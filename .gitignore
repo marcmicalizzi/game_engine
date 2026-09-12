@@ -1,0 +1,25 @@
+# Build output
+/build/
+/out/
+/_deps/
+CMakeUserPresets.json
+
+# IDE
+/.vs/
+/.vscode/
+/.idea/
+*.user
+*.suo
+*.swp
+
+# Caches
+/.cache/
+compile_commands.json
+
+# Derived data and local content caches (content-addressed, rebuildable)
+/ddc/
+/content/golden/local/
+
+# OS
+Thumbs.db
+.DS_Store

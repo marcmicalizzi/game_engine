@@ -1,0 +1,80 @@
+# Working in this repository
+
+This file is for every contributor, human or agent. It is short on purpose; the detail lives in the linked documents.
+
+## Where things are
+
+| Path | What |
+|---|---|
+| `docs/plan/` | The technical plan. Start at `docs/plan/README.md`. It is the source of intent for everything below. |
+| `docs/adr/` | Architecture decision records. Numbered, immutable once accepted. Reverse a decision with a new ADR that supersedes the old one. |
+| `docs/subsystems/` | One page per module: purpose, owned data, invariants, public API, how to test. |
+| `schemas/` | IDL source of truth (document types, protocol, events, components). Generated code is never hand-edited. |
+| `core/ foundation/ domain/ systems/ apps/ game/` | Source, one directory per module, layered lowest to highest. |
+| `tools/` | PowerShell 7 scripts and small C++ tools. No Python. |
+| `content/` | Test scenes, golden images, migration corpus. |
+| `third_party/` | Vendored dependencies and `LICENSES.md`. Permissive licenses only (ADR-0014). |
+
+## Build, test, lint
+
+One script drives everything, identically for humans, agents, and CI:
+
+```powershell
+tools/dev.ps1 configure [-Preset msvc-debug]   # locates Visual Studio, runs CMake with the preset
+tools/dev.ps1 build     [-Preset msvc-debug]
+tools/dev.ps1 test      [-Preset msvc-debug] [-Filter <regex>]
+tools/dev.ps1 lint                             # banned-pattern lint (also runs as a CTest test)
+tools/dev.ps1 format                           # clang-format over the tree
+tools/dev.ps1 modules   [-Preset msvc-debug]   # prints build/<preset>/modules.json
+```
+
+Presets are in `CMakePresets.json`. Debug builds carry asserts and iterator checking; `msvc-asan` adds AddressSanitizer. Every change must build and pass tests in `msvc-debug` before it is committed.
+
+## Layering (enforced by CMake)
+
+```
+L0 core        platform, memory, containers, math, jobs, log, schema runtime, serialization, hash, time, ids
+L1 foundation  io/vfs, asset-db, tunables, profiling, telemetry, calibration, scripting-host
+L2 domain      gfx (RHI + render graph), physics, nav, audio, ecs, doc, protocol, ddc, geometry
+L3 systems     renderer, streaming, simulation, destruction, deformation, ui, animation, ...
+L4 apps        engine-host, editor, mcp-bridge, engine-cli, content-build
+L5 game        per-game code
+```
+
+A module is declared once, in its `CMakeLists.txt`:
+
+```cmake
+engine_module(NAME containers LAYER core DEPS base)
+engine_module_tests(NAME containers SOURCES tests/flat_map_tests.cpp)
+```
+
+`engine_module()` refuses a dependency on a higher layer or on a module that has not been declared yet, so `add_subdirectory` order is lower layers first. The module graph is written to `build/<preset>/modules.json` after configure; read that rather than parsing CMake.
+
+Module layout: `include/<module>/` holds public headers only, `src/` the implementation, `tests/` unit and property tests, `bench/` micro-benchmarks. Public headers are the contract; nothing outside the module includes anything from `src/`.
+
+## Rules that are checked
+
+- **No banned containers or ownership types in engine code.** `std::map`, `std::set`, `std::unordered_map`, `std::unordered_set`, `std::list`, `std::deque`, `std::shared_ptr`, `std::function` (in hot paths) are replaced by `core/containers`. Allowed in `tools/`, `tests/`, and cold initialization marked with `// engine-lint: allow-std-container <reason>`. `tools/lint.ps1` enforces this and runs under CTest.
+- **Size table.** Every hot type has an `ENGINE_EXPECT_SIZE(Type, size, align)` entry in its module's `tests/size_table.cpp`. Changing a hot type's size means updating the entry and saying why in the commit message.
+- **Warnings are errors** on every compiler.
+- **No allocations in the frame loop in steady state** (measured once the frame loop exists; the allocation counter is a CI metric).
+- **Layering** as above.
+
+## Rules that are reviewed
+
+Read `docs/plan/11-performance-principles.md` before touching a hot path. In short: data layout and footprint first; iterate in memory order; no data-dependent branches inside inner loops (template on data-selected configuration, hoist hardware-selected parameters); pinned cache-domain thread pools; no hidden limits; measure before and after with the numbers in the change description.
+
+Read `docs/plan/12-ai-usage-policy.md` before touching anything that involves a model at development or run time. In short: agent outputs are content and code, never training data; runtime models are unmodified third-party open weights; describe caching as caching.
+
+## Conventions
+
+- C++20, `snake_case` for functions and variables, `PascalCase` for types, `k_` prefix for constants, trailing underscore for private members (`size_`), `ENGINE_` prefix for macros. Standard-library-style aliases (`size_type`, `iterator`) are kept on containers so agents' habits transfer. `.clang-format` is authoritative; run `tools/dev.ps1 format`.
+- Headers use `#pragma once`. Includes are ordered: own header, module headers, engine headers, third party, standard library.
+- No exceptions across module boundaries; error returns use `Result<T>` from `core/base` once it exists, `bool` plus out-parameter until then. Exceptions are disabled in engine targets.
+- Asserts: `ENGINE_ASSERT(cond, "message")` in debug, compiled out in release; `ENGINE_VERIFY` stays in release. Never assert on external input; validate it.
+- Every new module gets a `docs/subsystems/<module>.md` page and a `tests/` directory in the same change.
+- Commit messages: imperative subject under 72 characters, a body that says why, and the attribution trailer the harness supplies. Reference ADRs and plan sections when a change implements them.
+
+## Recording decisions
+
+Anything that would surprise a future contributor gets an ADR: copy `docs/adr/0000-template.md`, take the next number, fill in context, decision, consequences, and when to revisit. Accepted ADRs are never edited except to mark them superseded.

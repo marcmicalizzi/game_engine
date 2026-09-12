@@ -1,0 +1,107 @@
+# 06 — Agent and Developer-Tool Architecture
+
+## 6.1 Principles
+
+- The engine is a server. All clients are equal. Editor gestures compile to the same commands agents send.
+- Everything is schema-typed and versioned; nothing is inferred from screenshots that the engine already knows.
+- Every mutation is a transaction with attribution and an inverse.
+- Agents are stateless workers; state lives in the document, the persistent store, and the task ledger.
+- Tools return *structured results plus resource URIs*; bulk data never flows through MCP tool results.
+
+## 6.2 Engine Protocol
+
+- JSON-RPC 2.0 over WebSocket (editor, remote agents) and stdio (CI); a separate **bulk channel** (shared memory locally, raw TCP remotely) for captures, mesh uploads, and profiles.
+- Methods and types are generated from `schemas/protocol/`. Versioned; the server advertises capabilities; clients negotiate.
+- Sessions: `open_session(document, mode)`; several sessions per host; each has its own transaction log and runtime world.
+- Subscriptions: sim events, validation results, build progress via server push.
+
+## 6.3 MCP bridge
+
+- Curated tools with rich descriptions and JSON Schema inputs, each mapping to one or more protocol calls. The bridge is where good error messages, pagination, and detail-level parameters live.
+- Rule of thumb: **MCP is the cognitive interface** (semantically meaningful, coarse-grained, documented); **the native protocol is the mechanical interface** (fine-grained, high-volume, used by the editor, tests, and the bridge). If an agent needs a fine-grained operation repeatedly, add a compound command server-side rather than exposing the fine-grained one over MCP.
+- Bulk results (captures, meshes, profiles) are written to a workspace directory and returned as file URIs the agent reads with its own tools.
+
+## 6.4 Transactions, checkpoints, rollback
+
+`begin_transaction → commands → validate → commit | rollback`; `checkpoint(label)` is a git commit; `rollback_to(checkpoint)` restores. Every commit records actor, role, task ID, and rationale. `diff(a, b)` returns structural diffs with deterministic semantic summaries ("12 props added in tile (3,7); quest q17 stage 2 precondition changed").
+
+## 6.5 Permissions, concurrency, and leases
+
+- **Roles** are configuration: allowed tool set, allowed layers, allowed tiles and object types, and whether commits need review. Director, designer, environment, QA, and performance are role configs, not code.
+- **Leases**: an agent acquires a lease on (layer, tile set) or (layer, object-type set) before editing. Leases are time-bounded and visible; conflicts fail fast at acquisition rather than at merge.
+- **Proposal layers**: agents write to their own proposal layer; acceptance promotes the layer's opinions into the target feature layer via structural merge; validators run on the merged result before promotion.
+- Read access is unrestricted. Read-only context from neighbors is the point.
+
+## 6.6 Introspection
+
+- `describe(object | tile | region, detail: summary | standard | full)` returns schema-typed data plus a natural-language summary generated deterministically from templates (not a model), so it is stable and cheap.
+- `query(sql | structured)` over the persistent store (SQL) and over document indices (a structured filter language).
+- `capture(view, camera, channels)` returns color plus any of: depth, normals, material ID, **entity ID buffer**, motion vectors, lighting components. The entity ID buffer accompanies every color capture so the agent can map pixels to objects. A contact-sheet mode renders N cameras into one image.
+- `profile(scene, duration)` returns a structured frame-time breakdown per pass and per system, GPU counters, memory by tag, and a Tracy capture URI.
+- `validate(scope)` runs module invariants and content validators: unreachable regions, nav islands, collision leaks, floating or interpenetrating objects, missing references, budget violations, style-guide violations, stale canon dependencies.
+- `events(since, filter)` returns gameplay and world events; `telemetry(run_id)` returns playtest telemetry.
+
+## 6.7 Edit context and world mips
+
+The design problem: an agent editing one part of a world needs enough global context to place its decisions in the whole, and exact knowledge of what borders its edit region so the result stays continuous at full detail, all inside a bounded token budget. Two mechanisms, both from the brief:
+
+**The mipmapped world.** The tile quadtree `L0..L4` ([03 §3.7](03-data-model.md#37-spatial-partition)) carries, at each level, summaries of its children in three families:
+
+- **Semantic mips**: terrain classes, biome, settlement types, roads and connections, watershed, faction control, narrative significance, landmarks, sightlines. Produced by deterministic aggregation plus optional LLM summarization *cached as a derived artifact* whose inputs are hashed, so it invalidates correctly.
+- **Visual mips**: automated capture cameras per tile (orthographic top-down, four obliques, notable vistas) rendered on content change into the derived-data cache and composited into neighborhood, district, and region maps.
+- **Design-density mips**: narrative, combat, exploration, secret, traversal difficulty, visual complexity, emotional intensity as per-tile scalar layers with aggregation. Director agents read them as heatmaps.
+
+**The edit cell with immutable overlap.** An edit lease covers a cell (one or more L0 tiles). The engine returns the cell at full detail and writable, plus an **overlap ring** (configurable width: one tile, or N meters) at full detail and **read-only for the duration of the lease**: terrain heights, placed objects, roads, splines, materials, nav, lighting. The ring is what the agent matches against. Because it cannot change during the edit, continuity validators (terrain slope across the seam, road tangents, river cross-sections, material families, nav connectivity) are checked deterministically at commit. Above the ring, the agent receives progressively coarser mips: `standard` detail for the containing L1, `summary` for L2 through L4, plus the boundary contracts ([§6.12](#612-hierarchical-world-generation)).
+
+**Token budgeting.** Every context package is assembled to a declared token budget: full detail for the cell and the ring first, then the mip levels compressed from the bottom up until the budget fits. The package lists what was dropped so the agent can request more on demand. The package is a `derived` node, so it is cached and invalidates exactly when any input changes.
+
+## 6.8 Long-running work
+
+- A **task ledger** in the repo (`work/tasks/*.json`): goal, acceptance criteria, owner role, lease, status, links to checkpoints and review items. Agents resume from the ledger and the document, never from conversation memory.
+- Review items are ledger entries created by the invalidation substrate or by review agents.
+- Every accepted proposal records its rationale next to the change so later agents can find *why*.
+
+## 6.9 Day-one operations
+
+The minimum set for the first agent loop, all via the protocol and exposed through MCP:
+
+```
+open_session, checkpoint, rollback_to, diff
+begin_transaction, commit, rollback
+create_object, delete_object, set_property, reparent, place_asset, instantiate_template
+describe, query, list_schema
+capture, run_headless(seconds | until predicate), validate, profile, run_tests, build_content
+events, get_budgets, get_logs
+benchmark(scene_set, resolution_set) -> {frame_times, counters, image_error_vs_reference}
+```
+
+## 6.10 Multi-agent roles, review, and the human director
+
+- Start with **one agent, one loop**: checkpoint → edit → build → validate → capture → review → accept or rollback. Add roles once this works.
+- Review is a role config with read access plus the ability to file review items and block promotion; the director role adjudicates by promoting or rejecting proposal layers.
+- **Human director surface** (in the editor client): a review queue of proposals with side-by-side captures (before/after, same cameras), structural diffs with semantic summaries, validator results, budget deltas, and one-click accept, reject, or annotate. This is the human's primary interface; design it early.
+
+## 6.11 Automated playtesting
+
+- Bots drive the game through the **same input path** as players (recorded input events), so replays and telemetry are identical between bots and humans.
+- Two control modes: scripted/utility bots (fast, headless, thousands of runs) and LLM-driven bots (slow, use captures plus structured state, dozens of runs) for subjective evaluation.
+- Player profiles (new, explorer, completionist, speedrunner, cautious, aggressive, adversarial) are parameterizations of the utility bot plus prompt variants for the LLM bot.
+- Telemetry per run: path, deaths, objective timeline, view-direction samples, encounter outcomes, nav failures, stuck detection, time per region, quest and world-state snapshots, performance. Stored in a run database, queryable, aggregated into design-density mips.
+- Headless `sim` mode runs at maximum speed with no rendering; `offscreen` mode adds periodic captures for the LLM bot.
+- Fuzzing: random destruction sequences, random input, random save/load points, with invariants checked after each.
+
+## 6.12 Hierarchical world generation
+
+- Stages as in the brief (thesis → world vision → narrative spine → coarse topology → main-path regions → expansion → secondary content), each producing **authored nodes** in the canon graph and document, each with acceptance criteria and validators.
+- **Boundary contracts**: when an L(n) node is elaborated into L(n-1) children, the parent first writes a contract per shared edge: terrain profile along the edge, road/river/path crossings (position, width, type), biome and style tags, sightline requirements, faction control. Children must satisfy the contract; a validator checks conformance. Contracts are the coordination mechanism between adjacent agents and turn adjacency into a *data* problem rather than a negotiation.
+- **Upward proposals**: a child may file a `CanonProposal` targeting a higher-level node. It enters the review queue; acceptance changes the parent, and the invalidation substrate marks dependents stale with review items.
+- **Coherence mechanisms**: style guides as structured constraints (palettes, material families, architectural grammars, naming rules) with validators; visual consistency checks via image-embedding distance to the approved reference board; the canonicity rule (only accepted canon may be depended on); review roles; human gates at the bible and spine levels.
+- **Derive optional content from existing state**: secondary-content agents query the world for "unexplained" objects (structures without history, factions without conflicts, regions without landmarks) and elaborate those rather than inventing unattached filler.
+
+## 6.13 Human developer tooling
+
+The editor is a complete development environment, not an agent review console. A team that never uses an agent must be able to build a game with it, and a team that does must be able to open anything an agent produced and adjust it by hand.
+
+Scope: a viewport with gizmos and snapping; scene outliner and property panels generated from schemas; an asset browser over the derived-data cache with validation results inline; material graph, terrain, spline, scatter, and placement tools; animation and state-machine editors; quest and dialogue graph editors; profiler and capture views; the HUD-safe-region editor; the review queue ([§6.10](#610-multi-agent-roles-review-and-the-human-director)).
+
+Because every gesture compiles to a command, human edits are attributed, undoable, and diffable exactly like agent edits, and humans and agents can work in the same document under the same lease rules. The editor never has a private path into the engine; if a feature is only reachable from the GUI, that is a protocol bug.

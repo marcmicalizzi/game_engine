@@ -1,0 +1,164 @@
+# 02 — Recommended High-Level Architecture
+
+## 2.1 Shape of the system
+
+The engine is a **headless simulation-and-rendering server** with a **text-based, versioned authoring document** as its source of truth, driven by clients over a **schema-generated protocol**. Humans use a GUI editor client; agents use an MCP bridge client; CI uses a CLI client. All three issue the same commands through the same transaction system.
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  Clients                                                            │
+│   GUI editor   │  MCP bridge (agents)  │  CLI / CI runner  │ tests  │
+└───────┬────────┴───────────┬───────────┴─────────┬─────────┴────┬───┘
+        │      Engine Protocol (JSON-RPC over WS/stdio + bulk channel) │
+┌───────▼─────────────────────▼─────────────────────▼──────────────▼───┐
+│  engine-host process                                                 │
+│  ┌──────────────┐ ┌──────────────┐ ┌───────────────┐ ┌────────────┐  │
+│  │ Transaction  │ │ Query/       │ │ Capture/      │ │ Validation │  │
+│  │ service      │ │ introspection│ │ profiling svc │ │ service    │  │
+│  └──────┬───────┘ └──────┬───────┘ └───────┬───────┘ └─────┬──────┘  │
+│  ┌──────▼───────────────▼────────────────▼───────────────▼──────┐   │
+│  │ World Document (authoring model, in-memory, layered)          │   │
+│  └──────┬───────────────────────────────────────────────────────┬┘   │
+│         │ compile (derived-data graph)                          │    │
+│  ┌──────▼──────────────┐   ┌────────────────────────────────────▼─┐  │
+│  │ Runtime World       │   │ Persistent World State (event log +  │  │
+│  │ (ECS, hot state)    │◄──┤ snapshots, SQLite-backed)            │  │
+│  └──────┬──────────────┘   └──────────────────────────────────────┘  │
+│  ┌──────▼──────────────────────────────────────────────────────────┐ │
+│  │ Systems: sim scheduler · physics · nav · anim · audio · destr.  │ │
+│  │          streaming · renderer (cluster geo + RT) · UI · input   │ │
+│  └─────────────────────────────────────────────────────────────────┘ │
+│  Foundation: jobs · memory · schema/reflection · serialization ·     │
+│              I/O · logging/telemetry · tunables · profiling          │
+└──────────────────────────────────────────────────────────────────────┘
+        │                                    │
+┌───────▼──────────┐               ┌─────────▼──────────────────────┐
+│ Derived Data     │               │ Content Build (out-of-process)  │
+│ Cache (CAS)      │◄──────────────┤ mesh→clusters→AS, textures,     │
+└──────────────────┘               │ navmesh, structural graphs, …   │
+                                   └────────────────────────────────┘
+```
+
+Three data domains, deliberately distinct because their access patterns are distinct:
+
+| Domain | Lives in | Access pattern | Owner |
+|---|---|---|---|
+| **Authoring document** | Text files in git, loaded to memory | Edited transactionally by humans/agents; diffed; merged | Transaction service |
+| **Runtime world** | ECS archetype storage + per-system SoA buffers + GPU buffers | Per-frame, cache-friendly, transient; rebuilt from the other two on load | Systems |
+| **Persistent world state** | Event log + periodic snapshots (SQLite) | Append-heavy writes, ad-hoc queries, survives across sessions and saves | World state service |
+
+The runtime world is a *materialization*: authoring document (what the designer built) + persistent state (what has happened since) → runtime entities at the current sim LOD. This separation is what makes sim LOD, save games, and agent introspection tractable. Details in [03-data-model](03-data-model.md).
+
+## 2.2 Process model
+
+- **`engine-host`**: the single runtime binary. Runs in one of three modes: `sim` (no GPU, no window; playtesting, world simulation, tests), `offscreen` (GPU, no window; captures, image tests, benchmarks), `windowed` (normal play, or editor viewport). All modes speak the protocol.
+- **`content-build`**: out-of-process, parallel, cache-driven derived-data compiler. Also callable in-process for editor hot-reload of a single asset.
+- **`editor`**: the full human-facing GUI client: viewport with gizmos, outliner and property panels, asset browser, material, terrain, animation, quest and dialogue tools, profiler, review queue. It is a complete development environment for teams that never use an agent and the place humans adjust what agents produced ([06 §6.13](06-agent-tooling.md#613-human-developer-tooling)). It connects to a local `engine-host` and has no privileged access: every gesture compiles to the same commands agents send. Dear ImGui initially.
+- **`mcp-bridge`**: adapts the Engine Protocol to MCP tools with curated, well-documented surfaces. Stateless; can be restarted without disturbing the engine.
+- **`engine-cli`**: thin scriptable client for CI and shell use.
+- **Generator services** (mesh/texture/speech generators): separate processes behind a uniform "generator" interface; may be remote.
+
+One `engine-host` may host multiple *sessions* (documents/worlds) for agents working in parallel, but a single session has a single authoritative document.
+
+## 2.3 Subsystem boundaries and layering
+
+Layering is enforced by the build: a module may only depend on modules in lower layers or the same layer where explicitly allowed. Agents (and humans) can then reason locally about any module.
+
+```
+L5  game/                  gameplay systems, content, quests   (per-game)
+L4  apps/                  engine-host, editor, mcp-bridge, engine-cli, content-build
+L3  systems/               renderer, streaming, simulation, destruction, deformation, ui, animation,
+                           audio-system, nav-system, physics-system, world-state, worldgen
+L2  domain/                gfx (RHI+render graph), physics (Jolt wrapper), nav (Recast wrapper),
+                           audio (device), ecs (world runtime), doc (authoring document),
+                           protocol (RPC), ddc (derived data cache), geometry (cluster builder)
+L1  foundation/            io/vfs, asset-db, tunables, profiling, telemetry, calibration,
+                           scripting-host
+L0  core/                  platform, memory, containers, math, jobs, log, schema (codegen runtime),
+                           serialization, hash, time, ids
+```
+
+**Ownership rules**
+
+- Every `L2+` module owns exactly one kind of data and exposes it through a schema-declared interface. No module reaches into another's storage.
+- Hot systems (renderer, physics, animation) own their own SoA/GPU representations. The ECS holds *identity, relationships, and cold-to-warm component data*; it is the index, not the hot loop.
+- Cross-system communication is via (a) the sim event bus for gameplay-meaningful events, (b) explicit per-frame data handoffs declared in the frame graph, never via ad-hoc calls into another system mid-update.
+- Anything that can be a **pure function of content** (mesh → clusters, mesh → structural graph, tile → navmesh) is a content-build step, not a runtime step, even if it also has a fast in-process path for editing.
+
+## 2.4 Frame and time model
+
+```
+wall clock ──► frame pacing ──► render frame N (variable dt, non-deterministic)
+                                     ▲ interpolates
+sim clock  ──► fixed step (e.g. 60 Hz) ──► sim tick k (deterministic)
+                                     ▲ drives
+game clock ──► scaled sim time (e.g. 1 game-minute per sim-second) ──► scheduler events
+```
+
+- **Sim tick** is fixed-step, deterministic, seeded, and replayable from an input log. It runs the LOD0/LOD1 systems. Tick counters and game time are 64-bit integers; floating point appears only in per-frame deltas, so precision does not degrade over long sessions.
+- **Game time** is sim time × scale; it drives the event scheduler for LOD2/LOD3 and world systems. It can advance in large jumps (sleep, travel, headless fast-forward).
+- **Render frame** is decoupled, may run faster or slower than sim, interpolates between sim states, and has no effect on sim.
+- **Observers** (players, cameras, playtest bots) are first-class; LOD assignment is a function over the set of observers.
+
+## 2.5 Repository organization for agent comprehension
+
+```
+/
+  AGENTS.md                 how to work in this repo (build, test, conventions, layering rules)
+  docs/
+    plan/                   this plan
+    adr/                    architecture decision records, numbered, immutable once accepted
+    subsystems/             one page per module: purpose, owned data, invariants, public API, tests
+  schemas/                  IDL source of truth: document schema, protocol, events, components
+  core/ foundation/ domain/ systems/ apps/ game/   (layers above)
+    <module>/
+      CMakeLists.txt        engine_module(NAME LAYER DEPS ...) is the module manifest;
+                            CMake enforces layering at configure time and emits build/modules.json
+      README.md             purpose, invariants, how to test
+      include/<module>/     public headers only
+      src/
+      tests/                unit + property tests
+      bench/                micro-benchmarks registered with the tunables system
+  tools/                    python/CLI tooling, codegen, CI scripts
+  content/
+    test-scenes/            deterministic reference scenes (versioned)
+    golden/                 golden images and metrics, by scene × resolution × GPU class
+  third_party/              vendored or vcpkg manifests, with LICENSES.md
+```
+
+Conventions that specifically help LLM-generated code:
+
+- **One schema, everything generated.** Components, events, protocol messages, document types are declared once in `schemas/`; C++ types, JSON (de)serializers, JSON Schema, protocol docs, MCP tool definitions, and migration stubs are generated. Agents never hand-write serialization.
+- **Machine-readable module manifests.** Each module declares its name, layer, and dependencies once, in its `CMakeLists.txt` through `engine_module()`. CMake refuses a dependency on a higher layer at configure time and writes `build/modules.json` so agents can read the module graph without parsing CMake.
+- **Invariants as code.** Every module exposes `validate()`; debug builds run it at system boundaries; the validation service exposes it to agents.
+- **No implicit global state.** Systems receive their dependencies explicitly; there is exactly one service locator and it is only used at the app layer.
+- **Small public surfaces.** Public headers are the contract; internal headers are not visible to other modules.
+- **One container set.** Engine code uses `core/containers` (flat maps and sets, open-addressing hash maps, small and fixed vectors, slot maps, intrusive lists, bitsets). Node-based standard containers and `std::shared_ptr` are banned outside tools, tests, and cold initialization, enforced by clang-tidy ([11 §11.2](11-performance-principles.md#112-data-layout-and-footprint-first)).
+- **A size table for hot types**, checked by `static_assert`, so footprint regressions fail the build rather than the frame rate.
+- **Tests and benchmarks are colocated** with the module and discoverable by a uniform command.
+- **ADRs** record every decision in this plan that gets confirmed or reversed, so agents can find *why* something is the way it is without reading git history.
+
+## 2.6 Explicit scope for the first engine version
+
+In scope: Windows first, Linux second, with feature parity as the goal and documented gaps where a vendor extension is missing on one platform; Vulkan behind a thin API-neutral RHI (rationale in [08-toolchain §8.3](08-toolchain.md#83-graphics-api)); desktop GPUs with hardware RT (NVIDIA first, AMD second, Intel third); single-player for the first game, with the multiplayer-readiness rules in [05 §5.12](05-simulation.md#512-multiplayer-readiness) enforced from the start; keyboard/mouse/gamepad; both agent-driven and fully manual development tooling; a 1–3 hour game.
+
+Out of scope for the first engine version, recorded as decisions (see [10-roadmap-risks](10-roadmap-risks.md#106-decisions-deliberately-deferred)): consoles; mobile (not precluded, see §2.7); shipping multiplayer (kept open, not built); VR; D3D12 and Metal backends (deferred); non-RT GPUs as a quality target (they run the baseline tier at reduced quality).
+
+## 2.7 Generality: what the engine must not preclude
+
+The first game is small and single-player, but the engine should not bake in limits a later game would hit. The following are cheap to get right now and expensive to retrofit.
+
+| Later need | What a limit would look like | Architectural hook now |
+|---|---|---|
+| Very large or space-scale worlds (flight, open worlds beyond ~10 km) | float32 world positions jitter far from the origin | Positions are (tile index, float local offset); rendering uses camera-relative transforms; no absolute float32 world coordinate exists anywhere |
+| Long sessions | float seconds accumulate error after hours | 64-bit tick counters and integer game time; float only in per-frame deltas |
+| Many animated units (RTS, crowds, 10^4 and up) | CPU skinning, one draw per entity | GPU skinning, cluster instancing, animation LOD; entity count is a budget, not a constant |
+| Multiplayer | wall-clock reads in gameplay, a "the player" singleton, render-coupled logic | Deterministic fixed-step sim, observer set, schema replication annotations, headless `sim` mode as a dedicated server ([05 §5.12](05-simulation.md#512-multiplayer-readiness)) |
+| Split-screen, VR, surround, portrait | single-view assumptions | `ViewSet` is first-class ([04 §4.6](04-renderer.md#46-extreme-displays)) |
+| Modding | binary levels, hard-coded content paths | Document layers *are* mods: a mod is a layer plus a content pack; scripting is sandboxed |
+| Custom rendering (stylized looks, extra passes) | a closed render pipeline | The render graph accepts game-registered passes; the material graph is extensible; Slang modules |
+| Extreme resolutions and FOV | packed screen coordinates, fixed atlas sizes | Checked compact types with fallback; every size from the render config ([11 §11.6](11-performance-principles.md#116-no-hidden-limits)) |
+| Localization and accessibility | ASCII assumptions, hard-coded text, fixed input | UTF-8 everywhere, string IDs, RTL-capable text layout, remappable input, UI scale |
+| HDR, high refresh, VRR | SDR-only pipeline, fixed frame pacing | Scene-referred lighting, per-display output transform, VRR-aware frame pacing |
+| Mobile (a later consideration, not a first-class target) | an RT-and-mesh-shader-only renderer | RHI capability tiers; the non-RT fallback path is kept working as the **baseline tier**; the cluster DAG can emit traditional LOD meshes at build time; SDL3 covers Android/iOS windowing and touch. A real port would still need a dedicated bandwidth-conscious renderer tier and is not revisited before Phase 7 is complete |
+| Arbitrary limits | max lights, bones, entities, texture size as constants | Every limit is a configurable budget with a validator, never a compile-time constant |

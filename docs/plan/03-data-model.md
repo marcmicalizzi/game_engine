@@ -1,0 +1,139 @@
+# 03 — Core Data and World Model
+
+This is the most consequential design area in the plan (see [01-critique §1.8](01-critique.md#18-the-three-decisions-that-must-be-right-early)). It defines three data domains, how they relate, and the one dependency-tracking substrate that serves both the asset pipeline and world-generation canon.
+
+## 3.1 Identity
+
+- Every authored object has a **128-bit stable ID**, time-sortable with random suffix (ULID-style), assigned at creation and never reused. Names, paths, and labels are metadata, never identity.
+- References between objects are by ID only. Path-based references are forbidden because agents rename and move things constantly.
+- Runtime entities use a transient **handle** (32-bit index + generation). An ID↔handle map exists per session. Handles are never serialized.
+- Content (meshes, textures, compiled data) is identified by **content hash** (BLAKE3 or xxHash3-128), not by ID, so identical generated outputs deduplicate automatically.
+
+## 3.2 The authoring document ("World Document")
+
+The authoring document is what designers and agents edit. It is *not* the runtime representation.
+
+**Structure**
+
+- A tree of typed **objects**, each with an ID, a schema type, a parent, and a set of typed properties. Types are declared in `schemas/` and code-generated.
+- **Layers** hold sparse property assignments. A document is an ordered stack of layers; for each (object, property), the strongest layer that assigns it wins. There are no other composition operators (no inherits, variants, payloads, or references-with-overrides) in v1. Templates/prefabs are handled by an explicit *instantiate-and-record-origin* operation, not by live composition, because live composition makes "what does this edit change" non-local, which is exactly what agents handle badly.
+- **Spatial partitioning of files.** A layer is stored as one file per tile: `world/<layer>/<tile>.wd`. Non-spatial objects (factions, quests, canon facts) live in `world/<layer>/global/<type>.wd`.
+- **Layer roles:** `base` (generated/authored world), feature layers (a quest's placements, a settlement's props), proposal layers (an agent's in-progress work, promoted into a feature layer on acceptance), and `session` (ephemeral edits not yet committed).
+
+**Serialization**
+
+- Canonical JSON: sorted keys, fixed number formatting, one object per top-level array element, IDs as strings. Zero tooling cost, universally understood by agents, diffs acceptably in git. Revisit only if measured diff churn is a problem; a custom text format is the fallback, not the default.
+- Large blobs (heightmaps, painted masks, splines with thousands of points) are separate content-addressed binary files referenced by hash from the JSON. The JSON stays diffable; blobs compare by hash.
+
+**Why not OpenUSD.** USD's concepts (layers, prims, schemas, opinions) are right and are borrowed here. Its composition engine (inherits, variants, references, payloads with LIVRPS strength ordering) makes edits non-local, its C++ build is heavy, and it is unsuitable as a runtime format regardless. Adopt the vocabulary, provide USD import/export for interop with DCC tools through a dependency-free reader/writer (LightUSD, formerly tinyusdz) rather than the full OpenUSD build, and confirm with experiment **E4** ([10-roadmap-risks §10.5](10-roadmap-risks.md#105-experiments-to-run-before-committing)).
+
+**Why not binary levels.** Agents cannot diff, review, attribute, or merge them. This is non-negotiable.
+
+## 3.3 Transactions, diffs, and merges
+
+- A **command** is a schema-typed message (`SetProperty`, `CreateObject`, `Reparent`, `Delete`, `ApplyPatch`, plus compound commands such as `PlaceAssetsAlongSpline`). Commands are the only way to change the document. GUI editor gestures compile to commands.
+- A **transaction** groups commands, validates the result (schema, references, module invariants), and produces a **forward patch** and an **inverse patch**, both structural (keyed by object ID and property), both serializable. Undo applies the inverse. Rollback of an uncommitted transaction is free.
+- Every transaction carries **attribution**: actor ID (human or agent), role, task ID, optional rationale, and the checkpoint it was based on.
+- The **session journal** appends committed transactions. A **checkpoint** serializes the layers and commits to git with the journal segment as the commit body. Journals give fine-grained history; git gives coarse, branchable history.
+- **Diff** between two document states is structural: per object, per property. Line diffs are never shown to agents.
+- **Merge** is a structural 3-way merge: conflicts arise only when the same (object, property) differs on both sides, or when structural operations collide (delete vs. modify, both reparent). Spatial conflicts (two agents placing overlapping objects) are not merge conflicts; validators catch them after merge. Agents working in parallel use proposal layers plus tile leases ([06-agent-tooling §6.5](06-agent-tooling.md#65-permissions-concurrency-and-leases)), which makes true merge conflicts rare.
+
+## 3.4 The runtime world
+
+The runtime world is a *materialization* of (document + persistent state) at a chosen simulation LOD for a set of loaded tiles. It is rebuilt on load and discarded on unload; it is never the source of truth for anything persistent.
+
+**Entity storage.** Archetype ECS. Recommendation: **evaluate flecs first** rather than writing one. Reasons specific to this project: built-in reflection and JSON serialization, a query language that maps almost directly onto `query_world`, first-class **relationships** (`(WorksAt, factory_17)`, `(MemberOf, faction_x)`) that the persistent-world design needs anyway, and a REST/explorer interface that is a ready-made introspection surface. Concern: general-purpose ECS iteration is not the fastest possible hot loop. Mitigation is architectural, not library choice: **hot systems own their own data.** Physics state lives in Jolt, render instances in GPU buffers, animation poses in the animation system's SoA pools; the ECS holds identity, relationships, and gameplay components, and hands out indices into those pools. If flecs fails measured performance targets for gameplay-component loops, EnTT or a small custom archetype store is the fallback; the interfaces above keep that swappable. Decide by experiment **E6**.
+
+**Materialization contract.** Every system that participates in sim LOD implements:
+
+```
+Materialize(record, tier)     create runtime components/resources for this tier
+Promote(entity, from, to)     add fidelity   (e.g. LOD2 -> LOD1: allocate nav agent)
+Demote(entity, from, to)      summarize and drop fidelity (LOD1 -> LOD2: write coarse position)
+Dematerialize(entity)         flush persistent deltas, free runtime state
+```
+
+Transient components are marked `transient` in the schema and are never persisted.
+
+## 3.5 Persistent world state
+
+Everything that has *happened* since the document was authored: destroyed buildings, NPC deaths, quest progress, economic state, player-caused changes.
+
+**Event-sourced.** The primary record is an append-only log of `WorldEvent`:
+
+```
+WorldEvent {
+  id          u64          monotonic per session
+  sim_tick    u64
+  game_time   i64          seconds
+  type        schema-typed
+  subject     ObjectId
+  cause       EventId?     causal parent
+  depth       u16          causal chain length; bounds cascades
+  tile        TileId
+  payload     type-specific, schema-typed
+  origin      Deterministic | Player | Agent | LLM | Debug
+}
+```
+
+**Projections.** Current state per object ("building_217 destroyed; rubble cleared at T") is a *projection* of the log, kept in memory for loaded tiles and in the persistent store for all tiles. Systems read projections during play; nothing scans the log per frame.
+
+**Storage: SQLite** in WAL mode holding the event log, projections, and indices. Reasons: transactional and crash-safe; a single-file save game; agents and tests can run **SQL** against world state, which is the most powerful introspection surface available for nearly zero engineering cost; schema migrations are a well-trodden path. SQLite is the durability and query layer; per-frame hot reads come from in-memory projections. Expected write rates (hundreds to low thousands of events per second at peak, batched per tick) are far below SQLite's WAL-mode capacity.
+
+**Snapshots.** Periodic full projection snapshots bound replay length. Save game = latest snapshot + events since. Load = apply snapshot, replay tail.
+
+**Non-determinism is logged, not re-executed.** Wall-clock reads, LLM outputs, external generator outputs, and human/agent edits during play are recorded as events with `origin`. Replay reads them from the log. This is what makes the runtime-LLM tiers compatible with deterministic replay.
+
+## 3.6 Dependencies and invalidation
+
+One substrate serves the asset pipeline, world-generation canon, visual and semantic mips, validation caches, and playtest result caches.
+
+**Model.** A node is identified by the hash of (function identity + version, input hashes). Two node classes:
+
+| Class | Producer | On input change |
+|---|---|---|
+| `derived` | Pure function (mesh→clusters, tile→navmesh, region→semantic summary, document→dependency index) | Recompute automatically, in parallel, cache in the content-addressed store |
+| `authored` | Human or agent judgment (a quest, a region's layout, a faction's history) | Mark **stale**, keep the old value live, enqueue a review item naming what changed upstream |
+
+**Tracked reads.** A build function receives its inputs through a tracked accessor; every read is recorded as a dependency. Undeclared reads (raw file access) are blocked in the build sandbox. This is how Bazel and Salsa achieve correctness without asking humans to maintain dependency lists, and it is essential here because agents will not maintain them either.
+
+**Storage.** Content-addressed store on disk (files named by hash) plus an SQLite index of nodes, edges, and staleness. Shareable across machines; deterministic outputs from any machine are interchangeable.
+
+**Canon example.**
+```
+world_history.founding_war                 (authored)
+  └─► faction.ironbound.motivation         (authored, depends on above)
+        ├─► quest.q17.premise              (authored)
+        └─► region.r3.semantic_summary     (derived)
+```
+An environment agent proposes a change to `founding_war`. On acceptance the substrate marks `motivation` and `q17.premise` stale with review items, and recomputes `r3.semantic_summary`. Nothing is regenerated without a decision, and nothing stale is silently used without being flagged.
+
+## 3.7 Spatial partition
+
+- A fixed **tile grid** (size chosen per game; 64–128 m is typical) with a quadtree of levels `L0..L4` over it. The same grid is the unit of: document layer files, streaming, persistent-state partitioning, nav tiles, acceleration-structure residency, agent edit leases, and world-gen mips. One partition, many consumers.
+- World positions are stored as (tile index, float local offset) and rendering uses camera-relative transforms, so float32 precision holds at any world size ([02 §2.7](02-architecture.md#27-generality-what-the-engine-must-not-preclude)).
+- Tiles are columns (full vertical extent). Interiors are either in the column or in **interior cells** reached through portals and streamed independently.
+- Per-tile spatial index (BVH or grid) for queries below tile granularity. Cross-tile queries go through the level hierarchy.
+
+## 3.8 Schema evolution
+
+- Every schema type carries a version. The generator emits migrators for additive changes automatically; removals and semantic changes require a hand-written (or agent-written) migration function checked in next to the schema.
+- Document files, snapshots, and events carry their schema version. Migration happens on read: events are upcast; snapshots migrated on load; documents migrated on open and rewritten on the next checkpoint.
+- A **migration corpus** of old documents and saves lives in `content/migration-corpus/`; every migration is tested against it in CI. Deleting a migration is forbidden while any corpus entry needs it.
+- Rename is an alias, never delete-and-add.
+
+## 3.9 Canon and narrative representation
+
+Canon is authored data in the document, not prose in a model's context.
+
+- Object types: `Character`, `Faction`, `Place`, `HistoricalEvent`, `Item`, `Fact`, `Quest`, `QuestStage`, `Scene`, `DialogueNode`, `StyleGuide`.
+- Typed relations (document references at authoring time, ECS relationships at runtime): `member_of`, `located_at`, `caused_by`, `knows`, `owns`, `contradicts`.
+- Every canon object has **provenance** (who, which stage, which task, when) and a **canonicity** level: `proposed` → `accepted` → `deprecated`. Only `accepted` canon may be depended on by shipped content; validators enforce it.
+- **Quests** are explicit state machines. Stage preconditions and completion conditions are **world predicates** over persistent state: `intact(bridge_217)`, `alive(npc_x)`, `has(player, item_y)`, `relation(a, b) > 0.3`. The **narrative dependency index** (a derived node) maps every world object to the quests and scenes whose predicates mention it. Story protection consults this index ([05-simulation §5.9](05-simulation.md#59-narrative-dependencies-and-story-protection)).
+- Dialogue is a graph of authored nodes plus optional `generated` nodes that carry the constraint set an LLM must satisfy and a cache of accepted generations, so the runtime tier can fall back to cached text.
+
+## 3.10 How deterministic and agent-generated state coexist
+
+- Agent output is **authored content** compiled into the document before play. At runtime it is indistinguishable from human-authored content.
+- During play only deterministic systems mutate persistent state, with two exceptions: player input and runtime-LLM outputs, both logged as events and replayed from the log.
+- Agents editing a *live* session (for iteration) do so through transactions that are also logged as `Agent`-origin events, so a live-edited session remains replayable.
