@@ -1,0 +1,44 @@
+# Build options. Keep this list short; most behaviour is fixed by policy, not options.
+
+option(ENGINE_BUILD_TESTS "Build unit tests and register them with CTest" ON)
+option(ENGINE_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" ON)
+option(ENGINE_ASAN "Enable AddressSanitizer" OFF)
+option(ENGINE_UBSAN "Enable UndefinedBehaviorSanitizer (Clang/GCC only)" OFF)
+
+# Default to Debug for single-config generators when nothing was requested.
+get_property(_engine_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
+if(NOT _engine_multi_config AND NOT CMAKE_BUILD_TYPE)
+  set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
+endif()
+
+# Sanitizers.
+if(ENGINE_ASAN)
+  if(MSVC)
+    add_compile_options(/fsanitize=address)
+    # MSVC ASan is incompatible with /RTC and incremental linking.
+    foreach(_cfg "" _DEBUG _RELWITHDEBINFO)
+      string(REPLACE "/RTC1" "" CMAKE_CXX_FLAGS${_cfg} "${CMAKE_CXX_FLAGS${_cfg}}")
+    endforeach()
+    add_link_options(/INCREMENTAL:NO)
+  else()
+    add_compile_options(-fsanitize=address -fno-omit-frame-pointer)
+    add_link_options(-fsanitize=address)
+  endif()
+endif()
+
+if(ENGINE_UBSAN AND NOT MSVC)
+  add_compile_options(-fsanitize=undefined -fno-omit-frame-pointer)
+  add_link_options(-fsanitize=undefined)
+endif()
+
+# Engine targets are built without exceptions and without RTTI where the
+# compiler allows it. Tests and tools may re-enable them per target.
+set(ENGINE_NO_EXCEPTIONS_FLAGS "")
+if(MSVC)
+  # /EHsc is the default and is required by the standard library headers we
+  # compile; exception *use* is forbidden by convention and lint rather than
+  # by flag on MSVC. RTTI stays on for MSVC as well: disabling it breaks
+  # standard library components in ways that cost more than the 8 bytes.
+else()
+  set(ENGINE_NO_EXCEPTIONS_FLAGS -fno-exceptions -fno-rtti)
+endif()
