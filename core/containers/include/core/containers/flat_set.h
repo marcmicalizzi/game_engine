@@ -2,7 +2,7 @@
 
 // FlatSet: a sorted set over a single contiguous allocation. Iterators are plain pointers to
 // const Key, so every standard algorithm works on it directly. The container object is 16
-// bytes with the default 32-bit size type and an empty comparator.
+// bytes with the default 32-bit size type, an empty comparator, and the default allocator.
 //
 // Complexity and guidance are the same as FlatMap: O(log n) lookup, O(n) insert and erase,
 // ideal for small or read-mostly sets; use HashSet under heavy churn at large sizes.
@@ -11,10 +11,10 @@
 #include <core/base/macros.h>
 #include <core/base/types.h>
 #include <core/containers/detail/raw_storage.h>
+#include <core/memory/allocator.h>
 
 #include <algorithm>
 #include <functional>
-#include <iterator>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -24,17 +24,20 @@
 
 namespace engine {
 
-template <class Key, class Compare = std::less<>, class SizeType = u32>
+template <class Key, class Compare = std::less<>, class SizeType = u32,
+          class Alloc = mem::DefaultAlloc>
 class FlatSet {
   static_assert(std::is_unsigned_v<SizeType>, "FlatSet: SizeType must be an unsigned integer");
   static_assert(std::is_nothrow_move_constructible_v<Key>,
                 "FlatSet: Key must be nothrow move constructible");
+  static_assert(mem::AllocatorPolicy<Alloc>, "FlatSet: Alloc must satisfy AllocatorPolicy");
 
  public:
   using key_type = Key;
   using value_type = Key;
   using key_compare = Compare;
   using size_type = SizeType;
+  using allocator_type = Alloc;
   using difference_type = isize;
   using iterator = const Key*;
   using const_iterator = const Key*;
@@ -44,14 +47,17 @@ class FlatSet {
   // --- construction -----------------------------------------------------------------------
 
   FlatSet() noexcept = default;
-  explicit FlatSet(Compare comp) noexcept : comp_(std::move(comp)) {}
+  explicit FlatSet(Alloc alloc) noexcept : alloc_(std::move(alloc)) {}
+  explicit FlatSet(Compare comp, Alloc alloc = Alloc{}) noexcept
+      : comp_(std::move(comp)), alloc_(std::move(alloc)) {}
 
-  FlatSet(const FlatSet& other) : comp_(other.comp_) { copy_from(other); }
+  FlatSet(const FlatSet& other) : comp_(other.comp_), alloc_(other.alloc_) { copy_from(other); }
   FlatSet(FlatSet&& other) noexcept
       : data_(other.data_),
         size_(other.size_),
         capacity_(other.capacity_),
-        comp_(std::move(other.comp_)) {
+        comp_(std::move(other.comp_)),
+        alloc_(std::move(other.alloc_)) {
     other.data_ = nullptr;
     other.size_ = 0;
     other.capacity_ = 0;
@@ -60,6 +66,7 @@ class FlatSet {
     if (this != &other) {
       release();
       comp_ = other.comp_;
+      alloc_ = other.alloc_;
       copy_from(other);
     }
     return *this;
@@ -71,6 +78,7 @@ class FlatSet {
       size_ = other.size_;
       capacity_ = other.capacity_;
       comp_ = std::move(other.comp_);
+      alloc_ = std::move(other.alloc_);
       other.data_ = nullptr;
       other.size_ = 0;
       other.capacity_ = 0;
@@ -84,6 +92,7 @@ class FlatSet {
     std::swap(size_, other.size_);
     std::swap(capacity_, other.capacity_);
     std::swap(comp_, other.comp_);
+    std::swap(alloc_, other.alloc_);
   }
   friend void swap(FlatSet& a, FlatSet& b) noexcept { a.swap(b); }
 
@@ -92,6 +101,7 @@ class FlatSet {
   size_type size() const noexcept { return size_; }
   bool empty() const noexcept { return size_ == 0; }
   size_type capacity() const noexcept { return capacity_; }
+  const Alloc& get_allocator() const noexcept { return alloc_; }
 
   void reserve(size_type n) {
     if (n > capacity_) reallocate(n, k_no_hole);
@@ -228,7 +238,7 @@ class FlatSet {
     ENGINE_ASSERT(size_ == 0 || comp_(data_[size_ - 1], key),
                   "FlatSet::append_sorted: keys must be appended in strictly increasing order");
     ENGINE_VERIFY(size_ < max_size(), "FlatSet: size_type overflow");
-    if (size_ == capacity_) reallocate(grow_capacity(size_ + 1), k_no_hole);
+    if (size_ == capacity_) reallocate(grow(size_ + 1), k_no_hole);
     std::construct_at(data_ + size_, std::forward<K>(key));
     ++size_;
     return data_[size_ - 1];
@@ -240,7 +250,7 @@ class FlatSet {
     const size_type old_size = size_;
     for (; first != last; ++first) {
       ENGINE_VERIFY(size_ < max_size(), "FlatSet: size_type overflow");
-      if (size_ == capacity_) reallocate(grow_capacity(size_ + 1), k_no_hole);
+      if (size_ == capacity_) reallocate(grow(size_ + 1), k_no_hole);
       std::construct_at(data_ + size_, *first);
       ++size_;
     }
@@ -275,25 +285,22 @@ class FlatSet {
     return static_cast<usize>(capacity) * sizeof(Key);
   }
 
-  size_type grow_capacity(size_type minimum) const noexcept {
-    usize cap = capacity_ < 4 ? 4 : static_cast<usize>(capacity_) + static_cast<usize>(capacity_) / 2;
-    if (cap < minimum) cap = minimum;
-    if (cap > max_size()) cap = max_size();
-    return static_cast<size_type>(cap);
+  size_type grow(size_type minimum) const noexcept {
+    return containers::detail::grow_capacity(capacity_, minimum, max_size());
   }
 
   void reallocate(size_type new_capacity, size_type hole) {
     namespace d = containers::detail;
     ENGINE_ASSERT(new_capacity >= size_ + (hole == k_no_hole ? 0 : 1),
                   "FlatSet::reallocate: capacity too small");
-    Key* new_data = static_cast<Key*>(d::allocate_bytes(block_bytes(new_capacity), alignof(Key)));
+    Key* new_data = static_cast<Key*>(alloc_.allocate(block_bytes(new_capacity), alignof(Key)));
     if (hole == k_no_hole) {
       d::relocate_n(data_, size_, new_data);
     } else {
       d::relocate_n(data_, hole, new_data);
       d::relocate_n(data_ + hole, size_ - hole, new_data + hole + 1);
     }
-    d::deallocate_bytes(data_, block_bytes(capacity_), alignof(Key));
+    alloc_.deallocate(data_, block_bytes(capacity_), alignof(Key));
     data_ = new_data;
     capacity_ = new_capacity;
   }
@@ -302,7 +309,7 @@ class FlatSet {
     ENGINE_ASSERT(i <= size_, "FlatSet::emplace_at: index out of range");
     ENGINE_VERIFY(size_ < max_size(), "FlatSet: size_type overflow");
     if (size_ == capacity_) {
-      reallocate(grow_capacity(size_ + 1), i);
+      reallocate(grow(size_ + 1), i);
     } else {
       containers::detail::open_hole(data_, size_, i);
     }
@@ -312,8 +319,7 @@ class FlatSet {
 
   void copy_from(const FlatSet& other) {
     if (other.size_ == 0) return;
-    data_ = static_cast<Key*>(
-        containers::detail::allocate_bytes(block_bytes(other.size_), alignof(Key)));
+    data_ = static_cast<Key*>(alloc_.allocate(block_bytes(other.size_), alignof(Key)));
     capacity_ = other.size_;
     for (size_type i = 0; i < other.size_; ++i) {
       std::construct_at(data_ + i, other.data_[i]);
@@ -323,7 +329,7 @@ class FlatSet {
 
   void release() noexcept {
     clear();
-    containers::detail::deallocate_bytes(data_, block_bytes(capacity_), alignof(Key));
+    alloc_.deallocate(data_, block_bytes(capacity_), alignof(Key));
     data_ = nullptr;
     capacity_ = 0;
   }
@@ -332,6 +338,7 @@ class FlatSet {
   size_type size_ = 0;
   size_type capacity_ = 0;
   ENGINE_NO_UNIQUE_ADDRESS Compare comp_{};
+  ENGINE_NO_UNIQUE_ADDRESS Alloc alloc_{};
 };
 
 }  // namespace engine

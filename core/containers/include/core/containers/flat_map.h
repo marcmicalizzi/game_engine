@@ -5,7 +5,8 @@
 // Keys and values live in separate arrays inside one heap block (keys first, then values),
 // so a binary search touches only keys: for 8-byte keys that is eight keys per cache line
 // regardless of how large the value type is. The container object itself is 16 bytes with the
-// default 32-bit size type and an empty comparator, so many small maps stay cheap.
+// default 32-bit size type, an empty comparator, and the default allocator, so many small maps
+// stay cheap.
 //
 // Complexity: lookup O(log n); insert and erase O(n) element moves; iteration is a linear walk
 // in key order. This is the right structure for small maps and for read-mostly maps of any
@@ -22,12 +23,12 @@
 #include <core/base/macros.h>
 #include <core/base/types.h>
 #include <core/containers/detail/raw_storage.h>
+#include <core/containers/detail/soa_iterator.h>
+#include <core/memory/allocator.h>
 
 #include <algorithm>
-#include <compare>
 #include <cstddef>
 #include <functional>
-#include <iterator>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -37,121 +38,46 @@
 
 namespace engine {
 
-template <class Key, class Value, class Compare = std::less<>, class SizeType = u32>
+template <class Key, class Value, class Compare = std::less<>, class SizeType = u32,
+          class Alloc = mem::DefaultAlloc>
 class FlatMap {
   static_assert(std::is_unsigned_v<SizeType>, "FlatMap: SizeType must be an unsigned integer");
   static_assert(std::is_nothrow_move_constructible_v<Key>,
                 "FlatMap: Key must be nothrow move constructible");
   static_assert(std::is_nothrow_move_constructible_v<Value>,
                 "FlatMap: Value must be nothrow move constructible");
+  static_assert(mem::AllocatorPolicy<Alloc>, "FlatMap: Alloc must satisfy AllocatorPolicy");
+
+  friend struct containers::detail::SoaAccess;
 
  public:
   using key_type = Key;
   using mapped_type = Value;
   using key_compare = Compare;
   using size_type = SizeType;
+  using allocator_type = Alloc;
   using difference_type = isize;
   using reference = std::pair<const Key&, Value&>;
   using const_reference = std::pair<const Key&, const Value&>;
-
-  template <bool IsConst>
-  class Iterator {
-    using map_pointer = std::conditional_t<IsConst, const FlatMap*, FlatMap*>;
-
-   public:
-    using iterator_concept = std::random_access_iterator_tag;
-    using iterator_category = std::input_iterator_tag;  // proxy reference
-    using value_type = std::pair<Key, Value>;
-    using difference_type = isize;
-    using reference = std::conditional_t<IsConst, FlatMap::const_reference, FlatMap::reference>;
-
-    struct pointer {
-      reference ref;
-      const reference* operator->() const noexcept { return &ref; }
-    };
-
-    Iterator() noexcept = default;
-
-    template <bool WasConst>
-      requires(IsConst && !WasConst)
-    Iterator(const Iterator<WasConst>& other) noexcept : map_(other.map_), index_(other.index_) {}
-
-    reference operator*() const noexcept {
-      return reference{map_->keys_[index_], map_->values_ptr()[index_]};
-    }
-    pointer operator->() const noexcept { return pointer{**this}; }
-    reference operator[](difference_type n) const noexcept { return *(*this + n); }
-
-    Iterator& operator++() noexcept {
-      ++index_;
-      return *this;
-    }
-    Iterator operator++(int) noexcept {
-      Iterator tmp = *this;
-      ++index_;
-      return tmp;
-    }
-    Iterator& operator--() noexcept {
-      --index_;
-      return *this;
-    }
-    Iterator operator--(int) noexcept {
-      Iterator tmp = *this;
-      --index_;
-      return tmp;
-    }
-    Iterator& operator+=(difference_type n) noexcept {
-      index_ = static_cast<size_type>(static_cast<difference_type>(index_) + n);
-      return *this;
-    }
-    Iterator& operator-=(difference_type n) noexcept { return *this += -n; }
-    friend Iterator operator+(Iterator it, difference_type n) noexcept { return it += n; }
-    friend Iterator operator+(difference_type n, Iterator it) noexcept { return it += n; }
-    friend Iterator operator-(Iterator it, difference_type n) noexcept { return it -= n; }
-
-    template <bool OtherConst>
-    difference_type operator-(const Iterator<OtherConst>& other) const noexcept {
-      return static_cast<difference_type>(index_) - static_cast<difference_type>(other.index_);
-    }
-    template <bool OtherConst>
-    bool operator==(const Iterator<OtherConst>& other) const noexcept {
-      return index_ == other.index_;
-    }
-    template <bool OtherConst>
-    std::strong_ordering operator<=>(const Iterator<OtherConst>& other) const noexcept {
-      return index_ <=> other.index_;
-    }
-
-    // Position in the underlying arrays; valid until the next insert or erase.
-    size_type index() const noexcept { return index_; }
-
-   private:
-    friend class FlatMap;
-    template <bool>
-    friend class Iterator;
-
-    Iterator(map_pointer map, size_type index) noexcept : map_(map), index_(index) {}
-
-    map_pointer map_ = nullptr;
-    size_type index_ = 0;
-  };
-
-  using iterator = Iterator<false>;
-  using const_iterator = Iterator<true>;
+  using iterator = containers::detail::SoaIterator<FlatMap, false>;
+  using const_iterator = containers::detail::SoaIterator<FlatMap, true>;
 
   static constexpr size_type max_size() noexcept { return std::numeric_limits<size_type>::max(); }
 
   // --- construction -----------------------------------------------------------------------
 
   FlatMap() noexcept = default;
-  explicit FlatMap(Compare comp) noexcept : comp_(std::move(comp)) {}
+  explicit FlatMap(Alloc alloc) noexcept : alloc_(std::move(alloc)) {}
+  explicit FlatMap(Compare comp, Alloc alloc = Alloc{}) noexcept
+      : comp_(std::move(comp)), alloc_(std::move(alloc)) {}
 
-  FlatMap(const FlatMap& other) : comp_(other.comp_) { copy_from(other); }
+  FlatMap(const FlatMap& other) : comp_(other.comp_), alloc_(other.alloc_) { copy_from(other); }
   FlatMap(FlatMap&& other) noexcept
       : keys_(other.keys_),
         size_(other.size_),
         capacity_(other.capacity_),
-        comp_(std::move(other.comp_)) {
+        comp_(std::move(other.comp_)),
+        alloc_(std::move(other.alloc_)) {
     other.keys_ = nullptr;
     other.size_ = 0;
     other.capacity_ = 0;
@@ -160,6 +86,7 @@ class FlatMap {
     if (this != &other) {
       release();
       comp_ = other.comp_;
+      alloc_ = other.alloc_;
       copy_from(other);
     }
     return *this;
@@ -171,6 +98,7 @@ class FlatMap {
       size_ = other.size_;
       capacity_ = other.capacity_;
       comp_ = std::move(other.comp_);
+      alloc_ = std::move(other.alloc_);
       other.keys_ = nullptr;
       other.size_ = 0;
       other.capacity_ = 0;
@@ -184,6 +112,7 @@ class FlatMap {
     std::swap(size_, other.size_);
     std::swap(capacity_, other.capacity_);
     std::swap(comp_, other.comp_);
+    std::swap(alloc_, other.alloc_);
   }
   friend void swap(FlatMap& a, FlatMap& b) noexcept { a.swap(b); }
 
@@ -192,6 +121,7 @@ class FlatMap {
   size_type size() const noexcept { return size_; }
   bool empty() const noexcept { return size_ == 0; }
   size_type capacity() const noexcept { return capacity_; }
+  const Alloc& get_allocator() const noexcept { return alloc_; }
 
   void reserve(size_type n) {
     if (n > capacity_) reallocate(n, k_no_hole);
@@ -415,7 +345,7 @@ class FlatMap {
     ENGINE_ASSERT(size_ == 0 || comp_(keys_[size_ - 1], key),
                   "FlatMap::append_sorted: keys must be appended in strictly increasing order");
     ENGINE_VERIFY(size_ < max_size(), "FlatMap: size_type overflow");
-    if (size_ == capacity_) reallocate(grow_capacity(size_ + 1), k_no_hole);
+    if (size_ == capacity_) reallocate(grow(size_ + 1), k_no_hole);
     std::construct_at(keys_ + size_, std::forward<K>(key));
     std::construct_at(values_ptr() + size_, std::forward<Args>(args)...);
     ++size_;
@@ -431,7 +361,7 @@ class FlatMap {
     const size_type old_size = size_;
     for (; first != last; ++first) {
       ENGINE_VERIFY(size_ < max_size(), "FlatMap: size_type overflow");
-      if (size_ == capacity_) reallocate(grow_capacity(size_ + 1), k_no_hole);
+      if (size_ == capacity_) reallocate(grow(size_ + 1), k_no_hole);
       std::construct_at(keys_ + size_, first->first);
       std::construct_at(values_ptr() + size_, first->second);
       ++size_;
@@ -439,14 +369,13 @@ class FlatMap {
     if (size_ == old_size) return;
 
     const usize n = size_;
-    auto* order = static_cast<size_type*>(
-        d::allocate_bytes(n * sizeof(size_type), alignof(size_type)));
+    auto* order =
+        static_cast<size_type*>(alloc_.allocate(n * sizeof(size_type), alignof(size_type)));
     for (usize k = 0; k < n; ++k) order[k] = static_cast<size_type>(k);
-    std::stable_sort(order, order + n, [this](size_type a, size_type b) {
-      return comp_(keys_[a], keys_[b]);
-    });
+    std::stable_sort(order, order + n,
+                     [this](size_type a, size_type b) { return comp_(keys_[a], keys_[b]); });
 
-    Key* new_keys = static_cast<Key*>(d::allocate_bytes(block_bytes(size_), block_align()));
+    Key* new_keys = static_cast<Key*>(alloc_.allocate(block_bytes(size_), block_align()));
     Value* new_values = values_at(new_keys, size_);
     Value* old_values = values_ptr();
     usize out = 0;
@@ -460,8 +389,8 @@ class FlatMap {
     }
     d::destroy_n(keys_, size_);
     d::destroy_n(old_values, size_);
-    d::deallocate_bytes(keys_, block_bytes(capacity_), block_align());
-    d::deallocate_bytes(order, n * sizeof(size_type), alignof(size_type));
+    alloc_.deallocate(keys_, block_bytes(capacity_), block_align());
+    alloc_.deallocate(order, n * sizeof(size_type), alignof(size_type));
     keys_ = new_keys;
     capacity_ = size_;
     size_ = static_cast<size_type>(out);
@@ -485,7 +414,7 @@ class FlatMap {
   static constexpr size_type k_no_hole = std::numeric_limits<size_type>::max();
 
   static constexpr usize block_align() noexcept {
-    return alignof(Key) > alignof(Value) ? alignof(Key) : alignof(Value);
+    return containers::detail::max_align(alignof(Key), alignof(Value));
   }
   static constexpr usize values_offset(size_type capacity) noexcept {
     return containers::detail::align_up(static_cast<usize>(capacity) * sizeof(Key),
@@ -500,16 +429,15 @@ class FlatMap {
     return static_cast<Value*>(p);
   }
 
+  Key* keys_ptr() noexcept { return keys_; }
+  const Key* keys_ptr() const noexcept { return keys_; }
   Value* values_ptr() noexcept { return capacity_ == 0 ? nullptr : values_at(keys_, capacity_); }
   const Value* values_ptr() const noexcept {
     return capacity_ == 0 ? nullptr : values_at(keys_, capacity_);
   }
 
-  size_type grow_capacity(size_type minimum) const noexcept {
-    usize cap = capacity_ < 4 ? 4 : static_cast<usize>(capacity_) + static_cast<usize>(capacity_) / 2;
-    if (cap < minimum) cap = minimum;
-    if (cap > max_size()) cap = max_size();
-    return static_cast<size_type>(cap);
+  size_type grow(size_type minimum) const noexcept {
+    return containers::detail::grow_capacity(capacity_, minimum, max_size());
   }
 
   // Moves all elements into a fresh block of `new_capacity`. When `hole` is not k_no_hole,
@@ -519,7 +447,7 @@ class FlatMap {
     namespace d = containers::detail;
     ENGINE_ASSERT(new_capacity >= size_ + (hole == k_no_hole ? 0 : 1),
                   "FlatMap::reallocate: capacity too small");
-    Key* new_keys = static_cast<Key*>(d::allocate_bytes(block_bytes(new_capacity), block_align()));
+    Key* new_keys = static_cast<Key*>(alloc_.allocate(block_bytes(new_capacity), block_align()));
     Value* new_values = values_at(new_keys, new_capacity);
     Value* old_values = values_ptr();
     if (hole == k_no_hole) {
@@ -531,7 +459,7 @@ class FlatMap {
       d::relocate_n(old_values, hole, new_values);
       d::relocate_n(old_values + hole, size_ - hole, new_values + hole + 1);
     }
-    d::deallocate_bytes(keys_, block_bytes(capacity_), block_align());
+    alloc_.deallocate(keys_, block_bytes(capacity_), block_align());
     keys_ = new_keys;
     capacity_ = new_capacity;
   }
@@ -541,7 +469,7 @@ class FlatMap {
     ENGINE_ASSERT(i <= size_, "FlatMap::emplace_at: index out of range");
     ENGINE_VERIFY(size_ < max_size(), "FlatMap: size_type overflow");
     if (size_ == capacity_) {
-      reallocate(grow_capacity(size_ + 1), i);
+      reallocate(grow(size_ + 1), i);
     } else {
       containers::detail::open_hole(keys_, size_, i);
       containers::detail::open_hole(values_ptr(), size_, i);
@@ -553,8 +481,7 @@ class FlatMap {
 
   void copy_from(const FlatMap& other) {
     if (other.size_ == 0) return;
-    keys_ = static_cast<Key*>(
-        containers::detail::allocate_bytes(block_bytes(other.size_), block_align()));
+    keys_ = static_cast<Key*>(alloc_.allocate(block_bytes(other.size_), block_align()));
     capacity_ = other.size_;
     Value* dst_values = values_ptr();
     const Value* src_values = other.values_ptr();
@@ -567,7 +494,7 @@ class FlatMap {
 
   void release() noexcept {
     clear();
-    containers::detail::deallocate_bytes(keys_, block_bytes(capacity_), block_align());
+    alloc_.deallocate(keys_, block_bytes(capacity_), block_align());
     keys_ = nullptr;
     capacity_ = 0;
   }
@@ -576,6 +503,7 @@ class FlatMap {
   size_type size_ = 0;
   size_type capacity_ = 0;
   ENGINE_NO_UNIQUE_ADDRESS Compare comp_{};
+  ENGINE_NO_UNIQUE_ADDRESS Alloc alloc_{};
 };
 
 }  // namespace engine

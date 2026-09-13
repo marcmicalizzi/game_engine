@@ -1,41 +1,28 @@
 #pragma once
 
-// Low-level helpers shared by the engine containers: raw aligned allocation, element
-// relocation, and hole open/close for contiguous storage. Everything here assumes engine
-// types do not throw from constructors or assignment.
+// Low-level helpers shared by the engine containers: element relocation and hole open/close
+// for contiguous storage. Allocation itself goes through an allocator policy
+// (core/memory/allocator.h). Everything here assumes engine types do not throw from
+// constructors or assignment.
 
-#include <core/base/assert.h>
 #include <core/base/types.h>
 
 #include <cstring>
 #include <memory>
-#include <new>
 #include <type_traits>
 #include <utility>
 
 namespace engine::containers::detail {
 
-// Allocation goes through the global aligned operator new for now; it will route through
-// core/memory once that module exists (tracked allocations, arenas, per-domain pools).
-[[nodiscard]] inline void* allocate_bytes(usize bytes, usize align) noexcept {
-  void* p = ::operator new(bytes, std::align_val_t{align}, std::nothrow);
-  ENGINE_VERIFY(p != nullptr, "container allocation failed");
-  return p;
-}
-
-inline void deallocate_bytes(void* p, usize bytes, usize align) noexcept {
-  if (p != nullptr) {
-    ::operator delete(p, bytes, std::align_val_t{align});
-  }
-}
-
 constexpr usize align_up(usize value, usize alignment) noexcept {
   return (value + alignment - 1) & ~(alignment - 1);
 }
 
+constexpr usize max_align(usize a, usize b) noexcept { return a > b ? a : b; }
+
 // Conservative: trivially copyable types can be moved with memcpy/memmove without running
 // constructors or destructors. This will become an opt-in trait for types that are
-// relocatable but not trivially copyable (for example, small vectors with inline storage).
+// relocatable but not trivially copyable.
 template <class T>
 inline constexpr bool is_trivially_relocatable_v = std::is_trivially_copyable_v<T>;
 
@@ -94,6 +81,15 @@ void close_hole(T* data, usize n, usize i) noexcept {
     }
     std::destroy_at(data + n - 1);
   }
+}
+
+// Growth policy shared by the contiguous containers: 1.5x from a floor of four, clamped.
+template <class SizeType>
+constexpr SizeType grow_capacity(SizeType current, SizeType minimum, SizeType maximum) noexcept {
+  usize cap = current < 4 ? 4 : static_cast<usize>(current) + static_cast<usize>(current) / 2;
+  if (cap < minimum) cap = minimum;
+  if (cap > maximum) cap = maximum;
+  return static_cast<SizeType>(cap);
 }
 
 }  // namespace engine::containers::detail

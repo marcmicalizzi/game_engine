@@ -26,6 +26,7 @@ function(engine_apply_warnings target)
       /w14826   # sign-extended conversion
       /w14905 /w14906   # string literal casts
       /w14928   # illegal copy-initialization
+      /wd4324   # structure padded due to alignment specifier: deliberate for cache-line padding
     )
     if(ENGINE_WARNINGS_AS_ERRORS)
       target_compile_options(${target} PRIVATE /WX)
