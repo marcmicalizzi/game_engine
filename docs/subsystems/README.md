@@ -23,4 +23,6 @@ One page per module, created in the same change that creates the module. Templat
 | Module | Layer | Page |
 |---|---|---|
 | base | core | [base.md](base.md) |
+| hash | core | [hash.md](hash.md) |
+| memory | core | [memory.md](memory.md) |
 | containers | core | [containers.md](containers.md) |

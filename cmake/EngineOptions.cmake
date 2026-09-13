@@ -5,6 +5,15 @@ option(ENGINE_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" ON)
 option(ENGINE_ASAN "Enable AddressSanitizer" OFF)
 option(ENGINE_UBSAN "Enable UndefinedBehaviorSanitizer (Clang/GCC only)" OFF)
 
+# Per-tag memory attribution (pointer -> tag table). On for development configurations,
+# off for shipping builds where only totals are kept.
+if(CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "MinSizeRel")
+  set(_engine_tracking_default OFF)
+else()
+  set(_engine_tracking_default ON)
+endif()
+option(ENGINE_MEMORY_TRACKING "Track allocations per tag (development builds)" ${_engine_tracking_default})
+
 # Default to Debug for single-config generators when nothing was requested.
 get_property(_engine_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
 if(NOT _engine_multi_config AND NOT CMAKE_BUILD_TYPE)
