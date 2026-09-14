@@ -9,7 +9,7 @@ This file is for every contributor, human or agent. It is short on purpose; the 
 | `docs/plan/` | The technical plan. Start at `docs/plan/README.md`. It is the source of intent for everything below. |
 | `docs/adr/` | Architecture decision records. Numbered, immutable once accepted. Reverse a decision with a new ADR that supersedes the old one. |
 | `docs/subsystems/` | One page per module: purpose, owned data, invariants, public API, how to test. |
-| `schemas/` | IDL source of truth (document types, protocol, events, components). Generated code is never hand-edited. |
+| `schemas/` | IDL source of truth (document types, protocol, events, components). `schemas/README.md` documents the language. `tools/schemac` compiles it; generated code lives under `build/` and is never hand-edited. Add a type by editing a `.schema` file and rebuilding. |
 | `core/ foundation/ domain/ systems/ apps/ game/` | Source, one directory per module, layered lowest to highest. |
 | `tools/` | PowerShell 7 scripts and small C++ tools. No Python. |
 | `content/` | Test scenes, golden images, migration corpus. |

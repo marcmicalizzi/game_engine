@@ -1,0 +1,40 @@
+// Exercises every feature of the schema IDL. Consumed by core/schema tests only.
+namespace engine.schema_test
+
+/// A small enum with an explicit underlying type.
+enum Color : u8 {
+  Red = 0
+  Green = 1
+  /// The third colour.
+  Blue = 2
+}
+
+struct Inner @version(1) {
+  x: f32 = 1.5
+  y: f32 = -2
+  name: string = "inner"
+}
+
+/// Everything the reflection layer must handle.
+struct Everything @version(3) @kind(record) {
+  b: bool = true
+  u8v: u8 = 255
+  i64v: i64 = -7
+  f64v: f64 = 0.25
+  s: string = "hello"
+  /// Raw bytes, serialized as hex.
+  blob: bytes
+  id: id128
+  color: Color = Green
+  inner: Inner
+  opt_i: i32?
+  opt_inner: Inner?
+  ints: i32[]
+  fixed: u16[3]
+  inners: Inner[]
+  by_name: map<string, i32>
+  by_id: map<u64, string>
+  added_later: string = "v3" @since(3)
+  scratch: u32 = 0 @transient
+  old: i32 = 0 @deprecated
+}

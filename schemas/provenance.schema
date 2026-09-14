@@ -1,0 +1,42 @@
+// Asset provenance and licensing metadata (docs/plan/07-content-pipeline.md §7.5, ADR-0014,
+// ADR-0015). Every generated or imported asset carries one of these; the content build refuses
+// assets whose license is not in the project allowlist.
+namespace engine.content
+
+/// Coarse license class used by the build's allowlist check.
+enum LicenseClass : u8 {
+  /// MIT, BSD, zlib, Apache-2.0, BSL-1.0, public domain, CC0.
+  Permissive = 0
+  /// LGPL and similar: allowed only as a dynamically linked, replaceable component.
+  WeakCopyleft = 1
+  /// GPL, AGPL, SSPL: never allowed in the engine or its content.
+  StrongCopyleft = 2
+  /// Vendor or model licenses reviewed individually.
+  Proprietary = 3
+  Unknown = 255
+}
+
+/// Who or what produced an asset, from which inputs, and under which license.
+struct AssetProvenance @version(1) @kind(record) {
+  /// Tool, pipeline step, or model family that produced the asset.
+  generator: string
+  /// Model identifier when the generator is a model; absent for hand-authored or procedural.
+  model_id: string?
+  model_version: string?
+  /// Hash of the prompt or parameter set that drove generation; 0 when not applicable.
+  prompt_hash: u64 = 0
+  seed: u64 = 0
+  /// Content hashes (as ids) of the inputs the asset was derived from.
+  inputs: id128[]
+  /// The human or agent that ran the step.
+  operator_id: id128
+  created_at_unix_ms: i64 = 0
+  /// SPDX identifier or a project-defined id from the license allowlist.
+  license: string
+  license_class: LicenseClass = Unknown
+  license_terms_url: string?
+  commercial_ok: bool = false
+  attribution_required: bool = true
+  /// Assets this one was derived from, by id.
+  derived_from: id128[]
+}
