@@ -42,11 +42,9 @@ template <class Key, class Value, class Compare = std::less<>, class SizeType = 
           class Alloc = mem::DefaultAlloc>
 class FlatMap {
   static_assert(std::is_unsigned_v<SizeType>, "FlatMap: SizeType must be an unsigned integer");
-  static_assert(std::is_nothrow_move_constructible_v<Key>,
-                "FlatMap: Key must be nothrow move constructible");
-  static_assert(std::is_nothrow_move_constructible_v<Value>,
-                "FlatMap: Value must be nothrow move constructible");
   static_assert(mem::AllocatorPolicy<Alloc>, "FlatMap: Alloc must satisfy AllocatorPolicy");
+  // Key and Value requirements are checked in release() so that Value may be an incomplete
+  // type at the point of declaration (recursive types such as JsonValue).
 
   friend struct containers::detail::SoaAccess;
 
@@ -493,6 +491,10 @@ class FlatMap {
   }
 
   void release() noexcept {
+    static_assert(std::is_nothrow_move_constructible_v<Key>,
+                  "FlatMap: Key must be nothrow move constructible");
+    static_assert(std::is_nothrow_move_constructible_v<Value>,
+                  "FlatMap: Value must be nothrow move constructible");
     clear();
     alloc_.deallocate(keys_, block_bytes(capacity_), block_align());
     keys_ = nullptr;

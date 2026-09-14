@@ -13,6 +13,7 @@
 | `HashMap<K, V, Hasher, KeyEqual, SizeType, Alloc>` | `hash_map.h` | 32 | Dense SoA keys/values block + Robin Hood bucket array | Large maps; insert/erase churn |
 | `HashSet<K, Hasher, KeyEqual, SizeType, Alloc>` | `hash_set.h` | 32 | Dense keys block + bucket array; iterators are `const K*` | Large sets; churn |
 | `SlotMap<T, Alloc>` | `slot_map.h` | 40 | Dense values block + slot table; 64-bit generational handles | Owned objects referenced across systems |
+| `Vector<T, SizeType, Alloc>` | `vector.h` | 16 | Heap only; element type may be incomplete at declaration | Many elements; recursive types |
 | `SmallVector<T, N, SizeType, Alloc>` | `small_vector.h` | 16 + N·sizeof(T) | Inline storage for N, heap beyond; branch-free `data()` | Usually-small sequences |
 | `FixedVector<T, N, SizeType>` | `fixed_vector.h` | sizeof(SizeType) + N·sizeof(T) | Inline only | Bounded sequences, no heap |
 

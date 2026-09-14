@@ -12,4 +12,5 @@ engine_module_tests(NAME containers
     tests/slot_map_tests.cpp
     tests/small_vector_tests.cpp
     tests/fixed_vector_tests.cpp
+    tests/vector_tests.cpp
     tests/size_table.cpp)

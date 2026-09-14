@@ -33,8 +33,6 @@ template <class Key, class Value, class Hasher = Hash<Key>, class KeyEqual = std
 class HashMap
     : private containers::detail::DenseHashTable<Key, Value, Hasher, KeyEqual, SizeType, Alloc> {
   using Base = containers::detail::DenseHashTable<Key, Value, Hasher, KeyEqual, SizeType, Alloc>;
-  static_assert(std::is_nothrow_move_constructible_v<Value>,
-                "HashMap: Value must be nothrow move constructible");
 
   friend struct containers::detail::SoaAccess;
 

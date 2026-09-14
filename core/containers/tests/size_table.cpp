@@ -9,6 +9,7 @@
 #include <core/containers/hash_set.h>
 #include <core/containers/slot_map.h>
 #include <core/containers/small_vector.h>
+#include <core/containers/vector.h>
 #include <core/memory/arena.h>
 
 #include <string>
@@ -39,6 +40,11 @@ ENGINE_EXPECT_SIZE(8, 4, containers::detail::HashBucket<u32>);
 ENGINE_EXPECT_SIZE(40, 8, SlotMap<u32>);
 ENGINE_EXPECT_SIZE(40, 8, SlotMap<std::string>);
 ENGINE_EXPECT_SIZE(8, 4, SlotHandle);
+
+// Heap-only vector: pointer plus two 32-bit counts.
+ENGINE_EXPECT_SIZE(16, 8, Vector<u32>);
+ENGINE_EXPECT_SIZE(16, 8, Vector<std::string>);
+ENGINE_EXPECT_SIZE(24, 8, Vector<u32, u64>);
 
 // Small and fixed vectors: header plus inline storage.
 ENGINE_EXPECT_SIZE(16 + 8 * 4, 8, SmallVector<u32, 8>);

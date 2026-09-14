@@ -18,8 +18,10 @@ FetchContent_Declare(doctest
 FetchContent_MakeAvailable(doctest)
 
 add_library(engine_test_main STATIC "${CMAKE_SOURCE_DIR}/tests/support/test_main.cpp")
-# Treat doctest as a system header so our warning policy applies only to our code.
+# Treat doctest as a system header so our warning policy applies only to our code, and let it
+# include the real standard headers so string_view and friends stringify in assertions.
 target_include_directories(engine_test_main SYSTEM PUBLIC "${doctest_SOURCE_DIR}")
+target_compile_definitions(engine_test_main PUBLIC DOCTEST_CONFIG_USE_STD_HEADERS)
 target_include_directories(engine_test_main PUBLIC "${CMAKE_SOURCE_DIR}/tests/support")
 
 # Banned-pattern lint as a test so CI cannot forget it.

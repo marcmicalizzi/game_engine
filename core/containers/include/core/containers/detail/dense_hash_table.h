@@ -40,9 +40,8 @@ struct HashBucket {
 template <class Key, class Value, class Hasher, class KeyEqual, class SizeType, class Alloc>
 class DenseHashTable {
   static_assert(std::is_unsigned_v<SizeType>, "hash table: SizeType must be an unsigned integer");
-  static_assert(std::is_nothrow_move_constructible_v<Key>,
-                "hash table: Key must be nothrow move constructible");
   static_assert(mem::AllocatorPolicy<Alloc>, "hash table: Alloc must satisfy AllocatorPolicy");
+  // Key requirements are checked in release() so Value may be incomplete at declaration.
 
  protected:
   static constexpr bool k_has_value = !std::is_void_v<Value>;
@@ -346,6 +345,8 @@ class DenseHashTable {
   }
 
   void release() noexcept {
+    static_assert(std::is_nothrow_move_constructible_v<Key>,
+                  "hash table: Key must be nothrow move constructible");
     destroy_n(keys_, size_);
     if constexpr (k_has_value) {
       destroy_n(values_ptr(), size_);
