@@ -32,5 +32,6 @@ One page per module, created in the same change that creates the module. Templat
 | json | core | [json.md](json.md) |
 | schema (+ tools/schemac) | core | [schema.md](schema.md) |
 | platform | core | [platform.md](platform.md) |
+| log | core | [log.md](log.md) |
 | jobs | core | [jobs.md](jobs.md) |
 | doc | domain | [doc.md](doc.md) |

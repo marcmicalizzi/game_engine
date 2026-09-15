@@ -37,10 +37,10 @@ Exit: agents produce a validated environment from generator rules and generated 
 
 **Phase 6 — Destruction, simulation depth, NPC routines (4–6 focused weeks)**
 Support graphs, pre-fracture build, collapse simulation, damage-state persistence, nav rebuild and region graph, NPC routines at all tiers, economy and faction event consumers, story-protection policies. Deformable surfaces v1 (snow and sand deformation maps with decay and the coarse CPU grid), gameplay soft bodies via Jolt XPBD, cosmetic GPU cloth ([05 §5.13](05-simulation.md#513-deformable-surfaces-and-soft-bodies)).
-Exit: destroy a building; NPCs and quests respond; leave and return; state persists correctly. Walk through snow and it stays trampled until it refills.
+Exit: destroy a building; NPCs and quests respond; leave and return; state persists correctly. Walk through snow and it stays trampled until it refills. Walk across a dune crest and it slumps; leave for a game-week and the dune has moved ([13 §13.6](13-proof-of-concept-game.md#136-mapping-to-the-roadmap)).
 
 **Phase 7 — The small game (8–12 focused weeks; bounded by human review bandwidth)**
-Thesis → world → spine → regions with the multi-role agent pipeline; playtest bots at scale; polish; ship a 1–3 hour game with runtime LLM at Tier 0 and telemetry for the long tail.
+The desert-survival proof of concept ([13](13-proof-of-concept-game.md)) ships first as the Phase 6 exit demo made playable: seeded runs, score, leaderboard-ready replays. Then thesis → world → spine → regions with the multi-role agent pipeline; playtest bots at scale; polish; ship a 1–3 hour game with runtime LLM at Tier 0 and telemetry for the long tail.
 Exit: playable, reviewed, benchmarked.
 
 Rough total: 30–48 focused weeks with Phases 2–4 overlapping (7–11 months of continuous full-budget effort), or 2–3 years at side-project pacing.
@@ -63,7 +63,7 @@ Critical paths: P0 → P1 → P2 → P7 for fidelity; P0 → P3 → P6 → P7 fo
 | Cluster geometry ↔ RT integration (LOD mismatch, AS cost, vendor lock) | The core renderer promise | E2 early; fallback path designed in; cluster format encodable to future formats |
 | Software rasterizer plus mesh-shader pipeline complexity | Phase 1 slip | `vk_lod_clusters` and Bevy meshlets as references; meshoptimizer clusterlod; keep a hardware-only path working |
 | Agent-written C++ defect rate | Everything | Sanitizers, fuzzing, codegen, small modules, strict layering; measure per phase; Rust as the fallback |
-| Engine generality without a game | Wasted systems | Phases 6–7 drive requirements; no system without a consumer in the roadmap |
+| Engine generality without a game | Wasted systems | The proof-of-concept game in [13](13-proof-of-concept-game.md) is the first consumer and the recommended first shippable; Phases 6–7 drive requirements; no system without a consumer in the roadmap |
 | ML asset quality and pass rate | Content phase | E10 early; validate-and-repair pipeline; procedural for volume; character standardization |
 | Creative coherence | Game quality | Canon graph, validators, review roles, human gates; measure review rejection rates |
 | Proprietary vendor SDKs vs. the permissive engine license | Distribution | In-house ReSTIR and denoiser; vendor SDKs as developer-supplied plugins ([08 §8.8](08-toolchain.md#88-engine-license-and-dependency-policy)) |
@@ -89,6 +89,7 @@ Critical paths: P0 → P1 → P2 → P7 for fidelity; P0 → P3 → P6 → P7 fo
 | E10 | Pass rate of ML-generated props through validators; repair yield | 200 generated props | Generation pipeline design |
 | E11 | Recast tile rebuild latency on modern hardware at the chosen tile size under destruction load | Benchmark | Nav rebuild budget |
 | E12 | Structural three-way merge of proposal layers: conflict rate with tile leases | Simulated multi-agent edits | Concurrency model |
+| E13–E15 | Granular relaxation cost, dune-migration fast-forward accuracy, GI stability under a moving sun | See [13 §13.7](13-proof-of-concept-game.md#137-additional-experiments) | Deformation grid resolution; slow-process summarization; temporal reuse policy |
 
 ## 10.6 Decisions deliberately deferred
 

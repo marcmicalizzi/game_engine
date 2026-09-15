@@ -72,6 +72,7 @@ Read `docs/plan/12-ai-usage-policy.md` before touching anything that involves a 
 - Headers use `#pragma once`. Includes are ordered: own header, module headers, engine headers, third party, standard library.
 - No exceptions across module boundaries; error returns use `Result<T>` from `core/base` once it exists, `bool` plus out-parameter until then. Exceptions are disabled in engine targets.
 - Asserts: `ENGINE_ASSERT(cond, "message")` in debug, compiled out in release; `ENGINE_VERIFY` stays in release. Never assert on external input; validate it.
+- Logging: `ENGINE_LOG_INFO(category, "short static message", log::field("key", value), ...)` with a category defined once per module (`ENGINE_LOG_CATEGORY_DEFINE`). Data goes in typed fields, never interpolated into the message; no `printf` in engine code outside `core/base` and `core/log`. See `docs/subsystems/log.md`.
 - Every new module gets a `docs/subsystems/<module>.md` page and a `tests/` directory in the same change.
 - Commit messages: imperative subject under 72 characters, a body that says why, and the attribution trailer the harness supplies. Reference ADRs and plan sections when a change implements them.
 

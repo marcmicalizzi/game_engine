@@ -14,6 +14,10 @@ else()
 endif()
 option(ENGINE_MEMORY_TRACKING "Track allocations per tag (development builds)" ${_engine_tracking_default})
 
+# Compile-time floor for log records: 0 trace, 1 debug, 2 info, 3 warn, 4 error, 5 fatal.
+# Empty keeps the per-configuration default (0 in Debug, 1 otherwise); see core/log.
+set(ENGINE_LOG_MIN_LEVEL "" CACHE STRING "Compile-time minimum log level (0-5); empty for the default")
+
 # Default to Debug for single-config generators when nothing was requested.
 get_property(_engine_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
 if(NOT _engine_multi_config AND NOT CMAKE_BUILD_TYPE)

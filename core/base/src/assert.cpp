@@ -1,5 +1,6 @@
 #include <core/base/assert.h>
 
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 
@@ -40,7 +41,8 @@ bool debugger_present() noexcept {
     }
     if (match) {
       p += sizeof(key) - 1;
-      while (*p == ' ' || *p == '\t') ++p;
+      while (*p == ' ' || *p == '\t')
+        ++p;
       return *p != '0';
     }
     ++p;
@@ -51,8 +53,19 @@ bool debugger_present() noexcept {
 
 }  // namespace
 
-void assert_fail(const char* expression, const char* message, const char* file,
-                 int line) noexcept {
+namespace {
+std::atomic<AssertHook> g_assert_hook{nullptr};
+}  // namespace
+
+void set_assert_hook(AssertHook hook) noexcept {
+  g_assert_hook.store(hook, std::memory_order_release);
+}
+
+void assert_fail(const char* expression, const char* message, const char* file, int line) noexcept {
+  if (const AssertHook hook = g_assert_hook.exchange(nullptr, std::memory_order_acq_rel)) {
+    // Cleared before the call so a failure inside the hook cannot recurse.
+    hook(expression, message, file, line);
+  }
   std::fprintf(stderr, "\n[engine] assertion failed: %s\n  %s\n  at %s:%d\n", expression,
                message != nullptr ? message : "", file, line);
   std::fflush(stderr);
