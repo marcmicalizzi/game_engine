@@ -128,3 +128,11 @@ What actually bounds the schedule, in rough order:
 4. **Visual judgment in renderer debugging.** Captures, the entity-ID buffer, FLIP against the reference path tracer, and golden images shrink this, but do not remove it.
 
 Mechanism: every phase records its estimate and its actual in the task ledger. After Phase 0 and again after Phase 1, the remaining estimates are rescaled by the observed ratio, separately for rendering and non-rendering work, since they are expected to compress differently.
+
+### Actuals
+
+| Phase | Estimate | Actual | Notes |
+|---|---|---|---|
+| 0 Foundations | 2–4 focused weeks | 4 calendar days (12–15 September 2026), 17 commits, intermittent sessions | Every listed item landed except the schemac negative tests (in progress) and self-hosted GPU CI (deferred until Phase 1 needs it). Exit criterion met and tested end to end on Windows and Linux. The first CI run on Linux found three real defects; two-platform CI from the first commit of Phase 1 stands. |
+
+Tentative rescale for non-rendering work after Phase 0: the actual came in below the low end of the estimate by a factor of two to four, consistent with the owner's expectation ([§10.1](#101-staging-principles)). Non-rendering phase estimates (3, 4, 5, and the tooling halves of 6 and 7) should be read at roughly half their stated focused weeks until Phase 1 provides the rendering ratio. Rendering estimates are not rescaled yet: they depend on GPU iteration and visual judgment, which Phase 0 did not exercise.

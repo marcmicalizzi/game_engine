@@ -6,3 +6,5 @@ Every dependency of the engine is listed here with its license. Policy: permissi
 |---|---|---|---|---|
 | doctest | v2.4.11 | MIT | tests only | CMake FetchContent at configure time |
 | Tracy | v0.14.1 | BSD-3-Clause | core/profiling (only when ENGINE_TRACY is on) | CMake FetchContent at configure time |
+| Vulkan-Headers | vulkan-sdk-1.4.357.0 | Apache-2.0 OR MIT | domain/gfx | CMake FetchContent at configure time |
+| volk | vulkan-sdk-1.4.357.0 | MIT | domain/gfx (Vulkan meta-loader) | CMake FetchContent at configure time |

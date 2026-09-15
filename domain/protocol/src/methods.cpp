@@ -2,6 +2,7 @@
 // introspection, tunables, the log ring, and schema discovery.
 #include <core/log/log.h>
 #include <core/schema/type_info.h>
+#include <domain/gfx/adapter.h>
 #include <domain/protocol/rpc.h>
 #include <domain/protocol/session.h>
 #include <foundation/tunables/tunables.h>
@@ -293,6 +294,13 @@ bool log_tail(Context& ctx, const LogTailParams& params, LogTailResult& out, Rpc
   return true;
 }
 
+// ---- gpu.* ------------------------------------------------------------------------------------
+
+bool gpu_adapters(Context&, AdaptersResult& out, RpcError&) {
+  out.available = gfx::enumerate_adapters(out.adapters, &out.error);
+  return true;
+}
+
 // ---- schema.* --------------------------------------------------------------------------------
 
 void render_type(const schema::TypeRef& t, std::string& out) {
@@ -422,6 +430,10 @@ void add_builtin_methods(Dispatcher& d) {
 
   d.add(method<LogTailParams, LogTailResult, &log_tail>(
       "log.tail", "Log records from the host's ring since a sequence number."));
+
+  d.add(method_no_params<AdaptersResult, &gpu_adapters>(
+      "gpu.adapters",
+      "Vulkan physical devices with driver, memory, queues, extensions, and tier."));
 
   d.add(method_no_params<SchemaTypesResult, &schema_types>("schema.types",
                                                            "Every registered schema type."));

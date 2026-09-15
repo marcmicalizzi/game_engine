@@ -23,6 +23,7 @@ engine-cli --doc ./world doc.undo
 engine-cli --doc ./world doc.redo
 engine-cli --doc ./world doc.add_layer '{"name":"quest"}'
 engine-cli --doc ./world doc.diff '{"from_layer":"base","to_layer":"quest"}'
+engine-cli gpu.adapters                       # what the machine's GPUs support (see gfx.md)
 ```
 
 **Build.** `engine_app(NAME engine_host OUTPUT engine-host SOURCES ... DEPS ... [E2E_TESTS ...])` in `cmake/EngineModule.cmake` builds an executable into `build/<preset>/bin/`, records it in `modules.json` with layer `apps`, and can build an end-to-end test executable that receives the app's path as `ENGINE_APP_PATH`. The CLI test also receives `ENGINE_HOST_PATH`.

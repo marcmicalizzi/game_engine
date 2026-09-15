@@ -21,8 +21,10 @@ class Process {
   ENGINE_NON_COPYABLE(Process);
 
   // argv[0] is the executable (a path, or a name found through PATH). False with a
-  // description in `error` when the process cannot be started.
-  bool spawn(std::span<const std::string_view> argv, std::string* error = nullptr);
+  // description in `error` when the process cannot be started. With `merge_stderr` the
+  // child's standard error is captured into the same stream as its standard output.
+  bool spawn(std::span<const std::string_view> argv, std::string* error = nullptr,
+             bool merge_stderr = false);
   bool spawned() const noexcept { return spawned_; }
 
   // Writes every byte to the child's standard input.

@@ -1,0 +1,40 @@
+// Graphics device description (docs/plan/04-renderer.md §4.1, ADR-0006): what the renderer
+// learns about each Vulkan physical device before choosing one and a capability tier.
+namespace engine.gfx
+
+enum AdapterType : u8 {
+  Other = 0
+  IntegratedGpu = 1
+  DiscreteGpu = 2
+  VirtualGpu = 3
+  Cpu = 4
+}
+
+struct QueueFamilyInfo @version(1) {
+  index: u32 = 0
+  count: u32 = 0
+  graphics: bool = false
+  compute: bool = false
+  transfer: bool = false
+}
+
+/// One physical device as reported by the Vulkan loader.
+struct AdapterInfo @version(1) {
+  name: string
+  /// "NVIDIA", "AMD", "Intel", or the hexadecimal vendor id.
+  vendor: string
+  vendor_id: u32 = 0
+  device_id: u32 = 0
+  type: AdapterType = Other
+  /// Highest Vulkan API version the device supports, "major.minor.patch".
+  api_version: string
+  driver_name: string
+  driver_info: string
+  /// Sum of device-local memory heaps.
+  device_local_bytes: u64 = 0
+  /// Device extensions the renderer cares about: present or absent.
+  extensions: map<string, bool>
+  queue_families: QueueFamilyInfo[]
+  /// Capability tier the device qualifies for: "raster", "rt", or "rt-cluster".
+  tier: string
+}

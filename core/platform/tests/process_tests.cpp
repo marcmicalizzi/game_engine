@@ -79,3 +79,19 @@ TEST_CASE("process: executable_directory") {
   CHECK(dir.back() != '/');
   CHECK(dir.find('\\') == std::string::npos);
 }
+
+TEST_CASE("process: merged standard error is captured") {
+#if ENGINE_PLATFORM_WINDOWS
+  const std::string_view argv[] = {"cmd.exe", "/c", "echo", "to-stderr", "1>&2"};
+#else
+  const std::string_view argv[] = {"sh", "-c", "echo to-stderr 1>&2"};
+#endif
+  Process p;
+  REQUIRE(p.spawn(argv, nullptr, /*merge_stderr=*/true));
+  std::string line;
+  REQUIRE(p.read_line(line));
+  while (!line.empty() && line.back() == ' ')
+    line.pop_back();  // cmd.exe echoes a trailing space
+  CHECK(line == "to-stderr");
+  CHECK(p.wait() == 0);
+}

@@ -110,7 +110,7 @@ Process::~Process() {
 
 #if ENGINE_PLATFORM_WINDOWS
 
-bool Process::spawn(std::span<const std::string_view> argv, std::string* error) {
+bool Process::spawn(std::span<const std::string_view> argv, std::string* error, bool merge_stderr) {
   if (spawned_) {
     set_error(error, "Process::spawn", "already spawned");
     return false;
@@ -146,7 +146,7 @@ bool Process::spawn(std::span<const std::string_view> argv, std::string* error) 
   si.dwFlags = STARTF_USESTDHANDLES;
   si.hStdInput = in_read;
   si.hStdOutput = out_write;
-  si.hStdError = ::GetStdHandle(STD_ERROR_HANDLE);
+  si.hStdError = merge_stderr ? out_write : ::GetStdHandle(STD_ERROR_HANDLE);
   PROCESS_INFORMATION pi{};
   const BOOL ok = ::CreateProcessW(nullptr, command.data(), nullptr, nullptr, TRUE, 0, nullptr,
                                    nullptr, &si, &pi);
@@ -242,7 +242,7 @@ std::string executable_directory() {
 
 #else
 
-bool Process::spawn(std::span<const std::string_view> argv, std::string* error) {
+bool Process::spawn(std::span<const std::string_view> argv, std::string* error, bool merge_stderr) {
   if (spawned_) {
     set_error(error, "Process::spawn", "already spawned");
     return false;
@@ -274,6 +274,7 @@ bool Process::spawn(std::span<const std::string_view> argv, std::string* error) 
   ::posix_spawn_file_actions_init(&actions);
   ::posix_spawn_file_actions_adddup2(&actions, in[0], 0);
   ::posix_spawn_file_actions_adddup2(&actions, out[1], 1);
+  if (merge_stderr) ::posix_spawn_file_actions_adddup2(&actions, out[1], 2);
   ::posix_spawn_file_actions_addclose(&actions, in[0]);
   ::posix_spawn_file_actions_addclose(&actions, in[1]);
   ::posix_spawn_file_actions_addclose(&actions, out[0]);

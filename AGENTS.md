@@ -37,6 +37,7 @@ build/msvc-debug/bin/engine-cli --doc ./world --create --name World session.info
 build/msvc-debug/bin/engine-cli --doc ./world doc.apply '{"commands":[...],"attribution":{"actor":"me","role":"environment","task":"t1","rationale":"why"}}'
 build/msvc-debug/bin/engine-cli --doc ./world doc.undo
 build/msvc-debug/bin/engine-host --stdio                                        # JSON-RPC 2.0, one request per line
+build/msvc-debug/bin/engine-cli gpu.adapters                                   # Vulkan devices, extensions, capability tier
 ```
 
 Every method's parameters and result are schema types in `schemas/protocol.schema`; `engine-cli schema.describe '{"type":"engine.protocol.ApplyParams"}'` explains any of them. See `docs/subsystems/apps.md` and `protocol.md`.

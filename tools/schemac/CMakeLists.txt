@@ -11,3 +11,16 @@ target_compile_features(engine_schemac PRIVATE cxx_std_20)
 target_include_directories(engine_schemac PRIVATE src)
 engine_apply_warnings(engine_schemac)
 set_target_properties(engine_schemac PROPERTIES OUTPUT_NAME schemac)
+
+# Negative and positive tests drive the built compiler as a child process.
+if(ENGINE_BUILD_TESTS)
+  add_executable(engine_schemac_tests tests/schemac_tests.cpp)
+  # engine::platform and engine::io are declared later (core, foundation); CMake resolves them
+  # at generate time.
+  target_link_libraries(engine_schemac_tests PRIVATE engine::platform engine::io engine_test_main)
+  target_compile_definitions(engine_schemac_tests PRIVATE ENGINE_SCHEMAC_PATH="$<TARGET_FILE:engine_schemac>")
+  add_dependencies(engine_schemac_tests engine_schemac)
+  engine_apply_warnings(engine_schemac_tests)
+  add_test(NAME schemac COMMAND engine_schemac_tests)
+  set_tests_properties(schemac PROPERTIES LABELS "unit;schemac")
+endif()
