@@ -1,6 +1,6 @@
 # 13 — Reference Consumer Games
 
-Status: recorded 15 September 2026 from the project owner's descriptions (the second, refined version incorporates a discussion the owner had elsewhere). These are two potential reference games for the engine, deliberately complementary. Neither dictates premature engine architecture; their purpose is to give proposed capabilities concrete consumers and acceptance cases instead of developing systems in the abstract. Nothing here is implemented.
+Status: recorded 15 September 2026 from the project owner's descriptions (the second, refined version incorporates a discussion the owner had elsewhere). These are two reference games for the engine, deliberately complementary. Neither dictates premature engine architecture; their purpose is to give proposed capabilities concrete consumers and acceptance cases instead of developing systems in the abstract. Order is decided (ADR-0022): Desert Survival first, because it is the faster proof of concept and exposes engine bugs before the dense scenario multiplies their cost; Island City second. Nothing here is implemented.
 
 - **Consumer A, Desert Survival** stresses sparse, effectively infinite, long-distance, dynamically deforming terrain while keeping conventional asset density low.
 - **Consumer B, Island City** stresses finite but extreme density, interiors, NPCs, visibility, streaming, simulation, and world consequences, and contains a continuous transition into natural terrain.

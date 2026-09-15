@@ -25,3 +25,4 @@ Numbered, dated, and immutable once accepted. To change a decision, write a new 
 | [0019](0019-efficiency-first-class.md) | Efficiency as a first-class metric: size table, engine container set, banned containers, fast-path APIs | Accepted |
 | [0020](0020-physically-reactive-world-by-default.md) | The world reacts physically by default: destruction on, deformation layer, soft bodies | Accepted |
 | [0021](0021-build-system-and-tooling.md) | CMake + Ninja, `engine_module()` manifests, PowerShell and C++ tooling, no Python | Accepted |
+| [0022](0022-consumer-game-order.md) | Desert Survival is the first consumer game; Island City the second | Accepted |
