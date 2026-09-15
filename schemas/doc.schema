@@ -1,0 +1,82 @@
+// The authoring document model (docs/plan/03-data-model.md §3.2–3.3, ADR-0002): layers of
+// sparse object records, the commands that edit them, and the journal that records edits.
+namespace engine.doc
+
+/// Role of a layer in the document's stack.
+enum LayerRole : u8 {
+  /// Generated or authored world content.
+  Base = 0
+  /// A feature's placements (a quest, a settlement) layered over the base.
+  Feature = 1
+  /// An agent's in-progress work, promoted into a feature layer on acceptance.
+  Proposal = 2
+  /// Ephemeral edits not yet committed.
+  Session = 3
+}
+
+/// One layer's opinion about one object. A record with a non-empty type defines the object;
+/// a record without a type only overrides properties, the parent, or deletion.
+struct ObjectRecord @version(1) {
+  id: id128
+  /// Qualified schema type name of the object; empty in override-only records.
+  type: string
+  /// Present when this layer assigns the parent; the null id means the root.
+  parent: id128?
+  /// Tombstone: hides the object defined in this or a weaker layer.
+  deleted: bool = false
+  /// Sparse property values keyed by field name of the object's type.
+  properties: map<string, json>
+}
+
+/// On-disk form of one layer: canonical JSON, records in id order.
+struct LayerFile @version(1) @kind(document) {
+  name: string
+  role: LayerRole = Base
+  objects: ObjectRecord[]
+}
+
+enum CommandKind : u8 {
+  /// Defines a new object in the edit layer (type, parent, optional initial properties in `value`).
+  CreateObject = 0
+  /// Removes the defining record when the edit layer defines the object; otherwise tombstones it.
+  DeleteObject = 1
+  /// Sets one property in the edit layer.
+  SetProperty = 2
+  /// Removes one property override from the edit layer.
+  ClearProperty = 3
+  /// Sets the parent in the edit layer (null id = root).
+  SetParent = 4
+  /// Removes the edit layer's record for the object entirely.
+  RemoveRecord = 5
+  /// Replaces the edit layer's record (or removes it when `record` is absent). The inverse of every command.
+  RestoreRecord = 6
+}
+
+/// A single edit to the document's edit layer. Fields beyond `kind` and `id` are used as the
+/// kind requires.
+struct Command @version(1) {
+  kind: CommandKind = SetProperty
+  id: id128
+  type: string
+  parent: id128?
+  name: string
+  value: json
+  record: ObjectRecord?
+}
+
+/// Who made a change, and why.
+struct Attribution @version(1) {
+  actor: string
+  role: string
+  task: string
+  rationale: string
+  timestamp_unix_ms: i64 = 0
+}
+
+/// A committed transaction: the forward commands and the inverse that undoes them.
+struct Patch @version(1) @kind(journal) {
+  attribution: Attribution
+  layer: string
+  forward: Command[]
+  inverse: Command[]
+}
