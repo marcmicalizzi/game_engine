@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <system_error>
+#include <thread>
 
 #if ENGINE_PLATFORM_WINDOWS
 #include <process.h>
@@ -237,14 +238,29 @@ Status write_file_atomic(std::string_view native_path, std::string_view data) {
     fs::remove(temp, ignored);
     return written;
   }
+  // Replacing a file that another process wrote moments ago can fail transiently on Windows
+  // (an indexer or scanner still holds it); retry briefly before giving up.
   std::error_code ec;
-  fs::rename(temp, target, ec);
-  if (ec) {
-    std::error_code ignored;
-    fs::remove(temp, ignored);
-    return status_from(ec);
+  for (int attempt = 0;; ++attempt) {
+    fs::rename(temp, target, ec);
+    if (!ec) return Status::Ok;
+    const Status s = status_from(ec);
+    if ((s != Status::PermissionDenied && s != Status::IoError) || attempt >= 40) {
+      std::error_code ignored;
+      fs::remove(temp, ignored);
+      return s;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
-  return Status::Ok;
+}
+
+Status append_file(std::string_view native_path, std::string_view data) {
+  std::FILE* f = open_file(to_path(native_path), "ab");
+  if (f == nullptr) return status_from_errno(errno);
+  bool ok = data.empty() || std::fwrite(data.data(), 1, data.size(), f) == data.size();
+  ok = std::fflush(f) == 0 && ok;
+  ok = std::fclose(f) == 0 && ok;
+  return ok ? Status::Ok : Status::IoError;
 }
 
 Status stat_file(std::string_view native_path, FileInfo& out) {
@@ -389,6 +405,18 @@ Status Vfs::write(std::string_view path, std::string_view data) const {
     if (made != Status::Ok) return made;
   }
   return write_file_atomic(native, data);
+}
+
+Status Vfs::append(std::string_view path, std::string_view data) const {
+  std::string native;
+  const Status s = resolve(path, native, /*for_write=*/true);
+  if (s != Status::Ok) return s;
+  const std::string_view parent = parent_path(native);
+  if (!parent.empty()) {
+    const Status made = io::make_directories(parent);
+    if (made != Status::Ok) return made;
+  }
+  return append_file(native, data);
 }
 
 Status Vfs::stat(std::string_view path, FileInfo& out) const {

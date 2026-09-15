@@ -16,13 +16,15 @@
 
 **Files.** A layer serializes through the generated `LayerFile` schema to canonical JSON with records in id order, so two equal layers produce byte-identical files and git diffs are meaningful. Format pinned by test.
 
+**Store.** `DocumentStore` (`document_store.h`) keeps a document as a directory: `manifest.json` (`DocumentManifest`: name, layer stack, edit layer, `undo_position`), `layers/<name>.json` (one canonical `LayerFile` each, written atomically), and `journal.jsonl` (one `Patch` per line). Layer files always hold the current state, so a checkout is readable without replaying the journal, and the journal plus the manifest position make undo and redo survive across processes. Paths go through `io::Vfs`, so documents live under mounts or at native paths.
+
 **Validation.** Unknown types; overrides for objects no layer defines; objects defined in more than one layer; missing parents; parent cycles; unknown, transient, or ill-typed properties (checked by deserializing each value into a scratch instance of the type). Diagnostics are `<layer>/<id hex>/<property>`.
 
 **Not yet (v0).** Tile-partitioned files, leases, proposal-layer promotion, structural three-way merge, git checkpointing, a composed index for O(1) resolution. `resolve()`, `objects()`, and `children()` are linear scans over layers and records.
 
 **Public API.** `domain/doc/document.h`: `Layer`, `Document`, `Transaction`, `ResolvedObject`, `diff_layers`, `cmd_*` constructors, `describe_path`. Types from `schemas/doc.schema`: `LayerRole`, `ObjectRecord`, `LayerFile`, `CommandKind`, `Command`, `Attribution`, `Patch`.
 
-**Depends on.** `base`, `containers`, `ids`, `json`, `schema`, `time`, `schemas`.
+**Depends on.** `base`, `containers`, `ids`, `json`, `schema`, `time`, `schemas`, `io`.
 
 **Testing.** `tools/dev.ps1 test -Filter doc`. Covers composition and tombstones across layers, precondition failures leaving state untouched, transactions with commit/rollback/undo/redo and serialized patches, diff round trips, the pinned file format, and validation against the registered provenance schema.
 

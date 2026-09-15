@@ -2,4 +2,5 @@
 engine_schema_library(NAME schemas
   SCHEMAS
     provenance.schema
-    doc.schema)
+    doc.schema
+    protocol.schema)

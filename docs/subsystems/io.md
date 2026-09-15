@@ -11,7 +11,7 @@
 - `normalize_path` uses forward slashes on every platform and is a pure string operation.
 - `list_directory` returns entries sorted by name, so tools and agents see stable order.
 
-**Public API.** `foundation/io/vfs.h`: `Status`, `status_name`, `FileInfo`, `DirEntry`; path helpers `normalize_path`, `join_path`, `parent_path`, `file_name`, `extension`, `is_absolute_path`; native operations `read_file`, `write_file`, `write_file_atomic`, `stat_file`, `exists`, `list_directory`, `make_directories`, `remove_file`, `remove_directory_recursive`, `rename_path`; `Mount`, `Vfs` (`mount`, `unmount`, `resolve`, `read`, `write`, `stat`, `exists`, `list`, `make_directories`, `remove`); `AsyncRead`, `read_async`, `wait_all`.
+**Public API.** `foundation/io/vfs.h`: `Status`, `status_name`, `FileInfo`, `DirEntry`; path helpers `normalize_path`, `join_path`, `parent_path`, `file_name`, `extension`, `is_absolute_path`; native operations `read_file`, `write_file`, `write_file_atomic`, `append_file`, `stat_file`, `exists`, `list_directory`, `make_directories`, `remove_file`, `remove_directory_recursive`, `rename_path`; `Mount`, `Vfs` (`mount`, `unmount`, `resolve`, `read`, `write`, `append`, `stat`, `exists`, `list`, `make_directories`, `remove`); `AsyncRead`, `read_async`, `wait_all`.
 
 **Depends on.** `base`, `containers`, `jobs`, `time`.
 

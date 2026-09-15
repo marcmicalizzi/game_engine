@@ -69,6 +69,8 @@ Status write_file(std::string_view native_path, std::string_view data);
 // Writes a sibling temporary file, flushes, then renames over the target, so readers see the
 // old or the new contents and never a mix. Does not create parent directories.
 Status write_file_atomic(std::string_view native_path, std::string_view data);
+// Appends to the file, creating it when absent (journals and logs).
+Status append_file(std::string_view native_path, std::string_view data);
 Status stat_file(std::string_view native_path, FileInfo& out);
 bool exists(std::string_view native_path) noexcept;
 // Entries sorted by name; "." and ".." excluded.
@@ -106,6 +108,8 @@ class Vfs {
   Status read(std::string_view path, std::string& out) const;
   // Atomic; creates missing parent directories.
   Status write(std::string_view path, std::string_view data) const;
+  // Appends; creates missing parent directories.
+  Status append(std::string_view path, std::string_view data) const;
   Status stat(std::string_view path, FileInfo& out) const;
   bool exists(std::string_view path) const noexcept;
   Status list(std::string_view path, Vector<DirEntry>& out) const;

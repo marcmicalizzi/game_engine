@@ -13,7 +13,7 @@
 
 **Phase 0 — Foundations (2–4 focused weeks)**
 Core: platform, memory, containers, math, topology-aware jobs, logging and telemetry, schema IDL and code generation (C++, JSON, JSON Schema, docs), serialization, IDs, hashing. Foundation: VFS and async I/O, tunables registry and bench harness, Tracy, protocol skeleton (JSON-RPC, sessions), headless runner, test infrastructure, CI (build, test, sanitizers), repository conventions (`MODULE.toml`, layer check), `AGENTS.md`. Document model v0: objects, layers, transactions, structural diff.
-Exit: an agent opens a session, creates objects, commits, diffs, and rolls back through `engine-cli`.
+Exit: an agent opens a session, creates objects, commits, diffs, and rolls back through `engine-cli`. **Met 2026-09-15** by the end-to-end suite in `apps/engine_cli/tests`, one process per step; remaining Phase 0 items (Tracy, CI on both platforms, the schemac negative-test harness) follow.
 
 **Phase 1 — Renderer core (6–10 focused weeks)**
 Thin RHI over Vulkan 1.3/1.4, render graph, bindless, GPU-resident scene; Windows and Linux CI from the first commit of this phase. Cluster build pipeline (meshoptimizer clusterlod) → pages → streaming. GPU culling and LOD selection; mesh-shader plus software-raster visibility buffer; material resolve; simple direct lighting. Reference GPU path tracer with shared BSDFs; FLIP harness. `ViewSet` multi-view; extreme-resolution CI; capture API with entity-ID buffer. Experiments E1, E2 (month 1), E9.

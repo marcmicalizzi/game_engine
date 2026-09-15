@@ -181,3 +181,64 @@ function(engine_finalize_modules)
   file(WRITE "${CMAKE_BINARY_DIR}/modules.json" "${_json}")
   message(STATUS "engine modules: wrote ${CMAKE_BINARY_DIR}/modules.json")
 endfunction()
+
+#   engine_app(NAME <name> OUTPUT <exe> SOURCES <file>... [DEPS <module>...] [E2E_TESTS <file>...])
+#
+# An executable in the apps layer: engine_<name> built as <exe> into ${CMAKE_BINARY_DIR}/bin,
+# recorded in modules.json, linked against the named modules. E2E_TESTS builds
+# engine_<name>_tests (linked against the same modules, core/platform, and the test main, not
+# against the app) with ENGINE_APP_PATH defined to the built executable, and registers it.
+function(engine_app)
+  set(_one NAME OUTPUT)
+  set(_multi SOURCES DEPS E2E_TESTS)
+  cmake_parse_arguments(EA "" "${_one}" "${_multi}" ${ARGN})
+  if(NOT EA_NAME OR NOT EA_SOURCES)
+    message(FATAL_ERROR "engine_app: NAME and SOURCES are required")
+  endif()
+  if(NOT EA_OUTPUT)
+    set(EA_OUTPUT "${EA_NAME}")
+  endif()
+  get_property(_declared GLOBAL PROPERTY ENGINE_MODULES)
+  if("${EA_NAME}" IN_LIST _declared)
+    message(FATAL_ERROR "engine_app(${EA_NAME}): name already declared")
+  endif()
+  _engine_layer_index("apps" _app_idx)
+  set(_dep_targets "")
+  foreach(_dep IN LISTS EA_DEPS)
+    if(NOT "${_dep}" IN_LIST _declared)
+      message(FATAL_ERROR "engine_app(${EA_NAME}): depends on '${_dep}', which is not declared")
+    endif()
+    get_property(_dep_layer TARGET engine_${_dep} PROPERTY ENGINE_LAYER)
+    _engine_layer_index("${_dep_layer}" _dep_idx)
+    if(_dep_idx GREATER _app_idx)
+      message(FATAL_ERROR "engine_app(${EA_NAME}): depends on '${_dep}' [${_dep_layer}], which is a higher layer")
+    endif()
+    list(APPEND _dep_targets engine::${_dep})
+  endforeach()
+
+  set(_target engine_${EA_NAME})
+  add_executable(${_target} ${EA_SOURCES})
+  target_link_libraries(${_target} PRIVATE ${_dep_targets})
+  target_compile_options(${_target} PRIVATE ${ENGINE_NO_EXCEPTIONS_FLAGS})
+  engine_apply_warnings(${_target})
+  set_target_properties(${_target} PROPERTIES
+    OUTPUT_NAME "${EA_OUTPUT}"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+    ENGINE_LAYER "apps"
+    ENGINE_MODULE_NAME "${EA_NAME}"
+    ENGINE_MODULE_DEPS "${EA_DEPS}"
+    ENGINE_MODULE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_property(GLOBAL APPEND PROPERTY ENGINE_MODULES "${EA_NAME}")
+  message(STATUS "engine app: ${EA_NAME} -> ${EA_OUTPUT} deps: ${EA_DEPS}")
+
+  if(EA_E2E_TESTS AND ENGINE_BUILD_TESTS)
+    set(_test_target ${_target}_tests)
+    add_executable(${_test_target} ${EA_E2E_TESTS})
+    target_link_libraries(${_test_target} PRIVATE ${_dep_targets} engine::platform engine::json engine_test_main)
+    target_compile_definitions(${_test_target} PRIVATE ENGINE_APP_PATH="$<TARGET_FILE:${_target}>")
+    add_dependencies(${_test_target} ${_target})
+    engine_apply_warnings(${_test_target})
+    add_test(NAME ${EA_NAME} COMMAND ${_test_target})
+    set_tests_properties(${EA_NAME} PROPERTIES LABELS "unit;e2e;${EA_NAME}")
+  endif()
+endfunction()

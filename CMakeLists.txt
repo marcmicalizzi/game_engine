@@ -31,7 +31,7 @@ add_subdirectory(schemas)
 add_subdirectory(foundation)
 add_subdirectory(domain)
 # add_subdirectory(systems)
-# add_subdirectory(apps)
+add_subdirectory(apps)
 # add_subdirectory(game)
 
 engine_finalize_modules()

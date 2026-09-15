@@ -22,9 +22,9 @@
 #include <core/ids/id128.h>
 #include <core/json/json_value.h>
 #include <core/schema/json_reflect.h>
-#include <schemas/doc.h>
 
 #include <optional>
+#include <schemas/doc.h>
 #include <string>
 #include <string_view>
 
@@ -118,10 +118,17 @@ class Document {
   // command that restores the previous state. On a precondition failure nothing changes and a
   // diagnostic is appended (if given). `strict = false` skips existence and cycle checks, for
   // applying diffs to layers whose base is not loaded.
-  bool apply(const Command& command, Command* inverse, Vector<Diagnostic>* diagnostics, bool strict = true);
+  bool apply(const Command& command, Command* inverse, Vector<Diagnostic>* diagnostics,
+             bool strict = true);
 
   Transaction begin(Attribution attribution);
   const Vector<Patch>& journal() const noexcept { return journal_; }
+  // Journal maintenance for stores: replace it after loading, or drop the redo tail (patches
+  // from `count` on) before a new commit.
+  void set_journal(Vector<Patch>&& patches) noexcept { journal_ = std::move(patches); }
+  void truncate_journal(u32 count) {
+    if (count < journal_.size()) journal_.resize(count);
+  }
   // Applies a patch's inverse commands in reverse order (or its forward commands in order).
   bool undo(const Patch& patch);
   bool redo(const Patch& patch);
@@ -173,7 +180,8 @@ class Transaction {
 Vector<Command> diff_layers(const Layer& from, const Layer& to);
 
 // Command constructors.
-Command cmd_create(ObjectId id, std::string type, ObjectId parent = {}, JsonValue initial_properties = {});
+Command cmd_create(ObjectId id, std::string type, ObjectId parent = {},
+                   JsonValue initial_properties = {});
 Command cmd_delete(ObjectId id);
 Command cmd_set(ObjectId id, std::string name, JsonValue value);
 Command cmd_clear(ObjectId id, std::string name);

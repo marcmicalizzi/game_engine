@@ -29,6 +29,18 @@ tools/dev.ps1 format                           # clang-format over the tree
 tools/dev.ps1 modules   [-Preset msvc-debug]   # prints build/<preset>/modules.json
 ```
 
+The engine as a server, and its command-line client, build into `build/<preset>/bin/`:
+
+```powershell
+build/msvc-debug/bin/engine-cli engine.methods                                  # the method catalogue
+build/msvc-debug/bin/engine-cli --doc ./world --create --name World session.info
+build/msvc-debug/bin/engine-cli --doc ./world doc.apply '{"commands":[...],"attribution":{"actor":"me","role":"environment","task":"t1","rationale":"why"}}'
+build/msvc-debug/bin/engine-cli --doc ./world doc.undo
+build/msvc-debug/bin/engine-host --stdio                                        # JSON-RPC 2.0, one request per line
+```
+
+Every method's parameters and result are schema types in `schemas/protocol.schema`; `engine-cli schema.describe '{"type":"engine.protocol.ApplyParams"}'` explains any of them. See `docs/subsystems/apps.md` and `protocol.md`.
+
 Presets are in `CMakePresets.json`. Debug builds carry asserts and iterator checking; `msvc-asan` adds AddressSanitizer. Every change must build and pass tests in `msvc-debug` before it is committed.
 
 ## Layering (enforced by CMake)
@@ -48,6 +60,7 @@ A module is declared once, in its `CMakeLists.txt`:
 engine_module(NAME containers LAYER core DEPS base)
 engine_module_tests(NAME containers SOURCES tests/flat_map_tests.cpp)
 engine_module_bench(NAME containers SOURCES bench/containers_bench.cpp)   # optional; smoke-run under CTest
+engine_app(NAME engine_cli OUTPUT engine-cli SOURCES main.cpp DEPS json platform E2E_TESTS tests/cli_tests.cpp)  # executables
 ```
 
 `engine_module()` refuses a dependency on a higher layer or on a module that has not been declared yet, so `add_subdirectory` order is lower layers first. The module graph is written to `build/<preset>/modules.json` after configure; read that rather than parsing CMake.

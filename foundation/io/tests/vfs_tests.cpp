@@ -137,6 +137,11 @@ TEST_CASE("io: mounts resolve virtual paths and refuse escapes") {
   CHECK(data == "bytes");
   CHECK(vfs.exists("cache://ddc/ab/cd.bin"));
   CHECK_FALSE(vfs.exists("cache://ddc/ab/missing.bin"));
+  CHECK(vfs.append("cache://logs/j.jsonl", "a\n") == Status::Ok);
+  CHECK(vfs.append("cache://logs/j.jsonl", "b\n") == Status::Ok);
+  CHECK(vfs.read("cache://logs/j.jsonl", data) == Status::Ok);
+  CHECK(data == "a\nb\n");
+  CHECK(vfs.append("content://j.jsonl", "x") == Status::ReadOnly);
   CHECK(vfs.write("content://x.txt", "no") == Status::ReadOnly);
   Vector<DirEntry> entries;
   CHECK(vfs.list("cache://ddc", entries) == Status::Ok);

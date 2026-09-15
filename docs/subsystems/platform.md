@@ -15,6 +15,7 @@
 - `core/platform/cpu_features.h`: `CpuFeatures`, `cpu_features()`, `detect_cpu_features()`.
 - `core/platform/thread.h`: `pin_current_thread`, `set_current_thread_priority`, `set_current_thread_name`, `current_cpu`, `current_thread_index`, `yield_thread`, `pause_cpu`, `sleep_ms`.
 - `core/platform/spin_lock.h`: `SpinLock`, a constant-initializable test-and-test-and-set lock for registries touched during static initialization and for very short critical sections.
+- `core/platform/process.h`: `Process` (spawn with piped stdin/stdout, `write`, `read_line`, `read_all`, `wait`, `kill`) and `executable_directory()`.
 
 **Detection sources.**
 - Windows: `GetLogicalProcessorInformationEx(RelationAll)`. Processor groups define the numbering; core records supply SMT and `EfficiencyClass`; cache records supply levels, sizes, line size, and sharing; NUMA and package records supply the rest. Cache domain = the set of CPUs sharing the highest-level non-instruction cache.

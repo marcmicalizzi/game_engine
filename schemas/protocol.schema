@@ -1,0 +1,239 @@
+// Engine protocol (docs/plan/06-agent-tooling.md §6.2, ADR-0001): JSON-RPC 2.0 framing and the
+// typed parameters and results of the day-one methods. Every method's params and result are
+// schema structs, so one set of descriptors produces the C++ types, the JSON Schema, and the
+// method catalogue that `engine.methods` returns to agents.
+namespace engine.protocol
+import "doc.schema"
+
+/// JSON-RPC 2.0 error object. Codes -32700..-32600 are the standard ones; engine codes are
+/// positive (domain/protocol/rpc.h).
+struct RpcError @version(1) {
+  code: i32 = 0
+  message: string
+  /// Structured detail: for invalid params, an array of {path, message} diagnostics.
+  data: json
+}
+
+/// A JSON-RPC request. `id` is absent for notifications, which receive no response.
+struct Request @version(1) {
+  jsonrpc: string = "2.0"
+  id: json
+  method: string
+  params: json
+}
+
+/// A JSON-RPC response; exactly one of `result` and `error` is present on the wire.
+struct Response @version(1) {
+  jsonrpc: string = "2.0"
+  id: json
+  result: json
+  error: RpcError?
+}
+
+/// One problem found by validation or command application.
+struct Diagnostic @version(1) {
+  path: string
+  message: string
+}
+
+/// Result of `engine.info`.
+struct EngineInfo @version(1) {
+  name: string
+  version: string
+  /// "debug" or "release".
+  build: string
+  pid: u32 = 0
+  schema_types: u32 = 0
+  methods: u32 = 0
+}
+
+/// One entry of the method catalogue (`engine.methods`).
+struct MethodInfo @version(1) {
+  name: string
+  doc: string
+  /// Qualified schema type of `params`; empty when the method takes none.
+  params_type: string
+  /// Qualified schema type of `result`.
+  result_type: string
+}
+
+struct MethodsResult @version(1) {
+  methods: MethodInfo[]
+}
+
+/// Parameters of `session.open`.
+struct SessionOpenParams @version(1) {
+  /// Directory holding manifest.json, layers/, and journal.jsonl (native or mounted path).
+  path: string
+  /// Create the document with one base layer when the directory holds none.
+  create: bool = false
+  /// Name for a created document; defaults to the directory name.
+  name: string
+}
+
+struct LayerInfo @version(1) {
+  name: string
+  role: engine.doc.LayerRole = Base
+  records: u32 = 0
+  is_edit: bool = false
+}
+
+struct SessionInfo @version(1) {
+  session: string
+  path: string
+  name: string
+  layers: LayerInfo[]
+  journal_length: u32 = 0
+  undo_position: u32 = 0
+}
+
+struct SessionRef @version(1) {
+  session: string
+}
+
+struct SessionsResult @version(1) {
+  sessions: SessionInfo[]
+}
+
+/// Parameters of `doc.apply`: one transaction.
+struct ApplyParams @version(1) {
+  session: string
+  commands: engine.doc.Command[]
+  attribution: engine.doc.Attribution
+  /// Roll the whole transaction back when any command fails, instead of committing what
+  /// succeeded.
+  atomic: bool = true
+}
+
+struct ApplyResult @version(1) {
+  committed: bool = false
+  /// Index of the committed patch in the journal.
+  patch_index: u32 = 0
+  applied: u32 = 0
+  diagnostics: Diagnostic[]
+}
+
+/// Parameters of `doc.objects`.
+struct ObjectsParams @version(1) {
+  session: string
+  /// Restrict to this qualified type; empty for every type.
+  type: string
+  /// Restrict to children of this parent (the null id means roots); absent for every object.
+  parent: id128?
+  offset: u32 = 0
+  limit: u32 = 1000
+}
+
+/// The composed view of one live object.
+struct ObjectView @version(1) {
+  id: id128
+  type: string
+  /// Null id = root.
+  parent: id128
+  defining_layer: string
+  properties: map<string, json>
+}
+
+struct ObjectsResult @version(1) {
+  objects: ObjectView[]
+  /// Objects matching the filter before offset and limit.
+  total: u32 = 0
+}
+
+struct GetParams @version(1) {
+  session: string
+  id: id128
+}
+
+struct DiffParams @version(1) {
+  session: string
+  from_layer: string
+  to_layer: string
+}
+
+struct DiffResult @version(1) {
+  commands: engine.doc.Command[]
+}
+
+/// Parameters of `doc.undo` and `doc.redo`.
+struct StepParams @version(1) {
+  session: string
+  steps: u32 = 1
+}
+
+struct StepResult @version(1) {
+  /// Journal patches applied after the operation.
+  position: u32 = 0
+  stepped: u32 = 0
+}
+
+struct ValidateResult @version(1) {
+  ok: bool = false
+  diagnostics: Diagnostic[]
+}
+
+struct LayersResult @version(1) {
+  layers: LayerInfo[]
+}
+
+struct AddLayerParams @version(1) {
+  session: string
+  name: string
+  role: engine.doc.LayerRole = Feature
+  /// Make the new layer the edit layer.
+  edit: bool = true
+}
+
+struct SetEditLayerParams @version(1) {
+  session: string
+  layer: string
+}
+
+struct JournalParams @version(1) {
+  session: string
+  offset: u32 = 0
+  limit: u32 = 100
+}
+
+struct JournalResult @version(1) {
+  patches: engine.doc.Patch[]
+  total: u32 = 0
+  position: u32 = 0
+}
+
+struct TunableSetParams @version(1) {
+  name: string
+  value: json
+}
+
+/// `tunables.list` returns every description; `tunables.set` the one that changed.
+struct TunablesResult @version(1) {
+  tunables: json
+}
+
+struct LogTailParams @version(1) {
+  /// First sequence number to return.
+  since: u64 = 0
+  limit: u32 = 200
+}
+
+struct LogTailResult @version(1) {
+  /// Array of records: {seq, t, wall, level, cat, thread, msg, fields}.
+  records: json
+  /// Sequence to pass as `since` next time.
+  next: u64 = 0
+}
+
+struct SchemaTypesResult @version(1) {
+  types: string[]
+}
+
+struct SchemaDescribeParams @version(1) {
+  type: string
+}
+
+struct SchemaDescribeResult @version(1) {
+  /// {name, ns, kind, version, tag, doc, fields: [{name, type, since, transient, deprecated,
+  /// doc}], values: [{name, value, doc}]}.
+  description: json
+}

@@ -80,3 +80,20 @@ struct Patch @version(1) @kind(journal) {
   forward: Command[]
   inverse: Command[]
 }
+
+/// One layer of a stored document: its file under the document's `layers/` directory.
+struct LayerRef @version(1) {
+  name: string
+  role: LayerRole = Base
+  /// File name under `layers/`.
+  file: string
+}
+
+/// `manifest.json` of a document directory: the layer stack (weakest first), the edit layer,
+/// and how many journal patches are applied (the rest form the redo tail).
+struct DocumentManifest @version(1) @kind(document) {
+  name: string
+  layers: LayerRef[]
+  edit_layer: string
+  undo_position: u32 = 0
+}
