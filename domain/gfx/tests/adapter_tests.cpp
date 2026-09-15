@@ -11,11 +11,12 @@ TEST_CASE("gfx: adapter enumeration reports devices or a reason") {
   Vector<gfx::AdapterInfo> adapters;
   const bool ok = gfx::enumerate_adapters(adapters, &error);
   if (!ok) {
-    // Build and test machines without a GPU driver land here; that is a supported outcome.
+    // Build and test machines without a GPU driver land here; that is a supported outcome. A
+    // loader may be present without any driver behind it (CI runners), so vulkan_available()
+    // can be true here.
     MESSAGE("Vulkan unavailable: " << error);
     CHECK_FALSE(error.empty());
     CHECK(adapters.empty());
-    CHECK_FALSE(gfx::vulkan_available());
     return;
   }
   CHECK(gfx::vulkan_available());

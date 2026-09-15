@@ -184,7 +184,11 @@ bool enumerate_adapters(Vector<AdapterInfo>& out, std::string* error) {
   VkInstance instance = VK_NULL_HANDLE;
   const VkResult created = vkCreateInstance(&create, nullptr, &instance);
   if (created != VK_SUCCESS) {
-    if (error != nullptr) *error = std::string("vkCreateInstance failed: ") + result_name(created);
+    if (error != nullptr) {
+      *error = created == VK_ERROR_INCOMPATIBLE_DRIVER
+                   ? std::string("no Vulkan 1.3 driver (ICD) is installed behind the loader")
+                   : std::string("vkCreateInstance failed: ") + result_name(created);
+    }
     return false;
   }
   volkLoadInstanceOnly(instance);
