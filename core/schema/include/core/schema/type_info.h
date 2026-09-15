@@ -32,6 +32,11 @@ enum class Kind : u8 {
   String,   // std::string
   Bytes,    // Vector<u8>, serialized as hex
   Id128,    // engine::Id128, serialized as 32 hex characters
+  Vec2,     // engine::Vec2, serialized as [x, y]
+  Vec3,     // engine::Vec3, serialized as [x, y, z]
+  Vec4,     // engine::Vec4, serialized as [x, y, z, w]
+  Quat,     // engine::Quat, serialized as [x, y, z, w]
+  Json,     // engine::JsonValue, serialized as itself (schema-free payloads)
   Enum,     // enum class with a schema-declared underlying integer
   Struct,
   Optional,   // std::optional<T>

@@ -26,6 +26,12 @@ std::string type_schema(const TypeExpr& t, const SchemaFile& file) {
       if (t.name == "bytes") return "{\"type\": \"string\", \"pattern\": \"^([0-9a-fA-F]{2})*$\"}";
       if (t.name == "id128") return "{\"type\": \"string\", \"pattern\": \"^[0-9a-fA-F]{32}$\"}";
       if (t.name == "f32" || t.name == "f64") return "{\"type\": \"number\"}";
+      if (t.name == "vec2") return "{\"type\": \"array\", \"items\": {\"type\": \"number\"}, \"minItems\": 2, \"maxItems\": 2}";
+      if (t.name == "vec3") return "{\"type\": \"array\", \"items\": {\"type\": \"number\"}, \"minItems\": 3, \"maxItems\": 3}";
+      if (t.name == "vec4" || t.name == "quat") {
+        return "{\"type\": \"array\", \"items\": {\"type\": \"number\"}, \"minItems\": 4, \"maxItems\": 4}";
+      }
+      if (t.name == "json") return "{}";
       return "{\"type\": \"integer\", " + integer_bounds(t.name) + "}";
     case TypeExpr::Kind::Named: {
       const size_t dot = t.resolved_qualified.rfind('.');

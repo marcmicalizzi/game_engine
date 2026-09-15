@@ -1,7 +1,7 @@
 # Schema runtime (ADR-0007): type descriptors emitted by schemac, the type registry, JSON
 # (de)serialization through reflection, and schema-version migrations.
 engine_module(NAME schema LAYER core
-  DEPS base hash memory containers ids json
+  DEPS base hash memory containers math ids json
   SOURCES src/type_info.cpp src/json_reflect.cpp)
 
 # Generated test types exercising every IDL feature; built by schemac like any other schema.

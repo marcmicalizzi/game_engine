@@ -37,9 +37,12 @@ function(engine_schema_library)
     COMMENT "schemac: ${ES_NAME}"
     VERBATIM)
 
+  # WHOLE_ARCHIVE: the generated sources register their types during static initialization
+  # and nothing else references them, so a plain static library would drop them.
   engine_module(NAME ${ES_NAME} LAYER core
-    DEPS base hash memory containers ids json schema ${ES_DEPS}
-    SOURCES ${_sources})
-  target_include_directories(engine_${ES_NAME} PUBLIC "${_gen}/include")
+    DEPS base hash memory containers math ids json schema ${ES_DEPS}
+    SOURCES ${_sources}
+    WHOLE_ARCHIVE)
+  target_include_directories(engine_${ES_NAME}_impl PUBLIC "${_gen}/include")
   set_property(TARGET engine_${ES_NAME} PROPERTY ENGINE_SCHEMA_FILES "${_abs_schemas}")
 endfunction()

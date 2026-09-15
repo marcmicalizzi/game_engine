@@ -212,6 +212,11 @@ std::string cpp_type(const TypeExpr& t) {
       if (t.name == "string") return "std::string";
       if (t.name == "bytes") return "engine::Vector<engine::u8>";
       if (t.name == "id128") return "engine::Id128";
+      if (t.name == "vec2") return "engine::Vec2";
+      if (t.name == "vec3") return "engine::Vec3";
+      if (t.name == "vec4") return "engine::Vec4";
+      if (t.name == "quat") return "engine::Quat";
+      if (t.name == "json") return "engine::JsonValue";
       return "engine::" + t.name;
     case TypeExpr::Kind::Named: return t.resolved_cpp;
     case TypeExpr::Kind::Optional: return "std::optional<" + cpp_type(*t.element) + ">";

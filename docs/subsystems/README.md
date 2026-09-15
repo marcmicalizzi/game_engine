@@ -26,8 +26,11 @@ One page per module, created in the same change that creates the module. Templat
 | hash | core | [hash.md](hash.md) |
 | memory | core | [memory.md](memory.md) |
 | containers | core | [containers.md](containers.md) |
+| time | core | [time.md](time.md) |
+| math | core | [math.md](math.md) |
 | ids | core | [ids.md](ids.md) |
 | json | core | [json.md](json.md) |
 | schema (+ tools/schemac) | core | [schema.md](schema.md) |
 | platform | core | [platform.md](platform.md) |
 | jobs | core | [jobs.md](jobs.md) |
+| doc | domain | [doc.md](doc.md) |

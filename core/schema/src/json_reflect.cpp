@@ -2,6 +2,7 @@
 
 #include <core/base/assert.h>
 #include <core/ids/id128.h>
+#include <core/math/math.h>
 
 #include <cmath>
 #include <cstring>
@@ -102,6 +103,43 @@ bool integer_fits(Kind kind, i64 v, u64 uv, bool is_unsigned_source) noexcept {
 }
 
 constexpr char k_hex[] = "0123456789abcdef";
+
+usize component_count(Kind kind) noexcept {
+  switch (kind) {
+    case Kind::Vec2: return 2;
+    case Kind::Vec3: return 3;
+    case Kind::Vec4:
+    case Kind::Quat: return 4;
+    default: return 0;
+  }
+}
+
+// Vec2/3/4 and Quat are plain f32 component arrays in memory.
+bool write_components(Kind kind, const void* p, JsonValue& out) {
+  const usize n = component_count(kind);
+  const auto* f = static_cast<const f32*>(p);
+  out = JsonValue::array();
+  for (usize i = 0; i < n; ++i) out.push_back(JsonValue(static_cast<f64>(f[i])));
+  return true;
+}
+
+bool read_components(Kind kind, void* p, const JsonValue& in, ReadContext& ctx) {
+  const usize n = component_count(kind);
+  if (!in.is_array() || in.size() != n) {
+    ctx.error("expected an array of the type's component count");
+    return false;
+  }
+  auto* f = static_cast<f32*>(p);
+  for (usize i = 0; i < n; ++i) {
+    f64 d;
+    if (!in[i].get_f64(d)) {
+      ctx.error("expected numeric components");
+      return false;
+    }
+    f[i] = static_cast<f32>(d);
+  }
+  return true;
+}
 
 int hex_value(char c) noexcept {
   if (c >= '0' && c <= '9') return c - '0';
@@ -266,6 +304,11 @@ bool to_json(const TypeRef& type, const void* object, JsonValue& out) {
       out = JsonValue(std::string_view(hex, 32));
       return true;
     }
+    case Kind::Vec2:
+    case Kind::Vec3:
+    case Kind::Vec4:
+    case Kind::Quat: return write_components(type.kind, object, out);
+    case Kind::Json: out = *static_cast<const JsonValue*>(object); return true;
     case Kind::Enum: return write_enum(*type.type, object, out);
     case Kind::Struct: return write_struct(*type.type, object, out);
     case Kind::Optional: {
@@ -387,6 +430,11 @@ bool from_json(const TypeRef& type, void* object, const JsonValue& in, ReadConte
       *static_cast<Id128*>(object) = id;
       return true;
     }
+    case Kind::Vec2:
+    case Kind::Vec3:
+    case Kind::Vec4:
+    case Kind::Quat: return read_components(type.kind, object, in, ctx);
+    case Kind::Json: *static_cast<JsonValue*>(object) = in; return true;
     case Kind::Enum: return read_enum(*type.type, object, in, ctx);
     case Kind::Struct: return read_struct(*type.type, object, in, ctx);
     case Kind::Optional: {

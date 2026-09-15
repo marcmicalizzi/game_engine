@@ -3,7 +3,13 @@
 #   engine_module(NAME <name> LAYER <layer>
 #                 [DEPS <module>...]           # other engine modules, by NAME
 #                 [EXTERNAL_DEPS <target>...]  # third-party targets
-#                 [SOURCES <file>...])         # omit for header-only modules
+#                 [SOURCES <file>...]          # omit for header-only modules
+#                 [WHOLE_ARCHIVE])             # link every object even if unreferenced
+#
+# WHOLE_ARCHIVE is for modules whose objects register themselves during static
+# initialization (generated schema types): a static library would otherwise drop object files
+# nothing references, and the registrations with them. The module becomes an INTERFACE target
+# wrapping engine_<name>_impl with the WHOLE_ARCHIVE link feature.
 #
 #   engine_module_tests(NAME <name> SOURCES <file>...)
 #
@@ -28,7 +34,7 @@ function(_engine_layer_index layer out_var)
 endfunction()
 
 function(engine_module)
-  set(_options "")
+  set(_options WHOLE_ARCHIVE)
   set(_one NAME LAYER)
   set(_multi DEPS EXTERNAL_DEPS SOURCES)
   cmake_parse_arguments(EM "${_options}" "${_one}" "${_multi}" ${ARGN})
@@ -70,7 +76,17 @@ function(engine_module)
     list(APPEND _dep_targets engine::${_dep})
   endforeach()
 
-  if(EM_SOURCES)
+  if(EM_SOURCES AND EM_WHOLE_ARCHIVE)
+    add_library(${_target}_impl STATIC ${EM_SOURCES})
+    target_include_directories(${_target}_impl
+      PUBLIC  "${CMAKE_CURRENT_SOURCE_DIR}/include"
+      PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(${_target}_impl PUBLIC ${_dep_targets} ${EM_EXTERNAL_DEPS})
+    target_compile_options(${_target}_impl PRIVATE ${ENGINE_NO_EXCEPTIONS_FLAGS})
+    engine_apply_warnings(${_target}_impl)
+    add_library(${_target} INTERFACE)
+    target_link_libraries(${_target} INTERFACE "$<LINK_LIBRARY:WHOLE_ARCHIVE,${_target}_impl>")
+  elseif(EM_SOURCES)
     add_library(${_target} STATIC ${EM_SOURCES})
     target_include_directories(${_target}
       PUBLIC  "${CMAKE_CURRENT_SOURCE_DIR}/include"

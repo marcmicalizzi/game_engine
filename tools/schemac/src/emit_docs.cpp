@@ -7,6 +7,15 @@ namespace schemac {
 
 namespace {
 
+// Table cells cannot contain newlines.
+std::string one_line(const std::string& doc) {
+  std::string out = doc;
+  for (char& c : out) {
+    if (c == '\n') c = ' ';
+  }
+  return out;
+}
+
 std::string default_text(const Field& f) {
   switch (f.default_kind) {
     case DefaultKind::None: return f.type.kind == TypeExpr::Kind::Optional ? "none" : "value-initialized";
@@ -33,7 +42,7 @@ std::string emit_docs(const Model& model, const SchemaFile& file) {
     out << "## enum `" << e.name << "` : " << e.underlying << "\n\n";
     if (!e.doc.empty()) out << e.doc << "\n\n";
     out << "| Name | Value | Doc |\n|---|---|---|\n";
-    for (const EnumValue& v : e.values) out << "| `" << v.name << "` | " << v.value << " | " << v.doc << " |\n";
+    for (const EnumValue& v : e.values) out << "| `" << v.name << "` | " << v.value << " | " << one_line(v.doc) << " |\n";
     out << "\n";
   }
   for (const StructDecl& s : file.structs) {
@@ -47,7 +56,7 @@ std::string emit_docs(const Model& model, const SchemaFile& file) {
       if (f.transient) flags += "transient ";
       if (f.deprecated) flags += "deprecated ";
       out << "| `" << f.name << "` | `" << idl_type(f.type) << "` | " << default_text(f) << " | " << f.since << " | " << flags
-          << " | " << f.doc << " |\n";
+          << " | " << one_line(f.doc) << " |\n";
     }
     out << "\n";
   }

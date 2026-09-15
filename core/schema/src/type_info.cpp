@@ -22,6 +22,11 @@ const char* kind_name(Kind kind) noexcept {
     case Kind::String: return "string";
     case Kind::Bytes: return "bytes";
     case Kind::Id128: return "id128";
+    case Kind::Vec2: return "vec2";
+    case Kind::Vec3: return "vec3";
+    case Kind::Vec4: return "vec4";
+    case Kind::Quat: return "quat";
+    case Kind::Json: return "json";
     case Kind::Enum: return "enum";
     case Kind::Struct: return "struct";
     case Kind::Optional: return "optional";

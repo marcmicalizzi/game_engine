@@ -38,3 +38,12 @@ struct Everything @version(3) @kind(record) {
   scratch: u32 = 0 @transient
   old: i32 = 0 @deprecated
 }
+
+/// Math and free-form primitives.
+struct Spatial @version(1) {
+  position: vec3
+  rotation: quat
+  uv: vec2
+  color: vec4
+  extra: json
+}

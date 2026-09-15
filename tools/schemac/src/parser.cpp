@@ -9,8 +9,8 @@ namespace schemac {
 
 namespace {
 
-const char* const k_primitives[] = {"bool", "u8",  "u16", "u32",    "u64",   "i8",   "i16",
-                                    "i32",  "i64", "f32", "f64",    "string", "bytes", "id128"};
+const char* const k_primitives[] = {"bool", "u8",  "u16", "u32",    "u64",   "i8",    "i16",  "i32",  "i64",
+                                    "f32",  "f64", "string", "bytes", "id128", "vec2", "vec3", "vec4", "quat", "json"};
 const char* const k_integers[] = {"u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64"};
 
 struct Token {

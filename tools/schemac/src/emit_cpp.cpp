@@ -44,6 +44,19 @@ std::string info_symbol(const TypeExpr& t) {
   return (ns.empty() ? "" : ns + "::") + "schema_detail::" + name + "_info";
 }
 
+// Emits a doc string as one or more `// ` comment lines at the given indent.
+void emit_comment(std::ostringstream& out, const std::string& indent, const std::string& doc) {
+  if (doc.empty()) return;
+  size_t start = 0;
+  while (start <= doc.size()) {
+    const size_t nl = doc.find('\n', start);
+    const std::string line = doc.substr(start, nl == std::string::npos ? std::string::npos : nl - start);
+    out << indent << "// " << line << "\n";
+    if (nl == std::string::npos) break;
+    start = nl + 1;
+  }
+}
+
 std::string default_initializer(const Field& f) {
   const TypeExpr& t = f.type;
   switch (f.default_kind) {
@@ -104,6 +117,8 @@ std::string emit_cpp_header(const Model& model, const SchemaFile& file) {
   out << "#include <core/containers/flat_map.h>\n";
   out << "#include <core/containers/vector.h>\n";
   out << "#include <core/ids/id128.h>\n";
+  out << "#include <core/json/json_value.h>\n";
+  out << "#include <core/math/math.h>\n";
   out << "#include <core/schema/type_info.h>\n\n";
   out << "#include <array>\n#include <optional>\n#include <string>\n";
   for (const std::string& imp : file.imports) out << "#include <schemas/" << imp << ".h>\n";
@@ -113,18 +128,21 @@ std::string emit_cpp_header(const Model& model, const SchemaFile& file) {
   out << "namespace " << ns << " {\n\n";
 
   for (const EnumDecl& e : file.enums) {
-    if (!e.doc.empty()) out << "// " << e.doc << "\n";
+    emit_comment(out, "", e.doc);
     out << "enum class " << e.name << " : engine::" << e.underlying << " {\n";
-    for (const EnumValue& v : e.values) out << "  " << v.name << " = " << v.value << ",\n";
+    for (const EnumValue& v : e.values) {
+      emit_comment(out, "  ", v.doc);
+      out << "  " << v.name << " = " << v.value << ",\n";
+    }
     out << "};\n\n";
   }
 
   for (const StructDecl& s : file.structs) {
-    if (!s.doc.empty()) out << "// " << s.doc << "\n";
+    emit_comment(out, "", s.doc);
     out << "struct " << s.name << " {\n";
     out << "  static constexpr engine::u16 k_schema_version = " << s.version << ";\n\n";
     for (const Field& f : s.fields) {
-      if (!f.doc.empty()) out << "  // " << f.doc << "\n";
+      emit_comment(out, "  ", f.doc);
       out << "  " << cpp_type(f.type) << " " << f.name;
       const std::string init = default_initializer(f);
       if (init == "{}") {

@@ -15,7 +15,7 @@
 - `from_json(to_json(x)) == x` for every schema type, modulo transient fields.
 - Two types never share a qualified name (verified at registration).
 
-**Build integration.** `engine_schema_library(NAME m SCHEMAS a.schema b.schema)` runs schemac once over the set (imports also resolve against `schemas/`) and declares module `m` from the generated sources; include as `<schemas/<stem>.h>`. Outputs go to `build/<preset>/<dir>/generated/<m>/{include,src,json,docs}`. schemac writes files only when content changes, so unchanged schemas do not trigger rebuilds. schemac itself is a standalone tool (standard library only) under `tools/schemac`, built before any module.
+**Build integration.** `engine_schema_library(NAME m SCHEMAS a.schema b.schema)` runs schemac once over the set (imports also resolve against `schemas/`) and declares module `m` from the generated sources; include as `<schemas/<stem>.h>`. Generated modules link whole-archive (`engine_module(... WHOLE_ARCHIVE)`) because their only job at link time is static registration, which a normal static library would drop for any object file nothing references. Outputs go to `build/<preset>/<dir>/generated/<m>/{include,src,json,docs}`. schemac writes files only when content changes, so unchanged schemas do not trigger rebuilds. schemac itself is a standalone tool (standard library only) under `tools/schemac`, built before any module.
 
 **Public API.** `core/schema/type_info.h`, `core/schema/ops.h`, `core/schema/json_reflect.h`.
 

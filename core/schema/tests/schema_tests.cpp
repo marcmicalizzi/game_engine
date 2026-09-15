@@ -280,6 +280,32 @@ TEST_CASE("schema: enums serialize by name and read by name or value") {
   CHECK(to_json(raw).as_int() == 9);
 }
 
+TEST_CASE("schema: math and json primitives round-trip") {
+  Spatial s;
+  CHECK(s.rotation == Quat::identity());  // value-initialized Quat is the identity
+  s.position = {1.5f, -2.0f, 3.25f};
+  s.rotation = quat_from_axis_angle(Vec3::unit_y(), 0.5f);
+  s.uv = {0.25f, 0.75f};
+  s.color = {1, 0.5f, 0.25f, 1};
+  s.extra = JsonValue::object();
+  s.extra["anything"] = JsonValue::array();
+  s.extra["anything"].push_back(i64{7});
+  const std::string text = write_json(to_json(s), JsonWriteOptions{false});
+  CHECK(text.find("\"position\":[1.5,-2.0,3.25]") != std::string::npos);
+  CHECK(text.find("\"extra\":{\"anything\":[7]}") != std::string::npos);
+  Spatial back;
+  ReadContext ctx;
+  REQUIRE(from_json(back, to_json(s), ctx));
+  CHECK(back == s);
+
+  // Component count is enforced.
+  JsonValue bad;
+  REQUIRE(parse_json(R"({"position": [1, 2]})", bad).ok);
+  ReadContext bad_ctx;
+  CHECK_FALSE(from_json(back, bad, bad_ctx));
+  CHECK(bad_ctx.diagnostics[0].path == "position");
+}
+
 namespace {
 
 bool migrate_everything_2_to_3(JsonValue& object, ReadContext&) {
