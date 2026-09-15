@@ -48,4 +48,15 @@ Planned: `IntrusiveList`, `BitSet`, `RingBuffer`.
 
 **Testing.** `tools/dev.ps1 test -Filter containers`. Each container has ordering/lookup/erase tests, tracked-type leak tests through growth and relocation, copy/move tests, and a randomized comparison against the corresponding standard container (20k–50k steps). `tests/size_table.cpp` pins every object size.
 
-**Performance notes.** Insert and erase in the flat containers are O(n) element moves; trivially copyable types move with `memmove`. Hash lookup is one bucket probe sequence plus one key access on a hit. Candidates for the tunables harness: growth factor, a branchless binary search, the flat-vs-hash size threshold, and the hash-table load cap.
+**Performance notes.** Insert and erase in the flat containers are O(n) element moves; trivially copyable types move with `memmove`. Hash lookup is one bucket probe sequence plus one key access on a hit. The flat containers use a branchless binary search (fixed log2(n) trips, one conditional move per trip), which measured 1.3x (n = 16) to 1.6x (n = 4096) faster than the branchy form on random keys.
+
+Measured with `core/containers/bench` (`tools/dev.ps1 bench -Preset msvc-release -Filter containers.find.*`, i9-10980XE, release, one thread; total time for one lookup of every key in random order):
+
+| n | FlatMap | HashMap | std::map | std::unordered_map |
+|---|---|---|---|---|
+| 16 | 83 ns | 51 ns | 92 ns | 73 ns |
+| 256 | 2.19 us | 0.99 us | 5.30 us | 1.14 us |
+| 4096 | 52.9 us | 32.2 us | 325 us | 38.2 us |
+| 65536 | 2.22 ms | 0.70 ms | 11.2 ms | 1.10 ms |
+
+Reading: `HashMap` wins lookups at every size measured, including n = 16 (3.2 ns against 5.2 ns per lookup). `FlatMap` wins on footprint (16 bytes, no bucket array), on ordered iteration, and on iteration bandwidth (contiguous SoA values); it beats `std::map` everywhere. So the choice is by access pattern, as 11 §11.2 says, not by size alone: a small map that is mostly iterated or needs order is a `FlatMap`; a map that is mostly looked up is a `HashMap` at any size. Remaining candidates for the harness: growth factor, an Eytzinger layout or prefetch for large flat maps, and the hash-table load cap.
