@@ -239,12 +239,14 @@ void JobSystem::worker_main(JobSystem* self, Worker* worker) {
 void JobSystem::run_job(const Job& job, Worker* worker) noexcept {
   ENGINE_PROFILE_ZONE_NAMED("job");
   job.fn(job.data);
-  if (job.counter != nullptr) job.counter->signal();
+  // Count before signaling: a waiter released by the signal may read stats() at once, and the
+  // counter's release/acquire pair is what makes the count visible to it.
   if (worker != nullptr) {
     ++worker->jobs_executed;
   } else {
     helper_runs_.fetch_add(1, std::memory_order_relaxed);
   }
+  if (job.counter != nullptr) job.counter->signal();
 }
 
 bool JobSystem::try_run_one(Worker* worker) {

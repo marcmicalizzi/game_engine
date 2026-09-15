@@ -74,11 +74,13 @@ class Tunable {
   virtual void describe_range(JsonValue& object) const = 0;
 
  private:
+  // Laid out to 40 bytes with no tail padding, so derived classes have the same size under
+  // the MSVC and Itanium ABIs (Itanium places derived members in base tail padding).
   const char* name_;
   const char* doc_;
   Tunable* next_ = nullptr;
-  std::atomic<u32> version_{0};
   Kind kind_;
+  std::atomic<u32> version_{0};
 };
 
 class Int final : public Tunable {

@@ -84,7 +84,7 @@ using Fn = void (*)(State&);
 
 class Registration {
  public:
-  Registration(const char* name, Fn fn, std::span<const i64> args = {}) noexcept;
+  Registration(const char* name, Fn function, std::span<const i64> args = {}) noexcept;
   ~Registration();
   ENGINE_NON_COPYABLE(Registration);
 

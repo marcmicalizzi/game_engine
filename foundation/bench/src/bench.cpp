@@ -195,9 +195,9 @@ void State::resume_timing() noexcept {
 
 // ---- registry --------------------------------------------------------------------------------
 
-Registration::Registration(const char* name, Fn fn, std::span<const i64> args) noexcept
-    : name_(name), fn_(fn), args_(args) {
-  ENGINE_VERIFY(name != nullptr && name[0] != '\0' && fn != nullptr,
+Registration::Registration(const char* name, Fn function, std::span<const i64> args) noexcept
+    : name_(name), fn_(function), args_(args) {
+  ENGINE_VERIFY(name != nullptr && name[0] != '\0' && function != nullptr,
                 "bench: registration needs a name and a function");
   std::lock_guard lock(g_registry.lock);
   next_ = g_registry.head;
