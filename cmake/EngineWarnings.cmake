@@ -40,11 +40,15 @@ function(engine_apply_warnings target)
       -Wcast-align
       -Wunused
       -Woverloaded-virtual
-      -Wnull-dereference
       -Wdouble-promotion
       -Wformat=2
       -Wimplicit-fallthrough
     )
+    # GCC's -Wnull-dereference reports false positives inside libstdc++ at -O2 (for example
+    # std::construct_at in the flat containers), so only Clang runs it.
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+      target_compile_options(${target} PRIVATE -Wnull-dereference)
+    endif()
     if(ENGINE_WARNINGS_AS_ERRORS)
       target_compile_options(${target} PRIVATE -Werror)
     endif()

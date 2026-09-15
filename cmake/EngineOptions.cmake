@@ -44,14 +44,15 @@ if(ENGINE_UBSAN AND NOT MSVC)
   add_link_options(-fsanitize=undefined)
 endif()
 
-# Engine targets are built without exceptions and without RTTI where the
-# compiler allows it. Tests and tools may re-enable them per target.
+# Engine targets are built without exceptions where the compiler allows it; tests and tools
+# keep them. RTTI stays on everywhere: the engine never uses dynamic_cast or typeid, but a
+# polymorphic class compiled without RTTI in a library and subclassed in a test compiled with
+# it has no typeinfo to link against (Itanium ABI), and on MSVC disabling RTTI breaks standard
+# library components. The cost is one typeinfo per polymorphic class.
 set(ENGINE_NO_EXCEPTIONS_FLAGS "")
 if(MSVC)
-  # /EHsc is the default and is required by the standard library headers we
-  # compile; exception *use* is forbidden by convention and lint rather than
-  # by flag on MSVC. RTTI stays on for MSVC as well: disabling it breaks
-  # standard library components in ways that cost more than the 8 bytes.
+  # /EHsc is the default and is required by the standard library headers we compile;
+  # exception *use* is forbidden by convention and lint rather than by flag on MSVC.
 else()
-  set(ENGINE_NO_EXCEPTIONS_FLAGS -fno-exceptions -fno-rtti)
+  set(ENGINE_NO_EXCEPTIONS_FLAGS -fno-exceptions)
 endif()
