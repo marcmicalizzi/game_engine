@@ -20,7 +20,7 @@ Read [01-critique](01-critique.md) first; it explains why the rest is shaped the
 | [10-roadmap-risks](10-roadmap-risks.md) | Phases with exit criteria, ordering, risks, experiments, deferred decisions, ADRs to record now |
 | [11-performance-principles](11-performance-principles.md) | Budgets as gates, data layout and footprint, the engine container set, prefetcher-friendly access order, branch-free `constexpr` dispatch, pinned cache-domain thread pools, no hidden limits, GPU rules, measurement discipline, performance by default for engine users |
 | [12-ai-usage-policy](12-ai-usage-policy.md) | Rules keeping every use of AI inside provider terms: agent outputs are content and code, never training data; runtime models are unmodified third-party open weights |
-| [13-proof-of-concept-game](13-proof-of-concept-game.md) | Desert survival: the first concrete consumer of the engine; what it exercises, the requirements it adds (unbounded procedural worlds, a moving terrain baseline, granular relaxation, long view distances, time of day, camera rigs), roadmap mapping, experiments E13–E15 |
+| [13-reference-consumer-games](13-reference-consumer-games.md) | Two complementary consumer games: Desert Survival (sparse, effectively infinite, deforming terrain, extreme view distances) and Island City (finite, extreme density, functional interiors, crowds, consequences); the requirements they add, roadmap mapping, experiments E13–E18 |
 
 ## Executive summary
 

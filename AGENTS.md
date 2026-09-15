@@ -23,6 +23,7 @@ One script drives everything, identically for humans, agents, and CI:
 tools/dev.ps1 configure [-Preset msvc-debug]   # locates Visual Studio, runs CMake with the preset
 tools/dev.ps1 build     [-Preset msvc-debug]
 tools/dev.ps1 test      [-Preset msvc-debug] [-Filter <regex>]
+tools/dev.ps1 bench     [-Preset msvc-release] [-Filter <glob>]  # runs engine_*_bench; JSON lines in build/<preset>/bench/
 tools/dev.ps1 lint                             # banned-pattern lint (also runs as a CTest test)
 tools/dev.ps1 format                           # clang-format over the tree
 tools/dev.ps1 modules   [-Preset msvc-debug]   # prints build/<preset>/modules.json
@@ -46,11 +47,12 @@ A module is declared once, in its `CMakeLists.txt`:
 ```cmake
 engine_module(NAME containers LAYER core DEPS base)
 engine_module_tests(NAME containers SOURCES tests/flat_map_tests.cpp)
+engine_module_bench(NAME containers SOURCES bench/containers_bench.cpp)   # optional; smoke-run under CTest
 ```
 
 `engine_module()` refuses a dependency on a higher layer or on a module that has not been declared yet, so `add_subdirectory` order is lower layers first. The module graph is written to `build/<preset>/modules.json` after configure; read that rather than parsing CMake.
 
-Module layout: `include/<module>/` holds public headers only, `src/` the implementation, `tests/` unit and property tests, `bench/` micro-benchmarks. Public headers are the contract; nothing outside the module includes anything from `src/`.
+Module layout: `include/<module>/` holds public headers only, `src/` the implementation, `tests/` unit and property tests, `bench/` micro-benchmarks written against `foundation/bench` (`ENGINE_BENCH_ARGS`, `state.keep_running()`, `bench::keep`). Public headers are the contract; nothing outside the module includes anything from `src/`.
 
 ## Rules that are checked
 
@@ -72,8 +74,9 @@ Read `docs/plan/12-ai-usage-policy.md` before touching anything that involves a 
 - Headers use `#pragma once`. Includes are ordered: own header, module headers, engine headers, third party, standard library.
 - No exceptions across module boundaries; error returns use `Result<T>` from `core/base` once it exists, `bool` plus out-parameter until then. Exceptions are disabled in engine targets.
 - Asserts: `ENGINE_ASSERT(cond, "message")` in debug, compiled out in release; `ENGINE_VERIFY` stays in release. Never assert on external input; validate it.
-- Logging: `ENGINE_LOG_INFO(category, "short static message", log::field("key", value), ...)` with a category defined once per module (`ENGINE_LOG_CATEGORY_DEFINE`). Data goes in typed fields, never interpolated into the message; no `printf` in engine code outside `core/base` and `core/log`. See `docs/subsystems/log.md`.
+- Logging: `ENGINE_LOG_INFO(category, "short static message", log::field("key", value), ...)` with a category defined once per module (`ENGINE_LOG_CATEGORY_DEFINE`). Data goes in typed fields, never interpolated into the message; no `printf`-style logging in engine code; report output that is the product of a tool (the bench table, CLI output) is the exception. See `docs/subsystems/log.md`.
 - Every new module gets a `docs/subsystems/<module>.md` page and a `tests/` directory in the same change.
+- Run-time parameters that a kernel or system reads (batch sizes, spin counts, budgets, thread counts) are `tunables::Int/Float/Bool/Enum` objects from `foundation/tunables`, read once outside hot loops. Core-layer modules take config structs instead and the app layer fills them from tunables. Data-selected dimensions (formats, modes) are compile-time variants, never tunables.
 - Commit messages: imperative subject under 72 characters, a body that says why, and the attribution trailer the harness supplies. Reference ADRs and plan sections when a change implements them.
 
 ## Recording decisions

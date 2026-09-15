@@ -1,5 +1,6 @@
 #include <core/base/assert.h>
 #include <core/log/log.h>
+#include <core/platform/spin_lock.h>
 #include <core/platform/thread.h>
 #include <core/time/time.h>
 
@@ -37,8 +38,10 @@ class SpinLock {
 
 constexpr usize k_spec_capacity = 1024;
 
+// A spinlock guards the category chain and the accumulated level spec: both are touched
+// during static initialization, where a mutex global would be a construction-order hazard.
 struct RegistryState {
-  SpinLock lock;
+  platform::SpinLock lock;
   Category* head = nullptr;
   char spec[k_spec_capacity] = {};
   usize spec_size = 0;

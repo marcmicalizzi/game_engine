@@ -34,4 +34,6 @@ One page per module, created in the same change that creates the module. Templat
 | platform | core | [platform.md](platform.md) |
 | log | core | [log.md](log.md) |
 | jobs | core | [jobs.md](jobs.md) |
+| tunables | foundation | [tunables.md](tunables.md) |
+| bench | foundation | [bench.md](bench.md) |
 | doc | domain | [doc.md](doc.md) |

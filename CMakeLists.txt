@@ -19,6 +19,7 @@ include(EngineWarnings)
 include(EngineModule)
 include(EngineTesting)
 include(EngineSchema)
+include(EngineBench)
 
 # Build tools first: schemac generates sources for schema modules below.
 add_subdirectory(tools/schemac)
@@ -27,7 +28,7 @@ add_subdirectory(tools/schemac)
 # modules that were declared before it and live in the same or a lower layer.
 add_subdirectory(core)
 add_subdirectory(schemas)
-# add_subdirectory(foundation)
+add_subdirectory(foundation)
 add_subdirectory(domain)
 # add_subdirectory(systems)
 # add_subdirectory(apps)

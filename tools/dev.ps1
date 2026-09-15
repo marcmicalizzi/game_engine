@@ -10,6 +10,8 @@
     configure   Run CMake with the preset (default: msvc-debug on Windows, linux-clang-debug on Linux).
     build       Build the preset (configures first if needed).
     test        Run CTest for the preset. -Filter is a regex on test names.
+    bench       Build, then run every engine_*_bench executable. -Filter is a glob on
+                benchmark names; JSON lines land in build/<preset>/bench/<module>.jsonl.
     lint        Run the banned-pattern lint over the tree.
     format      Run clang-format in place over engine sources.
     modules     Print build/<preset>/modules.json.
@@ -22,7 +24,7 @@
 [CmdletBinding()]
 param(
   [Parameter(Position = 0)]
-  [ValidateSet('configure', 'build', 'test', 'lint', 'format', 'modules', 'clean')]
+  [ValidateSet('configure', 'build', 'test', 'bench', 'lint', 'format', 'modules', 'clean')]
   [string]$Command = 'build',
   [string]$Preset,
   [string]$Filter,
@@ -90,6 +92,24 @@ function Invoke-Test {
   finally { Pop-Location }
 }
 
+function Invoke-Bench {
+  Invoke-Build
+  $exes = Get-ChildItem -Path $BuildDir -Recurse -File |
+    Where-Object { $_.Name -match '^engine_.+_bench(\.exe)?$' -and $_.FullName -notmatch '[\\/]_deps[\\/]' }
+  if (-not $exes) { throw 'no bench executables found; is ENGINE_BUILD_BENCH on?' }
+  $outDir = Join-Path $BuildDir 'bench'
+  New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+  foreach ($exe in $exes) {
+    $module = $exe.BaseName -replace '^engine_', '' -replace '_bench$', ''
+    $benchArgs = @("--json=$(Join-Path $outDir "$module.jsonl")")
+    if ($Filter) { $benchArgs += "--filter=$Filter" }
+    Write-Host "== $module" -ForegroundColor Cyan
+    & $exe.FullName @benchArgs
+    if ($LASTEXITCODE -ne 0) { throw "bench $module failed ($LASTEXITCODE)" }
+  }
+  Write-Host "results: $outDir"
+}
+
 function Invoke-Lint {
   & (Join-Path $PSScriptRoot 'lint.ps1') -Root $Root
   if ($LASTEXITCODE -ne 0) { throw "lint failed ($LASTEXITCODE)" }
@@ -115,6 +135,7 @@ switch ($Command) {
   'configure' { Invoke-Configure }
   'build'     { Invoke-Build }
   'test'      { Invoke-Test }
+  'bench'     { Invoke-Bench }
   'lint'      { Invoke-Lint }
   'format'    { Invoke-Format }
   'modules'   { Show-Modules }
