@@ -62,6 +62,7 @@ engine_module(NAME containers LAYER core DEPS base)
 engine_module_tests(NAME containers SOURCES tests/flat_map_tests.cpp)
 engine_module_bench(NAME containers SOURCES bench/containers_bench.cpp)   # optional; smoke-run under CTest
 engine_app(NAME engine_cli OUTPUT engine-cli SOURCES main.cpp DEPS json platform E2E_TESTS tests/cli_tests.cpp)  # executables
+engine_shaders(NAME gfx_tests SOURCES shaders/fill.slang)   # .slang -> SPIR-V at build time, embedded as <shaders/fill.spv.h>
 ```
 
 `engine_module()` refuses a dependency on a higher layer or on a module that has not been declared yet, so `add_subdirectory` order is lower layers first. The module graph is written to `build/<preset>/modules.json` after configure; read that rather than parsing CMake.
@@ -88,6 +89,7 @@ Read `docs/plan/12-ai-usage-policy.md` before touching anything that involves a 
 - Headers use `#pragma once`. Includes are ordered: own header, module headers, engine headers, third party, standard library.
 - No exceptions across module boundaries; error returns use `Result<T>` from `core/base` once it exists, `bool` plus out-parameter until then. Exceptions are disabled in engine targets.
 - Asserts: `ENGINE_ASSERT(cond, "message")` in debug, compiled out in release; `ENGINE_VERIFY` stays in release. Never assert on external input; validate it.
+- Shaders are Slang only (ADR-0008), compiled at build time by `engine_shaders()` and embedded; entry point names are preserved, so a file may hold several. Keep shader sources beside the module that owns them.
 - Logging: `ENGINE_LOG_INFO(category, "short static message", log::field("key", value), ...)` with a category defined once per module (`ENGINE_LOG_CATEGORY_DEFINE`). Data goes in typed fields, never interpolated into the message; no `printf`-style logging in engine code; report output that is the product of a tool (the bench table, CLI output) is the exception. See `docs/subsystems/log.md`.
 - Every new module gets a `docs/subsystems/<module>.md` page and a `tests/` directory in the same change.
 - Run-time parameters that a kernel or system reads (batch sizes, spin counts, budgets, thread counts) are `tunables::Int/Float/Bool/Enum` objects from `foundation/tunables`, read once outside hot loops. Core-layer modules take config structs instead and the app layer fills them from tunables. Data-selected dimensions (formats, modes) are compile-time variants, never tunables.

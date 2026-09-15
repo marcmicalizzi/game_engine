@@ -9,3 +9,4 @@ Every dependency of the engine is listed here with its license. Policy: permissi
 | Vulkan-Headers | vulkan-sdk-1.4.357.0 | Apache-2.0 OR MIT | domain/gfx | CMake FetchContent at configure time |
 | volk | vulkan-sdk-1.4.357.0 | MIT | domain/gfx (Vulkan meta-loader) | CMake FetchContent at configure time |
 | Vulkan Memory Allocator | v3.4.0 | MIT | domain/gfx | CMake FetchContent at configure time |
+| Slang | v2026.17.1 | Apache-2.0 WITH LLVM-exception | shader compiler (build time only; prebuilt binaries) | CMake FetchContent of the release archive at configure time |

@@ -5,6 +5,7 @@
 #include <domain/gfx/device.h>
 #include <domain/gfx/vulkan.h>
 
+#include <cstdint>
 #include <cstring>
 #include <memory>
 
@@ -671,6 +672,80 @@ void image_barrier(VkCommandBuffer commands, VkImage image, VkImageLayout old_la
   dependency.imageMemoryBarrierCount = 1;
   dependency.pImageMemoryBarriers = &barrier;
   vkCmdPipelineBarrier2(commands, &dependency);
+}
+
+}  // namespace engine::gfx
+
+// ---- shaders and pipelines -------------------------------------------------------------------
+
+namespace engine::gfx {
+
+VkShaderModule create_shader_module(const Device& device, const unsigned char* spirv, usize bytes,
+                                    std::string* error) {
+  if (bytes == 0 || (bytes % 4) != 0 || (reinterpret_cast<std::uintptr_t>(spirv) % 4) != 0) {
+    if (error != nullptr) *error = "SPIR-V must be a non-empty, 4-byte-aligned multiple of 4 bytes";
+    return VK_NULL_HANDLE;
+  }
+  VkShaderModuleCreateInfo info{};
+  info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+  info.codeSize = bytes;
+  info.pCode = reinterpret_cast<const u32*>(spirv);
+  VkShaderModule module = VK_NULL_HANDLE;
+  const VkResult r = vkCreateShaderModule(device.handles().device, &info, nullptr, &module);
+  if (r != VK_SUCCESS) {
+    set_error(error, "vkCreateShaderModule", r);
+    return VK_NULL_HANDLE;
+  }
+  return module;
+}
+
+void destroy_shader_module(const Device& device, VkShaderModule module) noexcept {
+  if (module != VK_NULL_HANDLE) vkDestroyShaderModule(device.handles().device, module, nullptr);
+}
+
+bool create_compute_pipeline(const Device& device, VkShaderModule module, const char* entry,
+                             std::span<const VkDescriptorSetLayout> set_layouts,
+                             u32 push_constant_bytes, ComputePipeline& out, std::string* error) {
+  const Handles& h = device.handles();
+  VkPushConstantRange range{};
+  range.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+  range.offset = 0;
+  range.size = push_constant_bytes;
+  VkPipelineLayoutCreateInfo layout_info{};
+  layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+  layout_info.setLayoutCount = static_cast<u32>(set_layouts.size());
+  layout_info.pSetLayouts = set_layouts.data();
+  layout_info.pushConstantRangeCount = push_constant_bytes > 0 ? 1 : 0;
+  layout_info.pPushConstantRanges = push_constant_bytes > 0 ? &range : nullptr;
+  if (const VkResult r = vkCreatePipelineLayout(h.device, &layout_info, nullptr, &out.layout);
+      r != VK_SUCCESS) {
+    set_error(error, "vkCreatePipelineLayout", r);
+    return false;
+  }
+  VkComputePipelineCreateInfo info{};
+  info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+  info.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+  info.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+  info.stage.module = module;
+  info.stage.pName = entry;
+  info.layout = out.layout;
+  if (const VkResult r =
+          vkCreateComputePipelines(h.device, VK_NULL_HANDLE, 1, &info, nullptr, &out.pipeline);
+      r != VK_SUCCESS) {
+    set_error(error, "vkCreateComputePipelines", r);
+    vkDestroyPipelineLayout(h.device, out.layout, nullptr);
+    out.layout = VK_NULL_HANDLE;
+    return false;
+  }
+  return true;
+}
+
+void destroy_compute_pipeline(const Device& device, ComputePipeline& pipeline) noexcept {
+  const Handles& h = device.handles();
+  if (pipeline.pipeline != VK_NULL_HANDLE) vkDestroyPipeline(h.device, pipeline.pipeline, nullptr);
+  if (pipeline.layout != VK_NULL_HANDLE)
+    vkDestroyPipelineLayout(h.device, pipeline.layout, nullptr);
+  pipeline = ComputePipeline{};
 }
 
 }  // namespace engine::gfx

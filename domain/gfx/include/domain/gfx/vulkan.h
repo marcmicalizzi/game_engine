@@ -7,6 +7,7 @@
 #include <core/base/types.h>
 #include <domain/gfx/device.h>
 
+#include <span>
 #include <string>
 
 // clang-format off: the VMA configuration macros must precede its header.
@@ -76,6 +77,26 @@ bool submit_immediate(const Device& device, F&& record, std::string* error = nul
       [](VkCommandBuffer commands, void* context) { (*static_cast<F*>(context))(commands); },
       &record, error);
 }
+
+// ---- shaders and pipelines ----------------------------------------------------------------------
+
+// SPIR-V bytes (4-byte aligned, as the embedded headers provide). VK_NULL_HANDLE on failure.
+VkShaderModule create_shader_module(const Device& device, const unsigned char* spirv, usize bytes,
+                                    std::string* error = nullptr);
+void destroy_shader_module(const Device& device, VkShaderModule module) noexcept;
+
+struct ComputePipeline {
+  VkPipeline pipeline = VK_NULL_HANDLE;
+  VkPipelineLayout layout = VK_NULL_HANDLE;
+};
+
+// One compute entry point over the given descriptor set layouts and a push-constant block of
+// `push_constant_bytes` (0 for none).
+bool create_compute_pipeline(const Device& device, VkShaderModule module, const char* entry,
+                             std::span<const VkDescriptorSetLayout> set_layouts,
+                             u32 push_constant_bytes, ComputePipeline& out,
+                             std::string* error = nullptr);
+void destroy_compute_pipeline(const Device& device, ComputePipeline& pipeline) noexcept;
 
 // synchronization2 image layout transition on the whole color aspect.
 void image_barrier(VkCommandBuffer commands, VkImage image, VkImageLayout old_layout,

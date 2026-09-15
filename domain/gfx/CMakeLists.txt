@@ -13,3 +13,10 @@ target_include_directories(engine_gfx SYSTEM PUBLIC
 
 engine_module_tests(NAME gfx
   SOURCES tests/adapter_tests.cpp tests/device_tests.cpp)
+
+# Shaders used by the RHI's own tests: the first .slang through the toolchain.
+engine_shaders(NAME gfx_tests SOURCES shaders/fill.slang)
+if(TARGET engine_gfx_tests)
+  target_sources(engine_gfx_tests PRIVATE tests/compute_tests.cpp)
+  target_link_libraries(engine_gfx_tests PRIVATE engine_shaders_gfx_tests)
+endif()
