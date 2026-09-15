@@ -1,5 +1,6 @@
 #include <core/base/assert.h>
 #include <core/json/json.h>
+#include <core/profiling/profile.h>
 #include <domain/protocol/rpc.h>
 
 #include <algorithm>
@@ -82,6 +83,7 @@ JsonValue Dispatcher::dispatch(const JsonValue& request) {
 }
 
 JsonValue Dispatcher::dispatch_one(const JsonValue& request) {
+  ENGINE_PROFILE_ZONE_NAMED("rpc.dispatch");
   if (!request.is_object()) {
     return error_response(JsonValue(),
                           make_error(codes::k_invalid_request, "request must be an object"));

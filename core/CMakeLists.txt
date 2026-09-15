@@ -2,6 +2,7 @@
 add_subdirectory(base)
 add_subdirectory(hash)
 add_subdirectory(memory)
+add_subdirectory(profiling)
 add_subdirectory(containers)
 add_subdirectory(time)
 add_subdirectory(math)

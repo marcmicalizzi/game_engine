@@ -19,6 +19,7 @@ include(EngineWarnings)
 include(EngineModule)
 include(EngineTesting)
 include(EngineSchema)
+include(EngineProfiling)
 include(EngineBench)
 
 # Build tools first: schemac generates sources for schema modules below.

@@ -25,6 +25,7 @@ One page per module, created in the same change that creates the module. Templat
 | base | core | [base.md](base.md) |
 | hash | core | [hash.md](hash.md) |
 | memory | core | [memory.md](memory.md) |
+| profiling | core | [profiling.md](profiling.md) |
 | containers | core | [containers.md](containers.md) |
 | time | core | [time.md](time.md) |
 | math | core | [math.md](math.md) |

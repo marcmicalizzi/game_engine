@@ -1,11 +1,11 @@
-#include <core/jobs/job_system.h>
-
 #include <core/base/assert.h>
 #include <core/containers/small_vector.h>
 #include <core/jobs/detail/mpmc_queue.h>
 #include <core/jobs/detail/work_deque.h>
+#include <core/jobs/job_system.h>
 #include <core/memory/memory.h>
 #include <core/platform/thread.h>
+#include <core/profiling/profile.h>
 
 #include <cstdio>
 #include <memory>
@@ -66,9 +66,11 @@ struct alignas(64) JobSystem::PoolState {
 // --- construction -----------------------------------------------------------------------------
 
 JobSystem::JobSystem(const JobSystemConfig& config) : topo_(platform::topology()), config_(config) {
-  ENGINE_VERIFY(config_.queue_capacity >= 2 && (config_.queue_capacity & (config_.queue_capacity - 1)) == 0,
-                "JobSystem: queue_capacity must be a power of two");
-  pools_ = static_cast<PoolState*>(mem::allocate(sizeof(PoolState) * static_cast<usize>(Pool::Count), alignof(PoolState)));
+  ENGINE_VERIFY(
+      config_.queue_capacity >= 2 && (config_.queue_capacity & (config_.queue_capacity - 1)) == 0,
+      "JobSystem: queue_capacity must be a power of two");
+  pools_ = static_cast<PoolState*>(
+      mem::allocate(sizeof(PoolState) * static_cast<usize>(Pool::Count), alignof(PoolState)));
   for (u32 p = 0; p < static_cast<u32>(Pool::Count); ++p) {
     new (pools_ + p) PoolState(config_.queue_capacity);
     pools_[p].pool = static_cast<Pool>(p);
@@ -96,7 +98,8 @@ JobSystem::~JobSystem() {
     mem::deallocate(workers_[i], sizeof(Worker), alignof(Worker));
   }
   mem::deallocate(workers_, sizeof(Worker*) * worker_total_, alignof(Worker*));
-  for (u32 p = 0; p < static_cast<u32>(Pool::Count); ++p) pools_[p].~PoolState();
+  for (u32 p = 0; p < static_cast<u32>(Pool::Count); ++p)
+    pools_[p].~PoolState();
   mem::deallocate(pools_, sizeof(PoolState) * static_cast<usize>(Pool::Count), alignof(PoolState));
 }
 
@@ -108,7 +111,8 @@ void JobSystem::build_workers(const JobSystemConfig& config) {
   topo_.efficiency_cpus.for_each([&](u16 id) { eff_cpus.push_back(id); });
 
   u32 perf_count = config.performance_workers;
-  if (perf_count == 0) perf_count = perf_cpus.size() > 1 ? perf_cpus.size() - 1 : 1;  // leave one for the main thread
+  if (perf_count == 0)
+    perf_count = perf_cpus.size() > 1 ? perf_cpus.size() - 1 : 1;  // leave one for the main thread
   if (perf_count > k_max_pool_workers) perf_count = k_max_pool_workers;
 
   u32 eff_count = config.efficiency_workers;
@@ -128,7 +132,8 @@ void JobSystem::build_workers(const JobSystemConfig& config) {
   if (eff_count > k_max_pool_workers) eff_count = k_max_pool_workers;
 
   worker_total_ = perf_count + eff_count;
-  workers_ = static_cast<Worker**>(mem::allocate(sizeof(Worker*) * worker_total_, alignof(Worker*)));
+  workers_ =
+      static_cast<Worker**>(mem::allocate(sizeof(Worker*) * worker_total_, alignof(Worker*)));
   u32 next = 0;
 
   auto make_worker = [&](Pool pool, u16 index, u16 cpu) {
@@ -138,7 +143,8 @@ void JobSystem::build_workers(const JobSystemConfig& config) {
     w->info.pool = pool;
     w->info.cpu = cpu;
     w->info.cache_domain = cpu != platform::k_invalid_cpu ? topo_.cpus[cpu].cache_domain : 0;
-    w->rng_state = 0x9E3779B9u ^ (static_cast<u32>(index) * 2654435761u + static_cast<u32>(pool) * 40503u);
+    w->rng_state =
+        0x9E3779B9u ^ (static_cast<u32>(index) * 2654435761u + static_cast<u32>(pool) * 40503u);
     pools_[static_cast<u32>(pool)].workers.push_back(w);
     workers_[next++] = w;
   };
@@ -166,11 +172,13 @@ void JobSystem::build_workers(const JobSystemConfig& config) {
     for (u32 i = 0; i < pool.workers.size(); ++i) {
       Worker* w = pool.workers[i];
       for (u32 j = 0; j < pool.workers.size(); ++j) {
-        if (j != i && pool.workers[j]->info.cache_domain == w->info.cache_domain) w->victims.push_back(static_cast<u16>(j));
+        if (j != i && pool.workers[j]->info.cache_domain == w->info.cache_domain)
+          w->victims.push_back(static_cast<u16>(j));
       }
       w->local_victim_count = w->victims.size();
       for (u32 j = 0; j < pool.workers.size(); ++j) {
-        if (j != i && pool.workers[j]->info.cache_domain != w->info.cache_domain) w->victims.push_back(static_cast<u16>(j));
+        if (j != i && pool.workers[j]->info.cache_domain != w->info.cache_domain)
+          w->victims.push_back(static_cast<u16>(j));
       }
     }
   }
@@ -183,8 +191,10 @@ void JobSystem::worker_main(JobSystem* self, Worker* worker) {
   t_current_worker = &worker->info;
 
   char name[32];
-  std::snprintf(name, sizeof(name), "%s-%u", worker->info.pool == Pool::Performance ? "perf" : "eff", worker->info.index);
+  std::snprintf(name, sizeof(name), "%s-%u",
+                worker->info.pool == Pool::Performance ? "perf" : "eff", worker->info.index);
   platform::set_current_thread_name(name);
+  ENGINE_PROFILE_THREAD(name);
   if (self->config_.pin_threads && worker->info.cpu != platform::k_invalid_cpu) {
     platform::pin_current_thread(worker->info.cpu);
   }
@@ -227,6 +237,7 @@ void JobSystem::worker_main(JobSystem* self, Worker* worker) {
 }
 
 void JobSystem::run_job(const Job& job, Worker* worker) noexcept {
+  ENGINE_PROFILE_ZONE_NAMED("job");
   job.fn(job.data);
   if (job.counter != nullptr) job.counter->signal();
   if (worker != nullptr) {
@@ -380,16 +391,24 @@ void JobSystem::wait(Counter& counter) {
 
 // --- introspection ----------------------------------------------------------------------------
 
-u32 JobSystem::worker_count(Pool pool) const noexcept { return pools_[static_cast<u32>(pool)].workers.size(); }
-u32 JobSystem::total_worker_count() const noexcept { return worker_total_; }
+u32 JobSystem::worker_count(Pool pool) const noexcept {
+  return pools_[static_cast<u32>(pool)].workers.size();
+}
+u32 JobSystem::total_worker_count() const noexcept {
+  return worker_total_;
+}
 
 const WorkerInfo& JobSystem::worker_info(Pool pool, u32 index) const noexcept {
   ENGINE_ASSERT(index < worker_count(pool), "JobSystem::worker_info: index out of range");
   return pools_[static_cast<u32>(pool)].workers[index]->info;
 }
 
-const WorkerInfo* JobSystem::current_worker() noexcept { return t_current_worker; }
-JobSystem* JobSystem::current() noexcept { return t_current_system; }
+const WorkerInfo* JobSystem::current_worker() noexcept {
+  return t_current_worker;
+}
+JobSystem* JobSystem::current() noexcept {
+  return t_current_system;
+}
 
 JobSystemStats JobSystem::stats() const noexcept {
   JobSystemStats s;

@@ -1,7 +1,7 @@
 # Topology-aware job system: pinned worker pools per efficiency class, per-worker
 # work-stealing deques, cache-domain-local stealing (ADR-0011, plan 11.5).
 engine_module(NAME jobs LAYER core
-  DEPS base memory containers platform
+  DEPS base memory containers platform profiling
   SOURCES src/job_system.cpp)
 
 engine_module_tests(NAME jobs

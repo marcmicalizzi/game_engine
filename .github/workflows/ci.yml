@@ -1,0 +1,58 @@
+# Build, test, lint, and bench-smoke on Windows and Linux (docs/plan/10-roadmap-risks.md §10.1,
+# ADR-0021). Presets come from CMakePresets.json; the release presets compile Tracy in.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: Windows ${{ matrix.preset }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: [msvc-debug, msvc-release]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Configure
+        run: cmake --preset ${{ matrix.preset }}
+      - name: Build
+        run: cmake --build --preset ${{ matrix.preset }}
+      - name: Test
+        run: ctest --preset ${{ matrix.preset }}
+      - name: Module graph
+        run: Get-Content build/${{ matrix.preset }}/modules.json
+        shell: pwsh
+
+  linux:
+    name: Linux ${{ matrix.preset }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: [linux-clang-debug, linux-gcc-release]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build clang g++
+          cmake --version && ninja --version && clang++ --version && g++ --version && pwsh --version
+      - name: Configure
+        run: cmake --preset ${{ matrix.preset }}
+      - name: Build
+        run: cmake --build --preset ${{ matrix.preset }}
+      - name: Test
+        run: ctest --preset ${{ matrix.preset }}
+      - name: Module graph
+        run: cat build/${{ matrix.preset }}/modules.json

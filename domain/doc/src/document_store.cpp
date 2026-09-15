@@ -1,4 +1,5 @@
 #include <core/json/json.h>
+#include <core/profiling/profile.h>
 #include <core/schema/json_reflect.h>
 #include <domain/doc/document_store.h>
 
@@ -73,6 +74,7 @@ bool DocumentStore::create(const io::Vfs& vfs, std::string_view dir, std::string
 
 bool DocumentStore::save(const io::Vfs& vfs, std::string_view dir, const Document& doc,
                          DocumentManifest& manifest, std::string* error) {
+  ENGINE_PROFILE_ZONE_NAMED("doc.store.save");
   const std::string layers_dir = path_of(dir, k_layers_dir);
   if (const io::Status s = vfs.make_directories(layers_dir); s != io::Status::Ok) {
     set_error(error, layers_dir, io::status_name(s));
@@ -105,6 +107,7 @@ bool DocumentStore::save(const io::Vfs& vfs, std::string_view dir, const Documen
 
 bool DocumentStore::load(const io::Vfs& vfs, std::string_view dir, Document& out,
                          DocumentManifest& manifest, std::string* error) {
+  ENGINE_PROFILE_ZONE_NAMED("doc.store.load");
   const std::string manifest_path = path_of(dir, k_manifest_file);
   std::string text;
   if (const io::Status s = vfs.read(manifest_path, text); s != io::Status::Ok) {

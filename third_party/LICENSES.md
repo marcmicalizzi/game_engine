@@ -5,3 +5,4 @@ Every dependency of the engine is listed here with its license. Policy: permissi
 | Component | Version | License | Used by | How obtained |
 |---|---|---|---|---|
 | doctest | v2.4.11 | MIT | tests only | CMake FetchContent at configure time |
+| Tracy | v0.14.1 | BSD-3-Clause | core/profiling (only when ENGINE_TRACY is on) | CMake FetchContent at configure time |
