@@ -1,0 +1,86 @@
+#pragma once
+
+// The Vulkan-facing surface of gfx: handles, VMA-backed resources, barriers, and one-shot
+// submission. Included by gfx internals, by the render graph, and by the RHI's tests. Nothing
+// above the RHI includes this header.
+
+#include <core/base/types.h>
+#include <domain/gfx/device.h>
+
+#include <string>
+
+// clang-format off: the VMA configuration macros must precede its header.
+#include <volk.h>
+#define VMA_STATIC_VULKAN_FUNCTIONS 0
+#define VMA_DYNAMIC_VULKAN_FUNCTIONS 1
+#include <vk_mem_alloc.h>
+// clang-format on
+
+namespace engine::gfx {
+
+struct Handles {
+  VkInstance instance = VK_NULL_HANDLE;
+  VkPhysicalDevice physical = VK_NULL_HANDLE;
+  VkDevice device = VK_NULL_HANDLE;
+  VkQueue graphics_queue = VK_NULL_HANDLE;
+  VkQueue compute_queue = VK_NULL_HANDLE;   // may equal graphics_queue
+  VkQueue transfer_queue = VK_NULL_HANDLE;  // may equal graphics_queue
+  VmaAllocator allocator = nullptr;
+  VkDebugUtilsMessengerEXT messenger = VK_NULL_HANDLE;
+  VkCommandPool immediate_pool = VK_NULL_HANDLE;  // graphics family, transient
+};
+
+const char* result_name(VkResult result) noexcept;
+
+// ---- resources -------------------------------------------------------------------------------
+
+struct BufferResource {
+  VkBuffer buffer = VK_NULL_HANDLE;
+  VmaAllocation allocation = nullptr;
+  void* mapped = nullptr;  // persistent mapping when host visible
+  u64 size = 0;
+  VkDeviceAddress address = 0;  // when created with VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
+};
+
+struct ImageResource {
+  VkImage image = VK_NULL_HANDLE;
+  VmaAllocation allocation = nullptr;
+  VkFormat format = VK_FORMAT_UNDEFINED;
+  u32 width = 0;
+  u32 height = 0;
+};
+
+// host_visible buffers are persistently mapped and host-coherent (upload and readback);
+// otherwise device-local.
+bool create_buffer(const Device& device, u64 size, VkBufferUsageFlags usage, bool host_visible,
+                   BufferResource& out, std::string* error = nullptr);
+void destroy_buffer(const Device& device, BufferResource& buffer) noexcept;
+
+bool create_image_2d(const Device& device, u32 width, u32 height, VkFormat format,
+                     VkImageUsageFlags usage, ImageResource& out, std::string* error = nullptr);
+void destroy_image(const Device& device, ImageResource& image) noexcept;
+
+// ---- commands --------------------------------------------------------------------------------
+
+using RecordFn = void (*)(VkCommandBuffer commands, void* context);
+
+// Records with `record`, submits on the graphics queue, and waits for completion. For uploads,
+// readbacks, tests, and tools; the render graph owns per-frame submission.
+bool submit_immediate(const Device& device, RecordFn record, void* context,
+                      std::string* error = nullptr);
+
+template <class F>
+bool submit_immediate(const Device& device, F&& record, std::string* error = nullptr) {
+  return submit_immediate(
+      device,
+      [](VkCommandBuffer commands, void* context) { (*static_cast<F*>(context))(commands); },
+      &record, error);
+}
+
+// synchronization2 image layout transition on the whole color aspect.
+void image_barrier(VkCommandBuffer commands, VkImage image, VkImageLayout old_layout,
+                   VkImageLayout new_layout, VkPipelineStageFlags2 src_stage,
+                   VkAccessFlags2 src_access, VkPipelineStageFlags2 dst_stage,
+                   VkAccessFlags2 dst_access) noexcept;
+
+}  // namespace engine::gfx

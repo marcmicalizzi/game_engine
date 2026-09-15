@@ -24,3 +24,14 @@ set(VOLK_PULL_IN_VULKAN ON CACHE BOOL "" FORCE)
 set(VOLK_INSTALL OFF CACHE BOOL "" FORCE)
 set(VOLK_HEADERS_ONLY OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(volk)
+
+# Vulkan Memory Allocator (MIT): header-only; the implementation is compiled once in
+# domain/gfx/src/vma.cpp with dynamic entry points from volk.
+FetchContent_Declare(vma
+  GIT_REPOSITORY https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
+  GIT_TAG        v3.4.0
+  GIT_SHALLOW    TRUE)
+set(VMA_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+set(VMA_BUILD_DOCUMENTATION OFF CACHE BOOL "" FORCE)
+set(VMA_BUILD_SAMPLES OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(vma)

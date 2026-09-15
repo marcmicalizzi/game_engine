@@ -1,5 +1,4 @@
 #include <core/jobs/job_system.h>
-
 #include <core/platform/thread.h>
 
 #include <doctest/doctest.h>
@@ -20,7 +19,9 @@ struct CounterJob {
   std::atomic<u32>* hits;
 };
 
-void hit(void* p) { static_cast<CounterJob*>(p)->hits->fetch_add(1, std::memory_order_relaxed); }
+void hit(void* p) {
+  static_cast<CounterJob*>(p)->hits->fetch_add(1, std::memory_order_relaxed);
+}
 
 }  // namespace
 
@@ -29,10 +30,12 @@ TEST_CASE("JobSystem: starts and stops cleanly, repeatedly, and reports its layo
     JobSystem js;
     CHECK(js.worker_count(Pool::Performance) >= 1);
     CHECK(js.worker_count(Pool::Efficiency) >= 1);
-    CHECK(js.total_worker_count() == js.worker_count(Pool::Performance) + js.worker_count(Pool::Efficiency));
+    CHECK(js.total_worker_count() ==
+          js.worker_count(Pool::Performance) + js.worker_count(Pool::Efficiency));
     if (round == 0) {
       MESSAGE("performance workers: " << js.worker_count(Pool::Performance)
-                                      << ", efficiency workers: " << js.worker_count(Pool::Efficiency)
+                                      << ", efficiency workers: "
+                                      << js.worker_count(Pool::Efficiency)
                                       << ", cache domains: " << js.topology().cache_domains.size());
     }
     for (u32 i = 0; i < js.worker_count(Pool::Performance); ++i) {
@@ -84,9 +87,11 @@ TEST_CASE("JobSystem: parallel_for covers the range exactly once and runs on wor
   js.parallel_for(Pool::Performance, k_n, 4096, [&](u32 begin, u32 end) {
     chunks.fetch_add(1);
     if (JobSystem::current_worker() != nullptr) on_worker.fetch_add(1);
-    for (u32 i = begin; i < end; ++i) seen[i].fetch_add(1);
+    for (u32 i = begin; i < end; ++i)
+      seen[i].fetch_add(1);
   });
-  for (u32 i = 0; i < k_n; ++i) REQUIRE(seen[i].load() == 1);
+  for (u32 i = 0; i < k_n; ++i)
+    REQUIRE(seen[i].load() == 1);
   CHECK(chunks.load() == (k_n + 4095) / 4096);
   // The main thread helps while waiting, so not every chunk is on a worker; most should be
   // when there is more than one worker.
@@ -100,7 +105,8 @@ TEST_CASE("JobSystem: parallel_for reduction") {
   std::atomic<u64> total{0};
   js.parallel_for(Pool::Performance, k_n, 1024, [&](u32 begin, u32 end) {
     u64 local = 0;
-    for (u32 i = begin; i < end; ++i) local += i;
+    for (u32 i = begin; i < end; ++i)
+      local += i;
     total.fetch_add(local, std::memory_order_relaxed);
   });
   CHECK(total.load() == static_cast<u64>(k_n) * (k_n - 1) / 2);
@@ -119,7 +125,8 @@ TEST_CASE("JobSystem: nested scheduling from inside jobs, and waiting on a worke
     CounterJob inner{o->hits};
     std::vector<Job> inner_jobs(64, Job{hit, &inner, nullptr});
     Counter inner_counter;
-    o->js->schedule(Pool::Performance, std::span<const Job>(inner_jobs.data(), inner_jobs.size()), inner_counter);
+    o->js->schedule(Pool::Performance, std::span<const Job>(inner_jobs.data(), inner_jobs.size()),
+                    inner_counter);
     o->js->wait(inner_counter);  // worker waits by running other jobs
     o->hits->fetch_add(1000);
   };
@@ -151,7 +158,8 @@ TEST_CASE("JobSystem: cross-pool scheduling works from workers and outside") {
   };
   std::vector<Job> perf_jobs(100, Job{perf_fn, &ctx, nullptr});
   Counter perf_counter;
-  js.schedule(Pool::Performance, std::span<const Job>(perf_jobs.data(), perf_jobs.size()), perf_counter);
+  js.schedule(Pool::Performance, std::span<const Job>(perf_jobs.data(), perf_jobs.size()),
+              perf_counter);
   js.wait(perf_counter);
   js.wait(eff_counter);
   CHECK(hits.load() == 100);
@@ -222,7 +230,8 @@ TEST_CASE("JobSystem: stealing happens when one worker is flooded") {
     auto slow_hit = [](void* q) {
       auto* c = static_cast<CounterJob*>(q);
       volatile u32 spin = 0;
-      for (u32 i = 0; i < 2000; ++i) spin = spin + i;
+      for (u32 i = 0; i < 2000; ++i)
+        spin = spin + i;
       c->hits->fetch_add(1);
     };
     for (int i = 0; i < 20000; ++i) {
@@ -239,15 +248,20 @@ TEST_CASE("JobSystem: stealing happens when one worker is flooded") {
   CHECK(hits.load() == 20000);
   const JobSystemStats s = js.stats();
   CHECK(s.steals_local + s.steals_remote > 0);
-  MESSAGE("steals local=" << s.steals_local << " remote=" << s.steals_remote << " inbox=" << s.inbox_pops
-                          << " sleeps=" << s.sleeps << " inline=" << s.inline_runs);
+  MESSAGE("steals local=" << s.steals_local << " remote=" << s.steals_remote << " inbox="
+                          << s.inbox_pops << " sleeps=" << s.sleeps << " inline=" << s.inline_runs);
 }
 
 TEST_CASE("JobSystem: idle workers sleep rather than spin forever") {
   JobSystem js;
-  std::this_thread::sleep_for(std::chrono::milliseconds(50));
-  const JobSystemStats before = js.stats();
-  CHECK(before.sleeps >= js.total_worker_count());  // every worker went to sleep at least once
+  // Every worker goes to sleep at least once. How soon depends on the spin budget and on how
+  // loaded the machine is, so poll for the condition rather than assume a fixed delay.
+  JobSystemStats before = js.stats();
+  for (int i = 0; i < 400 && before.sleeps < js.total_worker_count(); ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    before = js.stats();
+  }
+  CHECK(before.sleeps >= js.total_worker_count());
   // Wake them with work and confirm they come back.
   std::atomic<u32> hits{0};
   CounterJob ctx{&hits};

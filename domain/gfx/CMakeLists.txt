@@ -1,13 +1,15 @@
-# gfx: the RHI (ADR-0006). Phase 1 begins with device discovery: enumerate Vulkan physical
-# devices and their capabilities without an SDK, so experiment E2 has data from day one.
+# gfx: the RHI (ADR-0006). Device discovery, instance and device creation with the feature
+# chain the renderer needs, VMA-backed resources, and one-shot command submission. The render
+# graph and the renderer systems build on this.
 engine_module(NAME gfx LAYER domain
-  DEPS base containers log schemas
-  EXTERNAL_DEPS volk::volk
-  SOURCES src/adapter.cpp)
-# The Vulkan headers are third-party code: the engine's warning policy applies to engine code.
+  DEPS base containers memory log schemas
+  EXTERNAL_DEPS volk::volk GPUOpen::VulkanMemoryAllocator
+  SOURCES src/adapter.cpp src/device.cpp src/vma.cpp)
+# Third-party headers: the engine's warning policy applies to engine code only.
 target_include_directories(engine_gfx SYSTEM PUBLIC
   $<TARGET_PROPERTY:Vulkan::Headers,INTERFACE_INCLUDE_DIRECTORIES>
-  $<TARGET_PROPERTY:volk,INTERFACE_INCLUDE_DIRECTORIES>)
+  $<TARGET_PROPERTY:volk,INTERFACE_INCLUDE_DIRECTORIES>
+  $<TARGET_PROPERTY:VulkanMemoryAllocator,INTERFACE_INCLUDE_DIRECTORIES>)
 
 engine_module_tests(NAME gfx
-  SOURCES tests/adapter_tests.cpp)
+  SOURCES tests/adapter_tests.cpp tests/device_tests.cpp)
