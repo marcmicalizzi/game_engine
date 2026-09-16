@@ -3,5 +3,5 @@
 # buffer and an orbiting camera; --frames N --capture out.png is how agents and CI look at it.
 engine_app(NAME engine_view OUTPUT engine-view
   SOURCES main.cpp
-  DEPS base containers math time log window image geometry gfx
+  DEPS base containers math time log platform window image geometry gfx
   E2E_TESTS tests/view_tests.cpp)

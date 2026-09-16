@@ -37,4 +37,5 @@ add_subdirectory(domain)
 add_subdirectory(apps)
 # add_subdirectory(game)
 
+engine_write_shader_manifest()
 engine_finalize_modules()

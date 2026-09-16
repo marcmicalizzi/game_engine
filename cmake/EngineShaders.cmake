@@ -74,9 +74,33 @@ function(engine_shaders)
       COMMENT "embed: ${_stem}.spv"
       VERBATIM)
     list(APPEND _headers "${_header}")
+    # Manifest entry for the runtime shader library (gfx::ShaderLibrary): where the source and
+    # the SPIR-V live and how slangc was invoked, so a running app can recompile on edit.
+    set(_args "\"-target\", \"spirv\", \"-profile\", \"${SH_PROFILE}\", \"-emit-spirv-directly\", \"-fvk-use-entrypoint-name\", \"-O2\", \"-warnings-disable\", \"41012\"")
+    foreach(_flag IN LISTS SH_FLAGS)
+      string(APPEND _args ", \"${_flag}\"")
+    endforeach()
+    set_property(GLOBAL APPEND PROPERTY ENGINE_SHADER_MANIFEST_ENTRIES
+      "{\"name\": \"${_stem}\", \"source\": \"${_abs}\", \"spirv\": \"${_spv}\", \"args\": [${_args}]}")
   endforeach()
   add_custom_target(${_target}_build DEPENDS ${_headers})
   add_dependencies(${_target} ${_target}_build)
   target_include_directories(${_target} INTERFACE "${_gen}/include")
   message(STATUS "engine shaders: ${SH_NAME} (${SH_PROFILE})")
+endfunction()
+
+# Writes build/<preset>/shaders/manifest.json listing every shader declared with
+# engine_shaders(): name, source, SPIR-V output, slangc arguments, and the compiler path.
+# gfx::ShaderLibrary::load_manifest() reads it to load shaders from files and to recompile
+# them when their sources change while an app runs.
+function(engine_write_shader_manifest)
+  if(NOT ENGINE_SHADERS)
+    return()
+  endif()
+  get_property(_entries GLOBAL PROPERTY ENGINE_SHADER_MANIFEST_ENTRIES)
+  string(JOIN ",\n    " _joined ${_entries})
+  file(WRITE "${CMAKE_BINARY_DIR}/shaders/manifest.json"
+    "{\n  \"slangc\": \"${ENGINE_SLANGC}\",\n  \"shaders\": [\n    ${_joined}\n  ]\n}\n")
+  list(LENGTH _entries _count)
+  message(STATUS "engine shaders: manifest with ${_count} shaders at ${CMAKE_BINARY_DIR}/shaders/manifest.json")
 endfunction()

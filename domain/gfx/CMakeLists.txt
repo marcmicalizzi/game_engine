@@ -5,10 +5,10 @@
 # engine_shaders_gfx_tests below.
 engine_shaders(NAME gfx SOURCES shaders/cluster_mesh.slang)
 engine_module(NAME gfx LAYER domain
-  DEPS base containers memory log schemas
+  DEPS base containers memory hash json log platform schemas io
   EXTERNAL_DEPS volk::volk GPUOpen::VulkanMemoryAllocator
   SOURCES src/adapter.cpp src/device.cpp src/vma.cpp src/frame.cpp src/render_graph.cpp
-          src/bindless.cpp src/swapchain.cpp src/capture.cpp)
+          src/bindless.cpp src/swapchain.cpp src/capture.cpp src/shader_library.cpp)
 target_link_libraries(engine_gfx PUBLIC engine_shaders_gfx)
 # Third-party headers: the engine's warning policy applies to engine code only.
 target_include_directories(engine_gfx SYSTEM PUBLIC
@@ -27,7 +27,10 @@ if(TARGET engine_gfx_tests)
   target_sources(engine_gfx_tests PRIVATE tests/compute_tests.cpp tests/frame_tests.cpp
                                           tests/render_graph_tests.cpp tests/bindless_tests.cpp
                                           tests/raster_tests.cpp tests/mesh_shader_tests.cpp
-                                          tests/capture_tests.cpp tests/swapchain_tests.cpp)
+                                          tests/capture_tests.cpp tests/swapchain_tests.cpp
+                                          tests/shader_library_tests.cpp)
+  target_compile_definitions(engine_gfx_tests PRIVATE
+    ENGINE_SHADER_MANIFEST="${CMAKE_BINARY_DIR}/shaders/manifest.json")
   target_link_libraries(engine_gfx_tests PRIVATE engine_shaders_gfx_tests engine::geometry
                                                  engine::window engine::image)
 endif()

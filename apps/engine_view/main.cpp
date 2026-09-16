@@ -9,6 +9,7 @@
 // mesh shaders, or no presentation support), which tests treat as a skip.
 #include <core/log/log.h>
 #include <core/math/math.h>
+#include <core/platform/process.h>
 #include <core/time/time.h>
 #include <domain/geometry/cluster.h>
 #include <domain/gfx/bindless.h>
@@ -16,6 +17,7 @@
 #include <domain/gfx/device.h>
 #include <domain/gfx/frame.h>
 #include <domain/gfx/render_graph.h>
+#include <domain/gfx/shader_library.h>
 #include <domain/gfx/swapchain.h>
 #include <domain/gfx/vulkan.h>
 #include <foundation/image/png.h>
@@ -38,11 +40,15 @@ constexpr const char* k_usage =
     "usage: engine-view [--width <px>] [--height <px>] [--frames <n>] [--capture <file.png>]\n"
     "                   [--no-vsync] [--adapter <index>] [--validation] [--grid <n>] [--log "
     "<spec>]\n"
+    "                   [--shaders <manifest.json>]\n"
     "\n"
     "  --frames <n>     render n frames, then exit (0: until the window closes)\n"
     "  --capture <png>  write the last frame as a PNG (implies --frames 60 when unset)\n"
     "  --grid <n>       heightfield resolution, n x n vertices (default 129)\n"
     "  --log <spec>     log levels, e.g. \"info,gfx=debug\" (stderr shows warnings and up)\n"
+    "  --shaders <m>    shader manifest (default: <exe dir>/../shaders/manifest.json when "
+    "present);\n"
+    "                   shaders recompile and reload when their .slang sources change\n"
     "exit codes: 0 ok, 1 error, 2 usage, 3 unavailable (no display, device, mesh shaders)\n";
 
 constexpr int k_exit_error = 1;
@@ -59,6 +65,7 @@ struct Options {
   bool validation = false;
   u32 grid = 129;
   std::string log_spec;
+  std::string shaders;
 };
 
 bool next_value(int argc, char** argv, int& i, std::string_view flag, std::string& out) {
@@ -169,6 +176,8 @@ int main(int argc, char** argv) {
       if (!next_value(argc, argv, i, a, options.capture)) return k_exit_usage;
     } else if (a == "--log") {
       if (!next_value(argc, argv, i, a, options.log_spec)) return k_exit_usage;
+    } else if (a == "--shaders") {
+      if (!next_value(argc, argv, i, a, options.shaders)) return k_exit_usage;
     } else if (a == "--no-vsync") {
       options.vsync = false;
     } else if (a == "--validation") {
@@ -188,7 +197,12 @@ int main(int argc, char** argv) {
   log::StreamSink stderr_sink(stderr, log::StreamSink::Format::Text);
   stderr_sink.set_min_level(log::Level::Warn);
   log::add_sink(&stderr_sink);
-  if (!options.log_spec.empty()) log::apply_level_spec(options.log_spec);
+  if (!options.log_spec.empty()) {
+    // With an explicit spec the category levels decide what reaches stderr.
+    stderr_sink.set_min_level(log::Level::Trace);
+    log::apply_level_spec("warn");
+    log::apply_level_spec(options.log_spec);
+  }
 
   std::string error;
   if (!window::init(&error)) return unavailable("no display", error);
@@ -236,7 +250,8 @@ int main(int argc, char** argv) {
   gfx::BufferResource cluster_buffer;
   gfx::BufferResource vertex_buffer;
   gfx::BufferResource triangle_buffer;
-  VkShaderModule module = VK_NULL_HANDLE;
+  gfx::ShaderLibrary shader_library;
+  const gfx::Shader* cluster_shader = nullptr;
   VkPipeline pipeline = VK_NULL_HANDLE;
   Depth depth;
   geometry::ClusterMesh mesh;
@@ -289,15 +304,35 @@ int main(int argc, char** argv) {
       break;
     }
 
-    module = gfx::create_shader_module(device, shaders::k_cluster_mesh_spirv,
-                                       shaders::k_cluster_mesh_spirv_size, &error);
-    if (module == VK_NULL_HANDLE) {
+    // Shaders: the embedded copy always works; the build's manifest, when found, loads the same
+    // shader from its file and recompiles it when the .slang source changes while running.
+    if (!shader_library.create(&device, &error)) {
+      exit_code = fail("shaders", error);
+      break;
+    }
+    shader_library.add_embedded("cluster_mesh", shaders::k_cluster_mesh_spirv,
+                                shaders::k_cluster_mesh_spirv_size);
+    std::string manifest = options.shaders;
+    if (manifest.empty()) {
+      const std::string candidate = platform::executable_directory() + "/../shaders/manifest.json";
+      if (io::exists(candidate)) manifest = candidate;
+    }
+    if (!manifest.empty() && !shader_library.load_manifest(manifest, &error)) {
+      exit_code = fail("shaders", error);
+      break;
+    }
+    cluster_shader = shader_library.get("cluster_mesh", &error);
+    if (cluster_shader == nullptr) {
       exit_code = fail("shader", error);
       break;
     }
+    if (!manifest.empty()) {
+      ENGINE_LOG_INFO(log_view, "shader manifest", log::field("path", manifest),
+                      log::field("cluster_mesh_from_file", cluster_shader->from_file));
+    }
     gfx::MeshPipelineDesc pipeline_desc;
-    pipeline_desc.mesh = module;
-    pipeline_desc.fragment = module;
+    pipeline_desc.mesh = cluster_shader->module;
+    pipeline_desc.fragment = cluster_shader->module;
     pipeline_desc.fragment_entry = "fs_color";
     pipeline_desc.layout = bindless.pipeline_layout();
     pipeline_desc.color_format = swapchain.format();
@@ -320,6 +355,7 @@ int main(int argc, char** argv) {
     gfx::RenderGraph graph(device);
     bool running = true;
     bool resize_pending = false;
+    i64 last_shader_poll_ns = 0;
     started_ns = time::monotonic_ns();
     while (running) {
       window::Event event;
@@ -335,6 +371,33 @@ int main(int argc, char** argv) {
         }
       }
       if (!running) break;
+      // Hot reload: recompile edited shaders four times a second and rebuild the pipeline.
+      if (time::monotonic_ns() - last_shader_poll_ns > 250'000'000) {
+        last_shader_poll_ns = time::monotonic_ns();
+        Vector<std::string> changed;
+        std::string reload_error;
+        shader_library.poll_changes(changed, &reload_error);
+        if (!reload_error.empty()) {
+          std::fprintf(stderr, "engine-view: shader compile error:\n%s\n", reload_error.c_str());
+        }
+        for (const std::string& name : changed) {
+          if (name != "cluster_mesh") continue;
+          frames.wait_idle();
+          gfx::destroy_pipeline(device, pipeline);
+          pipeline = VK_NULL_HANDLE;
+          cluster_shader = shader_library.get("cluster_mesh", &error);
+          pipeline_desc.mesh = cluster_shader->module;
+          pipeline_desc.fragment = cluster_shader->module;
+          if (!gfx::create_mesh_pipeline(device, pipeline_desc, pipeline, &error)) {
+            exit_code = fail("pipeline", error);
+            running = false;
+            break;
+          }
+          ENGINE_LOG_INFO(log_view, "pipeline rebuilt after shader reload",
+                          log::field("generation", cluster_shader->generation));
+        }
+        if (!running) break;
+      }
       if (resize_pending) {
         resize_pending = false;
         if (!swapchain.resize(window.pixel_width(), window.pixel_height(), &error)) {
@@ -447,7 +510,7 @@ int main(int argc, char** argv) {
   frames.wait_idle();
   depth.destroy(device);
   if (pipeline != VK_NULL_HANDLE) gfx::destroy_pipeline(device, pipeline);
-  if (module != VK_NULL_HANDLE) gfx::destroy_shader_module(device, module);
+  shader_library.destroy();
   gfx::destroy_buffer(device, triangle_buffer);
   gfx::destroy_buffer(device, vertex_buffer);
   gfx::destroy_buffer(device, cluster_buffer);
