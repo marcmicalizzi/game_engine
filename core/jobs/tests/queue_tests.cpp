@@ -12,7 +12,8 @@ using namespace engine::jobs::detail;
 
 TEST_CASE("WorkDeque: owner push/pop is LIFO and reports full") {
   WorkDeque<int> d(8);
-  for (int i = 0; i < 8; ++i) CHECK(d.push(i));
+  for (int i = 0; i < 8; ++i)
+    CHECK(d.push(i));
   CHECK_FALSE(d.push(99));
   CHECK(d.size() == 8);
   int v;
@@ -23,8 +24,10 @@ TEST_CASE("WorkDeque: owner push/pop is LIFO and reports full") {
   CHECK_FALSE(d.pop(v));
   // Wraps around the ring.
   for (int round = 0; round < 5; ++round) {
-    for (int i = 0; i < 5; ++i) CHECK(d.push(i));
-    for (int i = 0; i < 5; ++i) REQUIRE(d.pop(v));
+    for (int i = 0; i < 5; ++i)
+      CHECK(d.push(i));
+    for (int i = 0; i < 5; ++i)
+      REQUIRE(d.pop(v));
   }
 }
 
@@ -48,7 +51,8 @@ TEST_CASE("WorkDeque: thieves take from the top; every item is taken exactly onc
     }
   };
   std::vector<std::thread> thieves;
-  for (int i = 0; i < 4; ++i) thieves.emplace_back(thief);
+  for (int i = 0; i < 4; ++i)
+    thieves.emplace_back(thief);
 
   go.store(true);
   long long owner_sum = 0;
@@ -69,7 +73,8 @@ TEST_CASE("WorkDeque: thieves take from the top; every item is taken exactly onc
     ++owner_taken;
     owner_sum += v;
   }
-  for (auto& t : thieves) t.join();
+  for (auto& t : thieves)
+    t.join();
   // Drain anything left after thieves exited.
   while (d.pop(v)) {
     ++owner_taken;
@@ -83,7 +88,8 @@ TEST_CASE("MpmcQueue: FIFO single-threaded and full/empty reporting") {
   MpmcQueue<int> q(4);
   int v;
   CHECK_FALSE(q.try_pop(v));
-  for (int i = 0; i < 4; ++i) CHECK(q.try_push(i));
+  for (int i = 0; i < 4; ++i)
+    CHECK(q.try_push(i));
   CHECK_FALSE(q.try_push(4));
   for (int i = 0; i < 4; ++i) {
     REQUIRE(q.try_pop(v));
@@ -131,7 +137,8 @@ TEST_CASE("MpmcQueue: many producers and consumers move every item exactly once"
       }
     });
   }
-  for (auto& t : threads) t.join();
+  for (auto& t : threads)
+    t.join();
   const long long n = static_cast<long long>(k_producers) * k_per_producer;
   CHECK(consumed.load() == n);
   CHECK(sum.load() == n * (n - 1) / 2);

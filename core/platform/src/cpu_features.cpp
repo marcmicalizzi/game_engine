@@ -1,6 +1,5 @@
-#include <core/platform/cpu_features.h>
-
 #include <core/base/macros.h>
+#include <core/platform/cpu_features.h>
 
 #include <cstring>
 
@@ -75,7 +74,7 @@ CpuFeatures detect_cpu_features() {
     bool zmm_ok = false;
     if (osxsave) {
       const u64 xcr0 = read_xcr0();
-      ymm_ok = (xcr0 & 0x6) == 0x6;          // XMM and YMM state
+      ymm_ok = (xcr0 & 0x6) == 0x6;              // XMM and YMM state
       zmm_ok = ymm_ok && (xcr0 & 0xE0) == 0xE0;  // opmask, ZMM_Hi256, Hi16_ZMM
     }
     f.avx = avx_cpu && ymm_ok;
@@ -116,7 +115,8 @@ CpuFeatures detect_cpu_features() {
     f.brand[48] = '\0';
     // Trim leading spaces some vendors pad with.
     usize start = 0;
-    while (f.brand[start] == ' ') ++start;
+    while (f.brand[start] == ' ')
+      ++start;
     if (start > 0) std::memmove(f.brand, f.brand + start, 49 - start);
   }
   return f;

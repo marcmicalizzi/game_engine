@@ -368,7 +368,8 @@ class FlatMap {
     const usize n = size_;
     auto* order =
         static_cast<size_type*>(alloc_.allocate(n * sizeof(size_type), alignof(size_type)));
-    for (usize k = 0; k < n; ++k) order[k] = static_cast<size_type>(k);
+    for (usize k = 0; k < n; ++k)
+      order[k] = static_cast<size_type>(k);
     std::stable_sort(order, order + n,
                      [this](size_type a, size_type b) { return comp_(keys_[a], keys_[b]); });
 
@@ -414,8 +415,7 @@ class FlatMap {
     return containers::detail::max_align(alignof(Key), alignof(Value));
   }
   static constexpr usize values_offset(size_type capacity) noexcept {
-    return containers::detail::align_up(static_cast<usize>(capacity) * sizeof(Key),
-                                        alignof(Value));
+    return containers::detail::align_up(static_cast<usize>(capacity) * sizeof(Key), alignof(Value));
   }
   static constexpr usize block_bytes(size_type capacity) noexcept {
     return values_offset(capacity) + static_cast<usize>(capacity) * sizeof(Value);

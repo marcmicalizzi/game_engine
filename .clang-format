@@ -10,7 +10,7 @@ AccessModifierOffset: -1
 DerivePointerAlignment: false
 PointerAlignment: Left
 ReferenceAlignment: Left
-AllowShortFunctionsOnASingleLine: Inline
+AllowShortFunctionsOnASingleLine: All
 AllowShortIfStatementsOnASingleLine: WithoutElse
 AllowShortLoopsOnASingleLine: false
 AllowShortCaseLabelsOnASingleLine: true

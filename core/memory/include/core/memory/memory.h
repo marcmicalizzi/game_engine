@@ -64,8 +64,8 @@ bool tracking_enabled() noexcept;
 u64 allocation_counter() noexcept;
 
 // `align` must be a power of two. Zero-byte requests are rounded up to one byte.
-[[nodiscard]] void* allocate(usize bytes, usize align);                 // aborts on failure
-[[nodiscard]] void* try_allocate(usize bytes, usize align) noexcept;    // nullptr on failure
+[[nodiscard]] void* allocate(usize bytes, usize align);               // aborts on failure
+[[nodiscard]] void* try_allocate(usize bytes, usize align) noexcept;  // nullptr on failure
 void deallocate(void* p, usize bytes, usize align) noexcept;          // nullptr is a no-op
 
 }  // namespace engine::mem

@@ -9,8 +9,9 @@ namespace schemac {
 
 namespace {
 
-const char* const k_primitives[] = {"bool", "u8",  "u16", "u32",    "u64",   "i8",    "i16",  "i32",  "i64",
-                                    "f32",  "f64", "string", "bytes", "id128", "vec2", "vec3", "vec4", "quat", "json"};
+const char* const k_primitives[] = {"bool", "u8",   "u16",  "u32",  "u64",    "i8",    "i16",
+                                    "i32",  "i64",  "f32",  "f64",  "string", "bytes", "id128",
+                                    "vec2", "vec3", "vec4", "quat", "json"};
 const char* const k_integers[] = {"u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64"};
 
 struct Token {
@@ -37,44 +38,53 @@ class Lexer {
           pos_ += 3;
           if (pos_ < text_.size() && text_[pos_] == ' ') ++pos_;
           const size_t start = pos_;
-          while (pos_ < text_.size() && text_[pos_] != '\n') ++pos_;
+          while (pos_ < text_.size() && text_[pos_] != '\n')
+            ++pos_;
           out.push_back(Token{Token::Kind::Doc, text_.substr(start, pos_ - start), line_});
         } else {
-          while (pos_ < text_.size() && text_[pos_] != '\n') ++pos_;
+          while (pos_ < text_.size() && text_[pos_] != '\n')
+            ++pos_;
         }
         continue;
       }
       if (std::isalpha(static_cast<unsigned char>(c)) || c == '_') {
         const size_t start = pos_;
-        while (pos_ < text_.size() &&
-               (std::isalnum(static_cast<unsigned char>(text_[pos_])) || text_[pos_] == '_' || text_[pos_] == '.')) {
+        while (pos_ < text_.size() && (std::isalnum(static_cast<unsigned char>(text_[pos_])) ||
+                                       text_[pos_] == '_' || text_[pos_] == '.')) {
           ++pos_;
         }
         out.push_back(Token{Token::Kind::Ident, text_.substr(start, pos_ - start), line_});
         continue;
       }
-      if (std::isdigit(static_cast<unsigned char>(c)) || (c == '-' && std::isdigit(static_cast<unsigned char>(peek(1))))) {
+      if (std::isdigit(static_cast<unsigned char>(c)) ||
+          (c == '-' && std::isdigit(static_cast<unsigned char>(peek(1))))) {
         const size_t start = pos_;
         if (c == '-') ++pos_;
         bool is_float = false;
         if (text_[pos_] == '0' && (peek(1) == 'x' || peek(1) == 'X')) {
           pos_ += 2;
-          while (pos_ < text_.size() && std::isxdigit(static_cast<unsigned char>(text_[pos_]))) ++pos_;
+          while (pos_ < text_.size() && std::isxdigit(static_cast<unsigned char>(text_[pos_])))
+            ++pos_;
         } else {
-          while (pos_ < text_.size() && std::isdigit(static_cast<unsigned char>(text_[pos_]))) ++pos_;
-          if (pos_ < text_.size() && text_[pos_] == '.' && std::isdigit(static_cast<unsigned char>(peek(1)))) {
+          while (pos_ < text_.size() && std::isdigit(static_cast<unsigned char>(text_[pos_])))
+            ++pos_;
+          if (pos_ < text_.size() && text_[pos_] == '.' &&
+              std::isdigit(static_cast<unsigned char>(peek(1)))) {
             is_float = true;
             ++pos_;
-            while (pos_ < text_.size() && std::isdigit(static_cast<unsigned char>(text_[pos_]))) ++pos_;
+            while (pos_ < text_.size() && std::isdigit(static_cast<unsigned char>(text_[pos_])))
+              ++pos_;
           }
           if (pos_ < text_.size() && (text_[pos_] == 'e' || text_[pos_] == 'E')) {
             is_float = true;
             ++pos_;
             if (pos_ < text_.size() && (text_[pos_] == '+' || text_[pos_] == '-')) ++pos_;
-            while (pos_ < text_.size() && std::isdigit(static_cast<unsigned char>(text_[pos_]))) ++pos_;
+            while (pos_ < text_.size() && std::isdigit(static_cast<unsigned char>(text_[pos_])))
+              ++pos_;
           }
         }
-        out.push_back(Token{is_float ? Token::Kind::Float : Token::Kind::Int, text_.substr(start, pos_ - start), line_});
+        out.push_back(Token{is_float ? Token::Kind::Float : Token::Kind::Int,
+                            text_.substr(start, pos_ - start), line_});
         continue;
       }
       if (c == '"') {
@@ -111,7 +121,8 @@ class Lexer {
         ++pos_;
         continue;
       }
-      error = file_ + ":" + std::to_string(line_) + ": unexpected character '" + std::string(1, c) + "'";
+      error = file_ + ":" + std::to_string(line_) + ": unexpected character '" + std::string(1, c) +
+              "'";
       return false;
     }
   }
@@ -154,7 +165,8 @@ class Parser {
       }
       if (is_ident("import")) {
         advance();
-        if (!at(Token::Kind::String)) return fail("expected a quoted file name after import", error);
+        if (!at(Token::Kind::String))
+          return fail("expected a quoted file name after import", error);
         std::string imp = advance().text;
         const size_t slash = imp.find_last_of("/\\");
         if (slash != std::string::npos) imp = imp.substr(slash + 1);
@@ -218,7 +230,8 @@ class Parser {
       if (at_punct('(')) {
         advance();
         while (!at_punct(')')) {
-          if (at(Token::Kind::Int) || at(Token::Kind::Float) || at(Token::Kind::String) || at(Token::Kind::Ident)) {
+          if (at(Token::Kind::Int) || at(Token::Kind::Float) || at(Token::Kind::String) ||
+              at(Token::Kind::Ident)) {
             a.args.push_back(advance().text);
           } else {
             return fail("expected an attribute argument", error);
@@ -355,7 +368,8 @@ class Parser {
     s.name = advance().text;
     if (!parse_attrs(s.attrs, error)) return false;
     for (const Attribute& a : s.attrs) {
-      if (a.name == "version" && !a.args.empty()) s.version = static_cast<uint16_t>(std::strtoul(a.args[0].c_str(), nullptr, 0));
+      if (a.name == "version" && !a.args.empty())
+        s.version = static_cast<uint16_t>(std::strtoul(a.args[0].c_str(), nullptr, 0));
       if (a.name == "doc" && !a.args.empty()) s.doc = a.args[0];
       if (a.name == "kind" && !a.args.empty()) s.tag = a.args[0];
     }
@@ -374,7 +388,8 @@ class Parser {
       }
       if (!parse_attrs(f.attrs, error)) return false;
       for (const Attribute& a : f.attrs) {
-        if (a.name == "since" && !a.args.empty()) f.since = static_cast<uint16_t>(std::strtoul(a.args[0].c_str(), nullptr, 0));
+        if (a.name == "since" && !a.args.empty())
+          f.since = static_cast<uint16_t>(std::strtoul(a.args[0].c_str(), nullptr, 0));
         if (a.name == "transient") f.transient = true;
         if (a.name == "deprecated") f.deprecated = true;
         if (a.name == "doc" && !a.args.empty()) f.doc = a.args[0];
@@ -409,7 +424,8 @@ bool is_integer_primitive(const std::string& name) {
   return false;
 }
 
-bool parse_schema(const std::string& path, const std::string& text, SchemaFile& out, std::string& error) {
+bool parse_schema(const std::string& path, const std::string& text, SchemaFile& out,
+                  std::string& error) {
   out.path = path;
   std::string stem = path;
   const size_t slash = stem.find_last_of("/\\");

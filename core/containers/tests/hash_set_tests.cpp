@@ -58,7 +58,8 @@ TEST_CASE("HashSet: basics") {
 
 TEST_CASE("HashSet: erase by iterator swaps in the last element and the loop terminates") {
   HashSet<int> s;
-  for (int k = 0; k < 100; ++k) s.insert(k);
+  for (int k = 0; k < 100; ++k)
+    s.insert(k);
   for (auto it = s.begin(); it != s.end();) {
     if (*it % 2 == 0) {
       it = s.erase(it);
@@ -67,7 +68,8 @@ TEST_CASE("HashSet: erase by iterator swaps in the last element and the loop ter
     }
   }
   CHECK(s.size() == 50);
-  for (int k = 0; k < 100; ++k) CHECK(s.contains(k) == (k % 2 == 1));
+  for (int k = 0; k < 100; ++k)
+    CHECK(s.contains(k) == (k % 2 == 1));
 }
 
 TEST_CASE("HashSet: heterogeneous lookup and tracked keys") {
@@ -81,10 +83,12 @@ TEST_CASE("HashSet: heterogeneous lookup and tracked keys") {
     CHECK(names.erase("a") == 1);
 
     HashSet<Tracked> s;
-    for (int k = 0; k < 1000; ++k) s.insert(Tracked(std::to_string(k % 700)));
+    for (int k = 0; k < 1000; ++k)
+      s.insert(Tracked(std::to_string(k % 700)));
     CHECK(s.size() == 700);
     CHECK(Tracked::live == 700);
-    for (int k = 0; k < 700; k += 5) CHECK(s.erase(Tracked(std::to_string(k))) == 1);
+    for (int k = 0; k < 700; k += 5)
+      CHECK(s.erase(Tracked(std::to_string(k))) == 1);
     CHECK(Tracked::live == static_cast<int>(s.size()));
     HashSet<Tracked> copy = s;
     CHECK(copy == s);
@@ -122,5 +126,6 @@ TEST_CASE("HashSet: randomized operations agree with std::unordered_set") {
     }
     REQUIRE(s.size() == oracle.size());
   }
-  for (u32 k : s) CHECK(oracle.count(k) == 1);
+  for (u32 k : s)
+    CHECK(oracle.count(k) == 1);
 }

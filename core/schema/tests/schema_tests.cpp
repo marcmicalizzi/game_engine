@@ -1,11 +1,10 @@
+#include <core/json/json.h>
 #include <core/schema/json_reflect.h>
 #include <core/schema/type_info.h>
 
-#include <core/json/json.h>
-#include <schemas/features.h>
-
 #include <doctest/doctest.h>
 
+#include <schemas/features.h>
 #include <string>
 
 using namespace engine;
@@ -226,19 +225,21 @@ TEST_CASE("schema: reading tolerates missing fields and reports bad ones with pa
   REQUIRE(from_json(e, in, ctx));
   CHECK(e.s == "only");
   CHECK(e.color == Color::Green);  // integer accepted
-  CHECK(e.u8v == 255);              // default kept
+  CHECK(e.u8v == 255);             // default kept
   CHECK_FALSE(e.opt_i.has_value());
 
   // Errors.
-  REQUIRE(parse_json(R"({"u8v": 300, "color": "Purple", "fixed": [1, 2], "inners": [{}, {"x": "no"}],
+  REQUIRE(
+      parse_json(R"({"u8v": 300, "color": "Purple", "fixed": [1, 2], "inners": [{}, {"x": "no"}],
                          "by_id": [[1, "a"], [2]], "id": "zz", "unknown": 1})",
-                     in)
-              .ok);
+                 in)
+          .ok);
   Everything f;
   ReadContext bad;
   CHECK_FALSE(from_json(f, in, bad));
   std::string joined;
-  for (const Diagnostic& d : bad.diagnostics) joined += d.path + ": " + d.message + "\n";
+  for (const Diagnostic& d : bad.diagnostics)
+    joined += d.path + ": " + d.message + "\n";
   MESSAGE(joined);
   CHECK(joined.find("u8v: integer out of range") != std::string::npos);
   CHECK(joined.find("color: unknown enumerator") != std::string::npos);
@@ -320,7 +321,8 @@ bool migrate_everything_2_to_3(JsonValue& object, ReadContext&) {
 }  // namespace
 
 TEST_CASE("schema: versioned reads apply registered migrations in order") {
-  MigrationRegistry::global().add(Migration{"engine.schema_test.Everything", 2, &migrate_everything_2_to_3});
+  MigrationRegistry::global().add(
+      Migration{"engine.schema_test.Everything", 2, &migrate_everything_2_to_3});
   JsonValue old;
   REQUIRE(parse_json(R"({"note": "from v2", "s": "kept"})", old).ok);
 
@@ -338,7 +340,8 @@ TEST_CASE("schema: versioned reads apply registered migrations in order") {
   ReadContext gap;
   CHECK_FALSE(from_json_versioned(e, old, 1, gap));
   REQUIRE(gap.diagnostics.size() == 1);
-  CHECK(gap.diagnostics[0].message.find("no migration registered from version 1 to 2") != std::string::npos);
+  CHECK(gap.diagnostics[0].message.find("no migration registered from version 1 to 2") !=
+        std::string::npos);
 
   // Newer than we understand.
   ReadContext future;

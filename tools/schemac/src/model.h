@@ -24,15 +24,15 @@ struct Attribute {
 struct TypeExpr {
   enum class Kind { Primitive, Named, Optional, Array, FixedArray, Map };
   Kind kind = Kind::Primitive;
-  std::string name;                    // primitive keyword or (possibly dotted) type name
-  std::shared_ptr<TypeExpr> element;   // Optional/Array/FixedArray element, Map value
-  std::shared_ptr<TypeExpr> key;       // Map key
-  uint64_t count = 0;                  // FixedArray
+  std::string name;                   // primitive keyword or (possibly dotted) type name
+  std::shared_ptr<TypeExpr> element;  // Optional/Array/FixedArray element, Map value
+  std::shared_ptr<TypeExpr> key;      // Map key
+  uint64_t count = 0;                 // FixedArray
 
   // Filled by resolve() for Named types.
-  std::string resolved_qualified;      // "a.b.Name"
-  std::string resolved_cpp;            // "a::b::Name"
-  std::string resolved_stem;           // schema file stem declaring the type
+  std::string resolved_qualified;  // "a.b.Name"
+  std::string resolved_cpp;        // "a::b::Name"
+  std::string resolved_stem;       // schema file stem declaring the type
   bool resolved_is_enum = false;
 };
 
@@ -81,8 +81,8 @@ struct StructDecl {
 struct SchemaFile {
   std::string path;
   std::string stem;
-  std::string ns;                     // dotted
-  std::vector<std::string> imports;   // stems
+  std::string ns;                    // dotted
+  std::vector<std::string> imports;  // stems
   std::vector<EnumDecl> enums;
   std::vector<StructDecl> structs;
 };
@@ -95,7 +95,8 @@ bool is_primitive_name(const std::string& name);
 bool is_integer_primitive(const std::string& name);
 
 // Parses one schema file. On failure returns false with a "file:line: message" in `error`.
-bool parse_schema(const std::string& path, const std::string& text, SchemaFile& out, std::string& error);
+bool parse_schema(const std::string& path, const std::string& text, SchemaFile& out,
+                  std::string& error);
 
 // Resolves named types across all files and validates declarations. Errors are appended.
 bool resolve(Model& model, std::vector<std::string>& errors);

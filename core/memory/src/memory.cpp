@@ -1,7 +1,6 @@
-#include <core/memory/memory.h>
-
 #include <core/base/assert.h>
 #include <core/hash/hash.h>
+#include <core/memory/memory.h>
 
 #include <atomic>
 #include <cstdlib>
@@ -54,7 +53,8 @@ thread_local TagId t_current_tag{};
 // Bounded copy with guaranteed termination; avoids the CRT's deprecated strncpy.
 void copy_name(char* dst, usize dst_size, const char* src) noexcept {
   usize i = 0;
-  for (; i + 1 < dst_size && src[i] != '\0'; ++i) dst[i] = src[i];
+  for (; i + 1 < dst_size && src[i] != '\0'; ++i)
+    dst[i] = src[i];
   dst[i] = '\0';
 }
 
@@ -78,8 +78,7 @@ struct AtomicStats {
     const u64 now = bytes_current.fetch_add(bytes, std::memory_order_relaxed) + bytes;
     allocation_count.fetch_add(1, std::memory_order_relaxed);
     u64 peak = bytes_peak.load(std::memory_order_relaxed);
-    while (now > peak &&
-           !bytes_peak.compare_exchange_weak(peak, now, std::memory_order_relaxed)) {
+    while (now > peak && !bytes_peak.compare_exchange_weak(peak, now, std::memory_order_relaxed)) {
     }
   }
   void record_free(usize bytes) noexcept {
@@ -121,7 +120,8 @@ class Shard {
   void insert(void* p, usize bytes, TagId tag) noexcept {
     if ((count_ + 1) * 4 > capacity_ * 3) grow();
     u32 i = index_of(p);
-    while (entries_[i].ptr != nullptr) i = (i + 1) & mask();
+    while (entries_[i].ptr != nullptr)
+      i = (i + 1) & mask();
     entries_[i] = TrackEntry{p, bytes, tag};
     ++count_;
   }
@@ -169,7 +169,8 @@ class Shard {
     shift_ = static_cast<u8>(64 - std::countr_zero(new_capacity));
     count_ = 0;
     for (u32 i = 0; i < old_capacity; ++i) {
-      if (old_entries[i].ptr != nullptr) insert(old_entries[i].ptr, old_entries[i].bytes, old_entries[i].tag);
+      if (old_entries[i].ptr != nullptr)
+        insert(old_entries[i].ptr, old_entries[i].bytes, old_entries[i].tag);
     }
     backend_free(old_entries);
   }
@@ -243,7 +244,8 @@ u64 allocation_counter() noexcept { return g_allocation_counter.load(std::memory
 // --- allocation -----------------------------------------------------------------------------
 
 void* try_allocate(usize bytes, usize align) noexcept {
-  ENGINE_ASSERT(align != 0 && (align & (align - 1)) == 0, "allocate: alignment must be a power of two");
+  ENGINE_ASSERT(align != 0 && (align & (align - 1)) == 0,
+                "allocate: alignment must be a power of two");
   if (bytes == 0) bytes = 1;
   void* p = backend_allocate(bytes, align);
   if (p == nullptr) return nullptr;

@@ -55,7 +55,10 @@ class Vector {
 
   Vector(const Vector& other) : alloc_(other.alloc_) { assign(other.begin(), other.end()); }
   Vector(Vector&& other) noexcept
-      : data_(other.data_), size_(other.size_), capacity_(other.capacity_), alloc_(std::move(other.alloc_)) {
+      : data_(other.data_),
+        size_(other.size_),
+        capacity_(other.capacity_),
+        alloc_(std::move(other.alloc_)) {
     other.data_ = nullptr;
     other.size_ = 0;
     other.capacity_ = 0;
@@ -178,7 +181,9 @@ class Vector {
   iterator insert(size_type pos, const T& value) { return emplace(pos, value); }
   iterator insert(size_type pos, T&& value) { return emplace(pos, std::move(value)); }
   iterator insert(const_iterator pos, const T& value) { return emplace(index_of(pos), value); }
-  iterator insert(const_iterator pos, T&& value) { return emplace(index_of(pos), std::move(value)); }
+  iterator insert(const_iterator pos, T&& value) {
+    return emplace(index_of(pos), std::move(value));
+  }
 
   iterator erase(const_iterator pos) noexcept { return erase_at(index_of(pos)); }
   iterator erase_at(size_type pos) noexcept {
@@ -192,12 +197,15 @@ class Vector {
     const size_type e = index_of(last);
     ENGINE_ASSERT(b <= e && e <= size_, "Vector::erase: bad range");
     const size_type count = e - b;
-    for (size_type k = b; k + count < size_; ++k) data_[k] = std::move(data_[k + count]);
+    for (size_type k = b; k + count < size_; ++k)
+      data_[k] = std::move(data_[k + count]);
     containers::detail::destroy_n(data_ + (size_ - count), count);
     size_ -= count;
     return data_ + b;
   }
-  iterator erase_unordered(const_iterator pos) noexcept { return erase_unordered_at(index_of(pos)); }
+  iterator erase_unordered(const_iterator pos) noexcept {
+    return erase_unordered_at(index_of(pos));
+  }
   iterator erase_unordered_at(size_type pos) noexcept {
     ENGINE_ASSERT(pos < size_, "Vector::erase_unordered_at: position out of range");
     const size_type last = size_ - 1;
@@ -213,7 +221,8 @@ class Vector {
       containers::detail::destroy_n(data_ + n, size_ - n);
     } else {
       reserve(n);
-      for (size_type i = size_; i < n; ++i) std::construct_at(data_ + i);
+      for (size_type i = size_; i < n; ++i)
+        std::construct_at(data_ + i);
     }
     size_ = n;
   }
@@ -223,7 +232,8 @@ class Vector {
       containers::detail::destroy_n(data_ + n, size_ - n);
     } else {
       reserve(n);
-      for (size_type i = size_; i < n; ++i) std::construct_at(data_ + i, value);
+      for (size_type i = size_; i < n; ++i)
+        std::construct_at(data_ + i, value);
     }
     size_ = n;
   }
@@ -231,23 +241,27 @@ class Vector {
   template <class InputIt>
   void assign(InputIt first, InputIt last) {
     clear();
-    for (; first != last; ++first) emplace_back(*first);
+    for (; first != last; ++first)
+      emplace_back(*first);
   }
   void assign(size_type count, const T& value) {
     check_type();
     clear();
     reserve(count);
-    for (size_type i = 0; i < count; ++i) std::construct_at(data_ + i, value);
+    for (size_type i = 0; i < count; ++i)
+      std::construct_at(data_ + i, value);
     size_ = count;
   }
   template <class InputIt>
   void append(InputIt first, InputIt last) {
-    for (; first != last; ++first) emplace_back(*first);
+    for (; first != last; ++first)
+      emplace_back(*first);
   }
   void append(std::span<const T> items) {
     check_type();
     reserve(static_cast<size_type>(size_ + items.size()));
-    for (const T& item : items) std::construct_at(data_ + size_++, item);
+    for (const T& item : items)
+      std::construct_at(data_ + size_++, item);
   }
 
   // --- comparison -------------------------------------------------------------------------
@@ -262,7 +276,8 @@ class Vector {
 
  private:
   static constexpr void check_type() noexcept {
-    static_assert(std::is_nothrow_move_constructible_v<T>, "Vector: T must be nothrow move constructible");
+    static_assert(std::is_nothrow_move_constructible_v<T>,
+                  "Vector: T must be nothrow move constructible");
   }
 
   size_type index_of(const_iterator pos) const noexcept {

@@ -68,9 +68,7 @@ VkImageAspectFlags aspect_for(VkFormat format) noexcept {
 
 }  // namespace
 
-bool access_writes(Access access) noexcept {
-  return access_info(access).writes;
-}
+bool access_writes(Access access) noexcept { return access_info(access).writes; }
 
 // ---- PassBuilder -----------------------------------------------------------------------------
 
@@ -104,9 +102,7 @@ void PassBuilder::depth_attachment(RgImage image, VkAttachmentLoadOp load, float
 
 RenderGraph::RenderGraph(const Device& device) : device_(&device) {}
 
-RenderGraph::~RenderGraph() {
-  reset();
-}
+RenderGraph::~RenderGraph() { reset(); }
 
 void RenderGraph::reset() noexcept {
   for (BufferNode& b : buffers_) {

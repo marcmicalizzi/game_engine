@@ -36,14 +36,16 @@ TEST_CASE("arena: grows into new chunks and dedicates chunks to large requests")
 
 TEST_CASE("arena: reset keeps chunks and reuses them with no new reservations") {
   mem::Arena arena(512);
-  for (int i = 0; i < 20; ++i) (void)arena.allocate(100, 8);
+  for (int i = 0; i < 20; ++i)
+    (void)arena.allocate(100, 8);
   const usize chunks = arena.chunk_count();
   const usize reserved = arena.bytes_reserved();
   const mem::Stats total_before = mem::total_stats();
   for (int round = 0; round < 5; ++round) {
     arena.reset();
     CHECK(arena.bytes_allocated() == 0);
-    for (int i = 0; i < 20; ++i) (void)arena.allocate(100, 8);
+    for (int i = 0; i < 20; ++i)
+      (void)arena.allocate(100, 8);
   }
   CHECK(arena.chunk_count() == chunks);
   CHECK(arena.bytes_reserved() == reserved);
@@ -55,7 +57,8 @@ TEST_CASE("arena: mark and rewind release later allocations only") {
   auto* a = static_cast<int*>(arena.allocate(sizeof(int), alignof(int)));
   *a = 42;
   const mem::Arena::Mark m = arena.mark();
-  for (int i = 0; i < 50; ++i) (void)arena.allocate(40, 8);  // spans several chunks
+  for (int i = 0; i < 50; ++i)
+    (void)arena.allocate(40, 8);  // spans several chunks
   arena.rewind(m);
   CHECK(*a == 42);
   auto* b = static_cast<int*>(arena.allocate(sizeof(int), alignof(int)));
@@ -91,7 +94,8 @@ TEST_CASE("arena: release returns all memory to the heap") {
   const mem::Stats before = mem::total_stats();
   {
     mem::Arena arena(1024);
-    for (int i = 0; i < 100; ++i) (void)arena.allocate(200, 8);
+    for (int i = 0; i < 100; ++i)
+      (void)arena.allocate(200, 8);
     CHECK(mem::total_stats().bytes_current > before.bytes_current);
   }
   CHECK(mem::total_stats().bytes_current == before.bytes_current);

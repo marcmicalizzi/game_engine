@@ -17,4 +17,5 @@ ENGINE_EXPECT_SIZE(64, 4, Mat4);
 ENGINE_EXPECT_SIZE(40, 4, Transform3);
 ENGINE_EXPECT_SIZE(24, 4, Aabb3);
 
-static_assert(std::is_trivially_copyable_v<Vec3> && std::is_trivially_copyable_v<Mat4> && std::is_trivially_copyable_v<Transform3>);
+static_assert(std::is_trivially_copyable_v<Vec3> && std::is_trivially_copyable_v<Mat4> &&
+              std::is_trivially_copyable_v<Transform3>);

@@ -95,7 +95,8 @@ int main(int argc, char** argv) {
       return 1;
     }
     if (!loaded_stems.insert(file.stem).second) {
-      std::fprintf(stderr, "%s: error: schema stem '%s' loaded twice\n", path.string().c_str(), file.stem.c_str());
+      std::fprintf(stderr, "%s: error: schema stem '%s' loaded twice\n", path.string().c_str(),
+                   file.stem.c_str());
       return 1;
     }
     if (qi < input_count) output_stems.push_back(file.stem);
@@ -107,7 +108,8 @@ int main(int argc, char** argv) {
       }
       if (queued) continue;
       if (schema_root.empty()) {
-        std::fprintf(stderr, "%s: error: import '%s' needs --schema-root\n", path.string().c_str(), imp.c_str());
+        std::fprintf(stderr, "%s: error: import '%s' needs --schema-root\n", path.string().c_str(),
+                     imp.c_str());
         return 1;
       }
       queue.push_back(schema_root / (imp + ".schema"));
@@ -119,7 +121,8 @@ int main(int argc, char** argv) {
   if (!schemac::resolve(model, errors)) {
     for (const std::string& e : errors) {
       const size_t sep = e.find(": ");
-      std::fprintf(stderr, "%s: error: %s\n", e.substr(0, sep).c_str(), sep == std::string::npos ? e.c_str() : e.substr(sep + 2).c_str());
+      std::fprintf(stderr, "%s: error: %s\n", e.substr(0, sep).c_str(),
+                   sep == std::string::npos ? e.c_str() : e.substr(sep + 2).c_str());
     }
     return 1;
   }
@@ -130,10 +133,14 @@ int main(int argc, char** argv) {
       if (s == file.stem) is_output = true;
     }
     if (!is_output) continue;
-    const bool ok = write_if_changed(out_dir / "include" / "schemas" / (file.stem + ".h"), schemac::emit_cpp_header(model, file)) &&
-                    write_if_changed(out_dir / "src" / (file.stem + ".cpp"), schemac::emit_cpp_source(model, file)) &&
-                    write_if_changed(out_dir / "json" / (file.stem + ".schema.json"), schemac::emit_json_schema(model, file)) &&
-                    write_if_changed(out_dir / "docs" / (file.stem + ".md"), schemac::emit_docs(model, file));
+    const bool ok =
+        write_if_changed(out_dir / "include" / "schemas" / (file.stem + ".h"),
+                         schemac::emit_cpp_header(model, file)) &&
+        write_if_changed(out_dir / "src" / (file.stem + ".cpp"),
+                         schemac::emit_cpp_source(model, file)) &&
+        write_if_changed(out_dir / "json" / (file.stem + ".schema.json"),
+                         schemac::emit_json_schema(model, file)) &&
+        write_if_changed(out_dir / "docs" / (file.stem + ".md"), schemac::emit_docs(model, file));
     if (!ok) {
       std::fprintf(stderr, "schemac: failed to write outputs for %s\n", file.stem.c_str());
       return 1;

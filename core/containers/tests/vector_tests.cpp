@@ -35,7 +35,8 @@ TEST_CASE("Vector: basics, growth, and algorithms") {
   Vector<int> v;
   CHECK(v.empty());
   CHECK(v.capacity() == 0);
-  for (int i = 0; i < 100; ++i) v.push_back(i);
+  for (int i = 0; i < 100; ++i)
+    v.push_back(i);
   CHECK(v.size() == 100);
   CHECK(v.capacity() >= 100);
   CHECK(std::accumulate(v.begin(), v.end(), 0) == 4950);
@@ -104,7 +105,8 @@ TEST_CASE("Vector: tracked elements through growth, copy, and move leak nothing"
     CHECK(Tracked::live == 1000);
     copy = std::move(moved);
     CHECK(Tracked::live == 500);
-    for (int i = 0; i < 500; i += 2) copy.erase_at(static_cast<u32>(i / 2));
+    for (int i = 0; i < 500; i += 2)
+      copy.erase_at(static_cast<u32>(i / 2));
     CHECK(copy.size() == 250);
     CHECK(Tracked::live == 250);
     swap(copy, v);

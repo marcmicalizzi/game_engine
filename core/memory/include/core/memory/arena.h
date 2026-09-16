@@ -43,7 +43,8 @@ class Arena {
     requires std::is_trivially_destructible_v<T>
   T* create_array(usize count) {
     T* p = static_cast<T*>(allocate(sizeof(T) * count, alignof(T)));
-    for (usize i = 0; i < count; ++i) std::construct_at(p + i);
+    for (usize i = 0; i < count; ++i)
+      std::construct_at(p + i);
     return p;
   }
 
@@ -67,7 +68,8 @@ class Arena {
     usize used;
   };
   static constexpr usize k_chunk_align = 64;
-  static constexpr usize k_header_bytes = (sizeof(Chunk) + k_chunk_align - 1) & ~(k_chunk_align - 1);
+  static constexpr usize k_header_bytes =
+      (sizeof(Chunk) + k_chunk_align - 1) & ~(k_chunk_align - 1);
 
   static std::byte* data_of(Chunk* c) noexcept;
   Chunk* new_chunk(usize capacity);

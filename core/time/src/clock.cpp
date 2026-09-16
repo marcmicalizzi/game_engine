@@ -8,21 +8,29 @@ namespace engine {
 namespace time {
 
 i64 monotonic_ns() noexcept {
-  return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
 }
 
 i64 wall_unix_ms() noexcept {
-  return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+             std::chrono::system_clock::now().time_since_epoch())
+      .count();
 }
 
 i64 wall_unix_us() noexcept {
-  return std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+  return std::chrono::duration_cast<std::chrono::microseconds>(
+             std::chrono::system_clock::now().time_since_epoch())
+      .count();
 }
 
 }  // namespace time
 
 FixedStepClock::FixedStepClock(u32 hz, u32 max_steps_per_advance) noexcept
-    : hz_(hz == 0 ? 60 : hz), max_steps_(max_steps_per_advance == 0 ? 1 : max_steps_per_advance), step_ns_(1'000'000'000ll / hz_) {}
+    : hz_(hz == 0 ? 60 : hz),
+      max_steps_(max_steps_per_advance == 0 ? 1 : max_steps_per_advance),
+      step_ns_(1'000'000'000ll / hz_) {}
 
 void FixedStepClock::advance(i64 real_ns) noexcept {
   if (real_ns <= 0) return;
@@ -53,7 +61,8 @@ f32 FixedStepClock::interpolation_alpha() const noexcept {
   return static_cast<f32>(static_cast<f64>(accumulator_ns_) / static_cast<f64>(step_ns_));
 }
 
-GameClock::GameClock(const FixedStepClock& sim, f64 game_seconds_per_real_second) noexcept : step_ns_(sim.step_ns()) {
+GameClock::GameClock(const FixedStepClock& sim, f64 game_seconds_per_real_second) noexcept
+    : step_ns_(sim.step_ns()) {
   set_rate(game_seconds_per_real_second);
 }
 

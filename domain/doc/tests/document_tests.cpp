@@ -1,10 +1,9 @@
-#include <domain/doc/document.h>
-
 #include <core/json/json.h>
-#include <schemas/provenance.h>
+#include <domain/doc/document.h>
 
 #include <doctest/doctest.h>
 
+#include <schemas/provenance.h>
 #include <string>
 
 using namespace engine;
@@ -75,8 +74,8 @@ TEST_CASE("doc: layering overrides, tombstones, and their removal") {
   d.set_edit_layer(feature);
   REQUIRE(d.apply(cmd_set(a, "generator", JsonValue("feature-gen")), nullptr, nullptr));
   CHECK(d.property(a, "generator")->as_string() == "feature-gen");  // strongest wins
-  CHECK(d.property(a, "seed")->as_uint() == 1);                       // untouched property shows through
-  CHECK(d.layer(feature).find(a)->type.empty());                     // override-only record
+  CHECK(d.property(a, "seed")->as_uint() == 1);   // untouched property shows through
+  CHECK(d.layer(feature).find(a)->type.empty());  // override-only record
 
   // Clearing the override reveals the base value and prunes the empty record.
   REQUIRE(d.apply(cmd_clear(a, "generator"), nullptr, nullptr));
@@ -120,14 +119,16 @@ TEST_CASE("doc: preconditions fail cleanly with diagnostics and change nothing")
   const Layer snapshot = d.layer(0);
 
   Vector<Diagnostic> diags;
-  CHECK_FALSE(d.apply(cmd_create(a, k_prov), nullptr, &diags));                 // duplicate
-  CHECK_FALSE(d.apply(cmd_create(id_of(22), ""), nullptr, &diags));             // no type
-  CHECK_FALSE(d.apply(cmd_create(id_of(22), k_prov, id_of(99)), nullptr, &diags));  // missing parent
-  CHECK_FALSE(d.apply(cmd_set(id_of(99), "x", JsonValue(i64{1})), nullptr, &diags));  // missing object
-  CHECK_FALSE(d.apply(cmd_set(a, "", JsonValue(i64{1})), nullptr, &diags));    // no name
-  CHECK_FALSE(d.apply(cmd_set_parent(a, b), nullptr, &diags));                 // cycle: b's parent is a
-  CHECK_FALSE(d.apply(cmd_set_parent(a, a), nullptr, &diags));                 // self
-  CHECK_FALSE(d.apply(cmd_delete(id_of(99)), nullptr, &diags));                // missing
+  CHECK_FALSE(d.apply(cmd_create(a, k_prov), nullptr, &diags));      // duplicate
+  CHECK_FALSE(d.apply(cmd_create(id_of(22), ""), nullptr, &diags));  // no type
+  CHECK_FALSE(
+      d.apply(cmd_create(id_of(22), k_prov, id_of(99)), nullptr, &diags));  // missing parent
+  CHECK_FALSE(
+      d.apply(cmd_set(id_of(99), "x", JsonValue(i64{1})), nullptr, &diags));  // missing object
+  CHECK_FALSE(d.apply(cmd_set(a, "", JsonValue(i64{1})), nullptr, &diags));   // no name
+  CHECK_FALSE(d.apply(cmd_set_parent(a, b), nullptr, &diags));   // cycle: b's parent is a
+  CHECK_FALSE(d.apply(cmd_set_parent(a, a), nullptr, &diags));   // self
+  CHECK_FALSE(d.apply(cmd_delete(id_of(99)), nullptr, &diags));  // missing
   CHECK_FALSE(d.apply(cmd_set(ObjectId{}, "x", JsonValue()), nullptr, &diags));  // null id
   CHECK(diags.size() == 9);
   CHECK(diags[0].message == "object already exists");
@@ -257,14 +258,18 @@ TEST_CASE("doc: structural diff transforms one layer into another") {
   }
 
   const Vector<Command> forward = diff_layers(from, to);
-  CHECK(forward.size() == 7);  // set_parent, clear gone, set generator, set license, restore 41, remove 42, restore 43
+  CHECK(
+      forward.size() ==
+      7);  // set_parent, clear gone, set generator, set license, restore 41, remove 42, restore 43
   Document d;
   d.add_layer(Layer(from));
-  for (const Command& c : forward) REQUIRE(d.apply(c, nullptr, nullptr, false));
+  for (const Command& c : forward)
+    REQUIRE(d.apply(c, nullptr, nullptr, false));
   CHECK(d.layer(0) == to);
 
   const Vector<Command> backward = diff_layers(to, from);
-  for (const Command& c : backward) REQUIRE(d.apply(c, nullptr, nullptr, false));
+  for (const Command& c : backward)
+    REQUIRE(d.apply(c, nullptr, nullptr, false));
   CHECK(d.layer(0) == from);
 
   CHECK(diff_layers(from, from).empty());
@@ -337,7 +342,8 @@ TEST_CASE("doc: validation against the schema registry") {
   CHECK(d.validate(diags));
   CHECK(diags.empty());
 
-  // Unknown type, unknown property, wrong value type, transient property, missing parent, dangling override, duplicate definition.
+  // Unknown type, unknown property, wrong value type, transient property, missing parent, dangling
+  // override, duplicate definition.
   REQUIRE(d.apply(cmd_create(bad_type, "engine.nope.Type"), nullptr, nullptr));
   REQUIRE(d.apply(cmd_set(good, "not_a_field", JsonValue(i64{1})), nullptr, nullptr));
   REQUIRE(d.apply(cmd_set(good, "seed", JsonValue("not a number")), nullptr, nullptr));
@@ -348,7 +354,8 @@ TEST_CASE("doc: validation against the schema registry") {
 
   CHECK_FALSE(d.validate(diags));
   std::string joined;
-  for (const Diagnostic& x : diags) joined += x.path + ": " + x.message + "\n";
+  for (const Diagnostic& x : diags)
+    joined += x.path + ": " + x.message + "\n";
   MESSAGE(joined);
   CHECK(joined.find("unknown object type 'engine.nope.Type'") != std::string::npos);
   CHECK(joined.find("/not_a_field: unknown property") != std::string::npos);

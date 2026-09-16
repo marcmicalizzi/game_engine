@@ -216,7 +216,8 @@ class HashMap
 
   template <class InputIt>
   void insert_bulk(InputIt first, InputIt last) {
-    for (; first != last; ++first) insert_or_assign(first->first, first->second);
+    for (; first != last; ++first)
+      insert_or_assign(first->first, first->second);
   }
   template <class Range>
   void insert_bulk(Range&& range) {

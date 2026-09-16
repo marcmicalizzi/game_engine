@@ -72,9 +72,7 @@ void format_rate(f64 per_second, char* buf, usize n) {
   }
 }
 
-void write_line(std::FILE* f, const char* text) {
-  std::fputs(text, f);
-}
+void write_line(std::FILE* f, const char* text) { std::fputs(text, f); }
 
 bool parse_u32(std::string_view text, u32& out) noexcept {
   const auto r = std::from_chars(text.data(), text.data() + text.size(), out);

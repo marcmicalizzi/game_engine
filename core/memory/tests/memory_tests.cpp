@@ -1,6 +1,5 @@
-#include <core/memory/memory.h>
-
 #include <core/memory/allocator.h>
+#include <core/memory/memory.h>
 
 #include <doctest/doctest.h>
 
@@ -118,10 +117,12 @@ TEST_CASE("memory: many concurrent allocations balance to zero") {
           live.pop_back();
         }
       }
-      for (auto [p, bytes] : live) mem::deallocate(p, bytes, 16);
+      for (auto [p, bytes] : live)
+        mem::deallocate(p, bytes, 16);
     });
   }
-  for (auto& th : threads) th.join();
+  for (auto& th : threads)
+    th.join();
 
   CHECK(mem::total_stats().bytes_current == total_before.bytes_current);
   if (mem::tracking_enabled()) {

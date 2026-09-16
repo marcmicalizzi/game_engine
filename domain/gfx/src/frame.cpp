@@ -8,9 +8,7 @@ namespace {
 ENGINE_LOG_CATEGORY_DEFINE(log_frame, "gfx.frame");
 }
 
-FrameContext::~FrameContext() {
-  destroy();
-}
+FrameContext::~FrameContext() { destroy(); }
 
 bool FrameContext::create(const Device& device, u32 frames_in_flight, std::string* error) {
   ENGINE_VERIFY(device_ == nullptr, "FrameContext::create: already created");

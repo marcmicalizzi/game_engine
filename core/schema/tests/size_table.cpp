@@ -6,7 +6,8 @@
 using namespace engine;
 using namespace engine::schema;
 
-ENGINE_EXPECT_SIZE(72, 8, TypeRef);  // kind+count, size, align, type, element, key, three ops pointers
+ENGINE_EXPECT_SIZE(72, 8,
+                   TypeRef);  // kind+count, size, align, type, element, key, three ops pointers
 ENGINE_EXPECT_SIZE(96, 8, FieldInfo);
 ENGINE_EXPECT_SIZE(24, 8, EnumValueInfo);
 ENGINE_EXPECT_SIZE(32, 8, StructOps);

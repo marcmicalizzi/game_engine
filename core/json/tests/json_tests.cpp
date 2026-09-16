@@ -13,7 +13,8 @@ JsonValue parse_ok(std::string_view text) {
   JsonValue v;
   const JsonParseResult r = parse_json(text, v);
   if (!r.ok) {
-    MESSAGE("parse failed at " << r.line << ":" << r.column << ": " << r.message << " in " << std::string(text));
+    MESSAGE("parse failed at " << r.line << ":" << r.column << ": " << r.message << " in "
+                               << std::string(text));
   }
   REQUIRE(r.ok);
   return v;
@@ -74,7 +75,8 @@ TEST_CASE("JsonValue: arrays and objects") {
   CHECK(obj.find("omega") == nullptr);
   // Keys iterate sorted.
   std::string keys;
-  for (auto [k, v] : obj.as_object()) keys += k + ",";
+  for (auto [k, v] : obj.as_object())
+    keys += k + ",";
   CHECK(keys == "alpha,mid,zeta,");
 
   JsonValue copy = obj;
@@ -87,7 +89,8 @@ TEST_CASE("JsonValue: arrays and objects") {
 }
 
 TEST_CASE("parse_json: valid documents") {
-  JsonValue v = parse_ok(R"({"a": [1, 2.5, -3, true, false, null, "s\n\"q\""], "b": {"c": {}}, "d": []})");
+  JsonValue v =
+      parse_ok(R"({"a": [1, 2.5, -3, true, false, null, "s\n\"q\""], "b": {"c": {}}, "d": []})");
   REQUIRE(v.is_object());
   const JsonValue& a = *v.find("a");
   REQUIRE(a.is_array());
@@ -122,10 +125,10 @@ TEST_CASE("parse_json: errors are reported with positions and leave the value nu
     u32 line;
   };
   const Case cases[] = {
-      {"", 1},           {"{", 1},           {"[1,]", 1},         {"{\"a\" 1}", 1},
-      {"tru", 1},        {"01", 1},          {"1.", 1},           {"\"abc", 1},
-      {"\"\\x\"", 1},    {"[1] x", 1},       {"{\n\"a\": }", 2},  {"\"\\ud83d\"", 1},
-      {"\"a\tb\"", 1},   {"-", 1},           {"1e", 1},
+      {"", 1},         {"{", 1},     {"[1,]", 1},        {"{\"a\" 1}", 1},
+      {"tru", 1},      {"01", 1},    {"1.", 1},          {"\"abc", 1},
+      {"\"\\x\"", 1},  {"[1] x", 1}, {"{\n\"a\": }", 2}, {"\"\\ud83d\"", 1},
+      {"\"a\tb\"", 1}, {"-", 1},     {"1e", 1},
   };
   for (const Case& c : cases) {
     JsonValue v(i64{99});
@@ -184,14 +187,17 @@ TEST_CASE("write_json: canonical form is stable and round-trips") {
   CHECK(write_json(back) == pretty);  // idempotent
 
   const std::string compact = write_json(v, JsonWriteOptions{false});
-  CHECK(compact == R"({"alpha":[18446744073709551615,0.1,1.0,-0.0,1e+21,{}],"flag":true,"mid":"tab\tquote\"back\\slash\u0001","none":null,"zeta":-1})");
+  CHECK(
+      compact ==
+      R"({"alpha":[18446744073709551615,0.1,1.0,-0.0,1e+21,{}],"flag":true,"mid":"tab\tquote\"back\\slash\u0001","none":null,"zeta":-1})");
   JsonValue back2;
   REQUIRE(parse_json(compact, back2).ok);
   CHECK(back2 == v);
 }
 
 TEST_CASE("write_json: floats round-trip exactly through shortest representation") {
-  const f64 values[] = {3.14159, 1.0 / 3.0, 123456789.123456789, 5e-324, 1.7976931348623157e308, 100.0, 0.5};
+  const f64 values[] = {3.14159, 1.0 / 3.0, 123456789.123456789, 5e-324, 1.7976931348623157e308,
+                        100.0,   0.5};
   for (f64 d : values) {
     JsonValue v(d);
     JsonValue back;

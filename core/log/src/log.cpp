@@ -304,9 +304,7 @@ bool parse_level(std::string_view text, Level& out) noexcept {
   return true;
 }
 
-Level global_min_level() noexcept {
-  return g_global_min_level.load(std::memory_order_relaxed);
-}
+Level global_min_level() noexcept { return g_global_min_level.load(std::memory_order_relaxed); }
 void set_global_min_level(Level level) noexcept {
   g_global_min_level.store(level, std::memory_order_relaxed);
 }
@@ -536,9 +534,7 @@ void fatal_terminate(std::string_view message, const char* file, u32 line) noexc
   assert_fail("ENGINE_LOG_FATAL", buf, file, static_cast<int>(line));
 }
 
-void install_assert_hook() noexcept {
-  set_assert_hook(&assert_hook);
-}
+void install_assert_hook() noexcept { set_assert_hook(&assert_hook); }
 
 // ---- StreamSink ----------------------------------------------------------------------------
 
@@ -565,9 +561,7 @@ void StreamSink::write(const Record& record) {
   if (record.level >= Level::Error) std::fflush(stream_);
 }
 
-void StreamSink::flush() {
-  std::fflush(stream_);
-}
+void StreamSink::flush() { std::fflush(stream_); }
 
 // ---- RingSink ------------------------------------------------------------------------------
 

@@ -46,9 +46,7 @@ RpcError make_error(i32 code, std::string message, JsonValue data) {
 
 // ---- Dispatcher ------------------------------------------------------------------------------
 
-Dispatcher::Dispatcher(Context context) : context_(context) {
-  context_.dispatcher = this;
-}
+Dispatcher::Dispatcher(Context context) : context_(context) { context_.dispatcher = this; }
 
 void Dispatcher::add(const MethodDesc& method) {
   ENGINE_VERIFY(method.name != nullptr && method.handler != nullptr,

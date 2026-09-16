@@ -52,9 +52,7 @@
 
 namespace engine::profiling {
 
-constexpr bool enabled() noexcept {
-  return ENGINE_PROFILING != 0;
-}
+constexpr bool enabled() noexcept { return ENGINE_PROFILING != 0; }
 
 // True while a profiler client is connected; always false when profiling is compiled out.
 inline bool connected() noexcept {

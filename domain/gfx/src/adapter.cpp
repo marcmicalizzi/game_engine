@@ -165,9 +165,7 @@ std::span<const char* const> extensions_of_interest() noexcept {
   return {k_extensions, sizeof(k_extensions) / sizeof(k_extensions[0])};
 }
 
-bool vulkan_available(std::string* error) {
-  return loader_ready(error);
-}
+bool vulkan_available(std::string* error) { return loader_ready(error); }
 
 bool enumerate_adapters(Vector<AdapterInfo>& out, std::string* error) {
   out.clear();

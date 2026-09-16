@@ -158,7 +158,8 @@ class SlotMap {
   // Invalidates every handle and releases every value; slots are recycled.
   void clear() noexcept {
     containers::detail::destroy_n(values_, size_);
-    for (size_type i = 0; i < size_; ++i) retire_slot(dense_to_slot()[i]);
+    for (size_type i = 0; i < size_; ++i)
+      retire_slot(dense_to_slot()[i]);
     size_ = 0;
   }
 
@@ -168,7 +169,9 @@ class SlotMap {
     return h.index < slot_count_ && (h.generation & 1u) != 0 &&
            slots_[h.index].generation == h.generation;
   }
-  T* get(SlotHandle h) noexcept { return contains(h) ? values_ + slots_[h.index].dense_or_next : nullptr; }
+  T* get(SlotHandle h) noexcept {
+    return contains(h) ? values_ + slots_[h.index].dense_or_next : nullptr;
+  }
   const T* get(SlotHandle h) const noexcept {
     return contains(h) ? values_ + slots_[h.index].dense_or_next : nullptr;
   }
@@ -194,7 +197,8 @@ class SlotMap {
   SlotHandle emplace(Args&&... args) {
     ENGINE_VERIFY(size_ < max_size(), "SlotMap: size overflow");
     if (size_ == dense_capacity_) {
-      reallocate_dense(containers::detail::grow_capacity<size_type>(dense_capacity_, size_ + 1, max_size()));
+      reallocate_dense(
+          containers::detail::grow_capacity<size_type>(dense_capacity_, size_ + 1, max_size()));
     }
     size_type slot;
     if (free_head_ != k_null) {
@@ -202,7 +206,8 @@ class SlotMap {
       free_head_ = slots_[slot].dense_or_next;
     } else {
       if (slot_count_ == slot_capacity_) {
-        reallocate_slots(containers::detail::grow_capacity<size_type>(slot_capacity_, slot_count_ + 1, max_size()));
+        reallocate_slots(containers::detail::grow_capacity<size_type>(slot_capacity_,
+                                                                      slot_count_ + 1, max_size()));
       }
       slot = slot_count_++;
       slots_[slot].generation = 0;
@@ -247,7 +252,8 @@ class SlotMap {
     return containers::detail::max_align(alignof(T), alignof(size_type));
   }
   static constexpr usize slots_offset(size_type capacity) noexcept {
-    return containers::detail::align_up(static_cast<usize>(capacity) * sizeof(T), alignof(size_type));
+    return containers::detail::align_up(static_cast<usize>(capacity) * sizeof(T),
+                                        alignof(size_type));
   }
   static constexpr usize dense_bytes(size_type capacity) noexcept {
     return slots_offset(capacity) + static_cast<usize>(capacity) * sizeof(size_type);
@@ -264,7 +270,7 @@ class SlotMap {
 
   void retire_slot(size_type slot) noexcept {
     Slot& s = slots_[slot];
-    s.generation += 1;                       // odd -> even
+    s.generation += 1;                        // odd -> even
     if (s.generation == 0) s.generation = 2;  // never let a wrapped generation read as null
     s.dense_or_next = free_head_;
     free_head_ = slot;
@@ -273,14 +279,16 @@ class SlotMap {
   void reallocate_dense(size_type new_capacity) {
     T* new_values = static_cast<T*>(alloc_.allocate(dense_bytes(new_capacity), dense_align()));
     containers::detail::relocate_n(values_, size_, new_values);
-    containers::detail::relocate_n(dense_to_slot(), size_, dense_to_slot_at(new_values, new_capacity));
+    containers::detail::relocate_n(dense_to_slot(), size_,
+                                   dense_to_slot_at(new_values, new_capacity));
     alloc_.deallocate(values_, dense_bytes(dense_capacity_), dense_align());
     values_ = new_values;
     dense_capacity_ = new_capacity;
   }
 
   void reallocate_slots(size_type new_capacity) {
-    Slot* new_slots = static_cast<Slot*>(alloc_.allocate(sizeof(Slot) * new_capacity, alignof(Slot)));
+    Slot* new_slots =
+        static_cast<Slot*>(alloc_.allocate(sizeof(Slot) * new_capacity, alignof(Slot)));
     containers::detail::relocate_n(slots_, slot_count_, new_slots);
     alloc_.deallocate(slots_, sizeof(Slot) * slot_capacity_, alignof(Slot));
     slots_ = new_slots;

@@ -1,7 +1,6 @@
-#include <core/platform/topology.h>
-
 #include <core/base/assert.h>
 #include <core/memory/memory.h>
+#include <core/platform/topology.h>
 
 #include <bit>
 #include <cstdio>
@@ -26,7 +25,8 @@ u32 CpuSet::ctz64(u64 v) noexcept { return static_cast<u32>(std::countr_zero(v))
 
 void CpuSet::set(u16 cpu) {
   const u32 w = cpu / 64;
-  while (words_.size() <= w) words_.push_back(0);
+  while (words_.size() <= w)
+    words_.push_back(0);
   words_[w] |= (u64{1} << (cpu % 64));
 }
 
@@ -42,7 +42,8 @@ bool CpuSet::test(u16 cpu) const noexcept {
 
 u16 CpuSet::count() const noexcept {
   u32 n = 0;
-  for (u64 w : words_) n += static_cast<u32>(std::popcount(w));
+  for (u64 w : words_)
+    n += static_cast<u32>(std::popcount(w));
   return static_cast<u16>(n);
 }
 
@@ -86,7 +87,8 @@ void finalize(Topology& t) {
     cpu.cache_domain = 0xFFFF;
     for (const CacheInfo& c : t.caches) {
       if (!c.cpus.test(cpu.id)) continue;
-      if (c.level == 1 && (c.type == CacheType::Data || c.type == CacheType::Unified)) cpu.l1d_bytes = c.size_bytes;
+      if (c.level == 1 && (c.type == CacheType::Data || c.type == CacheType::Unified))
+        cpu.l1d_bytes = c.size_bytes;
       if (c.level == 2 && c.type != CacheType::Instruction) cpu.l2_bytes = c.size_bytes;
       if (c.type != CacheType::Instruction && c.level == max_level) {
         // Find or create the domain for this cache.
@@ -272,8 +274,8 @@ Topology detect_windows() {
         const u16 node = static_cast<u16>(rec->NumaNode.NodeNumber);
         const WORD count = rec->NumaNode.GroupCount == 0 ? 1 : rec->NumaNode.GroupCount;
         for (WORD i = 0; i < count; ++i) {
-          const GROUP_AFFINITY& ga = rec->NumaNode.GroupCount == 0 ? rec->NumaNode.GroupMask
-                                                                    : rec->NumaNode.GroupMasks[i];
+          const GROUP_AFFINITY& ga =
+              rec->NumaNode.GroupCount == 0 ? rec->NumaNode.GroupMask : rec->NumaNode.GroupMasks[i];
           gm.for_each_in(ga, [&](u16 id) { t.cpus[id].numa_node = node; });
         }
         break;
@@ -283,7 +285,8 @@ Topology detect_windows() {
         c.level = rec->Cache.Level;
         c.size_bytes = rec->Cache.CacheSize;
         c.line_bytes = rec->Cache.LineSize;
-        c.associativity = rec->Cache.Associativity == CACHE_FULLY_ASSOCIATIVE ? 0xFFFF : rec->Cache.Associativity;
+        c.associativity =
+            rec->Cache.Associativity == CACHE_FULLY_ASSOCIATIVE ? 0xFFFF : rec->Cache.Associativity;
         switch (rec->Cache.Type) {
           case CacheUnified: c.type = CacheType::Unified; break;
           case CacheInstruction: c.type = CacheType::Instruction; break;
@@ -292,14 +295,14 @@ Topology detect_windows() {
         }
         const WORD count = rec->Cache.GroupCount == 0 ? 1 : rec->Cache.GroupCount;
         for (WORD i = 0; i < count; ++i) {
-          const GROUP_AFFINITY& ga = rec->Cache.GroupCount == 0 ? rec->Cache.GroupMask : rec->Cache.GroupMasks[i];
+          const GROUP_AFFINITY& ga =
+              rec->Cache.GroupCount == 0 ? rec->Cache.GroupMask : rec->Cache.GroupMasks[i];
           gm.for_each_in(ga, [&](u16 id) { c.cpus.set(id); });
         }
         if (!c.cpus.empty()) t.caches.push_back(c);
         break;
       }
-      default:
-        break;
+      default: break;
     }
     p += rec->Size;
   }
@@ -361,7 +364,8 @@ Topology detect_linux() {
     CpuSet online;
     parse_cpu_list(buf, online, [](u16 k) { return k; });  // identity for now
     online.for_each([&](u16 k) {
-      while (kernel_to_id.size() <= k) kernel_to_id.push_back(k_invalid_cpu);
+      while (kernel_to_id.size() <= k)
+        kernel_to_id.push_back(k_invalid_cpu);
       kernel_to_id[k] = static_cast<u16>(t.cpus.size());
       LogicalCpu cpu;
       cpu.id = static_cast<u16>(t.cpus.size());
@@ -375,9 +379,11 @@ Topology detect_linux() {
   SmallVector<long, 64> core_keys;  // (package << 16 | core_id) per engine cpu, for renumbering
   for (LogicalCpu& cpu : t.cpus) {
     char path[256];
-    std::snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%u/topology/core_id", cpu.os_index);
+    std::snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%u/topology/core_id",
+                  cpu.os_index);
     const long core = read_long(path, cpu.os_index);
-    std::snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%u/topology/physical_package_id", cpu.os_index);
+    std::snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%u/topology/physical_package_id",
+                  cpu.os_index);
     const long pkg = read_long(path, 0);
     cpu.package_id = static_cast<u16>(pkg);
     core_keys.push_back((pkg << 16) | core);
@@ -421,18 +427,24 @@ Topology detect_linux() {
   for (const LogicalCpu& cpu : t.cpus) {
     for (u32 idx = 0; idx < 8; ++idx) {
       char path[256];
-      std::snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%u/cache/index%u/level", cpu.os_index, idx);
+      std::snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%u/cache/index%u/level",
+                    cpu.os_index, idx);
       const long level = read_long(path, -1);
       if (level < 0) break;
       CacheInfo c;
       c.level = static_cast<u8>(level);
-      std::snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%u/cache/index%u/type", cpu.os_index, idx);
+      std::snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%u/cache/index%u/type",
+                    cpu.os_index, idx);
       if (read_file(path, buf, sizeof(buf))) {
-        if (std::strncmp(buf, "Data", 4) == 0) c.type = CacheType::Data;
-        else if (std::strncmp(buf, "Instruction", 11) == 0) c.type = CacheType::Instruction;
-        else c.type = CacheType::Unified;
+        if (std::strncmp(buf, "Data", 4) == 0)
+          c.type = CacheType::Data;
+        else if (std::strncmp(buf, "Instruction", 11) == 0)
+          c.type = CacheType::Instruction;
+        else
+          c.type = CacheType::Unified;
       }
-      std::snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%u/cache/index%u/size", cpu.os_index, idx);
+      std::snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%u/cache/index%u/size",
+                    cpu.os_index, idx);
       if (read_file(path, buf, sizeof(buf))) {
         char* end = nullptr;
         long size = std::strtol(buf, &end, 10);
@@ -440,11 +452,17 @@ Topology detect_linux() {
         if (end != nullptr && (*end == 'M' || *end == 'm')) size *= 1024 * 1024;
         c.size_bytes = static_cast<u32>(size);
       }
-      std::snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%u/cache/index%u/coherency_line_size", cpu.os_index, idx);
+      std::snprintf(path, sizeof(path),
+                    "/sys/devices/system/cpu/cpu%u/cache/index%u/coherency_line_size", cpu.os_index,
+                    idx);
       c.line_bytes = static_cast<u16>(read_long(path, 64));
-      std::snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%u/cache/index%u/ways_of_associativity", cpu.os_index, idx);
+      std::snprintf(path, sizeof(path),
+                    "/sys/devices/system/cpu/cpu%u/cache/index%u/ways_of_associativity",
+                    cpu.os_index, idx);
       c.associativity = static_cast<u16>(read_long(path, 0));
-      std::snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%u/cache/index%u/shared_cpu_list", cpu.os_index, idx);
+      std::snprintf(path, sizeof(path),
+                    "/sys/devices/system/cpu/cpu%u/cache/index%u/shared_cpu_list", cpu.os_index,
+                    idx);
       if (read_file(path, buf, sizeof(buf))) parse_cpu_list(buf, c.cpus, id_of);
       if (c.cpus.empty()) c.cpus.set(cpu.id);
       bool duplicate = false;
@@ -465,7 +483,8 @@ Topology detect_linux() {
   SmallVector<long, 64> freqs;
   for (const LogicalCpu& cpu : t.cpus) {
     char path[256];
-    std::snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%u/cpufreq/cpuinfo_max_freq", cpu.os_index);
+    std::snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%u/cpufreq/cpuinfo_max_freq",
+                  cpu.os_index);
     const long f = read_long(path, 0);
     freqs.push_back(f);
     if (f > max_freq) max_freq = f;
@@ -499,13 +518,14 @@ const Topology& topology() {
 
 usize describe_topology(const Topology& topo, char* out, usize capacity) {
   if (capacity == 0) return 0;
-  int n = std::snprintf(out, capacity,
-                        "%u logical CPUs, %u cores%s, %u package(s), %u NUMA node(s), %u cache domain(s), "
-                        "%u efficiency class(es): %u performance / %u efficiency CPUs, %u-byte lines",
-                        topo.cpu_count(), topo.core_count, topo.smt ? " (SMT)" : "", topo.package_count,
-                        topo.numa_node_count, static_cast<u32>(topo.cache_domains.size()),
-                        topo.efficiency_class_count, topo.performance_cpus.count(),
-                        topo.efficiency_cpus.count(), topo.cache_line_bytes);
+  int n = std::snprintf(
+      out, capacity,
+      "%u logical CPUs, %u cores%s, %u package(s), %u NUMA node(s), %u cache domain(s), "
+      "%u efficiency class(es): %u performance / %u efficiency CPUs, %u-byte lines",
+      topo.cpu_count(), topo.core_count, topo.smt ? " (SMT)" : "", topo.package_count,
+      topo.numa_node_count, static_cast<u32>(topo.cache_domains.size()),
+      topo.efficiency_class_count, topo.performance_cpus.count(), topo.efficiency_cpus.count(),
+      topo.cache_line_bytes);
   if (n < 0) {
     out[0] = '\0';
     return 0;
@@ -513,10 +533,12 @@ usize describe_topology(const Topology& topo, char* out, usize capacity) {
   usize written = static_cast<usize>(n) < capacity ? static_cast<usize>(n) : capacity - 1;
   for (const CacheDomain& d : topo.cache_domains) {
     if (written + 1 >= capacity) break;
-    n = std::snprintf(out + written, capacity - written, "\n  domain %u: %u CPUs, LLC %u KB, NUMA %u", d.id,
-                      d.cpus.count(), d.llc_bytes / 1024, d.numa_node);
+    n = std::snprintf(out + written, capacity - written,
+                      "\n  domain %u: %u CPUs, LLC %u KB, NUMA %u", d.id, d.cpus.count(),
+                      d.llc_bytes / 1024, d.numa_node);
     if (n < 0) break;
-    written += static_cast<usize>(n) < capacity - written ? static_cast<usize>(n) : capacity - written - 1;
+    written +=
+        static_cast<usize>(n) < capacity - written ? static_cast<usize>(n) : capacity - written - 1;
   }
   return written;
 }

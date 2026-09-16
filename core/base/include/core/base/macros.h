@@ -56,6 +56,6 @@
 #define ENGINE_CONCAT(a, b) ENGINE_CONCAT_IMPL(a, b)
 
 // Marks a type as non-copyable in one line inside the class body.
-#define ENGINE_NON_COPYABLE(Type)     \
-  Type(const Type&) = delete;         \
+#define ENGINE_NON_COPYABLE(Type) \
+  Type(const Type&) = delete;     \
   Type& operator=(const Type&) = delete

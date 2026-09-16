@@ -191,7 +191,8 @@ class DenseHashTable {
   // Finds the bucket that references dense index `dense` (which must be live).
   u32 bucket_for_dense(SizeType dense) const noexcept {
     u32 b = bucket_of(hasher_(keys_[dense]));
-    while (buckets_[b].dist_and_fingerprint == 0 || buckets_[b].index != dense) b = next_bucket(b);
+    while (buckets_[b].dist_and_fingerprint == 0 || buckets_[b].index != dense)
+      b = next_bucket(b);
     return b;
   }
 
@@ -234,7 +235,8 @@ class DenseHashTable {
 
   void reallocate_dense(SizeType new_capacity) {
     ENGINE_ASSERT(new_capacity >= size_, "hash table: dense capacity too small");
-    Key* new_keys = static_cast<Key*>(alloc_.allocate(dense_block_bytes(new_capacity), block_align()));
+    Key* new_keys =
+        static_cast<Key*>(alloc_.allocate(dense_block_bytes(new_capacity), block_align()));
     relocate_n(keys_, size_, new_keys);
     if constexpr (k_has_value) {
       relocate_n(values_ptr(), size_, values_at(new_keys, new_capacity));
@@ -254,7 +256,8 @@ class DenseHashTable {
     buckets_ = new_buckets;
     bucket_count_ = new_bucket_count;
     shift_ = static_cast<u8>(64 - std::countr_zero(static_cast<usize>(new_bucket_count)));
-    for (SizeType i = 0; i < size_; ++i) place_bucket(hasher_(keys_[i]), i);
+    for (SizeType i = 0; i < size_; ++i)
+      place_bucket(hasher_(keys_[i]), i);
   }
 
   void reserve_impl(SizeType n) {
@@ -295,7 +298,8 @@ class DenseHashTable {
     u32 hole = b;
     u32 next = next_bucket(hole);
     while (buckets_[next].dist_and_fingerprint >= 2 * k_dist_inc) {
-      buckets_[hole] = Bucket{buckets_[next].dist_and_fingerprint - k_dist_inc, buckets_[next].index};
+      buckets_[hole] =
+          Bucket{buckets_[next].dist_and_fingerprint - k_dist_inc, buckets_[next].index};
       hole = next;
       next = next_bucket(hole);
     }
@@ -322,22 +326,26 @@ class DenseHashTable {
       destroy_n(values_ptr(), size_);
     }
     size_ = 0;
-    if (buckets_ != nullptr) std::memset(static_cast<void*>(buckets_), 0, bucket_bytes(bucket_count_));
+    if (buckets_ != nullptr)
+      std::memset(static_cast<void*>(buckets_), 0, bucket_bytes(bucket_count_));
   }
 
   void copy_from(const DenseHashTable& o) {
     if (o.size_ == 0) return;
     keys_ = static_cast<Key*>(alloc_.allocate(dense_block_bytes(o.size_), block_align()));
     dense_capacity_ = o.size_;
-    for (SizeType i = 0; i < o.size_; ++i) std::construct_at(keys_ + i, o.keys_[i]);
+    for (SizeType i = 0; i < o.size_; ++i)
+      std::construct_at(keys_ + i, o.keys_[i]);
     if constexpr (k_has_value) {
       ValueStorage* dst = values_ptr();
       const ValueStorage* src = o.values_ptr();
-      for (SizeType i = 0; i < o.size_; ++i) std::construct_at(dst + i, src[i]);
+      for (SizeType i = 0; i < o.size_; ++i)
+        std::construct_at(dst + i, src[i]);
     }
     size_ = o.size_;
     // Bucket indices refer to dense positions, which are identical, so the array copies verbatim.
-    buckets_ = static_cast<Bucket*>(alloc_.allocate(bucket_bytes(o.bucket_count_), alignof(Bucket)));
+    buckets_ =
+        static_cast<Bucket*>(alloc_.allocate(bucket_bytes(o.bucket_count_), alignof(Bucket)));
     std::memcpy(static_cast<void*>(buckets_), static_cast<const void*>(o.buckets_),
                 bucket_bytes(o.bucket_count_));
     bucket_count_ = o.bucket_count_;

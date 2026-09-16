@@ -65,8 +65,10 @@ TEST_CASE("SlotMap: insert, get, erase, stale detection") {
 TEST_CASE("SlotMap: dense iteration and handle_at agree") {
   SlotMap<int> m;
   std::vector<SlotHandle> handles;
-  for (int k = 0; k < 100; ++k) handles.push_back(m.insert(k));
-  for (int k = 0; k < 100; k += 3) m.erase(handles[static_cast<usize>(k)]);
+  for (int k = 0; k < 100; ++k)
+    handles.push_back(m.insert(k));
+  for (int k = 0; k < 100; k += 3)
+    m.erase(handles[static_cast<usize>(k)]);
   int count = 0;
   for (u32 i = 0; i < m.size(); ++i) {
     const SlotHandle h = m.handle_at(i);
@@ -96,13 +98,16 @@ TEST_CASE("SlotMap: growth, clear, and tracked values leak nothing") {
       handles.push_back(m.emplace(std::to_string(k)));
       REQUIRE(Tracked::live == static_cast<int>(m.size()));
     }
-    for (int k = 0; k < 5000; k += 2) CHECK(m.erase(handles[static_cast<usize>(k)]));
+    for (int k = 0; k < 5000; k += 2)
+      CHECK(m.erase(handles[static_cast<usize>(k)]));
     CHECK(Tracked::live == 2500);
-    for (int k = 1; k < 5000; k += 2) CHECK(m.get(handles[static_cast<usize>(k)])->payload == std::to_string(k));
+    for (int k = 1; k < 5000; k += 2)
+      CHECK(m.get(handles[static_cast<usize>(k)])->payload == std::to_string(k));
     m.clear();
     CHECK(Tracked::live == 0);
     CHECK(m.empty());
-    for (int k = 1; k < 5000; k += 2) CHECK(m.get(handles[static_cast<usize>(k)]) == nullptr);
+    for (int k = 1; k < 5000; k += 2)
+      CHECK(m.get(handles[static_cast<usize>(k)]) == nullptr);
     // Slots are recycled after clear.
     const SlotHandle h = m.emplace("after clear");
     CHECK(h.index < 5000);
@@ -127,6 +132,7 @@ TEST_CASE("SlotMap: reserve") {
   m.reserve(100);
   CHECK(m.capacity() >= 100);
   const auto cap = m.capacity();
-  for (int k = 0; k < 100; ++k) m.insert(k);
+  for (int k = 0; k < 100; ++k)
+    m.insert(k);
   CHECK(m.capacity() == cap);
 }

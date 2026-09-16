@@ -37,9 +37,7 @@ bool Session::persist(RpcError& error) {
   return true;
 }
 
-bool Session::save(RpcError& error) {
-  return persist(error);
-}
+bool Session::save(RpcError& error) { return persist(error); }
 
 bool Session::apply(std::span<const doc::Command> commands, doc::Attribution attribution,
                     bool atomic, ApplyResult& result, RpcError& error) {

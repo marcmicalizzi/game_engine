@@ -1,6 +1,5 @@
-#include <core/memory/arena.h>
-
 #include <core/base/assert.h>
+#include <core/memory/arena.h>
 
 #include <cstddef>
 
@@ -14,7 +13,8 @@ constexpr usize align_up(usize value, usize alignment) noexcept {
 
 }  // namespace
 
-Arena::Arena(usize chunk_bytes) noexcept : chunk_bytes_(chunk_bytes == 0 ? k_default_chunk_bytes : chunk_bytes) {}
+Arena::Arena(usize chunk_bytes) noexcept
+    : chunk_bytes_(chunk_bytes == 0 ? k_default_chunk_bytes : chunk_bytes) {}
 
 Arena::~Arena() { release(); }
 
@@ -61,7 +61,8 @@ Arena::Chunk* Arena::new_chunk(usize capacity) {
 }
 
 void* Arena::allocate(usize bytes, usize align) {
-  ENGINE_ASSERT(align != 0 && (align & (align - 1)) == 0, "Arena::allocate: alignment must be a power of two");
+  ENGINE_ASSERT(align != 0 && (align & (align - 1)) == 0,
+                "Arena::allocate: alignment must be a power of two");
   if (bytes == 0) bytes = 1;
   if (current_ != nullptr) {
     const usize start = align_up(current_->used, align);
@@ -91,7 +92,8 @@ void* Arena::allocate_slow(usize bytes, usize align) {
     // Reuse a chunk retained by reset() or rewind().
     current_ = current_->next;
     current_->used = 0;
-    if (worst_case > current_->capacity) return allocate_slow(bytes, align);  // dedicated chunk too small; skip past it
+    if (worst_case > current_->capacity)
+      return allocate_slow(bytes, align);  // dedicated chunk too small; skip past it
   } else {
     Chunk* c = new_chunk(chunk_bytes_);
     if (current_ == nullptr) {

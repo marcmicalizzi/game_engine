@@ -1,6 +1,5 @@
-#include <core/schema/type_info.h>
-
 #include <core/base/assert.h>
+#include <core/schema/type_info.h>
 
 #include <cstring>
 
@@ -67,7 +66,8 @@ void Registry::add(const TypeInfo& info) {
   const std::string_view name(info.qualified_name);
   const TypeInfo* const* existing = by_name_.find_value(name);
   if (existing != nullptr) {
-    ENGINE_VERIFY(*existing == &info, "schema: two different types registered under the same qualified name");
+    ENGINE_VERIFY(*existing == &info,
+                  "schema: two different types registered under the same qualified name");
     return;
   }
   types_.push_back(&info);
@@ -81,7 +81,8 @@ const TypeInfo* Registry::find(std::string_view qualified_name) const noexcept {
 
 Registrar::Registrar(const TypeInfo* const* types, usize count) {
   Registry& registry = Registry::global();
-  for (usize i = 0; i < count; ++i) registry.add(*types[i]);
+  for (usize i = 0; i < count; ++i)
+    registry.add(*types[i]);
 }
 
 }  // namespace engine::schema

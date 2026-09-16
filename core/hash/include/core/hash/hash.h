@@ -96,7 +96,9 @@ struct Hash<T> {
 
 template <class T>
 struct Hash<T*> {
-  u64 operator()(T* p) const noexcept { return mix64(static_cast<u64>(reinterpret_cast<usize>(p))); }
+  u64 operator()(T* p) const noexcept {
+    return mix64(static_cast<u64>(reinterpret_cast<usize>(p)));
+  }
 };
 
 template <>

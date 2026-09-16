@@ -19,9 +19,7 @@ struct CounterJob {
   std::atomic<u32>* hits;
 };
 
-void hit(void* p) {
-  static_cast<CounterJob*>(p)->hits->fetch_add(1, std::memory_order_relaxed);
-}
+void hit(void* p) { static_cast<CounterJob*>(p)->hits->fetch_add(1, std::memory_order_relaxed); }
 
 }  // namespace
 

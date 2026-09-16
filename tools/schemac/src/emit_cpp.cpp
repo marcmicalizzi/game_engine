@@ -40,7 +40,8 @@ std::string info_symbol(const TypeExpr& t) {
   // a::b::schema_detail::Name_info
   const size_t sep = t.resolved_cpp.rfind("::");
   const std::string ns = sep == std::string::npos ? "" : t.resolved_cpp.substr(0, sep);
-  const std::string name = sep == std::string::npos ? t.resolved_cpp : t.resolved_cpp.substr(sep + 2);
+  const std::string name =
+      sep == std::string::npos ? t.resolved_cpp : t.resolved_cpp.substr(sep + 2);
   return (ns.empty() ? "" : ns + "::") + "schema_detail::" + name + "_info";
 }
 
@@ -50,7 +51,8 @@ void emit_comment(std::ostringstream& out, const std::string& indent, const std:
   size_t start = 0;
   while (start <= doc.size()) {
     const size_t nl = doc.find('\n', start);
-    const std::string line = doc.substr(start, nl == std::string::npos ? std::string::npos : nl - start);
+    const std::string line =
+        doc.substr(start, nl == std::string::npos ? std::string::npos : nl - start);
     out << indent << "// " << line << "\n";
     if (nl == std::string::npos) break;
     start = nl + 1;
@@ -78,7 +80,8 @@ std::string default_initializer(const Field& f) {
 }
 
 // Emits constexpr TypeRef constants for `t` and its element types; returns the outermost name.
-std::string emit_type_ref(std::ostringstream& out, const TypeExpr& t, const std::string& prefix, int& counter) {
+std::string emit_type_ref(std::ostringstream& out, const TypeExpr& t, const std::string& prefix,
+                          int& counter) {
   std::string element_ref, key_ref;
   if (t.element) element_ref = emit_type_ref(out, *t.element, prefix, counter);
   if (t.key) key_ref = emit_type_ref(out, *t.key, prefix, counter);
@@ -86,22 +89,30 @@ std::string emit_type_ref(std::ostringstream& out, const TypeExpr& t, const std:
   const std::string cpp = cpp_type(t);
   out << "constexpr engine::schema::TypeRef " << name << "{\n";
   out << "    .kind = engine::schema::Kind::" << kind_enum(t) << ",\n";
-  out << "    .fixed_count = " << (t.kind == TypeExpr::Kind::FixedArray ? std::to_string(t.count) : "0") << ",\n";
+  out << "    .fixed_count = "
+      << (t.kind == TypeExpr::Kind::FixedArray ? std::to_string(t.count) : "0") << ",\n";
   out << "    .size = sizeof(" << cpp << "),\n";
   out << "    .align = alignof(" << cpp << "),\n";
-  out << "    .type = " << (t.kind == TypeExpr::Kind::Named ? "&" + info_symbol(t) : "nullptr") << ",\n";
+  out << "    .type = " << (t.kind == TypeExpr::Kind::Named ? "&" + info_symbol(t) : "nullptr")
+      << ",\n";
   out << "    .element = " << (element_ref.empty() ? "nullptr" : "&" + element_ref) << ",\n";
   out << "    .key = " << (key_ref.empty() ? "nullptr" : "&" + key_ref) << ",\n";
   out << "    .optional_ops = "
-      << (t.kind == TypeExpr::Kind::Optional ? "&engine::schema::OptionalOpsFor<" + cpp + ">::ops" : "nullptr") << ",\n";
+      << (t.kind == TypeExpr::Kind::Optional ? "&engine::schema::OptionalOpsFor<" + cpp + ">::ops"
+                                             : "nullptr")
+      << ",\n";
   std::string array_ops = "nullptr";
-  if (t.kind == TypeExpr::Kind::Array || (t.kind == TypeExpr::Kind::Primitive && t.name == "bytes")) {
+  if (t.kind == TypeExpr::Kind::Array ||
+      (t.kind == TypeExpr::Kind::Primitive && t.name == "bytes")) {
     array_ops = "&engine::schema::ArrayOpsFor<" + cpp + ">::ops";
   } else if (t.kind == TypeExpr::Kind::FixedArray) {
     array_ops = "&engine::schema::FixedArrayOpsFor<" + cpp + ">::ops";
   }
   out << "    .array_ops = " << array_ops << ",\n";
-  out << "    .map_ops = " << (t.kind == TypeExpr::Kind::Map ? "&engine::schema::MapOpsFor<" + cpp + ">::ops" : "nullptr") << ",\n";
+  out << "    .map_ops = "
+      << (t.kind == TypeExpr::Kind::Map ? "&engine::schema::MapOpsFor<" + cpp + ">::ops"
+                                        : "nullptr")
+      << ",\n";
   out << "};\n";
   return name;
 }
@@ -121,7 +132,8 @@ std::string emit_cpp_header(const Model& model, const SchemaFile& file) {
   out << "#include <core/math/math.h>\n";
   out << "#include <core/schema/type_info.h>\n\n";
   out << "#include <array>\n#include <optional>\n#include <string>\n";
-  for (const std::string& imp : file.imports) out << "#include <schemas/" << imp << ".h>\n";
+  for (const std::string& imp : file.imports)
+    out << "#include <schemas/" << imp << ".h>\n";
   out << "\n";
 
   const std::string ns = ns_to_cpp(file.ns);
@@ -156,19 +168,21 @@ std::string emit_cpp_header(const Model& model, const SchemaFile& file) {
   }
 
   out << "namespace schema_detail {\n";
-  for (const EnumDecl& e : file.enums) out << "extern const engine::schema::TypeInfo " << e.name << "_info;\n";
-  for (const StructDecl& s : file.structs) out << "extern const engine::schema::TypeInfo " << s.name << "_info;\n";
+  for (const EnumDecl& e : file.enums)
+    out << "extern const engine::schema::TypeInfo " << e.name << "_info;\n";
+  for (const StructDecl& s : file.structs)
+    out << "extern const engine::schema::TypeInfo " << s.name << "_info;\n";
   out << "}  // namespace schema_detail\n\n";
   out << "}  // namespace " << ns << "\n\n";
 
   out << "namespace engine::schema {\n";
   for (const EnumDecl& e : file.enums) {
-    out << "template <>\ninline const TypeInfo& type_of<" << ns << "::" << e.name << ">() { return " << ns
-        << "::schema_detail::" << e.name << "_info; }\n";
+    out << "template <>\ninline const TypeInfo& type_of<" << ns << "::" << e.name << ">() { return "
+        << ns << "::schema_detail::" << e.name << "_info; }\n";
   }
   for (const StructDecl& s : file.structs) {
-    out << "template <>\ninline const TypeInfo& type_of<" << ns << "::" << s.name << ">() { return " << ns
-        << "::schema_detail::" << s.name << "_info; }\n";
+    out << "template <>\ninline const TypeInfo& type_of<" << ns << "::" << s.name << ">() { return "
+        << ns << "::schema_detail::" << s.name << "_info; }\n";
   }
   out << "}  // namespace engine::schema\n";
   return out.str();
@@ -192,7 +206,8 @@ std::string emit_cpp_source(const Model& model, const SchemaFile& file) {
   for (const EnumDecl& e : file.enums) {
     out << "constexpr engine::schema::EnumValueInfo " << e.name << "_values[] = {\n";
     for (const EnumValue& v : e.values) {
-      out << "    {\"" << v.name << "\", " << v.value << ", \"" << escape_cpp_string(v.doc) << "\"},\n";
+      out << "    {\"" << v.name << "\", " << v.value << ", \"" << escape_cpp_string(v.doc)
+          << "\"},\n";
     }
     out << "};\n\n";
   }
@@ -200,7 +215,8 @@ std::string emit_cpp_source(const Model& model, const SchemaFile& file) {
   for (const StructDecl& s : file.structs) {
     int counter = 0;
     std::vector<std::string> refs;
-    for (const Field& f : s.fields) refs.push_back(emit_type_ref(out, f.type, s.name + "_" + f.name, counter));
+    for (const Field& f : s.fields)
+      refs.push_back(emit_type_ref(out, f.type, s.name + "_" + f.name, counter));
     out << "\n";
     if (s.fields.empty()) {
       out << "constexpr std::span<const engine::schema::FieldInfo> " << s.name << "_fields{};\n\n";
@@ -211,8 +227,9 @@ std::string emit_cpp_source(const Model& model, const SchemaFile& file) {
         std::string flags = "0";
         if (f.transient) flags += " | engine::schema::FieldFlag::transient";
         if (f.deprecated) flags += " | engine::schema::FieldFlag::deprecated";
-        out << "    {\"" << f.name << "\", " << refs[i] << ", static_cast<engine::u32>(offsetof(" << s.name << ", " << f.name
-            << ")), " << f.since << ", static_cast<engine::u16>(" << flags << "), \"" << escape_cpp_string(f.doc) << "\"},\n";
+        out << "    {\"" << f.name << "\", " << refs[i] << ", static_cast<engine::u32>(offsetof("
+            << s.name << ", " << f.name << ")), " << f.since << ", static_cast<engine::u16>("
+            << flags << "), \"" << escape_cpp_string(f.doc) << "\"},\n";
       }
       out << "};\n\n";
     }
@@ -231,8 +248,10 @@ std::string emit_cpp_source(const Model& model, const SchemaFile& file) {
     out << "    .tag = \"" << escape_cpp_string(e.tag) << "\",\n";
     out << "    .doc = \"" << escape_cpp_string(e.doc) << "\",\n";
     out << "    .fields = {},\n";
-    out << "    .values = std::span<const engine::schema::EnumValueInfo>(" << e.name << "_values),\n";
-    out << "    .enum_underlying = engine::schema::Kind::" << kind_enum_for_primitive_name(e.underlying) << ",\n";
+    out << "    .values = std::span<const engine::schema::EnumValueInfo>(" << e.name
+        << "_values),\n";
+    out << "    .enum_underlying = engine::schema::Kind::"
+        << kind_enum_for_primitive_name(e.underlying) << ",\n";
     out << "    .ops = nullptr,\n";
     out << "};\n\n";
   }
@@ -260,10 +279,13 @@ std::string emit_cpp_source(const Model& model, const SchemaFile& file) {
 
   out << "namespace {\n";
   out << "const engine::schema::TypeInfo* const k_all_types[] = {\n";
-  for (const EnumDecl& e : file.enums) out << "    &" << e.name << "_info,\n";
-  for (const StructDecl& s : file.structs) out << "    &" << s.name << "_info,\n";
+  for (const EnumDecl& e : file.enums)
+    out << "    &" << e.name << "_info,\n";
+  for (const StructDecl& s : file.structs)
+    out << "    &" << s.name << "_info,\n";
   out << "};\n";
-  out << "const engine::schema::Registrar k_registrar(k_all_types, sizeof(k_all_types) / sizeof(k_all_types[0]));\n";
+  out << "const engine::schema::Registrar k_registrar(k_all_types, sizeof(k_all_types) / "
+         "sizeof(k_all_types[0]));\n";
   out << "}  // namespace\n\n";
   out << "}  // namespace " << ns << "::schema_detail\n";
   return out.str();

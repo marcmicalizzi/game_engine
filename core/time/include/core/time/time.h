@@ -61,7 +61,9 @@ struct GameTime {
   static constexpr GameTime from_minutes(i64 v) noexcept { return from_seconds(v * 60); }
   static constexpr GameTime from_hours(i64 v) noexcept { return from_minutes(v * 60); }
   static constexpr GameTime from_days(i64 v) noexcept { return from_hours(v * 24); }
-  static constexpr GameTime from_seconds_f(f64 v) noexcept { return GameTime{static_cast<i64>(v * 1.0e6)}; }
+  static constexpr GameTime from_seconds_f(f64 v) noexcept {
+    return GameTime{static_cast<i64>(v * 1.0e6)};
+  }
 
   constexpr i64 milliseconds() const noexcept { return us / 1000; }
   constexpr i64 whole_seconds() const noexcept { return us / 1'000'000; }

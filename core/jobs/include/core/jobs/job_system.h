@@ -75,7 +75,7 @@ struct JobSystemConfig {
   u32 performance_workers = 0;
   u32 efficiency_workers = 0;
   bool pin_threads = true;
-  u32 queue_capacity = 4096;  // per worker deque and per pool inbox; power of two
+  u32 queue_capacity = 4096;   // per worker deque and per pool inbox; power of two
   u32 spin_iterations = 2000;  // idle spins before a worker sleeps
 };
 
@@ -92,8 +92,8 @@ struct JobSystemStats {
   u64 steals_remote = 0;  // stolen from another cache domain
   u64 inbox_pops = 0;     // taken from a pool inbox by a worker
   u64 sleeps = 0;
-  u64 helper_runs = 0;    // executed by a non-worker thread while it waited (includes inline runs)
-  u64 inline_runs = 0;    // executed by the submitter because every queue was full
+  u64 helper_runs = 0;  // executed by a non-worker thread while it waited (includes inline runs)
+  u64 inline_runs = 0;  // executed by the submitter because every queue was full
 };
 
 class JobSystem {

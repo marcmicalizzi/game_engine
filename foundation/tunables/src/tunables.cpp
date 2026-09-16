@@ -162,12 +162,8 @@ bool Int::set_from_text(std::string_view text, std::string* error) {
   return set_from_json(JsonValue(v), error);
 }
 
-void Int::append_value(std::string& out) const {
-  append_i64(out, get());
-}
-void Int::append_default(std::string& out) const {
-  append_i64(out, default_);
-}
+void Int::append_value(std::string& out) const { append_i64(out, get()); }
+void Int::append_default(std::string& out) const { append_i64(out, default_); }
 
 bool Int::set_from_json(const JsonValue& value, std::string* error) {
   i64 v = 0;
@@ -223,12 +219,8 @@ bool Float::set_from_text(std::string_view text, std::string* error) {
   return set_from_json(JsonValue(v), error);
 }
 
-void Float::append_value(std::string& out) const {
-  append_f64(out, get());
-}
-void Float::append_default(std::string& out) const {
-  append_f64(out, default_);
-}
+void Float::append_value(std::string& out) const { append_f64(out, get()); }
+void Float::append_default(std::string& out) const { append_f64(out, default_); }
 
 bool Float::set_from_json(const JsonValue& value, std::string* error) {
   f64 v = 0;
@@ -284,12 +276,8 @@ bool Bool::set_from_text(std::string_view text, std::string* error) {
   return false;
 }
 
-void Bool::append_value(std::string& out) const {
-  out.append(get() ? "true" : "false");
-}
-void Bool::append_default(std::string& out) const {
-  out.append(default_ ? "true" : "false");
-}
+void Bool::append_value(std::string& out) const { out.append(get() ? "true" : "false"); }
+void Bool::append_default(std::string& out) const { out.append(default_ ? "true" : "false"); }
 
 bool Bool::set_from_json(const JsonValue& value, std::string* error) {
   bool v = false;
@@ -344,12 +332,8 @@ bool EnumBase::set_from_text(std::string_view text, std::string* error) {
   return true;
 }
 
-void EnumBase::append_value(std::string& out) const {
-  out.append(choice_name(index()));
-}
-void EnumBase::append_default(std::string& out) const {
-  out.append(choice_name(default_));
-}
+void EnumBase::append_value(std::string& out) const { out.append(choice_name(index())); }
+void EnumBase::append_default(std::string& out) const { out.append(choice_name(default_)); }
 
 bool EnumBase::set_from_json(const JsonValue& value, std::string* error) {
   std::string_view text;
@@ -390,9 +374,7 @@ usize count() noexcept {
   return g_registry.count;
 }
 
-u64 generation() noexcept {
-  return g_generation.load(std::memory_order_relaxed);
-}
+u64 generation() noexcept { return g_generation.load(std::memory_order_relaxed); }
 
 bool apply_overrides(std::string_view spec, std::string* error) {
   bool ok = true;

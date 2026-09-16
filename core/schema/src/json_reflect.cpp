@@ -1,8 +1,7 @@
-#include <core/schema/json_reflect.h>
-
 #include <core/base/assert.h>
 #include <core/ids/id128.h>
 #include <core/math/math.h>
+#include <core/schema/json_reflect.h>
 
 #include <cmath>
 #include <cstring>
@@ -95,9 +94,11 @@ bool integer_fits(Kind kind, i64 v, u64 uv, bool is_unsigned_source) noexcept {
     case Kind::I8: return !is_unsigned_source ? (v >= -128 && v <= 127) : uv <= 127;
     case Kind::I16: return !is_unsigned_source ? (v >= -32768 && v <= 32767) : uv <= 32767;
     case Kind::I32:
-      return !is_unsigned_source ? (v >= std::numeric_limits<i32>::min() && v <= std::numeric_limits<i32>::max())
-                                 : uv <= static_cast<u64>(std::numeric_limits<i32>::max());
-    case Kind::I64: return !is_unsigned_source || uv <= static_cast<u64>(std::numeric_limits<i64>::max());
+      return !is_unsigned_source
+                 ? (v >= std::numeric_limits<i32>::min() && v <= std::numeric_limits<i32>::max())
+                 : uv <= static_cast<u64>(std::numeric_limits<i32>::max());
+    case Kind::I64:
+      return !is_unsigned_source || uv <= static_cast<u64>(std::numeric_limits<i64>::max());
     default: return false;
   }
 }
@@ -119,7 +120,8 @@ bool write_components(Kind kind, const void* p, JsonValue& out) {
   const usize n = component_count(kind);
   const auto* f = static_cast<const f32*>(p);
   out = JsonValue::array();
-  for (usize i = 0; i < n; ++i) out.push_back(JsonValue(static_cast<f64>(f[i])));
+  for (usize i = 0; i < n; ++i)
+    out.push_back(JsonValue(static_cast<f64>(f[i])));
   return true;
 }
 
@@ -286,7 +288,9 @@ bool to_json(const TypeRef& type, const void* object, JsonValue& out) {
     case Kind::I64: return write_integer(type.kind, object, out);
     case Kind::F32: out = JsonValue(static_cast<f64>(load<f32>(object))); return true;
     case Kind::F64: out = JsonValue(load<f64>(object)); return true;
-    case Kind::String: out = JsonValue(std::string_view(*static_cast<const std::string*>(object))); return true;
+    case Kind::String:
+      out = JsonValue(std::string_view(*static_cast<const std::string*>(object)));
+      return true;
     case Kind::Bytes: {
       const auto& bytes = *static_cast<const Vector<u8>*>(object);
       std::string hex;
@@ -553,7 +557,8 @@ MigrationRegistry& MigrationRegistry::global() {
 
 void MigrationRegistry::add(const Migration& migration) { migrations_.push_back(migration); }
 
-bool MigrationRegistry::migrate(const TypeInfo& type, JsonValue& object, u16 from_version, ReadContext& ctx) const {
+bool MigrationRegistry::migrate(const TypeInfo& type, JsonValue& object, u16 from_version,
+                                ReadContext& ctx) const {
   const std::string_view name(type.qualified_name);
   for (u16 v = from_version; v < type.version; ++v) {
     const Migration* step = nullptr;
@@ -574,12 +579,14 @@ bool MigrationRegistry::migrate(const TypeInfo& type, JsonValue& object, u16 fro
   return true;
 }
 
-bool from_json_versioned(const TypeInfo& type, void* object, JsonValue in, u16 stored_version, ReadContext& ctx) {
+bool from_json_versioned(const TypeInfo& type, void* object, JsonValue in, u16 stored_version,
+                         ReadContext& ctx) {
   if (stored_version > type.version) {
     ctx.error("stored schema version is newer than this build understands");
     return false;
   }
-  if (stored_version < type.version && !MigrationRegistry::global().migrate(type, in, stored_version, ctx)) {
+  if (stored_version < type.version &&
+      !MigrationRegistry::global().migrate(type, in, stored_version, ctx)) {
     return false;
   }
   return from_json(type, object, in, ctx);

@@ -27,15 +27,16 @@ struct JsonParseOptions {
 
 struct JsonParseResult {
   bool ok = false;
-  usize offset = 0;      // byte offset of the error
-  u32 line = 0;          // 1-based
-  u32 column = 0;        // 1-based
+  usize offset = 0;  // byte offset of the error
+  u32 line = 0;      // 1-based
+  u32 column = 0;    // 1-based
   const char* message = "";
 };
 
 // Parses a complete JSON text. Trailing whitespace is allowed; anything else after the value
 // is an error. On failure `out` is left null.
-JsonParseResult parse_json(std::string_view text, JsonValue& out, const JsonParseOptions& options = {});
+JsonParseResult parse_json(std::string_view text, JsonValue& out,
+                           const JsonParseOptions& options = {});
 
 struct JsonWriteOptions {
   bool pretty = true;  // newlines and two-space indentation; false gives the compact form

@@ -20,7 +20,7 @@
 namespace engine::schema {
 
 struct Diagnostic {
-  std::string path;     // "inners[1].name"
+  std::string path;  // "inners[1].name"
   std::string message;
 };
 
@@ -87,7 +87,8 @@ class MigrationRegistry {
 };
 
 // Reads an object stored at an older schema version: migrates the JSON, then maps it.
-bool from_json_versioned(const TypeInfo& type, void* object, JsonValue in, u16 stored_version, ReadContext& ctx);
+bool from_json_versioned(const TypeInfo& type, void* object, JsonValue in, u16 stored_version,
+                         ReadContext& ctx);
 
 template <class T>
 bool from_json_versioned(T& value, JsonValue in, u16 stored_version, ReadContext& ctx) {

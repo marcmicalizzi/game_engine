@@ -349,9 +349,7 @@ std::array<Field, sizeof...(Fields)> fields_of(Fields&&... fields) noexcept {
 // other translation units of the module log to it.
 #define ENGINE_LOG_CATEGORY_DECLARE(ident) extern ::engine::log::Category ident
 #define ENGINE_LOG_CATEGORY_DEFINE(ident, name) \
-  ::engine::log::Category ident {               \
-    name                                        \
-  }
+  ::engine::log::Category ident { name }
 
 // Emits at a compile-time level. `level` must be a constant expression; use log::emit for
 // levels chosen at run time. Field arguments are evaluated only when the record is enabled.

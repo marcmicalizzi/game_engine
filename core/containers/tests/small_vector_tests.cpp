@@ -30,13 +30,15 @@ TEST_CASE("SmallVector: stays inline up to N then moves to the heap") {
   SmallVector<int, 4> v;
   CHECK(v.is_inline());
   CHECK(v.capacity() == 4);
-  for (int i = 0; i < 4; ++i) v.push_back(i);
+  for (int i = 0; i < 4; ++i)
+    v.push_back(i);
   CHECK(v.is_inline());
   CHECK(v.size() == 4);
   v.push_back(4);
   CHECK_FALSE(v.is_inline());
   CHECK(v.capacity() >= 5);
-  for (int i = 0; i < 5; ++i) CHECK(v[static_cast<u32>(i)] == i);
+  for (int i = 0; i < 5; ++i)
+    CHECK(v[static_cast<u32>(i)] == i);
   v.shrink_to_fit();
   CHECK(v.capacity() == 5);
   v.pop_back();
@@ -61,7 +63,8 @@ TEST_CASE("SmallVector: initializer list, iteration, span conversion") {
 
 TEST_CASE("SmallVector: insert and erase preserve order; erase_unordered is O(1)") {
   SmallVector<int, 2> v;
-  for (int i = 0; i < 6; ++i) v.push_back(i);
+  for (int i = 0; i < 6; ++i)
+    v.push_back(i);
   v.insert(2u, 100);
   CHECK(v.size() == 7);
   CHECK(v[2] == 100);
@@ -112,7 +115,8 @@ TEST_CASE("SmallVector: move from inline moves elements; move from heap steals t
     CHECK(Tracked::live == 2);
 
     SmallVector<Tracked, 4> heap_v;
-    for (int i = 0; i < 10; ++i) heap_v.emplace_back(std::to_string(i));
+    for (int i = 0; i < 10; ++i)
+      heap_v.emplace_back(std::to_string(i));
     CHECK_FALSE(heap_v.is_inline());
     const Tracked* data = heap_v.data();
     SmallVector<Tracked, 4> stolen(std::move(heap_v));
@@ -142,10 +146,12 @@ TEST_CASE("SmallVector: growth relocates tracked elements exactly") {
       v.emplace_back(std::to_string(i));
       REQUIRE(Tracked::live == static_cast<int>(v.size()));
     }
-    for (int i = 0; i < 200; i += 2) v.erase_at(static_cast<u32>(i / 2));
+    for (int i = 0; i < 200; i += 2)
+      v.erase_at(static_cast<u32>(i / 2));
     CHECK(v.size() == 100);
     CHECK(Tracked::live == 100);
-    for (u32 i = 0; i < 100; ++i) CHECK(v[i].payload == std::to_string(2 * i + 1));
+    for (u32 i = 0; i < 100; ++i)
+      CHECK(v[i].payload == std::to_string(2 * i + 1));
     v.clear();
     CHECK(Tracked::live == 0);
   }

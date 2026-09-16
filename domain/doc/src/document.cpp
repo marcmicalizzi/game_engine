@@ -1,10 +1,9 @@
-#include <domain/doc/document.h>
-
 #include <core/base/assert.h>
 #include <core/containers/flat_set.h>
 #include <core/json/json.h>
 #include <core/schema/type_info.h>
 #include <core/time/time.h>
+#include <domain/doc/document.h>
 
 #include <memory>
 
@@ -112,7 +111,8 @@ LayerFile Layer::to_file() const {
   file.name = name_;
   file.role = role_;
   file.objects.reserve(records_.size());
-  for (auto [id, record] : records_) file.objects.push_back(record);
+  for (auto [id, record] : records_)
+    file.objects.push_back(record);
   return file;
 }
 
@@ -142,7 +142,9 @@ bool Layer::from_json_text(std::string_view text, Layer& out, schema::ReadContex
 
 // --- Document: layers ---------------------------------------------------------------------------
 
-u32 Document::add_layer(std::string name, LayerRole role) { return add_layer(Layer(std::move(name), role)); }
+u32 Document::add_layer(std::string name, LayerRole role) {
+  return add_layer(Layer(std::move(name), role));
+}
 
 u32 Document::add_layer(Layer&& layer) {
   layers_.push_back(std::move(layer));
@@ -192,7 +194,8 @@ bool Document::resolve(ObjectId id, ResolvedObject& out) const {
     if (r == nullptr) continue;
     if (r->parent.has_value()) out.parent = *r->parent;
     if (r->deleted && i >= defining) out.deleted = true;
-    for (auto [name, value] : r->properties) out.properties.insert_or_assign(std::string_view(name), &value);
+    for (auto [name, value] : r->properties)
+      out.properties.insert_or_assign(std::string_view(name), &value);
   }
   return true;
 }
@@ -259,7 +262,8 @@ void Document::prune(Layer& layer, ObjectId id) noexcept {
 
 // --- Document: mutation -------------------------------------------------------------------------
 
-bool Document::apply(const Command& cmd, Command* inverse, Vector<Diagnostic>* diagnostics, bool strict) {
+bool Document::apply(const Command& cmd, Command* inverse, Vector<Diagnostic>* diagnostics,
+                     bool strict) {
   ENGINE_VERIFY(edit_layer_ < layers_.size(), "Document::apply: no layers");
   Layer& layer = layers_[edit_layer_];
   const std::string& layer_name = layer.name();
@@ -284,14 +288,16 @@ bool Document::apply(const Command& cmd, Command* inverse, Vector<Diagnostic>* d
       if (strict && is_defined(cmd.id)) return fail("object already exists");
       const ObjectId parent = cmd.parent.value_or(ObjectId{});
       if (strict && !parent.is_null() && !exists(parent)) return fail("parent does not exist");
-      if (!cmd.value.is_null() && !cmd.value.is_object()) return fail("initial properties must be an object");
+      if (!cmd.value.is_null() && !cmd.value.is_object())
+        return fail("initial properties must be an object");
       snapshot_inverse();
       ObjectRecord& r = layer.ensure(cmd.id);
       r.type = cmd.type;
       r.parent = parent;
       r.deleted = false;
       if (cmd.value.is_object()) {
-        for (auto [name, value] : cmd.value.as_object()) r.properties.insert_or_assign(name, value);
+        for (auto [name, value] : cmd.value.as_object())
+          r.properties.insert_or_assign(name, value);
       }
       return true;
     }
@@ -353,7 +359,9 @@ bool Document::apply(const Command& cmd, Command* inverse, Vector<Diagnostic>* d
   return fail("unknown command kind");
 }
 
-Transaction Document::begin(Attribution attribution) { return Transaction(*this, std::move(attribution)); }
+Transaction Document::begin(Attribution attribution) {
+  return Transaction(*this, std::move(attribution));
+}
 
 bool Document::undo(const Patch& patch) {
   const i32 idx = find_layer(patch.layer);
@@ -361,7 +369,8 @@ bool Document::undo(const Patch& patch) {
   const u32 previous = edit_layer_;
   edit_layer_ = static_cast<u32>(idx);
   bool ok = true;
-  for (u32 i = patch.inverse.size(); i > 0; --i) ok = apply(patch.inverse[i - 1], nullptr, nullptr, false) && ok;
+  for (u32 i = patch.inverse.size(); i > 0; --i)
+    ok = apply(patch.inverse[i - 1], nullptr, nullptr, false) && ok;
   edit_layer_ = previous;
   return ok;
 }
@@ -372,7 +381,8 @@ bool Document::redo(const Patch& patch) {
   const u32 previous = edit_layer_;
   edit_layer_ = static_cast<u32>(idx);
   bool ok = true;
-  for (const Command& c : patch.forward) ok = apply(c, nullptr, nullptr, false) && ok;
+  for (const Command& c : patch.forward)
+    ok = apply(c, nullptr, nullptr, false) && ok;
   edit_layer_ = previous;
   return ok;
 }
@@ -391,19 +401,22 @@ bool Document::validate(Vector<Diagnostic>& out) const {
       definitions[id] += 1;
       const schema::TypeInfo* info = registry.find(record.type);
       if (info == nullptr || info->kind != schema::Kind::Struct) {
-        out.push_back({describe_path(layer.name(), id), "unknown object type '" + record.type + "'"});
+        out.push_back(
+            {describe_path(layer.name(), id), "unknown object type '" + record.type + "'"});
       }
     }
   }
   for (auto [id, count] : definitions) {
-    if (count > 1) out.push_back({describe_path("*", id), "object is defined in more than one layer"});
+    if (count > 1)
+      out.push_back({describe_path("*", id), "object is defined in more than one layer"});
   }
 
   // Overrides for objects nobody defines.
   for (const Layer& layer : layers_) {
     for (auto [id, record] : layer.records()) {
       if (record.type.empty() && !definitions.contains(id)) {
-        out.push_back({describe_path(layer.name(), id), "override record for an object no layer defines"});
+        out.push_back(
+            {describe_path(layer.name(), id), "override record for an object no layer defines"});
       }
     }
   }
@@ -416,9 +429,11 @@ bool Document::validate(Vector<Diagnostic>& out) const {
 
     if (!r.parent.is_null()) {
       if (!exists(r.parent)) {
-        out.push_back({describe_path(layers_[r.defining_layer].name(), id), "parent does not exist"});
+        out.push_back(
+            {describe_path(layers_[r.defining_layer].name(), id), "parent does not exist"});
       } else if (would_cycle(id, r.parent)) {
-        out.push_back({describe_path(layers_[r.defining_layer].name(), id), "parent chain forms a cycle"});
+        out.push_back(
+            {describe_path(layers_[r.defining_layer].name(), id), "parent chain forms a cycle"});
       }
     }
 
@@ -438,17 +453,21 @@ bool Document::validate(Vector<Diagnostic>& out) const {
       for (auto [name, value] : rec->properties) {
         const schema::FieldInfo* field = info->find_field(name);
         if (field == nullptr) {
-          out.push_back({describe_path(layer.name(), id, name), "unknown property for type '" + std::string(r.type) + "'"});
+          out.push_back({describe_path(layer.name(), id, name),
+                         "unknown property for type '" + std::string(r.type) + "'"});
           continue;
         }
         if ((field->flags & schema::FieldFlag::transient) != 0) {
-          out.push_back({describe_path(layer.name(), id, name), "property is transient and cannot be authored"});
+          out.push_back({describe_path(layer.name(), id, name),
+                         "property is transient and cannot be authored"});
           continue;
         }
         schema::ReadContext ctx;
         if (!schema::from_json(field->type, object + field->offset, value, ctx)) {
           for (const Diagnostic& d : ctx.diagnostics) {
-            out.push_back({describe_path(layer.name(), id, name) + (d.path.empty() ? "" : "." + d.path), d.message});
+            out.push_back(
+                {describe_path(layer.name(), id, name) + (d.path.empty() ? "" : "." + d.path),
+                 d.message});
           }
         }
       }
@@ -493,7 +512,8 @@ void Transaction::rollback() {
   const u32 previous = doc_->edit_layer();
   const i32 idx = doc_->find_layer(patch_.layer);
   if (idx >= 0) doc_->set_edit_layer(static_cast<u32>(idx));
-  for (u32 i = patch_.inverse.size(); i > 0; --i) doc_->apply(patch_.inverse[i - 1], nullptr, nullptr, false);
+  for (u32 i = patch_.inverse.size(); i > 0; --i)
+    doc_->apply(patch_.inverse[i - 1], nullptr, nullptr, false);
   doc_->set_edit_layer(previous);
   patch_.forward.clear();
   patch_.inverse.clear();

@@ -80,7 +80,8 @@ bool Id128::from_hex(std::string_view text, Id128& out) noexcept {
 
 Id128 Id128::generate() noexcept {
   const auto now = std::chrono::system_clock::now().time_since_epoch();
-  const u64 ms = static_cast<u64>(std::chrono::duration_cast<std::chrono::milliseconds>(now).count());
+  const u64 ms =
+      static_cast<u64>(std::chrono::duration_cast<std::chrono::milliseconds>(now).count());
   Id128 id;
   do {
     const u64 r0 = t_rng.next();

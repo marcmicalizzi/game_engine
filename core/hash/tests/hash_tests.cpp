@@ -15,7 +15,8 @@ TEST_CASE("hash: mix64 is a bijection with no fixed point at zero") {
   CHECK(mix64(1) != 1);
   // Adjacent inputs differ in many bits.
   int total_bits = 0;
-  for (u64 i = 1; i < 1000; ++i) total_bits += std::popcount(mix64(i) ^ mix64(i + 1));
+  for (u64 i = 1; i < 1000; ++i)
+    total_bits += std::popcount(mix64(i) ^ mix64(i + 1));
   const double average = static_cast<double>(total_bits) / 999.0;
   CHECK(average > 24.0);
   CHECK(average < 40.0);
@@ -38,7 +39,8 @@ TEST_CASE("hash: hash_bytes is deterministic and sensitive to content and length
     s.push_back(static_cast<char>('a' + (len % 26)));
   }
   for (usize i = 0; i < seen.size(); ++i)
-    for (usize j = i + 1; j < seen.size(); ++j) CHECK(seen[i] != seen[j]);
+    for (usize j = i + 1; j < seen.size(); ++j)
+      CHECK(seen[i] != seen[j]);
 }
 
 TEST_CASE("hash: string-like keys hash identically regardless of representation") {
@@ -68,7 +70,8 @@ TEST_CASE("hash: sequential integer keys spread across buckets") {
   constexpr int k_buckets = 256;
   int counts[k_buckets] = {};
   constexpr int k_n = 65536;
-  for (int i = 0; i < k_n; ++i) ++counts[Hash<int>{}(i) >> 56];
+  for (int i = 0; i < k_n; ++i)
+    ++counts[Hash<int>{}(i) >> 56];
   const int expected = k_n / k_buckets;
   for (int c : counts) {
     CHECK(c > expected / 2);

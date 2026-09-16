@@ -19,9 +19,7 @@ void set_error(std::string* error, const char* what, VkResult result) {
 
 }  // namespace
 
-BindlessSet::~BindlessSet() {
-  destroy();
-}
+BindlessSet::~BindlessSet() { destroy(); }
 
 bool BindlessSet::create(const Device& device, const BindlessConfig& config, std::string* error) {
   ENGINE_VERIFY(device_ == nullptr, "BindlessSet::create: already created");

@@ -75,8 +75,12 @@ struct Vec4 {
   constexpr explicit Vec4(f32 s) : x(s), y(s), z(s), w(s) {}
   constexpr Vec4(Vec3 v, f32 w_) : x(v.x), y(v.y), z(v.z), w(w_) {}
   constexpr bool operator==(const Vec4&) const = default;
-  constexpr f32& operator[](usize i) noexcept { return i == 0 ? x : (i == 1 ? y : (i == 2 ? z : w)); }
-  constexpr f32 operator[](usize i) const noexcept { return i == 0 ? x : (i == 1 ? y : (i == 2 ? z : w)); }
+  constexpr f32& operator[](usize i) noexcept {
+    return i == 0 ? x : (i == 1 ? y : (i == 2 ? z : w));
+  }
+  constexpr f32 operator[](usize i) const noexcept {
+    return i == 0 ? x : (i == 1 ? y : (i == 2 ? z : w));
+  }
   constexpr Vec3 xyz() const noexcept { return {x, y, z}; }
 };
 
@@ -92,14 +96,14 @@ struct Vec3i {
   constexpr auto operator<=>(const Vec3i&) const = default;
 };
 
-#define ENGINE_VEC_OPS(V, ...)                                                        \
-  constexpr V operator+(V a, V b) noexcept { return V{__VA_ARGS__(+)}; }               \
-  constexpr V operator-(V a, V b) noexcept { return V{__VA_ARGS__(-)}; }               \
-  constexpr V operator*(V a, V b) noexcept { return V{__VA_ARGS__(*)}; }               \
-  constexpr V operator/(V a, V b) noexcept { return V{__VA_ARGS__(/)}; }               \
-  constexpr V& operator+=(V& a, V b) noexcept { return a = a + b; }                    \
-  constexpr V& operator-=(V& a, V b) noexcept { return a = a - b; }                    \
-  constexpr V& operator*=(V& a, V b) noexcept { return a = a * b; }                    \
+#define ENGINE_VEC_OPS(V, ...)                                           \
+  constexpr V operator+(V a, V b) noexcept { return V{__VA_ARGS__(+)}; } \
+  constexpr V operator-(V a, V b) noexcept { return V{__VA_ARGS__(-)}; } \
+  constexpr V operator*(V a, V b) noexcept { return V{__VA_ARGS__(*)}; } \
+  constexpr V operator/(V a, V b) noexcept { return V{__VA_ARGS__(/)}; } \
+  constexpr V& operator+=(V& a, V b) noexcept { return a = a + b; }      \
+  constexpr V& operator-=(V& a, V b) noexcept { return a = a - b; }      \
+  constexpr V& operator*=(V& a, V b) noexcept { return a = a * b; }      \
   constexpr V& operator/=(V& a, V b) noexcept { return a = a / b; }
 
 #define ENGINE_VEC2_BODY(op) a.x op b.x, a.y op b.y
@@ -159,14 +163,21 @@ inline Vec4 normalize(Vec4 v) noexcept {
 }
 
 constexpr Vec3 lerp(Vec3 a, Vec3 b, f32 t) noexcept { return a + (b - a) * t; }
-constexpr Vec3 min(Vec3 a, Vec3 b) noexcept { return {a.x < b.x ? a.x : b.x, a.y < b.y ? a.y : b.y, a.z < b.z ? a.z : b.z}; }
-constexpr Vec3 max(Vec3 a, Vec3 b) noexcept { return {a.x > b.x ? a.x : b.x, a.y > b.y ? a.y : b.y, a.z > b.z ? a.z : b.z}; }
-constexpr Vec3 abs(Vec3 v) noexcept { return {v.x < 0 ? -v.x : v.x, v.y < 0 ? -v.y : v.y, v.z < 0 ? -v.z : v.z}; }
+constexpr Vec3 min(Vec3 a, Vec3 b) noexcept {
+  return {a.x < b.x ? a.x : b.x, a.y < b.y ? a.y : b.y, a.z < b.z ? a.z : b.z};
+}
+constexpr Vec3 max(Vec3 a, Vec3 b) noexcept {
+  return {a.x > b.x ? a.x : b.x, a.y > b.y ? a.y : b.y, a.z > b.z ? a.z : b.z};
+}
+constexpr Vec3 abs(Vec3 v) noexcept {
+  return {v.x < 0 ? -v.x : v.x, v.y < 0 ? -v.y : v.y, v.z < 0 ? -v.z : v.z};
+}
 constexpr bool approx_equal(Vec3 a, Vec3 b, f32 eps = 1.0e-5f) noexcept {
   return approx_equal(a.x, b.x, eps) && approx_equal(a.y, b.y, eps) && approx_equal(a.z, b.z, eps);
 }
 constexpr bool approx_equal(Vec4 a, Vec4 b, f32 eps = 1.0e-5f) noexcept {
-  return approx_equal(a.x, b.x, eps) && approx_equal(a.y, b.y, eps) && approx_equal(a.z, b.z, eps) && approx_equal(a.w, b.w, eps);
+  return approx_equal(a.x, b.x, eps) && approx_equal(a.y, b.y, eps) &&
+         approx_equal(a.z, b.z, eps) && approx_equal(a.w, b.w, eps);
 }
 constexpr Vec3 reflect(Vec3 v, Vec3 n) noexcept { return v - n * (2.0f * dot(v, n)); }
 
@@ -192,11 +203,14 @@ inline Quat quat_from_axis_angle(Vec3 axis, f32 angle) noexcept {
 inline Quat quat_from_euler(f32 yaw, f32 pitch, f32 roll) noexcept;
 
 constexpr Quat operator*(Quat a, Quat b) noexcept {
-  return {a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y, a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
-          a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w, a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z};
+  return {
+      a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y, a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+      a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w, a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z};
 }
 constexpr Quat operator*(Quat q, f32 s) noexcept { return {q.x * s, q.y * s, q.z * s, q.w * s}; }
-constexpr Quat operator+(Quat a, Quat b) noexcept { return {a.x + b.x, a.y + b.y, a.z + b.z, a.w + b.w}; }
+constexpr Quat operator+(Quat a, Quat b) noexcept {
+  return {a.x + b.x, a.y + b.y, a.z + b.z, a.w + b.w};
+}
 constexpr Quat operator-(Quat q) noexcept { return {-q.x, -q.y, -q.z, -q.w}; }
 constexpr f32 dot(Quat a, Quat b) noexcept { return a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w; }
 constexpr Quat conjugate(Quat q) noexcept { return {-q.x, -q.y, -q.z, q.w}; }
@@ -236,8 +250,10 @@ inline Quat slerp(Quat a, Quat b, f32 t) noexcept {
 }
 constexpr bool approx_equal(Quat a, Quat b, f32 eps = 1.0e-5f) noexcept {
   // q and -q are the same rotation.
-  const bool same = approx_equal(a.x, b.x, eps) && approx_equal(a.y, b.y, eps) && approx_equal(a.z, b.z, eps) && approx_equal(a.w, b.w, eps);
-  const bool neg = approx_equal(a.x, -b.x, eps) && approx_equal(a.y, -b.y, eps) && approx_equal(a.z, -b.z, eps) && approx_equal(a.w, -b.w, eps);
+  const bool same = approx_equal(a.x, b.x, eps) && approx_equal(a.y, b.y, eps) &&
+                    approx_equal(a.z, b.z, eps) && approx_equal(a.w, b.w, eps);
+  const bool neg = approx_equal(a.x, -b.x, eps) && approx_equal(a.y, -b.y, eps) &&
+                   approx_equal(a.z, -b.z, eps) && approx_equal(a.w, -b.w, eps);
   return same || neg;
 }
 
@@ -264,22 +280,35 @@ struct Mat4 {
   constexpr const f32* data() const noexcept { return &c[0].x; }
 };
 
-constexpr Vec3 operator*(const Mat3& m, Vec3 v) noexcept { return m.c[0] * v.x + m.c[1] * v.y + m.c[2] * v.z; }
-constexpr Mat3 operator*(const Mat3& a, const Mat3& b) noexcept { return {a * b.c[0], a * b.c[1], a * b.c[2]}; }
-constexpr Vec4 operator*(const Mat4& m, Vec4 v) noexcept { return m.c[0] * v.x + m.c[1] * v.y + m.c[2] * v.z + m.c[3] * v.w; }
-constexpr Mat4 operator*(const Mat4& a, const Mat4& b) noexcept { return {a * b.c[0], a * b.c[1], a * b.c[2], a * b.c[3]}; }
+constexpr Vec3 operator*(const Mat3& m, Vec3 v) noexcept {
+  return m.c[0] * v.x + m.c[1] * v.y + m.c[2] * v.z;
+}
+constexpr Mat3 operator*(const Mat3& a, const Mat3& b) noexcept {
+  return {a * b.c[0], a * b.c[1], a * b.c[2]};
+}
+constexpr Vec4 operator*(const Mat4& m, Vec4 v) noexcept {
+  return m.c[0] * v.x + m.c[1] * v.y + m.c[2] * v.z + m.c[3] * v.w;
+}
+constexpr Mat4 operator*(const Mat4& a, const Mat4& b) noexcept {
+  return {a * b.c[0], a * b.c[1], a * b.c[2], a * b.c[3]};
+}
 
 // Transforms a point (w = 1) or a direction (w = 0) by an affine matrix.
 constexpr Vec3 transform_point(const Mat4& m, Vec3 p) noexcept { return (m * Vec4(p, 1.0f)).xyz(); }
-constexpr Vec3 transform_direction(const Mat4& m, Vec3 d) noexcept { return (m * Vec4(d, 0.0f)).xyz(); }
+constexpr Vec3 transform_direction(const Mat4& m, Vec3 d) noexcept {
+  return (m * Vec4(d, 0.0f)).xyz();
+}
 
 constexpr Mat3 transpose(const Mat3& m) noexcept {
-  return {{m.at(0, 0), m.at(0, 1), m.at(0, 2)}, {m.at(1, 0), m.at(1, 1), m.at(1, 2)}, {m.at(2, 0), m.at(2, 1), m.at(2, 2)}};
+  return {{m.at(0, 0), m.at(0, 1), m.at(0, 2)},
+          {m.at(1, 0), m.at(1, 1), m.at(1, 2)},
+          {m.at(2, 0), m.at(2, 1), m.at(2, 2)}};
 }
 constexpr Mat4 transpose(const Mat4& m) noexcept {
   Mat4 r;
   for (usize i = 0; i < 4; ++i)
-    for (usize j = 0; j < 4; ++j) r.at(i, j) = m.at(j, i);
+    for (usize j = 0; j < 4; ++j)
+      r.at(i, j) = m.at(j, i);
   return r;
 }
 
@@ -354,16 +383,20 @@ inline Quat quat_from_mat3(const Mat3& m) noexcept {
   Quat q;
   if (trace > 0.0f) {
     const f32 s = std::sqrt(trace + 1.0f) * 2.0f;
-    q = {(m.at(2, 1) - m.at(1, 2)) / s, (m.at(0, 2) - m.at(2, 0)) / s, (m.at(1, 0) - m.at(0, 1)) / s, 0.25f * s};
+    q = {(m.at(2, 1) - m.at(1, 2)) / s, (m.at(0, 2) - m.at(2, 0)) / s,
+         (m.at(1, 0) - m.at(0, 1)) / s, 0.25f * s};
   } else if (m.at(0, 0) > m.at(1, 1) && m.at(0, 0) > m.at(2, 2)) {
     const f32 s = std::sqrt(1.0f + m.at(0, 0) - m.at(1, 1) - m.at(2, 2)) * 2.0f;
-    q = {0.25f * s, (m.at(0, 1) + m.at(1, 0)) / s, (m.at(0, 2) + m.at(2, 0)) / s, (m.at(2, 1) - m.at(1, 2)) / s};
+    q = {0.25f * s, (m.at(0, 1) + m.at(1, 0)) / s, (m.at(0, 2) + m.at(2, 0)) / s,
+         (m.at(2, 1) - m.at(1, 2)) / s};
   } else if (m.at(1, 1) > m.at(2, 2)) {
     const f32 s = std::sqrt(1.0f + m.at(1, 1) - m.at(0, 0) - m.at(2, 2)) * 2.0f;
-    q = {(m.at(0, 1) + m.at(1, 0)) / s, 0.25f * s, (m.at(1, 2) + m.at(2, 1)) / s, (m.at(0, 2) - m.at(2, 0)) / s};
+    q = {(m.at(0, 1) + m.at(1, 0)) / s, 0.25f * s, (m.at(1, 2) + m.at(2, 1)) / s,
+         (m.at(0, 2) - m.at(2, 0)) / s};
   } else {
     const f32 s = std::sqrt(1.0f + m.at(2, 2) - m.at(0, 0) - m.at(1, 1)) * 2.0f;
-    q = {(m.at(0, 2) + m.at(2, 0)) / s, (m.at(1, 2) + m.at(2, 1)) / s, 0.25f * s, (m.at(1, 0) - m.at(0, 1)) / s};
+    q = {(m.at(0, 2) + m.at(2, 0)) / s, (m.at(1, 2) + m.at(2, 1)) / s, 0.25f * s,
+         (m.at(1, 0) - m.at(0, 1)) / s};
   }
   return normalize(q);
 }
@@ -380,12 +413,16 @@ struct Transform3 {
 
 constexpr Mat4 mat4_from_transform(const Transform3& t) noexcept {
   const Mat3 r = mat3_from_quat(t.rotation);
-  return {Vec4(r.c[0] * t.scale.x, 0), Vec4(r.c[1] * t.scale.y, 0), Vec4(r.c[2] * t.scale.z, 0), Vec4(t.position, 1)};
+  return {Vec4(r.c[0] * t.scale.x, 0), Vec4(r.c[1] * t.scale.y, 0), Vec4(r.c[2] * t.scale.z, 0),
+          Vec4(t.position, 1)};
 }
-constexpr Vec3 transform_point(const Transform3& t, Vec3 p) noexcept { return rotate(t.rotation, p * t.scale) + t.position; }
+constexpr Vec3 transform_point(const Transform3& t, Vec3 p) noexcept {
+  return rotate(t.rotation, p * t.scale) + t.position;
+}
 // Parent-then-child composition: the result applies `child` in `parent`'s space.
 inline Transform3 compose(const Transform3& parent, const Transform3& child) noexcept {
-  return {transform_point(parent, child.position), normalize(parent.rotation * child.rotation), parent.scale * child.scale};
+  return {transform_point(parent, child.position), normalize(parent.rotation * child.rotation),
+          parent.scale * child.scale};
 }
 inline Transform3 inverse(const Transform3& t) noexcept {
   const Quat inv_rot = conjugate(t.rotation);
@@ -401,7 +438,9 @@ struct Aabb3 {
   constexpr bool operator==(const Aabb3&) const = default;
   // An empty box that expands correctly from the first point.
   static constexpr Aabb3 empty() noexcept { return {Vec3(3.4e38f), Vec3(-3.4e38f)}; }
-  constexpr bool is_empty() const noexcept { return min.x > max.x || min.y > max.y || min.z > max.z; }
+  constexpr bool is_empty() const noexcept {
+    return min.x > max.x || min.y > max.y || min.z > max.z;
+  }
   constexpr Vec3 center() const noexcept { return (min + max) * 0.5f; }
   constexpr Vec3 extent() const noexcept { return (max - min) * 0.5f; }
   constexpr Vec3 size() const noexcept { return max - min; }
@@ -415,10 +454,12 @@ struct Aabb3 {
     expand(b.max);
   }
   constexpr bool contains(Vec3 p) const noexcept {
-    return p.x >= min.x && p.x <= max.x && p.y >= min.y && p.y <= max.y && p.z >= min.z && p.z <= max.z;
+    return p.x >= min.x && p.x <= max.x && p.y >= min.y && p.y <= max.y && p.z >= min.z &&
+           p.z <= max.z;
   }
   constexpr bool intersects(const Aabb3& b) const noexcept {
-    return min.x <= b.max.x && max.x >= b.min.x && min.y <= b.max.y && max.y >= b.min.y && min.z <= b.max.z && max.z >= b.min.z;
+    return min.x <= b.max.x && max.x >= b.min.x && min.y <= b.max.y && max.y >= b.min.y &&
+           min.z <= b.max.z && max.z >= b.min.z;
   }
 };
 
@@ -426,7 +467,8 @@ struct Aabb3 {
 constexpr Aabb3 transform_aabb(const Mat4& m, const Aabb3& b) noexcept {
   Aabb3 r = Aabb3::empty();
   for (u32 i = 0; i < 8; ++i) {
-    const Vec3 corner{(i & 1) ? b.max.x : b.min.x, (i & 2) ? b.max.y : b.min.y, (i & 4) ? b.max.z : b.min.z};
+    const Vec3 corner{(i & 1) ? b.max.x : b.min.x, (i & 2) ? b.max.y : b.min.y,
+                      (i & 4) ? b.max.z : b.min.z};
     r.expand(transform_point(m, corner));
   }
   return r;
@@ -475,7 +517,8 @@ inline Mat4 perspective_reversed_z(f32 fov_y, f32 aspect, f32 near, f32 far = 0.
 }
 
 // Orthographic with reversed zero-to-one depth.
-constexpr Mat4 orthographic_reversed_z(f32 left, f32 right, f32 bottom, f32 top, f32 near, f32 far) noexcept {
+constexpr Mat4 orthographic_reversed_z(f32 left, f32 right, f32 bottom, f32 top, f32 near,
+                                       f32 far) noexcept {
   Mat4 m;
   m.at(0, 0) = 2.0f / (right - left);
   m.at(1, 1) = 2.0f / (top - bottom);

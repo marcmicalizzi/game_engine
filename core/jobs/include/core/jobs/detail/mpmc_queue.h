@@ -21,7 +21,8 @@ class MpmcQueue {
 
  public:
   explicit MpmcQueue(u32 capacity) : mask_(capacity - 1) {
-    ENGINE_VERIFY(capacity >= 2 && std::has_single_bit(capacity), "MpmcQueue: capacity must be a power of two");
+    ENGINE_VERIFY(capacity >= 2 && std::has_single_bit(capacity),
+                  "MpmcQueue: capacity must be a power of two");
     cells_ = static_cast<Cell*>(mem::allocate(sizeof(Cell) * capacity, alignof(Cell)));
     for (u32 i = 0; i < capacity; ++i) {
       new (cells_ + i) Cell();
@@ -76,7 +77,8 @@ class MpmcQueue {
 
   // Approximate.
   bool empty_hint() const noexcept {
-    return enqueue_pos_.load(std::memory_order_relaxed) == dequeue_pos_.load(std::memory_order_relaxed);
+    return enqueue_pos_.load(std::memory_order_relaxed) ==
+           dequeue_pos_.load(std::memory_order_relaxed);
   }
 
  private:

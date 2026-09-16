@@ -1,5 +1,4 @@
 #include <core/containers/hash_map.h>
-
 #include <core/memory/arena.h>
 
 #include <doctest/doctest.h>
@@ -99,8 +98,10 @@ TEST_CASE("HashMap: load factor stays under 80% and rehash preserves contents") 
 
 TEST_CASE("HashMap: erase by key keeps every other element reachable") {
   HashMap<int, int> m;
-  for (int k = 0; k < 2000; ++k) m.insert(k, k * 3);
-  for (int k = 0; k < 2000; k += 2) CHECK(m.erase(k) == 1);
+  for (int k = 0; k < 2000; ++k)
+    m.insert(k, k * 3);
+  for (int k = 0; k < 2000; k += 2)
+    CHECK(m.erase(k) == 1);
   CHECK(m.erase(0) == 0);
   CHECK(m.size() == 1000);
   for (int k = 0; k < 2000; ++k) {
@@ -113,31 +114,39 @@ TEST_CASE("HashMap: erase by key keeps every other element reachable") {
     }
   }
   // Re-insert the erased keys; the freed slots and shifted buckets must accept them.
-  for (int k = 0; k < 2000; k += 2) CHECK(m.insert(k, -k).second);
+  for (int k = 0; k < 2000; k += 2)
+    CHECK(m.insert(k, -k).second);
   CHECK(m.size() == 2000);
-  for (int k = 0; k < 2000; k += 2) CHECK(*m.find_value(k) == -k);
+  for (int k = 0; k < 2000; k += 2)
+    CHECK(*m.find_value(k) == -k);
 }
 
 TEST_CASE("HashMap: erase by iterator and erase_at swap in the last element") {
   HashMap<int, int> m;
-  for (int k = 0; k < 10; ++k) m.insert(k, k);
+  for (int k = 0; k < 10; ++k)
+    m.insert(k, k);
   const int last_key = m.key_at(9);
   auto it = m.erase(m.begin());
   CHECK(it.index() == 0);
   CHECK(it->first == last_key);
   CHECK(m.size() == 9);
   // Erase everything through the iterator loop.
-  for (auto pos = m.begin(); pos != m.end();) pos = m.erase(pos);
+  for (auto pos = m.begin(); pos != m.end();)
+    pos = m.erase(pos);
   CHECK(m.empty());
 }
 
 TEST_CASE("HashMap: pathological hash still works") {
   HashMap<int, int, BadHash> m;
-  for (int k = 0; k < 500; ++k) m.insert(k, k);
+  for (int k = 0; k < 500; ++k)
+    m.insert(k, k);
   CHECK(m.size() == 500);
-  for (int k = 0; k < 500; ++k) REQUIRE(m.contains(k));
-  for (int k = 0; k < 500; k += 3) m.erase(k);
-  for (int k = 0; k < 500; ++k) CHECK(m.contains(k) == (k % 3 != 0));
+  for (int k = 0; k < 500; ++k)
+    REQUIRE(m.contains(k));
+  for (int k = 0; k < 500; k += 3)
+    m.erase(k);
+  for (int k = 0; k < 500; ++k)
+    CHECK(m.contains(k) == (k % 3 != 0));
 }
 
 TEST_CASE("HashMap: heterogeneous lookup with string keys") {
@@ -174,7 +183,8 @@ TEST_CASE("HashMap: extract, iteration, spans") {
                     [](const std::string& s) { return s.back() == '!'; }));
   CHECK(m.keys().size() == 2);
   const HashMap<int, std::string>& cm = m;
-  for (auto [k, val] : cm) CHECK(val.size() >= 4);
+  for (auto [k, val] : cm)
+    CHECK(val.size() >= 4);
 }
 
 TEST_CASE("HashMap: growth and erase with tracked values leak nothing") {
@@ -185,9 +195,11 @@ TEST_CASE("HashMap: growth and erase with tracked values leak nothing") {
       m.try_emplace(k, std::to_string(k));
       REQUIRE(Tracked::live == static_cast<int>(m.size()));
     }
-    for (int k = 0; k < 3000; k += 2) m.erase(k);
+    for (int k = 0; k < 3000; k += 2)
+      m.erase(k);
     CHECK(Tracked::live == 1500);
-    for (int k = 1; k < 3000; k += 2) CHECK(m.find_value(k)->payload == std::to_string(k));
+    for (int k = 1; k < 3000; k += 2)
+      CHECK(m.find_value(k)->payload == std::to_string(k));
     m.shrink_to_fit();
     CHECK(m.capacity() == m.size());
     CHECK(Tracked::live == 1500);
@@ -204,7 +216,8 @@ TEST_CASE("HashMap: copy and move semantics") {
   Tracked::live = 0;
   {
     HashMap<int, Tracked> a;
-    for (int k = 0; k < 50; ++k) a.try_emplace(k, std::to_string(k));
+    for (int k = 0; k < 50; ++k)
+      a.try_emplace(k, std::to_string(k));
     HashMap<int, Tracked> b = a;
     CHECK(b == a);
     CHECK(Tracked::live == 100);
@@ -233,7 +246,8 @@ TEST_CASE("HashMap: reserve avoids rehash during fill") {
   const auto buckets = m.bucket_count();
   const auto cap = m.capacity();
   CHECK(cap >= 1000);
-  for (int k = 0; k < 1000; ++k) m.insert(k, k);
+  for (int k = 0; k < 1000; ++k)
+    m.insert(k, k);
   CHECK(m.bucket_count() == buckets);
   CHECK(m.capacity() == cap);
 }
@@ -241,7 +255,8 @@ TEST_CASE("HashMap: reserve avoids rehash during fill") {
 TEST_CASE("HashMap: arena-backed map allocates from the arena") {
   mem::Arena arena;
   HashMap<int, int, Hash<int>, std::equal_to<>, u32, mem::ArenaAlloc> m(mem::ArenaAlloc{&arena});
-  for (int k = 0; k < 500; ++k) m.insert(k, k);
+  for (int k = 0; k < 500; ++k)
+    m.insert(k, k);
   CHECK(m.size() == 500);
   CHECK(arena.bytes_allocated() > 500 * 8);
 }

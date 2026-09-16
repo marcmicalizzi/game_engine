@@ -50,7 +50,8 @@ TEST_CASE("time: FixedStepClock produces exactly one step per step duration") {
   CHECK_FALSE(clock.step());
   clock.advance(clock.step_ns() * 3 + 1000);
   int steps = 0;
-  while (clock.step()) ++steps;
+  while (clock.step())
+    ++steps;
   CHECK(steps == 3);
   CHECK(clock.tick().value == 3);
   CHECK(clock.interpolation_alpha() >= 0.0f);
@@ -69,7 +70,8 @@ TEST_CASE("time: FixedStepClock caps the backlog and counts dropped steps") {
   FixedStepClock clock(100, 4);  // 10 ms steps, at most 4 per advance
   clock.advance(1'000'000'000);  // a one-second stall
   int steps = 0;
-  while (clock.step()) ++steps;
+  while (clock.step())
+    ++steps;
   CHECK(steps == 4);
   CHECK(clock.dropped_steps() == 96);
   clock.reset();
@@ -94,9 +96,10 @@ TEST_CASE("time: time scale slows or pauses the sim without changing the step") 
 
 TEST_CASE("time: GameClock advances by integer microseconds per tick") {
   FixedStepClock sim(60);
-  GameClock game(sim, 60.0);  // one game-minute per real second
+  GameClock game(sim, 60.0);               // one game-minute per real second
   CHECK(game.us_per_tick() == 1'000'000);  // 16.667 ms * 60 = 1 s of game time per tick
-  for (int i = 0; i < 60; ++i) game.advance_tick();
+  for (int i = 0; i < 60; ++i)
+    game.advance_tick();
   CHECK(game.now() == GameTime::from_minutes(1));
   game.jump_by(GameTime::from_hours(8));
   CHECK(game.now() == GameTime::from_minutes(1) + GameTime::from_hours(8));

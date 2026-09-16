@@ -15,7 +15,9 @@ JsonValue::JsonValue(Array&& a) noexcept : kind_(Kind::Array), arr_(std::move(a)
 JsonValue::JsonValue(Object&& o) noexcept : kind_(Kind::Object), obj_(std::move(o)) {}
 
 JsonValue::JsonValue(const JsonValue& other) : kind_(Kind::Null), i_(0) { copy_from(other); }
-JsonValue::JsonValue(JsonValue&& other) noexcept : kind_(Kind::Null), i_(0) { move_from(std::move(other)); }
+JsonValue::JsonValue(JsonValue&& other) noexcept : kind_(Kind::Null), i_(0) {
+  move_from(std::move(other));
+}
 
 JsonValue& JsonValue::operator=(const JsonValue& other) {
   if (this != &other) {
@@ -105,7 +107,8 @@ bool JsonValue::get_u64(u64& out) const noexcept {
       out = static_cast<u64>(i_);
       return true;
     case Kind::Float:
-      if (!std::isfinite(f_) || std::floor(f_) != f_ || f_ < 0.0 || f_ >= 18446744073709551616.0) return false;
+      if (!std::isfinite(f_) || std::floor(f_) != f_ || f_ < 0.0 || f_ >= 18446744073709551616.0)
+        return false;
       out = static_cast<u64>(f_);
       return true;
     default: return false;

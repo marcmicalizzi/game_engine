@@ -396,21 +396,15 @@ void JobSystem::wait(Counter& counter) {
 u32 JobSystem::worker_count(Pool pool) const noexcept {
   return pools_[static_cast<u32>(pool)].workers.size();
 }
-u32 JobSystem::total_worker_count() const noexcept {
-  return worker_total_;
-}
+u32 JobSystem::total_worker_count() const noexcept { return worker_total_; }
 
 const WorkerInfo& JobSystem::worker_info(Pool pool, u32 index) const noexcept {
   ENGINE_ASSERT(index < worker_count(pool), "JobSystem::worker_info: index out of range");
   return pools_[static_cast<u32>(pool)].workers[index]->info;
 }
 
-const WorkerInfo* JobSystem::current_worker() noexcept {
-  return t_current_worker;
-}
-JobSystem* JobSystem::current() noexcept {
-  return t_current_system;
-}
+const WorkerInfo* JobSystem::current_worker() noexcept { return t_current_worker; }
+JobSystem* JobSystem::current() noexcept { return t_current_system; }
 
 JobSystemStats JobSystem::stats() const noexcept {
   JobSystemStats s;

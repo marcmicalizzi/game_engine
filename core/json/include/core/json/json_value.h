@@ -60,7 +60,9 @@ class JsonValue {
   bool is_int() const noexcept { return kind_ == Kind::Int; }
   bool is_uint() const noexcept { return kind_ == Kind::Uint; }
   bool is_float() const noexcept { return kind_ == Kind::Float; }
-  bool is_number() const noexcept { return kind_ == Kind::Int || kind_ == Kind::Uint || kind_ == Kind::Float; }
+  bool is_number() const noexcept {
+    return kind_ == Kind::Int || kind_ == Kind::Uint || kind_ == Kind::Float;
+  }
   bool is_string() const noexcept { return kind_ == Kind::String; }
   bool is_array() const noexcept { return kind_ == Kind::Array; }
   bool is_object() const noexcept { return kind_ == Kind::Object; }
@@ -90,9 +92,9 @@ class JsonValue {
   }
 
   bool get_bool(bool& out) const noexcept;
-  bool get_i64(i64& out) const noexcept;   // Int, or Uint that fits, or Float with integral value
-  bool get_u64(u64& out) const noexcept;   // Uint, or non-negative Int, or Float with integral value
-  bool get_f64(f64& out) const noexcept;   // any number
+  bool get_i64(i64& out) const noexcept;  // Int, or Uint that fits, or Float with integral value
+  bool get_u64(u64& out) const noexcept;  // Uint, or non-negative Int, or Float with integral value
+  bool get_f64(f64& out) const noexcept;  // any number
   bool get_string(std::string_view& out) const noexcept;
 
   // --- container access -------------------------------------------------------------------

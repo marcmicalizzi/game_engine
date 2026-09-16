@@ -9,7 +9,8 @@ namespace {
 
 void write_indent(std::string& out, u32 depth) {
   out.push_back('\n');
-  for (u32 i = 0; i < depth; ++i) out.append("  ");
+  for (u32 i = 0; i < depth; ++i)
+    out.append("  ");
 }
 
 void write_escaped(std::string_view s, std::string& out) {

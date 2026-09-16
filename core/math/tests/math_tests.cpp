@@ -26,7 +26,7 @@ TEST_CASE("math: vector arithmetic, dot, cross, normalize") {
 
 TEST_CASE("math: quaternion rotations") {
   const Quat q = quat_from_axis_angle(Vec3::unit_y(), k_half_pi);  // 90 degrees about +y
-  CHECK(approx_equal(rotate(q, Vec3::unit_x()), Vec3{0, 0, -1}));   // x -> -z (right-handed)
+  CHECK(approx_equal(rotate(q, Vec3::unit_x()), Vec3{0, 0, -1}));  // x -> -z (right-handed)
   CHECK(approx_equal(rotate(q, Vec3::unit_z()), Vec3{1, 0, 0}));
   CHECK(approx_equal(length(q), 1.0f));
   CHECK(approx_equal(q * conjugate(q), Quat::identity()));
@@ -49,7 +49,8 @@ TEST_CASE("math: quaternion rotations") {
   const Quat a = Quat::identity();
   CHECK(approx_equal(slerp(a, q, 0.0f), a));
   CHECK(approx_equal(slerp(a, q, 1.0f), q));
-  CHECK(approx_equal(slerp(a, q, 0.5f), quat_from_axis_angle(Vec3::unit_y(), k_half_pi * 0.5f), 1.0e-4f));
+  CHECK(approx_equal(slerp(a, q, 0.5f), quat_from_axis_angle(Vec3::unit_y(), k_half_pi * 0.5f),
+                     1.0e-4f));
 
   // Euler: yaw alone about +y.
   CHECK(approx_equal(quat_from_euler(k_half_pi, 0, 0), q));
@@ -60,19 +61,22 @@ TEST_CASE("math: matrix products, transpose, inverse") {
   const Mat4 s = scaling({2, 2, 2});
   const Mat4 r = mat4_from_quat(quat_from_axis_angle(Vec3::unit_z(), k_half_pi));
   const Mat4 m = t * r * s;
-  const Vec3 p = transform_point(m, {1, 0, 0});  // scale -> (2,0,0), rotate 90 about z -> (0,2,0), translate
+  const Vec3 p =
+      transform_point(m, {1, 0, 0});  // scale -> (2,0,0), rotate 90 about z -> (0,2,0), translate
   CHECK(approx_equal(p, Vec3{1, 4, 3}));
   CHECK(approx_equal(transform_direction(m, {1, 0, 0}), Vec3{0, 2, 0}));
 
   const Mat4 inv = inverse(m);
   const Mat4 id = m * inv;
   for (usize i = 0; i < 4; ++i)
-    for (usize j = 0; j < 4; ++j) CHECK(approx_equal(id.at(i, j), i == j ? 1.0f : 0.0f, 1.0e-5f));
+    for (usize j = 0; j < 4; ++j)
+      CHECK(approx_equal(id.at(i, j), i == j ? 1.0f : 0.0f, 1.0e-5f));
   CHECK(approx_equal(transform_point(inv, p), Vec3{1, 0, 0}, 1.0e-5f));
   CHECK(transpose(transpose(m)) == m);
   CHECK(inverse(Mat4{Vec4{}, Vec4{}, Vec4{}, Vec4{}}) == Mat4::identity());  // singular -> identity
   static_assert(determinant(Mat3::identity()) == 1.0f);
-  CHECK(approx_equal(determinant(mat3_from_quat(quat_from_axis_angle(Vec3::unit_x(), 0.7f))), 1.0f));
+  CHECK(
+      approx_equal(determinant(mat3_from_quat(quat_from_axis_angle(Vec3::unit_x(), 0.7f))), 1.0f));
 }
 
 TEST_CASE("math: Transform3 composes, inverts, and matches its matrix") {
@@ -111,7 +115,8 @@ TEST_CASE("math: bounds") {
   CHECK_FALSE(b.intersects(Aabb3{{2, 2, 2}, {3, 3, 3}}));
   const Aabb3 moved = transform_aabb(translation({10, 10, 10}), b);
   CHECK(moved.min == Vec3{9, 10, 13});
-  const Aabb3 rotated = transform_aabb(mat4_from_quat(quat_from_axis_angle(Vec3::unit_y(), k_half_pi)), Aabb3{{0, 0, 0}, {1, 2, 3}});
+  const Aabb3 rotated = transform_aabb(
+      mat4_from_quat(quat_from_axis_angle(Vec3::unit_y(), k_half_pi)), Aabb3{{0, 0, 0}, {1, 2, 3}});
   CHECK(approx_equal(rotated.size(), Vec3{3, 2, 1}, 1.0e-5f));
 }
 
@@ -126,9 +131,9 @@ TEST_CASE("math: view and projection conventions") {
     const Vec4 c = proj * Vec4(p, 1.0f);
     return c.xyz() / c.w;
   };
-  CHECK(approx_equal(ndc({0, 0, -0.1f}).z, 1.0f, 1.0e-4f));   // near -> 1
-  CHECK(approx_equal(ndc({0, 0, -100.0f}).z, 0.0f, 1.0e-4f)); // far -> 0
-  CHECK(approx_equal(ndc({1, 0, -1}).x, 1.0f, 1.0e-5f));      // 90 degree fov: x = z at the edge
+  CHECK(approx_equal(ndc({0, 0, -0.1f}).z, 1.0f, 1.0e-4f));    // near -> 1
+  CHECK(approx_equal(ndc({0, 0, -100.0f}).z, 0.0f, 1.0e-4f));  // far -> 0
+  CHECK(approx_equal(ndc({1, 0, -1}).x, 1.0f, 1.0e-5f));       // 90 degree fov: x = z at the edge
   const Mat4 infinite = perspective_reversed_z(radians(60.0f), 16.0f / 9.0f, 0.5f);
   const Vec4 c = infinite * Vec4(0, 0, -1.0e6f, 1);
   CHECK(c.z / c.w >= 0.0f);

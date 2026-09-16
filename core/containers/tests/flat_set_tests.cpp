@@ -47,7 +47,8 @@ TEST_CASE("FlatSet: empty set behaves") {
 
 TEST_CASE("FlatSet: insert keeps keys sorted and unique") {
   FlatSet<int> s;
-  for (int k : {5, 1, 9, 3, 7, 1, 5, 2, 8, 0, 6, 4}) s.insert(k);
+  for (int k : {5, 1, 9, 3, 7, 1, 5, 2, 8, 0, 6, 4})
+    s.insert(k);
   CHECK(s.size() == 10);
   CHECK(std::is_sorted(s.begin(), s.end()));
   for (int k = 0; k < 10; ++k) {
@@ -63,7 +64,8 @@ TEST_CASE("FlatSet: insert keeps keys sorted and unique") {
 
 TEST_CASE("FlatSet: iterators are plain pointers usable with standard algorithms") {
   FlatSet<int> s;
-  for (int k : {4, 2, 8, 6}) s.insert(k);
+  for (int k : {4, 2, 8, 6})
+    s.insert(k);
   CHECK(std::count_if(s.begin(), s.end(), [](int k) { return k > 3; }) == 3);
   CHECK(std::binary_search(s.begin(), s.end(), 6));
   static_assert(std::is_same_v<FlatSet<int>::iterator, const int*>);
@@ -82,7 +84,8 @@ TEST_CASE("FlatSet: heterogeneous lookup") {
 
 TEST_CASE("FlatSet: erase and extract") {
   FlatSet<int> s;
-  for (int k = 0; k < 10; ++k) s.insert(k);
+  for (int k = 0; k < 10; ++k)
+    s.insert(k);
   CHECK(s.erase(5) == 1);
   auto it = s.erase(s.find(0));
   CHECK(*it == 1);
@@ -106,7 +109,8 @@ TEST_CASE("FlatSet: growth with non-trivial keys leaks nothing") {
     }
     CHECK(s.size() == 150);
     CHECK(std::is_sorted(s.begin(), s.end()));
-    for (int k = 0; k < 150; k += 2) s.erase(Tracked(std::to_string(k)));
+    for (int k = 0; k < 150; k += 2)
+      s.erase(Tracked(std::to_string(k)));
     CHECK(Tracked::live == static_cast<int>(s.size()));
     FlatSet<Tracked> copy = s;
     CHECK(copy == s);
@@ -119,13 +123,15 @@ TEST_CASE("FlatSet: growth with non-trivial keys leaks nothing") {
 
 TEST_CASE("FlatSet: append_sorted and insert_bulk") {
   FlatSet<int> s;
-  for (int k = 0; k < 10; ++k) s.append_sorted(k * 3);
+  for (int k = 0; k < 10; ++k)
+    s.append_sorted(k * 3);
   CHECK(s.size() == 10);
   std::vector<int> batch = {4, 3, 3, 30, 0, 7, 7, 7, 100};
   s.insert_bulk(batch);
   CHECK(std::is_sorted(s.begin(), s.end()));
   CHECK(std::adjacent_find(s.begin(), s.end()) == s.end());
-  CHECK(s.size() == 14);  // 0,3,6,...,27 (10) plus the new keys 4, 7, 30, 100; 0 and 3 already present
+  CHECK(s.size() ==
+        14);  // 0,3,6,...,27 (10) plus the new keys 4, 7, 30, 100; 0 and 3 already present
   CHECK(s.contains(100));
   CHECK(s.contains(4));
 }

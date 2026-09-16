@@ -1,6 +1,5 @@
-#include <core/platform/topology.h>
-
 #include <core/platform/thread.h>
+#include <core/platform/topology.h>
 
 #include <doctest/doctest.h>
 

@@ -150,7 +150,8 @@ TEST_CASE("FlatMap: heterogeneous lookup with string keys and string_view querie
 
 TEST_CASE("FlatMap: erase by key, by iterator, and by index") {
   FlatMap<int, int> m;
-  for (int k = 0; k < 10; ++k) m.insert(k, k);
+  for (int k = 0; k < 10; ++k)
+    m.insert(k, k);
 
   CHECK(m.erase(5) == 1);
   CHECK(m.erase(5) == 0);
@@ -167,7 +168,8 @@ TEST_CASE("FlatMap: erase by key, by iterator, and by index") {
   check_sorted_invariant(m);
 
   // Erase the rest through the iterator loop.
-  for (auto pos = m.begin(); pos != m.end();) pos = m.erase(pos);
+  for (auto pos = m.begin(); pos != m.end();)
+    pos = m.erase(pos);
   CHECK(m.empty());
 }
 
@@ -185,7 +187,8 @@ TEST_CASE("FlatMap: extract moves the value out and removes the entry") {
 
 TEST_CASE("FlatMap: iteration is in key order and supports structured bindings") {
   FlatMap<int, int> m;
-  for (int k : {3, 1, 2}) m.insert(k, k * 100);
+  for (int k : {3, 1, 2})
+    m.insert(k, k * 100);
   std::vector<int> seen;
   for (auto [k, v] : m) {
     seen.push_back(k);
@@ -197,7 +200,8 @@ TEST_CASE("FlatMap: iteration is in key order and supports structured bindings")
 
   const FlatMap<int, int>& cm = m;
   int sum = 0;
-  for (auto [k, v] : cm) sum += k + v;
+  for (auto [k, v] : cm)
+    sum += k + v;
   CHECK(sum == 1 + 101 + 2 + 201 + 3 + 301);
 
   // Random access and iterator arithmetic.
@@ -213,7 +217,8 @@ TEST_CASE("FlatMap: iteration is in key order and supports structured bindings")
 
 TEST_CASE("FlatMap: lower_bound and upper_bound") {
   FlatMap<int, int> m;
-  for (int k : {10, 20, 30}) m.insert(k, k);
+  for (int k : {10, 20, 30})
+    m.insert(k, k);
   CHECK(m.lower_bound(20)->first == 20);
   CHECK(m.upper_bound(20)->first == 30);
   CHECK(m.lower_bound(25)->first == 30);
@@ -239,7 +244,8 @@ TEST_CASE("FlatMap: growth relocates non-trivial elements exactly and leaks noth
       CHECK(m.find_value(k)->payload == std::to_string(k));
     }
     // Erase every third from the middle outward.
-    for (int k = 0; k < 200; k += 3) m.erase(k);
+    for (int k = 0; k < 200; k += 3)
+      m.erase(k);
     CHECK(Tracked::live == static_cast<int>(m.size()));
     check_sorted_invariant(m);
     m.shrink_to_fit();
@@ -253,7 +259,8 @@ TEST_CASE("FlatMap: copy and move semantics") {
   Tracked::live = 0;
   {
     FlatMap<int, Tracked> a;
-    for (int k = 0; k < 20; ++k) a.try_emplace(k, std::to_string(k));
+    for (int k = 0; k < 20; ++k)
+      a.try_emplace(k, std::to_string(k));
 
     FlatMap<int, Tracked> b = a;  // copy
     CHECK(b == a);
@@ -288,7 +295,8 @@ TEST_CASE("FlatMap: reserve avoids reallocation and clear keeps capacity") {
   m.reserve(100);
   CHECK(m.capacity() >= 100);
   const auto cap = m.capacity();
-  for (int k = 0; k < 100; ++k) m.insert(k, k);
+  for (int k = 0; k < 100; ++k)
+    m.insert(k, k);
   CHECK(m.capacity() == cap);
   m.clear();
   CHECK(m.empty());
@@ -299,7 +307,8 @@ TEST_CASE("FlatMap: reserve avoids reallocation and clear keeps capacity") {
 
 TEST_CASE("FlatMap: append_sorted builds from sorted input without searching") {
   FlatMap<int, int> m;
-  for (int k = 0; k < 50; ++k) m.append_sorted(k * 2, k);
+  for (int k = 0; k < 50; ++k)
+    m.append_sorted(k * 2, k);
   CHECK(m.size() == 50);
   check_sorted_invariant(m);
   CHECK(*m.find_value(98) == 49);
@@ -310,8 +319,8 @@ TEST_CASE("FlatMap: insert_bulk sorts, dedupes with last-wins, and overrides exi
   m.insert(5, "existing-five");
   m.insert(100, "existing-hundred");
 
-  std::vector<std::pair<int, std::string>> batch = {
-      {3, "three"}, {1, "one"}, {5, "five-a"}, {2, "two"}, {5, "five-b"}, {1, "one-late"}};
+  std::vector<std::pair<int, std::string>> batch = {{3, "three"}, {1, "one"},    {5, "five-a"},
+                                                    {2, "two"},   {5, "five-b"}, {1, "one-late"}};
   m.insert_bulk(batch);
 
   CHECK(m.size() == 5);
@@ -333,7 +342,8 @@ TEST_CASE("FlatMap: insert_bulk with tracked values leaks nothing") {
   {
     FlatMap<int, Tracked> m;
     std::vector<std::pair<int, Tracked>> batch;
-    for (int k = 0; k < 100; ++k) batch.emplace_back(k % 40, Tracked(std::to_string(k)));
+    for (int k = 0; k < 100; ++k)
+      batch.emplace_back(k % 40, Tracked(std::to_string(k)));
     m.insert_bulk(batch);
     CHECK(m.size() == 40);
     CHECK(Tracked::live == 40 + static_cast<int>(batch.size()));
@@ -385,7 +395,8 @@ TEST_CASE("FlatMap: randomized operations agree with std::map") {
 
 TEST_CASE("FlatMap: custom comparator and 64-bit size type") {
   FlatMap<int, int, std::greater<>> desc;
-  for (int k : {1, 3, 2}) desc.insert(k, k);
+  for (int k : {1, 3, 2})
+    desc.insert(k, k);
   CHECK(desc.key_at(0) == 3);
   CHECK(desc.key_at(2) == 1);
   CHECK(desc.contains(2));

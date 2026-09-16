@@ -1,6 +1,5 @@
-#include <core/ids/id128.h>
-
 #include <core/containers/hash_set.h>
+#include <core/ids/id128.h>
 
 #include <doctest/doctest.h>
 
@@ -30,8 +29,9 @@ TEST_CASE("Id128: null, ordering, hex round trip") {
 }
 
 TEST_CASE("Id128: generated ids are unique, non-null, and time-ordered") {
-  const u64 before = static_cast<u64>(
-      std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+  const u64 before = static_cast<u64>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                          std::chrono::system_clock::now().time_since_epoch())
+                                          .count());
   HashSet<Id128> seen;
   Id128 previous;
   for (int i = 0; i < 100000; ++i) {
@@ -50,13 +50,16 @@ TEST_CASE("Id128: generation from several threads never collides") {
   for (int t = 0; t < 8; ++t) {
     threads.emplace_back([&per_thread, t] {
       per_thread[static_cast<usize>(t)].reserve(20000);
-      for (int i = 0; i < 20000; ++i) per_thread[static_cast<usize>(t)].push_back(Id128::generate());
+      for (int i = 0; i < 20000; ++i)
+        per_thread[static_cast<usize>(t)].push_back(Id128::generate());
     });
   }
-  for (auto& th : threads) th.join();
+  for (auto& th : threads)
+    th.join();
   HashSet<Id128> seen;
   for (const auto& ids : per_thread) {
-    for (const Id128& id : ids) CHECK(seen.insert(id).second);
+    for (const Id128& id : ids)
+      CHECK(seen.insert(id).second);
   }
   CHECK(seen.size() == 160000);
 }
@@ -85,7 +88,8 @@ TEST_CASE("Id128: deterministic generators repeat exactly and differ by seed") {
 TEST_CASE("Id128: hashes are well distributed") {
   IdGenerator g(99);
   int buckets[64] = {};
-  for (int i = 0; i < 64000; ++i) ++buckets[Hash<Id128>{}(g.next()) >> 58];
+  for (int i = 0; i < 64000; ++i)
+    ++buckets[Hash<Id128>{}(g.next()) >> 58];
   for (int c : buckets) {
     CHECK(c > 500);
     CHECK(c < 1500);

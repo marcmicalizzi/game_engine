@@ -26,30 +26,41 @@ std::string type_schema(const TypeExpr& t, const SchemaFile& file) {
       if (t.name == "bytes") return "{\"type\": \"string\", \"pattern\": \"^([0-9a-fA-F]{2})*$\"}";
       if (t.name == "id128") return "{\"type\": \"string\", \"pattern\": \"^[0-9a-fA-F]{32}$\"}";
       if (t.name == "f32" || t.name == "f64") return "{\"type\": \"number\"}";
-      if (t.name == "vec2") return "{\"type\": \"array\", \"items\": {\"type\": \"number\"}, \"minItems\": 2, \"maxItems\": 2}";
-      if (t.name == "vec3") return "{\"type\": \"array\", \"items\": {\"type\": \"number\"}, \"minItems\": 3, \"maxItems\": 3}";
+      if (t.name == "vec2")
+        return "{\"type\": \"array\", \"items\": {\"type\": \"number\"}, \"minItems\": 2, "
+               "\"maxItems\": 2}";
+      if (t.name == "vec3")
+        return "{\"type\": \"array\", \"items\": {\"type\": \"number\"}, \"minItems\": 3, "
+               "\"maxItems\": 3}";
       if (t.name == "vec4" || t.name == "quat") {
-        return "{\"type\": \"array\", \"items\": {\"type\": \"number\"}, \"minItems\": 4, \"maxItems\": 4}";
+        return "{\"type\": \"array\", \"items\": {\"type\": \"number\"}, \"minItems\": 4, "
+               "\"maxItems\": 4}";
       }
       if (t.name == "json") return "{}";
       return "{\"type\": \"integer\", " + integer_bounds(t.name) + "}";
     case TypeExpr::Kind::Named: {
       const size_t dot = t.resolved_qualified.rfind('.');
-      const std::string simple = dot == std::string::npos ? t.resolved_qualified : t.resolved_qualified.substr(dot + 1);
+      const std::string simple =
+          dot == std::string::npos ? t.resolved_qualified : t.resolved_qualified.substr(dot + 1);
       if (t.resolved_stem == file.stem) return "{\"$ref\": \"#/$defs/" + simple + "\"}";
       return "{\"$ref\": \"" + t.resolved_stem + ".schema.json#/$defs/" + simple + "\"}";
     }
-    case TypeExpr::Kind::Optional: return "{\"oneOf\": [" + type_schema(*t.element, file) + ", {\"type\": \"null\"}]}";
-    case TypeExpr::Kind::Array: return "{\"type\": \"array\", \"items\": " + type_schema(*t.element, file) + "}";
+    case TypeExpr::Kind::Optional:
+      return "{\"oneOf\": [" + type_schema(*t.element, file) + ", {\"type\": \"null\"}]}";
+    case TypeExpr::Kind::Array:
+      return "{\"type\": \"array\", \"items\": " + type_schema(*t.element, file) + "}";
     case TypeExpr::Kind::FixedArray:
-      return "{\"type\": \"array\", \"items\": " + type_schema(*t.element, file) + ", \"minItems\": " + std::to_string(t.count) +
+      return "{\"type\": \"array\", \"items\": " + type_schema(*t.element, file) +
+             ", \"minItems\": " + std::to_string(t.count) +
              ", \"maxItems\": " + std::to_string(t.count) + "}";
     case TypeExpr::Kind::Map:
       if (t.key->kind == TypeExpr::Kind::Primitive && t.key->name == "string") {
-        return "{\"type\": \"object\", \"additionalProperties\": " + type_schema(*t.element, file) + "}";
+        return "{\"type\": \"object\", \"additionalProperties\": " + type_schema(*t.element, file) +
+               "}";
       }
-      return "{\"type\": \"array\", \"items\": {\"type\": \"array\", \"prefixItems\": [" + type_schema(*t.key, file) + ", " +
-             type_schema(*t.element, file) + "], \"minItems\": 2, \"maxItems\": 2}}";
+      return "{\"type\": \"array\", \"items\": {\"type\": \"array\", \"prefixItems\": [" +
+             type_schema(*t.key, file) + ", " + type_schema(*t.element, file) +
+             "], \"minItems\": 2, \"maxItems\": 2}}";
   }
   return "{}";
 }
@@ -71,7 +82,8 @@ std::string emit_json_schema(const Model& model, const SchemaFile& file) {
     out << "    \"" << e.name << "\": {\n";
     if (!e.doc.empty()) out << "      \"description\": \"" << escape_json_string(e.doc) << "\",\n";
     out << "      \"enum\": [";
-    for (size_t i = 0; i < e.values.size(); ++i) out << (i ? ", " : "") << "\"" << e.values[i].name << "\"";
+    for (size_t i = 0; i < e.values.size(); ++i)
+      out << (i ? ", " : "") << "\"" << e.values[i].name << "\"";
     out << "]\n    }";
   }
   for (const StructDecl& s : file.structs) {
@@ -103,14 +115,15 @@ std::string emit_json_schema(const Model& model, const SchemaFile& file) {
       }
       out << schema;
       const bool has_default = f.default_kind != DefaultKind::None;
-      if (!has_default && f.type.kind != TypeExpr::Kind::Optional && f.type.kind != TypeExpr::Kind::Array &&
-          f.type.kind != TypeExpr::Kind::Map) {
+      if (!has_default && f.type.kind != TypeExpr::Kind::Optional &&
+          f.type.kind != TypeExpr::Kind::Array && f.type.kind != TypeExpr::Kind::Map) {
         required.push_back(f.name);
       }
     }
     out << "\n      },\n";
     out << "      \"required\": [";
-    for (size_t i = 0; i < required.size(); ++i) out << (i ? ", " : "") << "\"" << required[i] << "\"";
+    for (size_t i = 0; i < required.size(); ++i)
+      out << (i ? ", " : "") << "\"" << required[i] << "\"";
     out << "],\n";
     out << "      \"additionalProperties\": false\n";
     out << "    }";

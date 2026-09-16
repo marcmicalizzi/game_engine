@@ -29,20 +29,20 @@ enum class Kind : u8 {
   I64,
   F32,
   F64,
-  String,   // std::string
-  Bytes,    // Vector<u8>, serialized as hex
-  Id128,    // engine::Id128, serialized as 32 hex characters
-  Vec2,     // engine::Vec2, serialized as [x, y]
-  Vec3,     // engine::Vec3, serialized as [x, y, z]
-  Vec4,     // engine::Vec4, serialized as [x, y, z, w]
-  Quat,     // engine::Quat, serialized as [x, y, z, w]
-  Json,     // engine::JsonValue, serialized as itself (schema-free payloads)
-  Enum,     // enum class with a schema-declared underlying integer
+  String,  // std::string
+  Bytes,   // Vector<u8>, serialized as hex
+  Id128,   // engine::Id128, serialized as 32 hex characters
+  Vec2,    // engine::Vec2, serialized as [x, y]
+  Vec3,    // engine::Vec3, serialized as [x, y, z]
+  Vec4,    // engine::Vec4, serialized as [x, y, z, w]
+  Quat,    // engine::Quat, serialized as [x, y, z, w]
+  Json,    // engine::JsonValue, serialized as itself (schema-free payloads)
+  Enum,    // enum class with a schema-declared underlying integer
   Struct,
-  Optional,   // std::optional<T>
-  Array,      // Vector<T>
-  FixedArray, // std::array<T, N>
-  Map,        // FlatMap<K, V>
+  Optional,    // std::optional<T>
+  Array,       // Vector<T>
+  FixedArray,  // std::array<T, N>
+  Map,         // FlatMap<K, V>
 };
 
 const char* kind_name(Kind kind) noexcept;
@@ -83,12 +83,12 @@ struct MapOps {
 // of another TypeRef.
 struct TypeRef {
   Kind kind = Kind::Bool;
-  u32 fixed_count = 0;                       // FixedArray
-  usize size = 0;                            // sizeof the C++ representation
-  usize align = 0;                           // alignof the C++ representation
-  const TypeInfo* type = nullptr;            // Enum, Struct
-  const TypeRef* element = nullptr;          // Optional, Array, FixedArray, Map value
-  const TypeRef* key = nullptr;              // Map
+  u32 fixed_count = 0;               // FixedArray
+  usize size = 0;                    // sizeof the C++ representation
+  usize align = 0;                   // alignof the C++ representation
+  const TypeInfo* type = nullptr;    // Enum, Struct
+  const TypeRef* element = nullptr;  // Optional, Array, FixedArray, Map value
+  const TypeRef* key = nullptr;      // Map
   const OptionalOps* optional_ops = nullptr;
   const ArrayOps* array_ops = nullptr;
   const MapOps* map_ops = nullptr;
@@ -129,8 +129,8 @@ struct TypeInfo {
   Kind kind;                   // Struct or Enum
   u32 size;
   u32 align;
-  u16 version;                 // @version, structs only; 1 when unspecified
-  const char* tag;             // @kind attribute ("component", "event", ...) or ""
+  u16 version;      // @version, structs only; 1 when unspecified
+  const char* tag;  // @kind attribute ("component", "event", ...) or ""
   const char* doc;
   std::span<const FieldInfo> fields;      // Struct
   std::span<const EnumValueInfo> values;  // Enum

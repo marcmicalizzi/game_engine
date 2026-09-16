@@ -195,10 +195,14 @@ class Parser {
     for (int i = 0; i < 4; ++i) {
       const char c = text_[pos_++];
       v <<= 4;
-      if (c >= '0' && c <= '9') v |= static_cast<u32>(c - '0');
-      else if (c >= 'a' && c <= 'f') v |= static_cast<u32>(c - 'a' + 10);
-      else if (c >= 'A' && c <= 'F') v |= static_cast<u32>(c - 'A' + 10);
-      else return fail("invalid hex digit in \\u escape");
+      if (c >= '0' && c <= '9')
+        v |= static_cast<u32>(c - '0');
+      else if (c >= 'a' && c <= 'f')
+        v |= static_cast<u32>(c - 'a' + 10);
+      else if (c >= 'A' && c <= 'F')
+        v |= static_cast<u32>(c - 'A' + 10);
+      else
+        return fail("invalid hex digit in \\u escape");
     }
     out = v;
     return true;
@@ -256,7 +260,8 @@ class Parser {
     if (peek() == '0') {
       ++pos_;
     } else if (peek() >= '1' && peek() <= '9') {
-      while (peek() >= '0' && peek() <= '9') ++pos_;
+      while (peek() >= '0' && peek() <= '9')
+        ++pos_;
     } else {
       return fail("invalid number");
     }
@@ -264,14 +269,16 @@ class Parser {
       is_float = true;
       ++pos_;
       if (!(peek() >= '0' && peek() <= '9')) return fail("digits required after decimal point");
-      while (peek() >= '0' && peek() <= '9') ++pos_;
+      while (peek() >= '0' && peek() <= '9')
+        ++pos_;
     }
     if (peek() == 'e' || peek() == 'E') {
       is_float = true;
       ++pos_;
       if (peek() == '+' || peek() == '-') ++pos_;
       if (!(peek() >= '0' && peek() <= '9')) return fail("digits required in exponent");
-      while (peek() >= '0' && peek() <= '9') ++pos_;
+      while (peek() >= '0' && peek() <= '9')
+        ++pos_;
     }
     const std::string_view token = text_.substr(start, pos_ - start);
     const char* first = token.data();

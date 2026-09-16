@@ -127,7 +127,8 @@ class HashSet
 
   template <class InputIt>
   void insert_bulk(InputIt first, InputIt last) {
-    for (; first != last; ++first) insert(*first);
+    for (; first != last; ++first)
+      insert(*first);
   }
   template <class Range>
   void insert_bulk(Range&& range) {

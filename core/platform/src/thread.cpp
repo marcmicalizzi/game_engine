@@ -7,8 +7,8 @@
 #if ENGINE_PLATFORM_WINDOWS
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include <windows.h>
 #include <immintrin.h>
+#include <windows.h>
 #elif ENGINE_PLATFORM_LINUX
 #include <pthread.h>
 #include <sched.h>
@@ -27,7 +27,8 @@ thread_local u32 t_thread_index = 0xFFFFFFFFu;
 }  // namespace
 
 u32 current_thread_index() {
-  if (t_thread_index == 0xFFFFFFFFu) t_thread_index = g_next_thread_index.fetch_add(1, std::memory_order_relaxed);
+  if (t_thread_index == 0xFFFFFFFFu)
+    t_thread_index = g_next_thread_index.fetch_add(1, std::memory_order_relaxed);
   return t_thread_index;
 }
 
@@ -53,7 +54,8 @@ bool pin_current_thread(const CpuSet& cpus) {
   GROUP_AFFINITY ga{};
   ga.Group = group;
   cpus.for_each([&](u16 id) {
-    if (id < t.cpu_count() && t.cpus[id].os_group == group) ga.Mask |= static_cast<KAFFINITY>(u64{1} << t.cpus[id].os_index);
+    if (id < t.cpu_count() && t.cpus[id].os_group == group)
+      ga.Mask |= static_cast<KAFFINITY>(u64{1} << t.cpus[id].os_index);
   });
   return ::SetThreadGroupAffinity(::GetCurrentThread(), &ga, nullptr) != 0;
 }
@@ -73,7 +75,8 @@ bool set_current_thread_priority(ThreadPriority priority) {
 bool set_current_thread_name(const char* name) {
   wchar_t wide[64];
   usize n = 0;
-  for (; n < 63 && name[n] != '\0'; ++n) wide[n] = static_cast<wchar_t>(static_cast<unsigned char>(name[n]));
+  for (; n < 63 && name[n] != '\0'; ++n)
+    wide[n] = static_cast<wchar_t>(static_cast<unsigned char>(name[n]));
   wide[n] = L'\0';
   return SUCCEEDED(::SetThreadDescription(::GetCurrentThread(), wide));
 }
@@ -126,7 +129,8 @@ bool set_current_thread_priority(ThreadPriority priority) {
 bool set_current_thread_name(const char* name) {
   char buf[16];
   usize n = 0;
-  for (; n < 15 && name[n] != '\0'; ++n) buf[n] = name[n];
+  for (; n < 15 && name[n] != '\0'; ++n)
+    buf[n] = name[n];
   buf[n] = '\0';
   return ::pthread_setname_np(::pthread_self(), buf) == 0;
 }
@@ -147,7 +151,8 @@ void pause_cpu() noexcept {
 #endif
 }
 void sleep_ms(u32 milliseconds) noexcept {
-  timespec ts{static_cast<time_t>(milliseconds / 1000), static_cast<long>(milliseconds % 1000) * 1000000L};
+  timespec ts{static_cast<time_t>(milliseconds / 1000),
+              static_cast<long>(milliseconds % 1000) * 1000000L};
   ::nanosleep(&ts, nullptr);
 }
 

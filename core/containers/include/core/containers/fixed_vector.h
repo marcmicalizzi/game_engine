@@ -145,7 +145,8 @@ class FixedVector {
     if (n < size_) {
       containers::detail::destroy_n(data() + n, size_ - n);
     } else {
-      for (size_type i = size_; i < n; ++i) std::construct_at(data() + i);
+      for (size_type i = size_; i < n; ++i)
+        std::construct_at(data() + i);
     }
     size_ = n;
   }
@@ -153,7 +154,8 @@ class FixedVector {
   template <class InputIt>
   void assign(InputIt first, InputIt last) {
     clear();
-    for (; first != last; ++first) emplace_back(*first);
+    for (; first != last; ++first)
+      emplace_back(*first);
   }
 
   friend bool operator==(const FixedVector& a, const FixedVector& b) {

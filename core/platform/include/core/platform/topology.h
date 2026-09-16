@@ -45,7 +45,7 @@ class CpuSet {
 enum class CacheType : u8 { Unified, Data, Instruction, Trace };
 
 struct CacheInfo {
-  u8 level = 0;           // 1, 2, 3
+  u8 level = 0;  // 1, 2, 3
   CacheType type = CacheType::Unified;
   u32 size_bytes = 0;
   u16 line_bytes = 0;
@@ -54,10 +54,10 @@ struct CacheInfo {
 };
 
 struct LogicalCpu {
-  u16 id = k_invalid_cpu;   // engine index
-  u16 os_group = 0;         // Windows processor group; 0 on Linux
-  u16 os_index = 0;         // index within the group (Windows) or the kernel CPU number (Linux)
-  u16 core_id = 0;          // physical core, engine numbering
+  u16 id = k_invalid_cpu;  // engine index
+  u16 os_group = 0;        // Windows processor group; 0 on Linux
+  u16 os_index = 0;        // index within the group (Windows) or the kernel CPU number (Linux)
+  u16 core_id = 0;         // physical core, engine numbering
   u16 package_id = 0;
   u16 numa_node = 0;
   u16 cache_domain = 0;     // index into Topology::cache_domains

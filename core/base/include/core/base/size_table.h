@@ -12,9 +12,9 @@
 // Do not put types that wrap standard-library containers in the size table: their size varies
 // with the standard library's debug settings. Engine containers are layout-stable by design.
 
-#define ENGINE_EXPECT_SIZE(ExpectedSize, ExpectedAlign, ...)                                       \
-  static_assert(sizeof(__VA_ARGS__) == (ExpectedSize),                                             \
-                "size table: " #__VA_ARGS__ " is not " #ExpectedSize                               \
-                " bytes; update the size table and justify the change");                           \
-  static_assert(alignof(__VA_ARGS__) == (ExpectedAlign),                                           \
+#define ENGINE_EXPECT_SIZE(ExpectedSize, ExpectedAlign, ...)             \
+  static_assert(sizeof(__VA_ARGS__) == (ExpectedSize),                   \
+                "size table: " #__VA_ARGS__ " is not " #ExpectedSize     \
+                " bytes; update the size table and justify the change"); \
+  static_assert(alignof(__VA_ARGS__) == (ExpectedAlign),                 \
                 "size table: " #__VA_ARGS__ " alignment is not " #ExpectedAlign)
