@@ -56,6 +56,10 @@ struct ImageResource {
 bool create_buffer(const Device& device, u64 size, VkBufferUsageFlags usage, bool host_visible,
                    BufferResource& out, std::string* error = nullptr);
 void destroy_buffer(const Device& device, BufferResource& buffer) noexcept;
+// Creates a device-local buffer with `usage` plus TRANSFER_DST and SHADER_DEVICE_ADDRESS, fills it
+// from `data` through a staging buffer, and waits for the copy. For setup-time uploads.
+bool upload_buffer(const Device& device, const void* data, u64 bytes, VkBufferUsageFlags usage,
+                   BufferResource& out, std::string* error = nullptr);
 
 bool create_image_2d(const Device& device, u32 width, u32 height, VkFormat format,
                      VkImageUsageFlags usage, ImageResource& out, std::string* error = nullptr);

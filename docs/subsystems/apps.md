@@ -1,6 +1,6 @@
-# apps: engine-host and engine-cli (apps)
+# apps: engine-host, engine-cli, engine-view (apps)
 
-**Purpose.** The first two executables (docs/plan/02-architecture.md §2.2, ADR-0001). `engine-host` is the engine as a headless server: in Phase 0 it runs in `sim` mode only and speaks JSON-RPC 2.0 over stdio, one request per line in and one response per line out. `engine-cli` is the thin scriptable client for humans, agents, and CI: it spawns a host, optionally opens a document, sends one method, prints the result, and exits. Because sessions persist their journal and undo position on disk (see [doc](doc.md) and [protocol](protocol.md)), a sequence of separate `engine-cli` invocations behaves like one editing session, which is what the Phase 0 exit criterion asks for and what the end-to-end test checks.
+**Purpose.** The first executables (docs/plan/02-architecture.md §2.2, ADR-0001). `engine-host` is the engine as a headless server: in Phase 0 it runs in `sim` mode only and speaks JSON-RPC 2.0 over stdio, one request per line in and one response per line out. `engine-cli` is the thin scriptable client for humans, agents, and CI: it spawns a host, optionally opens a document, sends one method, prints the result, and exits. Because sessions persist their journal and undo position on disk (see [doc](doc.md) and [protocol](protocol.md)), a sequence of separate `engine-cli` invocations behaves like one editing session, which is what the Phase 0 exit criterion asks for and what the end-to-end test checks.
 
 **engine-host.**
 ```
@@ -26,10 +26,16 @@ engine-cli --doc ./world doc.diff '{"from_layer":"base","to_layer":"quest"}'
 engine-cli gpu.adapters                       # what the machine's GPUs support (see gfx.md)
 ```
 
+**engine-view.**
+```
+engine-view [--width <px>] [--height <px>] [--frames <n>] [--capture <file.png>] [--no-vsync] [--adapter <i>] [--validation] [--grid <n>] [--log <spec>]
+```
+The engine's first window (windowed mode). A procedural heightfield is split into clusters (`geometry`), uploaded behind device addresses, and drawn one mesh-shader workgroup per cluster into the swapchain with a reversed-Z depth buffer while the camera orbits; each cluster gets its own color, so the picture is also the cluster-partition debug view. `--frames N --capture out.png` renders N frames and writes the last one as a PNG, and the process prints one JSON line of statistics (frames, seconds, average ms, size, cluster and triangle counts, whether the capture was written) to stdout, so scripts and agents look at the picture and the numbers without a human at the window. Escape or closing the window exits; resizing recreates the swapchain and the depth buffer. Exit codes: 0, 1 error, 2 usage, 3 unavailable (no display, no Vulkan device, no mesh shaders, or no presentation), which the end-to-end test treats as a skip. On the RTX 5090 the default 129×129 grid (32,768 triangles in 341 clusters) renders in about 2.4 ms per frame at 960×540 without vsync, window creation included.
+
 **Build.** `engine_app(NAME engine_host OUTPUT engine-host SOURCES ... DEPS ... [E2E_TESTS ...])` in `cmake/EngineModule.cmake` builds an executable into `build/<preset>/bin/`, records it in `modules.json` with layer `apps`, and can build an end-to-end test executable that receives the app's path as `ENGINE_APP_PATH`. The CLI test also receives `ENGINE_HOST_PATH`.
 
-**Depends on.** engine-host: `protocol`, `log`, `io`, `tunables`. engine-cli: `json`, `platform` (`Process`, `executable_directory`).
+**Depends on.** engine-host: `protocol`, `log`, `io`, `tunables`. engine-cli: `json`, `platform` (`Process`, `executable_directory`). engine-view: `window`, `image`, `geometry`, `gfx`, `math`, `time`, `log`.
 
-**Testing.** `tools/dev.ps1 test -Filter engine_cli` runs the end-to-end suite: info and methods through a spawned host, error exit codes, and the exit criterion with one process per step (create, apply, objects, undo, redo across processes, add layer, diff, get, validate, journal).
+**Testing.** `tools/dev.ps1 test -Filter engine_cli` runs the end-to-end suite: info and methods through a spawned host, error exit codes, and the exit criterion with one process per step (create, apply, objects, undo, redo across processes, add layer, diff, get, validate, journal). `-Filter engine_view` runs engine-view for six frames at 320×200 with a capture and checks the JSON summary and the PNG header, plus the usage exit codes; it records a skip where the app exits 3.
 
-**Not yet.** `offscreen` and `windowed` modes, sockets, multiple clients per host, long-running operations, the MCP bridge, a persistent-host mode for the editor.
+**Not yet.** engine-host `offscreen` and `windowed` modes (engine-view is the standalone window until the host learns to own one), sockets, multiple clients per host, long-running operations, the MCP bridge, a persistent-host mode for the editor.

@@ -28,6 +28,10 @@ struct DeviceOptions {
   bool validation = false;
   // Route validation and driver messages through the log when VK_EXT_debug_utils exists.
   bool debug_messenger = true;
+  // Instance extensions a window system needs for its surface
+  // (window::Window::vulkan_instance_extensions()); creation fails when one is missing.
+  const char* const* instance_extensions = nullptr;
+  u32 instance_extension_count = 0;
 };
 
 // What the created device has enabled, beyond the required core features.
@@ -41,7 +45,8 @@ struct DeviceFeatures {
   bool memory_decompression = false;
   bool shader_int64 = false;
   bool sampler_anisotropy = false;
-  bool validation = false;  // the validation layer is active
+  bool presentation = false;  // VK_KHR_swapchain is enabled
+  bool validation = false;    // the validation layer is active
 };
 
 struct Handles;  // Vulkan handles; see domain/gfx/vulkan.h

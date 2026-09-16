@@ -11,3 +11,4 @@ Every dependency of the engine is listed here with its license. Policy: permissi
 | Vulkan Memory Allocator | v3.4.0 | MIT | domain/gfx | CMake FetchContent at configure time |
 | Slang | v2026.17.1 | Apache-2.0 WITH LLVM-exception | shader compiler (build time only; prebuilt binaries) | CMake FetchContent of the release archive at configure time |
 | meshoptimizer | v1.2 | MIT | domain/geometry (meshlets, bounds, cluster LOD) | CMake FetchContent at configure time |
+| SDL3 | release-3.4.16 | zlib | foundation/window (windowing, input, Vulkan surfaces) | CMake FetchContent at configure time; static, video and events only |

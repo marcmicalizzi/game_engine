@@ -131,6 +131,7 @@ const char* status_name(Status status) noexcept {
     case Status::NotDirectory: return "not a directory";
     case Status::AlreadyExists: return "already exists";
     case Status::IoError: return "i/o error";
+    case Status::InvalidArgument: return "invalid argument";
   }
   return "?";
 }

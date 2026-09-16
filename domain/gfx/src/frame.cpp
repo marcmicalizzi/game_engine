@@ -55,6 +55,15 @@ bool FrameContext::create(const Device& device, u32 frames_in_flight, std::strin
       destroy();
       return false;
     }
+    VkSemaphoreCreateInfo binary{};
+    binary.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    if (const VkResult r = vkCreateSemaphore(h.device, &binary, nullptr, &slot.acquire);
+        r != VK_SUCCESS) {
+      if (error != nullptr) *error = std::string("vkCreateSemaphore(acquire): ") + result_name(r);
+      device_ = &device;
+      destroy();
+      return false;
+    }
   }
   device_ = &device;
   ENGINE_LOG_DEBUG(log_frame, "frame context created",
@@ -74,6 +83,7 @@ void FrameContext::destroy() noexcept {
     slot.buffers.clear();
     slot.images.clear();
     if (slot.pool != VK_NULL_HANDLE) vkDestroyCommandPool(h.device, slot.pool, nullptr);
+    if (slot.acquire != VK_NULL_HANDLE) vkDestroySemaphore(h.device, slot.acquire, nullptr);
   }
   slots_.clear();
   if (timeline_ != VK_NULL_HANDLE) vkDestroySemaphore(h.device, timeline_, nullptr);
@@ -110,7 +120,9 @@ VkCommandBuffer FrameContext::begin_frame() {
   return slot.commands;
 }
 
-u64 FrameContext::end_frame() {
+u64 FrameContext::end_frame() { return end_frame(PresentSync{}); }
+
+u64 FrameContext::end_frame(const PresentSync& sync) {
   ENGINE_VERIFY(recording_, "FrameContext::end_frame: begin_frame was not called");
   Slot& slot = slots_[slot_];
   vkEndCommandBuffer(slot.commands);
@@ -119,17 +131,30 @@ u64 FrameContext::end_frame() {
   VkCommandBufferSubmitInfo command_info{};
   command_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
   command_info.commandBuffer = slot.commands;
-  VkSemaphoreSubmitInfo signal{};
-  signal.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
-  signal.semaphore = timeline_;
-  signal.value = value;
-  signal.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+  VkSemaphoreSubmitInfo signals[2]{};
+  signals[0].sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+  signals[0].semaphore = timeline_;
+  signals[0].value = value;
+  signals[0].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+  u32 signal_count = 1;
+  if (sync.signal != VK_NULL_HANDLE) {
+    signals[1].sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+    signals[1].semaphore = sync.signal;
+    signals[1].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    signal_count = 2;
+  }
+  VkSemaphoreSubmitInfo wait{};
+  wait.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+  wait.semaphore = sync.wait;
+  wait.stageMask = sync.wait_stage;
   VkSubmitInfo2 submit{};
   submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
+  submit.waitSemaphoreInfoCount = sync.wait != VK_NULL_HANDLE ? 1 : 0;
+  submit.pWaitSemaphoreInfos = &wait;
   submit.commandBufferInfoCount = 1;
   submit.pCommandBufferInfos = &command_info;
-  submit.signalSemaphoreInfoCount = 1;
-  submit.pSignalSemaphoreInfos = &signal;
+  submit.signalSemaphoreInfoCount = signal_count;
+  submit.pSignalSemaphoreInfos = signals;
   const VkResult r = vkQueueSubmit2(device_->handles().graphics_queue, 1, &submit, VK_NULL_HANDLE);
   ENGINE_VERIFY(r == VK_SUCCESS, "FrameContext::end_frame: vkQueueSubmit2 failed");
   slot.submitted_value = value;

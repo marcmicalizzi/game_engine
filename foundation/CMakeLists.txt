@@ -2,3 +2,5 @@
 add_subdirectory(tunables)
 add_subdirectory(bench)
 add_subdirectory(io)
+add_subdirectory(window)
+add_subdirectory(image)

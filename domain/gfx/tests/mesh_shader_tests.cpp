@@ -50,31 +50,6 @@ void make_grid(u32 n, f32 extent, Vector<Vec3>& positions, Vector<u32>& indices)
   }
 }
 
-// Uploads bytes into a device-local buffer with a device address.
-bool upload(const gfx::Device& device, const void* data, u64 bytes, gfx::BufferResource& out,
-            std::string* error) {
-  if (!gfx::create_buffer(device, bytes,
-                          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                              VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
-                              VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                          false, out, error)) {
-    return false;
-  }
-  gfx::BufferResource staging;
-  if (!gfx::create_buffer(device, bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true, staging, error))
-    return false;
-  std::memcpy(staging.mapped, data, static_cast<usize>(bytes));
-  const bool ok = gfx::submit_immediate(
-      device,
-      [&](VkCommandBuffer commands) {
-        VkBufferCopy copy{0, 0, bytes};
-        vkCmdCopyBuffer(commands, staging.buffer, out.buffer, 1, &copy);
-      },
-      error);
-  gfx::destroy_buffer(device, staging);
-  return ok;
-}
-
 }  // namespace
 
 TEST_CASE("mesh shaders: clusters rasterize to visibility IDs") {
@@ -107,12 +82,13 @@ TEST_CASE("mesh shaders: clusters rasterize to visibility IDs") {
   gfx::BufferResource cluster_buffer;
   gfx::BufferResource vertex_buffer;
   gfx::BufferResource triangle_buffer;
-  REQUIRE(upload(device, mesh.clusters.data(), mesh.clusters.size() * sizeof(geometry::ClusterDesc),
-                 cluster_buffer, &error));
-  REQUIRE(upload(device, mesh.vertices.data(), mesh.vertices.size() * sizeof(Vec3), vertex_buffer,
-                 &error));
-  REQUIRE(upload(device, mesh.triangles.data(), mesh.triangles.size() * sizeof(u32),
-                 triangle_buffer, &error));
+  REQUIRE(gfx::upload_buffer(device, mesh.clusters.data(),
+                             mesh.clusters.size() * sizeof(geometry::ClusterDesc),
+                             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, cluster_buffer, &error));
+  REQUIRE(gfx::upload_buffer(device, mesh.vertices.data(), mesh.vertices.size() * sizeof(Vec3),
+                             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, vertex_buffer, &error));
+  REQUIRE(gfx::upload_buffer(device, mesh.triangles.data(), mesh.triangles.size() * sizeof(u32),
+                             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, triangle_buffer, &error));
 
   gfx::FrameContext frames;
   REQUIRE(frames.create(device, 2, &error));

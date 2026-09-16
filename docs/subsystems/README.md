@@ -37,6 +37,8 @@ One page per module, created in the same change that creates the module. Templat
 | jobs | core | [jobs.md](jobs.md) |
 | tunables | foundation | [tunables.md](tunables.md) |
 | io | foundation | [io.md](io.md) |
+| window | foundation | [window.md](window.md) |
+| image | foundation | [image.md](image.md) |
 | bench | foundation | [bench.md](bench.md) |
 | doc | domain | [doc.md](doc.md) |
 | geometry | domain | [geometry.md](geometry.md) |

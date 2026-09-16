@@ -119,6 +119,7 @@ void RenderGraph::reset() noexcept {
   passes_.clear();
   buffer_barriers_.clear();
   image_barriers_.clear();
+  final_barriers_.clear();
   pass_image_layouts_.clear();
   arena_.reset();
   current_pass_ = ~u32{0};
@@ -256,9 +257,12 @@ void RenderGraph::begin_rendering(VkCommandBuffer commands, const Pass& pass) {
   rendering.pColorAttachments = colors;
   rendering.pDepthAttachment = has_depth ? &depth : nullptr;
   vkCmdBeginRendering(commands, &rendering);
+  // Negative height flips Vulkan's y-down framebuffer to the y-up clip space core/math produces,
+  // so counter-clockwise triangles in y-up space are the front faces.
   VkViewport viewport{};
+  viewport.y = static_cast<float>(render_area_.height);
   viewport.width = static_cast<float>(render_area_.width);
-  viewport.height = static_cast<float>(render_area_.height);
+  viewport.height = -static_cast<float>(render_area_.height);
   viewport.minDepth = 0.0f;
   viewport.maxDepth = 1.0f;
   vkCmdSetViewport(commands, 0, 1, &viewport);
@@ -373,6 +377,12 @@ void RenderGraph::compute_barriers() {
   }
 }
 
+void RenderGraph::set_final_layout(RgImage image, VkImageLayout layout) {
+  ENGINE_VERIFY(!compiled_, "RenderGraph: set_final_layout before compile");
+  ENGINE_VERIFY(image.index < images_.size(), "RenderGraph::set_final_layout: invalid handle");
+  images_[image.index].requested_final = layout;
+}
+
 bool RenderGraph::compile(std::string* error) {
   ENGINE_VERIFY(!compiled_, "RenderGraph::compile: already compiled");
   // Validate: indices in range, every read has a producer before it (imported counts).
@@ -402,6 +412,33 @@ bool RenderGraph::compile(std::string* error) {
   if (!allocate_transients(error)) return false;
   if (!create_attachment_views(error)) return false;
   compute_barriers();
+  for (ImageNode& node : images_) {
+    if (node.requested_final == VK_IMAGE_LAYOUT_UNDEFINED ||
+        node.requested_final == node.state.layout) {
+      continue;
+    }
+    VkImageMemoryBarrier2 barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+    barrier.srcStageMask = node.state.stage != VK_PIPELINE_STAGE_2_NONE
+                               ? node.state.stage
+                               : VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
+    barrier.srcAccessMask = node.state.access;
+    barrier.dstStageMask = VK_PIPELINE_STAGE_2_NONE;  // consumed by the submit's signal
+    barrier.dstAccessMask = VK_ACCESS_2_NONE;
+    barrier.oldLayout = node.state.layout;
+    barrier.newLayout = node.requested_final;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = node.resource.image;
+    barrier.subresourceRange = {aspect_for(node.resource.format), 0, 1, 0, 1};
+    final_barriers_.push_back(barrier);
+    node.state.layout = node.requested_final;
+    node.state.stage = VK_PIPELINE_STAGE_2_NONE;
+    node.state.access = VK_ACCESS_2_NONE;
+    node.final_layout = node.requested_final;
+    ++stats_.image_barriers;
+    ++stats_.layout_transitions;
+  }
   for (const Pass& pass : passes_) {
     if (pass.kind == PassKind::Raster) ++stats_.raster_passes;
   }
@@ -433,6 +470,13 @@ void RenderGraph::execute(VkCommandBuffer commands) {
     if (raster) begin_rendering(commands, pass);
     pass.execute(commands, *this, pass.context);
     if (raster) vkCmdEndRendering(commands);
+  }
+  if (!final_barriers_.empty()) {
+    VkDependencyInfo dependency{};
+    dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    dependency.imageMemoryBarrierCount = final_barriers_.size();
+    dependency.pImageMemoryBarriers = final_barriers_.data();
+    vkCmdPipelineBarrier2(commands, &dependency);
   }
   current_pass_ = ~u32{0};
 }

@@ -43,6 +43,17 @@ class FrameContext {
   // Ends recording and submits on the graphics queue, signaling the timeline with the value
   // returned (frame_index() + 1 at the time of the call).
   u64 end_frame();
+  // Binary semaphores around a presented frame: wait for the swapchain acquire before color
+  // output, signal the swapchain image's render-finished semaphore when the frame is done.
+  struct PresentSync {
+    VkSemaphore wait = VK_NULL_HANDLE;
+    VkPipelineStageFlags2 wait_stage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    VkSemaphore signal = VK_NULL_HANDLE;
+  };
+  u64 end_frame(const PresentSync& sync);
+  // A binary semaphore owned by the current slot, for Swapchain::acquire(); safe to reuse
+  // because begin_frame() waited for the frame that last waited on it.
+  VkSemaphore acquire_semaphore() const noexcept { return slots_[slot_].acquire; }
 
   u32 frames_in_flight() const noexcept { return slots_.size(); }
   u32 slot() const noexcept { return slot_; }
@@ -68,6 +79,7 @@ class FrameContext {
   struct Slot {
     VkCommandPool pool = VK_NULL_HANDLE;
     VkCommandBuffer commands = VK_NULL_HANDLE;
+    VkSemaphore acquire = VK_NULL_HANDLE;
     u64 submitted_value = 0;  // 0: never submitted
     Vector<BufferResource> buffers;
     Vector<ImageResource> images;

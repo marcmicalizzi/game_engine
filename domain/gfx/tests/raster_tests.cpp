@@ -101,15 +101,17 @@ TEST_CASE("raster: a triangle through the render graph lands on the expected pix
   CHECK(seen_area.width == k_size);
   CHECK(seen_area.height == k_size);
 
-  // The triangle covers pixels with x + y < size (top-left half); the rest keeps the clear.
+  // The triangle covers the bottom-left half in y-up clip space; with the graph's flipped viewport
+  // that is the bottom-left half of the image (row 0 is the top). The rest keeps the clear.
   const auto* pixels = static_cast<const u8*>(readback.mapped);
   u32 covered = 0;
   u32 wrong = 0;
   for (u32 y = 0; y < k_size; ++y) {
     for (u32 x = 0; x < k_size; ++x) {
       const u8* p = pixels + (y * k_size + x) * 4;
-      const bool inside = x + y + 1 < k_size;  // strictly inside, away from the diagonal edge
-      const bool outside = x + y > k_size;     // strictly outside
+      const u32 fy = k_size - 1 - y;            // y-up row
+      const bool inside = x + fy + 1 < k_size;  // strictly inside, away from the diagonal edge
+      const bool outside = x + fy > k_size;     // strictly outside
       if (inside) {
         ++covered;
         if (p[0] != 255 || (p[1] < 127 || p[1] > 128) || p[2] != 0 || p[3] != 255) ++wrong;
@@ -120,8 +122,8 @@ TEST_CASE("raster: a triangle through the render graph lands on the expected pix
   }
   CHECK(wrong == 0);
   CHECK(covered == (k_size - 1) * k_size / 2);
-  CHECK(pixels[0] == 255);  // top-left corner: triangle
-  CHECK(pixels[((k_size - 1) * k_size + (k_size - 1)) * 4 + 2] == 255);  // bottom-right: clear
+  CHECK(pixels[(k_size - 1) * k_size * 4] == 255);  // bottom-left corner: triangle
+  CHECK(pixels[(k_size - 1) * 4 + 2] == 255);       // top-right corner: clear
 
   graph.reset();
   gfx::destroy_pipeline(device, pipeline);

@@ -56,9 +56,14 @@ VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(VkDebugUtilsMessageSeverityFlagBit
   if ((severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) != 0) {
     ENGINE_LOG_ERROR(log_validation, "validation error", log::field("id", id),
                      log::field("message", message));
-  } else if ((severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) != 0) {
+  } else if ((severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) != 0 &&
+             id != "Loader Message") {
     ENGINE_LOG_WARN(log_validation, "validation warning", log::field("id", id),
                     log::field("message", message));
+  } else if ((severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) != 0) {
+    // Loader policy notes about third-party layers installed on the machine (overlays) are
+    // not about this engine; keep them visible at debug only.
+    ENGINE_LOG_DEBUG(log_validation, "loader message", log::field("message", message));
   } else {
     ENGINE_LOG_DEBUG(log_validation, "validation info", log::field("id", id),
                      log::field("message", message));
@@ -172,6 +177,15 @@ bool Device::create(const DeviceOptions& options, std::string* error) {
                                          instance_extensions.available.data());
   const bool debug_utils =
       options.debug_messenger && instance_extensions.enable_if_available("VK_EXT_debug_utils");
+  for (u32 i = 0; i < options.instance_extension_count; ++i) {
+    const char* name = options.instance_extensions[i];
+    if (!instance_extensions.enable_if_available(name)) {
+      if (error != nullptr) *error = std::string("instance extension not available: ") + name;
+      impl_ = impl;
+      destroy();
+      return false;
+    }
+  }
 
   VkApplicationInfo app{};
   app.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
@@ -267,7 +281,7 @@ bool Device::create(const DeviceOptions& options, std::string* error) {
   device_extensions.available.resize(device_extension_count);
   vkEnumerateDeviceExtensionProperties(h.physical, nullptr, &device_extension_count,
                                        device_extensions.available.data());
-  device_extensions.enable_if_available("VK_KHR_swapchain");
+  impl->features.presentation = device_extensions.enable_if_available("VK_KHR_swapchain");
   const bool ext_mesh = device_extensions.enable_if_available("VK_EXT_mesh_shader");
   const bool ext_deferred =
       device_extensions.enable_if_available("VK_KHR_deferred_host_operations");
@@ -920,6 +934,43 @@ bool create_mesh_pipeline(const Device& device, const MeshPipelineDesc& desc, Vk
     return false;
   }
   return true;
+}
+
+}  // namespace engine::gfx
+
+// ---- uploads ---------------------------------------------------------------------------------
+
+namespace engine::gfx {
+
+bool upload_buffer(const Device& device, const void* data, u64 bytes, VkBufferUsageFlags usage,
+                   BufferResource& out, std::string* error) {
+  out = BufferResource{};
+  if (data == nullptr || bytes == 0) {
+    if (error != nullptr) *error = "upload_buffer: nothing to upload";
+    return false;
+  }
+  if (!create_buffer(
+          device, bytes,
+          usage | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+          false, out, error)) {
+    return false;
+  }
+  BufferResource staging;
+  if (!create_buffer(device, bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true, staging, error)) {
+    destroy_buffer(device, out);
+    return false;
+  }
+  std::memcpy(staging.mapped, data, static_cast<usize>(bytes));
+  const bool ok = submit_immediate(
+      device,
+      [&](VkCommandBuffer commands) {
+        const VkBufferCopy copy{0, 0, bytes};
+        vkCmdCopyBuffer(commands, staging.buffer, out.buffer, 1, &copy);
+      },
+      error);
+  destroy_buffer(device, staging);
+  if (!ok) destroy_buffer(device, out);
+  return ok;
 }
 
 }  // namespace engine::gfx

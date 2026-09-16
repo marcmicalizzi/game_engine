@@ -121,6 +121,9 @@ class RenderGraph {
                        VkImageLayout current_layout = VK_IMAGE_LAYOUT_UNDEFINED,
                        VkPipelineStageFlags2 last_stage = VK_PIPELINE_STAGE_2_NONE,
                        VkAccessFlags2 last_access = VK_ACCESS_2_NONE);
+  // Layout an image must be in after execute(), such as VK_IMAGE_LAYOUT_PRESENT_SRC_KHR for a
+  // swapchain image; the graph appends the transition after the last pass when needed.
+  void set_final_layout(RgImage image, VkImageLayout layout);
 
   // --- passes ---
   // `setup` runs now with a PassBuilder; `execute` runs during execute(). Both must be trivially
@@ -201,6 +204,7 @@ class RenderGraph {
     bool imported = false;
     State state;
     VkImageLayout final_layout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VkImageLayout requested_final = VK_IMAGE_LAYOUT_UNDEFINED;
     bool has_producer = false;
   };
   struct Use {
@@ -247,7 +251,8 @@ class RenderGraph {
   Vector<Pass> passes_;
   Vector<VkMemoryBarrier2> buffer_barriers_;
   Vector<VkImageMemoryBarrier2> image_barriers_;
-  Vector<VkImageLayout> pass_image_layouts_;  // per (pass, image) layout during that pass
+  Vector<VkImageMemoryBarrier2> final_barriers_;  // after the last pass (set_final_layout)
+  Vector<VkImageLayout> pass_image_layouts_;      // per (pass, image) layout during that pass
   u32 current_pass_ = ~u32{0};
   VkExtent2D render_area_{};
   bool compiled_ = false;

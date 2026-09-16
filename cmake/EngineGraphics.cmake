@@ -45,3 +45,25 @@ FetchContent_Declare(meshoptimizer
 set(MESHOPT_INSTALL OFF CACHE BOOL "" FORCE)
 set(MESHOPT_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(meshoptimizer)
+
+# SDL3 (zlib): windowing, input, and Vulkan surface creation (ADR-0012, plan 08 §8.3). Static,
+# video and events only for now; audio goes through miniaudio/Steam Audio, rendering through
+# our own Vulkan path. Joystick/haptic stay on for gamepads. Without X11/Wayland headers on a
+# Linux build machine SDL simply has no video driver and window::init() reports that.
+set(ENGINE_SDL_TAG "release-3.4.16" CACHE STRING "SDL3 tag")
+FetchContent_Declare(sdl3
+  GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
+  GIT_TAG        ${ENGINE_SDL_TAG}
+  GIT_SHALLOW    TRUE)
+set(SDL_SHARED OFF CACHE BOOL "" FORCE)
+set(SDL_STATIC ON CACHE BOOL "" FORCE)
+set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
+set(SDL_TESTS OFF CACHE BOOL "" FORCE)
+set(SDL_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(SDL_INSTALL OFF CACHE BOOL "" FORCE)
+set(SDL_AUDIO OFF CACHE BOOL "" FORCE)
+set(SDL_RENDER OFF CACHE BOOL "" FORCE)
+set(SDL_GPU OFF CACHE BOOL "" FORCE)
+set(SDL_CAMERA OFF CACHE BOOL "" FORCE)
+set(SDL_SENSOR OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(sdl3)

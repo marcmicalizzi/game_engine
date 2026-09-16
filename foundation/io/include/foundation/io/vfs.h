@@ -34,6 +34,7 @@ enum class Status : u8 {
   NotDirectory,
   AlreadyExists,
   IoError,
+  InvalidArgument,  // the caller passed inconsistent arguments (nothing was touched)
 };
 const char* status_name(Status status) noexcept;
 

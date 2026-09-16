@@ -72,3 +72,12 @@ void mesh_main(uint3 group_thread : SV_GroupThreadID, uint3 group : SV_GroupID,
 uint fs_main(MeshVertex v, uint primitive_id : SV_PrimitiveID) : SV_Target {
   return (v.cluster_id << 8) | (primitive_id & 0xff);
 }
+
+// Debug view for windows and captures: one color per cluster, shaded a little per triangle.
+[shader("fragment")]
+float4 fs_color(MeshVertex v, uint primitive_id : SV_PrimitiveID) : SV_Target {
+  const uint h = v.cluster_id * 2654435761u;
+  const float3 base = float3((h >> 0) & 255, (h >> 8) & 255, (h >> 16) & 255) / 255.0;
+  const float shade = 0.7 + 0.3 * frac(float(primitive_id) * 0.6180339887);
+  return float4(base * shade, 1.0);
+}
