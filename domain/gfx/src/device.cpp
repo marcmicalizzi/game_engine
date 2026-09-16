@@ -105,9 +105,7 @@ struct Device::Impl {
   u32 transfer_family = 0;
 };
 
-Device::~Device() {
-  destroy();
-}
+Device::~Device() { destroy(); }
 
 const AdapterInfo& Device::adapter() const noexcept {
   ENGINE_ASSERT(impl_ != nullptr, "Device::adapter: no device");
@@ -120,9 +118,7 @@ const DeviceFeatures& Device::features() const noexcept {
 u32 Device::graphics_family() const noexcept {
   return impl_ != nullptr ? impl_->graphics_family : 0;
 }
-u32 Device::compute_family() const noexcept {
-  return impl_ != nullptr ? impl_->compute_family : 0;
-}
+u32 Device::compute_family() const noexcept { return impl_ != nullptr ? impl_->compute_family : 0; }
 u32 Device::transfer_family() const noexcept {
   return impl_ != nullptr ? impl_->transfer_family : 0;
 }
@@ -833,6 +829,97 @@ bool create_graphics_pipeline(const Device& device, const GraphicsPipelineDesc& 
 
 void destroy_pipeline(const Device& device, VkPipeline pipeline) noexcept {
   if (pipeline != VK_NULL_HANDLE) vkDestroyPipeline(device.handles().device, pipeline, nullptr);
+}
+
+}  // namespace engine::gfx
+
+// ---- mesh pipelines --------------------------------------------------------------------------
+
+namespace engine::gfx {
+
+bool create_mesh_pipeline(const Device& device, const MeshPipelineDesc& desc, VkPipeline& out,
+                          std::string* error) {
+  if (!device.features().mesh_shader) {
+    if (error != nullptr) *error = "create_mesh_pipeline: the device has no mesh shader support";
+    out = VK_NULL_HANDLE;
+    return false;
+  }
+  VkPipelineShaderStageCreateInfo stages[3]{};
+  u32 stage_count = 0;
+  if (desc.task != VK_NULL_HANDLE) {
+    stages[stage_count].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[stage_count].stage = VK_SHADER_STAGE_TASK_BIT_EXT;
+    stages[stage_count].module = desc.task;
+    stages[stage_count].pName = desc.task_entry;
+    ++stage_count;
+  }
+  stages[stage_count].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+  stages[stage_count].stage = VK_SHADER_STAGE_MESH_BIT_EXT;
+  stages[stage_count].module = desc.mesh;
+  stages[stage_count].pName = desc.mesh_entry;
+  ++stage_count;
+  stages[stage_count].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+  stages[stage_count].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+  stages[stage_count].module = desc.fragment;
+  stages[stage_count].pName = desc.fragment_entry;
+  ++stage_count;
+
+  VkPipelineViewportStateCreateInfo viewport{};
+  viewport.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+  viewport.viewportCount = 1;
+  viewport.scissorCount = 1;
+  VkPipelineRasterizationStateCreateInfo raster{};
+  raster.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+  raster.polygonMode = VK_POLYGON_MODE_FILL;
+  raster.cullMode = desc.cull;
+  raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+  raster.lineWidth = 1.0f;
+  VkPipelineMultisampleStateCreateInfo multisample{};
+  multisample.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+  multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+  VkPipelineDepthStencilStateCreateInfo depth{};
+  depth.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+  depth.depthTestEnable = desc.depth_test ? VK_TRUE : VK_FALSE;
+  depth.depthWriteEnable = desc.depth_write ? VK_TRUE : VK_FALSE;
+  depth.depthCompareOp = desc.depth_compare;
+  VkPipelineColorBlendAttachmentState blend_attachment{};
+  blend_attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                                    VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+  VkPipelineColorBlendStateCreateInfo blend{};
+  blend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+  blend.attachmentCount = desc.color_format != VK_FORMAT_UNDEFINED ? 1 : 0;
+  blend.pAttachments = &blend_attachment;
+  const VkDynamicState dynamic_states[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+  VkPipelineDynamicStateCreateInfo dynamic{};
+  dynamic.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+  dynamic.dynamicStateCount = 2;
+  dynamic.pDynamicStates = dynamic_states;
+  VkPipelineRenderingCreateInfo rendering{};
+  rendering.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+  rendering.colorAttachmentCount = blend.attachmentCount;
+  rendering.pColorAttachmentFormats = &desc.color_format;
+  rendering.depthAttachmentFormat = desc.depth_format;
+
+  VkGraphicsPipelineCreateInfo info{};
+  info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+  info.pNext = &rendering;
+  info.stageCount = stage_count;
+  info.pStages = stages;
+  info.pViewportState = &viewport;
+  info.pRasterizationState = &raster;
+  info.pMultisampleState = &multisample;
+  info.pDepthStencilState = &depth;
+  info.pColorBlendState = &blend;
+  info.pDynamicState = &dynamic;
+  info.layout = desc.layout;
+  const VkResult r =
+      vkCreateGraphicsPipelines(device.handles().device, VK_NULL_HANDLE, 1, &info, nullptr, &out);
+  if (r != VK_SUCCESS) {
+    set_error(error, "vkCreateGraphicsPipelines(mesh)", r);
+    out = VK_NULL_HANDLE;
+    return false;
+  }
+  return true;
 }
 
 }  // namespace engine::gfx

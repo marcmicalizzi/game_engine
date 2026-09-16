@@ -118,6 +118,26 @@ bool create_graphics_pipeline(const Device& device, const GraphicsPipelineDesc& 
                               VkPipeline& out, std::string* error = nullptr);
 void destroy_pipeline(const Device& device, VkPipeline pipeline) noexcept;
 
+// A mesh-shader pipeline: optional task stage, mesh stage, fragment stage; no vertex input or
+// input assembly state exists for these. Requires DeviceFeatures::mesh_shader.
+struct MeshPipelineDesc {
+  VkShaderModule task = VK_NULL_HANDLE;  // optional
+  const char* task_entry = "task_main";
+  VkShaderModule mesh = VK_NULL_HANDLE;
+  const char* mesh_entry = "mesh_main";
+  VkShaderModule fragment = VK_NULL_HANDLE;
+  const char* fragment_entry = "fs_main";
+  VkPipelineLayout layout = VK_NULL_HANDLE;
+  VkFormat color_format = VK_FORMAT_UNDEFINED;
+  VkFormat depth_format = VK_FORMAT_UNDEFINED;
+  VkCullModeFlags cull = VK_CULL_MODE_NONE;
+  bool depth_test = false;
+  bool depth_write = false;
+  VkCompareOp depth_compare = VK_COMPARE_OP_GREATER_OR_EQUAL;
+};
+bool create_mesh_pipeline(const Device& device, const MeshPipelineDesc& desc, VkPipeline& out,
+                          std::string* error = nullptr);
+
 // synchronization2 image layout transition on the whole color aspect.
 void image_barrier(VkCommandBuffer commands, VkImage image, VkImageLayout old_layout,
                    VkImageLayout new_layout, VkPipelineStageFlags2 src_stage,

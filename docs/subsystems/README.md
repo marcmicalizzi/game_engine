@@ -39,6 +39,7 @@ One page per module, created in the same change that creates the module. Templat
 | io | foundation | [io.md](io.md) |
 | bench | foundation | [bench.md](bench.md) |
 | doc | domain | [doc.md](doc.md) |
+| geometry | domain | [geometry.md](geometry.md) |
 | gfx | domain | [gfx.md](gfx.md) |
 | protocol | domain | [protocol.md](protocol.md) |
 | engine_host, engine_cli | apps | [apps.md](apps.md) |

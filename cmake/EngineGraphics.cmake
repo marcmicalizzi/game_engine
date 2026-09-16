@@ -35,3 +35,13 @@ set(VMA_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
 set(VMA_BUILD_DOCUMENTATION OFF CACHE BOOL "" FORCE)
 set(VMA_BUILD_SAMPLES OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(vma)
+
+# meshoptimizer (MIT): meshlet building, bounds, simplification, and the cluster-LOD DAG
+# builder behind the cluster geometry format (docs/plan/04-renderer.md §4.3).
+FetchContent_Declare(meshoptimizer
+  GIT_REPOSITORY https://github.com/zeux/meshoptimizer.git
+  GIT_TAG        v1.2
+  GIT_SHALLOW    TRUE)
+set(MESHOPT_INSTALL OFF CACHE BOOL "" FORCE)
+set(MESHOPT_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(meshoptimizer)
