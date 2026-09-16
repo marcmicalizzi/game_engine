@@ -48,7 +48,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ninja-build clang g++ \
             libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxfixes-dev libxss-dev \
-            libwayland-dev libxkbcommon-dev libegl1-mesa-dev libdrm-dev libgbm-dev
+            libwayland-dev libxkbcommon-dev libegl1-mesa-dev libgl1-mesa-dev libdrm-dev libgbm-dev \
+            libxtst-dev libdecor-0-dev libudev-dev
           cmake --version && ninja --version && clang++ --version && g++ --version && pwsh --version
       - name: Configure
         run: cmake --preset ${{ matrix.preset }}
