@@ -172,12 +172,12 @@ RgImage RenderGraph::import_image(const char* name, const ImageResource& image,
   return RgImage{images_.size() - 1};
 }
 
-u32 RenderGraph::add_pass_raw(const char* name, PassKind kind, ExecuteFn execute, void* context) {
+u32 RenderGraph::add_pass_raw(const char* name, PassKind kind, ExecuteFn body, void* context) {
   ENGINE_VERIFY(!compiled_, "RenderGraph: cannot add passes after compile");
   Pass pass{};
   pass.name = name;
   pass.kind = kind;
-  pass.execute = execute;
+  pass.execute = body;
   pass.context = context;
   pass.first_use = uses_.size();
   passes_.push_back(pass);

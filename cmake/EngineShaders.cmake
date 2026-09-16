@@ -60,7 +60,7 @@ function(engine_shaders)
       OUTPUT "${_spv}"
       COMMAND "${ENGINE_SLANGC}" "${_abs}"
               -target spirv -profile ${SH_PROFILE} -emit-spirv-directly
-              -fvk-use-entrypoint-name -O2 ${SH_FLAGS}
+              -fvk-use-entrypoint-name -O2 -warnings-disable 41012 ${SH_FLAGS}
               -o "${_spv}"
       DEPENDS "${_abs}"
       COMMENT "slangc: ${_src}"

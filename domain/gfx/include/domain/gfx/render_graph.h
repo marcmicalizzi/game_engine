@@ -134,7 +134,7 @@ class RenderGraph {
     PassBuilder builder(*this, pass);
     setup(builder);
   }
-  u32 add_pass_raw(const char* name, PassKind kind, ExecuteFn execute, void* context);
+  u32 add_pass_raw(const char* name, PassKind kind, ExecuteFn body, void* context);
 
   // --- compile and execute ---
   // Validates (every read has a prior writer or is imported; declared resources exist),

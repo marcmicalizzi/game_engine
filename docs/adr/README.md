@@ -26,3 +26,4 @@ Numbered, dated, and immutable once accepted. To change a decision, write a new 
 | [0020](0020-physically-reactive-world-by-default.md) | The world reacts physically by default: destruction on, deformation layer, soft bodies | Accepted |
 | [0021](0021-build-system-and-tooling.md) | CMake + Ninja, `engine_module()` manifests, PowerShell and C++ tooling, no Python | Accepted |
 | [0022](0022-consumer-game-order.md) | Desert Survival is the first consumer game; Island City the second | Accepted |
+| [0023](0023-bindless-resources.md) | Bindless resources through descriptor indexing and device addresses; descriptor buffers optional | Accepted |
