@@ -83,6 +83,12 @@ class PassBuilder {
   void write(RgBuffer buffer, Access access);
   void read(RgImage image, Access access);
   void write(RgImage image, Access access);
+  // Raster passes only: the graph begins and ends dynamic rendering around the body with these
+  // attachments, a full-extent viewport and scissor, and the declared load operation.
+  void color_attachment(RgImage image, VkAttachmentLoadOp load = VK_ATTACHMENT_LOAD_OP_LOAD,
+                        VkClearColorValue clear = {});
+  void depth_attachment(RgImage image, VkAttachmentLoadOp load = VK_ATTACHMENT_LOAD_OP_LOAD,
+                        float clear_depth = 0.0f);
 
  private:
   friend class RenderGraph;
@@ -149,6 +155,11 @@ class RenderGraph {
   const ImageResource& image(RgImage handle) const noexcept;
   // The layout an image is in during the currently executing pass (after that pass's barriers).
   VkImageLayout image_layout(RgImage handle) const noexcept;
+  // A whole-image view, created at compile for images used as attachments (VK_NULL_HANDLE
+  // otherwise); owned by the graph for transients and for imported images alike.
+  VkImageView image_view(RgImage handle) const noexcept;
+  // Extent of the current raster pass's attachments.
+  VkExtent2D render_area() const noexcept { return render_area_; }
   // After execute(): the layout an imported image was left in.
   VkImageLayout final_layout(RgImage handle) const noexcept;
 
@@ -161,6 +172,7 @@ class RenderGraph {
     u32 buffer_barriers = 0;
     u32 image_barriers = 0;
     u32 layout_transitions = 0;
+    u32 raster_passes = 0;
   };
   const Stats& stats() const noexcept { return stats_; }
 
@@ -185,6 +197,7 @@ class RenderGraph {
     const char* name;
     RgImageDesc desc;
     ImageResource resource;
+    VkImageView view = VK_NULL_HANDLE;  // created at compile when used as an attachment
     bool imported = false;
     State state;
     VkImageLayout final_layout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -196,6 +209,12 @@ class RenderGraph {
     Access access;
     bool write;
   };
+  struct Attachment {
+    u32 image;
+    VkAttachmentLoadOp load;
+    VkClearValue clear;
+    bool depth;
+  };
   struct Pass {
     const char* name;
     PassKind kind;
@@ -203,6 +222,8 @@ class RenderGraph {
     void* context;
     u32 first_use = 0;
     u32 use_count = 0;
+    u32 first_attachment = 0;
+    u32 attachment_count = 0;
     u32 first_buffer_barrier = 0;
     u32 buffer_barrier_count = 0;
     u32 first_image_barrier = 0;
@@ -211,7 +232,10 @@ class RenderGraph {
   };
 
   void add_use(u32 pass, bool is_image, u32 index, Access access, bool write);
+  void add_attachment(u32 pass, u32 image, VkAttachmentLoadOp load, VkClearValue clear, bool depth);
   bool allocate_transients(std::string* error);
+  bool create_attachment_views(std::string* error);
+  void begin_rendering(VkCommandBuffer commands, const Pass& pass);
   void compute_barriers();
 
   const Device* device_;
@@ -219,11 +243,13 @@ class RenderGraph {
   Vector<BufferNode> buffers_;
   Vector<ImageNode> images_;
   Vector<Use> uses_;
+  Vector<Attachment> attachments_;
   Vector<Pass> passes_;
   Vector<VkMemoryBarrier2> buffer_barriers_;
   Vector<VkImageMemoryBarrier2> image_barriers_;
   Vector<VkImageLayout> pass_image_layouts_;  // per (pass, image) layout during that pass
   u32 current_pass_ = ~u32{0};
+  VkExtent2D render_area_{};
   bool compiled_ = false;
   Stats stats_;
 };

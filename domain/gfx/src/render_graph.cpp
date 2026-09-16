@@ -1,5 +1,6 @@
 #include <core/base/assert.h>
 #include <core/log/log.h>
+#include <domain/gfx/bindless.h>
 #include <domain/gfx/render_graph.h>
 
 namespace engine::gfx {
@@ -85,6 +86,19 @@ void PassBuilder::read(RgImage image, Access access) {
 void PassBuilder::write(RgImage image, Access access) {
   graph_->add_use(pass_, true, image.index, access, true);
 }
+void PassBuilder::color_attachment(RgImage image, VkAttachmentLoadOp load,
+                                   VkClearColorValue clear) {
+  graph_->add_use(pass_, true, image.index, Access::ColorAttachment, true);
+  VkClearValue value{};
+  value.color = clear;
+  graph_->add_attachment(pass_, image.index, load, value, false);
+}
+void PassBuilder::depth_attachment(RgImage image, VkAttachmentLoadOp load, float clear_depth) {
+  graph_->add_use(pass_, true, image.index, Access::DepthAttachment, true);
+  VkClearValue value{};
+  value.depthStencil = {clear_depth, 0};
+  graph_->add_attachment(pass_, image.index, load, value, true);
+}
 
 // ---- RenderGraph -----------------------------------------------------------------------------
 
@@ -99,11 +113,13 @@ void RenderGraph::reset() noexcept {
     if (!b.imported) destroy_buffer(*device_, b.resource);
   }
   for (ImageNode& i : images_) {
+    destroy_image_view(*device_, i.view);
     if (!i.imported) destroy_image(*device_, i.resource);
   }
   buffers_.clear();
   images_.clear();
   uses_.clear();
+  attachments_.clear();
   passes_.clear();
   buffer_barriers_.clear();
   image_barriers_.clear();
@@ -180,8 +196,78 @@ u32 RenderGraph::add_pass_raw(const char* name, PassKind kind, ExecuteFn body, v
   pass.execute = body;
   pass.context = context;
   pass.first_use = uses_.size();
+  pass.first_attachment = attachments_.size();
   passes_.push_back(pass);
   return passes_.size() - 1;
+}
+
+void RenderGraph::add_attachment(u32 pass, u32 image, VkAttachmentLoadOp load, VkClearValue clear,
+                                 bool depth) {
+  ENGINE_VERIFY(pass == passes_.size() - 1, "RenderGraph: PassBuilder used outside its pass setup");
+  ENGINE_VERIFY(passes_[pass].kind == PassKind::Raster,
+                "RenderGraph: attachments need a Raster pass");
+  Attachment a{};
+  a.image = image;
+  a.load = load;
+  a.clear = clear;
+  a.depth = depth;
+  attachments_.push_back(a);
+  ++passes_[pass].attachment_count;
+}
+
+bool RenderGraph::create_attachment_views(std::string* error) {
+  for (const Attachment& a : attachments_) {
+    ImageNode& node = images_[a.image];
+    if (node.view != VK_NULL_HANDLE) continue;
+    if (!create_image_view(*device_, node.resource, node.view, error)) {
+      if (error != nullptr) error->insert(0, std::string("attachment view '") + node.name + "': ");
+      return false;
+    }
+  }
+  return true;
+}
+
+void RenderGraph::begin_rendering(VkCommandBuffer commands, const Pass& pass) {
+  VkRenderingAttachmentInfo colors[8]{};
+  VkRenderingAttachmentInfo depth{};
+  u32 color_count = 0;
+  bool has_depth = false;
+  render_area_ = VkExtent2D{0, 0};
+  for (u32 i = pass.first_attachment; i < pass.first_attachment + pass.attachment_count; ++i) {
+    const Attachment& a = attachments_[i];
+    const ImageNode& node = images_[a.image];
+    VkRenderingAttachmentInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    info.imageView = node.view;
+    info.imageLayout = a.depth ? VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL
+                               : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    info.loadOp = a.load;
+    info.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    info.clearValue = a.clear;
+    if (a.depth) {
+      depth = info;
+      has_depth = true;
+    } else if (color_count < 8) {
+      colors[color_count++] = info;
+    }
+    render_area_ = VkExtent2D{node.resource.width, node.resource.height};
+  }
+  VkRenderingInfo rendering{};
+  rendering.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+  rendering.renderArea = {{0, 0}, render_area_};
+  rendering.layerCount = 1;
+  rendering.colorAttachmentCount = color_count;
+  rendering.pColorAttachments = colors;
+  rendering.pDepthAttachment = has_depth ? &depth : nullptr;
+  vkCmdBeginRendering(commands, &rendering);
+  VkViewport viewport{};
+  viewport.width = static_cast<float>(render_area_.width);
+  viewport.height = static_cast<float>(render_area_.height);
+  viewport.minDepth = 0.0f;
+  viewport.maxDepth = 1.0f;
+  vkCmdSetViewport(commands, 0, 1, &viewport);
+  const VkRect2D scissor{{0, 0}, render_area_};
+  vkCmdSetScissor(commands, 0, 1, &scissor);
 }
 
 void RenderGraph::add_use(u32 pass, bool is_image, u32 index, Access access, bool write) {
@@ -318,7 +404,11 @@ bool RenderGraph::compile(std::string* error) {
     }
   }
   if (!allocate_transients(error)) return false;
+  if (!create_attachment_views(error)) return false;
   compute_barriers();
+  for (const Pass& pass : passes_) {
+    if (pass.kind == PassKind::Raster) ++stats_.raster_passes;
+  }
   stats_.passes = passes_.size();
   stats_.buffers = buffers_.size();
   stats_.images = images_.size();
@@ -343,7 +433,10 @@ void RenderGraph::execute(VkCommandBuffer commands) {
       vkCmdPipelineBarrier2(commands, &dependency);
     }
     current_pass_ = p;
+    const bool raster = pass.kind == PassKind::Raster && pass.attachment_count > 0;
+    if (raster) begin_rendering(commands, pass);
     pass.execute(commands, *this, pass.context);
+    if (raster) vkCmdEndRendering(commands);
   }
   current_pass_ = ~u32{0};
 }
@@ -369,6 +462,10 @@ VkImageLayout RenderGraph::image_layout(RgImage handle) const noexcept {
     ++layout_slot;
   }
   return VK_IMAGE_LAYOUT_UNDEFINED;
+}
+
+VkImageView RenderGraph::image_view(RgImage handle) const noexcept {
+  return handle.index < images_.size() ? images_[handle.index].view : VK_NULL_HANDLE;
 }
 
 VkImageLayout RenderGraph::final_layout(RgImage handle) const noexcept {

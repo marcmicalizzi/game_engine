@@ -98,6 +98,26 @@ bool create_compute_pipeline(const Device& device, VkShaderModule module, const 
                              std::string* error = nullptr);
 void destroy_compute_pipeline(const Device& device, ComputePipeline& pipeline) noexcept;
 
+// A graphics pipeline for dynamic rendering: no vertex input (geometry is pulled through device
+// addresses or generated), dynamic viewport and scissor, one color attachment, optional depth.
+struct GraphicsPipelineDesc {
+  VkShaderModule vertex = VK_NULL_HANDLE;
+  const char* vertex_entry = "vs_main";
+  VkShaderModule fragment = VK_NULL_HANDLE;
+  const char* fragment_entry = "fs_main";
+  VkPipelineLayout layout = VK_NULL_HANDLE;
+  VkFormat color_format = VK_FORMAT_UNDEFINED;
+  VkFormat depth_format = VK_FORMAT_UNDEFINED;
+  VkCullModeFlags cull = VK_CULL_MODE_NONE;
+  bool depth_test = false;
+  bool depth_write = false;
+  // Reversed-Z: greater-or-equal passes (core/math projections produce near = 1).
+  VkCompareOp depth_compare = VK_COMPARE_OP_GREATER_OR_EQUAL;
+};
+bool create_graphics_pipeline(const Device& device, const GraphicsPipelineDesc& desc,
+                              VkPipeline& out, std::string* error = nullptr);
+void destroy_pipeline(const Device& device, VkPipeline pipeline) noexcept;
+
 // synchronization2 image layout transition on the whole color aspect.
 void image_barrier(VkCommandBuffer commands, VkImage image, VkImageLayout old_layout,
                    VkImageLayout new_layout, VkPipelineStageFlags2 src_stage,

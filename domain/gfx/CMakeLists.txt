@@ -17,9 +17,11 @@ engine_module_tests(NAME gfx
 
 # Shaders used by the RHI's own tests: the first .slang through the toolchain.
 engine_shaders(NAME gfx_tests
-  SOURCES shaders/fill.slang shaders/scale.slang shaders/bindless_copy.slang shaders/bda_fill.slang)
+  SOURCES shaders/fill.slang shaders/scale.slang shaders/bindless_copy.slang shaders/bda_fill.slang
+          shaders/triangle.slang)
 if(TARGET engine_gfx_tests)
   target_sources(engine_gfx_tests PRIVATE tests/compute_tests.cpp tests/frame_tests.cpp
-                                          tests/render_graph_tests.cpp tests/bindless_tests.cpp)
+                                          tests/render_graph_tests.cpp tests/bindless_tests.cpp
+                                          tests/raster_tests.cpp)
   target_link_libraries(engine_gfx_tests PRIVATE engine_shaders_gfx_tests)
 endif()
