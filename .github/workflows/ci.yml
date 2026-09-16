@@ -46,7 +46,9 @@ jobs:
       - name: Install toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build clang g++
+          sudo apt-get install -y ninja-build clang g++ \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxfixes-dev libxss-dev \
+            libwayland-dev libxkbcommon-dev libegl1-mesa-dev libdrm-dev libgbm-dev
           cmake --version && ninja --version && clang++ --version && g++ --version && pwsh --version
       - name: Configure
         run: cmake --preset ${{ matrix.preset }}

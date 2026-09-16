@@ -32,7 +32,11 @@ TEST_CASE("swapchain: acquire, render, present, resize, capture") {
   window_desc.width = 160;
   window_desc.height = 120;
   window::Window window;
-  REQUIRE_MESSAGE(window.create(window_desc, &error), error);
+  if (!window.create(window_desc, &error)) {
+    MESSAGE("cannot create a window here: " << error);
+    window::shutdown();
+    return;
+  }
 
   gfx::DeviceOptions options;
   options.instance_extensions = extensions.data();

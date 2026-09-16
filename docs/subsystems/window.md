@@ -4,7 +4,7 @@
 
 **API.** `window::init()` starts the video subsystem (false with the reason on a machine without a display). `Window::create(WindowDesc)` opens a resizable, high-DPI-aware window; `pixel_width()/pixel_height()` are the framebuffer size, refreshed on every `Resized` event. `poll(Event&)` pulls one event at a time: `Quit`, `CloseRequested`, `Resized`, focus, `KeyDown/KeyUp` (a small `Key` enum for the common keys plus the raw scancode), mouse move, buttons, and wheel. `Window::vulkan_instance_extensions()` feeds `gfx::DeviceOptions::instance_extensions`; `create_vulkan_surface(instance)` and `destroy_vulkan_surface` bracket a `gfx::Swapchain`. Vulkan handle types are forward-declared the way SDL does it, so the header depends on neither SDL nor the Vulkan headers.
 
-**Build.** `cmake/EngineGraphics.cmake` fetches SDL `release-3.4.16` (`ENGINE_SDL_TAG`) and builds it static with audio, render, GPU, camera, and sensor subsystems off; joystick and haptics stay on for gamepads. On Linux without X11 or Wayland development headers SDL builds with no video driver, and `init()` fails cleanly.
+**Build.** `cmake/EngineGraphics.cmake` fetches SDL `release-3.4.16` (`ENGINE_SDL_TAG`) and builds it static with audio, render, GPU, camera, and sensor subsystems off; joystick and haptics stay on for gamepads. On Linux SDL needs the X11 or Wayland development headers at build time (the libraries themselves are loaded at run time), and refuses to configure without them; the CI workflow installs them. A headless server build can set `SDL_UNIX_CONSOLE_BUILD=ON` to skip that check, and `init()` then fails cleanly at run time.
 
 **Depends on.** `base`, `containers`, `log`; SDL3 (third_party/LICENSES.md).
 

@@ -204,7 +204,7 @@ int main(int argc, char** argv) {
   window::Window window;
   if (!window.create(window_desc, &error)) {
     window::shutdown();
-    return fail("window", error);
+    return unavailable("cannot create a window", error);
   }
 
   gfx::DeviceOptions device_options;
