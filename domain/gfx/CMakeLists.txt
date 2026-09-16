@@ -4,7 +4,7 @@
 engine_module(NAME gfx LAYER domain
   DEPS base containers memory log schemas
   EXTERNAL_DEPS volk::volk GPUOpen::VulkanMemoryAllocator
-  SOURCES src/adapter.cpp src/device.cpp src/vma.cpp)
+  SOURCES src/adapter.cpp src/device.cpp src/vma.cpp src/frame.cpp src/render_graph.cpp)
 # Third-party headers: the engine's warning policy applies to engine code only.
 target_include_directories(engine_gfx SYSTEM PUBLIC
   $<TARGET_PROPERTY:Vulkan::Headers,INTERFACE_INCLUDE_DIRECTORIES>
@@ -15,8 +15,9 @@ engine_module_tests(NAME gfx
   SOURCES tests/adapter_tests.cpp tests/device_tests.cpp)
 
 # Shaders used by the RHI's own tests: the first .slang through the toolchain.
-engine_shaders(NAME gfx_tests SOURCES shaders/fill.slang)
+engine_shaders(NAME gfx_tests SOURCES shaders/fill.slang shaders/scale.slang)
 if(TARGET engine_gfx_tests)
-  target_sources(engine_gfx_tests PRIVATE tests/compute_tests.cpp)
+  target_sources(engine_gfx_tests PRIVATE tests/compute_tests.cpp tests/frame_tests.cpp
+                                          tests/render_graph_tests.cpp)
   target_link_libraries(engine_gfx_tests PRIVATE engine_shaders_gfx_tests)
 endif()
