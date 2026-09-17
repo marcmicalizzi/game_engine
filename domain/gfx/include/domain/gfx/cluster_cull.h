@@ -1,10 +1,22 @@
 #pragma once
 
-// Parameters of the GPU cluster culling and LOD selection pass (shaders/cluster_cull.slang),
-// the two rasterizers' shared push block, the visibility resolve, and the Hi-Z pyramid used by
-// two-pass occlusion culling (shaders/hiz_build.slang). The RHI stays ignorant of the geometry
-// module: the passes read cluster and LOD descriptors through device addresses whose layouts
-// geometry pins with size tables, and these structs only carry cameras, frustums, and addresses.
+// The GPU-resident scene (docs/plan/04-renderer.md §4.2) and the passes that consume it: the
+// cluster culling and LOD selection pass (shaders/cluster_cull.slang), the two rasterizers'
+// shared push block, the visibility resolve, and the Hi-Z pyramid used by two-pass occlusion
+// culling (shaders/hiz_build.slang). The RHI stays ignorant of the geometry module: the passes
+// read cluster and LOD descriptors through device addresses whose layouts geometry pins with
+// size tables, and these structs only carry cameras, frustums, transforms, and addresses.
+//
+// **The scene is instances of meshes.** Every mesh of a scene lives in one set of global buffers
+// (clusters, LOD, triangles, attributes, quantized positions) with the offsets baked into each
+// `geometry::ClusterDesc`; a `MeshDesc` says which range of clusters a mesh owns and which
+// 16-bit grid its positions are on, and an `InstanceDesc` places one mesh in the world. The unit
+// of culling is the **pair** (instance, cluster): instance i owns `pair_count` of them starting
+// at `InstanceDesc::first_pair`, a prefix sum over the instances in order, so the cull dispatch
+// covers `CullParams::pair_count` threads and thread t finds its instance by binary search.
+// Survivors append a `uint2 {instance, cluster}` to the visible list, and the visibility buffer's
+// id is `visible_index << 8 | triangle`: the rasterizers and the resolve read `visible[i]` to get
+// back to the instance and the cluster.
 //
 //     CullParams params{};
 //     set_frustum(params, frustum_from_view_proj(view_proj));
@@ -12,12 +24,16 @@
 //     params.camera = Vec4(eye, znear);
 //     params.lod = Vec4(proj_scale, threshold_px, 1.0f, 1.0f);
 //     params.cone_cull = 1;  // unless the mesh is two-sided
-//     ...write to a host-visible buffer, push its address, dispatch cull_group_count(n)...
+//     params.instances = instances.address;  // InstanceDesc[instance_count]
+//     params.meshes = meshes.address;        // MeshDesc[]
+//     params.instance_count = n; params.pair_count = total;
+//     ...write to a host-visible buffer, push its address, dispatch cull_group_count(pairs)...
 //     vkCmdDrawMeshTasksIndirectEXT(commands, draw_args.buffer, 0, 1, sizeof(u32) * 3);
 //
 // Before the dispatch, `draw_args` (and `sw_args`) must hold {0, 1, 1}: the pass counts
 // survivors into x. For occlusion culling, `hiz` points at a pyramid laid out by hiz_layout(),
-// `pass` is 1 then 2 within a frame, and `flags`/`prev_flags` ping-pong between frames.
+// `pass` is 1 then 2 within a frame, and `flags`/`prev_flags` ping-pong between frames; both are
+// indexed by pair, so both are `pair_count` words long.
 
 #include <core/base/types.h>
 #include <core/math/math.h>
@@ -28,68 +44,114 @@ inline constexpr u32 k_hiz_max_mips = 16;  // enough for 32768 x 32768
 
 // Mirrors CullParams in cluster_cull.slang. 376 bytes.
 struct CullParams {
-  Vec4 planes[6];  // inward-facing, normalized
-  Vec4 camera;     // xyz position, w = znear
-  Vec4 lod;        // x = proj_scale (cot(fov_y/2) * viewport_height / 2), y = threshold_px,
-                   // z = LOD selection enabled, w = frustum culling enabled
-  Vec4 raster;     // x = projected cluster diameter (px) below which a cluster is software
-                   // rasterized, y = mode (k_raster_*), z and w unused
-  u32 cluster_count = 0;
+  Vec4 planes[6];         // inward-facing, normalized
+  Vec4 camera;            // xyz position, w = znear
+  Vec4 lod;               // x = proj_scale (cot(fov_y/2) * viewport_height / 2), y = threshold_px,
+                          // z = LOD selection enabled, w = frustum culling enabled
+  Vec4 raster;            // x = projected cluster diameter (px) below which a cluster is software
+                          // rasterized, y = mode (k_raster_*), z and w unused
+  u32 cluster_count = 0;  // the global cluster array; the dispatch covers pair_count instead
   u32 plane_count = 0;
   u32 count_index = 0;  // which u32 of draw_args counts hardware survivors: 0 for mesh-task
                         // groups {count, 1, 1}, 1 for vkCmdDrawIndirect {verts, count, 0, 0}
   u32 cone_cull = 0;    // 1: backface-cull clusters by their normal cone (ClusterDesc::cone)
   u64 clusters = 0;     // geometry::ClusterDesc[]
   u64 lods = 0;         // geometry::ClusterLodDesc[]
-  u64 visible = 0;      // u32[cluster_count]: hardware-rasterized survivors
+  u64 visible = 0;      // u32x2[]: {instance, cluster} of the hardware survivors. Every draw of a
+                        // frame appends to its own run of one list, so this is the run's address
+                        // and the draw's ClusterDrawParams::visible_offset is the run's index.
   u64 draw_args = 0;    // u32[3] = {survivors, 1, 1} for vkCmdDrawMeshTasksIndirectEXT
-  u64 sw_visible = 0;   // u32[cluster_count]: software-rasterized survivors
+  u64 sw_visible = 0;   // u32x2[]: the software-rasterized survivors, in their own run
   u64 sw_args = 0;      // u32[3] = {survivors, 1, 1} for vkCmdDispatchIndirect
   // Occlusion culling; hiz == 0 disables it.
   Mat4 view_proj;
   u64 hiz = 0;         // f32[] pyramid from hiz_layout()
-  u64 prev_flags = 0;  // u32[cluster_count]: drawn last frame
-  u64 flags = 0;       // u32[cluster_count]: drawn this frame (cleared before pass 1)
+  u64 prev_flags = 0;  // u32[pair_count]: drawn last frame
+  u64 flags = 0;       // u32[pair_count]: drawn this frame (cleared before pass 1)
   u32 hiz_width = 0;
   u32 hiz_height = 0;
   u32 hiz_mips = 0;
   u32 pass = 0;  // 0 single pass, 1 last frame's visible set, 2 the rest
   u32 hiz_offsets[k_hiz_max_mips] = {};
+  // The scene.
+  u64 instances = 0;  // InstanceDesc[instance_count], in order of first_pair
+  u64 meshes = 0;     // MeshDesc[], indexed by InstanceDesc::mesh
+  u32 instance_count = 0;
+  u32 pair_count = 0;  // the prefix sum: one thread per (instance, cluster) pair
 };
-static_assert(sizeof(CullParams) == 376);
+static_assert(sizeof(CullParams) == 400);
+static_assert(sizeof(CullParams) % 16 == 0, "the block is read as float4 rows on the GPU");
 
 inline constexpr f32 k_raster_hardware = 0.0f;  // CullParams::raster.y
 inline constexpr f32 k_raster_software = 1.0f;
 inline constexpr f32 k_raster_split = 2.0f;
 
 // GPU-mirrored; keep in step with the MeshDesc struct in the shaders. 32 bytes, read through a
-// device address. One per mesh: the 16-bit position grid `geometry::quantize_positions` built
-// and the stream of three u16 per vertex on it (`geometry::ClusterMesh::quantized`, padded to an
-// even count so the shaders' load_position may read the last triple as two 32-bit words). Six
-// bytes of position per vertex instead of twelve; the acceleration structure builders still read
-// the float positions.
+// device address. One per mesh of the scene: the 16-bit position grid this mesh's positions are
+// on (`geometry::ClusterMeshPart`), the stream of three u16 per vertex that every mesh shares
+// (`geometry::ClusterMesh::quantized`, indexed by the scene-wide vertex index and padded to an
+// even count so the shaders' load_position may read the last triple as two 32-bit words), and
+// the range of the global cluster array this mesh owns. Six bytes of position per vertex instead
+// of twelve; the acceleration structure builders still read the float positions.
 struct MeshDesc {
-  Vec4 quant{};       // xyz grid origin, w grid step
-  u64 quantized = 0;  // u16[3 * vertex_count], rounded up to an even count
-  u64 pad = 0;
+  Vec4 quant{};           // xyz grid origin, w grid step: this mesh's own grid
+  u64 quantized = 0;      // u16[3 * vertex_count] of the whole scene, rounded up to an even count
+  u32 first_cluster = 0;  // in the global cluster array
+  u32 cluster_count = 0;
 };
 static_assert(sizeof(MeshDesc) == 32);
 
+// InstanceDesc::flags, bit 0: the world transform scales every axis alike, so a normal cone may
+// be tested (rotating its axis keeps it a cone) and a normal only needs the rotation.
+inline constexpr u32 k_instance_uniform_scale = 1u;
+
+// GPU-mirrored; keep in step with the InstanceDesc struct in the shaders. 96 bytes, read through
+// a device address. One per instance of the scene, in order of `first_pair`.
+struct InstanceDesc {
+  Mat4 world;             // mesh space to world; the top three rows are used
+  u32 mesh = 0;           // index into the MeshDesc array
+  u32 material_base = 0;  // added to the cluster's material index in the resolve
+  u32 first_pair = 0;     // prefix sum of the instances' mesh cluster counts, in order
+  f32 scale_max = 1.0f;   // largest axis scale: radii and LOD errors multiply by it
+  u32 flags = k_instance_uniform_scale;
+  u32 pad[3] = {};
+};
+static_assert(sizeof(InstanceDesc) == 96);
+
+// Fills `world`, `scale_max`, and the uniform-scale flag from an affine transform. The scales are
+// the lengths of the upper-left 3x3's columns; "uniform" means they agree to a part in 10^4,
+// which is what lets the cone test and the cheap normal transform run.
+inline void set_instance_transform(InstanceDesc& instance, const Mat4& world) noexcept {
+  instance.world = world;
+  const f32 sx = length(world.c[0].xyz());
+  const f32 sy = length(world.c[1].xyz());
+  const f32 sz = length(world.c[2].xyz());
+  const f32 hi = sx > sy ? (sx > sz ? sx : sz) : (sy > sz ? sy : sz);
+  const f32 lo = sx < sy ? (sx < sz ? sx : sz) : (sy < sz ? sy : sz);
+  instance.scale_max = hi;
+  instance.flags = hi - lo <= 1.0e-4f * hi ? k_instance_uniform_scale : 0u;
+}
+
 // Mirrors MeshParams in cluster_mesh.slang and RasterParams in cluster_sw_raster.slang: the push
-// constants of the mesh-shader and software rasterization paths. 120 bytes.
+// constants of the mesh-shader and software rasterization paths. 128 bytes, the largest push
+// block the renderer allows.
 struct ClusterDrawParams {
   Mat4 view_proj;
   u64 clusters = 0;
-  u64 mesh = 0;  // MeshDesc: the quantized positions and their grid
+  u64 mesh = 0;  // MeshDesc[]: the quantized positions and each mesh's grid
   u64 triangles = 0;
-  u32 cluster_count = 0;
+  // Index of this draw's first entry in the whole scene's visible list, which the id carries and
+  // the resolve indexes. Occlusion pass 2 and the software rasterizer append to their own runs of
+  // one list, so `visible` points at the run and this shifts the ids back onto the whole list.
+  u32 visible_offset = 0;
   u32 triangles_per_cluster = 0;  // vertex path only: the draw's vertex count / 3
-  u64 visible = 0;                // cull output; 0 draws clusters in index order
+  u64 visible = 0;     // u32x2[]: {instance, cluster} per entry; 0 draws {0, i} in index order
   u64 visibility = 0;  // u64[width * height] visibility buffer (fs_visibility, software raster)
   u32 width = 0;
   u32 height = 0;
+  u64 instances = 0;  // InstanceDesc[]
 };
-static_assert(sizeof(ClusterDrawParams) == 120);
+static_assert(sizeof(ClusterDrawParams) == 128);
 
 // Mirrors HizParams in hiz_build.slang: the push constants of one pyramid level. 40 bytes.
 struct HizParams {
@@ -117,8 +179,9 @@ inline void set_frustum(CullParams& params, const Frustum& frustum) noexcept {
   }
 }
 
-inline u32 cull_group_count(u32 cluster_count) noexcept {
-  return (cluster_count + k_cull_workgroup_size - 1) / k_cull_workgroup_size;
+// One thread per (instance, cluster) pair.
+inline u32 cull_group_count(u32 pair_count) noexcept {
+  return (pair_count + k_cull_workgroup_size - 1) / k_cull_workgroup_size;
 }
 
 inline u32 hiz_mip_extent(u32 extent, u32 mip) noexcept {

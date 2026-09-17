@@ -1,12 +1,14 @@
 #pragma once
 
 // Parameters of the visibility resolve (shaders/visibility_resolve.slang): the first material
-// pass. Read through a device address; the fragment pass pushes only the address. Positions come
-// off the same 16-bit grid the rasterizers read (`MeshDesc` in cluster_cull.h), so the resolve
-// reconstructs exactly the triangle that was drawn. Materials are a flat table indexed per
-// cluster, which is enough until the material graph arrives. Shading is the physically based
-// BSDF of shaders/brdf.slang (GGX specular, Lambert diffuse) under a directional sun, a list of
-// analytic lights, and a sky hemisphere.
+// pass. Read through a device address; the fragment pass pushes only the address. A pixel's id
+// is `visible_index << 8 | triangle`, so the resolve reads `visible[visible_index]` to recover
+// the (instance, cluster) pair the rasterizer drew, decodes the positions off that instance's
+// mesh's 16-bit grid (`MeshDesc` in cluster_cull.h) and transforms them by the instance's world
+// matrix: exactly the triangle that was drawn. Materials are a flat table indexed per cluster
+// plus the instance's `material_base`, which is enough until the material graph arrives. Shading
+// is the physically based BSDF of shaders/brdf.slang (GGX specular, Lambert diffuse) under a
+// directional sun, a list of analytic lights, and a sky hemisphere.
 
 #include <core/base/types.h>
 #include <core/math/math.h>
@@ -56,7 +58,7 @@ enum class ResolveMode : u32 {
   Uvs = 5,
 };
 
-// Mirrors ResolveParams in visibility_resolve.slang. 192 bytes.
+// Mirrors ResolveParams in visibility_resolve.slang. 208 bytes.
 struct ResolveParams {
   Vec4 sky{};     // rgb shown for empty pixels and used as the hemisphere ambient
   Vec4 sun{};     // xyz normalized direction towards the light, w intensity
@@ -64,7 +66,7 @@ struct ResolveParams {
   Mat4 view_proj;
   u64 visibility = 0;         // u64[width * height]
   u64 clusters = 0;           // geometry::ClusterDesc[]
-  u64 mesh = 0;               // MeshDesc (cluster_cull.h): the quantized positions and their grid
+  u64 mesh = 0;               // MeshDesc[] (cluster_cull.h): the positions and each mesh's grid
   u64 triangles = 0;          // u32[]: packed local indices
   u64 materials = 0;          // ResolveMaterial[]
   u64 cluster_materials = 0;  // u32[cluster_count]
@@ -74,8 +76,10 @@ struct ResolveParams {
   u32 height = 0;
   u32 mode = static_cast<u32>(ResolveMode::Shaded);
   u32 light_count = 0;
+  u64 instances = 0;  // InstanceDesc[] (cluster_cull.h)
+  u64 visible = 0;    // u32x2[]: the cull pass's visible list; 0 reads {0, visible_index}
 };
-static_assert(sizeof(ResolveParams) == 192);
+static_assert(sizeof(ResolveParams) == 208);
 static_assert(sizeof(ResolveParams) % 16 == 0, "the block is read as float4 rows on the GPU");
 
 }  // namespace engine::gfx

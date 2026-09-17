@@ -193,10 +193,10 @@ bool create_tlas(const Device& device, u32 instance_count,
   return true;
 }
 
-void write_instances(std::span<const InstanceDesc> instances, void* out) noexcept {
+void write_instances(std::span<const TlasInstance> instances, void* out) noexcept {
   auto* bytes = static_cast<u8*>(out);
   for (u32 i = 0; i < instances.size(); ++i) {
-    const InstanceDesc& desc = instances[i];
+    const TlasInstance& desc = instances[i];
     VkAccelerationStructureInstanceKHR record{};
     for (u32 row = 0; row < 3; ++row) {
       for (u32 col = 0; col < 4; ++col)

@@ -48,7 +48,7 @@ struct ClusterGeometry {
 };
 
 // One instance of a bottom-level structure in a top-level one.
-struct InstanceDesc {
+struct TlasInstance {
   Mat4 transform;            // affine; the top three rows go into the record
   u32 custom_index = 0;      // 24 bits: InstanceID() in shaders
   u32 mask = 0xff;           // 8 bits
@@ -87,7 +87,7 @@ bool create_tlas(const Device& device, u32 instance_count,
                  std::string* error = nullptr);
 // Writes instance records (k_instance_record_bytes each) to `out`, which the TLAS build reads
 // from a buffer with k_build_input_usage.
-void write_instances(std::span<const InstanceDesc> instances, void* out) noexcept;
+void write_instances(std::span<const TlasInstance> instances, void* out) noexcept;
 void build_tlas(VkCommandBuffer commands, const AccelerationStructure& tlas,
                 VkDeviceAddress instances, u32 instance_count,
                 VkBuildAccelerationStructureFlagsKHR flags, const BufferResource& scratch);

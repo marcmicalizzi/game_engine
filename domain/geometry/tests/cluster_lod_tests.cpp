@@ -249,3 +249,96 @@ TEST_CASE("cluster lod: DAGs built per part merge into one mesh with the leaves 
   CHECK_FALSE(merge_cluster_lod(empty_parts, merged, nullptr, &error));
   CHECK_FALSE(error.empty());
 }
+
+TEST_CASE("cluster lod: separate meshes merge into a scene, each keeping its own grid") {
+  // A big terrain and a small one a long way off: one grid over both would spend the 16 bits on
+  // the distance between them, which is exactly what merge_cluster_meshes must not do.
+  Vector<Vec3> positions_a;
+  Vector<u32> indices_a;
+  make_terrain(33, 20.0f, positions_a, indices_a);
+  Vector<Vec3> positions_b;
+  Vector<u32> indices_b;
+  make_terrain(17, 0.02f, positions_b, indices_b);
+  ClusterLodMesh meshes[2];
+  std::string error;
+  REQUIRE_MESSAGE(build_cluster_lod(positions_a, indices_a, ClusterLodOptions{}, meshes[0], &error),
+                  error);
+  REQUIRE_MESSAGE(build_cluster_lod(positions_b, indices_b, ClusterLodOptions{}, meshes[1], &error),
+                  error);
+
+  ClusterLodMesh scene;
+  Vector<ClusterMeshPart> parts;
+  REQUIRE_MESSAGE(merge_cluster_meshes(meshes, scene, parts, &error), error);
+  REQUIRE(parts.size() == 2);
+  const u32 total_clusters = meshes[0].mesh.clusters.size() + meshes[1].mesh.clusters.size();
+  CHECK(scene.mesh.clusters.size() == total_clusters);
+  CHECK(scene.lod.size() == total_clusters);
+  CHECK(scene.mesh.vertices.size() ==
+        meshes[0].mesh.vertices.size() + meshes[1].mesh.vertices.size());
+  CHECK(scene.mesh.attributes.size() == scene.mesh.vertices.size());
+  CHECK(scene.leaf_triangle_count == 2 * 32 * 32 + 2 * 16 * 16);
+  CHECK(scene.group_count == meshes[0].group_count + meshes[1].group_count);
+
+  // Each mesh keeps its own grid, so the small one is not quantized on the big one's step.
+  for (u32 m = 0; m < 2; ++m) {
+    CHECK(parts[m].quant_scale == meshes[m].mesh.quant_scale);
+    CHECK(parts[m].quant_origin == meshes[m].mesh.quant_origin);
+    CHECK(parts[m].cluster_count == meshes[m].mesh.clusters.size());
+    CHECK(parts[m].leaf_cluster_count == meshes[m].level_cluster_counts[0]);
+    CHECK(parts[m].first_vertex == (m == 0 ? 0u : meshes[0].mesh.vertices.size()));
+  }
+  CHECK(parts[0].first_cluster == 0);
+  CHECK(parts[1].first_cluster == parts[0].cluster_count);
+  CHECK(parts[1].quant_scale * 100.0f < parts[0].quant_scale);
+  MESSAGE("grids: " << parts[0].quant_scale << " and " << parts[1].quant_scale);
+
+  // Every mesh's clusters are contiguous, its own leaves first, and its offsets shifted.
+  for (u32 m = 0; m < 2; ++m) {
+    const ClusterMeshPart& part = parts[m];
+    for (u32 i = 0; i < part.cluster_count; ++i) {
+      const u32 index = part.first_cluster + i;
+      CHECK((scene.lod[index].level == 0) == (i < part.leaf_cluster_count));
+      const ClusterDesc& c = scene.mesh.clusters[index];
+      CHECK(c.vertex_offset >= part.first_vertex);
+      CHECK(c.vertex_offset + c.vertex_count <= part.first_vertex + meshes[m].mesh.vertices.size());
+    }
+  }
+
+  // Three u16 a vertex at the scene-wide vertex index, padded to an even count, and every vertex
+  // within half a step of its own mesh's grid.
+  CHECK(scene.mesh.quantized.size() >= scene.mesh.vertices.size() * 3);
+  CHECK(scene.mesh.quantized.size() % 2 == 0);
+  f32 worst_steps = 0.0f;
+  for (u32 m = 0; m < 2; ++m) {
+    const ClusterMeshPart& part = parts[m];
+    for (u32 v = 0; v < meshes[m].mesh.vertices.size(); ++v) {
+      const u32 index = part.first_vertex + v;
+      const Vec3 p = scene.mesh.vertices[index];
+      const Vec3 q =
+          part.quant_origin + Vec3{static_cast<f32>(scene.mesh.quantized[index * 3 + 0]),
+                                   static_cast<f32>(scene.mesh.quantized[index * 3 + 1]),
+                                   static_cast<f32>(scene.mesh.quantized[index * 3 + 2])} *
+                                  part.quant_scale;
+      const f32 axis[3] = {std::fabs(q.x - p.x), std::fabs(q.y - p.y), std::fabs(q.z - p.z)};
+      for (const f32 e : axis)
+        worst_steps = std::fmax(worst_steps, e / part.quant_scale);
+    }
+  }
+  CHECK(worst_steps <= 0.5f + 1e-3f);
+  MESSAGE("worst quantization error over both meshes: " << worst_steps << " of a grid step");
+
+  // The first mesh's grid is the merged mesh's, so a one-mesh merge behaves as before.
+  CHECK(scene.mesh.quant_scale == meshes[0].mesh.quant_scale);
+  ClusterLodMesh single;
+  Vector<ClusterMeshPart> single_parts;
+  REQUIRE(merge_cluster_meshes(std::span<const ClusterLodMesh>(&meshes[1], 1), single, single_parts,
+                               &error));
+  CHECK(single.mesh.quant_scale == meshes[1].mesh.quant_scale);
+  CHECK(single_parts.size() == 1);
+
+  // Empty input and an empty mesh are rejected.
+  CHECK_FALSE(merge_cluster_meshes({}, scene, parts, &error));
+  ClusterLodMesh empty_meshes[2] = {meshes[0], ClusterLodMesh{}};
+  CHECK_FALSE(merge_cluster_meshes(empty_meshes, scene, parts, &error));
+  CHECK_FALSE(error.empty());
+}

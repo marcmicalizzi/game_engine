@@ -6,6 +6,8 @@
 // pixels, and the two must match each other. The test reports build and trace times and
 // memory for each path, which is the data E2 exists to produce. Skips without cluster
 // acceleration structures (NVIDIA RTX only), ray queries, or 64-bit buffer atomics.
+#include "scene_fixture.h"
+
 #include <domain/geometry/cluster_lod.h>
 #include <domain/gfx/acceleration.h>
 #include <domain/gfx/bindless.h>
@@ -155,12 +157,11 @@ void run_comparison(gfx::Device& device, u32 grid, f32 threshold_px, u32 k_w, u3
   }
   gfx::BufferResource clusters;
   gfx::BufferResource vertices;
-  gfx::BufferResource quantized;
-  gfx::BufferResource mesh_buffer;
   gfx::BufferResource triangles;
   gfx::BufferResource cut_buffer;
   gfx::BufferResource index16_buffer;
   gfx::BufferResource index8_buffer;
+  gfx_test::SingleInstance scene;
   REQUIRE(gfx::upload_buffer(device, lod.mesh.clusters.data(),
                              cluster_count * sizeof(geometry::ClusterDesc), k_storage, clusters,
                              &error));
@@ -168,19 +169,19 @@ void run_comparison(gfx::Device& device, u32 grid, f32 threshold_px, u32 k_w, u3
                              lod.mesh.vertices.size() * sizeof(Vec3),
                              k_storage | gfx::k_build_input_usage, vertices, &error));
   // The rasterizer reads the 16-bit grid; the cluster structure builds read the floats.
-  REQUIRE(gfx::upload_buffer(device, lod.mesh.quantized.data(),
-                             lod.mesh.quantized.size() * sizeof(u16), k_storage, quantized,
-                             &error));
-  gfx::MeshDesc mesh_block{};
-  mesh_block.quant = Vec4{lod.mesh.quant_origin, lod.mesh.quant_scale};
-  mesh_block.quantized = quantized.address;
-  REQUIRE(
-      gfx::upload_buffer(device, &mesh_block, sizeof(mesh_block), k_storage, mesh_buffer, &error));
+  REQUIRE(scene.create(device, lod.mesh, cluster_count, &error));
   REQUIRE(gfx::upload_buffer(device, lod.mesh.triangles.data(),
                              lod.mesh.triangles.size() * sizeof(u32), k_storage, triangles,
                              &error));
-  REQUIRE(gfx::upload_buffer(device, cut.data(), cut_count * sizeof(u32), k_storage, cut_buffer,
-                             &error));
+  // The cut as a visible list, {instance, cluster} per entry: the entry index is what the
+  // visibility id carries, and it is the geometry index both ray paths report.
+  Vector<u32> cut_entries;
+  for (const u32 c : cut) {
+    cut_entries.push_back(0);  // the one instance
+    cut_entries.push_back(c);
+  }
+  REQUIRE(gfx::upload_buffer(device, cut_entries.data(), cut_entries.size() * sizeof(u32),
+                             k_storage, cut_buffer, &error));
   REQUIRE(gfx::upload_buffer(device, indices16.data(), indices16.size() * sizeof(u16),
                              gfx::k_build_input_usage, index16_buffer, &error));
   REQUIRE(gfx::upload_buffer(device, indices8.data(), indices8.size(), gfx::k_build_input_usage,
@@ -198,7 +199,7 @@ void run_comparison(gfx::Device& device, u32 grid, f32 threshold_px, u32 k_w, u3
     g.triangle_count = desc.triangle_count;
     geometries.push_back(g);
     gfx::ClusterBuildInput in;
-    in.cluster_id = cut[k];
+    in.cluster_id = k;  // the entry of the visible list, which is what a visibility id names
     in.triangle_count = desc.triangle_count;
     in.vertex_count = desc.vertex_count;
     in.vertices = g.vertices;
@@ -218,7 +219,7 @@ void run_comparison(gfx::Device& device, u32 grid, f32 threshold_px, u32 k_w, u3
   limits.max_clusters = cut_count;
   limits.max_triangles_per_cluster = triangles_per_cluster;
   limits.max_vertices_per_cluster = geometry::ClusterLodOptions{}.max_vertices;
-  limits.max_geometry_index = cluster_count - 1;
+  limits.max_geometry_index = cut_count - 1;
   gfx::ClusterSet set;
   gfx::ClusterBlas cluster_blas;
   REQUIRE_MESSAGE(gfx::create_cluster_set(device, limits, set, &error), error);
@@ -283,12 +284,12 @@ void run_comparison(gfx::Device& device, u32 grid, f32 threshold_px, u32 k_w, u3
                              khr_instances, &error));
   REQUIRE(gfx::create_buffer(device, gfx::k_instance_record_bytes, gfx::k_build_input_usage, true,
                              clas_instances, &error));
-  gfx::InstanceDesc khr_instance;
+  gfx::TlasInstance khr_instance;
   khr_instance.blas = khr_blas.address;
-  gfx::InstanceDesc clas_instance;
+  gfx::TlasInstance clas_instance;
   clas_instance.blas = cluster_blas_address;
-  gfx::write_instances(std::span<const gfx::InstanceDesc>(&khr_instance, 1), khr_instances.mapped);
-  gfx::write_instances(std::span<const gfx::InstanceDesc>(&clas_instance, 1),
+  gfx::write_instances(std::span<const gfx::TlasInstance>(&khr_instance, 1), khr_instances.mapped);
+  gfx::write_instances(std::span<const gfx::TlasInstance>(&clas_instance, 1),
                        clas_instances.mapped);
   const u32 khr_scene = bindless.add_acceleration_structure(khr_tlas.handle);
   const u32 clas_scene = bindless.add_acceleration_structure(clas_tlas.handle);
@@ -333,9 +334,9 @@ void run_comparison(gfx::Device& device, u32 grid, f32 threshold_px, u32 k_w, u3
   gfx::ClusterDrawParams draw{};
   draw.view_proj = view_proj;
   draw.clusters = clusters.address;
-  draw.mesh = mesh_buffer.address;
+  draw.mesh = scene.meshes.address;
+  draw.instances = scene.instances.address;
   draw.triangles = triangles.address;
-  draw.cluster_count = cut_count;
   draw.triangles_per_cluster = triangles_per_cluster;
   draw.visible = cut_buffer.address;
   draw.visibility = vis[0].address;
@@ -348,7 +349,7 @@ void run_comparison(gfx::Device& device, u32 grid, f32 threshold_px, u32 k_w, u3
     ray.inv_view_proj = inverse(view_proj);
     ray.camera = Vec4{eye, 0.0f};
     ray.output = vis[1 + p].address;
-    ray.cut = p == 0 ? cut_buffer.address : 0;  // CLAS geometry indices are cluster ids already
+    ray.instance_base = 0;  // both paths report the visible entry as the geometry index
     ray.width = k_w;
     ray.height = k_h;
     ray.scene = p == 0 ? khr_scene : clas_scene;
@@ -492,10 +493,11 @@ void run_comparison(gfx::Device& device, u32 grid, f32 threshold_px, u32 k_w, u3
   gfx::destroy_acceleration_structure(device, clas_tlas);
   gfx::destroy_cluster_set(device, set);
   gfx::destroy_cluster_blas(device, cluster_blas);
+  scene.destroy(device);
   for (gfx::BufferResource* b :
        {&records, &scratch, &khr_instances, &clas_instances, &host, &clusters, &vertices,
-        &quantized, &mesh_buffer, &triangles, &cut_buffer, &index16_buffer, &index8_buffer, &vis[0],
-        &vis[1], &vis[2], &params[0], &params[1]}) {
+        &triangles, &cut_buffer, &index16_buffer, &index8_buffer, &vis[0], &vis[1], &vis[2],
+        &params[0], &params[1]}) {
     gfx::destroy_buffer(device, *b);
   }
 }

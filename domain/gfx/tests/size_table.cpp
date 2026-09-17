@@ -10,13 +10,15 @@ using namespace engine;
 
 ENGINE_EXPECT_SIZE(32, 8, gfx::MeshDesc);
 
-ENGINE_EXPECT_SIZE(120, 8, gfx::ClusterDrawParams);
+ENGINE_EXPECT_SIZE(96, 4, gfx::InstanceDesc);
 
-ENGINE_EXPECT_SIZE(376, 8, gfx::CullParams);
+ENGINE_EXPECT_SIZE(128, 8, gfx::ClusterDrawParams);
+
+ENGINE_EXPECT_SIZE(400, 8, gfx::CullParams);
 
 ENGINE_EXPECT_SIZE(40, 8, gfx::HizParams);
 
-ENGINE_EXPECT_SIZE(192, 8, gfx::ResolveParams);
+ENGINE_EXPECT_SIZE(208, 8, gfx::ResolveParams);
 
 ENGINE_EXPECT_SIZE(64, 4, gfx::ResolveMaterial);
 

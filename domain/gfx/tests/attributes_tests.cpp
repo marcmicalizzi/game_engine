@@ -8,6 +8,7 @@
 // roughness, the metallic, and the albedo the maps produce. Skips without mesh shaders or 64-bit
 // buffer atomics.
 #include "brdf_reference.h"
+#include "scene_fixture.h"
 
 #include <domain/geometry/cluster.h>
 #include <domain/gfx/bindless.h>
@@ -76,8 +77,7 @@ TEST_CASE("material resolve: vertex normals steer the shading and textures sampl
 
   constexpr VkBufferUsageFlags k_storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
   gfx::BufferResource clusters;
-  gfx::BufferResource quantized;
-  gfx::BufferResource mesh_buffer;
+  gfx_test::SingleInstance scene;
   gfx::BufferResource triangles;
   gfx::BufferResource attributes;
   gfx::BufferResource materials;
@@ -92,13 +92,7 @@ TEST_CASE("material resolve: vertex normals steer the shading and textures sampl
   const u32 one = 1;
   REQUIRE(gfx::upload_buffer(device, mesh.clusters.data(), sizeof(geometry::ClusterDesc), k_storage,
                              clusters, &error));
-  REQUIRE(gfx::upload_buffer(device, mesh.quantized.data(), mesh.quantized.size() * sizeof(u16),
-                             k_storage, quantized, &error));
-  gfx::MeshDesc mesh_block{};
-  mesh_block.quant = Vec4{mesh.quant_origin, mesh.quant_scale};
-  mesh_block.quantized = quantized.address;
-  REQUIRE(
-      gfx::upload_buffer(device, &mesh_block, sizeof(mesh_block), k_storage, mesh_buffer, &error));
+  REQUIRE(scene.create(device, mesh, 1, &error));
   REQUIRE(gfx::upload_buffer(device, mesh.triangles.data(), mesh.triangles.size() * sizeof(u32),
                              k_storage, triangles, &error));
   REQUIRE(gfx::upload_buffer(device, mesh.attributes.data(),
@@ -158,9 +152,9 @@ TEST_CASE("material resolve: vertex normals steer the shading and textures sampl
   gfx::ClusterDrawParams draw{};
   draw.view_proj = view_proj;
   draw.clusters = clusters.address;
-  draw.mesh = mesh_buffer.address;
+  draw.mesh = scene.meshes.address;
+  draw.instances = scene.instances.address;
   draw.triangles = triangles.address;
-  draw.cluster_count = 1;
   draw.visibility = vis.address;
   draw.width = k_size;
   draw.height = k_size;
@@ -174,7 +168,8 @@ TEST_CASE("material resolve: vertex normals steer the shading and textures sampl
   base.view_proj = view_proj;
   base.visibility = vis.address;
   base.clusters = clusters.address;
-  base.mesh = mesh_buffer.address;
+  base.mesh = scene.meshes.address;
+  base.instances = scene.instances.address;
   base.triangles = triangles.address;
   base.materials = materials.address;
   base.cluster_materials = plain_index.address;
@@ -319,9 +314,9 @@ TEST_CASE("material resolve: vertex normals steer the shading and textures sampl
   gfx::destroy_sampler(device, nearest);
   gfx::destroy_image_view(device, texture_view);
   gfx::destroy_image(device, texture);
-  for (gfx::BufferResource* b :
-       {&host_color, &params, &vis, &textured_index, &plain_index, &materials, &attributes,
-        &triangles, &mesh_buffer, &quantized, &clusters}) {
+  scene.destroy(device);
+  for (gfx::BufferResource* b : {&host_color, &params, &vis, &textured_index, &plain_index,
+                                 &materials, &attributes, &triangles, &clusters}) {
     gfx::destroy_buffer(device, *b);
   }
   frames.destroy();
@@ -422,21 +417,14 @@ TEST_CASE("material resolve: metallic-roughness and normal maps") {
 
   constexpr VkBufferUsageFlags k_storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
   gfx::BufferResource clusters;
-  gfx::BufferResource quantized;
-  gfx::BufferResource mesh_buffer;
+  gfx_test::SingleInstance scene;
   gfx::BufferResource triangles;
   gfx::BufferResource attributes;
   gfx::BufferResource materials;
   gfx::BufferResource cluster_materials;
   REQUIRE(gfx::upload_buffer(device, mesh.clusters.data(), sizeof(geometry::ClusterDesc), k_storage,
                              clusters, &error));
-  REQUIRE(gfx::upload_buffer(device, mesh.quantized.data(), mesh.quantized.size() * sizeof(u16),
-                             k_storage, quantized, &error));
-  gfx::MeshDesc mesh_block{};
-  mesh_block.quant = Vec4{mesh.quant_origin, mesh.quant_scale};
-  mesh_block.quantized = quantized.address;
-  REQUIRE(
-      gfx::upload_buffer(device, &mesh_block, sizeof(mesh_block), k_storage, mesh_buffer, &error));
+  REQUIRE(scene.create(device, mesh, 1, &error));
   REQUIRE(gfx::upload_buffer(device, mesh.triangles.data(), mesh.triangles.size() * sizeof(u32),
                              k_storage, triangles, &error));
   REQUIRE(gfx::upload_buffer(device, mesh.attributes.data(),
@@ -495,9 +483,9 @@ TEST_CASE("material resolve: metallic-roughness and normal maps") {
   gfx::ClusterDrawParams draw{};
   draw.view_proj = view_proj;
   draw.clusters = clusters.address;
-  draw.mesh = mesh_buffer.address;
+  draw.mesh = scene.meshes.address;
+  draw.instances = scene.instances.address;
   draw.triangles = triangles.address;
-  draw.cluster_count = 1;
   draw.visibility = vis.address;
   draw.width = k_size;
   draw.height = k_size;
@@ -511,7 +499,8 @@ TEST_CASE("material resolve: metallic-roughness and normal maps") {
   base.view_proj = view_proj;
   base.visibility = vis.address;
   base.clusters = clusters.address;
-  base.mesh = mesh_buffer.address;
+  base.mesh = scene.meshes.address;
+  base.instances = scene.instances.address;
   base.triangles = triangles.address;
   base.materials = materials.address;
   base.attributes = attributes.address;
@@ -691,8 +680,9 @@ TEST_CASE("material resolve: metallic-roughness and normal maps") {
   gfx::destroy_image_view(device, mr_view);
   gfx::destroy_image(device, normal_image);
   gfx::destroy_image(device, mr_image);
+  scene.destroy(device);
   for (gfx::BufferResource* b : {&host_color, &params, &vis, &cluster_materials, &materials,
-                                 &attributes, &triangles, &mesh_buffer, &quantized, &clusters}) {
+                                 &attributes, &triangles, &clusters}) {
     gfx::destroy_buffer(device, *b);
   }
   frames.destroy();

@@ -2,6 +2,8 @@
 // pass against a camera, and check that the survivors are exactly what the CPU reference
 // selects, that the indirect mesh draw of the cut covers the same pixels as drawing every
 // leaf cluster, and that a camera looking away culls everything.
+#include "scene_fixture.h"
+
 #include <domain/geometry/cluster_lod.h>
 #include <domain/gfx/bindless.h>
 #include <domain/gfx/cluster_cull.h>
@@ -75,22 +77,14 @@ TEST_CASE("cluster cull: GPU selection matches the CPU reference and the cut cov
   const u32 leaf_count = lod.level_cluster_counts[0];
 
   gfx::BufferResource clusters;
-  gfx::BufferResource quantized;
-  gfx::BufferResource mesh_buffer;
   gfx::BufferResource triangles;
   gfx::BufferResource lods;
+  gfx_test::SingleInstance scene;
   constexpr VkBufferUsageFlags k_storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
   REQUIRE(gfx::upload_buffer(device, lod.mesh.clusters.data(),
                              cluster_count * sizeof(geometry::ClusterDesc), k_storage, clusters,
                              &error));
-  REQUIRE(gfx::upload_buffer(device, lod.mesh.quantized.data(),
-                             lod.mesh.quantized.size() * sizeof(u16), k_storage, quantized,
-                             &error));
-  gfx::MeshDesc mesh_block{};
-  mesh_block.quant = Vec4{lod.mesh.quant_origin, lod.mesh.quant_scale};
-  mesh_block.quantized = quantized.address;
-  REQUIRE(
-      gfx::upload_buffer(device, &mesh_block, sizeof(mesh_block), k_storage, mesh_buffer, &error));
+  REQUIRE(scene.create(device, lod.mesh, cluster_count, &error));
   REQUIRE(gfx::upload_buffer(device, lod.mesh.triangles.data(),
                              lod.mesh.triangles.size() * sizeof(u32), k_storage, triangles,
                              &error));
@@ -103,8 +97,9 @@ TEST_CASE("cluster cull: GPU selection matches the CPU reference and the cut cov
   gfx::BufferResource params;
   gfx::BufferResource visible_host;
   gfx::BufferResource args_host;
+  const u64 visible_bytes = u64{cluster_count} * 2 * sizeof(u32);  // uint2 per entry
   REQUIRE(gfx::create_buffer(
-      device, cluster_count * sizeof(u32),
+      device, visible_bytes,
       k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
       false, visible, &error));
   REQUIRE(gfx::create_buffer(
@@ -115,8 +110,8 @@ TEST_CASE("cluster cull: GPU selection matches the CPU reference and the cut cov
   REQUIRE(gfx::create_buffer(device, sizeof(gfx::CullParams),
                              k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, true, params,
                              &error));
-  REQUIRE(gfx::create_buffer(device, cluster_count * sizeof(u32), VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                             true, visible_host, &error));
+  REQUIRE(gfx::create_buffer(device, visible_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true,
+                             visible_host, &error));
   REQUIRE(gfx::create_buffer(device, sizeof(u32) * 3, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true,
                              args_host, &error));
 
@@ -142,6 +137,10 @@ TEST_CASE("cluster cull: GPU selection matches the CPU reference and the cut cov
   cull.lods = lods.address;
   cull.visible = visible.address;
   cull.draw_args = args.address;
+  cull.instances = scene.instances.address;
+  cull.meshes = scene.meshes.address;
+  cull.instance_count = 1;
+  cull.pair_count = scene.pair_count();
   std::memcpy(params.mapped, &cull, sizeof(cull));
 
   // CPU reference.
@@ -191,12 +190,11 @@ TEST_CASE("cluster cull: GPU selection matches the CPU reference and the cut cov
   MeshParams mesh_params{};
   mesh_params.view_proj = view_proj;
   mesh_params.clusters = clusters.address;
-  mesh_params.mesh = mesh_buffer.address;
+  mesh_params.mesh = scene.meshes.address;
+  mesh_params.instances = scene.instances.address;
   mesh_params.triangles = triangles.address;
-  mesh_params.cluster_count = cluster_count;
   mesh_params.visible = visible.address;
   MeshParams leaf_params = mesh_params;
-  leaf_params.cluster_count = leaf_count;
   leaf_params.visible = 0;
   const u64 params_address = params.address;
 
@@ -278,7 +276,7 @@ TEST_CASE("cluster cull: GPU selection matches the CPU reference and the cut cov
       [&](VkCommandBuffer cb, gfx::RenderGraph& g) {
         const VkBufferCopy args_copy{0, 0, sizeof(u32) * 3};
         vkCmdCopyBuffer(cb, args.buffer, args_host.buffer, 1, &args_copy);
-        const VkBufferCopy visible_copy{0, 0, u64{cluster_count} * sizeof(u32)};
+        const VkBufferCopy visible_copy{0, 0, visible_bytes};
         vkCmdCopyBuffer(cb, visible.buffer, visible_host.buffer, 1, &visible_copy);
         VkBufferImageCopy region{};
         region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
@@ -301,10 +299,17 @@ TEST_CASE("cluster cull: GPU selection matches the CPU reference and the cut cov
   CHECK(args_out[2] == 1);
   const u32 count = args_out[0];
   CHECK(count == expected.size());
+  // A visible entry is {instance, cluster}; there is one instance, so every entry names it.
   Vector<u32> got;
+  Vector<u32> cluster_of_entry(cluster_count, ~u32{0});
   const auto* visible_out = static_cast<const u32*>(visible_host.mapped);
-  for (u32 i = 0; i < count && i < cluster_count; ++i)
-    got.push_back(visible_out[i]);
+  u32 foreign_instance = 0;
+  for (u32 i = 0; i < count && i < cluster_count; ++i) {
+    if (visible_out[i * 2] != 0) ++foreign_instance;
+    cluster_of_entry[i] = visible_out[i * 2 + 1];
+    got.push_back(visible_out[i * 2 + 1]);
+  }
+  CHECK(foreign_instance == 0);
   std::sort(got.begin(), got.end());
   REQUIRE(got.size() == expected.size());
   u32 mismatched = 0;
@@ -324,8 +329,12 @@ TEST_CASE("cluster cull: GPU selection matches the CPU reference and the cut cov
     const bool in_leaves = leaf_pixels[i] != 0xFFFFFFFFu;
     if (in_leaves) ++covered;
     if (in_cut != in_leaves) ++coverage_mismatch;
-    if (in_cut && !std::binary_search(expected.begin(), expected.end(), cut_pixels[i] >> 8))
-      ++foreign;
+    // The id's high bits are the entry in the visible list, which names the cluster.
+    if (in_cut) {
+      const u32 entry = cut_pixels[i] >> 8;
+      const u32 cluster = entry < count ? cluster_of_entry[entry] : ~u32{0};
+      if (!std::binary_search(expected.begin(), expected.end(), cluster)) ++foreign;
+    }
   }
   CHECK(covered > k_size * k_size / 8);     // the terrain fills about a fifth of this view
   CHECK(coverage_mismatch * 50 < covered);  // under 2% of the covered area along silhouettes
@@ -366,9 +375,9 @@ TEST_CASE("cluster cull: GPU selection matches the CPU reference and the cut cov
   gfx::destroy_shader_module(device, mesh_module);
   gfx::destroy_shader_module(device, cull_module);
   bindless.destroy();
-  for (gfx::BufferResource* b :
-       {&cut_host, &leaves_host, &visible_host, &args_host, &params, &args, &visible, &lods,
-        &triangles, &mesh_buffer, &quantized, &clusters}) {
+  scene.destroy(device);
+  for (gfx::BufferResource* b : {&cut_host, &leaves_host, &visible_host, &args_host, &params, &args,
+                                 &visible, &lods, &triangles, &clusters}) {
     gfx::destroy_buffer(device, *b);
   }
   frames.destroy();

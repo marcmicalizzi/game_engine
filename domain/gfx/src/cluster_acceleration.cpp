@@ -223,7 +223,7 @@ bool create_cluster_blas(const Device& device, u32 max_clusters, ClusterBlas& ou
 }
 
 void build_cluster_blas_indirect(VkCommandBuffer commands, const ClusterBlas& blas,
-                                 const BufferResource& scratch) {
+                                 const BufferResource& scratch, VkDeviceAddress record_address) {
   VkClusterAccelerationStructureClustersBottomLevelInputNV clusters;
   VkClusterAccelerationStructureCommandsInfoNV info{};
   info.sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_COMMANDS_INFO_NV;
@@ -233,8 +233,8 @@ void build_cluster_blas_indirect(VkCommandBuffer commands, const ClusterBlas& bl
   info.scratchData = align_up(scratch.address, blas.alignment);
   info.dstAddressesArray = {blas.destination.address, sizeof(u64), sizeof(u64)};
   info.dstSizesArray = {0, 0, 0};
-  info.srcInfosArray = {blas.record.address, k_cluster_blas_record_bytes,
-                        k_cluster_blas_record_bytes};
+  info.srcInfosArray = {record_address != 0 ? record_address : blas.record.address,
+                        k_cluster_blas_record_bytes, k_cluster_blas_record_bytes};
   info.srcInfosCount = 0;
   info.addressResolutionFlags = 0;
   vkCmdBuildClusterAccelerationStructureIndirectNV(commands, &info);

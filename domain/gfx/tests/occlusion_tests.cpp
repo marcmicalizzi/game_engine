@@ -5,6 +5,8 @@
 // Hi-Z rebuilt again for the next frame). Occlusion culling must not change the picture: the
 // third frame's visibility buffer must match the reference, while drawing fewer clusters.
 // The Hi-Z pyramid itself is checked against a CPU recomputation.
+#include "scene_fixture.h"
+
 #include <domain/geometry/cluster_lod.h>
 #include <domain/gfx/bindless.h>
 #include <domain/gfx/cluster_cull.h>
@@ -87,21 +89,13 @@ TEST_CASE("occlusion culling: two passes draw fewer clusters and the same pictur
                                         VK_BUFFER_USAGE_TRANSFER_DST_BIT |
                                         VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
   gfx::BufferResource clusters;
-  gfx::BufferResource quantized;
-  gfx::BufferResource mesh_buffer;
   gfx::BufferResource triangles;
   gfx::BufferResource lods;
+  gfx_test::SingleInstance scene;
   REQUIRE(gfx::upload_buffer(device, lod.mesh.clusters.data(),
                              cluster_count * sizeof(geometry::ClusterDesc), k_storage, clusters,
                              &error));
-  REQUIRE(gfx::upload_buffer(device, lod.mesh.quantized.data(),
-                             lod.mesh.quantized.size() * sizeof(u16), k_storage, quantized,
-                             &error));
-  gfx::MeshDesc mesh_block{};
-  mesh_block.quant = Vec4{lod.mesh.quant_origin, lod.mesh.quant_scale};
-  mesh_block.quantized = quantized.address;
-  REQUIRE(
-      gfx::upload_buffer(device, &mesh_block, sizeof(mesh_block), k_storage, mesh_buffer, &error));
+  REQUIRE(scene.create(device, lod.mesh, cluster_count, &error));
   REQUIRE(gfx::upload_buffer(device, lod.mesh.triangles.data(),
                              lod.mesh.triangles.size() * sizeof(u32), k_storage, triangles,
                              &error));
@@ -130,12 +124,14 @@ TEST_CASE("occlusion culling: two passes draw fewer clusters and the same pictur
 
   gfx::BufferResource vis;
   gfx::BufferResource hiz;
-  gfx::BufferResource visible[2];
+  gfx::BufferResource visible;
   gfx::BufferResource args[2];
   gfx::BufferResource flags[2];
   gfx::BufferResource params;  // three CullParams: reference, pass 1, pass 2
   gfx::BufferResource host_vis_ref;
   gfx::BufferResource host_vis;
+  gfx::BufferResource host_list_ref;
+  gfx::BufferResource host_list;
   gfx::BufferResource host_hiz;
   gfx::BufferResource host_args;
   REQUIRE(gfx::create_buffer(
@@ -146,9 +142,14 @@ TEST_CASE("occlusion culling: two passes draw fewer clusters and the same pictur
       device, u64{hiz_elements} * 4,
       k_address | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, false, hiz,
       &error));
+  // The two passes append to their own runs of one visible list, so a visibility id names an
+  // entry of the whole list and the resolve needs nothing else: pass 1 starts at 0 and pass 2 at
+  // `cluster_count`, which is as many entries as either pass can produce.
+  const u64 visible_bytes = u64{cluster_count} * 2 * 8;
+  const u64 visible_run[2] = {visible_bytes / 2 * 0, u64{cluster_count} * 8};
+  REQUIRE(gfx::create_buffer(device, visible_bytes, k_address | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                             false, visible, &error));
   for (u32 i = 0; i < 2; ++i) {
-    REQUIRE(
-        gfx::create_buffer(device, u64{cluster_count} * 4, k_address, false, visible[i], &error));
     REQUIRE(gfx::create_buffer(device, 12, k_args, false, args[i], &error));
     REQUIRE(gfx::create_buffer(device, u64{cluster_count} * 4,
                                k_address | VK_BUFFER_USAGE_TRANSFER_DST_BIT, false, flags[i],
@@ -159,6 +160,10 @@ TEST_CASE("occlusion culling: two passes draw fewer clusters and the same pictur
                              host_vis_ref, &error));
   REQUIRE(gfx::create_buffer(device, vis_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, host_vis,
                              &error));
+  REQUIRE(gfx::create_buffer(device, visible_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true,
+                             host_list_ref, &error));
+  REQUIRE(gfx::create_buffer(device, visible_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true,
+                             host_list, &error));
   REQUIRE(gfx::create_buffer(device, u64{hiz_elements} * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true,
                              host_hiz, &error));
   REQUIRE(
@@ -203,6 +208,10 @@ TEST_CASE("occlusion culling: two passes draw fewer clusters and the same pictur
   base.cluster_count = cluster_count;
   base.clusters = clusters.address;
   base.lods = lods.address;
+  base.instances = scene.instances.address;
+  base.meshes = scene.meshes.address;
+  base.instance_count = 1;
+  base.pair_count = scene.pair_count();
   base.hiz_width = k_w;
   base.hiz_height = k_h;
   base.hiz_mips = hiz_mips;
@@ -210,34 +219,36 @@ TEST_CASE("occlusion culling: two passes draw fewer clusters and the same pictur
   auto* blocks = static_cast<gfx::CullParams*>(params.mapped);
   const u64 block_stride = sizeof(gfx::CullParams);
   gfx::CullParams reference = base;
-  reference.visible = visible[0].address;
+  reference.visible = visible.address;
   reference.draw_args = args[0].address;
   blocks[0] = reference;
 
   gfx::ClusterDrawParams draw{};
   draw.view_proj = view_proj;
   draw.clusters = clusters.address;
-  draw.mesh = mesh_buffer.address;
+  draw.mesh = scene.meshes.address;
+  draw.instances = scene.instances.address;
   draw.triangles = triangles.address;
-  draw.cluster_count = cluster_count;
   draw.visibility = vis.address;
   draw.width = k_w;
   draw.height = k_h;
   gfx::ClusterDrawParams draw_pass[2] = {draw, draw};
-  draw_pass[0].visible = visible[0].address;
-  draw_pass[1].visible = visible[1].address;
+  for (u32 i = 0; i < 2; ++i) {
+    draw_pass[i].visible = visible.address + visible_run[i];
+    draw_pass[i].visible_offset = static_cast<u32>(visible_run[i] / 8);
+  }
 
   gfx::RenderGraph graph(device);
   gfx::RgBuffer rg_vis;
   gfx::RgBuffer rg_hiz;
-  gfx::RgBuffer rg_visible[2];
+  gfx::RgBuffer rg_visible;
   gfx::RgBuffer rg_args[2];
   gfx::RgBuffer rg_flags[2];
   auto import_all = [&]() {
     rg_vis = graph.import_buffer("vis", vis);
+    rg_visible = graph.import_buffer("visible", visible);
     rg_hiz = graph.import_buffer("hiz", hiz);
     for (u32 i = 0; i < 2; ++i) {
-      rg_visible[i] = graph.import_buffer("visible", visible[i]);
       rg_args[i] = graph.import_buffer("args", args[i]);
       rg_flags[i] = graph.import_buffer("flags", flags[i]);
     }
@@ -271,7 +282,7 @@ TEST_CASE("occlusion culling: two passes draw fewer clusters and the same pictur
         "cull", gfx::PassKind::Compute,
         [&, list, reads_hiz, prev_flags, cur_flags](gfx::PassBuilder& b) {
           b.write(rg_args[list], gfx::Access::ComputeReadWrite);
-          b.write(rg_visible[list], gfx::Access::ComputeWrite);
+          b.write(rg_visible, gfx::Access::ComputeWrite);
           if (reads_hiz) b.read(rg_hiz, gfx::Access::ComputeRead);
           if (prev_flags < 2) b.read(rg_flags[prev_flags], gfx::Access::ComputeRead);
           if (cur_flags < 2) b.write(rg_flags[cur_flags], gfx::Access::ComputeReadWrite);
@@ -290,7 +301,7 @@ TEST_CASE("occlusion culling: two passes draw fewer clusters and the same pictur
           b.render_area(k_w, k_h);
           b.write(rg_vis, gfx::Access::FragmentReadWrite);
           b.read(rg_args[list], gfx::Access::IndirectRead);
-          b.read(rg_visible[list], gfx::Access::MeshRead);
+          b.read(rg_visible, gfx::Access::MeshRead);
         },
         [&, list](VkCommandBuffer cb, gfx::RenderGraph&) {
           vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, mesh_pipeline);
@@ -328,16 +339,21 @@ TEST_CASE("occlusion culling: two passes draw fewer clusters and the same pictur
           });
     }
   };
-  auto add_readback = [&](gfx::BufferResource& vis_host_ref, bool with_hiz) {
+  auto add_readback = [&](gfx::BufferResource& vis_host_ref, gfx::BufferResource& list_host_ref,
+                          bool with_hiz) {
     gfx::BufferResource* vis_host = &vis_host_ref;
+    gfx::BufferResource* list_host = &list_host_ref;
     const gfx::RgBuffer rg_host = graph.import_buffer("host_vis", *vis_host);
+    const gfx::RgBuffer rg_host_list = graph.import_buffer("host_list", *list_host);
     const gfx::RgBuffer rg_host_hiz = graph.import_buffer("host_hiz", host_hiz);
     const gfx::RgBuffer rg_host_args = graph.import_buffer("host_args", host_args);
     graph.add_pass(
         "readback", gfx::PassKind::Transfer,
         [&, with_hiz](gfx::PassBuilder& b) {
           b.read(rg_vis, gfx::Access::TransferRead);
+          b.read(rg_visible, gfx::Access::TransferRead);
           b.write(rg_host, gfx::Access::TransferWrite);
+          b.write(rg_host_list, gfx::Access::TransferWrite);
           for (u32 i = 0; i < 2; ++i)
             b.read(rg_args[i], gfx::Access::TransferRead);
           b.write(rg_host_args, gfx::Access::TransferWrite);
@@ -346,9 +362,11 @@ TEST_CASE("occlusion culling: two passes draw fewer clusters and the same pictur
             b.write(rg_host_hiz, gfx::Access::TransferWrite);
           }
         },
-        [&, vis_host, with_hiz](VkCommandBuffer cb, gfx::RenderGraph&) {
+        [&, vis_host, list_host, with_hiz](VkCommandBuffer cb, gfx::RenderGraph&) {
           const VkBufferCopy vis_copy{0, 0, vis_bytes};
           vkCmdCopyBuffer(cb, vis.buffer, vis_host->buffer, 1, &vis_copy);
+          const VkBufferCopy list_copy{0, 0, visible_bytes};
+          vkCmdCopyBuffer(cb, visible.buffer, list_host->buffer, 1, &list_copy);
           for (u32 i = 0; i < 2; ++i) {
             const VkBufferCopy args_copy{0, i * 12, 12};
             vkCmdCopyBuffer(cb, args[i].buffer, host_args.buffer, 1, &args_copy);
@@ -370,7 +388,7 @@ TEST_CASE("occlusion culling: two passes draw fewer clusters and the same pictur
   add_reset(true, 0);
   add_cull(0, 0, false, 2, 2);
   add_draw(0);
-  add_readback(host_vis_ref, false);
+  add_readback(host_vis_ref, host_list_ref, false);
   REQUIRE_MESSAGE(graph.compile(&error), error);
   run_frame();
   const auto* args_out = static_cast<const u32*>(host_args.mapped);
@@ -388,11 +406,11 @@ TEST_CASE("occlusion culling: two passes draw fewer clusters and the same pictur
     pass1.hiz = hiz.address;
     pass1.prev_flags = flags[prev].address;
     pass1.flags = flags[cur].address;
-    pass1.visible = visible[0].address;
+    pass1.visible = visible.address + visible_run[0];
     pass1.draw_args = args[0].address;
     gfx::CullParams pass2 = pass1;
     pass2.pass = 2;
-    pass2.visible = visible[1].address;
+    pass2.visible = visible.address + visible_run[1];
     pass2.draw_args = args[1].address;
     frames.wait_idle();  // the params buffer is host-visible and shared by the blocks
     blocks[1] = pass1;
@@ -416,7 +434,7 @@ TEST_CASE("occlusion culling: two passes draw fewer clusters and the same pictur
     add_cull(2, 1, true, 2, cur);
     add_draw(1);
     add_hiz(1);
-    add_readback(host_vis, true);
+    add_readback(host_vis, host_list, true);
     REQUIRE_MESSAGE(graph.compile(&error), error);
     run_frame();
     drawn[frame][0] = args_out[0];
@@ -436,6 +454,14 @@ TEST_CASE("occlusion culling: two passes draw fewer clusters and the same pictur
   // The picture is unchanged.
   const auto* ref = static_cast<const u64*>(host_vis_ref.mapped);
   const auto* cur_vis = static_cast<const u64*>(host_vis.mapped);
+  const auto* ref_list = static_cast<const u32*>(host_list_ref.mapped);
+  const auto* cur_list = static_cast<const u32*>(host_list.mapped);
+  // A visibility id names an entry of that frame's visible list, and the two frames filled the
+  // list differently, so what must agree is the (cluster, triangle) the id leads to.
+  auto surface_of = [](u64 word, const u32* list) {
+    const u32 id = static_cast<u32>(word);
+    return (u64{list[(id >> 8) * 2 + 1]} << 8) | (id & 0xff);
+  };
   u32 covered = 0;
   u32 coverage_mismatch = 0;
   u32 id_mismatch = 0;
@@ -444,7 +470,7 @@ TEST_CASE("occlusion culling: two passes draw fewer clusters and the same pictur
     const bool b = cur_vis[i] != 0;
     covered += a;
     if (a != b) ++coverage_mismatch;
-    if (a && b && static_cast<u32>(ref[i]) != static_cast<u32>(cur_vis[i])) ++id_mismatch;
+    if (a && b && surface_of(ref[i], ref_list) != surface_of(cur_vis[i], cur_list)) ++id_mismatch;
   }
   CHECK(covered > k_w * k_h / 16);
   CHECK(coverage_mismatch == 0);
@@ -493,12 +519,14 @@ TEST_CASE("occlusion culling: two passes draw fewer clusters and the same pictur
   gfx::destroy_shader_module(device, mesh_module);
   gfx::destroy_shader_module(device, cull_module);
   bindless.destroy();
-  for (gfx::BufferResource* b : {&host_args, &host_hiz, &host_vis, &host_vis_ref, &params, &hiz,
-                                 &vis, &lods, &triangles, &mesh_buffer, &quantized, &clusters}) {
+  scene.destroy(device);
+  for (gfx::BufferResource* b :
+       {&host_args, &host_hiz, &host_list, &host_list_ref, &host_vis, &host_vis_ref, &params, &hiz,
+        &vis, &lods, &triangles, &clusters}) {
     gfx::destroy_buffer(device, *b);
   }
+  gfx::destroy_buffer(device, visible);
   for (u32 i = 0; i < 2; ++i) {
-    gfx::destroy_buffer(device, visible[i]);
     gfx::destroy_buffer(device, args[i]);
     gfx::destroy_buffer(device, flags[i]);
   }

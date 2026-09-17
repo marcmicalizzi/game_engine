@@ -4,6 +4,8 @@
 // where both cover a pixel, on which triangle is nearest, up to the edge-rule differences along
 // shared edges and silhouettes. Then the resolve pass turns the buffer into colors, and the GPU
 // timer reports how long each path took. Skips without mesh shaders or 64-bit buffer atomics.
+#include "scene_fixture.h"
+
 #include <domain/geometry/cluster_lod.h>
 #include <domain/gfx/bindless.h>
 #include <domain/gfx/capture.h>
@@ -77,19 +79,12 @@ TEST_CASE("visibility buffer: hardware and software rasterization agree, resolve
 
   constexpr VkBufferUsageFlags k_storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
   gfx::BufferResource clusters;
-  gfx::BufferResource quantized;
-  gfx::BufferResource mesh_buffer;
   gfx::BufferResource triangles;
+  gfx_test::SingleInstance scene;
   REQUIRE(gfx::upload_buffer(device, mesh.clusters.data(),
                              cluster_count * sizeof(geometry::ClusterDesc), k_storage, clusters,
                              &error));
-  REQUIRE(gfx::upload_buffer(device, mesh.quantized.data(), mesh.quantized.size() * sizeof(u16),
-                             k_storage, quantized, &error));
-  gfx::MeshDesc mesh_block{};
-  mesh_block.quant = Vec4{mesh.quant_origin, mesh.quant_scale};
-  mesh_block.quantized = quantized.address;
-  REQUIRE(
-      gfx::upload_buffer(device, &mesh_block, sizeof(mesh_block), k_storage, mesh_buffer, &error));
+  REQUIRE(scene.create(device, mesh, cluster_count, &error));
   REQUIRE(gfx::upload_buffer(device, mesh.triangles.data(), mesh.triangles.size() * sizeof(u32),
                              k_storage, triangles, &error));
 
@@ -163,9 +158,9 @@ TEST_CASE("visibility buffer: hardware and software rasterization agree, resolve
   gfx::ClusterDrawParams draw{};
   draw.view_proj = view_proj;
   draw.clusters = clusters.address;
-  draw.mesh = mesh_buffer.address;
+  draw.mesh = scene.meshes.address;
+  draw.instances = scene.instances.address;
   draw.triangles = triangles.address;
-  draw.cluster_count = cluster_count;
   draw.width = k_size;
   draw.height = k_size;
   gfx::ClusterDrawParams draw_hw = draw;
@@ -179,6 +174,10 @@ TEST_CASE("visibility buffer: hardware and software rasterization agree, resolve
                              resolve_params, &error));
   gfx::ResolveParams resolve{};
   resolve.visibility = vis_sw.address;
+  resolve.instances = scene.instances.address;
+  resolve.mesh = scene.meshes.address;
+  resolve.clusters = clusters.address;
+  resolve.triangles = triangles.address;
   resolve.width = k_size;
   resolve.height = k_size;
   resolve.mode = static_cast<u32>(gfx::ResolveMode::ClusterColors);
@@ -348,8 +347,9 @@ TEST_CASE("visibility buffer: hardware and software rasterization agree, resolve
   gfx::destroy_shader_module(device, mesh_module);
   timer.destroy();
   bindless.destroy();
+  scene.destroy(device);
   for (gfx::BufferResource* b : {&resolve_params, &host_color, &host_sw, &host_hw, &vis_sw, &vis_hw,
-                                 &mesh_buffer, &quantized, &triangles, &clusters}) {
+                                 &triangles, &clusters}) {
     gfx::destroy_buffer(device, *b);
   }
   frames.destroy();

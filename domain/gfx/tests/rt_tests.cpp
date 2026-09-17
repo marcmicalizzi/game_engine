@@ -4,6 +4,8 @@
 // bottom-level structure with one geometry per cut cluster under a one-instance top-level
 // structure; the two 64-bit buffers must agree on coverage, on the triangle under nearly every
 // covered pixel, and on depth. Skips without ray queries or 64-bit buffer atomics.
+#include "scene_fixture.h"
+
 #include <domain/geometry/cluster_lod.h>
 #include <domain/gfx/acceleration.h>
 #include <domain/gfx/bindless.h>
@@ -112,11 +114,10 @@ TEST_CASE("ray query: primary visibility matches the rasterized LOD cut") {
   constexpr VkBufferUsageFlags k_address = k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
   gfx::BufferResource clusters;
   gfx::BufferResource vertices;
-  gfx::BufferResource quantized;
-  gfx::BufferResource mesh_buffer;
   gfx::BufferResource triangles;
   gfx::BufferResource cut_buffer;
   gfx::BufferResource indices16;
+  gfx_test::SingleInstance scene_data;
   Vector<u16> expanded;
   Vector<u32> expanded_offset;  // element offset of each cut cluster's indices
   for (const u32 c : cut) {
@@ -133,19 +134,20 @@ TEST_CASE("ray query: primary visibility matches the rasterized LOD cut") {
                              lod.mesh.vertices.size() * sizeof(Vec3),
                              k_storage | gfx::k_build_input_usage, vertices, &error));
   // The rasterizer reads the 16-bit grid; the acceleration structure builder reads the floats.
-  REQUIRE(gfx::upload_buffer(device, lod.mesh.quantized.data(),
-                             lod.mesh.quantized.size() * sizeof(u16), k_storage, quantized,
-                             &error));
-  gfx::MeshDesc mesh_block{};
-  mesh_block.quant = Vec4{lod.mesh.quant_origin, lod.mesh.quant_scale};
-  mesh_block.quantized = quantized.address;
-  REQUIRE(
-      gfx::upload_buffer(device, &mesh_block, sizeof(mesh_block), k_storage, mesh_buffer, &error));
+  REQUIRE(scene_data.create(device, lod.mesh, cluster_count, &error));
   REQUIRE(gfx::upload_buffer(device, lod.mesh.triangles.data(),
                              lod.mesh.triangles.size() * sizeof(u32), k_storage, triangles,
                              &error));
-  REQUIRE(gfx::upload_buffer(device, cut.data(), cut.size() * sizeof(u32), k_storage, cut_buffer,
-                             &error));
+  // The cut as a visible list: {instance, cluster} per entry, in the order the bottom-level
+  // structure's geometries were built, so a hit's GeometryIndex is the entry the rasterizer's
+  // visibility id names.
+  Vector<u32> cut_entries;
+  for (const u32 c : cut) {
+    cut_entries.push_back(0);  // the one instance
+    cut_entries.push_back(c);
+  }
+  REQUIRE(gfx::upload_buffer(device, cut_entries.data(), cut_entries.size() * sizeof(u32),
+                             k_storage, cut_buffer, &error));
   REQUIRE(gfx::upload_buffer(device, expanded.data(), expanded.size() * sizeof(u16),
                              gfx::k_build_input_usage, indices16, &error));
 
@@ -176,9 +178,9 @@ TEST_CASE("ray query: primary visibility matches the rasterized LOD cut") {
                               scratch, &error));
   REQUIRE(gfx::create_buffer(device, gfx::k_instance_record_bytes, gfx::k_build_input_usage, true,
                              instances, &error));
-  gfx::InstanceDesc instance;
+  gfx::TlasInstance instance;
   instance.blas = blas.address;
-  gfx::write_instances(std::span<const gfx::InstanceDesc>(&instance, 1), instances.mapped);
+  gfx::write_instances(std::span<const gfx::TlasInstance>(&instance, 1), instances.mapped);
   REQUIRE(gfx::submit_immediate(
       device,
       [&](VkCommandBuffer cb) {
@@ -242,9 +244,9 @@ TEST_CASE("ray query: primary visibility matches the rasterized LOD cut") {
   gfx::ClusterDrawParams draw{};
   draw.view_proj = view_proj;
   draw.clusters = clusters.address;
-  draw.mesh = mesh_buffer.address;
+  draw.mesh = scene_data.meshes.address;
+  draw.instances = scene_data.instances.address;
   draw.triangles = triangles.address;
-  draw.cluster_count = cut.size();
   draw.triangles_per_cluster = triangles_per_cluster;
   draw.visible = cut_buffer.address;
   draw.visibility = vis_raster.address;
@@ -255,7 +257,7 @@ TEST_CASE("ray query: primary visibility matches the rasterized LOD cut") {
   ray.inv_view_proj = inverse(view_proj);
   ray.camera = Vec4{eye, 0.0f};
   ray.output = vis_rt.address;
-  ray.cut = cut_buffer.address;
+  ray.instance_base = 0;  // GeometryIndex is already the entry of the visible list
   ray.width = k_w;
   ray.height = k_h;
   ray.scene = scene;
@@ -373,9 +375,9 @@ TEST_CASE("ray query: primary visibility matches the rasterized LOD cut") {
   frames.destroy();
   gfx::destroy_acceleration_structure(device, blas);
   gfx::destroy_acceleration_structure(device, tlas);
-  for (gfx::BufferResource* b :
-       {&scratch, &instances, &vis_raster, &vis_rt, &params, &host, &clusters, &vertices,
-        &quantized, &mesh_buffer, &triangles, &cut_buffer, &indices16}) {
+  scene_data.destroy(device);
+  for (gfx::BufferResource* b : {&scratch, &instances, &vis_raster, &vis_rt, &params, &host,
+                                 &clusters, &vertices, &triangles, &cut_buffer, &indices16}) {
     gfx::destroy_buffer(device, *b);
   }
   device.destroy();

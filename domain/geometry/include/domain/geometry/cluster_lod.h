@@ -77,6 +77,38 @@ u32 select_lod_raw(const ClusterLodMesh& mesh, f32 threshold, Vector<u32>& out);
 bool merge_cluster_lod(std::span<const ClusterLodMesh> parts, ClusterLodMesh& out,
                        Vector<u32>* part_of_cluster = nullptr, std::string* error = nullptr);
 
+// Where one mesh landed in the buffers merge_cluster_meshes built, and the 16-bit grid its
+// positions stayed on. A renderer uploads one of these per mesh (`gfx::MeshDesc` mirrors the
+// first two fields and the grid) and indexes it by an instance's mesh id.
+struct ClusterMeshPart {
+  u32 first_cluster = 0;  // in the merged `mesh.clusters`
+  u32 cluster_count = 0;
+  u32 leaf_cluster_count = 0;  // the level-0 clusters, which come first within the part
+  u32 first_vertex = 0;        // in the merged vertex, attribute, and quantized streams
+  Vec3 quant_origin{};         // this mesh's own grid, unchanged by the merge
+  f32 quant_scale = 1.0f;
+};
+
+// Merges DAGs built over *separate meshes* into the one set of buffers a scene draws from: the
+// vertex, attribute, triangle, and quantized streams are concatenated with the offsets shifted,
+// exactly as merge_cluster_lod does, with two differences that matter for a scene.
+//
+//   - Each mesh keeps its **own 16-bit position grid**. `quantized` is concatenated untouched
+//     (three u16 per vertex at the merged vertex index, the whole stream padded to an even
+//     count), and `parts_out[m]` reports the origin and step to decode a vertex of mesh m with.
+//     Quantizing the scene on one grid instead would spend the 16 bits on the distance between
+//     meshes rather than on each mesh's own detail.
+//   - Every mesh's clusters stay **contiguous**, so `{first_cluster, cluster_count}` names a
+//     mesh's clusters and an instance reaches cluster `first_cluster + local`. Within a mesh the
+//     level-0 clusters still come first, so a direct draw of the leaves is the first
+//     `leaf_cluster_count` of them.
+//
+// `out.quant_origin`/`quant_scale` are the first mesh's, so a single-mesh merge behaves as
+// before; every other mesh's grid is in `parts_out`, and `dequantize_position` on the merged
+// mesh is therefore only correct for the first. Fails on an empty list or an empty part.
+bool merge_cluster_meshes(std::span<const ClusterLodMesh> parts, ClusterLodMesh& out,
+                          Vector<ClusterMeshPart>& parts_out, std::string* error = nullptr);
+
 // Level 0 covers every source triangle exactly once; every cluster's own error is at most its
 // parent error; the raw cut is non-empty for every threshold; the triangle count of the raw
 // cut never grows with the threshold. For a merged mesh, `source_indices` is the parts' index

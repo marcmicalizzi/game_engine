@@ -87,9 +87,9 @@ TEST_CASE("shader reflection: entry points, workgroup sizes, bindings, push cons
   CHECK(r.entry("fs_color") != nullptr);
   CHECK(r.entry("fs_visibility") != nullptr);
   CHECK(r.entry("missing") == nullptr);
-  // float4x4, three addresses (clusters, the MeshDesc, triangles), count and pad, the visible
-  // list, the visibility buffer, width, height.
-  CHECK(r.push_constant_bytes == 120);
+  // float4x4, three addresses (clusters, the MeshDesc array, triangles), the visible offset and
+  // the triangle capacity, the visible list, the visibility buffer, width, height, the instances.
+  CHECK(r.push_constant_bytes == 128);
   CHECK(r.bindings.empty());
 
   REQUIRE(gfx::reflect_spirv(words_of(shaders::k_triangle_spirv, shaders::k_triangle_spirv_size), r,
@@ -147,7 +147,7 @@ TEST_CASE("shader library: embedded shaders, the build manifest, and hot reload 
   std::string description;
   library.describe(description);
   CHECK(description.find("cluster_mesh (file) entries: mesh_main[128x1x1]") != std::string::npos);
-  CHECK(description.find("push:120") != std::string::npos);
+  CHECK(description.find("push:128") != std::string::npos);
 
   // Hot reload: a temporary shader compiled on first use, recompiled when its source changes,
   // and kept at the last good version when a save does not compile.

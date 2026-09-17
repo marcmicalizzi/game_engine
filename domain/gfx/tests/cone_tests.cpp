@@ -4,6 +4,8 @@
 // test), a third to a half of the sphere must be culled, and the visibility buffer must not
 // change: every pixel the culled draw covers holds the same word, and only silhouette pixels
 // that back faces alone touched may differ. Runs on any GPU with 64-bit buffer atomics.
+#include "scene_fixture.h"
+
 #include <domain/geometry/cluster.h>
 #include <domain/gfx/bindless.h>
 #include <domain/gfx/cluster_cull.h>
@@ -94,19 +96,12 @@ TEST_CASE("normal cones: the cull pass drops backfacing clusters without changin
   constexpr VkBufferUsageFlags k_storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
   constexpr VkBufferUsageFlags k_address = k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
   gfx::BufferResource clusters;
-  gfx::BufferResource quantized;
-  gfx::BufferResource mesh_buffer;
   gfx::BufferResource triangles;
+  gfx_test::SingleInstance scene;
   REQUIRE(gfx::upload_buffer(device, mesh.clusters.data(),
                              cluster_count * sizeof(geometry::ClusterDesc), k_storage, clusters,
                              &error));
-  REQUIRE(gfx::upload_buffer(device, mesh.quantized.data(), mesh.quantized.size() * sizeof(u16),
-                             k_storage, quantized, &error));
-  gfx::MeshDesc mesh_block{};
-  mesh_block.quant = Vec4{mesh.quant_origin, mesh.quant_scale};
-  mesh_block.quantized = quantized.address;
-  REQUIRE(
-      gfx::upload_buffer(device, &mesh_block, sizeof(mesh_block), k_storage, mesh_buffer, &error));
+  REQUIRE(scene.create(device, mesh, cluster_count, &error));
   REQUIRE(gfx::upload_buffer(device, mesh.triangles.data(), mesh.triangles.size() * sizeof(u32),
                              k_storage, triangles, &error));
 
@@ -128,7 +123,7 @@ TEST_CASE("normal cones: the cull pass drops backfacing clusters without changin
   REQUIRE(expected.size() * 100 >= cluster_count * 40);  // at most 60% culled
 
   const u64 vis_bytes = u64{k_size} * k_size * sizeof(u64);
-  const u64 list_bytes = u64{cluster_count} * sizeof(u32);
+  const u64 list_bytes = u64{cluster_count} * 2 * sizeof(u32);  // uint2 per entry
   const VkBufferUsageFlags k_vis =
       k_address | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
   const VkBufferUsageFlags k_args = k_address | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
@@ -183,12 +178,16 @@ TEST_CASE("normal cones: the cull pass drops backfacing clusters without changin
   cull.cluster_count = cluster_count;
   cull.count_index = 1;
   cull.clusters = clusters.address;
+  cull.instances = scene.instances.address;
+  cull.meshes = scene.meshes.address;
+  cull.instance_count = 1;
+  cull.pair_count = scene.pair_count();
   gfx::ClusterDrawParams draw{};
   draw.view_proj = view_proj;
   draw.clusters = clusters.address;
-  draw.mesh = mesh_buffer.address;
+  draw.mesh = scene.meshes.address;
+  draw.instances = scene.instances.address;
   draw.triangles = triangles.address;
-  draw.cluster_count = cluster_count;
   draw.triangles_per_cluster = triangles_per_cluster;
   draw.width = k_size;
   draw.height = k_size;
@@ -287,17 +286,19 @@ TEST_CASE("normal cones: the cull pass drops backfacing clusters without changin
   const auto* bytes = static_cast<const u8*>(host.mapped);
   const auto* vis_off = reinterpret_cast<const u64*>(bytes);
   const auto* vis_on = reinterpret_cast<const u64*>(bytes + vis_bytes);
+  const auto* list_off = reinterpret_cast<const u32*>(bytes + vis_bytes * 2);
   const auto* list_on = reinterpret_cast<const u32*>(bytes + vis_bytes * 2 + list_bytes);
   const auto* args_off = reinterpret_cast<const u32*>(bytes + vis_bytes * 2 + list_bytes * 2);
   const u32* args_on = args_off + 4;
 
-  // Cones off keeps the whole sphere; cones on keeps exactly the CPU reference set.
+  // Cones off keeps the whole sphere; cones on keeps exactly the CPU reference set. An entry is
+  // {instance, cluster}, and there is one instance.
   CHECK(args_off[0] == triangles_per_cluster * 3);
   CHECK(args_off[1] == cluster_count);
   CHECK(args_on[1] == expected.size());
   Vector<u32> got;
   for (u32 i = 0; i < args_on[1] && i < cluster_count; ++i)
-    got.push_back(list_on[i]);
+    got.push_back(list_on[i * 2 + 1]);
   std::sort(got.begin(), got.end());
   REQUIRE(got.size() == expected.size());
   u32 mismatched = 0;
@@ -305,16 +306,23 @@ TEST_CASE("normal cones: the cull pass drops backfacing clusters without changin
     mismatched += got[i] != expected[i];
   CHECK(mismatched == 0);
 
-  // The picture: every pixel the culled draw covers holds the same word as the full draw (the
+  // The picture: every pixel the culled draw covers holds the same surface as the full draw (the
   // back faces of a closed convex body never win the depth race), and pixels only the full
-  // draw covers are silhouette pixels back faces alone touched.
+  // draw covers are silhouette pixels back faces alone touched. The two draws have their own
+  // visible lists, so a pixel's id names a different entry in each; the (cluster, triangle,
+  // depth) it leads to is what must agree.
+  auto surface_of = [&](u64 word, const u32* list) {
+    const u32 id = static_cast<u32>(word);
+    return (u64{list[(id >> 8) * 2 + 1]} << 40) | (u64{id & 0xff} << 32) | (word >> 32);
+  };
   u32 covered = 0;
   u32 changed = 0;
   u32 lost = 0;
   for (u32 i = 0; i < k_size * k_size; ++i) {
     if (vis_on[i] != 0) {
       ++covered;
-      if (vis_off[i] != vis_on[i]) ++changed;
+      if (vis_off[i] == 0 || surface_of(vis_off[i], list_off) != surface_of(vis_on[i], list_on))
+        ++changed;
     } else if (vis_off[i] != 0) {
       ++lost;
     }
@@ -337,10 +345,9 @@ TEST_CASE("normal cones: the cull pass drops backfacing clusters without changin
     gfx::destroy_buffer(device, args[k]);
     gfx::destroy_buffer(device, params[k]);
   }
+  scene.destroy(device);
   gfx::destroy_buffer(device, host);
   gfx::destroy_buffer(device, clusters);
-  gfx::destroy_buffer(device, mesh_buffer);
-  gfx::destroy_buffer(device, quantized);
   gfx::destroy_buffer(device, triangles);
   device.destroy();
 }

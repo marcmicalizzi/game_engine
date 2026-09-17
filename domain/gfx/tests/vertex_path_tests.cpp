@@ -2,6 +2,8 @@
 // the mesh-shader path does from the same clusters, both drawn directly and through the cull
 // pass counting into vkCmdDrawIndirect's instance count. The mesh comparison needs mesh shaders;
 // the vertex path itself and its indirect draw run on any device with 64-bit buffer atomics.
+#include "scene_fixture.h"
+
 #include <domain/geometry/cluster_lod.h>
 #include <domain/gfx/bindless.h>
 #include <domain/gfx/cluster_cull.h>
@@ -75,21 +77,13 @@ TEST_CASE("vertex path: the baseline tier fills the visibility buffer like the m
   constexpr VkBufferUsageFlags k_storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
   constexpr VkBufferUsageFlags k_address = k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
   gfx::BufferResource clusters;
-  gfx::BufferResource quantized;
-  gfx::BufferResource mesh_buffer;
   gfx::BufferResource triangles;
   gfx::BufferResource lods;
+  gfx_test::SingleInstance scene;
   REQUIRE(gfx::upload_buffer(device, lod.mesh.clusters.data(),
                              cluster_count * sizeof(geometry::ClusterDesc), k_storage, clusters,
                              &error));
-  REQUIRE(gfx::upload_buffer(device, lod.mesh.quantized.data(),
-                             lod.mesh.quantized.size() * sizeof(u16), k_storage, quantized,
-                             &error));
-  gfx::MeshDesc mesh_block{};
-  mesh_block.quant = Vec4{lod.mesh.quant_origin, lod.mesh.quant_scale};
-  mesh_block.quantized = quantized.address;
-  REQUIRE(
-      gfx::upload_buffer(device, &mesh_block, sizeof(mesh_block), k_storage, mesh_buffer, &error));
+  REQUIRE(scene.create(device, lod.mesh, leaf_count, &error));  // the cull candidates: the leaves
   REQUIRE(gfx::upload_buffer(device, lod.mesh.triangles.data(),
                              lod.mesh.triangles.size() * sizeof(u32), k_storage, triangles,
                              &error));
@@ -117,15 +111,17 @@ TEST_CASE("vertex path: the baseline tier fills the visibility buffer like the m
   REQUIRE(gfx::create_buffer(device, vis_bytes, k_vis, false, vis_mesh, &error));
   REQUIRE(gfx::create_buffer(device, vis_bytes, k_vis, false, vis_vertex, &error));
   REQUIRE(gfx::create_buffer(device, vis_bytes, k_vis, false, vis_indirect, &error));
-  REQUIRE(gfx::create_buffer(device, u64{cluster_count} * 4, k_address, false, visible, &error));
+  const u64 visible_bytes = u64{cluster_count} * 2 * sizeof(u32);  // uint2 per entry
+  REQUIRE(gfx::create_buffer(device, visible_bytes, k_address | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                             false, visible, &error));
   REQUIRE(gfx::create_buffer(device, 16,
                              k_address | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
                                  VK_BUFFER_USAGE_TRANSFER_DST_BIT |
                                  VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                              false, args, &error));
   REQUIRE(gfx::create_buffer(device, sizeof(gfx::CullParams), k_address, true, params, &error));
-  REQUIRE(gfx::create_buffer(device, vis_bytes * 3 + 16, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true,
-                             host, &error));
+  REQUIRE(gfx::create_buffer(device, vis_bytes * 3 + 16 + visible_bytes,
+                             VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, host, &error));
 
   gfx::FrameContext frames;
   REQUIRE(frames.create(device, 2, &error));
@@ -166,9 +162,9 @@ TEST_CASE("vertex path: the baseline tier fills the visibility buffer like the m
   gfx::ClusterDrawParams draw{};
   draw.view_proj = view_proj;
   draw.clusters = clusters.address;
-  draw.mesh = mesh_buffer.address;
+  draw.mesh = scene.meshes.address;
+  draw.instances = scene.instances.address;
   draw.triangles = triangles.address;
-  draw.cluster_count = leaf_count;
   draw.triangles_per_cluster = triangles_per_cluster;
   draw.width = k_w;
   draw.height = k_h;
@@ -179,23 +175,27 @@ TEST_CASE("vertex path: the baseline tier fills the visibility buffer like the m
   gfx::ClusterDrawParams draw_indirect = draw;
   draw_indirect.visibility = vis_indirect.address;
   draw_indirect.visible = visible.address;
-  draw_indirect.cluster_count = cluster_count;
 
   // Cull: frustum only, no LOD, counting into the instance count of a vkCmdDrawIndirect block;
   // the survivors are the frustum-visible leaves plus every coarser level, so the LOD filter is
-  // replaced by restricting the candidate set through cluster_count = leaf_count (leaves first).
+  // replaced by restricting the candidate set to the leaves, which the scene's one mesh does by
+  // claiming only the first leaf_count clusters (leaves come first).
   gfx::CullParams cull{};
   gfx::set_frustum(cull, frustum_from_view_proj(view_proj));
   cull.view_proj = view_proj;
   cull.camera = Vec4{eye, znear};
   cull.lod = Vec4{1.0f, 1.0f, 0.0f, 1.0f};  // LOD selection off, frustum on
   cull.raster = Vec4{0.0f, gfx::k_raster_hardware, 0.0f, 0.0f};
-  cull.cluster_count = leaf_count;
+  cull.cluster_count = cluster_count;
   cull.count_index = 1;
   cull.clusters = clusters.address;
   cull.lods = lods.address;
   cull.visible = visible.address;
   cull.draw_args = args.address;
+  cull.instances = scene.instances.address;
+  cull.meshes = scene.meshes.address;
+  cull.instance_count = 1;
+  cull.pair_count = scene.pair_count();
   std::memcpy(params.mapped, &cull, sizeof(cull));
   const u64 params_address = params.address;
 
@@ -283,6 +283,7 @@ TEST_CASE("vertex path: the baseline tier fills the visibility buffer like the m
         b.read(rg_vertex, gfx::Access::TransferRead);
         b.read(rg_indirect, gfx::Access::TransferRead);
         b.read(rg_args, gfx::Access::TransferRead);
+        b.read(rg_visible, gfx::Access::TransferRead);
         b.write(rg_host, gfx::Access::TransferWrite);
       },
       [&](VkCommandBuffer cb, gfx::RenderGraph&) {
@@ -290,10 +291,12 @@ TEST_CASE("vertex path: the baseline tier fills the visibility buffer like the m
         const VkBufferCopy vertex_copy{0, vis_bytes, vis_bytes};
         const VkBufferCopy indirect_copy{0, vis_bytes * 2, vis_bytes};
         const VkBufferCopy args_copy{0, vis_bytes * 3, 16};
+        const VkBufferCopy visible_copy{0, vis_bytes * 3 + 16, visible_bytes};
         vkCmdCopyBuffer(cb, vis_mesh.buffer, host.buffer, 1, &mesh_copy);
         vkCmdCopyBuffer(cb, vis_vertex.buffer, host.buffer, 1, &vertex_copy);
         vkCmdCopyBuffer(cb, vis_indirect.buffer, host.buffer, 1, &indirect_copy);
         vkCmdCopyBuffer(cb, args.buffer, host.buffer, 1, &args_copy);
+        vkCmdCopyBuffer(cb, visible.buffer, host.buffer, 1, &visible_copy);
       });
   REQUIRE_MESSAGE(graph.compile(&error), error);
   VkCommandBuffer commands = frames.begin_frame();
@@ -304,11 +307,21 @@ TEST_CASE("vertex path: the baseline tier fills the visibility buffer like the m
   const u64* vertex_out = mesh_out + k_w * k_h;
   const u64* indirect_out = vertex_out + k_w * k_h;
   const auto* args_out = reinterpret_cast<const u32*>(indirect_out + k_w * k_h);
+  const auto* visible_out = args_out + 4;  // uint2 per entry: {instance, cluster}
   CHECK(args_out[0] == triangles_per_cluster * 3);
   CHECK(args_out[1] > 0);
   CHECK(args_out[1] <= leaf_count);
   MESSAGE("indirect: " << args_out[1] << " of " << leaf_count << " leaf clusters in the frustum");
 
+  // A visibility id names an entry of the visible list, not a cluster, so the indirect draw's
+  // words differ from the direct draw's even where they name the same triangle. What must agree
+  // is the surface: the (cluster, triangle) the id leads to, and the depth.
+  auto surface_of = [&](u64 word, u64 offset) {
+    const u32 id = static_cast<u32>(word);
+    const u32 entry = id >> 8;
+    const u32 cluster = offset == 0 ? entry : visible_out[entry * 2 + 1];
+    return (u64{cluster} << 40) | (u64{id & 0xff} << 32) | (word >> 32);
+  };
   u32 covered = 0;
   u32 coverage_mismatch = 0;
   u32 id_mismatch = 0;
@@ -323,7 +336,11 @@ TEST_CASE("vertex path: the baseline tier fills the visibility buffer like the m
         ++id_mismatch;
     }
     // The frustum-culled indirect draw must draw exactly what the direct draw drew.
-    if (indirect_out[i] != vertex_out[i]) ++indirect_mismatch;
+    const bool in_indirect = indirect_out[i] != 0;
+    if (in_indirect != in_vertex ||
+        (in_indirect && surface_of(indirect_out[i], 1) != surface_of(vertex_out[i], 0))) {
+      ++indirect_mismatch;
+    }
   }
   CHECK(covered > k_w * k_h / 8);
   if (have_mesh) {
@@ -343,9 +360,9 @@ TEST_CASE("vertex path: the baseline tier fills the visibility buffer like the m
   gfx::destroy_shader_module(device, cull_module);
   gfx::destroy_shader_module(device, vertex_module);
   bindless.destroy();
-  for (gfx::BufferResource* b :
-       {&host, &params, &args, &visible, &vis_indirect, &vis_vertex, &vis_mesh, &lods, &triangles,
-        &mesh_buffer, &quantized, &clusters}) {
+  scene.destroy(device);
+  for (gfx::BufferResource* b : {&host, &params, &args, &visible, &vis_indirect, &vis_vertex,
+                                 &vis_mesh, &lods, &triangles, &clusters}) {
     gfx::destroy_buffer(device, *b);
   }
   frames.destroy();

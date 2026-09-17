@@ -1,57 +1,29 @@
 // Software rasterization of small clusters (docs/plan/04-renderer.md §4.3, experiment E1): one
-// 128-thread workgroup per cluster, vertices transformed to pixel space in shared memory, then
-// one thread per triangle walks the triangle's bounding box with edge functions and writes
-// depth << 32 | id into the visibility buffer with a 64-bit atomic max, exactly as the hardware
-// path's fs_visibility does. Meant for clusters a few dozen pixels across, where a hardware
-// triangle costs more in setup than in coverage; the cull pass decides which clusters come here.
-// No clipping: a triangle with a vertex behind the camera is skipped, and clusters that close
-// go through the hardware path anyway.
+// 128-thread workgroup per entry of the software visible list, vertices moved into the
+// instance's frame and transformed to pixel space in shared memory, then one thread per triangle
+// walks the triangle's bounding box with edge functions and writes depth << 32 | id into the
+// visibility buffer with a 64-bit atomic max, exactly as the hardware path's fs_visibility does.
+// The id's high 24 bits are the workgroup's **visible index**, the same word the mesh and vertex
+// paths write. Meant for clusters a few dozen pixels across, where a hardware triangle costs
+// more in setup than in coverage; the cull pass decides which pairs come here. No clipping: a
+// triangle with a vertex behind the camera is skipped, and clusters that close go through the
+// hardware path anyway.
 
-struct ClusterDesc {
-  uint vertex_offset;
-  uint triangle_offset;
-  uint vertex_count;
-  uint triangle_count;
-  float3 center;
-  float radius;
-  float3 cone_apex;  // normal cone for backface culling (cull pass only)
-  uint cone;         // axis snorm8 x, y, z in bytes 0..2, cutoff snorm8 in byte 3
-};
+#include "scene.slang"
 
-// Mirrors gfx::MeshDesc (32 bytes): the mesh-wide 16-bit position grid and the stream of three
-// u16 per vertex on it. Duplicated in every shader that reads positions, like ClusterDesc.
-struct MeshDesc {
-  float4 quant;        // xyz grid origin, w grid step
-  uint64_t quantized;  // uint16_t[3 * vertex_count], padded to an even count
-  uint64_t pad;
-};
-
-// Three u16 at 3 * vertex, read as the 32-bit words that contain them. The stream is padded to
-// an even u16 count on the CPU, so the last word read is always inside the buffer.
-float3 load_position(MeshDesc* mesh, uint vertex) {
-  uint* words = (uint*)mesh->quantized;
-  const uint i = vertex * 3;
-  const uint w0 = words[i >> 1];
-  const uint w1 = words[(i + 1) >> 1];
-  const uint w2 = words[(i + 2) >> 1];
-  const uint x = (i & 1) != 0 ? (w0 >> 16) : (w0 & 0xffff);
-  const uint y = ((i + 1) & 1) != 0 ? (w1 >> 16) : (w1 & 0xffff);
-  const uint z = ((i + 2) & 1) != 0 ? (w2 >> 16) : (w2 & 0xffff);
-  return mesh->quant.xyz + float3(float(x), float(y), float(z)) * mesh->quant.w;
-}
-
-// Same layout as MeshParams in cluster_mesh.slang (120 bytes).
+// Same layout as MeshParams in cluster_mesh.slang (128 bytes).
 struct RasterParams {
   column_major float4x4 view_proj;
   uint64_t clusters;
-  uint64_t mesh;  // MeshDesc: the quantized positions and their grid
+  uint64_t mesh;  // MeshDesc[]: the quantized positions and each mesh's grid
   uint64_t triangles;
-  uint cluster_count;
+  uint visible_offset;  // this draw's first entry in the whole scene's visible list
   uint pad;
-  uint64_t visible;     // uint[]: cluster index per workgroup; 0 rasterizes clusters in order
+  uint64_t visible;     // uint2[]: {instance, cluster} per entry; 0 takes {0, i} in order
   uint64_t visibility;  // uint64_t[width * height]
   uint width;
   uint height;
+  uint64_t instances;  // InstanceDesc[]
 };
 
 [[vk::push_constant]] ConstantBuffer<RasterParams> g_params;
@@ -65,20 +37,23 @@ groupshared bool s_in_front[k_max_vertices];
 [shader("compute")]
 [numthreads(128, 1, 1)]
 void sw_raster_main(uint3 group_thread : SV_GroupThreadID, uint3 group : SV_GroupID) {
-  uint cluster_id = group.x;
-  if (g_params.visible != 0) {
-    uint* visible = (uint*)g_params.visible;
-    cluster_id = visible[group.x];
-  }
+  const uint local = group.x;
+  const uint visible_index = g_params.visible_offset + local;
+  const uint2 entry = visible_entry(g_params.visible, local);
+  InstanceDesc* instances = (InstanceDesc*)g_params.instances;
+  const InstanceDesc instance = instances[entry.x];
   ClusterDesc* clusters = (ClusterDesc*)g_params.clusters;
-  const ClusterDesc cluster = clusters[cluster_id];
+  const ClusterDesc cluster = clusters[entry.y];
   const float2 size = float2(float(g_params.width), float(g_params.height));
 
-  // Vertices: clip space to pixel space with the same y flip as the hardware viewport.
-  MeshDesc* positions = (MeshDesc*)g_params.mesh;
+  // Vertices: mesh space to world to clip space to pixel space, with the same y flip as the
+  // hardware viewport.
+  MeshDesc* meshes = (MeshDesc*)g_params.mesh;
+  const MeshDesc mesh = meshes[instance.mesh];
   for (uint v = group_thread.x; v < cluster.vertex_count; v += 128) {
-    const float3 p = load_position(positions, cluster.vertex_offset + v);
-    const float4 clip = mul(g_params.view_proj, float4(p, 1.0));
+    const float3 p = load_position(mesh, cluster.vertex_offset + v);
+    const float3 world = mul(instance.world, float4(p, 1.0)).xyz;
+    const float4 clip = mul(g_params.view_proj, float4(world, 1.0));
     const bool in_front = clip.w > 1e-6;
     const float3 ndc = in_front ? clip.xyz / clip.w : float3(0.0, 0.0, 0.0);
     s_screen[v] = float3((ndc.x * 0.5 + 0.5) * size.x, (0.5 - ndc.y * 0.5) * size.y, ndc.z);
@@ -112,7 +87,7 @@ void sw_raster_main(uint3 group_thread : SV_GroupThreadID, uint3 group : SV_Grou
   const int2 max_px = int2(min(ceil(hi), size - 1.0));
   if (uint(max_px.x - min_px.x + 1) * uint(max_px.y - min_px.y + 1) > k_max_bbox_pixels) return;
 
-  const uint id = (cluster_id << 8) | (t & 0xff);
+  const uint id = (visible_index << 8) | (t & 0xff);
   Atomic<uint64_t>* visibility = (Atomic<uint64_t>*)g_params.visibility;
   const float inv_area = 1.0 / area;
   for (int y = min_px.y; y <= max_px.y; ++y) {

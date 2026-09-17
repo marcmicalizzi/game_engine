@@ -16,6 +16,7 @@
 //
 // Exit codes: 0 ok; 1 runtime error; 2 usage; 3 unavailable (no display, no Vulkan device, no
 // mesh shaders, or no presentation support), which tests treat as a skip.
+#include <core/json/json.h>
 #include <core/log/log.h>
 #include <core/math/math.h>
 #include <core/platform/process.h>
@@ -70,8 +71,8 @@ constexpr const char* k_usage =
     "                   [--no-vsync] [--adapter <index>] [--validation] [--grid <n>] [--log <spec>]\n"
     "                   [--shaders <manifest.json>] [--lod <px>] [--no-cull] [--no-occlusion] [--no-cone]\n"
     "                   [--raster direct|hw|vertex|sw|auto|rt] [--sw-px <px>] [--view <mode>] [--orbit <d>]\n"
-    "                   [--mesh <file.gltf|file.glb|file.clusters>] [--no-cache] [--ddc <dir>]\n"
-    "                   [--no-lights]\n"
+    "                   [--mesh <file.gltf|file.glb|file.clusters>] [--scene <file.json>]\n"
+    "                   [--grid-instances <n>] [--no-cache] [--ddc <dir>] [--no-lights]\n"
     "\n"
     "  --frames <n>     render n frames, then exit (0: until the window closes)\n"
     "  --capture <png>  write the last frame as a PNG (implies --frames 60 when unset)\n"
@@ -80,6 +81,9 @@ constexpr const char* k_usage =
     "                   cluster DAG per primitive; materials with their base-color,\n"
     "                   metallic-roughness, and normal textures from the file), or a .clusters\n"
     "                   container that already holds one\n"
+    "  --scene <json>   {\"meshes\":[{\"path\":\"...\"}],\"instances\":[{\"mesh\":0,\"translation\":[x,y,z],\n"
+    "                   \"rotation\":[x,y,z,w],\"scale\":[x,y,z]}]}; paths are relative to the file\n"
+    "  --grid-instances <n>  place the loaded mesh n x n times with varied rotation and scale\n"
     "  --no-cache       always build a glTF from source; do not read or write ddc/clusters\n"
     "  --ddc <dir>      the derived-data root (default: <repo>/ddc, found beside AGENTS.md)\n"
     "  --lod <px>       screen-space error threshold in pixels for LOD selection (default 1)\n"
@@ -122,8 +126,10 @@ struct Options {
   u32 grid = 257;
   std::string log_spec;
   std::string shaders;
-  std::string mesh;  // glTF or .clusters file; empty renders the heightfield
-  std::string ddc;   // derived-data root; empty is found from the executable
+  std::string mesh;        // glTF or .clusters file; empty renders the heightfield
+  std::string scene;       // a scene JSON file: meshes and instances of them
+  std::string ddc;         // derived-data root; empty is found from the executable
+  u32 grid_instances = 0;  // n: place the one mesh n x n times
   bool cache = true;
   f32 lod_px = 1.0f;
   bool cull = true;
@@ -247,7 +253,9 @@ struct Pipelines {
   gfx::ComputePipeline software;         // cluster_sw_raster
   gfx::ComputePipeline cull;             // cluster_cull
   gfx::ComputePipeline hiz;              // hiz_build
-  gfx::ComputePipeline records;          // clas_records (--raster rt)
+  gfx::ComputePipeline records;          // clas_records: bucket the visible list by instance
+  gfx::ComputePipeline record_ranges;    // clas_records: prefix sum and bottom-level records
+  gfx::ComputePipeline record_emit;      // clas_records: the dense CLAS build records
   gfx::ComputePipeline trace;            // ray_visibility (--raster rt)
   VkPipeline resolve = VK_NULL_HANDLE;   // fullscreen visibility resolve
   void destroy(const gfx::Device& device) {
@@ -259,6 +267,8 @@ struct Pipelines {
     gfx::destroy_compute_pipeline(device, cull);
     gfx::destroy_compute_pipeline(device, hiz);
     gfx::destroy_compute_pipeline(device, records);
+    gfx::destroy_compute_pipeline(device, record_ranges);
+    gfx::destroy_compute_pipeline(device, record_emit);
     gfx::destroy_compute_pipeline(device, trace);
     direct = hardware = vertex = resolve = VK_NULL_HANDLE;
   }
@@ -340,6 +350,287 @@ void write_cluster_cache(const std::string& path, const std::string& source,
   lod = std::move(data.mesh);
 }
 
+// One mesh of the scene as it arrives: its DAG, the materials and images it names, and which
+// primitive — and so which material — each of its clusters came from.
+struct SourceMesh {
+  geometry::ClusterLodMesh lod;
+  assets::MeshData data;        // materials and images; the positions are spent by now
+  Vector<u32> part_of_cluster;  // the part index of every cluster
+  Vector<i32> part_material;    // the material of every part, -1 for none
+  std::string image_dir;        // what the relative image paths are relative to
+  u32 primitives = 0;
+  const char* cache = "none";
+};
+
+// Reads one mesh: a `.clusters` container named outright, the derived-data cache entry this glTF
+// and these options address, or the glTF itself (imported, welded, clustered per primitive so
+// every cluster has a single material, merged, and written into the cache for the next run). An
+// empty `path` builds the procedural heightfield instead.
+bool load_source_mesh(const std::string& path, const Options& options, SourceMesh& out,
+                      std::string& error) {
+  if (path.empty()) {
+    Vector<Vec3> positions;
+    Vector<u32> indices;
+    make_terrain(options.grid, 10.0f, positions, indices);
+    Vector<Vec2> uvs;
+    uvs.reserve(positions.size());
+    for (const Vec3& p : positions)
+      uvs.push_back(Vec2{(p.x + 10.0f) / 20.0f, (p.z + 10.0f) / 20.0f});
+    geometry::AttributeSource attribute_source;
+    attribute_source.uvs = std::span<const Vec2>(uvs.data(), uvs.size());  // normals: computed
+    return geometry::build_cluster_lod(positions, indices, geometry::ClusterLodOptions{}, out.lod,
+                                       &error, attribute_source);
+  }
+  // Where a built mesh may already be: a container named outright, or the cache entry this
+  // source and these options address.
+  std::string container;
+  std::string cache_path;
+  if (io::extension(path) == ".clusters") {
+    container = path;
+    out.cache = "file";
+  } else if (options.cache) {
+    u64 source_hash = 0;
+    if (!assets::source_mesh_hash(path, source_hash, &error)) return false;
+    const u64 key = geometry::cluster_cache_key(source_hash, geometry::ClusterLodOptions{}, true);
+    cache_path = geometry::cluster_cache_path(options.ddc, key);
+    out.cache = "miss";
+    if (io::exists(cache_path)) container = cache_path;
+  }
+  geometry::ClusterFileData container_data;
+  bool from_container = false;
+  if (!container.empty()) {
+    std::string read_error;
+    if (geometry::read_cluster_file(container, container_data, &read_error)) {
+      from_container = true;
+      if (!cache_path.empty()) out.cache = "hit";
+    } else if (cache_path.empty()) {
+      error = read_error;  // a file named on the command line must load
+      return false;
+    } else {
+      // A cache entry this build cannot read is not an error; it is a miss with a warning.
+      ENGINE_LOG_WARN(log_view, "cluster cache entry ignored", log::field("path", container),
+                      log::field("error", read_error));
+    }
+  }
+  if (from_container) {
+    out.lod = std::move(container_data.mesh);
+    // The container's materials, images, and material map, in the shape the glTF path leaves
+    // behind so that everything below is the same code for both: one part per material, and the
+    // file's own map from cluster to part.
+    out.data.materials.reserve(container_data.materials.size());
+    out.part_material.reserve(container_data.materials.size());
+    for (const geometry::ClusterFileMaterial& source : container_data.materials) {
+      assets::Material material;
+      material.base_color = source.base_color;
+      material.metallic = source.metallic;
+      material.roughness = source.roughness;
+      material.base_color_image = source.base_color_image;
+      material.normal_image = source.normal_image;
+      material.metallic_roughness_image =
+          geometry::decode_optional_image(source.metallic_roughness_image);
+      material.occlusion_image = geometry::decode_optional_image(source.occlusion_image);
+      material.emissive_image = geometry::decode_optional_image(source.emissive_image);
+      material.emissive = source.emissive;
+      material.normal_scale = source.normal_scale;
+      material.alpha_mode = geometry::alpha_word_mode(source.alpha);
+      material.double_sided = geometry::alpha_word_double_sided(source.alpha);
+      material.alpha_cutoff = geometry::alpha_word_cutoff(source.alpha);
+      out.data.materials.push_back(std::move(material));
+      out.part_material.push_back(static_cast<i32>(out.part_material.size()));
+    }
+    // An image the source embedded has no path and no bytes here: the container carries paths
+    // only, so such a material draws untextured with a warning until the texture pipeline gives
+    // images a derived form of their own.
+    out.data.images.reserve(container_data.image_paths.size());
+    for (const std::string& uri : container_data.image_paths) {
+      assets::ImageRef image;
+      image.uri = uri;
+      out.data.images.push_back(std::move(image));
+    }
+    out.part_of_cluster = std::move(container_data.cluster_material);
+    if (out.part_of_cluster.empty()) {  // a container with no material map: one default for all
+      out.part_of_cluster = Vector<u32>(out.lod.mesh.clusters.size(), out.part_material.size());
+      out.part_material.push_back(-1);
+    }
+    // Relative image paths belong to the mesh the container was built from; a container that
+    // does not name one resolves them beside itself.
+    out.image_dir = std::string(io::parent_path(
+        container_data.source_path.empty() ? std::string_view(container)
+                                           : std::string_view(container_data.source_path)));
+    out.primitives = 0;  // a container does not record how many were merged into it
+    ENGINE_LOG_INFO(
+        log_view, "mesh loaded", log::field("path", container), log::field("from", "cluster file"),
+        log::field("source", container_data.source_path), log::field("cache", out.cache),
+        log::field("clusters", out.lod.mesh.clusters.size()),
+        log::field("vertices", out.lod.mesh.vertices.size()),
+        log::field("triangles", out.lod.leaf_triangle_count),
+        log::field("lod_levels", out.lod.level_cluster_counts.size()),
+        log::field("materials", out.data.materials.size()),
+        log::field("images", out.data.images.size()));
+    return true;
+  }
+  if (!assets::load_gltf(path, out.data, &error)) return false;
+  out.image_dir = std::string(io::parent_path(path));
+  // Exporters duplicate vertices freely; welding the identical ones gives the cluster builder
+  // shared vertices to fill clusters with and the LOD builder edges to collapse.
+  const u32 loaded_vertices = out.data.positions.size();
+  const u32 welded_vertices =
+      geometry::weld_vertices(out.data.positions, out.data.normals, out.data.uvs,
+                              std::span<u32>(out.data.indices.data(), out.data.indices.size()));
+  ENGINE_LOG_INFO(log_view, "mesh loaded", log::field("path", path), log::field("from", "gltf"),
+                  log::field("cache", out.cache), log::field("vertices", loaded_vertices),
+                  log::field("welded", welded_vertices),
+                  log::field("triangles", out.data.indices.size() / 3),
+                  log::field("primitives", out.data.primitives.size()),
+                  log::field("materials", out.data.materials.size()),
+                  log::field("images", out.data.images.size()));
+  const geometry::AttributeSource attribute_source = assets::attribute_source(out.data);
+  Vector<geometry::ClusterLodMesh> parts;
+  for (const assets::Primitive& primitive : out.data.primitives) {
+    if (primitive.index_count < 3) continue;
+    const std::span<const u32> range(out.data.indices.data() + primitive.first_index,
+                                     primitive.index_count);
+    geometry::ClusterLodMesh part;
+    if (!geometry::build_cluster_lod(out.data.positions, range, geometry::ClusterLodOptions{}, part,
+                                     &error, attribute_source)) {
+      return false;
+    }
+    parts.push_back(std::move(part));
+    out.part_material.push_back(primitive.material);
+  }
+  if (!geometry::merge_cluster_lod(parts, out.lod, &out.part_of_cluster, &error)) return false;
+  out.primitives = parts.size();
+  // Into the cache for the next run, as the same container engine-content build writes: either
+  // app fills the cache, either app finds it.
+  if (!cache_path.empty()) {
+    write_cluster_cache(cache_path, path, out.data, out.part_material, out.part_of_cluster,
+                        out.lod);
+  }
+  return true;
+}
+
+// The bounding sphere of a mesh's level-0 clusters, in its own space.
+void mesh_bounds(const geometry::ClusterLodMesh& lod, u32 first, u32 count, Vec3& center,
+                 f32& radius) {
+  Vec3 lo{1e30f, 1e30f, 1e30f};
+  Vec3 hi{-1e30f, -1e30f, -1e30f};
+  for (u32 i = first; i < first + count; ++i) {
+    const geometry::ClusterDesc& c = lod.mesh.clusters[i];
+    lo = Vec3{std::min(lo.x, c.center.x - c.radius), std::min(lo.y, c.center.y - c.radius),
+              std::min(lo.z, c.center.z - c.radius)};
+    hi = Vec3{std::max(hi.x, c.center.x + c.radius), std::max(hi.y, c.center.y + c.radius),
+              std::max(hi.z, c.center.z + c.radius)};
+  }
+  center = (lo + hi) * 0.5f;
+  radius = 1e-6f;  // tighter than the box diagonal for elongated meshes
+  for (u32 i = first; i < first + count; ++i) {
+    const geometry::ClusterDesc& c = lod.mesh.clusters[i];
+    radius = std::max(radius, length(c.center - center) + c.radius);
+  }
+}
+
+// One instance of a scene as the file or the grid describes it.
+struct SceneInstance {
+  u32 mesh = 0;
+  Transform3 transform;
+};
+
+// Reads `--scene <file.json>`: {"meshes":[{"path":"..."}], "instances":[{"mesh":0,
+// "translation":[x,y,z], "rotation":[x,y,z,w], "scale":[x,y,z]}]}. Mesh paths are resolved
+// against the file's own directory. Every field but the mesh list is optional; an empty instance
+// list gives one identity instance of every mesh.
+bool read_scene_file(const std::string& path, Vector<std::string>& meshes,
+                     Vector<SceneInstance>& instances, std::string& error) {
+  std::string text;
+  const io::Status status = io::read_file(path, text);
+  if (status != io::Status::Ok) {
+    error = std::string("cannot read ") + path + ": " + io::status_name(status);
+    return false;
+  }
+  JsonValue root;
+  const JsonParseResult parsed = parse_json(text, root);
+  if (!parsed.ok) {
+    error = std::string(path) + ":" + std::to_string(parsed.line) + ": " + parsed.message;
+    return false;
+  }
+  const JsonValue* mesh_list = root.is_object() ? root.find("meshes") : nullptr;
+  if (mesh_list == nullptr || !mesh_list->is_array() || mesh_list->size() == 0) {
+    error = std::string(path) + ": no \"meshes\" array";
+    return false;
+  }
+  const std::string dir(io::parent_path(path));
+  for (usize i = 0; i < mesh_list->size(); ++i) {
+    const JsonValue& entry = (*mesh_list)[i];
+    std::string_view mesh_path;
+    const JsonValue* value = entry.is_object() ? entry.find("path") : nullptr;
+    if (value == nullptr || !value->get_string(mesh_path) || mesh_path.empty()) {
+      error = std::string(path) + ": mesh " + std::to_string(i) + " has no \"path\"";
+      return false;
+    }
+    const std::string relative(mesh_path);
+    meshes.push_back(io::is_absolute_path(relative) || dir.empty() ? relative
+                                                                   : io::join_path(dir, relative));
+  }
+  auto read_vec = [](const JsonValue* value, u32 count, f32* out) {
+    if (value == nullptr || !value->is_array() || value->size() != count) return false;
+    for (u32 i = 0; i < count; ++i) {
+      f64 v = 0.0;
+      if (!(*value)[i].get_f64(v)) return false;
+      out[i] = static_cast<f32>(v);
+    }
+    return true;
+  };
+  const JsonValue* instance_list = root.find("instances");
+  if (instance_list == nullptr || !instance_list->is_array() || instance_list->size() == 0) {
+    for (u32 i = 0; i < meshes.size(); ++i)
+      instances.push_back(SceneInstance{i, Transform3::identity()});
+    return true;
+  }
+  for (usize i = 0; i < instance_list->size(); ++i) {
+    const JsonValue& entry = (*instance_list)[i];
+    SceneInstance instance;
+    u64 mesh_index = 0;
+    const JsonValue* mesh_value = entry.is_object() ? entry.find("mesh") : nullptr;
+    if (mesh_value != nullptr && !mesh_value->get_u64(mesh_index)) mesh_index = ~u64{0};
+    if (mesh_index >= meshes.size()) {
+      error = std::string(path) + ": instance " + std::to_string(i) + " names no known mesh";
+      return false;
+    }
+    instance.mesh = static_cast<u32>(mesh_index);
+    f32 v[4] = {};
+    if (read_vec(entry.find("translation"), 3, v))
+      instance.transform.position = Vec3{v[0], v[1], v[2]};
+    if (read_vec(entry.find("rotation"), 4, v))
+      instance.transform.rotation = normalize(Quat{v[0], v[1], v[2], v[3]});
+    if (read_vec(entry.find("scale"), 3, v)) instance.transform.scale = Vec3{v[0], v[1], v[2]};
+    instances.push_back(instance);
+  }
+  return true;
+}
+
+// `--grid-instances n`: n x n copies of mesh 0 on a grid, with a rotation and a scale that vary
+// per copy and a non-uniform scale on every third, so one flag exercises the uniform and the
+// non-uniform path, the cone test's precondition, and the LOD scaling all at once.
+void make_instance_grid(u32 n, f32 mesh_radius, Vector<SceneInstance>& out) {
+  const f32 spacing = 3.0f * mesh_radius;
+  const f32 center = 0.5f * static_cast<f32>(n - 1);
+  for (u32 z = 0; z < n; ++z) {
+    for (u32 x = 0; x < n; ++x) {
+      const u32 k = z * n + x;
+      SceneInstance instance;
+      instance.mesh = 0;
+      instance.transform.position = Vec3{(static_cast<f32>(x) - center) * spacing, 0.0f,
+                                         (static_cast<f32>(z) - center) * spacing};
+      instance.transform.rotation = quat_from_euler(radians(static_cast<f32>(k * 37 % 360)),
+                                                    radians(static_cast<f32>(k * 11 % 25)), 0.0f);
+      const f32 s = 0.6f + 0.2f * static_cast<f32>(k % 4);
+      instance.transform.scale =
+          k % 3 == 2 ? Vec3{s, s * 1.4f, s * 0.7f} : Vec3{s, s, s};  // every third non-uniform
+      out.push_back(instance);
+    }
+  }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -351,7 +642,7 @@ int main(int argc, char** argv) {
       std::fputs(k_usage, stdout);
       return 0;
     } else if (a == "--width" || a == "--height" || a == "--frames" || a == "--adapter" ||
-               a == "--grid") {
+               a == "--grid" || a == "--grid-instances") {
       if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
       u32 n = 0;
       if (!parse_u32(value, n)) {
@@ -364,6 +655,7 @@ int main(int argc, char** argv) {
       if (a == "--frames") options.frames = n;
       if (a == "--adapter") options.adapter = n;
       if (a == "--grid") options.grid = n;
+      if (a == "--grid-instances") options.grid_instances = n;
     } else if (a == "--lod" || a == "--sw-px" || a == "--orbit") {
       if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
       f32 px = 0.0f;
@@ -418,6 +710,8 @@ int main(int argc, char** argv) {
       if (!next_value(argc, argv, i, a, options.shaders)) return k_exit_usage;
     } else if (a == "--mesh") {
       if (!next_value(argc, argv, i, a, options.mesh)) return k_exit_usage;
+    } else if (a == "--scene") {
+      if (!next_value(argc, argv, i, a, options.scene)) return k_exit_usage;
     } else if (a == "--ddc") {
       if (!next_value(argc, argv, i, a, options.ddc)) return k_exit_usage;
     } else if (a == "--no-cache") {
@@ -442,6 +736,14 @@ int main(int argc, char** argv) {
   }
   if (options.width == 0 || options.height == 0 || options.grid < 2 || options.grid > 2048) {
     std::fprintf(stderr, "engine-view: size must be positive and --grid within 2..2048\n");
+    return k_exit_usage;
+  }
+  if (options.grid_instances > 64) {
+    std::fprintf(stderr, "engine-view: --grid-instances must be at most 64\n");
+    return k_exit_usage;
+  }
+  if (!options.scene.empty() && (!options.mesh.empty() || options.grid_instances != 0)) {
+    std::fprintf(stderr, "engine-view: --scene names its own meshes and instances\n");
     return k_exit_usage;
   }
   if (!options.capture.empty() && options.frames == 0) options.frames = 60;
@@ -536,7 +838,8 @@ int main(int argc, char** argv) {
   gfx::BufferResource cluster_buffer;
   gfx::BufferResource vertex_buffer;     // float positions; only --raster rt needs them
   gfx::BufferResource quantized_buffer;  // three u16 per vertex on the mesh-wide grid
-  gfx::BufferResource mesh_buffer;       // one gfx::MeshDesc pointing at it
+  gfx::BufferResource mesh_buffer;       // one gfx::MeshDesc per mesh of the scene
+  gfx::BufferResource instance_buffer;   // one gfx::InstanceDesc per instance
   gfx::BufferResource triangle_buffer;
   gfx::BufferResource lod_buffer;
   gfx::BufferResource attribute_buffer;  // VertexAttributes parallel to the vertices
@@ -554,22 +857,27 @@ int main(int argc, char** argv) {
   gfx::BufferResource material_buffer;  // ResolveMaterial table
   gfx::BufferResource cluster_material_buffer;              // material index per cluster
   gfx::BufferResource resolve_buffers[k_frames_in_flight];  // host-visible ResolveParams per slot
-  gfx::BufferResource visible_buffer[2];                    // hardware survivors of pass 1 / pass 2
-  gfx::BufferResource args_buffer[2];     // {count, 1, 1} for the indirect mesh draws
-  gfx::BufferResource sw_visible_buffer;  // software survivors
-  gfx::BufferResource sw_args_buffer;     // {count, 1, 1} for the indirect dispatch
-  gfx::BufferResource flags_buffer[2];    // drawn last frame / this frame, ping-pong
+  // The frame's visible list: {instance, cluster} per entry, in three runs (hardware pass 1,
+  // hardware pass 2, software), so a visibility id names an entry of one array.
+  gfx::BufferResource visible_buffer;
+  gfx::BufferResource args_buffer[2];   // {count, 1, 1} for the indirect mesh draws
+  gfx::BufferResource sw_args_buffer;   // {count, 1, 1} for the indirect dispatch
+  gfx::BufferResource flags_buffer[2];  // drawn last frame / this frame, ping-pong, by pair
   gfx::BufferResource params_buffers[k_frames_in_flight];  // host-visible: two CullParams per slot
   gfx::BufferResource stats_buffers[k_frames_in_flight];   // host-visible copies of the arg blocks
   // --raster rt: the frame's cut as cluster acceleration structures.
-  gfx::BufferResource indices8_buffer;      // 8-bit packed cluster indices for the CLAS builds
-  gfx::BufferResource records_buffer;       // CLAS build records written from the cull output
-  gfx::BufferResource record_count_buffer;  // u32: how many
-  gfx::BufferResource rt_instances;         // the one top-level instance record
+  gfx::BufferResource indices8_buffer;         // 8-bit packed cluster indices for the CLAS builds
+  gfx::BufferResource records_buffer;          // CLAS build records written from the cull output
+  gfx::BufferResource record_count_buffer;     // u32: how many
+  gfx::BufferResource slots_buffer;            // u32 per pair: the records pass's bucketing scratch
+  gfx::BufferResource instance_counts_buffer;  // u32 per instance: its surviving clusters
+  gfx::BufferResource instance_first_buffer;   // u32 per instance: its dense record base
+  gfx::BufferResource blas_records_buffer;     // one 16-byte bottom-level record per instance
+  gfx::BufferResource rt_instances;            // one top-level instance record per instance
   gfx::BufferResource rt_scratch;
   gfx::BufferResource ray_params[k_frames_in_flight];  // host-visible RayVisibilityParams per slot
   gfx::ClusterSet clas_set;
-  gfx::ClusterBlas cluster_blas;
+  Vector<gfx::ClusterBlas> cluster_blas;  // one cluster bottom-level structure per instance
   gfx::AccelerationStructure tlas;
   u32 tlas_slot = gfx::BindlessSet::k_invalid_slot;
   gfx::ShaderLibrary shader_library;
@@ -586,6 +894,9 @@ int main(int argc, char** argv) {
   u32 visible_sw_last = 0;
   u32 visible_min = ~u32{0};
   u32 visible_max = 0;
+  u32 scene_meshes = 0;          // the scene's meshes, instances, and (instance, cluster) pairs
+  u32 scene_instance_count = 0;  // as the summary reports them after the loop has unwound
+  u32 scene_pairs = 0;
   i64 build_ns = 0;
   f64 gpu_cull_ms = 0.0;
   f64 gpu_hw_ms = 0.0;
@@ -625,187 +936,108 @@ int main(int argc, char** argv) {
       break;
     }
 
-    // Geometry: the terrain's LOD DAG, or a mesh. A mesh arrives already clustered when
-    // `--mesh` names a `.clusters` container or when the derived-data cache holds this glTF
-    // built with these options; otherwise it is imported and clustered here, one DAG per
-    // primitive merged into one so every cluster has a single material, and the result is
-    // written into the cache for the next run.
-    assets::MeshData mesh_data;
-    Vector<u32> part_of_cluster;  // --mesh: the primitive each cluster came from
-    Vector<i32> part_material;    // --mesh: the material of each primitive with triangles
-    std::string image_dir;        // what the materials' relative image paths are relative to
+    // The scene: one or more meshes, and instances of them. Every mesh keeps its own 16-bit
+    // position grid through the merge, so a 2 cm mesh next to a 20 m one loses no detail, and
+    // every mesh's clusters stay contiguous so `{first_cluster, cluster_count}` names them.
+    Vector<std::string> mesh_paths;
+    Vector<SceneInstance> scene_instances;
     const i64 build_start = time::monotonic_ns();
-    if (options.mesh.empty()) {
-      Vector<Vec3> positions;
-      Vector<u32> indices;
-      make_terrain(options.grid, 10.0f, positions, indices);
-      Vector<Vec2> uvs;
-      uvs.reserve(positions.size());
-      for (const Vec3& p : positions)
-        uvs.push_back(Vec2{(p.x + 10.0f) / 20.0f, (p.z + 10.0f) / 20.0f});
-      geometry::AttributeSource attribute_source;
-      attribute_source.uvs = std::span<const Vec2>(uvs.data(), uvs.size());  // normals: computed
-      if (!geometry::build_cluster_lod(positions, indices, geometry::ClusterLodOptions{}, lod,
-                                       &error, attribute_source)) {
-        exit_code = fail("clusters", error);
+    if (!options.scene.empty()) {
+      if (!read_scene_file(options.scene, mesh_paths, scene_instances, error)) {
+        exit_code = fail("scene", error);
         break;
       }
     } else {
-      // Where a built mesh may already be: a container named outright, or the cache entry this
-      // source and these options address.
-      std::string container;
-      std::string cache_path;
-      if (io::extension(options.mesh) == ".clusters") {
-        container = options.mesh;
-        mesh_cache = "file";
-      } else if (options.cache) {
-        u64 source_hash = 0;
-        if (!assets::source_mesh_hash(options.mesh, source_hash, &error)) {
-          exit_code = fail("mesh", error);
-          break;
-        }
-        const u64 key =
-            geometry::cluster_cache_key(source_hash, geometry::ClusterLodOptions{}, true);
-        cache_path = geometry::cluster_cache_path(options.ddc, key);
-        mesh_cache = "miss";
-        if (io::exists(cache_path)) container = cache_path;
-      }
-      geometry::ClusterFileData container_data;
-      bool from_container = false;
-      if (!container.empty()) {
-        std::string read_error;
-        if (geometry::read_cluster_file(container, container_data, &read_error)) {
-          from_container = true;
-          if (!cache_path.empty()) mesh_cache = "hit";
-        } else if (cache_path.empty()) {
-          exit_code = fail("mesh", read_error);  // a file named on the command line must load
-          break;
-        } else {
-          // A cache entry this build cannot read is not an error; it is a miss with a warning.
-          ENGINE_LOG_WARN(log_view, "cluster cache entry ignored", log::field("path", container),
-                          log::field("error", read_error));
-        }
-      }
-      if (from_container) {
-        lod = std::move(container_data.mesh);
-        // The container's materials, images, and material map, in the shape the glTF path
-        // leaves behind so that everything below is the same code for both: one part per
-        // material, and the file's own map from cluster to part.
-        mesh_data.materials.reserve(container_data.materials.size());
-        part_material.reserve(container_data.materials.size());
-        for (const geometry::ClusterFileMaterial& source : container_data.materials) {
-          assets::Material material;
-          material.base_color = source.base_color;
-          material.metallic = source.metallic;
-          material.roughness = source.roughness;
-          material.base_color_image = source.base_color_image;
-          material.normal_image = source.normal_image;
-          material.metallic_roughness_image =
-              geometry::decode_optional_image(source.metallic_roughness_image);
-          material.occlusion_image = geometry::decode_optional_image(source.occlusion_image);
-          material.emissive_image = geometry::decode_optional_image(source.emissive_image);
-          material.emissive = source.emissive;
-          material.normal_scale = source.normal_scale;
-          material.alpha_mode = geometry::alpha_word_mode(source.alpha);
-          material.double_sided = geometry::alpha_word_double_sided(source.alpha);
-          material.alpha_cutoff = geometry::alpha_word_cutoff(source.alpha);
-          mesh_data.materials.push_back(std::move(material));
-          part_material.push_back(static_cast<i32>(part_material.size()));
-        }
-        // An image the source embedded has no path and no bytes here: the container carries
-        // paths only, so such a material draws untextured with a warning until the texture
-        // pipeline gives images a derived form of their own.
-        mesh_data.images.reserve(container_data.image_paths.size());
-        for (const std::string& uri : container_data.image_paths) {
-          assets::ImageRef image;
-          image.uri = uri;
-          mesh_data.images.push_back(std::move(image));
-        }
-        part_of_cluster = std::move(container_data.cluster_material);
-        if (part_of_cluster.empty()) {  // a container with no material map: one default for all
-          part_of_cluster = Vector<u32>(lod.mesh.clusters.size(), part_material.size());
-          part_material.push_back(-1);
-        }
-        // Relative image paths belong to the mesh the container was built from; a container
-        // that does not name one resolves them beside itself.
-        image_dir = std::string(io::parent_path(
-            container_data.source_path.empty() ? std::string_view(container)
-                                               : std::string_view(container_data.source_path)));
-        // A container does not record how many primitives were merged into it.
-        mesh_primitives = 0;
-        ENGINE_LOG_INFO(
-            log_view, "mesh loaded", log::field("path", container),
-            log::field("from", "cluster file"), log::field("source", container_data.source_path),
-            log::field("cache", mesh_cache), log::field("clusters", lod.mesh.clusters.size()),
-            log::field("vertices", lod.mesh.vertices.size()),
-            log::field("triangles", lod.leaf_triangle_count),
-            log::field("lod_levels", lod.level_cluster_counts.size()),
-            log::field("materials", mesh_data.materials.size()),
-            log::field("images", mesh_data.images.size()));
-      } else if (!assets::load_gltf(options.mesh, mesh_data, &error)) {
-        exit_code = fail("mesh", error);
+      mesh_paths.push_back(options.mesh);  // empty: the procedural heightfield
+    }
+    Vector<SourceMesh> sources(mesh_paths.size());
+    bool sources_ok = true;
+    for (u32 m = 0; m < mesh_paths.size() && sources_ok; ++m)
+      sources_ok = load_source_mesh(mesh_paths[m], options, sources[m], error);
+    if (!sources_ok) {
+      exit_code = fail("mesh", error);
+      break;
+    }
+    mesh_primitives = sources[0].primitives;
+    mesh_cache = sources[0].cache;
+    Vector<geometry::ClusterMeshPart> parts;
+    if (sources.size() == 1) {
+      lod = std::move(sources[0].lod);
+      geometry::ClusterMeshPart part;
+      part.cluster_count = lod.mesh.clusters.size();
+      part.leaf_cluster_count = lod.level_cluster_counts[0];
+      part.quant_origin = lod.mesh.quant_origin;
+      part.quant_scale = lod.mesh.quant_scale;
+      parts.push_back(part);
+    } else {
+      Vector<geometry::ClusterLodMesh> dags;
+      for (SourceMesh& source : sources)
+        dags.push_back(std::move(source.lod));
+      if (!geometry::merge_cluster_meshes(dags, lod, parts, &error)) {
+        exit_code = fail("scene meshes", error);
         break;
-      } else {
-        image_dir = std::string(io::parent_path(options.mesh));
-        // Exporters duplicate vertices freely; welding the identical ones gives the cluster
-        // builder shared vertices to fill clusters with and the LOD builder edges to collapse.
-        const u32 loaded_vertices = mesh_data.positions.size();
-        const u32 welded_vertices = geometry::weld_vertices(
-            mesh_data.positions, mesh_data.normals, mesh_data.uvs,
-            std::span<u32>(mesh_data.indices.data(), mesh_data.indices.size()));
-        ENGINE_LOG_INFO(log_view, "mesh loaded", log::field("path", options.mesh),
-                        log::field("from", "gltf"), log::field("cache", mesh_cache),
-                        log::field("vertices", loaded_vertices),
-                        log::field("welded", welded_vertices),
-                        log::field("triangles", mesh_data.indices.size() / 3),
-                        log::field("primitives", mesh_data.primitives.size()),
-                        log::field("materials", mesh_data.materials.size()),
-                        log::field("images", mesh_data.images.size()));
-        const geometry::AttributeSource attribute_source = assets::attribute_source(mesh_data);
-        Vector<geometry::ClusterLodMesh> parts;
-        bool parts_ok = true;
-        for (const assets::Primitive& primitive : mesh_data.primitives) {
-          if (primitive.index_count < 3) continue;
-          const std::span<const u32> range(mesh_data.indices.data() + primitive.first_index,
-                                           primitive.index_count);
-          geometry::ClusterLodMesh part;
-          if (!geometry::build_cluster_lod(mesh_data.positions, range,
-                                           geometry::ClusterLodOptions{}, part, &error,
-                                           attribute_source)) {
-            parts_ok = false;
-            break;
-          }
-          parts.push_back(std::move(part));
-          part_material.push_back(primitive.material);
-        }
-        if (!parts_ok || !geometry::merge_cluster_lod(parts, lod, &part_of_cluster, &error)) {
-          exit_code = fail("mesh clusters", error);
-          break;
-        }
-        mesh_primitives = parts.size();
-        // Into the cache for the next run, as the same container engine-content build writes:
-        // either app fills the cache, either app finds it.
-        if (!cache_path.empty())
-          write_cluster_cache(cache_path, options.mesh, mesh_data, part_material, part_of_cluster,
-                              lod);
-      }
-      // The camera orbits the mesh's bounds instead of the heightfield's.
-      Vec3 lo{1e30f, 1e30f, 1e30f};
-      Vec3 hi{-1e30f, -1e30f, -1e30f};
-      for (u32 i = 0; i < lod.level_cluster_counts[0]; ++i) {
-        const geometry::ClusterDesc& c = lod.mesh.clusters[i];
-        lo = Vec3{std::min(lo.x, c.center.x - c.radius), std::min(lo.y, c.center.y - c.radius),
-                  std::min(lo.z, c.center.z - c.radius)};
-        hi = Vec3{std::max(hi.x, c.center.x + c.radius), std::max(hi.y, c.center.y + c.radius),
-                  std::max(hi.z, c.center.z + c.radius)};
-      }
-      scene_center = (lo + hi) * 0.5f;
-      scene_radius = 1e-6f;  // tighter than the box diagonal for elongated meshes
-      for (u32 i = 0; i < lod.level_cluster_counts[0]; ++i) {
-        const geometry::ClusterDesc& c = lod.mesh.clusters[i];
-        scene_radius = std::max(scene_radius, length(c.center - scene_center) + c.radius);
       }
     }
+    // One material table over the scene: each mesh's materials follow the last mesh's, and an
+    // instance adds its mesh's base to the cluster's material index.
+    Vector<u32> mesh_material_base(parts.size(), 0u);
+    // Instances: the file's, the grid's, or one identity instance of the one mesh.
+    if (options.grid_instances > 1) {
+      Vec3 mesh_center{};
+      f32 mesh_radius = 1.0f;
+      mesh_bounds(lod, parts[0].first_cluster, parts[0].leaf_cluster_count, mesh_center,
+                  mesh_radius);
+      make_instance_grid(options.grid_instances, mesh_radius, scene_instances);
+    } else if (scene_instances.empty()) {
+      scene_instances.push_back(SceneInstance{0, Transform3::identity()});
+    }
+    Vector<gfx::InstanceDesc> instance_table;
+    u32 pair_count = 0;
+    for (const SceneInstance& source : scene_instances) {
+      gfx::InstanceDesc instance{};
+      gfx::set_instance_transform(instance, mat4_from_transform(source.transform));
+      instance.mesh = source.mesh;
+      instance.first_pair = pair_count;
+      pair_count += parts[source.mesh].cluster_count;
+      instance_table.push_back(instance);
+    }
+    const u32 instance_count = instance_table.size();
+    scene_meshes = parts.size();
+    scene_instance_count = instance_count;
+    scene_pairs = pair_count;
+    // The camera frames the scene's bounding sphere: the union of the instances' transformed
+    // mesh bounds. The plain heightfield keeps the half extent it has always used.
+    if (options.mesh.empty() && options.scene.empty() && instance_count == 1) {
+      scene_center = Vec3{};
+      scene_radius = 10.0f;
+    } else {
+      Vec3 lo{1e30f, 1e30f, 1e30f};
+      Vec3 hi{-1e30f, -1e30f, -1e30f};
+      Vector<Vec3> centers(parts.size());
+      Vector<f32> radii(parts.size(), 0.0f);
+      for (u32 m = 0; m < parts.size(); ++m)
+        mesh_bounds(lod, parts[m].first_cluster, parts[m].leaf_cluster_count, centers[m], radii[m]);
+      for (u32 i = 0; i < instance_count; ++i) {
+        const gfx::InstanceDesc& instance = instance_table[i];
+        const Vec3 c = transform_point(instance.world, centers[instance.mesh]);
+        const f32 r = radii[instance.mesh] * instance.scale_max;
+        lo = Vec3{std::min(lo.x, c.x - r), std::min(lo.y, c.y - r), std::min(lo.z, c.z - r)};
+        hi = Vec3{std::max(hi.x, c.x + r), std::max(hi.y, c.y + r), std::max(hi.z, c.z + r)};
+      }
+      scene_center = (lo + hi) * 0.5f;
+      scene_radius = 1e-6f;
+      for (u32 i = 0; i < instance_count; ++i) {
+        const gfx::InstanceDesc& instance = instance_table[i];
+        const Vec3 c = transform_point(instance.world, centers[instance.mesh]);
+        scene_radius = std::max(
+            scene_radius, length(c - scene_center) + radii[instance.mesh] * instance.scale_max);
+      }
+    }
+    if (instance_count > 1 && !options.cull) {
+      options.cull = true;  // a scene draws through the cull pass; there is no direct draw of it
+      ENGINE_LOG_WARN(log_view, "--no-cull ignored with more than one instance");
+    }
+
     build_ns = time::monotonic_ns() - build_start;
     const u32 cluster_count = lod.mesh.clusters.size();
     const u32 leaf_count = lod.level_cluster_counts[0];
@@ -834,11 +1066,19 @@ int main(int argc, char** argv) {
       exit_code = fail("upload", error);
       break;
     }
-    gfx::MeshDesc mesh_block{};
-    mesh_block.quant = Vec4{lod.mesh.quant_origin, lod.mesh.quant_scale};
-    mesh_block.quantized = quantized_buffer.address;
-    if (!gfx::upload_buffer(device, &mesh_block, sizeof(mesh_block), k_storage, mesh_buffer,
-                            &error)) {
+    // One MeshDesc per mesh: its own grid, its range of the shared cluster array, and the one
+    // quantized stream every mesh of the scene indexes.
+    Vector<gfx::MeshDesc> mesh_descs;
+    for (const geometry::ClusterMeshPart& part : parts) {
+      gfx::MeshDesc desc{};
+      desc.quant = Vec4{part.quant_origin, part.quant_scale};
+      desc.quantized = quantized_buffer.address;
+      desc.first_cluster = part.first_cluster;
+      desc.cluster_count = part.cluster_count;
+      mesh_descs.push_back(desc);
+    }
+    if (!gfx::upload_buffer(device, mesh_descs.data(), mesh_descs.size() * sizeof(gfx::MeshDesc),
+                            k_storage, mesh_buffer, &error)) {
       exit_code = fail("upload", error);
       break;
     }
@@ -867,7 +1107,7 @@ int main(int argc, char** argv) {
     const u32 sampler_slot = bindless.add_sampler(texture_sampler);
     Vector<gfx::ResolveMaterial> materials;
     Vector<u32> cluster_material(cluster_count);
-    if (options.mesh.empty()) {
+    if (options.mesh.empty() && options.scene.empty()) {
       // A procedural ripple texture, linear-sampled through the bindless set.
       constexpr u32 k_texture_size = 256;
       Vector<u8> texels(k_texture_size * k_texture_size * 4);
@@ -907,107 +1147,126 @@ int main(int argc, char** argv) {
         cluster_material[i] = y < -0.15f ? 0u : y < 0.65f ? 1u : 2u;
       }
     } else {
-      // Materials from the file, plus a default for primitives without one. Images are decoded
-      // on the CPU (embedded bytes or a file beside the glTF) and uploaded once each, into one
-      // bindless slot every material that names the image shares; an image that fails to decode
-      // leaves its slot empty with a warning. Base color is color and goes up as sRGB, so that
-      // sampling returns linear; metallic-roughness and normal maps are data, not color, and go
-      // up UNORM. A glTF never gives one image both roles, so the format an image is first
-      // asked for is the one it keeps.
-      Vector<u32> image_slot(mesh_data.images.size(), gfx::k_no_texture);
-      Vector<bool> image_tried(mesh_data.images.size(), false);
-      const std::string& mesh_dir = image_dir;  // the glTF's directory, or the container's
-      auto texture_slot_of = [&](i32 image_index, VkFormat format) -> u32 {
-        if (image_index < 0 || static_cast<u32>(image_index) >= mesh_data.images.size())
-          return gfx::k_no_texture;
-        const u32 index = static_cast<u32>(image_index);
-        if (image_tried[index]) return image_slot[index];
-        image_tried[index] = true;
-        const assets::ImageRef& ref = mesh_data.images[index];
-        image::Image decoded;
-        std::string image_error;
-        bool ok = false;
-        if (!ref.bytes.empty()) {
-          ok = image::decode_image(std::span<const u8>(ref.bytes.data(), ref.bytes.size()), decoded,
-                                   4, &image_error);
-        } else if (!ref.uri.empty()) {
-          const std::string path = mesh_dir.empty() ? ref.uri : io::join_path(mesh_dir, ref.uri);
-          ok = image::read_image(path, decoded, 4, &image_error) == io::Status::Ok;
-        } else {
-          image_error = "image has neither bytes nor a uri";
+      // Materials from the files, one mesh's table after the last: every instance adds its
+      // mesh's base to the cluster's material index, so the clusters keep mesh-local indices.
+      // Images are decoded on the CPU (embedded bytes or a file beside the glTF) and uploaded
+      // once each, into one bindless slot every material of that mesh which names the image
+      // shares; an image that fails to decode leaves its slot empty with a warning. Base color
+      // is color and goes up as sRGB, so that sampling returns linear; metallic-roughness and
+      // normal maps are data, not color, and go up UNORM. A glTF never gives one image both
+      // roles, so the format an image is first asked for is the one it keeps.
+      for (u32 m = 0; m < sources.size(); ++m) {
+        SourceMesh& source_mesh = sources[m];
+        assets::MeshData& mesh_data = source_mesh.data;
+        mesh_material_base[m] = materials.size();
+        Vector<u32> image_slot(mesh_data.images.size(), gfx::k_no_texture);
+        Vector<bool> image_tried(mesh_data.images.size(), false);
+        const std::string& mesh_dir = source_mesh.image_dir;  // the glTF's or the container's
+        auto texture_slot_of = [&](i32 image_index, VkFormat format) -> u32 {
+          if (image_index < 0 || static_cast<u32>(image_index) >= mesh_data.images.size())
+            return gfx::k_no_texture;
+          const u32 index = static_cast<u32>(image_index);
+          if (image_tried[index]) return image_slot[index];
+          image_tried[index] = true;
+          const assets::ImageRef& ref = mesh_data.images[index];
+          image::Image decoded;
+          std::string image_error;
+          bool ok = false;
+          if (!ref.bytes.empty()) {
+            ok = image::decode_image(std::span<const u8>(ref.bytes.data(), ref.bytes.size()),
+                                     decoded, 4, &image_error);
+          } else if (!ref.uri.empty()) {
+            const std::string path = mesh_dir.empty() ? ref.uri : io::join_path(mesh_dir, ref.uri);
+            ok = image::read_image(path, decoded, 4, &image_error) == io::Status::Ok;
+          } else {
+            image_error = "image has neither bytes nor a uri";
+          }
+          gfx::ImageResource uploaded;
+          VkImageView view = VK_NULL_HANDLE;
+          if (ok && (!gfx::upload_image_2d(device, decoded.width, decoded.height, format,
+                                           decoded.pixels.data(), decoded.pixels.size(), uploaded,
+                                           &image_error) ||
+                     !gfx::create_image_view(device, uploaded, view, &image_error))) {
+            if (uploaded.image != VK_NULL_HANDLE) gfx::destroy_image(device, uploaded);
+            ok = false;
+          }
+          if (!ok) {
+            ENGINE_LOG_WARN(log_view, "texture skipped", log::field("image", index),
+                            log::field("name", ref.name), log::field("error", image_error));
+            return gfx::k_no_texture;
+          }
+          mesh_textures.push_back(uploaded);
+          mesh_texture_views.push_back(view);
+          image_slot[index] =
+              bindless.add_sampled_image(view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+          return image_slot[index];
+        };
+        for (const assets::Material& source : mesh_data.materials) {
+          gfx::ResolveMaterial material;
+          material.albedo =
+              Vec4{source.base_color.x, source.base_color.y, source.base_color.z, source.roughness};
+          // The emissive factor goes through as a constant term. A material that modulates it
+          // with an emissive texture is left unlit instead of glowing at full factor everywhere:
+          // the resolve has no emissive slot yet, and too dark is a smaller lie than too bright.
+          const Vec3 emissive = source.emissive_image < 0 ? source.emissive : Vec3{};
+          material.emissive = Vec4{emissive, source.metallic};
+          material.albedo_texture =
+              texture_slot_of(source.base_color_image, VK_FORMAT_R8G8B8A8_SRGB);
+          material.metallic_roughness_texture =
+              texture_slot_of(source.metallic_roughness_image, VK_FORMAT_R8G8B8A8_UNORM);
+          material.normal_texture = texture_slot_of(source.normal_image, VK_FORMAT_R8G8B8A8_UNORM);
+          material.normal_scale = source.normal_scale;
+          material.sampler = sampler_slot;
+          material.uv_scale = 1.0f;
+          materials.push_back(material);
         }
-        gfx::ImageResource uploaded;
-        VkImageView view = VK_NULL_HANDLE;
-        if (ok && (!gfx::upload_image_2d(device, decoded.width, decoded.height, format,
-                                         decoded.pixels.data(), decoded.pixels.size(), uploaded,
-                                         &image_error) ||
-                   !gfx::create_image_view(device, uploaded, view, &image_error))) {
-          if (uploaded.image != VK_NULL_HANDLE) gfx::destroy_image(device, uploaded);
-          ok = false;
+        const u32 local_count = materials.size() - mesh_material_base[m];
+        gfx::ResolveMaterial plain;
+        plain.albedo = Vec4{0.8f, 0.8f, 0.8f, 0.6f};
+        materials.push_back(plain);  // the default for a primitive that names no material
+        const geometry::ClusterMeshPart& part = parts[m];
+        for (u32 i = 0; i < part.cluster_count; ++i) {
+          const i32 material = source_mesh.part_material[source_mesh.part_of_cluster[i]];
+          cluster_material[part.first_cluster + i] =
+              material >= 0 && static_cast<u32>(material) < local_count ? static_cast<u32>(material)
+                                                                        : local_count;
         }
-        if (!ok) {
-          ENGINE_LOG_WARN(log_view, "texture skipped", log::field("image", index),
-                          log::field("name", ref.name), log::field("error", image_error));
-          return gfx::k_no_texture;
-        }
-        mesh_textures.push_back(uploaded);
-        mesh_texture_views.push_back(view);
-        image_slot[index] =
-            bindless.add_sampled_image(view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        return image_slot[index];
-      };
-      for (const assets::Material& source : mesh_data.materials) {
-        gfx::ResolveMaterial material;
-        material.albedo =
-            Vec4{source.base_color.x, source.base_color.y, source.base_color.z, source.roughness};
-        // The emissive factor goes through as a constant term. A material that modulates it with
-        // an emissive texture is left unlit instead of glowing at full factor everywhere: the
-        // resolve has no emissive slot yet, and too dark is a smaller lie than too bright.
-        const Vec3 emissive = source.emissive_image < 0 ? source.emissive : Vec3{};
-        material.emissive = Vec4{emissive, source.metallic};
-        material.albedo_texture = texture_slot_of(source.base_color_image, VK_FORMAT_R8G8B8A8_SRGB);
-        material.metallic_roughness_texture =
-            texture_slot_of(source.metallic_roughness_image, VK_FORMAT_R8G8B8A8_UNORM);
-        material.normal_texture = texture_slot_of(source.normal_image, VK_FORMAT_R8G8B8A8_UNORM);
-        material.normal_scale = source.normal_scale;
-        material.sampler = sampler_slot;
-        material.uv_scale = 1.0f;
-        materials.push_back(material);
-      }
-      const u32 default_material = materials.size();
-      gfx::ResolveMaterial plain;
-      plain.albedo = Vec4{0.8f, 0.8f, 0.8f, 0.6f};
-      materials.push_back(plain);
-      for (u32 i = 0; i < cluster_count; ++i) {
-        const i32 material = part_material[part_of_cluster[i]];
-        cluster_material[i] = material >= 0 && static_cast<u32>(material) < default_material
-                                  ? static_cast<u32>(material)
-                                  : default_material;
       }
     }
+    // Now that the tables are laid out, every instance knows where its mesh's materials start.
+    for (gfx::InstanceDesc& instance : instance_table)
+      instance.material_base = mesh_material_base[instance.mesh];
     if (!gfx::upload_buffer(device, materials.data(),
                             materials.size() * sizeof(gfx::ResolveMaterial), k_storage,
                             material_buffer, &error) ||
         !gfx::upload_buffer(device, cluster_material.data(), cluster_count * sizeof(u32), k_storage,
-                            cluster_material_buffer, &error)) {
+                            cluster_material_buffer, &error) ||
+        !gfx::upload_buffer(device, instance_table.data(),
+                            instance_count * sizeof(gfx::InstanceDesc), k_storage, instance_buffer,
+                            &error)) {
       exit_code = fail("materials", error);
       break;
     }
-    bool buffers_ok = true;
+    // One visible list for the whole frame, in three runs: the hardware pass 1, the hardware
+    // pass 2, and the software rasterizer. A visibility id names an entry of the whole list, so
+    // the resolve reads one array however many draws filled it, and each draw's
+    // `visible_offset` is where its run starts. Every run is as long as the pair count, which is
+    // as many entries as any one draw can produce.
+    constexpr u32 k_visible_runs = 3;
+    const u64 visible_entry_bytes = 2 * sizeof(u32);
+    const u64 visible_run_bytes = u64{pair_count} * visible_entry_bytes;
+    bool buffers_ok =
+        gfx::create_buffer(device, visible_run_bytes * k_visible_runs, k_address, false,
+                           visible_buffer, &error) &&
+        gfx::create_buffer(device, sizeof(u32) * 3, k_args, false, sw_args_buffer, &error);
     for (u32 i = 0; i < 2; ++i) {
       buffers_ok =
           buffers_ok &&
-          gfx::create_buffer(device, u64{cluster_count} * sizeof(u32), k_address, false,
-                             visible_buffer[i], &error) &&
           gfx::create_buffer(device, sizeof(u32) * 4, k_args, false, args_buffer[i], &error) &&
-          gfx::create_buffer(device, u64{cluster_count} * sizeof(u32),
+          gfx::create_buffer(device, u64{pair_count} * sizeof(u32),
                              k_address | VK_BUFFER_USAGE_TRANSFER_DST_BIT, false, flags_buffer[i],
                              &error);
     }
-    buffers_ok = buffers_ok &&
-                 gfx::create_buffer(device, u64{cluster_count} * sizeof(u32), k_address, false,
-                                    sw_visible_buffer, &error) &&
-                 gfx::create_buffer(device, sizeof(u32) * 3, k_args, false, sw_args_buffer, &error);
     for (u32 slot = 0; slot < k_frames_in_flight && buffers_ok; ++slot) {
       buffers_ok =
           gfx::create_buffer(device, sizeof(gfx::CullParams) * 2, k_address, true,
@@ -1024,40 +1283,58 @@ int main(int argc, char** argv) {
       break;
     }
     if (ray_path) {
-      // Every cluster may be in some frame's cut, so the structures are sized for all of them.
+      // Every pair may be in some frame's cut, so the cluster acceleration structures are sized
+      // for all of them, and a pair's base geometry index is its entry in the visible list, so
+      // the largest geometry index is the last pair. One cluster bottom-level structure per
+      // instance, sized for that instance's mesh; the top-level structure instances them with
+      // the world transforms and a custom index that is the scene instance.
       Vector<u8> indices8;
       gfx::pack_cluster_indices(
           std::span<const u32>(lod.mesh.triangles.data(), lod.mesh.triangles.size()), indices8);
       gfx::ClusterSetLimits limits;
-      limits.max_clusters = cluster_count;
+      limits.max_clusters = pair_count;
       limits.max_triangles_per_cluster = triangles_per_cluster;
       limits.max_vertices_per_cluster = geometry::ClusterLodOptions{}.max_vertices;
-      limits.max_geometry_index = cluster_count - 1;
+      limits.max_geometry_index = pair_count - 1;
       constexpr VkBufferUsageFlags k_record_usage =
           k_address | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
-      bool rt_ok = gfx::upload_buffer(device, indices8.data(), indices8.size(),
-                                      gfx::k_build_input_usage, indices8_buffer, &error) &&
-                   gfx::create_buffer(device, gfx::k_cluster_build_record_bytes * cluster_count,
-                                      k_record_usage, false, records_buffer, &error) &&
-                   gfx::create_buffer(device, sizeof(u32), k_record_usage, false,
-                                      record_count_buffer, &error) &&
-                   gfx::create_cluster_set(device, limits, clas_set, &error) &&
-                   gfx::create_cluster_blas(device, cluster_count, cluster_blas, &error) &&
-                   gfx::create_tlas(device, 1, gfx::k_build_fast_trace, tlas, &error) &&
-                   gfx::create_buffer(device, gfx::k_instance_record_bytes,
-                                      gfx::k_build_input_usage, true, rt_instances, &error);
+      bool rt_ok =
+          gfx::upload_buffer(device, indices8.data(), indices8.size(), gfx::k_build_input_usage,
+                             indices8_buffer, &error) &&
+          gfx::create_buffer(device, gfx::k_cluster_build_record_bytes * pair_count, k_record_usage,
+                             false, records_buffer, &error) &&
+          gfx::create_buffer(device, sizeof(u32), k_record_usage, false, record_count_buffer,
+                             &error) &&
+          gfx::create_buffer(device, u64{pair_count} * sizeof(u32), k_address, false, slots_buffer,
+                             &error) &&
+          gfx::create_buffer(device, u64{instance_count} * sizeof(u32),
+                             k_address | VK_BUFFER_USAGE_TRANSFER_DST_BIT, false,
+                             instance_counts_buffer, &error) &&
+          gfx::create_buffer(device, u64{instance_count} * sizeof(u32), k_address, false,
+                             instance_first_buffer, &error) &&
+          gfx::create_buffer(device, gfx::k_cluster_blas_record_bytes * instance_count,
+                             k_record_usage, false, blas_records_buffer, &error) &&
+          gfx::create_cluster_set(device, limits, clas_set, &error) &&
+          gfx::create_tlas(device, instance_count, gfx::k_build_fast_trace, tlas, &error) &&
+          gfx::create_buffer(device, gfx::k_instance_record_bytes * instance_count,
+                             gfx::k_build_input_usage, true, rt_instances, &error);
+      u64 blas_bytes = 0;
+      cluster_blas.resize(instance_count);
+      for (u32 i = 0; i < instance_count && rt_ok; ++i) {
+        rt_ok = gfx::create_cluster_blas(device, parts[instance_table[i].mesh].cluster_count,
+                                         cluster_blas[i], &error);
+        if (rt_ok) blas_bytes += cluster_blas[i].data.size;
+      }
       if (rt_ok) {
         u64 scratch_bytes = clas_set.build_scratch_bytes;
-        scratch_bytes = std::max(scratch_bytes, cluster_blas.build_scratch_bytes);
         scratch_bytes = std::max(scratch_bytes, tlas.build_scratch_bytes);
+        for (const gfx::ClusterBlas& blas : cluster_blas)
+          scratch_bytes = std::max(scratch_bytes, blas.build_scratch_bytes);
         rt_ok = gfx::create_scratch(device, scratch_bytes, rt_scratch, &error);
         for (u32 s = 0; s < k_frames_in_flight && rt_ok; ++s) {
           rt_ok = gfx::create_buffer(device, sizeof(gfx::RayVisibilityParams), k_address, true,
                                      ray_params[s], &error);
         }
-        gfx::InstanceDesc instance;
-        instance.blas = cluster_blas.address;
-        gfx::write_instances(std::span<const gfx::InstanceDesc>(&instance, 1), rt_instances.mapped);
         tlas_slot = bindless.add_acceleration_structure(tlas.handle);
         if (tlas_slot == gfx::BindlessSet::k_invalid_slot) {
           rt_ok = false;
@@ -1068,10 +1345,10 @@ int main(int argc, char** argv) {
         exit_code = fail("ray tracing", error);
         break;
       }
-      ENGINE_LOG_INFO(log_view, "ray tracing ready", log::field("clusters", cluster_count),
-                      log::field("clas_bytes", clas_set.data.size),
-                      log::field("blas_bytes", cluster_blas.data.size),
-                      log::field("scratch_bytes", rt_scratch.size));
+      ENGINE_LOG_INFO(
+          log_view, "ray tracing ready", log::field("pairs", pair_count),
+          log::field("instances", instance_count), log::field("clas_bytes", clas_set.data.size),
+          log::field("blas_bytes", blas_bytes), log::field("scratch_bytes", rt_scratch.size));
     }
 
     // Shaders: the embedded copies always work; the build's manifest, when found, loads the same
@@ -1127,6 +1404,12 @@ int main(int argc, char** argv) {
         const VkDescriptorSetLayout set_layout = bindless.layout();
         if (!gfx::create_compute_pipeline(device, records->module, "records_main", {},
                                           sizeof(gfx::ClusterRecordParams), pipelines.records,
+                                          err) ||
+            !gfx::create_compute_pipeline(device, records->module, "ranges_main", {},
+                                          sizeof(gfx::ClusterRecordParams), pipelines.record_ranges,
+                                          err) ||
+            !gfx::create_compute_pipeline(device, records->module, "emit_main", {},
+                                          sizeof(gfx::ClusterRecordParams), pipelines.record_emit,
                                           err) ||
             !gfx::create_compute_pipeline(device, trace->module, "trace_main",
                                           std::span<const VkDescriptorSetLayout>(&set_layout, 1),
@@ -1188,7 +1471,9 @@ int main(int argc, char** argv) {
         log::field("build_ms", static_cast<f64>(build_ns) / 1.0e6),
         log::field("raster", raster_name(options.raster)), log::field("occlusion", occlusion),
         log::field("cone", options.cone), log::field("mesh_primitives", mesh_primitives),
-        log::field("materials", materials.size()), log::field("width", swapchain.extent().width),
+        log::field("materials", materials.size()), log::field("meshes", parts.size()),
+        log::field("instances", instance_count), log::field("pairs", pair_count),
+        log::field("width", swapchain.extent().width),
         log::field("height", swapchain.extent().height));
 
     gfx::RenderGraph graph(device);
@@ -1270,7 +1555,8 @@ int main(int argc, char** argv) {
           gpu_sw_ms += timer.ms("sw");
           gpu_hiz_ms += timer.ms("hiz");
           gpu_resolve_ms += timer.ms("resolve");
-          gpu_rt_ms += timer.ms("records") + timer.ms("clas") + timer.ms("blas") + timer.ms("tlas");
+          gpu_rt_ms += timer.ms("records") + timer.ms("ranges") + timer.ms("emit") +
+                       timer.ms("clas") + timer.ms("blas") + timer.ms("tlas");
           gpu_trace_ms += timer.ms("trace");
           gpu_total_ms += timer.total_ms();
           ++timed_frames;
@@ -1313,21 +1599,27 @@ int main(int argc, char** argv) {
       const u32 cur_flags = static_cast<u32>(rendered % 2);
       const u32 prev_flags = 1 - cur_flags;
 
+      // The three runs of the frame's visible list; a draw's ids start at its run.
+      const u64 run_address[k_visible_runs] = {visible_buffer.address,
+                                               visible_buffer.address + visible_run_bytes,
+                                               visible_buffer.address + visible_run_bytes * 2};
       gfx::ClusterDrawParams draw{};
       draw.view_proj = view_proj;
       draw.clusters = cluster_buffer.address;
       draw.mesh = mesh_buffer.address;
+      draw.instances = instance_buffer.address;
       draw.triangles = triangle_buffer.address;
-      draw.cluster_count = options.cull ? cluster_count : leaf_count;
       draw.triangles_per_cluster = triangles_per_cluster;
-      draw.visible = options.cull ? visible_buffer[0].address : 0;
+      draw.visible = options.cull ? run_address[0] : 0;
       draw.visibility = targets.vis.address;
       draw.width = extent.width;
       draw.height = extent.height;
       gfx::ClusterDrawParams draw_pass2 = draw;
-      draw_pass2.visible = visible_buffer[1].address;
+      draw_pass2.visible = run_address[1];
+      draw_pass2.visible_offset = pair_count;
       gfx::ClusterDrawParams draw_sw = draw;
-      draw_sw.visible = sw_visible_buffer.address;
+      draw_sw.visible = run_address[2];
+      draw_sw.visible_offset = pair_count * 2;
 
       gfx::CullParams cull{};
       gfx::set_frustum(cull, frustum_from_view_proj(view_proj));
@@ -1345,10 +1637,14 @@ int main(int argc, char** argv) {
       cull.cone_cull = options.cone ? 1u : 0u;
       cull.clusters = cluster_buffer.address;
       cull.lods = lod_buffer.address;
-      cull.visible = visible_buffer[0].address;
+      cull.visible = run_address[0];
       cull.draw_args = args_buffer[0].address;
-      cull.sw_visible = sw_visible_buffer.address;
+      cull.sw_visible = run_address[2];
       cull.sw_args = sw_args_buffer.address;
+      cull.instances = instance_buffer.address;
+      cull.meshes = mesh_buffer.address;
+      cull.instance_count = instance_count;
+      cull.pair_count = pair_count;
       if (occlusion) {
         cull.hiz = targets.hiz.address;
         cull.prev_flags = flags_buffer[prev_flags].address;
@@ -1361,7 +1657,7 @@ int main(int argc, char** argv) {
       }
       gfx::CullParams cull_pass2 = cull;
       cull_pass2.pass = 2;
-      cull_pass2.visible = visible_buffer[1].address;
+      cull_pass2.visible = run_address[1];
       cull_pass2.draw_args = args_buffer[1].address;
       auto* blocks = static_cast<gfx::CullParams*>(params_buffers[slot].mapped);
       blocks[0] = cull;
@@ -1377,6 +1673,8 @@ int main(int argc, char** argv) {
       resolve.visibility = targets.vis.address;
       resolve.clusters = cluster_buffer.address;
       resolve.mesh = mesh_buffer.address;
+      resolve.instances = instance_buffer.address;
+      resolve.visible = options.cull ? visible_buffer.address : 0;
       resolve.triangles = triangle_buffer.address;
       resolve.materials = material_buffer.address;
       resolve.cluster_materials = cluster_material_buffer.address;
@@ -1417,19 +1715,38 @@ int main(int argc, char** argv) {
         record_params.clusters = cluster_buffer.address;
         record_params.vertices = vertex_buffer.address;
         record_params.indices8 = indices8_buffer.address;
-        record_params.visible = visible_buffer[0].address;
+        record_params.instances = instance_buffer.address;
+        record_params.visible = run_address[0];
         record_params.visible_count = args_buffer[0].address;  // count_index 0: the first word
+        record_params.slots = slots_buffer.address;
+        record_params.instance_counts = instance_counts_buffer.address;
+        record_params.instance_first = instance_first_buffer.address;
         record_params.records = records_buffer.address;
         record_params.record_count = record_count_buffer.address;
-        record_params.blas_record = cluster_blas.record.address;
+        record_params.blas_records = blas_records_buffer.address;
         record_params.clas_addresses = clas_set.addresses.address;
-        record_params.max_clusters = cluster_count;
+        record_params.instance_count = instance_count;
+        record_params.pair_count = pair_count;
+        record_params.max_clusters = pair_count;
+        // One top-level instance per scene instance: the world transform, the instance as the
+        // custom index, and that instance's own cluster bottom-level structure.
+        Vector<gfx::TlasInstance> tlas_instances;
+        for (u32 i = 0; i < instance_count; ++i) {
+          gfx::TlasInstance record;
+          record.transform = instance_table[i].world;
+          record.custom_index = i;
+          record.blas = cluster_blas[i].address;
+          tlas_instances.push_back(record);
+        }
+        gfx::write_instances(
+            std::span<const gfx::TlasInstance>(tlas_instances.data(), tlas_instances.size()),
+            rt_instances.mapped);
         gfx::RayVisibilityParams ray{};
         ray.view_proj = view_proj;
         ray.inv_view_proj = inverse(view_proj);
         ray.camera = Vec4{eye, 0.0f};
         ray.output = targets.vis.address;
-        ray.cut = 0;  // geometry indices are cluster ids
+        ray.instance_base = 0;  // a CLAS record's base geometry index is the visible entry
         ray.width = extent.width;
         ray.height = extent.height;
         ray.scene = tlas_slot;
@@ -1442,27 +1759,30 @@ int main(int argc, char** argv) {
       const gfx::RgImage depth_target = graph.import_image("depth", targets.depth);
       const gfx::RgBuffer rg_args[2] = {graph.import_buffer("draw_args", args_buffer[0]),
                                         graph.import_buffer("draw_args2", args_buffer[1])};
-      const gfx::RgBuffer rg_visible[2] = {graph.import_buffer("visible", visible_buffer[0]),
-                                           graph.import_buffer("visible2", visible_buffer[1])};
+      const gfx::RgBuffer rg_visible = graph.import_buffer("visible", visible_buffer);
       const gfx::RgBuffer rg_flags[2] = {graph.import_buffer("flags0", flags_buffer[0]),
                                          graph.import_buffer("flags1", flags_buffer[1])};
       const gfx::RgBuffer rg_sw_args = graph.import_buffer("sw_args", sw_args_buffer);
-      const gfx::RgBuffer rg_sw_visible = graph.import_buffer("sw_visible", sw_visible_buffer);
       const gfx::RgBuffer rg_vis = graph.import_buffer("visibility", targets.vis);
       const gfx::RgBuffer rg_hiz = graph.import_buffer("hiz", targets.hiz);
       const gfx::RgBuffer rg_stats = graph.import_buffer("stats", stats_buffers[slot]);
       struct RtBuffers {
-        gfx::RgBuffer records, record_count, blas_record, clas_data, clas_addresses, clas_sizes;
-        gfx::RgBuffer blas_data, tlas, instances;
+        gfx::RgBuffer records, record_count, slots, instance_counts, instance_first, blas_records;
+        gfx::RgBuffer clas_data, clas_addresses, clas_sizes, tlas, instances;
       } rt{};
+      Vector<gfx::RgBuffer> rg_blas_data;
       if (ray_path) {
         rt.records = graph.import_buffer("clas records", records_buffer);
         rt.record_count = graph.import_buffer("clas record count", record_count_buffer);
-        rt.blas_record = graph.import_buffer("cluster blas record", cluster_blas.record);
+        rt.slots = graph.import_buffer("clas slots", slots_buffer);
+        rt.instance_counts = graph.import_buffer("clas instance counts", instance_counts_buffer);
+        rt.instance_first = graph.import_buffer("clas instance first", instance_first_buffer);
+        rt.blas_records = graph.import_buffer("cluster blas records", blas_records_buffer);
         rt.clas_data = graph.import_buffer("clas", clas_set.data);
         rt.clas_addresses = graph.import_buffer("clas addresses", clas_set.addresses);
         rt.clas_sizes = graph.import_buffer("clas sizes", clas_set.sizes);
-        rt.blas_data = graph.import_buffer("cluster blas", cluster_blas.data);
+        for (u32 i = 0; i < instance_count; ++i)
+          rg_blas_data.push_back(graph.import_buffer("cluster blas", cluster_blas[i].data));
         rt.tlas = graph.import_buffer("tlas", tlas.buffer);
         rt.instances = graph.import_buffer("tlas instances", rt_instances);
       }
@@ -1486,6 +1806,7 @@ int main(int argc, char** argv) {
             if (occlusion) b.write(rg_flags[cur_flags], gfx::Access::TransferWrite);
             if (fill_flags) b.write(rg_flags[prev_flags], gfx::Access::TransferWrite);
             if (fill_hiz) b.write(rg_hiz, gfx::Access::TransferWrite);
+            if (ray_path) b.write(rt.instance_counts, gfx::Access::TransferWrite);
           },
           [&](VkCommandBuffer cb, gfx::RenderGraph&) {
             if (options.cull) {
@@ -1507,16 +1828,16 @@ int main(int argc, char** argv) {
             if (fill_flags)
               vkCmdFillBuffer(cb, flags_buffer[prev_flags].buffer, 0, VK_WHOLE_SIZE, 0);
             if (fill_hiz) vkCmdFillBuffer(cb, targets.hiz.buffer, 0, VK_WHOLE_SIZE, 0);
+            if (ray_path) vkCmdFillBuffer(cb, instance_counts_buffer.buffer, 0, VK_WHOLE_SIZE, 0);
           });
       auto add_cull = [&](u32 block, u32 list) {
         graph.add_pass(
             "cull", gfx::PassKind::Compute,
             [&, list](gfx::PassBuilder& b) {
               b.write(rg_args[list], gfx::Access::ComputeReadWrite);
-              b.write(rg_visible[list], gfx::Access::ComputeWrite);
+              b.write(rg_visible, gfx::Access::ComputeWrite);
               if (use_sw) {
                 b.write(rg_sw_args, gfx::Access::ComputeReadWrite);
-                b.write(rg_sw_visible, gfx::Access::ComputeWrite);
               }
               if (occlusion) {
                 b.read(rg_hiz, gfx::Access::ComputeRead);
@@ -1529,7 +1850,7 @@ int main(int argc, char** argv) {
               vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines.cull.pipeline);
               vkCmdPushConstants(cb, pipelines.cull.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
                                  sizeof(u64), &block_address[block]);
-              vkCmdDispatch(cb, gfx::cull_group_count(cluster_count), 1, 1);
+              vkCmdDispatch(cb, gfx::cull_group_count(pair_count), 1, 1);
               timer.end(cb);
             });
       };
@@ -1541,8 +1862,7 @@ int main(int argc, char** argv) {
               b.write(rg_vis, gfx::Access::FragmentReadWrite);
               if (options.cull) {
                 b.read(rg_args[list], gfx::Access::IndirectRead);
-                b.read(rg_visible[list],
-                       vertex_path ? gfx::Access::VertexRead : gfx::Access::MeshRead);
+                b.read(rg_visible, vertex_path ? gfx::Access::VertexRead : gfx::Access::MeshRead);
               }
             },
             [&, list, params](VkCommandBuffer cb, gfx::RenderGraph&) {
@@ -1606,7 +1926,7 @@ int main(int argc, char** argv) {
                                  0.0f);  // reversed Z: far is 0
               if (options.cull) {
                 b.read(rg_args[0], gfx::Access::IndirectRead);
-                b.read(rg_visible[0], gfx::Access::MeshRead);
+                b.read(rg_visible, gfx::Access::MeshRead);
               }
             },
             [&](VkCommandBuffer cb, gfx::RenderGraph&) {
@@ -1636,7 +1956,7 @@ int main(int argc, char** argv) {
               [&](gfx::PassBuilder& b) {
                 b.write(rg_vis, gfx::Access::ComputeReadWrite);
                 b.read(rg_sw_args, gfx::Access::IndirectRead);
-                b.read(rg_sw_visible, gfx::Access::ComputeRead);
+                b.read(rg_visible, gfx::Access::ComputeRead);
               },
               [&](VkCommandBuffer cb, gfx::RenderGraph&) {
                 timer.begin(cb, "sw");
@@ -1648,26 +1968,43 @@ int main(int argc, char** argv) {
               });
         }
         if (ray_path) {
-          graph.add_pass(
-              "records", gfx::PassKind::Compute,
-              [&](gfx::PassBuilder& b) {
-                b.read(rg_args[0], gfx::Access::ComputeRead);
-                b.read(rg_visible[0], gfx::Access::ComputeRead);
-                b.write(rt.records, gfx::Access::ComputeWrite);
-                b.write(rt.record_count, gfx::Access::ComputeWrite);
-                b.write(rt.blas_record, gfx::Access::ComputeWrite);
-              },
-              [&](VkCommandBuffer cb, gfx::RenderGraph&) {
-                timer.begin(cb, "records");
-                vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines.records.pipeline);
-                vkCmdPushConstants(cb, pipelines.records.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                                   sizeof(record_params), &record_params);
-                vkCmdDispatch(cb,
-                              (cluster_count + gfx::k_cluster_records_workgroup - 1) /
-                                  gfx::k_cluster_records_workgroup,
-                              1, 1);
-                timer.end(cb);
-              });
+          // The frame's cut becomes the frame's ray tracing geometry with no CPU in between:
+          // bucket the visible entries by instance, prefix-sum the per-instance counts, emit the
+          // dense CLAS records, build every CLAS in one command, build one cluster bottom-level
+          // structure per instance, and top-level over them.
+          const gfx::ComputePipeline* record_passes[3] = {
+              &pipelines.records, &pipelines.record_ranges, &pipelines.record_emit};
+          const char* record_names[3] = {"records", "ranges", "emit"};
+          const u32 record_groups[3] = {(pair_count + gfx::k_cluster_records_workgroup - 1) /
+                                            gfx::k_cluster_records_workgroup,
+                                        1,
+                                        (pair_count + gfx::k_cluster_records_workgroup - 1) /
+                                            gfx::k_cluster_records_workgroup};
+          for (u32 p = 0; p < 3; ++p) {
+            graph.add_pass(
+                record_names[p], gfx::PassKind::Compute,
+                [&, p](gfx::PassBuilder& b) {
+                  b.read(rg_args[0], gfx::Access::ComputeRead);
+                  b.read(rg_visible, gfx::Access::ComputeRead);
+                  b.write(rt.slots, gfx::Access::ComputeReadWrite);
+                  b.write(rt.instance_counts, gfx::Access::ComputeReadWrite);
+                  b.write(rt.instance_first, gfx::Access::ComputeReadWrite);
+                  if (p != 0) b.write(rt.records, gfx::Access::ComputeWrite);
+                  if (p == 1) {
+                    b.write(rt.record_count, gfx::Access::ComputeWrite);
+                    b.write(rt.blas_records, gfx::Access::ComputeWrite);
+                  }
+                },
+                [&, p, record_passes, record_names, record_groups](VkCommandBuffer cb,
+                                                                   gfx::RenderGraph&) {
+                  timer.begin(cb, record_names[p]);
+                  vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, record_passes[p]->pipeline);
+                  vkCmdPushConstants(cb, record_passes[p]->layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                                     sizeof(record_params), &record_params);
+                  vkCmdDispatch(cb, record_groups[p], 1, 1);
+                  timer.end(cb);
+                });
+          }
           graph.add_pass(
               "clas", gfx::PassKind::Compute,
               [&](gfx::PassBuilder& b) {
@@ -1686,34 +2023,48 @@ int main(int argc, char** argv) {
           graph.add_pass(
               "blas", gfx::PassKind::Compute,
               [&](gfx::PassBuilder& b) {
-                b.read(rt.blas_record, gfx::Access::AccelerationBuildRead);
+                b.read(rt.blas_records, gfx::Access::AccelerationBuildRead);
                 b.read(rt.clas_addresses, gfx::Access::AccelerationBuildRead);
                 b.read(rt.clas_data, gfx::Access::AccelerationBuildRead);
-                b.write(rt.blas_data, gfx::Access::AccelerationBuildWrite);
+                for (const gfx::RgBuffer& data : rg_blas_data)
+                  b.write(data, gfx::Access::AccelerationBuildWrite);
               },
               [&](VkCommandBuffer cb, gfx::RenderGraph&) {
+                // One build per instance; they share the scratch, so each waits for the last.
                 timer.begin(cb, "blas");
-                gfx::build_cluster_blas_indirect(cb, cluster_blas, rt_scratch);
+                for (u32 i = 0; i < instance_count; ++i) {
+                  if (i != 0) {
+                    gfx::acceleration_build_barrier(
+                        cb, VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+                        VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR |
+                            VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR);
+                  }
+                  gfx::build_cluster_blas_indirect(
+                      cb, cluster_blas[i], rt_scratch,
+                      blas_records_buffer.address + u64{i} * gfx::k_cluster_blas_record_bytes);
+                }
                 timer.end(cb);
               });
           graph.add_pass(
               "tlas", gfx::PassKind::Compute,
               [&](gfx::PassBuilder& b) {
-                b.read(rt.blas_data, gfx::Access::AccelerationBuildRead);
+                for (const gfx::RgBuffer& data : rg_blas_data)
+                  b.read(data, gfx::Access::AccelerationBuildRead);
                 b.read(rt.instances, gfx::Access::AccelerationBuildRead);
                 b.write(rt.tlas, gfx::Access::AccelerationBuildWrite);
               },
               [&](VkCommandBuffer cb, gfx::RenderGraph&) {
                 timer.begin(cb, "tlas");
-                gfx::build_tlas(cb, tlas, rt_instances.address, 1, gfx::k_build_fast_trace,
-                                rt_scratch);
+                gfx::build_tlas(cb, tlas, rt_instances.address, instance_count,
+                                gfx::k_build_fast_trace, rt_scratch);
                 timer.end(cb);
               });
           graph.add_pass(
               "trace", gfx::PassKind::Compute,
               [&](gfx::PassBuilder& b) {
                 b.read(rt.tlas, gfx::Access::RayQueryRead);
-                b.read(rt.blas_data, gfx::Access::RayQueryRead);
+                for (const gfx::RgBuffer& data : rg_blas_data)
+                  b.read(data, gfx::Access::RayQueryRead);
                 b.read(rt.clas_data, gfx::Access::RayQueryRead);
                 b.write(rg_vis, gfx::Access::ComputeWrite);
               },
@@ -1831,18 +2182,22 @@ int main(int argc, char** argv) {
   for (u32 i = 0; i < 2; ++i) {
     gfx::destroy_buffer(device, flags_buffer[i]);
     gfx::destroy_buffer(device, args_buffer[i]);
-    gfx::destroy_buffer(device, visible_buffer[i]);
   }
+  gfx::destroy_buffer(device, visible_buffer);
   gfx::destroy_buffer(device, sw_args_buffer);
-  gfx::destroy_buffer(device, sw_visible_buffer);
   if (ray_path) {
     gfx::destroy_acceleration_structure(device, tlas);
-    gfx::destroy_cluster_blas(device, cluster_blas);
+    for (gfx::ClusterBlas& blas : cluster_blas)
+      gfx::destroy_cluster_blas(device, blas);
     gfx::destroy_cluster_set(device, clas_set);
     for (u32 s = 0; s < k_frames_in_flight; ++s)
       gfx::destroy_buffer(device, ray_params[s]);
     gfx::destroy_buffer(device, rt_scratch);
     gfx::destroy_buffer(device, rt_instances);
+    gfx::destroy_buffer(device, blas_records_buffer);
+    gfx::destroy_buffer(device, instance_first_buffer);
+    gfx::destroy_buffer(device, instance_counts_buffer);
+    gfx::destroy_buffer(device, slots_buffer);
     gfx::destroy_buffer(device, record_count_buffer);
     gfx::destroy_buffer(device, records_buffer);
     gfx::destroy_buffer(device, indices8_buffer);
@@ -1860,6 +2215,7 @@ int main(int argc, char** argv) {
   gfx::destroy_buffer(device, material_buffer);
   gfx::destroy_buffer(device, triangle_buffer);
   gfx::destroy_buffer(device, vertex_buffer);
+  gfx::destroy_buffer(device, instance_buffer);
   gfx::destroy_buffer(device, mesh_buffer);
   gfx::destroy_buffer(device, quantized_buffer);
   gfx::destroy_buffer(device, cluster_buffer);
@@ -1880,10 +2236,10 @@ int main(int argc, char** argv) {
     std::printf(
         "{\"frames\":%llu,\"seconds\":%.3f,\"avg_ms\":%.3f,\"width\":%u,\"height\":%u,"
         "\"clusters\":%u,\"leaf_clusters\":%u,\"triangles\":%u,\"lod_levels\":%u,\"build_ms\":%.1f,"
-        "\"mesh_primitives\":%u,\"mesh_cache\":\"%s\","
+        "\"mesh_primitives\":%u,\"mesh_cache\":\"%s\",\"meshes\":%u,\"instances\":%u,\"pairs\":%u,"
         "\"cull\":%s,\"occlusion\":%s,\"cone\":%s,\"lod_px\":%.2f,\"raster\":\"%s\",\"sw_px\":%.1f,"
-        "\"visible_hw_last\":%u,\"visible_pass2_last\":%u,\"visible_sw_last\":%u,\"visible_min\":%"
-        "u,"
+        "\"visible_hw_last\":%u,\"visible_pass2_last\":%u,\"visible_sw_last\":%u,"
+        "\"visible_pairs_last\":%u,\"visible_min\":%u,"
         "\"visible_max\":%u,"
         "\"gpu_ms\":{\"cull\":%.4f,\"hw\":%.4f,\"sw\":%.4f,\"hiz\":%.4f,\"resolve\":%.4f,"
         "\"rt\":%.4f,\"trace\":%.4f,\"total\":%.4f,"
@@ -1892,14 +2248,15 @@ int main(int argc, char** argv) {
         lod.mesh.clusters.size(),
         lod.level_cluster_counts.empty() ? 0u : lod.level_cluster_counts[0],
         lod.leaf_triangle_count, lod.level_cluster_counts.size(),
-        static_cast<f64>(build_ns) / 1.0e6, mesh_primitives, mesh_cache,
-        options.cull ? "true" : "false", occlusion ? "true" : "false",
-        options.cone ? "true" : "false", static_cast<f64>(options.lod_px),
-        raster_name(options.raster), static_cast<f64>(options.sw_px), visible_hw_last,
-        visible_pass2_last, visible_sw_last, visible_min, visible_max, gpu_cull_ms / n,
-        gpu_hw_ms / n, gpu_sw_ms / n, gpu_hiz_ms / n, gpu_resolve_ms / n, gpu_rt_ms / n,
-        gpu_trace_ms / n, gpu_total_ms / n, static_cast<unsigned long long>(timed_frames),
-        captured ? "true" : "false");
+        static_cast<f64>(build_ns) / 1.0e6, mesh_primitives, mesh_cache, scene_meshes,
+        scene_instance_count, scene_pairs, options.cull ? "true" : "false",
+        occlusion ? "true" : "false", options.cone ? "true" : "false",
+        static_cast<f64>(options.lod_px), raster_name(options.raster),
+        static_cast<f64>(options.sw_px), visible_hw_last, visible_pass2_last, visible_sw_last,
+        visible_hw_last + visible_pass2_last + visible_sw_last, visible_min, visible_max,
+        gpu_cull_ms / n, gpu_hw_ms / n, gpu_sw_ms / n, gpu_hiz_ms / n, gpu_resolve_ms / n,
+        gpu_rt_ms / n, gpu_trace_ms / n, gpu_total_ms / n,
+        static_cast<unsigned long long>(timed_frames), captured ? "true" : "false");
   }
   log::remove_sink(&stderr_sink);
   return exit_code;

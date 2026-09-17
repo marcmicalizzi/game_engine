@@ -100,23 +100,46 @@ inline constexpr u32 k_cluster_geometry_opaque = 4;  // ..._GEOMETRY_OPAQUE_BIT_
 // address of the CLAS address array. A GPU-driven cut writes it from a shader.
 inline constexpr u64 k_cluster_blas_record_bytes = 16;
 
-// Push constants of clas_records.slang (records_main, 64 threads per group): one thread per
-// entry of the cull pass's visible list writes that cluster's CLAS record; thread 0 writes the
-// record count and the bottom-level record. Mirrors RecordParams in the shader. 80 bytes.
+// Push constants of clas_records.slang, shared by its three entry points (64 threads a group).
+// A scene builds one cluster bottom-level structure per instance, so the CLAS records of an
+// instance have to end up next to each other, while the cull pass's visible list is in whatever
+// order its atomics produced. Three small passes sort that out without a CPU round trip:
+//
+//   `records_main`  one thread per visible entry: bucket the entry into its instance's slice of
+//                   `slots` (a pair-indexed scratch array, so slot = instance.first_pair + a
+//                   per-instance atomic) and count the instance's survivors into
+//                   `instance_counts`. Sparse: an instance's slice is as long as its mesh.
+//   `ranges_main`   one thread: the prefix sum of `instance_counts` into `instance_first`, the
+//                   total into `record_count`, and one 16-byte bottom-level record per instance
+//                   pointing at that instance's run of CLAS addresses.
+//   `emit_main`     one thread per pair slot: move the bucketed entries down to the dense
+//                   `records` array at `instance_first[instance] + local` and write the 64-byte
+//                   CLAS build record there. A record's base geometry index is the entry's
+//                   **visible index**, which is what the visibility buffer's id holds, so a hit's
+//                   GeometryIndex names the same pair the rasterizer would have.
+//
+// `instance_counts` must be zeroed before `records_main`. Mirrors RecordParams in the shader.
+// 120 bytes.
 struct ClusterRecordParams {
-  u64 clusters = 0;        // geometry::ClusterDesc[]
-  u64 vertices = 0;        // float3[]: cluster-ordered positions
-  u64 indices8 = 0;        // u8[]: pack_cluster_indices of every cluster, in triangle order
-  u64 visible = 0;         // u32[]: the visible list
-  u64 visible_count = 0;   // u32: the cull pass's count word
-  u64 records = 0;         // ClusterBuildInput records out, k_cluster_build_record_bytes each
-  u64 record_count = 0;    // u32 out: what build_cluster_set reads as `count`
-  u64 blas_record = 0;     // ClusterBlas::record.address
-  u64 clas_addresses = 0;  // ClusterSet::addresses.address
-  u32 max_clusters = 0;
+  u64 clusters = 0;         // geometry::ClusterDesc[]
+  u64 vertices = 0;         // float3[]: cluster-ordered positions
+  u64 indices8 = 0;         // u8[]: pack_cluster_indices of every cluster, in triangle order
+  u64 instances = 0;        // gfx::InstanceDesc[instance_count]
+  u64 visible = 0;          // u32x2[]: the visible list, {instance, cluster} per entry
+  u64 visible_count = 0;    // u32: the cull pass's count word
+  u64 slots = 0;            // u32[pair_count]: visible index per pair slot (records_main out)
+  u64 instance_counts = 0;  // u32[instance_count]: survivors per instance (records_main out)
+  u64 instance_first = 0;   // u32[instance_count]: dense record base (ranges_main out)
+  u64 records = 0;          // ClusterBuildInput records out, k_cluster_build_record_bytes each
+  u64 record_count = 0;     // u32 out: what build_cluster_set reads as `count`
+  u64 blas_records = 0;     // k_cluster_blas_record_bytes per instance (ranges_main out)
+  u64 clas_addresses = 0;   // ClusterSet::addresses.address
+  u32 instance_count = 0;
+  u32 pair_count = 0;
+  u32 max_clusters = 0;  // the ClusterSet's capacity; the record count is clamped to it
   u32 pad = 0;
 };
-static_assert(sizeof(ClusterRecordParams) == 80);
+static_assert(sizeof(ClusterRecordParams) == 120);
 inline constexpr u32 k_cluster_records_workgroup = 64;
 
 // A bottom-level structure over CLAS references (the addresses a ClusterSet build wrote). Built
@@ -126,7 +149,7 @@ struct ClusterBlas {
   BufferResource data;
   BufferResource record;        // k_cluster_blas_record_bytes; host visible
   BufferResource destination;   // u64: the explicit destination the build is told to use
-  VkDeviceAddress address = 0;  // where the structure lives after any build (InstanceDesc::blas)
+  VkDeviceAddress address = 0;  // where the structure lives after any build (TlasInstance::blas)
   u64 build_scratch_bytes = 0;
   u32 max_clusters = 0;
   u32 alignment = 0;
@@ -138,8 +161,11 @@ bool create_cluster_blas(const Device& device, u32 max_clusters, ClusterBlas& ou
 void build_cluster_blas(VkCommandBuffer commands, const ClusterBlas& blas,
                         VkDeviceAddress references, u32 count, const BufferResource& scratch);
 // Records the build with whatever the record holds: for a record a shader wrote on the GPU.
+// `record_address` overrides `blas.record`, which is how a scene keeps one contiguous array of
+// bottom-level records for its instances (one shader dispatch writes them all) while every
+// instance still has its own structure.
 void build_cluster_blas_indirect(VkCommandBuffer commands, const ClusterBlas& blas,
-                                 const BufferResource& scratch);
+                                 const BufferResource& scratch, VkDeviceAddress record_address = 0);
 void destroy_cluster_blas(const Device& device, ClusterBlas& blas) noexcept;
 
 }  // namespace engine::gfx

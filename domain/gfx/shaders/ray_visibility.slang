@@ -1,9 +1,12 @@
 // Primary visibility by ray query (docs/plan/04-renderer.md §4.4; experiment E2's image match):
 // one ray per pixel center through the same view-projection the rasterizer used, against a
-// top-level structure whose bottom level has one geometry per cluster of the current cut, so a
-// hit's GeometryIndex is the cut index and PrimitiveIndex the triangle. The output is the
-// visibility buffer's 64-bit word (reversed-Z depth bits << 32 | cluster << 8 | triangle), so
-// the raster and ray-traced pictures compare word for word. Empty pixels write 0.
+// top-level structure with one instance per scene instance whose bottom level has one geometry
+// per visible cluster of that instance, so a hit's GeometryIndex is the **visible index** of the
+// pair and PrimitiveIndex the triangle. The output is the visibility buffer's 64-bit word
+// (reversed-Z depth bits << 32 | visible_index << 8 | triangle), so the raster and ray-traced
+// pictures compare word for word. On the cluster path each CLAS record carries its base geometry
+// index, which is already the visible index; on the KHR path the geometries of a bottom-level
+// structure start at 0, so `instance_base[InstanceID()]` shifts them. Empty pixels write 0.
 
 [[vk::binding(3, 0)]] RaytracingAccelerationStructure g_scenes[];
 
@@ -12,8 +15,9 @@ struct RayVisibilityParams {
   column_major float4x4 view_proj;
   column_major float4x4 inv_view_proj;
   float4 camera;    // xyz position
-  uint64_t output;  // uint64_t[width * height]
-  uint64_t cut;     // uint[]: cluster index per BLAS geometry; 0 when geometry index == cluster
+  uint64_t output;         // uint64_t[width * height]
+  uint64_t instance_base;  // uint[instance_count]: the visible index of each instance's first
+                           // geometry; 0 when GeometryIndex is already the visible index
   uint width;
   uint height;
   uint scene;  // bindless slot of the top-level structure
@@ -53,13 +57,13 @@ void trace_main(uint3 id : SV_DispatchThreadID) {
     const float3 p = origin + direction * query.CommittedRayT();
     const float4 clip = mul(params->view_proj, float4(p, 1.0));
     const float depth = clip.z / clip.w;  // what the rasterizer's SV_Position.z holds
-    uint cluster = query.CommittedGeometryIndex();
-    if (params->cut != 0) {
-      uint* cut = (uint*)params->cut;
-      cluster = cut[cluster];
+    uint visible_index = query.CommittedGeometryIndex();
+    if (params->instance_base != 0) {
+      uint* base = (uint*)params->instance_base;
+      visible_index += base[query.CommittedInstanceID()];  // the scene instance
     }
     const uint triangle = query.CommittedPrimitiveIndex() & 0xff;
-    value = (uint64_t(asuint(depth)) << 32) | uint64_t((cluster << 8) | triangle);
+    value = (uint64_t(asuint(depth)) << 32) | uint64_t((visible_index << 8) | triangle);
   }
   uint64_t* output = (uint64_t*)params->output;
   output[id.y * params->width + id.x] = value;

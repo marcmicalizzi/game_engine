@@ -7,6 +7,7 @@
 // nothing at all, and a white dielectric lit head-on reflects what the BSDF says it should.
 // Skips without mesh shaders or 64-bit buffer atomics.
 #include "brdf_reference.h"
+#include "scene_fixture.h"
 
 #include <domain/geometry/cluster.h>
 #include <domain/gfx/bindless.h>
@@ -65,9 +66,8 @@ TEST_CASE("material resolve: shading matches a CPU reference over roughness and 
 
   constexpr VkBufferUsageFlags k_storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
   gfx::BufferResource clusters;
-  gfx::BufferResource quantized;
-  gfx::BufferResource mesh_buffer;
   gfx::BufferResource triangles;
+  gfx_test::SingleInstance scene;
   gfx::BufferResource materials;
   gfx::BufferResource cluster_materials;
   gfx::BufferResource lights;
@@ -86,13 +86,7 @@ TEST_CASE("material resolve: shading matches a CPU reference over roughness and 
     material_index[i] = i;
   REQUIRE(gfx::upload_buffer(device, mesh.clusters.data(), sizeof(geometry::ClusterDesc), k_storage,
                              clusters, &error));
-  REQUIRE(gfx::upload_buffer(device, mesh.quantized.data(), mesh.quantized.size() * sizeof(u16),
-                             k_storage, quantized, &error));
-  gfx::MeshDesc mesh_block{};
-  mesh_block.quant = Vec4{mesh.quant_origin, mesh.quant_scale};
-  mesh_block.quantized = quantized.address;
-  REQUIRE(
-      gfx::upload_buffer(device, &mesh_block, sizeof(mesh_block), k_storage, mesh_buffer, &error));
+  REQUIRE(scene.create(device, mesh, 1, &error));
   REQUIRE(gfx::upload_buffer(device, mesh.triangles.data(), mesh.triangles.size() * sizeof(u32),
                              k_storage, triangles, &error));
   REQUIRE(gfx::upload_buffer(device, material_table, sizeof(material_table), k_storage, materials,
@@ -159,9 +153,9 @@ TEST_CASE("material resolve: shading matches a CPU reference over roughness and 
   gfx::ClusterDrawParams draw{};
   draw.view_proj = view_proj;
   draw.clusters = clusters.address;
-  draw.mesh = mesh_buffer.address;
+  draw.mesh = scene.meshes.address;
+  draw.instances = scene.instances.address;
   draw.triangles = triangles.address;
-  draw.cluster_count = 1;
   draw.visibility = vis.address;
   draw.width = k_size;
   draw.height = k_size;
@@ -175,7 +169,8 @@ TEST_CASE("material resolve: shading matches a CPU reference over roughness and 
   base.view_proj = view_proj;
   base.visibility = vis.address;
   base.clusters = clusters.address;
-  base.mesh = mesh_buffer.address;
+  base.mesh = scene.meshes.address;
+  base.instances = scene.instances.address;
   base.triangles = triangles.address;
   base.materials = materials.address;
   base.cluster_materials = cluster_materials.address;
@@ -402,8 +397,9 @@ TEST_CASE("material resolve: shading matches a CPU reference over roughness and 
   gfx::destroy_shader_module(device, resolve_module);
   gfx::destroy_shader_module(device, mesh_module);
   bindless.destroy();
+  scene.destroy(device);
   for (gfx::BufferResource* b : {&host_color, &params, &vis, &lights, &cluster_materials,
-                                 &materials, &mesh_buffer, &quantized, &triangles, &clusters}) {
+                                 &materials, &triangles, &clusters}) {
     gfx::destroy_buffer(device, *b);
   }
   frames.destroy();

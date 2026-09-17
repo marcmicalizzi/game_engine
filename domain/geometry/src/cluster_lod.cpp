@@ -276,6 +276,83 @@ bool merge_cluster_lod(std::span<const ClusterLodMesh> parts, ClusterLodMesh& ou
   return true;
 }
 
+bool merge_cluster_meshes(std::span<const ClusterLodMesh> parts, ClusterLodMesh& out,
+                          Vector<ClusterMeshPart>& parts_out, std::string* error) {
+  out = ClusterLodMesh{};
+  parts_out.clear();
+  if (parts.empty()) {
+    if (error != nullptr) *error = "merge_cluster_meshes: no meshes";
+    return false;
+  }
+  u32 levels = 0;
+  for (const ClusterLodMesh& part : parts) {
+    if (part.mesh.clusters.empty() || part.lod.size() != part.mesh.clusters.size() ||
+        part.mesh.vertex_source.size() != part.mesh.vertices.size() ||
+        part.mesh.quantized.size() < part.mesh.vertices.size() * 3) {
+      if (error != nullptr) *error = "merge_cluster_meshes: a mesh is empty or inconsistent";
+      return false;
+    }
+    levels = part.level_cluster_counts.size() > levels ? part.level_cluster_counts.size() : levels;
+  }
+  out.level_cluster_counts.resize(levels, 0u);
+  parts_out.resize(static_cast<u32>(parts.size()));
+
+  const bool attributes = parts[0].mesh.attributes.size() == parts[0].mesh.vertices.size();
+  for (u32 p = 0; p < parts.size(); ++p) {
+    const ClusterLodMesh& whole = parts[p];
+    const ClusterMesh& part = whole.mesh;
+    ClusterMeshPart& info = parts_out[p];
+    info.first_vertex = out.mesh.vertices.size();
+    info.first_cluster = out.mesh.clusters.size();
+    info.cluster_count = part.clusters.size();
+    info.leaf_cluster_count =
+        whole.level_cluster_counts.empty() ? 0 : whole.level_cluster_counts[0];
+    info.quant_origin = part.quant_origin;
+    info.quant_scale = part.quant_scale;
+    const u32 vertex_base = info.first_vertex;
+    const u32 triangle_base = out.mesh.triangles.size();
+    const u32 group_base = out.group_count;
+    const u32 source_base = out.mesh.source_vertex_count;
+    out.mesh.vertices.append(std::span<const Vec3>(part.vertices.data(), part.vertices.size()));
+    for (const u32 source : part.vertex_source)
+      out.mesh.vertex_source.push_back(source_base + source);
+    if (attributes && part.attributes.size() == part.vertices.size()) {
+      out.mesh.attributes.append(
+          std::span<const VertexAttributes>(part.attributes.data(), part.attributes.size()));
+    } else {
+      out.mesh.attributes.resize(out.mesh.vertices.size(), VertexAttributes{});
+    }
+    out.mesh.triangles.append(std::span<const u32>(part.triangles.data(), part.triangles.size()));
+    // Three u16 a vertex, the mesh's own padding dropped so the merged index is 3 * vertex.
+    out.mesh.quantized.append(
+        std::span<const u16>(part.quantized.data(), part.vertices.size() * 3));
+    out.mesh.source_vertex_count += part.source_vertex_count;
+    out.mesh.source_triangle_count += part.source_triangle_count;
+    out.group_count += whole.group_count;
+    out.leaf_triangle_count += whole.leaf_triangle_count;
+    for (u32 level = 0; level < whole.level_cluster_counts.size(); ++level)
+      out.level_cluster_counts[level] += whole.level_cluster_counts[level];
+    // This mesh's clusters, contiguously, its own leaves first.
+    for (u32 pass = 0; pass < 2; ++pass) {
+      for (u32 i = 0; i < part.clusters.size(); ++i) {
+        if ((whole.lod[i].level == 0) != (pass == 0)) continue;
+        ClusterDesc desc = part.clusters[i];
+        desc.vertex_offset += vertex_base;
+        desc.triangle_offset += triangle_base;
+        ClusterLodDesc lod = whole.lod[i];
+        lod.group += group_base;
+        out.mesh.clusters.push_back(desc);
+        out.lod.push_back(lod);
+      }
+    }
+  }
+  // The shaders read the last triple as two whole 32-bit words.
+  if (out.mesh.quantized.size() % 2 != 0) out.mesh.quantized.push_back(0);
+  out.mesh.quant_origin = parts[0].mesh.quant_origin;
+  out.mesh.quant_scale = parts[0].mesh.quant_scale;
+  return true;
+}
+
 bool validate_cluster_lod(const ClusterLodMesh& mesh, std::span<const u32> source_indices,
                           std::string* error) {
   auto fail = [&](const char* what) {

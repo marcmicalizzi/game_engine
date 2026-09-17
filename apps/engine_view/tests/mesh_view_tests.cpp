@@ -315,6 +315,44 @@ TEST_CASE("engine-view: renders a glTF mesh with one cluster DAG per material") 
     CHECK(visible > 0);  // the cube's clusters went through the cull, the builds, and the trace
   }
 
+  // A scene: the same cube nine times through `--grid-instances`, and through a `--scene` file
+  // that names it twice. Every instance of a mesh adds that mesh's cluster count to the pair
+  // count, which is what the cull pass covers, and the summary reports all three numbers.
+  const Run grid = view(with({"--mesh", mesh, "--grid-instances", "3"}));
+  REQUIRE_MESSAGE(grid.exit_code == 0, grid.output);
+  Summary grid_summary;
+  REQUIRE_MESSAGE(parse_summary(grid, grid_summary), grid.output);
+  CHECK(grid_summary.number("meshes") == 1);
+  CHECK(grid_summary.number("instances") == 9);
+  CHECK(grid_summary.number("clusters") == number("clusters"));
+  CHECK(grid_summary.number("pairs") == number("clusters") * 9);
+  CHECK(grid_summary.number("visible_pairs_last") > number("visible_hw_last"));
+  CHECK(grid_summary.number("visible_pairs_last") <= number("clusters") * 9);
+
+  const std::string scene_path = slashes(dir / "scene.json");
+  {
+    std::ofstream out(scene_path);
+    out << "{\"meshes\":[{\"path\":\"cube.glb\"}],\"instances\":["
+        << "{\"mesh\":0,\"translation\":[-1,0,0]},"
+        << "{\"mesh\":0,\"translation\":[1,0,0],\"rotation\":[0,0,0,1],\"scale\":[1,2,1]}]}";
+  }
+  const Run scene = view(with({"--scene", scene_path}));
+  REQUIRE_MESSAGE(scene.exit_code == 0, scene.output);
+  Summary scene_summary;
+  REQUIRE_MESSAGE(parse_summary(scene, scene_summary), scene.output);
+  CHECK(scene_summary.number("meshes") == 1);
+  CHECK(scene_summary.number("instances") == 2);
+  CHECK(scene_summary.number("pairs") == number("clusters") * 2);
+  CHECK(scene_summary.number("visible_pairs_last") > 0);
+  // A scene file that is not one, and a scene plus a mesh, are refused.
+  const std::string broken_scene = slashes(dir / "broken.json");
+  {
+    std::ofstream out(broken_scene);
+    out << "{\"instances\":[]}";
+  }
+  CHECK(view(with({"--scene", broken_scene})).exit_code == 1);
+  CHECK(view({"--scene", scene_path, "--mesh", mesh}).exit_code == 2);
+
   // A file that does not exist fails cleanly (exit 1) once the window and device are up, as
   // does a container that is not one.
   const Run missing = view({"--frames", "1", "--ddc", ddc, "--mesh", slashes(dir / "missing.glb")});
@@ -326,11 +364,14 @@ TEST_CASE("engine-view: renders a glTF mesh with one cluster DAG per material") 
   }
   const Run broken = view({"--frames", "1", "--ddc", ddc, "--mesh", not_a_container});
   CHECK(broken.exit_code == 1);
-  // The fixture and the capture stay next to the temp directory for a look after the run.
+  // The fixture and the capture stay next to the temp directory for a look after the run. This
+  // is a convenience, not an assertion: a copy that cannot be made says so and nothing else.
   const auto temp = std::filesystem::temp_directory_path();
+  std::error_code copy_error;
   std::filesystem::copy_file(dir / "cube.glb", temp / "engine_view_mesh_cube.glb",
-                             std::filesystem::copy_options::overwrite_existing);
+                             std::filesystem::copy_options::overwrite_existing, copy_error);
   std::filesystem::copy_file(dir / "mesh.png", temp / "engine_view_mesh_last.png",
-                             std::filesystem::copy_options::overwrite_existing);
+                             std::filesystem::copy_options::overwrite_existing, copy_error);
+  if (copy_error) MESSAGE("the fixture copies were not kept: " << copy_error.message());
   std::filesystem::remove_all(dir);
 }
