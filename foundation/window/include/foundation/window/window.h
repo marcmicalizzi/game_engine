@@ -29,8 +29,10 @@ typedef struct VkSurfaceKHR_T* VkSurfaceKHR;
 
 namespace engine::window {
 
-// Starts the video and event subsystems. False, with the reason, on a machine without a
-// display server or video driver; nothing else in this module may be used then.
+// Starts the video and event subsystems, and the gamepad subsystem when the platform has one
+// (a machine with no gamepad driver still gets a window; the failure is logged, not returned).
+// False, with the reason, on a machine without a display server or video driver; nothing else
+// in this module may be used then.
 bool init(std::string* error = nullptr);
 void shutdown() noexcept;
 bool initialized() noexcept;
@@ -99,6 +101,54 @@ enum class Key : u16 {
   F12,
 };
 
+// How many gamepads this module tracks at once. Slots are handed out lowest free first and
+// released on disconnect, so `Event::gamepad` is always below this.
+inline constexpr u32 k_max_gamepads = 8;
+
+// The standard gamepad layout, in SDL's own order. Face buttons are named by position, not by
+// label, so the same enumerator is the bottom button on every pad (Xbox A, PlayStation cross,
+// Nintendo B); a game that wants the printed label asks the platform layer, not this enum.
+//
+// The numeric values are part of the input log format (docs/subsystems/input.md): append new
+// enumerators, never reorder or renumber them.
+enum class GamepadButton : u8 {
+  Unknown = 0,
+  South,  // bottom face button
+  East,   // right face button
+  West,   // left face button
+  North,  // top face button
+  Back,
+  Guide,
+  Start,
+  LeftStick,  // stick pressed in
+  RightStick,
+  LeftShoulder,
+  RightShoulder,
+  DpadUp,
+  DpadDown,
+  DpadLeft,
+  DpadRight,
+  // Only pads whose triggers are digital report these (SDL maps the GameCube trigger click
+  // here). Analog triggers arrive as GamepadAxis::LeftTrigger/RightTrigger instead, and a game
+  // that wants a digital trigger from them binds the axis with a deadzone.
+  LeftTrigger,
+  RightTrigger,
+  Count,
+};
+
+// Gamepad axes. Sticks are -1..1 with +x right and +y down (SDL's sign convention, so a stick
+// pushed forward reads negative y); triggers are 0..1. Numeric values are part of the input
+// log format: append, never reorder.
+enum class GamepadAxis : u8 {
+  LeftX = 0,
+  LeftY,
+  RightX,
+  RightY,
+  LeftTrigger,
+  RightTrigger,
+  Count,
+};
+
 enum class EventKind : u8 {
   None = 0,
   Quit,            // the application was asked to quit (last window closed, SIGINT, ...)
@@ -112,6 +162,13 @@ enum class EventKind : u8 {
   MouseButtonDown,
   MouseButtonUp,
   MouseWheel,
+  // Gamepads are process-wide, not per-window: SDL reports no window for them, so whichever
+  // window is polling receives them. `gamepad` holds this module's slot id in every one.
+  GamepadConnected,
+  GamepadDisconnected,
+  GamepadButtonDown,
+  GamepadButtonUp,
+  GamepadAxis,
 };
 
 struct Event {
@@ -126,7 +183,19 @@ struct Event {
   f32 y = 0.0f;
   f32 dx = 0.0f;  // MouseMove: relative motion; MouseWheel: horizontal/vertical scroll
   f32 dy = 0.0f;
+  u8 gamepad = 0;  // Gamepad*: the slot id this module assigned, 0..k_max_gamepads-1
+  GamepadButton gamepad_button = GamepadButton::Unknown;  // GamepadButtonDown/Up
+  GamepadAxis gamepad_axis = GamepadAxis::LeftX;          // GamepadAxis
+  f32 value = 0.0f;  // GamepadAxis: -1..1 for sticks, 0..1 for triggers
 };
+
+// "South", "LeftTrigger", ... for logs and tools; "Unknown" outside the enum.
+const char* gamepad_button_name(GamepadButton button) noexcept;
+const char* gamepad_axis_name(GamepadAxis axis) noexcept;
+// The pad's product name ("Xbox Series X Controller"), or "" for a slot with nothing in it.
+// Valid until that slot disconnects.
+const char* gamepad_name(u32 gamepad) noexcept;
+bool gamepad_connected(u32 gamepad) noexcept;
 
 struct WindowDesc {
   const char* title = "engine";

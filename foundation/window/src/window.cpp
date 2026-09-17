@@ -50,6 +50,111 @@ void set_error(std::string* error, const char* what) {
   *error = std::string(what) + ": " + (reason != nullptr && reason[0] != '\0' ? reason : "unknown");
 }
 
+// --- gamepads -------------------------------------------------------------------------------
+//
+// SDL identifies a pad by an instance id that grows for the lifetime of the process; the engine
+// wants a small stable slot instead, so this table maps one to the other. Slots are handed out
+// lowest free first, which makes a single-pad session always slot 0 and a replay reproducible.
+// The table is process-wide because SDL's gamepad events are: they carry no window.
+
+bool g_gamepad_subsystem = false;
+
+struct GamepadSlot {
+  SDL_Gamepad* handle = nullptr;
+  SDL_JoystickID instance = 0;
+};
+
+GamepadSlot g_gamepads[k_max_gamepads];
+
+u32 find_gamepad_slot(SDL_JoystickID instance) noexcept {
+  for (u32 i = 0; i < k_max_gamepads; ++i) {
+    if (g_gamepads[i].handle != nullptr && g_gamepads[i].instance == instance) return i;
+  }
+  return k_max_gamepads;
+}
+
+// Opens a newly arrived pad into the lowest free slot. k_max_gamepads when it will not open or
+// every slot is taken; the caller then drops the event.
+u32 open_gamepad(SDL_JoystickID instance) {
+  if (find_gamepad_slot(instance) != k_max_gamepads) return k_max_gamepads;  // already open
+  u32 slot = k_max_gamepads;
+  for (u32 i = 0; i < k_max_gamepads; ++i) {
+    if (g_gamepads[i].handle == nullptr) {
+      slot = i;
+      break;
+    }
+  }
+  if (slot == k_max_gamepads) {
+    ENGINE_LOG_WARN(log_window, "gamepad ignored: every slot is taken",
+                    log::field("slots", k_max_gamepads));
+    return k_max_gamepads;
+  }
+  SDL_Gamepad* pad = SDL_OpenGamepad(instance);
+  if (pad == nullptr) {
+    ENGINE_LOG_WARN(log_window, "SDL_OpenGamepad failed", log::field("reason", SDL_GetError()));
+    return k_max_gamepads;
+  }
+  g_gamepads[slot] = GamepadSlot{pad, instance};
+  return slot;
+}
+
+void close_gamepad_slot(u32 slot) noexcept {
+  if (slot >= k_max_gamepads || g_gamepads[slot].handle == nullptr) return;
+  SDL_CloseGamepad(g_gamepads[slot].handle);
+  g_gamepads[slot] = GamepadSlot{};
+}
+
+void close_all_gamepads() noexcept {
+  for (u32 i = 0; i < k_max_gamepads; ++i)
+    close_gamepad_slot(i);
+}
+
+GamepadButton button_from_sdl(u8 button) noexcept {
+  switch (static_cast<int>(button)) {
+    case SDL_GAMEPAD_BUTTON_SOUTH: return GamepadButton::South;
+    case SDL_GAMEPAD_BUTTON_EAST: return GamepadButton::East;
+    case SDL_GAMEPAD_BUTTON_WEST: return GamepadButton::West;
+    case SDL_GAMEPAD_BUTTON_NORTH: return GamepadButton::North;
+    case SDL_GAMEPAD_BUTTON_BACK: return GamepadButton::Back;
+    case SDL_GAMEPAD_BUTTON_GUIDE: return GamepadButton::Guide;
+    case SDL_GAMEPAD_BUTTON_START: return GamepadButton::Start;
+    case SDL_GAMEPAD_BUTTON_LEFT_STICK: return GamepadButton::LeftStick;
+    case SDL_GAMEPAD_BUTTON_RIGHT_STICK: return GamepadButton::RightStick;
+    case SDL_GAMEPAD_BUTTON_LEFT_SHOULDER: return GamepadButton::LeftShoulder;
+    case SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER: return GamepadButton::RightShoulder;
+    case SDL_GAMEPAD_BUTTON_DPAD_UP: return GamepadButton::DpadUp;
+    case SDL_GAMEPAD_BUTTON_DPAD_DOWN: return GamepadButton::DpadDown;
+    case SDL_GAMEPAD_BUTTON_DPAD_LEFT: return GamepadButton::DpadLeft;
+    case SDL_GAMEPAD_BUTTON_DPAD_RIGHT: return GamepadButton::DpadRight;
+    // SDL routes a digital trigger click (the GameCube pad) to these two misc buttons.
+    case SDL_GAMEPAD_BUTTON_MISC3: return GamepadButton::LeftTrigger;
+    case SDL_GAMEPAD_BUTTON_MISC4: return GamepadButton::RightTrigger;
+    default: return GamepadButton::Unknown;
+  }
+}
+
+// The switch is on the integer rather than on SDL_GamepadAxis: SDL delivers the axis as a byte,
+// and a byte outside the enum's range is not a value of that enumeration type.
+GamepadAxis axis_from_sdl(u8 axis, bool& is_trigger) noexcept {
+  switch (static_cast<int>(axis)) {
+    case SDL_GAMEPAD_AXIS_LEFTX: is_trigger = false; return GamepadAxis::LeftX;
+    case SDL_GAMEPAD_AXIS_LEFTY: is_trigger = false; return GamepadAxis::LeftY;
+    case SDL_GAMEPAD_AXIS_RIGHTX: is_trigger = false; return GamepadAxis::RightX;
+    case SDL_GAMEPAD_AXIS_RIGHTY: is_trigger = false; return GamepadAxis::RightY;
+    case SDL_GAMEPAD_AXIS_LEFT_TRIGGER: is_trigger = true; return GamepadAxis::LeftTrigger;
+    case SDL_GAMEPAD_AXIS_RIGHT_TRIGGER: is_trigger = true; return GamepadAxis::RightTrigger;
+    default: is_trigger = false; return GamepadAxis::Count;
+  }
+}
+
+// SDL's axes are Sint16. A stick maps to -1..1 (the negative end is one step longer, so the
+// division is by 32767 and the result clamped); a trigger rests at 0 and maps to 0..1.
+f32 normalize_axis(i16 raw, bool is_trigger) noexcept {
+  const f32 v = static_cast<f32>(raw) / 32767.0f;
+  if (is_trigger) return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
+  return v < -1.0f ? -1.0f : (v > 1.0f ? 1.0f : v);
+}
+
 }  // namespace
 
 bool init(std::string* error) {
@@ -62,13 +167,69 @@ bool init(std::string* error) {
   const char* driver = SDL_GetCurrentVideoDriver();
   ENGINE_LOG_DEBUG(log_window, "video initialized",
                    log::field("driver", driver != nullptr ? driver : "none"));
+  // Gamepads are optional: a machine with no joystick driver (a container, a service session)
+  // still gets a window, and poll() simply never reports a pad.
+  g_gamepad_subsystem = SDL_InitSubSystem(SDL_INIT_GAMEPAD);
+  if (!g_gamepad_subsystem) {
+    ENGINE_LOG_WARN(log_window, "no gamepad subsystem", log::field("reason", SDL_GetError()));
+  }
   return true;
 }
 
 void shutdown() noexcept {
   if (!g_initialized) return;
+  close_all_gamepads();
+  g_gamepad_subsystem = false;
   SDL_Quit();
   g_initialized = false;
+}
+
+const char* gamepad_button_name(GamepadButton button) noexcept {
+  switch (button) {
+    case GamepadButton::South: return "South";
+    case GamepadButton::East: return "East";
+    case GamepadButton::West: return "West";
+    case GamepadButton::North: return "North";
+    case GamepadButton::Back: return "Back";
+    case GamepadButton::Guide: return "Guide";
+    case GamepadButton::Start: return "Start";
+    case GamepadButton::LeftStick: return "LeftStick";
+    case GamepadButton::RightStick: return "RightStick";
+    case GamepadButton::LeftShoulder: return "LeftShoulder";
+    case GamepadButton::RightShoulder: return "RightShoulder";
+    case GamepadButton::DpadUp: return "DpadUp";
+    case GamepadButton::DpadDown: return "DpadDown";
+    case GamepadButton::DpadLeft: return "DpadLeft";
+    case GamepadButton::DpadRight: return "DpadRight";
+    case GamepadButton::LeftTrigger: return "LeftTrigger";
+    case GamepadButton::RightTrigger: return "RightTrigger";
+    case GamepadButton::Unknown:
+    case GamepadButton::Count: break;
+  }
+  return "Unknown";
+}
+
+const char* gamepad_axis_name(GamepadAxis axis) noexcept {
+  switch (axis) {
+    case GamepadAxis::LeftX: return "LeftX";
+    case GamepadAxis::LeftY: return "LeftY";
+    case GamepadAxis::RightX: return "RightX";
+    case GamepadAxis::RightY: return "RightY";
+    case GamepadAxis::LeftTrigger: return "LeftTrigger";
+    case GamepadAxis::RightTrigger: return "RightTrigger";
+    case GamepadAxis::Count: break;
+  }
+  return "Unknown";
+}
+
+const char* gamepad_name(u32 gamepad) noexcept {
+  if (gamepad >= k_max_gamepads || g_gamepads[gamepad].handle == nullptr) return "";
+  const char* name = SDL_GetGamepadName(g_gamepads[gamepad].handle);
+  return name != nullptr ? name : "";
+}
+
+bool gamepad_connected(u32 gamepad) noexcept {
+  return gamepad < k_max_gamepads && g_gamepads[gamepad].handle != nullptr;
 }
 
 bool initialized() noexcept { return g_initialized; }
@@ -120,6 +281,48 @@ bool Window::poll(Event& out) {
     out = Event{};
     switch (e.type) {
       case SDL_EVENT_QUIT: out.kind = EventKind::Quit; return true;
+      // Gamepad events carry no window id, so they are reported to whichever window polls.
+      case SDL_EVENT_GAMEPAD_ADDED: {
+        const u32 slot = open_gamepad(e.gdevice.which);
+        if (slot >= k_max_gamepads) continue;
+        out.kind = EventKind::GamepadConnected;
+        out.gamepad = static_cast<u8>(slot);
+        ENGINE_LOG_INFO(log_window, "gamepad connected", log::field("slot", slot),
+                        log::field("name", gamepad_name(slot)));
+        return true;
+      }
+      case SDL_EVENT_GAMEPAD_REMOVED: {
+        const u32 slot = find_gamepad_slot(e.gdevice.which);
+        if (slot >= k_max_gamepads) continue;
+        close_gamepad_slot(slot);
+        out.kind = EventKind::GamepadDisconnected;
+        out.gamepad = static_cast<u8>(slot);
+        ENGINE_LOG_INFO(log_window, "gamepad disconnected", log::field("slot", slot));
+        return true;
+      }
+      case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
+      case SDL_EVENT_GAMEPAD_BUTTON_UP: {
+        const u32 slot = find_gamepad_slot(e.gbutton.which);
+        const GamepadButton mapped = button_from_sdl(e.gbutton.button);
+        if (slot >= k_max_gamepads || mapped == GamepadButton::Unknown) continue;
+        out.kind = e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ? EventKind::GamepadButtonDown
+                                                           : EventKind::GamepadButtonUp;
+        out.gamepad = static_cast<u8>(slot);
+        out.gamepad_button = mapped;
+        out.value = out.kind == EventKind::GamepadButtonDown ? 1.0f : 0.0f;
+        return true;
+      }
+      case SDL_EVENT_GAMEPAD_AXIS_MOTION: {
+        const u32 slot = find_gamepad_slot(e.gaxis.which);
+        bool is_trigger = false;
+        const GamepadAxis mapped = axis_from_sdl(e.gaxis.axis, is_trigger);
+        if (slot >= k_max_gamepads || mapped == GamepadAxis::Count) continue;
+        out.kind = EventKind::GamepadAxis;
+        out.gamepad = static_cast<u8>(slot);
+        out.gamepad_axis = mapped;
+        out.value = normalize_axis(e.gaxis.value, is_trigger);
+        return true;
+      }
       case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
         if (e.window.windowID != id_) continue;
         out.kind = EventKind::CloseRequested;
