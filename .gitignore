@@ -19,6 +19,7 @@ compile_commands.json
 # Derived data and local content caches (content-addressed, rebuildable)
 /ddc/
 /content/golden/local/
+/content/samples/
 
 # OS
 Thumbs.db

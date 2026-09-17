@@ -315,6 +315,44 @@ void compute_vertex_normals(std::span<const Vec3> positions, std::span<const u32
     n = length_squared(n) > 1e-20f ? normalize(n) : Vec3{0.0f, 1.0f, 0.0f};
 }
 
+u32 weld_vertices(Vector<Vec3>& positions, Vector<Vec3>& normals, Vector<Vec2>& uvs,
+                  std::span<u32> indices) {
+  const u32 vertex_count = positions.size();
+  if (vertex_count == 0) return 0;
+  const bool have_normals = normals.size() == vertex_count;
+  const bool have_uvs = uvs.size() == vertex_count;
+  meshopt_Stream streams[3];
+  usize stream_count = 0;
+  streams[stream_count++] = meshopt_Stream{positions.data(), sizeof(Vec3), sizeof(Vec3)};
+  if (have_normals)
+    streams[stream_count++] = meshopt_Stream{normals.data(), sizeof(Vec3), sizeof(Vec3)};
+  if (have_uvs) streams[stream_count++] = meshopt_Stream{uvs.data(), sizeof(Vec2), sizeof(Vec2)};
+
+  Vector<unsigned int> remap(vertex_count);
+  const u32 unique = static_cast<u32>(meshopt_generateVertexRemapMulti(
+      remap.data(), indices.empty() ? nullptr : indices.data(),
+      indices.empty() ? vertex_count : indices.size(), vertex_count, streams, stream_count));
+  Vector<Vec3> welded_positions(unique);
+  meshopt_remapVertexBuffer(welded_positions.data(), positions.data(), vertex_count, sizeof(Vec3),
+                            remap.data());
+  positions = std::move(welded_positions);
+  if (have_normals) {
+    Vector<Vec3> welded(unique);
+    meshopt_remapVertexBuffer(welded.data(), normals.data(), vertex_count, sizeof(Vec3),
+                              remap.data());
+    normals = std::move(welded);
+  }
+  if (have_uvs) {
+    Vector<Vec2> welded(unique);
+    meshopt_remapVertexBuffer(welded.data(), uvs.data(), vertex_count, sizeof(Vec2), remap.data());
+    uvs = std::move(welded);
+  }
+  if (!indices.empty()) {
+    meshopt_remapIndexBuffer(indices.data(), indices.data(), indices.size(), remap.data());
+  }
+  return unique;
+}
+
 void fill_cluster_attributes(ClusterMesh& mesh, std::span<const Vec3> positions,
                              std::span<const u32> indices, const AttributeSource& attributes) {
   Vector<Vec3> computed;

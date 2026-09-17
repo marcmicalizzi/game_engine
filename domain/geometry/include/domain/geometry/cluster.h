@@ -72,6 +72,16 @@ Vec2 decode_half2(u32 packed) noexcept;
 void compute_vertex_normals(std::span<const Vec3> positions, std::span<const u32> indices,
                             Vector<Vec3>& out);
 
+// Merges vertices whose position, normal, and UV are bit-identical and drops unreferenced
+// ones, rewriting `indices` in place and compacting the streams (`normals` and `uvs` take part
+// when they are parallel to `positions`, and are left alone otherwise). Exporters often write
+// unindexed or seam-split meshes; without welding, the 64-vertex cluster limit caps clusters at
+// 21 triangles and the LOD builder has no connectivity to simplify across. Vertices that
+// differ in any attribute stay distinct, so seams keep their normals and UVs. Returns the new
+// vertex count.
+u32 weld_vertices(Vector<Vec3>& positions, Vector<Vec3>& normals, Vector<Vec2>& uvs,
+                  std::span<u32> indices);
+
 struct ClusterBuildOptions {
   u32 max_vertices = 64;    // at most 255 (local indices are bytes)
   u32 max_triangles = 124;  // at most 512 and a multiple of 4 (meshoptimizer)

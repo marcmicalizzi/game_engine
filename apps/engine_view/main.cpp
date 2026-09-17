@@ -515,6 +515,19 @@ int main(int argc, char** argv) {
         exit_code = fail("mesh", error);
         break;
       }
+      // Exporters duplicate vertices freely; welding the identical ones gives the cluster
+      // builder shared vertices to fill clusters with and the LOD builder edges to collapse.
+      const u32 loaded_vertices = mesh_data.positions.size();
+      const u32 welded_vertices = geometry::weld_vertices(
+          mesh_data.positions, mesh_data.normals, mesh_data.uvs,
+          std::span<u32>(mesh_data.indices.data(), mesh_data.indices.size()));
+      ENGINE_LOG_INFO(log_view, "mesh loaded", log::field("path", options.mesh),
+                      log::field("vertices", loaded_vertices),
+                      log::field("welded", welded_vertices),
+                      log::field("triangles", mesh_data.indices.size() / 3),
+                      log::field("primitives", mesh_data.primitives.size()),
+                      log::field("materials", mesh_data.materials.size()),
+                      log::field("images", mesh_data.images.size()));
       const geometry::AttributeSource attribute_source = assets::attribute_source(mesh_data);
       Vector<geometry::ClusterLodMesh> parts;
       bool parts_ok = true;
@@ -547,7 +560,11 @@ int main(int argc, char** argv) {
                   std::max(hi.z, c.center.z + c.radius)};
       }
       scene_center = (lo + hi) * 0.5f;
-      scene_radius = std::max(length(hi - lo) * 0.5f, 1e-3f);
+      scene_radius = 1e-6f;  // tighter than the box diagonal for elongated meshes
+      for (u32 i = 0; i < lod.level_cluster_counts[0]; ++i) {
+        const geometry::ClusterDesc& c = lod.mesh.clusters[i];
+        scene_radius = std::max(scene_radius, length(c.center - scene_center) + c.radius);
+      }
     }
     build_ns = time::monotonic_ns() - build_start;
     const u32 cluster_count = lod.mesh.clusters.size();
@@ -937,7 +954,7 @@ int main(int argc, char** argv) {
       const Vec3 eye = scene_center + Vec3{std::cos(angle) * distance, 0.45f * distance,
                                            std::sin(angle) * distance};
       const f32 fov_y = radians(55.0f);
-      const f32 znear = 0.1f;
+      const f32 znear = 0.01f * scene_radius;  // 0.1 for the heightfield; a 2 cm mesh gets 0.2 mm
       const Mat4 view_proj = perspective_reversed_z(fov_y, aspect, znear) *
                              look_at(eye, scene_center, Vec3{0.0f, 1.0f, 0.0f});
       const f32 proj_scale = 1.0f / std::tan(fov_y * 0.5f) * static_cast<f32>(extent.height) * 0.5f;

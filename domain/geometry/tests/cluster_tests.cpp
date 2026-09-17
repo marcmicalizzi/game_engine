@@ -294,3 +294,61 @@ TEST_CASE(
   }
   CHECK(any_failed);
 }
+
+TEST_CASE("weld: unindexed copies merge back, differing attributes stay apart") {
+  Vector<Vec3> positions;
+  Vector<u32> indices;
+  make_grid(9, positions, indices);  // 81 vertices, 128 triangles
+  Vector<Vec3> normals;
+  compute_vertex_normals(positions, indices, normals);
+  // Unindex: one vertex per corner, 384 of them, like an exporter that writes no index buffer.
+  Vector<Vec3> flat_positions;
+  Vector<Vec3> flat_normals;
+  Vector<Vec2> flat_uvs;
+  Vector<u32> flat_indices;
+  for (const u32 i : indices) {
+    flat_indices.push_back(flat_positions.size());
+    flat_positions.push_back(positions[i]);
+    flat_normals.push_back(normals[i]);
+    flat_uvs.push_back(Vec2{positions[i].x, positions[i].y});
+  }
+  REQUIRE(flat_positions.size() == 384);
+  const Vector<Vec3> expected_positions = flat_positions;
+  const Vector<u32> corner_order = flat_indices;
+  const u32 unique = weld_vertices(flat_positions, flat_normals, flat_uvs, flat_indices);
+  CHECK(unique == 81);
+  CHECK(flat_positions.size() == 81);
+  CHECK(flat_normals.size() == 81);
+  CHECK(flat_uvs.size() == 81);
+  for (u32 c = 0; c < flat_indices.size(); ++c) {  // every corner still lands on its position
+    const Vec3 p = flat_positions[flat_indices[c]];
+    const Vec3 e = expected_positions[corner_order[c]];
+    CHECK(p.x == e.x);
+    CHECK(p.y == e.y);
+    CHECK(p.z == e.z);
+    CHECK(flat_uvs[flat_indices[c]].x == e.x);
+  }
+  ClusterMesh mesh;
+  std::string error;
+  REQUIRE(build_clusters(flat_positions, flat_indices, ClusterBuildOptions{}, mesh, &error));
+  CHECK(mesh.clusters.size() <= 3);  // 128 triangles over shared vertices: a few full clusters
+  CHECK(validate_clusters(mesh, flat_indices, ClusterBuildOptions{}, &error));
+
+  // A corner with a different normal keeps its own vertex; an unreferenced vertex disappears.
+  Vector<Vec3> split_positions = expected_positions;
+  Vector<Vec3> split_normals;
+  Vector<Vec2> no_uvs;
+  for (const u32 i : indices)
+    split_normals.push_back(normals[i]);
+  split_normals[5] = Vec3{0.0f, 0.0f, 1.0f};          // flipped against its neighbours
+  split_positions.push_back(Vec3{9.0f, 9.0f, 9.0f});  // never indexed
+  split_normals.push_back(Vec3{0.0f, 1.0f, 0.0f});
+  Vector<u32> split_indices = corner_order;
+  CHECK(weld_vertices(split_positions, split_normals, no_uvs, split_indices) == 82);
+  CHECK(split_positions.size() == 82);
+  CHECK(no_uvs.empty());
+  bool found_far = false;
+  for (const Vec3& p : split_positions)
+    found_far = found_far || p.x == 9.0f;
+  CHECK_FALSE(found_far);
+}
