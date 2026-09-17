@@ -378,6 +378,62 @@ TEST_CASE("protocol: the Phase 0 exit criterion over the dispatcher") {
   }
 }
 
+TEST_CASE("protocol: doc.add_layer with edit=false leaves the edit layer alone, on disk too") {
+  TempDir tmp;
+  const std::string dir = tmp.path + "/layered-world";
+  const Id128 a = Id128::from_parts(0x30, 1);
+  const Id128 b = Id128::from_parts(0x30, 2);
+  const char* k_type = "engine.content.AssetProvenance";
+  {
+    Host host;
+    JsonValue info = host.ok(
+        "session.open",
+        obj({{"path", JsonValue(dir)}, {"create", JsonValue(true)}, {"name", JsonValue("World")}}));
+    const std::string session(at(info, "session").as_string());
+    const JsonValue s(session);
+    JsonValue first = JsonValue::array();
+    first.push_back(create_command(a, k_type));
+    host.ok("doc.apply",
+            obj({{"session", s}, {"commands", first}, {"attribution", attribution()}}));
+
+    // The new layer is appended, but the session keeps editing base.
+    JsonValue layers =
+        at(host.ok("doc.add_layer",
+                   obj({{"session", s}, {"name", JsonValue("notes")}, {"edit", JsonValue(false)}})),
+           "layers");
+    REQUIRE(layers.size() == 2);
+    CHECK(at(layers[0], "is_edit") == JsonValue(true));
+    CHECK(at(layers[1], "is_edit") == JsonValue(false));
+    layers = at(host.ok("doc.layers", obj({{"session", s}})), "layers");
+    CHECK(at(layers[0], "is_edit") == JsonValue(true));
+    CHECK(at(layers[1], "is_edit") == JsonValue(false));
+
+    // So the next commit lands in base, not in the new layer.
+    JsonValue second = JsonValue::array();
+    second.push_back(create_command(b, k_type, a));
+    host.ok("doc.apply",
+            obj({{"session", s}, {"commands", second}, {"attribution", attribution()}}));
+    layers = at(host.ok("doc.layers", obj({{"session", s}})), "layers");
+    CHECK(at(layers[0], "records") == JsonValue(u32{2}));
+    CHECK(at(layers[1], "records") == JsonValue(u32{0}));
+    host.ok("session.close", obj({{"session", s}}));
+  }
+
+  // The manifest recorded the same choice: a fresh process reopens on base.
+  {
+    Host host;
+    JsonValue info = host.ok("session.open", obj({{"path", JsonValue(dir)}}));
+    const JsonValue& layers = at(info, "layers");
+    REQUIRE(layers.size() == 2);
+    CHECK(at(layers[0], "name") == JsonValue("base"));
+    CHECK(at(layers[0], "is_edit") == JsonValue(true));
+    CHECK(at(layers[0], "records") == JsonValue(u32{2}));
+    CHECK(at(layers[1], "name") == JsonValue("notes"));
+    CHECK(at(layers[1], "is_edit") == JsonValue(false));
+    CHECK(at(layers[1], "records") == JsonValue(u32{0}));
+  }
+}
+
 TEST_CASE("protocol: doc.merge writes a three-way merge into a layer, undoably") {
   TempDir tmp;
   const std::string dir = tmp.path + "/merged-world";

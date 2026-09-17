@@ -110,6 +110,22 @@ TEST_CASE("doc: layering overrides, tombstones, and their removal") {
   CHECK(d.children(p) == Vector<ObjectId>{q});
 }
 
+TEST_CASE("doc: adding a layer leaves the edit layer where it was") {
+  Document d;
+  CHECK(d.add_layer("base", LayerRole::Base) == 0);
+  CHECK(d.edit_layer() == 0);  // a fresh document edits its first layer
+  CHECK(d.add_layer("feature", LayerRole::Feature) == 1);
+  CHECK(d.edit_layer() == 0);
+  const ObjectId a = id_of(15);
+  REQUIRE(d.apply(cmd_create(a, k_prov), nullptr, nullptr));
+  CHECK(d.layer(0).find(a) != nullptr);
+  CHECK(d.layer(1).find(a) == nullptr);
+
+  d.set_edit_layer(1);
+  CHECK(d.add_layer("top", LayerRole::Feature) == 2);
+  CHECK(d.edit_layer() == 1);
+}
+
 TEST_CASE("doc: preconditions fail cleanly with diagnostics and change nothing") {
   Document d;
   d.add_layer("base", LayerRole::Base);

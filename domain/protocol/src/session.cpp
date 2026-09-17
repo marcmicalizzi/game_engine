@@ -149,9 +149,7 @@ bool Session::merge(const MergeParams& params, MergeResult& result, RpcError& er
   if (output < 0) {
     // The layer itself is not part of the transaction: undoing the merge empties it again, it
     // does not take it off the stack.
-    const u32 edit_layer = doc_.edit_layer();
     output = static_cast<i32>(doc_.add_layer(params.output_layer, merged.merged.role()));
-    doc_.set_edit_layer(edit_layer);
     if (!persist(error)) return false;
   }
 

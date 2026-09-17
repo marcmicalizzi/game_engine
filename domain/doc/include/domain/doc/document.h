@@ -86,7 +86,9 @@ class Document {
 
   // --- layers -----------------------------------------------------------------------------
 
-  // Appends a layer; later layers are stronger. Returns its index.
+  // Appends a layer; later layers are stronger. Returns its index. The edit layer stays where
+  // it was: a fresh document edits its first layer, and a caller that wants to edit the new
+  // one says so with set_edit_layer.
   u32 add_layer(std::string name, LayerRole role);
   u32 add_layer(Layer&& layer);
   u32 layer_count() const noexcept { return layers_.size(); }

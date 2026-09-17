@@ -148,8 +148,7 @@ u32 Document::add_layer(std::string name, LayerRole role) {
 
 u32 Document::add_layer(Layer&& layer) {
   layers_.push_back(std::move(layer));
-  edit_layer_ = layers_.size() - 1;
-  return edit_layer_;
+  return layers_.size() - 1;
 }
 
 i32 Document::find_layer(std::string_view name) const noexcept {
