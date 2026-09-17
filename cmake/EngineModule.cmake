@@ -359,6 +359,7 @@ function(engine_app)
     add_dependencies(${_test_target} ${_target})
     engine_apply_warnings(${_test_target})
     add_test(NAME ${EA_NAME} COMMAND ${_test_target})
-    set_tests_properties(${EA_NAME} PROPERTIES LABELS "unit;e2e;${EA_NAME}")
+    # End-to-end apps open windows, devices, and shared temp directories: never two at once.
+    set_tests_properties(${EA_NAME} PROPERTIES LABELS "unit;e2e;${EA_NAME}" RESOURCE_LOCK "e2e_apps")
   endif()
 endfunction()
