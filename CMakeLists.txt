@@ -35,7 +35,7 @@ add_subdirectory(core)
 add_subdirectory(schemas)
 add_subdirectory(foundation)
 add_subdirectory(domain)
-# add_subdirectory(systems)
+add_subdirectory(systems)
 add_subdirectory(apps)
 # add_subdirectory(game)
 

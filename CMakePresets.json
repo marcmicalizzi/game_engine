@@ -35,6 +35,12 @@
       "cacheVariables": { "ENGINE_ASAN": "ON" }
     },
     {
+      "name": "msvc-minimal",
+      "displayName": "MSVC Debug, every optional capability OFF (ADR-0027)",
+      "inherits": "msvc-debug",
+      "cacheVariables": { "ENGINE_MINIMAL": "ON" }
+    },
+    {
       "name": "clangcl-debug",
       "displayName": "clang-cl Debug (x64)",
       "inherits": "base",
@@ -61,6 +67,12 @@
       "cacheVariables": { "ENGINE_ASAN": "ON", "ENGINE_UBSAN": "ON" }
     },
     {
+      "name": "linux-clang-minimal",
+      "displayName": "Linux Clang Debug, every optional capability OFF (ADR-0027)",
+      "inherits": "linux-clang-debug",
+      "cacheVariables": { "ENGINE_MINIMAL": "ON" }
+    },
+    {
       "name": "linux-gcc-release",
       "displayName": "Linux GCC RelWithDebInfo",
       "inherits": "base",
@@ -76,18 +88,22 @@
     { "name": "msvc-debug", "configurePreset": "msvc-debug" },
     { "name": "msvc-release", "configurePreset": "msvc-release" },
     { "name": "msvc-asan", "configurePreset": "msvc-asan" },
+    { "name": "msvc-minimal", "configurePreset": "msvc-minimal" },
     { "name": "clangcl-debug", "configurePreset": "clangcl-debug" },
     { "name": "linux-clang-debug", "configurePreset": "linux-clang-debug" },
     { "name": "linux-clang-asan", "configurePreset": "linux-clang-asan" },
+    { "name": "linux-clang-minimal", "configurePreset": "linux-clang-minimal" },
     { "name": "linux-gcc-release", "configurePreset": "linux-gcc-release" }
   ],
   "testPresets": [
     { "name": "msvc-debug", "configurePreset": "msvc-debug", "output": { "outputOnFailure": true } },
     { "name": "msvc-release", "configurePreset": "msvc-release", "output": { "outputOnFailure": true } },
     { "name": "msvc-asan", "configurePreset": "msvc-asan", "output": { "outputOnFailure": true } },
+    { "name": "msvc-minimal", "configurePreset": "msvc-minimal", "output": { "outputOnFailure": true } },
     { "name": "clangcl-debug", "configurePreset": "clangcl-debug", "output": { "outputOnFailure": true } },
     { "name": "linux-clang-debug", "configurePreset": "linux-clang-debug", "output": { "outputOnFailure": true } },
     { "name": "linux-clang-asan", "configurePreset": "linux-clang-asan", "output": { "outputOnFailure": true } },
+    { "name": "linux-clang-minimal", "configurePreset": "linux-clang-minimal", "output": { "outputOnFailure": true } },
     { "name": "linux-gcc-release", "configurePreset": "linux-gcc-release", "output": { "outputOnFailure": true } }
   ]
 }

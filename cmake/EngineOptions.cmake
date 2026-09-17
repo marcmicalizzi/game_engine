@@ -1,6 +1,10 @@
 # Build options. Keep this list short; most behaviour is fixed by policy, not options.
 
 option(ENGINE_BUILD_TESTS "Build unit tests and register them with CTest" ON)
+# The minimal configuration (ADR-0027): every optional capability off, whatever the individual
+# ENGINE_WITH_<NAME> options say. The *-minimal presets set it and CI builds one of them; it is
+# what proves that nothing in the tree depends on a capability.
+option(ENGINE_MINIMAL "Configure the minimal build: every optional capability OFF" OFF)
 option(ENGINE_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" ON)
 option(ENGINE_ASAN "Enable AddressSanitizer" OFF)
 option(ENGINE_UBSAN "Enable UndefinedBehaviorSanitizer (Clang/GCC only)" OFF)

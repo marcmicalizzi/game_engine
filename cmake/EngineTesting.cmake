@@ -32,6 +32,13 @@ if(ENGINE_PWSH)
             -File "${CMAKE_SOURCE_DIR}/tools/lint.ps1" -Root "${CMAKE_SOURCE_DIR}"
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
   set_tests_properties(lint.banned_patterns PROPERTIES LABELS "lint")
+
+  # The capability scaffold (ADR-0027) generates into a temporary tree and checks the result.
+  add_test(NAME tools.new_capability
+    COMMAND "${ENGINE_PWSH}" -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_SOURCE_DIR}/tools/new-capability.Tests.ps1"
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+  set_tests_properties(tools.new_capability PROPERTIES LABELS "tools")
 else()
-  message(WARNING "pwsh not found; lint.banned_patterns test not registered")
+  message(WARNING "pwsh not found; lint.banned_patterns and tools.new_capability tests not registered")
 endif()

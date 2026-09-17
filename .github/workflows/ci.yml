@@ -40,7 +40,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        preset: [linux-clang-debug, linux-gcc-release]
+        # linux-clang-minimal is the minimal build (ADR-0027): ENGINE_MINIMAL=ON turns every
+        # optional capability off, which proves the rest of the tree does not depend on any of
+        # them. It duplicates linux-clang-debug until the first capability lands, and is cheaper
+        # to run from the start than to add once four capabilities each assume another is there.
+        preset: [linux-clang-debug, linux-gcc-release, linux-clang-minimal]
     steps:
       - uses: actions/checkout@v4
       - name: Install toolchain

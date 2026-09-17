@@ -9,7 +9,7 @@ Read [01-critique](01-critique.md) first; it explains why the rest is shaped the
 | Document | Covers |
 |---|---|
 | [01-critique](01-critique.md) | What the brief gets right, what is re-scoped, coupling errors, missing subsystems, unnecessary complexity, the three decisions that must be right early |
-| [02-architecture](02-architecture.md) | System shape, process model, subsystem boundaries and layering, frame and time model, repository organization for agent comprehension, scope, what the engine must not preclude |
+| [02-architecture](02-architecture.md) | System shape, process model, subsystem boundaries and layering, frame and time model, repository organization for agent comprehension, scope, what the engine must not preclude, how a studio adds a capability without forking |
 | [03-data-model](03-data-model.md) | Identity, authoring document, transactions and merges, runtime ECS, event-sourced persistent state, the dependency/invalidation substrate, spatial partition, schema evolution, canon |
 | [04-renderer](04-renderer.md) | Frame architecture, cluster geometry, ray tracing and acceleration structures, destruction, extreme displays and attention-region foveation, UI coordinates, reference renderer, streaming, reuse vs. build |
 | [05-simulation](05-simulation.md) | Scheduler, timing wheel, LOD tiers, tile reconciliation, NPC scale, world events and loop prevention, destruction, story protection, determinism, multiplayer readiness, deformable surfaces and soft bodies, deformable volumes, the capability inventory |

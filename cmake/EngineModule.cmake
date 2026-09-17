@@ -4,14 +4,23 @@
 #                 [DEPS <module>...]           # other engine modules, by NAME
 #                 [EXTERNAL_DEPS <target>...]  # third-party targets
 #                 [SOURCES <file>...]          # omit for header-only modules
-#                 [WHOLE_ARCHIVE])             # link every object even if unreferenced
+#                 [WHOLE_ARCHIVE]              # link every object even if unreferenced
+#                 [OPTIONAL] [CAPABILITY <c>]) # an optional capability (ADR-0027)
 #
 # WHOLE_ARCHIVE is for modules whose objects register themselves during static
-# initialization (generated schema types): a static library would otherwise drop object files
-# nothing references, and the registrations with them. The module becomes an INTERFACE target
-# wrapping engine_<name>_impl with the WHOLE_ARCHIVE link feature.
+# initialization (generated schema types, a capability's system registration): a static library
+# would otherwise drop object files nothing references, and the registrations with them. The
+# module becomes an INTERFACE target wrapping engine_<name>_impl with the WHOLE_ARCHIVE feature.
+#
+# OPTIONAL marks the module as a capability (ADR-0027): it gets an ENGINE_WITH_<UPPER_NAME>
+# option defaulting ON, and when that option is off — or when ENGINE_MINIMAL is on, which turns
+# every capability off whatever the cache says — the module, its tests, and its bench are
+# skipped and it is absent from modules.json. CAPABILITY names the switch when several modules
+# share one (a capability plus its schema library); it implies OPTIONAL. Nothing foundational is
+# ever optional: a foundation that can be switched off is one nobody can rely on.
 #
 #   engine_module_tests(NAME <name> SOURCES <file>...)
+#   engine_capability_enabled(<capability> <out_var>)   # for a CMakeLists that guards more
 #
 #   engine_finalize_modules()   # writes ${CMAKE_BINARY_DIR}/modules.json
 #
@@ -25,6 +34,45 @@ define_property(GLOBAL PROPERTY ENGINE_MODULES
   BRIEF_DOCS "Declared engine modules" FULL_DOCS "Declared engine modules, in declaration order")
 set_property(GLOBAL PROPERTY ENGINE_MODULES "")
 
+define_property(GLOBAL PROPERTY ENGINE_DISABLED_MODULES
+  BRIEF_DOCS "Capability modules skipped in this configuration"
+  FULL_DOCS "Modules declared OPTIONAL whose capability switch is off")
+set_property(GLOBAL PROPERTY ENGINE_DISABLED_MODULES "")
+
+define_property(GLOBAL PROPERTY ENGINE_DISABLED_CAPABILITIES
+  BRIEF_DOCS "Capabilities switched off in this configuration"
+  FULL_DOCS "ENGINE_WITH_<NAME> switches that are off, or all of them under ENGINE_MINIMAL")
+set_property(GLOBAL PROPERTY ENGINE_DISABLED_CAPABILITIES "")
+
+# The switch behind one capability (ADR-0027 decision 4). Declared on first use so a capability
+# that is not part of this configuration's source tree contributes no stale cache entry.
+# ENGINE_MINIMAL wins over the per-capability option: the minimal build is a proof, and a proof
+# that a stale cache entry can weaken is not one.
+function(_engine_capability_option capability out_var)
+  string(TOUPPER "${capability}" _upper)
+  set(_opt "ENGINE_WITH_${_upper}")
+  if(NOT DEFINED ${_opt})
+    option(${_opt} "Build the ${capability} capability (ADR-0027)" ON)
+  endif()
+  if(ENGINE_MINIMAL)
+    set(${out_var} OFF PARENT_SCOPE)
+  else()
+    set(${out_var} ${${_opt}} PARENT_SCOPE)
+  endif()
+endfunction()
+
+# For a capability whose CMakeLists.txt has to guard more than its engine_module() call (an
+# extra target, an engine_shaders() invocation):
+#
+#   engine_capability_enabled(cloth _cloth)
+#   if(NOT _cloth)
+#     return()
+#   endif()
+function(engine_capability_enabled capability out_var)
+  _engine_capability_option("${capability}" _enabled)
+  set(${out_var} ${_enabled} PARENT_SCOPE)
+endfunction()
+
 function(_engine_layer_index layer out_var)
   list(FIND ENGINE_LAYERS "${layer}" _idx)
   if(_idx EQUAL -1)
@@ -34,8 +82,8 @@ function(_engine_layer_index layer out_var)
 endfunction()
 
 function(engine_module)
-  set(_options WHOLE_ARCHIVE)
-  set(_one NAME LAYER)
+  set(_options WHOLE_ARCHIVE OPTIONAL)
+  set(_one NAME LAYER CAPABILITY)
   set(_multi DEPS EXTERNAL_DEPS SOURCES)
   cmake_parse_arguments(EM "${_options}" "${_one}" "${_multi}" ${ARGN})
 
@@ -56,11 +104,38 @@ function(engine_module)
     message(FATAL_ERROR "engine_module(${EM_NAME}): module declared twice")
   endif()
 
+  # An optional capability's switch is consulted before anything else is validated or created:
+  # a capability that is off contributes no target, no dependency check, and no modules.json row.
+  set(_optional FALSE)
+  set(_capability "")
+  if(EM_OPTIONAL OR EM_CAPABILITY)
+    set(_optional TRUE)
+    set(_capability "${EM_CAPABILITY}")
+    if(NOT _capability)
+      set(_capability "${EM_NAME}")
+    endif()
+    _engine_capability_option("${_capability}" _enabled)
+    if(NOT _enabled)
+      string(TOUPPER "${_capability}" _upper)
+      set_property(GLOBAL APPEND PROPERTY ENGINE_DISABLED_MODULES "${EM_NAME}")
+      set_property(GLOBAL APPEND PROPERTY ENGINE_DISABLED_CAPABILITIES "${_capability}")
+      message(STATUS "engine module: ${EM_NAME} [${EM_LAYER}] skipped (ENGINE_WITH_${_upper}=OFF)")
+      return()
+    endif()
+  endif()
+
   set(_target engine_${EM_NAME})
 
   # Validate dependencies before creating the target so errors are clear.
+  get_property(_disabled GLOBAL PROPERTY ENGINE_DISABLED_MODULES)
   set(_dep_targets "")
   foreach(_dep IN LISTS EM_DEPS)
+    if("${_dep}" IN_LIST _disabled)
+      message(FATAL_ERROR
+        "engine_module(${EM_NAME}) [${EM_LAYER}]: depends on '${_dep}', an optional capability that is "
+        "switched off in this configuration. A capability may only be depended on by its own capability "
+        "group, which shares its switch (ADR-0027 decision 1); anything else cannot be built without it.")
+    endif()
     if(NOT "${_dep}" IN_LIST _declared)
       message(FATAL_ERROR
         "engine_module(${EM_NAME}) [${EM_LAYER}]: depends on '${_dep}', which is not declared yet. "
@@ -105,10 +180,16 @@ function(engine_module)
     ENGINE_LAYER "${EM_LAYER}"
     ENGINE_MODULE_NAME "${EM_NAME}"
     ENGINE_MODULE_DEPS "${EM_DEPS}"
-    ENGINE_MODULE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+    ENGINE_MODULE_DIR "${CMAKE_CURRENT_SOURCE_DIR}"
+    ENGINE_MODULE_OPTIONAL "${_optional}"
+    ENGINE_MODULE_CAPABILITY "${_capability}")
 
   set_property(GLOBAL APPEND PROPERTY ENGINE_MODULES "${EM_NAME}")
-  message(STATUS "engine module: ${EM_NAME} [${EM_LAYER}] deps: ${EM_DEPS}")
+  if(_optional)
+    message(STATUS "engine module: ${EM_NAME} [${EM_LAYER}] (capability ${_capability}) deps: ${EM_DEPS}")
+  else()
+    message(STATUS "engine module: ${EM_NAME} [${EM_LAYER}] deps: ${EM_DEPS}")
+  endif()
 endfunction()
 
 #   engine_module_tests(NAME <name> SOURCES <file>... [DEPS <module>...])
@@ -122,6 +203,11 @@ function(engine_module_tests)
   endif()
   if(NOT ET_NAME OR NOT ET_SOURCES)
     message(FATAL_ERROR "engine_module_tests: NAME and SOURCES are required")
+  endif()
+  # A capability that is switched off takes its tests with it (ADR-0027).
+  get_property(_disabled GLOBAL PROPERTY ENGINE_DISABLED_MODULES)
+  if("${ET_NAME}" IN_LIST _disabled)
+    return()
   endif()
   if(NOT TARGET engine_${ET_NAME})
     message(FATAL_ERROR "engine_module_tests(${ET_NAME}): declare the module with engine_module() first")
@@ -160,6 +246,8 @@ function(engine_finalize_modules)
     get_property(_layer TARGET engine_${_m} PROPERTY ENGINE_LAYER)
     get_property(_deps  TARGET engine_${_m} PROPERTY ENGINE_MODULE_DEPS)
     get_property(_dir   TARGET engine_${_m} PROPERTY ENGINE_MODULE_DIR)
+    get_property(_opt   TARGET engine_${_m} PROPERTY ENGINE_MODULE_OPTIONAL)
+    get_property(_cap   TARGET engine_${_m} PROPERTY ENGINE_MODULE_CAPABILITY)
     file(RELATIVE_PATH _rel "${CMAKE_SOURCE_DIR}" "${_dir}")
     set(_deps_json "")
     set(_dfirst TRUE)
@@ -170,14 +258,44 @@ function(engine_finalize_modules)
       string(APPEND _deps_json "\"${_d}\"")
       set(_dfirst FALSE)
     endforeach()
+    if(_opt)
+      set(_opt_json "true, \"capability\": \"${_cap}\"")
+    else()
+      set(_opt_json "false")
+    endif()
     if(NOT _first)
       string(APPEND _json ",\n")
     endif()
     string(APPEND _json
-      "    {\"name\": \"${_m}\", \"layer\": \"${_layer}\", \"path\": \"${_rel}\", \"deps\": [${_deps_json}]}")
+      "    {\"name\": \"${_m}\", \"layer\": \"${_layer}\", \"path\": \"${_rel}\", "
+      "\"optional\": ${_opt_json}, \"deps\": [${_deps_json}]}")
     set(_first FALSE)
   endforeach()
-  string(APPEND _json "\n  ]\n}\n")
+  string(APPEND _json "\n  ],\n")
+
+  # What this configuration left out (ADR-0027): an agent reading modules.json can otherwise not
+  # tell "this capability does not exist" from "this capability is switched off".
+  get_property(_off GLOBAL PROPERTY ENGINE_DISABLED_CAPABILITIES)
+  if(_off)
+    list(REMOVE_DUPLICATES _off)
+    list(SORT _off)
+  endif()
+  set(_off_json "")
+  set(_first TRUE)
+  foreach(_c IN LISTS _off)
+    if(NOT _first)
+      string(APPEND _off_json ", ")
+    endif()
+    string(APPEND _off_json "\"${_c}\"")
+    set(_first FALSE)
+  endforeach()
+  if(ENGINE_MINIMAL)
+    set(_minimal_json "true")
+  else()
+    set(_minimal_json "false")
+  endif()
+  string(APPEND _json "  \"minimal\": ${_minimal_json},\n")
+  string(APPEND _json "  \"disabled_capabilities\": [${_off_json}]\n}\n")
   file(WRITE "${CMAKE_BINARY_DIR}/modules.json" "${_json}")
   message(STATUS "engine modules: wrote ${CMAKE_BINARY_DIR}/modules.json")
 endfunction()
@@ -227,7 +345,9 @@ function(engine_app)
     ENGINE_LAYER "apps"
     ENGINE_MODULE_NAME "${EA_NAME}"
     ENGINE_MODULE_DEPS "${EA_DEPS}"
-    ENGINE_MODULE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+    ENGINE_MODULE_DIR "${CMAKE_CURRENT_SOURCE_DIR}"
+    ENGINE_MODULE_OPTIONAL FALSE
+    ENGINE_MODULE_CAPABILITY "")
   set_property(GLOBAL APPEND PROPERTY ENGINE_MODULES "${EA_NAME}")
   message(STATUS "engine app: ${EA_NAME} -> ${EA_OUTPUT} deps: ${EA_DEPS}")
 

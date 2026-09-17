@@ -27,7 +27,11 @@ tools/dev.ps1 bench     [-Preset msvc-release] [-Filter <glob>]  # runs engine_*
 tools/dev.ps1 lint                             # banned-pattern lint (also runs as a CTest test)
 tools/dev.ps1 format                           # clang-format over the tree
 tools/dev.ps1 modules   [-Preset msvc-debug]   # prints build/<preset>/modules.json
+
+tools/new-capability.ps1 -Name cloth -Layer systems -Deps "base containers math" [-WithSchema] [-WithBench] [-WithProtocol]
 ```
+
+`new-capability.ps1` scaffolds a new capability — module, system skeleton, LOD policy, determinism stance, tests, size table, docs page, and the `ENGINE_WITH_<NAME>` switch that has to be removable — as ADR-0027 requires.
 
 The engine as a server, and its command-line client, build into `build/<preset>/bin/`:
 
@@ -42,7 +46,7 @@ build/msvc-debug/bin/engine-cli gpu.adapters                                   #
 
 Every method's parameters and result are schema types in `schemas/protocol.schema`; `engine-cli schema.describe '{"type":"engine.protocol.ApplyParams"}'` explains any of them. See `docs/subsystems/apps.md` and `protocol.md`.
 
-Presets are in `CMakePresets.json`. Debug builds carry asserts and iterator checking; `msvc-asan` adds AddressSanitizer; the release presets compile Tracy profiling zones in (`ENGINE_TRACY`). Every change must build and pass tests in `msvc-debug` before it is committed. CI (`.github/workflows/ci.yml`) builds and tests `msvc-debug`, `msvc-release`, `linux-clang-debug`, and `linux-gcc-release` on every push and pull request. Hosted runners have no GPU driver, so every GPU test skips there; `.github/workflows/gpu.yml` runs the same suite weekly on the two self-hosted baseline-tier machines that do, set up as `docs/ci/self-hosted-runners.md` describes.
+Presets are in `CMakePresets.json`. Debug builds carry asserts and iterator checking; `msvc-asan` adds AddressSanitizer; the release presets compile Tracy profiling zones in (`ENGINE_TRACY`); `msvc-minimal` and `linux-clang-minimal` set `ENGINE_MINIMAL`, which switches every optional capability off and is the proof that nothing in the tree depends on one (ADR-0027). Every change must build and pass tests in `msvc-debug` before it is committed. CI (`.github/workflows/ci.yml`) builds and tests `msvc-debug`, `msvc-release`, `linux-clang-debug`, `linux-gcc-release`, and `linux-clang-minimal` on every push and pull request. Hosted runners have no GPU driver, so every GPU test skips there; `.github/workflows/gpu.yml` runs the same suite weekly on the two self-hosted baseline-tier machines that do, set up as `docs/ci/self-hosted-runners.md` describes.
 
 ## Layering (enforced by CMake)
 
@@ -63,6 +67,7 @@ engine_module_tests(NAME containers SOURCES tests/flat_map_tests.cpp)
 engine_module_bench(NAME containers SOURCES bench/containers_bench.cpp)   # optional; smoke-run under CTest
 engine_app(NAME engine_cli OUTPUT engine-cli SOURCES main.cpp DEPS json platform E2E_TESTS tests/cli_tests.cpp)  # executables
 engine_shaders(NAME gfx_tests SOURCES shaders/fill.slang)   # .slang -> SPIR-V at build time, embedded as <shaders/fill.spv.h>
+engine_module(NAME cloth LAYER systems OPTIONAL DEPS base containers)     # a capability: ENGINE_WITH_CLOTH, ADR-0027
 ```
 
 `engine_module()` refuses a dependency on a higher layer or on a module that has not been declared yet, so `add_subdirectory` order is lower layers first. The module graph is written to `build/<preset>/modules.json` after configure; read that rather than parsing CMake.
@@ -110,7 +115,7 @@ Read `docs/plan/12-ai-usage-policy.md` before touching anything that involves a 
 - Images are decoded on the CPU by `image::decode_image`/`read_image` (PNG, JPEG, TGA, BMP, always to 8 bits per channel) and encoded by `image::encode_png`; stb_image lives in that one module and is never included anywhere else. GPU upload is `gfx`'s (`upload_image_2d`), and the compressed texture formats belong to a future texture pipeline, not to the decoder.
 - Shaders load through `gfx::ShaderLibrary`: embedded bytes ship, the build's `shaders/manifest.json` wins while developing, and edited `.slang` files recompile and reload in a running `engine-view`; a failing save prints slangc's diagnostics and keeps the last good shader. Reflection is read from the SPIR-V (`reflect_spirv`), so mirrored C++ structs can be checked against `push_constant_bytes`.
 - Logging: `ENGINE_LOG_INFO(category, "short static message", log::field("key", value), ...)` with a category defined once per module (`ENGINE_LOG_CATEGORY_DEFINE`). Data goes in typed fields, never interpolated into the message; no `printf`-style logging in engine code; report output that is the product of a tool (the bench table, CLI output) is the exception. See `docs/subsystems/log.md`.
-- Every new module gets a `docs/subsystems/<module>.md` page and a `tests/` directory in the same change.
+- Every new module gets a `docs/subsystems/<module>.md` page and a `tests/` directory in the same change. New **capabilities** — a system, its component and event types, a solver or backend, an LOD policy — are scaffolded by `tools/new-capability.ps1` and follow ADR-0027's checklist: one module in the layer it belongs to, `engine_module(... OPTIONAL)` so `ENGINE_WITH_<NAME>=OFF` and the minimal build prove the rest of the tree does not depend on it, attachment only through the registration points (schema types, the scheduler's table, `RenderGraph::add_pass`, a `derived` content-build step, the protocol's method table, tunables), an LOD policy and a determinism stance, and no edit to `core/`, `foundation/`, the render graph, the scheduler, or another capability. See `docs/plan/02-architecture.md` §2.8.
 - Run-time parameters that a kernel or system reads (batch sizes, spin counts, budgets, thread counts) are `tunables::Int/Float/Bool/Enum` objects from `foundation/tunables`, read once outside hot loops. Core-layer modules take config structs instead and the app layer fills them from tunables. Data-selected dimensions (formats, modes) are compile-time variants, never tunables.
 - Commit messages: imperative subject under 72 characters, a body that says why, and the attribution trailer the harness supplies. Reference ADRs and plan sections when a change implements them.
 
