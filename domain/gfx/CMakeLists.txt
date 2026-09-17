@@ -12,7 +12,7 @@ engine_module(NAME gfx LAYER domain
   EXTERNAL_DEPS volk::volk GPUOpen::VulkanMemoryAllocator
   SOURCES src/adapter.cpp src/device.cpp src/vma.cpp src/frame.cpp src/render_graph.cpp
           src/bindless.cpp src/swapchain.cpp src/capture.cpp src/shader_library.cpp
-          src/gpu_timer.cpp src/acceleration.cpp)
+          src/gpu_timer.cpp src/acceleration.cpp src/cluster_acceleration.cpp)
 target_link_libraries(engine_gfx PUBLIC engine_shaders_gfx)
 # Third-party headers: the engine's warning policy applies to engine code only.
 target_include_directories(engine_gfx SYSTEM PUBLIC
@@ -36,7 +36,7 @@ if(TARGET engine_gfx_tests)
                                           tests/visibility_tests.cpp tests/occlusion_tests.cpp
                                           tests/shading_tests.cpp tests/attributes_tests.cpp
                                           tests/vertex_path_tests.cpp tests/cone_tests.cpp
-                                          tests/rt_tests.cpp)
+                                          tests/rt_tests.cpp tests/rt_cluster_tests.cpp)
   target_compile_definitions(engine_gfx_tests PRIVATE
     ENGINE_SHADER_MANIFEST="${CMAKE_BINARY_DIR}/shaders/manifest.json")
   target_link_libraries(engine_gfx_tests PRIVATE engine_shaders_gfx_tests engine::geometry

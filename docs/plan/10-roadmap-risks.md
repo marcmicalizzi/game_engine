@@ -60,7 +60,7 @@ Critical paths: P0 → P1 → P2 → P7 for fidelity; P0 → P3 → P6 → P7 fo
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| Cluster geometry ↔ RT integration (LOD mismatch, AS cost, vendor lock) | The core renderer promise | E2 early; fallback path designed in; cluster format encodable to future formats |
+| Cluster geometry ↔ RT integration (LOD mismatch, AS cost, vendor lock) | The core renderer promise | Resolved for NVIDIA by E2 (ADR-0025): cluster acceleration structures from the frame's cut, pixel-identical to raster, 3× less memory than KHR structures; the KHR fallback is built and tested for every other RT GPU; cluster format encodable to future formats |
 | Software rasterizer plus mesh-shader pipeline complexity | Phase 1 slip | Resolved by E1 (ADR-0024): hardware-only in Phase 1; the software rasterizer is an experimental path with a test that keeps it pixel-compatible |
 | Agent-written C++ defect rate | Everything | Sanitizers, fuzzing, codegen, small modules, strict layering; measure per phase; Rust as the fallback |
 | Engine generality without a game | Wasted systems | The two consumer games in [13](13-reference-consumer-games.md) are the concrete consumers (Desert Survival is the recommended first shippable; Island City the density benchmark); Phases 6–7 drive requirements; no system without a consumer in the roadmap |
@@ -78,7 +78,7 @@ Critical paths: P0 → P1 → P2 → P7 for fidelity; P0 → P3 → P6 → P7 fo
 | ID | Question | Method | Decides |
 |---|---|---|---|
 | E1 | Where is the hardware-vs-software raster crossover for small clusters on target GPUs? | Prototype both on synthetic cluster sets; measure at 4K and 11520×2160 | Whether software raster is in Phase 1. **Done 2026-09-16** ([results](../experiments/e1-raster-crossover.md), ADR-0024): no crossover down to 0.7 px triangles on the RTX 5090; hardware wins 1.5–3×; Phase 1 is hardware-only, the software rasterizer stays experimental |
-| E2 | Cluster AS on D3D12 (NVAPI) vs Vulkan (NV extension): build cost per frame, memory, image match against raster | One-month spike from `vk_lod_clusters` and RTXMG samples at Phase 1 start | Graphics API; AS strategy |
+| E2 | Cluster AS on D3D12 (NVAPI) vs Vulkan (NV extension): build cost per frame, memory, image match against raster | One-month spike from `vk_lod_clusters` and RTXMG samples at Phase 1 start | Graphics API; AS strategy. **Done 2026-09-17** ([results](../experiments/e2-cluster-acceleration.md), ADR-0025): the Vulkan extension works through ray queries with no API change; cluster structures take 2.9–3.3× less memory and build 1.2–2.6× faster than KHR structures for the same cut on the RTX 5090, trace at the same speed, and match the raster picture to the pixel; per-frame GPU-driven builds are the next step |
 | E3 | Do runtime-selected kernel variants beat one good default by more than 10% across two or more machines? | Tunables harness on culling, transform, and animation kernels | Whether calibration Stage 3 is built |
 | E4 | Canonical-JSON layered document vs LightUSD as authoring format: agent edit, diff, merge round trips | An agent performs 20 edits and 3 merges; measure errors and diff readability | Document format |
 | E5 | Can one agent build a small level using structured feedback and captures only? | Phase 4 exit demo; count tool calls, errors, human interventions | Agent API gaps |
