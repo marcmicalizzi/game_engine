@@ -90,7 +90,7 @@ TEST_CASE("png: a small RGBA image round-trips through the container") {
     pixels[i * 4 + 3] = 255;
   }
   Vector<u8> png;
-  REQUIRE(encode_png(k_w, k_h, 4, pixels, png));
+  REQUIRE(encode_png(k_w, k_h, 4, pixels, png, Compression::Stored));
   u32 width = 0;
   u32 height = 0;
   u8 color_type = 0;
@@ -117,7 +117,8 @@ TEST_CASE("png: large images split into several stored blocks and other channel 
   for (u32 i = 0; i < gray.size(); ++i)
     gray[i] = static_cast<u8>((i * 31) & 0xFF);
   Vector<u8> png;
-  REQUIRE(encode_png(k_w, k_h, 1, std::span<const u8>(gray.data(), gray.size()), png));
+  REQUIRE(encode_png(k_w, k_h, 1, std::span<const u8>(gray.data(), gray.size()), png,
+                     Compression::Stored));
   u32 width = 0;
   u32 height = 0;
   u8 color_type = 0;
@@ -131,7 +132,8 @@ TEST_CASE("png: large images split into several stored blocks and other channel 
     CHECK(std::memcmp(raw.data() + y * (k_w + 1) + 1, gray.data() + y * k_w, k_w) == 0);
   }
   Vector<u8> rgb(6 * 3);
-  REQUIRE(encode_png(6, 1, 3, std::span<const u8>(rgb.data(), rgb.size()), png));
+  REQUIRE(
+      encode_png(6, 1, 3, std::span<const u8>(rgb.data(), rgb.size()), png, Compression::Stored));
   REQUIRE(walk_chunks(png, width, height, color_type, idat));
   CHECK(color_type == 2);
 }
@@ -146,7 +148,7 @@ TEST_CASE("png: bad arguments are rejected and write_png produces a file") {
   const auto dir = std::filesystem::temp_directory_path() / "engine_png_tests";
   std::filesystem::create_directories(dir);
   const std::string path = (dir / "one.png").string();
-  CHECK(write_png(path, 1, 1, 4, four) == io::Status::Ok);
+  CHECK(write_png(path, 1, 1, 4, four, Compression::Stored) == io::Status::Ok);
   CHECK(std::filesystem::file_size(path) == 8 + 25 + 12 + (2 + 5 + 5 + 4) + 12);
   CHECK(write_png(path, 3, 1, 4, four) == io::Status::InvalidArgument);
   std::filesystem::remove_all(dir);

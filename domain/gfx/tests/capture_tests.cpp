@@ -100,11 +100,16 @@ TEST_CASE("capture: an attachment left in a requested layout captures pixel-exac
   CHECK(wrong == 0);
   CHECK(covered == (k_size - 1) * k_size / 2);
 
-  // The capture is a valid PNG of the right size.
+  // The capture is a valid PNG. `Stored` is the size of the raw scanlines plus the container;
+  // the default level compresses, and two flat triangles leave very little behind.
   Vector<u8> png;
   REQUIRE(image::encode_png(capture.width, capture.height, 4,
-                            std::span<const u8>(rgba.data(), rgba.size()), png));
+                            std::span<const u8>(rgba.data(), rgba.size()), png,
+                            image::Compression::Stored));
   CHECK(png.size() == 8 + 25 + 12 + (2 + 5 + (k_size * 4 + 1) * k_size + 4) + 12);
+  REQUIRE(image::encode_png(capture.width, capture.height, 4,
+                            std::span<const u8>(rgba.data(), rgba.size()), png));
+  CHECK(png.size() < (k_size * 4 + 1) * k_size / 4);
 
   // Depth captures come back as floats; an unsupported format is refused.
   gfx::ImageResource depth;

@@ -32,8 +32,13 @@ void put_chunk(Vector<u8>& out, const char type[4], std::span<const u8> data) {
   const u32 type_offset = out.size();
   for (u32 i = 0; i < 4; ++i)
     out.push_back(static_cast<u8>(type[i]));
-  for (const u8 b : data)
-    out.push_back(b);
+  // One memcpy rather than Vector::append's element-by-element copy: an IDAT payload is the
+  // whole image, and at `Compression::Stored` that copy is most of the encoder's time.
+  const u32 at = out.size();
+  if (!data.empty()) {
+    out.resize(at + static_cast<u32>(data.size()));
+    std::memcpy(out.data() + at, data.data(), data.size());
+  }
   const u32 crc = crc32(std::span<const u8>(out.data() + type_offset, 4 + data.size()));
   put_u32_be(out, crc);
 }
@@ -64,7 +69,8 @@ u32 adler32(std::span<const u8> bytes) noexcept {
   return (b << 16) | a;
 }
 
-bool encode_png(u32 width, u32 height, u32 channels, std::span<const u8> pixels, Vector<u8>& out) {
+bool encode_png(u32 width, u32 height, u32 channels, std::span<const u8> pixels, Vector<u8>& out,
+                Compression level) {
   out.clear();
   if (width == 0 || height == 0 || channels < 1 || channels > 4) return false;
   const u64 row_bytes = u64{width} * channels;
@@ -81,26 +87,9 @@ bool encode_png(u32 width, u32 height, u32 channels, std::span<const u8> pixels,
                 static_cast<usize>(row_bytes));
   }
 
-  // zlib stream: header, stored blocks of at most 65535 bytes, adler32 of the raw data.
-  const u32 block_count = (raw.size() + 65534) / 65535;
+  // The IDAT payload: a zlib stream over those scanlines at the requested level.
   Vector<u8> zlib;
-  zlib.reserve(2 + raw.size() + block_count * 5 + 4);
-  zlib.push_back(0x78);  // deflate, 32K window
-  zlib.push_back(0x01);  // fastest, no dictionary, check bits make the header a multiple of 31
-  u32 offset = 0;
-  do {
-    const u32 len = raw.size() - offset < 65535 ? raw.size() - offset : 65535;
-    const bool final = offset + len == raw.size();
-    zlib.push_back(final ? 1 : 0);  // BFINAL, BTYPE = 00 (stored)
-    zlib.push_back(static_cast<u8>(len));
-    zlib.push_back(static_cast<u8>(len >> 8));
-    zlib.push_back(static_cast<u8>(~len));
-    zlib.push_back(static_cast<u8>(~len >> 8));
-    for (u32 i = 0; i < len; ++i)
-      zlib.push_back(raw[offset + i]);
-    offset += len;
-  } while (offset < raw.size());
-  put_u32_be(zlib, adler32(std::span<const u8>(raw.data(), raw.size())));
+  zlib_compress(std::span<const u8>(raw.data(), raw.size()), level, zlib);
 
   static constexpr u8 k_signature[8] = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'};
   out.reserve(8 + 25 + 12 + zlib.size() + 12);
@@ -123,9 +112,10 @@ bool encode_png(u32 width, u32 height, u32 channels, std::span<const u8> pixels,
 }
 
 io::Status write_png(std::string_view native_path, u32 width, u32 height, u32 channels,
-                     std::span<const u8> pixels) {
+                     std::span<const u8> pixels, Compression level) {
   Vector<u8> bytes;
-  if (!encode_png(width, height, channels, pixels, bytes)) return io::Status::InvalidArgument;
+  if (!encode_png(width, height, channels, pixels, bytes, level))
+    return io::Status::InvalidArgument;
   return io::write_file(
       native_path, std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
 }
