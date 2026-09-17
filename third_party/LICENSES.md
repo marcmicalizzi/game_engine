@@ -12,3 +12,5 @@ Every dependency of the engine is listed here with its license. Policy: permissi
 | Slang | v2026.17.1 | Apache-2.0 WITH LLVM-exception | shader compiler (build time only; prebuilt binaries) | CMake FetchContent of the release archive at configure time |
 | meshoptimizer | v1.2 | MIT | domain/geometry (meshlets, bounds, cluster LOD) | CMake FetchContent at configure time |
 | SDL3 | release-3.4.16 | zlib | foundation/window (windowing, input, Vulkan surfaces) | CMake FetchContent at configure time; static, video and events only |
+| stb_image | v2.30 (repository commit 2c980bb59875b0d32144a71867fbdebb2f77cd20) | MIT OR Unlicense (public domain) | foundation/image (PNG/JPEG/TGA/BMP decoding) | CMake FetchContent of the stb repository at configure time; header compiled into foundation/image/src/decode.cpp |
+| stb_image_write | v1.16 (same commit) | MIT OR Unlicense (public domain) | tests only (foundation/image's baseline JPEG fixture) | Comes with the stb checkout above; included only by foundation/image/tests/decode_tests.cpp |
