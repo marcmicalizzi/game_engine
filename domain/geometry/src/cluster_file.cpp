@@ -11,7 +11,7 @@ namespace {
 
 constexpr u64 k_header_bytes = sizeof(ClusterFileHeader);
 constexpr u64 k_record_bytes = sizeof(ClusterFileSection);
-constexpr u32 k_kind_count = static_cast<u32>(ClusterSection::Quantized) + 1;
+constexpr u32 k_kind_count = static_cast<u32>(ClusterSection::SourcePath) + 1;
 
 constexpr u64 align_up(u64 value) noexcept {
   const u64 a = k_cluster_file_alignment;
@@ -65,7 +65,7 @@ u64 encode(const ClusterFileData& data, std::string& out) {
 
   const ClusterMesh& mesh = data.mesh.mesh;
   Vector<Payload> payloads;
-  payloads.reserve(12);
+  payloads.reserve(16);
   add_section(payloads, ClusterSection::Clusters, static_cast<u32>(sizeof(ClusterDesc)),
               mesh.clusters.size(), mesh.clusters.data());
   add_section(payloads, ClusterSection::Lod, static_cast<u32>(sizeof(ClusterLodDesc)),
@@ -91,6 +91,9 @@ u64 encode(const ClusterFileData& data, std::string& out) {
               &scalars);
   add_section(payloads, ClusterSection::Quantized, static_cast<u32>(sizeof(u16)),
               mesh.quantized.size(), mesh.quantized.data());
+  // The source path, NUL included, so a reader gets a C string straight out of the mapping.
+  add_section(payloads, ClusterSection::SourcePath, 1u, data.source_path.size() + 1,
+              data.source_path.c_str());
 
   u64 offset = k_header_bytes + k_record_bytes * payloads.size();
   for (Payload& payload : payloads) {
@@ -150,6 +153,7 @@ const char* cluster_section_name(u32 kind) noexcept {
     case ClusterSection::Strings: return "strings";
     case ClusterSection::Scalars: return "scalars";
     case ClusterSection::Quantized: return "quantized";
+    case ClusterSection::SourcePath: return "source_path";
   }
   return "unknown";
 }
@@ -301,6 +305,20 @@ bool read_cluster_file_memory(std::span<const u8> bytes, ClusterFileData& out, s
     quantize_positions(result.mesh.mesh);
   }
 
+  // The source path; a file from before the section existed leaves it empty, and so does a
+  // build that had no file behind its bytes.
+  if (const ClusterFileSection* source = found[static_cast<u32>(ClusterSection::SourcePath)];
+      source != nullptr && source->element_count != 0) {
+    if (source->element_size != 1) {
+      return fail(error, "cluster file section source_path has " +
+                             std::to_string(source->element_size) + "-byte elements, expected 1");
+    }
+    const char* text = reinterpret_cast<const char*>(bytes.data() + source->offset);
+    const void* nul = std::memchr(text, 0, static_cast<usize>(source->element_count));
+    if (nul == nullptr) return fail(error, "cluster file source path is not NUL-terminated");
+    result.source_path.assign(text, static_cast<usize>(static_cast<const char*>(nul) - text));
+  }
+
   // The material map, the materials, and the image paths are optional: a mesh may carry none.
   if (const ClusterFileSection* materials = found[static_cast<u32>(ClusterSection::Materials)];
       materials != nullptr) {
@@ -389,6 +407,38 @@ bool read_cluster_file_memory(std::span<const u8> bytes, ClusterFileData& out, s
 
   out = std::move(result);
   return true;
+}
+
+u64 cluster_cache_key(u64 source_hash, const ClusterLodOptions& options, bool weld) noexcept {
+  u64 key = hash_combine(source_hash, k_cluster_cache_version);
+  key = hash_combine(key, options.max_triangles);
+  key = hash_combine(key, options.max_vertices);
+  const u64 flags = (options.ray_tracing ? 1ull : 0ull) | (options.normal_cones ? 2ull : 0ull) |
+                    (weld ? 4ull : 0ull);
+  return hash_combine(key, flags);
+}
+
+std::string cluster_cache_path(std::string_view ddc_root, u64 hash) {
+  constexpr char k_digits[] = "0123456789abcdef";
+  char name[17];
+  for (u32 i = 0; i < 16; ++i)
+    name[i] = k_digits[(hash >> ((15 - i) * 4)) & 0xfull];
+  name[16] = '\0';
+  return io::join_path(io::join_path(ddc_root, "clusters"), std::string(name) + ".clusters");
+}
+
+std::string find_ddc_root(std::string_view start) {
+  std::string dir = io::normalize_path(start);
+  // A repository is nowhere near this deep; the bound keeps a path helper that stops shortening
+  // from spinning.
+  for (u32 step = 0; step < 64; ++step) {
+    if (dir.empty() || dir == ".") break;
+    if (io::exists(io::join_path(dir, "AGENTS.md"))) return io::join_path(dir, "ddc");
+    std::string parent(io::parent_path(dir));
+    if (parent.empty() || parent == dir) break;
+    dir = std::move(parent);
+  }
+  return std::string();
 }
 
 }  // namespace engine::geometry

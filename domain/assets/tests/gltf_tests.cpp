@@ -311,6 +311,64 @@ TEST_CASE("gltf: a .gltf with an external buffer merges its primitives in world 
   check_cube_materials(mesh);
 }
 
+TEST_CASE("gltf: the source hash answers to the glTF and to the buffers it names") {
+  const TempDir tmp("engine_assets_gltf_hash");
+  const Cube cube = make_cube();
+  const std::vector<std::uint8_t> binary = cube_buffer(cube);
+  const std::string gltf = io::join_path(tmp.path, "cube.gltf");
+  const std::string bin = io::join_path(tmp.path, "cube.bin");
+  REQUIRE(io::write_file(bin, view_of(binary)) == io::Status::Ok);
+  REQUIRE(io::write_file(gltf, cube_json("cube.bin")) == io::Status::Ok);
+
+  u64 hash = 0;
+  std::string error;
+  REQUIRE_MESSAGE(source_mesh_hash(gltf, hash, &error), error);
+  CHECK(hash != 0);
+  u64 again = 0;
+  REQUIRE(source_mesh_hash(gltf, again, &error));
+  CHECK(again == hash);  // nothing changed, nothing to rebuild
+
+  // An edit to the external buffer moves the hash although the glTF text is identical: this is
+  // what keeps a derived-data cache from serving a mesh built from the old vertices.
+  std::vector<std::uint8_t> edited = binary;
+  edited[0] ^= 0x5a;
+  REQUIRE(io::write_file(bin, view_of(edited)) == io::Status::Ok);
+  u64 after_buffer = 0;
+  REQUIRE(source_mesh_hash(gltf, after_buffer, &error));
+  CHECK(after_buffer != hash);
+
+  // So does an edit to the glTF itself, here a whitespace-only one.
+  REQUIRE(io::write_file(gltf, cube_json("cube.bin") + "\n") == io::Status::Ok);
+  u64 after_text = 0;
+  REQUIRE(source_mesh_hash(gltf, after_text, &error));
+  CHECK(after_text != after_buffer);
+
+  // A missing buffer is not a failure here; the load that follows reports it properly.
+  REQUIRE(io::remove_file(bin) == io::Status::Ok);
+  u64 without_buffer = 0;
+  CHECK(source_mesh_hash(gltf, without_buffer, &error));
+  CHECK(without_buffer != after_text);
+
+  // A .glb carries its buffer inside, so its own bytes are the whole of it.
+  const std::vector<std::uint8_t> glb = make_glb(cube_json(""), cube_buffer(cube));
+  const std::string glb_path = io::join_path(tmp.path, "cube.glb");
+  REQUIRE(io::write_file(glb_path, view_of(glb)) == io::Status::Ok);
+  u64 glb_hash = 0;
+  REQUIRE_MESSAGE(source_mesh_hash(glb_path, glb_hash, &error), error);
+  CHECK(glb_hash != 0);
+  CHECK(glb_hash != hash);
+
+  // A file that is not there, and one that is not a glTF, say so.
+  u64 ignored = 0;
+  CHECK_FALSE(source_mesh_hash(io::join_path(tmp.path, "nothing.gltf"), ignored, &error));
+  CHECK(error.find("cannot read") != std::string::npos);
+  CHECK(ignored == 0);
+  const std::string junk = io::join_path(tmp.path, "junk.gltf");
+  REQUIRE(io::write_file(junk, "not a glTF document") == io::Status::Ok);
+  CHECK_FALSE(source_mesh_hash(junk, ignored, &error));
+  CHECK(ignored == 0);
+}
+
 TEST_CASE("gltf: a .glb built in memory loads like the .gltf") {
   const Cube cube = make_cube();
   const std::vector<std::uint8_t> glb = make_glb(cube_json(""), cube_buffer(cube));

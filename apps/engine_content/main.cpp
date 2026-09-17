@@ -1,14 +1,18 @@
 // engine-content: the content build on the command line (docs/plan/07-content-pipeline.md §7.3).
 // `build` imports a glTF 2.0 or GLB file (domain/assets), welds its vertices, builds one cluster
 // LOD DAG per primitive so that every cluster has a single material (domain/geometry), merges
-// them, and writes the result as a `.clusters` container together with the material table and
-// the image paths the materials name. `info` prints what a container holds. Both print one JSON
-// line on stdout, so scripts and agents read the numbers without parsing prose; everything else
-// goes through the log to stderr.
+// them, and writes the result as a `.clusters` container together with the material table, the
+// image paths the materials name, and the source path they are relative to. `--cache` writes
+// that container into the derived-data cache instead, under the hash of the source and the
+// build options, which is the path `engine-view --mesh` looks in before it builds anything.
+// `info` prints what a container holds. Both print one JSON line on stdout, so scripts and
+// agents read the numbers without parsing prose; everything else goes through the log to
+// stderr.
 //
 // Exit codes: 0 ok; 1 the file could not be loaded, built, or written; 2 usage.
 #include <core/json/json.h>
 #include <core/log/log.h>
+#include <core/platform/process.h>
 #include <core/time/time.h>
 #include <domain/assets/gltf.h>
 #include <domain/geometry/cluster_file.h>
@@ -38,11 +42,15 @@ const char* k_usage =
     "      --max-triangles <n>   triangles per cluster (4..256, default 124)\n"
     "      --max-vertices <n>    vertices per cluster (1..255, default 64)\n"
     "      --no-weld             keep the file's duplicate vertices\n"
+    "      --cache               write into the derived-data cache instead of a named output,\n"
+    "                            addressed by the source and the options above\n"
+    "      --ddc <dir>           the cache root (default: <repo>/ddc, found beside AGENTS.md)\n"
     "      --log <spec>          log levels, e.g. \"info\" or \"warn,content=debug\"\n"
     "  info <file.clusters>                    print the header, sections, and counts\n"
     "\n"
     "examples:\n"
     "  engine-content build content/samples/Suzanne/Suzanne.gltf ddc/suzanne.clusters\n"
+    "  engine-content build content/samples/Suzanne/Suzanne.gltf --cache\n"
     "  engine-content info ddc/suzanne.clusters\n";
 
 int usage(const char* message) {
@@ -107,13 +115,41 @@ struct BuildOptions {
   std::string input;
   std::string output;
   std::string log_spec;
+  std::string ddc;
   u32 max_triangles = geometry::ClusterLodOptions{}.max_triangles;
   u32 max_vertices = geometry::ClusterLodOptions{}.max_vertices;
   bool weld = true;
+  bool cache = false;
 };
+
+// The lod options the cache key is taken over, so that the key and the build agree by
+// construction.
+geometry::ClusterLodOptions lod_options_of(const BuildOptions& options) {
+  geometry::ClusterLodOptions lod_options;
+  lod_options.max_triangles = options.max_triangles;
+  lod_options.max_vertices = options.max_vertices;
+  return lod_options;
+}
 
 int build(const BuildOptions& options) {
   const i64 start_ns = time::monotonic_ns();
+  // --cache: the output is where the derived-data cache wants this source with these options,
+  // which is the same path engine-view looks in before it builds anything itself.
+  std::string output = options.output;
+  u64 source_hash = 0;
+  if (options.cache) {
+    std::string hash_error;
+    if (!assets::source_mesh_hash(options.input, source_hash, &hash_error))
+      return failed(hash_error);
+    const u64 key = geometry::cluster_cache_key(source_hash, lod_options_of(options), options.weld);
+    output = geometry::cluster_cache_path(options.ddc, key);
+    const io::Status status = io::make_directories(io::parent_path(output));
+    if (status != io::Status::Ok) {
+      return failed("cannot create the cache directory '" + std::string(io::parent_path(output)) +
+                    "': " + io::status_name(status));
+    }
+  }
+
   assets::MeshData mesh;
   std::string error;
   if (!assets::load_gltf(options.input, mesh, &error)) return failed(error);
@@ -133,9 +169,7 @@ int build(const BuildOptions& options) {
 
   // One DAG per primitive, so every cluster belongs to exactly one material; merging keeps the
   // parts' clusters and remembers which part each came from.
-  geometry::ClusterLodOptions lod_options;
-  lod_options.max_triangles = options.max_triangles;
-  lod_options.max_vertices = options.max_vertices;
+  const geometry::ClusterLodOptions lod_options = lod_options_of(options);
   const geometry::AttributeSource attributes = assets::attribute_source(mesh);
   Vector<geometry::ClusterLodMesh> parts;
   Vector<i32> part_material;
@@ -191,18 +225,25 @@ int build(const BuildOptions& options) {
     data.image_paths.push_back(image.uri);
   }
 
-  if (!geometry::write_cluster_file(options.output, data, &error)) return failed(error);
+  // The source as it was given, so the renderer resolves the image paths above against its
+  // directory however it came by the container.
+  data.source_path = options.input;
+
+  if (!geometry::write_cluster_file(output, data, &error)) return failed(error);
   const u64 content_hash = geometry::cluster_file_hash(data);
   const f64 build_ms = static_cast<f64>(time::monotonic_ns() - start_ns) / 1.0e6;
   io::FileInfo info;
-  const u64 bytes = io::stat_file(options.output, info) == io::Status::Ok ? info.size : 0;
+  const u64 bytes = io::stat_file(output, info) == io::Status::Ok ? info.size : 0;
 
   const geometry::ClusterLodMesh& lod = data.mesh;
-  ENGINE_LOG_INFO(log_content, "cluster file written", log::field("path", options.output),
+  ENGINE_LOG_INFO(log_content, "cluster file written", log::field("path", output),
                   log::field("clusters", lod.mesh.clusters.size()), log::field("bytes", bytes),
-                  log::field("build_ms", build_ms));
+                  log::field("cached", options.cache), log::field("build_ms", build_ms));
 
   JsonValue summary = JsonValue::object();
+  summary.set("path", JsonValue(output));
+  summary.set("cached", JsonValue(options.cache));
+  if (options.cache) summary.set("source_hash", JsonValue(source_hash));
   summary.set("clusters", JsonValue(lod.mesh.clusters.size()));
   summary.set("leaf_clusters",
               JsonValue(lod.level_cluster_counts.empty() ? 0u : lod.level_cluster_counts[0]));
@@ -230,17 +271,31 @@ int build_command(int argc, char** argv) {
       if (!next_u32(argc, argv, i, options.max_vertices)) return k_exit_usage;
     } else if (a == "--log") {
       if (!next_value(argc, argv, i, options.log_spec)) return k_exit_usage;
+    } else if (a == "--ddc") {
+      if (!next_value(argc, argv, i, options.ddc)) return k_exit_usage;
     } else if (a == "--no-weld") {
       options.weld = false;
+    } else if (a == "--cache") {
+      options.cache = true;
     } else if (!a.empty() && a[0] == '-') {
       return usage("unknown option for build");
     } else {
       positional.push_back(std::string(a));
     }
   }
-  if (positional.size() != 2) return usage("build takes an input mesh and an output file");
+  // The output is a path or the cache, never both: two destinations for one build would leave
+  // a caller guessing which one the summary names.
+  if (positional.size() != (options.cache ? 1u : 2u)) {
+    return usage(options.cache ? "build --cache takes an input mesh and no output file"
+                               : "build takes an input mesh and an output file");
+  }
   options.input = positional[0];
-  options.output = positional[1];
+  if (!options.cache) options.output = positional[1];
+  if (options.cache && options.ddc.empty()) {
+    options.ddc = geometry::find_ddc_root(platform::executable_directory());
+    if (options.ddc.empty())
+      return usage("--cache found no repository root above the executable; pass --ddc <dir>");
+  }
   // The cluster format's own limits; the builder rejects the rest with its own message.
   if (options.max_triangles < 4 || options.max_triangles > 256 || options.max_vertices < 1 ||
       options.max_vertices > 255) {
@@ -298,6 +353,7 @@ int info(const std::string& path) {
   summary.set("groups", JsonValue(lod.group_count));
   summary.set("materials", JsonValue(data.materials.size()));
   summary.set("images", JsonValue(data.image_paths.size()));
+  summary.set("source_path", JsonValue(data.source_path));
   print_json(summary);
   return k_exit_ok;
 }

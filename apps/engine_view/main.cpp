@@ -10,7 +10,9 @@
 // and the process prints one JSON line of statistics (including GPU milliseconds per pass from
 // timestamps) on exit, so scripts and agents can look at the picture and the numbers without a
 // human at the window. Shaders come from the build's manifest when it is found and recompile
-// when their sources change.
+// when their sources change. `--mesh` takes a glTF file or a `.clusters` container
+// (domain/geometry); a glTF is looked up in the derived-data cache first and built into it on a
+// miss, so the second run of the same mesh skips the import and the clustering entirely.
 //
 // Exit codes: 0 ok; 1 runtime error; 2 usage; 3 unavailable (no display, no Vulkan device, no
 // mesh shaders, or no presentation support), which tests treat as a skip.
@@ -19,6 +21,7 @@
 #include <core/platform/process.h>
 #include <core/time/time.h>
 #include <domain/assets/gltf.h>
+#include <domain/geometry/cluster_file.h>
 #include <domain/geometry/cluster_lod.h>
 #include <domain/gfx/acceleration.h>
 #include <domain/gfx/bindless.h>
@@ -67,13 +70,17 @@ constexpr const char* k_usage =
     "                   [--no-vsync] [--adapter <index>] [--validation] [--grid <n>] [--log <spec>]\n"
     "                   [--shaders <manifest.json>] [--lod <px>] [--no-cull] [--no-occlusion] [--no-cone]\n"
     "                   [--raster direct|hw|vertex|sw|auto|rt] [--sw-px <px>] [--view <mode>] [--orbit <d>]\n"
-    "                   [--mesh <file.gltf|file.glb>] [--no-lights]\n"
+    "                   [--mesh <file.gltf|file.glb|file.clusters>] [--no-cache] [--ddc <dir>]\n"
+    "                   [--no-lights]\n"
     "\n"
     "  --frames <n>     render n frames, then exit (0: until the window closes)\n"
     "  --capture <png>  write the last frame as a PNG (implies --frames 60 when unset)\n"
     "  --grid <n>       heightfield resolution, n x n vertices (default 257)\n"
-    "  --mesh <file>    render a glTF 2.0 file instead of the heightfield: one cluster DAG per\n"
-    "                   primitive, materials and base-color textures from the file\n"
+    "  --mesh <file>    render a mesh instead of the heightfield: a glTF 2.0 or GLB file (one\n"
+    "                   cluster DAG per primitive, materials and base-color textures from the\n"
+    "                   file), or a .clusters container that already holds one\n"
+    "  --no-cache       always build a glTF from source; do not read or write ddc/clusters\n"
+    "  --ddc <dir>      the derived-data root (default: <repo>/ddc, found beside AGENTS.md)\n"
     "  --lod <px>       screen-space error threshold in pixels for LOD selection (default 1)\n"
     "  --no-cull        draw every leaf cluster; no GPU culling or LOD selection\n"
     "  --no-occlusion   skip two-pass occlusion culling (hw mode only; on by default)\n"
@@ -114,7 +121,9 @@ struct Options {
   u32 grid = 257;
   std::string log_spec;
   std::string shaders;
-  std::string mesh;  // glTF file; empty renders the heightfield
+  std::string mesh;  // glTF or .clusters file; empty renders the heightfield
+  std::string ddc;   // derived-data root; empty is found from the executable
+  bool cache = true;
   f32 lod_px = 1.0f;
   bool cull = true;
   bool occlusion = true;
@@ -265,6 +274,63 @@ int unavailable(const char* what, const std::string& error) {
   return k_exit_unavailable;
 }
 
+// Writes a mesh that was just imported and clustered into the derived-data cache, byte for byte
+// the container `engine-content build` writes from the same source: the DAG, the materials as
+// GPU records, a material index per cluster (a primitive that names none gets one appended
+// default, shared), the image paths as the glTF gave them, and the source path they are
+// relative to. `lod` is moved into the container and back out again, so the DAG is never
+// copied. A cache that cannot be written is a warning and nothing more: the picture does not
+// depend on it.
+void write_cluster_cache(const std::string& path, const std::string& source,
+                         const assets::MeshData& mesh_data, const Vector<i32>& part_material,
+                         const Vector<u32>& part_of_cluster, geometry::ClusterLodMesh& lod) {
+  geometry::ClusterFileData data;
+  data.mesh = std::move(lod);
+  data.source_path = source;
+  data.materials.reserve(mesh_data.materials.size() + 1);
+  for (const assets::Material& source_material : mesh_data.materials) {
+    geometry::ClusterFileMaterial material;
+    material.base_color = source_material.base_color;
+    material.metallic = source_material.metallic;
+    material.roughness = source_material.roughness;
+    material.base_color_image = source_material.base_color_image;
+    material.normal_image = source_material.normal_image;
+    data.materials.push_back(material);
+  }
+  constexpr u32 k_no_default = ~u32{0};
+  u32 default_material = k_no_default;
+  data.cluster_material.reserve(part_of_cluster.size());
+  for (const u32 part : part_of_cluster) {
+    const i32 index = part_material[part];
+    if (index >= 0 && static_cast<u32>(index) < mesh_data.materials.size()) {
+      data.cluster_material.push_back(static_cast<u32>(index));
+      continue;
+    }
+    if (default_material == k_no_default) {
+      default_material = data.materials.size();
+      data.materials.push_back(geometry::ClusterFileMaterial{});
+    }
+    data.cluster_material.push_back(default_material);
+  }
+  data.image_paths.reserve(mesh_data.images.size());
+  for (const assets::ImageRef& image : mesh_data.images)
+    data.image_paths.push_back(image.uri);
+
+  std::string error;
+  const io::Status status = io::make_directories(io::parent_path(path));
+  if (status != io::Status::Ok) {
+    error = std::string("cannot create the directory: ") + io::status_name(status);
+  } else if (geometry::write_cluster_file(path, data, &error)) {
+    ENGINE_LOG_INFO(log_view, "cluster cache written", log::field("path", path),
+                    log::field("clusters", data.mesh.mesh.clusters.size()));
+  }
+  if (!error.empty()) {
+    ENGINE_LOG_WARN(log_view, "cluster cache not written", log::field("path", path),
+                    log::field("error", error));
+  }
+  lod = std::move(data.mesh);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -343,6 +409,10 @@ int main(int argc, char** argv) {
       if (!next_value(argc, argv, i, a, options.shaders)) return k_exit_usage;
     } else if (a == "--mesh") {
       if (!next_value(argc, argv, i, a, options.mesh)) return k_exit_usage;
+    } else if (a == "--ddc") {
+      if (!next_value(argc, argv, i, a, options.ddc)) return k_exit_usage;
+    } else if (a == "--no-cache") {
+      options.cache = false;
     } else if (a == "--no-vsync") {
       options.vsync = false;
     } else if (a == "--no-cull") {
@@ -378,6 +448,18 @@ int main(int argc, char** argv) {
     stderr_sink.set_min_level(log::Level::Trace);
     log::apply_level_spec("warn");
     log::apply_level_spec(options.log_spec);
+  }
+
+  // The derived-data cache lives at <repo>/ddc, found by walking up from the executable to the
+  // directory that holds AGENTS.md, unless --ddc names one. With no root there is nowhere to
+  // keep a built mesh, so the cache is simply off.
+  if (options.cache && options.ddc.empty()) {
+    options.ddc = geometry::find_ddc_root(platform::executable_directory());
+    if (options.ddc.empty()) {
+      options.cache = false;
+      ENGINE_LOG_WARN(log_view, "no derived-data root above the executable",
+                      log::field("from", platform::executable_directory()));
+    }
   }
 
   std::string error;
@@ -455,6 +537,9 @@ int main(int argc, char** argv) {
   Vector<gfx::ImageResource> mesh_textures;  // --mesh: decoded base-color textures
   Vector<VkImageView> mesh_texture_views;
   u32 mesh_primitives = 0;
+  // Where the mesh came from: "file" a named container, "hit" or "miss" the derived-data cache,
+  // "none" the heightfield or --no-cache.
+  const char* mesh_cache = "none";
   Vec3 scene_center{};
   f32 scene_radius = 10.0f;             // the heightfield's half extent; a mesh's bounding radius
   gfx::BufferResource material_buffer;  // ResolveMaterial table
@@ -531,11 +616,15 @@ int main(int argc, char** argv) {
       break;
     }
 
-    // Geometry: the terrain's LOD DAG, or one DAG per primitive of a glTF file merged into one
-    // so every cluster has a single material.
+    // Geometry: the terrain's LOD DAG, or a mesh. A mesh arrives already clustered when
+    // `--mesh` names a `.clusters` container or when the derived-data cache holds this glTF
+    // built with these options; otherwise it is imported and clustered here, one DAG per
+    // primitive merged into one so every cluster has a single material, and the result is
+    // written into the cache for the next run.
     assets::MeshData mesh_data;
     Vector<u32> part_of_cluster;  // --mesh: the primitive each cluster came from
     Vector<i32> part_material;    // --mesh: the material of each primitive with triangles
+    std::string image_dir;        // what the materials' relative image paths are relative to
     const i64 build_start = time::monotonic_ns();
     if (options.mesh.empty()) {
       Vector<Vec3> positions;
@@ -553,44 +642,135 @@ int main(int argc, char** argv) {
         break;
       }
     } else {
-      if (!assets::load_gltf(options.mesh, mesh_data, &error)) {
-        exit_code = fail("mesh", error);
-        break;
-      }
-      // Exporters duplicate vertices freely; welding the identical ones gives the cluster
-      // builder shared vertices to fill clusters with and the LOD builder edges to collapse.
-      const u32 loaded_vertices = mesh_data.positions.size();
-      const u32 welded_vertices = geometry::weld_vertices(
-          mesh_data.positions, mesh_data.normals, mesh_data.uvs,
-          std::span<u32>(mesh_data.indices.data(), mesh_data.indices.size()));
-      ENGINE_LOG_INFO(log_view, "mesh loaded", log::field("path", options.mesh),
-                      log::field("vertices", loaded_vertices),
-                      log::field("welded", welded_vertices),
-                      log::field("triangles", mesh_data.indices.size() / 3),
-                      log::field("primitives", mesh_data.primitives.size()),
-                      log::field("materials", mesh_data.materials.size()),
-                      log::field("images", mesh_data.images.size()));
-      const geometry::AttributeSource attribute_source = assets::attribute_source(mesh_data);
-      Vector<geometry::ClusterLodMesh> parts;
-      bool parts_ok = true;
-      for (const assets::Primitive& primitive : mesh_data.primitives) {
-        if (primitive.index_count < 3) continue;
-        const std::span<const u32> range(mesh_data.indices.data() + primitive.first_index,
-                                         primitive.index_count);
-        geometry::ClusterLodMesh part;
-        if (!geometry::build_cluster_lod(mesh_data.positions, range, geometry::ClusterLodOptions{},
-                                         part, &error, attribute_source)) {
-          parts_ok = false;
+      // Where a built mesh may already be: a container named outright, or the cache entry this
+      // source and these options address.
+      std::string container;
+      std::string cache_path;
+      if (io::extension(options.mesh) == ".clusters") {
+        container = options.mesh;
+        mesh_cache = "file";
+      } else if (options.cache) {
+        u64 source_hash = 0;
+        if (!assets::source_mesh_hash(options.mesh, source_hash, &error)) {
+          exit_code = fail("mesh", error);
           break;
         }
-        parts.push_back(std::move(part));
-        part_material.push_back(primitive.material);
+        const u64 key =
+            geometry::cluster_cache_key(source_hash, geometry::ClusterLodOptions{}, true);
+        cache_path = geometry::cluster_cache_path(options.ddc, key);
+        mesh_cache = "miss";
+        if (io::exists(cache_path)) container = cache_path;
       }
-      if (!parts_ok || !geometry::merge_cluster_lod(parts, lod, &part_of_cluster, &error)) {
-        exit_code = fail("mesh clusters", error);
+      geometry::ClusterFileData container_data;
+      bool from_container = false;
+      if (!container.empty()) {
+        std::string read_error;
+        if (geometry::read_cluster_file(container, container_data, &read_error)) {
+          from_container = true;
+          if (!cache_path.empty()) mesh_cache = "hit";
+        } else if (cache_path.empty()) {
+          exit_code = fail("mesh", read_error);  // a file named on the command line must load
+          break;
+        } else {
+          // A cache entry this build cannot read is not an error; it is a miss with a warning.
+          ENGINE_LOG_WARN(log_view, "cluster cache entry ignored", log::field("path", container),
+                          log::field("error", read_error));
+        }
+      }
+      if (from_container) {
+        lod = std::move(container_data.mesh);
+        // The container's materials, images, and material map, in the shape the glTF path
+        // leaves behind so that everything below is the same code for both: one part per
+        // material, and the file's own map from cluster to part.
+        mesh_data.materials.reserve(container_data.materials.size());
+        part_material.reserve(container_data.materials.size());
+        for (const geometry::ClusterFileMaterial& source : container_data.materials) {
+          assets::Material material;
+          material.base_color = source.base_color;
+          material.metallic = source.metallic;
+          material.roughness = source.roughness;
+          material.base_color_image = source.base_color_image;
+          material.normal_image = source.normal_image;
+          mesh_data.materials.push_back(std::move(material));
+          part_material.push_back(static_cast<i32>(part_material.size()));
+        }
+        // An image the source embedded has no path and no bytes here: the container carries
+        // paths only, so such a material draws untextured with a warning until the texture
+        // pipeline gives images a derived form of their own.
+        mesh_data.images.reserve(container_data.image_paths.size());
+        for (const std::string& uri : container_data.image_paths) {
+          assets::ImageRef image;
+          image.uri = uri;
+          mesh_data.images.push_back(std::move(image));
+        }
+        part_of_cluster = std::move(container_data.cluster_material);
+        if (part_of_cluster.empty()) {  // a container with no material map: one default for all
+          part_of_cluster = Vector<u32>(lod.mesh.clusters.size(), part_material.size());
+          part_material.push_back(-1);
+        }
+        // Relative image paths belong to the mesh the container was built from; a container
+        // that does not name one resolves them beside itself.
+        image_dir = std::string(io::parent_path(
+            container_data.source_path.empty() ? std::string_view(container)
+                                               : std::string_view(container_data.source_path)));
+        // A container does not record how many primitives were merged into it.
+        mesh_primitives = 0;
+        ENGINE_LOG_INFO(
+            log_view, "mesh loaded", log::field("path", container),
+            log::field("from", "cluster file"), log::field("source", container_data.source_path),
+            log::field("cache", mesh_cache), log::field("clusters", lod.mesh.clusters.size()),
+            log::field("vertices", lod.mesh.vertices.size()),
+            log::field("triangles", lod.leaf_triangle_count),
+            log::field("lod_levels", lod.level_cluster_counts.size()),
+            log::field("materials", mesh_data.materials.size()),
+            log::field("images", mesh_data.images.size()));
+      } else if (!assets::load_gltf(options.mesh, mesh_data, &error)) {
+        exit_code = fail("mesh", error);
         break;
+      } else {
+        image_dir = std::string(io::parent_path(options.mesh));
+        // Exporters duplicate vertices freely; welding the identical ones gives the cluster
+        // builder shared vertices to fill clusters with and the LOD builder edges to collapse.
+        const u32 loaded_vertices = mesh_data.positions.size();
+        const u32 welded_vertices = geometry::weld_vertices(
+            mesh_data.positions, mesh_data.normals, mesh_data.uvs,
+            std::span<u32>(mesh_data.indices.data(), mesh_data.indices.size()));
+        ENGINE_LOG_INFO(log_view, "mesh loaded", log::field("path", options.mesh),
+                        log::field("from", "gltf"), log::field("cache", mesh_cache),
+                        log::field("vertices", loaded_vertices),
+                        log::field("welded", welded_vertices),
+                        log::field("triangles", mesh_data.indices.size() / 3),
+                        log::field("primitives", mesh_data.primitives.size()),
+                        log::field("materials", mesh_data.materials.size()),
+                        log::field("images", mesh_data.images.size()));
+        const geometry::AttributeSource attribute_source = assets::attribute_source(mesh_data);
+        Vector<geometry::ClusterLodMesh> parts;
+        bool parts_ok = true;
+        for (const assets::Primitive& primitive : mesh_data.primitives) {
+          if (primitive.index_count < 3) continue;
+          const std::span<const u32> range(mesh_data.indices.data() + primitive.first_index,
+                                           primitive.index_count);
+          geometry::ClusterLodMesh part;
+          if (!geometry::build_cluster_lod(mesh_data.positions, range,
+                                           geometry::ClusterLodOptions{}, part, &error,
+                                           attribute_source)) {
+            parts_ok = false;
+            break;
+          }
+          parts.push_back(std::move(part));
+          part_material.push_back(primitive.material);
+        }
+        if (!parts_ok || !geometry::merge_cluster_lod(parts, lod, &part_of_cluster, &error)) {
+          exit_code = fail("mesh clusters", error);
+          break;
+        }
+        mesh_primitives = parts.size();
+        // Into the cache for the next run, as the same container engine-content build writes:
+        // either app fills the cache, either app finds it.
+        if (!cache_path.empty())
+          write_cluster_cache(cache_path, options.mesh, mesh_data, part_material, part_of_cluster,
+                              lod);
       }
-      mesh_primitives = parts.size();
       // The camera orbits the mesh's bounds instead of the heightfield's.
       Vec3 lo{1e30f, 1e30f, 1e30f};
       Vec3 hi{-1e30f, -1e30f, -1e30f};
@@ -715,7 +895,7 @@ int main(int argc, char** argv) {
       // untextured with a warning.
       Vector<u32> image_slot(mesh_data.images.size(), gfx::k_no_texture);
       Vector<bool> image_tried(mesh_data.images.size(), false);
-      const std::string mesh_dir(io::parent_path(options.mesh));
+      const std::string& mesh_dir = image_dir;  // the glTF's directory, or the container's
       auto texture_slot_of = [&](i32 image_index) -> u32 {
         if (image_index < 0 || static_cast<u32>(image_index) >= mesh_data.images.size())
           return gfx::k_no_texture;
@@ -1671,7 +1851,7 @@ int main(int argc, char** argv) {
     std::printf(
         "{\"frames\":%llu,\"seconds\":%.3f,\"avg_ms\":%.3f,\"width\":%u,\"height\":%u,"
         "\"clusters\":%u,\"leaf_clusters\":%u,\"triangles\":%u,\"lod_levels\":%u,\"build_ms\":%.1f,"
-        "\"mesh_primitives\":%u,"
+        "\"mesh_primitives\":%u,\"mesh_cache\":\"%s\","
         "\"cull\":%s,\"occlusion\":%s,\"cone\":%s,\"lod_px\":%.2f,\"raster\":\"%s\",\"sw_px\":%.1f,"
         "\"visible_hw_last\":%u,\"visible_pass2_last\":%u,\"visible_sw_last\":%u,\"visible_min\":%"
         "u,"
@@ -1683,13 +1863,14 @@ int main(int argc, char** argv) {
         lod.mesh.clusters.size(),
         lod.level_cluster_counts.empty() ? 0u : lod.level_cluster_counts[0],
         lod.leaf_triangle_count, lod.level_cluster_counts.size(),
-        static_cast<f64>(build_ns) / 1.0e6, mesh_primitives, options.cull ? "true" : "false",
-        occlusion ? "true" : "false", options.cone ? "true" : "false",
-        static_cast<f64>(options.lod_px), raster_name(options.raster),
-        static_cast<f64>(options.sw_px), visible_hw_last, visible_pass2_last, visible_sw_last,
-        visible_min, visible_max, gpu_cull_ms / n, gpu_hw_ms / n, gpu_sw_ms / n, gpu_hiz_ms / n,
-        gpu_resolve_ms / n, gpu_rt_ms / n, gpu_trace_ms / n, gpu_total_ms / n,
-        static_cast<unsigned long long>(timed_frames), captured ? "true" : "false");
+        static_cast<f64>(build_ns) / 1.0e6, mesh_primitives, mesh_cache,
+        options.cull ? "true" : "false", occlusion ? "true" : "false",
+        options.cone ? "true" : "false", static_cast<f64>(options.lod_px),
+        raster_name(options.raster), static_cast<f64>(options.sw_px), visible_hw_last,
+        visible_pass2_last, visible_sw_last, visible_min, visible_max, gpu_cull_ms / n,
+        gpu_hw_ms / n, gpu_sw_ms / n, gpu_hiz_ms / n, gpu_resolve_ms / n, gpu_rt_ms / n,
+        gpu_trace_ms / n, gpu_total_ms / n, static_cast<unsigned long long>(timed_frames),
+        captured ? "true" : "false");
   }
   log::remove_sink(&stderr_sink);
   return exit_code;

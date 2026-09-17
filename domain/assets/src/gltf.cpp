@@ -1,3 +1,4 @@
+#include <core/hash/hash.h>
 #include <domain/assets/gltf.h>
 #include <foundation/io/vfs.h>
 
@@ -439,6 +440,40 @@ bool load_gltf(std::string_view path, MeshData& out, std::string* error) {
                            "': " + io::status_name(status));
   const std::span<const u8> bytes(reinterpret_cast<const u8*>(contents.data()), contents.size());
   return load_gltf_memory(bytes, io::parent_path(path), out, error);
+}
+
+bool source_mesh_hash(std::string_view path, u64& out, std::string* error) {
+  out = 0;
+  std::string contents;
+  const io::Status status = io::read_file(path, contents);
+  if (status != io::Status::Ok)
+    return fail(error, std::string("glTF: cannot read '") + std::string(path) +
+                           "': " + io::status_name(status));
+  u64 hash = hash_bytes(contents.data(), contents.size());
+
+  // Only the parse, not cgltf_load_buffers: the buffer URIs are all that is wanted here, and a
+  // file whose buffers are missing still gets a hash that changes when the glTF changes.
+  cgltf_options options{};
+  options.file.read = &read_through_io;
+  options.file.release = &release_through_io;
+  Document document;
+  const cgltf_result result =
+      cgltf_parse(&options, contents.data(), contents.size(), &document.data);
+  if (result != cgltf_result_success)
+    return fail(error, std::string("glTF: parsing failed (") + result_text(result) + ")");
+
+  const std::string base_dir(io::parent_path(path));
+  for (cgltf_size i = 0; i < document.data->buffers_count; ++i) {
+    const char* uri = document.data->buffers[i].uri;
+    if (uri == nullptr || std::strncmp(uri, "data:", 5) == 0) continue;
+    const std::string relative = decoded_uri(uri);
+    const std::string file = base_dir.empty() ? relative : io::join_path(base_dir, relative);
+    std::string buffer;
+    if (io::read_file(file, buffer) != io::Status::Ok) buffer.clear();
+    hash = hash_combine(hash, hash_bytes(buffer.data(), buffer.size()));
+  }
+  out = hash;
+  return true;
 }
 
 geometry::AttributeSource attribute_source(const MeshData& mesh) noexcept {

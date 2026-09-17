@@ -54,6 +54,7 @@ enum class ClusterSection : u32 {
   // 13 is reserved for per-cluster quantized positions and their origin and scale, which the
   // writer emits once ClusterMesh carries them.
   Quantized = 13,
+  SourcePath = 14,  // u8, one NUL-terminated string: the source mesh this was built from
 };
 
 // Names the kinds this build knows, "unknown" for anything else; for diagnostics and for
@@ -84,7 +85,7 @@ struct ClusterFileScalars {
   u32 leaf_triangle_count = 0;
   u32 source_vertex_count = 0;
   u32 source_triangle_count = 0;
-  u32 pad[4] = {0, 0, 0, 0};  // room for quantization origin and scale, and for page counts
+  u32 pad[4] = {0, 0, 0, 0};  // the quantization origin and step, as float bits
 };
 
 // A material as the GPU wants it: 64 bytes, one cache line's half, indexed per cluster. The
@@ -107,11 +108,18 @@ static_assert(sizeof(ClusterFileMaterial) == 64, "ClusterFileMaterial is a 64-by
 // Everything one file holds. `cluster_material` is empty or one entry per cluster; the image
 // paths are as the source named them (relative to the source file), and an image the source
 // embedded has an empty path.
+//
+// `source_path` is the mesh this was built from, exactly as it was given to the builder, so a
+// reader resolves those relative image paths against its directory. It is empty in a file
+// written before the section existed and in one built from bytes with no file behind them; a
+// reader with nothing to fall back on resolves the image paths against the container's own
+// directory instead.
 struct ClusterFileData {
   ClusterLodMesh mesh;
   Vector<u32> cluster_material;
   Vector<ClusterFileMaterial> materials;
   Vector<std::string> image_paths;
+  std::string source_path;
 };
 
 // Writes the file through io::write_file_atomic, so a reader sees the old bytes or the new ones
@@ -130,5 +138,28 @@ bool read_cluster_file_memory(std::span<const u8> bytes, ClusterFileData& out,
 
 // The content hash the writer stores in the header, computed without writing anything.
 u64 cluster_file_hash(const ClusterFileData& data);
+
+// ---- the derived-data cache (docs/plan/07-content-pipeline.md §7.3) -------------------------
+//
+// A mesh built from a source file is stored under a hash of everything that went into it, so a
+// second build finds the answer instead of repeating the work, and a changed source, a changed
+// build option, or a changed builder misses. The rules live here because `engine-content` and
+// `engine-view` must agree on them byte for byte: what one writes, the other finds.
+
+// Bumped whenever the builder or the container changes in a way that makes an old cache entry
+// wrong. It is not the file format version: a cache miss is cheap, a wrong mesh is not.
+inline constexpr u32 k_cluster_cache_version = 1;
+
+// The cache key: the source's content hash (`assets::source_mesh_hash`) mixed with the build
+// options and the version above.
+u64 cluster_cache_key(u64 source_hash, const ClusterLodOptions& options, bool weld) noexcept;
+
+// "<ddc_root>/clusters/<hash as 16 lower-case hex digits>.clusters".
+std::string cluster_cache_path(std::string_view ddc_root, u64 hash);
+
+// The repository's derived-data root: walks up from `start` (an executable's directory, say)
+// to the first directory that holds an `AGENTS.md` and returns "<that>/ddc". Empty when there
+// is no such directory, which is how a caller knows to ask for one explicitly.
+std::string find_ddc_root(std::string_view start);
 
 }  // namespace engine::geometry

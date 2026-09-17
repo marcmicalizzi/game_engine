@@ -81,6 +81,17 @@ bool load_gltf(std::string_view path, MeshData& out, std::string* error = nullpt
 bool load_gltf_memory(std::span<const u8> bytes, std::string_view base_dir, MeshData& out,
                       std::string* error = nullptr);
 
+// The identity of a source mesh, for a content-addressed cache of what is built from it
+// (docs/plan/07-content-pipeline.md §7.3): the file's own bytes hashed with `core/hash`, mixed
+// with the bytes of every external buffer a `.gltf` names in `buffers[].uri`. A `.glb` carries
+// its buffer inside, and a data URI is already part of the text, so neither adds anything. An
+// external buffer that cannot be read contributes its length as zero rather than failing: the
+// load that follows reports it properly, and the hash still changed with the glTF that names
+// it. Images are deliberately not hashed — they are not an input to the cluster build, and the
+// renderer reads them from disk every time. Returns false and fills `error` when the mesh file
+// itself cannot be read or parsed.
+bool source_mesh_hash(std::string_view path, u64& out, std::string* error = nullptr);
+
 // Spans over the mesh's normals and UVs for geometry::build_clusters and
 // geometry::build_cluster_lod. Absent attributes stay empty, which is what the builders expect:
 // they compute smooth normals and leave UVs at zero.

@@ -252,6 +252,7 @@ TEST_CASE("engine-content: build writes a cluster file that reads back and valid
   CHECK(data.cluster_material.size() == data.mesh.mesh.clusters.size());
   CHECK(data.image_paths.size() == 1);
   CHECK(data.image_paths[0].empty());  // an embedded image keeps its slot with an empty path
+  CHECK(data.source_path == mesh);     // the glTF those paths would have been relative to
   CHECK(data.materials[0].base_color_image == 0);
   CHECK(data.materials[1].base_color_image == -1);
   CHECK(data.materials[1].base_color.x == doctest::Approx(0.9f));
@@ -278,13 +279,15 @@ TEST_CASE("engine-content: build writes a cluster file that reads back and valid
   CHECK(number(described.result, "hash") == number(built.result, "hash"));
   CHECK(number(described.result, "clusters") == number(built.result, "clusters"));
   CHECK(number(described.result, "materials") == 2);
+  REQUIRE(described.result.find("source_path") != nullptr);
+  CHECK(described.result.find("source_path")->as_string() == mesh);
   const JsonValue* sections = described.result.find("sections");
   REQUIRE(sections != nullptr);
   REQUIRE(sections->is_array());
-  CHECK(sections->size() == 13);
+  CHECK(sections->size() == 14);
   for (const char* name : {"clusters", "lod", "vertices", "attributes", "triangles",
                            "vertex_source", "level_cluster_counts", "cluster_material", "materials",
-                           "image_paths", "strings", "scalars", "quantized"}) {
+                           "image_paths", "strings", "scalars", "quantized", "source_path"}) {
     bool found = false;
     for (usize i = 0; i < sections->size(); ++i) {
       const JsonValue* section_name = (*sections)[i].find("name");
@@ -306,6 +309,60 @@ TEST_CASE("engine-content: build writes a cluster file that reads back and valid
       dir / "cube.clusters",
       std::filesystem::temp_directory_path() / "engine_content_cube.clusters",
       std::filesystem::copy_options::overwrite_existing);
+  std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("engine-content: --cache writes the container the source's hash addresses") {
+  const auto dir = std::filesystem::temp_directory_path() / "engine_content_cache_tests";
+  std::filesystem::remove_all(dir);
+  std::filesystem::create_directories(dir);
+  const std::string mesh = slashes(dir / "cube.glb");
+  const std::string ddc = slashes(dir / "ddc");
+  REQUIRE(write_cube_glb(mesh));
+
+  // The path the app must choose, computed here from the same two helpers the renderer uses.
+  u64 source_hash = 0;
+  std::string error;
+  REQUIRE_MESSAGE(assets::source_mesh_hash(mesh, source_hash, &error), error);
+  const std::string expected = geometry::cluster_cache_path(
+      ddc, geometry::cluster_cache_key(source_hash, geometry::ClusterLodOptions{}, true));
+
+  const Run cached = content({"build", mesh, "--cache", "--ddc", ddc});
+  REQUIRE_MESSAGE(cached.exit_code == 0, cached.output);
+  REQUIRE_MESSAGE(cached.result.is_object(), cached.output);
+  const JsonValue* path = cached.result.find("path");
+  REQUIRE_MESSAGE(path != nullptr, cached.output);
+  CHECK(path->as_string() == expected);  // the app prints where it put it
+  REQUIRE_MESSAGE(std::filesystem::exists(expected), expected);
+  CHECK(std::filesystem::file_size(expected) == number(cached.result, "bytes"));
+  CHECK(number(cached.result, "source_hash") == source_hash);
+  const JsonValue* flag = cached.result.find("cached");
+  REQUIRE(flag != nullptr);
+  CHECK(flag->as_bool());
+
+  // The container names the source, so a renderer that finds it in the cache still resolves
+  // the image paths relative to the glTF rather than to the cache directory.
+  geometry::ClusterFileData data;
+  REQUIRE_MESSAGE(geometry::read_cluster_file(expected, data, &error), error);
+  CHECK(data.source_path == mesh);
+  CHECK(data.mesh.leaf_triangle_count == 12);
+
+  // The same source and options land on the same entry; a different limit does not.
+  const Run again = content({"build", mesh, "--cache", "--ddc", ddc});
+  REQUIRE_MESSAGE(again.exit_code == 0, again.output);
+  REQUIRE(again.result.find("path") != nullptr);
+  CHECK(again.result.find("path")->as_string() == expected);
+  const Run tighter = content({"build", mesh, "--cache", "--ddc", ddc, "--max-triangles", "8"});
+  REQUIRE_MESSAGE(tighter.exit_code == 0, tighter.output);
+  REQUIRE(tighter.result.find("path") != nullptr);
+  CHECK(tighter.result.find("path")->as_string() != expected);
+  CHECK(std::filesystem::exists(std::string(tighter.result.find("path")->as_string())));
+
+  // Two destinations for one build is a usage error, in either direction.
+  CHECK(content({"build", mesh, slashes(dir / "out.clusters"), "--cache", "--ddc", ddc}, true)
+            .exit_code == 2);
+  CHECK(content({"build", mesh, "--ddc", ddc}, true).exit_code == 2);
+
   std::filesystem::remove_all(dir);
 }
 

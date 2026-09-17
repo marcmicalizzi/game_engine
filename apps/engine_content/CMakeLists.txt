@@ -10,3 +10,8 @@ engine_app(NAME engine_content OUTPUT engine-content
 if(TARGET engine_engine_content_tests)
   target_link_libraries(engine_engine_content_tests PRIVATE engine::image)
 endif()
+# engine-view's mesh end-to-end test drives this app, which sits beside engine-view in bin/, to
+# write the container it then renders.
+if(TARGET engine_engine_view_tests)
+  add_dependencies(engine_engine_view_tests engine_engine_content)
+endif()

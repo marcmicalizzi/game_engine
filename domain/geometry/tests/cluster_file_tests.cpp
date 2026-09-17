@@ -68,6 +68,7 @@ void make_fixture(ClusterFileData& data, Vector<u32>& indices) {
   data.materials[1].roughness = 0.2f;
   data.image_paths.push_back("textures/sand_basecolor.png");
   data.image_paths.push_back("");  // an embedded image keeps its slot with an empty path
+  data.source_path = "content/samples/Terrain/terrain.gltf";
   data.cluster_material.reserve(data.mesh.mesh.clusters.size());
   for (u32 i = 0; i < data.mesh.mesh.clusters.size(); ++i)
     data.cluster_material.push_back(i % 2);
@@ -90,6 +91,7 @@ void check_equal(const ClusterFileData& read, const ClusterFileData& written) {
   REQUIRE(read.image_paths.size() == written.image_paths.size());
   for (u32 i = 0; i < read.image_paths.size(); ++i)
     CHECK(read.image_paths[i] == written.image_paths[i]);
+  CHECK(read.source_path == written.source_path);
 }
 
 struct TempDir {
@@ -194,7 +196,7 @@ TEST_CASE("cluster file: a DAG with materials survives a round trip array by arr
   CHECK(std::memcmp(header.magic, "CLST", 4) == 0);
   CHECK(header.version == k_cluster_file_version);
   CHECK(header.flags == 0);
-  CHECK(header.section_count == 13);
+  CHECK(header.section_count == 14);
   CHECK(header.total_bytes == file.size());
   CHECK(header.content_hash == cluster_file_hash(data));
   for (u32 i = 0; i < header.section_count; ++i) {
@@ -232,6 +234,108 @@ TEST_CASE("cluster file: a section of an unknown kind is skipped") {
   check_equal(read, data);
 }
 
+TEST_CASE("cluster file: the source path travels with the mesh, and its absence is not an error") {
+  TempDir tmp;
+  ClusterFileData data;
+  Vector<u32> indices;
+  make_fixture(data, indices);
+
+  // The path is a section of its own, so it is there and it is what was written.
+  const std::string path = tmp.path + "/source.clusters";
+  std::string error;
+  REQUIRE_MESSAGE(write_cluster_file(path, data, &error), error);
+  std::string file;
+  REQUIRE(io::read_file(path, file) == io::Status::Ok);
+  ClusterFileHeader header;
+  std::memcpy(&header, file.data(), sizeof(header));
+  usize source_at = 0;
+  ClusterFileSection source{};
+  for (u32 i = 0; i < header.section_count; ++i) {
+    const usize at = sizeof(header) + sizeof(source) * i;
+    ClusterFileSection section;
+    std::memcpy(&section, file.data() + at, sizeof(section));
+    if (section.kind == static_cast<u32>(ClusterSection::SourcePath)) {
+      source_at = at;
+      source = section;
+    }
+  }
+  REQUIRE(source_at != 0);
+  CHECK(source.element_size == 1);
+  CHECK(source.element_count == data.source_path.size() + 1);  // the NUL travels too
+  CHECK(std::string(cluster_section_name(source.kind)) == "source_path");
+  ClusterFileData read;
+  REQUIRE_MESSAGE(read_cluster_file(path, read, &error), error);
+  CHECK(read.source_path == "content/samples/Terrain/terrain.gltf");
+
+  // A file from a build that did not write the section: the kind becomes one this build does
+  // not know, which is exactly what an older file looks like. Everything else survives and the
+  // path comes back empty rather than as a failure.
+  std::string older = file;
+  ClusterFileSection renamed = source;
+  renamed.kind = 31337;
+  patch(older, source_at, &renamed, sizeof(renamed));
+  rehash(older);
+  ClusterFileData without;
+  REQUIRE_MESSAGE(read_cluster_file_memory(view(older), without, &error), error);
+  CHECK(without.source_path.empty());
+  ClusterFileData expected = data;
+  expected.source_path.clear();
+  check_equal(without, expected);
+
+  // A mesh built from bytes with no file behind them writes an empty path and reads one back.
+  ClusterFileData anonymous;
+  Vector<u32> anonymous_indices;
+  make_fixture(anonymous, anonymous_indices);
+  anonymous.source_path.clear();
+  const std::string anonymous_path = tmp.path + "/anonymous.clusters";
+  REQUIRE_MESSAGE(write_cluster_file(anonymous_path, anonymous, &error), error);
+  ClusterFileData anonymous_read;
+  REQUIRE_MESSAGE(read_cluster_file(anonymous_path, anonymous_read, &error), error);
+  CHECK(anonymous_read.source_path.empty());
+  check_equal(anonymous_read, anonymous);
+}
+
+TEST_CASE("cluster file: the cache key answers to everything that went into the build") {
+  const ClusterLodOptions options;
+  const u64 key = cluster_cache_key(0x1234'5678'9abc'def0ull, options, true);
+  CHECK(key != 0);
+  CHECK(cluster_cache_key(0x1234'5678'9abc'def0ull, options, true) == key);  // deterministic
+
+  // Every input moves it: a different source, either per-cluster limit, the cone and ray
+  // tracing switches, and welding.
+  CHECK(cluster_cache_key(0x1234'5678'9abc'def1ull, options, true) != key);
+  CHECK(cluster_cache_key(0x1234'5678'9abc'def0ull, options, false) != key);
+  ClusterLodOptions other = options;
+  other.max_triangles = options.max_triangles - 1;
+  CHECK(cluster_cache_key(0x1234'5678'9abc'def0ull, other, true) != key);
+  other = options;
+  other.max_vertices = options.max_vertices - 1;
+  CHECK(cluster_cache_key(0x1234'5678'9abc'def0ull, other, true) != key);
+  other = options;
+  other.normal_cones = !options.normal_cones;
+  CHECK(cluster_cache_key(0x1234'5678'9abc'def0ull, other, true) != key);
+  other = options;
+  other.ray_tracing = !options.ray_tracing;
+  CHECK(cluster_cache_key(0x1234'5678'9abc'def0ull, other, true) != key);
+
+  // The path is the root, "clusters", and sixteen lower-case hex digits of the key.
+  CHECK(cluster_cache_path("D:/repo/ddc", 0x0123456789abcdefull) ==
+        "D:/repo/ddc/clusters/0123456789abcdef.clusters");
+  CHECK(cluster_cache_path("ddc", 0) == "ddc/clusters/0000000000000000.clusters");
+  CHECK(cluster_cache_path("ddc", ~u64{0}) == "ddc/clusters/ffffffffffffffff.clusters");
+}
+
+TEST_CASE("cluster file: the derived-data root is the directory above that holds AGENTS.md") {
+  TempDir tmp;
+  const std::string deep = tmp.path + "/build/msvc-debug/bin";
+  std::filesystem::create_directories(std::filesystem::path(deep));
+  CHECK(find_ddc_root(deep).empty());  // nothing above it says this is a repository
+
+  REQUIRE(io::write_file(tmp.path + "/AGENTS.md", "# marker\n") == io::Status::Ok);
+  CHECK(find_ddc_root(deep) == tmp.path + "/ddc");
+  CHECK(find_ddc_root(tmp.path) == tmp.path + "/ddc");  // the root itself counts
+}
+
 TEST_CASE("cluster file: broken files fail with distinct messages and an empty result") {
   TempDir tmp;
   ClusterFileData data;
@@ -254,6 +358,7 @@ TEST_CASE("cluster file: broken files fail with distinct messages and an empty r
     CHECK(read.materials.empty());
     CHECK(read.cluster_material.empty());
     CHECK(read.image_paths.empty());
+    CHECK(read.source_path.empty());
     messages.push_back(message);
   };
 
