@@ -4,6 +4,8 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
 
+#include <utility>
+
 namespace engine::window {
 
 ENGINE_LOG_CATEGORY_DEFINE(log_window, "window");
@@ -155,6 +157,77 @@ f32 normalize_axis(i16 raw, bool is_trigger) noexcept {
   return v < -1.0f ? -1.0f : (v > 1.0f ? 1.0f : v);
 }
 
+// --- raw joysticks --------------------------------------------------------------------------
+//
+// SDL announces every device as a joystick, and the subset it has a mapping for a second time as
+// a gamepad. A device with a mapping belongs to the table above, which reports it by its named
+// buttons and axes; everything else — wheels, pedal boxes, shifters, flight sticks — lands here
+// and is reported by bare index, because there is nothing to name it by. The slot space is this
+// table's own: joystick 0 and gamepad 0 are two different devices.
+
+bool g_joystick_subsystem = false;
+
+struct JoystickSlot {
+  SDL_Joystick* handle = nullptr;
+  SDL_JoystickID instance = 0;
+};
+
+JoystickSlot g_joysticks[k_max_joysticks];
+
+u32 find_joystick_slot(SDL_JoystickID instance) noexcept {
+  for (u32 i = 0; i < k_max_joysticks; ++i) {
+    if (g_joysticks[i].handle != nullptr && g_joysticks[i].instance == instance) return i;
+  }
+  return k_max_joysticks;
+}
+
+// Opens a newly arrived joystick into the lowest free slot. k_max_joysticks when SDL also has a
+// gamepad mapping for it (the gamepad table owns it then), when it will not open, or when every
+// slot is taken; the caller drops the event.
+u32 open_joystick(SDL_JoystickID instance) {
+  if (SDL_IsGamepad(instance)) return k_max_joysticks;
+  if (find_joystick_slot(instance) != k_max_joysticks) return k_max_joysticks;  // already open
+  u32 slot = k_max_joysticks;
+  for (u32 i = 0; i < k_max_joysticks; ++i) {
+    if (g_joysticks[i].handle == nullptr) {
+      slot = i;
+      break;
+    }
+  }
+  if (slot == k_max_joysticks) {
+    ENGINE_LOG_WARN(log_window, "joystick ignored: every slot is taken",
+                    log::field("slots", k_max_joysticks));
+    return k_max_joysticks;
+  }
+  SDL_Joystick* stick = SDL_OpenJoystick(instance);
+  if (stick == nullptr) {
+    ENGINE_LOG_WARN(log_window, "SDL_OpenJoystick failed", log::field("reason", SDL_GetError()));
+    return k_max_joysticks;
+  }
+  g_joysticks[slot] = JoystickSlot{stick, instance};
+  return slot;
+}
+
+void close_joystick_slot(u32 slot) noexcept {
+  if (slot >= k_max_joysticks || g_joysticks[slot].handle == nullptr) return;
+  SDL_CloseJoystick(g_joysticks[slot].handle);
+  g_joysticks[slot] = JoystickSlot{};
+}
+
+void close_all_joysticks() noexcept {
+  for (u32 i = 0; i < k_max_joysticks; ++i)
+    close_joystick_slot(i);
+}
+
+// SDL's hat value is already the four-bit mask; anything above those bits would not be one of
+// the nine positions, so it is masked off rather than reported as a new direction.
+HatDirection hat_from_sdl(u8 value) noexcept { return static_cast<HatDirection>(value & 0x0Fu); }
+
+u8 count_to_u8(int count) noexcept {
+  if (count <= 0) return 0;
+  return count > 255 ? u8{255} : static_cast<u8>(count);
+}
+
 }  // namespace
 
 bool init(std::string* error) {
@@ -173,13 +246,26 @@ bool init(std::string* error) {
   if (!g_gamepad_subsystem) {
     ENGINE_LOG_WARN(log_window, "no gamepad subsystem", log::field("reason", SDL_GetError()));
   }
+  // SDL_INIT_GAMEPAD implies SDL_INIT_JOYSTICK, so this usually only takes a second reference;
+  // it is asked for separately so that a machine whose gamepad mappings fail to load still
+  // reports its wheels and sticks as raw joysticks.
+  g_joystick_subsystem = SDL_InitSubSystem(SDL_INIT_JOYSTICK);
+  if (!g_joystick_subsystem) {
+    ENGINE_LOG_WARN(log_window, "no joystick subsystem", log::field("reason", SDL_GetError()));
+  }
   return true;
+}
+
+void set_background_input(bool enabled) noexcept {
+  SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, enabled ? "1" : "0");
 }
 
 void shutdown() noexcept {
   if (!g_initialized) return;
   close_all_gamepads();
+  close_all_joysticks();
   g_gamepad_subsystem = false;
+  g_joystick_subsystem = false;
   SDL_Quit();
   g_initialized = false;
 }
@@ -222,6 +308,21 @@ const char* gamepad_axis_name(GamepadAxis axis) noexcept {
   return "Unknown";
 }
 
+const char* hat_direction_name(HatDirection hat) noexcept {
+  switch (hat) {
+    case HatDirection::Centered: return "Centered";
+    case HatDirection::Up: return "Up";
+    case HatDirection::Right: return "Right";
+    case HatDirection::Down: return "Down";
+    case HatDirection::Left: return "Left";
+    case HatDirection::RightUp: return "RightUp";
+    case HatDirection::RightDown: return "RightDown";
+    case HatDirection::LeftUp: return "LeftUp";
+    case HatDirection::LeftDown: return "LeftDown";
+  }
+  return "Unknown";
+}
+
 const char* gamepad_name(u32 gamepad) noexcept {
   if (gamepad >= k_max_gamepads || g_gamepads[gamepad].handle == nullptr) return "";
   const char* name = SDL_GetGamepadName(g_gamepads[gamepad].handle);
@@ -230,6 +331,63 @@ const char* gamepad_name(u32 gamepad) noexcept {
 
 bool gamepad_connected(u32 gamepad) noexcept {
   return gamepad < k_max_gamepads && g_gamepads[gamepad].handle != nullptr;
+}
+
+const char* joystick_name(u32 joystick) noexcept {
+  if (joystick >= k_max_joysticks || g_joysticks[joystick].handle == nullptr) return "";
+  const char* name = SDL_GetJoystickName(g_joysticks[joystick].handle);
+  return name != nullptr ? name : "";
+}
+
+bool joystick_connected(u32 joystick) noexcept {
+  return joystick < k_max_joysticks && g_joysticks[joystick].handle != nullptr;
+}
+
+u32 input_devices(Vector<InputDeviceInfo>& out) {
+  out.clear();
+  if (!g_initialized) return 0;
+  int count = 0;
+  SDL_JoystickID* ids = SDL_GetJoysticks(&count);
+  if (ids == nullptr) return 0;
+  for (int i = 0; i < count; ++i) {
+    const SDL_JoystickID id = ids[i];
+    InputDeviceInfo info;
+    info.is_gamepad = SDL_IsGamepad(id);
+    const char* name = info.is_gamepad ? SDL_GetGamepadNameForID(id) : SDL_GetJoystickNameForID(id);
+    if (name != nullptr) info.name.assign(name);
+    char guid[33] = {};
+    SDL_GUIDToString(SDL_GetJoystickGUIDForID(id), guid, static_cast<int>(sizeof(guid)));
+    info.guid.assign(guid);
+    info.vendor = SDL_GetJoystickVendorForID(id);
+    info.product = SDL_GetJoystickProductForID(id);
+
+    // The axis, button, and hat counts need an open device. SDL reference-counts opening, so
+    // this hands back the handle the gamepad table or the joystick table already holds and the
+    // matching close only drops this function's reference; a device nothing has opened is
+    // opened and closed here without disturbing the event stream.
+    if (SDL_Joystick* stick = SDL_OpenJoystick(id); stick != nullptr) {
+      info.axes = count_to_u8(SDL_GetNumJoystickAxes(stick));
+      info.buttons = count_to_u8(SDL_GetNumJoystickButtons(stick));
+      info.hats = count_to_u8(SDL_GetNumJoystickHats(stick));
+      SDL_CloseJoystick(stick);
+    }
+    const u32 slot = info.is_gamepad ? find_gamepad_slot(id) : find_joystick_slot(id);
+    const u32 limit = info.is_gamepad ? k_max_gamepads : k_max_joysticks;
+    info.slot = slot < limit ? static_cast<u8>(slot) : k_invalid_slot;
+    out.push_back(std::move(info));
+  }
+  SDL_free(ids);
+  return out.size();
+}
+
+bool rumble(u8 gamepad, f32 low, f32 high, u32 ms) noexcept {
+  if (gamepad >= k_max_gamepads || g_gamepads[gamepad].handle == nullptr) return false;
+  auto motor = [](f32 v) -> Uint16 {
+    if (!(v > 0.0f)) return 0;  // also catches NaN
+    if (v > 1.0f) v = 1.0f;
+    return static_cast<Uint16>(v * 65535.0f + 0.5f);
+  };
+  return SDL_RumbleGamepad(g_gamepads[gamepad].handle, motor(low), motor(high), ms);
 }
 
 bool initialized() noexcept { return g_initialized; }
@@ -321,6 +479,60 @@ bool Window::poll(Event& out) {
         out.gamepad = static_cast<u8>(slot);
         out.gamepad_axis = mapped;
         out.value = normalize_axis(e.gaxis.value, is_trigger);
+        return true;
+      }
+      // Raw joysticks. SDL sends these for every open device, including the ones the gamepad
+      // table owns, so an instance that is not in the joystick table is skipped here and
+      // reported by the gamepad cases above instead.
+      case SDL_EVENT_JOYSTICK_ADDED: {
+        const u32 slot = open_joystick(e.jdevice.which);
+        if (slot >= k_max_joysticks) continue;
+        out.kind = EventKind::JoystickConnected;
+        out.joystick = static_cast<u8>(slot);
+        ENGINE_LOG_INFO(log_window, "joystick connected", log::field("slot", slot),
+                        log::field("name", joystick_name(slot)));
+        return true;
+      }
+      case SDL_EVENT_JOYSTICK_REMOVED: {
+        const u32 slot = find_joystick_slot(e.jdevice.which);
+        if (slot >= k_max_joysticks) continue;
+        close_joystick_slot(slot);
+        out.kind = EventKind::JoystickDisconnected;
+        out.joystick = static_cast<u8>(slot);
+        ENGINE_LOG_INFO(log_window, "joystick disconnected", log::field("slot", slot));
+        return true;
+      }
+      case SDL_EVENT_JOYSTICK_AXIS_MOTION: {
+        const u32 slot = find_joystick_slot(e.jaxis.which);
+        if (slot >= k_max_joysticks) continue;
+        out.kind = EventKind::JoystickAxis;
+        out.joystick = static_cast<u8>(slot);
+        out.index = e.jaxis.axis;
+        // No layout, so no trigger convention: every axis is -1..1 as the device reports it.
+        // A pedal that rests at one end reads -1 at rest, which is the device's truth and the
+        // binding's problem (input::Binding::scale).
+        out.value = normalize_axis(e.jaxis.value, false);
+        return true;
+      }
+      case SDL_EVENT_JOYSTICK_BUTTON_DOWN:
+      case SDL_EVENT_JOYSTICK_BUTTON_UP: {
+        const u32 slot = find_joystick_slot(e.jbutton.which);
+        if (slot >= k_max_joysticks) continue;
+        out.kind = e.type == SDL_EVENT_JOYSTICK_BUTTON_DOWN ? EventKind::JoystickButtonDown
+                                                            : EventKind::JoystickButtonUp;
+        out.joystick = static_cast<u8>(slot);
+        out.index = e.jbutton.button;
+        out.value = out.kind == EventKind::JoystickButtonDown ? 1.0f : 0.0f;
+        return true;
+      }
+      case SDL_EVENT_JOYSTICK_HAT_MOTION: {
+        const u32 slot = find_joystick_slot(e.jhat.which);
+        if (slot >= k_max_joysticks) continue;
+        out.kind = EventKind::JoystickHat;
+        out.joystick = static_cast<u8>(slot);
+        out.index = e.jhat.hat;
+        out.hat = hat_from_sdl(e.jhat.value);
+        out.value = static_cast<f32>(static_cast<u8>(out.hat));
         return true;
       }
       case SDL_EVENT_WINDOW_CLOSE_REQUESTED:

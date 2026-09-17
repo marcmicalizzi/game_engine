@@ -1,3 +1,4 @@
+#include <core/containers/vector.h>
 #include <foundation/window/window.h>
 
 #include <doctest/doctest.h>
@@ -49,12 +50,14 @@ TEST_CASE("window: create a hidden window, read its size, drain events") {
     CHECK(has_surface);
   }
 
-  // Draining also runs the gamepad path: SDL reports every pad already plugged in as an
-  // SDL_EVENT_GAMEPAD_ADDED during init, so a machine with one arrives here as a Connected
-  // event with a slot below k_max_gamepads and an open handle behind it.
+  // Draining also runs the gamepad and joystick paths: SDL reports every device already plugged
+  // in as an arrival during init, so a machine with one arrives here as a Connected event with
+  // a slot below the table's size and an open handle behind it. The two slot spaces are
+  // separate, so a gamepad 0 and a joystick 0 may both show up.
   window::Event event;
   u32 drained = 0;
   u32 pads_seen = 0;
+  u32 sticks_seen = 0;
   while (window.poll(event) && drained < 1000) {
     CHECK(event.kind != window::EventKind::None);
     if (event.kind == window::EventKind::GamepadConnected) {
@@ -74,9 +77,27 @@ TEST_CASE("window: create a hidden window, read its size, drain events") {
       CHECK(event.value >= -1.0f);
       CHECK(event.value <= 1.0f);
     }
+    if (event.kind == window::EventKind::JoystickConnected) {
+      CHECK(event.joystick < window::k_max_joysticks);
+      CHECK(window::joystick_connected(event.joystick));
+      MESSAGE("joystick " << static_cast<u32>(event.joystick) << ": "
+                          << window::joystick_name(event.joystick));
+      ++sticks_seen;
+    }
+    if (event.kind == window::EventKind::JoystickAxis) {
+      CHECK(window::joystick_connected(event.joystick));
+      CHECK(event.value >= -1.0f);
+      CHECK(event.value <= 1.0f);
+    }
+    if (event.kind == window::EventKind::JoystickHat) {
+      CHECK(window::joystick_connected(event.joystick));
+      CHECK(static_cast<u32>(event.hat) <= 12);
+      CHECK(std::strcmp(window::hat_direction_name(event.hat), "Unknown") != 0);
+    }
     ++drained;
   }
   if (pads_seen == 0) MESSAGE("no gamepad is plugged in here");
+  if (sticks_seen == 0) MESSAGE("no raw joystick is plugged in here");
 
   // Slots nothing has been plugged into report as empty rather than as a stale handle.
   for (u32 i = pads_seen; i < window::k_max_gamepads; ++i) {
@@ -84,15 +105,60 @@ TEST_CASE("window: create a hidden window, read its size, drain events") {
     CHECK(std::strcmp(window::gamepad_name(i), "") == 0);
   }
   CHECK_FALSE(window::gamepad_connected(window::k_max_gamepads));
+  for (u32 i = sticks_seen; i < window::k_max_joysticks; ++i) {
+    CHECK_FALSE(window::joystick_connected(i));
+    CHECK(std::strcmp(window::joystick_name(i), "") == 0);
+  }
+  CHECK_FALSE(window::joystick_connected(window::k_max_joysticks));
+
+  // The description API needs no events: whatever is attached is listed, whether or not its
+  // arrival has been polled. Having drained above, every listed device also has its slot.
+  Vector<window::InputDeviceInfo> devices;
+  const u32 device_count = window::input_devices(devices);
+  CHECK(device_count == devices.size());
+  CHECK(device_count >= pads_seen + sticks_seen);
+  u32 listed_pads = 0;
+  u32 listed_sticks = 0;
+  for (const window::InputDeviceInfo& info : devices) {
+    MESSAGE("device " << std::string(info.is_gamepad ? "gamepad" : "joystick") << " slot "
+                      << static_cast<u32>(info.slot) << ": " << info.name << " [" << info.guid
+                      << "] vendor " << info.vendor << " product " << info.product << ", "
+                      << static_cast<u32>(info.axes) << " axes, " << static_cast<u32>(info.buttons)
+                      << " buttons, " << static_cast<u32>(info.hats) << " hats");
+    CHECK(info.guid.size() == 32);
+    if (info.slot == window::k_invalid_slot) {
+      // Attached but unslotted: it refused to open, or every slot of its kind is taken.
+      MESSAGE("device has no slot: " << info.name);
+      continue;
+    }
+    if (info.is_gamepad) {
+      CHECK(window::gamepad_connected(info.slot));
+      ++listed_pads;
+    } else {
+      CHECK(window::joystick_connected(info.slot));
+      ++listed_sticks;
+    }
+  }
+  CHECK(listed_pads == pads_seen);
+  CHECK(listed_sticks == sticks_seen);
+
+  // Rumble is harmless where it is unsupported and false for an empty slot.
+  CHECK_FALSE(window::rumble(static_cast<u8>(window::k_max_gamepads), 0.5f, 0.5f, 10));
+  for (u32 i = 0; i < pads_seen; ++i)
+    (void)window::rumble(static_cast<u8>(i), 0.0f, 0.0f, 1);
 
   window.set_title("renamed");
   window.destroy();
   CHECK_FALSE(window.valid());
   window::shutdown();
   CHECK_FALSE(window::initialized());
-  // shutdown() closes every pad it opened.
+  // shutdown() closes every device it opened.
   for (u32 i = 0; i < window::k_max_gamepads; ++i)
     CHECK_FALSE(window::gamepad_connected(i));
+  for (u32 i = 0; i < window::k_max_joysticks; ++i)
+    CHECK_FALSE(window::joystick_connected(i));
+  devices.clear();
+  CHECK(window::input_devices(devices) == 0);
 }
 
 // The button and axis enums are the input log's vocabulary (docs/subsystems/input.md), so their
@@ -126,5 +192,32 @@ TEST_CASE("window: the gamepad enums are named and numbered for the input log") 
   for (u32 i = 0; i < static_cast<u32>(window::GamepadAxis::Count); ++i) {
     CHECK(std::strcmp(window::gamepad_axis_name(static_cast<window::GamepadAxis>(i)), "Unknown") !=
           0);
+  }
+
+  // Hat directions are a bitmask: a diagonal is the two cardinals or-ed, and the nine positions
+  // are the only ones with names. input::k_hat_* mirrors these numbers.
+  CHECK(static_cast<u32>(window::HatDirection::Centered) == 0);
+  CHECK(static_cast<u32>(window::HatDirection::Up) == 1);
+  CHECK(static_cast<u32>(window::HatDirection::Right) == 2);
+  CHECK(static_cast<u32>(window::HatDirection::Down) == 4);
+  CHECK(static_cast<u32>(window::HatDirection::Left) == 8);
+  CHECK(static_cast<u32>(window::HatDirection::RightUp) == 3);
+  CHECK(static_cast<u32>(window::HatDirection::RightDown) == 6);
+  CHECK(static_cast<u32>(window::HatDirection::LeftUp) == 9);
+  CHECK(static_cast<u32>(window::HatDirection::LeftDown) == 12);
+  CHECK(std::strcmp(window::hat_direction_name(window::HatDirection::LeftDown), "LeftDown") == 0);
+  CHECK(std::strcmp(window::hat_direction_name(static_cast<window::HatDirection>(5)), "Unknown") ==
+        0);
+  const window::HatDirection hats[] = {
+      window::HatDirection::Centered,  window::HatDirection::Up,
+      window::HatDirection::Right,     window::HatDirection::Down,
+      window::HatDirection::Left,      window::HatDirection::RightUp,
+      window::HatDirection::RightDown, window::HatDirection::LeftUp,
+      window::HatDirection::LeftDown};
+  for (u32 i = 0; i < 9; ++i) {
+    const char* name = window::hat_direction_name(hats[i]);
+    CHECK(std::strcmp(name, "Unknown") != 0);
+    for (u32 j = 0; j < i; ++j)
+      CHECK(std::strcmp(name, window::hat_direction_name(hats[j])) != 0);
   }
 }

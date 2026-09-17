@@ -69,7 +69,10 @@ void InputState::feed(const RawEvent& event) {
   switch (event.source) {
     case Source::Key:
     case Source::MouseButton:
-    case Source::GamepadButton: {
+    case Source::GamepadButton:
+    case Source::JoystickButton:
+    // A hat direction is fed as 1 or 0 per event, so it edges exactly like a button.
+    case Source::JoystickHat: {
       const bool down = event.value != 0.0f;
       const bool was_down = signal.value != 0.0f;
       // The counters saturate: what a query asks is whether the edge happened at all.
@@ -83,7 +86,8 @@ void InputState::feed(const RawEvent& event) {
       break;
     }
     case Source::MouseAxis: signal.value += event.value; break;
-    case Source::GamepadAxis: signal.value = clamp_unit(event.value); break;
+    case Source::GamepadAxis:
+    case Source::JoystickAxis: signal.value = clamp_unit(event.value); break;
   }
 }
 
@@ -97,7 +101,7 @@ f32 InputState::bound_value(const Binding& binding, bool previous) const noexcep
   const Signal* signal = find_signal(binding.source, binding.code);
   if (signal == nullptr) return 0.0f;
   const f32 raw = previous ? signal->previous : signal->value;
-  return binding.source == Source::GamepadAxis ? apply_deadzone(raw, binding.deadzone) : raw;
+  return is_analog_axis(binding.source) ? apply_deadzone(raw, binding.deadzone) : raw;
 }
 
 bool InputState::binding_active(const Binding& binding, bool previous) const noexcept {
@@ -155,15 +159,15 @@ Vec2 InputState::axis2(ActionId action) const noexcept {
   if (map_ == nullptr) return Vec2{};
   const std::span<const ActionBinding> list = map_->bindings(action);
 
-  // A stick is two gamepad axes, one per component, with the same deadzone. Taking their
-  // deadzone radially instead of per axis keeps the usable area a disc: without it a diagonal
-  // needs more travel than a cardinal direction, which is what makes a stick feel square.
+  // A stick is two analog axes of the same source, one per component, with the same deadzone.
+  // Taking their deadzone radially instead of per axis keeps the usable area a disc: without it
+  // a diagonal needs more travel than a cardinal direction, which is what makes a stick feel
+  // square. A flight stick's two raw joystick axes are a stick by the same rule.
   const ActionBinding* x_axis = nullptr;
   const ActionBinding* y_axis = nullptr;
   bool stick = true;
   for (const ActionBinding& ab : list) {
-    if (ab.binding.source != Source::GamepadAxis || ab.binding.deadzone <= 0.0f ||
-        ab.component > 1) {
+    if (!is_analog_axis(ab.binding.source) || ab.binding.deadzone <= 0.0f || ab.component > 1) {
       stick = false;
       break;
     }
@@ -175,6 +179,7 @@ Vec2 InputState::axis2(ActionId action) const noexcept {
     slot = &ab;
   }
   if (stick && x_axis != nullptr && y_axis != nullptr &&
+      x_axis->binding.source == y_axis->binding.source &&
       x_axis->binding.deadzone == y_axis->binding.deadzone) {
     const Signal* sx = find_signal(x_axis->binding.source, x_axis->binding.code);
     const Signal* sy = find_signal(y_axis->binding.source, y_axis->binding.code);

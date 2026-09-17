@@ -9,8 +9,9 @@ namespace engine::input {
 
 namespace {
 
-constexpr const char* k_source_names[k_source_count] = {"key", "mouse_button", "mouse_axis",
-                                                        "gamepad_button", "gamepad_axis"};
+constexpr const char* k_source_names[k_source_count] = {
+    "key",          "mouse_button",  "mouse_axis",      "gamepad_button",
+    "gamepad_axis", "joystick_axis", "joystick_button", "joystick_hat"};
 constexpr const char* k_kind_names[3] = {"button", "axis", "axis2"};
 
 // Floats go into the digest by their bits so that a scale of -1 and a scale of 1 cannot

@@ -211,6 +211,83 @@ TEST_CASE("input log: saved as JSON lines and loaded back unchanged") {
   }
 }
 
+// The same round trip over the raw-joystick sources, which are the log format's newest members:
+// a wheel axis, a pedal, a shifter button on a second device, and a hat direction.
+TEST_CASE("input log: a wheel, a pedal, a shifter, and a hat round-trip and replay") {
+  const TempDir tmp("engine_input_log_joystick");
+
+  ActionMap map;
+  const ActionId steer = map.add_action("steer", ActionKind::Axis);
+  map.bind(steer, Binding{Source::JoystickAxis, 0, 1.0f, 0.05f});
+  const ActionId throttle = map.add_action("throttle", ActionKind::Axis);
+  map.bind(throttle, Binding{Source::JoystickAxis, 1, 1.0f});
+  const ActionId gear = map.add_action("gear_1", ActionKind::Button);
+  map.bind(gear, Binding{Source::JoystickButton, 0});
+  const ActionId look = map.add_action("look_left", ActionKind::Button);
+  map.bind(look, Binding{Source::JoystickHat, hat_code(0, k_hat_left)});
+
+  Vector<RawEvent> events;
+  events.push_back(RawEvent{SimTick{1}, Source::JoystickAxis, 0, -0.75f, 0});
+  events.push_back(RawEvent{SimTick{1}, Source::JoystickAxis, 1, 0.5f, 0});
+  events.push_back(RawEvent{SimTick{2}, Source::JoystickHat, hat_code(0, k_hat_left), 1.0f, 0});
+  events.push_back(RawEvent{SimTick{2}, Source::JoystickButton, 0, 1.0f, 1});
+  events.push_back(RawEvent{SimTick{3}, Source::JoystickHat, hat_code(0, k_hat_left), 0.0f, 0});
+  events.push_back(RawEvent{SimTick{4}, Source::JoystickButton, 0, 0.0f, 1});
+  events.push_back(RawEvent{SimTick{4}, Source::JoystickAxis, 0, 0.0f, 0});
+
+  InputLog log;
+  log.set_map(map);
+  InputState live(map);
+  Vector<u64> expected;
+  u32 cursor = 0;
+  for (u64 t = 0; t <= 5; ++t) {
+    live.begin_tick(SimTick{t});
+    while (cursor < events.size() && events[cursor].tick.value == t) {
+      live.feed(events[cursor]);
+      log.record(events[cursor]);
+      ++cursor;
+    }
+    live.end_tick();
+    expected.push_back(live.state_hash());
+  }
+  CHECK(cursor == events.size());
+
+  const std::string path = io::join_path(tmp.path, "wheel.jsonl");
+  REQUIRE(log.save(path) == io::Status::Ok);
+  std::string text;
+  REQUIRE(io::read_file(path, text) == io::Status::Ok);
+  // The source names are what a hand-written or third-party log has to say.
+  CHECK(text.find("\"joystick_axis\"") != std::string::npos);
+  CHECK(text.find("\"joystick_button\"") != std::string::npos);
+  CHECK(text.find("\"joystick_hat\"") != std::string::npos);
+
+  InputLog loaded;
+  std::string error;
+  REQUIRE_MESSAGE(loaded.load(path, &error) == io::Status::Ok, error);
+  REQUIRE(loaded.size() == events.size());
+  for (u32 i = 0; i < loaded.size(); ++i) {
+    CHECK(loaded.events()[i].source == events[i].source);
+    CHECK(loaded.events()[i].code == events[i].code);
+    CHECK(loaded.events()[i].device == events[i].device);
+    CHECK(loaded.events()[i].value == doctest::Approx(events[i].value));
+  }
+
+  InputState replayed(map);
+  Recorder recorder;
+  REQUIRE_MESSAGE(loaded.replay(replayed, SimTick{0}, SimTick{5}, {&collect, &recorder}, &error),
+                  error);
+  REQUIRE(recorder.digests.size() == expected.size());
+  for (u32 i = 0; i < expected.size(); ++i)
+    CHECK_MESSAGE(recorder.digests[i] == expected[i], "tick " << i);
+  CHECK(replayed.held(gear) == false);
+  CHECK(replayed.axis(steer) == doctest::Approx(0.0f));
+  CHECK(map.is_bound(Source::JoystickHat, hat_code(0, k_hat_left)));
+  CHECK_FALSE(map.is_bound(Source::JoystickHat, hat_code(0, k_hat_right)));
+  CHECK(map.action_count() == 4);
+  CHECK(map.find_action("throttle") == throttle);
+  CHECK(map.find_action("look_left") == look);
+}
+
 TEST_CASE("input log: a replay against a different map is refused") {
   const ActionMap map = make_map();
   InputLog log;

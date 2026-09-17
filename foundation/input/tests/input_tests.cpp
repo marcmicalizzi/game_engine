@@ -181,6 +181,151 @@ TEST_CASE("input: a gamepad axis takes its deadzone and its scale") {
   CHECK_FALSE(trigger_state.held(shoot));
 }
 
+// A racing rig as the window module hands it over: a wheel on joystick slot 0 with steering on
+// axis 0 and two pedals on axes 1 and 2, a hat on the rim, and a gear shifter on slot 1 whose
+// gates are plain buttons. Nothing here is named by the device; the binding table is what turns
+// "axis 2 of device 0" into "brake".
+TEST_CASE("input: a wheel, its pedals, its hat, and a shifter") {
+  constexpr u32 k_wheel = 0;    // joystick slots
+  constexpr u32 k_shifter = 1;  //
+  constexpr u32 k_steer = 0;    // axis indices on the wheel
+  constexpr u32 k_throttle = 1;
+  constexpr u32 k_brake = 2;
+
+  ActionMap map;
+  const ActionId steer = map.add_action("steer", ActionKind::Axis);
+  map.bind(steer, Binding{Source::JoystickAxis, k_steer, 1.0f, 0.05f});
+  // Two pedals on one axis action: the throttle pushes it positive, the brake negative. A real
+  // pedal set rests at one end of its travel, which is the scale's business, not the module's.
+  const ActionId drive = map.add_action("drive", ActionKind::Axis);
+  map.bind(drive, Binding{Source::JoystickAxis, k_throttle, 1.0f, 0.02f});
+  map.bind(drive, Binding{Source::JoystickAxis, k_brake, -1.0f, 0.02f});
+  // A hat direction is a button: code = hat 0, direction Up.
+  const ActionId look_back = map.add_action("look_back", ActionKind::Button);
+  map.bind(look_back, Binding{Source::JoystickHat, hat_code(0, k_hat_up)});
+  // Shifter gates.
+  const ActionId first = map.add_action("gear_1", ActionKind::Button);
+  map.bind(first, Binding{Source::JoystickButton, 0});
+  const ActionId second = map.add_action("gear_2", ActionKind::Button);
+  map.bind(second, Binding{Source::JoystickButton, 1});
+
+  CHECK(hat_code(0, k_hat_up) == 1);
+  CHECK(hat_code(2, k_hat_left) == 520);
+  CHECK(hat_index_of(hat_code(2, k_hat_left)) == 2);
+  CHECK(hat_direction_of(hat_code(2, k_hat_left)) == k_hat_left);
+
+  InputState state(map);
+
+  // The wheel a quarter turn right, the throttle half down, no brake.
+  const RawEvent turn[] = {
+      RawEvent{SimTick{1}, Source::JoystickAxis, k_steer, 0.25f, k_wheel},
+      RawEvent{SimTick{1}, Source::JoystickAxis, k_throttle, 0.5f, k_wheel},
+  };
+  run_tick(state, 1, turn);
+  // (0.25 - 0.05) / 0.95 and (0.5 - 0.02) / 0.98.
+  CHECK(state.axis(steer) == doctest::Approx(0.2f / 0.95f));
+  CHECK(state.axis(drive) == doctest::Approx(0.48f / 0.98f));
+
+  // Off the throttle and hard on the brake: the same action swings negative.
+  const RawEvent brake[] = {
+      RawEvent{SimTick{2}, Source::JoystickAxis, k_throttle, 0.0f, k_wheel},
+      RawEvent{SimTick{2}, Source::JoystickAxis, k_brake, 1.0f, k_wheel},
+  };
+  run_tick(state, 2, brake);
+  CHECK(state.axis(drive) == doctest::Approx(-1.0f));
+  // Wheel drift inside the deadzone is nothing at all.
+  const RawEvent drift{SimTick{3}, Source::JoystickAxis, k_steer, 0.04f, k_wheel};
+  run_tick(state, 3, {&drift, 1});
+  CHECK(state.axis(steer) == doctest::Approx(0.0f));
+
+  // The hat: all four directions are fed every time it moves, and only the one that changed
+  // reports an edge.
+  auto hat_tick = [&](u64 tick, u32 mask) {
+    const u32 directions[4] = {k_hat_up, k_hat_right, k_hat_down, k_hat_left};
+    RawEvent events[4];
+    for (u32 i = 0; i < 4; ++i) {
+      events[i] = RawEvent{SimTick{tick}, Source::JoystickHat, hat_code(0, directions[i]),
+                           (mask & directions[i]) != 0 ? 1.0f : 0.0f, k_wheel};
+    }
+    run_tick(state, tick, events);
+  };
+  hat_tick(4, k_hat_up);
+  CHECK(state.pressed(look_back));
+  CHECK(state.held(look_back));
+  hat_tick(5, k_hat_up | k_hat_right);  // to a diagonal: Up stays down, no second press
+  CHECK_FALSE(state.pressed(look_back));
+  CHECK(state.held(look_back));
+  hat_tick(6, 0);
+  CHECK(state.released(look_back));
+  CHECK_FALSE(state.held(look_back));
+
+  // The shifter: two gates on a second device, one down at a time.
+  const RawEvent into_first{SimTick{7}, Source::JoystickButton, 0, 1.0f, k_shifter};
+  run_tick(state, 7, {&into_first, 1});
+  CHECK(state.pressed(first));
+  CHECK_FALSE(state.held(second));
+  const RawEvent shift[] = {
+      RawEvent{SimTick{8}, Source::JoystickButton, 0, 0.0f, k_shifter},
+      RawEvent{SimTick{8}, Source::JoystickButton, 1, 1.0f, k_shifter},
+  };
+  run_tick(state, 8, shift);
+  CHECK(state.released(first));
+  CHECK_FALSE(state.held(first));
+  CHECK(state.pressed(second));
+  CHECK(state.held(second));
+}
+
+// The joystick slot space and the gamepad slot space overlap numerically: device 0 means two
+// different things by source, and a filter on one does not silence the other.
+TEST_CASE("input: a joystick axis and a gamepad axis on the same slot number are separate") {
+  ActionMap map;
+  const ActionId wheel = map.add_action("wheel", ActionKind::Axis);
+  map.bind(wheel, Binding{Source::JoystickAxis, 0});
+  const ActionId stick = map.add_action("stick", ActionKind::Axis);
+  map.bind(stick, Binding{Source::GamepadAxis, k_pad_left_x});
+  InputState state(map);
+
+  const RawEvent both[] = {
+      RawEvent{SimTick{1}, Source::JoystickAxis, 0, 0.5f, 0},
+      RawEvent{SimTick{1}, Source::GamepadAxis, k_pad_left_x, -0.5f, 0},
+  };
+  run_tick(state, 1, both);
+  CHECK(state.axis(wheel) == doctest::Approx(0.5f));
+  CHECK(state.axis(stick) == doctest::Approx(-0.5f));
+}
+
+TEST_CASE("input: a flight stick's two axes get the radial deadzone a gamepad stick gets") {
+  ActionMap map;
+  const ActionId fly = map.add_action("fly", ActionKind::Axis2);
+  map.bind(fly, Binding{Source::JoystickAxis, 0, 1.0f, 0.2f}, 0);
+  map.bind(fly, Binding{Source::JoystickAxis, 1, 1.0f, 0.2f}, 1);
+  InputState state(map);
+
+  // Each component is under the deadzone; the radius is not, so the stick still moves.
+  const RawEvent nudge[] = {
+      RawEvent{SimTick{1}, Source::JoystickAxis, 0, 0.18f, 0},
+      RawEvent{SimTick{1}, Source::JoystickAxis, 1, 0.18f, 0},
+  };
+  run_tick(state, 1, nudge);
+  const Vec2 v = state.axis2(fly);
+  CHECK(v.x > 0.0f);
+  CHECK(v.x == doctest::Approx(v.y));
+
+  // Mixing sources across the components is not a stick: each axis takes its own deadzone.
+  ActionMap mixed;
+  const ActionId half = mixed.add_action("half", ActionKind::Axis2);
+  mixed.bind(half, Binding{Source::JoystickAxis, 0, 1.0f, 0.2f}, 0);
+  mixed.bind(half, Binding{Source::GamepadAxis, k_pad_left_x, 1.0f, 0.2f}, 1);
+  InputState mixed_state(mixed);
+  const RawEvent pair[] = {
+      RawEvent{SimTick{1}, Source::JoystickAxis, 0, 0.18f, 0},
+      RawEvent{SimTick{1}, Source::GamepadAxis, k_pad_left_x, 0.18f, 0},
+  };
+  run_tick(mixed_state, 1, pair);
+  CHECK(mixed_state.axis2(half).x == doctest::Approx(0.0f));
+  CHECK(mixed_state.axis2(half).y == doctest::Approx(0.0f));
+}
+
 TEST_CASE("input: axis2 from four keys and from a stick") {
   ActionMap map;
   const ActionId move = map.add_action("move", ActionKind::Axis2);
@@ -415,8 +560,23 @@ TEST_CASE("input: source and kind names round-trip") {
   CHECK(is_digital(Source::Key));
   CHECK(is_digital(Source::MouseButton));
   CHECK(is_digital(Source::GamepadButton));
+  CHECK(is_digital(Source::JoystickButton));
+  CHECK(is_digital(Source::JoystickHat));
   CHECK_FALSE(is_digital(Source::MouseAxis));
   CHECK_FALSE(is_digital(Source::GamepadAxis));
+  CHECK_FALSE(is_digital(Source::JoystickAxis));
+  CHECK(is_analog_axis(Source::GamepadAxis));
+  CHECK(is_analog_axis(Source::JoystickAxis));
+  CHECK_FALSE(is_analog_axis(Source::MouseAxis));
+
+  // The enumerators are log format: their numbering is pinned, and the new ones are appended.
+  CHECK(static_cast<u32>(Source::Key) == 0);
+  CHECK(static_cast<u32>(Source::GamepadAxis) == 4);
+  CHECK(static_cast<u32>(Source::JoystickAxis) == 5);
+  CHECK(static_cast<u32>(Source::JoystickButton) == 6);
+  CHECK(static_cast<u32>(Source::JoystickHat) == 7);
+  CHECK(k_source_count == 8);
+  CHECK(std::string(source_name(Source::JoystickHat)) == "joystick_hat");
 
   const ActionKind kinds[] = {ActionKind::Button, ActionKind::Axis, ActionKind::Axis2};
   for (ActionKind kind : kinds) {

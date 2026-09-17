@@ -18,6 +18,7 @@
 
 #include <core/base/macros.h>
 #include <core/base/types.h>
+#include <core/containers/vector.h>
 
 #include <span>
 #include <string>
@@ -29,13 +30,19 @@ typedef struct VkSurfaceKHR_T* VkSurfaceKHR;
 
 namespace engine::window {
 
-// Starts the video and event subsystems, and the gamepad subsystem when the platform has one
-// (a machine with no gamepad driver still gets a window; the failure is logged, not returned).
-// False, with the reason, on a machine without a display server or video driver; nothing else
-// in this module may be used then.
+// Starts the video and event subsystems, then the gamepad and joystick subsystems when the
+// platform has them (a machine with no joystick driver still gets a window; the failure is
+// logged, not returned). False, with the reason, on a machine without a display server or video
+// driver; nothing else in this module may be used then.
 bool init(std::string* error = nullptr);
 void shutdown() noexcept;
 bool initialized() noexcept;
+
+// SDL drops gamepad and joystick events while the process owns windows and none of them holds
+// keyboard focus, which is right for a game and wrong for a tool the owner starts from a
+// terminal and then touches a wheel. Off by default; `engine-input` turns it on. Call after
+// init(); it has no effect on a process with no window.
+void set_background_input(bool enabled) noexcept;
 
 enum class Key : u16 {
   Unknown = 0,
@@ -105,6 +112,21 @@ enum class Key : u16 {
 // released on disconnect, so `Event::gamepad` is always below this.
 inline constexpr u32 k_max_gamepads = 8;
 
+// How many raw joysticks this module tracks at once. SDL reports every device as a joystick and
+// the ones it has a mapping for additionally as a gamepad; this module opens a joystick only
+// when it is *not* a gamepad, so the two tables never hold the same device.
+//
+// **The two slot spaces are separate.** `Event::gamepad` indexes the gamepad table and
+// `Event::joystick` the joystick table, both from 0, both lowest free first, both released on
+// disconnect: gamepad 0 and joystick 0 are two different devices. Whoever converts these events
+// into `input::RawEvent`s keeps them apart by source, not by the slot number
+// (docs/subsystems/input.md).
+inline constexpr u32 k_max_joysticks = 8;
+
+// `InputDeviceInfo::slot` for a device that is attached but has no slot: its arrival event has
+// not been polled yet, or every slot of its kind is taken.
+inline constexpr u8 k_invalid_slot = 0xFF;
+
 // The standard gamepad layout, in SDL's own order. Face buttons are named by position, not by
 // label, so the same enumerator is the bottom button on every pad (Xbox A, PlayStation cross,
 // Nintendo B); a game that wants the printed label asks the platform layer, not this enum.
@@ -149,6 +171,22 @@ enum class GamepadAxis : u8 {
   Count,
 };
 
+// Where a hat (a d-pad on a stick, the "POV hat") is pushed, as a bitmask of the four cardinal
+// directions: a diagonal is two bits, and centered is none. The values are SDL's own and are
+// part of the input log format (`input::k_hat_up` and friends mirror them): append, never
+// reorder. A binding names one direction of one hat, `input::hat_code(hat, direction)`.
+enum class HatDirection : u8 {
+  Centered = 0,
+  Up = 1,
+  Right = 2,
+  Down = 4,
+  Left = 8,
+  RightUp = Right | Up,      // 3
+  RightDown = Right | Down,  // 6
+  LeftUp = Left | Up,        // 9
+  LeftDown = Left | Down,    // 12
+};
+
 enum class EventKind : u8 {
   None = 0,
   Quit,            // the application was asked to quit (last window closed, SIGINT, ...)
@@ -169,6 +207,15 @@ enum class EventKind : u8 {
   GamepadButtonDown,
   GamepadButtonUp,
   GamepadAxis,
+  // Raw joysticks: everything SDL has no gamepad mapping for (wheels, pedal sets, shifters,
+  // flight sticks, arcade panels). No layout is assumed, so axes, buttons, and hats are bare
+  // indices; `joystick` holds this module's joystick slot id, a different space from `gamepad`.
+  JoystickConnected,
+  JoystickDisconnected,
+  JoystickAxis,
+  JoystickButtonDown,
+  JoystickButtonUp,
+  JoystickHat,
 };
 
 struct Event {
@@ -186,16 +233,49 @@ struct Event {
   u8 gamepad = 0;  // Gamepad*: the slot id this module assigned, 0..k_max_gamepads-1
   GamepadButton gamepad_button = GamepadButton::Unknown;  // GamepadButtonDown/Up
   GamepadAxis gamepad_axis = GamepadAxis::LeftX;          // GamepadAxis
-  f32 value = 0.0f;  // GamepadAxis: -1..1 for sticks, 0..1 for triggers
+  u8 joystick = 0;  // Joystick*: the joystick slot id, 0..k_max_joysticks-1
+  u8 index = 0;     // JoystickAxis/JoystickButton*/JoystickHat: the axis, button, or hat index
+  HatDirection hat = HatDirection::Centered;  // JoystickHat
+  f32 value = 0.0f;  // GamepadAxis: -1..1 for sticks, 0..1 for triggers. JoystickAxis: -1..1
 };
 
 // "South", "LeftTrigger", ... for logs and tools; "Unknown" outside the enum.
 const char* gamepad_button_name(GamepadButton button) noexcept;
 const char* gamepad_axis_name(GamepadAxis axis) noexcept;
+// "Centered", "Up", "RightDown", ...; "Unknown" for a mask outside the nine positions.
+const char* hat_direction_name(HatDirection hat) noexcept;
 // The pad's product name ("Xbox Series X Controller"), or "" for a slot with nothing in it.
 // Valid until that slot disconnects.
 const char* gamepad_name(u32 gamepad) noexcept;
 bool gamepad_connected(u32 gamepad) noexcept;
+// The same two, over the separate joystick slot space.
+const char* joystick_name(u32 joystick) noexcept;
+bool joystick_connected(u32 joystick) noexcept;
+
+// What a device is and how much of it there is, without waiting for an event. `slot` indexes
+// the gamepad table when `is_gamepad`, the joystick table otherwise, and is k_invalid_slot
+// until that device's arrival event has been polled.
+struct InputDeviceInfo {
+  std::string name;
+  std::string guid;  // SDL's 32-character stable device id: bus, vendor, product, version
+  u16 vendor = 0;
+  u16 product = 0;
+  u8 axes = 0;
+  u8 buttons = 0;
+  u8 hats = 0;
+  bool is_gamepad = false;
+  u8 slot = k_invalid_slot;
+};
+
+// Every gamepad and joystick attached right now, in SDL's enumeration order. Replaces `out`;
+// returns how many were written. Empty before init() and on a machine with no joystick driver.
+u32 input_devices(Vector<InputDeviceInfo>& out);
+
+// Plays a rumble effect on a gamepad slot: `low` and `high` are the two motors, 0..1, for `ms`
+// milliseconds. False when the slot is empty or the pad has no motors — which is most of them,
+// so a caller treats false as "nothing happened", not as an error. Joysticks have no rumble
+// here: a force-feedback wheel is a haptics device, not two motors.
+bool rumble(u8 gamepad, f32 low, f32 high, u32 ms) noexcept;
 
 struct WindowDesc {
   const char* title = "engine";

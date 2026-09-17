@@ -43,13 +43,42 @@
 //           r.value  = e.value;                                 // -1..1, or 0..1 for triggers
 //           r.device = e.gamepad;
 //           break;
+//         case window::EventKind::JoystickAxis:                 // a raw device: bare indices
+//           r.source = input::Source::JoystickAxis;
+//           r.code   = e.index;                                 // the axis index
+//           r.value  = e.value;                                 // -1..1 as the device reports
+//           r.device = e.joystick;                              // the joystick slot id
+//           break;
+//         case window::EventKind::JoystickButtonDown:
+//         case window::EventKind::JoystickButtonUp:
+//           r.source = input::Source::JoystickButton;
+//           r.code   = e.index;                                 // the button index
+//           r.value  = e.kind == window::EventKind::JoystickButtonDown ? 1.0f : 0.0f;
+//           r.device = e.joystick;
+//           break;
+//         case window::EventKind::JoystickHat:                  // four events, one per direction
+//           r.source = input::Source::JoystickHat;
+//           for (u32 dir : {k_hat_up, k_hat_right, k_hat_down, k_hat_left}) {
+//             r.code  = input::hat_code(e.index, dir);          // hat << 8 | direction
+//             r.value = (u32(e.hat) & dir) != 0 ? 1.0f : 0.0f;  // one signal per direction
+//             r.device = e.joystick;
+//             state.feed(r); log.record(r);
+//           }
+//           continue;                                           // already fed
 //       }
 //       state.feed(r); log.record(r);
 //     }
 //
 // So `code` is a key scancode, a mouse button number, a `MouseAxisCode`, a
-// `window::GamepadButton`, or a `window::GamepadAxis`, by source. Those numbering schemes are
-// part of the log format: enumerators are appended, never reordered.
+// `window::GamepadButton`, a `window::GamepadAxis`, a raw joystick axis or button index, or a
+// hat direction packed as `hat_code()`, by source. Those numbering schemes are part of the log
+// format: enumerators are appended, never reordered. `device` is the gamepad slot for the
+// gamepad sources and the joystick slot for the joystick ones — two separate spaces, told apart
+// by the source and never by the number (docs/subsystems/window.md).
+//
+// A hat reports a position, not an edge, so one hat becomes four digital signals, one per
+// cardinal direction: the conversion emits all four on every hat event and `InputState` counts
+// an edge only where the value actually changed, which keeps the converter stateless.
 //
 // Per tick:
 //
@@ -77,30 +106,67 @@
 namespace engine::input {
 
 // What a binding reads. The meaning of `Binding::code` follows from it (see the header note).
-enum class Source : u8 { Key, MouseButton, MouseAxis, GamepadButton, GamepadAxis };
-inline constexpr u32 k_source_count = 5;
+// **The numeric values are log format**: append, never reorder or renumber.
+enum class Source : u8 {
+  Key,
+  MouseButton,
+  MouseAxis,
+  GamepadButton,
+  GamepadAxis,
+  JoystickAxis,    // a raw device's axis, by index: a wheel, a pedal, a stick's pitch
+  JoystickButton,  // a raw device's button, by index: a shifter gate, a rim button
+  JoystickHat,     // one direction of one hat: code = hat_code(hat_index, direction)
+};
+inline constexpr u32 k_source_count = 8;
 
-// "key", "mouse_button", "mouse_axis", "gamepad_button", "gamepad_axis": the names in a saved
-// ActionMap and in a log header. Stable; they are file format, not display text.
+// "key", "mouse_button", "mouse_axis", "gamepad_button", "gamepad_axis", "joystick_axis",
+// "joystick_button", "joystick_hat": the names in a saved ActionMap and in a log header.
+// Stable; they are file format, not display text.
 const char* source_name(Source source) noexcept;
 bool source_from_name(std::string_view name, Source& out) noexcept;
-// True for the sources that report a press and a release (Key, MouseButton, GamepadButton).
+// True for the sources that report a press and a release rather than a position.
 constexpr bool is_digital(Source source) noexcept {
-  return source == Source::Key || source == Source::MouseButton || source == Source::GamepadButton;
+  return source == Source::Key || source == Source::MouseButton ||
+         source == Source::GamepadButton || source == Source::JoystickButton ||
+         source == Source::JoystickHat;
+}
+// True for the analog axes a deadzone applies to. Mouse motion is not one of them: it is a
+// delta, and a deadzone on a delta would eat slow movement.
+constexpr bool is_analog_axis(Source source) noexcept {
+  return source == Source::GamepadAxis || source == Source::JoystickAxis;
 }
 
 // `Binding::code` for Source::MouseAxis. X and Y are pointer motion in window pixels for the
 // tick; the wheel axes are notches.
 enum class MouseAxisCode : u32 { X = 0, Y = 1, WheelX = 2, WheelY = 3 };
 
+// The hat direction bits, the same numbering as `window::HatDirection`: a diagonal is two of
+// them or-ed, and a hat at rest is none. Mirrored here because this module does not depend on
+// `window` (docs/subsystems/window.md).
+inline constexpr u32 k_hat_up = 1;
+inline constexpr u32 k_hat_right = 2;
+inline constexpr u32 k_hat_down = 4;
+inline constexpr u32 k_hat_left = 8;
+
+// `Binding::code` for Source::JoystickHat. A hat has no press of its own — it has a position —
+// so a binding names one direction of one hat and the pair is packed into the code:
+//
+//     code = hat_index << 8 | direction        // hat_code(0, k_hat_up) == 1
+//
+// which leaves 24 bits of hat index (one is enough for every device that exists) and keeps the
+// direction a single byte, so the code is still one number in the JSON and in the log.
+constexpr u32 hat_code(u32 hat, u32 direction) noexcept { return (hat << 8) | (direction & 0xFFu); }
+constexpr u32 hat_index_of(u32 code) noexcept { return code >> 8; }
+constexpr u32 hat_direction_of(u32 code) noexcept { return code & 0xFFu; }
+
 // One input a player can be moved by. `scale` turns a key into an axis end (+1 or -1) and
-// inverts or attenuates an analog axis; `deadzone` is the fraction of an analog gamepad axis's
-// travel that reads as zero, with the rest rescaled so the usable range still reaches 1.
+// inverts or attenuates an analog axis; `deadzone` is the fraction of an analog axis's travel
+// that reads as zero, with the rest rescaled so the usable range still reaches 1.
 struct Binding {
   Source source = Source::Key;
   u32 code = 0;
   f32 scale = 1.0f;
-  f32 deadzone = 0.0f;  // Source::GamepadAxis only
+  f32 deadzone = 0.0f;  // the analog axes: Source::GamepadAxis and Source::JoystickAxis
 };
 
 enum class ActionKind : u8 { Button, Axis, Axis2 };
@@ -179,7 +245,9 @@ class ActionMap {
 };
 
 // One input event, stamped with the tick it belongs to (plan 05 §5.12: "every input carries its
-// tick number"). `device` is the gamepad slot for gamepad sources and 0 for keyboard and mouse.
+// tick number"). `device` is the gamepad slot for the gamepad sources, the joystick slot for the
+// joystick ones, and 0 for keyboard and mouse. The two slot spaces overlap numerically and the
+// source is what tells them apart.
 struct RawEvent {
   SimTick tick;
   Source source = Source::Key;
@@ -228,9 +296,9 @@ class InputState {
   bool held(ActionId action) const noexcept;
   // Sum of the bindings' values times their scales, clamped to -1..1.
   f32 axis(ActionId action) const noexcept;
-  // Components 0 and 1 of an Axis2 action. A pair of gamepad axes bound one per component with
-  // the same non-zero deadzone is treated as a stick and gets a radial deadzone, so a diagonal
-  // is not harder to reach than an edge.
+  // Components 0 and 1 of an Axis2 action. A pair of analog axes of the same source bound one
+  // per component with the same non-zero deadzone is treated as a stick and gets a radial
+  // deadzone, so a diagonal is not harder to reach than an edge.
   Vec2 axis2(ActionId action) const noexcept;
   // Pointer motion accumulated over this tick, in window pixels. Tracked whether or not
   // anything is bound to it, because it is the state's own reading rather than an action.
