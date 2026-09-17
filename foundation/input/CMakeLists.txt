@@ -8,4 +8,9 @@ engine_module(NAME input LAYER foundation
   SOURCES src/action_map.cpp src/input_state.cpp src/input_log.cpp)
 
 engine_module_tests(NAME input
-  SOURCES tests/input_tests.cpp tests/log_tests.cpp tests/size_table.cpp)
+  SOURCES tests/input_tests.cpp tests/log_tests.cpp tests/corpus_tests.cpp tests/size_table.cpp)
+
+# The corpus test replays the device logs committed under content/input-logs/, which are found
+# relative to the source tree rather than to the executable: a test binary sits wherever the
+# preset put it. Same idea as ENGINE_APP_PATH in cmake/EngineModule.cmake.
+target_compile_definitions(engine_input_tests PRIVATE ENGINE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")

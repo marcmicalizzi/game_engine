@@ -64,7 +64,7 @@ TEST_CASE("window: create a hidden window, read its size, drain events") {
       CHECK(event.gamepad < window::k_max_gamepads);
       CHECK(window::gamepad_connected(event.gamepad));
       MESSAGE("gamepad " << static_cast<u32>(event.gamepad) << ": "
-                         << window::gamepad_name(event.gamepad));
+                         << std::string(window::gamepad_name(event.gamepad)));
       ++pads_seen;
     }
     if (event.kind == window::EventKind::GamepadButtonDown ||
@@ -81,7 +81,7 @@ TEST_CASE("window: create a hidden window, read its size, drain events") {
       CHECK(event.joystick < window::k_max_joysticks);
       CHECK(window::joystick_connected(event.joystick));
       MESSAGE("joystick " << static_cast<u32>(event.joystick) << ": "
-                          << window::joystick_name(event.joystick));
+                          << std::string(window::joystick_name(event.joystick)));
       ++sticks_seen;
     }
     if (event.kind == window::EventKind::JoystickAxis) {
@@ -121,11 +121,17 @@ TEST_CASE("window: create a hidden window, read its size, drain events") {
   u32 listed_sticks = 0;
   for (const window::InputDeviceInfo& info : devices) {
     MESSAGE("device " << std::string(info.is_gamepad ? "gamepad" : "joystick") << " slot "
-                      << static_cast<u32>(info.slot) << ": " << info.name << " [" << info.guid
-                      << "] vendor " << info.vendor << " product " << info.product << ", "
-                      << static_cast<u32>(info.axes) << " axes, " << static_cast<u32>(info.buttons)
-                      << " buttons, " << static_cast<u32>(info.hats) << " hats");
+                      << static_cast<u32>(info.slot) << ": " << info.name << " (driver: \""
+                      << info.raw_name << "\") [" << info.guid << "] vendor " << info.vendor
+                      << " product " << info.product << ", " << static_cast<u32>(info.axes)
+                      << " axes, " << static_cast<u32>(info.buttons) << " buttons, "
+                      << static_cast<u32>(info.hats) << " hats");
     CHECK(info.guid.size() == 32);
+    // A device always ends up with a name, even when the driver gave none: the table's, the
+    // driver's, or its ids. The unedited driver name stays beside it.
+    CHECK_FALSE(info.name.empty());
+    CHECK(info.name ==
+          window::resolve_device_name(info.vendor, info.product, info.raw_name.c_str()));
     if (info.slot == window::k_invalid_slot) {
       // Attached but unslotted: it refused to open, or every slot of its kind is taken.
       MESSAGE("device has no slot: " << info.name);
@@ -146,6 +152,40 @@ TEST_CASE("window: create a hidden window, read its size, drain events") {
   CHECK_FALSE(window::rumble(static_cast<u8>(window::k_max_gamepads), 0.5f, 0.5f, 10));
   for (u32 i = 0; i < pads_seen; ++i)
     (void)window::rumble(static_cast<u8>(i), 0.0f, 0.0f, 1);
+
+  // Force feedback. Nothing here can feel one, so what is checked is that a slot with nothing
+  // in it says no to every call, and that a device that does have haptics can be opened, read,
+  // and handed back. No force is ever set: opening already stops a wheel's own centring, and
+  // this closes again immediately so the driver takes it back.
+  window::HapticInfo haptics;
+  CHECK_FALSE(window::haptics_open(static_cast<u8>(window::k_max_joysticks)));
+  CHECK_FALSE(window::haptics_info(static_cast<u8>(window::k_max_joysticks), haptics));
+  for (u32 i = sticks_seen; i < window::k_max_joysticks; ++i) {
+    const u8 slot = static_cast<u8>(i);
+    CHECK_FALSE(window::haptics_open(slot));
+    CHECK_FALSE(window::haptics_info(slot, haptics));
+    CHECK_FALSE(window::set_spring(slot, 0.5f, 0.0f));
+    CHECK_FALSE(window::set_damper(slot, 0.5f));
+    CHECK_FALSE(window::set_constant_force(slot, 0.5f));
+    CHECK_FALSE(window::stop_forces(slot));
+    window::haptics_close(slot);  // and closing one that was never opened does nothing
+  }
+  for (u32 i = 0; i < sticks_seen; ++i) {
+    const u8 slot = static_cast<u8>(i);
+    if (!window::haptics_open(slot)) {
+      MESSAGE("joystick " << i << " has no force feedback: "
+                          << std::string(window::joystick_name(slot)));
+      continue;
+    }
+    REQUIRE(window::haptics_info(slot, haptics));
+    MESSAGE("joystick " << i << " haptics: " << std::string(window::joystick_name(slot))
+                        << " constant " << haptics.constant << " spring " << haptics.spring
+                        << " damper " << haptics.damper << " friction " << haptics.friction
+                        << " sine " << haptics.sine << ", " << haptics.axes << " axes");
+    CHECK(window::stop_forces(slot));
+    window::haptics_close(slot);
+    CHECK_FALSE(window::haptics_info(slot, haptics));
+  }
 
   window.set_title("renamed");
   window.destroy();
@@ -220,4 +260,40 @@ TEST_CASE("window: the gamepad enums are named and numbered for the input log") 
     for (u32 j = 0; j < i; ++j)
       CHECK(std::strcmp(name, window::hat_direction_name(hats[j])) != 0);
   }
+}
+
+// The name table, which needs no display and no device. Every string below is one a driver
+// really produced on this project's hardware; content/input-logs/README.md says which.
+TEST_CASE("window: the name table fixes what drivers call a device") {
+  // The T300 RS: the Windows driver names it nothing at all and it arrives as its USB ids in
+  // hex. That is the case the table exists for.
+  CHECK(window::resolve_device_name(0x044F, 0xB66E, "44F B66E") == "Thrustmaster T300 RS");
+  CHECK(window::resolve_device_name(0x044F, 0xB66E, "") == "Thrustmaster T300 RS");
+  CHECK(window::resolve_device_name(0x044F, 0xB66E, nullptr) == "Thrustmaster T300 RS");
+  CHECK(window::resolve_device_name(0x044F, 0xB66D, "") == "Thrustmaster T300 RS (PS4 mode)");
+
+  // The F710 with its switch on XInput, where SDL can only say "XInput Controller #1"; and on
+  // DirectInput, where SDL's own database already has the right answer and the table agrees.
+  CHECK(window::resolve_device_name(0x046D, 0xC21F, "XInput Controller #1") ==
+        "Logitech F710 Gamepad");
+  CHECK(window::resolve_device_name(0x046D, 0xC219, "Logitech F710 Gamepad") ==
+        "Logitech F710 Gamepad");
+  CHECK(window::resolve_device_name(0x046D, 0xC216, "") == "Logitech F310 Gamepad");
+  CHECK(window::resolve_device_name(0x044F, 0xB10A, "") == "Thrustmaster T.16000M");
+
+  // The gear shift reports its own name with a typo in it, and no ids were ever captured for
+  // it, so its row matches that misspelling — under its vendor, and under nobody else's.
+  CHECK(window::resolve_device_name(0x044F, 0xB65A, "Thustmaster T500 RS Gear Shift") ==
+        "Thrustmaster T500 RS Gear Shift");
+  CHECK(window::resolve_device_name(0x046D, 0xB65A, "Thustmaster T500 RS Gear Shift") ==
+        "Thustmaster T500 RS Gear Shift");
+
+  // A device the table has never heard of keeps whatever the driver called it...
+  CHECK(window::known_device_name(0x1234, 0x5678, "Some Pad") == nullptr);
+  CHECK(window::resolve_device_name(0x1234, 0x5678, "Some Pad") == "Some Pad");
+  // ...and one nothing named at all still gets something to be told apart by.
+  CHECK(window::resolve_device_name(0x1234, 0x5678, "") == "1234 5678");
+  CHECK(window::resolve_device_name(0x1234, 0x5678, nullptr) == "1234 5678");
+  CHECK(window::resolve_device_name(0, 0, nullptr) == "Unknown device");
+  CHECK(window::resolve_device_name(0, 0, "Keyboard-ish thing") == "Keyboard-ish thing");
 }

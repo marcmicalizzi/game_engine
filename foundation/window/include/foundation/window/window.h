@@ -239,13 +239,33 @@ struct Event {
   f32 value = 0.0f;  // GamepadAxis: -1..1 for sticks, 0..1 for triggers. JoystickAxis: -1..1
 };
 
+// --- device names ---------------------------------------------------------------------------
+//
+// Drivers name a device badly or not at all. A Thrustmaster T300 RS arrives from the Windows
+// driver as "44F B66E" — its USB ids in hex, because nothing wrote an OEM name into the
+// registry — and a T500 RS gear shift reports "Thustmaster T500 RS Gear Shift", a typo in the
+// hardware's own product string. So this module keeps a small table of the devices the project
+// has been shown, keyed by USB vendor and product (or, where the ids were never captured, by
+// the exact misspelled name the device reports), and that table wins over what the driver said.
+// What the driver said stays available as `InputDeviceInfo::raw_name`.
+//
+// The table is a courtesy, not a layout: naming a device is not the same as knowing which axis
+// is its brake. Adding one is a line here and a line in docs/subsystems/window.md.
+
+// The table's name for a device, or nullptr when it has no entry. `raw_name` may be null.
+const char* known_device_name(u16 vendor, u16 product, const char* raw_name) noexcept;
+
+// What this module reports as a device's name: the table's entry when it has one, otherwise the
+// driver's name, otherwise the ids in hex ("044F B66E"), otherwise "Unknown device".
+std::string resolve_device_name(u16 vendor, u16 product, const char* raw_name);
+
 // "South", "LeftTrigger", ... for logs and tools; "Unknown" outside the enum.
 const char* gamepad_button_name(GamepadButton button) noexcept;
 const char* gamepad_axis_name(GamepadAxis axis) noexcept;
 // "Centered", "Up", "RightDown", ...; "Unknown" for a mask outside the nine positions.
 const char* hat_direction_name(HatDirection hat) noexcept;
-// The pad's product name ("Xbox Series X Controller"), or "" for a slot with nothing in it.
-// Valid until that slot disconnects.
+// The pad's resolved product name ("Xbox Series X Controller"), or "" for a slot with nothing
+// in it. Valid until that slot disconnects.
 const char* gamepad_name(u32 gamepad) noexcept;
 bool gamepad_connected(u32 gamepad) noexcept;
 // The same two, over the separate joystick slot space.
@@ -256,8 +276,9 @@ bool joystick_connected(u32 joystick) noexcept;
 // the gamepad table when `is_gamepad`, the joystick table otherwise, and is k_invalid_slot
 // until that device's arrival event has been polled.
 struct InputDeviceInfo {
-  std::string name;
-  std::string guid;  // SDL's 32-character stable device id: bus, vendor, product, version
+  std::string name;      // resolved: the name table's entry where it has one (see above)
+  std::string raw_name;  // what the driver called it, unedited; empty when it named nothing
+  std::string guid;      // SDL's 32-character stable device id: bus, vendor, product, version
   u16 vendor = 0;
   u16 product = 0;
   u8 axes = 0;
@@ -276,6 +297,55 @@ u32 input_devices(Vector<InputDeviceInfo>& out);
 // so a caller treats false as "nothing happened", not as an error. Joysticks have no rumble
 // here: a force-feedback wheel is a haptics device, not two motors.
 bool rumble(u8 gamepad, f32 low, f32 high, u32 ms) noexcept;
+
+// --- force feedback -------------------------------------------------------------------------
+//
+// A force-feedback wheel is not two motors: it is a motor on the steering axis that a game
+// drives with *forces*, and the shapes of those forces are the device's own. This module
+// exposes the four that every wheel driver implements — a constant force, a spring towards a
+// centre, a damper against velocity, and (read-only, in `HapticInfo`) friction and a sine — over
+// the raw joystick slot space, because a wheel has no gamepad mapping.
+//
+// **Opening a wheel turns its own centring off.** The driver applies an autocentre spring until
+// something takes the device over; SDL's open is that takeover, so a wheel that felt sprung
+// goes limp the moment a slot holds it. That is not a bug to fix here: a game that opens a
+// wheel must set a spring or a damper itself (`set_spring(slot, 0.5f, 0.0f)` is a reasonable
+// resting force) and keep it running for as long as it holds the device.
+//
+// Every call returns false where the device, the driver, or the platform does not support it,
+// so false means "no force was applied", never "something went wrong".
+
+// Which effects a slot's haptics device supports, and how many axes it drives. Valid after
+// haptics_open; an unopened or empty slot answers false from haptics_info and nothing else.
+struct HapticInfo {
+  bool constant = false;  // a force of a fixed level along an axis
+  bool spring = false;    // a force towards a centre, proportional to the distance from it
+  bool damper = false;    // a force against the axis's velocity
+  bool friction = false;  // a force against motion, independent of speed
+  bool sine = false;      // a periodic force: rumble strips, engine vibration
+  u32 axes = 0;           // how many axes the device can be pushed along
+};
+
+// Opens the haptics device behind a raw joystick slot. False when the slot is empty, the device
+// has no haptics, or SDL will not open it. Opening twice is a no-op that answers true.
+bool haptics_open(u8 joystick);
+// Stops every running force and closes the device. Safe on a slot that was never opened;
+// shutdown() and a disconnect do it too.
+void haptics_close(u8 joystick) noexcept;
+// What the open device supports. False (leaving `out` untouched) when the slot has no open
+// haptics device.
+bool haptics_info(u8 joystick, HapticInfo& out) noexcept;
+
+// A force of a fixed level along the device's first axis, -1..1: negative pushes one way,
+// positive the other, 0 stops pushing. The effect runs until stop_forces or a new level.
+bool set_constant_force(u8 joystick, f32 level) noexcept;
+// A spring pulling the axis towards `center` (-1..1, 0 being the middle of the travel) with
+// `strength` 0..1. This is what replaces the driver's own centring.
+bool set_spring(u8 joystick, f32 strength, f32 center) noexcept;
+// A force against the axis's velocity, `strength` 0..1: weight rather than centring.
+bool set_damper(u8 joystick, f32 strength) noexcept;
+// Stops and destroys every effect this module started on the slot. The wheel goes limp.
+bool stop_forces(u8 joystick) noexcept;
 
 struct WindowDesc {
   const char* title = "engine";

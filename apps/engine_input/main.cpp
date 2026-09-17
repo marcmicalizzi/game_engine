@@ -5,11 +5,16 @@
 // on dongles. This is the tool that closes that gap. The owner of a device runs
 //
 //     engine-input devices                       # one JSON line per attached device
-//     engine-input probe --seconds 10 --log wheel.jsonl
+//     engine-input probe --seconds 10 --log wheel.jsonl --events wheel.events.jsonl
 //
 // moves everything, and sends the two outputs back; `engine-input replay wheel.jsonl` then
 // turns the recording into an `input::InputState` here, with no device attached at all. So the
-// axis numbering of a shifter can be read off a file instead of guessed.
+// axis numbering of a shifter can be read off a file instead of guessed. The recordings that
+// came back this way are committed under `content/input-logs/`.
+//
+// `ffb` and `rumble` are the same idea in the other direction: output nobody here can feel.
+// They apply a force or run the motors and say what the device claimed to support, so the owner
+// of a wheel can report whether anything actually moved.
 //
 // SDL needs no window for joystick events, but it does need its own event pump, and it drops
 // device events while a process owns windows and none of them holds keyboard focus. This tool
@@ -17,6 +22,7 @@
 // exist before it will pump anything on some backends) and turns
 // `window::set_background_input(true)` on, so the terminal it was started from can keep focus
 // while the owner has both hands on a wheel.
+#include <core/base/macros.h>
 #include <core/base/types.h>
 #include <core/containers/vector.h>
 #include <core/json/json.h>
@@ -50,19 +56,38 @@ constexpr const char* k_usage =
     "    --gamepad                   only devices SDL has a gamepad mapping for\n"
     "    --joystick                  only raw joysticks (wheels, pedals, shifters, sticks)\n"
     "    --log <file.jsonl>          also record the events as an input::InputLog\n"
+    "    --events <file.jsonl>       write the event stream to this file as UTF-8 instead of\n"
+    "                                to stdout (a PowerShell redirect writes UTF-16)\n"
     "  replay <file.jsonl>           load a recorded log, bind every axis, button, and hat it\n"
     "                                saw, replay it into an InputState, print a summary\n"
+    "  ffb --device <slot> [options] force feedback on a raw joystick slot: prints what the\n"
+    "                                device supports, applies the forces, then stops them\n"
+    "    --spring <s>                centring spring, 0..1\n"
+    "    --damper <d>                damping against motion, 0..1\n"
+    "    --constant <c>              constant force, -1..1\n"
+    "    --seconds <n>               how long to hold them (default 5, max 60)\n"
+    "  rumble --device <slot> [options]  a gamepad slot's two motors\n"
+    "    --low <l>                   low-frequency motor, 0..1 (default 0.5)\n"
+    "    --high <h>                  high-frequency motor, 0..1 (default 0.5)\n"
+    "    --ms <n>                    how long, in milliseconds (default 500, max 10000)\n"
     "\n"
     "The gamepad and joystick slot spaces are separate: gamepad 0 and joystick 0 are two\n"
-    "different devices, and each event line says which space its `device` belongs to.\n"
+    "different devices, and each event line says which space its `device` belongs to. `ffb`\n"
+    "is a joystick slot and `rumble` a gamepad slot for the same reason.\n"
+    "\n"
+    "Opening a wheel's haptics stops the driver's own centring spring, so a wheel goes limp\n"
+    "under `ffb` until a force is set and again once it stops. That is the device, not a bug.\n"
     "\n"
     "examples:\n"
     "  engine-input devices\n"
-    "  engine-input probe --seconds 10 --log wheel.jsonl\n"
+    "  engine-input probe --seconds 10 --log wheel.jsonl --events wheel.events.jsonl\n"
     "  engine-input probe --joystick --device 1 --seconds 20\n"
     "  engine-input replay wheel.jsonl\n"
+    "  engine-input ffb --device 0 --spring 0.5 --seconds 5\n"
+    "  engine-input rumble --device 0 --low 0.5 --high 0.5 --ms 500\n"
     "\n"
-    "exit codes: 0 ok, 1 error, 2 usage, 3 unavailable (no display or no SDL video driver)\n";
+    "exit codes: 0 ok, 1 error, 2 usage, 3 unavailable (no display or no SDL video driver;\n"
+    "for ffb and rumble, also an empty slot or a device with no forces and no motors)\n";
 // clang-format on
 
 constexpr int k_exit_ok = 0;
@@ -91,11 +116,26 @@ int usage_error(const char* what, std::string_view detail) {
   return k_exit_usage;
 }
 
-void print_line(const JsonValue& value) {
+// One JSON line, written as UTF-8 bytes with a bare newline whatever the stream is. That is
+// the whole reason `probe --events` exists: PowerShell's `>` writes UTF-16 with a BOM, and the
+// files that came back that way were unreadable to every text tool that met them.
+void write_line(std::FILE* out, const JsonValue& value) {
   std::string text = write_json(value, JsonWriteOptions{.pretty = false});
   text.push_back('\n');
-  std::fwrite(text.data(), 1, text.size(), stdout);
-  std::fflush(stdout);  // a probe is watched while it runs
+  std::fwrite(text.data(), 1, text.size(), out);
+  if (out == stdout) std::fflush(out);  // a probe is watched while it runs
+}
+
+void print_line(const JsonValue& value) { write_line(stdout, value); }
+
+std::FILE* open_utf8_file(const char* path) {
+  std::FILE* file = nullptr;
+#if ENGINE_COMPILER_MSVC
+  (void)fopen_s(&file, path, "wb");
+#else
+  file = std::fopen(path, "wb");
+#endif
+  return file;  // "wb", so the newlines stay bare on Windows too
 }
 
 bool parse_u32(const char* text, u32& out) {
@@ -103,6 +143,17 @@ bool parse_u32(const char* text, u32& out) {
   const unsigned long v = std::strtoul(text, &end, 10);
   if (end == text || *end != '\0' || v > 0xFFFFFFFFul) return false;
   out = static_cast<u32>(v);
+  return true;
+}
+
+// A force, as a number between `low` and `high`. The range check also rejects a NaN and an
+// infinity, which would otherwise reach the driver.
+bool parse_f32(const char* text, f32 low, f32 high, f32& out) {
+  char* end = nullptr;
+  const double v = std::strtod(text, &end);
+  if (end == text || *end != '\0') return false;
+  if (!(v >= static_cast<double>(low) && v <= static_cast<double>(high))) return false;
+  out = static_cast<f32>(v);
   return true;
 }
 
@@ -202,6 +253,7 @@ int command_devices() {
     line.set("slot", info.slot == window::k_invalid_slot ? JsonValue()
                                                          : JsonValue(static_cast<u64>(info.slot)));
     line.set("name", info.name);
+    line.set("raw_name", info.raw_name);  // what the driver called it, before the name table
     line.set("guid", info.guid);
     line.set("vendor", static_cast<u64>(info.vendor));
     line.set("product", static_cast<u64>(info.product));
@@ -223,6 +275,7 @@ struct ProbeOptions {
   bool gamepads = true;
   bool joysticks = true;
   std::string log_path;
+  std::string events_path;
 };
 
 // What one window event is, for the stream and for the log. `joystick` picks the slot space.
@@ -364,7 +417,26 @@ void record_raw(input::InputLog& log, const window::Event& event, u64 tick) {
   log.record(raw);
 }
 
+// The event stream's destination: stdout, or the file `--events` named. Closed on the way out.
+struct EventStream {
+  std::FILE* file = nullptr;
+  ~EventStream() {
+    if (file != nullptr) std::fclose(file);
+  }
+  EventStream() = default;
+  EventStream(const EventStream&) = delete;
+  EventStream& operator=(const EventStream&) = delete;
+  std::FILE* out() const noexcept { return file != nullptr ? file : stdout; }
+  bool separate() const noexcept { return file != nullptr; }
+};
+
 int command_probe(const ProbeOptions& options) {
+  EventStream events;
+  if (!options.events_path.empty()) {
+    events.file = open_utf8_file(options.events_path.c_str());
+    if (events.file == nullptr) return fail("cannot write the event stream", options.events_path);
+  }
+
   Session session;
   std::string error;
   if (!session.open(error)) return unavailable("cannot open a window for device events", error);
@@ -390,7 +462,7 @@ int command_probe(const ProbeOptions& options) {
     line.set("space", translated.joystick ? "joystick" : "gamepad");
     line.set("device", static_cast<u64>(translated.slot));
     line.set("name", translated.name != nullptr ? translated.name : "");
-    print_line(line);
+    write_line(events.out(), line);
     if (DeviceStats* stats = probe.slot(translated.joystick, translated.slot); stats != nullptr) {
       stats->seen = true;
       if (translated.name != nullptr) stats->name.assign(translated.name);
@@ -421,7 +493,7 @@ int command_probe(const ProbeOptions& options) {
         line.set("value", static_cast<f64>(translated.value));
       }
       if (translated.name != nullptr) line.set("name", translated.name);
-      print_line(line);
+      write_line(events.out(), line);
 
       ++total;
       if (DeviceStats* stats = probe.slot(translated.joystick, translated.slot); stats != nullptr) {
@@ -446,7 +518,14 @@ int command_probe(const ProbeOptions& options) {
   auto add_device = [&](const DeviceStats& stats, bool joystick, u32 slot) {
     if (!stats.seen) return;
     JsonValue entry = JsonValue::object();
-    entry.set("name", stats.name);
+    // A device that moved before its arrival was polled has no name yet; ask the slot, which
+    // holds the resolved one (docs/subsystems/window.md), so every summary names its devices.
+    if (stats.name.empty()) {
+      const char* slot_name = joystick ? window::joystick_name(slot) : window::gamepad_name(slot);
+      entry.set("name", std::string(slot_name));
+    } else {
+      entry.set("name", stats.name);
+    }
     entry.set("events", static_cast<u64>(stats.events));
     entry.set("axes", static_cast<u64>(stats.axes.count()));
     entry.set("buttons", static_cast<u64>(stats.buttons.count()));
@@ -481,8 +560,145 @@ int command_probe(const ProbeOptions& options) {
     summary.set("log", options.log_path);
     summary.set("log_events", static_cast<u64>(log.size()));
   }
+  if (!options.events_path.empty()) summary.set("events_file", options.events_path);
+  // The summary goes to stdout whatever happened to the events, so a terminal running the probe
+  // still reports; a separate event file gets it as its last line, the way a shell redirect of
+  // the whole stream used to.
   print_line(summary);
+  if (events.separate()) write_line(events.out(), summary);
   return exit_code;
+}
+
+// --- force feedback and rumble --------------------------------------------------------------
+//
+// Output, not input, and the one part of this tool nothing here can check: no test can feel a
+// wheel push back. What is testable is the argument handling and the exit codes, so these two
+// commands say exactly what they asked the device for and what the device claimed to support,
+// and leave the verdict to whoever has their hands on it.
+
+// Keeps SDL's event pump running for a while, which is what a force or a rumble needs to stay
+// alive, and stops early if the process is asked to quit.
+void hold(Session& session, u32 milliseconds) {
+  const time::Stopwatch watch;
+  const i64 limit_ns = static_cast<i64>(milliseconds) * 1'000'000;
+  window::Event event;
+  while (watch.elapsed_ns() < limit_ns) {
+    while (session.win.poll(event)) {
+      if (event.kind == window::EventKind::Quit) return;
+    }
+    platform::sleep_ms(1);
+  }
+}
+
+struct FfbOptions {
+  u32 device = 0xFFFFFFFFu;
+  u32 seconds = 5;
+  f32 spring = 0.0f;
+  f32 damper = 0.0f;
+  f32 constant = 0.0f;
+  bool has_spring = false;
+  bool has_damper = false;
+  bool has_constant = false;
+};
+
+int command_ffb(const FfbOptions& options) {
+  Session session;
+  std::string error;
+  if (!session.open(error)) return unavailable("cannot open a window for device events", error);
+  Vector<window::Event> arrivals;
+  settle(session, arrivals, 250);
+
+  const u8 slot = static_cast<u8>(options.device);
+  if (!window::joystick_connected(slot)) {
+    return unavailable("no raw joystick in that slot",
+                       "joystick:" + std::to_string(options.device));
+  }
+  if (!window::haptics_open(slot)) {
+    return unavailable("the device has no force feedback", window::joystick_name(slot));
+  }
+  window::HapticInfo info;
+  if (!window::haptics_info(slot, info)) {
+    return unavailable("the device reports no haptic capabilities", window::joystick_name(slot));
+  }
+
+  JsonValue capabilities = JsonValue::object();
+  capabilities.set("device", static_cast<u64>(slot));
+  capabilities.set("name", std::string(window::joystick_name(slot)));
+  capabilities.set("constant", info.constant);
+  capabilities.set("spring", info.spring);
+  capabilities.set("damper", info.damper);
+  capabilities.set("friction", info.friction);
+  capabilities.set("sine", info.sine);
+  capabilities.set("axes", static_cast<u64>(info.axes));
+  print_line(capabilities);
+
+  // Opening the device already stopped the driver's own centring, so a run with no force named
+  // is a report and nothing else: it says what the wheel can do and hands it straight back.
+  const bool any_force = options.has_spring || options.has_damper || options.has_constant;
+  bool spring_ran = false;
+  bool damper_ran = false;
+  bool constant_ran = false;
+  if (options.has_spring) spring_ran = window::set_spring(slot, options.spring, 0.0f);
+  if (options.has_damper) damper_ran = window::set_damper(slot, options.damper);
+  if (options.has_constant) constant_ran = window::set_constant_force(slot, options.constant);
+  if (any_force) hold(session, options.seconds * 1000);
+  const bool stopped = window::stop_forces(slot);
+  window::haptics_close(slot);
+
+  JsonValue summary = JsonValue::object();
+  summary.set("device", static_cast<u64>(slot));
+  summary.set("seconds", static_cast<f64>(any_force ? options.seconds : 0));
+  if (options.has_spring) {
+    summary.set("spring", static_cast<f64>(options.spring));
+    summary.set("spring_ran", spring_ran);
+  }
+  if (options.has_damper) {
+    summary.set("damper", static_cast<f64>(options.damper));
+    summary.set("damper_ran", damper_ran);
+  }
+  if (options.has_constant) {
+    summary.set("constant", static_cast<f64>(options.constant));
+    summary.set("constant_ran", constant_ran);
+  }
+  summary.set("stopped", stopped);
+  print_line(summary);
+  return k_exit_ok;
+}
+
+struct RumbleOptions {
+  u32 device = 0xFFFFFFFFu;
+  f32 low = 0.5f;
+  f32 high = 0.5f;
+  u32 ms = 500;
+};
+
+int command_rumble(const RumbleOptions& options) {
+  Session session;
+  std::string error;
+  if (!session.open(error)) return unavailable("cannot open a window for device events", error);
+  Vector<window::Event> arrivals;
+  settle(session, arrivals, 250);
+
+  const u8 slot = static_cast<u8>(options.device);
+  if (!window::gamepad_connected(slot)) {
+    return unavailable("no gamepad in that slot", "gamepad:" + std::to_string(options.device));
+  }
+  const bool ran = window::rumble(slot, options.low, options.high, options.ms);
+  JsonValue summary = JsonValue::object();
+  summary.set("device", static_cast<u64>(slot));
+  summary.set("name", std::string(window::gamepad_name(slot)));
+  summary.set("low", static_cast<f64>(options.low));
+  summary.set("high", static_cast<f64>(options.high));
+  summary.set("ms", static_cast<u64>(options.ms));
+  summary.set("rumbled", ran);
+  print_line(summary);
+  if (!ran) {
+    // Most pads have no motors at all; SDL says so by refusing, not by failing.
+    return unavailable("the pad has no rumble motors", window::gamepad_name(slot));
+  }
+  // The motors stop when SDL shuts down, so the process has to outlive the effect it started.
+  hold(session, options.ms);
+  return k_exit_ok;
 }
 
 // --- replay ---------------------------------------------------------------------------------
@@ -620,6 +836,9 @@ int main(int argc, char** argv) {
       } else if (a == "--log") {
         if (!value(&text)) return usage_error("--log needs a file", "");
         options.log_path.assign(text);
+      } else if (a == "--events") {
+        if (!value(&text)) return usage_error("--events needs a file", "");
+        options.events_path.assign(text);
       } else if (a == "--gamepad") {
         only_gamepads = true;
       } else if (a == "--joystick") {
@@ -638,6 +857,85 @@ int main(int argc, char** argv) {
   if (command == "replay") {
     if (argc != 3) return usage_error("replay needs exactly one log file", "");
     return command_replay(argv[2]);
+  }
+
+  if (command == "ffb") {
+    FfbOptions options;
+    for (int i = 2; i < argc; ++i) {
+      const std::string_view a = argv[i];
+      auto value = [&](const char** out) {
+        if (i + 1 >= argc) return false;
+        *out = argv[++i];
+        return true;
+      };
+      const char* text = nullptr;
+      if (a == "--device") {
+        if (!value(&text) || !parse_u32(text, options.device) ||
+            options.device >= window::k_max_joysticks) {
+          return usage_error("--device needs a joystick slot id, got", text != nullptr ? text : "");
+        }
+      } else if (a == "--seconds") {
+        if (!value(&text) || !parse_u32(text, options.seconds) || options.seconds == 0 ||
+            options.seconds > 60) {
+          return usage_error("--seconds needs a count of 1..60, got", text != nullptr ? text : "");
+        }
+      } else if (a == "--spring") {
+        if (!value(&text) || !parse_f32(text, 0.0f, 1.0f, options.spring)) {
+          return usage_error("--spring needs a strength of 0..1, got", text != nullptr ? text : "");
+        }
+        options.has_spring = true;
+      } else if (a == "--damper") {
+        if (!value(&text) || !parse_f32(text, 0.0f, 1.0f, options.damper)) {
+          return usage_error("--damper needs a strength of 0..1, got", text != nullptr ? text : "");
+        }
+        options.has_damper = true;
+      } else if (a == "--constant") {
+        if (!value(&text) || !parse_f32(text, -1.0f, 1.0f, options.constant)) {
+          return usage_error("--constant needs a level of -1..1, got", text != nullptr ? text : "");
+        }
+        options.has_constant = true;
+      } else {
+        return usage_error("unknown option", a);
+      }
+    }
+    if (options.device == 0xFFFFFFFFu) return usage_error("ffb needs --device <slot>", "");
+    return command_ffb(options);
+  }
+
+  if (command == "rumble") {
+    RumbleOptions options;
+    for (int i = 2; i < argc; ++i) {
+      const std::string_view a = argv[i];
+      auto value = [&](const char** out) {
+        if (i + 1 >= argc) return false;
+        *out = argv[++i];
+        return true;
+      };
+      const char* text = nullptr;
+      if (a == "--device") {
+        if (!value(&text) || !parse_u32(text, options.device) ||
+            options.device >= window::k_max_gamepads) {
+          return usage_error("--device needs a gamepad slot id, got", text != nullptr ? text : "");
+        }
+      } else if (a == "--low") {
+        if (!value(&text) || !parse_f32(text, 0.0f, 1.0f, options.low)) {
+          return usage_error("--low needs a level of 0..1, got", text != nullptr ? text : "");
+        }
+      } else if (a == "--high") {
+        if (!value(&text) || !parse_f32(text, 0.0f, 1.0f, options.high)) {
+          return usage_error("--high needs a level of 0..1, got", text != nullptr ? text : "");
+        }
+      } else if (a == "--ms") {
+        if (!value(&text) || !parse_u32(text, options.ms) || options.ms == 0 ||
+            options.ms > 10000) {
+          return usage_error("--ms needs a duration of 1..10000, got", text != nullptr ? text : "");
+        }
+      } else {
+        return usage_error("unknown option", a);
+      }
+    }
+    if (options.device == 0xFFFFFFFFu) return usage_error("rumble needs --device <slot>", "");
+    return command_rumble(options);
   }
 
   return usage_error("unknown command", command);
