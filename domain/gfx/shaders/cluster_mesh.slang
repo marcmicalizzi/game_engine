@@ -24,6 +24,8 @@ struct MeshParams {
   uint64_t vertices;
   uint64_t triangles;
   uint cluster_count;
+  uint pad;
+  uint64_t visible;  // uint[]: cluster index per workgroup (the cull pass output); 0 draws all clusters in order
 };
 
 [[vk::push_constant]] ConstantBuffer<MeshParams> g_params;
@@ -48,7 +50,11 @@ void mesh_main(uint3 group_thread : SV_GroupThreadID, uint3 group : SV_GroupID,
                out vertices MeshVertex verts[k_max_vertices],
                out indices uint3 tris[k_max_triangles],
                out primitives MeshPrimitive prims[k_max_triangles]) {
-  const uint cluster_id = group.x;
+  uint cluster_id = group.x;
+  if (g_params.visible != 0) {
+    uint* visible = (uint*)g_params.visible;
+    cluster_id = visible[group.x];
+  }
   ClusterDesc* clusters = (ClusterDesc*)g_params.clusters;
   const ClusterDesc cluster = clusters[cluster_id];
   SetMeshOutputCounts(cluster.vertex_count, cluster.triangle_count);

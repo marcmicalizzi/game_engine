@@ -1,9 +1,11 @@
-// engine-view: a window on the renderer as it stands. A procedural heightfield is split into
-// clusters (domain/geometry), uploaded behind device addresses, and drawn one mesh-shader
-// workgroup per cluster into the swapchain with a reversed-Z depth buffer while the camera
-// orbits. `--frames N --capture out.png` renders N frames and writes the last one as a PNG, and
-// the process prints one JSON line of statistics on exit, so scripts and agents can look at the
-// picture and the numbers without a human at the window.
+// engine-view: a window on the renderer as it stands. A procedural heightfield is built into
+// a cluster LOD DAG (domain/geometry), uploaded behind device addresses, culled and LOD-selected
+// on the GPU every frame (cluster_cull.slang), and drawn one mesh-shader workgroup per surviving
+// cluster through an indirect draw into the swapchain with a reversed-Z depth buffer while the
+// camera orbits and zooms. `--frames N --capture out.png` renders N frames and writes the last
+// one as a PNG, and the process prints one JSON line of statistics on exit, so scripts and
+// agents can look at the picture and the numbers without a human at the window. Shaders come
+// from the build's manifest when it is found and recompile when their sources change.
 //
 // Exit codes: 0 ok; 1 runtime error; 2 usage; 3 unavailable (no display, no Vulkan device, no
 // mesh shaders, or no presentation support), which tests treat as a skip.
@@ -11,9 +13,10 @@
 #include <core/math/math.h>
 #include <core/platform/process.h>
 #include <core/time/time.h>
-#include <domain/geometry/cluster.h>
+#include <domain/geometry/cluster_lod.h>
 #include <domain/gfx/bindless.h>
 #include <domain/gfx/capture.h>
+#include <domain/gfx/cluster_cull.h>
 #include <domain/gfx/device.h>
 #include <domain/gfx/frame.h>
 #include <domain/gfx/render_graph.h>
@@ -26,6 +29,8 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <shaders/cluster_cull.spv.h>
 #include <shaders/cluster_mesh.spv.h>
 #include <string>
 #include <string_view>
@@ -36,24 +41,27 @@ namespace {
 
 ENGINE_LOG_CATEGORY_DEFINE(log_view, "view");
 
+// clang-format off
 constexpr const char* k_usage =
     "usage: engine-view [--width <px>] [--height <px>] [--frames <n>] [--capture <file.png>]\n"
-    "                   [--no-vsync] [--adapter <index>] [--validation] [--grid <n>] [--log "
-    "<spec>]\n"
-    "                   [--shaders <manifest.json>]\n"
+    "                   [--no-vsync] [--adapter <index>] [--validation] [--grid <n>] [--log <spec>]\n"
+    "                   [--shaders <manifest.json>] [--lod <px>] [--no-cull]\n"
     "\n"
     "  --frames <n>     render n frames, then exit (0: until the window closes)\n"
     "  --capture <png>  write the last frame as a PNG (implies --frames 60 when unset)\n"
-    "  --grid <n>       heightfield resolution, n x n vertices (default 129)\n"
+    "  --grid <n>       heightfield resolution, n x n vertices (default 257)\n"
+    "  --lod <px>       screen-space error threshold in pixels for LOD selection (default 1)\n"
+    "  --no-cull        draw every leaf cluster; no GPU culling or LOD selection\n"
     "  --log <spec>     log levels, e.g. \"info,gfx=debug\" (stderr shows warnings and up)\n"
-    "  --shaders <m>    shader manifest (default: <exe dir>/../shaders/manifest.json when "
-    "present);\n"
+    "  --shaders <m>    shader manifest (default: <exe dir>/../shaders/manifest.json when present);\n"
     "                   shaders recompile and reload when their .slang sources change\n"
     "exit codes: 0 ok, 1 error, 2 usage, 3 unavailable (no display, device, mesh shaders)\n";
+// clang-format on
 
 constexpr int k_exit_error = 1;
 constexpr int k_exit_usage = 2;
 constexpr int k_exit_unavailable = 3;
+constexpr u32 k_frames_in_flight = 2;
 
 struct Options {
   u32 width = 1280;
@@ -63,9 +71,11 @@ struct Options {
   bool vsync = true;
   u32 adapter = 0;
   bool validation = false;
-  u32 grid = 129;
+  u32 grid = 257;
   std::string log_spec;
   std::string shaders;
+  f32 lod_px = 1.0f;
+  bool cull = true;
 };
 
 bool next_value(int argc, char** argv, int& i, std::string_view flag, std::string& out) {
@@ -86,6 +96,14 @@ bool parse_u32(const std::string& text, u32& out) {
   return true;
 }
 
+bool parse_f32(const std::string& text, f32& out) {
+  char* end = nullptr;
+  const double v = std::strtod(text.c_str(), &end);
+  if (end == text.c_str() || *end != '\0' || !(v > 0.0) || v > 1.0e6) return false;
+  out = static_cast<f32>(v);
+  return true;
+}
+
 // Mirrors MeshParams in domain/gfx/shaders/cluster_mesh.slang.
 struct MeshParams {
   Mat4 view_proj;
@@ -94,8 +112,9 @@ struct MeshParams {
   u64 triangles;
   u32 cluster_count;
   u32 pad = 0;
+  u64 visible = 0;  // cull output; 0 draws clusters in index order
 };
-static_assert(sizeof(MeshParams) == 96);
+static_assert(sizeof(MeshParams) == 104);
 
 // An (n x n) heightfield over [-extent, extent]^2 in XZ, dunes-and-ridges in Y.
 void make_terrain(u32 n, f32 extent, Vector<Vec3>& positions, Vector<u32>& indices) {
@@ -172,6 +191,12 @@ int main(int argc, char** argv) {
       if (a == "--frames") options.frames = n;
       if (a == "--adapter") options.adapter = n;
       if (a == "--grid") options.grid = n;
+    } else if (a == "--lod") {
+      if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
+      if (!parse_f32(value, options.lod_px)) {
+        std::fprintf(stderr, "engine-view: --lod expects a positive number of pixels\n");
+        return k_exit_usage;
+      }
     } else if (a == "--capture") {
       if (!next_value(argc, argv, i, a, options.capture)) return k_exit_usage;
     } else if (a == "--log") {
@@ -180,6 +205,8 @@ int main(int argc, char** argv) {
       if (!next_value(argc, argv, i, a, options.shaders)) return k_exit_usage;
     } else if (a == "--no-vsync") {
       options.vsync = false;
+    } else if (a == "--no-cull") {
+      options.cull = false;
     } else if (a == "--validation") {
       options.validation = true;
     } else {
@@ -250,17 +277,28 @@ int main(int argc, char** argv) {
   gfx::BufferResource cluster_buffer;
   gfx::BufferResource vertex_buffer;
   gfx::BufferResource triangle_buffer;
+  gfx::BufferResource lod_buffer;
+  gfx::BufferResource visible_buffer;
+  gfx::BufferResource args_buffer;
+  gfx::BufferResource params_buffers[k_frames_in_flight];  // host-visible CullParams per slot
+  gfx::BufferResource stats_buffers[k_frames_in_flight];   // host-visible copy of the draw args
   gfx::ShaderLibrary shader_library;
   const gfx::Shader* cluster_shader = nullptr;
+  const gfx::Shader* cull_shader = nullptr;
   VkPipeline pipeline = VK_NULL_HANDLE;
+  gfx::ComputePipeline cull_pipeline;
   Depth depth;
-  geometry::ClusterMesh mesh;
+  geometry::ClusterLodMesh lod;
   u64 rendered = 0;
   i64 started_ns = 0;
   i64 finished_ns = 0;
   bool captured = false;
+  u32 visible_last = 0;
+  u32 visible_min = ~u32{0};
+  u32 visible_max = 0;
+  i64 build_ns = 0;
 
-  // Everything below unwinds through this label so the destruction order stays in one place.
+  // Everything below unwinds through this block so the destruction order stays in one place.
   do {
     if (!window.create_vulkan_surface(device.handles().instance, surface, &error)) {
       exit_code = fail("surface", error);
@@ -279,39 +317,77 @@ int main(int argc, char** argv) {
       exit_code = fail("capture", "the surface does not allow reading presented images back");
       break;
     }
-    if (!frames.create(device, 2, &error) ||
+    if (!frames.create(device, k_frames_in_flight, &error) ||
         !bindless.create(device, gfx::BindlessConfig{}, &error)) {
       exit_code = fail("frames", error);
       break;
     }
 
+    // Geometry: the terrain and its LOD DAG.
     Vector<Vec3> positions;
     Vector<u32> indices;
     make_terrain(options.grid, 10.0f, positions, indices);
-    if (!geometry::build_clusters(positions, indices, geometry::ClusterBuildOptions{}, mesh,
-                                  &error)) {
+    const i64 build_start = time::monotonic_ns();
+    if (!geometry::build_cluster_lod(positions, indices, geometry::ClusterLodOptions{}, lod,
+                                     &error)) {
       exit_code = fail("clusters", error);
       break;
     }
-    if (!gfx::upload_buffer(device, mesh.clusters.data(),
-                            mesh.clusters.size() * sizeof(geometry::ClusterDesc),
-                            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, cluster_buffer, &error) ||
-        !gfx::upload_buffer(device, mesh.vertices.data(), mesh.vertices.size() * sizeof(Vec3),
-                            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, vertex_buffer, &error) ||
-        !gfx::upload_buffer(device, mesh.triangles.data(), mesh.triangles.size() * sizeof(u32),
-                            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, triangle_buffer, &error)) {
+    build_ns = time::monotonic_ns() - build_start;
+    const u32 cluster_count = lod.mesh.clusters.size();
+    const u32 leaf_count = lod.level_cluster_counts[0];
+    constexpr VkBufferUsageFlags k_storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    if (!gfx::upload_buffer(device, lod.mesh.clusters.data(),
+                            cluster_count * sizeof(geometry::ClusterDesc), k_storage,
+                            cluster_buffer, &error) ||
+        !gfx::upload_buffer(device, lod.mesh.vertices.data(),
+                            lod.mesh.vertices.size() * sizeof(Vec3), k_storage, vertex_buffer,
+                            &error) ||
+        !gfx::upload_buffer(device, lod.mesh.triangles.data(),
+                            lod.mesh.triangles.size() * sizeof(u32), k_storage, triangle_buffer,
+                            &error) ||
+        !gfx::upload_buffer(device, lod.lod.data(),
+                            cluster_count * sizeof(geometry::ClusterLodDesc), k_storage, lod_buffer,
+                            &error)) {
       exit_code = fail("upload", error);
       break;
     }
+    if (!gfx::create_buffer(device, u64{cluster_count} * sizeof(u32),
+                            k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, false,
+                            visible_buffer, &error) ||
+        !gfx::create_buffer(device, sizeof(u32) * 3,
+                            k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+                                VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
+                                VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                            false, args_buffer, &error)) {
+      exit_code = fail("cull buffers", error);
+      break;
+    }
+    bool buffers_ok = true;
+    for (u32 slot = 0; slot < k_frames_in_flight; ++slot) {
+      buffers_ok = buffers_ok &&
+                   gfx::create_buffer(device, sizeof(gfx::CullParams),
+                                      k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, true,
+                                      params_buffers[slot], &error) &&
+                   gfx::create_buffer(device, sizeof(u32) * 3, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                      true, stats_buffers[slot], &error);
+      if (buffers_ok) std::memset(stats_buffers[slot].mapped, 0, sizeof(u32) * 3);
+    }
+    if (!buffers_ok) {
+      exit_code = fail("per-frame buffers", error);
+      break;
+    }
 
-    // Shaders: the embedded copy always works; the build's manifest, when found, loads the same
-    // shader from its file and recompiles it when the .slang source changes while running.
+    // Shaders: the embedded copies always work; the build's manifest, when found, loads the same
+    // shaders from their files and recompiles them when the .slang sources change while running.
     if (!shader_library.create(&device, &error)) {
       exit_code = fail("shaders", error);
       break;
     }
     shader_library.add_embedded("cluster_mesh", shaders::k_cluster_mesh_spirv,
                                 shaders::k_cluster_mesh_spirv_size);
+    shader_library.add_embedded("cluster_cull", shaders::k_cluster_cull_spirv,
+                                shaders::k_cluster_cull_spirv_size);
     std::string manifest = options.shaders;
     if (manifest.empty()) {
       const std::string candidate = platform::executable_directory() + "/../shaders/manifest.json";
@@ -322,7 +398,8 @@ int main(int argc, char** argv) {
       break;
     }
     cluster_shader = shader_library.get("cluster_mesh", &error);
-    if (cluster_shader == nullptr) {
+    cull_shader = cluster_shader != nullptr ? shader_library.get("cluster_cull", &error) : nullptr;
+    if (cluster_shader == nullptr || cull_shader == nullptr) {
       exit_code = fail("shader", error);
       break;
     }
@@ -339,7 +416,9 @@ int main(int argc, char** argv) {
     pipeline_desc.depth_format = VK_FORMAT_D32_SFLOAT;
     pipeline_desc.depth_test = true;
     pipeline_desc.depth_write = true;
-    if (!gfx::create_mesh_pipeline(device, pipeline_desc, pipeline, &error)) {
+    if (!gfx::create_mesh_pipeline(device, pipeline_desc, pipeline, &error) ||
+        !gfx::create_compute_pipeline(device, cull_shader->module, "cull_main", {}, sizeof(u64),
+                                      cull_pipeline, &error)) {
       exit_code = fail("pipeline", error);
       break;
     }
@@ -347,8 +426,11 @@ int main(int argc, char** argv) {
       exit_code = fail("depth", error);
       break;
     }
-    ENGINE_LOG_INFO(log_view, "ready", log::field("clusters", mesh.clusters.size()),
-                    log::field("triangles", mesh.source_triangle_count),
+    ENGINE_LOG_INFO(log_view, "ready", log::field("clusters", cluster_count),
+                    log::field("leaf_clusters", leaf_count),
+                    log::field("triangles", lod.leaf_triangle_count),
+                    log::field("lod_levels", lod.level_cluster_counts.size()),
+                    log::field("build_ms", static_cast<f64>(build_ns) / 1.0e6),
                     log::field("width", swapchain.extent().width),
                     log::field("height", swapchain.extent().height));
 
@@ -371,7 +453,8 @@ int main(int argc, char** argv) {
         }
       }
       if (!running) break;
-      // Hot reload: recompile edited shaders four times a second and rebuild the pipeline.
+
+      // Hot reload: recompile edited shaders four times a second and rebuild the pipelines.
       if (time::monotonic_ns() - last_shader_poll_ns > 250'000'000) {
         last_shader_poll_ns = time::monotonic_ns();
         Vector<std::string> changed;
@@ -381,20 +464,31 @@ int main(int argc, char** argv) {
           std::fprintf(stderr, "engine-view: shader compile error:\n%s\n", reload_error.c_str());
         }
         for (const std::string& name : changed) {
-          if (name != "cluster_mesh") continue;
+          if (name != "cluster_mesh" && name != "cluster_cull") continue;
           frames.wait_idle();
-          gfx::destroy_pipeline(device, pipeline);
-          pipeline = VK_NULL_HANDLE;
-          cluster_shader = shader_library.get("cluster_mesh", &error);
-          pipeline_desc.mesh = cluster_shader->module;
-          pipeline_desc.fragment = cluster_shader->module;
-          if (!gfx::create_mesh_pipeline(device, pipeline_desc, pipeline, &error)) {
-            exit_code = fail("pipeline", error);
-            running = false;
-            break;
+          if (name == "cluster_mesh") {
+            gfx::destroy_pipeline(device, pipeline);
+            pipeline = VK_NULL_HANDLE;
+            cluster_shader = shader_library.get("cluster_mesh", &error);
+            pipeline_desc.mesh = cluster_shader->module;
+            pipeline_desc.fragment = cluster_shader->module;
+            if (!gfx::create_mesh_pipeline(device, pipeline_desc, pipeline, &error)) {
+              exit_code = fail("pipeline", error);
+              running = false;
+              break;
+            }
+          } else {
+            gfx::destroy_compute_pipeline(device, cull_pipeline);
+            cull_shader = shader_library.get("cluster_cull", &error);
+            if (!gfx::create_compute_pipeline(device, cull_shader->module, "cull_main", {},
+                                              sizeof(u64), cull_pipeline, &error)) {
+              exit_code = fail("cull pipeline", error);
+              running = false;
+              break;
+            }
           }
           ENGINE_LOG_INFO(log_view, "pipeline rebuilt after shader reload",
-                          log::field("generation", cluster_shader->generation));
+                          log::field("shader", name));
         }
         if (!running) break;
       }
@@ -414,6 +508,13 @@ int main(int argc, char** argv) {
       }
 
       VkCommandBuffer commands = frames.begin_frame();
+      const u32 slot = frames.slot();
+      // The frame that last used this slot has completed: its draw-args copy is readable.
+      if (options.cull && rendered >= k_frames_in_flight) {
+        visible_last = static_cast<const u32*>(stats_buffers[slot].mapped)[0];
+        visible_min = visible_last < visible_min ? visible_last : visible_min;
+        visible_max = visible_last > visible_max ? visible_last : visible_max;
+      }
       u32 image_index = 0;
       const gfx::PresentStatus acquired =
           swapchain.acquire(frames.acquire_semaphore(), image_index);
@@ -427,40 +528,104 @@ int main(int argc, char** argv) {
         continue;
       }
 
+      // Camera: orbit and breathe between close and far so the LOD cut changes visibly.
       const VkExtent2D extent = swapchain.extent();
       const f32 aspect = static_cast<f32>(extent.width) / static_cast<f32>(extent.height);
-      const f32 angle = static_cast<f32>(rendered) * 0.008f;
-      const Vec3 eye{std::cos(angle) * 15.0f, 7.5f, std::sin(angle) * 15.0f};
+      const f32 angle = static_cast<f32>(rendered) * 0.006f;
+      const f32 distance = 22.0f + 14.0f * std::sin(static_cast<f32>(rendered) * 0.004f);
+      const Vec3 eye{std::cos(angle) * distance, 0.45f * distance, std::sin(angle) * distance};
+      const f32 fov_y = radians(55.0f);
+      const f32 znear = 0.1f;
+      const Mat4 view_proj = perspective_reversed_z(fov_y, aspect, znear) *
+                             look_at(eye, Vec3{}, Vec3{0.0f, 1.0f, 0.0f});
+
       MeshParams params{};
-      params.view_proj = perspective_reversed_z(radians(55.0f), aspect, 0.1f) *
-                         look_at(eye, Vec3{0.0f, 0.0f, 0.0f}, Vec3{0.0f, 1.0f, 0.0f});
+      params.view_proj = view_proj;
       params.clusters = cluster_buffer.address;
       params.vertices = vertex_buffer.address;
       params.triangles = triangle_buffer.address;
-      params.cluster_count = mesh.clusters.size();
+      params.cluster_count = options.cull ? cluster_count : leaf_count;
+      params.visible = options.cull ? visible_buffer.address : 0;
+
+      gfx::CullParams cull{};
+      gfx::set_frustum(cull, frustum_from_view_proj(view_proj));
+      cull.camera = Vec4{eye, znear};
+      cull.lod = Vec4{1.0f / std::tan(fov_y * 0.5f) * static_cast<f32>(extent.height) * 0.5f,
+                      options.lod_px, 1.0f, 1.0f};
+      cull.cluster_count = cluster_count;
+      cull.clusters = cluster_buffer.address;
+      cull.lods = lod_buffer.address;
+      cull.visible = visible_buffer.address;
+      cull.draw_args = args_buffer.address;
+      std::memcpy(params_buffers[slot].mapped, &cull, sizeof(cull));
+      const u64 cull_params_address = params_buffers[slot].address;
 
       graph.reset();
       const gfx::RgImage color = graph.import_image("swapchain", swapchain.image(image_index));
       const gfx::RgImage depth_target = graph.import_image("depth", depth.image);
+      const gfx::RgBuffer rg_args = graph.import_buffer("draw_args", args_buffer);
+      const gfx::RgBuffer rg_visible = graph.import_buffer("visible", visible_buffer);
+      const gfx::RgBuffer rg_stats = graph.import_buffer("stats", stats_buffers[slot]);
       VkClearColorValue sky{};
       sky.float32[0] = 0.55f;
       sky.float32[1] = 0.70f;
       sky.float32[2] = 0.90f;
       sky.float32[3] = 1.0f;
+      if (options.cull) {
+        graph.add_pass(
+            "reset", gfx::PassKind::Transfer,
+            [&](gfx::PassBuilder& b) { b.write(rg_args, gfx::Access::TransferWrite); },
+            [&](VkCommandBuffer cb, gfx::RenderGraph&) {
+              vkCmdFillBuffer(cb, args_buffer.buffer, 0, sizeof(u32), 0);
+              vkCmdFillBuffer(cb, args_buffer.buffer, sizeof(u32), sizeof(u32) * 2, 1);
+            });
+        graph.add_pass(
+            "cull", gfx::PassKind::Compute,
+            [&](gfx::PassBuilder& b) {
+              b.write(rg_args, gfx::Access::ComputeReadWrite);
+              b.write(rg_visible, gfx::Access::ComputeWrite);
+            },
+            [&](VkCommandBuffer cb, gfx::RenderGraph&) {
+              vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, cull_pipeline.pipeline);
+              vkCmdPushConstants(cb, cull_pipeline.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                                 sizeof(u64), &cull_params_address);
+              vkCmdDispatch(cb, gfx::cull_group_count(cluster_count), 1, 1);
+            });
+      }
       graph.add_pass(
           "terrain", gfx::PassKind::Raster,
           [&](gfx::PassBuilder& b) {
             b.color_attachment(color, VK_ATTACHMENT_LOAD_OP_CLEAR, sky);
             b.depth_attachment(depth_target, VK_ATTACHMENT_LOAD_OP_CLEAR,
                                0.0f);  // reversed Z: far is 0
+            if (options.cull) {
+              b.read(rg_args, gfx::Access::IndirectRead);
+              b.read(rg_visible, gfx::Access::MeshRead);
+            }
           },
           [&](VkCommandBuffer cb, gfx::RenderGraph&) {
             vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
             bindless.bind(cb, VK_PIPELINE_BIND_POINT_GRAPHICS);
             vkCmdPushConstants(cb, bindless.pipeline_layout(), VK_SHADER_STAGE_ALL, 0,
                                sizeof(params), &params);
-            vkCmdDrawMeshTasksEXT(cb, mesh.clusters.size(), 1, 1);
+            if (options.cull) {
+              vkCmdDrawMeshTasksIndirectEXT(cb, args_buffer.buffer, 0, 1, sizeof(u32) * 3);
+            } else {
+              vkCmdDrawMeshTasksEXT(cb, leaf_count, 1, 1);
+            }
           });
+      if (options.cull) {
+        graph.add_pass(
+            "stats", gfx::PassKind::Transfer,
+            [&](gfx::PassBuilder& b) {
+              b.read(rg_args, gfx::Access::TransferRead);
+              b.write(rg_stats, gfx::Access::TransferWrite);
+            },
+            [&](VkCommandBuffer cb, gfx::RenderGraph&) {
+              const VkBufferCopy copy{0, 0, sizeof(u32) * 3};
+              vkCmdCopyBuffer(cb, args_buffer.buffer, stats_buffers[slot].buffer, 1, &copy);
+            });
+      }
       graph.set_final_layout(color, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
       if (!graph.compile(&error)) {
         frames.end_frame();
@@ -477,6 +642,11 @@ int main(int argc, char** argv) {
       const bool last = options.frames != 0 && rendered >= options.frames;
       if (last && !options.capture.empty()) {
         frames.wait(value);
+        if (options.cull) {
+          visible_last = static_cast<const u32*>(stats_buffers[slot].mapped)[0];
+          visible_min = visible_last < visible_min ? visible_last : visible_min;
+          visible_max = visible_last > visible_max ? visible_last : visible_max;
+        }
         gfx::Capture capture;
         Vector<u8> rgba;
         if (!gfx::capture_image(device, swapchain.image(image_index),
@@ -510,7 +680,15 @@ int main(int argc, char** argv) {
   frames.wait_idle();
   depth.destroy(device);
   if (pipeline != VK_NULL_HANDLE) gfx::destroy_pipeline(device, pipeline);
+  gfx::destroy_compute_pipeline(device, cull_pipeline);
   shader_library.destroy();
+  for (u32 slot = 0; slot < k_frames_in_flight; ++slot) {
+    gfx::destroy_buffer(device, params_buffers[slot]);
+    gfx::destroy_buffer(device, stats_buffers[slot]);
+  }
+  gfx::destroy_buffer(device, args_buffer);
+  gfx::destroy_buffer(device, visible_buffer);
+  gfx::destroy_buffer(device, lod_buffer);
   gfx::destroy_buffer(device, triangle_buffer);
   gfx::destroy_buffer(device, vertex_buffer);
   gfx::destroy_buffer(device, cluster_buffer);
@@ -525,11 +703,19 @@ int main(int argc, char** argv) {
   if (exit_code == 0) {
     const f64 seconds = static_cast<f64>(finished_ns - started_ns) / 1.0e9;
     const f64 avg_ms = rendered > 0 ? seconds * 1000.0 / static_cast<f64>(rendered) : 0.0;
+    if (visible_min == ~u32{0}) visible_min = 0;
     std::printf(
         "{\"frames\":%llu,\"seconds\":%.3f,\"avg_ms\":%.3f,\"width\":%u,\"height\":%u,"
-        "\"clusters\":%u,\"triangles\":%u,\"captured\":%s}\n",
+        "\"clusters\":%u,\"leaf_clusters\":%u,\"triangles\":%u,\"lod_levels\":%u,\"build_ms\":%.1f,"
+        "\"cull\":%s,\"lod_px\":%.2f,\"visible_last\":%u,\"visible_min\":%u,\"visible_max\":%u,"
+        "\"captured\":%s}\n",
         static_cast<unsigned long long>(rendered), seconds, avg_ms, options.width, options.height,
-        mesh.clusters.size(), mesh.source_triangle_count, captured ? "true" : "false");
+        lod.mesh.clusters.size(),
+        lod.level_cluster_counts.empty() ? 0u : lod.level_cluster_counts[0],
+        lod.leaf_triangle_count, lod.level_cluster_counts.size(),
+        static_cast<f64>(build_ns) / 1.0e6, options.cull ? "true" : "false",
+        static_cast<f64>(options.lod_px), visible_last, visible_min, visible_max,
+        captured ? "true" : "false");
   }
   log::remove_sink(&stderr_sink);
   return exit_code;

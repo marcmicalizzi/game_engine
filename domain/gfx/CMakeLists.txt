@@ -3,9 +3,9 @@
 # graph and the renderer systems build on this.
 # Shaders every consumer of the RHI may draw with (the cluster path); test-only shaders stay in
 # engine_shaders_gfx_tests below.
-engine_shaders(NAME gfx SOURCES shaders/cluster_mesh.slang)
+engine_shaders(NAME gfx SOURCES shaders/cluster_mesh.slang shaders/cluster_cull.slang)
 engine_module(NAME gfx LAYER domain
-  DEPS base containers memory hash json log platform schemas io
+  DEPS base containers memory hash json log math platform schemas io
   EXTERNAL_DEPS volk::volk GPUOpen::VulkanMemoryAllocator
   SOURCES src/adapter.cpp src/device.cpp src/vma.cpp src/frame.cpp src/render_graph.cpp
           src/bindless.cpp src/swapchain.cpp src/capture.cpp src/shader_library.cpp)
@@ -28,7 +28,7 @@ if(TARGET engine_gfx_tests)
                                           tests/render_graph_tests.cpp tests/bindless_tests.cpp
                                           tests/raster_tests.cpp tests/mesh_shader_tests.cpp
                                           tests/capture_tests.cpp tests/swapchain_tests.cpp
-                                          tests/shader_library_tests.cpp)
+                                          tests/shader_library_tests.cpp tests/cull_tests.cpp)
   target_compile_definitions(engine_gfx_tests PRIVATE
     ENGINE_SHADER_MANIFEST="${CMAKE_BINARY_DIR}/shaders/manifest.json")
   target_link_libraries(engine_gfx_tests PRIVATE engine_shaders_gfx_tests engine::geometry

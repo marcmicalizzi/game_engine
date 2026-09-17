@@ -25,8 +25,9 @@ struct MeshParams {
   u64 triangles;
   u32 cluster_count;
   u32 pad = 0;
+  u64 visible = 0;  // cull output; 0 draws clusters in index order
 };
-static_assert(sizeof(MeshParams) == 96);
+static_assert(sizeof(MeshParams) == 104);
 
 // (n x n) vertices spanning [-extent, extent]^2 in clip space, z = 0.
 void make_grid(u32 n, f32 extent, Vector<Vec3>& positions, Vector<u32>& indices) {

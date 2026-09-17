@@ -86,8 +86,8 @@ TEST_CASE("shader reflection: entry points, workgroup sizes, bindings, push cons
   CHECK(r.entry("fs_main")->stage == VK_SHADER_STAGE_FRAGMENT_BIT);
   CHECK(r.entry("fs_color") != nullptr);
   CHECK(r.entry("missing") == nullptr);
-  // float4x4 + three uint64 addresses + one uint = 92 unpadded bytes; the C++ mirror pads to 96.
-  CHECK(r.push_constant_bytes == 92);
+  // float4x4 + three uint64 addresses + uint + pad + the visible-list address.
+  CHECK(r.push_constant_bytes == 104);
   CHECK(r.bindings.empty());
 
   REQUIRE(gfx::reflect_spirv(words_of(shaders::k_triangle_spirv, shaders::k_triangle_spirv_size), r,
@@ -145,7 +145,7 @@ TEST_CASE("shader library: embedded shaders, the build manifest, and hot reload 
   std::string description;
   library.describe(description);
   CHECK(description.find("cluster_mesh (file) entries: mesh_main[128x1x1]") != std::string::npos);
-  CHECK(description.find("push:92") != std::string::npos);
+  CHECK(description.find("push:104") != std::string::npos);
 
   // Hot reload: a temporary shader compiled on first use, recompiled when its source changes,
   // and kept at the last good version when a save does not compile.

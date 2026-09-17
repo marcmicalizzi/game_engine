@@ -143,3 +143,25 @@ TEST_CASE("math: view and projection conventions") {
   CHECK(approx_equal(transform_point(ortho, {2, 1, 0}), Vec3{1, 1, 1}, 1.0e-6f));
   CHECK(approx_equal(transform_point(ortho, {-2, -1, -10}), Vec3{-1, -1, 0}, 1.0e-6f));
 }
+
+TEST_CASE("math: frustum planes from a reversed-Z projection") {
+  const Mat4 view = look_at(Vec3{0, 0, 10}, Vec3{0, 0, 0}, Vec3{0, 1, 0});
+  const Mat4 proj = perspective_reversed_z(radians(90.0f), 1.0f, 0.5f);  // infinite far
+  const Frustum f = frustum_from_view_proj(proj * view);
+  CHECK(f.plane_count == 5);  // the infinite far plane drops out
+  CHECK(frustum_contains_sphere(f, Vec3{0, 0, 0}, 1.0f));
+  CHECK(frustum_contains_sphere(f, Vec3{9.0f, 0, 0},
+                                0.5f));  // at the edge, 90 degree fov at distance 10
+  CHECK_FALSE(frustum_contains_sphere(f, Vec3{12.0f, 0, 0}, 0.5f));
+  CHECK_FALSE(frustum_contains_sphere(f, Vec3{0, 0, 20}, 1.0f));    // behind the camera
+  CHECK_FALSE(frustum_contains_sphere(f, Vec3{0, 0, 9.8f}, 0.1f));  // in front of the near plane
+  CHECK(frustum_contains_sphere(f, Vec3{0, 0, 9.8f}, 0.5f));        // straddling the near plane
+  CHECK(frustum_contains_sphere(f, Vec3{0, 0, -1000.0f}, 1.0f));    // far away, infinite far plane
+  const Mat4 finite = perspective_reversed_z(radians(90.0f), 1.0f, 0.5f, 50.0f);
+  const Frustum g = frustum_from_view_proj(finite * view);
+  CHECK(g.plane_count == 6);
+  CHECK_FALSE(frustum_contains_sphere(g, Vec3{0, 0, -1000.0f}, 1.0f));
+  CHECK(frustum_contains_sphere(g, Vec3{0, 0, -30.0f}, 1.0f));
+  for (u32 i = 0; i < g.plane_count; ++i)
+    CHECK(approx_equal(length(g.planes[i].normal), 1.0f, 1e-4f));
+}

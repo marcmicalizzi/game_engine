@@ -72,6 +72,8 @@ enum class Access : u8 {
   TransferWrite,     // copy or clear destination (images: TRANSFER_DST_OPTIMAL)
   ColorAttachment,   // written through dynamic rendering (images: COLOR_ATTACHMENT_OPTIMAL)
   DepthAttachment,   // depth/stencil attachment (images: DEPTH_ATTACHMENT_OPTIMAL)
+  IndirectRead,      // indirect draw or dispatch arguments (buffers)
+  MeshRead,          // storage read in task or mesh shaders (buffers)
 };
 bool access_writes(Access access) noexcept;
 

@@ -432,6 +432,53 @@ inline Transform3 inverse(const Transform3& t) noexcept {
 
 // --- bounds -------------------------------------------------------------------------------------
 
+// A plane as normal and offset: points with dot(normal, p) + d >= 0 are on the positive side.
+struct Plane {
+  Vec3 normal{};
+  f32 d = 0.0f;
+  constexpr f32 distance(Vec3 p) const noexcept { return dot(normal, p) + d; }
+};
+
+// View frustum as inward-facing planes extracted from a view-projection matrix (Gribb/Hartmann)
+// for the zero-to-one reversed-Z convention: near is z/w <= 1, far is z/w >= 0. An infinite far
+// plane degenerates to a zero normal and is dropped, so plane_count is 5 or 6.
+struct Frustum {
+  Plane planes[6];
+  u32 plane_count = 0;
+};
+
+inline Frustum frustum_from_view_proj(const Mat4& m) noexcept {
+  Frustum f;
+  auto row = [&](usize r) { return Vec4{m.at(r, 0), m.at(r, 1), m.at(r, 2), m.at(r, 3)}; };
+  const Vec4 r0 = row(0);
+  const Vec4 r1 = row(1);
+  const Vec4 r2 = row(2);
+  const Vec4 r3 = row(3);
+  const Vec4 candidates[6] = {
+      Vec4{r3.x + r0.x, r3.y + r0.y, r3.z + r0.z, r3.w + r0.w},  // left:   x/w >= -1
+      Vec4{r3.x - r0.x, r3.y - r0.y, r3.z - r0.z, r3.w - r0.w},  // right:  x/w <= 1
+      Vec4{r3.x + r1.x, r3.y + r1.y, r3.z + r1.z, r3.w + r1.w},  // bottom: y/w >= -1
+      Vec4{r3.x - r1.x, r3.y - r1.y, r3.z - r1.z, r3.w - r1.w},  // top:    y/w <= 1
+      Vec4{r3.x - r2.x, r3.y - r2.y, r3.z - r2.z, r3.w - r2.w},  // near:   z/w <= 1
+      Vec4{r2.x, r2.y, r2.z, r2.w},                              // far:    z/w >= 0
+  };
+  for (const Vec4& c : candidates) {
+    const Vec3 n{c.x, c.y, c.z};
+    const f32 len = length(n);
+    if (len <= k_epsilon) continue;
+    f.planes[f.plane_count++] = Plane{n * (1.0f / len), c.w / len};
+  }
+  return f;
+}
+
+// False only when the sphere lies entirely outside one plane (conservative: corners pass).
+inline bool frustum_contains_sphere(const Frustum& f, Vec3 center, f32 radius) noexcept {
+  for (u32 i = 0; i < f.plane_count; ++i) {
+    if (f.planes[i].distance(center) < -radius) return false;
+  }
+  return true;
+}
+
 struct Aabb3 {
   Vec3 min{};
   Vec3 max{};
