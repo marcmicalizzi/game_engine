@@ -67,7 +67,7 @@ constexpr const char* k_usage =
     "                   [--no-vsync] [--adapter <index>] [--validation] [--grid <n>] [--log <spec>]\n"
     "                   [--shaders <manifest.json>] [--lod <px>] [--no-cull] [--no-occlusion] [--no-cone]\n"
     "                   [--raster direct|hw|vertex|sw|auto|rt] [--sw-px <px>] [--view <mode>] [--orbit <d>]\n"
-    "                   [--mesh <file.gltf|file.glb>]\n"
+    "                   [--mesh <file.gltf|file.glb>] [--no-lights]\n"
     "\n"
     "  --frames <n>     render n frames, then exit (0: until the window closes)\n"
     "  --capture <png>  write the last frame as a PNG (implies --frames 60 when unset)\n"
@@ -78,6 +78,7 @@ constexpr const char* k_usage =
     "  --no-cull        draw every leaf cluster; no GPU culling or LOD selection\n"
     "  --no-occlusion   skip two-pass occlusion culling (hw mode only; on by default)\n"
     "  --no-cone        skip backface culling of clusters by their normal cones (on by default)\n"
+    "  --no-lights      only the sun and the sky; no orbiting point lights (they are on by default)\n"
     "  --raster <mode>  direct: mesh shaders to color with a depth buffer; hw (default), vertex, sw,\n"
     "                   auto: the visibility buffer through mesh shaders, a vertex shader (the\n"
     "                   baseline tier, chosen automatically without mesh shaders), software, or\n"
@@ -98,6 +99,7 @@ constexpr int k_exit_error = 1;
 constexpr int k_exit_usage = 2;
 constexpr int k_exit_unavailable = 3;
 constexpr u32 k_frames_in_flight = 2;
+constexpr u32 k_view_lights = 2;  // the warm and cool point lights orbiting the scene
 
 enum class RasterMode : u8 { Direct, Hardware, Software, Auto, Vertex, RayTrace };
 
@@ -117,6 +119,7 @@ struct Options {
   bool cull = true;
   bool occlusion = true;
   bool cone = true;
+  bool lights = true;  // the two orbiting point lights
   RasterMode raster = RasterMode::Hardware;
   f32 sw_px = 32.0f;
   u32 view_mode = static_cast<u32>(gfx::ResolveMode::Shaded);
@@ -348,6 +351,8 @@ int main(int argc, char** argv) {
       options.occlusion = false;
     } else if (a == "--no-cone") {
       options.cone = false;
+    } else if (a == "--no-lights") {
+      options.lights = false;
     } else if (a == "--validation") {
       options.validation = true;
     } else {
@@ -795,12 +800,14 @@ int main(int argc, char** argv) {
                                     sw_visible_buffer, &error) &&
                  gfx::create_buffer(device, sizeof(u32) * 3, k_args, false, sw_args_buffer, &error);
     for (u32 slot = 0; slot < k_frames_in_flight && buffers_ok; ++slot) {
-      buffers_ok = gfx::create_buffer(device, sizeof(gfx::CullParams) * 2, k_address, true,
-                                      params_buffers[slot], &error) &&
-                   gfx::create_buffer(device, sizeof(gfx::ResolveParams), k_address, true,
-                                      resolve_buffers[slot], &error) &&
-                   gfx::create_buffer(device, sizeof(u32) * 9, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                                      true, stats_buffers[slot], &error);
+      buffers_ok =
+          gfx::create_buffer(device, sizeof(gfx::CullParams) * 2, k_address, true,
+                             params_buffers[slot], &error) &&
+          gfx::create_buffer(device,
+                             sizeof(gfx::ResolveParams) + k_view_lights * sizeof(gfx::ResolveLight),
+                             k_address, true, resolve_buffers[slot], &error) &&
+          gfx::create_buffer(device, sizeof(u32) * 9, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true,
+                             stats_buffers[slot], &error);
       if (buffers_ok) std::memset(stats_buffers[slot].mapped, 0, sizeof(u32) * 9);
     }
     if (!buffers_ok) {
@@ -1168,7 +1175,29 @@ int main(int argc, char** argv) {
       resolve.width = extent.width;
       resolve.height = extent.height;
       resolve.mode = options.view_mode;
-      std::memcpy(resolve_buffers[slot].mapped, &resolve, sizeof(resolve));
+      // Two point lights orbiting the scene out of phase, one warm and one cool, so the BSDF's
+      // specular response sweeps across the surface while the camera turns and metal reads as
+      // metal. Reach and intensity scale with the scene radius, intensity with its square
+      // because the falloff is inverse square, so a 2 cm mesh and the heightfield look alike.
+      // They live behind the params block in the same per-slot buffer.
+      const f32 light_orbit = 1.35f * scene_radius;
+      const f32 light_angle = static_cast<f32>(rendered) * 0.013f;
+      gfx::ResolveLight lights[k_view_lights];
+      lights[0].position_radius =
+          Vec4{scene_center + Vec3{std::cos(light_angle) * light_orbit, 0.70f * scene_radius,
+                                   std::sin(light_angle) * light_orbit},
+               4.0f * scene_radius};
+      lights[0].color_intensity = Vec4{1.0f, 0.78f, 0.55f, light_orbit * light_orbit};
+      lights[1].position_radius = Vec4{
+          scene_center + Vec3{-std::cos(light_angle * 0.7f) * light_orbit, -0.35f * scene_radius,
+                              -std::sin(light_angle * 0.7f) * light_orbit},
+          4.0f * scene_radius};
+      lights[1].color_intensity = Vec4{0.50f, 0.68f, 1.0f, 0.8f * light_orbit * light_orbit};
+      resolve.lights = resolve_buffers[slot].address + sizeof(resolve);
+      resolve.light_count = options.lights ? k_view_lights : 0;
+      auto* resolve_block = static_cast<u8*>(resolve_buffers[slot].mapped);
+      std::memcpy(resolve_block, &resolve, sizeof(resolve));
+      std::memcpy(resolve_block + sizeof(resolve), lights, sizeof(lights));
       const u64 resolve_address = resolve_buffers[slot].address;
 
       // --raster rt: the records pass turns this frame's visible list into CLAS build records,

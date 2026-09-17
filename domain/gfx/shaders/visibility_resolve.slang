@@ -5,10 +5,13 @@
 // perspective-correct with the vertices' clip-space w, reconstruct the surface position and
 // interpolate the per-vertex normal and UV (octahedral snorm16 normals, half-float UVs, from
 // geometry::VertexAttributes; without attributes the triangle plane gives a flat normal). A
-// per-cluster material index selects albedo, emissive, and an optional albedo texture from the
-// bindless set, and a directional sun plus a sky hemisphere light the surface. Debug modes show
-// cluster colors, triangle shading, depth, normals, or UVs. Empty pixels (value 0: depth 0 is
-// the far plane and id 0 never occurs there) take the sky color.
+// per-cluster material index selects albedo, roughness, metallic, emissive, and an optional
+// albedo texture from the bindless set, and the shared BSDF (brdf.slang) shades a directional sun,
+// N analytic point and spot lights, and a sky hemisphere. Debug modes show cluster colors,
+// triangle shading, depth, normals, or UVs. Empty pixels (value 0: depth 0 is the far plane and
+// id 0 never occurs there) take the sky color.
+
+#include "brdf.slang"
 
 [[vk::binding(0, 0)]] Texture2D<float4> g_textures[];
 [[vk::binding(2, 0)]] SamplerState g_samplers[];
@@ -62,7 +65,15 @@ struct ResolveMaterial {
   uint flags;
 };
 
-// Read through a device address; mirrors gfx::ResolveParams (184 bytes).
+// Mirrors gfx::ResolveLight (64 bytes).
+struct ResolveLight {
+  float4 position_radius;  // xyz world position, w radius of influence
+  float4 color_intensity;  // rgb linear color, w radiant intensity scale
+  float4 direction_type;   // xyz spot direction (towards the lit surface), w 0 point, 1 spot
+  float4 spot;             // x cos inner, y cos outer, zw unused
+};
+
+// Read through a device address; mirrors gfx::ResolveParams (192 bytes).
 struct ResolveParams {
   float4 sky;     // rgb, shown for empty pixels and used as the hemisphere ambient
   float4 sun;     // xyz normalized direction towards the light, w intensity
@@ -75,10 +86,11 @@ struct ResolveParams {
   uint64_t materials;          // ResolveMaterial[]
   uint64_t cluster_materials;  // uint[cluster_count]: material index per cluster
   uint64_t attributes;         // VertexAttributes[] parallel to vertices; 0 = flat shading
+  uint64_t lights;             // ResolveLight[light_count]
   uint width;
   uint height;
   uint mode;  // 0 cluster colors, 1 with triangle shade, 2 depth, 3 shaded, 4 normals, 5 uvs
-  uint pad;
+  uint light_count;
 };
 
 struct ResolvePush {
@@ -212,8 +224,38 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
                   .SampleLevel(g_samplers[NonUniformResourceIndex(material.sampler)], s.uv * material.uv_scale, 0)
                   .rgb;
   }
-  const float n_dot_l = max(dot(s.normal, params->sun.xyz), 0.0);
+  BrdfSurface surface;
+  surface.albedo = albedo;
+  surface.normal = s.normal;
+  surface.view = normalize(params->camera.xyz - s.position);
+  surface.roughness = material.albedo.w;
+  surface.metallic = material.emissive.w;
+
+  // The sun: one direction, one intensity, no falloff.
+  float3 color = brdf_direct(surface, params->sun.xyz, float3(params->sun.w));
+  // The analytic lights: inverse square windowed to zero at the radius, spots by their cone.
+  ResolveLight* lights = (ResolveLight*)params->lights;
+  for (uint i = 0; i < params->light_count; ++i) {
+    const ResolveLight light = lights[i];
+    const float3 to_light = light.position_radius.xyz - s.position;
+    const float distance_sq = dot(to_light, to_light);
+    float attenuation = brdf_distance_attenuation(distance_sq, light.position_radius.w);
+    if (attenuation <= 0.0) continue;
+    const float3 light_dir = normalize(to_light);
+    if (light.direction_type.w >= 0.5) {
+      attenuation *= brdf_spot_attenuation(-light_dir, normalize(light.direction_type.xyz),
+                                           light.spot.x, light.spot.y);
+    }
+    color += brdf_direct(surface, light_dir,
+                         light.color_intensity.rgb * (light.color_intensity.w * attenuation));
+  }
+  // The sky hemisphere is the whole indirect term until the lighting passes exist: the diffuse
+  // albedo takes it by normal elevation, and a Fresnel-weighted sliver of it at the view angle
+  // keeps metals, which have no diffuse lobe, from going black.
   const float3 ambient = params->sky.rgb * lerp(0.15, 0.35, s.normal.y * 0.5 + 0.5);
-  const float3 color = albedo * (n_dot_l * params->sun.w + ambient) + material.emissive.rgb;
+  const float n_dot_v = max(dot(surface.normal, surface.view), 0.0);
+  color += ambient * (albedo * (1.0 - surface.metallic) +
+                      brdf_f_schlick(brdf_f0(albedo, surface.metallic), n_dot_v));
+  color += material.emissive.rgb;
   return float4(pow(max(color, 0.0), 1.0 / 2.2), 1.0);  // linear to display on a UNORM swapchain
 }

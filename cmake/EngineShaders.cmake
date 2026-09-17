@@ -3,7 +3,12 @@
 # and tools need no file lookup. Runtime loading through the VFS and a hash-keyed cache arrive
 # with the renderer's shader library.
 #
-#   engine_shaders(NAME <name> SOURCES <file.slang>... [PROFILE spirv_1_6] [FLAGS ...])
+#   engine_shaders(NAME <name> SOURCES <file.slang>... [PROFILE spirv_1_6] [FLAGS ...]
+#                  [DEPENDS <included.slang>...])
+#
+# DEPENDS names files the sources `#include` (slangc resolves an include against the including
+# file's directory). They are not compiled themselves and get no header; they are added to every
+# source's dependencies so editing one recompiles the shaders that include it.
 #
 # Produces the INTERFACE target engine_shaders_<name> whose include directory holds
 # <stem>.spv.h for every source, each declaring
@@ -34,7 +39,7 @@ endif()
 
 function(engine_shaders)
   set(_one NAME PROFILE)
-  set(_multi SOURCES FLAGS)
+  set(_multi SOURCES FLAGS DEPENDS)
   cmake_parse_arguments(SH "" "${_one}" "${_multi}" ${ARGN})
   if(NOT SH_NAME OR NOT SH_SOURCES)
     message(FATAL_ERROR "engine_shaders: NAME and SOURCES are required")
@@ -51,6 +56,11 @@ function(engine_shaders)
 
   set(_gen "${CMAKE_CURRENT_BINARY_DIR}/shaders/${SH_NAME}")
   set(_headers "")
+  set(_included "")
+  foreach(_inc IN LISTS SH_DEPENDS)
+    get_filename_component(_inc_abs "${_inc}" ABSOLUTE)
+    list(APPEND _included "${_inc_abs}")
+  endforeach()
   foreach(_src IN LISTS SH_SOURCES)
     get_filename_component(_abs "${_src}" ABSOLUTE)
     get_filename_component(_stem "${_src}" NAME_WE)
@@ -62,7 +72,7 @@ function(engine_shaders)
               -target spirv -profile ${SH_PROFILE} -emit-spirv-directly
               -fvk-use-entrypoint-name -O2 -warnings-disable 41012 ${SH_FLAGS}
               -o "${_spv}"
-      DEPENDS "${_abs}"
+      DEPENDS "${_abs}" ${_included}
       COMMENT "slangc: ${_src}"
       VERBATIM)
     add_custom_command(

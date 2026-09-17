@@ -1,7 +1,11 @@
 // Per-vertex attributes through the material resolve: a quad whose vertex normals are tilted
 // 45 degrees must shade by those normals rather than its plane, the normals view must show them,
 // and a 2x2 checker texture sampled by the quad's UVs through the bindless set must land in the
-// right quadrants. Skips without mesh shaders or 64-bit buffer atomics.
+// right quadrants. The expected colors come from the CPU mirror of the BSDF (brdf_reference.h),
+// the same reference the shading test uses, evaluated with the tilted normal and the sampled
+// texel as albedo. Skips without mesh shaders or 64-bit buffer atomics.
+#include "brdf_reference.h"
+
 #include <domain/geometry/cluster.h>
 #include <domain/gfx/bindless.h>
 #include <domain/gfx/cluster_cull.h>
@@ -20,15 +24,7 @@
 #include <string>
 
 using namespace engine;
-
-namespace {
-
-u8 display(f32 linear) {
-  const f32 v = std::pow(linear < 0.0f ? 0.0f : linear, 1.0f / 2.2f);
-  return static_cast<u8>(std::lround((v > 1.0f ? 1.0f : v) * 255.0f));
-}
-
-}  // namespace
+namespace ref = engine::brdf_ref;
 
 TEST_CASE("material resolve: vertex normals steer the shading and textures sample by UV") {
   gfx::Device device;
@@ -111,8 +107,10 @@ TEST_CASE("material resolve: vertex normals steer the shading and textures sampl
 
   constexpr u32 k_size = 128;
   const Vec3 eye{0.0f, 10.0f, 0.0f};
-  const Mat4 view_proj = perspective_reversed_z(radians(60.0f), 1.0f, 0.1f) *
-                         look_at(eye, Vec3{}, Vec3{0.0f, 0.0f, -1.0f});
+  const Vec3 target{};
+  const Vec3 up{0.0f, 0.0f, -1.0f};
+  const f32 fov_y = radians(60.0f);
+  const Mat4 view_proj = perspective_reversed_z(fov_y, 1.0f, 0.1f) * look_at(eye, target, up);
   const u64 vis_bytes = u64{k_size} * k_size * sizeof(u64);
   gfx::BufferResource vis;
   gfx::BufferResource params;
@@ -164,9 +162,10 @@ TEST_CASE("material resolve: vertex normals steer the shading and textures sampl
   draw.height = k_size;
 
   const Vec4 sky{0.2f, 0.3f, 0.4f, 1.0f};
+  const Vec3 sun_dir{0.0f, 1.0f, 0.0f};
   gfx::ResolveParams base{};
   base.sky = sky;
-  base.sun = Vec4{0.0f, 1.0f, 0.0f, 1.0f};
+  base.sun = Vec4{sun_dir, 1.0f};
   base.camera = Vec4{eye, 0.0f};
   base.view_proj = view_proj;
   base.visibility = vis.address;
@@ -260,40 +259,52 @@ TEST_CASE("material resolve: vertex normals steer the shading and textures sampl
     return static_cast<const u8*>(host_color.mapped) +
            (u64{k_size} * k_size * image + y * k_size + x) * 4;
   };
-  auto close = [](const u8* p, u8 r, u8 g, u8 b, int tolerance) {
-    return std::abs(int{p[0]} - r) <= tolerance && std::abs(int{p[1]} - g) <= tolerance &&
-           std::abs(int{p[2]} - b) <= tolerance;
-  };
-  // With the vertex normals tilted 45 degrees: direct term cos 45, ambient at that elevation.
-  const f32 cos45 = std::sqrt(0.5f);
-  const f32 ambient = 0.15f + 0.20f * (cos45 * 0.5f + 0.5f);
-  auto lit = [&](f32 albedo, f32 sky_channel) {
-    return display(albedo * (cos45 + sky_channel * ambient));
+  // The reference surface at a pixel: the point the resolve reconstructs on the quad's plane,
+  // the tilted vertex normal (the same at every vertex, so interpolation cannot change it), the
+  // view from there, and the albedo the material and the texture produce together.
+  auto expect_pixel = [&](u32 image, u32 x, u32 y, Vec3 albedo, const std::string& what) {
+    ref::Surface s;
+    s.position = ref::pixel_on_plane(ref::dvec3(eye), ref::dvec3(target), ref::dvec3(up),
+                                     double{fov_y}, 1.0, k_size, k_size, x, y, 0.0);
+    s.normal = ref::normalize(ref::dvec3(tilted));
+    s.view = ref::normalize(ref::dvec3(eye) - s.position);
+    s.albedo = ref::dvec3(albedo);
+    s.roughness = double{material_set[0].albedo.w};
+    s.metallic = 0.0;
+    const ref::Dvec3 linear =
+        ref::shade(s, ref::dvec3(sun_dir), 1.0, ref::dvec3(sky), nullptr, 0, ref::Dvec3{});
+    const u8 expect[3] = {ref::display(linear.x), ref::display(linear.y), ref::display(linear.z)};
+    const u8* p = pixel(image, x, y);
+    const bool matches = std::abs(int{p[0]} - int{expect[0]}) <= 2 &&
+                         std::abs(int{p[1]} - int{expect[1]}) <= 2 &&
+                         std::abs(int{p[2]} - int{expect[2]}) <= 2;
+    CHECK_MESSAGE(matches, what << " at " << x << "," << y << ": gpu " << int{p[0]} << ","
+                                << int{p[1]} << "," << int{p[2]} << " reference " << int{expect[0]}
+                                << "," << int{expect[1]} << "," << int{expect[2]});
   };
 
-  const u8* center = pixel(0, k_size / 2, k_size / 2);
-  CHECK_MESSAGE(close(center, lit(0.8f, sky.x), lit(0.4f, sky.y), lit(0.2f, sky.z), 3),
-                "center " << int{center[0]} << "," << int{center[1]} << "," << int{center[2]});
+  const u32 cx = k_size / 2;
+  const u32 cy = k_size / 2;
+  // Shaded by the tilted normal, not by the plane: the plane would give a different cosine, a
+  // different half vector, and a different hemisphere elevation, all of which the reference sees.
+  expect_pixel(0, cx, cy, material_set[0].albedo.xyz(), "tilted normal");
+  const f32 cos45 = std::sqrt(0.5f);
   const u8 half_up = static_cast<u8>(std::lround((cos45 * 0.5f + 0.5f) * 255.0f));
-  const u8* normal = pixel(1, k_size / 2, k_size / 2);
-  CHECK_MESSAGE(close(normal, 128, half_up, half_up, 2),
+  const u8* normal = pixel(1, cx, cy);
+  const bool normal_ok = std::abs(int{normal[0]} - 128) <= 2 &&
+                         std::abs(int{normal[1]} - int{half_up}) <= 2 &&
+                         std::abs(int{normal[2]} - int{half_up}) <= 2;
+  CHECK_MESSAGE(normal_ok,
                 "normal " << int{normal[0]} << "," << int{normal[1]} << "," << int{normal[2]});
 
   // The texture: u grows with +x (screen right); v grows with +z, which this camera (looking down
   // -y with -z as up) maps to screen down. Sample a quarter of the quad's footprint from center.
+  // The material is white, so the sampled texel is the albedo the reference shades.
   const u32 quarter = static_cast<u32>(5.0f / (10.0f * std::tan(radians(30.0f))) * k_size * 0.25f);
-  const u32 cx = k_size / 2;
-  const u32 cy = k_size / 2;
-  auto expect_texel = [&](u32 x, u32 y, f32 r, f32 g, f32 b) {
-    const u8* p = pixel(2, x, y);
-    CHECK_MESSAGE(
-        close(p, lit(r, sky.x), lit(g, sky.y), lit(b, sky.z), 3),
-        "texel at " << x << "," << y << ": " << int{p[0]} << "," << int{p[1]} << "," << int{p[2]});
-  };
-  expect_texel(cx - quarter, cy - quarter, 1.0f, 0.0f, 0.0f);  // u < 0.5, v < 0.5: red
-  expect_texel(cx + quarter, cy - quarter, 0.0f, 1.0f, 0.0f);  // u > 0.5, v < 0.5: green
-  expect_texel(cx - quarter, cy + quarter, 0.0f, 0.0f, 1.0f);  // u < 0.5, v > 0.5: blue
-  expect_texel(cx + quarter, cy + quarter, 1.0f, 1.0f, 1.0f);  // both > 0.5: white
+  expect_pixel(2, cx - quarter, cy - quarter, Vec3{1.0f, 0.0f, 0.0f}, "red texel");
+  expect_pixel(2, cx + quarter, cy - quarter, Vec3{0.0f, 1.0f, 0.0f}, "green texel");
+  expect_pixel(2, cx - quarter, cy + quarter, Vec3{0.0f, 0.0f, 1.0f}, "blue texel");
+  expect_pixel(2, cx + quarter, cy + quarter, Vec3{1.0f, 1.0f, 1.0f}, "white texel");
 
   graph.reset();
   gfx::destroy_pipeline(device, resolve_pipeline);
