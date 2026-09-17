@@ -48,7 +48,7 @@ struct ClusterLodMesh {
 
 bool build_cluster_lod(std::span<const Vec3> positions, std::span<const u32> indices,
                        const ClusterLodOptions& options, ClusterLodMesh& out,
-                       std::string* error = nullptr);
+                       std::string* error = nullptr, const AttributeSource& attributes = {});
 
 // View-dependent selection, the reference for the GPU pass. Errors are projected to screen
 // pixels the way clusterlod documents: error / max(distance - radius, znear) * proj_scale.

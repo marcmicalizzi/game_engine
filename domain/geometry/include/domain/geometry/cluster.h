@@ -30,6 +30,28 @@ struct ClusterDesc {
   f32 radius = 0.0f;
 };
 
+// GPU-mirrored per-vertex attributes, 8 bytes, cluster-ordered like ClusterMesh::vertices: an
+// octahedral normal in two snorm16 and a UV in two half floats. Keep in step with the shaders.
+struct VertexAttributes {
+  u32 normal_oct = 0;
+  u32 uv_half2 = 0;
+};
+
+// Optional source attributes for the builders, indexed like the source positions. Empty normals
+// are computed from the faces (area-weighted, smooth); empty UVs are zero.
+struct AttributeSource {
+  std::span<const Vec3> normals;
+  std::span<const Vec2> uvs;
+};
+
+u32 encode_normal_oct(Vec3 normal) noexcept;
+Vec3 decode_normal_oct(u32 packed) noexcept;
+u32 encode_half2(Vec2 v) noexcept;
+Vec2 decode_half2(u32 packed) noexcept;
+// Area-weighted smooth normals; isolated vertices get +Y.
+void compute_vertex_normals(std::span<const Vec3> positions, std::span<const u32> indices,
+                            Vector<Vec3>& out);
+
 struct ClusterBuildOptions {
   u32 max_vertices = 64;    // at most 255 (local indices are bytes)
   u32 max_triangles = 124;  // at most 512 and a multiple of 4 (meshoptimizer)
@@ -39,9 +61,10 @@ struct ClusterBuildOptions {
 
 struct ClusterMesh {
   Vector<ClusterDesc> clusters;
-  Vector<Vec3> vertices;      // cluster-ordered copies of source positions
-  Vector<u32> vertex_source;  // source vertex index per entry of `vertices`
-  Vector<u32> triangles;      // per triangle: local i0 | i1 << 8 | i2 << 16
+  Vector<Vec3> vertices;                // cluster-ordered copies of source positions
+  Vector<u32> vertex_source;            // source vertex index per entry of `vertices`
+  Vector<VertexAttributes> attributes;  // parallel to `vertices`
+  Vector<u32> triangles;                // per triangle: local i0 | i1 << 8 | i2 << 16
   u32 source_vertex_count = 0;
   u32 source_triangle_count = 0;
 
@@ -56,7 +79,12 @@ struct ClusterMesh {
 // range, or options outside the limits above.
 bool build_clusters(std::span<const Vec3> positions, std::span<const u32> indices,
                     const ClusterBuildOptions& options, ClusterMesh& out,
-                    std::string* error = nullptr);
+                    std::string* error = nullptr, const AttributeSource& attributes = {});
+
+// Fills `mesh.attributes` from the source attributes through `vertex_source`; the builders call
+// it, and it is public so a mesh built elsewhere can be given attributes later.
+void fill_cluster_attributes(ClusterMesh& mesh, std::span<const Vec3> positions,
+                             std::span<const u32> indices, const AttributeSource& attributes);
 
 // Checks the invariants tests rely on: offsets and counts in range, counts within the limits,
 // every source triangle present exactly once, every vertex inside its cluster's sphere.

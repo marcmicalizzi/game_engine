@@ -2,6 +2,7 @@
 
 #include <doctest/doctest.h>
 
+#include <cmath>
 #include <string>
 
 using namespace engine;
@@ -111,4 +112,63 @@ TEST_CASE("clusters: bad input is rejected") {
   CHECK_FALSE(build_clusters(positions, indices, bad, mesh, &error));
   CHECK(ClusterMesh::pack(1, 2, 3) == (1u | (2u << 8) | (3u << 16)));
   CHECK(ClusterMesh::unpack(ClusterMesh::pack(7, 8, 9), 2) == 9);
+}
+
+TEST_CASE("attributes: octahedral normals and half UVs round-trip, builders carry them") {
+  const Vec3 samples[] = {
+      Vec3{0, 1, 0},          Vec3{0, -1, 0},           Vec3{1, 0, 0},
+      Vec3{0, 0, -1},         Vec3{0.3f, 0.4f, 0.866f}, Vec3{-0.5f, 0.2f, -0.84f},
+      Vec3{0.7f, -0.7f, 0.1f}};
+  for (const Vec3& s : samples) {
+    const Vec3 n = normalize(s);
+    const Vec3 back = decode_normal_oct(encode_normal_oct(n));
+    CHECK(length(back - n) < 2e-4f);
+  }
+  const Vec2 uvs[] = {Vec2{0, 0}, Vec2{1, 1}, Vec2{0.25f, 0.75f}, Vec2{-3.5f, 1000.0f},
+                      Vec2{0.001f, 65504.0f}};
+  for (const Vec2& uv : uvs) {
+    const Vec2 back = decode_half2(encode_half2(uv));
+    CHECK(std::fabs(back.x - uv.x) <= std::fabs(uv.x) * 1e-3f + 1e-6f);
+    CHECK(std::fabs(back.y - uv.y) <= std::fabs(uv.y) * 1e-3f + 1e-6f);
+  }
+  CHECK(encode_half2(Vec2{0, 0}) == 0);
+
+  // A flat grid: computed normals all point up; a builder without a source computes them.
+  Vector<Vec3> positions;
+  Vector<u32> indices;
+  make_grid(9, positions, indices);
+  Vector<Vec3> normals;
+  compute_vertex_normals(positions, indices, normals);
+  REQUIRE(normals.size() == positions.size());
+  // The grid lies in z = 0 and winds clockwise seen from +z, so its normals face -z.
+  for (const Vec3& n : normals)
+    CHECK(length(n - Vec3{0, 0, -1}) < 1e-5f);
+  ClusterMesh mesh;
+  std::string error;
+  REQUIRE(build_clusters(positions, indices, ClusterBuildOptions{}, mesh, &error));
+  REQUIRE(mesh.attributes.size() == mesh.vertices.size());
+  for (const VertexAttributes& a : mesh.attributes) {
+    CHECK(length(decode_normal_oct(a.normal_oct) - Vec3{0, 0, -1}) < 2e-4f);
+    CHECK(a.uv_half2 == 0);
+  }
+
+  // With a source: attributes follow vertex_source.
+  Vector<Vec2> source_uvs;
+  Vector<Vec3> source_normals;
+  for (const Vec3& p : positions) {
+    source_uvs.push_back(Vec2{p.x, p.y});
+    source_normals.push_back(normalize(Vec3{p.x - 0.5f, p.y - 0.5f, 1.0f}));
+  }
+  AttributeSource source;
+  source.normals = std::span<const Vec3>(source_normals.data(), source_normals.size());
+  source.uvs = std::span<const Vec2>(source_uvs.data(), source_uvs.size());
+  REQUIRE(build_clusters(positions, indices, ClusterBuildOptions{}, mesh, &error, source));
+  REQUIRE(mesh.attributes.size() == mesh.vertex_source.size());
+  for (u32 i = 0; i < mesh.attributes.size(); ++i) {
+    const u32 s = mesh.vertex_source[i];
+    const Vec2 uv = decode_half2(mesh.attributes[i].uv_half2);
+    CHECK(std::fabs(uv.x - source_uvs[s].x) < 1e-3f);
+    CHECK(std::fabs(uv.y - source_uvs[s].y) < 1e-3f);
+    CHECK(length(decode_normal_oct(mesh.attributes[i].normal_oct) - source_normals[s]) < 2e-4f);
+  }
 }

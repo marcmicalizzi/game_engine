@@ -2,12 +2,15 @@
 #include <domain/geometry/cluster.h>
 
 #include <algorithm>
+#include <cmath>
+#include <cstring>
 #include <meshoptimizer.h>
 
 namespace engine::geometry {
 
 bool build_clusters(std::span<const Vec3> positions, std::span<const u32> indices,
-                    const ClusterBuildOptions& options, ClusterMesh& out, std::string* error) {
+                    const ClusterBuildOptions& options, ClusterMesh& out, std::string* error,
+                    const AttributeSource& attributes) {
   out = ClusterMesh{};
   if (positions.empty() || indices.empty() || indices.size() % 3 != 0) {
     if (error != nullptr) *error = "build_clusters: need vertices and a multiple of three indices";
@@ -68,6 +71,7 @@ bool build_clusters(std::span<const Vec3> positions, std::span<const u32> indice
     }
     out.clusters.push_back(desc);
   }
+  fill_cluster_attributes(out, positions, indices, attributes);
   return true;
 }
 
@@ -130,6 +134,144 @@ bool validate_clusters(const ClusterMesh& mesh, std::span<const u32> source_indi
     if (expected[i] != found[i]) return fail("a source triangle is missing or duplicated");
   }
   return true;
+}
+
+}  // namespace engine::geometry
+
+// ---- attributes --------------------------------------------------------------------------------
+
+namespace engine::geometry {
+
+namespace {
+
+u16 f32_to_f16(f32 value) noexcept {
+  u32 bits = 0;
+  std::memcpy(&bits, &value, 4);
+  const u32 sign = (bits >> 16) & 0x8000u;
+  const u32 exponent = (bits >> 23) & 0xffu;
+  u32 mantissa = bits & 0x7fffffu;
+  if (exponent == 0xff) return static_cast<u16>(sign | 0x7c00u | (mantissa != 0 ? 0x200u : 0u));
+  const i32 e = static_cast<i32>(exponent) - 127 + 15;
+  if (e >= 31) return static_cast<u16>(sign | 0x7c00u);
+  if (e <= 0) {
+    if (e < -10) return static_cast<u16>(sign);
+    mantissa |= 0x800000u;
+    const u32 shift = static_cast<u32>(14 - e);
+    u32 half = mantissa >> shift;
+    const u32 remainder = mantissa & ((1u << shift) - 1);
+    const u32 halfway = 1u << (shift - 1);
+    if (remainder > halfway || (remainder == halfway && (half & 1u) != 0)) ++half;
+    return static_cast<u16>(sign | half);
+  }
+  u32 half = sign | (static_cast<u32>(e) << 10) | (mantissa >> 13);
+  const u32 remainder = mantissa & 0x1fffu;
+  if (remainder > 0x1000u || (remainder == 0x1000u && (half & 1u) != 0)) ++half;
+  return static_cast<u16>(half);
+}
+
+f32 f16_to_f32(u16 half) noexcept {
+  const u32 sign = (u32{half} & 0x8000u) << 16;
+  const u32 exponent = (half >> 10) & 0x1fu;
+  const u32 mantissa = half & 0x3ffu;
+  u32 bits = 0;
+  if (exponent == 0) {
+    if (mantissa == 0) {
+      bits = sign;
+    } else {
+      // Denormal: renormalize.
+      u32 m = mantissa;
+      i32 e = -1;
+      do {
+        m <<= 1;
+        ++e;
+      } while ((m & 0x400u) == 0);
+      bits = sign | (static_cast<u32>(113 - e) << 23) | ((m & 0x3ffu) << 13);
+    }
+  } else if (exponent == 31) {
+    bits = sign | 0x7f800000u | (mantissa << 13);
+  } else {
+    bits = sign | ((exponent + 112) << 23) | (mantissa << 13);
+  }
+  f32 value = 0.0f;
+  std::memcpy(&value, &bits, 4);
+  return value;
+}
+
+f32 sign_or_one(f32 v) noexcept { return v < 0.0f ? -1.0f : 1.0f; }
+
+}  // namespace
+
+u32 encode_normal_oct(Vec3 normal) noexcept {
+  const f32 l1 = std::fabs(normal.x) + std::fabs(normal.y) + std::fabs(normal.z);
+  Vec2 p = l1 > 0.0f ? Vec2{normal.x / l1, normal.y / l1} : Vec2{0.0f, 0.0f};
+  if (normal.z < 0.0f) {
+    p = Vec2{(1.0f - std::fabs(p.y)) * sign_or_one(p.x),
+             (1.0f - std::fabs(p.x)) * sign_or_one(p.y)};
+  }
+  auto snorm = [](f32 v) {
+    const f32 c = v < -1.0f ? -1.0f : (v > 1.0f ? 1.0f : v);
+    const i32 i = static_cast<i32>(std::lround(c * 32767.0f));
+    return static_cast<u32>(static_cast<u16>(static_cast<i16>(i)));
+  };
+  return snorm(p.x) | (snorm(p.y) << 16);
+}
+
+Vec3 decode_normal_oct(u32 packed) noexcept {
+  const f32 x = static_cast<f32>(static_cast<i16>(packed & 0xffffu)) / 32767.0f;
+  const f32 y = static_cast<f32>(static_cast<i16>(packed >> 16)) / 32767.0f;
+  Vec3 n{x, y, 1.0f - std::fabs(x) - std::fabs(y)};
+  if (n.z < 0.0f) {
+    n = Vec3{(1.0f - std::fabs(y)) * sign_or_one(x), (1.0f - std::fabs(x)) * sign_or_one(y), n.z};
+  }
+  return normalize(n);
+}
+
+u32 encode_half2(Vec2 v) noexcept { return u32{f32_to_f16(v.x)} | (u32{f32_to_f16(v.y)} << 16); }
+
+Vec2 decode_half2(u32 packed) noexcept {
+  return Vec2{f16_to_f32(static_cast<u16>(packed & 0xffffu)),
+              f16_to_f32(static_cast<u16>(packed >> 16))};
+}
+
+void compute_vertex_normals(std::span<const Vec3> positions, std::span<const u32> indices,
+                            Vector<Vec3>& out) {
+  out.clear();
+  out.resize(static_cast<u32>(positions.size()));
+  for (Vec3& n : out)
+    n = Vec3{};
+  for (usize i = 0; i + 2 < indices.size(); i += 3) {
+    const u32 a = indices[i];
+    const u32 b = indices[i + 1];
+    const u32 c = indices[i + 2];
+    if (a >= positions.size() || b >= positions.size() || c >= positions.size()) continue;
+    const Vec3 face =
+        cross(positions[b] - positions[a], positions[c] - positions[a]);  // area-weighted
+    out[a] = out[a] + face;
+    out[b] = out[b] + face;
+    out[c] = out[c] + face;
+  }
+  for (Vec3& n : out)
+    n = length_squared(n) > 1e-20f ? normalize(n) : Vec3{0.0f, 1.0f, 0.0f};
+}
+
+void fill_cluster_attributes(ClusterMesh& mesh, std::span<const Vec3> positions,
+                             std::span<const u32> indices, const AttributeSource& attributes) {
+  Vector<Vec3> computed;
+  std::span<const Vec3> normals = attributes.normals;
+  if (normals.size() != positions.size()) {
+    compute_vertex_normals(positions, indices, computed);
+    normals = std::span<const Vec3>(computed.data(), computed.size());
+  }
+  const bool have_uvs = attributes.uvs.size() == positions.size();
+  mesh.attributes.clear();
+  mesh.attributes.reserve(mesh.vertex_source.size());
+  for (const u32 source : mesh.vertex_source) {
+    VertexAttributes a;
+    a.normal_oct =
+        encode_normal_oct(source < normals.size() ? normals[source] : Vec3{0.0f, 1.0f, 0.0f});
+    a.uv_half2 = encode_half2(have_uvs ? attributes.uvs[source] : Vec2{0.0f, 0.0f});
+    mesh.attributes.push_back(a);
+  }
 }
 
 }  // namespace engine::geometry

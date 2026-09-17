@@ -60,6 +60,11 @@ void destroy_buffer(const Device& device, BufferResource& buffer) noexcept;
 // from `data` through a staging buffer, and waits for the copy. For setup-time uploads.
 bool upload_buffer(const Device& device, const void* data, u64 bytes, VkBufferUsageFlags usage,
                    BufferResource& out, std::string* error = nullptr);
+// Creates a sampled 2D image, fills it from tightly packed `pixels` through a staging buffer, and
+// leaves it in SHADER_READ_ONLY_OPTIMAL. For setup-time textures.
+bool upload_image_2d(const Device& device, u32 width, u32 height, VkFormat format,
+                     const void* pixels, u64 bytes, ImageResource& out,
+                     std::string* error = nullptr);
 
 bool create_image_2d(const Device& device, u32 width, u32 height, VkFormat format,
                      VkImageUsageFlags usage, ImageResource& out, std::string* error = nullptr);

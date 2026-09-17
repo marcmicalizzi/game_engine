@@ -102,7 +102,8 @@ int emit_group(void* context, clodGroup group, const clodCluster* clusters, size
 }  // namespace
 
 bool build_cluster_lod(std::span<const Vec3> positions, std::span<const u32> indices,
-                       const ClusterLodOptions& options, ClusterLodMesh& out, std::string* error) {
+                       const ClusterLodOptions& options, ClusterLodMesh& out, std::string* error,
+                       const AttributeSource& attributes) {
   out = ClusterLodMesh{};
   if (positions.empty() || indices.empty() || indices.size() % 3 != 0) {
     if (error != nullptr)
@@ -150,6 +151,7 @@ bool build_cluster_lod(std::span<const Vec3> positions, std::span<const u32> ind
     return false;
   }
   out.group_count = ctx.group_bounds.size();
+  fill_cluster_attributes(out.mesh, positions, indices, attributes);
   return true;
 }
 

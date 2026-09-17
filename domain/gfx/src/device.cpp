@@ -975,3 +975,47 @@ bool upload_buffer(const Device& device, const void* data, u64 bytes, VkBufferUs
 }
 
 }  // namespace engine::gfx
+
+namespace engine::gfx {
+
+bool upload_image_2d(const Device& device, u32 width, u32 height, VkFormat format,
+                     const void* pixels, u64 bytes, ImageResource& out, std::string* error) {
+  out = ImageResource{};
+  if (pixels == nullptr || bytes == 0 || width == 0 || height == 0) {
+    if (error != nullptr) *error = "upload_image_2d: nothing to upload";
+    return false;
+  }
+  if (!create_image_2d(device, width, height, format,
+                       VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, out, error)) {
+    return false;
+  }
+  BufferResource staging;
+  if (!create_buffer(device, bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true, staging, error)) {
+    destroy_image(device, out);
+    return false;
+  }
+  std::memcpy(staging.mapped, pixels, static_cast<usize>(bytes));
+  const bool ok = submit_immediate(
+      device,
+      [&](VkCommandBuffer commands) {
+        image_barrier(commands, out.image, VK_IMAGE_LAYOUT_UNDEFINED,
+                      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_NONE,
+                      VK_ACCESS_2_NONE, VK_PIPELINE_STAGE_2_COPY_BIT,
+                      VK_ACCESS_2_TRANSFER_WRITE_BIT);
+        VkBufferImageCopy region{};
+        region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        region.imageExtent = {width, height, 1};
+        vkCmdCopyBufferToImage(commands, staging.buffer, out.image,
+                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+        image_barrier(commands, out.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                      VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                      VK_ACCESS_2_SHADER_READ_BIT);
+      },
+      error);
+  destroy_buffer(device, staging);
+  if (!ok) destroy_image(device, out);
+  return ok;
+}
+
+}  // namespace engine::gfx

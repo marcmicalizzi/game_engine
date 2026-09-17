@@ -67,7 +67,8 @@ constexpr const char* k_usage =
     "  --raster <mode>  direct: mesh shaders to color with a depth buffer; hw (default), sw, auto:\n"
     "                   the visibility buffer through hardware, software, or both split by size\n"
     "  --sw-px <px>     auto mode: clusters narrower than this go to the software rasterizer (32)\n"
-    "  --view <mode>    id, tri, depth, shaded (default: flat-shaded materials under a sun), normals\n"
+    "  --view <mode>    id, tri, depth, shaded (default: materials with vertex normals and textures under\n"
+    "                   a sun), normals, uv\n"
     "  --orbit <d>      orbit at a fixed distance instead of breathing between 8 and 36 units\n"
     "  --log <spec>     log levels, e.g. \"info,gfx=debug\" (stderr shows warnings and up)\n"
     "  --shaders <m>    shader manifest (default: <exe dir>/../shaders/manifest.json when present);\n"
@@ -292,8 +293,11 @@ int main(int argc, char** argv) {
         options.view_mode = 3;
       } else if (value == "normals") {
         options.view_mode = 4;
+      } else if (value == "uv") {
+        options.view_mode = 5;
       } else {
-        std::fprintf(stderr, "engine-view: --view expects id, tri, depth, shaded, or normals\n");
+        std::fprintf(stderr,
+                     "engine-view: --view expects id, tri, depth, shaded, normals, or uv\n");
         return k_exit_usage;
       }
     } else if (a == "--capture") {
@@ -387,6 +391,10 @@ int main(int argc, char** argv) {
   gfx::BufferResource vertex_buffer;
   gfx::BufferResource triangle_buffer;
   gfx::BufferResource lod_buffer;
+  gfx::BufferResource attribute_buffer;  // VertexAttributes parallel to the vertices
+  gfx::ImageResource texture;            // procedural albedo texture in the bindless set
+  VkImageView texture_view = VK_NULL_HANDLE;
+  VkSampler texture_sampler = VK_NULL_HANDLE;
   gfx::BufferResource material_buffer;                      // ResolveMaterial table
   gfx::BufferResource cluster_material_buffer;              // material index per cluster
   gfx::BufferResource resolve_buffers[k_frames_in_flight];  // host-visible ResolveParams per slot
@@ -452,9 +460,15 @@ int main(int argc, char** argv) {
     Vector<Vec3> positions;
     Vector<u32> indices;
     make_terrain(options.grid, 10.0f, positions, indices);
+    Vector<Vec2> uvs;
+    uvs.reserve(positions.size());
+    for (const Vec3& p : positions)
+      uvs.push_back(Vec2{(p.x + 10.0f) / 20.0f, (p.z + 10.0f) / 20.0f});
+    geometry::AttributeSource attribute_source;
+    attribute_source.uvs = std::span<const Vec2>(uvs.data(), uvs.size());  // normals are computed
     const i64 build_start = time::monotonic_ns();
-    if (!geometry::build_cluster_lod(positions, indices, geometry::ClusterLodOptions{}, lod,
-                                     &error)) {
+    if (!geometry::build_cluster_lod(positions, indices, geometry::ClusterLodOptions{}, lod, &error,
+                                     attribute_source)) {
       exit_code = fail("clusters", error);
       break;
     }
@@ -481,11 +495,48 @@ int main(int argc, char** argv) {
       exit_code = fail("upload", error);
       break;
     }
+    if (!gfx::upload_buffer(device, lod.mesh.attributes.data(),
+                            lod.mesh.attributes.size() * sizeof(geometry::VertexAttributes),
+                            k_storage, attribute_buffer, &error)) {
+      exit_code = fail("attributes", error);
+      break;
+    }
+    // A procedural ripple texture, linear-sampled through the bindless set.
+    constexpr u32 k_texture_size = 256;
+    Vector<u8> texels(k_texture_size * k_texture_size * 4);
+    for (u32 y = 0; y < k_texture_size; ++y) {
+      for (u32 x = 0; x < k_texture_size; ++x) {
+        const f32 fx = static_cast<f32>(x);
+        const f32 fy = static_cast<f32>(y);
+        const f32 ripple = 0.5f + 0.5f * std::sin(fx * 0.25f + 2.0f * std::sin(fy * 0.08f));
+        const f32 grain =
+            0.5f + 0.5f * std::sin(fx * 1.7f + fy * 2.3f) * std::sin(fy * 1.1f - fx * 0.7f);
+        const u8 v = static_cast<u8>((0.62f + 0.3f * ripple + 0.08f * grain) * 255.0f);
+        u8* t = &texels[(y * k_texture_size + x) * 4];
+        t[0] = t[1] = t[2] = v;
+        t[3] = 255;
+      }
+    }
+    if (!gfx::upload_image_2d(device, k_texture_size, k_texture_size, VK_FORMAT_R8G8B8A8_UNORM,
+                              texels.data(), texels.size(), texture, &error) ||
+        !gfx::create_image_view(device, texture, texture_view, &error) ||
+        !gfx::create_sampler(device, VK_FILTER_LINEAR, texture_sampler, &error)) {
+      exit_code = fail("texture", error);
+      break;
+    }
+    const u32 texture_slot =
+        bindless.add_sampled_image(texture_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    const u32 sampler_slot = bindless.add_sampler(texture_sampler);
     // Materials: a flat table indexed per cluster by the height band of the cluster's center.
     gfx::ResolveMaterial materials[3];
     materials[0].albedo = Vec4{0.86f, 0.72f, 0.46f, 0.9f};  // sand
     materials[1].albedo = Vec4{0.42f, 0.40f, 0.38f, 0.7f};  // rock
     materials[2].albedo = Vec4{0.92f, 0.94f, 0.97f, 0.4f};  // snow
+    for (u32 i = 0; i < 2; ++i) {  // sand and rock carry the ripple texture at different scales
+      materials[i].albedo_texture = texture_slot;
+      materials[i].sampler = sampler_slot;
+      materials[i].uv_scale = i == 0 ? 24.0f : 9.0f;
+    }
     Vector<u32> cluster_material(cluster_count);
     for (u32 i = 0; i < cluster_count; ++i) {
       const f32 y = lod.mesh.clusters[i].center.y;
@@ -793,6 +844,7 @@ int main(int argc, char** argv) {
       resolve.triangles = triangle_buffer.address;
       resolve.materials = material_buffer.address;
       resolve.cluster_materials = cluster_material_buffer.address;
+      resolve.attributes = attribute_buffer.address;
       resolve.width = extent.width;
       resolve.height = extent.height;
       resolve.mode = options.view_mode;
@@ -1087,6 +1139,10 @@ int main(int argc, char** argv) {
   gfx::destroy_buffer(device, sw_args_buffer);
   gfx::destroy_buffer(device, sw_visible_buffer);
   gfx::destroy_buffer(device, lod_buffer);
+  gfx::destroy_buffer(device, attribute_buffer);
+  gfx::destroy_sampler(device, texture_sampler);
+  gfx::destroy_image_view(device, texture_view);
+  if (texture.image != VK_NULL_HANDLE) gfx::destroy_image(device, texture);
   gfx::destroy_buffer(device, cluster_material_buffer);
   gfx::destroy_buffer(device, material_buffer);
   gfx::destroy_buffer(device, triangle_buffer);
