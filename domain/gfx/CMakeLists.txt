@@ -21,7 +21,7 @@ target_include_directories(engine_gfx SYSTEM PUBLIC
   $<TARGET_PROPERTY:VulkanMemoryAllocator,INTERFACE_INCLUDE_DIRECTORIES>)
 
 engine_module_tests(NAME gfx
-  SOURCES tests/adapter_tests.cpp tests/device_tests.cpp)
+  SOURCES tests/adapter_tests.cpp tests/device_tests.cpp tests/size_table.cpp)
 
 # Shaders used by the RHI's own tests: the first .slang through the toolchain.
 engine_shaders(NAME gfx_tests

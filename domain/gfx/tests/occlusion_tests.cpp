@@ -87,14 +87,21 @@ TEST_CASE("occlusion culling: two passes draw fewer clusters and the same pictur
                                         VK_BUFFER_USAGE_TRANSFER_DST_BIT |
                                         VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
   gfx::BufferResource clusters;
-  gfx::BufferResource vertices;
+  gfx::BufferResource quantized;
+  gfx::BufferResource mesh_buffer;
   gfx::BufferResource triangles;
   gfx::BufferResource lods;
   REQUIRE(gfx::upload_buffer(device, lod.mesh.clusters.data(),
                              cluster_count * sizeof(geometry::ClusterDesc), k_storage, clusters,
                              &error));
-  REQUIRE(gfx::upload_buffer(device, lod.mesh.vertices.data(),
-                             lod.mesh.vertices.size() * sizeof(Vec3), k_storage, vertices, &error));
+  REQUIRE(gfx::upload_buffer(device, lod.mesh.quantized.data(),
+                             lod.mesh.quantized.size() * sizeof(u16), k_storage, quantized,
+                             &error));
+  gfx::MeshDesc mesh_block{};
+  mesh_block.quant = Vec4{lod.mesh.quant_origin, lod.mesh.quant_scale};
+  mesh_block.quantized = quantized.address;
+  REQUIRE(
+      gfx::upload_buffer(device, &mesh_block, sizeof(mesh_block), k_storage, mesh_buffer, &error));
   REQUIRE(gfx::upload_buffer(device, lod.mesh.triangles.data(),
                              lod.mesh.triangles.size() * sizeof(u32), k_storage, triangles,
                              &error));
@@ -210,7 +217,7 @@ TEST_CASE("occlusion culling: two passes draw fewer clusters and the same pictur
   gfx::ClusterDrawParams draw{};
   draw.view_proj = view_proj;
   draw.clusters = clusters.address;
-  draw.vertices = vertices.address;
+  draw.mesh = mesh_buffer.address;
   draw.triangles = triangles.address;
   draw.cluster_count = cluster_count;
   draw.visibility = vis.address;
@@ -487,7 +494,7 @@ TEST_CASE("occlusion culling: two passes draw fewer clusters and the same pictur
   gfx::destroy_shader_module(device, cull_module);
   bindless.destroy();
   for (gfx::BufferResource* b : {&host_args, &host_hiz, &host_vis, &host_vis_ref, &params, &hiz,
-                                 &vis, &lods, &triangles, &vertices, &clusters}) {
+                                 &vis, &lods, &triangles, &mesh_buffer, &quantized, &clusters}) {
     gfx::destroy_buffer(device, *b);
   }
   for (u32 i = 0; i < 2; ++i) {

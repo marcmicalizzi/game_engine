@@ -1,6 +1,7 @@
 // Fullscreen resolve of the 64-bit visibility buffer (docs/plan/04-renderer.md §4.3 step 4):
 // the first material pass. For every covered pixel the cluster and triangle id lead back to the
-// triangle's three vertices; screen-space barycentrics against the pixel center, made
+// triangle's three vertices, whose positions come off the mesh-wide 16-bit grid the rasterizers
+// read (MeshDesc, load_position); screen-space barycentrics against the pixel center, made
 // perspective-correct with the vertices' clip-space w, reconstruct the surface position and
 // interpolate the per-vertex normal and UV (octahedral snorm16 normals, half-float UVs, from
 // geometry::VertexAttributes; without attributes the triangle plane gives a flat normal). A
@@ -23,11 +24,27 @@ struct ClusterDesc {
   uint cone;         // axis snorm8 x, y, z in bytes 0..2, cutoff snorm8 in byte 3
 };
 
-struct Position {
-  float x;
-  float y;
-  float z;
+// Mirrors gfx::MeshDesc (32 bytes): the mesh-wide 16-bit position grid and the stream of three
+// u16 per vertex on it. Duplicated in every shader that reads positions, like ClusterDesc.
+struct MeshDesc {
+  float4 quant;        // xyz grid origin, w grid step
+  uint64_t quantized;  // uint16_t[3 * vertex_count], padded to an even count
+  uint64_t pad;
 };
+
+// Three u16 at 3 * vertex, read as the 32-bit words that contain them. The stream is padded to
+// an even u16 count on the CPU, so the last word read is always inside the buffer.
+float3 load_position(MeshDesc* mesh, uint vertex) {
+  uint* words = (uint*)mesh->quantized;
+  const uint i = vertex * 3;
+  const uint w0 = words[i >> 1];
+  const uint w1 = words[(i + 1) >> 1];
+  const uint w2 = words[(i + 2) >> 1];
+  const uint x = (i & 1) != 0 ? (w0 >> 16) : (w0 & 0xffff);
+  const uint y = ((i + 1) & 1) != 0 ? (w1 >> 16) : (w1 & 0xffff);
+  const uint z = ((i + 2) & 1) != 0 ? (w2 >> 16) : (w2 & 0xffff);
+  return mesh->quant.xyz + float3(float(x), float(y), float(z)) * mesh->quant.w;
+}
 
 // Mirrors geometry::VertexAttributes (8 bytes).
 struct VertexAttributes {
@@ -53,7 +70,7 @@ struct ResolveParams {
   column_major float4x4 view_proj;
   uint64_t visibility;         // uint64_t[width * height]
   uint64_t clusters;           // ClusterDesc[]
-  uint64_t vertices;           // Position[]
+  uint64_t mesh;               // MeshDesc: the quantized positions and their grid
   uint64_t triangles;          // uint[]: packed local indices
   uint64_t materials;          // ResolveMaterial[]
   uint64_t cluster_materials;  // uint[cluster_count]: material index per cluster
@@ -119,7 +136,7 @@ struct Surface {
 Surface reconstruct(ResolveParams* params, uint id, float2 pixel_center) {
   ClusterDesc* clusters = (ClusterDesc*)params->clusters;
   uint* triangles = (uint*)params->triangles;
-  Position* positions = (Position*)params->vertices;
+  MeshDesc* positions = (MeshDesc*)params->mesh;
   const ClusterDesc cluster = clusters[id >> 8];
   const uint packed = triangles[cluster.triangle_offset + (id & 0xff)];
   float3 p[3];
@@ -129,8 +146,7 @@ Surface reconstruct(ResolveParams* params, uint id, float2 pixel_center) {
   const float2 size = float2(float(params->width), float(params->height));
   for (uint i = 0; i < 3; ++i) {
     local[i] = cluster.vertex_offset + ((packed >> (8 * i)) & 0xff);
-    const Position v = positions[local[i]];
-    p[i] = float3(v.x, v.y, v.z);
+    p[i] = load_position(positions, local[i]);
     clip[i] = mul(params->view_proj, float4(p[i], 1.0));
     const float2 ndc = clip[i].xy / clip[i].w;
     screen[i] = float2((ndc.x * 0.5 + 0.5) * size.x, (0.5 - ndc.y * 0.5) * size.y);

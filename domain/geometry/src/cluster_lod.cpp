@@ -164,6 +164,7 @@ bool build_cluster_lod(std::span<const Vec3> positions, std::span<const u32> ind
   }
   out.group_count = ctx.group_bounds.size();
   fill_cluster_attributes(out.mesh, positions, indices, attributes);
+  quantize_positions(out.mesh);  // one grid over every level
   return true;
 }
 
@@ -271,6 +272,7 @@ bool merge_cluster_lod(std::span<const ClusterLodMesh> parts, ClusterLodMesh& ou
       }
     }
   }
+  quantize_positions(out.mesh);  // one grid over all the parts, not one per part
   return true;
 }
 
@@ -291,6 +293,9 @@ bool validate_cluster_lod(const ClusterLodMesh& mesh, std::span<const u32> sourc
   leaves.vertices = mesh.mesh.vertices;
   leaves.vertex_source = mesh.mesh.vertex_source;
   leaves.triangles = mesh.mesh.triangles;
+  leaves.quantized = mesh.mesh.quantized;  // the whole mesh's grid, shared by every level
+  leaves.quant_origin = mesh.mesh.quant_origin;
+  leaves.quant_scale = mesh.mesh.quant_scale;
   for (u32 i = 0; i < mesh.mesh.clusters.size(); ++i) {
     if (mesh.lod[i].level == 0) leaves.clusters.push_back(mesh.mesh.clusters[i]);
   }

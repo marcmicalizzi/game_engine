@@ -112,6 +112,8 @@ TEST_CASE("ray query: primary visibility matches the rasterized LOD cut") {
   constexpr VkBufferUsageFlags k_address = k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
   gfx::BufferResource clusters;
   gfx::BufferResource vertices;
+  gfx::BufferResource quantized;
+  gfx::BufferResource mesh_buffer;
   gfx::BufferResource triangles;
   gfx::BufferResource cut_buffer;
   gfx::BufferResource indices16;
@@ -130,6 +132,15 @@ TEST_CASE("ray query: primary visibility matches the rasterized LOD cut") {
   REQUIRE(gfx::upload_buffer(device, lod.mesh.vertices.data(),
                              lod.mesh.vertices.size() * sizeof(Vec3),
                              k_storage | gfx::k_build_input_usage, vertices, &error));
+  // The rasterizer reads the 16-bit grid; the acceleration structure builder reads the floats.
+  REQUIRE(gfx::upload_buffer(device, lod.mesh.quantized.data(),
+                             lod.mesh.quantized.size() * sizeof(u16), k_storage, quantized,
+                             &error));
+  gfx::MeshDesc mesh_block{};
+  mesh_block.quant = Vec4{lod.mesh.quant_origin, lod.mesh.quant_scale};
+  mesh_block.quantized = quantized.address;
+  REQUIRE(
+      gfx::upload_buffer(device, &mesh_block, sizeof(mesh_block), k_storage, mesh_buffer, &error));
   REQUIRE(gfx::upload_buffer(device, lod.mesh.triangles.data(),
                              lod.mesh.triangles.size() * sizeof(u32), k_storage, triangles,
                              &error));
@@ -231,7 +242,7 @@ TEST_CASE("ray query: primary visibility matches the rasterized LOD cut") {
   gfx::ClusterDrawParams draw{};
   draw.view_proj = view_proj;
   draw.clusters = clusters.address;
-  draw.vertices = vertices.address;
+  draw.mesh = mesh_buffer.address;
   draw.triangles = triangles.address;
   draw.cluster_count = cut.size();
   draw.triangles_per_cluster = triangles_per_cluster;
@@ -362,8 +373,9 @@ TEST_CASE("ray query: primary visibility matches the rasterized LOD cut") {
   frames.destroy();
   gfx::destroy_acceleration_structure(device, blas);
   gfx::destroy_acceleration_structure(device, tlas);
-  for (gfx::BufferResource* b : {&scratch, &instances, &vis_raster, &vis_rt, &params, &host,
-                                 &clusters, &vertices, &triangles, &cut_buffer, &indices16}) {
+  for (gfx::BufferResource* b :
+       {&scratch, &instances, &vis_raster, &vis_rt, &params, &host, &clusters, &vertices,
+        &quantized, &mesh_buffer, &triangles, &cut_buffer, &indices16}) {
     gfx::destroy_buffer(device, *b);
   }
   device.destroy();

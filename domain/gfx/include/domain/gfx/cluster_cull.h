@@ -62,12 +62,25 @@ inline constexpr f32 k_raster_hardware = 0.0f;  // CullParams::raster.y
 inline constexpr f32 k_raster_software = 1.0f;
 inline constexpr f32 k_raster_split = 2.0f;
 
+// GPU-mirrored; keep in step with the MeshDesc struct in the shaders. 32 bytes, read through a
+// device address. One per mesh: the 16-bit position grid `geometry::quantize_positions` built
+// and the stream of three u16 per vertex on it (`geometry::ClusterMesh::quantized`, padded to an
+// even count so the shaders' load_position may read the last triple as two 32-bit words). Six
+// bytes of position per vertex instead of twelve; the acceleration structure builders still read
+// the float positions.
+struct MeshDesc {
+  Vec4 quant{};       // xyz grid origin, w grid step
+  u64 quantized = 0;  // u16[3 * vertex_count], rounded up to an even count
+  u64 pad = 0;
+};
+static_assert(sizeof(MeshDesc) == 32);
+
 // Mirrors MeshParams in cluster_mesh.slang and RasterParams in cluster_sw_raster.slang: the push
 // constants of the mesh-shader and software rasterization paths. 120 bytes.
 struct ClusterDrawParams {
   Mat4 view_proj;
   u64 clusters = 0;
-  u64 vertices = 0;
+  u64 mesh = 0;  // MeshDesc: the quantized positions and their grid
   u64 triangles = 0;
   u32 cluster_count = 0;
   u32 triangles_per_cluster = 0;  // vertex path only: the draw's vertex count / 3

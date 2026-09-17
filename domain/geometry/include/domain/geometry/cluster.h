@@ -7,9 +7,11 @@
 // are built from the same clusters (Phase 2). The layout below is what the GPU reads through
 // device addresses, so it is fixed and pinned by the size table.
 //
-// v1 stores positions as three floats per vertex in cluster order, packed normals and UVs per
-// vertex, and a normal cone per cluster for backface culling; the LOD DAG with error bounds is
-// cluster_lod.h. Per-cluster 16-bit quantization and fixed-size pages for streaming follow.
+// v1 stores positions twice: as three floats per vertex in cluster order (what the acceleration
+// structure builders read) and as three u16 on one mesh-wide grid (what the rasterizers and the
+// resolve read, six bytes a vertex instead of twelve), plus packed normals and UVs per vertex
+// and a normal cone per cluster for backface culling; the LOD DAG with error bounds is
+// cluster_lod.h. Fixed-size pages for streaming follow.
 
 #include <core/base/types.h>
 #include <core/containers/vector.h>
@@ -98,6 +100,13 @@ struct ClusterMesh {
   Vector<u32> vertex_source;            // source vertex index per entry of `vertices`
   Vector<VertexAttributes> attributes;  // parallel to `vertices`
   Vector<u32> triangles;                // per triangle: local i0 | i1 << 8 | i2 << 16
+  // Positions on the mesh-wide 16-bit grid: three u16 per vertex, cluster-ordered like
+  // `vertices`, padded with one zero to an even count so a shader may read the last triple as
+  // two 32-bit words. `quantize_positions` fills all three fields; a mesh with no vertices keeps
+  // the identity grid.
+  Vector<u16> quantized;
+  Vec3 quant_origin{};     // the AABB minimum of `vertices`
+  f32 quant_scale = 1.0f;  // the largest AABB extent / 65535; 1 for a degenerate mesh
   u32 source_vertex_count = 0;
   u32 source_triangle_count = 0;
 
@@ -119,9 +128,24 @@ bool build_clusters(std::span<const Vec3> positions, std::span<const u32> indice
 void fill_cluster_attributes(ClusterMesh& mesh, std::span<const Vec3> positions,
                              std::span<const u32> indices, const AttributeSource& attributes);
 
+// Fills `quantized`, `quant_origin`, and `quant_scale` from `vertices`: one grid over the whole
+// mesh, origin at the AABB minimum, step = the largest AABB extent / 65535 (1 when the mesh is a
+// point), and q = round((p - origin) / step) clamped to 0..65535 per axis. Every builder calls
+// it last, so a merged mesh gets one grid over all of its parts. Because every cluster's copy of
+// a shared vertex quantizes the same source position on the same grid, the copies land on the
+// same integer triple and welded meshes stay crack-free: quantization moves a seam's two copies
+// by exactly the same amount. Public so a mesh built elsewhere can be quantized later; call it
+// again after changing `vertices`.
+void quantize_positions(ClusterMesh& mesh);
+// The CPU reference of the shaders' load_position: the grid point of `vertex` as a float
+// position. Out-of-range vertices read as the origin.
+Vec3 dequantize_position(const ClusterMesh& mesh, u32 vertex) noexcept;
+
 // Checks the invariants tests rely on: offsets and counts in range, counts within the limits,
 // every source triangle present exactly once, every vertex inside its cluster's sphere, every
-// triangle normal inside its cluster's normal cone (when the cone is not k_cone_none).
+// triangle normal inside its cluster's normal cone (when the cone is not k_cone_none), and a
+// quantized position stream that is present, padded to an even count, and within half a grid
+// step of every float position.
 bool validate_clusters(const ClusterMesh& mesh, std::span<const u32> source_indices,
                        const ClusterBuildOptions& options, std::string* error = nullptr);
 

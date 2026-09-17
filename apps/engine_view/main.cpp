@@ -438,7 +438,9 @@ int main(int argc, char** argv) {
   gfx::BindlessSet bindless;
   gfx::GpuTimer timer;
   gfx::BufferResource cluster_buffer;
-  gfx::BufferResource vertex_buffer;
+  gfx::BufferResource vertex_buffer;     // float positions; only --raster rt needs them
+  gfx::BufferResource quantized_buffer;  // three u16 per vertex on the mesh-wide grid
+  gfx::BufferResource mesh_buffer;       // one gfx::MeshDesc pointing at it
   gfx::BufferResource triangle_buffer;
   gfx::BufferResource lod_buffer;
   gfx::BufferResource attribute_buffer;  // VertexAttributes parallel to the vertices
@@ -610,13 +612,16 @@ int main(int argc, char** argv) {
     constexpr VkBufferUsageFlags k_args = k_address | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
                                           VK_BUFFER_USAGE_TRANSFER_DST_BIT |
                                           VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    // Positions go to the GPU on the mesh-wide 16-bit grid: six bytes a vertex instead of twelve.
+    const u64 float_position_bytes = u64{lod.mesh.vertices.size()} * sizeof(Vec3);
+    const u64 quantized_position_bytes =
+        u64{lod.mesh.quantized.size()} * sizeof(u16) + sizeof(gfx::MeshDesc);
     if (!gfx::upload_buffer(device, lod.mesh.clusters.data(),
                             cluster_count * sizeof(geometry::ClusterDesc), k_storage,
                             cluster_buffer, &error) ||
-        !gfx::upload_buffer(
-            device, lod.mesh.vertices.data(), lod.mesh.vertices.size() * sizeof(Vec3),
-            k_storage | (ray_path ? gfx::k_build_input_usage : VkBufferUsageFlags{0}),
-            vertex_buffer, &error) ||
+        !gfx::upload_buffer(device, lod.mesh.quantized.data(),
+                            u64{lod.mesh.quantized.size()} * sizeof(u16), k_storage,
+                            quantized_buffer, &error) ||
         !gfx::upload_buffer(device, lod.mesh.triangles.data(),
                             lod.mesh.triangles.size() * sizeof(u32), k_storage, triangle_buffer,
                             &error) ||
@@ -626,6 +631,26 @@ int main(int argc, char** argv) {
       exit_code = fail("upload", error);
       break;
     }
+    gfx::MeshDesc mesh_block{};
+    mesh_block.quant = Vec4{lod.mesh.quant_origin, lod.mesh.quant_scale};
+    mesh_block.quantized = quantized_buffer.address;
+    if (!gfx::upload_buffer(device, &mesh_block, sizeof(mesh_block), k_storage, mesh_buffer,
+                            &error)) {
+      exit_code = fail("upload", error);
+      break;
+    }
+    // The float positions stay only for --raster rt: the cluster structure builds read them.
+    if (ray_path &&
+        !gfx::upload_buffer(device, lod.mesh.vertices.data(), float_position_bytes,
+                            k_storage | gfx::k_build_input_usage, vertex_buffer, &error)) {
+      exit_code = fail("upload", error);
+      break;
+    }
+    ENGINE_LOG_INFO(log_view, "positions quantized",
+                    log::field("vertices", lod.mesh.vertices.size()),
+                    log::field("float_bytes", float_position_bytes),
+                    log::field("quantized_bytes", quantized_position_bytes),
+                    log::field("grid_step", lod.mesh.quant_scale));
     if (!gfx::upload_buffer(device, lod.mesh.attributes.data(),
                             lod.mesh.attributes.size() * sizeof(geometry::VertexAttributes),
                             k_storage, attribute_buffer, &error)) {
@@ -1075,7 +1100,7 @@ int main(int argc, char** argv) {
       gfx::ClusterDrawParams draw{};
       draw.view_proj = view_proj;
       draw.clusters = cluster_buffer.address;
-      draw.vertices = vertex_buffer.address;
+      draw.mesh = mesh_buffer.address;
       draw.triangles = triangle_buffer.address;
       draw.cluster_count = options.cull ? cluster_count : leaf_count;
       draw.triangles_per_cluster = triangles_per_cluster;
@@ -1135,7 +1160,7 @@ int main(int argc, char** argv) {
       resolve.view_proj = view_proj;
       resolve.visibility = targets.vis.address;
       resolve.clusters = cluster_buffer.address;
-      resolve.vertices = vertex_buffer.address;
+      resolve.mesh = mesh_buffer.address;
       resolve.triangles = triangle_buffer.address;
       resolve.materials = material_buffer.address;
       resolve.cluster_materials = cluster_material_buffer.address;
@@ -1597,6 +1622,8 @@ int main(int argc, char** argv) {
   gfx::destroy_buffer(device, material_buffer);
   gfx::destroy_buffer(device, triangle_buffer);
   gfx::destroy_buffer(device, vertex_buffer);
+  gfx::destroy_buffer(device, mesh_buffer);
+  gfx::destroy_buffer(device, quantized_buffer);
   gfx::destroy_buffer(device, cluster_buffer);
   timer.destroy();
   bindless.destroy();

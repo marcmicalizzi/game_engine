@@ -218,6 +218,19 @@ void make_sphere(u32 rings, u32 segments, Vector<Vec3>& positions, Vector<u32>& 
   }
 }
 
+// The largest per-axis distance between a float position and its point on the 16-bit grid.
+f32 worst_quantization_error(const ClusterMesh& mesh) {
+  f32 worst = 0.0f;
+  for (u32 v = 0; v < mesh.vertices.size(); ++v) {
+    const Vec3 p = mesh.vertices[v];
+    const Vec3 q = dequantize_position(mesh, v);
+    const f32 axis[3] = {std::fabs(q.x - p.x), std::fabs(q.y - p.y), std::fabs(q.z - p.z)};
+    for (const f32 e : axis)
+      worst = e > worst ? e : worst;
+  }
+  return worst;
+}
+
 }  // namespace
 
 TEST_CASE(
@@ -351,4 +364,72 @@ TEST_CASE("weld: unindexed copies merge back, differing attributes stay apart") 
   for (const Vec3& p : split_positions)
     found_far = found_far || p.x == 9.0f;
   CHECK_FALSE(found_far);
+}
+
+TEST_CASE("quantized positions: one grid per mesh, half a step of error, six bytes a vertex") {
+  Vector<Vec3> positions;
+  Vector<u32> indices;
+  make_grid(33, positions, indices);  // the unit square: 1089 vertices, 2048 triangles
+  ClusterMesh mesh;
+  std::string error;
+  REQUIRE_MESSAGE(build_clusters(positions, indices, ClusterBuildOptions{}, mesh, &error), error);
+
+  // Three u16 a vertex, padded with at most one entry to an even count so a shader may read the
+  // last triple as two whole 32-bit words, and still half of what the floats cost.
+  CHECK(mesh.quantized.size() >= mesh.vertices.size() * 3);
+  CHECK(mesh.quantized.size() <= mesh.vertices.size() * 3 + 1);
+  CHECK(mesh.quantized.size() % 2 == 0);
+  CHECK(mesh.quantized.size() * sizeof(u16) <= mesh.vertices.size() * sizeof(Vec3) / 2 + 2);
+  // A mesh one unit across gets a step of 1 / 65535.
+  CHECK(mesh.quant_scale > 1.52e-5f);
+  CHECK(mesh.quant_scale < 1.53e-5f);
+  CHECK(mesh.quant_origin.x <= 0.0f);
+  CHECK(worst_quantization_error(mesh) <= mesh.quant_scale * 0.5f + 1e-6f);
+  CHECK_MESSAGE(validate_clusters(mesh, indices, ClusterBuildOptions{}, &error), error);
+  MESSAGE("grid: step " << mesh.quant_scale << ", worst error " << worst_quantization_error(mesh));
+
+  // Every cluster's copy of a shared source vertex lands on the same integer triple, which is
+  // what keeps a welded mesh crack-free through quantization.
+  u32 shared = 0;
+  for (u32 a = 0; a < mesh.vertices.size(); ++a) {
+    for (u32 b = a + 1; b < mesh.vertices.size(); ++b) {
+      if (mesh.vertex_source[a] != mesh.vertex_source[b]) continue;
+      ++shared;
+      for (u32 k = 0; k < 3; ++k)
+        CHECK(mesh.quantized[a * 3 + k] == mesh.quantized[b * 3 + k]);
+    }
+  }
+  CHECK(shared > 0);  // the grid's clusters do share vertices
+
+  // The same grid a thousand units across: the step scales with the mesh, the error with it.
+  Vector<Vec3> large = positions;
+  for (Vec3& p : large)
+    p = p * 1000.0f;
+  REQUIRE(build_clusters(large, indices, ClusterBuildOptions{}, mesh, &error));
+  CHECK(mesh.quant_scale > 0.0152f);
+  CHECK(mesh.quant_scale < 0.0153f);
+  CHECK(worst_quantization_error(mesh) <= mesh.quant_scale * 0.5f + 1e-6f);
+  CHECK(validate_clusters(mesh, indices, ClusterBuildOptions{}, &error));
+
+  // A sphere: the grid spans the largest extent of the whole mesh, two units here.
+  Vector<Vec3> sphere_positions;
+  Vector<u32> sphere_indices;
+  make_sphere(24, 48, sphere_positions, sphere_indices);
+  REQUIRE(build_clusters(sphere_positions, sphere_indices, ClusterBuildOptions{}, mesh, &error));
+  CHECK(mesh.quant_scale > 3.04e-5f);
+  CHECK(mesh.quant_scale < 3.06e-5f);
+  CHECK(mesh.quant_origin.y < -0.999f);
+  CHECK(worst_quantization_error(mesh) <= mesh.quant_scale * 0.5f + 1e-6f);
+  CHECK_MESSAGE(validate_clusters(mesh, sphere_indices, ClusterBuildOptions{}, &error), error);
+  MESSAGE("sphere: step " << mesh.quant_scale << ", worst error "
+                          << worst_quantization_error(mesh));
+
+  // A degenerate mesh (one point) keeps the identity step rather than dividing by zero.
+  const Vec3 point[3] = {Vec3{2.0f, 3.0f, 4.0f}, Vec3{2.0f, 3.0f, 4.0f}, Vec3{2.0f, 3.0f, 4.0f}};
+  const u32 point_indices[3] = {0, 1, 2};
+  REQUIRE(build_clusters(point, point_indices, ClusterBuildOptions{}, mesh, &error));
+  CHECK(mesh.quant_scale == 1.0f);
+  CHECK(mesh.quant_origin.x == 2.0f);
+  CHECK(dequantize_position(mesh, 0).z == 4.0f);
+  CHECK(dequantize_position(mesh, 10000).x == 2.0f);  // out of range reads as the origin
 }

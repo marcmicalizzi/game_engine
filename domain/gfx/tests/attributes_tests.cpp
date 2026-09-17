@@ -76,7 +76,8 @@ TEST_CASE("material resolve: vertex normals steer the shading and textures sampl
 
   constexpr VkBufferUsageFlags k_storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
   gfx::BufferResource clusters;
-  gfx::BufferResource vertices;
+  gfx::BufferResource quantized;
+  gfx::BufferResource mesh_buffer;
   gfx::BufferResource triangles;
   gfx::BufferResource attributes;
   gfx::BufferResource materials;
@@ -91,8 +92,13 @@ TEST_CASE("material resolve: vertex normals steer the shading and textures sampl
   const u32 one = 1;
   REQUIRE(gfx::upload_buffer(device, mesh.clusters.data(), sizeof(geometry::ClusterDesc), k_storage,
                              clusters, &error));
-  REQUIRE(gfx::upload_buffer(device, mesh.vertices.data(), mesh.vertices.size() * sizeof(Vec3),
-                             k_storage, vertices, &error));
+  REQUIRE(gfx::upload_buffer(device, mesh.quantized.data(), mesh.quantized.size() * sizeof(u16),
+                             k_storage, quantized, &error));
+  gfx::MeshDesc mesh_block{};
+  mesh_block.quant = Vec4{mesh.quant_origin, mesh.quant_scale};
+  mesh_block.quantized = quantized.address;
+  REQUIRE(
+      gfx::upload_buffer(device, &mesh_block, sizeof(mesh_block), k_storage, mesh_buffer, &error));
   REQUIRE(gfx::upload_buffer(device, mesh.triangles.data(), mesh.triangles.size() * sizeof(u32),
                              k_storage, triangles, &error));
   REQUIRE(gfx::upload_buffer(device, mesh.attributes.data(),
@@ -150,7 +156,7 @@ TEST_CASE("material resolve: vertex normals steer the shading and textures sampl
   gfx::ClusterDrawParams draw{};
   draw.view_proj = view_proj;
   draw.clusters = clusters.address;
-  draw.vertices = vertices.address;
+  draw.mesh = mesh_buffer.address;
   draw.triangles = triangles.address;
   draw.cluster_count = 1;
   draw.visibility = vis.address;
@@ -165,7 +171,7 @@ TEST_CASE("material resolve: vertex normals steer the shading and textures sampl
   base.view_proj = view_proj;
   base.visibility = vis.address;
   base.clusters = clusters.address;
-  base.vertices = vertices.address;
+  base.mesh = mesh_buffer.address;
   base.triangles = triangles.address;
   base.materials = materials.address;
   base.cluster_materials = plain_index.address;
@@ -298,8 +304,9 @@ TEST_CASE("material resolve: vertex normals steer the shading and textures sampl
   gfx::destroy_sampler(device, nearest);
   gfx::destroy_image_view(device, texture_view);
   gfx::destroy_image(device, texture);
-  for (gfx::BufferResource* b : {&host_color, &params, &vis, &textured_index, &plain_index,
-                                 &materials, &attributes, &triangles, &vertices, &clusters}) {
+  for (gfx::BufferResource* b :
+       {&host_color, &params, &vis, &textured_index, &plain_index, &materials, &attributes,
+        &triangles, &mesh_buffer, &quantized, &clusters}) {
     gfx::destroy_buffer(device, *b);
   }
   frames.destroy();

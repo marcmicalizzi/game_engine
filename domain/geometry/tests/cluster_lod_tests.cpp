@@ -208,6 +208,27 @@ TEST_CASE("cluster lod: DAGs built per part merge into one mesh with the leaves 
     source_indices.push_back(index + static_cast<u32>(positions_a.size()));
   CHECK_MESSAGE(validate_cluster_lod(merged, source_indices, &error), error);
 
+  // One grid over both parts, not one grid per part: the merged step spans the wider mesh, and
+  // every merged vertex is still within half a step of its float position (validate checks the
+  // whole stream, so this pins the shape of it).
+  CHECK(merged.mesh.quantized.size() >= merged.mesh.vertices.size() * 3);
+  CHECK(merged.mesh.quantized.size() % 2 == 0);
+  CHECK(merged.mesh.quant_scale > parts[0].mesh.quant_scale);
+  CHECK(merged.mesh.quant_scale > parts[1].mesh.quant_scale);
+  CHECK(merged.mesh.quant_origin.x <= parts[0].mesh.quant_origin.x);
+  f32 worst = 0.0f;
+  for (u32 v = 0; v < merged.mesh.vertices.size(); ++v) {
+    const Vec3 p = merged.mesh.vertices[v];
+    const Vec3 q = dequantize_position(merged.mesh, v);
+    const f32 axis[3] = {std::fabs(q.x - p.x), std::fabs(q.y - p.y), std::fabs(q.z - p.z)};
+    for (const f32 e : axis)
+      worst = e > worst ? e : worst;
+  }
+  CHECK(worst <= merged.mesh.quant_scale * 0.5f + 1e-6f);
+  MESSAGE("merged grid: step " << merged.mesh.quant_scale << " over parts "
+                               << parts[0].mesh.quant_scale << " and " << parts[1].mesh.quant_scale
+                               << ", worst error " << worst);
+
   // A view-dependent cut of the merged mesh is the union of the parts' cuts.
   LodView view;
   view.camera = Vec3{4.0f, 6.0f, 12.0f};

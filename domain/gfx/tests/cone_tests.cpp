@@ -94,13 +94,19 @@ TEST_CASE("normal cones: the cull pass drops backfacing clusters without changin
   constexpr VkBufferUsageFlags k_storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
   constexpr VkBufferUsageFlags k_address = k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
   gfx::BufferResource clusters;
-  gfx::BufferResource vertices;
+  gfx::BufferResource quantized;
+  gfx::BufferResource mesh_buffer;
   gfx::BufferResource triangles;
   REQUIRE(gfx::upload_buffer(device, mesh.clusters.data(),
                              cluster_count * sizeof(geometry::ClusterDesc), k_storage, clusters,
                              &error));
-  REQUIRE(gfx::upload_buffer(device, mesh.vertices.data(), mesh.vertices.size() * sizeof(Vec3),
-                             k_storage, vertices, &error));
+  REQUIRE(gfx::upload_buffer(device, mesh.quantized.data(), mesh.quantized.size() * sizeof(u16),
+                             k_storage, quantized, &error));
+  gfx::MeshDesc mesh_block{};
+  mesh_block.quant = Vec4{mesh.quant_origin, mesh.quant_scale};
+  mesh_block.quantized = quantized.address;
+  REQUIRE(
+      gfx::upload_buffer(device, &mesh_block, sizeof(mesh_block), k_storage, mesh_buffer, &error));
   REQUIRE(gfx::upload_buffer(device, mesh.triangles.data(), mesh.triangles.size() * sizeof(u32),
                              k_storage, triangles, &error));
 
@@ -180,7 +186,7 @@ TEST_CASE("normal cones: the cull pass drops backfacing clusters without changin
   gfx::ClusterDrawParams draw{};
   draw.view_proj = view_proj;
   draw.clusters = clusters.address;
-  draw.vertices = vertices.address;
+  draw.mesh = mesh_buffer.address;
   draw.triangles = triangles.address;
   draw.cluster_count = cluster_count;
   draw.triangles_per_cluster = triangles_per_cluster;
@@ -333,7 +339,8 @@ TEST_CASE("normal cones: the cull pass drops backfacing clusters without changin
   }
   gfx::destroy_buffer(device, host);
   gfx::destroy_buffer(device, clusters);
-  gfx::destroy_buffer(device, vertices);
+  gfx::destroy_buffer(device, mesh_buffer);
+  gfx::destroy_buffer(device, quantized);
   gfx::destroy_buffer(device, triangles);
   device.destroy();
 }

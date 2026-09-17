@@ -18,17 +18,33 @@ struct ClusterDesc {
   uint cone;         // axis snorm8 x, y, z in bytes 0..2, cutoff snorm8 in byte 3
 };
 
-struct Position {
-  float x;
-  float y;
-  float z;
+// Mirrors gfx::MeshDesc (32 bytes): the mesh-wide 16-bit position grid and the stream of three
+// u16 per vertex on it. Duplicated in every shader that reads positions, like ClusterDesc.
+struct MeshDesc {
+  float4 quant;        // xyz grid origin, w grid step
+  uint64_t quantized;  // uint16_t[3 * vertex_count], padded to an even count
+  uint64_t pad;
 };
+
+// Three u16 at 3 * vertex, read as the 32-bit words that contain them. The stream is padded to
+// an even u16 count on the CPU, so the last word read is always inside the buffer.
+float3 load_position(MeshDesc* mesh, uint vertex) {
+  uint* words = (uint*)mesh->quantized;
+  const uint i = vertex * 3;
+  const uint w0 = words[i >> 1];
+  const uint w1 = words[(i + 1) >> 1];
+  const uint w2 = words[(i + 2) >> 1];
+  const uint x = (i & 1) != 0 ? (w0 >> 16) : (w0 & 0xffff);
+  const uint y = ((i + 1) & 1) != 0 ? (w1 >> 16) : (w1 & 0xffff);
+  const uint z = ((i + 2) & 1) != 0 ? (w2 >> 16) : (w2 & 0xffff);
+  return mesh->quant.xyz + float3(float(x), float(y), float(z)) * mesh->quant.w;
+}
 
 // Same layout as MeshParams in cluster_mesh.slang (120 bytes).
 struct RasterParams {
   column_major float4x4 view_proj;
   uint64_t clusters;
-  uint64_t vertices;
+  uint64_t mesh;  // MeshDesc: the quantized positions and their grid
   uint64_t triangles;
   uint cluster_count;
   uint pad;
@@ -59,10 +75,10 @@ void sw_raster_main(uint3 group_thread : SV_GroupThreadID, uint3 group : SV_Grou
   const float2 size = float2(float(g_params.width), float(g_params.height));
 
   // Vertices: clip space to pixel space with the same y flip as the hardware viewport.
-  Position* positions = (Position*)g_params.vertices;
+  MeshDesc* positions = (MeshDesc*)g_params.mesh;
   for (uint v = group_thread.x; v < cluster.vertex_count; v += 128) {
-    const Position p = positions[cluster.vertex_offset + v];
-    const float4 clip = mul(g_params.view_proj, float4(p.x, p.y, p.z, 1.0));
+    const float3 p = load_position(positions, cluster.vertex_offset + v);
+    const float4 clip = mul(g_params.view_proj, float4(p, 1.0));
     const bool in_front = clip.w > 1e-6;
     const float3 ndc = in_front ? clip.xyz / clip.w : float3(0.0, 0.0, 0.0);
     s_screen[v] = float3((ndc.x * 0.5 + 0.5) * size.x, (0.5 - ndc.y * 0.5) * size.y, ndc.z);

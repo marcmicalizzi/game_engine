@@ -75,14 +75,21 @@ TEST_CASE("vertex path: the baseline tier fills the visibility buffer like the m
   constexpr VkBufferUsageFlags k_storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
   constexpr VkBufferUsageFlags k_address = k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
   gfx::BufferResource clusters;
-  gfx::BufferResource vertices;
+  gfx::BufferResource quantized;
+  gfx::BufferResource mesh_buffer;
   gfx::BufferResource triangles;
   gfx::BufferResource lods;
   REQUIRE(gfx::upload_buffer(device, lod.mesh.clusters.data(),
                              cluster_count * sizeof(geometry::ClusterDesc), k_storage, clusters,
                              &error));
-  REQUIRE(gfx::upload_buffer(device, lod.mesh.vertices.data(),
-                             lod.mesh.vertices.size() * sizeof(Vec3), k_storage, vertices, &error));
+  REQUIRE(gfx::upload_buffer(device, lod.mesh.quantized.data(),
+                             lod.mesh.quantized.size() * sizeof(u16), k_storage, quantized,
+                             &error));
+  gfx::MeshDesc mesh_block{};
+  mesh_block.quant = Vec4{lod.mesh.quant_origin, lod.mesh.quant_scale};
+  mesh_block.quantized = quantized.address;
+  REQUIRE(
+      gfx::upload_buffer(device, &mesh_block, sizeof(mesh_block), k_storage, mesh_buffer, &error));
   REQUIRE(gfx::upload_buffer(device, lod.mesh.triangles.data(),
                              lod.mesh.triangles.size() * sizeof(u32), k_storage, triangles,
                              &error));
@@ -159,7 +166,7 @@ TEST_CASE("vertex path: the baseline tier fills the visibility buffer like the m
   gfx::ClusterDrawParams draw{};
   draw.view_proj = view_proj;
   draw.clusters = clusters.address;
-  draw.vertices = vertices.address;
+  draw.mesh = mesh_buffer.address;
   draw.triangles = triangles.address;
   draw.cluster_count = leaf_count;
   draw.triangles_per_cluster = triangles_per_cluster;
@@ -336,10 +343,50 @@ TEST_CASE("vertex path: the baseline tier fills the visibility buffer like the m
   gfx::destroy_shader_module(device, cull_module);
   gfx::destroy_shader_module(device, vertex_module);
   bindless.destroy();
-  for (gfx::BufferResource* b : {&host, &params, &args, &visible, &vis_indirect, &vis_vertex,
-                                 &vis_mesh, &lods, &triangles, &vertices, &clusters}) {
+  for (gfx::BufferResource* b :
+       {&host, &params, &args, &visible, &vis_indirect, &vis_vertex, &vis_mesh, &lods, &triangles,
+        &mesh_buffer, &quantized, &clusters}) {
     gfx::destroy_buffer(device, *b);
   }
   frames.destroy();
   device.destroy();
+}
+
+// What quantization costs the picture. Both rasterizers and the resolve read the same 16-bit
+// stream, so comparing them against each other says nothing about the grid; this compares the
+// grid against the floats it came from, on the CPU, through the projection the test above uses.
+// The terrain is 20 units across, so the step is 20 / 65535 and no vertex may move a pixel.
+TEST_CASE("vertex path: quantized positions project within a twentieth of a pixel") {
+  Vector<Vec3> positions;
+  Vector<u32> indices;
+  make_terrain(65, 10.0f, positions, indices);
+  geometry::ClusterLodMesh lod;
+  std::string error;
+  REQUIRE(
+      geometry::build_cluster_lod(positions, indices, geometry::ClusterLodOptions{}, lod, &error));
+
+  constexpr u32 k_w = 320;
+  constexpr u32 k_h = 240;
+  const Vec3 eye{0.0f, 9.0f, 24.0f};
+  const f32 znear = 0.1f;
+  const Mat4 view_proj =
+      perspective_reversed_z(radians(60.0f), static_cast<f32>(k_w) / k_h, znear) *
+      look_at(eye, Vec3{}, Vec3{0, 1, 0});
+  f32 worst_px = 0.0f;
+  u32 projected = 0;
+  for (u32 v = 0; v < lod.mesh.vertices.size(); ++v) {
+    const Vec4 exact = view_proj * Vec4{lod.mesh.vertices[v], 1.0f};
+    const Vec4 grid = view_proj * Vec4{geometry::dequantize_position(lod.mesh, v), 1.0f};
+    if (exact.w <= znear || grid.w <= znear) continue;
+    ++projected;
+    const f32 dx = std::fabs(exact.x / exact.w - grid.x / grid.w) * 0.5f * static_cast<f32>(k_w);
+    const f32 dy = std::fabs(exact.y / exact.w - grid.y / grid.w) * 0.5f * static_cast<f32>(k_h);
+    worst_px = dx > worst_px ? dx : worst_px;
+    worst_px = dy > worst_px ? dy : worst_px;
+  }
+  CHECK(projected > lod.mesh.vertices.size() / 2);
+  CHECK(lod.mesh.quant_scale < 3.1e-4f);  // 20 units over 65535 steps
+  CHECK(worst_px < 0.05f);
+  MESSAGE("grid step " << lod.mesh.quant_scale << " moves " << projected << " vertices by at most "
+                       << worst_px << " px at " << k_w << "x" << k_h);
 }

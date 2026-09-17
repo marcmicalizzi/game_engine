@@ -73,13 +73,19 @@ TEST_CASE("mesh shaders: clusters rasterize to visibility IDs") {
   MESSAGE("clusters: " << mesh.clusters.size());
 
   gfx::BufferResource cluster_buffer;
-  gfx::BufferResource vertex_buffer;
+  gfx::BufferResource quantized_buffer;
+  gfx::BufferResource mesh_buffer;
   gfx::BufferResource triangle_buffer;
   REQUIRE(gfx::upload_buffer(device, mesh.clusters.data(),
                              mesh.clusters.size() * sizeof(geometry::ClusterDesc),
                              VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, cluster_buffer, &error));
-  REQUIRE(gfx::upload_buffer(device, mesh.vertices.data(), mesh.vertices.size() * sizeof(Vec3),
-                             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, vertex_buffer, &error));
+  REQUIRE(gfx::upload_buffer(device, mesh.quantized.data(), mesh.quantized.size() * sizeof(u16),
+                             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, quantized_buffer, &error));
+  gfx::MeshDesc mesh_block{};
+  mesh_block.quant = Vec4{mesh.quant_origin, mesh.quant_scale};
+  mesh_block.quantized = quantized_buffer.address;
+  REQUIRE(gfx::upload_buffer(device, &mesh_block, sizeof(mesh_block),
+                             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, mesh_buffer, &error));
   REQUIRE(gfx::upload_buffer(device, mesh.triangles.data(), mesh.triangles.size() * sizeof(u32),
                              VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, triangle_buffer, &error));
 
@@ -120,7 +126,7 @@ TEST_CASE("mesh shaders: clusters rasterize to visibility IDs") {
         MeshParams params{};
         params.view_proj = Mat4::identity();
         params.clusters = cluster_buffer.address;
-        params.vertices = vertex_buffer.address;
+        params.mesh = mesh_buffer.address;
         params.triangles = triangle_buffer.address;
         params.cluster_count = mesh.clusters.size();
         vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
@@ -193,7 +199,8 @@ TEST_CASE("mesh shaders: clusters rasterize to visibility IDs") {
   bindless.destroy();
   gfx::destroy_buffer(device, readback);
   gfx::destroy_buffer(device, triangle_buffer);
-  gfx::destroy_buffer(device, vertex_buffer);
+  gfx::destroy_buffer(device, mesh_buffer);
+  gfx::destroy_buffer(device, quantized_buffer);
   gfx::destroy_buffer(device, cluster_buffer);
   frames.destroy();
   device.destroy();

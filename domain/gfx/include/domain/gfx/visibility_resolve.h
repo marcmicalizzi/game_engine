@@ -1,9 +1,10 @@
 #pragma once
 
 // Parameters of the visibility resolve (shaders/visibility_resolve.slang): the first material
-// pass. Read through a device address; the fragment pass pushes only the address. Materials are
-// a flat table indexed per cluster, which is enough until the material graph and per-vertex
-// attributes arrive.
+// pass. Read through a device address; the fragment pass pushes only the address. Positions come
+// off the same 16-bit grid the rasterizers read (`MeshDesc` in cluster_cull.h), so the resolve
+// reconstructs exactly the triangle that was drawn. Materials are a flat table indexed per
+// cluster, which is enough until the material graph and per-vertex attributes arrive.
 
 #include <core/base/types.h>
 #include <core/math/math.h>
@@ -40,7 +41,7 @@ struct ResolveParams {
   Mat4 view_proj;
   u64 visibility = 0;         // u64[width * height]
   u64 clusters = 0;           // geometry::ClusterDesc[]
-  u64 vertices = 0;           // Vec3[]
+  u64 mesh = 0;               // MeshDesc (cluster_cull.h): the quantized positions and their grid
   u64 triangles = 0;          // u32[]: packed local indices
   u64 materials = 0;          // ResolveMaterial[]
   u64 cluster_materials = 0;  // u32[cluster_count]

@@ -115,7 +115,48 @@ bool build_clusters(std::span<const Vec3> positions, std::span<const u32> indice
     out.clusters.push_back(desc);
   }
   fill_cluster_attributes(out, positions, indices, attributes);
+  quantize_positions(out);
   return true;
+}
+
+void quantize_positions(ClusterMesh& mesh) {
+  mesh.quantized.clear();
+  mesh.quant_origin = Vec3{};
+  mesh.quant_scale = 1.0f;
+  const u32 count = mesh.vertices.size();
+  if (count == 0) return;
+  Vec3 lo = mesh.vertices[0];
+  Vec3 hi = lo;
+  for (u32 i = 1; i < count; ++i) {
+    const Vec3 p = mesh.vertices[i];
+    lo = Vec3{std::min(lo.x, p.x), std::min(lo.y, p.y), std::min(lo.z, p.z)};
+    hi = Vec3{std::max(hi.x, p.x), std::max(hi.y, p.y), std::max(hi.z, p.z)};
+  }
+  const f32 extent = std::max(std::max(hi.x - lo.x, hi.y - lo.y), hi.z - lo.z);
+  mesh.quant_origin = lo;
+  mesh.quant_scale = extent > 0.0f ? extent / 65535.0f : 1.0f;
+  const f32 inverse_scale = 1.0f / mesh.quant_scale;
+  mesh.quantized.reserve(count * 3 + 1);
+  for (u32 i = 0; i < count; ++i) {
+    const Vec3 p = mesh.vertices[i];
+    const f32 axis[3] = {p.x - lo.x, p.y - lo.y, p.z - lo.z};
+    for (u32 k = 0; k < 3; ++k) {
+      const f32 grid = std::round(axis[k] * inverse_scale);
+      const f32 clamped = grid < 0.0f ? 0.0f : (grid > 65535.0f ? 65535.0f : grid);
+      mesh.quantized.push_back(static_cast<u16>(static_cast<u32>(clamped)));
+    }
+  }
+  // One pad entry so a shader may read every triple as two whole 32-bit words.
+  if ((mesh.quantized.size() & 1u) != 0) mesh.quantized.push_back(0);
+}
+
+Vec3 dequantize_position(const ClusterMesh& mesh, u32 vertex) noexcept {
+  const u64 first = u64{vertex} * 3;
+  if (first + 3 > mesh.quantized.size()) return mesh.quant_origin;
+  const u32 i = static_cast<u32>(first);
+  return Vec3{mesh.quant_origin.x + static_cast<f32>(mesh.quantized[i]) * mesh.quant_scale,
+              mesh.quant_origin.y + static_cast<f32>(mesh.quantized[i + 1]) * mesh.quant_scale,
+              mesh.quant_origin.z + static_cast<f32>(mesh.quantized[i + 2]) * mesh.quant_scale};
 }
 
 bool validate_clusters(const ClusterMesh& mesh, std::span<const u32> source_indices,
@@ -127,6 +168,21 @@ bool validate_clusters(const ClusterMesh& mesh, std::span<const u32> source_indi
   if (source_indices.size() % 3 != 0) return fail("source index count is not a multiple of three");
   if (mesh.vertices.size() != mesh.vertex_source.size())
     return fail("vertex_source does not match vertices");
+
+  // The 16-bit grid reproduces every float position within half a step.
+  if (u64{mesh.quantized.size()} < u64{mesh.vertices.size()} * 3)
+    return fail("quantized positions are missing or short");
+  if ((mesh.quantized.size() & 1u) != 0)
+    return fail("quantized positions are not padded to an even count");
+  if (!(mesh.quant_scale > 0.0f)) return fail("quantization scale is not positive");
+  const f32 quant_tolerance = mesh.quant_scale * 0.5f + 1e-6f;
+  for (u32 v = 0; v < mesh.vertices.size(); ++v) {
+    const Vec3 p = mesh.vertices[v];
+    const Vec3 q = dequantize_position(mesh, v);
+    if (std::fabs(q.x - p.x) > quant_tolerance || std::fabs(q.y - p.y) > quant_tolerance ||
+        std::fabs(q.z - p.z) > quant_tolerance)
+      return fail("a dequantized position is more than half a grid step from the original");
+  }
 
   // Every source triangle exactly once: compare sorted canonical corner triples.
   Vector<u64> expected;

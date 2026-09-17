@@ -55,7 +55,8 @@ TEST_CASE("material resolve: flat shading matches the formula, normals and sky a
 
   constexpr VkBufferUsageFlags k_storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
   gfx::BufferResource clusters;
-  gfx::BufferResource vertices;
+  gfx::BufferResource quantized;
+  gfx::BufferResource mesh_buffer;
   gfx::BufferResource triangles;
   gfx::BufferResource materials;
   gfx::BufferResource cluster_materials;
@@ -64,8 +65,13 @@ TEST_CASE("material resolve: flat shading matches the formula, normals and sky a
   const u32 zero = 0;
   REQUIRE(gfx::upload_buffer(device, mesh.clusters.data(), sizeof(geometry::ClusterDesc), k_storage,
                              clusters, &error));
-  REQUIRE(gfx::upload_buffer(device, mesh.vertices.data(), mesh.vertices.size() * sizeof(Vec3),
-                             k_storage, vertices, &error));
+  REQUIRE(gfx::upload_buffer(device, mesh.quantized.data(), mesh.quantized.size() * sizeof(u16),
+                             k_storage, quantized, &error));
+  gfx::MeshDesc mesh_block{};
+  mesh_block.quant = Vec4{mesh.quant_origin, mesh.quant_scale};
+  mesh_block.quantized = quantized.address;
+  REQUIRE(
+      gfx::upload_buffer(device, &mesh_block, sizeof(mesh_block), k_storage, mesh_buffer, &error));
   REQUIRE(gfx::upload_buffer(device, mesh.triangles.data(), mesh.triangles.size() * sizeof(u32),
                              k_storage, triangles, &error));
   REQUIRE(gfx::upload_buffer(device, &material, sizeof(material), k_storage, materials, &error));
@@ -121,7 +127,7 @@ TEST_CASE("material resolve: flat shading matches the formula, normals and sky a
   gfx::ClusterDrawParams draw{};
   draw.view_proj = view_proj;
   draw.clusters = clusters.address;
-  draw.vertices = vertices.address;
+  draw.mesh = mesh_buffer.address;
   draw.triangles = triangles.address;
   draw.cluster_count = 1;
   draw.visibility = vis.address;
@@ -136,7 +142,7 @@ TEST_CASE("material resolve: flat shading matches the formula, normals and sky a
   base.view_proj = view_proj;
   base.visibility = vis.address;
   base.clusters = clusters.address;
-  base.vertices = vertices.address;
+  base.mesh = mesh_buffer.address;
   base.triangles = triangles.address;
   base.materials = materials.address;
   base.cluster_materials = cluster_materials.address;
@@ -279,7 +285,7 @@ TEST_CASE("material resolve: flat shading matches the formula, normals and sky a
   gfx::destroy_shader_module(device, mesh_module);
   bindless.destroy();
   for (gfx::BufferResource* b : {&host_color, &params, &vis, &cluster_materials, &materials,
-                                 &triangles, &vertices, &clusters}) {
+                                 &mesh_buffer, &quantized, &triangles, &clusters}) {
     gfx::destroy_buffer(device, *b);
   }
   frames.destroy();

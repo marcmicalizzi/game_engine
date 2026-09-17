@@ -87,8 +87,8 @@ TEST_CASE("shader reflection: entry points, workgroup sizes, bindings, push cons
   CHECK(r.entry("fs_color") != nullptr);
   CHECK(r.entry("fs_visibility") != nullptr);
   CHECK(r.entry("missing") == nullptr);
-  // float4x4, three addresses, count and pad, the visible list, the visibility buffer, width,
-  // height.
+  // float4x4, three addresses (clusters, the MeshDesc, triangles), count and pad, the visible
+  // list, the visibility buffer, width, height.
   CHECK(r.push_constant_bytes == 120);
   CHECK(r.bindings.empty());
 

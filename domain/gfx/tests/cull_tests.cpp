@@ -75,15 +75,22 @@ TEST_CASE("cluster cull: GPU selection matches the CPU reference and the cut cov
   const u32 leaf_count = lod.level_cluster_counts[0];
 
   gfx::BufferResource clusters;
-  gfx::BufferResource vertices;
+  gfx::BufferResource quantized;
+  gfx::BufferResource mesh_buffer;
   gfx::BufferResource triangles;
   gfx::BufferResource lods;
   constexpr VkBufferUsageFlags k_storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
   REQUIRE(gfx::upload_buffer(device, lod.mesh.clusters.data(),
                              cluster_count * sizeof(geometry::ClusterDesc), k_storage, clusters,
                              &error));
-  REQUIRE(gfx::upload_buffer(device, lod.mesh.vertices.data(),
-                             lod.mesh.vertices.size() * sizeof(Vec3), k_storage, vertices, &error));
+  REQUIRE(gfx::upload_buffer(device, lod.mesh.quantized.data(),
+                             lod.mesh.quantized.size() * sizeof(u16), k_storage, quantized,
+                             &error));
+  gfx::MeshDesc mesh_block{};
+  mesh_block.quant = Vec4{lod.mesh.quant_origin, lod.mesh.quant_scale};
+  mesh_block.quantized = quantized.address;
+  REQUIRE(
+      gfx::upload_buffer(device, &mesh_block, sizeof(mesh_block), k_storage, mesh_buffer, &error));
   REQUIRE(gfx::upload_buffer(device, lod.mesh.triangles.data(),
                              lod.mesh.triangles.size() * sizeof(u32), k_storage, triangles,
                              &error));
@@ -184,7 +191,7 @@ TEST_CASE("cluster cull: GPU selection matches the CPU reference and the cut cov
   MeshParams mesh_params{};
   mesh_params.view_proj = view_proj;
   mesh_params.clusters = clusters.address;
-  mesh_params.vertices = vertices.address;
+  mesh_params.mesh = mesh_buffer.address;
   mesh_params.triangles = triangles.address;
   mesh_params.cluster_count = cluster_count;
   mesh_params.visible = visible.address;
@@ -359,8 +366,9 @@ TEST_CASE("cluster cull: GPU selection matches the CPU reference and the cut cov
   gfx::destroy_shader_module(device, mesh_module);
   gfx::destroy_shader_module(device, cull_module);
   bindless.destroy();
-  for (gfx::BufferResource* b : {&cut_host, &leaves_host, &visible_host, &args_host, &params, &args,
-                                 &visible, &lods, &triangles, &vertices, &clusters}) {
+  for (gfx::BufferResource* b :
+       {&cut_host, &leaves_host, &visible_host, &args_host, &params, &args, &visible, &lods,
+        &triangles, &mesh_buffer, &quantized, &clusters}) {
     gfx::destroy_buffer(device, *b);
   }
   frames.destroy();
