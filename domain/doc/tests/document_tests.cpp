@@ -273,6 +273,31 @@ TEST_CASE("doc: structural diff transforms one layer into another") {
   CHECK(d.layer(0) == from);
 
   CHECK(diff_layers(from, from).empty());
+
+  // The same diff, machine-readable: one entry per changed record, in id order, with property
+  // changes in name order.
+  const Vector<RecordDiff> records = diff_records(from, to);
+  CHECK(records.size() == 4);
+  for (u32 i = 1; i < records.size(); ++i)
+    CHECK(records[i - 1].id < records[i].id);
+  const RecordDiff* changed = nullptr;
+  for (const RecordDiff& r : records) {
+    if (r.id == id_of(40)) changed = &r;
+    if (r.id == id_of(41)) CHECK(r.added);
+    if (r.id == id_of(42)) CHECK(r.removed);
+    if (r.id == id_of(43)) CHECK(r.type_changed);
+  }
+  REQUIRE(changed != nullptr);
+  CHECK_FALSE(changed->type_changed);
+  CHECK(changed->parent_changed);
+  CHECK(changed->parent == std::optional<ObjectId>(id_of(41)));
+  REQUIRE(changed->properties.size() == 3);
+  CHECK(changed->properties[0].name == "generator");
+  CHECK(changed->properties[0].value.as_string() == "b");
+  CHECK(changed->properties[1].name == "gone");
+  CHECK(changed->properties[1].removed);
+  CHECK(changed->properties[2].name == "license");
+  CHECK(diff_records(from, from).empty());
 }
 
 TEST_CASE("doc: layers save to canonical JSON and load back identically") {

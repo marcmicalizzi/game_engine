@@ -156,6 +156,68 @@ struct DiffResult @version(1) {
   commands: engine.doc.Command[]
 }
 
+/// Which side `doc.merge` resolves a conflict toward (domain/doc/merge.h).
+enum MergePrefer : u8 {
+  /// Conflicting properties keep ours; an object both sides created keeps ours.
+  Ours = 0
+  /// The same, resolved toward theirs.
+  Theirs = 1
+  /// Conflicting properties keep base's value, and an object both sides created differently is
+  /// left out.
+  Neither = 2
+}
+
+/// How the two sides disagreed (domain/doc/merge.h).
+enum MergeConflictKind : u8 {
+  /// The same property (or "$type", or "$parent") changed to different values on both sides.
+  PropertyBothChanged = 0
+  /// One side deleted the object, the other modified it; the object is kept, modified.
+  DeletedAndModified = 1
+  /// Both sides created the object under the same id, with different content.
+  CreatedBothDifferent = 2
+  /// Taking the reparent would close a cycle; base's parent is kept.
+  ParentCycle = 3
+}
+
+/// Parameters of `doc.merge`: three layers of the open document, and the layer the merge is
+/// written to.
+struct MergeParams @version(1) {
+  session: string
+  /// The common ancestor the other two diverged from.
+  base_layer: string
+  ours_layer: string
+  theirs_layer: string
+  /// Layer the merged records go into: appended to the stack when it does not exist yet, and
+  /// otherwise replaced. May be one of the three inputs.
+  output_layer: string
+  prefer: MergePrefer = Ours
+}
+
+/// One conflict `doc.merge` found.
+struct MergeConflictInfo @version(1) {
+  object: id128
+  /// A property of the object, "$type" or "$parent" for the record's own fields, empty for a
+  /// conflict about the whole record.
+  property: string
+  kind: MergeConflictKind = PropertyBothChanged
+  /// The three values, with null for absent.
+  base: json
+  ours: json
+  theirs: json
+}
+
+struct MergeResult @version(1) {
+  /// Changes taken from each side: one per property set or cleared, one each for a changed
+  /// type, parent, or deletion flag, and one for a record added or removed whole.
+  applied_ours: u32 = 0
+  applied_theirs: u32 = 0
+  conflicts: MergeConflictInfo[]
+  /// Index of the committed patch in the journal; the merge is undoable like any transaction.
+  patch_index: u32 = 0
+  /// False when the merge changed nothing, and nothing was journaled.
+  committed: bool = false
+}
+
 /// Parameters of `doc.undo` and `doc.redo`.
 struct StepParams @version(1) {
   session: string

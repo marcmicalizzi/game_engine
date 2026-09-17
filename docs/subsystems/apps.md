@@ -23,6 +23,7 @@ engine-cli --doc ./world doc.undo
 engine-cli --doc ./world doc.redo
 engine-cli --doc ./world doc.add_layer '{"name":"quest"}'
 engine-cli --doc ./world doc.diff '{"from_layer":"base","to_layer":"quest"}'
+engine-cli --doc ./world doc.merge '{"base_layer":"base","ours_layer":"quest","theirs_layer":"other","output_layer":"merged"}'
 engine-cli gpu.adapters                       # what the machine's GPUs support (see gfx.md)
 ```
 

@@ -184,6 +184,11 @@ bool doc_diff(Context& ctx, const DiffParams& params, DiffResult& out, RpcError&
   return true;
 }
 
+bool doc_merge(Context& ctx, const MergeParams& params, MergeResult& out, RpcError& error) {
+  Session* s = ctx.sessions->require(params.session, error);
+  return s != nullptr && s->merge(params, out, error);
+}
+
 bool doc_validate(Context& ctx, const SessionRef& params, ValidateResult& out, RpcError& error) {
   Session* s = ctx.sessions->require(params.session, error);
   if (s == nullptr) return false;
@@ -416,6 +421,9 @@ void add_builtin_methods(Dispatcher& d) {
   d.add(method<StepParams, StepResult, &doc_redo>("doc.redo", "Redo undone patches."));
   d.add(method<DiffParams, DiffResult, &doc_diff>("doc.diff",
                                                   "Commands that turn one layer into another."));
+  d.add(method<MergeParams, MergeResult, &doc_merge>(
+      "doc.merge",
+      "Three-way merge of two layers over their common base into a layer, as one transaction."));
   d.add(method<SessionRef, ValidateResult, &doc_validate>(
       "doc.validate", "Validate every record against the schema registry."));
   d.add(method<JournalParams, JournalResult, &doc_journal>("doc.journal",

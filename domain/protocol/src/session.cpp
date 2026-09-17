@@ -1,9 +1,21 @@
 #include <core/time/time.h>
+#include <domain/doc/merge.h>
 #include <domain/protocol/session.h>
 
 namespace engine::protocol {
 
 using doc::DocumentStore;
+
+// The wire enums mirror domain/doc's, so the conversion below is a cast.
+static_assert(static_cast<u8>(doc::MergeConflict::PropertyBothChanged) ==
+                      static_cast<u8>(MergeConflictKind::PropertyBothChanged) &&
+                  static_cast<u8>(doc::MergeConflict::DeletedAndModified) ==
+                      static_cast<u8>(MergeConflictKind::DeletedAndModified) &&
+                  static_cast<u8>(doc::MergeConflict::CreatedBothDifferent) ==
+                      static_cast<u8>(MergeConflictKind::CreatedBothDifferent) &&
+                  static_cast<u8>(doc::MergeConflict::ParentCycle) ==
+                      static_cast<u8>(MergeConflictKind::ParentCycle),
+              "engine.protocol.MergeConflictKind must number doc::MergeConflict::Kind's values");
 
 // ---- Session ---------------------------------------------------------------------------------
 
@@ -41,11 +53,22 @@ bool Session::save(RpcError& error) { return persist(error); }
 
 bool Session::apply(std::span<const doc::Command> commands, doc::Attribution attribution,
                     bool atomic, ApplyResult& result, RpcError& error) {
+  return commit_commands(commands, std::move(attribution), atomic, true, doc_.edit_layer(), result,
+                         error);
+}
+
+bool Session::commit_commands(std::span<const doc::Command> commands, doc::Attribution attribution,
+                              bool atomic, bool strict, u32 layer, ApplyResult& result,
+                              RpcError& error) {
   if (attribution.timestamp_unix_ms == 0) attribution.timestamp_unix_ms = time::wall_unix_ms();
+  // The patch names the layer it edited, so undo and redo find it again; the session's own edit
+  // layer is restored before anything is written, because the manifest records it.
+  const u32 edit_layer = doc_.edit_layer();
+  doc_.set_edit_layer(layer);
   doc::Transaction tx = doc_.begin(std::move(attribution));
   u32 applied = 0;
   for (const doc::Command& command : commands) {
-    if (tx.apply(command)) ++applied;
+    if (tx.apply(command, strict)) ++applied;
   }
   for (const auto& d : tx.diagnostics()) {
     Diagnostic diagnostic;
@@ -56,6 +79,7 @@ bool Session::apply(std::span<const doc::Command> commands, doc::Attribution att
   result.applied = applied;
   if (applied == 0 || (atomic && !tx.ok())) {
     tx.rollback();
+    doc_.set_edit_layer(edit_layer);
     result.committed = false;
     return true;
   }
@@ -64,6 +88,7 @@ bool Session::apply(std::span<const doc::Command> commands, doc::Attribution att
   const bool truncated = manifest_.undo_position < doc_.journal().size();
   if (truncated) doc_.truncate_journal(manifest_.undo_position);
   tx.commit();
+  doc_.set_edit_layer(edit_layer);
   manifest_.undo_position = doc_.journal().size();
   result.committed = true;
   result.patch_index = doc_.journal().size() - 1;
@@ -77,6 +102,81 @@ bool Session::apply(std::span<const doc::Command> commands, doc::Attribution att
     return false;
   }
   return persist(error);
+}
+
+bool Session::merge(const MergeParams& params, MergeResult& result, RpcError& error) {
+  const i32 base = doc_.find_layer(params.base_layer);
+  const i32 ours = doc_.find_layer(params.ours_layer);
+  const i32 theirs = doc_.find_layer(params.theirs_layer);
+  if (base < 0 || ours < 0 || theirs < 0) {
+    const std::string& missing =
+        base < 0 ? params.base_layer : (ours < 0 ? params.ours_layer : params.theirs_layer);
+    error = make_error(codes::k_not_found, "no layer named " + missing);
+    return false;
+  }
+  if (params.output_layer.empty()) {
+    error = make_error(codes::k_invalid_argument, "output_layer is required");
+    return false;
+  }
+
+  doc::MergeOptions options;
+  switch (params.prefer) {
+    case MergePrefer::Ours: options.prefer_on_conflict = doc::MergeOptions::Ours; break;
+    case MergePrefer::Theirs: options.prefer_on_conflict = doc::MergeOptions::Theirs; break;
+    case MergePrefer::Neither: options.prefer_on_conflict = doc::MergeOptions::Neither; break;
+  }
+  doc::MergeResult merged;
+  std::string message;
+  if (!doc::merge_layers(doc_.layer(static_cast<u32>(base)), doc_.layer(static_cast<u32>(ours)),
+                         doc_.layer(static_cast<u32>(theirs)), options, merged, &message)) {
+    error = make_error(codes::k_document_error, std::move(message));
+    return false;
+  }
+  result.applied_ours = merged.applied_ours;
+  result.applied_theirs = merged.applied_theirs;
+  for (const doc::MergeConflict& c : merged.conflicts) {
+    MergeConflictInfo info;
+    info.object = c.object;
+    info.property = c.property;
+    info.kind = static_cast<MergeConflictKind>(c.kind);
+    info.base = c.base;
+    info.ours = c.ours;
+    info.theirs = c.theirs;
+    result.conflicts.push_back(std::move(info));
+  }
+
+  i32 output = doc_.find_layer(params.output_layer);
+  if (output < 0) {
+    // The layer itself is not part of the transaction: undoing the merge empties it again, it
+    // does not take it off the stack.
+    const u32 edit_layer = doc_.edit_layer();
+    output = static_cast<i32>(doc_.add_layer(params.output_layer, merged.merged.role()));
+    doc_.set_edit_layer(edit_layer);
+    if (!persist(error)) return false;
+  }
+
+  const u32 index = static_cast<u32>(output);
+  const Vector<doc::Command> commands = doc::diff_layers(doc_.layer(index), merged.merged);
+  doc::Attribution attribution;
+  attribution.actor = "doc.merge";
+  attribution.role = "merge";
+  attribution.task = params.output_layer;
+  attribution.rationale = "three-way merge of " + params.ours_layer + " and " +
+                          params.theirs_layer + " over " + params.base_layer;
+  ApplyResult applied;
+  // The commands replay a diff between two layers, so they are applied the way undo and redo
+  // apply theirs: without preconditions that speak about the composed document.
+  if (!commit_commands(commands, std::move(attribution), true, false, index, applied, error))
+    return false;
+  if (!applied.committed && !commands.empty()) {
+    std::string why = "the merged layer could not be written";
+    if (!applied.diagnostics.empty()) why += ": " + applied.diagnostics[0].message;
+    error = make_error(codes::k_document_error, std::move(why));
+    return false;
+  }
+  result.committed = applied.committed;
+  result.patch_index = applied.patch_index;
+  return true;
 }
 
 bool Session::undo(u32 steps, StepResult& result, RpcError& error) {

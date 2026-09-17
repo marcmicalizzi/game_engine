@@ -40,6 +40,10 @@ class Session {
   // with `atomic` the transaction rolls back when any command fails.
   bool apply(std::span<const doc::Command> commands, doc::Attribution attribution, bool atomic,
              ApplyResult& result, RpcError& error);
+  // Three-way merge of three of the document's layers into `params.output_layer`, appending
+  // that layer when it is not there yet, as one transaction against it: the merge is journaled,
+  // saved, and undone like any other edit. Conflicts are reported in `result`, not as an error.
+  bool merge(const MergeParams& params, MergeResult& result, RpcError& error);
   bool undo(u32 steps, StepResult& result, RpcError& error);
   bool redo(u32 steps, StepResult& result, RpcError& error);
   bool add_layer(std::string_view name, doc::LayerRole role, bool make_edit, RpcError& error);
@@ -50,6 +54,10 @@ class Session {
 
  private:
   bool persist(RpcError& error);
+  // One transaction against `layer`, committed, journaled, and saved. `strict` is the document's
+  // precondition checking; a merge replays a diff and turns it off, as undo and redo do.
+  bool commit_commands(std::span<const doc::Command> commands, doc::Attribution attribution,
+                       bool atomic, bool strict, u32 layer, ApplyResult& result, RpcError& error);
 
   io::Vfs* vfs_;
   std::string id_;

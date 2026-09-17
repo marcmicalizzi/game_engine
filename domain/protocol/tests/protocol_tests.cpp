@@ -100,6 +100,20 @@ JsonValue set_command(Id128 id, const char* name, JsonValue value) {
               {"value", std::move(value)}});
 }
 
+// Writes a whole override record (no type) into the edit layer: how a test builds a layer that
+// is a copy of another one with edits on top, which is what a three-way merge takes.
+JsonValue restore_command(Id128 id,
+                          std::initializer_list<std::pair<const char*, JsonValue>> properties) {
+  JsonValue bag = JsonValue::object();
+  for (auto& [name, value] : properties)
+    bag.set(name, value);
+  JsonValue record = obj({{"id", JsonValue(hex(id))}});
+  record.set("properties", std::move(bag));
+  return obj({{"kind", JsonValue("RestoreRecord")},
+              {"id", JsonValue(hex(id))},
+              {"record", std::move(record)}});
+}
+
 }  // namespace
 
 TEST_CASE("protocol: JSON-RPC framing") {
@@ -362,6 +376,121 @@ TEST_CASE("protocol: the Phase 0 exit criterion over the dispatcher") {
     CHECK(at(host.ok("doc.objects", obj({{"session", JsonValue(s)}})), "total") ==
           JsonValue(u32{2}));
   }
+}
+
+TEST_CASE("protocol: doc.merge writes a three-way merge into a layer, undoably") {
+  TempDir tmp;
+  const std::string dir = tmp.path + "/merged-world";
+  const Id128 a = Id128::from_parts(0x20, 1);
+  const Id128 b = Id128::from_parts(0x20, 2);
+  const char* k_type = "engine.content.AssetProvenance";
+  Host host;
+  JsonValue info = host.ok(
+      "session.open",
+      obj({{"path", JsonValue(dir)}, {"create", JsonValue(true)}, {"name", JsonValue("World")}}));
+  const std::string session(at(info, "session").as_string());
+  const JsonValue s(session);
+
+  // Two objects in the base layer.
+  JsonValue world = JsonValue::array();
+  world.push_back(create_command(a, k_type));
+  world.push_back(create_command(b, k_type, a));
+  host.ok("doc.apply", obj({{"session", s}, {"commands", world}, {"attribution", attribution()}}));
+
+  // Three layers of overrides: the common ancestor, and two copies of it that diverged.
+  auto layer_of = [&](const char* name, JsonValue commands) {
+    host.ok("doc.add_layer", obj({{"session", s}, {"name", JsonValue(name)}}));
+    host.ok(
+        "doc.apply",
+        obj({{"session", s}, {"commands", std::move(commands)}, {"attribution", attribution()}}));
+  };
+  JsonValue shared = JsonValue::array();
+  shared.push_back(
+      restore_command(a, {{"generator", JsonValue("shared")}, {"license", JsonValue("MIT")}}));
+  shared.push_back(restore_command(b, {{"generator", JsonValue("b-shared")}}));
+  layer_of("shared", shared);
+  JsonValue ours = JsonValue::array();
+  ours.push_back(
+      restore_command(a, {{"generator", JsonValue("ours")}, {"license", JsonValue("MIT")}}));
+  ours.push_back(
+      restore_command(b, {{"generator", JsonValue("b-shared")}, {"model_id", JsonValue("m1")}}));
+  layer_of("ours", ours);
+  JsonValue theirs = JsonValue::array();
+  theirs.push_back(
+      restore_command(a, {{"generator", JsonValue("theirs")}, {"license", JsonValue("MIT")}}));
+  theirs.push_back(restore_command(b, {{"generator", JsonValue("b-theirs")}}));
+  layer_of("theirs", theirs);
+
+  JsonValue params = obj({{"session", s},
+                          {"base_layer", JsonValue("shared")},
+                          {"ours_layer", JsonValue("ours")},
+                          {"theirs_layer", JsonValue("theirs")},
+                          {"output_layer", JsonValue("merged")}});
+  JsonValue merged = host.ok("doc.merge", params);
+  CHECK(at(merged, "applied_ours") == JsonValue(u32{2}));    // our generator, our model_id
+  CHECK(at(merged, "applied_theirs") == JsonValue(u32{1}));  // their generator on b
+  CHECK(at(merged, "committed") == JsonValue(true));
+  CHECK(at(merged, "patch_index") == JsonValue(u32{4}));
+  REQUIRE(at(merged, "conflicts").size() == 1);
+  const JsonValue& conflict = at(merged, "conflicts")[0];
+  CHECK(at(conflict, "kind") == JsonValue("PropertyBothChanged"));
+  CHECK(at(conflict, "object") == JsonValue(hex(a)));
+  CHECK(at(conflict, "property") == JsonValue("generator"));
+  CHECK(at(conflict, "base") == JsonValue("shared"));
+  CHECK(at(conflict, "ours") == JsonValue("ours"));
+  CHECK(at(conflict, "theirs") == JsonValue("theirs"));
+
+  // The merged layer is the strongest, so the composed document reads it.
+  auto generator_of = [&](Id128 id) {
+    return std::string(
+        at(host.ok("doc.get", obj({{"session", s}, {"id", JsonValue(hex(id))}})), "properties")
+            .find("generator")
+            ->as_string());
+  };
+  CHECK(generator_of(a) == "ours");
+  CHECK(generator_of(b) == "b-theirs");
+  CHECK(at(host.ok("doc.validate", obj({{"session", s}})), "ok") == JsonValue(true));
+  REQUIRE(at(host.ok("doc.layers", obj({{"session", s}})), "layers").size() == 5);
+  // The merge did not move the session's edit layer.
+  CHECK(at(at(host.ok("doc.layers", obj({{"session", s}})), "layers")[3], "is_edit") ==
+        JsonValue(true));
+
+  // It is a transaction like any other: undo empties the layer again, redo fills it.
+  CHECK(at(host.ok("doc.undo", obj({{"session", s}})), "position") == JsonValue(u32{4}));
+  CHECK(generator_of(a) == "theirs");
+  CHECK(at(host.ok("doc.redo", obj({{"session", s}})), "position") == JsonValue(u32{5}));
+  CHECK(generator_of(a) == "ours");
+
+  // Resolving toward theirs, into a second layer.
+  JsonValue toward_theirs = params;
+  toward_theirs.set("output_layer", JsonValue("merged-theirs"));
+  toward_theirs.set("prefer", JsonValue("Theirs"));
+  JsonValue second = host.ok("doc.merge", toward_theirs);
+  CHECK(at(second, "applied_ours") == JsonValue(u32{1}));
+  CHECK(at(second, "applied_theirs") == JsonValue(u32{2}));
+  CHECK(at(second, "conflicts").size() == 1);
+  CHECK(generator_of(a) == "theirs");
+
+  // Merging a layer with itself over itself changes nothing and journals nothing.
+  JsonValue idempotent = obj({{"session", s},
+                              {"base_layer", JsonValue("merged")},
+                              {"ours_layer", JsonValue("merged")},
+                              {"theirs_layer", JsonValue("merged")},
+                              {"output_layer", JsonValue("merged")}});
+  JsonValue nothing = host.ok("doc.merge", idempotent);
+  CHECK(at(nothing, "committed") == JsonValue(false));
+  CHECK(at(nothing, "conflicts").size() == 0);
+
+  // Bad arguments.
+  JsonValue missing = params;
+  missing.set("theirs_layer", JsonValue("nope"));
+  CHECK(host.error_code("doc.merge", missing) == codes::k_not_found);
+  JsonValue no_output = params;
+  no_output.set("output_layer", JsonValue(""));
+  CHECK(host.error_code("doc.merge", no_output) == codes::k_invalid_argument);
+  JsonValue bad_prefer = params;
+  bad_prefer.set("prefer", JsonValue("Whatever"));
+  CHECK(host.error_code("doc.merge", bad_prefer) == codes::k_invalid_params);
 }
 
 TEST_CASE("protocol: tunables, log, and schema methods") {

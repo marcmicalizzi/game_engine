@@ -160,7 +160,9 @@ class Transaction {
 
   // Applies to the edit layer and records the inverse. Returns false and records a diagnostic
   // on failure; the transaction can still be committed with what succeeded, or rolled back.
-  bool apply(const Command& command);
+  // `strict = false` skips the existence and cycle checks, for the same reason Document::apply
+  // takes the flag: replaying a diff or a merge whose base the composed document does not hold.
+  bool apply(const Command& command, bool strict = true);
   bool ok() const noexcept { return diagnostics_.empty(); }
   const Vector<Diagnostic>& diagnostics() const noexcept { return diagnostics_; }
   const Patch& patch() const noexcept { return patch_; }
@@ -175,8 +177,44 @@ class Transaction {
   bool finished_ = false;
 };
 
+// --- structural diff ------------------------------------------------------------------------
+
+// One property's change between two layers: the value it takes in `to`, or its removal.
+struct PropertyChange {
+  std::string name;
+  // The value in `to`; meaningless when `removed`.
+  JsonValue value;
+  bool removed = false;
+};
+
+// What changed about one object's record between two layers, field by field and property by
+// property: the machine-readable form of a diff. `diff_layers` renders it as commands and
+// `merge_layers` (merge.h) reasons about it.
+struct RecordDiff {
+  ObjectId id;
+  // The record is absent in `from`, or absent in `to`. Never both, and never with any of the
+  // fields below: read the whole record from the layer that has it.
+  bool added = false;
+  bool removed = false;
+  bool type_changed = false;
+  bool parent_changed = false;
+  bool deleted_changed = false;
+  // What `to` holds, for the fields marked changed above.
+  std::string type;
+  std::optional<ObjectId> parent;
+  bool deleted = false;
+  // Changed properties, in name order; `removed` ones are absent from `to`.
+  Vector<PropertyChange> properties;
+};
+
+// Structural diff of two layers: one entry per object whose record differs, in id order.
+Vector<RecordDiff> diff_records(const Layer& from, const Layer& to);
+
 // Commands that turn layer `from` into layer `to`, record by record, in deterministic order.
-// Applying them (strict = false) to a copy of `from` yields a layer equal to `to`.
+// Applying them (strict = false) to a copy of `from` yields a layer equal to `to`. This is
+// `diff_records` rendered as commands: a whole-record restore or removal where no command can
+// express the change (an added or removed record, a changed type or deletion flag, a parent
+// override that `to` drops), fine-grained commands otherwise.
 Vector<Command> diff_layers(const Layer& from, const Layer& to);
 
 // Command constructors.

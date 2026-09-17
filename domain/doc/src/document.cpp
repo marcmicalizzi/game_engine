@@ -489,10 +489,10 @@ Transaction::~Transaction() {
   if (!finished_) rollback();
 }
 
-bool Transaction::apply(const Command& command) {
+bool Transaction::apply(const Command& command, bool strict) {
   ENGINE_ASSERT(!finished_, "Transaction::apply after commit or rollback");
   Command inverse;
-  if (!doc_->apply(command, &inverse, &diagnostics_)) return false;
+  if (!doc_->apply(command, &inverse, &diagnostics_, strict)) return false;
   patch_.forward.push_back(command);
   patch_.inverse.push_back(std::move(inverse));
   return true;
@@ -521,19 +521,25 @@ void Transaction::rollback() {
 
 // --- diff ---------------------------------------------------------------------------------------
 
-Vector<Command> diff_layers(const Layer& from, const Layer& to) {
-  Vector<Command> out;
+Vector<RecordDiff> diff_records(const Layer& from, const Layer& to) {
+  Vector<RecordDiff> out;
   const auto& a = from.records();
   const auto& b = to.records();
   u32 i = 0, j = 0;
   while (i < a.size() || j < b.size()) {
     if (j >= b.size() || (i < a.size() && a.key_at(i) < b.key_at(j))) {
-      out.push_back(cmd_remove_record(a.key_at(i)));
+      RecordDiff d;
+      d.id = a.key_at(i);
+      d.removed = true;
+      out.push_back(std::move(d));
       ++i;
       continue;
     }
     if (i >= a.size() || b.key_at(j) < a.key_at(i)) {
-      out.push_back(cmd_restore(b.key_at(j), b.value_at(j)));
+      RecordDiff d;
+      d.id = b.key_at(j);
+      d.added = true;
+      out.push_back(std::move(d));
       ++j;
       continue;
     }
@@ -543,20 +549,76 @@ Vector<Command> diff_layers(const Layer& from, const Layer& to) {
     ++i;
     ++j;
     if (ra == rb) continue;
-    const bool fine_grained = ra.type == rb.type && ra.deleted == rb.deleted &&
-                              (ra.parent == rb.parent || rb.parent.has_value());
-    if (!fine_grained) {
-      out.push_back(cmd_restore(id, rb));
+    RecordDiff d;
+    d.id = id;
+    if (ra.type != rb.type) {
+      d.type_changed = true;
+      d.type = rb.type;
+    }
+    if (ra.parent != rb.parent) {
+      d.parent_changed = true;
+      d.parent = rb.parent;
+    }
+    if (ra.deleted != rb.deleted) {
+      d.deleted_changed = true;
+      d.deleted = rb.deleted;
+    }
+    // Properties in name order, walking the two sorted maps together.
+    const auto& pa = ra.properties;
+    const auto& pb = rb.properties;
+    u32 x = 0, y = 0;
+    while (x < pa.size() || y < pb.size()) {
+      if (y >= pb.size() || (x < pa.size() && pa.key_at(x) < pb.key_at(y))) {
+        PropertyChange p;
+        p.name = pa.key_at(x);
+        p.removed = true;
+        d.properties.push_back(std::move(p));
+        ++x;
+        continue;
+      }
+      if (x >= pa.size() || pb.key_at(y) < pa.key_at(x)) {
+        PropertyChange p;
+        p.name = pb.key_at(y);
+        p.value = pb.value_at(y);
+        d.properties.push_back(std::move(p));
+        ++y;
+        continue;
+      }
+      if (!(pa.value_at(x) == pb.value_at(y))) {
+        PropertyChange p;
+        p.name = pb.key_at(y);
+        p.value = pb.value_at(y);
+        d.properties.push_back(std::move(p));
+      }
+      ++x;
+      ++y;
+    }
+    out.push_back(std::move(d));
+  }
+  return out;
+}
+
+Vector<Command> diff_layers(const Layer& from, const Layer& to) {
+  Vector<Command> out;
+  for (const RecordDiff& d : diff_records(from, to)) {
+    if (d.removed) {
+      out.push_back(cmd_remove_record(d.id));
       continue;
     }
-    if (ra.parent != rb.parent) out.push_back(cmd_set_parent(id, *rb.parent));
-    // Property changes in key order: removals first, then sets.
-    for (auto [name, value] : ra.properties) {
-      if (!rb.properties.contains(name)) out.push_back(cmd_clear(id, name));
+    // No command expresses a changed type or deletion flag, or a parent override that `to`
+    // drops, so those (and an added record) restore the record whole.
+    if (d.added || d.type_changed || d.deleted_changed ||
+        (d.parent_changed && !d.parent.has_value())) {
+      out.push_back(cmd_restore(d.id, *to.find(d.id)));
+      continue;
     }
-    for (auto [name, value] : rb.properties) {
-      const JsonValue* old = ra.properties.find_value(name);
-      if (old == nullptr || !(*old == value)) out.push_back(cmd_set(id, name, value));
+    if (d.parent_changed) out.push_back(cmd_set_parent(d.id, *d.parent));
+    // Property changes in key order: removals first, then sets.
+    for (const PropertyChange& p : d.properties) {
+      if (p.removed) out.push_back(cmd_clear(d.id, p.name));
+    }
+    for (const PropertyChange& p : d.properties) {
+      if (!p.removed) out.push_back(cmd_set(d.id, p.name, p.value));
     }
   }
   return out;

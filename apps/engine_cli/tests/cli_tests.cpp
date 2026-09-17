@@ -168,3 +168,64 @@ TEST_CASE("cli: the Phase 0 exit criterion, one process per step") {
   CHECK(std::filesystem::exists(std::filesystem::path(dir) / "layers" / "quest.json"));
   CHECK(std::filesystem::exists(std::filesystem::path(dir) / "journal.jsonl"));
 }
+
+TEST_CASE("cli: two layers that diverged from a common base are merged in one call") {
+  TempDir tmp;
+  const std::string dir = tmp.path + "/merged";
+  REQUIRE(cli({"--doc", dir, "--create", "--name", "Merged", "session.info"}).exit_code == 0);
+
+  // Two objects in the base layer.
+  const std::string world = std::string("[{\"kind\":\"CreateObject\",\"id\":\"") + k_a +
+                            "\",\"type\":\"" + k_type + "\"},{\"kind\":\"CreateObject\",\"id\":\"" +
+                            k_b + "\",\"type\":\"" + k_type + "\",\"parent\":\"" + k_a + "\"}]";
+  REQUIRE(cli({"--doc", dir, "doc.apply", apply_params(world)}).exit_code == 0);
+
+  // A layer of overrides, and two copies of it that diverged: ours renames the first object and
+  // drops the second, theirs renames both differently.
+  auto record = [](const char* id, const char* properties) {
+    return std::string("{\"kind\":\"RestoreRecord\",\"id\":\"") + id + "\",\"record\":{\"id\":\"" +
+           id + "\",\"properties\":" + properties + "}}";
+  };
+  auto layer = [&](const char* name, const std::string& commands) {
+    REQUIRE(cli({"--doc", dir, "doc.add_layer", std::string("{\"name\":\"") + name + "\"}"})
+                .exit_code == 0);
+    REQUIRE(cli({"--doc", dir, "doc.apply", apply_params(commands)}).exit_code == 0);
+  };
+  layer("shared", "[" + record(k_a, R"({"generator":"shared","license":"MIT"})") + "," +
+                      record(k_b, R"({"generator":"b-shared"})") + "]");
+  layer("ours", "[" + record(k_a, R"({"generator":"ours","license":"MIT"})") + "]");
+  layer("theirs", "[" + record(k_a, R"({"generator":"theirs","license":"MIT"})") + "," +
+                      record(k_b, R"({"generator":"b-theirs"})") + "]");
+
+  Run merged = cli({"--doc", dir, "doc.merge",
+                    R"({"base_layer":"shared","ours_layer":"ours","theirs_layer":"theirs",)"
+                    R"("output_layer":"merged"})"});
+  REQUIRE(merged.exit_code == 0);
+  CHECK(at(merged.result, "committed") == JsonValue(true));
+  CHECK(at(merged.result, "applied_ours") == JsonValue(u32{1}));
+  CHECK(at(merged.result, "applied_theirs") == JsonValue(u32{1}));
+  const JsonValue& conflicts = at(merged.result, "conflicts");
+  REQUIRE(conflicts.size() == 2);
+  CHECK(at(conflicts[0], "kind") == JsonValue("PropertyBothChanged"));
+  CHECK(at(conflicts[0], "object") == JsonValue(k_a));
+  CHECK(at(conflicts[0], "property") == JsonValue("generator"));
+  CHECK(at(conflicts[0], "ours") == JsonValue("ours"));
+  CHECK(at(conflicts[0], "theirs") == JsonValue("theirs"));
+  CHECK(at(conflicts[1], "kind") == JsonValue("DeletedAndModified"));
+  CHECK(at(conflicts[1], "object") == JsonValue(k_b));
+  CHECK(at(conflicts[1], "property") == JsonValue(""));
+
+  // The merged layer is the strongest: a conflicting property kept ours, the object we deleted
+  // and they changed survived with their change.
+  Run got_a = cli({"--doc", dir, "doc.get", std::string("{\"id\":\"") + k_a + "\"}"});
+  CHECK(at(at(got_a.result, "properties"), "generator") == JsonValue("ours"));
+  Run got_b = cli({"--doc", dir, "doc.get", std::string("{\"id\":\"") + k_b + "\"}"});
+  CHECK(at(at(got_b.result, "properties"), "generator") == JsonValue("b-theirs"));
+  CHECK(at(cli({"--doc", dir, "doc.validate"}).result, "ok") == JsonValue(true));
+  CHECK(std::filesystem::exists(std::filesystem::path(dir) / "layers" / "merged.json"));
+
+  // And it is undoable across processes, like every other transaction.
+  REQUIRE(cli({"--doc", dir, "doc.undo"}).exit_code == 0);
+  Run after_undo = cli({"--doc", dir, "doc.get", std::string("{\"id\":\"") + k_a + "\"}"});
+  CHECK(at(at(after_undo.result, "properties"), "generator") == JsonValue("theirs"));
+}
