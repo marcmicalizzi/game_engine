@@ -22,6 +22,7 @@ include(EngineSchema)
 include(EngineProfiling)
 include(EngineGraphics)
 include(EngineImage)
+include(EngineAssets)
 include(EngineShaders)
 include(EngineBench)
 

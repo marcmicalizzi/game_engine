@@ -2,5 +2,6 @@
 # depend only on core and generated schemas.
 add_subdirectory(doc)
 add_subdirectory(geometry)
+add_subdirectory(assets)
 add_subdirectory(gfx)
 add_subdirectory(protocol)

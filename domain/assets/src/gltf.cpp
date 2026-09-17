@@ -1,0 +1,452 @@
+#include <domain/assets/gltf.h>
+#include <foundation/io/vfs.h>
+
+// cgltf is a single-header glTF 2.0 parser (MIT, third_party/LICENSES.md); the implementation
+// is compiled into this one translation unit.
+#if defined(_MSC_VER)
+#pragma warning(push, 0)
+#elif defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wshadow"
+#pragma GCC diagnostic ignored "-Wold-style-cast"
+#pragma GCC diagnostic ignored "-Wunused-parameter"
+#pragma GCC diagnostic ignored "-Wunused-function"
+#pragma GCC diagnostic ignored "-Wdouble-promotion"
+#pragma GCC diagnostic ignored "-Wimplicit-fallthrough"
+#pragma GCC diagnostic ignored "-Wcast-align"
+#pragma GCC diagnostic ignored "-Wsign-compare"
+#pragma GCC diagnostic ignored "-Wpedantic"
+#endif
+#define CGLTF_IMPLEMENTATION
+#include <cgltf.h>
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#elif defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
+
+#include <cstdlib>
+#include <cstring>
+#include <limits>
+#include <utility>
+
+namespace engine::assets {
+
+namespace {
+
+bool fail(std::string* error, std::string message) {
+  if (error != nullptr) *error = std::move(message);
+  return false;
+}
+
+const char* result_text(cgltf_result result) noexcept {
+  switch (result) {
+    case cgltf_result_success: return "success";
+    case cgltf_result_data_too_short: return "data too short";
+    case cgltf_result_unknown_format: return "unknown format";
+    case cgltf_result_invalid_json: return "invalid JSON";
+    case cgltf_result_invalid_gltf: return "invalid glTF";
+    case cgltf_result_invalid_options: return "invalid options";
+    case cgltf_result_file_not_found: return "file not found";
+    case cgltf_result_io_error: return "I/O error";
+    case cgltf_result_out_of_memory: return "out of memory";
+    case cgltf_result_legacy_gltf: return "glTF 1.0 is not supported";
+    default: return "unknown error";
+  }
+}
+
+const char* topology_text(cgltf_primitive_type type) noexcept {
+  switch (type) {
+    case cgltf_primitive_type_points: return "points";
+    case cgltf_primitive_type_lines: return "lines";
+    case cgltf_primitive_type_line_loop: return "line loop";
+    case cgltf_primitive_type_line_strip: return "line strip";
+    case cgltf_primitive_type_triangles: return "triangles";
+    case cgltf_primitive_type_triangle_strip: return "triangle strip";
+    case cgltf_primitive_type_triangle_fan: return "triangle fan";
+    default: return "unknown";
+  }
+}
+
+// --- file access through foundation/io --------------------------------------------------------
+// cgltf's default reader is fopen() on a narrow path, which mangles non-ASCII directories on
+// Windows. These callbacks route external buffers and .bin files through io::read_file instead,
+// so the module has exactly one way to touch the disk.
+
+void* alloc_bytes(const cgltf_memory_options* memory, cgltf_size size) {
+  if (memory != nullptr && memory->alloc_func != nullptr)
+    return memory->alloc_func(memory->user_data, size);
+  return std::malloc(size);
+}
+
+void free_bytes(const cgltf_memory_options* memory, void* bytes) {
+  if (memory != nullptr && memory->free_func != nullptr) {
+    memory->free_func(memory->user_data, bytes);
+    return;
+  }
+  std::free(bytes);
+}
+
+cgltf_result read_through_io(const cgltf_memory_options* memory, const cgltf_file_options*,
+                             const char* path, cgltf_size* size, void** data) {
+  std::string contents;
+  const io::Status status = io::read_file(path, contents);
+  if (status == io::Status::NotFound) return cgltf_result_file_not_found;
+  if (status != io::Status::Ok) return cgltf_result_io_error;
+
+  const cgltf_size wanted = (size != nullptr && *size != 0) ? *size : contents.size();
+  if (wanted > contents.size()) return cgltf_result_data_too_short;
+  void* buffer = alloc_bytes(memory, wanted != 0 ? wanted : 1);
+  if (buffer == nullptr) return cgltf_result_out_of_memory;
+  std::memcpy(buffer, contents.data(), wanted);
+  if (size != nullptr) *size = wanted;
+  *data = buffer;
+  return cgltf_result_success;
+}
+
+void release_through_io(const cgltf_memory_options* memory, const cgltf_file_options*, void* data) {
+  free_bytes(memory, data);
+}
+
+// Owns the parsed document so every error path frees it.
+struct Document {
+  cgltf_data* data = nullptr;
+  Document() = default;
+  Document(const Document&) = delete;
+  Document& operator=(const Document&) = delete;
+  ~Document() {
+    if (data != nullptr) cgltf_free(data);
+  }
+};
+
+// --- small helpers ----------------------------------------------------------------------------
+
+std::string decoded_uri(const char* uri) {
+  std::string text(uri);
+  const cgltf_size length = cgltf_decode_uri(text.data());
+  text.resize(length);
+  return text;
+}
+
+// "data:image/png;base64,iVBOR..." -> the media type and the decoded bytes. Only base64 data
+// URIs exist in practice, and they are the only ones glTF allows for buffers.
+bool decode_data_uri(const char* uri, std::string& mime_type, Vector<u8>& out) {
+  const char* comma = std::strchr(uri, ',');
+  if (comma == nullptr) return false;
+  const std::string_view header(uri + 5, static_cast<usize>(comma - uri) - 5);  // past "data:"
+  const std::string_view marker(";base64");
+  if (header.size() < marker.size() || header.substr(header.size() - marker.size()) != marker)
+    return false;
+  mime_type = std::string(header.substr(0, header.size() - marker.size()));
+
+  const char* encoded = comma + 1;
+  usize characters = std::strlen(encoded);
+  while (characters > 0 && encoded[characters - 1] == '=')
+    --characters;
+  const usize remainder = characters % 4;
+  if (remainder == 1) return false;
+  const usize size = characters / 4 * 3 + (remainder == 2 ? 1 : (remainder == 3 ? 2 : 0));
+  if (size > std::numeric_limits<u32>::max()) return false;
+
+  out.clear();
+  if (size == 0) return true;
+  cgltf_options options{};
+  void* bytes = nullptr;
+  if (cgltf_load_buffer_base64(&options, size, encoded, &bytes) != cgltf_result_success)
+    return false;
+  out.resize(static_cast<u32>(size));
+  std::memcpy(out.data(), bytes, size);
+  free_bytes(nullptr, bytes);
+  return true;
+}
+
+Mat4 local_transform(const cgltf_node& node) noexcept {
+  cgltf_float m[16];
+  cgltf_node_transform_local(&node, m);  // column-major, like core/math
+  return Mat4(Vec4(m[0], m[1], m[2], m[3]), Vec4(m[4], m[5], m[6], m[7]),
+              Vec4(m[8], m[9], m[10], m[11]), Vec4(m[12], m[13], m[14], m[15]));
+}
+
+i32 image_slot(const cgltf_data& data, const cgltf_texture_view& view) noexcept {
+  if (view.texture == nullptr) return -1;
+  const cgltf_image* image = view.texture->image;
+  if (image == nullptr && view.texture->has_basisu != 0) image = view.texture->basisu_image;
+  if (image == nullptr && view.texture->has_webp != 0) image = view.texture->webp_image;
+  if (image == nullptr) return -1;
+  return static_cast<i32>(cgltf_image_index(&data, image));
+}
+
+// --- the merge ---------------------------------------------------------------------------------
+
+struct Context {
+  const cgltf_data* gltf = nullptr;
+  MeshData* mesh = nullptr;
+  std::string* error = nullptr;
+  bool saw_normals = false;
+  bool saw_uvs = false;
+  Vector<f32> floats;   // scratch for one attribute accessor
+  Vector<u32> widened;  // scratch for one index accessor
+};
+
+// Unpacks a whole accessor into ctx.floats, applying sparse data and component conversion.
+bool read_attribute(Context& ctx, const cgltf_accessor& accessor, u32 components,
+                    const char* what) {
+  if (cgltf_num_components(accessor.type) != components)
+    return fail(ctx.error, std::string("glTF: ") + what + " is not a vector of " +
+                               std::to_string(components) + " components");
+  const cgltf_size total = accessor.count * components;
+  if (total > std::numeric_limits<u32>::max())
+    return fail(ctx.error, std::string("glTF: ") + what + " has too many components");
+  ctx.floats.resize(static_cast<u32>(total));
+  if (total == 0) return true;
+  if (cgltf_accessor_unpack_floats(&accessor, ctx.floats.data(), total) != total)
+    return fail(ctx.error, std::string("glTF: could not read ") + what +
+                               " (compressed or unsupported buffer view?)");
+  return true;
+}
+
+bool append_primitive(Context& ctx, const cgltf_primitive& primitive, const Mat4& world,
+                      const Mat4& normal_transform) {
+  MeshData& out = *ctx.mesh;
+  if (primitive.type != cgltf_primitive_type_triangles)
+    return fail(ctx.error, std::string("glTF: primitive topology is ") +
+                               topology_text(primitive.type) + "; only triangles are accepted");
+
+  const cgltf_accessor* positions =
+      cgltf_find_accessor(&primitive, cgltf_attribute_type_position, 0);
+  if (positions == nullptr) return fail(ctx.error, "glTF: a primitive has no POSITION attribute");
+  const cgltf_size count = positions->count;
+  if (count == 0) return fail(ctx.error, "glTF: a primitive has no vertices");
+
+  const u32 base = out.positions.size();
+  if (count > std::numeric_limits<u32>::max() - base)
+    return fail(ctx.error, "glTF: the scene has more vertices than the mesh format holds");
+  const u32 vertices = static_cast<u32>(count);
+
+  if (!read_attribute(ctx, *positions, 3, "POSITION")) return false;
+  out.positions.reserve(base + vertices);
+  for (u32 i = 0; i < vertices; ++i) {
+    const Vec3 p{ctx.floats[i * 3], ctx.floats[i * 3 + 1], ctx.floats[i * 3 + 2]};
+    out.positions.push_back(transform_point(world, p));
+  }
+  // Normals and UVs stay parallel to the positions even for primitives that have none.
+  out.normals.resize(base + vertices);
+  out.uvs.resize(base + vertices);
+
+  const cgltf_accessor* normals = cgltf_find_accessor(&primitive, cgltf_attribute_type_normal, 0);
+  if (normals != nullptr) {
+    if (normals->count != count)
+      return fail(ctx.error, "glTF: NORMAL and POSITION have different counts");
+    if (!read_attribute(ctx, *normals, 3, "NORMAL")) return false;
+    ctx.saw_normals = true;
+    for (u32 i = 0; i < vertices; ++i) {
+      const Vec3 n{ctx.floats[i * 3], ctx.floats[i * 3 + 1], ctx.floats[i * 3 + 2]};
+      out.normals[base + i] = normalize(transform_direction(normal_transform, n));
+    }
+  }
+
+  const cgltf_accessor* uvs = cgltf_find_accessor(&primitive, cgltf_attribute_type_texcoord, 0);
+  if (uvs != nullptr) {
+    if (uvs->count != count)
+      return fail(ctx.error, "glTF: TEXCOORD_0 and POSITION have different counts");
+    if (!read_attribute(ctx, *uvs, 2, "TEXCOORD_0")) return false;
+    ctx.saw_uvs = true;
+    for (u32 i = 0; i < vertices; ++i)
+      out.uvs[base + i] = Vec2{ctx.floats[i * 2], ctx.floats[i * 2 + 1]};
+  }
+
+  const u32 first = out.indices.size();
+  if (primitive.indices != nullptr) {
+    const cgltf_size index_count = primitive.indices->count;
+    if (index_count == 0 || index_count % 3 != 0)
+      return fail(ctx.error,
+                  "glTF: the index count of a primitive is not a positive multiple of "
+                  "three");
+    if (index_count > std::numeric_limits<u32>::max() - first)
+      return fail(ctx.error, "glTF: the scene has more indices than the mesh format holds");
+    ctx.widened.resize(static_cast<u32>(index_count));
+    if (cgltf_accessor_unpack_indices(primitive.indices, ctx.widened.data(), sizeof(u32),
+                                      index_count) != index_count)
+      return fail(ctx.error,
+                  "glTF: could not read the indices of a primitive (sparse or "
+                  "compressed accessors are not supported)");
+    out.indices.reserve(first + static_cast<u32>(index_count));
+    for (u32 i = 0; i < static_cast<u32>(index_count); ++i) {
+      const u32 index = ctx.widened[i];
+      if (index >= vertices)
+        return fail(ctx.error, "glTF: index " + std::to_string(index) +
+                                   " is out of range for a primitive with " +
+                                   std::to_string(vertices) + " vertices");
+      out.indices.push_back(base + index);
+    }
+  } else {
+    // A primitive without an index accessor draws its vertices in order.
+    if (vertices % 3 != 0)
+      return fail(ctx.error,
+                  "glTF: a primitive without indices has a vertex count that is not a "
+                  "multiple of three");
+    if (vertices > std::numeric_limits<u32>::max() - first)
+      return fail(ctx.error, "glTF: the scene has more indices than the mesh format holds");
+    out.indices.reserve(first + vertices);
+    for (u32 i = 0; i < vertices; ++i)
+      out.indices.push_back(base + i);
+  }
+
+  Primitive range;
+  range.first_index = first;
+  range.index_count = out.indices.size() - first;
+  range.material = primitive.material != nullptr
+                       ? static_cast<i32>(cgltf_material_index(ctx.gltf, primitive.material))
+                       : -1;
+  out.primitives.push_back(std::move(range));
+  return true;
+}
+
+bool append_node(Context& ctx, const cgltf_node& node, const Mat4& parent) {
+  const Mat4 world = parent * local_transform(node);
+  if (node.mesh != nullptr) {
+    // Normals transform by the inverse transpose, which is the only correct rule under
+    // non-uniform scale; renormalized per vertex because the transform is not orthonormal.
+    const Mat4 normal_transform = transpose(inverse(world));
+    for (cgltf_size i = 0; i < node.mesh->primitives_count; ++i)
+      if (!append_primitive(ctx, node.mesh->primitives[i], world, normal_transform)) return false;
+  }
+  for (cgltf_size i = 0; i < node.children_count; ++i) {
+    if (node.children[i] == nullptr) continue;
+    if (!append_node(ctx, *node.children[i], world)) return false;
+  }
+  return true;
+}
+
+bool collect_images(const cgltf_data& data, MeshData& out, std::string* error) {
+  if (data.images_count > std::numeric_limits<u32>::max())
+    return fail(error, "glTF: too many images");
+  out.images.reserve(static_cast<u32>(data.images_count));
+  for (cgltf_size i = 0; i < data.images_count; ++i) {
+    const cgltf_image& image = data.images[i];
+    ImageRef entry;
+    if (image.name != nullptr) entry.name = image.name;
+    if (image.mime_type != nullptr) entry.mime_type = image.mime_type;
+
+    if (image.buffer_view != nullptr) {
+      const u8* bytes = cgltf_buffer_view_data(image.buffer_view);
+      if (bytes == nullptr)
+        return fail(error, "glTF: image " + std::to_string(i) + " has no buffer data");
+      if (image.buffer_view->size > std::numeric_limits<u32>::max())
+        return fail(error, "glTF: image " + std::to_string(i) + " is too large");
+      entry.bytes.resize(static_cast<u32>(image.buffer_view->size));
+      std::memcpy(entry.bytes.data(), bytes, image.buffer_view->size);
+    } else if (image.uri != nullptr && std::strncmp(image.uri, "data:", 5) == 0) {
+      std::string mime;
+      if (!decode_data_uri(image.uri, mime, entry.bytes))
+        return fail(error,
+                    "glTF: image " + std::to_string(i) + " has a data URI that is not base64");
+      if (entry.mime_type.empty()) entry.mime_type = std::move(mime);
+    } else if (image.uri != nullptr) {
+      entry.uri = decoded_uri(image.uri);
+    }
+    out.images.push_back(std::move(entry));
+  }
+  return true;
+}
+
+bool collect_materials(const cgltf_data& data, MeshData& out, std::string* error) {
+  if (data.materials_count > std::numeric_limits<u32>::max())
+    return fail(error, "glTF: too many materials");
+  out.materials.reserve(static_cast<u32>(data.materials_count));
+  for (cgltf_size i = 0; i < data.materials_count; ++i) {
+    const cgltf_material& source = data.materials[i];
+    Material entry;
+    if (source.name != nullptr) entry.name = source.name;
+    if (source.has_pbr_metallic_roughness != 0) {
+      const cgltf_pbr_metallic_roughness& pbr = source.pbr_metallic_roughness;
+      entry.base_color = Vec4(pbr.base_color_factor[0], pbr.base_color_factor[1],
+                              pbr.base_color_factor[2], pbr.base_color_factor[3]);
+      entry.metallic = pbr.metallic_factor;
+      entry.roughness = pbr.roughness_factor;
+      entry.base_color_image = image_slot(data, pbr.base_color_texture);
+    }
+    entry.normal_image = image_slot(data, source.normal_texture);
+    out.materials.push_back(std::move(entry));
+  }
+  return true;
+}
+
+bool build_mesh(const cgltf_data& data, MeshData& out, std::string* error) {
+  if (!collect_images(data, out, error)) return false;
+  if (!collect_materials(data, out, error)) return false;
+
+  const cgltf_scene* scene = data.scene;
+  if (scene == nullptr && data.scenes_count > 0) scene = &data.scenes[0];
+  if (scene == nullptr) return fail(error, "glTF: the file has no scene to traverse");
+
+  Context ctx;
+  ctx.gltf = &data;
+  ctx.mesh = &out;
+  ctx.error = error;
+  for (cgltf_size i = 0; i < scene->nodes_count; ++i) {
+    if (scene->nodes[i] == nullptr) continue;
+    if (!append_node(ctx, *scene->nodes[i], Mat4::identity())) return false;
+  }
+  if (out.positions.empty()) return fail(error, "glTF: the scene has no triangle geometry");
+  if (!ctx.saw_normals) out.normals.clear();
+  if (!ctx.saw_uvs) out.uvs.clear();
+  return true;
+}
+
+}  // namespace
+
+bool load_gltf_memory(std::span<const u8> bytes, std::string_view base_dir, MeshData& out,
+                      std::string* error) {
+  out = MeshData{};
+  if (bytes.empty()) return fail(error, "glTF: the input is empty");
+
+  cgltf_options options{};
+  options.file.read = &read_through_io;
+  options.file.release = &release_through_io;
+
+  Document document;
+  cgltf_result result = cgltf_parse(&options, bytes.data(), bytes.size(), &document.data);
+  if (result != cgltf_result_success)
+    return fail(error, std::string("glTF: parsing failed (") + result_text(result) + ")");
+
+  // cgltf resolves a buffer URI against the directory of the path it is given, so a name inside
+  // base_dir stands in for the file itself; an empty base_dir leaves URIs relative to the
+  // working directory, which is what a caller with no directory can offer.
+  const std::string root = base_dir.empty() ? std::string("gltf") : io::join_path(base_dir, "gltf");
+  result = cgltf_load_buffers(&options, document.data, root.c_str());
+  if (result != cgltf_result_success)
+    return fail(error, std::string("glTF: reading buffers failed (") + result_text(result) + ")");
+
+  result = cgltf_validate(document.data);
+  if (result != cgltf_result_success)
+    return fail(error,
+                std::string("glTF: the document is not valid (") + result_text(result) + ")");
+
+  if (!build_mesh(*document.data, out, error)) {
+    out = MeshData{};
+    return false;
+  }
+  return true;
+}
+
+bool load_gltf(std::string_view path, MeshData& out, std::string* error) {
+  out = MeshData{};
+  std::string contents;
+  const io::Status status = io::read_file(path, contents);
+  if (status != io::Status::Ok)
+    return fail(error, std::string("glTF: cannot read '") + std::string(path) +
+                           "': " + io::status_name(status));
+  const std::span<const u8> bytes(reinterpret_cast<const u8*>(contents.data()), contents.size());
+  return load_gltf_memory(bytes, io::parent_path(path), out, error);
+}
+
+geometry::AttributeSource attribute_source(const MeshData& mesh) noexcept {
+  geometry::AttributeSource source;
+  if (!mesh.normals.empty())
+    source.normals = std::span<const Vec3>(mesh.normals.data(), mesh.normals.size());
+  if (!mesh.uvs.empty()) source.uvs = std::span<const Vec2>(mesh.uvs.data(), mesh.uvs.size());
+  return source;
+}
+
+}  // namespace engine::assets
