@@ -367,11 +367,12 @@ struct ClItem {
 // Level parameters as types, so every loop is specialized and no level knob is read inside the
 // matcher (docs/plan/11-performance-principles.md section 11.4).
 struct FastLevel {
-  static constexpr u32 max_chain = 4;     // hash-chain probes per position
-  static constexpr u32 nice_length = 32;  // stop probing once a match is this long
-  static constexpr u32 good_length = 0;   // unused without lazy matching
-  static constexpr u32 max_lazy = 0;
-  static constexpr u32 insert_limit = 4;  // longer matches do not index their interior
+  static constexpr u32 max_chain = 4;                     // hash-chain probes per position
+  static constexpr u32 nice_length = 32;                  // stop probing once a match is this long
+  [[maybe_unused]] static constexpr u32 good_length = 0;  // unused without lazy matching
+  [[maybe_unused]] static constexpr u32 max_lazy = 0;
+  [[maybe_unused]] static constexpr u32 insert_limit =
+      4;  // longer matches do not index their interior
   static constexpr bool lazy = false;
   static constexpr bool dynamic = false;
 };
@@ -379,9 +380,11 @@ struct FastLevel {
 struct DefaultLevel {
   static constexpr u32 max_chain = 32;
   static constexpr u32 nice_length = 128;
-  static constexpr u32 good_length = 8;  // a match this long shortens the next chain walk
-  static constexpr u32 max_lazy = 16;    // no second look once the held match is this long
-  static constexpr u32 insert_limit = k_max_match;
+  [[maybe_unused]] static constexpr u32 good_length =
+      8;  // a match this long shortens the next chain walk
+  [[maybe_unused]] static constexpr u32 max_lazy =
+      16;  // no second look once the held match is this long
+  [[maybe_unused]] static constexpr u32 insert_limit = k_max_match;
   static constexpr bool lazy = true;
   static constexpr bool dynamic = true;
 };
