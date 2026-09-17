@@ -64,19 +64,22 @@ enum class PassKind : u8 { Compute, Transfer, Raster };
 // How a pass touches a resource. Each maps to a stage, an access mask, and (for images) the
 // layout the pass needs; the graph derives barriers from the transitions between them.
 enum class Access : u8 {
-  ComputeRead,        // storage read in a compute shader (images: GENERAL)
-  ComputeWrite,       // storage write in a compute shader (images: GENERAL)
-  ComputeReadWrite,   // both
-  SampledRead,        // sampled/texture read in any shader (images: SHADER_READ_ONLY_OPTIMAL)
-  TransferRead,       // copy source (images: TRANSFER_SRC_OPTIMAL)
-  TransferWrite,      // copy or clear destination (images: TRANSFER_DST_OPTIMAL)
-  ColorAttachment,    // written through dynamic rendering (images: COLOR_ATTACHMENT_OPTIMAL)
-  DepthAttachment,    // depth/stencil attachment (images: DEPTH_ATTACHMENT_OPTIMAL)
-  IndirectRead,       // indirect draw or dispatch arguments (buffers)
-  MeshRead,           // storage read in task or mesh shaders (buffers)
-  FragmentRead,       // storage read in fragment shaders (buffers)
-  FragmentReadWrite,  // storage read and write (atomics) in fragment shaders (buffers)
-  VertexRead,         // storage read in vertex shaders (buffers)
+  ComputeRead,             // storage read in a compute shader (images: GENERAL)
+  ComputeWrite,            // storage write in a compute shader (images: GENERAL)
+  ComputeReadWrite,        // both
+  SampledRead,             // sampled/texture read in any shader (images: SHADER_READ_ONLY_OPTIMAL)
+  TransferRead,            // copy source (images: TRANSFER_SRC_OPTIMAL)
+  TransferWrite,           // copy or clear destination (images: TRANSFER_DST_OPTIMAL)
+  ColorAttachment,         // written through dynamic rendering (images: COLOR_ATTACHMENT_OPTIMAL)
+  DepthAttachment,         // depth/stencil attachment (images: DEPTH_ATTACHMENT_OPTIMAL)
+  IndirectRead,            // indirect draw or dispatch arguments (buffers)
+  MeshRead,                // storage read in task or mesh shaders (buffers)
+  FragmentRead,            // storage read in fragment shaders (buffers)
+  FragmentReadWrite,       // storage read and write (atomics) in fragment shaders (buffers)
+  VertexRead,              // storage read in vertex shaders (buffers)
+  AccelerationBuildRead,   // acceleration structure build inputs: geometry, records, references
+  AccelerationBuildWrite,  // what a build writes: the structure, addresses, sizes (buffers)
+  RayQueryRead,            // an acceleration structure traversed by ray queries in compute
 };
 bool access_writes(Access access) noexcept;
 

@@ -220,6 +220,26 @@ TEST_CASE("engine-view: renders a glTF mesh with one cluster DAG per material") 
   CHECK(std::filesystem::exists(capture));
   CHECK(std::filesystem::file_size(capture) > 1000);
 
+  // The same mesh through ray queries against cluster acceleration structures built every frame
+  // from the cull output; exit 3 where the GPU has no cluster acceleration structures.
+  const Run rt = view({"--width", "320", "--height", "240", "--frames", "6", "--no-vsync",
+                       "--orbit", "20", "--mesh", mesh, "--raster", "rt"});
+  if (rt.exit_code == 3) {
+    MESSAGE("--raster rt unavailable here: " << rt.output);
+  } else {
+    REQUIRE_MESSAGE(rt.exit_code == 0, rt.output);
+    const usize rt_start = rt.output.find_last_of('\n', rt.output.size() - 2);
+    const std::string rt_last = rt.output.substr(rt_start == std::string::npos ? 0 : rt_start + 1);
+    CHECK(rt_last.find("\"raster\":\"rt\"") != std::string::npos);
+    JsonValue rt_summary;
+    REQUIRE_MESSAGE(parse_json(rt_last, rt_summary).ok, rt_last);
+    u64 visible = 0;
+    const JsonValue* rt_visible = rt_summary.find("visible_hw_last");
+    REQUIRE(rt_visible != nullptr);
+    CHECK(rt_visible->get_u64(visible));
+    CHECK(visible > 0);  // the cube's clusters went through the cull, the builds, and the trace
+  }
+
   // A file that does not exist fails cleanly (exit 1) once the window and device are up.
   const Run missing = view({"--frames", "1", "--mesh", slashes(dir / "missing.glb")});
   CHECK(missing.exit_code == 1);

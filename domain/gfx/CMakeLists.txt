@@ -6,7 +6,7 @@
 engine_shaders(NAME gfx SOURCES shaders/cluster_mesh.slang shaders/cluster_cull.slang
                              shaders/cluster_sw_raster.slang shaders/visibility_resolve.slang
                              shaders/hiz_build.slang shaders/cluster_vertex.slang
-                             shaders/ray_visibility.slang)
+                             shaders/ray_visibility.slang shaders/clas_records.slang)
 engine_module(NAME gfx LAYER domain
   DEPS base containers memory hash json log math platform schemas io
   EXTERNAL_DEPS volk::volk GPUOpen::VulkanMemoryAllocator
@@ -36,7 +36,8 @@ if(TARGET engine_gfx_tests)
                                           tests/visibility_tests.cpp tests/occlusion_tests.cpp
                                           tests/shading_tests.cpp tests/attributes_tests.cpp
                                           tests/vertex_path_tests.cpp tests/cone_tests.cpp
-                                          tests/rt_tests.cpp tests/rt_cluster_tests.cpp)
+                                          tests/rt_tests.cpp tests/rt_cluster_tests.cpp
+                                          tests/clas_records_tests.cpp)
   target_compile_definitions(engine_gfx_tests PRIVATE
     ENGINE_SHADER_MANIFEST="${CMAKE_BINARY_DIR}/shaders/manifest.json")
   target_link_libraries(engine_gfx_tests PRIVATE engine_shaders_gfx_tests engine::geometry

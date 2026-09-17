@@ -255,7 +255,7 @@ void run_comparison(gfx::Device& device, u32 grid, f32 threshold_px, u32 k_w, u3
                                     VK_ACCESS_2_MEMORY_READ_BIT);
     REQUIRE(frames.wait(frames.end_frame()));
   }
-  const VkDeviceAddress cluster_blas_address = gfx::cluster_blas_address(cluster_blas);
+  const VkDeviceAddress cluster_blas_address = cluster_blas.address;
   REQUIRE(cluster_blas_address != 0);
   u64 clas_bytes = 0;
   const auto* clas_sizes = static_cast<const u32*>(set.sizes.mapped);

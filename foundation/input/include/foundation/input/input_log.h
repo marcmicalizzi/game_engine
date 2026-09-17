@@ -41,6 +41,15 @@ namespace engine::input {
 inline constexpr u32 k_log_version = 1;
 inline constexpr const char* k_log_type = "engine.input.log";
 
+// Called after every tick of a replay, with the state the tick ended in. Declared at namespace
+// scope because a nested struct's default member initializers cannot serve as a default argument
+// inside the enclosing class (GCC and Clang reject it).
+using ReplayTickFn = void (*)(void* user, SimTick tick, const InputState& state);
+struct ReplayOptions {
+  ReplayTickFn on_tick = nullptr;
+  void* user = nullptr;
+};
+
 class InputLog {
  public:
   InputLog() = default;
@@ -64,12 +73,7 @@ class InputLog {
   // Replaces the log's contents. On failure the log is left empty and `error` says why.
   io::Status load(std::string_view native_path, std::string* error = nullptr);
 
-  // Called after every tick of a replay, with the state the tick ended in.
-  using TickFn = void (*)(void* user, SimTick tick, const InputState& state);
-  struct ReplayOptions {
-    TickFn on_tick = nullptr;
-    void* user = nullptr;
-  };
+  using TickFn = ReplayTickFn;
 
   // Feeds the recorded events into `state` tick by tick, from `from` to `to` inclusive,
   // including the ticks with no events (the state still ages: a press stops being new).

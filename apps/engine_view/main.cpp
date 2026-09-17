@@ -20,12 +20,15 @@
 #include <core/time/time.h>
 #include <domain/assets/gltf.h>
 #include <domain/geometry/cluster_lod.h>
+#include <domain/gfx/acceleration.h>
 #include <domain/gfx/bindless.h>
 #include <domain/gfx/capture.h>
+#include <domain/gfx/cluster_acceleration.h>
 #include <domain/gfx/cluster_cull.h>
 #include <domain/gfx/device.h>
 #include <domain/gfx/frame.h>
 #include <domain/gfx/gpu_timer.h>
+#include <domain/gfx/ray_visibility.h>
 #include <domain/gfx/render_graph.h>
 #include <domain/gfx/shader_library.h>
 #include <domain/gfx/swapchain.h>
@@ -41,11 +44,13 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <shaders/clas_records.spv.h>
 #include <shaders/cluster_cull.spv.h>
 #include <shaders/cluster_mesh.spv.h>
 #include <shaders/cluster_sw_raster.spv.h>
 #include <shaders/cluster_vertex.spv.h>
 #include <shaders/hiz_build.spv.h>
+#include <shaders/ray_visibility.spv.h>
 #include <shaders/visibility_resolve.spv.h>
 #include <string>
 #include <string_view>
@@ -61,7 +66,7 @@ constexpr const char* k_usage =
     "usage: engine-view [--width <px>] [--height <px>] [--frames <n>] [--capture <file.png>]\n"
     "                   [--no-vsync] [--adapter <index>] [--validation] [--grid <n>] [--log <spec>]\n"
     "                   [--shaders <manifest.json>] [--lod <px>] [--no-cull] [--no-occlusion] [--no-cone]\n"
-    "                   [--raster direct|hw|vertex|sw|auto] [--sw-px <px>] [--view <mode>] [--orbit <d>]\n"
+    "                   [--raster direct|hw|vertex|sw|auto|rt] [--sw-px <px>] [--view <mode>] [--orbit <d>]\n"
     "                   [--mesh <file.gltf|file.glb>]\n"
     "\n"
     "  --frames <n>     render n frames, then exit (0: until the window closes)\n"
@@ -76,7 +81,8 @@ constexpr const char* k_usage =
     "  --raster <mode>  direct: mesh shaders to color with a depth buffer; hw (default), vertex, sw,\n"
     "                   auto: the visibility buffer through mesh shaders, a vertex shader (the\n"
     "                   baseline tier, chosen automatically without mesh shaders), software, or\n"
-    "                   both split by size\n"
+    "                   both split by size; rt: ray queries against cluster acceleration structures\n"
+    "                   built every frame from the cull output (NVIDIA RTX only)\n"
     "  --sw-px <px>     auto mode: clusters narrower than this go to the software rasterizer (32)\n"
     "  --view <mode>    id, tri, depth, shaded (default: materials with vertex normals and textures under\n"
     "                   a sun), normals, uv\n"
@@ -93,7 +99,7 @@ constexpr int k_exit_usage = 2;
 constexpr int k_exit_unavailable = 3;
 constexpr u32 k_frames_in_flight = 2;
 
-enum class RasterMode : u8 { Direct, Hardware, Software, Auto, Vertex };
+enum class RasterMode : u8 { Direct, Hardware, Software, Auto, Vertex, RayTrace };
 
 struct Options {
   u32 width = 1280;
@@ -124,6 +130,7 @@ const char* raster_name(RasterMode mode) {
     case RasterMode::Software: return "sw";
     case RasterMode::Auto: return "auto";
     case RasterMode::Vertex: return "vertex";
+    case RasterMode::RayTrace: return "rt";
   }
   return "?";
 }
@@ -227,6 +234,8 @@ struct Pipelines {
   gfx::ComputePipeline software;         // cluster_sw_raster
   gfx::ComputePipeline cull;             // cluster_cull
   gfx::ComputePipeline hiz;              // hiz_build
+  gfx::ComputePipeline records;          // clas_records (--raster rt)
+  gfx::ComputePipeline trace;            // ray_visibility (--raster rt)
   VkPipeline resolve = VK_NULL_HANDLE;   // fullscreen visibility resolve
   void destroy(const gfx::Device& device) {
     if (direct != VK_NULL_HANDLE) gfx::destroy_pipeline(device, direct);
@@ -236,6 +245,8 @@ struct Pipelines {
     gfx::destroy_compute_pipeline(device, software);
     gfx::destroy_compute_pipeline(device, cull);
     gfx::destroy_compute_pipeline(device, hiz);
+    gfx::destroy_compute_pipeline(device, records);
+    gfx::destroy_compute_pipeline(device, trace);
     direct = hardware = vertex = resolve = VK_NULL_HANDLE;
   }
 };
@@ -296,8 +307,10 @@ int main(int argc, char** argv) {
         options.raster = RasterMode::Auto;
       } else if (value == "vertex") {
         options.raster = RasterMode::Vertex;
+      } else if (value == "rt") {
+        options.raster = RasterMode::RayTrace;
       } else {
-        std::fprintf(stderr, "engine-view: --raster expects direct, hw, vertex, sw, or auto\n");
+        std::fprintf(stderr, "engine-view: --raster expects direct, hw, vertex, sw, auto, or rt\n");
         return k_exit_usage;
       }
     } else if (a == "--view") {
@@ -399,10 +412,19 @@ int main(int argc, char** argv) {
   occlusion = options.occlusion && options.cull &&
               (options.raster == RasterMode::Hardware || options.raster == RasterMode::Vertex);
   const bool vertex_path = options.raster == RasterMode::Vertex;
-  if (!device.features().presentation || !visibility_ok) {
+  const bool ray_path = options.raster == RasterMode::RayTrace;
+  if (ray_path && !options.cull) {
+    options.cull = true;  // the ray tracing geometry is built from the cull output
+    ENGINE_LOG_WARN(log_view, "--no-cull ignored with --raster rt");
+  }
+  const bool ray_ok = !ray_path || (device.features().cluster_acceleration_structure &&
+                                    device.features().ray_query);
+  if (!device.features().presentation || !visibility_ok || !ray_ok) {
     const std::string why =
         std::string(device.adapter().name) +
-        (!device.features().presentation ? " cannot present" : " has no 64-bit buffer atomics");
+        (!device.features().presentation ? " cannot present"
+         : !visibility_ok ? " has no 64-bit buffer atomics"
+                          : " has no cluster acceleration structures or ray queries");
     device.destroy();
     window.destroy();
     window::shutdown();
@@ -438,6 +460,17 @@ int main(int argc, char** argv) {
   gfx::BufferResource flags_buffer[2];    // drawn last frame / this frame, ping-pong
   gfx::BufferResource params_buffers[k_frames_in_flight];  // host-visible: two CullParams per slot
   gfx::BufferResource stats_buffers[k_frames_in_flight];   // host-visible copies of the arg blocks
+  // --raster rt: the frame's cut as cluster acceleration structures.
+  gfx::BufferResource indices8_buffer;      // 8-bit packed cluster indices for the CLAS builds
+  gfx::BufferResource records_buffer;       // CLAS build records written from the cull output
+  gfx::BufferResource record_count_buffer;  // u32: how many
+  gfx::BufferResource rt_instances;         // the one top-level instance record
+  gfx::BufferResource rt_scratch;
+  gfx::BufferResource ray_params[k_frames_in_flight];  // host-visible RayVisibilityParams per slot
+  gfx::ClusterSet clas_set;
+  gfx::ClusterBlas cluster_blas;
+  gfx::AccelerationStructure tlas;
+  u32 tlas_slot = gfx::BindlessSet::k_invalid_slot;
   gfx::ShaderLibrary shader_library;
   Pipelines pipelines;
   Targets targets;
@@ -459,6 +492,8 @@ int main(int argc, char** argv) {
   f64 gpu_hiz_ms = 0.0;
   f64 gpu_resolve_ms = 0.0;
   f64 gpu_total_ms = 0.0;
+  f64 gpu_rt_ms = 0.0;     // records + CLAS + cluster BLAS + TLAS builds
+  f64 gpu_trace_ms = 0.0;  // the ray query pass
   u64 timed_frames = 0;
   u32 extent_width = options.width;
   u32 extent_height = options.height;
@@ -578,9 +613,10 @@ int main(int argc, char** argv) {
     if (!gfx::upload_buffer(device, lod.mesh.clusters.data(),
                             cluster_count * sizeof(geometry::ClusterDesc), k_storage,
                             cluster_buffer, &error) ||
-        !gfx::upload_buffer(device, lod.mesh.vertices.data(),
-                            lod.mesh.vertices.size() * sizeof(Vec3), k_storage, vertex_buffer,
-                            &error) ||
+        !gfx::upload_buffer(
+            device, lod.mesh.vertices.data(), lod.mesh.vertices.size() * sizeof(Vec3),
+            k_storage | (ray_path ? gfx::k_build_input_usage : VkBufferUsageFlags{0}),
+            vertex_buffer, &error) ||
         !gfx::upload_buffer(device, lod.mesh.triangles.data(),
                             lod.mesh.triangles.size() * sizeof(u32), k_storage, triangle_buffer,
                             &error) ||
@@ -746,6 +782,56 @@ int main(int argc, char** argv) {
       exit_code = fail("buffers", error);
       break;
     }
+    if (ray_path) {
+      // Every cluster may be in some frame's cut, so the structures are sized for all of them.
+      Vector<u8> indices8;
+      gfx::pack_cluster_indices(
+          std::span<const u32>(lod.mesh.triangles.data(), lod.mesh.triangles.size()), indices8);
+      gfx::ClusterSetLimits limits;
+      limits.max_clusters = cluster_count;
+      limits.max_triangles_per_cluster = triangles_per_cluster;
+      limits.max_vertices_per_cluster = geometry::ClusterLodOptions{}.max_vertices;
+      limits.max_geometry_index = cluster_count - 1;
+      constexpr VkBufferUsageFlags k_record_usage =
+          k_address | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
+      bool rt_ok = gfx::upload_buffer(device, indices8.data(), indices8.size(),
+                                      gfx::k_build_input_usage, indices8_buffer, &error) &&
+                   gfx::create_buffer(device, gfx::k_cluster_build_record_bytes * cluster_count,
+                                      k_record_usage, false, records_buffer, &error) &&
+                   gfx::create_buffer(device, sizeof(u32), k_record_usage, false,
+                                      record_count_buffer, &error) &&
+                   gfx::create_cluster_set(device, limits, clas_set, &error) &&
+                   gfx::create_cluster_blas(device, cluster_count, cluster_blas, &error) &&
+                   gfx::create_tlas(device, 1, gfx::k_build_fast_trace, tlas, &error) &&
+                   gfx::create_buffer(device, gfx::k_instance_record_bytes,
+                                      gfx::k_build_input_usage, true, rt_instances, &error);
+      if (rt_ok) {
+        u64 scratch_bytes = clas_set.build_scratch_bytes;
+        scratch_bytes = std::max(scratch_bytes, cluster_blas.build_scratch_bytes);
+        scratch_bytes = std::max(scratch_bytes, tlas.build_scratch_bytes);
+        rt_ok = gfx::create_scratch(device, scratch_bytes, rt_scratch, &error);
+        for (u32 s = 0; s < k_frames_in_flight && rt_ok; ++s) {
+          rt_ok = gfx::create_buffer(device, sizeof(gfx::RayVisibilityParams), k_address, true,
+                                     ray_params[s], &error);
+        }
+        gfx::InstanceDesc instance;
+        instance.blas = cluster_blas.address;
+        gfx::write_instances(std::span<const gfx::InstanceDesc>(&instance, 1), rt_instances.mapped);
+        tlas_slot = bindless.add_acceleration_structure(tlas.handle);
+        if (tlas_slot == gfx::BindlessSet::k_invalid_slot) {
+          rt_ok = false;
+          error = "no bindless slot for the top-level structure";
+        }
+      }
+      if (!rt_ok) {
+        exit_code = fail("ray tracing", error);
+        break;
+      }
+      ENGINE_LOG_INFO(log_view, "ray tracing ready", log::field("clusters", cluster_count),
+                      log::field("clas_bytes", clas_set.data.size),
+                      log::field("blas_bytes", cluster_blas.data.size),
+                      log::field("scratch_bytes", rt_scratch.size));
+    }
 
     // Shaders: the embedded copies always work; the build's manifest, when found, loads the same
     // shaders from their files and recompiles them when the .slang sources change while running.
@@ -765,6 +851,10 @@ int main(int argc, char** argv) {
                                 shaders::k_cluster_vertex_spirv_size);
     shader_library.add_embedded("visibility_resolve", shaders::k_visibility_resolve_spirv,
                                 shaders::k_visibility_resolve_spirv_size);
+    shader_library.add_embedded("clas_records", shaders::k_clas_records_spirv,
+                                shaders::k_clas_records_spirv_size);
+    shader_library.add_embedded("ray_visibility", shaders::k_ray_visibility_spirv,
+                                shaders::k_ray_visibility_spirv_size);
     std::string manifest = options.shaders;
     if (manifest.empty()) {
       const std::string candidate = platform::executable_directory() + "/../shaders/manifest.json";
@@ -788,6 +878,21 @@ int main(int argc, char** argv) {
       const gfx::Shader* resolve =
           hiz != nullptr ? shader_library.get("visibility_resolve", err) : nullptr;
       if (resolve == nullptr || vertex == nullptr) return false;
+      if (ray_path) {
+        const gfx::Shader* records = shader_library.get("clas_records", err);
+        const gfx::Shader* trace =
+            records != nullptr ? shader_library.get("ray_visibility", err) : nullptr;
+        if (trace == nullptr) return false;
+        const VkDescriptorSetLayout set_layout = bindless.layout();
+        if (!gfx::create_compute_pipeline(device, records->module, "records_main", {},
+                                          sizeof(gfx::ClusterRecordParams), pipelines.records,
+                                          err) ||
+            !gfx::create_compute_pipeline(device, trace->module, "trace_main",
+                                          std::span<const VkDescriptorSetLayout>(&set_layout, 1),
+                                          sizeof(u64), pipelines.trace, err)) {
+          return false;
+        }
+      }
       gfx::GraphicsPipelineDesc vertex_desc;
       vertex_desc.vertex = vertex->module;
       vertex_desc.vertex_entry = "vs_cluster";
@@ -924,6 +1029,8 @@ int main(int argc, char** argv) {
           gpu_sw_ms += timer.ms("sw");
           gpu_hiz_ms += timer.ms("hiz");
           gpu_resolve_ms += timer.ms("resolve");
+          gpu_rt_ms += timer.ms("records") + timer.ms("clas") + timer.ms("blas") + timer.ms("tlas");
+          gpu_trace_ms += timer.ms("trace");
           gpu_total_ms += timer.total_ms();
           ++timed_frames;
         }
@@ -959,8 +1066,8 @@ int main(int argc, char** argv) {
                              look_at(eye, scene_center, Vec3{0.0f, 1.0f, 0.0f});
       const f32 proj_scale = 1.0f / std::tan(fov_y * 0.5f) * static_cast<f32>(extent.height) * 0.5f;
       const bool direct = options.raster == RasterMode::Direct;
-      const bool use_hw = options.raster != RasterMode::Software;
-      const bool use_sw = !direct && options.raster != RasterMode::Hardware &&
+      const bool use_hw = options.raster != RasterMode::Software && !ray_path;
+      const bool use_sw = !direct && !ray_path && options.raster != RasterMode::Hardware &&
                           options.raster != RasterMode::Vertex && options.cull;
       const u32 cur_flags = static_cast<u32>(rendered % 2);
       const u32 prev_flags = 1 - cur_flags;
@@ -986,10 +1093,11 @@ int main(int argc, char** argv) {
       cull.view_proj = view_proj;
       cull.camera = Vec4{eye, znear};
       cull.lod = Vec4{proj_scale, options.lod_px, 1.0f, 1.0f};
-      const f32 raster_mode = direct || options.raster == RasterMode::Hardware || vertex_path
-                                  ? gfx::k_raster_hardware
-                              : options.raster == RasterMode::Software ? gfx::k_raster_software
-                                                                       : gfx::k_raster_split;
+      const f32 raster_mode =
+          direct || options.raster == RasterMode::Hardware || vertex_path || ray_path
+              ? gfx::k_raster_hardware
+          : options.raster == RasterMode::Software ? gfx::k_raster_software
+                                                   : gfx::k_raster_split;
       cull.raster = Vec4{options.sw_px, raster_mode, 0.0f, 0.0f};
       cull.cluster_count = cluster_count;
       cull.count_index = vertex_path ? 1u : 0u;
@@ -1038,6 +1146,34 @@ int main(int argc, char** argv) {
       std::memcpy(resolve_buffers[slot].mapped, &resolve, sizeof(resolve));
       const u64 resolve_address = resolve_buffers[slot].address;
 
+      // --raster rt: the records pass turns this frame's visible list into CLAS build records,
+      // the builds follow on the GPU, and the trace pass replaces the rasterizer.
+      gfx::ClusterRecordParams record_params{};
+      u64 ray_address = 0;
+      if (ray_path) {
+        record_params.clusters = cluster_buffer.address;
+        record_params.vertices = vertex_buffer.address;
+        record_params.indices8 = indices8_buffer.address;
+        record_params.visible = visible_buffer[0].address;
+        record_params.visible_count = args_buffer[0].address;  // count_index 0: the first word
+        record_params.records = records_buffer.address;
+        record_params.record_count = record_count_buffer.address;
+        record_params.blas_record = cluster_blas.record.address;
+        record_params.clas_addresses = clas_set.addresses.address;
+        record_params.max_clusters = cluster_count;
+        gfx::RayVisibilityParams ray{};
+        ray.view_proj = view_proj;
+        ray.inv_view_proj = inverse(view_proj);
+        ray.camera = Vec4{eye, 0.0f};
+        ray.output = targets.vis.address;
+        ray.cut = 0;  // geometry indices are cluster ids
+        ray.width = extent.width;
+        ray.height = extent.height;
+        ray.scene = tlas_slot;
+        std::memcpy(ray_params[slot].mapped, &ray, sizeof(ray));
+        ray_address = ray_params[slot].address;
+      }
+
       graph.reset();
       const gfx::RgImage color = graph.import_image("swapchain", swapchain.image(image_index));
       const gfx::RgImage depth_target = graph.import_image("depth", targets.depth);
@@ -1052,6 +1188,21 @@ int main(int argc, char** argv) {
       const gfx::RgBuffer rg_vis = graph.import_buffer("visibility", targets.vis);
       const gfx::RgBuffer rg_hiz = graph.import_buffer("hiz", targets.hiz);
       const gfx::RgBuffer rg_stats = graph.import_buffer("stats", stats_buffers[slot]);
+      struct RtBuffers {
+        gfx::RgBuffer records, record_count, blas_record, clas_data, clas_addresses, clas_sizes;
+        gfx::RgBuffer blas_data, tlas, instances;
+      } rt{};
+      if (ray_path) {
+        rt.records = graph.import_buffer("clas records", records_buffer);
+        rt.record_count = graph.import_buffer("clas record count", record_count_buffer);
+        rt.blas_record = graph.import_buffer("cluster blas record", cluster_blas.record);
+        rt.clas_data = graph.import_buffer("clas", clas_set.data);
+        rt.clas_addresses = graph.import_buffer("clas addresses", clas_set.addresses);
+        rt.clas_sizes = graph.import_buffer("clas sizes", clas_set.sizes);
+        rt.blas_data = graph.import_buffer("cluster blas", cluster_blas.data);
+        rt.tlas = graph.import_buffer("tlas", tlas.buffer);
+        rt.instances = graph.import_buffer("tlas instances", rt_instances);
+      }
       VkClearColorValue sky{};
       sky.float32[0] = 0.55f;
       sky.float32[1] = 0.70f;
@@ -1233,6 +1384,87 @@ int main(int argc, char** argv) {
                 timer.end(cb);
               });
         }
+        if (ray_path) {
+          graph.add_pass(
+              "records", gfx::PassKind::Compute,
+              [&](gfx::PassBuilder& b) {
+                b.read(rg_args[0], gfx::Access::ComputeRead);
+                b.read(rg_visible[0], gfx::Access::ComputeRead);
+                b.write(rt.records, gfx::Access::ComputeWrite);
+                b.write(rt.record_count, gfx::Access::ComputeWrite);
+                b.write(rt.blas_record, gfx::Access::ComputeWrite);
+              },
+              [&](VkCommandBuffer cb, gfx::RenderGraph&) {
+                timer.begin(cb, "records");
+                vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines.records.pipeline);
+                vkCmdPushConstants(cb, pipelines.records.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                                   sizeof(record_params), &record_params);
+                vkCmdDispatch(cb,
+                              (cluster_count + gfx::k_cluster_records_workgroup - 1) /
+                                  gfx::k_cluster_records_workgroup,
+                              1, 1);
+                timer.end(cb);
+              });
+          graph.add_pass(
+              "clas", gfx::PassKind::Compute,
+              [&](gfx::PassBuilder& b) {
+                b.read(rt.records, gfx::Access::AccelerationBuildRead);
+                b.read(rt.record_count, gfx::Access::AccelerationBuildRead);
+                b.write(rt.clas_data, gfx::Access::AccelerationBuildWrite);
+                b.write(rt.clas_addresses, gfx::Access::AccelerationBuildWrite);
+                b.write(rt.clas_sizes, gfx::Access::AccelerationBuildWrite);
+              },
+              [&](VkCommandBuffer cb, gfx::RenderGraph&) {
+                timer.begin(cb, "clas");
+                gfx::build_cluster_set(cb, clas_set, records_buffer.address,
+                                       record_count_buffer.address, rt_scratch);
+                timer.end(cb);
+              });
+          graph.add_pass(
+              "blas", gfx::PassKind::Compute,
+              [&](gfx::PassBuilder& b) {
+                b.read(rt.blas_record, gfx::Access::AccelerationBuildRead);
+                b.read(rt.clas_addresses, gfx::Access::AccelerationBuildRead);
+                b.read(rt.clas_data, gfx::Access::AccelerationBuildRead);
+                b.write(rt.blas_data, gfx::Access::AccelerationBuildWrite);
+              },
+              [&](VkCommandBuffer cb, gfx::RenderGraph&) {
+                timer.begin(cb, "blas");
+                gfx::build_cluster_blas_indirect(cb, cluster_blas, rt_scratch);
+                timer.end(cb);
+              });
+          graph.add_pass(
+              "tlas", gfx::PassKind::Compute,
+              [&](gfx::PassBuilder& b) {
+                b.read(rt.blas_data, gfx::Access::AccelerationBuildRead);
+                b.read(rt.instances, gfx::Access::AccelerationBuildRead);
+                b.write(rt.tlas, gfx::Access::AccelerationBuildWrite);
+              },
+              [&](VkCommandBuffer cb, gfx::RenderGraph&) {
+                timer.begin(cb, "tlas");
+                gfx::build_tlas(cb, tlas, rt_instances.address, 1, gfx::k_build_fast_trace,
+                                rt_scratch);
+                timer.end(cb);
+              });
+          graph.add_pass(
+              "trace", gfx::PassKind::Compute,
+              [&](gfx::PassBuilder& b) {
+                b.read(rt.tlas, gfx::Access::RayQueryRead);
+                b.read(rt.blas_data, gfx::Access::RayQueryRead);
+                b.read(rt.clas_data, gfx::Access::RayQueryRead);
+                b.write(rg_vis, gfx::Access::ComputeWrite);
+              },
+              [&](VkCommandBuffer cb, gfx::RenderGraph&) {
+                timer.begin(cb, "trace");
+                vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines.trace.pipeline);
+                bindless.bind(cb, VK_PIPELINE_BIND_POINT_COMPUTE);
+                vkCmdPushConstants(cb, pipelines.trace.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                                   sizeof(u64), &ray_address);
+                vkCmdDispatch(cb, gfx::ray_visibility_group_count(extent.width),
+                              gfx::ray_visibility_group_count(extent.height), 1);
+                timer.end(cb);
+              });
+        }
         graph.add_pass(
             "resolve", gfx::PassKind::Raster,
             [&](gfx::PassBuilder& b) {
@@ -1340,6 +1572,18 @@ int main(int argc, char** argv) {
   }
   gfx::destroy_buffer(device, sw_args_buffer);
   gfx::destroy_buffer(device, sw_visible_buffer);
+  if (ray_path) {
+    gfx::destroy_acceleration_structure(device, tlas);
+    gfx::destroy_cluster_blas(device, cluster_blas);
+    gfx::destroy_cluster_set(device, clas_set);
+    for (u32 s = 0; s < k_frames_in_flight; ++s)
+      gfx::destroy_buffer(device, ray_params[s]);
+    gfx::destroy_buffer(device, rt_scratch);
+    gfx::destroy_buffer(device, rt_instances);
+    gfx::destroy_buffer(device, record_count_buffer);
+    gfx::destroy_buffer(device, records_buffer);
+    gfx::destroy_buffer(device, indices8_buffer);
+  }
   gfx::destroy_buffer(device, lod_buffer);
   gfx::destroy_buffer(device, attribute_buffer);
   gfx::destroy_sampler(device, texture_sampler);
@@ -1376,8 +1620,8 @@ int main(int argc, char** argv) {
         "\"visible_hw_last\":%u,\"visible_pass2_last\":%u,\"visible_sw_last\":%u,\"visible_min\":%"
         "u,"
         "\"visible_max\":%u,"
-        "\"gpu_ms\":{\"cull\":%.4f,\"hw\":%.4f,\"sw\":%.4f,\"hiz\":%.4f,\"resolve\":%.4f,\"total\":"
-        "%.4f,"
+        "\"gpu_ms\":{\"cull\":%.4f,\"hw\":%.4f,\"sw\":%.4f,\"hiz\":%.4f,\"resolve\":%.4f,"
+        "\"rt\":%.4f,\"trace\":%.4f,\"total\":%.4f,"
         "\"frames\":%llu},\"captured\":%s}\n",
         static_cast<unsigned long long>(rendered), seconds, avg_ms, extent_width, extent_height,
         lod.mesh.clusters.size(),
@@ -1388,8 +1632,8 @@ int main(int argc, char** argv) {
         static_cast<f64>(options.lod_px), raster_name(options.raster),
         static_cast<f64>(options.sw_px), visible_hw_last, visible_pass2_last, visible_sw_last,
         visible_min, visible_max, gpu_cull_ms / n, gpu_hw_ms / n, gpu_sw_ms / n, gpu_hiz_ms / n,
-        gpu_resolve_ms / n, gpu_total_ms / n, static_cast<unsigned long long>(timed_frames),
-        captured ? "true" : "false");
+        gpu_resolve_ms / n, gpu_rt_ms / n, gpu_trace_ms / n, gpu_total_ms / n,
+        static_cast<unsigned long long>(timed_frames), captured ? "true" : "false");
   }
   log::remove_sink(&stderr_sink);
   return exit_code;

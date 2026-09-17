@@ -197,23 +197,47 @@ bool create_cluster_blas(const Device& device, u32 max_clusters, ClusterBlas& ou
     return false;
   }
   VkClusterAccelerationStructureClustersBottomLevelInputNV clusters;
-  const VkClusterAccelerationStructureInputInfoNV input = blas_input(max_clusters, clusters);
+  VkClusterAccelerationStructureInputInfoNV input = blas_input(max_clusters, clusters);
+  input.opMode = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_EXPLICIT_DESTINATIONS_NV;
   VkAccelerationStructureBuildSizesInfoKHR sizes{};
   sizes.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
   vkGetClusterAccelerationStructureBuildSizesNV(device.handles().device, &input, &sizes);
   out.alignment = props.bottom_level_alignment;
   out.max_clusters = max_clusters;
   out.build_scratch_bytes = sizes.buildScratchSize + props.scratch_alignment;
+  static_assert(sizeof(VkClusterAccelerationStructureBuildClustersBottomLevelInfoNV) ==
+                k_cluster_blas_record_bytes);
   if (!create_buffer(device, sizes.accelerationStructureSize + props.bottom_level_alignment,
                      k_structure_usage, false, out.data, error) ||
-      !create_buffer(device, sizeof(VkClusterAccelerationStructureBuildClustersBottomLevelInfoNV),
-                     k_output_usage, true, out.record, error) ||
-      !create_buffer(device, sizeof(u64), k_output_usage, true, out.address_out, error)) {
+      !create_buffer(device, k_cluster_blas_record_bytes, k_output_usage, true, out.record,
+                     error) ||
+      !create_buffer(device, sizeof(u64), k_output_usage, true, out.destination, error)) {
     destroy_cluster_blas(device, out);
     return false;
   }
-  std::memset(out.address_out.mapped, 0, sizeof(u64));
+  // Explicit destination: the structure always lands at the aligned start of `data`.
+  out.address = align_up(out.data.address, props.bottom_level_alignment);
+  std::memcpy(out.destination.mapped, &out.address, sizeof(out.address));
+  std::memset(out.record.mapped, 0, k_cluster_blas_record_bytes);
   return true;
+}
+
+void build_cluster_blas_indirect(VkCommandBuffer commands, const ClusterBlas& blas,
+                                 const BufferResource& scratch) {
+  VkClusterAccelerationStructureClustersBottomLevelInputNV clusters;
+  VkClusterAccelerationStructureCommandsInfoNV info{};
+  info.sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_COMMANDS_INFO_NV;
+  info.input = blas_input(blas.max_clusters, clusters);
+  info.input.opMode = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_EXPLICIT_DESTINATIONS_NV;
+  info.dstImplicitData = 0;
+  info.scratchData = align_up(scratch.address, blas.alignment);
+  info.dstAddressesArray = {blas.destination.address, sizeof(u64), sizeof(u64)};
+  info.dstSizesArray = {0, 0, 0};
+  info.srcInfosArray = {blas.record.address, k_cluster_blas_record_bytes,
+                        k_cluster_blas_record_bytes};
+  info.srcInfosCount = 0;
+  info.addressResolutionFlags = 0;
+  vkCmdBuildClusterAccelerationStructureIndirectNV(commands, &info);
 }
 
 void build_cluster_blas(VkCommandBuffer commands, const ClusterBlas& blas,
@@ -223,32 +247,13 @@ void build_cluster_blas(VkCommandBuffer commands, const ClusterBlas& blas,
   record.clusterReferencesStride = sizeof(u64);
   record.clusterReferences = references;
   std::memcpy(blas.record.mapped, &record, sizeof(record));
-
-  VkClusterAccelerationStructureClustersBottomLevelInputNV clusters;
-  VkClusterAccelerationStructureCommandsInfoNV info{};
-  info.sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_COMMANDS_INFO_NV;
-  info.input = blas_input(blas.max_clusters, clusters);
-  info.dstImplicitData = align_up(blas.data.address, blas.alignment);
-  info.scratchData = align_up(scratch.address, blas.alignment);
-  info.dstAddressesArray = {blas.address_out.address, sizeof(u64), sizeof(u64)};
-  info.dstSizesArray = {0, 0, 0};
-  info.srcInfosArray = {blas.record.address, sizeof(record), sizeof(record)};
-  info.srcInfosCount = 0;
-  info.addressResolutionFlags = 0;
-  vkCmdBuildClusterAccelerationStructureIndirectNV(commands, &info);
-}
-
-VkDeviceAddress cluster_blas_address(const ClusterBlas& blas) noexcept {
-  VkDeviceAddress address = 0;
-  if (blas.address_out.mapped != nullptr)
-    std::memcpy(&address, blas.address_out.mapped, sizeof(address));
-  return address;
+  build_cluster_blas_indirect(commands, blas, scratch);
 }
 
 void destroy_cluster_blas(const Device& device, ClusterBlas& blas) noexcept {
   destroy_buffer(device, blas.data);
   destroy_buffer(device, blas.record);
-  destroy_buffer(device, blas.address_out);
+  destroy_buffer(device, blas.destination);
   blas = ClusterBlas{};
 }
 
