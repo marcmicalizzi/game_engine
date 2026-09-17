@@ -81,6 +81,8 @@ void make_fixture(ClusterFileData& data, Vector<u32>& indices) {
   data.image_paths.push_back("textures/sand_basecolor.png");
   data.image_paths.push_back("");  // an embedded image keeps its slot with an empty path
   data.source_path = "content/samples/Terrain/terrain.gltf";
+  data.source_hash = 0x0123'4567'89ab'cdefull;
+  data.build_key = cluster_cache_key(data.source_hash, ClusterLodOptions{}, true);
   data.cluster_material.reserve(data.mesh.mesh.clusters.size());
   for (u32 i = 0; i < data.mesh.mesh.clusters.size(); ++i)
     data.cluster_material.push_back(i % 2);
@@ -104,6 +106,8 @@ void check_equal(const ClusterFileData& read, const ClusterFileData& written) {
   for (u32 i = 0; i < read.image_paths.size(); ++i)
     CHECK(read.image_paths[i] == written.image_paths[i]);
   CHECK(read.source_path == written.source_path);
+  CHECK(read.source_hash == written.source_hash);
+  CHECK(read.build_key == written.build_key);
 }
 
 struct TempDir {
@@ -226,7 +230,7 @@ TEST_CASE("cluster file: a DAG with materials survives a round trip array by arr
   CHECK(std::memcmp(header.magic, "CLST", 4) == 0);
   CHECK(header.version == k_cluster_file_version);
   CHECK(header.flags == 0);
-  CHECK(header.section_count == 14);
+  CHECK(header.section_count == 15);
   CHECK(header.total_bytes == file.size());
   CHECK(header.content_hash == cluster_file_hash(data));
   for (u32 i = 0; i < header.section_count; ++i) {
@@ -323,6 +327,80 @@ TEST_CASE("cluster file: the source path travels with the mesh, and its absence 
   REQUIRE_MESSAGE(read_cluster_file(anonymous_path, anonymous_read, &error), error);
   CHECK(anonymous_read.source_path.empty());
   check_equal(anonymous_read, anonymous);
+}
+
+TEST_CASE("cluster file: the source identity reads back without decoding the mesh") {
+  TempDir tmp;
+  ClusterFileData data;
+  Vector<u32> indices;
+  make_fixture(data, indices);
+  const std::string path = tmp.path + "/identity.clusters";
+  std::string error;
+  REQUIRE_MESSAGE(write_cluster_file(path, data, &error), error);
+
+  // Two u64 in one section, the source hash first and the build key second.
+  std::string file;
+  REQUIRE(io::read_file(path, file) == io::Status::Ok);
+  ClusterFileHeader header;
+  std::memcpy(&header, file.data(), sizeof(header));
+  usize identity_at = 0;
+  ClusterFileSection identity{};
+  for (u32 i = 0; i < header.section_count; ++i) {
+    const usize at = sizeof(header) + sizeof(identity) * i;
+    ClusterFileSection section;
+    std::memcpy(&section, file.data() + at, sizeof(section));
+    if (section.kind == static_cast<u32>(ClusterSection::SourceHash)) {
+      identity_at = at;
+      identity = section;
+    }
+  }
+  REQUIRE(identity_at != 0);
+  CHECK(identity.element_size == 8);
+  CHECK(identity.element_count == 2);
+  CHECK(std::string(cluster_section_name(identity.kind)) == "source_hash");
+
+  // The cheap reader agrees with the full one and costs no mesh.
+  u64 source_hash = 0;
+  u64 build_key = 0;
+  REQUIRE_MESSAGE(read_cluster_file_identity(path, source_hash, build_key, &error), error);
+  CHECK(source_hash == data.source_hash);
+  CHECK(build_key == data.build_key);
+  ClusterFileData read;
+  REQUIRE_MESSAGE(read_cluster_file(path, read, &error), error);
+  CHECK(read.source_hash == source_hash);
+  CHECK(read.build_key == build_key);
+
+  // A file from before the section existed: the kind becomes one this build does not know, and
+  // the identity reads as zero rather than as a failure, which is what makes a build rebuild it.
+  std::string older = file;
+  ClusterFileSection renamed = identity;
+  renamed.kind = 31338;
+  patch(older, identity_at, &renamed, sizeof(renamed));
+  rehash(older);
+  const std::string older_path = tmp.path + "/older.clusters";
+  REQUIRE(io::write_file(older_path, older) == io::Status::Ok);
+  REQUIRE_MESSAGE(read_cluster_file_identity(older_path, source_hash, build_key, &error), error);
+  CHECK(source_hash == 0);
+  CHECK(build_key == 0);
+  ClusterFileData without;
+  REQUIRE_MESSAGE(read_cluster_file(older_path, without, &error), error);
+  CHECK(without.source_hash == 0);
+  CHECK(without.build_key == 0);
+  ClusterFileData expected = data;
+  expected.source_hash = 0;
+  expected.build_key = 0;
+  check_equal(without, expected);
+
+  // A file that is not a container, and one that is not there, are failures with zeros left.
+  CHECK_FALSE(read_cluster_file_identity(tmp.path + "/missing.clusters", source_hash, build_key));
+  CHECK(source_hash == 0);
+  std::string corrupt = file;
+  corrupt[0] = 'X';
+  const std::string corrupt_path = tmp.path + "/corrupt.clusters";
+  REQUIRE(io::write_file(corrupt_path, corrupt) == io::Status::Ok);
+  std::string message;
+  CHECK_FALSE(read_cluster_file_identity(corrupt_path, source_hash, build_key, &message));
+  CHECK_MESSAGE(message.find("magic") != std::string::npos, message);
 }
 
 TEST_CASE("cluster file: the cache key answers to everything that went into the build") {

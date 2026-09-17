@@ -24,7 +24,7 @@ namespace {
 
 constexpr u64 k_header_bytes = sizeof(ClusterFileHeader);
 constexpr u64 k_record_bytes = sizeof(ClusterFileSection);
-constexpr u32 k_kind_count = static_cast<u32>(ClusterSection::SourcePath) + 1;
+constexpr u32 k_kind_count = static_cast<u32>(ClusterSection::SourceHash) + 1;
 
 constexpr u64 align_up(u64 value) noexcept {
   const u64 a = k_cluster_file_alignment;
@@ -107,6 +107,9 @@ u64 encode(const ClusterFileData& data, std::string& out) {
   // The source path, NUL included, so a reader gets a C string straight out of the mapping.
   add_section(payloads, ClusterSection::SourcePath, 1u, data.source_path.size() + 1,
               data.source_path.c_str());
+  // What the source was and what was built from it, for an incremental build to compare.
+  const u64 identity[2] = {data.source_hash, data.build_key};
+  add_section(payloads, ClusterSection::SourceHash, static_cast<u32>(sizeof(u64)), 2u, identity);
 
   u64 offset = k_header_bytes + k_record_bytes * payloads.size();
   for (Payload& payload : payloads) {
@@ -149,6 +152,81 @@ std::string section_label(u32 kind) {
   return std::string(cluster_section_name(kind)) + " (kind " + std::to_string(kind) + ")";
 }
 
+// Everything that can be checked without interpreting a payload: the header, the section table,
+// that no section runs past the end, and the content hash. Both readers start here, so a file
+// they disagree about does not exist.
+bool check_container(std::span<const u8> bytes, ClusterFileHeader& header,
+                     Vector<ClusterFileSection>& sections, std::string* error) {
+  if (bytes.size() < k_header_bytes) {
+    return fail(error, "cluster file is truncated: " + std::to_string(bytes.size()) +
+                           " bytes, the 32-byte header does not fit");
+  }
+  std::memcpy(&header, bytes.data(), sizeof(header));
+  if (std::memcmp(header.magic, "CLST", 4) != 0)
+    return fail(error, "not a cluster file: the magic is not \"CLST\"");
+  if (header.version != k_cluster_file_version) {
+    return fail(error, "unsupported cluster file version " + std::to_string(header.version) +
+                           ": this build reads version " + std::to_string(k_cluster_file_version));
+  }
+  if (header.total_bytes < k_header_bytes || bytes.size() < header.total_bytes) {
+    return fail(error, "cluster file is truncated: " + std::to_string(bytes.size()) +
+                           " bytes, the header says " + std::to_string(header.total_bytes));
+  }
+  const u64 table_end = k_header_bytes + k_record_bytes * u64{header.section_count};
+  if (table_end > header.total_bytes) {
+    return fail(error, "cluster file is truncated: the table of " +
+                           std::to_string(header.section_count) + " sections does not fit");
+  }
+
+  sections.resize(header.section_count);
+  for (u32 i = 0; i < header.section_count; ++i) {
+    std::memcpy(&sections[i], bytes.data() + k_header_bytes + k_record_bytes * i, k_record_bytes);
+  }
+  // Structure before contents: a section that runs past the end is named as such rather than
+  // reported as a hash mismatch, and nothing below reads outside the file.
+  for (const ClusterFileSection& section : sections) {
+    if (section.element_count > 0xffffffffull) {
+      return fail(error, "cluster file section " + section_label(section.kind) + " holds " +
+                             std::to_string(section.element_count) +
+                             " elements, more than this build reads");
+    }
+    const u64 span_bytes = u64{section.element_size} * section.element_count;
+    if (section.offset < k_header_bytes || section.offset > header.total_bytes ||
+        span_bytes > header.total_bytes - section.offset) {
+      return fail(error, "cluster file section " + section_label(section.kind) +
+                             " extends past the end of the file");
+    }
+  }
+  const u64 content_hash = hash_bytes(bytes.data() + k_header_bytes,
+                                      static_cast<usize>(header.total_bytes - k_header_bytes));
+  if (content_hash != header.content_hash) {
+    return fail(error, "cluster file content hash mismatch: the header says " +
+                           std::to_string(header.content_hash) + ", the contents give " +
+                           std::to_string(content_hash));
+  }
+  return true;
+}
+
+// The two identity words of a checked container, zero when it records none.
+bool read_identity(std::span<const u8> bytes, std::span<const ClusterFileSection> sections,
+                   u64& source_hash, u64& build_key, std::string* error) {
+  source_hash = 0;
+  build_key = 0;
+  for (const ClusterFileSection& section : sections) {
+    if (section.kind != static_cast<u32>(ClusterSection::SourceHash)) continue;
+    if (section.element_count == 0) return true;
+    if (section.element_size != sizeof(u64)) {
+      return fail(error, "cluster file section source_hash has " +
+                             std::to_string(section.element_size) + "-byte elements, expected 8");
+    }
+    std::memcpy(&source_hash, bytes.data() + section.offset, sizeof(u64));
+    if (section.element_count >= 2)
+      std::memcpy(&build_key, bytes.data() + section.offset + sizeof(u64), sizeof(u64));
+    return true;
+  }
+  return true;
+}
+
 }  // namespace
 
 const char* cluster_section_name(u32 kind) noexcept {
@@ -167,6 +245,7 @@ const char* cluster_section_name(u32 kind) noexcept {
     case ClusterSection::Scalars: return "scalars";
     case ClusterSection::Quantized: return "quantized";
     case ClusterSection::SourcePath: return "source_path";
+    case ClusterSection::SourceHash: return "source_hash";
   }
   return "unknown";
 }
@@ -199,56 +278,29 @@ bool read_cluster_file(std::string_view path, ClusterFileData& out, std::string*
       std::span<const u8>(reinterpret_cast<const u8*>(bytes.data()), bytes.size()), out, error);
 }
 
+bool read_cluster_file_identity(std::string_view path, u64& source_hash, u64& build_key,
+                                std::string* error) {
+  source_hash = 0;
+  build_key = 0;
+  std::string bytes;
+  const io::Status status = io::read_file(path, bytes);
+  if (status != io::Status::Ok) {
+    return fail(error,
+                "cannot read cluster file '" + std::string(path) + "': " + io::status_name(status));
+  }
+  const std::span<const u8> view(reinterpret_cast<const u8*>(bytes.data()), bytes.size());
+  ClusterFileHeader header;
+  Vector<ClusterFileSection> sections;
+  if (!check_container(view, header, sections, error)) return false;
+  return read_identity(view, std::span<const ClusterFileSection>(sections.data(), sections.size()),
+                       source_hash, build_key, error);
+}
+
 bool read_cluster_file_memory(std::span<const u8> bytes, ClusterFileData& out, std::string* error) {
   out = ClusterFileData{};
-  if (bytes.size() < k_header_bytes) {
-    return fail(error, "cluster file is truncated: " + std::to_string(bytes.size()) +
-                           " bytes, the 32-byte header does not fit");
-  }
   ClusterFileHeader header;
-  std::memcpy(&header, bytes.data(), sizeof(header));
-  if (std::memcmp(header.magic, "CLST", 4) != 0)
-    return fail(error, "not a cluster file: the magic is not \"CLST\"");
-  if (header.version != k_cluster_file_version) {
-    return fail(error, "unsupported cluster file version " + std::to_string(header.version) +
-                           ": this build reads version " + std::to_string(k_cluster_file_version));
-  }
-  if (header.total_bytes < k_header_bytes || bytes.size() < header.total_bytes) {
-    return fail(error, "cluster file is truncated: " + std::to_string(bytes.size()) +
-                           " bytes, the header says " + std::to_string(header.total_bytes));
-  }
-  const u64 table_end = k_header_bytes + k_record_bytes * u64{header.section_count};
-  if (table_end > header.total_bytes) {
-    return fail(error, "cluster file is truncated: the table of " +
-                           std::to_string(header.section_count) + " sections does not fit");
-  }
-
-  Vector<ClusterFileSection> sections(header.section_count);
-  for (u32 i = 0; i < header.section_count; ++i) {
-    std::memcpy(&sections[i], bytes.data() + k_header_bytes + k_record_bytes * i, k_record_bytes);
-  }
-  // Structure before contents: a section that runs past the end is named as such rather than
-  // reported as a hash mismatch, and nothing below reads outside the file.
-  for (const ClusterFileSection& section : sections) {
-    if (section.element_count > 0xffffffffull) {
-      return fail(error, "cluster file section " + section_label(section.kind) + " holds " +
-                             std::to_string(section.element_count) +
-                             " elements, more than this build reads");
-    }
-    const u64 span_bytes = u64{section.element_size} * section.element_count;
-    if (section.offset < k_header_bytes || section.offset > header.total_bytes ||
-        span_bytes > header.total_bytes - section.offset) {
-      return fail(error, "cluster file section " + section_label(section.kind) +
-                             " extends past the end of the file");
-    }
-  }
-  const u64 content_hash = hash_bytes(bytes.data() + k_header_bytes,
-                                      static_cast<usize>(header.total_bytes - k_header_bytes));
-  if (content_hash != header.content_hash) {
-    return fail(error, "cluster file content hash mismatch: the header says " +
-                           std::to_string(header.content_hash) + ", the contents give " +
-                           std::to_string(content_hash));
-  }
+  Vector<ClusterFileSection> sections;
+  if (!check_container(bytes, header, sections, error)) return false;
 
   // Unknown kinds are skipped here: that is the forward-compatibility guarantee.
   const ClusterFileSection* found[k_kind_count] = {};
@@ -330,6 +382,12 @@ bool read_cluster_file_memory(std::span<const u8> bytes, ClusterFileData& out, s
     const void* nul = std::memchr(text, 0, static_cast<usize>(source->element_count));
     if (nul == nullptr) return fail(error, "cluster file source path is not NUL-terminated");
     result.source_path.assign(text, static_cast<usize>(static_cast<const char*>(nul) - text));
+  }
+
+  // The source's identity; zero when the file records none, which reads as "rebuild it".
+  if (!read_identity(bytes, std::span<const ClusterFileSection>(sections.data(), sections.size()),
+                     result.source_hash, result.build_key, error)) {
+    return false;
   }
 
   // The material map, the materials, and the image paths are optional: a mesh may carry none.

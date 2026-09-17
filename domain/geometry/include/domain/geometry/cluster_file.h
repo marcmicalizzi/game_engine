@@ -55,6 +55,12 @@ enum class ClusterSection : u32 {
   // writer emits once ClusterMesh carries them.
   Quantized = 13,
   SourcePath = 14,  // u8, one NUL-terminated string: the source mesh this was built from
+  // u64, two of them: the identity of what this container was built from. [0] is the source
+  // mesh's content hash (`assets::source_mesh_hash`), [1] the build key over that hash and the
+  // build options (`cluster_cache_key`). Both are zero in a file written before the section
+  // existed and in one built from bytes with no source behind them, which is how an incremental
+  // build knows to rebuild the entry rather than trust it.
+  SourceHash = 15,
 };
 
 // Names the kinds this build knows, "unknown" for anything else; for diagnostics and for
@@ -153,12 +159,19 @@ static_assert(sizeof(ClusterFileMaterial) == 64, "ClusterFileMaterial is a 64-by
 // written before the section existed and in one built from bytes with no file behind them; a
 // reader with nothing to fall back on resolves the image paths against the container's own
 // directory instead.
+//
+// `source_hash` and `build_key` are that source's identity: the hash of its bytes
+// (`assets::source_mesh_hash`) and `cluster_cache_key` over it and the build options. They are
+// what an incremental build compares against before deciding a container is up to date, and
+// they are zero when nothing recorded them.
 struct ClusterFileData {
   ClusterLodMesh mesh;
   Vector<u32> cluster_material;
   Vector<ClusterFileMaterial> materials;
   Vector<std::string> image_paths;
   std::string source_path;
+  u64 source_hash = 0;
+  u64 build_key = 0;
 };
 
 // Writes the file through io::write_file_atomic, so a reader sees the old bytes or the new ones
@@ -177,6 +190,14 @@ bool read_cluster_file_memory(std::span<const u8> bytes, ClusterFileData& out,
 
 // The content hash the writer stores in the header, computed without writing anything.
 u64 cluster_file_hash(const ClusterFileData& data);
+
+// Just the `SourceHash` section of a container, without rebuilding the mesh from it: the header,
+// the section table, and the content hash are checked exactly as a full read checks them, and
+// then the two words are taken out. Both are zero for a container that recorded no identity, so
+// an incremental build treats such a file as stale rather than as a hit. Returns false, with
+// `error`, when the file cannot be read or is not a container.
+bool read_cluster_file_identity(std::string_view path, u64& source_hash, u64& build_key,
+                                std::string* error = nullptr);
 
 // ---- the derived-data cache (docs/plan/07-content-pipeline.md §7.3) -------------------------
 //
