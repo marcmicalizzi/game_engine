@@ -28,6 +28,7 @@
 #include <domain/gfx/render_graph.h>
 #include <domain/gfx/shader_library.h>
 #include <domain/gfx/swapchain.h>
+#include <domain/gfx/visibility_resolve.h>
 #include <domain/gfx/vulkan.h>
 #include <foundation/image/png.h>
 #include <foundation/window/window.h>
@@ -55,7 +56,7 @@ constexpr const char* k_usage =
     "usage: engine-view [--width <px>] [--height <px>] [--frames <n>] [--capture <file.png>]\n"
     "                   [--no-vsync] [--adapter <index>] [--validation] [--grid <n>] [--log <spec>]\n"
     "                   [--shaders <manifest.json>] [--lod <px>] [--no-cull] [--no-occlusion]\n"
-    "                   [--raster direct|hw|sw|auto] [--sw-px <px>] [--view id|tri|depth] [--orbit <d>]\n"
+    "                   [--raster direct|hw|sw|auto] [--sw-px <px>] [--view <mode>] [--orbit <d>]\n"
     "\n"
     "  --frames <n>     render n frames, then exit (0: until the window closes)\n"
     "  --capture <png>  write the last frame as a PNG (implies --frames 60 when unset)\n"
@@ -66,8 +67,7 @@ constexpr const char* k_usage =
     "  --raster <mode>  direct: mesh shaders to color with a depth buffer; hw (default), sw, auto:\n"
     "                   the visibility buffer through hardware, software, or both split by size\n"
     "  --sw-px <px>     auto mode: clusters narrower than this go to the software rasterizer (32)\n"
-    "  --view <mode>    resolve as cluster colors, cluster colors with triangle shading (default),\n"
-    "                   or depth\n"
+    "  --view <mode>    id, tri, depth, shaded (default: flat-shaded materials under a sun), normals\n"
     "  --orbit <d>      orbit at a fixed distance instead of breathing between 8 and 36 units\n"
     "  --log <spec>     log levels, e.g. \"info,gfx=debug\" (stderr shows warnings and up)\n"
     "  --shaders <m>    shader manifest (default: <exe dir>/../shaders/manifest.json when present);\n"
@@ -98,7 +98,7 @@ struct Options {
   bool occlusion = true;
   RasterMode raster = RasterMode::Hardware;
   f32 sw_px = 32.0f;
-  u32 view_mode = 1;
+  u32 view_mode = static_cast<u32>(gfx::ResolveMode::Shaded);
   f32 orbit = 0.0f;  // 0: breathe
 };
 
@@ -288,8 +288,12 @@ int main(int argc, char** argv) {
         options.view_mode = 1;
       } else if (value == "depth") {
         options.view_mode = 2;
+      } else if (value == "shaded") {
+        options.view_mode = 3;
+      } else if (value == "normals") {
+        options.view_mode = 4;
       } else {
-        std::fprintf(stderr, "engine-view: --view expects id, tri, or depth\n");
+        std::fprintf(stderr, "engine-view: --view expects id, tri, depth, shaded, or normals\n");
         return k_exit_usage;
       }
     } else if (a == "--capture") {
@@ -383,7 +387,10 @@ int main(int argc, char** argv) {
   gfx::BufferResource vertex_buffer;
   gfx::BufferResource triangle_buffer;
   gfx::BufferResource lod_buffer;
-  gfx::BufferResource visible_buffer[2];  // hardware survivors of pass 1 / pass 2
+  gfx::BufferResource material_buffer;                      // ResolveMaterial table
+  gfx::BufferResource cluster_material_buffer;              // material index per cluster
+  gfx::BufferResource resolve_buffers[k_frames_in_flight];  // host-visible ResolveParams per slot
+  gfx::BufferResource visible_buffer[2];                    // hardware survivors of pass 1 / pass 2
   gfx::BufferResource args_buffer[2];     // {count, 1, 1} for the indirect mesh draws
   gfx::BufferResource sw_visible_buffer;  // software survivors
   gfx::BufferResource sw_args_buffer;     // {count, 1, 1} for the indirect dispatch
@@ -474,6 +481,23 @@ int main(int argc, char** argv) {
       exit_code = fail("upload", error);
       break;
     }
+    // Materials: a flat table indexed per cluster by the height band of the cluster's center.
+    gfx::ResolveMaterial materials[3];
+    materials[0].albedo = Vec4{0.86f, 0.72f, 0.46f, 0.9f};  // sand
+    materials[1].albedo = Vec4{0.42f, 0.40f, 0.38f, 0.7f};  // rock
+    materials[2].albedo = Vec4{0.92f, 0.94f, 0.97f, 0.4f};  // snow
+    Vector<u32> cluster_material(cluster_count);
+    for (u32 i = 0; i < cluster_count; ++i) {
+      const f32 y = lod.mesh.clusters[i].center.y;
+      cluster_material[i] = y < -0.15f ? 0u : y < 0.65f ? 1u : 2u;
+    }
+    if (!gfx::upload_buffer(device, materials, sizeof(materials), k_storage, material_buffer,
+                            &error) ||
+        !gfx::upload_buffer(device, cluster_material.data(), cluster_count * sizeof(u32), k_storage,
+                            cluster_material_buffer, &error)) {
+      exit_code = fail("materials", error);
+      break;
+    }
     bool buffers_ok = true;
     for (u32 i = 0; i < 2; ++i) {
       buffers_ok =
@@ -492,6 +516,8 @@ int main(int argc, char** argv) {
     for (u32 slot = 0; slot < k_frames_in_flight && buffers_ok; ++slot) {
       buffers_ok = gfx::create_buffer(device, sizeof(gfx::CullParams) * 2, k_address, true,
                                       params_buffers[slot], &error) &&
+                   gfx::create_buffer(device, sizeof(gfx::ResolveParams), k_address, true,
+                                      resolve_buffers[slot], &error) &&
                    gfx::create_buffer(device, sizeof(u32) * 9, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                                       true, stats_buffers[slot], &error);
       if (buffers_ok) std::memset(stats_buffers[slot].mapped, 0, sizeof(u32) * 9);
@@ -758,10 +784,20 @@ int main(int argc, char** argv) {
 
       gfx::ResolveParams resolve{};
       resolve.sky = Vec4{0.55f, 0.70f, 0.90f, 1.0f};
+      resolve.sun = Vec4{normalize(Vec3{0.4f, 0.8f, 0.45f}), 1.0f};
+      resolve.camera = Vec4{eye, 0.0f};
+      resolve.view_proj = view_proj;
       resolve.visibility = targets.vis.address;
+      resolve.clusters = cluster_buffer.address;
+      resolve.vertices = vertex_buffer.address;
+      resolve.triangles = triangle_buffer.address;
+      resolve.materials = material_buffer.address;
+      resolve.cluster_materials = cluster_material_buffer.address;
       resolve.width = extent.width;
       resolve.height = extent.height;
       resolve.mode = options.view_mode;
+      std::memcpy(resolve_buffers[slot].mapped, &resolve, sizeof(resolve));
+      const u64 resolve_address = resolve_buffers[slot].address;
 
       graph.reset();
       const gfx::RgImage color = graph.import_image("swapchain", swapchain.image(image_index));
@@ -954,7 +990,7 @@ int main(int argc, char** argv) {
               vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.resolve);
               bindless.bind(cb, VK_PIPELINE_BIND_POINT_GRAPHICS);
               vkCmdPushConstants(cb, bindless.pipeline_layout(), VK_SHADER_STAGE_ALL, 0,
-                                 sizeof(resolve), &resolve);
+                                 sizeof(u64), &resolve_address);
               vkCmdDraw(cb, 3, 1, 0, 0);
               timer.end(cb);
             });
@@ -1040,6 +1076,7 @@ int main(int argc, char** argv) {
   shader_library.destroy();
   for (u32 slot = 0; slot < k_frames_in_flight; ++slot) {
     gfx::destroy_buffer(device, params_buffers[slot]);
+    gfx::destroy_buffer(device, resolve_buffers[slot]);
     gfx::destroy_buffer(device, stats_buffers[slot]);
   }
   for (u32 i = 0; i < 2; ++i) {
@@ -1050,6 +1087,8 @@ int main(int argc, char** argv) {
   gfx::destroy_buffer(device, sw_args_buffer);
   gfx::destroy_buffer(device, sw_visible_buffer);
   gfx::destroy_buffer(device, lod_buffer);
+  gfx::destroy_buffer(device, cluster_material_buffer);
+  gfx::destroy_buffer(device, material_buffer);
   gfx::destroy_buffer(device, triangle_buffer);
   gfx::destroy_buffer(device, vertex_buffer);
   gfx::destroy_buffer(device, cluster_buffer);

@@ -76,18 +76,6 @@ struct ClusterDrawParams {
 };
 static_assert(sizeof(ClusterDrawParams) == 120);
 
-// Mirrors ResolveParams in visibility_resolve.slang. 40 bytes; the vector comes first so both
-// layouts agree without padding.
-struct ResolveParams {
-  Vec4 sky{};
-  u64 visibility = 0;
-  u32 width = 0;
-  u32 height = 0;
-  u32 mode = 0;  // 0 cluster colors, 1 with per-triangle shade, 2 depth
-  u32 pad = 0;
-};
-static_assert(sizeof(ResolveParams) == 40);
-
 // Mirrors HizParams in hiz_build.slang: the push constants of one pyramid level. 40 bytes.
 struct HizParams {
   u64 src = 0;

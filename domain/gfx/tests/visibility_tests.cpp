@@ -12,6 +12,7 @@
 #include <domain/gfx/frame.h>
 #include <domain/gfx/gpu_timer.h>
 #include <domain/gfx/render_graph.h>
+#include <domain/gfx/visibility_resolve.h>
 #include <domain/gfx/vulkan.h>
 
 #include <doctest/doctest.h>
@@ -165,12 +166,19 @@ TEST_CASE("visibility buffer: hardware and software rasterization agree, resolve
   draw_hw.visibility = vis_hw.address;
   gfx::ClusterDrawParams draw_sw = draw;
   draw_sw.visibility = vis_sw.address;
+  // The resolve reads its parameters through an address; cluster colors need no materials.
+  gfx::BufferResource resolve_params;
+  REQUIRE(gfx::create_buffer(device, sizeof(gfx::ResolveParams),
+                             k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, true,
+                             resolve_params, &error));
   gfx::ResolveParams resolve{};
   resolve.visibility = vis_sw.address;
   resolve.width = k_size;
   resolve.height = k_size;
-  resolve.mode = 0;
+  resolve.mode = static_cast<u32>(gfx::ResolveMode::ClusterColors);
   resolve.sky = Vec4{0.0f, 0.0f, 1.0f, 1.0f};
+  std::memcpy(resolve_params.mapped, &resolve, sizeof(resolve));
+  const u64 resolve_address = resolve_params.address;
 
   gfx::RenderGraph graph(device);
   const gfx::RgBuffer rg_hw = graph.import_buffer("vis_hw", vis_hw);
@@ -227,8 +235,8 @@ TEST_CASE("visibility buffer: hardware and software rasterization agree, resolve
       [&](VkCommandBuffer cb, gfx::RenderGraph&) {
         vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, resolve_pipeline);
         bindless.bind(cb, VK_PIPELINE_BIND_POINT_GRAPHICS);
-        vkCmdPushConstants(cb, bindless.pipeline_layout(), VK_SHADER_STAGE_ALL, 0, sizeof(resolve),
-                           &resolve);
+        vkCmdPushConstants(cb, bindless.pipeline_layout(), VK_SHADER_STAGE_ALL, 0, sizeof(u64),
+                           &resolve_address);
         vkCmdDraw(cb, 3, 1, 0, 0);
       });
   graph.add_pass(
@@ -334,8 +342,8 @@ TEST_CASE("visibility buffer: hardware and software rasterization agree, resolve
   gfx::destroy_shader_module(device, mesh_module);
   timer.destroy();
   bindless.destroy();
-  for (gfx::BufferResource* b :
-       {&host_color, &host_sw, &host_hw, &vis_sw, &vis_hw, &triangles, &vertices, &clusters}) {
+  for (gfx::BufferResource* b : {&resolve_params, &host_color, &host_sw, &host_hw, &vis_sw, &vis_hw,
+                                 &triangles, &vertices, &clusters}) {
     gfx::destroy_buffer(device, *b);
   }
   frames.destroy();

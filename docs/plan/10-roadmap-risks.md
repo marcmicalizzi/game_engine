@@ -123,7 +123,7 @@ Scripting language (E7); game UI framework (RmlUi vs in-house); D3D12 backend ti
 What actually bounds the schedule, in rough order:
 
 1. **Human review bandwidth.** The owner is the creative director and the final reviewer of visual quality, design, and taste. Once agents run ahead of review, the queue, not the agents, sets the pace. The review-queue tooling in [06 §6.10](06-agent-tooling.md#610-multi-agent-roles-review-and-the-human-director) exists to keep this bottleneck as wide as possible.
-2. **One GPU.** Renderer iterations, benchmarks, golden-image runs, and experiments serialize on a single RTX 5090 until a second machine exists. Headless `sim` work does not compete for it.
+2. **One GPU for the high end.** Renderer iterations, benchmarks, golden-image runs, and experiments serialize on a single RTX 5090. A second machine (i7-980 + GTX Titan X at 2560×1440) is the minimum-hardware target and the natural self-hosted CI runner for the baseline tier once it is set up; it cannot stand in for the RT and mesh-shader work. Headless `sim` work does not compete for either.
 3. **Experiments that need iteration** (E1, E2, E10) and vendor features that arrive on their own schedule.
 4. **Visual judgment in renderer debugging.** Captures, the entity-ID buffer, FLIP against the reference path tracer, and golden images shrink this, but do not remove it.
 

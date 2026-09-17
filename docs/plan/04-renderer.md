@@ -9,6 +9,7 @@ Provisional targets, to be confirmed once hardware is in hand:
 | Configuration | Target |
 |---|---|
 | 2560×1440, RTX 4070-class | 60 fps hybrid RT, internal resolution ≥ 67% with upscaler |
+| 2560×1440, GTX Titan X (Maxwell) with an i7-980: the project's minimum test machine (no mesh shaders, no ray tracing, SSE4.2 CPU) | Runs the baseline tier: cluster geometry through a vertex-shader path, raster lighting, no RT; 30 fps at reduced settings is the bar, and the build carries no ISA above x86-64 baseline so the CPU side runs unmodified |
 | 3840×2160, RTX 4080/5080-class | 60 fps hybrid RT with upscaler |
 | 11520×2160 surround, RTX 5090-class | 60 fps target, 30 fps floor; attention region at full shading rate, peripheral views at reduced rate |
 | Reference mode | Converged path trace; minutes per frame acceptable |
