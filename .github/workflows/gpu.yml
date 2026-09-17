@@ -1,0 +1,90 @@
+# Build and test on the two self-hosted machines that have a real Vulkan driver
+# (docs/ci/self-hosted-runners.md, docs/plan/10-roadmap-risks.md section 10.4).
+# The hosted runners in ci.yml have a Vulkan loader but no device behind it, so
+# every GPU test skips there; these two cover the baseline tier: a GTX Titan X
+# (Maxwell) on Windows and a headless GTX Titan Xp (Pascal) on Linux. Neither has
+# mesh shaders or ray tracing, so the mesh-shader, software-raster, occlusion,
+# and shading tests skip and the vertex path, cull, LOD, and resolve tests run.
+#
+# Only workflow_dispatch and schedule trigger this, which is also what keeps it
+# away from pull requests: self-hosted runners must never execute code from a
+# fork. ci.yml stays the gate for every push and pull request and is not touched
+# from here.
+name: GPU
+
+on:
+  workflow_dispatch:
+    inputs:
+      clean:
+        description: Delete build/<preset> before building (a from-scratch run)
+        type: boolean
+        default: false
+  schedule:
+    # Mondays, 06:17 UTC. An odd minute, as GitHub asks, to spread the load.
+    - cron: '17 6 * * 1'
+
+# One GPU per machine: let a running job finish rather than cancelling it.
+concurrency:
+  group: gpu
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  windows-maxwell:
+    name: Windows msvc-release (GTX Titan X, Maxwell)
+    runs-on: [self-hosted, windows, gpu]
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Self-hosted runners keep their workspace between runs; leaving
+          # build/ in place makes this an incremental build, which is what fits
+          # in the timeout on an i7-980. Use the clean input for a full rebuild.
+          clean: false
+
+      - name: Clean build directory
+        if: ${{ inputs.clean }}
+        shell: pwsh
+        run: ./tools/dev.ps1 clean -Preset msvc-release
+
+      - name: GPU smoke
+        shell: pwsh
+        run: ./tools/ci/gpu-smoke.ps1 -Preset msvc-release
+
+      - name: Upload ctest log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lasttest-windows-msvc-release
+          path: build/msvc-release/Testing/Temporary/LastTest.log
+          if-no-files-found: warn
+          retention-days: 30
+
+  linux-pascal:
+    name: Linux linux-clang-debug (GTX Titan Xp, Pascal, headless)
+    runs-on: [self-hosted, linux, gpu]
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          clean: false
+
+      - name: Clean build directory
+        if: ${{ inputs.clean }}
+        run: pwsh -NoProfile -File ./tools/dev.ps1 clean -Preset linux-clang-debug
+
+      - name: GPU smoke
+        run: bash ./tools/ci/gpu-smoke.sh --preset linux-clang-debug
+
+      - name: Upload ctest log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lasttest-linux-clang-debug
+          path: build/linux-clang-debug/Testing/Temporary/LastTest.log
+          if-no-files-found: warn
+          retention-days: 30

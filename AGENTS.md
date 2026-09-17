@@ -42,7 +42,7 @@ build/msvc-debug/bin/engine-cli gpu.adapters                                   #
 
 Every method's parameters and result are schema types in `schemas/protocol.schema`; `engine-cli schema.describe '{"type":"engine.protocol.ApplyParams"}'` explains any of them. See `docs/subsystems/apps.md` and `protocol.md`.
 
-Presets are in `CMakePresets.json`. Debug builds carry asserts and iterator checking; `msvc-asan` adds AddressSanitizer; the release presets compile Tracy profiling zones in (`ENGINE_TRACY`). Every change must build and pass tests in `msvc-debug` before it is committed. CI (`.github/workflows/ci.yml`) builds and tests `msvc-debug`, `msvc-release`, `linux-clang-debug`, and `linux-gcc-release` on every push and pull request.
+Presets are in `CMakePresets.json`. Debug builds carry asserts and iterator checking; `msvc-asan` adds AddressSanitizer; the release presets compile Tracy profiling zones in (`ENGINE_TRACY`). Every change must build and pass tests in `msvc-debug` before it is committed. CI (`.github/workflows/ci.yml`) builds and tests `msvc-debug`, `msvc-release`, `linux-clang-debug`, and `linux-gcc-release` on every push and pull request. Hosted runners have no GPU driver, so every GPU test skips there; `.github/workflows/gpu.yml` runs the same suite weekly on the two self-hosted baseline-tier machines that do, set up as `docs/ci/self-hosted-runners.md` describes.
 
 ## Layering (enforced by CMake)
 
