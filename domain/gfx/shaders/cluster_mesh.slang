@@ -1,7 +1,7 @@
 // Mesh-shader cluster rasterization (docs/plan/04-renderer.md §4.3): one workgroup per cluster,
 // geometry pulled through device addresses, and a visibility ID written per pixel:
 // cluster index in the high 24 bits, triangle index within the cluster in the low 8.
-// Layout of ClusterDesc mirrors domain/geometry/cluster.h (32 bytes).
+// Layout of ClusterDesc mirrors domain/geometry/cluster.h (48 bytes).
 
 struct ClusterDesc {
   uint vertex_offset;
@@ -10,6 +10,8 @@ struct ClusterDesc {
   uint triangle_count;
   float3 center;
   float radius;
+  float3 cone_apex;  // normal cone for backface culling (cull pass only)
+  uint cone;         // axis snorm8 x, y, z in bytes 0..2, cutoff snorm8 in byte 3
 };
 
 struct Position {

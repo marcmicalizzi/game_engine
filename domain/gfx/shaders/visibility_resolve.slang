@@ -19,6 +19,8 @@ struct ClusterDesc {
   uint triangle_count;
   float3 center;
   float radius;
+  float3 cone_apex;  // normal cone for backface culling (cull pass only)
+  uint cone;         // axis snorm8 x, y, z in bytes 0..2, cutoff snorm8 in byte 3
 };
 
 struct Position {

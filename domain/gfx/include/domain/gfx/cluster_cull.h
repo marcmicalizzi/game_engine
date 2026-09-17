@@ -11,6 +11,7 @@
 //     params.view_proj = view_proj;
 //     params.camera = Vec4(eye, znear);
 //     params.lod = Vec4(proj_scale, threshold_px, 1.0f, 1.0f);
+//     params.cone_cull = 1;  // unless the mesh is two-sided
 //     ...write to a host-visible buffer, push its address, dispatch cull_group_count(n)...
 //     vkCmdDrawMeshTasksIndirectEXT(commands, draw_args.buffer, 0, 1, sizeof(u32) * 3);
 //
@@ -37,13 +38,13 @@ struct CullParams {
   u32 plane_count = 0;
   u32 count_index = 0;  // which u32 of draw_args counts hardware survivors: 0 for mesh-task
                         // groups {count, 1, 1}, 1 for vkCmdDrawIndirect {verts, count, 0, 0}
-  u32 pad1 = 0;
-  u64 clusters = 0;    // geometry::ClusterDesc[]
-  u64 lods = 0;        // geometry::ClusterLodDesc[]
-  u64 visible = 0;     // u32[cluster_count]: hardware-rasterized survivors
-  u64 draw_args = 0;   // u32[3] = {survivors, 1, 1} for vkCmdDrawMeshTasksIndirectEXT
-  u64 sw_visible = 0;  // u32[cluster_count]: software-rasterized survivors
-  u64 sw_args = 0;     // u32[3] = {survivors, 1, 1} for vkCmdDispatchIndirect
+  u32 cone_cull = 0;    // 1: backface-cull clusters by their normal cone (ClusterDesc::cone)
+  u64 clusters = 0;     // geometry::ClusterDesc[]
+  u64 lods = 0;         // geometry::ClusterLodDesc[]
+  u64 visible = 0;      // u32[cluster_count]: hardware-rasterized survivors
+  u64 draw_args = 0;    // u32[3] = {survivors, 1, 1} for vkCmdDrawMeshTasksIndirectEXT
+  u64 sw_visible = 0;   // u32[cluster_count]: software-rasterized survivors
+  u64 sw_args = 0;      // u32[3] = {survivors, 1, 1} for vkCmdDispatchIndirect
   // Occlusion culling; hiz == 0 disables it.
   Mat4 view_proj;
   u64 hiz = 0;         // f32[] pyramid from hiz_layout()

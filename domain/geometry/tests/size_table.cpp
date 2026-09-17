@@ -6,7 +6,7 @@
 
 using namespace engine;
 
-ENGINE_EXPECT_SIZE(32, 4, geometry::ClusterDesc);
+ENGINE_EXPECT_SIZE(48, 4, geometry::ClusterDesc);
 
 ENGINE_EXPECT_SIZE(48, 4, geometry::ClusterLodDesc);
 

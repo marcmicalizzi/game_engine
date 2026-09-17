@@ -34,7 +34,7 @@ if(TARGET engine_gfx_tests)
                                           tests/shader_library_tests.cpp tests/cull_tests.cpp
                                           tests/visibility_tests.cpp tests/occlusion_tests.cpp
                                           tests/shading_tests.cpp tests/attributes_tests.cpp
-                                          tests/vertex_path_tests.cpp)
+                                          tests/vertex_path_tests.cpp tests/cone_tests.cpp)
   target_compile_definitions(engine_gfx_tests PRIVATE
     ENGINE_SHADER_MANIFEST="${CMAKE_BINARY_DIR}/shaders/manifest.json")
   target_link_libraries(engine_gfx_tests PRIVATE engine_shaders_gfx_tests engine::geometry

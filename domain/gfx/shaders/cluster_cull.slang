@@ -1,7 +1,8 @@
 // GPU cluster culling and LOD selection (docs/plan/04-renderer.md §4.3): one thread per
-// cluster, frustum test on the cluster sphere, the DAG cut test on the two error bounds from
-// domain/geometry/cluster_lod.h (own error at or under the threshold, parent error over it),
-// and optionally an occlusion test against a Hi-Z pyramid of the farthest depth. Survivors
+// cluster, frustum test on the cluster sphere, backface test on the cluster's normal cone,
+// the DAG cut test on the two error bounds from domain/geometry/cluster_lod.h (own error at or
+// under the threshold, parent error over it), and optionally an occlusion test against a Hi-Z
+// pyramid of the farthest depth. Survivors
 // append their index to a visible list, and the same atomic is the group count of the indirect
 // draw that follows, so no CPU round trip sits between culling and drawing.
 //
@@ -17,6 +18,8 @@ struct ClusterDesc {
   uint triangle_count;
   float3 center;
   float radius;
+  float3 cone_apex;  // normal cone for backface culling (cull pass only)
+  uint cone;         // axis snorm8 x, y, z in bytes 0..2, cutoff snorm8 in byte 3
 };
 
 // Mirrors geometry::ClusterLodDesc (48 bytes).
@@ -40,7 +43,7 @@ struct CullParams {
   uint cluster_count;
   uint plane_count;
   uint count_index;  // u32 of draw_args that counts hardware survivors (0 mesh tasks, 1 vkCmdDrawIndirect)
-  uint pad1;
+  uint cone_cull;    // 1: reject clusters whose normal cone faces away from the camera
   uint64_t clusters;    // ClusterDesc[]
   uint64_t lods;        // ClusterLodDesc[]
   uint64_t visible;     // uint[cluster_count]: hardware-rasterized survivors
@@ -125,6 +128,20 @@ bool occluded(CullParams* params, float3 center, float radius) {
   return depth < farthest;
 }
 
+// meshoptimizer's cone test on the snorm8 packing (geometry::cluster_backfacing is the CPU
+// reference): every triangle faces away when the direction from the camera to the apex lies
+// within the cone. A cutoff of 1 marks a cluster without a usable cone.
+bool backfacing(ClusterDesc cluster, float3 camera) {
+  const float cutoff = float(int(cluster.cone) >> 24) / 127.0;
+  if (cutoff >= 1.0) return false;
+  const float3 axis = float3(int(cluster.cone << 24) >> 24, int(cluster.cone << 16) >> 24,
+                             int(cluster.cone << 8) >> 24) / 127.0;
+  const float3 to_apex = cluster.cone_apex - camera;
+  const float distance = length(to_apex);
+  if (distance <= 1e-12) return false;
+  return dot(to_apex * (1.0 / distance), axis) >= cutoff;
+}
+
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void cull_main(uint3 thread_id : SV_DispatchThreadID) {
@@ -149,6 +166,7 @@ void cull_main(uint3 thread_id : SV_DispatchThreadID) {
       if (dot(plane.xyz, cluster.center) + plane.w < -cluster.radius) return;
     }
   }
+  if (params->cone_cull != 0 && backfacing(cluster, params->camera.xyz)) return;
   if (params->lod.z > 0.0) {
     ClusterLodDesc* lods = (ClusterLodDesc*)params->lods;
     const ClusterLodDesc lod = lods[index];

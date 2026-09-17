@@ -7,9 +7,9 @@
 // are built from the same clusters (Phase 2). The layout below is what the GPU reads through
 // device addresses, so it is fixed and pinned by the size table.
 //
-// v0 stores positions as three floats per vertex in cluster order. Per-cluster 16-bit
-// quantization, packed normals and UVs, normal cones for backface culling, the LOD DAG with
-// error bounds (meshoptimizer clusterlod), and fixed-size pages for streaming follow.
+// v1 stores positions as three floats per vertex in cluster order, packed normals and UVs per
+// vertex, and a normal cone per cluster for backface culling; the LOD DAG with error bounds is
+// cluster_lod.h. Per-cluster 16-bit quantization and fixed-size pages for streaming follow.
 
 #include <core/base/types.h>
 #include <core/containers/vector.h>
@@ -20,7 +20,10 @@
 
 namespace engine::geometry {
 
-// GPU-mirrored; keep in step with the ClusterDesc struct in shaders.
+// A packed normal cone that never culls: zero axis, cutoff 1 (127/127).
+inline constexpr u32 k_cone_none = 0x7f000000u;
+
+// GPU-mirrored; keep in step with the ClusterDesc struct in shaders. 48 bytes.
 struct ClusterDesc {
   u32 vertex_offset = 0;    // first vertex in ClusterMesh::vertices
   u32 triangle_offset = 0;  // first packed triangle in ClusterMesh::triangles
@@ -28,7 +31,24 @@ struct ClusterDesc {
   u32 triangle_count = 0;
   Vec3 center{};  // bounding sphere
   f32 radius = 0.0f;
+  // Normal cone for backface culling (meshoptimizer's form): the cluster is entirely
+  // backfacing when dot(normalize(cone_apex - camera), axis) >= cutoff. `cone` packs the axis
+  // as three snorm8 (bytes 0..2, x/127) and the cutoff as a snorm8 (byte 3); a cutoff of 1
+  // (k_cone_none) marks a cluster that is never culled: two-sided, or normals too spread.
+  Vec3 cone_apex{};
+  u32 cone = k_cone_none;
 };
+
+struct NormalCone {
+  Vec3 axis{};        // decoded as stored: within a snorm8 step of unit length
+  f32 cutoff = 1.0f;  // sin of the half-angle of the normal spread; 1 never culls
+};
+
+// Snorm8 packing of a cone; the cutoff rounds up so quantization never culls more.
+u32 encode_cone(Vec3 axis, f32 cutoff) noexcept;
+NormalCone decode_cone(u32 packed) noexcept;
+// The CPU reference of the cull pass's cone test, on the packed values it reads.
+bool cluster_backfacing(const ClusterDesc& cluster, Vec3 camera) noexcept;
 
 // GPU-mirrored per-vertex attributes, 8 bytes, cluster-ordered like ClusterMesh::vertices: an
 // octahedral normal in two snorm16 and a UV in two half floats. Keep in step with the shaders.
@@ -57,6 +77,9 @@ struct ClusterBuildOptions {
   u32 max_triangles = 124;  // at most 512 and a multiple of 4 (meshoptimizer)
   // 0 optimizes for reuse and locality; up to 1 trades that for tighter normal cones.
   f32 cone_weight = 0.0f;
+  // False stores k_cone_none on every cluster, for two-sided meshes that must never be
+  // backface culled.
+  bool normal_cones = true;
 };
 
 struct ClusterMesh {
@@ -87,7 +110,8 @@ void fill_cluster_attributes(ClusterMesh& mesh, std::span<const Vec3> positions,
                              std::span<const u32> indices, const AttributeSource& attributes);
 
 // Checks the invariants tests rely on: offsets and counts in range, counts within the limits,
-// every source triangle present exactly once, every vertex inside its cluster's sphere.
+// every source triangle present exactly once, every vertex inside its cluster's sphere, every
+// triangle normal inside its cluster's normal cone (when the cone is not k_cone_none).
 bool validate_clusters(const ClusterMesh& mesh, std::span<const u32> source_indices,
                        const ClusterBuildOptions& options, std::string* error = nullptr);
 

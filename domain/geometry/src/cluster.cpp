@@ -8,6 +8,47 @@
 
 namespace engine::geometry {
 
+namespace {
+
+u32 pack_cone_s8(const meshopt_Bounds& bounds) noexcept {
+  auto byte = [](signed char v) { return u32{static_cast<u8>(v)}; };
+  return byte(bounds.cone_axis_s8[0]) | (byte(bounds.cone_axis_s8[1]) << 8) |
+         (byte(bounds.cone_axis_s8[2]) << 16) | (byte(bounds.cone_cutoff_s8) << 24);
+}
+
+}  // namespace
+
+u32 encode_cone(Vec3 axis, f32 cutoff) noexcept {
+  auto snorm8 = [](f32 v, bool round_up) {
+    const f32 c = v < -1.0f ? -1.0f : (v > 1.0f ? 1.0f : v);
+    const f32 scaled = c * 127.0f;
+    i32 i = round_up ? static_cast<i32>(std::ceil(scaled)) : static_cast<i32>(std::lround(scaled));
+    i = i < -127 ? -127 : (i > 127 ? 127 : i);
+    return u32{static_cast<u8>(static_cast<i8>(i))};
+  };
+  return snorm8(axis.x, false) | (snorm8(axis.y, false) << 8) | (snorm8(axis.z, false) << 16) |
+         (snorm8(cutoff, true) << 24);
+}
+
+NormalCone decode_cone(u32 packed) noexcept {
+  auto component = [packed](u32 byte) {
+    return static_cast<f32>(static_cast<i8>((packed >> (8 * byte)) & 0xffu)) / 127.0f;
+  };
+  NormalCone cone;
+  cone.axis = Vec3{component(0), component(1), component(2)};
+  cone.cutoff = component(3);
+  return cone;
+}
+
+bool cluster_backfacing(const ClusterDesc& cluster, Vec3 camera) noexcept {
+  const NormalCone cone = decode_cone(cluster.cone);
+  if (cone.cutoff >= 1.0f) return false;
+  const Vec3 to_apex = cluster.cone_apex - camera;
+  const f32 distance = length(to_apex);
+  if (distance <= 1e-12f) return false;
+  return dot(to_apex * (1.0f / distance), cone.axis) >= cone.cutoff;
+}
+
 bool build_clusters(std::span<const Vec3> positions, std::span<const u32> indices,
                     const ClusterBuildOptions& options, ClusterMesh& out, std::string* error,
                     const AttributeSource& attributes) {
@@ -60,6 +101,8 @@ bool build_clusters(std::span<const Vec3> positions, std::span<const u32> indice
     desc.triangle_count = meshlet.triangle_count;
     desc.center = Vec3{bounds.center[0], bounds.center[1], bounds.center[2]};
     desc.radius = bounds.radius;
+    desc.cone_apex = Vec3{bounds.cone_apex[0], bounds.cone_apex[1], bounds.cone_apex[2]};
+    desc.cone = options.normal_cones ? pack_cone_s8(bounds) : k_cone_none;
     for (u32 v = 0; v < meshlet.vertex_count; ++v) {
       const u32 source = meshlet_vertices[meshlet.vertex_offset + v];
       out.vertices.push_back(positions[source]);
@@ -112,6 +155,15 @@ bool validate_clusters(const ClusterMesh& mesh, std::span<const u32> source_indi
       if (length(p - d.center) > d.radius * 1.001f + 1e-5f)
         return fail("vertex outside its cluster sphere");
     }
+    const NormalCone cone = decode_cone(d.cone);
+    if (cone.cutoff < -1.0f || cone.cutoff > 1.0f) return fail("cone cutoff out of range");
+    const bool has_cone = cone.cutoff < 1.0f;
+    if (has_cone && std::fabs(length(cone.axis) - 1.0f) > 0.02f)
+      return fail("cone axis is not unit length");
+    // Every face normal lies within the cone's half-angle: cos(half-angle) = sqrt(1 - cutoff^2),
+    // with slack for the snorm8 axis and the rounded-up cutoff.
+    const f32 min_cos =
+        has_cone ? std::sqrt(std::max(0.0f, 1.0f - cone.cutoff * cone.cutoff)) : 0.0f;
     for (u32 t = 0; t < d.triangle_count; ++t) {
       const u32 packed = mesh.triangles[d.triangle_offset + t];
       u32 corners[3];
@@ -122,6 +174,15 @@ bool validate_clusters(const ClusterMesh& mesh, std::span<const u32> source_indi
       found.push_back(key_of(mesh.vertex_source[d.vertex_offset + corners[0]],
                              mesh.vertex_source[d.vertex_offset + corners[1]],
                              mesh.vertex_source[d.vertex_offset + corners[2]]));
+      if (has_cone) {
+        const Vec3 p0 = mesh.vertices[d.vertex_offset + corners[0]];
+        const Vec3 p1 = mesh.vertices[d.vertex_offset + corners[1]];
+        const Vec3 p2 = mesh.vertices[d.vertex_offset + corners[2]];
+        const Vec3 face = cross(p1 - p0, p2 - p0);
+        if (length_squared(face) <= 1e-24f) continue;  // degenerate faces have no normal
+        if (dot(normalize(face), normalize(cone.axis)) < min_cos - 0.03f)
+          return fail("triangle normal outside its cluster's cone");
+      }
     }
     total_triangles += d.triangle_count;
   }

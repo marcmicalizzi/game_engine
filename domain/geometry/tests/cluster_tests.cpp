@@ -172,3 +172,125 @@ TEST_CASE("attributes: octahedral normals and half UVs round-trip, builders carr
     CHECK(length(decode_normal_oct(mesh.attributes[i].normal_oct) - source_normals[s]) < 2e-4f);
   }
 }
+
+namespace {
+
+// A unit sphere wound counter-clockwise seen from outside: one pole vertex at each end, `rings`
+// latitude bands of `segments` vertices, fans at the poles and two triangles per quad between.
+void make_sphere(u32 rings, u32 segments, Vector<Vec3>& positions, Vector<u32>& indices) {
+  positions.clear();
+  indices.clear();
+  positions.push_back(Vec3{0.0f, 1.0f, 0.0f});
+  for (u32 r = 1; r < rings; ++r) {
+    const f32 theta = k_pi * static_cast<f32>(r) / static_cast<f32>(rings);
+    for (u32 s = 0; s < segments; ++s) {
+      const f32 phi = k_two_pi * static_cast<f32>(s) / static_cast<f32>(segments);
+      positions.push_back(
+          Vec3{std::sin(theta) * std::cos(phi), std::cos(theta), std::sin(theta) * std::sin(phi)});
+    }
+  }
+  positions.push_back(Vec3{0.0f, -1.0f, 0.0f});
+  const u32 bottom = positions.size() - 1;
+  auto ring = [segments](u32 r, u32 s) { return 1 + (r - 1) * segments + (s % segments); };
+  for (u32 s = 0; s < segments; ++s) {
+    indices.push_back(0);
+    indices.push_back(ring(1, s + 1));
+    indices.push_back(ring(1, s));
+  }
+  for (u32 r = 1; r + 1 < rings; ++r) {
+    for (u32 s = 0; s < segments; ++s) {
+      const u32 a = ring(r, s);
+      const u32 b = ring(r, s + 1);
+      const u32 c = ring(r + 1, s);
+      const u32 d = ring(r + 1, s + 1);
+      indices.push_back(a);
+      indices.push_back(b);
+      indices.push_back(c);
+      indices.push_back(b);
+      indices.push_back(d);
+      indices.push_back(c);
+    }
+  }
+  for (u32 s = 0; s < segments; ++s) {
+    indices.push_back(ring(rings - 1, s));
+    indices.push_back(ring(rings - 1, s + 1));
+    indices.push_back(bottom);
+  }
+}
+
+}  // namespace
+
+TEST_CASE(
+    "normal cones: packing round-trips, a sphere's far side is backfacing, cones can be off") {
+  // Packing: the axis within a snorm8 step, the cutoff rounded up, never down.
+  const NormalCone tilted = decode_cone(encode_cone(normalize(Vec3{0.3f, -0.5f, 0.8f}), 0.5f));
+  CHECK(length(tilted.axis - normalize(Vec3{0.3f, -0.5f, 0.8f})) < 1.5f / 127.0f);
+  CHECK(tilted.cutoff >= 0.5f);
+  CHECK(tilted.cutoff <= 0.5f + 1.0f / 127.0f);
+  CHECK(encode_cone(Vec3{}, 1.0f) == k_cone_none);
+  CHECK(decode_cone(k_cone_none).cutoff == 1.0f);
+  CHECK(decode_cone(encode_cone(Vec3{0, 0, 1}, 0.999f)).cutoff == 1.0f);  // rounds up to none
+
+  Vector<Vec3> positions;
+  Vector<u32> indices;
+  make_sphere(24, 48, positions, indices);  // 2,208 triangles
+  ClusterMesh mesh;
+  std::string error;
+  REQUIRE_MESSAGE(build_clusters(positions, indices, ClusterBuildOptions{}, mesh, &error), error);
+  CHECK_MESSAGE(validate_clusters(mesh, indices, ClusterBuildOptions{}, &error), error);
+  u32 with_cone = 0;
+  u32 backfacing = 0;
+  const Vec3 camera{0.0f, 0.0f, 4.0f};
+  for (const ClusterDesc& c : mesh.clusters) {
+    const NormalCone cone = decode_cone(c.cone);
+    if (cone.cutoff < 1.0f) {
+      ++with_cone;
+      CHECK(cone.cutoff >= 0.0f);
+      // The axis of a cluster on a sphere points roughly outward at its center.
+      CHECK(dot(normalize(cone.axis), normalize(c.center)) > 0.8f);
+      CHECK(length(c.cone_apex) < 1.05f);  // apex inside or near the unit sphere
+    }
+    const bool back = cluster_backfacing(c, camera);
+    backfacing += back;
+    if (c.center.z > 0.25f) CHECK_FALSE(back);  // facing the camera: never culled
+    if (c.center.z < -0.6f && cone.cutoff < 1.0f) CHECK(back);
+  }
+  MESSAGE("clusters " << mesh.clusters.size() << ", with cones " << with_cone << ", backfacing "
+                      << backfacing);
+  CHECK(with_cone * 10 >= mesh.clusters.size() * 8);  // a sphere's clusters are compact
+  CHECK(backfacing * 100 >= mesh.clusters.size() * 20);
+  CHECK(backfacing * 100 <= mesh.clusters.size() * 60);
+
+  // From the center every outward-wound cluster shows its back; the apex form of the test
+  // catches nearly all of them from there.
+  u32 from_inside = 0;
+  for (const ClusterDesc& c : mesh.clusters)
+    from_inside += cluster_backfacing(c, Vec3{});
+  CHECK(from_inside * 10 >= with_cone * 9);
+
+  // Cones off: nothing is ever backfacing, and the mesh still validates.
+  ClusterBuildOptions two_sided;
+  two_sided.normal_cones = false;
+  REQUIRE(build_clusters(positions, indices, two_sided, mesh, &error));
+  CHECK(validate_clusters(mesh, indices, two_sided, &error));
+  for (const ClusterDesc& c : mesh.clusters) {
+    CHECK(c.cone == k_cone_none);
+    CHECK_FALSE(cluster_backfacing(c, camera));
+  }
+
+  // A cone that does not contain a face fails validation.
+  REQUIRE(build_clusters(positions, indices, ClusterBuildOptions{}, mesh, &error));
+  mesh.clusters[0].cone = encode_cone(normalize(Vec3{0, 0, 1}) * -1.0f, 0.1f);
+  mesh.clusters[0].cone_apex = mesh.clusters[0].center;
+  bool any_failed = false;
+  for (ClusterDesc& c : mesh.clusters) {
+    const u32 saved = c.cone;
+    c.cone = encode_cone(normalize(c.center) * -1.0f, 0.1f);  // points inward
+    if (!validate_clusters(mesh, indices, ClusterBuildOptions{}, &error)) {
+      any_failed = true;
+      CHECK(error.find("cone") != std::string::npos);
+    }
+    c.cone = saved;
+  }
+  CHECK(any_failed);
+}

@@ -56,7 +56,7 @@ ENGINE_LOG_CATEGORY_DEFINE(log_view, "view");
 constexpr const char* k_usage =
     "usage: engine-view [--width <px>] [--height <px>] [--frames <n>] [--capture <file.png>]\n"
     "                   [--no-vsync] [--adapter <index>] [--validation] [--grid <n>] [--log <spec>]\n"
-    "                   [--shaders <manifest.json>] [--lod <px>] [--no-cull] [--no-occlusion]\n"
+    "                   [--shaders <manifest.json>] [--lod <px>] [--no-cull] [--no-occlusion] [--no-cone]\n"
     "                   [--raster direct|hw|vertex|sw|auto] [--sw-px <px>] [--view <mode>] [--orbit <d>]\n"
     "\n"
     "  --frames <n>     render n frames, then exit (0: until the window closes)\n"
@@ -65,6 +65,7 @@ constexpr const char* k_usage =
     "  --lod <px>       screen-space error threshold in pixels for LOD selection (default 1)\n"
     "  --no-cull        draw every leaf cluster; no GPU culling or LOD selection\n"
     "  --no-occlusion   skip two-pass occlusion culling (hw mode only; on by default)\n"
+    "  --no-cone        skip backface culling of clusters by their normal cones (on by default)\n"
     "  --raster <mode>  direct: mesh shaders to color with a depth buffer; hw (default), vertex, sw,\n"
     "                   auto: the visibility buffer through mesh shaders, a vertex shader (the\n"
     "                   baseline tier, chosen automatically without mesh shaders), software, or\n"
@@ -100,6 +101,7 @@ struct Options {
   f32 lod_px = 1.0f;
   bool cull = true;
   bool occlusion = true;
+  bool cone = true;
   RasterMode raster = RasterMode::Hardware;
   f32 sw_px = 32.0f;
   u32 view_mode = static_cast<u32>(gfx::ResolveMode::Shaded);
@@ -320,6 +322,8 @@ int main(int argc, char** argv) {
       options.cull = false;
     } else if (a == "--no-occlusion") {
       options.occlusion = false;
+    } else if (a == "--no-cone") {
+      options.cone = false;
     } else if (a == "--validation") {
       options.validation = true;
     } else {
@@ -686,7 +690,7 @@ int main(int argc, char** argv) {
         log::field("lod_levels", lod.level_cluster_counts.size()),
         log::field("build_ms", static_cast<f64>(build_ns) / 1.0e6),
         log::field("raster", raster_name(options.raster)), log::field("occlusion", occlusion),
-        log::field("width", swapchain.extent().width),
+        log::field("cone", options.cone), log::field("width", swapchain.extent().width),
         log::field("height", swapchain.extent().height));
 
     gfx::RenderGraph graph(device);
@@ -835,6 +839,7 @@ int main(int argc, char** argv) {
       cull.raster = Vec4{options.sw_px, raster_mode, 0.0f, 0.0f};
       cull.cluster_count = cluster_count;
       cull.count_index = vertex_path ? 1u : 0u;
+      cull.cone_cull = options.cone ? 1u : 0u;
       cull.clusters = cluster_buffer.address;
       cull.lods = lod_buffer.address;
       cull.visible = visible_buffer[0].address;
@@ -1208,7 +1213,7 @@ int main(int argc, char** argv) {
     std::printf(
         "{\"frames\":%llu,\"seconds\":%.3f,\"avg_ms\":%.3f,\"width\":%u,\"height\":%u,"
         "\"clusters\":%u,\"leaf_clusters\":%u,\"triangles\":%u,\"lod_levels\":%u,\"build_ms\":%.1f,"
-        "\"cull\":%s,\"occlusion\":%s,\"lod_px\":%.2f,\"raster\":\"%s\",\"sw_px\":%.1f,"
+        "\"cull\":%s,\"occlusion\":%s,\"cone\":%s,\"lod_px\":%.2f,\"raster\":\"%s\",\"sw_px\":%.1f,"
         "\"visible_hw_last\":%u,\"visible_pass2_last\":%u,\"visible_sw_last\":%u,\"visible_min\":%"
         "u,"
         "\"visible_max\":%u,"
@@ -1220,7 +1225,8 @@ int main(int argc, char** argv) {
         lod.level_cluster_counts.empty() ? 0u : lod.level_cluster_counts[0],
         lod.leaf_triangle_count, lod.level_cluster_counts.size(),
         static_cast<f64>(build_ns) / 1.0e6, options.cull ? "true" : "false",
-        occlusion ? "true" : "false", static_cast<f64>(options.lod_px), raster_name(options.raster),
+        occlusion ? "true" : "false", options.cone ? "true" : "false",
+        static_cast<f64>(options.lod_px), raster_name(options.raster),
         static_cast<f64>(options.sw_px), visible_hw_last, visible_pass2_last, visible_sw_last,
         visible_min, visible_max, gpu_cull_ms / n, gpu_hw_ms / n, gpu_sw_ms / n, gpu_hiz_ms / n,
         gpu_resolve_ms / n, gpu_total_ms / n, static_cast<unsigned long long>(timed_frames),

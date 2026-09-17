@@ -33,6 +33,7 @@ namespace {
 struct BuildContext {
   std::span<const Vec3> positions;
   ClusterLodMesh* out;
+  bool normal_cones = true;
   Vector<clodBounds> group_bounds;  // simplified bounds per group, in output order
   Vector<unsigned int> local_vertices;
   Vector<unsigned char> local_triangles;
@@ -67,6 +68,16 @@ int emit_group(void* context, clodGroup group, const clodCluster* clusters, size
     desc.center =
         Vec3{cluster.bounds.center[0], cluster.bounds.center[1], cluster.bounds.center[2]};
     desc.radius = cluster.bounds.radius;
+    // clusterlod bounds carry no cone; meshoptimizer's meshlet bounds do, on the local indices.
+    const meshopt_Bounds bounds = meshopt_computeMeshletBounds(
+        ctx->local_vertices.data(), ctx->local_triangles.data(), cluster.index_count / 3,
+        &ctx->positions[0].x, ctx->positions.size(), sizeof(Vec3));
+    desc.cone_apex = Vec3{bounds.cone_apex[0], bounds.cone_apex[1], bounds.cone_apex[2]};
+    if (ctx->normal_cones) {
+      auto byte = [](signed char v) { return u32{static_cast<u8>(v)}; };
+      desc.cone = byte(bounds.cone_axis_s8[0]) | (byte(bounds.cone_axis_s8[1]) << 8) |
+                  (byte(bounds.cone_axis_s8[2]) << 16) | (byte(bounds.cone_cutoff_s8) << 24);
+    }
     for (u32 v = 0; v < desc.vertex_count; ++v) {
       const u32 source = ctx->local_vertices[v];
       out.mesh.vertices.push_back(ctx->positions[source]);
@@ -137,6 +148,7 @@ bool build_cluster_lod(std::span<const Vec3> positions, std::span<const u32> ind
   BuildContext ctx;
   ctx.positions = positions;
   ctx.out = &out;
+  ctx.normal_cones = options.normal_cones;
   out.mesh.source_vertex_count = static_cast<u32>(positions.size());
   out.mesh.source_triangle_count = static_cast<u32>(indices.size() / 3);
   const size_t produced = clodBuild(config, mesh, &ctx, &emit_group);

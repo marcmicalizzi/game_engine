@@ -36,6 +36,7 @@ struct ClusterLodOptions {
   u32 max_triangles = 124;   // per cluster, 4..256
   u32 max_vertices = 64;     // per cluster, at most 255
   bool ray_tracing = false;  // clusterlod's RT-oriented defaults (smaller, spatially compact)
+  bool normal_cones = true;  // false: k_cone_none on every cluster (see ClusterBuildOptions)
 };
 
 struct ClusterLodMesh {
