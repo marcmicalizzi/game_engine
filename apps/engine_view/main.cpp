@@ -880,7 +880,7 @@ int main(int argc, char** argv) {
                 if (m == 0) b.read(rg_vis, gfx::Access::ComputeRead);
                 b.write(rg_hiz, gfx::Access::ComputeReadWrite);
               },
-              [&, level, m, set](VkCommandBuffer cb, gfx::RenderGraph&) {
+              [&, level, m](VkCommandBuffer cb, gfx::RenderGraph&) {
                 if (m == 0) timer.begin(cb, "hiz");
                 vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines.hiz.pipeline);
                 vkCmdPushConstants(cb, pipelines.hiz.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
