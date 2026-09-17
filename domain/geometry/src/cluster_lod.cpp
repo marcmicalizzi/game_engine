@@ -204,6 +204,76 @@ u32 select_lod_raw(const ClusterLodMesh& mesh, f32 threshold, Vector<u32>& out) 
   return count;
 }
 
+bool merge_cluster_lod(std::span<const ClusterLodMesh> parts, ClusterLodMesh& out,
+                       Vector<u32>* part_of_cluster, std::string* error) {
+  out = ClusterLodMesh{};
+  if (part_of_cluster != nullptr) part_of_cluster->clear();
+  if (parts.empty()) {
+    if (error != nullptr) *error = "merge_cluster_lod: no parts";
+    return false;
+  }
+  u32 levels = 0;
+  for (const ClusterLodMesh& part : parts) {
+    if (part.mesh.clusters.empty() || part.lod.size() != part.mesh.clusters.size() ||
+        part.mesh.vertex_source.size() != part.mesh.vertices.size()) {
+      if (error != nullptr) *error = "merge_cluster_lod: a part is empty or inconsistent";
+      return false;
+    }
+    levels = part.level_cluster_counts.size() > levels ? part.level_cluster_counts.size() : levels;
+  }
+  out.level_cluster_counts.resize(levels, 0u);
+
+  // Streams first, remembering where each part landed.
+  const u32 part_count = static_cast<u32>(parts.size());
+  Vector<u32> vertex_base(part_count);
+  Vector<u32> triangle_base(part_count);
+  Vector<u32> group_base(part_count);
+  const bool attributes = parts[0].mesh.attributes.size() == parts[0].mesh.vertices.size();
+  for (u32 p = 0; p < part_count; ++p) {
+    const ClusterMesh& part = parts[p].mesh;
+    vertex_base[p] = out.mesh.vertices.size();
+    triangle_base[p] = out.mesh.triangles.size();
+    group_base[p] = out.group_count;
+    const u32 source_base = out.mesh.source_vertex_count;
+    out.mesh.vertices.append(std::span<const Vec3>(part.vertices.data(), part.vertices.size()));
+    for (const u32 source : part.vertex_source)
+      out.mesh.vertex_source.push_back(source_base + source);
+    if (attributes && part.attributes.size() == part.vertices.size()) {
+      out.mesh.attributes.append(
+          std::span<const VertexAttributes>(part.attributes.data(), part.attributes.size()));
+    } else {
+      out.mesh.attributes.resize(out.mesh.vertices.size(), VertexAttributes{});
+    }
+    out.mesh.triangles.append(std::span<const u32>(part.triangles.data(), part.triangles.size()));
+    out.mesh.source_vertex_count += part.source_vertex_count;
+    out.mesh.source_triangle_count += part.source_triangle_count;
+    out.group_count += parts[p].group_count;
+    out.leaf_triangle_count += parts[p].leaf_triangle_count;
+    for (u32 level = 0; level < parts[p].level_cluster_counts.size(); ++level)
+      out.level_cluster_counts[level] += parts[p].level_cluster_counts[level];
+  }
+
+  // Clusters: every part's leaves, then everything else, in part order.
+  for (u32 pass = 0; pass < 2; ++pass) {
+    for (u32 p = 0; p < part_count; ++p) {
+      const ClusterLodMesh& part = parts[p];
+      for (u32 i = 0; i < part.mesh.clusters.size(); ++i) {
+        const bool leaf = part.lod[i].level == 0;
+        if (leaf != (pass == 0)) continue;
+        ClusterDesc desc = part.mesh.clusters[i];
+        desc.vertex_offset += vertex_base[p];
+        desc.triangle_offset += triangle_base[p];
+        ClusterLodDesc lod = part.lod[i];
+        lod.group += group_base[p];
+        out.mesh.clusters.push_back(desc);
+        out.lod.push_back(lod);
+        if (part_of_cluster != nullptr) part_of_cluster->push_back(p);
+      }
+    }
+  }
+  return true;
+}
+
 bool validate_cluster_lod(const ClusterLodMesh& mesh, std::span<const u32> source_indices,
                           std::string* error) {
   auto fail = [&](const char* what) {

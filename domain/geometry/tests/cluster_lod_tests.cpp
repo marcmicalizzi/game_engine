@@ -156,3 +156,75 @@ TEST_CASE("cluster lod: options and bad input") {
   CHECK_FALSE(build_cluster_lod(positions, out_of_range, ClusterLodOptions{}, lod, &error));
   CHECK(error.find("out of range") != std::string::npos);
 }
+
+TEST_CASE("cluster lod: DAGs built per part merge into one mesh with the leaves first") {
+  // Two terrains side by side, as two primitives of one mesh would be.
+  Vector<Vec3> positions_a;
+  Vector<u32> indices_a;
+  make_terrain(33, 4.0f, positions_a, indices_a);
+  Vector<Vec3> positions_b;
+  Vector<u32> indices_b;
+  make_terrain(17, 2.0f, positions_b, indices_b);
+  for (Vec3& p : positions_b)
+    p.x += 8.0f;
+  ClusterLodMesh parts[2];
+  std::string error;
+  REQUIRE_MESSAGE(build_cluster_lod(positions_a, indices_a, ClusterLodOptions{}, parts[0], &error),
+                  error);
+  REQUIRE_MESSAGE(build_cluster_lod(positions_b, indices_b, ClusterLodOptions{}, parts[1], &error),
+                  error);
+
+  ClusterLodMesh merged;
+  Vector<u32> part_of_cluster;
+  REQUIRE_MESSAGE(merge_cluster_lod(parts, merged, &part_of_cluster, &error), error);
+  const u32 total_clusters = parts[0].mesh.clusters.size() + parts[1].mesh.clusters.size();
+  CHECK(merged.mesh.clusters.size() == total_clusters);
+  CHECK(merged.lod.size() == total_clusters);
+  CHECK(part_of_cluster.size() == total_clusters);
+  CHECK(merged.mesh.vertices.size() ==
+        parts[0].mesh.vertices.size() + parts[1].mesh.vertices.size());
+  CHECK(merged.mesh.attributes.size() == merged.mesh.vertices.size());
+  CHECK(merged.mesh.triangles.size() ==
+        parts[0].mesh.triangles.size() + parts[1].mesh.triangles.size());
+  CHECK(merged.leaf_triangle_count == 2 * 32 * 32 + 2 * 16 * 16);
+  CHECK(merged.group_count == parts[0].group_count + parts[1].group_count);
+  CHECK(merged.level_cluster_counts[0] ==
+        parts[0].level_cluster_counts[0] + parts[1].level_cluster_counts[0]);
+
+  // Leaves first, then the coarser levels; every cluster names its part and a valid group.
+  for (u32 i = 0; i < total_clusters; ++i) {
+    CHECK((merged.lod[i].level == 0) == (i < merged.level_cluster_counts[0]));
+    CHECK(merged.lod[i].group < merged.group_count);
+    CHECK(part_of_cluster[i] < 2);
+    const ClusterDesc& c = merged.mesh.clusters[i];
+    // Part 1 lives at x >= 6; part 0 within |x| <= 4.
+    CHECK((c.center.x > 5.0f) == (part_of_cluster[i] == 1));
+  }
+
+  // The merged mesh validates against the concatenated, shifted source indices.
+  Vector<u32> source_indices;
+  source_indices.append(std::span<const u32>(indices_a.data(), indices_a.size()));
+  for (const u32 index : indices_b)
+    source_indices.push_back(index + static_cast<u32>(positions_a.size()));
+  CHECK_MESSAGE(validate_cluster_lod(merged, source_indices, &error), error);
+
+  // A view-dependent cut of the merged mesh is the union of the parts' cuts.
+  LodView view;
+  view.camera = Vec3{4.0f, 6.0f, 12.0f};
+  view.proj_scale = 1000.0f;
+  view.threshold_px = 1.5f;
+  Vector<u32> cut;
+  select_lod(merged, view, cut);
+  Vector<u32> cut_a;
+  Vector<u32> cut_b;
+  select_lod(parts[0], view, cut_a);
+  select_lod(parts[1], view, cut_b);
+  CHECK(cut.size() == cut_a.size() + cut_b.size());
+  CHECK(triangles_of(merged, cut) == triangles_of(parts[0], cut_a) + triangles_of(parts[1], cut_b));
+
+  // Empty input and an empty part are rejected.
+  CHECK_FALSE(merge_cluster_lod({}, merged, nullptr, &error));
+  ClusterLodMesh empty_parts[2] = {parts[0], ClusterLodMesh{}};
+  CHECK_FALSE(merge_cluster_lod(empty_parts, merged, nullptr, &error));
+  CHECK_FALSE(error.empty());
+}

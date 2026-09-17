@@ -67,9 +67,20 @@ u32 select_lod(const ClusterLodMesh& mesh, const LodView& view, Vector<u32>& out
 // The same with a threshold on raw mesh-space error (no camera): own <= t < parent.
 u32 select_lod_raw(const ClusterLodMesh& mesh, f32 threshold, Vector<u32>& out);
 
+// Merges DAGs built over parts of one mesh (a glTF primitive per material, for example) into
+// one: the vertex, attribute, and triangle streams are concatenated with the offsets shifted,
+// source vertex indices and group indices shift by the parts before, level counts add up, and
+// the clusters are reordered so every level-0 cluster comes first (the direct-draw convention;
+// the cut test is per cluster and does not care about order). `part_of_cluster`, when given,
+// receives the part index of every merged cluster in output order, which is how a caller maps
+// clusters back to materials. Fails on an empty list or an empty part.
+bool merge_cluster_lod(std::span<const ClusterLodMesh> parts, ClusterLodMesh& out,
+                       Vector<u32>* part_of_cluster = nullptr, std::string* error = nullptr);
+
 // Level 0 covers every source triangle exactly once; every cluster's own error is at most its
 // parent error; the raw cut is non-empty for every threshold; the triangle count of the raw
-// cut never grows with the threshold.
+// cut never grows with the threshold. For a merged mesh, `source_indices` is the parts' index
+// lists concatenated with each shifted by the source vertex counts of the parts before it.
 bool validate_cluster_lod(const ClusterLodMesh& mesh, std::span<const u32> source_indices,
                           std::string* error = nullptr);
 

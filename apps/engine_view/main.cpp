@@ -18,6 +18,7 @@
 #include <core/math/math.h>
 #include <core/platform/process.h>
 #include <core/time/time.h>
+#include <domain/assets/gltf.h>
 #include <domain/geometry/cluster_lod.h>
 #include <domain/gfx/bindless.h>
 #include <domain/gfx/capture.h>
@@ -30,9 +31,12 @@
 #include <domain/gfx/swapchain.h>
 #include <domain/gfx/visibility_resolve.h>
 #include <domain/gfx/vulkan.h>
+#include <foundation/image/decode.h>
 #include <foundation/image/png.h>
+#include <foundation/io/vfs.h>
 #include <foundation/window/window.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -58,10 +62,13 @@ constexpr const char* k_usage =
     "                   [--no-vsync] [--adapter <index>] [--validation] [--grid <n>] [--log <spec>]\n"
     "                   [--shaders <manifest.json>] [--lod <px>] [--no-cull] [--no-occlusion] [--no-cone]\n"
     "                   [--raster direct|hw|vertex|sw|auto] [--sw-px <px>] [--view <mode>] [--orbit <d>]\n"
+    "                   [--mesh <file.gltf|file.glb>]\n"
     "\n"
     "  --frames <n>     render n frames, then exit (0: until the window closes)\n"
     "  --capture <png>  write the last frame as a PNG (implies --frames 60 when unset)\n"
     "  --grid <n>       heightfield resolution, n x n vertices (default 257)\n"
+    "  --mesh <file>    render a glTF 2.0 file instead of the heightfield: one cluster DAG per\n"
+    "                   primitive, materials and base-color textures from the file\n"
     "  --lod <px>       screen-space error threshold in pixels for LOD selection (default 1)\n"
     "  --no-cull        draw every leaf cluster; no GPU culling or LOD selection\n"
     "  --no-occlusion   skip two-pass occlusion culling (hw mode only; on by default)\n"
@@ -73,7 +80,8 @@ constexpr const char* k_usage =
     "  --sw-px <px>     auto mode: clusters narrower than this go to the software rasterizer (32)\n"
     "  --view <mode>    id, tri, depth, shaded (default: materials with vertex normals and textures under\n"
     "                   a sun), normals, uv\n"
-    "  --orbit <d>      orbit at a fixed distance instead of breathing between 8 and 36 units\n"
+    "  --orbit <d>      orbit at a fixed distance instead of breathing between 8 and 36 units;\n"
+    "                   distances scale with the scene radius (10 for the heightfield)\n"
     "  --log <spec>     log levels, e.g. \"info,gfx=debug\" (stderr shows warnings and up)\n"
     "  --shaders <m>    shader manifest (default: <exe dir>/../shaders/manifest.json when present);\n"
     "                   shaders recompile and reload when their .slang sources change\n"
@@ -98,6 +106,7 @@ struct Options {
   u32 grid = 257;
   std::string log_spec;
   std::string shaders;
+  std::string mesh;  // glTF file; empty renders the heightfield
   f32 lod_px = 1.0f;
   bool cull = true;
   bool occlusion = true;
@@ -316,6 +325,8 @@ int main(int argc, char** argv) {
       if (!next_value(argc, argv, i, a, options.log_spec)) return k_exit_usage;
     } else if (a == "--shaders") {
       if (!next_value(argc, argv, i, a, options.shaders)) return k_exit_usage;
+    } else if (a == "--mesh") {
+      if (!next_value(argc, argv, i, a, options.mesh)) return k_exit_usage;
     } else if (a == "--no-vsync") {
       options.vsync = false;
     } else if (a == "--no-cull") {
@@ -412,7 +423,12 @@ int main(int argc, char** argv) {
   gfx::ImageResource texture;            // procedural albedo texture in the bindless set
   VkImageView texture_view = VK_NULL_HANDLE;
   VkSampler texture_sampler = VK_NULL_HANDLE;
-  gfx::BufferResource material_buffer;                      // ResolveMaterial table
+  Vector<gfx::ImageResource> mesh_textures;  // --mesh: decoded base-color textures
+  Vector<VkImageView> mesh_texture_views;
+  u32 mesh_primitives = 0;
+  Vec3 scene_center{};
+  f32 scene_radius = 10.0f;             // the heightfield's half extent; a mesh's bounding radius
+  gfx::BufferResource material_buffer;  // ResolveMaterial table
   gfx::BufferResource cluster_material_buffer;              // material index per cluster
   gfx::BufferResource resolve_buffers[k_frames_in_flight];  // host-visible ResolveParams per slot
   gfx::BufferResource visible_buffer[2];                    // hardware survivors of pass 1 / pass 2
@@ -473,21 +489,65 @@ int main(int argc, char** argv) {
       break;
     }
 
-    // Geometry: the terrain and its LOD DAG.
-    Vector<Vec3> positions;
-    Vector<u32> indices;
-    make_terrain(options.grid, 10.0f, positions, indices);
-    Vector<Vec2> uvs;
-    uvs.reserve(positions.size());
-    for (const Vec3& p : positions)
-      uvs.push_back(Vec2{(p.x + 10.0f) / 20.0f, (p.z + 10.0f) / 20.0f});
-    geometry::AttributeSource attribute_source;
-    attribute_source.uvs = std::span<const Vec2>(uvs.data(), uvs.size());  // normals are computed
+    // Geometry: the terrain's LOD DAG, or one DAG per primitive of a glTF file merged into one
+    // so every cluster has a single material.
+    assets::MeshData mesh_data;
+    Vector<u32> part_of_cluster;  // --mesh: the primitive each cluster came from
+    Vector<i32> part_material;    // --mesh: the material of each primitive with triangles
     const i64 build_start = time::monotonic_ns();
-    if (!geometry::build_cluster_lod(positions, indices, geometry::ClusterLodOptions{}, lod, &error,
-                                     attribute_source)) {
-      exit_code = fail("clusters", error);
-      break;
+    if (options.mesh.empty()) {
+      Vector<Vec3> positions;
+      Vector<u32> indices;
+      make_terrain(options.grid, 10.0f, positions, indices);
+      Vector<Vec2> uvs;
+      uvs.reserve(positions.size());
+      for (const Vec3& p : positions)
+        uvs.push_back(Vec2{(p.x + 10.0f) / 20.0f, (p.z + 10.0f) / 20.0f});
+      geometry::AttributeSource attribute_source;
+      attribute_source.uvs = std::span<const Vec2>(uvs.data(), uvs.size());  // normals: computed
+      if (!geometry::build_cluster_lod(positions, indices, geometry::ClusterLodOptions{}, lod,
+                                       &error, attribute_source)) {
+        exit_code = fail("clusters", error);
+        break;
+      }
+    } else {
+      if (!assets::load_gltf(options.mesh, mesh_data, &error)) {
+        exit_code = fail("mesh", error);
+        break;
+      }
+      const geometry::AttributeSource attribute_source = assets::attribute_source(mesh_data);
+      Vector<geometry::ClusterLodMesh> parts;
+      bool parts_ok = true;
+      for (const assets::Primitive& primitive : mesh_data.primitives) {
+        if (primitive.index_count < 3) continue;
+        const std::span<const u32> range(mesh_data.indices.data() + primitive.first_index,
+                                         primitive.index_count);
+        geometry::ClusterLodMesh part;
+        if (!geometry::build_cluster_lod(mesh_data.positions, range, geometry::ClusterLodOptions{},
+                                         part, &error, attribute_source)) {
+          parts_ok = false;
+          break;
+        }
+        parts.push_back(std::move(part));
+        part_material.push_back(primitive.material);
+      }
+      if (!parts_ok || !geometry::merge_cluster_lod(parts, lod, &part_of_cluster, &error)) {
+        exit_code = fail("mesh clusters", error);
+        break;
+      }
+      mesh_primitives = parts.size();
+      // The camera orbits the mesh's bounds instead of the heightfield's.
+      Vec3 lo{1e30f, 1e30f, 1e30f};
+      Vec3 hi{-1e30f, -1e30f, -1e30f};
+      for (u32 i = 0; i < lod.level_cluster_counts[0]; ++i) {
+        const geometry::ClusterDesc& c = lod.mesh.clusters[i];
+        lo = Vec3{std::min(lo.x, c.center.x - c.radius), std::min(lo.y, c.center.y - c.radius),
+                  std::min(lo.z, c.center.z - c.radius)};
+        hi = Vec3{std::max(hi.x, c.center.x + c.radius), std::max(hi.y, c.center.y + c.radius),
+                  std::max(hi.z, c.center.z + c.radius)};
+      }
+      scene_center = (lo + hi) * 0.5f;
+      scene_radius = std::max(length(hi - lo) * 0.5f, 1e-3f);
     }
     build_ns = time::monotonic_ns() - build_start;
     const u32 cluster_count = lod.mesh.clusters.size();
@@ -519,49 +579,123 @@ int main(int argc, char** argv) {
       exit_code = fail("attributes", error);
       break;
     }
-    // A procedural ripple texture, linear-sampled through the bindless set.
-    constexpr u32 k_texture_size = 256;
-    Vector<u8> texels(k_texture_size * k_texture_size * 4);
-    for (u32 y = 0; y < k_texture_size; ++y) {
-      for (u32 x = 0; x < k_texture_size; ++x) {
-        const f32 fx = static_cast<f32>(x);
-        const f32 fy = static_cast<f32>(y);
-        const f32 ripple = 0.5f + 0.5f * std::sin(fx * 0.25f + 2.0f * std::sin(fy * 0.08f));
-        const f32 grain =
-            0.5f + 0.5f * std::sin(fx * 1.7f + fy * 2.3f) * std::sin(fy * 1.1f - fx * 0.7f);
-        const u8 v = static_cast<u8>((0.62f + 0.3f * ripple + 0.08f * grain) * 255.0f);
-        u8* t = &texels[(y * k_texture_size + x) * 4];
-        t[0] = t[1] = t[2] = v;
-        t[3] = 255;
-      }
-    }
-    if (!gfx::upload_image_2d(device, k_texture_size, k_texture_size, VK_FORMAT_R8G8B8A8_UNORM,
-                              texels.data(), texels.size(), texture, &error) ||
-        !gfx::create_image_view(device, texture, texture_view, &error) ||
-        !gfx::create_sampler(device, VK_FILTER_LINEAR, texture_sampler, &error)) {
-      exit_code = fail("texture", error);
+    if (!gfx::create_sampler(device, VK_FILTER_LINEAR, texture_sampler, &error)) {
+      exit_code = fail("sampler", error);
       break;
     }
-    const u32 texture_slot =
-        bindless.add_sampled_image(texture_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     const u32 sampler_slot = bindless.add_sampler(texture_sampler);
-    // Materials: a flat table indexed per cluster by the height band of the cluster's center.
-    gfx::ResolveMaterial materials[3];
-    materials[0].albedo = Vec4{0.86f, 0.72f, 0.46f, 0.9f};  // sand
-    materials[1].albedo = Vec4{0.42f, 0.40f, 0.38f, 0.7f};  // rock
-    materials[2].albedo = Vec4{0.92f, 0.94f, 0.97f, 0.4f};  // snow
-    for (u32 i = 0; i < 2; ++i) {  // sand and rock carry the ripple texture at different scales
-      materials[i].albedo_texture = texture_slot;
-      materials[i].sampler = sampler_slot;
-      materials[i].uv_scale = i == 0 ? 24.0f : 9.0f;
-    }
+    Vector<gfx::ResolveMaterial> materials;
     Vector<u32> cluster_material(cluster_count);
-    for (u32 i = 0; i < cluster_count; ++i) {
-      const f32 y = lod.mesh.clusters[i].center.y;
-      cluster_material[i] = y < -0.15f ? 0u : y < 0.65f ? 1u : 2u;
+    if (options.mesh.empty()) {
+      // A procedural ripple texture, linear-sampled through the bindless set.
+      constexpr u32 k_texture_size = 256;
+      Vector<u8> texels(k_texture_size * k_texture_size * 4);
+      for (u32 y = 0; y < k_texture_size; ++y) {
+        for (u32 x = 0; x < k_texture_size; ++x) {
+          const f32 fx = static_cast<f32>(x);
+          const f32 fy = static_cast<f32>(y);
+          const f32 ripple = 0.5f + 0.5f * std::sin(fx * 0.25f + 2.0f * std::sin(fy * 0.08f));
+          const f32 grain =
+              0.5f + 0.5f * std::sin(fx * 1.7f + fy * 2.3f) * std::sin(fy * 1.1f - fx * 0.7f);
+          const u8 v = static_cast<u8>((0.62f + 0.3f * ripple + 0.08f * grain) * 255.0f);
+          u8* t = &texels[(y * k_texture_size + x) * 4];
+          t[0] = t[1] = t[2] = v;
+          t[3] = 255;
+        }
+      }
+      if (!gfx::upload_image_2d(device, k_texture_size, k_texture_size, VK_FORMAT_R8G8B8A8_UNORM,
+                                texels.data(), texels.size(), texture, &error) ||
+          !gfx::create_image_view(device, texture, texture_view, &error)) {
+        exit_code = fail("texture", error);
+        break;
+      }
+      const u32 texture_slot =
+          bindless.add_sampled_image(texture_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+      // Materials: a flat table indexed per cluster by the height band of the cluster's center.
+      materials.resize(3);
+      materials[0].albedo = Vec4{0.86f, 0.72f, 0.46f, 0.9f};  // sand
+      materials[1].albedo = Vec4{0.42f, 0.40f, 0.38f, 0.7f};  // rock
+      materials[2].albedo = Vec4{0.92f, 0.94f, 0.97f, 0.4f};  // snow
+      for (u32 i = 0; i < 2; ++i) {  // sand and rock carry the ripple texture at different scales
+        materials[i].albedo_texture = texture_slot;
+        materials[i].sampler = sampler_slot;
+        materials[i].uv_scale = i == 0 ? 24.0f : 9.0f;
+      }
+      for (u32 i = 0; i < cluster_count; ++i) {
+        const f32 y = lod.mesh.clusters[i].center.y;
+        cluster_material[i] = y < -0.15f ? 0u : y < 0.65f ? 1u : 2u;
+      }
+    } else {
+      // Materials from the file, plus a default for primitives without one. Base-color images
+      // are decoded on the CPU (embedded bytes or a file beside the glTF) and uploaded as sRGB
+      // so sampling returns linear color; an image that fails to decode leaves its material
+      // untextured with a warning.
+      Vector<u32> image_slot(mesh_data.images.size(), gfx::k_no_texture);
+      Vector<bool> image_tried(mesh_data.images.size(), false);
+      const std::string mesh_dir(io::parent_path(options.mesh));
+      auto texture_slot_of = [&](i32 image_index) -> u32 {
+        if (image_index < 0 || static_cast<u32>(image_index) >= mesh_data.images.size())
+          return gfx::k_no_texture;
+        const u32 index = static_cast<u32>(image_index);
+        if (image_tried[index]) return image_slot[index];
+        image_tried[index] = true;
+        const assets::ImageRef& ref = mesh_data.images[index];
+        image::Image decoded;
+        std::string image_error;
+        bool ok = false;
+        if (!ref.bytes.empty()) {
+          ok = image::decode_image(std::span<const u8>(ref.bytes.data(), ref.bytes.size()), decoded,
+                                   4, &image_error);
+        } else if (!ref.uri.empty()) {
+          const std::string path = mesh_dir.empty() ? ref.uri : io::join_path(mesh_dir, ref.uri);
+          ok = image::read_image(path, decoded, 4, &image_error) == io::Status::Ok;
+        } else {
+          image_error = "image has neither bytes nor a uri";
+        }
+        gfx::ImageResource uploaded;
+        VkImageView view = VK_NULL_HANDLE;
+        if (ok && (!gfx::upload_image_2d(device, decoded.width, decoded.height,
+                                         VK_FORMAT_R8G8B8A8_SRGB, decoded.pixels.data(),
+                                         decoded.pixels.size(), uploaded, &image_error) ||
+                   !gfx::create_image_view(device, uploaded, view, &image_error))) {
+          if (uploaded.image != VK_NULL_HANDLE) gfx::destroy_image(device, uploaded);
+          ok = false;
+        }
+        if (!ok) {
+          ENGINE_LOG_WARN(log_view, "texture skipped", log::field("image", index),
+                          log::field("name", ref.name), log::field("error", image_error));
+          return gfx::k_no_texture;
+        }
+        mesh_textures.push_back(uploaded);
+        mesh_texture_views.push_back(view);
+        image_slot[index] =
+            bindless.add_sampled_image(view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        return image_slot[index];
+      };
+      for (const assets::Material& source : mesh_data.materials) {
+        gfx::ResolveMaterial material;
+        material.albedo =
+            Vec4{source.base_color.x, source.base_color.y, source.base_color.z, source.roughness};
+        material.emissive = Vec4{0.0f, 0.0f, 0.0f, source.metallic};
+        material.albedo_texture = texture_slot_of(source.base_color_image);
+        material.sampler = sampler_slot;
+        material.uv_scale = 1.0f;
+        materials.push_back(material);
+      }
+      const u32 default_material = materials.size();
+      gfx::ResolveMaterial plain;
+      plain.albedo = Vec4{0.8f, 0.8f, 0.8f, 0.6f};
+      materials.push_back(plain);
+      for (u32 i = 0; i < cluster_count; ++i) {
+        const i32 material = part_material[part_of_cluster[i]];
+        cluster_material[i] = material >= 0 && static_cast<u32>(material) < default_material
+                                  ? static_cast<u32>(material)
+                                  : default_material;
+      }
     }
-    if (!gfx::upload_buffer(device, materials, sizeof(materials), k_storage, material_buffer,
-                            &error) ||
+    if (!gfx::upload_buffer(device, materials.data(),
+                            materials.size() * sizeof(gfx::ResolveMaterial), k_storage,
+                            material_buffer, &error) ||
         !gfx::upload_buffer(device, cluster_material.data(), cluster_count * sizeof(u32), k_storage,
                             cluster_material_buffer, &error)) {
       exit_code = fail("materials", error);
@@ -690,7 +824,8 @@ int main(int argc, char** argv) {
         log::field("lod_levels", lod.level_cluster_counts.size()),
         log::field("build_ms", static_cast<f64>(build_ns) / 1.0e6),
         log::field("raster", raster_name(options.raster)), log::field("occlusion", occlusion),
-        log::field("cone", options.cone), log::field("width", swapchain.extent().width),
+        log::field("cone", options.cone), log::field("mesh_primitives", mesh_primitives),
+        log::field("materials", materials.size()), log::field("width", swapchain.extent().width),
         log::field("height", swapchain.extent().height));
 
     gfx::RenderGraph graph(device);
@@ -795,14 +930,16 @@ int main(int argc, char** argv) {
       extent_height = extent.height;
       const f32 aspect = static_cast<f32>(extent.width) / static_cast<f32>(extent.height);
       const f32 angle = static_cast<f32>(rendered) * 0.006f;
-      const f32 distance = options.orbit > 0.0f
-                               ? options.orbit
-                               : 22.0f + 14.0f * std::sin(static_cast<f32>(rendered) * 0.004f);
-      const Vec3 eye{std::cos(angle) * distance, 0.45f * distance, std::sin(angle) * distance};
+      const f32 distance =
+          (options.orbit > 0.0f ? options.orbit
+                                : 22.0f + 14.0f * std::sin(static_cast<f32>(rendered) * 0.004f)) *
+          (scene_radius / 10.0f);
+      const Vec3 eye = scene_center + Vec3{std::cos(angle) * distance, 0.45f * distance,
+                                           std::sin(angle) * distance};
       const f32 fov_y = radians(55.0f);
       const f32 znear = 0.1f;
       const Mat4 view_proj = perspective_reversed_z(fov_y, aspect, znear) *
-                             look_at(eye, Vec3{}, Vec3{0.0f, 1.0f, 0.0f});
+                             look_at(eye, scene_center, Vec3{0.0f, 1.0f, 0.0f});
       const f32 proj_scale = 1.0f / std::tan(fov_y * 0.5f) * static_cast<f32>(extent.height) * 0.5f;
       const bool direct = options.raster == RasterMode::Direct;
       const bool use_hw = options.raster != RasterMode::Software;
@@ -1191,6 +1328,10 @@ int main(int argc, char** argv) {
   gfx::destroy_sampler(device, texture_sampler);
   gfx::destroy_image_view(device, texture_view);
   if (texture.image != VK_NULL_HANDLE) gfx::destroy_image(device, texture);
+  for (VkImageView view : mesh_texture_views)
+    gfx::destroy_image_view(device, view);
+  for (gfx::ImageResource& image : mesh_textures)
+    gfx::destroy_image(device, image);
   gfx::destroy_buffer(device, cluster_material_buffer);
   gfx::destroy_buffer(device, material_buffer);
   gfx::destroy_buffer(device, triangle_buffer);
@@ -1213,6 +1354,7 @@ int main(int argc, char** argv) {
     std::printf(
         "{\"frames\":%llu,\"seconds\":%.3f,\"avg_ms\":%.3f,\"width\":%u,\"height\":%u,"
         "\"clusters\":%u,\"leaf_clusters\":%u,\"triangles\":%u,\"lod_levels\":%u,\"build_ms\":%.1f,"
+        "\"mesh_primitives\":%u,"
         "\"cull\":%s,\"occlusion\":%s,\"cone\":%s,\"lod_px\":%.2f,\"raster\":\"%s\",\"sw_px\":%.1f,"
         "\"visible_hw_last\":%u,\"visible_pass2_last\":%u,\"visible_sw_last\":%u,\"visible_min\":%"
         "u,"
@@ -1224,7 +1366,7 @@ int main(int argc, char** argv) {
         lod.mesh.clusters.size(),
         lod.level_cluster_counts.empty() ? 0u : lod.level_cluster_counts[0],
         lod.leaf_triangle_count, lod.level_cluster_counts.size(),
-        static_cast<f64>(build_ns) / 1.0e6, options.cull ? "true" : "false",
+        static_cast<f64>(build_ns) / 1.0e6, mesh_primitives, options.cull ? "true" : "false",
         occlusion ? "true" : "false", options.cone ? "true" : "false",
         static_cast<f64>(options.lod_px), raster_name(options.raster),
         static_cast<f64>(options.sw_px), visible_hw_last, visible_pass2_last, visible_sw_last,
