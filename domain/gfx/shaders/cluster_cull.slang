@@ -39,7 +39,7 @@ struct CullParams {
   float4 raster;
   uint cluster_count;
   uint plane_count;
-  uint pad0;
+  uint count_index;  // u32 of draw_args that counts hardware survivors (0 mesh tasks, 1 vkCmdDrawIndirect)
   uint pad1;
   uint64_t clusters;    // ClusterDesc[]
   uint64_t lods;        // ClusterLodDesc[]
@@ -176,7 +176,7 @@ void cull_main(uint3 thread_id : SV_DispatchThreadID) {
     uint* visible = (uint*)params->sw_visible;
     visible[slot] = index;
   } else {
-    Atomic<uint>* count = (Atomic<uint>*)params->draw_args;
+    Atomic<uint>* count = (Atomic<uint>*)(params->draw_args + uint64_t(params->count_index) * 4);
     const uint slot = count->add(1);
     uint* visible = (uint*)params->visible;
     visible[slot] = index;

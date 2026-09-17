@@ -35,7 +35,8 @@ struct CullParams {
                    // rasterized, y = mode (k_raster_*), z and w unused
   u32 cluster_count = 0;
   u32 plane_count = 0;
-  u32 pad0 = 0;
+  u32 count_index = 0;  // which u32 of draw_args counts hardware survivors: 0 for mesh-task
+                        // groups {count, 1, 1}, 1 for vkCmdDrawIndirect {verts, count, 0, 0}
   u32 pad1 = 0;
   u64 clusters = 0;    // geometry::ClusterDesc[]
   u64 lods = 0;        // geometry::ClusterLodDesc[]
@@ -68,8 +69,8 @@ struct ClusterDrawParams {
   u64 vertices = 0;
   u64 triangles = 0;
   u32 cluster_count = 0;
-  u32 pad = 0;
-  u64 visible = 0;     // cull output; 0 draws clusters in index order
+  u32 triangles_per_cluster = 0;  // vertex path only: the draw's vertex count / 3
+  u64 visible = 0;                // cull output; 0 draws clusters in index order
   u64 visibility = 0;  // u64[width * height] visibility buffer (fs_visibility, software raster)
   u32 width = 0;
   u32 height = 0;

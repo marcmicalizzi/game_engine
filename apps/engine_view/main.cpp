@@ -40,6 +40,7 @@
 #include <shaders/cluster_cull.spv.h>
 #include <shaders/cluster_mesh.spv.h>
 #include <shaders/cluster_sw_raster.spv.h>
+#include <shaders/cluster_vertex.spv.h>
 #include <shaders/hiz_build.spv.h>
 #include <shaders/visibility_resolve.spv.h>
 #include <string>
@@ -56,7 +57,7 @@ constexpr const char* k_usage =
     "usage: engine-view [--width <px>] [--height <px>] [--frames <n>] [--capture <file.png>]\n"
     "                   [--no-vsync] [--adapter <index>] [--validation] [--grid <n>] [--log <spec>]\n"
     "                   [--shaders <manifest.json>] [--lod <px>] [--no-cull] [--no-occlusion]\n"
-    "                   [--raster direct|hw|sw|auto] [--sw-px <px>] [--view <mode>] [--orbit <d>]\n"
+    "                   [--raster direct|hw|vertex|sw|auto] [--sw-px <px>] [--view <mode>] [--orbit <d>]\n"
     "\n"
     "  --frames <n>     render n frames, then exit (0: until the window closes)\n"
     "  --capture <png>  write the last frame as a PNG (implies --frames 60 when unset)\n"
@@ -64,8 +65,10 @@ constexpr const char* k_usage =
     "  --lod <px>       screen-space error threshold in pixels for LOD selection (default 1)\n"
     "  --no-cull        draw every leaf cluster; no GPU culling or LOD selection\n"
     "  --no-occlusion   skip two-pass occlusion culling (hw mode only; on by default)\n"
-    "  --raster <mode>  direct: mesh shaders to color with a depth buffer; hw (default), sw, auto:\n"
-    "                   the visibility buffer through hardware, software, or both split by size\n"
+    "  --raster <mode>  direct: mesh shaders to color with a depth buffer; hw (default), vertex, sw,\n"
+    "                   auto: the visibility buffer through mesh shaders, a vertex shader (the\n"
+    "                   baseline tier, chosen automatically without mesh shaders), software, or\n"
+    "                   both split by size\n"
     "  --sw-px <px>     auto mode: clusters narrower than this go to the software rasterizer (32)\n"
     "  --view <mode>    id, tri, depth, shaded (default: materials with vertex normals and textures under\n"
     "                   a sun), normals, uv\n"
@@ -81,7 +84,7 @@ constexpr int k_exit_usage = 2;
 constexpr int k_exit_unavailable = 3;
 constexpr u32 k_frames_in_flight = 2;
 
-enum class RasterMode : u8 { Direct, Hardware, Software, Auto };
+enum class RasterMode : u8 { Direct, Hardware, Software, Auto, Vertex };
 
 struct Options {
   u32 width = 1280;
@@ -109,6 +112,7 @@ const char* raster_name(RasterMode mode) {
     case RasterMode::Hardware: return "hw";
     case RasterMode::Software: return "sw";
     case RasterMode::Auto: return "auto";
+    case RasterMode::Vertex: return "vertex";
   }
   return "?";
 }
@@ -208,6 +212,7 @@ struct Targets {
 struct Pipelines {
   VkPipeline direct = VK_NULL_HANDLE;    // mesh + fs_color into the swapchain with depth
   VkPipeline hardware = VK_NULL_HANDLE;  // mesh + fs_visibility, no attachments
+  VkPipeline vertex = VK_NULL_HANDLE;    // vertex shader + fs_visibility: the baseline tier
   gfx::ComputePipeline software;         // cluster_sw_raster
   gfx::ComputePipeline cull;             // cluster_cull
   gfx::ComputePipeline hiz;              // hiz_build
@@ -215,11 +220,12 @@ struct Pipelines {
   void destroy(const gfx::Device& device) {
     if (direct != VK_NULL_HANDLE) gfx::destroy_pipeline(device, direct);
     if (hardware != VK_NULL_HANDLE) gfx::destroy_pipeline(device, hardware);
+    if (vertex != VK_NULL_HANDLE) gfx::destroy_pipeline(device, vertex);
     if (resolve != VK_NULL_HANDLE) gfx::destroy_pipeline(device, resolve);
     gfx::destroy_compute_pipeline(device, software);
     gfx::destroy_compute_pipeline(device, cull);
     gfx::destroy_compute_pipeline(device, hiz);
-    direct = hardware = resolve = VK_NULL_HANDLE;
+    direct = hardware = vertex = resolve = VK_NULL_HANDLE;
   }
 };
 
@@ -277,8 +283,10 @@ int main(int argc, char** argv) {
         options.raster = RasterMode::Software;
       } else if (value == "auto") {
         options.raster = RasterMode::Auto;
+      } else if (value == "vertex") {
+        options.raster = RasterMode::Vertex;
       } else {
-        std::fprintf(stderr, "engine-view: --raster expects direct, hw, sw, or auto\n");
+        std::fprintf(stderr, "engine-view: --raster expects direct, hw, vertex, sw, or auto\n");
         return k_exit_usage;
       }
     } else if (a == "--view") {
@@ -327,8 +335,7 @@ int main(int argc, char** argv) {
   if (!options.capture.empty() && options.frames == 0) options.frames = 60;
   if (!options.cull && options.raster == RasterMode::Auto) options.raster = RasterMode::Hardware;
   // Occlusion culling runs on the hardware visibility path only.
-  const bool occlusion =
-      options.occlusion && options.cull && options.raster == RasterMode::Hardware;
+  bool occlusion = options.occlusion && options.cull && options.raster == RasterMode::Hardware;
 
   log::StreamSink stderr_sink(stderr, log::StreamSink::Format::Text);
   stderr_sink.set_min_level(log::Level::Warn);
@@ -369,12 +376,18 @@ int main(int argc, char** argv) {
     return unavailable("no Vulkan device", error);
   }
   const bool visibility_ok = device.features().buffer_int64_atomics;
-  if (!device.features().mesh_shader || !device.features().presentation ||
-      (!visibility_ok && options.raster != RasterMode::Direct)) {
-    const std::string why = std::string(device.adapter().name) +
-                            (!device.features().mesh_shader    ? " has no mesh shaders"
-                             : !device.features().presentation ? " cannot present"
-                                                               : " has no 64-bit buffer atomics");
+  if (!device.features().mesh_shader &&
+      (options.raster == RasterMode::Direct || options.raster == RasterMode::Hardware ||
+       options.raster == RasterMode::Auto)) {
+    options.raster = RasterMode::Vertex;  // the baseline tier
+  }
+  occlusion = options.occlusion && options.cull &&
+              (options.raster == RasterMode::Hardware || options.raster == RasterMode::Vertex);
+  const bool vertex_path = options.raster == RasterMode::Vertex;
+  if (!device.features().presentation || !visibility_ok) {
+    const std::string why =
+        std::string(device.adapter().name) +
+        (!device.features().presentation ? " cannot present" : " has no 64-bit buffer atomics");
     device.destroy();
     window.destroy();
     window::shutdown();
@@ -475,6 +488,7 @@ int main(int argc, char** argv) {
     build_ns = time::monotonic_ns() - build_start;
     const u32 cluster_count = lod.mesh.clusters.size();
     const u32 leaf_count = lod.level_cluster_counts[0];
+    const u32 triangles_per_cluster = geometry::ClusterLodOptions{}.max_triangles;
     constexpr VkBufferUsageFlags k_storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
     constexpr VkBufferUsageFlags k_address = k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
     constexpr VkBufferUsageFlags k_args = k_address | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
@@ -555,7 +569,7 @@ int main(int argc, char** argv) {
           buffers_ok &&
           gfx::create_buffer(device, u64{cluster_count} * sizeof(u32), k_address, false,
                              visible_buffer[i], &error) &&
-          gfx::create_buffer(device, sizeof(u32) * 3, k_args, false, args_buffer[i], &error) &&
+          gfx::create_buffer(device, sizeof(u32) * 4, k_args, false, args_buffer[i], &error) &&
           gfx::create_buffer(device, u64{cluster_count} * sizeof(u32),
                              k_address | VK_BUFFER_USAGE_TRANSFER_DST_BIT, false, flags_buffer[i],
                              &error);
@@ -592,6 +606,8 @@ int main(int argc, char** argv) {
                                 shaders::k_cluster_sw_raster_spirv_size);
     shader_library.add_embedded("hiz_build", shaders::k_hiz_build_spirv,
                                 shaders::k_hiz_build_spirv_size);
+    shader_library.add_embedded("cluster_vertex", shaders::k_cluster_vertex_spirv,
+                                shaders::k_cluster_vertex_spirv_size);
     shader_library.add_embedded("visibility_resolve", shaders::k_visibility_resolve_spirv,
                                 shaders::k_visibility_resolve_spirv_size);
     std::string manifest = options.shaders;
@@ -612,9 +628,17 @@ int main(int argc, char** argv) {
       const gfx::Shader* sw =
           cull != nullptr ? shader_library.get("cluster_sw_raster", err) : nullptr;
       const gfx::Shader* hiz = sw != nullptr ? shader_library.get("hiz_build", err) : nullptr;
+      const gfx::Shader* vertex =
+          hiz != nullptr ? shader_library.get("cluster_vertex", err) : nullptr;
       const gfx::Shader* resolve =
           hiz != nullptr ? shader_library.get("visibility_resolve", err) : nullptr;
-      if (resolve == nullptr) return false;
+      if (resolve == nullptr || vertex == nullptr) return false;
+      gfx::GraphicsPipelineDesc vertex_desc;
+      vertex_desc.vertex = vertex->module;
+      vertex_desc.vertex_entry = "vs_cluster";
+      vertex_desc.fragment = vertex->module;
+      vertex_desc.fragment_entry = "fs_visibility";
+      vertex_desc.layout = bindless.pipeline_layout();
       gfx::MeshPipelineDesc direct_desc;
       direct_desc.mesh = mesh->module;
       direct_desc.fragment = mesh->module;
@@ -638,6 +662,7 @@ int main(int argc, char** argv) {
       resolve_desc.color_format = swapchain.format();
       return gfx::create_mesh_pipeline(device, direct_desc, pipelines.direct, err) &&
              gfx::create_mesh_pipeline(device, hw_desc, pipelines.hardware, err) &&
+             gfx::create_graphics_pipeline(device, vertex_desc, pipelines.vertex, err) &&
              gfx::create_compute_pipeline(device, sw->module, "sw_raster_main", {},
                                           sizeof(gfx::ClusterDrawParams), pipelines.software,
                                           err) &&
@@ -730,8 +755,8 @@ int main(int argc, char** argv) {
         // The frame that last used this slot has completed: its statistics are readable.
         if (options.cull) {
           const auto* stats = static_cast<const u32*>(stats_buffers[slot].mapped);
-          visible_hw_last = stats[0];
-          visible_pass2_last = stats[3];
+          visible_hw_last = stats[vertex_path ? 1 : 0];
+          visible_pass2_last = stats[vertex_path ? 4 : 3];
           visible_sw_last = stats[6];
           const u32 total = visible_hw_last + visible_pass2_last + visible_sw_last;
           visible_min = total < visible_min ? total : visible_min;
@@ -777,7 +802,8 @@ int main(int argc, char** argv) {
       const f32 proj_scale = 1.0f / std::tan(fov_y * 0.5f) * static_cast<f32>(extent.height) * 0.5f;
       const bool direct = options.raster == RasterMode::Direct;
       const bool use_hw = options.raster != RasterMode::Software;
-      const bool use_sw = !direct && options.raster != RasterMode::Hardware && options.cull;
+      const bool use_sw = !direct && options.raster != RasterMode::Hardware &&
+                          options.raster != RasterMode::Vertex && options.cull;
       const u32 cur_flags = static_cast<u32>(rendered % 2);
       const u32 prev_flags = 1 - cur_flags;
 
@@ -787,6 +813,7 @@ int main(int argc, char** argv) {
       draw.vertices = vertex_buffer.address;
       draw.triangles = triangle_buffer.address;
       draw.cluster_count = options.cull ? cluster_count : leaf_count;
+      draw.triangles_per_cluster = triangles_per_cluster;
       draw.visible = options.cull ? visible_buffer[0].address : 0;
       draw.visibility = targets.vis.address;
       draw.width = extent.width;
@@ -801,12 +828,13 @@ int main(int argc, char** argv) {
       cull.view_proj = view_proj;
       cull.camera = Vec4{eye, znear};
       cull.lod = Vec4{proj_scale, options.lod_px, 1.0f, 1.0f};
-      const f32 raster_mode = direct || options.raster == RasterMode::Hardware
+      const f32 raster_mode = direct || options.raster == RasterMode::Hardware || vertex_path
                                   ? gfx::k_raster_hardware
                               : options.raster == RasterMode::Software ? gfx::k_raster_software
                                                                        : gfx::k_raster_split;
       cull.raster = Vec4{options.sw_px, raster_mode, 0.0f, 0.0f};
       cull.cluster_count = cluster_count;
+      cull.count_index = vertex_path ? 1u : 0u;
       cull.clusters = cluster_buffer.address;
       cull.lods = lod_buffer.address;
       cull.visible = visible_buffer[0].address;
@@ -888,11 +916,18 @@ int main(int argc, char** argv) {
           },
           [&](VkCommandBuffer cb, gfx::RenderGraph&) {
             if (options.cull) {
-              for (gfx::BufferResource* args :
-                   {&args_buffer[0], &args_buffer[1], &sw_args_buffer}) {
-                vkCmdFillBuffer(cb, args->buffer, 0, sizeof(u32), 0);
-                vkCmdFillBuffer(cb, args->buffer, sizeof(u32), sizeof(u32) * 2, 1);
+              for (u32 i = 0; i < 2; ++i) {
+                if (vertex_path) {  // {vertexCount, instanceCount = 0, firstVertex, firstInstance}
+                  vkCmdFillBuffer(cb, args_buffer[i].buffer, 0, sizeof(u32),
+                                  triangles_per_cluster * 3);
+                  vkCmdFillBuffer(cb, args_buffer[i].buffer, sizeof(u32), sizeof(u32) * 3, 0);
+                } else {  // {groups = 0, 1, 1}
+                  vkCmdFillBuffer(cb, args_buffer[i].buffer, 0, sizeof(u32), 0);
+                  vkCmdFillBuffer(cb, args_buffer[i].buffer, sizeof(u32), sizeof(u32) * 2, 1);
+                }
               }
+              vkCmdFillBuffer(cb, sw_args_buffer.buffer, 0, sizeof(u32), 0);
+              vkCmdFillBuffer(cb, sw_args_buffer.buffer, sizeof(u32), sizeof(u32) * 2, 1);
             }
             if (!direct) vkCmdFillBuffer(cb, targets.vis.buffer, 0, VK_WHOLE_SIZE, 0);
             if (occlusion) vkCmdFillBuffer(cb, flags_buffer[cur_flags].buffer, 0, VK_WHOLE_SIZE, 0);
@@ -933,16 +968,24 @@ int main(int argc, char** argv) {
               b.write(rg_vis, gfx::Access::FragmentReadWrite);
               if (options.cull) {
                 b.read(rg_args[list], gfx::Access::IndirectRead);
-                b.read(rg_visible[list], gfx::Access::MeshRead);
+                b.read(rg_visible[list],
+                       vertex_path ? gfx::Access::VertexRead : gfx::Access::MeshRead);
               }
             },
             [&, list, params](VkCommandBuffer cb, gfx::RenderGraph&) {
               timer.begin(cb, "hw");
-              vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.hardware);
+              vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                vertex_path ? pipelines.vertex : pipelines.hardware);
               bindless.bind(cb, VK_PIPELINE_BIND_POINT_GRAPHICS);
               vkCmdPushConstants(cb, bindless.pipeline_layout(), VK_SHADER_STAGE_ALL, 0,
                                  sizeof(*params), params);
-              if (options.cull) {
+              if (vertex_path) {
+                if (options.cull) {
+                  vkCmdDrawIndirect(cb, args_buffer[list].buffer, 0, 1, sizeof(u32) * 4);
+                } else {
+                  vkCmdDraw(cb, triangles_per_cluster * 3, leaf_count, 0, 0);
+                }
+              } else if (options.cull) {
                 vkCmdDrawMeshTasksIndirectEXT(cb, args_buffer[list].buffer, 0, 1, sizeof(u32) * 3);
               } else {
                 vkCmdDrawMeshTasksEXT(cb, leaf_count, 1, 1);
@@ -1085,8 +1128,8 @@ int main(int argc, char** argv) {
         frames.wait(value);
         if (options.cull) {
           const auto* stats = static_cast<const u32*>(stats_buffers[slot].mapped);
-          visible_hw_last = stats[0];
-          visible_pass2_last = stats[3];
+          visible_hw_last = stats[vertex_path ? 1 : 0];
+          visible_pass2_last = stats[vertex_path ? 4 : 3];
           visible_sw_last = stats[6];
           const u32 total = visible_hw_last + visible_pass2_last + visible_sw_last;
           visible_min = total < visible_min ? total : visible_min;

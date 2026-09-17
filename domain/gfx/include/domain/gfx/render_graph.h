@@ -76,6 +76,7 @@ enum class Access : u8 {
   MeshRead,           // storage read in task or mesh shaders (buffers)
   FragmentRead,       // storage read in fragment shaders (buffers)
   FragmentReadWrite,  // storage read and write (atomics) in fragment shaders (buffers)
+  VertexRead,         // storage read in vertex shaders (buffers)
 };
 bool access_writes(Access access) noexcept;
 
