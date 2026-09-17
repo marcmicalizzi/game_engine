@@ -5,13 +5,14 @@
 # engine_shaders_gfx_tests below.
 engine_shaders(NAME gfx SOURCES shaders/cluster_mesh.slang shaders/cluster_cull.slang
                              shaders/cluster_sw_raster.slang shaders/visibility_resolve.slang
-                             shaders/hiz_build.slang shaders/cluster_vertex.slang)
+                             shaders/hiz_build.slang shaders/cluster_vertex.slang
+                             shaders/ray_visibility.slang)
 engine_module(NAME gfx LAYER domain
   DEPS base containers memory hash json log math platform schemas io
   EXTERNAL_DEPS volk::volk GPUOpen::VulkanMemoryAllocator
   SOURCES src/adapter.cpp src/device.cpp src/vma.cpp src/frame.cpp src/render_graph.cpp
           src/bindless.cpp src/swapchain.cpp src/capture.cpp src/shader_library.cpp
-          src/gpu_timer.cpp)
+          src/gpu_timer.cpp src/acceleration.cpp)
 target_link_libraries(engine_gfx PUBLIC engine_shaders_gfx)
 # Third-party headers: the engine's warning policy applies to engine code only.
 target_include_directories(engine_gfx SYSTEM PUBLIC
@@ -34,7 +35,8 @@ if(TARGET engine_gfx_tests)
                                           tests/shader_library_tests.cpp tests/cull_tests.cpp
                                           tests/visibility_tests.cpp tests/occlusion_tests.cpp
                                           tests/shading_tests.cpp tests/attributes_tests.cpp
-                                          tests/vertex_path_tests.cpp tests/cone_tests.cpp)
+                                          tests/vertex_path_tests.cpp tests/cone_tests.cpp
+                                          tests/rt_tests.cpp)
   target_compile_definitions(engine_gfx_tests PRIVATE
     ENGINE_SHADER_MANIFEST="${CMAKE_BINARY_DIR}/shaders/manifest.json")
   target_link_libraries(engine_gfx_tests PRIVATE engine_shaders_gfx_tests engine::geometry

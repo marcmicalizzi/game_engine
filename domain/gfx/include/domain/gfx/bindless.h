@@ -1,9 +1,11 @@
 #pragma once
 
-// The global bindless set (ADR-0023): three unbounded, partially bound, update-after-bind arrays
-// (sampled images, storage images, samplers) in one descriptor set that every pipeline binds
-// at set 0, plus the pipeline layout that goes with it (set 0 and a push-constant block).
-// Buffers are reached through device addresses and never appear here.
+// The global bindless set (ADR-0023): unbounded, partially bound, update-after-bind arrays
+// (sampled images, storage images, samplers, and on devices with ray tracing acceleration
+// structures) in one descriptor set that every pipeline binds at set 0, plus the pipeline layout
+// that goes with it (set 0 and a push-constant block). Buffers are reached through device
+// addresses and never appear here; acceleration structures have no address form a shader can
+// trace against, so they do.
 //
 //     BindlessSet bindless;
 //     bindless.create(device, {});
@@ -17,6 +19,7 @@
 //   [[vk::binding(0, 0)]] Texture2D g_textures[];
 //   [[vk::binding(1, 0)]] RWTexture2D<float4> g_storage_images[];
 //   [[vk::binding(2, 0)]] SamplerState g_samplers[];
+//   [[vk::binding(3, 0)]] RaytracingAccelerationStructure g_scenes[];   // ray tracing devices
 
 #include <core/base/macros.h>
 #include <core/base/types.h>
@@ -32,6 +35,8 @@ struct BindlessConfig {
   u32 sampled_images = 16384;
   u32 storage_images = 4096;
   u32 samplers = 256;
+  u32 acceleration_structures =
+      256;  // binding 3 exists only with DeviceFeatures::acceleration_structure
   // Push-constant block shared by every pipeline using the layout, all stages.
   u32 push_constant_bytes = 128;
 };
@@ -41,6 +46,7 @@ class BindlessSet {
   static constexpr u32 k_binding_sampled_images = 0;
   static constexpr u32 k_binding_storage_images = 1;
   static constexpr u32 k_binding_samplers = 2;
+  static constexpr u32 k_binding_acceleration_structures = 3;
   static constexpr u32 k_invalid_slot = ~u32{0};
 
   BindlessSet() noexcept = default;
@@ -56,6 +62,8 @@ class BindlessSet {
   u32 add_sampled_image(VkImageView view, VkImageLayout layout);
   u32 add_storage_image(VkImageView view);
   u32 add_sampler(VkSampler sampler);
+  // k_invalid_slot on a device without acceleration structures (has_acceleration_structures()).
+  u32 add_acceleration_structure(VkAccelerationStructureKHR structure);
   // Overwrites a slot in place (a streamed texture replacing its placeholder).
   void update_sampled_image(u32 slot, VkImageView view, VkImageLayout layout);
   void update_storage_image(u32 slot, VkImageView view);
@@ -65,13 +73,20 @@ class BindlessSet {
   void release_sampled_image(u32 slot, u64 safe_after_value);
   void release_storage_image(u32 slot, u64 safe_after_value);
   void release_sampler(u32 slot, u64 safe_after_value);
+  void release_acceleration_structure(u32 slot, u64 safe_after_value);
   // Frees every release whose value has completed. Call once per frame.
   void recycle(u64 completed_value);
 
   const BindlessConfig& capacity() const noexcept { return capacity_; }
+  bool has_acceleration_structures() const noexcept {
+    return pools_[k_binding_acceleration_structures].capacity > 0;
+  }
   u32 live_sampled_images() const noexcept { return live_[k_binding_sampled_images]; }
   u32 live_storage_images() const noexcept { return live_[k_binding_storage_images]; }
   u32 live_samplers() const noexcept { return live_[k_binding_samplers]; }
+  u32 live_acceleration_structures() const noexcept {
+    return live_[k_binding_acceleration_structures];
+  }
   u32 pending_releases() const noexcept { return pending_.size(); }
 
   VkDescriptorSetLayout layout() const noexcept { return layout_; }
@@ -101,8 +116,8 @@ class BindlessSet {
   VkDescriptorPool pool_ = VK_NULL_HANDLE;
   VkDescriptorSet set_ = VK_NULL_HANDLE;
   VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
-  Pool pools_[3];
-  u32 live_[3] = {0, 0, 0};
+  Pool pools_[4];
+  u32 live_[4] = {0, 0, 0, 0};
   Vector<Pending> pending_;
 };
 

@@ -28,11 +28,21 @@ bool BindlessSet::create(const Device& device, const BindlessConfig& config, std
   // Clamp to the update-after-bind limits of the device.
   VkPhysicalDeviceDescriptorIndexingProperties indexing{};
   indexing.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_PROPERTIES;
+  VkPhysicalDeviceAccelerationStructurePropertiesKHR as_props{};
+  as_props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR;
+  const bool with_as =
+      device.features().acceleration_structure && config.acceleration_structures > 0;
+  if (with_as) indexing.pNext = &as_props;
   VkPhysicalDeviceProperties2 props{};
   props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
   props.pNext = &indexing;
   vkGetPhysicalDeviceProperties2(h.physical, &props);
   capacity_ = config;
+  capacity_.acceleration_structures =
+      with_as ? std::min(config.acceleration_structures,
+                         as_props.maxDescriptorSetUpdateAfterBindAccelerationStructures)
+              : 0u;
+  const u32 binding_count = capacity_.acceleration_structures > 0 ? 4u : 3u;
   capacity_.sampled_images =
       std::min(config.sampled_images, indexing.maxDescriptorSetUpdateAfterBindSampledImages);
   capacity_.storage_images =
@@ -47,8 +57,8 @@ bool BindlessSet::create(const Device& device, const BindlessConfig& config, std
 
   const VkDescriptorBindingFlags flags =
       VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT | VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
-  const VkDescriptorBindingFlags binding_flags[3] = {flags, flags, flags};
-  VkDescriptorSetLayoutBinding bindings[3]{};
+  const VkDescriptorBindingFlags binding_flags[4] = {flags, flags, flags, flags};
+  VkDescriptorSetLayoutBinding bindings[4]{};
   bindings[0].binding = k_binding_sampled_images;
   bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
   bindings[0].descriptorCount = capacity_.sampled_images;
@@ -61,16 +71,20 @@ bool BindlessSet::create(const Device& device, const BindlessConfig& config, std
   bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
   bindings[2].descriptorCount = capacity_.samplers;
   bindings[2].stageFlags = VK_SHADER_STAGE_ALL;
+  bindings[3].binding = k_binding_acceleration_structures;
+  bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+  bindings[3].descriptorCount = capacity_.acceleration_structures;
+  bindings[3].stageFlags = VK_SHADER_STAGE_ALL;
 
   VkDescriptorSetLayoutBindingFlagsCreateInfo flags_info{};
   flags_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
-  flags_info.bindingCount = 3;
+  flags_info.bindingCount = binding_count;
   flags_info.pBindingFlags = binding_flags;
   VkDescriptorSetLayoutCreateInfo layout_info{};
   layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
   layout_info.pNext = &flags_info;
   layout_info.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
-  layout_info.bindingCount = 3;
+  layout_info.bindingCount = binding_count;
   layout_info.pBindings = bindings;
   if (const VkResult r = vkCreateDescriptorSetLayout(h.device, &layout_info, nullptr, &layout_);
       r != VK_SUCCESS) {
@@ -79,16 +93,17 @@ bool BindlessSet::create(const Device& device, const BindlessConfig& config, std
   }
   device_ = &device;
 
-  const VkDescriptorPoolSize sizes[3] = {
+  const VkDescriptorPoolSize sizes[4] = {
       {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, capacity_.sampled_images},
       {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, capacity_.storage_images},
       {VK_DESCRIPTOR_TYPE_SAMPLER, capacity_.samplers},
+      {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, capacity_.acceleration_structures},
   };
   VkDescriptorPoolCreateInfo pool_info{};
   pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
   pool_info.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
   pool_info.maxSets = 1;
-  pool_info.poolSizeCount = 3;
+  pool_info.poolSizeCount = binding_count;
   pool_info.pPoolSizes = sizes;
   if (const VkResult r = vkCreateDescriptorPool(h.device, &pool_info, nullptr, &pool_);
       r != VK_SUCCESS) {
@@ -128,10 +143,12 @@ bool BindlessSet::create(const Device& device, const BindlessConfig& config, std
   pools_[0].capacity = capacity_.sampled_images;
   pools_[1].capacity = capacity_.storage_images;
   pools_[2].capacity = capacity_.samplers;
+  pools_[3].capacity = capacity_.acceleration_structures;
   ENGINE_LOG_DEBUG(log_bindless, "bindless set created",
                    log::field("sampled_images", capacity_.sampled_images),
                    log::field("storage_images", capacity_.storage_images),
                    log::field("samplers", capacity_.samplers),
+                   log::field("acceleration_structures", capacity_.acceleration_structures),
                    log::field("push_constant_bytes", capacity_.push_constant_bytes));
   return true;
 }
@@ -224,6 +241,27 @@ u32 BindlessSet::add_sampler(VkSampler sampler) {
   return slot;
 }
 
+u32 BindlessSet::add_acceleration_structure(VkAccelerationStructureKHR structure) {
+  ENGINE_VERIFY(device_ != nullptr, "BindlessSet: not created");
+  if (!has_acceleration_structures()) return k_invalid_slot;
+  const u32 slot = allocate(k_binding_acceleration_structures);
+  if (slot == k_invalid_slot) return slot;
+  VkWriteDescriptorSetAccelerationStructureKHR structures{};
+  structures.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
+  structures.accelerationStructureCount = 1;
+  structures.pAccelerationStructures = &structure;
+  VkWriteDescriptorSet write{};
+  write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+  write.pNext = &structures;
+  write.dstSet = set_;
+  write.dstBinding = k_binding_acceleration_structures;
+  write.dstArrayElement = slot;
+  write.descriptorCount = 1;
+  write.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+  vkUpdateDescriptorSets(device_->handles().device, 1, &write, 0, nullptr);
+  return slot;
+}
+
 void BindlessSet::update_sampled_image(u32 slot, VkImageView view, VkImageLayout layout) {
   ENGINE_VERIFY(slot < pools_[k_binding_sampled_images].next,
                 "BindlessSet: slot was never allocated");
@@ -248,6 +286,12 @@ void BindlessSet::release_storage_image(u32 slot, u64 safe_after_value) {
 void BindlessSet::release_sampler(u32 slot, u64 safe_after_value) {
   if (slot == k_invalid_slot) return;
   pending_.push_back(Pending{k_binding_samplers, slot, safe_after_value});
+}
+
+void BindlessSet::release_acceleration_structure(u32 slot, u64 safe_after_value) {
+  ENGINE_VERIFY(slot < pools_[k_binding_acceleration_structures].next,
+                "BindlessSet: slot was never allocated");
+  pending_.push_back(Pending{k_binding_acceleration_structures, slot, safe_after_value});
 }
 
 void BindlessSet::recycle(u64 completed_value) {
