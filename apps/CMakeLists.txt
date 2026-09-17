@@ -2,3 +2,4 @@
 add_subdirectory(engine_host)
 add_subdirectory(engine_cli)
 add_subdirectory(engine_view)
+add_subdirectory(engine_content)
