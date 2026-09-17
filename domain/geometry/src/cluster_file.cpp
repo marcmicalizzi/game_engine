@@ -7,6 +7,19 @@
 #include <utility>
 
 namespace engine::geometry {
+
+u32 encode_alpha_word(u8 alpha_mode, bool double_sided, f32 alpha_cutoff) noexcept {
+  const f32 clamped = alpha_cutoff < 0.0f ? 0.0f : (alpha_cutoff > 1.0f ? 1.0f : alpha_cutoff);
+  const u32 cutoff = static_cast<u32>(clamped * 65535.0f + 0.5f);
+  return (alpha_mode & 3u) | (double_sided ? 4u : 0u) | (cutoff << 16);
+}
+
+u8 alpha_word_mode(u32 word) noexcept { return static_cast<u8>(word & 3u); }
+
+bool alpha_word_double_sided(u32 word) noexcept { return (word & 4u) != 0u; }
+
+f32 alpha_word_cutoff(u32 word) noexcept { return static_cast<f32>(word >> 16) / 65535.0f; }
+
 namespace {
 
 constexpr u64 k_header_bytes = sizeof(ClusterFileHeader);
@@ -399,9 +412,15 @@ bool read_cluster_file_memory(std::span<const u8> bytes, ClusterFileData& out, s
   }
   const i32 image_count = static_cast<i32>(result.image_paths.size());
   for (const ClusterFileMaterial& material : result.materials) {
-    if (material.base_color_image >= image_count || material.normal_image >= image_count) {
-      return fail(error, "cluster file material names an image outside the " +
-                             std::to_string(image_count) + " image paths");
+    const i32 slots[5] = {material.base_color_image, material.normal_image,
+                          decode_optional_image(material.metallic_roughness_image),
+                          decode_optional_image(material.occlusion_image),
+                          decode_optional_image(material.emissive_image)};
+    for (const i32 slot : slots) {
+      if (slot >= image_count) {
+        return fail(error, "cluster file material names an image outside the " +
+                               std::to_string(image_count) + " image paths");
+      }
     }
   }
 

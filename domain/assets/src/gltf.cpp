@@ -170,6 +170,7 @@ Mat4 local_transform(const cgltf_node& node) noexcept {
 
 i32 image_slot(const cgltf_data& data, const cgltf_texture_view& view) noexcept {
   if (view.texture == nullptr) return -1;
+  if (view.texcoord != 0) return -1;  // TEXCOORD_0 only; the mesh carries one UV set
   const cgltf_image* image = view.texture->image;
   if (image == nullptr && view.texture->has_basisu != 0) image = view.texture->basisu_image;
   if (image == nullptr && view.texture->has_webp != 0) image = view.texture->webp_image;
@@ -366,8 +367,22 @@ bool collect_materials(const cgltf_data& data, MeshData& out, std::string* error
       entry.metallic = pbr.metallic_factor;
       entry.roughness = pbr.roughness_factor;
       entry.base_color_image = image_slot(data, pbr.base_color_texture);
+      entry.metallic_roughness_image = image_slot(data, pbr.metallic_roughness_texture);
     }
+    entry.emissive =
+        Vec3(source.emissive_factor[0], source.emissive_factor[1], source.emissive_factor[2]);
     entry.normal_image = image_slot(data, source.normal_texture);
+    // cgltf only defaults a texture view's scale to 1 when the view is there to parse, so a
+    // material with no normal texture keeps this record's own default instead of a zero.
+    if (entry.normal_image >= 0) entry.normal_scale = source.normal_texture.scale;
+    entry.occlusion_image = image_slot(data, source.occlusion_texture);
+    entry.emissive_image = image_slot(data, source.emissive_texture);
+    entry.alpha_cutoff = source.alpha_cutoff;
+    entry.alpha_mode =
+        source.alpha_mode == cgltf_alpha_mode_mask
+            ? k_alpha_mask
+            : (source.alpha_mode == cgltf_alpha_mode_blend ? k_alpha_blend : k_alpha_opaque);
+    entry.double_sided = source.double_sided != 0;
     out.materials.push_back(std::move(entry));
   }
   return true;

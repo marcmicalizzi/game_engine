@@ -26,15 +26,29 @@
 
 namespace engine::assets {
 
+// glTF `alphaMode`, as the one byte `Material::alpha_mode` and the cluster container store it.
+inline constexpr u8 k_alpha_opaque = 0;  // alpha is ignored
+inline constexpr u8 k_alpha_mask = 1;    // alpha < alpha_cutoff is not drawn
+inline constexpr u8 k_alpha_blend = 2;   // alpha weighs the surface against what is behind it
+
 // Metallic-roughness material parameters. Texture slots are indices into MeshData::images, or
-// -1 when the material has no such texture. Factors default to the glTF defaults.
+// -1 when the material has no such texture; only TEXCOORD_0 is read, so a texture bound to any
+// other UV set arrives as -1. Factors default to the glTF defaults.
 struct Material {
   std::string name;
   Vec4 base_color{1.0f, 1.0f, 1.0f, 1.0f};
+  Vec3 emissive{0.0f, 0.0f, 0.0f};
   f32 metallic = 1.0f;
   f32 roughness = 1.0f;
+  f32 normal_scale = 1.0f;  // normalTexture.scale: how far the map tilts the normal
+  f32 alpha_cutoff = 0.5f;  // alphaCutoff, meaningful for k_alpha_mask
   i32 base_color_image = -1;
-  i32 normal_image = -1;
+  i32 metallic_roughness_image = -1;  // glTF packing: G roughness, B metallic
+  i32 normal_image = -1;              // tangent space, UNORM, xyz remapped to -1..1
+  i32 occlusion_image = -1;           // R ambient occlusion
+  i32 emissive_image = -1;
+  u8 alpha_mode = k_alpha_opaque;
+  bool double_sided = false;
 };
 
 // An image referenced by a material, undecoded. `bytes` holds the encoded file for images that

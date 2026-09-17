@@ -3,10 +3,11 @@
 // The CPU mirror of domain/gfx/shaders/brdf.slang and of the shading block of
 // visibility_resolve.slang, in double precision: the same Cook-Torrance BSDF (GGX, Smith
 // height-correlated visibility, Schlick Fresnel), the same windowed inverse-square falloff, the
-// same sky hemisphere, and the same display gamma. The shading and attributes tests render a
-// known surface on the GPU and compare the pixels against this, so the lighting model is pinned
-// by a second implementation rather than by numbers nobody can rederive. Changing brdf.slang
-// means changing this file in the same commit; the tests then say by how much the two disagree.
+// same sky hemisphere, the same tangent frame and normal-map perturbation, and the same display
+// gamma. The shading and attributes tests render a known surface on the GPU and compare the
+// pixels against this, so the lighting model is pinned by a second implementation rather than by
+// numbers nobody can rederive. Changing brdf.slang means changing this file in the same commit;
+// the tests then say by how much the two disagree.
 
 #include <core/base/types.h>
 #include <core/math/math.h>
@@ -123,6 +124,50 @@ inline double spot_attenuation(Dvec3 to_surface, Dvec3 direction, double cos_inn
   const double span = cos_inner - cos_outer;
   const double t = clamp01((dot(to_surface, direction) - cos_outer) / (span < 1e-4 ? 1e-4 : span));
   return t * t;
+}
+
+// The tangent frame of one triangle, from its own positions and UVs: the CPU mirror of
+// `tangent_frame` in visibility_resolve.slang. Solves dp1 = T du1 + B dv1, dp2 = T du2 + B dv2,
+// then Gram-Schmidt orthonormalizes against the shading normal. False when the UV area is
+// degenerate, which is when the resolve leaves the normal alone.
+inline bool tangent_frame(const Dvec3* p, const Vec2* uv, Dvec3 normal, Dvec3& tangent,
+                          Dvec3& bitangent) {
+  const Dvec3 edge1 = p[1] - p[0];
+  const Dvec3 edge2 = p[2] - p[0];
+  const double du1 = static_cast<double>(uv[1].x) - static_cast<double>(uv[0].x);
+  const double dv1 = static_cast<double>(uv[1].y) - static_cast<double>(uv[0].y);
+  const double du2 = static_cast<double>(uv[2].x) - static_cast<double>(uv[0].x);
+  const double dv2 = static_cast<double>(uv[2].y) - static_cast<double>(uv[0].y);
+  const double area = du1 * dv2 - du2 * dv1;
+  if (std::fabs(area) < 1e-12) return false;
+  const double r = 1.0 / area;
+  Dvec3 t = (edge1 * dv2 - edge2 * dv1) * r;
+  Dvec3 b = (edge2 * du1 - edge1 * du2) * r;
+  t = t - normal * dot(normal, t);
+  const double t_length = std::sqrt(dot(t, t));
+  if (t_length < 1e-12) return false;
+  tangent = t * (1.0 / t_length);
+  b = b - (normal * dot(normal, b) + tangent * dot(tangent, b));
+  const double b_length = std::sqrt(dot(b, b));
+  if (b_length < 1e-12) return false;
+  bitangent = b * (1.0 / b_length);
+  return true;
+}
+
+// The shading normal a tangent-space normal map gives, from the three UNORM bytes a sampler
+// returns: remap to -1..1, scale the tangential part, renormalize, rotate into the frame. The
+// mirror of the normal-map block of fs_resolve; `normal_scale` of 0 gives `normal` back.
+inline Dvec3 map_normal(Dvec3 normal, Dvec3 tangent, Dvec3 bitangent, const u8* texel,
+                        double normal_scale) {
+  Dvec3 n{static_cast<double>(texel[0]) / 255.0 * 2.0 - 1.0,
+          static_cast<double>(texel[1]) / 255.0 * 2.0 - 1.0,
+          static_cast<double>(texel[2]) / 255.0 * 2.0 - 1.0};
+  n.x *= normal_scale;
+  n.y *= normal_scale;
+  const double length_sq = dot(n, n);
+  if (length_sq < 1e-12) return normal;
+  n = n * (1.0 / std::sqrt(length_sq));
+  return normalize(tangent * n.x + bitangent * n.y + normal * n.z);
 }
 
 // The whole shaded branch of fs_resolve: sun, analytic lights, sky hemisphere (diffuse by normal

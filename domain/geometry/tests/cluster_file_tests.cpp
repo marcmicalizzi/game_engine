@@ -1,6 +1,8 @@
 // The .clusters container: a DAG plus its materials written, read back, and compared array by
-// array; the forward-compatibility rule (unknown sections are skipped); and the five ways a
-// file can be broken, each with its own message and an untouched output.
+// array (including the eight words of the material record that used to be padding, and a
+// material that leaves them zero as an older file does); the forward-compatibility rule
+// (unknown sections are skipped); and the five ways a file can be broken, each with its own
+// message and an untouched output.
 #include <core/hash/hash.h>
 #include <domain/geometry/cluster_file.h>
 #include <foundation/io/vfs.h>
@@ -63,9 +65,19 @@ void make_fixture(ClusterFileData& data, Vector<u32>& indices) {
   data.materials[0].metallic = 0.0f;
   data.materials[0].roughness = 0.85f;
   data.materials[0].base_color_image = 0;
+  // The eight words that used to be padding: the three one-based image slots, the emissive
+  // factor, the normal scale, and the packed alpha word.
+  data.materials[0].normal_image = 1;
+  data.materials[0].metallic_roughness_image = encode_optional_image(1);
+  data.materials[0].occlusion_image = encode_optional_image(1);
+  data.materials[0].emissive_image = encode_optional_image(0);
+  data.materials[0].emissive = Vec3{0.05f, 0.02f, 0.0f};
+  data.materials[0].normal_scale = 1.5f;
+  data.materials[0].alpha = encode_alpha_word(1 /* mask */, true, 0.25f);
   data.materials[1].base_color = Vec4{0.18f, 0.32f, 0.91f, 1.0f};
   data.materials[1].metallic = 1.0f;
   data.materials[1].roughness = 0.2f;
+  data.materials[1].alpha = 0;  // what a file written before the word existed reads
   data.image_paths.push_back("textures/sand_basecolor.png");
   data.image_paths.push_back("");  // an embedded image keeps its slot with an empty path
   data.source_path = "content/samples/Terrain/terrain.gltf";
@@ -187,6 +199,24 @@ TEST_CASE("cluster file: a DAG with materials survives a round trip array by arr
   CHECK_MESSAGE(validate_cluster_lod(read.mesh, indices, &error), error);
   CHECK(read.mesh.leaf_triangle_count == 8192);
   CHECK(read.mesh.level_cluster_counts.size() >= 3);
+
+  // The record's second half, which was padding: the slots come back one-based and decode to
+  // the -1 convention, the packed alpha word unpacks, and a zero word is opaque with no
+  // image anywhere, which is exactly what a file written before these words existed reads.
+  CHECK(decode_optional_image(read.materials[0].metallic_roughness_image) == 1);
+  CHECK(decode_optional_image(read.materials[0].occlusion_image) == 1);
+  CHECK(decode_optional_image(read.materials[0].emissive_image) == 0);
+  CHECK(length(read.materials[0].emissive - Vec3{0.05f, 0.02f, 0.0f}) < 1e-6f);
+  CHECK(std::fabs(read.materials[0].normal_scale - 1.5f) < 1e-6f);
+  CHECK(alpha_word_mode(read.materials[0].alpha) == 1);
+  CHECK(alpha_word_double_sided(read.materials[0].alpha));
+  CHECK(std::fabs(alpha_word_cutoff(read.materials[0].alpha) - 0.25f) < 1e-4f);
+  CHECK(decode_optional_image(read.materials[1].metallic_roughness_image) == -1);
+  CHECK(decode_optional_image(read.materials[1].occlusion_image) == -1);
+  CHECK(decode_optional_image(read.materials[1].emissive_image) == -1);
+  CHECK(alpha_word_mode(read.materials[1].alpha) == 0);
+  CHECK_FALSE(alpha_word_double_sided(read.materials[1].alpha));
+  CHECK(alpha_word_cutoff(read.materials[1].alpha) == 0.0f);
 
   // The bytes on disk say what the header promised, and the hash is the one computed in memory.
   std::string file;

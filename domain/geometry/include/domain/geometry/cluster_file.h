@@ -88,16 +88,55 @@ struct ClusterFileScalars {
   u32 pad[4] = {0, 0, 0, 0};  // the quantization origin and step, as float bits
 };
 
-// A material as the GPU wants it: 64 bytes, one cache line's half, indexed per cluster. The
-// image slots index ClusterFileData::image_paths, or are -1. The padding is zero today and is
-// where emissive, alpha cutoff, and the remaining texture slots go.
+// The alpha word, `ClusterFileMaterial::alpha` (what was pad[7]): the glTF alpha mode in bits
+// 0..1 (0 opaque, 1 mask, 2 blend, matching assets::k_alpha_*), "double sided" in bit 2, and the
+// alpha cutoff as a unorm16 in bits 16..31 — a cutoff is compared against an 8-bit alpha
+// channel, so 1/65535 of precision is more than the comparison can see, and packing it here is
+// what keeps the record at 64 bytes. A zero word is opaque, single sided, cutoff 0, which is
+// what a file written before the word existed reads.
+u32 encode_alpha_word(u8 alpha_mode, bool double_sided, f32 alpha_cutoff) noexcept;
+u8 alpha_word_mode(u32 word) noexcept;
+bool alpha_word_double_sided(u32 word) noexcept;
+f32 alpha_word_cutoff(u32 word) noexcept;
+
+// The image slots that live in the record's padding are **one-based** — 0 is "no image", and
+// slot n names image n - 1 — because a file written before they existed has zeros there and
+// zero has to mean none. The two original slots keep their -1 convention; these convert.
+inline u32 encode_optional_image(i32 index) noexcept {
+  return index < 0 ? 0u : static_cast<u32>(index) + 1u;
+}
+inline i32 decode_optional_image(u32 slot) noexcept {
+  return slot == 0 ? -1 : static_cast<i32>(slot - 1u);
+}
+
+// A material as the GPU wants it: 64 bytes, one cache line's half, indexed per cluster.
+//
+// The first 32 bytes are the original record and never move. The second 32 were `u32 pad[8]`
+// and are now named, one field per word, so that **every one of them reads as "none" or "off"
+// when it is zero** — which is exactly what an older file, whose padding was zero, gives:
+//
+//   pad[0]  metallic_roughness_image  one-based slot, 0 = none
+//   pad[1]  occlusion_image           one-based slot, 0 = none
+//   pad[2]  emissive_image            one-based slot, 0 = none
+//   pad[3]  emissive.x                f32 bits
+//   pad[4]  emissive.y
+//   pad[5]  emissive.z
+//   pad[6]  normal_scale              f32 bits; 0 leaves the normal map with nothing to do
+//   pad[7]  alpha                     see encode_alpha_word above
+//
+// `base_color_image` and `normal_image` index ClusterFileData::image_paths, or are -1.
 struct ClusterFileMaterial {
   Vec4 base_color{1.0f, 1.0f, 1.0f, 1.0f};
   f32 metallic = 1.0f;
   f32 roughness = 1.0f;
   i32 base_color_image = -1;
   i32 normal_image = -1;
-  u32 pad[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+  u32 metallic_roughness_image = 0;  // glTF packing: G roughness, B metallic
+  u32 occlusion_image = 0;           // R ambient occlusion
+  u32 emissive_image = 0;
+  Vec3 emissive{0.0f, 0.0f, 0.0f};
+  f32 normal_scale = 1.0f;
+  u32 alpha = 0;
 };
 
 static_assert(sizeof(ClusterFileHeader) == 32, "the cluster file header is 32 bytes on the wire");
@@ -148,7 +187,7 @@ u64 cluster_file_hash(const ClusterFileData& data);
 
 // Bumped whenever the builder or the container changes in a way that makes an old cache entry
 // wrong. It is not the file format version: a cache miss is cheap, a wrong mesh is not.
-inline constexpr u32 k_cluster_cache_version = 1;
+inline constexpr u32 k_cluster_cache_version = 2;  // 2: the material record's padding is filled
 
 // The cache key: the source's content hash (`assets::source_mesh_hash`) mixed with the build
 // options and the version above.

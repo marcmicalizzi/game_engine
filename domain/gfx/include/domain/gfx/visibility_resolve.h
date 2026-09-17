@@ -15,16 +15,23 @@ namespace engine::gfx {
 
 inline constexpr u32 k_no_texture = 0xFFFFFFFFu;
 
-// Mirrors ResolveMaterial in visibility_resolve.slang. 48 bytes.
+// Mirrors ResolveMaterial in visibility_resolve.slang. 64 bytes. Every texture slot is a
+// bindless sampled image read with the one `sampler` at `uv * uv_scale`. The albedo texture is
+// uploaded sRGB, so sampling returns linear color; the metallic-roughness and normal textures
+// are data, not color, and are uploaded UNORM.
 struct ResolveMaterial {
   Vec4 albedo{0.8f, 0.8f, 0.8f, 0.5f};  // rgb linear, w roughness
   Vec4 emissive{};                      // rgb linear, w metallic
-  u32 albedo_texture = k_no_texture;    // bindless sampled-image slot, multiplies albedo
+  u32 albedo_texture = k_no_texture;    // multiplies albedo
   u32 sampler = 0;                      // bindless sampler slot
   f32 uv_scale = 1.0f;
   u32 flags = 0;
+  u32 metallic_roughness_texture = k_no_texture;  // glTF packing: G roughness, B metallic
+  u32 normal_texture = k_no_texture;              // tangent space, UNORM, remapped to -1..1
+  f32 normal_scale = 1.0f;                        // scales the map's xy before it is normalized
+  u32 pad = 0;
 };
-static_assert(sizeof(ResolveMaterial) == 48);
+static_assert(sizeof(ResolveMaterial) == 64);
 
 inline constexpr f32 k_light_point = 0.0f;  // ResolveLight::direction_type.w
 inline constexpr f32 k_light_spot = 1.0f;

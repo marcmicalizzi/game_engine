@@ -198,6 +198,14 @@ int build(const BuildOptions& options) {
     material.roughness = source.roughness;
     material.base_color_image = source.base_color_image;
     material.normal_image = source.normal_image;
+    material.metallic_roughness_image =
+        geometry::encode_optional_image(source.metallic_roughness_image);
+    material.occlusion_image = geometry::encode_optional_image(source.occlusion_image);
+    material.emissive_image = geometry::encode_optional_image(source.emissive_image);
+    material.emissive = source.emissive;
+    material.normal_scale = source.normal_scale;
+    material.alpha =
+        geometry::encode_alpha_word(source.alpha_mode, source.double_sided, source.alpha_cutoff);
     data.materials.push_back(material);
   }
   // A primitive that names no material gets one appended default, shared by all of them.

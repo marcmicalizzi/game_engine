@@ -10,4 +10,4 @@ using namespace engine;
 
 ENGINE_EXPECT_SIZE(12, 4, assets::Primitive);
 
-ENGINE_EXPECT_SIZE(sizeof(std::string) + 32, 8, assets::Material);
+ENGINE_EXPECT_SIZE(sizeof(std::string) + 72, 8, assets::Material);

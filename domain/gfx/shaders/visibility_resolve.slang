@@ -5,11 +5,14 @@
 // perspective-correct with the vertices' clip-space w, reconstruct the surface position and
 // interpolate the per-vertex normal and UV (octahedral snorm16 normals, half-float UVs, from
 // geometry::VertexAttributes; without attributes the triangle plane gives a flat normal). A
-// per-cluster material index selects albedo, roughness, metallic, emissive, and an optional
-// albedo texture from the bindless set, and the shared BSDF (brdf.slang) shades a directional sun,
-// N analytic point and spot lights, and a sky hemisphere. Debug modes show cluster colors,
-// triangle shading, depth, normals, or UVs. Empty pixels (value 0: depth 0 is the far plane and
-// id 0 never occurs there) take the sky color.
+// per-cluster material index selects albedo, roughness, metallic, and emissive, and up to three
+// optional textures from the bindless set: albedo, a glTF metallic-roughness map (G roughness, B
+// metallic) that multiplies both factors, and a tangent-space normal map that perturbs the
+// shading normal in a frame solved from the hit triangle's own positions and UVs. The shared
+// BSDF (brdf.slang) then shades a directional sun, N analytic point and spot lights, and a sky
+// hemisphere. Debug modes show cluster colors, triangle shading, depth, the interpolated normal
+// before any map, or UVs. Empty pixels (value 0: depth 0 is the far plane and id 0 never occurs
+// there) take the sky color.
 
 #include "brdf.slang"
 
@@ -55,7 +58,7 @@ struct VertexAttributes {
   uint uv_half2;
 };
 
-// Mirrors gfx::ResolveMaterial (48 bytes).
+// Mirrors gfx::ResolveMaterial (64 bytes).
 struct ResolveMaterial {
   float4 albedo;    // rgb linear, w roughness
   float4 emissive;  // rgb linear, w metallic
@@ -63,6 +66,10 @@ struct ResolveMaterial {
   uint sampler;         // bindless sampler slot
   float uv_scale;
   uint flags;
+  uint metallic_roughness_texture;  // glTF packing: G roughness, B metallic
+  uint normal_texture;              // tangent space, UNORM, remapped to -1..1
+  float normal_scale;               // scales the map's xy before it is normalized
+  uint pad;
 };
 
 // Mirrors gfx::ResolveLight (64 bytes).
@@ -195,6 +202,53 @@ Surface reconstruct(ResolveParams* params, uint id, float2 pixel_center) {
   return s;
 }
 
+// The hit triangle's tangent frame, from its own positions and UVs: with dp1 = T du1 + B dv1 and
+// dp2 = T du2 + B dv2, the two edge deltas and the two UV deltas solve for T and B, which are
+// then Gram-Schmidt orthonormalized against the shading normal so the frame is orthonormal and
+// keeps the UV parameterization's handedness (a mirrored UV island gives a mirrored bitangent,
+// which is what a normal map authored on it expects). Returns false when there is no frame to
+// build — no vertex attributes, or a triangle whose UV area is degenerate, seam-collapsed or
+// simply absent — and the caller then leaves the normal alone rather than perturbing it by a
+// frame it invented. Reads the triangle a second time instead of reaching into reconstruct(),
+// so the surface reconstruction stays one self-contained block.
+bool tangent_frame(ResolveParams* params, uint id, float3 normal, out float3 tangent,
+                   out float3 bitangent) {
+  tangent = float3(1.0, 0.0, 0.0);
+  bitangent = float3(0.0, 0.0, 1.0);
+  if (params->attributes == 0) return false;
+  ClusterDesc* clusters = (ClusterDesc*)params->clusters;
+  uint* triangles = (uint*)params->triangles;
+  MeshDesc* positions = (MeshDesc*)params->mesh;
+  VertexAttributes* attributes = (VertexAttributes*)params->attributes;
+  const ClusterDesc cluster = clusters[id >> 8];
+  const uint packed = triangles[cluster.triangle_offset + (id & 0xff)];
+  float3 p[3];
+  float2 uv[3];
+  for (uint i = 0; i < 3; ++i) {
+    const uint vertex = cluster.vertex_offset + ((packed >> (8 * i)) & 0xff);
+    p[i] = load_position(positions, vertex);
+    uv[i] = decode_half2(attributes[vertex].uv_half2);
+  }
+  const float3 edge1 = p[1] - p[0];
+  const float3 edge2 = p[2] - p[0];
+  const float2 duv1 = uv[1] - uv[0];
+  const float2 duv2 = uv[2] - uv[0];
+  const float area = duv1.x * duv2.y - duv2.x * duv1.y;
+  if (abs(area) < 1e-12) return false;  // degenerate UVs: no frame, no perturbation
+  const float r = 1.0 / area;
+  float3 t = (edge1 * duv2.y - edge2 * duv1.y) * r;
+  float3 b = (edge2 * duv1.x - edge1 * duv2.x) * r;
+  t -= normal * dot(normal, t);
+  const float t_length = length(t);
+  if (t_length < 1e-12) return false;
+  tangent = t / t_length;
+  b -= normal * dot(normal, b) + tangent * dot(tangent, b);
+  const float b_length = length(b);
+  if (b_length < 1e-12) return false;
+  bitangent = b / b_length;
+  return true;
+}
+
 [shader("fragment")]
 float4 fs_resolve(FullscreenOut in) : SV_Target {
   ResolveParams* params = (ResolveParams*)g_push.params;
@@ -218,18 +272,50 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
   ResolveMaterial* materials = (ResolveMaterial*)params->materials;
   uint* cluster_materials = (uint*)params->cluster_materials;
   const ResolveMaterial material = materials[cluster_materials[id >> 8]];
+  const float2 uv = s.uv * material.uv_scale;
   float3 albedo = material.albedo.rgb;
   if (material.albedo_texture != k_no_texture) {
     albedo *= g_textures[NonUniformResourceIndex(material.albedo_texture)]
-                  .SampleLevel(g_samplers[NonUniformResourceIndex(material.sampler)], s.uv * material.uv_scale, 0)
+                  .SampleLevel(g_samplers[NonUniformResourceIndex(material.sampler)], uv, 0)
                   .rgb;
+  }
+  // glTF packs roughness in G and metallic in B of one texture, and both multiply their factor.
+  float roughness = material.albedo.w;
+  float metallic = material.emissive.w;
+  if (material.metallic_roughness_texture != k_no_texture) {
+    const float4 mr =
+        g_textures[NonUniformResourceIndex(material.metallic_roughness_texture)]
+            .SampleLevel(g_samplers[NonUniformResourceIndex(material.sampler)], uv, 0);
+    roughness *= mr.g;
+    metallic *= mr.b;
+  }
+  // The normal map: a UNORM texture whose xyz are a unit vector remapped to 0..1 in the
+  // triangle's own tangent frame. `normal_scale` widens or flattens the tangential part before
+  // the vector is renormalized, so 0 gives the interpolated normal back exactly.
+  float3 shading_normal = s.normal;
+  if (material.normal_texture != k_no_texture) {
+    float3 tangent;
+    float3 bitangent;
+    if (tangent_frame(params, id, s.normal, tangent, bitangent)) {
+      float3 tangent_normal =
+          g_textures[NonUniformResourceIndex(material.normal_texture)]
+              .SampleLevel(g_samplers[NonUniformResourceIndex(material.sampler)], uv, 0)
+              .xyz * 2.0 - 1.0;
+      tangent_normal.xy *= material.normal_scale;
+      const float length_sq = dot(tangent_normal, tangent_normal);
+      if (length_sq > 1e-12) {
+        tangent_normal *= rsqrt(length_sq);
+        shading_normal = normalize(tangent * tangent_normal.x + bitangent * tangent_normal.y +
+                                   s.normal * tangent_normal.z);
+      }
+    }
   }
   BrdfSurface surface;
   surface.albedo = albedo;
-  surface.normal = s.normal;
+  surface.normal = shading_normal;
   surface.view = normalize(params->camera.xyz - s.position);
-  surface.roughness = material.albedo.w;
-  surface.metallic = material.emissive.w;
+  surface.roughness = roughness;
+  surface.metallic = metallic;
 
   // The sun: one direction, one intensity, no falloff.
   float3 color = brdf_direct(surface, params->sun.xyz, float3(params->sun.w));
@@ -252,7 +338,7 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
   // The sky hemisphere is the whole indirect term until the lighting passes exist: the diffuse
   // albedo takes it by normal elevation, and a Fresnel-weighted sliver of it at the view angle
   // keeps metals, which have no diffuse lobe, from going black.
-  const float3 ambient = params->sky.rgb * lerp(0.15, 0.35, s.normal.y * 0.5 + 0.5);
+  const float3 ambient = params->sky.rgb * lerp(0.15, 0.35, surface.normal.y * 0.5 + 0.5);
   const float n_dot_v = max(dot(surface.normal, surface.view), 0.0);
   color += ambient * (albedo * (1.0 - surface.metallic) +
                       brdf_f_schlick(brdf_f0(albedo, surface.metallic), n_dot_v));

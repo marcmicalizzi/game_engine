@@ -140,19 +140,29 @@ std::string cube_json(const std::string& buffer_uri, int mode = 4) {
       " \"indices\": 4, \"material\": 1}\n";
   json += "  ]}],\n";
   json += "  \"materials\": [\n";
+  // "painted" carries every slot the importer reads and one image in two roles (the usual ORM
+  // packing); "bumped" carries a scaled normal map, is blended, and binds its occlusion texture
+  // to TEXCOORD_1, which the importer refuses because the mesh keeps one UV set.
   json +=
       "    {\"name\": \"painted\", \"pbrMetallicRoughness\": {"
       "\"baseColorFactor\": [0.25, 0.5, 0.75, 1.0], \"metallicFactor\": 0.25,"
-      " \"roughnessFactor\": 0.75, \"baseColorTexture\": {\"index\": 0}}},\n";
+      " \"roughnessFactor\": 0.75, \"baseColorTexture\": {\"index\": 0},"
+      " \"metallicRoughnessTexture\": {\"index\": 2}},"
+      " \"occlusionTexture\": {\"index\": 2}, \"emissiveTexture\": {\"index\": 3},"
+      " \"emissiveFactor\": [0.1, 0.2, 0.3], \"alphaMode\": \"MASK\", \"alphaCutoff\": 0.25,"
+      " \"doubleSided\": true},\n";
   json +=
       "    {\"name\": \"bumped\", \"pbrMetallicRoughness\": {"
       "\"baseColorFactor\": [1.0, 0.5, 0.25, 1.0], \"metallicFactor\": 0.0,"
-      " \"roughnessFactor\": 1.0}, \"normalTexture\": {\"index\": 1}}\n";
+      " \"roughnessFactor\": 1.0}, \"normalTexture\": {\"index\": 1, \"scale\": 2.0},"
+      " \"occlusionTexture\": {\"index\": 3, \"texCoord\": 1}, \"alphaMode\": \"BLEND\"}\n";
   json += "  ],\n";
-  json += "  \"textures\": [{\"source\": 0}, {\"source\": 1}],\n";
+  json += "  \"textures\": [{\"source\": 0}, {\"source\": 1}, {\"source\": 2}, {\"source\": 3}],\n";
   json += "  \"images\": [\n";
   json += "    {\"name\": \"albedo\", \"uri\": \"" + image_uri + "\"},\n";
-  json += "    {\"name\": \"bumps\", \"uri\": \"textures/normal%20map.png\"}\n";
+  json += "    {\"name\": \"bumps\", \"uri\": \"textures/normal%20map.png\"},\n";
+  json += "    {\"name\": \"orm\", \"uri\": \"textures/orm.png\"},\n";
+  json += "    {\"name\": \"glow\", \"uri\": \"textures/glow.png\"}\n";
   json += "  ],\n";
   json += "  \"accessors\": [\n";
   json +=
@@ -272,6 +282,16 @@ void check_cube_materials(const MeshData& mesh) {
   CHECK(std::fabs(mesh.materials[0].roughness - 0.75f) < 1e-6f);
   CHECK(mesh.materials[0].base_color_image == 0);
   CHECK(mesh.materials[0].normal_image == -1);
+  // One image in two roles keeps one slot; emissive, the alpha test, and double-sidedness all
+  // come through, and a material with no normal texture keeps the default scale of 1.
+  CHECK(mesh.materials[0].metallic_roughness_image == 2);
+  CHECK(mesh.materials[0].occlusion_image == 2);
+  CHECK(mesh.materials[0].emissive_image == 3);
+  CHECK(length(mesh.materials[0].emissive - Vec3(0.1f, 0.2f, 0.3f)) < 1e-6f);
+  CHECK(std::fabs(mesh.materials[0].normal_scale - 1.0f) < 1e-6f);
+  CHECK(mesh.materials[0].alpha_mode == k_alpha_mask);
+  CHECK(std::fabs(mesh.materials[0].alpha_cutoff - 0.25f) < 1e-6f);
+  CHECK(mesh.materials[0].double_sided);
 
   CHECK(mesh.materials[1].name == "bumped");
   CHECK(length(mesh.materials[1].base_color - Vec4(1.0f, 0.5f, 0.25f, 1.0f)) < 1e-6f);
@@ -279,10 +299,20 @@ void check_cube_materials(const MeshData& mesh) {
   CHECK(std::fabs(mesh.materials[1].roughness - 1.0f) < 1e-6f);
   CHECK(mesh.materials[1].base_color_image == -1);
   CHECK(mesh.materials[1].normal_image == 1);
+  CHECK(std::fabs(mesh.materials[1].normal_scale - 2.0f) < 1e-6f);
+  CHECK(mesh.materials[1].metallic_roughness_image == -1);
+  CHECK(mesh.materials[1].emissive_image == -1);
+  CHECK(length(mesh.materials[1].emissive) < 1e-6f);
+  CHECK(mesh.materials[1].alpha_mode == k_alpha_blend);
+  CHECK(std::fabs(mesh.materials[1].alpha_cutoff - 0.5f) < 1e-6f);  // the glTF default
+  CHECK_FALSE(mesh.materials[1].double_sided);
+  // Its occlusion texture names TEXCOORD_1, which the importer refuses rather than sampling it
+  // by the only UV set the mesh has.
+  CHECK(mesh.materials[1].occlusion_image == -1);
 
-  // The embedded image arrives undecoded, with its media type; the external one as a URI with
-  // its percent escapes resolved.
-  REQUIRE(mesh.images.size() == 2u);
+  // The embedded image arrives undecoded, with its media type; the external ones as URIs with
+  // their percent escapes resolved.
+  REQUIRE(mesh.images.size() == 4u);
   CHECK(mesh.images[0].name == "albedo");
   CHECK(mesh.images[0].mime_type == "image/png");
   CHECK(mesh.images[0].uri.empty());
@@ -291,6 +321,10 @@ void check_cube_materials(const MeshData& mesh) {
   CHECK(mesh.images[1].name == "bumps");
   CHECK(mesh.images[1].uri == "textures/normal map.png");
   CHECK(mesh.images[1].bytes.empty());
+  CHECK(mesh.images[2].name == "orm");
+  CHECK(mesh.images[2].uri == "textures/orm.png");
+  CHECK(mesh.images[3].name == "glow");
+  CHECK(mesh.images[3].uri == "textures/glow.png");
 }
 
 }  // namespace

@@ -1,9 +1,12 @@
-// Per-vertex attributes through the material resolve: a quad whose vertex normals are tilted
-// 45 degrees must shade by those normals rather than its plane, the normals view must show them,
-// and a 2x2 checker texture sampled by the quad's UVs through the bindless set must land in the
-// right quadrants. The expected colors come from the CPU mirror of the BSDF (brdf_reference.h),
-// the same reference the shading test uses, evaluated with the tilted normal and the sampled
-// texel as albedo. Skips without mesh shaders or 64-bit buffer atomics.
+// Per-vertex attributes and the material textures they address, through the material resolve. A
+// quad whose vertex normals are tilted 45 degrees must shade by those normals rather than its
+// plane, the normals view must show them, and a 2x2 checker texture sampled by the quad's UVs
+// through the bindless set must land in the right quadrants; then a flat quad must take its
+// roughness and metallic from a 2x2 metallic-roughness map, and its shading normal from a
+// tangent-space normal map. The expected colors come from the CPU mirror of the BSDF
+// (brdf_reference.h), the same reference the shading test uses, evaluated with the normal, the
+// roughness, the metallic, and the albedo the maps produce. Skips without mesh shaders or 64-bit
+// buffer atomics.
 #include "brdf_reference.h"
 
 #include <domain/geometry/cluster.h>
@@ -17,6 +20,7 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <shaders/cluster_mesh.spv.h>
@@ -318,6 +322,377 @@ TEST_CASE("material resolve: vertex normals steer the shading and textures sampl
   for (gfx::BufferResource* b :
        {&host_color, &params, &vis, &textured_index, &plain_index, &materials, &attributes,
         &triangles, &mesh_buffer, &quantized, &clusters}) {
+    gfx::destroy_buffer(device, *b);
+  }
+  frames.destroy();
+  device.destroy();
+}
+
+// The two data textures of the material path, on a quad whose vertex normals are the plane's, so
+// that everything the shading does to the normal comes from the map and not from the geometry: a
+// 2x2 metallic-roughness map (glTF packs roughness in G and metallic in B) whose quadrants are a
+// rough dielectric, a smooth dielectric, a rough metal, and a smooth metal, and a constant normal
+// map tilted 45 degrees about the tangent axis, once at normal_scale 1 and once at 0. The
+// expected colors again come from brdf_reference.h, now with the quadrant's roughness and
+// metallic and with the tangent frame and the perturbed normal it computes the way the shader
+// does. Skips without mesh shaders or 64-bit buffer atomics.
+TEST_CASE("material resolve: metallic-roughness and normal maps") {
+  gfx::Device device;
+  std::string error;
+  if (!device.create(gfx::DeviceOptions{}, &error)) {
+    MESSAGE("device unavailable: " << error);
+    return;
+  }
+  if (!device.features().mesh_shader || !device.features().buffer_int64_atomics) {
+    MESSAGE("no mesh shaders or 64-bit buffer atomics on " << device.adapter().name);
+    device.destroy();
+    return;
+  }
+
+  // The same quad as above, but with the plane's own normal at every vertex.
+  const Vec3 positions[4] = {Vec3{-5.0f, 0.0f, -5.0f}, Vec3{5.0f, 0.0f, -5.0f},
+                             Vec3{5.0f, 0.0f, 5.0f}, Vec3{-5.0f, 0.0f, 5.0f}};
+  const u32 indices[6] = {0, 2, 1, 0, 3, 2};
+  const Vec3 flat{0.0f, 1.0f, 0.0f};
+  const Vec3 normals[4] = {flat, flat, flat, flat};
+  const Vec2 uvs[4] = {Vec2{0.0f, 0.0f}, Vec2{1.0f, 0.0f}, Vec2{1.0f, 1.0f}, Vec2{0.0f, 1.0f}};
+  geometry::AttributeSource source;
+  source.normals = normals;
+  source.uvs = uvs;
+  geometry::ClusterMesh mesh;
+  REQUIRE(geometry::build_clusters(positions, indices, geometry::ClusterBuildOptions{}, mesh,
+                                   &error, source));
+
+  // The metallic-roughness map: R unused, G roughness, B metallic, A unused. Texel order is
+  // screen top-left, top-right, bottom-left, bottom-right, as the checker above established.
+  constexpr u8 k_rough = 230;      // 0.902 perceptual roughness
+  constexpr u8 k_smooth = 38;      // 0.149
+  constexpr u8 k_conductor = 255;  // metallic 1
+  constexpr u8 k_dielectric = 0;   // metallic 0
+  const u8 mr_texels[16] = {0, k_rough, k_dielectric, 255, 0, k_smooth, k_dielectric, 255,
+                            0, k_rough, k_conductor,  255, 0, k_smooth, k_conductor,  255};
+  // The normal map: one tangent-space direction everywhere, 45 degrees from the surface normal
+  // about the tangent axis, which is +x here, so it leans the shading normal towards +z.
+  constexpr u8 k_zero = 128;  // 0 remapped to 0..255
+  constexpr u8 k_cos45 = 218;
+  const u8 normal_texels[16] = {k_zero, k_cos45, k_cos45, 255, k_zero, k_cos45, k_cos45, 255,
+                                k_zero, k_cos45, k_cos45, 255, k_zero, k_cos45, k_cos45, 255};
+  gfx::ImageResource mr_image;
+  gfx::ImageResource normal_image;
+  REQUIRE_MESSAGE(gfx::upload_image_2d(device, 2, 2, VK_FORMAT_R8G8B8A8_UNORM, mr_texels,
+                                       sizeof(mr_texels), mr_image, &error),
+                  error);
+  REQUIRE_MESSAGE(gfx::upload_image_2d(device, 2, 2, VK_FORMAT_R8G8B8A8_UNORM, normal_texels,
+                                       sizeof(normal_texels), normal_image, &error),
+                  error);
+  VkImageView mr_view = VK_NULL_HANDLE;
+  VkImageView normal_view = VK_NULL_HANDLE;
+  REQUIRE(gfx::create_image_view(device, mr_image, mr_view, &error));
+  REQUIRE(gfx::create_image_view(device, normal_image, normal_view, &error));
+  VkSampler nearest = VK_NULL_HANDLE;
+  REQUIRE(gfx::create_sampler(device, VK_FILTER_NEAREST, nearest, &error));
+  gfx::BindlessSet bindless;
+  REQUIRE(bindless.create(device, gfx::BindlessConfig{}, &error));
+  const u32 mr_slot = bindless.add_sampled_image(mr_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+  const u32 normal_slot =
+      bindless.add_sampled_image(normal_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+  const u32 sampler_slot = bindless.add_sampler(nearest);
+
+  // Four materials, one per block: plain, metallic-roughness mapped (both factors 1, so the
+  // texture passes straight through), normal mapped, and normal mapped with the scale at zero.
+  constexpr u32 k_blocks = 4;
+  const Vec3 base_color{0.8f, 0.6f, 0.3f};
+  constexpr f32 k_plain_roughness = 0.6f;
+  gfx::ResolveMaterial material_set[k_blocks];
+  for (gfx::ResolveMaterial& material : material_set) {
+    material.albedo = Vec4{base_color, k_plain_roughness};
+    material.emissive = Vec4{};  // dielectric
+    material.sampler = sampler_slot;
+  }
+  material_set[1].albedo = Vec4{base_color, 1.0f};          // the map is the whole roughness
+  material_set[1].emissive = Vec4{0.0f, 0.0f, 0.0f, 1.0f};  // ... and the whole metallic
+  material_set[1].metallic_roughness_texture = mr_slot;
+  material_set[2].normal_texture = normal_slot;
+  material_set[2].normal_scale = 1.0f;
+  material_set[3].normal_texture = normal_slot;
+  material_set[3].normal_scale = 0.0f;
+  u32 material_index[k_blocks];
+  for (u32 i = 0; i < k_blocks; ++i)
+    material_index[i] = i;
+
+  constexpr VkBufferUsageFlags k_storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+  gfx::BufferResource clusters;
+  gfx::BufferResource quantized;
+  gfx::BufferResource mesh_buffer;
+  gfx::BufferResource triangles;
+  gfx::BufferResource attributes;
+  gfx::BufferResource materials;
+  gfx::BufferResource cluster_materials;
+  REQUIRE(gfx::upload_buffer(device, mesh.clusters.data(), sizeof(geometry::ClusterDesc), k_storage,
+                             clusters, &error));
+  REQUIRE(gfx::upload_buffer(device, mesh.quantized.data(), mesh.quantized.size() * sizeof(u16),
+                             k_storage, quantized, &error));
+  gfx::MeshDesc mesh_block{};
+  mesh_block.quant = Vec4{mesh.quant_origin, mesh.quant_scale};
+  mesh_block.quantized = quantized.address;
+  REQUIRE(
+      gfx::upload_buffer(device, &mesh_block, sizeof(mesh_block), k_storage, mesh_buffer, &error));
+  REQUIRE(gfx::upload_buffer(device, mesh.triangles.data(), mesh.triangles.size() * sizeof(u32),
+                             k_storage, triangles, &error));
+  REQUIRE(gfx::upload_buffer(device, mesh.attributes.data(),
+                             mesh.attributes.size() * sizeof(geometry::VertexAttributes), k_storage,
+                             attributes, &error));
+  REQUIRE(
+      gfx::upload_buffer(device, material_set, sizeof(material_set), k_storage, materials, &error));
+  REQUIRE(gfx::upload_buffer(device, material_index, sizeof(material_index), k_storage,
+                             cluster_materials, &error));
+
+  constexpr u32 k_size = 128;
+  const Vec3 eye{0.0f, 10.0f, 0.0f};
+  const Vec3 target{};
+  const Vec3 up{0.0f, 0.0f, -1.0f};
+  const f32 fov_y = radians(60.0f);
+  const Mat4 view_proj = perspective_reversed_z(fov_y, 1.0f, 0.1f) * look_at(eye, target, up);
+  gfx::BufferResource vis;
+  gfx::BufferResource params;
+  gfx::BufferResource host_color;
+  REQUIRE(gfx::create_buffer(
+      device, u64{k_size} * k_size * sizeof(u64),
+      k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+      false, vis, &error));
+  REQUIRE(gfx::create_buffer(device, sizeof(gfx::ResolveParams) * k_blocks,
+                             k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, true, params,
+                             &error));
+  REQUIRE(gfx::create_buffer(device, u64{k_size} * k_size * 4 * k_blocks,
+                             VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, host_color, &error));
+
+  gfx::FrameContext frames;
+  REQUIRE(frames.create(device, 2, &error));
+  VkShaderModule mesh_module = gfx::create_shader_module(
+      device, shaders::k_cluster_mesh_spirv, shaders::k_cluster_mesh_spirv_size, &error);
+  VkShaderModule resolve_module =
+      gfx::create_shader_module(device, shaders::k_visibility_resolve_spirv,
+                                shaders::k_visibility_resolve_spirv_size, &error);
+  REQUIRE(mesh_module != VK_NULL_HANDLE);
+  REQUIRE(resolve_module != VK_NULL_HANDLE);
+  gfx::MeshPipelineDesc hw_desc;
+  hw_desc.mesh = mesh_module;
+  hw_desc.fragment = mesh_module;
+  hw_desc.fragment_entry = "fs_visibility";
+  hw_desc.layout = bindless.pipeline_layout();
+  VkPipeline hw_pipeline = VK_NULL_HANDLE;
+  REQUIRE(gfx::create_mesh_pipeline(device, hw_desc, hw_pipeline, &error));
+  gfx::GraphicsPipelineDesc resolve_desc;
+  resolve_desc.vertex = resolve_module;
+  resolve_desc.vertex_entry = "vs_fullscreen";
+  resolve_desc.fragment = resolve_module;
+  resolve_desc.fragment_entry = "fs_resolve";
+  resolve_desc.layout = bindless.pipeline_layout();
+  resolve_desc.color_format = VK_FORMAT_R8G8B8A8_UNORM;
+  VkPipeline resolve_pipeline = VK_NULL_HANDLE;
+  REQUIRE(gfx::create_graphics_pipeline(device, resolve_desc, resolve_pipeline, &error));
+
+  gfx::ClusterDrawParams draw{};
+  draw.view_proj = view_proj;
+  draw.clusters = clusters.address;
+  draw.mesh = mesh_buffer.address;
+  draw.triangles = triangles.address;
+  draw.cluster_count = 1;
+  draw.visibility = vis.address;
+  draw.width = k_size;
+  draw.height = k_size;
+
+  const Vec4 sky{0.2f, 0.3f, 0.4f, 1.0f};
+  const Vec3 sun_dir{0.0f, 1.0f, 0.0f};
+  gfx::ResolveParams base{};
+  base.sky = sky;
+  base.sun = Vec4{sun_dir, 1.0f};
+  base.camera = Vec4{eye, 0.0f};
+  base.view_proj = view_proj;
+  base.visibility = vis.address;
+  base.clusters = clusters.address;
+  base.mesh = mesh_buffer.address;
+  base.triangles = triangles.address;
+  base.materials = materials.address;
+  base.attributes = attributes.address;
+  base.mode = static_cast<u32>(gfx::ResolveMode::Shaded);
+  base.width = k_size;
+  base.height = k_size;
+  // One block per material: the quad is a single cluster, so a block selects its material by
+  // pointing the resolve at its own word of the cluster-material array.
+  auto* blocks = static_cast<gfx::ResolveParams*>(params.mapped);
+  u64 block_address[k_blocks];
+  for (u32 i = 0; i < k_blocks; ++i) {
+    blocks[i] = base;
+    blocks[i].cluster_materials = cluster_materials.address + i * sizeof(u32);
+    block_address[i] = params.address + i * sizeof(gfx::ResolveParams);
+  }
+
+  gfx::RenderGraph graph(device);
+  const gfx::RgBuffer rg_vis = graph.import_buffer("vis", vis);
+  const gfx::RgBuffer rg_host = graph.import_buffer("host", host_color);
+  gfx::RgImage targets[k_blocks];
+  for (u32 i = 0; i < k_blocks; ++i) {
+    targets[i] = graph.create_image(
+        "resolved", {k_size, k_size, VK_FORMAT_R8G8B8A8_UNORM,
+                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT});
+  }
+  graph.add_pass(
+      "clear", gfx::PassKind::Transfer,
+      [&](gfx::PassBuilder& b) { b.write(rg_vis, gfx::Access::TransferWrite); },
+      [&](VkCommandBuffer cb, gfx::RenderGraph&) {
+        vkCmdFillBuffer(cb, vis.buffer, 0, VK_WHOLE_SIZE, 0);
+      });
+  graph.add_pass(
+      "visibility", gfx::PassKind::Raster,
+      [&](gfx::PassBuilder& b) {
+        b.render_area(k_size, k_size);
+        b.write(rg_vis, gfx::Access::FragmentReadWrite);
+      },
+      [&](VkCommandBuffer cb, gfx::RenderGraph&) {
+        vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, hw_pipeline);
+        bindless.bind(cb, VK_PIPELINE_BIND_POINT_GRAPHICS);
+        vkCmdPushConstants(cb, bindless.pipeline_layout(), VK_SHADER_STAGE_ALL, 0, sizeof(draw),
+                           &draw);
+        vkCmdDrawMeshTasksEXT(cb, 1, 1, 1);
+      });
+  for (u32 i = 0; i < k_blocks; ++i) {
+    graph.add_pass(
+        "resolve", gfx::PassKind::Raster,
+        [&, i](gfx::PassBuilder& b) {
+          VkClearColorValue clear{};
+          b.color_attachment(targets[i], VK_ATTACHMENT_LOAD_OP_CLEAR, clear);
+          b.read(rg_vis, gfx::Access::FragmentRead);
+        },
+        [&, i](VkCommandBuffer cb, gfx::RenderGraph&) {
+          vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, resolve_pipeline);
+          bindless.bind(cb, VK_PIPELINE_BIND_POINT_GRAPHICS);
+          vkCmdPushConstants(cb, bindless.pipeline_layout(), VK_SHADER_STAGE_ALL, 0, sizeof(u64),
+                             &block_address[i]);
+          vkCmdDraw(cb, 3, 1, 0, 0);
+        });
+  }
+  graph.add_pass(
+      "readback", gfx::PassKind::Transfer,
+      [&](gfx::PassBuilder& b) {
+        for (u32 i = 0; i < k_blocks; ++i)
+          b.read(targets[i], gfx::Access::TransferRead);
+        b.write(rg_host, gfx::Access::TransferWrite);
+      },
+      [&](VkCommandBuffer cb, gfx::RenderGraph& g) {
+        for (u32 i = 0; i < k_blocks; ++i) {
+          VkBufferImageCopy region{};
+          region.bufferOffset = u64{k_size} * k_size * 4 * i;
+          region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+          region.imageExtent = {k_size, k_size, 1};
+          vkCmdCopyImageToBuffer(cb, g.image(targets[i]).image, g.image_layout(targets[i]),
+                                 host_color.buffer, 1, &region);
+        }
+      });
+  REQUIRE_MESSAGE(graph.compile(&error), error);
+  VkCommandBuffer commands = frames.begin_frame();
+  graph.execute(commands);
+  REQUIRE(frames.wait(frames.end_frame()));
+
+  auto pixel = [&](u32 image, u32 x, u32 y) {
+    return static_cast<const u8*>(host_color.mapped) +
+           (u64{k_size} * k_size * image + y * k_size + x) * 4;
+  };
+  // The tangent frame the resolve solves for, from the quad's own corners and UVs: +x and +z
+  // here, which is what makes the map's y lean the shading normal towards +z.
+  const ref::Dvec3 corner[3] = {ref::dvec3(positions[0]), ref::dvec3(positions[1]),
+                                ref::dvec3(positions[2])};
+  ref::Dvec3 tangent;
+  ref::Dvec3 bitangent;
+  REQUIRE(ref::tangent_frame(corner, uvs, ref::dvec3(flat), tangent, bitangent));
+  int worst = 0;
+  auto expect_pixel = [&](u32 image, u32 x, u32 y, ref::Dvec3 normal, double roughness,
+                          double metallic, const std::string& what) {
+    ref::Surface s;
+    s.position = ref::pixel_on_plane(ref::dvec3(eye), ref::dvec3(target), ref::dvec3(up),
+                                     static_cast<double>(fov_y), 1.0, k_size, k_size, x, y, 0.0);
+    s.normal = normal;
+    s.view = ref::normalize(ref::dvec3(eye) - s.position);
+    s.albedo = ref::dvec3(base_color);
+    s.roughness = roughness;
+    s.metallic = metallic;
+    const ref::Dvec3 linear =
+        ref::shade(s, ref::dvec3(sun_dir), 1.0, ref::dvec3(sky), nullptr, 0, ref::Dvec3{});
+    const u8 expect[3] = {ref::display(linear.x), ref::display(linear.y), ref::display(linear.z)};
+    const u8* p = pixel(image, x, y);
+    int here = 0;
+    for (u32 c = 0; c < 3; ++c)
+      here = std::max(here, std::abs(int{p[c]} - int{expect[c]}));
+    worst = std::max(worst, here);
+    CHECK_MESSAGE(here <= 2, what << " at " << x << "," << y << ": gpu " << int{p[0]} << ","
+                                  << int{p[1]} << "," << int{p[2]} << " reference "
+                                  << int{expect[0]} << "," << int{expect[1]} << ","
+                                  << int{expect[2]});
+    MESSAGE(what << ": gpu " << int{p[0]} << "," << int{p[1]} << "," << int{p[2]} << " reference "
+                 << int{expect[0]} << "," << int{expect[1]} << "," << int{expect[2]} << " (max "
+                 << here << ")");
+  };
+
+  const u32 cx = k_size / 2;
+  const u32 cy = k_size / 2;
+  const u32 quarter = static_cast<u32>(5.0f / (10.0f * std::tan(radians(30.0f))) * k_size * 0.25f);
+  const ref::Dvec3 flat_normal = ref::dvec3(flat);
+  // The metallic-roughness map, quadrant by quadrant: G is the roughness, B the metallic, and
+  // both multiply factors of 1, so the reference shades exactly what the texel says.
+  const double rough = static_cast<double>(k_rough) / 255.0;
+  const double smooth = static_cast<double>(k_smooth) / 255.0;
+  expect_pixel(1, cx - quarter, cy - quarter, flat_normal, rough, 0.0, "rough dielectric");
+  expect_pixel(1, cx + quarter, cy - quarter, flat_normal, smooth, 0.0, "smooth dielectric");
+  expect_pixel(1, cx - quarter, cy + quarter, flat_normal, rough, 1.0, "rough metal");
+  expect_pixel(1, cx + quarter, cy + quarter, flat_normal, smooth, 1.0, "smooth metal");
+  // The four quadrants must not be one picture, or the comparisons above prove nothing.
+  const u8* rough_metal = pixel(1, cx - quarter, cy + quarter);
+  const u8* smooth_metal = pixel(1, cx + quarter, cy + quarter);
+  const u8* rough_dielectric = pixel(1, cx - quarter, cy - quarter);
+  CHECK(std::abs(int{rough_metal[0]} - int{smooth_metal[0]}) > 8);
+  CHECK(std::abs(int{rough_metal[0]} - int{rough_dielectric[0]}) > 8);
+
+  // The normal map: the shading normal is the map's direction in the quad's tangent frame, and
+  // it is not the plane's, which the difference against the unmapped render shows.
+  const ref::Dvec3 mapped = ref::map_normal(flat_normal, tangent, bitangent, normal_texels, 1.0);
+  expect_pixel(2, cx, cy, mapped, static_cast<double>(k_plain_roughness), 0.0, "normal map");
+  MESSAGE("the normal map tilts the shading normal to " << mapped.x << "," << mapped.y << ","
+                                                        << mapped.z);
+  const u8* plain_center = pixel(0, cx, cy);
+  const u8* mapped_center = pixel(2, cx, cy);
+  CHECK(std::abs(int{plain_center[0]} - int{mapped_center[0]}) > 8);
+
+  // normal_scale 0 scales the map's tangential part away, so the render is the unmapped one.
+  expect_pixel(0, cx, cy, flat_normal, static_cast<double>(k_plain_roughness), 0.0, "plain");
+  expect_pixel(3, cx, cy, flat_normal, static_cast<double>(k_plain_roughness), 0.0,
+               "normal map at scale 0");
+  int scale_zero = 0;
+  for (u32 y = 0; y < k_size; ++y) {
+    for (u32 x = 0; x < k_size; ++x) {
+      const u8* a = pixel(0, x, y);
+      const u8* b = pixel(3, x, y);
+      for (u32 c = 0; c < 3; ++c)
+        scale_zero = std::max(scale_zero, std::abs(int{a[c]} - int{b[c]}));
+    }
+  }
+  CHECK_MESSAGE(scale_zero <= 1, "normal_scale 0 changed the picture by " << scale_zero);
+  MESSAGE("normal_scale 0 against no normal map at all: worst pixel difference " << scale_zero
+                                                                                 << " of 255");
+  MESSAGE("worst reference-vs-GPU difference over the maps: " << worst << " of 255");
+
+  graph.reset();
+  gfx::destroy_pipeline(device, resolve_pipeline);
+  gfx::destroy_pipeline(device, hw_pipeline);
+  gfx::destroy_shader_module(device, resolve_module);
+  gfx::destroy_shader_module(device, mesh_module);
+  bindless.destroy();
+  gfx::destroy_sampler(device, nearest);
+  gfx::destroy_image_view(device, normal_view);
+  gfx::destroy_image_view(device, mr_view);
+  gfx::destroy_image(device, normal_image);
+  gfx::destroy_image(device, mr_image);
+  for (gfx::BufferResource* b : {&host_color, &params, &vis, &cluster_materials, &materials,
+                                 &attributes, &triangles, &mesh_buffer, &quantized, &clusters}) {
     gfx::destroy_buffer(device, *b);
   }
   frames.destroy();

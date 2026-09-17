@@ -77,8 +77,9 @@ constexpr const char* k_usage =
     "  --capture <png>  write the last frame as a PNG (implies --frames 60 when unset)\n"
     "  --grid <n>       heightfield resolution, n x n vertices (default 257)\n"
     "  --mesh <file>    render a mesh instead of the heightfield: a glTF 2.0 or GLB file (one\n"
-    "                   cluster DAG per primitive, materials and base-color textures from the\n"
-    "                   file), or a .clusters container that already holds one\n"
+    "                   cluster DAG per primitive; materials with their base-color,\n"
+    "                   metallic-roughness, and normal textures from the file), or a .clusters\n"
+    "                   container that already holds one\n"
     "  --no-cache       always build a glTF from source; do not read or write ddc/clusters\n"
     "  --ddc <dir>      the derived-data root (default: <repo>/ddc, found beside AGENTS.md)\n"
     "  --lod <px>       screen-space error threshold in pixels for LOD selection (default 1)\n"
@@ -92,8 +93,8 @@ constexpr const char* k_usage =
     "                   both split by size; rt: ray queries against cluster acceleration structures\n"
     "                   built every frame from the cull output (NVIDIA RTX only)\n"
     "  --sw-px <px>     auto mode: clusters narrower than this go to the software rasterizer (32)\n"
-    "  --view <mode>    id, tri, depth, shaded (default: materials with vertex normals and textures under\n"
-    "                   a sun), normals, uv\n"
+    "  --view <mode>    id, tri, depth, shaded (default: materials with vertex normals, textures,\n"
+    "                   and normal maps under a sun), normals, uv\n"
     "  --orbit <d>      orbit at a fixed distance instead of breathing between 8 and 36 units;\n"
     "                   distances scale with the scene radius (10 for the heightfield)\n"
     "  --log <spec>     log levels, e.g. \"info,gfx=debug\" (stderr shows warnings and up)\n"
@@ -295,6 +296,14 @@ void write_cluster_cache(const std::string& path, const std::string& source,
     material.roughness = source_material.roughness;
     material.base_color_image = source_material.base_color_image;
     material.normal_image = source_material.normal_image;
+    material.metallic_roughness_image =
+        geometry::encode_optional_image(source_material.metallic_roughness_image);
+    material.occlusion_image = geometry::encode_optional_image(source_material.occlusion_image);
+    material.emissive_image = geometry::encode_optional_image(source_material.emissive_image);
+    material.emissive = source_material.emissive;
+    material.normal_scale = source_material.normal_scale;
+    material.alpha = geometry::encode_alpha_word(
+        source_material.alpha_mode, source_material.double_sided, source_material.alpha_cutoff);
     data.materials.push_back(material);
   }
   constexpr u32 k_no_default = ~u32{0};
@@ -691,6 +700,15 @@ int main(int argc, char** argv) {
           material.roughness = source.roughness;
           material.base_color_image = source.base_color_image;
           material.normal_image = source.normal_image;
+          material.metallic_roughness_image =
+              geometry::decode_optional_image(source.metallic_roughness_image);
+          material.occlusion_image = geometry::decode_optional_image(source.occlusion_image);
+          material.emissive_image = geometry::decode_optional_image(source.emissive_image);
+          material.emissive = source.emissive;
+          material.normal_scale = source.normal_scale;
+          material.alpha_mode = geometry::alpha_word_mode(source.alpha);
+          material.double_sided = geometry::alpha_word_double_sided(source.alpha);
+          material.alpha_cutoff = geometry::alpha_word_cutoff(source.alpha);
           mesh_data.materials.push_back(std::move(material));
           part_material.push_back(static_cast<i32>(part_material.size()));
         }
@@ -889,14 +907,17 @@ int main(int argc, char** argv) {
         cluster_material[i] = y < -0.15f ? 0u : y < 0.65f ? 1u : 2u;
       }
     } else {
-      // Materials from the file, plus a default for primitives without one. Base-color images
-      // are decoded on the CPU (embedded bytes or a file beside the glTF) and uploaded as sRGB
-      // so sampling returns linear color; an image that fails to decode leaves its material
-      // untextured with a warning.
+      // Materials from the file, plus a default for primitives without one. Images are decoded
+      // on the CPU (embedded bytes or a file beside the glTF) and uploaded once each, into one
+      // bindless slot every material that names the image shares; an image that fails to decode
+      // leaves its slot empty with a warning. Base color is color and goes up as sRGB, so that
+      // sampling returns linear; metallic-roughness and normal maps are data, not color, and go
+      // up UNORM. A glTF never gives one image both roles, so the format an image is first
+      // asked for is the one it keeps.
       Vector<u32> image_slot(mesh_data.images.size(), gfx::k_no_texture);
       Vector<bool> image_tried(mesh_data.images.size(), false);
       const std::string& mesh_dir = image_dir;  // the glTF's directory, or the container's
-      auto texture_slot_of = [&](i32 image_index) -> u32 {
+      auto texture_slot_of = [&](i32 image_index, VkFormat format) -> u32 {
         if (image_index < 0 || static_cast<u32>(image_index) >= mesh_data.images.size())
           return gfx::k_no_texture;
         const u32 index = static_cast<u32>(image_index);
@@ -917,9 +938,9 @@ int main(int argc, char** argv) {
         }
         gfx::ImageResource uploaded;
         VkImageView view = VK_NULL_HANDLE;
-        if (ok && (!gfx::upload_image_2d(device, decoded.width, decoded.height,
-                                         VK_FORMAT_R8G8B8A8_SRGB, decoded.pixels.data(),
-                                         decoded.pixels.size(), uploaded, &image_error) ||
+        if (ok && (!gfx::upload_image_2d(device, decoded.width, decoded.height, format,
+                                         decoded.pixels.data(), decoded.pixels.size(), uploaded,
+                                         &image_error) ||
                    !gfx::create_image_view(device, uploaded, view, &image_error))) {
           if (uploaded.image != VK_NULL_HANDLE) gfx::destroy_image(device, uploaded);
           ok = false;
@@ -939,8 +960,16 @@ int main(int argc, char** argv) {
         gfx::ResolveMaterial material;
         material.albedo =
             Vec4{source.base_color.x, source.base_color.y, source.base_color.z, source.roughness};
-        material.emissive = Vec4{0.0f, 0.0f, 0.0f, source.metallic};
-        material.albedo_texture = texture_slot_of(source.base_color_image);
+        // The emissive factor goes through as a constant term. A material that modulates it with
+        // an emissive texture is left unlit instead of glowing at full factor everywhere: the
+        // resolve has no emissive slot yet, and too dark is a smaller lie than too bright.
+        const Vec3 emissive = source.emissive_image < 0 ? source.emissive : Vec3{};
+        material.emissive = Vec4{emissive, source.metallic};
+        material.albedo_texture = texture_slot_of(source.base_color_image, VK_FORMAT_R8G8B8A8_SRGB);
+        material.metallic_roughness_texture =
+            texture_slot_of(source.metallic_roughness_image, VK_FORMAT_R8G8B8A8_UNORM);
+        material.normal_texture = texture_slot_of(source.normal_image, VK_FORMAT_R8G8B8A8_UNORM);
+        material.normal_scale = source.normal_scale;
         material.sampler = sampler_slot;
         material.uv_scale = 1.0f;
         materials.push_back(material);
