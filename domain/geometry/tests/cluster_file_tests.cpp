@@ -137,7 +137,8 @@ std::string with_unknown_section(const std::string& file) {
                 sizeof(ClusterFileSection));
     if (sections[i].offset < first_payload) first_payload = sections[i].offset;
   }
-  const u64 shift = 48;
+  // Payloads move to the first 16-byte boundary after the table grown by one record.
+  const u64 shift = (table_end + sizeof(ClusterFileSection) + 15) / 16 * 16 - first_payload;
 
   std::string out;
   out.append(file, 0, sizeof(ClusterFileHeader));
@@ -151,7 +152,7 @@ std::string with_unknown_section(const std::string& file) {
   unknown.element_count = 4;
   const usize unknown_record_at = out.size();
   out.append(reinterpret_cast<const char*>(&unknown), sizeof(unknown));
-  out.append(static_cast<usize>(table_end + shift) - out.size(), '\0');
+  out.append(static_cast<usize>(first_payload + shift) - out.size(), '\0');
   out.append(file, static_cast<usize>(first_payload),
              static_cast<usize>(header.total_bytes - first_payload));
   while (out.size() % 16 != 0)
@@ -193,7 +194,7 @@ TEST_CASE("cluster file: a DAG with materials survives a round trip array by arr
   CHECK(std::memcmp(header.magic, "CLST", 4) == 0);
   CHECK(header.version == k_cluster_file_version);
   CHECK(header.flags == 0);
-  CHECK(header.section_count == 12);
+  CHECK(header.section_count == 13);
   CHECK(header.total_bytes == file.size());
   CHECK(header.content_hash == cluster_file_hash(data));
   for (u32 i = 0; i < header.section_count; ++i) {

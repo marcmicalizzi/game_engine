@@ -57,6 +57,11 @@ u64 encode(const ClusterFileData& data, std::string& out) {
   scalars.leaf_triangle_count = data.mesh.leaf_triangle_count;
   scalars.source_vertex_count = data.mesh.mesh.source_vertex_count;
   scalars.source_triangle_count = data.mesh.mesh.source_triangle_count;
+  // The 16-bit grid: origin in pad[0..2], step in pad[3], as float bits.
+  std::memcpy(&scalars.pad[0], &data.mesh.mesh.quant_origin.x, sizeof(f32));
+  std::memcpy(&scalars.pad[1], &data.mesh.mesh.quant_origin.y, sizeof(f32));
+  std::memcpy(&scalars.pad[2], &data.mesh.mesh.quant_origin.z, sizeof(f32));
+  std::memcpy(&scalars.pad[3], &data.mesh.mesh.quant_scale, sizeof(f32));
 
   const ClusterMesh& mesh = data.mesh.mesh;
   Vector<Payload> payloads;
@@ -84,6 +89,8 @@ u64 encode(const ClusterFileData& data, std::string& out) {
   add_section(payloads, ClusterSection::Strings, 1u, strings.size(), strings.data());
   add_section(payloads, ClusterSection::Scalars, static_cast<u32>(sizeof(ClusterFileScalars)), 1u,
               &scalars);
+  add_section(payloads, ClusterSection::Quantized, static_cast<u32>(sizeof(u16)),
+              mesh.quantized.size(), mesh.quantized.data());
 
   u64 offset = k_header_bytes + k_record_bytes * payloads.size();
   for (Payload& payload : payloads) {
@@ -277,6 +284,22 @@ bool read_cluster_file_memory(std::span<const u8> bytes, ClusterFileData& out, s
   result.mesh.leaf_triangle_count = scalars.leaf_triangle_count;
   result.mesh.mesh.source_vertex_count = scalars.source_vertex_count;
   result.mesh.mesh.source_triangle_count = scalars.source_triangle_count;
+  // The quantized stream and its grid; a file from before the section existed is requantized.
+  if (const ClusterFileSection* quantized = found[static_cast<u32>(ClusterSection::Quantized)];
+      quantized != nullptr) {
+    if (quantized->element_size != sizeof(u16)) {
+      return fail(error, "cluster file section quantized has " +
+                             std::to_string(quantized->element_size) +
+                             "-byte elements, expected 2");
+    }
+    copy_section(bytes, *quantized, result.mesh.mesh.quantized);
+    std::memcpy(&result.mesh.mesh.quant_origin.x, &scalars.pad[0], sizeof(f32));
+    std::memcpy(&result.mesh.mesh.quant_origin.y, &scalars.pad[1], sizeof(f32));
+    std::memcpy(&result.mesh.mesh.quant_origin.z, &scalars.pad[2], sizeof(f32));
+    std::memcpy(&result.mesh.mesh.quant_scale, &scalars.pad[3], sizeof(f32));
+  } else {
+    quantize_positions(result.mesh.mesh);
+  }
 
   // The material map, the materials, and the image paths are optional: a mesh may carry none.
   if (const ClusterFileSection* materials = found[static_cast<u32>(ClusterSection::Materials)];

@@ -281,10 +281,10 @@ TEST_CASE("engine-content: build writes a cluster file that reads back and valid
   const JsonValue* sections = described.result.find("sections");
   REQUIRE(sections != nullptr);
   REQUIRE(sections->is_array());
-  CHECK(sections->size() == 12);
+  CHECK(sections->size() == 13);
   for (const char* name : {"clusters", "lod", "vertices", "attributes", "triangles",
                            "vertex_source", "level_cluster_counts", "cluster_material", "materials",
-                           "image_paths", "strings", "scalars"}) {
+                           "image_paths", "strings", "scalars", "quantized"}) {
     bool found = false;
     for (usize i = 0; i < sections->size(); ++i) {
       const JsonValue* section_name = (*sections)[i].find("name");
