@@ -30,8 +30,12 @@ inline Dvec3 cross(Dvec3 a, Dvec3 b) {
 }
 inline Dvec3 normalize(Dvec3 v) { return v * (1.0 / std::sqrt(dot(v, v))); }
 inline Dvec3 splat(double s) { return {s, s, s}; }
-inline Dvec3 dvec3(Vec3 v) { return {double{v.x}, double{v.y}, double{v.z}}; }
-inline Dvec3 dvec3(Vec4 v) { return {double{v.x}, double{v.y}, double{v.z}}; }
+inline Dvec3 dvec3(Vec3 v) {
+  return {static_cast<double>(v.x), static_cast<double>(v.y), static_cast<double>(v.z)};
+}
+inline Dvec3 dvec3(Vec4 v) {
+  return {static_cast<double>(v.x), static_cast<double>(v.y), static_cast<double>(v.z)};
+}
 inline double clamp01(double v) { return v < 0.0 ? 0.0 : (v > 1.0 ? 1.0 : v); }
 inline Dvec3 lerp(Dvec3 a, Dvec3 b, double t) { return a + (b - a) * t; }
 

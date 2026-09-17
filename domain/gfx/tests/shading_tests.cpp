@@ -281,19 +281,19 @@ TEST_CASE("material resolve: shading matches a CPU reference over roughness and 
   auto surface_at = [&](u32 x, u32 y, const gfx::ResolveMaterial& m) {
     ref::Surface s;
     s.position = ref::pixel_on_plane(ref::dvec3(eye), ref::dvec3(target), ref::dvec3(up),
-                                     double{fov_y}, 1.0, k_size, k_size, x, y, 0.0);
+                                     static_cast<double>(fov_y), 1.0, k_size, k_size, x, y, 0.0);
     s.normal = ref::Dvec3{0.0, 1.0, 0.0};
     s.view = ref::normalize(ref::dvec3(eye) - s.position);
     s.albedo = ref::dvec3(m.albedo);
-    s.roughness = double{m.albedo.w};
-    s.metallic = double{m.emissive.w};
+    s.roughness = static_cast<double>(m.albedo.w);
+    s.metallic = static_cast<double>(m.emissive.w);
     return s;
   };
   ref::Light near_light;
   near_light.position = ref::dvec3(light_table[0].position_radius);
-  near_light.radius = double{light_table[0].position_radius.w};
+  near_light.radius = static_cast<double>(light_table[0].position_radius.w);
   near_light.color = ref::dvec3(light_table[0].color_intensity);
-  near_light.intensity = double{light_table[0].color_intensity.w};
+  near_light.intensity = static_cast<double>(light_table[0].color_intensity.w);
   const ref::Dvec3 sky_ref = ref::dvec3(sky);
   const ref::Dvec3 sun_ref = ref::dvec3(sun_dir);
 

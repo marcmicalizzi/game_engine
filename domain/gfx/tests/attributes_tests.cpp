@@ -265,11 +265,11 @@ TEST_CASE("material resolve: vertex normals steer the shading and textures sampl
   auto expect_pixel = [&](u32 image, u32 x, u32 y, Vec3 albedo, const std::string& what) {
     ref::Surface s;
     s.position = ref::pixel_on_plane(ref::dvec3(eye), ref::dvec3(target), ref::dvec3(up),
-                                     double{fov_y}, 1.0, k_size, k_size, x, y, 0.0);
+                                     static_cast<double>(fov_y), 1.0, k_size, k_size, x, y, 0.0);
     s.normal = ref::normalize(ref::dvec3(tilted));
     s.view = ref::normalize(ref::dvec3(eye) - s.position);
     s.albedo = ref::dvec3(albedo);
-    s.roughness = double{material_set[0].albedo.w};
+    s.roughness = static_cast<double>(material_set[0].albedo.w);
     s.metallic = 0.0;
     const ref::Dvec3 linear =
         ref::shade(s, ref::dvec3(sun_dir), 1.0, ref::dvec3(sky), nullptr, 0, ref::Dvec3{});
