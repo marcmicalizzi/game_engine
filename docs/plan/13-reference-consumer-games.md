@@ -5,6 +5,8 @@ Status: recorded 15 September 2026 from the project owner's descriptions (the se
 - **Consumer A, Desert Survival** stresses sparse, effectively infinite, long-distance, dynamically deforming terrain while keeping conventional asset density low.
 - **Consumer B, Island City** stresses finite but extreme density, interiors, NPCs, visibility, streaming, simulation, and world consequences, and contains a continuous transition into natural terrain.
 
+[§13.7](#137-reference-interactions) adds **reference interactions**: single moments from games outside the roadmap that the engine must nonetheless support, recorded so that a capability is judged against something specific rather than against its own abstraction.
+
 Where the desert asks how cheaply the engine can represent enormous sparse space, Island City asks how much complexity the engine can manage when almost everything nearby matters. Together they cover the risk row "engine generality without a game" ([10 §10.4](10-roadmap-risks.md#104-major-technical-risks)).
 
 ## 13.1 Consumer A — Desert Survival
@@ -186,7 +188,43 @@ Density and complexity: dense asset rendering, massive instance counts, dense ma
 | E17 | RT cost of a street with 2,000 visible windows under relevance LOD versus full fidelity | Downtown block scene; acceleration-structure memory and trace time per policy | RT geometry LOD policy and BLAS budgets |
 | E18 | Yield of a hierarchical building grammar: fraction of generated units passing validators (reachability, furniture fit, light, egress) without repair | 200 generated buildings across archetypes | Grammar design; validator set; agent review loop |
 
-## 13.7 Open design questions for the owner
+## 13.7 Reference interactions
+
+The two consumer games are acceptance cases for scale and density. A **reference interaction** is smaller and does a different job: one concrete moment, from a game the engine must be able to support, written down so that a capability is judged against something specific instead of against its own abstraction. A reference interaction is not a commitment to build the game it comes from, and it is not a third consumer game. It is a row in [05 §5.15](05-simulation.md#515-capability-inventory) with a scene attached.
+
+### R1 — Reaching into a fleshy cavity (third-party reference: Lovecraftian horror)
+
+Horror is neither of the two consumer games. It is a genre the engine must support without the engine being built for it, which is exactly why this interaction is useful: it comes from outside the roadmap and has to fall out of the general primitive.
+
+**The moment.** The player reaches into a fleshy cavity in a wall to take an object. The tissue deforms as the arm enters and resists slightly. It clings to the arm as the arm withdraws, stretching after it before letting go. It recoils to rest. A harder surround limits how far the cavity can stretch, so the opening does not balloon. Folds and other authored features shape where it creases and where it does not. All of it is simulation, not a canned animation, and none of it is allowed to show up as a frame-time spike at the moment the player touches it.
+
+**Mapping onto the primitive** ([05 §5.14](05-simulation.md#514-deformable-volumes), ADR-0026), which is the point of the case — no part of it is new machinery:
+
+| The moment | The mechanism |
+|---|---|
+| The cavity | One closed cage with a pressure constraint on the cavity boundary |
+| The harder surround | A stiff outer layer whose elements are attached to the static wall; softer inner layers under it |
+| The arm | A kinematic collider set — a capsule chain driven by the animation system, which the solver reads and never writes ([05 §5.11](05-simulation.md#511-integration-notes)) |
+| Resistance on insertion | Soft-against-rigid contact plus layer stiffness, pressure, and volume preservation |
+| Clinging on withdrawal | `adhesive` contact: attachment constraints that form on dwell, hold to a break stress, and release over a release time |
+| Recoil to rest | Damping and volume preservation, with no scripted return pose |
+| Folds where they were authored | Cage material and element-size overrides where the fold is structural, strain-driven wrinkle and fold maps where it is surface detail ([04 §4.3](04-renderer.md#43-geometry)) |
+| Distance | The authored animation is the **far LOD tier** (T2) and only that; it is never what the player interacts with |
+
+**Requirements it puts on the engine.** Each already has a home; the interaction is what says they have to work together.
+
+1. **Adhesion as a contact model kind**, with per-material tack, break stress, dwell, and release time, deterministic at tick boundaries ([05 §5.14](05-simulation.md#514-deformable-volumes), [07 §7.10](07-content-pipeline.md#710-deformable-volume-assets)).
+2. **Pressure in a closed cage**, which is the particle-and-shell cage kind or a lattice cage with a cavity region.
+3. **Layered stiffness in one cage**, stiff attached outer layer over softer inner layers, with `bonded` boundaries and a stiffness ratio inside the conditioning limit E23 measures.
+4. **Attachment to static world geometry**, not only to bones and bodies: the surround is a wall, so `attachment.target` must resolve to a static collider as well.
+5. **Strain-driven surface detail**, so folds read at material resolution and the cage stays small enough to afford at T0.
+6. **A kinematic collider set driven by animation**, with the one-way flow of ADR-0026 intact: the arm drives the tissue, the tissue never moves the arm's bones. Anything the player should *feel* pushing back is a gameplay force on the character, not deformation writing a bone.
+7. **A near-tier budget**: this is one T0 volume at arm's length filling much of the screen, and it must fit inside the 1.5 ms deformable tick budget and the per-frame GPU budget of [05 §5.14](05-simulation.md#514-deformable-volumes) alongside whatever else the scene is doing. The provisional allowance is 150 µs of the tick for the cavity itself (invented, and what E26 measures).
+8. **No cost when absent**: a game with no deformable volumes pays nothing for any of the above ([11 §11.10](11-performance-principles.md#1110-absent-capabilities-are-free)).
+
+**Where it is tested.** Experiment **E26** ([09 §9.6](09-testing-profiling.md#96-deformable-volume-experiments), [10 §10.5](10-roadmap-risks.md#105-experiments-to-run-before-committing)) is this interaction as a measurable scene, and it becomes a permanent test scene with a golden replay like the other deformable-volume scenarios. It decides the adhesion defaults and whether strain-driven detail is needed at hero distance.
+
+## 13.8 Open design questions for the owner
 
 Desert Survival: day length; death rules (one run, permadeath); ruin interiors (interior cells) or shells; keyboard and mouse versus controller; crash site always tile (0, 0) with an authored layer and everything else procedural (recommended); whether shared-seed leaderboards ship in the first release; whether temperature exposure is in.
 
