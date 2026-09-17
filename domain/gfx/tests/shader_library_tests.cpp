@@ -77,7 +77,7 @@ TEST_CASE("shader reflection: entry points, workgroup sizes, bindings, push cons
 
   REQUIRE(gfx::reflect_spirv(
       words_of(shaders::k_cluster_mesh_spirv, shaders::k_cluster_mesh_spirv_size), r, &error));
-  REQUIRE(r.entry_points.size() == 3);
+  REQUIRE(r.entry_points.size() == 4);
   const gfx::ShaderEntryPoint* mesh = r.entry("mesh_main");
   REQUIRE(mesh != nullptr);
   CHECK(mesh->stage == VK_SHADER_STAGE_MESH_BIT_EXT);
@@ -85,9 +85,11 @@ TEST_CASE("shader reflection: entry points, workgroup sizes, bindings, push cons
   REQUIRE(r.entry("fs_main") != nullptr);
   CHECK(r.entry("fs_main")->stage == VK_SHADER_STAGE_FRAGMENT_BIT);
   CHECK(r.entry("fs_color") != nullptr);
+  CHECK(r.entry("fs_visibility") != nullptr);
   CHECK(r.entry("missing") == nullptr);
-  // float4x4 + three uint64 addresses + uint + pad + the visible-list address.
-  CHECK(r.push_constant_bytes == 104);
+  // float4x4, three addresses, count and pad, the visible list, the visibility buffer, width,
+  // height.
+  CHECK(r.push_constant_bytes == 120);
   CHECK(r.bindings.empty());
 
   REQUIRE(gfx::reflect_spirv(words_of(shaders::k_triangle_spirv, shaders::k_triangle_spirv_size), r,
@@ -140,12 +142,12 @@ TEST_CASE("shader library: embedded shaders, the build manifest, and hot reload 
     REQUIRE_MESSAGE(file_mesh != nullptr, error);
     CHECK(file_mesh->from_file);
     CHECK(file_mesh->hash == embedded_mesh->hash);
-    CHECK(file_mesh->reflection.entry_points.size() == 3);
+    CHECK(file_mesh->reflection.entry_points.size() == 4);
   }
   std::string description;
   library.describe(description);
   CHECK(description.find("cluster_mesh (file) entries: mesh_main[128x1x1]") != std::string::npos);
-  CHECK(description.find("push:104") != std::string::npos);
+  CHECK(description.find("push:120") != std::string::npos);
 
   // Hot reload: a temporary shader compiled on first use, recompiled when its source changes,
   // and kept at the last good version when a save does not compile.

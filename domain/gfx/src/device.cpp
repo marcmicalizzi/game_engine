@@ -403,6 +403,7 @@ bool Device::create(const DeviceOptions& options, std::string* error) {
   e12.shaderFloat16 = v12.shaderFloat16;
   e12.samplerFilterMinmax = v12.samplerFilterMinmax;
   e12.shaderBufferInt64Atomics = v12.shaderBufferInt64Atomics;
+  impl->features.buffer_int64_atomics = v12.shaderBufferInt64Atomics == VK_TRUE;
   VkPhysicalDeviceVulkan13Features e13{};
   e13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
   e13.dynamicRendering = VK_TRUE;

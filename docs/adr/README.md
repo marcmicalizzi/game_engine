@@ -27,3 +27,4 @@ Numbered, dated, and immutable once accepted. To change a decision, write a new 
 | [0021](0021-build-system-and-tooling.md) | CMake + Ninja, `engine_module()` manifests, PowerShell and C++ tooling, no Python | Accepted |
 | [0022](0022-consumer-game-order.md) | Desert Survival is the first consumer game; Island City the second | Accepted |
 | [0023](0023-bindless-resources.md) | Bindless resources through descriptor indexing and device addresses; descriptor buffers optional | Accepted |
+| [0024](0024-hardware-rasterization-first.md) | Hardware rasterization for all clusters in Phase 1; software rasterizer experimental (E1 result) | Accepted |

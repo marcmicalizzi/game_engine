@@ -16,7 +16,7 @@ Core: platform, memory, containers, math, topology-aware jobs, logging and telem
 Exit: an agent opens a session, creates objects, commits, diffs, and rolls back through `engine-cli`. **Met 2026-09-15** by the end-to-end suite in `apps/engine_cli/tests`, one process per step; remaining Phase 0 items (Tracy, CI on both platforms, the schemac negative-test harness) follow.
 
 **Phase 1 — Renderer core (6–10 focused weeks)**
-Thin RHI over Vulkan 1.3/1.4, render graph, bindless, GPU-resident scene; Windows and Linux CI from the first commit of this phase. Cluster build pipeline (meshoptimizer clusterlod) → pages → streaming. GPU culling and LOD selection; mesh-shader plus software-raster visibility buffer; material resolve; simple direct lighting. Reference GPU path tracer with shared BSDFs; FLIP harness. `ViewSet` multi-view; extreme-resolution CI; capture API with entity-ID buffer. Experiments E1, E2 (month 1), E9.
+Thin RHI over Vulkan 1.3/1.4, render graph, bindless, GPU-resident scene; Windows and Linux CI from the first commit of this phase. Cluster build pipeline (meshoptimizer clusterlod) → pages → streaming. GPU culling and LOD selection; mesh-shader visibility buffer (the software rasterizer exists but stays off the critical path after E1, ADR-0024); material resolve; simple direct lighting. Reference GPU path tracer with shared BSDFs; FLIP harness. `ViewSet` multi-view; extreme-resolution CI; capture API with entity-ID buffer. Experiments E1, E2 (month 1), E9.
 Exit: test scenes render through clusters at 4K and 11520×2160; reference comparisons run nightly; agents can capture and benchmark.
 
 **Phase 2 — RT lighting (6–10 focused weeks, overlaps Phase 3)**
@@ -61,7 +61,7 @@ Critical paths: P0 → P1 → P2 → P7 for fidelity; P0 → P3 → P6 → P7 fo
 | Risk | Impact | Mitigation |
 |---|---|---|
 | Cluster geometry ↔ RT integration (LOD mismatch, AS cost, vendor lock) | The core renderer promise | E2 early; fallback path designed in; cluster format encodable to future formats |
-| Software rasterizer plus mesh-shader pipeline complexity | Phase 1 slip | `vk_lod_clusters` and Bevy meshlets as references; meshoptimizer clusterlod; keep a hardware-only path working |
+| Software rasterizer plus mesh-shader pipeline complexity | Phase 1 slip | Resolved by E1 (ADR-0024): hardware-only in Phase 1; the software rasterizer is an experimental path with a test that keeps it pixel-compatible |
 | Agent-written C++ defect rate | Everything | Sanitizers, fuzzing, codegen, small modules, strict layering; measure per phase; Rust as the fallback |
 | Engine generality without a game | Wasted systems | The two consumer games in [13](13-reference-consumer-games.md) are the concrete consumers (Desert Survival is the recommended first shippable; Island City the density benchmark); Phases 6–7 drive requirements; no system without a consumer in the roadmap |
 | ML asset quality and pass rate | Content phase | E10 early; validate-and-repair pipeline; procedural for volume; character standardization |
@@ -77,7 +77,7 @@ Critical paths: P0 → P1 → P2 → P7 for fidelity; P0 → P3 → P6 → P7 fo
 
 | ID | Question | Method | Decides |
 |---|---|---|---|
-| E1 | Where is the hardware-vs-software raster crossover for small clusters on target GPUs? | Prototype both on synthetic cluster sets; measure at 4K and 11520×2160 | Whether software raster is in Phase 1 |
+| E1 | Where is the hardware-vs-software raster crossover for small clusters on target GPUs? | Prototype both on synthetic cluster sets; measure at 4K and 11520×2160 | Whether software raster is in Phase 1. **Done 2026-09-16** ([results](../experiments/e1-raster-crossover.md), ADR-0024): no crossover down to 0.7 px triangles on the RTX 5090; hardware wins 1.5–3×; Phase 1 is hardware-only, the software rasterizer stays experimental |
 | E2 | Cluster AS on D3D12 (NVAPI) vs Vulkan (NV extension): build cost per frame, memory, image match against raster | One-month spike from `vk_lod_clusters` and RTXMG samples at Phase 1 start | Graphics API; AS strategy |
 | E3 | Do runtime-selected kernel variants beat one good default by more than 10% across two or more machines? | Tunables harness on culling, transform, and animation kernels | Whether calibration Stage 3 is built |
 | E4 | Canonical-JSON layered document vs LightUSD as authoring format: agent edit, diff, merge round trips | An agent performs 20 edits and 3 merges; measure errors and diff readability | Document format |

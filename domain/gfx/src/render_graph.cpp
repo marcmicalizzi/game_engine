@@ -53,6 +53,13 @@ AccessInfo access_info(Access access) noexcept {
     case Access::MeshRead:
       return {VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT | VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT,
               VK_ACCESS_2_SHADER_READ_BIT, VK_IMAGE_LAYOUT_UNDEFINED, false};
+    case Access::FragmentRead:
+      return {VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+              VK_IMAGE_LAYOUT_UNDEFINED, false};
+    case Access::FragmentReadWrite:
+      return {VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+              VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+              VK_IMAGE_LAYOUT_UNDEFINED, true};
   }
   return {VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
           VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT, VK_IMAGE_LAYOUT_GENERAL,
@@ -102,6 +109,9 @@ void PassBuilder::depth_attachment(RgImage image, VkAttachmentLoadOp load, float
   VkClearValue value{};
   value.depthStencil = {clear_depth, 0};
   graph_->add_attachment(pass_, image.index, load, value, true);
+}
+void PassBuilder::render_area(u32 width, u32 height) {
+  graph_->set_pass_area(pass_, width, height);
 }
 
 // ---- RenderGraph -----------------------------------------------------------------------------
@@ -204,6 +214,13 @@ u32 RenderGraph::add_pass_raw(const char* name, PassKind kind, ExecuteFn body, v
   return passes_.size() - 1;
 }
 
+void RenderGraph::set_pass_area(u32 pass, u32 width, u32 height) {
+  ENGINE_VERIFY(pass == passes_.size() - 1, "RenderGraph: PassBuilder used outside its pass setup");
+  ENGINE_VERIFY(passes_[pass].kind == PassKind::Raster,
+                "RenderGraph: render_area needs a Raster pass");
+  passes_[pass].area = VkExtent2D{width, height};
+}
+
 void RenderGraph::add_attachment(u32 pass, u32 image, VkAttachmentLoadOp load, VkClearValue clear,
                                  bool depth) {
   ENGINE_VERIFY(pass == passes_.size() - 1, "RenderGraph: PassBuilder used outside its pass setup");
@@ -235,7 +252,7 @@ void RenderGraph::begin_rendering(VkCommandBuffer commands, const Pass& pass) {
   VkRenderingAttachmentInfo depth{};
   u32 color_count = 0;
   bool has_depth = false;
-  render_area_ = VkExtent2D{0, 0};
+  render_area_ = pass.area;  // attachments below override an explicit area
   for (u32 i = pass.first_attachment; i < pass.first_attachment + pass.attachment_count; ++i) {
     const Attachment& a = attachments_[i];
     const ImageNode& node = images_[a.image];
@@ -472,7 +489,8 @@ void RenderGraph::execute(VkCommandBuffer commands) {
       vkCmdPipelineBarrier2(commands, &dependency);
     }
     current_pass_ = p;
-    const bool raster = pass.kind == PassKind::Raster && pass.attachment_count > 0;
+    const bool raster =
+        pass.kind == PassKind::Raster && (pass.attachment_count > 0 || pass.area.width > 0);
     if (raster) begin_rendering(commands, pass);
     pass.execute(commands, *this, pass.context);
     if (raster) vkCmdEndRendering(commands);

@@ -44,6 +44,7 @@ struct DeviceFeatures {
   bool descriptor_buffer = false;
   bool memory_decompression = false;
   bool shader_int64 = false;
+  bool buffer_int64_atomics = false;  // 64-bit atomics on storage buffers (visibility buffer)
   bool sampler_anisotropy = false;
   bool presentation = false;  // VK_KHR_swapchain is enabled
   bool validation = false;    // the validation layer is active

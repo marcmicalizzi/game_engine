@@ -22,6 +22,8 @@ Read [01-critique](01-critique.md) first; it explains why the rest is shaped the
 | [12-ai-usage-policy](12-ai-usage-policy.md) | Rules keeping every use of AI inside provider terms: agent outputs are content and code, never training data; runtime models are unmodified third-party open weights |
 | [13-reference-consumer-games](13-reference-consumer-games.md) | Two complementary consumer games: Desert Survival (sparse, effectively infinite, deforming terrain, extreme view distances) and Island City (finite, extreme density, functional interiors, crowds, consequences); the requirements they add, roadmap mapping, experiments E13–E18 |
 
+Experiment write-ups live in [docs/experiments](../experiments/): [E1 raster crossover](../experiments/e1-raster-crossover.md).
+
 ## Executive summary
 
 The brief's four priorities are sound, and the agent-native pillar is the genuinely new thing. The motivations behind its two most heavily worded sections, microarchitectural optimization and extreme-resolution robustness, are correct and grounded in real experience: engines that ship features at unplayable frame rates, games that render nothing past 8192 pixels or lose their UI past 4096, and a 20–30× kernel speedup that came from traversal order alone. Those motivations are adopted as engine coding standards. What the plan changes is the mechanism: rules, a tunables registry, and nightly extreme-resolution CI instead of a general calibration system and a family of compact data types.

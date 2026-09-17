@@ -64,16 +64,18 @@ enum class PassKind : u8 { Compute, Transfer, Raster };
 // How a pass touches a resource. Each maps to a stage, an access mask, and (for images) the
 // layout the pass needs; the graph derives barriers from the transitions between them.
 enum class Access : u8 {
-  ComputeRead,       // storage read in a compute shader (images: GENERAL)
-  ComputeWrite,      // storage write in a compute shader (images: GENERAL)
-  ComputeReadWrite,  // both
-  SampledRead,       // sampled/texture read in any shader (images: SHADER_READ_ONLY_OPTIMAL)
-  TransferRead,      // copy source (images: TRANSFER_SRC_OPTIMAL)
-  TransferWrite,     // copy or clear destination (images: TRANSFER_DST_OPTIMAL)
-  ColorAttachment,   // written through dynamic rendering (images: COLOR_ATTACHMENT_OPTIMAL)
-  DepthAttachment,   // depth/stencil attachment (images: DEPTH_ATTACHMENT_OPTIMAL)
-  IndirectRead,      // indirect draw or dispatch arguments (buffers)
-  MeshRead,          // storage read in task or mesh shaders (buffers)
+  ComputeRead,        // storage read in a compute shader (images: GENERAL)
+  ComputeWrite,       // storage write in a compute shader (images: GENERAL)
+  ComputeReadWrite,   // both
+  SampledRead,        // sampled/texture read in any shader (images: SHADER_READ_ONLY_OPTIMAL)
+  TransferRead,       // copy source (images: TRANSFER_SRC_OPTIMAL)
+  TransferWrite,      // copy or clear destination (images: TRANSFER_DST_OPTIMAL)
+  ColorAttachment,    // written through dynamic rendering (images: COLOR_ATTACHMENT_OPTIMAL)
+  DepthAttachment,    // depth/stencil attachment (images: DEPTH_ATTACHMENT_OPTIMAL)
+  IndirectRead,       // indirect draw or dispatch arguments (buffers)
+  MeshRead,           // storage read in task or mesh shaders (buffers)
+  FragmentRead,       // storage read in fragment shaders (buffers)
+  FragmentReadWrite,  // storage read and write (atomics) in fragment shaders (buffers)
 };
 bool access_writes(Access access) noexcept;
 
@@ -91,6 +93,9 @@ class PassBuilder {
                         VkClearColorValue clear = {});
   void depth_attachment(RgImage image, VkAttachmentLoadOp load = VK_ATTACHMENT_LOAD_OP_LOAD,
                         float clear_depth = 0.0f);
+  // Raster passes without attachments (fragment shaders writing storage through atomics, as the
+  // visibility buffer does) declare their render area here instead.
+  void render_area(u32 width, u32 height);
 
  private:
   friend class RenderGraph;
@@ -230,6 +235,7 @@ class RenderGraph {
     u32 use_count = 0;
     u32 first_attachment = 0;
     u32 attachment_count = 0;
+    VkExtent2D area{};  // explicit render area for attachment-less raster passes
     u32 first_buffer_barrier = 0;
     u32 buffer_barrier_count = 0;
     u32 first_image_barrier = 0;
@@ -239,6 +245,7 @@ class RenderGraph {
 
   void add_use(u32 pass, bool is_image, u32 index, Access access, bool write);
   void add_attachment(u32 pass, u32 image, VkAttachmentLoadOp load, VkClearValue clear, bool depth);
+  void set_pass_area(u32 pass, u32 width, u32 height);
   bool allocate_transients(std::string* error);
   bool create_attachment_views(std::string* error);
   void begin_rendering(VkCommandBuffer commands, const Pass& pass);

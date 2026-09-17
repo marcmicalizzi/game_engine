@@ -25,7 +25,10 @@ struct MeshParams {
   uint64_t triangles;
   uint cluster_count;
   uint pad;
-  uint64_t visible;  // uint[]: cluster index per workgroup (the cull pass output); 0 draws all clusters in order
+  uint64_t visible;     // uint[]: cluster index per workgroup (the cull pass output); 0 draws all clusters in order
+  uint64_t visibility;  // uint64_t[width * height]: depth << 32 | id, written with atomic max (fs_visibility)
+  uint width;           // visibility buffer size in pixels
+  uint height;
 };
 
 [[vk::push_constant]] ConstantBuffer<MeshParams> g_params;
@@ -86,4 +89,18 @@ float4 fs_color(MeshVertex v, uint primitive_id : SV_PrimitiveID) : SV_Target {
   const float3 base = float3((h >> 0) & 255, (h >> 8) & 255, (h >> 16) & 255) / 255.0;
   const float shade = 0.7 + 0.3 * frac(float(primitive_id) * 0.6180339887);
   return float4(base * shade, 1.0);
+}
+
+// Visibility-buffer path: no attachments; each fragment folds its reversed-Z depth and its
+// visibility id into one 64-bit word and takes the nearest with an atomic max. Depth is in the
+// high half, so max keeps the nearest surface; ids of equal depth resolve arbitrarily. The
+// software rasterizer (cluster_sw_raster.slang) writes the same buffer the same way.
+[shader("fragment")]
+void fs_visibility(MeshVertex v, uint primitive_id : SV_PrimitiveID) {
+  const uint2 pixel = uint2(v.position.xy);
+  if (pixel.x >= g_params.width || pixel.y >= g_params.height) return;
+  const uint id = (v.cluster_id << 8) | (primitive_id & 0xff);
+  const uint64_t value = (uint64_t(asuint(v.position.z)) << 32) | uint64_t(id);
+  Atomic<uint64_t>* visibility = (Atomic<uint64_t>*)g_params.visibility;
+  visibility[pixel.y * g_params.width + pixel.x].max(value);
 }

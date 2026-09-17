@@ -3,6 +3,7 @@
 // the render graph, and check that every triangle's ID appears where the mesh covers pixels.
 #include <domain/geometry/cluster.h>
 #include <domain/gfx/bindless.h>
+#include <domain/gfx/cluster_cull.h>
 #include <domain/gfx/device.h>
 #include <domain/gfx/frame.h>
 #include <domain/gfx/render_graph.h>
@@ -18,16 +19,7 @@ using namespace engine;
 
 namespace {
 
-struct MeshParams {
-  Mat4 view_proj;
-  u64 clusters;
-  u64 vertices;
-  u64 triangles;
-  u32 cluster_count;
-  u32 pad = 0;
-  u64 visible = 0;  // cull output; 0 draws clusters in index order
-};
-static_assert(sizeof(MeshParams) == 104);
+using MeshParams = gfx::ClusterDrawParams;  // the push constants of cluster_mesh.slang
 
 // (n x n) vertices spanning [-extent, extent]^2 in clip space, z = 0.
 void make_grid(u32 n, f32 extent, Vector<Vec3>& positions, Vector<u32>& indices) {

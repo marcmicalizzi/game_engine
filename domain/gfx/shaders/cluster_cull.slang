@@ -24,19 +24,24 @@ struct ClusterLodDesc {
   uint group;
 };
 
-// Read through a device address; mirrors gfx::CullParams (176 bytes).
+// Read through a device address; mirrors gfx::CullParams (208 bytes).
 struct CullParams {
   float4 planes[6];     // inward-facing, normalized: dot(n, p) + w >= 0 inside
   float4 camera;        // xyz position, w = znear
   float4 lod;           // x = proj_scale, y = threshold_px, z = lod enabled, w = frustum enabled
+  // x = projected cluster diameter in pixels below which a cluster goes to the software
+  // rasterizer; y = mode: 0 everything hardware, 1 everything software, 2 split by x
+  float4 raster;
   uint cluster_count;
   uint plane_count;
   uint pad0;
   uint pad1;
   uint64_t clusters;    // ClusterDesc[]
   uint64_t lods;        // ClusterLodDesc[]
-  uint64_t visible;     // uint[cluster_count]
+  uint64_t visible;     // uint[cluster_count]: hardware-rasterized survivors
   uint64_t draw_args;   // uint3: group counts of vkCmdDrawMeshTasksIndirectEXT; x counts survivors
+  uint64_t sw_visible;  // uint[cluster_count]: software-rasterized survivors
+  uint64_t sw_args;     // uint3: group counts of vkCmdDispatchIndirect for the software pass
 };
 
 struct CullPush {
@@ -78,8 +83,22 @@ void cull_main(uint3 thread_id : SV_DispatchThreadID) {
     if (!(own <= params->lod.y && parent > params->lod.y)) return;
   }
 
-  Atomic<uint>* count = (Atomic<uint>*)params->draw_args;
-  const uint slot = count->add(1);
-  uint* visible = (uint*)params->visible;
-  visible[slot] = index;
+  // Hardware or software rasterization: by projected size unless the mode forces one path.
+  bool software = params->raster.y == 1.0;
+  if (params->raster.y == 2.0) {
+    const float distance = max(length(cluster.center - params->camera.xyz) - cluster.radius, params->camera.w);
+    const float diameter_px = 2.0 * cluster.radius / distance * params->lod.x;
+    software = diameter_px < params->raster.x;
+  }
+  if (software) {
+    Atomic<uint>* count = (Atomic<uint>*)params->sw_args;
+    const uint slot = count->add(1);
+    uint* visible = (uint*)params->sw_visible;
+    visible[slot] = index;
+  } else {
+    Atomic<uint>* count = (Atomic<uint>*)params->draw_args;
+    const uint slot = count->add(1);
+    uint* visible = (uint*)params->visible;
+    visible[slot] = index;
+  }
 }

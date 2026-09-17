@@ -23,7 +23,7 @@ GPU-driven, visibility-buffer, hybrid lighting. Passes, as render-graph nodes:
 
 1. **Scene update.** Upload instance transform deltas; rebuild TLAS; BLAS builds/refits under budget (async compute, starts early).
 2. **Culling.** Instance frustum + occlusion (Hi-Z from the previous frame, reprojected); hierarchical cluster culling + LOD selection by projected error; output cluster lists split by size class.
-3. **Visibility raster.** Large clusters via mesh shaders; small and micro-triangle clusters via a compute software rasterizer writing a 64-bit (depth | instance | triangle) visibility buffer with atomics. Two-pass occlusion: pass 1 draws last frame's visible set and builds Hi-Z; pass 2 tests the rest.
+3. **Visibility raster.** All clusters via mesh shaders writing a 64-bit (depth | instance | triangle) visibility buffer with atomics; a compute software rasterizer for small clusters exists but measured slower than the hardware path at every triangle size on the development GPU (E1, ADR-0024) and stays experimental. Two-pass occlusion: pass 1 draws last frame's visible set and builds Hi-Z; pass 2 tests the rest.
 4. **Material resolve.** Per pixel: reconstruct barycentrics from triangle ID, fetch attributes, evaluate material into a compact GBuffer. Materials are bindless; per-material-ID tile classification keeps divergence low.
 5. **Lighting.** RT direct lighting with ReSTIR DI over all emitters; RT GI via ReSTIR GI fed by a world-space radiance cache; RT reflections (rough surfaces fall back to the cache); RT shadows for key lights; sky/atmosphere; volumetrics.
 6. **Denoise and compose.** Per-signal denoisers, then composition.
@@ -46,7 +46,7 @@ Infrastructure: render graph (automatic barriers, transient aliasing, async-comp
 **Runtime**
 - LOD selection: a cluster is drawn if its own projected error is below threshold and its parent group's is not. Evaluated per cluster in parallel; the hierarchy is only used for culling.
 - Per-instance culling BVH over cluster groups, traversed with persistent threads or a multi-dispatch work queue.
-- Small-triangle path: compute software rasterizer. Hardware raster throughput collapses for triangles under a few pixels and mesh shaders do not fix that. Experiment **E1** measures the crossover on target GPUs.
+- Small-triangle path: experiment **E1** measured a compute software rasterizer against mesh-shader rasterization from 4.5 px down to 0.7 px triangles on the RTX 5090 and found hardware faster throughout (docs/experiments/e1-raster-crossover.md); the software path is kept for other hardware and a smarter revision, not for Phase 1.
 - Streaming: the GPU writes requested page IDs to a feedback buffer; the CPU streams pages (DirectStorage with GPU decompression where available); the residency budget evicts by last use.
 
 **Special cases**

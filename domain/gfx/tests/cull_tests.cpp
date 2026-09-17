@@ -23,16 +23,7 @@ using namespace engine;
 
 namespace {
 
-struct MeshParams {
-  Mat4 view_proj;
-  u64 clusters;
-  u64 vertices;
-  u64 triangles;
-  u32 cluster_count;
-  u32 pad = 0;
-  u64 visible = 0;
-};
-static_assert(sizeof(MeshParams) == 104);
+using MeshParams = gfx::ClusterDrawParams;
 
 void make_terrain(u32 n, f32 extent, Vector<Vec3>& positions, Vector<u32>& indices) {
   for (u32 z = 0; z < n; ++z) {
