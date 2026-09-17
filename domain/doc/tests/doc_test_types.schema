@@ -1,0 +1,24 @@
+// Object types the doc tests place in a world. They exist for one reason: to be the
+// schema-registry side of how a type opts into a partitioned layer (docs/plan/03-data-model.md
+// §3.7) — a partition that names no property tiles a record by its type's `position` or
+// `transform` field.
+namespace engine.doc.test
+
+/// Something standing somewhere in the world.
+struct Placement @version(1) @kind(record) {
+  name: string
+  /// World position. Its presence is what opts the type into tile partitioning.
+  position: vec3
+}
+
+/// The same, opting in through a transform: a whole placement matrix or a
+/// translation/rotation/scale object, which the partition reads the position out of.
+struct Fixture @version(1) @kind(record) {
+  name: string
+  transform: json
+}
+
+/// A type with neither: it has no place on the grid, so its records go to `untiled.json`.
+struct Fact @version(1) @kind(record) {
+  claim: string
+}

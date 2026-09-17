@@ -95,7 +95,16 @@ bool doc_layers(Context& ctx, const SessionRef& params, LayersResult& out, RpcEr
 bool doc_add_layer(Context& ctx, const AddLayerParams& params, LayersResult& out, RpcError& error) {
   Session* s = ctx.sessions->require(params.session, error);
   if (s == nullptr) return false;
-  if (!s->add_layer(params.name, params.role, params.edit, error)) return false;
+  if (!s->add_layer(params.name, params.role, params.edit, params.partition, error)) return false;
+  s->layers(out.layers);
+  return true;
+}
+
+bool doc_set_partition(Context& ctx, const SetPartitionParams& params, LayersResult& out,
+                       RpcError& error) {
+  Session* s = ctx.sessions->require(params.session, error);
+  if (s == nullptr) return false;
+  if (!s->set_partition(params.layer, params.partition, error)) return false;
   s->layers(out.layers);
   return true;
 }
@@ -405,10 +414,14 @@ void add_builtin_methods(Dispatcher& d) {
   d.add(method<SessionRef, SessionInfo, &session_info>("session.info",
                                                        "Layers, journal length, undo position."));
 
-  d.add(method<SessionRef, LayersResult, &doc_layers>("doc.layers",
-                                                      "The layer stack, weakest first."));
+  d.add(method<SessionRef, LayersResult, &doc_layers>(
+      "doc.layers", "The layer stack, weakest first, with each layer's storage form and tiles."));
   d.add(method<AddLayerParams, LayersResult, &doc_add_layer>(
-      "doc.add_layer", "Append a layer (strongest) and optionally make it the edit layer."));
+      "doc.add_layer",
+      "Append a layer (strongest), optionally partitioned into tile files and made the edit "
+      "layer."));
+  d.add(method<SetPartitionParams, LayersResult, &doc_set_partition>(
+      "doc.set_partition", "Store a layer as tile files, or as one file again, and rewrite it."));
   d.add(method<SetEditLayerParams, LayersResult, &doc_set_edit_layer>(
       "doc.set_edit_layer", "Choose the layer that commands edit."));
   d.add(method<ObjectsParams, ObjectsResult, &doc_objects>(

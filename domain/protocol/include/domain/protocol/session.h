@@ -12,6 +12,7 @@
 #include <foundation/io/vfs.h>
 
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -46,7 +47,13 @@ class Session {
   bool merge(const MergeParams& params, MergeResult& result, RpcError& error);
   bool undo(u32 steps, StepResult& result, RpcError& error);
   bool redo(u32 steps, StepResult& result, RpcError& error);
-  bool add_layer(std::string_view name, doc::LayerRole role, bool make_edit, RpcError& error);
+  // `partition` gives the layer the tile-file form (domain/doc/partition.h); without one it is
+  // a single file.
+  bool add_layer(std::string_view name, doc::LayerRole role, bool make_edit,
+                 const std::optional<doc::LayerPartition>& partition, RpcError& error);
+  // Converts a layer between the two storage forms and rewrites its files. No record changes.
+  bool set_partition(std::string_view name, const std::optional<doc::LayerPartition>& partition,
+                     RpcError& error);
   bool set_edit_layer(std::string_view name, RpcError& error);
 
   SessionInfo info() const;

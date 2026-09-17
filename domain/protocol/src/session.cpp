@@ -1,5 +1,6 @@
 #include <core/time/time.h>
 #include <domain/doc/merge.h>
+#include <domain/doc/partition.h>
 #include <domain/protocol/session.h>
 
 namespace engine::protocol {
@@ -211,8 +212,20 @@ bool Session::redo(u32 steps, StepResult& result, RpcError& error) {
   return done == 0 || persist(error);
 }
 
+namespace {
+
+// A partition is either absent (one file) or complete. A tile size of zero would silently mean
+// "one file" and hide a caller's mistake, so it is refused instead.
+bool check_partition(const std::optional<doc::LayerPartition>& partition, RpcError& error) {
+  if (!partition.has_value() || partition->tile_size > 0) return true;
+  error = make_error(codes::k_invalid_argument, "partition tile_size must be greater than zero");
+  return false;
+}
+
+}  // namespace
+
 bool Session::add_layer(std::string_view name, doc::LayerRole role, bool make_edit,
-                        RpcError& error) {
+                        const std::optional<doc::LayerPartition>& partition, RpcError& error) {
   if (name.empty()) {
     error = make_error(codes::k_invalid_argument, "layer name is required");
     return false;
@@ -221,9 +234,28 @@ bool Session::add_layer(std::string_view name, doc::LayerRole role, bool make_ed
     error = make_error(codes::k_invalid_argument, "layer already exists: " + std::string(name));
     return false;
   }
+  if (!check_partition(partition, error)) return false;
   const u32 index = doc_.add_layer(std::string(name), role);
+  if (partition.has_value()) doc_.set_layer_partition(index, *partition);
   if (make_edit) doc_.set_edit_layer(index);
   return persist(error);
+}
+
+bool Session::set_partition(std::string_view name,
+                            const std::optional<doc::LayerPartition>& partition, RpcError& error) {
+  const i32 index = doc_.find_layer(name);
+  if (index < 0) {
+    error = make_error(codes::k_not_found, "no layer named " + std::string(name));
+    return false;
+  }
+  if (!check_partition(partition, error)) return false;
+  std::string message;
+  if (!DocumentStore::repartition(*vfs_, dir_, doc_, manifest_, static_cast<u32>(index),
+                                  partition.value_or(doc::LayerPartition{}), &message, nullptr)) {
+    error = make_error(codes::k_io_error, std::move(message));
+    return false;
+  }
+  return true;
 }
 
 bool Session::set_edit_layer(std::string_view name, RpcError& error) {
@@ -245,6 +277,10 @@ void Session::layers(Vector<LayerInfo>& out) const {
     info.role = layer.role();
     info.records = layer.size();
     info.is_edit = i == doc_.edit_layer();
+    if (layer.partitioned()) {
+      info.partition = layer.partition();
+      info.tiles = doc::tile_count(layer);
+    }
     out.push_back(std::move(info));
   }
 }

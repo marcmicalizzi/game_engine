@@ -72,11 +72,17 @@ struct SessionOpenParams @version(1) {
   name: string
 }
 
-struct LayerInfo @version(1) {
+struct LayerInfo @version(2) {
   name: string
   role: engine.doc.LayerRole = Base
   records: u32 = 0
   is_edit: bool = false
+  /// How the layer is stored: present when it is a set of tile files under
+  /// `layers/<name>/`, absent when it is the single file `layers/<name>.json`
+  /// (docs/plan/03-data-model.md §3.7).
+  partition: engine.doc.LayerPartition? @since(2)
+  /// Occupied tiles; zero for a layer stored as one file.
+  tiles: u32 = 0 @since(2)
 }
 
 struct SessionInfo @version(1) {
@@ -239,12 +245,25 @@ struct LayersResult @version(1) {
   layers: LayerInfo[]
 }
 
-struct AddLayerParams @version(1) {
+struct AddLayerParams @version(2) {
   session: string
   name: string
   role: engine.doc.LayerRole = Feature
   /// Make the new layer the edit layer.
   edit: bool = true
+  /// Store the layer as tile files rather than one file: the property holding each record's
+  /// world position (empty to take it from each record type's `position` or `transform` field)
+  /// and the tile edge length, which must be greater than zero.
+  partition: engine.doc.LayerPartition? @since(2)
+}
+
+/// Parameters of `doc.set_partition`: converts one layer between the two storage forms and
+/// rewrites its files. No record changes, so the journal, undo, and redo are untouched.
+struct SetPartitionParams @version(1) {
+  session: string
+  layer: string
+  /// Absent, or a tile_size of zero, stores the layer as one file again.
+  partition: engine.doc.LayerPartition?
 }
 
 struct SetEditLayerParams @version(1) {

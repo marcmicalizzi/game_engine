@@ -5,6 +5,7 @@
 #include <core/time/time.h>
 #include <domain/doc/document.h>
 
+#include <algorithm>
 #include <memory>
 
 namespace engine::doc {
@@ -116,6 +117,17 @@ LayerFile Layer::to_file() const {
   return file;
 }
 
+LayerFile Layer::to_file(std::span<const ObjectId> ids) const {
+  LayerFile file;
+  file.name = name_;
+  file.role = role_;
+  file.objects.reserve(static_cast<u32>(ids.size()));
+  for (const ObjectId id : ids) {
+    if (const ObjectRecord* r = records_.find_value(id)) file.objects.push_back(*r);
+  }
+  return file;
+}
+
 Layer Layer::from_file(LayerFile&& file) {
   Layer layer(std::move(file.name), file.role);
   for (ObjectRecord& r : file.objects) {
@@ -148,7 +160,29 @@ u32 Document::add_layer(std::string name, LayerRole role) {
 
 u32 Document::add_layer(Layer&& layer) {
   layers_.push_back(std::move(layer));
-  return layers_.size() - 1;
+  const u32 index = layers_.size() - 1;
+  // A layer arriving with records changes the composition of exactly those ids, and it arrives
+  // strongest, so nothing below it moves.
+  if (layers_[index].size() != 0) {
+    ensure_index();
+    for (const ObjectId id : layers_[index].records().keys())
+      touch(id);
+  }
+  return index;
+}
+
+bool Document::remove_layer(u32 index) {
+  if (index >= layers_.size() || layers_.size() == 1) return false;
+  for (const ObjectId id : layers_[index].records().keys())
+    dirty_.insert(id);
+  layers_.erase_at(index);
+  if (edit_layer_ >= layers_.size()) {
+    edit_layer_ = layers_.size() - 1;
+  } else if (edit_layer_ > index) {
+    --edit_layer_;
+  }
+  rebuild_index();
+  return true;
 }
 
 i32 Document::find_layer(std::string_view name) const noexcept {
@@ -158,97 +192,286 @@ i32 Document::find_layer(std::string_view name) const noexcept {
   return -1;
 }
 
+void Document::set_layer_partition(u32 index, LayerPartition partition) {
+  ENGINE_ASSERT(index < layers_.size(), "Document::set_layer_partition: index out of range");
+  layers_[index].set_partition(std::move(partition));
+}
+
 void Document::set_edit_layer(u32 index) noexcept {
   ENGINE_ASSERT(index < layers_.size(), "Document::set_edit_layer: index out of range");
   edit_layer_ = index;
 }
 
+// --- Document: the composed index -----------------------------------------------------------
+
+Document::IndexEntry Document::compose(ObjectId id) const {
+  IndexEntry entry;
+  const u32 count = layers_.size();
+  for (u32 i = 0; i < count; ++i) {
+    const ObjectRecord* r = layers_[i].find(id);
+    if (r == nullptr) continue;
+    ++entry.record_count;
+    entry.layer_mask |= u64{1} << (i < 63 ? i : 63);
+    if (!r->type.empty()) {
+      entry.defined = true;
+      entry.defining_layer = i;  // the strongest definition wins
+    }
+    if (r->parent.has_value()) entry.parent = *r->parent;
+  }
+  if (entry.defined) {
+    for (u32 i = entry.defining_layer; i < count; ++i) {
+      const ObjectRecord* r = layers_[i].find(id);
+      if (r != nullptr && r->deleted) {
+        entry.deleted = true;
+        break;
+      }
+    }
+  }
+  return entry;
+}
+
+template <class Fn>
+void Document::for_each_record(ObjectId id, const IndexEntry& entry, Fn&& fn) const {
+  const u32 count = layers_.size();
+  const u32 masked = count < 63 ? count : 63;
+  for (u32 i = 0; i < masked; ++i) {
+    if ((entry.layer_mask & (u64{1} << i)) == 0) continue;
+    if (const ObjectRecord* r = layers_[i].find(id)) fn(i, *r);
+  }
+  if (count > 63 && (entry.layer_mask & (u64{1} << 63)) != 0) {
+    for (u32 i = 63; i < count; ++i) {
+      if (const ObjectRecord* r = layers_[i].find(id)) fn(i, *r);
+    }
+  }
+}
+
+void Document::link_child(ObjectId parent, ObjectId id) const {
+  Vector<ObjectId>& list = children_[parent];
+  const auto at = std::lower_bound(list.begin(), list.end(), id);
+  const u32 pos = static_cast<u32>(at - list.begin());
+  if (pos < list.size() && list[pos] == id) return;
+  list.emplace(pos, id);
+}
+
+void Document::unlink_child(ObjectId parent, ObjectId id) const {
+  Vector<ObjectId>* list = children_.find_value(parent);
+  if (list == nullptr) return;
+  const auto at = std::lower_bound(list->begin(), list->end(), id);
+  const u32 pos = static_cast<u32>(at - list->begin());
+  if (pos >= list->size() || !((*list)[pos] == id)) return;
+  list->erase_at(pos);
+  if (list->empty()) children_.erase(parent);
+}
+
+void Document::flush_live() const {
+  if (live_pending_.empty()) return;
+  std::sort(live_pending_.begin(), live_pending_.end());
+  Vector<ObjectId> merged;
+  merged.reserve(live_.size() + live_pending_.size());
+  u32 i = 0, j = 0;
+  const u32 n = live_.size(), m = live_pending_.size();
+  while (i < n || j < m) {
+    if (j < m && (i >= n || !(live_[i] < live_pending_[j]))) {
+      const ObjectId id = live_pending_[j];
+      while (j < m && live_pending_[j] == id)
+        ++j;
+      if (i < n && live_[i] == id) ++i;
+      const IndexEntry* entry = index_.find_value(id);
+      if (entry != nullptr && entry->live()) merged.push_back(id);
+      continue;
+    }
+    merged.push_back(live_[i]);
+    ++i;
+  }
+  live_ = std::move(merged);
+  live_pending_.clear();
+}
+
+void Document::rebuild_index() const {
+  index_.clear();
+  children_.clear();
+  live_.clear();
+  live_pending_.clear();
+  index_dirty_ = false;
+
+  FlatSet<ObjectId> ids;
+  for (const Layer& layer : layers_) {
+    for (const ObjectId id : layer.records().keys())
+      ids.insert(id);
+  }
+  index_.reserve(ids.size());
+  live_.reserve(ids.size());
+  for (const ObjectId id : ids) {  // FlatSet iterates in key order, so live_ comes out sorted
+    const IndexEntry entry = compose(id);
+    index_.insert(id, entry);
+    if (!entry.live()) continue;
+    live_.push_back(id);
+    children_[entry.parent].push_back(id);
+  }
+}
+
+void Document::touch(ObjectId id) {
+  ensure_index();
+  const IndexEntry fresh = compose(id);
+  const IndexEntry* existing = index_.find_value(id);
+  const bool was_live = existing != nullptr && existing->live();
+  const ObjectId was_parent = existing != nullptr ? existing->parent : ObjectId{};
+  const bool now_live = fresh.live();
+
+  if (fresh.record_count == 0) {
+    index_.erase(id);
+  } else if (existing != nullptr) {
+    index_.insert_or_assign(id, fresh);
+  } else {
+    index_.insert(id, fresh);
+  }
+  if (was_live != now_live) live_pending_.push_back(id);
+  if (was_live && (!now_live || !(was_parent == fresh.parent))) unlink_child(was_parent, id);
+  if (now_live && (!was_live || !(was_parent == fresh.parent))) link_child(fresh.parent, id);
+  dirty_.insert(id);
+}
+
+void Document::mark_all_dirty() {
+  ensure_index();
+  for (const ObjectId id : index_.keys())
+    dirty_.insert(id);
+}
+
+bool Document::validate_index(Vector<Diagnostic>* out) const {
+  ensure_index();
+  flush_live();
+  auto report = [&](ObjectId id, std::string message) {
+    diag(out, describe_path("$index", id), std::move(message));
+  };
+
+  // A linear recomputation of everything the index claims, from the layers alone.
+  FlatSet<ObjectId> ids;
+  for (const Layer& layer : layers_) {
+    for (const ObjectId id : layer.records().keys())
+      ids.insert(id);
+  }
+  Vector<ObjectId> want_live;
+  FlatMap<ObjectId, Vector<ObjectId>> want_children;
+  u32 mismatches = 0;
+  for (const ObjectId id : ids) {
+    const IndexEntry want = compose(id);
+    if (want.live()) {
+      want_live.push_back(id);
+      want_children[want.parent].push_back(id);
+    }
+    const IndexEntry* have = index_.find_value(id);
+    if (have == nullptr) {
+      ++mismatches;
+      report(id, "the index has no entry for a record the layers hold");
+      continue;
+    }
+    if (have->defined != want.defined || have->deleted != want.deleted ||
+        have->defining_layer != want.defining_layer || have->record_count != want.record_count ||
+        have->layer_mask != want.layer_mask || !(have->parent == want.parent)) {
+      ++mismatches;
+      report(id, "the index entry disagrees with the layers");
+    }
+  }
+  for (const ObjectId id : index_.keys()) {
+    if (!ids.contains(id)) {
+      ++mismatches;
+      report(id, "the index has an entry no layer holds a record for");
+    }
+  }
+  if (live_ != want_live) {
+    ++mismatches;
+    diag(out, "$index", "the live object list disagrees with the layers");
+  }
+  for (auto [parent, want] : want_children) {
+    const Vector<ObjectId>* have = children_.find_value(parent);
+    if (have == nullptr || *have != want) {
+      ++mismatches;
+      report(parent, "the children list disagrees with the layers");
+    }
+  }
+  for (const ObjectId parent : children_.keys()) {
+    if (!want_children.contains(parent)) {
+      ++mismatches;
+      report(parent, "the children list names a parent with no live children");
+    }
+  }
+  return mismatches == 0;
+}
+
 // --- Document: composition ----------------------------------------------------------------------
 
 bool Document::is_defined(ObjectId id) const noexcept {
-  for (const Layer& layer : layers_) {
-    const ObjectRecord* r = layer.find(id);
-    if (r != nullptr && !r->type.empty()) return true;
-  }
-  return false;
+  ensure_index();
+  const IndexEntry* entry = index_.find_value(id);
+  return entry != nullptr && entry->defined;
 }
 
 bool Document::resolve(ObjectId id, ResolvedObject& out) const {
+  ensure_index();
+  const IndexEntry* entry = index_.find_value(id);
+  if (entry == nullptr || !entry->defined) {
+    out = ResolvedObject{};
+    out.id = id;
+    return false;
+  }
   out = ResolvedObject{};
   out.id = id;
-  bool defined = false;
-  u32 defining = 0;
-  for (u32 i = 0; i < layers_.size(); ++i) {
-    const ObjectRecord* r = layers_[i].find(id);
-    if (r != nullptr && !r->type.empty()) {
-      defined = true;
-      defining = i;
-      out.type = r->type;
-    }
-  }
-  if (!defined) return false;
-  out.defining_layer = defining;
-  for (u32 i = 0; i < layers_.size(); ++i) {
-    const ObjectRecord* r = layers_[i].find(id);
-    if (r == nullptr) continue;
-    if (r->parent.has_value()) out.parent = *r->parent;
-    if (r->deleted && i >= defining) out.deleted = true;
-    for (auto [name, value] : r->properties)
+  out.parent = entry->parent;
+  out.defining_layer = entry->defining_layer;
+  out.deleted = entry->deleted;
+  out.type = layers_[entry->defining_layer].find(id)->type;
+  for_each_record(id, *entry, [&](u32, const ObjectRecord& r) {
+    for (auto [name, value] : r.properties)
       out.properties.insert_or_assign(std::string_view(name), &value);
-  }
+  });
   return true;
 }
 
 bool Document::exists(ObjectId id) const noexcept {
-  ResolvedObject r;
-  return resolve(id, r) && !r.deleted;
+  ensure_index();
+  const IndexEntry* entry = index_.find_value(id);
+  return entry != nullptr && entry->live();
 }
 
 const JsonValue* Document::property(ObjectId id, std::string_view name) const noexcept {
+  ensure_index();
+  const IndexEntry* entry = index_.find_value(id);
+  if (entry == nullptr || !entry->defined) return nullptr;
   const JsonValue* found = nullptr;
-  bool defined = false;
-  for (const Layer& layer : layers_) {
-    const ObjectRecord* r = layer.find(id);
-    if (r == nullptr) continue;
-    if (!r->type.empty()) defined = true;
-    if (const JsonValue* v = r->properties.find_value(name)) found = v;
-  }
-  return defined ? found : nullptr;
+  for_each_record(id, *entry, [&](u32, const ObjectRecord& r) {
+    if (const JsonValue* v = r.properties.find_value(name)) found = v;
+  });
+  return found;
 }
 
 Vector<ObjectId> Document::objects() const {
-  FlatSet<ObjectId> ids;
-  for (const Layer& layer : layers_) {
-    for (auto [id, record] : layer.records()) {
-      if (!record.type.empty()) ids.insert(id);
-    }
-  }
-  Vector<ObjectId> out;
-  out.reserve(ids.size());
-  for (ObjectId id : ids) {
-    if (exists(id)) out.push_back(id);
-  }
-  return out;
+  ensure_index();
+  flush_live();
+  return live_;
+}
+
+u32 Document::object_count() const noexcept {
+  ensure_index();
+  flush_live();
+  return live_.size();
 }
 
 Vector<ObjectId> Document::children(ObjectId parent) const {
-  Vector<ObjectId> out;
-  for (ObjectId id : objects()) {
-    ResolvedObject r;
-    if (resolve(id, r) && r.parent == parent) out.push_back(id);
-  }
-  return out;
+  ensure_index();
+  const Vector<ObjectId>* list = children_.find_value(parent);
+  return list != nullptr ? *list : Vector<ObjectId>{};
 }
 
 bool Document::would_cycle(ObjectId id, ObjectId new_parent) const {
+  ensure_index();
   ObjectId cursor = new_parent;
   u32 hops = 0;
-  const u32 limit = static_cast<u32>(objects().size()) + 1;
+  const u32 limit = index_.size() + 1;
   while (!cursor.is_null()) {
     if (cursor == id) return true;
-    ResolvedObject r;
-    if (!resolve(cursor, r)) return false;
-    cursor = r.parent;
+    const IndexEntry* entry = index_.find_value(cursor);
+    if (entry == nullptr || !entry->defined) return false;
+    cursor = entry->parent;
     if (++hops > limit) return true;  // an existing cycle counts as a cycle
   }
   return false;
@@ -281,6 +504,8 @@ bool Document::apply(const Command& cmd, Command* inverse, Vector<Diagnostic>* d
 
   if (cmd.id.is_null()) return fail("command needs an object id");
 
+  // Every case that changes the edit layer ends with touch(cmd.id): a command edits one record,
+  // so exactly one object's place in the composed index moved.
   switch (cmd.kind) {
     case CommandKind::CreateObject: {
       if (cmd.type.empty()) return fail("CreateObject requires a type");
@@ -298,6 +523,7 @@ bool Document::apply(const Command& cmd, Command* inverse, Vector<Diagnostic>* d
         for (auto [name, value] : cmd.value.as_object())
           r.properties.insert_or_assign(name, value);
       }
+      touch(cmd.id);
       return true;
     }
     case CommandKind::DeleteObject: {
@@ -309,6 +535,7 @@ bool Document::apply(const Command& cmd, Command* inverse, Vector<Diagnostic>* d
       } else {
         layer.ensure(cmd.id).deleted = true;  // defined below: tombstone
       }
+      touch(cmd.id);
       return true;
     }
     case CommandKind::SetProperty: {
@@ -316,6 +543,7 @@ bool Document::apply(const Command& cmd, Command* inverse, Vector<Diagnostic>* d
       if (strict && !exists(cmd.id)) return fail("object does not exist");
       snapshot_inverse();
       layer.ensure(cmd.id).properties.insert_or_assign(cmd.name, cmd.value);
+      touch(cmd.id);
       return true;
     }
     case CommandKind::ClearProperty: {
@@ -325,6 +553,7 @@ bool Document::apply(const Command& cmd, Command* inverse, Vector<Diagnostic>* d
         r->properties.erase(cmd.name);
         prune(layer, cmd.id);
       }
+      touch(cmd.id);
       return true;
     }
     case CommandKind::SetParent: {
@@ -336,11 +565,13 @@ bool Document::apply(const Command& cmd, Command* inverse, Vector<Diagnostic>* d
       }
       snapshot_inverse();
       layer.ensure(cmd.id).parent = parent;
+      touch(cmd.id);
       return true;
     }
     case CommandKind::RemoveRecord: {
       snapshot_inverse();
       layer.remove(cmd.id);
+      touch(cmd.id);
       return true;
     }
     case CommandKind::RestoreRecord: {
@@ -352,6 +583,7 @@ bool Document::apply(const Command& cmd, Command* inverse, Vector<Diagnostic>* d
       } else {
         layer.remove(cmd.id);
       }
+      touch(cmd.id);
       return true;
     }
   }

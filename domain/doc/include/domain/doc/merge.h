@@ -70,7 +70,8 @@ struct MergeOptions {
 };
 
 struct MergeResult {
-  // Takes base's name and role; the caller names the layer it writes the records into.
+  // Takes base's name, role, and storage form (partition.h); the caller names the layer it
+  // writes the records into, and decides how that layer is stored.
   Layer merged{std::string(), LayerRole::Base};
   Vector<MergeConflict> conflicts;
   // Changes taken from each side: one per property set or cleared, one each for a changed type,

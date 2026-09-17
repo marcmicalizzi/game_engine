@@ -169,6 +169,67 @@ TEST_CASE("cli: the Phase 0 exit criterion, one process per step") {
   CHECK(std::filesystem::exists(std::filesystem::path(dir) / "journal.jsonl"));
 }
 
+TEST_CASE("cli: a partitioned layer keeps its objects in tile files") {
+  TempDir tmp;
+  const std::string dir = tmp.path + "/tiled";
+  const std::filesystem::path layer_dir = std::filesystem::path(dir) / "layers" / "places";
+  REQUIRE(cli({"--doc", dir, "--create", "--name", "Tiled", "session.info"}).exit_code == 0);
+
+  Run layered = cli({"--doc", dir, "doc.add_layer",
+                     R"({"name":"places","partition":{"property":"position","tile_size":64}})"});
+  REQUIRE(layered.exit_code == 0);
+  const JsonValue& layers = at(layered.result, "layers");
+  REQUIRE(layers.size() == 2);
+  CHECK(at(layers[1], "name") == JsonValue("places"));
+  CHECK(at(layers[1], "tiles") == JsonValue(u32{0}));
+  CHECK(at(at(layers[1], "partition"), "tile_size") == JsonValue(64.0));
+  CHECK(std::filesystem::exists(layer_dir / "index.json"));
+
+  // Three objects: two in one tile, one two tiles over.
+  auto place = [](const char* id, f64 x, f64 z) {
+    return std::string("{\"kind\":\"CreateObject\",\"id\":\"") + id + "\",\"type\":\"" + k_type +
+           "\",\"value\":{\"position\":[" + std::to_string(x) + ",0.0," + std::to_string(z) + "]}}";
+  };
+  const char* k_c = "00000000000000100000000000000003";
+  Run placed = cli({"--doc", dir, "doc.apply",
+                    apply_params("[" + place(k_a, 8, 8) + "," + place(k_b, 20, 20) + "," +
+                                 place(k_c, 160, 8) + "]")});
+  REQUIRE(placed.exit_code == 0);
+  CHECK(at(placed.result, "committed") == JsonValue(true));
+  CHECK(std::filesystem::exists(layer_dir / "tiles" / "0_0.json"));
+  CHECK(std::filesystem::exists(layer_dir / "tiles" / "2_0.json"));
+  CHECK(at(at(cli({"--doc", dir, "doc.layers"}).result, "layers")[1], "tiles") ==
+        JsonValue(u32{2}));
+
+  // A second transaction touches one object, so the store rewrites that object's tile and
+  // leaves the other one alone: not rewritten with the same bytes, not written at all.
+  const auto stamp_of = [&](const char* file) {
+    return std::filesystem::last_write_time(layer_dir / "tiles" / file);
+  };
+  const auto untouched_before = stamp_of("0_0.json");
+  const auto touched_before = stamp_of("2_0.json");
+  REQUIRE(cli({"--doc", dir, "doc.apply",
+               apply_params(std::string("[{\"kind\":\"SetProperty\",\"id\":\"") + k_c +
+                            "\",\"name\":\"generator\",\"value\":\"tile-gen\"}]")})
+              .exit_code == 0);
+  CHECK(stamp_of("0_0.json") == untouched_before);
+  CHECK(stamp_of("2_0.json") != touched_before);
+
+  // The tiles are an on-disk detail: every object is there, composed, in the next process.
+  CHECK(at(cli({"--doc", dir, "doc.objects"}).result, "total") == JsonValue(u32{3}));
+  CHECK(at(at(cli({"--doc", dir, "doc.get", std::string("{\"id\":\"") + k_c + "\"}"}).result,
+              "properties"),
+           "generator") == JsonValue("tile-gen"));
+
+  // And back to one file, with the tiles gone.
+  Run flattened = cli({"--doc", dir, "doc.set_partition", R"({"layer":"places"})"});
+  REQUIRE(flattened.exit_code == 0);
+  CHECK(at(at(flattened.result, "layers")[1], "tiles") == JsonValue(u32{0}));
+  CHECK(std::filesystem::exists(std::filesystem::path(dir) / "layers" / "places.json"));
+  CHECK_FALSE(std::filesystem::exists(layer_dir / "index.json"));
+  CHECK(at(cli({"--doc", dir, "doc.objects"}).result, "total") == JsonValue(u32{3}));
+}
+
 TEST_CASE("cli: two layers that diverged from a common base are merged in one call") {
   TempDir tmp;
   const std::string dir = tmp.path + "/merged";

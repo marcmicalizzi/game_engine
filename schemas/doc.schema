@@ -81,12 +81,57 @@ struct Patch @version(1) @kind(journal) {
   inverse: Command[]
 }
 
-/// One layer of a stored document: its file under the document's `layers/` directory.
-struct LayerRef @version(1) {
+/// How a layer's records are spread over tile files (docs/plan/03-data-model.md §3.7). A layer
+/// with a partition is stored as `layers/<layer>/tiles/<x>_<y>.json` plus `index.json` and
+/// `untiled.json`; a layer without one is a single `layers/<layer>.json`.
+struct LayerPartition @version(1) {
+  /// Name of the property holding the record's world position: a JSON array of two or three
+  /// numbers, or an object with numeric `x`, `y` (and `z`), or a transform object with a
+  /// `position` or `translation` member. Empty means the property is the record type's first
+  /// `position` or `transform` field, as the schema registry reports it.
+  property: string
+  /// Tile edge length in world units on the horizontal plane. Greater than zero.
+  tile_size: f64 = 0
+}
+
+/// One tile file of a partitioned layer: `layers/<layer>/tiles/<x>_<y>.json`.
+struct TileRef @version(1) {
+  /// Tile coordinates on the horizontal plane: floor(position / tile_size).
+  x: i32 = 0
+  y: i32 = 0
+  /// File name under the layer's `tiles/` directory.
+  file: string
+  /// The records the file holds, in id order: the record-to-tile map, read the other way.
+  objects: id128[]
+}
+
+/// `layers/<layer>/index.json`: a partitioned layer's tile grid and which tile holds each
+/// record. The tile files hold the records themselves, each one a `LayerFile` restricted to
+/// them.
+struct LayerIndex @version(1) @kind(document) {
   name: string
   role: LayerRole = Base
-  /// File name under `layers/`.
+  partition: LayerPartition
+  /// Occupied tiles, in (x, y) order. A tile with no records has no file and no entry.
+  tiles: TileRef[]
+  /// Records with no usable position, held by `untiled.json`, in id order.
+  untiled: id128[]
+  /// Inclusive tile coordinates covering every occupied tile; all zero when there are none.
+  min_x: i32 = 0
+  min_y: i32 = 0
+  max_x: i32 = 0
+  max_y: i32 = 0
+}
+
+/// One layer of a stored document: its file under the document's `layers/` directory.
+struct LayerRef @version(2) {
+  name: string
+  role: LayerRole = Base
+  /// File name under `layers/`: `<layer>.json` for a single-file layer, `<layer>/index.json`
+  /// for a partitioned one.
   file: string
+  /// Present when the layer is stored as tiles; absent for a single file.
+  partition: LayerPartition? @since(2)
 }
 
 /// `manifest.json` of a document directory: the layer stack (weakest first), the edit layer,
