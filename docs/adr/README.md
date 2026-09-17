@@ -29,3 +29,4 @@ Numbered, dated, and immutable once accepted. To change a decision, write a new 
 | [0023](0023-bindless-resources.md) | Bindless resources through descriptor indexing and device addresses; descriptor buffers optional | Accepted |
 | [0024](0024-hardware-rasterization-first.md) | Hardware rasterization for all clusters in Phase 1; software rasterizer experimental (E1 result) | Accepted |
 | [0025](0025-cluster-acceleration-structures.md) | Cluster acceleration structures on NVIDIA, KHR bottom-level structures elsewhere; Vulkan stays (E2 result) | Accepted |
+| [0026](0026-deformable-volumes-first-class.md) | Deformable volumes as a first-class physics primitive: cage separate from the render mesh, solver-agnostic, simulation-LOD'd | Accepted |

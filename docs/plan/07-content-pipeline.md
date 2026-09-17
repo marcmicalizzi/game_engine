@@ -19,7 +19,7 @@
 | Structural graphs, fracture chunks | document objects + derived chunk meshes | |
 | Interop | USD via LightUSD (read/write); FBX via an import-only converter | |
 
-Canonical engine representations, all derived: cluster pages, AS build inputs, compressed textures, navmesh tiles, support graphs, compressed animation clips, material shader permutations, semantic summaries, visual mips.
+Canonical engine representations, all derived: cluster pages, AS build inputs, compressed textures, navmesh tiles, support graphs, deformable cages and their surface bindings, compressed animation clips, material shader permutations, semantic summaries, visual mips.
 
 ## 7.3 Content build (the derived-data graph)
 
@@ -33,6 +33,7 @@ Canonical engine representations, all derived: cluster pages, AS build inputs, c
 - **Geometry**: manifoldness where required, degenerate triangles, scale (bounding box against the declared category's size range), pivot placement, up axis, UV coverage and overlap, texel-density range, cluster error budget, triangle budget per category, collision presence and fit (convex hull to mesh volume ratio), open edges.
 - **Materials**: texture resolution against on-screen size class, missing maps, energy conservation, naming.
 - **Rigs and animation**: standard-skeleton conformance, bone count, skin-weight normalization, foot-sliding metric, root-motion consistency.
+- **Deformable volumes**: cage covers the render mesh, attachments resolve to existing bones or bodies, layers partition the volume, parameters in range ([§7.10](#710-deformable-volume-assets)).
 - **Placement**: floating or interpenetrating objects, below terrain, unreachable by nav, occlusion of required landmarks, style-guide conformance.
 - **Performance**: per-asset cost estimate (clusters at typical distance, AS memory, texture memory) against budgets by category.
 - **Provenance**: metadata present and license in the allowlist.
@@ -92,3 +93,42 @@ Constraints: inference runs on whatever the budget system grants. On the GPU whe
 ## 7.9 Text and localization
 
 All player-facing strings are document objects with IDs. Generated text is an object with provenance. Localization is a layer. TTS derives from these objects.
+
+## 7.10 Deformable volume assets
+
+What an asset carries for the deformable-volume primitive of [05 §5.14](05-simulation.md#514-deformable-volumes). The source mesh stays a plain glTF mesh; everything here is document properties on the asset plus painted regions, so a deformable asset is an ordinary asset with one more property block.
+
+| Property | Units | Default | Notes |
+|---|---|---|---|
+| `cage.kind` | `lattice` \| `shell` \| `tet` | `lattice` | `tet` is not in v1 |
+| `cage.target_elements` | count | 512 | the generator's budget; adaptive refinement spends it where curvature and thinness need it |
+| `cage.min_feature` | m | 0.02 | smallest feature the cage must resolve; sets the finest cell |
+| `material.stiffness` | kPa | 200 | per layer; fat ≈ 20, muscle ≈ 200, cartilage ≈ 5,000 as starting points. The solver takes the compliance 1/E |
+| `material.damping` | 1/s | 4 | higher settles faster and looks deader |
+| `material.density` | kg/m³ | 1,000 | element mass is density × element volume |
+| `material.volume_preservation` | 0–1 | 0.8 | weight of the volume constraint; 1 is incompressible |
+| `material.anisotropy` | axis + ratio | none (1.0) | fibre direction and the stiffness ratio along it, for muscle |
+| `layer.region` | element selection | — | layers partition the volume; every element is in exactly one |
+| `layer.bond` | `bonded` \| `sliding` \| `separable(F)` | `bonded` | behavior at a boundary with a neighbouring layer; `separable` takes a force in N |
+| `cavity.region` | element selection | — | material-free region; its boundary carries a pressure constraint |
+| `cavity.pressure` | kPa, relative | 0 | closed-volume pressure |
+| `attachment.target` | bone id \| body id \| `free` | `free` | must resolve in the asset's own skeleton or rigid structure |
+| `attachment.stiffness` | kPa | 5,000 | a stiff spring, not a weld; 0 is free |
+| `limits.max_strain` | ratio | 0.5 | per-element clamp the solver never exceeds |
+| `limits.max_velocity` | m/s | 20 | per-element velocity clamp |
+| `contact.surface` | mesh ref \| `cage` | `cage` | a coarse authored contact surface when the cage is too coarse. Never the render mesh |
+| `sim_lod.max_tier` / `min_tier` | tier (T0–T4) | T0 / T4 | caps; a cosmetic cushion may forbid the CPU tiers, a gameplay creature may forbid T3 |
+| `gameplay_relevant` | bool | false | true puts the cage in the fixed-step tick and the sim hash ([05 §5.10](05-simulation.md#510-determinism-and-replay)) |
+| `binding.max_influences` | count | 8 | cage elements per render vertex (a lattice cell's corners) |
+
+**Cage generation is a `derived` step.** `mesh + deformable properties → signed distance field → adaptive lattice → binding` is one node in the dependency substrate ([03 §3.6](03-data-model.md#36-dependencies-and-invalidation)), keyed by the source mesh hash, the property block, and the function version, cached in the derived-data store like clusters are. Authored overrides (a painted region's element size, a region's material, a cavity, an attachment set) are document objects and therefore inputs to the node, so editing one rebuilds that asset and nothing else. Nothing about the cage is hand-built in a DCC tool; the default path is generation, and an override exists where the default is wrong.
+
+**Surface binding ships with the clusters.** Each render vertex of the affected clusters is bound to its cage element and weights during the cluster build ([04 §4.3](04-renderer.md#43-geometry)) and written into the cluster page's vertex stream as a fixed 12 B per vertex (cell index plus packed local coordinates). Binding therefore streams, evicts, and pages with the geometry that needs it, adds no residency type, and costs the resident cut rather than the source asset. Every level of the cluster DAG binds to the same cage, so a geometry LOD change never changes the deformation.
+
+**Validation** (rule IDs in the structured diagnostics of [§7.3](#73-content-build-the-derived-data-graph)):
+
+- The cage encloses the render mesh at the bind pose with a margin. A render vertex outside every cell fails and the diagnostic names the vertices.
+- Every attachment resolves to a bone in the asset's skeleton or a body in its rigid structure; standard-skeleton conformance is already checked in [§7.4](#74-validation-rules-automatic).
+- Layers partition the volume: every element in exactly one layer, none unassigned, none overlapping. Cavities are closed and do not touch the outer boundary.
+- Material parameters are in range, and the stiffness ratio across a `bonded` boundary is under the conditioning limit E23 measures — an ill-conditioned XPBD layer stack is a warning with a number, not a mystery at run time.
+- Per-asset cost estimate (cage elements at T0, binding bytes, solver microseconds from the category's cost model) against the category budget, like every other asset ([§7.4](#74-validation-rules-automatic), Performance).
