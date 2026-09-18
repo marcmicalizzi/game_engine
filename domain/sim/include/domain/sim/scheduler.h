@@ -73,6 +73,87 @@ struct ComponentMask {
   bool operator==(const ComponentMask&) const noexcept = default;
 };
 
+// ---- named resources ---------------------------------------------------------------------------
+//
+// A component mask names components, and [03
+// §3.4](../../../docs/plan/03-data-model.md#34-the-runtime-world) tells a hot system to own its
+// data instead: a pose pool, a physics island set, a GPU upload buffer. Two systems ordered by one
+// of those had nothing to declare, so the dependency between them was invisible to the schedule —
+// the gap `systems/animation` found first and worked around with a phase boundary.
+//
+// A **resource** is that data, named. A capability registers a name once (`resource_id`), lists the
+// id in `SystemDesc::reads_resources`/`writes_resources`, and the wave layering treats a resource
+// conflict exactly like a component conflict: a writer conflicts with every other toucher, two
+// readers do not. Nothing else about a resource is the scheduler's business — it never sees the
+// data, only the id — which is what keeps this a declaration and not an ownership mechanism.
+//
+// **64, one word, for the same reason components get 256**: the conflict test runs once per pair of
+// systems in a phase when the schedule is built, and one `and` is the whole of it. Resources are
+// per *capability* and not per type, so 64 is a different order of magnitude from the component
+// count and the cap is stated, asserted and cheap to raise ([ADR-0017](
+// ../../../docs/adr/0017-no-hidden-limits.md)).
+inline constexpr u32 k_resource_mask_words = 1;
+inline constexpr u32 k_max_resources = k_resource_mask_words * 64;
+inline constexpr u32 k_invalid_resource = 0xFFFF'FFFFu;
+
+struct ResourceMask {
+  u64 words[k_resource_mask_words] = {};
+
+  void set(u32 resource) noexcept;
+  bool test(u32 resource) const noexcept;
+  bool any() const noexcept;
+  bool intersects(const ResourceMask& other) const noexcept;
+  bool operator==(const ResourceMask&) const noexcept = default;
+};
+
+// Names to ids, in registration order, for the process.
+//
+// **Why one registry for the process and not one per world.** A component's index is a property of
+// a world, because the component type is registered into that world; a resource is a property of a
+// *capability* — "the animation pose pool" means the same thing in every world in the process, and
+// a capability that installs into two worlds declares the same masks in both. A per-world registry
+// would need a world to reach, and `domain/sim` has no world: the scheduler must stay free of
+// `domain/ecs` ([ADR-0028](../../../docs/adr/0028-ecs-and-persistent-store.md) decision 7).
+//
+// Registration is cold — install time, from one thread — and is not synchronized, exactly like
+// `ecs::ComponentRegistry`. `name` must outlive the registry, so it is a string literal, the same
+// convention `SystemDesc::name` already has.
+class ResourceRegistry {
+ public:
+  // The id for this name, registering it if it is new. `k_invalid_resource` past the cap.
+  u32 id(const char* name);
+  // The id for this name, or `k_invalid_resource`; registers nothing.
+  u32 find(const char* name) const noexcept;
+  // The name an id was registered under, or nullptr: what a diagnostic prints, and what an assert
+  // uses to tell a real id from a stale one.
+  const char* name_of(u32 resource) const noexcept;
+  u32 size() const noexcept { return names_.size(); }
+  // Names refused because the cap was reached. Non-zero means the schedule is under-declared.
+  u32 overflowed() const noexcept { return overflowed_; }
+
+  static ResourceRegistry& global() noexcept;
+
+ private:
+  Vector<const char*> names_;
+  u32 overflowed_ = 0;
+};
+
+// `ResourceRegistry::global().id(name)`, which is how a capability spells it.
+u32 resource_id(const char* name);
+
+// The mask naming these resources, registering any that are new. One call per system at install
+// time: `desc.writes_resources = sim::resource_mask("animation.pose_pool");`
+template <class First, class... Rest>
+ResourceMask resource_mask(First first, Rest... rest) {
+  const char* const names[] = {first, rest...};
+  ResourceMask mask;
+  for (const char* name : names) {
+    const u32 id = resource_id(name);
+    if (id != k_invalid_resource) mask.set(id);
+  }
+  return mask;
+}
+
 // ADR-0010's two stances, declared per system and recorded on the docs page.
 enum class Determinism : u8 { Hashed, Derived };
 
@@ -101,6 +182,10 @@ struct SystemDesc {
   TickPhase phase = TickPhase::Systems;
   ComponentMask reads;
   ComponentMask writes;
+  // Data outside the ECS this system touches, by registered name. Read-write against the same
+  // resource conflicts; two readers do not. See "named resources" above.
+  ResourceMask reads_resources;
+  ResourceMask writes_resources;
   u8 tiers = 0x0Fu;  // LodMask: tiers this system runs at
   Determinism determinism = Determinism::Hashed;
   u16 batches = 1;

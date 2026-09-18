@@ -139,6 +139,24 @@ u16 finish_system(flecs::world& world, const sim::SystemDesc& desc, flecs::entit
                   "ecs::register_system: the system's query reads a component SystemDesc::reads "
                   "does not name");
   }
+
+  // **Resources are not query terms**, and that is what they are for: `sim::ResourceMask` names
+  // data the ECS does not hold — a pose pool, a GPU buffer — so there is nothing in the query to
+  // compare a resource declaration against, and the check above must not try. The masks are
+  // separate types, so a resource id cannot be set into a component mask by mistake; what is left
+  // to check is that the ids are real. An id past what the registry has handed out is a mask built
+  // from a stale constant or from arithmetic, and it would claim somebody else's resource.
+  for (u32 resource = 0; resource < sim::k_max_resources; ++resource) {
+    if (!desc.reads_resources.test(resource) && !desc.writes_resources.test(resource)) continue;
+    if (sim::ResourceRegistry::global().name_of(resource) != nullptr) continue;
+    ENGINE_LOG_WARN(log_ecs, "system declares a resource id nothing registered",
+                    log::field("system", desc.name != nullptr ? desc.name : "(unnamed)"),
+                    log::field("resource", resource),
+                    log::field("registered", sim::ResourceRegistry::global().size()));
+    ENGINE_ASSERT(false,
+                  "ecs::register_system: SystemDesc names a resource id that was never registered; "
+                  "build the mask with sim::resource_mask(\"<name>\")");
+  }
 #endif
   return systems(world).add(desc, system);
 }

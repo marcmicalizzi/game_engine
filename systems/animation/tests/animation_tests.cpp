@@ -368,8 +368,8 @@ TEST_CASE("animation: with no instances the capability is registered and costs n
   // instances means no component, no query match, no pool.
   const ecs::SystemRegistry& registry = ecs::systems(sim.world());
   CHECK(registry.size() == AnimationSystem::k_system_count);
-  CHECK(registry.count_in(sim::TickPhase::Systems) == 2);
-  CHECK(registry.count_in(sim::TickPhase::PostPhysics) == 1);
+  CHECK(registry.count_in(sim::TickPhase::Systems) == AnimationSystem::k_system_count);
+  CHECK(registry.count_in(sim::TickPhase::PostPhysics) == 0);
 
   for (u32 i = 0; i < 4; ++i)
     sim.step();
@@ -397,17 +397,30 @@ TEST_CASE("animation: the descriptors declare what the queries touch") {
     // correctness when it is wrong.
     for (u32 word = 0; word < sim::k_component_mask_words; ++word)
       CHECK((access.writes.words[word] & ~row.desc.writes.words[word]) == 0);
-    CHECK(row.desc.determinism == (row.desc.phase == sim::TickPhase::PostPhysics
-                                       ? sim::Determinism::Derived
-                                       : sim::Determinism::Hashed));
   }
-  // `advance_players` writes the playhead and `sample_poses` reads it, so the two are ordered by
-  // their declarations and not by luck; the matrices are a phase later because what orders *them*
-  // is the pose pool, which no mask can name.
-  CHECK(descs[0].phase == sim::TickPhase::Systems);
-  CHECK(descs[1].phase == sim::TickPhase::Systems);
-  CHECK(descs[2].phase == sim::TickPhase::PostPhysics);
+  // The stance is the system's, not the phase's: the matrices are `Derived` because nothing reads
+  // them back into gameplay, and they now say so from inside the phase they belong in.
+  CHECK(descs[0].determinism == sim::Determinism::Hashed);
+  CHECK(descs[1].determinism == sim::Determinism::Hashed);
+  CHECK(descs[2].determinism == sim::Determinism::Derived);
+
+  // Every ordering this capability needs is declared. `advance_players` writes the playhead and
+  // `sample_poses` reads it — a component conflict. `sample_poses` writes the pose pool and
+  // `build_skinning_matrices` reads it — a *resource* conflict, which is the whole point of
+  // `SystemDesc::reads_resources`/`writes_resources`: the pool is not a component and must not be.
+  for (const sim::SystemDesc& desc : descs)
+    CHECK(desc.phase == sim::TickPhase::Systems);
   CHECK(descs[0].writes.intersects(descs[1].reads));
+  CHECK(descs[1].writes_resources.intersects(descs[2].reads_resources));
+
+  // And the scheduler that owns the rule agrees: three systems, three waves, in declaration order.
+  sim::SimScheduler scheduler;
+  for (const sim::SystemDesc& desc : descs)
+    scheduler.add_system(desc);
+  CHECK(scheduler.wave_count(sim::TickPhase::Systems) == 3);
+  CHECK(scheduler.wave_of(0) == 0);
+  CHECK(scheduler.wave_of(1) == 1);
+  CHECK(scheduler.wave_of(2) == 2);
 }
 
 TEST_CASE("animation: two runs and eight workers give bit-identical matrices") {

@@ -21,6 +21,15 @@
 // Over-declaring costs parallelism and is visible in `schedule_hash()`; under-declaring costs
 // correctness and is invisible, so only one of the two is worth an assert.
 //
+// **Resources are not query terms.** `sim::SystemDesc::reads_resources`/`writes_resources` name
+// data that is not in the ECS at all — a pose pool, a GPU upload buffer, the storage [03 §3.4]
+// tells a hot system to own — so the query has nothing to say about them and the check does not
+// look. That is the point of them: they are how a system declares the accesses its terms *cannot*
+// mention, which the paragraph above says is the whole reason the declaration is written by hand.
+// The two masks are distinct types, so a resource id cannot land in a component mask by accident;
+// what the check does add is that every declared resource id is one the registry handed out, which
+// catches a mask built from a stale constant instead of from `sim::resource_mask()`.
+//
 // **What v1 does not check.** Relationship terms — `(Likes, *)`, `(ChildOf, parent)` — have no
 // place in `sim::ComponentMask`, which addresses plain components by index, so a pair term is
 // skipped. That is the same gap ADR-0028 leaves open around spatial relationships, and closing

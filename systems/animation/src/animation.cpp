@@ -150,19 +150,21 @@ void AnimationSystem::install(ecs::SimWorld& sim) {
       ecs::mask_of<AnimationPlayer, SkeletonInstance, AnimationLod>(world);
   const sim::ComponentMask instance_and_lod = ecs::mask_of<SkeletonInstance, AnimationLod>(world);
 
+  // The capability's own storage, named so the schedule can order two systems by it. Registered
+  // here rather than at namespace scope because the registry is the process's and a static
+  // initializer ordering question is not worth having for two ids read once per world.
+  const sim::ResourceMask pose_pool = sim::resource_mask(k_resource_pose_pool);
+  const sim::ResourceMask joint_matrices = sim::resource_mask(k_resource_joint_matrices);
+
   // Seam 2: each system declares itself to the engine and its body to flecs, in one call.
   //
-  // **What orders the three, and what the masks can and cannot say about it.** `sample_poses`
-  // must run after `advance_players`, and that one *is* expressible: `advance_players` writes
-  // `AnimationPlayer` and `SkeletonInstance` and `sample_poses` reads both, so the conflict is in
-  // the declaration and flecs' pipeline and the engine's future scheduler both see it.
-  // `build_skinning_matrices` must run after `sample_poses`, and that one is **not** expressible:
-  // what one writes and the other reads is the pose pool, which is not a component and has no bit
-  // in `sim::ComponentMask`. So it is put in a later phase — `PostPhysics` — where the ordering
-  // comes from the phase and not from a mask. That is also where it belongs on its own merits:
-  // bone matrices are derived visual state, they are the last thing computed before a frame is
-  // handed over, and a ragdoll blended in `Physics` has to be in them. See
-  // docs/subsystems/animation.md, "What the contract could not express".
+  // **What orders the three.** `advance_players` writes `AnimationPlayer` and `SkeletonInstance`
+  // and `sample_poses` reads both, so that ordering is a component conflict and always was.
+  // `build_skinning_matrices` must run after `sample_poses`, and what one writes and the other
+  // reads is the *pose pool* — not a component, and for good reasons (see pose_pool.h). That is
+  // now declarable: `sample_poses` writes the `animation.pose_pool` resource and
+  // `build_skinning_matrices` reads it, so the schedule puts them in successive waves for exactly
+  // the reason the code requires it, and all three systems sit in the phase they belong in.
 
   descs_[0] = sim::SystemDesc{};
   descs_[0].name = "animation.advance_players";
@@ -184,6 +186,7 @@ void AnimationSystem::install(ecs::SimWorld& sim) {
   descs_[1].name = "animation.sample_poses";
   descs_[1].phase = k_phase_sample;
   descs_[1].reads = all;
+  descs_[1].writes_resources = pose_pool;
   descs_[1].tiers = 0b0111u;
   descs_[1].determinism = sim::Determinism::Hashed;
   descs_[1].context = this;
@@ -200,6 +203,8 @@ void AnimationSystem::install(ecs::SimWorld& sim) {
   descs_[2].name = "animation.build_skinning_matrices";
   descs_[2].phase = k_phase_skin;
   descs_[2].reads = instance_and_lod;
+  descs_[2].reads_resources = pose_pool;
+  descs_[2].writes_resources = joint_matrices;
   descs_[2].tiers = 0b0011u;  // only the tiers whose plan says `skin`
   // ADR-0010's other stance: the matrices are output nothing reads back into gameplay, and they
   // are rebuilt from the playhead after a load, so they are not in the sim hash.

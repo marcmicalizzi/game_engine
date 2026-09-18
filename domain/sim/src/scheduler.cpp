@@ -2,6 +2,8 @@
 #include <core/log/log.h>
 #include <domain/sim/scheduler.h>
 
+#include <cstring>
+
 namespace engine::sim {
 
 ENGINE_LOG_CATEGORY_DEFINE(log_sim, "sim");
@@ -43,10 +45,14 @@ bool covers(u8 mask, u8 tier) noexcept {
 }
 
 // Two systems conflict when one writes something the other reads or writes. Read-read is free,
-// which is the whole point of declaring the sets.
+// which is the whole point of declaring the sets. A named resource is tested by exactly the same
+// rule as a component, because to the schedule it is exactly the same kind of claim: the only
+// difference is that the scheduler can never look at what is behind it.
 bool conflicts(const SystemDesc& a, const SystemDesc& b) noexcept {
   return a.writes.intersects(b.writes) || a.writes.intersects(b.reads) ||
-         a.reads.intersects(b.writes);
+         a.reads.intersects(b.writes) || a.writes_resources.intersects(b.writes_resources) ||
+         a.writes_resources.intersects(b.reads_resources) ||
+         a.reads_resources.intersects(b.writes_resources);
 }
 
 }  // namespace
@@ -80,6 +86,71 @@ bool ComponentMask::intersects(const ComponentMask& other) const noexcept {
   }
   return false;
 }
+
+void ResourceMask::set(u32 resource) noexcept {
+  ENGINE_ASSERT(resource < k_max_resources, "ResourceMask: resource id out of range");
+  if (resource >= k_max_resources) return;
+  words[resource / 64u] |= (u64{1} << (resource % 64u));
+}
+
+bool ResourceMask::test(u32 resource) const noexcept {
+  if (resource >= k_max_resources) return false;
+  return (words[resource / 64u] & (u64{1} << (resource % 64u))) != 0;
+}
+
+bool ResourceMask::any() const noexcept {
+  for (u32 i = 0; i < k_resource_mask_words; ++i) {
+    if (words[i] != 0) return true;
+  }
+  return false;
+}
+
+bool ResourceMask::intersects(const ResourceMask& other) const noexcept {
+  for (u32 i = 0; i < k_resource_mask_words; ++i) {
+    if ((words[i] & other.words[i]) != 0) return true;
+  }
+  return false;
+}
+
+// --- the resource registry --------------------------------------------------------------------
+
+u32 ResourceRegistry::find(const char* name) const noexcept {
+  if (name == nullptr) return k_invalid_resource;
+  for (u32 i = 0; i < names_.size(); ++i) {
+    // Compared by text and not by pointer: two translation units may hold two copies of the same
+    // literal, and a capability that registered "animation.pose_pool" twice means one resource.
+    if (std::strcmp(names_[i], name) == 0) return i;
+  }
+  return k_invalid_resource;
+}
+
+const char* ResourceRegistry::name_of(u32 resource) const noexcept {
+  return resource < names_.size() ? names_[resource] : nullptr;
+}
+
+u32 ResourceRegistry::id(const char* name) {
+  ENGINE_ASSERT(name != nullptr, "ResourceRegistry: a resource is registered under a name");
+  const u32 existing = find(name);
+  if (existing != k_invalid_resource) return existing;
+  if (names_.size() >= k_max_resources) {
+    // Counted and logged rather than aliased onto somebody else's bit: an aliased resource would
+    // make the schedule quietly wrong, which is the one failure the declaration exists to prevent.
+    ++overflowed_;
+    ENGINE_LOG_WARN(log_sim, "resource registry is full; this resource has no bit",
+                    log::field("resource", name != nullptr ? name : "(unnamed)"),
+                    log::field("max", k_max_resources));
+    return k_invalid_resource;
+  }
+  names_.push_back(name);
+  return names_.size() - 1u;
+}
+
+ResourceRegistry& ResourceRegistry::global() noexcept {
+  static ResourceRegistry registry;
+  return registry;
+}
+
+u32 resource_id(const char* name) { return ResourceRegistry::global().id(name); }
 
 SimScheduler::SimScheduler(const SimSchedulerConfig& config)
     : clock_(config.hz, config.max_steps_per_advance),
@@ -198,6 +269,8 @@ u64 SimScheduler::schedule_hash() const {
       hash = fnv1a(hash, &desc.batches, sizeof(desc.batches));
       hash = fnv1a(hash, &desc.reads, sizeof(desc.reads));
       hash = fnv1a(hash, &desc.writes, sizeof(desc.writes));
+      hash = fnv1a(hash, &desc.reads_resources, sizeof(desc.reads_resources));
+      hash = fnv1a(hash, &desc.writes_resources, sizeof(desc.writes_resources));
     }
   }
   return hash;

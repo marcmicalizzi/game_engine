@@ -37,9 +37,13 @@ ENGINE_EXPECT_SIZE(48, 8, TierInput);
 // The scheduler's registration tables.
 ENGINE_EXPECT_SIZE(1, 1, TickPhase);
 ENGINE_EXPECT_SIZE(32, 8, ComponentMask);
+ENGINE_EXPECT_SIZE(8, 8, ResourceMask);
 ENGINE_EXPECT_SIZE(8, 4, Batch);
 ENGINE_EXPECT_SIZE(40, 8, SystemContext);
-ENGINE_EXPECT_SIZE(120, 8, SystemDesc);
+// 136 and not 120: the two `ResourceMask`s that let a system declare data outside the ECS. A
+// descriptor is one row per system in a table read when the schedule is built and never in a tick,
+// so sixteen bytes there buy an ordering the schedule could not otherwise express.
+ENGINE_EXPECT_SIZE(136, 8, SystemDesc);
 ENGINE_EXPECT_SIZE(4, 2, ScheduleEntry);
 ENGINE_EXPECT_SIZE(40, 8, EntityRecord);
 ENGINE_EXPECT_SIZE(56, 8, MaterializationHooks);

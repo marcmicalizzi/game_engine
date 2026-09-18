@@ -132,6 +132,44 @@ TEST_CASE("ecs: a relationship term is counted, not masked") {
   CHECK(access.pair_terms >= 1);
 }
 
+TEST_CASE("ecs: a declared resource survives registration and is not a query term") {
+  SimWorld sim;
+  flecs::world& world = sim.world();
+  demo::register_ecs_demo_components(world);
+
+  // A resource names data that is not in the ECS at all — the pool plan 03 §3.4 tells a hot system
+  // to own — so a query has no term for it and `query_access` must stay silent about it. That is
+  // what makes it usable for the one thing a query cannot express: an ordering between two systems
+  // that share the capability's own storage.
+  sim::SystemDesc desc;
+  desc.name = "demo_pool_writer";
+  desc.phase = TickPhase::Systems;
+  desc.reads = mask_of<demo::Standing>(world);
+  desc.writes_resources = sim::resource_mask("ecs.tests.demo_pool");
+
+  const flecs::system system = register_system(sim, desc, [](flecs::world& w, flecs::entity phase) {
+    return w.system<const demo::Standing>("demo_pool_writer")
+        .kind(phase)
+        .each([](const demo::Standing&) {});
+  });
+  REQUIRE(system.is_valid());
+
+  const QueryAccess access = query_access(world, system.id());
+  CHECK(access.reads.test(component_index<demo::Standing>(world)));
+  CHECK_FALSE(access.writes.any());
+  CHECK(access.unregistered_terms == 0);
+
+  const RegisteredSystem* row = systems(world).find(system.id());
+  REQUIRE(row != nullptr);
+  CHECK(row->desc.writes_resources == desc.writes_resources);
+  CHECK(row->desc.writes_resources.any());
+  CHECK_FALSE(row->desc.reads_resources.any());
+  // The id is the registry's, which is what the registration check verifies rather than guessing.
+  const u32 id = sim::ResourceRegistry::global().find("ecs.tests.demo_pool");
+  REQUIRE(id != sim::k_invalid_resource);
+  CHECK(row->desc.writes_resources.test(id));
+}
+
 TEST_CASE("ecs: over-declaring is allowed and under-declaring is not") {
   SimWorld sim;
   flecs::world& world = sim.world();

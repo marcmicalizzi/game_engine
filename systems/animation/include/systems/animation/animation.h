@@ -58,15 +58,23 @@ namespace engine::animation {
 // ADR-0010's stance, in the header as the ADR requires. See the paragraph above for why.
 inline constexpr const char* k_determinism = "hashed";
 
-// The playhead and the pose are simulation state and run in `Systems`. The bone matrices are
-// **derived visual state** and run in `PostPhysics`, which is both where they belong on their own
-// merits (a ragdoll blended in `Physics` has to be in them, and they are the last thing computed
-// before a frame is handed over) and the only way this capability could declare that the matrices
-// must be built after the poses: what one system writes and the other reads is the pose pool, and
-// `sim::ComponentMask` addresses components. See docs/subsystems/animation.md.
+// All three run in `Systems`, and the ordering between all three is declared rather than implied.
+// `advance_players` before `sample_poses` is a component conflict; `sample_poses` before
+// `build_skinning_matrices` is a **resource** conflict on the pose pool (`k_resource_pose_pool`),
+// which `sim::SystemDesc::writes_resources` can now name. Until it could, the third system sat in
+// `PostPhysics` to borrow an ordering from the phase — honest, but it moved a system for a reason
+// that had nothing to do with which phase it belongs in, and a capability whose two pool-ordered
+// systems genuinely belong in one phase had no answer at all. See docs/subsystems/animation.md.
 inline constexpr sim::TickPhase k_phase_advance = sim::TickPhase::Systems;
 inline constexpr sim::TickPhase k_phase_sample = sim::TickPhase::Systems;
-inline constexpr sim::TickPhase k_phase_skin = sim::TickPhase::PostPhysics;
+inline constexpr sim::TickPhase k_phase_skin = sim::TickPhase::Systems;
+
+// The two things this capability owns that are not components, as `sim` resource names. They are
+// separate because they are written by different systems and read by different consumers: the pose
+// channels are `sample_poses`' output and `build_skinning_matrices`' input, and the matrices are
+// the renderer's (`joint_matrices()`), which is a reader outside the tick entirely.
+inline constexpr const char* k_resource_pose_pool = "animation.pose_pool";
+inline constexpr const char* k_resource_joint_matrices = "animation.joint_matrices";
 
 // ---- the LOD policy --------------------------------------------------------------------------
 //

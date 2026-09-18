@@ -547,6 +547,117 @@ TEST_CASE("scheduler: an unknown tile is materialized without a summary") {
   CHECK(result.materialized == 1);
 }
 
+TEST_CASE("scheduler: a named resource orders two systems a component mask cannot") {
+  // The gap `systems/animation` found: two systems of one capability share a pool, plan 03 §3.4
+  // says the pool must *not* be a component, and before this there was nothing to declare.
+  SimScheduler scheduler;
+  Trace trace;
+  SystemStub fill;
+  SystemStub consume;
+  SystemStub unrelated;
+  fill.trace = &trace;
+  consume.trace = &trace;
+  unrelated.trace = &trace;
+
+  const ResourceMask pool = resource_mask("sim.tests.pool");
+  const ResourceMask other = resource_mask("sim.tests.other_pool");
+  CHECK(pool.any());
+  CHECK_FALSE(pool.intersects(other));
+
+  SystemDesc writer = describe("fill", TickPhase::Systems, ComponentMask{}, ComponentMask{}, fill);
+  writer.writes_resources = pool;
+  SystemDesc reader =
+      describe("consume", TickPhase::Systems, ComponentMask{}, ComponentMask{}, consume);
+  reader.reads_resources = pool;
+  SystemDesc elsewhere =
+      describe("unrelated", TickPhase::Systems, ComponentMask{}, ComponentMask{}, unrelated);
+  elsewhere.writes_resources = other;
+
+  const u16 iw = scheduler.add_system(writer);
+  const u16 ir = scheduler.add_system(reader);
+  const u16 iu = scheduler.add_system(elsewhere);
+
+  CHECK(scheduler.wave_of(iw) == 0);
+  CHECK(scheduler.wave_of(ir) == 1);  // read-after-write on the resource, exactly like a component
+  CHECK(scheduler.wave_of(iu) == 0);  // a different resource is not a conflict
+  CHECK(scheduler.wave_count(TickPhase::Systems) == 2);
+
+  // Two readers of one resource are not a conflict, which is the whole point of declaring the
+  // direction rather than just the name.
+  SystemStub second_reader;
+  second_reader.trace = &trace;
+  SystemDesc also_reads =
+      describe("also_consume", TickPhase::Systems, ComponentMask{}, ComponentMask{}, second_reader);
+  also_reads.reads_resources = pool;
+  const u16 ir2 = scheduler.add_system(also_reads);
+  CHECK(scheduler.wave_of(ir2) == 1);
+
+  scheduler.step();
+  u32 position_of[4] = {0, 0, 0, 0};
+  for (u32 i = 0; i < trace.order.size(); ++i)
+    position_of[trace.order[i]] = i;
+  CHECK(position_of[iw] < position_of[ir]);
+  CHECK(position_of[iw] < position_of[ir2]);
+}
+
+TEST_CASE("scheduler: a resource declaration is in the schedule hash") {
+  auto build = [](SimScheduler& scheduler, SystemStub* stubs, bool declare) {
+    SystemDesc a = describe("a", TickPhase::Systems, ComponentMask{}, ComponentMask{}, stubs[0]);
+    SystemDesc b = describe("b", TickPhase::Systems, ComponentMask{}, ComponentMask{}, stubs[1]);
+    if (declare) {
+      a.writes_resources = resource_mask("sim.tests.hashed_pool");
+      b.reads_resources = resource_mask("sim.tests.hashed_pool");
+    }
+    scheduler.add_system(a);
+    scheduler.add_system(b);
+  };
+
+  SystemStub declared_stubs[2];
+  SystemStub silent_stubs[2];
+  SystemStub again_stubs[2];
+  SimScheduler declared;
+  SimScheduler silent;
+  SimScheduler again;
+  build(declared, declared_stubs, true);
+  build(silent, silent_stubs, false);
+  build(again, again_stubs, true);
+
+  // Over-declaring costs parallelism and is visible; under-declaring is invisible at run time and
+  // is what the hash is for.
+  CHECK(declared.schedule_hash() == again.schedule_hash());
+  CHECK(declared.schedule_hash() != silent.schedule_hash());
+  CHECK(declared.wave_count(TickPhase::Systems) == 2);
+  CHECK(silent.wave_count(TickPhase::Systems) == 1);
+}
+
+TEST_CASE("scheduler: the resource registry interns by name and states its cap") {
+  CHECK(k_max_resources == 64);
+  ResourceRegistry& registry = ResourceRegistry::global();
+
+  const u32 first = registry.id("sim.tests.interned");
+  CHECK(first != k_invalid_resource);
+  CHECK(registry.id("sim.tests.interned") == first);
+  // By text and not by pointer: a second copy of the same literal is the same resource.
+  const char* copy = "sim.tests.interned";
+  CHECK(registry.find(copy) == first);
+  CHECK(std::string(registry.name_of(first)) == "sim.tests.interned");
+  CHECK(registry.find("sim.tests.never.registered") == k_invalid_resource);
+  CHECK(registry.name_of(k_max_resources) == nullptr);
+
+  ResourceMask mask;
+  CHECK_FALSE(mask.any());
+  mask.set(0);
+  mask.set(k_max_resources - 1);
+  CHECK(mask.test(0));
+  CHECK(mask.test(k_max_resources - 1));
+  CHECK_FALSE(mask.test(1));
+  ResourceMask other;
+  other.set(1);
+  CHECK_FALSE(mask.intersects(other));
+  other.set(0);
+  CHECK(mask.intersects(other));
+}
+
 TEST_CASE("scheduler: the component mask is 256 wide and says so") {
   CHECK(k_max_components == 256);
   ComponentMask mask;
