@@ -166,20 +166,26 @@ bool render_load(protocol::Context& ctx, const protocol::RenderLoadParams& param
     desc.meshes.push_back(params.mesh);  // empty: the procedural heightfield
   }
 
-  RenderHost::Scene* scene = host->add_scene();
-  scene->requested = settings;
-  if (!renderer::load_scene(desc, scene->data, load_error)) {
+  // Loaded into a local and resolved before the scene is registered, so a mesh that does not
+  // load or a device that cannot draw it leaves no half-built scene behind holding an id.
+  renderer::SceneData data;
+  if (!renderer::load_scene(desc, data, load_error)) {
     error = protocol::make_error(protocol::codes::k_io_error, std::move(load_error));
     return false;
   }
-  renderer::resolve_settings(settings, device->features(), &scene->data, scene->resolved);
+  renderer::ResolvedSettings resolved;
+  renderer::resolve_settings(settings, device->features(), &data, resolved);
   const renderer::RenderAvailability availability =
-      renderer::check_availability(scene->resolved, device->features());
+      renderer::check_availability(resolved, device->features());
   if (availability != renderer::RenderAvailability::Ok) {
     error = unavailable(std::string(device->adapter().name) + " " +
                         renderer::availability_message(availability));
     return false;
   }
+  RenderHost::Scene* scene = host->add_scene();
+  scene->requested = settings;
+  scene->resolved = resolved;
+  scene->data = std::move(data);
 
   out.scene = scene->id;
   out.adapter = device->adapter().name;
@@ -500,8 +506,6 @@ bool RenderHost::ensure_renderer(Scene& scene, const renderer::RenderSettings& s
   scene.gpu = std::move(gpu);
   scene.view = std::move(view);
   scene.built = settings;
-  scene.width = width;
-  scene.height = height;
   return true;
 }
 

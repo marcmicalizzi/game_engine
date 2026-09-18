@@ -40,9 +40,9 @@ class RenderHost {
     renderer::ResolvedSettings resolved;
     std::unique_ptr<renderer::GpuScene> gpu;
     std::unique_ptr<renderer::SceneRenderer> view;
-    renderer::RenderSettings built;  // what `gpu` and `view` were built with
-    u32 width = 0;
-    u32 height = 0;
+    renderer::RenderSettings built;  // what `gpu` and `view` were built with; the frame size is
+                                     // the renderer's own (`view->width()`), because a resize
+                                     // touches only the screen-sized targets
   };
 
   // The device, created on first use. Null with `error` when there is none; the failure is
