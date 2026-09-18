@@ -430,6 +430,113 @@ ShaderLibrary::Entry* ShaderLibrary::find(std::string_view name) noexcept {
   return nullptr;
 }
 
+const ShaderLibrary::Entry* ShaderLibrary::find(std::string_view name) const noexcept {
+  for (const Entry& e : entries_) {
+    if (e.name == name) return &e;
+  }
+  return nullptr;
+}
+
+// ---- include tracking ----------------------------------------------------------------------
+
+namespace {
+
+// Everything before the last separator, or empty when the path has none.
+std::string_view directory_of(std::string_view path) noexcept {
+  const usize slash = path.find_last_of("/\\");
+  return slash == std::string_view::npos ? std::string_view() : path.substr(0, slash);
+}
+
+bool is_file(const std::string& path) noexcept {
+  io::FileInfo info{};
+  return io::stat_file(path, info) == io::Status::Ok && !info.is_directory;
+}
+
+std::string join(std::string_view directory, std::string_view relative) {
+  if (directory.empty()) return std::string(relative);
+  std::string out(directory);
+  out.push_back('/');
+  out.append(relative);
+  return out;
+}
+
+// The quoted `#include "..."` directives of one source, in order. Angle-bracket includes are
+// the compiler's own and are not tracked; a line commented out with // is skipped, which is
+// the only form of commenting-out that matters in practice (a directive inside a block comment
+// is still reported, and reporting one file too many only costs a timestamp check).
+void parse_includes(std::string_view text, Vector<std::string>& out) {
+  usize at = 0;
+  while (at < text.size()) {
+    usize end = text.find('\n', at);
+    if (end == std::string_view::npos) end = text.size();
+    std::string_view line = text.substr(at, end - at);
+    at = end + 1;
+    usize i = 0;
+    while (i < line.size() && (line[i] == ' ' || line[i] == '\t'))
+      ++i;
+    if (i + 1 < line.size() && line[i] == '/' && line[i + 1] == '/') continue;
+    if (i >= line.size() || line[i] != '#') continue;
+    ++i;
+    while (i < line.size() && (line[i] == ' ' || line[i] == '\t'))
+      ++i;
+    if (line.substr(i, 7) != "include") continue;
+    i += 7;
+    while (i < line.size() && (line[i] == ' ' || line[i] == '\t'))
+      ++i;
+    if (i >= line.size() || line[i] != '"') continue;
+    ++i;
+    const usize close = line.find('"', i);
+    if (close == std::string_view::npos || close == i) continue;
+    out.push_back(std::string(line.substr(i, close - i)));
+  }
+}
+
+}  // namespace
+
+void ShaderLibrary::scan_includes(Entry& entry) const {
+  entry.includes.clear();
+  if (entry.source.empty()) return;
+  // slangc resolves a quoted include against the including file's own directory, so that is
+  // tried first; the shader's own directory is the fallback, which is what a shared header in
+  // the module's shaders/ directory looks like from a source in a subdirectory.
+  const std::string_view root = directory_of(entry.source);
+  constexpr u32 k_max_include_files = 64;
+  Vector<std::string> visited;
+  visited.push_back(entry.source);
+  for (u32 at = 0; at < visited.size() && at < k_max_include_files; ++at) {
+    std::string text;
+    if (io::read_file(visited[at], text) != io::Status::Ok) continue;
+    Vector<std::string> quoted;
+    parse_includes(text, quoted);
+    const std::string_view directory = directory_of(visited[at]);
+    for (const std::string& relative : quoted) {
+      std::string resolved = join(directory, relative);
+      if (!is_file(resolved)) {
+        resolved = join(root, relative);
+        if (!is_file(resolved)) continue;  // slangc will say what it could not find
+      }
+      bool seen = false;
+      for (const std::string& p : visited) {
+        if (p == resolved) {
+          seen = true;
+          break;
+        }
+      }
+      if (seen) continue;  // a file is visited once, so a cycle terminates
+      io::FileInfo info{};
+      const i64 mtime = io::stat_file(resolved, info) == io::Status::Ok ? info.modified_unix_ms : 0;
+      entry.includes.push_back(IncludedFile{resolved, mtime});
+      visited.push_back(std::move(resolved));
+      if (visited.size() >= k_max_include_files) break;
+    }
+  }
+}
+
+u32 ShaderLibrary::include_count(std::string_view name) const noexcept {
+  const Entry* entry = find(name);
+  return entry != nullptr ? entry->includes.size() : 0;
+}
+
 ShaderLibrary::Entry& ShaderLibrary::entry_for(std::string_view name) {
   if (Entry* existing = find(name); existing != nullptr) return *existing;
   Entry entry;
@@ -580,11 +687,19 @@ bool ShaderLibrary::load(Entry& entry, std::string* error) {
     const bool have_source =
         !entry.source.empty() && io::stat_file(entry.source, source_info) == io::Status::Ok;
     const bool have_spirv = io::stat_file(entry.spirv_path, spirv_info) == io::Status::Ok;
+    // An edited include makes the built SPIR-V as stale as an edited source does, so the
+    // freshness question is asked of the whole include graph, not of the source alone.
+    scan_includes(entry);
+    i64 newest = have_source ? source_info.modified_unix_ms : 0;
+    for (const IncludedFile& included : entry.includes)
+      newest = included.mtime > newest ? included.mtime : newest;
     bool usable = have_spirv;
-    if (have_source &&
-        (!have_spirv || source_info.modified_unix_ms > spirv_info.modified_unix_ms)) {
+    if (have_source && (!have_spirv || newest > spirv_info.modified_unix_ms)) {
       usable = compile(entry, &local_error);
-      if (usable) io::stat_file(entry.source, source_info);
+      if (usable) {
+        io::stat_file(entry.source, source_info);
+        scan_includes(entry);  // the edit may have added or removed an include
+      }
     }
     if (usable) {
       std::string bytes;
@@ -631,9 +746,23 @@ u32 ShaderLibrary::poll_changes(Vector<std::string>& changed, std::string* error
   for (Entry& entry : entries_) {
     if (!entry.loaded || entry.source.empty()) continue;
     io::FileInfo info{};
-    if (io::stat_file(entry.source, info) != io::Status::Ok ||
-        info.modified_unix_ms == entry.source_mtime)
-      continue;
+    const bool have_source = io::stat_file(entry.source, info) == io::Status::Ok;
+    bool edited = have_source && info.modified_unix_ms != entry.source_mtime;
+    // An included file is a source of this shader too: editing brdf.slang or scene.slang has
+    // to reload every shader that reaches it, not only the one that was saved. The remembered
+    // timestamp is updated whether the recompile works or not, so a save that does not compile
+    // is reported once rather than on every poll.
+    for (IncludedFile& included : entry.includes) {
+      io::FileInfo include_info{};
+      const i64 mtime = io::stat_file(included.path, include_info) == io::Status::Ok
+                            ? include_info.modified_unix_ms
+                            : 0;
+      if (mtime != included.mtime) {
+        included.mtime = mtime;
+        edited = true;
+      }
+    }
+    if (!edited) continue;
     std::string local_error;
     if (compile(entry, &local_error)) {
       std::string bytes;
@@ -641,15 +770,17 @@ u32 ShaderLibrary::poll_changes(Vector<std::string>& changed, std::string* error
           load_bytes(entry,
                      std::span<const u8>(reinterpret_cast<const u8*>(bytes.data()), bytes.size()),
                      true, &local_error)) {
-        entry.source_mtime = info.modified_unix_ms;
+        if (have_source) entry.source_mtime = info.modified_unix_ms;
+        scan_includes(entry);
         changed.push_back(entry.name);
         ENGINE_LOG_INFO(log_shaders, "shader reloaded", log::field("shader", entry.name),
-                        log::field("generation", entry.shader.generation));
+                        log::field("generation", entry.shader.generation),
+                        log::field("includes", entry.includes.size()));
         continue;
       }
     }
     // Keep the previous shader; remember this mtime so a broken save is reported once.
-    entry.source_mtime = info.modified_unix_ms;
+    if (have_source) entry.source_mtime = info.modified_unix_ms;
     if (!errors.empty()) errors += "\n";
     errors += local_error;
   }
@@ -677,6 +808,7 @@ bool ShaderLibrary::recompile(std::string_view name, std::string* error) {
   io::FileInfo info{};
   if (io::stat_file(entry->source, info) == io::Status::Ok)
     entry->source_mtime = info.modified_unix_ms;
+  scan_includes(*entry);
   return true;
 }
 
@@ -698,7 +830,9 @@ void ShaderLibrary::describe(std::string& out) const {
       }
     }
     out += " bindings:" + std::to_string(e.shader.reflection.bindings.size());
-    out += " push:" + std::to_string(e.shader.reflection.push_constant_bytes) + "\n";
+    out += " push:" + std::to_string(e.shader.reflection.push_constant_bytes);
+    if (!e.includes.empty()) out += " includes:" + std::to_string(e.includes.size());
+    out += "\n";
   }
 }
 

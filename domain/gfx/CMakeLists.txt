@@ -3,17 +3,15 @@
 # graph and the renderer systems build on this.
 # Shaders every consumer of the RHI may draw with (the cluster path); test-only shaders stay in
 # engine_shaders_gfx_tests below.
-# visibility_resolve_rt.slang is visibility_resolve.slang with the shadow rays defined in, so it
-# is both a source (its own module) and a dependency of every other one (editing the resolve
-# recompiles it).
+# No DEPENDS: engine_shaders() walks each source's #include graph itself, so brdf.slang,
+# scene.slang, and visibility_resolve.slang (which visibility_resolve_rt.slang includes with the
+# shadow rays defined in) reach exactly the shaders that include them (cmake/EngineShaders.cmake).
 engine_shaders(NAME gfx SOURCES shaders/cluster_mesh.slang shaders/cluster_cull.slang
                              shaders/cluster_sw_raster.slang shaders/visibility_resolve.slang
                              shaders/visibility_resolve_rt.slang
                              shaders/hiz_build.slang shaders/cluster_vertex.slang
                              shaders/ray_visibility.slang shaders/clas_records.slang
-                             shaders/deform.slang
-                        DEPENDS shaders/brdf.slang shaders/scene.slang
-                                shaders/visibility_resolve.slang)
+                             shaders/deform.slang)
 engine_module(NAME gfx LAYER domain
   DEPS base containers memory hash json log math platform schemas io
   EXTERNAL_DEPS volk::volk GPUOpen::VulkanMemoryAllocator

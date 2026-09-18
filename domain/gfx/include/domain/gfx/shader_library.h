@@ -97,11 +97,22 @@ class ShaderLibrary {
   bool recompile(std::string_view name, std::string* error = nullptr);
 
   u32 count() const noexcept { return entries_.size(); }
+  // How many files a shader's source `#include`s, transitively, as the last load resolved
+  // them. Hot reload watches these as well as the source itself, so editing brdf.slang or
+  // scene.slang reloads every shader that includes it. Zero for an unknown or embedded-only
+  // shader.
+  u32 include_count(std::string_view name) const noexcept;
   const std::string& compiler() const noexcept { return compiler_; }
   // One line per loaded shader: entry points, bindings, push-constant size.
   void describe(std::string& out) const;
 
  private:
+  // One file a shader's source reaches through `#include "..."`, with the timestamp it had
+  // when the shader was last loaded.
+  struct IncludedFile {
+    std::string path;
+    i64 mtime = 0;
+  };
   struct Entry {
     std::string name;
     std::string source;      // manifest
@@ -110,14 +121,20 @@ class ShaderLibrary {
     const unsigned char* embedded = nullptr;
     usize embedded_size = 0;
     i64 source_mtime = 0;
+    Vector<IncludedFile> includes;  // transitive, source excluded
     Shader shader;
     bool loaded = false;
   };
+  const Entry* find(std::string_view name) const noexcept;
   Entry* find(std::string_view name) noexcept;
   Entry& entry_for(std::string_view name);
   bool load(Entry& entry, std::string* error);
   bool load_bytes(Entry& entry, std::span<const u8> bytes, bool from_file, std::string* error);
   bool compile(Entry& entry, std::string* error);
+  // Walks the source's `#include "..."` graph and records every file it reaches, with its
+  // current timestamp. Called whenever the shader's own timestamp is refreshed, so an edit
+  // that adds or removes an include is picked up on the next poll.
+  void scan_includes(Entry& entry) const;
   void release(Shader& shader) noexcept;
 
   const Device* device_ = nullptr;

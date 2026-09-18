@@ -227,3 +227,126 @@ TEST_CASE("shader library: embedded shaders, the build manifest, and hot reload 
   std::filesystem::remove_all(dir);
   if (have_device) device.destroy();
 }
+
+TEST_CASE("shader library: hot reload follows #include, transitively") {
+  // No device: this is about file timestamps and the compiler, both of which work on a machine
+  // with no GPU, which is where CI runs it.
+  gfx::ShaderLibrary library;
+  std::string error;
+  REQUIRE(library.create(nullptr, &error));
+  REQUIRE_MESSAGE(library.load_manifest(ENGINE_SHADER_MANIFEST, &error), error);
+
+  // The shipped shaders include shaders/scene.slang, and the resolve includes brdf.slang as
+  // well; whatever the exact set is on the day, the library has to have found it.
+  REQUIRE(library.get("cluster_mesh", &error) != nullptr);
+  CHECK(library.include_count("cluster_mesh") >= 1);
+  CHECK(library.include_count("no_such_shader") == 0);
+  std::string description;
+  library.describe(description);
+  CHECK(description.find("includes:") != std::string::npos);
+  const std::string slangc = library.compiler();
+  REQUIRE_FALSE(slangc.empty());
+  library.destroy();
+
+  const auto dir = std::filesystem::temp_directory_path() / "engine_shader_include_tests";
+  std::filesystem::remove_all(dir);
+  std::filesystem::create_directories(dir);
+  const std::string deeper = forward_slashes((dir / "deeper.slang").string());
+  const std::string common = forward_slashes((dir / "common.slang").string());
+  const std::string leaf = forward_slashes((dir / "leaf.slang").string());
+  const std::string spirv = forward_slashes((dir / "leaf.spv").string());
+  const std::string manifest = forward_slashes((dir / "manifest.json").string());
+
+  auto write_deeper = [&](const char* factor) {
+    REQUIRE(io::write_file(deeper, std::string("static const uint k_factor = ") + factor + ";\n") ==
+            io::Status::Ok);
+  };
+  auto write_common = [&](const char* bias) {
+    // Includes a file of its own, so the shader reaches deeper.slang only through this one.
+    REQUIRE(io::write_file(common, std::string("#include \"deeper.slang\"\n"
+                                               "// #include \"deeper.slang\"\n"
+                                               "uint transform(uint v) { return v * k_factor + ") +
+                                       bias + "; }\n") == io::Status::Ok);
+  };
+  write_deeper("2");
+  write_common("1");
+  REQUIRE(io::write_file(leaf,
+                         "#include \"common.slang\"\n"
+                         "[[vk::binding(0, 0)]] RWStructuredBuffer<uint> g_out;\n"
+                         "[shader(\"compute\")]\n[numthreads(32, 1, 1)]\n"
+                         "void leaf_main(uint3 id : SV_DispatchThreadID) "
+                         "{ g_out[id.x] = transform(id.x); }\n") == io::Status::Ok);
+  REQUIRE(io::write_file(manifest,
+                         std::string("{\"slangc\": \"") + slangc +
+                             "\", \"shaders\": [{\"name\": \"leaf\", \"source\": \"" + leaf +
+                             "\", \"spirv\": \"" + spirv +
+                             "\", \"args\": [\"-target\", \"spirv\", \"-profile\", \"spirv_1_6\", "
+                             "\"-emit-spirv-directly\", \"-fvk-use-entrypoint-name\", \"-O2\", "
+                             "\"-warnings-disable\", \"41012\"]}]}\n") == io::Status::Ok);
+
+  gfx::ShaderLibrary included;
+  REQUIRE(included.create(nullptr, &error));
+  REQUIRE_MESSAGE(included.load_manifest(manifest, &error), error);
+  const gfx::Shader* shader = included.get("leaf", &error);
+  REQUIRE_MESSAGE(shader != nullptr, error);
+  // common.slang and, through it, deeper.slang -- each once, although common.slang names
+  // deeper.slang twice and the second one is commented out.
+  CHECK(included.include_count("leaf") == 2);
+  const u64 first_hash = shader->hash;
+
+  Vector<std::string> changed;
+  CHECK(included.poll_changes(changed, &error) == 0);
+  CHECK(error.empty());
+
+  // The included file changes and the shader that includes it reloads, although its own source
+  // was not touched. This is the case poll_changes used to miss.
+  write_common("7");
+  std::filesystem::last_write_time(
+      common, std::filesystem::file_time_type::clock::now() + std::chrono::seconds(2));
+  REQUIRE_MESSAGE(included.poll_changes(changed, &error) == 1, error);
+  REQUIRE(changed.size() == 1);
+  CHECK(changed[0] == "leaf");
+  shader = included.get("leaf");
+  REQUIRE(shader != nullptr);
+  CHECK(shader->generation == 1);
+  CHECK(shader->hash != first_hash);
+  const u64 second_hash = shader->hash;
+  CHECK(included.poll_changes(changed, &error) == 0);  // reported once
+
+  // And a file the shader reaches only through that include.
+  write_deeper("5");
+  std::filesystem::last_write_time(
+      deeper, std::filesystem::file_time_type::clock::now() + std::chrono::seconds(4));
+  REQUIRE_MESSAGE(included.poll_changes(changed, &error) == 1, error);
+  CHECK(changed[0] == "leaf");
+  shader = included.get("leaf");
+  REQUIRE(shader != nullptr);
+  CHECK(shader->generation == 2);
+  CHECK(shader->hash != second_hash);
+
+  // An include that stops being included stops being watched.
+  REQUIRE(io::write_file(common, "uint transform(uint v) { return v + 3; }\n") == io::Status::Ok);
+  std::filesystem::last_write_time(
+      common, std::filesystem::file_time_type::clock::now() + std::chrono::seconds(6));
+  REQUIRE_MESSAGE(included.poll_changes(changed, &error) == 1, error);
+  CHECK(included.include_count("leaf") == 1);
+  write_deeper("11");
+  std::filesystem::last_write_time(
+      deeper, std::filesystem::file_time_type::clock::now() + std::chrono::seconds(8));
+  CHECK(included.poll_changes(changed, &error) == 0);
+  CHECK(error.empty());
+
+  // A broken include keeps the last good shader and reports slangc's message once.
+  REQUIRE(io::write_file(common, "this is not slang\n") == io::Status::Ok);
+  std::filesystem::last_write_time(
+      common, std::filesystem::file_time_type::clock::now() + std::chrono::seconds(10));
+  const u32 generation = included.get("leaf")->generation;
+  CHECK(included.poll_changes(changed, &error) == 0);
+  CHECK(error.find("leaf: slangc exited with") != std::string::npos);
+  CHECK(included.get("leaf")->generation == generation);
+  CHECK(included.poll_changes(changed, &error) == 0);
+  CHECK(error.empty());
+
+  included.destroy();
+  std::filesystem::remove_all(dir);
+}
