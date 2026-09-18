@@ -335,7 +335,7 @@ struct AdaptersResult @version(1) {
 // with the same functions in systems/renderer/settings.h.
 
 /// Every knob the renderer has. Absent fields keep the defaults, which are engine-view's.
-struct RenderSettings @version(2) {
+struct RenderSettings @version(3) {
   /// direct, hw, vertex, sw, auto, or rt. `hw` and `direct` fall back to `vertex` on a device
   /// without mesh shaders; the result says which one ran.
   raster: string = "hw"
@@ -369,6 +369,70 @@ struct RenderSettings @version(2) {
   /// Multiply the LOD pixel threshold of the views outside the attention region — surround3's
   /// side monitors — by this. At least 1.
   peripheral_lod: f32 = 1 @since(2)
+  /// Geometry streaming (04 §4.9): the device holds a budgeted subset of the scene's cluster
+  /// pages, the cull pass draws what is resident and asks for the rest, and the picture
+  /// converges. It needs a scene that was **loaded** with a page table, which is what
+  /// `RenderLoadParams.settings.stream` asks for; asking here for a scene that has none turns
+  /// streaming off with a log line rather than failing the call.
+  stream: bool = false @since(3)
+  /// The residency budget in **mebibytes** over the scene's page bytes; 0 is every page, which
+  /// is streaming with nothing to evict. MiB rather than bytes because that is the scale a
+  /// budget is chosen at, and it is the unit `engine-view --page-budget` takes.
+  page_budget_mib: u32 = 0 @since(3)
+  /// Page payload one frame may copy into the pool, in **kibibytes**; 0 is the renderer's own
+  /// default (256 KiB), and a value under the largest page is raised to it, because a budget no
+  /// page fits in would never converge. KiB because an upload is a fraction of a frame, and it
+  /// is the unit `engine-view --upload-budget` takes.
+  upload_budget_kib: u32 = 0 @since(3)
+}
+
+/// What a run of geometry streaming did (04 §4.9, docs/subsystems/renderer.md "Geometry
+/// streaming"), mirroring `renderer::StreamStats`. The counters are cumulative over the run;
+/// `pages_resident`, `pending` and `loads_in_flight` are the latest frame's. Every field is named
+/// as engine-view's `streaming` summary object names it, so one shape reads out of both hosts.
+/// `pages_total` is 0 when nothing streamed, which is how a reader tells a whole-scene upload
+/// from a streamed one without testing for the block.
+struct RenderStreamStats @version(1) {
+  /// Pages in the scene's table, how many the device holds, and how many of those are roots
+  /// (`geometry::k_page_root`: resident from the start, never evicted).
+  pages_total: u32 = 0
+  pages_resident: u32 = 0
+  pages_pinned: u32 = 0
+  /// The page pool's fixed-size slots, and the requests queued in the manager but not admitted.
+  page_slots: u32 = 0
+  pending: u32 = 0
+  /// Request entries the cull passes wrote, summed over the run.
+  requests: u64 = 0
+  /// Pages copied into the pool and the payload bytes that cost.
+  uploads: u64 = 0
+  uploads_bytes: u64 = 0
+  evictions: u64 = 0
+  /// Requests dropped because the page that asked has been evicted since.
+  stale: u64 = 0
+  /// Frames whose request buffer was full; those pages come back next frame.
+  overflows: u64 = 0
+  /// Frames from the first with work outstanding to the first with none. A camera jump starts a
+  /// new interval, so it is how long the last convergence took and not a total.
+  frames_to_converge: u32 = 0
+  resident_bytes: u64 = 0
+  /// Every page of the scene — what streaming is a fraction of — and the manager's budget.
+  page_bytes: u64 = 0
+  budget_bytes: u64 = 0
+  /// Where the payloads came from: "file" (the meshes' `.clusters` containers, read by range on
+  /// the job system) or "host" (out of the loaded scene, which is all the procedural heightfield
+  /// and a `"cache":false` glTF can do). The three counters below are zero for "host".
+  source: string = "host"
+  file_reads: u64 = 0
+  file_bytes: u64 = 0
+  /// What releasing the merged host streams saved, which only a file-backed source can do.
+  host_bytes_freed: u64 = 0
+  /// Frames in which a page was wanted and its reads had not landed yet: the read latency made
+  /// visible. Many against few uploads is a run waiting on the disk.
+  load_waits: u64 = 0
+  /// Page loads outstanding right now. engine-view's summary line leaves this one out because it
+  /// is a momentary value rather than a count of the run; it is here because the block is the
+  /// whole of `renderer::StreamStats` and a caller polling a benchmark can use it.
+  loads_in_flight: u32 = 0
 }
 
 /// What one view of a `ViewSet` costs, beside the totals in `RenderStats` (04 §4.6). The
@@ -404,7 +468,7 @@ struct RenderViewStats @version(1) {
 }
 
 /// Parameters of `render.load`. Exactly one of `mesh` and `scene` is given.
-struct RenderLoadParams @version(1) {
+struct RenderLoadParams @version(2) {
   /// A glTF 2.0, GLB, or .clusters file. Empty with an empty `scene` loads the procedural
   /// heightfield, which is the scene that needs no content at all.
   mesh: string
@@ -422,6 +486,15 @@ struct RenderLoadParams @version(1) {
   cache: bool = true
   /// Index into the sorted `gpu.adapters` list; used by the first render call of the process.
   adapter: u32 = 0
+  /// The streaming page byte target, for the **procedural heightfield only** (0 is the default
+  /// target, 131072). A glTF's and a container's page layout is fixed, because the target is part
+  /// of the derived-data cache key and two targets are two different containers; the heightfield
+  /// has no cache entry, so a caller that wants many small pages — a test, or a measurement of
+  /// what a budget does — may say so. It is a *load* parameter and not a `RenderSettings` field
+  /// because it changes what loading produces: the page layout renumbers the scene's clusters,
+  /// and a `SceneData` outlives a settings change in this host. `settings.stream` is what turns
+  /// the page table on; this only sizes it.
+  page_bytes: u32 = 0 @since(2)
 }
 
 /// A loaded scene: the id later calls name it by, and what loading found.
@@ -568,7 +641,7 @@ struct MachineStateSpan @version(1) {
   end: MachineState
 }
 
-struct RenderStats @version(3) {
+struct RenderStats @version(4) {
   /// Frames submitted.
   frames: u64 = 0
   /// The last frame's surviving (instance, cluster) pairs, by the draw that produced them.
@@ -588,6 +661,9 @@ struct RenderStats @version(3) {
   /// had to be than its picture (1 for every other layout).
   view_layout: string = "single" @since(3)
   oversample: f32 = 1 @since(3)
+  /// Geometry residency over the run. Present on every result so a script never has to test for
+  /// it; `stream.pages_total` is 0 when the scene was uploaded whole.
+  stream: RenderStreamStats @since(4)
 }
 
 struct RenderCaptureResult @version(2) {

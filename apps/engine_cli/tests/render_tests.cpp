@@ -234,6 +234,88 @@ TEST_CASE("render: load, capture, benchmark, and compare over the protocol") {
         k_invalid_argument);
 }
 
+// Geometry streaming over the protocol (docs/plan/04-renderer.md §4.9, docs/subsystems/apps.md
+// "Streaming pages at run time"). Two things are being checked, and the second is the one that
+// matters: that `stats.stream` comes back coherent, and that a per-call `settings` block turning
+// streaming *off* produces an empty one — which is what says the additive schema field is reaching
+// the renderer rather than being decoded into a struct nobody reads.
+//
+// The heightfield again, so the case needs no fixture; `page_bytes` is what makes it a streaming
+// scene at all, since the heightfield is not paged unless someone asks. 16 KiB instead of the
+// 128 KiB default so that a few hundred kilobytes of payload become dozens of pages rather than
+// three. Small frames and few of them, because this measures nothing — the picture converging is
+// the whole assertion.
+TEST_CASE("render: geometry streaming over the protocol") {
+  Host host;
+  REQUIRE(host.ok);
+
+  // A budget under the scene's page bytes on purpose: it is the one number whose unit differs
+  // between the wire (MiB) and the renderer (bytes), so a budget that came back unclamped is the
+  // proof the conversion happened. The default grid is big enough for 1 MiB to bite.
+  constexpr u64 k_budget_bytes = u64{1} * 1024 * 1024;
+  const JsonValue loaded =
+      host.call("render.load", R"({"grid":257,"page_bytes":16384,)"
+                               R"("settings":{"raster":"hw","stream":true,"page_budget_mib":1}})");
+  if (error_code(loaded) == k_render_unavailable) {
+    MESSAGE("render.* unavailable here: " << error_message(loaded));
+    return;
+  }
+  const std::string id = text(result_of(loaded), "scene");
+
+  // Enough frames for the feedback round trip to run its course: a frame's page requests are read
+  // back when its slot comes around, and the upload budget lets a couple of pages through a frame.
+  const JsonValue benchmarked = host.call(
+      "render.benchmark", "{\"scene\":\"" + id + "\",\"width\":320,\"height\":240,\"frames\":60}");
+  const JsonValue& bench = result_of(benchmarked);
+  const JsonValue* stats = bench.find("stats");
+  REQUIRE(stats != nullptr);
+  const JsonValue* stream = stats->find("stream");
+  REQUIRE(stream != nullptr);
+  CHECK(number(*stream, "pages_total") > 0);
+  CHECK(number(*stream, "pages_resident") > 0);
+  CHECK(number(*stream, "pages_resident") <= number(*stream, "pages_total"));
+  CHECK(number(*stream, "pages_pinned") > 0);  // the root pages, resident from the first frame
+  CHECK(number(*stream, "page_slots") > 0);
+  CHECK(number(*stream, "uploads") > 0);
+  CHECK(number(*stream, "uploads_bytes") > 0);
+  CHECK(number(*stream, "requests") > 0);
+  CHECK(number(*stream, "page_bytes") > k_budget_bytes);  // the budget is a fraction of the scene
+  CHECK(number(*stream, "budget_bytes") == k_budget_bytes);  // MiB on the wire, bytes in here
+  CHECK(number(*stream, "resident_bytes") <= number(*stream, "page_bytes"));
+  // The heightfield is built, never written to a container, so its pages can only come out of the
+  // loaded scene in host memory: no file source, and the three file counters stay at zero.
+  CHECK(text(*stream, "source") == "host");
+  CHECK(number(*stream, "file_reads") == 0);
+  CHECK(number(*stream, "file_bytes") == 0);
+  CHECK(number(*stream, "host_bytes_freed") == 0);
+  CHECK(number(*stats, "visible_pairs") > 0);  // and the frame still drew
+
+  // The same scene with streaming turned off for this call alone: the GPU scene is rebuilt whole
+  // and there is no residency at all. `pages_total == 0` is the documented way to tell the two
+  // apart without testing for the block, and it is only reachable if `stream` travelled.
+  const JsonValue plain =
+      host.call("render.benchmark", "{\"scene\":\"" + id +
+                                        "\",\"width\":320,\"height\":240,\"frames\":12,"
+                                        "\"settings\":{\"raster\":\"hw\",\"stream\":false}}");
+  const JsonValue* plain_stats = result_of(plain).find("stats");
+  REQUIRE(plain_stats != nullptr);
+  const JsonValue* plain_stream = plain_stats->find("stream");
+  REQUIRE(plain_stream != nullptr);
+  CHECK(number(*plain_stream, "pages_total") == 0);
+  CHECK(number(*plain_stream, "pages_resident") == 0);
+  CHECK(number(*plain_stream, "uploads") == 0);
+  CHECK(number(*plain_stream, "page_bytes") == 0);
+  CHECK(number(*plain_stats, "visible_pairs") > 0);  // still the same picture's worth of pairs
+
+  // `page_bytes` is bounded like the other load parameters: a page too small to hold a cluster is
+  // a typo, not a request.
+  CHECK(error_code(host.call("render.load", R"({"grid":33,"page_bytes":7})")) ==
+        k_invalid_argument);
+  CHECK(error_code(host.call("render.load",
+                             R"({"grid":33,"settings":{"upload_budget_kib":4294967295}})")) ==
+        k_invalid_argument);
+}
+
 // `render.evaluate` and the reference integrator of `render.capture` (docs/plan/04-renderer.md
 // §4.8, docs/subsystems/renderer.md "Reference renderer"). They need a device that can build the
 // frame's cluster acceleration structures, which the hosted runners have not and the baseline

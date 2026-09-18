@@ -88,6 +88,19 @@ bool read_settings(const protocol::RenderSettings& in, renderer::RenderSettings&
     error = invalid("panini_d must not be negative");
     return false;
   }
+  // The two streaming budgets are MiB and KiB on the wire and bytes in the renderer, which is the
+  // same split engine-view's `--page-budget` and `--upload-budget` have: a budget is chosen at the
+  // scale of a scene and an upload at the scale of a frame, while the renderer sizes buffers and
+  // so counts bytes. The conversion lives here, in the one place the wire meets the module, rather
+  // than in `RenderSettings`, so `settings.h` never has to say what unit a caller was thinking in.
+  // The bound keeps the kibibyte product inside the u32 the renderer's field is.
+  if (in.upload_budget_kib > 1024u * 1024u) {
+    error = invalid("upload_budget_kib must be at most 1048576 (1 GiB)");
+    return false;
+  }
+  out.stream = in.stream;
+  out.page_budget_bytes = u64{in.page_budget_mib} * 1024u * 1024u;
+  out.upload_budget_bytes = in.upload_budget_kib * 1024u;
   out.lod_px = in.lod_px;
   out.sw_px = in.sw_px;
   out.cull = in.cull;
@@ -130,6 +143,31 @@ void fill_stats(const renderer::Stats& in, const renderer::ViewSet& views,
   out.gpu_memory.device_local_total_mib = in.gpu_memory.device_local_total_mib;
   out.view_layout = renderer::view_layout_name(views.layout());
   out.oversample = views.oversample();
+  // Geometry residency, in the shape and under the key names engine-view's `streaming` summary
+  // object uses, so one reader serves both hosts. `from_file` becomes a word rather than a flag
+  // because "host" and "file" are two different sources and not the presence or absence of one.
+  const renderer::StreamStats& stream = in.stream;
+  out.stream.pages_total = stream.pages_total;
+  out.stream.pages_resident = stream.pages_resident;
+  out.stream.pages_pinned = stream.pages_pinned;
+  out.stream.page_slots = stream.page_slots;
+  out.stream.pending = stream.pending;
+  out.stream.requests = stream.requests;
+  out.stream.uploads = stream.uploads;
+  out.stream.uploads_bytes = stream.uploads_bytes;
+  out.stream.evictions = stream.evictions;
+  out.stream.stale = stream.stale;
+  out.stream.overflows = stream.overflows;
+  out.stream.frames_to_converge = stream.frames_to_converge;
+  out.stream.resident_bytes = stream.resident_bytes;
+  out.stream.page_bytes = stream.page_bytes;
+  out.stream.budget_bytes = stream.budget_bytes;
+  out.stream.source = stream.from_file ? "file" : "host";
+  out.stream.file_reads = stream.file_reads;
+  out.stream.file_bytes = stream.file_bytes;
+  out.stream.host_bytes_freed = stream.host_bytes_freed;
+  out.stream.load_waits = stream.load_waits;
+  out.stream.loads_in_flight = stream.loads_in_flight;
   const f64 timed = in.timed();
   out.views.clear();
   for (u32 v = 0; v < in.view_count; ++v) {
@@ -266,6 +304,13 @@ bool render_load(protocol::Context& ctx, const protocol::RenderLoadParams& param
     error = invalid("grid must be within 2..2048");
     return false;
   }
+  // A page has to be able to hold a cluster or two, and a scene made of millions of pages is a
+  // typo rather than a request: the same reason `grid` and `grid_instances` are bounded above.
+  if (params.page_bytes != 0 &&
+      (params.page_bytes < 4096u || params.page_bytes > 64u * 1024u * 1024u)) {
+    error = invalid("page_bytes must be 0 (the default target) or within 4096..67108864");
+    return false;
+  }
   renderer::RenderSettings settings;
   if (!read_settings(params.settings, settings, error)) return false;
 
@@ -281,6 +326,13 @@ bool render_load(protocol::Context& ctx, const protocol::RenderLoadParams& param
   desc.grid_instances = params.grid_instances;
   desc.ddc = params.ddc;
   desc.cache = params.cache;
+  // Whether loading keeps a page table at all, and what the heightfield's pages are sized at.
+  // `SceneDesc::stream` is the load's question and `RenderSettings::stream` the frame's; the
+  // scene's *requested* settings answer both, because a `SceneData` outlives a settings change
+  // here and a later call that asks to stream a scene loaded without a table gets streaming
+  // turned off with a log line instead of a page table it cannot have.
+  desc.stream = settings.stream;
+  desc.page_bytes = params.page_bytes;
   std::string load_error;
   if (!params.scene.empty()) {
     if (!renderer::read_scene_file(params.scene, desc, load_error)) {
@@ -846,6 +898,18 @@ bool RenderHost::ensure_renderer(Scene& scene, const renderer::RenderSettings& s
   auto gpu = std::make_unique<renderer::GpuScene>();
   if (!gpu->create(*dev, scene.data, scene.resolved, &error)) return false;
   auto view = std::make_unique<renderer::SceneRenderer>();
+  // `SceneRenderer::Desc::page_source` is left null, so a streamed scene's pages are copied out of
+  // the `SceneData` this host keeps rather than read back out of the meshes' containers. That is
+  // deliberate and it is not a "not done yet": `renderer::attach_page_source` **releases** the
+  // merged host streams as the other half of what it does, and those streams are exactly what this
+  // function rebuilds a `GpuScene` from when a later call changes the settings. engine-view can
+  // release them because it builds its scene once; a host whose `render.benchmark` may be handed
+  // `{"stream":false}` for the scene it just loaded with `{"stream":true}` cannot, because the
+  // rebuild would upload buffers that are no longer there. Attaching one here means either
+  // refusing that rebuild or re-opening the source against each new `GpuScene`, and neither is
+  // worth doing untested — every scene this host can build without a content fixture is the
+  // procedural heightfield, which has no container behind it and would be refused a file source
+  // anyway. docs/subsystems/protocol.md says so under "Not yet".
   renderer::SceneRenderer::Desc desc;
   desc.width = width;
   desc.height = height;
@@ -893,7 +957,8 @@ void add_render_methods(protocol::Dispatcher& d) {
   d.add(protocol::method<protocol::RenderLoadParams, protocol::RenderSceneInfo, &render_load>(
       "render.load",
       "Load a mesh or a scene file into a GPU scene the session holds; returns its id and "
-      "counts."));
+      "counts. `settings.stream` also keeps the scene's streaming page table, which `page_bytes` "
+      "sizes for the procedural heightfield."));
   d.add(protocol::method<protocol::RenderCaptureParams, protocol::RenderCaptureResult,
                          &render_capture>(
       "render.capture",
@@ -903,7 +968,7 @@ void add_render_methods(protocol::Dispatcher& d) {
                          &render_benchmark>(
       "render.benchmark",
       "Render a loaded scene for n frames with the camera held still; returns GPU milliseconds "
-      "per pass and CPU milliseconds per frame."));
+      "per pass, CPU milliseconds per frame, and the run's geometry residency in stats.stream."));
   d.add(protocol::method<protocol::RenderCompareParams, protocol::RenderCompareResult,
                          &render_compare>(
       "render.compare", "FLIP, PSNR, and SSIM between two images, with an optional heat map."));
