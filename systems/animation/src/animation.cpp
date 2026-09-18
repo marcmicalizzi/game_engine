@@ -390,9 +390,12 @@ bool AnimationSystem::attach(flecs::entity entity, const Id128& skeleton, const 
   instance.pose_slot = poses_.acquire(skeleton_index, instance.joints);
   instance.clip_index = library_->clip_index(clip);
   instance.fade_index = Library::k_not_found;
-  ++stats_.promotions;
-  // The rest pose, so a slot is never a frame of whatever the previous occupant left.
-  if (instance.pose_slot != k_no_slot) anim::rest_pose(data, poses_.pose(instance.pose_slot));
+  // The rest pose, so a slot is never a frame of whatever the previous occupant left. A skeleton
+  // with no joints gets no slot, and is not counted as a promotion.
+  if (instance.pose_slot != k_no_slot) {
+    anim::rest_pose(data, poses_.pose(instance.pose_slot));
+    ++stats_.promotions;
+  }
 
   AnimationPlayer player;
   if (const AnimationPlayer* existing = entity.try_get<AnimationPlayer>()) player = *existing;

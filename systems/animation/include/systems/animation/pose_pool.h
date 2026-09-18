@@ -92,6 +92,9 @@ class PosePool {
 
   u32 slot_count() const noexcept { return slots_.size(); }
   u32 live_count() const noexcept { return live_; }
+  // Joints the arena holds, live and free: the length of each channel array and of the upload
+  // buffer. It never shrinks, because a released slot keeps its run for the next instance of the
+  // same skeleton.
   u32 joint_capacity() const noexcept { return rotation_.size(); }
   // What this pool costs: 40 bytes of pose and 48 of matrix per joint of every slot ever used.
   u64 bytes() const noexcept;

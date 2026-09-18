@@ -110,8 +110,11 @@ u8 lod_tier(f32 observer_score, u8 current, const sim::TierParams& params) noexc
 
 // ---- counters ---------------------------------------------------------------------------------
 
-// What the last tick did. Cheap: four counters written once per system per tick by stage 0, so
-// nothing here is a per-entity atomic.
+// What the last tick did. Cheap by construction: each counter is written **once per system per
+// tick, by stage 0 only**, so nothing here is a per-entity atomic and nothing in the hot loop
+// contends. The price is that with more than one worker these are stage 0's share of the work and
+// not the world's total — a diagnostic, not a metric. `promotions` and `demotions` are exact,
+// because a tier transition never happens on a worker.
 struct AnimationStats {
   u32 players = 0;       // players advanced
   u32 sampled = 0;       // poses written
