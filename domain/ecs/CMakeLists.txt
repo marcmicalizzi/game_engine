@@ -27,8 +27,7 @@ engine_module_tests(NAME ecs
 # The E6 half that measures flecs: 10^5 entities with relationships and a hierarchy, four
 # systems a tick, worker scaling, query latency, and churn (docs/experiments/e6-ecs-store.md).
 engine_module_bench(NAME ecs
-  SOURCES bench/ecs_bench.cpp
-  DEPS ids)
+  SOURCES bench/ecs_bench.cpp)
 # The bench reports the process working set, which is psapi's on Windows and /proc/self/statm's
 # on Linux.
 if(WIN32 AND TARGET engine_ecs_bench)

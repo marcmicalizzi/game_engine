@@ -6,7 +6,6 @@
 // enough for CTest; every number that reaches the write-up comes from msvc-release at 100,000.
 
 #include <core/base/macros.h>
-#include <core/ids/id128.h>
 #include <core/jobs/job_system.h>
 #include <core/platform/topology.h>
 #include <domain/ecs/os_api.h>
