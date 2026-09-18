@@ -17,10 +17,20 @@ if(TARGET engine::animation)
   list(APPEND _view_deps ids animation)
 endif()
 
+set(_view_tests tests/view_tests.cpp tests/mesh_view_tests.cpp)
+if(TARGET engine::animation)
+  # The animation-LOD glue is a header beside main.cpp (`anim_lod.h`) rather than a block inside
+  # it, because it is the pattern a game copies and because it is worth testing on its own: the
+  # observer set, the per-view weights, the frustum gate and the band scale are arithmetic, and
+  # these cases drive them with no GPU and no world. Without the capability the header is not
+  # compiled at all, which is what the minimal build proves.
+  list(APPEND _view_tests tests/anim_lod_tests.cpp)
+endif()
+
 engine_app(NAME engine_view OUTPUT engine-view
   SOURCES main.cpp
   DEPS ${_view_deps}
-  E2E_TESTS tests/view_tests.cpp tests/mesh_view_tests.cpp)
+  E2E_TESTS ${_view_tests})
 
 if(TARGET engine::animation)
   # `engine_app(NAME engine_view)` builds the target `engine_engine_view`, and its end-to-end test

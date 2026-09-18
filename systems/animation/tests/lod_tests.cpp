@@ -166,6 +166,76 @@ TEST_CASE("animation LOD: demotion releases the slot and promotion re-acquires i
   CHECK(animation.stats().sampled == 1);
 }
 
+// The playhead test above says the *time* comes back right. This says the **pose** does, which is
+// the property a game actually depends on: a character that walked out of the tier the camera
+// cares about and back has to be mid-stride where it would have been, not where it froze and not
+// one frame behind. Two instances of one clip, started on the same phase, one ticked throughout
+// and one frozen for a hundred steps and promoted back — their bone matrices have to be the same
+// bytes, because both are a pure function of (skeleton, clip, time) and the promotion computes
+// that time in closed form.
+//
+// Now that `engine-view --anim-lod` drives these transitions from the camera every frame
+// (docs/subsystems/animation.md, "The app-side LOD glue"), this is the invariant that keeps a
+// crowd crossing a band boundary from visibly stuttering.
+TEST_CASE("animation LOD: a promoted instance holds the pose it would have had") {
+  Fixture fixture;
+  ecs::SimWorld sim(world_config());
+  AnimationSystem animation(fixture.library);
+  animation.install(sim);
+
+  const flecs::entity ticked = sim.world().entity("ticked");
+  const flecs::entity frozen = sim.world().entity("frozen");
+  REQUIRE(animation.attach(ticked, fixture.skeleton, fixture.walk));
+  REQUIRE(animation.attach(frozen, fixture.skeleton, fixture.walk));
+  // The same phase and the same rate, so the only difference between them is the demotion.
+  for (const flecs::entity e : {ticked, frozen}) {
+    AnimationPlayer* player = e.try_get_mut<AnimationPlayer>();
+    REQUIRE(player != nullptr);
+    player->time = 0.125f;
+    player->speed = 1.0f;
+  }
+  for (u32 i = 0; i < 5; ++i)
+    sim.step();
+
+  animation.set_tier(frozen, 3);
+  CHECK(frozen.try_get<SkeletonInstance>()->pose_slot == k_no_slot);
+  for (u32 i = 0; i < 97; ++i)
+    sim.step();
+  animation.set_tier(frozen, 0);
+  sim.step();  // the tick that samples the re-acquired slot
+
+  const SkeletonInstance& a = *ticked.try_get<SkeletonInstance>();
+  const SkeletonInstance& b = *frozen.try_get<SkeletonInstance>();
+  REQUIRE(a.pose_slot != k_no_slot);
+  REQUIRE(b.pose_slot != k_no_slot);
+  CHECK(ticked.try_get<AnimationPlayer>()->time ==
+        doctest::Approx(frozen.try_get<AnimationPlayer>()->time).epsilon(1e-5));
+  const std::span<const anim::JointMatrix> all = animation.joint_matrices();
+  const u32 first_a = animation.first_joint(a.pose_slot);
+  const u32 first_b = animation.first_joint(b.pose_slot);
+  const u32 joints = animation.joint_count(a.pose_slot);
+  REQUIRE(joints > 0);
+  REQUIRE(animation.joint_count(b.pose_slot) == joints);
+  u32 differing = 0;
+  f32 worst = 0.0f;
+  for (u32 j = 0; j < joints; ++j) {
+    const anim::JointMatrix& ma = all[first_a + j];
+    const anim::JointMatrix& mb = all[first_b + j];
+    for (u32 r = 0; r < 3; ++r) {
+      const Vec4 d = ma.rows[r] - mb.rows[r];
+      const f32 row = std::max(std::max(std::fabs(d.x), std::fabs(d.y)),
+                               std::max(std::fabs(d.z), std::fabs(d.w)));
+      worst = row > worst ? row : worst;
+      differing += row != 0.0f ? 1u : 0u;
+    }
+  }
+  MESSAGE("promoted against continuously ticked: " << differing << " of " << joints * 3
+                                                   << " matrix rows differ, worst " << worst);
+  // Bit-identical, not merely close: the promotion's closed form is the same arithmetic the tick
+  // would have done, and the sampler is a pure function of the time it lands on.
+  CHECK(differing == 0);
+}
+
 TEST_CASE("animation LOD: the divisor staggers the work and keeps the average rate") {
   Fixture fixture;
   ecs::SimWorld sim(world_config());

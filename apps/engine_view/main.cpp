@@ -35,9 +35,12 @@
 #include <systems/renderer/settings.h>
 
 #if ENGINE_VIEW_ANIMATION
+#include "anim_lod.h"
+
 #include <core/ids/id128.h>
 #include <domain/ecs/sim_world.h>
 #include <domain/ecs/world_commands.h>
+#include <domain/sim/tiers.h>
 #include <systems/animation/animation.h>
 #endif
 
@@ -66,7 +69,8 @@ constexpr const char* k_usage =
     "                   [--stream] [--page-budget <MiB>] [--upload-budget <KiB>]\n"
     "                   [--shadows off|rt] [--views single|surround3|panini] [--side-yaw <deg>]\n"
     "                   [--panini-d <d>] [--peripheral-lod <mult>]\n"
-    "                   [--animate [clip]] [--anim-speed <x>]\n"
+    "                   [--animate [clip]] [--anim-speed <x>] [--anim-lod on|off]\n"
+    "                   [--anim-lod-scale <x>]\n"
     "                   [--reference <spp>] [--bounces <n>] [--finest] [--spp-batch <n>]\n"
     "\n"
     "  --frames <n>     render n frames, then exit (0: until the window closes)\n"
@@ -129,6 +133,13 @@ constexpr const char* k_usage =
     "                   not in lockstep. A scene file says it per instance, in an \"animation\"\n"
     "                   block: {\"clip\":\"Run\",\"speed\":1.5,\"phase\":0.4}\n"
     "  --anim-speed <x> multiply every animated instance's playback rate (default 1)\n"
+    "  --anim-lod on|off  let the camera decide each character's animation tier (default on):\n"
+    "                   an observer per view of the layout, the side monitors weighted below the\n"
+    "                   centre, sim::TierAssignment over the animated instances' positions, and\n"
+    "                   the changes through the animation capability's own hooks. Off animates\n"
+    "                   every instance at LOD0, which is what every build before this one did\n"
+    "  --anim-lod-scale <x>  multiply the tier band boundaries (default 1): 2 puts everything one\n"
+    "                   band nearer and animates the crowd finer, 0.5 coarser\n"
     "  --views <how>    single (default: one rectilinear view over the whole target); surround3:\n"
     "                   three views with per-monitor off-axis frusta, the target divided in three;\n"
     "                   panini: one view rendered rectilinear into an oversampled source and\n"
@@ -182,6 +193,8 @@ struct Options {
   bool animate = false;
   std::string clip;  // --animate's optional value: a clip name or an index
   f32 anim_speed = 1.0f;
+  bool anim_lod = true;       // let the camera decide each character's animation tier
+  f32 anim_lod_scale = 1.0f;  // multiplies the capability's band boundaries
   // The reference renderer (docs/plan/04-renderer.md §4.8): spp > 0 takes the whole offscreen
   // path below instead of opening a window, because a converged picture is minutes of compute
   // with nothing to look at while it runs and because CI has no display.
@@ -253,6 +266,32 @@ struct AnimatedScene {
   u32 joints = 0;                         // the widest skeleton attached
   u32 instances = 0;                      // entities attached
   std::string clip_name;                  // what the summary reports
+
+  // ---- the camera-driven LOD (anim_lod.h) -----------------------------------------------------
+  //
+  // The SoA `sim::TierAssignment` works on, over the **animated** instances only: a rigid one has
+  // no pose to coarsen and would only cost a score. `row_instance` maps a row back to its scene
+  // instance, which is the one place the tier code's index space and the entity ids meet — the
+  // same seam `sim::apply_tier_changes` has, written here because an app cannot make a
+  // `sim::EntityHandle` without flecs and `set_tier(Id128, u8)` is the surface that exists for it.
+  bool lod = true;
+  f32 lod_scale = 1.0f;
+  sim::TierParams tier_params;
+  sim::ObserverSet observers;
+  sim::TierAssignment tiers;
+  Vector<u32> row_instance;  // scene instance of each row below
+  Vector<Vec3> positions;    // world centre of the instance's padded bounding sphere
+  Vector<f32> radii;         // its radius, padding and instance scale included
+  Vector<f32> importance;    // what the camera says the row is worth, refilled every frame
+  Vector<u8> tier_state;     // in/out of assign_tiers; the tier each row is at
+  Vector<u8> instance_tier;  // the same, indexed by scene instance, for `step_animation`
+  Vector<sim::TierChange> changes;
+  u32 histogram[animation::k_tier_count] = {};
+  u32 promotions = 0;
+  u32 demotions = 0;
+  u32 deferred = 0;
+  f64 tick_ns = 0.0;  // summed over the frames, for the summary
+  f64 lod_ns = 0.0;
 
   AnimatedScene() : system(library) {}
 };
@@ -359,16 +398,85 @@ bool prepare_animation(std::unique_ptr<AnimatedScene>& out, renderer::SceneDesc&
   return true;
 }
 
+// **What the camera says each character is worth, before the world is ticked.**
+//
+// This is the whole of the join, and it is four calls: build the observer set from the views, ask
+// the views which instances are on screen and how much that view is worth, run
+// `sim::TierAssignment` over the rows, and hand the accepted changes to the capability. The tier
+// code never sees an entity id and the capability never sees a camera; `row_instance` is where
+// the two meet, exactly as `sim::apply_tier_changes`' `entities[change.index]` is.
+//
+// The changes go through `AnimationSystem::set_tier(Id128, u8)` rather than through the hooks
+// table, and that is not a shortcut: `sim::MaterializationHooks` speaks `sim::EntityHandle`, only
+// `domain/ecs` may make one, and `<flecs.h>` does not belong in `apps/` (AGENTS.md, ADR-0028 seam
+// 5). animation.md states that both paths go to one function — `apply_tier`, which acquires or
+// releases the pose slot and advances the playhead across the frozen interval — so the demotion
+// still releases the slot and the promotion still lands where ticking through the gap would have.
+//
+// It runs **before** `sim.step()`, so the tick that follows already has the new divisors; and it
+// runs on *this* frame's frusta (`SceneRenderer::update_views`) rather than on the ones the last
+// frame was drawn with, because a tier that lags the camera by a frame is a pop on every cut.
+void update_animation_lod(AnimatedScene& scene, const renderer::ViewSet& views,
+                          const renderer::Camera& camera) {
+  if (!scene.lod || scene.row_instance.empty()) return;
+  view::build_observers(views, camera, scene.observers);
+  view::view_importance(views,
+                        std::span<const Vec3>(scene.positions.data(), scene.positions.size()),
+                        std::span<const f32>(scene.radii.data(), scene.radii.size()),
+                        std::span<f32>(scene.importance.data(), scene.importance.size()));
+  sim::TierInput input;
+  input.positions = {scene.positions.data(), scene.positions.size()};
+  input.importance = {scene.importance.data(), scene.importance.size()};
+  input.tiers = {scene.tier_state.data(), scene.tier_state.size()};
+  scene.changes.clear();
+  const sim::TierStats stats =
+      scene.tiers.assign_tiers(input, scene.observers, scene.tier_params, scene.changes);
+  scene.promotions += stats.promoted;
+  scene.demotions += stats.demoted;
+  scene.deferred += stats.deferred_promotions + stats.deferred_demotions;
+  for (const sim::TierChange& change : scene.changes) {
+    scene.system.set_tier(scene.entities[scene.row_instance[change.index]], change.to);
+    scene.instance_tier[scene.row_instance[change.index]] = change.to;
+  }
+  for (u32& bucket : scene.histogram)
+    bucket = 0;
+  for (const u8 tier : scene.tier_state)
+    ++scene.histogram[tier < animation::k_tier_count ? tier : animation::k_tier_count - 1];
+}
+
 // One fixed step of the animated world, then where each instance's matrices are. `SimWorld::step`
 // reads no clock, so N steps are N steps whatever the machine was doing and two runs draw the
 // same picture.
+// **What a coarsened instance draws: the rest pose, at LOD2 and LOD3 alike.**
+//
+// At LOD3 there is no choice — the pool slot is gone and `joint_run` answers false — but at LOD2
+// the slot is still held and the matrices in it are simply not rebuilt any more, so handing them
+// over would draw the character frozen at whatever pose the last LOD1 tick happened to leave. The
+// glue hands a zero-length run instead, which the renderer already reads as "this instance draws
+// its rest pose" ([renderer](docs/subsystems/renderer.md), "Skinned instances").
+//
+// Three reasons, in the order they decided it. It is what the policy already says LOD2 *means* —
+// "the pose still exists for gameplay and nothing on screen deforms from it"
+// (docs/subsystems/animation.md) — and drawing a stale pose is deforming from it. Keeping the last
+// pose would make what is on screen depend on *when* an instance was demoted, so the same
+// character at the same distance would differ between two runs and between two cameras, and this
+// project compares captures byte for byte. And at LOD3 keeping one would mean the renderer holding
+// a private copy of every frozen instance's matrices — the pose pool rebuilt on the far side of
+// the boundary that exists to keep poses off it.
+//
+// What it costs is measured rather than assumed: at the distance where the LOD1/LOD2 switch
+// happens the picture changes by **0.0097 FLIP mean** (PSNR 34.4, SSIM 0.988), a tenth of the 0.1
+// FLIP calls the threshold of noticing, and the LOD2/LOD3 switch then costs **nothing at all**
+// because both draw the same pose ([apps](docs/subsystems/apps.md) has the table).
 void step_animation(AnimatedScene& scene) {
   scene.sim.step();
   for (u32 i = 0; i < scene.entities.size(); ++i) {
     renderer::InstanceJoints& run = scene.runs[i];
     run = renderer::InstanceJoints{};
-    if (!scene.entities[i].is_null())
-      scene.system.joint_run(scene.entities[i], run.first, run.count);
+    if (scene.entities[i].is_null()) continue;
+    const u8 tier = i < scene.instance_tier.size() ? scene.instance_tier[i] : u8{0};
+    if (!animation::lod_plan(tier).skin) continue;  // the rest pose, deliberately
+    scene.system.joint_run(scene.entities[i], run.first, run.count);
   }
 }
 
@@ -379,6 +487,8 @@ void step_animation(AnimatedScene& scene) {
 // honest place for `SceneData::max_joints` to be filled in.
 bool attach_instances(AnimatedScene& scene, const renderer::SceneDesc& desc,
                       renderer::SceneData& data, const Options& options, std::string& error) {
+  scene.lod = options.anim_lod;
+  scene.lod_scale = options.anim_lod_scale;
   scene.system.install(scene.sim);
   const u32 count = data.instances.size();
   scene.entities.resize(count, Id128{});
@@ -478,6 +588,38 @@ bool attach_instances(AnimatedScene& scene, const renderer::SceneDesc& desc,
     error = "no instance of this scene is skinned";
     return false;
   }
+
+  // The rows `sim::TierAssignment` scores: one per animated instance, its padded bounding sphere
+  // in world space. The instances do not move in engine-view, so this is built once; a game whose
+  // characters walk refills `positions` every tick, which is the only line of this that changes.
+  //
+  // The sphere is the *mesh's* leaf bounds through the instance's transform, plus the same
+  // `bounds_padding` the cull pass inflates the cluster spheres by, so an instance whose limb
+  // swings out of its rest-pose bounds still counts as on screen. `scale_max` multiplies both, the
+  // way `cluster_cull.slang` multiplies them.
+  Vector<Vec3> mesh_center(data.parts.size());
+  Vector<f32> mesh_radius(data.parts.size(), 0.0f);
+  for (u32 m = 0; m < data.parts.size(); ++m) {
+    renderer::mesh_bounds(data.lod, data.parts[m].first_cluster, data.parts[m].leaf_cluster_count,
+                          mesh_center[m], mesh_radius[m]);
+  }
+  for (u32 i = 0; i < count; ++i) {
+    if (scene.entities[i].is_null()) continue;
+    const gfx::InstanceDesc& instance = data.instances[i];
+    const Vec4 world_center = instance.world * Vec4{mesh_center[instance.mesh], 1.0f};
+    scene.row_instance.push_back(i);
+    scene.positions.push_back(Vec3{world_center.x, world_center.y, world_center.z});
+    scene.radii.push_back((mesh_radius[instance.mesh] + instance.bounds_padding) *
+                          instance.scale_max);
+  }
+  scene.importance.resize(scene.row_instance.size(), 1.0f);
+  // Every instance starts at tier 0, which is where `AnimationSystem::attach` put it, so the first
+  // frame's assignment is the only one that has a whole population to move and the rate limits in
+  // `sim::TierParams` spread it over the ticks after it.
+  scene.tier_state.resize(scene.row_instance.size(), u8{0});
+  scene.instance_tier.resize(count, u8{0});
+  scene.histogram[0] = scene.row_instance.size();
+  scene.tier_params = view::scaled_tier_params(animation::tier_params(), scene.lod_scale);
   // The pool hands out one slot per instance and never splits a run, so its capacity now is the
   // longest span a frame can hand over. The renderer clamps anything longer and says so once.
   data.max_joints = scene.system.poses().joint_capacity();
@@ -485,6 +627,35 @@ bool attach_instances(AnimatedScene& scene, const renderer::SceneDesc& desc,
   // frames, and what the light reach and the shadow bias scale with — has to be taken again.
   renderer::update_scene_bounds(data);
   return true;
+}
+#endif
+
+#if ENGINE_VIEW_ANIMATION
+// The animation block of the summary line: what the camera decided, and what the tick cost.
+//
+// The histogram is the *population by tier* at the last frame, which is the number the LOD policy
+// is judged by — `animation`'s bench says a 5/15/30/50 mix is 5.6× cheaper than everything at
+// LOD0, so a run whose histogram is all in bucket 0 has a policy that is not working. `tick` and
+// `lod` are CPU milliseconds a frame: the world's fixed step (the sampler, the skinning matrices,
+// the per-instance `joint_run`) and the tier assignment that precedes it.
+JsonValue anim_summary(const AnimatedScene& scene, u64 frames) {
+  JsonValue out = JsonValue::object();
+  out.set("on", scene.lod);
+  out.set("scale", static_cast<f64>(scene.lod_scale));
+  out.set("instances", scene.instances);
+  JsonValue tiers = JsonValue::array();
+  for (const u32 bucket : scene.histogram)
+    tiers.push_back(JsonValue(bucket));
+  out.set("tiers", std::move(tiers));
+  out.set("promotions", scene.promotions);
+  out.set("demotions", scene.demotions);
+  out.set("deferred", scene.deferred);
+  const f64 divisor = frames > 0 ? static_cast<f64>(frames) : 1.0;
+  JsonValue ms = JsonValue::object();
+  ms.set("tick", scene.tick_ns / 1.0e6 / divisor);
+  ms.set("lod", scene.lod_ns / 1.0e6 / divisor);
+  out.set("ms", std::move(ms));
+  return out;
 }
 #endif
 
@@ -811,6 +982,19 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "engine-view: --deform expects none, identity, wave, or lattice\n");
         return k_exit_usage;
       }
+    } else if (a == "--anim-lod") {
+      if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
+      if (value != "on" && value != "off") {
+        std::fprintf(stderr, "engine-view: --anim-lod expects on or off\n");
+        return k_exit_usage;
+      }
+      options.anim_lod = value == "on";
+    } else if (a == "--anim-lod-scale") {
+      if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
+      if (!parse_f32(value, options.anim_lod_scale)) {
+        std::fprintf(stderr, "engine-view: --anim-lod-scale expects a positive number\n");
+        return k_exit_usage;
+      }
     } else if (a == "--anim-speed") {
       if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
       if (!parse_f32(value, options.anim_speed)) {
@@ -1039,6 +1223,7 @@ int main(int argc, char** argv) {
   std::string views_text = "{}";
   std::string streaming_text =
       write_json(streaming_summary(renderer::StreamStats{}), JsonWriteOptions{.pretty = false});
+  std::string anim_text = "null";
   u32 skinned_instances = 0;
   u32 joint_matrices = 0;
   std::string clip_text;
@@ -1245,16 +1430,24 @@ int main(int argc, char** argv) {
       extent_width = view_renderer.width();
       extent_height = view_renderer.height();
 
-#if ENGINE_VIEW_ANIMATION
-      // One fixed step of the world per frame: `--frames N` advances exactly N steps and two runs
-      // produce the same picture whatever the machine was doing.
-      if (animated) step_animation(*animated);
-#endif
-
       renderer::FrameDesc frame;
       frame.camera =
           renderer::orbit_camera(scene_data.center, scene_data.radius, options.orbit, rendered);
       frame.frame_index = rendered;
+#if ENGINE_VIEW_ANIMATION
+      // The camera first, then the tick: `update_animation_lod` reads **this** frame's frusta and
+      // sets each instance's tier, and `step_animation` then ticks the world with the divisors
+      // that decision left. One fixed step per frame, so `--frames N` advances exactly N steps and
+      // two runs produce the same picture whatever the machine was doing.
+      if (animated) {
+        const i64 lod_started = time::monotonic_ns();
+        update_animation_lod(*animated, view_renderer.update_views(frame.camera), frame.camera);
+        const i64 ticked = time::monotonic_ns();
+        step_animation(*animated);
+        animated->lod_ns += static_cast<f64>(ticked - lod_started);
+        animated->tick_ns += static_cast<f64>(time::monotonic_ns() - ticked);
+      }
+#endif
 #if ENGINE_VIEW_ANIMATION
       if (animated) {
         // The whole contract: one span, and one run per instance.
@@ -1311,6 +1504,10 @@ int main(int argc, char** argv) {
       streaming_text = write_json(streaming_summary(view_renderer.streamer().stats()),
                                   JsonWriteOptions{.pretty = false});
     }
+#if ENGINE_VIEW_ANIMATION
+    if (animated)
+      anim_text = write_json(anim_summary(*animated, rendered), JsonWriteOptions{.pretty = false});
+#endif
     machine_end = bench::sample_machine_state(bench::k_sample_window_ms);
   } while (false);
 
@@ -1345,7 +1542,7 @@ int main(int argc, char** argv) {
         "\"deform_whole_mesh_bytes\":%llu,\"deform_pool_used_bytes\":%llu,"
         "\"deform_pool_peak_bytes\":%llu,\"deform_entries\":%u,"
         "\"deform_overflow_entries\":%u,\"deform_overflow_bytes\":%llu,\"rt_templates\":%s,"
-        "\"skinned_instances\":%u,\"joints\":%u,\"clip\":\"%s\","
+        "\"skinned_instances\":%u,\"joints\":%u,\"clip\":\"%s\",\"anim\":%s,"
         "\"template_bytes\":%llu,\"rt_bytes\":%llu,\"views\":%s,\"streaming\":%s,"
         "\"gpu_memory\":{\"budget_mib\":%llu,\"used_mib\":%llu,"
         "\"device_local_total_mib\":%llu},\"machine_state\":%s,"
@@ -1371,7 +1568,7 @@ int main(int argc, char** argv) {
         stats.deform_entries, stats.deform_overflow_entries,
         static_cast<unsigned long long>(u64{stats.deform_overflow_vertices} * 3 * sizeof(f32)),
         resolved.settings.rt_templates ? "true" : "false", skinned_instances, joint_matrices,
-        clip_text.c_str(), static_cast<unsigned long long>(template_bytes),
+        clip_text.c_str(), anim_text.c_str(), static_cast<unsigned long long>(template_bytes),
         static_cast<unsigned long long>(rt_bytes), views_text.c_str(), streaming_text.c_str(),
         static_cast<unsigned long long>(stats.gpu_memory.budget_mib),
         static_cast<unsigned long long>(stats.gpu_memory.used_mib),

@@ -81,6 +81,8 @@ The bands are tunables (`animation.lod.near/mid/far/hysteresis`, 12 / 40 / 120 m
 
 **How tiers reach the capability.** `AnimationSystem::hooks()` is a `sim::MaterializationHooks` row for `sim::SimScheduler::add_hooks`: `materialize`, `promote`, `demote` and `dematerialize` all go to one function, so the scheduler-driven path and a game calling `set_tier` directly cannot behave differently. Promote/demote are idempotent and the tests drive both paths.
 
+**What a coarsened instance draws is the *renderer's* question, and the answer is the rest pose at LOD2 as well as at LOD3.** At LOD3 there is no choice: the pool slot is released, `joint_run` answers false, and the renderer reads that absence as "this instance draws its rest pose" ([renderer](renderer.md#skinned-instances)). At LOD2 the slot is still held and its matrices simply stop being rebuilt, so a consumer that handed them over would draw the character frozen at whatever pose the last LOD1 tick left. `engine-view` hands a zero-length run instead, and a game should. Three reasons, in the order that decided it: it is what LOD2 already *means* here — the pose exists for gameplay and nothing on screen deforms from it, and a stale pose is deforming from it; keeping the last pose makes what is on screen depend on *when* an instance was demoted, so the same character at the same distance differs between two runs and between two cameras, and this project compares captures byte for byte; and at LOD3 keeping one would mean the renderer holding a private copy of every frozen instance's matrices, which is the pose pool rebuilt on the far side of the boundary that exists to keep poses off it. What it costs is measured — see the boundary table below, where the LOD2/LOD3 switch costs **nothing at all** precisely because both sides draw the same pose.
+
 **And which name each hook carries is the contract's, not this capability's choice.** `materialize` is handed the record's persistent `Id128`, resolves it through `ecs::entity_for`, and answers with the `sim::EntityHandle` for the entity it found — this capability attaches a pose to an entity that already exists rather than bringing one into being, so a record naming nothing this world holds gets a null handle and `reconcile_tile` skips it rather than promoting into nothing. `promote`, `demote` and `dematerialize` read their handle with `ecs::entity_of` and keep nothing ([sim](sim.md), "Which name each hook carries"; [ADR-0028](../adr/0028-ecs-and-persistent-store.md) seam 3).
 
 ## The renderer contract
@@ -123,11 +125,67 @@ for (u32 i = 0; i < instances; ++i) {
 sim.step();
 for (u32 i = 0; i < instances; ++i) {
   runs[i] = {};
-  animation.joint_run(entity_id(i), runs[i].first, runs[i].count);
+  if (lod_plan(tier[i]).skin) animation.joint_run(entity_id(i), runs[i].first, runs[i].count);
 }
 frame.joints = animation.joint_matrices();
 frame.instance_joints = {runs.data(), runs.size()};
 ```
+
+## The app-side LOD glue: what the camera decides
+
+The tier policy above sat unused until 2026-09-18, because nothing told it where the cameras were: `engine-view --animate` attached every instance at LOD0 and left it there, so 1,024 foxes cost **3.2 ms** of CPU a frame for a crowd of which most is a smudge. `engine-view --anim-lod` (on by default) closes that, and the code is `apps/engine_view/anim_lod.h` plus forty lines of `main.cpp` — **this is the pattern a game copies**, so it is spelled out rather than folded in.
+
+**Why it is in the app and not in either module.** The tier is `sim::TierAssignment`'s, the pose is this capability's, and where the cameras are is `systems/renderer`'s — and the renderer must not depend on this capability, on `domain/ecs` or on flecs, while `domain/sim` must not depend on the renderer. The one place the three meet is the host that owns all three. What crosses each boundary is data, and nothing else.
+
+```cpp
+// once, when the population is attached: the rows the tier code scores
+for (u32 i = 0; i < instances; ++i) {
+  row_instance.push_back(i);
+  positions.push_back(world_centre_of(i));                 // the instance's bounding sphere
+  radii.push_back((mesh_radius(i) + bounds_padding(i)) * scale_max(i));   // padded, as the cull is
+}
+tier_state.resize(rows, 0);                    // attach() put every one of them at LOD0
+params = view::scaled_tier_params(animation::tier_params(), lod_scale);
+
+// per frame, before the tick
+view::build_observers(renderer.update_views(camera), camera, observers);  // one per view
+view::view_importance(views, positions, radii, importance);               // what the camera says
+changes.clear();
+tiers.assign_tiers({positions, importance, tier_state}, observers, params, changes);
+for (const sim::TierChange& c : changes) animation.set_tier(entity_id(row_instance[c.index]), c.to);
+sim.step();
+```
+
+**One observer per view, and the frustum gate is importance.** `sim::ObserverSet` gets one observer per view of the `ViewSet`, at that view's eye and with that view's weight — the centre monitor 1, the side monitors `1 / ViewQuality::lod_scale`, which is the same knob `--peripheral-lod` already uses for geometry, because a player who has said the sides are worth a quarter of the detail has said it about the animation too. Today every view of a `ViewSet` shares one eye, so that set is degenerate and the minimum over it is the distance over the largest weight; that is not worked around, because it is the shape a split-screen or co-op layout fills with two genuinely different eyes and everything above keeps working. What a *view* is worth therefore reaches the entity through its **importance**: the best weight among the views whose frustum contains its padded bounds, over the best weight in the set. Importance divides the distance, so a character only a side monitor can see scores four times as far away and coarsens sooner, which is exactly the owner's "the side monitors are peripheral vision".
+
+**Off screen is `k_offscreen_importance` = 1/16, not infinity.** The cull pass already knows exactly what was drawn — one frame late and on the device ([renderer](renderer.md), "The renderer never reads a buffer back inside a frame") — and a tier that lags the camera by a frame pops on every cut. So the glue runs its own conservative frustum test on the CPU, six planes against one sphere per instance, against `SceneRenderer::update_views(camera)` so the frusta are **this** frame's. The sphere carries the instance's `bounds_padding`, so a limb that swings out of the rest-pose sphere still counts as on screen, which is the same direction the cull pass errs in. A factor rather than infinity because infinity would pin a character standing two metres behind the camera — about to be turned back towards — at the coarsest tier, where 1/16 lets it sit at LOD2 and keep the pose a foot-plant query may ask for.
+
+**The changes go through `set_tier(Id128, u8)` and not through the hooks table.** `sim::MaterializationHooks` speaks `sim::EntityHandle`, only `domain/ecs` may make one, and `<flecs.h>` does not belong in `apps/` ([ADR-0028](../adr/0028-ecs-and-persistent-store.md) seam 5). Both paths go to one function here — see "How tiers reach the capability" — so the demotion still releases the pool slot and the promotion still advances the playhead analytically; the `Id128` overload exists for exactly this caller.
+
+**What it is worth, measured.** 1,024 Khronos Foxes, 3840×2160, `--orbit 22 --no-vsync`, 300 frames, `msvc-release` on the RTX 5090, every row taken twice. `tick` is the world's fixed step — the sampler, the skinning matrices and the per-instance `joint_run` — and `lod` is the tier assignment in front of it.
+
+| Tier histogram | `--anim-lod-scale` | tick, run 1 / run 2 | lod | against LOD0 |
+|---|---|---|---|---|
+| 1,024 / 0 / 0 / 0 (`--anim-lod off`) | — | 3.263 / 3.218 ms | 0.001 ms | 1.0× |
+| 1,024 / 0 / 0 / 0 | 1600 | 3.118 / 3.254 ms | 0.031 ms | 1.0× |
+| 0 / 1,023 / 1 / 0 | 400 | 1.931 / 1.790 ms | 0.036 ms | **1.7×** |
+| 0 / 0 / 1,024 / 0 | 200 | 0.798 / 0.844 ms | 0.038 ms | **3.9×** |
+| 0 / 0 / 867 / 157 | 120 | 0.754 / 0.727 ms | 0.044 ms | **4.4×** |
+| 0 / 0 / 0 / 1,024 | 1 (default) | 0.284 / 0.312 ms | 0.036 ms | **10.8×** |
+
+**Machine state:** the box was shared throughout — other processes at 6–27% of the CPU and the GPU 1–97% busy at the ends of the runs, 783 MiB of the card held — so every figure is an **upper bound** ([bench](bench.md#measuring-on-a-shared-machine)). The two runs of each row agree to within 8%, and the *ratios* are what the table is for.
+
+Three things it says. **The policy's 5.6× is real and the mix decides which multiple you get**: 1.7× at LOD1, 3.9× at LOD2, 10.8× frozen, against the bench's 5.6× for its own 5/15/30/50 mix. **The assignment costs 0.03–0.04 ms for 1,024 instances**, about a hundredth of what it saves, and it is flat across the mix because it scores every instance every tick whatever tier it is at (`sim`'s own note that the rate limits exist partly so LOD assignment does not have to act on everything applies to the *materialization*, not to the scoring). And **the default bands are metres and a sample asset's units may not be**: the Khronos Fox has a bounding radius of 82 in its own units, so a 32×32 grid of them seen from `--orbit 22` is thousands of units away and lands entirely at LOD3 with `--anim-lod-scale 1`. That is the policy working on the numbers it was given, and `--anim-lod-scale` is the knob that says so; a game with metres in its assets would not need it.
+
+**What a tier change costs the picture, which is what makes the thresholds defensible.** One fox, 1280×720, `--orbit 22`, frame 61, rendered on both sides of each band boundary at the distance where the switch happens (found by bisecting `--anim-lod-scale`, so the two pictures differ in nothing but the tier):
+
+| Boundary | What changes | FLIP mean | FLIP max | PSNR | SSIM |
+|---|---|---|---|---|---|
+| LOD0 → LOD1 | cross-fade interpolation off, every second tick | **0.0011** | 0.565 | 47.6 dB | 0.9984 |
+| LOD1 → LOD2 | no skinning matrices: the character draws its rest pose | **0.0097** | 0.895 | 34.4 dB | 0.9876 |
+| LOD2 → LOD3 | the pool slot is released; the pose is the same one | **0.0000** | 0.000 | ∞ | 1.0000 |
+
+FLIP calls about **0.1** the threshold at which a person starts to notice a difference, so the worst of the three is a tenth of that and the first is a hundredth. The LOD1/LOD2 step is the whole of the visible cost, which is the honest reading: that boundary is where a character stops moving, and `animation.lod.mid` (40 m of observer score) is what decides where it happens. The LOD2/LOD3 step is free *by construction* — both draw the rest pose, see "What a coarsened instance draws" — and that is the point of the decision rather than a coincidence.
 
 **Why there are `Id128` overloads of `attach`, `play`, `set_playhead` and `joint_run` at all.** `<flecs.h>` belongs to `domain/ecs`, `systems/` and `game/` (AGENTS.md, [ADR-0028](../adr/0028-ecs-and-persistent-store.md) seam 5) and `apps/` is deliberately not on that list — so a host outside `systems/` would have had to break the seam to attach a single character. The four overloads resolve the id through `ecs::IdentityMap` exactly as `set_tier(const Id128&, u8)` already did, and between them they are the whole of what such a host needs. They are also the vocabulary seam 3 asks for: an id that survives a tick, a save, and the wire.
 
@@ -170,7 +228,7 @@ This capability was built to find out what ADR-0027's contract is like from the 
 
 **Depends on.** `base`, `containers`, `math`, `time`, `log`, `jobs`, `ids`, `json`, `schema`, `tunables`, `geometry`, `anim`, `assets`, `sim`, `ecs`, `animation_schemas`.
 
-**Testing.** `tools/dev.ps1 test -Preset msvc-debug -Filter animation` — 18 cases over `tests/animation_tests.cpp` (the library, the playhead, the pose against `anim::`, the cross-fade, the weight, `WorldCommands`, the empty world, the declarations — including the three waves the pose-pool resource puts them in — and the bit-identical worker case, **the `Id128` surface a host with no flecs drives — attach, phase-shift two instances, read the runs back, and find them at the offsets the pool reports, with an entity at LOD3 answering false rather than a run of zeros — and the displacement bound, checked against the truth measured by brute force at 997 phases**) and `tests/lod_tests.cpp` (the plans, the agreement with `sim::TierAssignment`, the LOD3 round trip, the divisor, the materialization hooks driven by `EntityHandle`, `materialize` named by `Id128` and answering with a handle, and slot determinism). The fixture is a two-bone skinned GLB with two clips, **written at test time** (`tests/animation_glb.h`) into a `TempDir`, for the reason [assets](assets.md)' fixture is: a binary in the tree is something nobody can review. Benchmarks: `tools/dev.ps1 bench -Preset msvc-release -Filter 'animation.*'`.
+**Testing.** `tools/dev.ps1 test -Preset msvc-debug -Filter animation` — 19 cases over `tests/animation_tests.cpp` (the library, the playhead, the pose against `anim::`, the cross-fade, the weight, `WorldCommands`, the empty world, the declarations — including the three waves the pose-pool resource puts them in — and the bit-identical worker case, **the `Id128` surface a host with no flecs drives — attach, phase-shift two instances, read the runs back, and find them at the offsets the pool reports, with an entity at LOD3 answering false rather than a run of zeros — and the displacement bound, checked against the truth measured by brute force at 997 phases**) and `tests/lod_tests.cpp` (the plans, the agreement with `sim::TierAssignment`, the LOD3 round trip, **a promoted instance's bone matrices bit-identical to a continuously ticked instance's after 97 frozen steps**, the divisor, the materialization hooks driven by `EntityHandle`, `materialize` named by `Id128` and answering with a handle, and slot determinism). The app-side glue has its own cases beside it in `apps/engine_view/tests/anim_lod_tests.cpp`: the per-view weights, the observer set, the frustum gate and its off-screen factor, the band scale, and a crowd of 512 walked across every boundary and back whose worst instance changes tier **6 times in 400 ticks** — the six crossings it actually made, which is hysteresis doing its job. The fixture is a two-bone skinned GLB with two clips, **written at test time** (`tests/animation_glb.h`) into a `TempDir`, for the reason [assets](assets.md)' fixture is: a binary in the tree is something nobody can review. Benchmarks: `tools/dev.ps1 bench -Preset msvc-release -Filter 'animation.*'`.
 
 ## Performance notes
 
@@ -228,5 +286,5 @@ This is a capability: it was added without editing `core/`, `foundation/`, the r
 - **Additive layers.** `anim::blend_additive` and `make_additive` exist and nothing here calls them.
 - **IK, foot locking, a contact channel, retarget-driven playback.** `Library::build_retarget` exposes the retarget; no system applies one.
 - **Protocol methods.** `animation.play`, `animation.attach` and a query over the library would be a small `register_methods()` — and would now have the `Id128` overloads to call, which is what the host-facing surface above was shaped for.
-- **Tiers driven by the camera.** `engine-view --animate` never demotes: it attaches every instance at LOD0 and leaves it there, so a crowd measured through it is the LOD0 row of the bench and not the mixed one. Wiring `sim::TierAssignment` to the renderer's camera is what closes that, and it is what makes the 5.6× the LOD policy claims visible in a frame rather than in a benchmark.
+- ~~**Tiers driven by the camera.**~~ **Closed, 2026-09-18**: `engine-view --anim-lod` (on by default) builds a `sim::ObserverSet` from the renderer's views and runs `sim::TierAssignment` over the animated instances every frame. See "The app-side LOD glue" above for the pattern and the numbers. What is still open there: the crowd's positions are rebuilt once because engine-view's instances do not move, so nothing yet measures the cost of refilling them per tick; the scoring visits every instance every tick, which is 0.04 ms at 1,024 and would want a spatial structure at 10^5; and the tier is still a field rather than a relationship, so `sample_poses` visits the frozen instances too (see "What the contract could not express").
 - **A tier relationship instead of a tier field**, once there is a scene whose tier distribution is worth measuring. See "What the contract could not express".

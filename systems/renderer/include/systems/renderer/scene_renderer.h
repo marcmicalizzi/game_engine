@@ -226,6 +226,17 @@ class SceneRenderer {
   // The views the frame draws, laid out over the color target. Read for the rectangles, the
   // projections and the tiers; `submit_frame` updates the cameras from the frame's own.
   const ViewSet& views() const noexcept { return views_; }
+  // The same set, with every projection brought up to `camera` first. A host that has to decide
+  // something from **this** frame's frusta before the frame is recorded — which characters are
+  // worth animating finely, say — needs them ahead of `submit_frame`, and reading them afterwards
+  // would make that decision lag the camera by a frame, which is exactly what shows on a cut.
+  // `submit_frame` updates the set again from its own camera, and `update` is a pure function of
+  // the camera, so calling this with the camera the frame will carry costs one matrix build per
+  // view and changes nothing about the frame.
+  const ViewSet& update_views(const Camera& camera) noexcept {
+    views_.update(camera);
+    return views_;
+  }
   const Stats& stats() const noexcept { return stats_; }
   void reset_stats() noexcept;
   // Reads the device's memory budget into `stats().gpu_memory`. A caller samples it around a

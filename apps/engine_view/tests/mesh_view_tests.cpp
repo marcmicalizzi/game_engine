@@ -594,4 +594,62 @@ TEST_CASE("engine-view: --animate plays a skinned glTF, deterministically") {
   // and a mesh with no skin cannot be animated at all.
   CHECK(view(with({"--mesh", mesh, "--animate", "sprint"})).exit_code == 1);
   CHECK(view(with({"--mesh", cube, "--animate"})).exit_code == 1);
+
+  // ---- the camera-driven tiers ----------------------------------------------------------------
+  //
+  // `--anim-lod` is on by default, so the run at the top of this case already went through
+  // `sim::TierAssignment` — and it is still byte-identical to its repeat, which is the property
+  // that matters most: the tier is a function of the camera and the camera is a function of the
+  // frame index, so a capture stays reproducible with the LOD driving it.
+  CHECK(view({"--anim-lod"}).exit_code == 2);
+  CHECK(view(with({"--mesh", mesh, "--animate", "--anim-lod", "sometimes"})).exit_code == 2);
+  CHECK(view(with({"--mesh", mesh, "--animate", "--anim-lod-scale", "-1"})).exit_code == 2);
+
+  // The histogram is in the summary, it sums to the animated population, and the scale moves it:
+  // a huge scale puts everything in the finest band, a tiny one in the coarsest. The bar's own
+  // scale makes the default land somewhere between, which is why the two ends are what is checked.
+  const Run fine = view(with({"--mesh", mesh, "--animate", "--grid-instances", "3", "--anim-lod",
+                              "on", "--anim-lod-scale", "100000"}));
+  REQUIRE_MESSAGE(fine.exit_code == 0, fine.output);
+  MESSAGE("summary at scale 100000: " << fine.output.substr(0, 40) << " ...");
+  CHECK(fine.output.find("\"tiers\":[9,0,0,0]") != std::string::npos);
+
+  const Run coarse = view(with({"--mesh", mesh, "--animate", "--grid-instances", "3", "--anim-lod",
+                                "on", "--anim-lod-scale", "0.0001"}));
+  REQUIRE_MESSAGE(coarse.exit_code == 0, coarse.output);
+  CHECK(coarse.output.find("\"tiers\":[0,0,0,9]") != std::string::npos);
+  CHECK(coarse.output.find("\"demotions\":9") != std::string::npos);
+
+  // `--anim-lod off` is what every build before this one did: everything at LOD0, and no tier
+  // assignment at all. It is kept as a flag rather than removed because it is the baseline every
+  // measurement of the policy is against.
+  const Run flat =
+      view(with({"--mesh", mesh, "--animate", "--grid-instances", "3", "--anim-lod", "off"}));
+  REQUIRE_MESSAGE(flat.exit_code == 0, flat.output);
+  CHECK(flat.output.find("\"on\":false") != std::string::npos);
+  CHECK(flat.output.find("\"tiers\":[9,0,0,0]") != std::string::npos);
+
+  // A capture with the LOD on, twice: the same bytes. A tier decided from the frame's own camera
+  // is deterministic; one decided from what the last frame drew would not be.
+  const std::string lod_a = slashes(dir / "anim_lod_a.png");
+  const std::string lod_b = slashes(dir / "anim_lod_b.png");
+  const std::vector<std::string> lod_args{"--mesh", mesh,         "--animate", "--grid-instances",
+                                          "3",      "--anim-lod", "on",        "--anim-lod-scale",
+                                          "0.5"};
+  auto lod_run = [&](const std::string& out) {
+    std::vector<std::string> args = lod_args;
+    args.push_back("--capture");
+    args.push_back(out);
+    return view(with(args));
+  };
+  REQUIRE_MESSAGE(lod_run(lod_a).exit_code == 0, "the first LOD capture failed");
+  REQUIRE_MESSAGE(lod_run(lod_b).exit_code == 0, "the second LOD capture failed");
+  std::ifstream la(lod_a, std::ios::binary);
+  std::ifstream lb(lod_b, std::ios::binary);
+  const std::string lod_bytes_a((std::istreambuf_iterator<char>(la)),
+                                std::istreambuf_iterator<char>());
+  const std::string lod_bytes_b((std::istreambuf_iterator<char>(lb)),
+                                std::istreambuf_iterator<char>());
+  CHECK(lod_bytes_a.size() > 8);
+  CHECK(lod_bytes_a == lod_bytes_b);
 }
