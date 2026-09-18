@@ -28,7 +28,7 @@ void WorldCommands::release(Command& command) noexcept {
   if (command.info != nullptr && command.info->ops != nullptr)
     command.info->ops->destroy(command.value);
   mem::deallocate(command.value, command.info != nullptr ? command.info->size : 0,
-                  command.info != nullptr ? command.info->align : alignof(max_align_t));
+                  command.info != nullptr ? command.info->align : alignof(std::max_align_t));
   command.value = nullptr;
 }
 

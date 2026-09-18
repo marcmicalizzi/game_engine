@@ -86,10 +86,13 @@ QueryAccess query_access(flecs::world& world, flecs::entity_t system) noexcept {
 
 namespace detail {
 
+#if ENGINE_DEBUG
 namespace {
 
 // Names one offending component for the message. The assert fires on the first mismatch, so one
-// name is enough to start from and the log line carries the counts.
+// name is enough to start from and the log line carries the counts. Compiled only in a debug
+// build, because only the check calls it and an unused static function is a warning, which here
+// is an error.
 const char* first_undeclared(const ComponentRegistry& registry, const sim::ComponentMask& used,
                              const sim::ComponentMask& declared) noexcept {
   for (const ComponentType& type : registry.all()) {
@@ -101,6 +104,7 @@ const char* first_undeclared(const ComponentRegistry& registry, const sim::Compo
 }
 
 }  // namespace
+#endif
 
 u16 finish_system(flecs::world& world, const sim::SystemDesc& desc, flecs::entity_t system) {
 #if ENGINE_DEBUG
