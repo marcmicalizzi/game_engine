@@ -229,6 +229,42 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
       ENGINE_LOG_WARN(log_renderer, "culling forced on for a paged mesh: its leaves are not first");
     }
   }
+  // ---- geometry streaming (04 §4.3 step 3, §4.9) ----------------------------------------------
+  //
+  // Streaming is refused rather than half-applied, and each of the four refusals is a statement
+  // about what the cut means. Without a page table there is nothing to stream. Without the cull
+  // pass there is no cut, and the drawing rule's fallback clause *is* the cut. A **deformed or
+  // skinned** instance reads the deformed-vertex pool at a scene-wide vertex index, and a streamed
+  // scene's vertices live at slot-relative ones, so the two index spaces disagree — joining them is
+  // a change to the pool's allocation, which is E25's open suballocation item and not this one.
+  // And **cluster templates** are built once at load from every cluster's float positions, which a
+  // streamed scene does not hold: a template has to be built when its page arrives and dropped when
+  // it leaves, which is a second residency problem with its own budget.
+  if (s.stream) {
+    const char* refused = nullptr;
+    if (scene != nullptr && !scene->paged()) {
+      refused = "the scene carries no page table; load it with SceneDesc::stream";
+    } else if (out.deform_pass) {
+      refused = "a deformed or skinned instance indexes the vertex pool scene-wide";
+    }
+    if (refused != nullptr) {
+      s.stream = false;
+      ENGINE_LOG_WARN(log_renderer, "geometry streaming off", log::field("reason", refused));
+    } else {
+      if (!s.cull) {
+        s.cull = true;
+        ENGINE_LOG_WARN(log_renderer, "culling forced on with geometry streaming",
+                        log::field("reason", "the drawing rule falls back to the LOD cut"));
+      }
+      if (s.rt_templates) {
+        s.rt_templates = false;
+        ENGINE_LOG_WARN(
+            log_renderer, "cluster templates off with geometry streaming",
+            log::field("reason", "a template is built from a page's positions when it arrives"));
+      }
+    }
+  }
+  out.stream = s.stream;
   out.settings = s;
 }
 

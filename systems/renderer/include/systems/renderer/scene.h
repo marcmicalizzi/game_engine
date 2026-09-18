@@ -17,6 +17,7 @@
 #include <core/math/math.h>
 #include <domain/assets/gltf.h>
 #include <domain/geometry/cluster_lod.h>
+#include <domain/geometry/cluster_pages.h>
 #include <domain/gfx/cluster_cull.h>
 
 #include <string>
@@ -84,6 +85,18 @@ struct SceneDesc {
   // which nobody knows until the mesh is loaded, so a host sets it afterwards and calls
   // `update_scene_bounds`.
   u32 grid_joints = 0;
+  // Keep the streaming page table (04 §4.3 step 3). A glTF and a `.clusters` container are laid
+  // out in pages either way — the layout is part of the derived-data cache key — but the table
+  // itself is dropped unless someone is going to stream from it, and the procedural heightfield is
+  // not paged at all unless this is set. It is here rather than in `RenderSettings` because it
+  // changes what *loading* produces, and a `SceneData` outlives a settings change in engine-host.
+  bool stream = false;
+  // The page byte target, for the **procedural heightfield only**. A glTF's and a container's
+  // layout is fixed at `geometry::ClusterPagesOptions{}.page_bytes`, because the target is part of
+  // `geometry::cluster_cache_key` and two targets would be two different containers; the
+  // heightfield has no cache entry, so a caller that wants many small pages — a test, or a
+  // measurement of what a budget does — may say so. Zero is the default target.
+  u32 page_bytes = 0;
 };
 
 // Reads `{"meshes":[{"path":"..."}],"instances":[{"mesh":0,"translation":[x,y,z],
@@ -108,7 +121,11 @@ struct SourceMesh {
 struct SceneData {
   geometry::ClusterLodMesh lod;             // every mesh of the scene, merged
   Vector<geometry::ClusterMeshPart> parts;  // one per mesh: its clusters and its 16-bit grid
-  Vector<SourceMesh> sources;               // parallel to `parts`
+  // The scene's one page table, filled only under `SceneDesc::stream`: every mesh's pages, one
+  // after another, with `parts[m].first_page`/`page_count` naming each mesh's run
+  // (`geometry::merge_paged_cluster_meshes`). Empty means the scene is uploaded whole.
+  geometry::ClusterPages pages;
+  Vector<SourceMesh> sources;  // parallel to `parts`
   // One per instance, in order of `first_pair`, with `world`, `mesh`, `first_pair`,
   // `scale_max`, and the uniform-scale flag filled in. `material_base` and `deform` are the GPU
   // scene's to fill, because both depend on tables it lays out.
@@ -134,6 +151,11 @@ struct SceneData {
   // Whether any instance is skinned, which is what makes the GPU scene allocate the joint buffer
   // and upload the mesh's per-vertex binding stream.
   bool skinned() const noexcept { return skinned_instances > 0 && !lod.mesh.skin.empty(); }
+  // Whether the scene can be streamed at all: a page table that covers its clusters.
+  bool paged() const noexcept {
+    return !pages.pages.empty() && pages.page_of_cluster.size() == cluster_count() &&
+           pages.children.size() == cluster_count();
+  }
 };
 
 // Loads every mesh of `desc`, merges them into one set of buffers, expands the instances, and

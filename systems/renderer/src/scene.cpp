@@ -125,7 +125,27 @@ void write_cluster_cache(const std::string& path, const std::string& source,
 // so every cluster has a single material, merged, and written into the cache for the next run).
 // An empty `path` builds the procedural heightfield instead.
 bool load_source_mesh(const std::string& path, const SceneDesc& desc, SourceMesh& out,
-                      geometry::ClusterLodMesh& lod, std::string& error) {
+                      geometry::ClusterLodMesh& lod, geometry::ClusterPages& pages,
+                      std::string& error) {
+  // The page layout renumbers a mesh's clusters, so it is only ever run where the result is
+  // already the renumbered one — the glTF and container paths below, whose layout is part of the
+  // derived-data cache key — or where nothing has been built yet and the caller asked to stream.
+  // Paging the heightfield unconditionally would change every id and every cut of the scene the
+  // renderer's own tests draw, for a table nobody would read.
+  auto page_layout = [&](const char* what, u32 page_bytes) {
+    if (!desc.stream) return;
+    Vector<u32> source_of_cluster;
+    std::string page_error;
+    geometry::ClusterPagesOptions options;
+    if (page_bytes > 0) options.page_bytes = page_bytes;
+    if (geometry::build_cluster_pages(lod, options, pages, &page_error, &source_of_cluster)) {
+      geometry::permute_cluster_array(source_of_cluster, out.part_of_cluster);
+      return;
+    }
+    pages = geometry::ClusterPages{};
+    ENGINE_LOG_WARN(log_renderer, "cluster pages not built", log::field("mesh", what),
+                    log::field("error", page_error));
+  };
   if (path.empty()) {
     Vector<Vec3> positions;
     Vector<u32> indices;
@@ -136,8 +156,12 @@ bool load_source_mesh(const std::string& path, const SceneDesc& desc, SourceMesh
       uvs.push_back(Vec2{(p.x + 10.0f) / 20.0f, (p.z + 10.0f) / 20.0f});
     geometry::AttributeSource attribute_source;
     attribute_source.uvs = std::span<const Vec2>(uvs.data(), uvs.size());  // normals: computed
-    return geometry::build_cluster_lod(positions, indices, geometry::ClusterLodOptions{}, lod,
-                                       &error, attribute_source);
+    if (!geometry::build_cluster_lod(positions, indices, geometry::ClusterLodOptions{}, lod, &error,
+                                     attribute_source)) {
+      return false;
+    }
+    page_layout("heightfield", desc.page_bytes);
+    return true;
   }
   // Where a built mesh may already be: a container named outright, or the cache entry this
   // source and these options address.
@@ -224,6 +248,13 @@ bool load_source_mesh(const std::string& path, const SceneDesc& desc, SourceMesh
         container_data.source_path.empty() ? std::string_view(container)
                                            : std::string_view(container_data.source_path)));
     out.primitives = 0;  // a container does not record how many were merged into it
+    // The container's own page table, which is the one its clusters were renumbered into. A
+    // container written with `--page-bytes 0` carries none, and the layout is run here instead so
+    // that a streamed run never depends on which build wrote the cache entry.
+    if (desc.stream) {
+      pages = std::move(container_data.pages);
+      if (pages.pages.empty()) page_layout(container.c_str(), 0);
+    }
     ENGINE_LOG_INFO(
         log_renderer, "mesh loaded", log::field("path", container),
         log::field("from", "cluster file"), log::field("source", container_data.source_path),
@@ -273,11 +304,13 @@ bool load_source_mesh(const std::string& path, const SceneDesc& desc, SourceMesh
   out.primitives = parts.size();
   // Laid out in streaming pages, exactly as engine-content lays it out, because the page target
   // is part of the cache key and the entry either app writes has to be the same container. The
-  // layout renumbers the clusters, so the map from cluster to primitive comes along.
-  geometry::ClusterPages pages;
+  // layout renumbers the clusters, so the map from cluster to primitive comes along. It runs
+  // whether or not anyone will stream from the table, because the *renumbering* is what the cache
+  // key promises; `pages` is only kept when a caller asked for it.
+  geometry::ClusterPages built;
   Vector<u32> source_of_cluster;
   std::string page_error;
-  if (geometry::build_cluster_pages(lod, geometry::ClusterPagesOptions{}, pages, &page_error,
+  if (geometry::build_cluster_pages(lod, geometry::ClusterPagesOptions{}, built, &page_error,
                                     &source_of_cluster)) {
     geometry::permute_cluster_array(source_of_cluster, out.part_of_cluster);
   } else {
@@ -288,8 +321,9 @@ bool load_source_mesh(const std::string& path, const SceneDesc& desc, SourceMesh
   // app fills the cache, either app finds it.
   if (!cache_path.empty()) {
     write_cluster_cache(cache_path, path, out.data, out.part_material, out.part_of_cluster, lod,
-                        pages);
+                        built);
   }
+  if (desc.stream) pages = std::move(built);
   return true;
 }
 
@@ -451,13 +485,30 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
   out.heightfield = resolved.meshes.size() == 1 && resolved.meshes[0].empty();
   out.sources.resize(resolved.meshes.size());
   Vector<geometry::ClusterLodMesh> dags(resolved.meshes.size());
+  Vector<geometry::ClusterPages> tables(resolved.meshes.size());
   for (u32 m = 0; m < resolved.meshes.size(); ++m) {
-    if (!load_source_mesh(resolved.meshes[m], resolved, out.sources[m], dags[m], error))
+    if (!load_source_mesh(resolved.meshes[m], resolved, out.sources[m], dags[m], tables[m], error))
       return false;
   }
   out.mesh_primitives = out.sources[0].primitives;
   out.mesh_cache = out.sources[0].cache;
-  if (dags.size() == 1) {
+  // Streaming needs one page table over the whole scene, and it is a different merge: a paged mesh
+  // is ordered coarse to fine, so pulling its leaves to the front — which the default merge does,
+  // to make a direct draw of the leaves one range — would leave every one of its pages naming
+  // clusters that are no longer beside each other. `merge_paged_cluster_meshes` keeps the order and
+  // shifts the table ([geometry](geometry.md), "A scene of paged meshes"). A mesh whose table could
+  // not be built takes the whole scene off the streaming path rather than half of it.
+  bool paged = resolved.stream;
+  for (const geometry::ClusterPages& table : tables)
+    paged = paged && !table.pages.empty();
+  if (paged) {
+    if (!geometry::merge_paged_cluster_meshes(
+            std::span<const geometry::ClusterLodMesh>(dags.data(), dags.size()),
+            std::span<const geometry::ClusterPages>(tables.data(), tables.size()), out.lod,
+            out.parts, out.pages, &error)) {
+      return false;
+    }
+  } else if (dags.size() == 1) {
     out.lod = std::move(dags[0]);
     geometry::ClusterMeshPart part;
     part.cluster_count = out.lod.mesh.clusters.size();

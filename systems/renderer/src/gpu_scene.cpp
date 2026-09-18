@@ -20,6 +20,10 @@ constexpr VkBufferUsageFlags k_args = k_address | VK_BUFFER_USAGE_INDIRECT_BUFFE
 // The visible list is read back by a capture, which resolves a visibility id into the instance
 // and cluster it names; that is the only reason it is a transfer source.
 constexpr VkBufferUsageFlags k_readable = k_address | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+// The streaming feedback arrays: cleared by the frame's reset pass and copied back to the host
+// one frame slot later, so both directions are transfers.
+constexpr VkBufferUsageFlags k_transfer =
+    VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
 
 }  // namespace
 
@@ -39,6 +43,10 @@ bool GpuScene::create(const gfx::Device& device, const SceneData& data,
   skinned_instances_ = skinned_ ? data.skinned_instances : 0;
   max_joints_ = skinned_ ? data.max_joints : 0;
   deform_ = resolved.deform_pass;
+  // `resolve_settings` has already refused streaming for a scene with no page table, but a caller
+  // may hand the two apart; a scene that cannot be streamed is uploaded whole rather than half.
+  streamed_ = resolved.stream && data.paged();
+  page_count_ = streamed_ ? data.pages.pages.size() : 0u;
   view_count_ = resolved.view_count > 0 ? resolved.view_count : 1;
   cluster_count_ = data.cluster_count();
   leaf_count_ = data.leaf_count();
@@ -48,8 +56,9 @@ bool GpuScene::create(const gfx::Device& device, const SceneData& data,
   instance_table_ = data.instances;
 
   if (!bindless_.create(device, gfx::BindlessConfig{}, error) ||
-      !upload_geometry(resolved, error) || !upload_materials(resolved, error) ||
-      !create_working_set(resolved, error) || !create_ray_tracing(resolved, error)) {
+      !create_streaming(resolved, error) || !upload_geometry(resolved, error) ||
+      !upload_materials(resolved, error) || !create_working_set(resolved, error) ||
+      !create_ray_tracing(resolved, error)) {
     destroy();
     return false;
   }
@@ -86,18 +95,28 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
   const u64 float_position_bytes = u64{lod.mesh.vertices.size()} * sizeof(Vec3);
   const u64 quantized_position_bytes =
       u64{lod.mesh.quantized.size()} * sizeof(u16) + sizeof(gfx::MeshDesc);
+  // The descriptors are scene-sized whatever the budget — the cull pass tests every pair of every
+  // frame — and under streaming the `ClusterDesc` array is also what a page upload **patches**:
+  // when a page lands in a slot its clusters' `vertex_offset` and `triangle_offset` are rewritten
+  // to point into that slot, so the copy that puts the array here is a transfer destination.
+  const VkBufferUsageFlags cluster_usage =
+      streamed_ ? (k_storage | VK_BUFFER_USAGE_TRANSFER_DST_BIT) : k_storage;
   if (!gfx::upload_buffer(device, lod.mesh.clusters.data(),
-                          u64{cluster_count_} * sizeof(geometry::ClusterDesc), k_storage, clusters,
-                          error) ||
-      !gfx::upload_buffer(device, lod.mesh.quantized.data(),
-                          u64{lod.mesh.quantized.size()} * sizeof(u16), k_storage, quantized,
-                          error) ||
-      !gfx::upload_buffer(device, lod.mesh.triangles.data(),
-                          u64{lod.mesh.triangles.size()} * sizeof(u32), k_storage, triangles,
-                          error) ||
+                          u64{cluster_count_} * sizeof(geometry::ClusterDesc), cluster_usage,
+                          clusters, error) ||
       !gfx::upload_buffer(device, lod.lod.data(),
                           u64{cluster_count_} * sizeof(geometry::ClusterLodDesc), k_storage, lods,
                           error)) {
+    return false;
+  }
+  // Everything below this line is a *payload* stream: under streaming it is a page pool of
+  // fixed-size slots that `create_streaming` already allocated, and nothing is uploaded here.
+  if (!streamed_ && (!gfx::upload_buffer(device, lod.mesh.quantized.data(),
+                                         u64{lod.mesh.quantized.size()} * sizeof(u16), k_storage,
+                                         quantized, error) ||
+                     !gfx::upload_buffer(device, lod.mesh.triangles.data(),
+                                         u64{lod.mesh.triangles.size()} * sizeof(u32), k_storage,
+                                         triangles, error))) {
     return false;
   }
   // The deformed-vertex pool and its per-instance table. The pool is device-local: nothing reads
@@ -176,9 +195,12 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
         log::field("joint_bytes", skinned_ ? joint_bytes() * k_joint_slots : u64{0}));
   }
   // The float positions stay only for the frames that build acceleration structures: the
-  // cluster structure builds read them.
-  if (ray_tracing_ && !gfx::upload_buffer(device, lod.mesh.vertices.data(), float_position_bytes,
-                                          k_storage | gfx::k_build_input_usage, vertices, error)) {
+  // cluster structure builds read them. Under streaming they are one more page-pool stream, for
+  // the reason the patched offsets force: a CLAS record addresses a cluster's vertices as
+  // `vertices + vertex_offset * 12`, and `vertex_offset` is slot-relative.
+  if (ray_tracing_ && !streamed_ &&
+      !gfx::upload_buffer(device, lod.mesh.vertices.data(), float_position_bytes,
+                          k_storage | gfx::k_build_input_usage, vertices, error)) {
     return false;
   }
   ENGINE_LOG_INFO(log_renderer, "positions quantized",
@@ -195,9 +217,187 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
                                       k_storage, skin, error)) {
     return false;
   }
+  if (streamed_) return true;
   return gfx::upload_buffer(device, lod.mesh.attributes.data(),
                             u64{lod.mesh.attributes.size()} * sizeof(geometry::VertexAttributes),
                             k_storage, attributes, error);
+}
+
+// What one page costs the pool, stream by stream, which is what an upload copies and what the
+// per-frame byte budget counts. The `ClusterDesc` records are in it because they are copied with
+// the payload — they carry the slot-relative offsets and are useless without it.
+//
+// **Every sub-block is 16-byte aligned**, and the padding is counted, because this number is both
+// the staging ring's layout and the floor the upload budget is raised to: a budget computed
+// without the padding would be a byte or two short of the largest page, which is a page that never
+// loads and a scene that never converges. One formula, used by both, is the only way those two
+// cannot drift apart.
+u64 GpuScene::page_payload_bytes(u32 page) const noexcept {
+  if (!streamed_ || page >= page_count_) return 0;
+  const geometry::ClusterPageDesc& desc = data_->pages.pages[page];
+  auto align16 = [](u64 value) { return (value + 15) & ~u64{15}; };
+  u64 at = align16(u64{desc.cluster_count} * sizeof(geometry::ClusterDesc));
+  at = align16(at + u64{desc.vertex_count} * 3 * sizeof(u16));                     // quantized
+  at = align16(at + u64{desc.vertex_count} * sizeof(geometry::VertexAttributes));  // attributes
+  at = align16(at + u64{desc.triangle_count} * sizeof(u32));                       // triangles
+  if (!ray_tracing_) return at;
+  at = align16(at + u64{desc.vertex_count} * sizeof(Vec3));  // the float positions a CLAS build
+  return align16(at + u64{desc.triangle_count} * 3);         // reads, and their 8-bit indices
+}
+
+u32* GpuScene::residency_slot(u32 slot) noexcept {
+  return static_cast<u32*>(residency.mapped) + u64{slot} * page_count_;
+}
+
+u64 GpuScene::residency_slot_address(u32 slot) const noexcept {
+  return residency.address + u64{slot} * page_count_ * sizeof(u32);
+}
+
+u64 GpuScene::stream_params_address(u32 slot) const noexcept {
+  return stream_params.address + u64{slot} * sizeof(gfx::StreamParams);
+}
+
+// The page pool and the tables the drawing rule reads. Runs before `upload_geometry`, because that
+// is where the payload streams either go up whole or do not go up at all.
+//
+// **How many slots.** The budget is in page bytes, the pool is in slots, and the two have to agree
+// on the worst case or a frame would admit a page with nowhere to put it. The bound is exact and
+// cheap: sort the pages by size and take them smallest first until the budget is spent — no set of
+// pages within the budget can be larger than that count. The pages of a real mesh are 85–95% full,
+// so the pool is about a tenth larger than the budget it serves, which is the price of a
+// fixed-size slot and is what makes an eviction a slot that can be reused without touching
+// anything else.
+bool GpuScene::create_streaming(const ResolvedSettings& resolved, std::string* error) {
+  if (!streamed_) return true;
+  const gfx::Device& device = *device_;
+  const geometry::ClusterPages& table = data_->pages;
+  // A group is the siblings a cut refines into together, and the drawing rule's residency test is
+  // over the whole group; the GPU tests one cluster's page instead, which is the same thing only
+  // while a group is in one page. `build_cluster_pages` guarantees it. Say so here rather than
+  // draw a cracked surface if a future layout stops guaranteeing it.
+  for (u32 c = 1; c < cluster_count_; ++c) {
+    if (data_->lod.lod[c].group != data_->lod.lod[c - 1].group) continue;
+    if (table.page_of_cluster[c] == table.page_of_cluster[c - 1]) continue;
+    if (error != nullptr) {
+      *error = "geometry streaming: group " + std::to_string(data_->lod.lod[c].group) +
+               " spans two pages, and the GPU drawing rule tests a cluster's page for its group's";
+    }
+    return false;
+  }
+  u64 total_bytes = 0;
+  Vector<u32> sizes(page_count_);
+  for (u32 p = 0; p < page_count_; ++p) {
+    const geometry::ClusterPageDesc& desc = table.pages[p];
+    sizes[p] = desc.bytes;
+    total_bytes += desc.bytes;
+    slot_vertices_ = desc.vertex_count > slot_vertices_ ? desc.vertex_count : slot_vertices_;
+    slot_triangles_ = desc.triangle_count > slot_triangles_ ? desc.triangle_count : slot_triangles_;
+  }
+  page_budget_bytes_ = resolved.settings.page_budget_bytes;
+  if (page_budget_bytes_ == 0 || page_budget_bytes_ > total_bytes) page_budget_bytes_ = total_bytes;
+  std::sort(sizes.begin(), sizes.end());
+  u64 spent = 0;
+  page_slots_ = 0;
+  for (u32 p = 0; p < page_count_ && spent + sizes[p] <= page_budget_bytes_; ++p) {
+    spent += sizes[p];
+    ++page_slots_;
+  }
+  // The root pages are pinned whatever the budget says — a mesh missing one cannot be drawn at all
+  // — so the pool always has room for them ([geometry](geometry.md), "The residency model").
+  u32 roots = 0;
+  for (u32 p = 0; p < page_count_; ++p)
+    roots += (table.pages[p].flags & geometry::k_page_root) != 0 ? 1u : 0u;
+  if (page_slots_ < roots) page_slots_ = roots;
+  if (page_slots_ == 0) page_slots_ = 1;
+  if (page_slots_ > page_count_) page_slots_ = page_count_;
+
+  u64 largest_payload = 0;
+  for (u32 p = 0; p < page_count_; ++p)
+    largest_payload = std::max(largest_payload, page_payload_bytes(p));
+  upload_budget_bytes_ = resolved.settings.upload_budget_bytes;
+  if (upload_budget_bytes_ == 0) upload_budget_bytes_ = k_default_upload_budget;
+  // A budget no page fits in would never converge, so it is raised to one page rather than
+  // accepted and reported as a scene that never finishes loading.
+  if (upload_budget_bytes_ < largest_payload)
+    upload_budget_bytes_ = static_cast<u32>(largest_payload);
+  max_requests_ = page_count_ < k_max_page_requests ? page_count_ : k_max_page_requests;
+
+  const u64 slot_vertices = u64{page_slots_} * slot_vertices_;
+  const u64 slot_triangles = u64{page_slots_} * slot_triangles_;
+  constexpr VkBufferUsageFlags k_pool =
+      k_address | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+  const VkBufferUsageFlags rt_pool = k_pool | gfx::k_build_input_usage;
+  Vector<u32> page_index(cluster_count_);
+  Vector<u32> child_ranges(u64{cluster_count_} * 2);
+  for (u32 c = 0; c < cluster_count_; ++c) {
+    page_index[c] = table.page_of_cluster[c];
+    child_ranges[c * 2 + 0] = table.children[c].first_cluster;
+    child_ranges[c * 2 + 1] = table.children[c].cluster_count;
+  }
+  bool ok =
+      gfx::create_buffer(device, slot_vertices * 3 * sizeof(u16), k_pool, false, quantized,
+                         error) &&
+      gfx::create_buffer(device, slot_vertices * sizeof(geometry::VertexAttributes), k_pool, false,
+                         attributes, error) &&
+      gfx::create_buffer(device, slot_triangles * sizeof(u32), k_pool, false, triangles, error) &&
+      gfx::upload_buffer(device, table.pages.data(),
+                         u64{page_count_} * sizeof(geometry::ClusterPageDesc), k_storage,
+                         page_table, error) &&
+      gfx::upload_buffer(device, page_index.data(), u64{cluster_count_} * sizeof(u32), k_storage,
+                         page_of_cluster, error) &&
+      gfx::upload_buffer(device, child_ranges.data(), u64{cluster_count_} * 2 * sizeof(u32),
+                         k_storage, page_children, error) &&
+      // Host-visible, one region per frame slot: the host writes the residency the cull pass of
+      // the *next* frame reads, and a slot is not reused until the GPU has finished the frame that
+      // last had it — the same argument that makes the joint buffer safe.
+      gfx::create_buffer(device, u64{page_count_} * sizeof(u32) * k_stream_slots, k_address, true,
+                         residency, error) &&
+      gfx::create_buffer(device, u64{page_count_} * sizeof(u32), k_address | k_transfer, false,
+                         page_used, error) &&
+      gfx::create_buffer(device, u64{max_requests_} * sizeof(geometry::PageRequest),
+                         k_address | k_transfer, false, page_requests, error) &&
+      gfx::create_buffer(device, sizeof(u32), k_address | k_transfer, false, request_count,
+                         error) &&
+      gfx::create_buffer(device, u64{page_count_} * sizeof(u32), k_address | k_transfer, false,
+                         request_mask, error) &&
+      gfx::create_buffer(device, sizeof(gfx::StreamParams) * k_stream_slots, k_address, true,
+                         stream_params, error) &&
+      gfx::create_buffer(device, u64{upload_budget_bytes_} * k_stream_slots,
+                         VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true, page_stage, error);
+  if (ok && ray_tracing_) {
+    ok =
+        gfx::create_buffer(device, slot_vertices * sizeof(Vec3), rt_pool, false, vertices, error) &&
+        gfx::create_buffer(device, slot_triangles * 3, rt_pool, false, indices8, error);
+  }
+  if (!ok) return false;
+  std::memset(residency.mapped, 0, u64{page_count_} * sizeof(u32) * k_stream_slots);
+  // Every address but the residency array is the same in all three blocks, which is the whole
+  // reason there are three: one word of the block changes per frame and nothing else does.
+  auto* blocks = static_cast<gfx::StreamParams*>(stream_params.mapped);
+  for (u32 slot = 0; slot < k_stream_slots; ++slot) {
+    gfx::StreamParams& block = blocks[slot];
+    block = gfx::StreamParams{};
+    block.pages = page_table.address;
+    block.page_of_cluster = page_of_cluster.address;
+    block.children = page_children.address;
+    block.residency = residency_slot_address(slot);
+    block.used = page_used.address;
+    block.requests = page_requests.address;
+    block.request_count = request_count.address;
+    block.request_mask = request_mask.address;
+  }
+  const u64 pool_bytes = quantized.size + attributes.size + triangles.size + vertices.size +
+                         indices8.size + page_stage.size;
+  geometry_bytes_ = total_bytes;
+  stream_bytes_ = pool_bytes + page_table.size + page_of_cluster.size + page_children.size;
+  ENGINE_LOG_INFO(
+      log_renderer, "geometry streaming", log::field("pages", page_count_),
+      log::field("slots", page_slots_), log::field("page_bytes", total_bytes),
+      log::field("budget_bytes", page_budget_bytes_), log::field("pool_bytes", pool_bytes),
+      log::field("table_bytes", stream_bytes_ - pool_bytes),
+      log::field("slot_vertices", slot_vertices_), log::field("slot_triangles", slot_triangles_),
+      log::field("upload_budget", upload_budget_bytes_));
+  return true;
 }
 
 bool GpuScene::upload_materials(const ResolvedSettings&, std::string* error) {
@@ -391,8 +591,13 @@ bool GpuScene::create_ray_tracing(const ResolvedSettings& resolved, std::string*
   // records built stay close to one view's while the allocation is three times it.
   const u32 union_clusters = pair_count_ * view_count_;
   Vector<u8> packed;
-  gfx::pack_cluster_indices(
-      std::span<const u32>(lod.mesh.triangles.data(), lod.mesh.triangles.size()), packed);
+  // Under streaming the 8-bit indices are one more page-pool stream, filled a page at a time
+  // beside the float positions, because a CLAS record addresses them at the same slot-relative
+  // `triangle_offset` the rasterizers read.
+  if (!streamed_) {
+    gfx::pack_cluster_indices(
+        std::span<const u32>(lod.mesh.triangles.data(), lod.mesh.triangles.size()), packed);
+  }
   gfx::ClusterSetLimits limits;
   limits.max_clusters = union_clusters;
   limits.max_triangles_per_cluster = triangles_per_cluster_;
@@ -401,8 +606,8 @@ bool GpuScene::create_ray_tracing(const ResolvedSettings& resolved, std::string*
   limits.instantiate = resolved.settings.rt_templates;
   constexpr VkBufferUsageFlags k_record_usage =
       k_address | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
-  bool ok = gfx::upload_buffer(device, packed.data(), packed.size(), gfx::k_build_input_usage,
-                               indices8, error) &&
+  bool ok = (streamed_ || gfx::upload_buffer(device, packed.data(), packed.size(),
+                                             gfx::k_build_input_usage, indices8, error)) &&
             gfx::create_buffer(device, gfx::k_cluster_build_record_bytes * union_clusters,
                                k_record_usage, false, records, error) &&
             gfx::create_buffer(device, sizeof(u32), k_record_usage, false, record_count, error) &&
@@ -519,6 +724,16 @@ void GpuScene::destroy() noexcept {
   gfx::destroy_buffer(device, record_count);
   gfx::destroy_buffer(device, records);
   gfx::destroy_buffer(device, indices8);
+  gfx::destroy_buffer(device, page_stage);
+  gfx::destroy_buffer(device, stream_params);
+  gfx::destroy_buffer(device, request_mask);
+  gfx::destroy_buffer(device, request_count);
+  gfx::destroy_buffer(device, page_requests);
+  gfx::destroy_buffer(device, page_used);
+  gfx::destroy_buffer(device, residency);
+  gfx::destroy_buffer(device, page_children);
+  gfx::destroy_buffer(device, page_of_cluster);
+  gfx::destroy_buffer(device, page_table);
   gfx::destroy_buffer(device, deform_frames);
   gfx::destroy_buffer(device, joints);
   gfx::destroy_buffer(device, deform_args);
@@ -564,7 +779,10 @@ void GpuScene::destroy() noexcept {
   max_joints_ = skinned_instances_ = 0;
   visible_run_bytes_ = deform_pool_bytes_ = template_bytes_ = rt_bytes_ = 0;
   tlas_slot_ = gfx::BindlessSet::k_invalid_slot;
-  ray_tracing_ = deform_ = skinned_ = false;
+  ray_tracing_ = deform_ = skinned_ = streamed_ = false;
+  page_count_ = page_slots_ = slot_vertices_ = slot_triangles_ = max_requests_ = 0;
+  upload_budget_bytes_ = 0;
+  page_budget_bytes_ = stream_bytes_ = geometry_bytes_ = 0;
 }
 
 }  // namespace engine::renderer

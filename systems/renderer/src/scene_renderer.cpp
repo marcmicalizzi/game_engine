@@ -223,6 +223,13 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
     return false;
   }
 
+  // Geometry residency, when the scene was built streamed. It owns the page manager, the staging
+  // ring's bookkeeping and the per-slot feedback buffers; the frame owns the passes that clear the
+  // feedback, copy the pages in, and copy the feedback out.
+  if (!streamer_.create(device, scene, desc.frames_in_flight, error)) {
+    destroy();
+    return false;
+  }
   if (!frames_.create(device, desc.frames_in_flight, error) ||
       // Every view records its own cull, raster, Hi-Z and resolve zones, so the pool grows with
       // the layout; one view asks for exactly the 24 it always did.
@@ -438,6 +445,7 @@ void SceneRenderer::destroy() noexcept {
     gfx::destroy_buffer(device, b);
   for (gfx::BufferResource& b : ray_params_)
     gfx::destroy_buffer(device, b);
+  streamer_.destroy();
   params_.clear();
   resolves_.clear();
   stat_blocks_.clear();
@@ -459,6 +467,8 @@ void SceneRenderer::destroy() noexcept {
 // the 320x240 capture's minimum.
 void SceneRenderer::reset_stats() noexcept {
   stats_ = Stats{};
+  streamer_.reset_stats();
+  stats_.stream = streamer_.stats();
   fill_view_layout();
   submitted_ = 0;
   sample_gpu_memory();  // a reset must not leave a summary with no memory figure at all
@@ -529,6 +539,11 @@ void SceneRenderer::fold_visible(u32 slot) {
 
 void SceneRenderer::collect_slot(u32 slot) {
   fold_visible(slot);
+  // The page feedback of the frame that last used this slot, read now that the slot has come
+  // around and the GPU is known to be done with it. This is the whole of §4.9's "the CPU reads it
+  // back N frames later without stalling": N is `frames_in_flight`.
+  streamer_.consume(slot);
+  stats_.stream = streamer_.stats();
   if (!timer_.results().empty()) {
     for (u32 v = 0; v < view_count(); ++v) {
       ViewStats& view = stats_.views[v];
@@ -648,6 +663,12 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   const u32 triangles_per_cluster = scene.triangles_per_cluster();
   const u32 views = views_.size();
   const u64 rendered = frame.frame_index;
+  // Geometry residency for this frame: evict to the budget, admit what this frame's upload budget
+  // allows, stage the payloads into this slot's region of the ring, and write this slot's residency
+  // words. Nothing here touches the device — the copies are recorded by the "page upload" pass
+  // below, and the words are in a host-visible region no frame in flight is reading.
+  const u64 stream_params = streamer_.prepare(slot);
+  const bool streaming = scene.streamed();
 
   // This frame's one camera through the layout: N view-projection matrices sharing one eye and
   // one near plane, differing in orientation and in the shape of the frustum.
@@ -806,6 +827,11 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     cull.meshes = scene.meshes.address;
     cull.instance_count = instance_count;
     cull.pair_count = pair_count;
+    // Geometry streaming: the drawing rule, and the feedback it writes. Null for a scene uploaded
+    // whole, and the pass then runs exactly the instructions it always ran.
+    cull.streaming = stream_params;
+    cull.page_count = scene.page_count();
+    cull.max_requests = scene.max_requests();
     if (occlusion) {
       // This view's own pyramid, at its own mip offsets into the shared buffer, and its own slice
       // of the drawn-last-frame flags: a cluster may be occluded in one view and visible in
@@ -987,6 +1013,44 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     rg_pool = graph.import_buffer("deform pool", scene.deform_pool);
     rg_deform_args = graph.import_buffer("deform args", scene.deform_args);
   }
+  // The streamed scene's page pool and its feedback. The pool buffers have to be *declared*, not
+  // only written: a page upload is a transfer into the same `clusters`, `quantized`, `attributes`
+  // and `triangles` the cull pass, the rasterizers, the resolve and the CLAS builds read, and the
+  // render graph is where a hazard between two passes is turned into a barrier (AGENTS.md).
+  struct StreamBuffers {
+    gfx::RgBuffer pool_clusters, pool_quantized, pool_attributes, pool_triangles;
+    gfx::RgBuffer pool_vertices, pool_indices8, stage;
+    gfx::RgBuffer used, requests, request_count, request_mask, feedback;
+  } sb{};
+  if (streaming) {
+    sb.pool_clusters = graph.import_buffer("page clusters", scene.clusters);
+    sb.pool_quantized = graph.import_buffer("page quantized", scene.quantized);
+    sb.pool_attributes = graph.import_buffer("page attributes", scene.attributes);
+    sb.pool_triangles = graph.import_buffer("page triangles", scene.triangles);
+    sb.stage = graph.import_buffer("page stage", scene.page_stage);
+    sb.used = graph.import_buffer("page used", scene.page_used);
+    sb.requests = graph.import_buffer("page requests", scene.page_requests);
+    sb.request_count = graph.import_buffer("page request count", scene.request_count);
+    sb.request_mask = graph.import_buffer("page request mask", scene.request_mask);
+    sb.feedback = graph.import_buffer("page feedback", streamer_.feedback(slot));
+    if (rt_chain) {
+      sb.pool_vertices = graph.import_buffer("page vertices", scene.vertices);
+      sb.pool_indices8 = graph.import_buffer("page indices8", scene.indices8);
+    }
+  }
+  // Every pass that reads geometry out of the pool says so with the access its own stage uses, so
+  // the one transfer that filled it this frame is made visible to each of them.
+  auto read_pool = [&, streaming, rt_chain](gfx::PassBuilder& b, gfx::Access access) {
+    if (!streaming) return;
+    b.read(sb.pool_clusters, access);
+    b.read(sb.pool_quantized, access);
+    b.read(sb.pool_attributes, access);
+    b.read(sb.pool_triangles, access);
+    if (rt_chain && access == gfx::Access::AccelerationBuildRead) {
+      b.read(sb.pool_vertices, access);
+      b.read(sb.pool_indices8, access);
+    }
+  };
   struct RtBuffers {
     gfx::RgBuffer records, record_count, slots, instance_counts, instance_first, blas_records;
     gfx::RgBuffer clas_data, clas_addresses, clas_sizes, tlas, instances;
@@ -1033,6 +1097,11 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
         if (fill_hiz) b.write(rg_hiz, gfx::Access::TransferWrite);
         if (rt_chain) b.write(rt.instance_counts, gfx::Access::TransferWrite);
         if (deform_on) b.write(rg_deform_args, gfx::Access::TransferWrite);
+        if (streaming) {  // the page feedback is per frame, so it starts every frame empty
+          b.write(sb.used, gfx::Access::TransferWrite);
+          b.write(sb.request_mask, gfx::Access::TransferWrite);
+          b.write(sb.request_count, gfx::Access::TransferWrite);
+        }
       },
       [&](VkCommandBuffer cb, gfx::RenderGraph&) {
         if (cull_on) {
@@ -1066,7 +1135,33 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             vkCmdFillBuffer(cb, scene.deform_args.buffer, at + sizeof(u32), sizeof(u32) * 2, 1);
           }
         }
+        if (streaming) {
+          vkCmdFillBuffer(cb, scene.page_used.buffer, 0, VK_WHOLE_SIZE, 0);
+          vkCmdFillBuffer(cb, scene.request_mask.buffer, 0, VK_WHOLE_SIZE, 0);
+          vkCmdFillBuffer(cb, scene.request_count.buffer, 0, VK_WHOLE_SIZE, 0);
+        }
       });
+
+  // The pages this frame admitted, copied out of the staging ring into their pool slots. It is the
+  // first thing the frame does after the reset, so everything below reads a pool that already has
+  // them — which is what makes a page arriving and a page being drawn the same frame rather than
+  // the next one.
+  if (streaming && streamer_.has_uploads()) {
+    graph.add_pass(
+        "page upload", gfx::PassKind::Transfer,
+        [&](gfx::PassBuilder& b) {
+          b.read(sb.stage, gfx::Access::TransferRead);
+          b.write(sb.pool_clusters, gfx::Access::TransferWrite);
+          b.write(sb.pool_quantized, gfx::Access::TransferWrite);
+          b.write(sb.pool_attributes, gfx::Access::TransferWrite);
+          b.write(sb.pool_triangles, gfx::Access::TransferWrite);
+          if (rt_chain) {
+            b.write(sb.pool_vertices, gfx::Access::TransferWrite);
+            b.write(sb.pool_indices8, gfx::Access::TransferWrite);
+          }
+        },
+        [&](VkCommandBuffer cb, gfx::RenderGraph&) { streamer_.record_uploads(cb); });
+  }
 
   auto add_cull = [&](u32 block, u32 list) {
     graph.add_pass(
@@ -1081,6 +1176,13 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             b.read(rg_hiz, gfx::Access::ComputeRead);
             b.read(rg_flags[prev_flags], gfx::Access::ComputeRead);
             b.write(rg_flags[cur_flags], gfx::Access::ComputeReadWrite);
+          }
+          read_pool(b, gfx::Access::ComputeRead);
+          if (streaming) {  // the feedback: what the cut used, and what it could not refine into
+            b.write(sb.used, gfx::Access::ComputeWrite);
+            b.write(sb.requests, gfx::Access::ComputeWrite);
+            b.write(sb.request_count, gfx::Access::ComputeReadWrite);
+            b.write(sb.request_mask, gfx::Access::ComputeReadWrite);
           }
         },
         [&, block](VkCommandBuffer cb, gfx::RenderGraph&) {
@@ -1149,6 +1251,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           }
           if (deform_on)
             b.read(rg_pool, vertex_path ? gfx::Access::VertexRead : gfx::Access::MeshRead);
+          read_pool(b, vertex_path ? gfx::Access::VertexRead : gfx::Access::MeshRead);
         },
         [&, list, run](VkCommandBuffer cb, gfx::RenderGraph&) {
           vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -1273,6 +1376,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             b.read(rg_sw_args, gfx::Access::IndirectRead);
             b.read(rg_visible, gfx::Access::ComputeRead);
             if (deform_on) b.read(rg_pool, gfx::Access::ComputeRead);
+            read_pool(b, gfx::Access::ComputeRead);
           },
           [&](VkCommandBuffer cb, gfx::RenderGraph&) {
             vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines.software.pipeline);
@@ -1312,6 +1416,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
                 b.write(rt.record_count, gfx::Access::ComputeWrite);
                 b.write(rt.blas_records, gfx::Access::ComputeWrite);
               }
+              read_pool(b, gfx::Access::ComputeRead);
             },
             [&, p, record_passes, record_names, record_groups](VkCommandBuffer cb,
                                                                gfx::RenderGraph&) {
@@ -1332,6 +1437,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             b.write(rt.clas_data, gfx::Access::AccelerationBuildWrite);
             b.write(rt.clas_addresses, gfx::Access::AccelerationBuildWrite);
             b.write(rt.clas_sizes, gfx::Access::AccelerationBuildWrite);
+            read_pool(b, gfx::Access::AccelerationBuildRead);
           },
           [&](VkCommandBuffer cb, gfx::RenderGraph&) {
             // The same command either way: a set created with `instantiate` runs the instantiate
@@ -1414,6 +1520,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           // The per-tile coverage mask the last Hi-Z build left behind it, in the same buffer.
           if (occlusion) b.read(rg_hiz, gfx::Access::FragmentRead);
           if (deform_on) b.read(rg_pool, gfx::Access::FragmentRead);
+          read_pool(b, gfx::Access::FragmentRead);
           if (shadows) {  // the shadow rays traverse them from the fragment stage
             b.read(rt.tlas, gfx::Access::FragmentRayQueryRead);
             for (const gfx::RgBuffer& d : rg_blas_data)
@@ -1456,6 +1563,31 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
               vkCmdCopyBuffer(cb, arg_blocks[i]->buffer, stat_target->buffer, 1, &copy);
             }
           }
+        });
+  }
+  // The page feedback into this slot's host-visible buffer, read when the slot comes around again.
+  // It is one copy of three ranges rather than a readback: the frame never waits, and the manager
+  // acts on what the frame `frames_in_flight` ago asked for, which is what §4.9's "the CPU streams
+  // them" costs in latency and what the drawing rule's fallback covers in the meantime.
+  if (streaming) {
+    const gfx::BufferResource* target = &streamer_.feedback(slot);
+    graph.add_pass(
+        "page feedback", gfx::PassKind::Transfer,
+        [&](gfx::PassBuilder& b) {
+          b.read(sb.request_count, gfx::Access::TransferRead);
+          b.read(sb.requests, gfx::Access::TransferRead);
+          b.read(sb.used, gfx::Access::TransferRead);
+          b.write(sb.feedback, gfx::Access::TransferWrite);
+        },
+        [&, target](VkCommandBuffer cb, gfx::RenderGraph&) {
+          const u64 request_bytes = u64{scene.max_requests()} * sizeof(geometry::PageRequest);
+          const VkBufferCopy count{0, 0, sizeof(u32)};
+          vkCmdCopyBuffer(cb, scene.request_count.buffer, target->buffer, 1, &count);
+          const VkBufferCopy requests{0, sizeof(u32), request_bytes};
+          vkCmdCopyBuffer(cb, scene.page_requests.buffer, target->buffer, 1, &requests);
+          const VkBufferCopy used{0, sizeof(u32) + request_bytes,
+                                  u64{scene.page_count()} * sizeof(u32)};
+          vkCmdCopyBuffer(cb, scene.page_used.buffer, target->buffer, 1, &used);
         });
   }
   graph.set_final_layout(color, frame.final_layout);

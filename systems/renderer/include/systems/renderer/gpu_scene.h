@@ -52,6 +52,23 @@ inline constexpr u32 k_visible_runs = 3;
 // `SceneRenderer::create` refuses more than this rather than overrunning the buffer.
 inline constexpr u32 k_joint_slots = 3;
 
+// How many frames' worth of page residency the streamed scene holds, for exactly the reason
+// `k_joint_slots` exists: the cull pass of frame N reads the residency word array while the host
+// is already writing frame N+1's, so each frame writes its own region and a region is not reused
+// until the GPU has finished the frame that last had it.
+inline constexpr u32 k_stream_slots = 3;
+
+// How many page requests one frame's cull passes may write. A page a thousand clusters want costs
+// one entry, because the pass deduplicates behind a per-page mask, so this bounds the *distinct*
+// pages one frame can discover it is missing — which is a few dozen even on a camera jump. The
+// counter still counts past it, so an overflow is reported rather than silently truncating.
+inline constexpr u32 k_max_page_requests = 4096;
+
+// A quarter of a megabyte of page payload a frame: about two 128 KB pages, which at 60 Hz is 15 MB
+// a second — more than a camera moving at a sane speed asks for, and little enough that a jump
+// converges over a handful of frames instead of in one stall.
+inline constexpr u32 k_default_upload_budget = 256 * 1024;
+
 class GpuScene {
  public:
   GpuScene() noexcept = default;
@@ -59,6 +76,8 @@ class GpuScene {
   ENGINE_NON_COPYABLE(GpuScene);
 
   // Uploads `data` with the buffers `resolved` calls for. The device must outlive the scene.
+  // Under `resolved.stream` the vertex, attribute, triangle and float-position streams are a
+  // **page pool** of fixed-size slots instead of the whole scene, and `GeometryStreamer` fills it.
   bool create(const gfx::Device& device, const SceneData& data, const ResolvedSettings& resolved,
               std::string* error = nullptr);
   void destroy() noexcept;
@@ -141,6 +160,45 @@ class GpuScene {
     return deform_frames.address + u64{slot} * deform_count() * sizeof(gfx::DeformDesc);
   }
 
+  // ---- geometry streaming (04 §4.3 step 3, §4.9; docs/subsystems/renderer.md) -----------------
+  //
+  // **What is paged and what is not.** The descriptors stay: `clusters`, `lods`,
+  // `cluster_materials`, the page table, and the two per-cluster tables the drawing rule reads are
+  // scene-sized and always resident, because the cull pass tests every pair of every frame and has
+  // to be able to say "not that one" about a cluster whose payload is not here. That is 112 bytes
+  // a cluster plus 48 a page against the ~1.5 KB a cluster a page carries — 7% held to stream the
+  // other 93%, which is the ratio that makes the split worth making.
+  //
+  // **Slot-relative offsets are patched, not indirected.** When a page lands in slot *s* the host
+  // rewrites that page's `geometry::ClusterDesc::vertex_offset` and `triangle_offset` to point
+  // into slot *s* and uploads the 48-byte records with the payload. Nothing in any shader changes,
+  // which matters more than it sounds: `gfx::ClusterDrawParams` is **full at its 128-byte push
+  // limit** and `gfx::MeshDesc` at 64, so an indirection — "add the slot base of
+  // `page_of_cluster[c]`" — has nowhere to put the two addresses it needs in the rasterizers, the
+  // resolve and the CLAS records without restructuring every one of those blocks. See
+  // docs/subsystems/gfx.md for what the indirection was measured to cost.
+  bool streamed() const noexcept { return streamed_; }
+  u32 page_count() const noexcept { return page_count_; }
+  u32 page_slots() const noexcept { return page_slots_; }
+  u32 slot_vertices() const noexcept { return slot_vertices_; }
+  u32 slot_triangles() const noexcept { return slot_triangles_; }
+  u32 max_requests() const noexcept { return max_requests_; }
+  u64 page_budget_bytes() const noexcept { return page_budget_bytes_; }
+  u32 upload_budget_bytes() const noexcept { return upload_budget_bytes_; }
+  // What the pool, the staging ring and the always-resident tables cost, which is what a summary
+  // reports against the whole scene's geometry bytes (`geometry_bytes()`).
+  u64 stream_bytes() const noexcept { return stream_bytes_; }
+  u64 geometry_bytes() const noexcept { return geometry_bytes_; }
+  // Every page's payload bytes for each stream, which is what an upload copies and a budget counts.
+  u64 page_payload_bytes(u32 page) const noexcept;
+  // This frame slot's residency word array, host-visible and mapped: the host writes it, the cull
+  // pass reads it, and a slot is not reused until the GPU has finished the frame that had it.
+  u32* residency_slot(u32 slot) noexcept;
+  u64 residency_slot_address(u32 slot) const noexcept;
+  // The block `gfx::CullParams::streaming` points at for this frame slot; the addresses are
+  // constant except for the residency array, so there is one block per slot, written at create.
+  u64 stream_params_address(u32 slot) const noexcept;
+
   // ---- the global buffers, read through device addresses -------------------------------------
   gfx::BufferResource clusters;           // geometry::ClusterDesc[]
   gfx::BufferResource quantized;          // three u16 per vertex on each mesh's own grid
@@ -169,6 +227,18 @@ class GpuScene {
   gfx::BufferResource joints;         // anim::JointMatrix[k_joint_slots * max_joints]
   gfx::BufferResource deform_frames;  // gfx::DeformDesc[k_joint_slots * deform_count]
 
+  // ---- geometry streaming ----------------------------------------------------------------------
+  gfx::BufferResource page_table;       // geometry::ClusterPageDesc[page_count]
+  gfx::BufferResource page_of_cluster;  // u32 per cluster
+  gfx::BufferResource page_children;    // geometry::ClusterChildren per cluster
+  gfx::BufferResource residency;        // u32 per page, k_stream_slots regions, host-visible
+  gfx::BufferResource page_used;        // u32 per page, written by the cut
+  gfx::BufferResource page_requests;    // geometry::PageRequest[max_requests]
+  gfx::BufferResource request_count;    // u32, the cull pass's atomic
+  gfx::BufferResource request_mask;     // u32 per page: one request a page a frame
+  gfx::BufferResource stream_params;    // gfx::StreamParams[k_stream_slots]
+  gfx::BufferResource page_stage;       // the staging ring: one upload budget per frame slot
+
   // ---- ray tracing ------------------------------------------------------------------------------
   gfx::BufferResource indices8;         // 8-bit packed cluster indices for the CLAS builds
   gfx::BufferResource records;          // CLAS build records written from the cull output
@@ -190,6 +260,7 @@ class GpuScene {
   bool upload_materials(const ResolvedSettings& resolved, std::string* error);
   bool create_working_set(const ResolvedSettings& resolved, std::string* error);
   bool create_ray_tracing(const ResolvedSettings& resolved, std::string* error);
+  bool create_streaming(const ResolvedSettings& resolved, std::string* error);
 
   const gfx::Device* device_ = nullptr;
   const SceneData* data_ = nullptr;
@@ -219,6 +290,16 @@ class GpuScene {
   u32 tlas_slot_ = gfx::BindlessSet::k_invalid_slot;
   bool ray_tracing_ = false;
   bool deform_ = false;
+  bool streamed_ = false;
+  u32 page_count_ = 0;
+  u32 page_slots_ = 0;
+  u32 slot_vertices_ = 0;   // the largest page's vertex count: every slot is sized for it
+  u32 slot_triangles_ = 0;  // and its triangle count
+  u32 max_requests_ = 0;
+  u32 upload_budget_bytes_ = 0;
+  u64 page_budget_bytes_ = 0;
+  u64 stream_bytes_ = 0;
+  u64 geometry_bytes_ = 0;
 };
 
 }  // namespace engine::renderer

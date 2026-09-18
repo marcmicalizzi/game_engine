@@ -36,6 +36,7 @@
 #include <domain/gfx/shader_library.h>
 #include <systems/renderer/capture.h>
 #include <systems/renderer/gpu_scene.h>
+#include <systems/renderer/streaming.h>
 #include <systems/renderer/view_set.h>
 
 #include <span>
@@ -110,6 +111,9 @@ struct Stats {
   // Sampled by sample_gpu_memory(), not by a frame: it is a driver query and the frame path
   // stays free of them.
   GpuMemory gpu_memory;
+  // Geometry residency, folded in with the rest when a frame slot comes around. Zero for a scene
+  // that is uploaded whole (`stream.pages_total == 0` is what says so).
+  StreamStats stream;
   // The per-view breakdown. `view_count` is 1 for a single view, and `views[0]` then holds the
   // same numbers the totals do.
   u32 view_count = 1;
@@ -215,6 +219,9 @@ class SceneRenderer {
   // calls it again at the end, which is when the contention it reports actually matters.
   void sample_gpu_memory() noexcept;
   const ResolvedSettings& settings() const noexcept { return resolved_; }
+  // The geometry residency this renderer drives; inactive for a scene uploaded whole. A caller
+  // that wants to measure convergence from cold calls `reset_residency()` on it.
+  GeometryStreamer& streamer() noexcept { return streamer_; }
   gfx::ShaderLibrary& shaders() noexcept { return shaders_; }
   // The renderer's own color target; null when it was created without one.
   const gfx::ImageResource& color_target() const noexcept { return color_; }
@@ -329,6 +336,7 @@ class SceneRenderer {
   Targets targets_;
   gfx::FrameContext frames_;
   gfx::GpuTimer timer_;
+  GeometryStreamer streamer_;
   gfx::RenderGraph* graph_ = nullptr;        // heap: RenderGraph is not default-constructible
   gfx::ImageResource color_;                 // the offscreen target, when the renderer owns one
   Vector<gfx::BufferResource> params_;       // two CullParams per view, per slot

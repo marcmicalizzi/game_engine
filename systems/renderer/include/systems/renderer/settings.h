@@ -49,6 +49,21 @@ struct RenderSettings {
   f32 deform_amplitude = 0.02f;
   bool rt_templates = false;  // instantiate prebuilt cluster templates instead of rebuilding
 
+  // Geometry streaming (04 §4.3 step 3, §4.9). The scene's clusters are laid out in fixed-size
+  // pages, the GPU holds a budgeted subset of them in a page pool, the cull pass draws whatever is
+  // resident and asks for what it is missing, and the picture converges. These size the scene's
+  // page pool and its staging ring, which is why they live here beside the view count rather than
+  // in the frame: changing one means rebuilding the `GpuScene`.
+  bool stream = false;
+  // The residency manager's budget, over the page table's own byte counts
+  // (`geometry::ClusterPageDesc::bytes`). Zero is every page: streaming with nothing to evict,
+  // which is the configuration the "all resident equals today's cut" test renders.
+  u64 page_budget_bytes = 0;
+  // How many bytes of page payload one frame may copy into the pool. Zero is
+  // `k_default_upload_budget`; a value under the largest page's payload is raised to it, because a
+  // budget no page fits in would never converge.
+  u32 upload_budget_bytes = 0;
+
   // Multi-view (04 §4.6). These size the scene's per-frame working set — the visible list, the
   // argument blocks, the flags, the acceleration structures all carry a slice per view — which is
   // why they live here, where a change forces a rebuild, and not in the frame.
@@ -81,6 +96,10 @@ struct ResolvedSettings {
   // is one of `deform.slang`'s kinds rather than a second pass, so a scene with a character in it
   // fills the pool whether or not anyone asked for `--deform`.
   bool deform_pass = false;
+  // Geometry pages stream on demand. True only when the caller asked *and* the scene carries a
+  // page table *and* nothing else in the frame contradicts it — see `resolve_settings` for the
+  // three things that do and why each one is a refusal rather than a silent half-measure.
+  bool stream = false;
   // How many views the layout has. The `GpuScene` is created before the `SceneRenderer` and so
   // before the view set, and every per-frame buffer it owns is sized by this, so the count is
   // resolved here rather than read off a `ViewSet` that does not exist yet.
