@@ -67,11 +67,14 @@ enum class ClusterSection : u32 {
   // `children` are derived from the page ranges and the DAG by `rebuild_cluster_page_index` on
   // read, which costs one sort over the clusters and saves eight bytes a cluster on disk. A file
   // without them (an older build, or one built with `--page-bytes 0`) reads with an empty page
-  // table, and a caller that wants one calls `build_cluster_pages`. The byte target is not
-  // stored either — it is a build knob, and the reader takes the largest page that was not
-  // flagged oversized, which is inside the target by construction.
+  // table, and a caller that wants one calls `build_cluster_pages`.
   Pages = 16,
   PageChildren = 17,
+  // u32: [0] is the byte target the layout was given. It is not derivable from the table — the
+  // largest page is a lower bound and nothing more, and for a mesh that fits in one page it is
+  // the page's own size, which would report a fill of 1.0 whatever the target was. A file
+  // without the section falls back to that lower bound.
+  PageScalars = 18,
 };
 
 // Names the kinds this build knows, "unknown" for anything else; for diagnostics and for
@@ -227,8 +230,12 @@ bool read_cluster_file_identity(std::string_view path, u64& source_hash, u64& bu
 inline constexpr u32 k_cluster_cache_version = 3;
 
 // The cache key: the source's content hash (`assets::source_mesh_hash`) mixed with the build
-// options and the version above.
-u64 cluster_cache_key(u64 source_hash, const ClusterLodOptions& options, bool weld) noexcept;
+// options and the version above. `page_bytes` is the streaming page target the container was
+// laid out with, 0 for a container with no page table — it is here because paging renumbers the
+// clusters, so two page sizes are two different containers and an entry built with one is not
+// the answer to a question that asked for the other.
+u64 cluster_cache_key(u64 source_hash, const ClusterLodOptions& options, bool weld,
+                      u32 page_bytes) noexcept;
 
 // "<ddc_root>/clusters/<hash as 16 lower-case hex digits>.clusters".
 std::string cluster_cache_path(std::string_view ddc_root, u64 hash);

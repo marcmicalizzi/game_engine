@@ -51,6 +51,8 @@ const char* k_usage =
     "  build <in.gltf|in.glb> <out.clusters>   import a mesh and write a cluster container\n"
     "      --max-triangles <n>   triangles per cluster (4..256, default 124)\n"
     "      --max-vertices <n>    vertices per cluster (1..255, default 64)\n"
+    "      --page-bytes <n>      streaming page target in bytes (default 131072); 0 writes no\n"
+    "                            page table and leaves the clusters in builder order\n"
     "      --no-weld             keep the file's duplicate vertices\n"
     "      --cache               write into the derived-data cache instead of a named output,\n"
     "                            addressed by the source and the options above\n"
@@ -61,13 +63,15 @@ const char* k_usage =
     "      --log <spec>          log levels, e.g. \"info\" or \"warn,content=debug\"\n"
     "  build-all <manifest.json>               build every mesh a manifest names\n"
     "      --cache               entries with no \"output\" go to the derived-data cache\n"
+    "      --page-bytes <n>      the default for entries whose \"options\" do not say\n"
     "      --ddc <dir>, --jobs <n>, --strict, --log <spec>   as above\n"
     "  info <file.clusters>                    print the header, sections, and counts\n"
     "  stats <file.clusters>                   print the content-build metrics of a container\n"
     "\n"
     "the build-all manifest:\n"
     "  {\"meshes\":[{\"source\":\"a.gltf\",\"output\":\"a.clusters\",\n"
-    "               \"options\":{\"max_triangles\":124,\"max_vertices\":64,\"weld\":true}}]}\n"
+    "               \"options\":{\"max_triangles\":124,\"max_vertices\":64,\"weld\":true,\n"
+    "                           \"page_bytes\":131072}}]}\n"
     "  paths are relative to the manifest file; \"output\" and \"options\" are optional.\n"
     "\n"
     "examples:\n"
@@ -142,6 +146,10 @@ bool next_u32(int argc, char** argv, int& i, u32& out) {
 struct MeshOptions {
   u32 max_triangles = geometry::ClusterLodOptions{}.max_triangles;
   u32 max_vertices = geometry::ClusterLodOptions{}.max_vertices;
+  // The streaming page target (docs/plan/04-renderer.md §4.3 step 3); 0 writes a container with
+  // no page table. It is in the cache key because laying a mesh out in pages renumbers its
+  // clusters, so two targets are two different containers.
+  u32 page_bytes = geometry::ClusterPagesOptions{}.page_bytes;
   bool weld = true;
 };
 
@@ -310,6 +318,9 @@ struct BuildResult {
   u32 triangles = 0;
   u32 lod_levels = 0;
   u32 vertices = 0;
+  u32 pages = 0;
+  u32 page_bytes = 0;   // the target the layout was given, 0 when there is no page table
+  f64 page_fill = 0.0;  // mean page bytes over the target
   u32 materials = 0;
   u32 images = 0;
   u32 embedded_images = 0;
@@ -454,6 +465,22 @@ bool build_one(const std::string& input, const std::string& output, const MeshOp
     return false;
   }
 
+  // Into streaming pages, coarse to fine and group by group (docs/plan/04-renderer.md §4.3 step 3
+  // and §4.9). This renumbers the clusters, so it happens before anything downstream indexes
+  // them and the map from cluster to primitive is carried through the same permutation.
+  if (options.page_bytes != 0) {
+    geometry::ClusterPagesOptions page_options;
+    page_options.page_bytes = options.page_bytes;
+    Vector<u32> source_of_cluster;
+    if (!geometry::build_cluster_pages(data.mesh, page_options, data.pages, &message,
+                                       &source_of_cluster)) {
+      error.rule = "geometry.cluster_pages";
+      error.message = message;
+      return false;
+    }
+    geometry::permute_cluster_array(source_of_cluster, part_of_cluster);
+  }
+
   data.materials.reserve(mesh.materials.size() + 1);
   for (const assets::Material& source : mesh.materials) {
     geometry::ClusterFileMaterial material;
@@ -516,6 +543,15 @@ bool build_one(const std::string& input, const std::string& output, const MeshOp
   out.triangles = lod.leaf_triangle_count;
   out.lod_levels = lod.level_cluster_counts.size();
   out.vertices = lod.mesh.vertices.size();
+  out.pages = data.pages.pages.size();
+  out.page_bytes = options.page_bytes;
+  if (out.pages != 0) {
+    u64 page_total = 0;
+    for (const geometry::ClusterPageDesc& page : data.pages.pages)
+      page_total += page.bytes;
+    out.page_fill = static_cast<f64>(page_total) /
+                    (static_cast<f64>(out.pages) * static_cast<f64>(options.page_bytes));
+  }
   out.materials = data.materials.size();
   out.images = data.image_paths.size();
   out.embedded_images = embedded_images;
@@ -524,8 +560,8 @@ bool build_one(const std::string& input, const std::string& output, const MeshOp
   out.build_ms = static_cast<f64>(time::monotonic_ns() - start_ns) / 1.0e6;
 
   ENGINE_LOG_INFO(log_content, "cluster file written", log::field("path", output),
-                  log::field("clusters", out.clusters), log::field("bytes", out.bytes),
-                  log::field("build_ms", out.build_ms));
+                  log::field("clusters", out.clusters), log::field("pages", out.pages),
+                  log::field("bytes", out.bytes), log::field("build_ms", out.build_ms));
   return true;
 }
 
@@ -565,8 +601,8 @@ int build(const BuildCommandOptions& options) {
   u64 source_hash = 0;
   std::string message;
   if (!assets::source_mesh_hash(options.input, source_hash, &message)) return failed(message);
-  const u64 key =
-      geometry::cluster_cache_key(source_hash, lod_options_of(options.mesh), options.mesh.weld);
+  const u64 key = geometry::cluster_cache_key(source_hash, lod_options_of(options.mesh),
+                                              options.mesh.weld, options.mesh.page_bytes);
 
   std::string output = options.output;
   if (options.cache) {
@@ -596,6 +632,9 @@ int build(const BuildCommandOptions& options) {
   summary.set("triangles", JsonValue(result.triangles));
   summary.set("lod_levels", JsonValue(result.lod_levels));
   summary.set("vertices", JsonValue(result.vertices));
+  summary.set("pages", JsonValue(result.pages));
+  summary.set("page_bytes", JsonValue(result.page_bytes));
+  summary.set("page_fill", JsonValue(result.page_fill));
   summary.set("materials", JsonValue(result.materials));
   summary.set("images", JsonValue(result.images));
   summary.set("embedded_images", JsonValue(result.embedded_images));
@@ -616,6 +655,8 @@ int build_command(int argc, char** argv) {
       if (!next_u32(argc, argv, i, options.mesh.max_triangles)) return k_exit_usage;
     } else if (a == "--max-vertices") {
       if (!next_u32(argc, argv, i, options.mesh.max_vertices)) return k_exit_usage;
+    } else if (a == "--page-bytes") {
+      if (!next_u32(argc, argv, i, options.mesh.page_bytes)) return k_exit_usage;
     } else if (a == "--jobs") {
       if (!next_u32(argc, argv, i, options.jobs)) return k_exit_usage;
     } else if (a == "--log") {
@@ -669,7 +710,8 @@ struct ManifestEntry {
 
 // Reads the manifest and resolves every path against the manifest's own directory, so a manifest
 // is movable as a unit and says the same thing from any working directory.
-bool read_manifest(const std::string& path, Vector<ManifestEntry>& out, std::string& error) {
+bool read_manifest(const std::string& path, const MeshOptions& defaults, Vector<ManifestEntry>& out,
+                   std::string& error) {
   std::string text;
   const io::Status status = io::read_file(path, text);
   if (status != io::Status::Ok) {
@@ -706,6 +748,7 @@ bool read_manifest(const std::string& path, Vector<ManifestEntry>& out, std::str
       return false;
     }
     ManifestEntry built;
+    built.options = defaults;  // the command line sets what an entry does not say
     built.source = resolve(source->as_string());
     if (const JsonValue* output = entry.find("output"); output != nullptr) {
       if (!output->is_string()) {
@@ -733,6 +776,13 @@ bool read_manifest(const std::string& path, Vector<ManifestEntry>& out, std::str
           return false;
         }
         built.options.max_vertices = static_cast<u32>(value);
+      }
+      if (const JsonValue* v = options->find("page_bytes"); v != nullptr) {
+        if (!v->get_u64(value)) {
+          error = at + ": \"page_bytes\" is not a number";
+          return false;
+        }
+        built.options.page_bytes = static_cast<u32>(value);
       }
       if (const JsonValue* v = options->find("weld"); v != nullptr) {
         bool weld = true;
@@ -777,8 +827,8 @@ void run_mesh_task(void* data) {
     task.state = TaskState::Failed;
     return;
   }
-  const u64 key =
-      geometry::cluster_cache_key(source_hash, lod_options_of(entry.options), entry.options.weld);
+  const u64 key = geometry::cluster_cache_key(source_hash, lod_options_of(entry.options),
+                                              entry.options.weld, entry.options.page_bytes);
   const bool to_cache = entry.output.empty();
   const std::string output = to_cache ? geometry::cluster_cache_path(*task.ddc, key) : entry.output;
   task.result.path = output;
@@ -810,6 +860,7 @@ struct BuildAllCommandOptions {
   std::string manifest;
   std::string log_spec;
   std::string ddc;
+  MeshOptions defaults;  // what an entry's "options" object does not override
   u32 jobs = 0;
   bool cache = false;
   bool strict = false;
@@ -819,7 +870,7 @@ int build_all(const BuildAllCommandOptions& options) {
   const i64 start_ns = time::monotonic_ns();
   Vector<ManifestEntry> entries;
   std::string message;
-  if (!read_manifest(options.manifest, entries, message)) return failed(message);
+  if (!read_manifest(options.manifest, options.defaults, entries, message)) return failed(message);
   for (const ManifestEntry& entry : entries) {
     if (entry.output.empty() && !options.cache) {
       return failed("manifest '" + options.manifest + "' entry '" + entry.source +
@@ -877,6 +928,9 @@ int build_all(const BuildAllCommandOptions& options) {
         line.set("triangles", JsonValue(task.result.triangles));
         line.set("lod_levels", JsonValue(task.result.lod_levels));
         line.set("vertices", JsonValue(task.result.vertices));
+        line.set("pages", JsonValue(task.result.pages));
+        line.set("page_bytes", JsonValue(task.result.page_bytes));
+        line.set("page_fill", JsonValue(task.result.page_fill));
         line.set("materials", JsonValue(task.result.materials));
         line.set("images", JsonValue(task.result.images));
         line.set("warnings", JsonValue(task.result.warnings.size()));
@@ -923,6 +977,8 @@ int build_all_command(int argc, char** argv) {
     const std::string_view a = argv[i];
     if (a == "--jobs") {
       if (!next_u32(argc, argv, i, options.jobs)) return k_exit_usage;
+    } else if (a == "--page-bytes") {
+      if (!next_u32(argc, argv, i, options.defaults.page_bytes)) return k_exit_usage;
     } else if (a == "--log") {
       if (!next_value(argc, argv, i, options.log_spec)) return k_exit_usage;
     } else if (a == "--ddc") {
@@ -976,6 +1032,34 @@ bool load_container(const std::string& path, std::string& file, geometry::Cluste
   return true;
 }
 
+// The page table at a glance, for `info` and as the head of `stats`'s page section: how many
+// pages, how full they are, how much of the mesh is pinned (the pages holding a group with no
+// coarser version, which the residency manager never evicts), and how connected they are.
+JsonValue page_summary(const geometry::ClusterPages& pages) {
+  JsonValue out = JsonValue::object();
+  out.set("count", JsonValue(pages.pages.size()));
+  out.set("bytes_target", JsonValue(pages.page_bytes_target));
+  u64 total = 0;
+  u32 largest = 0;
+  u32 oversized = 0;
+  u32 root = 0;
+  for (const geometry::ClusterPageDesc& page : pages.pages) {
+    total += page.bytes;
+    largest = page.bytes > largest ? page.bytes : largest;
+    if ((page.flags & geometry::k_page_oversized) != 0) ++oversized;
+    if ((page.flags & geometry::k_page_root) != 0) ++root;
+  }
+  out.set("bytes", JsonValue(total));
+  out.set("largest_bytes", JsonValue(largest));
+  const f64 capacity =
+      static_cast<f64>(pages.pages.size()) * static_cast<f64>(pages.page_bytes_target);
+  out.set("mean_fill", JsonValue(capacity > 0.0 ? static_cast<f64>(total) / capacity : 0.0));
+  out.set("oversized", JsonValue(oversized));
+  out.set("root_pages", JsonValue(root));
+  out.set("child_page_entries", JsonValue(pages.child_pages.size()));
+  return out;
+}
+
 int info(const std::string& path) {
   std::string file;
   geometry::ClusterFileHeader header;
@@ -1000,6 +1084,7 @@ int info(const std::string& path) {
   const geometry::ClusterLodMesh& lod = data.mesh;
   JsonValue summary = JsonValue::object();
   summary.set("path", JsonValue(path));
+  summary.set("pages", page_summary(data.pages));
   summary.set("version", JsonValue(header.version));
   summary.set("flags", JsonValue(header.flags));
   summary.set("total_bytes", JsonValue(header.total_bytes));
@@ -1019,6 +1104,136 @@ int info(const std::string& path) {
   summary.set("build_key", JsonValue(data.build_key));
   print_json(summary);
   return k_exit_ok;
+}
+
+// ---- the streaming sweep ----------------------------------------------------------------------
+//
+// What the page layout costs a viewer that has to fetch it: a camera flies in from 50 mesh radii
+// to half a radius, and at every step the sweep reports what the ideal cut needs and what a
+// budgeted residency manager (docs/plan/04-renderer.md §4.9) actually asks for. It is a content
+// metric, not a benchmark: it answers "does the way this mesh is paged make a fly-in cheap?"
+// without a GPU, a window, or a frame loop.
+
+constexpr u32 k_sweep_steps = 32;
+constexpr f32 k_sweep_far = 50.0f;    // in mesh radii
+constexpr f32 k_sweep_near = 0.5f;    // inside the mesh's own sphere: full detail
+constexpr f64 k_sweep_budget = 0.25;  // of the mesh's total page bytes
+
+struct SweepStep {
+  f32 distance = 0.0f;  // in mesh radii
+  u32 clusters = 0;     // the cut with everything resident
+  u32 triangles = 0;
+  u32 pages_needed = 0;  // distinct pages that cut draws from
+  u32 requested = 0;     // pages this step asked for, under the budget
+  u32 drawn = 0;         // clusters the budgeted viewer actually drew
+  u32 evicted = 0;       // pages the budget took back this step
+  u32 resident = 0;      // pages held at the end of the step
+  u64 resident_bytes = 0;
+};
+
+// The bounding sphere of the mesh's original geometry, which is what "radii" measures.
+void leaf_bounds(const geometry::ClusterLodMesh& lod, Vec3& center, f32& radius) {
+  Vec3 lo{1e30f, 1e30f, 1e30f};
+  Vec3 hi{-1e30f, -1e30f, -1e30f};
+  for (u32 i = 0; i < lod.mesh.clusters.size(); ++i) {
+    if (lod.lod[i].level != 0) continue;
+    const geometry::ClusterDesc& c = lod.mesh.clusters[i];
+    lo = Vec3{std::min(lo.x, c.center.x - c.radius), std::min(lo.y, c.center.y - c.radius),
+              std::min(lo.z, c.center.z - c.radius)};
+    hi = Vec3{std::max(hi.x, c.center.x + c.radius), std::max(hi.y, c.center.y + c.radius),
+              std::max(hi.z, c.center.z + c.radius)};
+  }
+  center = (lo + hi) * 0.5f;
+  radius = 1e-6f;
+  for (u32 i = 0; i < lod.mesh.clusters.size(); ++i) {
+    if (lod.lod[i].level != 0) continue;
+    const geometry::ClusterDesc& c = lod.mesh.clusters[i];
+    radius = std::max(radius, length(c.center - center) + c.radius);
+  }
+}
+
+bool sweep_streaming(const geometry::ClusterFileData& data, Vector<SweepStep>& out, u64& budget,
+                     std::string& error) {
+  out.clear();
+  budget = 0;
+  const geometry::ClusterPages& pages = data.pages;
+  if (pages.pages.empty()) return true;
+  u64 total = 0;
+  for (const geometry::ClusterPageDesc& page : pages.pages)
+    total += page.bytes;
+  budget = static_cast<u64>(static_cast<f64>(total) * k_sweep_budget);
+
+  Vec3 center{};
+  f32 radius = 1.0f;
+  leaf_bounds(data.mesh, center, radius);
+
+  geometry::PageResidency everything;
+  everything.resident.assign(pages.pages.size(), u8{1});
+  geometry::PageResidencyManager manager;
+  if (!manager.reset(pages, budget, &error)) return false;
+
+  geometry::LodView view;
+  view.znear = 0.1f;
+  // 1080p at 60 degrees, one pixel of error: the same view the LOD tests use.
+  view.proj_scale = 1.0f / std::tan(radians(60.0f) * 0.5f) * 1080.0f * 0.5f;
+  view.threshold_px = 1.0f;
+
+  Vector<u32> cut;
+  Vector<u32> budgeted;
+  Vector<u32> requests;
+  Vector<u8> seen(pages.pages.size(), u8{0});
+  for (u32 step = 0; step < k_sweep_steps; ++step) {
+    const f32 t = static_cast<f32>(step) / static_cast<f32>(k_sweep_steps - 1);
+    SweepStep entry;
+    entry.distance = k_sweep_far + (k_sweep_near - k_sweep_far) * t;
+    view.camera = center + Vec3{0.0f, 0.0f, entry.distance * radius};
+
+    // What the mesh would draw with every page in memory, and how many pages that touches.
+    cut.clear();
+    requests.clear();
+    entry.clusters =
+        geometry::select_lod_streaming(data.mesh, view, pages, everything, cut, requests);
+    for (u8& flag : seen)
+      flag = 0;
+    for (const u32 c : cut) {
+      entry.triangles += data.mesh.mesh.clusters[c].triangle_count;
+      u8& flag = seen[pages.page_of_cluster[c]];
+      if (flag == 0) ++entry.pages_needed;
+      flag = 1;
+    }
+
+    // And what a viewer under a quarter of the bytes asks for, one frame per step.
+    manager.begin_frame();
+    budgeted.clear();
+    requests.clear();
+    entry.drawn = geometry::select_lod_streaming(data.mesh, view, pages, manager.page_residency(),
+                                                 budgeted, requests);
+    for (const u32 c : budgeted)
+      manager.touch(pages.page_of_cluster[c]);
+    entry.requested = requests.size();
+    manager.request(std::span<const u32>(requests.data(), requests.size()));
+    manager.admit(~u32{0});
+    entry.evicted = manager.evict_to_budget();
+    entry.resident = manager.resident_pages();
+    entry.resident_bytes = manager.resident_bytes();
+    out.push_back(entry);
+  }
+  return true;
+}
+
+// The sweep as a table on stderr, so a human reads it and stdout stays one JSON line.
+void print_sweep(const Vector<SweepStep>& sweep, u64 budget) {
+  if (sweep.empty()) return;
+  std::fprintf(stderr, "  streaming sweep, 1080p at 1 px, budget %llu bytes (25%%)\n",
+               static_cast<unsigned long long>(budget));
+  std::fprintf(stderr, "  %6s %9s %10s %7s %10s %8s %8s %9s %9s\n", "radii", "clusters",
+               "triangles", "pages", "requested", "drawn", "evicted", "resident", "KB");
+  for (const SweepStep& step : sweep) {
+    std::fprintf(stderr, "  %6.2f %9u %10u %7u %10u %8u %8u %9u %9llu\n",
+                 static_cast<double>(step.distance), step.clusters, step.triangles,
+                 step.pages_needed, step.requested, step.drawn, step.evicted, step.resident,
+                 static_cast<unsigned long long>(step.resident_bytes / 1024));
+  }
 }
 
 // The metrics docs/plan/07-content-pipeline.md §7.3 wants a content build to report about what it
@@ -1115,9 +1330,73 @@ int stats(const std::string& path) {
   const f64 duplication =
       distinct == 0 ? 0.0 : static_cast<f64>(mesh.vertices.size()) / static_cast<f64>(distinct);
 
+  // The page table, the spread of child pages per page — which is how much of the DAG a page
+  // depends on and therefore how wide a prefetch is — and the fly-in sweep.
+  JsonValue pages = page_summary(data.pages);
+  Vector<u32> child_counts;
+  child_counts.reserve(data.pages.pages.size());
+  for (const geometry::ClusterPageDesc& page : data.pages.pages)
+    child_counts.push_back(page.child_page_count);
+  std::sort(child_counts.begin(), child_counts.end());
+  JsonValue child_histogram = JsonValue::array();
+  for (u32 i = 0; i < child_counts.size();) {
+    u32 j = i;
+    while (j < child_counts.size() && child_counts[j] == child_counts[i])
+      ++j;
+    JsonValue bucket = JsonValue::object();
+    bucket.set("child_pages", JsonValue(child_counts[i]));
+    bucket.set("pages", JsonValue(j - i));
+    child_histogram.push_back(std::move(bucket));
+    i = j;
+  }
+  pages.set("child_pages_histogram", std::move(child_histogram));
+  // The page table's own invariants, checked against the mesh it came with: a container is read
+  // by the renderer, and this is the one place that says out loud whether its table is sound.
+  if (!data.pages.pages.empty()) {
+    std::string page_error;
+    const bool valid = geometry::validate_cluster_pages(data.mesh, data.pages, &page_error);
+    pages.set("valid", JsonValue(valid));
+    if (!valid) pages.set("invalid_reason", JsonValue(page_error));
+  }
+
+  Vector<SweepStep> sweep;
+  u64 budget = 0;
+  std::string sweep_error;
+  if (!sweep_streaming(data, sweep, budget, sweep_error)) return failed(sweep_error);
+  JsonValue streaming = JsonValue::object();
+  streaming.set("budget_bytes", JsonValue(budget));
+  streaming.set("budget_fraction", JsonValue(k_sweep_budget));
+  streaming.set("steps", JsonValue(k_sweep_steps));
+  streaming.set("from_radii", JsonValue(k_sweep_far));
+  streaming.set("to_radii", JsonValue(k_sweep_near));
+  JsonValue steps = JsonValue::array();
+  u64 requested_total = 0;
+  u32 most_needed = 0;
+  for (const SweepStep& step : sweep) {
+    requested_total += step.requested;
+    most_needed = step.pages_needed > most_needed ? step.pages_needed : most_needed;
+    JsonValue entry = JsonValue::object();
+    entry.set("radii", JsonValue(step.distance));
+    entry.set("clusters", JsonValue(step.clusters));
+    entry.set("triangles", JsonValue(step.triangles));
+    entry.set("pages_needed", JsonValue(step.pages_needed));
+    entry.set("requested", JsonValue(step.requested));
+    entry.set("drawn", JsonValue(step.drawn));
+    entry.set("evicted", JsonValue(step.evicted));
+    entry.set("resident", JsonValue(step.resident));
+    entry.set("resident_bytes", JsonValue(step.resident_bytes));
+    steps.push_back(std::move(entry));
+  }
+  streaming.set("requested_total", JsonValue(requested_total));
+  streaming.set("pages_needed_max", JsonValue(most_needed));
+  streaming.set("steps_detail", std::move(steps));
+  pages.set("streaming", std::move(streaming));
+  print_sweep(sweep, budget);
+
   JsonValue summary = JsonValue::object();
   summary.set("path", JsonValue(path));
   summary.set("clusters", JsonValue(cluster_count));
+  summary.set("pages", std::move(pages));
   summary.set("lod_levels", JsonValue(data.mesh.level_cluster_counts.size()));
   summary.set("level_clusters", std::move(levels));
   summary.set("groups", JsonValue(data.mesh.group_count));

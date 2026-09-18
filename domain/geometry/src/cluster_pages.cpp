@@ -15,25 +15,33 @@ bool fail(std::string* error, std::string message) {
   return false;
 }
 
-// A group's identity, as the DAG stores it: the bits of the bound its simplification produced.
-// Every member of group g carries it as `parent`/`parent_error`, and every cluster produced by
-// simplifying g carries the same bits as `own`/`own_error` — which is the only way back from a
-// cluster to the group it refines into, because clusterlod's `refined` index is not in the
-// format. Bits, not values: the two are copies of one float, so they compare exactly.
+// A group's identity, as the DAG stores it: the level of its clusters and the bits of the bound
+// its simplification produced. Every member of group g carries the bound as `parent`/
+// `parent_error`, and every cluster produced by simplifying g carries the same bits as `own`/
+// `own_error` — which is the only way back from a cluster to the group it refines into, because
+// clusterlod's `refined` index is not in the format. Bits, not values: the two are copies of one
+// float, so they compare exactly.
+//
+// The level is in the key and not just along for the ride. When a simplification step costs no
+// error at all — a flat panel, a piece of glass — clusterlod carries the group's bound and error
+// through to the next level unchanged, so the bound alone is ambiguous between a group and the
+// one above it. A cluster at level L is always produced from a group at level L - 1 (each round
+// of the builder partitions only the clusters the round before it made), so the level settles it.
 struct GroupKey {
-  u32 bits[5] = {0, 0, 0, 0, 0};
+  u32 bits[6] = {0, 0, 0, 0, 0, 0};
 };
 
-GroupKey bound_key(Vec4 sphere, f32 error) noexcept {
+GroupKey bound_key(u32 level, Vec4 sphere, f32 error) noexcept {
   GroupKey key;
+  key.bits[0] = level;
   const f32 values[5] = {sphere.x, sphere.y, sphere.z, sphere.w, error};
   for (u32 i = 0; i < 5; ++i)
-    std::memcpy(&key.bits[i], &values[i], sizeof(f32));
+    std::memcpy(&key.bits[i + 1], &values[i], sizeof(f32));
   return key;
 }
 
 int compare_keys(const GroupKey& a, const GroupKey& b) noexcept {
-  for (u32 i = 0; i < 5; ++i) {
+  for (u32 i = 0; i < 6; ++i) {
     if (a.bits[i] != b.bits[i]) return a.bits[i] < b.bits[i] ? -1 : 1;
   }
   return 0;
@@ -97,7 +105,7 @@ bool match_children(std::span<const ClusterLodDesc> lod, std::span<const Cluster
     if (runs[g].cluster_count == 0) continue;
     const ClusterLodDesc& any = lod[runs[g].first_cluster];
     GroupEntry entry;
-    entry.key = bound_key(any.parent, any.parent_error);
+    entry.key = bound_key(any.level, any.parent, any.parent_error);
     entry.group = g;
     table.push_back(entry);
   }
@@ -107,7 +115,7 @@ bool match_children(std::span<const ClusterLodDesc> lod, std::span<const Cluster
   for (u32 i = 0; i < lod.size(); ++i) {
     if (lod[i].level == 0) continue;  // original geometry: nothing finer exists
     GroupEntry wanted;
-    wanted.key = bound_key(lod[i].own, lod[i].own_error);
+    wanted.key = bound_key(lod[i].level - 1, lod[i].own, lod[i].own_error);
     u32 low = k_no_index;
     u32 high = 0;
     for (const GroupEntry* it = std::lower_bound(table.begin(), table.end(), wanted, key_less);
@@ -246,9 +254,11 @@ bool build_cluster_pages(ClusterLodMesh& mesh, const ClusterPagesOptions& option
     group_clusters[fill_at[mesh.lod[i].group]++] = i;
 
   Vector<u32> group_level(group_count, 0u);
+  Vector<u8> group_terminal(group_count, u8{0});
   for (u32 g = 0; g < group_count; ++g) {
     if (group_start[g + 1] == group_start[g]) continue;
-    const u32 level = mesh.lod[group_clusters[group_start[g]]].level;
+    const ClusterLodDesc& first_member = mesh.lod[group_clusters[group_start[g]]];
+    const u32 level = first_member.level;
     for (u32 k = group_start[g]; k < group_start[g + 1]; ++k) {
       if (mesh.lod[group_clusters[k]].level != level) {
         return fail(error, "build_cluster_pages: group " + std::to_string(g) +
@@ -256,25 +266,46 @@ bool build_cluster_pages(ClusterLodMesh& mesh, const ClusterPagesOptions& option
       }
     }
     group_level[g] = level;
+    // A group whose simplification never happened — the root, or one the simplifier got stuck on.
+    // Every member carries the group's simplified error, so one of them settles it.
+    group_terminal[g] = first_member.parent_error >= k_lod_terminal_error ? u8{1} : u8{0};
   }
 
-  // Groups coarsest level first, and by group index within a level: the root lands in page 0, so
-  // a viewer holding the first n pages sees the whole mesh coarsely rather than part of it
-  // finely, and a prefetch is a prefix of the page array.
-  Vector<u32> level_start(level_count + 1, 0u);
+  // The order the pages are filled in, and so the order a viewer streams them in:
+  //
+  //   1. every group with no coarser version — the root of the DAG and every group the
+  //      simplifier got stuck on — coarsest level first;
+  //   2. everything else, coarsest level first;
+  //   3. by group index inside a level, which is only there to make the result deterministic.
+  //
+  // The first block is the mesh's *minimum resident set*: nothing else can stand in for it, so a
+  // viewer that has it can draw the whole mesh, coarsely, and everything after it is refinement.
+  // Putting it first is what makes "a prefix of the pages is a complete picture" true for a mesh
+  // whose DAG has more than one root, which is every mesh built from several primitives or with
+  // a patch the simplifier could not merge. It also keeps the pages the residency manager must
+  // pin at the front, so pinning one never strands the pages above it.
+  //
+  // It does not disturb the property everything else rests on — a cluster's children are always
+  // later in the array — because a group that produced parents was simplified, so a cluster's
+  // children are never a terminal group and always land in block 2 at a finer level.
+  const u32 bucket_count = 2 * level_count;
+  Vector<u32> bucket_start(bucket_count + 1, 0u);
+  auto bucket_of = [&](u32 g) {
+    return (group_terminal[g] != 0 ? 0u : level_count) + (level_count - 1 - group_level[g]);
+  };
   for (u32 g = 0; g < group_count; ++g) {
     if (group_start[g + 1] == group_start[g]) continue;
-    ++level_start[level_count - group_level[g]];
+    ++bucket_start[bucket_of(g) + 1];
   }
-  for (u32 l = 0; l < level_count; ++l)
-    level_start[l + 1] += level_start[l];
-  Vector<u32> group_order(level_start[level_count]);
-  Vector<u32> level_fill(level_count, 0u);
-  for (u32 l = 0; l < level_count; ++l)
-    level_fill[l] = level_start[l];
+  for (u32 b = 0; b < bucket_count; ++b)
+    bucket_start[b + 1] += bucket_start[b];
+  Vector<u32> group_order(bucket_start[bucket_count]);
+  Vector<u32> bucket_fill(bucket_count, 0u);
+  for (u32 b = 0; b < bucket_count; ++b)
+    bucket_fill[b] = bucket_start[b];
   for (u32 g = 0; g < group_count; ++g) {
     if (group_start[g + 1] == group_start[g]) continue;
-    group_order[level_fill[level_count - 1 - group_level[g]]++] = g;
+    group_order[bucket_fill[bucket_of(g)]++] = g;
   }
 
   // Fill pages group by group. A group only ever straddles a page boundary when it does not fit
@@ -471,10 +502,35 @@ bool validate_cluster_pages(const ClusterLodMesh& mesh, const ClusterPages& page
   if (pages.pages.empty()) return fail(error, "no pages");
   if (pages.page_of_cluster.size() != count || pages.children.size() != count)
     return fail(error, "the per-cluster page and child tables are the wrong length");
+  // The DAG first: children are finer, inside the mesh, and later in the array, which is what
+  // lets one forward pass walk a cut and lets eviction decide a page is free by looking only at
+  // the pages that name it as a child.
+  for (u32 c = 0; c < count; ++c) {
+    const ClusterChildren& kids = pages.children[c];
+    if (kids.cluster_count == 0) {
+      if (mesh.lod[c].level != 0)
+        return fail(error, "cluster " + std::to_string(c) + " above level 0 has no children");
+      continue;
+    }
+    if (u64{kids.first_cluster} + kids.cluster_count > count)
+      return fail(error, "cluster " + std::to_string(c) + "'s children are outside the mesh");
+    if (kids.first_cluster <= c) {
+      return fail(error, "cluster " + std::to_string(c) + " at level " +
+                             std::to_string(mesh.lod[c].level) + " has children at " +
+                             std::to_string(kids.first_cluster) + ".." +
+                             std::to_string(kids.first_cluster + kids.cluster_count) +
+                             ", which is not after it");
+    }
+    for (u32 k = 0; k < kids.cluster_count; ++k) {
+      if (mesh.lod[kids.first_cluster + k].level >= mesh.lod[c].level)
+        return fail(error, "cluster " + std::to_string(c) + " has a child that is not finer");
+    }
+  }
   u32 cluster_at = 0;
   u32 vertex_at = 0;
   u32 triangle_at = 0;
   u32 previous_level = k_no_index;
+  bool past_the_roots = false;
   for (u32 p = 0; p < pages.pages.size(); ++p) {
     const ClusterPageDesc& desc = pages.pages[p];
     const std::string where = "page " + std::to_string(p);
@@ -514,7 +570,18 @@ bool validate_cluster_pages(const ClusterLodMesh& mesh, const ClusterPages& page
       return fail(error, where + " is over the byte target and is not flagged oversized");
     if ((desc.flags & k_page_oversized) != 0 && desc.bytes <= pages.page_bytes_target)
       return fail(error, where + " is flagged oversized and is within the byte target");
-    // Coarse to fine: a page never holds anything coarser than the page before it.
+    // The root pages come first — they are the minimum resident set — and within that block and
+    // within the refinement that follows it, a page never holds anything coarser than the page
+    // before it.
+    const bool root = (desc.flags & k_page_root) != 0;
+    if (root && past_the_roots)
+      return fail(error, where +
+                             " holds a group with no coarser version after a page that does "
+                             "not, so the pinned pages are not a prefix");
+    if (!root && !past_the_roots) {
+      past_the_roots = true;
+      previous_level = k_no_index;  // the refinement block starts its own coarse-to-fine run
+    }
     if (previous_level != k_no_index && desc.level_max > previous_level)
       return fail(error, where + " is coarser than the page before it");
     previous_level = desc.level_max;
@@ -525,7 +592,10 @@ bool validate_cluster_pages(const ClusterLodMesh& mesh, const ClusterPages& page
       if (child >= pages.pages.size())
         return fail(error, where + " names a child page that is not there");
       // Children are finer, so they are later in the array; a page is never its own child.
-      if (child <= p) return fail(error, where + " names a child page that is not after it");
+      if (child <= p) {
+        return fail(error, where + " names page " + std::to_string(child) +
+                               " as a child, which is not after it");
+      }
       if (k != 0 && child <= pages.child_pages[desc.first_child_page + k - 1])
         return fail(error, where + "'s child pages are not ascending and unique");
     }
@@ -539,21 +609,6 @@ bool validate_cluster_pages(const ClusterLodMesh& mesh, const ClusterPages& page
   }
   if ((pages.pages[0].flags & k_page_root) == 0)
     return fail(error, "page 0 does not hold the coarsest level");
-  // Children are finer, inside the mesh, and present for everything above level 0.
-  for (u32 c = 0; c < count; ++c) {
-    const ClusterChildren& kids = pages.children[c];
-    if (kids.cluster_count == 0) {
-      if (mesh.lod[c].level != 0)
-        return fail(error, "cluster " + std::to_string(c) + " above level 0 has no children");
-      continue;
-    }
-    if (u64{kids.first_cluster} + kids.cluster_count > count)
-      return fail(error, "cluster " + std::to_string(c) + "'s children are outside the mesh");
-    for (u32 k = 0; k < kids.cluster_count; ++k) {
-      if (mesh.lod[kids.first_cluster + k].level >= mesh.lod[c].level)
-        return fail(error, "cluster " + std::to_string(c) + " has a child that is not finer");
-    }
-  }
   return true;
 }
 

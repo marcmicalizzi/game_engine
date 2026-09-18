@@ -341,7 +341,8 @@ TEST_CASE("engine-content: build writes a cluster file that reads back and valid
   std::string error;
   REQUIRE_MESSAGE(assets::source_mesh_hash(mesh, source_hash, &error), error);
   const u64 key =
-      geometry::cluster_cache_key(source_hash, geometry::ClusterLodOptions{}, /*weld=*/true);
+      geometry::cluster_cache_key(source_hash, geometry::ClusterLodOptions{}, /*weld=*/true,
+                                  geometry::ClusterPagesOptions{}.page_bytes);
   CHECK(number(built.result, "source_hash") == source_hash);
   CHECK(number(built.result, "build_key") == key);
 
@@ -389,11 +390,11 @@ TEST_CASE("engine-content: build writes a cluster file that reads back and valid
   const JsonValue* sections = described.result.find("sections");
   REQUIRE(sections != nullptr);
   REQUIRE(sections->is_array());
-  CHECK(sections->size() == 15);
-  for (const char* name :
-       {"clusters", "lod", "vertices", "attributes", "triangles", "vertex_source",
-        "level_cluster_counts", "cluster_material", "materials", "image_paths", "strings",
-        "scalars", "quantized", "source_path", "source_hash"}) {
+  CHECK(sections->size() == 18);
+  for (const char* name : {"clusters", "lod", "vertices", "attributes", "triangles",
+                           "vertex_source", "level_cluster_counts", "cluster_material", "materials",
+                           "image_paths", "strings", "scalars", "quantized", "source_path",
+                           "source_hash", "pages", "page_children", "page_scalars"}) {
     bool found = false;
     for (usize i = 0; i < sections->size(); ++i) {
       const JsonValue* section_name = (*sections)[i].find("name");
@@ -401,6 +402,40 @@ TEST_CASE("engine-content: build writes a cluster file that reads back and valid
     }
     CHECK_MESSAGE(found, "info does not name the " << name << " section");
   }
+
+  // The container is laid out in streaming pages by default: the cube is one page, coarse first,
+  // and `info` reports the table.
+  CHECK(number(built.result, "pages") == 1);
+  CHECK(number(built.result, "page_bytes") == geometry::ClusterPagesOptions{}.page_bytes);
+  REQUIRE(data.pages.pages.size() == 1);
+  CHECK(data.pages.page_of_cluster.size() == data.mesh.mesh.clusters.size());
+  CHECK(data.mesh.lod[0].level + 1 == data.mesh.level_cluster_counts.size());
+  std::string page_error;
+  CHECK_MESSAGE(geometry::validate_cluster_pages(data.mesh, data.pages, &page_error), page_error);
+  const JsonValue* page_info = described.result.find("pages");
+  REQUIRE(page_info != nullptr);
+  CHECK(number(*page_info, "count") == 1);
+  CHECK(number(*page_info, "bytes") > 0);
+  CHECK(number(*page_info, "root_pages") == 1);
+
+  // --page-bytes 0 writes no page table and leaves the clusters where the builders put them,
+  // level 0 first; it is a different container, so it addresses a different cache entry.
+  const std::string unpaged_path = slashes(dir / "unpaged.clusters");
+  const Run unpaged = content({"build", mesh, unpaged_path, "--page-bytes", "0"});
+  REQUIRE_MESSAGE(unpaged.exit_code == 0, unpaged.output);
+  CHECK(number(unpaged.result, "pages") == 0);
+  CHECK(number(unpaged.result, "build_key") != key);
+  geometry::ClusterFileData unpaged_data;
+  REQUIRE_MESSAGE(geometry::read_cluster_file(unpaged_path, unpaged_data, &error), error);
+  CHECK(unpaged_data.pages.pages.empty());
+  CHECK(unpaged_data.mesh.lod[0].level == 0);
+  CHECK(unpaged_data.mesh.mesh.clusters.size() == data.mesh.mesh.clusters.size());
+  // A smaller target is a third container again, with more pages than the default.
+  const Run small_pages =
+      content({"build", mesh, slashes(dir / "small_pages.clusters"), "--page-bytes", "1024"});
+  REQUIRE_MESSAGE(small_pages.exit_code == 0, small_pages.output);
+  CHECK(number(small_pages.result, "pages") >= number(built.result, "pages"));
+  CHECK(number(small_pages.result, "build_key") != key);
 
   // --no-weld keeps the file's duplicate vertices, --max-triangles makes smaller clusters.
   const Run unwelded = content({"build", mesh, slashes(dir / "unwelded.clusters"), "--no-weld"});
@@ -431,7 +466,8 @@ TEST_CASE("engine-content: --cache writes the container the source's hash addres
   std::string error;
   REQUIRE_MESSAGE(assets::source_mesh_hash(mesh, source_hash, &error), error);
   const std::string expected = geometry::cluster_cache_path(
-      ddc, geometry::cluster_cache_key(source_hash, geometry::ClusterLodOptions{}, true));
+      ddc, geometry::cluster_cache_key(source_hash, geometry::ClusterLodOptions{}, true,
+                                       geometry::ClusterPagesOptions{}.page_bytes));
 
   const Run cached = content({"build", mesh, "--cache", "--ddc", ddc});
   REQUIRE_MESSAGE(cached.exit_code == 0, cached.output);
@@ -601,7 +637,8 @@ TEST_CASE("engine-content: build-all builds a manifest once and skips what is up
   std::string error;
   REQUIRE_MESSAGE(assets::source_mesh_hash(first, source_hash, &error), error);
   const std::string entry = geometry::cluster_cache_path(
-      ddc, geometry::cluster_cache_key(source_hash, geometry::ClusterLodOptions{}, true));
+      ddc, geometry::cluster_cache_key(source_hash, geometry::ClusterLodOptions{}, true,
+                                       geometry::ClusterPagesOptions{}.page_bytes));
   CHECK(text_of(to_cache.lines[0], "path") == entry);
   CHECK(std::filesystem::exists(entry));
   const Run cache_hit = content({"build-all", cached_manifest, "--cache", "--ddc", ddc});
@@ -766,11 +803,47 @@ TEST_CASE("engine-content: stats reports the metrics of a container") {
   const JsonValue* sections = bytes->find("sections");
   REQUIRE(sections != nullptr);
   REQUIRE(sections->is_array());
-  CHECK(sections->size() == 15);
+  CHECK(sections->size() == 18);
   u64 section_total = 0;
   for (usize i = 0; i < sections->size(); ++i)
     section_total += number((*sections)[i], "bytes");
   CHECK(section_total == number(*bytes, "payloads"));
+
+  // The page table and the fly-in sweep: one page for a cube, a child-page histogram that adds
+  // up to the pages, and one step per camera position, each drawing something and asking only
+  // for pages it does not have.
+  const JsonValue* page_stats = stats.result.find("pages");
+  REQUIRE(page_stats != nullptr);
+  CHECK(number(*page_stats, "count") == 1);
+  CHECK(number(*page_stats, "root_pages") == 1);
+  CHECK(number(*page_stats, "oversized") == 0);
+  const JsonValue* child_histogram = page_stats->find("child_pages_histogram");
+  REQUIRE(child_histogram != nullptr);
+  REQUIRE(child_histogram->is_array());
+  u64 histogram_pages = 0;
+  for (usize i = 0; i < child_histogram->size(); ++i)
+    histogram_pages += number((*child_histogram)[i], "pages");
+  CHECK(histogram_pages == number(*page_stats, "count"));
+  const JsonValue* streaming = page_stats->find("streaming");
+  REQUIRE(streaming != nullptr);
+  CHECK(number(*streaming, "steps") == 32);
+  CHECK(number(*streaming, "budget_bytes") > 0);
+  const JsonValue* steps = streaming->find("steps_detail");
+  REQUIRE(steps != nullptr);
+  REQUIRE(steps->is_array());
+  CHECK(steps->size() == 32);
+  u64 previous_clusters = 0;
+  for (usize i = 0; i < steps->size(); ++i) {
+    const JsonValue& entry = (*steps)[i];
+    CHECK(number(entry, "clusters") >= 1);
+    CHECK(number(entry, "pages_needed") >= 1);
+    CHECK(number(entry, "pages_needed") <= number(*page_stats, "count"));
+    CHECK(number(entry, "resident") >= 1);  // the root is never evicted
+    CHECK(number(entry, "drawn") >= 1);
+    // The camera flies in, so the ideal cut never coarsens from one step to the next.
+    CHECK(number(entry, "clusters") >= previous_clusters);
+    previous_clusters = number(entry, "clusters");
+  }
 
   CHECK(content({"stats", mesh}, true).exit_code == 1);  // a GLB is not a container
   CHECK(content({"stats"}, true).exit_code == 2);

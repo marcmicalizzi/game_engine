@@ -41,7 +41,7 @@ Infrastructure: render graph (automatic barriers, transient aliasing, async-comp
 **Build** (content-build step, a `derived` node):
 1. Split the mesh into clusters of ≤128 triangles (meshoptimizer).
 2. Group 4–8 adjacent clusters (graph partition; METIS or own), simplify the group with locked boundaries (meshoptimizer simplifier), re-split into clusters. Repeat to a root. The result is a DAG where each cluster stores its own error bound and its parent group's. meshoptimizer 1.2 ships a cluster-LOD DAG builder (`clusterlod.h`) that covers steps 1–2; start from it rather than writing a partitioner. NVIDIA's open `vk_lod_clusters` sample (Apache-2.0) is the closest public reference for continuous cluster LOD with streaming, mesh-shader raster, and cluster-AS ray tracing from one hierarchy.
-3. Quantize positions per cluster (16-bit relative to cluster bounds), pack normals/tangents/UVs; store clusters in fixed-size **pages** (~128 KB) ordered by DAG locality for streaming.
+3. Quantize positions per cluster (16-bit relative to cluster bounds), pack normals/tangents/UVs; store clusters in fixed-size **pages** (~128 KB) ordered by DAG locality for streaming. *(Pages built and stored: `geometry::build_cluster_pages`, 2026-09-17; GPU feedback pending.)*
 4. Per cluster: bounds, normal cone, LOD error, material ID, page/offset, and precomputed data for cluster acceleration-structure construction.
 
 **Runtime**

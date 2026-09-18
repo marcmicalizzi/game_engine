@@ -325,14 +325,16 @@ int unavailable(const char* what, const std::string& error) {
 // the container `engine-content build` writes from the same source: the DAG, the materials as
 // GPU records, a material index per cluster (a primitive that names none gets one appended
 // default, shared), the image paths as the glTF gave them, and the source path they are
-// relative to. `lod` is moved into the container and back out again, so the DAG is never
-// copied. A cache that cannot be written is a warning and nothing more: the picture does not
-// depend on it.
+// relative to, plus the streaming page table the clusters were laid out in. `lod` and `pages`
+// are moved into the container and back out again, so neither is ever copied. A cache that
+// cannot be written is a warning and nothing more: the picture does not depend on it.
 void write_cluster_cache(const std::string& path, const std::string& source,
                          const assets::MeshData& mesh_data, const Vector<i32>& part_material,
-                         const Vector<u32>& part_of_cluster, geometry::ClusterLodMesh& lod) {
+                         const Vector<u32>& part_of_cluster, geometry::ClusterLodMesh& lod,
+                         geometry::ClusterPages& pages) {
   geometry::ClusterFileData data;
   data.mesh = std::move(lod);
+  data.pages = std::move(pages);
   data.source_path = source;
   data.materials.reserve(mesh_data.materials.size() + 1);
   for (const assets::Material& source_material : mesh_data.materials) {
@@ -384,6 +386,7 @@ void write_cluster_cache(const std::string& path, const std::string& source,
                     log::field("error", error));
   }
   lod = std::move(data.mesh);
+  pages = std::move(data.pages);
 }
 
 // One mesh of the scene as it arrives: its DAG, the materials and images it names, and which
@@ -427,7 +430,10 @@ bool load_source_mesh(const std::string& path, const Options& options, SourceMes
   } else if (options.cache) {
     u64 source_hash = 0;
     if (!assets::source_mesh_hash(path, source_hash, &error)) return false;
-    const u64 key = geometry::cluster_cache_key(source_hash, geometry::ClusterLodOptions{}, true);
+    // The page target is part of the key, so this has to be the one the build below uses — and
+    // the one engine-content uses by default, or the two apps would stop sharing entries.
+    const u64 key = geometry::cluster_cache_key(source_hash, geometry::ClusterLodOptions{}, true,
+                                                geometry::ClusterPagesOptions{}.page_bytes);
     cache_path = geometry::cluster_cache_path(options.ddc, key);
     out.cache = "miss";
     if (io::exists(cache_path)) container = cache_path;
@@ -536,11 +542,24 @@ bool load_source_mesh(const std::string& path, const Options& options, SourceMes
   }
   if (!geometry::merge_cluster_lod(parts, out.lod, &out.part_of_cluster, &error)) return false;
   out.primitives = parts.size();
+  // Laid out in streaming pages, exactly as engine-content lays it out, because the page target
+  // is part of the cache key and the entry either app writes has to be the same container. The
+  // layout renumbers the clusters, so the map from cluster to primitive comes along.
+  geometry::ClusterPages pages;
+  Vector<u32> source_of_cluster;
+  std::string page_error;
+  if (geometry::build_cluster_pages(out.lod, geometry::ClusterPagesOptions{}, pages, &page_error,
+                                    &source_of_cluster)) {
+    geometry::permute_cluster_array(source_of_cluster, out.part_of_cluster);
+  } else {
+    ENGINE_LOG_WARN(log_view, "cluster pages not built", log::field("path", path),
+                    log::field("error", page_error));
+  }
   // Into the cache for the next run, as the same container engine-content build writes: either
   // app fills the cache, either app finds it.
   if (!cache_path.empty()) {
-    write_cluster_cache(cache_path, path, out.data, out.part_material, out.part_of_cluster,
-                        out.lod);
+    write_cluster_cache(cache_path, path, out.data, out.part_material, out.part_of_cluster, out.lod,
+                        pages);
   }
   return true;
 }

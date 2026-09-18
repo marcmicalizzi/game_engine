@@ -87,7 +87,8 @@ void make_fixture(ClusterFileData& data, Vector<u32>& indices) {
   data.image_paths.push_back("");  // an embedded image keeps its slot with an empty path
   data.source_path = "content/samples/Terrain/terrain.gltf";
   data.source_hash = 0x0123'4567'89ab'cdefull;
-  data.build_key = cluster_cache_key(data.source_hash, ClusterLodOptions{}, true);
+  data.build_key =
+      cluster_cache_key(data.source_hash, ClusterLodOptions{}, true, page_options.page_bytes);
   data.cluster_material.reserve(data.mesh.mesh.clusters.size());
   for (u32 i = 0; i < data.mesh.mesh.clusters.size(); ++i)
     data.cluster_material.push_back(i % 2);
@@ -105,6 +106,7 @@ void check_equal(const ClusterFileData& read, const ClusterFileData& written) {
   CHECK(same_bytes(read.materials, written.materials));
   CHECK(same_bytes(read.pages.pages, written.pages.pages));
   CHECK(same_bytes(read.pages.child_pages, written.pages.child_pages));
+  CHECK(read.pages.page_bytes_target == written.pages.page_bytes_target);
   CHECK(read.mesh.group_count == written.mesh.group_count);
   CHECK(read.mesh.leaf_triangle_count == written.mesh.leaf_triangle_count);
   CHECK(read.mesh.mesh.source_vertex_count == written.mesh.mesh.source_vertex_count);
@@ -237,7 +239,7 @@ TEST_CASE("cluster file: a DAG with materials survives a round trip array by arr
   CHECK(std::memcmp(header.magic, "CLST", 4) == 0);
   CHECK(header.version == k_cluster_file_version);
   CHECK(header.flags == 0);
-  CHECK(header.section_count == 17);
+  CHECK(header.section_count == 18);
   CHECK(header.total_bytes == file.size());
   CHECK(header.content_hash == cluster_file_hash(data));
   for (u32 i = 0; i < header.section_count; ++i) {
@@ -274,6 +276,9 @@ TEST_CASE("cluster file: the page table round-trips, and a file without one read
   check_equal(read, data);
   CHECK(read.pages.page_of_cluster.size() == read.mesh.mesh.clusters.size());
   CHECK(read.pages.children.size() == read.mesh.mesh.clusters.size());
+  // The byte target is written down rather than guessed at: the largest page is only a lower
+  // bound on it, and for a mesh that fits in one page it is that page's own size.
+  CHECK(read.pages.page_bytes_target == 64 * 1024);
   CHECK(same_bytes(read.pages.page_of_cluster, data.pages.page_of_cluster));
   CHECK(same_bytes(read.pages.children, data.pages.children));
   CHECK_MESSAGE(validate_cluster_pages(read.mesh, read.pages, &error), error);
@@ -483,26 +488,32 @@ TEST_CASE("cluster file: the source identity reads back without decoding the mes
 
 TEST_CASE("cluster file: the cache key answers to everything that went into the build") {
   const ClusterLodOptions options;
-  const u64 key = cluster_cache_key(0x1234'5678'9abc'def0ull, options, true);
+  constexpr u32 k_page_bytes = 128 * 1024;
+  const u64 key = cluster_cache_key(0x1234'5678'9abc'def0ull, options, true, k_page_bytes);
   CHECK(key != 0);
-  CHECK(cluster_cache_key(0x1234'5678'9abc'def0ull, options, true) == key);  // deterministic
+  CHECK(cluster_cache_key(0x1234'5678'9abc'def0ull, options, true, k_page_bytes) ==
+        key);  // deterministic
 
   // Every input moves it: a different source, either per-cluster limit, the cone and ray
   // tracing switches, and welding.
-  CHECK(cluster_cache_key(0x1234'5678'9abc'def1ull, options, true) != key);
-  CHECK(cluster_cache_key(0x1234'5678'9abc'def0ull, options, false) != key);
+  CHECK(cluster_cache_key(0x1234'5678'9abc'def1ull, options, true, k_page_bytes) != key);
+  CHECK(cluster_cache_key(0x1234'5678'9abc'def0ull, options, false, k_page_bytes) != key);
   ClusterLodOptions other = options;
   other.max_triangles = options.max_triangles - 1;
-  CHECK(cluster_cache_key(0x1234'5678'9abc'def0ull, other, true) != key);
+  CHECK(cluster_cache_key(0x1234'5678'9abc'def0ull, other, true, k_page_bytes) != key);
   other = options;
   other.max_vertices = options.max_vertices - 1;
-  CHECK(cluster_cache_key(0x1234'5678'9abc'def0ull, other, true) != key);
+  CHECK(cluster_cache_key(0x1234'5678'9abc'def0ull, other, true, k_page_bytes) != key);
   other = options;
   other.normal_cones = !options.normal_cones;
-  CHECK(cluster_cache_key(0x1234'5678'9abc'def0ull, other, true) != key);
+  CHECK(cluster_cache_key(0x1234'5678'9abc'def0ull, other, true, k_page_bytes) != key);
   other = options;
   other.ray_tracing = !options.ray_tracing;
-  CHECK(cluster_cache_key(0x1234'5678'9abc'def0ull, other, true) != key);
+  CHECK(cluster_cache_key(0x1234'5678'9abc'def0ull, other, true, k_page_bytes) != key);
+  // And the page target, because paging renumbers the clusters: two page sizes are two
+  // containers, and "no pages" is a third.
+  CHECK(cluster_cache_key(0x1234'5678'9abc'def0ull, options, true, k_page_bytes / 2) != key);
+  CHECK(cluster_cache_key(0x1234'5678'9abc'def0ull, options, true, 0) != key);
 
   // The path is the root, "clusters", and sixteen lower-case hex digits of the key.
   CHECK(cluster_cache_path("D:/repo/ddc", 0x0123456789abcdefull) ==

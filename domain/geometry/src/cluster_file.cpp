@@ -24,7 +24,7 @@ namespace {
 
 constexpr u64 k_header_bytes = sizeof(ClusterFileHeader);
 constexpr u64 k_record_bytes = sizeof(ClusterFileSection);
-constexpr u32 k_kind_count = static_cast<u32>(ClusterSection::PageChildren) + 1;
+constexpr u32 k_kind_count = static_cast<u32>(ClusterSection::PageScalars) + 1;
 
 constexpr u64 align_up(u64 value) noexcept {
   const u64 a = k_cluster_file_alignment;
@@ -116,6 +116,9 @@ u64 encode(const ClusterFileData& data, std::string& out) {
               data.pages.pages.size(), data.pages.pages.data());
   add_section(payloads, ClusterSection::PageChildren, static_cast<u32>(sizeof(u32)),
               data.pages.child_pages.size(), data.pages.child_pages.data());
+  const u32 page_scalars[1] = {data.pages.page_bytes_target};
+  add_section(payloads, ClusterSection::PageScalars, static_cast<u32>(sizeof(u32)), 1u,
+              page_scalars);
 
   u64 offset = k_header_bytes + k_record_bytes * payloads.size();
   for (Payload& payload : payloads) {
@@ -254,6 +257,7 @@ const char* cluster_section_name(u32 kind) noexcept {
     case ClusterSection::SourceHash: return "source_hash";
     case ClusterSection::Pages: return "pages";
     case ClusterSection::PageChildren: return "page_children";
+    case ClusterSection::PageScalars: return "page_scalars";
   }
   return "unknown";
 }
@@ -510,14 +514,26 @@ bool read_cluster_file_memory(std::span<const u8> bytes, ClusterFileData& out, s
       }
       copy_section(bytes, *kids, result.pages.child_pages);
     }
-    // The byte target is a build knob, not something the renderer reads, and the scalars record
-    // is full, so it is not stored: the largest page that was *not* flagged oversized is inside
-    // the target by construction, and every oversized page is over it, which is exactly what the
-    // validator needs and the closest a reader can get to the number the builder was given.
+    // The byte target the layout was given. A file that does not record it falls back to the
+    // largest page that was not flagged oversized, which is inside the target by construction
+    // and is the best a reader can do — but it reads as a full page for a mesh that fits in one,
+    // which is why the number is written down.
     result.pages.page_bytes_target = 0;
     for (const ClusterPageDesc& page : result.pages.pages) {
       if ((page.flags & k_page_oversized) == 0 && page.bytes > result.pages.page_bytes_target)
         result.pages.page_bytes_target = page.bytes;
+    }
+    if (const ClusterFileSection* scalars_section =
+            found[static_cast<u32>(ClusterSection::PageScalars)];
+        scalars_section != nullptr && scalars_section->element_count != 0) {
+      if (scalars_section->element_size != sizeof(u32)) {
+        return fail(error, "cluster file section page_scalars has " +
+                               std::to_string(scalars_section->element_size) +
+                               "-byte elements, expected 4");
+      }
+      u32 target = 0;
+      std::memcpy(&target, bytes.data() + scalars_section->offset, sizeof(u32));
+      if (target != 0) result.pages.page_bytes_target = target;
     }
     std::string why;
     if (!rebuild_cluster_page_index(result.mesh, result.pages, &why))
@@ -528,13 +544,15 @@ bool read_cluster_file_memory(std::span<const u8> bytes, ClusterFileData& out, s
   return true;
 }
 
-u64 cluster_cache_key(u64 source_hash, const ClusterLodOptions& options, bool weld) noexcept {
+u64 cluster_cache_key(u64 source_hash, const ClusterLodOptions& options, bool weld,
+                      u32 page_bytes) noexcept {
   u64 key = hash_combine(source_hash, k_cluster_cache_version);
   key = hash_combine(key, options.max_triangles);
   key = hash_combine(key, options.max_vertices);
   const u64 flags = (options.ray_tracing ? 1ull : 0ull) | (options.normal_cones ? 2ull : 0ull) |
                     (weld ? 4ull : 0ull);
-  return hash_combine(key, flags);
+  key = hash_combine(key, flags);
+  return hash_combine(key, page_bytes);
 }
 
 std::string cluster_cache_path(std::string_view ddc_root, u64 hash) {

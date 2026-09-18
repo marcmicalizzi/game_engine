@@ -214,12 +214,21 @@ TEST_CASE("cluster pages: a terrain lays out in pages, coarse first, group by gr
   }
   CHECK(coarsest_in_page_0 == lod.level_cluster_counts[level_count - 1]);
   CHECK(lod.lod[count - 1].level == 0);
-  for (u32 p = 1; p < pages.pages.size(); ++p)
-    CHECK(pages.pages[p].level_max <= pages.pages[p - 1].level_max);
-  // The level of a cluster never rises as the cluster index does: the array is one coarse-to-fine
-  // sweep, which is what makes a prefix of the pages a complete picture.
-  for (u32 c = 1; c < count; ++c)
-    CHECK(lod.lod[c].level <= lod.lod[c - 1].level);
+  // The pages that hold a group nothing coarser can replace are a prefix — the minimum resident
+  // set — and after them the refinement runs coarse to fine.
+  u32 root_pages = 0;
+  while (root_pages < pages.pages.size() && (pages.pages[root_pages].flags & k_page_root) != 0)
+    ++root_pages;
+  CHECK(root_pages >= 1);
+  for (u32 p = root_pages; p < pages.pages.size(); ++p) {
+    CHECK((pages.pages[p].flags & k_page_root) == 0);
+    if (p > root_pages) CHECK(pages.pages[p].level_max <= pages.pages[p - 1].level_max);
+  }
+  // Every cluster's children come after it, which is what makes a prefix of the pages something
+  // a viewer can draw and what lets eviction work from the fine end inward.
+  for (u32 c = 0; c < count; ++c) {
+    if (pages.children[c].cluster_count != 0) CHECK(pages.children[c].first_cluster > c);
+  }
 
   // A group is one run of clusters inside one page, unless it was too big for a page of its own.
   for (u32 c = 1; c < count; ++c) {

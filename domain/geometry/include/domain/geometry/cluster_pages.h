@@ -4,9 +4,13 @@
 // renderer streams clusters in. A page is a contiguous run of clusters, of a target size
 // (~128 KB) counted over exactly the streams the GPU reads for a cluster — its `ClusterDesc`,
 // its `ClusterLodDesc`, its quantized positions, its attributes, and its packed triangles —
-// and pages are laid out **coarse to fine**, the root in page 0, so that a viewer who has the
-// first n pages has a complete, if coarse, picture of the whole mesh rather than a detailed
-// picture of part of it.
+// and pages are laid out **coarse to fine**, so that a viewer who has the first n pages has a
+// complete, if coarse, picture of the whole mesh rather than a detailed picture of part of it.
+//
+// "Coarse first" means the *minimum resident set* first, not the top level first: a DAG has one
+// root per part that simplified all the way down plus one per group the simplifier got stuck on,
+// and none of them can be stood in for by anything coarser. Those groups fill the first pages,
+// which are the ones the residency manager pins; everything after them is refinement.
 //
 // Within a level the clusters are packed **group by group**. A group is the set of siblings a
 // LOD cut refines into together (`ClusterLodDesc::group`): they share one parent error, so they
@@ -142,9 +146,10 @@ bool rebuild_cluster_page_index(const ClusterLodMesh& mesh, ClusterPages& pages,
 
 // The invariants the renderer and the tests rely on: the pages tile the clusters, the vertices,
 // and the triangles exactly and in order; every page is within the byte target unless it is
-// flagged oversized; levels never rise from one page to the next (pages are coarse to fine) and
-// page 0 carries the coarsest level; every child range is inside the mesh and one level below;
-// and the child page runs are ascending, unique, and inside the page array.
+// flagged oversized; the `k_page_root` pages are a prefix and page 0 carries the coarsest level;
+// levels never rise from one page to the next inside that prefix or inside the refinement that
+// follows it; every cluster's children are finer, inside the mesh, and later in the array; and
+// the child page runs are ascending, unique, and inside the page array.
 bool validate_cluster_pages(const ClusterLodMesh& mesh, const ClusterPages& pages,
                             std::string* error = nullptr);
 
