@@ -17,6 +17,7 @@ Every dependency of the engine is listed here with its license. Policy: permissi
 | stb_image_write | v1.16 (same commit) | MIT OR Unlicense (public domain) | tests only (foundation/image's baseline JPEG fixture) | Comes with the stb checkout above; included only by foundation/image/tests/decode_tests.cpp |
 | flecs | v4.1.6 | MIT | domain/ecs (the runtime entity store; capability `ENGINE_WITH_ECS`) | CMake FetchContent at configure time, static, only when the capability is on |
 | SQLite | 3.53.4 (amalgamation) | public domain | foundation/store (event log, projections, snapshots; capability `ENGINE_WITH_STORE`) | CMake FetchContent of the published amalgamation archive at configure time, pinned by URL and SHA-256, compiled into `engine_sqlite3`; only when the capability is on |
+| Recast/Detour | v1.6.0 | zlib | domain/nav (tile building, path queries, crowd; capability `ENGINE_WITH_NAV`) | CMake FetchContent at configure time, static, only when the capability is on; the `Recast`, `Detour` and `DetourCrowd` targets only — the demo, the tests, `DebugUtils` and `DetourTileCache` are excluded |
 
 ## Consulted, not vendored
 
