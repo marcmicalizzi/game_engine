@@ -26,6 +26,13 @@ enum class RasterMode : u8 { Direct, Hardware, Software, Auto, Vertex, RayTrace 
 // `Auto`: ray-traced shadows wherever the device can build the structures, off where it cannot.
 enum class ShadowMode : u8 { Auto, Off, RayTraced };
 
+// How many views the frame has and how they are laid out over the target (04 §4.6,
+// systems/renderer/view_set.h). `Single` is one rectilinear view over the whole target and is
+// what every existing caller gets. `Surround3` is three views with per-monitor off-axis frusta,
+// the arrangement the project owner plays on. `Panini` is one wide view rendered rectilinear into
+// an oversampled source and resampled in the resolve.
+enum class ViewLayout : u8 { Single, Surround3, Panini };
+
 struct RenderSettings {
   RasterMode raster = RasterMode::Hardware;
   ShadowMode shadows = ShadowMode::Auto;
@@ -41,6 +48,14 @@ struct RenderSettings {
   u32 deform_kind = gfx::k_deform_identity;
   f32 deform_amplitude = 0.02f;
   bool rt_templates = false;  // instantiate prebuilt cluster templates instead of rebuilding
+
+  // Multi-view (04 §4.6). These size the scene's per-frame working set — the visible list, the
+  // argument blocks, the flags, the acceleration structures all carry a slice per view — which is
+  // why they live here, where a change forces a rebuild, and not in the frame.
+  ViewLayout views = ViewLayout::Single;
+  f32 side_yaw = 0.0f;        // surround3: radians the side monitors are turned inward
+  f32 panini_d = 1.0f;        // panini: 0 is rectilinear, 1 the classic Pannini
+  f32 peripheral_lod = 1.0f;  // LOD threshold multiplier outside the attention region
 
   // Whether two requests would build the same scene and the same pipelines. A host that keeps a
   // loaded scene across calls uses this to decide whether it may reuse the GPU side: the
@@ -61,6 +76,10 @@ struct ResolvedSettings {
   bool shadows = false;      // the resolve traces shadow rays
   bool occlusion = false;    // two-pass occlusion culling runs
   bool rt_chain = false;     // the frame builds acceleration structures from its visible list
+  // How many views the layout has. The `GpuScene` is created before the `SceneRenderer` and so
+  // before the view set, and every per-frame buffer it owns is sized by this, so the count is
+  // resolved here rather than read off a `ViewSet` that does not exist yet.
+  u32 view_count = 1;
 };
 
 // Why a device cannot render at all with these settings. `Ok` is the only value that lets
@@ -98,5 +117,8 @@ const char* deform_name(const RenderSettings& settings) noexcept;
 bool parse_deform_mode(std::string_view text, bool& deform, u32& kind) noexcept;
 const char* view_mode_name(u32 mode) noexcept;
 bool parse_view_mode(std::string_view text, u32& out) noexcept;
+// "single", "surround3", or "panini".
+const char* view_layout_name(ViewLayout layout) noexcept;
+bool parse_view_layout(std::string_view text, ViewLayout& out) noexcept;
 
 }  // namespace engine::renderer

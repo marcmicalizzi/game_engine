@@ -1,6 +1,7 @@
 #include <core/log/log.h>
 #include <systems/renderer/scene.h>
 #include <systems/renderer/settings.h>
+#include <systems/renderer/view_set.h>
 
 namespace engine::renderer {
 
@@ -117,6 +118,28 @@ bool parse_view_mode(std::string_view text, u32& out) noexcept {
   return true;
 }
 
+const char* view_layout_name(ViewLayout layout) noexcept {
+  switch (layout) {
+    case ViewLayout::Single: return "single";
+    case ViewLayout::Surround3: return "surround3";
+    case ViewLayout::Panini: return "panini";
+  }
+  return "?";
+}
+
+bool parse_view_layout(std::string_view text, ViewLayout& out) noexcept {
+  if (text == "single") {
+    out = ViewLayout::Single;
+  } else if (text == "surround3") {
+    out = ViewLayout::Surround3;
+  } else if (text == "panini") {
+    out = ViewLayout::Panini;
+  } else {
+    return false;
+  }
+  return true;
+}
+
 // The order here is the order the decisions depend on each other in, and changing it changes
 // pictures: the mesh-shader fallback decides which path runs, the path decides whether shadows
 // can be traced at all, and shadows decide whether two-pass occlusion culling may run (the
@@ -153,6 +176,21 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
                     log::field("reason", "no cluster acceleration structures or ray queries"));
   }
   out.rt_chain = out.ray_path || out.shadows;
+  // More than one view needs the cull pass: every view's draw reads its own run of the visible
+  // list, and there is no run without one. The direct path draws one view and one only, because
+  // it writes color rather than a visibility buffer and has nowhere to put a second rectangle.
+  out.view_count = view_count_of(s.views);
+  if (out.direct && s.views != ViewLayout::Single) {
+    s.views = ViewLayout::Single;
+    out.view_count = 1;
+    ENGINE_LOG_WARN(
+        log_renderer, "one view only on the direct path",
+        log::field("reason", "it draws straight to color and has no visibility buffer"));
+  }
+  if (s.views != ViewLayout::Single && !s.cull) {
+    s.cull = true;
+    ENGINE_LOG_WARN(log_renderer, "culling forced on with more than one view");
+  }
   out.occlusion = s.occlusion && s.cull && !out.shadows &&
                   (s.raster == RasterMode::Hardware || out.vertex_path);
   if (out.shadows && s.occlusion && !out.ray_path) {

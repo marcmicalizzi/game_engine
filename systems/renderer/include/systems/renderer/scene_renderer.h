@@ -11,6 +11,12 @@
 // this module, and the renderer never touches a surface, a swapchain, or a present queue:
 // engine-view keeps all four and hands in the acquired image and its two semaphores.
 //
+// One renderer draws a whole `ViewSet` (systems/renderer/view_set.h, docs/plan/04-renderer.md
+// §4.6): N views over one `GpuScene`, each with its own camera, projection, rectangle of the color
+// target and quality tier, sharing the scene buffers, the acceleration structures and the
+// residency budget. `Desc::views` picks the layout; a frame still names one camera, and the view
+// set turns it into N.
+//
 //     SceneData data; load_scene(desc, data, error);
 //     ResolvedSettings resolved; resolve_settings(settings, device.features(), &data, resolved);
 //     GpuScene scene; scene.create(device, data, resolved, &error);
@@ -30,31 +36,42 @@
 #include <domain/gfx/shader_library.h>
 #include <systems/renderer/capture.h>
 #include <systems/renderer/gpu_scene.h>
+#include <systems/renderer/view_set.h>
 
 #include <string>
 
 namespace engine::renderer {
 
-struct Camera {
-  Vec3 position{};
-  Vec3 target{};
-  f32 fov_y = 0.9599310886f;  // radians(55)
-  f32 znear = 0.1f;           // reversed-Z: there is no far plane
+// One view's share of a frame. The milliseconds are sums over `Stats::timed_frames`, like the
+// totals beside them, and `Stats::view_ms` divides. The rectangle and the tier are copied out of
+// the `ViewSet` so a summary can say which numbers belong to which monitor.
+struct ViewStats {
+  u32 x = 0;
+  u32 y = 0;
+  u32 width = 0;
+  u32 height = 0;
+  u32 source_width = 0;  // what the rasterizers ran at; wider than `width` for a Panini view
+  u32 source_height = 0;
+  f32 lod_scale = 1.0f;
+  u32 shading_rate = 1;  // stubbed; see ViewQuality
+  u32 visible_hw = 0;
+  u32 visible_pass2 = 0;
+  u32 visible_sw = 0;
+  f64 gpu_cull = 0.0;
+  f64 gpu_hw = 0.0;
+  f64 gpu_sw = 0.0;
+  f64 gpu_hiz = 0.0;
+  f64 gpu_resolve = 0.0;
+  f64 gpu_deform = 0.0;
+  f64 gpu_trace = 0.0;
+
+  u32 visible_pairs() const noexcept { return visible_hw + visible_pass2 + visible_sw; }
+  // Everything this view cost on its own. The frame's acceleration structure chain is not in it:
+  // it is built once from the union of the views' cuts and belongs to no single view.
+  f64 gpu_sum() const noexcept {
+    return gpu_cull + gpu_hw + gpu_sw + gpu_hiz + gpu_resolve + gpu_deform + gpu_trace;
+  }
 };
-
-// The elevation `orbit_camera` holds above its orbit circle: atan(0.45), engine-view's fixed
-// height factor. It is the default pitch of an explicit orbit, so `orbit {distance: 22}` and
-// `--orbit 22` are the same camera and the two hosts' captures of a scene compare.
-inline constexpr f32 k_orbit_pitch = 0.4228539f;
-
-// The camera engine-view has always orbited with, so a capture of a scene from engine-host and
-// a capture of the same scene from engine-view are the same picture. `distance` of zero
-// breathes between 8 and 36 units instead of holding still, and every distance scales with the
-// scene's radius, so a 2 cm mesh and a 20 m one are framed alike.
-Camera orbit_camera(const Vec3& center, f32 radius, f32 distance, u64 frame) noexcept;
-// The same orbit at explicit angles, which is what a caller that wants one picture asks for.
-// `distance` of zero is the breathing orbit's rest distance (22 radius-tenths).
-Camera orbit_camera_at(const Vec3& center, f32 radius, f32 distance, f32 yaw, f32 pitch) noexcept;
 
 // Every number the JSON summary of a run reports, and every number a benchmark returns. The GPU
 // milliseconds are sums over `timed_frames`; `*_ms()` divide.
@@ -92,6 +109,10 @@ struct Stats {
   // Sampled by sample_gpu_memory(), not by a frame: it is a driver query and the frame path
   // stays free of them.
   GpuMemory gpu_memory;
+  // The per-view breakdown. `view_count` is 1 for a single view, and `views[0]` then holds the
+  // same numbers the totals do.
+  u32 view_count = 1;
+  ViewStats views[k_max_views];
 
   u32 visible_pairs() const noexcept { return visible_hw + visible_pass2 + visible_sw; }
   f64 timed() const noexcept { return timed_frames > 0 ? static_cast<f64>(timed_frames) : 1.0; }
@@ -105,6 +126,10 @@ struct Stats {
   f64 deform_ms() const noexcept { return gpu_deform / timed(); }
   f64 trace_ms() const noexcept { return gpu_trace / timed(); }
   f64 total_ms() const noexcept { return gpu_total / timed(); }
+  // What one view cost a frame, everything but the shared acceleration structure chain.
+  f64 view_ms(u32 view) const noexcept {
+    return view < view_count ? views[view].gpu_sum() / timed() : 0.0;
+  }
   f64 cpu_ms_per_frame() const noexcept {
     return frames > 0 ? cpu_ns / 1.0e6 / static_cast<f64>(frames) : 0.0;
   }
@@ -133,6 +158,11 @@ class SceneRenderer {
     u32 frames_in_flight = 2;
     // Create an offscreen color target the renderer owns, for frames that name no image.
     bool offscreen = true;
+    // How the target is divided into views (04 §4.6). The default is one view over the whole of
+    // it, which is what every caller before multi-view got. The layout has to agree with the one
+    // `resolve_settings` saw, because the scene's per-frame working set is sized by the view
+    // count; `create` checks and fails rather than overrunning a buffer.
+    ViewSetDesc views;
     // A shader manifest to prefer over the embedded SPIR-V; empty looks for
     // `<exe dir>/../shaders/manifest.json` and uses the embedded bytes when there is none.
     std::string shader_manifest;
@@ -152,6 +182,9 @@ class SceneRenderer {
 
   u32 width() const noexcept { return width_; }
   u32 height() const noexcept { return height_; }
+  // The views the frame draws, laid out over the color target. Read for the rectangles, the
+  // projections and the tiers; `submit_frame` updates the cameras from the frame's own.
+  const ViewSet& views() const noexcept { return views_; }
   const Stats& stats() const noexcept { return stats_; }
   void reset_stats() noexcept;
   // Reads the device's memory budget into `stats().gpu_memory`. A caller samples it around a
@@ -220,18 +253,30 @@ class SceneRenderer {
     gfx::ComputePipeline trace;
     void destroy(const gfx::Device& device) noexcept;
   };
-  // Screen-sized resources, recreated on resize.
-  struct Targets {
-    gfx::ImageResource depth;  // the direct path's depth buffer
-    gfx::BufferResource vis;   // the visibility buffer: u64 per pixel
-    gfx::BufferResource hiz;   // the Hi-Z pyramid of the farthest depth
+  // One view's slice of the screen-sized buffers. Every view rasterizes into its own region of
+  // one visibility buffer and builds its own Hi-Z pyramid in one pyramid buffer, both packed back
+  // to back, so a view's passes address their region from element zero and every shader below the
+  // resolve stays view-local — which is why the rasterizers and `hiz_build.slang` needed no
+  // change at all for multi-view (04 §4.6).
+  struct ViewTarget {
+    u64 vis_offset = 0;  // first element of this view's region of the visibility buffer
     u32 width = 0;
     u32 height = 0;
     u32 hiz_mips = 0;
-    u32 hiz_offsets[gfx::k_hiz_max_mips] = {};
-    Vector<gfx::HizParams> hiz_levels;  // 2 x hiz_mips: stable storage for the pass bodies
+    u32 hiz_offsets[gfx::k_hiz_max_mips] = {};  // elements into the shared pyramid buffer
+    u32 level_base = 0;                         // first of this view's blocks in `hiz_levels`
+  };
+  // Screen-sized resources, recreated on resize.
+  struct Targets {
+    gfx::ImageResource depth;  // the direct path's depth buffer
+    gfx::BufferResource vis;   // the visibility buffer: u64 per pixel, the views back to back
+    gfx::BufferResource hiz;   // the Hi-Z pyramids of the farthest depth, the views back to back
+    Vector<ViewTarget> views;
+    u32 width = 0;  // the largest source rectangle: the raster passes' render area
+    u32 height = 0;
+    Vector<gfx::HizParams> hiz_levels;  // 2 x mips per view: stable storage for the pass bodies
     bool hiz_dirty = true;
-    bool create(const gfx::Device& device, u32 w, u32 h, std::string* error);
+    bool create(const gfx::Device& device, const ViewSet& views, std::string* error);
     void destroy(const gfx::Device& device) noexcept;
   };
 
@@ -242,12 +287,16 @@ class SceneRenderer {
   // a body pushes has to still be alive when execute() records it.
   bool record_frame(const FrameDesc& frame, gfx::RgImage color_handle, std::string* error);
   void collect_slot(u32 slot);
+  void fold_visible(u32 slot);
+  void fill_view_layout() noexcept;
   bool read_visibility(CapturedFrame& out, const CaptureChannels& channels, std::string* error);
+  u32 view_count() const noexcept { return views_.size(); }
 
   const gfx::Device* device_ = nullptr;
   GpuScene* scene_ = nullptr;
   ResolvedSettings resolved_;
   Desc desc_;
+  ViewSet views_;
   gfx::ShaderLibrary shaders_;
   Pipelines pipelines_;
   Targets targets_;
@@ -255,10 +304,10 @@ class SceneRenderer {
   gfx::GpuTimer timer_;
   gfx::RenderGraph* graph_ = nullptr;        // heap: RenderGraph is not default-constructible
   gfx::ImageResource color_;                 // the offscreen target, when the renderer owns one
-  Vector<gfx::BufferResource> params_;       // two CullParams per slot
-  Vector<gfx::BufferResource> resolves_;     // ResolveParams plus the lights, per slot
+  Vector<gfx::BufferResource> params_;       // two CullParams per view, per slot
+  Vector<gfx::BufferResource> resolves_;     // one ResolveParams per view plus the lights, a slot
   Vector<gfx::BufferResource> stat_blocks_;  // host-visible copies of the argument blocks
-  Vector<gfx::BufferResource> ray_params_;   // RayVisibilityParams per slot
+  Vector<gfx::BufferResource> ray_params_;   // one RayVisibilityParams per view, per slot
   Stats stats_;
   VkCommandBuffer commands_ = VK_NULL_HANDLE;  // the frame between begin_frame and submit_frame
   u32 width_ = 0;

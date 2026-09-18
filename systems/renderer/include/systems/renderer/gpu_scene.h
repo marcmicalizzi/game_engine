@@ -11,6 +11,16 @@
 // `SceneRenderer` by the screen. That is also the order they have to be built in, because the
 // `MeshDesc` array names the deformed-vertex pool and this scene's cluster templates, so it is
 // uploaded last, after every address it carries exists.
+//
+// **The per-frame working set carries a slice per view** (04 §4.6). A `ViewSet` renders N views
+// over one scene, and each view culls independently: it needs its own visible runs, its own
+// indirect argument blocks, and its own drawn-last-frame flags. They are slices of the *same*
+// buffers rather than a working set per renderer, for three reasons. The visible list has to be
+// one array because a visibility id is an index into it and the resolve of any view must be able
+// to look one up; the ray tracing chain builds one set of structures from the **union** of the
+// views' cuts, and a union is a contiguous range of one list rather than a gather over N;
+// and one allocation that scales with the view count keeps the residency budget one number, which
+// is what §4.6 asks a `ViewSet` to share. A single view is exactly the layout it always was.
 
 #include <core/base/macros.h>
 #include <core/base/types.h>
@@ -57,7 +67,25 @@ class GpuScene {
   u32 triangles_per_cluster() const noexcept { return triangles_per_cluster_; }
   u64 deform_pool_bytes() const noexcept { return deform_pool_bytes_; }
   u64 template_bytes() const noexcept { return template_bytes_; }
+  // Bytes of one view's run of the visible list: `pair_count` entries of eight.
   u64 visible_run_bytes() const noexcept { return visible_run_bytes_; }
+  u32 view_count() const noexcept { return view_count_; }
+  // Where run `run` of view `view` starts, as an entry index into the whole list. **Run-major**:
+  // every view's first run is one contiguous range at the front, which is the range the ray
+  // tracing chain builds the union from. With one view this is `run * pair_count`, the layout the
+  // list has always had.
+  u32 visible_base(u32 view, u32 run) const noexcept {
+    return (run * view_count_ + view) * pair_count_;
+  }
+  // Bytes into `draw_args[pass]` / `sw_args` where this view's indirect block is.
+  u64 args_offset(u32 view) const noexcept { return u64{view} * gfx::k_draw_args_bytes; }
+  // Bytes into `deform_args` where this (view, run)'s indirect dispatch block is.
+  u64 deform_args_offset(u32 view, u32 run) const noexcept {
+    return (u64{view} * k_visible_runs + run) * gfx::k_draw_args_bytes;
+  }
+  // The bytes of the CLAS records, structures and scratch the ray tracing chain holds, which is
+  // what a summary reports as the multi-view memory cost.
+  u64 rt_bytes() const noexcept { return rt_bytes_; }
   u32 tlas_slot() const noexcept { return tlas_slot_; }
 
   // ---- the global buffers, read through device addresses -------------------------------------
@@ -72,16 +100,16 @@ class GpuScene {
   gfx::BufferResource materials;          // gfx::ResolveMaterial[]
   gfx::BufferResource cluster_materials;  // u32 per cluster
 
-  // ---- the frame's working set, sized by the scene --------------------------------------------
-  gfx::BufferResource visible;       // u32x2[3 * pair_count]: {instance, cluster} per entry
-  gfx::BufferResource draw_args[2];  // occlusion pass 1 and pass 2 indirect blocks
-  gfx::BufferResource sw_args;       // the software rasterizer's indirect dispatch block
-  gfx::BufferResource flags[2];      // drawn last frame / this frame, ping-pong, by pair
+  // ---- the frame's working set, sized by the scene and the view count --------------------------
+  gfx::BufferResource visible;       // u32x2[3 * views * pair_count]: {instance, cluster} per entry
+  gfx::BufferResource draw_args[2];  // occlusion pass 1 and pass 2 indirect blocks, one per view
+  gfx::BufferResource sw_args;       // the software rasterizer's indirect dispatch block, per view
+  gfx::BufferResource flags[2];      // drawn last frame / this frame, ping-pong, by pair, per view
 
   // ---- the deformed-vertex pool ----------------------------------------------------------------
-  gfx::BufferResource deform_pool;   // f32[3 * pool_vertices]
+  gfx::BufferResource deform_pool;   // f32[3 * pool_vertices]; shared by every view
   gfx::BufferResource deform_table;  // gfx::DeformDesc[] indexed by InstanceDesc::deform
-  gfx::BufferResource deform_args[k_visible_runs];
+  gfx::BufferResource deform_args;   // one indirect dispatch block per (view, run)
 
   // ---- ray tracing ------------------------------------------------------------------------------
   gfx::BufferResource indices8;         // 8-bit packed cluster indices for the CLAS builds
@@ -120,9 +148,11 @@ class GpuScene {
   u32 pair_count_ = 0;
   u32 material_count_ = 0;
   u32 triangles_per_cluster_ = 0;
+  u32 view_count_ = 1;
   u64 visible_run_bytes_ = 0;
   u64 deform_pool_bytes_ = 0;
   u64 template_bytes_ = 0;
+  u64 rt_bytes_ = 0;
   u32 tlas_slot_ = gfx::BindlessSet::k_invalid_slot;
   bool ray_tracing_ = false;
   bool deform_ = false;

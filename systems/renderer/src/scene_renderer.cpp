@@ -25,6 +25,46 @@ namespace engine::renderer {
 namespace {
 
 constexpr u32 k_view_lights = 2;  // the warm and cool point lights orbiting the scene
+constexpr u32 k_stat_words = 9;   // three indirect blocks of three u32, per view
+
+// The GPU timer keys zones by name and sums equal names, so a view's own milliseconds need a name
+// of their own. View 0 keeps the bare name, so a single-view frame records exactly the zones it
+// always has, and the per-pass totals are the sum over the views' names.
+enum ZoneKind : u32 {
+  k_zone_cull = 0,
+  k_zone_hw,
+  k_zone_sw,
+  k_zone_hiz,
+  k_zone_resolve,
+  k_zone_deform,
+  k_zone_trace,
+  k_zone_kinds
+};
+constexpr const char* k_zone_names[k_zone_kinds][k_max_views] = {
+    {"cull", "cull.1", "cull.2", "cull.3", "cull.4", "cull.5", "cull.6", "cull.7"},
+    {"hw", "hw.1", "hw.2", "hw.3", "hw.4", "hw.5", "hw.6", "hw.7"},
+    {"sw", "sw.1", "sw.2", "sw.3", "sw.4", "sw.5", "sw.6", "sw.7"},
+    {"hiz", "hiz.1", "hiz.2", "hiz.3", "hiz.4", "hiz.5", "hiz.6", "hiz.7"},
+    {"resolve", "resolve.1", "resolve.2", "resolve.3", "resolve.4", "resolve.5", "resolve.6",
+     "resolve.7"},
+    {"deform", "deform.1", "deform.2", "deform.3", "deform.4", "deform.5", "deform.6", "deform.7"},
+    {"trace", "trace.1", "trace.2", "trace.3", "trace.4", "trace.5", "trace.6", "trace.7"},
+};
+
+// The viewport a pass draws one view through, with the renderer's y flip (clip space is y-up like
+// core/math, so the height is negative and the origin moves to the bottom of the rectangle).
+void set_view_viewport(VkCommandBuffer commands, u32 x, u32 y, u32 width, u32 height) {
+  VkViewport viewport{};
+  viewport.x = static_cast<f32>(x);
+  viewport.y = static_cast<f32>(y + height);
+  viewport.width = static_cast<f32>(width);
+  viewport.height = -static_cast<f32>(height);
+  viewport.minDepth = 0.0f;
+  viewport.maxDepth = 1.0f;
+  vkCmdSetViewport(commands, 0, 1, &viewport);
+  const VkRect2D scissor{{static_cast<i32>(x), static_cast<i32>(y)}, {width, height}};
+  vkCmdSetScissor(commands, 0, 1, &scissor);
+}
 
 // Copies a device buffer into host memory through a staging buffer and a blocking submission.
 // Only a capture does this; a frame never reads anything back.
@@ -50,35 +90,6 @@ bool read_buffer(const gfx::Device& device, const gfx::BufferResource& source, u
 
 }  // namespace
 
-Camera orbit_camera(const Vec3& center, f32 radius, f32 distance, u64 frame) noexcept {
-  const f32 angle = static_cast<f32>(frame) * 0.006f;
-  const f32 d =
-      (distance > 0.0f ? distance : 22.0f + 14.0f * std::sin(static_cast<f32>(frame) * 0.004f)) *
-      (radius / 10.0f);
-  Camera camera;
-  camera.position = center + Vec3{std::cos(angle) * d, 0.45f * d, std::sin(angle) * d};
-  camera.target = center;
-  camera.fov_y = radians(55.0f);
-  camera.znear = 0.01f * radius;  // reversed-Z: 0.1 for the heightfield, 0.2 mm for a 2 cm mesh
-  return camera;
-}
-
-Camera orbit_camera_at(const Vec3& center, f32 radius, f32 distance, f32 yaw, f32 pitch) noexcept {
-  const f32 d = (distance > 0.0f ? distance : 22.0f) * (radius / 10.0f);
-  // `pitch` is the elevation above the orbit circle of radius d, so the default (atan(0.45))
-  // reproduces engine-view's fixed 0.45 height factor exactly and `--orbit 22` and
-  // `orbit {distance: 22}` are the same camera. Clamped short of the pole, where the tangent and
-  // the up vector both stop meaning anything.
-  const f32 limit = radians(85.0f);
-  const f32 clamped = pitch < -limit ? -limit : (pitch > limit ? limit : pitch);
-  Camera camera;
-  camera.position = center + Vec3{std::cos(yaw) * d, std::tan(clamped) * d, std::sin(yaw) * d};
-  camera.target = center;
-  camera.fov_y = radians(55.0f);
-  camera.znear = 0.01f * radius;
-  return camera;
-}
-
 void SceneRenderer::Pipelines::destroy(const gfx::Device& device) noexcept {
   if (direct != VK_NULL_HANDLE) gfx::destroy_pipeline(device, direct);
   if (hardware != VK_NULL_HANDLE) gfx::destroy_pipeline(device, hardware);
@@ -95,22 +106,45 @@ void SceneRenderer::Pipelines::destroy(const gfx::Device& device) noexcept {
   direct = hardware = vertex = resolve = VK_NULL_HANDLE;
 }
 
-bool SceneRenderer::Targets::create(const gfx::Device& device, u32 w, u32 h, std::string* error) {
+// The views' visibility regions and Hi-Z pyramids, packed back to back into one buffer each. A
+// view's region is as big as the rectangle it rasterizes, so for a single view the two buffers are
+// exactly the size and layout they have always been.
+bool SceneRenderer::Targets::create(const gfx::Device& device, const ViewSet& set,
+                                    std::string* error) {
   destroy(device);
-  width = w;
-  height = h;
-  hiz_mips = gfx::hiz_mip_count(w, h);
-  const u32 hiz_elements = gfx::hiz_layout(w, h, hiz_offsets);
-  hiz_levels.resize(hiz_mips * 2);
+  width = set.source_width();
+  height = set.source_height();
+  views.resize(set.size());
+  u64 vis_elements = 0;
+  u32 hiz_elements = 0;
+  u32 level_base = 0;
+  for (u32 v = 0; v < set.size(); ++v) {
+    ViewTarget& target = views[v];
+    target.width = set[v].source_width;
+    target.height = set[v].source_height;
+    target.vis_offset = vis_elements;
+    target.hiz_mips = gfx::hiz_mip_count(target.width, target.height);
+    const u32 pyramid = gfx::hiz_layout(target.width, target.height, target.hiz_offsets);
+    // The offsets are into the shared pyramid buffer, so the cull pass reads its own view's mips
+    // without knowing there are others.
+    for (u32 m = 0; m < gfx::k_hiz_max_mips; ++m)
+      target.hiz_offsets[m] += hiz_elements;
+    target.level_base = level_base;
+    level_base += target.hiz_mips * 2;
+    hiz_elements += pyramid;
+    vis_elements += u64{target.width} * target.height;
+  }
+  hiz_levels.resize(level_base);
   hiz_dirty = true;
   // TRANSFER_SRC on the visibility buffer is what a capture's id and depth channels read back;
   // nothing in a frame ever copies from it.
   constexpr VkBufferUsageFlags k_buffer_usage =
       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
       VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-  return gfx::create_image_2d(device, w, h, VK_FORMAT_D32_SFLOAT,
+  return gfx::create_image_2d(device, set.width(), set.height(), VK_FORMAT_D32_SFLOAT,
                               VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, depth, error) &&
-         gfx::create_buffer(device, u64{w} * h * sizeof(u64), k_buffer_usage, false, vis, error) &&
+         gfx::create_buffer(device, vis_elements * sizeof(u64), k_buffer_usage, false, vis,
+                            error) &&
          gfx::create_buffer(device, u64{hiz_elements} * sizeof(f32), k_buffer_usage, false, hiz,
                             error);
 }
@@ -122,6 +156,8 @@ void SceneRenderer::Targets::destroy(const gfx::Device& device) noexcept {
   depth = gfx::ImageResource{};
   vis = gfx::BufferResource{};
   hiz = gfx::BufferResource{};
+  views.clear();
+  hiz_levels.clear();
 }
 
 SceneRenderer::~SceneRenderer() { destroy(); }
@@ -136,8 +172,27 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
   width_ = desc.width;
   height_ = desc.height;
 
+  if (!views_.build(desc.views, width_, height_, error)) {
+    destroy();
+    return false;
+  }
+  // The scene's per-frame working set was sized by `resolve_settings`' view count, so a renderer
+  // whose layout disagrees would index past the end of the visible list. Say so rather than draw.
+  if (views_.size() != scene.view_count()) {
+    if (error != nullptr) {
+      *error =
+          "the view layout does not match the one the scene was built with; pass the same "
+          "RenderSettings to resolve_settings and the renderer";
+    }
+    destroy();
+    return false;
+  }
+  const u32 views = views_.size();
+
   if (!frames_.create(device, desc.frames_in_flight, error) ||
-      !timer_.create(device, desc.frames_in_flight, 24, error)) {
+      // Every view records its own cull, raster, Hi-Z and resolve zones, so the pool grows with
+      // the layout; one view asks for exactly the 24 it always did.
+      !timer_.create(device, desc.frames_in_flight, 24 + 16 * (views - 1), error)) {
     destroy();
     return false;
   }
@@ -147,18 +202,21 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
   ray_params_.resize(desc.frames_in_flight);
   constexpr VkBufferUsageFlags k_address =
       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+  const u64 stat_bytes = sizeof(u32) * k_stat_words * views;
   bool ok = true;
   for (u32 slot = 0; slot < desc.frames_in_flight && ok; ++slot) {
-    ok = gfx::create_buffer(device, sizeof(gfx::CullParams) * 2, k_address, true, params_[slot],
-                            error) &&
-         gfx::create_buffer(device,
-                            sizeof(gfx::ResolveParams) + k_view_lights * sizeof(gfx::ResolveLight),
-                            k_address, true, resolves_[slot], error) &&
-         gfx::create_buffer(device, sizeof(u32) * 9, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true,
+    // Two cull blocks per view, one resolve block per view with the frame's lights behind the
+    // last, and one statistics block per view.
+    ok = gfx::create_buffer(device, sizeof(gfx::CullParams) * 2 * views, k_address, true,
+                            params_[slot], error) &&
+         gfx::create_buffer(
+             device, sizeof(gfx::ResolveParams) * views + k_view_lights * sizeof(gfx::ResolveLight),
+             k_address, true, resolves_[slot], error) &&
+         gfx::create_buffer(device, stat_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true,
                             stat_blocks_[slot], error);
-    if (ok) std::memset(stat_blocks_[slot].mapped, 0, sizeof(u32) * 9);
+    if (ok) std::memset(stat_blocks_[slot].mapped, 0, stat_bytes);
     if (ok && resolved_.ray_path) {
-      ok = gfx::create_buffer(device, sizeof(gfx::RayVisibilityParams), k_address, true,
+      ok = gfx::create_buffer(device, sizeof(gfx::RayVisibilityParams) * views, k_address, true,
                               ray_params_[slot], error);
     }
   }
@@ -207,11 +265,12 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
   }
 
   graph_ = new gfx::RenderGraph(device);
-  if (!create_pipelines(error) || !targets_.create(device, width_, height_, error) ||
+  if (!create_pipelines(error) || !targets_.create(device, views_, error) ||
       !create_color_target(error)) {
     destroy();
     return false;
   }
+  fill_view_layout();
   sample_gpu_memory();
   return true;
 }
@@ -366,6 +425,7 @@ void SceneRenderer::destroy() noexcept {
 // the 320x240 capture's minimum.
 void SceneRenderer::reset_stats() noexcept {
   stats_ = Stats{};
+  fill_view_layout();
   submitted_ = 0;
   sample_gpu_memory();  // a reset must not leave a summary with no memory figure at all
 }
@@ -376,7 +436,11 @@ bool SceneRenderer::resize(u32 width, u32 height, std::string* error) {
   width_ = width;
   height_ = height;
   flags_dirty_ = true;  // last frame's visible set no longer matches the Hi-Z
-  return targets_.create(*device_, width_, height_, error) && create_color_target(error);
+  // The layout is a function of the target, so it is laid out again; the *count* cannot change,
+  // because the scene's working set is sized by it, and no layout changes its count with size.
+  if (!views_.build(desc_.views, width_, height_, error)) return false;
+  fill_view_layout();
+  return targets_.create(*device_, views_, error) && create_color_target(error);
 }
 
 bool SceneRenderer::poll_shaders(Vector<std::string>& changed, std::string* error) {
@@ -386,42 +450,80 @@ bool SceneRenderer::poll_shaders(Vector<std::string>& changed, std::string* erro
   return create_pipelines(error);
 }
 
-void SceneRenderer::collect_slot(u32 slot) {
-  if (resolved_.settings.cull) {
-    const auto* stats = static_cast<const u32*>(stat_blocks_[slot].mapped);
-    stats_.visible_hw = stats[resolved_.vertex_path ? 1 : 0];
-    stats_.visible_pass2 = stats[resolved_.vertex_path ? 4 : 3];
-    stats_.visible_sw = stats[6];
-    const u32 total = stats_.visible_pairs();
-    stats_.visible_min = total < stats_.visible_min ? total : stats_.visible_min;
-    stats_.visible_max = total > stats_.visible_max ? total : stats_.visible_max;
+// The visible-pair counts of the frame that last used `slot`, per view and summed. The three
+// indirect blocks of each view were copied into that view's nine words of the statistics block,
+// in the order pass 1, pass 2, software.
+// The rectangles and the tiers into the statistics, so a summary can say which monitor a row
+// belongs to. They are the layout's and not a frame's, so they are copied when the layout is laid
+// out — a capture is one or two frames and would otherwise report a run of zeros.
+void SceneRenderer::fill_view_layout() noexcept {
+  stats_.view_count = views_.size();
+  for (u32 v = 0; v < views_.size(); ++v) {
+    const View& source = views_[v];
+    ViewStats& view = stats_.views[v];
+    view.x = source.rect.x;
+    view.y = source.rect.y;
+    view.width = source.rect.width;
+    view.height = source.rect.height;
+    view.source_width = source.source_width;
+    view.source_height = source.source_height;
+    view.lod_scale = source.quality.lod_scale;
+    view.shading_rate = source.quality.shading_rate;
   }
+}
+
+void SceneRenderer::fold_visible(u32 slot) {
+  if (!resolved_.settings.cull) return;
+  const auto* stats = static_cast<const u32*>(stat_blocks_[slot].mapped);
+  stats_.visible_hw = 0;
+  stats_.visible_pass2 = 0;
+  stats_.visible_sw = 0;
+  for (u32 v = 0; v < view_count(); ++v) {
+    const u32* block = stats + v * k_stat_words;
+    ViewStats& view = stats_.views[v];
+    view.visible_hw = block[resolved_.vertex_path ? 1 : 0];
+    view.visible_pass2 = block[resolved_.vertex_path ? 4 : 3];
+    view.visible_sw = block[6];
+    stats_.visible_hw += view.visible_hw;
+    stats_.visible_pass2 += view.visible_pass2;
+    stats_.visible_sw += view.visible_sw;
+  }
+  const u32 total = stats_.visible_pairs();
+  stats_.visible_min = total < stats_.visible_min ? total : stats_.visible_min;
+  stats_.visible_max = total > stats_.visible_max ? total : stats_.visible_max;
+}
+
+void SceneRenderer::collect_slot(u32 slot) {
+  fold_visible(slot);
   if (!timer_.results().empty()) {
-    stats_.gpu_cull += timer_.ms("cull");
-    stats_.gpu_hw += timer_.ms("hw");
-    stats_.gpu_sw += timer_.ms("sw");
-    stats_.gpu_hiz += timer_.ms("hiz");
-    stats_.gpu_resolve += timer_.ms("resolve");
+    for (u32 v = 0; v < view_count(); ++v) {
+      ViewStats& view = stats_.views[v];
+      view.gpu_cull += timer_.ms(k_zone_names[k_zone_cull][v]);
+      view.gpu_hw += timer_.ms(k_zone_names[k_zone_hw][v]);
+      view.gpu_sw += timer_.ms(k_zone_names[k_zone_sw][v]);
+      view.gpu_hiz += timer_.ms(k_zone_names[k_zone_hiz][v]);
+      view.gpu_resolve += timer_.ms(k_zone_names[k_zone_resolve][v]);
+      view.gpu_deform += timer_.ms(k_zone_names[k_zone_deform][v]);
+      view.gpu_trace += timer_.ms(k_zone_names[k_zone_trace][v]);
+      stats_.gpu_cull += timer_.ms(k_zone_names[k_zone_cull][v]);
+      stats_.gpu_hw += timer_.ms(k_zone_names[k_zone_hw][v]);
+      stats_.gpu_sw += timer_.ms(k_zone_names[k_zone_sw][v]);
+      stats_.gpu_hiz += timer_.ms(k_zone_names[k_zone_hiz][v]);
+      stats_.gpu_resolve += timer_.ms(k_zone_names[k_zone_resolve][v]);
+      stats_.gpu_deform += timer_.ms(k_zone_names[k_zone_deform][v]);
+      stats_.gpu_trace += timer_.ms(k_zone_names[k_zone_trace][v]);
+    }
+    // The acceleration structure chain is built once from the union of the views' cuts, so it is
+    // the frame's cost and no view's.
     stats_.gpu_rt += timer_.ms("records") + timer_.ms("ranges") + timer_.ms("emit") +
                      timer_.ms("clas") + timer_.ms("blas") + timer_.ms("tlas");
     stats_.gpu_clas += timer_.ms("clas");
-    stats_.gpu_deform += timer_.ms("deform");
-    stats_.gpu_trace += timer_.ms("trace");
     stats_.gpu_total += timer_.total_ms();
     ++stats_.timed_frames;
   }
 }
 
-void SceneRenderer::collect_visible() {
-  if (!resolved_.settings.cull) return;
-  const auto* stats = static_cast<const u32*>(stat_blocks_[frames_.slot()].mapped);
-  stats_.visible_hw = stats[resolved_.vertex_path ? 1 : 0];
-  stats_.visible_pass2 = stats[resolved_.vertex_path ? 4 : 3];
-  stats_.visible_sw = stats[6];
-  const u32 total = stats_.visible_pairs();
-  stats_.visible_min = total < stats_.visible_min ? total : stats_.visible_min;
-  stats_.visible_max = total > stats_.visible_max ? total : stats_.visible_max;
-}
+void SceneRenderer::collect_visible() { fold_visible(frames_.slot()); }
 
 void SceneRenderer::begin_frame() {
   commands_ = frames_.begin_frame();
@@ -484,10 +586,21 @@ bool SceneRenderer::render_offscreen(const FrameDesc& frame, std::string* error)
   return true;
 }
 
-// One frame, from the cull pass to the resolve. Every parameter block here is referenced by a
-// pass body and therefore has to outlive the execute() at the bottom, which is why declaring,
-// compiling, and executing are one function rather than three: the render graph stores bodies
-// in an arena and requires them to capture by reference.
+// One frame, from the cull pass to the resolve, for every view of the set. Every parameter block
+// here is referenced by a pass body and therefore has to outlive the execute() at the bottom,
+// which is why declaring, compiling, and executing are one function rather than three: the render
+// graph stores bodies in an arena and requires them to capture by reference.
+//
+// **Every stage is one graph pass with a loop over the views inside it**, not one pass per view.
+// The views write disjoint slices of the same buffers, and the render graph tracks whole buffers,
+// so a pass per view would make the graph insert a barrier between views that have no hazard at
+// all. The exception is the Hi-Z build, whose mips must be barriered anyway and whose views are
+// therefore built one after another so that a view's pyramid is one timer zone.
+//
+// **What the per-view timings mean.** A zone's timestamps are written at ALL_COMMANDS on both
+// ends, so bracketing each view separately orders the views on the queue. The per-view numbers are
+// therefore what each view costs on its own, and their sum is what the frame costs measured this
+// way — an upper bound on what the views would cost if the driver were free to overlap them.
 bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_handle,
                                  std::string* error) {
   GpuScene& scene = *scene_;
@@ -499,18 +612,15 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   const u32 cluster_count = scene.cluster_count();
   const u32 leaf_count = scene.leaf_count();
   const u32 triangles_per_cluster = scene.triangles_per_cluster();
-  const u64 visible_run_bytes = scene.visible_run_bytes();
-  const u32 extent_width = width_;
-  const u32 extent_height = height_;
+  const u32 views = views_.size();
   const u64 rendered = frame.frame_index;
 
-  const f32 aspect = static_cast<f32>(extent_width) / static_cast<f32>(extent_height);
+  // This frame's one camera through the layout: N view-projection matrices sharing one eye and
+  // one near plane, differing in orientation and in the shape of the frustum.
+  views_.update(frame.camera);
+
   const Vec3 eye = frame.camera.position;
-  const f32 fov_y = frame.camera.fov_y;
   const f32 znear = frame.camera.znear;
-  const Mat4 view_proj = perspective_reversed_z(fov_y, aspect, znear) *
-                         look_at(eye, frame.camera.target, Vec3{0.0f, 1.0f, 0.0f});
-  const f32 proj_scale = 1.0f / std::tan(fov_y * 0.5f) * static_cast<f32>(extent_height) * 0.5f;
   const bool direct = resolved_.direct;
   const bool vertex_path = resolved_.vertex_path;
   const bool ray_path = resolved_.ray_path;
@@ -522,95 +632,40 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
                       settings.raster != RasterMode::Vertex && settings.cull;
   const u32 cur_flags = static_cast<u32>(rendered % 2);
   const u32 prev_flags = 1 - cur_flags;
-
-  // The three runs of the frame's visible list; a draw's ids start at its run.
-  const u64 run_address[k_visible_runs] = {scene.visible.address,
-                                           scene.visible.address + visible_run_bytes,
-                                           scene.visible.address + visible_run_bytes * 2};
-  gfx::ClusterDrawParams draw{};
-  draw.view_proj = view_proj;
-  draw.clusters = scene.clusters.address;
-  draw.mesh = scene.meshes.address;
-  draw.instances = scene.instances.address;
-  draw.triangles = scene.triangles.address;
-  draw.triangles_per_cluster = triangles_per_cluster;
-  draw.visible = settings.cull ? run_address[0] : 0;
-  draw.visibility = targets_.vis.address;
-  draw.width = extent_width;
-  draw.height = extent_height;
-  gfx::ClusterDrawParams draw_pass2 = draw;
-  draw_pass2.visible = run_address[1];
-  draw_pass2.visible_offset = pair_count;
-  gfx::ClusterDrawParams draw_sw = draw;
-  draw_sw.visible = run_address[2];
-  draw_sw.visible_offset = pair_count * 2;
-
-  gfx::CullParams cull{};
-  gfx::set_frustum(cull, frustum_from_view_proj(view_proj));
-  cull.view_proj = view_proj;
-  cull.camera = Vec4{eye, znear};
-  cull.lod = Vec4{proj_scale, settings.lod_px, 1.0f, 1.0f};
+  const u32 count_index = vertex_path ? 1u : 0u;
   const f32 raster_mode =
       direct || settings.raster == RasterMode::Hardware || vertex_path || ray_path
           ? gfx::k_raster_hardware
       : settings.raster == RasterMode::Software ? gfx::k_raster_software
                                                 : gfx::k_raster_split;
-  cull.raster = Vec4{settings.sw_px, raster_mode, 0.0f, 0.0f};
-  cull.cluster_count = cluster_count;
-  cull.count_index = vertex_path ? 1u : 0u;
-  cull.cone_cull = settings.cone ? 1u : 0u;
-  cull.clusters = scene.clusters.address;
-  cull.lods = scene.lods.address;
-  cull.visible = run_address[0];
-  cull.draw_args = scene.draw_args[0].address;
-  cull.sw_visible = run_address[2];
-  cull.sw_args = scene.sw_args.address;
-  cull.instances = scene.instances.address;
-  cull.meshes = scene.meshes.address;
-  cull.instance_count = instance_count;
-  cull.pair_count = pair_count;
-  if (occlusion) {
-    cull.hiz = targets_.hiz.address;
-    cull.prev_flags = scene.flags[prev_flags].address;
-    cull.flags = scene.flags[cur_flags].address;
-    cull.hiz_width = extent_width;
-    cull.hiz_height = extent_height;
-    cull.hiz_mips = targets_.hiz_mips;
-    std::memcpy(cull.hiz_offsets, targets_.hiz_offsets, sizeof(cull.hiz_offsets));
-    cull.pass = 1;
-  }
-  gfx::CullParams cull_pass2 = cull;
-  cull_pass2.pass = 2;
-  cull_pass2.visible = run_address[1];
-  cull_pass2.draw_args = scene.draw_args[1].address;
-  auto* blocks = static_cast<gfx::CullParams*>(params_[slot].mapped);
-  blocks[0] = cull;
-  blocks[1] = cull_pass2;
-  const u64 block_address[2] = {params_[slot].address,
-                                params_[slot].address + sizeof(gfx::CullParams)};
 
-  gfx::ResolveParams resolve{};
-  resolve.sky = Vec4{0.55f, 0.70f, 0.90f, 1.0f};
-  resolve.sun = Vec4{normalize(Vec3{0.4f, 0.8f, 0.45f}), 1.0f};
-  resolve.camera = Vec4{eye, 0.0f};
-  resolve.view_proj = view_proj;
-  resolve.visibility = targets_.vis.address;
-  resolve.clusters = scene.clusters.address;
-  resolve.mesh = scene.meshes.address;
-  resolve.instances = scene.instances.address;
-  resolve.visible = settings.cull ? scene.visible.address : 0;
-  resolve.triangles = scene.triangles.address;
-  resolve.materials = scene.materials.address;
-  resolve.cluster_materials = scene.cluster_materials.address;
-  resolve.attributes = scene.attributes.address;
-  resolve.width = extent_width;
-  resolve.height = extent_height;
-  resolve.mode = frame.view_mode == ~u32{0} ? settings.view_mode : frame.view_mode;
+  // What one view needs that the frame cannot share: its region of the visibility buffer, its
+  // three runs of the visible list, its indirect blocks, and the addresses of its parameter
+  // blocks in the per-slot buffers.
+  struct ViewFrame {
+    u32 width = 0;
+    u32 height = 0;
+    u64 vis_address = 0;
+    u64 run_address[k_visible_runs] = {};
+    u32 run_base[k_visible_runs] = {};
+    u64 args_offset = 0;
+    u64 block_address[2] = {};
+    u64 resolve_address = 0;
+    u64 ray_address = 0;
+  };
+  ViewFrame view_frames[k_max_views];
+  gfx::ClusterDrawParams draws[k_max_views][k_visible_runs];
+  gfx::DeformParams deform_params[k_max_views][k_visible_runs];
+  auto* cull_blocks = static_cast<gfx::CullParams*>(params_[slot].mapped);
+  auto* resolve_bytes = static_cast<u8*>(resolves_[slot].mapped);
+  const u64 lights_address = resolves_[slot].address + sizeof(gfx::ResolveParams) * views;
+  const f32 deform_time = static_cast<f32>(rendered) / 60.0f;
+
   // Two point lights orbiting the scene out of phase, one warm and one cool, so the BSDF's
   // specular response sweeps across the surface while the camera turns and metal reads as metal.
   // Reach and intensity scale with the scene radius, intensity with its square because the
-  // falloff is inverse square, so a 2 cm mesh and the heightfield look alike. They live behind
-  // the params block in the same per-slot buffer.
+  // falloff is inverse square, so a 2 cm mesh and the heightfield look alike. They are the
+  // frame's, shared by every view, and live behind the last view's params block in one buffer.
   const Vec3 scene_center = data.center;
   const f32 scene_radius = data.radius;
   const f32 light_orbit = 1.35f * scene_radius;
@@ -626,48 +681,169 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
                                -std::sin(light_angle * 0.7f) * light_orbit},
            4.0f * scene_radius};
   lights[1].color_intensity = Vec4{0.50f, 0.68f, 1.0f, 0.8f * light_orbit * light_orbit};
-  resolve.lights = resolves_[slot].address + sizeof(resolve);
-  resolve.light_count = settings.lights ? k_view_lights : 0;
-  // Shadows: every light traces against this frame's top-level structure, which holds the same
-  // visible list the rasterizer drew from, so a shadow can only come from geometry the picture
-  // has. The bias is a thousandth of the scene radius — a couple of centimetres on the
-  // heightfield, well over the half grid step by which a quantized position may differ from the
-  // float one the structures were built from, and far under any feature that casts.
-  resolve.scene = shadows ? scene.tlas_slot() : gfx::k_no_scene;
-  resolve.shadow_flags = shadows ? gfx::k_shadow_sun | gfx::k_shadow_lights : 0u;
-  resolve.shadow_bias = 1.0e-3f * scene_radius;
-  auto* resolve_block = static_cast<u8*>(resolves_[slot].mapped);
-  std::memcpy(resolve_block, &resolve, sizeof(resolve));
-  std::memcpy(resolve_block + sizeof(resolve), lights, sizeof(lights));
-  const u64 resolve_address = resolves_[slot].address;
+  std::memcpy(resolve_bytes + sizeof(gfx::ResolveParams) * views, lights, sizeof(lights));
 
-  // One DeformParams per run of the visible list. The pass reads that run's count word out of
-  // the cull's own arguments and dispatches one group per visible cluster from a copy of it, so
-  // the pool pass costs the cut and nothing else.
-  gfx::DeformParams deform_params[k_visible_runs];
-  const f32 deform_time = static_cast<f32>(rendered) / 60.0f;
-  for (u32 run = 0; run < k_visible_runs; ++run) {
-    gfx::DeformParams& d = deform_params[run];
-    d = gfx::DeformParams{};
-    d.clusters = scene.clusters.address;
-    d.instances = scene.instances.address;
-    d.meshes = scene.meshes.address;
-    d.attributes = scene.attributes.address;
-    d.visible = run_address[run];
-    d.visible_count =
-        run == 2 ? scene.sw_args.address : scene.draw_args[run].address + u64{cull.count_index} * 4;
-    d.pool = scene.deform_pool.address;
-    d.deform = scene.deform_table.address;
-    d.time = deform_time;
-    d.amplitude = settings.deform_amplitude;
-    d.max_entries = pair_count;
+  for (u32 v = 0; v < views; ++v) {
+    const View& view = views_[v];
+    const ViewTarget& target = targets_.views[v];
+    ViewFrame& vf = view_frames[v];
+    vf.width = target.width;
+    vf.height = target.height;
+    vf.vis_address = targets_.vis.address + target.vis_offset * sizeof(u64);
+    for (u32 run = 0; run < k_visible_runs; ++run) {
+      vf.run_base[run] = scene.visible_base(v, run);
+      vf.run_address[run] = scene.visible.address + u64{vf.run_base[run]} * 2 * sizeof(u32);
+    }
+    vf.args_offset = scene.args_offset(v);
+    vf.block_address[0] = params_[slot].address + sizeof(gfx::CullParams) * 2 * v;
+    vf.block_address[1] = vf.block_address[0] + sizeof(gfx::CullParams);
+    vf.resolve_address = resolves_[slot].address + sizeof(gfx::ResolveParams) * v;
+
+    // ---- the rasterizers' push blocks, one per run -----------------------------------------
+    for (u32 run = 0; run < k_visible_runs; ++run) {
+      gfx::ClusterDrawParams& draw = draws[v][run];
+      draw = gfx::ClusterDrawParams{};
+      draw.view_proj = view.view_proj;
+      draw.clusters = scene.clusters.address;
+      draw.mesh = scene.meshes.address;
+      draw.instances = scene.instances.address;
+      draw.triangles = scene.triangles.address;
+      draw.triangles_per_cluster = triangles_per_cluster;
+      // Run 0 with culling off draws every leaf in index order, which is what a null list means.
+      draw.visible = run == 0 && !settings.cull ? 0 : vf.run_address[run];
+      draw.visible_offset = vf.run_base[run];
+      draw.visibility = vf.vis_address;
+      draw.width = vf.width;
+      draw.height = vf.height;
+    }
+
+    // ---- the cull pass's two blocks ----------------------------------------------------------
+    gfx::CullParams cull{};
+    gfx::set_frustum(cull, frustum_from_view_proj(view.view_proj));
+    cull.view_proj = view.view_proj;
+    cull.camera = Vec4{eye, znear};
+    // The LOD threshold is this view's: a peripheral view lets a cluster be `lod_scale` times as
+    // wrong in screen space before the parent group is drawn instead (04 §4.6, foveation).
+    cull.lod = Vec4{view.proj_scale, settings.lod_px * view.quality.lod_scale, 1.0f, 1.0f};
+    cull.raster = Vec4{settings.sw_px, raster_mode, 0.0f, 0.0f};
+    cull.cluster_count = cluster_count;
+    cull.count_index = count_index;
+    cull.cone_cull = settings.cone ? 1u : 0u;
+    cull.clusters = scene.clusters.address;
+    cull.lods = scene.lods.address;
+    cull.visible = vf.run_address[0];
+    cull.draw_args = scene.draw_args[0].address + vf.args_offset;
+    cull.sw_visible = vf.run_address[2];
+    cull.sw_args = scene.sw_args.address + vf.args_offset;
+    cull.instances = scene.instances.address;
+    cull.meshes = scene.meshes.address;
+    cull.instance_count = instance_count;
+    cull.pair_count = pair_count;
+    if (occlusion) {
+      // This view's own pyramid, at its own mip offsets into the shared buffer, and its own slice
+      // of the drawn-last-frame flags: a cluster may be occluded in one view and visible in
+      // another, so the two-pass state cannot be shared.
+      cull.hiz = targets_.hiz.address;
+      cull.prev_flags = scene.flags[prev_flags].address + u64{v} * pair_count * sizeof(u32);
+      cull.flags = scene.flags[cur_flags].address + u64{v} * pair_count * sizeof(u32);
+      cull.hiz_width = vf.width;
+      cull.hiz_height = vf.height;
+      cull.hiz_mips = target.hiz_mips;
+      std::memcpy(cull.hiz_offsets, target.hiz_offsets, sizeof(cull.hiz_offsets));
+      cull.pass = 1;
+    }
+    cull_blocks[v * 2] = cull;
+    gfx::CullParams& cull_pass2 = cull_blocks[v * 2 + 1];
+    cull_pass2 = cull;
+    cull_pass2.pass = 2;
+    cull_pass2.visible = vf.run_address[1];
+    cull_pass2.draw_args = scene.draw_args[1].address + vf.args_offset;
+
+    // ---- the resolve's block ------------------------------------------------------------------
+    gfx::ResolveParams resolve{};
+    resolve.sky = Vec4{0.55f, 0.70f, 0.90f, 1.0f};
+    resolve.sun = Vec4{normalize(Vec3{0.4f, 0.8f, 0.45f}), 1.0f};
+    resolve.camera = Vec4{eye, 0.0f};
+    resolve.view_proj = view.view_proj;
+    resolve.visibility = vf.vis_address;
+    resolve.clusters = scene.clusters.address;
+    resolve.mesh = scene.meshes.address;
+    resolve.instances = scene.instances.address;
+    resolve.visible = settings.cull ? scene.visible.address : 0;
+    resolve.triangles = scene.triangles.address;
+    resolve.materials = scene.materials.address;
+    resolve.cluster_materials = scene.cluster_materials.address;
+    resolve.attributes = scene.attributes.address;
+    resolve.width = vf.width;
+    resolve.height = vf.height;
+    resolve.mode = frame.view_mode == ~u32{0} ? settings.view_mode : frame.view_mode;
+    resolve.lights = lights_address;
+    resolve.light_count = settings.lights ? k_view_lights : 0;
+    // Where this view's picture goes in the target, and — for a Panini view — the map from an
+    // output pixel back into the wider rectilinear source the rasterizers filled.
+    resolve.view_x = view.rect.x;
+    resolve.view_y = view.rect.y;
+    resolve.out_width = view.rect.width;
+    resolve.out_height = view.rect.height;
+    if (views_.resample()) {
+      resolve.panini_d = views_.panini_d();
+      resolve.panini_x = views_.panini_half_width();
+      resolve.source_x = views_.source_half_width();
+    }
+    // Shadows: every light traces against this frame's top-level structure, which holds the same
+    // visible list the rasterizer drew from, so a shadow can only come from geometry the picture
+    // has. The bias is a thousandth of the scene radius — a couple of centimetres on the
+    // heightfield, well over the half grid step by which a quantized position may differ from the
+    // float one the structures were built from, and far under any feature that casts.
+    resolve.scene = shadows ? scene.tlas_slot() : gfx::k_no_scene;
+    resolve.shadow_flags = shadows ? gfx::k_shadow_sun | gfx::k_shadow_lights : 0u;
+    resolve.shadow_bias = 1.0e-3f * scene_radius;
+    std::memcpy(resolve_bytes + sizeof(gfx::ResolveParams) * v, &resolve, sizeof(resolve));
+
+    // ---- the deformed-vertex pool, one block per run ------------------------------------------
+    // The pass reads that run's count word out of the cull's own arguments and dispatches one
+    // group per visible cluster from a copy of it, so the pool pass costs the cut and nothing
+    // else. Two views that both draw a cluster write its vertices twice, with the same value.
+    for (u32 run = 0; run < k_visible_runs; ++run) {
+      gfx::DeformParams& d = deform_params[v][run];
+      d = gfx::DeformParams{};
+      d.clusters = scene.clusters.address;
+      d.instances = scene.instances.address;
+      d.meshes = scene.meshes.address;
+      d.attributes = scene.attributes.address;
+      d.visible = vf.run_address[run];
+      d.visible_count =
+          run == 2 ? scene.sw_args.address + vf.args_offset
+                   : scene.draw_args[run].address + vf.args_offset + u64{count_index} * sizeof(u32);
+      d.pool = scene.deform_pool.address;
+      d.deform = scene.deform_table.address;
+      d.time = deform_time;
+      d.amplitude = settings.deform_amplitude;
+      d.max_entries = pair_count;
+    }
+
+    if (ray_path) {
+      gfx::RayVisibilityParams ray{};
+      ray.view_proj = view.view_proj;
+      ray.inv_view_proj = inverse(view.view_proj);
+      ray.camera = Vec4{eye, 0.0f};
+      ray.output = vf.vis_address;
+      ray.instance_base = 0;  // a CLAS record's base geometry index is the visible entry
+      ray.width = vf.width;
+      ray.height = vf.height;
+      ray.scene = scene.tlas_slot();
+      vf.ray_address = ray_params_[slot].address + sizeof(gfx::RayVisibilityParams) * v;
+      std::memcpy(static_cast<u8*>(ray_params_[slot].mapped) + sizeof(gfx::RayVisibilityParams) * v,
+                  &ray, sizeof(ray));
+    }
   }
 
   // The records pass turns this frame's visible list into CLAS build records and the builds
   // follow on the GPU. The ray path then traces the picture against them; a raster mode with
-  // shadows on runs the same chain and the resolve traces the lights against them.
+  // shadows on runs the same chain and the resolve traces the lights against them. With more than
+  // one view the geometry is the **union** of the views' cuts: the visible list is run-major, so
+  // every view's first run is one contiguous range at the front and one dispatch covers them all.
   gfx::ClusterRecordParams record_params{};
-  u64 ray_address = 0;
   Vector<gfx::TlasInstance> tlas_instances;
   if (rt_chain) {
     record_params.clusters = scene.clusters.address;
@@ -676,10 +852,11 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     record_params.instances = scene.instances.address;
     record_params.meshes = scene.meshes.address;
     record_params.instantiate = settings.rt_templates ? 1u : 0u;
-    record_params.visible = run_address[0];
-    // Where the cull pass counted this run's survivors: the mesh path's group count is the first
-    // word of the indirect block, the vertex path's instance count the second.
-    record_params.visible_count = scene.draw_args[0].address + (vertex_path ? sizeof(u32) : 0);
+    record_params.visible = scene.visible.address;
+    // Where the cull pass counted each view's survivors: the mesh path's group count is the first
+    // word of the view's indirect block, the vertex path's instance count the second, and the
+    // views' blocks are `k_draw_args_bytes` apart.
+    record_params.visible_count = scene.draw_args[0].address + u64{count_index} * sizeof(u32);
     record_params.slots = scene.slots.address;
     record_params.instance_counts = scene.instance_counts.address;
     record_params.instance_first = scene.instance_first.address;
@@ -689,9 +866,10 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     record_params.clas_addresses = scene.clas_set.addresses.address;
     record_params.instance_count = instance_count;
     record_params.pair_count = pair_count;
-    record_params.max_clusters = pair_count;
+    record_params.views = views;
     // One top-level instance per scene instance: the world transform, the instance as the custom
-    // index, and that instance's own cluster bottom-level structure.
+    // index, and that instance's own cluster bottom-level structure. One structure for the whole
+    // set: the views share it, which is what makes them one view set and not three renderers.
     for (u32 i = 0; i < instance_count; ++i) {
       gfx::TlasInstance record;
       record.transform = data.instances[i].world;
@@ -702,19 +880,6 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     gfx::write_instances(
         std::span<const gfx::TlasInstance>(tlas_instances.data(), tlas_instances.size()),
         scene.rt_instances.mapped);
-  }
-  if (ray_path) {
-    gfx::RayVisibilityParams ray{};
-    ray.view_proj = view_proj;
-    ray.inv_view_proj = inverse(view_proj);
-    ray.camera = Vec4{eye, 0.0f};
-    ray.output = targets_.vis.address;
-    ray.instance_base = 0;  // a CLAS record's base geometry index is the visible entry
-    ray.width = extent_width;
-    ray.height = extent_height;
-    ray.scene = scene.tlas_slot();
-    std::memcpy(ray_params_[slot].mapped, &ray, sizeof(ray));
-    ray_address = ray_params_[slot].address;
   }
 
   gfx::RenderGraph& graph = *graph_;
@@ -734,11 +899,10 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   const gfx::RgBuffer rg_hiz = graph.import_buffer("hiz", targets.hiz);
   const gfx::RgBuffer rg_stats = graph.import_buffer("stats", stat_blocks_[slot]);
   gfx::RgBuffer rg_pool{};
-  gfx::RgBuffer rg_deform_args[k_visible_runs]{};
+  gfx::RgBuffer rg_deform_args{};
   if (settings.deform) {
     rg_pool = graph.import_buffer("deform pool", scene.deform_pool);
-    for (u32 run = 0; run < k_visible_runs; ++run)
-      rg_deform_args[run] = graph.import_buffer("deform args", scene.deform_args[run]);
+    rg_deform_args = graph.import_buffer("deform args", scene.deform_args);
   }
   struct RtBuffers {
     gfx::RgBuffer records, record_count, slots, instance_counts, instance_first, blas_records;
@@ -769,6 +933,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   const bool fill_flags = occlusion && flags_dirty_;
   const bool cull_on = settings.cull;
   const bool deform_on = settings.deform;
+  const u32 raster_width = targets.width;
+  const u32 raster_height = targets.height;
 
   graph.add_pass(
       "reset", gfx::PassKind::Transfer,
@@ -783,25 +949,27 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
         if (fill_flags) b.write(rg_flags[prev_flags], gfx::Access::TransferWrite);
         if (fill_hiz) b.write(rg_hiz, gfx::Access::TransferWrite);
         if (rt_chain) b.write(rt.instance_counts, gfx::Access::TransferWrite);
-        if (deform_on) {
-          for (const gfx::RgBuffer& args : rg_deform_args)
-            b.write(args, gfx::Access::TransferWrite);
-        }
+        if (deform_on) b.write(rg_deform_args, gfx::Access::TransferWrite);
       },
       [&](VkCommandBuffer cb, gfx::RenderGraph&) {
         if (cull_on) {
-          for (u32 i = 0; i < 2; ++i) {
-            if (vertex_path) {  // {vertexCount, instanceCount = 0, firstVertex, firstInstance}
-              vkCmdFillBuffer(cb, scene.draw_args[i].buffer, 0, sizeof(u32),
-                              triangles_per_cluster * 3);
-              vkCmdFillBuffer(cb, scene.draw_args[i].buffer, sizeof(u32), sizeof(u32) * 3, 0);
-            } else {  // {groups = 0, 1, 1}
-              vkCmdFillBuffer(cb, scene.draw_args[i].buffer, 0, sizeof(u32), 0);
-              vkCmdFillBuffer(cb, scene.draw_args[i].buffer, sizeof(u32), sizeof(u32) * 2, 1);
+          for (u32 v = 0; v < views; ++v) {
+            const u64 at = view_frames[v].args_offset;
+            for (u32 i = 0; i < 2; ++i) {
+              if (vertex_path) {  // {vertexCount, instanceCount = 0, firstVertex, firstInstance}
+                vkCmdFillBuffer(cb, scene.draw_args[i].buffer, at, sizeof(u32),
+                                triangles_per_cluster * 3);
+                vkCmdFillBuffer(cb, scene.draw_args[i].buffer, at + sizeof(u32), sizeof(u32) * 3,
+                                0);
+              } else {  // {groups = 0, 1, 1}
+                vkCmdFillBuffer(cb, scene.draw_args[i].buffer, at, sizeof(u32), 0);
+                vkCmdFillBuffer(cb, scene.draw_args[i].buffer, at + sizeof(u32), sizeof(u32) * 2,
+                                1);
+              }
             }
+            vkCmdFillBuffer(cb, scene.sw_args.buffer, at, sizeof(u32), 0);
+            vkCmdFillBuffer(cb, scene.sw_args.buffer, at + sizeof(u32), sizeof(u32) * 2, 1);
           }
-          vkCmdFillBuffer(cb, scene.sw_args.buffer, 0, sizeof(u32), 0);
-          vkCmdFillBuffer(cb, scene.sw_args.buffer, sizeof(u32), sizeof(u32) * 2, 1);
         }
         if (!direct) vkCmdFillBuffer(cb, targets.vis.buffer, 0, VK_WHOLE_SIZE, 0);
         if (occlusion) vkCmdFillBuffer(cb, scene.flags[cur_flags].buffer, 0, VK_WHOLE_SIZE, 0);
@@ -809,12 +977,14 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
         if (fill_hiz) vkCmdFillBuffer(cb, targets.hiz.buffer, 0, VK_WHOLE_SIZE, 0);
         if (rt_chain) vkCmdFillBuffer(cb, scene.instance_counts.buffer, 0, VK_WHOLE_SIZE, 0);
         if (deform_on) {  // {groups = 0, 1, 1}; the copy below fills in the count
-          for (const gfx::BufferResource& args : scene.deform_args) {
-            vkCmdFillBuffer(cb, args.buffer, 0, sizeof(u32), 0);
-            vkCmdFillBuffer(cb, args.buffer, sizeof(u32), sizeof(u32) * 2, 1);
+          for (u32 i = 0; i < views * k_visible_runs; ++i) {
+            const u64 at = u64{i} * gfx::k_draw_args_bytes;
+            vkCmdFillBuffer(cb, scene.deform_args.buffer, at, sizeof(u32), 0);
+            vkCmdFillBuffer(cb, scene.deform_args.buffer, at + sizeof(u32), sizeof(u32) * 2, 1);
           }
         }
       });
+
   auto add_cull = [&](u32 block, u32 list) {
     graph.add_pass(
         "cull", gfx::PassKind::Compute,
@@ -831,55 +1001,64 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           }
         },
         [&, block](VkCommandBuffer cb, gfx::RenderGraph&) {
-          timer.begin(cb, "cull");
           vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines.cull.pipeline);
-          vkCmdPushConstants(cb, pipelines.cull.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(u64),
-                             &block_address[block]);
-          vkCmdDispatch(cb, gfx::cull_group_count(pair_count), 1, 1);
-          timer.end(cb);
+          for (u32 v = 0; v < views; ++v) {
+            timer.begin(cb, k_zone_names[k_zone_cull][v]);
+            vkCmdPushConstants(cb, pipelines.cull.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                               sizeof(u64), &view_frames[v].block_address[block]);
+            vkCmdDispatch(cb, gfx::cull_group_count(pair_count), 1, 1);
+            timer.end(cb);
+          }
         });
   };
-  // The deformed-vertex pool for one run of the visible list: copy that run's survivor count
-  // into an indirect dispatch block, then one workgroup per surviving cluster. Two runs when
+  // The deformed-vertex pool for one run of every view's visible list: copy each run's survivor
+  // count into an indirect dispatch block, then one workgroup per surviving cluster. Two runs when
   // occlusion culling splits the cut, because pass 2's entries are not known until its cull has
   // run and the pool has to hold pass 1's positions before pass 1 draws.
   auto add_deform = [&](u32 run) {
-    const u64 source_offset = run == 2 ? 0 : u64{cull.count_index} * sizeof(u32);
+    const u64 source_offset = run == 2 ? 0 : u64{count_index} * sizeof(u32);
     const gfx::RgBuffer rg_source = run == 2 ? rg_sw_args : rg_args[run];
     graph.add_pass(
         "deform args", gfx::PassKind::Transfer,
-        [&, rg_source, run](gfx::PassBuilder& b) {
+        [&, rg_source](gfx::PassBuilder& b) {
           b.read(rg_source, gfx::Access::TransferRead);
-          b.write(rg_deform_args[run], gfx::Access::TransferWrite);
+          b.write(rg_deform_args, gfx::Access::TransferWrite);
         },
         [&, run, source_offset](VkCommandBuffer cb, gfx::RenderGraph&) {
-          const VkBufferCopy copy{source_offset, 0, sizeof(u32)};
           const VkBuffer source = run == 2 ? scene.sw_args.buffer : scene.draw_args[run].buffer;
-          vkCmdCopyBuffer(cb, source, scene.deform_args[run].buffer, 1, &copy);
+          for (u32 v = 0; v < views; ++v) {
+            const VkBufferCopy copy{view_frames[v].args_offset + source_offset,
+                                    scene.deform_args_offset(v, run), sizeof(u32)};
+            vkCmdCopyBuffer(cb, source, scene.deform_args.buffer, 1, &copy);
+          }
         });
-    const gfx::DeformParams* params = &deform_params[run];
     graph.add_pass(
         "deform", gfx::PassKind::Compute,
-        [&, rg_source, run](gfx::PassBuilder& b) {
+        [&, rg_source](gfx::PassBuilder& b) {
           b.read(rg_source, gfx::Access::ComputeRead);  // the run's count word
-          b.read(rg_deform_args[run], gfx::Access::IndirectRead);
+          b.read(rg_deform_args, gfx::Access::IndirectRead);
           b.read(rg_visible, gfx::Access::ComputeRead);
           b.write(rg_pool, gfx::Access::ComputeWrite);
         },
-        [&, params, run](VkCommandBuffer cb, gfx::RenderGraph&) {
-          timer.begin(cb, "deform");
+        [&, run](VkCommandBuffer cb, gfx::RenderGraph&) {
           vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines.deform.pipeline);
-          vkCmdPushConstants(cb, pipelines.deform.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                             sizeof(*params), params);
-          vkCmdDispatchIndirect(cb, scene.deform_args[run].buffer, 0);
-          timer.end(cb);
+          for (u32 v = 0; v < views; ++v) {
+            timer.begin(cb, k_zone_names[k_zone_deform][v]);
+            vkCmdPushConstants(cb, pipelines.deform.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                               sizeof(gfx::DeformParams), &deform_params[v][run]);
+            vkCmdDispatchIndirect(cb, scene.deform_args.buffer, scene.deform_args_offset(v, run));
+            timer.end(cb);
+          }
         });
   };
-  auto add_hw_draw = [&](u32 list, const gfx::ClusterDrawParams* params) {
+  // One raster pass, one draw per view, each through a viewport at the origin of its own source
+  // rectangle: a view rasterizes into its own region of the visibility buffer, in view-local
+  // pixels, which is why none of the three rasterizers needed a line changed for multi-view.
+  auto add_hw_draw = [&](u32 list, u32 run) {
     graph.add_pass(
         "hardware", gfx::PassKind::Raster,
         [&, list](gfx::PassBuilder& b) {
-          b.render_area(extent_width, extent_height);
+          b.render_area(raster_width, raster_height);
           b.write(rg_vis, gfx::Access::FragmentReadWrite);
           if (cull_on) {
             b.read(rg_args[list], gfx::Access::IndirectRead);
@@ -888,60 +1067,74 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           if (deform_on)
             b.read(rg_pool, vertex_path ? gfx::Access::VertexRead : gfx::Access::MeshRead);
         },
-        [&, list, params](VkCommandBuffer cb, gfx::RenderGraph&) {
-          timer.begin(cb, "hw");
+        [&, list, run](VkCommandBuffer cb, gfx::RenderGraph&) {
           vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             vertex_path ? pipelines.vertex : pipelines.hardware);
           bindless.bind(cb, VK_PIPELINE_BIND_POINT_GRAPHICS);
-          vkCmdPushConstants(cb, bindless.pipeline_layout(), VK_SHADER_STAGE_ALL, 0,
-                             sizeof(*params), params);
-          if (vertex_path) {
-            if (cull_on) {
-              vkCmdDrawIndirect(cb, scene.draw_args[list].buffer, 0, 1, sizeof(u32) * 4);
+          for (u32 v = 0; v < views; ++v) {
+            timer.begin(cb, k_zone_names[k_zone_hw][v]);
+            set_view_viewport(cb, 0, 0, view_frames[v].width, view_frames[v].height);
+            vkCmdPushConstants(cb, bindless.pipeline_layout(), VK_SHADER_STAGE_ALL, 0,
+                               sizeof(gfx::ClusterDrawParams), &draws[v][run]);
+            if (vertex_path) {
+              if (cull_on) {
+                vkCmdDrawIndirect(cb, scene.draw_args[list].buffer, view_frames[v].args_offset, 1,
+                                  sizeof(u32) * 4);
+              } else {
+                vkCmdDraw(cb, triangles_per_cluster * 3, leaf_count, 0, 0);
+              }
+            } else if (cull_on) {
+              vkCmdDrawMeshTasksIndirectEXT(cb, scene.draw_args[list].buffer,
+                                            view_frames[v].args_offset, 1, sizeof(u32) * 3);
             } else {
-              vkCmdDraw(cb, triangles_per_cluster * 3, leaf_count, 0, 0);
+              vkCmdDrawMeshTasksEXT(cb, leaf_count, 1, 1);
             }
-          } else if (cull_on) {
-            vkCmdDrawMeshTasksIndirectEXT(cb, scene.draw_args[list].buffer, 0, 1, sizeof(u32) * 3);
-          } else {
-            vkCmdDrawMeshTasksEXT(cb, leaf_count, 1, 1);
+            timer.end(cb);
           }
-          timer.end(cb);
         });
   };
+  // A view's whole pyramid, mip by mip: the mips of one pyramid depend on each other and have to
+  // be barriered anyway, and building the views one after another keeps a view's Hi-Z one zone.
   auto add_hiz = [&](u32 set) {
-    for (u32 m = 0; m < targets.hiz_mips; ++m) {
-      gfx::HizParams* level = &targets.hiz_levels[set * targets.hiz_mips + m];
-      *level = gfx::HizParams{};
-      level->from_visibility = m == 0 ? 1u : 0u;
-      level->src =
-          m == 0 ? targets.vis.address : targets.hiz.address + u64{targets.hiz_offsets[m - 1]} * 4;
-      level->dst = targets.hiz.address + u64{targets.hiz_offsets[m]} * 4;
-      level->src_width = m == 0 ? extent_width : gfx::hiz_mip_extent(extent_width, m - 1);
-      level->src_height = m == 0 ? extent_height : gfx::hiz_mip_extent(extent_height, m - 1);
-      level->dst_width = gfx::hiz_mip_extent(extent_width, m);
-      level->dst_height = gfx::hiz_mip_extent(extent_height, m);
-      graph.add_pass(
-          "hiz", gfx::PassKind::Compute,
-          [&, m](gfx::PassBuilder& b) {
-            if (m == 0) b.read(rg_vis, gfx::Access::ComputeRead);
-            b.write(rg_hiz, gfx::Access::ComputeReadWrite);
-          },
-          [&, level, m](VkCommandBuffer cb, gfx::RenderGraph&) {
-            if (m == 0) timer.begin(cb, "hiz");
-            vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines.hiz.pipeline);
-            vkCmdPushConstants(cb, pipelines.hiz.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                               sizeof(*level), level);
-            vkCmdDispatch(cb, gfx::hiz_group_count(level->dst_width),
-                          gfx::hiz_group_count(level->dst_height), 1);
-            if (m + 1 == targets.hiz_mips) timer.end(cb);
-          });
+    for (u32 v = 0; v < views; ++v) {
+      const ViewTarget& target = targets.views[v];
+      for (u32 m = 0; m < target.hiz_mips; ++m) {
+        gfx::HizParams* level = &targets.hiz_levels[target.level_base + set * target.hiz_mips + m];
+        *level = gfx::HizParams{};
+        level->from_visibility = m == 0 ? 1u : 0u;
+        level->src = m == 0 ? view_frames[v].vis_address
+                            : targets.hiz.address + u64{target.hiz_offsets[m - 1]} * 4;
+        level->dst = targets.hiz.address + u64{target.hiz_offsets[m]} * 4;
+        level->src_width = m == 0 ? target.width : gfx::hiz_mip_extent(target.width, m - 1);
+        level->src_height = m == 0 ? target.height : gfx::hiz_mip_extent(target.height, m - 1);
+        level->dst_width = gfx::hiz_mip_extent(target.width, m);
+        level->dst_height = gfx::hiz_mip_extent(target.height, m);
+        const bool first = m == 0;
+        const bool last = m + 1 == target.hiz_mips;
+        graph.add_pass(
+            "hiz", gfx::PassKind::Compute,
+            [&, first](gfx::PassBuilder& b) {
+              if (first) b.read(rg_vis, gfx::Access::ComputeRead);
+              b.write(rg_hiz, gfx::Access::ComputeReadWrite);
+            },
+            [&, level, first, last, v](VkCommandBuffer cb, gfx::RenderGraph&) {
+              if (first) timer.begin(cb, k_zone_names[k_zone_hiz][v]);
+              vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines.hiz.pipeline);
+              vkCmdPushConstants(cb, pipelines.hiz.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                                 sizeof(*level), level);
+              vkCmdDispatch(cb, gfx::hiz_group_count(level->dst_width),
+                            gfx::hiz_group_count(level->dst_height), 1);
+              if (last) timer.end(cb);
+            });
+      }
     }
   };
 
   if (cull_on) add_cull(0, 0);
   if (deform_on) add_deform(0);
   if (direct) {
+    // The direct path is single-view by construction: it draws mesh shaders straight to color.
+    const gfx::ClusterDrawParams* params = &draws[0][0];
     graph.add_pass(
         "direct", gfx::PassKind::Raster,
         [&](gfx::PassBuilder& b) {
@@ -954,12 +1147,12 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           }
           if (deform_on) b.read(rg_pool, gfx::Access::MeshRead);
         },
-        [&](VkCommandBuffer cb, gfx::RenderGraph&) {
-          timer.begin(cb, "hw");
+        [&, params](VkCommandBuffer cb, gfx::RenderGraph&) {
+          timer.begin(cb, k_zone_names[k_zone_hw][0]);
           vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.direct);
           bindless.bind(cb, VK_PIPELINE_BIND_POINT_GRAPHICS);
-          vkCmdPushConstants(cb, bindless.pipeline_layout(), VK_SHADER_STAGE_ALL, 0, sizeof(draw),
-                             &draw);
+          vkCmdPushConstants(cb, bindless.pipeline_layout(), VK_SHADER_STAGE_ALL, 0,
+                             sizeof(*params), params);
           if (cull_on) {
             vkCmdDrawMeshTasksIndirectEXT(cb, scene.draw_args[0].buffer, 0, 1, sizeof(u32) * 3);
           } else {
@@ -968,12 +1161,12 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           timer.end(cb);
         });
   } else {
-    if (use_hw) add_hw_draw(0, &draw);
+    if (use_hw) add_hw_draw(0, 0);
     if (occlusion) {
       add_hiz(0);
       add_cull(1, 1);
       if (deform_on) add_deform(1);
-      add_hw_draw(1, &draw_pass2);
+      add_hw_draw(1, 1);
       add_hiz(1);
     }
     if (use_sw) {
@@ -987,12 +1180,14 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             if (deform_on) b.read(rg_pool, gfx::Access::ComputeRead);
           },
           [&](VkCommandBuffer cb, gfx::RenderGraph&) {
-            timer.begin(cb, "sw");
             vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines.software.pipeline);
-            vkCmdPushConstants(cb, pipelines.software.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                               sizeof(draw_sw), &draw_sw);
-            vkCmdDispatchIndirect(cb, scene.sw_args.buffer, 0);
-            timer.end(cb);
+            for (u32 v = 0; v < views; ++v) {
+              timer.begin(cb, k_zone_names[k_zone_sw][v]);
+              vkCmdPushConstants(cb, pipelines.software.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                                 sizeof(gfx::ClusterDrawParams), &draws[v][2]);
+              vkCmdDispatchIndirect(cb, scene.sw_args.buffer, view_frames[v].args_offset);
+              timer.end(cb);
+            }
           });
     }
     if (rt_chain) {
@@ -1001,13 +1196,13 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       // records, build every CLAS in one command, build one cluster bottom-level structure per
       // instance, and top-level over them. The picture is traced against it under the ray path
       // and the shadow rays are traced against it whenever shadows are on, so the chain is the
-      // same passes in the same order for both.
+      // same passes in the same order for both. Its dispatches cover every view's first run.
       const gfx::ComputePipeline* record_passes[3] = {&pipelines.records, &pipelines.record_ranges,
                                                       &pipelines.record_emit};
       const char* record_names[3] = {"records", "ranges", "emit"};
-      const u32 record_groups[3] = {
-          (pair_count + gfx::k_cluster_records_workgroup - 1) / gfx::k_cluster_records_workgroup, 1,
-          (pair_count + gfx::k_cluster_records_workgroup - 1) / gfx::k_cluster_records_workgroup};
+      const u32 union_groups = (views * pair_count + gfx::k_cluster_records_workgroup - 1) /
+                               gfx::k_cluster_records_workgroup;
+      const u32 record_groups[3] = {union_groups, 1, union_groups};
       for (u32 p = 0; p < 3; ++p) {
         graph.add_pass(
             record_names[p], gfx::PassKind::Compute,
@@ -1102,16 +1297,20 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             b.write(rg_vis, gfx::Access::ComputeWrite);
           },
           [&](VkCommandBuffer cb, gfx::RenderGraph&) {
-            timer.begin(cb, "trace");
             vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines.trace.pipeline);
             bindless.bind(cb, VK_PIPELINE_BIND_POINT_COMPUTE);
-            vkCmdPushConstants(cb, pipelines.trace.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                               sizeof(u64), &ray_address);
-            vkCmdDispatch(cb, gfx::ray_visibility_group_count(extent_width),
-                          gfx::ray_visibility_group_count(extent_height), 1);
-            timer.end(cb);
+            for (u32 v = 0; v < views; ++v) {
+              timer.begin(cb, k_zone_names[k_zone_trace][v]);
+              vkCmdPushConstants(cb, pipelines.trace.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                                 sizeof(u64), &view_frames[v].ray_address);
+              vkCmdDispatch(cb, gfx::ray_visibility_group_count(view_frames[v].width),
+                            gfx::ray_visibility_group_count(view_frames[v].height), 1);
+              timer.end(cb);
+            }
           });
     }
+    // One resolve pass, one fullscreen draw per view through that view's rectangle of the target.
+    // The clear covers the whole target once, so a pixel no view owns keeps the sky.
     graph.add_pass(
         "resolve", gfx::PassKind::Raster,
         [&](gfx::PassBuilder& b) {
@@ -1126,13 +1325,17 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           }
         },
         [&](VkCommandBuffer cb, gfx::RenderGraph&) {
-          timer.begin(cb, "resolve");
           vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.resolve);
           bindless.bind(cb, VK_PIPELINE_BIND_POINT_GRAPHICS);
-          vkCmdPushConstants(cb, bindless.pipeline_layout(), VK_SHADER_STAGE_ALL, 0, sizeof(u64),
-                             &resolve_address);
-          vkCmdDraw(cb, 3, 1, 0, 0);
-          timer.end(cb);
+          for (u32 v = 0; v < views; ++v) {
+            timer.begin(cb, k_zone_names[k_zone_resolve][v]);
+            const View& view = views_[v];
+            set_view_viewport(cb, view.rect.x, view.rect.y, view.rect.width, view.rect.height);
+            vkCmdPushConstants(cb, bindless.pipeline_layout(), VK_SHADER_STAGE_ALL, 0, sizeof(u64),
+                               &view_frames[v].resolve_address);
+            vkCmdDraw(cb, 3, 1, 0, 0);
+            timer.end(cb);
+          }
         });
   }
   if (cull_on) {
@@ -1148,9 +1351,13 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
         [&, stat_target](VkCommandBuffer cb, gfx::RenderGraph&) {
           const gfx::BufferResource* arg_blocks[3] = {&scene.draw_args[0], &scene.draw_args[1],
                                                       &scene.sw_args};
-          for (u32 i = 0; i < 3; ++i) {
-            const VkBufferCopy copy{0, sizeof(u32) * 3 * i, sizeof(u32) * 3};
-            vkCmdCopyBuffer(cb, arg_blocks[i]->buffer, stat_target->buffer, 1, &copy);
+          for (u32 v = 0; v < views; ++v) {
+            for (u32 i = 0; i < 3; ++i) {
+              const VkBufferCopy copy{view_frames[v].args_offset,
+                                      sizeof(u32) * (u64{v} * k_stat_words + 3 * i),
+                                      sizeof(u32) * 3};
+              vkCmdCopyBuffer(cb, arg_blocks[i]->buffer, stat_target->buffer, 1, &copy);
+            }
           }
         });
   }
@@ -1219,65 +1426,79 @@ bool SceneRenderer::capture(const FrameDesc& frame, const CaptureChannels& chann
 // resolve does in `visible_entry`, including the no-cull case where the list is null and entry i
 // is {0, i}. Both are read back here so that what a capture reports is the pair, not an index
 // into a list that will not exist a frame later.
+//
+// **A capture is in the target's pixels, whatever the layout.** Each view owns a rectangle of the
+// target and a region of the visibility buffer, so the walk is per view: a pixel inside a view's
+// rectangle reads that view's region, a pixel no view covers is empty, and a view whose source is
+// wider than its rectangle — a Panini view — is sampled through the same map the resolve used, so
+// an id in a capture names what is under that pixel of the picture. The ids of two views are
+// looked up in the *same* list, because the runs share one array and one index space.
 bool SceneRenderer::read_visibility(CapturedFrame& out, const CaptureChannels& channels,
                                     std::string* error) {
-  const u64 pixels = u64{width_} * height_;
   Vector<u8> vis_bytes;
-  if (!read_buffer(*device_, targets_.vis, pixels * sizeof(u64), vis_bytes, error)) return false;
+  if (!read_buffer(*device_, targets_.vis, targets_.vis.size, vis_bytes, error)) return false;
   Vector<u8> visible_bytes;
   const bool has_list = resolved_.settings.cull && scene_->visible_run_bytes() > 0;
-  if (has_list &&
-      !read_buffer(*device_, scene_->visible, scene_->visible_run_bytes() * k_visible_runs,
-                   visible_bytes, error)) {
+  const u64 list_bytes = scene_->visible_run_bytes() * k_visible_runs * scene_->view_count();
+  if (has_list && !read_buffer(*device_, scene_->visible, list_bytes, visible_bytes, error)) {
     return false;
   }
   const auto* values = reinterpret_cast<const u64*>(vis_bytes.data());
   const auto* entries = reinterpret_cast<const u32*>(visible_bytes.data());
-  const u32 entry_count =
-      has_list ? static_cast<u32>(scene_->visible_run_bytes() * k_visible_runs / 8) : 0;
-  const u32 pixel_count = static_cast<u32>(pixels);
+  const u32 entry_count = has_list ? static_cast<u32>(list_bytes / 8) : 0;
+  const u32 pixel_count = static_cast<u32>(u64{width_} * height_);
   if (channels.ids) out.ids.resize(pixel_count * k_id_words);
   if (channels.depth) out.depth.resize(pixel_count);
+  if (channels.ids) {
+    for (u32 p = 0; p < pixel_count; ++p) {
+      out.ids[p * k_id_words + 0] = k_no_id;
+      out.ids[p * k_id_words + 1] = k_no_id;
+      out.ids[p * k_id_words + 2] = k_no_id;
+    }
+  }
   f32 lo = 0.0f;
   f32 hi = 0.0f;
-  for (u32 p = 0; p < pixel_count; ++p) {
-    const u64 value = values[p];
-    if (value == 0) {
-      if (channels.ids) {
-        out.ids[p * k_id_words + 0] = k_no_id;
-        out.ids[p * k_id_words + 1] = k_no_id;
-        out.ids[p * k_id_words + 2] = k_no_id;
+  for (u32 v = 0; v < views_.size(); ++v) {
+    const View& view = views_[v];
+    const ViewTarget& target = targets_.views[v];
+    for (u32 y = 0; y < view.rect.height; ++y) {
+      for (u32 x = 0; x < view.rect.width; ++x) {
+        const u32 p = (view.rect.y + y) * width_ + view.rect.x + x;
+        u32 sx = x;
+        u32 sy = y;
+        if (views_.resample() && !panini_source_pixel(views_, view, x, y, sx, sy)) continue;
+        const u64 value = values[target.vis_offset + u64{sy} * target.width + sx];
+        if (value == 0) continue;
+        ++out.covered;
+        const u32 id = static_cast<u32>(value & 0xffffffffu);
+        if (channels.depth) {
+          const u32 bits = static_cast<u32>(value >> 32);
+          f32 depth = 0.0f;
+          std::memcpy(&depth, &bits, sizeof(depth));
+          out.depth[p] = depth;
+          if (out.covered == 1) {
+            lo = hi = depth;
+          } else {
+            lo = depth < lo ? depth : lo;
+            hi = depth > hi ? depth : hi;
+          }
+        }
+        if (!channels.ids) continue;
+        const u32 index = id >> 8;
+        u32 instance = 0;
+        u32 cluster = index;
+        if (has_list && index < entry_count) {
+          instance = entries[index * 2 + 0];
+          cluster = entries[index * 2 + 1];
+        } else if (has_list) {
+          instance = k_no_id;  // an id past the list: the frame and the readback disagree
+          cluster = k_no_id;
+        }
+        out.ids[p * k_id_words + 0] = instance;
+        out.ids[p * k_id_words + 1] = cluster;
+        out.ids[p * k_id_words + 2] = id & 0xffu;
       }
-      continue;
     }
-    ++out.covered;
-    const u32 id = static_cast<u32>(value & 0xffffffffu);
-    if (channels.depth) {
-      const u32 bits = static_cast<u32>(value >> 32);
-      f32 depth = 0.0f;
-      std::memcpy(&depth, &bits, sizeof(depth));
-      out.depth[p] = depth;
-      if (out.covered == 1) {
-        lo = hi = depth;
-      } else {
-        lo = depth < lo ? depth : lo;
-        hi = depth > hi ? depth : hi;
-      }
-    }
-    if (!channels.ids) continue;
-    const u32 index = id >> 8;
-    u32 instance = 0;
-    u32 cluster = index;
-    if (has_list && index < entry_count) {
-      instance = entries[index * 2 + 0];
-      cluster = entries[index * 2 + 1];
-    } else if (has_list) {
-      instance = k_no_id;  // an id past the list: the frame and the readback disagree
-      cluster = k_no_id;
-    }
-    out.ids[p * k_id_words + 0] = instance;
-    out.ids[p * k_id_words + 1] = cluster;
-    out.ids[p * k_id_words + 2] = id & 0xffu;
   }
   out.depth_min = lo;
   out.depth_max = hi;

@@ -32,6 +32,7 @@ bool GpuScene::create(const gfx::Device& device, const SceneData& data,
   data_ = &data;
   ray_tracing_ = resolved.rt_chain;
   deform_ = resolved.settings.deform;
+  view_count_ = resolved.view_count > 0 ? resolved.view_count : 1;
   cluster_count_ = data.cluster_count();
   leaf_count_ = data.leaf_count();
   instance_count_ = data.instances.size();
@@ -119,13 +120,16 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
     constexpr VkBufferUsageFlags k_pool_usage =
         k_address | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
         VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
-    bool ok =
+    // One indirect dispatch block per (view, run): every view's pool pass covers its own cut, and
+    // a vertex two views both draw is written twice with the same value, which costs bandwidth
+    // and nothing else.
+    const bool ok =
         gfx::create_buffer(device, deform_pool_bytes_, k_pool_usage, false, deform_pool, error) &&
         gfx::upload_buffer(device, deform_descs.data(),
                            deform_descs.size() * sizeof(gfx::DeformDesc), k_storage, deform_table,
-                           error);
-    for (gfx::BufferResource& args : deform_args)
-      ok = ok && gfx::create_buffer(device, sizeof(u32) * 3, k_args, false, args, error);
+                           error) &&
+        gfx::create_buffer(device, u64{gfx::k_draw_args_bytes} * k_visible_runs * view_count_,
+                           k_args, false, deform_args, error);
     if (!ok) return false;
     ENGINE_LOG_INFO(
         log_renderer, "deformed-vertex pool", log::field("mode", deform_name(resolved.settings)),
@@ -296,19 +300,26 @@ bool GpuScene::upload_materials(const ResolvedSettings&, std::string* error) {
 
 bool GpuScene::create_working_set(const ResolvedSettings&, std::string* error) {
   const gfx::Device& device = *device_;
-  // One visible list for the whole frame, in three runs: the hardware pass 1, the hardware pass
-  // 2, and the software rasterizer. A visibility id names an entry of the whole list, so the
-  // resolve reads one array however many draws filled it, and each draw's `visible_offset` is
-  // where its run starts. Every run is as long as the pair count, which is as many entries as
-  // any one draw can produce.
+  // One visible list for the whole frame, in three runs per view: the hardware pass 1, the
+  // hardware pass 2, and the software rasterizer. A visibility id names an entry of the whole
+  // list, so the resolve of any view reads one array however many draws of however many views
+  // filled it, and each draw's `visible_offset` is where its run starts. Every run is as long as
+  // the pair count, which is as many entries as any one draw can produce.
+  //
+  // Run-major (`visible_base`): run r of view v starts at `(r * views + v) * pair_count`, so the
+  // first run of every view is one contiguous range at the front. That range is what the ray
+  // tracing chain builds the union of the views' cuts from in a single dispatch.
   const u64 visible_entry_bytes = 2 * sizeof(u32);
   visible_run_bytes_ = u64{pair_count_} * visible_entry_bytes;
-  bool ok = gfx::create_buffer(device, visible_run_bytes_ * k_visible_runs, k_readable, false,
-                               visible, error) &&
-            gfx::create_buffer(device, sizeof(u32) * 3, k_args, false, sw_args, error);
+  bool ok = gfx::create_buffer(device, visible_run_bytes_ * k_visible_runs * view_count_,
+                               k_readable, false, visible, error) &&
+            gfx::create_buffer(device, u64{gfx::k_draw_args_bytes} * view_count_, k_args, false,
+                               sw_args, error);
   for (u32 i = 0; i < 2; ++i) {
-    ok = ok && gfx::create_buffer(device, sizeof(u32) * 4, k_args, false, draw_args[i], error) &&
-         gfx::create_buffer(device, u64{pair_count_} * sizeof(u32),
+    ok = ok &&
+         gfx::create_buffer(device, u64{gfx::k_draw_args_bytes} * view_count_, k_args, false,
+                            draw_args[i], error) &&
+         gfx::create_buffer(device, u64{pair_count_} * view_count_ * sizeof(u32),
                             k_address | VK_BUFFER_USAGE_TRANSFER_DST_BIT, false, flags[i], error);
   }
   return ok;
@@ -323,39 +334,48 @@ bool GpuScene::create_ray_tracing(const ResolvedSettings& resolved, std::string*
   // largest geometry index is the last pair. One cluster bottom-level structure per instance,
   // sized for that instance's mesh; the top-level structure instances them with the world
   // transforms and a custom index that is the scene instance.
+  //
+  // **Times the view count.** The structures hold the union of the views' cuts, and in the worst
+  // case every view draws every pair, so the capacity is `views * pair_count` and the largest
+  // geometry index is the last entry of the views' first runs, which run-major ordering puts at
+  // `views * pair_count - 1`. The capacity is what is allocated; what a frame actually builds is
+  // `record_count`, and on a surround the views see nearly disjoint thirds of the world, so the
+  // records built stay close to one view's while the allocation is three times it.
+  const u32 union_clusters = pair_count_ * view_count_;
   Vector<u8> packed;
   gfx::pack_cluster_indices(
       std::span<const u32>(lod.mesh.triangles.data(), lod.mesh.triangles.size()), packed);
   gfx::ClusterSetLimits limits;
-  limits.max_clusters = pair_count_;
+  limits.max_clusters = union_clusters;
   limits.max_triangles_per_cluster = triangles_per_cluster_;
   limits.max_vertices_per_cluster = geometry::ClusterLodOptions{}.max_vertices;
-  limits.max_geometry_index = pair_count_ - 1;
+  limits.max_geometry_index = union_clusters - 1;
   limits.instantiate = resolved.settings.rt_templates;
   constexpr VkBufferUsageFlags k_record_usage =
       k_address | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
-  bool ok =
-      gfx::upload_buffer(device, packed.data(), packed.size(), gfx::k_build_input_usage, indices8,
-                         error) &&
-      gfx::create_buffer(device, gfx::k_cluster_build_record_bytes * pair_count_, k_record_usage,
-                         false, records, error) &&
-      gfx::create_buffer(device, sizeof(u32), k_record_usage, false, record_count, error) &&
-      gfx::create_buffer(device, u64{pair_count_} * sizeof(u32), k_address, false, slots, error) &&
-      gfx::create_buffer(device, u64{instance_count_} * sizeof(u32),
-                         k_address | VK_BUFFER_USAGE_TRANSFER_DST_BIT, false, instance_counts,
-                         error) &&
-      gfx::create_buffer(device, u64{instance_count_} * sizeof(u32), k_address, false,
-                         instance_first, error) &&
-      gfx::create_buffer(device, gfx::k_cluster_blas_record_bytes * instance_count_, k_record_usage,
-                         false, blas_records, error) &&
-      gfx::create_cluster_set(device, limits, clas_set, error) &&
-      gfx::create_tlas(device, instance_count_, gfx::k_build_fast_trace, tlas, error) &&
-      gfx::create_buffer(device, gfx::k_instance_record_bytes * instance_count_,
-                         gfx::k_build_input_usage, true, rt_instances, error);
+  bool ok = gfx::upload_buffer(device, packed.data(), packed.size(), gfx::k_build_input_usage,
+                               indices8, error) &&
+            gfx::create_buffer(device, gfx::k_cluster_build_record_bytes * union_clusters,
+                               k_record_usage, false, records, error) &&
+            gfx::create_buffer(device, sizeof(u32), k_record_usage, false, record_count, error) &&
+            gfx::create_buffer(device, u64{union_clusters} * sizeof(u32), k_address, false, slots,
+                               error) &&
+            gfx::create_buffer(device, u64{instance_count_} * sizeof(u32),
+                               k_address | VK_BUFFER_USAGE_TRANSFER_DST_BIT, false, instance_counts,
+                               error) &&
+            gfx::create_buffer(device, u64{instance_count_} * sizeof(u32), k_address, false,
+                               instance_first, error) &&
+            gfx::create_buffer(device, gfx::k_cluster_blas_record_bytes * instance_count_,
+                               k_record_usage, false, blas_records, error) &&
+            gfx::create_cluster_set(device, limits, clas_set, error) &&
+            gfx::create_tlas(device, instance_count_, gfx::k_build_fast_trace, tlas, error) &&
+            gfx::create_buffer(device, gfx::k_instance_record_bytes * instance_count_,
+                               gfx::k_build_input_usage, true, rt_instances, error);
   u64 blas_bytes = 0;
   cluster_blas.resize(instance_count_);
   for (u32 i = 0; i < instance_count_ && ok; ++i) {
-    ok = gfx::create_cluster_blas(device, data_->parts[instance_table_[i].mesh].cluster_count,
+    ok = gfx::create_cluster_blas(device,
+                                  data_->parts[instance_table_[i].mesh].cluster_count * view_count_,
                                   cluster_blas[i], error);
     if (ok) blas_bytes += cluster_blas[i].data.size;
   }
@@ -418,12 +438,16 @@ bool GpuScene::create_ray_tracing(const ResolvedSettings& resolved, std::string*
     }
   }
   if (!ok) return false;
-  ENGINE_LOG_INFO(
-      log_renderer, "ray tracing ready", log::field("pairs", pair_count_),
-      log::field("instances", instance_count_), log::field("clas_bytes", clas_set.data.size),
-      log::field("blas_bytes", blas_bytes), log::field("scratch_bytes", rt_scratch.size),
-      log::field("templates", resolved.settings.rt_templates ? cluster_count_ : 0u),
-      log::field("template_bytes", template_bytes_));
+  rt_bytes_ = clas_set.data.size + blas_bytes + rt_scratch.size + tlas.buffer.size + records.size +
+              template_bytes_;
+  ENGINE_LOG_INFO(log_renderer, "ray tracing ready", log::field("pairs", pair_count_),
+                  log::field("views", view_count_), log::field("union_clusters", union_clusters),
+                  log::field("instances", instance_count_),
+                  log::field("clas_bytes", clas_set.data.size),
+                  log::field("blas_bytes", blas_bytes),
+                  log::field("scratch_bytes", rt_scratch.size), log::field("rt_bytes", rt_bytes_),
+                  log::field("templates", resolved.settings.rt_templates ? cluster_count_ : 0u),
+                  log::field("template_bytes", template_bytes_));
   return true;
 }
 
@@ -447,8 +471,7 @@ void GpuScene::destroy() noexcept {
   gfx::destroy_buffer(device, record_count);
   gfx::destroy_buffer(device, records);
   gfx::destroy_buffer(device, indices8);
-  for (gfx::BufferResource& args : deform_args)
-    gfx::destroy_buffer(device, args);
+  gfx::destroy_buffer(device, deform_args);
   gfx::destroy_buffer(device, deform_table);
   gfx::destroy_buffer(device, deform_pool);
   for (u32 i = 0; i < 2; ++i) {
@@ -484,7 +507,8 @@ void GpuScene::destroy() noexcept {
   data_ = nullptr;
   cluster_count_ = leaf_count_ = instance_count_ = pair_count_ = material_count_ = 0;
   triangles_per_cluster_ = 0;
-  visible_run_bytes_ = deform_pool_bytes_ = template_bytes_ = 0;
+  view_count_ = 1;
+  visible_run_bytes_ = deform_pool_bytes_ = template_bytes_ = rt_bytes_ = 0;
   tlas_slot_ = gfx::BindlessSet::k_invalid_slot;
   ray_tracing_ = deform_ = false;
 }
