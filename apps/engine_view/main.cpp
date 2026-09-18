@@ -1175,6 +1175,14 @@ int main(int argc, char** argv) {
       options.cull = true;  // a scene draws through the cull pass; there is no direct draw of it
       ENGINE_LOG_WARN(log_view, "--no-cull ignored with more than one instance");
     }
+    // A mesh laid out in streaming pages (geometry::build_cluster_pages) is ordered coarse to
+    // fine, so its leaves are the *last* clusters rather than the first and the direct draw's
+    // "clusters 0..leaf_count" would draw the root. The cull pass tests every cluster on its own
+    // and does not care which end they are at.
+    if (!options.cull && !lod.lod.empty() && lod.lod[0].level != 0) {
+      options.cull = true;
+      ENGINE_LOG_WARN(log_view, "--no-cull ignored for a paged mesh: its leaves are not first");
+    }
 
     build_ns = time::monotonic_ns() - build_start;
     const u32 cluster_count = lod.mesh.clusters.size();

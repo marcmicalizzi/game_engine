@@ -4,12 +4,17 @@
 #include <domain/geometry/cluster.h>
 #include <domain/geometry/cluster_file.h>
 #include <domain/geometry/cluster_lod.h>
+#include <domain/geometry/cluster_pages.h>
 
 using namespace engine;
 
 ENGINE_EXPECT_SIZE(48, 4, geometry::ClusterDesc);
 
 ENGINE_EXPECT_SIZE(48, 4, geometry::ClusterLodDesc);
+
+// A page descriptor travels to the GPU with the cluster it names, so its layout is the streaming
+// contract as well as the footprint: twelve words, no padding, a multiple of sixteen bytes.
+ENGINE_EXPECT_SIZE(48, 4, geometry::ClusterPageDesc);
 
 ENGINE_EXPECT_SIZE(8, 4, geometry::VertexAttributes);
 
