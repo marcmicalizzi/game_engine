@@ -96,7 +96,21 @@ At 10^6 LOD3 NPCs with about 5 events per game-day each, running at one game-min
 - **Animation**: own system with SoA poses, blend trees and state machines as data, retargeting via a **standard skeleton** with per-character offsets (this is what makes generated characters tractable), IK for feet and hands, motion matching later.
 - **Audio**: miniaudio for devices and mixing; Steam Audio for spatialization and occlusion, sharing the RT scene geometry.
 
-**Status.** `domain/physics` skeleton with Jolt 5.6, 2026-09-17: rigid bodies, shapes (box, sphere, capsule, convex hull, triangle mesh, heightfield, compound), ray and shape casts, drained contact events, the debris pool with its hard cap, and XPBD soft bodies behind the engine's own types, running Jolt's jobs on `core/jobs` with cross-platform determinism on (measured at 1.6–3.6%, not the estimated 8%); character controllers, constraints, and rollback state are pending. See [physics](../subsystems/physics.md).
+**Status (navigation).** `domain/nav` with Recast/Detour 1.6.0, 2026-09-17: tiles built on the
+world grid from triangle soup, added, replaced and removed at run time; string-pulled paths,
+nearest-point and walkability queries; off-mesh links added and removed at run time, each
+re-baking one tile and no voxelization; an asynchronous rebuild queue on the job system's
+efficiency pool that coalesces a doubly-requested tile, orders by observer distance with a
+starvation guard, and applies results in tile order on the caller's thread; the
+region-connectivity graph for LOD2/LOD3 estimates, built from the same tile bytes as the detailed
+mesh and measured at 1.00–1.09× its path length; and a DetourCrowd wrap sized by a cap. Tile
+rebuild latency is measured — [E11](10-roadmap-risks.md#105-experiments-to-run-before-committing)'s
+first data point — and it is a range rather than a number: 7.2 / 32.3 / 133.4 ms for 32, 64 and
+128 m tiles at 0.25 m cells, and 2.0 / 8.4 / 42.5 ms for the same tiles at half the resolution
+with monotone regions and no detail mesh. Temporary obstacles (Detour's tile cache), automatic
+jump-link generation, and formation movement are pending. See [nav](../subsystems/nav.md).
+
+**Status (physics).** `domain/physics` skeleton with Jolt 5.6, 2026-09-17: rigid bodies, shapes (box, sphere, capsule, convex hull, triangle mesh, heightfield, compound), ray and shape casts, drained contact events, the debris pool with its hard cap, and XPBD soft bodies behind the engine's own types, running Jolt's jobs on `core/jobs` with cross-platform determinism on (measured at 1.6–3.6%, not the estimated 8%); character controllers, constraints, and rollback state are pending. See [physics](../subsystems/physics.md).
 
 ## 5.12 Multiplayer readiness
 
