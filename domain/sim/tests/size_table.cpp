@@ -1,0 +1,24 @@
+// Size table for domain/sim (ADR-0019, docs/plan/11-performance-principles.md §11.2).
+//
+// The hot type here is `TimingWheel::Slot`: the simulation is expected to hold 10^5-10^6 live
+// timers ([05 §5.6](../../../docs/plan/05-simulation.md#56-what-npc-scale-is-realistic)), so a
+// byte on it is a megabyte at scale. 56 bytes is due time, interval, insertion sequence, the
+// 16-byte payload, the two intrusive list links, the generation, the system id, the level and
+// the flags — nothing spare. Growing it means saying in the commit what the extra bytes buy.
+
+#include <core/base/size_table.h>
+#include <domain/sim/timing_wheel.h>
+
+using namespace engine;
+using namespace engine::sim;
+
+// The timing wheel.
+ENGINE_EXPECT_SIZE(56, 8, TimingWheel::Slot);
+ENGINE_EXPECT_SIZE(8, 4, TimerHandle);
+ENGINE_EXPECT_SIZE(16, 8, TimerPayload);
+ENGINE_EXPECT_SIZE(56, 8, TimerEvent);
+ENGINE_EXPECT_SIZE(16, 8, EventSink);
+ENGINE_EXPECT_SIZE(40, 8, SummarizeInterval);
+ENGINE_EXPECT_SIZE(32, 8, Summarizer);
+ENGINE_EXPECT_SIZE(24, 8, TimingWheelConfig);
+ENGINE_EXPECT_SIZE(56, 8, FastForwardResult);

@@ -20,6 +20,8 @@
 - Two kinds of scheduled work: `Timer(entity, kind, at)` and `Periodic(system, interval, phase)`. Economy hourly, ecology daily, settlement weekly are periodics.
 - **Fast-forward.** Advancing game time by Δ processes wheel events in order under a budget. If the count exceeds the budget, systems are asked to coarsen via `SummarizeInterval(from, to)` rather than execute every event. Every LOD2/LOD3 system must implement `SummarizeInterval`.
 
+**Status.** Built in `domain/sim` as `TimingWheel`, 2026-09-17: five levels, O(1) insert (68 ns at 10^6 timers) and cancel (32 ns) with generation-checked handles, delivery ordered by (due time, insertion sequence), a far list for anything past the top level's ~2.8-year span, and the budgeted fast-forward with its summarizer table — the five conditions a system's `SummarizeInterval` has to meet are written down in [sim](../subsystems/sim.md), because "implement it" was not a contract.
+
 ## 5.4 LOD tier assignment
 
 - Tiers as in the brief (LOD0 immediate, LOD1 nearby, LOD2 loaded, LOD3 distant); the *number* is configurable per game.
