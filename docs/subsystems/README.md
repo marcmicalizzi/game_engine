@@ -44,6 +44,7 @@ One page per module, created in the same change that creates the module. Templat
 | store (capability) | foundation | [store.md](store.md) |
 | doc | domain | [doc.md](doc.md) |
 | geometry | domain | [geometry.md](geometry.md) |
+| anim | domain | [anim.md](anim.md) |
 | assets | domain | [assets.md](assets.md) |
 | gfx | domain | [gfx.md](gfx.md) |
 | protocol | domain | [protocol.md](protocol.md) |
