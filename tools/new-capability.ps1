@@ -105,12 +105,106 @@ function Get-DeclaredModules([string]$root) {
 $created = New-Object System.Collections.Generic.List[string]
 $touched = New-Object System.Collections.Generic.List[string]
 
+# ---- staying clang-format clean ----------------------------------------------------------------
+#
+# A freshly scaffolded capability has to pass `tools/dev.ps1 format` unchanged, or the first thing
+# the new owner sees is a diff they did not write and cannot tell from a mistake. Two things in
+# these templates are not clean by construction, and both are about the capability's *name*:
+#
+#  1. **Comment width.** Every comment line here is interpolated with the name, so a line that fits
+#     for `cloth` overruns `ColumnLimit` for `scent_field` — and clang-format then reflows it into
+#     the rest of the paragraph, which mangles a checklist row. `Split-LongCommentLine` wraps any
+#     generated comment that overruns, and nothing that fits is touched, so the output is a fixed
+#     point of clang-format for a name of any length.
+#  2. **Include order.** `.clang-format` regroups and sorts includes by category, and which category
+#     a capability's own header falls into depends on its layer, so the block cannot be written out
+#     by hand and be right for every layer. `Format-IncludeBlock` applies the same rules.
+#
+# Both are checked by `tools/new-capability.Tests.ps1`, which scaffolds with a deliberately long
+# name and asserts clang-format changes nothing.
+
+$script:ColumnLimit = 100
+
+# `.clang-format`'s IncludeCategories, in its order. Keep the two in agreement.
+function Get-IncludePriority([string]$include) {
+  if ($include.StartsWith('"')) { return 1 }
+  if ($include -match '^<(core|foundation|domain|systems|apps|game)/') { return 2 }
+  if ($include -match '^<(doctest|SDL3|vulkan|Jolt|tracy|sqlite3|slang)') { return 3 }
+  if ($include -match '^<test_[a-z_]+\.h>$') { return 3 }
+  if ($include -match '^<[a-z_]+>$') { return 4 }
+  if ($include -match '^<.*\.h>$') { return 4 }
+  return 1
+}
+
+# The include block clang-format would produce: sorted by (category, text) with a blank line
+# between categories. Ordinal comparison, because that is what SortIncludes: CaseSensitive does.
+function Format-IncludeBlock([string[]]$includes) {
+  $items = @($includes | Where-Object { $_ })
+  for ($i = 1; $i -lt $items.Count; $i++) {
+    $j = $i
+    while ($j -gt 0) {
+      $a = $items[$j - 1]
+      $b = $items[$j]
+      $pa = Get-IncludePriority $a
+      $pb = Get-IncludePriority $b
+      if ($pa -lt $pb -or ($pa -eq $pb -and [string]::CompareOrdinal($a, $b) -le 0)) { break }
+      $items[$j - 1] = $b
+      $items[$j] = $a
+      $j--
+    }
+  }
+  $out = New-Object System.Collections.Generic.List[string]
+  $previous = 0
+  foreach ($inc in $items) {
+    $priority = Get-IncludePriority $inc
+    if ($previous -ne 0 -and $priority -ne $previous) { $out.Add('') }
+    $out.Add("#include $inc")
+    $previous = $priority
+  }
+  return ($out -join "`n")
+}
+
+# Wraps one over-long `//` line, breaking at the last space that fits and aligning the continuation
+# under the comment's own text so a checklist row stays readable. Everything before the break is
+# kept verbatim, so internal alignment on the first line survives.
+function Split-LongCommentLine([string]$line) {
+  $out = New-Object System.Collections.Generic.List[string]
+  if ($line.Length -le $script:ColumnLimit -or $line -notmatch '^(\s*)//(\s*)(\S.*)$') {
+    $out.Add($line)
+    return $out
+  }
+  $indent = $Matches[1]
+  $gap = $Matches[2]
+  $continuation = "$indent//" + (' ' * [Math]::Max(1, $gap.Length))
+  $minCut = $indent.Length + 2 + $gap.Length
+  $current = $line
+  while ($current.Length -gt $script:ColumnLimit) {
+    $cut = $current.LastIndexOf(' ', [Math]::Min($current.Length - 1, $script:ColumnLimit))
+    if ($cut -le $minCut) { break }   # one unbreakable word: leave it and let the test say so
+    $out.Add($current.Substring(0, $cut).TrimEnd())
+    $current = $continuation + $current.Substring($cut + 1).TrimStart()
+  }
+  $out.Add($current)
+  return $out
+}
+
+function Repair-CommentWidth([string]$text) {
+  $out = New-Object System.Collections.Generic.List[string]
+  foreach ($line in (($text -replace "`r`n", "`n") -split "`n")) {
+    foreach ($piece in (Split-LongCommentLine $line)) { $out.Add($piece) }
+  }
+  return ($out -join "`n")
+}
+
 # Writes one file, LF-terminated and UTF-8 without a BOM (.editorconfig, .gitattributes).
 function New-GeneratedFile([string]$path, [string]$text) {
   if (Test-Path -LiteralPath $path) { throw "refusing to overwrite $path" }
   $dir = Split-Path -Parent $path
   if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
   $text = $text -replace "`r`n", "`n"
+  # C++ only: the docs page is Markdown, where a wrapped line means something different, and the
+  # schema file is not clang-format's.
+  if ($path -match '\.(h|hpp|cpp|inl)$') { $text = Repair-CommentWidth $text }
   if (-not $text.EndsWith("`n")) { $text += "`n" }
   [System.IO.File]::WriteAllText($path, $text, (New-Object System.Text.UTF8Encoding $false))
   $created.Add([IO.Path]::GetRelativePath($Root, $path))
@@ -257,8 +351,9 @@ if ($WithBench) {
   $checklistBench = "[ ] bench             required once there is a hot path; rerun with -WithBench"
 }
 
-$schemaInclude = ''
-if ($WithSchema) { $schemaInclude = "`n#include <schemas/$Name.h>" }
+$headerIncludes = @('<core/base/types.h>')
+if ($WithSchema) { $headerIncludes += "<schemas/$Name.h>" }
+$headerIncludeBlock = Format-IncludeBlock $headerIncludes
 
 $protocolForward = ''
 if ($WithProtocol) {
@@ -311,7 +406,7 @@ $headerText = @"
 // constant-initialized table of function pointers, never a virtual interface, and no loop in the
 // engine asks at run time whether this capability is present — the linker already answered.
 
-#include <core/base/types.h>$schemaInclude
+$headerIncludeBlock
 $protocolForward
 namespace engine::$Name {
 
@@ -369,15 +464,17 @@ $protocolDecl
 
 # ---- src/<name>.cpp ----------------------------------------------------------------------------
 
-$protocolSrcInclude = ''
-if ($WithProtocol) { $protocolSrcInclude = "`n#include <domain/protocol/rpc.h>`n" }
+$sourceIncludes = @("<$HeaderPath>")
+if ($WithProtocol) { $sourceIncludes += '<domain/protocol/rpc.h>' }
+$sourceIncludeBlock = Format-IncludeBlock $sourceIncludes
 
 $protocolDef = ''
 if ($WithProtocol) {
   $protocolDef = @"
 
 void register_methods(protocol::Dispatcher&) {
-  // TODO($Name): dispatcher.add(protocol::method<Params, Result, &handler>("$Name.thing", "doc"));
+  // TODO($Name): add the capability's methods here, as
+  //   dispatcher.add(protocol::method<Params, Result, &handler>("$Name.thing", "doc"));
   // Params and Result are schema types, so the catalogue engine.methods returns, the JSON Schema
   // schemac emits, and this handler agree by construction (ADR-0007).
 }
@@ -385,8 +482,8 @@ void register_methods(protocol::Dispatcher&) {
 }
 
 $sourceText = @"
-#include <$HeaderPath>
-$protocolSrcInclude
+$sourceIncludeBlock
+
 namespace engine::$Name {
 
 void ${System}::begin_tick(u64 tick) noexcept {
@@ -415,19 +512,25 @@ $protocolDef
 
 # ---- tests ------------------------------------------------------------------------------------
 
+$testsIncludeBlock = Format-IncludeBlock @("<$HeaderPath>", '<doctest/doctest.h>', '<string_view>')
+
 $testsText = @"
 // Tests for the $Name capability (ADR-0027). TODO($Name): the invariants listed on the docs page
 // belong here, one test each, before the capability ships.
-#include <$HeaderPath>
-
-#include <doctest/doctest.h>
-
-#include <string_view>
+$testsIncludeBlock
 
 using namespace engine;
 
+namespace {
+
+// Named once so the assertions below stay inside the column limit whatever the capability is
+// called, which is also how they read best.
+using System = ${Name}::$System;
+
+}  // namespace
+
 TEST_CASE("$Name system runs a tick") {
-  ${Name}::$System system;
+  System system;
   system.begin_tick(7);
   system.tick(1.0f / 60.0f);
   system.end_tick();
@@ -438,8 +541,8 @@ TEST_CASE("$Name system runs a tick") {
 TEST_CASE("$Name LOD policy never coarsens as the observer gets nearer") {
   // The tier is monotonic in the observer score (plan 05 §5.4); hysteresis, once it exists,
   // widens the boundaries but must not break this.
-  CHECK(${Name}::${System}::lod_tier(0.0f) <= ${Name}::${System}::lod_tier(10.0f));
-  CHECK(${Name}::${System}::lod_tier(10.0f) <= ${Name}::${System}::lod_tier(1000.0f));
+  CHECK(System::lod_tier(0.0f) <= System::lod_tier(10.0f));
+  CHECK(System::lod_tier(10.0f) <= System::lod_tier(1000.0f));
 }
 
 TEST_CASE("$Name declares a determinism stance") {
@@ -448,26 +551,26 @@ TEST_CASE("$Name declares a determinism stance") {
 }
 "@
 
+$sizeTableIncludeBlock = Format-IncludeBlock @('<core/base/size_table.h>', "<$HeaderPath>")
+
 $sizeTableText = @"
 // Size table for $Layer/$Name (ADR-0019). TODO($Name): every hot type this capability adds —
 // components, per-instance solver state, GPU-mirrored structs — gets an entry, so that footprint
 // regressions fail the build rather than the frame rate.
-#include <core/base/size_table.h>
-
-#include <$HeaderPath>
+$sizeTableIncludeBlock
 
 using namespace engine;
 
 ENGINE_EXPECT_SIZE(16, 8, ${Name}::$System);
 "@
 
+$benchIncludeBlock = Format-IncludeBlock @('<foundation/bench/bench.h>', "<$HeaderPath>")
+
 $benchText = @"
 // Micro-benchmarks for the $Name capability (docs/plan/11-performance-principles.md §11.8).
 // TODO($Name): measure the capability's hot path. The before-and-after numbers in a change
 // description come from here, and a capability with a hot path and no bench is not finished.
-#include <foundation/bench/bench.h>
-
-#include <$HeaderPath>
+$benchIncludeBlock
 
 using namespace engine;
 

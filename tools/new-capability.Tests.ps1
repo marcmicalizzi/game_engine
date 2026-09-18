@@ -49,6 +49,55 @@ function Test-Throws([string]$what, [string]$messageLike, [scriptblock]$action) 
   }
 }
 
+# clang-format, wherever this machine keeps it: on PATH (which `tools/dev.ps1 format` assumes),
+# inside Visual Studio's bundled LLVM, or in a standalone LLVM install. Returns $null when there
+# is none, and the caller then reports the formatting checks as skipped rather than failing — a
+# hosted Linux runner has clang but not necessarily clang-format, and a test that fails for a
+# missing optional tool teaches people to ignore it.
+function Find-ClangFormat {
+  $onPath = Get-Command clang-format -ErrorAction SilentlyContinue
+  if ($onPath) { return $onPath.Source }
+  $candidates = New-Object System.Collections.Generic.List[string]
+  $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+  if (Test-Path -LiteralPath $vswhere) {
+    $vs = & $vswhere -latest -property installationPath 2>$null
+    if ($vs) { $candidates.Add((Join-Path $vs 'VC\Tools\Llvm\x64\bin\clang-format.exe')) }
+  }
+  if ($env:ProgramFiles) { $candidates.Add((Join-Path $env:ProgramFiles 'LLVM\bin\clang-format.exe')) }
+  foreach ($candidate in $candidates) {
+    if (Test-Path -LiteralPath $candidate) { return $candidate }
+  }
+  return $null
+}
+
+# Every generated C++ file, run through clang-format with the repository's own style: the output
+# has to come back byte for byte, or a freshly scaffolded capability greets its new owner with a
+# diff nobody wrote. The interesting parameter is the capability's *name*, because every comment
+# and every include in the templates is interpolated with it.
+function Test-FormatClean([string]$clangFormat, [string]$root, [string]$moduleDir, [string]$what) {
+  $script:checks++
+  $files = @(Get-ChildItem -Path (Join-Path $root $moduleDir) -Recurse -Include *.h, *.cpp -File)
+  if ($files.Count -eq 0) {
+    Write-Host "  FAIL $what (no generated C++ files found)" -ForegroundColor Red
+    $failures.Add($what)
+    return
+  }
+  $dirty = New-Object System.Collections.Generic.List[string]
+  foreach ($file in $files) {
+    $before = ([System.IO.File]::ReadAllText($file.FullName) -replace "`r`n", "`n")
+    $after = ((& $clangFormat --style=file $file.FullName | Out-String) -replace "`r`n", "`n")
+    if ($before.TrimEnd("`n") -ne $after.TrimEnd("`n")) {
+      $dirty.Add([IO.Path]::GetRelativePath($root, $file.FullName))
+    }
+  }
+  if ($dirty.Count -eq 0) {
+    Write-Host "  ok   $what ($($files.Count) files)"
+  } else {
+    Write-Host "  FAIL ${what}: clang-format rewrites $($dirty -join ', ')" -ForegroundColor Red
+    $failures.Add($what)
+  }
+}
+
 function New-FakeTree {
   $root = Join-Path ([IO.Path]::GetTempPath()) "engine-new-capability-$([guid]::NewGuid().ToString('N'))"
   $files = @{
@@ -199,6 +248,34 @@ try {
   }
   Test-That 'the docs page records the requirement' {
     (Get-Text $root 'docs/subsystems/crowd.md') -match 'engine_capability_requires\(crowd store\)'
+  }
+
+  # ---- the scaffold is clang-format clean ---------------------------------------------------------
+  # `tools/dev.ps1 format` on a freshly scaffolded capability must be a no-op. It was not: the
+  # templated comment lines overrun the column limit for a name of the wrong length and clang-format
+  # reflows them, and the include block's grouping depends on the capability's layer. Both are now
+  # computed rather than written out, and this is what says so.
+  Write-Host 'case: clang-format leaves the scaffold alone'
+  $clangFormat = Find-ClangFormat
+  if ($clangFormat) {
+    Copy-Item (Join-Path $PSScriptRoot '..' '.clang-format') (Join-Path $root '.clang-format') -Force
+    Test-FormatClean $clangFormat $root 'systems/cloth' 'a short name is format-clean'
+    Test-FormatClean $clangFormat $root 'systems/scent_field' 'every switch on is format-clean'
+    # The case the fix is actually about: a long name pushes every interpolated comment line and
+    # every qualified name further right, and a template that only fits for `cloth` breaks here.
+    & $scaffold -Name deformable_volume_field -Layer systems -Deps 'containers' -WithSchema -WithBench -WithProtocol -Root $root | Out-Null
+    Test-FormatClean $clangFormat $root 'systems/deformable_volume_field' 'a long name is format-clean'
+    # And a capability in another layer, where the include block sorts differently.
+    & $scaffold -Name wind -Layer core -Deps 'containers' -WithBench -Root $root | Out-Null
+    Test-FormatClean $clangFormat $root 'core/wind' 'a core-layer capability is format-clean'
+    Test-That 'no generated comment line is over the column limit' {
+      $long = Get-ChildItem -Path $root -Recurse -Include *.h, *.cpp -File |
+        ForEach-Object { Get-Content -LiteralPath $_.FullName } |
+        Where-Object { $_.Length -gt 100 }
+      $long.Count -eq 0
+    }
+  } else {
+    Write-Host '  skip clang-format was not found; the formatting checks did not run' -ForegroundColor Yellow
   }
 
   # ---- refusals -----------------------------------------------------------------------------------
