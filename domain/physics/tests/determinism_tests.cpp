@@ -124,10 +124,20 @@ TEST_CASE("physics: the job adapter runs backend jobs on core/jobs workers") {
   jobs::JobSystem job_system(config);
 
   const jobs::JobSystemStats before = job_system.stats();
+  // The pool sizes itself to the machine: a hosted CI runner with four virtual cores may give the
+  // performance pool a single worker, and then whether it ever wins a job against the stepping
+  // thread is luck, not a property of the adapter. The determinism cases above cover that shape.
+  if (job_system.worker_count(jobs::Pool::Performance) < 2) {
+    MESSAGE("fewer than two performance workers on this machine; worker check skipped");
+    return;
+  }
 
   Vector<Transform3> transforms;
   WorldStats stats;
-  run(&job_system, 4, 60, transforms, stats);
+  // 600 steps, not 60: the barrier wait executes ready jobs on the caller, so on a small scene a
+  // worker only sees a job when it wakes before the stepping thread has drained the queue, and
+  // over a few dozen steps on a slow runner that happened zero times (CI, 2026-09-18).
+  run(&job_system, 4, 600, transforms, stats);
 
   CHECK(stats.backend_jobs > 0);
   // Some of them ran on a pinned pool worker rather than on the stepping thread. Not all of
