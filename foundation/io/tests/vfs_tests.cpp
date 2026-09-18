@@ -4,6 +4,7 @@
 #include <test_temp_dir.h>
 
 #include <string>
+#include <utility>
 
 using namespace engine;
 using namespace engine::io;
@@ -172,4 +173,141 @@ TEST_CASE("io: asynchronous reads complete on the job system") {
   }
   CHECK(requests[k_files].status == Status::NotFound);
   CHECK(wait_all(js, std::span<AsyncRead>(requests, k_files)));
+}
+
+// ---- ranged reads ------------------------------------------------------------------------------
+
+namespace {
+
+// A pattern whose every byte is a function of its offset, so a range read that lands at the wrong
+// place is caught by its contents and not only by its length.
+std::string range_fixture(usize bytes) {
+  std::string out(bytes, '\0');
+  for (usize i = 0; i < bytes; ++i)
+    out[i] = static_cast<char>((i * 31u + 7u) & 0xFFu);
+  return out;
+}
+
+}  // namespace
+
+TEST_CASE("io: a file handle reads byte ranges, short at the end and empty past it") {
+  TempDir tmp("engine_io");
+  const std::string path = join_path(tmp.path(), "ranges.bin");
+  const std::string data = range_fixture(100000);
+  REQUIRE(write_file(path, data) == Status::Ok);
+
+  FileHandle file;
+  REQUIRE(file.open(path) == Status::Ok);
+  CHECK(file.valid());
+  CHECK(file.size() == data.size());
+  CHECK(file.path() == path);
+
+  std::string buffer(4096, '\1');
+  u64 read = 0;
+  // A range out of the middle: the bytes are the file's, and nothing past the range is touched.
+  CHECK(file.read_at(1234, buffer.data(), 1000, read) == Status::Ok);
+  CHECK(read == 1000);
+  CHECK(std::string_view(buffer).substr(0, 1000) == std::string_view(data).substr(1234, 1000));
+  CHECK(buffer[1000] == '\1');
+
+  // The first and the last byte, which is where an off-by-one in the offset arithmetic shows.
+  CHECK(file.read_at(0, buffer.data(), 1, read) == Status::Ok);
+  CHECK(read == 1);
+  CHECK(buffer[0] == data[0]);
+  CHECK(file.read_at(data.size() - 1, buffer.data(), 1, read) == Status::Ok);
+  CHECK(read == 1);
+  CHECK(buffer[0] == data.back());
+
+  // **Past the end is short, not a failure.** A caller that wanted the whole range compares
+  // `read` against what it asked for; one reading "the rest of the file" needs no stat first.
+  CHECK(file.read_at(data.size() - 10, buffer.data(), 4096, read) == Status::Ok);
+  CHECK(read == 10);
+  CHECK(file.read_at(data.size(), buffer.data(), 4096, read) == Status::Ok);
+  CHECK(read == 0);
+  CHECK(file.read_at(data.size() + 1000, buffer.data(), 4096, read) == Status::Ok);
+  CHECK(read == 0);
+
+  // A zero-length read is Ok and touches nothing, so a caller with an empty section — which is
+  // what an unskinned mesh's binding stream is — needs no special case.
+  CHECK(file.read_at(0, nullptr, 0, read) == Status::Ok);
+  CHECK(read == 0);
+
+  // Moved, the handle keeps reading and the source is closed.
+  FileHandle moved = std::move(file);
+  CHECK_FALSE(file.valid());
+  CHECK(moved.valid());
+  CHECK(moved.read_at(50, buffer.data(), 8, read) == Status::Ok);
+  CHECK(read == 8);
+  CHECK(std::string_view(buffer).substr(0, 8) == std::string_view(data).substr(50, 8));
+  moved.close();
+  CHECK_FALSE(moved.valid());
+  CHECK(moved.read_at(0, buffer.data(), 8, read) == Status::InvalidArgument);
+
+  FileHandle missing;
+  CHECK(missing.open(join_path(tmp.path(), "nothing.bin")) == Status::NotFound);
+
+  // The one-shot form, for a caller with one range and no job system.
+  CHECK(read_file_range(path, 900, buffer.data(), 64, read) == Status::Ok);
+  CHECK(read == 64);
+  CHECK(std::string_view(buffer).substr(0, 64) == std::string_view(data).substr(900, 64));
+  CHECK(read_file_range(join_path(tmp.path(), "nothing.bin"), 0, buffer.data(), 8, read) ==
+        Status::NotFound);
+}
+
+TEST_CASE("io: many ranges of one file read concurrently on the efficiency pool") {
+  TempDir tmp("engine_io");
+  const std::string path = join_path(tmp.path(), "concurrent.bin");
+  const std::string data = range_fixture(1 << 20);
+  REQUIRE(write_file(path, data) == Status::Ok);
+
+  FileHandle file;
+  REQUIRE(file.open(path) == Status::Ok);
+
+  jobs::JobSystemConfig config;
+  config.performance_workers = 2;
+  config.efficiency_workers = 2;
+  config.pin_threads = false;
+  jobs::JobSystem js(config);
+
+  // 128 scattered ranges of one handle through one counter. Scattered rather than sequential
+  // because that is what makes a shared file position visible: with one, a read that ran between
+  // another read's seek and its transfer would come back with the wrong bytes.
+  constexpr u32 k_count = 128;
+  constexpr u64 k_span = 3000;
+  Vector<AsyncRangeRead> requests;
+  std::string dst(k_count * k_span, '\0');
+  requests.resize(k_count);
+  for (u32 i = 0; i < k_count; ++i) {
+    requests[i].file = &file;
+    requests[i].offset = (u64{i} * 7919u) % (data.size() - k_span);
+    requests[i].bytes = k_span;
+    requests[i].dst = dst.data() + u64{i} * k_span;
+  }
+  jobs::Counter counter;
+  read_ranges_async(js, std::span<AsyncRangeRead>(requests.data(), requests.size()), counter);
+  js.wait(counter);
+  CHECK(counter.done());
+  for (u32 i = 0; i < k_count; ++i) {
+    CHECK(requests[i].complete());
+    CHECK_MESSAGE(std::string_view(dst).substr(u64{i} * k_span, k_span) ==
+                      std::string_view(data).substr(static_cast<usize>(requests[i].offset), k_span),
+                  "range " << i << " at " << requests[i].offset);
+  }
+
+  // A read past the end through the same path is short and therefore not complete, and a request
+  // naming no file is refused rather than taking a worker down with it.
+  AsyncRangeRead tail[2];
+  tail[0].file = &file;
+  tail[0].offset = data.size() - 100;
+  tail[0].bytes = 4096;
+  tail[0].dst = dst.data();
+  tail[1].bytes = 16;
+  tail[1].dst = dst.data();
+  jobs::Counter tail_counter;
+  read_ranges_async(js, std::span<AsyncRangeRead>(tail, 2), tail_counter);
+  js.wait(tail_counter);
+  CHECK(tail[0].status == Status::Ok);
+  CHECK(tail[0].read == 100);
+  CHECK_FALSE(tail[0].complete());
+  CHECK(tail[1].status == Status::InvalidArgument);
 }

@@ -9,8 +9,15 @@
 // writable flag, and resolution refuses paths that escape their root. `read_async` runs reads
 // on the job system's Efficiency pool for streaming and tooling.
 //
+// `FileHandle` is the third layer and the one streaming needs: a file held open and read **by
+// byte range**, so a consumer that wants a few kilobytes out of the middle of a ten-megabyte
+// container pays for those kilobytes. The reads are positional — Windows `ReadFile` with an
+// `OVERLAPPED` offset on a handle opened `FILE_FLAG_OVERLAPPED`, POSIX `pread` — so one handle
+// serves any number of concurrent reads from any number of threads with no shared file pointer
+// between them, which is exactly the shape `read_ranges_async` puts on the Efficiency pool.
+//
 // Not here (yet): memory mapping, file watching, the content-addressed blob store (domain/ddc),
-// and OS asynchronous I/O (io_uring, overlapped) behind the same AsyncRead shape.
+// io_uring, and DirectStorage-style GPU decompression behind the same request shape.
 
 #include <core/base/macros.h>
 #include <core/base/types.h>
@@ -138,5 +145,91 @@ struct AsyncRead {
 void read_async(jobs::JobSystem& jobs, AsyncRead& request);
 // Waits for every request; returns true when all succeeded.
 bool wait_all(jobs::JobSystem& jobs, std::span<AsyncRead> requests);
+
+// ---- ranged reads ----------------------------------------------------------------------------
+
+// A file held open and read by byte range.
+//
+// **Every read names its own offset**, so nothing about a read depends on what any other read
+// did: `read_at` is `const` and safe to call concurrently on one handle from any number of
+// threads. That is the property streaming is built on — a geometry page is three or four
+// contiguous ranges of one `.clusters` container, several pages are in flight at once, and none
+// of them may disturb another's position. On Windows the handle is opened `FILE_FLAG_OVERLAPPED`
+// and each read carries its offset in an `OVERLAPPED` with its own event, because a *synchronous*
+// handle serializes concurrent reads on one file object even when each names an offset; on POSIX
+// it is `pread`, which has the same contract by definition.
+//
+// The handle is movable so it can live in a `Vector` beside the rest of a mesh's state, and
+// closes itself. Nothing is buffered: a range read is one system call, which is what a caller
+// reading 128 KB at a time wants and what a caller reading four bytes at a time must not do.
+class FileHandle {
+ public:
+  FileHandle() noexcept = default;
+  ~FileHandle() { close(); }
+  ENGINE_NON_COPYABLE(FileHandle);
+  FileHandle(FileHandle&& other) noexcept;
+  FileHandle& operator=(FileHandle&& other) noexcept;
+
+  // Opens for reading. Replaces whatever the handle held.
+  Status open(std::string_view native_path);
+  void close() noexcept;
+#if ENGINE_PLATFORM_WINDOWS
+  bool valid() const noexcept { return handle_ != nullptr; }
+#else
+  bool valid() const noexcept { return handle_ >= 0; }
+#endif
+  // The size the file had when it was opened, which is what `read_at` clamps against.
+  u64 size() const noexcept { return size_; }
+  const std::string& path() const noexcept { return path_; }
+
+  // Reads up to `bytes` at `offset` into `dst`, and reports in `read_out` how many arrived.
+  //
+  // A read that runs past the end of the file is **short, not an error** — `read_out` says so and
+  // a caller that needs exactly `bytes` compares the two — because "how long is this file" and
+  // "read this range" are two questions and answering the second with the first's failure would
+  // make every caller ask both. A zero-length read is `Ok`, reads nothing, and touches neither
+  // `dst` nor the disk; an offset at or past the end is `Ok` with `read_out` zero. Only a real
+  // I/O failure is a failure.
+  Status read_at(u64 offset, void* dst, u64 bytes, u64& read_out) const noexcept;
+
+ private:
+#if ENGINE_PLATFORM_WINDOWS
+  // A `HANDLE`, kept as `void*` so that <windows.h> stays out of every file that includes this
+  // one. `INVALID_HANDLE_VALUE` is normalized to null on the way in, so "closed" is one value.
+  void* handle_ = nullptr;
+#else
+  int handle_ = -1;
+#endif
+  u64 size_ = 0;
+  std::string path_;
+};
+
+// One ranged read, the way `read_async` is one whole-file read. `file` and `dst` must outlive
+// the job. `read` is what arrived, so `complete()` is the test a caller who wanted the whole
+// range makes; a short read at the end of the file leaves `status` `Ok`.
+struct AsyncRangeRead {
+  const FileHandle* file = nullptr;
+  u64 offset = 0;
+  u64 bytes = 0;
+  void* dst = nullptr;
+  u64 read = 0;
+  Status status = Status::Ok;
+
+  bool complete() const noexcept { return status == Status::Ok && read == bytes; }
+};
+
+// Schedules the reads on the Efficiency pool against `counter`, which is add()ed here — one
+// counter for a whole group, because the caller of a group (a page, a header) wants to know when
+// *all* of it has landed and polling one word is cheaper than polling N. The requests are
+// scheduled one at a time rather than as a span, so this allocates nothing and may be called
+// every frame.
+void read_ranges_async(jobs::JobSystem& jobs, std::span<AsyncRangeRead> requests,
+                       jobs::Counter& counter);
+void read_range_async(jobs::JobSystem& jobs, AsyncRangeRead& request, jobs::Counter& counter);
+
+// The synchronous form, for a caller with one range and no job system: opens, reads, closes.
+// A caller with more than one range of the same file opens a `FileHandle` instead.
+Status read_file_range(std::string_view native_path, u64 offset, void* dst, u64 bytes,
+                       u64& read_out);
 
 }  // namespace engine::io

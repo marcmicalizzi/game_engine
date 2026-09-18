@@ -9,10 +9,19 @@
 #include <filesystem>
 #include <system_error>
 #include <thread>
+#include <utility>
 
 #if ENGINE_PLATFORM_WINDOWS
 #include <process.h>
+// The ranged reads below are the one place this module needs the OS directly: positional,
+// concurrency-safe reads are `ReadFile` with an `OVERLAPPED` offset on Windows and `pread` on
+// POSIX, and the standard library has neither.
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
 #else
+#include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
@@ -470,6 +479,191 @@ bool wait_all(jobs::JobSystem& jobs, std::span<AsyncRead> requests) {
     ok = ok && r.status == Status::Ok;
   }
   return ok;
+}
+
+// ---- ranged reads ------------------------------------------------------------------------------
+
+FileHandle::FileHandle(FileHandle&& other) noexcept
+    : handle_(other.handle_), size_(other.size_), path_(std::move(other.path_)) {
+#if ENGINE_PLATFORM_WINDOWS
+  other.handle_ = nullptr;
+#else
+  other.handle_ = -1;
+#endif
+  other.size_ = 0;
+}
+
+FileHandle& FileHandle::operator=(FileHandle&& other) noexcept {
+  if (this == &other) return *this;
+  close();
+  handle_ = other.handle_;
+  size_ = other.size_;
+  path_ = std::move(other.path_);
+#if ENGINE_PLATFORM_WINDOWS
+  other.handle_ = nullptr;
+#else
+  other.handle_ = -1;
+#endif
+  other.size_ = 0;
+  return *this;
+}
+
+void FileHandle::close() noexcept {
+#if ENGINE_PLATFORM_WINDOWS
+  if (handle_ != nullptr) ::CloseHandle(static_cast<HANDLE>(handle_));
+  handle_ = nullptr;
+#else
+  if (handle_ >= 0) ::close(handle_);
+  handle_ = -1;
+#endif
+  size_ = 0;
+  path_.clear();
+}
+
+Status FileHandle::open(std::string_view native_path) {
+  close();
+#if ENGINE_PLATFORM_WINDOWS
+  // FILE_FLAG_OVERLAPPED, because the point of this handle is concurrent positional reads: a
+  // synchronous handle serializes them on the file object even when each names its own offset.
+  // Shared for reading, writing and deletion, so holding a container open never stops a build
+  // replacing it — `write_cluster_file` renames over the target, and a reader with an open
+  // handle keeps reading the bytes it opened.
+  const fs::path p = to_path(native_path);
+  HANDLE h =
+      ::CreateFileW(p.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    nullptr, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, nullptr);
+  if (h == INVALID_HANDLE_VALUE) {
+    const DWORD err = ::GetLastError();
+    if (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND) return Status::NotFound;
+    if (err == ERROR_ACCESS_DENIED) return Status::PermissionDenied;
+    if (err == ERROR_SHARING_VIOLATION) return Status::PermissionDenied;
+    return Status::IoError;
+  }
+  LARGE_INTEGER size{};
+  if (::GetFileSizeEx(h, &size) == 0) {
+    ::CloseHandle(h);
+    return Status::IoError;
+  }
+  handle_ = h;
+  size_ = static_cast<u64>(size.QuadPart);
+#else
+  std::string native(native_path);
+  const int fd = ::open(native.c_str(), O_RDONLY);
+  if (fd < 0) return status_from_errno(errno);
+  struct stat st{};
+  if (::fstat(fd, &st) != 0) {
+    ::close(fd);
+    return Status::IoError;
+  }
+  if (S_ISDIR(st.st_mode)) {
+    ::close(fd);
+    return Status::IsDirectory;
+  }
+  handle_ = fd;
+  size_ = static_cast<u64>(st.st_size);
+#endif
+  path_.assign(native_path);
+  return Status::Ok;
+}
+
+Status FileHandle::read_at(u64 offset, void* dst, u64 bytes, u64& read_out) const noexcept {
+  read_out = 0;
+  if (!valid()) return Status::InvalidArgument;
+  if (bytes == 0) return Status::Ok;
+  if (dst == nullptr) return Status::InvalidArgument;
+  // Clamped here rather than left to the OS so that "past the end" is one answer on both
+  // platforms: a short read, not an error (see the header).
+  if (offset >= size_) return Status::Ok;
+  const u64 want = bytes <= size_ - offset ? bytes : size_ - offset;
+  auto* out = static_cast<u8*>(dst);
+#if ENGINE_PLATFORM_WINDOWS
+  // One event per call. It costs a couple of microseconds against a read of tens of kilobytes,
+  // and it is what makes the reads independent: with a null event the completion is signalled on
+  // the file handle itself, which two concurrent reads would then share.
+  HANDLE event = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+  if (event == nullptr) return Status::IoError;
+  Status status = Status::Ok;
+  u64 done = 0;
+  while (done < want) {
+    const DWORD chunk =
+        static_cast<DWORD>(want - done > 0x4000'0000ull ? 0x4000'0000ull : want - done);
+    const u64 at = offset + done;
+    OVERLAPPED ov{};
+    ov.Offset = static_cast<DWORD>(at & 0xFFFF'FFFFull);
+    ov.OffsetHigh = static_cast<DWORD>(at >> 32);
+    ov.hEvent = event;
+    ::ResetEvent(event);
+    DWORD moved = 0;
+    if (::ReadFile(static_cast<HANDLE>(handle_), out + done, chunk, &moved, &ov) == 0) {
+      if (::GetLastError() != ERROR_IO_PENDING) {
+        status = ::GetLastError() == ERROR_HANDLE_EOF ? Status::Ok : Status::IoError;
+        break;
+      }
+      if (::GetOverlappedResult(static_cast<HANDLE>(handle_), &ov, &moved, TRUE) == 0) {
+        status = ::GetLastError() == ERROR_HANDLE_EOF ? Status::Ok : Status::IoError;
+        break;
+      }
+    }
+    if (moved == 0) break;  // end of file
+    done += moved;
+  }
+  ::CloseHandle(event);
+  read_out = done;
+  return status;
+#else
+  u64 done = 0;
+  while (done < want) {
+    const ssize_t moved = ::pread(handle_, out + done, static_cast<size_t>(want - done),
+                                  static_cast<off_t>(offset + done));
+    if (moved < 0) {
+      if (errno == EINTR) continue;
+      read_out = done;
+      return status_from_errno(errno);
+    }
+    if (moved == 0) break;  // end of file
+    done += static_cast<u64>(moved);
+  }
+  read_out = done;
+  return Status::Ok;
+#endif
+}
+
+namespace {
+
+void run_range_read(void* p) noexcept {
+  auto* r = static_cast<AsyncRangeRead*>(p);
+  if (r->file == nullptr) {
+    r->status = Status::InvalidArgument;
+    r->read = 0;
+    return;
+  }
+  r->status = r->file->read_at(r->offset, r->dst, r->bytes, r->read);
+}
+
+}  // namespace
+
+void read_range_async(jobs::JobSystem& jobs, AsyncRangeRead& request, jobs::Counter& counter) {
+  counter.add(1);
+  jobs::Job job;
+  job.fn = &run_range_read;
+  job.data = &request;
+  job.counter = &counter;
+  jobs.schedule(jobs::Pool::Efficiency, job);
+}
+
+void read_ranges_async(jobs::JobSystem& jobs, std::span<AsyncRangeRead> requests,
+                       jobs::Counter& counter) {
+  for (AsyncRangeRead& request : requests)
+    read_range_async(jobs, request, counter);
+}
+
+Status read_file_range(std::string_view native_path, u64 offset, void* dst, u64 bytes,
+                       u64& read_out) {
+  read_out = 0;
+  FileHandle file;
+  const Status opened = file.open(native_path);
+  if (opened != Status::Ok) return opened;
+  return file.read_at(offset, dst, bytes, read_out);
 }
 
 }  // namespace engine::io
