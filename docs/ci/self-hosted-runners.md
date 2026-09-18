@@ -180,6 +180,18 @@ version and an already-registered runner only checks that the service is up.
 `self-hosted`, `Windows`, and `X64` are added by GitHub, and `runs-on` matches labels
 case-insensitively, so `-Labels gpu,maxwell` is enough to satisfy `runs-on: [self-hosted, windows, gpu]`.
 
+**The `rtx` label, and the job that is waiting for it.** `gpu.yml`'s nightly `reference` job asks
+for `runs-on: [self-hosted, windows, gpu, rtx]` and **no registered machine carries `rtx`**, so it
+queues and is never picked up. That is deliberate rather than an oversight: the reference path
+tracer traces the frame's *cluster* acceleration structures
+([renderer](../subsystems/renderer.md#reference-renderer)), which needs
+`VK_NV_cluster_acceleration_structure` — an RTX 20-series card or newer — and the two machines
+registered today are a Maxwell and a Pascal, on which every scene of the corpus would answer
+"unavailable" and the report would be five skips. A runner on a machine with an RTX card and
+`-Labels gpu,rtx` is all the job needs; until then
+`pwsh tools/ci/reference-compare.ps1 -Preset msvc-release` is run by hand on the development box,
+and it produces exactly what the workflow would upload.
+
 ### Linux: a systemd service
 
 As the unprivileged user the runner should work as — not root, which `config.sh` refuses — on a

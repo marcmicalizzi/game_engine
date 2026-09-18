@@ -63,8 +63,33 @@ struct PathTraceParams {
   u32 seed = 0;
   u32 flags = 0;
   f32 ray_bias = 0.0f;  // world units along the geometric normal, off the surface
-  u32 pad[4] = {};
+  // u32[width * height]: 1 where any sample's **primary** ray hit geometry. It exists because the
+  // real-time path writes the sky straight out as a display-space colour for an uncovered pixel,
+  // while the reference carries linear radiance and would have to round-trip it through
+  // `pow(sky, 2.2)` and back — and that round trip moves `sky.g` = 0.70 across the 178.5 byte
+  // boundary, putting a one-byte difference on every background pixel of every comparison. So the
+  // tonemap writes the background as the resolve writes it wherever nothing covered the pixel,
+  // and the transform where something did (which is what a box filter over a silhouette wants).
+  u64 coverage = 0;
+  // The packed RGBA8 the resolve writes for an uncovered pixel, **quantized on the CPU**. The
+  // shader cannot do it: `0.70f * 255` is 178.49999695 exactly, and rounding that product to
+  // float32 lands on 178.5 — half a byte away from where it started and on the wrong side of the
+  // boundary — while the fixed-function UNORM conversion the resolve's target does converts the
+  // same float exactly and writes 178. So the one value that has to match to the byte is computed
+  // where there is precision to spare (`pack_unorm_rgba8`) and handed over ready.
+  u32 background = 0;
+  u32 pad = 0;
 };
+
+// A linear-space colour into the byte a UNORM target would hold, in double precision so the
+// product never rounds across a boundary. Alpha is always opaque.
+inline u32 pack_unorm_rgba8(Vec4 color) noexcept {
+  auto quantize = [](f32 v) {
+    const f64 clamped = v < 0.0f ? 0.0 : (v > 1.0f ? 1.0 : static_cast<f64>(v));
+    return static_cast<u32>(clamped * 255.0 + 0.5);
+  };
+  return quantize(color.x) | (quantize(color.y) << 8) | (quantize(color.z) << 16) | (255u << 24);
+}
 static_assert(sizeof(PathTraceParams) == 256);
 static_assert(sizeof(PathTraceParams) % 16 == 0, "the block is read as float4 rows on the GPU");
 

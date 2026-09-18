@@ -60,7 +60,9 @@ struct PathTraceParams {
   uint seed;
   uint flags;
   float ray_bias;
-  uint4 pad;
+  uint64_t coverage;  // uint[width * height]: 1 where a primary ray hit geometry
+  uint background;    // packed RGBA8 of the sky, quantized on the CPU
+  uint pad;
 };
 
 struct PathTracePush {
@@ -134,8 +136,11 @@ float3 next_event(PathTraceParams* params, BrdfSurface surface, float3 position,
 }
 
 // One camera path. `rng` is the pixel's stream for this sample index, so the whole path is a
-// function of (pixel, sample, seed) and nothing else.
-float3 trace_path(PathTraceParams* params, float3 origin, float3 direction, inout uint rng) {
+// function of (pixel, sample, seed) and nothing else. `hit_primary` says whether the first ray
+// found geometry, which is what the tonemap needs to tell a background pixel from a dark one.
+float3 trace_path(PathTraceParams* params, float3 origin, float3 direction, inout uint rng,
+                  out bool hit_primary) {
+  hit_primary = false;
   const SceneGeometry geo = geometry_of(params);
   InstanceDesc* instances = (InstanceDesc*)params->instances;
   float3 radiance = float3(0.0);
@@ -155,6 +160,7 @@ float3 trace_path(PathTraceParams* params, float3 origin, float3 direction, inou
       radiance += throughput * environment(params, direction, bounce == 0);
       break;
     }
+    if (bounce == 0) hit_primary = true;
 
     // The hit, decoded exactly as ray_visibility.slang decodes one: the CLAS record's base
     // geometry index is the visible entry, the primitive index the triangle within the cluster.
@@ -249,6 +255,7 @@ void path_trace_main(uint3 id : SV_DispatchThreadID) {
   const bool centered = (params->flags & k_pt_pixel_center) != 0;
 
   float3 sum = float3(0.0);
+  bool covered = false;
   for (uint s = 0; s < params->spp; ++s) {
     uint rng = rng_seed(id.xy, params->sample_base + s, params->seed);
     const float2 jitter = centered ? float2(0.5, 0.5) : rng_next2(rng);
@@ -259,14 +266,31 @@ void path_trace_main(uint3 id : SV_DispatchThreadID) {
     const float4 ahead = mul(params->inv_view_proj, float4(ndc, 0.5, 1.0));
     const float3 origin = params->camera.xyz;
     const float3 direction = normalize(ahead.xyz / ahead.w - origin);
-    sum += trace_path(params, origin, direction, rng);
+    bool hit_primary = false;
+    sum += trace_path(params, origin, direction, rng, hit_primary);
+    covered = covered || hit_primary;
   }
   const float4 previous = params->sample_base == 0 ? float4(0.0) : accum[pixel];
   accum[pixel] = float4(previous.rgb + sum, previous.w + float(params->spp));
+  uint* coverage = (uint*)params->coverage;
+  const uint before = params->sample_base == 0 ? 0u : coverage[pixel];
+  coverage[pixel] = before | (covered ? 1u : 0u);
 }
 
 // The accumulator to the bytes a UNORM target would hold, through the display transform the
 // resolve ends on, so a reference image and a real-time image are in the same space.
+//
+// **A pixel nothing covered is written the way the resolve writes it**: the real-time path
+// returns `sky` for an empty pixel as a *display-space* colour, straight into a UNORM target,
+// while this accumulator holds linear radiance and would have to round-trip through
+// `pow(sky, 2.2)` and back. That round trip is exact to about a part in ten million — and
+// `sky.g` = 0.70 sits at 178.4999969 of 255, a hair under the byte boundary, so the round trip
+// moves it to 179 and puts a one-byte difference on **every background pixel** of every
+// comparison. A flat one-byte offset over most of a frame is not a rendering difference and FLIP
+// should not be measuring it. Where something *did* cover the pixel the transform runs as usual,
+// including on a silhouette pixel whose box filter mixed sky and surface, which is correct.
+// Under `k_pt_uniform_sky` the sky is a radiance rather than a colour, so there is nothing to
+// bypass and the transform runs everywhere.
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void tonemap_main(uint3 id : SV_DispatchThreadID) {
@@ -274,9 +298,16 @@ void tonemap_main(uint3 id : SV_DispatchThreadID) {
   if (id.x >= params->width || id.y >= params->height) return;
   const uint pixel = id.y * params->width + id.x;
   float4* accum = (float4*)params->accum;
+  uint* coverage = (uint*)params->coverage;
   uint* output = (uint*)params->output;
   const float4 value = accum[pixel];
   const float3 mean = value.w > 0.0 ? value.rgb / value.w : float3(0.0);
+  const bool background =
+      coverage[pixel] == 0 && (params->flags & k_pt_uniform_sky) == 0;
+  if (background) {
+    output[pixel] = params->background;
+    return;
+  }
   const float3 encoded = saturate(display_encode(mean));
   const uint r = uint(encoded.x * 255.0 + 0.5);
   const uint g = uint(encoded.y * 255.0 + 0.5);

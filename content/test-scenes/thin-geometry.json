@@ -1,0 +1,14 @@
+{
+  "format": "engine.test-scene.v1",
+  "name": "thin-geometry",
+  "description": "the Khronos Lantern: a thin metal frame and a rope whose triangles fall under a pixel, which is where a rasterized edge and a traced one disagree most",
+  "requires": ["content/samples/Lantern/Lantern.glb"],
+  "load": { "mesh": "content/samples/Lantern/Lantern.glb" },
+  "settings": { "raster": "hw", "shadows": "rt" },
+  "orbit": { "distance": 22 },
+  "width": 640,
+  "height": 480,
+  "frame": 0,
+  "reference": { "spp": 1024, "bounces": 3, "batch": 32 },
+  "thresholds": { "flip_mean": 0.03, "flip_p95": 0.05 }
+}

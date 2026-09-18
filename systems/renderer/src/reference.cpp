@@ -133,9 +133,12 @@ bool ReferenceRenderer::create_targets(std::string* error) {
   gfx::destroy_buffer(*device_, output_);
   accum_ = gfx::BufferResource{};
   output_ = gfx::BufferResource{};
+  gfx::destroy_buffer(*device_, coverage_);
+  coverage_ = gfx::BufferResource{};
   const u64 pixels = u64{width_} * height_;
   return gfx::create_buffer(*device_, pixels * 4 * sizeof(f32), k_readable, false, accum_, error) &&
-         gfx::create_buffer(*device_, pixels * sizeof(u32), k_readable, false, output_, error);
+         gfx::create_buffer(*device_, pixels * sizeof(u32), k_readable, false, output_, error) &&
+         gfx::create_buffer(*device_, pixels * sizeof(u32), k_address, false, coverage_, error);
 }
 
 bool ReferenceRenderer::resize(std::string* error) {
@@ -154,10 +157,12 @@ void ReferenceRenderer::destroy() noexcept {
   gfx::destroy_compute_pipeline(device, tonemap_);
   gfx::destroy_buffer(device, accum_);
   gfx::destroy_buffer(device, output_);
+  gfx::destroy_buffer(device, coverage_);
   gfx::destroy_buffer(device, params_);
   gfx::destroy_buffer(device, lights_);
   accum_ = gfx::BufferResource{};
   output_ = gfx::BufferResource{};
+  coverage_ = gfx::BufferResource{};
   params_ = gfx::BufferResource{};
   lights_ = gfx::BufferResource{};
   shaders_.destroy();
@@ -207,6 +212,8 @@ bool ReferenceRenderer::render(const Camera& camera, const ReferenceSettings& se
   params.sun = lighting.sun;
   params.accum = accum_.address;
   params.output = output_.address;
+  params.coverage = coverage_.address;
+  params.background = gfx::pack_unorm_rgba8(lighting.sky);
   params.clusters = scene_->clusters.address;
   params.mesh = scene_->meshes.address;
   params.triangles = scene_->triangles.address;

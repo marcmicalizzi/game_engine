@@ -1,0 +1,14 @@
+{
+  "format": "engine.test-scene.v1",
+  "name": "wide-frustum",
+  "description": "1920x360, a 48:9 frustum in one view: the aspect the project owner plays at, where a flat projection magnifies its edges and most of the picture is periphery",
+  "requires": ["content/samples/FlightHelmet/FlightHelmet.gltf"],
+  "load": { "mesh": "content/samples/FlightHelmet/FlightHelmet.gltf", "grid_instances": 3 },
+  "settings": { "raster": "hw", "shadows": "rt" },
+  "orbit": { "distance": 22 },
+  "width": 1920,
+  "height": 360,
+  "frame": 0,
+  "reference": { "spp": 512, "bounces": 3, "batch": 32 },
+  "thresholds": { "flip_mean": 0.01, "flip_p95": 0.05 }
+}

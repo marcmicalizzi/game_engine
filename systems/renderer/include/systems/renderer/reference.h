@@ -140,6 +140,10 @@ class ReferenceRenderer {
   gfx::ComputePipeline tonemap_;
   gfx::BufferResource accum_;   // float4 per pixel, device local
   gfx::BufferResource output_;  // u32 per pixel, packed RGBA8, device local + transfer source
+  // u32 per pixel: 1 where a primary ray hit geometry. It is what lets the tonemap write an
+  // uncovered pixel the way the resolve writes it, which keeps a one-byte quantization difference
+  // off every background pixel of every comparison (see path_trace.h).
+  gfx::BufferResource coverage_;
   gfx::BufferResource params_;  // one host-visible gfx::PathTraceParams
   gfx::BufferResource lights_;  // the frame's gfx::ResolveLight array, host-visible
   u32 width_ = 0;

@@ -442,10 +442,11 @@ TEST_CASE("reference: the same seed is the same picture") {
   // the same bytes", and across batch sizes it is "the same picture to within the last bit",
   // which this measures rather than assumes.
   //
-  // The byte count is deliberately not asserted tightly and the reason is worth knowing: the
-  // background is `sky` written straight out, and `sky.g` of 0.70 encodes to 0.70 * 255 + 0.5 =
-  // 179.0 **exactly** on a rounding boundary, so every background pixel flips on a one-ulp
-  // difference. A large byte count with a tiny linear difference is that, not a real divergence.
+  // The byte count is measured rather than asserted tightly, because it is the quantity that
+  // would move if the display transform ever grew a value sitting on a rounding boundary — which
+  // is exactly what `sky.g` = 0.70 did before the tonemap stopped round-tripping the background
+  // (see path_trace.h). It is 0 today, and a tiny linear difference with a large byte count would
+  // be that hazard coming back rather than a real divergence.
   settings.seed = 7;
   settings.batch = 64;
   ReferenceFrame single;

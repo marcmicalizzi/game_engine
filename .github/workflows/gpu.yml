@@ -22,6 +22,11 @@ on:
   schedule:
     # Mondays, 06:17 UTC. An odd minute, as GitHub asks, to spread the load.
     - cron: '17 6 * * 1'
+    # Nightly, 07:41 UTC: the reference comparison only (docs/plan/04-renderer.md section 4.8,
+    # "reference comparisons run nightly" in 10 section 10.2). The two baseline-tier machines
+    # above stay weekly — a Maxwell and a Pascal cannot run the reference at all, since it traces
+    # the frame's cluster acceleration structures, and building them nightly buys nothing.
+    - cron: '41 7 * * *'
 
 # One GPU per machine: let a running job finish rather than cancelling it.
 concurrency:
@@ -35,6 +40,8 @@ jobs:
   windows-maxwell:
     name: Windows msvc-release (GTX Titan X, Maxwell)
     runs-on: [self-hosted, windows, gpu]
+    # Weekly and on demand, not on the nightly reference schedule.
+    if: ${{ github.event_name != 'schedule' || github.event.schedule == '17 6 * * 1' }}
     timeout-minutes: 90
     steps:
       - name: Checkout
@@ -81,6 +88,7 @@ jobs:
   linux-pascal:
     name: Linux linux-clang-debug (GTX Titan Xp, Pascal, headless)
     runs-on: [self-hosted, linux, gpu]
+    if: ${{ github.event_name != 'schedule' || github.event.schedule == '17 6 * * 1' }}
     timeout-minutes: 90
     steps:
       - name: Checkout
@@ -116,5 +124,56 @@ jobs:
           path: |
             build/linux-clang-debug/gpu-smoke.json
             build/linux-clang-debug/captures/
+          if-no-files-found: warn
+          retention-days: 30
+
+  # The reference comparison (docs/plan/04-renderer.md section 4.8, docs/subsystems/renderer.md
+  # "Reference renderer"): the scene corpus rendered through the real-time path and through the
+  # reference path tracer, compared, and failed when a scene exceeds the FLIP threshold stored
+  # with it.
+  #
+  # **No runner carries the `rtx` label yet.** The two machines above are a Maxwell and a Pascal,
+  # and the reference traces the frame's *cluster* acceleration structures, which neither has —
+  # so this job waits for a runner with an RTX card rather than being pointed at a machine that
+  # would skip every scene. Until one is registered the job queues and is never picked up, and
+  # the script is run by hand on the development box:
+  #
+  #     pwsh tools/ci/reference-compare.ps1 -Preset msvc-release
+  #
+  # docs/ci/self-hosted-runners.md is the setup; the label to add is `rtx`.
+  reference:
+    name: Reference comparison (RTX, msvc-release)
+    runs-on: [self-hosted, windows, gpu, rtx]
+    if: ${{ github.event_name != 'schedule' || github.event.schedule == '41 7 * * *' }}
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          clean: false
+
+      - name: Fetch sample assets
+        shell: pwsh
+        # The corpus names Khronos samples that git ignores; a scene whose mesh is missing is
+        # skipped rather than failed, so this step is a convenience and not a gate.
+        run: ./tools/fetch-samples.ps1
+        continue-on-error: true
+
+      - name: Build
+        shell: pwsh
+        run: ./tools/dev.ps1 build -Preset msvc-release
+
+      - name: Reference comparison
+        shell: pwsh
+        run: ./tools/ci/reference-compare.ps1 -Preset msvc-release
+
+      # The report and every picture it names, on failure too: a run where one scene went over
+      # its threshold is exactly the one whose heat map is worth looking at.
+      - name: Upload report and images
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reference-compare-msvc-release
+          path: build/msvc-release/reference/
           if-no-files-found: warn
           retention-days: 30

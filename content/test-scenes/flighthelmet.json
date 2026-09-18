@@ -1,0 +1,14 @@
+{
+  "format": "engine.test-scene.v1",
+  "name": "flighthelmet",
+  "description": "one Khronos FlightHelmet: textured dielectrics, metal buckles, normal maps, and a shape that shadows itself",
+  "requires": ["content/samples/FlightHelmet/FlightHelmet.gltf"],
+  "load": { "mesh": "content/samples/FlightHelmet/FlightHelmet.gltf" },
+  "settings": { "raster": "hw", "shadows": "rt" },
+  "orbit": { "distance": 22 },
+  "width": 640,
+  "height": 480,
+  "frame": 0,
+  "reference": { "spp": 1024, "bounces": 3, "batch": 32 },
+  "thresholds": { "flip_mean": 0.04, "flip_p95": 0.22 }
+}
