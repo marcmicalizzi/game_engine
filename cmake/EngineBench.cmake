@@ -18,6 +18,12 @@ endif()
 # engine::bench is declared later (foundation layer); CMake resolves the link at generate time.
 add_library(engine_bench_main STATIC "${CMAKE_SOURCE_DIR}/tests/support/bench_main.cpp")
 target_link_libraries(engine_bench_main PUBLIC engine::bench)
+# Same scratch-space rule as a test: a bench that needs a directory takes it from
+# engine::test::TempDir (tests/support/test_temp_dir.h), which is header-only and
+# standard-library-only, so the include path is all a bench target needs to reach it. Two copies
+# of a bench executable meet as readily as two copies of a test — `tools/dev.ps1 bench` beside
+# the CTest smoke run is already two.
+target_include_directories(engine_bench_main PUBLIC "${CMAKE_SOURCE_DIR}/tests/support")
 engine_apply_warnings(engine_bench_main)
 
 function(engine_module_bench)

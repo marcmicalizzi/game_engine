@@ -15,6 +15,7 @@
 #include <foundation/store/event_log.h>
 
 #include <sqlite3.h>
+#include <test_temp_dir.h>
 
 #include <cstdio>
 #include <filesystem>
@@ -58,15 +59,15 @@ struct Rng {
 
 Id128 entity_for(u32 index) { return Id128::from_seed(0xE6E6, index); }
 
-std::string temp_root() {
-  auto path = std::filesystem::temp_directory_path() / "engine_store_bench";
-  std::error_code ec;
-  std::filesystem::create_directories(path, ec);
-  std::string text = path.string();
-  for (char& c : text) {
-    if (c == '\\') c = '/';
-  }
-  return text;
+// One scratch directory for this process, unguessable and removed when the process ends. A
+// benchmark is a test as far as the filesystem is concerned: `tools/dev.ps1 bench` and the
+// CTest smoke run are two copies of this executable, and a release build's bench beside a debug
+// build's is two more, so a fixed name here is the same shared mutable global the tests stopped
+// naming (tests/support/test_temp_dir.h, AGENTS.md "Test hygiene"). The directory outlives every
+// `Corpus` and `Scratch` because they are what first ask for it.
+const std::string& temp_root() {
+  static const test::TempDir dir("engine_store_bench");
+  return dir.path();
 }
 
 const char* build_preset() {
