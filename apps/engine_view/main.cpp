@@ -2105,11 +2105,11 @@ int main(int argc, char** argv) {
               b.write(rg_stats, gfx::Access::TransferWrite);
             },
             [&](VkCommandBuffer cb, gfx::RenderGraph&) {
-              const gfx::BufferResource* sources[3] = {&args_buffer[0], &args_buffer[1],
+              const gfx::BufferResource* arg_blocks[3] = {&args_buffer[0], &args_buffer[1],
                                                        &sw_args_buffer};
               for (u32 i = 0; i < 3; ++i) {
                 const VkBufferCopy copy{0, sizeof(u32) * 3 * i, sizeof(u32) * 3};
-                vkCmdCopyBuffer(cb, sources[i]->buffer, stats_buffers[slot].buffer, 1, &copy);
+                vkCmdCopyBuffer(cb, arg_blocks[i]->buffer, stats_buffers[slot].buffer, 1, &copy);
               }
             });
       }
