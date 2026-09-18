@@ -19,6 +19,7 @@
 #include <core/base/types.h>
 #include <core/containers/vector.h>
 #include <core/math/math.h>
+#include <domain/physics/deformable.h>
 #include <domain/physics/types.h>
 
 #include <span>
@@ -112,10 +113,28 @@ struct SoftBodyDesc {
   f32 restitution = 0.0f;
   f32 vertex_radius = 0.0f;  // particles collide as spheres of this radius
   f32 gravity_factor = 1.0f;
+  // plan 07 §7.10's `limits.max_strain`, enforced (ADR-0029 decision 4). The largest engineering
+  // strain any edge is allowed to hold at a step boundary: 0.5 is a length between half and one
+  // and a half times rest. 0 switches the clamp off and costs nothing — no rest lengths are kept
+  // and no pass runs (plan 11 §11.10).
+  //
+  // It is a clamp and not a stiffness. Compliance decides how hard the solver *argues* about a
+  // length; this decides what the cage is allowed to be left holding when the argument is over,
+  // which is the only thing that stops an element being driven somewhere it cannot come back
+  // from. E19 measured held stretch of 1.76 to 2.41 against an authored limit of 1.5, a peak of
+  // 2.81, and one configuration diverging outright, all with nothing enforcing this number.
+  f32 max_strain = 0.0f;
   u32 iterations = 5;  // solver iterations per sub-step; the cost knob of ADR-0026's tiers
   Layer layer = Layer::Moving;
   bool allow_sleeping = true;
   bool update_position = true;  // false pins the body's origin: for a volume set into the world
+  // ADR-0029 decision 1: this volume draws on the hero allowance rather than on the ambient
+  // budget, and the tiers never demote it to fit a budget. At most one volume in a world should
+  // carry it — the reference interaction of plan 13 §13.7 is the case it exists for — and the
+  // world reports how many do (`SoftBodyBudget::hero_count`) rather than refusing a second,
+  // because refusing would break a tier transition that legitimately overlaps two heroes for a
+  // few ticks.
+  bool hero = false;
 };
 
 // --- fixtures -------------------------------------------------------------------------------

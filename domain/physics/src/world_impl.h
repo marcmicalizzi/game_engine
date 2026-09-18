@@ -86,6 +86,14 @@ struct World::Impl {
     JPH::BodyID id;
     Vector<SoftAttachment> attachments;
     u32 vertex_count = 0;
+    // What the budget report needs to split the measured phase between the ambient set and the
+    // hero, and what the strain clamp needs to run (ADR-0029). `iterations` is kept because a
+    // cage's share of the phase is proportional to its elements times its iterations — E19's
+    // cost model, linear to within 5% across the whole grid — and the backend does not hand back
+    // per-cage timings to split it any other way.
+    u32 iterations = 1;
+    f32 max_strain = 0.0f;
+    bool hero = false;
   };
 
   SlotMap<ShapeEntry> shapes;
@@ -108,6 +116,16 @@ struct World::Impl {
   SimTick tick;
   u64 steps = 0;
   f32 step_seconds = 1.0f / 60.0f;
+  SoftBodyBudget soft_body_budget;
+
+  // Turns the nanoseconds the last step spent on deformables into ADR-0029's report. Called once
+  // per step, after the clamp, so that everything the tick spent on cages is inside the number.
+  void refresh_soft_body_budget(i64 soft_body_ns) noexcept;
+
+  // ADR-0029 decision 4: enforce `SoftBodyDesc::max_strain`. Runs on the stepping thread once the
+  // backend's update has returned, over every cage that asked for a limit. Defined in
+  // soft_body.cpp, beside the rest of the cage code; called from `World::step`.
+  void clamp_soft_body_strain(f32 dt_seconds);
 
   const JPH::Shape* shape_ptr(ShapeId id) const noexcept {
     const ShapeEntry* entry = shapes.get(id.handle);

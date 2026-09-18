@@ -244,6 +244,7 @@ WorldStats World::stats() const noexcept {
   out.backend_jobs_pending = impl_->job_adapter->pending_count();
   out.soft_body_solve_jobs = impl_->job_adapter->soft_body_count();
   out.soft_body_solve_workers = impl_->job_adapter->soft_body_worker_count();
+  out.soft_body_budget = impl_->soft_body_budget;
   out.body_count = impl_->bodies.size();
   out.active_body_count = active_body_count();
   out.soft_body_count = impl_->soft_bodies.size();
@@ -254,6 +255,58 @@ WorldStats World::stats() const noexcept {
 
 void World::optimize_broad_phase() {
   if (impl_ != nullptr) impl_->system.OptimizeBroadPhase();
+}
+
+// ADR-0029 decision 1. The measured number is one wall-clock figure for the whole soft-body
+// phase, because that is what the backend's arrangement produces: its solve jobs take the next
+// available constraint group from *any* active cage, which is exactly why eight cages cost less
+// together than one costs alone (E19), and the same interleaving is why there is no per-cage
+// wall clock to be had. The split between the hero and the ambient set is therefore by work —
+// elements times iterations, E19's cost model, which held to within 5% across its whole grid —
+// and the total is measured. Saying which half of that sentence applies to which number is the
+// honest way to report it, and it is why the two are named separately rather than summed.
+//
+// A sleeping cage is left out of the weights: the backend does no work for it, so giving it a
+// share of the phase would make a settled scene look busy.
+void World::Impl::refresh_soft_body_budget(i64 soft_body_ns) noexcept {
+  // The clamp filled these in on its way past and this runs afterwards, so they survive the reset.
+  const u32 sweeps = soft_body_budget.strain_clamp_sweeps;
+  const bool saturated = soft_body_budget.strain_clamp_saturated;
+  soft_body_budget = SoftBodyBudget{};
+  soft_body_budget.strain_clamp_sweeps = sweeps;
+  soft_body_budget.strain_clamp_saturated = saturated;
+  if (soft_bodies.size() == 0) return;
+
+  f64 ambient_work = 0.0;
+  f64 hero_work = 0.0;
+  const JPH::BodyInterface& body_interface = system.GetBodyInterfaceNoLock();
+  for (const SoftEntry& entry : soft_bodies.values()) {
+    if (entry.hero) ++soft_body_budget.hero_count;
+    if (!body_interface.IsActive(entry.id)) continue;
+    const f64 work = static_cast<f64>(entry.vertex_count) * static_cast<f64>(entry.iterations);
+    if (entry.hero) {
+      hero_work += work;
+    } else {
+      ambient_work += work;
+    }
+  }
+
+  const f64 total_ms = static_cast<f64>(soft_body_ns) / 1.0e6;
+  const f64 total_work = ambient_work + hero_work;
+  if (total_work > 0.0) {
+    soft_body_budget.hero_ms = static_cast<f32>(total_ms * hero_work / total_work);
+    soft_body_budget.ambient_ms = static_cast<f32>(total_ms * ambient_work / total_work);
+  } else {
+    // Every cage asleep: whatever the phase cost was, it was not deformable work.
+    soft_body_budget.ambient_ms = 0.0f;
+  }
+  if (soft_body_budget.ambient_ms > k_deformable_ambient_budget_ms) {
+    soft_body_budget.ambient_over_ms = soft_body_budget.ambient_ms - k_deformable_ambient_budget_ms;
+  }
+  if (soft_body_budget.hero_ms > k_deformable_hero_budget_ms)
+    soft_body_budget.hero_over_ms = soft_body_budget.hero_ms - k_deformable_hero_budget_ms;
+  soft_body_budget.over_budget =
+      soft_body_budget.ambient_over_ms > 0.0f || soft_body_budget.hero_over_ms > 0.0f;
 }
 
 // --- bodies --------------------------------------------------------------------------------
@@ -568,6 +621,13 @@ Status World::step(f32 dt_seconds, u32 sub_steps) {
   impl_->raw_contacts.clear();
   impl_->contacts.clear();
 
+  // ADR-0029's budget is per step, so the window accumulator starts empty every step. The three
+  // things that go into it are this pre-pass, the backend's own soft-body phase (measured by the
+  // job adapter), and the strain clamp at the end.
+  impl_->job_adapter->reset_soft_body_ns();
+  const bool has_soft_bodies = impl_->soft_bodies.size() != 0;
+  const i64 pre_pass_start = has_soft_bodies ? time::monotonic_ns() : 0;
+
   // Drive every attached particle from the body it hangs on. Both kinds write a velocity and
   // nothing else, which is what lets "bound to a rigid body" of ADR-0026 work without a second
   // backend constraint kind:
@@ -609,8 +669,15 @@ Status World::step(f32 dt_seconds, u32 sub_steps) {
     }
   }
 
+  if (has_soft_bodies) impl_->job_adapter->add_soft_body_ns(time::monotonic_ns() - pre_pass_start);
+
   const JPH::EPhysicsUpdateError error = impl_->system.Update(
       dt_seconds, static_cast<int>(sub_steps), impl_->temp_allocator, impl_->job_adapter);
+
+  // The last sub-step's soft-body phase has no next-step job to close its window, so the end of
+  // the update closes it. Every earlier sub-step closed itself when the backend queued the job
+  // that starts the next one (src/job_adapter.h).
+  impl_->job_adapter->close_soft_body_window();
 
   // Update returns when the backend's barrier is satisfied, which is not the same as "the job
   // system has nothing of ours left". A job the barrier executed on this thread is still
@@ -620,6 +687,18 @@ Status World::step(f32 dt_seconds, u32 sub_steps) {
   // rather than of the step, which is why a four-core machine exhausted the list in a fraction
   // of a second while a thirty-six-thread one never did. Draining here bounds it to one step.
   impl_->job_adapter->drain();
+
+  // The authored strain limit, enforced (ADR-0029 decision 4, plan 07 §7.10 `limits.max_strain`).
+  // Here rather than inside the solve because a limit is a property of the pose the step leaves
+  // behind, not a constraint the solver negotiates; the reasoning in full is in soft_body.cpp.
+  if (has_soft_bodies) {
+    impl_->soft_body_budget.strain_clamp_sweeps = 0;
+    impl_->soft_body_budget.strain_clamp_saturated = false;
+    const i64 clamp_start = time::monotonic_ns();
+    impl_->clamp_soft_body_strain(dt_seconds);
+    impl_->job_adapter->add_soft_body_ns(time::monotonic_ns() - clamp_start);
+  }
+  impl_->refresh_soft_body_budget(impl_->job_adapter->soft_body_ns());
 
   ++impl_->tick;
   ++impl_->steps;

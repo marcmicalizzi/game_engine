@@ -30,6 +30,28 @@ bool indices_in_range(std::span<const u32> indices, u32 count) noexcept {
   return true;
 }
 
+// The clamp is a constraint projection, and projecting one edge moves the particles its
+// neighbours share, so a single sweep leaves part of a violation behind: in E19's lattice a
+// particle carries eighteen edges. It therefore sweeps until the worst edge is inside the limit
+// to within `k_strain_clamp_tolerance` of its own rest length.
+//
+// **A tolerance and not "until nothing moved", because "nothing moved" never happens under load.**
+// Measured: with the exit condition "a sweep corrected no edge", E19's press burned all sixteen
+// sweeps on every one of the sixty hold ticks at every element count — the solver re-stretches
+// what the previous sweep pulled in, so Gauss-Seidel keeps correcting a smaller and smaller amount
+// forever. That is 16 x 5,068 edge visits a tick for a 512-element cage, and it showed up as about
+// 370 us a tick in the cost grid, a quarter of the whole step. With a tolerance the same press
+// exits in 2 sweeps on ADR-0029's default cage and 7 to 15 on the wider ones, and holds the same
+// 1.5000 stretch ratio either way.
+//
+// One part in a thousand is the number because it is what the module's strain test asserts, so
+// the guarantee the code makes and the guarantee the test checks are the same sentence.
+constexpr f32 k_strain_clamp_tolerance = 1.0e-3f;
+// The bound for a cage whose limit is fighting its own geometry — a limit tighter than the press
+// it is under, where no pose satisfies both — so that costs a bounded amount rather than spinning.
+// `SoftBodyBudget::strain_clamp_saturated` says when it is being reached.
+constexpr u32 k_strain_clamp_sweeps = 16;
+
 }  // namespace
 
 Status World::create_soft_body(const SoftBodyDesc& desc, SoftBodyId& out) {
@@ -42,6 +64,11 @@ Status World::create_soft_body(const SoftBodyDesc& desc, SoftBodyId& out) {
   if (desc.faces.size() % 3 != 0) return Status::InvalidArgument;
   if (!indices_in_range(desc.faces, vertex_count)) return Status::InvalidArgument;
   if (desc.iterations == 0) return Status::InvalidArgument;
+  // A negative limit is not "no limit", it is a typo. One at or above 1 is refused because the
+  // clamp is symmetric in engineering strain — the compression side is the half that stops a cell
+  // inverting — and a limit of 1 makes the lower bound a length of zero, which is no bound at
+  // all. Plan 07 §7.10's default is 0.5.
+  if (desc.max_strain < 0.0f || desc.max_strain >= 1.0f) return Status::InvalidArgument;
   for (const SoftEdge& edge : desc.edges)
     if (edge.a >= vertex_count || edge.b >= vertex_count || edge.a == edge.b)
       return Status::InvalidArgument;
@@ -131,9 +158,125 @@ Status World::create_soft_body(const SoftBodyDesc& desc, SoftBodyId& out) {
   Impl::SoftEntry entry;
   entry.id = id;
   entry.vertex_count = vertex_count;
+  entry.iterations = desc.iterations;
+  entry.max_strain = desc.max_strain;
+  entry.hero = desc.hero;
   entry.attachments.append(desc.attachments);
   out = SoftBodyId{impl_->soft_bodies.insert(std::move(entry))};
   return Status::Ok;
+}
+
+// --- the strain clamp (ADR-0029 decision 4) ---------------------------------------------------
+//
+// **Where it lives, and why there.** After `PhysicsSystem::Update` has returned, on the stepping
+// thread, over the backend's own edge list. Three alternatives were on the table and each is
+// worse:
+//
+//   *Inside the solver, as another constraint.* It is not a constraint — a constraint is a thing
+//   the solver negotiates with compliance, and a limit is a thing that is true when the step is
+//   over. Expressing it as a stiff edge constraint is what the cage already has, and E19 shows
+//   it losing the argument to a kinematic plate 1.8 to 2.4 times over.
+//   *Per sub-step.* The backend runs its sub-steps inside one `Update` call and there is no hook
+//   between them without patching Jolt. Per step at 60 Hz turns out to be enough, because what
+//   the clamp has to stop is an element being left somewhere it cannot come back from, and an
+//   element cannot get far in one step from a pose that was already inside the limit.
+//   *On velocities only.* A velocity limit bounds how fast an element leaves but not where it
+//   ends up, and the failure E19 recorded is a position — an inverted tetrahedron whose volume
+//   constraint then pushes it further inside out.
+//
+// **Position-only, and velocity-consistent at the step's own dt.** The pass moves positions and
+// then makes the velocity agree with the move, `v += dx / dt`, so the next step integrates from a
+// pose and a velocity that describe the same motion instead of spending the stretch's energy on
+// re-stretching the same edge.
+//
+// `dt` is the *step*, not the backend's sub-step, and that is a measured choice rather than an
+// obvious one. Jolt's soft body closes each of its XPBD sub-steps with `v = (x - x_prev)/dt_sub`,
+// where `dt_sub = dt / (collision sub-steps x iterations)` — `mNumIterations` is a sub-step count,
+// not a Gauss-Seidel iteration count — so "match what the solver does" argues for `dt_sub`. But
+// this pass is not inside a sub-step: it runs once a step, and the error it removes is what a
+// whole step accumulated, so the interval that correction belongs to is the step.
+//
+// All three were run on E19's press grid (docs/experiments/e19-lattice-cage.md). At the step's
+// `dt` and with no velocity correction at all, nineteen of twenty configurations recover to 1.000
+// of rest volume and the results are indistinguishable. At `dt_sub` the correction is up to 32
+// times larger, overshoots, and 343 elements at sixteen iterations and two sub-steps goes from
+// recovering to diverging. So: correct the velocity, at the step's dt.
+//
+// **Symmetric in strain: the compression half is not optional.** A limit of 0.5 is a length
+// between half and one and a half times rest, and the lower bound is the half that stops a
+// tetrahedron going inside out, which is the mechanism behind every failure E19 recorded. It was
+// measured against a stretch-only clamp on the whole press grid: stretch-only is cheaper (two to
+// three sweeps against seven to fifteen) and recovers the same eighteen of twenty configurations,
+// but it lets **one to twenty-one** free particles through the rigid core against the symmetric
+// clamp's **one to four** — and "no element passes through the core" is one of E19's four pass
+// criteria while sweep count is not.
+//
+// **Cost.** One sweep is two loads, a square root and about a dozen flops per edge. The sweep
+// count is what a cage's own geometry and load decide, and it is reported per step
+// (`SoftBodyBudget::strain_clamp_sweeps`) rather than assumed: under E19's press it is **2 for
+// ADR-0029's 216-element default cage and 7 to 15 at 343 to 729 elements**, which is one more
+// reason the default is one solve group wide. See docs/experiments/e19-lattice-cage.md.
+//
+// The rest lengths come from `SoftBodySharedSettings::mEdgeConstraints`, the backend's own,
+// rather than from a copy kept beside them: a copy would be 16 bytes an edge of duplicate state
+// that could drift from what the solver actually used, and the settings object is shared by every
+// instance of the cage, so reading it costs nothing per body.
+void World::Impl::clamp_soft_body_strain(f32 dt_seconds) {
+  const f32 inv_dt = 1.0f / dt_seconds;
+  for (const SoftEntry& entry : soft_bodies.values()) {
+    if (!(entry.max_strain > 0.0f)) continue;
+    JPH::BodyLockWrite lock(system.GetBodyLockInterfaceNoLock(), entry.id);
+    if (!lock.Succeeded()) continue;
+    JPH::Body& body = lock.GetBody();
+    auto* motion = static_cast<JPH::SoftBodyMotionProperties*>(body.GetMotionProperties());
+    const SharedSettings* settings = motion->GetSettings();
+    if (settings == nullptr) continue;
+
+    const f32 high = 1.0f + entry.max_strain;
+    const f32 low = 1.0f - entry.max_strain;
+    u32 sweeps_used = 0;
+    for (u32 sweep = 0; sweep < k_strain_clamp_sweeps; ++sweep) {
+      ++sweeps_used;
+      f32 worst = 0.0f;
+      for (const SharedSettings::Edge& edge : settings->mEdgeConstraints) {
+        JPH::SoftBodyVertex& a = motion->GetVertex(edge.mVertex[0]);
+        JPH::SoftBodyVertex& b = motion->GetVertex(edge.mVertex[1]);
+        const f32 inverse_mass_sum = a.mInvMass + b.mInvMass;
+        // Two pinned or rigidly attached particles: there is nothing this pass may move, and the
+        // cage's own topology is what has to change if that edge is out of range.
+        if (!(inverse_mass_sum > 0.0f)) continue;
+        const JPH::Vec3 delta = b.mPosition - a.mPosition;
+        const f32 separation = delta.Length();
+        if (!(separation > 0.0f)) continue;
+        const f32 upper = edge.mRestLength * high;
+        const f32 lower = edge.mRestLength * low;
+        f32 target = separation;
+        if (separation > upper) target = upper;
+        if (separation < lower) target = lower;
+        if (!(target < separation) && !(target > separation)) continue;
+        // How far outside the limit, as a fraction of the edge's own rest length, so a cage of
+        // mixed cell sizes is judged by the same number everywhere.
+        const f32 excess =
+            (separation > target ? separation - target : target - separation) / edge.mRestLength;
+        if (excess > worst) worst = excess;
+        // Move the two ends together (or apart) by exactly the excess, split by inverse mass, so
+        // the pair's centre of mass does not move and a heavy element is not dragged by a light
+        // one.
+        const JPH::Vec3 correction =
+            delta * ((separation - target) / (separation * inverse_mass_sum));
+        const JPH::Vec3 move_a = correction * a.mInvMass;
+        const JPH::Vec3 move_b = correction * -b.mInvMass;
+        a.mPosition += move_a;
+        b.mPosition += move_b;
+        a.mVelocity += move_a * inv_dt;
+        b.mVelocity += move_b * inv_dt;
+      }
+      if (worst <= k_strain_clamp_tolerance) break;
+    }
+    if (sweeps_used > soft_body_budget.strain_clamp_sweeps)
+      soft_body_budget.strain_clamp_sweeps = sweeps_used;
+    if (sweeps_used == k_strain_clamp_sweeps) soft_body_budget.strain_clamp_saturated = true;
+  }
 }
 
 bool World::destroy_soft_body(SoftBodyId body) {

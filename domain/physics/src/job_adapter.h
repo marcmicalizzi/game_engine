@@ -28,6 +28,18 @@
 // profiler session (WorldStats::soft_body_solve_jobs / soft_body_solve_workers, E19). It costs a
 // name compare per job created — tens per step — and one relaxed atomic per solve job executed,
 // which is nothing beside the job itself.
+//
+// The same tag is what makes ADR-0029's budget measurable. The budget is **wall clock in the
+// backend's soft-body phase**, and the adapter can see that phase because it sees the *queue*:
+// the window opens when the first job of a soft-body stage is queued and closes when the job
+// that kicks the next collision sub-step is queued, or when `Update` returns for the last one.
+// The soft-body jobs are the last thing in a collision step and it is the soft-body finalize job
+// that removes the next step's last dependency, so those two events bracket the phase. Measuring
+// the queue rather than the execution is deliberate: a queue is something this adapter owns,
+// while an execution is not — the barrier runs ready jobs on the stepping thread without passing
+// through `run_job`, so a span built from execution timestamps would silently lose whatever the
+// stepping thread did. The cost is one relaxed load per job queued and two clock reads per
+// sub-step.
 
 #include "jolt.h"
 
@@ -66,6 +78,19 @@ class JoltJobAdapter final : public JPH::JobSystemWithBarrier {
   // worker 64 and up share the last bit; a pool that wide is not the case this measures.
   u32 soft_body_worker_count() const noexcept;
 
+  // --- the soft-body phase window (ADR-0029's budget) ---
+  // Closes an open window at `now`. `World::step` calls it once `Update` has returned, which is
+  // what bounds the last sub-step's phase; the sub-steps before it are closed by the backend
+  // queueing its next-step job.
+  void close_soft_body_window() noexcept;
+  // Nanoseconds accumulated across every soft-body phase since the last reset, plus whatever
+  // `add_soft_body_ns` was handed. Read once per step.
+  i64 soft_body_ns() const noexcept { return soft_body_ns_.load(std::memory_order_relaxed); }
+  void reset_soft_body_ns() noexcept;
+  // For work the world does itself on the cage after the backend is done — the strain clamp —
+  // which is soft-body time the budget has to carry even though no backend job ran it.
+  void add_soft_body_ns(i64 ns) noexcept { soft_body_ns_.fetch_add(ns, std::memory_order_relaxed); }
+
   // Waits until every job this adapter handed to the job system has run and released its
   // reference. Called at the end of each step and again before the adapter is destroyed, so
   // that the number of live backend jobs is bounded by one step's worth rather than by how
@@ -82,7 +107,16 @@ class JoltJobAdapter final : public JPH::JobSystemWithBarrier {
   // The backend's step is a graph of named jobs. The names are the only thing that says which
   // stage a job belongs to, and Jolt only keeps them when its profiler is compiled in (which
   // it is not here), so the tag is taken from the name at CreateJob and carried on the job.
-  enum class Stage : u8 { Other, SoftBodySolve };
+  //
+  //   SoftBody       any of the phase's jobs (prepare, collide, finalize): opens the window.
+  //   SoftBodySolve  the constraint solve specifically. Opens the window too, and is what the
+  //                  worker-spread counters count.
+  //   NextStep       the job that kicks the next collision sub-step: closes the window.
+  enum class Stage : u8 { Other, SoftBody, SoftBodySolve, NextStep };
+
+  static constexpr bool is_soft_body(Stage stage) noexcept {
+    return stage == Stage::SoftBody || stage == Stage::SoftBodySolve;
+  }
 
   // Jolt's Job plus that tag. Deriving is what makes the tag reachable from the pointer the
   // queue hands back: Job is not polymorphic and stores nothing we could hang it on.
@@ -106,6 +140,11 @@ class JoltJobAdapter final : public JPH::JobSystemWithBarrier {
   std::atomic<u64> on_workers_{0};
   std::atomic<u64> soft_body_solve_jobs_{0};
   std::atomic<u64> soft_body_solve_workers_{0};
+  // 0 while no soft-body phase is open, 1 while one is. A compare-exchange decides which of
+  // several jobs queued at once opens it, so the window has one start whatever the pool does.
+  std::atomic<u32> soft_body_window_{0};
+  std::atomic<i64> soft_body_window_start_ns_{0};
+  std::atomic<i64> soft_body_ns_{0};
 };
 
 }  // namespace engine::physics

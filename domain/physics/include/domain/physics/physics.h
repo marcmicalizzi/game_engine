@@ -99,6 +99,11 @@ struct WorldStats {
   // 64 are folded into the last bit, because the set is one word.
   u64 soft_body_solve_jobs = 0;
   u32 soft_body_solve_workers = 0;
+  // What the *last* step spent on deformable volumes, and whether that fits (ADR-0029 decision
+  // 1). Wall clock, not a CPU-time sum, and per step rather than averaged: smoothing is the tier
+  // logic's decision and a number that has already been smoothed cannot be un-smoothed. See
+  // docs/subsystems/physics.md, "What a tick spends on deformables".
+  SoftBodyBudget soft_body_budget;
   u32 body_count = 0;
   u32 active_body_count = 0;
   u32 soft_body_count = 0;

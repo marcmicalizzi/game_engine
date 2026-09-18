@@ -2,6 +2,7 @@
 
 #include <core/base/assert.h>
 #include <core/jobs/job_system.h>
+#include <core/time/time.h>
 
 #include <bit>
 #include <cstring>
@@ -18,9 +19,24 @@ namespace {
 // A rename in a future Jolt shows up as a solve-job count of zero, which the parallelism test
 // asserts against rather than leaving the counter to quietly mean nothing.
 constexpr const char* k_soft_body_solve_job = "SoftBodySimulate";
+// The backend's soft-body stage is four job kinds and they all begin this way: prepare, collide,
+// simulate, finalize. The prefix is what opens ADR-0029's budget window, so a future Jolt that
+// added a fifth would be measured too.
+constexpr const char* k_soft_body_prefix = "SoftBody";
+// The job that kicks the next collision sub-step. The soft-body finalize job is what removes its
+// last dependency, so its queueing is the end of the phase.
+constexpr const char* k_next_step_job = "StartNextStep";
 
 bool is_soft_body_solve_job(const char* name) noexcept {
   return name != nullptr && std::strcmp(name, k_soft_body_solve_job) == 0;
+}
+
+bool is_soft_body_job(const char* name) noexcept {
+  return name != nullptr && std::strncmp(name, k_soft_body_prefix, 8) == 0;
+}
+
+bool is_next_step_job(const char* name) noexcept {
+  return name != nullptr && std::strcmp(name, k_next_step_job) == 0;
 }
 
 }  // namespace
@@ -50,9 +66,32 @@ u32 JoltJobAdapter::soft_body_worker_count() const noexcept {
   return static_cast<u32>(std::popcount(soft_body_solve_workers_.load(std::memory_order_relaxed)));
 }
 
+void JoltJobAdapter::close_soft_body_window() noexcept {
+  u32 open = 1;
+  // Only the thread that wins the 1 -> 0 exchange accumulates, so a window is counted once
+  // however many jobs raced to close it.
+  if (!soft_body_window_.compare_exchange_strong(open, 0, std::memory_order_acq_rel,
+                                                 std::memory_order_relaxed)) {
+    return;
+  }
+  const i64 start = soft_body_window_start_ns_.load(std::memory_order_relaxed);
+  soft_body_ns_.fetch_add(time::monotonic_ns() - start, std::memory_order_relaxed);
+}
+
+void JoltJobAdapter::reset_soft_body_ns() noexcept {
+  soft_body_ns_.store(0, std::memory_order_relaxed);
+}
+
 JPH::JobHandle JoltJobAdapter::CreateJob(const char* name, JPH::ColorArg color,
                                          const JobFunction& function, JPH::uint32 dependencies) {
-  const Stage stage = is_soft_body_solve_job(name) ? Stage::SoftBodySolve : Stage::Other;
+  Stage stage = Stage::Other;
+  if (is_soft_body_solve_job(name)) {
+    stage = Stage::SoftBodySolve;
+  } else if (is_soft_body_job(name)) {
+    stage = Stage::SoftBody;
+  } else if (is_next_step_job(name)) {
+    stage = Stage::NextStep;
+  }
   const JPH::uint32 index = jobs_.ConstructObject(name, color, this, function, dependencies, stage);
   // Jolt sizes its job budget (cMaxPhysicsJobs) for the worst step it can produce, so running
   // out means the world was configured with fewer jobs than the backend needs, not that the
@@ -92,6 +131,22 @@ void JoltJobAdapter::QueueJob(Job* job) {
   // Every job this adapter hands out is one of ours, so the downcast is what recovers the
   // stage tag on the other side of the queue's void*.
   auto* tagged = static_cast<TaggedJob*>(job);
+  // ADR-0029's window. Queueing a soft-body job opens the phase, queueing the next sub-step's
+  // starter closes it. Both happen before the job runs, which is the point: this measures the
+  // wall clock the phase occupies whatever thread ends up executing it.
+  if (is_soft_body(tagged->stage)) {
+    // The start is published before the flag, so a close can never read a start that has not
+    // been written. Two jobs queued at once may both write one; they are the same instant to
+    // within the burst that queued them, and only one of them wins the flag.
+    if (soft_body_window_.load(std::memory_order_acquire) == 0) {
+      soft_body_window_start_ns_.store(time::monotonic_ns(), std::memory_order_relaxed);
+      u32 closed = 0;
+      soft_body_window_.compare_exchange_strong(closed, 1, std::memory_order_acq_rel,
+                                                std::memory_order_relaxed);
+    }
+  } else if (tagged->stage == Stage::NextStep) {
+    close_soft_body_window();
+  }
   if (system_ == nullptr) {
     // No job system: run it here and now. The barrier still sees a finished job. The counters
     // that run_job keeps are its own, so they stay at zero, which is the truth: nothing ran on

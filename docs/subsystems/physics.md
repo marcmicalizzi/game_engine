@@ -33,13 +33,23 @@ the only thing that advances it is `step()`.
   one step and never by how fast the pool drains.
 - Two worlds built by the same sequence of calls and stepped the same number of times produce
   bit-identical transforms, whatever worker count each was given.
+- A cage with a `max_strain` holds no edge outside that limit once `step()` has returned, to
+  within one part in a thousand of the edge's rest length, unless both its ends are pinned or the
+  clamp ran out of sweeps (`SoftBodyBudget::strain_clamp_saturated`). A cage with no limit runs no
+  clamp and keeps no extra state.
+- `WorldStats::soft_body_budget` describes the step that has just returned and nothing else: it is
+  per step, unsmoothed, and wall clock rather than a sum of per-worker time
+  ([ADR-0029](../adr/0029-deformable-volume-budgets.md)).
 
 **Public API.** `domain/physics/types.h`: `Status`/`status_name`, `Layer`/`layer_name`/
 `layers_collide`/`LayerMask`, `MotionType`, and the three handle types.
 `domain/physics/soft_body.h`: `SoftEdge`, `SoftVolumeConstraint`, `AttachmentKind`,
 `SoftAttachment`, `SoftBodyDesc`, `k_soft_body_constraint_batch` and `soft_body_solve_width`,
 and the two cage builders `build_cloth_sheet` and `build_lattice_volume` with
-their `ClothSheet` and `LatticeVolume` results. `domain/physics/physics.h`: `WorldOptions`,
+their `ClothSheet` and `LatticeVolume` results.
+`domain/physics/deformable.h` ([ADR-0029](../adr/0029-deformable-volume-budgets.md)): the budget
+constants `k_deformable_ambient_budget_ms` / `k_deformable_hero_budget_ms`, the cage sizing
+constants and `cage_size_verdict`, `volume_compliance_for`, and `SoftBodyBudget`. `domain/physics/physics.h`: `WorldOptions`,
 `WorldStats`, `temp_allocator_size_for`, `CompoundChild`, `HeightfieldDesc`, `BodyDesc`,
 `RayHit`, `ShapeHit`, `ContactPhase`, `ContactEvent`, and `World` itself — shape creation
 (box, sphere, capsule, convex hull, triangle mesh, heightfield, compound), body creation and
@@ -363,6 +373,141 @@ mirrored in every other cell to stay conformal, and a cell whose orientation is 
 under compression and turns the cage inside out instead of pushing it back; that failure took a
 while to recognise because it looks like a solver explosion rather than a topology bug.
 
+### `iterations` is a sub-step count, not an iteration count
+
+`SoftBodyDesc::iterations` is Jolt's `mNumIterations`, and Jolt's soft body **integrates positions
+inside each one**: it applies gravity and damping, moves every particle by `v * dt_sub`, solves
+the constraints, and closes with `v = (x - x_prev) / dt_sub`, where
+`dt_sub = collision step dt / iterations`. So it is an XPBD sub-step, not a Gauss-Seidel sweep,
+and `World::step(dt, sub_steps)`'s own `sub_steps` multiplies it: eight iterations at two
+sub-steps is **sixteen position solves a tick**, at a sub-step of 1/960 s.
+
+The name is Jolt's and this module keeps it, but three things follow that the name hides, and all
+three cost time to rediscover:
+
+- **A constraint's compliance is divided by `dt_sub²`, not by the step's `dt²`**, so raising
+  `iterations` makes every constraint *effectively stiffer per solve* rather than merely
+  better-converged. That is why E19 measured raising iterations turning recoveries into failures
+  while raising sub-steps did not, and why 16 iterations at 2 sub-steps diverges with a compliance
+  that 8 at 2 is comfortable with ([E19](../experiments/e19-lattice-cage.md)).
+- **Anything the engine does to a cage per `World::step` is once per `iterations × sub_steps`
+  solves**, which is the trap the strain clamp's velocity correction fell into (below).
+- **Cost is linear in it**, exactly, which is what makes E19's cost model one multiplication.
+
+### The strain clamp, and why it is not a constraint
+
+[ADR-0029](../adr/0029-deformable-volume-budgets.md) decision 4 makes `SoftBodyDesc::max_strain`
+— [plan 07 §7.10](../plan/07-content-pipeline.md#710-deformable-volume-assets)'s
+`limits.max_strain`, which that table has always described as "a per-element clamp the solver
+never exceeds" — into something that is actually enforced. Before it, E19 measured held stretch of
+1.76 to 2.41 against an authored limit of 1.5, a transient peak of 2.81, three cages taking a
+permanent set at two thirds of their volume, and one diverging outright.
+
+**It is a clamp and not a constraint, and that is the whole design.** A constraint is a thing the
+solver negotiates with compliance; the cage already has one of those per edge and E19 shows it
+losing the argument with a kinematic plate by a factor of two. A limit is a thing that is true
+when the step is over. So it runs in `World::step`, after `PhysicsSystem::Update` has returned, on
+the stepping thread, over the backend's own `mEdgeConstraints` — the backend's rest lengths rather
+than a copy, because a copy is 16 bytes an edge of duplicate state that can drift from what the
+solver actually used.
+
+Four properties, each of which was measured rather than assumed, and each of which went against
+the first guess at least once:
+
+| Property | Why |
+|---|---|
+| **Symmetric in strain.** A limit of 0.5 means a length between half and one and a half times rest. | The compression half is the one that stops a tetrahedron going inside out, which is the mechanism behind every failure E19 recorded. Measured against a stretch-only clamp on the whole press grid: stretch-only is cheaper (2–3 sweeps against 7–15) and recovers the same eighteen of twenty configurations, but it lets **1 to 21** free particles through the rigid core against the symmetric clamp's **0 to 5**, and that is a pass criterion while sweep count is not. |
+| **Position-only, velocity-consistent at the *step's* dt.** `v += dx / dt`, not `dx / dt_sub`. | Matching the solver's own per-sub-step velocity identity looks right and is wrong: the correction is up to 32 times larger, overshoots, and 343 elements at 16 iterations and 2 sub-steps goes from recovering to diverging. The clamp is not inside a sub-step — it runs once a step and removes what a whole step accumulated — so the step is the interval its correction belongs to. At the step's dt and with no velocity correction at all the grid is indistinguishable; the correction is kept because it is the one that cannot leave the stretch's energy in the velocity. |
+| **Sweeps until the worst edge is inside the limit to one part in a thousand**, capped at 16. | Projecting one edge moves the particles its neighbours share (a lattice particle carries eighteen edges), so one sweep is not enough. Exiting on "a sweep corrected nothing" never fires under load — the solver re-stretches what the last sweep pulled in, forever — and burned all sixteen sweeps on every hold tick of E19's press, 370 µs a tick at 512 elements. The tolerance is the number the module's strain test asserts, so the guarantee the code makes and the one the test checks are the same sentence. |
+| **A cage that asks for no limit pays nothing.** | No rest lengths are kept and no pass runs ([plan 11 §11.10](../plan/11-performance-principles.md)). |
+
+**Cost: `edges × sweeps × 4.3 ns` a step, and the sweep count is reported.** Under E19's press
+that is **17 µs for ADR-0029's 216-element default cage (2 sweeps) and 326 µs for a 512-element
+one (14.6 sweeps)** — 4% and 27% of their respective ticks, which is a second and independent
+reason for the small default. A settled cage exits on its first sweep and costs nothing measurable
+(E19's 20-second sustained load is within 0.3% of the unclamped run).
+
+**What the clamp cannot do.** It keeps a cage inside a press a material could survive; it does not
+make a cage survive a press it cannot. A kinematic plate is infinitely heavy, so a
+displacement-controlled press driven past what the limit allows leaves the projection with two
+demands it cannot satisfy at once, and it is the clamp that loses. Measured on a stiff 64-element
+cage: driven to 70% of its height it leaves **0** inverted cells against 63 unclamped, at 60% it
+leaves 50, and at 50% and 40% it leaves slightly *more* than no clamp at all.
+`SoftBodyBudget::strain_clamp_saturated` is how a caller sees that happening.
+
+### Volume preservation is authored, and the conversion knows the cell size
+
+`volume_compliance_for(preservation, cell_size, stiffness)` in `domain/physics/deformable.h` is
+[ADR-0029](../adr/0029-deformable-volume-budgets.md) decision 3. The header carries the
+derivation; the reason it exists is E19's least expected result, and it is worth stating plainly
+because it will catch the next person too:
+
+> **A volume constraint's compliance is not an edge constraint's.** XPBD weighs compliance against
+> the sum of inverse masses times the squared constraint gradient. An edge's gradient is a unit
+> vector; a tetrahedron's volume gradient is an **area**. At a 6 cm cell those are four orders of
+> magnitude apart, so the same 1e-4 that makes a stiff edge switches the volume constraint off,
+> and the cage takes a permanent set at two thirds of its volume with no way back.
+
+The conversion comes from the energy rather than from that ratio, which is what makes it a
+material property instead of a tuning constant: the backend's constraint is on six times the
+tetrahedron's volume, so equating `C²/2α` with a bulk modulus K's `K(ΔV)²/2V₀` gives
+`α = 36·V₀/K`, and for a cubic cell of side h that is `6h³/K`. **Compliance therefore goes as the
+cube of the cell size**, and E19's own rule of thumb — "half the element size wants half the
+compliance" — is the wrong law; it came from the conditioning ratio rather than from the energy.
+The authored 0..1 weight scales the material's own bulk modulus, `K = (E/3)·p/(1−p)`, so p = ½ is
+a material with Poisson's ratio 0, p → 1 is incompressible and a hard constraint, and p → 0 has no
+volume preservation at all.
+
+The sanity check that says the model is describing reality: E19 found 1e-8 by hand, and at its
+5.71 cm cell that is a preservation of 0.63 at plan 07's default 200 kPa stiffness, while its
+hand-picked edge compliance of 1e-4 is a Young's modulus of 175 kPa at the same cell. The
+hand-tuned fixture and the plan's authored defaults were already the same material; nothing knew
+it because nothing had written the conversion down.
+
+### What a tick spends on deformables
+
+`WorldStats::soft_body_budget` is [ADR-0029](../adr/0029-deformable-volume-budgets.md) decision 1:
+**wall clock on the performance pool per tick, not a sum of per-worker CPU time**. The distinction
+is not pedantry — E19 measured eight cages running 6.45× faster together than one after another,
+so a CPU-time sum would price the arrangement the engine wants as if it were the worst one.
+
+Three things go into the number: the world's own attachment pre-pass, the backend's soft-body
+phase, and the strain clamp. The middle one is the interesting one to measure, because it happens
+on threads this module does not own.
+
+**How the phase is timed.** The job adapter already tags each backend job with its stage
+(`src/job_adapter.h`). The window **opens** when the first job of a soft-body stage is queued and
+**closes** when the job that kicks the next collision sub-step is queued, or when `Update` returns
+for the last one. Those two events bracket the phase because the soft-body jobs are the last thing
+in a collision step and it is the soft-body finalize job that removes the next step's last
+dependency. **Measuring the queue rather than the execution is the point**: a queue is something
+the adapter owns and an execution is not — `JobSystemWithBarrier`'s barrier runs ready jobs on the
+stepping thread without passing through the adapter's `run_job`, so a span built from execution
+timestamps would silently lose whatever the stepping thread did, and how much that is depends on
+the pool. The cost is one relaxed load per job queued and two clock reads per sub-step. Measured
+against the whole step on E19's fixture, the window is 96–98% of it, which is the expected answer
+for a world whose only body of consequence is a cage.
+
+**How ambient and hero are split.** The total is measured; the split is modelled, and saying which
+is which is the honest way to report it. The backend's solve jobs take the next available
+constraint group from *any* active cage — that interleaving is exactly why eight cages cost less
+together than one costs alone — so there is no per-cage wall clock to be had. Each active cage's
+share is therefore proportional to its elements times its iterations, which is E19's cost model
+and held to within 5% across its whole grid. A sleeping cage is left out, because the backend does
+no work for it.
+
+The report carries `ambient_ms` and `hero_ms`, how far each is past its budget, how many volumes
+are flagged `hero` (more than one at a time is an authoring error, not something this module
+refuses — refusing would break a tier transition that legitimately overlaps two for a few ticks),
+and the strain clamp's sweep count. **The ambient overrun is the actionable number**: the tiers
+above this module demote ambient volumes farthest-first until it is zero, and they never demote
+the hero to fit a budget. A hero overrun is a content problem and is reported separately so it
+cannot invite the wrong response.
+
+The module holds no opinion about tiers and assigns none; it reports the number the tier logic
+acts on. Per step and unsmoothed, because smoothing is the tier logic's decision and a number
+that has already been smoothed cannot be un-smoothed.
+
 ## LOD policy and determinism stance
 
 [ADR-0027](../adr/0027-additive-capabilities.md) asks every capability for both, in writing.
@@ -375,7 +520,10 @@ Soft bodies take their tiers from [ADR-0026](../adr/0026-deformable-volumes-firs
 table (full cage, reduced cage, authored secondary motion, skinning only, none); this module
 provides the knob those tiers turn — `iterations`, and the cage the caller hands it — and holds
 no opinion about which tier an entity is in. The module never assigns a tier itself: tier
-assignment is the deformation system's, above this layer.
+assignment is the deformation system's, above this layer. What it does provide, since
+[ADR-0029](../adr/0029-deformable-volume-budgets.md), is the number that decides: the per-step
+wall clock the deformable set cost, split between the ambient volumes the tiers may demote and
+the one flagged `hero` that they may not, with how far each is past its budget.
 
 **Determinism.** The world is part of the fixed-step sim and enters the sim hash. It reads no
 wall clock, sorts its contacts and islands, and produces bit-identical results whatever worker
@@ -391,7 +539,7 @@ collision groups and sub-shape filtering, overlap and collide-shape queries (onl
 casts are here), soft-body contact events, and Jolt's GPU hair solver. None of them needs the
 public surface to change shape; each is an addition.
 
-**Testing.** `tools/dev.ps1 test -Preset msvc-debug -Filter physics`. Twenty-nine cases: a sphere
+**Testing.** `tools/dev.ps1 test -Preset msvc-debug -Filter physics`. Thirty-six cases: a sphere
 dropped on a static box comes to rest within the penetration slop and falls asleep; a hundred
 boxes in ten towers of ten are still standing after 600 steps, with bounds on sideways drift and
 on how far anything sank; a kinematic box pushes a dynamic one and stays behind it; contact
@@ -420,6 +568,21 @@ before the backend sees them; 600 steps with 1 and with 8 workers are bit-identi
 adapter runs backend jobs on `jobs::JobSystem` workers; and a world with no job system produces
 the same answer as one with four.
 
+[ADR-0029](../adr/0029-deformable-volume-budgets.md) adds seven more, in
+`tests/deformable_tests.cpp`: the volume-compliance conversion scales as the cube of the cell size
+and reproduces E19's hand-tuned working point at E19's cell; the cage size verdicts are the ones
+the content validator will apply and the default cage is exactly one backend solve group; **a cage
+pressed to 70% of its height and released recovers to within 1% of its rest volume at three cell
+sizes**, each built with the compliance the conversion returns for its own cell; a cage hung under
+thirty gravities stretches past the authored limit without the clamp and sits at or under it with
+it; **a stiff cage crushed 30% leaves inverted cells without the clamp and none with it** (that
+test also records, in a comment, the press depth past which the clamp stops being able to help,
+because a kinematic plate always wins); the budget report splits ambient from hero the way the
+flags say and its overruns are the budget arithmetic; and a strain limit that is negative or at or
+above 1 is refused. The divergence itself is measured where it happened — the E19 press grid, in
+`msvc-release` — rather than in a unit test, because a test that waits for a NaN is a test tuned
+to one machine's rounding.
+
 A single 100-high tower is *not* in the suite, and not because it was awkward to write: it falls
 over inside two seconds. That is a property of sequential-impulse solvers rather than of this
 wrapper — the bottom box carries a hundred times its own weight and the residual error at the
@@ -436,8 +599,13 @@ line, which is why the user data rides inline instead of being looked up per eve
 around a rigid two-bone core pressed to 30% of its depth and released, and the same cage under a
 sustained load — which prints its own JSON lines so the whole experiment re-runs on another
 machine from one command. Both live in `engine_physics_bench`; a benchmark argument is one
-integer, so the E19 sweeps pack their four dimensions into a decimal key
-(`elements * 1e6 + workers * 1e4 + iterations * 10 + sub_steps`). Under CTest the bench runs with
+integer, so the E19 sweeps pack their dimensions into a decimal key
+(`mode * 1e9 + elements * 1e6 + workers * 1e4 + iterations * 10 + sub_steps`). `mode` is the
+control ADR-0029 added: 0 has both of its fixes in, 1 is the fixture exactly as the experiment
+first ran, and 2 and 3 turn the strain clamp and the compliance conversion on one at a time. The
+failing configurations run in all four **in the same session**, because a re-run on a different
+day cannot otherwise tell "the fix did this" from "the machine was quieter this time" — which on
+a shared desktop is a real alternative and not a rhetorical one. Under CTest the bench runs with
 `--smoke`, and the E19 fixture reads that flag (`bench::smoke_mode()`) rather than the build type:
 a four-a-side cage and phases twelve times shorter, because the release grid registers 54
 variants and at full length they cost a billed CI runner a minute per run (11 s now).
@@ -445,7 +613,10 @@ variants and at full length they cost a billed CI runner a minute per run (11 s 
 **Performance notes.** `tools/dev.ps1 bench -Preset msvc-release -Filter "physics.*"`, measured on
 an i9-10980XE (18 cores), `RelWithDebInfo`, cross-platform determinism on, SSE4.2 baseline. One
 machine settles layout and traversal decisions, not cross-machine defaults
-([11 §11.8](../plan/11-performance-principles.md)):
+([11 §11.8](../plan/11-performance-principles.md)). **This desktop is shared** — the owner runs GPU
+jobs on it and other agents compile on it — so a measurement is worth what its record of the
+machine's state is worth; the table below was re-taken on 2026-09-18 at a CPU load of 6–10% of 36
+threads with the GPU idle, and it agrees with the 2026-09-17 run (in brackets) to within 1%:
 
 **Machine state:** the rigid-body and single-cage rows were re-taken on 2026-09-18 with
 `--require-quiet`, twice, on a machine that started and ended both runs below 10% others' CPU
@@ -488,11 +659,16 @@ them does** on the same pool — 145 µs a cage against 1,226. So the way to spe
 deformables is *more cages*, not *bigger* ones, and a deformation system has to step its volumes
 in one world for the backend to be able to interleave them at all.
 
-Against ADR-0026's **1.5 ms per 60 Hz tick for all deformable volumes together**: E19 measures the
-T0 cage at **0.225 µs per element per iteration per sub-step**, so the 512-element cage at the
-eight iterations and two sub-steps that plan 05 §5.14 assumes costs **1.8 ms — more than the whole
-budget, for one volume**, against the 40–120 µs that section estimates. The full grid, what it
-decides, and what fails is in [E19](../experiments/e19-lattice-cage.md).
+Against the budget: E19 measures the T0 cage at **0.225 µs per element per iteration per
+sub-step** — twice, five weeks apart, agreeing to 3% — so the 512-element cage at eight iterations
+and two sub-steps costs **1.8 ms, more than ADR-0026's whole 1.5 ms budget for one volume**,
+against the 40–120 µs plan 05 §5.14 estimated. That is what
+[ADR-0029](../adr/0029-deformable-volume-budgets.md) acted on: the default T0 cage is now **at
+most 256 elements** — one solve group — which costs **0.80 ms at one worker and 1.37 ms at eight**
+at the same iteration and sub-step counts, and the budget is **1.5 ms ambient plus a 2.5 ms hero
+allowance**, wall clock, reported per step in `WorldStats::soft_body_budget`. The strain clamp is
+a further `edges × sweeps × 4.3 ns` — 17 µs on the default cage, 326 µs on a 512-element one. The
+full grid, what it decides, and what still fails is in [E19](../experiments/e19-lattice-cage.md).
 
 Other hot-path decisions: contact recording is lock-free (a per-worker bucket, merged and sorted
 once per step); `read_transforms` takes one pass over the caller's id array against the no-lock

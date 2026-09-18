@@ -21,7 +21,8 @@ target_include_directories(engine_physics SYSTEM PRIVATE
 
 engine_module_tests(NAME physics
   SOURCES tests/rigid_body_tests.cpp tests/query_tests.cpp tests/soft_body_tests.cpp
-          tests/soft_body_parallel_tests.cpp tests/determinism_tests.cpp tests/size_table.cpp
+          tests/soft_body_parallel_tests.cpp tests/deformable_tests.cpp
+          tests/determinism_tests.cpp tests/size_table.cpp
   DEPS jobs)
 
 # Step cost for falling boxes at 1/4/8 workers and for soft cubes across worker, iteration and
