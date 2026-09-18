@@ -281,9 +281,11 @@ Not "more locking": **three to four orders of magnitude** more, and it is one th
 | Workers | pre (create + wait) | post (join) | pipeline | pre + post, flecs' own threads |
 |---|---|---|---|---|
 | 2 | 0.19 ms | 0.13 ms | 3.09 ms | 4.3 µs |
-| 4 | 0.36 ms | 0.21 ms | 2.23 ms | 4.6 µs |
-| 8 | 0.65 ms | 0.35 ms | 1.71 ms | 4.6 µs |
-| 16 | 1.21–1.71 ms | 0.61–0.76 ms | 1.48 ms | 5.1 µs |
+| 4 | 0.34–0.39 ms | 0.19–0.22 ms | 2.23 ms | 4.6 µs |
+| 8 | 0.65–0.73 ms | 0.35–0.38 ms | 1.71 ms | 4.6 µs |
+| 16 | 1.21–1.71 ms | 0.61–0.76 ms | 1.48 ms | 5.0 µs |
+
+That is **0.32 ms a tick at two workers rising to 2.5 ms at sixteen**, against 4–6 µs, for work that has nothing to do with the systems.
 
 ### Two: every tick's worker is a fresh job, and the pool worker that ran the last one is asleep
 
