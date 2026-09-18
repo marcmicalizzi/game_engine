@@ -13,6 +13,18 @@ if(ENGINE_TRACY)
   set(TRACY_ENABLE ON CACHE BOOL "" FORCE)
   set(TRACY_ON_DEMAND ON CACHE BOOL "" FORCE)
   set(TRACY_STATIC ON CACHE BOOL "" FORCE)
+  # The Tracy client opens a listening socket when the process starts. On every interface, that
+  # makes Windows Firewall raise a prompt once per executable *path*, and every agent worktree
+  # and preset has its own paths: on 2026-09-18 thirty-five pending prompts, each one a GPU
+  # client process, pushed the machine past the number of clients the NVIDIA driver survives
+  # and every vkCreateDevice crashed inside the driver until they were dismissed
+  # (docs/subsystems/profiling.md). Loopback listeners do not prompt, so that is the default;
+  # profiling another machine is the opt-in.
+  option(ENGINE_TRACY_REMOTE "Let the Tracy client accept connections from other machines" OFF)
+  if(NOT ENGINE_TRACY_REMOTE)
+    set(TRACY_ONLY_LOCALHOST ON CACHE BOOL "" FORCE)
+    set(TRACY_NO_BROADCAST ON CACHE BOOL "" FORCE)
+  endif()
   FetchContent_Declare(tracy
     GIT_REPOSITORY https://github.com/wolfpld/tracy.git
     GIT_TAG        v0.14.1
