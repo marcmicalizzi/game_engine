@@ -31,3 +31,4 @@ Numbered, dated, and immutable once accepted. To change a decision, write a new 
 | [0025](0025-cluster-acceleration-structures.md) | Cluster acceleration structures on NVIDIA, KHR bottom-level structures elsewhere; Vulkan stays (E2 result) | Accepted |
 | [0026](0026-deformable-volumes-first-class.md) | Deformable volumes as a first-class physics primitive: cage separate from the render mesh, solver-agnostic, simulation-LOD'd | Accepted |
 | [0027](0027-additive-capabilities.md) | Capabilities are additive modules: registration points, not forks; the proof is a build, not a runtime layer | Accepted |
+| [0028](0028-ecs-and-persistent-store.md) | flecs is the runtime entity store, exposed directly; SQLite is the persistent store, tuned by measurement (E6 result) | Proposed |
