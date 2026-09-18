@@ -73,7 +73,14 @@ jobs:
         # optional capability off, which proves the rest of the tree does not depend on any of
         # them. It duplicates linux-clang-debug until the first capability lands, and is cheaper
         # to run from the start than to add once four capabilities each assume another is there.
-        preset: [linux-clang-debug, linux-gcc-release, linux-clang-minimal]
+        #
+        # linux-clang-no-ecs is the configuration in between, and it is the one that exercises the
+        # **capability graph** rather than the switch: everything on except `ecs`, so `animation`
+        # has to follow it off through `engine_capability_requires` and the rest of the tree has to
+        # build without either. All-on and all-off both pass with a broken graph — all-on never
+        # consults it and all-off switches everything off for a different reason — so this job is
+        # the only one that would catch a capability that links another and forgot to declare it.
+        preset: [linux-clang-debug, linux-gcc-release, linux-clang-minimal, linux-clang-no-ecs]
     steps:
       - uses: actions/checkout@v4
       - name: Install toolchain
