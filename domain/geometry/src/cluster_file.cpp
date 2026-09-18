@@ -24,7 +24,7 @@ namespace {
 
 constexpr u64 k_header_bytes = sizeof(ClusterFileHeader);
 constexpr u64 k_record_bytes = sizeof(ClusterFileSection);
-constexpr u32 k_kind_count = static_cast<u32>(ClusterSection::PageScalars) + 1;
+constexpr u32 k_kind_count = static_cast<u32>(ClusterSection::SkinScalars) + 1;
 
 constexpr u64 align_up(u64 value) noexcept {
   const u64 a = k_cluster_file_alignment;
@@ -119,6 +119,13 @@ u64 encode(const ClusterFileData& data, std::string& out) {
   const u32 page_scalars[1] = {data.pages.page_bytes_target};
   add_section(payloads, ClusterSection::PageScalars, static_cast<u32>(sizeof(u32)), 1u,
               page_scalars);
+  // The skin binding stream and the width of the palette it indexes; empty and zero for an
+  // unskinned mesh, which is what every container built before skinning existed reads as.
+  add_section(payloads, ClusterSection::Skin, static_cast<u32>(sizeof(SkinBinding)),
+              mesh.skin.size(), mesh.skin.data());
+  const u32 skin_scalars[1] = {mesh.skin_joint_count};
+  add_section(payloads, ClusterSection::SkinScalars, static_cast<u32>(sizeof(u32)), 1u,
+              skin_scalars);
 
   u64 offset = k_header_bytes + k_record_bytes * payloads.size();
   for (Payload& payload : payloads) {
@@ -258,6 +265,8 @@ const char* cluster_section_name(u32 kind) noexcept {
     case ClusterSection::Pages: return "pages";
     case ClusterSection::PageChildren: return "page_children";
     case ClusterSection::PageScalars: return "page_scalars";
+    case ClusterSection::Skin: return "skin";
+    case ClusterSection::SkinScalars: return "skin_scalars";
   }
   return "unknown";
 }
@@ -382,6 +391,26 @@ bool read_cluster_file_memory(std::span<const u8> bytes, ClusterFileData& out, s
     quantize_positions(result.mesh.mesh);
   }
 
+  // The skin bindings, and the palette width they index. A file with neither section, or one
+  // with an empty stream, is an unskinned mesh; the two travel together, so a stream with no
+  // width is refused rather than loaded with a palette nothing can be checked against.
+  if (const ClusterFileSection* skin = found[static_cast<u32>(ClusterSection::Skin)];
+      skin != nullptr && skin->element_count != 0) {
+    if (skin->element_size != sizeof(SkinBinding)) {
+      return fail(error, "cluster file section skin has " + std::to_string(skin->element_size) +
+                             "-byte elements, expected " + std::to_string(sizeof(SkinBinding)));
+    }
+    copy_section(bytes, *skin, result.mesh.mesh.skin);
+    const ClusterFileSection* width = found[static_cast<u32>(ClusterSection::SkinScalars)];
+    if (width == nullptr || width->element_count == 0)
+      return fail(error, "cluster file has skin bindings but no joint count");
+    if (width->element_size != sizeof(u32)) {
+      return fail(error, "cluster file section skin_scalars has " +
+                             std::to_string(width->element_size) + "-byte elements, expected 4");
+    }
+    std::memcpy(&result.mesh.mesh.skin_joint_count, bytes.data() + width->offset, sizeof(u32));
+  }
+
   // The source path; a file from before the section existed leaves it empty, and so does a
   // build that had no file behind its bytes.
   if (const ClusterFileSection* source = found[static_cast<u32>(ClusterSection::SourcePath)];
@@ -458,6 +487,11 @@ bool read_cluster_file_memory(std::span<const u8> bytes, ClusterFileData& out, s
                            std::to_string(mesh.vertices.size()) + " positions, " +
                            std::to_string(mesh.attributes.size()) + " attributes, " +
                            std::to_string(mesh.vertex_source.size()) + " sources");
+  }
+  if (!mesh.skin.empty() && mesh.skin.size() != mesh.vertices.size()) {
+    return fail(error, "cluster file has " + std::to_string(mesh.skin.size()) +
+                           " skin bindings for " + std::to_string(mesh.vertices.size()) +
+                           " vertices");
   }
   u64 level_total = 0;
   for (const u32 count : result.mesh.level_cluster_counts)

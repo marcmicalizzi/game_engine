@@ -40,6 +40,41 @@ NormalCone decode_cone(u32 packed) noexcept {
   return cone;
 }
 
+SkinBinding make_skin_binding(const u32 joints[4], const f32 weights[4]) noexcept {
+  SkinBinding out;
+  f32 total = 0.0f;
+  for (u32 i = 0; i < 4; ++i)
+    total += weights[i] > 0.0f ? weights[i] : 0.0f;
+  if (!(total > 0.0f)) {
+    // No influence at all: bind rigidly to the first joint rather than leaving the vertex at
+    // the origin of the palette, which is what a missing WEIGHTS_0 accessor means in practice.
+    out.joints[0] = static_cast<u8>(joints[0] < k_max_skin_joints ? joints[0] : 0);
+    return out;
+  }
+  const f32 inverse_total = 1.0f / total;
+  u32 sum = 0;
+  u32 largest = 0;
+  f32 largest_weight = -1.0f;
+  for (u32 i = 0; i < 4; ++i) {
+    const f32 w = weights[i] > 0.0f ? weights[i] * inverse_total : 0.0f;
+    const u32 q = static_cast<u32>(w * 255.0f + 0.5f);
+    out.joints[i] = static_cast<u8>(joints[i] < k_max_skin_joints ? joints[i] : 0);
+    out.weights[i] = static_cast<u8>(q > 255 ? 255 : q);
+    sum += out.weights[i];
+    if (w > largest_weight) {
+      largest_weight = w;
+      largest = i;
+    }
+  }
+  // The rounding error lands on the biggest influence, which is where it is least visible and
+  // where there is always room for it: its quantized weight is at least 64 whenever four
+  // influences share the vertex, so ±3 never underflows or saturates.
+  const i32 correction = 255 - static_cast<i32>(sum);
+  const i32 corrected = static_cast<i32>(out.weights[largest]) + correction;
+  out.weights[largest] = static_cast<u8>(corrected < 0 ? 0 : (corrected > 255 ? 255 : corrected));
+  return out;
+}
+
 bool cluster_backfacing(const ClusterDesc& cluster, Vec3 camera) noexcept {
   const NormalCone cone = decode_cone(cluster.cone);
   if (cone.cutoff >= 1.0f) return false;
@@ -182,6 +217,29 @@ bool validate_clusters(const ClusterMesh& mesh, std::span<const u32> source_indi
     if (std::fabs(q.x - p.x) > quant_tolerance || std::fabs(q.y - p.y) > quant_tolerance ||
         std::fabs(q.z - p.z) > quant_tolerance)
       return fail("a dequantized position is more than half a grid step from the original");
+  }
+
+  // The skin binding stream: present or absent as a whole, weights that sum to exactly 255, and
+  // joints inside the palette the mesh says it binds to. The fixed sum is what lets the shader
+  // skip a divide, so a stream that does not hold it is a bug in whoever built it, not something
+  // the GPU is asked to repair.
+  if (!mesh.skin.empty()) {
+    if (mesh.skin.size() != mesh.vertices.size())
+      return fail("the skin binding stream is not parallel to the vertices");
+    if (mesh.skin_joint_count == 0) return fail("a skinned mesh binds to no joints");
+    if (mesh.skin_joint_count > k_max_skin_joints)
+      return fail("a skin binds to more joints than a u8 index holds");
+    for (const SkinBinding& binding : mesh.skin) {
+      u32 total = 0;
+      for (u32 k = 0; k < 4; ++k) {
+        total += binding.weights[k];
+        if (binding.weights[k] != 0 && binding.joints[k] >= mesh.skin_joint_count)
+          return fail("a skin binding names a joint outside the mesh's palette");
+      }
+      if (total != 255) return fail("skin binding weights do not sum to 255");
+    }
+  } else if (mesh.skin_joint_count != 0) {
+    return fail("the mesh names a joint palette but carries no skin bindings");
   }
 
   // Every source triangle exactly once: compare sorted canonical corner triples.
@@ -372,17 +430,24 @@ void compute_vertex_normals(std::span<const Vec3> positions, std::span<const u32
 }
 
 u32 weld_vertices(Vector<Vec3>& positions, Vector<Vec3>& normals, Vector<Vec2>& uvs,
-                  std::span<u32> indices) {
+                  std::span<u32> indices, Vector<SkinBinding>* skin) {
   const u32 vertex_count = positions.size();
   if (vertex_count == 0) return 0;
   const bool have_normals = normals.size() == vertex_count;
   const bool have_uvs = uvs.size() == vertex_count;
-  meshopt_Stream streams[3];
+  const bool have_skin = skin != nullptr && skin->size() == vertex_count;
+  meshopt_Stream streams[4];
   usize stream_count = 0;
   streams[stream_count++] = meshopt_Stream{positions.data(), sizeof(Vec3), sizeof(Vec3)};
   if (have_normals)
     streams[stream_count++] = meshopt_Stream{normals.data(), sizeof(Vec3), sizeof(Vec3)};
   if (have_uvs) streams[stream_count++] = meshopt_Stream{uvs.data(), sizeof(Vec2), sizeof(Vec2)};
+  // The binding is part of the key: two duplicates at one position with different weights are
+  // different vertices, because a weld that merged them would give one of the two surfaces the
+  // other's deformation.
+  if (have_skin)
+    streams[stream_count++] =
+        meshopt_Stream{skin->data(), sizeof(SkinBinding), sizeof(SkinBinding)};
 
   Vector<unsigned int> remap(vertex_count);
   const u32 unique = static_cast<u32>(meshopt_generateVertexRemapMulti(
@@ -402,6 +467,12 @@ u32 weld_vertices(Vector<Vec3>& positions, Vector<Vec3>& normals, Vector<Vec2>& 
     Vector<Vec2> welded(unique);
     meshopt_remapVertexBuffer(welded.data(), uvs.data(), vertex_count, sizeof(Vec2), remap.data());
     uvs = std::move(welded);
+  }
+  if (have_skin) {
+    Vector<SkinBinding> welded(unique);
+    meshopt_remapVertexBuffer(welded.data(), skin->data(), vertex_count, sizeof(SkinBinding),
+                              remap.data());
+    *skin = std::move(welded);
   }
   if (!indices.empty()) {
     meshopt_remapIndexBuffer(indices.data(), indices.data(), indices.size(), remap.data());
@@ -427,6 +498,18 @@ void fill_cluster_attributes(ClusterMesh& mesh, std::span<const Vec3> positions,
     a.uv_half2 = encode_half2(have_uvs ? attributes.uvs[source] : Vec2{0.0f, 0.0f});
     mesh.attributes.push_back(a);
   }
+
+  // The skin binding travels the same road as the normals and the UVs: through `vertex_source`,
+  // which is what gives every LOD level its bindings, since clusterlod keeps original vertices.
+  // That is also why skinning is crack-free — every copy of a source vertex, in every cluster
+  // and on every level, gets bitwise the same four joints and four weights.
+  mesh.skin.clear();
+  mesh.skin_joint_count = 0;
+  if (attributes.skin.size() != positions.size()) return;
+  mesh.skin_joint_count = attributes.joint_count;
+  mesh.skin.reserve(mesh.vertex_source.size());
+  for (const u32 source : mesh.vertex_source)
+    mesh.skin.push_back(attributes.skin[source]);
 }
 
 }  // namespace engine::geometry

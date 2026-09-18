@@ -22,6 +22,11 @@ ENGINE_EXPECT_SIZE(12, 4, geometry::PageRequest);
 
 ENGINE_EXPECT_SIZE(8, 4, geometry::VertexAttributes);
 
+// The skin binding is the same eight bytes a vertex as the attributes, and it is read by the
+// deform pass through a device address, so its layout is the shader contract too: four u8 joint
+// indices then four u8 weights, no padding, alignment 1 so the stream is a plain byte array.
+ENGINE_EXPECT_SIZE(8, 1, geometry::SkinBinding);
+
 // The .clusters container: these three are the file itself, so their size is the format.
 ENGINE_EXPECT_SIZE(32, 8, geometry::ClusterFileHeader);
 

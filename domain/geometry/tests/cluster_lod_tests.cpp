@@ -342,3 +342,77 @@ TEST_CASE("cluster lod: separate meshes merge into a scene, each keeping its own
   CHECK_FALSE(merge_cluster_meshes(empty_meshes, scene, parts, &error));
   CHECK_FALSE(error.empty());
 }
+
+TEST_CASE("cluster lod: skin bindings reach every level and survive both merges") {
+  Vector<Vec3> positions;
+  Vector<u32> indices;
+  make_terrain(33, 10.0f, positions, indices);
+  // Three joints along +x, so a binding is a function of position alone and two vertices at one
+  // place always agree — the property the crack rule asks of a deformer's inputs.
+  Vector<SkinBinding> skin;
+  for (const Vec3& p : positions) {
+    const f32 t = (p.x + 10.0f) / 20.0f * 2.0f;  // 0 .. 2 across the terrain
+    const u32 lower = t < 1.0f ? 0u : 1u;
+    const u32 joints[4] = {lower, lower + 1, 0, 0};
+    const f32 fraction = t - static_cast<f32>(lower);
+    const f32 weights[4] = {1.0f - fraction, fraction, 0.0f, 0.0f};
+    skin.push_back(make_skin_binding(joints, weights));
+  }
+  AttributeSource attributes;
+  attributes.skin = std::span<const SkinBinding>(skin.data(), skin.size());
+  attributes.joint_count = 3;
+
+  ClusterLodMesh mesh;
+  std::string error;
+  REQUIRE_MESSAGE(
+      build_cluster_lod(positions, indices, ClusterLodOptions{}, mesh, &error, attributes), error);
+  REQUIRE(mesh.mesh.skin.size() == mesh.mesh.vertices.size());
+  CHECK(mesh.mesh.skin_joint_count == 3);
+  CHECK_MESSAGE(validate_cluster_lod(mesh, indices, &error), error);
+  // Every level's vertices are original vertices (clusterlod keeps them), so a coarse cluster's
+  // binding is its source vertex's binding and not something a simplifier invented. That is why
+  // skinning does not tear at a LOD-group boundary the way displacement along a normal does.
+  u32 coarse_checked = 0;
+  for (u32 c = 0; c < mesh.mesh.clusters.size(); ++c) {
+    if (mesh.lod[c].level == 0) continue;
+    const ClusterDesc& desc = mesh.mesh.clusters[c];
+    for (u32 v = 0; v < desc.vertex_count; ++v) {
+      const u32 at = desc.vertex_offset + v;
+      const SkinBinding& want = skin[mesh.mesh.vertex_source[at]];
+      for (u32 k = 0; k < 4; ++k) {
+        CHECK(mesh.mesh.skin[at].joints[k] == want.joints[k]);
+        CHECK(mesh.mesh.skin[at].weights[k] == want.weights[k]);
+      }
+      ++coarse_checked;
+    }
+  }
+  CHECK(coarse_checked > 0);
+
+  // Both merges carry the stream: the parts of one mesh (merge_cluster_lod) and the meshes of
+  // one scene (merge_cluster_meshes), whose palette width is the widest of them.
+  const ClusterLodMesh skinned_parts[2] = {mesh, mesh};
+  ClusterLodMesh merged_parts;
+  REQUIRE(merge_cluster_lod(std::span<const ClusterLodMesh>(skinned_parts, 2), merged_parts,
+                            nullptr, &error));
+  CHECK(merged_parts.mesh.skin.size() == merged_parts.mesh.vertices.size());
+  CHECK(merged_parts.mesh.skin_joint_count == 3);
+
+  ClusterLodMesh skinned_scene;
+  Vector<ClusterMeshPart> skinned_scene_parts;
+  REQUIRE(merge_cluster_meshes(std::span<const ClusterLodMesh>(skinned_parts, 2), skinned_scene,
+                               skinned_scene_parts, &error));
+  REQUIRE(skinned_scene.mesh.skin.size() == skinned_scene.mesh.vertices.size());
+  CHECK(skinned_scene.mesh.skin_joint_count == 3);
+  for (u32 v = 0; v < mesh.mesh.skin.size(); ++v) {
+    CHECK(skinned_scene.mesh.skin[v].joints[0] == mesh.mesh.skin[v].joints[0]);
+    CHECK(skinned_scene.mesh.skin[skinned_scene_parts[1].first_vertex + v].weights[0] ==
+          mesh.mesh.skin[v].weights[0]);
+  }
+
+  // An unskinned build of the same terrain carries no stream at all: the eight bytes a vertex are
+  // paid by skinned meshes only.
+  ClusterLodMesh plain;
+  REQUIRE(build_cluster_lod(positions, indices, ClusterLodOptions{}, plain, &error));
+  CHECK(plain.mesh.skin.empty());
+  CHECK(plain.mesh.skin_joint_count == 0);
+}

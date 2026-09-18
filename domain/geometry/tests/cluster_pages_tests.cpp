@@ -1055,4 +1055,59 @@ TEST_CASE("cluster pages: a request carries the priority of the cluster that mad
   CHECK(screen_pixels(sphere, view) ==
         doctest::Approx(projected_error(sphere, 4.0f, view)).epsilon(1e-6));
   CHECK(sphere_distance(sphere, view) == doctest::Approx(view.camera.y - 2.0f).epsilon(1e-5));
+
+TEST_CASE("cluster pages: a skinned mesh pages its bindings with its vertices, and pays for them") {
+  Vector<Vec3> positions;
+  Vector<u32> indices;
+  make_terrain(65, 10.0f, positions, indices);
+  Vector<SkinBinding> skin;
+  for (const Vec3& p : positions) {
+    const u32 joints[4] = {0, 1, 0, 0};
+    const f32 t = (p.x + 10.0f) / 20.0f;
+    const f32 weights[4] = {1.0f - t, t, 0.0f, 0.0f};
+    skin.push_back(make_skin_binding(joints, weights));
+  }
+  AttributeSource attributes;
+  attributes.skin = std::span<const SkinBinding>(skin.data(), skin.size());
+  attributes.joint_count = 2;
+
+  ClusterLodMesh mesh;
+  std::string error;
+  REQUIRE_MESSAGE(
+      build_cluster_lod(positions, indices, ClusterLodOptions{}, mesh, &error, attributes), error);
+  ClusterLodMesh plain;
+  REQUIRE(build_cluster_lod(positions, indices, ClusterLodOptions{}, plain, &error));
+
+  // Eight more bytes a vertex: a skinned cluster streams its bindings or it cannot be deformed.
+  const u32 skinned_bytes = cluster_page_bytes(mesh.mesh, 0);
+  const u32 plain_bytes = cluster_page_bytes(plain.mesh, 0);
+  CHECK(skinned_bytes == plain_bytes + mesh.mesh.clusters[0].vertex_count * 8u);
+
+  // The bindings are permuted with the vertices they belong to, so a page's bindings are one run
+  // of the stream exactly as its positions are. `vertex_source` is permuted alongside, so a
+  // vertex's binding is still its source vertex's.
+  const Vector<SkinBinding> before = mesh.mesh.skin;
+  const Vector<u32> before_source = mesh.mesh.vertex_source;
+  ClusterPages pages;
+  Vector<u32> source_of_cluster;
+  ClusterPagesOptions options;
+  options.page_bytes = 64 * 1024;
+  REQUIRE_MESSAGE(build_cluster_pages(mesh, options, pages, &error, &source_of_cluster), error);
+  REQUIRE(mesh.mesh.skin.size() == mesh.mesh.vertices.size());
+  CHECK_MESSAGE(validate_cluster_lod(mesh, indices, &error), error);
+  for (u32 v = 0; v < mesh.mesh.skin.size(); ++v) {
+    const SkinBinding& want = skin[mesh.mesh.vertex_source[v]];
+    for (u32 k = 0; k < 4; ++k) {
+      CHECK(mesh.mesh.skin[v].joints[k] == want.joints[k]);
+      CHECK(mesh.mesh.skin[v].weights[k] == want.weights[k]);
+    }
+  }
+  // The permutation moved something: a stream identical to the one before would prove nothing.
+  bool moved = false;
+  for (u32 v = 0; v < before_source.size() && !moved; ++v)
+    moved = before_source[v] != mesh.mesh.vertex_source[v];
+  CHECK(moved);
+  CHECK(before.size() == mesh.mesh.skin.size());
+  MESSAGE("skinned cluster 0: " << skinned_bytes << " bytes against " << plain_bytes
+                                << " rigid, over " << pages.pages.size() << " pages");
 }

@@ -270,10 +270,14 @@ struct PriorityRequestSink {
 u32 cluster_page_bytes(const ClusterMesh& mesh, u32 cluster) noexcept {
   if (cluster >= mesh.clusters.size()) return 0;
   const ClusterDesc& desc = mesh.clusters[cluster];
-  // Six bytes of quantized position and eight of attributes a vertex, four bytes a triangle, and
-  // the two descriptors. The float positions are not counted: only the acceleration-structure
-  // builders read those, and they are not what a page streams.
-  const u32 per_vertex = 6u + (mesh.attributes.size() == mesh.vertices.size() ? 8u : 0u);
+  // Six bytes of quantized position, eight of attributes, and — on a skinned mesh — eight of
+  // skin binding a vertex, four bytes a triangle, and the two descriptors. The float positions
+  // are not counted: only the acceleration-structure builders read those, and they are not what
+  // a page streams. A skinned mesh therefore fits fewer clusters in a page than a rigid one,
+  // which is the honest number: the binding streams with the cluster or the cluster cannot be
+  // deformed.
+  const u32 per_vertex = 6u + (mesh.attributes.size() == mesh.vertices.size() ? 8u : 0u) +
+                         (mesh.skin.size() == mesh.vertices.size() ? 8u : 0u);
   const u32 fixed = static_cast<u32>(sizeof(ClusterDesc) + sizeof(ClusterLodDesc));
   return fixed + desc.vertex_count * per_vertex + desc.triangle_count * 4u;
 }
@@ -317,6 +321,9 @@ bool build_cluster_pages(ClusterLodMesh& mesh, const ClusterPagesOptions& option
   const bool has_quantized = geo.quantized.size() >= u64{geo.vertices.size()} * 3;
   if (!geo.quantized.empty() && !has_quantized)
     return fail(error, "build_cluster_pages: the quantized stream is the wrong length");
+  const bool has_skin = geo.skin.size() == geo.vertices.size();
+  if (!geo.skin.empty() && !has_skin)
+    return fail(error, "build_cluster_pages: the skin binding stream is the wrong length");
 
   // Reordering the clusters reorders their runs of the vertex and triangle streams, which only
   // means anything when those runs tile the streams: one run per cluster, in order, no gaps and
@@ -476,11 +483,13 @@ bool build_cluster_pages(ClusterLodMesh& mesh, const ClusterPagesOptions& option
   Vector<Vec3> vertices;
   Vector<u32> vertex_source;
   Vector<VertexAttributes> attributes;
+  Vector<SkinBinding> skin;
   Vector<u16> quantized;
   Vector<u32> triangles;
   vertices.reserve(geo.vertices.size());
   vertex_source.reserve(geo.vertices.size());
   if (has_attributes) attributes.reserve(geo.vertices.size());
+  if (has_skin) skin.reserve(geo.vertices.size());
   if (has_quantized) quantized.reserve(geo.quantized.size());
   triangles.reserve(geo.triangles.size());
   for (u32 n = 0; n < count; ++n) {
@@ -495,6 +504,7 @@ bool build_cluster_pages(ClusterLodMesh& mesh, const ClusterPagesOptions& option
       vertices.push_back(geo.vertices[source]);
       vertex_source.push_back(geo.vertex_source[source]);
       if (has_attributes) attributes.push_back(geo.attributes[source]);
+      if (has_skin) skin.push_back(geo.skin[source]);
       if (has_quantized) {
         quantized.push_back(geo.quantized[source * 3 + 0]);
         quantized.push_back(geo.quantized[source * 3 + 1]);
@@ -563,6 +573,7 @@ bool build_cluster_pages(ClusterLodMesh& mesh, const ClusterPagesOptions& option
   geo.vertices = std::move(vertices);
   geo.vertex_source = std::move(vertex_source);
   if (has_attributes) geo.attributes = std::move(attributes);
+  if (has_skin) geo.skin = std::move(skin);
   if (has_quantized) geo.quantized = std::move(quantized);
   geo.triangles = std::move(triangles);
   mesh.lod = std::move(lods);

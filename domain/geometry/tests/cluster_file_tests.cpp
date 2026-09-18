@@ -102,6 +102,8 @@ void check_equal(const ClusterFileData& read, const ClusterFileData& written) {
   CHECK(same_bytes(read.mesh.mesh.attributes, written.mesh.mesh.attributes));
   CHECK(same_bytes(read.mesh.mesh.triangles, written.mesh.mesh.triangles));
   CHECK(same_bytes(read.mesh.mesh.vertex_source, written.mesh.mesh.vertex_source));
+  CHECK(same_bytes(read.mesh.mesh.skin, written.mesh.mesh.skin));
+  CHECK(read.mesh.mesh.skin_joint_count == written.mesh.mesh.skin_joint_count);
   CHECK(same_bytes(read.mesh.level_cluster_counts, written.mesh.level_cluster_counts));
   CHECK(same_bytes(read.cluster_material, written.cluster_material));
   CHECK(same_bytes(read.materials, written.materials));
@@ -226,7 +228,7 @@ TEST_CASE("cluster file: a DAG with materials survives a round trip array by arr
   CHECK(std::memcmp(header.magic, "CLST", 4) == 0);
   CHECK(header.version == k_cluster_file_version);
   CHECK(header.flags == 0);
-  CHECK(header.section_count == 18);
+  CHECK(header.section_count == 20);
   CHECK(header.total_bytes == file.size());
   CHECK(header.content_hash == cluster_file_hash(data));
   for (u32 i = 0; i < header.section_count; ++i) {
@@ -318,6 +320,87 @@ TEST_CASE("cluster file: the page table round-trips, and a file without one read
   REQUIRE_MESSAGE(read_cluster_file_memory(view(older), without, &error), error);
   CHECK(without.pages.pages.empty());
   check_equal(without, unpaged);
+}
+
+TEST_CASE("cluster file: the skin bindings round-trip, and a file without them reads unskinned") {
+  TempDir tmp;
+  ClusterFileData data;
+  Vector<u32> indices;
+  make_fixture(data, indices);
+  // Bind the fixture's vertices to two joints. The mesh is already laid out in pages, so this
+  // stands in for a skinned container exactly as `engine-content build` would write one.
+  ClusterMesh& geo = data.mesh.mesh;
+  geo.skin.clear();
+  geo.skin.reserve(geo.vertices.size());
+  for (u32 v = 0; v < geo.vertices.size(); ++v) {
+    const u32 joints[4] = {0, 1, 0, 0};
+    const f32 t = (geo.vertices[v].x + 10.0f) / 20.0f;
+    const f32 weights[4] = {1.0f - t, t, 0.0f, 0.0f};
+    geo.skin.push_back(make_skin_binding(joints, weights));
+  }
+  geo.skin_joint_count = 2;
+
+  const std::string path = tmp.path + "/skinned.clusters";
+  std::string error;
+  REQUIRE_MESSAGE(write_cluster_file(path, data, &error), error);
+  ClusterFileData read;
+  REQUIRE_MESSAGE(read_cluster_file(path, read, &error), error);
+  check_equal(read, data);
+  REQUIRE(read.mesh.mesh.skin.size() == read.mesh.mesh.vertices.size());
+  CHECK(read.mesh.mesh.skin_joint_count == 2);
+  CHECK_MESSAGE(validate_cluster_lod(read.mesh, indices, &error), error);
+
+  // A container written before skinning existed: the kind becomes one this build does not know,
+  // and what comes back is the same mesh with no bindings rather than a failure.
+  std::string file;
+  REQUIRE(io::read_file(path, file) == io::Status::Ok);
+  ClusterFileHeader header;
+  std::memcpy(&header, file.data(), sizeof(header));
+  usize skin_at = 0;
+  ClusterFileSection section{};
+  for (u32 i = 0; i < header.section_count; ++i) {
+    const usize at = sizeof(header) + sizeof(section) * i;
+    ClusterFileSection record;
+    std::memcpy(&record, file.data() + at, sizeof(record));
+    if (record.kind == static_cast<u32>(ClusterSection::Skin)) {
+      skin_at = at;
+      section = record;
+    }
+  }
+  REQUIRE(skin_at != 0);
+  CHECK(section.element_size == sizeof(SkinBinding));
+  CHECK(section.element_count == geo.skin.size());
+  CHECK(std::string(cluster_section_name(section.kind)) == "skin");
+  std::string older = file;
+  ClusterFileSection renamed = section;
+  renamed.kind = 31341;
+  patch(older, skin_at, &renamed, sizeof(renamed));
+  rehash(older);
+  ClusterFileData without;
+  REQUIRE_MESSAGE(read_cluster_file_memory(view(older), without, &error), error);
+  CHECK(without.mesh.mesh.skin.empty());
+  CHECK(without.mesh.mesh.skin_joint_count == 0);
+  CHECK(same_bytes(without.mesh.mesh.vertices, data.mesh.mesh.vertices));
+
+  // Bindings with no joint count is the one combination that is refused: a palette nothing can
+  // be checked against is worse than no palette at all.
+  std::string orphaned = file;
+  usize width_at = 0;
+  for (u32 i = 0; i < header.section_count; ++i) {
+    const usize at = sizeof(header) + sizeof(section) * i;
+    ClusterFileSection record;
+    std::memcpy(&record, file.data() + at, sizeof(record));
+    if (record.kind == static_cast<u32>(ClusterSection::SkinScalars)) width_at = at;
+  }
+  REQUIRE(width_at != 0);
+  ClusterFileSection dropped;
+  std::memcpy(&dropped, file.data() + width_at, sizeof(dropped));
+  dropped.kind = 31342;
+  patch(orphaned, width_at, &dropped, sizeof(dropped));
+  rehash(orphaned);
+  ClusterFileData refused;
+  CHECK_FALSE(read_cluster_file_memory(view(orphaned), refused, &error));
+  CHECK(error.find("joint count") != std::string::npos);
 }
 
 TEST_CASE("cluster file: a section of an unknown kind is skipped") {

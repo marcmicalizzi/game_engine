@@ -433,3 +433,124 @@ TEST_CASE("quantized positions: one grid per mesh, half a step of error, six byt
   CHECK(dequantize_position(mesh, 0).z == 4.0f);
   CHECK(dequantize_position(mesh, 10000).x == 2.0f);  // out of range reads as the origin
 }
+
+TEST_CASE("skin bindings: weights sum to 255, travel through the builder, and split a weld") {
+  // Quantization: four influences normalize to exactly 255, and the rounding error lands on the
+  // biggest one rather than on whichever happens to come last.
+  const u32 four_joints[4] = {3, 1, 7, 0};
+  const f32 thirds[4] = {1.0f / 3.0f, 1.0f / 3.0f, 1.0f / 3.0f, 0.0f};
+  const SkinBinding even = make_skin_binding(four_joints, thirds);
+  CHECK(u32{even.weights[0]} + even.weights[1] + even.weights[2] + even.weights[3] == 255);
+  CHECK(even.joints[0] == 3);
+  CHECK(even.joints[2] == 7);
+  CHECK(even.weights[3] == 0);
+  // Unnormalized input is normalized; a single influence takes the whole 255.
+  const f32 lopsided[4] = {6.0f, 2.0f, 0.0f, 0.0f};
+  const SkinBinding scaled = make_skin_binding(four_joints, lopsided);
+  CHECK(u32{scaled.weights[0]} + scaled.weights[1] + scaled.weights[2] + scaled.weights[3] == 255);
+  CHECK(scaled.weights[0] == 191);
+  CHECK(scaled.weights[1] == 64);
+  const f32 single[4] = {1.0f, 0.0f, 0.0f, 0.0f};
+  CHECK(make_skin_binding(four_joints, single).weights[0] == 255);
+  // No weight at all binds the vertex rigidly to its first joint instead of leaving it weightless
+  // at the palette's origin, which is what a mesh with JOINTS_0 and no WEIGHTS_0 means.
+  const f32 nothing[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+  const SkinBinding rigid = make_skin_binding(four_joints, nothing);
+  CHECK(rigid.joints[0] == 3);
+  CHECK(rigid.weights[0] == 255);
+  CHECK(SkinBinding{}.weights[0] == 255);  // a default binding is already valid
+
+  // Two joints across the grid: joint 0 at x = 0, joint 1 at x = 1.
+  Vector<Vec3> positions;
+  Vector<u32> indices;
+  make_grid(9, positions, indices);
+  Vector<SkinBinding> source_skin;
+  for (const Vec3& p : positions) {
+    const u32 joints[4] = {0, 1, 0, 0};
+    const f32 weights[4] = {1.0f - p.x, p.x, 0.0f, 0.0f};
+    source_skin.push_back(make_skin_binding(joints, weights));
+  }
+  AttributeSource attributes;
+  attributes.skin = std::span<const SkinBinding>(source_skin.data(), source_skin.size());
+  attributes.joint_count = 2;
+
+  ClusterMesh mesh;
+  std::string error;
+  REQUIRE_MESSAGE(
+      build_clusters(positions, indices, ClusterBuildOptions{}, mesh, &error, attributes), error);
+  REQUIRE(mesh.skin.size() == mesh.vertices.size());
+  CHECK(mesh.skin_joint_count == 2);
+  // The stream follows vertex_source exactly, which is what makes every copy of a surface point
+  // — in another cluster, or on a coarser level — deform the same way.
+  for (u32 v = 0; v < mesh.vertices.size(); ++v) {
+    const SkinBinding& got = mesh.skin[v];
+    const SkinBinding& want = source_skin[mesh.vertex_source[v]];
+    for (u32 k = 0; k < 4; ++k) {
+      CHECK(got.joints[k] == want.joints[k]);
+      CHECK(got.weights[k] == want.weights[k]);
+    }
+  }
+  CHECK_MESSAGE(validate_clusters(mesh, indices, ClusterBuildOptions{}, &error), error);
+
+  // Validation refuses a stream that has lost the invariants the shader relies on.
+  ClusterMesh broken = mesh;
+  broken.skin[3].weights[0] = static_cast<u8>(broken.skin[3].weights[0] + 1);
+  CHECK_FALSE(validate_clusters(broken, indices, ClusterBuildOptions{}, &error));
+  CHECK(error.find("255") != std::string::npos);
+  broken = mesh;
+  broken.skin[3].joints[0] = 9;  // outside the two-joint palette
+  broken.skin[3].weights[0] = 255;
+  broken.skin[3].weights[1] = 0;
+  broken.skin[3].weights[2] = 0;
+  broken.skin[3].weights[3] = 0;
+  CHECK_FALSE(validate_clusters(broken, indices, ClusterBuildOptions{}, &error));
+  CHECK(error.find("palette") != std::string::npos);
+  broken = mesh;
+  broken.skin.resize(broken.skin.size() - 1);
+  CHECK_FALSE(validate_clusters(broken, indices, ClusterBuildOptions{}, &error));
+
+  // Unskinned stays unskinned: no stream, no palette, and nothing to validate.
+  ClusterMesh plain;
+  REQUIRE(build_clusters(positions, indices, ClusterBuildOptions{}, plain, &error));
+  CHECK(plain.skin.empty());
+  CHECK(plain.skin_joint_count == 0);
+  CHECK(validate_clusters(plain, indices, ClusterBuildOptions{}, &error));
+
+  // The weld key includes the binding. Unindex the grid, give every corner its source vertex's
+  // binding, and it folds back to 81 vertices as it does without one; give one corner different
+  // weights and that corner keeps a vertex of its own, because merging the two would hand one
+  // surface the other's deformation.
+  Vector<Vec3> normals;
+  compute_vertex_normals(positions, indices, normals);
+  Vector<Vec3> flat_positions;
+  Vector<Vec3> flat_normals;
+  Vector<Vec2> flat_uvs;
+  Vector<SkinBinding> flat_skin;
+  Vector<u32> flat_indices;
+  for (const u32 i : indices) {
+    flat_indices.push_back(flat_positions.size());
+    flat_positions.push_back(positions[i]);
+    flat_normals.push_back(normals[i]);
+    flat_uvs.push_back(Vec2{positions[i].x, positions[i].y});
+    flat_skin.push_back(source_skin[i]);
+  }
+  Vector<Vec3> welded_positions = flat_positions;
+  Vector<Vec3> welded_normals = flat_normals;
+  Vector<Vec2> welded_uvs = flat_uvs;
+  Vector<SkinBinding> welded_skin = flat_skin;
+  Vector<u32> welded_indices = flat_indices;
+  CHECK(weld_vertices(welded_positions, welded_normals, welded_uvs, welded_indices, &welded_skin) ==
+        81);
+  CHECK(welded_skin.size() == 81);
+
+  Vector<Vec3> split_positions = flat_positions;
+  Vector<Vec3> split_normals = flat_normals;
+  Vector<Vec2> split_uvs = flat_uvs;
+  Vector<SkinBinding> split_skin = flat_skin;
+  Vector<u32> split_indices = flat_indices;
+  const u32 joints_other[4] = {1, 0, 0, 0};
+  const f32 weights_other[4] = {1.0f, 0.0f, 0.0f, 0.0f};
+  split_skin[7] = make_skin_binding(joints_other, weights_other);
+  CHECK(weld_vertices(split_positions, split_normals, split_uvs, split_indices, &split_skin) == 82);
+  CHECK(split_skin.size() == 82);
+}

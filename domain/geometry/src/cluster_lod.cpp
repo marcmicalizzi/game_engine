@@ -230,8 +230,17 @@ bool merge_cluster_lod(std::span<const ClusterLodMesh> parts, ClusterLodMesh& ou
   Vector<u32> triangle_base(part_count);
   Vector<u32> group_base(part_count);
   const bool attributes = parts[0].mesh.attributes.size() == parts[0].mesh.vertices.size();
+  // The parts of one mesh share one skin, so the merged palette is the widest of them; a part
+  // with no bindings contributes default ones rather than shortening the stream, exactly as it
+  // does for attributes.
+  const bool skinned = parts[0].mesh.skin.size() == parts[0].mesh.vertices.size();
   for (u32 p = 0; p < part_count; ++p) {
     const ClusterMesh& part = parts[p].mesh;
+    if (skinned) {
+      out.mesh.skin_joint_count = part.skin_joint_count > out.mesh.skin_joint_count
+                                      ? part.skin_joint_count
+                                      : out.mesh.skin_joint_count;
+    }
     vertex_base[p] = out.mesh.vertices.size();
     triangle_base[p] = out.mesh.triangles.size();
     group_base[p] = out.group_count;
@@ -244,6 +253,11 @@ bool merge_cluster_lod(std::span<const ClusterLodMesh> parts, ClusterLodMesh& ou
           std::span<const VertexAttributes>(part.attributes.data(), part.attributes.size()));
     } else {
       out.mesh.attributes.resize(out.mesh.vertices.size(), VertexAttributes{});
+    }
+    if (skinned && part.skin.size() == part.vertices.size()) {
+      out.mesh.skin.append(std::span<const SkinBinding>(part.skin.data(), part.skin.size()));
+    } else if (skinned) {
+      out.mesh.skin.resize(out.mesh.vertices.size(), SkinBinding{});
     }
     out.mesh.triangles.append(std::span<const u32>(part.triangles.data(), part.triangles.size()));
     out.mesh.source_vertex_count += part.source_vertex_count;
@@ -299,9 +313,18 @@ bool merge_cluster_meshes(std::span<const ClusterLodMesh> parts, ClusterLodMesh&
   parts_out.resize(static_cast<u32>(parts.size()));
 
   const bool attributes = parts[0].mesh.attributes.size() == parts[0].mesh.vertices.size();
+  // Separate meshes have separate skeletons, so the merged palette width is only the bound the
+  // validator needs: a mesh's own bindings index its own skin, and the renderer reaches the right
+  // bone matrices through the *instance's* deform record, never through the merged mesh.
+  const bool skinned = parts[0].mesh.skin.size() == parts[0].mesh.vertices.size();
   for (u32 p = 0; p < parts.size(); ++p) {
     const ClusterLodMesh& whole = parts[p];
     const ClusterMesh& part = whole.mesh;
+    if (skinned) {
+      out.mesh.skin_joint_count = part.skin_joint_count > out.mesh.skin_joint_count
+                                      ? part.skin_joint_count
+                                      : out.mesh.skin_joint_count;
+    }
     ClusterMeshPart& info = parts_out[p];
     info.first_vertex = out.mesh.vertices.size();
     info.first_cluster = out.mesh.clusters.size();
@@ -322,6 +345,11 @@ bool merge_cluster_meshes(std::span<const ClusterLodMesh> parts, ClusterLodMesh&
           std::span<const VertexAttributes>(part.attributes.data(), part.attributes.size()));
     } else {
       out.mesh.attributes.resize(out.mesh.vertices.size(), VertexAttributes{});
+    }
+    if (skinned && part.skin.size() == part.vertices.size()) {
+      out.mesh.skin.append(std::span<const SkinBinding>(part.skin.data(), part.skin.size()));
+    } else if (skinned) {
+      out.mesh.skin.resize(out.mesh.vertices.size(), SkinBinding{});
     }
     out.mesh.triangles.append(std::span<const u32>(part.triangles.data(), part.triangles.size()));
     // Three u16 a vertex, the mesh's own padding dropped so the merged index is 3 * vertex.
@@ -388,6 +416,8 @@ bool validate_cluster_lod(const ClusterLodMesh& mesh, std::span<const u32> sourc
   leaves.quantized = mesh.mesh.quantized;  // the whole mesh's grid, shared by every level
   leaves.quant_origin = mesh.mesh.quant_origin;
   leaves.quant_scale = mesh.mesh.quant_scale;
+  leaves.skin = mesh.mesh.skin;  // every level's bindings, so validate_clusters checks them
+  leaves.skin_joint_count = mesh.mesh.skin_joint_count;
   for (u32 i = 0; i < mesh.mesh.clusters.size(); ++i) {
     if (mesh.lod[i].level == 0) leaves.clusters.push_back(mesh.mesh.clusters[i]);
   }

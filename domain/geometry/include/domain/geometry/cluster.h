@@ -59,11 +59,44 @@ struct VertexAttributes {
   u32 uv_half2 = 0;
 };
 
+// GPU-mirrored per-vertex skin binding, 8 bytes, cluster-ordered like `vertices` and
+// `attributes` (docs/plan/04-renderer.md §4.3, docs/plan/05-simulation.md §5.11): four joint
+// indices and four weights, the weights summing to **exactly 255**. Keep in step with the
+// SkinBinding struct in the shaders.
+//
+// Eight bytes is the whole budget: four influences is what every exporter writes and what a
+// mesh-shader workgroup can afford to load, and a u8 joint index caps a skin's palette at
+// `k_max_skin_joints`, which is more than a humanoid with fingers and toes needs. A mesh that
+// wants more joints is split into several skinned meshes, which is also how it would be
+// streamed. The weights sum to a fixed total rather than being renormalized on the GPU so that
+// the shader's four multiply-adds need no divide and every copy of a surface point gets bitwise
+// identical weights — the property the crack rule rests on (see gfx.md, "Deformed clusters").
+struct SkinBinding {
+  u8 joints[4] = {0, 0, 0, 0};
+  u8 weights[4] = {255, 0, 0, 0};  // a default binding is rigid to joint 0, and already valid
+};
+static_assert(sizeof(SkinBinding) == 8, "SkinBinding is an 8-byte GPU-mirrored record");
+
+// A u8 joint index: a skin binds to at most this many joints.
+inline constexpr u32 k_max_skin_joints = 256;
+
+// Quantizes up to four influences into a SkinBinding. The weights are normalized and rounded to
+// sum to exactly 255 (largest remainder, so the rounding lands on the biggest influence), an
+// influence with no weight gets joint 0 and weight 0, and a vertex with no weight at all binds
+// rigidly to `joints[0]`. Joint indices at or above k_max_skin_joints are clamped: the callers
+// that can tell (the glTF importer) refuse such a skin before reaching here.
+SkinBinding make_skin_binding(const u32 joints[4], const f32 weights[4]) noexcept;
+
 // Optional source attributes for the builders, indexed like the source positions. Empty normals
 // are computed from the faces (area-weighted, smooth); empty UVs are zero.
 struct AttributeSource {
   std::span<const Vec3> normals;
   std::span<const Vec2> uvs;
+  // Optional per-vertex skin bindings. Empty leaves the built mesh unskinned; `joint_count` is
+  // the width of the palette they index, which is what `validate_clusters` checks them against
+  // and what a renderer sizes an instance's bone-matrix array by.
+  std::span<const SkinBinding> skin;
+  u32 joint_count = 0;
 };
 
 u32 encode_normal_oct(Vec3 normal) noexcept;
@@ -74,15 +107,17 @@ Vec2 decode_half2(u32 packed) noexcept;
 void compute_vertex_normals(std::span<const Vec3> positions, std::span<const u32> indices,
                             Vector<Vec3>& out);
 
-// Merges vertices whose position, normal, and UV are bit-identical and drops unreferenced
-// ones, rewriting `indices` in place and compacting the streams (`normals` and `uvs` take part
-// when they are parallel to `positions`, and are left alone otherwise). Exporters often write
-// unindexed or seam-split meshes; without welding, the 64-vertex cluster limit caps clusters at
-// 21 triangles and the LOD builder has no connectivity to simplify across. Vertices that
-// differ in any attribute stay distinct, so seams keep their normals and UVs. Returns the new
-// vertex count.
+// Merges vertices whose position, normal, UV, and skin binding are bit-identical and drops
+// unreferenced ones, rewriting `indices` in place and compacting the streams (`normals`, `uvs`,
+// and `skin` take part when they are parallel to `positions`, and are left alone otherwise).
+// Exporters often write unindexed or seam-split meshes; without welding, the 64-vertex cluster
+// limit caps clusters at 21 triangles and the LOD builder has no connectivity to simplify
+// across. Vertices that differ in any attribute stay distinct, so seams keep their normals and
+// UVs — and **two duplicates with different skin weights stay two vertices**, because merging
+// them would silently pick one vertex's weights for the other's surface. Returns the new vertex
+// count.
 u32 weld_vertices(Vector<Vec3>& positions, Vector<Vec3>& normals, Vector<Vec2>& uvs,
-                  std::span<u32> indices);
+                  std::span<u32> indices, Vector<SkinBinding>* skin = nullptr);
 
 struct ClusterBuildOptions {
   u32 max_vertices = 64;    // at most 255 (local indices are bytes)
@@ -99,7 +134,13 @@ struct ClusterMesh {
   Vector<Vec3> vertices;                // cluster-ordered copies of source positions
   Vector<u32> vertex_source;            // source vertex index per entry of `vertices`
   Vector<VertexAttributes> attributes;  // parallel to `vertices`
-  Vector<u32> triangles;                // per triangle: local i0 | i1 << 8 | i2 << 16
+  // Per-vertex skin bindings, parallel to `vertices`, or empty for an unskinned mesh. It is an
+  // optional stream rather than part of `VertexAttributes` because the overwhelming majority of
+  // a scene's vertices are rigid, and eight bytes a vertex on all of them is a page budget the
+  // streaming layout would pay for nothing.
+  Vector<SkinBinding> skin;
+  u32 skin_joint_count = 0;  // palette width `skin` indexes; 0 when unskinned
+  Vector<u32> triangles;     // per triangle: local i0 | i1 << 8 | i2 << 16
   // Positions on the mesh-wide 16-bit grid: three u16 per vertex, cluster-ordered like
   // `vertices`, padded with one zero to an even count so a shader may read the last triple as
   // two 32-bit words. `quantize_positions` fills all three fields; a mesh with no vertices keeps
@@ -123,8 +164,9 @@ bool build_clusters(std::span<const Vec3> positions, std::span<const u32> indice
                     const ClusterBuildOptions& options, ClusterMesh& out,
                     std::string* error = nullptr, const AttributeSource& attributes = {});
 
-// Fills `mesh.attributes` from the source attributes through `vertex_source`; the builders call
-// it, and it is public so a mesh built elsewhere can be given attributes later.
+// Fills `mesh.attributes` and, when the source carries them, `mesh.skin` from the source
+// attributes through `vertex_source`; the builders call it, and it is public so a mesh built
+// elsewhere can be given attributes later.
 void fill_cluster_attributes(ClusterMesh& mesh, std::span<const Vec3> positions,
                              std::span<const u32> indices, const AttributeSource& attributes);
 
@@ -143,9 +185,10 @@ Vec3 dequantize_position(const ClusterMesh& mesh, u32 vertex) noexcept;
 
 // Checks the invariants tests rely on: offsets and counts in range, counts within the limits,
 // every source triangle present exactly once, every vertex inside its cluster's sphere, every
-// triangle normal inside its cluster's normal cone (when the cone is not k_cone_none), and a
+// triangle normal inside its cluster's normal cone (when the cone is not k_cone_none), a
 // quantized position stream that is present, padded to an even count, and within half a grid
-// step of every float position.
+// step of every float position, and — when the mesh is skinned — a binding stream parallel to
+// the vertices whose weights sum to 255 and whose joints are inside `skin_joint_count`.
 bool validate_clusters(const ClusterMesh& mesh, std::span<const u32> source_indices,
                        const ClusterBuildOptions& options, std::string* error = nullptr);
 

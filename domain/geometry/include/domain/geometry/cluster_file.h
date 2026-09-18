@@ -75,6 +75,16 @@ enum class ClusterSection : u32 {
   // the page's own size, which would report a fill of 1.0 whatever the target was. A file
   // without the section falls back to that lower bound.
   PageScalars = 18,
+  // The optional per-vertex skin bindings of a skinned mesh (`geometry::SkinBinding`, eight
+  // bytes, parallel to `Vertices`) and, because the mesh's own palette width is not derivable
+  // from them, one `u32` saying how many joints they index. They are two sections rather than a
+  // field in `Scalars` because that record's eight words are all spoken for (the four counts and
+  // the four floats of the 16-bit grid), and growing it would change the layout of an element
+  // every existing container carries. Both are written even when the mesh is unskinned — empty
+  // and zero — so a container's section list does not depend on what it holds, and a file
+  // without either reads as an unskinned mesh rather than as a failure.
+  Skin = 19,
+  SkinScalars = 20,
 };
 
 // Names the kinds this build knows, "unknown" for anything else; for diagnostics and for
@@ -227,7 +237,9 @@ bool read_cluster_file_identity(std::string_view path, u64& source_hash, u64& bu
 // Bumped whenever the builder or the container changes in a way that makes an old cache entry
 // wrong. It is not the file format version: a cache miss is cheap, a wrong mesh is not.
 // 3: the clusters of a cached container are laid out in streaming pages, which renumbers them.
-inline constexpr u32 k_cluster_cache_version = 3;
+// 4: a skinned source now carries a per-vertex `SkinBinding` stream, and the weld key includes
+//    it, so an entry built before this is both missing the stream and welded differently.
+inline constexpr u32 k_cluster_cache_version = 4;
 
 // The cache key: the source's content hash (`assets::source_mesh_hash`) mixed with the build
 // options and the version above. `page_bytes` is the streaming page target the container was
