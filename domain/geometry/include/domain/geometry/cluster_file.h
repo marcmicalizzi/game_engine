@@ -27,6 +27,7 @@
 #include <core/containers/vector.h>
 #include <core/math/math.h>
 #include <domain/geometry/cluster_lod.h>
+#include <domain/geometry/cluster_pages.h>
 
 #include <span>
 #include <string>
@@ -61,6 +62,16 @@ enum class ClusterSection : u32 {
   // existed and in one built from bytes with no source behind them, which is how an incremental
   // build knows to rebuild the entry rather than trust it.
   SourceHash = 15,
+  // The streaming page table (`cluster_pages.h`): `ClusterPageDesc` per page, and the flat list
+  // of child pages the descriptors index. Only these two are stored — `page_of_cluster` and
+  // `children` are derived from the page ranges and the DAG by `rebuild_cluster_page_index` on
+  // read, which costs one sort over the clusters and saves eight bytes a cluster on disk. A file
+  // without them (an older build, or one built with `--page-bytes 0`) reads with an empty page
+  // table, and a caller that wants one calls `build_cluster_pages`. The byte target is not
+  // stored either — it is a build knob, and the reader takes the largest page that was not
+  // flagged oversized, which is inside the target by construction.
+  Pages = 16,
+  PageChildren = 17,
 };
 
 // Names the kinds this build knows, "unknown" for anything else; for diagnostics and for
@@ -166,6 +177,10 @@ static_assert(sizeof(ClusterFileMaterial) == 64, "ClusterFileMaterial is a 64-by
 // they are zero when nothing recorded them.
 struct ClusterFileData {
   ClusterLodMesh mesh;
+  // The streaming page table over `mesh`, empty in a container built without one. When it is
+  // there, the mesh's clusters are in page order — coarse to fine, group by group — rather than
+  // in the builders' leaves-first order.
+  ClusterPages pages;
   Vector<u32> cluster_material;
   Vector<ClusterFileMaterial> materials;
   Vector<std::string> image_paths;
@@ -208,7 +223,8 @@ bool read_cluster_file_identity(std::string_view path, u64& source_hash, u64& bu
 
 // Bumped whenever the builder or the container changes in a way that makes an old cache entry
 // wrong. It is not the file format version: a cache miss is cheap, a wrong mesh is not.
-inline constexpr u32 k_cluster_cache_version = 2;  // 2: the material record's padding is filled
+// 3: the clusters of a cached container are laid out in streaming pages, which renumbers them.
+inline constexpr u32 k_cluster_cache_version = 3;
 
 // The cache key: the source's content hash (`assets::source_mesh_hash`) mixed with the build
 // options and the version above.

@@ -24,7 +24,7 @@ namespace {
 
 constexpr u64 k_header_bytes = sizeof(ClusterFileHeader);
 constexpr u64 k_record_bytes = sizeof(ClusterFileSection);
-constexpr u32 k_kind_count = static_cast<u32>(ClusterSection::SourceHash) + 1;
+constexpr u32 k_kind_count = static_cast<u32>(ClusterSection::PageChildren) + 1;
 
 constexpr u64 align_up(u64 value) noexcept {
   const u64 a = k_cluster_file_alignment;
@@ -110,6 +110,12 @@ u64 encode(const ClusterFileData& data, std::string& out) {
   // What the source was and what was built from it, for an incremental build to compare.
   const u64 identity[2] = {data.source_hash, data.build_key};
   add_section(payloads, ClusterSection::SourceHash, static_cast<u32>(sizeof(u64)), 2u, identity);
+  // The streaming page table. Both sections are written even when there is no table, so the
+  // section list of a container does not depend on how it was built.
+  add_section(payloads, ClusterSection::Pages, static_cast<u32>(sizeof(ClusterPageDesc)),
+              data.pages.pages.size(), data.pages.pages.data());
+  add_section(payloads, ClusterSection::PageChildren, static_cast<u32>(sizeof(u32)),
+              data.pages.child_pages.size(), data.pages.child_pages.data());
 
   u64 offset = k_header_bytes + k_record_bytes * payloads.size();
   for (Payload& payload : payloads) {
@@ -246,6 +252,8 @@ const char* cluster_section_name(u32 kind) noexcept {
     case ClusterSection::Quantized: return "quantized";
     case ClusterSection::SourcePath: return "source_path";
     case ClusterSection::SourceHash: return "source_hash";
+    case ClusterSection::Pages: return "pages";
+    case ClusterSection::PageChildren: return "page_children";
   }
   return "unknown";
 }
@@ -480,6 +488,40 @@ bool read_cluster_file_memory(std::span<const u8> bytes, ClusterFileData& out, s
                                std::to_string(image_count) + " image paths");
       }
     }
+  }
+
+  // The streaming page table, once the mesh it indexes is known to be consistent. Only the page
+  // descriptors and the flat child-page list are stored; the per-cluster page and child tables
+  // are rebuilt from them and from the DAG, which is what keeps eight bytes a cluster off disk.
+  // A file with no page table (an older build, or one built with pages switched off) reads with
+  // an empty one rather than as a failure: the caller builds it if it wants it.
+  if (const ClusterFileSection* table = found[static_cast<u32>(ClusterSection::Pages)];
+      table != nullptr && table->element_count != 0) {
+    if (table->element_size != sizeof(ClusterPageDesc)) {
+      return fail(error, "cluster file section pages has " + std::to_string(table->element_size) +
+                             "-byte elements, expected " + std::to_string(sizeof(ClusterPageDesc)));
+    }
+    copy_section(bytes, *table, result.pages.pages);
+    if (const ClusterFileSection* kids = found[static_cast<u32>(ClusterSection::PageChildren)];
+        kids != nullptr) {
+      if (kids->element_size != sizeof(u32)) {
+        return fail(error, "cluster file section page_children has " +
+                               std::to_string(kids->element_size) + "-byte elements, expected 4");
+      }
+      copy_section(bytes, *kids, result.pages.child_pages);
+    }
+    // The byte target is a build knob, not something the renderer reads, and the scalars record
+    // is full, so it is not stored: the largest page that was *not* flagged oversized is inside
+    // the target by construction, and every oversized page is over it, which is exactly what the
+    // validator needs and the closest a reader can get to the number the builder was given.
+    result.pages.page_bytes_target = 0;
+    for (const ClusterPageDesc& page : result.pages.pages) {
+      if ((page.flags & k_page_oversized) == 0 && page.bytes > result.pages.page_bytes_target)
+        result.pages.page_bytes_target = page.bytes;
+    }
+    std::string why;
+    if (!rebuild_cluster_page_index(result.mesh, result.pages, &why))
+      return fail(error, "cluster file page table: " + why);
   }
 
   out = std::move(result);

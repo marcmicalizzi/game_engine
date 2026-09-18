@@ -60,6 +60,11 @@ void make_fixture(ClusterFileData& data, Vector<u32>& indices) {
   std::string error;
   REQUIRE_MESSAGE(build_cluster_lod(positions, indices, ClusterLodOptions{}, data.mesh, &error),
                   error);
+  // Laid out in streaming pages, as `engine-content build` writes it: the clusters are renumbered
+  // and the two page sections travel with them.
+  ClusterPagesOptions page_options;
+  page_options.page_bytes = 64 * 1024;
+  REQUIRE_MESSAGE(build_cluster_pages(data.mesh, page_options, data.pages, &error), error);
   data.materials.resize(2);
   data.materials[0].base_color = Vec4{0.82f, 0.71f, 0.49f, 1.0f};
   data.materials[0].metallic = 0.0f;
@@ -98,6 +103,8 @@ void check_equal(const ClusterFileData& read, const ClusterFileData& written) {
   CHECK(same_bytes(read.mesh.level_cluster_counts, written.mesh.level_cluster_counts));
   CHECK(same_bytes(read.cluster_material, written.cluster_material));
   CHECK(same_bytes(read.materials, written.materials));
+  CHECK(same_bytes(read.pages.pages, written.pages.pages));
+  CHECK(same_bytes(read.pages.child_pages, written.pages.child_pages));
   CHECK(read.mesh.group_count == written.mesh.group_count);
   CHECK(read.mesh.leaf_triangle_count == written.mesh.leaf_triangle_count);
   CHECK(read.mesh.mesh.source_vertex_count == written.mesh.mesh.source_vertex_count);
@@ -230,7 +237,7 @@ TEST_CASE("cluster file: a DAG with materials survives a round trip array by arr
   CHECK(std::memcmp(header.magic, "CLST", 4) == 0);
   CHECK(header.version == k_cluster_file_version);
   CHECK(header.flags == 0);
-  CHECK(header.section_count == 15);
+  CHECK(header.section_count == 17);
   CHECK(header.total_bytes == file.size());
   CHECK(header.content_hash == cluster_file_hash(data));
   for (u32 i = 0; i < header.section_count; ++i) {
@@ -248,6 +255,77 @@ TEST_CASE("cluster file: a DAG with materials survives a round trip array by arr
   ClusterFileData from_memory;
   REQUIRE_MESSAGE(read_cluster_file_memory(view(file), from_memory, &error), error);
   check_equal(from_memory, read);
+}
+
+TEST_CASE("cluster file: the page table round-trips, and a file without one reads empty") {
+  TempDir tmp;
+  ClusterFileData data;
+  Vector<u32> indices;
+  make_fixture(data, indices);
+  REQUIRE(data.pages.pages.size() > 1);
+  const std::string path = tmp.path + "/pages.clusters";
+  std::string error;
+  REQUIRE_MESSAGE(write_cluster_file(path, data, &error), error);
+
+  // The descriptors and the flat child-page list come back as they were written, and the two
+  // per-cluster tables the file does not store are rebuilt from them.
+  ClusterFileData read;
+  REQUIRE_MESSAGE(read_cluster_file(path, read, &error), error);
+  check_equal(read, data);
+  CHECK(read.pages.page_of_cluster.size() == read.mesh.mesh.clusters.size());
+  CHECK(read.pages.children.size() == read.mesh.mesh.clusters.size());
+  CHECK(same_bytes(read.pages.page_of_cluster, data.pages.page_of_cluster));
+  CHECK(same_bytes(read.pages.children, data.pages.children));
+  CHECK_MESSAGE(validate_cluster_pages(read.mesh, read.pages, &error), error);
+  CHECK_MESSAGE(validate_cluster_lod(read.mesh, indices, &error), error);
+  // The container's clusters are in page order, so the coarsest level is first rather than last.
+  CHECK(read.mesh.lod[0].level + 1 == read.mesh.level_cluster_counts.size());
+  MESSAGE("pages.clusters: " << data.pages.pages.size() << " pages over "
+                             << data.mesh.mesh.clusters.size() << " clusters, "
+                             << data.pages.child_pages.size() << " child page entries");
+
+  // Both sections are written even when there is no page table, so the section list does not
+  // depend on how the container was built, and a mesh with no pages reads back with none.
+  ClusterFileData unpaged = data;
+  unpaged.pages = ClusterPages{};
+  const std::string unpaged_path = tmp.path + "/unpaged.clusters";
+  REQUIRE_MESSAGE(write_cluster_file(unpaged_path, unpaged, &error), error);
+  ClusterFileData read_unpaged;
+  REQUIRE_MESSAGE(read_cluster_file(unpaged_path, read_unpaged, &error), error);
+  CHECK(read_unpaged.pages.pages.empty());
+  CHECK(read_unpaged.pages.page_of_cluster.empty());
+  check_equal(read_unpaged, unpaged);
+
+  // A file from a build that did not know about pages: the kind becomes one this build does not
+  // know, and everything else still loads.
+  std::string file;
+  REQUIRE(io::read_file(path, file) == io::Status::Ok);
+  ClusterFileHeader header;
+  std::memcpy(&header, file.data(), sizeof(header));
+  usize pages_at = 0;
+  ClusterFileSection section{};
+  for (u32 i = 0; i < header.section_count; ++i) {
+    const usize at = sizeof(header) + sizeof(section) * i;
+    ClusterFileSection record;
+    std::memcpy(&record, file.data() + at, sizeof(record));
+    if (record.kind == static_cast<u32>(ClusterSection::Pages)) {
+      pages_at = at;
+      section = record;
+    }
+  }
+  REQUIRE(pages_at != 0);
+  CHECK(section.element_size == sizeof(ClusterPageDesc));
+  CHECK(section.element_count == data.pages.pages.size());
+  CHECK(std::string(cluster_section_name(section.kind)) == "pages");
+  std::string older = file;
+  ClusterFileSection renamed = section;
+  renamed.kind = 31339;
+  patch(older, pages_at, &renamed, sizeof(renamed));
+  rehash(older);
+  ClusterFileData without;
+  REQUIRE_MESSAGE(read_cluster_file_memory(view(older), without, &error), error);
+  CHECK(without.pages.pages.empty());
+  check_equal(without, unpaged);
 }
 
 TEST_CASE("cluster file: a section of an unknown kind is skipped") {
