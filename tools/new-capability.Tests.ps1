@@ -70,10 +70,25 @@ function Find-ClangFormat {
   return $null
 }
 
-# Every generated C++ file, run through clang-format with the repository's own style: the output
-# has to come back byte for byte, or a freshly scaffolded capability greets its new owner with a
-# diff nobody wrote. The interesting parameter is the capability's *name*, because every comment
-# and every include in the templates is interpolated with it.
+# clang-format's major version, or 0 when it cannot be read. `--dry-run` needs 10 or newer.
+function Get-ClangFormatMajor([string]$clangFormat) {
+  $text = ((& $clangFormat --version 2>$null) -join ' ')
+  if ($text -match 'version\s+(\d+)\.') { return [int]$Matches[1] }
+  return 0
+}
+
+# Every generated C++ file, checked against the repository's own style: a freshly scaffolded
+# capability must not greet its new owner with a diff nobody wrote. The interesting parameter is the
+# capability's *name*, because every comment and every include in the templates is interpolated with
+# it.
+#
+# **The verdict is `--dry-run --Werror`'s exit code, and never a comparison of clang-format's
+# stdout with the file's text.** PowerShell decodes a native process's stdout using the console's
+# active code page, and every one of these templates contains an em dash or a section sign: on a
+# console that is not UTF-8 — which is the Windows default, and what CTest and a plain shell both
+# give you — the round trip loses those characters and *every* file "differs" for a reason that has
+# nothing to do with formatting. That is exactly how the first version of this check passed on a
+# UTF-8 console and failed everywhere else. The exit code is bytes, not text, so it does not care.
 function Test-FormatClean([string]$clangFormat, [string]$root, [string]$moduleDir, [string]$what) {
   $script:checks++
   $files = @(Get-ChildItem -Path (Join-Path $root $moduleDir) -Recurse -Include *.h, *.cpp -File)
@@ -84,16 +99,18 @@ function Test-FormatClean([string]$clangFormat, [string]$root, [string]$moduleDi
   }
   $dirty = New-Object System.Collections.Generic.List[string]
   foreach ($file in $files) {
-    $before = ([System.IO.File]::ReadAllText($file.FullName) -replace "`r`n", "`n")
-    $after = ((& $clangFormat --style=file $file.FullName | Out-String) -replace "`r`n", "`n")
-    if ($before.TrimEnd("`n") -ne $after.TrimEnd("`n")) {
-      $dirty.Add([IO.Path]::GetRelativePath($root, $file.FullName))
-    }
+    # stderr carries the per-line diagnostics and is discarded: it is a report, not the answer. The
+    # try/catch is because this script runs with `$ErrorActionPreference = 'Stop'`, and some
+    # PowerShell 7 minors turn a native command's stderr into a terminating error — which would
+    # report a violation as a crash.
+    try { & $clangFormat --style=file --dry-run --Werror $file.FullName 2>$null | Out-Null } catch { }
+    if ($LASTEXITCODE -ne 0) { $dirty.Add([IO.Path]::GetRelativePath($root, $file.FullName)) }
   }
   if ($dirty.Count -eq 0) {
     Write-Host "  ok   $what ($($files.Count) files)"
   } else {
-    Write-Host "  FAIL ${what}: clang-format rewrites $($dirty -join ', ')" -ForegroundColor Red
+    Write-Host "  FAIL ${what}: clang-format would rewrite $($dirty -join ', ')" -ForegroundColor Red
+    Write-Host "       reproduce with: `"$clangFormat`" --style=file --dry-run --Werror <file>" -ForegroundColor Red
     $failures.Add($what)
   }
 }
@@ -257,7 +274,13 @@ try {
   # computed rather than written out, and this is what says so.
   Write-Host 'case: clang-format leaves the scaffold alone'
   $clangFormat = Find-ClangFormat
-  if ($clangFormat) {
+  $clangFormatMajor = if ($clangFormat) { Get-ClangFormatMajor $clangFormat } else { 0 }
+  if ($clangFormat) { Write-Host "  using $clangFormat (major version $clangFormatMajor)" }
+  # 10 is where `--dry-run`/`--Werror` arrived. No *upper* bound and no pinned version: 19.1.5 and
+  # 22.1.3 were both measured against this scaffold's output on 2026-09-18 and agree that it is
+  # clean, so there is nothing here that a major version has an opinion about. If one ever does,
+  # the reproduce line the failure prints names the binary that disagreed.
+  if ($clangFormat -and $clangFormatMajor -ge 10) {
     Copy-Item (Join-Path $PSScriptRoot '..' '.clang-format') (Join-Path $root '.clang-format') -Force
     Test-FormatClean $clangFormat $root 'systems/cloth' 'a short name is format-clean'
     Test-FormatClean $clangFormat $root 'systems/scent_field' 'every switch on is format-clean'
@@ -268,12 +291,16 @@ try {
     # And a capability in another layer, where the include block sorts differently.
     & $scaffold -Name wind -Layer core -Deps 'containers' -WithBench -Root $root | Out-Null
     Test-FormatClean $clangFormat $root 'core/wind' 'a core-layer capability is format-clean'
-    Test-That 'no generated comment line is over the column limit' {
-      $long = Get-ChildItem -Path $root -Recurse -Include *.h, *.cpp -File |
-        ForEach-Object { Get-Content -LiteralPath $_.FullName } |
-        Where-Object { $_.Length -gt 100 }
+    Test-That 'no generated line is over the column limit' {
+      # Read the bytes as UTF-8 rather than letting a console code page near them, for the same
+      # reason `Test-FormatClean` does not round-trip text.
+      $long = @(Get-ChildItem -Path $root -Recurse -Include *.h, *.cpp -File |
+        ForEach-Object { [System.IO.File]::ReadAllLines($_.FullName) } |
+        Where-Object { $_.Length -gt 100 })
       $long.Count -eq 0
     }
+  } elseif ($clangFormat) {
+    Write-Host "  skip clang-format $clangFormatMajor is older than 10 and has no --dry-run; the formatting checks did not run" -ForegroundColor Yellow
   } else {
     Write-Host '  skip clang-format was not found; the formatting checks did not run' -ForegroundColor Yellow
   }
