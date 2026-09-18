@@ -28,6 +28,9 @@ the only thing that advances it is `step()`.
 - The contact buffer carries at most one event per (body pair, phase) per step, ordered
   deterministically, with `a < b`.
 - Spawning past `debris_cap` destroys the oldest piece rather than growing the pool.
+- A `step()` that has returned has left nothing of its own in the job system's queues
+  (`WorldStats::backend_jobs_pending` is 0), so the number of live backend jobs is bounded by
+  one step and never by how fast the pool drains.
 - Two worlds built by the same sequence of calls and stepped the same number of times produce
   bit-identical transforms, whatever worker count each was given.
 
@@ -180,6 +183,75 @@ to abort the process: Jolt's plain `TempAllocatorImpl` asserts on overflow. The 
 middle of a step rather than a crash. `temp_allocator_bytes` of 0 means "derive it"; anything else
 overrides.
 
+## The job adapter, and why the step drains the queue
+
+Jolt's jobs run on `core/jobs`' performance pool through `src/job_adapter.h`, a
+`JPH::JobSystemWithBarrier` subclass of about sixty lines. Jolt asks for four things — allocate a
+job, free a job, queue one or many, and say how many ways it may split its work — and the
+interesting part, the barrier, is `JobSystemWithBarrier`'s: the barrier owns the completion
+semaphore, executes ready jobs on the thread that is waiting, and is the only place that blocks.
+So no pool worker ever blocks; the thread that called `step()` is the one that waits. The
+alternative was Jolt's own `JobSystemThreadPool`, which would stand a second set of threads
+beside the engine's pinned pools and let the OS decide which of the two gets a P-core
+([11 §11.5](../plan/11-performance-principles.md)).
+
+**A backend job lives in a fixed-size free list, and two things hold references to it.** The
+queue holds one from `QueueJob` until the job has run, and the barrier holds one until
+`WaitForJobs` retires it. That is Jolt's design and the adapter follows it. What Jolt's own
+thread pool also does, and what the adapter missed, is *empty the queue*: because the barrier
+executes ready jobs on the waiting thread, a job is routinely finished while a queue entry for
+it is still outstanding, and that entry keeps the `Job` object alive. `JobSystemThreadPool`
+sweeps its own queue when it stops its threads; this adapter's queue belongs to
+`jobs::JobSystem`, which outlives the world, so nothing ever swept it.
+
+The consequence was not a slow leak but a **machine-dependent** one. The live-job count became a
+function of how fast the pool drained relative to how fast steps were queued, and the stepping
+thread does much of a step's work itself inside the barrier wait, so it finishes steps faster
+than an oversubscribed pool retires the leftovers. On an 18-core box the backlog never grew; on
+a four-vCPU CI runner it exhausted the 2,048-job list inside half a second (`assertion failed:
+index != cInvalidObjectIndex`) and, when it did not, left the free list short at shutdown
+(Jolt's `mNumFreeObjects == mNumPages * mPageSize` assert, which is what the Debug bench smoke
+run tripped on). In Release the second one is worse than an assert: a leftover job runs against
+a deleted adapter.
+
+**So `World::step` drains.** The adapter counts the jobs it hands to the pool on a
+`jobs::Counter`, and `drain()` is one `JobSystem::wait` on it, called after
+`PhysicsSystem::Update` returns and again from the adapter's destructor. `wait` from the
+stepping thread *helps* the pool rather than spinning on it, so the drain pops the leftovers
+itself instead of waiting for a worker to get round to them, and the jobs it waits for have
+already run — the wait is microseconds. The live-job count is now bounded by one step's worth,
+which is what the free list is sized for. `WorldStats::backend_jobs_pending` is that counter, and
+it exists so that "a step leaves nothing behind" is a number a test reads rather than an outcome
+it hopes for.
+
+**Reproducing it takes taking the race away.** The regression test holds the pool's only worker
+in a spin job for the duration of the steps, so every entry a step queues is guaranteed to still
+be there when `Update` returns. Without the drain that is an immediate, machine-independent
+failure — 17 jobs outstanding after one step of the 64-body scene at a concurrency of 1, and
+Jolt's free-list assert on the way out. On an 18-core box neither the exhaustion nor the
+shutdown assert reproduces at all, with or without four-core affinity, which is precisely why
+this reached CI. A second, looser case runs 300 steps through a deliberately small pool at 1, 2,
+and 4 workers, which is the shape the failure actually took.
+
+One corollary: a job system with **no** performance workers is now treated as no job system at
+all. Before the drain, such a world limped along because the barrier ran everything on the
+stepping thread; with the drain it would wait forever for a queue nothing can empty. `init`
+substitutes inline execution and the behaviour is the documented one.
+
+The lesson generalizes past this module: **a fixed-size pool whose occupancy depends on how fast
+another component drains is not a pool with a limit, it is a race with a limit.** Bound the
+occupancy at a point you control — here, the end of the step — rather than sizing for the worst
+scheduling you have happened to see.
+
+`WorldOptions::max_backend_jobs` makes the size visible in the options struct with the other
+caps ([ADR-0017](../adr/0017-no-hidden-limits.md)); 0 means the backend's own worst case
+(`JPH::cMaxPhysicsJobs`, 2,048) and is what every caller should use. It exists as an option so
+that the regression test can make the pool small enough — 256 — for exhaustion to be reachable
+in 300 steps, at 1, 2 and 4 workers. A step needs roughly `10 + 8 * worker_count` jobs, so a
+pool below that is not a small pool but a broken one, and running out is a hard failure rather
+than Jolt's own sleep-and-retry: it means the world was configured with fewer jobs than the
+backend needs, which is a configuration bug and not something to spin on.
+
 ## Soft bodies, and how they map onto ADR-0026
 
 `SoftBodyDesc` is the *backend surface* that ADR-0026's `DeformableVolume` is expected to sit on,
@@ -245,7 +317,7 @@ collision groups and sub-shape filtering, overlap and collide-shape queries (onl
 casts are here), soft-body contact events, and Jolt's GPU hair solver. None of them needs the
 public surface to change shape; each is an addition.
 
-**Testing.** `tools/dev.ps1 test -Preset msvc-debug -Filter physics`. Twenty-one cases: a sphere
+**Testing.** `tools/dev.ps1 test -Preset msvc-debug -Filter physics`. Twenty-four cases: a sphere
 dropped on a static box comes to rest within the penetration slop and falls asleep; a hundred
 boxes in ten towers of ten are still standing after 600 steps, with bounds on sideways drift and
 on how far anything sank; a kinematic box pushes a dynamic one and stays behind it; contact
@@ -255,7 +327,12 @@ and refuse to be destroyed underneath a body; a mesh shape refuses to be dynamic
 is symmetric and `Query` simulates against nothing; ray and shape casts report fraction, body,
 position, and normal, and respect a `LayerMask`; a sphere rests at exactly one radius above a
 flat heightfield and stays one radius off the surface while it rolls down a sloped one;
-heightfields and hulls refuse grids and point sets the backend cannot build; the cloth and
+heightfields and hulls refuse grids and point sets the backend cannot build; a step leaves no
+job of its own in the queue even when the pool's only worker is held busy, three hundred steps
+through a deliberately small backend job pool at 1, 2, and 4 workers recycle it many times over
+and hand every job back by the time the world is destroyed, and a job system with no performance
+workers behaves as none at all (the regression tests for the drain above, and the reason the pool
+size is an option); the cloth and
 lattice builders produce exactly the constraint counts they promise; a cloth pinned at two
 corners sags, settles, and stays finite; a lattice cube pressed to 70% of its height by a
 kinematic plate recovers more than 90% of it; soft-body descriptions are validated before the

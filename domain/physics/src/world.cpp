@@ -151,8 +151,14 @@ Status World::init(const WorldOptions& world_options) {
 
   u32 concurrency = world_options.worker_count;
   u32 buckets = 1;
-  if (world_options.job_system != nullptr) {
-    const u32 pool_workers = world_options.job_system->worker_count(jobs::Pool::Performance);
+  // A pool with no performance workers is the same thing as no pool: nothing would ever run a
+  // queued job, so the step would have to execute all of them on the stepping thread anyway
+  // and then wait forever for the queue to drain. Saying so here beats hanging there.
+  jobs::JobSystem* job_system = world_options.job_system;
+  if (job_system != nullptr && job_system->worker_count(jobs::Pool::Performance) == 0)
+    job_system = nullptr;
+  if (job_system != nullptr) {
+    const u32 pool_workers = job_system->worker_count(jobs::Pool::Performance);
     if (concurrency == 0) concurrency = pool_workers;
     buckets = pool_workers + 1;  // + the stepping thread, which has no worker info
   } else {
@@ -167,8 +173,15 @@ Status World::init(const WorldOptions& world_options) {
                               : temp_allocator_size_for(world_options);
   impl->options.temp_allocator_bytes = arena_bytes;
   impl->temp_allocator = new JPH::TempAllocatorImplWithMallocFallback(arena_bytes);
-  impl->job_adapter = new JoltJobAdapter(world_options.job_system, concurrency,
-                                         round_up_pow2(static_cast<u32>(JPH::cMaxPhysicsJobs)),
+  // The backend's own worst-case job count unless the caller asked for a different one. It is
+  // a fixed pool and it must stay a function of the backend and the caller's option alone:
+  // sizing it for "however many jobs happen to be in flight" is exactly the bug that made a
+  // slow machine run out of them while a fast one never did (see the drain in `step`).
+  const u32 configured_jobs = world_options.max_backend_jobs != 0
+                                  ? world_options.max_backend_jobs
+                                  : static_cast<u32>(JPH::cMaxPhysicsJobs);
+  impl->options.max_backend_jobs = configured_jobs;
+  impl->job_adapter = new JoltJobAdapter(job_system, concurrency, round_up_pow2(configured_jobs),
                                          static_cast<u32>(JPH::cMaxPhysicsBarriers));
 
   impl->body_of_jph.resize(world_options.max_bodies);
@@ -228,6 +241,7 @@ WorldStats World::stats() const noexcept {
   out.steps = impl_->steps;
   out.backend_jobs = impl_->job_adapter->queued_count();
   out.backend_jobs_on_workers = impl_->job_adapter->worker_count();
+  out.backend_jobs_pending = impl_->job_adapter->pending_count();
   out.body_count = impl_->bodies.size();
   out.active_body_count = active_body_count();
   out.soft_body_count = impl_->soft_bodies.size();
@@ -581,6 +595,15 @@ Status World::step(f32 dt_seconds, u32 sub_steps) {
 
   const JPH::EPhysicsUpdateError error = impl_->system.Update(
       dt_seconds, static_cast<int>(sub_steps), impl_->temp_allocator, impl_->job_adapter);
+
+  // Update returns when the backend's barrier is satisfied, which is not the same as "the job
+  // system has nothing of ours left". A job the barrier executed on this thread is still
+  // sitting in a pool queue holding the last reference to its Job object, and the Job objects
+  // come from a fixed-size free list. Leaving those entries for the pool to pick up whenever
+  // it gets round to it makes the number of live jobs a function of how fast the workers drain
+  // rather than of the step, which is why a four-core machine exhausted the list in a fraction
+  // of a second while a thirty-six-thread one never did. Draining here bounds it to one step.
+  impl_->job_adapter->drain();
 
   ++impl_->tick;
   ++impl_->steps;

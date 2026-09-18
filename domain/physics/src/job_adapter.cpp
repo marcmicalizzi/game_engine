@@ -14,7 +14,17 @@ JoltJobAdapter::JoltJobAdapter(jobs::JobSystem* system, u32 concurrency, u32 max
   jobs_.Init(max_jobs, max_jobs);
 }
 
-JoltJobAdapter::~JoltJobAdapter() = default;
+JoltJobAdapter::~JoltJobAdapter() {
+  // Nothing may still be holding a Job when the free list goes away — the free list asserts on
+  // it in Debug, and in Release a job that ran afterwards would touch a deleted adapter. The
+  // step drains too, so this is normally a no-op; it covers a world torn down after a step
+  // that failed, and it is the last line of defence either way.
+  drain();
+}
+
+void JoltJobAdapter::drain() {
+  if (system_ != nullptr) system_->wait(pending_);
+}
 
 JPH::JobHandle JoltJobAdapter::CreateJob(const char* name, JPH::ColorArg color,
                                          const JobFunction& function, JPH::uint32 dependencies) {
@@ -52,9 +62,11 @@ void JoltJobAdapter::QueueJob(Job* job) {
     job->Execute();
     return;
   }
-  // The reference the queue holds; run_job releases it.
+  // The reference the queue holds; run_job releases it. The counter is added to *before* the
+  // job is handed over, because the pool may run and signal it before schedule() returns.
   job->AddRef();
-  system_->schedule(jobs::Pool::Performance, jobs::Job{&run_job, job, nullptr});
+  pending_.add(1);
+  system_->schedule(jobs::Pool::Performance, jobs::Job{&run_job, job, &pending_});
 }
 
 void JoltJobAdapter::QueueJobs(Job** job_array, JPH::uint count) {

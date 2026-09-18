@@ -64,6 +64,14 @@ struct WorldOptions {
   jobs::JobSystem* job_system = nullptr;
   u32 worker_count = 0;
 
+  // How many backend job objects the world keeps, allocated up front (ADR-0017: the limits
+  // that exist are visible here). 0 takes the backend's own worst-case figure, which is what
+  // every caller should use; the option exists so that a test can make the pool small enough
+  // for exhaustion to be reachable. Rounded up to a power of two. A step that needs more than
+  // this fails hard rather than stalling, so a value below roughly 10 + 8 * worker_count is
+  // not a small pool but a broken one.
+  u32 max_backend_jobs = 0;
+
   // Scratch for one step, allocated once. 0 sizes it from the limits above, which is what the
   // caller wants unless they have measured otherwise: the dominant term is one contact
   // constraint per `max_contact_constraints`, and getting it wrong is not a failure — the
@@ -79,6 +87,11 @@ struct WorldStats {
   u64 steps = 0;
   u64 backend_jobs = 0;             // jobs the backend handed to the job system
   u64 backend_jobs_on_workers = 0;  // of those, the ones that ran on a jobs::JobSystem worker
+  // Backend jobs handed to the job system that have not run yet. Each one is holding a job out
+  // of the world's fixed pool, so **this is zero every time `step()` returns** — the step
+  // drains them, and the count existing at all is what makes that a checkable invariant
+  // rather than a race that only a slow machine loses (docs/subsystems/physics.md).
+  u32 backend_jobs_pending = 0;
   u32 body_count = 0;
   u32 active_body_count = 0;
   u32 soft_body_count = 0;

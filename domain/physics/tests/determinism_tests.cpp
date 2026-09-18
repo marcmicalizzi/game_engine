@@ -13,7 +13,9 @@
 
 #include <doctest/doctest.h>
 
+#include <atomic>
 #include <cstring>
+#include <thread>
 
 using namespace engine;
 using namespace engine::physics;
@@ -74,6 +76,20 @@ void run(jobs::JobSystem* job_system, u32 worker_count, u32 steps, Vector<Transf
   world.read_transforms(std::span<const BodyId>(bodies), std::span<Transform3>(out));
   stats = world.stats();
   CHECK(world.tick().value == steps);
+}
+
+// Occupies one pool worker until it is told to stop, so that a step has to do its own work on
+// the stepping thread and the pool cannot retire the queue entries behind it.
+struct WorkerHold {
+  std::atomic<bool> started{false};
+  std::atomic<bool> release{false};
+};
+
+void hold_worker(void* data) {
+  auto* hold = static_cast<WorkerHold*>(data);
+  hold->started.store(true, std::memory_order_release);
+  while (!hold->release.load(std::memory_order_acquire))
+    std::this_thread::yield();
 }
 
 }  // namespace
@@ -141,6 +157,120 @@ TEST_CASE("physics: with no job system the backend still steps, on the calling t
   const usize bytes = with_jobs.size() * sizeof(Transform3);
   REQUIRE(with_jobs.size() == inline_only.size());
   CHECK(std::memcmp(with_jobs.data(), inline_only.data(), bytes) == 0);
+}
+
+TEST_CASE("physics: a step leaves nothing of its own in the job queue, even with a busy pool") {
+  // The deterministic half of the job-lifetime regression. The backend's barrier executes any
+  // ready job on the thread that is waiting, so a job is routinely *finished* while the queue
+  // entry that was going to run it is still outstanding — and that entry holds the last
+  // reference to a Job object out of a fixed-size pool. Whether the pool gets round to
+  // retiring those entries before the next step needs more is a race, and it is a race a
+  // machine with spare cores always wins, which is why this failed only on CI.
+  //
+  // Holding the pool's single worker takes the race away: every entry a step queues is still
+  // there when Update returns, so `backend_jobs_pending` is exactly the leak, and the step's
+  // drain is the only thing that can make it zero. Jolt's concurrency is 1 here to keep a
+  // step's job count small — the drain helps the pool rather than spinning on it, and helping
+  // is what has to do the work while the worker is held.
+  jobs::JobSystemConfig config;
+  config.performance_workers = 1;
+  jobs::JobSystem job_system(config);
+
+  WorkerHold hold;
+  jobs::Counter blocker;
+  blocker.add(1);
+  job_system.schedule(jobs::Pool::Performance, jobs::Job{&hold_worker, &hold, &blocker});
+  while (!hold.started.load(std::memory_order_acquire))
+    std::this_thread::yield();
+
+  {
+    WorldOptions options = small_world_options();
+    options.job_system = &job_system;
+    options.worker_count = 1;
+    options.max_backend_jobs = 256;
+    World world;
+    REQUIRE(world.init(options) == Status::Ok);
+    Vector<BodyId> bodies;
+    build_scene(world, bodies);
+
+    for (u32 i = 0; i < 20; ++i) {
+      REQUIRE(world.step() == Status::Ok);
+      REQUIRE(world.stats().backend_jobs_pending == 0);
+    }
+    const WorldStats stats = world.stats();
+    INFO("backend jobs " << stats.backend_jobs << " over 20 steps");
+    CHECK(stats.backend_jobs > 20);
+  }
+
+  hold.release.store(true, std::memory_order_release);
+  job_system.wait(blocker);
+}
+
+TEST_CASE("physics: a job system with no performance workers is treated as none at all") {
+  // Otherwise the step would queue jobs nothing can ever run and then wait for them.
+  jobs::JobSystemConfig config;
+  config.performance_workers = 0;
+  jobs::JobSystem job_system(config);
+  if (job_system.worker_count(jobs::Pool::Performance) != 0) return;  // not this machine
+
+  WorldOptions options = small_world_options();
+  options.job_system = &job_system;
+  World world;
+  REQUIRE(world.init(options) == Status::Ok);
+  Vector<BodyId> bodies;
+  build_scene(world, bodies);
+  for (u32 i = 0; i < 20; ++i)
+    REQUIRE(world.step() == Status::Ok);
+  CHECK(world.stats().backend_jobs_on_workers == 0);
+}
+
+TEST_CASE("physics: the backend's job pool comes back whole after every step") {
+  // Every job the backend creates comes out of a fixed-size free list and goes back when its
+  // last reference is released. A queued job holds one of those references, and the barrier
+  // will execute the same job on the stepping thread if it gets there first — so when a step
+  // returns, the pool can still hold entries for jobs that are already finished. Until the
+  // step drained them, the number of live jobs was a function of how fast the workers happened
+  // to drain rather than of the step: a machine with few cores ran the list dry within a
+  // second (a hard failure) and left it short at shutdown (a backend assert in Debug), while a
+  // thirty-six-thread one never showed either.
+  //
+  // The pool here is small on purpose, so that 300 steps recycle it many times over; the
+  // worker counts are the ones CI actually runs on.
+  constexpr u32 k_pool = 256;
+  const u32 worker_counts[] = {1, 2, 4};
+  for (const u32 workers : worker_counts) {
+    jobs::JobSystemConfig config;
+    config.performance_workers = workers;
+    jobs::JobSystem job_system(config);
+
+    WorldOptions options = small_world_options();
+    options.job_system = &job_system;
+    options.worker_count = workers;
+    options.max_backend_jobs = k_pool;
+
+    World world;
+    REQUIRE(world.init(options) == Status::Ok);
+    CHECK(world.options().max_backend_jobs == k_pool);
+    Vector<BodyId> bodies;
+    build_scene(world, bodies);
+    for (u32 i = 0; i < 300; ++i) {
+      REQUIRE(world.step() == Status::Ok);
+      // The invariant, checked on every step rather than hoped for: a step that returns has
+      // no job of its own left in the pool. Checking the *count* instead of waiting for the
+      // free list to run dry is what makes this test machine-independent — on a machine with
+      // more cores than the step has work for, the leftovers are retired before the next step
+      // asks for anything and the exhaustion never reproduces.
+      REQUIRE(world.stats().backend_jobs_pending == 0);
+    }
+
+    const WorldStats stats = world.stats();
+    INFO("workers " << workers << ", backend jobs " << stats.backend_jobs);
+    // Many times the pool's size, so the pool has been handed out and returned over and over
+    // rather than merely never filled.
+    CHECK(stats.backend_jobs > 4 * k_pool);
+    // Destroying the world here is the other half of the check: the backend's free list
+    // asserts in Debug that every object it handed out has come back.
+  }
 }
 
 TEST_CASE("physics: the same world stepped twice from the same start agrees with itself") {
