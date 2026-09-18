@@ -212,6 +212,14 @@ try {
       spp                = $r.samples
       bounces            = $reference['bounces']
       visible_pairs      = $r.stats.visible_pairs
+      # Where the geometry came from — "miss" built from the glTF, "hit" read from the derived-data
+      # cache, "file" a container named outright, "none" the heightfield. It is in the report
+      # because it is **not** always the same picture: measured on the Khronos Lantern, the mesh
+      # built in memory and the same mesh round-tripped through a `.clusters` container differ by
+      # 0.019 FLIP, so a run that missed the cache and a run that hit it give different numbers for
+      # that scene (docs/subsystems/renderer.md). A number whose provenance is not recorded is a
+      # number nobody can reproduce.
+      mesh_cache         = $loaded.result.mesh_cache
       full               = [ordered]@{ flip_mean = $r.full.flip_mean; flip_p95 = $r.full.flip_p95
                                        flip_max = $r.full.flip_max; psnr = $r.full.psnr
                                        ssim = $r.full.ssim }

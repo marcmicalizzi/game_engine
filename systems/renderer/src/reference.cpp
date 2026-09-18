@@ -196,6 +196,11 @@ bool ReferenceRenderer::render(const Camera& camera, const ReferenceSettings& se
   frame.camera = camera;
   frame.frame_index = settings.frame_index;
   frame.lod_px = settings.finest ? 0.0f : -1.0f;
+  // The pose, straight through. The frame writes the deformed-vertex pool from it and builds the
+  // acceleration structures from the pool, so every ray below traces the character in the pose the
+  // caller's tick produced without this file knowing what a clip is.
+  frame.joints = settings.joints;
+  frame.instance_joints = settings.instance_joints;
   if (!renderer_->render_offscreen(frame, error)) return false;
   out.visible_pairs = renderer_->stats().visible_pairs();
 

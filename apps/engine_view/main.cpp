@@ -291,6 +291,72 @@ u32 find_clip(const animation::Library& library, u32 skeleton, std::string_view 
   return animation::Library::k_not_found;
 }
 
+// Part one of the glue: does this run animate, and which instances play a clip? It runs **before**
+// the scene loads, because `SceneInstance::joints` is what makes an instance skinned and the GPU
+// scene's deform table is laid out from it. `out` stays null when nothing animates, which is the
+// common case and costs one loop over the instance list.
+//
+// It is a function rather than a block in the frame loop's setup because the *offscreen*
+// reference path needs exactly the same three steps in exactly the same order (`run_reference`
+// below), and two copies of "which instances are skinned" would be two answers the day one of
+// them changed.
+bool prepare_animation(std::unique_ptr<AnimatedScene>& out, renderer::SceneDesc& desc,
+                       const Options& options, std::string& error) {
+  bool wants_animation = options.animate;
+  for (const renderer::SceneInstance& instance : desc.instances)
+    wants_animation = wants_animation || instance.animation.play;
+  if (!wants_animation) return true;
+
+  out = std::make_unique<AnimatedScene>();
+  if (!load_clips(*out, desc, error)) return false;
+  auto joints_of_mesh = [&](u32 mesh) {
+    const u32 skeleton = mesh < out->mesh_skeleton.size() ? out->mesh_skeleton[mesh]
+                                                          : animation::Library::k_not_found;
+    return skeleton == animation::Library::k_not_found
+               ? 0u
+               : out->library.skeleton_data(skeleton).joint_count();
+  };
+  if (desc.instances.empty()) {
+    // `--mesh --animate`: the grid is expanded by the loader and a single instance is not, so
+    // the one case that has no `SceneInstance` yet gets one here.
+    if (desc.grid_instances > 1) {
+      desc.grid_joints = joints_of_mesh(0);
+    } else {
+      renderer::SceneInstance instance;
+      instance.mesh = 0;
+      instance.joints = joints_of_mesh(0);
+      instance.animation.play = true;
+      desc.instances.push_back(instance);
+    }
+  } else {
+    for (renderer::SceneInstance& instance : desc.instances) {
+      if (options.animate) instance.animation.play = true;
+      if (instance.animation.play) instance.joints = joints_of_mesh(instance.mesh);
+    }
+  }
+  const u32 joints = desc.grid_instances > 1
+                         ? desc.grid_joints
+                         : (desc.instances.empty() ? 0u : desc.instances[0].joints);
+  if (joints == 0) {
+    error = "no mesh of this scene has a skin; --animate needs a skinned glTF";
+    return false;
+  }
+  return true;
+}
+
+// One fixed step of the animated world, then where each instance's matrices are. `SimWorld::step`
+// reads no clock, so N steps are N steps whatever the machine was doing and two runs draw the
+// same picture.
+void step_animation(AnimatedScene& scene) {
+  scene.sim.step();
+  for (u32 i = 0; i < scene.entities.size(); ++i) {
+    renderer::InstanceJoints& run = scene.runs[i];
+    run = renderer::InstanceJoints{};
+    if (!scene.entities[i].is_null())
+      scene.system.joint_run(scene.entities[i], run.first, run.count);
+  }
+}
+
 // Part two of the glue: one entity per skinned instance, its clip, and its phase.
 //
 // It runs *after* the scene has loaded because the renderer's joint buffer is sized by the pose
@@ -499,6 +565,10 @@ int run_reference(const Options& options) {
   bench::MachineState machine_start;
   bench::MachineState machine_end;
   bool captured = false;
+#if ENGINE_VIEW_ANIMATION
+  std::unique_ptr<AnimatedScene> animated;
+#endif
+  u32 skinned_instances = 0;
   do {
     renderer::SceneDesc desc;
     desc.heightfield_grid = options.grid;
@@ -513,10 +583,31 @@ int run_reference(const Options& options) {
     } else {
       desc.meshes.push_back(options.mesh);
     }
+#if ENGINE_VIEW_ANIMATION
+    // The same three steps the windowed path takes, in the same order and through the same
+    // functions: which instances are skinned (before the load, because the deform table is laid
+    // out from it), the entities and their clips (after it), and **one** tick. One, because a
+    // reference render is one frame — so what it draws is the pose the windowed path's first
+    // frame would draw, and `--frames` means nothing here.
+    if (!prepare_animation(animated, desc, options, error)) {
+      exit_code = fail("clips", error);
+      break;
+    }
+#endif
     if (!renderer::load_scene(desc, scene_data, error)) {
       exit_code = fail("mesh", error);
       break;
     }
+#if ENGINE_VIEW_ANIMATION
+    if (animated) {
+      if (!attach_instances(*animated, desc, scene_data, options, error)) {
+        exit_code = fail("animate", error);
+        break;
+      }
+      skinned_instances = animated->instances;
+      step_animation(*animated);
+    }
+#endif
     renderer::resolve_settings(options.settings, device.features(), &scene_data, resolved);
     const renderer::RenderAvailability availability =
         renderer::check_availability(resolved, device.features());
@@ -556,6 +647,12 @@ int run_reference(const Options& options) {
     reference_settings.max_bounces = options.bounces;
     reference_settings.batch = options.spp_batch;
     reference_settings.finest = options.finest;
+#if ENGINE_VIEW_ANIMATION
+    if (animated) {
+      reference_settings.joints = animated->system.joint_matrices();
+      reference_settings.instance_joints = {animated->runs.data(), animated->runs.size()};
+    }
+#endif
     machine_start = bench::sample_machine_state(bench::k_sample_window_ms);
     const renderer::Camera camera =
         renderer::orbit_camera(scene_data.center, scene_data.radius, options.orbit, 0);
@@ -593,12 +690,14 @@ int run_reference(const Options& options) {
         "{\"reference\":true,\"spp\":%u,\"bounces\":%u,\"finest\":%s,\"width\":%u,\"height\":%u,"
         "\"seconds\":%.3f,\"trace_ms\":%.3f,\"samples\":%u,\"visible_pairs\":%u,"
         "\"clusters\":%u,\"leaf_clusters\":%u,\"triangles\":%u,\"instances\":%u,"
+        "\"skinned_instances\":%u,"
         "\"gpu_memory\":{\"budget_mib\":%llu,\"used_mib\":%llu,"
         "\"device_local_total_mib\":%llu},\"machine_state\":%s,\"captured\":%s}\n",
         frame.samples, options.bounces, options.finest ? "true" : "false", frame.width,
         frame.height, frame.seconds, frame.trace_ms, frame.samples, frame.visible_pairs,
         scene_data.cluster_count(), scene_data.leaf_count(), scene_data.lod.leaf_triangle_count,
-        scene_data.instances.size(), static_cast<unsigned long long>(stats.gpu_memory.budget_mib),
+        scene_data.instances.size(), skinned_instances,
+        static_cast<unsigned long long>(stats.gpu_memory.budget_mib),
         static_cast<unsigned long long>(stats.gpu_memory.used_mib),
         static_cast<unsigned long long>(stats.gpu_memory.device_local_total_mib),
         machine_text.c_str(), captured ? "true" : "false");
@@ -790,15 +889,16 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "engine-view: --bounces must be at most 64 and --spp-batch at least 1\n");
     return k_exit_usage;
   }
-  // A reference of an animated scene is a reference of **one posed frame**, and it needs no
-  // special path to be one: `--animate` poses the instances through the deformed-vertex pool, the
-  // acceleration structures are built from that pool, and the reference traces those structures.
-  // What it cannot do is animate, because it renders one frame and `--frames` means nothing to
-  // it: the pose is the one at `frame 0`. Say so rather than let a caller believe otherwise.
-  if (options.reference != 0 && options.animate) {
+  // A reference of an animated scene is a reference of **one posed frame**, which needs no special
+  // path: the frame the reference renders first writes the deformed-vertex pool and builds the
+  // acceleration structures from it, and the reference traces those. What it cannot do is play a
+  // clip, because it renders one frame — so `--frames` means nothing here and the pose is the one
+  // the windowed path's *first* frame would draw. Say so rather than let a caller believe a
+  // number that does nothing.
+  if (options.reference != 0 && options.animate && options.frames > 1) {
     std::fprintf(stderr,
-                 "engine-view: --reference renders one frame, so it draws the pose at frame 0; "
-                 "--animate's clip does not advance under it.\n");
+                 "engine-view: --reference renders one frame, so --frames is ignored and the pose "
+                 "is the one after a single tick.\n");
   }
   if (!options.capture.empty() && options.frames == 0) options.frames = 60;
 
@@ -918,52 +1018,9 @@ int main(int argc, char** argv) {
 
 #if ENGINE_VIEW_ANIMATION
     // ---- the animated world, part one: the clips, and which instances play them --------------
-    //
-    // Before the scene loads, because `SceneInstance::joints` is what makes an instance skinned
-    // and the GPU scene's deform table is laid out from it.
-    bool wants_animation = options.animate;
-    for (const renderer::SceneInstance& instance : desc.instances)
-      wants_animation = wants_animation || instance.animation.play;
-    if (wants_animation) {
-      animated = std::make_unique<AnimatedScene>();
-      if (!load_clips(*animated, desc, error)) {
-        exit_code = fail("clips", error);
-        break;
-      }
-      auto joints_of_mesh = [&](u32 mesh) {
-        const u32 skeleton = mesh < animated->mesh_skeleton.size()
-                                 ? animated->mesh_skeleton[mesh]
-                                 : animation::Library::k_not_found;
-        return skeleton == animation::Library::k_not_found
-                   ? 0u
-                   : animated->library.skeleton_data(skeleton).joint_count();
-      };
-      if (desc.instances.empty()) {
-        // `--mesh --animate`: the grid is expanded by the loader and a single instance is not, so
-        // the one case that has no `SceneInstance` yet gets one here.
-        if (desc.grid_instances > 1) {
-          desc.grid_joints = joints_of_mesh(0);
-        } else {
-          renderer::SceneInstance instance;
-          instance.mesh = 0;
-          instance.joints = joints_of_mesh(0);
-          instance.animation.play = true;
-          desc.instances.push_back(instance);
-        }
-      } else {
-        for (renderer::SceneInstance& instance : desc.instances) {
-          if (options.animate) instance.animation.play = true;
-          if (instance.animation.play) instance.joints = joints_of_mesh(instance.mesh);
-        }
-      }
-      const u32 joints = desc.grid_instances > 1
-                             ? desc.grid_joints
-                             : (desc.instances.empty() ? 0u : desc.instances[0].joints);
-      if (joints == 0) {
-        exit_code =
-            fail("clips", "no mesh of this scene has a skin; --animate needs a skinned glTF");
-        break;
-      }
+    if (!prepare_animation(animated, desc, options, error)) {
+      exit_code = fail("clips", error);
+      break;
     }
 #endif
 
@@ -1125,18 +1182,9 @@ int main(int argc, char** argv) {
       extent_height = view_renderer.height();
 
 #if ENGINE_VIEW_ANIMATION
-      // One fixed step of the world per frame, then read back where each instance's matrices
-      // are. `SimWorld::step` reads no clock, so `--frames N` advances exactly N steps and two
-      // runs produce the same picture whatever the machine was doing.
-      if (animated) {
-        animated->sim.step();
-        for (u32 i = 0; i < animated->entities.size(); ++i) {
-          renderer::InstanceJoints& run = animated->runs[i];
-          run = renderer::InstanceJoints{};
-          if (!animated->entities[i].is_null())
-            animated->system.joint_run(animated->entities[i], run.first, run.count);
-        }
-      }
+      // One fixed step of the world per frame: `--frames N` advances exactly N steps and two runs
+      // produce the same picture whatever the machine was doing.
+      if (animated) step_animation(*animated);
 #endif
 
       renderer::FrameDesc frame;

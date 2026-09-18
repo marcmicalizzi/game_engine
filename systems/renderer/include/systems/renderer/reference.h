@@ -40,6 +40,7 @@
 #include <systems/renderer/scene_renderer.h>
 #include <systems/renderer/view_set.h>
 
+#include <span>
 #include <string>
 
 namespace engine::renderer {
@@ -65,6 +66,15 @@ struct ReferenceSettings {
   // antialiasing turns the jitter off.
   bool pixel_center = false;
   u64 frame_index = 0;  // drives the light orbit, exactly as a capture's frame number does
+  // **An animated instance's pose**, in the same two spans `FrameDesc` takes. A reference render
+  // is one frame, so what it draws is one pose: the caller ticks its world, hands over the
+  // matrices, and the reference path traces the character where the tick put it. Nothing else was
+  // needed for that — the preliminary frame writes the deformed-vertex pool and builds the
+  // acceleration structures from it, and the reference traces those — which is the whole reason
+  // this is a pass-through and not a feature (docs/subsystems/renderer.md, "An animated
+  // instance"). Empty spans leave every instance at rest, as they do for a frame.
+  std::span<const anim::JointMatrix> joints;
+  std::span<const InstanceJoints> instance_joints;
 };
 
 // What one came back with. `hdr` is the linear radiance **mean** — the accumulator already
