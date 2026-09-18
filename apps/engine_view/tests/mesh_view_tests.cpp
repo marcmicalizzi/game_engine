@@ -10,6 +10,7 @@
 #include <foundation/image/png.h>
 
 #include <doctest/doctest.h>
+#include <test_temp_dir.h>
 
 #include <cstring>
 #include <filesystem>
@@ -222,9 +223,8 @@ std::string content_app() {
 }  // namespace
 
 TEST_CASE("engine-view: renders a glTF mesh with one cluster DAG per material") {
-  const auto dir = std::filesystem::temp_directory_path() / "engine_view_mesh_tests";
-  std::filesystem::remove_all(dir);
-  std::filesystem::create_directories(dir);
+  const test::TempDir tmp("engine_view_mesh");
+  const std::filesystem::path dir = tmp.native();
   const std::string mesh = slashes(dir / "cube.glb");
   const std::string ddc = slashes(dir / "ddc");
   const std::string capture = slashes(dir / "mesh.png");
@@ -242,7 +242,6 @@ TEST_CASE("engine-view: renders a glTF mesh with one cluster DAG per material") 
   const Run run = view(with({"--mesh", mesh, "--capture", capture}));
   if (run.exit_code == 3) {
     MESSAGE("engine-view unavailable here: " << run.output);
-    std::filesystem::remove_all(dir);
     return;
   }
   REQUIRE_MESSAGE(run.exit_code == 0, run.output);
@@ -373,5 +372,4 @@ TEST_CASE("engine-view: renders a glTF mesh with one cluster DAG per material") 
   std::filesystem::copy_file(dir / "mesh.png", temp / "engine_view_mesh_last.png",
                              std::filesystem::copy_options::overwrite_existing, copy_error);
   if (copy_error) MESSAGE("the fixture copies were not kept: " << copy_error.message());
-  std::filesystem::remove_all(dir);
 }

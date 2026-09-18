@@ -20,6 +20,7 @@
 #include <systems/renderer/settings.h>
 
 #include <doctest/doctest.h>
+#include <test_temp_dir.h>
 
 #include <cstring>
 #include <filesystem>
@@ -200,9 +201,8 @@ TEST_CASE("renderer: draws a cube offscreen with no window and reads every chann
     MESSAGE("renderer unavailable here: " << gpu.why);
     return;
   }
-  const auto dir = std::filesystem::temp_directory_path() / "engine_renderer_tests";
-  std::filesystem::remove_all(dir);
-  std::filesystem::create_directories(dir);
+  const test::TempDir tmp("engine_renderer");
+  const std::filesystem::path dir = tmp.native();
   const std::string mesh = slashes(dir / "cube.glb");
   REQUIRE(write_cube_glb(mesh));
 
@@ -274,7 +274,6 @@ TEST_CASE("renderer: draws a cube offscreen with no window and reads every chann
   CHECK(std::filesystem::exists(files.ids));
   CHECK(std::filesystem::exists(files.ids_header));
   CHECK(std::filesystem::file_size(files.ids) == u64{160} * 120 * k_id_words * 4);
-  std::filesystem::remove_all(dir);
 }
 
 TEST_CASE("renderer: two instances give two ids") {
@@ -283,9 +282,8 @@ TEST_CASE("renderer: two instances give two ids") {
     MESSAGE("renderer unavailable here: " << gpu.why);
     return;
   }
-  const auto dir = std::filesystem::temp_directory_path() / "engine_renderer_ids_tests";
-  std::filesystem::remove_all(dir);
-  std::filesystem::create_directories(dir);
+  const test::TempDir tmp("engine_renderer_ids");
+  const std::filesystem::path dir = tmp.native();
   const std::string mesh = slashes(dir / "cube.glb");
   REQUIRE(write_cube_glb(mesh));
 
@@ -327,7 +325,6 @@ TEST_CASE("renderer: two instances give two ids") {
   CHECK(saw[0]);
   CHECK(saw[1]);
   CHECK(other == 0);
-  std::filesystem::remove_all(dir);
 }
 
 TEST_CASE("renderer: settings resolve the same way for every host") {
@@ -378,9 +375,8 @@ TEST_CASE("renderer: the direct path has no id or depth channel") {
     MESSAGE("renderer unavailable here: " << (gpu.ok ? "no mesh shaders" : gpu.why));
     return;
   }
-  const auto dir = std::filesystem::temp_directory_path() / "engine_renderer_direct_tests";
-  std::filesystem::remove_all(dir);
-  std::filesystem::create_directories(dir);
+  const test::TempDir tmp("engine_renderer_direct");
+  const std::filesystem::path dir = tmp.native();
   const std::string mesh = slashes(dir / "cube.glb");
   REQUIRE(write_cube_glb(mesh));
   SceneDesc desc;
@@ -404,5 +400,4 @@ TEST_CASE("renderer: the direct path has no id or depth channel") {
   error.clear();
   REQUIRE_MESSAGE(rig.renderer.capture(frame, channels, shot, &error), error);
   CHECK(shot.color.size() == u64{96} * 96 * 4);
-  std::filesystem::remove_all(dir);
 }

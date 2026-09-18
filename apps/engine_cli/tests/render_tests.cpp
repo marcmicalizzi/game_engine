@@ -12,6 +12,7 @@
 #include <core/platform/process.h>
 
 #include <doctest/doctest.h>
+#include <test_temp_dir.h>
 
 #include <filesystem>
 #include <string>
@@ -24,14 +25,6 @@ namespace {
 constexpr i32 k_render_unavailable = 1007;
 constexpr i32 k_not_found = 1003;
 constexpr i32 k_invalid_argument = 1004;
-
-std::string slashes(const std::filesystem::path& p) {
-  std::string s = p.string();
-  for (char& c : s) {
-    if (c == '\\') c = '/';
-  }
-  return s;
-}
 
 // One engine-host process fed a series of requests, so the scene a `render.load` leaves behind
 // is still there for the calls after it.
@@ -138,10 +131,8 @@ std::string uri_at(const JsonValue& files, const char* channel) {
 }  // namespace
 
 TEST_CASE("render: load, capture, benchmark, and compare over the protocol") {
-  const auto dir = std::filesystem::temp_directory_path() / "engine_render_cli_tests";
-  std::filesystem::remove_all(dir);
-  std::filesystem::create_directories(dir);
-  const std::string out_dir = slashes(dir);
+  const test::TempDir tmp("engine_render_cli");
+  const std::string out_dir = tmp.path();
 
   Host host;
   REQUIRE(host.ok);
@@ -150,7 +141,6 @@ TEST_CASE("render: load, capture, benchmark, and compare over the protocol") {
   const JsonValue loaded = host.call("render.load", R"({"grid":33,"settings":{"raster":"hw"}})");
   if (error_code(loaded) == k_render_unavailable) {
     MESSAGE("render.* unavailable here: " << error_message(loaded));
-    std::filesystem::remove_all(dir);
     return;
   }
   const JsonValue& scene = result_of(loaded);
@@ -242,7 +232,6 @@ TEST_CASE("render: load, capture, benchmark, and compare over the protocol") {
         k_invalid_argument);
   CHECK(error_code(host.call("render.load", R"({"mesh":"a.gltf","scene":"b.json"})")) ==
         k_invalid_argument);
-  std::filesystem::remove_all(dir);
 }
 
 // `render.compare` is the one render method that never opens a device, so it runs everywhere —

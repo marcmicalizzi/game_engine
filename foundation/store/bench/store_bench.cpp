@@ -42,7 +42,9 @@ u32 records() noexcept { return bench::smoke_mode() ? k_smoke_records : k_full_r
 u32 tiles() noexcept { return bench::smoke_mode() ? k_smoke_tiles : k_full_tiles; }
 constexpr u32 k_blob_min = 64;
 constexpr u32 k_blob_max = 256;
-u32 summary_records() noexcept { return records() / 100; }  // the hourly pass touches 1% of the world
+u32 summary_records() noexcept {
+  return records() / 100;
+}  // the hourly pass touches 1% of the world
 u32 snapshot_records() noexcept { return records() / 100; }
 constexpr u32 k_snapshot_tile = 7;
 

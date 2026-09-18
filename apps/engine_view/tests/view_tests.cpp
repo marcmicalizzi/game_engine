@@ -5,6 +5,7 @@
 #include <core/platform/process.h>
 
 #include <doctest/doctest.h>
+#include <test_temp_dir.h>
 
 #include <filesystem>
 #include <fstream>
@@ -55,17 +56,12 @@ TEST_CASE("engine-view: usage errors exit 2") {
 }
 
 TEST_CASE("engine-view: renders frames and captures the last one") {
-  const auto dir = std::filesystem::temp_directory_path() / "engine_view_tests";
-  std::filesystem::create_directories(dir);
-  std::string capture = (dir / "view.png").string();
-  for (char& c : capture) {
-    if (c == '\\') c = '/';
-  }
+  const test::TempDir tmp("engine_view");
+  const std::string capture = tmp.file("view.png");
   const Run run = view({"--width", "320", "--height", "200", "--frames", "6", "--grid", "33",
                         "--no-vsync", "--capture", capture});
   if (run.exit_code == 3) {
     MESSAGE("engine-view unavailable here: " << run.output);
-    std::filesystem::remove_all(dir);
     return;
   }
   REQUIRE_MESSAGE(run.exit_code == 0, run.output);
@@ -101,7 +97,6 @@ TEST_CASE("engine-view: renders frames and captures the last one") {
       (u32{head[20]} << 24) | (u32{head[21]} << 16) | (u32{head[22]} << 8) | head[23];
   CHECK(width >= 320);  // high-DPI scaling can only enlarge the pixel size
   CHECK(height >= 200);
-  std::filesystem::remove_all(dir);
 }
 
 // `--deform identity` fills the per-frame vertex pool with the rest pose, so the picture and the
