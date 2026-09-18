@@ -88,6 +88,8 @@ At 10^6 LOD3 NPCs with about 5 events per game-day each, running at one game-min
 - **Animation**: own system with SoA poses, blend trees and state machines as data, retargeting via a **standard skeleton** with per-character offsets (this is what makes generated characters tractable), IK for feet and hands, motion matching later.
 - **Audio**: miniaudio for devices and mixing; Steam Audio for spatialization and occlusion, sharing the RT scene geometry.
 
+**Status.** `domain/physics` skeleton with Jolt 5.6, 2026-09-17: rigid bodies, shapes (box, sphere, capsule, convex hull, triangle mesh, heightfield, compound), ray and shape casts, drained contact events, the debris pool with its hard cap, and XPBD soft bodies behind the engine's own types, running Jolt's jobs on `core/jobs` with cross-platform determinism on (measured at 1.6–3.6%, not the estimated 8%); character controllers, constraints, and rollback state are pending. See [physics](../subsystems/physics.md).
+
 ## 5.12 Multiplayer readiness
 
 Single-player ships first, but the engine carries more of the multiplayer burden than game code does, so the doors must stay open now. What an engine typically provides: transport (reliable and unreliable channels over UDP, encryption), replication (which components replicate, to whom, how often), ownership and authority, interest management (who needs to know about what), client-side prediction and reconciliation, RPC plumbing, lag-compensation hooks, snapshot and delta compression, session and lobby integration with platform services, and for lockstep designs, deterministic simulation with rollback. Game code decides *what* replicates and the rules; the engine provides the machinery.

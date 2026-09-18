@@ -46,4 +46,5 @@ One page per module, created in the same change that creates the module. Templat
 | assets | domain | [assets.md](assets.md) |
 | gfx | domain | [gfx.md](gfx.md) |
 | protocol | domain | [protocol.md](protocol.md) |
+| physics (capability) | domain | [physics.md](physics.md) |
 | engine_host, engine_cli, engine_view, engine_content, engine_input, engine_image | apps | [apps.md](apps.md) |
