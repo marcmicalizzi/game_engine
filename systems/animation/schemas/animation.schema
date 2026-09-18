@@ -1,18 +1,107 @@
-// animation components and events (ADR-0007, ADR-0027). The capability's own types live with the
-// capability, so adding them touches no shared file, and ENGINE_WITH_ANIMATION=OFF takes them out of
-// the build with everything else it owns.
+// animation components (ADR-0007, ADR-0027, ADR-0028 seam 1). The capability's own types live
+// with the capability, so adding them touches no shared file, and ENGINE_WITH_ANIMATION=OFF takes
+// them out of the build with everything else it owns.
+//
+// Three components, and the split between them is the whole of this capability's answer to
+// "what does a save contain":
+//
+//   AnimationPlayer    persistent. A pose is a pure function of (skeleton, clip, time) — and of
+//                      (second clip, its time, how far the fade has got) while a cross-fade is in
+//                      flight — so those are exactly the fields a save needs to resume the same
+//                      pose, and there are no others.
+//   SkeletonInstance   transient. Which skeleton an entity rides is a property of the model it
+//                      materializes from, not of its animation state, and the pool slot is a
+//                      run-time allocation that means nothing in the next process. Saving either
+//                      would give one fact two owners.
+//   AnimationLod       transient. Derived from the tier, which is derived from the observer set,
+//                      which is a property of where the cameras are this session.
+//
+// Nothing here holds a pose. The pose lives in the capability's pool and the ECS holds the slot
+// (docs/plan/03-data-model.md §3.4, "hot systems own their own data"); see
+// docs/subsystems/animation.md for why that is not a component.
 namespace engine.animation
 
-/// TODO(animation): the component that makes an entity participate in this capability. An entity
-/// without it costs nothing: no component, no instance, no work (plan 11 §11.10).
-struct Animation @version(1) @kind(component) {
-  /// TODO(animation): replace with the capability's real fields.
-  enabled: bool = true
+/// A playhead over the clip library: which clip, where in it, and the cross-fade in flight.
+///
+/// This is the persistent half of an animated entity. Everything the capability needs to put the
+/// same pose back after a load is here, and nothing that is recomputable is.
+struct AnimationPlayer @version(1) @kind(component) {
+  /// The clip being played, as `animation::Library` addresses it. A null id plays nothing.
+  clip: id128
+  /// The clip being faded *in*, or a null id when no cross-fade is in flight. The fade is
+  /// `clip` -> `fade_clip`, and it ends by making `fade_clip` the clip.
+  fade_clip: id128
+  /// Seconds into `clip`. Kept in the component rather than in the pool because it is the one
+  /// number a save has to bring back: a pose can be resampled from it, and cannot be from a pose.
+  time: f32 = 0.0
+  /// Seconds into `fade_clip`, advanced with `time` so the incoming clip is already running when
+  /// the fade reaches it.
+  fade_time: f32 = 0.0
+  /// How far the cross-fade has got, in seconds. 0 at the start, `fade_seconds` at the end.
+  fade_elapsed: f32 = 0.0
+  /// How long the cross-fade lasts. Zero is an instant cut.
+  fade_seconds: f32 = 0.0
+  /// Playback rate. Negative plays backwards; the wrap is exact either way.
+  speed: f32 = 1.0
+  /// How much of this player reaches the pose: 1 is the clip, 0 is the skeleton's bind pose, and
+  /// in between is a blend toward the bind pose. One player per entity is what this capability
+  /// samples today, so a weight below 1 is a fade to rest; it is the same number a blend tree
+  /// will give a node (docs/subsystems/animation.md, "Not yet"), which is why it is here and
+  /// persisted now rather than added later with a migration.
+  weight: f32 = 1.0
+  /// Wrap `time` into [0, duration) rather than clamping at the end.
+  looping: bool = true
+  /// The same for `fade_clip`.
+  fade_looping: bool = true
 }
 
-/// TODO(animation): what this capability tells the rest of the world about. Gameplay-relevant events
-/// are hashed and replay (ADR-0010).
-struct AnimationEvent @version(1) @kind(event) {
-  entity: id128
-  tick: u64 = 0
+/// The skeleton an entity rides and the pose-pool slot its sampled pose lives in.
+///
+/// Transient: a save brings the skeleton back with the model, and a slot index is meaningless in
+/// the next process. `pose_slot` is `animation::k_no_slot` when this instance has no pose — which
+/// is what LOD3 means, and what a freshly created entity is until the capability gives it one.
+struct SkeletonInstance @version(1) @kind(component) @transient {
+  /// The skeleton, as `animation::Library` addresses it.
+  skeleton: id128
+  /// Into the capability's pose pool, or 4294967295 (`animation::k_no_slot`).
+  pose_slot: u32 = 4294967295
+  /// The skeleton's joint count, cached here so the sampling loop does not go through the
+  /// library for a number it needs per instance per tick.
+  joints: u32 = 0
+  /// The library's index for `skeleton`, resolved once.
+  skeleton_index: u32 = 4294967295
+  /// The library's indices for the player's two clips, resolved once and re-resolved when the
+  /// player's `Id128` stops matching. This is the whole reason `sample_poses` declares a write on
+  /// this component: an `Id128` is the right handle to *save*, and the wrong one to hash per
+  /// instance per tick, so the lookup happens where the clip changes and the check that it is
+  /// still right is a 16-byte compare against the library's own record.
+  clip_index: u32 = 4294967295
+  fade_index: u32 = 4294967295
+}
+
+/// What this instance's tier costs it, as the numbers the hot loops actually read.
+///
+/// Transient, and derived: the tier comes from the observer set (`sim::TierAssignment`), and the
+/// three fields below are a pure function of the tier (`animation::lod_plan`). They are stored
+/// rather than recomputed so that the sampling loop reads one component instead of branching on a
+/// tier enumeration per entity.
+struct AnimationLod @version(1) @kind(component) @transient {
+  /// The game time, in microseconds, at which this instance stopped being animated. Used to
+  /// advance the playhead analytically on the way back up, so a promoted instance is where it
+  /// would have been rather than where it was when it froze.
+  frozen_at_us: i64 = 0
+  /// 0..3, as ADR-0010 numbers them. Lower is nearer.
+  tier: u8 = 0
+  /// Update every `divisor` ticks. 1 at LOD0, 2 at LOD1, 4 at LOD2, 0 at LOD3 (never).
+  divisor: u8 = 1
+  /// Which tick of the divisor's cycle this instance updates on: `(tick + phase) % divisor == 0`.
+  /// Derived from the pool slot, so a crowd at LOD2 spreads over four ticks instead of costing
+  /// four ticks' work on one of them, and so the spread is a function of the slot rather than of
+  /// the iteration order — which is what keeps it identical at one worker and at eight.
+  phase: u8 = 0
+  /// Blend the cross-fade rather than snapping to the dominant clip.
+  interpolate: bool = true
+  /// Build skinning matrices for this instance. False at LOD2, which samples a pose for
+  /// gameplay's benefit and has nothing on screen to deform.
+  skin: bool = true
 }

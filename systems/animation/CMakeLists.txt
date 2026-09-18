@@ -21,10 +21,10 @@ engine_schema_library(NAME animation_schemas SCHEMAS schemas/animation.schema CA
 
 engine_module(NAME animation LAYER systems OPTIONAL WHOLE_ARCHIVE
   DEPS base containers math time log jobs ids json schema tunables geometry anim assets sim ecs animation_schemas
-  SOURCES src/animation.cpp)
+  SOURCES src/library.cpp src/pose_pool.cpp src/animation.cpp)
 
 engine_module_tests(NAME animation
-  SOURCES tests/animation_tests.cpp tests/size_table.cpp)
+  SOURCES tests/animation_tests.cpp tests/lod_tests.cpp tests/size_table.cpp)
 
 # 10^4 instances of a 23-joint skeleton through the real tick, by tier mix (plan 11 §11.8).
 engine_module_bench(NAME animation
