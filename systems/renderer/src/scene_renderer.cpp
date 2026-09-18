@@ -124,13 +124,14 @@ bool SceneRenderer::Targets::create(const gfx::Device& device, const ViewSet& se
     target.height = set[v].source_height;
     target.vis_offset = vis_elements;
     target.hiz_mips = gfx::hiz_mip_count(target.width, target.height);
+    target.hiz_dispatches = gfx::hiz_dispatch_count(target.hiz_mips);
     const u32 pyramid = gfx::hiz_layout(target.width, target.height, target.hiz_offsets);
     // The offsets are into the shared pyramid buffer, so the cull pass reads its own view's mips
     // without knowing there are others.
     for (u32 m = 0; m < gfx::k_hiz_max_mips; ++m)
       target.hiz_offsets[m] += hiz_elements;
     target.level_base = level_base;
-    level_base += target.hiz_mips * 2;
+    level_base += target.hiz_dispatches * 2;
     hiz_elements += pyramid;
     vis_elements += u64{target.width} * target.height;
   }
@@ -1093,37 +1094,43 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           }
         });
   };
-  // A view's whole pyramid, mip by mip: the mips of one pyramid depend on each other and have to
-  // be barriered anyway, and building the views one after another keeps a view's Hi-Z one zone.
+  // A view's whole pyramid, a dispatch at a time: one workgroup folds a 32 x 32 tile into six
+  // mips through shared memory (hiz_build.slang), so a 15-mip pyramid is three dispatches rather
+  // than fifteen, and only the boundaries between them need a barrier. The views are still built
+  // one after another so that a view's Hi-Z is one timer zone.
   auto add_hiz = [&](u32 set) {
     for (u32 v = 0; v < views; ++v) {
       const ViewTarget& target = targets.views[v];
-      for (u32 m = 0; m < target.hiz_mips; ++m) {
-        gfx::HizParams* level = &targets.hiz_levels[target.level_base + set * target.hiz_mips + m];
+      for (u32 d = 0; d < target.hiz_dispatches; ++d) {
+        gfx::HizParams* level =
+            &targets.hiz_levels[target.level_base + set * target.hiz_dispatches + d];
+        const u32 src_mip = gfx::hiz_dispatch_src_mip(d);
+        const bool first = d == 0;
+        const bool last = d + 1 == target.hiz_dispatches;
         *level = gfx::HizParams{};
-        level->from_visibility = m == 0 ? 1u : 0u;
-        level->src = m == 0 ? view_frames[v].vis_address
-                            : targets.hiz.address + u64{target.hiz_offsets[m - 1]} * 4;
-        level->dst = targets.hiz.address + u64{target.hiz_offsets[m]} * 4;
-        level->src_width = m == 0 ? target.width : gfx::hiz_mip_extent(target.width, m - 1);
-        level->src_height = m == 0 ? target.height : gfx::hiz_mip_extent(target.height, m - 1);
-        level->dst_width = gfx::hiz_mip_extent(target.width, m);
-        level->dst_height = gfx::hiz_mip_extent(target.height, m);
-        const bool first = m == 0;
-        const bool last = m + 1 == target.hiz_mips;
+        level->from_visibility = first ? 1u : 0u;
+        level->src = first ? view_frames[v].vis_address
+                           : targets.hiz.address + u64{target.hiz_offsets[src_mip]} * 4;
+        level->pyramid = targets.hiz.address;
+        level->width = target.width;
+        level->height = target.height;
+        level->src_mip = src_mip;
+        level->src_offset = target.hiz_offsets[src_mip];
+        level->levels = gfx::hiz_dispatch_levels(target.hiz_mips, d);
+        const u32 src_w = gfx::hiz_mip_extent(target.width, src_mip);
+        const u32 src_h = gfx::hiz_mip_extent(target.height, src_mip);
         graph.add_pass(
             "hiz", gfx::PassKind::Compute,
             [&, first](gfx::PassBuilder& b) {
               if (first) b.read(rg_vis, gfx::Access::ComputeRead);
               b.write(rg_hiz, gfx::Access::ComputeReadWrite);
             },
-            [&, level, first, last, v](VkCommandBuffer cb, gfx::RenderGraph&) {
+            [&, level, first, last, v, src_w, src_h](VkCommandBuffer cb, gfx::RenderGraph&) {
               if (first) timer.begin(cb, k_zone_names[k_zone_hiz][v]);
               vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines.hiz.pipeline);
               vkCmdPushConstants(cb, pipelines.hiz.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
                                  sizeof(*level), level);
-              vkCmdDispatch(cb, gfx::hiz_group_count(level->dst_width),
-                            gfx::hiz_group_count(level->dst_height), 1);
+              vkCmdDispatch(cb, gfx::hiz_group_count(src_w), gfx::hiz_group_count(src_h), 1);
               if (last) timer.end(cb);
             });
       }

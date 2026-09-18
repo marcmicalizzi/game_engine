@@ -240,21 +240,28 @@ static_assert(sizeof(DeformParams) == 80);
 
 inline constexpr u32 k_deform_workgroup_size = 128;  // numthreads in deform.slang
 
-// Mirrors HizParams in hiz_build.slang: the push constants of one pyramid level. 40 bytes.
+// Mirrors HizParams in hiz_build.slang: the push constants of **one dispatch**, which folds a
+// 32 x 32 tile of mip `src_mip` down through up to `k_hiz_levels_per_dispatch` further mips in
+// shared memory. 40 bytes, as it was when a dispatch built one mip: the destination mips are
+// contiguous behind the source, so the shader walks their offsets and extents the way
+// hiz_layout() does rather than being handed an array of them.
 struct HizParams {
-  u64 src = 0;
-  u64 dst = 0;
-  u32 src_width = 0;
-  u32 src_height = 0;
-  u32 dst_width = 0;
-  u32 dst_height = 0;
-  u32 from_visibility = 0;  // 1: src is the u64 visibility buffer, else a f32 mip
-  u32 pad = 0;
+  u64 src = 0;      // u64[] visibility buffer (from_visibility) or f32[] of mip src_mip
+  u64 pyramid = 0;  // f32[] from hiz_layout(): this view's mips back to back
+  u32 width = 0;    // mip 0's extent, which every mip's extent is derived from
+  u32 height = 0;
+  u32 src_mip = 0;     // which mip `src` holds
+  u32 src_offset = 0;  // element offset of mip `src_mip` in `pyramid` (hiz_layout's offsets[m])
+  u32 levels = 0;      // reductions written: mips src_mip + 1 .. src_mip + levels
+  u32 from_visibility = 0;  // 1: src is the u64 visibility buffer and mip src_mip is written too
 };
 static_assert(sizeof(HizParams) == 40);
 
 inline constexpr u32 k_cull_workgroup_size = 64;  // numthreads in cluster_cull.slang
-inline constexpr u32 k_hiz_workgroup_size = 8;    // numthreads in hiz_build.slang (8 x 8)
+inline constexpr u32 k_hiz_workgroup_size = 16;   // numthreads in hiz_build.slang (16 x 16)
+inline constexpr u32 k_hiz_tile = 32;             // source texels one workgroup folds, per side
+// 32 -> 16 -> 8 -> 4 -> 2 -> 1: the halvings a 16 x 16 workgroup can do in shared memory.
+inline constexpr u32 k_hiz_levels_per_dispatch = 5;
 
 inline void set_frustum(CullParams& params, const Frustum& frustum) noexcept {
   params.plane_count = frustum.plane_count;
@@ -295,8 +302,25 @@ inline u32 hiz_layout(u32 width, u32 height, u32 offsets[k_hiz_max_mips]) noexce
   return total;
 }
 
-inline u32 hiz_group_count(u32 extent) noexcept {
-  return (extent + k_hiz_workgroup_size - 1) / k_hiz_workgroup_size;
+// Workgroups along one axis of a dispatch whose **source** mip is `extent` texels wide, each
+// folding `k_hiz_tile` of them.
+inline u32 hiz_group_count(u32 extent) noexcept { return (extent + k_hiz_tile - 1) / k_hiz_tile; }
+
+// How many dispatches a pyramid of `mips` mips takes: the first writes mip 0 and up to five
+// more, each further one reads the last mip written and writes up to five. A single-mip pyramid
+// still takes the one dispatch that copies the depth word.
+inline u32 hiz_dispatch_count(u32 mips) noexcept {
+  if (mips <= 1) return 1;
+  return (mips - 1 + k_hiz_levels_per_dispatch - 1) / k_hiz_levels_per_dispatch;
+}
+
+// The source mip of dispatch `d` of that chain, and how many reductions it writes.
+inline u32 hiz_dispatch_src_mip(u32 d) noexcept { return d * k_hiz_levels_per_dispatch; }
+
+inline u32 hiz_dispatch_levels(u32 mips, u32 d) noexcept {
+  const u32 done = hiz_dispatch_src_mip(d);
+  const u32 left = mips > done + 1 ? mips - 1 - done : 0;
+  return left < k_hiz_levels_per_dispatch ? left : k_hiz_levels_per_dispatch;
 }
 
 }  // namespace engine::gfx

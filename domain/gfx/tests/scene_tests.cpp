@@ -502,30 +502,34 @@ TEST_CASE("scene: the pair cull, the two rasterizers, ray tracing, and occlusion
           }
         });
   };
-  Vector<gfx::HizParams> hiz_params(hiz_mips);
+  const u32 hiz_dispatches = gfx::hiz_dispatch_count(hiz_mips);
+  Vector<gfx::HizParams> hiz_params(hiz_dispatches);
   auto add_hiz = [&](u32 source) {
-    for (u32 m = 0; m < hiz_mips; ++m) {
-      gfx::HizParams* level = &hiz_params[m];
+    for (u32 d = 0; d < hiz_dispatches; ++d) {
+      gfx::HizParams* level = &hiz_params[d];
+      const u32 src_mip = gfx::hiz_dispatch_src_mip(d);
       *level = gfx::HizParams{};
-      level->from_visibility = m == 0 ? 1u : 0u;
-      level->src = m == 0 ? vis[source].address : hiz.address + u64{hiz_offsets[m - 1]} * 4;
-      level->dst = hiz.address + u64{hiz_offsets[m]} * 4;
-      level->src_width = m == 0 ? k_w : gfx::hiz_mip_extent(k_w, m - 1);
-      level->src_height = m == 0 ? k_h : gfx::hiz_mip_extent(k_h, m - 1);
-      level->dst_width = gfx::hiz_mip_extent(k_w, m);
-      level->dst_height = gfx::hiz_mip_extent(k_h, m);
+      level->from_visibility = d == 0 ? 1u : 0u;
+      level->src = d == 0 ? vis[source].address : hiz.address + u64{hiz_offsets[src_mip]} * 4;
+      level->pyramid = hiz.address;
+      level->width = k_w;
+      level->height = k_h;
+      level->src_mip = src_mip;
+      level->src_offset = hiz_offsets[src_mip];
+      level->levels = gfx::hiz_dispatch_levels(hiz_mips, d);
+      const u32 src_w = gfx::hiz_mip_extent(k_w, src_mip);
+      const u32 src_h = gfx::hiz_mip_extent(k_h, src_mip);
       graph.add_pass(
           "hiz", gfx::PassKind::Compute,
-          [&, m, source](gfx::PassBuilder& b) {
-            if (m == 0) b.read(rg_vis[source], gfx::Access::ComputeRead);
+          [&, d, source](gfx::PassBuilder& b) {
+            if (d == 0) b.read(rg_vis[source], gfx::Access::ComputeRead);
             b.write(rg_hiz, gfx::Access::ComputeReadWrite);
           },
-          [&, level](VkCommandBuffer cb, gfx::RenderGraph&) {
+          [&, level, src_w, src_h](VkCommandBuffer cb, gfx::RenderGraph&) {
             vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, hiz_pipeline.pipeline);
             vkCmdPushConstants(cb, hiz_pipeline.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
                                sizeof(*level), level);
-            vkCmdDispatch(cb, gfx::hiz_group_count(level->dst_width),
-                          gfx::hiz_group_count(level->dst_height), 1);
+            vkCmdDispatch(cb, gfx::hiz_group_count(src_w), gfx::hiz_group_count(src_h), 1);
           });
     }
   };

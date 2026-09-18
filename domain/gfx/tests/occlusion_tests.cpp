@@ -311,31 +311,38 @@ TEST_CASE("occlusion culling: two passes draw fewer clusters and the same pictur
           vkCmdDrawMeshTasksIndirectEXT(cb, args[list].buffer, 0, 1, 12);
         });
   };
-  Vector<gfx::HizParams> hiz_params(hiz_mips * 2);  // stable storage for pass bodies
+  // One dispatch folds a 32 x 32 tile into six mips, so the pyramid is a handful of dispatches
+  // and the CPU recomputation below is what says the values are the mip-at-a-time ones.
+  const u32 hiz_dispatches = gfx::hiz_dispatch_count(hiz_mips);
+  CHECK(hiz_dispatches == 2);                             // 10 mips: 0..5, then 6..9
+  Vector<gfx::HizParams> hiz_params(hiz_dispatches * 2);  // stable storage for pass bodies
   auto add_hiz = [&](u32 set) {
-    for (u32 m = 0; m < hiz_mips; ++m) {
-      gfx::HizParams* level = &hiz_params[set * hiz_mips + m];
+    for (u32 d = 0; d < hiz_dispatches; ++d) {
+      gfx::HizParams* level = &hiz_params[set * hiz_dispatches + d];
       gfx::HizParams& p = *level;
+      const u32 src_mip = gfx::hiz_dispatch_src_mip(d);
       p = gfx::HizParams{};
-      p.from_visibility = m == 0 ? 1u : 0u;
-      p.src = m == 0 ? vis.address : hiz.address + u64{hiz_offsets[m - 1]} * 4;
-      p.dst = hiz.address + u64{hiz_offsets[m]} * 4;
-      p.src_width = m == 0 ? k_w : gfx::hiz_mip_extent(k_w, m - 1);
-      p.src_height = m == 0 ? k_h : gfx::hiz_mip_extent(k_h, m - 1);
-      p.dst_width = gfx::hiz_mip_extent(k_w, m);
-      p.dst_height = gfx::hiz_mip_extent(k_h, m);
+      p.from_visibility = d == 0 ? 1u : 0u;
+      p.src = d == 0 ? vis.address : hiz.address + u64{hiz_offsets[src_mip]} * 4;
+      p.pyramid = hiz.address;
+      p.width = k_w;
+      p.height = k_h;
+      p.src_mip = src_mip;
+      p.src_offset = hiz_offsets[src_mip];
+      p.levels = gfx::hiz_dispatch_levels(hiz_mips, d);
+      const u32 src_w = gfx::hiz_mip_extent(k_w, src_mip);
+      const u32 src_h = gfx::hiz_mip_extent(k_h, src_mip);
       graph.add_pass(
           "hiz", gfx::PassKind::Compute,
-          [&, m](gfx::PassBuilder& b) {
-            if (m == 0) b.read(rg_vis, gfx::Access::ComputeRead);
+          [&, d](gfx::PassBuilder& b) {
+            if (d == 0) b.read(rg_vis, gfx::Access::ComputeRead);
             b.write(rg_hiz, gfx::Access::ComputeReadWrite);
           },
-          [&, level](VkCommandBuffer cb, gfx::RenderGraph&) {
+          [&, level, src_w, src_h](VkCommandBuffer cb, gfx::RenderGraph&) {
             vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, hiz_pipeline.pipeline);
             vkCmdPushConstants(cb, hiz_pipeline.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
                                sizeof(*level), level);
-            vkCmdDispatch(cb, gfx::hiz_group_count(level->dst_width),
-                          gfx::hiz_group_count(level->dst_height), 1);
+            vkCmdDispatch(cb, gfx::hiz_group_count(src_w), gfx::hiz_group_count(src_h), 1);
           });
     }
   };
@@ -530,6 +537,165 @@ TEST_CASE("occlusion culling: two passes draw fewer clusters and the same pictur
     gfx::destroy_buffer(device, args[i]);
     gfx::destroy_buffer(device, flags[i]);
   }
+  frames.destroy();
+  device.destroy();
+}
+
+// The pyramid the shader builds is the pyramid the mip-at-a-time build used to write, texel for
+// texel, at a size chosen to break it if it can be broken. One workgroup folds a 32 x 32 tile
+// through six mips in shared memory, so the two things that could differ from a dispatch per mip
+// are the tile boundaries and the **odd extents**: a mip of odd width rounds up, and its last
+// texel is the one the per-mip pass clamped a missing source onto. 2053 x 1027 is odd at six of
+// its thirteen levels, needs three dispatches (mips 0-5, 6-10, 11-12), and leaves a partial tile
+// on both axes at every level. The source is a pseudo-random visibility buffer with a fifth of
+// its pixels empty, so the depths are unordered and a fold that took the wrong four texels would
+// show. The test that matters for the *picture* is the one above; this one is the arithmetic.
+TEST_CASE("hi-z: the folded pyramid equals the mip-at-a-time one at an awkward size") {
+  gfx::Device device;
+  std::string error;
+  if (!device.create(gfx::DeviceOptions{}, &error)) {
+    MESSAGE("device unavailable: " << error);
+    return;
+  }
+  constexpr u32 k_w = 2053;
+  constexpr u32 k_h = 1027;
+  u32 hiz_offsets[gfx::k_hiz_max_mips];
+  const u32 hiz_elements = gfx::hiz_layout(k_w, k_h, hiz_offsets);
+  const u32 hiz_mips = gfx::hiz_mip_count(k_w, k_h);
+  const u32 dispatches = gfx::hiz_dispatch_count(hiz_mips);
+  CHECK(hiz_mips == 13);
+  CHECK(dispatches == 3);
+
+  Vector<u64> source;
+  source.resize(k_w * k_h);
+  u32 state = 0x13579bdfu;
+  for (u32 i = 0; i < k_w * k_h; ++i) {
+    state = state * 1664525u + 1013904223u;
+    // A reversed-Z depth in (0, 1) in the high word, an arbitrary id in the low one; one pixel
+    // in five is empty, which is the whole word zero and the far plane.
+    const f32 depth = static_cast<f32>((state >> 8) & 0xffffu) / 65536.0f;
+    u32 bits = 0;
+    std::memcpy(&bits, &depth, 4);
+    source[i] = (state % 5u) == 0 ? 0 : (u64{bits} << 32) | (state & 0xffffffu);
+  }
+
+  constexpr VkBufferUsageFlags k_address =
+      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+  gfx::BufferResource vis;
+  gfx::BufferResource hiz;
+  gfx::BufferResource host_hiz;
+  REQUIRE(gfx::upload_buffer(device, source.data(), u64{k_w} * k_h * sizeof(u64), k_address, vis,
+                             &error));
+  REQUIRE(gfx::create_buffer(
+      device, u64{hiz_elements} * 4,
+      k_address | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, false, hiz,
+      &error));
+  REQUIRE(gfx::create_buffer(device, u64{hiz_elements} * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true,
+                             host_hiz, &error));
+
+  VkShaderModule module = gfx::create_shader_module(device, shaders::k_hiz_build_spirv,
+                                                    shaders::k_hiz_build_spirv_size, &error);
+  REQUIRE(module != VK_NULL_HANDLE);
+  gfx::ComputePipeline pipeline;
+  REQUIRE_MESSAGE(gfx::create_compute_pipeline(device, module, "hiz_build_main", {},
+                                               sizeof(gfx::HizParams), pipeline, &error),
+                  error);
+  gfx::FrameContext frames;
+  REQUIRE(frames.create(device, 1, &error));
+  gfx::RenderGraph graph(device);
+  const gfx::RgBuffer rg_vis = graph.import_buffer("visibility", vis);
+  const gfx::RgBuffer rg_hiz = graph.import_buffer("hiz", hiz);
+  const gfx::RgBuffer rg_host = graph.import_buffer("host_hiz", host_hiz);
+  // A sentinel under every mip: a texel the shader forgets to write shows up as one that never
+  // changed, not as whatever the allocator happened to leave there.
+  graph.add_pass(
+      "fill", gfx::PassKind::Transfer,
+      [&](gfx::PassBuilder& b) { b.write(rg_hiz, gfx::Access::TransferWrite); },
+      [&](VkCommandBuffer cb, gfx::RenderGraph&) {
+        vkCmdFillBuffer(cb, hiz.buffer, 0, VK_WHOLE_SIZE, 0xbadf00du);
+      });
+  Vector<gfx::HizParams> params(dispatches);
+  for (u32 d = 0; d < dispatches; ++d) {
+    gfx::HizParams* level = &params[d];
+    const u32 src_mip = gfx::hiz_dispatch_src_mip(d);
+    *level = gfx::HizParams{};
+    level->from_visibility = d == 0 ? 1u : 0u;
+    level->src = d == 0 ? vis.address : hiz.address + u64{hiz_offsets[src_mip]} * 4;
+    level->pyramid = hiz.address;
+    level->width = k_w;
+    level->height = k_h;
+    level->src_mip = src_mip;
+    level->src_offset = hiz_offsets[src_mip];
+    level->levels = gfx::hiz_dispatch_levels(hiz_mips, d);
+    const u32 src_w = gfx::hiz_mip_extent(k_w, src_mip);
+    const u32 src_h = gfx::hiz_mip_extent(k_h, src_mip);
+    graph.add_pass(
+        "hiz", gfx::PassKind::Compute,
+        [&, d](gfx::PassBuilder& b) {
+          if (d == 0) b.read(rg_vis, gfx::Access::ComputeRead);
+          b.write(rg_hiz, gfx::Access::ComputeReadWrite);
+        },
+        [&, level, src_w, src_h](VkCommandBuffer cb, gfx::RenderGraph&) {
+          vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.pipeline);
+          vkCmdPushConstants(cb, pipeline.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(*level),
+                             level);
+          vkCmdDispatch(cb, gfx::hiz_group_count(src_w), gfx::hiz_group_count(src_h), 1);
+        });
+  }
+  graph.add_pass(
+      "readback", gfx::PassKind::Transfer,
+      [&](gfx::PassBuilder& b) {
+        b.read(rg_hiz, gfx::Access::TransferRead);
+        b.write(rg_host, gfx::Access::TransferWrite);
+      },
+      [&](VkCommandBuffer cb, gfx::RenderGraph&) {
+        const VkBufferCopy copy{0, 0, u64{hiz_elements} * 4};
+        vkCmdCopyBuffer(cb, hiz.buffer, host_hiz.buffer, 1, &copy);
+      });
+  REQUIRE_MESSAGE(graph.compile(&error), error);
+  VkCommandBuffer commands = frames.begin_frame();
+  graph.execute(commands);
+  REQUIRE(frames.wait(frames.end_frame()));
+
+  const auto* out = static_cast<const f32*>(host_hiz.mapped);
+  u32 mip0_mismatch = 0;
+  for (u32 i = 0; i < k_w * k_h; ++i) {
+    const u32 bits = static_cast<u32>(source[i] >> 32);
+    f32 depth = 0.0f;
+    std::memcpy(&depth, &bits, 4);
+    if (out[i] != depth) ++mip0_mismatch;
+  }
+  CHECK(mip0_mismatch == 0);
+  u32 mismatch = 0;
+  for (u32 m = 1; m < hiz_mips; ++m) {
+    const u32 sw = gfx::hiz_mip_extent(k_w, m - 1);
+    const u32 sh = gfx::hiz_mip_extent(k_h, m - 1);
+    const u32 dw = gfx::hiz_mip_extent(k_w, m);
+    const u32 dh = gfx::hiz_mip_extent(k_h, m);
+    for (u32 y = 0; y < dh; ++y) {
+      for (u32 x = 0; x < dw; ++x) {
+        f32 expected = 1e30f;
+        for (u32 sy = y * 2; sy <= (y * 2 + 1 < sh ? y * 2 + 1 : sh - 1); ++sy) {
+          for (u32 sx = x * 2; sx <= (x * 2 + 1 < sw ? x * 2 + 1 : sw - 1); ++sx) {
+            const f32 v = out[hiz_offsets[m - 1] + sy * sw + sx];
+            expected = v < expected ? v : expected;
+          }
+        }
+        if (out[hiz_offsets[m] + y * dw + x] != expected) ++mismatch;
+      }
+    }
+  }
+  CHECK(mismatch == 0);
+  MESSAGE("hi-z " << k_w << "x" << k_h << ": " << hiz_mips << " mips in " << dispatches
+                  << " dispatches, " << hiz_elements << " texels, " << mip0_mismatch << " + "
+                  << mismatch << " mismatches");
+
+  graph.reset();
+  gfx::destroy_compute_pipeline(device, pipeline);
+  gfx::destroy_shader_module(device, module);
+  gfx::destroy_buffer(device, host_hiz);
+  gfx::destroy_buffer(device, hiz);
+  gfx::destroy_buffer(device, vis);
   frames.destroy();
   device.destroy();
 }

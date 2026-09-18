@@ -264,7 +264,8 @@ class SceneRenderer {
     u32 height = 0;
     u32 hiz_mips = 0;
     u32 hiz_offsets[gfx::k_hiz_max_mips] = {};  // elements into the shared pyramid buffer
-    u32 level_base = 0;                         // first of this view's blocks in `hiz_levels`
+    u32 hiz_dispatches = 0;  // how many workgroup folds the pyramid takes, six mips at a time
+    u32 level_base = 0;      // first of this view's blocks in `hiz_levels`
   };
   // Screen-sized resources, recreated on resize.
   struct Targets {
@@ -274,7 +275,8 @@ class SceneRenderer {
     Vector<ViewTarget> views;
     u32 width = 0;  // the largest source rectangle: the raster passes' render area
     u32 height = 0;
-    Vector<gfx::HizParams> hiz_levels;  // 2 x mips per view: stable storage for the pass bodies
+    // 2 x dispatches per view: stable storage for the pass bodies, which capture by pointer.
+    Vector<gfx::HizParams> hiz_levels;
     bool hiz_dirty = true;
     bool create(const gfx::Device& device, const ViewSet& views, std::string* error);
     void destroy(const gfx::Device& device) noexcept;
