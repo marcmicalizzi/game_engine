@@ -67,6 +67,25 @@ The cull pass backface-culls clusters by their normal cones unless `--no-cone`. 
 
 **Deterministic by construction.** `ecs::SimWorld::step` reads no clock, so `--frames N` advances the world exactly N steps and two runs of the same command line produce **byte-identical PNGs**; the end-to-end suite checks that, and checks that `--anim-speed 4` produces a different one. The summary gains `skinned_instances`, `joints` (the length of the bone-matrix span the frame uploaded), and `clip`; `gpu_ms.deform` was already there and is now non-zero without `--deform`, because skinning is one of the pool pass's kinds rather than a pass beside it.
 
+**What a crowd costs.** The Khronos Fox (576 triangles, 19 clusters in 5 levels, a 24-joint rig) playing `Survey`, at **3840×2160**, `--orbit 22 --shadows off --no-vsync`, 240 frames, `msvc-release` on the RTX 5090. Every row was taken twice and the two agree within the last digit quoted; the rigid column is the same command line without `--animate`.
+
+| Instances | Visible pairs | `gpu_ms.deform` | `gpu_ms.total` | CPU ms/frame, rigid → animated | Upload/frame | Pool |
+|---|---|---|---|---|---|---|
+| 1 | 8 | 0.0115–0.0125 | 0.310 | 0.52 → 0.53–0.59 | 1.1 KB | 11.9 KB |
+| 100 | 480 | 0.0247–0.0253 | 0.324 | 0.46–0.52 → 0.81–0.98 | 115 KB | 1.19 MB |
+| 1,024 | 1,325 | 0.138–0.139 | 0.458 | 0.51–0.54 → 3.61–3.63 | 1.18 MB | 12.2 MB |
+
+`gpu_memory.used_mib` was 420–421 MiB in every one of those runs, animated or not; with `--shadows rt` it is 583 at one instance and 783 at 1,024, which is the acceleration structure chain and not the skinning. **Machine state:** the box was shared throughout — other processes at 10–43% of the CPU and the GPU between 1% and 53% busy at the ends of the runs, 3.9–4.3 GB of the card held by other tenants — so every figure here is an **upper bound**, not a cost ([bench](bench.md#measuring-on-a-shared-machine)).
+
+Four things they say.
+
+1. **The pool pass costs the cut**, which is E25's whole claim, and skinning does not change it: 1,325 visible clusters over 1,024 characters deform in 0.139 ms, against E25's prediction of 9.4 µs plus 0.9 µs per 1,000 visible clusters — 10.6 µs predicted against 139 measured. The gap is not the cluster count, it is the *instances*: the pass is one workgroup per visible entry and a skinned workgroup reads a binding and four 48-byte matrices per vertex where a `lattice` one reads nothing but the position, and 1,024 entries spread over 1,024 different matrix arrays is a scattered read where a single deformed mesh's is not. At one instance the same pass is 0.0115 ms for 8 clusters, which is the fixed cost E25 measured.
+2. **The frame is not where a crowd gets expensive; the tick is.** At 1,024 characters the GPU frame is 0.46 ms and the CPU frame goes from 0.5 ms to 3.6 ms. That 3.1 ms is the animation tick plus the upload, and it lines up with [animation](animation.md)'s bench to within a tenth: 1,024 instances × 2.53 µs at LOD0 is 2.6 ms, and the rest is the memcpy and the per-instance `joint_run`. **engine-view attaches everything at LOD0 and never demotes**, so this is the bench's worst row and not its mixed one — the 5.6× the LOD policy claims is available and nothing here asks for it.
+3. **The upload is what the 3×4 matrix was chosen for.** 1.18 MB a frame for a thousand characters, one memcpy, 71 MB/s at 60 Hz. The fourth row would have made it 1.57 MB.
+4. **The pool is the memory problem, and it is E25's known one.** 12.2 MB for 1,024 foxes, because a deformed instance gets a block as long as its mesh's *whole* cluster-ordered vertex range whether or not the cut touches it. A fox is 995 vertices; a thousand FlightHelmets would be 1.7 GB. Suballocating the pool per frame from the cut, which E25 already listed, is what this turns from a tidiness item into a limit.
+
+**Ray tracing a moving crowd** (`--grid-instances 3`, 800×600, 41 visible pairs). `--raster rt` traces the deformed geometry: 0.245 ms of structure chain, 0.012 ms of rays, and a picture that differs from the mesh-shader path by PSNR 63.2 / SSIM 0.99995 — silhouettes, the same disagreement a rigid mesh gets. `--rt-templates` instantiates the cut's templates from the pool instead of rebuilding: the chain falls to 0.186 ms and its CLAS build from 0.0567 to 0.0143 ms (4.0×) for 7,712 bytes of template, and the picture is **byte-identical** to the rebuild's (PSNR null, SSIM 1, FLIP 0). `--shadows rt` on the same crowd changes the picture by PSNR 51.8: each fox shadows itself as it walks.
+
 **engine-content.**
 ```
 engine-content build <in.gltf|in.glb> <out.clusters> [--max-triangles <n>] [--max-vertices <n>] [--no-weld] [--jobs <n>] [--strict] [--log <spec>]
