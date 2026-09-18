@@ -5,6 +5,7 @@
 #include <core/platform/process.h>
 
 #include <doctest/doctest.h>
+#include <test_temp_dir.h>
 
 #include <filesystem>
 #include <string>
@@ -13,20 +14,6 @@
 using namespace engine;
 
 namespace {
-
-struct TempDir {
-  std::string path;
-  TempDir() {
-    const auto p = std::filesystem::temp_directory_path() / "engine_cli_tests";
-    std::filesystem::remove_all(p);
-    std::filesystem::create_directories(p);
-    path = p.string();
-    for (char& c : path) {
-      if (c == '\\') c = '/';
-    }
-  }
-  ~TempDir() { std::filesystem::remove_all(std::filesystem::path(path)); }
-};
 
 struct Run {
   i32 exit_code = -1;
@@ -97,8 +84,8 @@ TEST_CASE("cli: errors exit non-zero and print nothing on stdout") {
 }
 
 TEST_CASE("cli: the Phase 0 exit criterion, one process per step") {
-  TempDir tmp;
-  const std::string dir = tmp.path + "/world";
+  const test::TempDir tmp("engine_cli");
+  const std::string dir = tmp.file("world");
 
   Run missing = cli({"--doc", dir, "session.info"});
   CHECK(missing.exit_code == 1);
@@ -170,8 +157,8 @@ TEST_CASE("cli: the Phase 0 exit criterion, one process per step") {
 }
 
 TEST_CASE("cli: a partitioned layer keeps its objects in tile files") {
-  TempDir tmp;
-  const std::string dir = tmp.path + "/tiled";
+  const test::TempDir tmp("engine_cli");
+  const std::string dir = tmp.file("tiled");
   const std::filesystem::path layer_dir = std::filesystem::path(dir) / "layers" / "places";
   REQUIRE(cli({"--doc", dir, "--create", "--name", "Tiled", "session.info"}).exit_code == 0);
 
@@ -231,8 +218,8 @@ TEST_CASE("cli: a partitioned layer keeps its objects in tile files") {
 }
 
 TEST_CASE("cli: two layers that diverged from a common base are merged in one call") {
-  TempDir tmp;
-  const std::string dir = tmp.path + "/merged";
+  const test::TempDir tmp("engine_cli");
+  const std::string dir = tmp.file("merged");
   REQUIRE(cli({"--doc", dir, "--create", "--name", "Merged", "session.info"}).exit_code == 0);
 
   // Two objects in the base layer.

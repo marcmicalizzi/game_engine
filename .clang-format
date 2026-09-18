@@ -27,6 +27,10 @@ IncludeCategories:
     Priority: 2
   - Regex: '^<(doctest|SDL3|vulkan|Jolt|tracy|sqlite3|slang)'
     Priority: 3
+  # tests/support/*.h is test harness, like doctest beside it, and not a standard header: without
+  # this it matches the catch-all below and sorts into the standard-library block.
+  - Regex: '^<test_[a-z_]+\.h>$'
+    Priority: 3
   - Regex: '^<[a-z_]+>$'
     Priority: 4
   - Regex: '^<.*\.h>$'

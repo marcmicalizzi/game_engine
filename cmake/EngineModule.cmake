@@ -366,7 +366,22 @@ function(engine_app)
     add_dependencies(${_test_target} ${_target})
     engine_apply_warnings(${_test_target})
     add_test(NAME ${EA_NAME} COMMAND ${_test_target})
-    # End-to-end apps open windows, devices, and shared temp directories: never two at once.
-    set_tests_properties(${EA_NAME} PROPERTIES LABELS "unit;e2e;${EA_NAME}" RESOURCE_LOCK "e2e_apps")
+    # End-to-end apps open windows, GPU devices, and input devices, and a machine has one of
+    # each: RESOURCE_LOCK keeps two of these tests from running at the same time. What it does
+    # *not* do is order this ctest invocation against another one — a second build tree, a
+    # release build beside a debug one, another agent's worktree, CI on the developer's box —
+    # so it is no defence at all against two runs sharing a file. That is what the unique
+    # scratch directories of tests/support/test_temp_dir.h are for, and why no end-to-end test
+    # may name a fixed path under the system temp directory.
+    #
+    # TIMEOUT is explicit rather than left at CTest's 1500 s default so that the number carries
+    # its reason. Ten minutes is roughly sixteen times the worst end-to-end run measured on a
+    # deliberately loaded machine (engine_view, 37 s, with a release build compiling and three
+    # 1600x1000 engine-view windows open), which is headroom for a slower machine and a colder
+    # cache and still short enough that a hung child is reported inside a coffee break. It is
+    # not a tripwire for slowness: a test that is merely slow under load must never fail, and
+    # none of these has ever come within an order of magnitude of this bound.
+    set_tests_properties(${EA_NAME} PROPERTIES LABELS "unit;e2e;${EA_NAME}"
+      RESOURCE_LOCK "e2e_apps" TIMEOUT 600)
   endif()
 endfunction()

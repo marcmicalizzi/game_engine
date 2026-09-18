@@ -10,6 +10,7 @@
 #include <foundation/io/vfs.h>
 
 #include <doctest/doctest.h>
+#include <test_temp_dir.h>
 
 #include <cmath>
 #include <filesystem>
@@ -141,8 +142,8 @@ TEST_CASE("engine-image: usage errors exit 2 and --help exits 0") {
 }
 
 TEST_CASE("engine-image: compare reports the numbers the metrics define") {
-  const auto dir = std::filesystem::temp_directory_path() / "engine_image_tests";
-  std::filesystem::create_directories(dir);
+  const test::TempDir tmp("engine_image_app");
+  const std::filesystem::path dir = tmp.native();
 
   const std::string flat = write_fixture(dir, "flat.png", flat_pixels(120));
   const std::string shifted = write_fixture(dir, "flat_shifted.png", flat_pixels(124));

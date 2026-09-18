@@ -226,6 +226,27 @@ its job queues until that runner comes back or the run is cancelled, and the oth
 
 `ci.yml` is untouched by all of this and remains the gate on every push and pull request.
 
+## More than one suite on one machine
+
+A self-hosted runner is somebody's desktop as often as it is a dedicated box, and that used to be a
+trap: the end-to-end app tests each opened a *fixed* directory under the system temp directory, so a
+run on the runner and a run by whoever was sitting at the machine — or by an agent in another
+worktree, or a release build's suite beside a debug one — deleted each other's fixtures halfway
+through. The symptom was a test that failed in a full run and passed when re-run alone, which reads
+like load and is not: measured on a 36-thread desktop, the suite passed `-j 16 --repeat until-fail:3`
+with a release build compiling and three 1600×1000 `engine-view` windows open, and failed 19 runs out
+of 30 when two copies of the end-to-end binaries started at the same instant. CTest's `RESOURCE_LOCK`
+does not cover this: it orders tests *within* one `ctest` invocation and cannot see a second one.
+
+Scratch space is now per test and unguessable (`engine::test::TempDir`, see AGENTS.md's
+"Test hygiene"), so a second suite on the machine is no longer a reason for a run to fail, and two
+`ctest` invocations from two build trees at once pass. What is still genuinely exclusive is the
+hardware: one window, one GPU, one set of input devices. Keep a runner to **one job at a time** — do
+not raise its concurrency — because the GPU tests measure the device and a second suite sharing it
+makes the timings meaningless even when the results stay green. Note also that two `ctest` runs drift
+out of phase within seconds and are therefore a *weak* probe for this class of bug; starting the test
+binaries simultaneously is the sensitive one, and is what to reach for when a collision is suspected.
+
 ## The extreme resolutions
 
 [04 §4.6](../plan/04-renderer.md#46-extreme-displays) ends with a commitment: *no 16-bit screen

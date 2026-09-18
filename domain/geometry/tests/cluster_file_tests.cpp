@@ -8,6 +8,7 @@
 #include <foundation/io/vfs.h>
 
 #include <doctest/doctest.h>
+#include <test_temp_dir.h>
 
 #include <cmath>
 #include <cstring>
@@ -119,20 +120,6 @@ void check_equal(const ClusterFileData& read, const ClusterFileData& written) {
   CHECK(read.build_key == written.build_key);
 }
 
-struct TempDir {
-  std::string path;
-  TempDir() {
-    const auto p = std::filesystem::temp_directory_path() / "engine_cluster_file_tests";
-    std::filesystem::remove_all(p);
-    std::filesystem::create_directories(p);
-    path = p.string();
-    for (char& c : path) {
-      if (c == '\\') c = '/';
-    }
-  }
-  ~TempDir() { std::filesystem::remove_all(std::filesystem::path(path)); }
-};
-
 std::span<const u8> view(const std::string& file) {
   return std::span<const u8>(reinterpret_cast<const u8*>(file.data()), file.size());
 }
@@ -198,11 +185,11 @@ std::string with_unknown_section(const std::string& file) {
 }  // namespace
 
 TEST_CASE("cluster file: a DAG with materials survives a round trip array by array") {
-  TempDir tmp;
+  const test::TempDir tmp("engine_cluster_file");
   ClusterFileData data;
   Vector<u32> indices;
   make_fixture(data, indices);
-  const std::string path = tmp.path + "/terrain.clusters";
+  const std::string path = tmp.file("terrain.clusters");
 
   std::string error;
   REQUIRE_MESSAGE(write_cluster_file(path, data, &error), error);
@@ -260,12 +247,12 @@ TEST_CASE("cluster file: a DAG with materials survives a round trip array by arr
 }
 
 TEST_CASE("cluster file: the page table round-trips, and a file without one reads empty") {
-  TempDir tmp;
+  const test::TempDir tmp("engine_cluster_file");
   ClusterFileData data;
   Vector<u32> indices;
   make_fixture(data, indices);
   REQUIRE(data.pages.pages.size() > 1);
-  const std::string path = tmp.path + "/pages.clusters";
+  const std::string path = tmp.file("pages.clusters");
   std::string error;
   REQUIRE_MESSAGE(write_cluster_file(path, data, &error), error);
 
@@ -293,7 +280,7 @@ TEST_CASE("cluster file: the page table round-trips, and a file without one read
   // depend on how the container was built, and a mesh with no pages reads back with none.
   ClusterFileData unpaged = data;
   unpaged.pages = ClusterPages{};
-  const std::string unpaged_path = tmp.path + "/unpaged.clusters";
+  const std::string unpaged_path = tmp.file("unpaged.clusters");
   REQUIRE_MESSAGE(write_cluster_file(unpaged_path, unpaged, &error), error);
   ClusterFileData read_unpaged;
   REQUIRE_MESSAGE(read_cluster_file(unpaged_path, read_unpaged, &error), error);
@@ -334,11 +321,11 @@ TEST_CASE("cluster file: the page table round-trips, and a file without one read
 }
 
 TEST_CASE("cluster file: a section of an unknown kind is skipped") {
-  TempDir tmp;
+  const test::TempDir tmp("engine_cluster_file");
   ClusterFileData data;
   Vector<u32> indices;
   make_fixture(data, indices);
-  const std::string path = tmp.path + "/forward.clusters";
+  const std::string path = tmp.file("forward.clusters");
   std::string error;
   REQUIRE_MESSAGE(write_cluster_file(path, data, &error), error);
   std::string file;
@@ -352,13 +339,13 @@ TEST_CASE("cluster file: a section of an unknown kind is skipped") {
 }
 
 TEST_CASE("cluster file: the source path travels with the mesh, and its absence is not an error") {
-  TempDir tmp;
+  const test::TempDir tmp("engine_cluster_file");
   ClusterFileData data;
   Vector<u32> indices;
   make_fixture(data, indices);
 
   // The path is a section of its own, so it is there and it is what was written.
-  const std::string path = tmp.path + "/source.clusters";
+  const std::string path = tmp.file("source.clusters");
   std::string error;
   REQUIRE_MESSAGE(write_cluster_file(path, data, &error), error);
   std::string file;
@@ -404,7 +391,7 @@ TEST_CASE("cluster file: the source path travels with the mesh, and its absence 
   Vector<u32> anonymous_indices;
   make_fixture(anonymous, anonymous_indices);
   anonymous.source_path.clear();
-  const std::string anonymous_path = tmp.path + "/anonymous.clusters";
+  const std::string anonymous_path = tmp.file("anonymous.clusters");
   REQUIRE_MESSAGE(write_cluster_file(anonymous_path, anonymous, &error), error);
   ClusterFileData anonymous_read;
   REQUIRE_MESSAGE(read_cluster_file(anonymous_path, anonymous_read, &error), error);
@@ -413,11 +400,11 @@ TEST_CASE("cluster file: the source path travels with the mesh, and its absence 
 }
 
 TEST_CASE("cluster file: the source identity reads back without decoding the mesh") {
-  TempDir tmp;
+  const test::TempDir tmp("engine_cluster_file");
   ClusterFileData data;
   Vector<u32> indices;
   make_fixture(data, indices);
-  const std::string path = tmp.path + "/identity.clusters";
+  const std::string path = tmp.file("identity.clusters");
   std::string error;
   REQUIRE_MESSAGE(write_cluster_file(path, data, &error), error);
 
@@ -460,7 +447,7 @@ TEST_CASE("cluster file: the source identity reads back without decoding the mes
   renamed.kind = 31338;
   patch(older, identity_at, &renamed, sizeof(renamed));
   rehash(older);
-  const std::string older_path = tmp.path + "/older.clusters";
+  const std::string older_path = tmp.file("older.clusters");
   REQUIRE(io::write_file(older_path, older) == io::Status::Ok);
   REQUIRE_MESSAGE(read_cluster_file_identity(older_path, source_hash, build_key, &error), error);
   CHECK(source_hash == 0);
@@ -475,11 +462,11 @@ TEST_CASE("cluster file: the source identity reads back without decoding the mes
   check_equal(without, expected);
 
   // A file that is not a container, and one that is not there, are failures with zeros left.
-  CHECK_FALSE(read_cluster_file_identity(tmp.path + "/missing.clusters", source_hash, build_key));
+  CHECK_FALSE(read_cluster_file_identity(tmp.file("missing.clusters"), source_hash, build_key));
   CHECK(source_hash == 0);
   std::string corrupt = file;
   corrupt[0] = 'X';
-  const std::string corrupt_path = tmp.path + "/corrupt.clusters";
+  const std::string corrupt_path = tmp.file("corrupt.clusters");
   REQUIRE(io::write_file(corrupt_path, corrupt) == io::Status::Ok);
   std::string message;
   CHECK_FALSE(read_cluster_file_identity(corrupt_path, source_hash, build_key, &message));
@@ -523,22 +510,22 @@ TEST_CASE("cluster file: the cache key answers to everything that went into the 
 }
 
 TEST_CASE("cluster file: the derived-data root is the directory above that holds AGENTS.md") {
-  TempDir tmp;
-  const std::string deep = tmp.path + "/build/msvc-debug/bin";
+  const test::TempDir tmp("engine_cluster_file");
+  const std::string deep = tmp.file("build/msvc-debug/bin");
   std::filesystem::create_directories(std::filesystem::path(deep));
   CHECK(find_ddc_root(deep).empty());  // nothing above it says this is a repository
 
-  REQUIRE(io::write_file(tmp.path + "/AGENTS.md", "# marker\n") == io::Status::Ok);
-  CHECK(find_ddc_root(deep) == tmp.path + "/ddc");
-  CHECK(find_ddc_root(tmp.path) == tmp.path + "/ddc");  // the root itself counts
+  REQUIRE(io::write_file(tmp.file("AGENTS.md"), "# marker\n") == io::Status::Ok);
+  CHECK(find_ddc_root(deep) == tmp.file("ddc"));
+  CHECK(find_ddc_root(tmp.path()) == tmp.file("ddc"));  // the root itself counts
 }
 
 TEST_CASE("cluster file: broken files fail with distinct messages and an empty result") {
-  TempDir tmp;
+  const test::TempDir tmp("engine_cluster_file");
   ClusterFileData data;
   Vector<u32> indices;
   make_fixture(data, indices);
-  const std::string path = tmp.path + "/broken.clusters";
+  const std::string path = tmp.file("broken.clusters");
   std::string error;
   REQUIRE_MESSAGE(write_cluster_file(path, data, &error), error);
   std::string good;
@@ -612,10 +599,10 @@ TEST_CASE("cluster file: broken files fail with distinct messages and an empty r
 }
 
 TEST_CASE("cluster file: a missing file and an unwritable directory report the reason") {
-  TempDir tmp;
+  const test::TempDir tmp("engine_cluster_file");
   ClusterFileData read;
   std::string error;
-  CHECK_FALSE(read_cluster_file(tmp.path + "/nothing.clusters", read, &error));
+  CHECK_FALSE(read_cluster_file(tmp.file("nothing.clusters"), read, &error));
   CHECK(error.find("cannot read") != std::string::npos);
   CHECK(read.mesh.mesh.clusters.empty());
 
@@ -623,6 +610,6 @@ TEST_CASE("cluster file: a missing file and an unwritable directory report the r
   Vector<u32> indices;
   make_fixture(data, indices);
   error.clear();
-  CHECK_FALSE(write_cluster_file(tmp.path + "/no/such/dir/out.clusters", data, &error));
+  CHECK_FALSE(write_cluster_file(tmp.file("no/such/dir/out.clusters"), data, &error));
   CHECK(error.find("cannot write") != std::string::npos);
 }

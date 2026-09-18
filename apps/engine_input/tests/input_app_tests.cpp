@@ -10,6 +10,7 @@
 #include <foundation/io/vfs.h>
 
 #include <doctest/doctest.h>
+#include <test_temp_dir.h>
 
 #include <filesystem>
 #include <string>
@@ -64,19 +65,6 @@ u64 number(const JsonValue& object, const char* key) {
   REQUIRE_MESSAGE(value->get_u64(out), key);
   return out;
 }
-
-struct TempDir {
-  std::string path;
-  explicit TempDir(const char* name) {
-    const auto p = std::filesystem::temp_directory_path() / name;
-    std::filesystem::remove_all(p);
-    std::filesystem::create_directories(p);
-    path = io::normalize_path(p.string());
-  }
-  ~TempDir() { std::filesystem::remove_all(std::filesystem::path(path)); }
-  TempDir(const TempDir&) = delete;
-  TempDir& operator=(const TempDir&) = delete;
-};
 
 }  // namespace
 
@@ -162,8 +150,8 @@ TEST_CASE("engine-input: devices prints one JSON line per device, or nothing at 
 }
 
 TEST_CASE("engine-input: a one-second probe ends with a summary line") {
-  const TempDir tmp("engine_input_app");
-  const std::string log_path = io::join_path(tmp.path, "probe.jsonl");
+  const test::TempDir tmp("engine_input_app");
+  const std::string log_path = io::join_path(tmp.path(), "probe.jsonl");
   const Run run = engine_input({"probe", "--seconds", "1", "--log", log_path});
   if (run.exit_code == 3) {
     MESSAGE("engine-input unavailable here (no display)");
@@ -206,8 +194,8 @@ TEST_CASE("engine-input: a one-second probe ends with a summary line") {
 // probe's stream as UTF-16 with a BOM, and the files that came back that way were unreadable to
 // every text tool that met them. So the probe opens the file itself, and this checks the bytes.
 TEST_CASE("engine-input: probe --events writes UTF-8 lines to a file of its own") {
-  const TempDir tmp("engine_input_app_events");
-  const std::string events_path = io::join_path(tmp.path, "probe.events.jsonl");
+  const test::TempDir tmp("engine_input_app_events");
+  const std::string events_path = io::join_path(tmp.path(), "probe.events.jsonl");
   const Run run = engine_input({"probe", "--seconds", "1", "--events", events_path});
   if (run.exit_code == 3) {
     MESSAGE("engine-input unavailable here (no display)");
@@ -242,13 +230,13 @@ TEST_CASE("engine-input: probe --events writes UTF-8 lines to a file of its own"
   CHECK(written.back() == printed[0]);
 
   // A file that cannot be opened is an error, and the probe says so before it waits a second.
-  const std::string nowhere = io::join_path(io::join_path(tmp.path, "missing"), "events.jsonl");
+  const std::string nowhere = io::join_path(io::join_path(tmp.path(), "missing"), "events.jsonl");
   CHECK(engine_input({"probe", "--seconds", "1", "--events", nowhere}).exit_code == 1);
 }
 
 TEST_CASE("engine-input: replay of a hand-written wheel log reports the expected counts") {
-  const TempDir tmp("engine_input_app_replay");
-  const std::string path = io::join_path(tmp.path, "wheel.jsonl");
+  const test::TempDir tmp("engine_input_app_replay");
+  const std::string path = io::join_path(tmp.path(), "wheel.jsonl");
 
   // A shifter gate held for two ticks and a wheel axis swung past the analog button threshold
   // and back: two presses and two releases, over four ticks, from two distinct signals.
@@ -288,7 +276,7 @@ TEST_CASE("engine-input: replay of a hand-written wheel log reports the expected
                                      tick == 1 && direction == input::k_hat_left ? 1.0f : 0.0f, 0});
     }
   }
-  const std::string hat_path = io::join_path(tmp.path, "hat.jsonl");
+  const std::string hat_path = io::join_path(tmp.path(), "hat.jsonl");
   REQUIRE(hat_log.save(hat_path) == io::Status::Ok);
   const Run hats = engine_input({"replay", hat_path});
   REQUIRE_MESSAGE(hats.exit_code == 0, hats.output);
@@ -302,5 +290,5 @@ TEST_CASE("engine-input: replay of a hand-written wheel log reports the expected
   CHECK(number(hat_summary, "releases") == 1);
 
   // A log that is not there is an error, not a usage problem.
-  CHECK(engine_input({"replay", io::join_path(tmp.path, "missing.jsonl")}).exit_code == 1);
+  CHECK(engine_input({"replay", io::join_path(tmp.path(), "missing.jsonl")}).exit_code == 1);
 }

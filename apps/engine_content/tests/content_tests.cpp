@@ -14,6 +14,7 @@
 #include <foundation/image/png.h>
 
 #include <doctest/doctest.h>
+#include <test_temp_dir.h>
 
 #include <algorithm>
 #include <cstring>
@@ -312,9 +313,8 @@ bool merged_source_indices(const std::string& mesh_path, Vector<u32>& out) {
 }  // namespace
 
 TEST_CASE("engine-content: build writes a cluster file that reads back and validates") {
-  const auto dir = std::filesystem::temp_directory_path() / "engine_content_tests";
-  std::filesystem::remove_all(dir);
-  std::filesystem::create_directories(dir);
+  const test::TempDir tmp("engine_content_tests");
+  const std::filesystem::path dir = tmp.native();
   const std::string mesh = slashes(dir / "cube.glb");
   const std::string out = slashes(dir / "cube.clusters");
   REQUIRE(write_cube_glb(mesh));
@@ -446,17 +446,21 @@ TEST_CASE("engine-content: build writes a cluster file that reads back and valid
   REQUIRE_MESSAGE(tight.exit_code == 0, tight.output);
   CHECK(number(tight.result, "leaf_clusters") >= 4);  // twelve triangles, four per cluster
 
+  // The built container stays behind for a look after the run. The destination is deliberately
+  // one fixed name — "the last one built" is the whole point of it — so it is the one path here
+  // two runs may still meet on, and the copy is therefore best-effort: a copy that cannot be
+  // made says so and nothing else. Nothing reads it, so nothing may fail over it.
+  std::error_code kept;
   std::filesystem::copy_file(
       dir / "cube.clusters",
       std::filesystem::temp_directory_path() / "engine_content_cube.clusters",
-      std::filesystem::copy_options::overwrite_existing);
-  std::filesystem::remove_all(dir);
+      std::filesystem::copy_options::overwrite_existing, kept);
+  if (kept) MESSAGE("the container copy was not kept: " << kept.message());
 }
 
 TEST_CASE("engine-content: --cache writes the container the source's hash addresses") {
-  const auto dir = std::filesystem::temp_directory_path() / "engine_content_cache_tests";
-  std::filesystem::remove_all(dir);
-  std::filesystem::create_directories(dir);
+  const test::TempDir tmp("engine_content_cache_tests");
+  const std::filesystem::path dir = tmp.native();
   const std::string mesh = slashes(dir / "cube.glb");
   const std::string ddc = slashes(dir / "ddc");
   REQUIRE(write_cube_glb(mesh));
@@ -504,14 +508,11 @@ TEST_CASE("engine-content: --cache writes the container the source's hash addres
   CHECK(content({"build", mesh, slashes(dir / "out.clusters"), "--cache", "--ddc", ddc}, true)
             .exit_code == 2);
   CHECK(content({"build", mesh, "--ddc", ddc}, true).exit_code == 2);
-
-  std::filesystem::remove_all(dir);
 }
 
 TEST_CASE("engine-content: the same mesh builds the same bytes whatever --jobs says") {
-  const auto dir = std::filesystem::temp_directory_path() / "engine_content_jobs_tests";
-  std::filesystem::remove_all(dir);
-  std::filesystem::create_directories(dir);
+  const test::TempDir tmp("engine_content_jobs_tests");
+  const std::filesystem::path dir = tmp.native();
   // Six primitives, so six per-primitive DAG builds race and the merge has an order to get
   // wrong; it must merge by primitive index, never by which job finished first.
   const std::string mesh = slashes(dir / "cube6.glb");
@@ -548,14 +549,11 @@ TEST_CASE("engine-content: the same mesh builds the same bytes whatever --jobs s
   REQUIRE_MESSAGE(all_eight.exit_code == 0, all_eight.output);
   CHECK(file_bytes(slashes(dir / "a.clusters")) == a);
   CHECK(file_bytes(slashes(dir / "b.clusters")) == a);
-
-  std::filesystem::remove_all(dir);
 }
 
 TEST_CASE("engine-content: build-all builds a manifest once and skips what is up to date") {
-  const auto dir = std::filesystem::temp_directory_path() / "engine_content_manifest_tests";
-  std::filesystem::remove_all(dir);
-  std::filesystem::create_directories(dir);
+  const test::TempDir tmp("engine_content_manifest_tests");
+  const std::filesystem::path dir = tmp.native();
   const std::string first = slashes(dir / "first.glb");
   const std::string second = slashes(dir / "second.glb");
   REQUIRE(write_cube_glb(first));
@@ -644,14 +642,11 @@ TEST_CASE("engine-content: build-all builds a manifest once and skips what is up
   const Run cache_hit = content({"build-all", cached_manifest, "--cache", "--ddc", ddc});
   REQUIRE_MESSAGE(cache_hit.exit_code == 0, cache_hit.output);
   CHECK(number(cache_hit.lines[2], "skipped") == 2);
-
-  std::filesystem::remove_all(dir);
 }
 
 TEST_CASE("engine-content: the validation rules refuse a broken mesh and warn about a soft one") {
-  const auto dir = std::filesystem::temp_directory_path() / "engine_content_validation_tests";
-  std::filesystem::remove_all(dir);
-  std::filesystem::create_directories(dir);
+  const test::TempDir tmp("engine_content_validation_tests");
+  const std::filesystem::path dir = tmp.native();
   const std::string out = slashes(dir / "out.clusters");
 
   // A position that is not finite stops the build, and the diagnostic names the primitive.
@@ -695,14 +690,11 @@ TEST_CASE("engine-content: the validation rules refuse a broken mesh and warn ab
   REQUIRE(write_text(not_json, "{\"nope\":1}"));
   CHECK(content({"build-all", not_json}, true).exit_code == 1);
   CHECK(content({"build-all", slashes(dir / "absent.json")}, true).exit_code == 1);
-
-  std::filesystem::remove_all(dir);
 }
 
 TEST_CASE("engine-content: stats reports the metrics of a container") {
-  const auto dir = std::filesystem::temp_directory_path() / "engine_content_stats_tests";
-  std::filesystem::remove_all(dir);
-  std::filesystem::create_directories(dir);
+  const test::TempDir tmp("engine_content_stats_tests");
+  const std::filesystem::path dir = tmp.native();
   const std::string mesh = slashes(dir / "cube.glb");
   const std::string out = slashes(dir / "cube.clusters");
   REQUIRE(write_cube_glb(mesh));
@@ -848,14 +840,11 @@ TEST_CASE("engine-content: stats reports the metrics of a container") {
   CHECK(content({"stats", mesh}, true).exit_code == 1);  // a GLB is not a container
   CHECK(content({"stats"}, true).exit_code == 2);
   CHECK(content({"stats", out, "--extra"}, true).exit_code == 2);
-
-  std::filesystem::remove_all(dir);
 }
 
 TEST_CASE("engine-content: failures and usage errors have their own exit codes") {
-  const auto dir = std::filesystem::temp_directory_path() / "engine_content_error_tests";
-  std::filesystem::remove_all(dir);
-  std::filesystem::create_directories(dir);
+  const test::TempDir tmp("engine_content_error_tests");
+  const std::filesystem::path dir = tmp.native();
   const std::string out = slashes(dir / "out.clusters");
 
   const Run missing = content({"build", slashes(dir / "missing.glb"), out}, true);
@@ -893,6 +882,4 @@ TEST_CASE("engine-content: failures and usage errors have their own exit codes")
   CHECK(content({"info"}, true).exit_code == 2);
   CHECK(content({"info", out, "--extra"}, true).exit_code == 2);
   CHECK(content({"--help"}).exit_code == 0);
-
-  std::filesystem::remove_all(dir);
 }
