@@ -2,6 +2,7 @@
 
 - **Question (docs/plan/10-roadmap-risks.md §10.4):** where is the crossover between hardware and software rasterization for small clusters on the target GPUs, and does software rasterization belong in Phase 1?
 - **Date:** 2026-09-16. **GPU:** NVIDIA GeForce RTX 5090, driver 610.88, Vulkan 1.4.341, Windows 11.
+- **Machine state (added 2026-09-18):** not recorded at the time; the machine is shared with GPU diffusion workloads and parallel agent builds, and the harness did not yet know how to look ([bench](../subsystems/bench.md#measuring-on-a-shared-machine)). Every number here is therefore an **upper bound**. What saves the experiment is that it is a *ratio* — hardware against software rasterization, both measured in the same run against the same LOD cut — and a contended GPU taxes both paths. The caveat below about the desktop compositor sharing the GPU was the part of this that was noticed at the time; the rest of the machine's load was not. Nothing was re-measured, because [ADR-0024](../adr/0024-hardware-rasterization-first.md) rests on the ratios and they are consistent across sixteen rows. Re-run with `--require-quiet` before quoting any absolute millisecond from this page.
 - **Decision:** [ADR-0024](../adr/0024-hardware-rasterization-first.md). Hardware rasterization for every cluster in Phase 1; the software rasterizer stays in the tree as an experimental path.
 
 ## Setup

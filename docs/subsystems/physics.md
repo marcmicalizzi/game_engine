@@ -447,27 +447,44 @@ an i9-10980XE (18 cores), `RelWithDebInfo`, cross-platform determinism on, SSE4.
 machine settles layout and traversal decisions, not cross-machine defaults
 ([11 §11.8](../plan/11-performance-principles.md)):
 
+**Machine state:** the rigid-body and single-cage rows were re-taken on 2026-09-18 with
+`--require-quiet`, twice, on a machine that started and ended both runs below 10% others' CPU
+([bench](bench.md#measuring-on-a-shared-machine)). The eight-cage row is the original and was
+measured before the harness recorded anything.
+
 | benchmark | 1 worker | 4 workers | 8 workers |
 |---|---|---|---|
-| 1,000 boxes | 2,403 | 1,083 | 736 |
-| 1,000 boxes, no job system | 2,426 | — | — |
-| 512-particle soft cube, 4 iterations | 878 | 596 | 638 |
-| 512-particle soft cube, 8 iterations | 965 | 1,163 | 1,232 |
-| 512-particle soft cube, 16 iterations | 1,889 | 2,281 | 2,393 |
+| 1,000 boxes | 2,367 | 1,070 | 750 |
+| 1,000 boxes, no job system | 2,409 | — | — |
+| 512-particle soft cube, 4 iterations | 489 | 598 | 641 |
+| 512-particle soft cube, 8 iterations | 945 | 1,156 | 1,226 |
+| 512-particle soft cube, 16 iterations | 1,857 | 2,277 | 2,401 |
 | **8** × 512-particle soft cube, 8 iterations | 7,475 | 2,236 | **1,159** |
+
+Every row here but one is within 2% of the figure first recorded on this page, which is the
+answer to "were those numbers taken on a loaded machine?" for the rigid-body path and for eight
+of the nine cage variants: no, or at least not enough to matter. **The exception is the one-worker,
+four-iteration cage, which was recorded as 878 µs and measures 489** — two quiet runs three
+minutes apart agreeing to 0.6%, against eight neighbouring cells that reproduce. A single
+outlying cell in an otherwise reproducing table is what a measurement taken beside somebody
+else's work looks like, and it is the cell that carried the only apparent *speedup* the
+single-cage rows had.
 
 Microseconds per step. The box benchmark measures a *settled* pile with sleeping switched off: a
 pile that is allowed to sleep costs nothing after a second and would make the number a measure of
-the sleep heuristic. Scaling from one to eight workers is 3.3x, which is what a contact solver
+the sleep heuristic. Scaling from one to eight workers is 3.2x, which is what a contact solver
 that has to sort its islands for determinism looks like — the 1-worker and no-job-system numbers
 being equal says the adapter itself, and the drain it does at the end of every step, cost nothing
 measurable.
 
 **The soft-body rows are the interesting ones, and they go the wrong way.** One cage is *slower*
-on eight workers than on one at eight and sixteen iterations, because a 512-particle cage is a
-two-wide solve (above) and the other six solve jobs spin rather than help. Eight cages are
+on eight workers than on one **at every iteration count** — 489 → 641, 945 → 1,226, 1,857 → 2,401
+— because a 512-particle cage is a two-wide solve (above) and the other six solve jobs spin
+rather than help. (Until the 2026-09-18 re-measurement the four-iteration row appeared to gain
+from workers; it was the one cell that did not reproduce, and the corrected number makes the
+conclusion uniform rather than qualified.) Eight cages are
 **6.45× faster** on eight workers than on one, and eight of them together cost **less than one of
-them does** on the same pool — 145 µs a cage against 1,232. So the way to spend a pool on
+them does** on the same pool — 145 µs a cage against 1,226. So the way to spend a pool on
 deformables is *more cages*, not *bigger* ones, and a deformation system has to step its volumes
 in one world for the backend to be able to interleave them at all.
 

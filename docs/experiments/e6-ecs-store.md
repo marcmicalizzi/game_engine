@@ -2,6 +2,7 @@
 
 - **Question ([docs/plan/10-roadmap-risks.md §10.5](../plan/10-roadmap-risks.md#105-experiments-to-run-before-committing)):** does flecs hold 10^5 entities with relationships and a hierarchy inside a tick budget, and does SQLite hold 10^6 LOD3 projection records at the tick time, memory, and query latency the plan assumes? Together they decide the ECS choice and the shape of the persistent store ([03 §3.4](../plan/03-data-model.md#34-the-runtime-world), [03 §3.5](../plan/03-data-model.md#35-persistent-world-state)).
 - **Date:** 2026-09-17. **Machine:** Intel Core i9-10980XE, 18 cores / 36 threads, one package, one NUMA node, one cache domain, 25 MB LLC, Windows 11, NVMe. **Build:** `msvc-release` (RelWithDebInfo). **Versions:** flecs 4.1.6, SQLite 3.53.4.
+- **Machine state (added 2026-09-18):** not recorded at the time; the machine is shared with GPU diffusion workloads and parallel agent builds, and the harness did not yet know how to look ([bench](../subsystems/bench.md#measuring-on-a-shared-machine)). Everything below the horizontal rule is the original run. The headline CPU numbers were re-taken on 2026-09-18 on a verified-quiet machine and the results are in "[Re-measured on a quiet machine](#re-measured-on-a-quiet-machine-2026-09-18)" at the end of this page — **the store numbers came back 7–11% faster and the ECS worker-scaling table did not reproduce at all**, which is the single clearest argument for the rule that produced it.
 - **Decision:** drafted as [ADR-0028](../adr/0028-ecs-and-persistent-store.md), status **Proposed**. The owner decides.
 
 ## Method
@@ -158,3 +159,40 @@ Each prints the CPU topology, the build, and the scene or corpus parameters as `
 - `propagate`'s cost is by subtraction from the tick rather than measured directly, because a cascade query is only meaningful inside the pipeline that orders it.
 - flecs 4.1.6 and SQLite 3.53.4. Both move; the pins are in `cmake/EngineEcs.cmake` and `cmake/EngineStore.cmake`.
 - The `ecs.query.faction_radius.cell_relationship` figure uses cached queries built once. Uncached, the same query took 328 µs — 790× slower — because an uncached query re-matches every table on every iteration. That is a flecs API footgun worth knowing: `query_builder<...>().build()` is uncached, a system's query is cached.
+- "Nothing else was running" (above) was an assumption, not a measurement. See the next section.
+
+---
+
+## Re-measured on a quiet machine (2026-09-18)
+
+The harness now records what else the machine is doing and can refuse to measure a busy one ([bench](../subsystems/bench.md#measuring-on-a-shared-machine)). The headline CPU numbers of this experiment were re-taken with it on the same box, same build preset, same flecs and SQLite pins, with nothing in `domain/ecs`, `foundation/store` or `core/jobs` changed since — except one line, noted below. Two runs each: the first with `--wait-quiet=7200`, the second with `--require-quiet` and a retry until a run started *and* ended under 10% others' CPU with no WARNING.
+
+**The store reads came back 7–11% faster**, and reproduce:
+
+| Read | 2026-09-17 (state unrecorded) | quiet run A | quiet run B |
+|---|---|---|---|
+| Point lookup, 2 MiB page cache | 34.9 µs | 31.85 µs | 31.68 µs |
+| Point lookup, 64 MiB | 22.0 µs | 20.13 µs | 19.62 µs |
+| Range by tile, 2 MiB | 442 µs | *discarded* | 410.55 µs |
+| Range by tile, 64 MiB | 317 µs | *discarded* | 292.66 µs |
+
+The discarded pair is worth keeping in the record: that run began at 3.2% others' CPU and **ended at 86.3%** because somebody's parallel build started inside it, and it reported 948 µs and 584 µs — 2.3× and 2.0× the accepted figures, and 2.1× and 1.8× the ones this page recorded in September. The WARNING is the only reason anyone would have known.
+
+**The ECS worker-scaling table did not reproduce at all.** Microseconds per tick, 100,000 entities, four systems:
+
+| Workers | 2026-09-17 (state unrecorded) | quiet run A | quiet run B |
+|---|---|---|---|
+| 1 | 2,790 | 2,435 | 2,459 |
+| 2 | 2,550 | 3,525 | 3,656 |
+| 4 | **1,625** | 2,965 | 3,122 |
+| 8 | 1,737 | 2,899 | 2,801 |
+| 16 | 2,377 | 3,703 | 3,546 |
+
+Single-threaded is **12% faster** than recorded, in line with the store's direction. Every multi-worker figure is **1.6× to 1.9× slower**, and the two quiet runs agree with each other to within 5% at every worker count. On these numbers the tick has no parallel speedup at all: one worker is the fastest configuration, and "1.72× at four workers" — the figure the "what surprised me" section is built on and the one [ADR-0028](../adr/0028-ecs-and-persistent-store.md) records — is not reproducible today.
+
+**This is not attributable to background load**, and that is the point of saying so with a record rather than a shrug: a quiet machine made the *serial* number better and the *parallel* numbers much worse, which is not the shape of contention. Two candidates, neither confirmed here because `domain/ecs` is not this change's to edit:
+
+1. Commit `8abcf43` (2026-09-17, after this experiment was written) changed `lod_assign`, the most expensive system in the tick, to bind `it.world()` to a named `flecs::world` before reading the observer singleton, to satisfy GCC 13's `-Wdangling-reference`. `lod_assign` is the one `multi_threaded()` system, so a per-invocation cost there is paid once per worker per tick, and the regression's shape — worse with more workers, unchanged or better with one — matches that exactly.
+2. The benchmark caches one `Scene` per worker count and the scenes stay alive, so measuring the four-worker scene happens with the one- and two-worker job systems' threads still resident. That was equally true on 2026-09-17, so it does not explain a *change*, but it makes the multi-worker rows sensitive to anything that changed how those pools idle.
+
+Either way the useful conclusion is unchanged and is the one the write-up already drew: **the number that matters is that four cheap systems over 100,000 entities fit in a 16.6 ms frame**, and the parallel speedup was never the reason to choose flecs. What has to happen before anyone budgets on worker counts is the bisect this section could not run; it is filed as a follow-up.

@@ -107,22 +107,26 @@ The size table pins `TimingWheel::Slot` at 56 bytes and eighteen other types; at
 
 ## Performance notes
 
-Measured with `tools/dev.ps1 bench -Preset msvc-release -Filter sim.*` on an i9-10980XE, release, otherwise idle.
+Measured with `tools/dev.ps1 bench -Preset msvc-release -Filter sim.*` on an i9-10980XE, release.
+
+**Machine state:** the wheel and tier rows were re-taken on 2026-09-18 with `--require-quiet` and repeated ([bench](bench.md#measuring-on-a-shared-machine)) — two runs, both starting and ending below 10% others' CPU, agreeing within 1%. The `sim.scheduler.tick` row is the original and was measured before the harness recorded anything; "otherwise idle" is what this page used to claim for all of them, and on this box that claim was never checked.
 
 | Benchmark | Per operation | What it covers |
 |---|---|---|
-| `sim.wheel.insert` | **68 ns** | 10^6 timers spread over 30 game days into an empty wheel |
-| `sim.wheel.cancel` | **32 ns** | cancelling every second one of those 10^6 |
-| `sim.wheel.advance` | **662 ns** | advancing 30 game days, delivering the surviving 5×10^5 |
-| `sim.wheel.tick` | **106 ns** | one fixed step with 10^6 timers resident and nothing due |
-| `sim.tiers.assign` | **23.0 ns** (no job system) → **6.1 ns** (8 workers) | 10^5 entities, three observers |
+| `sim.wheel.insert` | **67 ns** | 10^6 timers spread over 30 game days into an empty wheel |
+| `sim.wheel.cancel` | **31 ns** | cancelling every second one of those 10^6 |
+| `sim.wheel.advance` | **645 ns** | advancing 30 game days, delivering the surviving 5×10^5 |
+| `sim.wheel.tick` | **105 ns** | one fixed step with 10^6 timers resident and nothing due |
+| `sim.tiers.assign` | **24.8 ns** (no job system) → **6.8 ns** (8 workers) | 10^5 entities, three observers |
 | `sim.scheduler.tick` | **0.97 µs** (no job system) | 16 systems × 4 batches, empty bodies |
+
+The wheel rows moved by under 3% from the figures first recorded here (68 / 32 / 662 / 106 ns), which is what an O(1) bucket operation should look like from one day to the next. **The tier rows moved by 8% and 12% the wrong way** (23.0 → 24.8 and 6.1 → 6.8), with both quiet runs agreeing to within 1% of each other, so it is not noise in *this* measurement. The ratio between them is unchanged, which is the useful part and which is what the discussion below rests on; the absolute pair is the reminder that a number recorded without the machine's state beside it cannot be compared against a number recorded with it. Nothing in `domain/sim` changed in between.
 
 Three things the numbers say:
 
 1. **Insert and cancel cost what an O(1) bucket operation should**, and the dominant term is not the list surgery but the integer divisions that map a due time to a level index. Computing all six indices by successive division from level 0 — rather than dividing the due time by each level's resolution and by each level's block size separately — plus caching the wheel's own indices took insert from 176 ns to 68 ns, a 2.6× improvement with no change in behaviour. The next step, if it is ever needed, is a reciprocal-multiply table for the five divisors.
 2. **`advance` is dominated by cascading, not by delivery.** With 5×10^5 timers spread over 30 days, every timer falls from level 4 to level 0 through four cascades, so 5×10^5 deliveries do about 2×10^6 re-links, each one a random access into 56 MB of slab. 662 ns per delivered event is therefore a worst case for a wheel that is being drained from empty; the operating point [05 §5.6](../plan/05-simulation.md#56-what-npc-scale-is-realistic) actually projects — 10^6 LOD3 NPCs at about 3.5k events a second — is 2.3 ms of CPU per wall-clock second, and `sim.wheel.tick` shows that holding those 10^6 timers costs 106 ns of a 16.7 ms tick when none of them is due. If the cascade ever shows up in a profile, the fix is to make a bucket a contiguous array of slot indices with the slot carrying its position, which trades the intrusive list's second random write for one.
-3. **Tier assignment scales 3.7× from no job system to eight workers**, not 8×, because scoring is only part of it: the candidate selection, the two sorts and the write-back are serial. Keeping the serial part to a compare-and-append is what makes even 3.7× possible — both hysteresis bands come out of one walk of the boundary table inside the scoring pass, and moving that work the other way (two separate band lookups in the serial pass) measured 2.6× *slower* overall, which is the sharpest evidence available that the serial tail is what governs here. 0.61 ms for 10^5 entities is comfortably under the 1.6 ms [ADR-0028](../adr/0028-ecs-and-persistent-store.md) records for E6's single-threaded LOD pass, but the ADR's point stands: at that population LOD assignment is a budget item, not a rounding error, and the rate limits exist partly so it does not have to act on everything every tick.
+3. **Tier assignment scales 3.6× from no job system to eight workers**, not 8×, because scoring is only part of it: the candidate selection, the two sorts and the write-back are serial. Keeping the serial part to a compare-and-append is what makes even 3.6× possible — both hysteresis bands come out of one walk of the boundary table inside the scoring pass, and moving that work the other way (two separate band lookups in the serial pass) measured 2.6× *slower* overall, which is the sharpest evidence available that the serial tail is what governs here. 0.68 ms for 10^5 entities is comfortably under the 1.6 ms [ADR-0028](../adr/0028-ecs-and-persistent-store.md) records for E6's single-threaded LOD pass, but the ADR's point stands: at that population LOD assignment is a budget item, not a rounding error, and the rate limits exist partly so it does not have to act on everything every tick.
 
 `sim.scheduler.tick` with a job system costs 10–12 µs against 0.97 µs without one, for 64 empty invocations: that is the job submission and counter wait, about 160 ns an invocation, and it is the floor a system's body has to be worth crossing. Systems with real work are the only ones that should declare more than one batch, and a phase of cheap systems is better left to the no-job path.
 

@@ -88,6 +88,8 @@ Module layout: `include/<module>/` holds public headers only, `src/` the impleme
 
 Read `docs/plan/11-performance-principles.md` before touching a hot path. In short: data layout and footprint first; iterate in memory order; no data-dependent branches inside inner loops (template on data-selected configuration, hoist hardware-selected parameters); pinned cache-domain thread pools; no hidden limits; measure before and after with the numbers in the change description.
 
+**A measurement states the machine's state, or comes from a quiet run.** This box is shared with GPU jobs and with several agents building at once, so a number taken beside them is an upper bound and not a cost: measure with `--require-quiet` or `--wait-quiet`, and quote the `machine_state` the harness recorded whenever you could not. See `docs/subsystems/bench.md` ("Measuring on a shared machine") and `docs/experiments/README.md`.
+
 Read `docs/plan/12-ai-usage-policy.md` before touching anything that involves a model at development or run time. In short: agent outputs are content and code, never training data; runtime models are unmodified third-party open weights; describe caching as caching.
 
 ## Conventions
