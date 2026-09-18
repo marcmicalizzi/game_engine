@@ -3,34 +3,25 @@
 #include <foundation/io/vfs.h>
 
 #include <doctest/doctest.h>
+#include <test_temp_dir.h>
 
 #include <cmath>
 #include <cstdint>
 #include <cstring>
-#include <filesystem>
 #include <string>
 #include <vector>
 
 using namespace engine;
 using namespace engine::assets;
 
+// One unguessable scratch directory per object, so a second copy of this binary cannot delete
+// the .gltf and .bin this one just wrote (tests/support/test_temp_dir.h).
+using TempDir = test::TempDir;
+
 namespace {
 
 // The fixtures are written here rather than committed: a binary in the tree is something no one
 // can review, and the numbers below are the test's expectations as much as its input.
-
-struct TempDir {
-  std::string path;
-  explicit TempDir(const char* name) {
-    const auto p = std::filesystem::temp_directory_path() / name;
-    std::filesystem::remove_all(p);
-    std::filesystem::create_directories(p);
-    path = io::normalize_path(p.string());
-  }
-  ~TempDir() { std::filesystem::remove_all(std::filesystem::path(path)); }
-  TempDir(const TempDir&) = delete;
-  TempDir& operator=(const TempDir&) = delete;
-};
 
 // A unit cube: six faces of four vertices, 36 indices, per-face normals, per-face UVs in [0, 1].
 struct Cube {
@@ -333,13 +324,13 @@ TEST_CASE("gltf: a .gltf with an external buffer merges its primitives in world 
   const TempDir tmp("engine_assets_gltf");
   const Cube cube = make_cube();
   const std::vector<std::uint8_t> binary = cube_buffer(cube);
-  REQUIRE(io::write_file(io::join_path(tmp.path, "cube.bin"), view_of(binary)) == io::Status::Ok);
-  REQUIRE(io::write_file(io::join_path(tmp.path, "cube.gltf"), cube_json("cube.bin")) ==
+  REQUIRE(io::write_file(io::join_path(tmp.path(), "cube.bin"), view_of(binary)) == io::Status::Ok);
+  REQUIRE(io::write_file(io::join_path(tmp.path(), "cube.gltf"), cube_json("cube.bin")) ==
           io::Status::Ok);
 
   MeshData mesh;
   std::string error;
-  REQUIRE_MESSAGE(load_gltf(io::join_path(tmp.path, "cube.gltf"), mesh, &error), error);
+  REQUIRE_MESSAGE(load_gltf(io::join_path(tmp.path(), "cube.gltf"), mesh, &error), error);
   CHECK(error.empty());
   check_cube_mesh(mesh, cube);
   check_cube_materials(mesh);
@@ -349,8 +340,8 @@ TEST_CASE("gltf: the source hash answers to the glTF and to the buffers it names
   const TempDir tmp("engine_assets_gltf_hash");
   const Cube cube = make_cube();
   const std::vector<std::uint8_t> binary = cube_buffer(cube);
-  const std::string gltf = io::join_path(tmp.path, "cube.gltf");
-  const std::string bin = io::join_path(tmp.path, "cube.bin");
+  const std::string gltf = io::join_path(tmp.path(), "cube.gltf");
+  const std::string bin = io::join_path(tmp.path(), "cube.bin");
   REQUIRE(io::write_file(bin, view_of(binary)) == io::Status::Ok);
   REQUIRE(io::write_file(gltf, cube_json("cube.bin")) == io::Status::Ok);
 
@@ -385,7 +376,7 @@ TEST_CASE("gltf: the source hash answers to the glTF and to the buffers it names
 
   // A .glb carries its buffer inside, so its own bytes are the whole of it.
   const std::vector<std::uint8_t> glb = make_glb(cube_json(""), cube_buffer(cube));
-  const std::string glb_path = io::join_path(tmp.path, "cube.glb");
+  const std::string glb_path = io::join_path(tmp.path(), "cube.glb");
   REQUIRE(io::write_file(glb_path, view_of(glb)) == io::Status::Ok);
   u64 glb_hash = 0;
   REQUIRE_MESSAGE(source_mesh_hash(glb_path, glb_hash, &error), error);
@@ -394,10 +385,10 @@ TEST_CASE("gltf: the source hash answers to the glTF and to the buffers it names
 
   // A file that is not there, and one that is not a glTF, say so.
   u64 ignored = 0;
-  CHECK_FALSE(source_mesh_hash(io::join_path(tmp.path, "nothing.gltf"), ignored, &error));
+  CHECK_FALSE(source_mesh_hash(io::join_path(tmp.path(), "nothing.gltf"), ignored, &error));
   CHECK(error.find("cannot read") != std::string::npos);
   CHECK(ignored == 0);
-  const std::string junk = io::join_path(tmp.path, "junk.gltf");
+  const std::string junk = io::join_path(tmp.path(), "junk.gltf");
   REQUIRE(io::write_file(junk, "not a glTF document") == io::Status::Ok);
   CHECK_FALSE(source_mesh_hash(junk, ignored, &error));
   CHECK(ignored == 0);
@@ -490,12 +481,12 @@ TEST_CASE("gltf: bad input fails with an error instead of a partial mesh") {
   std::string error;
 
   SUBCASE("a file that is not there") {
-    CHECK_FALSE(load_gltf(io::join_path(tmp.path, "missing.gltf"), mesh, &error));
+    CHECK_FALSE(load_gltf(io::join_path(tmp.path(), "missing.gltf"), mesh, &error));
     CHECK_FALSE(error.empty());
   }
 
   SUBCASE("corrupt JSON") {
-    const std::string path = io::join_path(tmp.path, "broken.gltf");
+    const std::string path = io::join_path(tmp.path(), "broken.gltf");
     REQUIRE(io::write_file(path, "{\"asset\": {\"version\": \"2.0\"} \"scenes\": [") ==
             io::Status::Ok);
     CHECK_FALSE(load_gltf(path, mesh, &error));
@@ -511,7 +502,7 @@ TEST_CASE("gltf: bad input fails with an error instead of a partial mesh") {
   }
 
   SUBCASE("an external buffer that is missing") {
-    const std::string path = io::join_path(tmp.path, "orphan.gltf");
+    const std::string path = io::join_path(tmp.path(), "orphan.gltf");
     REQUIRE(io::write_file(path, cube_json("nowhere.bin")) == io::Status::Ok);
     CHECK_FALSE(load_gltf(path, mesh, &error));
     CHECK_FALSE(error.empty());

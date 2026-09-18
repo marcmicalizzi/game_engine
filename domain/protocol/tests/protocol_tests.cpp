@@ -5,25 +5,18 @@
 #include <foundation/tunables/tunables.h>
 
 #include <doctest/doctest.h>
+#include <test_temp_dir.h>
 
-#include <filesystem>
 #include <string>
 
 using namespace engine;
 using namespace engine::protocol;
 
-namespace {
+// One unguessable scratch directory per object, so a second copy of this binary cannot delete
+// this one's session documents (tests/support/test_temp_dir.h).
+using TempDir = test::TempDir;
 
-struct TempDir {
-  std::string path;
-  TempDir() {
-    const auto p = std::filesystem::temp_directory_path() / "engine_protocol_tests";
-    std::filesystem::remove_all(p);
-    std::filesystem::create_directories(p);
-    path = io::normalize_path(p.string());
-  }
-  ~TempDir() { std::filesystem::remove_all(std::filesystem::path(path)); }
-};
+namespace {
 
 struct Host {
   io::Vfs vfs;
@@ -207,8 +200,8 @@ TEST_CASE("protocol: typed params report diagnostics") {
 }
 
 TEST_CASE("protocol: the Phase 0 exit criterion over the dispatcher") {
-  TempDir tmp;
-  const std::string dir = tmp.path + "/world";
+  TempDir tmp("engine_protocol");
+  const std::string dir = tmp.file("world");
   const Id128 a = Id128::from_parts(0x10, 1);
   const Id128 b = Id128::from_parts(0x10, 2);
   const char* k_type = "engine.content.AssetProvenance";
@@ -379,8 +372,8 @@ TEST_CASE("protocol: the Phase 0 exit criterion over the dispatcher") {
 }
 
 TEST_CASE("protocol: doc.add_layer with edit=false leaves the edit layer alone, on disk too") {
-  TempDir tmp;
-  const std::string dir = tmp.path + "/layered-world";
+  TempDir tmp("engine_protocol");
+  const std::string dir = tmp.file("layered-world");
   const Id128 a = Id128::from_parts(0x30, 1);
   const Id128 b = Id128::from_parts(0x30, 2);
   const char* k_type = "engine.content.AssetProvenance";
@@ -435,8 +428,8 @@ TEST_CASE("protocol: doc.add_layer with edit=false leaves the edit layer alone, 
 }
 
 TEST_CASE("protocol: doc.merge writes a three-way merge into a layer, undoably") {
-  TempDir tmp;
-  const std::string dir = tmp.path + "/merged-world";
+  TempDir tmp("engine_protocol");
+  const std::string dir = tmp.file("merged-world");
   const Id128 a = Id128::from_parts(0x20, 1);
   const Id128 b = Id128::from_parts(0x20, 2);
   const char* k_type = "engine.content.AssetProvenance";

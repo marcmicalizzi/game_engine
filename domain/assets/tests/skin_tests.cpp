@@ -12,28 +12,19 @@
 #include <foundation/io/vfs.h>
 
 #include <doctest/doctest.h>
+#include <test_temp_dir.h>
 
 #include <cmath>
-#include <filesystem>
 #include <string>
 
 using namespace engine;
 using namespace engine::assets;
 
-namespace {
+// One unguessable scratch directory per object, so a second copy of this binary cannot delete
+// the .glb this one just wrote (tests/support/test_temp_dir.h).
+using TempDir = test::TempDir;
 
-struct TempDir {
-  std::string path;
-  explicit TempDir(const char* name) {
-    const auto p = std::filesystem::temp_directory_path() / name;
-    std::filesystem::remove_all(p);
-    std::filesystem::create_directories(p);
-    path = io::normalize_path(p.string());
-  }
-  ~TempDir() { std::filesystem::remove_all(std::filesystem::path(path)); }
-  TempDir(const TempDir&) = delete;
-  TempDir& operator=(const TempDir&) = delete;
-};
+namespace {
 
 i32 node_named(const MeshData& mesh, const char* name) {
   for (u32 i = 0; i < mesh.nodes.size(); ++i) {
@@ -46,7 +37,7 @@ i32 node_named(const MeshData& mesh, const char* name) {
 
 TEST_CASE("gltf skins: a skinned primitive stays in bind space with its node transform recorded") {
   TempDir tmp("engine_assets_skin_tests");
-  const std::string path = tmp.path + "/bar.glb";
+  const std::string path = tmp.file("bar.glb");
   REQUIRE(test_fixture::write_skinned_glb(path));
 
   MeshData mesh;
@@ -142,7 +133,7 @@ TEST_CASE("gltf skins: both joint and weight component forms give the same bindi
   TempDir tmp("engine_assets_skin_components");
   MeshData reference;
   std::string error;
-  const std::string plain = tmp.path + "/plain.glb";
+  const std::string plain = tmp.file("plain.glb");
   REQUIRE(test_fixture::write_skinned_glb(plain));
   REQUIRE_MESSAGE(load_gltf(plain, reference, &error), error);
 
@@ -151,7 +142,7 @@ TEST_CASE("gltf skins: both joint and weight component forms give the same bindi
   test_fixture::SkinnedGlbOptions packed;
   packed.joints_u16 = true;
   packed.weights_u8 = true;
-  const std::string path = tmp.path + "/packed.glb";
+  const std::string path = tmp.file("packed.glb");
   REQUIRE(test_fixture::write_skinned_glb(path, packed));
   MeshData mesh;
   REQUIRE_MESSAGE(load_gltf(path, mesh, &error), error);
@@ -166,7 +157,7 @@ TEST_CASE("gltf skins: both joint and weight component forms give the same bindi
 
 TEST_CASE("gltf animations: three sampler modes and three paths come through as written") {
   TempDir tmp("engine_assets_animation_tests");
-  const std::string path = tmp.path + "/bar.glb";
+  const std::string path = tmp.file("bar.glb");
   REQUIRE(test_fixture::write_skinned_glb(path));
   MeshData mesh;
   std::string error;
@@ -222,7 +213,7 @@ TEST_CASE("gltf skins: a broken skin fails with a sentence rather than a wrong l
   // and the mesh would look right until it moved, so the load fails instead.
   test_fixture::SkinnedGlbOptions bad_joint;
   bad_joint.joint_out_of_range = true;
-  const std::string bad_path = tmp.path + "/bad_joint.glb";
+  const std::string bad_path = tmp.file("bad_joint.glb");
   REQUIRE(test_fixture::write_skinned_glb(bad_path, bad_joint));
   MeshData mesh;
   CHECK_FALSE(load_gltf(bad_path, mesh, &error));
@@ -233,7 +224,7 @@ TEST_CASE("gltf skins: a broken skin fails with a sentence rather than a wrong l
   // per-vertex format is the whole reason for the limit.
   test_fixture::SkinnedGlbOptions wide;
   wide.extra_joints = 300;
-  const std::string wide_path = tmp.path + "/wide.glb";
+  const std::string wide_path = tmp.file("wide.glb");
   REQUIRE(test_fixture::write_skinned_glb(wide_path, wide));
   error.clear();
   CHECK_FALSE(load_gltf(wide_path, mesh, &error));

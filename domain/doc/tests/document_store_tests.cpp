@@ -1,25 +1,18 @@
 #include <domain/doc/document_store.h>
 
 #include <doctest/doctest.h>
+#include <test_temp_dir.h>
 
-#include <filesystem>
 #include <string>
 
 using namespace engine;
 using namespace engine::doc;
 
-namespace {
+// One unguessable scratch directory per object, so a second copy of this binary cannot delete
+// this one's documents while it saves them (tests/support/test_temp_dir.h).
+using TempDir = test::TempDir;
 
-struct TempDir {
-  std::string path;
-  TempDir() {
-    const auto p = std::filesystem::temp_directory_path() / "engine_doc_store_tests";
-    std::filesystem::remove_all(p);
-    std::filesystem::create_directories(p);
-    path = io::normalize_path(p.string());
-  }
-  ~TempDir() { std::filesystem::remove_all(std::filesystem::path(path)); }
-};
+namespace {
 
 Attribution who() {
   Attribution a;
@@ -42,9 +35,9 @@ TEST_CASE("doc store: layer file names are sanitized") {
 }
 
 TEST_CASE("doc store: create, save, and load round trip through a mount") {
-  TempDir tmp;
+  TempDir tmp("engine_doc_store");
   io::Vfs vfs;
-  REQUIRE(vfs.mount("docs", tmp.path, /*writable=*/true) == io::Status::Ok);
+  REQUIRE(vfs.mount("docs", tmp.path(), /*writable=*/true) == io::Status::Ok);
   const std::string dir = "docs://world";
   std::string error;
 
@@ -132,9 +125,9 @@ TEST_CASE("doc store: create, save, and load round trip through a mount") {
 }
 
 TEST_CASE("doc store: load failures are reported with paths") {
-  TempDir tmp;
+  TempDir tmp("engine_doc_store");
   io::Vfs vfs;
-  REQUIRE(vfs.mount("docs", tmp.path, /*writable=*/true) == io::Status::Ok);
+  REQUIRE(vfs.mount("docs", tmp.path(), /*writable=*/true) == io::Status::Ok);
   Document doc;
   DocumentManifest manifest;
   std::string error;

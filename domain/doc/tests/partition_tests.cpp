@@ -6,6 +6,7 @@
 #include <domain/doc/partition.h>
 
 #include <doctest/doctest.h>
+#include <test_temp_dir.h>
 
 #include <filesystem>
 #include <schemas/doc_test_types.h>
@@ -14,23 +15,18 @@
 using namespace engine;
 using namespace engine::doc;
 
+// One unguessable scratch directory per object, so a second copy of this binary cannot delete
+// this one's tiles between a save and the count that checks it (tests/support/test_temp_dir.h).
+// Spelled from `engine::` because the generated schema namespace `engine::doc::test` makes a
+// bare `test` ambiguous here.
+using TempDir = engine::test::TempDir;
+
 namespace {
 
 // A type with a `position`, one with a `transform`, one with neither: how a type opts into a
 // tile grid when the partition names no property (domain/doc/tests/doc_test_types.schema).
 const char* const k_placement = "engine.doc.test.Placement";
 const char* const k_fact = "engine.doc.test.Fact";
-
-struct TempDir {
-  std::string path;
-  explicit TempDir(const char* name) {
-    const auto p = std::filesystem::temp_directory_path() / name;
-    std::filesystem::remove_all(p);
-    std::filesystem::create_directories(p);
-    path = io::normalize_path(p.string());
-  }
-  ~TempDir() { std::filesystem::remove_all(std::filesystem::path(path)); }
-};
 
 ObjectId id_of(u32 n) { return Id128::from_parts(1, n + 1); }
 
@@ -177,7 +173,7 @@ TEST_CASE("doc partition: tile coordinates, file names, and the property a type 
 TEST_CASE("doc partition: the file layout and its canonical bytes") {
   TempDir tmp("engine_doc_partition_layout");
   io::Vfs vfs;
-  REQUIRE(vfs.mount("docs", tmp.path, /*writable=*/true) == io::Status::Ok);
+  REQUIRE(vfs.mount("docs", tmp.path(), /*writable=*/true) == io::Status::Ok);
   const std::string dir = "docs://world";
   std::string error;
 
@@ -289,7 +285,7 @@ TEST_CASE("doc partition: the file layout and its canonical bytes") {
 TEST_CASE("doc partition: a round trip against the single-file form, record by record") {
   TempDir tmp("engine_doc_partition_round_trip");
   io::Vfs vfs;
-  REQUIRE(vfs.mount("docs", tmp.path, /*writable=*/true) == io::Status::Ok);
+  REQUIRE(vfs.mount("docs", tmp.path(), /*writable=*/true) == io::Status::Ok);
   std::string error;
 
   // The same content saved both ways.
@@ -321,7 +317,7 @@ TEST_CASE("doc partition: a round trip against the single-file form, record by r
   build(tiled);
   tiled.set_layer_partition(0, partition_of("position", 64));
   REQUIRE(DocumentStore::save(vfs, "docs://tiled", tiled, tiled_manifest, &error));
-  CHECK(count_files(tmp.path + "/tiled/layers/base/tiles") == tile_count(tiled.layer(0)));
+  CHECK(count_files(tmp.file("tiled/layers/base/tiles")) == tile_count(tiled.layer(0)));
 
   Document loaded_plain, loaded_tiled;
   DocumentManifest m1, m2;
@@ -349,7 +345,7 @@ TEST_CASE("doc partition: a round trip against the single-file form, record by r
 TEST_CASE("doc partition: a transaction rewrites the tile it touched and no other") {
   TempDir tmp("engine_doc_partition_dirty");
   io::Vfs vfs;
-  REQUIRE(vfs.mount("docs", tmp.path, /*writable=*/true) == io::Status::Ok);
+  REQUIRE(vfs.mount("docs", tmp.path(), /*writable=*/true) == io::Status::Ok);
   const std::string dir = "docs://world";
   std::string error;
 
@@ -413,7 +409,7 @@ TEST_CASE("doc partition: a transaction rewrites the tile it touched and no othe
 TEST_CASE("doc partition: repartition converts a layer both ways") {
   TempDir tmp("engine_doc_repartition");
   io::Vfs vfs;
-  REQUIRE(vfs.mount("docs", tmp.path, /*writable=*/true) == io::Status::Ok);
+  REQUIRE(vfs.mount("docs", tmp.path(), /*writable=*/true) == io::Status::Ok);
   const std::string dir = "docs://world";
   std::string error;
 
@@ -451,7 +447,7 @@ TEST_CASE("doc partition: repartition converts a layer both ways") {
       DocumentStore::repartition(vfs, dir, doc, manifest, 0, LayerPartition{}, &error, &to_file));
   CHECK(vfs.exists("docs://world/layers/base.json"));
   CHECK_FALSE(vfs.exists("docs://world/layers/base/index.json"));
-  CHECK(count_files(tmp.path + "/world/layers/base/tiles") == 0);
+  CHECK(count_files(tmp.file("world/layers/base/tiles")) == 0);
   CHECK_FALSE(manifest.layers[0].partition.has_value());
   CHECK(to_file.tiles_removed == 7);
 
@@ -465,7 +461,7 @@ TEST_CASE("doc partition: repartition converts a layer both ways") {
 TEST_CASE("doc partition: a malformed index fails the load with a message") {
   TempDir tmp("engine_doc_partition_malformed");
   io::Vfs vfs;
-  REQUIRE(vfs.mount("docs", tmp.path, /*writable=*/true) == io::Status::Ok);
+  REQUIRE(vfs.mount("docs", tmp.path(), /*writable=*/true) == io::Status::Ok);
   const std::string dir = "docs://world";
   std::string error;
 

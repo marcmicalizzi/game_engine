@@ -6,6 +6,7 @@
 #include <foundation/io/vfs.h>
 
 #include <doctest/doctest.h>
+#include <test_temp_dir.h>
 
 #include <chrono>
 #include <filesystem>
@@ -22,13 +23,6 @@ namespace {
 
 std::span<const u32> words_of(const unsigned char* bytes, usize size) {
   return std::span<const u32>(reinterpret_cast<const u32*>(bytes), size / 4);
-}
-
-std::string forward_slashes(std::string path) {
-  for (char& c : path) {
-    if (c == '\\') c = '/';
-  }
-  return path;
 }
 
 }  // namespace
@@ -151,12 +145,10 @@ TEST_CASE("shader library: embedded shaders, the build manifest, and hot reload 
 
   // Hot reload: a temporary shader compiled on first use, recompiled when its source changes,
   // and kept at the last good version when a save does not compile.
-  const auto dir = std::filesystem::temp_directory_path() / "engine_shader_library_tests";
-  std::filesystem::remove_all(dir);
-  std::filesystem::create_directories(dir);
-  const std::string source = forward_slashes((dir / "hot.slang").string());
-  const std::string spirv = forward_slashes((dir / "hot.spv").string());
-  const std::string manifest = forward_slashes((dir / "manifest.json").string());
+  const test::TempDir dir("engine_shader_library");
+  const std::string source = dir.file("hot.slang");
+  const std::string spirv = dir.file("hot.spv");
+  const std::string manifest = dir.file("manifest.json");
   auto write_source = [&](const char* push_type) {
     const std::string text = std::string("struct Params { ") + push_type +
                              " value; };\n[[vk::push_constant]] ConstantBuffer<Params> g_params;\n"
@@ -224,7 +216,6 @@ TEST_CASE("shader library: embedded shaders, the build manifest, and hot reload 
 
   hot.destroy();
   library.destroy();
-  std::filesystem::remove_all(dir);
   if (have_device) device.destroy();
 }
 
@@ -248,14 +239,12 @@ TEST_CASE("shader library: hot reload follows #include, transitively") {
   REQUIRE_FALSE(slangc.empty());
   library.destroy();
 
-  const auto dir = std::filesystem::temp_directory_path() / "engine_shader_include_tests";
-  std::filesystem::remove_all(dir);
-  std::filesystem::create_directories(dir);
-  const std::string deeper = forward_slashes((dir / "deeper.slang").string());
-  const std::string common = forward_slashes((dir / "common.slang").string());
-  const std::string leaf = forward_slashes((dir / "leaf.slang").string());
-  const std::string spirv = forward_slashes((dir / "leaf.spv").string());
-  const std::string manifest = forward_slashes((dir / "manifest.json").string());
+  const test::TempDir dir("engine_shader_include");
+  const std::string deeper = dir.file("deeper.slang");
+  const std::string common = dir.file("common.slang");
+  const std::string leaf = dir.file("leaf.slang");
+  const std::string spirv = dir.file("leaf.spv");
+  const std::string manifest = dir.file("manifest.json");
 
   auto write_deeper = [&](const char* factor) {
     REQUIRE(io::write_file(deeper, std::string("static const uint k_factor = ") + factor + ";\n") ==
@@ -348,5 +337,4 @@ TEST_CASE("shader library: hot reload follows #include, transitively") {
   CHECK(error.empty());
 
   included.destroy();
-  std::filesystem::remove_all(dir);
 }
