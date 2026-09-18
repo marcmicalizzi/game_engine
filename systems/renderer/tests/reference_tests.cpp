@@ -295,16 +295,6 @@ image::Image image_of(u32 width, u32 height, const Vector<u8>& rgba) {
   return out;
 }
 
-image::Image image_of(u32 width, u32 height, const std::vector<u8>& rgba) {
-  image::Image out;
-  out.width = width;
-  out.height = height;
-  out.channels = 4;
-  out.pixels.resize(static_cast<u32>(rgba.size()));
-  std::memcpy(out.pixels.data(), rgba.data(), rgba.size());
-  return out;
-}
-
 }  // namespace
 
 TEST_CASE("reference: a closed white environment comes back white") {

@@ -11,6 +11,7 @@
 #include <systems/renderer/settings.h>
 
 #include <cmath>
+#include <cstring>
 
 namespace engine::host {
 
