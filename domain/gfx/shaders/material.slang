@@ -99,19 +99,26 @@ float material_edge(float2 a, float2 b, float2 c) {
 // space: positions come off the mesh's 16-bit grid, or out of the frame's deformed-vertex pool
 // for a deformed instance (load_position), and go through the instance's world matrix, exactly
 // as the rasterizer and the acceleration structure builds moved them.
-TriangleFetch fetch_triangle(SceneGeometry geo, InstanceDesc instance, uint cluster_index,
-                            uint triangle) {
+//
+// `entry` is the **visible index** the pixel's id or the ray's geometry index carried, which is
+// how the pool block is found: the pool is suballocated per frame per visible entry, so the same
+// (instance, cluster) pair drawn by two views has two blocks holding the same positions.
+TriangleFetch fetch_triangle(SceneGeometry geo, InstanceDesc instance, uint entry,
+                            uint cluster_index, uint triangle) {
   ClusterDesc* clusters = (ClusterDesc*)geo.clusters;
   uint* triangles = (uint*)geo.triangles;
   MeshDesc* meshes = (MeshDesc*)geo.mesh;
   const MeshDesc mesh = meshes[instance.mesh];
   const ClusterDesc cluster = clusters[cluster_index];
   const uint packed = triangles[cluster.triangle_offset + triangle];
+  const uint base = deform_base(mesh, instance, entry);
   TriangleFetch fetched;
   for (uint i = 0; i < 3; ++i) {
-    fetched.local[i] = cluster.vertex_offset + ((packed >> (8 * i)) & 0xff);
+    const uint local = (packed >> (8 * i)) & 0xff;
+    fetched.local[i] = cluster.vertex_offset + local;
     fetched.p[i] =
-        mul(instance.world, float4(load_position(mesh, instance, fetched.local[i]), 1.0)).xyz;
+        mul(instance.world, float4(load_position(mesh, base, cluster.vertex_offset, local), 1.0))
+            .xyz;
   }
   return fetched;
 }
@@ -146,10 +153,11 @@ Surface surface_at(SceneGeometry geo, InstanceDesc instance, TriangleFetch tri, 
 // perspective-correct through the vertices' clip-space w. A rasterized pixel has no barycentrics
 // of its own — the visibility buffer holds an id and a depth — so they are recovered by putting
 // the triangle back through the same view-projection the rasterizer used.
-Surface reconstruct_screen(SceneGeometry geo, InstanceDesc instance, uint cluster_index,
-                          uint triangle, float2 pixel_center, column_major float4x4 view_proj,
-                          float3 camera, uint width, uint height) {
-  const TriangleFetch tri = fetch_triangle(geo, instance, cluster_index, triangle);
+Surface reconstruct_screen(SceneGeometry geo, InstanceDesc instance, uint entry,
+                          uint cluster_index, uint triangle, float2 pixel_center,
+                          column_major float4x4 view_proj, float3 camera, uint width,
+                          uint height) {
+  const TriangleFetch tri = fetch_triangle(geo, instance, entry, cluster_index, triangle);
   float4 clip[3];
   float2 screen[3];
   const float2 size = float2(float(width), float(height));

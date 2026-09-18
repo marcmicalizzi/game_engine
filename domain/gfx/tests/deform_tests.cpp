@@ -49,7 +49,10 @@ namespace {
 constexpr u32 k_w = 320;
 constexpr u32 k_h = 240;
 constexpr u32 k_sentinel = 0x7fc00000u;  // a quiet NaN: no deformer ever writes it
-constexpr f32 k_amplitude = 0.02f;       // of the mesh's grid box, as engine-view defaults
+// Pool vertices past the cut's blocks. The pass must leave them alone, which is what says the
+// suballocation is packed and bounded rather than scattered over the mesh's whole vertex range.
+constexpr u32 k_pool_slack = 1024;
+constexpr f32 k_amplitude = 0.02f;  // of the mesh's grid box, as engine-view defaults
 
 void make_terrain(u32 n, f32 extent, Vector<Vec3>& positions, Vector<u32>& indices) {
   for (u32 z = 0; z < n; ++z) {
@@ -132,8 +135,11 @@ struct DeformScene {
   gfx::BufferResource instances;
   gfx::BufferResource deform_table;
   gfx::BufferResource pool;
+  gfx::BufferResource slots;  // u32 per visible entry: its block's first pool vertex
   gfx::BufferResource count_buffer;
   gfx::BufferResource visible[2];  // {0, cluster} and {1, cluster} per cut entry
+  Vector<u32> slot_table;          // the CPU's copy of what the allocator would have written
+  u32 cut_vertices = 0;            // what the cut's blocks take: the pool's occupancy
 
   bool create(const gfx::Device& device, u32 grid, u32 deform_kind, std::string* error) {
     Vector<Vec3> positions;
@@ -163,7 +169,17 @@ struct DeformScene {
       return false;
     }
 
-    pool_vertices = lod.mesh.vertices.size();
+    // The pool is suballocated per **visible entry**, so its occupancy is the cut's vertices and
+    // not the mesh's. The allocator that does this on the GPU (`deform_alloc.slang`) is a prefix
+    // sum over exactly these numbers in exactly this order, and writing the same table here on the
+    // CPU is what lets the cases below check the shaders' half of the contract on its own. The
+    // slack past the cut is what the sentinel case reads: a block the frame did not hand out must
+    // come back untouched.
+    for (const u32 c : cut) {
+      slot_table.push_back(cut_vertices);
+      cut_vertices += lod.mesh.clusters[c].vertex_count;
+    }
+    pool_vertices = cut_vertices + k_pool_slack;
     constexpr VkBufferUsageFlags k_storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
     constexpr VkBufferUsageFlags k_address = k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
     const VkBufferUsageFlags k_pool_usage = k_address | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
@@ -186,11 +202,9 @@ struct DeformScene {
                             error)) {
       return false;
     }
-    // The one deformed instance's block is the whole mesh, at the start of the pool: the mesh is
-    // the scene's first vertex, so the bias `pool_offset` carries is zero here.
+    // What is left on the instance is which deformer it plays; where in the pool it writes is the
+    // per-entry table above.
     gfx::DeformDesc desc{};
-    desc.pool_offset = 0;
-    desc.vertex_count = pool_vertices;
     desc.flags = deform_kind;
     gfx::MeshDesc mesh_desc{};
     mesh_desc.quant = Vec4{lod.mesh.quant_origin, lod.mesh.quant_scale};
@@ -210,12 +224,14 @@ struct DeformScene {
     const u32 count = cut.size();
     if (!gfx::upload_buffer(device, &desc, sizeof(desc), k_storage, deform_table, error) ||
         !gfx::upload_buffer(device, table, sizeof(table), k_storage, instances, error) ||
+        !gfx::upload_buffer(device, slot_table.data(), slot_table.size() * sizeof(u32), k_storage,
+                            slots, error) ||
         !gfx::upload_buffer(device, &count, sizeof(count), k_storage, count_buffer, error)) {
       return false;
     }
     mesh_desc.quantized = quantized.address;
     mesh_desc.deform_pool = pool.address;
-    mesh_desc.deform = deform_table.address;
+    mesh_desc.deform_slots = slots.address;
     if (!gfx::upload_buffer(device, &mesh_desc, sizeof(mesh_desc), k_storage, meshes, error))
       return false;
     for (u32 k = 0; k < 2; ++k) {
@@ -239,9 +255,11 @@ struct DeformScene {
     p.visible_count = count_buffer.address;
     p.pool = pool.address;
     p.deform = deform_table.address;
+    p.slots = slots.address;
     p.time = time;
     p.amplitude = k_amplitude;
     p.max_entries = cut.size();
+    p.visible_offset = 0;
     return p;
   }
 
@@ -262,7 +280,7 @@ struct DeformScene {
   void destroy(const gfx::Device& device) noexcept {
     for (gfx::BufferResource* b :
          {&clusters, &triangles, &quantized, &attributes, &vertices, &meshes, &instances,
-          &deform_table, &pool, &count_buffer, &visible[0], &visible[1]}) {
+          &deform_table, &pool, &slots, &count_buffer, &visible[0], &visible[1]}) {
       gfx::destroy_buffer(device, *b);
     }
   }
@@ -464,35 +482,32 @@ TEST_CASE("deform: the identity deformer draws exactly what the rigid instance d
                         << c.word_mismatch << " pixels whose depth bits differ");
   }
 
-  // The cut's slots hold numbers; every other slot still holds the sentinel. This is the cost
-  // rule as an assertion: the pass touched the LOD cut and nothing else.
+  // Every slot the allocator handed out holds a number; every slot past the cut's blocks still
+  // holds the sentinel. This is the cost rule *and* the suballocation as one assertion: the pass
+  // wrote the cut's blocks, they are packed from the front of the pool, and the slack behind them
+  // is untouched. The per-instance pool this replaced would have needed one block per instance's
+  // whole mesh — 25,135 vertices here for a cut of 1,622.
   const auto* pool_words = reinterpret_cast<const u32*>(host_bytes + vis_bytes * 6);
-  Vector<u8> touched(scene.pool_vertices, u8{0});
-  for (const u32 c : scene.cut) {
-    const geometry::ClusterDesc& desc = scene.lod.mesh.clusters[c];
-    for (u32 v = 0; v < desc.vertex_count; ++v)
-      touched[desc.vertex_offset + v] = 1;
-  }
-  u32 in_cut = 0;
   u32 in_cut_untouched = 0;
   u32 outside_written = 0;
   for (u32 v = 0; v < scene.pool_vertices; ++v) {
     bool sentinel = true;
     for (u32 k = 0; k < 3; ++k)
       sentinel = sentinel && pool_words[v * 3 + k] == k_sentinel;
-    if (touched[v] != 0) {
-      ++in_cut;
+    if (v < scene.cut_vertices) {
       in_cut_untouched += sentinel ? 1 : 0;
     } else {
       outside_written += sentinel ? 0 : 1;
     }
   }
-  CHECK(in_cut > 0);
-  CHECK(in_cut < scene.pool_vertices);  // or the check below proves nothing
+  CHECK(scene.cut_vertices > 0);
+  CHECK(scene.cut_vertices < scene.pool_vertices);  // or the check below proves nothing
   CHECK(in_cut_untouched == 0);
   CHECK(outside_written == 0);
-  MESSAGE("pool: " << in_cut << " of " << scene.pool_vertices << " vertices written for a cut of "
-                   << cut_count << " of " << scene.lod.mesh.clusters.size() << " clusters");
+  MESSAGE("pool: " << scene.cut_vertices << " of " << scene.pool_vertices
+                   << " vertices written for a cut of " << cut_count << " of "
+                   << scene.lod.mesh.clusters.size() << " clusters; the mesh has "
+                   << scene.lod.mesh.vertices.size());
 
   graph.reset();
   if (mesh_pipeline != VK_NULL_HANDLE) gfx::destroy_pipeline(device, mesh_pipeline);
@@ -561,7 +576,8 @@ TEST_CASE("deform: the wave deformer reaches the rasterizer and the ray path ali
   for (u32 k = 0; k < cut_count; ++k) {
     const geometry::ClusterDesc& desc = scene.lod.mesh.clusters[scene.cut[k]];
     gfx::ClusterGeometry g;
-    g.vertices = scene.pool.address + u64{desc.vertex_offset} * 12;  // pool_offset is 0 here
+    // The pool is packed per visible entry, so entry k's block is where the slot table says.
+    g.vertices = scene.pool.address + u64{scene.slot_table[k]} * 12;
     g.vertex_count = desc.vertex_count;
     g.indices = indices16.address + u64{expanded_offset[k]} * sizeof(u16);
     g.triangle_count = desc.triangle_count;
@@ -871,7 +887,7 @@ TEST_CASE("deform: instantiated cluster templates trace what the rebuilt cluster
     in.cluster_id = k;  // the visible entry
     in.triangle_count = desc.triangle_count;
     in.vertex_count = desc.vertex_count;
-    in.vertices = scene.pool.address + u64{desc.vertex_offset} * 12;
+    in.vertices = scene.pool.address + u64{scene.slot_table[k]} * 12;
     in.indices = indices8.address + u64{desc.triangle_offset} * 3;
     build_inputs.push_back(in);
   }
@@ -928,12 +944,11 @@ TEST_CASE("deform: instantiated cluster templates trace what the rebuilt cluster
   }
   Vector<gfx::ClusterInstantiateInput> instantiate_inputs;
   for (u32 k = 0; k < cut_count; ++k) {
-    const geometry::ClusterDesc& desc = scene.lod.mesh.clusters[scene.cut[k]];
     gfx::ClusterInstantiateInput in;
     in.cluster_id = k;
     in.geometry_index = k;
     in.cluster_template = template_addresses[scene.cut[k]];
-    in.vertices = scene.pool.address + u64{desc.vertex_offset} * 12;
+    in.vertices = scene.pool.address + u64{scene.slot_table[k]} * 12;
     instantiate_inputs.push_back(in);
   }
   gfx::write_cluster_instantiate_records(std::span<const gfx::ClusterInstantiateInput>(

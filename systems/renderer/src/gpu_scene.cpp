@@ -25,6 +25,21 @@ constexpr VkBufferUsageFlags k_readable = k_address | VK_BUFFER_USAGE_TRANSFER_S
 constexpr VkBufferUsageFlags k_transfer =
     VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
 
+// The budget, in vertices. `deform_pool_kib` is what the caller asked for (0 is the default); the
+// clamp **down** to `whole_mesh_vertices` is what keeps a single character costing exactly what it
+// cost before the suballocation existed, and makes overflow impossible on any scene small enough
+// for the layout E25 built. Both ends are stated rather than hidden (ADR-0017): the summary
+// reports the pool bytes and what the whole-mesh layout would have taken beside them.
+u32 pool_budget_vertices(const ResolvedSettings& resolved, u64 whole_mesh_vertices) noexcept {
+  u64 kib = resolved.settings.deform_pool_kib > 0 ? u64{resolved.settings.deform_pool_kib}
+                                                  : u64{k_default_deform_pool_kib};
+  if (kib < k_min_deform_pool_kib) kib = k_min_deform_pool_kib;
+  u64 vertices = kib * 1024 / (3 * sizeof(f32));
+  if (vertices < 1) vertices = 1;
+  if (vertices > whole_mesh_vertices) vertices = whole_mesh_vertices;
+  return static_cast<u32>(vertices);
+}
+
 }  // namespace
 
 GpuScene::~GpuScene() { destroy(); }
@@ -75,7 +90,7 @@ bool GpuScene::create(const gfx::Device& device, const SceneData& data,
     desc.first_cluster = part.first_cluster;
     desc.cluster_count = part.cluster_count;
     desc.deform_pool = deform_pool.address;
-    desc.deform = deform_table.address;
+    desc.deform_slots = deform_slots.address;
     desc.templates = clas_templates.addresses.address;
     desc.skin = skin.address;
     mesh_descs.push_back(desc);
@@ -119,16 +134,21 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
                                          triangles, error))) {
     return false;
   }
-  // The deformed-vertex pool and its per-instance table. The pool is device-local: nothing reads
-  // it back, and the cluster acceleration structure builds take it as a build input. Every
-  // instance gets a block as long as its mesh's cluster-ordered vertex range, so a cluster's
-  // vertices are contiguous there and the CLAS records can point straight at them.
-  // `pool_offset` is added to the **scene-wide** vertex index, so it is the block's base biased
-  // by the mesh's first vertex; both are u32 and the bias wraps, which is the arithmetic the
-  // shaders do.
+  // The deformed-vertex pool, its per-instance table, and the per-entry allocation table. The
+  // pool is device-local: nothing reads it back, and the cluster acceleration structure builds
+  // take it as a build input.
+  //
+  // **The pool is a budget, not a sum over the population.** E25 gave every deformed instance a
+  // block as long as its mesh's whole cluster-ordered vertex range — which is what made the pool
+  // the binding memory constraint, 12.2 MB for 1,024 foxes and 1.7 GB if they had been
+  // FlightHelmets, to write the ~1,300 clusters a frame draws. What is allocated here is
+  // `RenderSettings::deform_pool_kib`, clamped **down** to what the whole-mesh layout would have
+  // needed, so a single character costs what it always did and a scene small enough for that
+  // layout can never overflow. `deform_alloc.slang` suballocates it per frame from the cull pass's
+  // own visible list, one block per (instance, cluster) pair.
   if (deform_) {
     const u32 total_vertices = lod.mesh.vertices.size();
-    u32 pool_vertices = 0;
+    u64 whole_mesh_vertices = 0;
     for (u32 i = 0; i < instance_count_; ++i) {
       // A skinned instance is deformed whatever the settings say; a rigid one only under
       // `--deform`, so a scene of one character and a hundred props allocates pool blocks for the
@@ -140,26 +160,31 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
                            ? data_->parts[instance_table_[i].mesh + 1].first_vertex
                            : total_vertices;
       gfx::DeformDesc desc{};
-      desc.vertex_count = next - part.first_vertex;
-      desc.pool_offset = pool_vertices - part.first_vertex;
       desc.flags = instance_joints > 0 ? gfx::k_deform_skin : resolved.settings.deform_kind;
       // `joints` and `joint_count` stay zero in the *static* table: they are what a frame fills
       // in, in its own copy. A frame that hands over no matrices therefore leaves the instance at
       // its rest pose rather than reading an address from a previous frame.
-      pool_vertices += desc.vertex_count;
+      whole_mesh_vertices += next - part.first_vertex;
       instance_table_[i].deform = deform_descs_.size();
       deform_descs_.push_back(desc);
       deform_instance_.push_back(i);
     }
-    deform_pool_bytes_ = u64{pool_vertices} * 3 * sizeof(f32);
+    deform_whole_mesh_bytes_ = whole_mesh_vertices * 3 * sizeof(f32);
+    deform_pool_vertices_ = pool_budget_vertices(resolved, whole_mesh_vertices);
+    deform_pool_bytes_ = u64{deform_pool_vertices_} * 3 * sizeof(f32);
     constexpr VkBufferUsageFlags k_pool_usage =
         k_address | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
         VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
     // One indirect dispatch block per (view, run): every view's pool pass covers its own cut, and
-    // a vertex two views both draw is written twice with the same value, which costs bandwidth
-    // and nothing else.
+    // a cluster two views both draw gets a block in each, written twice with the same value.
     bool ok =
         gfx::create_buffer(device, deform_pool_bytes_, k_pool_usage, false, deform_pool, error) &&
+        gfx::create_buffer(device, u64{visible_entries()} * sizeof(u32), k_address, false,
+                           deform_slots, error) &&
+        gfx::create_buffer(
+            device, sizeof(gfx::DeformAlloc),
+            k_address | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, false,
+            deform_alloc, error) &&
         gfx::upload_buffer(device, deform_descs_.data(),
                            deform_descs_.size() * sizeof(gfx::DeformDesc), k_storage, deform_table,
                            error) &&
@@ -191,7 +216,10 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
         log_renderer, "deformed-vertex pool", log::field("mode", deform_name(resolved.settings)),
         log::field("instances", deform_descs_.size()),
         log::field("skinned_instances", skinned_instances_), log::field("max_joints", max_joints_),
-        log::field("pool_vertices", pool_vertices), log::field("pool_bytes", deform_pool_bytes_),
+        log::field("pool_vertices", deform_pool_vertices_),
+        log::field("pool_bytes", deform_pool_bytes_),
+        log::field("whole_mesh_bytes", deform_whole_mesh_bytes_),
+        log::field("slot_bytes", u64{visible_entries()} * sizeof(u32)),
         log::field("joint_bytes", skinned_ ? joint_bytes() * k_joint_slots : u64{0}));
   }
   // The float positions stay only for the frames that build acceleration structures: the
@@ -738,6 +766,8 @@ void GpuScene::destroy() noexcept {
   gfx::destroy_buffer(device, joints);
   gfx::destroy_buffer(device, deform_args);
   gfx::destroy_buffer(device, deform_table);
+  gfx::destroy_buffer(device, deform_alloc);
+  gfx::destroy_buffer(device, deform_slots);
   gfx::destroy_buffer(device, deform_pool);
   for (u32 i = 0; i < 2; ++i) {
     gfx::destroy_buffer(device, flags[i]);
@@ -776,8 +806,9 @@ void GpuScene::destroy() noexcept {
   cluster_count_ = leaf_count_ = instance_count_ = pair_count_ = material_count_ = 0;
   triangles_per_cluster_ = 0;
   view_count_ = 1;
-  max_joints_ = skinned_instances_ = 0;
-  visible_run_bytes_ = deform_pool_bytes_ = template_bytes_ = rt_bytes_ = 0;
+  max_joints_ = skinned_instances_ = deform_pool_vertices_ = 0;
+  visible_run_bytes_ = deform_pool_bytes_ = deform_whole_mesh_bytes_ = 0;
+  template_bytes_ = rt_bytes_ = 0;
   tlas_slot_ = gfx::BindlessSet::k_invalid_slot;
   ray_tracing_ = deform_ = skinned_ = streamed_ = false;
   page_count_ = page_slots_ = slot_vertices_ = slot_triangles_ = max_requests_ = 0;

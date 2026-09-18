@@ -140,14 +140,15 @@ void ranges_main() {
 }
 
 // Where a cluster's twelve-byte positions live this frame: the mesh's rest-pose float array for
-// a rigid instance, the deformed-vertex pool for a deformed one. The pool block is the mesh's
-// whole cluster-ordered vertex range, so the cluster's vertices are contiguous there too.
-uint64_t cluster_vertex_address(MeshDesc mesh, InstanceDesc instance, ClusterDesc cluster) {
-  if (is_deformed(mesh, instance)) {
-    DeformDesc* table = (DeformDesc*)mesh.deform;
-    const DeformDesc deform = table[instance.deform];
-    return mesh.deform_pool + uint64_t(deform.pool_offset + cluster.vertex_offset) * 12;
-  }
+// a rigid instance, and this **visible entry's** block of the deformed-vertex pool for a deformed
+// one. The block is exactly the cluster's vertex range and is contiguous, which is what lets a
+// build or an instantiate record address it with no gather (E25 decision 2). An entry the frame's
+// pool budget had no room for falls back to the rest-pose float positions — the same fallback the
+// rasterizers take, so the ray geometry and the picture stay the same surface.
+uint64_t cluster_vertex_address(MeshDesc mesh, InstanceDesc instance, ClusterDesc cluster,
+                                uint visible_index) {
+  const uint base = deform_base(mesh, instance, visible_index);
+  if (base != k_no_pool_slot) return mesh.deform_pool + uint64_t(base) * 12;
   return g_params.vertices + uint64_t(cluster.vertex_offset) * 12;
 }
 
@@ -178,7 +179,7 @@ void emit_main(uint3 thread_id : SV_DispatchThreadID) {
   const MeshDesc mesh = meshes[instance.mesh];
   uint* first = (uint*)g_params.instance_first;
   const uint dense = first[instance_index] + local;
-  const uint64_t vertex_address = cluster_vertex_address(mesh, instance, cluster);
+  const uint64_t vertex_address = cluster_vertex_address(mesh, instance, cluster, visible_index);
 
   if (g_params.instantiate != 0) {
     uint64_t* templates = (uint64_t*)mesh.templates;

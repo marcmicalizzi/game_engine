@@ -1159,6 +1159,92 @@ TEST_CASE("renderer: a skinned instance at the bind pose draws the unskinned pic
   CHECK(worst_depth <= 2.0e-7f);
 }
 
+// ---- the deformed-vertex pool's per-frame suballocation -----------------------------------------
+//
+// Two properties, and they are the two halves of what the budget replaced E25's per-instance pool
+// for: with room, the pool holds **the cut** and nothing else, and every visible pair gets a block;
+// without room, the pairs that did not fit draw their **rest pose**, are counted, and nothing
+// crashes or reads a wild address. The second half is why `deform_pool_kib` is in kibibytes — a
+// budget a bar's own cut cannot fit has to be expressible, or the overflow rule is untested.
+TEST_CASE("renderer: the pool holds the frame's cut, and a budget too small falls back to rest") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("renderer unavailable here: " << gpu.why);
+    return;
+  }
+  SkinnedBar bar;
+  build_skinned_bar(bar);
+  constexpr u32 k_width = 240;
+  constexpr u32 k_height = 240;
+  constexpr u32 k_instances = 8;
+
+  CaptureChannels channels;
+  channels.ids = true;
+  Vector<anim::JointMatrix> matrices;
+  bar_matrices(bar, 45.0f, matrices);
+  Vector<anim::JointMatrix> population;  // one pose per instance, as a crowd hands over
+  Vector<InstanceJoints> runs;
+  for (u32 i = 0; i < k_instances; ++i) {
+    runs.push_back(InstanceJoints{static_cast<u32>(population.size()), 2});
+    for (const anim::JointMatrix& m : matrices)
+      population.push_back(m);
+  }
+  const std::span<const anim::JointMatrix> joints(population.data(), population.size());
+  const std::span<const InstanceJoints> joint_runs(runs.data(), runs.size());
+
+  // With the default budget: nothing overflows, every visible pair has a block, and the pool's
+  // occupancy is what the cut needs rather than what the instances' meshes are.
+  Rig roomy;
+  REQUIRE_MESSAGE(make_bar_scene(bar, k_instances, 2, 0.6f, roomy.data, roomy.error), roomy.error);
+  REQUIRE_MESSAGE(roomy.finish(gpu.device, RenderSettings{}, k_width, k_height), roomy.error);
+  CapturedFrame roomy_shot;
+  std::string error;
+  const FrameDesc posed = skinned_frame(roomy.data, joints, joint_runs, 22.0f);
+  REQUIRE_MESSAGE(roomy.renderer.capture(posed, channels, roomy_shot, &error), error);
+  const Stats& wide = roomy.renderer.stats();
+  MESSAGE("roomy pool: " << roomy.scene.deform_pool_bytes() << " B budgeted of "
+                         << roomy.scene.deform_whole_mesh_bytes() << " B whole-mesh, "
+                         << wide.deform_vertices << " vertices used by " << wide.deform_entries
+                         << " of " << wide.visible_pairs() << " visible pairs");
+  CHECK(wide.deform_overflow_entries == 0);
+  CHECK(wide.deform_entries == wide.visible_pairs());
+  CHECK(wide.deform_vertices > 0);
+  CHECK(wide.deform_vertices <= roomy.scene.deform_pool_vertices());
+  u32 roomy_covered = 0;
+  covered_rect(roomy_shot, roomy_covered);
+  CHECK(roomy_covered > 1000);
+
+  // One kibibyte is 85 vertices, against the 272 this cut needs: two or three of its clusters fit
+  // and the rest do not. The refused pairs take the rest pose, so the picture is still a bar —
+  // straighter in places — and every pair is accounted for on one side or the other.
+  RenderSettings tight;
+  tight.deform_pool_kib = 1;
+  Rig cramped;
+  REQUIRE_MESSAGE(make_bar_scene(bar, k_instances, 2, 0.6f, cramped.data, cramped.error),
+                  cramped.error);
+  REQUIRE_MESSAGE(cramped.finish(gpu.device, tight, k_width, k_height), cramped.error);
+  CHECK(cramped.scene.deform_pool_vertices() < wide.deform_vertices);
+  CapturedFrame cramped_shot;
+  REQUIRE_MESSAGE(cramped.renderer.capture(posed, channels, cramped_shot, &error), error);
+  const Stats& narrow = cramped.renderer.stats();
+  MESSAGE("cramped pool: " << cramped.scene.deform_pool_bytes() << " B, " << narrow.deform_entries
+                           << " placed, " << narrow.deform_overflow_entries << " refused of "
+                           << narrow.visible_pairs() << " visible pairs");
+  CHECK(narrow.deform_overflow_entries > 0);
+  CHECK(narrow.deform_entries + narrow.deform_overflow_entries == narrow.visible_pairs());
+  CHECK(narrow.deform_vertices <= cramped.scene.deform_pool_vertices());
+  // The frame is still a picture of the same scene: covered, and covered by the same instances.
+  u32 cramped_covered = 0;
+  covered_rect(cramped_shot, cramped_covered);
+  CHECK(cramped_covered > 1000);
+  u32 instance_out_of_range = 0;
+  for (u32 p = 0; p < k_width * k_height; ++p) {
+    const u32 instance = cramped_shot.ids[p * k_id_words];
+    if (instance != k_no_id && instance >= k_instances) ++instance_out_of_range;
+  }
+  CHECK(instance_out_of_range == 0);
+}
+
 TEST_CASE("renderer: a bend puts the bar where anim::skin_positions says it goes") {
   Gpu gpu;
   if (!gpu.ok) {

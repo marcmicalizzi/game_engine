@@ -97,6 +97,15 @@ struct Stats {
   u32 visible_sw = 0;     // the software rasterizer's
   u32 visible_min = ~u32{0};
   u32 visible_max = 0;
+  // The deformed-vertex pool's suballocation, one frame late like the visible counts and read the
+  // same way — out of a host-visible copy of a device record, never from inside a frame.
+  // `deform_overflow_*` is what the budget refused: those (instance, cluster) pairs drew their
+  // **rest pose** this frame. Nonzero here is the one number that says the pool is too small.
+  u32 deform_vertices = 0;           // pool vertices the frame's cut used
+  u32 deform_entries = 0;            // visible entries given a block
+  u32 deform_overflow_entries = 0;   // entries the budget had no room for
+  u32 deform_overflow_vertices = 0;  // the vertices they would have needed
+  u32 deform_peak_vertices = 0;      // the largest `deform_vertices` of the run
   f64 gpu_cull = 0.0;
   f64 gpu_hw = 0.0;
   f64 gpu_sw = 0.0;
@@ -105,6 +114,10 @@ struct Stats {
   f64 gpu_rt = 0.0;  // records + ranges + emit + CLAS + cluster BLAS + TLAS
   f64 gpu_clas = 0.0;
   f64 gpu_deform = 0.0;
+  // The pool's suballocator, kept apart from the pool pass it feeds: one dispatch covers every
+  // view of a run, so it is the frame's cost and no view's, and E25's "9.4 µs plus 0.9 µs per
+  // 1,000 visible clusters" is a statement about the pool pass alone.
+  f64 gpu_deform_alloc = 0.0;
   f64 gpu_trace = 0.0;
   f64 gpu_total = 0.0;
   f64 cpu_ns = 0.0;  // wall time inside submit_frame, summed
@@ -129,6 +142,7 @@ struct Stats {
   f64 rt_ms() const noexcept { return gpu_rt / timed(); }
   f64 clas_ms() const noexcept { return gpu_clas / timed(); }
   f64 deform_ms() const noexcept { return gpu_deform / timed(); }
+  f64 deform_alloc_ms() const noexcept { return gpu_deform_alloc / timed(); }
   f64 trace_ms() const noexcept { return gpu_trace / timed(); }
   f64 total_ms() const noexcept { return gpu_total / timed(); }
   // What one view cost a frame, everything but the shared acceleration structure chain.
@@ -276,6 +290,7 @@ class SceneRenderer {
     gfx::ComputePipeline software;
     gfx::ComputePipeline cull;
     gfx::ComputePipeline deform;
+    gfx::ComputePipeline deform_alloc;
     gfx::ComputePipeline hiz;
     gfx::ComputePipeline records;
     gfx::ComputePipeline record_ranges;
@@ -351,7 +366,8 @@ class SceneRenderer {
   u64 collected_ = 0;  // the timeline value whose statistics were last folded in
   bool flags_dirty_ = true;
   bool recording_ = false;
-  bool joint_overflow_warned_ = false;  // a span longer than the scene was sized for, said once
+  bool joint_overflow_warned_ = false;   // a span longer than the scene was sized for, said once
+  bool deform_overflow_warned_ = false;  // the pool budget refused a pair, said once
 };
 
 }  // namespace engine::renderer

@@ -54,7 +54,9 @@ ClusterVertex vs_cluster(uint vertex_id : SV_VertexID, uint instance_id : SV_Ins
   const uint packed = triangles[cluster.triangle_offset + triangle];
   const uint local = (packed >> (8 * corner)) & 0xff;
   MeshDesc* meshes = (MeshDesc*)g_params.mesh;
-  const float3 p = load_position(meshes[instance.mesh], instance, cluster.vertex_offset + local);
+  const MeshDesc mesh = meshes[instance.mesh];
+  const uint base = deform_base(mesh, instance, visible_index);
+  const float3 p = load_position(mesh, base, cluster.vertex_offset, local);
   const float3 world = mul(instance.world, float4(p, 1.0)).xyz;
   out.position = mul(g_params.view_proj, float4(world, 1.0));
   return out;

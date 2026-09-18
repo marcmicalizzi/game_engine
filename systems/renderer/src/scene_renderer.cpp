@@ -16,6 +16,7 @@
 #include <shaders/cluster_sw_raster.spv.h>
 #include <shaders/cluster_vertex.spv.h>
 #include <shaders/deform.spv.h>
+#include <shaders/deform_alloc.spv.h>
 #include <shaders/hiz_build.spv.h>
 #include <shaders/ray_visibility.spv.h>
 #include <shaders/visibility_resolve.spv.h>
@@ -27,6 +28,9 @@ namespace {
 
 constexpr u32 k_view_lights = k_frame_lights;  // the warm and cool point lights (lighting.h)
 constexpr u32 k_stat_words = 9;                // three indirect blocks of three u32, per view
+// The deformed-vertex pool's allocation record, copied in behind every view's block: it is one
+// record for the frame, not one per view, because the pool's budget is the frame's.
+constexpr u32 k_alloc_words = sizeof(gfx::DeformAlloc) / sizeof(u32);
 
 // The sky is `renderer::k_sky` in `lighting.h`, and there are now **three** things that have to
 // be the same number rather than two. The resolve pass's clear value and `ResolveParams::sky`,
@@ -108,6 +112,7 @@ void SceneRenderer::Pipelines::destroy(const gfx::Device& device) noexcept {
   gfx::destroy_compute_pipeline(device, software);
   gfx::destroy_compute_pipeline(device, cull);
   gfx::destroy_compute_pipeline(device, deform);
+  gfx::destroy_compute_pipeline(device, deform_alloc);
   gfx::destroy_compute_pipeline(device, hiz);
   gfx::destroy_compute_pipeline(device, records);
   gfx::destroy_compute_pipeline(device, record_ranges);
@@ -233,7 +238,10 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
   if (!frames_.create(device, desc.frames_in_flight, error) ||
       // Every view records its own cull, raster, Hi-Z and resolve zones, so the pool grows with
       // the layout; one view asks for exactly the 24 it always did.
-      !timer_.create(device, desc.frames_in_flight, 24 + 16 * (views - 1), error)) {
+      // 28 per view: the two cull passes, the two hardware draws, the two Hi-Z builds, the three
+      // pool passes and the three allocations, the software raster, the six acceleration
+      // structure zones, the trace and the resolve, with room to spare.
+      !timer_.create(device, desc.frames_in_flight, 28 + 16 * (views - 1), error)) {
     destroy();
     return false;
   }
@@ -243,7 +251,7 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
   ray_params_.resize(desc.frames_in_flight);
   constexpr VkBufferUsageFlags k_address =
       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
-  const u64 stat_bytes = sizeof(u32) * k_stat_words * views;
+  const u64 stat_bytes = sizeof(u32) * (u64{k_stat_words} * views + k_alloc_words);
   bool ok = true;
   for (u32 slot = 0; slot < desc.frames_in_flight && ok; ++slot) {
     // Two cull blocks per view, one resolve block per view with the frame's lights behind the
@@ -292,6 +300,8 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
   shaders_.add_embedded("ray_visibility", shaders::k_ray_visibility_spirv,
                         shaders::k_ray_visibility_spirv_size);
   shaders_.add_embedded("deform", shaders::k_deform_spirv, shaders::k_deform_spirv_size);
+  shaders_.add_embedded("deform_alloc", shaders::k_deform_alloc_spirv,
+                        shaders::k_deform_alloc_spirv_size);
   std::string manifest = desc.shader_manifest;
   if (manifest.empty()) {
     const std::string candidate = platform::executable_directory() + "/../shaders/manifest.json";
@@ -353,9 +363,13 @@ bool SceneRenderer::create_pipelines(std::string* error) {
   gfx::BindlessSet& bindless = scene_->bindless();
   if (resolved_.deform_pass) {
     const gfx::Shader* deform = shaders_.get("deform", error);
-    if (deform == nullptr ||
+    const gfx::Shader* alloc = deform != nullptr ? shaders_.get("deform_alloc", error) : nullptr;
+    if (alloc == nullptr ||
         !gfx::create_compute_pipeline(device, deform->module, "deform_main", {},
-                                      sizeof(gfx::DeformParams), pipelines_.deform, error)) {
+                                      sizeof(gfx::DeformParams), pipelines_.deform, error) ||
+        !gfx::create_compute_pipeline(device, alloc->module, "deform_alloc_main", {},
+                                      sizeof(gfx::DeformAllocParams), pipelines_.deform_alloc,
+                                      error)) {
       return false;
     }
   }
@@ -535,6 +549,26 @@ void SceneRenderer::fold_visible(u32 slot) {
   const u32 total = stats_.visible_pairs();
   stats_.visible_min = total < stats_.visible_min ? total : stats_.visible_min;
   stats_.visible_max = total > stats_.visible_max ? total : stats_.visible_max;
+  if (resolved_.deform_pass) {
+    const u32* alloc = stats + u64{k_stat_words} * view_count();
+    stats_.deform_vertices = alloc[0];
+    stats_.deform_entries = alloc[1];
+    stats_.deform_overflow_entries = alloc[2];
+    stats_.deform_overflow_vertices = alloc[3];
+    stats_.deform_peak_vertices = stats_.deform_vertices > stats_.deform_peak_vertices
+                                      ? stats_.deform_vertices
+                                      : stats_.deform_peak_vertices;
+    // Said once, because it is a budget question and not a per-frame event: those pairs drew
+    // their rest pose, which is visible on a character and invisible in a frame time.
+    if (stats_.deform_overflow_entries > 0 && !deform_overflow_warned_) {
+      deform_overflow_warned_ = true;
+      ENGINE_LOG_WARN(log_renderer, "the deformed-vertex pool overflowed",
+                      log::field("entries", stats_.deform_overflow_entries),
+                      log::field("vertices", stats_.deform_overflow_vertices),
+                      log::field("pool_vertices", scene_->deform_pool_vertices()),
+                      log::field("remedy", "raise RenderSettings::deform_pool_mib"));
+    }
+  }
 }
 
 void SceneRenderer::collect_slot(u32 slot) {
@@ -562,6 +596,10 @@ void SceneRenderer::collect_slot(u32 slot) {
       stats_.gpu_deform += timer_.ms(k_zone_names[k_zone_deform][v]);
       stats_.gpu_trace += timer_.ms(k_zone_names[k_zone_trace][v]);
     }
+    // The pool's allocator is one dispatch over every view of a run, so it is the frame's cost
+    // and no view's — and it is kept out of `gpu_deform`, which is the pool pass and the number
+    // E25's cost rule is about.
+    stats_.gpu_deform_alloc += timer_.ms("deform alloc");
     // The acceleration structure chain is built once from the union of the views' cuts, so it is
     // the frame's cost and no view's.
     stats_.gpu_rt += timer_.ms("records") + timer_.ms("ranges") + timer_.ms("emit") +
@@ -713,6 +751,10 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   ViewFrame view_frames[k_max_views];
   gfx::ClusterDrawParams draws[k_max_views][k_visible_runs];
   gfx::DeformParams deform_params[k_max_views][k_visible_runs];
+  // One allocation block per run, not per view: the allocator's dispatch is a single workgroup
+  // that walks every view of the run, because the pool's budget is the frame's and the order the
+  // blocks are handed out in has to be a function of the cut and not of the GPU's scheduling.
+  gfx::DeformAllocParams alloc_params[k_visible_runs];
   auto* cull_blocks = static_cast<gfx::CullParams*>(params_[slot].mapped);
   auto* resolve_bytes = static_cast<u8*>(resolves_[slot].mapped);
   const u64 lights_address = resolves_[slot].address + sizeof(gfx::ResolveParams) * views;
@@ -910,7 +952,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     // ---- the deformed-vertex pool, one block per run ------------------------------------------
     // The pass reads that run's count word out of the cull's own arguments and dispatches one
     // group per visible cluster from a copy of it, so the pool pass costs the cut and nothing
-    // else. Two views that both draw a cluster write its vertices twice, with the same value.
+    // else. Two views that both draw a cluster get a block each, written with the same value.
     for (u32 run = 0; run < k_visible_runs; ++run) {
       gfx::DeformParams& d = deform_params[v][run];
       d = gfx::DeformParams{};
@@ -926,9 +968,11 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       // This frame's table for a skinned scene, the static one otherwise; the two differ only in
       // `joints`/`joint_count`, which nothing but this pass reads.
       d.deform = deform_table_address;
+      d.slots = scene.deform_slots.address;
       d.time = deform_time;
       d.amplitude = settings.deform_amplitude;
       d.max_entries = pair_count;
+      d.visible_offset = vf.run_base[run];
     }
 
     if (ray_path) {
@@ -944,6 +988,34 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       vf.ray_address = ray_params_[slot].address + sizeof(gfx::RayVisibilityParams) * v;
       std::memcpy(static_cast<u8*>(ray_params_[slot].mapped) + sizeof(gfx::RayVisibilityParams) * v,
                   &ray, sizeof(ray));
+    }
+  }
+
+  // ---- the pool's allocator, one block per run ------------------------------------------------
+  //
+  // The budget is the *frame's*, so the runs share one cursor: run 0 resets it and the later runs
+  // carry it forward across the barriers the render graph already puts between them. Each block
+  // covers every view of its run in one dispatch of one workgroup, which is what lets the cursor
+  // advance by what was actually placed rather than by what was asked for. While the cut fits the
+  // budget the order the blocks come out in does not reach the picture — every entry reads its
+  // own block — and a capture is byte-identical; past the budget it does, and it is the cull
+  // pass's atomics, so it is not reproducible (`deform_alloc.slang` says so at length).
+  if (resolved_.deform_pass) {
+    for (u32 run = 0; run < k_visible_runs; ++run) {
+      gfx::DeformAllocParams& a = alloc_params[run];
+      a = gfx::DeformAllocParams{};
+      a.clusters = scene.clusters.address;
+      a.instances = scene.instances.address;
+      a.visible = scene.visible.address;
+      a.visible_counts = run == 2 ? scene.sw_args.address
+                                  : scene.draw_args[run].address + u64{count_index} * sizeof(u32);
+      a.slots = scene.deform_slots.address;
+      a.alloc = scene.deform_alloc.address;
+      a.pool_vertices = scene.deform_pool_vertices();
+      a.pair_count = pair_count;
+      a.views = views;
+      a.run = run;
+      a.reset = run == 0 ? 1u : 0u;
     }
   }
 
@@ -1008,9 +1080,13 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   const gfx::RgBuffer rg_hiz = graph.import_buffer("hiz", targets.hiz);
   const gfx::RgBuffer rg_stats = graph.import_buffer("stats", stat_blocks_[slot]);
   gfx::RgBuffer rg_pool{};
+  gfx::RgBuffer rg_slots{};
+  gfx::RgBuffer rg_alloc{};
   gfx::RgBuffer rg_deform_args{};
   if (resolved_.deform_pass) {
     rg_pool = graph.import_buffer("deform pool", scene.deform_pool);
+    rg_slots = graph.import_buffer("deform slots", scene.deform_slots);
+    rg_alloc = graph.import_buffer("deform alloc", scene.deform_alloc);
     rg_deform_args = graph.import_buffer("deform args", scene.deform_args);
   }
   // The streamed scene's page pool and its feedback. The pool buffers have to be *declared*, not
@@ -1203,6 +1279,27 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   auto add_deform = [&](u32 run) {
     const u64 source_offset = run == 2 ? 0 : u64{count_index} * sizeof(u32);
     const gfx::RgBuffer rg_source = run == 2 ? rg_sw_args : rg_args[run];
+    // Suballocate the pool for this run of every view before anything writes or reads it: one
+    // workgroup, a prefix sum over the entries' vertex counts, and one `deform_slots` word per
+    // entry saying where its block is (or that it did not fit).
+    graph.add_pass(
+        "deform alloc", gfx::PassKind::Compute,
+        [&, rg_source](gfx::PassBuilder& b) {
+          b.read(rg_source, gfx::Access::ComputeRead);
+          b.read(rg_visible, gfx::Access::ComputeRead);
+          b.write(rg_slots, gfx::Access::ComputeWrite);
+          b.write(rg_alloc, gfx::Access::ComputeReadWrite);
+        },
+        [&, run](VkCommandBuffer cb, gfx::RenderGraph&) {
+          // Its own zone rather than a view's: one dispatch covers every view of the run, so
+          // charging it to view 0 would put the whole set's allocation on one monitor's row.
+          timer.begin(cb, "deform alloc");
+          vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines.deform_alloc.pipeline);
+          vkCmdPushConstants(cb, pipelines.deform_alloc.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                             sizeof(gfx::DeformAllocParams), &alloc_params[run]);
+          vkCmdDispatch(cb, 1, 1, 1);
+          timer.end(cb);
+        });
     graph.add_pass(
         "deform args", gfx::PassKind::Transfer,
         [&, rg_source](gfx::PassBuilder& b) {
@@ -1223,6 +1320,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           b.read(rg_source, gfx::Access::ComputeRead);  // the run's count word
           b.read(rg_deform_args, gfx::Access::IndirectRead);
           b.read(rg_visible, gfx::Access::ComputeRead);
+          b.read(rg_slots, gfx::Access::ComputeRead);
           b.write(rg_pool, gfx::Access::ComputeWrite);
         },
         [&, run](VkCommandBuffer cb, gfx::RenderGraph&) {
@@ -1249,9 +1347,14 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             b.read(rg_args[list], gfx::Access::IndirectRead);
             b.read(rg_visible, vertex_path ? gfx::Access::VertexRead : gfx::Access::MeshRead);
           }
-          if (deform_on)
-            b.read(rg_pool, vertex_path ? gfx::Access::VertexRead : gfx::Access::MeshRead);
-          read_pool(b, vertex_path ? gfx::Access::VertexRead : gfx::Access::MeshRead);
+          {
+            const gfx::Access stage = vertex_path ? gfx::Access::VertexRead : gfx::Access::MeshRead;
+            if (deform_on) {
+              b.read(rg_pool, stage);
+              b.read(rg_slots, stage);
+            }
+            read_pool(b, stage);
+          }
         },
         [&, list, run](VkCommandBuffer cb, gfx::RenderGraph&) {
           vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -1343,7 +1446,10 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             b.read(rg_args[0], gfx::Access::IndirectRead);
             b.read(rg_visible, gfx::Access::MeshRead);
           }
-          if (deform_on) b.read(rg_pool, gfx::Access::MeshRead);
+          if (deform_on) {
+            b.read(rg_pool, gfx::Access::MeshRead);
+            b.read(rg_slots, gfx::Access::MeshRead);
+          }
         },
         [&, params](VkCommandBuffer cb, gfx::RenderGraph&) {
           timer.begin(cb, k_zone_names[k_zone_hw][0]);
@@ -1375,7 +1481,10 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             b.write(rg_vis, gfx::Access::ComputeReadWrite);
             b.read(rg_sw_args, gfx::Access::IndirectRead);
             b.read(rg_visible, gfx::Access::ComputeRead);
-            if (deform_on) b.read(rg_pool, gfx::Access::ComputeRead);
+            if (deform_on) {
+              b.read(rg_pool, gfx::Access::ComputeRead);
+              b.read(rg_slots, gfx::Access::ComputeRead);
+            }
             read_pool(b, gfx::Access::ComputeRead);
           },
           [&](VkCommandBuffer cb, gfx::RenderGraph&) {
@@ -1433,7 +1542,10 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           [&](gfx::PassBuilder& b) {
             b.read(rt.records, gfx::Access::AccelerationBuildRead);
             b.read(rt.record_count, gfx::Access::AccelerationBuildRead);
-            if (deform_on) b.read(rg_pool, gfx::Access::AccelerationBuildRead);
+            if (deform_on) {
+              b.read(rg_pool, gfx::Access::AccelerationBuildRead);
+              b.read(rg_slots, gfx::Access::AccelerationBuildRead);
+            }
             b.write(rt.clas_data, gfx::Access::AccelerationBuildWrite);
             b.write(rt.clas_addresses, gfx::Access::AccelerationBuildWrite);
             b.write(rt.clas_sizes, gfx::Access::AccelerationBuildWrite);
@@ -1519,7 +1631,10 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           b.read(rg_vis, gfx::Access::FragmentRead);
           // The per-tile coverage mask the last Hi-Z build left behind it, in the same buffer.
           if (occlusion) b.read(rg_hiz, gfx::Access::FragmentRead);
-          if (deform_on) b.read(rg_pool, gfx::Access::FragmentRead);
+          if (deform_on) {
+            b.read(rg_pool, gfx::Access::FragmentRead);
+            b.read(rg_slots, gfx::Access::FragmentRead);
+          }
           read_pool(b, gfx::Access::FragmentRead);
           if (shadows) {  // the shadow rays traverse them from the fragment stage
             b.read(rt.tlas, gfx::Access::FragmentRayQueryRead);
@@ -1550,6 +1665,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           b.read(rg_args[0], gfx::Access::TransferRead);
           b.read(rg_args[1], gfx::Access::TransferRead);
           b.read(rg_sw_args, gfx::Access::TransferRead);
+          if (deform_on) b.read(rg_alloc, gfx::Access::TransferRead);
           b.write(rg_stats, gfx::Access::TransferWrite);
         },
         [&, stat_target](VkCommandBuffer cb, gfx::RenderGraph&) {
@@ -1562,6 +1678,11 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
                                       sizeof(u32) * 3};
               vkCmdCopyBuffer(cb, arg_blocks[i]->buffer, stat_target->buffer, 1, &copy);
             }
+          }
+          if (deform_on) {
+            const VkBufferCopy copy{0, sizeof(u32) * u64{k_stat_words} * views,
+                                    sizeof(gfx::DeformAlloc)};
+            vkCmdCopyBuffer(cb, scene.deform_alloc.buffer, stat_target->buffer, 1, &copy);
           }
         });
   }

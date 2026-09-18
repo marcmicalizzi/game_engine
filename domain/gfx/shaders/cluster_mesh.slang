@@ -57,7 +57,11 @@ void mesh_main(uint3 group_thread : SV_GroupThreadID, uint3 group : SV_GroupID,
   const uint t = group_thread.x;
   if (t < cluster.vertex_count) {
     MeshDesc* meshes = (MeshDesc*)g_params.mesh;
-    const float3 p = load_position(meshes[instance.mesh], instance, cluster.vertex_offset + t);
+    const MeshDesc mesh = meshes[instance.mesh];
+    // One table read per workgroup, not per vertex: where this frame's pool holds this entry's
+    // deformed vertices, or k_no_pool_slot for the rest pose off the grid.
+    const uint base = deform_base(mesh, instance, visible_index);
+    const float3 p = load_position(mesh, base, cluster.vertex_offset, t);
     const float3 world = mul(instance.world, float4(p, 1.0)).xyz;
     verts[t].position = mul(g_params.view_proj, float4(world, 1.0));
     verts[t].visible_index = visible_index;

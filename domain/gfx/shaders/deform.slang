@@ -5,10 +5,11 @@
 // count word, so no CPU ever sees how big the cut is.
 //
 // A thread reads the cluster's rest-pose vertex off the mesh's 16-bit grid, applies the
-// instance's deformer, and writes `pool[pool_offset + vertex]` — the scene-wide vertex index
-// biased into this instance's block, which is as long as the mesh's whole cluster-ordered vertex
-// range. Only the cut's slots are written; every other slot of the pool keeps whatever it held.
-// Entries of rigid instances are skipped outright.
+// instance's deformer, and writes `pool[base + local]` — the block `deform_alloc.slang` gave
+// **this visible entry** before this pass ran, as long as this cluster's vertex count and no
+// longer. The pool is therefore sized by the frame's cut and a budget rather than by the
+// population. Entries of rigid instances are skipped outright, and so is an entry the budget had
+// no room for: its `deform_slots` word is `k_no_pool_slot`, and every reader takes its rest pose.
 //
 // Three deformers, one real and two stand-ins. §4.3 says skinning reads bone matrices and a
 // deformable volume reads the tick's cage state; both land in the same pool through the same
@@ -45,7 +46,7 @@
 
 #include "scene.slang"
 
-// Mirrors gfx::DeformParams (80 bytes).
+// Mirrors gfx::DeformParams (88 bytes).
 struct DeformParams {
   uint64_t clusters;      // ClusterDesc[]
   uint64_t instances;     // InstanceDesc[]
@@ -55,10 +56,11 @@ struct DeformParams {
   uint64_t visible_count; // uint: that run's count word
   uint64_t pool;          // float[3 * pool_vertices] out
   uint64_t deform;        // DeformDesc[]
+  uint64_t slots;         // uint[]: the whole list's per-entry pool bases
   float time;             // animation phase in seconds
   float amplitude;        // displacement scale as a fraction of the mesh's grid box
   uint max_entries;       // the run's capacity; the device count is clamped to it
-  uint pad;
+  uint visible_offset;    // this run's first entry in the whole visible list
 };
 
 [[vk::push_constant]] ConstantBuffer<DeformParams> g_params;
@@ -186,6 +188,11 @@ void deform_main(uint3 group : SV_GroupID, uint3 group_thread : SV_GroupThreadID
   InstanceDesc* instances = (InstanceDesc*)g_params.instances;
   const InstanceDesc instance = instances[pair.x];
   if (instance.deform == k_invalid_deform) return;  // rigid: its positions stay on the grid
+  // Where this frame put this entry's vertices. `k_no_pool_slot` means the budget had no room:
+  // write nothing, and every reader draws the rest pose for this cluster.
+  uint* slots = (uint*)g_params.slots;
+  const uint base = slots[g_params.visible_offset + entry];
+  if (base == k_no_pool_slot) return;
   DeformDesc* table = (DeformDesc*)g_params.deform;
   const DeformDesc deform = table[instance.deform];
   MeshDesc* meshes = (MeshDesc*)g_params.meshes;
@@ -218,7 +225,7 @@ void deform_main(uint3 group : SV_GroupID, uint3 group_thread : SV_GroupThreadID
     }
     // k_deform_identity writes the rest pose, which is what makes a deformed instance and a
     // rigid one draw the same picture.
-    const uint slot = (deform.pool_offset + vertex) * 3;
+    const uint slot = (base + i) * 3;
     pool[slot] = moved.x;
     pool[slot + 1] = moved.y;
     pool[slot + 2] = moved.z;

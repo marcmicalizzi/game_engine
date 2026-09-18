@@ -11,19 +11,34 @@
 using namespace engine;
 
 // 64, not 32: a MeshDesc also says where a *deformed* instance's positions come from — the
-// frame's deformed-vertex pool, the per-instance deform table, the mesh's cluster templates, and
-// (the eighth word) its per-vertex skin bindings (docs/plan/04-renderer.md §4.3,
+// frame's deformed-vertex pool, the per-entry allocation table into it, the mesh's cluster
+// templates, and (the eighth word) its per-vertex skin bindings (docs/plan/04-renderer.md §4.3,
 // docs/plan/05-simulation.md §5.11). The addresses ride on the mesh because the rasterizers'
 // push block is full at its 128-byte limit and every position read already holds the MeshDesc;
 // the binding stream in particular is per vertex, so it is the mesh's and not the instance's.
+// **Still 64 with the per-frame pool suballocation**: `deform_slots` took over the word that held
+// the `DeformDesc[]` address, because a position reader now needs the visible entry's block base
+// and not the instance's deformer.
 ENGINE_EXPECT_SIZE(64, 8, gfx::MeshDesc);
 
-// 24, not 16: a skinned instance carries its own bone-matrix address and joint count, because a
-// pose is per instance while the mesh and its bindings are shared by a whole crowd. The word
-// that was `pad` became `joint_count`.
-ENGINE_EXPECT_SIZE(24, 8, gfx::DeformDesc);
+// 16, down from 24: a skinned instance carries its own bone-matrix address and joint count,
+// because a pose is per instance while the mesh and its bindings are shared by a whole crowd —
+// and *where in the pool* is no longer the instance's at all. The per-frame suballocation gives a
+// block to each visible entry, so `pool_offset` and `vertex_count` went away and only the pool
+// pass reads this record now (docs/subsystems/renderer.md, "The deformed-vertex pool").
+ENGINE_EXPECT_SIZE(16, 8, gfx::DeformDesc);
 
-ENGINE_EXPECT_SIZE(80, 8, gfx::DeformParams);
+// 16: the frame's pool allocator, one record in a device buffer. Four counters, and it is copied
+// into the per-slot statistics block and read one frame late like the visible counts.
+ENGINE_EXPECT_SIZE(16, 4, gfx::DeformAlloc);
+
+// 88, not 80: the pool pass gained the per-entry allocation table's address and the run's first
+// entry in it, because `visible` points at one run and the table spans the whole list.
+ENGINE_EXPECT_SIZE(88, 8, gfx::DeformParams);
+
+// 72: the allocator's push block. One dispatch per run of the visible list, one workgroup, every
+// view inside it — so it carries the run and the view count rather than a per-view block.
+ENGINE_EXPECT_SIZE(72, 8, gfx::DeformAllocParams);
 
 // Unchanged at 96: `deform` took one of the three pad words and `bounds_padding` a second, so a
 // deformed instance can say how far its vertices leave their rest positions without the record

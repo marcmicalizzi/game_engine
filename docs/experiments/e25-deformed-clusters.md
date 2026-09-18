@@ -80,10 +80,81 @@ So E25's "no crack at any cluster or LOD boundary" criterion is a constraint on 
 ## What this decides
 
 1. **The pool stays unquantized `float3`, per frame, indexed by the scene-wide vertex index.** 12 bytes a vertex against the grid's 6 is not a cost worth paying attention to at cut scale, and the pass is three orders of magnitude away from a bandwidth limit.
-2. **A deformed instance's block covers its mesh's whole cluster-ordered vertex range.** That is what keeps a cluster's vertices contiguous in the pool, which is what lets a cluster acceleration structure record — build or instantiate — point straight at them with no gather and no copy. `DeformDesc::pool_offset` is therefore biased by the mesh's first vertex so that it adds to the scene-wide index.
+2. **A deformed instance's block covers its mesh's whole cluster-ordered vertex range.** That is what keeps a cluster's vertices contiguous in the pool, which is what lets a cluster acceleration structure record — build or instantiate — point straight at them with no gather and no copy. `DeformDesc::pool_offset` is therefore biased by the mesh's first vertex so that it adds to the scene-wide index. **Superseded 2026-09-18** (see the addendum): the contiguity requirement stands, the whole-mesh block does not — a block is now one *visible entry's* cluster, suballocated per frame from a budget, and `pool_offset` is gone.
 3. **Templates are the ray-side path for deformed instances on NVIDIA**, with per-frame rebuilds kept as the fallback for everything else (and for the KHR path, which has no equivalent). They cost a third of a CLAS in resident memory per cluster of the mesh and save 3× to 5× of the per-frame build.
 4. **The cost rule holds** and the deform pass is not where a deforming mesh's frame goes. Budgeting attention for [05 §5.14](../plan/05-simulation.md#514-deformable-volumes) belongs on the acceleration structures and on the solver, not on the transfer.
 5. **The cage binding must be a function of position.** See above.
+
+## Addendum, 2026-09-18: the pool is suballocated per frame, and decision 2 survives it
+
+Decision 2 above — "a deformed instance's block covers its mesh's whole cluster-ordered vertex
+range" — was the right answer to the question this spike asked (*can a cluster acceleration
+structure record address the pool directly?*) and the wrong answer to the one the renderer asked
+next (*what does a crowd cost?*). It made the pool a function of the **population**: 12.2 MB for
+1,024 foxes, 110 MB for 64 FlightHelmets, and 1.7 GB had the thousand been helmets — to write the
+1,325 clusters a frame draws. The caveat below ("the pool is allocated, not budgeted") is now
+closed, and this is what replaced it.
+
+**The block is the (instance, cluster) pair, not the instance.** The constraint decision 2
+identified is real and unchanged: a cluster's vertices have to be contiguous in the pool or a build
+or instantiate record cannot point at them. What the decision missed is that a *cluster* is already
+contiguous — it is one instance's cut that is scattered — so the smallest block that satisfies the
+constraint is one cluster's vertices, and the name that addresses it is the **visible entry**,
+which every reader already holds. `MeshDesc::deform_slots[entry]` is that block's first pool vertex
+(`gfx::k_no_pool_slot` if it has none), it took over the word that held the `DeformDesc[]` address
+so `MeshDesc` is still 64 bytes, and `DeformDesc` fell from 24 bytes to 16 because `pool_offset`
+and `vertex_count` were the per-instance block. `DeformDesc::pool_offset` is gone; there is no
+scene-wide-index bias any more, and a position read is one indirection shorter than it was.
+
+**The allocation is a prefix sum on the GPU** (`deform_alloc.slang`), over the cull pass's own
+visible list, dispatched once per run before the pool pass that consumes it. The pool is a budget
+(`RenderSettings::deform_pool_kib`, 8 MiB by default, `engine-view --deform-pool-mib`), clamped
+down to what the whole-mesh layout would have taken so a small scene allocates what it always did.
+An entry the budget refuses gets `k_no_pool_slot` and every reader — three rasterizers, the
+resolve, the CLAS records — draws that cluster's **rest pose**; `gfx::DeformAlloc` counts the
+refusals and the renderer logs them once.
+
+**What it costs and what it saves** (RTX 5090, `msvc-debug`, 1920×1080, `--orbit 22`,
+`--deform wave --shadows off`, 240 frames; before is main's build, measured back to back on the
+same machine. **Machine state:** shared as always — other processes at 4–20% of the CPU and the GPU
+1–41% busy at the ends of the runs, 4.3–5.4 GB of the card held by other tenants — so the
+milliseconds are upper bounds; the before/after pairs were taken minutes apart under the same load,
+which is what makes their *difference* meaningful).
+
+| Scene | cut | pool before | pool after | the cut used | `deform` before → after | `alloc` |
+|---|---|---|---|---|---|---|
+| heightfield `--grid 1025 --lod 1` | 373 | 34,604,100 B | 8,388,600 B | 280,752 B | 0.0080 → 0.0084 ms | 0.0061 ms |
+| heightfield `--lod 0.25` | 1,228 | 34,604,100 B | 8,388,600 B | 886,344 B | 0.0090 → 0.0092 ms | 0.0113 ms |
+| heightfield `--lod 0.06` | 4,352 | 34,604,100 B | 8,388,600 B | 3,249,480 B | 0.0121 → 0.0116 ms | 0.0275 ms |
+| 64 FlightHelmets `--lod 1` | 562 | 110,219,520 B | 8,388,600 B | 321,924 B | 0.0093 → 0.0085 ms | 0.0085 ms |
+| 64 FlightHelmets `--lod 0.05` | 24,131 | 110,219,520 B | 8,388,600 B | overflowed | 0.0223 → 0.0206 ms | 0.1234 ms |
+| 1,024 foxes, skinned, 3840×2160 | 1,325 | 12,226,560 B | 8,388,600 B | 597,240 B | 0.1341 → 0.1323 ms | 0.0103 ms |
+
+- **The cost rule is untouched.** The pool pass moved by under 5% at every cut size, which is what
+  a change to *where* a workgroup writes rather than *what* it writes should look like. Refitting
+  the line over the four non-overflowing procedural rows gives 7.8 µs fixed plus 0.53 µs per 1,000
+  visible clusters, against this experiment's 9.4 µs plus 0.9 µs — the same shape, and the same
+  conclusion: deformation is not what a deforming mesh costs.
+- **The skinned crowd's 0.13 ms is not the layout's fault and packing the blocks does not fix it.**
+  A workgroup at 1,024 instances reads a different instance's bone-matrix array and a different
+  `DeformDesc`; the pass is latency-bound on those scattered reads, not on the 1.6 MB it writes,
+  and where the writes land does not change which arrays are read. What would is sorting the
+  visible list by instance so consecutive workgroups share a matrix array — a change to the cull
+  pass, not to the pool, and not made here.
+- **The allocator is the new cost, and it is serial**: one workgroup, about 5 µs per 1,000 entries.
+  That is the same order as the pool pass at an ordinary cut and 0.12 ms at the pathological
+  24,000-pair one. A two-level scan (block sums in parallel, one serial pass over them) keeps the
+  exact cursor and removes it.
+- **Overflow is a picture, not a failure.** The 24,131-pair row exhausted its 8 MiB: 11,508 pairs
+  got blocks and 13,111 drew their rest pose, and the frame is 0.0040 FLIP (35.2 dB, SSIM 0.993)
+  from the same frame with a 256 MiB pool. What it is *not* is reproducible — the order entries are
+  allocated in is the order the cull pass's atomics appended them, so two runs of that frame differ
+  by 0.0003 FLIP. While the cut fits, the order never reaches the picture and a capture is
+  byte-identical; that is what the default budget is sized for.
+- **Every deform mode's picture is unchanged.** FlightHelmet at 640×480, `--orbit 22`,
+  `--no-cache`, through `--raster hw`, `--raster vertex`, `--raster rt --shadows rt`,
+  `--deform wave` and `--views surround3`: PSNR null, SSIM 1, FLIP 0 against main's build on all
+  five, and an animated `--frames 37` capture of 1,024 foxes is byte-identical across two runs.
 
 ## Caveats: what a procedural deformer does not tell us
 
@@ -91,7 +162,7 @@ So E25's "no crack at any cluster or LOD boundary" criterion is a constraint on 
 - **No skinning.** The same pool is meant to carry skinning first and cage displacement on top ([04 §4.3](../plan/04-renderer.md#43-geometry)); only one deformer per instance has been run.
 - **No strain channel.** The optional parallel array of per-vertex cage strain is not built, so nothing here says what it costs or whether the pool's stride can stay as it is when a volume declares it.
 - **No FLIP against deforming the full mesh**, and no cage: E25's own pass criteria about crack-freedom and FLIP under a 512-element cage stay open. What is measured is the weaker statement that a position-only deformer does not crack and a normal-direction one does.
-- **The pool is allocated, not budgeted.** Every deformed instance gets its mesh's whole vertex range: 33 MB for one instance of the 2.1M-triangle heightfield, 110 MB for 64 FlightHelmets. A real system must suballocate what the cut needs, and nothing here measures that allocator.
+- ~~**The pool is allocated, not budgeted.** Every deformed instance gets its mesh's whole vertex range: 33 MB for one instance of the 2.1M-triangle heightfield, 110 MB for 64 FlightHelmets. A real system must suballocate what the cut needs, and nothing here measures that allocator.~~ **Closed, 2026-09-18** — see the addendum above; the allocator is measured there.
 - **`--deform` deforms every instance of the scene**, which is not a scene anybody ships; a real frame mixes rigid and deformed instances and the rigid ones cost nothing extra (they are skipped in the pass and take the unchanged grid path in every reader).
 - **One GPU, one driver.** The templates path needs `VK_NV_cluster_acceleration_structure`; AMD and Intel will rebuild or refit, and neither has been measured because no such machine is reachable. The Titan X and Titan Xp baseline machines have no ray tracing at all.
 - **`msvc-debug`, and timestamps at ALL_COMMANDS.** The GPU times include the barrier wait each zone brackets, which is most of the 9.4 µs fixed cost of the pool pass and part of every build number here.

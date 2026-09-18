@@ -50,8 +50,10 @@ void sw_raster_main(uint3 group_thread : SV_GroupThreadID, uint3 group : SV_Grou
   // hardware viewport.
   MeshDesc* meshes = (MeshDesc*)g_params.mesh;
   const MeshDesc mesh = meshes[instance.mesh];
+  // Once per workgroup: this entry's block in the frame's deformed-vertex pool, or the rest pose.
+  const uint base = deform_base(mesh, instance, visible_index);
   for (uint v = group_thread.x; v < cluster.vertex_count; v += 128) {
-    const float3 p = load_position(mesh, instance, cluster.vertex_offset + v);
+    const float3 p = load_position(mesh, base, cluster.vertex_offset, v);
     const float3 world = mul(instance.world, float4(p, 1.0)).xyz;
     const float4 clip = mul(g_params.view_proj, float4(world, 1.0));
     const bool in_front = clip.w > 1e-6;

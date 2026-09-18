@@ -93,7 +93,13 @@ class GpuScene {
   u32 pair_count() const noexcept { return pair_count_; }
   u32 material_count() const noexcept { return material_count_; }
   u32 triangles_per_cluster() const noexcept { return triangles_per_cluster_; }
+  // The deformed-vertex pool's **budget**, not its occupancy: the pool is suballocated per frame
+  // from the visible list, so what a frame actually uses is `Stats::deform_vertices`.
   u64 deform_pool_bytes() const noexcept { return deform_pool_bytes_; }
+  u32 deform_pool_vertices() const noexcept { return deform_pool_vertices_; }
+  // What the pool would have cost with a block per instance's whole mesh, which is what E25 built
+  // and what the budget replaced. Reported so a summary can say what the suballocation saved.
+  u64 deform_whole_mesh_bytes() const noexcept { return deform_whole_mesh_bytes_; }
   u64 template_bytes() const noexcept { return template_bytes_; }
   // Bytes of one view's run of the visible list: `pair_count` entries of eight.
   u64 visible_run_bytes() const noexcept { return visible_run_bytes_; }
@@ -111,6 +117,8 @@ class GpuScene {
   u64 deform_args_offset(u32 view, u32 run) const noexcept {
     return (u64{view} * k_visible_runs + run) * gfx::k_draw_args_bytes;
   }
+  // Entries of the whole visible list, which is what `deform_slots` has one word each of.
+  u32 visible_entries() const noexcept { return k_visible_runs * view_count_ * pair_count_; }
   // The bytes of the CLAS records, structures and scratch the ray tracing chain holds, which is
   // what a summary reports as the multi-view memory cost.
   u64 rt_bytes() const noexcept { return rt_bytes_; }
@@ -219,7 +227,19 @@ class GpuScene {
   gfx::BufferResource flags[2];      // drawn last frame / this frame, ping-pong, by pair, per view
 
   // ---- the deformed-vertex pool ----------------------------------------------------------------
-  gfx::BufferResource deform_pool;   // f32[3 * pool_vertices]; shared by every view
+  //
+  // **The pool holds what the frame deforms, not every instance's whole mesh.** E25 gave each
+  // deformed instance a block as long as its mesh's cluster-ordered vertex range — 12.2 MB for
+  // 1,024 foxes, 1.7 GB if they had been FlightHelmets — to write the ~1,300 clusters a frame
+  // actually touches. `deform_pool` is now a **budget** (`RenderSettings::deform_pool_mib`,
+  // clamped down to what the whole-mesh layout would have taken so a small scene allocates no
+  // more than it did), suballocated per frame by `deform_alloc.slang`: one block per entry of the
+  // visible list, as long as that cluster's vertex count. `deform_slots` is the result — one word
+  // per entry of the whole list, its block's first pool vertex or `gfx::k_no_pool_slot` — and it
+  // is the address every position reader now goes through (`MeshDesc::deform_slots`).
+  gfx::BufferResource deform_pool;   // f32[3 * deform_pool_vertices]; shared by every view
+  gfx::BufferResource deform_slots;  // u32 per entry of the visible list: its pool vertex base
+  gfx::BufferResource deform_alloc;  // gfx::DeformAlloc: the frame's cursor and overflow counters
   gfx::BufferResource deform_table;  // gfx::DeformDesc[] indexed by InstanceDesc::deform
   gfx::BufferResource deform_args;   // one indirect dispatch block per (view, run)
   // Skinning: the frame's bone matrices and the frame's copy of the deform table, both
@@ -284,7 +304,9 @@ class GpuScene {
   u32 triangles_per_cluster_ = 0;
   u32 view_count_ = 1;
   u64 visible_run_bytes_ = 0;
+  u32 deform_pool_vertices_ = 0;
   u64 deform_pool_bytes_ = 0;
+  u64 deform_whole_mesh_bytes_ = 0;
   u64 template_bytes_ = 0;
   u64 rt_bytes_ = 0;
   u32 tlas_slot_ = gfx::BindlessSet::k_invalid_slot;

@@ -246,8 +246,9 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
   const SceneGeometry geo = geometry_of(params);
   InstanceDesc* instances = (InstanceDesc*)params->instances;
   const InstanceDesc instance = instances[entry.x];
-  const Surface s = reconstruct_screen(geo, instance, entry.y, id & 0xff, source, params->view_proj,
-                                       params->camera.xyz, params->width, params->height);
+  const Surface s = reconstruct_screen(geo, instance, id >> 8, entry.y, id & 0xff, source,
+                                       params->view_proj, params->camera.xyz, params->width,
+                                       params->height);
   if (params->mode == 4) return float4(s.normal * 0.5 + 0.5, 1.0);
   if (params->mode == 5) return float4(frac(s.uv), 0.0, 1.0);
 
@@ -261,7 +262,7 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
     float3 bitangent;
     // The triangle a second time rather than one held across the reconstruction, which is what
     // this block always did: the frame is needed only where a normal map is.
-    const TriangleFetch tri = fetch_triangle(geo, instance, entry.y, id & 0xff);
+    const TriangleFetch tri = fetch_triangle(geo, instance, id >> 8, entry.y, id & 0xff);
     if (tangent_frame(geo, tri, s.normal, tangent, bitangent)) {
       shading_normal = apply_normal_map(material, uv, s.normal, tangent, bitangent);
     }

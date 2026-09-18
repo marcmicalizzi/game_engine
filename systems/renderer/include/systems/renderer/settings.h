@@ -33,6 +33,19 @@ enum class ShadowMode : u8 { Auto, Off, RayTraced };
 // an oversampled source and resampled in the resolve.
 enum class ViewLayout : u8 { Single, Surround3, Panini };
 
+// The deformed-vertex pool's default budget, in kibibytes: 8 MiB, or 699,050 vertices — more than
+// twice the largest cut E25 measured (4,831 clusters at about 65 vertices each, 3.8 MB) and about
+// seven times what a 1,024-fox crowd's cut actually deforms. It is a *budget* — `GpuScene` clamps
+// it down to what a block per instance's whole mesh would have taken, so a scene of one character
+// still allocates exactly what it always did and can never overflow — and `--deform-pool-mib`
+// raises it for a frame whose cut is larger than anything measured here.
+//
+// Kibibytes rather than mebibytes because a *test* has to be able to ask for a pool too small for
+// its own cut: overflow is a stated behaviour (the rest pose, counted) and a behaviour nothing
+// exercises is a behaviour nobody knows works.
+inline constexpr u32 k_default_deform_pool_kib = 8 * 1024;
+inline constexpr u32 k_min_deform_pool_kib = 1;  // a pool of nothing is not a pool
+
 struct RenderSettings {
   RasterMode raster = RasterMode::Hardware;
   ShadowMode shadows = ShadowMode::Auto;
@@ -47,6 +60,9 @@ struct RenderSettings {
   bool deform = false;    // every instance reads the per-frame deformed-vertex pool
   u32 deform_kind = gfx::k_deform_identity;
   f32 deform_amplitude = 0.02f;
+  // The deformed-vertex pool's budget in kibibytes; 0 takes `k_default_deform_pool_kib`. It sizes
+  // a scene buffer, which is why it lives here beside the other things that force a rebuild.
+  u32 deform_pool_kib = 0;
   bool rt_templates = false;  // instantiate prebuilt cluster templates instead of rebuilding
 
   // Geometry streaming (04 §4.3 step 3, §4.9). The scene's clusters are laid out in fixed-size

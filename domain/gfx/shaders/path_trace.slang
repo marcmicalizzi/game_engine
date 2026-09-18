@@ -164,10 +164,11 @@ float3 trace_path(PathTraceParams* params, float3 origin, float3 direction, inou
 
     // The hit, decoded exactly as ray_visibility.slang decodes one: the CLAS record's base
     // geometry index is the visible entry, the primitive index the triangle within the cluster.
-    const uint2 entry = visible_entry(params->visible, query.CommittedGeometryIndex());
+    const uint visible_index = query.CommittedGeometryIndex();
+    const uint2 entry = visible_entry(params->visible, visible_index);
     const InstanceDesc instance = instances[entry.x];
     const uint triangle = query.CommittedPrimitiveIndex() & 0xff;
-    const TriangleFetch tri = fetch_triangle(geo, instance, entry.y, triangle);
+    const TriangleFetch tri = fetch_triangle(geo, instance, visible_index, entry.y, triangle);
     const float2 bary = query.CommittedTriangleBarycentrics();
     const float3 b = float3(1.0 - bary.x - bary.y, bary.x, bary.y);
     Surface s = surface_at(geo, instance, tri, b, origin);

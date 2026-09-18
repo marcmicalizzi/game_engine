@@ -11,7 +11,8 @@ engine_shaders(NAME gfx SOURCES shaders/cluster_mesh.slang shaders/cluster_cull.
                              shaders/visibility_resolve_rt.slang
                              shaders/hiz_build.slang shaders/cluster_vertex.slang
                              shaders/ray_visibility.slang shaders/clas_records.slang
-                             shaders/deform.slang shaders/path_trace.slang)
+                             shaders/deform.slang shaders/deform_alloc.slang
+                             shaders/path_trace.slang)
 engine_module(NAME gfx LAYER domain
   DEPS base containers memory hash json log math platform schemas io
   EXTERNAL_DEPS volk::volk GPUOpen::VulkanMemoryAllocator

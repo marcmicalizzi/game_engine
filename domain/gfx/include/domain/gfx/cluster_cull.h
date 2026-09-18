@@ -137,24 +137,43 @@ inline constexpr f32 k_raster_split = 2.0f;
 // whose `InstanceDesc::deform` is not `k_invalid_deform` is **deformed**: every position read for
 // it — by the three rasterizers, by the resolve's reconstruction, and by the cluster
 // acceleration structure records — comes out of the frame's deformed-vertex pool instead of its
-// mesh's 16-bit grid. `pool_offset` is added to the **scene-wide** vertex index, so it is the
-// instance's block base minus its mesh's first vertex (u32 arithmetic, and the bias wraps); the
-// block is as long as the whole mesh's cluster-ordered vertex range, so a cluster's vertices are
-// contiguous in the pool and a CLAS record can point straight at them.
+// mesh's 16-bit grid.
 //
-// **24 bytes, not the original 16.** A skinned instance also needs the address of its own bone
-// matrices, and that is per *instance*, not per mesh: two characters share one mesh, one skin
-// binding stream and one skeleton, and have entirely different poses. The word that was `pad`
-// became `joint_count`, which the pass clamps a binding's joint index against, and the address
-// was appended. GPU-mirrored; keep in step with `DeformDesc` in the shaders.
+// **Where in the pool is no longer a property of the instance.** E25 gave each deformed instance
+// a block as long as its mesh's whole cluster-ordered vertex range, so `pool_offset` plus the
+// scene-wide vertex index was the slot — and the pool was then sized by the *population* rather
+// than by the frame (1.7 GB for 1,024 FlightHelmets). The pool is now suballocated per frame from
+// a budget, one block per **visible entry**, so the address depends on which entry is being drawn
+// and lives in `MeshDesc::deform_slots` rather than here. What is left on the instance is what is
+// genuinely per instance: which deformer, and a skinned one's own bone matrices, which are per
+// *instance* and not per mesh because two characters share one mesh, one binding stream and one
+// skeleton and have entirely different poses.
+//
+// **16 bytes, not the 24 it was**: `pool_offset` and `vertex_count` were the per-instance block,
+// and neither survives the change. GPU-mirrored; keep in step with `DeformDesc` in the shaders.
 struct DeformDesc {
-  u32 pool_offset = 0;   // added to the scene-wide vertex index to reach this instance's slot
-  u32 vertex_count = 0;  // the block's length: the mesh's cluster-ordered vertex count
-  u32 flags = 0;         // which deformer: k_deform_*
-  u32 joint_count = 0;   // the bone-matrix array's length; 0 leaves a skinned instance at rest
-  u64 joints = 0;        // anim::JointMatrix[joint_count]: three float4 rows each, or 0
+  u32 flags = 0;        // which deformer: k_deform_*
+  u32 joint_count = 0;  // the bone-matrix array's length; 0 leaves a skinned instance at rest
+  u64 joints = 0;       // anim::JointMatrix[joint_count]: three float4 rows each, or 0
 };
-static_assert(sizeof(DeformDesc) == 24);
+static_assert(sizeof(DeformDesc) == 16);
+
+// `MeshDesc::deform_slots[entry]`: the entry's block did not fit the frame's pool budget, so
+// every reader falls back to the **rest pose** for it. Never garbage and never a crash — a
+// character momentarily drawn at rest, counted in `DeformAlloc::overflow_entries`.
+inline constexpr u32 k_no_pool_slot = ~u32{0};
+
+// The frame's pool allocator, one record in a device buffer (`deform_alloc.slang`). The cursor is
+// in **vertices**, not bytes, because that is the unit `deform_slots` holds and the unit the
+// pool's twelve-byte stride multiplies. A frame resets it in its first allocation dispatch and
+// the run's dispatches carry it forward, so the whole frame's cut shares one budget.
+struct DeformAlloc {
+  u32 cursor = 0;             // vertices handed out so far this frame
+  u32 entries = 0;            // visible entries that got a block
+  u32 overflow_entries = 0;   // entries that did not fit and draw their rest pose
+  u32 overflow_vertices = 0;  // the vertices those entries would have needed
+};
+static_assert(sizeof(DeformAlloc) == 16);
 
 inline constexpr u32 k_invalid_deform = ~u32{0};  // InstanceDesc::deform: the instance is rigid
 // The deformers. Identity writes the rest pose into the pool, which is what proves a deformed
@@ -177,9 +196,16 @@ inline constexpr u32 k_deform_kind_mask = 3;  // exactly four kinds fit; a fifth
 // of twelve; the acceleration structure builders still read the float positions.
 //
 // The last four addresses are where a **deformed** instance's positions come from instead. Two
-// of them (`deform_pool`, `deform`) are the scene's, the same in every MeshDesc, and they ride
-// here rather than in `ClusterDrawParams` because that push block is full at its 128-byte limit
-// and every position read already holds the MeshDesc. `templates` and `skin` are the mesh's own.
+// of them (`deform_pool`, `deform_slots`) are the scene's, the same in every MeshDesc, and they
+// ride here rather than in `ClusterDrawParams` because that push block is full at its 128-byte
+// limit and every position read already holds the MeshDesc. `templates` and `skin` are the
+// mesh's own.
+//
+// `deform_slots` replaced the `DeformDesc[]` address that used to sit here, at the same size:
+// with the pool suballocated per frame, a position reader needs the **visible entry's** block
+// base and not the instance's deformer, and only the pool pass reads a `DeformDesc` at all (it
+// takes the table through its own push constant). One indirection fewer per position read, and
+// the table it replaces was being read for one word that never changed.
 //
 // `skin` took the struct from 56 to 64 bytes, and it belongs on the mesh rather than on the
 // `DeformDesc` because a skin binding is per *vertex* and the vertex streams are the mesh's: a
@@ -190,10 +216,11 @@ struct MeshDesc {
   u64 quantized = 0;      // u16[3 * vertex_count] of the whole scene, rounded up to an even count
   u32 first_cluster = 0;  // in the global cluster array
   u32 cluster_count = 0;
-  u64 deform_pool = 0;  // f32[3 * pool_vertices]: the frame's pool; 0 when nothing deforms
-  u64 deform = 0;       // DeformDesc[], indexed by InstanceDesc::deform; 0 when nothing deforms
-  u64 templates = 0;    // u64[]: one cluster template address per global cluster index, or 0
-  u64 skin = 0;         // geometry::SkinBinding[]: eight bytes per scene-wide vertex, or 0
+  u64 deform_pool = 0;   // f32[3 * pool_vertices]: the frame's pool; 0 when nothing deforms
+  u64 deform_slots = 0;  // u32[] per entry of the visible list: its pool vertex base, or
+                         // k_no_pool_slot; 0 when nothing deforms
+  u64 templates = 0;     // u64[]: one cluster template address per global cluster index, or 0
+  u64 skin = 0;          // geometry::SkinBinding[]: eight bytes per scene-wide vertex, or 0
 };
 static_assert(sizeof(MeshDesc) == 64);
 
@@ -264,26 +291,54 @@ struct ClusterDrawParams {
 static_assert(sizeof(ClusterDrawParams) == 128);
 
 // Mirrors DeformParams in deform.slang: the push constants of the deformed-vertex pool pass.
-// 80 bytes. One workgroup per entry of one run of the cull pass's visible list, dispatched
+// 88 bytes. One workgroup per entry of one run of the cull pass's visible list, dispatched
 // indirectly from that run's count, so the pass costs the LOD cut and not the source mesh. A
-// thread writes the pool slots of the cluster's vertices only; every other slot is left alone.
+// thread writes the entry's own block of the pool, which `deform_alloc.slang` handed out before
+// this pass ran; an entry that did not fit writes nothing and draws its rest pose.
+//
+// **88, not the 80 it was**: `slots` is the per-entry allocation table and `visible_offset` is
+// where this run starts in it, because `visible` points at the run and the table is indexed by
+// the entry's index in the *whole* list.
 struct DeformParams {
-  u64 clusters = 0;       // geometry::ClusterDesc[]
-  u64 instances = 0;      // InstanceDesc[]
-  u64 meshes = 0;         // MeshDesc[]
-  u64 attributes = 0;     // geometry::VertexAttributes[]; 0: displace radially instead
-  u64 visible = 0;        // u32x2[]: one run of the visible list, {instance, cluster} per entry
-  u64 visible_count = 0;  // u32: that run's count word, the cull pass's atomic
-  u64 pool = 0;           // f32[3 * pool_vertices] out
-  u64 deform = 0;         // DeformDesc[]
-  f32 time = 0.0f;        // animation phase in seconds
-  f32 amplitude = 1.0f;   // displacement scale as a fraction of the mesh's grid box
-  u32 max_entries = 0;    // the run's capacity; the count read from the device is clamped to it
+  u64 clusters = 0;        // geometry::ClusterDesc[]
+  u64 instances = 0;       // InstanceDesc[]
+  u64 meshes = 0;          // MeshDesc[]
+  u64 attributes = 0;      // geometry::VertexAttributes[]; 0: displace radially instead
+  u64 visible = 0;         // u32x2[]: one run of the visible list, {instance, cluster} per entry
+  u64 visible_count = 0;   // u32: that run's count word, the cull pass's atomic
+  u64 pool = 0;            // f32[3 * pool_vertices] out
+  u64 deform = 0;          // DeformDesc[]
+  u64 slots = 0;           // u32[]: the whole list's per-entry pool bases, from deform_alloc.slang
+  f32 time = 0.0f;         // animation phase in seconds
+  f32 amplitude = 1.0f;    // displacement scale as a fraction of the mesh's grid box
+  u32 max_entries = 0;     // the run's capacity; the count read from the device is clamped to it
+  u32 visible_offset = 0;  // this run's first entry in the whole visible list
+};
+static_assert(sizeof(DeformParams) == 88);
+
+// Mirrors AllocParams in deform_alloc.slang: the push constants of the pool's allocator. 72
+// bytes. **One workgroup**, once per run of the visible list, looping over the views inside it:
+// the allocation is a prefix sum over the visible entries' vertex counts, and doing it in one
+// workgroup in a fixed order (entry, then view, then run) is what makes *which* entries overflow
+// a function of the cut rather than of how the GPU happened to schedule the dispatch.
+struct DeformAllocParams {
+  u64 clusters = 0;        // geometry::ClusterDesc[]
+  u64 instances = 0;       // InstanceDesc[]
+  u64 visible = 0;         // u32x2[]: the whole visible list
+  u64 visible_counts = 0;  // u32: view 0's count word for this run; views k_draw_args_bytes apart
+  u64 slots = 0;           // u32[] out: one per entry of the whole visible list
+  u64 alloc = 0;           // DeformAlloc: the cursor and the counters
+  u32 pool_vertices = 0;   // the budget, in vertices
+  u32 pair_count = 0;      // one view's run is at most this long
+  u32 views = 0;
+  u32 run = 0;    // which run of the list; run-major, so entry (v, run) is (run*views+v)*pairs
+  u32 reset = 0;  // 1: the frame's first allocation dispatch, which zeroes the record
   u32 pad = 0;
 };
-static_assert(sizeof(DeformParams) == 80);
+static_assert(sizeof(DeformAllocParams) == 72);
 
-inline constexpr u32 k_deform_workgroup_size = 128;  // numthreads in deform.slang
+inline constexpr u32 k_deform_workgroup_size = 128;   // numthreads in deform.slang
+inline constexpr u32 k_deform_alloc_workgroup = 256;  // numthreads in deform_alloc.slang
 
 // Mirrors HizParams in hiz_build.slang: the push constants of **one dispatch**, which folds a
 // 32 x 32 tile of mip `src_mip` down through up to `k_hiz_levels_per_dispatch` further mips in

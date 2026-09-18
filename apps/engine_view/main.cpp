@@ -105,6 +105,11 @@ constexpr const char* k_usage =
     "                   (experiment E25): identity writes the rest pose, wave displaces along the\n"
     "                   vertex normal, lattice runs a 3x3x3 cage over the mesh's bounds\n"
     "  --deform-amplitude <a>  displacement as a fraction of the mesh's bounds (default 0.02)\n"
+    "  --deform-pool-mib <n>  the deformed-vertex pool's budget in MiB (default 8). The pool is\n"
+    "                   suballocated per frame from the visible list, so this bounds what the\n"
+    "                   frame's cut may deform; pairs that do not fit draw their rest pose and are\n"
+    "                   counted in deform_overflow_entries. Clamped down to what a block per\n"
+    "                   instance's whole mesh would have taken\n"
     "  --stream         geometry pages stream on demand (04 §4.3 step 3, §4.9): the GPU holds a\n"
     "                   budgeted subset of the scene's cluster pages, the cull pass draws what is\n"
     "                   resident and asks for what it is missing, and the picture converges. The\n"
@@ -753,7 +758,7 @@ int main(int argc, char** argv) {
       std::fputs(k_usage, stdout);
       return 0;
     } else if (a == "--width" || a == "--height" || a == "--frames" || a == "--adapter" ||
-               a == "--grid" || a == "--grid-instances") {
+               a == "--grid" || a == "--grid-instances" || a == "--deform-pool-mib") {
       if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
       u32 n = 0;
       if (!parse_u32(value, n)) {
@@ -767,6 +772,9 @@ int main(int argc, char** argv) {
       if (a == "--adapter") options.adapter = n;
       if (a == "--grid") options.grid = n;
       if (a == "--grid-instances") options.grid_instances = n;
+      // The flag is mebibytes, the setting kibibytes: a caller of the module may want a finer
+      // budget than a whole MiB (and a test needs one), while a person at a command line does not.
+      if (a == "--deform-pool-mib") options.settings.deform_pool_kib = n * 1024;
     } else if (a == "--lod" || a == "--sw-px" || a == "--orbit" || a == "--deform-amplitude") {
       if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
       f32 px = 0.0f;
@@ -1025,6 +1033,7 @@ int main(int argc, char** argv) {
   u32 extent_height = options.height;
   // Read out of the GPU scene while it is alive, because the summary prints after it is gone.
   u64 deform_pool_bytes = 0;
+  u64 deform_whole_mesh_bytes = 0;
   u64 template_bytes = 0;
   u64 rt_bytes = 0;
   std::string views_text = "{}";
@@ -1119,6 +1128,7 @@ int main(int argc, char** argv) {
       break;
     }
     deform_pool_bytes = scene.deform_pool_bytes();
+    deform_whole_mesh_bytes = scene.deform_whole_mesh_bytes();
     template_bytes = scene.template_bytes();
     rt_bytes = scene.rt_bytes();
     renderer::SceneRenderer::Desc renderer_desc;
@@ -1331,13 +1341,17 @@ int main(int argc, char** argv) {
         "\"visible_hw_last\":%u,\"visible_pass2_last\":%u,\"visible_sw_last\":%u,"
         "\"visible_pairs_last\":%u,\"visible_min\":%u,"
         "\"visible_max\":%u,"
-        "\"deform\":\"%s\",\"deform_pool_bytes\":%llu,\"rt_templates\":%s,"
+        "\"deform\":\"%s\",\"deform_pool_bytes\":%llu,"
+        "\"deform_whole_mesh_bytes\":%llu,\"deform_pool_used_bytes\":%llu,"
+        "\"deform_pool_peak_bytes\":%llu,\"deform_entries\":%u,"
+        "\"deform_overflow_entries\":%u,\"deform_overflow_bytes\":%llu,\"rt_templates\":%s,"
         "\"skinned_instances\":%u,\"joints\":%u,\"clip\":\"%s\","
         "\"template_bytes\":%llu,\"rt_bytes\":%llu,\"views\":%s,\"streaming\":%s,"
         "\"gpu_memory\":{\"budget_mib\":%llu,\"used_mib\":%llu,"
         "\"device_local_total_mib\":%llu},\"machine_state\":%s,"
         "\"gpu_ms\":{\"cull\":%.4f,\"hw\":%.4f,\"sw\":%.4f,\"hiz\":%.4f,\"resolve\":%.4f,"
-        "\"rt\":%.4f,\"clas\":%.4f,\"deform\":%.4f,\"trace\":%.4f,\"total\":%.4f,"
+        "\"rt\":%.4f,\"clas\":%.4f,\"deform\":%.4f,\"deform_alloc\":%.4f,"
+        "\"trace\":%.4f,\"total\":%.4f,"
         "\"frames\":%llu},\"captured\":%s}\n",
         static_cast<unsigned long long>(rendered), seconds, avg_ms, extent_width, extent_height,
         scene_data.cluster_count(), scene_data.leaf_count(), scene_data.lod.leaf_triangle_count,
@@ -1351,6 +1365,11 @@ int main(int argc, char** argv) {
         stats.visible_sw, stats.visible_pairs(), visible_min, stats.visible_max,
         renderer::deform_name(resolved.settings),
         static_cast<unsigned long long>(deform_pool_bytes),
+        static_cast<unsigned long long>(deform_whole_mesh_bytes),
+        static_cast<unsigned long long>(u64{stats.deform_vertices} * 3 * sizeof(f32)),
+        static_cast<unsigned long long>(u64{stats.deform_peak_vertices} * 3 * sizeof(f32)),
+        stats.deform_entries, stats.deform_overflow_entries,
+        static_cast<unsigned long long>(u64{stats.deform_overflow_vertices} * 3 * sizeof(f32)),
         resolved.settings.rt_templates ? "true" : "false", skinned_instances, joint_matrices,
         clip_text.c_str(), static_cast<unsigned long long>(template_bytes),
         static_cast<unsigned long long>(rt_bytes), views_text.c_str(), streaming_text.c_str(),
@@ -1358,9 +1377,9 @@ int main(int argc, char** argv) {
         static_cast<unsigned long long>(stats.gpu_memory.used_mib),
         static_cast<unsigned long long>(stats.gpu_memory.device_local_total_mib),
         machine_text.c_str(), stats.cull_ms(), stats.hw_ms(), stats.sw_ms(), stats.hiz_ms(),
-        stats.resolve_ms(), stats.rt_ms(), stats.clas_ms(), stats.deform_ms(), stats.trace_ms(),
-        stats.total_ms(), static_cast<unsigned long long>(stats.timed_frames),
-        captured ? "true" : "false");
+        stats.resolve_ms(), stats.rt_ms(), stats.clas_ms(), stats.deform_ms(),
+        stats.deform_alloc_ms(), stats.trace_ms(), stats.total_ms(),
+        static_cast<unsigned long long>(stats.timed_frames), captured ? "true" : "false");
     // stdout is the summary; the caveat goes beside it on stderr, the same line and the same
     // thresholds the bench harness prints.
     (void)bench::warn_if_busy(bench::worst_of(machine_start, machine_end), bench::QuietThresholds{},

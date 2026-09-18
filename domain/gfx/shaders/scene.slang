@@ -40,10 +40,10 @@ struct MeshDesc {
   uint64_t quantized;  // uint16_t[3 * vertex_count] of the whole scene, padded to an even count
   uint first_cluster;  // this mesh's range of the global cluster array
   uint cluster_count;
-  uint64_t deform_pool;  // float[3 * pool_vertices]: the frame's deformed-vertex pool, or 0
-  uint64_t deform;       // DeformDesc[], indexed by InstanceDesc::deform, or 0
-  uint64_t templates;    // uint64_t[]: a cluster template address per global cluster index, or 0
-  uint64_t skin;         // SkinBinding[]: eight bytes per scene-wide vertex, or 0
+  uint64_t deform_pool;   // float[3 * pool_vertices]: the frame's deformed-vertex pool, or 0
+  uint64_t deform_slots;  // uint[] per visible entry: its pool vertex base, or k_no_pool_slot
+  uint64_t templates;     // uint64_t[]: a cluster template address per global cluster index, or 0
+  uint64_t skin;          // SkinBinding[]: eight bytes per scene-wide vertex, or 0
 };
 
 // Mirrors gfx::InstanceDesc (96 bytes): one per instance, in order of first_pair.
@@ -62,12 +62,12 @@ struct InstanceDesc {
   uint pad;
 };
 
-// Mirrors gfx::DeformDesc (24 bytes): one per deformed instance. `joints` is per instance and
-// `MeshDesc::skin` is per mesh, which is the split a crowd needs: one binding stream, one array
-// of bone matrices per character.
+// Mirrors gfx::DeformDesc (16 bytes): one per deformed instance, read by the pool pass alone.
+// `joints` is per instance and `MeshDesc::skin` is per mesh, which is the split a crowd needs:
+// one binding stream, one array of bone matrices per character. Where in the pool the instance
+// writes is **not** here — the pool is suballocated per frame per visible entry, so that address
+// is `MeshDesc::deform_slots[entry]`.
 struct DeformDesc {
-  uint pool_offset;  // added to the scene-wide vertex index to reach this instance's slot
-  uint vertex_count;
   uint flags;        // which deformer: k_deform_*
   uint joint_count;  // the bone-matrix array's length; 0 leaves a skinned instance at rest
   uint64_t joints;   // JointMatrix[joint_count], or 0
@@ -137,6 +137,9 @@ struct PageRequest {
 
 static const uint k_instance_uniform_scale = 1u;
 static const uint k_invalid_deform = 0xffffffffu;
+// gfx::k_no_pool_slot: this visible entry has no block in the frame's pool, so every reader takes
+// its rest pose. That is the *only* overflow behaviour there is — never garbage, never a crash.
+static const uint k_no_pool_slot = 0xffffffffu;
 static const uint k_deform_identity = 0u;
 static const uint k_deform_wave = 1u;
 static const uint k_deform_lattice = 2u;
@@ -158,28 +161,38 @@ float3 load_quantized_position(MeshDesc mesh, uint vertex) {
   return mesh.quant.xyz + float3(float(x), float(y), float(z)) * mesh.quant.w;
 }
 
-// A slot of the deformed-vertex pool: three floats at 3 * (pool_offset + vertex). Read as plain
-// floats rather than a float3 array so the stride is twelve bytes with no layout assumption.
-float3 load_pool_position(MeshDesc mesh, DeformDesc deform, uint vertex) {
-  float* pool = (float*)mesh.deform_pool;
-  const uint slot = (deform.pool_offset + vertex) * 3;
-  return float3(pool[slot], pool[slot + 1], pool[slot + 2]);
+// Where this frame put the deformed vertices of visible entry `entry`, as a **pool vertex
+// index**, or k_no_pool_slot when the instance is rigid, the frame has no pool, or the entry did
+// not fit the budget. Resolved once per cluster by every reader — a workgroup, a draw instance,
+// a resolve pixel's triangle — and then handed to `load_position` for each of its vertices.
+//
+// `entry` is the index into the **whole** visible list (the visibility id's high bits), not into
+// one run of it, because the table is one array over the frame's three runs and every view.
+uint deform_base(MeshDesc mesh, InstanceDesc instance, uint entry) {
+  if (instance.deform == k_invalid_deform || mesh.deform_slots == 0) return k_no_pool_slot;
+  uint* slots = (uint*)mesh.deform_slots;
+  return slots[entry];
 }
 
-// True when this instance's positions come from the pool rather than the grid.
+// True when this instance's positions could come from the pool. It says nothing about whether
+// this frame found room for a particular cluster; `deform_base` answers that.
 bool is_deformed(MeshDesc mesh, InstanceDesc instance) {
-  return instance.deform != k_invalid_deform && mesh.deform != 0;
+  return instance.deform != k_invalid_deform && mesh.deform_slots != 0;
 }
 
-// **Every** position read of a scene goes through this: the pool for a deformed instance, the
-// mesh's 16-bit grid for a rigid one (docs/plan/04-renderer.md §4.3). `vertex` is the scene-wide
-// vertex index, which is what the pool is indexed by too.
-float3 load_position(MeshDesc mesh, InstanceDesc instance, uint vertex) {
-  if (is_deformed(mesh, instance)) {
-    DeformDesc* table = (DeformDesc*)mesh.deform;
-    return load_pool_position(mesh, table[instance.deform], vertex);
+// **Every** position read of a scene goes through this (docs/plan/04-renderer.md §4.3). `base` is
+// what `deform_base` answered for the entry being drawn and `first` is the cluster's
+// `vertex_offset`, so the pool slot is the vertex's position *within its cluster* — which is what
+// a per-frame suballocation makes it. `k_no_pool_slot` is the rest pose off the mesh's 16-bit
+// grid, and it covers three cases with one branch: a rigid instance, a frame with no pool, and a
+// deformed cluster the pool budget had no room for.
+float3 load_position(MeshDesc mesh, uint base, uint first, uint local) {
+  if (base != k_no_pool_slot) {
+    float* pool = (float*)mesh.deform_pool;
+    const uint slot = (base + local) * 3;
+    return float3(pool[slot], pool[slot + 1], pool[slot + 2]);
   }
-  return load_quantized_position(mesh, vertex);
+  return load_quantized_position(mesh, first + local);
 }
 
 // Entry `index` of the visible list. A null list is the identity scene the direct draws use:

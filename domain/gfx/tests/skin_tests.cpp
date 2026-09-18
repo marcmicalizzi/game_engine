@@ -92,6 +92,7 @@ struct SkinScene {
   gfx::BufferResource deform_table;
   gfx::BufferResource joints;
   gfx::BufferResource pool;
+  gfx::BufferResource slots;  // u32 per visible entry: its block's first pool vertex
   gfx::BufferResource count_buffer;
   gfx::BufferResource visible;
   gfx::BufferResource host;
@@ -139,7 +140,6 @@ struct SkinScene {
     }
 
     gfx::DeformDesc desc{};
-    desc.vertex_count = pool_vertices;
     desc.flags = gfx::k_deform_skin;
     desc.joint_count = joint_count;
     desc.joints = joints.address;
@@ -147,14 +147,23 @@ struct SkinScene {
     gfx::set_instance_transform(instance, Mat4::identity());
     instance.deform = 0;
     Vector<u32> entries;
+    // The pool is addressed per visible entry, and *this* test chooses the mesh-ordered layout:
+    // entry c's block starts at cluster c's own `vertex_offset`, so a pool slot is still the
+    // mesh's vertex index and the comparison against `anim::skin_positions` below stays a plain
+    // walk of the mesh. A frame's allocator packs the cut instead; that it can is exactly the
+    // point of the table being what decides.
+    Vector<u32> slot_table;
     for (u32 c = 0; c < mesh.clusters.size(); ++c) {
       entries.push_back(0);
       entries.push_back(c);
+      slot_table.push_back(mesh.clusters[c].vertex_offset);
     }
     const u32 count = mesh.clusters.size();
     if (!gfx::upload_buffer(device, &desc, sizeof(desc), k_storage, deform_table, error) ||
         !gfx::upload_buffer(device, &instance, sizeof(instance), k_storage, instances, error) ||
         !gfx::upload_buffer(device, &count, sizeof(count), k_storage, count_buffer, error) ||
+        !gfx::upload_buffer(device, slot_table.data(), slot_table.size() * sizeof(u32), k_storage,
+                            slots, error) ||
         !gfx::upload_buffer(device, entries.data(), entries.size() * sizeof(u32), k_storage,
                             visible, error)) {
       return false;
@@ -165,7 +174,7 @@ struct SkinScene {
     mesh_desc.quantized = quantized.address;
     mesh_desc.cluster_count = mesh.clusters.size();
     mesh_desc.deform_pool = pool.address;
-    mesh_desc.deform = deform_table.address;
+    mesh_desc.deform_slots = slots.address;
     mesh_desc.skin = skin.address;
     return gfx::upload_buffer(device, &mesh_desc, sizeof(mesh_desc), k_storage, meshes, error);
   }
@@ -179,13 +188,15 @@ struct SkinScene {
     p.visible_count = count_buffer.address;
     p.pool = pool.address;
     p.deform = deform_table.address;
+    p.slots = slots.address;
     p.max_entries = mesh.clusters.size();
+    p.visible_offset = 0;
     return p;
   }
 
   void destroy(const gfx::Device& device) noexcept {
     for (gfx::BufferResource* b : {&clusters, &quantized, &skin, &meshes, &instances, &deform_table,
-                                   &joints, &pool, &count_buffer, &visible, &host}) {
+                                   &joints, &pool, &slots, &count_buffer, &visible, &host}) {
       gfx::destroy_buffer(device, *b);
     }
   }
@@ -230,7 +241,6 @@ TEST_CASE("deform: the skinning mode matches the CPU reference on a two-bone cyl
     // The bone matrices are host visible, so a pose is one memcpy; a real frame would stage them.
     std::memcpy(scene.joints.mapped, matrices.data(), matrices.size() * sizeof(anim::JointMatrix));
     gfx::DeformDesc desc{};
-    desc.vertex_count = scene.pool_vertices;
     desc.flags = gfx::k_deform_skin;
     desc.joint_count = joint_count;
     desc.joints = scene.joints.address;
@@ -242,7 +252,7 @@ TEST_CASE("deform: the skinning mode matches the CPU reference on a two-bone cyl
     mesh_desc.quantized = scene.quantized.address;
     mesh_desc.cluster_count = scene.mesh.clusters.size();
     mesh_desc.deform_pool = scene.pool.address;
-    mesh_desc.deform = table.address;
+    mesh_desc.deform_slots = scene.slots.address;
     mesh_desc.skin = scene.skin.address;
     gfx::BufferResource meshes;
     REQUIRE(gfx::upload_buffer(device, &mesh_desc, sizeof(mesh_desc),
