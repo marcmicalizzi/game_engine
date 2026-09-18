@@ -18,6 +18,12 @@
 //                 cluster id and base geometry index are the entry's **visible index**, the same
 //                 word the rasterizer puts in the visibility buffer, so the ray-traced and
 //                 rasterized pictures name the same pair.
+//
+// A deformed instance's record points at the frame's deformed-vertex pool instead of the mesh's
+// rest-pose positions, so the ray geometry deforms with the raster geometry (§4.3). With
+// `instantiate` set, emit_main writes 32-byte instantiate records naming each cluster's prebuilt
+// template (MeshDesc::templates) and this frame's positions for it, which is what cluster
+// acceleration structure templates exist for.
 
 #include "scene.slang"
 
@@ -36,6 +42,17 @@ struct ClusterRecord {
   uint64_t omm_indices;
 };
 
+// Mirrors VkClusterAccelerationStructureInstantiateClusterInfoNV (32 bytes): what the templates
+// variant writes instead. The offsets are added to the template's own cluster id and base
+// geometry index, both built as zero, so they are the visible entry outright.
+struct InstantiateRecord {
+  uint cluster_id_offset;
+  uint geometry_index_offset;  // 24 bits, then 8 reserved
+  uint64_t template_address;
+  uint64_t vertex_address;
+  uint64_t vertex_stride;
+};
+
 // Mirrors VkClusterAccelerationStructureBuildClustersBottomLevelInfoNV (16 bytes).
 struct BlasRecord {
   uint count;
@@ -43,25 +60,26 @@ struct BlasRecord {
   uint64_t references;
 };
 
-// Mirrors gfx::ClusterRecordParams (120 bytes).
+// Mirrors gfx::ClusterRecordParams (128 bytes).
 struct RecordParams {
   uint64_t clusters;         // ClusterDesc[]
-  uint64_t vertices;         // float3[]: cluster-ordered positions
+  uint64_t vertices;         // float3[]: cluster-ordered rest positions
   uint64_t indices8;         // uint8[3 * triangles]: packed cluster indices
   uint64_t instances;        // InstanceDesc[instance_count]
+  uint64_t meshes;           // MeshDesc[]: the deformed-vertex pool and the cluster templates
   uint64_t visible;          // uint2[]: the cull pass's visible list
   uint64_t visible_count;    // uint: how many (the cull pass's count word)
   uint64_t slots;            // uint[pair_count]: visible index per pair slot
   uint64_t instance_counts;  // uint[instance_count]: survivors per instance (zeroed first)
   uint64_t instance_first;   // uint[instance_count]: dense record base
-  uint64_t records;          // ClusterRecord[max_clusters] out
+  uint64_t records;          // ClusterRecord[max_clusters] or InstantiateRecord[max_clusters] out
   uint64_t record_count;     // uint out
   uint64_t blas_records;     // BlasRecord[instance_count] out
   uint64_t clas_addresses;   // uint64_t[]: where the CLAS build writes each address
   uint instance_count;
   uint pair_count;
   uint max_clusters;
-  uint pad;
+  uint instantiate;  // 1: write InstantiateRecord from MeshDesc::templates instead
 };
 
 [[vk::push_constant]] ConstantBuffer<RecordParams> g_params;
@@ -107,7 +125,21 @@ void ranges_main() {
   *record_count = total;
 }
 
-// Move the bucketed entries down to the dense array and write their CLAS build records.
+// Where a cluster's twelve-byte positions live this frame: the mesh's rest-pose float array for
+// a rigid instance, the deformed-vertex pool for a deformed one. The pool block is the mesh's
+// whole cluster-ordered vertex range, so the cluster's vertices are contiguous there too.
+uint64_t cluster_vertex_address(MeshDesc mesh, InstanceDesc instance, ClusterDesc cluster) {
+  if (is_deformed(mesh, instance)) {
+    DeformDesc* table = (DeformDesc*)mesh.deform;
+    const DeformDesc deform = table[instance.deform];
+    return mesh.deform_pool + uint64_t(deform.pool_offset + cluster.vertex_offset) * 12;
+  }
+  return g_params.vertices + uint64_t(cluster.vertex_offset) * 12;
+}
+
+// Move the bucketed entries down to the dense array and write their CLAS build records, or, in
+// the templates variant, the instantiate records that name the cluster's template and this
+// frame's positions for it.
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void emit_main(uint3 thread_id : SV_DispatchThreadID) {
@@ -115,7 +147,8 @@ void emit_main(uint3 thread_id : SV_DispatchThreadID) {
   if (slot >= g_params.pair_count) return;
   InstanceDesc* instances = (InstanceDesc*)g_params.instances;
   const uint instance_index = instance_of_pair(instances, g_params.instance_count, slot);
-  const uint local = slot - instances[instance_index].first_pair;
+  const InstanceDesc instance = instances[instance_index];
+  const uint local = slot - instance.first_pair;
   uint* counts = (uint*)g_params.instance_counts;
   if (local >= counts[instance_index]) return;  // this instance drew fewer clusters than it has
   uint* slots = (uint*)g_params.slots;
@@ -124,8 +157,24 @@ void emit_main(uint3 thread_id : SV_DispatchThreadID) {
   const uint cluster_id = visible[visible_index].y;
   ClusterDesc* clusters = (ClusterDesc*)g_params.clusters;
   const ClusterDesc cluster = clusters[cluster_id];
+  MeshDesc* meshes = (MeshDesc*)g_params.meshes;
+  const MeshDesc mesh = meshes[instance.mesh];
   uint* first = (uint*)g_params.instance_first;
   const uint dense = first[instance_index] + local;
+  const uint64_t vertex_address = cluster_vertex_address(mesh, instance, cluster);
+
+  if (g_params.instantiate != 0) {
+    uint64_t* templates = (uint64_t*)mesh.templates;
+    InstantiateRecord record;
+    record.cluster_id_offset = visible_index;
+    record.geometry_index_offset = visible_index & 0xffffff;
+    record.template_address = templates[cluster_id];
+    record.vertex_address = vertex_address;
+    record.vertex_stride = 12;
+    InstantiateRecord* records = (InstantiateRecord*)g_params.records;
+    records[dense] = record;
+    return;
+  }
 
   ClusterRecord record;
   record.cluster_id = visible_index;
@@ -136,7 +185,7 @@ void emit_main(uint3 thread_id : SV_DispatchThreadID) {
   record.strides0 = 1 | (12 << 16);
   record.strides1 = 0;
   record.index_buffer = g_params.indices8 + uint64_t(cluster.triangle_offset) * 3;
-  record.vertex_buffer = g_params.vertices + uint64_t(cluster.vertex_offset) * 12;
+  record.vertex_buffer = vertex_address;
   record.geometry_buffer = 0;
   record.omm_array = 0;
   record.omm_indices = 0;

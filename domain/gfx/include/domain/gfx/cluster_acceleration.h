@@ -32,12 +32,16 @@
 
 namespace engine::gfx {
 
-// What the device allows per cluster and how big the arrays may get.
+// What the device allows per cluster and how big the arrays may get. `instantiate` sizes a
+// ClusterSet for instantiating cluster templates rather than building clusters from scratch;
+// everything downstream (the addresses array, the cluster bottom-level build, the top-level
+// structure) is the same either way.
 struct ClusterSetLimits {
   u32 max_clusters = 0;                 // records per build
   u32 max_triangles_per_cluster = 124;  // at most ClusterAsProperties::max_triangles_per_cluster
   u32 max_vertices_per_cluster = 64;
   u32 max_geometry_index = 0;  // largest cluster id used as a geometry index
+  bool instantiate = false;    // the set holds instantiated templates, not rebuilt clusters
 };
 
 struct ClusterAsProperties {
@@ -47,6 +51,7 @@ struct ClusterAsProperties {
   u32 cluster_alignment = 0;
   u32 scratch_alignment = 0;
   u32 bottom_level_alignment = 0;
+  u32 template_alignment = 0;
 };
 bool cluster_as_properties(const Device& device, ClusterAsProperties& out) noexcept;
 
@@ -84,7 +89,61 @@ bool create_cluster_set(const Device& device, const ClusterSetLimits& limits, Cl
 // limits.max_clusters records.
 void build_cluster_set(VkCommandBuffer commands, const ClusterSet& set, VkDeviceAddress records,
                        VkDeviceAddress count, const BufferResource& scratch);
+// The same command for a set created with `limits.instantiate`: `records` holds instantiate
+// records (k_cluster_instantiate_record_bytes each, see write_cluster_instantiate_records or
+// clas_records.slang's `instantiate` variant), each naming a template and the positions to
+// instantiate it with. The addresses and sizes the build writes are read exactly as a rebuild's.
+void instantiate_cluster_templates(VkCommandBuffer commands, const ClusterSet& set,
+                                   VkDeviceAddress records, VkDeviceAddress count,
+                                   const BufferResource& scratch);
 void destroy_cluster_set(const Device& device, ClusterSet& set) noexcept;
+
+// Cluster templates (docs/plan/04-renderer.md §4.3, experiment E25): a template is built once
+// per cluster from the bind-pose topology and instantiated per frame from deformed positions,
+// which is what makes a deforming mesh's ray tracing geometry cheaper than rebuilding it. The
+// positions given at build time are a reference pose the builder lays the structure out from,
+// not the ones traced against; an instantiation supplies those, so the rest pose is what to hand
+// a template. Build it with cluster id and base geometry index **zero**, because an instantiate
+// record's offsets are added to the template's own.
+struct ClusterTemplateSet {
+  BufferResource data;       // every template, packed by the driver
+  BufferResource addresses;  // u64[max_clusters], written by the build; host visible
+  BufferResource sizes;      // u32[max_clusters], written by the build; host visible
+  u64 build_scratch_bytes = 0;
+  u32 max_clusters = 0;
+  ClusterSetLimits limits;
+  u32 alignment = 0;
+};
+bool create_cluster_templates(const Device& device, const ClusterSetLimits& limits,
+                              ClusterTemplateSet& out, std::string* error = nullptr);
+// Builds one template per record; `records` holds k_cluster_template_record_bytes each (see
+// write_cluster_template_records) and `count` is a device address of a u32 count, or 0 for
+// limits.max_clusters.
+void build_cluster_templates(VkCommandBuffer commands, const ClusterTemplateSet& set,
+                             VkDeviceAddress records, VkDeviceAddress count,
+                             const BufferResource& scratch);
+void destroy_cluster_templates(const Device& device, ClusterTemplateSet& set) noexcept;
+
+// The 72-byte template build record: the 64-byte cluster build record followed by one more
+// address, the instantiation bounding-box limit (0 for none).
+inline constexpr u64 k_cluster_template_record_bytes = 72;
+void write_cluster_template_records(std::span<const ClusterBuildInput> clusters,
+                                    void* out) noexcept;
+
+// One instantiation of a template: the offsets are added to the template's own cluster id and
+// base geometry index, so a template built with zeros reports exactly these.
+struct ClusterInstantiateInput {
+  u32 cluster_id = 0;
+  u32 geometry_index = 0;
+  VkDeviceAddress cluster_template = 0;
+  VkDeviceAddress vertices = 0;  // float3, stride 12
+};
+// The 32-byte instantiate record as clas_records.slang writes it, in order: u32 clusterIdOffset;
+// u32 geometryIndexOffset in 24 bits; u64 clusterTemplateAddress; then the vertex buffer as a
+// u64 address and a u64 stride.
+inline constexpr u64 k_cluster_instantiate_record_bytes = 32;
+void write_cluster_instantiate_records(std::span<const ClusterInstantiateInput> clusters,
+                                       void* out) noexcept;
 
 // The 64-byte CLAS build record as a shader writes it (clas_records.slang mirrors this), in
 // order: u32 cluster_id; u32 cluster_flags; u32 counts, which packs triangle_count, then
@@ -118,28 +177,32 @@ inline constexpr u64 k_cluster_blas_record_bytes = 16;
 //                   **visible index**, which is what the visibility buffer's id holds, so a hit's
 //                   GeometryIndex names the same pair the rasterizer would have.
 //
-// `instance_counts` must be zeroed before `records_main`. Mirrors RecordParams in the shader.
-// 120 bytes.
+// `instance_counts` must be zeroed before `records_main`. A deformed instance's record points at
+// the frame's deformed-vertex pool (`MeshDesc::deform_pool`) rather than `vertices`, and with
+// `instantiate` set the emit pass writes instantiate records naming each cluster's template
+// (`MeshDesc::templates`) instead of build records. Mirrors RecordParams in the shader.
+// 128 bytes, the largest push block the renderer allows.
 struct ClusterRecordParams {
   u64 clusters = 0;         // geometry::ClusterDesc[]
-  u64 vertices = 0;         // float3[]: cluster-ordered positions
+  u64 vertices = 0;         // float3[]: cluster-ordered rest positions
   u64 indices8 = 0;         // u8[]: pack_cluster_indices of every cluster, in triangle order
   u64 instances = 0;        // gfx::InstanceDesc[instance_count]
+  u64 meshes = 0;           // gfx::MeshDesc[]: the deformed-vertex pool and the templates
   u64 visible = 0;          // u32x2[]: the visible list, {instance, cluster} per entry
   u64 visible_count = 0;    // u32: the cull pass's count word
   u64 slots = 0;            // u32[pair_count]: visible index per pair slot (records_main out)
   u64 instance_counts = 0;  // u32[instance_count]: survivors per instance (records_main out)
   u64 instance_first = 0;   // u32[instance_count]: dense record base (ranges_main out)
-  u64 records = 0;          // ClusterBuildInput records out, k_cluster_build_record_bytes each
-  u64 record_count = 0;     // u32 out: what build_cluster_set reads as `count`
+  u64 records = 0;          // build or instantiate records out, the matching stride each
+  u64 record_count = 0;     // u32 out: what the build reads as `count`
   u64 blas_records = 0;     // k_cluster_blas_record_bytes per instance (ranges_main out)
   u64 clas_addresses = 0;   // ClusterSet::addresses.address
   u32 instance_count = 0;
   u32 pair_count = 0;
   u32 max_clusters = 0;  // the ClusterSet's capacity; the record count is clamped to it
-  u32 pad = 0;
+  u32 instantiate = 0;   // 1: write k_cluster_instantiate_record_bytes records from templates
 };
-static_assert(sizeof(ClusterRecordParams) == 120);
+static_assert(sizeof(ClusterRecordParams) == 128);
 inline constexpr u32 k_cluster_records_workgroup = 64;
 
 // A bottom-level structure over CLAS references (the addresses a ClusterSet build wrote). Built

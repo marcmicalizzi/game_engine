@@ -1,8 +1,9 @@
 // Fullscreen resolve of the 64-bit visibility buffer (docs/plan/04-renderer.md §4.3 step 4):
 // the first material pass. A pixel's id is `visible_index << 8 | triangle`, so the visible list
 // gives back the (instance, cluster) pair the rasterizer drew; the cluster and the triangle lead
-// to the three vertices, whose positions come off the 16-bit grid of that instance's mesh
-// (MeshDesc, load_position) and go through the instance's world matrix, exactly as the
+// to the three vertices, whose positions come off the 16-bit grid of that instance's mesh — or,
+// for a deformed instance, out of the frame's deformed-vertex pool (MeshDesc, load_position) —
+// and go through the instance's world matrix, exactly as the
 // rasterizer moved them. Screen-space barycentrics against the pixel center, made
 // perspective-correct with the vertices' clip-space w, reconstruct the surface position and
 // interpolate the per-vertex normal and UV (octahedral snorm16 normals, half-float UVs, from
@@ -157,7 +158,7 @@ Surface reconstruct(ResolveParams* params, InstanceDesc instance, uint2 entry, u
   const float2 size = float2(float(params->width), float(params->height));
   for (uint i = 0; i < 3; ++i) {
     local[i] = cluster.vertex_offset + ((packed >> (8 * i)) & 0xff);
-    p[i] = mul(instance.world, float4(load_position(mesh, local[i]), 1.0)).xyz;
+    p[i] = mul(instance.world, float4(load_position(mesh, instance, local[i]), 1.0)).xyz;
     clip[i] = mul(params->view_proj, float4(p[i], 1.0));
     const float2 ndc = clip[i].xy / clip[i].w;
     screen[i] = float2((ndc.x * 0.5 + 0.5) * size.x, (0.5 - ndc.y * 0.5) * size.y);
@@ -225,7 +226,7 @@ bool tangent_frame(ResolveParams* params, InstanceDesc instance, uint2 entry, ui
   float2 uv[3];
   for (uint i = 0; i < 3; ++i) {
     const uint vertex = cluster.vertex_offset + ((packed >> (8 * i)) & 0xff);
-    p[i] = mul(instance.world, float4(load_position(mesh, vertex), 1.0)).xyz;
+    p[i] = mul(instance.world, float4(load_position(mesh, instance, vertex), 1.0)).xyz;
     uv[i] = decode_half2(attributes[vertex].uv_half2);
   }
   const float3 edge1 = p[1] - p[0];

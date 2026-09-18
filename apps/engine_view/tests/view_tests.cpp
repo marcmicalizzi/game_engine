@@ -46,6 +46,9 @@ TEST_CASE("engine-view: usage errors exit 2") {
   CHECK(view({"--width"}).exit_code == 2);
   CHECK(view({"--width", "abc"}).exit_code == 2);
   CHECK(view({"--grid", "1"}).exit_code == 2);
+  CHECK(view({"--deform"}).exit_code == 2);
+  CHECK(view({"--deform", "bogus"}).exit_code == 2);
+  CHECK(view({"--deform-amplitude", "abc"}).exit_code == 2);
   const Run help = view({"--help"});
   CHECK(help.exit_code == 0);
   CHECK(help.output.find("usage: engine-view") != std::string::npos);
@@ -99,4 +102,49 @@ TEST_CASE("engine-view: renders frames and captures the last one") {
   CHECK(width >= 320);  // high-DPI scaling can only enlarge the pixel size
   CHECK(height >= 200);
   std::filesystem::remove_all(dir);
+}
+
+// `--deform identity` fills the per-frame vertex pool with the rest pose, so the picture and the
+// cut must be exactly what the rigid run produced — the flag is wired up when nothing changes
+// except the pool appearing and the pass running (experiment E25, docs/subsystems/gfx.md).
+TEST_CASE("engine-view: --deform fills the vertex pool without changing the cut") {
+  // No occlusion culling: its Hi-Z comes from the rasterized depth, and a deformed instance's
+  // depth differs from a rigid one's in the last bit (the pool stores what the rasterizer would
+  // have recomputed), which could flip a marginal cluster and make this comparison flaky.
+  auto run_mode = [](const char* mode) {
+    return view({"--width", "320", "--height", "200", "--frames", "8", "--grid", "65", "--orbit",
+                 "22", "--no-vsync", "--no-occlusion", "--shadows", "off", "--deform", mode});
+  };
+  const Run rigid = run_mode("none");
+  if (rigid.exit_code == 3) {
+    MESSAGE("engine-view unavailable here: " << rigid.output);
+    return;
+  }
+  const Run identity = run_mode("identity");
+  REQUIRE_MESSAGE(rigid.exit_code == 0, rigid.output);
+  REQUIRE_MESSAGE(identity.exit_code == 0, identity.output);
+  auto summary_of = [](const Run& run) {
+    const usize line_start = run.output.find_last_of('\n', run.output.size() - 2);
+    const std::string last =
+        run.output.substr(line_start == std::string::npos ? 0 : line_start + 1);
+    JsonValue value;
+    REQUIRE_MESSAGE(parse_json(last, value).ok, last);
+    return value;
+  };
+  const JsonValue rigid_summary = summary_of(rigid);
+  const JsonValue identity_summary = summary_of(identity);
+  auto number = [](const JsonValue& summary, const char* key) {
+    u64 v = 0;
+    const JsonValue* value = summary.find(key);
+    return value != nullptr && value->get_u64(v) ? v : ~u64{0};
+  };
+  REQUIRE(rigid_summary.find("deform") != nullptr);
+  CHECK(rigid_summary.find("deform")->as_string() == "none");
+  CHECK(identity_summary.find("deform")->as_string() == "identity");
+  CHECK(number(rigid_summary, "deform_pool_bytes") == 0);
+  CHECK(number(identity_summary, "deform_pool_bytes") > 0);
+  // The same camera and the same threshold select the same clusters whether they deform or not.
+  CHECK(number(identity_summary, "visible_pairs_last") ==
+        number(rigid_summary, "visible_pairs_last"));
+  CHECK(number(identity_summary, "visible_pairs_last") > 0);
 }

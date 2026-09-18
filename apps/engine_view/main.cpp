@@ -13,6 +13,9 @@
 // when their sources change. `--mesh` takes a glTF file or a `.clusters` container
 // (domain/geometry); a glTF is looked up in the derived-data cache first and built into it on a
 // miss, so the second run of the same mesh skips the import and the clustering entirely.
+// `--deform` runs the per-frame deformed-vertex pool over the cut's clusters and makes every
+// instance read its positions from there (experiment E25); with `--raster rt`, `--rt-templates`
+// instantiates one prebuilt cluster template per cluster instead of rebuilding the CLAS.
 //
 // Exit codes: 0 ok; 1 runtime error; 2 usage; 3 unavailable (no display, no Vulkan device, no
 // mesh shaders, or no presentation support), which tests treat as a skip.
@@ -53,6 +56,7 @@
 #include <shaders/cluster_mesh.spv.h>
 #include <shaders/cluster_sw_raster.spv.h>
 #include <shaders/cluster_vertex.spv.h>
+#include <shaders/deform.spv.h>
 #include <shaders/hiz_build.spv.h>
 #include <shaders/ray_visibility.spv.h>
 #include <shaders/visibility_resolve.spv.h>
@@ -74,6 +78,7 @@ constexpr const char* k_usage =
     "                   [--raster direct|hw|vertex|sw|auto|rt] [--sw-px <px>] [--view <mode>] [--orbit <d>]\n"
     "                   [--mesh <file.gltf|file.glb|file.clusters>] [--scene <file.json>]\n"
     "                   [--grid-instances <n>] [--no-cache] [--ddc <dir>] [--no-lights]\n"
+    "                   [--deform none|identity|wave|lattice] [--deform-amplitude <a>] [--rt-templates]\n"
     "                   [--shadows off|rt]\n"
     "\n"
     "  --frames <n>     render n frames, then exit (0: until the window closes)\n"
@@ -108,6 +113,12 @@ constexpr const char* k_usage =
     "                   and normal maps under a sun), normals, uv\n"
     "  --orbit <d>      orbit at a fixed distance instead of breathing between 8 and 36 units;\n"
     "                   distances scale with the scene radius (10 for the heightfield)\n"
+    "  --deform <mode>  deform every instance through the per-frame deformed-vertex pool\n"
+    "                   (experiment E25): identity writes the rest pose, wave displaces along the\n"
+    "                   vertex normal, lattice runs a 3x3x3 cage over the mesh's bounds\n"
+    "  --deform-amplitude <a>  displacement as a fraction of the mesh's bounds (default 0.02)\n"
+    "  --rt-templates   --raster rt: build one cluster template per cluster at load and\n"
+    "                   instantiate the cut's templates each frame instead of rebuilding the CLAS\n"
     "  --log <spec>     log levels, e.g. \"info,gfx=debug\" (stderr shows warnings and up)\n"
     "  --shaders <m>    shader manifest (default: <exe dir>/../shaders/manifest.json when present);\n"
     "                   shaders recompile and reload when their .slang sources change\n"
@@ -149,8 +160,21 @@ struct Options {
   RasterMode raster = RasterMode::Hardware;
   f32 sw_px = 32.0f;
   u32 view_mode = static_cast<u32>(gfx::ResolveMode::Shaded);
-  f32 orbit = 0.0f;  // 0: breathe
+  f32 orbit = 0.0f;     // 0: breathe
+  bool deform = false;  // --deform: every instance reads the deformed-vertex pool
+  u32 deform_kind = gfx::k_deform_identity;
+  f32 deform_amplitude = 0.02f;
+  bool rt_templates = false;  // --raster rt: instantiate templates instead of rebuilding
 };
+
+const char* deform_name(const Options& options) {
+  if (!options.deform) return "none";
+  switch (options.deform_kind) {
+    case gfx::k_deform_wave: return "wave";
+    case gfx::k_deform_lattice: return "lattice";
+    default: return "identity";
+  }
+}
 
 const char* raster_name(RasterMode mode) {
   switch (mode) {
@@ -262,6 +286,7 @@ struct Pipelines {
   VkPipeline vertex = VK_NULL_HANDLE;    // vertex shader + fs_visibility: the baseline tier
   gfx::ComputePipeline software;         // cluster_sw_raster
   gfx::ComputePipeline cull;             // cluster_cull
+  gfx::ComputePipeline deform;           // deform: the per-frame deformed-vertex pool
   gfx::ComputePipeline hiz;              // hiz_build
   gfx::ComputePipeline records;          // clas_records: bucket the visible list by instance
   gfx::ComputePipeline record_ranges;    // clas_records: prefix sum and bottom-level records
@@ -275,6 +300,7 @@ struct Pipelines {
     if (resolve != VK_NULL_HANDLE) gfx::destroy_pipeline(device, resolve);
     gfx::destroy_compute_pipeline(device, software);
     gfx::destroy_compute_pipeline(device, cull);
+    gfx::destroy_compute_pipeline(device, deform);
     gfx::destroy_compute_pipeline(device, hiz);
     gfx::destroy_compute_pipeline(device, records);
     gfx::destroy_compute_pipeline(device, record_ranges);
@@ -666,7 +692,7 @@ int main(int argc, char** argv) {
       if (a == "--adapter") options.adapter = n;
       if (a == "--grid") options.grid = n;
       if (a == "--grid-instances") options.grid_instances = n;
-    } else if (a == "--lod" || a == "--sw-px" || a == "--orbit") {
+    } else if (a == "--lod" || a == "--sw-px" || a == "--orbit" || a == "--deform-amplitude") {
       if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
       f32 px = 0.0f;
       if (!parse_f32(value, px)) {
@@ -674,7 +700,29 @@ int main(int argc, char** argv) {
                      static_cast<int>(a.size()), a.data());
         return k_exit_usage;
       }
-      (a == "--lod" ? options.lod_px : a == "--sw-px" ? options.sw_px : options.orbit) = px;
+      (a == "--lod"     ? options.lod_px
+       : a == "--sw-px" ? options.sw_px
+       : a == "--orbit" ? options.orbit
+                        : options.deform_amplitude) = px;
+    } else if (a == "--deform") {
+      if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
+      if (value == "none") {
+        options.deform = false;
+      } else if (value == "identity") {
+        options.deform = true;
+        options.deform_kind = gfx::k_deform_identity;
+      } else if (value == "wave") {
+        options.deform = true;
+        options.deform_kind = gfx::k_deform_wave;
+      } else if (value == "lattice") {
+        options.deform = true;
+        options.deform_kind = gfx::k_deform_lattice;
+      } else {
+        std::fprintf(stderr, "engine-view: --deform expects none, identity, wave, or lattice\n");
+        return k_exit_usage;
+      }
+    } else if (a == "--rt-templates") {
+      options.rt_templates = true;
     } else if (a == "--raster") {
       if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
       if (value == "direct") {
@@ -862,6 +910,14 @@ int main(int argc, char** argv) {
                     log::field("raster", raster_name(options.raster)),
                     log::field("shadows", shadows));
   }
+  if (options.deform && !options.cull) {
+    options.cull = true;  // the pool pass walks the cull's visible list, which is the point
+    ENGINE_LOG_WARN(log_view, "--no-cull ignored with --deform");
+  }
+  if (options.rt_templates && !rt_chain) {
+    options.rt_templates = false;
+    ENGINE_LOG_WARN(log_view, "--rt-templates ignored without --raster rt or --shadows rt");
+  }
   const bool ray_ok = !ray_path || shadow_device;
   if (!device.features().presentation || !visibility_ok || !ray_ok) {
     const std::string why =
@@ -909,6 +965,13 @@ int main(int argc, char** argv) {
   gfx::BufferResource args_buffer[2];   // {count, 1, 1} for the indirect mesh draws
   gfx::BufferResource sw_args_buffer;   // {count, 1, 1} for the indirect dispatch
   gfx::BufferResource flags_buffer[2];  // drawn last frame / this frame, ping-pong, by pair
+  // --deform: the per-frame deformed-vertex pool, one block per instance, and the table that
+  // says where each instance's block is. `deform_args` are {count, 1, 1} per visible-list run,
+  // copied from that run's cull count, so the pass dispatches one group per visible cluster.
+  gfx::BufferResource deform_pool_buffer;
+  gfx::BufferResource deform_table_buffer;
+  gfx::BufferResource deform_args_buffer[3];
+  u64 deform_pool_bytes = 0;
   gfx::BufferResource params_buffers[k_frames_in_flight];  // host-visible: two CullParams per slot
   gfx::BufferResource stats_buffers[k_frames_in_flight];   // host-visible copies of the arg blocks
   // --raster rt: the frame's cut as cluster acceleration structures.
@@ -923,6 +986,10 @@ int main(int argc, char** argv) {
   gfx::BufferResource rt_scratch;
   gfx::BufferResource ray_params[k_frames_in_flight];  // host-visible RayVisibilityParams per slot
   gfx::ClusterSet clas_set;
+  // --rt-templates: one cluster template per cluster, built once, instantiated every frame.
+  gfx::ClusterTemplateSet clas_templates;
+  gfx::BufferResource template_records_buffer;
+  u64 template_bytes = 0;
   Vector<gfx::ClusterBlas> cluster_blas;  // one cluster bottom-level structure per instance
   gfx::AccelerationStructure tlas;
   u32 tlas_slot = gfx::BindlessSet::k_invalid_slot;
@@ -950,8 +1017,10 @@ int main(int argc, char** argv) {
   f64 gpu_hiz_ms = 0.0;
   f64 gpu_resolve_ms = 0.0;
   f64 gpu_total_ms = 0.0;
-  f64 gpu_rt_ms = 0.0;     // records + CLAS + cluster BLAS + TLAS builds
-  f64 gpu_trace_ms = 0.0;  // the ray query pass
+  f64 gpu_rt_ms = 0.0;      // records + CLAS + cluster BLAS + TLAS builds
+  f64 gpu_clas_ms = 0.0;    // the CLAS rebuild, or the instantiation from templates, alone
+  f64 gpu_deform_ms = 0.0;  // the deformed-vertex pool pass
+  f64 gpu_trace_ms = 0.0;   // the ray query pass
   u64 timed_frames = 0;
   u32 extent_width = options.width;
   u32 extent_height = options.height;
@@ -977,7 +1046,7 @@ int main(int argc, char** argv) {
     }
     if (!frames.create(device, k_frames_in_flight, &error) ||
         !bindless.create(device, gfx::BindlessConfig{}, &error) ||
-        !timer.create(device, k_frames_in_flight, 16, &error)) {
+        !timer.create(device, k_frames_in_flight, 24, &error)) {
       exit_code = fail("frames", error);
       break;
     }
@@ -1051,6 +1120,29 @@ int main(int argc, char** argv) {
     scene_meshes = parts.size();
     scene_instance_count = instance_count;
     scene_pairs = pair_count;
+    // --deform: every instance gets a block of the deformed-vertex pool as long as its mesh's
+    // cluster-ordered vertex range, so a cluster's vertices are contiguous there and the CLAS
+    // records can point straight at them. `pool_offset` is added to the **scene-wide** vertex
+    // index, so it is the block's base biased by the mesh's first vertex; both are u32 and the
+    // bias wraps, which is the arithmetic the shaders do.
+    Vector<gfx::DeformDesc> deform_table;
+    u32 pool_vertices = 0;
+    if (options.deform) {
+      const u32 total_vertices = lod.mesh.vertices.size();
+      for (u32 i = 0; i < instance_count; ++i) {
+        const geometry::ClusterMeshPart& part = parts[instance_table[i].mesh];
+        const u32 next = instance_table[i].mesh + 1 < parts.size()
+                             ? parts[instance_table[i].mesh + 1].first_vertex
+                             : total_vertices;
+        gfx::DeformDesc desc{};
+        desc.vertex_count = next - part.first_vertex;
+        desc.pool_offset = pool_vertices - part.first_vertex;
+        desc.flags = options.deform_kind;
+        pool_vertices += desc.vertex_count;
+        instance_table[i].deform = i;
+        deform_table.push_back(desc);
+      }
+    }
     // The camera frames the scene's bounding sphere: the union of the instances' transformed
     // mesh bounds. The plain heightfield keeps the half extent it has always used.
     if (options.mesh.empty() && options.scene.empty() && instance_count == 1) {
@@ -1112,21 +1204,29 @@ int main(int argc, char** argv) {
       exit_code = fail("upload", error);
       break;
     }
-    // One MeshDesc per mesh: its own grid, its range of the shared cluster array, and the one
-    // quantized stream every mesh of the scene indexes.
-    Vector<gfx::MeshDesc> mesh_descs;
-    for (const geometry::ClusterMeshPart& part : parts) {
-      gfx::MeshDesc desc{};
-      desc.quant = Vec4{part.quant_origin, part.quant_scale};
-      desc.quantized = quantized_buffer.address;
-      desc.first_cluster = part.first_cluster;
-      desc.cluster_count = part.cluster_count;
-      mesh_descs.push_back(desc);
-    }
-    if (!gfx::upload_buffer(device, mesh_descs.data(), mesh_descs.size() * sizeof(gfx::MeshDesc),
-                            k_storage, mesh_buffer, &error)) {
-      exit_code = fail("upload", error);
-      break;
+    // The deformed-vertex pool and its per-instance table. The pool is device-local: nothing
+    // reads it back, and the cluster acceleration structure builds take it as a build input.
+    if (options.deform) {
+      deform_pool_bytes = u64{pool_vertices} * 3 * sizeof(f32);
+      constexpr VkBufferUsageFlags k_pool_usage =
+          k_address | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+          VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
+      bool pool_ok = gfx::create_buffer(device, deform_pool_bytes, k_pool_usage, false,
+                                        deform_pool_buffer, &error) &&
+                     gfx::upload_buffer(device, deform_table.data(),
+                                        deform_table.size() * sizeof(gfx::DeformDesc), k_storage,
+                                        deform_table_buffer, &error);
+      for (gfx::BufferResource& args : deform_args_buffer)
+        pool_ok =
+            pool_ok && gfx::create_buffer(device, sizeof(u32) * 3, k_args, false, args, &error);
+      if (!pool_ok) {
+        exit_code = fail("deform pool", error);
+        break;
+      }
+      ENGINE_LOG_INFO(log_view, "deformed-vertex pool", log::field("mode", deform_name(options)),
+                      log::field("instances", instance_count),
+                      log::field("pool_vertices", pool_vertices),
+                      log::field("pool_bytes", deform_pool_bytes));
     }
     // The float positions stay only for the frames that build acceleration structures — --raster
     // rt, or ray-traced shadows in a raster mode: the cluster structure builds read them.
@@ -1343,6 +1443,7 @@ int main(int argc, char** argv) {
       limits.max_triangles_per_cluster = triangles_per_cluster;
       limits.max_vertices_per_cluster = geometry::ClusterLodOptions{}.max_vertices;
       limits.max_geometry_index = pair_count - 1;
+      limits.instantiate = options.rt_templates;
       constexpr VkBufferUsageFlags k_record_usage =
           k_address | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
       bool rt_ok =
@@ -1372,9 +1473,38 @@ int main(int argc, char** argv) {
                                          cluster_blas[i], &error);
         if (rt_ok) blas_bytes += cluster_blas[i].data.size;
       }
+      // --rt-templates: one template per cluster of the scene, built from the rest pose, with
+      // cluster id and base geometry index zero so an instantiate record's offsets are the
+      // visible entry outright. Built once below; instantiated from the pool every frame.
+      if (rt_ok && options.rt_templates) {
+        gfx::ClusterSetLimits template_limits = limits;
+        template_limits.max_clusters = cluster_count;
+        template_limits.max_geometry_index = 0;
+        template_limits.instantiate = false;
+        rt_ok = gfx::create_cluster_templates(device, template_limits, clas_templates, &error) &&
+                gfx::create_buffer(device, gfx::k_cluster_template_record_bytes * cluster_count,
+                                   k_record_usage, true, template_records_buffer, &error);
+        if (rt_ok) {
+          Vector<gfx::ClusterBuildInput> template_inputs;
+          for (u32 c = 0; c < cluster_count; ++c) {
+            const geometry::ClusterDesc& desc = lod.mesh.clusters[c];
+            gfx::ClusterBuildInput in;
+            in.cluster_id = 0;  // the instantiate record's offsets carry the visible entry
+            in.triangle_count = desc.triangle_count;
+            in.vertex_count = desc.vertex_count;
+            in.vertices = vertex_buffer.address + u64{desc.vertex_offset} * sizeof(Vec3);
+            in.indices = indices8_buffer.address + u64{desc.triangle_offset} * 3;
+            template_inputs.push_back(in);
+          }
+          gfx::write_cluster_template_records(std::span<const gfx::ClusterBuildInput>(
+                                                  template_inputs.data(), template_inputs.size()),
+                                              template_records_buffer.mapped);
+        }
+      }
       if (rt_ok) {
         u64 scratch_bytes = clas_set.build_scratch_bytes;
         scratch_bytes = std::max(scratch_bytes, tlas.build_scratch_bytes);
+        scratch_bytes = std::max(scratch_bytes, clas_templates.build_scratch_bytes);
         for (const gfx::ClusterBlas& blas : cluster_blas)
           scratch_bytes = std::max(scratch_bytes, blas.build_scratch_bytes);
         rt_ok = gfx::create_scratch(device, scratch_bytes, rt_scratch, &error);
@@ -1388,6 +1518,24 @@ int main(int argc, char** argv) {
           error = "no bindless slot for the top-level structure";
         }
       }
+      // The templates are built once, before any frame: everything after them is per frame.
+      if (rt_ok && options.rt_templates) {
+        rt_ok = gfx::submit_immediate(
+            device,
+            [&](VkCommandBuffer cb) {
+              gfx::build_cluster_templates(cb, clas_templates, template_records_buffer.address, 0,
+                                           rt_scratch);
+              gfx::acceleration_build_barrier(
+                  cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                  VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
+            },
+            &error);
+        if (rt_ok) {
+          const auto* sizes = static_cast<const u32*>(clas_templates.sizes.mapped);
+          for (u32 c = 0; c < cluster_count; ++c)
+            template_bytes += sizes[c];
+        }
+      }
       if (!rt_ok) {
         exit_code = fail("ray tracing", error);
         break;
@@ -1395,7 +1543,31 @@ int main(int argc, char** argv) {
       ENGINE_LOG_INFO(
           log_view, "ray tracing ready", log::field("pairs", pair_count),
           log::field("instances", instance_count), log::field("clas_bytes", clas_set.data.size),
-          log::field("blas_bytes", blas_bytes), log::field("scratch_bytes", rt_scratch.size));
+          log::field("blas_bytes", blas_bytes), log::field("scratch_bytes", rt_scratch.size),
+          log::field("templates", options.rt_templates ? cluster_count : 0u),
+          log::field("template_bytes", template_bytes));
+    }
+
+    // One MeshDesc per mesh: its own grid, its range of the shared cluster array, the one
+    // quantized stream every mesh of the scene indexes, and where a deformed instance's
+    // positions come from instead — the frame's pool, the deform table, and this mesh's cluster
+    // templates. It is uploaded last because those three addresses have to exist first.
+    Vector<gfx::MeshDesc> mesh_descs;
+    for (const geometry::ClusterMeshPart& part : parts) {
+      gfx::MeshDesc desc{};
+      desc.quant = Vec4{part.quant_origin, part.quant_scale};
+      desc.quantized = quantized_buffer.address;
+      desc.first_cluster = part.first_cluster;
+      desc.cluster_count = part.cluster_count;
+      desc.deform_pool = deform_pool_buffer.address;
+      desc.deform = deform_table_buffer.address;
+      desc.templates = clas_templates.addresses.address;
+      mesh_descs.push_back(desc);
+    }
+    if (!gfx::upload_buffer(device, mesh_descs.data(), mesh_descs.size() * sizeof(gfx::MeshDesc),
+                            k_storage, mesh_buffer, &error)) {
+      exit_code = fail("upload", error);
+      break;
     }
 
     // Shaders: the embedded copies always work; the build's manifest, when found, loads the same
@@ -1424,6 +1596,7 @@ int main(int argc, char** argv) {
                                 shaders::k_clas_records_spirv_size);
     shader_library.add_embedded("ray_visibility", shaders::k_ray_visibility_spirv,
                                 shaders::k_ray_visibility_spirv_size);
+    shader_library.add_embedded("deform", shaders::k_deform_spirv, shaders::k_deform_spirv_size);
     std::string manifest = options.shaders;
     if (manifest.empty()) {
       const std::string candidate = platform::executable_directory() + "/../shaders/manifest.json";
@@ -1449,6 +1622,14 @@ int main(int argc, char** argv) {
               ? shader_library.get(shadows ? "visibility_resolve_rt" : "visibility_resolve", err)
               : nullptr;
       if (resolve == nullptr || vertex == nullptr) return false;
+      if (options.deform) {
+        const gfx::Shader* deform = shader_library.get("deform", err);
+        if (deform == nullptr ||
+            !gfx::create_compute_pipeline(device, deform->module, "deform_main", {},
+                                          sizeof(gfx::DeformParams), pipelines.deform, err)) {
+          return false;
+        }
+      }
       if (rt_chain) {
         const gfx::Shader* records = shader_library.get("clas_records", err);
         if (records == nullptr) return false;
@@ -1530,7 +1711,9 @@ int main(int argc, char** argv) {
         log::field("shadows", shadows ? "rt" : "off"), log::field("cone", options.cone),
         log::field("mesh_primitives", mesh_primitives), log::field("materials", materials.size()),
         log::field("meshes", parts.size()), log::field("instances", instance_count),
-        log::field("pairs", pair_count), log::field("width", swapchain.extent().width),
+        log::field("pairs", pair_count), log::field("deform", deform_name(options)),
+        log::field("rt_templates", options.rt_templates),
+        log::field("width", swapchain.extent().width),
         log::field("height", swapchain.extent().height));
 
     gfx::RenderGraph graph(device);
@@ -1614,6 +1797,8 @@ int main(int argc, char** argv) {
           gpu_resolve_ms += timer.ms("resolve");
           gpu_rt_ms += timer.ms("records") + timer.ms("ranges") + timer.ms("emit") +
                        timer.ms("clas") + timer.ms("blas") + timer.ms("tlas");
+          gpu_clas_ms += timer.ms("clas");
+          gpu_deform_ms += timer.ms("deform");
           gpu_trace_ms += timer.ms("trace");
           gpu_total_ms += timer.total_ms();
           ++timed_frames;
@@ -1772,6 +1957,28 @@ int main(int argc, char** argv) {
       std::memcpy(resolve_block + sizeof(resolve), lights, sizeof(lights));
       const u64 resolve_address = resolve_buffers[slot].address;
 
+      // --deform: one DeformParams per run of the visible list. The pass reads that run's count
+      // word out of the cull's own arguments and dispatches one group per visible cluster from a
+      // copy of it, so the pool pass costs the cut and nothing else.
+      gfx::DeformParams deform_params[k_visible_runs];
+      const f32 deform_time = static_cast<f32>(rendered) / 60.0f;
+      for (u32 run = 0; run < k_visible_runs; ++run) {
+        gfx::DeformParams& d = deform_params[run];
+        d = gfx::DeformParams{};
+        d.clusters = cluster_buffer.address;
+        d.instances = instance_buffer.address;
+        d.meshes = mesh_buffer.address;
+        d.attributes = attribute_buffer.address;
+        d.visible = run_address[run];
+        d.visible_count = run == 2 ? sw_args_buffer.address
+                                   : args_buffer[run].address + u64{cull.count_index} * 4;
+        d.pool = deform_pool_buffer.address;
+        d.deform = deform_table_buffer.address;
+        d.time = deform_time;
+        d.amplitude = options.deform_amplitude;
+        d.max_entries = pair_count;
+      }
+
       // The records pass turns this frame's visible list into CLAS build records and the builds
       // follow on the GPU. --raster rt then traces the picture against them; a raster mode with
       // shadows on runs the same chain and the resolve traces the lights against them.
@@ -1782,6 +1989,8 @@ int main(int argc, char** argv) {
         record_params.vertices = vertex_buffer.address;
         record_params.indices8 = indices8_buffer.address;
         record_params.instances = instance_buffer.address;
+        record_params.meshes = mesh_buffer.address;
+        record_params.instantiate = options.rt_templates ? 1u : 0u;
         record_params.visible = run_address[0];
         // Where the cull pass counted this run's survivors: the mesh path's group count is the
         // first word of the indirect block, the vertex path's instance count the second.
@@ -1836,6 +2045,13 @@ int main(int argc, char** argv) {
       const gfx::RgBuffer rg_vis = graph.import_buffer("visibility", targets.vis);
       const gfx::RgBuffer rg_hiz = graph.import_buffer("hiz", targets.hiz);
       const gfx::RgBuffer rg_stats = graph.import_buffer("stats", stats_buffers[slot]);
+      gfx::RgBuffer rg_pool{};
+      gfx::RgBuffer rg_deform_args[k_visible_runs]{};
+      if (options.deform) {
+        rg_pool = graph.import_buffer("deform pool", deform_pool_buffer);
+        for (u32 run = 0; run < k_visible_runs; ++run)
+          rg_deform_args[run] = graph.import_buffer("deform args", deform_args_buffer[run]);
+      }
       struct RtBuffers {
         gfx::RgBuffer records, record_count, slots, instance_counts, instance_first, blas_records;
         gfx::RgBuffer clas_data, clas_addresses, clas_sizes, tlas, instances;
@@ -1877,6 +2093,10 @@ int main(int argc, char** argv) {
             if (fill_flags) b.write(rg_flags[prev_flags], gfx::Access::TransferWrite);
             if (fill_hiz) b.write(rg_hiz, gfx::Access::TransferWrite);
             if (rt_chain) b.write(rt.instance_counts, gfx::Access::TransferWrite);
+            if (options.deform) {
+              for (const gfx::RgBuffer& args : rg_deform_args)
+                b.write(args, gfx::Access::TransferWrite);
+            }
           },
           [&](VkCommandBuffer cb, gfx::RenderGraph&) {
             if (options.cull) {
@@ -1899,6 +2119,12 @@ int main(int argc, char** argv) {
               vkCmdFillBuffer(cb, flags_buffer[prev_flags].buffer, 0, VK_WHOLE_SIZE, 0);
             if (fill_hiz) vkCmdFillBuffer(cb, targets.hiz.buffer, 0, VK_WHOLE_SIZE, 0);
             if (rt_chain) vkCmdFillBuffer(cb, instance_counts_buffer.buffer, 0, VK_WHOLE_SIZE, 0);
+            if (options.deform) {  // {groups = 0, 1, 1}; the copy below fills in the count
+              for (const gfx::BufferResource& args : deform_args_buffer) {
+                vkCmdFillBuffer(cb, args.buffer, 0, sizeof(u32), 0);
+                vkCmdFillBuffer(cb, args.buffer, sizeof(u32), sizeof(u32) * 2, 1);
+              }
+            }
           });
       auto add_cull = [&](u32 block, u32 list) {
         graph.add_pass(
@@ -1924,6 +2150,42 @@ int main(int argc, char** argv) {
               timer.end(cb);
             });
       };
+      // The deformed-vertex pool for one run of the visible list: copy that run's survivor count
+      // into an indirect dispatch block, then one workgroup per surviving cluster. Two runs when
+      // occlusion culling splits the cut, because pass 2's entries are not known until its cull
+      // has run and the pool has to hold pass 1's positions before pass 1 draws.
+      auto add_deform = [&](u32 run) {
+        const u64 source_offset = run == 2 ? 0 : u64{cull.count_index} * sizeof(u32);
+        const gfx::RgBuffer rg_source = run == 2 ? rg_sw_args : rg_args[run];
+        graph.add_pass(
+            "deform args", gfx::PassKind::Transfer,
+            [&, rg_source, run](gfx::PassBuilder& b) {
+              b.read(rg_source, gfx::Access::TransferRead);
+              b.write(rg_deform_args[run], gfx::Access::TransferWrite);
+            },
+            [&, run, source_offset](VkCommandBuffer cb, gfx::RenderGraph&) {
+              const VkBufferCopy copy{source_offset, 0, sizeof(u32)};
+              const VkBuffer source = run == 2 ? sw_args_buffer.buffer : args_buffer[run].buffer;
+              vkCmdCopyBuffer(cb, source, deform_args_buffer[run].buffer, 1, &copy);
+            });
+        const gfx::DeformParams* params = &deform_params[run];
+        graph.add_pass(
+            "deform", gfx::PassKind::Compute,
+            [&, rg_source, run](gfx::PassBuilder& b) {
+              b.read(rg_source, gfx::Access::ComputeRead);  // the run's count word
+              b.read(rg_deform_args[run], gfx::Access::IndirectRead);
+              b.read(rg_visible, gfx::Access::ComputeRead);
+              b.write(rg_pool, gfx::Access::ComputeWrite);
+            },
+            [&, params, run](VkCommandBuffer cb, gfx::RenderGraph&) {
+              timer.begin(cb, "deform");
+              vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines.deform.pipeline);
+              vkCmdPushConstants(cb, pipelines.deform.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                                 sizeof(*params), params);
+              vkCmdDispatchIndirect(cb, deform_args_buffer[run].buffer, 0);
+              timer.end(cb);
+            });
+      };
       auto add_hw_draw = [&](u32 list, const gfx::ClusterDrawParams* params) {
         graph.add_pass(
             "hardware", gfx::PassKind::Raster,
@@ -1934,6 +2196,8 @@ int main(int argc, char** argv) {
                 b.read(rg_args[list], gfx::Access::IndirectRead);
                 b.read(rg_visible, vertex_path ? gfx::Access::VertexRead : gfx::Access::MeshRead);
               }
+              if (options.deform)
+                b.read(rg_pool, vertex_path ? gfx::Access::VertexRead : gfx::Access::MeshRead);
             },
             [&, list, params](VkCommandBuffer cb, gfx::RenderGraph&) {
               timer.begin(cb, "hw");
@@ -1987,6 +2251,7 @@ int main(int argc, char** argv) {
       };
 
       if (options.cull) add_cull(0, 0);
+      if (options.deform) add_deform(0);
       if (direct) {
         graph.add_pass(
             "terrain", gfx::PassKind::Raster,
@@ -1998,6 +2263,7 @@ int main(int argc, char** argv) {
                 b.read(rg_args[0], gfx::Access::IndirectRead);
                 b.read(rg_visible, gfx::Access::MeshRead);
               }
+              if (options.deform) b.read(rg_pool, gfx::Access::MeshRead);
             },
             [&](VkCommandBuffer cb, gfx::RenderGraph&) {
               timer.begin(cb, "hw");
@@ -2017,16 +2283,19 @@ int main(int argc, char** argv) {
         if (occlusion) {
           add_hiz(0);
           add_cull(1, 1);
+          if (options.deform) add_deform(1);
           add_hw_draw(1, &draw_pass2);
           add_hiz(1);
         }
         if (use_sw) {
+          if (options.deform) add_deform(2);
           graph.add_pass(
               "software", gfx::PassKind::Compute,
               [&](gfx::PassBuilder& b) {
                 b.write(rg_vis, gfx::Access::ComputeReadWrite);
                 b.read(rg_sw_args, gfx::Access::IndirectRead);
                 b.read(rg_visible, gfx::Access::ComputeRead);
+                if (options.deform) b.read(rg_pool, gfx::Access::ComputeRead);
               },
               [&](VkCommandBuffer cb, gfx::RenderGraph&) {
                 timer.begin(cb, "sw");
@@ -2082,11 +2351,14 @@ int main(int argc, char** argv) {
               [&](gfx::PassBuilder& b) {
                 b.read(rt.records, gfx::Access::AccelerationBuildRead);
                 b.read(rt.record_count, gfx::Access::AccelerationBuildRead);
+                if (options.deform) b.read(rg_pool, gfx::Access::AccelerationBuildRead);
                 b.write(rt.clas_data, gfx::Access::AccelerationBuildWrite);
                 b.write(rt.clas_addresses, gfx::Access::AccelerationBuildWrite);
                 b.write(rt.clas_sizes, gfx::Access::AccelerationBuildWrite);
               },
               [&](VkCommandBuffer cb, gfx::RenderGraph&) {
+                // The same command either way: a set created with `instantiate` runs the
+                // instantiate op over the template records the emit pass wrote.
                 timer.begin(cb, "clas");
                 gfx::build_cluster_set(cb, clas_set, records_buffer.address,
                                        record_count_buffer.address, rt_scratch);
@@ -2158,6 +2430,7 @@ int main(int argc, char** argv) {
             [&](gfx::PassBuilder& b) {
               b.color_attachment(color, VK_ATTACHMENT_LOAD_OP_CLEAR, sky);
               b.read(rg_vis, gfx::Access::FragmentRead);
+              if (options.deform) b.read(rg_pool, gfx::Access::FragmentRead);
               if (shadows) {  // the shadow rays traverse them from the fragment stage
                 b.read(rt.tlas, gfx::Access::FragmentRayQueryRead);
                 for (const gfx::RgBuffer& data : rg_blas_data)
@@ -2186,7 +2459,7 @@ int main(int argc, char** argv) {
             },
             [&](VkCommandBuffer cb, gfx::RenderGraph&) {
               const gfx::BufferResource* arg_blocks[3] = {&args_buffer[0], &args_buffer[1],
-                                                       &sw_args_buffer};
+                                                          &sw_args_buffer};
               for (u32 i = 0; i < 3; ++i) {
                 const VkBufferCopy copy{0, sizeof(u32) * 3 * i, sizeof(u32) * 3};
                 vkCmdCopyBuffer(cb, arg_blocks[i]->buffer, stats_buffers[slot].buffer, 1, &copy);
@@ -2265,7 +2538,13 @@ int main(int argc, char** argv) {
   }
   gfx::destroy_buffer(device, visible_buffer);
   gfx::destroy_buffer(device, sw_args_buffer);
+  gfx::destroy_buffer(device, deform_pool_buffer);
+  gfx::destroy_buffer(device, deform_table_buffer);
+  for (gfx::BufferResource& args : deform_args_buffer)
+    gfx::destroy_buffer(device, args);
   if (rt_chain) {
+    gfx::destroy_cluster_templates(device, clas_templates);
+    gfx::destroy_buffer(device, template_records_buffer);
     gfx::destroy_acceleration_structure(device, tlas);
     for (gfx::ClusterBlas& blas : cluster_blas)
       gfx::destroy_cluster_blas(device, blas);
@@ -2322,8 +2601,10 @@ int main(int argc, char** argv) {
         "\"visible_hw_last\":%u,\"visible_pass2_last\":%u,\"visible_sw_last\":%u,"
         "\"visible_pairs_last\":%u,\"visible_min\":%u,"
         "\"visible_max\":%u,"
+        "\"deform\":\"%s\",\"deform_pool_bytes\":%llu,\"rt_templates\":%s,"
+        "\"template_bytes\":%llu,"
         "\"gpu_ms\":{\"cull\":%.4f,\"hw\":%.4f,\"sw\":%.4f,\"hiz\":%.4f,\"resolve\":%.4f,"
-        "\"rt\":%.4f,\"trace\":%.4f,\"total\":%.4f,"
+        "\"rt\":%.4f,\"clas\":%.4f,\"deform\":%.4f,\"trace\":%.4f,\"total\":%.4f,"
         "\"frames\":%llu},\"captured\":%s}\n",
         static_cast<unsigned long long>(rendered), seconds, avg_ms, extent_width, extent_height,
         lod.mesh.clusters.size(),
@@ -2335,8 +2616,10 @@ int main(int argc, char** argv) {
         static_cast<f64>(options.lod_px), raster_name(options.raster), shadows ? "rt" : "off",
         static_cast<f64>(options.sw_px), visible_hw_last, visible_pass2_last, visible_sw_last,
         visible_hw_last + visible_pass2_last + visible_sw_last, visible_min, visible_max,
+        deform_name(options), static_cast<unsigned long long>(deform_pool_bytes),
+        options.rt_templates ? "true" : "false", static_cast<unsigned long long>(template_bytes),
         gpu_cull_ms / n, gpu_hw_ms / n, gpu_sw_ms / n, gpu_hiz_ms / n, gpu_resolve_ms / n,
-        gpu_rt_ms / n, gpu_trace_ms / n, gpu_total_ms / n,
+        gpu_rt_ms / n, gpu_clas_ms / n, gpu_deform_ms / n, gpu_trace_ms / n, gpu_total_ms / n,
         static_cast<unsigned long long>(timed_frames), captured ? "true" : "false");
   }
   log::remove_sink(&stderr_sink);

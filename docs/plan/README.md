@@ -22,7 +22,7 @@ Read [01-critique](01-critique.md) first; it explains why the rest is shaped the
 | [12-ai-usage-policy](12-ai-usage-policy.md) | Rules keeping every use of AI inside provider terms: agent outputs are content and code, never training data; runtime models are unmodified third-party open weights |
 | [13-reference-consumer-games](13-reference-consumer-games.md) | Two complementary consumer games: Desert Survival (sparse, effectively infinite, deforming terrain, extreme view distances) and Island City (finite, extreme density, functional interiors, crowds, consequences); the requirements they add, roadmap mapping, experiments E13–E18, and the reference interactions a third-party game would need |
 
-Experiment write-ups live in [docs/experiments](../experiments/): [E1 raster crossover](../experiments/e1-raster-crossover.md), [E2 cluster acceleration structures](../experiments/e2-cluster-acceleration.md).
+Experiment write-ups live in [docs/experiments](../experiments/): [E1 raster crossover](../experiments/e1-raster-crossover.md), [E2 cluster acceleration structures](../experiments/e2-cluster-acceleration.md), [E25 deformed clusters](../experiments/e25-deformed-clusters.md).
 
 ## Executive summary
 

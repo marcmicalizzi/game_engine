@@ -57,7 +57,7 @@ void mesh_main(uint3 group_thread : SV_GroupThreadID, uint3 group : SV_GroupID,
   const uint t = group_thread.x;
   if (t < cluster.vertex_count) {
     MeshDesc* meshes = (MeshDesc*)g_params.mesh;
-    const float3 p = load_position(meshes[instance.mesh], cluster.vertex_offset + t);
+    const float3 p = load_position(meshes[instance.mesh], instance, cluster.vertex_offset + t);
     const float3 world = mul(instance.world, float4(p, 1.0)).xyz;
     verts[t].position = mul(g_params.view_proj, float4(world, 1.0));
     verts[t].visible_index = visible_index;

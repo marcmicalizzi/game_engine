@@ -2,7 +2,9 @@
 // scene's visible list and its count into the 64-byte CLAS build records, grouped by instance so
 // every instance can have its own cluster bottom-level structure, plus the record count and one
 // bottom-level record per instance. The shader's bytes must equal what write_cluster_build_records
-// writes on the CPU for the same clusters, so the CPU and GPU paths can never drift apart. The
+// writes on the CPU for the same clusters, so the CPU and GPU paths can never drift apart. One of
+// the two instances is **deformed**, so its records must name the frame's deformed-vertex pool
+// instead of the mesh's rest positions, which is the rule every position reader follows. The
 // shader needs no ray tracing feature, so this runs on any device with a driver.
 #include <domain/geometry/cluster.h>
 #include <domain/gfx/cluster_acceleration.h>
@@ -61,8 +63,9 @@ TEST_CASE("clas records: the shader writes the same build records as the CPU") {
 
   // Two instances of the one mesh, so the compaction the shader does has something to compact:
   // the pair space is twice the cluster count and the second instance's pairs start at its
-  // first_pair.
+  // first_pair. The second one is deformed, so its records must point into the pool.
   constexpr u32 k_instances = 2;
+  constexpr u32 k_deformed = 1;
   const u32 pair_count = cluster_count * k_instances;
   gfx::InstanceDesc instance_table[k_instances];
   for (u32 i = 0; i < k_instances; ++i) {
@@ -71,6 +74,12 @@ TEST_CASE("clas records: the shader writes the same build records as the CPU") {
     instance_table[i].mesh = 0;
     instance_table[i].first_pair = i * cluster_count;
   }
+  instance_table[k_deformed].deform = 0;
+  // The pool block starts a few slots in, so a wrong offset shows up rather than cancelling out.
+  gfx::DeformDesc deform{};
+  deform.pool_offset = 7;
+  deform.vertex_count = mesh.vertices.size();
+  deform.flags = gfx::k_deform_wave;
 
   // A visible list in a scrambled order, both instances interleaved, with a count below it: the
   // last entry is beyond the count and must be ignored.
@@ -102,6 +111,9 @@ TEST_CASE("clas records: the shader writes the same build records as the CPU") {
   gfx::BufferResource records;
   gfx::BufferResource record_count;
   gfx::BufferResource blas_records;
+  gfx::BufferResource meshes;
+  gfx::BufferResource deform_table;
+  gfx::BufferResource pool;
   REQUIRE(gfx::upload_buffer(device, mesh.clusters.data(),
                              cluster_count * sizeof(geometry::ClusterDesc), k_storage, clusters,
                              &error));
@@ -113,6 +125,14 @@ TEST_CASE("clas records: the shader writes the same build records as the CPU") {
   REQUIRE(gfx::upload_buffer(device, visible.data(), visible.size() * sizeof(u32), k_storage,
                              visible_buffer, &error));
   REQUIRE(gfx::upload_buffer(device, &count, sizeof(u32), k_storage, count_buffer, &error));
+  REQUIRE(gfx::upload_buffer(device, &deform, sizeof(deform), k_storage, deform_table, &error));
+  REQUIRE(gfx::create_buffer(device, (u64{deform.pool_offset} + deform.vertex_count) * 12,
+                             k_address, false, pool, &error));
+  gfx::MeshDesc mesh_desc{};
+  mesh_desc.cluster_count = cluster_count;
+  mesh_desc.deform_pool = pool.address;
+  mesh_desc.deform = deform_table.address;
+  REQUIRE(gfx::upload_buffer(device, &mesh_desc, sizeof(mesh_desc), k_storage, meshes, &error));
   const u64 records_bytes = gfx::k_cluster_build_record_bytes * pair_count;
   REQUIRE(
       gfx::create_buffer(device, u64{pair_count} * sizeof(u32), k_address, false, slots, &error));
@@ -135,6 +155,7 @@ TEST_CASE("clas records: the shader writes the same build records as the CPU") {
   params.vertices = vertices.address;
   params.indices8 = index8.address;
   params.instances = instances.address;
+  params.meshes = meshes.address;
   params.visible = visible_buffer.address;
   params.visible_count = count_buffer.address;
   params.slots = slots.address;
@@ -227,7 +248,10 @@ TEST_CASE("clas records: the shader writes the same build records as the CPU") {
     in.cluster_id = entry;  // the visible index is the cluster id and the base geometry index
     in.triangle_count = desc.triangle_count;
     in.vertex_count = desc.vertex_count;
-    in.vertices = vertices.address + u64{desc.vertex_offset} * sizeof(Vec3);
+    // A deformed instance's positions come out of the pool, at its block's own offset.
+    in.vertices = instance_index == k_deformed
+                      ? pool.address + (u64{deform.pool_offset} + desc.vertex_offset) * sizeof(Vec3)
+                      : vertices.address + u64{desc.vertex_offset} * sizeof(Vec3);
     in.indices = index8.address + u64{desc.triangle_offset} * 3;
     u8 expected[gfx::k_cluster_build_record_bytes];
     gfx::write_cluster_build_records(std::span<const gfx::ClusterBuildInput>(&in, 1), expected);
@@ -258,15 +282,15 @@ TEST_CASE("clas records: the shader writes the same build records as the CPU") {
     CHECK(blas_references == fake_addresses + u64{first_out[k]} * 8);
   }
   MESSAGE("records for " << count << " of " << pair_count << " pairs over " << k_instances
-                         << " instances match the CPU");
+                         << " instances (one deformed) match the CPU");
 
   gfx::destroy_compute_pipeline(device, bucket);
   gfx::destroy_compute_pipeline(device, ranges);
   gfx::destroy_compute_pipeline(device, emit);
   gfx::destroy_shader_module(device, module);
-  for (gfx::BufferResource* b :
-       {&clusters, &vertices, &index8, &instances, &visible_buffer, &count_buffer, &slots,
-        &instance_counts, &instance_first, &records, &record_count, &blas_records}) {
+  for (gfx::BufferResource* b : {&clusters, &vertices, &index8, &instances, &visible_buffer,
+                                 &count_buffer, &slots, &instance_counts, &instance_first, &records,
+                                 &record_count, &blas_records, &meshes, &deform_table, &pool}) {
     gfx::destroy_buffer(device, *b);
   }
   device.destroy();

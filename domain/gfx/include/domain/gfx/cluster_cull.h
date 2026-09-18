@@ -86,20 +86,52 @@ inline constexpr f32 k_raster_hardware = 0.0f;  // CullParams::raster.y
 inline constexpr f32 k_raster_software = 1.0f;
 inline constexpr f32 k_raster_split = 2.0f;
 
-// GPU-mirrored; keep in step with the MeshDesc struct in the shaders. 32 bytes, read through a
+// Per-instance deformation (docs/plan/04-renderer.md §4.3, ADR-0026 decision 7). An instance
+// whose `InstanceDesc::deform` is not `k_invalid_deform` is **deformed**: every position read for
+// it — by the three rasterizers, by the resolve's reconstruction, and by the cluster
+// acceleration structure records — comes out of the frame's deformed-vertex pool instead of its
+// mesh's 16-bit grid. `pool_offset` is added to the **scene-wide** vertex index, so it is the
+// instance's block base minus its mesh's first vertex (u32 arithmetic, and the bias wraps); the
+// block is as long as the whole mesh's cluster-ordered vertex range, so a cluster's vertices are
+// contiguous in the pool and a CLAS record can point straight at them. 16 bytes, GPU-mirrored.
+struct DeformDesc {
+  u32 pool_offset = 0;   // added to the scene-wide vertex index to reach this instance's slot
+  u32 vertex_count = 0;  // the block's length: the mesh's cluster-ordered vertex count
+  u32 flags = 0;         // which deformer: k_deform_*
+  u32 pad = 0;
+};
+static_assert(sizeof(DeformDesc) == 16);
+
+inline constexpr u32 k_invalid_deform = ~u32{0};  // InstanceDesc::deform: the instance is rigid
+// The deformers of the E25 spike. Identity writes the rest pose into the pool, which is what
+// proves a deformed instance and a rigid one draw the same picture.
+inline constexpr u32 k_deform_identity = 0;
+inline constexpr u32 k_deform_wave = 1;     // sinusoidal displacement along the vertex normal
+inline constexpr u32 k_deform_lattice = 2;  // 3x3x3 trilinear cage over the mesh's grid box
+inline constexpr u32 k_deform_kind_mask = 3;
+
+// GPU-mirrored; keep in step with the MeshDesc struct in the shaders. 56 bytes, read through a
 // device address. One per mesh of the scene: the 16-bit position grid this mesh's positions are
 // on (`geometry::ClusterMeshPart`), the stream of three u16 per vertex that every mesh shares
 // (`geometry::ClusterMesh::quantized`, indexed by the scene-wide vertex index and padded to an
 // even count so the shaders' load_position may read the last triple as two 32-bit words), and
 // the range of the global cluster array this mesh owns. Six bytes of position per vertex instead
 // of twelve; the acceleration structure builders still read the float positions.
+//
+// The last three addresses are where a **deformed** instance's positions come from instead. Two
+// of them (`deform_pool`, `deform`) are the scene's, the same in every MeshDesc, and they ride
+// here rather than in `ClusterDrawParams` because that push block is full at its 128-byte limit
+// and every position read already holds the MeshDesc. `templates` is the mesh's own.
 struct MeshDesc {
   Vec4 quant{};           // xyz grid origin, w grid step: this mesh's own grid
   u64 quantized = 0;      // u16[3 * vertex_count] of the whole scene, rounded up to an even count
   u32 first_cluster = 0;  // in the global cluster array
   u32 cluster_count = 0;
+  u64 deform_pool = 0;  // f32[3 * pool_vertices]: the frame's pool; 0 when nothing deforms
+  u64 deform = 0;       // DeformDesc[], indexed by InstanceDesc::deform; 0 when nothing deforms
+  u64 templates = 0;    // u64[]: one cluster template address per global cluster index, or 0
 };
-static_assert(sizeof(MeshDesc) == 32);
+static_assert(sizeof(MeshDesc) == 56);
 
 // InstanceDesc::flags, bit 0: the world transform scales every axis alike, so a normal cone may
 // be tested (rotating its axis keeps it a cone) and a normal only needs the rotation.
@@ -114,7 +146,8 @@ struct InstanceDesc {
   u32 first_pair = 0;     // prefix sum of the instances' mesh cluster counts, in order
   f32 scale_max = 1.0f;   // largest axis scale: radii and LOD errors multiply by it
   u32 flags = k_instance_uniform_scale;
-  u32 pad[3] = {};
+  u32 deform = k_invalid_deform;  // entry of the DeformDesc table; k_invalid_deform: rigid
+  u32 pad[2] = {};
 };
 static_assert(sizeof(InstanceDesc) == 96);
 
@@ -152,6 +185,28 @@ struct ClusterDrawParams {
   u64 instances = 0;  // InstanceDesc[]
 };
 static_assert(sizeof(ClusterDrawParams) == 128);
+
+// Mirrors DeformParams in deform.slang: the push constants of the deformed-vertex pool pass.
+// 80 bytes. One workgroup per entry of one run of the cull pass's visible list, dispatched
+// indirectly from that run's count, so the pass costs the LOD cut and not the source mesh. A
+// thread writes the pool slots of the cluster's vertices only; every other slot is left alone.
+struct DeformParams {
+  u64 clusters = 0;       // geometry::ClusterDesc[]
+  u64 instances = 0;      // InstanceDesc[]
+  u64 meshes = 0;         // MeshDesc[]
+  u64 attributes = 0;     // geometry::VertexAttributes[]; 0: displace radially instead
+  u64 visible = 0;        // u32x2[]: one run of the visible list, {instance, cluster} per entry
+  u64 visible_count = 0;  // u32: that run's count word, the cull pass's atomic
+  u64 pool = 0;           // f32[3 * pool_vertices] out
+  u64 deform = 0;         // DeformDesc[]
+  f32 time = 0.0f;        // animation phase in seconds
+  f32 amplitude = 1.0f;   // displacement scale as a fraction of the mesh's grid box
+  u32 max_entries = 0;    // the run's capacity; the count read from the device is clamped to it
+  u32 pad = 0;
+};
+static_assert(sizeof(DeformParams) == 80);
+
+inline constexpr u32 k_deform_workgroup_size = 128;  // numthreads in deform.slang
 
 // Mirrors HizParams in hiz_build.slang: the push constants of one pyramid level. 40 bytes.
 struct HizParams {
