@@ -170,8 +170,9 @@ git -C "$repo" add -A
 git -C "$repo" commit -qm 'the first commit'
 expect 1 'a root commit is diffed against nothing' -- --repo "$repo" --base '0000000000000000000000000000000000000000' --head HEAD
 
+# Given a file list the gate runs no git at all, so these cases need no repository.
 echo 'case: lists from somewhere else (a pull request)'
-repo="$(new_repo)"
+repo="$tmp_root"
 printf 'domain/gfx/include/gfx/view.h\ndomain/gfx/src/view.cpp\n' > "$tmp_root/files.txt"
 printf 'gfx: add a resource view\n\nwhy it is there\n' > "$tmp_root/messages.txt"
 expect 1 'a file list with no page' -- --repo "$repo" --files-from "$tmp_root/files.txt" --messages-from "$tmp_root/messages.txt"

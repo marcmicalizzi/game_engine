@@ -59,16 +59,46 @@ else()
   message(WARNING "pwsh not found; lint.banned_patterns, tools.new_capability, docs_check, and tools.docs_check tests not registered")
 endif()
 
-# The CI documentation gate is bash, because it runs on the hosted Linux runner (.github/workflows/ci.yml);
-# its tests build throwaway git repositories, so they need git as well. Where either is missing the
-# test is simply not registered — the gate itself still runs in CI, which is where it decides anything.
-find_program(ENGINE_BASH NAMES bash)
+# The CI documentation gate is bash, because it runs on the hosted Linux runner
+# (.github/workflows/ci.yml); its tests build throwaway git repositories, so they need git too.
+#
+# Finding bash on Windows takes care: C:/Windows/System32/bash.exe is the WSL launcher, comes
+# first on PATH, and on a machine with no distribution installed it fails instead of running a
+# script. Git for Windows ships a real bash beside git, so that one is tried first and whichever
+# candidate is picked has to prove it can run a command before a test is registered on it.
 find_program(ENGINE_GIT NAMES git)
-if(ENGINE_BASH AND ENGINE_GIT)
+
+set(_engine_bash_candidates "")
+if(WIN32 AND ENGINE_GIT)
+  get_filename_component(_engine_git_bin "${ENGINE_GIT}" DIRECTORY)
+  cmake_path(SET _engine_git_bash NORMALIZE "${_engine_git_bin}/../bin/bash.exe")
+  cmake_path(SET _engine_usr_bash NORMALIZE "${_engine_git_bin}/../usr/bin/bash.exe")
+  list(APPEND _engine_bash_candidates "${_engine_git_bash}" "${_engine_usr_bash}")
+endif()
+find_program(ENGINE_BASH_ON_PATH NAMES bash)
+if(ENGINE_BASH_ON_PATH)
+  list(APPEND _engine_bash_candidates "${ENGINE_BASH_ON_PATH}")
+endif()
+
+set(ENGINE_BASH "")
+foreach(_candidate IN LISTS _engine_bash_candidates)
+  if(NOT EXISTS "${_candidate}")
+    continue()
+  endif()
+  execute_process(COMMAND "${_candidate}" -c "command -v git"
+    RESULT_VARIABLE _engine_bash_status OUTPUT_QUIET ERROR_QUIET)
+  if(_engine_bash_status EQUAL 0)
+    set(ENGINE_BASH "${_candidate}")
+    break()
+  endif()
+endforeach()
+
+if(ENGINE_BASH)
   add_test(NAME tools.docs_gate
     COMMAND "${ENGINE_BASH}" "${CMAKE_SOURCE_DIR}/tools/docs-gate.test.sh"
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
   set_tests_properties(tools.docs_gate PROPERTIES LABELS "tools")
+  message(STATUS "docs gate tests: ${ENGINE_BASH}")
 else()
-  message(STATUS "bash or git not found; tools.docs_gate test not registered")
+  message(STATUS "no bash that can run git; tools.docs_gate test not registered")
 endif()
