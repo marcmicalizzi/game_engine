@@ -45,6 +45,12 @@ inline constexpr i32 k_not_found = 1003;
 inline constexpr i32 k_invalid_argument = 1004;
 inline constexpr i32 k_io_error = 1005;
 inline constexpr i32 k_unavailable = 1006;
+// A `render.*` method on a process that has no usable GPU: no Vulkan loader or driver, no
+// 64-bit buffer atomics, or no cluster acceleration structures for the ray path. It is a code
+// of its own rather than k_unavailable so a client can tell "this machine cannot render" from
+// "this host has no log ring" and from "you asked for something wrong" — which is what lets one
+// end-to-end suite run on a hosted CI runner and on a GPU machine, skipping on the first.
+inline constexpr i32 k_render_unavailable = 1007;
 }  // namespace codes
 
 RpcError make_error(i32 code, std::string message, JsonValue data = {});
@@ -54,6 +60,13 @@ struct Context {
   SessionManager* sessions = nullptr;
   log::RingSink* log_ring = nullptr;  // for log.tail; may be null
   Dispatcher* dispatcher = nullptr;   // set by the Dispatcher for engine.methods
+  // The registration point an app adds its own methods' state through (ADR-0027: attachment
+  // only through registration points, and the protocol's method table is one of them). A
+  // handler is a plain function pointer and cannot capture, and the protocol layer must not
+  // learn about anything above it — engine-host's renderer sessions live in `systems`, two
+  // layers up — so the app owns the object, registers the methods that know its type, and
+  // casts it back. The protocol never touches it, and nothing in domain/ may read it.
+  void* app = nullptr;
 };
 
 using Handler = bool (*)(Context& ctx, const JsonValue& params, JsonValue& result, RpcError& error);

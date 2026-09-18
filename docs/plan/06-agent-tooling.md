@@ -75,6 +75,8 @@ events, get_budgets, get_logs
 benchmark(scene_set, resolution_set) -> {frame_times, counters, image_error_vs_reference}
 ```
 
+**Status (2026-09-17): `capture`, `benchmark`, and `profile` — two of three.** `capture` and `benchmark` are `render.capture` and `render.benchmark` on engine-host, over `systems/renderer` ([renderer](../subsystems/renderer.md), [apps](../subsystems/apps.md)); `render.load` is the scene-set half of `benchmark(scene_set, resolution_set)` (one scene and one resolution per call for now, and a caller loops), and `render.compare` is the `image_error_vs_reference` half, which the list above did not name separately because it assumed a reference renderer that does not exist yet ([04 §4.8](04-renderer.md#48-reference-renderer-and-objective-optimization)). `capture` returns more than a picture: the entity-ID buffer beside the color, depth, and normal channels, which is what turns "look at the frame" into "which instance is under this pixel". The `counters` half of `benchmark` is the GPU milliseconds per pass and the visible-pair counts; allocation and draw counters arrive with the frame budgets of ADR-0018. **`profile` is not there**: Tracy zones compile into the release presets but nothing exposes a trace over the protocol, and it stays a Phase 2 item beside the ray budget scheduler it exists to measure. The rest of the list — `run_headless`, `run_tests`, `build_content`, `events`, `get_budgets` — is untouched.
+
 ## 6.10 Multi-agent roles, review, and the human director
 
 - Start with **one agent, one loop**: checkpoint → edit → build → validate → capture → review → accept or rollback. Add roles once this works.

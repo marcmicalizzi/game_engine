@@ -41,6 +41,12 @@ struct RenderSettings {
   u32 deform_kind = gfx::k_deform_identity;
   f32 deform_amplitude = 0.02f;
   bool rt_templates = false;  // instantiate prebuilt cluster templates instead of rebuilding
+
+  // Whether two requests would build the same scene and the same pipelines. A host that keeps a
+  // loaded scene across calls uses this to decide whether it may reuse the GPU side: the
+  // deformed-vertex pool and the ray tracing chain are sized by these, and the resolve's
+  // pipeline is chosen by them, so anything that differs means a rebuild.
+  bool operator==(const RenderSettings&) const = default;
 };
 
 // What the device and the scene made of a `RenderSettings`. The booleans are the frame's

@@ -346,7 +346,14 @@ void SceneRenderer::destroy() noexcept {
   recording_ = false;
 }
 
-void SceneRenderer::reset_stats() noexcept { stats_ = Stats{}; }
+// The warm-up counter goes back with the numbers. A slot's per-frame statistics block survives a
+// resize and a settings change, so without this the first frames of a new run would fold in the
+// visible counts of the last one — which is how a benchmark of a 640x480 scene came back with
+// the 320x240 capture's minimum.
+void SceneRenderer::reset_stats() noexcept {
+  stats_ = Stats{};
+  submitted_ = 0;
+}
 
 bool SceneRenderer::resize(u32 width, u32 height, std::string* error) {
   if (width == 0 || height == 0 || (width == width_ && height == height_)) return true;

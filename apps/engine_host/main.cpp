@@ -1,6 +1,11 @@
 // engine-host (docs/plan/02-architecture.md §2.2, ADR-0001): the engine as a headless server.
-// Phase 0 shape: `sim` mode only, JSON-RPC over stdio, one request per line in and one
-// response per line out. The editor, the MCP bridge, and engine-cli are clients of this.
+// JSON-RPC over stdio, one request per line in and one response per line out. The editor, the
+// MCP bridge, and engine-cli are clients of this. Beyond the document methods it now serves
+// `render.*` over `systems/renderer` (render_methods.cpp) — offscreen, with no window anywhere
+// in the process, which is what the Phase 1 exit criterion asks for: agents capture and
+// benchmark, and an agent has no display.
+#include "render_methods.h"
+
 #include <core/log/log.h>
 #include <domain/protocol/rpc.h>
 #include <domain/protocol/session.h>
@@ -145,8 +150,13 @@ int main(int argc, char** argv) {
   }
 
   protocol::SessionManager sessions(vfs);
-  protocol::Dispatcher dispatcher(protocol::Context{&sessions, &ring, nullptr});
+  // The renderer's state reaches its handlers through Context::app; it owns a Vulkan device and
+  // every loaded scene, and it must outlive the dispatcher. Nothing is created until the first
+  // render.* call, so a host that only edits documents never opens a device.
+  host::RenderHost render_host;
+  protocol::Dispatcher dispatcher(protocol::Context{&sessions, &ring, nullptr, &render_host});
   protocol::add_builtin_methods(dispatcher);
+  host::add_render_methods(dispatcher);
   ENGINE_LOG_INFO(log_host, "engine-host ready",
                   log::field("methods", static_cast<u64>(dispatcher.methods().size())),
                   log::field("mounts", static_cast<u64>(vfs.mounts().size())));
@@ -172,7 +182,8 @@ int main(int argc, char** argv) {
     }
   }
   std::fflush(stdout);
-  ENGINE_LOG_INFO(log_host, "engine-host exiting", log::field("sessions", sessions.count()));
+  ENGINE_LOG_INFO(log_host, "engine-host exiting", log::field("sessions", sessions.count()),
+                  log::field("scenes", render_host.count()));
   log::flush();
   log::remove_sink(&json_sink);
   log::remove_sink(&stderr_sink);

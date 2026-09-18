@@ -327,3 +327,228 @@ struct AdaptersResult @version(1) {
   error: string
   adapters: engine.gfx.AdapterInfo[]
 }
+
+// ---- render.* ---------------------------------------------------------------------------------
+// The renderer over the protocol (docs/subsystems/renderer.md, docs/plan/04-renderer.md §4.8,
+// 06 §6.9): load a scene once, then capture it, benchmark it, and compare the pictures. Every
+// string here is spelled the way engine-view's flags spell it, because both hosts parse them
+// with the same functions in systems/renderer/settings.h.
+
+/// Every knob the renderer has. Absent fields keep the defaults, which are engine-view's.
+struct RenderSettings @version(1) {
+  /// direct, hw, vertex, sw, auto, or rt. `hw` and `direct` fall back to `vertex` on a device
+  /// without mesh shaders; the result says which one ran.
+  raster: string = "hw"
+  /// off, rt, or auto (rt wherever the device has cluster acceleration structures and ray
+  /// queries, off where it does not).
+  shadows: string = "auto"
+  /// id, tri, depth, shaded, normals, or uv.
+  view: string = "shaded"
+  /// Screen-space error threshold in pixels for LOD selection.
+  lod_px: f32 = 1
+  /// `auto` raster: clusters narrower than this go to the software rasterizer.
+  sw_px: f32 = 32
+  cull: bool = true
+  occlusion: bool = true
+  cone: bool = true
+  /// The two orbiting point lights beside the sun.
+  lights: bool = true
+  /// none, identity, wave, or lattice: the per-frame deformed-vertex pool.
+  deform: string = "none"
+  deform_amplitude: f32 = 0.02
+  /// Instantiate prebuilt cluster templates instead of rebuilding the structures every frame.
+  rt_templates: bool = false
+}
+
+/// Parameters of `render.load`. Exactly one of `mesh` and `scene` is given.
+struct RenderLoadParams @version(1) {
+  /// A glTF 2.0, GLB, or .clusters file. Empty with an empty `scene` loads the procedural
+  /// heightfield, which is the scene that needs no content at all.
+  mesh: string
+  /// A scene file: {"meshes":[{"path":"..."}],"instances":[{"mesh":0,"translation":[x,y,z],
+  /// "rotation":[x,y,z,w],"scale":[x,y,z]}]}, with paths relative to the file.
+  scene: string
+  settings: RenderSettings
+  /// n: place the one mesh n x n times with varied rotation and scale.
+  grid_instances: u32 = 0
+  /// Heightfield resolution, n x n vertices, when no mesh is named.
+  grid: u32 = 257
+  /// Derived-data root; empty walks up from the executable to the directory holding AGENTS.md.
+  ddc: string
+  /// Read and write <ddc>/clusters/<key>.clusters.
+  cache: bool = true
+  /// Index into the sorted `gpu.adapters` list; used by the first render call of the process.
+  adapter: u32 = 0
+}
+
+/// A loaded scene: the id later calls name it by, and what loading found.
+struct RenderSceneInfo @version(1) {
+  scene: string
+  adapter: string
+  meshes: u32 = 0
+  instances: u32 = 0
+  /// The (instance, cluster) prefix sum the cull dispatch covers.
+  pairs: u32 = 0
+  clusters: u32 = 0
+  leaf_clusters: u32 = 0
+  triangles: u32 = 0
+  lod_levels: u32 = 0
+  /// glTF primitives merged into the first mesh; 0 for a container or the heightfield.
+  mesh_primitives: u32 = 0
+  /// "miss" built from the source, "hit" read from the cache, "file" a container named
+  /// outright, "none" the heightfield or no cache.
+  mesh_cache: string
+  build_ms: f64 = 0
+  /// The scene's bounding sphere: what a camera frames and what every distance scales with.
+  center: vec3
+  radius: f32 = 0
+  /// The settings as the device and the scene resolved them, which is what will actually run.
+  raster: string
+  shadows: string
+  cull: bool = false
+  occlusion: bool = false
+  deform: string
+  rt_templates: bool = false
+}
+
+/// An explicit camera. `znear` of zero is a hundredth of the scene radius, as engine-view uses.
+struct RenderCamera @version(1) {
+  position: vec3
+  target: vec3
+  fov_deg: f32 = 55
+  znear: f32 = 0
+}
+
+/// A camera on the orbit engine-view uses, in the scene's own scale: `distance` is in tenths of
+/// the scene radius (0 is the rest distance, 22), `yaw_deg` turns around the scene's up axis,
+/// and `pitch_deg` is the elevation above the orbit circle. The default pitch is engine-view's
+/// fixed height factor, so `{distance: 22}` is `engine-view --orbit 22` at frame 0.
+struct RenderOrbit @version(1) {
+  distance: f32 = 0
+  yaw_deg: f32 = 0
+  pitch_deg: f32 = 24.2277
+}
+
+/// Parameters of `render.capture`. With neither `camera` nor `orbit` the default orbit frames
+/// the scene.
+struct RenderCaptureParams @version(1) {
+  scene: string
+  camera: RenderCamera?
+  orbit: RenderOrbit?
+  width: u32 = 1280
+  height: u32 = 720
+  /// Any of "color", "ids", "depth", "normals"; empty means ["color"]. `ids` and `depth` come
+  /// out of the visibility buffer, which `"raster":"direct"` does not write.
+  channels: string[]
+  /// Directory the files go in, created when absent.
+  out_dir: string
+  /// Base name; the color channel is <name>.png and the others <name>.<channel>.<ext>.
+  name: string = "capture"
+  /// Frame number, which drives the orbiting lights and the deformation phase.
+  frame: u64 = 0
+}
+
+/// GPU milliseconds per pass, averaged over the frames whose timestamps came back (`frames`,
+/// which is short of the frames rendered by the frames in flight, because a timestamp pool is
+/// read when its slot is reused). `rt` is the whole acceleration structure chain and `clas` the
+/// cluster structure build inside it.
+struct RenderGpuMs @version(1) {
+  cull: f64 = 0
+  hw: f64 = 0
+  sw: f64 = 0
+  hiz: f64 = 0
+  resolve: f64 = 0
+  rt: f64 = 0
+  clas: f64 = 0
+  deform: f64 = 0
+  trace: f64 = 0
+  total: f64 = 0
+  frames: u64 = 0
+}
+
+struct RenderStats @version(1) {
+  /// Frames submitted.
+  frames: u64 = 0
+  /// The last frame's surviving (instance, cluster) pairs, by the draw that produced them.
+  visible_hw: u32 = 0
+  visible_pass2: u32 = 0
+  visible_sw: u32 = 0
+  visible_pairs: u32 = 0
+  visible_min: u32 = 0
+  visible_max: u32 = 0
+  /// Wall time inside the renderer's own submit, per frame.
+  cpu_ms_per_frame: f64 = 0
+  gpu_ms: RenderGpuMs
+}
+
+struct RenderCaptureResult @version(1) {
+  width: u32 = 0
+  height: u32 = 0
+  /// Pixels the scene covered.
+  covered: u32 = 0
+  /// The covered depth range the depth PNG is normalized over (reversed-Z clip depth).
+  depth_min: f32 = 0
+  depth_max: f32 = 0
+  /// Channel name to file URI: "color", "ids", "ids_header", "depth", "normals".
+  files: map<string, string>
+  /// The id buffer's header, so a client that has the bytes needs no second read.
+  ids_header: string
+  stats: RenderStats
+}
+
+/// Parameters of `render.benchmark`. The camera is held still for every frame, so the LOD cut
+/// is the same one each time; the frame number still advances, so the lights orbit and a
+/// deformed scene deforms.
+struct RenderBenchmarkParams @version(1) {
+  scene: string
+  width: u32 = 1280
+  height: u32 = 720
+  frames: u32 = 60
+  camera: RenderCamera?
+  orbit: RenderOrbit?
+  /// Render with these instead of the ones the scene was loaded with; the scene itself is not
+  /// reloaded, only its GPU buffers and pipelines are rebuilt.
+  settings: RenderSettings?
+}
+
+struct RenderBenchmarkResult @version(1) {
+  width: u32 = 0
+  height: u32 = 0
+  raster: string
+  shadows: string
+  /// Wall time of the whole run, including the wait for the last frame.
+  seconds: f64 = 0
+  stats: RenderStats
+}
+
+/// Parameters of `render.compare` (docs/plan/04-renderer.md §4.8): the accept-or-reject gate of
+/// the optimization loop, beside `render.capture` which produces what it measures.
+struct RenderCompareParams @version(1) {
+  a: string
+  b: string
+  /// "none", or "center" to pool the per-pixel error under a Gaussian attention region, so a
+  /// regression in the corner of a 48:9 frame weighs less than one in the middle.
+  weights: string = "none"
+  /// Pixels per degree of visual angle the contrast-sensitivity filter is evaluated at.
+  ppd: f32 = 67.0206
+  /// Write the per-pixel FLIP error as a heat map here.
+  flip_out: string
+}
+
+struct RenderCompareResult @version(1) {
+  width: u32 = 0
+  height: u32 = 0
+  /// Null for two identical images, where the value is infinite and a large number would read
+  /// like "nearly identical"; `identical` says which.
+  psnr: f64?
+  identical: bool = false
+  ssim: f64 = 0
+  flip_mean: f64 = 0
+  flip_p95: f64 = 0
+  flip_max: f64 = 0
+  flip_weighted_mean: f64 = 0
+  /// File URI of the heat map, when one was asked for.
+  flip_image: string
+  /// Wall time of the metrics themselves.
+  ms: f64 = 0
+}
