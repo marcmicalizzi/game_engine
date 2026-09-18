@@ -56,8 +56,11 @@ function New-FakeTree {
     'core/CMakeLists.txt'           = "add_subdirectory(base)`nadd_subdirectory(containers)`n"
     'core/base/CMakeLists.txt'      = "engine_module(NAME base LAYER core)`n"
     'core/containers/CMakeLists.txt' = "engine_module(NAME containers LAYER core DEPS base)`n"
-    'domain/CMakeLists.txt'         = "add_subdirectory(protocol)`n"
+    'domain/CMakeLists.txt'         = "add_subdirectory(protocol)`nadd_subdirectory(store)`n"
     'domain/protocol/CMakeLists.txt' = "engine_module(NAME protocol LAYER domain DEPS base)`n"
+    # An optional capability to depend on, so the capability-graph case has something real to
+    # find. Anything that ticks depends on one of these in the actual tree.
+    'domain/store/CMakeLists.txt'   = "engine_module(NAME store LAYER domain OPTIONAL DEPS base)`n"
     'apps/CMakeLists.txt'           = "engine_app(NAME engine_cli OUTPUT engine-cli SOURCES main.cpp DEPS base)`n"
     'docs/subsystems/README.md'     = @"
 # Subsystem pages
@@ -67,6 +70,7 @@ function New-FakeTree {
 | base | core | [base.md](base.md) |
 | containers | core | [containers.md](containers.md) |
 | protocol | domain | [protocol.md](protocol.md) |
+| store | domain | [store.md](store.md) |
 | engine_cli | apps | [apps.md](apps.md) |
 "@
   }
@@ -176,6 +180,26 @@ try {
     (Get-Text $root 'systems/scent_field/src/scent_field.cpp') -match 'void register_methods\(protocol::Dispatcher&\)'
   }
   Test-That 'the generated header includes its schema types' { $header2 -match '#include <schemas/scent_field\.h>' }
+  Test-That 'a capability with no optional dependency declares no edge' {
+    $cmake2 -notmatch 'engine_capability_requires'
+  }
+
+  # ---- the capability graph ----------------------------------------------------------------------
+  # A capability that depends on another capability is the case ADR-0027's "revisit when"
+  # anticipated and `systems/animation` hit first: without the declared edge, a configure with
+  # ENGINE_WITH_<required>=OFF is a fatal error rather than one fewer capability.
+  Write-Host 'case: -Name crowd -Deps "containers store" (store is OPTIONAL)'
+  & $scaffold -Name crowd -Layer systems -Deps 'containers store' -Root $root | Out-Null
+  $cmake3 = Get-Text $root 'systems/crowd/CMakeLists.txt'
+  Test-That 'the edge to the required capability is declared' {
+    $cmake3 -match '(?m)^engine_capability_requires\(crowd store\)$'
+  }
+  Test-That 'the edge comes before the module that needs it' {
+    $cmake3.IndexOf('engine_capability_requires') -lt $cmake3.IndexOf('engine_module(')
+  }
+  Test-That 'the docs page records the requirement' {
+    (Get-Text $root 'docs/subsystems/crowd.md') -match 'engine_capability_requires\(crowd store\)'
+  }
 
   # ---- refusals -----------------------------------------------------------------------------------
   Write-Host 'case: refusals'

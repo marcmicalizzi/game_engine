@@ -69,6 +69,7 @@ engine_module_bench(NAME containers SOURCES bench/containers_bench.cpp)   # opti
 engine_app(NAME engine_cli OUTPUT engine-cli SOURCES main.cpp DEPS json platform E2E_TESTS tests/cli_tests.cpp)  # executables
 engine_shaders(NAME gfx_tests SOURCES shaders/fill.slang)   # .slang -> SPIR-V at build time, embedded as <shaders/fill.spv.h>
 engine_module(NAME cloth LAYER systems OPTIONAL DEPS base containers)     # a capability: ENGINE_WITH_CLOTH, ADR-0027
+engine_capability_requires(cloth ecs)   # this capability is off when the one it needs is (08 §8.5)
 ```
 
 `engine_module()` refuses a dependency on a higher layer or on a module that has not been declared yet, so `add_subdirectory` order is lower layers first. The module graph is written to `build/<preset>/modules.json` after configure; read that rather than parsing CMake.

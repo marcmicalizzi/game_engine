@@ -176,6 +176,7 @@ The checklist. `tools/new-capability.ps1` ([08 §8.5](08-toolchain.md#85-build-s
 | Registration point | File or call | Required? |
 |---|---|---|
 | The module itself | `<layer>/<name>/CMakeLists.txt`: `engine_module(NAME <name> LAYER <layer> OPTIONAL DEPS ...)`, depending only downward, plus the `add_subdirectory` line in `<layer>/CMakeLists.txt` | Always |
+| A capability it cannot be built without | `engine_capability_requires(<name> <other>)` at the top of the same file. The capability is then switched off with what it requires instead of failing the configure, and `modules.json` lists it under `disabled_capabilities` ([08 §8.5](08-toolchain.md#85-build-system-and-ci)) | If it links another capability — anything that ticks links `domain/ecs` |
 | Component and event types | `<layer>/<name>/schemas/<name>.schema`, compiled by `engine_schema_library(... CAPABILITY <name>)`; the types register themselves ([ADR-0007](../adr/0007-schema-code-generation.md)) | If the capability has state a document, a save, or the protocol can see |
 | A system in the tick scheduler | A constant-initialized `SystemDesc` in the static registration table, placed by tick phase ([§5.2](05-simulation.md#52-sim-scheduler)); `begin_tick`/`tick`/`end_tick` are plain functions, not virtuals | If the capability ticks |
 | Render-graph passes | `gfx::RenderGraph::add_pass()` from the system's frame setup; the graph is never edited to know a pass exists ([§4.2](04-renderer.md#42-frame-architecture)) | If the capability draws or dispatches |

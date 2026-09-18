@@ -15,6 +15,10 @@
     tests/size_table.cpp                 ADR-0019
     schemas/<name>.schema                with -WithSchema
     bench/<name>_bench.cpp               with -WithBench
+  A dependency that is itself an optional capability (domain/ecs, foundation/store, ...) also
+  generates an `engine_capability_requires()` line, so that a configure with that capability
+  switched off leaves this one out rather than failing (docs/plan/08-toolchain.md §8.5).
+
   and, outside it, only the lines that announce the module exists:
     <layer>/CMakeLists.txt               add_subdirectory(<name>), appended
     CMakeLists.txt                       add_subdirectory(<layer>), if the layer is new
@@ -63,9 +67,14 @@ function ConvertTo-PascalCase([string]$snake) {
 }
 
 # Every module the tree already declares, with its layer, read from the CMake manifests rather
-# than from modules.json so that the script works before the first configure.
+# than from modules.json so that the script works before the first configure. `$script:Capabilities`
+# is filled at the same time: module name -> the capability switch it belongs to, for the modules
+# declared OPTIONAL. A new capability that depends on one of those has to declare the edge
+# (engine_capability_requires), or a configure with that capability off fails outright instead of
+# leaving this one out — which is what `domain/ecs` did to the first capability that ticked.
 function Get-DeclaredModules([string]$root) {
   $modules = @{}
+  $script:Capabilities = @{}
   # Matched against the path relative to the root, because the root itself may sit under a
   # directory the pattern would otherwise exclude (a git worktree under .claude/, for one).
   $manifests = Get-ChildItem -Path $root -Recurse -Filter 'CMakeLists.txt' -File |
@@ -74,8 +83,14 @@ function Get-DeclaredModules([string]$root) {
     }
   foreach ($manifest in $manifests) {
     $text = Get-Content -LiteralPath $manifest.FullName -Raw
-    foreach ($m in [regex]::Matches($text, 'engine_module\(\s*NAME\s+(\w+)\s+LAYER\s+(\w+)')) {
+    foreach ($m in [regex]::Matches($text, 'engine_module\(\s*NAME\s+(\w+)\s+LAYER\s+(\w+)([^)]*)\)')) {
       $modules[$m.Groups[1].Value] = $m.Groups[2].Value
+      $rest = $m.Groups[3].Value
+      if ($rest -match 'CAPABILITY\s+(\w+)') {
+        $script:Capabilities[$m.Groups[1].Value] = $Matches[1]
+      } elseif ($rest -match '(^|\s)OPTIONAL(\s|$)') {
+        $script:Capabilities[$m.Groups[1].Value] = $m.Groups[1].Value
+      }
     }
     foreach ($m in [regex]::Matches($text, 'engine_schema_library\(\s*NAME\s+(\w+)')) {
       $modules[$m.Groups[1].Value] = 'core'
@@ -147,6 +162,15 @@ foreach ($dep in $Deps) {
 }
 $Deps = @($Deps | Select-Object -Unique)
 
+# Capabilities this one cannot be built without, deduced from the dependencies the caller named.
+# The generated schema library shares this capability's own switch, so it is not an edge.
+$Requires = @()
+foreach ($dep in $Deps) {
+  if ($dep -eq "${Name}_schemas") { continue }
+  if ($script:Capabilities.ContainsKey($dep)) { $Requires += $script:Capabilities[$dep] }
+}
+$Requires = @($Requires | Select-Object -Unique | Sort-Object)
+
 $Pascal = ConvertTo-PascalCase $Name
 $Upper = $Name.ToUpperInvariant()
 $System = "$($Pascal)System"
@@ -177,6 +201,27 @@ engine_module_bench(NAME $Name
 "@
 }
 
+$requiresLine = ''
+if ($Requires.Count -gt 0) {
+  $requiresNames = $Requires -join ' '
+  if ($Requires.Count -eq 1) {
+    $requiresPhrase = "``$requiresNames`` is itself an optional capability and this one links it"
+    $requiresOff = 'that capability'
+  } else {
+    $requiresPhrase = "``$requiresNames`` are themselves optional capabilities and this one links them"
+    $requiresOff = 'any of them'
+  }
+  $requiresLine = @"
+
+
+# The capability graph (docs/plan/08-toolchain.md section 8.5). $requiresPhrase,
+# so the edge is declared: with $requiresOff switched off, this capability is switched off too —
+# with a line on the configure's status output and a row in modules.json's
+# disabled_capabilities — instead of failing a configure that is perfectly legitimate.
+engine_capability_requires($Name $requiresNames)
+"@
+}
+
 $cmakeText = @"
 # $Name capability (ADR-0027). TODO($Name): one line saying what it is.
 #
@@ -184,7 +229,7 @@ $cmakeText = @"
 # ENGINE_MINIMAL=ON, removes this module, its tests, and its bench from the build, and the rest
 # of the tree still builds and passes. That is the proof that the capability is additive.
 # WHOLE_ARCHIVE keeps the module's static registration objects — the scheduler entry, tunables,
-# schema types — from being dropped by the linker because nothing references them.$schemaLine
+# schema types — from being dropped by the linker because nothing references them.$requiresLine$schemaLine
 
 engine_module(NAME $Name LAYER $Layer OPTIONAL WHOLE_ARCHIVE
   DEPS $($Deps -join ' ')
@@ -477,6 +522,13 @@ if ($WithBench) {
 } else {
   $docsBenchRow = "| Bench | none | TODO once there is a hot path |"
 }
+if ($Requires.Count -gt 0) {
+  $docsRequiresCall = 'engine_capability_requires(' + $Name + ' ' + ($Requires -join ' ') + ')'
+  $docsRequiresRow = '| Capabilities it requires | `' + $docsRequiresCall + '` | declared; off when ' +
+                     ($Requires -join ', ') + ' is off |'
+} else {
+  $docsRequiresRow = '| Capabilities it requires | none | this capability stands alone |'
+}
 $docsBenchCommand = ''
 if ($WithBench) { $docsBenchCommand = " Benchmarks: ``tools/dev.ps1 bench -Filter '$Name.*'``." }
 
@@ -514,6 +566,7 @@ the scheduler, or another capability, and it can be removed from the build the s
 
 | Registration point | This capability | Status |
 |---|---|---|
+$docsRequiresRow
 $docsSchemaRow
 | Tick scheduler entry | ``$($Name)::$System``, phase ``$($Name)::k_phase`` | TODO: register when the scheduler lands |
 | Render-graph passes | none | TODO: state whether this capability draws |

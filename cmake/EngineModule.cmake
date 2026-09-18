@@ -21,6 +21,7 @@
 #
 #   engine_module_tests(NAME <name> SOURCES <file>...)
 #   engine_capability_enabled(<capability> <out_var>)   # for a CMakeLists that guards more
+#   engine_capability_requires(<capability> <other>...) # the capability graph (ADR-0027)
 #
 #   engine_finalize_modules()   # writes ${CMAKE_BINARY_DIR}/modules.json
 #
@@ -44,21 +45,87 @@ define_property(GLOBAL PROPERTY ENGINE_DISABLED_CAPABILITIES
   FULL_DOCS "ENGINE_WITH_<NAME> switches that are off, or all of them under ENGINE_MINIMAL")
 set_property(GLOBAL PROPERTY ENGINE_DISABLED_CAPABILITIES "")
 
+# The capability graph (ADR-0027's "revisit when": *the grouping rule in decision 1 needs to
+# become a declared capability graph*).
+#
+#   engine_capability_requires(animation ecs)
+#
+# declared at the top of a capability's CMakeLists.txt, before anything consults its switch.
+#
+# Why this exists. Decision 1 says a capability is never a dependency of a module that is not part
+# of the same capability, because that module could then not be built without it — and until the
+# first ticking capability landed, that rule and reality agreed. They stop agreeing the moment a
+# capability *ticks*: the registration point for a ticking system is `ecs::register_system` with a
+# `sim::SystemDesc` (ADR-0028 seam 2) and its components are flecs components registered from the
+# schema IDL (seam 1), so the module that attaches through those points links `domain/ecs` — which
+# is itself an optional capability under `ENGINE_WITH_ECS`. With `ENGINE_WITH_ECS=OFF` and
+# `ENGINE_WITH_ANIMATION=ON` the dependency check above fired and the configure died, which is the
+# wrong answer twice: the combination is legitimate, and the failure was a hard error in a shared
+# file rather than one capability quietly not being in this build.
+#
+# What a declared edge buys: the dependent capability resolves **off** when anything it requires is
+# off, it says so once on the status line, and `modules.json` lists it under `disabled_capabilities`
+# like any other switched-off capability — so "this configuration has no animation" stays a fact
+# the module graph answers, and the minimal build stays the proof it was.
+#
+# What it deliberately does not do is turn the required capability *on*. A switch the user set is
+# never overridden, because `ENGINE_MINIMAL=ON` has to mean what it says.
+function(engine_capability_requires capability)
+  if(NOT ARGN)
+    message(FATAL_ERROR "engine_capability_requires(${capability}): name at least one capability")
+  endif()
+  get_property(_already GLOBAL PROPERTY ENGINE_CAPABILITY_REQUIRES_${capability})
+  list(APPEND _already ${ARGN})
+  list(REMOVE_DUPLICATES _already)
+  set_property(GLOBAL PROPERTY ENGINE_CAPABILITY_REQUIRES_${capability} "${_already}")
+endfunction()
+
 # The switch behind one capability (ADR-0027 decision 4). Declared on first use so a capability
 # that is not part of this configuration's source tree contributes no stale cache entry.
 # ENGINE_MINIMAL wins over the per-capability option: the minimal build is a proof, and a proof
 # that a stale cache entry can weaken is not one.
-function(_engine_capability_option capability out_var)
+# `out_reason` comes back as the switch that actually decided it, so a skip message can say why a
+# capability is absent when its own switch is on.
+function(_engine_capability_option capability out_var out_reason)
   string(TOUPPER "${capability}" _upper)
   set(_opt "ENGINE_WITH_${_upper}")
   if(NOT DEFINED ${_opt})
     option(${_opt} "Build the ${capability} capability (ADR-0027)" ON)
   endif()
+  set(_enabled ${${_opt}})
+  set(_why "ENGINE_WITH_${_upper}=OFF")
   if(ENGINE_MINIMAL)
-    set(${out_var} OFF PARENT_SCOPE)
-  else()
-    set(${out_var} ${${_opt}} PARENT_SCOPE)
+    set(_enabled OFF)
+    set(_why "ENGINE_MINIMAL=ON")
   endif()
+
+  # Requirements, if the switch itself said yes. The recursion is over the declared graph, which
+  # is a handful of edges deep at most; the stack is carried so a cycle is a named error instead
+  # of a CMake that never returns.
+  if(_enabled)
+    get_property(_stack GLOBAL PROPERTY ENGINE_CAPABILITY_STACK)
+    if("${capability}" IN_LIST _stack)
+      message(FATAL_ERROR
+        "engine capability graph: '${capability}' requires itself through ${_stack}. "
+        "A capability that needs another one is a dependency, and dependencies do not form cycles.")
+    endif()
+    get_property(_requires GLOBAL PROPERTY ENGINE_CAPABILITY_REQUIRES_${capability})
+    if(_requires)
+      set_property(GLOBAL PROPERTY ENGINE_CAPABILITY_STACK "${_stack};${capability}")
+      foreach(_req IN LISTS _requires)
+        _engine_capability_option("${_req}" _req_enabled _req_why)
+        if(NOT _req_enabled)
+          set(_enabled OFF)
+          set(_why "it requires ${_req}, and ${_req_why}")
+          break()
+        endif()
+      endforeach()
+      set_property(GLOBAL PROPERTY ENGINE_CAPABILITY_STACK "${_stack}")
+    endif()
+  endif()
+
+  set(${out_var} ${_enabled} PARENT_SCOPE)
+  set(${out_reason} ${_why} PARENT_SCOPE)
 endfunction()
 
 # For a capability whose CMakeLists.txt has to guard more than its engine_module() call (an
@@ -69,7 +136,7 @@ endfunction()
 #     return()
 #   endif()
 function(engine_capability_enabled capability out_var)
-  _engine_capability_option("${capability}" _enabled)
+  _engine_capability_option("${capability}" _enabled _why)
   # A CMakeLists that guards its whole file with this (because the capability's dependency must
   # not even be fetched when it is off) still owes modules.json the row that says the capability
   # exists and is switched off: engine_module() never runs in that configuration to record it,
@@ -121,12 +188,11 @@ function(engine_module)
     if(NOT _capability)
       set(_capability "${EM_NAME}")
     endif()
-    _engine_capability_option("${_capability}" _enabled)
+    _engine_capability_option("${_capability}" _enabled _why)
     if(NOT _enabled)
-      string(TOUPPER "${_capability}" _upper)
       set_property(GLOBAL APPEND PROPERTY ENGINE_DISABLED_MODULES "${EM_NAME}")
       set_property(GLOBAL APPEND PROPERTY ENGINE_DISABLED_CAPABILITIES "${_capability}")
-      message(STATUS "engine module: ${EM_NAME} [${EM_LAYER}] skipped (ENGINE_WITH_${_upper}=OFF)")
+      message(STATUS "engine module: ${EM_NAME} [${EM_LAYER}] skipped (${_why})")
       return()
     endif()
   endif()
@@ -140,8 +206,10 @@ function(engine_module)
     if("${_dep}" IN_LIST _disabled)
       message(FATAL_ERROR
         "engine_module(${EM_NAME}) [${EM_LAYER}]: depends on '${_dep}', an optional capability that is "
-        "switched off in this configuration. A capability may only be depended on by its own capability "
-        "group, which shares its switch (ADR-0027 decision 1); anything else cannot be built without it.")
+        "switched off in this configuration. A module that is not itself a capability cannot depend on "
+        "one (ADR-0027 decision 1): it could not be built without it. A module that *is* a capability "
+        "declares the edge instead — engine_capability_requires(<this capability> ${_dep}) at the top of "
+        "its CMakeLists.txt — and is then switched off with what it requires, rather than failing here.")
     endif()
     if(NOT "${_dep}" IN_LIST _declared)
       message(FATAL_ERROR
