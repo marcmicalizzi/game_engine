@@ -50,4 +50,5 @@ One page per module, created in the same change that creates the module. Templat
 | ecs (capability) | domain | [ecs.md](ecs.md) |
 | physics (capability) | domain | [physics.md](physics.md) |
 | sim | domain | [sim.md](sim.md) |
+| renderer | systems | [renderer.md](renderer.md) |
 | engine_host, engine_cli, engine_view, engine_content, engine_input, engine_image | apps | [apps.md](apps.md) |
