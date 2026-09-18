@@ -27,6 +27,13 @@ namespace {
 constexpr u32 k_view_lights = 2;  // the warm and cool point lights orbiting the scene
 constexpr u32 k_stat_words = 9;   // three indirect blocks of three u32, per view
 
+// The sky, in one place. It is both the resolve pass's clear value and `ResolveParams::sky`, and
+// **they have to be the same number**: the resolve tells the shader so with
+// `ResolveParams::sky_is_clear`, and the shader then discards an empty pixel instead of writing a
+// colour the clear already put there. Two spellings of it would make an uncovered pixel take
+// whichever the clear said, silently.
+constexpr Vec4 k_sky{0.55f, 0.70f, 0.90f, 1.0f};
+
 // The GPU timer keys zones by name and sums equal names, so a view's own milliseconds need a name
 // of their own. View 0 keeps the bare name, so a single-view frame records exactly the zones it
 // always has, and the per-pass totals are the sum over the views' names.
@@ -762,7 +769,10 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
 
     // ---- the resolve's block ------------------------------------------------------------------
     gfx::ResolveParams resolve{};
-    resolve.sky = Vec4{0.55f, 0.70f, 0.90f, 1.0f};
+    resolve.sky = k_sky;
+    // Both raster paths clear the colour target to exactly this before they draw, so an empty
+    // pixel is a fragment whose value is already in the target: the shader discards it instead.
+    resolve.sky_is_clear = 1;
     resolve.sun = Vec4{normalize(Vec3{0.4f, 0.8f, 0.45f}), 1.0f};
     resolve.camera = Vec4{eye, 0.0f};
     resolve.view_proj = view.view_proj;
@@ -926,10 +936,10 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     rt.instances = graph.import_buffer("tlas instances", scene.rt_instances);
   }
   VkClearColorValue sky{};
-  sky.float32[0] = 0.55f;
-  sky.float32[1] = 0.70f;
-  sky.float32[2] = 0.90f;
-  sky.float32[3] = 1.0f;
+  sky.float32[0] = k_sky.x;
+  sky.float32[1] = k_sky.y;
+  sky.float32[2] = k_sky.z;
+  sky.float32[3] = k_sky.w;
   const bool fill_hiz = occlusion && targets.hiz_dirty;
   const bool fill_flags = occlusion && flags_dirty_;
   const bool cull_on = settings.cull;

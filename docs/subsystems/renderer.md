@@ -142,6 +142,7 @@ Nothing about the frame changed in the move, and the numbers in [apps](apps.md) 
 **The fixed cost of a frame** — what it costs with nothing in view — is what [E9](../experiments/e9-multi-view.md) found dominates the owner's 11520×2160, and where the renderer's own passes were rebuilt.
 
 - **The Hi-Z pyramid is folded, not built a mip at a time.** `Targets::hiz_dispatches` is `gfx::hiz_dispatch_count(mips)` and `add_hiz` records that many passes per view per build, each pushing one `gfx::HizParams` that names the source mip and how many folds to write; the shader does the rest in shared memory ([gfx](gfx.md)). The pyramid is bit-identical and the visible set is unchanged, which is the requirement: the Hi-Z is the input to a test that must not change the picture.
+- **The resolve leaves the sky to the clear.** The resolve pass clears the colour target to the sky before it draws, so a pixel the scene does not cover is a fragment that would write the value already under it; `gfx::ResolveParams::sky_is_clear` says so and the shader discards instead ([gfx](gfx.md)). The renderer is entitled to set it because it owns both ends: `k_sky` in `scene_renderer.cpp` is the clear value **and** `ResolveParams::sky`, in one place, because two spellings of the same colour would make an uncovered pixel take whichever the clear said without anything saying so.
 
 ## Not yet
 

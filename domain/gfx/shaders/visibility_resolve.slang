@@ -96,7 +96,8 @@ struct ResolveParams {
   float panini_d;      // Panini parameter; the resample is off when panini_x is 0
   float panini_x;      // the picture's half-width in image units
   float source_x;      // the rectilinear source's half-width, tan(half the horizontal fov)
-  uint2 pad;
+  uint sky_is_clear;   // 1: the pass cleared the target to `sky`, so an empty pixel is discarded
+  uint pad;
 };
 
 struct ResolvePush {
@@ -113,6 +114,18 @@ static const uint k_shadow_lights = 2u;
 struct FullscreenOut {
   float4 position : SV_Position;
 };
+
+// What an **empty** pixel is. At the owner's 11520 x 2160 the pass is bandwidth-bound and the
+// sky is most of a frame's pixels whenever the camera looks at any of it — the read of the
+// visibility word cannot be avoided (it is how the pixel is known to be empty), but the color
+// write can, because the pass clears the whole target to `sky` before it draws and so the bytes
+// the shader would write are already there. `sky_is_clear` is the caller saying it cleared to
+// exactly this value; the fragment is then killed and the ROP does nothing. A caller that
+// cleared to something else leaves the flag at zero and the sky is written as it always was.
+float4 sky_pixel(ResolveParams* params) {
+  if (params->sky_is_clear != 0) discard;
+  return params->sky;
+}
 
 [shader("vertex")]
 FullscreenOut vs_fullscreen(uint vertex_id : SV_VertexID) {
@@ -324,7 +337,7 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
   const bool resample = params->panini_x > 0.0;
   const uint out_width = resample ? params->out_width : params->width;
   const uint out_height = resample ? params->out_height : params->height;
-  if (out_pixel.x >= out_width || out_pixel.y >= out_height) return params->sky;
+  if (out_pixel.x >= out_width || out_pixel.y >= out_height) return sky_pixel(params);
   // Where in this view's visibility region the output pixel reads. Without a resample that is the
   // pixel's own centre; with one it is wherever the Panini map sends it, which is also the point
   // the barycentrics below are taken at, so the reconstruction stays sub-pixel accurate.
@@ -335,13 +348,13 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
     const float2 src_ndc = panini_source_ndc(params, ndc);
     source = float2((src_ndc.x * 0.5 + 0.5) * float(params->width),
                     (0.5 - src_ndc.y * 0.5) * float(params->height));
-    if (source.x < 0.0 || source.y < 0.0) return params->sky;
+    if (source.x < 0.0 || source.y < 0.0) return sky_pixel(params);
   }
   const uint2 pixel = uint2(source);
-  if (pixel.x >= params->width || pixel.y >= params->height) return params->sky;
+  if (pixel.x >= params->width || pixel.y >= params->height) return sky_pixel(params);
   uint64_t* visibility = (uint64_t*)params->visibility;
   const uint64_t value = visibility[pixel.y * params->width + pixel.x];
-  if (value == 0) return params->sky;
+  if (value == 0) return sky_pixel(params);
   const uint id = uint(value & 0xffffffffu);
   const float depth = asfloat(uint(value >> 32));
   const uint2 entry = visible_entry(params->visible, id >> 8);

@@ -134,7 +134,15 @@ struct ResolveParams {
   f32 panini_d = 0.0f;
   f32 panini_x = 0.0f;
   f32 source_x = 0.0f;
-  u32 pad[2] = {};  // keeps the block 16-byte aligned
+  // 1: the pass cleared the color target to exactly `sky` before it drew, so a pixel the scene
+  // does not cover already holds the value the shader would write. The shader then **discards**
+  // that fragment instead of writing it, which at 11520x2160 is a 100 MB color write the frame
+  // no longer makes; the picture is identical because the bytes under it already are. Zero is
+  // the safe default and means "write the sky", which is what a caller that clears to something
+  // else — `domain/gfx`'s resolve tests clear to black and read the sky back out of the
+  // picture — needs. Whoever sets it owns the clear value beside it.
+  u32 sky_is_clear = 0;
+  u32 pad = 0;  // keeps the block 16-byte aligned
 };
 static_assert(sizeof(ResolveParams) == 256);
 static_assert(sizeof(ResolveParams) % 16 == 0, "the block is read as float4 rows on the GPU");
