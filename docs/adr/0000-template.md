@@ -3,6 +3,7 @@
 - **Status:** Proposed | Accepted | Superseded by ADR-MMMM
 - **Date:** YYYY-MM-DD
 - **Plan references:** docs/plan/<file> §<section>
+- **Docs touched:** the pages this decision changed (`docs/subsystems/<module>.md`, `docs/plan/<file>` §<section>), or `none`
 
 ## Context
 

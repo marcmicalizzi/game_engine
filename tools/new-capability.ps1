@@ -486,6 +486,13 @@ $docsText = @"
 **Purpose.** TODO($Name): one paragraph. What this capability is, which use cases it serves, and
 what it deliberately does not do.
 
+**Why this shape.** TODO($Name): why it is built this way and not another way — the alternatives
+that were on the table, the measurement or constraint that chose the data layout, the solver, and
+the LOD policy, and what would have to change for a different answer to be right. A page that says
+only what the code does leaves the next reader to rediscover the reasoning at the price the first
+one paid (AGENTS.md, "Write the why, not only the what"). If a decision here is one a future
+contributor could be surprised by, it is an ADR, and this paragraph links it.
+
 **Owned data.** TODO($Name): what this module is the source of truth for. Nothing else may hold or
 mutate it.
 

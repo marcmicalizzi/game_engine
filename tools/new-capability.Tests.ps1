@@ -146,6 +146,12 @@ try {
   Test-That 'the docs page carries the capability contract' {
     (Get-Text $root 'docs/subsystems/cloth.md') -match 'Capability contract \(ADR-0027\)'
   }
+  # A generated page that only has a place for what the code does gets filled in with what the
+  # code does; the why has to have a place of its own or it never gets written (AGENTS.md).
+  Test-That 'the docs page asks for the why, not only the what' {
+    $page = Get-Text $root 'docs/subsystems/cloth.md'
+    ($page -match '(?m)^\*\*Why this shape\.\*\* TODO\(cloth\):') -and ($page -match 'Write the why, not only the what')
+  }
 
   # ---- every switch on ---------------------------------------------------------------------------
   Write-Host 'case: -Name scent_field -WithSchema -WithBench -WithProtocol'

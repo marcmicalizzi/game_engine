@@ -137,6 +137,7 @@ Conventions that specifically help LLM-generated code:
 - **A size table for hot types**, checked by `static_assert`, so footprint regressions fail the build rather than the frame rate.
 - **Tests and benchmarks are colocated** with the module and discoverable by a uniform command.
 - **ADRs** record every decision in this plan that gets confirmed or reversed, so agents can find *why* something is the way it is without reading git history.
+- **Documentation moves with the code.** Every module has a `docs/subsystems/` page, every page is indexed, every link resolves, and a change to an interface lands with the page that describes it — the invariant is stated once, in [AGENTS.md](../../AGENTS.md), and checked by `tools/docs-check.ps1` (CTest: `docs_check`) and by CI's documentation gate (`tools/docs-gate.sh`). The documents are the context an agent starts from, so a stale one costs every future session.
 
 ## 2.6 Explicit scope for the first engine version
 
@@ -185,7 +186,7 @@ The checklist. `tools/new-capability.ps1` ([08 §8.5](08-toolchain.md#85-build-s
 | Determinism declaration | `hashed` (in the fixed-step tick and the sim hash) or `derived` (never read back), in the header and on the docs page | Always |
 | Zero cost when unused | Which mechanism of [11 §11.10](11-performance-principles.md#1110-absent-capabilities-are-free) applies — no instances, no graph inputs, no asset property block, no linked code — named on the docs page | Always |
 | Tests, size table, bench | `tests/<name>_tests.cpp`, `tests/size_table.cpp` ([ADR-0019](../adr/0019-efficiency-first-class.md)), `bench/<name>_bench.cpp` | Tests and size table always; bench when there is a hot path |
-| Docs page | `docs/subsystems/<name>.md` plus its row in that directory's README | Always |
+| Docs page | `docs/subsystems/<name>.md` plus its row in that directory's README; the subsystem page and the plan status note land in the same change as the code ([AGENTS.md](../../AGENTS.md)) | Always |
 | Removal proof | `ENGINE_WITH_<UPPER_NAME>`, created by `OPTIONAL`; the module disappears from `modules.json` in the minimal build and everything else still builds and passes | Always |
 
 What a capability must never need: edits to `core/`, `foundation/`, the render graph, the scheduler, the content build's driver, or another capability. A capability that genuinely needs one because the registration point does not exist yet extends this table first, as a plan change and an ADR, and lands that before the capability does.
