@@ -4,6 +4,7 @@
 - **Date:** 2026-09-18. **Machine:** Intel Core i9-10980XE (18 cores), 63.7 GB, Windows 11 Pro 10.0.26200; **GPU:** NVIDIA GeForce RTX 5090, driver 610.88, Vulkan 1.4.341, 32,404 MB device-local. **Build:** `msvc-release`.
 - **Machine state:** **not quiet, WARNING raised on the CPU threshold throughout.** Over the 72 samples the two runs took (`machine_state.start` and `.end` of every benchmark), other processes used **5.8% to 36.3% of the CPU, median 18.3%**, against the harness's 10% threshold. The GPU was **quiet before every single run** — all 36 `start` samples are under 20% busy, median 6%, and the card held 4.1–5.7 GiB of 31.8 GiB including this process — and the 13 samples over 20% are all `end` samples, which is the benchmark's own last frames still in flight when the sampler ran. Every number here is a GPU timestamp rather than a CPU clock ([renderer](../subsystems/renderer.md#statistics)), and every comparison below is between configurations measured in the same process minutes apart, so the ratios hold; absolute milliseconds are upper bounds and do not compare against another day's.
 - **Decision:** the multi-view design, recorded as a status note in [04 §4.6](../plan/04-renderer.md#46-extreme-displays) and built as `renderer::ViewSet` ([renderer](../subsystems/renderer.md#multi-view-a-viewset-over-one-scene)). The row stays **Measured**, not Done: three of §4.6's asks — per-view VRS, per-view internal resolution and ray budgets, and screen-space passes per view — cannot be measured at all yet, because the RHI has no shading-rate path and there is no TAA, denoiser or upscaler to run per view.
+- **Sequel, the same day:** ["After the fixed-cost work"](#after-the-fixed-cost-work-2026-09-18-later-the-same-day) re-measures every table below against the three changes the "Hi-Z is entirely fixed" and "the resolve is about 45% fixed" findings provoked. The frame at 11520×2160 fell 16–19% loaded and 29–31% empty, byte-identical picture and identical visible set. The original numbers here are left exactly as they were taken.
 
 ## Setup
 
@@ -134,6 +135,137 @@ Against the loaded frames above: **Hi-Z is entirely fixed** — 0.595 ms empty, 
 - **Per-view internal resolution and ray budget**, the other two levers of §4.6's foveation gradient.
 - **Multi-window presentation and per-output HDR metadata.** Everything here is one swapchain with the views tiled.
 - **One RT cut instead of a union.** Two views at different LOD thresholds put two levels of the same surface into one top-level structure, so a ray from either may hit the other's level. With `--peripheral-lod 1` the cuts agree and nothing overlaps, which is why the tables above are clean; at 2 and 4 they do not. §4.6's "RT is view-agnostic" is the fix and it means *one cut at a view-agnostic threshold*, not the union of the views'. A related consequence: with more than one view a ray may name a pair through another view's entry, which resolves to the same (instance, cluster, triangle) and so is invisible to a capture, but it makes E2's word-for-word raster/RT invariant a single-view statement.
+
+## After the fixed-cost work (2026-09-18, later the same day)
+
+The numbers above stand as measured and are not edited. What follows is the same corpora, the same
+resolutions and the same two layouts re-measured after the three changes E9's "Hi-Z is entirely
+fixed" and "the resolve is about 45% fixed" findings provoked. Each one keeps the picture
+byte-identical and the visible set exactly equal; the commits carry the individual before/after
+numbers and the safety arguments, and [gfx](../subsystems/gfx.md) and
+[renderer](../subsystems/renderer.md) carry the mechanisms.
+
+1. **The Hi-Z pyramid folds six mips per workgroup** instead of one dispatch per mip. A dispatch
+   per mip re-reads the whole of each mip to produce the next; a 16×16 workgroup folding a 32×32
+   tile pays that read once and does the rest in shared memory. 11520×2160's fifteen mips are
+   three dispatches and two barriers instead of fifteen and fourteen. The values are bit-identical
+   — `min` is exact, and a power-of-two tile at a power-of-two offset covers exactly the 2×2
+   subtrees the per-mip pass reduced — so the cull pass reads the same texels and the cut does not
+   move.
+2. **The resolve discards an empty pixel** rather than writing the sky, because the pass already
+   cleared the target to it (`ResolveParams::sky_is_clear`).
+3. **The resolve skips a 32×32 tile the Hi-Z build says holds nothing.** The build's first
+   dispatch already reads every word of the visibility buffer and its workgroup is exactly a tile,
+   so an OR across it is free; the resolve reads that word before the visibility word. Valid
+   because the last Hi-Z build of a frame follows the last write to the visibility buffer whenever
+   two-pass occlusion culling is on, and `ResolveParams::coverage` is zero when it is not.
+
+**Machine state.** Same machine, same driver, same `msvc-release` build. The GPU was **quiet before
+every run** — 1–16% busy at the start sample of all 48 configurations, median 2%, with 3.8–5.8 GiB
+of the 31.8 GiB card held including this process — and `nvidia-smi` agreed at 3.4–4.4 GiB and 2–6%
+between runs. The **CPU was not**: other processes used 3–35% for most of the run and 55–100% for
+nine of the 48 configurations, against the harness's 10% threshold, because other agents were
+building on the box. Every figure here is a GPU timestamp and every before/after pair was taken in
+the same conditions minutes apart, so the ratios hold; **the absolute milliseconds are upper
+bounds**, as they were in the tables above. Every figure was taken twice in two separate processes
+and both are reported as `run 1 / run 2`; 120 frames each, `--raster hw`, shadows off.
+
+### FlightHelmet grid ×25, GPU ms a frame — before → after
+
+| Layout, resolution | cull | hw | Hi-Z | resolve | **total** |
+|---|---|---|---|---|---|
+| `single` 11520×2160 | 0.034/0.038 → 0.034/0.036 | 0.183/0.210 → 0.184/0.188 | 0.563/0.567 → **0.431/0.429** | 0.375/0.388 → **0.316/0.325** | 1.155/1.203 → **0.966/0.978** |
+| `surround3` 11520×2160 | 0.090/0.089 → 0.087/0.085 | 0.184/0.185 → 0.183/0.188 | 0.623/0.620 → **0.429/0.433** | 0.374/0.386 → **0.324/0.320** | 1.271/1.280 → **1.024/1.026** |
+| `single` 3840×2160 | 0.035/0.032 → 0.031/0.034 | 0.061/0.057 → 0.053/0.056 | 0.200/0.211 → **0.098/0.099** | 0.138/0.142 → **0.111/0.109** | 0.434/0.441 → **0.293/0.298** |
+| `surround3` 3840×2160 | 0.083/0.082 → 0.085/0.083 | 0.056/0.059 → 0.057/0.053 | 0.271/0.266 → **0.109/0.111** | 0.134/0.140 → **0.115/0.117** | 0.543/0.547 → **0.366/0.364** |
+| `single` 1920×1080 | 0.026/0.027 → 0.026/0.026 | 0.018/0.020 → 0.018/0.018 | 0.070/0.069 → **0.021/0.021** | 0.035/0.035 → **0.034/0.035** | 0.150/0.150 → **0.100/0.100** |
+| `surround3` 1920×1080 | 0.075/0.077 → 0.070/0.071 | 0.018/0.018 → 0.018/0.018 | 0.129/0.123 → **0.038/0.038** | 0.038/0.038 → **0.037/0.037** | 0.259/0.256 → **0.163/0.163** |
+
+Visible pairs unchanged in every row: 4,564 at 11520×2160 `single` and `surround3`, 2,976 and
+3,042 at 3840×2160, 1,355 and 1,394 at 1920×1080.
+
+### Heightfield 1025 (2.1 M triangles), GPU ms a frame — before → after
+
+| Layout, resolution | cull | hw | Hi-Z | resolve | **total** |
+|---|---|---|---|---|---|
+| `single` 11520×2160 | 0.030/0.028 → 0.028/0.032 | 0.113/0.112 → 0.119/0.110 | 0.557/0.556 → **0.435/0.460** | 0.345/0.344 → **0.286/0.285** | 1.044/1.040 → **0.869/0.886** |
+| `surround3` 11520×2160 | 0.101/0.085 → 0.080/0.077 | 0.156/0.155 → 0.159/0.160 | 0.668/0.605 → **0.432/0.432** | 0.382/0.341 → **0.297/0.291** | 1.306/1.186 → **0.968/0.961** |
+| `single` 3840×2160 | 0.027/0.029 → 0.026/0.028 | 0.054/0.053 → 0.053/0.055 | 0.204/0.203 → **0.093/0.091** | 0.136/0.136 → **0.124/0.122** | 0.422/0.420 → **0.295/0.295** |
+| `surround3` 3840×2160 | 0.081/0.082 → 0.078/0.081 | 0.054/0.053 → 0.055/0.055 | 0.268/0.264 → **0.106/0.106** | 0.136/0.137 → **0.131/0.131** | 0.540/0.536 → **0.369/0.373** |
+| `single` 1920×1080 | 0.024/0.024 → 0.025/0.025 | 0.019/0.019 → 0.019/0.019 | 0.067/0.067 → **0.021/0.021** | 0.037/0.036 → **0.036/0.036** | 0.147/0.146 → **0.101/0.100** |
+| `surround3` 1920×1080 | 0.072/0.071 → 0.069/0.069 | 0.021/0.020 → 0.019/0.020 | 0.125/0.123 → **0.040/0.045** | 0.042/0.042 → **0.043/0.043** | 0.259/0.256 → **0.171/0.177** |
+
+Visible pairs unchanged: 1,520 and 1,609 at 11520×2160, 1,229 and 1,384 at 3840×2160, 935 and
+1,070 at 1920×1080.
+
+### The same frame with nothing in it, after
+
+Same cameras as the tables above but turned to face empty sky, 120 frames.
+
+| Layout, resolution | cull | Hi-Z | resolve | total |
+|---|---|---|---|---|
+| `single` 11520×2160 | 0.014 | 0.464/0.452 | **0.084/0.079** | 0.561/0.545 |
+| `surround3` 11520×2160 | 0.034/0.037 | 0.459/0.452 | **0.085/0.083** | 0.577/0.572 |
+| `single` 3840×2160 | 0.014 | 0.096/0.091 | **0.027/0.027** | 0.137/0.132 |
+| `single` 1920×1080 | 0.010 | 0.021/0.021 | **0.0092** | 0.040/0.040 |
+
+### The fixed-versus-scene-dependent split, after
+
+The finding that provoked the work was that **Hi-Z is entirely fixed** and **the resolve is about
+45% fixed**. Both halves moved, but only one of them changed shape.
+
+- **Hi-Z is still entirely fixed** — 0.452 ms empty against 0.430 loaded at 11520×2160, which is
+  the same number — and it is still the largest single pass of a frame at that resolution. It is
+  now 26% cheaper rather than a different shape: it reads the whole visibility buffer twice a
+  frame and writes a mip 0 the cull pass reads, and both of those are the resolution. **It is
+  bandwidth-bound at about 86% of the card's peak**, so what is left is not overhead to remove;
+  the next step is to move fewer bytes, and every way of doing that found so far changes the
+  visible set (see below).
+- **The resolve is now about 25% fixed**, not 45%: 0.081 ms empty against 0.320 loaded on the
+  helmets at 11520×2160, where it was 0.184 against 0.381. The sky no longer costs a read *or* a
+  write; what remains of the empty cost is the covered-tile boundary and the fragment pass itself.
+- **A whole empty 3840×2160 view costs 0.13–0.14 ms**, where E9 measured 0.28–0.30, of which
+  0.09 is still its Hi-Z pyramid.
+- **The fixed share of a whole frame** at 11520×2160 `single` on the helmets fell from 66% to
+  **57%** (0.553 ms of 0.972), and in absolute terms from 0.78 ms to 0.55.
+
+### What did not pay
+
+- **Two 32-bit loads instead of one 64-bit load** of each visibility word in the Hi-Z's first
+  dispatch, which E9's brief suggested as a way to read only the depth half. It cannot save DRAM
+  traffic — the transaction granularity is 32 bytes and reading one word in two touches every
+  sector either way — and measured *worse*: Hi-Z 0.431 → 0.435 ms at 11520×2160 `single` loaded
+  (inside the spread), 0.098 → 0.106 at 3840×2160, and 0.021 → 0.026 at 1920×1080, where the extra
+  instructions matter and the bytes never did. Reverted. The coverage mask needs the low half
+  anyway, so the question is now moot as well as answered.
+- **Computing the coverage mask from both Hi-Z builds, and keeping all four 64-bit words live to
+  OR them.** The first working version of change 3 did both, and it cost the Hi-Z 0.02 ms at
+  11520×2160 and 17% at 1920×1080 `surround3` — a change that gives some of the resolve's win
+  straight back. Folding the two halves of each word into one `uint` as it is read, and writing the
+  mask only from the build the resolve actually reads, took the cost back inside the noise.
+- **Starting the pyramid at half resolution** — reducing 2×2 visibility words straight into a mip
+  0 that is half the size — was not tried, because it cannot be done without changing the cut.
+  `occluded()` picks `mip = coarse - 2` where `2^coarse >= size` in mip-0 texels, so **any cluster
+  whose screen rectangle is four texels or less across reads mip 0**, which is most of a distant
+  scene. A half-resolution mip 0 is a `min` over 2×2, which is farther than either source, so the
+  test rejects strictly less often and the visible set grows. It would not change the picture —
+  occlusion culling never does — but it is not the byte-identical change this work was allowed to
+  make, and it would have to be justified on its own terms, with the cut it produces measured.
+
+### Follow-ups this leaves
+
+- **The Hi-Z reads the visibility buffer twice a frame** and the second read usually finds it
+  unchanged: in a static frame occlusion pass 2 draws *nothing*, so the second pyramid is the first
+  one recomputed. An early-out on the pass-2 count would roughly halve the Hi-Z, and it would do so
+  only when the camera is still — a benchmark with a fixed camera would show a win a moving frame
+  does not get, which is exactly why it was not taken without a moving-camera measurement to go
+  with it. The general form is rebuilding only the tiles pass 2 drew into.
+- **The mask is 32×32 because the Hi-Z workgroup is.** A finer classification would skip more of a
+  silhouette's neighbourhood; it would need its own pass or a smaller tile, and the smaller tile
+  costs the Hi-Z its six-mip fold.
+- **A compute resolve** was not measured. The fragment pass is now within 25% of its own empty
+  cost, and the remaining time is per-covered-pixel work that a compute pass would do identically;
+  the reason to try one is scheduling (overlap with the next frame's cull), not the resolve itself.
 
 ## Caveats
 
