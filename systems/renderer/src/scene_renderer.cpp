@@ -3,6 +3,7 @@
 #include <core/time/time.h>
 #include <domain/gfx/capture.h>
 #include <foundation/io/vfs.h>
+#include <systems/renderer/lighting.h>
 #include <systems/renderer/scene_renderer.h>
 
 #include <algorithm>
@@ -24,15 +25,17 @@ namespace engine::renderer {
 
 namespace {
 
-constexpr u32 k_view_lights = 2;  // the warm and cool point lights orbiting the scene
-constexpr u32 k_stat_words = 9;   // three indirect blocks of three u32, per view
+constexpr u32 k_view_lights = k_frame_lights;  // the warm and cool point lights (lighting.h)
+constexpr u32 k_stat_words = 9;                // three indirect blocks of three u32, per view
 
-// The sky, in one place. It is both the resolve pass's clear value and `ResolveParams::sky`, and
-// **they have to be the same number**: the resolve tells the shader so with
-// `ResolveParams::sky_is_clear`, and the shader then discards an empty pixel instead of writing a
-// colour the clear already put there. Two spellings of it would make an uncovered pixel take
-// whichever the clear said, silently.
-constexpr Vec4 k_sky{0.55f, 0.70f, 0.90f, 1.0f};
+// The sky is `renderer::k_sky` in `lighting.h`, and there are now **three** things that have to
+// be the same number rather than two. The resolve pass's clear value and `ResolveParams::sky`,
+// because `sky_is_clear` makes the shader discard an empty pixel instead of writing a colour the
+// clear already put there — two spellings would make an uncovered pixel take whichever the clear
+// said, silently. And the reference path tracer's background, which is quantized on the CPU from
+// the same constant (04 §4.8): a third spelling would put a one-byte difference on every empty
+// pixel of every comparison, which is a mistake this project has already made once and measured
+// (docs/subsystems/renderer.md, "Reference renderer").
 
 // The GPU timer keys zones by name and sums equal names, so a view's own milliseconds need a name
 // of their own. View 0 keeps the bare name, so a single-view frame records exactly the zones it
@@ -661,6 +664,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   const bool use_hw = settings.raster != RasterMode::Software && !ray_path;
   const bool use_sw = !direct && !ray_path && settings.raster != RasterMode::Hardware &&
                       settings.raster != RasterMode::Vertex && settings.cull;
+  // A negative override means "what the settings say", which is every caller but the reference.
+  const f32 frame_lod_px = frame.lod_px >= 0.0f ? frame.lod_px : settings.lod_px;
   const u32 cur_flags = static_cast<u32>(rendered % 2);
   const u32 prev_flags = 1 - cur_flags;
   const u32 count_index = vertex_path ? 1u : 0u;
@@ -734,27 +739,14 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     deform_table_address = scene.deform_frame_address(slot);
   }
 
-  // Two point lights orbiting the scene out of phase, one warm and one cool, so the BSDF's
-  // specular response sweeps across the surface while the camera turns and metal reads as metal.
-  // Reach and intensity scale with the scene radius, intensity with its square because the
-  // falloff is inverse square, so a 2 cm mesh and the heightfield look alike. They are the
-  // frame's, shared by every view, and live behind the last view's params block in one buffer.
-  const Vec3 scene_center = data.center;
-  const f32 scene_radius = data.radius;
-  const f32 light_orbit = 1.35f * scene_radius;
-  const f32 light_angle = static_cast<f32>(rendered) * 0.013f;
-  gfx::ResolveLight lights[k_view_lights];
-  lights[0].position_radius =
-      Vec4{scene_center + Vec3{std::cos(light_angle) * light_orbit, 0.70f * scene_radius,
-                               std::sin(light_angle) * light_orbit},
-           4.0f * scene_radius};
-  lights[0].color_intensity = Vec4{1.0f, 0.78f, 0.55f, light_orbit * light_orbit};
-  lights[1].position_radius =
-      Vec4{scene_center + Vec3{-std::cos(light_angle * 0.7f) * light_orbit, -0.35f * scene_radius,
-                               -std::sin(light_angle * 0.7f) * light_orbit},
-           4.0f * scene_radius};
-  lights[1].color_intensity = Vec4{0.50f, 0.68f, 1.0f, 0.8f * light_orbit * light_orbit};
-  std::memcpy(resolve_bytes + sizeof(gfx::ResolveParams) * views, lights, sizeof(lights));
+  // The frame's lights, shared by every view and living behind the last view's params block in
+  // one buffer. They come out of `frame_lighting` rather than being built here, because the
+  // reference path tracer has to light the same scene with the same numbers at the same frame
+  // index or a comparison between the two measures the lights (04 §4.8, lighting.h).
+  FrameLighting lighting;
+  frame_lighting(data, rendered, settings.lights, lighting);
+  std::memcpy(resolve_bytes + sizeof(gfx::ResolveParams) * views, lighting.lights,
+              sizeof(lighting.lights));
 
   for (u32 v = 0; v < views; ++v) {
     const View& view = views_[v];
@@ -796,8 +788,10 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     cull.view_proj = view.view_proj;
     cull.camera = Vec4{eye, znear};
     // The LOD threshold is this view's: a peripheral view lets a cluster be `lod_scale` times as
-    // wrong in screen space before the parent group is drawn instead (04 §4.6, foveation).
-    cull.lod = Vec4{view.proj_scale, settings.lod_px * view.quality.lod_scale, 1.0f, 1.0f};
+    // wrong in screen space before the parent group is drawn instead (04 §4.6, foveation). A
+    // frame may override the settings' threshold — `FrameDesc::lod_px`, which the reference
+    // renderer sets to 0 to make the frame's cut the finest clusters (04 §4.8).
+    cull.lod = Vec4{view.proj_scale, frame_lod_px * view.quality.lod_scale, 1.0f, 1.0f};
     cull.raster = Vec4{settings.sw_px, raster_mode, 0.0f, 0.0f};
     cull.cluster_count = cluster_count;
     cull.count_index = count_index;
@@ -834,7 +828,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
 
     // ---- the resolve's block ------------------------------------------------------------------
     gfx::ResolveParams resolve{};
-    resolve.sky = k_sky;
+    // `frame_lighting`'s sky, which is `k_sky` — one spelling, because the clear below writes it
+    // too and the reference path tracer reads it as its background (04 §4.8, lighting.h).
+    resolve.sky = lighting.sky;
     // Both raster paths clear the colour target to exactly this before they draw, so an empty
     // pixel is a fragment whose value is already in the target: the shader discards it instead.
     resolve.sky_is_clear = 1;
@@ -848,7 +844,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       resolve.coverage = targets_.hiz.address + u64{target.coverage_offset} * 4;
       resolve.coverage_pitch = target.coverage_pitch;
     }
-    resolve.sun = Vec4{normalize(Vec3{0.4f, 0.8f, 0.45f}), 1.0f};
+    resolve.sun = lighting.sun;
     resolve.camera = Vec4{eye, 0.0f};
     resolve.view_proj = view.view_proj;
     resolve.visibility = vf.vis_address;
@@ -864,7 +860,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     resolve.height = vf.height;
     resolve.mode = frame.view_mode == ~u32{0} ? settings.view_mode : frame.view_mode;
     resolve.lights = lights_address;
-    resolve.light_count = settings.lights ? k_view_lights : 0;
+    resolve.light_count = lighting.light_count;
     // Where this view's picture goes in the target, and — for a Panini view — the map from an
     // output pixel back into the wider rectilinear source the rasterizers filled.
     resolve.view_x = view.rect.x;
@@ -878,12 +874,11 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     }
     // Shadows: every light traces against this frame's top-level structure, which holds the same
     // visible list the rasterizer drew from, so a shadow can only come from geometry the picture
-    // has. The bias is a thousandth of the scene radius — a couple of centimetres on the
-    // heightfield, well over the half grid step by which a quantized position may differ from the
-    // float one the structures were built from, and far under any feature that casts.
+    // has. The bias is `FrameLighting::shadow_bias`, shared with the reference for the same
+    // reason the lights are.
     resolve.scene = shadows ? scene.tlas_slot() : gfx::k_no_scene;
     resolve.shadow_flags = shadows ? gfx::k_shadow_sun | gfx::k_shadow_lights : 0u;
-    resolve.shadow_bias = 1.0e-3f * scene_radius;
+    resolve.shadow_bias = lighting.shadow_bias;
     std::memcpy(resolve_bytes + sizeof(gfx::ResolveParams) * v, &resolve, sizeof(resolve));
 
     // ---- the deformed-vertex pool, one block per run ------------------------------------------

@@ -15,8 +15,8 @@
 # and the contract between them is a span and a per-instance offset (docs/subsystems/animation.md).
 engine_module(NAME renderer LAYER systems
   DEPS base containers math time log platform io image geometry anim assets gfx json
-  SOURCES src/settings.cpp src/view_set.cpp src/scene.cpp src/gpu_scene.cpp src/scene_renderer.cpp
-          src/capture.cpp)
+  SOURCES src/settings.cpp src/view_set.cpp src/scene.cpp src/gpu_scene.cpp src/lighting.cpp
+          src/scene_renderer.cpp src/reference.cpp src/capture.cpp)
 target_include_directories(engine_renderer PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 
-engine_module_tests(NAME renderer SOURCES tests/renderer_tests.cpp)
+engine_module_tests(NAME renderer SOURCES tests/renderer_tests.cpp tests/reference_tests.cpp)

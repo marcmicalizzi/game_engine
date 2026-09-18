@@ -155,6 +155,12 @@ struct FrameDesc {
   Camera camera;
   u64 frame_index = 0;      // drives the light orbit and the deformation phase, as engine-view does
   u32 view_mode = ~u32{0};  // override the settings' view mode; ~0 uses it
+  // Override the settings' LOD pixel threshold for this frame; negative uses it. The reference
+  // renderer passes 0 to make the frame's cut the *finest* clusters, so the acceleration
+  // structures it then traces hold the source geometry rather than the frame's cut
+  // (docs/plan/04-renderer.md §4.8). It is per frame and not per renderer because the same
+  // renderer draws both pictures of a comparison.
+  f32 lod_px = -1.0f;
   gfx::ImageResource color;  // a swapchain image, or null for the renderer's own target
   VkImageLayout final_layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
   VkSemaphore wait = VK_NULL_HANDLE;          // the swapchain acquire, for a presented frame

@@ -29,6 +29,7 @@
 #include <foundation/io/vfs.h>
 #include <foundation/window/window.h>
 #include <systems/renderer/gpu_scene.h>
+#include <systems/renderer/reference.h>
 #include <systems/renderer/scene.h>
 #include <systems/renderer/scene_renderer.h>
 #include <systems/renderer/settings.h>
@@ -65,6 +66,7 @@ constexpr const char* k_usage =
     "                   [--shadows off|rt] [--views single|surround3|panini] [--side-yaw <deg>]\n"
     "                   [--panini-d <d>] [--peripheral-lod <mult>]\n"
     "                   [--animate [clip]] [--anim-speed <x>]\n"
+    "                   [--reference <spp>] [--bounces <n>] [--finest] [--spp-batch <n>]\n"
     "\n"
     "  --frames <n>     render n frames, then exit (0: until the window closes)\n"
     "  --capture <png>  write the last frame as a PNG (implies --frames 60 when unset)\n"
@@ -122,6 +124,18 @@ constexpr const char* k_usage =
     "                   source, which the summary reports as the oversampling factor\n"
     "  --peripheral-lod <m>  multiply the LOD pixel threshold outside the attention region by m:\n"
     "                   surround3's side monitors, which a surround player reads peripherally\n"
+    "  --reference <n>  render the reference path tracer at n samples per pixel instead of the\n"
+    "                   real-time frame (plan 04 §4.8): no window, no swapchain, one converged\n"
+    "                   picture written by --capture and one JSON summary line. Needs a device\n"
+    "                   with cluster acceleration structures and ray queries, and settings that\n"
+    "                   build them (the default --shadows auto does)\n"
+    "  --bounces <n>    --reference: scattering events after the primary hit (default 3). 1 is\n"
+    "                   direct lighting plus one bounce, which is what the resolve approximates\n"
+    "  --finest         --reference: build the acceleration structures from the finest clusters\n"
+    "                   (LOD threshold 0) rather than from the frame's own cut, so the picture is\n"
+    "                   a reference for the source geometry and not for the geometry LOD chose\n"
+    "  --spp-batch <n>  --reference: samples per dispatch (default 8); smaller keeps each\n"
+    "                   submission short and reports progress more often\n"
     "  --log <spec>     log levels, e.g. \"info,gfx=debug\" (stderr shows warnings and up)\n"
     "  --shaders <m>    shader manifest (default: <exe dir>/../shaders/manifest.json when present);\n"
     "                   shaders recompile and reload when their .slang sources change\n"
@@ -153,6 +167,13 @@ struct Options {
   bool animate = false;
   std::string clip;  // --animate's optional value: a clip name or an index
   f32 anim_speed = 1.0f;
+  // The reference renderer (docs/plan/04-renderer.md §4.8): spp > 0 takes the whole offscreen
+  // path below instead of opening a window, because a converged picture is minutes of compute
+  // with nothing to look at while it runs and because CI has no display.
+  u32 reference = 0;
+  u32 bounces = 3;
+  u32 spp_batch = 8;
+  bool finest = false;
   renderer::RenderSettings settings;
 };
 
@@ -433,6 +454,15 @@ JsonValue views_summary(const renderer::ViewSet& views, const renderer::Stats& s
   return out;
 }
 
+// Progress on stderr, because stdout is the summary line a script reads. One line rewritten in
+// place when stderr is a console, one line per batch when it is a file or a pipe.
+bool reference_progress(u32 done, u32 total, void*) {
+  std::fprintf(stderr, "\rengine-view: reference %u/%u samples", done, total);
+  if (done == total) std::fputc('\n', stderr);
+  std::fflush(stderr);
+  return true;
+}
+
 int fail(const char* what, const std::string& error) {
   std::fprintf(stderr, "engine-view: %s: %s\n", what, error.c_str());
   return k_exit_error;
@@ -442,6 +472,140 @@ int unavailable(const char* what, const std::string& error) {
   std::fprintf(stderr, "engine-view: unavailable: %s%s%s\n", what, error.empty() ? "" : ": ",
                error.c_str());
   return k_exit_unavailable;
+}
+
+// `--reference <spp>`: the whole run offscreen, with no window, no surface and no swapchain
+// (docs/plan/04-renderer.md §4.8, docs/subsystems/renderer.md "Reference renderer"). A converged
+// picture is minutes of compute showing nothing until it is done, the machines that run the
+// nightly comparison have no display, and the renderer has never needed a window — so this path
+// creates the device without the presentation extensions and goes straight to the offscreen
+// contract. It shares the flags and the exit codes with the windowed path; what it does not
+// share is the frame loop, because there is one frame.
+int run_reference(const Options& options) {
+  std::string error;
+  gfx::DeviceOptions device_options;
+  device_options.adapter_index = options.adapter;
+  device_options.validation = options.validation;
+  gfx::Device device;
+  if (!device.create(device_options, &error)) return unavailable("no Vulkan device", error);
+
+  int exit_code = 0;
+  renderer::SceneData scene_data;
+  renderer::ResolvedSettings resolved;
+  renderer::GpuScene scene;
+  renderer::SceneRenderer view_renderer;
+  renderer::ReferenceRenderer reference;
+  renderer::ReferenceFrame frame;
+  bench::MachineState machine_start;
+  bench::MachineState machine_end;
+  bool captured = false;
+  do {
+    renderer::SceneDesc desc;
+    desc.heightfield_grid = options.grid;
+    desc.grid_instances = options.grid_instances;
+    desc.ddc = options.ddc;
+    desc.cache = options.cache;
+    if (!options.scene.empty()) {
+      if (!renderer::read_scene_file(options.scene, desc, error)) {
+        exit_code = fail("scene", error);
+        break;
+      }
+    } else {
+      desc.meshes.push_back(options.mesh);
+    }
+    if (!renderer::load_scene(desc, scene_data, error)) {
+      exit_code = fail("mesh", error);
+      break;
+    }
+    renderer::resolve_settings(options.settings, device.features(), &scene_data, resolved);
+    const renderer::RenderAvailability availability =
+        renderer::check_availability(resolved, device.features());
+    if (availability != renderer::RenderAvailability::Ok) {
+      exit_code = unavailable(
+          (std::string(device.adapter().name) + " " + renderer::availability_message(availability))
+              .c_str(),
+          "");
+      break;
+    }
+    std::string why;
+    if (!renderer::reference_available(resolved, device.features(), &why)) {
+      exit_code = unavailable((std::string(device.adapter().name) + " " + why).c_str(), "");
+      break;
+    }
+    if (!scene.create(device, scene_data, resolved, &error)) {
+      exit_code = fail("scene", error);
+      break;
+    }
+    renderer::SceneRenderer::Desc renderer_desc;
+    renderer_desc.width = options.width;
+    renderer_desc.height = options.height;
+    renderer_desc.offscreen = true;
+    renderer_desc.shader_manifest = options.shaders;
+    if (!view_renderer.create(device, scene, resolved, renderer_desc, &error)) {
+      exit_code = fail("renderer", error);
+      break;
+    }
+    renderer::ReferenceRenderer::Desc reference_desc;
+    reference_desc.shader_manifest = options.shaders;
+    if (!reference.create(device, scene, view_renderer, reference_desc, &error)) {
+      exit_code = fail("reference", error);
+      break;
+    }
+    renderer::ReferenceSettings reference_settings;
+    reference_settings.spp = options.reference;
+    reference_settings.max_bounces = options.bounces;
+    reference_settings.batch = options.spp_batch;
+    reference_settings.finest = options.finest;
+    machine_start = bench::sample_machine_state(bench::k_sample_window_ms);
+    const renderer::Camera camera =
+        renderer::orbit_camera(scene_data.center, scene_data.radius, options.orbit, 0);
+    if (!reference.render(camera, reference_settings, frame, &error, reference_progress, nullptr)) {
+      exit_code = fail("reference", error);
+      break;
+    }
+    machine_end = bench::sample_machine_state(bench::k_sample_window_ms);
+    if (!options.capture.empty()) {
+      const io::Status status =
+          image::write_png(options.capture, frame.width, frame.height, 4,
+                           std::span<const u8>(frame.color.data(), frame.color.size()));
+      if (status != io::Status::Ok) {
+        exit_code = fail("capture", std::string("cannot write ") + options.capture + ": " +
+                                        io::status_name(status));
+        break;
+      }
+      captured = true;
+    }
+  } while (false);
+
+  view_renderer.sample_gpu_memory();
+  const renderer::Stats stats = view_renderer.stats();
+  reference.destroy();
+  view_renderer.destroy();
+  scene.destroy();
+  device.destroy();
+
+  if (exit_code == 0) {
+    JsonValue machine = JsonValue::object();
+    machine.set("start", bench::machine_state_json(machine_start));
+    machine.set("end", bench::machine_state_json(machine_end));
+    const std::string machine_text = write_json(machine, JsonWriteOptions{.pretty = false});
+    std::printf(
+        "{\"reference\":true,\"spp\":%u,\"bounces\":%u,\"finest\":%s,\"width\":%u,\"height\":%u,"
+        "\"seconds\":%.3f,\"trace_ms\":%.3f,\"samples\":%u,\"visible_pairs\":%u,"
+        "\"clusters\":%u,\"leaf_clusters\":%u,\"triangles\":%u,\"instances\":%u,"
+        "\"gpu_memory\":{\"budget_mib\":%llu,\"used_mib\":%llu,"
+        "\"device_local_total_mib\":%llu},\"machine_state\":%s,\"captured\":%s}\n",
+        frame.samples, options.bounces, options.finest ? "true" : "false", frame.width,
+        frame.height, frame.seconds, frame.trace_ms, frame.samples, frame.visible_pairs,
+        scene_data.cluster_count(), scene_data.leaf_count(), scene_data.lod.leaf_triangle_count,
+        scene_data.instances.size(), static_cast<unsigned long long>(stats.gpu_memory.budget_mib),
+        static_cast<unsigned long long>(stats.gpu_memory.used_mib),
+        static_cast<unsigned long long>(stats.gpu_memory.device_local_total_mib),
+        machine_text.c_str(), captured ? "true" : "false");
+    (void)bench::warn_if_busy(bench::worst_of(machine_start, machine_end), bench::QuietThresholds{},
+                              stderr);
+  }
+  return exit_code;
 }
 
 }  // namespace
@@ -518,6 +682,19 @@ int main(int argc, char** argv) {
       options.animate = true;
       if (i + 1 < argc && std::string_view(argv[i + 1]).substr(0, 2) != "--")
         options.clip = argv[++i];
+    } else if (a == "--reference" || a == "--bounces" || a == "--spp-batch") {
+      if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
+      u32 n = 0;
+      if (!parse_u32(value, n)) {
+        std::fprintf(stderr, "engine-view: %.*s expects a number\n", static_cast<int>(a.size()),
+                     a.data());
+        return k_exit_usage;
+      }
+      if (a == "--reference") options.reference = n;
+      if (a == "--bounces") options.bounces = n;
+      if (a == "--spp-batch") options.spp_batch = n;
+    } else if (a == "--finest") {
+      options.finest = true;
     } else if (a == "--rt-templates") {
       options.settings.rt_templates = true;
     } else if (a == "--raster") {
@@ -609,6 +786,20 @@ int main(int argc, char** argv) {
     return k_exit_usage;
   }
 #endif
+  if (options.reference != 0 && (options.bounces > 64 || options.spp_batch == 0)) {
+    std::fprintf(stderr, "engine-view: --bounces must be at most 64 and --spp-batch at least 1\n");
+    return k_exit_usage;
+  }
+  // A reference of an animated scene is a reference of **one posed frame**, and it needs no
+  // special path to be one: `--animate` poses the instances through the deformed-vertex pool, the
+  // acceleration structures are built from that pool, and the reference traces those structures.
+  // What it cannot do is animate, because it renders one frame and `--frames` means nothing to
+  // it: the pose is the one at `frame 0`. Say so rather than let a caller believe otherwise.
+  if (options.reference != 0 && options.animate) {
+    std::fprintf(stderr,
+                 "engine-view: --reference renders one frame, so it draws the pose at frame 0; "
+                 "--animate's clip does not advance under it.\n");
+  }
   if (!options.capture.empty() && options.frames == 0) options.frames = 60;
 
   log::StreamSink stderr_sink(stderr, log::StreamSink::Format::Text);
@@ -620,6 +811,9 @@ int main(int argc, char** argv) {
     log::apply_level_spec("warn");
     log::apply_level_spec(options.log_spec);
   }
+
+  // The reference path never opens a window, so it comes before the display is even asked for.
+  if (options.reference != 0) return run_reference(options);
 
   std::string error;
   if (!window::init(&error)) return unavailable("no display", error);
