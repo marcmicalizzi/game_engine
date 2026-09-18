@@ -588,3 +588,471 @@ TEST_CASE("cluster pages: the residency manager evicts the least recently used, 
   CHECK_FALSE(nothing.reset(ClusterPages{}, 1024, &error));
   CHECK_FALSE(error.empty());
 }
+
+// ---- a scene of paged meshes -----------------------------------------------------------------
+
+namespace {
+
+// Two terrains of different sizes, each its own DAG laid out in its own pages: the smallest scene
+// that has everything a merged page table has to get right — two root pages, two group spaces,
+// and two runs of the cluster, vertex, triangle and child-page arrays.
+struct PagedScene {
+  Vector<ClusterLodMesh> meshes;
+  Vector<ClusterPages> pages;
+  ClusterLodMesh scene;
+  Vector<ClusterMeshPart> parts;
+  ClusterPages table;
+};
+
+bool build_paged_scene(u32 page_bytes, PagedScene& out, std::string& error) {
+  const u32 sizes[2] = {33u, 65u};
+  const f32 extents[2] = {4.0f, 10.0f};
+  out.meshes.resize(2);
+  out.pages.resize(2);
+  for (u32 m = 0; m < 2; ++m) {
+    Vector<Vec3> positions;
+    Vector<u32> indices;
+    make_terrain(sizes[m], extents[m], positions, indices);
+    if (!build_cluster_lod(positions, indices, ClusterLodOptions{}, out.meshes[m], &error))
+      return false;
+    ClusterPagesOptions options;
+    options.page_bytes = page_bytes;
+    if (!build_cluster_pages(out.meshes[m], options, out.pages[m], &error)) return false;
+  }
+  return merge_paged_cluster_meshes(
+      std::span<const ClusterLodMesh>(out.meshes.data(), out.meshes.size()),
+      std::span<const ClusterPages>(out.pages.data(), out.pages.size()), out.scene, out.parts,
+      out.table, &error);
+}
+
+}  // namespace
+
+TEST_CASE("cluster pages: two paged meshes merge into one scene's page table") {
+  PagedScene scene;
+  std::string error;
+  REQUIRE_MESSAGE(build_paged_scene(16 * 1024, scene, error), error);
+  REQUIRE(scene.parts.size() == 2);
+
+  // The page invariants hold over the scene, per mesh where they are about a mesh.
+  CHECK_MESSAGE(
+      validate_cluster_pages(scene.scene, scene.table,
+                             std::span<const ClusterMeshPart>(scene.parts.data(), 2), &error),
+      error);
+  CHECK(scene.table.page_bytes_target == 16 * 1024);
+
+  // Each mesh's pages stay together, in its own order, with its pinned pages at the front of its
+  // own run: that is what lets a scene pin one page per mesh rather than one page in all.
+  u32 page_at = 0;
+  u32 cluster_at = 0;
+  for (u32 m = 0; m < 2; ++m) {
+    const ClusterMeshPart& part = scene.parts[m];
+    CHECK(part.first_page == page_at);
+    CHECK(part.page_count == scene.pages[m].pages.size());
+    CHECK(part.first_cluster == cluster_at);
+    CHECK(part.cluster_count == scene.meshes[m].mesh.clusters.size());
+    CHECK((scene.table.pages[part.first_page].flags & k_page_root) != 0);
+    // A paged mesh is coarse first, so its leaves are its last clusters, and the part says so.
+    CHECK(part.leaf_cluster_count == scene.meshes[m].level_cluster_counts[0]);
+    CHECK(part.first_leaf_cluster == part.cluster_count - part.leaf_cluster_count);
+    for (u32 i = 0; i < part.cluster_count; ++i) {
+      CHECK((scene.scene.lod[part.first_cluster + i].level == 0) == (i >= part.first_leaf_cluster));
+      const u32 page = scene.table.page_of_cluster[part.first_cluster + i];
+      CHECK(page >= part.first_page);
+      CHECK(page < part.first_page + part.page_count);
+    }
+    // Every page descriptor is the mesh's own, shifted: the same clusters, bytes, levels, flags.
+    for (u32 p = 0; p < part.page_count; ++p) {
+      const ClusterPageDesc& before = scene.pages[m].pages[p];
+      const ClusterPageDesc& after = scene.table.pages[part.first_page + p];
+      CHECK(after.cluster_count == before.cluster_count);
+      CHECK(after.vertex_count == before.vertex_count);
+      CHECK(after.triangle_count == before.triangle_count);
+      CHECK(after.bytes == before.bytes);
+      CHECK(after.flags == before.flags);
+      CHECK(after.level_min == before.level_min);
+      CHECK(after.level_max == before.level_max);
+      CHECK(after.child_page_count == before.child_page_count);
+      CHECK(after.first_cluster == before.first_cluster + part.first_cluster);
+      // A child page is in the same mesh: nothing in one mesh's DAG names another mesh's page.
+      for (u32 k = 0; k < after.child_page_count; ++k) {
+        const u32 child = scene.table.child_pages[after.first_child_page + k];
+        CHECK(child == scene.pages[m].child_pages[before.first_child_page + k] + part.first_page);
+        CHECK(child >= part.first_page);
+        CHECK(child < part.first_page + part.page_count);
+      }
+    }
+    page_at += part.page_count;
+    cluster_at += part.cluster_count;
+  }
+  CHECK(page_at == scene.table.pages.size());
+  CHECK(cluster_at == scene.scene.mesh.clusters.size());
+  MESSAGE("scene: " << cluster_at << " clusters in " << page_at << " pages, "
+                    << scene.parts[0].page_count << " + " << scene.parts[1].page_count);
+}
+
+TEST_CASE("cluster pages: a merged scene's cut is the union of its meshes' cuts") {
+  PagedScene scene;
+  std::string error;
+  REQUIRE_MESSAGE(build_paged_scene(16 * 1024, scene, error), error);
+  const u32 page_count = scene.table.pages.size();
+
+  // The page of the second mesh the last test's fallback case takes away: one with nothing under
+  // it, so that residency stays ancestor-closed, which is what eviction is allowed to take.
+  u32 dropped = ~u32{0};
+  for (u32 p = scene.parts[1].page_count; p-- > 0;) {
+    if (scene.pages[1].pages[p].child_page_count == 0 &&
+        (scene.pages[1].pages[p].flags & k_page_root) == 0) {
+      dropped = p;
+      break;
+    }
+  }
+  REQUIRE(dropped != ~u32{0});
+
+  // Three residencies, each built the same way for the scene and for the meshes on their own:
+  // everything, the pinned pages alone, and everything but that one page.
+  for (u32 mode = 0; mode < 3; ++mode) {
+    PageResidency scene_residency;
+    scene_residency.resident.assign(page_count, u8{0});
+    Vector<PageResidency> mesh_residency(2);
+    for (u32 m = 0; m < 2; ++m) {
+      const ClusterMeshPart& part = scene.parts[m];
+      mesh_residency[m].resident.assign(part.page_count, u8{0});
+      for (u32 p = 0; p < part.page_count; ++p) {
+        const bool root = (scene.pages[m].pages[p].flags & k_page_root) != 0;
+        bool here = mode == 0 || root;
+        if (mode == 2) here = !(m == 1 && p == dropped);
+        mesh_residency[m].resident[p] = here ? u8{1} : u8{0};
+        scene_residency.resident[part.first_page + p] = here ? u8{1} : u8{0};
+      }
+    }
+
+    for (const f32 distance : {5.0f, 30.0f, 150.0f}) {
+      const LodView view = terrain_view(distance, 1.0f);
+      Vector<u32> scene_cut;
+      Vector<u32> scene_requests;
+      const u32 drawn = select_lod_streaming(scene.scene, view, scene.table, scene_residency,
+                                             scene_cut, scene_requests);
+      Vector<u32> union_cut;
+      Vector<u32> union_requests;
+      u32 union_drawn = 0;
+      for (u32 m = 0; m < 2; ++m) {
+        Vector<u32> cut;
+        Vector<u32> requests;
+        union_drawn += select_lod_streaming(scene.meshes[m], view, scene.pages[m],
+                                            mesh_residency[m], cut, requests);
+        for (const u32 c : cut)
+          union_cut.push_back(c + scene.parts[m].first_cluster);
+        for (const u32 p : requests)
+          union_requests.push_back(p + scene.parts[m].first_page);
+      }
+      REQUIRE(drawn == union_drawn);
+      REQUIRE(scene_cut.size() == union_cut.size());
+      bool same = true;
+      for (u32 i = 0; i < scene_cut.size(); ++i)
+        same = same && scene_cut[i] == union_cut[i];
+      CHECK(same);
+      REQUIRE(scene_requests.size() == union_requests.size());
+      bool same_requests = true;
+      for (u32 i = 0; i < scene_requests.size(); ++i)
+        same_requests = same_requests && scene_requests[i] == union_requests[i];
+      CHECK(same_requests);
+      std::string why;
+      CHECK_MESSAGE(cut_is_crack_free(scene.scene, scene.table, scene_cut, why), why);
+      // Close up, a cut that is missing pages has something to ask for. Far away it does not:
+      // the coarse levels are already fine enough, which is the point of streaming.
+      if (mode != 0 && distance < 10.0f) CHECK_FALSE(scene_requests.empty());
+    }
+  }
+}
+
+TEST_CASE("cluster pages: a scene pins a root page per mesh, and eviction never takes one") {
+  PagedScene scene;
+  std::string error;
+  REQUIRE_MESSAGE(build_paged_scene(16 * 1024, scene, error), error);
+  const u32 page_count = scene.table.pages.size();
+
+  u64 total = 0;
+  for (const ClusterPageDesc& page : scene.table.pages)
+    total += page.bytes;
+  PageResidencyManager manager;
+  REQUIRE_MESSAGE(manager.reset(scene.table, total, &error), error);
+
+  // Both meshes' first pages are pinned from the start: a scene that pinned page 0 alone could
+  // not draw the second mesh at all.
+  CHECK(manager.page_residency().is_resident(scene.parts[0].first_page));
+  CHECK(manager.page_residency().is_resident(scene.parts[1].first_page));
+  CHECK(manager.resident_pages() >= 2);
+
+  Vector<u32> everything;
+  for (u32 p = 0; p < page_count; ++p)
+    everything.push_back(p);
+  manager.request(std::span<const u32>(everything.data(), everything.size()));
+  manager.admit(~u32{0});
+  CHECK(manager.resident_pages() == page_count);
+
+  // A budget of nothing peels both meshes from the fine end inward and stops at the pages nothing
+  // coarser can replace — in both meshes, not only in the first.
+  manager.set_budget(0);
+  manager.evict_to_budget();
+  u32 pinned[2] = {0, 0};
+  for (u32 m = 0; m < 2; ++m) {
+    const ClusterMeshPart& part = scene.parts[m];
+    for (u32 p = part.first_page; p < part.first_page + part.page_count; ++p) {
+      const bool root = (scene.table.pages[p].flags & k_page_root) != 0;
+      CHECK(manager.page_residency().is_resident(p) == root);
+      if (root) ++pinned[m];
+    }
+    CHECK(pinned[m] >= 1);
+  }
+  CHECK(manager.resident_pages() == pinned[0] + pinned[1]);
+
+  // And what is left still draws both meshes: the roots are a picture, coarse but whole.
+  const LodView view = terrain_view(5.0f, 1.0f);
+  Vector<u32> cut;
+  Vector<u32> requests;
+  REQUIRE(select_lod_streaming(scene.scene, view, scene.table, manager.page_residency(), cut,
+                               requests) > 0);
+  u32 per_mesh[2] = {0, 0};
+  for (const u32 c : cut)
+    ++per_mesh[c < scene.parts[1].first_cluster ? 0 : 1];
+  CHECK(per_mesh[0] > 0);
+  CHECK(per_mesh[1] > 0);
+  std::string why;
+  CHECK_MESSAGE(cut_is_crack_free(scene.scene, scene.table, cut, why), why);
+
+  // Bad input is refused rather than half-merged.
+  ClusterLodMesh out;
+  Vector<ClusterMeshPart> parts;
+  ClusterPages table;
+  CHECK_FALSE(merge_paged_cluster_meshes({}, {}, out, parts, table, &error));
+  Vector<ClusterPages> mismatched(2);
+  mismatched[0] = scene.pages[0];
+  mismatched[1] = scene.pages[1];
+  mismatched[1].page_bytes_target = 4096;
+  CHECK_FALSE(merge_paged_cluster_meshes(std::span<const ClusterLodMesh>(scene.meshes.data(), 2),
+                                         std::span<const ClusterPages>(mismatched.data(), 2), out,
+                                         parts, table, &error));
+  CHECK(error.find("page byte target") != std::string::npos);
+  CHECK(table.pages.empty());
+}
+
+// ---- request priority ------------------------------------------------------------------------
+
+namespace {
+
+// The pages a request may name: everything the manager does not pin, in page order.
+Vector<u32> loadable_pages(const ClusterPages& pages) {
+  Vector<u32> out;
+  for (u32 p = 0; p < pages.pages.size(); ++p) {
+    if ((pages.pages[p].flags & k_page_root) == 0) out.push_back(p);
+  }
+  return out;
+}
+
+// Admits one page at a time and records the order, which is what the priority is about.
+Vector<u32> drain(PageResidencyManager& manager) {
+  Vector<u32> order;
+  u32 next = 0;
+  while (manager.next_request(next)) {
+    order.push_back(next);
+    REQUIRE(manager.admit(1) == 1);
+    CHECK(manager.page_residency().is_resident(next));
+  }
+  return order;
+}
+
+}  // namespace
+
+TEST_CASE("cluster pages: requests are served by screen contribution, then distance, then page") {
+  Vector<Vec3> positions;
+  Vector<u32> indices;
+  make_terrain(65, 10.0f, positions, indices);
+  ClusterLodMesh lod;
+  std::string error;
+  REQUIRE(build_cluster_lod(positions, indices, ClusterLodOptions{}, lod, &error));
+  ClusterPages pages;
+  ClusterPagesOptions options;
+  options.page_bytes = 16 * 1024;
+  REQUIRE_MESSAGE(build_cluster_pages(lod, options, pages, &error), error);
+  const Vector<u32> free_pages = loadable_pages(pages);
+  REQUIRE(free_pages.size() >= 5);
+
+  u64 total = 0;
+  for (const ClusterPageDesc& page : pages.pages)
+    total += page.bytes;
+
+  // Four requests: a big near one, a big far one that projects to the same size, a small far one,
+  // and one with no view behind it at all. They are queued in the reverse of the order they
+  // should be served in, so arrival order cannot be what produces the answer.
+  const PageRequest small_far{free_pages[0], 4.0f, 250.0f};
+  const PageRequest unknown{free_pages[1], 0.0f, k_unknown_distance};
+  const PageRequest big_far{free_pages[2], 400.0f, 60.0f};
+  const PageRequest big_near{free_pages[3], 400.0f, 5.0f};
+
+  PageResidencyManager manager;
+  REQUIRE(manager.reset(pages, total, &error));
+  manager.request(unknown);
+  manager.request(small_far);
+  manager.request(big_far);
+  manager.request(big_near);
+  CHECK(manager.pending() == 4);
+  const Vector<u32> order = drain(manager);
+  REQUIRE(order.size() == 4);
+  CHECK(order[0] == big_near.page);  // the same screen size, nearer: it is wanted for longer
+  CHECK(order[1] == big_far.page);
+  CHECK(order[2] == small_far.page);
+  CHECK(order[3] == unknown.page);  // no view behind it: behind everything that has one
+  CHECK(manager.pending() == 0);
+
+  // Deterministic: the same four requests in any order give the same answer, and so does a repeat
+  // of the whole run. A request for a page already queued keeps the better of the two.
+  PageResidencyManager again;
+  REQUIRE(again.reset(pages, total, &error));
+  again.request(big_near);
+  again.request(big_far);
+  again.request(small_far);
+  again.request(unknown);
+  again.request(PageRequest{small_far.page, 1.0f, 900.0f});  // worse: it must not move
+  again.request(PageRequest{unknown.page, 0.0f, k_unknown_distance});
+  CHECK(again.pending() == 4);
+  const Vector<u32> order_again = drain(again);
+  REQUIRE(order_again.size() == order.size());
+  bool same = true;
+  for (u32 i = 0; i < order.size(); ++i)
+    same = same && order[i] == order_again[i];
+  CHECK(same);
+
+  // A better priority for a queued page moves it up; a plain request carries none and so leaves
+  // page order, which is coarse first and is what the manager did before priorities existed.
+  PageResidencyManager plain;
+  REQUIRE(plain.reset(pages, total, &error));
+  plain.request(free_pages[3]);
+  plain.request(free_pages[1]);
+  plain.request(free_pages[2]);
+  plain.request(free_pages[0]);
+  const Vector<u32> plain_order = drain(plain);
+  REQUIRE(plain_order.size() == 4);
+  for (u32 i = 1; i < plain_order.size(); ++i)
+    CHECK(plain_order[i] > plain_order[i - 1]);
+
+  PageResidencyManager promoted;
+  REQUIRE(promoted.reset(pages, total, &error));
+  promoted.request(free_pages[0]);
+  promoted.request(free_pages[1]);
+  promoted.request(PageRequest{free_pages[1], 900.0f, 1.0f});  // better: to the front
+  u32 next = 0;
+  REQUIRE(promoted.next_request(next));
+  CHECK(next == free_pages[1]);
+}
+
+TEST_CASE("cluster pages: a starved request eventually goes first") {
+  Vector<Vec3> positions;
+  Vector<u32> indices;
+  make_terrain(65, 10.0f, positions, indices);
+  ClusterLodMesh lod;
+  std::string error;
+  REQUIRE(build_cluster_lod(positions, indices, ClusterLodOptions{}, lod, &error));
+  ClusterPages pages;
+  ClusterPagesOptions options;
+  options.page_bytes = 16 * 1024;
+  REQUIRE_MESSAGE(build_cluster_pages(lod, options, pages, &error), error);
+  const Vector<u32> free_pages = loadable_pages(pages);
+  REQUIRE(free_pages.size() >= 8);
+  u64 total = 0;
+  for (const ClusterPageDesc& page : pages.pages)
+    total += page.bytes;
+
+  // One small far page asked for once, and a big near page asked for every frame afterwards while
+  // the loader only manages one page a frame. On screen size alone the small one never loads.
+  auto run = [&](u32 starvation_frames, u32& served_at) {
+    PageResidencyManager manager;
+    REQUIRE(manager.reset(pages, total, &error));
+    manager.set_starvation_frames(starvation_frames);
+    const u32 starved = free_pages[0];
+    manager.request(PageRequest{starved, 2.0f, 400.0f});
+    served_at = ~u32{0};
+    for (u32 frame = 1; frame <= 6; ++frame) {
+      manager.begin_frame();
+      CHECK(manager.frame_index() == frame);
+      manager.request(PageRequest{free_pages[frame], 900.0f, 3.0f});
+      u32 next = 0;
+      REQUIRE(manager.next_request(next));
+      if (next == starved && served_at == ~u32{0}) served_at = frame;
+      REQUIRE(manager.admit(1) == 1);
+    }
+  };
+
+  u32 guarded = 0;
+  run(2, guarded);
+  CHECK(guarded == 2);  // requested in frame 0, promoted the frame its age reaches the bound
+
+  u32 never = 0;
+  run(1000, never);
+  CHECK(never == ~u32{0});  // without the guard the small far page is starved for good
+
+  // The whole run is a function of its inputs: the same sequence twice gives the same frame.
+  u32 repeat = 0;
+  run(2, repeat);
+  CHECK(repeat == guarded);
+}
+
+TEST_CASE("cluster pages: a request carries the priority of the cluster that made it") {
+  Vector<Vec3> positions;
+  Vector<u32> indices;
+  make_terrain(65, 10.0f, positions, indices);
+  ClusterLodMesh lod;
+  std::string error;
+  REQUIRE(build_cluster_lod(positions, indices, ClusterLodOptions{}, lod, &error));
+  ClusterPages pages;
+  ClusterPagesOptions options;
+  options.page_bytes = 16 * 1024;
+  REQUIRE_MESSAGE(build_cluster_pages(lod, options, pages, &error), error);
+
+  // Nothing but the pinned pages: every cluster that wants to refine has to ask.
+  PageResidency roots;
+  roots.resident.assign(pages.pages.size(), u8{0});
+  for (u32 c = 0; c < lod.lod.size(); ++c) {
+    if (lod.lod[c].parent_error >= k_lod_terminal_error)
+      roots.resident[pages.page_of_cluster[c]] = 1;
+  }
+  const LodView view = terrain_view(6.0f, 1.0f);
+  Vector<u32> cut;
+  Vector<u32> plain;
+  Vector<u32> detailed_cut;
+  Vector<PageRequest> detailed;
+  const u32 a = select_lod_streaming(lod, view, pages, roots, cut, plain);
+  const u32 b = select_lod_streaming(lod, view, pages, roots, detailed_cut, detailed);
+  REQUIRE(a == b);
+  REQUIRE(cut.size() == detailed_cut.size());
+  bool same_cut = true;
+  for (u32 i = 0; i < cut.size(); ++i)
+    same_cut = same_cut && cut[i] == detailed_cut[i];
+  CHECK(same_cut);
+  // The same pages, in the same order, each with a priority a cluster of this view produced.
+  REQUIRE(detailed.size() == plain.size());
+  REQUIRE_FALSE(detailed.empty());
+  for (u32 i = 0; i < detailed.size(); ++i) {
+    CHECK(detailed[i].page == plain[i]);
+    CHECK(detailed[i].screen_px > 0.0f);
+    CHECK(detailed[i].distance >= view.znear);
+    CHECK(detailed[i].distance < k_unknown_distance);
+    if (i != 0) CHECK(detailed[i].page > detailed[i - 1].page);
+  }
+  // Pulling the camera back shrinks every request: the priority is the view's, not the page's.
+  const LodView far_view = terrain_view(60.0f, 1.0f);
+  Vector<u32> far_cut;
+  Vector<PageRequest> far_requests;
+  select_lod_streaming(lod, far_view, pages, roots, far_cut, far_requests);
+  for (const PageRequest& near_request : detailed) {
+    for (const PageRequest& far_request : far_requests) {
+      if (far_request.page != near_request.page) continue;
+      CHECK(far_request.screen_px < near_request.screen_px);
+      CHECK(far_request.distance > near_request.distance);
+    }
+  }
+  // And `screen_pixels` is the projection the cut uses, applied to the sphere's own size.
+  const Vec4 sphere{0.0f, 0.0f, 0.0f, 2.0f};
+  CHECK(screen_pixels(sphere, view) ==
+        doctest::Approx(projected_error(sphere, 4.0f, view)).epsilon(1e-6));
+  CHECK(sphere_distance(sphere, view) == doctest::Approx(view.camera.y - 2.0f).epsilon(1e-5));
+}

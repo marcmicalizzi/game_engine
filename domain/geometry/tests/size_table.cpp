@@ -16,6 +16,10 @@ ENGINE_EXPECT_SIZE(48, 4, geometry::ClusterLodDesc);
 // contract as well as the footprint: twelve words, no padding, a multiple of sixteen bytes.
 ENGINE_EXPECT_SIZE(48, 4, geometry::ClusterPageDesc);
 
+// One page request, which the cull pass will write to a feedback buffer once §4.9's GPU half
+// exists: three words, so a lane emits one and the CPU reads it back without a conversion.
+ENGINE_EXPECT_SIZE(12, 4, geometry::PageRequest);
+
 ENGINE_EXPECT_SIZE(8, 4, geometry::VertexAttributes);
 
 // The .clusters container: these three are the file itself, so their size is the format.

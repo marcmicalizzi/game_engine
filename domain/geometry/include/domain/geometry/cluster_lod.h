@@ -83,11 +83,28 @@ bool merge_cluster_lod(std::span<const ClusterLodMesh> parts, ClusterLodMesh& ou
 struct ClusterMeshPart {
   u32 first_cluster = 0;  // in the merged `mesh.clusters`
   u32 cluster_count = 0;
-  u32 leaf_cluster_count = 0;  // the level-0 clusters, which come first within the part
-  u32 first_vertex = 0;        // in the merged vertex, attribute, and quantized streams
-  Vec3 quant_origin{};         // this mesh's own grid, unchanged by the merge
+  u32 leaf_cluster_count = 0;  // the level-0 clusters of this mesh
+  // Where they start, relative to `first_cluster`. Zero for a mesh merged the default way, whose
+  // leaves come first; `cluster_count - leaf_cluster_count` for a mesh that was laid out in pages
+  // before the merge, because a paged mesh is ordered coarse to fine and its leaves are last.
+  u32 first_leaf_cluster = 0;
+  u32 first_vertex = 0;  // in the merged vertex, attribute, and quantized streams
+  // This mesh's run of the scene's page table (`merge_paged_cluster_meshes`), zero and empty when
+  // the scene carries none.
+  u32 first_page = 0;
+  u32 page_count = 0;
+  Vec3 quant_origin{};  // this mesh's own grid, unchanged by the merge
   f32 quant_scale = 1.0f;
 };
+
+// Whether a merge reorders each mesh's clusters so its level-0 clusters come first.
+//
+// `leaves_first` is the scene convention: a direct draw of the leaves is then the first
+// `leaf_cluster_count` clusters of the mesh. `keep` leaves a mesh's clusters in the order it
+// arrived in, which is what a mesh laid out in **pages** needs: `build_cluster_pages` orders the
+// clusters coarse to fine so that each page is a contiguous run of them, and pulling the leaves
+// to the front would leave every page naming clusters that are no longer beside each other.
+enum class ClusterOrder : u8 { leaves_first, keep };
 
 // Merges DAGs built over *separate meshes* into the one set of buffers a scene draws from: the
 // vertex, attribute, triangle, and quantized streams are concatenated with the offsets shifted,
@@ -106,8 +123,12 @@ struct ClusterMeshPart {
 // `out.quant_origin`/`quant_scale` are the first mesh's, so a single-mesh merge behaves as
 // before; every other mesh's grid is in `parts_out`, and `dequantize_position` on the merged
 // mesh is therefore only correct for the first. Fails on an empty list or an empty part.
+//
+// `order` is `ClusterOrder::keep` when the meshes have been laid out in pages; see the enum, and
+// `merge_paged_cluster_meshes` in cluster_pages.h, which is what a caller with page tables uses.
 bool merge_cluster_meshes(std::span<const ClusterLodMesh> parts, ClusterLodMesh& out,
-                          Vector<ClusterMeshPart>& parts_out, std::string* error = nullptr);
+                          Vector<ClusterMeshPart>& parts_out, std::string* error = nullptr,
+                          ClusterOrder order = ClusterOrder::leaves_first);
 
 // Level 0 covers every source triangle exactly once; every cluster's own error is at most its
 // parent error; the raw cut is non-empty for every threshold; the triangle count of the raw

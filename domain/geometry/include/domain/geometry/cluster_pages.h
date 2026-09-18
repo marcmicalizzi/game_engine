@@ -153,6 +153,38 @@ bool rebuild_cluster_page_index(const ClusterLodMesh& mesh, ClusterPages& pages,
 bool validate_cluster_pages(const ClusterLodMesh& mesh, const ClusterPages& pages,
                             std::string* error = nullptr);
 
+// The same over a **scene** of meshes merged by `merge_paged_cluster_meshes`. The invariants that
+// are about the whole array — the pages tiling the clusters, the vertices and the triangles, the
+// byte target, children finer and later, child page runs ascending — hold across the scene
+// exactly as they do in one mesh. The two that are about a *mesh* are checked per mesh instead:
+// the pinned `k_page_root` pages are a prefix of **each mesh's** run and its first page is one of
+// them, and the coarse-to-fine order restarts at each mesh, because mesh 1's coarsest page
+// necessarily follows mesh 0's finest. `parts` must tile the page array and the cluster array.
+bool validate_cluster_pages(const ClusterLodMesh& mesh, const ClusterPages& pages,
+                            std::span<const ClusterMeshPart> parts, std::string* error = nullptr);
+
+// Joins meshes that have each been laid out in pages into the one set of buffers and the one page
+// table a scene streams from: `merge_cluster_meshes` over the geometry with `ClusterOrder::keep`,
+// so no mesh's page-ordered clusters are shuffled, and the page tables concatenated with every
+// index shifted — cluster, vertex and triangle ranges by the merged bases, child-page entries and
+// `page_of_cluster` by the pages before this mesh, `children` by the clusters before it.
+//
+// A mesh's pages stay together and in their own order, so `parts_out[m].first_page` and
+// `page_count` name them and mesh m's root pages — the groups nothing coarser can replace, which
+// `build_cluster_pages` keeps at the front — are the front of *its* run. That is what makes the
+// pinning rule right for a scene: `PageResidencyManager` pins every `k_page_root` page, which is
+// one per mesh at least, not page 0 alone; a scene that pinned only page 0 could not draw mesh 1
+// at all. Nothing links the meshes, so a page's children are always in the same mesh.
+//
+// Every mesh must carry a page table laid out with the same `page_bytes_target` — the merged
+// table has one target, and two targets in one scene would make every fill ratio and every
+// oversized flag mean something different from page to page. Fails on an empty list, a mesh with
+// no page table, a page table that does not match its mesh, or targets that disagree.
+bool merge_paged_cluster_meshes(std::span<const ClusterLodMesh> meshes,
+                                std::span<const ClusterPages> pages, ClusterLodMesh& out,
+                                Vector<ClusterMeshPart>& parts_out, ClusterPages& pages_out,
+                                std::string* error = nullptr);
+
 // ---- streaming ---------------------------------------------------------------------------
 
 // Which pages a viewer has. One byte per page rather than a bit: the cull pass will read this
@@ -180,6 +212,46 @@ u32 select_lod_streaming(const ClusterLodMesh& mesh, const LodView& view, const 
                          const PageResidency& residency, Vector<u32>& cut,
                          Vector<u32>& page_requests);
 
+// ---- request priority --------------------------------------------------------------------
+
+// What one missing page is worth, as the cluster that could not refine into it sees it. Two of
+// the three terms of docs/plan/04-renderer.md §4.9's priority — screen contribution and distance
+// to the observer — travel with the request; the third, time since request, is the manager's,
+// because only it knows how long a request has been waiting (`set_starvation_frames`).
+//
+// The defaults say *nothing*: a request made without a view (`request(u32)`) scores zero and
+// loses every distance tie, so a queue of them is served in page order, which is coarse first,
+// which is what the manager did before priorities existed.
+inline constexpr f32 k_unknown_distance = 3.402823466e+38f;  // FLT_MAX: behind everything known
+
+struct PageRequest {
+  u32 page = 0;
+  // The projected diameter of the requesting cluster's bounding sphere, in pixels: what this page
+  // would add to the picture, and the term that decides. `screen_pixels` computes it.
+  f32 screen_px = 0.0f;
+  // Observer to the near side of that sphere, in mesh units. It settles the one thing screen size
+  // cannot: a small near cluster and a large far one project to the same size, and the near one
+  // is the one an observer moving at all will still want next frame.
+  f32 distance = k_unknown_distance;
+};
+
+// The projected diameter of a bounding sphere in pixels — 2 * radius / max(distance - radius,
+// znear) * proj_scale — which is `projected_error`'s projection applied to the sphere's own size
+// rather than to an error, so the two are in the same units and the same view. And the distance
+// the request records: observer to the near side of the sphere, never below `znear`.
+f32 screen_pixels(Vec4 sphere, const LodView& view) noexcept;
+f32 sphere_distance(Vec4 sphere, const LodView& view) noexcept;
+
+// `select_lod_streaming` with the priority of every request filled in from the cluster that made
+// it: the same cut and the same pages, each carrying the screen size and the distance of its
+// requester. A page several clusters ask for keeps the best of them — the largest screen size and
+// the smallest distance — because the page is worth what the cluster that would show most of it
+// says it is. The appended requests are sorted by page, free of repeats, and a function of the
+// inputs alone.
+u32 select_lod_streaming(const ClusterLodMesh& mesh, const LodView& view, const ClusterPages& pages,
+                         const PageResidency& residency, Vector<u32>& cut,
+                         Vector<PageRequest>& page_requests);
+
 // The CPU model of the residency manager of docs/plan/04-renderer.md §4.9, for one mesh: a fixed
 // budget in bytes, a queue of requested pages, and eviction of the least recently used page
 // first — restricted to the pages that may go at all, which is what keeps the drawing rule above
@@ -192,28 +264,68 @@ u32 select_lod_streaming(const ClusterLodMesh& mesh, const LodView& view, const 
 // The GPU version — feedback from the cull pass, asynchronous I/O, several meshes and three page
 // types under one budget — comes later; this is the reference its numbers and its tests are
 // taken against, and what `engine-content stats` sweeps a camera over.
+// The queue is served by **priority**, not in arrival order (plan 04 §4.9): a page that would
+// cover 400 pixels of the picture loads before one that would cover 4, whichever was asked for
+// first. The order over queued pages, most urgent first, is
+//
+//   1. a request that has waited more than `starvation_frames()` frames, oldest first;
+//   2. the largest screen contribution (`PageRequest::screen_px`);
+//   3. the smallest distance to the observer;
+//   4. the smallest page index.
+//
+// Rule 4 makes the order total, so a run is reproducible and a queue of requests that carry no
+// view (`request(u32)`) is served in page order — coarse first, which is what the manager did
+// before priorities existed. Rules 2 and 3 are the view: what the page is worth now.
+//
+// Rule 1 is the starvation guard, and it is a **step rather than a slope** on purpose. A smooth
+// "time since request" term would change every queued page's key every frame, which is exactly
+// what a heap cannot survive: the ordering it was built under would be stale the moment the frame
+// advanced, and re-keying the whole queue every frame would cost more than the queue is worth.
+// A step costs one drain of a FIFO that is already in request order, and it is also the honest
+// statement of the requirement — not "old requests count for a little more" but "nothing waits
+// longer than N frames", which is what a viewer parked in front of a small distant detail needs.
+// The requests themselves do not age: a page's score is what the clusters that asked for it said,
+// kept at the best of them, so a re-request may only ever move a page up the queue.
 class PageResidencyManager {
  public:
+  // About a quarter of a second at 60 Hz: long enough that the guard does not fight the screen
+  // order under any normal load, short enough that nothing a viewer is looking at stays missing
+  // for longer than a glance.
+  static constexpr u32 k_default_starvation_frames = 16;
+
   // Points the manager at a page table and a budget. Every `k_page_root` page becomes resident,
   // whatever the budget says — a budget below them is not honoured, because a mesh missing one
-  // of them cannot be drawn at all. Fails on an empty page table. The sizes, flags, and child
-  // lists are copied, so `table` does not have to outlive the manager.
+  // of them cannot be drawn at all. In a scene merged by `merge_paged_cluster_meshes` that is one
+  // page per mesh at least, not page 0 alone, and the rule needs no special case: the flag is on
+  // the page. Fails on an empty page table. The sizes, flags, and child lists are copied, so
+  // `table` does not have to outlive the manager.
   bool reset(const ClusterPages& table, u64 budget, std::string* error = nullptr);
 
   void set_budget(u64 budget) noexcept { budget_ = budget; }
-  void begin_frame() noexcept { ++frame_; }
+  // Advances the frame and applies the starvation guard to whatever has waited too long.
+  void begin_frame() noexcept;
   u64 frame_index() const noexcept { return frame_; }
+
+  // How long a queued page may wait before rule 1 takes it. Zero promotes everything at once,
+  // which is the old arrival order and is what a test that wants no view-dependence asks for.
+  void set_starvation_frames(u32 frames) noexcept { starvation_frames_ = frames; }
+  u32 starvation_frames() const noexcept { return starvation_frames_; }
 
   // Marks a resident page as used this frame, which is what keeps it out of the eviction order.
   void touch(u32 page) noexcept;
-  // Queues a page to be loaded. A page that is already resident is touched instead, and a page
-  // already in the queue is not queued twice.
+  // Queues a page to be loaded. A page that is already resident is touched instead; a page
+  // already queued keeps the better of the two priorities rather than being queued twice.
   void request(u32 page);
+  void request(const PageRequest& entry);
   void request(std::span<const u32> list);
+  void request(std::span<const PageRequest> list);
 
-  // The loader: makes up to `max_pages` queued pages resident, in the order they were requested,
-  // and returns how many. The budget is not consulted here — `evict_to_budget` is what enforces
-  // it, after the frame has said which pages it is using.
+  // The page the next `admit` would take, without taking it: false when nothing is queued.
+  bool next_request(u32& page) const noexcept;
+
+  // The loader: makes up to `max_pages` queued pages resident, most urgent first, and returns how
+  // many. The budget is not consulted here — `evict_to_budget` is what enforces it, after the
+  // frame has said which pages it is using.
   u32 admit(u32 max_pages);
   // Evicts least-recently-used pages, ties broken by page index, until the resident bytes are
   // within the budget or nothing may go. Only a page with no resident child page and no
@@ -224,13 +336,22 @@ class PageResidencyManager {
   const PageResidency& page_residency() const noexcept { return residency_; }
   u64 resident_bytes() const noexcept { return resident_bytes_; }
   u32 resident_pages() const noexcept { return resident_pages_; }
-  u32 pending() const noexcept { return queue_.size() - queue_head_; }
+  u32 pending() const noexcept { return heap_.size(); }
   u64 budget_bytes() const noexcept { return budget_; }
   u64 total_bytes() const noexcept { return total_bytes_; }
 
  private:
   void admit_one(u32 page);
   bool may_evict(u32 page) const noexcept;
+  // The queue is a binary max-heap of page indices under the order above, with `heap_at_` giving
+  // every queued page its slot so that a re-request or the starvation guard can move one entry
+  // instead of rebuilding the heap. Every array below is sized once in `reset` and the heap keeps
+  // its capacity across a drain, so a steady state of requesting and admitting allocates nothing.
+  bool more_urgent(u32 a, u32 b) const noexcept;
+  void sift_up(u32 at) noexcept;
+  void sift_down(u32 at) noexcept;
+  u32 pop_most_urgent() noexcept;
+  void promote_starved() noexcept;
 
   Vector<u32> bytes_;  // per page
   Vector<u64> used_;   // the frame each page was last touched
@@ -240,10 +361,20 @@ class PageResidencyManager {
   Vector<u32> child_first_;
   Vector<u32> child_count_;
   Vector<u32> child_pages_;
-  Vector<u8> queued_;
-  Vector<u32> queue_;
+  Vector<f32> screen_;     // per page, the best screen contribution asked with
+  Vector<f32> distance_;   // per page, the smallest distance asked with
+  Vector<u64> requested_;  // per page, the frame it was queued in
+  Vector<u8> starved_;     // per page, whether the guard has promoted it
+  Vector<u32> heap_at_;    // per page, its slot in heap_, or ~0 when it is not queued
+  Vector<u32> heap_;
+  // The queued pages in the order they were first asked for, so the guard drains a head rather
+  // than scanning the queue. An entry carries the frame it was made in, which is what tells a
+  // stale entry (its page was admitted and asked for again) from a live one.
+  Vector<u32> age_page_;
+  Vector<u64> age_frame_;
   PageResidency residency_;
-  u32 queue_head_ = 0;
+  u32 age_head_ = 0;
+  u32 starvation_frames_ = k_default_starvation_frames;
   u32 resident_pages_ = 0;
   u64 resident_bytes_ = 0;
   u64 total_bytes_ = 0;

@@ -10,6 +10,11 @@ namespace {
 
 constexpr u32 k_no_index = ~u32{0};
 
+// A cluster's bounding sphere in the form the projection helpers take.
+Vec4 cluster_sphere(const ClusterDesc& desc) noexcept {
+  return Vec4{desc.center.x, desc.center.y, desc.center.z, desc.radius};
+}
+
 bool fail(std::string* error, std::string message) {
   if (error != nullptr) *error = std::move(message);
   return false;
@@ -136,10 +141,13 @@ bool match_children(std::span<const ClusterLodDesc> lod, std::span<const Cluster
 }
 
 // The pages holding a run of clusters, which is a range of pages because the builder keeps a
-// group in consecutive pages. Returns false when any of them is missing, and appends the missing
-// ones to `missing`.
+// group in consecutive pages. Returns false when any of them is missing, and hands each missing
+// one to `on_missing`. A template rather than a pointer to a sink because the two callers want
+// two different records of a missing page — the page alone, or the page with the priority of the
+// cluster that could not refine into it — and neither wants an indirect call per page.
+template <typename OnMissing>
 bool run_resident(const ClusterPages& pages, const PageResidency& residency, u32 first, u32 count,
-                  Vector<u32>* missing) {
+                  OnMissing&& on_missing) {
   if (count == 0) return true;
   const u32 from = pages.page_of_cluster[first];
   const u32 to = pages.page_of_cluster[first + count - 1];
@@ -147,10 +155,12 @@ bool run_resident(const ClusterPages& pages, const PageResidency& residency, u32
   for (u32 page = from; page <= to; ++page) {
     if (residency.is_resident(page)) continue;
     complete = false;
-    if (missing != nullptr) missing->push_back(page);
+    on_missing(page);
   }
   return complete;
 }
+
+void ignore_missing(u32) noexcept {}
 
 // Sorts and removes the repeats from the run of `values` appended since `from`.
 void sort_unique_tail(Vector<u32>& values, u32 from) {
@@ -159,6 +169,101 @@ void sort_unique_tail(Vector<u32>& values, u32 from) {
   u32* last = std::unique(values.begin() + from, values.end());
   values.resize(static_cast<u32>(last - values.begin()));
 }
+
+// The same over requests: sorted by page, one entry a page, keeping the best priority any of the
+// clusters that asked gave it. Taking the maximum screen size and the minimum distance separately
+// means the surviving entry may be better than any single request — which is the intent: the page
+// is worth what the cluster that would show most of it says, at the range of the nearest one.
+void coalesce_requests_tail(Vector<PageRequest>& values, u32 from) {
+  if (values.size() <= from) return;
+  std::sort(values.begin() + from, values.end(),
+            [](const PageRequest& a, const PageRequest& b) noexcept { return a.page < b.page; });
+  u32 out = from;
+  for (u32 i = from; i < values.size(); ++i) {
+    if (out > from && values[out - 1].page == values[i].page) {
+      PageRequest& kept = values[out - 1];
+      if (values[i].screen_px > kept.screen_px) kept.screen_px = values[i].screen_px;
+      if (values[i].distance < kept.distance) kept.distance = values[i].distance;
+      continue;
+    }
+    values[out++] = values[i];
+  }
+  values.resize(out);
+}
+
+// The one selection loop, with the record of a missing page left to the caller's sink. `sink`
+// answers `size()`, `resize(n)` — the rollback when a cluster turns out to be able to refine
+// after all — `add(page, sphere)` and `finish(from)`.
+template <typename Sink>
+u32 select_lod_streaming_impl(const ClusterLodMesh& mesh, const LodView& view,
+                              const ClusterPages& pages, const PageResidency& residency,
+                              Vector<u32>& cut, Sink& sink) {
+  const u32 count = mesh.lod.size();
+  const u32 requests_at = sink.size();
+  u32 selected = 0;
+  u32 i = 0;
+  while (i < count) {
+    u32 j = i + 1;
+    while (j < count && mesh.lod[j].group == mesh.lod[i].group)
+      ++j;
+    // The residency test is over the whole group, not over the cluster: the parent that would be
+    // drawn instead takes the same decision over the same group, so the two never disagree and
+    // the cut stays crack-free even where a group had to be split over two pages.
+    if (!run_resident(pages, residency, i, j - i, ignore_missing)) {
+      // A terminal group has no parent to ask for it, so it asks for itself: without the coarsest
+      // level there is nothing to draw at all.
+      if (mesh.lod[i].parent_error >= k_lod_terminal_error) {
+        const Vec4 sphere = cluster_sphere(mesh.mesh.clusters[i]);
+        run_resident(pages, residency, i, j - i, [&](u32 page) { sink.add(page, sphere); });
+      }
+      i = j;
+      continue;
+    }
+    for (u32 c = i; c < j; ++c) {
+      const ClusterLodDesc& lod = mesh.lod[c];
+      if (projected_error(lod.parent, lod.parent_error, view) <= view.threshold_px) continue;
+      if (projected_error(lod.own, lod.own_error, view) <= view.threshold_px) {
+        cut.push_back(c);
+        ++selected;
+        continue;
+      }
+      // Too coarse for this view: refine into the children, unless their pages are not all here,
+      // in which case this cluster is the best there is and the missing pages are asked for.
+      const ClusterChildren& kids = pages.children[c];
+      const u32 before = sink.size();
+      const Vec4 sphere = cluster_sphere(mesh.mesh.clusters[c]);
+      if (!run_resident(pages, residency, kids.first_cluster, kids.cluster_count,
+                        [&](u32 page) { sink.add(page, sphere); })) {
+        cut.push_back(c);
+        ++selected;
+      } else {
+        sink.resize(before);
+      }
+    }
+    i = j;
+  }
+  sink.finish(requests_at);
+  return selected;
+}
+
+struct PlainRequestSink {
+  Vector<u32>* out = nullptr;
+  u32 size() const noexcept { return out->size(); }
+  void resize(u32 n) { out->resize(n); }
+  void add(u32 page, Vec4) { out->push_back(page); }
+  void finish(u32 from) { sort_unique_tail(*out, from); }
+};
+
+struct PriorityRequestSink {
+  Vector<PageRequest>* out = nullptr;
+  const LodView* view = nullptr;
+  u32 size() const noexcept { return out->size(); }
+  void resize(u32 n) { out->resize(n); }
+  void add(u32 page, Vec4 sphere) {
+    out->push_back(PageRequest{page, screen_pixels(sphere, *view), sphere_distance(sphere, *view)});
+  }
+  void finish(u32 from) { coalesce_requests_tail(*out, from); }
+};
 
 }  // namespace
 
@@ -498,10 +603,36 @@ bool rebuild_cluster_page_index(const ClusterLodMesh& mesh, ClusterPages& pages,
 
 bool validate_cluster_pages(const ClusterLodMesh& mesh, const ClusterPages& pages,
                             std::string* error) {
+  // One mesh is the scene of one part, so there is one validator and not two.
+  ClusterMeshPart whole;
+  whole.cluster_count = mesh.mesh.clusters.size();
+  whole.page_count = pages.pages.size();
+  return validate_cluster_pages(mesh, pages, std::span<const ClusterMeshPart>(&whole, 1), error);
+}
+
+bool validate_cluster_pages(const ClusterLodMesh& mesh, const ClusterPages& pages,
+                            std::span<const ClusterMeshPart> parts, std::string* error) {
   const u32 count = mesh.mesh.clusters.size();
   if (pages.pages.empty()) return fail(error, "no pages");
+  if (parts.empty()) return fail(error, "no meshes");
   if (pages.page_of_cluster.size() != count || pages.children.size() != count)
     return fail(error, "the per-cluster page and child tables are the wrong length");
+  // The meshes tile the page array and the cluster array, in the same order: that is what makes
+  // "a mesh's pages stay together" a statement anything downstream can rely on.
+  u32 part_page_at = 0;
+  u32 part_cluster_at = 0;
+  for (u32 m = 0; m < parts.size(); ++m) {
+    const std::string which = "mesh " + std::to_string(m);
+    if (parts[m].page_count == 0) return fail(error, which + " has no pages");
+    if (parts[m].first_page != part_page_at)
+      return fail(error, which + "'s pages do not continue the pages of the mesh before it");
+    if (parts[m].first_cluster != part_cluster_at)
+      return fail(error, which + "'s clusters do not continue the mesh before it");
+    part_page_at += parts[m].page_count;
+    part_cluster_at += parts[m].cluster_count;
+  }
+  if (part_page_at != pages.pages.size() || part_cluster_at != count)
+    return fail(error, "the meshes do not cover the pages and the clusters");
   // The DAG first: children are finer, inside the mesh, and later in the array, which is what
   // lets one forward pass walk a cut and lets eviction decide a page is free by looking only at
   // the pages that name it as a child.
@@ -529,87 +660,183 @@ bool validate_cluster_pages(const ClusterLodMesh& mesh, const ClusterPages& page
   u32 cluster_at = 0;
   u32 vertex_at = 0;
   u32 triangle_at = 0;
-  u32 previous_level = k_no_index;
-  bool past_the_roots = false;
-  for (u32 p = 0; p < pages.pages.size(); ++p) {
-    const ClusterPageDesc& desc = pages.pages[p];
-    const std::string where = "page " + std::to_string(p);
-    if (desc.cluster_count == 0) return fail(error, where + " is empty");
-    if (desc.first_cluster != cluster_at || desc.first_vertex != vertex_at ||
-        desc.first_triangle != triangle_at) {
-      return fail(error, where + " does not continue the ranges of the page before it");
+  // Per mesh, because two of the invariants are about a mesh and not about the array: the pinned
+  // pages are the front of *its* run, and its levels run coarse to fine from its own first page.
+  // In a scene, mesh 1's coarsest page necessarily comes after mesh 0's finest.
+  for (u32 m = 0; m < parts.size(); ++m) {
+    u32 previous_level = k_no_index;
+    bool past_the_roots = false;
+    const u32 part_first_page = parts[m].first_page;
+    const u32 part_end_page = part_first_page + parts[m].page_count;
+    if ((pages.pages[part_first_page].flags & k_page_root) == 0) {
+      return fail(error,
+                  "mesh " + std::to_string(m) + "'s first page does not hold the coarsest level");
     }
-    u32 vertices = 0;
-    u32 triangles = 0;
-    u32 bytes = 0;
-    u32 level_min = k_no_index;
-    u32 level_max = 0;
-    for (u32 k = 0; k < desc.cluster_count; ++k) {
-      const u32 c = desc.first_cluster + k;
-      if (c >= count) return fail(error, where + " runs past the last cluster");
-      if (pages.page_of_cluster[c] != p)
-        return fail(error, "cluster " + std::to_string(c) + " is not in " + where);
-      const ClusterDesc& cluster = mesh.mesh.clusters[c];
-      if (cluster.vertex_offset != vertex_at + vertices ||
-          cluster.triangle_offset != triangle_at + triangles) {
-        return fail(error,
-                    "cluster " + std::to_string(c) + " does not continue " + where + "'s streams");
+    for (u32 p = part_first_page; p < part_end_page; ++p) {
+      const ClusterPageDesc& desc = pages.pages[p];
+      const std::string where = "page " + std::to_string(p);
+      if (desc.cluster_count == 0) return fail(error, where + " is empty");
+      if (desc.first_cluster != cluster_at || desc.first_vertex != vertex_at ||
+          desc.first_triangle != triangle_at) {
+        return fail(error, where + " does not continue the ranges of the page before it");
       }
-      vertices += cluster.vertex_count;
-      triangles += cluster.triangle_count;
-      bytes += cluster_page_bytes(mesh.mesh, c);
-      const u32 level = mesh.lod[c].level;
-      level_min = level < level_min ? level : level_min;
-      level_max = level > level_max ? level : level_max;
-    }
-    if (desc.vertex_count != vertices || desc.triangle_count != triangles || desc.bytes != bytes)
-      return fail(error, where + " does not add up to its clusters");
-    if (desc.level_min != level_min || desc.level_max != level_max)
-      return fail(error, where + " does not name the levels of its clusters");
-    if (desc.bytes > pages.page_bytes_target && (desc.flags & k_page_oversized) == 0)
-      return fail(error, where + " is over the byte target and is not flagged oversized");
-    if ((desc.flags & k_page_oversized) != 0 && desc.bytes <= pages.page_bytes_target)
-      return fail(error, where + " is flagged oversized and is within the byte target");
-    // The root pages come first — they are the minimum resident set — and within that block and
-    // within the refinement that follows it, a page never holds anything coarser than the page
-    // before it.
-    const bool root = (desc.flags & k_page_root) != 0;
-    if (root && past_the_roots)
-      return fail(error, where +
-                             " holds a group with no coarser version after a page that does "
-                             "not, so the pinned pages are not a prefix");
-    if (!root && !past_the_roots) {
-      past_the_roots = true;
-      previous_level = k_no_index;  // the refinement block starts its own coarse-to-fine run
-    }
-    if (previous_level != k_no_index && desc.level_max > previous_level)
-      return fail(error, where + " is coarser than the page before it");
-    previous_level = desc.level_max;
-    if (u64{desc.first_child_page} + desc.child_page_count > pages.child_pages.size())
-      return fail(error, where + "'s child page run is outside the child page list");
-    for (u32 k = 0; k < desc.child_page_count; ++k) {
-      const u32 child = pages.child_pages[desc.first_child_page + k];
-      if (child >= pages.pages.size())
-        return fail(error, where + " names a child page that is not there");
-      // Children are finer, so they are later in the array; a page is never its own child.
-      if (child <= p) {
-        return fail(error, where + " names page " + std::to_string(child) +
-                               " as a child, which is not after it");
+      u32 vertices = 0;
+      u32 triangles = 0;
+      u32 bytes = 0;
+      u32 level_min = k_no_index;
+      u32 level_max = 0;
+      for (u32 k = 0; k < desc.cluster_count; ++k) {
+        const u32 c = desc.first_cluster + k;
+        if (c >= count) return fail(error, where + " runs past the last cluster");
+        if (pages.page_of_cluster[c] != p)
+          return fail(error, "cluster " + std::to_string(c) + " is not in " + where);
+        const ClusterDesc& cluster = mesh.mesh.clusters[c];
+        if (cluster.vertex_offset != vertex_at + vertices ||
+            cluster.triangle_offset != triangle_at + triangles) {
+          return fail(
+              error, "cluster " + std::to_string(c) + " does not continue " + where + "'s streams");
+        }
+        vertices += cluster.vertex_count;
+        triangles += cluster.triangle_count;
+        bytes += cluster_page_bytes(mesh.mesh, c);
+        const u32 level = mesh.lod[c].level;
+        level_min = level < level_min ? level : level_min;
+        level_max = level > level_max ? level : level_max;
       }
-      if (k != 0 && child <= pages.child_pages[desc.first_child_page + k - 1])
-        return fail(error, where + "'s child pages are not ascending and unique");
+      if (desc.vertex_count != vertices || desc.triangle_count != triangles || desc.bytes != bytes)
+        return fail(error, where + " does not add up to its clusters");
+      if (desc.level_min != level_min || desc.level_max != level_max)
+        return fail(error, where + " does not name the levels of its clusters");
+      if (desc.bytes > pages.page_bytes_target && (desc.flags & k_page_oversized) == 0)
+        return fail(error, where + " is over the byte target and is not flagged oversized");
+      if ((desc.flags & k_page_oversized) != 0 && desc.bytes <= pages.page_bytes_target)
+        return fail(error, where + " is flagged oversized and is within the byte target");
+      // The root pages come first — they are the minimum resident set — and within that block and
+      // within the refinement that follows it, a page never holds anything coarser than the page
+      // before it.
+      const bool root = (desc.flags & k_page_root) != 0;
+      if (root && past_the_roots)
+        return fail(error, where +
+                               " holds a group with no coarser version after a page that does "
+                               "not, so the pinned pages are not a prefix");
+      if (!root && !past_the_roots) {
+        past_the_roots = true;
+        previous_level = k_no_index;  // the refinement block starts its own coarse-to-fine run
+      }
+      if (previous_level != k_no_index && desc.level_max > previous_level)
+        return fail(error, where + " is coarser than the page before it");
+      previous_level = desc.level_max;
+      if (u64{desc.first_child_page} + desc.child_page_count > pages.child_pages.size())
+        return fail(error, where + "'s child page run is outside the child page list");
+      for (u32 k = 0; k < desc.child_page_count; ++k) {
+        const u32 child = pages.child_pages[desc.first_child_page + k];
+        if (child >= pages.pages.size())
+          return fail(error, where + " names a child page that is not there");
+        // Children are finer, so they are later in the array; a page is never its own child.
+        if (child <= p) {
+          return fail(error, where + " names page " + std::to_string(child) +
+                                 " as a child, which is not after it");
+        }
+        if (k != 0 && child <= pages.child_pages[desc.first_child_page + k - 1])
+          return fail(error, where + "'s child pages are not ascending and unique");
+      }
+      cluster_at += desc.cluster_count;
+      vertex_at += vertices;
+      triangle_at += triangles;
     }
-    cluster_at += desc.cluster_count;
-    vertex_at += vertices;
-    triangle_at += triangles;
+    if (cluster_at != parts[m].first_cluster + parts[m].cluster_count) {
+      return fail(error,
+                  "mesh " + std::to_string(m) + "'s pages do not cover exactly its clusters");
+    }
   }
   if (cluster_at != count || vertex_at != mesh.mesh.vertices.size() ||
       triangle_at != mesh.mesh.triangles.size()) {
     return fail(error, "the pages do not cover the clusters, the vertices, and the triangles");
   }
-  if ((pages.pages[0].flags & k_page_root) == 0)
-    return fail(error, "page 0 does not hold the coarsest level");
   return true;
+}
+
+bool merge_paged_cluster_meshes(std::span<const ClusterLodMesh> meshes,
+                                std::span<const ClusterPages> pages, ClusterLodMesh& out,
+                                Vector<ClusterMeshPart>& parts_out, ClusterPages& pages_out,
+                                std::string* error) {
+  out = ClusterLodMesh{};
+  parts_out.clear();
+  pages_out = ClusterPages{};
+  if (meshes.empty()) return fail(error, "merge_paged_cluster_meshes: no meshes");
+  if (meshes.size() != pages.size())
+    return fail(error, "merge_paged_cluster_meshes: a page table per mesh is required");
+  const u32 target = pages[0].page_bytes_target;
+  for (u32 m = 0; m < meshes.size(); ++m) {
+    const std::string which = "merge_paged_cluster_meshes: mesh " + std::to_string(m);
+    const u32 clusters = meshes[m].mesh.clusters.size();
+    if (pages[m].pages.empty()) return fail(error, which + " has no page table");
+    if (pages[m].page_of_cluster.size() != clusters || pages[m].children.size() != clusters)
+      return fail(error, which + "'s page table does not match its clusters");
+    // One target for the scene: two in one table would make every fill ratio and every oversized
+    // flag mean something different from page to page, and the merged table carries only one.
+    if (pages[m].page_bytes_target != target)
+      return fail(error, which + " was laid out with a different page byte target");
+  }
+  if (!merge_cluster_meshes(meshes, out, parts_out, error, ClusterOrder::keep)) return false;
+
+  pages_out.page_bytes_target = target;
+  u32 page_count = 0;
+  u32 child_count = 0;
+  for (const ClusterPages& table : pages) {
+    page_count += table.pages.size();
+    child_count += table.child_pages.size();
+  }
+  pages_out.pages.reserve(page_count);
+  pages_out.child_pages.reserve(child_count);
+  pages_out.page_of_cluster.reserve(out.mesh.clusters.size());
+  pages_out.children.reserve(out.mesh.clusters.size());
+
+  u32 vertex_base = 0;
+  u32 triangle_base = 0;
+  for (u32 m = 0; m < meshes.size(); ++m) {
+    const ClusterPages& table = pages[m];
+    ClusterMeshPart& part = parts_out[m];
+    const u32 page_base = pages_out.pages.size();
+    const u32 cluster_base = part.first_cluster;
+    part.first_page = page_base;
+    part.page_count = table.pages.size();
+    for (const ClusterPageDesc& desc : table.pages) {
+      ClusterPageDesc moved = desc;
+      moved.first_cluster += cluster_base;
+      moved.first_vertex += vertex_base;
+      moved.first_triangle += triangle_base;
+      // The child list is rewritten rather than shifted in place, because its run moves as well:
+      // the merged list is every mesh's, one after another.
+      moved.first_child_page = pages_out.child_pages.size();
+      for (u32 k = 0; k < desc.child_page_count; ++k)
+        pages_out.child_pages.push_back(table.child_pages[desc.first_child_page + k] + page_base);
+      pages_out.pages.push_back(moved);
+    }
+    for (const u32 page : table.page_of_cluster)
+      pages_out.page_of_cluster.push_back(page + page_base);
+    for (const ClusterChildren& kids : table.children) {
+      // A cluster with no children keeps the empty range rather than a shifted one, so that
+      // "cluster_count == 0" stays the single test for a leaf.
+      pages_out.children.push_back(
+          kids.cluster_count == 0
+              ? ClusterChildren{}
+              : ClusterChildren{kids.first_cluster + cluster_base, kids.cluster_count});
+    }
+    vertex_base += meshes[m].mesh.vertices.size();
+    triangle_base += meshes[m].mesh.triangles.size();
+  }
+  return true;
+}
+
+f32 screen_pixels(Vec4 sphere, const LodView& view) noexcept {
+  return projected_error(sphere, 2.0f * sphere.w, view);
+}
+
+f32 sphere_distance(Vec4 sphere, const LodView& view) noexcept {
+  const Vec3 center{sphere.x, sphere.y, sphere.z};
+  const f32 distance = length(center - view.camera) - sphere.w;
+  return distance > view.znear ? distance : view.znear;
 }
 
 u32 select_lod_streaming(const ClusterLodMesh& mesh, const LodView& view, const ClusterPages& pages,
@@ -620,47 +847,20 @@ u32 select_lod_streaming(const ClusterLodMesh& mesh, const LodView& view, const 
       pages.children.size() != count) {
     return select_lod(mesh, view, cut);  // no page table: nothing can be missing
   }
-  const u32 requests_at = page_requests.size();
-  u32 selected = 0;
-  u32 i = 0;
-  while (i < count) {
-    u32 j = i + 1;
-    while (j < count && mesh.lod[j].group == mesh.lod[i].group)
-      ++j;
-    // The residency test is over the whole group, not over the cluster: the parent that would be
-    // drawn instead takes the same decision over the same group, so the two never disagree and
-    // the cut stays crack-free even where a group had to be split over two pages.
-    if (!run_resident(pages, residency, i, j - i, nullptr)) {
-      // A terminal group has no parent to ask for it, so it asks for itself: without the coarsest
-      // level there is nothing to draw at all.
-      if (mesh.lod[i].parent_error >= k_lod_terminal_error)
-        run_resident(pages, residency, i, j - i, &page_requests);
-      i = j;
-      continue;
-    }
-    for (u32 c = i; c < j; ++c) {
-      const ClusterLodDesc& lod = mesh.lod[c];
-      if (projected_error(lod.parent, lod.parent_error, view) <= view.threshold_px) continue;
-      if (projected_error(lod.own, lod.own_error, view) <= view.threshold_px) {
-        cut.push_back(c);
-        ++selected;
-        continue;
-      }
-      // Too coarse for this view: refine into the children, unless their pages are not all here,
-      // in which case this cluster is the best there is and the missing pages are asked for.
-      const ClusterChildren& kids = pages.children[c];
-      const u32 before = page_requests.size();
-      if (!run_resident(pages, residency, kids.first_cluster, kids.cluster_count, &page_requests)) {
-        cut.push_back(c);
-        ++selected;
-      } else {
-        page_requests.resize(before);
-      }
-    }
-    i = j;
+  PlainRequestSink sink{&page_requests};
+  return select_lod_streaming_impl(mesh, view, pages, residency, cut, sink);
+}
+
+u32 select_lod_streaming(const ClusterLodMesh& mesh, const LodView& view, const ClusterPages& pages,
+                         const PageResidency& residency, Vector<u32>& cut,
+                         Vector<PageRequest>& page_requests) {
+  const u32 count = mesh.lod.size();
+  if (pages.pages.empty() || pages.page_of_cluster.size() != count ||
+      pages.children.size() != count) {
+    return select_lod(mesh, view, cut);  // no page table: nothing can be missing
   }
-  sort_unique_tail(page_requests, requests_at);
-  return selected;
+  PriorityRequestSink sink{&page_requests, &view};
+  return select_lod_streaming_impl(mesh, view, pages, residency, cut, sink);
 }
 
 bool PageResidencyManager::reset(const ClusterPages& table, u64 budget, std::string* error) {
@@ -670,10 +870,16 @@ bool PageResidencyManager::reset(const ClusterPages& table, u64 budget, std::str
   child_first_.clear();
   child_count_.clear();
   child_pages_.clear();
-  queued_.clear();
-  queue_.clear();
+  screen_.clear();
+  distance_.clear();
+  requested_.clear();
+  starved_.clear();
+  heap_at_.clear();
+  heap_.clear();
+  age_page_.clear();
+  age_frame_.clear();
   residency_.resident.clear();
-  queue_head_ = 0;
+  age_head_ = 0;
   resident_pages_ = 0;
   resident_bytes_ = 0;
   total_bytes_ = 0;
@@ -687,7 +893,16 @@ bool PageResidencyManager::reset(const ClusterPages& table, u64 budget, std::str
   child_first_.resize(count);
   child_count_.resize(count);
   child_pages_ = table.child_pages;
-  queued_.assign(count, u8{0});
+  screen_.assign(count, 0.0f);
+  distance_.assign(count, k_unknown_distance);
+  requested_.assign(count, 0ull);
+  starved_.assign(count, u8{0});
+  heap_at_.assign(count, k_no_index);
+  // The queue never holds more than one entry a page, and the age list never more than the queue
+  // plus what has been drained from it, so one reservation each is the whole steady state.
+  heap_.reserve(count);
+  age_page_.reserve(count);
+  age_frame_.reserve(count);
   residency_.resident.assign(count, u8{0});
   for (u32 p = 0; p < count; ++p) {
     bytes_[p] = table.pages[p].bytes;
@@ -720,22 +935,138 @@ void PageResidencyManager::admit_one(u32 page) {
   used_[page] = frame_;
   resident_bytes_ += bytes_[page];
   ++resident_pages_;
-  queued_[page] = 0;
 }
 
 void PageResidencyManager::touch(u32 page) noexcept {
   if (page < residency_.resident.size() && residency_.resident[page] != 0) used_[page] = frame_;
 }
 
+// The order the queue is served in; see the class comment for why age is a step and not a slope.
+bool PageResidencyManager::more_urgent(u32 a, u32 b) const noexcept {
+  if (starved_[a] != starved_[b]) return starved_[a] > starved_[b];
+  if (starved_[a] != 0) {
+    // Among the promoted, oldest first: the guard is a bound on waiting, so it serves in the
+    // order the waiting started.
+    if (requested_[a] != requested_[b]) return requested_[a] < requested_[b];
+    return a < b;
+  }
+  if (screen_[a] != screen_[b]) return screen_[a] > screen_[b];
+  if (distance_[a] != distance_[b]) return distance_[a] < distance_[b];
+  return a < b;
+}
+
+void PageResidencyManager::sift_up(u32 at) noexcept {
+  const u32 page = heap_[at];
+  while (at != 0) {
+    const u32 parent = (at - 1) / 2;
+    if (!more_urgent(page, heap_[parent])) break;
+    heap_[at] = heap_[parent];
+    heap_at_[heap_[at]] = at;
+    at = parent;
+  }
+  heap_[at] = page;
+  heap_at_[page] = at;
+}
+
+void PageResidencyManager::sift_down(u32 at) noexcept {
+  const u32 size = heap_.size();
+  if (size == 0) return;
+  const u32 page = heap_[at];
+  for (;;) {
+    const u32 left = 2 * at + 1;
+    if (left >= size) break;
+    const u32 right = left + 1;
+    u32 best = left;
+    if (right < size && more_urgent(heap_[right], heap_[left])) best = right;
+    if (!more_urgent(heap_[best], page)) break;
+    heap_[at] = heap_[best];
+    heap_at_[heap_[at]] = at;
+    at = best;
+  }
+  heap_[at] = page;
+  heap_at_[page] = at;
+}
+
+u32 PageResidencyManager::pop_most_urgent() noexcept {
+  const u32 page = heap_[0];
+  const u32 last = heap_.back();
+  heap_.pop_back();
+  if (!heap_.empty()) {
+    heap_[0] = last;
+    heap_at_[last] = 0;
+    sift_down(0);
+  }
+  heap_at_[page] = k_no_index;
+  starved_[page] = 0;
+  return page;
+}
+
+// The starvation guard. `age_page_` is in request order, so everything that has waited long
+// enough is at its head and this is a drain rather than a scan: one pass over the entries that
+// cross the line this frame, and nothing else is touched. A promoted page's key only improves,
+// so moving it is one sift up.
+void PageResidencyManager::promote_starved() noexcept {
+  while (age_head_ < age_page_.size()) {
+    const u32 page = age_page_[age_head_];
+    const u64 when = age_frame_[age_head_];
+    // A page admitted since, or asked for again in a later frame, leaves a stale entry behind.
+    if (heap_at_[page] == k_no_index || requested_[page] != when || starved_[page] != 0) {
+      ++age_head_;
+      continue;
+    }
+    if (frame_ - when < starvation_frames_) break;  // the head is the oldest: so is everything
+    starved_[page] = 1;
+    sift_up(heap_at_[page]);
+    ++age_head_;
+  }
+  if (age_head_ == age_page_.size()) {
+    age_page_.clear();
+    age_frame_.clear();
+    age_head_ = 0;
+  }
+}
+
+void PageResidencyManager::begin_frame() noexcept {
+  ++frame_;
+  promote_starved();
+}
+
 void PageResidencyManager::request(u32 page) {
+  request(PageRequest{page, 0.0f, k_unknown_distance});
+}
+
+void PageResidencyManager::request(const PageRequest& entry) {
+  const u32 page = entry.page;
   if (page >= residency_.resident.size()) return;
   if (residency_.resident[page] != 0) {
     used_[page] = frame_;
     return;
   }
-  if (queued_[page] != 0) return;
-  queued_[page] = 1;
-  queue_.push_back(page);
+  if (heap_at_[page] != k_no_index) {
+    // Already queued. Keep the best of the two, which can only move the page up the queue: a page
+    // two clusters ask for is worth what the one that would show most of it says, and a repeat of
+    // last frame's request must not be able to push it back down.
+    bool better = false;
+    if (entry.screen_px > screen_[page]) {
+      screen_[page] = entry.screen_px;
+      better = true;
+    }
+    if (entry.distance < distance_[page]) {
+      distance_[page] = entry.distance;
+      better = true;
+    }
+    if (better) sift_up(heap_at_[page]);
+    return;
+  }
+  screen_[page] = entry.screen_px;
+  distance_[page] = entry.distance;
+  requested_[page] = frame_;
+  starved_[page] = 0;
+  heap_at_[page] = heap_.size();
+  heap_.push_back(page);
+  sift_up(heap_.size() - 1);
+  age_page_.push_back(page);
+  age_frame_.push_back(frame_);
 }
 
 void PageResidencyManager::request(std::span<const u32> list) {
@@ -743,17 +1074,27 @@ void PageResidencyManager::request(std::span<const u32> list) {
     request(page);
 }
 
+void PageResidencyManager::request(std::span<const PageRequest> list) {
+  for (const PageRequest& entry : list)
+    request(entry);
+}
+
+bool PageResidencyManager::next_request(u32& page) const noexcept {
+  if (heap_.empty()) return false;
+  page = heap_[0];
+  return true;
+}
+
 u32 PageResidencyManager::admit(u32 max_pages) {
   u32 loaded = 0;
-  while (loaded < max_pages && queue_head_ < queue_.size()) {
-    const u32 page = queue_[queue_head_++];
-    if (queued_[page] == 0) continue;  // it became resident some other way
-    admit_one(page);
+  while (loaded < max_pages && !heap_.empty()) {
+    admit_one(pop_most_urgent());
     ++loaded;
   }
-  if (queue_head_ == queue_.size()) {
-    queue_.clear();
-    queue_head_ = 0;
+  if (heap_.empty()) {
+    age_page_.clear();
+    age_frame_.clear();
+    age_head_ = 0;
   }
   return loaded;
 }

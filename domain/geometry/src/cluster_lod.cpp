@@ -277,7 +277,8 @@ bool merge_cluster_lod(std::span<const ClusterLodMesh> parts, ClusterLodMesh& ou
 }
 
 bool merge_cluster_meshes(std::span<const ClusterLodMesh> parts, ClusterLodMesh& out,
-                          Vector<ClusterMeshPart>& parts_out, std::string* error) {
+                          Vector<ClusterMeshPart>& parts_out, std::string* error,
+                          ClusterOrder order) {
   out = ClusterLodMesh{};
   parts_out.clear();
   if (parts.empty()) {
@@ -332,17 +333,31 @@ bool merge_cluster_meshes(std::span<const ClusterLodMesh> parts, ClusterLodMesh&
     out.leaf_triangle_count += whole.leaf_triangle_count;
     for (u32 level = 0; level < whole.level_cluster_counts.size(); ++level)
       out.level_cluster_counts[level] += whole.level_cluster_counts[level];
-    // This mesh's clusters, contiguously, its own leaves first.
-    for (u32 pass = 0; pass < 2; ++pass) {
+    // This mesh's clusters, contiguously.
+    auto emit = [&](u32 i) {
+      ClusterDesc desc = part.clusters[i];
+      desc.vertex_offset += vertex_base;
+      desc.triangle_offset += triangle_base;
+      ClusterLodDesc lod = whole.lod[i];
+      lod.group += group_base;
+      out.mesh.clusters.push_back(desc);
+      out.lod.push_back(lod);
+    };
+    if (order == ClusterOrder::keep) {
+      // A paged mesh is already in the one order its page table describes, so the merge only
+      // shifts the offsets. Its leaves are wherever the layout put them, which is at the end.
+      u32 first_leaf = part.clusters.size();
       for (u32 i = 0; i < part.clusters.size(); ++i) {
-        if ((whole.lod[i].level == 0) != (pass == 0)) continue;
-        ClusterDesc desc = part.clusters[i];
-        desc.vertex_offset += vertex_base;
-        desc.triangle_offset += triangle_base;
-        ClusterLodDesc lod = whole.lod[i];
-        lod.group += group_base;
-        out.mesh.clusters.push_back(desc);
-        out.lod.push_back(lod);
+        if (whole.lod[i].level == 0 && i < first_leaf) first_leaf = i;
+        emit(i);
+      }
+      info.first_leaf_cluster = first_leaf < part.clusters.size() ? first_leaf : 0;
+    } else {
+      // The scene convention: this mesh's own leaves first, so a direct draw of them is one range.
+      for (u32 pass = 0; pass < 2; ++pass) {
+        for (u32 i = 0; i < part.clusters.size(); ++i) {
+          if ((whole.lod[i].level == 0) == (pass == 0)) emit(i);
+        }
       }
     }
   }
