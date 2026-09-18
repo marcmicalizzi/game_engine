@@ -142,9 +142,19 @@ struct ResolveParams {
   // else — `domain/gfx`'s resolve tests clear to black and read the sky back out of the
   // picture — needs. Whoever sets it owns the clear value beside it.
   u32 sky_is_clear = 0;
-  u32 pad = 0;  // keeps the block 16-byte aligned
+  u32 pad = 0;
+  // One u32 per 32 x 32 tile of this view's visibility region, non-zero when the tile holds any
+  // surface; 0 reads the visibility word for every pixel, as the pass always did. It is the Hi-Z
+  // build's by-product (`hiz_build.slang`), so it costs nothing to produce and exists only while
+  // two-pass occlusion culling is on — which is also the only time it is *valid*, because that
+  // is when the last write to the visibility buffer is the pass-2 draw and the last Hi-Z build
+  // follows it. A tile the mask calls empty is not read at all, and reading a 64-bit word per
+  // empty pixel was the resolve's whole fixed cost.
+  u64 coverage = 0;
+  u32 coverage_pitch = 0;  // tiles per row: gfx::hiz_coverage_pitch(width)
+  u32 pad2 = 0;            // keeps the block 16-byte aligned
 };
-static_assert(sizeof(ResolveParams) == 256);
+static_assert(sizeof(ResolveParams) == 272);
 static_assert(sizeof(ResolveParams) % 16 == 0, "the block is read as float4 rows on the GPU");
 
 }  // namespace engine::gfx

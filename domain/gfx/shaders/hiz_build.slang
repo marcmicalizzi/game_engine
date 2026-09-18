@@ -23,11 +23,22 @@
 // pass clamps an out-of-range source to the last texel, and `min(a, a) = a`, so a shared-memory
 // slot outside the mip holds +infinity's stand-in (every depth is in [0, 1]) and folds away.
 // The occlusion test recomputes the whole pyramid on the CPU and requires equality.
+//
+// **The coverage mask is this pass's by-product**, and it is free. The first dispatch already
+// reads every word of the visibility buffer, and its workgroup is exactly a 32 x 32 tile of it,
+// so an OR across the workgroup says whether that tile holds any surface at all. The resolve
+// reads it to skip the tiles that hold none, which is the only way to *not* read a 64-bit word
+// per empty pixel (docs/subsystems/gfx.md, "Material resolve"). A whole word rather than a bit
+// per tile: it is 97 KB at 11520 x 2160 against 3 KB, small enough either way to sit in cache
+// while the resolve runs, and a plain store needs neither an atomic nor a clear between frames.
 
 struct HizParams {
   uint64_t src;      // uint64_t[] visibility buffer (from_visibility) or float[] of mip src_mip
   uint64_t pyramid;  // float[]: this view's pyramid, its mips back to back
-  uint width;        // mip 0's extent, which every mip's extent is derived from
+  // uint[] one word per 32 x 32 tile, or 0. Written only by the from_visibility dispatch, whose
+  // workgroup *is* a tile: non-zero when any pixel of it holds a surface. See the note below.
+  uint64_t coverage;
+  uint width;  // mip 0's extent, which every mip's extent is derived from
   uint height;
   uint src_mip;     // which mip `src` holds
   uint src_offset;  // element offset of mip `src_mip` in `pyramid`
@@ -43,6 +54,7 @@ static const uint k_hiz_threads = 16;  // 16 x 16 threads fold a 32 x 32 tile
 static const float k_hiz_far = 1.0e30;
 
 groupshared float g_tile[k_hiz_threads * k_hiz_threads];
+groupshared uint g_covered;  // non-zero once any thread of the tile has seen a surface
 
 uint hiz_extent(uint extent, uint mip) { return (extent + (1u << mip) - 1u) >> mip; }
 
@@ -64,6 +76,8 @@ void hiz_build_main(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThread
   const uint dx = group_id.x * k_hiz_threads + lx;
   const uint dy = group_id.y * k_hiz_threads + ly;
   float value = k_hiz_far;
+  uint covered = 0;
+  if (lx == 0 && ly == 0) g_covered = 0;
   if (dx < dst_w && dy < dst_h) {
     const uint x0 = dx * 2;
     const uint y0 = dy * 2;
@@ -75,10 +89,23 @@ void hiz_build_main(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThread
     float d;
     if (g_params.from_visibility != 0) {
       uint64_t* visibility = (uint64_t*)g_params.src;
-      a = asfloat(uint(visibility[y0 * src_w + x0] >> 32));
-      b = asfloat(uint(visibility[y0 * src_w + x1] >> 32));
-      c = asfloat(uint(visibility[y1 * src_w + x0] >> 32));
-      d = asfloat(uint(visibility[y1 * src_w + x1] >> 32));
+      // A pixel is empty when the **whole** word is zero: a surface exactly at the far plane has
+      // a zero depth and a non-zero id, and the resolve shades it. The two halves are folded into
+      // one `uint` as each word is read, so only one 64-bit value is ever live.
+      uint any = 0;
+      uint64_t w = visibility[y0 * src_w + x0];
+      a = asfloat(uint(w >> 32));
+      any |= uint(w) | uint(w >> 32);
+      w = visibility[y0 * src_w + x1];
+      b = asfloat(uint(w >> 32));
+      any |= uint(w) | uint(w >> 32);
+      w = visibility[y1 * src_w + x0];
+      c = asfloat(uint(w >> 32));
+      any |= uint(w) | uint(w >> 32);
+      w = visibility[y1 * src_w + x1];
+      d = asfloat(uint(w >> 32));
+      any |= uint(w) | uint(w >> 32);
+      covered = any != 0 ? 1u : 0u;
       // Mip `src_mip` is that depth word. Every texel of it is the x0 or the x1 of exactly one
       // destination texel, so these four writes cover the mip; a clamped duplicate writes the
       // same value to the same place twice.
@@ -99,6 +126,9 @@ void hiz_build_main(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThread
 
   g_tile[ly * k_hiz_threads + lx] = value;
   GroupMemoryBarrierWithGroupSync();
+  // The tile's coverage, once `g_covered` is known to be initialised. Only the threads that saw
+  // a surface touch it, so a wholly empty tile costs no atomic at all.
+  if (covered != 0 && g_params.coverage != 0) InterlockedOr(g_covered, 1u);
   // The remaining folds, entirely in shared memory: the tile halves each time and so does the
   // number of threads that have anything to do.
   uint side = k_hiz_threads / 2;
@@ -124,5 +154,13 @@ void hiz_build_main(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThread
     if (active) g_tile[ly * k_hiz_threads + lx] = folded;
     GroupMemoryBarrierWithGroupSync();
     side >>= 1;
+  }
+
+  if (g_params.from_visibility != 0 && g_params.coverage != 0) {
+    GroupMemoryBarrierWithGroupSync();  // every OR of this tile has landed
+    if (lx == 0 && ly == 0) {
+      uint* tiles = (uint*)g_params.coverage;
+      tiles[group_id.y * ((g_params.width + 31u) >> 5) + group_id.x] = g_covered;
+    }
   }
 }

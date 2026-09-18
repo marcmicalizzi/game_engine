@@ -142,6 +142,16 @@ bool SceneRenderer::Targets::create(const gfx::Device& device, const ViewSet& se
     hiz_elements += pyramid;
     vis_elements += u64{target.width} * target.height;
   }
+  // The coverage masks live behind the pyramids in the same buffer, because they *are* the Hi-Z
+  // build's by-product: one word per 32 x 32 tile of a view's region, which is one word per
+  // workgroup of the build's first dispatch. 97 KB for a 11520 x 2160 view against the 100 MB of
+  // pyramid in front of it, and one allocation rather than two.
+  for (u32 v = 0; v < set.size(); ++v) {
+    ViewTarget& target = views[v];
+    target.coverage_pitch = gfx::hiz_coverage_pitch(target.width);
+    target.coverage_offset = hiz_elements;
+    hiz_elements += target.coverage_pitch * gfx::hiz_coverage_pitch(target.height);
+  }
   hiz_levels.resize(level_base);
   hiz_dirty = true;
   // TRANSFER_SRC on the visibility buffer is what a capture's id and depth channels read back;
@@ -773,6 +783,16 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     // Both raster paths clear the colour target to exactly this before they draw, so an empty
     // pixel is a fragment whose value is already in the target: the shader discards it instead.
     resolve.sky_is_clear = 1;
+    // Skip the visibility read for a 32 x 32 tile with nothing in it. The mask is exact **only**
+    // when the last write to the visibility buffer happened before the last Hi-Z build, and that
+    // is exactly when two-pass occlusion culling is on: `resolve_settings` allows it only under
+    // `--raster hw` and `--raster vertex`, which are the two modes with no software-raster pass
+    // and no ray trace after the Hi-Z. Add a pass that writes the buffer after `add_hiz(1)` and
+    // this must go off with it.
+    if (occlusion) {
+      resolve.coverage = targets_.hiz.address + u64{target.coverage_offset} * 4;
+      resolve.coverage_pitch = target.coverage_pitch;
+    }
     resolve.sun = Vec4{normalize(Vec3{0.4f, 0.8f, 0.45f}), 1.0f};
     resolve.camera = Vec4{eye, 0.0f};
     resolve.view_proj = view.view_proj;
@@ -1127,6 +1147,12 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
         level->src_mip = src_mip;
         level->src_offset = target.hiz_offsets[src_mip];
         level->levels = gfx::hiz_dispatch_levels(target.hiz_mips, d);
+        // Only the dispatch that reads the visibility buffer can say what a tile holds, and its
+        // workgroup is exactly a tile — and only the **last** build of the frame says it about
+        // the buffer the resolve will read, so the build after pass 1 (`set` 0) writes no mask at
+        // all rather than one nothing looks at.
+        level->coverage =
+            first && set == 1 ? targets.hiz.address + u64{target.coverage_offset} * 4 : 0;
         const u32 src_w = gfx::hiz_mip_extent(target.width, src_mip);
         const u32 src_h = gfx::hiz_mip_extent(target.height, src_mip);
         graph.add_pass(
@@ -1333,6 +1359,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
         [&](gfx::PassBuilder& b) {
           b.color_attachment(color, VK_ATTACHMENT_LOAD_OP_CLEAR, sky);
           b.read(rg_vis, gfx::Access::FragmentRead);
+          // The per-tile coverage mask the last Hi-Z build left behind it, in the same buffer.
+          if (occlusion) b.read(rg_hiz, gfx::Access::FragmentRead);
           if (deform_on) b.read(rg_pool, gfx::Access::FragmentRead);
           if (shadows) {  // the shadow rays traverse them from the fragment stage
             b.read(rt.tlas, gfx::Access::FragmentRayQueryRead);

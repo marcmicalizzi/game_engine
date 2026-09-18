@@ -242,20 +242,30 @@ inline constexpr u32 k_deform_workgroup_size = 128;  // numthreads in deform.sla
 
 // Mirrors HizParams in hiz_build.slang: the push constants of **one dispatch**, which folds a
 // 32 x 32 tile of mip `src_mip` down through up to `k_hiz_levels_per_dispatch` further mips in
-// shared memory. 40 bytes, as it was when a dispatch built one mip: the destination mips are
-// contiguous behind the source, so the shader walks their offsets and extents the way
-// hiz_layout() does rather than being handed an array of them.
+// shared memory. The destination mips are contiguous behind the source, so the shader walks
+// their offsets and extents the way hiz_layout() does rather than being handed an array of them.
+//
+// **48 bytes, not the 40 it was**: `coverage` was appended when the resolve started skipping
+// empty tiles. The mask is this pass's by-product — the from_visibility dispatch already reads
+// every word of the visibility buffer and its workgroup is exactly one tile — so the address had
+// to reach it, and there was no spare word: every other field is in use and an address needs
+// eight bytes. The block is push constants, well under the 128-byte limit.
 struct HizParams {
-  u64 src = 0;      // u64[] visibility buffer (from_visibility) or f32[] of mip src_mip
-  u64 pyramid = 0;  // f32[] from hiz_layout(): this view's mips back to back
-  u32 width = 0;    // mip 0's extent, which every mip's extent is derived from
+  u64 src = 0;       // u64[] visibility buffer (from_visibility) or f32[] of mip src_mip
+  u64 pyramid = 0;   // f32[] from hiz_layout(): this view's mips back to back
+  u64 coverage = 0;  // u32[] one per 32 x 32 tile; 0 writes none. Only from_visibility writes it.
+  u32 width = 0;     // mip 0's extent, which every mip's extent is derived from
   u32 height = 0;
   u32 src_mip = 0;     // which mip `src` holds
   u32 src_offset = 0;  // element offset of mip `src_mip` in `pyramid` (hiz_layout's offsets[m])
   u32 levels = 0;      // reductions written: mips src_mip + 1 .. src_mip + levels
   u32 from_visibility = 0;  // 1: src is the u64 visibility buffer and mip src_mip is written too
 };
-static_assert(sizeof(HizParams) == 40);
+static_assert(sizeof(HizParams) == 48);
+
+// Tiles in one row of a `hiz_build.slang` coverage mask over a region `extent` pixels wide: one
+// per workgroup of the from_visibility dispatch, which is what makes the mask free.
+inline u32 hiz_coverage_pitch(u32 extent) noexcept { return (extent + 31) / 32; }
 
 inline constexpr u32 k_cull_workgroup_size = 64;  // numthreads in cluster_cull.slang
 inline constexpr u32 k_hiz_workgroup_size = 16;   // numthreads in hiz_build.slang (16 x 16)

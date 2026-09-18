@@ -264,8 +264,10 @@ class SceneRenderer {
     u32 height = 0;
     u32 hiz_mips = 0;
     u32 hiz_offsets[gfx::k_hiz_max_mips] = {};  // elements into the shared pyramid buffer
-    u32 hiz_dispatches = 0;  // how many workgroup folds the pyramid takes, six mips at a time
-    u32 level_base = 0;      // first of this view's blocks in `hiz_levels`
+    u32 hiz_dispatches = 0;   // how many workgroup folds the pyramid takes, six mips at a time
+    u32 level_base = 0;       // first of this view's blocks in `hiz_levels`
+    u32 coverage_offset = 0;  // this view's per-tile mask, behind every view's pyramid
+    u32 coverage_pitch = 0;   // tiles per row of it
   };
   // Screen-sized resources, recreated on resize.
   struct Targets {

@@ -98,6 +98,9 @@ struct ResolveParams {
   float source_x;      // the rectilinear source's half-width, tan(half the horizontal fov)
   uint sky_is_clear;   // 1: the pass cleared the target to `sky`, so an empty pixel is discarded
   uint pad;
+  uint64_t coverage;    // uint[] per 32x32 tile of this view's region; 0: no mask, read every word
+  uint coverage_pitch;  // tiles per row of that mask
+  uint pad2;
 };
 
 struct ResolvePush {
@@ -352,6 +355,16 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
   }
   const uint2 pixel = uint2(source);
   if (pixel.x >= params->width || pixel.y >= params->height) return sky_pixel(params);
+  // A whole 32x32 tile with nothing in it: the visibility word is not read at all, which is the
+  // fixed cost the discard above could not touch. The mask is the Hi-Z build's by-product and is
+  // exact — the pass that wrote it read every word of the tile — so a tile it calls empty holds
+  // no surface and a tile it calls covered is resolved exactly as before. Zero means no mask.
+  if (params->coverage != 0) {
+    uint* tiles = (uint*)params->coverage;
+    if (tiles[(pixel.y >> 5) * params->coverage_pitch + (pixel.x >> 5)] == 0) {
+      return sky_pixel(params);
+    }
+  }
   uint64_t* visibility = (uint64_t*)params->visibility;
   const uint64_t value = visibility[pixel.y * params->width + pixel.x];
   if (value == 0) return sky_pixel(params);

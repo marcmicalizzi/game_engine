@@ -732,6 +732,89 @@ TEST_CASE(
   }
 }
 
+// Two-pass occlusion culling brings two pieces of machinery into a frame that a frame without it
+// does not have — the Hi-Z pyramid, and the per-32x32-tile coverage mask the last build of it
+// leaves behind for the resolve to skip empty tiles by — and **neither may change one pixel**.
+// The mask is the sharper of the two: it decides, before the visibility word is read at all,
+// that a region of the picture is sky, and a mask that were wrong by one tile would put a
+// 32x32 hole in a surface. So the test is the same scene rendered with occlusion on and off,
+// compared byte for byte in colour *and* in the ids under it, at both layouts — because a
+// surround gives each view its own mask at its own offset and pitch, which is the part of the
+// wiring a single view cannot exercise. Shadows are off because they turn occlusion off with
+// them (one visible list to build the acceleration structures from), and this GPU would
+// otherwise have taken them.
+TEST_CASE("renderer: occlusion culling's Hi-Z and coverage mask change no pixel") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("renderer unavailable here: " << gpu.why);
+    return;
+  }
+  const test::TempDir tmp("engine_renderer_occlusion");
+  const std::filesystem::path dir = tmp.native();
+  const std::string mesh = slashes(dir / "cube.glb");
+  REQUIRE(write_cube_glb(mesh));
+  SceneDesc desc;
+  desc.meshes.push_back(mesh);
+  desc.ddc = slashes(dir / "ddc");
+  // A wall of cubes at two depths, so something is genuinely behind something else and the
+  // picture is a mixture of covered tiles, empty tiles, and tiles that straddle a silhouette.
+  for (i32 z = 0; z < 2; ++z) {
+    for (i32 x = -3; x <= 3; ++x) {
+      for (i32 y = -1; y <= 1; ++y) {
+        SceneInstance instance;
+        instance.transform.position = Vec3{static_cast<f32>(x) * 1.4f, static_cast<f32>(y) * 1.4f,
+                                           static_cast<f32>(z) * -2.2f};
+        desc.instances.push_back(instance);
+      }
+    }
+  }
+
+  // Not a multiple of the 32-pixel tile on either axis, and a surround's thirds are not either.
+  constexpr u32 k_width = 302;
+  constexpr u32 k_height = 154;
+  for (const ViewLayout layout : {ViewLayout::Single, ViewLayout::Surround3}) {
+    RenderSettings on;
+    on.shadows = ShadowMode::Off;
+    on.views = layout;
+    RenderSettings off = on;
+    off.occlusion = false;
+    Rig with;
+    Rig without;
+    REQUIRE_MESSAGE(with.build(gpu.device, desc, on, k_width, k_height), with.error);
+    REQUIRE_MESSAGE(without.build(gpu.device, desc, off, k_width, k_height), without.error);
+    REQUIRE(with.resolved.occlusion);
+    REQUIRE_FALSE(without.resolved.occlusion);
+
+    FrameDesc frame;
+    frame.camera = orbit_camera_at(with.data.center, with.data.radius, 12.0f, 0.4f, k_orbit_pitch);
+    CaptureChannels channels;
+    channels.ids = true;
+    CapturedFrame a;
+    CapturedFrame b;
+    std::string error;
+    REQUIRE_MESSAGE(with.renderer.capture(frame, channels, a, &error), error);
+    REQUIRE_MESSAGE(without.renderer.capture(frame, channels, b, &error), error);
+    REQUIRE(a.covered > k_width * k_height / 16);  // the scene is actually in the picture
+    REQUIRE(a.covered < u64{k_width} * k_height);  // and so is some sky, which is what is skipped
+    u64 colour_mismatch = 0;
+    u64 surface_mismatch = 0;
+    for (u32 p = 0; p < k_width * k_height; ++p) {
+      for (u32 c = 0; c < 4; ++c)
+        if (a.color[p * 4 + c] != b.color[p * 4 + c]) ++colour_mismatch;
+      // The triangle may be the other one of a shared edge where the depths tie, but the
+      // instance and the cluster a pixel names cannot move.
+      for (u32 w = 0; w < 2; ++w)
+        if (a.ids[p * k_id_words + w] != b.ids[p * k_id_words + w]) ++surface_mismatch;
+    }
+    MESSAGE(std::string(view_layout_name(layout))
+            << " " << k_width << "x" << k_height << ": " << a.covered << " covered px, "
+            << colour_mismatch << " colour differences, " << surface_mismatch
+            << " surface differences");
+    CHECK(colour_mismatch == 0);
+    CHECK(surface_mismatch == 0);
+  }
+}
+
 TEST_CASE("renderer: a Panini view at d = 0 is the rectilinear picture") {
   Gpu gpu;
   if (!gpu.ok) {
