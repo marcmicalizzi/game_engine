@@ -6,4 +6,4 @@ engine_module(NAME assets LAYER domain
   SOURCES src/gltf.cpp)
 
 engine_module_tests(NAME assets
-  SOURCES tests/gltf_tests.cpp tests/size_table.cpp)
+  SOURCES tests/gltf_tests.cpp tests/skin_tests.cpp tests/size_table.cpp)
