@@ -247,6 +247,72 @@ makes the timings meaningless even when the results stay green. Note also that t
 out of phase within seconds and are therefore a *weak* probe for this class of bug; starting the test
 binaries simultaneously is the sensitive one, and is what to reach for when a collision is suspected.
 
+## Nothing listens, and how many GPU clients there are
+
+Two numbers to take on a Windows runner before believing anything else it says, because both of
+them have already taken a machine out for a night.
+
+### `tools/ci/check-no-listeners.ps1`
+
+On 2026-09-18 every process on the development machine that created a Vulkan device crashed inside
+the NVIDIA driver, for hours, with binaries that had passed minutes earlier. The cause was pending
+**Windows Firewall prompts**: Tracy's client opens a listening TCP socket at start-up and, by
+default, binds every interface; Windows asks about that once per executable *path*; this tree makes
+paths cheaply — every preset and every agent worktree has its own copy of every test, bench and app;
+and each pending prompt is a `PickerHost.exe FirewallNotificationDialogServer` process **holding a
+GPU context**. Thirty-five of them took the box from 49 GPU client processes to 77, and somewhere
+between those two numbers the driver stopped surviving `vkCreateDevice`. Dismissing the prompts
+fixed it on the spot. [profiling](../subsystems/profiling.md) has the full account and the two
+commands that diagnose it.
+
+Tracy is fixed (`TRACY_ONLY_LOCALHOST`, `TRACY_NO_BROADCAST`) and flecs' REST and HTTP addons are
+compiled out ([ecs](../subsystems/ecs.md)). This script is what says a third one has not appeared:
+
+```powershell
+pwsh tools/ci/check-no-listeners.ps1 -Preset msvc-release [-Build]
+```
+
+It copies every executable the build produced — not the prebuilt third-party tools under `_deps`;
+see below — into a directory with a random name, so **every path is new to the firewall and Windows
+has to decide about it again**, runs each once with harmless arguments (`--help`, a bench's
+`--smoke --quiet --no-pin`, `engine-view --frames 1 --width 64 --height 64`), and counts the prompt
+processes before and after. The count must not grow. It also samples each live process's own
+endpoints (`Get-NetTCPConnection -State Listen`, `Get-NetUDPEndpoint`) and fails on any that is not
+loopback — that half needs no fresh path at all and is what keeps the check meaningful on a machine
+the firewall has already made up its mind about.
+
+A run on the development machine (RTX 5090, `msvc-release`, 2026-09-18): 54 executables from 54
+brand-new paths, **0 prompts before and 0 after**, 49 GPU clients before and after, and the only
+listeners observed were Tracy's, on `127.0.0.1:8086` and `127.0.0.1:8087` — which is the loopback
+setting doing its job and is also the evidence that the check can see a listener when there is one.
+
+**Never answer a prompt with "Allow", and never add, change or remove a firewall rule to make one go
+away.** A prompt our own run raised is dismissed by stopping that `PickerHost.exe` process, which is
+the same as pressing Cancel; the script does that by default and `-KeepPrompts` leaves them up for
+diagnosis, which also leaves the machine in the state that caused the outage. When the count does
+grow, the script names the binary that was running: the fix is in that binary or its dependency —
+bind `127.0.0.1`, or do not listen — and `AGENTS.md`'s convention says so.
+
+`_deps` is excluded because those executables are downloaded, not produced here. `slangc.exe` is run
+by the shader hot reload and is a compiler with no socket; `slangd.exe` is a language server this
+tree never starts, and launching it under this check would be inventing a listener rather than
+finding one.
+
+### GPU client count
+
+```powershell
+nvidia-smi --query-compute-apps=pid --format=csv,noheader   # one line per client; count the lines
+```
+
+This is the number the driver failed at. Forty-nine was healthy on the development machine and
+seventy-seven was not, so somewhere in between is where an NVIDIA driver stops surviving
+`vkCreateDevice`; the exact threshold is unknown and is certainly not a constant across driver
+versions or GPUs. Worth printing beside a GPU run, and worth looking at first when device creation
+starts failing machine-wide rather than in one process — together with
+`Get-CimInstance Win32_Process -Filter "Name='PickerHost.exe'"` for the prompts and the Application
+event log (Id 1000, faulting module `nv*`) for when it began. `check-no-listeners.ps1` prints the
+count before and after its run for exactly this reason.
+
 ## The extreme resolutions
 
 [04 §4.6](../plan/04-renderer.md#46-extreme-displays) ends with a commitment: *no 16-bit screen
