@@ -63,6 +63,21 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
+      # The run's own record: the adapter report, the ctest status, and one
+      # entry per extreme resolution with engine-view's JSON summary, beside
+      # the pictures themselves. Uploaded on failure too, because a run where
+      # one resolution died is exactly the one worth looking at.
+      - name: Upload smoke report and captures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpu-smoke-windows-msvc-release
+          path: |
+            build/msvc-release/gpu-smoke.json
+            build/msvc-release/captures/
+          if-no-files-found: warn
+          retention-days: 30
+
   linux-pascal:
     name: Linux linux-clang-debug (GTX Titan Xp, Pascal, headless)
     runs-on: [self-hosted, linux, gpu]
@@ -86,5 +101,20 @@ jobs:
         with:
           name: lasttest-linux-clang-debug
           path: build/linux-clang-debug/Testing/Temporary/LastTest.log
+          if-no-files-found: warn
+          retention-days: 30
+
+      # Same record on this machine, where every resolution skips: it is
+      # headless, so engine-view exits 3. The file says "skipped" five times
+      # rather than nothing, which is the difference between a machine that
+      # cannot draw and a step that did not run.
+      - name: Upload smoke report and captures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpu-smoke-linux-clang-debug
+          path: |
+            build/linux-clang-debug/gpu-smoke.json
+            build/linux-clang-debug/captures/
           if-no-files-found: warn
           retention-days: 30

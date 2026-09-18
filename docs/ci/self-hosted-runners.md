@@ -28,6 +28,9 @@ checking are worth more than speed there and it is the preset a Linux contributo
 `engine-cli gpu.adapters` — the machine's capability report, in the same schema-typed form the
 protocol serves — and then run the whole CTest suite. The GPU tests decide for themselves what they
 can do, so the suite passes on every machine and the log is what says how much of it meant anything.
+A fourth step then renders the extreme resolutions of [04 §4.6](../plan/04-renderer.md#46-extreme-displays)
+and writes `build/<preset>/gpu-smoke.json`; see [The extreme resolutions](#the-extreme-resolutions)
+below for what it does and what it treats as a skip.
 
 Neither GPU has `VK_EXT_mesh_shader`, so on both machines these skip with a reason:
 
@@ -222,6 +225,52 @@ is the one whose log you can actually read. The two jobs are independent: if one
 its job queues until that runner comes back or the run is cancelled, and the other still reports.
 
 `ci.yml` is untouched by all of this and remains the gate on every push and pull request.
+
+## The extreme resolutions
+
+[04 §4.6](../plan/04-renderer.md#46-extreme-displays) ends with a commitment: *no 16-bit screen
+coordinates anywhere, all screen-space structures sized from the render config at startup, and CI
+renders at 11520×2160, 7680×4320, 1080×3840 portrait, and 5120×1440 every night.* The first two
+halves of that are claims about the code and the third is what checks them. An overflow in a tile
+count, a Hi-Z level count, or a workgroup dispatch does not show up at 1280×720; it shows up as a
+wrong picture or a device loss at 48:9 or at 8K, and nothing smaller finds it.
+
+So both smoke scripts have a fourth step, after ctest: `engine-view --frames 60 --capture` at each
+of those four resolutions, and at plain 3840×2160 as the number the others are read against. The
+pictures go to `build/<preset>/captures/<width>x<height>.png` and each run's stdout and stderr
+beside them; the workflow uploads the lot, with `if: always()`, as `gpu-smoke-<runner>`.
+
+**Each resolution is its own experiment.** It gets its own time budget
+(`-CaptureTimeout` / `--capture-timeout`, 300 s, after which the process is killed) and its own
+recorded result, and the loop never stops early. The reason is that a resolution is exactly the kind
+of thing that hangs or crashes on one machine and not another, and a run that stopped at the first
+one would tell you nothing about the other four — which are the ones you wanted to know about. The
+same goes for the report: it is written whatever happened, so a failed run still says which
+resolutions worked. A resolution where `engine-view` exits **3** — no display, no Vulkan device, no
+mesh shaders, no presentation — is a **skip**, the same treatment its end-to-end test gives it,
+because that is the headless Linux runner every time and the Windows runner whenever it runs as a
+service. Any other nonzero exit, and a run that outlives its budget, is a **failure**, reported
+after all five have been tried; the script's status is then ctest's, or 1 when ctest passed and a
+capture did not. `-SkipCaptures` / `--skip-captures` leaves the step out entirely.
+
+**`build/<preset>/gpu-smoke.json`** is the run's machine-readable record, written beside the ctest
+log: the machine and preset, the timestamp, ctest's status, the `gpu.adapters` report embedded whole
+(or `null` when it did not come back as JSON — it is read with stderr merged in), and one entry per
+resolution with its status, exit code, wall time, capture path, and `engine-view`'s own JSON summary
+— cluster counts, visible pairs, and `gpu_ms` per pass. That last part is the point of running 60
+frames rather than 2: the summary averages the GPU timestamps over the run, so the file carries a
+per-pass cost at each aspect ratio and not only a pass/fail.
+
+**`engine-view` is a windowed application**, which is the wart in this step until `engine-host`
+learns an offscreen mode ([apps](../subsystems/apps.md)). A window manager may hand back a surface
+smaller than 11520×2160 was asked for, so each entry records `requested_width`/`requested_height`
+alongside `rendered_width`/`rendered_height` from the summary and a `clamped` flag when they differ:
+the file never claims a resolution that no rasterizer saw. On the development machine (RTX 5090, an
+11520×2160 surround desktop) all five come back unclamped, including 7680×4320, which is larger than
+the desktop; whether Maxwell and a 2560×1440 display do the same is one of the things the first
+nightly run will say. At 11520×2160 on that machine the frame is 0.86 ms of GPU time — cull 0.030,
+mesh-shader raster 0.033, Hi-Z 0.55, resolve 0.25 — which is the shape to expect: at 24.9 million
+pixels the passes that are per-pixel dominate and the ones that are per-cluster do not move.
 
 ## Security
 
