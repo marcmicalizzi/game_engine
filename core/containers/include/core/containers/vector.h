@@ -104,6 +104,9 @@ class Vector {
   size_type capacity() const noexcept { return capacity_; }
   const Alloc& get_allocator() const noexcept { return alloc_; }
 
+  // **Exactly `n`, always.** `reserve` is the caller saying how much it wants, so it is the one
+  // place the container does not second-guess the number; `resize`, `insert` and `append` grow
+  // geometrically instead (see `resize`).
   void reserve(size_type n) {
     if (n > capacity_) reallocate(n);
   }
@@ -215,7 +218,49 @@ class Vector {
     return data_ + pos;
   }
 
+  // **Grows geometrically when it has to reallocate, and takes the size exactly otherwise.**
+  //
+  // `resize` used to reserve exactly what it was asked for, which makes a pool that appends a
+  // fixed-size run and resizes to the new total reallocate and relocate on *every* call — O(n^2)
+  // in the number of runs. That is not "slow", it is "does not finish": `systems/animation`'s pose
+  // pool spent ten CPU-minutes on 65,536 slots in a debug build before it grew its own capacity by
+  // hand, and 2.0 s in release against 0.42 ms reserved (`containers.grow.*`).
+  //
+  // The policy is `grow_capacity`'s, the same one `push_back` has always used: 1.5x from a floor
+  // of four, **but never less than what was asked for**. That last clause is what keeps the
+  // footprint honest, and it is the reason this is not a memory regression: a `resize(n)` on an
+  // empty or much smaller vector — which is what almost every caller in this tree does, a capture
+  // buffer or a mesh array sized once from a count — still takes exactly `n`, because 1.5x of a
+  // small capacity is below `n`. Slack appears only where the growth is incremental, which is
+  // exactly the case that was quadratic. A caller that wants the exact path anyway has
+  // `resize_exact`; a caller that has finished growing has `shrink_to_fit`.
   void resize(size_type n) {
+    check_type();
+    if (n < size_) {
+      containers::detail::destroy_n(data_ + n, size_ - n);
+    } else {
+      if (n > capacity_) reallocate(grow(n));
+      for (size_type i = size_; i < n; ++i)
+        std::construct_at(data_ + i);
+    }
+    size_ = n;
+  }
+  void resize(size_type n, const T& value) {
+    check_type();
+    if (n < size_) {
+      containers::detail::destroy_n(data_ + n, size_ - n);
+    } else {
+      if (n > capacity_) reallocate(grow(n));
+      for (size_type i = size_; i < n; ++i)
+        std::construct_at(data_ + i, value);
+    }
+    size_ = n;
+  }
+  // `resize` with the capacity taken exactly, for a caller that knows the size is final and wants
+  // no slack — a long-lived array sized from a count it will not revise, where half again would be
+  // real memory. Growing one of these in a loop is the quadratic shape `resize` exists to avoid,
+  // so a caller reaching for this should be sizing once. See the growth note on `resize` above.
+  void resize_exact(size_type n) {
     check_type();
     if (n < size_) {
       containers::detail::destroy_n(data_ + n, size_ - n);
@@ -226,7 +271,7 @@ class Vector {
     }
     size_ = n;
   }
-  void resize(size_type n, const T& value) {
+  void resize_exact(size_type n, const T& value) {
     check_type();
     if (n < size_) {
       containers::detail::destroy_n(data_ + n, size_ - n);
@@ -257,9 +302,12 @@ class Vector {
     for (; first != last; ++first)
       emplace_back(*first);
   }
+  // Geometric for the same reason `resize` is: appending spans in a loop is the other shape that
+  // was quadratic, and appending one span to an empty vector still takes the size exactly.
   void append(std::span<const T> items) {
     check_type();
-    reserve(static_cast<size_type>(size_ + items.size()));
+    const size_type wanted = static_cast<size_type>(size_ + items.size());
+    if (wanted > capacity_) reallocate(grow(wanted));
     for (const T& item : items)
       std::construct_at(data_ + size_++, item);
   }

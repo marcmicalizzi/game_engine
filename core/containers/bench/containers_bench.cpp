@@ -165,3 +165,59 @@ ENGINE_BENCH_ARGS(std_map_iterate, "containers.iterate.std_map", 256, 4096, 6553
   }
   state.set_items(keys.size());
 }
+
+// ---- growing a pool by fixed-size runs ---------------------------------------------------------
+//
+// The shape a capability that owns an arena actually has: a slot is a run of `k_run` elements, and
+// acquiring one appends a run by resizing to the new total. `systems/animation`'s pose pool is this
+// exactly, and it is the reason this benchmark exists — a `resize` that reserves *exactly* what it
+// was asked for reallocates and relocates on every single call, which is O(n^2) in the number of
+// runs and cost ten CPU-minutes in a debug build before the pool grew its own capacity by hand.
+//
+// `resize_exact` is the same loop with the exact path, so the two rows are the policy's before and
+// after and stay comparable after the policy changed.
+namespace {
+
+constexpr u32 k_run = 23;  // a character's joints, which is where the number comes from
+
+}  // namespace
+
+ENGINE_BENCH_ARGS(vector_resize_runs, "containers.grow.vector_resize_runs", 256, 2048, 16384) {
+  const u32 runs = static_cast<u32>(state.arg());
+  while (state.keep_running()) {
+    Vector<u32> pool;
+    for (u32 i = 0; i < runs; ++i)
+      pool.resize((i + 1) * k_run);
+    bench::keep(pool.size());
+  }
+  state.set_items(runs);
+  state.set_bytes(u64{runs} * k_run * sizeof(u32));
+}
+
+ENGINE_BENCH_ARGS(vector_resize_exact_runs, "containers.grow.vector_resize_exact_runs", 256, 2048,
+                  16384) {
+  const u32 runs = static_cast<u32>(state.arg());
+  while (state.keep_running()) {
+    Vector<u32> pool;
+    for (u32 i = 0; i < runs; ++i)
+      pool.resize_exact((i + 1) * k_run);
+    bench::keep(pool.size());
+  }
+  state.set_items(runs);
+  state.set_bytes(u64{runs} * k_run * sizeof(u32));
+}
+
+// What a caller that knows its population pays: one allocation, no slack. The row is here so the
+// two above have a floor to be read against.
+ENGINE_BENCH_ARGS(vector_reserved_runs, "containers.grow.vector_reserved_runs", 256, 2048, 16384) {
+  const u32 runs = static_cast<u32>(state.arg());
+  while (state.keep_running()) {
+    Vector<u32> pool;
+    pool.reserve(runs * k_run);
+    for (u32 i = 0; i < runs; ++i)
+      pool.resize((i + 1) * k_run);
+    bench::keep(pool.size());
+  }
+  state.set_items(runs);
+  state.set_bytes(u64{runs} * k_run * sizeof(u32));
+}

@@ -74,6 +74,78 @@ TEST_CASE("Vector: insert, erase, erase_unordered, resize, assign") {
   CHECK(s.size() == 3);
 }
 
+TEST_CASE("Vector: the growth policy, which is a footprint decision as much as a speed one") {
+  // Half of this is the fix — a pool that appends a run and resizes to the new total must not
+  // relocate on every call — and half is the reason it is not a memory regression: a single
+  // `resize` from an empty or much smaller vector still takes the size exactly, which is what
+  // almost every caller in this tree does.
+  SUBCASE("a first resize takes the size exactly") {
+    Vector<int> v;
+    v.resize(1000);
+    CHECK(v.capacity() == 1000);
+    // And so does one that steps far past what 1.5x of the current capacity would give.
+    v.resize(100000);
+    CHECK(v.capacity() == 100000);
+  }
+
+  SUBCASE("growing by fixed-size runs reallocates a logarithmic number of times") {
+    Vector<int> v;
+    usize reallocations = 0;
+    const int* previous = nullptr;
+    for (u32 run = 0; run < 1000; ++run) {
+      v.resize((run + 1) * 23);
+      if (v.data() != previous) ++reallocations;
+      previous = v.data();
+    }
+    CHECK(v.size() == 23000);
+    // Exact growth would be 1000 of them. 1.5x from a floor of four needs about log(23000)/log(1.5)
+    // steps; the bound is loose on purpose, because the assertion worth making is "not linear".
+    CHECK(reallocations < 40);
+    // Slack is bounded by the policy, not by luck.
+    CHECK(v.capacity() < v.size() * 3 / 2 + 4);
+  }
+
+  SUBCASE("reserve and resize_exact stay exact, and shrink_to_fit gives the slack back") {
+    Vector<int> v;
+    v.reserve(777);
+    CHECK(v.capacity() == 777);
+    v.reserve(1);  // never shrinks
+    CHECK(v.capacity() == 777);
+
+    Vector<int> exact;
+    for (u32 run = 0; run < 8; ++run)
+      exact.resize_exact((run + 1) * 23);
+    CHECK(exact.size() == 184);
+    CHECK(exact.capacity() == 184);
+    exact.resize_exact(300, 5);
+    CHECK(exact.capacity() == 300);
+    CHECK(exact[299] == 5);
+
+    Vector<int> grown;
+    for (u32 run = 0; run < 64; ++run)
+      grown.resize((run + 1) * 23);
+    CHECK(grown.capacity() >= grown.size());
+    grown.shrink_to_fit();
+    CHECK(grown.capacity() == grown.size());
+  }
+
+  SUBCASE("append grows the same way and is exact on the first one") {
+    const Vector<int> chunk(50u, 1);
+    Vector<int> v;
+    v.append(std::span<const int>(chunk.data(), chunk.size()));
+    CHECK(v.capacity() == 50);
+    usize reallocations = 0;
+    const int* previous = v.data();
+    for (u32 i = 0; i < 500; ++i) {
+      v.append(std::span<const int>(chunk.data(), chunk.size()));
+      if (v.data() != previous) ++reallocations;
+      previous = v.data();
+    }
+    CHECK(v.size() == 25050);
+    CHECK(reallocations < 30);
+  }
+}
+
 TEST_CASE("Vector: recursive element type") {
   Node root;
   root.value = 1;

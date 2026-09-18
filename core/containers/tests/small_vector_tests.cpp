@@ -138,6 +138,34 @@ TEST_CASE("SmallVector: move from inline moves elements; move from heap steals t
   CHECK(Tracked::live == 0);
 }
 
+TEST_CASE("SmallVector: resize follows Vector's growth policy") {
+  // A policy the container set documents that one container quietly does not follow is a trap for
+  // whoever changes a `Vector<T>` to a `SmallVector<T, N>` and gets the quadratic back. Same three
+  // promises as `Vector`: a first resize is exact, incremental growth is geometric, `resize_exact`
+  // is the escape.
+  SmallVector<int, 8> once;
+  once.resize(1000);
+  CHECK(once.capacity() == 1000);
+
+  SmallVector<int, 8> runs;
+  usize reallocations = 0;
+  const int* previous = nullptr;
+  for (u32 run = 0; run < 500; ++run) {
+    runs.resize((run + 1) * 23);
+    if (runs.data() != previous) ++reallocations;
+    previous = runs.data();
+  }
+  CHECK(runs.size() == 11500);
+  CHECK(reallocations < 40);  // 500 with an exact resize
+
+  SmallVector<int, 8> exact;
+  exact.resize_exact(37);
+  CHECK(exact.capacity() == 37);
+  exact.resize_exact(74, 3);
+  CHECK(exact.capacity() == 74);
+  CHECK(exact[73] == 3);
+}
+
 TEST_CASE("SmallVector: growth relocates tracked elements exactly") {
   Tracked::live = 0;
   {

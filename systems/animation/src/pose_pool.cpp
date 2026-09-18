@@ -11,22 +11,14 @@ void PosePool::reserve(u32 joints) {
 }
 
 void PosePool::grow(u32 joints) {
-  const u32 first = rotation_.size();
-  const u32 wanted = first + joints;
-  // **Reserve geometrically, then resize.** `Vector::resize` reserves *exactly* what it was asked
-  // for, so a pool that appends one skeleton's worth of joints at a time and resizes to the new
-  // total reallocates and copies on every acquire — O(n^2) in the population, which is not slow so
-  // much as never finished: filling 65,536 slots this way spun for ten CPU-minutes in a debug
-  // build before this line existed. Doubling makes the amortized cost a constant, and a pool that
-  // was told its population up front (`AnimationConfig::reserve_joints`) never gets here twice.
-  if (wanted > rotation_.capacity()) {
-    const u32 doubled = rotation_.capacity() < wanted / 2 ? wanted : rotation_.capacity() * 2;
-    const u32 capacity = doubled > wanted ? doubled : wanted;
-    translation_.reserve(capacity);
-    rotation_.reserve(capacity);
-    scale_.reserve(capacity);
-    matrices_.reserve(capacity);
-  }
+  // `Vector::resize` grows geometrically when it has to reallocate (core/containers), so appending
+  // one skeleton's worth of joints at a time and resizing to the new total is amortized constant
+  // and this function is four calls. It used to reserve a doubled capacity by hand, because
+  // `resize` took the size exactly and filling 65,536 slots that way spun for ten CPU-minutes in a
+  // debug build; that was the right fix in the wrong place, and it is now the container's policy.
+  // A pool told its population up front (`AnimationConfig::reserve_joints`) still reallocates
+  // never.
+  const u32 wanted = rotation_.size() + joints;
   translation_.resize(wanted);
   rotation_.resize(wanted);
   scale_.resize(wanted);

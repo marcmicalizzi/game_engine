@@ -36,9 +36,9 @@ Declared once, in `systems/animation/schemas/animation.schema`, as `@kind(compon
 
 **When the arrays may move.** `acquire` may reallocate, so no view or span from the pool survives one. The capability acquires and releases only from tier transitions, which happen outside the parallel systems phase, so within a tick the arena is stable and every instance writes only its own run — which is also what makes the sampling systems' writes safe at any worker count.
 
-**Growth is geometric, explicitly.** `Vector::resize` reserves *exactly* what it is asked for, so a pool that appends one skeleton's worth of joints and resizes to the new total reallocates and copies on every acquire. That is O(n²) in the population, and it is not "slow" so much as "never finishes": filling 65,536 slots that way spun for ten CPU-minutes in a debug build before `PosePool::grow` doubled instead. `AnimationConfig::reserve_joints` is how a world that knows its population avoids the question.
+**Growth is geometric, and it is the container's job now.** A pool that appends one skeleton's worth of joints and resizes to the new total used to reallocate and copy on every acquire, because `Vector::resize` took the size exactly: O(n²) in the population, and not "slow" so much as "never finishes" — filling 65,536 slots that way spun for ten CPU-minutes in a debug build. `PosePool::grow` worked around it by reserving a doubled capacity by hand; [containers](containers.md) now grows geometrically on `resize`, so the workaround is gone and this is four `resize` calls. `AnimationConfig::reserve_joints` is still how a world that knows its population never reallocates at all.
 
-**Cost.** 40 bytes of pose (`Vec3` + `Quat` + `Vec3`) and 48 bytes of matrix per joint of every slot ever used. A 23-joint character is 2,024 bytes; 10,000 of them are 20 MB, of which 11 MB is the upload buffer. `PosePool::bytes()` reports it.
+**Cost.** 40 bytes of pose (`Vec3` + `Quat` + `Vec3`) and 48 bytes of matrix per joint of every slot ever used. A 23-joint character is 2,024 bytes; 10,000 of them are 20 MB, of which 11 MB is the upload buffer. `PosePool::bytes()` reports the arena **in use**; while the population is still growing the allocator holds up to half again as much, which is what geometric growth costs and what `reserve_joints` avoids.
 
 ## The systems
 

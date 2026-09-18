@@ -216,7 +216,31 @@ class SmallVector {
     return data_ + pos;
   }
 
+  // Geometric when it has to reallocate, exact otherwise — `Vector`'s policy, for the reason it is
+  // `Vector`'s: a policy the container set documents that one container quietly does not follow is
+  // a trap for whoever changes `Vector<T>` to `SmallVector<T, N>` and gets the quadratic back.
   void resize(size_type n) {
+    if (n < size_) {
+      containers::detail::destroy_n(data_ + n, size_ - n);
+    } else {
+      if (n > capacity_) reallocate(grow(n));
+      for (size_type i = size_; i < n; ++i)
+        std::construct_at(data_ + i);
+    }
+    size_ = n;
+  }
+  void resize(size_type n, const T& value) {
+    if (n < size_) {
+      containers::detail::destroy_n(data_ + n, size_ - n);
+    } else {
+      if (n > capacity_) reallocate(grow(n));
+      for (size_type i = size_; i < n; ++i)
+        std::construct_at(data_ + i, value);
+    }
+    size_ = n;
+  }
+  // `resize` with the capacity taken exactly; see `Vector::resize_exact`.
+  void resize_exact(size_type n) {
     if (n < size_) {
       containers::detail::destroy_n(data_ + n, size_ - n);
     } else {
@@ -226,7 +250,7 @@ class SmallVector {
     }
     size_ = n;
   }
-  void resize(size_type n, const T& value) {
+  void resize_exact(size_type n, const T& value) {
     if (n < size_) {
       containers::detail::destroy_n(data_ + n, size_ - n);
     } else {
