@@ -167,7 +167,7 @@ TEST_CASE("clas records: the shader writes the same build records as the CPU") {
   params.clas_addresses = fake_addresses;
   params.instance_count = k_instances;
   params.pair_count = pair_count;
-  params.max_clusters = pair_count;
+  params.views = 1;  // one view: the run is the whole list and its count word is the first
 
   VkShaderModule module = gfx::create_shader_module(device, shaders::k_clas_records_spirv,
                                                     shaders::k_clas_records_spirv_size, &error);

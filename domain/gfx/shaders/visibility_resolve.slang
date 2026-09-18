@@ -60,7 +60,13 @@ struct ResolveLight {
   float4 spot;             // x cos inner, y cos outer, zw unused
 };
 
-// Read through a device address; mirrors gfx::ResolveParams (208 bytes).
+// One resolve per view (docs/plan/04-renderer.md §4.6): the pass runs once for each view of a
+// `renderer::ViewSet` with that view's viewport rectangle, so `SV_Position` is in the *target's*
+// pixels and `view_x`/`view_y` take it back to a view-local pixel of that view's own region of
+// the visibility buffer. A **Panini** view goes one step further: its region holds a wider
+// rectilinear picture, and `panini_x`/`source_x`/`panini_d` map each output pixel back into it.
+//
+// Read through a device address; mirrors gfx::ResolveParams (256 bytes).
 struct ResolveParams {
   float4 sky;     // rgb, shown for empty pixels and used as the hemisphere ambient
   float4 sun;     // xyz normalized direction towards the light, w intensity
@@ -83,7 +89,14 @@ struct ResolveParams {
   uint scene;          // bindless slot of the top-level structure; 0xffffffff for none
   uint shadow_flags;   // bit 0 the sun casts, bit 1 the analytic lights cast
   float shadow_bias;   // world units along the geometric normal, off the surface
-  uint pad;
+  uint view_x;         // this view's rectangle of the color target
+  uint view_y;
+  uint out_width;
+  uint out_height;
+  float panini_d;      // Panini parameter; the resample is off when panini_x is 0
+  float panini_x;      // the picture's half-width in image units
+  float source_x;      // the rectilinear source's half-width, tan(half the horizontal fov)
+  uint2 pad;
 };
 
 struct ResolvePush {
@@ -249,6 +262,30 @@ bool tangent_frame(ResolveParams* params, InstanceDesc instance, uint2 entry, ui
   return true;
 }
 
+// Where an output pixel of a Panini view reads its rectilinear source (docs/plan/04-renderer.md
+// §4.6, experiment E9). The forward map of the Panini projection of parameter d takes a direction
+// at azimuth theta and elevation phi from the view axis to
+//
+//     X = (d + 1) sin(theta) / (d + cos(theta)) = S sin(theta),   S = (d + 1) / (d + cos(theta))
+//     Y = S tan(phi)
+//
+// and the rectilinear source puts the same direction at (tan(theta), tan(phi) / cos(theta)). This
+// inverts the first equation — with k = X / (d + 1) it is sin(theta) - k cos(theta) = k d, whose
+// solution is theta = atan(k) + asin(k d / sqrt(1 + k^2)) — and forward-maps the result. The
+// vertical parameter cancels: the source's normalized y is ndc.y / (S cos(theta)), because the
+// output's half-height and the source's are the same tan(fov_y / 2) at theta = 0 and the ratio of
+// the two vertical scales is all that is left. At d = 0 the whole map is the identity to within
+// the round trip through atan and tan, which is what the d = 0 test measures.
+float2 panini_source_ndc(ResolveParams* params, float2 ndc) {
+  const float d = params->panini_d;
+  const float k = ndc.x * params->panini_x / (d + 1.0);
+  const float root = sqrt(1.0 + k * k);
+  const float theta = atan(k) + asin(clamp(k * d / root, -1.0, 1.0));
+  const float cos_theta = cos(theta);
+  const float s = (d + 1.0) / max(d + cos_theta, 1e-6);
+  return float2(tan(theta) / params->source_x, ndc.y / max(s * cos_theta, 1e-6));
+}
+
 // Is anything between `origin` and a light `t_max` away in direction `direction`? One ray query
 // with the terminate-on-first-hit flag, which is what a shadow ray wants: any hit ends the
 // traversal and no hit shader runs. False without the shadow bit, without a scene, when the light
@@ -279,7 +316,28 @@ bool shadow_ray_blocked(ResolveParams* params, uint bit, float3 origin, float3 d
 [shader("fragment")]
 float4 fs_resolve(FullscreenOut in) : SV_Target {
   ResolveParams* params = (ResolveParams*)g_push.params;
-  const uint2 pixel = uint2(in.position.xy);
+  // SV_Position is in the target's pixels; this view's rectangle starts at (view_x, view_y).
+  // Without a resample the picture's extent *is* the source's, so `out_width` and `out_height` are
+  // read only where they can differ — which is why a caller that draws one rectilinear view fills
+  // neither and gets what it always did.
+  const uint2 out_pixel = uint2(in.position.xy) - uint2(params->view_x, params->view_y);
+  const bool resample = params->panini_x > 0.0;
+  const uint out_width = resample ? params->out_width : params->width;
+  const uint out_height = resample ? params->out_height : params->height;
+  if (out_pixel.x >= out_width || out_pixel.y >= out_height) return params->sky;
+  // Where in this view's visibility region the output pixel reads. Without a resample that is the
+  // pixel's own centre; with one it is wherever the Panini map sends it, which is also the point
+  // the barycentrics below are taken at, so the reconstruction stays sub-pixel accurate.
+  float2 source = float2(out_pixel) + 0.5;
+  if (resample) {
+    const float2 ndc = float2((source.x / float(out_width)) * 2.0 - 1.0,
+                              1.0 - (source.y / float(out_height)) * 2.0);
+    const float2 src_ndc = panini_source_ndc(params, ndc);
+    source = float2((src_ndc.x * 0.5 + 0.5) * float(params->width),
+                    (0.5 - src_ndc.y * 0.5) * float(params->height));
+    if (source.x < 0.0 || source.y < 0.0) return params->sky;
+  }
+  const uint2 pixel = uint2(source);
   if (pixel.x >= params->width || pixel.y >= params->height) return params->sky;
   uint64_t* visibility = (uint64_t*)params->visibility;
   const uint64_t value = visibility[pixel.y * params->width + pixel.x];
@@ -296,7 +354,7 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
   }
   InstanceDesc* instances = (InstanceDesc*)params->instances;
   const InstanceDesc instance = instances[entry.x];
-  const Surface s = reconstruct(params, instance, entry, id, float2(pixel) + 0.5);
+  const Surface s = reconstruct(params, instance, entry, id, source);
   if (params->mode == 4) return float4(s.normal * 0.5 + 0.5, 1.0);
   if (params->mode == 5) return float4(frac(s.uv), 0.0, 1.0);
 

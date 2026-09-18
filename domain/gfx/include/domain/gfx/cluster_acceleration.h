@@ -165,9 +165,10 @@ inline constexpr u64 k_cluster_blas_record_bytes = 16;
 // order its atomics produced. Three small passes sort that out without a CPU round trip:
 //
 //   `records_main`  one thread per visible entry: bucket the entry into its instance's slice of
-//                   `slots` (a pair-indexed scratch array, so slot = instance.first_pair + a
-//                   per-instance atomic) and count the instance's survivors into
-//                   `instance_counts`. Sparse: an instance's slice is as long as its mesh.
+//                   `slots` (a pair-indexed scratch array, so slot = instance.first_pair * views +
+//                   a per-instance atomic) and count the instance's survivors into
+//                   `instance_counts`. Sparse: an instance's slice is as long as its mesh, times
+//                   the number of views whose cuts accumulate into this set.
 //   `ranges_main`   one thread: the prefix sum of `instance_counts` into `instance_first`, the
 //                   total into `record_count`, and one 16-byte bottom-level record per instance
 //                   pointing at that instance's run of CLAS addresses.
@@ -180,17 +181,24 @@ inline constexpr u64 k_cluster_blas_record_bytes = 16;
 // `instance_counts` must be zeroed before `records_main`. A deformed instance's record points at
 // the frame's deformed-vertex pool (`MeshDesc::deform_pool`) rather than `vertices`, and with
 // `instantiate` set the emit pass writes instantiate records naming each cluster's template
-// (`MeshDesc::templates`) instead of build records. Mirrors RecordParams in the shader.
+// (`MeshDesc::templates`) instead of build records.
+//
+// **More than one view** ([04 §4.6](docs/plan/04-renderer.md)): the RT geometry of a
+// `renderer::ViewSet` is the union of the views' cuts under one top-level structure, so
+// `records_main` is dispatched once per view against that view's own run of the visible list and
+// the counts accumulate. `views` is what makes the bucketing fit: every instance's slice of
+// `slots` is `views` times its mesh's cluster count, because in the worst case every view draws
+// every cluster of it. Mirrors RecordParams in the shader.
 // 128 bytes, the largest push block the renderer allows.
 struct ClusterRecordParams {
-  u64 clusters = 0;         // geometry::ClusterDesc[]
-  u64 vertices = 0;         // float3[]: cluster-ordered rest positions
-  u64 indices8 = 0;         // u8[]: pack_cluster_indices of every cluster, in triangle order
-  u64 instances = 0;        // gfx::InstanceDesc[instance_count]
-  u64 meshes = 0;           // gfx::MeshDesc[]: the deformed-vertex pool and the templates
-  u64 visible = 0;          // u32x2[]: the visible list, {instance, cluster} per entry
-  u64 visible_count = 0;    // u32: the cull pass's count word
-  u64 slots = 0;            // u32[pair_count]: visible index per pair slot (records_main out)
+  u64 clusters = 0;       // geometry::ClusterDesc[]
+  u64 vertices = 0;       // float3[]: cluster-ordered rest positions
+  u64 indices8 = 0;       // u8[]: pack_cluster_indices of every cluster, in triangle order
+  u64 instances = 0;      // gfx::InstanceDesc[instance_count]
+  u64 meshes = 0;         // gfx::MeshDesc[]: the deformed-vertex pool and the templates
+  u64 visible = 0;        // u32x2[]: the visible list, {instance, cluster} per entry
+  u64 visible_count = 0;  // u32: the cull pass's count word
+  u64 slots = 0;          // u32[views * pair_count]: visible index per pair slot (records_main out)
   u64 instance_counts = 0;  // u32[instance_count]: survivors per instance (records_main out)
   u64 instance_first = 0;   // u32[instance_count]: dense record base (ranges_main out)
   u64 records = 0;          // build or instantiate records out, the matching stride each
@@ -198,9 +206,13 @@ struct ClusterRecordParams {
   u64 blas_records = 0;     // k_cluster_blas_record_bytes per instance (ranges_main out)
   u64 clas_addresses = 0;   // ClusterSet::addresses.address
   u32 instance_count = 0;
+  // The scene's pair count: `emit_main` covers `views * pair_count` slots, and one visible run's
+  // count is clamped to it. The clamp used to be the CLAS set's capacity, which is the same bound
+  // for one view and the wrong one for several: a run is filled by one atomic over a dispatch of
+  // `pair_count` threads and cannot exceed it, while the set holds `views` runs.
   u32 pair_count = 0;
-  u32 max_clusters = 0;  // the ClusterSet's capacity; the record count is clamped to it
-  u32 instantiate = 0;   // 1: write k_cluster_instantiate_record_bytes records from templates
+  u32 views = 1;        // how many views' cuts accumulate into this set (see above)
+  u32 instantiate = 0;  // 1: write k_cluster_instantiate_record_bytes records from templates
 };
 static_assert(sizeof(ClusterRecordParams) == 128);
 inline constexpr u32 k_cluster_records_workgroup = 64;

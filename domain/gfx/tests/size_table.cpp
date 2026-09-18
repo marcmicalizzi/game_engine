@@ -30,14 +30,22 @@ ENGINE_EXPECT_SIZE(96, 4, gfx::InstanceDesc);
 ENGINE_EXPECT_SIZE(128, 8, gfx::ClusterDrawParams);
 
 // 128, not 120: the emit pass reads the MeshDesc array to find a deformed instance's pool and a
-// cluster's template, and `instantiate` replaced the pad word.
+// cluster's template, and `instantiate` replaced the pad word. Still 128 with multi-view: `views`
+// took over the word that held the CLAS set's capacity, because a visible run's count is bounded
+// by `pair_count` anyway (docs/plan/04-renderer.md §4.6).
 ENGINE_EXPECT_SIZE(128, 8, gfx::ClusterRecordParams);
 
 ENGINE_EXPECT_SIZE(400, 8, gfx::CullParams);
 
 ENGINE_EXPECT_SIZE(40, 8, gfx::HizParams);
 
-ENGINE_EXPECT_SIZE(224, 8, gfx::ResolveParams);
+// 256, not 224: one resolve runs per view of a `renderer::ViewSet`, so the block carries that
+// view's rectangle of the color target — the origin it takes off SV_Position and the extent it
+// bounds against, four words where one pad word used to be — and the three Panini parameters that
+// resample a wide rectilinear source into the picture (docs/plan/04-renderer.md §4.6). Every one
+// of them is zero for a single rectilinear view, and the shader's arithmetic then reduces to what
+// it was, which is why the single-view pictures are byte-identical.
+ENGINE_EXPECT_SIZE(256, 8, gfx::ResolveParams);
 
 ENGINE_EXPECT_SIZE(64, 4, gfx::ResolveMaterial);
 

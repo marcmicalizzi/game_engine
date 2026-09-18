@@ -12,9 +12,19 @@
 // `shadow_flags` is shadowed by a ray query against the top-level structure in bindless slot
 // `scene` — the one the frame built from the same visible list the rasterizer drew from, so the
 // shadows are cast by exactly the geometry in the picture.
+//
+// **One resolve per view.** A `renderer::ViewSet` (docs/plan/04-renderer.md §4.6) puts N views in
+// one color target, so the pass runs once per view with that view's viewport rectangle and that
+// view's region of the visibility buffer. `view_x`/`view_y` are the rectangle's origin, which the
+// shader subtracts from `SV_Position` to get back to a view-local pixel, `out_width`/`out_height`
+// are the rectangle's extent, and `width`/`height` stay the extent of the visibility region the
+// ids were rasterized into — the same number for every view that draws rectilinearly, and a wider
+// one for a **Panini** view, whose rectilinear source is oversampled and resampled here.
 
 #include <core/base/types.h>
 #include <core/math/math.h>
+
+#include <cmath>
 
 namespace engine::gfx {
 
@@ -68,7 +78,25 @@ enum class ResolveMode : u32 {
   Uvs = 5,
 };
 
-// Mirrors ResolveParams in visibility_resolve.slang. 224 bytes.
+// The Panini projection of parameter d (docs/plan/04-renderer.md §4.6, experiment E9), as the
+// resolve resamples it. A direction at azimuth `theta` from the view axis lands at image
+// abscissa `x = (d + 1) * sin(theta) / (d + cos(theta))`; d = 0 is `tan(theta)`, the ordinary
+// rectilinear projection, and larger d compresses the periphery instead of stretching it.
+inline f32 panini_abscissa(f32 d, f32 theta) noexcept {
+  return (d + 1.0f) * std::sin(theta) / (d + std::cos(theta));
+}
+
+// How much wider the rectilinear source has to be than the Panini picture it is resampled into,
+// for the same horizontal field of view and no magnification anywhere. Both projections have unit
+// angular scale on the view axis (d(x)/d(theta) = 1 at theta = 0), and rectilinear stretches the
+// periphery harder than Panini does, so the worst case is the *centre* and the factor is simply
+// the ratio of the two half-widths: `tan(theta_max) / panini_abscissa(d, theta_max)`.
+inline f32 panini_oversample(f32 d, f32 half_fov_x) noexcept {
+  const f32 panini = panini_abscissa(d, half_fov_x);
+  return panini > 0.0f ? std::tan(half_fov_x) / panini : 1.0f;
+}
+
+// Mirrors ResolveParams in visibility_resolve.slang. 256 bytes.
 struct ResolveParams {
   Vec4 sky{};     // rgb shown for empty pixels and used as the hemisphere ambient
   Vec4 sun{};     // xyz normalized direction towards the light, w intensity
@@ -91,9 +119,24 @@ struct ResolveParams {
   u32 scene = k_no_scene;  // bindless slot of the top-level structure the shadow rays trace
   u32 shadow_flags = 0;    // k_shadow_sun | k_shadow_lights; 0 traces nothing
   f32 shadow_bias = 0.0f;  // world units along the geometric normal, off the surface
-  u32 pad = 0;             // keeps the block 16-byte aligned
+  // This view's rectangle of the color target: the origin the shader takes off SV_Position, and
+  // the extent of the picture. A rectilinear view's picture is exactly as big as the visibility
+  // region it resolves, so the shader reads `out_width`/`out_height` **only when the view
+  // resamples** and a caller that draws one rectilinear view leaves all four zero, as every caller
+  // before multi-view did.
+  u32 view_x = 0;
+  u32 view_y = 0;
+  u32 out_width = 0;
+  u32 out_height = 0;
+  // Panini resampling, off when `panini_x` is 0. `panini_x` is the picture's half-width in image
+  // units, `source_x` the rectilinear source's (`tan` of half the horizontal field of view), and
+  // the two are equal only at d = 0. The vertical scale needs no parameter: it cancels.
+  f32 panini_d = 0.0f;
+  f32 panini_x = 0.0f;
+  f32 source_x = 0.0f;
+  u32 pad[2] = {};  // keeps the block 16-byte aligned
 };
-static_assert(sizeof(ResolveParams) == 224);
+static_assert(sizeof(ResolveParams) == 256);
 static_assert(sizeof(ResolveParams) % 16 == 0, "the block is read as float4 rows on the GPU");
 
 }  // namespace engine::gfx

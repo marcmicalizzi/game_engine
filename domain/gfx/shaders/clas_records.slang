@@ -7,9 +7,9 @@
 // produced. Three passes sort that out (gfx::ClusterRecordParams documents the buffers):
 //
 //   records_main  one thread per visible entry, bucketing it into its instance's slice of
-//                 `slots` (slot = instance.first_pair + a per-instance atomic) and counting the
-//                 instance's survivors. The slices are as long as the instances' meshes, so the
-//                 result is sparse.
+//                 `slots` (slot = instance.first_pair * views + a per-instance atomic) and
+//                 counting the instance's survivors. The slices are as long as the instances'
+//                 meshes times the view count, so the result is sparse.
 //   ranges_main   one thread: the prefix sum of the per-instance counts, the total record count
 //                 the CLAS build reads from the device, and one 16-byte bottom-level record per
 //                 instance over that instance's run of CLAS addresses.
@@ -24,6 +24,15 @@
 // `instantiate` set, emit_main writes 32-byte instantiate records naming each cluster's prebuilt
 // template (MeshDesc::templates) and this frame's positions for it, which is what cluster
 // acceleration structure templates exist for.
+//
+// With more than one view (§4.6) the three passes build the **union** of the views' cuts under
+// one top-level structure. The visible list is laid out run-major — run r of view v starts at
+// `(r * views + v) * pair_count` — so the *first* run of every view is one contiguous range at
+// the front of the list, which is exactly the range the ray tracing chain consumes: one
+// records_main dispatch covers `views * pair_count` entries, reads each view's own count word out
+// of its indirect argument block, and `views` widens every instance's slice of `slots` so that a
+// cluster drawn by every view has a slot in each. A record's base geometry index stays the entry's
+// visible index, unique across the frame because the runs share one list.
 
 #include "scene.slang"
 
@@ -67,18 +76,18 @@ struct RecordParams {
   uint64_t indices8;         // uint8[3 * triangles]: packed cluster indices
   uint64_t instances;        // InstanceDesc[instance_count]
   uint64_t meshes;           // MeshDesc[]: the deformed-vertex pool and the cluster templates
-  uint64_t visible;          // uint2[]: the cull pass's visible list
-  uint64_t visible_count;    // uint: how many (the cull pass's count word)
-  uint64_t slots;            // uint[pair_count]: visible index per pair slot
+  uint64_t visible;        // uint2[]: the cull pass's visible list, from its first run
+  uint64_t visible_count;  // uint: view 0's count word; view v's is k_draw_args_bytes further on
+  uint64_t slots;            // uint[views * pair_count]: visible index per pair slot
   uint64_t instance_counts;  // uint[instance_count]: survivors per instance (zeroed first)
   uint64_t instance_first;   // uint[instance_count]: dense record base
-  uint64_t records;          // ClusterRecord[max_clusters] or InstantiateRecord[max_clusters] out
+  uint64_t records;          // ClusterRecord[] or InstantiateRecord[] out, views * pair_count long
   uint64_t record_count;     // uint out
   uint64_t blas_records;     // BlasRecord[instance_count] out
   uint64_t clas_addresses;   // uint64_t[]: where the CLAS build writes each address
   uint instance_count;
-  uint pair_count;
-  uint max_clusters;
+  uint pair_count;   // the scene's; one run's count cannot exceed it
+  uint views;        // how many views' runs accumulate into this set
   uint instantiate;  // 1: write InstantiateRecord from MeshDesc::templates instead
 };
 
@@ -86,22 +95,27 @@ struct RecordParams {
 
 static const uint k_index_type_8bit = 1;
 static const uint k_geometry_opaque = 4;
+static const uint k_draw_args_bytes = 16;  // gfx::k_draw_args_bytes: one block per view
 
-// Bucket each visible entry into its instance's slice of the pair-indexed scratch array.
+// Bucket each visible entry into its instance's slice of the pair-indexed scratch array. The
+// dispatch covers every view's first run at once, because those runs are contiguous.
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void records_main(uint3 thread_id : SV_DispatchThreadID) {
   const uint index = thread_id.x;
-  uint* visible_count = (uint*)g_params.visible_count;
-  const uint count = min(*visible_count, g_params.max_clusters);
-  if (index >= count) return;
+  if (index >= g_params.views * g_params.pair_count) return;
+  const uint view = index / g_params.pair_count;
+  const uint local_index = index - view * g_params.pair_count;
+  uint* visible_count = (uint*)(g_params.visible_count + uint64_t(view) * k_draw_args_bytes);
+  // The run is filled by one atomic over a dispatch of pair_count threads, so that is its bound.
+  if (local_index >= min(*visible_count, g_params.pair_count)) return;
   uint2* visible = (uint2*)g_params.visible;
   const uint instance_index = visible[index].x;
   InstanceDesc* instances = (InstanceDesc*)g_params.instances;
   Atomic<uint>* counts = (Atomic<uint>*)g_params.instance_counts;
   const uint local = counts[instance_index].add(1);
   uint* slots = (uint*)g_params.slots;
-  slots[instances[instance_index].first_pair + local] = index;
+  slots[instances[instance_index].first_pair * g_params.views + local] = index;
 }
 
 // The prefix sum over the instances, the total, and one bottom-level record per instance.
@@ -144,11 +158,14 @@ uint64_t cluster_vertex_address(MeshDesc mesh, InstanceDesc instance, ClusterDes
 [numthreads(64, 1, 1)]
 void emit_main(uint3 thread_id : SV_DispatchThreadID) {
   const uint slot = thread_id.x;
-  if (slot >= g_params.pair_count) return;
+  if (slot >= g_params.views * g_params.pair_count) return;
   InstanceDesc* instances = (InstanceDesc*)g_params.instances;
-  const uint instance_index = instance_of_pair(instances, g_params.instance_count, slot);
+  // An instance's slice is `views` times its mesh's cluster count, so dividing the slot by the
+  // view count lands back in the pair space the prefix sum `first_pair` is in.
+  const uint instance_index =
+      instance_of_pair(instances, g_params.instance_count, slot / g_params.views);
   const InstanceDesc instance = instances[instance_index];
-  const uint local = slot - instance.first_pair;
+  const uint local = slot - instance.first_pair * g_params.views;
   uint* counts = (uint*)g_params.instance_counts;
   if (local >= counts[instance_index]) return;  // this instance drew fewer clusters than it has
   uint* slots = (uint*)g_params.slots;

@@ -34,6 +34,14 @@
 // survivors into x. For occlusion culling, `hiz` points at a pyramid laid out by hiz_layout(),
 // `pass` is 1 then 2 within a frame, and `flags`/`prev_flags` ping-pong between frames; both are
 // indexed by pair, so both are `pair_count` words long.
+//
+// **With more than one view** (a `renderer::ViewSet`, docs/plan/04-renderer.md §4.6) the pass runs
+// once per view with that view's frustum, Hi-Z and LOD threshold, and every one of these buffers
+// carries a slice per view: the visible list is laid out **run-major** — run r of view v starts at
+// entry `(r * views + v) * pair_count` — the argument blocks are `k_draw_args_bytes` apart, and
+// `flags`/`prev_flags` point at the view's own `pair_count` words. Run-major is what makes the
+// first run of every view one contiguous range, which is the range the ray tracing chain builds
+// its union from; for a single view the layout is the same three runs it has always been.
 
 #include <core/base/types.h>
 #include <core/math/math.h>
@@ -41,6 +49,13 @@
 namespace engine::gfx {
 
 inline constexpr u32 k_hiz_max_mips = 16;  // enough for 32768 x 32768
+
+// One indirect argument block, and the stride between two views' blocks in one buffer. Four u32
+// covers both shapes the cull pass fills — `{groups, 1, 1}` for `vkCmdDrawMeshTasksIndirectEXT`
+// and `{vertexCount, instanceCount, 0, 0}` for `vkCmdDrawIndirect` — and keeps every view's block
+// 16-byte aligned. `clas_records.slang` mirrors the number, because it reads each view's count
+// word out of one buffer (docs/plan/04-renderer.md §4.6).
+inline constexpr u32 k_draw_args_bytes = 16;
 
 // Mirrors CullParams in cluster_cull.slang. 376 bytes.
 struct CullParams {
