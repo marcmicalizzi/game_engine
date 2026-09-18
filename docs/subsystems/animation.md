@@ -215,7 +215,7 @@ This is a capability: it was added without editing `core/`, `foundation/`, the r
 | LOD policy | `lod_plan()`, `lod_tier()`, `AnimationSystem::hooks()` | done, over `sim::TierParams` |
 | Determinism | `hashed` (the playhead and the pose); the matrices are `derived` | done |
 | Zero cost when unused | no linked code, and no instances | done |
-| Tests and size table | `tests/animation_tests.cpp`, `tests/lod_tests.cpp`, `tests/size_table.cpp` | 16 cases |
+| Tests and size table | `tests/animation_tests.cpp`, `tests/lod_tests.cpp`, `tests/size_table.cpp` | 18 cases |
 | Bench | `bench/animation_bench.cpp` | 10^4 instances by tier mix |
 | Removal proof | `ENGINE_WITH_ANIMATION`, off in the minimal build | works |
 
