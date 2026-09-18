@@ -36,6 +36,21 @@ $allowedLicenses = @('CC0-1.0', 'CC-BY-4.0')
 
 # Model directory -> variant directory to fetch. glTF-Binary is one file; glTF is a .gltf,
 # a .bin, and loose textures. Draco and KTX variants are not readable by domain/assets.
+#
+# The last two are **skinned and animated**, which is what `engine-view --mesh <file> --animate`
+# needs: a skin the importer turns into an anim::Skeleton, a per-vertex geometry::SkinBinding
+# stream, and at least one clip. Fox carries three cycles (Survey, Walk, Run) on a 24-joint rig
+# and RiggedFigure one on a 19-joint humanoid, which is also the case that exercises
+# anim::map_joints' standard-skeleton mapping. Both pass the allow list — Fox is CC0 for the
+# model with CC-BY-4.0 on the rigging, the animation and the glTF conversion, RiggedFigure is
+# CC-BY-4.0 throughout — and the attribution CC-BY asks for is in content/README.md as well as in
+# the generated LICENSES.md, because the generated one is git-ignored with the assets.
+#
+# CesiumMan is the obvious third and is deliberately **not** here: its metadata carries a second
+# legal entry, `LicenseRef-LegalMark-Cesium`, for the logo on its shirt. That is a trademark
+# notice rather than a copyright licence, but the allow list below is a policy and not a
+# judgement call, so a model whose metadata names a licence this project has not vetted is not
+# fetched. Widening the list is a decision to take deliberately, in a commit that says why.
 $models = [ordered]@{
   'Suzanne'      = 'glTF'
   'Avocado'      = 'glTF-Binary'
@@ -44,6 +59,8 @@ $models = [ordered]@{
   'Lantern'      = 'glTF-Binary'
   'SciFiHelmet'  = 'glTF'
   'FlightHelmet' = 'glTF'
+  'Fox'          = 'glTF-Binary'
+  'RiggedFigure' = 'glTF-Binary'
 }
 
 $headers = @{ 'User-Agent' = 'engine-fetch-samples' }
