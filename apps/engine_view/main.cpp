@@ -63,6 +63,7 @@ constexpr const char* k_usage =
     "                   [--mesh <file.gltf|file.glb|file.clusters>] [--scene <file.json>]\n"
     "                   [--grid-instances <n>] [--no-cache] [--ddc <dir>] [--no-lights]\n"
     "                   [--deform none|identity|wave|lattice] [--deform-amplitude <a>] [--rt-templates]\n"
+    "                   [--stream] [--page-budget <MiB>] [--upload-budget <KiB>]\n"
     "                   [--shadows off|rt] [--views single|surround3|panini] [--side-yaw <deg>]\n"
     "                   [--panini-d <d>] [--peripheral-lod <mult>]\n"
     "                   [--animate [clip]] [--anim-speed <x>]\n"
@@ -104,6 +105,15 @@ constexpr const char* k_usage =
     "                   (experiment E25): identity writes the rest pose, wave displaces along the\n"
     "                   vertex normal, lattice runs a 3x3x3 cage over the mesh's bounds\n"
     "  --deform-amplitude <a>  displacement as a fraction of the mesh's bounds (default 0.02)\n"
+    "  --stream         geometry pages stream on demand (04 §4.3 step 3, §4.9): the GPU holds a\n"
+    "                   budgeted subset of the scene's cluster pages, the cull pass draws what is\n"
+    "                   resident and asks for what it is missing, and the picture converges. The\n"
+    "                   summary's \"streaming\" block says what it cost. Refuses --deform, a\n"
+    "                   skinned scene, and --rt-templates, each with a reason on stderr\n"
+    "  --page-budget <MiB>    the residency budget over the scene's page bytes; 0 (the default) is\n"
+    "                   every page, which is streaming with nothing to evict. Implies --stream\n"
+    "  --upload-budget <KiB>  page payload one frame may copy into the pool (default 256 KiB); a\n"
+    "                   value under the largest page is raised to it. Implies --stream\n"
     "  --rt-templates   --raster rt: build one cluster template per cluster at load and\n"
     "                   instantiate the cut's templates each frame instead of rebuilding the CLAS\n"
     "  --animate [clip] play a skinned glTF's animation: the skin becomes a skeleton, a clip is\n"
@@ -520,6 +530,28 @@ JsonValue views_summary(const renderer::ViewSet& views, const renderer::Stats& s
   return out;
 }
 
+// The geometry residency block (04 §4.9). Always present, so a script never has to test for it:
+// `pages_total` is 0 for a run that did not stream, which is what says the rest means nothing.
+JsonValue streaming_summary(const renderer::StreamStats& s) {
+  JsonValue out = JsonValue::object();
+  out.set("pages_total", s.pages_total);
+  out.set("pages_resident", s.pages_resident);
+  out.set("pages_pinned", s.pages_pinned);
+  out.set("page_slots", s.page_slots);
+  out.set("pending", s.pending);
+  out.set("requests", s.requests);
+  out.set("uploads", s.uploads);
+  out.set("uploads_bytes", s.uploads_bytes);
+  out.set("evictions", s.evictions);
+  out.set("stale", s.stale);
+  out.set("overflows", s.overflows);
+  out.set("frames_to_converge", s.frames_to_converge);
+  out.set("resident_bytes", s.resident_bytes);
+  out.set("page_bytes", s.page_bytes);
+  out.set("budget_bytes", s.budget_bytes);
+  return out;
+}
+
 // Progress on stderr, because stdout is the summary line a script reads. One line rewritten in
 // place when stderr is a console, one line per batch when it is a file or a pipe.
 bool reference_progress(u32 done, u32 total, void*) {
@@ -575,6 +607,9 @@ int run_reference(const Options& options) {
     desc.grid_instances = options.grid_instances;
     desc.ddc = options.ddc;
     desc.cache = options.cache;
+    // Loading keeps the page table only when someone is going to stream from it: the layout itself
+    // is what the derived-data cache key promises and runs either way.
+    desc.stream = options.settings.stream;
     if (!options.scene.empty()) {
       if (!renderer::read_scene_file(options.scene, desc, error)) {
         exit_code = fail("scene", error);
@@ -796,6 +831,22 @@ int main(int argc, char** argv) {
       options.finest = true;
     } else if (a == "--rt-templates") {
       options.settings.rt_templates = true;
+    } else if (a == "--stream") {
+      options.settings.stream = true;
+    } else if (a == "--page-budget" || a == "--upload-budget") {
+      if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
+      u32 n = 0;
+      if (!parse_u32(value, n)) {
+        std::fprintf(stderr, "engine-view: %.*s expects a number\n", static_cast<int>(a.size()),
+                     a.data());
+        return k_exit_usage;
+      }
+      // Mebibytes for the residency budget and kibibytes for the per-frame upload, because that is
+      // the scale each one is thought about at: a budget is a fraction of a scene and an upload is
+      // a fraction of a frame.
+      options.settings.stream = true;
+      if (a == "--page-budget") options.settings.page_budget_bytes = u64{n} * 1024 * 1024;
+      if (a == "--upload-budget") options.settings.upload_budget_bytes = n * 1024;
     } else if (a == "--raster") {
       if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
       if (!renderer::parse_raster_mode(value, options.settings.raster)) {
@@ -977,6 +1028,8 @@ int main(int argc, char** argv) {
   u64 template_bytes = 0;
   u64 rt_bytes = 0;
   std::string views_text = "{}";
+  std::string streaming_text =
+      write_json(streaming_summary(renderer::StreamStats{}), JsonWriteOptions{.pretty = false});
   u32 skinned_instances = 0;
   u32 joint_matrices = 0;
   std::string clip_text;
@@ -1007,6 +1060,7 @@ int main(int argc, char** argv) {
     desc.grid_instances = options.grid_instances;
     desc.ddc = options.ddc;
     desc.cache = options.cache;
+    desc.stream = options.settings.stream;  // keep the page table for the residency manager
     if (!options.scene.empty()) {
       if (!renderer::read_scene_file(options.scene, desc, error)) {
         exit_code = fail("scene", error);
@@ -1244,6 +1298,8 @@ int main(int argc, char** argv) {
     if (view_renderer.valid()) {
       views_text = write_json(views_summary(view_renderer.views(), view_renderer.stats()),
                               JsonWriteOptions{.pretty = false});
+      streaming_text = write_json(streaming_summary(view_renderer.streamer().stats()),
+                                  JsonWriteOptions{.pretty = false});
     }
     machine_end = bench::sample_machine_state(bench::k_sample_window_ms);
   } while (false);
@@ -1277,7 +1333,7 @@ int main(int argc, char** argv) {
         "\"visible_max\":%u,"
         "\"deform\":\"%s\",\"deform_pool_bytes\":%llu,\"rt_templates\":%s,"
         "\"skinned_instances\":%u,\"joints\":%u,\"clip\":\"%s\","
-        "\"template_bytes\":%llu,\"rt_bytes\":%llu,\"views\":%s,"
+        "\"template_bytes\":%llu,\"rt_bytes\":%llu,\"views\":%s,\"streaming\":%s,"
         "\"gpu_memory\":{\"budget_mib\":%llu,\"used_mib\":%llu,"
         "\"device_local_total_mib\":%llu},\"machine_state\":%s,"
         "\"gpu_ms\":{\"cull\":%.4f,\"hw\":%.4f,\"sw\":%.4f,\"hiz\":%.4f,\"resolve\":%.4f,"
@@ -1297,7 +1353,7 @@ int main(int argc, char** argv) {
         static_cast<unsigned long long>(deform_pool_bytes),
         resolved.settings.rt_templates ? "true" : "false", skinned_instances, joint_matrices,
         clip_text.c_str(), static_cast<unsigned long long>(template_bytes),
-        static_cast<unsigned long long>(rt_bytes), views_text.c_str(),
+        static_cast<unsigned long long>(rt_bytes), views_text.c_str(), streaming_text.c_str(),
         static_cast<unsigned long long>(stats.gpu_memory.budget_mib),
         static_cast<unsigned long long>(stats.gpu_memory.used_mib),
         static_cast<unsigned long long>(stats.gpu_memory.device_local_total_mib),

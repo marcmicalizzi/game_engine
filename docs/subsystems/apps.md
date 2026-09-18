@@ -180,6 +180,26 @@ Renumbering a mesh has to be invisible to the renderer, and it is: `engine-view 
 
 The two sample meshes, in `msvc-debug`. The **FlightHelmet** (2,348 clusters, 10 levels) is 25 pages at 91% fill, 2.85 MB of page bytes, one of them pinned, and the whole outer half of the fly-in — 50 radii down to 10, 7 to 38 clusters, 319 to 2,618 triangles — draws out of that one page with nothing requested. Streaming starts at 8.5 radii (2 pages), reaching 5 pages at 5.3, 7 at 3.7, 11 at 2.1 and 17 at half a radius, where the full cut is 960 clusters and 80,422 triangles. Under the 747 KB budget the viewer settles at 6 pages and 687 KB, draws 281 of those 960 clusters and still has 8 pages outstanding, which is what a budget a third of the working set looks like: it lags, it does not crack. **Suzanne** (88 clusters, 7 levels, 113,528 page bytes) is a single page, so its sweep requests nothing at any distance and its cut runs from 3 clusters and 245 triangles at 50 radii to all 42 leaves and 3,936 triangles from 3.7 radii in — and its budget is not honoured, because that one page holds the root and a mesh without its root draws nothing at all.
 
+## Streaming pages at run time: `--stream`
+
+`engine-view --stream` turns the page table the content build wrote into a **GPU residency budget** ([04 §4.9](../plan/04-renderer.md#49-streaming-and-residency), [renderer](renderer.md#geometry-streaming-the-gpu-half-of-pages-and-residency)): the device holds a subset of the scene's cluster pages, the cull pass draws whatever is resident and writes the pages it could not refine into to a feedback buffer, the CPU reads that back one frame slot later and streams them in, and the picture converges. Two more flags size it, and both imply `--stream`:
+
+| Flag | What it sets |
+|---|---|
+| `--stream` | residency on, with the whole page table as the budget: streaming with nothing to evict |
+| `--page-budget <MiB>` | the residency manager's budget over the scene's page bytes |
+| `--upload-budget <KiB>` | page payload one frame may copy into the pool; 256 KiB by default, raised to the largest page when a smaller value is given |
+
+The JSON summary gains a **`streaming`** object, present on every run so that a script never has to test for it — `pages_total` is 0 when nothing streamed:
+
+```json
+"streaming":{"pages_total":58,"pages_resident":21,"pages_pinned":4,"page_slots":24,"pending":0,
+ "requests":412,"uploads":37,"uploads_bytes":3211264,"evictions":16,"stale":2,"overflows":0,
+ "frames_to_converge":9,"resident_bytes":760320,"page_bytes":2851000,"budget_bytes":712750}
+```
+
+Three of the flags a run might combine with it are **refused rather than half-applied**, each with a line on stderr under the `renderer` category: `--deform` and a skinned scene (the deformed-vertex pool is indexed by the scene-wide vertex index and a streamed scene's vertices are at slot-relative ones), `--rt-templates` (a template is built at load from every cluster's positions, which a streamed scene does not hold), and `--no-cull` (the drawing rule's fallback *is* the LOD cut). A mesh with no page table turns streaming off outright.
+
 ## The renderer is a library, and both engine-view and engine-host draw with it
 
 Everything that draws moved out of `apps/engine_view/main.cpp` and into [renderer](renderer.md) (layer `systems`): scene loading through the derived-data cache, the GPU-resident scene, the cull and LOD passes, the four rasterizers, the deformed-vertex pool, the acceleration structure chain, the material resolve, the Hi-Z, the GPU timers, and the capture. The reason was not the file's length. It was that **nothing but engine-view could render**, so the protocol had no `capture` and no `benchmark` and the Phase 1 exit criterion could not be met ([10 §10.2](../plan/10-roadmap-risks.md#102-phases)).
