@@ -53,7 +53,8 @@ constexpr const char* k_usage =
     "                   [--mesh <file.gltf|file.glb|file.clusters>] [--scene <file.json>]\n"
     "                   [--grid-instances <n>] [--no-cache] [--ddc <dir>] [--no-lights]\n"
     "                   [--deform none|identity|wave|lattice] [--deform-amplitude <a>] [--rt-templates]\n"
-    "                   [--shadows off|rt]\n"
+    "                   [--shadows off|rt] [--views single|surround3|panini] [--side-yaw <deg>]\n"
+    "                   [--panini-d <d>] [--peripheral-lod <mult>]\n"
     "\n"
     "  --frames <n>     render n frames, then exit (0: until the window closes)\n"
     "  --capture <png>  write the last frame as a PNG (implies --frames 60 when unset)\n"
@@ -93,6 +94,16 @@ constexpr const char* k_usage =
     "  --deform-amplitude <a>  displacement as a fraction of the mesh's bounds (default 0.02)\n"
     "  --rt-templates   --raster rt: build one cluster template per cluster at load and\n"
     "                   instantiate the cut's templates each frame instead of rebuilding the CLAS\n"
+    "  --views <how>    single (default: one rectilinear view over the whole target); surround3:\n"
+    "                   three views with per-monitor off-axis frusta, the target divided in three;\n"
+    "                   panini: one view rendered rectilinear into an oversampled source and\n"
+    "                   resampled with a Panini projection (experiment E9, plan 04 §4.6)\n"
+    "  --side-yaw <d>   surround3: degrees the side monitors are turned inward (default 0, flat)\n"
+    "  --panini-d <d>   panini: 0 is the ordinary rectilinear picture, 1 the classic Pannini\n"
+    "                   (default 1); larger d compresses the periphery harder and needs a wider\n"
+    "                   source, which the summary reports as the oversampling factor\n"
+    "  --peripheral-lod <m>  multiply the LOD pixel threshold outside the attention region by m:\n"
+    "                   surround3's side monitors, which a surround player reads peripherally\n"
     "  --log <spec>     log levels, e.g. \"info,gfx=debug\" (stderr shows warnings and up)\n"
     "  --shaders <m>    shader manifest (default: <exe dir>/../shaders/manifest.json when present);\n"
     "                   shaders recompile and reload when their .slang sources change\n"
@@ -150,6 +161,63 @@ bool parse_f32(const std::string& text, f32& out) {
   return true;
 }
 
+// The same, for the flags whose zero is meaningful: a flat surround has no yaw, and Panini at
+// d = 0 is the rectilinear picture, which is the comparison the d parameter is measured against.
+bool parse_f32_zero_ok(const std::string& text, f32& out) {
+  char* end = nullptr;
+  const double v = std::strtod(text.c_str(), &end);
+  if (end == text.c_str() || *end != '\0' || !(v >= 0.0) || v > 1.0e6) return false;
+  out = static_cast<f32>(v);
+  return true;
+}
+
+// The multi-view block of the summary line: what the layout is, and what each view cost. Built
+// rather than formatted because it is an array of objects, and built while the renderer is still
+// alive because the summary prints after it is gone. A single-view run still carries it, with one
+// entry whose numbers are the totals beside it, so a script never has to special-case the shape.
+JsonValue views_summary(const renderer::ViewSet& views, const renderer::Stats& stats) {
+  JsonValue out = JsonValue::object();
+  out.set("layout", renderer::view_layout_name(views.layout()));
+  out.set("count", views.size());
+  out.set("side_yaw_deg", static_cast<f64>(degrees(views.desc().surround.side_yaw)));
+  out.set("panini_d", static_cast<f64>(views.resample() ? views.panini_d() : 0.0f));
+  out.set("peripheral_lod", static_cast<f64>(views.desc().peripheral_lod));
+  out.set("oversample", static_cast<f64>(views.oversample()));
+  out.set("source_width", views.source_width());
+  out.set("source_pixels", views.source_pixels());
+  JsonValue list = JsonValue::array();
+  const f64 timed = stats.timed();
+  for (u32 v = 0; v < views.size(); ++v) {
+    const renderer::ViewStats& s = stats.views[v];
+    JsonValue entry = JsonValue::object();
+    entry.set("x", s.x);
+    entry.set("y", s.y);
+    entry.set("width", s.width);
+    entry.set("height", s.height);
+    entry.set("source_width", s.source_width);
+    entry.set("source_height", s.source_height);
+    entry.set("lod_scale", static_cast<f64>(s.lod_scale));
+    entry.set("shading_rate", s.shading_rate);
+    entry.set("visible_hw", s.visible_hw);
+    entry.set("visible_pass2", s.visible_pass2);
+    entry.set("visible_sw", s.visible_sw);
+    entry.set("visible_pairs", s.visible_pairs());
+    JsonValue ms = JsonValue::object();
+    ms.set("cull", s.gpu_cull / timed);
+    ms.set("hw", s.gpu_hw / timed);
+    ms.set("sw", s.gpu_sw / timed);
+    ms.set("hiz", s.gpu_hiz / timed);
+    ms.set("resolve", s.gpu_resolve / timed);
+    ms.set("deform", s.gpu_deform / timed);
+    ms.set("trace", s.gpu_trace / timed);
+    ms.set("total", s.gpu_sum() / timed);
+    entry.set("gpu_ms", std::move(ms));
+    list.push_back(std::move(entry));
+  }
+  out.set("per_view", std::move(list));
+  return out;
+}
+
 int fail(const char* what, const std::string& error) {
   std::fprintf(stderr, "engine-view: %s: %s\n", what, error.c_str());
   return k_exit_error;
@@ -198,6 +266,23 @@ int main(int argc, char** argv) {
        : a == "--sw-px" ? options.settings.sw_px
        : a == "--orbit" ? options.orbit
                         : options.settings.deform_amplitude) = px;
+    } else if (a == "--side-yaw" || a == "--panini-d" || a == "--peripheral-lod") {
+      if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
+      f32 v = 0.0f;
+      if (!parse_f32_zero_ok(value, v)) {
+        std::fprintf(stderr, "engine-view: %.*s expects a number that is not negative\n",
+                     static_cast<int>(a.size()), a.data());
+        return k_exit_usage;
+      }
+      if (a == "--side-yaw") options.settings.side_yaw = radians(v);
+      if (a == "--panini-d") options.settings.panini_d = v;
+      if (a == "--peripheral-lod") options.settings.peripheral_lod = v;
+    } else if (a == "--views") {
+      if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
+      if (!renderer::parse_view_layout(value, options.settings.views)) {
+        std::fprintf(stderr, "engine-view: --views expects single, surround3, or panini\n");
+        return k_exit_usage;
+      }
     } else if (a == "--deform") {
       if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
       if (!renderer::parse_deform_mode(value, options.settings.deform,
@@ -265,6 +350,14 @@ int main(int argc, char** argv) {
   }
   if (options.grid_instances > 64) {
     std::fprintf(stderr, "engine-view: --grid-instances must be at most 64\n");
+    return k_exit_usage;
+  }
+  if (options.settings.side_yaw > radians(80.0f)) {
+    std::fprintf(stderr, "engine-view: --side-yaw must be under 80 degrees\n");
+    return k_exit_usage;
+  }
+  if (options.settings.peripheral_lod < 1.0f) {
+    std::fprintf(stderr, "engine-view: --peripheral-lod must be at least 1\n");
     return k_exit_usage;
   }
   if (!options.scene.empty() && (!options.mesh.empty() || options.grid_instances != 0)) {
@@ -337,6 +430,8 @@ int main(int argc, char** argv) {
   // Read out of the GPU scene while it is alive, because the summary prints after it is gone.
   u64 deform_pool_bytes = 0;
   u64 template_bytes = 0;
+  u64 rt_bytes = 0;
+  std::string views_text = "{}";
 
   // Everything below unwinds through this block so the destruction order stays in one place.
   do {
@@ -391,6 +486,7 @@ int main(int argc, char** argv) {
     }
     deform_pool_bytes = scene.deform_pool_bytes();
     template_bytes = scene.template_bytes();
+    rt_bytes = scene.rt_bytes();
     renderer::SceneRenderer::Desc renderer_desc;
     renderer_desc.width = swapchain.extent().width;
     renderer_desc.height = swapchain.extent().height;
@@ -398,6 +494,14 @@ int main(int argc, char** argv) {
     renderer_desc.frames_in_flight = k_frames_in_flight;
     renderer_desc.offscreen = false;  // the swapchain image is the target
     renderer_desc.shader_manifest = options.shaders;
+    // The layout the flags asked for, over the swapchain. The monitor geometry of a surround is
+    // derived from the target (a third of its width each, no bezel correction) unless a caller of
+    // the module fills `Surround3` in; engine-view exposes the yaw, which is the parameter a
+    // player actually has to set.
+    renderer_desc.views.layout = resolved.settings.views;
+    renderer_desc.views.surround.side_yaw = resolved.settings.side_yaw;
+    renderer_desc.views.panini_d = resolved.settings.panini_d;
+    renderer_desc.views.peripheral_lod = resolved.settings.peripheral_lod;
     if (!view_renderer.create(device, scene, resolved, renderer_desc, &error)) {
       exit_code = fail("renderer", error);
       break;
@@ -420,6 +524,8 @@ int main(int argc, char** argv) {
                     log::field("pairs", scene.pair_count()),
                     log::field("deform", renderer::deform_name(resolved.settings)),
                     log::field("rt_templates", resolved.settings.rt_templates),
+                    log::field("views", renderer::view_layout_name(resolved.settings.views)),
+                    log::field("view_count", view_renderer.views().size()),
                     log::field("width", extent_width), log::field("height", extent_height));
 
     // What else the machine is doing, before the first frame and after the last: the summary is
@@ -542,6 +648,10 @@ int main(int argc, char** argv) {
     finished_ns = time::monotonic_ns();
     if (view_renderer.valid()) view_renderer.wait_idle();
     view_renderer.sample_gpu_memory();
+    if (view_renderer.valid()) {
+      views_text = write_json(views_summary(view_renderer.views(), view_renderer.stats()),
+                              JsonWriteOptions{.pretty = false});
+    }
     machine_end = bench::sample_machine_state(bench::k_sample_window_ms);
   } while (false);
 
@@ -573,7 +683,7 @@ int main(int argc, char** argv) {
         "\"visible_pairs_last\":%u,\"visible_min\":%u,"
         "\"visible_max\":%u,"
         "\"deform\":\"%s\",\"deform_pool_bytes\":%llu,\"rt_templates\":%s,"
-        "\"template_bytes\":%llu,"
+        "\"template_bytes\":%llu,\"rt_bytes\":%llu,\"views\":%s,"
         "\"gpu_memory\":{\"budget_mib\":%llu,\"used_mib\":%llu,"
         "\"device_local_total_mib\":%llu},\"machine_state\":%s,"
         "\"gpu_ms\":{\"cull\":%.4f,\"hw\":%.4f,\"sw\":%.4f,\"hiz\":%.4f,\"resolve\":%.4f,"
@@ -592,8 +702,8 @@ int main(int argc, char** argv) {
         renderer::deform_name(resolved.settings),
         static_cast<unsigned long long>(deform_pool_bytes),
         resolved.settings.rt_templates ? "true" : "false",
-        static_cast<unsigned long long>(template_bytes),
-        static_cast<unsigned long long>(stats.gpu_memory.budget_mib),
+        static_cast<unsigned long long>(template_bytes), static_cast<unsigned long long>(rt_bytes),
+        views_text.c_str(), static_cast<unsigned long long>(stats.gpu_memory.budget_mib),
         static_cast<unsigned long long>(stats.gpu_memory.used_mib),
         static_cast<unsigned long long>(stats.gpu_memory.device_local_total_mib),
         machine_text.c_str(), stats.cull_ms(), stats.hw_ms(), stats.sw_ms(), stats.hiz_ms(),

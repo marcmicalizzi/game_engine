@@ -71,6 +71,22 @@ bool read_settings(const protocol::RenderSettings& in, renderer::RenderSettings&
     error = invalid("deform must be none, identity, wave, or lattice; got '" + in.deform + "'");
     return false;
   }
+  if (!renderer::parse_view_layout(in.views, out.views)) {
+    error = invalid("views must be single, surround3, or panini; got '" + in.views + "'");
+    return false;
+  }
+  if (in.side_yaw_deg < 0.0f || in.side_yaw_deg > 80.0f) {
+    error = invalid("side_yaw_deg must be within 0..80");
+    return false;
+  }
+  if (in.peripheral_lod < 1.0f) {
+    error = invalid("peripheral_lod must be at least 1");
+    return false;
+  }
+  if (in.panini_d < 0.0f) {
+    error = invalid("panini_d must not be negative");
+    return false;
+  }
   out.lod_px = in.lod_px;
   out.sw_px = in.sw_px;
   out.cull = in.cull;
@@ -79,10 +95,16 @@ bool read_settings(const protocol::RenderSettings& in, renderer::RenderSettings&
   out.lights = in.lights;
   out.deform_amplitude = in.deform_amplitude;
   out.rt_templates = in.rt_templates;
+  out.side_yaw = radians(in.side_yaw_deg);
+  out.panini_d = in.panini_d;
+  out.peripheral_lod = in.peripheral_lod;
   return true;
 }
 
-void fill_stats(const renderer::Stats& in, protocol::RenderStats& out) {
+// The statistics of a run, including the per-view breakdown. The view set is passed beside them
+// because the layout's name and the Panini oversampling factor live there rather than in `Stats`.
+void fill_stats(const renderer::Stats& in, const renderer::ViewSet& views,
+                protocol::RenderStats& out) {
   out.frames = in.frames;
   out.visible_hw = in.visible_hw;
   out.visible_pass2 = in.visible_pass2;
@@ -105,6 +127,35 @@ void fill_stats(const renderer::Stats& in, protocol::RenderStats& out) {
   out.gpu_memory.budget_mib = in.gpu_memory.budget_mib;
   out.gpu_memory.used_mib = in.gpu_memory.used_mib;
   out.gpu_memory.device_local_total_mib = in.gpu_memory.device_local_total_mib;
+  out.view_layout = renderer::view_layout_name(views.layout());
+  out.oversample = views.oversample();
+  const f64 timed = in.timed();
+  out.views.clear();
+  for (u32 v = 0; v < in.view_count; ++v) {
+    const renderer::ViewStats& s = in.views[v];
+    protocol::RenderViewStats entry;
+    entry.x = s.x;
+    entry.y = s.y;
+    entry.width = s.width;
+    entry.height = s.height;
+    entry.source_width = s.source_width;
+    entry.source_height = s.source_height;
+    entry.lod_scale = s.lod_scale;
+    entry.shading_rate = s.shading_rate;
+    entry.visible_hw = s.visible_hw;
+    entry.visible_pass2 = s.visible_pass2;
+    entry.visible_sw = s.visible_sw;
+    entry.visible_pairs = s.visible_pairs();
+    entry.cull_ms = s.gpu_cull / timed;
+    entry.hw_ms = s.gpu_hw / timed;
+    entry.sw_ms = s.gpu_sw / timed;
+    entry.hiz_ms = s.gpu_hiz / timed;
+    entry.resolve_ms = s.gpu_resolve / timed;
+    entry.deform_ms = s.gpu_deform / timed;
+    entry.trace_ms = s.gpu_trace / timed;
+    entry.total_ms = s.gpu_sum() / timed;
+    out.views.push_back(entry);
+  }
 }
 
 // One spelling of the machine state for both hosts (foundation/bench/machine_state.h): the
@@ -308,7 +359,7 @@ bool render_capture(protocol::Context& ctx, const protocol::RenderCaptureParams&
   }
   if (!files.depth.empty()) out.files.insert_or_assign("depth", file_uri(files.depth));
   if (!files.normals.empty()) out.files.insert_or_assign("normals", file_uri(files.normals));
-  fill_stats(scene->view->stats(), out.stats);
+  fill_stats(scene->view->stats(), scene->view->views(), out.stats);
   return true;
 }
 
@@ -373,7 +424,7 @@ bool render_benchmark(protocol::Context& ctx, const protocol::RenderBenchmarkPar
   out.height = scene->view->height();
   out.raster = renderer::raster_name(scene->resolved.settings.raster);
   out.shadows = scene->resolved.shadows ? "rt" : "off";
-  fill_stats(scene->view->stats(), out.stats);
+  fill_stats(scene->view->stats(), scene->view->views(), out.stats);
   out.machine_state.start = machine_state_of(machine_start);
   out.machine_state.end = machine_state_of(machine_end);
   // stdout belongs to the protocol, so the caveat goes to stderr — the same line and the same
@@ -539,6 +590,13 @@ bool RenderHost::ensure_renderer(Scene& scene, const renderer::RenderSettings& s
   desc.width = width;
   desc.height = height;
   desc.offscreen = true;
+  // The layout the settings asked for, over the offscreen target. It must be the one
+  // `resolve_settings` saw just above, because the scene's per-frame working set is sized by the
+  // view count; both come from the same `RenderSettings`, which is what keeps them in step.
+  desc.views.layout = scene.resolved.settings.views;
+  desc.views.surround.side_yaw = scene.resolved.settings.side_yaw;
+  desc.views.panini_d = scene.resolved.settings.panini_d;
+  desc.views.peripheral_lod = scene.resolved.settings.peripheral_lod;
   if (!view->create(*dev, *gpu, scene.resolved, desc, &error)) return false;
   scene.gpu = std::move(gpu);
   scene.view = std::move(view);
