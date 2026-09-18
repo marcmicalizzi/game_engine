@@ -1,0 +1,63 @@
+#pragma once
+
+// Jolt's jobs, running on the engine's job system (core/jobs, performance pool).
+//
+// Jolt asks for four things: allocate a job, free a job, queue one or many, and say how many
+// ways it may split its work. Barriers — the part with the interesting ordering rules — are
+// JobSystemWithBarrier's, which is written for exactly this case: the barrier owns the
+// completion semaphore, executes ready jobs on the waiting thread, and is the only place that
+// blocks. So the adapter never blocks a pool worker: a queued job runs once and returns, and
+// the thread that called `World::step` is the one that waits.
+//
+// The alternative was Jolt's own JobSystemThreadPool, which would put a second set of threads
+// beside the engine's pinned pools and let the OS decide which of the two gets a P-core
+// (plan 11 §11.5). This adapter is about 60 lines; the thread pool would have cost more than
+// that in scheduling pathologies.
+
+#include "jolt.h"
+
+#include <core/base/types.h>
+
+#include <Jolt/Core/FixedSizeFreeList.h>
+#include <Jolt/Core/JobSystemWithBarrier.h>
+
+#include <atomic>
+
+namespace engine::jobs {
+class JobSystem;
+}
+
+namespace engine::physics {
+
+class JoltJobAdapter final : public JPH::JobSystemWithBarrier {
+ public:
+  // `system` may be null, in which case queued jobs run inline on the calling thread (Jolt's
+  // own JobSystemSingleThreaded does the same thing) and concurrency is 1.
+  // `concurrency` is how many ways Jolt may split its work, not a thread count: it is what
+  // changes between the 1-worker and 8-worker runs of the determinism test.
+  JoltJobAdapter(jobs::JobSystem* system, u32 concurrency, u32 max_jobs, u32 max_barriers);
+  ~JoltJobAdapter() override;
+
+  int GetMaxConcurrency() const override { return concurrency_; }
+  JPH::JobHandle CreateJob(const char* name, JPH::ColorArg color, const JobFunction& function,
+                           JPH::uint32 dependencies) override;
+
+  u64 queued_count() const noexcept { return queued_.load(std::memory_order_relaxed); }
+  u64 worker_count() const noexcept { return on_workers_.load(std::memory_order_relaxed); }
+
+ protected:
+  void QueueJob(Job* job) override;
+  void QueueJobs(Job** job_array, JPH::uint count) override;
+  void FreeJob(Job* job) override;
+
+ private:
+  static void run_job(void* data);
+
+  jobs::JobSystem* system_ = nullptr;
+  int concurrency_ = 1;
+  JPH::FixedSizeFreeList<Job> jobs_;
+  std::atomic<u64> queued_{0};
+  std::atomic<u64> on_workers_{0};
+};
+
+}  // namespace engine::physics
