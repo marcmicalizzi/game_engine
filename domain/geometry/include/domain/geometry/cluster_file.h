@@ -29,11 +29,13 @@
 // `ClusterFileData` in memory: that is the identity a content-addressed cache stores the built
 // mesh under, and the reader checks it on load.
 
+#include <core/base/macros.h>
 #include <core/base/types.h>
 #include <core/containers/vector.h>
 #include <core/math/math.h>
 #include <domain/geometry/cluster_lod.h>
 #include <domain/geometry/cluster_pages.h>
+#include <foundation/io/vfs.h>
 
 #include <span>
 #include <string>
@@ -103,6 +105,9 @@ enum class ClusterSection : u32 {
   Images = 21,
   ImageBytes = 22,
 };
+
+// One past the highest kind this build knows, which is how wide a by-kind table has to be.
+inline constexpr u32 k_cluster_section_kinds = static_cast<u32>(ClusterSection::ImageBytes) + 1;
 
 // Names the kinds this build knows, "unknown" for anything else; for diagnostics and for
 // `engine-content info`.
@@ -286,6 +291,74 @@ struct ClusterImageSummary {
   u64 bytes = 0;         // what the distinct blobs take
 };
 ClusterImageSummary summarize_cluster_images(const ClusterFileData& data);
+
+// ---- the container as a random-access file (docs/plan/04-renderer.md §4.9) --------------------
+//
+// `read_cluster_file` answers "give me this mesh" and costs the whole file in host memory.
+// Streaming needs the other half of that question: the small **always-resident** tables now, and
+// the big per-page streams left on disk to be fetched a page at a time. This is that reader.
+//
+// What makes it possible is the format itself: a section is an array of one fixed-size element at
+// a 16-byte aligned offset, and `build_cluster_pages` has already reordered the vertex,
+// attribute, quantized and triangle streams so that **a page's slice of each is one contiguous
+// run** ("Pages and streaming" in docs/subsystems/geometry.md). So a page's payload is three or
+// four ranged reads of one file and not a gather, which is why `range()` is all a streamer needs
+// on top of `io::FileHandle`.
+//
+// **What `open` does not check, and why.** The header, the section table, and every section's
+// extent are validated exactly as a full read validates them, so nothing `range()` reports can
+// fall outside the file. The header's **content hash is not** checked, because it covers every
+// byte after the header and checking it means reading the file — which is the cost this reader
+// exists to avoid. `header_hash()` hands the stored value to a caller that wants to compare it
+// against a full read it made for other reasons, which is what the renderer does: its load reads
+// the container once, hash and all, and opens this beside it to go on fetching pages after the
+// merged streams have been released.
+//
+// Filling `resident` reads only the resident sections, by range. One of them is not small: the
+// embedded image payload is the whole of a GLB's textures, and it is here because a container is
+// a complete answer to "draw this mesh" and the textures are uploaded whole. That stops being
+// true when the derived-data cache grows texture derivatives ([07 §7.3]).
+class ClusterFileReader {
+ public:
+  ClusterFileReader() noexcept = default;
+  ~ClusterFileReader() = default;
+  ENGINE_NON_COPYABLE(ClusterFileReader);
+  ClusterFileReader(ClusterFileReader&&) noexcept = default;
+  ClusterFileReader& operator=(ClusterFileReader&&) noexcept = default;
+
+  // Opens the container and reads its header and section table. `resident`, when given, is
+  // replaced with everything **but** the paged streams: the cluster and LOD descriptors, the
+  // level counts, the scalars and the 16-bit grid, the page table, the per-cluster material map,
+  // the materials, the image paths, records and strings, the source path and the source identity.
+  // `mesh.vertices`, `mesh.quantized`, `mesh.attributes`, `mesh.triangles`, `mesh.vertex_source`
+  // and `mesh.skin` come back **empty** however long they are in the file; `range()` is how to
+  // reach them. Returns false with `error` and leaves the reader closed.
+  bool open(std::string_view path, ClusterFileData* resident = nullptr,
+            std::string* error = nullptr);
+  void close() noexcept;
+  bool valid() const noexcept { return file_.valid(); }
+
+  const io::FileHandle& file() const noexcept { return file_; }
+  const std::string& path() const noexcept { return file_.path(); }
+  u64 header_hash() const noexcept { return content_hash_; }
+  // How many elements of `kind` the container holds; zero for a kind it does not carry, which is
+  // what an older container's page table or image records are.
+  u64 element_count(ClusterSection kind) const noexcept;
+
+  // The byte range of elements [first, first + count) of `kind`, for `io::FileHandle::read_at`.
+  // False — leaving the outputs zero — when the container has no such section, when its elements
+  // are not `element_size` bytes, or when the run runs past the section's end, so a caller may
+  // ask about a section an older container does not carry and get an answer rather than a fault.
+  // A `count` of zero is true with zero bytes: an empty run is a read a caller can skip.
+  bool range(ClusterSection kind, u32 element_size, u64 first, u64 count, u64& offset,
+             u64& bytes) const noexcept;
+
+ private:
+  io::FileHandle file_;
+  u64 content_hash_ = 0;
+  Vector<ClusterFileSection> sections_;        // as the file lists them, validated
+  u32 by_kind_[k_cluster_section_kinds] = {};  // index into `sections_` plus one; 0 is absent
+};
 
 // Just the `SourceHash` section of a container, without rebuilding the mesh from it: the header,
 // the section table, and the content hash are checked exactly as a full read checks them, and

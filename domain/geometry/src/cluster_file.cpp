@@ -724,6 +724,204 @@ bool read_cluster_file_memory(std::span<const u8> bytes, ClusterFileData& out, s
   return true;
 }
 
+// ---- the container as a random-access file -----------------------------------------------------
+
+namespace {
+
+// What travels with a streamed scene and is never itself paged. The image payload is the one
+// large member and is here for the reason the header states: a container is a complete answer to
+// "draw this mesh", and textures are uploaded whole.
+constexpr ClusterSection k_resident_kinds[] = {
+    ClusterSection::Clusters,    ClusterSection::Lod,         ClusterSection::LevelClusterCounts,
+    ClusterSection::Scalars,     ClusterSection::Pages,       ClusterSection::PageChildren,
+    ClusterSection::PageScalars, ClusterSection::SkinScalars, ClusterSection::ClusterMaterial,
+    ClusterSection::Materials,   ClusterSection::ImagePaths,  ClusterSection::Strings,
+    ClusterSection::Images,      ClusterSection::ImageBytes,  ClusterSection::SourcePath,
+    ClusterSection::SourceHash,
+};
+
+// The per-page streams, which a resident read leaves on disk. They are still *listed*, with zero
+// elements, in the container the resident read hands the decoder — because "present and empty"
+// and "absent" mean different things to it: an absent `Quantized` section means "requantize this
+// mesh", which on an empty mesh would throw the 16-bit grid away, and an absent `Vertices`
+// section is a file it refuses outright.
+constexpr ClusterSection k_paged_kinds[] = {
+    ClusterSection::Vertices,     ClusterSection::Attributes, ClusterSection::Triangles,
+    ClusterSection::VertexSource, ClusterSection::Quantized,  ClusterSection::Skin,
+};
+
+bool read_exact(const io::FileHandle& file, u64 offset, void* dst, u64 bytes, const char* what,
+                std::string* error) {
+  u64 read = 0;
+  const io::Status status = file.read_at(offset, dst, bytes, read);
+  if (status != io::Status::Ok) {
+    return fail(error, std::string("cannot read the cluster file's ") + what + ": " +
+                           io::status_name(status));
+  }
+  if (read != bytes) {
+    return fail(error, std::string("cluster file is truncated: its ") + what + " wanted " +
+                           std::to_string(bytes) + " bytes at " + std::to_string(offset) +
+                           " and the file gave " + std::to_string(read));
+  }
+  return true;
+}
+
+}  // namespace
+
+void ClusterFileReader::close() noexcept {
+  file_.close();
+  content_hash_ = 0;
+  sections_.clear();
+  for (u32& index : by_kind_)
+    index = 0;
+}
+
+u64 ClusterFileReader::element_count(ClusterSection kind) const noexcept {
+  const u32 index = static_cast<u32>(kind);
+  if (index >= k_cluster_section_kinds || by_kind_[index] == 0) return 0;
+  return sections_[by_kind_[index] - 1].element_count;
+}
+
+bool ClusterFileReader::range(ClusterSection kind, u32 element_size, u64 first, u64 count,
+                              u64& offset, u64& bytes) const noexcept {
+  offset = 0;
+  bytes = 0;
+  const u32 index = static_cast<u32>(kind);
+  if (index >= k_cluster_section_kinds || by_kind_[index] == 0) return false;
+  const ClusterFileSection& section = sections_[by_kind_[index] - 1];
+  if (section.element_size != element_size) return false;
+  if (first > section.element_count || count > section.element_count - first) return false;
+  offset = section.offset + first * element_size;
+  bytes = count * element_size;
+  return true;
+}
+
+bool ClusterFileReader::open(std::string_view path, ClusterFileData* resident, std::string* error) {
+  close();
+  if (resident != nullptr) *resident = ClusterFileData{};
+  const io::Status status = file_.open(path);
+  if (status != io::Status::Ok) {
+    close();
+    return fail(error,
+                "cannot open cluster file '" + std::string(path) + "': " + io::status_name(status));
+  }
+
+  ClusterFileHeader header;
+  if (!read_exact(file_, 0, &header, k_header_bytes, "header", error)) {
+    close();
+    return false;
+  }
+  if (std::memcmp(header.magic, "CLST", 4) != 0) {
+    close();
+    return fail(error, "not a cluster file: the magic is not \"CLST\"");
+  }
+  if (header.version != k_cluster_file_version) {
+    close();
+    return fail(error, "unsupported cluster file version " + std::to_string(header.version) +
+                           ": this build reads version " + std::to_string(k_cluster_file_version));
+  }
+  if (header.total_bytes < k_header_bytes || file_.size() < header.total_bytes) {
+    close();
+    return fail(error, "cluster file is truncated: " + std::to_string(file_.size()) +
+                           " bytes, the header says " + std::to_string(header.total_bytes));
+  }
+  const u64 table_end = k_header_bytes + k_record_bytes * u64{header.section_count};
+  if (table_end > header.total_bytes) {
+    close();
+    return fail(error, "cluster file is truncated: the table of " +
+                           std::to_string(header.section_count) + " sections does not fit");
+  }
+  sections_.resize(header.section_count);
+  if (header.section_count != 0 &&
+      !read_exact(file_, k_header_bytes, sections_.data(), table_end - k_header_bytes,
+                  "section table", error)) {
+    close();
+    return false;
+  }
+  // Structure before contents, exactly as a full read checks it, so that nothing `range` reports
+  // can fall outside the file. What is *not* checked is the payload hash; see the header.
+  for (const ClusterFileSection& section : sections_) {
+    if (section.element_count > 0xffffffffull) {
+      close();
+      return fail(error, "cluster file section " + section_label(section.kind) + " holds " +
+                             std::to_string(section.element_count) +
+                             " elements, more than this build reads");
+    }
+    const u64 span_bytes = u64{section.element_size} * section.element_count;
+    if (section.offset < k_header_bytes || section.offset > header.total_bytes ||
+        span_bytes > header.total_bytes - section.offset) {
+      close();
+      return fail(error, "cluster file section " + section_label(section.kind) +
+                             " extends past the end of the file");
+    }
+  }
+  content_hash_ = header.content_hash;
+  for (u32 i = 0; i < sections_.size(); ++i) {
+    const u32 kind = sections_[i].kind;
+    if (kind == 0 || kind >= k_cluster_section_kinds) continue;  // an unknown kind is skipped
+    if (by_kind_[kind] == 0) by_kind_[kind] = i + 1;
+  }
+  if (resident == nullptr) return true;
+
+  // The resident sections, decoded by **rewriting them as a container of their own** and handing
+  // that to `read_cluster_file_memory`. Copying the decode instead would be a second reader of
+  // one format — two sets of checks, two sets of messages, and a drift nobody would notice until
+  // a container loaded one way and not the other — so the only thing written twice here is the
+  // twelve lines of layout that `encode` already knows how to do.
+  constexpr u64 k_max_emitted = sizeof(k_resident_kinds) / sizeof(k_resident_kinds[0]) +
+                                sizeof(k_paged_kinds) / sizeof(k_paged_kinds[0]);
+  Vector<ClusterFileSection> emitted;
+  u64 at = k_header_bytes + k_record_bytes * k_max_emitted;
+  for (const ClusterSection kind : k_resident_kinds) {
+    const u32 index = static_cast<u32>(kind);
+    if (by_kind_[index] == 0) continue;
+    ClusterFileSection record = sections_[by_kind_[index] - 1];
+    at = align_up(at);
+    record.offset = at;
+    at += u64{record.element_size} * record.element_count;
+    emitted.push_back(record);
+  }
+  for (const ClusterSection kind : k_paged_kinds) {
+    const u32 index = static_cast<u32>(kind);
+    if (by_kind_[index] == 0) continue;
+    ClusterFileSection record = sections_[by_kind_[index] - 1];
+    record.element_count = 0;
+    at = align_up(at);
+    record.offset = at;
+    emitted.push_back(record);
+  }
+  // The table is sized for every kind and filled with the ones this file has, so the payloads
+  // start where the loop above assumed; the unused records are trimmed by rewriting the count.
+  std::string bytes;
+  bytes.assign(static_cast<usize>(at), '\0');
+  auto* raw = reinterpret_cast<u8*>(bytes.data());
+  u32 out_index = 0;
+  for (const ClusterFileSection& record : emitted) {
+    std::memcpy(raw + k_header_bytes + k_record_bytes * out_index, &record, k_record_bytes);
+    ++out_index;
+    if (record.element_count == 0) continue;
+    const u32 index = static_cast<u32>(record.kind);
+    const ClusterFileSection& source = sections_[by_kind_[index] - 1];
+    if (!read_exact(file_, source.offset, raw + record.offset,
+                    u64{record.element_size} * record.element_count,
+                    cluster_section_name(record.kind), error)) {
+      close();
+      return false;
+    }
+  }
+  ClusterFileHeader out_header;
+  out_header.section_count = emitted.size();
+  out_header.total_bytes = at;
+  out_header.content_hash =
+      hash_bytes(raw + k_header_bytes, static_cast<usize>(at - k_header_bytes));
+  std::memcpy(raw, &out_header, k_header_bytes);
+  if (!read_cluster_file_memory(std::span<const u8>(raw, bytes.size()), *resident, error)) {
+    close();
+    return false;
+  }
+  return true;
+}
+
 u64 cluster_cache_key(u64 source_hash, const ClusterLodOptions& options, bool weld,
                       u32 page_bytes) noexcept {
   u64 key = hash_combine(source_hash, k_cluster_cache_version);

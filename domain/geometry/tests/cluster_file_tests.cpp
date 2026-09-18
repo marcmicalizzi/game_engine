@@ -367,6 +367,146 @@ TEST_CASE("cluster file: the page table round-trips, and a file without one read
   check_equal(without, unpaged);
 }
 
+TEST_CASE("cluster file: a reader gives the resident tables now and the page streams by range") {
+  const test::TempDir tmp("engine_cluster_file");
+  ClusterFileData data;
+  Vector<u32> indices;
+  make_fixture(data, indices);
+  REQUIRE(data.pages.pages.size() > 1);
+  const std::string path = tmp.file("ranged.clusters");
+  std::string error;
+  REQUIRE_MESSAGE(write_cluster_file(path, data, &error), error);
+  ClusterFileData whole;
+  REQUIRE_MESSAGE(read_cluster_file(path, whole, &error), error);
+
+  ClusterFileReader reader;
+  ClusterFileData resident;
+  REQUIRE_MESSAGE(reader.open(path, &resident, &error), error);
+  CHECK(reader.valid());
+  CHECK(reader.path() == path);
+  CHECK(reader.file().size() > 0);
+
+  // **The resident read is the full read minus the paged streams**, and the only way to keep two
+  // readers of one format from drifting is to say so as an assertion rather than in a comment.
+  CHECK(same_bytes(resident.mesh.mesh.clusters, whole.mesh.mesh.clusters));
+  CHECK(same_bytes(resident.mesh.lod, whole.mesh.lod));
+  CHECK(same_bytes(resident.mesh.level_cluster_counts, whole.mesh.level_cluster_counts));
+  CHECK(resident.mesh.group_count == whole.mesh.group_count);
+  CHECK(resident.mesh.leaf_triangle_count == whole.mesh.leaf_triangle_count);
+  CHECK(resident.mesh.mesh.source_vertex_count == whole.mesh.mesh.source_vertex_count);
+  CHECK(resident.mesh.mesh.source_triangle_count == whole.mesh.mesh.source_triangle_count);
+  // The 16-bit grid comes off the scalars and not off a requantization of an empty mesh, which is
+  // why the paged sections are listed with zero elements rather than left out.
+  CHECK(resident.mesh.mesh.quant_scale == whole.mesh.mesh.quant_scale);
+  CHECK(resident.mesh.mesh.quant_origin.x == whole.mesh.mesh.quant_origin.x);
+  CHECK(same_bytes(resident.pages.pages, whole.pages.pages));
+  CHECK(same_bytes(resident.pages.child_pages, whole.pages.child_pages));
+  CHECK(same_bytes(resident.pages.page_of_cluster, whole.pages.page_of_cluster));
+  CHECK(same_bytes(resident.pages.children, whole.pages.children));
+  CHECK(resident.pages.page_bytes_target == whole.pages.page_bytes_target);
+  CHECK(same_bytes(resident.cluster_material, whole.cluster_material));
+  CHECK(same_bytes(resident.materials, whole.materials));
+  REQUIRE(resident.image_paths.size() == whole.image_paths.size());
+  for (u32 i = 0; i < resident.image_paths.size(); ++i)
+    CHECK(resident.image_paths[i] == whole.image_paths[i]);
+  REQUIRE(resident.images.size() == whole.images.size());
+  for (u32 i = 0; i < resident.images.size(); ++i) {
+    CHECK(resident.images[i].mime_type == whole.images[i].mime_type);
+    CHECK(same_bytes(resident.images[i].bytes, whole.images[i].bytes));
+  }
+  CHECK(resident.source_path == whole.source_path);
+  CHECK(resident.source_hash == whole.source_hash);
+  CHECK(resident.build_key == whole.build_key);
+  CHECK(reader.header_hash() == cluster_file_hash(whole));
+
+  // And the paged streams are **not** in it: that is the whole point.
+  CHECK(resident.mesh.mesh.vertices.empty());
+  CHECK(resident.mesh.mesh.quantized.empty());
+  CHECK(resident.mesh.mesh.attributes.empty());
+  CHECK(resident.mesh.mesh.triangles.empty());
+  CHECK(resident.mesh.mesh.vertex_source.empty());
+  CHECK(reader.element_count(ClusterSection::Quantized) == whole.mesh.mesh.quantized.size());
+  CHECK(reader.element_count(ClusterSection::Triangles) == whole.mesh.mesh.triangles.size());
+
+  // Every page's slice of every paged stream is one contiguous range, and reading it gives what
+  // the full read has at the same indices. This is the property the whole file-backed page source
+  // rests on — `build_cluster_pages` reordered the streams so that it holds.
+  Vector<u8> buffer;
+  for (u32 p = 0; p < resident.pages.pages.size(); ++p) {
+    const ClusterPageDesc& page = resident.pages.pages[p];
+    u64 offset = 0;
+    u64 bytes = 0;
+    REQUIRE(reader.range(ClusterSection::Quantized, sizeof(u16), u64{page.first_vertex} * 3,
+                         u64{page.vertex_count} * 3, offset, bytes));
+    CHECK(bytes == u64{page.vertex_count} * 3 * sizeof(u16));
+    buffer.resize(static_cast<u32>(bytes));
+    u64 read = 0;
+    REQUIRE(reader.file().read_at(offset, buffer.data(), bytes, read) == io::Status::Ok);
+    REQUIRE(read == bytes);
+    CHECK(std::memcmp(buffer.data(), whole.mesh.mesh.quantized.data() + u64{page.first_vertex} * 3,
+                      static_cast<usize>(bytes)) == 0);
+
+    REQUIRE(reader.range(ClusterSection::Attributes, sizeof(VertexAttributes), page.first_vertex,
+                         page.vertex_count, offset, bytes));
+    buffer.resize(static_cast<u32>(bytes));
+    REQUIRE(reader.file().read_at(offset, buffer.data(), bytes, read) == io::Status::Ok);
+    REQUIRE(read == bytes);
+    CHECK(std::memcmp(buffer.data(), whole.mesh.mesh.attributes.data() + page.first_vertex,
+                      static_cast<usize>(bytes)) == 0);
+
+    REQUIRE(reader.range(ClusterSection::Triangles, sizeof(u32), page.first_triangle,
+                         page.triangle_count, offset, bytes));
+    buffer.resize(static_cast<u32>(bytes));
+    REQUIRE(reader.file().read_at(offset, buffer.data(), bytes, read) == io::Status::Ok);
+    REQUIRE(read == bytes);
+    CHECK(std::memcmp(buffer.data(), whole.mesh.mesh.triangles.data() + page.first_triangle,
+                      static_cast<usize>(bytes)) == 0);
+
+    REQUIRE(reader.range(ClusterSection::Vertices, sizeof(Vec3), page.first_vertex,
+                         page.vertex_count, offset, bytes));
+    buffer.resize(static_cast<u32>(bytes));
+    REQUIRE(reader.file().read_at(offset, buffer.data(), bytes, read) == io::Status::Ok);
+    REQUIRE(read == bytes);
+    CHECK(std::memcmp(buffer.data(), whole.mesh.mesh.vertices.data() + page.first_vertex,
+                      static_cast<usize>(bytes)) == 0);
+  }
+
+  // A range that asks for the wrong element size, a run past the end, and a kind the container
+  // does not carry are all answered with false and zeros rather than a fault, so a caller may ask
+  // about a section an older container has none of.
+  u64 offset = 0;
+  u64 bytes = 1;
+  CHECK_FALSE(reader.range(ClusterSection::Triangles, sizeof(u16), 0, 1, offset, bytes));
+  CHECK(bytes == 0);
+  CHECK_FALSE(reader.range(ClusterSection::Triangles, sizeof(u32), whole.mesh.mesh.triangles.size(),
+                           1, offset, bytes));
+  CHECK(reader.range(ClusterSection::Triangles, sizeof(u32), 0, 0, offset, bytes));
+  CHECK(bytes == 0);
+  CHECK(reader.element_count(static_cast<ClusterSection>(31339)) == 0);
+  CHECK_FALSE(reader.range(static_cast<ClusterSection>(31339), 4, 0, 1, offset, bytes));
+
+  // Header and table only: no resident decode at all, and the ranges still answer.
+  ClusterFileReader table_only;
+  REQUIRE_MESSAGE(table_only.open(path, nullptr, &error), error);
+  CHECK(table_only.range(ClusterSection::Triangles, sizeof(u32), 0, 1, offset, bytes));
+  CHECK(bytes == sizeof(u32));
+  table_only.close();
+  CHECK_FALSE(table_only.valid());
+  CHECK_FALSE(table_only.range(ClusterSection::Triangles, sizeof(u32), 0, 1, offset, bytes));
+
+  // The structural checks are the full read's, so a broken container is refused here too and by
+  // the same sentence; the payload hash is the one thing this reader does not look at.
+  ClusterFileReader missing;
+  CHECK_FALSE(missing.open(tmp.file("nothing.clusters"), &resident, &error));
+  CHECK(error.find("cannot open") != std::string::npos);
+  const std::string wrong = tmp.file("wrong.clusters");
+  REQUIRE(io::write_file(wrong, "NOPE and then some padding to get past the header size") ==
+          io::Status::Ok);
+  CHECK_FALSE(missing.open(wrong, &resident, &error));
+  CHECK(error.find("magic") != std::string::npos);
+  CHECK(resident.mesh.mesh.clusters.empty());
+}
+
 TEST_CASE("cluster file: the skin bindings round-trip, and a file without them reads unskinned") {
   const test::TempDir tmp("cluster_file_skin");
   ClusterFileData data;
