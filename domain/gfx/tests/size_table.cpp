@@ -38,7 +38,19 @@ ENGINE_EXPECT_SIZE(128, 8, gfx::ClusterDrawParams);
 // by `pair_count` anyway (docs/plan/04-renderer.md §4.6).
 ENGINE_EXPECT_SIZE(128, 8, gfx::ClusterRecordParams);
 
-ENGINE_EXPECT_SIZE(400, 8, gfx::CullParams);
+// 416, not 400: geometry streaming appended the address of its own block plus the two counts that
+// bound every index the shader writes — the page table's length and the request buffer's capacity
+// (docs/plan/04-renderer.md §4.9, docs/subsystems/gfx.md). The address is null for a scene that is
+// uploaded whole and the pass then runs the instructions it always ran, which is why a
+// non-streamed picture is byte-identical; the two counts went beside it rather than into
+// `StreamParams` because a bound has to be readable before the block it bounds is dereferenced.
+ENGINE_EXPECT_SIZE(416, 8, gfx::CullParams);
+
+// 64: eight addresses, no counts — the page table and the per-cluster tables the drawing rule
+// reads, and the three feedback arrays it writes. It is read through a device address rather than
+// pushed, because `CullParams` is itself addressed and one more indirection costs one load per
+// dispatch while eight more words in the pushed block would cost every pass that never streams.
+ENGINE_EXPECT_SIZE(64, 8, gfx::StreamParams);
 
 // 48, not 40: `coverage` was appended when the resolve started skipping 32 x 32 tiles with
 // nothing in them. The mask is this pass's by-product — the from_visibility dispatch reads every

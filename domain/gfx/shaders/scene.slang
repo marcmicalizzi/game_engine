@@ -88,6 +88,53 @@ struct JointMatrix {
   float4 rows[3];
 };
 
+// ---- geometry streaming (docs/plan/04-renderer.md §4.3 step 3 and §4.9) -----------------------
+//
+// A scene's clusters are laid out in fixed-size **pages**, and a viewer may hold only some of
+// them. Three tables travel with the scene and stay resident whatever the budget, because the
+// cull pass tests every pair of every frame and has to be able to say "not that one" about a
+// cluster whose payload is not here: the page table itself, the page each cluster is in, and the
+// clusters each cluster refines into. They are 12 bytes a cluster plus 48 bytes a page against
+// the ~1.5 KB a cluster the page holds, which is the ratio that makes the split worth making.
+
+// Mirrors geometry::ClusterPageDesc (48 bytes). The cull pass reads none of it today — the
+// drawing rule needs only `page_of_cluster` and the residency word — but the record is the
+// streaming contract the way ClusterDesc is the geometry one, so it is written down here once,
+// beside the tables that index it, rather than in whichever pass first needs `level_min`.
+struct ClusterPageDesc {
+  uint first_cluster;
+  uint cluster_count;
+  uint first_vertex;
+  uint vertex_count;
+  uint first_triangle;
+  uint triangle_count;
+  uint level_min;
+  uint level_max;
+  uint first_child_page;
+  uint child_page_count;
+  uint bytes;
+  uint flags;
+};
+
+static const uint k_page_root = 1u;      // nothing coarser can replace it: pinned, never evicted
+static const uint k_page_oversized = 2u;  // one group did not fit in a page of its own
+
+// Mirrors geometry::ClusterChildren (two uint): the run of clusters one cluster refines into,
+// which is the group it was simplified from and which the page builder keeps contiguous. A
+// level-0 cluster is original geometry and has `cluster_count` zero.
+struct ClusterChildren {
+  uint first_cluster;
+  uint cluster_count;
+};
+
+// Mirrors geometry::PageRequest (12 bytes): what one missing page is worth to the cluster that
+// could not refine into it. The CPU heap reads these words without a conversion.
+struct PageRequest {
+  uint page;
+  float screen_px;  // the projected diameter of the requesting cluster's sphere, in pixels
+  float distance;   // observer to the near side of that sphere
+};
+
 static const uint k_instance_uniform_scale = 1u;
 static const uint k_invalid_deform = 0xffffffffu;
 static const uint k_deform_identity = 0u;

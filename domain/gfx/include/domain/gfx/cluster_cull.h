@@ -50,6 +50,34 @@ namespace engine::gfx {
 
 inline constexpr u32 k_hiz_max_mips = 16;  // enough for 32768 x 32768
 
+// **Geometry streaming** (docs/plan/04-renderer.md §4.3 step 3 and §4.9, geometry/cluster_pages.h).
+// The addresses the cull pass needs to run `geometry::select_lod_streaming`'s rule on the GPU and
+// to tell the CPU what it could not draw. Everything here is scene-sized or page-sized; none of it
+// is screen-sized, so one block serves every view of a frame.
+//
+// `CullParams::streaming` is null for a scene that is uploaded whole, and the pass then runs
+// exactly the instructions it ran before streaming existed — which is what keeps every picture of
+// a non-streamed scene byte-identical.
+//
+// The three feedback arrays are the GPU half of §4.9's request queue. `requests` is a bounded
+// array of `geometry::PageRequest` (12 bytes: page, screen pixels, distance) appended under the
+// atomic in `request_count`; `request_mask` deduplicates, one word per page, so a page a thousand
+// clusters want costs one entry and one atomic exchange rather than a thousand; and `used` is the
+// "the cut read this page this frame" bit that makes the CPU manager's LRU mean something. All
+// three are cleared by the frame's reset pass and copied back to the host one frame slot later,
+// so nothing in the frame path ever waits on the device.
+struct StreamParams {
+  u64 pages = 0;            // geometry::ClusterPageDesc[page_count]
+  u64 page_of_cluster = 0;  // u32 per cluster of the scene
+  u64 children = 0;         // geometry::ClusterChildren (two u32) per cluster
+  u64 residency = 0;        // u32 per page: non-zero while the page's payload is in a pool slot
+  u64 used = 0;             // u32 per page, written by the cut: the LRU's "touched this frame"
+  u64 requests = 0;         // geometry::PageRequest[CullParams::max_requests]
+  u64 request_count = 0;    // u32: the atomic the requests are appended under
+  u64 request_mask = 0;     // u32 per page: one request per page per frame
+};
+static_assert(sizeof(StreamParams) == 64);
+
 // One indirect argument block, and the stride between two views' blocks in one buffer. Four u32
 // covers both shapes the cull pass fills — `{groups, 1, 1}` for `vkCmdDrawMeshTasksIndirectEXT`
 // and `{vertexCount, instanceCount, 0, 0}` for `vkCmdDrawIndirect` — and keeps every view's block
@@ -57,7 +85,7 @@ inline constexpr u32 k_hiz_max_mips = 16;  // enough for 32768 x 32768
 // word out of one buffer (docs/plan/04-renderer.md §4.6).
 inline constexpr u32 k_draw_args_bytes = 16;
 
-// Mirrors CullParams in cluster_cull.slang. 376 bytes.
+// Mirrors CullParams in cluster_cull.slang. 416 bytes.
 struct CullParams {
   Vec4 planes[6];         // inward-facing, normalized
   Vec4 camera;            // xyz position, w = znear
@@ -93,8 +121,12 @@ struct CullParams {
   u64 meshes = 0;     // MeshDesc[], indexed by InstanceDesc::mesh
   u32 instance_count = 0;
   u32 pair_count = 0;  // the prefix sum: one thread per (instance, cluster) pair
+  // Streaming; 0 runs the pass exactly as it ran before pages existed.
+  u64 streaming = 0;     // StreamParams*
+  u32 page_count = 0;    // the scene's page table, which bounds every page index below
+  u32 max_requests = 0;  // the request buffer's capacity; the atomic is clamped to it
 };
-static_assert(sizeof(CullParams) == 400);
+static_assert(sizeof(CullParams) == 416);
 static_assert(sizeof(CullParams) % 16 == 0, "the block is read as float4 rows on the GPU");
 
 inline constexpr f32 k_raster_hardware = 0.0f;  // CullParams::raster.y

@@ -25,7 +25,20 @@ struct ClusterLodDesc {
   uint group;
 };
 
-// Read through a device address; mirrors gfx::CullParams (400 bytes).
+// Read through a device address; mirrors gfx::StreamParams (64 bytes). Null in `CullParams` for a
+// scene that is uploaded whole.
+struct StreamParams {
+  uint64_t pages;            // ClusterPageDesc[]
+  uint64_t page_of_cluster;  // uint per cluster
+  uint64_t children;         // ClusterChildren per cluster
+  uint64_t residency;        // uint per page
+  uint64_t used;             // uint per page
+  uint64_t requests;         // PageRequest[]
+  uint64_t request_count;    // uint, the atomic
+  uint64_t request_mask;     // uint per page
+};
+
+// Read through a device address; mirrors gfx::CullParams (416 bytes).
 struct CullParams {
   float4 planes[6];  // inward-facing, normalized: dot(n, p) + w >= 0 inside
   float4 camera;     // xyz position, w = znear
@@ -57,6 +70,9 @@ struct CullParams {
   uint64_t meshes;      // MeshDesc[]
   uint instance_count;
   uint pair_count;
+  uint64_t streaming;   // StreamParams*, or 0: the scene is uploaded whole
+  uint page_count;
+  uint max_requests;
 };
 
 struct CullPush {
@@ -71,6 +87,85 @@ float projected_error(float4 sphere, float error, float3 camera, float znear, fl
   if (error >= k_terminal_error) return k_terminal_error;
   const float distance = length(sphere.xyz - camera) - sphere.w;
   return error / max(distance, znear) * proj_scale;
+}
+
+// ---- geometry streaming (docs/plan/04-renderer.md §4.9, domain/geometry/cluster_pages.h) ------
+//
+// `geometry::select_lod_streaming`'s rule, one thread per pair instead of one loop over the mesh:
+//
+//   draw c  <=>  resident(page of c)
+//                && projected parent error > threshold
+//                && (projected own error <= threshold || !resident(pages of c's children))
+//
+// Both residency tests are over a whole *group* in the CPU model, and a group is always exactly
+// one page: `build_cluster_pages` closes the open page before a group that would not fit, and
+// gives a group that fits in no page at all one of its own, so `page_of_cluster` is constant
+// across a group and the per-cluster test **is** the group test. `merge_paged_cluster_meshes`
+// shifts a mesh's pages as a block and never links two meshes, so it stays true for a scene. The
+// CPU side checks it before it uploads a page table (renderer::GeometryStreamer), because the rule
+// is crack-free only while it holds.
+
+bool page_resident(StreamParams* stream, uint page) {
+  uint* resident = (uint*)stream->residency;
+  return resident[page] != 0;
+}
+
+// geometry::screen_pixels: `projected_error`'s projection applied to the sphere's own size rather
+// than to an error, so a request's priority and the LOD threshold are in the same units and the
+// same view. And geometry::sphere_distance: observer to the near side, never below the near plane.
+float projected_size(float3 center, float radius, float3 camera, float znear, float proj_scale) {
+  const float distance = length(center - camera) - radius;
+  return 2.0 * radius / max(distance, znear) * proj_scale;
+}
+
+float sphere_distance(float3 center, float radius, float3 camera, float znear) {
+  const float distance = length(center - camera) - radius;
+  return distance > znear ? distance : znear;
+}
+
+// One entry per page per frame. The mask word is **exchanged** rather than compared: the first
+// lane to claim a page writes the entry and every other lane pays one atomic and leaves, so a page
+// a thousand clusters want costs one twelve-byte entry instead of a thousand — which is what keeps
+// `max_requests` a small constant rather than a function of the scene.
+//
+// The priority the entry carries is therefore the *winning* lane's and not the best of the
+// requesters', where the CPU reference keeps the largest screen size and the smallest distance.
+// That is a deliberate trade: a lock-free best-of would be two more atomics on every losing lane,
+// and it buys nothing over a frame or two, because `PageResidencyManager::request` keeps the best
+// of every request it sees and a queued page's key can only ever improve.
+//
+// A request past the buffer's capacity is dropped rather than wrapped. The counter still counts it,
+// so the CPU can report that the frame overflowed, and the page is asked for again next frame
+// because the mask is cleared with the rest of the feedback.
+void request_page(CullParams* params, StreamParams* stream, uint page, float screen_px,
+                  float distance) {
+  Atomic<uint>* mask = (Atomic<uint>*)(stream->request_mask + uint64_t(page) * 4);
+  if (mask->exchange(1u) != 0u) return;
+  Atomic<uint>* count = (Atomic<uint>*)stream->request_count;
+  const uint slot = count->add(1u);
+  if (slot >= params->max_requests) return;
+  PageRequest* requests = (PageRequest*)stream->requests;
+  requests[slot].page = page;
+  requests[slot].screen_px = screen_px;
+  requests[slot].distance = distance;
+}
+
+// True when every page holding the run of clusters `first .. first + count` is resident, and —
+// when `emit` is set — asking for the ones that are not. A run is a range of pages because the
+// builder keeps a group in consecutive pages, so this is the CPU's `run_resident` exactly.
+bool run_resident(CullParams* params, StreamParams* stream, uint first, uint count, bool emit,
+                  float screen_px, float distance) {
+  if (count == 0) return true;
+  uint* page_of = (uint*)stream->page_of_cluster;
+  const uint from = page_of[first];
+  const uint to = page_of[first + count - 1];
+  bool complete = true;
+  for (uint page = from; page <= to; ++page) {
+    if (page_resident(stream, page)) continue;
+    complete = false;
+    if (emit) request_page(params, stream, page, screen_px, distance);
+  }
+  return complete;
 }
 
 // True when every pixel the sphere's screen rectangle touches holds a surface nearer than the
@@ -188,6 +283,16 @@ void cull_main(uint3 thread_id : SV_DispatchThreadID) {
     const float3 axis = normalize(mul(instance.world, float4(cone_axis(cluster), 0.0)).xyz);
     if (backfacing(cluster, apex, axis, params->camera.xyz)) return;
   }
+  // The page this cluster's payload is in. Streaming is only ever on together with LOD selection
+  // (renderer::resolve_settings forces the cut on with it), because the fallback clause of the
+  // drawing rule *is* the LOD test: without a cut there is nothing for a missing page to fall back
+  // to.
+  StreamParams* stream = (StreamParams*)params->streaming;
+  uint page = 0;
+  if (params->streaming != 0) {
+    uint* page_of = (uint*)stream->page_of_cluster;
+    page = page_of[index];
+  }
   if (params->lod.z > 0.0) {
     ClusterLodDesc* lods = (ClusterLodDesc*)params->lods;
     const ClusterLodDesc lod = lods[index];
@@ -200,9 +305,43 @@ void cull_main(uint3 thread_id : SV_DispatchThreadID) {
     const float parent =
         projected_error(parent_sphere, lod.parent_error * instance.scale_max, params->camera.xyz,
                         params->camera.w, params->lod.x);
-    if (!(own <= params->lod.y && parent > params->lod.y)) return;
+    if (params->streaming == 0) {
+      if (!(own <= params->lod.y && parent > params->lod.y)) return;
+    } else {
+      const float screen_px =
+          projected_size(center, radius, params->camera.xyz, params->camera.w, params->lod.x);
+      const float distance = sphere_distance(center, radius, params->camera.xyz, params->camera.w);
+      if (!page_resident(stream, page)) {
+        // A group with no coarser version has no parent to ask on its behalf, so it asks for
+        // itself: without the coarsest level there is nothing to draw at all. In a scene whose
+        // root pages are pinned this never fires — it is here because the CPU reference does it,
+        // and the two have to agree on a residency a test made up.
+        if (lod.parent_error >= k_terminal_error)
+          request_page(params, stream, page, screen_px, distance);
+        return;
+      }
+      if (parent <= params->lod.y) return;  // the coarser version is good enough
+      if (own > params->lod.y) {
+        // Too coarse for this view: refine into the children, unless their pages are not all
+        // here, in which case this cluster is the best there is and the missing pages are asked
+        // for. A level-0 cluster has no children and is simply not drawn, exactly as an
+        // unstreamed cut would not draw it.
+        ClusterChildren* children = (ClusterChildren*)stream->children;
+        const ClusterChildren kids = children[index];
+        if (run_resident(params, stream, kids.first_cluster, kids.cluster_count, true, screen_px,
+                         distance)) {
+          return;
+        }
+      }
+    }
   }
   if (params->hiz != 0 && occluded(params, center, radius)) return;
+  // The cut read this page: the CPU manager's LRU is only as good as this bit, because a page
+  // nothing asks for and nothing draws out of is exactly the page that should go first.
+  if (params->streaming != 0) {
+    uint* used = (uint*)stream->used;
+    used[page] = 1u;
+  }
   if (params->pass != 0) {
     uint* flags = (uint*)params->flags;
     flags[pair] = 1;
