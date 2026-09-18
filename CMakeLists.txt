@@ -25,6 +25,10 @@ include(EngineImage)
 include(EngineAssets)
 include(EngineShaders)
 include(EngineBench)
+# Capability dependencies: each returns immediately when its ENGINE_WITH_<NAME> switch is off,
+# so a minimal build (ADR-0027) fetches nothing for a capability it does not contain.
+include(EngineEcs)
+include(EngineStore)
 
 # Build tools first: schemac generates sources for schema modules below.
 add_subdirectory(tools/schemac)

@@ -15,6 +15,8 @@ Every dependency of the engine is listed here with its license. Policy: permissi
 | SDL3 | release-3.4.16 | zlib | foundation/window (windowing, input, Vulkan surfaces) | CMake FetchContent at configure time; static, video and events only |
 | stb_image | v2.30 (repository commit 2c980bb59875b0d32144a71867fbdebb2f77cd20) | MIT OR Unlicense (public domain) | foundation/image (PNG/JPEG/TGA/BMP decoding) | CMake FetchContent of the stb repository at configure time; header compiled into foundation/image/src/decode.cpp |
 | stb_image_write | v1.16 (same commit) | MIT OR Unlicense (public domain) | tests only (foundation/image's baseline JPEG fixture) | Comes with the stb checkout above; included only by foundation/image/tests/decode_tests.cpp |
+| flecs | v4.1.6 | MIT | domain/ecs (the runtime entity store; capability `ENGINE_WITH_ECS`) | CMake FetchContent at configure time, static, only when the capability is on |
+| SQLite | 3.53.4 (amalgamation) | public domain | foundation/store (event log, projections, snapshots; capability `ENGINE_WITH_STORE`) | CMake FetchContent of the published amalgamation archive at configure time, pinned by URL and SHA-256, compiled into `engine_sqlite3`; only when the capability is on |
 
 ## Consulted, not vendored
 
