@@ -187,9 +187,12 @@ bool load_gltf_memory(std::span<const u8> bytes, std::string_view base_dir, Mesh
 // its buffer inside, and a data URI is already part of the text, so neither adds anything. An
 // external buffer that cannot be read contributes its length as zero rather than failing: the
 // load that follows reports it properly, and the hash still changed with the glTF that names
-// it. Images are deliberately not hashed — they are not an input to the cluster build, and the
-// renderer reads them from disk every time. Returns false and fills `error` when the mesh file
-// itself cannot be read or parsed.
+// it. **External** images are deliberately not hashed: a container stores their paths and the
+// renderer reads those files every time, so a repainted texture shows up without a rebuild. An
+// image the file *embeds* needs no special case and gets none — it is part of the file's own
+// bytes, so the hash already covers it, which is what keeps the cache key sound now that a
+// container carries those bytes (`geometry::ClusterSection::Images`). Returns false and fills
+// `error` when the mesh file itself cannot be read or parsed.
 bool source_mesh_hash(std::string_view path, u64& out, std::string* error = nullptr);
 
 // Spans over the mesh's normals, UVs, and skin bindings for geometry::build_clusters and

@@ -2,9 +2,10 @@
 // `build` imports a glTF 2.0 or GLB file (domain/assets), validates it against the rules of
 // §7.4, welds its vertices, builds one cluster LOD DAG per primitive so that every cluster has a
 // single material (domain/geometry), merges them, and writes the result as a `.clusters`
-// container together with the material table, the image paths the materials name, the source
-// path they are relative to, and the source's identity (its content hash and the build key over
-// it and the options), which is what makes a second build able to skip the work. The
+// container together with the material table, the image paths the materials name, the encoded
+// bytes of the images the source embedded rather than named, the source path those paths are
+// relative to, and the source's identity (its content hash and the build key over it and the
+// options), which is what makes a second build able to skip the work. The
 // per-primitive DAG builds run as jobs on the job system's performance pool, and the merge is
 // over the primitives in index order, never in completion order, so the bytes do not depend on
 // how many threads ran them.
@@ -323,7 +324,9 @@ struct BuildResult {
   f64 page_fill = 0.0;  // mean page bytes over the target
   u32 materials = 0;
   u32 images = 0;
-  u32 embedded_images = 0;
+  u32 embedded_images = 0;      // of those, how many the container carries the bytes of
+  u32 deduplicated_images = 0;  // slots served by an earlier image's identical bytes
+  u64 image_bytes = 0;          // what the distinct embedded images take in the container
   u64 bytes = 0;
   u64 hash = 0;
   f64 build_ms = 0.0;
@@ -521,14 +524,21 @@ bool build_one(const std::string& input, const std::string& output, const MeshOp
     }
     data.cluster_material.push_back(default_material);
   }
-  // Image paths as the glTF gives them, relative to the glTF file; an image the file embedded
-  // has no path of its own and keeps its slot with an empty one.
-  u32 embedded_images = 0;
+  // Image paths as the glTF gives them, relative to the glTF file; an image the file embedded has
+  // no path of its own, so its **encoded bytes** travel in the container instead and the slot
+  // keeps an empty path. That is what makes the container drawable wherever it ends up: a GLB
+  // holds its textures inside itself, and a container that recorded only their empty paths drew
+  // the mesh untextured while the GLB beside it drew it textured ([geometry](geometry.md)).
   data.image_paths.reserve(mesh.images.size());
+  data.images.reserve(mesh.images.size());
   for (const assets::ImageRef& image : mesh.images) {
-    if (image.uri.empty()) ++embedded_images;
     data.image_paths.push_back(image.uri);
+    geometry::ClusterImage carried;
+    carried.mime_type = image.mime_type;
+    carried.bytes = image.bytes;
+    data.images.push_back(std::move(carried));
   }
+  const geometry::ClusterImageSummary images = geometry::summarize_cluster_images(data);
 
   // The source as it was given, so the renderer resolves the image paths above against its
   // directory however it came by the container, and the source's identity, so that a later build
@@ -560,7 +570,9 @@ bool build_one(const std::string& input, const std::string& output, const MeshOp
   }
   out.materials = data.materials.size();
   out.images = data.image_paths.size();
-  out.embedded_images = embedded_images;
+  out.embedded_images = images.embedded;
+  out.deduplicated_images = images.deduplicated;
+  out.image_bytes = images.bytes;
   out.bytes = io::stat_file(output, info) == io::Status::Ok ? info.size : 0;
   out.hash = geometry::cluster_file_hash(data);
   out.build_ms = static_cast<f64>(time::monotonic_ns() - start_ns) / 1.0e6;
@@ -644,6 +656,8 @@ int build(const BuildCommandOptions& options) {
   summary.set("materials", JsonValue(result.materials));
   summary.set("images", JsonValue(result.images));
   summary.set("embedded_images", JsonValue(result.embedded_images));
+  summary.set("deduplicated_images", JsonValue(result.deduplicated_images));
+  summary.set("image_bytes", JsonValue(result.image_bytes));
   summary.set("warnings", JsonValue(result.warnings.size()));
   summary.set("bytes", JsonValue(result.bytes));
   summary.set("build_ms", JsonValue(result.build_ms));
@@ -939,6 +953,9 @@ int build_all(const BuildAllCommandOptions& options) {
         line.set("page_fill", JsonValue(task.result.page_fill));
         line.set("materials", JsonValue(task.result.materials));
         line.set("images", JsonValue(task.result.images));
+        line.set("embedded_images", JsonValue(task.result.embedded_images));
+        line.set("deduplicated_images", JsonValue(task.result.deduplicated_images));
+        line.set("image_bytes", JsonValue(task.result.image_bytes));
         line.set("warnings", JsonValue(task.result.warnings.size()));
         line.set("bytes", JsonValue(task.result.bytes));
         line.set("build_ms", JsonValue(task.result.build_ms));
@@ -1104,7 +1121,11 @@ int info(const std::string& path) {
   summary.set("vertices", JsonValue(lod.mesh.vertices.size()));
   summary.set("groups", JsonValue(lod.group_count));
   summary.set("materials", JsonValue(data.materials.size()));
-  summary.set("images", JsonValue(data.image_paths.size()));
+  const geometry::ClusterImageSummary images = geometry::summarize_cluster_images(data);
+  summary.set("images", JsonValue(images.count));
+  summary.set("embedded_images", JsonValue(images.embedded));
+  summary.set("deduplicated_images", JsonValue(images.deduplicated));
+  summary.set("image_bytes", JsonValue(images.bytes));
   summary.set("source_path", JsonValue(data.source_path));
   summary.set("source_hash", JsonValue(data.source_hash));
   summary.set("build_key", JsonValue(data.build_key));
@@ -1415,7 +1436,26 @@ int stats(const std::string& path) {
   summary.set("bytes", std::move(bytes));
   summary.set("quantization", std::move(quantization));
   summary.set("materials", JsonValue(data.materials.size()));
-  summary.set("images", JsonValue(data.image_paths.size()));
+  // The images, slot by slot: a container is only drawable on its own when every image either
+  // names a file or carries its bytes, so the per-image line says which it is and what it costs.
+  const geometry::ClusterImageSummary image_summary = geometry::summarize_cluster_images(data);
+  JsonValue image_detail = JsonValue::array();
+  for (u32 i = 0; i < image_summary.count; ++i) {
+    JsonValue entry = JsonValue::object();
+    entry.set("path", JsonValue(i < data.image_paths.size() ? data.image_paths[i] : std::string()));
+    const u64 carried = i < data.images.size() ? data.images[i].bytes.size() : 0;
+    entry.set("bytes", JsonValue(carried));
+    entry.set("mime", JsonValue(i < data.images.size() ? data.images[i].mime_type : std::string()));
+    image_detail.push_back(std::move(entry));
+  }
+  JsonValue images = JsonValue::object();
+  images.set("count", JsonValue(image_summary.count));
+  images.set("embedded", JsonValue(image_summary.embedded));
+  images.set("deduplicated", JsonValue(image_summary.deduplicated));
+  images.set("bytes", JsonValue(image_summary.bytes));
+  images.set("detail", std::move(image_detail));
+  summary.set("images", JsonValue(image_summary.count));
+  summary.set("image_detail", std::move(images));
   summary.set("source_path", JsonValue(data.source_path));
   summary.set("source_hash", JsonValue(data.source_hash));
   summary.set("build_key", JsonValue(data.build_key));

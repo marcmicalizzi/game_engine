@@ -35,3 +35,7 @@ ENGINE_EXPECT_SIZE(24, 8, geometry::ClusterFileSection);
 ENGINE_EXPECT_SIZE(32, 4, geometry::ClusterFileScalars);
 
 ENGINE_EXPECT_SIZE(64, 4, geometry::ClusterFileMaterial);
+
+// The image record is the format too: three words of range and identity plus the one-based media
+// type, with no padding to leave a later field room in.
+ENGINE_EXPECT_SIZE(24, 8, geometry::ClusterFileImage);

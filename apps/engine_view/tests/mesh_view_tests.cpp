@@ -1,8 +1,9 @@
 // End to end: engine-view renders a glTF file, the container the derived-data cache made of it
-// on the run before, and a container engine-content wrote. The fixture is a unit cube written
-// as a GLB at test time (two primitives with two materials, one of them textured with a 4x4
-// checker PNG in the BIN chunk), so nothing binary lives in the tree, and every run gets its
-// own `--ddc` directory so the cache in the repository is neither read nor written here.
+// on the run before, and a container engine-content wrote — and the three have to be the **same
+// picture, byte for byte**, which is the assertion this file exists for. The fixture is a unit
+// cube written as a GLB at test time (two primitives with two materials, one of them textured
+// with a 4x4 checker PNG in the BIN chunk), so nothing binary lives in the tree, and every run
+// gets its own `--ddc` directory so the cache in the repository is neither read nor written here.
 // Without a display or device the app exits 3 and the test records the skip.
 #include <core/json/json.h>
 #include <core/math/math.h>
@@ -321,6 +322,11 @@ std::string slashes(const std::filesystem::path& p) {
   return s;
 }
 
+std::string read_bytes(const std::string& path) {
+  std::ifstream f(path, std::ios::binary);
+  return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+}
+
 // engine-content is built into the same directory as engine-view, and writes the container the
 // viewer reads; the test drives the real pair rather than reimplementing either.
 std::string content_app() {
@@ -367,7 +373,8 @@ TEST_CASE("engine-view: renders a glTF mesh with one cluster DAG per material") 
 
   // The build went into the derived-data cache, so the same command again reads the container
   // instead of importing and clustering the glTF, and draws exactly what the first run drew.
-  const Run hit = view(with({"--mesh", mesh}));
+  const std::string hit_capture = slashes(dir / "mesh_hit.png");
+  const Run hit = view(with({"--mesh", mesh, "--capture", hit_capture}));
   REQUIRE_MESSAGE(hit.exit_code == 0, hit.output);
   Summary hit_summary;
   REQUIRE_MESSAGE(parse_summary(hit, hit_summary), hit.output);
@@ -380,7 +387,8 @@ TEST_CASE("engine-view: renders a glTF mesh with one cluster DAG per material") 
   CHECK(hit_summary.number("mesh_primitives") == 0);
 
   // --no-cache neither reads the entry that is now there nor writes one.
-  const Run uncached = view(with({"--no-cache", "--mesh", mesh}));
+  const std::string uncached_capture = slashes(dir / "mesh_nocache.png");
+  const Run uncached = view(with({"--no-cache", "--mesh", mesh, "--capture", uncached_capture}));
   REQUIRE_MESSAGE(uncached.exit_code == 0, uncached.output);
   Summary uncached_summary;
   REQUIRE_MESSAGE(parse_summary(uncached, uncached_summary), uncached.output);
@@ -394,7 +402,8 @@ TEST_CASE("engine-view: renders a glTF mesh with one cluster DAG per material") 
   const Run built = run_app(content_app(), {"build", mesh, container});
   REQUIRE_MESSAGE(built.exit_code == 0, built.output);
   REQUIRE(std::filesystem::exists(container));
-  const Run from_file = view(with({"--mesh", container}));
+  const std::string container_capture = slashes(dir / "mesh_container.png");
+  const Run from_file = view(with({"--mesh", container, "--capture", container_capture}));
   REQUIRE_MESSAGE(from_file.exit_code == 0, from_file.output);
   Summary file_summary;
   REQUIRE_MESSAGE(parse_summary(from_file, file_summary), from_file.output);
@@ -402,6 +411,18 @@ TEST_CASE("engine-view: renders a glTF mesh with one cluster DAG per material") 
   CHECK(file_summary.number("clusters") == number("clusters"));
   CHECK(file_summary.number("triangles") == number("triangles"));
   CHECK(file_summary.number("visible_hw_last") == number("visible_hw_last"));
+
+  // **The picture, not only the cut.** The cube's texture is a PNG inside the GLB's BIN chunk,
+  // which a container has to carry or the same mesh draws untextured from the cache and textured
+  // from the source — reproducibly, and invisibly to a test that compares cluster counts. So all
+  // four loads are compared as bytes: the glTF built in memory (the first run, a cache miss), the
+  // container the cache made of it, the same glTF with the cache switched off, and the container
+  // `engine-content build` wrote. One picture, four ways of getting to it.
+  const std::string miss_png = read_bytes(capture);
+  CHECK(miss_png.size() > 1000);
+  CHECK(read_bytes(hit_capture) == miss_png);
+  CHECK(read_bytes(uncached_capture) == miss_png);
+  CHECK(read_bytes(container_capture) == miss_png);
 
   // The same mesh through ray queries against cluster acceleration structures built every frame
   // from the cull output; exit 3 where the GPU has no cluster acceleration structures.

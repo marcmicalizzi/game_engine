@@ -53,8 +53,23 @@ bool same_bytes(const Vector<T>& a, const Vector<T>& b) {
   return std::memcmp(a.data(), b.data(), static_cast<usize>(a.size()) * sizeof(T)) == 0;
 }
 
-// A DAG over a small terrain, wrapped with two materials, one image path, and a material index
-// per cluster. `indices` is what validate_cluster_lod checks the result against.
+// Stand-in bytes for an embedded image: this module carries encoded files without looking at
+// them, so what matters here is that they are a run of bytes that is not all the same and is long
+// enough that a memcmp is doing work. `foundation/image` is where real PNGs are made.
+Vector<u8> fake_png() {
+  Vector<u8> bytes;
+  bytes.reserve(1024);
+  const u8 signature[8] = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'};
+  for (const u8 b : signature)
+    bytes.push_back(b);
+  for (u32 i = 8; i < 1024; ++i)
+    bytes.push_back(static_cast<u8>((i * 37u + (i >> 3)) & 0xffu));
+  return bytes;
+}
+
+// A DAG over a small terrain, wrapped with two materials, three images (one named by a path, two
+// embedded with the same bytes), and a material index per cluster. `indices` is what
+// validate_cluster_lod checks the result against.
 void make_fixture(ClusterFileData& data, Vector<u32>& indices) {
   Vector<Vec3> positions;
   make_terrain(65, 10.0f, positions, indices);
@@ -86,6 +101,15 @@ void make_fixture(ClusterFileData& data, Vector<u32>& indices) {
   data.materials[1].alpha = 0;  // what a file written before the word existed reads
   data.image_paths.push_back("textures/sand_basecolor.png");
   data.image_paths.push_back("");  // an embedded image keeps its slot with an empty path
+  data.image_paths.push_back("");  // and so does a second one with the same bytes
+  // The images themselves: the first is a file beside the source and carries nothing, the second
+  // is embedded, and the third is the same bytes again — which is what an exporter that packs
+  // occlusion, roughness, and metallic into one texture and names it twice produces.
+  data.images.resize(3);
+  data.images[1].mime_type = "image/png";
+  data.images[1].bytes = fake_png();
+  data.images[2].mime_type = "image/png";
+  data.images[2].bytes = fake_png();
   data.source_path = "content/samples/Terrain/terrain.gltf";
   data.source_hash = 0x0123'4567'89ab'cdefull;
   data.build_key =
@@ -117,6 +141,11 @@ void check_equal(const ClusterFileData& read, const ClusterFileData& written) {
   REQUIRE(read.image_paths.size() == written.image_paths.size());
   for (u32 i = 0; i < read.image_paths.size(); ++i)
     CHECK(read.image_paths[i] == written.image_paths[i]);
+  REQUIRE(read.images.size() == written.images.size());
+  for (u32 i = 0; i < read.images.size(); ++i) {
+    CHECK(read.images[i].mime_type == written.images[i].mime_type);
+    CHECK(same_bytes(read.images[i].bytes, written.images[i].bytes));
+  }
   CHECK(read.source_path == written.source_path);
   CHECK(read.source_hash == written.source_hash);
   CHECK(read.build_key == written.build_key);
@@ -124,6 +153,22 @@ void check_equal(const ClusterFileData& read, const ClusterFileData& written) {
 
 std::span<const u8> view(const std::string& file) {
   return std::span<const u8>(reinterpret_cast<const u8*>(file.data()), file.size());
+}
+
+// The file offset of the table record for `kind`, and the record itself; 0 when there is none.
+usize find_section(const std::string& file, ClusterSection kind, ClusterFileSection& out) {
+  ClusterFileHeader header;
+  std::memcpy(&header, file.data(), sizeof(header));
+  for (u32 i = 0; i < header.section_count; ++i) {
+    const usize at = sizeof(ClusterFileHeader) + sizeof(ClusterFileSection) * i;
+    ClusterFileSection record;
+    std::memcpy(&record, file.data() + at, sizeof(record));
+    if (record.kind == static_cast<u32>(kind)) {
+      out = record;
+      return at;
+    }
+  }
+  return 0;
 }
 
 void patch(std::string& file, usize at, const void* data, usize size) {
@@ -228,7 +273,7 @@ TEST_CASE("cluster file: a DAG with materials survives a round trip array by arr
   CHECK(std::memcmp(header.magic, "CLST", 4) == 0);
   CHECK(header.version == k_cluster_file_version);
   CHECK(header.flags == 0);
-  CHECK(header.section_count == 20);
+  CHECK(header.section_count == 22);
   CHECK(header.total_bytes == file.size());
   CHECK(header.content_hash == cluster_file_hash(data));
   for (u32 i = 0; i < header.section_count; ++i) {
@@ -401,6 +446,103 @@ TEST_CASE("cluster file: the skin bindings round-trip, and a file without them r
   ClusterFileData refused;
   CHECK_FALSE(read_cluster_file_memory(view(orphaned), refused, &error));
   CHECK(error.find("joint count") != std::string::npos);
+}
+
+TEST_CASE("cluster file: an embedded image travels whole, once per distinct blob") {
+  const test::TempDir tmp("cluster_file_images");
+  ClusterFileData data;
+  Vector<u32> indices;
+  make_fixture(data, indices);
+  const Vector<u8> png = fake_png();
+  const std::string path = tmp.file("images.clusters");
+  std::string error;
+  REQUIRE_MESSAGE(write_cluster_file(path, data, &error), error);
+
+  // Three image slots: one named by a path, two carrying the same bytes. Both embedded slots read
+  // back byte for byte with their media type, and the file holds one copy of the bytes.
+  ClusterFileData read;
+  REQUIRE_MESSAGE(read_cluster_file(path, read, &error), error);
+  check_equal(read, data);
+  REQUIRE(read.images.size() == 3);
+  CHECK(read.images[0].bytes.empty());
+  CHECK(read.images[0].mime_type.empty());
+  CHECK(same_bytes(read.images[1].bytes, png));
+  CHECK(same_bytes(read.images[2].bytes, png));
+  CHECK(read.images[1].mime_type == "image/png");
+  CHECK(read.images[2].mime_type == "image/png");
+
+  const ClusterImageSummary summary = summarize_cluster_images(data);
+  CHECK(summary.count == 3);
+  CHECK(summary.embedded == 2);
+  CHECK(summary.distinct == 1);
+  CHECK(summary.deduplicated == 1);
+  CHECK(summary.bytes == png.size());
+  // What a reader reports of a container is what the build that wrote it reported, which is the
+  // property `engine-content info` rests on.
+  const ClusterImageSummary reread = summarize_cluster_images(read);
+  CHECK(reread.count == summary.count);
+  CHECK(reread.embedded == summary.embedded);
+  CHECK(reread.distinct == summary.distinct);
+  CHECK(reread.deduplicated == summary.deduplicated);
+  CHECK(reread.bytes == summary.bytes);
+
+  std::string file;
+  REQUIRE(io::read_file(path, file) == io::Status::Ok);
+  ClusterFileSection payload{};
+  REQUIRE(find_section(file, ClusterSection::ImageBytes, payload) != 0);
+  CHECK(payload.element_size == 1);
+  CHECK(payload.element_count == png.size());  // one copy, not two
+  ClusterFileSection records{};
+  const usize records_at = find_section(file, ClusterSection::Images, records);
+  REQUIRE(records_at != 0);
+  CHECK(records.element_size == sizeof(ClusterFileImage));
+  CHECK(records.element_count == 3);
+  // The two duplicates point at the same range, and the hash is the content hash of the bytes,
+  // which is what a texture derivative in the cache will be addressed by.
+  ClusterFileImage first;
+  ClusterFileImage second;
+  std::memcpy(&first, file.data() + records.offset + sizeof(ClusterFileImage), sizeof(first));
+  std::memcpy(&second, file.data() + records.offset + 2 * sizeof(ClusterFileImage), sizeof(second));
+  CHECK(first.offset == second.offset);
+  CHECK(first.bytes == png.size());
+  CHECK(first.hash == hash_bytes(png.data(), png.size()));
+
+  // A container from a build that carried no image bytes: the kind becomes one this build does
+  // not know, and the mesh comes back with its paths and no bytes — which is exactly the older
+  // container, and exactly what it drew.
+  std::string older = file;
+  ClusterFileSection renamed = records;
+  renamed.kind = 31343;
+  patch(older, records_at, &renamed, sizeof(renamed));
+  rehash(older);
+  ClusterFileData without;
+  REQUIRE_MESSAGE(read_cluster_file_memory(view(older), without, &error), error);
+  CHECK(without.images.empty());
+  REQUIRE(without.image_paths.size() == 3);
+  CHECK(without.image_paths[0] == data.image_paths[0]);
+  CHECK(same_bytes(without.mesh.mesh.vertices, data.mesh.mesh.vertices));
+
+  // A file that disagrees with itself about how many images it has is refused rather than
+  // half-read: a record array shorter than the path array would silently drop a texture.
+  std::string short_records = file;
+  ClusterFileSection fewer = records;
+  fewer.element_count = 2;
+  patch(short_records, records_at, &fewer, sizeof(fewer));
+  rehash(short_records);
+  ClusterFileData mismatched;
+  CHECK_FALSE(read_cluster_file_memory(view(short_records), mismatched, &error));
+  CHECK(error.find("image records") != std::string::npos);
+
+  // And a record whose bytes run past the payload is named as such rather than read out of it.
+  std::string overrun = file;
+  ClusterFileImage broken = first;
+  broken.bytes = 0xffffffffu;
+  patch(overrun, static_cast<usize>(records.offset) + sizeof(ClusterFileImage), &broken,
+        sizeof(broken));
+  rehash(overrun);
+  ClusterFileData outside;
+  CHECK_FALSE(read_cluster_file_memory(view(overrun), outside, &error));
+  CHECK(error.find("image payload") != std::string::npos);
 }
 
 TEST_CASE("cluster file: a section of an unknown kind is skipped") {

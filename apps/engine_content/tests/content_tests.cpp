@@ -330,6 +330,8 @@ TEST_CASE("engine-content: build writes a cluster file that reads back and valid
   CHECK(number(built.result, "materials") == 2);
   CHECK(number(built.result, "images") == 1);
   CHECK(number(built.result, "embedded_images") == 1);  // the checker PNG is in the BIN chunk
+  CHECK(number(built.result, "deduplicated_images") == 0);
+  CHECK(number(built.result, "image_bytes") > 0);  // and the container carries it
   CHECK(number(built.result, "warnings") == 0);
   CHECK(number(built.result, "bytes") > 0);
   CHECK(number(built.result, "bytes") == std::filesystem::file_size(out));
@@ -354,7 +356,15 @@ TEST_CASE("engine-content: build writes a cluster file that reads back and valid
   CHECK(data.cluster_material.size() == data.mesh.mesh.clusters.size());
   CHECK(data.image_paths.size() == 1);
   CHECK(data.image_paths[0].empty());  // an embedded image keeps its slot with an empty path
-  CHECK(data.source_path == mesh);     // the glTF those paths would have been relative to
+  // ...and its bytes, so the container draws the picture the GLB draws wherever it ends up. They
+  // are the encoded file as found, not a decode: what goes in comes out byte for byte.
+  REQUIRE(data.images.size() == 1);
+  CHECK(data.images[0].mime_type == "image/png");
+  CHECK(data.images[0].bytes.size() == number(built.result, "image_bytes"));
+  CHECK(data.images[0].bytes.size() > 8);
+  const u8 png_signature[8] = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'};
+  CHECK(std::memcmp(data.images[0].bytes.data(), png_signature, sizeof(png_signature)) == 0);
+  CHECK(data.source_path == mesh);  // the glTF those paths would have been relative to
   CHECK(data.source_hash == source_hash);
   CHECK(data.build_key == key);
   CHECK(data.materials[0].base_color_image == 0);
@@ -390,7 +400,7 @@ TEST_CASE("engine-content: build writes a cluster file that reads back and valid
   const JsonValue* sections = described.result.find("sections");
   REQUIRE(sections != nullptr);
   REQUIRE(sections->is_array());
-  CHECK(sections->size() == 20);
+  CHECK(sections->size() == 22);
   for (const char* name : {"clusters",
                            "lod",
                            "vertices",
@@ -410,7 +420,9 @@ TEST_CASE("engine-content: build writes a cluster file that reads back and valid
                            "page_children",
                            "page_scalars",
                            "skin",
-                           "skin_scalars"}) {
+                           "skin_scalars",
+                           "images",
+                           "image_bytes"}) {
     bool found = false;
     for (usize i = 0; i < sections->size(); ++i) {
       const JsonValue* section_name = (*sections)[i].find("name");
@@ -678,6 +690,12 @@ TEST_CASE("engine-content: the validation rules refuse a broken mesh and warn ab
   const Run warned = content({"build", missing_image, out});
   REQUIRE_MESSAGE(warned.exit_code == 0, warned.output);
   CHECK(number(warned.result, "warnings") == 1);
+  // An image the source names rather than embeds is the case a container cannot carry: it keeps
+  // the path and says so, which is the other half of "self-sufficient, or precise about what it
+  // still needs".
+  CHECK(number(warned.result, "images") == 1);
+  CHECK(number(warned.result, "embedded_images") == 0);
+  CHECK(number(warned.result, "image_bytes") == 0);
   CHECK(std::filesystem::exists(out));
   std::filesystem::remove(out);
   const Run strict = content({"build", missing_image, out, "--strict"}, true);
@@ -720,7 +738,7 @@ TEST_CASE("engine-content: stats reports the metrics of a container") {
        {"path", "clusters", "lod_levels", "level_clusters", "groups", "leaf_triangles",
         "triangles_per_cluster", "source_vertices", "referenced_source_vertices",
         "cluster_vertices", "vertex_duplication", "bytes", "quantization", "materials", "images",
-        "source_path", "source_hash", "build_key"}) {
+        "image_detail", "source_path", "source_hash", "build_key"}) {
     CHECK_MESSAGE(stats.result.find(key) != nullptr, "stats has no \"" << key << "\"");
   }
   const u64 clusters = number(stats.result, "clusters");
@@ -807,7 +825,7 @@ TEST_CASE("engine-content: stats reports the metrics of a container") {
   const JsonValue* sections = bytes->find("sections");
   REQUIRE(sections != nullptr);
   REQUIRE(sections->is_array());
-  CHECK(sections->size() == 20);
+  CHECK(sections->size() == 22);
   u64 section_total = 0;
   for (usize i = 0; i < sections->size(); ++i)
     section_total += number((*sections)[i], "bytes");

@@ -2,9 +2,15 @@
 
 // The binary cluster container, `.clusters` (docs/plan/07-content-pipeline.md §7.3,
 // docs/plan/04-renderer.md §4.3): one `ClusterLodMesh` plus the per-cluster material map, the
-// materials themselves, and the paths of the images they name. It is what `engine-content
-// build` writes into the derived-data cache and what the renderer loads instead of importing
-// glTF and clustering at startup, and it is the first step toward fixed-size streaming pages.
+// materials themselves, the paths of the images they name, and the encoded bytes of the images
+// the source embedded rather than named. It is what `engine-content build` writes into the
+// derived-data cache and what the renderer loads instead of importing glTF and clustering at
+// startup, and it is the first step toward fixed-size streaming pages.
+//
+// **A container is self-sufficient for drawing, or says exactly what else it needs**: an image
+// with a path names a file beside the source mesh, and every other image travels inside. That is
+// the property the renderer rests on — what it draws from a container has to be what it draws
+// from the source — and it is checked end to end rather than assumed (docs/subsystems/apps.md).
 //
 // Layout, little-endian, no pointers, every payload an array of one fixed-size element that the
 // reader and the writer copy with memcpy:
@@ -85,6 +91,17 @@ enum class ClusterSection : u32 {
   // without either reads as an unskinned mesh rather than as a failure.
   Skin = 19,
   SkinScalars = 20,
+  // The images the source **embedded**, carried in full so that a container draws the picture its
+  // source draws with nothing beside it. 21 is one `ClusterFileImage` per image, parallel to
+  // `ImagePaths`, naming a range of 22, which holds the encoded files — PNG or JPEG bytes exactly
+  // as they were found, never decoded — back to back and **deduplicated by content hash**, since
+  // an exporter that packs occlusion, roughness, and metallic into one texture names the same
+  // bytes from several slots. An image that came from a file of its own keeps its path and
+  // carries no bytes; both sections are written even when there are none, so a container's
+  // section list does not depend on what it holds, and a file without them reads with no bytes at
+  // all, which is what every container built before them is.
+  Images = 21,
+  ImageBytes = 22,
 };
 
 // Names the kinds this build knows, "unknown" for anything else; for diagnostics and for
@@ -169,14 +186,51 @@ struct ClusterFileMaterial {
   u32 alpha = 0;
 };
 
+// Where one image's encoded bytes are, as the `Images` section records it. 24 bytes.
+//
+// `hash` is `core/hash`'s `hash_bytes` over those bytes. It is the dedup key the writer matches
+// on (and then confirms with a comparison, because a 64-bit collision that swapped two textures
+// would be invisible), and it is deliberately the *content* hash of the encoded file rather than
+// an index: when the derived-data cache grows texture derivatives of its own (plan 07 §7.3), the
+// entry for this image is addressed by exactly this number, and a container already says what to
+// ask for.
+//
+// A zero `bytes` is an image the container does not carry — an external file, named by
+// `image_paths[i]` — which is also what an all-zero record means, so a reader needs no flag.
+struct ClusterFileImage {
+  u64 hash = 0;
+  u64 offset = 0;  // into the ImageBytes payload
+  u32 bytes = 0;   // 0: no bytes here; the image is the file image_paths[i] names
+  // A **one-based** byte offset into `Strings` of a NUL-terminated media type ("image/png"), 0
+  // meaning the source did not say — one-based for the same reason the record's image slots are:
+  // zero is what a file written before the field existed carries, so zero has to mean none.
+  u32 mime = 0;
+};
+
 static_assert(sizeof(ClusterFileHeader) == 32, "the cluster file header is 32 bytes on the wire");
 static_assert(sizeof(ClusterFileSection) == 24, "a cluster file section record is 24 bytes");
 static_assert(sizeof(ClusterFileScalars) == 32, "the cluster file scalars section is 32 bytes");
 static_assert(sizeof(ClusterFileMaterial) == 64, "ClusterFileMaterial is a 64-byte GPU record");
+static_assert(sizeof(ClusterFileImage) == 24, "a cluster file image record is 24 bytes");
+
+// One image's bytes as a caller holds them: the encoded file (PNG or JPEG, undecoded) and the
+// media type the source stated, if it stated one. `bytes` is empty for an image that lives in a
+// file of its own, which `ClusterFileData::image_paths` names.
+struct ClusterImage {
+  std::string mime_type;
+  Vector<u8> bytes;
+};
 
 // Everything one file holds. `cluster_material` is empty or one entry per cluster; the image
 // paths are as the source named them (relative to the source file), and an image the source
-// embedded has an empty path.
+// embedded has an empty path and its bytes in `images` instead.
+//
+// `images` is empty or parallel to `image_paths`: entry *i* carries image *i*'s encoded bytes
+// when the source embedded them, and is empty when the image is the file `image_paths[i]` names.
+// **That is what makes a container self-sufficient for drawing**: a GLB keeps its textures inside
+// itself, so a container that recorded only their (empty) paths drew untextured, and the same
+// mesh looked different depending on whether it came from the source or from the cache. It is
+// empty for every container written before the sections existed, which draws exactly as it did.
 //
 // `source_path` is the mesh this was built from, exactly as it was given to the builder, so a
 // reader resolves those relative image paths against its directory. It is empty in a file
@@ -197,6 +251,7 @@ struct ClusterFileData {
   Vector<u32> cluster_material;
   Vector<ClusterFileMaterial> materials;
   Vector<std::string> image_paths;
+  Vector<ClusterImage> images;  // empty, or parallel to image_paths
   std::string source_path;
   u64 source_hash = 0;
   u64 build_key = 0;
@@ -218,6 +273,19 @@ bool read_cluster_file_memory(std::span<const u8> bytes, ClusterFileData& out,
 
 // The content hash the writer stores in the header, computed without writing anything.
 u64 cluster_file_hash(const ClusterFileData& data);
+
+// What the images of a container come to, for whoever reports on one. The dedup is the writer's,
+// so these are the numbers the file has (or would have): `distinct` blobs take `bytes`, and
+// `deduplicated` image slots are served by an earlier slot's bytes. Reading a container back and
+// summarizing it gives what building it gave, because identical bytes hash the same either way.
+struct ClusterImageSummary {
+  u32 count = 0;         // images the container names at all
+  u32 embedded = 0;      // of those, how many carry their bytes here
+  u32 distinct = 0;      // distinct blobs among them
+  u32 deduplicated = 0;  // embedded - distinct
+  u64 bytes = 0;         // what the distinct blobs take
+};
+ClusterImageSummary summarize_cluster_images(const ClusterFileData& data);
 
 // Just the `SourceHash` section of a container, without rebuilding the mesh from it: the header,
 // the section table, and the content hash are checked exactly as a full read checks them, and
@@ -245,7 +313,11 @@ bool read_cluster_file_identity(std::string_view path, u64& source_hash, u64& bu
 //    binding in the key — two coincident vertices with different weights silently became one,
 //    which is the defect that stream exists to prevent. Both builders pass it now, so an entry
 //    built at 4 is wrong for a skinned mesh and merely re-keyed for a rigid one.
-inline constexpr u32 k_cluster_cache_version = 5;
+// 6: a container carries the bytes of the images its source embedded (sections 21 and 22). An
+//    entry built at 5 from a GLB has none of them, so it draws that mesh untextured while the
+//    glTF beside it draws it textured — the same mesh, two pictures, depending on whether the
+//    cache was warm. Such an entry is not merely missing a section: it is the wrong answer.
+inline constexpr u32 k_cluster_cache_version = 6;
 
 // The cache key: the source's content hash (`assets::source_mesh_hash`) mixed with the build
 // options and the version above. `page_bytes` is the streaming page target the container was

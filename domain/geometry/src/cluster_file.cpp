@@ -24,7 +24,7 @@ namespace {
 
 constexpr u64 k_header_bytes = sizeof(ClusterFileHeader);
 constexpr u64 k_record_bytes = sizeof(ClusterFileSection);
-constexpr u32 k_kind_count = static_cast<u32>(ClusterSection::SkinScalars) + 1;
+constexpr u32 k_kind_count = static_cast<u32>(ClusterSection::ImageBytes) + 1;
 
 constexpr u64 align_up(u64 value) noexcept {
   const u64 a = k_cluster_file_alignment;
@@ -53,16 +53,66 @@ void add_section(Vector<Payload>& out, ClusterSection kind, u32 element_size, u6
   out.push_back(payload);
 }
 
+// Appends `text` to the string table and returns its byte offset.
+u32 add_string(Vector<u8>& strings, std::string_view text) {
+  const u32 at = strings.size();
+  strings.append(std::span<const u8>(reinterpret_cast<const u8*>(text.data()), text.size()));
+  strings.push_back(u8{0});
+  return at;
+}
+
 // Serializes `data` into `out` and returns the content hash the header carries.
 u64 encode(const ClusterFileData& data, std::string& out) {
   // The string table: every image path NUL-terminated, back to back, with its byte offset.
   Vector<u8> strings;
   Vector<u32> path_offsets;
   path_offsets.reserve(data.image_paths.size());
-  for (const std::string& path : data.image_paths) {
-    path_offsets.push_back(strings.size());
-    strings.append(std::span<const u8>(reinterpret_cast<const u8*>(path.data()), path.size()));
-    strings.push_back(u8{0});
+  for (const std::string& path : data.image_paths)
+    path_offsets.push_back(add_string(strings, path));
+
+  // The images the source embedded: their encoded bytes back to back, one record apiece saying
+  // where they landed, and their media types in the same string table. Two images with identical
+  // bytes share one copy — an exporter packs occlusion, roughness, and metallic into one texture
+  // and names it from three slots — and the hash is confirmed with a comparison, because a
+  // 64-bit collision that quietly swapped two textures would be invisible in the picture.
+  Vector<ClusterFileImage> image_records;
+  Vector<u8> image_bytes;
+  Vector<u32> mime_offsets;       // into `strings`, one per distinct media type
+  Vector<std::string> mime_seen;  // parallel to `mime_offsets`, for the lookup
+  image_records.reserve(data.images.size());
+  for (const ClusterImage& image : data.images) {
+    ClusterFileImage record;
+    if (!image.bytes.empty()) {
+      const u8* from = image.bytes.data();
+      const usize size = image.bytes.size();
+      record.hash = hash_bytes(from, size);
+      record.bytes = image.bytes.size();
+      bool shared = false;
+      for (const ClusterFileImage& earlier : image_records) {
+        if (earlier.bytes != record.bytes || earlier.hash != record.hash) continue;
+        if (std::memcmp(image_bytes.data() + earlier.offset, from, size) != 0) continue;
+        record.offset = earlier.offset;
+        shared = true;
+        break;
+      }
+      if (!shared) {
+        record.offset = image_bytes.size();
+        image_bytes.append(std::span<const u8>(from, size));
+      }
+    }
+    if (!image.mime_type.empty()) {
+      u32 at = ~u32{0};
+      for (u32 i = 0; i < mime_seen.size(); ++i) {
+        if (mime_seen[i] == image.mime_type) at = mime_offsets[i];
+      }
+      if (at == ~u32{0}) {
+        at = add_string(strings, image.mime_type);
+        mime_offsets.push_back(at);
+        mime_seen.push_back(image.mime_type);
+      }
+      record.mime = at + 1;  // one-based: zero is "the source did not say"
+    }
+    image_records.push_back(record);
   }
 
   ClusterFileScalars scalars;
@@ -78,7 +128,7 @@ u64 encode(const ClusterFileData& data, std::string& out) {
 
   const ClusterMesh& mesh = data.mesh.mesh;
   Vector<Payload> payloads;
-  payloads.reserve(16);
+  payloads.reserve(24);
   add_section(payloads, ClusterSection::Clusters, static_cast<u32>(sizeof(ClusterDesc)),
               mesh.clusters.size(), mesh.clusters.data());
   add_section(payloads, ClusterSection::Lod, static_cast<u32>(sizeof(ClusterLodDesc)),
@@ -126,6 +176,12 @@ u64 encode(const ClusterFileData& data, std::string& out) {
   const u32 skin_scalars[1] = {mesh.skin_joint_count};
   add_section(payloads, ClusterSection::SkinScalars, static_cast<u32>(sizeof(u32)), 1u,
               skin_scalars);
+  // The embedded images. Both sections are written even when there are none, for the same reason
+  // the page and skin sections are: a container's section list says what the format is, not what
+  // this mesh happened to have.
+  add_section(payloads, ClusterSection::Images, static_cast<u32>(sizeof(ClusterFileImage)),
+              image_records.size(), image_records.data());
+  add_section(payloads, ClusterSection::ImageBytes, 1u, image_bytes.size(), image_bytes.data());
 
   u64 offset = k_header_bytes + k_record_bytes * payloads.size();
   for (Payload& payload : payloads) {
@@ -166,6 +222,23 @@ void copy_section(std::span<const u8> bytes, const ClusterFileSection& section, 
 
 std::string section_label(u32 kind) {
   return std::string(cluster_section_name(kind)) + " (kind " + std::to_string(kind) + ")";
+}
+
+// One NUL-terminated string out of the `Strings` payload. `what` names the caller in the message,
+// since an image path and a media type fail for the same two reasons and read differently.
+bool read_string(std::span<const u8> bytes, const ClusterFileSection& strings, u64 at,
+                 const char* what, std::string& out, std::string* error) {
+  const u64 size = strings.element_count;
+  if (at >= size) {
+    return fail(error, std::string("cluster file ") + what + " offset " + std::to_string(at) +
+                           " is outside the " + std::to_string(size) + "-byte string table");
+  }
+  const u8* blob = bytes.data() + strings.offset;
+  const void* nul = std::memchr(blob + at, 0, static_cast<usize>(size - at));
+  if (nul == nullptr) return fail(error, "cluster file string table is not NUL-terminated");
+  out.assign(reinterpret_cast<const char*>(blob + at),
+             static_cast<usize>(static_cast<const u8*>(nul) - (blob + at)));
+  return true;
 }
 
 // Everything that can be checked without interpreting a payload: the header, the section table,
@@ -267,6 +340,8 @@ const char* cluster_section_name(u32 kind) noexcept {
     case ClusterSection::PageScalars: return "page_scalars";
     case ClusterSection::Skin: return "skin";
     case ClusterSection::SkinScalars: return "skin_scalars";
+    case ClusterSection::Images: return "images";
+    case ClusterSection::ImageBytes: return "image_bytes";
   }
   return "unknown";
 }
@@ -274,6 +349,39 @@ const char* cluster_section_name(u32 kind) noexcept {
 u64 cluster_file_hash(const ClusterFileData& data) {
   std::string bytes;
   return encode(data, bytes);
+}
+
+ClusterImageSummary summarize_cluster_images(const ClusterFileData& data) {
+  ClusterImageSummary out;
+  out.count =
+      data.image_paths.size() > data.images.size() ? data.image_paths.size() : data.images.size();
+  // The same dedup the writer does, so what a build reports and what a reader reports of the file
+  // it wrote are the same numbers: identical bytes hash the same on either side.
+  Vector<u64> hashes;
+  Vector<u32> sizes;
+  Vector<const u8*> blobs;
+  for (const ClusterImage& image : data.images) {
+    if (image.bytes.empty()) continue;
+    ++out.embedded;
+    const u64 hash = hash_bytes(image.bytes.data(), image.bytes.size());
+    bool shared = false;
+    for (u32 i = 0; i < hashes.size(); ++i) {
+      if (hashes[i] != hash || sizes[i] != image.bytes.size()) continue;
+      if (std::memcmp(blobs[i], image.bytes.data(), image.bytes.size()) != 0) continue;
+      shared = true;
+      break;
+    }
+    if (shared) {
+      ++out.deduplicated;
+      continue;
+    }
+    hashes.push_back(hash);
+    sizes.push_back(image.bytes.size());
+    blobs.push_back(image.bytes.data());
+    ++out.distinct;
+    out.bytes += image.bytes.size();
+  }
+  return out;
 }
 
 bool write_cluster_file(std::string_view path, const ClusterFileData& data, std::string* error) {
@@ -458,19 +566,57 @@ bool read_cluster_file_memory(std::span<const u8> bytes, ClusterFileData& out, s
       return fail(error, "cluster file has image paths but no string table");
     Vector<u32> offsets;
     copy_section(bytes, *paths, offsets);
-    const u8* blob = bytes.data() + strings->offset;
-    const u64 blob_size = strings->element_count;
     result.image_paths.reserve(offsets.size());
     for (const u32 at : offsets) {
-      if (at >= blob_size) {
-        return fail(error, "cluster file image path offset " + std::to_string(at) +
-                               " is outside the " + std::to_string(blob_size) +
-                               "-byte string table");
+      std::string path;
+      if (!read_string(bytes, *strings, at, "image path", path, error)) return false;
+      result.image_paths.push_back(std::move(path));
+    }
+  }
+
+  // The images the source embedded, which is what makes a container drawable on its own. The
+  // records are parallel to the paths, so a file that disagrees with itself about how many images
+  // it has is refused rather than half-read; a file with no records at all is one written before
+  // the sections existed, and it draws what it drew then.
+  if (const ClusterFileSection* records = found[static_cast<u32>(ClusterSection::Images)];
+      records != nullptr && records->element_count != 0) {
+    if (records->element_size != sizeof(ClusterFileImage)) {
+      return fail(error, "cluster file section images has " +
+                             std::to_string(records->element_size) + "-byte elements, expected " +
+                             std::to_string(sizeof(ClusterFileImage)));
+    }
+    if (records->element_count != result.image_paths.size()) {
+      return fail(error, "cluster file has " + std::to_string(records->element_count) +
+                             " image records for " + std::to_string(result.image_paths.size()) +
+                             " image paths");
+    }
+    Vector<ClusterFileImage> image_records;
+    copy_section(bytes, *records, image_records);
+    const ClusterFileSection* blob = found[static_cast<u32>(ClusterSection::ImageBytes)];
+    const u64 blob_size = blob != nullptr && blob->element_size == 1 ? blob->element_count : 0;
+    result.images.resize(image_records.size());
+    for (u32 i = 0; i < image_records.size(); ++i) {
+      const ClusterFileImage& record = image_records[i];
+      if (record.bytes != 0) {
+        if (record.offset > blob_size || record.bytes > blob_size - record.offset) {
+          return fail(error, "cluster file image " + std::to_string(i) + " names " +
+                                 std::to_string(record.bytes) + " bytes at " +
+                                 std::to_string(record.offset) + ", outside the " +
+                                 std::to_string(blob_size) + "-byte image payload");
+        }
+        result.images[i].bytes.resize(record.bytes);
+        std::memcpy(result.images[i].bytes.data(), bytes.data() + blob->offset + record.offset,
+                    static_cast<usize>(record.bytes));
       }
-      const void* nul = std::memchr(blob + at, 0, static_cast<usize>(blob_size - at));
-      if (nul == nullptr) return fail(error, "cluster file string table is not NUL-terminated");
-      const usize length = static_cast<usize>(static_cast<const u8*>(nul) - (blob + at));
-      result.image_paths.push_back(std::string(reinterpret_cast<const char*>(blob + at), length));
+      // The media type is one-based, so a record from a build that did not fill it reads empty.
+      if (record.mime != 0) {
+        if (strings == nullptr || strings->element_size != 1)
+          return fail(error, "cluster file has an image media type but no string table");
+        if (!read_string(bytes, *strings, record.mime - 1, "image media type",
+                         result.images[i].mime_type, error)) {
+          return false;
+        }
+      }
     }
   }
 

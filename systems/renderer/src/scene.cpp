@@ -91,9 +91,18 @@ void write_cluster_cache(const std::string& path, const std::string& source,
     }
     data.cluster_material.push_back(default_material);
   }
+  // The image paths as the glTF gave them, and beside them the bytes of the images it embedded,
+  // so that what this container draws is what the glTF draws. Writing only the (empty) paths is
+  // what made a cache hit a different picture from a cache miss ([geometry](geometry.md)).
   data.image_paths.reserve(mesh_data.images.size());
-  for (const assets::ImageRef& image : mesh_data.images)
+  data.images.reserve(mesh_data.images.size());
+  for (const assets::ImageRef& image : mesh_data.images) {
     data.image_paths.push_back(image.uri);
+    geometry::ClusterImage carried;
+    carried.mime_type = image.mime_type;
+    carried.bytes = image.bytes;
+    data.images.push_back(std::move(carried));
+  }
 
   std::string error;
   const io::Status status = io::make_directories(io::parent_path(path));
@@ -190,13 +199,18 @@ bool load_source_mesh(const std::string& path, const SceneDesc& desc, SourceMesh
       out.data.materials.push_back(std::move(material));
       out.part_material.push_back(static_cast<i32>(out.part_material.size()));
     }
-    // An image the source embedded has no path and no bytes here: the container carries paths
-    // only, so such a material draws untextured with a warning until the texture pipeline gives
-    // images a derived form of their own.
+    // The images: a path names a file beside the source mesh, and an image the source embedded
+    // travels inside the container, so everything below is the same code for both and a container
+    // draws what its source draws. A container written before the bytes were carried has the
+    // paths alone, and an embedded image of one still draws untextured with a warning.
     out.data.images.reserve(container_data.image_paths.size());
-    for (const std::string& uri : container_data.image_paths) {
+    for (u32 i = 0; i < container_data.image_paths.size(); ++i) {
       assets::ImageRef image;
-      image.uri = uri;
+      image.uri = container_data.image_paths[i];
+      if (i < container_data.images.size()) {
+        image.mime_type = std::move(container_data.images[i].mime_type);
+        image.bytes = std::move(container_data.images[i].bytes);
+      }
       out.data.images.push_back(std::move(image));
     }
     out.part_of_cluster = std::move(container_data.cluster_material);
