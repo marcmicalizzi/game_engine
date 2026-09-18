@@ -437,7 +437,10 @@ around a rigid two-bone core pressed to 30% of its depth and released, and the s
 sustained load — which prints its own JSON lines so the whole experiment re-runs on another
 machine from one command. Both live in `engine_physics_bench`; a benchmark argument is one
 integer, so the E19 sweeps pack their four dimensions into a decimal key
-(`elements * 1e6 + workers * 1e4 + iterations * 10 + sub_steps`).
+(`elements * 1e6 + workers * 1e4 + iterations * 10 + sub_steps`). Under CTest the bench runs with
+`--smoke`, and the E19 fixture reads that flag (`bench::smoke_mode()`) rather than the build type:
+a four-a-side cage and phases twelve times shorter, because the release grid registers 54
+variants and at full length they cost a billed CI runner a minute per run (11 s now).
 
 **Performance notes.** `tools/dev.ps1 bench -Preset msvc-release -Filter "physics.*"`, measured on
 an i9-10980XE (18 cores), `RelWithDebInfo`, cross-platform determinism on, SSE4.2 baseline. One

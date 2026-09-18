@@ -84,24 +84,25 @@ constexpr f32 k_plate_half = 0.20f;
 // gripped top and bottom cannot bulge sideways, and a volume it cannot displace it has to lose.
 constexpr f32 k_contact_friction = 0.6f;
 
-#if ENGINE_DEBUG
-// A CTest smoke run has to be quick, and it is checking that the fixture runs at all.
-constexpr u32 k_debug_side = 4;
-constexpr u32 k_step_scale = 12;
-#else
-constexpr u32 k_step_scale = 1;
-#endif
-
-constexpr u32 scaled(u32 steps) { return steps / k_step_scale < 2 ? 2 : steps / k_step_scale; }
+// A CTest smoke run (`--smoke`, in every build) only checks that the fixture runs, so it gets a
+// four-a-side cage and phases twelve times shorter, decided at run time from the harness's flag
+// rather than from the build type: the release grid registers 54 variants, and at full length
+// they cost a hosted CI runner minutes it is billed for.
+constexpr u32 k_smoke_side = 4;
+u32 step_scale() { return bench::smoke_mode() ? 12 : 1; }
+u32 scaled(u32 steps) {
+  const u32 s = steps / step_scale();
+  return s < 2 ? 2 : s;
+}
 
 // Phase lengths at 60 Hz. The press is 0.5 s, the hold 1 s, the release 0.33 s, and the
 // recovery window 3 s (E19 asks for the shape 1 s after release, which is inside it).
-constexpr u32 k_settle_steps = scaled(150);
-constexpr u32 k_press_steps = scaled(30);
-constexpr u32 k_hold_steps = scaled(60);
-constexpr u32 k_lift_steps = scaled(20);
-constexpr u32 k_recover_steps = scaled(180);
-constexpr u32 k_one_second = scaled(60);
+u32 settle_steps() { return scaled(150); }
+u32 press_steps() { return scaled(30); }
+u32 hold_steps() { return scaled(60); }
+u32 lift_steps() { return scaled(20); }
+u32 recover_steps() { return scaled(180); }
+u32 one_second() { return scaled(60); }
 
 // --- the configuration grid ---------------------------------------------------------------
 //
@@ -257,12 +258,7 @@ struct Scene {
 };
 
 void Scene::build(const Config& config, jobs::JobSystem* job_system) {
-#if ENGINE_DEBUG
-  const u32 n = k_debug_side;
-  (void)config.elements;
-#else
-  const u32 n = lattice_side(config.elements);
-#endif
+  const u32 n = bench::smoke_mode() ? k_smoke_side : lattice_side(config.elements);
   const f32 spacing = k_cage_side / static_cast<f32>(n - 1);
 
   WorldOptions options;
@@ -404,7 +400,7 @@ void Scene::build(const Config& config, jobs::JobSystem* job_system) {
 }
 
 void Scene::settle() {
-  for (u32 i = 0; i < k_settle_steps; ++i)
+  for (u32 i = 0; i < settle_steps(); ++i)
     step();
   read();
   settled.clear();
@@ -483,12 +479,12 @@ void press_and_hold(Scene& scene) {
   const Extent extent = vertical_extent(std::span<const Vec3>(scene.points));
   const f32 target = extent.min + 0.70f * scene.rest_height + k_plate_half;
   scene.place_plate(extent.max + k_plate_half + 0.005f);
-  const f32 travel = (scene.plate_y - target) / static_cast<f32>(k_press_steps);
-  for (u32 i = 0; i < k_press_steps; ++i) {
+  const f32 travel = (scene.plate_y - target) / static_cast<f32>(press_steps());
+  for (u32 i = 0; i < press_steps(); ++i) {
     scene.move_plate(scene.plate_y - travel);
     scene.step();
   }
-  for (u32 i = 0; i < k_hold_steps; ++i) {
+  for (u32 i = 0; i < hold_steps(); ++i) {
     scene.move_plate(target);
     scene.step();
   }
@@ -590,8 +586,8 @@ PressResult run_press_cycle(Scene& scene) {
 
   // Press: 30% of the cage's depth over half a second.
   scene.place_plate(extent.max + k_plate_half + 0.005f);
-  const f32 travel = (scene.plate_y - target) / static_cast<f32>(k_press_steps);
-  for (u32 i = 0; i < k_press_steps; ++i) {
+  const f32 travel = (scene.plate_y - target) / static_cast<f32>(press_steps());
+  for (u32 i = 0; i < press_steps(); ++i) {
     scene.move_plate(scene.plate_y - travel);
     scene.step();
     if (!sample()) continue;
@@ -606,7 +602,7 @@ PressResult run_press_cycle(Scene& scene) {
   // measuring the harness. The bench harness's own `physics.e19.tick` is the authority on cost
   // either way; this number is here so that a single scenario run carries its own.
   i64 hold_ns = 0;
-  for (u32 i = 0; i < k_hold_steps; ++i) {
+  for (u32 i = 0; i < hold_steps(); ++i) {
     scene.move_plate(target);
     const i64 step_start = time::monotonic_ns();
     scene.step();
@@ -617,7 +613,7 @@ PressResult run_press_cycle(Scene& scene) {
                       scene.rest_volume;
     if (ratio < result.volume_min_load) result.volume_min_load = ratio;
   }
-  result.hold_us_per_tick = static_cast<f64>(hold_ns) / 1000.0 / static_cast<f64>(k_hold_steps);
+  result.hold_us_per_tick = static_cast<f64>(hold_ns) / 1000.0 / static_cast<f64>(hold_steps());
   if (!result.diverged) {
     result.pressed_ratio =
         vertical_extent(std::span<const Vec3>(scene.points)).size() / scene.rest_height;
@@ -637,7 +633,7 @@ PressResult run_press_cycle(Scene& scene) {
       result.recovery_ms = 1000.0f * static_cast<f32>(since_release) * scene.dt;
     }
   };
-  for (u32 i = 0; i < k_lift_steps; ++i) {
+  for (u32 i = 0; i < lift_steps(); ++i) {
     scene.move_plate(scene.plate_y + 0.05f);
     scene.step();
     if (!sample()) continue;
@@ -650,11 +646,11 @@ PressResult run_press_cycle(Scene& scene) {
   }
 
   // Recover, watching for 95% of the rest height and for the shape one second later.
-  for (u32 i = 0; i < k_recover_steps; ++i) {
+  for (u32 i = 0; i < recover_steps(); ++i) {
     scene.step();
     if (!sample()) continue;
     watch_recovery();
-    if (i + 1 == k_one_second) {
+    if (i + 1 == one_second()) {
       result.volume_plus_1s = surface_volume(std::span<const Vec3>(scene.points),
                                              std::span<const u32>(scene.lattice.faces)) /
                               scene.rest_volume;
@@ -721,14 +717,14 @@ ENGINE_BENCH_ARGS(physics_e19_press, "physics.e19.press", ENGINE_E19_PRESS_ARGS)
       print_press(state.arg(), config, scene, result);
     }
   }
-  state.set_items(k_press_steps + k_hold_steps + k_lift_steps + k_recover_steps);
+  state.set_items(press_steps() + hold_steps() + lift_steps() + recover_steps());
 }
 
 // --- sustained load (E22's shape) -------------------------------------------------------------
 
 namespace {
 
-constexpr u32 k_sustained_steps = scaled(1200);  // 20 s at 60 Hz
+u32 sustained_steps() { return scaled(1200); }  // 20 s at 60 Hz
 
 struct SustainedResult {
   f32 height_at_2s = 0.0f;
@@ -774,9 +770,9 @@ SustainedResult run_sustained(Scene& scene, f32 load_ratio) {
 
   f32 min_height_after_2s = 1.0e30f;
   f32 max_height_after_2s = 0.0f;
-  const u32 settle_under_load = k_one_second * 2;
+  const u32 settle_under_load = one_second() * 2;
   const i64 start = time::monotonic_ns();
-  for (u32 i = 0; i < k_sustained_steps; ++i) {
+  for (u32 i = 0; i < sustained_steps(); ++i) {
     previous.clear();
     previous.append(std::span<const Vec3>(scene.points));
     scene.step();
@@ -792,7 +788,7 @@ SustainedResult run_sustained(Scene& scene, f32 load_ratio) {
       if (now.size() < min_height_after_2s) min_height_after_2s = now.size();
       if (now.size() > max_height_after_2s) max_height_after_2s = now.size();
     }
-    if (i + 1 == k_sustained_steps) {
+    if (i + 1 == sustained_steps()) {
       result.height_at_end = now.size();
       result.speed_mm_s_at_end = speed_mm_s();
       result.volume_at_end = surface_volume(std::span<const Vec3>(scene.points),
@@ -801,7 +797,7 @@ SustainedResult run_sustained(Scene& scene, f32 load_ratio) {
     }
   }
   result.us_per_tick =
-      static_cast<f64>(time::monotonic_ns() - start) / 1000.0 / static_cast<f64>(k_sustained_steps);
+      static_cast<f64>(time::monotonic_ns() - start) / 1000.0 / static_cast<f64>(sustained_steps());
   result.creep_mm = 1000.0f * (result.height_at_2s - result.height_at_end);
   result.oscillation_mm = 1000.0f * (max_height_after_2s - min_height_after_2s);
   return result;
@@ -816,7 +812,7 @@ void print_sustained(const Config& config, const Scene& scene, f32 load_ratio,
       "\"oscillation_mm\":%.3f,\"speed_mm_s_at_2s\":%.3f,\"speed_mm_s_at_end\":%.3f,"
       "\"plane_penetration_mm\":%.3f,\"volume_at_end\":%.4f,\"us_per_tick\":%.1f}\n",
       ENGINE_DEBUG ? "debug" : "release", scene.vertex_count, config.workers, config.iterations,
-      config.sub_steps, static_cast<f64>(k_sustained_steps) * static_cast<f64>(scene.dt),
+      config.sub_steps, static_cast<f64>(sustained_steps()) * static_cast<f64>(scene.dt),
       static_cast<f64>(load_ratio), static_cast<f64>(load_ratio * scene.total_mass),
       static_cast<f64>(r.height_at_2s), static_cast<f64>(r.height_at_end),
       static_cast<f64>(r.creep_mm), static_cast<f64>(r.oscillation_mm),
@@ -852,5 +848,5 @@ ENGINE_BENCH_ARGS(physics_e19_sustained, "physics.e19.sustained", 1, 5) {
       print_sustained(config, scene, load_ratio, result);
     }
   }
-  state.set_items(k_sustained_steps);
+  state.set_items(sustained_steps());
 }
