@@ -91,8 +91,8 @@ struct ComponentMask {
 // **64, one word, for the same reason components get 256**: the conflict test runs once per pair of
 // systems in a phase when the schedule is built, and one `and` is the whole of it. Resources are
 // per *capability* and not per type, so 64 is a different order of magnitude from the component
-// count and the cap is stated, asserted and cheap to raise ([ADR-0017](
-// ../../../docs/adr/0017-no-hidden-limits.md)).
+// count, and the cap is stated, asserted and cheap to raise
+// ([ADR-0017](../../../docs/adr/0017-no-hidden-limits.md)).
 inline constexpr u32 k_resource_mask_words = 1;
 inline constexpr u32 k_max_resources = k_resource_mask_words * 64;
 inline constexpr u32 k_invalid_resource = 0xFFFF'FFFFu;
