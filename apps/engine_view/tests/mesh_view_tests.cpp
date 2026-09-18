@@ -363,13 +363,4 @@ TEST_CASE("engine-view: renders a glTF mesh with one cluster DAG per material") 
   }
   const Run broken = view({"--frames", "1", "--ddc", ddc, "--mesh", not_a_container});
   CHECK(broken.exit_code == 1);
-  // The fixture and the capture stay next to the temp directory for a look after the run. This
-  // is a convenience, not an assertion: a copy that cannot be made says so and nothing else.
-  const auto temp = std::filesystem::temp_directory_path();
-  std::error_code copy_error;
-  std::filesystem::copy_file(dir / "cube.glb", temp / "engine_view_mesh_cube.glb",
-                             std::filesystem::copy_options::overwrite_existing, copy_error);
-  std::filesystem::copy_file(dir / "mesh.png", temp / "engine_view_mesh_last.png",
-                             std::filesystem::copy_options::overwrite_existing, copy_error);
-  if (copy_error) MESSAGE("the fixture copies were not kept: " << copy_error.message());
 }

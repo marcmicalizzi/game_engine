@@ -139,17 +139,12 @@ try {
   Set-FixtureFile $root 'domain/nav/tests/nav_tests.cpp' "#include <cstdio>`nchar* p = tmpnam(nullptr);  // engine-lint: allow-temp-path deliberate`n"
   Test-That 'a line-level marker opts out of the temp-path rule' { (Invoke-Lint $root).Code -eq 0 }
 
-  # A `Pending` path is a deadline, not an exemption: the violation is printed on every run and
-  # the run still passes, so a conversion in flight does not turn the gate red and cannot be
-  # forgotten either. Both halves are asserted, because silence would be the failure here.
+  # The `Pending` list is empty (2026-09-18): the one path that was on it, engine-view's tests, is
+  # held to the rule like every other test directory. The mechanism stays in lint.ps1 for the next
+  # conversion in flight; with nothing listed there is nothing of it to assert here.
   $root = New-Fixture
   Set-FixtureFile $root 'apps/engine_view/tests/mesh_view_tests.cpp' "#include <filesystem>`nauto t = std::filesystem::temp_directory_path();`n"
-  $pendingResult = Invoke-Lint $root
-  Test-That 'a Pending path does not fail the run' { $pendingResult.Code -eq 0 }
-  Test-That 'but is reported on every run' {
-    $pendingResult.Out.Contains('apps/engine_view/tests/mesh_view_tests.cpp:2: [test-temp-path]') -and
-    $pendingResult.Out.Contains('Pending list')
-  }
+  Test-Reports 'a path that used to be pending is held to the rule again' $root 'apps/engine_view/tests/mesh_view_tests.cpp:2: [test-temp-path]'
 
   $root = New-Fixture
   Set-FixtureFile $root 'domain/physics/src/solver.cpp' "#include <map>`nnamespace engine::physics { std::map<int, int> m; }`n"

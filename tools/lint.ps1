@@ -71,11 +71,9 @@ $rules = @(
      AllowedPaths = @('tests/support')
      # `Pending` is a deadline, not an exemption: a path listed here is known to be wrong and is
      # being converted by whoever owns it, so the lint reports it on every run and still exits 0.
-     # The list is meant to reach zero and then disappear along with this field.
-     #   apps/engine_view/tests — mesh_view_tests.cpp keeps its fixture and last capture at two
-     #   fixed names under the system temp directory, the same "for a look afterwards" copy
-     #   engine-content's test just lost; owned by another change in flight (2026-09-18).
-     Pending = @('apps/engine_view/tests')
+     # Empty since 2026-09-18, when the last fixed temp names (engine-view's kept fixture copies)
+     # went; keep it empty.
+     Pending = @()
      Message = 'a test or bench names no path under the system temp directory; take scratch space from engine::test::TempDir (<test_temp_dir.h>), see AGENTS.md "Test hygiene"' }
 )
 
