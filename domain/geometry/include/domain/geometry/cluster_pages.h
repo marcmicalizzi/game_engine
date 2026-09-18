@@ -195,8 +195,9 @@ u32 select_lod_streaming(const ClusterLodMesh& mesh, const LodView& view, const 
 class PageResidencyManager {
  public:
   // Points the manager at a page table and a budget. Every `k_page_root` page becomes resident,
-  // whatever the budget says. Fails on an empty page table. The table must outlive nothing: its
-  // sizes and child lists are copied.
+  // whatever the budget says — a budget below them is not honoured, because a mesh missing one
+  // of them cannot be drawn at all. Fails on an empty page table. The sizes, flags, and child
+  // lists are copied, so `table` does not have to outlive the manager.
   bool reset(const ClusterPages& table, u64 budget, std::string* error = nullptr);
 
   void set_budget(u64 budget) noexcept { budget_ = budget; }
