@@ -462,16 +462,12 @@ TEST_CASE("engine-content: build writes a cluster file that reads back and valid
   REQUIRE_MESSAGE(tight.exit_code == 0, tight.output);
   CHECK(number(tight.result, "leaf_clusters") >= 4);  // twelve triangles, four per cluster
 
-  // The built container stays behind for a look after the run. The destination is deliberately
-  // one fixed name — "the last one built" is the whole point of it — so it is the one path here
-  // two runs may still meet on, and the copy is therefore best-effort: a copy that cannot be
-  // made says so and nothing else. Nothing reads it, so nothing may fail over it.
-  std::error_code kept;
-  std::filesystem::copy_file(
-      dir / "cube.clusters",
-      std::filesystem::temp_directory_path() / "engine_content_cube.clusters",
-      std::filesystem::copy_options::overwrite_existing, kept);
-  if (kept) MESSAGE("the container copy was not kept: " << kept.message());
+  // This test used to copy the container it built to one fixed name under the system temp
+  // directory, so that "the last one built" stayed behind for a look. That was the last fixed
+  // temp path in the tree and the one two concurrent runs could still meet on, which is what
+  // AGENTS.md's "Test hygiene" now rules out outright. Nothing read the copy, so it is gone;
+  // a failing run keeps this test's whole scratch directory and prints where (TempDir), and a
+  // container to look at on a *passing* run is one `engine-content build` away.
 }
 
 TEST_CASE("engine-content: --cache writes the container the source's hash addresses") {
