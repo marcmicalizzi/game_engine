@@ -7,14 +7,17 @@
 #include <core/platform/topology.h>
 #include <core/time/time.h>
 #include <foundation/bench/bench.h>
+#include <foundation/bench/machine_state.h>
 #include <foundation/tunables/tunables.h>
 
 #include <algorithm>
 #include <charconv>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <mutex>
+#include <thread>
 
 namespace engine::bench {
 
@@ -103,8 +106,14 @@ Vector<const Registration*> matching(std::string_view filter) {
 const char* usage_text() {
   return "usage: <bench> [filter] [--list] [--filter=<glob>] [--repeats=N] [--warmup=N]\n"
          "               [--min-time=<ms>] [--smoke] [--quiet] [--no-pin] [--json=<path>]\n"
-         "               [--sweep=<tunable>=<v1;v2;...>] [--set=<tunable=value,...>]\n";
+         "               [--sweep=<tunable>=<v1;v2;...>] [--set=<tunable=value,...>]\n"
+         "               [--require-quiet] [--wait-quiet=<seconds>]\n"
+         "               [--quiet-cpu=<pct>] [--quiet-gpu=<pct>]\n";
 }
+
+// How often --wait-quiet looks again. A diffusion job or another agent's build ends on its own
+// schedule and polling faster only costs a CPU sample each time.
+constexpr i64 k_poll_interval_s = 5;
 
 }  // namespace
 
@@ -323,6 +332,44 @@ int run(const Options& options, Vector<Result>* results) {
     sweep_target->append_value(sweep_original);
   }
 
+  // What else the machine is doing (machine_state.h). A smoke run neither samples nor waits:
+  // it answers "does this run at all", CTest runs one per module, and a quarter second plus a
+  // process spawn per module buys nothing there. Nothing has been changed yet at this point, so
+  // an early return needs no unwinding.
+  MachineSampler& sampler = options.sampler != nullptr ? *options.sampler : system_sampler();
+  MachineState start;
+  const bool sampled = !options.smoke;
+  if (sampled) {
+    start = sampler.sample(k_sample_window_ms);
+    if (!is_quiet(start, options.quiet_thresholds)) {
+      if (options.require_quiet) {
+        std::fprintf(stderr, "bench: the machine is busy and --require-quiet was given: %s\n",
+                     describe(start).c_str());
+        return k_exit_not_quiet;
+      }
+      if (options.wait_quiet_s > 0) {
+        std::fprintf(stderr, "bench: waiting up to %lld s for a quiet machine: %s\n",
+                     static_cast<long long>(options.wait_quiet_s), describe(start).c_str());
+        const i64 began_ns = time::monotonic_ns();
+        const i64 deadline_ns = began_ns + options.wait_quiet_s * i64{1'000'000'000};
+        for (;;) {
+          // Never sleep past the deadline: --wait-quiet is a bound on the waiting, not a
+          // rounding of it up to the next poll.
+          const i64 remaining_ns = deadline_ns - time::monotonic_ns();
+          if (remaining_ns <= 0) break;
+          const i64 sleep_ns = std::min(remaining_ns, k_poll_interval_s * i64{1'000'000'000});
+          std::this_thread::sleep_for(std::chrono::nanoseconds(sleep_ns));
+          start = sampler.sample(k_sample_window_ms);
+          if (is_quiet(start, options.quiet_thresholds)) break;
+        }
+        std::fprintf(stderr, "bench: proceeding on a %s machine after %.0f s: %s\n",
+                     is_quiet(start, options.quiet_thresholds) ? "quiet" : "busy",
+                     static_cast<f64>(time::monotonic_ns() - began_ns) / 1e9,
+                     describe(start).c_str());
+      }
+    }
+  }
+
   if (options.pin && !options.smoke) {
     const platform::Topology& topo = platform::topology();
     if (!topo.performance_cpus.empty())
@@ -330,6 +377,11 @@ int run(const Options& options, Vector<Result>* results) {
     (void)platform::set_current_thread_priority(platform::ThreadPriority::High);
   }
 
+  // The file is opened now so that a path that cannot be written fails before anything runs,
+  // and written when the run ends: the header carries the machine's state at *both* ends of the
+  // run, and the closing sample does not exist until the last benchmark has finished. A run
+  // killed part way therefore leaves no JSON, which is the right trade — its numbers were taken
+  // under whatever killed it.
   std::FILE* json = nullptr;
   if (!options.json_path.empty()) {
     const std::string path(options.json_path);
@@ -342,17 +394,6 @@ int run(const Options& options, Vector<Result>* results) {
       std::fprintf(stderr, "bench: cannot open '%s'\n", path.c_str());
       return 2;
     }
-    JsonValue header = JsonValue::object();
-    header.set("header", true);
-    header.set("cpu", platform::cpu_features().brand);
-    header.set("logical_cpus", static_cast<u32>(platform::topology().cpu_count()));
-    header.set("cache_domains", static_cast<u32>(platform::topology().cache_domains.size()));
-    header.set("build", ENGINE_DEBUG ? "debug" : "release");
-    header.set("unix_ms", time::wall_unix_ms());
-    header.set("smoke", options.smoke);
-    std::string line = write_json(header, JsonWriteOptions{.pretty = false});
-    line.push_back('\n');
-    std::fwrite(line.data(), 1, line.size(), json);
   }
 
   const Vector<const Registration*> regs = matching(options.filter);
@@ -367,8 +408,12 @@ int run(const Options& options, Vector<Result>* results) {
   Vector<std::string> baseline_names;
   Vector<f64> baseline_medians;
 
+  // Results are held until the run ends so that each one can carry the worst "others" CPU of
+  // the whole run, which is not known until the closing sample.
+  Vector<Result> ran_results;
+  Vector<f64> ran_relatives;
+
   const u32 sweep_count = sweep_target != nullptr ? sweep_values.size() : 1;
-  usize ran = 0;
   for (u32 si = 0; si < sweep_count; ++si) {
     std::string tunable_text;
     if (sweep_target != nullptr) {
@@ -391,7 +436,6 @@ int run(const Options& options, Vector<Result>* results) {
             all_args.empty() ? std::span<const i64>{} : all_args.subspan(ai, 1);
         Result result = Runner::measure_one(*reg, args, options);
         result.tunable = tunable_text;
-        ++ran;
 
         f64 relative = 0;
         if (sweep_target != nullptr) {
@@ -430,34 +474,85 @@ int run(const Options& options, Vector<Result>* results) {
           write_line(stdout, line);
         }
 
-        if (json != nullptr) {
-          JsonValue o = JsonValue::object();
-          o.set("bench", result.name);
-          if (!result.tunable.empty()) o.set("tunable", result.tunable);
-          o.set("iterations", result.iterations);
-          o.set("repeats", result.repeats);
-          o.set("median_ns", result.median_ns);
-          o.set("min_ns", result.min_ns);
-          o.set("max_ns", result.max_ns);
-          o.set("mean_ns", result.mean_ns);
-          o.set("stddev_ns", result.stddev_ns);
-          o.set("items", result.items_per_iteration);
-          o.set("bytes", result.bytes_per_iteration);
-          o.set("items_per_s", result.items_per_second());
-          if (sweep_target != nullptr) o.set("relative", relative);
-          std::string line = write_json(o, JsonWriteOptions{.pretty = false});
-          line.push_back('\n');
-          std::fwrite(line.data(), 1, line.size(), json);
-        }
-
-        if (results != nullptr) results->push_back(std::move(result));
+        ran_results.push_back(std::move(result));
+        ran_relatives.push_back(relative);
       }
     }
   }
 
   if (sweep_target != nullptr) (void)sweep_target->set_from_text(sweep_original);
-  if (json != nullptr) std::fclose(json);
-  if (!options.quiet && ran == 0) write_line(stdout, "bench: no benchmark matched the filter\n");
+
+  // The closing sample, and the worst of the two: a run that started quiet and ended under a
+  // diffusion job is not a quiet run, and the report says so once for the whole table.
+  MachineState finish;
+  MachineState worst;
+  if (sampled) {
+    finish = sampler.sample(k_sample_window_ms);
+    worst = worst_of(start, finish);
+  }
+  for (Result& result : ran_results) {
+    result.machine_state_known = sampled;
+    result.worst_others_cpu_pct = sampled && worst.cpu_valid ? worst.cpu_others_pct : 0.0;
+  }
+
+  if (json != nullptr) {
+    JsonValue header = JsonValue::object();
+    header.set("header", true);
+    header.set("cpu", platform::cpu_features().brand);
+    header.set("logical_cpus", static_cast<u32>(platform::topology().cpu_count()));
+    header.set("cache_domains", static_cast<u32>(platform::topology().cache_domains.size()));
+    header.set("build", ENGINE_DEBUG ? "debug" : "release");
+    header.set("unix_ms", time::wall_unix_ms());
+    header.set("smoke", options.smoke);
+    if (sampled) {
+      JsonValue machine = JsonValue::object();
+      machine.set("start", machine_state_json(start));
+      machine.set("end", machine_state_json(finish));
+      header.set("machine_state", std::move(machine));
+    } else {
+      header.set("machine_state", JsonValue::null());
+    }
+    std::string line = write_json(header, JsonWriteOptions{.pretty = false});
+    line.push_back('\n');
+    std::fwrite(line.data(), 1, line.size(), json);
+
+    for (u32 i = 0; i < ran_results.size(); ++i) {
+      const Result& result = ran_results[i];
+      JsonValue o = JsonValue::object();
+      o.set("bench", result.name);
+      if (!result.tunable.empty()) o.set("tunable", result.tunable);
+      o.set("iterations", result.iterations);
+      o.set("repeats", result.repeats);
+      o.set("median_ns", result.median_ns);
+      o.set("min_ns", result.min_ns);
+      o.set("max_ns", result.max_ns);
+      o.set("mean_ns", result.mean_ns);
+      o.set("stddev_ns", result.stddev_ns);
+      o.set("items", result.items_per_iteration);
+      o.set("bytes", result.bytes_per_iteration);
+      o.set("items_per_s", result.items_per_second());
+      o.set("worst_others_cpu_pct", result.machine_state_known && worst.cpu_valid
+                                        ? JsonValue(result.worst_others_cpu_pct)
+                                        : JsonValue::null());
+      if (sweep_target != nullptr) o.set("relative", ran_relatives[i]);
+      line = write_json(o, JsonWriteOptions{.pretty = false});
+      line.push_back('\n');
+      std::fwrite(line.data(), 1, line.size(), json);
+    }
+    std::fclose(json);
+  }
+
+  // One line, under the table it qualifies. With --quiet there is no table to put it under, so
+  // it goes to stderr rather than being lost.
+  if (sampled) (void)warn_if_busy(worst, options.quiet_thresholds, options.quiet ? stderr : stdout);
+
+  if (results != nullptr) {
+    for (Result& result : ran_results)
+      results->push_back(std::move(result));
+  }
+  if (!options.quiet && ran_results.empty()) {
+    write_line(stdout, "bench: no benchmark matched the filter\n");
+  }
   std::fflush(stdout);
   return 0;
 }
@@ -484,6 +579,8 @@ int run_main(int argc, char** argv) {
       options.quiet = true;
     } else if (a == "--no-pin") {
       options.pin = false;
+    } else if (a == "--require-quiet") {
+      options.require_quiet = true;
     } else if (a == "--help" || a == "-h") {
       write_line(stdout, usage_text());
       return 0;
@@ -513,6 +610,27 @@ int run_main(int argc, char** argv) {
         return 2;
       }
       options.min_time_ns = static_cast<i64>(ms * 1e6);
+    } else if (value_of("--wait-quiet=")) {
+      f64 seconds = 0;
+      if (!parse_f64(v, seconds) || seconds < 0) {
+        std::fprintf(stderr, "bench: --wait-quiet expects seconds\n");
+        return 2;
+      }
+      options.wait_quiet_s = static_cast<i64>(seconds);
+    } else if (value_of("--quiet-cpu=")) {
+      f64 pct = 0;
+      if (!parse_f64(v, pct) || pct < 0 || pct > 100) {
+        std::fprintf(stderr, "bench: --quiet-cpu expects a percentage in 0..100\n");
+        return 2;
+      }
+      options.quiet_thresholds.others_cpu_pct = pct;
+    } else if (value_of("--quiet-gpu=")) {
+      f64 pct = 0;
+      if (!parse_f64(v, pct) || pct < 0 || pct > 100) {
+        std::fprintf(stderr, "bench: --quiet-gpu expects a percentage in 0..100\n");
+        return 2;
+      }
+      options.quiet_thresholds.gpu_util_pct = pct;
     } else if (!a.empty() && a[0] != '-') {
       options.filter = a;
     } else {

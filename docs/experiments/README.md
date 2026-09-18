@@ -1,0 +1,51 @@
+# Experiment write-ups
+
+The measurements the decisions rest on. [10 §10.5](../plan/10-roadmap-risks.md#105-experiments-to-run-before-committing) lists the experiments and what each one is meant to settle; a row there that reports **Done** or **Measured** must link a page here, and `tools/docs-check.ps1` fails a push where it does not.
+
+A write-up is not a benchmark log. It is the page a future contributor reads instead of re-running the experiment, so it has to say what was measured, on what, **beside what**, and what the numbers do not cover.
+
+| Experiment | Page | Settles |
+|---|---|---|
+| E1 | [e1-raster-crossover.md](e1-raster-crossover.md) | hardware against software rasterization of small clusters ([ADR-0024](../adr/0024-hardware-rasterization-first.md)) |
+| E2 | [e2-cluster-acceleration.md](e2-cluster-acceleration.md) | cluster acceleration structures against one bottom-level structure per cut ([ADR-0025](../adr/0025-cluster-acceleration-structures.md)) |
+| E6 | [e6-ecs-store.md](e6-ecs-store.md) | flecs at 10^5 entities and SQLite at 10^6 projection records ([ADR-0028](../adr/0028-ecs-and-persistent-store.md)) |
+| E19 | [e19-lattice-cage.md](e19-lattice-cage.md) | what a lattice cage costs against ADR-0026's per-tick budget |
+| E25 | [e25-deformed-clusters.md](e25-deformed-clusters.md) | the deformed-vertex pool, and cluster templates for deforming geometry |
+
+## The skeleton
+
+```markdown
+# E<n>: <the question in a phrase>
+
+- **Question ([10 §10.5](../plan/10-roadmap-risks.md#105-experiments-to-run-before-committing)):** what this decides, and which plan section asked.
+- **Date:** YYYY-MM-DD. **Machine:** CPU, cores, RAM, OS; **GPU:** model, driver, API version. **Build:** the preset.
+- **Machine state:** what else the machine was doing. See below — this line is mandatory.
+- **Decision:** the ADR or the plan status note this produced, and its status.
+
+## Setup
+What was built, what was measured, and the exact command lines that reproduce it.
+
+## Results
+Tables. Medians, and the spread when it matters.
+
+## What surprised me
+The numbers that did not match the plan's guess, and why. This section is the reason to read the page.
+
+## What it decides
+And what it explicitly does not.
+
+## Caveats
+One machine, one driver, one corpus; what a second data point would likely change.
+```
+
+## The "Machine state" line
+
+**Every write-up says what else the machine was doing while its numbers were taken.** This project's development box is shared with GPU diffusion workloads and with several agents compiling and testing at once, so "otherwise idle" is a claim that has to be *checked*, not assumed — and a number taken beside a full GPU or a parallel build is an upper bound on the cost rather than the cost. Attributing a loaded environment's numbers to poor performance is how a budget gets set against a figure nobody can reproduce.
+
+The harness records it (`foundation/bench`, [bench.md](../subsystems/bench.md#measuring-on-a-shared-machine)): a measured run samples the CPU, GPU and session-lock state before and after itself, writes both into the JSON header, and prints one WARNING line when other processes used more than 10% of the CPU or the GPU was more than 20% busy. So the line has one of three honest forms:
+
+- **`Machine state: quiet.`** Measured with `--require-quiet`, or with `--wait-quiet=<n>` reporting a quiet machine, and no WARNING. Say which flag, and say it if you widened a threshold.
+- **`Machine state: <the numbers>, WARNING raised.`** Quote the warning. The numbers are upper bounds; ratios measured in the same run survive, comparisons against another day's numbers do not.
+- **`Machine state: not recorded at the time.`** For a page written before the harness knew how to look. Say what the machine is normally doing, and re-measure when a decision turns on the number.
+
+A GPU measurement adds the renderer's own `gpu_memory` block (`budget_mib`, `used_mib`, `device_local_total_mib`), which is what says whether another process was holding the card's memory while the frame was timed.

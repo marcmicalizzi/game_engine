@@ -27,6 +27,7 @@
 #include <core/base/macros.h>
 #include <core/base/types.h>
 #include <core/containers/vector.h>
+#include <foundation/bench/machine_state.h>
 
 #include <atomic>
 #include <span>
@@ -127,7 +128,18 @@ struct Options {
   std::string_view json_path;     // append JSON lines here
   std::string_view sweep;         // "tunable=v1;v2;v3"
   std::string_view overrides;     // "tunable=value,..." applied before running
+
+  // Measurement hygiene on a shared machine (machine_state.h, docs/subsystems/bench.md). A
+  // measured run samples the machine before and after itself; `smoke` runs skip all of this,
+  // because a "does it run at all" pass is not a measurement and CTest should not pay for it.
+  QuietThresholds quiet_thresholds;   // what counts as a machine somebody else is using
+  bool require_quiet = false;         // refuse to measure a busy machine: exit code 4, nothing run
+  i64 wait_quiet_s = 0;               // poll every 5 s until quiet or this many seconds have passed
+  MachineSampler* sampler = nullptr;  // null uses system_sampler(); tests inject a fake
 };
+
+// run() returns this instead of measuring when --require-quiet finds a busy machine.
+inline constexpr int k_exit_not_quiet = 4;
 
 struct Result {
   std::string name;     // registration name, plus "/<arg>" when the benchmark has arguments
@@ -141,6 +153,10 @@ struct Result {
   f64 stddev_ns = 0;
   u64 items_per_iteration = 0;
   u64 bytes_per_iteration = 0;
+  // The worst "others" CPU percentage any sample of the run this result came from saw, so that
+  // one JSON line carries its own caveat. False when the run took no sample (a smoke run).
+  bool machine_state_known = false;
+  f64 worst_others_cpu_pct = 0;
 
   f64 items_per_second() const noexcept {
     return median_ns > 0 ? static_cast<f64>(items_per_iteration) * 1e9 / median_ns : 0;
@@ -151,7 +167,9 @@ struct Result {
 };
 
 // Runs every registered benchmark matching the filter. Returns a process exit code: 0 on
-// success, 2 for a bad option or tunable. Results are appended to `results` when given.
+// success, 2 for a bad option or tunable, 4 when --require-quiet found a busy machine (nothing
+// was measured). Results are appended to `results` when given, after the closing sample, so
+// that every one of them carries the run's worst "others" CPU.
 int run(const Options& options, Vector<Result>* results = nullptr);
 // True while run() executes with Options::smoke: fixtures built outside any State (a corpus a
 // whole bench file shares) size themselves from this, so the CTest smoke run stays seconds long.
@@ -160,6 +178,7 @@ bool smoke_mode() noexcept;
 // Command-line entry point used by every bench executable:
 //   --list  --filter=<glob>  --repeats=N  --warmup=N  --min-time=<ms>  --smoke  --quiet
 //   --no-pin  --json=<path>  --sweep=<tunable>=<v1;v2;...>  --set=<tunable=value,...>
+//   --require-quiet  --wait-quiet=<seconds>  --quiet-cpu=<pct>  --quiet-gpu=<pct>
 // A bare argument is a filter.
 int run_main(int argc, char** argv);
 
