@@ -45,7 +45,12 @@ ENGINE_EXPECT_SIZE(40, 8, SystemContext);
 // so sixteen bytes there buy an ordering the schedule could not otherwise express.
 ENGINE_EXPECT_SIZE(136, 8, SystemDesc);
 ENGINE_EXPECT_SIZE(4, 2, ScheduleEntry);
-ENGINE_EXPECT_SIZE(40, 8, EntityRecord);
+ENGINE_EXPECT_SIZE(8, 8, EntityHandle);
+// 48 and not 40: the record's entity is the `Id128` that survived the store (ADR-0028 seam 3), not
+// a `u64` whose meaning the reader had to guess. A tile's records are loaded in bulk, so this is
+// eight bytes per projection row on the reconciliation path; the price of a name that is the same
+// name in the save, the protocol and the log is worth paying once there.
+ENGINE_EXPECT_SIZE(48, 8, EntityRecord);
 ENGINE_EXPECT_SIZE(56, 8, MaterializationHooks);
 ENGINE_EXPECT_SIZE(16, 8, TileState);
 ENGINE_EXPECT_SIZE(24, 8, TileStore);

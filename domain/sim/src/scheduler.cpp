@@ -380,11 +380,14 @@ u32 SimScheduler::advance(i64 real_ns) {
 }
 
 void SimScheduler::apply_tier_changes(std::span<const TierChange> changes,
-                                      std::span<const u64> entities) {
+                                      std::span<const EntityHandle> entities) {
   for (usize c = 0; c < changes.size(); ++c) {
     const TierChange change = changes[c];
     if (change.index >= entities.size()) continue;
-    const u64 entity = entities[change.index];
+    const EntityHandle entity = entities[change.index];
+    // A null handle is a row no hook materialized: there is nothing live to promote or demote, and
+    // handing a hook a handle that names nothing is how a capability learns to check for it.
+    if (entity.is_null()) continue;
     if (change.to == change.from) continue;
     for (u32 h = 0; h < hooks_.size(); ++h) {
       const MaterializationHooks& hook = hooks_[h];
@@ -398,16 +401,24 @@ void SimScheduler::apply_tier_changes(std::span<const TierChange> changes,
   }
 }
 
-void SimScheduler::materialize(const EntityRecord& record, u8 tier) {
+EntityHandle SimScheduler::materialize(const EntityRecord& record, u8 tier) {
+  // Registration order, and the first hook that gives the record a runtime existence names it.
+  // Every hook still runs: a second one attaching its own state to the entity the first created is
+  // the ordinary case, and it is why the handle is *returned* rather than passed in.
+  EntityHandle handle;
   for (u32 h = 0; h < hooks_.size(); ++h) {
     const MaterializationHooks& hook = hooks_[h];
     if (!covers(hook.tiers, tier)) continue;
-    if (hook.materialize != nullptr) hook.materialize(hook.context, record, tier);
+    if (hook.materialize == nullptr) continue;
+    const EntityHandle produced = hook.materialize(hook.context, record, tier);
+    if (handle.is_null()) handle = produced;
   }
+  return handle;
 }
 
-void SimScheduler::dematerialize(std::span<const u64> entities) {
+void SimScheduler::dematerialize(std::span<const EntityHandle> entities) {
   for (usize e = 0; e < entities.size(); ++e) {
+    if (entities[e].is_null()) continue;
     for (u32 h = 0; h < hooks_.size(); ++h) {
       const MaterializationHooks& hook = hooks_[h];
       if (hook.dematerialize != nullptr) hook.dematerialize(hook.context, entities[e]);
@@ -456,19 +467,21 @@ ReconcileResult SimScheduler::reconcile_tile(const ReconcileParams& params, cons
   positions_.clear();
   importance_.clear();
   tiers_buffer_.clear();
-  entities_.clear();
+  handles_.clear();
   positions_.reserve(records_.size());
   importance_.reserve(records_.size());
   tiers_buffer_.reserve(records_.size());
-  entities_.reserve(records_.size());
+  handles_.reserve(records_.size());
   for (u32 i = 0; i < records_.size(); ++i) {
     const EntityRecord& record = records_[i];
-    materialize(record, params.materialize_tier);
+    // Step 5 promotes what step 4 brought in, and a promotion needs a *runtime* handle: the
+    // record's `Id128` is the name that survived the disk and not the one the hooks act on. So the
+    // handle comes back out of the materialization rather than being looked up again.
+    handles_.push_back(materialize(record, params.materialize_tier));
     ++result.materialized;
     positions_.push_back(record.position);
     importance_.push_back(record.importance);
     tiers_buffer_.push_back(params.materialize_tier);
-    entities_.push_back(record.entity);
   }
 
   // 5. promote by observer distance (step 5). The plan's own step 5 — derived visual state —
@@ -481,7 +494,7 @@ ReconcileResult SimScheduler::reconcile_tile(const ReconcileParams& params, cons
     input.tiers = std::span<u8>(tiers_buffer_.data(), tiers_buffer_.size());
     tiers_.assign_tiers(input, observers, tier_params, changes_);
     apply_tier_changes(std::span<const TierChange>(changes_.data(), changes_.size()),
-                       std::span<const u64>(entities_.data(), entities_.size()));
+                       std::span<const EntityHandle>(handles_.data(), handles_.size()));
     for (u32 i = 0; i < changes_.size(); ++i) {
       if (changes_[i].to < changes_[i].from) ++result.promoted;
     }

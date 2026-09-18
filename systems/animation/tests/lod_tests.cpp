@@ -4,6 +4,7 @@
 // engine's reference (`sim::TierAssignment`) and that a promotion lands where ticking would have.
 #include "animation_glb.h"
 
+#include <domain/ecs/identity.h>
 #include <domain/sim/scheduler.h>
 #include <domain/sim/tiers.h>
 #include <systems/animation/animation.h>
@@ -218,14 +219,14 @@ TEST_CASE("animation LOD: sim::MaterializationHooks drive the transitions") {
 
   constexpr u32 k_instances = 8;
   std::vector<flecs::entity> entities;
-  Vector<u64> ids;
+  Vector<sim::EntityHandle> ids;
   for (u32 i = 0; i < k_instances; ++i) {
     const flecs::entity entity = sim.world().entity();
     REQUIRE(animation.attach(entity, fixture.skeleton, fixture.walk));
     entities.push_back(entity);
-    // The hooks speak `u64`; this capability reads it as a flecs entity id and uses it inside the
-    // call, which is what ADR-0028 seam 3 allows and what animation.h states it does.
-    ids.push_back(static_cast<u64>(entity.id()));
+    // `promote`/`demote`/`dematerialize` name a live entity with a `sim::EntityHandle`, and
+    // `domain/ecs` is the only module that knows what is inside one (ADR-0028 seam 3).
+    ids.push_back(ecs::handle_of(entity));
   }
   CHECK(animation.poses().live_count() == k_instances);
 
@@ -251,13 +252,47 @@ TEST_CASE("animation LOD: sim::MaterializationHooks drive the transitions") {
 
   // `dematerialize` is the teardown half: the slot goes back and the transient components go with
   // it, while the player — the entity's own state — stays for the save.
-  Vector<u64> going;
+  Vector<sim::EntityHandle> going;
   going.push_back(ids[1]);
   scheduler.dematerialize({going.data(), going.size()});
   CHECK(entities[1].try_get<SkeletonInstance>() == nullptr);
   CHECK(entities[1].try_get<AnimationLod>() == nullptr);
   CHECK(entities[1].try_get<AnimationPlayer>() != nullptr);
   CHECK(animation.poses().live_count() == k_instances - 1);
+}
+
+TEST_CASE("animation LOD: materialize is named by Id128 and answers with a runtime handle") {
+  // The other half of ADR-0028 seam 3, which the hooks table used to leave to each capability: a
+  // record out of the store carries the persistent name, and what comes back is the handle the
+  // tier changes then act on. The two are different numbers and different types, so the mistake
+  // this replaced — reading a `u64` as whichever of the two you assumed — cannot be written.
+  Fixture fixture;
+  ecs::SimWorld sim(world_config());
+  AnimationSystem animation(fixture.library);
+  animation.install(sim);
+
+  sim::SimScheduler scheduler;
+  scheduler.add_hooks(animation.hooks());
+
+  const Id128 persistent = Id128::from_seed(99, 1);
+  const flecs::entity entity = ecs::create_entity(sim.world(), persistent);
+  REQUIRE(animation.attach(entity, fixture.skeleton, fixture.walk));
+  animation.set_tier(entity, 3);
+  REQUIRE(entity.try_get<SkeletonInstance>()->pose_slot == k_no_slot);
+
+  sim::EntityRecord record;
+  record.entity = persistent;
+  record.tier = 3;
+  const sim::EntityHandle handle = scheduler.materialize(record, 0);
+  CHECK(handle == ecs::handle_of(entity));
+  CHECK(entity.try_get<SkeletonInstance>()->pose_slot != k_no_slot);
+  CHECK(entity.try_get<AnimationLod>()->tier == 0);
+
+  // A record naming nothing this world holds gets a null handle rather than a guess, and the
+  // scheduler skips it instead of promoting into nothing.
+  sim::EntityRecord stranger;
+  stranger.entity = Id128::from_seed(99, 2);
+  CHECK(scheduler.materialize(stranger, 0).is_null());
 }
 
 TEST_CASE("animation LOD: the same transitions give the same slots in two runs") {

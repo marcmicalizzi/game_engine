@@ -160,11 +160,11 @@ class AnimationSystem {
   // The materialization contract of [03 §3.4] as a row for `sim::SimScheduler::add_hooks`: this
   // is how tier changes computed by `sim::TierAssignment` reach the capability.
   //
-  // **The hooks' `u64 entity` is a flecs entity id**, and the capability uses it inside the call
-  // and never stores it (ADR-0028 seam 3). `domain/sim` speaks `u64` and `domain/ecs` speaks
-  // `Id128`, and the two registration points do not share a vocabulary; this is the choice this
-  // capability made and it is stated rather than implied. `set_tier(Id128, u8)` is the form for a
-  // caller that came from a save.
+  // The contract now says which name each hook carries, so this capability no longer has to
+  // choose: `materialize` gets the record's persistent `Id128` and is resolved through the
+  // identity map, while `promote`, `demote` and `dematerialize` get a `sim::EntityHandle` that is
+  // read with `ecs::entity_of` and never kept (ADR-0028 seam 3). `set_tier(Id128, u8)` is the form
+  // for a caller that came from a save.
   sim::MaterializationHooks hooks() noexcept;
 
   // --- instances -------------------------------------------------------------------------------

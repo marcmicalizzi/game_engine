@@ -552,29 +552,37 @@ sim::MaterializationHooks AnimationSystem::hooks() noexcept {
   row.name = "animation";
   row.context = this;
   row.tiers = 0x0Fu;  // every tier: the transition into and out of LOD3 is the interesting one
+  // The record came off disk, so it names its entity with the `Id128` that survived the trip, and
+  // the identity map is what turns that into something to act on. This capability does not *bring*
+  // an entity into the world — it attaches a pose to one that is already there — so what it
+  // returns is the handle for the entity it found, and a null handle when there is none.
   row.materialize = [](void* context, const sim::EntityRecord& record, u8 tier) {
     AnimationSystem* self = static_cast<AnimationSystem*>(context);
-    if (self->world_ == nullptr) return;
-    const flecs::entity entity(self->world_->c_ptr(), static_cast<flecs::entity_t>(record.entity));
-    if (entity.is_alive()) self->apply_tier(entity, tier);
+    if (self->world_ == nullptr) return sim::EntityHandle{};
+    const flecs::entity entity = ecs::entity_for(*self->world_, record.entity);
+    if (!entity.is_valid()) return sim::EntityHandle{};
+    self->apply_tier(entity, tier);
+    return ecs::handle_of(entity);
   };
-  row.promote = [](void* context, u64 entity, u8, u8 to) {
+  // The other three act on something already live this tick, so they take the runtime handle and
+  // keep nothing (ADR-0028 seam 3); `ecs::entity_of` is the one place that knows what is in one.
+  row.promote = [](void* context, sim::EntityHandle entity, u8, u8 to) {
     AnimationSystem* self = static_cast<AnimationSystem*>(context);
     if (self->world_ == nullptr) return;
-    const flecs::entity handle(self->world_->c_ptr(), static_cast<flecs::entity_t>(entity));
-    if (handle.is_alive()) self->apply_tier(handle, to);
+    const flecs::entity found = ecs::entity_of(*self->world_, entity);
+    if (found.is_valid()) self->apply_tier(found, to);
   };
-  row.demote = [](void* context, u64 entity, u8, u8 to) {
+  row.demote = [](void* context, sim::EntityHandle entity, u8, u8 to) {
     AnimationSystem* self = static_cast<AnimationSystem*>(context);
     if (self->world_ == nullptr) return;
-    const flecs::entity handle(self->world_->c_ptr(), static_cast<flecs::entity_t>(entity));
-    if (handle.is_alive()) self->apply_tier(handle, to);
+    const flecs::entity found = ecs::entity_of(*self->world_, entity);
+    if (found.is_valid()) self->apply_tier(found, to);
   };
-  row.dematerialize = [](void* context, u64 entity) {
+  row.dematerialize = [](void* context, sim::EntityHandle entity) {
     AnimationSystem* self = static_cast<AnimationSystem*>(context);
     if (self->world_ == nullptr) return;
-    const flecs::entity handle(self->world_->c_ptr(), static_cast<flecs::entity_t>(entity));
-    if (handle.is_alive()) self->detach(handle);
+    const flecs::entity found = ecs::entity_of(*self->world_, entity);
+    if (found.is_valid()) self->detach(found);
   };
   return row;
 }

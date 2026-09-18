@@ -25,6 +25,7 @@
 #include <core/base/types.h>
 #include <core/containers/hash_map.h>
 #include <core/ids/id128.h>
+#include <domain/sim/scheduler.h>
 
 #include <flecs.h>
 
@@ -69,5 +70,24 @@ flecs::entity entity_for(flecs::world& world, const Id128& id) noexcept;
 flecs::entity create_entity(flecs::world& world, const Id128& id);
 // The entity's persistent name, or the null id when it has none.
 Id128 id_of(flecs::entity entity) noexcept;
+
+// ---- the bridge to `domain/sim`'s materialization contract -------------------------------------
+//
+// `sim::MaterializationHooks` names a live entity with a `sim::EntityHandle` — opaque, and valid
+// only inside the call that carries it — and a persistent record with an `Id128`. These three
+// functions are where a flecs entity id becomes one and stops being one, and they are the **only**
+// place in the tree that is allowed to know that an `EntityHandle` holds a `flecs::entity_t`. That
+// is what makes seam 3's rule checkable: everything outside `domain/ecs` handles the opaque type,
+// so storing a runtime id past a tick is a thing nobody can write by accident.
+//
+// A capability implementing the hooks therefore reads `record.entity` as an `Id128` (which is what
+// `entity_for` takes) and `promote`/`demote`/`dematerialize`'s handle through `entity_of`, and it
+// keeps neither.
+sim::EntityHandle handle_of(flecs::entity entity) noexcept;
+// The live entity a handle names, or an entity of id 0 bound to this world when it names none —
+// the same "not found" `entity_for` returns, and for the same reason.
+flecs::entity entity_of(flecs::world& world, sim::EntityHandle handle) noexcept;
+// The runtime handle for a persistent id, through the identity map. Null when nothing holds it.
+sim::EntityHandle handle_for(flecs::world& world, const Id128& id) noexcept;
 
 }  // namespace engine::ecs

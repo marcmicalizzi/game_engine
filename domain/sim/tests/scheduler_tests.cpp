@@ -116,11 +116,17 @@ struct FakeStore {
 
 // ---- the fake system that implements the whole contract ---------------------------------------
 
+// The persistent name a record carries, and the runtime handle this fake hands back for it. Two
+// different numbers on purpose: a test that used the same value for both would pass with the two
+// confused, which is the mistake the strong type exists to make impossible.
+Id128 record_id(u64 n) noexcept { return Id128::from_parts(0xA55E, n); }
+EntityHandle record_handle(u64 n) noexcept { return EntityHandle{0x1000 + n}; }
+
 struct FakeSystem {
-  Vector<u64> materialized;
-  Vector<u64> promoted;
-  Vector<u64> demoted;
-  Vector<u64> dropped;
+  Vector<Id128> materialized;
+  Vector<EntityHandle> promoted;
+  Vector<EntityHandle> demoted;
+  Vector<EntityHandle> dropped;
   u64 summarized_from = 0;
   u64 summarized_to = 0;
   u64 summarized_seed = 0;
@@ -129,24 +135,27 @@ struct FakeSystem {
   // The summary is a deterministic function of the seed and the gap, and of nothing else.
   u64 drift = 0;
 
-  static void materialize(void* context, const EntityRecord& record, u8 tier) {
+  // A record arrives with the name that survived the store, and the hook answers with the runtime
+  // handle it now has — which is what step 5's promotions act on.
+  static EntityHandle materialize(void* context, const EntityRecord& record, u8 tier) {
     auto* self = static_cast<FakeSystem*>(context);
     (void)tier;
     self->materialized.push_back(record.entity);
+    return EntityHandle{0x1000 + record.entity.lo};
   }
-  static void promote(void* context, u64 entity, u8 from, u8 to) {
+  static void promote(void* context, EntityHandle entity, u8 from, u8 to) {
     auto* self = static_cast<FakeSystem*>(context);
     (void)from;
     (void)to;
     self->promoted.push_back(entity);
   }
-  static void demote(void* context, u64 entity, u8 from, u8 to) {
+  static void demote(void* context, EntityHandle entity, u8 from, u8 to) {
     auto* self = static_cast<FakeSystem*>(context);
     (void)from;
     (void)to;
     self->demoted.push_back(entity);
   }
-  static void dematerialize(void* context, u64 entity) {
+  static void dematerialize(void* context, EntityHandle entity) {
     static_cast<FakeSystem*>(context)->dropped.push_back(entity);
   }
   static void summarize(void* context, const SummarizeInterval& interval) {
@@ -410,24 +419,26 @@ TEST_CASE("scheduler: tier changes drive the materialization hooks") {
   FakeSystem system;
   scheduler.add_hooks(system.hooks_for());
 
-  Vector<u64> entities;
-  entities.push_back(100);
-  entities.push_back(200);
-  entities.push_back(300);
+  Vector<EntityHandle> entities;
+  entities.push_back(EntityHandle{100});
+  entities.push_back(EntityHandle{200});
+  entities.push_back(EntityHandle{300});
+  entities.push_back(EntityHandle{});  // a row nothing materialized
   Vector<TierChange> changes;
   changes.push_back(TierChange{0, 2, 1});  // promotion
   changes.push_back(TierChange{1, 1, 3});  // demotion
   changes.push_back(TierChange{2, 2, 2});  // no transition at all
+  changes.push_back(TierChange{3, 2, 1});  // a promotion of nothing
 
   scheduler.apply_tier_changes(std::span<const TierChange>(changes.data(), changes.size()),
-                               std::span<const u64>(entities.data(), entities.size()));
+                               std::span<const EntityHandle>(entities.data(), entities.size()));
   REQUIRE(system.promoted.size() == 1);
-  CHECK(system.promoted[0] == 100);
+  CHECK(system.promoted[0] == EntityHandle{100});
   REQUIRE(system.demoted.size() == 1);
-  CHECK(system.demoted[0] == 200);
+  CHECK(system.demoted[0] == EntityHandle{200});
 
-  scheduler.dematerialize(std::span<const u64>(entities.data(), entities.size()));
-  CHECK(system.dropped.size() == 3);
+  scheduler.dematerialize(std::span<const EntityHandle>(entities.data(), entities.size()));
+  CHECK(system.dropped.size() == 3);  // the null handle is not a row to tear down
 }
 
 TEST_CASE("scheduler: a hook only sees the tiers it declared") {
@@ -437,17 +448,17 @@ TEST_CASE("scheduler: a hook only sees the tiers it declared") {
   hooks.tiers = 0x03u;  // LOD0 and LOD1 only
   scheduler.add_hooks(hooks);
 
-  Vector<u64> entities;
-  entities.push_back(7);
-  entities.push_back(8);
+  Vector<EntityHandle> entities;
+  entities.push_back(EntityHandle{7});
+  entities.push_back(EntityHandle{8});
   Vector<TierChange> changes;
   changes.push_back(TierChange{0, 3, 2});  // entirely outside the hook's tiers
   changes.push_back(TierChange{1, 2, 1});  // ends inside them
   scheduler.apply_tier_changes(std::span<const TierChange>(changes.data(), changes.size()),
-                               std::span<const u64>(entities.data(), entities.size()));
+                               std::span<const EntityHandle>(entities.data(), entities.size()));
   CHECK(near_only.demoted.empty());
   REQUIRE(near_only.promoted.size() == 1);
-  CHECK(near_only.promoted[0] == 8);
+  CHECK(near_only.promoted[0] == EntityHandle{8});
 }
 
 TEST_CASE("scheduler: reconcile_tile runs the five steps of plan 05 section 5.5") {
@@ -461,7 +472,7 @@ TEST_CASE("scheduler: reconcile_tile runs the five steps of plan 05 section 5.5"
   store.last_active = GameTime::from_days(10);
   for (u32 i = 0; i < 8; ++i) {
     EntityRecord record;
-    record.entity = 1000 + i;
+    record.entity = record_id(1000 + i);
     record.seed = store.seed ^ i;
     // The first two are inside the observer's LOD0 radius; the rest are far away.
     record.position = Vec3{i < 2 ? 5.0f : 4000.0f, 0.0f, 0.0f};
@@ -493,12 +504,43 @@ TEST_CASE("scheduler: reconcile_tile runs the five steps of plan 05 section 5.5"
   CHECK(system.summarized_to == static_cast<u64>(GameTime::from_days(40).us));
   CHECK(result.records == 8);
   CHECK(result.materialized == 8);  // step 4, all at LOD2
-  CHECK(system.materialized.size() == 8);
+  REQUIRE(system.materialized.size() == 8);
+  // The record is named by the id that survived the store...
+  CHECK(system.materialized[0] == record_id(1000));
   CHECK(result.promoted == 2);  // step 5, by observer distance
   REQUIRE(system.promoted.size() == 2);
-  CHECK(system.promoted[0] == 1000);
-  CHECK(system.promoted[1] == 1001);
+  // ...and the promotion by the runtime handle materializing it produced, which is a different
+  // number and a different type. Before this, both were a `u64` and a capability had to guess.
+  CHECK(system.promoted[0] == record_handle(1000));
+  CHECK(system.promoted[1] == record_handle(1001));
   CHECK(system.demoted.size() == 6);  // the rest fall to LOD3
+}
+
+TEST_CASE("scheduler: a record no hook materialized is not promoted into nothing") {
+  SimScheduler scheduler;
+  FakeSystem absent;
+  MaterializationHooks hooks = absent.hooks_for();
+  // A hook that gives the record no runtime existence answers with a null handle. Registration
+  // order decides which hook's answer wins; a record nobody answered for has none.
+  hooks.materialize = [](void*, const EntityRecord&, u8) { return EntityHandle{}; };
+  scheduler.add_hooks(hooks);
+
+  FakeStore store;
+  store.known = false;
+  EntityRecord record;
+  record.entity = record_id(42);
+  record.position = Vec3{1.0f, 0.0f, 0.0f};
+  store.records.push_back(record);
+
+  ObserverSet observers;
+  observers.add(Vec3{0.0f, 0.0f, 0.0f}, 1.0f);
+  ReconcileParams params;
+  params.now = GameTime::from_days(1);
+  const ReconcileResult result =
+      scheduler.reconcile_tile(params, store.interface_for(), observers, TierParams{});
+  CHECK(result.materialized == 1);
+  CHECK(absent.promoted.empty());
+  CHECK(absent.demoted.empty());
 }
 
 TEST_CASE("scheduler: reconciling the same tile twice is the same summary") {
@@ -530,7 +572,7 @@ TEST_CASE("scheduler: an unknown tile is materialized without a summary") {
   FakeStore store;
   store.known = false;
   EntityRecord record;
-  record.entity = 5;
+  record.entity = record_id(5);
   record.position = Vec3{1.0f, 0.0f, 0.0f};
   store.records.push_back(record);
 

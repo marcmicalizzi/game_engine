@@ -28,6 +28,7 @@
 #include <core/base/macros.h>
 #include <core/base/types.h>
 #include <core/containers/vector.h>
+#include <core/ids/id128.h>
 #include <core/jobs/job_system.h>
 #include <core/math/math.h>
 #include <core/time/time.h>
@@ -202,10 +203,32 @@ struct ScheduleEntry {
   u16 wave = 0;
 };
 
+// ---- the two names an entity has, and which hook gets which -----------------------------------
+//
+// [ADR-0028](../../../docs/adr/0028-ecs-and-persistent-store.md) seam 3 settles this for the engine
+// and the hooks below did not speak it: persistent identity is `Id128`, and **a runtime entity id
+// must not outlive a tick's working set**. Both halves of the materialization contract have to
+// appear here, because the contract is exactly where the two meet, and a `u64` that was sometimes
+// one and sometimes the other meant two capabilities could choose differently and not interoperate.
+//
+// `EntityHandle` is the runtime half: opaque to this module, meaningful only to whoever produced
+// it, and **valid only inside the call that carries it**. It is a struct rather than a `u64` so
+// that the two cannot be swapped at a call site by a cast that compiles, and so that
+// `static_cast<flecs::entity_t>` has exactly one legal home — `domain/ecs`, which is the only
+// module allowed to know what is inside one (`ecs::handle_of`, `ecs::entity_of`,
+// `ecs::handle_for`).
+struct EntityHandle {
+  u64 value = 0;
+
+  constexpr bool is_null() const noexcept { return value == 0; }
+  bool operator==(const EntityHandle&) const noexcept = default;
+};
+
 // The persistent record a tile's store hands back for one entity ([03
-// §3.5](../../../docs/plan/03-data-model.md#35-persistent-world-state)).
+// §3.5](../../../docs/plan/03-data-model.md#35-persistent-world-state)). It came off disk, so the
+// only name it can carry is the one that survived the trip: `Id128`.
 struct EntityRecord {
-  u64 entity = 0;
+  Id128 entity;
   u64 seed = 0;
   Vec3 position;
   f32 importance = 1.0f;
@@ -218,14 +241,29 @@ struct EntityRecord {
 // class, for the same reason `SystemDesc` is: the scheduler holds a table it walks in registration
 // order, and a capability that implements none of the four hooks contributes no row and costs
 // nothing.
+//
+// **Which hook gets which name, and why it is not a matter of taste.**
+//
+// `materialize` is handed a record that came out of the store, so it gets the record's `Id128` —
+// there is no runtime handle yet, which is the whole point of the call. It **returns** the handle
+// the record now has: created by a hook that brings the entity into being, or resolved by a hook
+// that found the one that already existed. A hook that gave the record no runtime existence
+// returns a null handle, the first non-null answer in registration order wins, and a record no
+// hook answered for is skipped by everything downstream rather than being promoted into nothing.
+//
+// `promote`, `demote` and `dematerialize` act on something that is already live *this tick*: they
+// are driven by `TierAssignment`, whose input is an array the caller is already holding, and whose
+// output indexes into it. So they get an `EntityHandle`, and it is valid for the call and no
+// longer. Handing them an `Id128` instead would put a hash lookup per entity per tier change in
+// front of information the caller already had, for a name nothing on this path needs.
 struct MaterializationHooks {
   const char* name = nullptr;
   void* context = nullptr;
   u8 tiers = 0x0Fu;  // tiers this system materializes at; other tiers skip the hook entirely
-  void (*materialize)(void* context, const EntityRecord& record, u8 tier) = nullptr;
-  void (*promote)(void* context, u64 entity, u8 from, u8 to) = nullptr;
-  void (*demote)(void* context, u64 entity, u8 from, u8 to) = nullptr;
-  void (*dematerialize)(void* context, u64 entity) = nullptr;
+  EntityHandle (*materialize)(void* context, const EntityRecord& record, u8 tier) = nullptr;
+  void (*promote)(void* context, EntityHandle entity, u8 from, u8 to) = nullptr;
+  void (*demote)(void* context, EntityHandle entity, u8 from, u8 to) = nullptr;
+  void (*dematerialize)(void* context, EntityHandle entity) = nullptr;
 };
 
 struct TileState {
@@ -319,11 +357,14 @@ class SimScheduler {
 
   // --- the materialization contract ----------------------------------------------------------
 
-  // Drives the hooks from the tier changes. `entities[change.index]` is the entity id, so the
-  // tier code stays free of identity and this stays free of positions.
-  void apply_tier_changes(std::span<const TierChange> changes, std::span<const u64> entities);
-  void materialize(const EntityRecord& record, u8 tier);
-  void dematerialize(std::span<const u64> entities);
+  // Drives the hooks from the tier changes. `entities[change.index]` is the runtime handle, so the
+  // tier code stays free of identity and this stays free of positions. A null handle is a row
+  // nothing materialized and is skipped: there is nothing for a hook to act on.
+  void apply_tier_changes(std::span<const TierChange> changes,
+                          std::span<const EntityHandle> entities);
+  // Returns the handle the record now has, or a null one when no hook gave it a runtime existence.
+  EntityHandle materialize(const EntityRecord& record, u8 tier);
+  void dematerialize(std::span<const EntityHandle> entities);
 
   // --- tile reconciliation -------------------------------------------------------------------
 
@@ -365,7 +406,7 @@ class SimScheduler {
   Vector<Vec3> positions_;
   Vector<f32> importance_;
   Vector<u8> tiers_buffer_;
-  Vector<u64> entities_;
+  Vector<EntityHandle> handles_;
   Vector<TierChange> changes_;
 
   SimTick tick_;

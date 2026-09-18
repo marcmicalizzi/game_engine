@@ -104,3 +104,27 @@ TEST_CASE("ecs: two entities claiming one id are counted rather than silently me
   first.destruct();
   CHECK(identity_map(world).find(id) == second.id());
 }
+
+TEST_CASE("ecs: the materialization bridge is the one place a runtime id is a number") {
+  // `sim::MaterializationHooks` names a live entity with an opaque `sim::EntityHandle` and a
+  // persistent record with an `Id128` (ADR-0028 seam 3). These three functions are where a flecs
+  // entity id becomes one and stops being one, and nothing outside this module may look inside.
+  SimWorld sim;
+  flecs::world& world = sim.world();
+  const Id128 id = Id128::from_seed(7, 1);
+
+  const flecs::entity entity = create_entity(world, id);
+  const sim::EntityHandle handle = handle_of(entity);
+  CHECK_FALSE(handle.is_null());
+  CHECK(handle == handle_for(world, id));
+  CHECK(entity_of(world, handle) == entity);
+
+  // A handle kept past its tick names an entity that is gone. It comes back as entity 0 — the same
+  // "not found" `entity_for` returns — rather than asserting, which is what `is_alive()` would do
+  // on entity 0 and what made the first version of this crash.
+  entity.destruct();
+  CHECK(entity_of(world, handle).id() == 0);
+  CHECK(entity_of(world, sim::EntityHandle{}).id() == 0);
+  CHECK(handle_for(world, id).is_null());
+  CHECK(handle_for(world, Id128::from_seed(7, 2)).is_null());
+}

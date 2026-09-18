@@ -100,4 +100,23 @@ Id128 id_of(flecs::entity entity) noexcept {
   return identity != nullptr ? identity->id : Id128{};
 }
 
+sim::EntityHandle handle_of(flecs::entity entity) noexcept {
+  return sim::EntityHandle{static_cast<u64>(entity.id())};
+}
+
+flecs::entity entity_of(flecs::world& world, sim::EntityHandle handle) noexcept {
+  // A handle is valid for the call that produced it and no longer, so the liveness test is the
+  // point of going through here rather than casting at the call site: a hook that kept one past
+  // its tick gets entity 0 instead of whatever flecs has since recycled into that slot.
+  // `is_valid()` is the one test that covers both cases — it rejects 0 (where `is_alive()` would
+  // assert) and then checks the generation.
+  const flecs::entity entity(world.c_ptr(), static_cast<flecs::entity_t>(handle.value));
+  if (!entity.is_valid()) return flecs::entity(world.c_ptr(), flecs::entity_t{0});
+  return entity;
+}
+
+sim::EntityHandle handle_for(flecs::world& world, const Id128& id) noexcept {
+  return sim::EntityHandle{static_cast<u64>(identity_map(world).find(id))};
+}
+
 }  // namespace engine::ecs
