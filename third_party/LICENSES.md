@@ -15,3 +15,12 @@ Every dependency of the engine is listed here with its license. Policy: permissi
 | SDL3 | release-3.4.16 | zlib | foundation/window (windowing, input, Vulkan surfaces) | CMake FetchContent at configure time; static, video and events only |
 | stb_image | v2.30 (repository commit 2c980bb59875b0d32144a71867fbdebb2f77cd20) | MIT OR Unlicense (public domain) | foundation/image (PNG/JPEG/TGA/BMP decoding) | CMake FetchContent of the stb repository at configure time; header compiled into foundation/image/src/decode.cpp |
 | stb_image_write | v1.16 (same commit) | MIT OR Unlicense (public domain) | tests only (foundation/image's baseline JPEG fixture) | Comes with the stb checkout above; included only by foundation/image/tests/decode_tests.cpp |
+
+## Consulted, not vendored
+
+Nothing below is fetched, linked, or compiled into anything; each is recorded because a published
+work was read closely enough while writing our own implementation that the debt should be visible.
+
+| Work | License | What was taken | Where it is used |
+|---|---|---|---|
+| NVIDIA FLIP (github.com/NVlabs/flip) | BSD-3-Clause | The numeric constants of the LDR-FLIP evaluator, checked against the reference: the contrast-sensitivity Gaussians per opponent channel, the color-difference exponent and its redistribution, the feature-detection width and exponent, and the D65 primaries. No source code. | `foundation/image/src/metrics.cpp`, written from the paper (Andersson et al., *FLIP: A Difference Evaluator for Alternating Images*, HPG 2020) — see `docs/subsystems/image.md` |
