@@ -16,9 +16,9 @@
 #include <foundation/io/vfs.h>
 
 #include <doctest/doctest.h>
+#include <test_temp_dir.h>
 
 #include <bit>
-#include <filesystem>
 #include <string>
 
 #if !defined(ENGINE_SOURCE_DIR)
@@ -179,18 +179,9 @@ bool contains(const std::string& haystack, const char* needle) {
   return haystack.find(needle) != std::string::npos;
 }
 
-struct TempDir {
-  std::string path;
-  explicit TempDir(const char* name) {
-    const auto p = std::filesystem::temp_directory_path() / name;
-    std::filesystem::remove_all(p);
-    std::filesystem::create_directories(p);
-    path = io::normalize_path(p.string());
-  }
-  ~TempDir() { std::filesystem::remove_all(std::filesystem::path(path)); }
-  TempDir(const TempDir&) = delete;
-  TempDir& operator=(const TempDir&) = delete;
-};
+// One unguessable scratch directory per object, so a second copy of this binary cannot delete
+// this one's re-recorded logs (tests/support/test_temp_dir.h).
+using TempDir = test::TempDir;
 
 }  // namespace
 
@@ -293,7 +284,7 @@ TEST_CASE("input: the committed device logs replay to the numbers they were reco
     std::string original;
     REQUIRE(io::read_file(io::join_path(dir, expect.file), original) == io::Status::Ok);
     const TempDir tmp("engine_input_corpus");
-    const std::string round_trip = io::join_path(tmp.path, expect.file);
+    const std::string round_trip = io::join_path(tmp.path(), expect.file);
     REQUIRE(log.save(round_trip) == io::Status::Ok);
     std::string written;
     REQUIRE(io::read_file(round_trip, written) == io::Status::Ok);

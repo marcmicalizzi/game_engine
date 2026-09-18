@@ -1,6 +1,7 @@
 #include <foundation/image/png.h>
 
 #include <doctest/doctest.h>
+#include <test_temp_dir.h>
 
 #include <cstring>
 #include <filesystem>
@@ -145,11 +146,10 @@ TEST_CASE("png: bad arguments are rejected and write_png produces a file") {
   CHECK_FALSE(encode_png(1, 1, 5, four, png));
   CHECK_FALSE(encode_png(2, 1, 4, four, png));  // 2 pixels need 8 bytes
   CHECK(png.empty());
-  const auto dir = std::filesystem::temp_directory_path() / "engine_png_tests";
-  std::filesystem::create_directories(dir);
-  const std::string path = (dir / "one.png").string();
+  const test::TempDir dir("engine_png");
+  const std::string path = dir.file("one.png");
   CHECK(write_png(path, 1, 1, 4, four, Compression::Stored) == io::Status::Ok);
-  CHECK(std::filesystem::file_size(path) == 8 + 25 + 12 + (2 + 5 + 5 + 4) + 12);
+  CHECK(std::filesystem::file_size(std::filesystem::path(path)) ==
+        8 + 25 + 12 + (2 + 5 + 5 + 4) + 12);
   CHECK(write_png(path, 3, 1, 4, four) == io::Status::InvalidArgument);
-  std::filesystem::remove_all(dir);
 }

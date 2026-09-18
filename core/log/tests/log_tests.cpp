@@ -3,10 +3,10 @@
 #include <core/platform/thread.h>
 
 #include <doctest/doctest.h>
+#include <test_temp_dir.h>
 
 #include <algorithm>
 #include <cstdio>
-#include <filesystem>
 #include <fstream>
 #include <limits>
 #include <string>
@@ -291,13 +291,14 @@ TEST_CASE("log: JSON line format is pinned and escapes") {
 
 TEST_CASE("log: stream sink writes one JSON line per record to a file") {
   Capture cap;
-  const auto path = std::filesystem::temp_directory_path() / "engine_log_tests.jsonl";
+  const test::TempDir tmp("engine_log");
+  const std::string path = tmp.file("stream_sink.jsonl");
   {
     std::FILE* f = nullptr;
 #if ENGINE_COMPILER_MSVC
-    (void)fopen_s(&f, path.string().c_str(), "wb");
+    (void)fopen_s(&f, path.c_str(), "wb");
 #else
-    f = std::fopen(path.string().c_str(), "wb");
+    f = std::fopen(path.c_str(), "wb");
 #endif
     REQUIRE(f != nullptr);
     StreamSink file_sink(f, StreamSink::Format::JsonLines, /*close_on_destroy=*/true);
@@ -311,7 +312,6 @@ TEST_CASE("log: stream sink writes one JSON line per record to a file") {
   for (std::string line; std::getline(in, line);)
     lines.push_back(line);
   in.close();
-  std::filesystem::remove(path);
   REQUIRE(lines.size() == 2);
   CHECK(lines[0].find("\"msg\":\"one\"") != std::string::npos);
   CHECK(lines[0].find("\"fields\":{\"k\":1}") != std::string::npos);

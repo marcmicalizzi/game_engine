@@ -2,29 +2,18 @@
 #include <foundation/store/event_log.h>
 
 #include <doctest/doctest.h>
+#include <test_temp_dir.h>
 
-#include <filesystem>
 #include <string>
 
 using namespace engine;
 using namespace engine::store;
 
-namespace {
+// One unguessable scratch directory per object, so a second copy of this binary cannot delete
+// this one's databases (tests/support/test_temp_dir.h).
+using TempDir = test::TempDir;
 
-struct TempDir {
-  std::string path;
-  TempDir() {
-    const auto p = std::filesystem::temp_directory_path() / "engine_store_event_tests";
-    std::filesystem::remove_all(p);
-    std::filesystem::create_directories(p);
-    path = p.string();
-    for (char& c : path) {
-      if (c == '\\') c = '/';
-    }
-  }
-  ~TempDir() { std::filesystem::remove_all(std::filesystem::path(path)); }
-  std::string file(const char* name) const { return path + "/" + name; }
-};
+namespace {
 
 struct Seen {
   Vector<u64> sequences;
@@ -151,7 +140,7 @@ TEST_CASE("store: a failed batch append leaves the log untouched") {
 }
 
 TEST_CASE("store: the log survives a reopen and keeps counting where it left off") {
-  TempDir dir;
+  TempDir dir("engine_store_event");
   const std::string path = dir.file("events.db");
   {
     Database db;

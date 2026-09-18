@@ -2,6 +2,7 @@
 #include <foundation/tunables/tunables.h>
 
 #include <doctest/doctest.h>
+#include <test_temp_dir.h>
 
 #include <filesystem>
 #include <limits>
@@ -212,17 +213,18 @@ TEST_CASE("tunables: JSON round trip saves only modified values by default") {
 
 TEST_CASE("tunables: file round trip") {
   ResetAll guard;
-  const auto path = std::filesystem::temp_directory_path() / "engine_tunables_tests.json";
+  const test::TempDir tmp("engine_tunables");
+  const std::string path = tmp.file("tunables.json");
   (void)t_scale.set(4.5);
   t_flag.set(true);
-  REQUIRE(tunables::save_file(path.string().c_str()));
+  REQUIRE(tunables::save_file(path.c_str()));
   tunables::reset_all();
   Vector<std::string> problems;
-  CHECK(tunables::load_file(path.string().c_str(), &problems));
+  CHECK(tunables::load_file(path.c_str(), &problems));
   CHECK(problems.empty());
   CHECK(t_scale.get() == 4.5);
   CHECK(t_flag.get());
-  std::filesystem::remove(path);
-  CHECK_FALSE(tunables::load_file(path.string().c_str(), &problems));
+  std::filesystem::remove(std::filesystem::path(path));
+  CHECK_FALSE(tunables::load_file(path.c_str(), &problems));
   CHECK(problems.size() == 1);
 }

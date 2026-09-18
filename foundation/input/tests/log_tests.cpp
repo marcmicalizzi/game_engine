@@ -4,27 +4,18 @@
 #include <foundation/io/vfs.h>
 
 #include <doctest/doctest.h>
+#include <test_temp_dir.h>
 
-#include <filesystem>
 #include <string>
 
 using namespace engine;
 using namespace engine::input;
 
-namespace {
+// One unguessable scratch directory per object, so a second copy of this binary cannot delete
+// this one's logs while it replays them (tests/support/test_temp_dir.h).
+using TempDir = test::TempDir;
 
-struct TempDir {
-  std::string path;
-  explicit TempDir(const char* name) {
-    const auto p = std::filesystem::temp_directory_path() / name;
-    std::filesystem::remove_all(p);
-    std::filesystem::create_directories(p);
-    path = io::normalize_path(p.string());
-  }
-  ~TempDir() { std::filesystem::remove_all(std::filesystem::path(path)); }
-  TempDir(const TempDir&) = delete;
-  TempDir& operator=(const TempDir&) = delete;
-};
+namespace {
 
 constexpr u32 k_key_w = 26;
 constexpr u32 k_key_a = 4;
@@ -142,7 +133,7 @@ TEST_CASE("input log: saved as JSON lines and loaded back unchanged") {
   for (const RawEvent& e : events)
     log.record(e);
 
-  const std::string path = io::join_path(tmp.path, "run.jsonl");
+  const std::string path = io::join_path(tmp.path(), "run.jsonl");
   REQUIRE(log.save(path) == io::Status::Ok);
 
   // The file is a header line and one line per event, tick first, and every line is JSON.
@@ -192,7 +183,7 @@ TEST_CASE("input log: saved as JSON lines and loaded back unchanged") {
   }
 
   // Saving what was loaded gives byte-identical text: the format is canonical.
-  const std::string second_path = io::join_path(tmp.path, "again.jsonl");
+  const std::string second_path = io::join_path(tmp.path(), "again.jsonl");
   REQUIRE(loaded.save(second_path) == io::Status::Ok);
   std::string second_text;
   REQUIRE(io::read_file(second_path, second_text) == io::Status::Ok);
@@ -252,7 +243,7 @@ TEST_CASE("input log: a wheel, a pedal, a shifter, and a hat round-trip and repl
   }
   CHECK(cursor == events.size());
 
-  const std::string path = io::join_path(tmp.path, "wheel.jsonl");
+  const std::string path = io::join_path(tmp.path(), "wheel.jsonl");
   REQUIRE(log.save(path) == io::Status::Ok);
   std::string text;
   REQUIRE(io::read_file(path, text) == io::Status::Ok);
@@ -372,7 +363,7 @@ TEST_CASE("input log: a broken file is refused with a message") {
        "[1,\"key\",4,0.0,0]\n"},
   };
   for (const Case& c : cases) {
-    const std::string path = io::join_path(tmp.path, c.name);
+    const std::string path = io::join_path(tmp.path(), c.name);
     REQUIRE(io::write_file(path, c.text) == io::Status::Ok);
     InputLog log;
     std::string error;
@@ -384,11 +375,12 @@ TEST_CASE("input log: a broken file is refused with a message") {
   // A file that is not there at all reports the read's own status.
   InputLog missing_log;
   std::string error;
-  CHECK(missing_log.load(io::join_path(tmp.path, "nothing.jsonl"), &error) == io::Status::NotFound);
+  CHECK(missing_log.load(io::join_path(tmp.path(), "nothing.jsonl"), &error) ==
+        io::Status::NotFound);
   CHECK_FALSE(error.empty());
 
   // A good file with blank lines and CRLF endings still loads.
-  const std::string path = io::join_path(tmp.path, "crlf.jsonl");
+  const std::string path = io::join_path(tmp.path(), "crlf.jsonl");
   const u64 expected_map = map.hash();
   std::string text = "{\"map\":" + std::to_string(expected_map) +
                      ",\"type\":\"engine.input.log\",\"version\":1}\r\n";

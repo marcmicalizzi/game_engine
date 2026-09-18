@@ -3,9 +3,9 @@
 #include <foundation/tunables/tunables.h>
 
 #include <doctest/doctest.h>
+#include <test_temp_dir.h>
 
 #include <atomic>
-#include <filesystem>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -177,19 +177,17 @@ TEST_CASE("bench: sweeping a tunable runs each value and restores the original")
 }
 
 TEST_CASE("bench: JSON lines output has a header and one object per result") {
-  const auto path = std::filesystem::temp_directory_path() / "engine_bench_tests.jsonl";
-  std::filesystem::remove(path);
-  const std::string path_text = path.string();
+  const test::TempDir tmp("engine_bench");
+  const std::string path = tmp.file("results.jsonl");
   bench::Options o = quick("test.bench.args");
   o.smoke = true;
-  o.json_path = path_text;
+  o.json_path = path;
   CHECK(bench::run(o, nullptr) == 0);
   std::ifstream in(path);
   std::vector<std::string> lines;
   for (std::string line; std::getline(in, line);)
     lines.push_back(line);
   in.close();
-  std::filesystem::remove(path);
   REQUIRE(lines.size() == 3);
   JsonValue header;
   REQUIRE(parse_json(lines[0], header).ok);

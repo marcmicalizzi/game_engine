@@ -2,6 +2,7 @@
 #include <foundation/image/png.h>
 
 #include <doctest/doctest.h>
+#include <test_temp_dir.h>
 
 // stb_image_write is a test-only dependency: it writes the baseline JPEG the decoder is checked
 // against, so the JPEG path is exercised without a binary fixture in the tree. The module never
@@ -31,7 +32,6 @@
 
 #include <cstdlib>
 #include <cstring>
-#include <filesystem>
 #include <string>
 
 using namespace engine;
@@ -300,9 +300,8 @@ TEST_CASE("decode: a 16-bit PNG decodes to 8-bit samples") {
 }
 
 TEST_CASE("decode: read_image round-trips a file written with write_png") {
-  const auto dir = std::filesystem::temp_directory_path() / "engine_image_decode_tests";
-  std::filesystem::create_directories(dir);
-  const std::string path = (dir / "round_trip.png").string();
+  const test::TempDir dir("engine_image_decode");
+  const std::string path = dir.file("round_trip.png");
 
   constexpr u32 k_w = 6;
   constexpr u32 k_h = 4;
@@ -322,21 +321,19 @@ TEST_CASE("decode: read_image round-trips a file written with write_png") {
   // A missing file reports the read's own status and leaves the image empty.
   Image missing = make_dirty();
   error.clear();
-  const std::string absent = (dir / "not_here.png").string();
+  const std::string absent = dir.file("not_here.png");
   CHECK(read_image(absent, missing, 4, &error) == io::Status::NotFound);
   CHECK_FALSE(error.empty());
   CHECK(is_empty(missing));
 
   // A file that exists but is not an image fails in the decoder.
-  const std::string text = (dir / "not_an_image.png").string();
+  const std::string text = dir.file("not_an_image.png");
   REQUIRE(io::write_file(text, "this is not a PNG, it is a sentence.") == io::Status::Ok);
   Image garbage = make_dirty();
   error.clear();
   CHECK(read_image(text, garbage, 4, &error) == io::Status::IoError);
   CHECK_FALSE(error.empty());
   CHECK(is_empty(garbage));
-
-  std::filesystem::remove_all(dir);
 }
 
 TEST_CASE("decode: bad input fails with a message and leaves the image empty") {

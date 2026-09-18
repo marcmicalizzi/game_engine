@@ -1,6 +1,7 @@
 #include <foundation/store/database.h>
 
 #include <doctest/doctest.h>
+#include <test_temp_dir.h>
 
 #include <filesystem>
 #include <string>
@@ -8,22 +9,12 @@
 using namespace engine;
 using namespace engine::store;
 
-namespace {
+// One unguessable scratch directory per object, so a second copy of this binary — another
+// worktree, a release build beside a debug one — cannot delete this one's databases
+// (tests/support/test_temp_dir.h).
+using TempDir = test::TempDir;
 
-struct TempDir {
-  std::string path;
-  TempDir() {
-    const auto p = std::filesystem::temp_directory_path() / "engine_store_tests";
-    std::filesystem::remove_all(p);
-    std::filesystem::create_directories(p);
-    path = p.string();
-    for (char& c : path) {
-      if (c == '\\') c = '/';
-    }
-  }
-  ~TempDir() { std::filesystem::remove_all(std::filesystem::path(path)); }
-  std::string file(const char* name) const { return path + "/" + name; }
-};
+namespace {
 
 i64 scalar(Database& db, const char* sql) {
   Statement stmt;
@@ -37,7 +28,7 @@ i64 scalar(Database& db, const char* sql) {
 }  // namespace
 
 TEST_CASE("store: a file opens in WAL mode with the engine's pragmas") {
-  TempDir dir;
+  TempDir dir("engine_store");
   Database db;
   REQUIRE(db.open(dir.file("world.db")) == Status::Ok);
   CHECK(db.is_open());
@@ -62,7 +53,7 @@ TEST_CASE("store: a file opens in WAL mode with the engine's pragmas") {
 }
 
 TEST_CASE("store: wal off asks for a rollback journal") {
-  TempDir dir;
+  TempDir dir("engine_store");
   OpenOptions options;
   options.wal = false;
   options.synchronous_normal = false;
@@ -75,7 +66,7 @@ TEST_CASE("store: wal off asks for a rollback journal") {
 }
 
 TEST_CASE("store: opening a missing file without create is NotFound") {
-  TempDir dir;
+  TempDir dir("engine_store");
   OpenOptions options;
   options.create = false;
   Database db;
@@ -189,7 +180,7 @@ TEST_CASE("store: the statement cache reuses one prepared statement per SQL text
 }
 
 TEST_CASE("store: migrations run once, in order, and bump user_version") {
-  TempDir dir;
+  TempDir dir("engine_store");
   const std::string path = dir.file("migrate.db");
 
   static constexpr Migration k_v1[] = {
@@ -279,7 +270,7 @@ TEST_CASE("store: errors are statuses, not exceptions") {
 }
 
 TEST_CASE("store: file_size_bytes reports pages times page size") {
-  TempDir dir;
+  TempDir dir("engine_store");
   Database db;
   REQUIRE(db.open(dir.file("size.db")) == Status::Ok);
   REQUIRE(db.exec("CREATE TABLE t(a INTEGER PRIMARY KEY, b BLOB)") == Status::Ok);
