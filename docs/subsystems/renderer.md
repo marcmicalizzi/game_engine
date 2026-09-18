@@ -231,6 +231,19 @@ Four things in that table are worth reading carefully.
 
 The working set falls by about the 4.83 MB the release reports, and **the peak does not move at all** — which is exactly the caveat above, stated as a measurement rather than as a promise: the load materializes the merged streams and `attach_page_source` frees them afterwards. On a 2.85 MB mesh the absolute numbers are small; what they establish is that the mechanism works and where its remaining cost is. (The read total is larger than the scene because a churning budget re-reads a page it evicted — three ranged reads a page against a memcpy, which is the trade a budget under the working set makes whichever source it has.)
 
+**And on a scene large enough for the budget to matter.** The procedural heightfield at `--grid 2048` (8.4 M triangles, 2,052 pages, **235 MB of page bytes**), same machine, same settings, camera at 0.6 scene radii, 120 frames, run twice. This is the case the FlightHelmet is too small to show, and it is also the case that has **no container behind it** — the heightfield is built in the process, so it keeps the in-memory source, which is exactly the refusal working as designed.
+
+| budget | slots | pool bytes | resident | uploads | `gpu_memory.used_mib` | cull ms |
+|---|---|---|---|---|---|---|
+| streaming off | — | 235 MB uploaded whole | all of it | — | **461** | 0.0293–0.0294 |
+| 100% (235 MB) | 2,052 | 244.9 MB | 75 pages, 8.6 MB | 75 (8.3 MB) | 485 | 0.0306–0.0313 |
+| 50% (117.5 MB) | 1,074 | 129.6 MB | 74 pages, 8.5 MB | 74 (8.2 MB) | 369 | 0.0306–0.0326 |
+| 25% (58.8 MB) | 553 | **68.2 MB** | 74–75 pages, 8.5 MB | 74 (8.2 MB) | **339** | 0.0306–0.0308 |
+
+The quarter budget draws the same picture — 1,136 visible pairs at every row — out of **68 MB of pool against 235 MB uploaded whole**, and the driver's own figure agrees to the mebibyte across both runs: 339 MiB against 461 MiB for the process. Nothing is evicted and nothing goes stale at any budget, because this camera's cut wants 74 of 2,052 pages and even a quarter budget is four times that: a budget is only pressure when it is under the working set, which is what the FlightHelmet rows show and this one deliberately does not. Convergence is one frame at every budget.
+
+The cull pass is the one place streaming's shipped cost is visible at all here: **0.0293 ms off against 0.0306–0.0326 streamed**, over 2,052 pairs — about 4%, and larger than the FlightHelmet's spread only because this scene's pair count is small enough (2,052 against 150,272) that the per-page residency read is a bigger share of a short pass. Read the two together: the extra work is one load per pair and a masked append, it does not scale with the scene, and on the larger pair count it disappears into the noise.
+
 **Costs, at a glance.** `Stats::stream` carries what a run did — pages total, resident and pinned, slots, pending requests, requests, uploads and their bytes, evictions, stale drops, request-buffer overflows, frames to converge, the resident and total page bytes, and — for a container-backed source — which source it was, the ranged reads and their bytes, the host bytes released, and how many frames a page was wanted before its reads had landed. Both hosts report all of it.
 
 ## Reference renderer
