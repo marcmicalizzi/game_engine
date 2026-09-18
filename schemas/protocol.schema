@@ -466,7 +466,39 @@ struct RenderGpuMs @version(1) {
   frames: u64 = 0
 }
 
-struct RenderStats @version(1) {
+/// Device-local memory around a measurement (`gfx::MemoryBudget`, VK_EXT_memory_budget).
+/// `device_local_total_mib - budget_mib` is a lower bound on the share other processes hold —
+/// the Vulkan budget under-reports a CUDA tenant — and `used_mib` is this process's own. Read
+/// `machine_state.gpu_memory_used_mib` beside it. All zero without the extension.
+struct RenderGpuMemory @version(1) {
+  budget_mib: u64 = 0
+  used_mib: u64 = 0
+  device_local_total_mib: u64 = 0
+}
+
+/// What else the machine was doing while a measurement was taken (docs/subsystems/bench.md,
+/// "Measuring on a shared machine"). Every field is null where the platform could not answer,
+/// so a reader can tell "quiet" from "not measured". No process names are ever reported.
+struct MachineState @version(1) {
+  /// Percentages of the whole machine: 100 is every logical CPU busy. "others" is total minus
+  /// this process's own.
+  cpu_total_pct: f64?
+  cpu_own_pct: f64?
+  cpu_others_pct: f64?
+  gpu_util_pct: f64?
+  gpu_memory_used_mib: u64?
+  gpu_memory_total_mib: u64?
+  /// Windows only: a lock screen is up. Null anywhere else, never false by assumption.
+  session_locked: bool?
+}
+
+/// The machine's state at both ends of a run.
+struct MachineStateSpan @version(1) {
+  start: MachineState
+  end: MachineState
+}
+
+struct RenderStats @version(2) {
   /// Frames submitted.
   frames: u64 = 0
   /// The last frame's surviving (instance, cluster) pairs, by the draw that produced them.
@@ -479,6 +511,7 @@ struct RenderStats @version(1) {
   /// Wall time inside the renderer's own submit, per frame.
   cpu_ms_per_frame: f64 = 0
   gpu_ms: RenderGpuMs
+  gpu_memory: RenderGpuMemory @since(2)
 }
 
 struct RenderCaptureResult @version(1) {
@@ -511,7 +544,7 @@ struct RenderBenchmarkParams @version(1) {
   settings: RenderSettings?
 }
 
-struct RenderBenchmarkResult @version(1) {
+struct RenderBenchmarkResult @version(2) {
   width: u32 = 0
   height: u32 = 0
   raster: string
@@ -519,6 +552,10 @@ struct RenderBenchmarkResult @version(1) {
   /// Wall time of the whole run, including the wait for the last frame.
   seconds: f64 = 0
   stats: RenderStats
+  /// Sampled around the run, not inside it, so the frame times are not the sampler's. A run
+  /// whose numbers were taken beside another process's work is an upper bound, and the host
+  /// says so on stderr as well.
+  machine_state: MachineStateSpan @since(2)
 }
 
 /// Parameters of `render.compare` (docs/plan/04-renderer.md §4.8): the accept-or-reject gate of

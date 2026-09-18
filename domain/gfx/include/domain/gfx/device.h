@@ -46,8 +46,30 @@ struct DeviceFeatures {
   bool shader_int64 = false;
   bool buffer_int64_atomics = false;  // 64-bit atomics on storage buffers (visibility buffer)
   bool sampler_anisotropy = false;
-  bool presentation = false;  // VK_KHR_swapchain is enabled
-  bool validation = false;    // the validation layer is active
+  bool presentation = false;   // VK_KHR_swapchain is enabled
+  bool validation = false;     // the validation layer is active
+  bool memory_budget = false;  // VK_EXT_memory_budget: Device::memory_budget() reports real
+                               // numbers rather than heap sizes alone
+};
+
+// How much of the device-local memory this process may have, and how much of it it is using
+// (VK_EXT_memory_budget). The development machine shares its GPU with other work — a diffusion
+// job can hold most of a 32 GB card — and a frame time measured while another process owns the
+// memory is a measurement of the contention, not of the renderer. Reported so a summary can say
+// so instead of leaving the reader to guess.
+//
+// `budget_bytes` is what the *Vulkan* driver will let this process allocate given what it knows
+// about, so `device_local_bytes - budget_bytes` is the share it believes the rest of the machine
+// holds and `used_bytes` is this process's own. Both are estimates, and the first one is a
+// **lower bound**: measured on an RTX 5090 with 17.1 GB of the card held by a CUDA workload, the
+// Vulkan budget still reported 31,614 of 32,404 MiB free. Trust it when it is large and read
+// nvidia-smi's figure — the machine_state block beside this one — for "is somebody else on this
+// GPU". See docs/subsystems/gfx.md.
+struct MemoryBudget {
+  bool valid = false;          // false without VK_EXT_memory_budget: only device_local_bytes
+  u64 budget_bytes = 0;        // what this process may use of the device-local heaps
+  u64 used_bytes = 0;          // what this process has allocated of them
+  u64 device_local_bytes = 0;  // the heaps' own size, known either way
 };
 
 struct Handles;  // Vulkan handles; see domain/gfx/vulkan.h
@@ -73,6 +95,11 @@ class Device {
   u32 transfer_family() const noexcept;
 
   void wait_idle() noexcept;
+
+  // Device-local memory: the heaps' size always, and this process's budget and usage when the
+  // device has VK_EXT_memory_budget. False with `out` untouched when there is no device. It is
+  // a driver query, not a frame path — sample it around a measurement, not inside one.
+  bool memory_budget(MemoryBudget& out) const noexcept;
 
   // Vulkan handles for gfx internals and tests.
   const Handles& handles() const noexcept;

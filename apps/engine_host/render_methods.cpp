@@ -2,6 +2,7 @@
 
 #include <core/log/log.h>
 #include <core/time/time.h>
+#include <foundation/bench/machine_state.h>
 #include <foundation/image/decode.h>
 #include <foundation/image/metrics.h>
 #include <foundation/image/png.h>
@@ -101,6 +102,30 @@ void fill_stats(const renderer::Stats& in, protocol::RenderStats& out) {
   out.gpu_ms.trace = in.trace_ms();
   out.gpu_ms.total = in.total_ms();
   out.gpu_ms.frames = in.timed_frames;
+  out.gpu_memory.budget_mib = in.gpu_memory.budget_mib;
+  out.gpu_memory.used_mib = in.gpu_memory.used_mib;
+  out.gpu_memory.device_local_total_mib = in.gpu_memory.device_local_total_mib;
+}
+
+// One spelling of the machine state for both hosts (foundation/bench/machine_state.h): the
+// protocol struct is the same fields as the bench harness's JSON, so a renderer measurement and
+// a CPU benchmark carry the same caveat in the same shape.
+protocol::MachineState machine_state_of(const bench::MachineState& in) {
+  protocol::MachineState out;
+  if (in.cpu_valid) {
+    out.cpu_total_pct = in.cpu_total_pct;
+    out.cpu_own_pct = in.cpu_own_pct;
+    out.cpu_others_pct = in.cpu_others_pct;
+  }
+  if (in.gpu_valid) {
+    out.gpu_util_pct = in.gpu_util_pct;
+    out.gpu_memory_used_mib = in.gpu_memory_used_mib;
+    out.gpu_memory_total_mib = in.gpu_memory_total_mib;
+  }
+  if (in.session_locked != bench::Tristate::Unknown) {
+    out.session_locked = in.session_locked == bench::Tristate::Yes;
+  }
+  return out;
 }
 
 renderer::Camera camera_of(const RenderHost::Scene& scene,
@@ -320,6 +345,10 @@ bool render_benchmark(protocol::Context& ctx, const protocol::RenderBenchmarkPar
   // benchmark that waited for each one would measure the wait. The camera is held still so the
   // LOD cut is the same every frame and the numbers are comparable between runs; the frame
   // number still advances, so the lights orbit and a deformed scene deforms.
+  // Around the run, never inside it: the sampler sleeps for its CPU window and spawns a process
+  // for the GPU reading, and neither belongs between two timed frames.
+  const bench::MachineState machine_start = bench::sample_machine_state(bench::k_sample_window_ms);
+
   const renderer::Camera camera = camera_of(*scene, params.camera, params.orbit);
   scene->view->reset_stats();
   const i64 started = time::monotonic_ns();
@@ -338,11 +367,19 @@ bool render_benchmark(protocol::Context& ctx, const protocol::RenderBenchmarkPar
   scene->view->wait(last);
   scene->view->collect_visible();
   out.seconds = static_cast<f64>(time::monotonic_ns() - started) / 1.0e9;
+  scene->view->sample_gpu_memory();  // after the run: what the card looked like while it ran
+  const bench::MachineState machine_end = bench::sample_machine_state(bench::k_sample_window_ms);
   out.width = scene->view->width();
   out.height = scene->view->height();
   out.raster = renderer::raster_name(scene->resolved.settings.raster);
   out.shadows = scene->resolved.shadows ? "rt" : "off";
   fill_stats(scene->view->stats(), out.stats);
+  out.machine_state.start = machine_state_of(machine_start);
+  out.machine_state.end = machine_state_of(machine_end);
+  // stdout belongs to the protocol, so the caveat goes to stderr — the same line and the same
+  // thresholds the bench harness prints.
+  (void)bench::warn_if_busy(bench::worst_of(machine_start, machine_end), bench::QuietThresholds{},
+                            stderr);
   return true;
 }
 

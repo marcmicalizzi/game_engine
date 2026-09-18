@@ -265,6 +265,18 @@ TEST_CASE("renderer: draws a cube offscreen with no window and reads every chann
   CHECK(stats.trace_ms() >= 0.0);
   CHECK(stats.total_ms() >= 0.0);
 
+  // Device memory, which is what says whether a frame was timed against a card another process
+  // was holding. create() samples it, so it is filled without the caller asking.
+  CHECK(stats.gpu_memory.device_local_total_mib > 0);
+  if (stats.gpu_memory.valid) {  // VK_EXT_memory_budget; a device without it reports zeros
+    CHECK(stats.gpu_memory.budget_mib > 0);
+    CHECK(stats.gpu_memory.budget_mib <= stats.gpu_memory.device_local_total_mib);
+    CHECK(stats.gpu_memory.used_mib <= stats.gpu_memory.device_local_total_mib);
+  }
+  // A reset does not leave the summary without a figure, and a second sample still agrees.
+  rig.renderer.sample_gpu_memory();
+  CHECK(stats.gpu_memory.device_local_total_mib > 0);
+
   // The channels land on disk in the documented shapes.
   CaptureFiles files;
   REQUIRE_MESSAGE(write_capture(slashes(dir), "shot", shot, files, error), error);

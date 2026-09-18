@@ -14,6 +14,8 @@
 //
 // Exit codes: 0 ok; 1 runtime error; 2 usage; 3 unavailable (no display, no Vulkan device, no
 // mesh shaders, or no presentation support), which tests treat as a skip.
+#include <core/json/json.h>
+#include <core/json/json_value.h>
 #include <core/log/log.h>
 #include <core/math/math.h>
 #include <core/platform/process.h>
@@ -22,6 +24,7 @@
 #include <domain/gfx/device.h>
 #include <domain/gfx/swapchain.h>
 #include <domain/gfx/vulkan.h>
+#include <foundation/bench/machine_state.h>
 #include <foundation/image/png.h>
 #include <foundation/io/vfs.h>
 #include <foundation/window/window.h>
@@ -326,6 +329,8 @@ int main(int argc, char** argv) {
   u64 rendered = 0;
   i64 started_ns = 0;
   i64 finished_ns = 0;
+  bench::MachineState machine_start;
+  bench::MachineState machine_end;
   bool captured = false;
   u32 extent_width = options.width;
   u32 extent_height = options.height;
@@ -416,6 +421,13 @@ int main(int argc, char** argv) {
                     log::field("deform", renderer::deform_name(resolved.settings)),
                     log::field("rt_templates", resolved.settings.rt_templates),
                     log::field("width", extent_width), log::field("height", extent_height));
+
+    // What else the machine is doing, before the first frame and after the last: the summary is
+    // read as a measurement, and on this project's development box it is often taken beside a
+    // GPU job and several parallel builds (docs/subsystems/bench.md). The sampler sleeps for its
+    // CPU window and spawns a process for the GPU reading, so both samples sit outside the timed
+    // region and cost the run nothing.
+    machine_start = bench::sample_machine_state(bench::k_sample_window_ms);
 
     bool running = true;
     bool resize_pending = false;
@@ -529,6 +541,8 @@ int main(int argc, char** argv) {
     }
     finished_ns = time::monotonic_ns();
     if (view_renderer.valid()) view_renderer.wait_idle();
+    view_renderer.sample_gpu_memory();
+    machine_end = bench::sample_machine_state(bench::k_sample_window_ms);
   } while (false);
 
   const renderer::Stats stats = view_renderer.stats();
@@ -544,6 +558,11 @@ int main(int argc, char** argv) {
     const f64 seconds = static_cast<f64>(finished_ns - started_ns) / 1.0e9;
     const f64 avg_ms = rendered > 0 ? seconds * 1000.0 / static_cast<f64>(rendered) : 0.0;
     const u32 visible_min = stats.visible_min == ~u32{0} ? 0u : stats.visible_min;
+    // The one block of the line with nulls in it, so it is built rather than formatted.
+    JsonValue machine = JsonValue::object();
+    machine.set("start", bench::machine_state_json(machine_start));
+    machine.set("end", bench::machine_state_json(machine_end));
+    const std::string machine_text = write_json(machine, JsonWriteOptions{.pretty = false});
     std::printf(
         "{\"frames\":%llu,\"seconds\":%.3f,\"avg_ms\":%.3f,\"width\":%u,\"height\":%u,"
         "\"clusters\":%u,\"leaf_clusters\":%u,\"triangles\":%u,\"lod_levels\":%u,\"build_ms\":%.1f,"
@@ -555,6 +574,8 @@ int main(int argc, char** argv) {
         "\"visible_max\":%u,"
         "\"deform\":\"%s\",\"deform_pool_bytes\":%llu,\"rt_templates\":%s,"
         "\"template_bytes\":%llu,"
+        "\"gpu_memory\":{\"budget_mib\":%llu,\"used_mib\":%llu,"
+        "\"device_local_total_mib\":%llu},\"machine_state\":%s,"
         "\"gpu_ms\":{\"cull\":%.4f,\"hw\":%.4f,\"sw\":%.4f,\"hiz\":%.4f,\"resolve\":%.4f,"
         "\"rt\":%.4f,\"clas\":%.4f,\"deform\":%.4f,\"trace\":%.4f,\"total\":%.4f,"
         "\"frames\":%llu},\"captured\":%s}\n",
@@ -571,10 +592,18 @@ int main(int argc, char** argv) {
         renderer::deform_name(resolved.settings),
         static_cast<unsigned long long>(deform_pool_bytes),
         resolved.settings.rt_templates ? "true" : "false",
-        static_cast<unsigned long long>(template_bytes), stats.cull_ms(), stats.hw_ms(),
-        stats.sw_ms(), stats.hiz_ms(), stats.resolve_ms(), stats.rt_ms(), stats.clas_ms(),
-        stats.deform_ms(), stats.trace_ms(), stats.total_ms(),
-        static_cast<unsigned long long>(stats.timed_frames), captured ? "true" : "false");
+        static_cast<unsigned long long>(template_bytes),
+        static_cast<unsigned long long>(stats.gpu_memory.budget_mib),
+        static_cast<unsigned long long>(stats.gpu_memory.used_mib),
+        static_cast<unsigned long long>(stats.gpu_memory.device_local_total_mib),
+        machine_text.c_str(), stats.cull_ms(), stats.hw_ms(), stats.sw_ms(), stats.hiz_ms(),
+        stats.resolve_ms(), stats.rt_ms(), stats.clas_ms(), stats.deform_ms(), stats.trace_ms(),
+        stats.total_ms(), static_cast<unsigned long long>(stats.timed_frames),
+        captured ? "true" : "false");
+    // stdout is the summary; the caveat goes beside it on stderr, the same line and the same
+    // thresholds the bench harness prints.
+    (void)bench::warn_if_busy(bench::worst_of(machine_start, machine_end), bench::QuietThresholds{},
+                              stderr);
   }
   log::remove_sink(&stderr_sink);
   return exit_code;

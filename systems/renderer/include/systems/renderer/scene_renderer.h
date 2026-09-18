@@ -58,6 +58,18 @@ Camera orbit_camera_at(const Vec3& center, f32 radius, f32 distance, f32 yaw, f3
 
 // Every number the JSON summary of a run reports, and every number a benchmark returns. The GPU
 // milliseconds are sums over `timed_frames`; `*_ms()` divide.
+// What the device's memory looked like when the run was measured, in mebibytes
+// (`gfx::MemoryBudget`). `budget_mib` is what the Vulkan driver will let this process use, so
+// `device_local_total_mib - budget_mib` is a **lower bound** on the share other processes hold —
+// it under-reports a CUDA tenant, which is why the hosts print nvidia-smi's figure beside it in
+// their machine_state block. Zero-valued and `valid == false` without VK_EXT_memory_budget.
+struct GpuMemory {
+  bool valid = false;
+  u64 budget_mib = 0;
+  u64 used_mib = 0;
+  u64 device_local_total_mib = 0;
+};
+
 struct Stats {
   u64 frames = 0;         // frames submitted
   u64 timed_frames = 0;   // frames whose timestamps came back
@@ -77,6 +89,9 @@ struct Stats {
   f64 gpu_trace = 0.0;
   f64 gpu_total = 0.0;
   f64 cpu_ns = 0.0;  // wall time inside submit_frame, summed
+  // Sampled by sample_gpu_memory(), not by a frame: it is a driver query and the frame path
+  // stays free of them.
+  GpuMemory gpu_memory;
 
   u32 visible_pairs() const noexcept { return visible_hw + visible_pass2 + visible_sw; }
   f64 timed() const noexcept { return timed_frames > 0 ? static_cast<f64>(timed_frames) : 1.0; }
@@ -139,6 +154,10 @@ class SceneRenderer {
   u32 height() const noexcept { return height_; }
   const Stats& stats() const noexcept { return stats_; }
   void reset_stats() noexcept;
+  // Reads the device's memory budget into `stats().gpu_memory`. A caller samples it around a
+  // run — create() does it once so a summary always has a figure, and a host that measures
+  // calls it again at the end, which is when the contention it reports actually matters.
+  void sample_gpu_memory() noexcept;
   const ResolvedSettings& settings() const noexcept { return resolved_; }
   gfx::ShaderLibrary& shaders() noexcept { return shaders_; }
   // The renderer's own color target; null when it was created without one.

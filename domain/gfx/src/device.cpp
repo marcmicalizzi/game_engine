@@ -132,6 +132,32 @@ const Handles& Device::handles() const noexcept {
   return impl_->handles;
 }
 
+bool Device::memory_budget(MemoryBudget& out) const noexcept {
+  if (impl_ == nullptr || impl_->handles.physical == VK_NULL_HANDLE) return false;
+  VkPhysicalDeviceMemoryBudgetPropertiesEXT budget{};
+  budget.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT;
+  VkPhysicalDeviceMemoryProperties2 properties{};
+  properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2;
+  if (impl_->features.memory_budget) properties.pNext = &budget;
+  vkGetPhysicalDeviceMemoryProperties2(impl_->handles.physical, &properties);
+
+  out = MemoryBudget{};
+  out.valid = impl_->features.memory_budget;
+  const VkPhysicalDeviceMemoryProperties& mem = properties.memoryProperties;
+  // Device-local heaps only: host memory is the system's and is reported elsewhere. On an
+  // integrated GPU every heap is device-local and the totals are the shared pool, which is the
+  // honest answer there.
+  for (u32 i = 0; i < mem.memoryHeapCount; ++i) {
+    if ((mem.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) == 0) continue;
+    out.device_local_bytes += mem.memoryHeaps[i].size;
+    if (out.valid) {
+      out.budget_bytes += budget.heapBudget[i];
+      out.used_bytes += budget.heapUsage[i];
+    }
+  }
+  return true;
+}
+
 void Device::wait_idle() noexcept {
   if (impl_ != nullptr && impl_->handles.device != VK_NULL_HANDLE)
     vkDeviceWaitIdle(impl_->handles.device);
@@ -300,6 +326,9 @@ bool Device::create(const DeviceOptions& options, std::string* error) {
       device_extensions.enable_if_available("VK_EXT_descriptor_buffer");
   const bool ext_decompression =
       device_extensions.enable_if_available("VK_EXT_memory_decompression");
+  // No feature struct and no device functions of its own: enabling it is what makes
+  // vkGetPhysicalDeviceMemoryProperties2 fill VkPhysicalDeviceMemoryBudgetPropertiesEXT.
+  impl->features.memory_budget = device_extensions.enable_if_available("VK_EXT_memory_budget");
 
   // ---- features: query, then enable what is supported ----
   VkPhysicalDeviceVulkan11Features v11{};

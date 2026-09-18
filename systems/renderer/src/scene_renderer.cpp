@@ -212,7 +212,21 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
     destroy();
     return false;
   }
+  sample_gpu_memory();
   return true;
+}
+
+// A driver query, so it is not in the frame path: the caller samples it around a run. It
+// survives reset_stats() being called between runs only because every caller samples again.
+void SceneRenderer::sample_gpu_memory() noexcept {
+  if (device_ == nullptr) return;
+  gfx::MemoryBudget budget;
+  if (!device_->memory_budget(budget)) return;
+  constexpr u64 k_mib = 1024 * 1024;
+  stats_.gpu_memory.valid = budget.valid;
+  stats_.gpu_memory.budget_mib = budget.budget_bytes / k_mib;
+  stats_.gpu_memory.used_mib = budget.used_bytes / k_mib;
+  stats_.gpu_memory.device_local_total_mib = budget.device_local_bytes / k_mib;
 }
 
 bool SceneRenderer::create_color_target(std::string* error) {
@@ -353,6 +367,7 @@ void SceneRenderer::destroy() noexcept {
 void SceneRenderer::reset_stats() noexcept {
   stats_ = Stats{};
   submitted_ = 0;
+  sample_gpu_memory();  // a reset must not leave a summary with no memory figure at all
 }
 
 bool SceneRenderer::resize(u32 width, u32 height, std::string* error) {
