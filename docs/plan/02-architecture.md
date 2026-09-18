@@ -119,7 +119,7 @@ game clock ──► scaled sim time (e.g. 1 game-minute per sim-second) ──�
       src/
       tests/                unit + property tests
       bench/                micro-benchmarks registered with the tunables system
-  tools/                    python/CLI tooling, codegen, CI scripts
+  tools/                    PowerShell 7 scripts and small C++ tools (no Python, ADR-0021), codegen, CI scripts
   content/
     test-scenes/            deterministic reference scenes (versioned)
     golden/                 golden images and metrics, by scene × resolution × GPU class

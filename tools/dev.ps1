@@ -13,6 +13,7 @@
     bench       Build, then run every engine_*_bench executable. -Filter is a glob on
                 benchmark names; JSON lines land in build/<preset>/bench/<module>.jsonl.
     lint        Run the banned-pattern lint over the tree.
+    docs        Check that the documentation moved with the code (tools/docs-check.ps1).
     format      Run clang-format in place over engine sources.
     modules     Print build/<preset>/modules.json.
     clean       Remove build/<preset>.
@@ -24,7 +25,7 @@
 [CmdletBinding()]
 param(
   [Parameter(Position = 0)]
-  [ValidateSet('configure', 'build', 'test', 'bench', 'lint', 'format', 'modules', 'clean')]
+  [ValidateSet('configure', 'build', 'test', 'bench', 'lint', 'docs', 'format', 'modules', 'clean')]
   [string]$Command = 'build',
   [string]$Preset,
   [string]$Filter,
@@ -115,6 +116,11 @@ function Invoke-Lint {
   if ($LASTEXITCODE -ne 0) { throw "lint failed ($LASTEXITCODE)" }
 }
 
+function Invoke-Docs {
+  & (Join-Path $PSScriptRoot 'docs-check.ps1') -Root $Root
+  if ($LASTEXITCODE -ne 0) { throw "docs-check failed ($LASTEXITCODE)" }
+}
+
 function Invoke-Format {
   Ensure-Tool clang-format
   $files = Get-ChildItem -Path $Root -Recurse -Include *.h, *.hpp, *.cpp, *.inl -File |
@@ -137,6 +143,7 @@ switch ($Command) {
   'test'      { Invoke-Test }
   'bench'     { Invoke-Bench }
   'lint'      { Invoke-Lint }
+  'docs'      { Invoke-Docs }
   'format'    { Invoke-Format }
   'modules'   { Show-Modules }
   'clean'     { if (Test-Path $BuildDir) { Remove-Item -Recurse -Force $BuildDir; Write-Host "removed $BuildDir" } }

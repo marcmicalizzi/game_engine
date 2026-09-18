@@ -25,6 +25,7 @@ tools/dev.ps1 build     [-Preset msvc-debug]
 tools/dev.ps1 test      [-Preset msvc-debug] [-Filter <regex>]
 tools/dev.ps1 bench     [-Preset msvc-release] [-Filter <glob>]  # runs engine_*_bench; JSON lines in build/<preset>/bench/
 tools/dev.ps1 lint                             # banned-pattern lint (also runs as a CTest test)
+tools/dev.ps1 docs                             # documentation check (also runs as a CTest test)
 tools/dev.ps1 format                           # clang-format over the tree
 tools/dev.ps1 modules   [-Preset msvc-debug]   # prints build/<preset>/modules.json
 
