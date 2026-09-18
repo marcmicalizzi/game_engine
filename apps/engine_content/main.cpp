@@ -386,15 +386,21 @@ bool build_one(const std::string& input, const std::string& output, const MeshOp
   const u32 loaded_vertices = mesh.positions.size();
   u32 vertices = loaded_vertices;
   if (options.weld) {
+    // The skin bindings are part of the weld key when the source has them, so two coincident
+    // vertices with different weights stay two vertices — merging them would hand one surface the
+    // other's deformation, before clustering and therefore beyond noticing
+    // ([geometry](geometry.md), "Skinned meshes"). `engine-view --mesh` welds identically, because
+    // the two apps share cache entries and what one writes the other has to find.
     vertices = geometry::weld_vertices(mesh.positions, mesh.normals, mesh.uvs,
-                                       std::span<u32>(mesh.indices.data(), mesh.indices.size()));
+                                       std::span<u32>(mesh.indices.data(), mesh.indices.size()),
+                                       mesh.skin_bindings.empty() ? nullptr : &mesh.skin_bindings);
   }
   ENGINE_LOG_INFO(log_content, "mesh loaded", log::field("path", input),
                   log::field("vertices", loaded_vertices), log::field("welded", vertices),
                   log::field("triangles", mesh.indices.size() / 3),
                   log::field("primitives", mesh.primitives.size()),
                   log::field("materials", mesh.materials.size()),
-                  log::field("images", mesh.images.size()));
+                  log::field("skins", mesh.skins.size()), log::field("images", mesh.images.size()));
 
   // One DAG per primitive, so every cluster belongs to exactly one material; merging keeps the
   // parts' clusters and remembers which part each came from.

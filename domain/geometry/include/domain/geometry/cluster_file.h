@@ -239,7 +239,13 @@ bool read_cluster_file_identity(std::string_view path, u64& source_hash, u64& bu
 // 3: the clusters of a cached container are laid out in streaming pages, which renumbers them.
 // 4: a skinned source now carries a per-vertex `SkinBinding` stream, and the weld key includes
 //    it, so an entry built before this is both missing the stream and welded differently.
-inline constexpr u32 k_cluster_cache_version = 4;
+// 5: 4 was the format's half of that and not the builders'. `weld_vertices` took the bindings as
+//    an optional fourth stream, but neither `engine-content build` nor `engine-view --mesh`
+//    passed them, so every container built at 4 from a skinned source was welded *without* the
+//    binding in the key — two coincident vertices with different weights silently became one,
+//    which is the defect that stream exists to prevent. Both builders pass it now, so an entry
+//    built at 4 is wrong for a skinned mesh and merely re-keyed for a rigid one.
+inline constexpr u32 k_cluster_cache_version = 5;
 
 // The cache key: the source's content hash (`assets::source_mesh_hash`) mixed with the build
 // options and the version above. `page_bytes` is the streaming page target the container was
