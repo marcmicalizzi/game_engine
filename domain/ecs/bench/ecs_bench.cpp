@@ -2,6 +2,11 @@
 // e6-ecs-store.md): flecs at 10^5 entities with relationships and a hierarchy, four systems a
 // tick, worker scaling on the engine's job pool, query latency, churn, and memory.
 //
+// The tick is measured four ways because how flecs' workers are hosted turned out to matter
+// more than anything else in this file: the engine's long-running hosting, the per-tick hosting
+// it replaced, that one again on a pool that does not sleep, and flecs' own OS threads as the
+// number to beat. See `Hosting` below and the experiment page.
+//
 // Debug builds only smoke-run benchmarks (docs/subsystems/bench.md), so the debug world is small
 // enough for CTest; every number that reaches the write-up comes from msvc-release at 100,000.
 
@@ -13,8 +18,10 @@
 #include <foundation/bench/bench.h>
 
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <memory>
+#include <thread>
 #include <vector>
 
 #if ENGINE_PLATFORM_WINDOWS
@@ -178,41 +185,121 @@ u8 tier_from_score(f32 score) {
   return 3;
 }
 
-// How a world's flecs workers are hosted. The two are measured against each other because the
-// answer decided a design: see `ecs.tick.four_systems` against `ecs.tick.four_systems.os_threads`
-// and docs/experiments/e6-ecs-store.md.
+// How a world's flecs workers are hosted. The three are measured against each other because the
+// answer decided a design: see `ecs.tick.four_systems` against `.tasks` and `.os_threads`, and
+// docs/experiments/e6-ecs-store.md.
 enum class Hosting : u32 {
-  // `ecs_set_task_threads` through `ecs::JobOsApi`: a worker per stage is created as a job on
-  // core/jobs' performance pool at the start of every `progress()` and joined at the end. This
-  // is what the engine ships.
-  Tasks = 0,
-  // `ecs_set_threads`: flecs' own long-running OS threads, created once for the world. The
-  // adapter only replaces `task_new_`/`task_join_`, so this bypasses it and changes nothing else.
+  // `ecs_set_threads` through `ecs::JobOsApi`: one long-running job per flecs worker on
+  // core/jobs' performance pool, for the world's lifetime. This is what the engine ships.
+  Threads = 0,
+  // `ecs_set_threads` with flecs' own OS threads, which is what the adapter has to beat: the
+  // same pipeline with no engine in the way, at the cost of an unpinned second thread set. The
+  // hooks are put back to flecs' own for the world, so nothing else changes.
   OsThreads = 1,
+  // `ecs_set_task_threads` through `ecs::JobOsApi`: a worker per stage created as a job at the
+  // start of every `progress()` and joined at the end. Measured on 2026-09-18 to cost 1.6-2.2 ms
+  // a tick; kept selectable so the comparison that rejected it can still be run.
+  Tasks = 2,
+  // The same again, on a pool whose idle workers spin for far longer than a tick instead of
+  // sleeping. The control that says how much of that cost is the pool's wake path and how much
+  // is flecs' per-tick protocol. Its own numbers drift; read it for the split, not as a figure.
+  TasksNeverSleep = 3,
+};
+
+// flecs' own OS threads, for the `os_threads` row: the plain thread-per-worker the library uses
+// when nothing has replaced its hooks. Written out here rather than reached for inside flecs,
+// because by the time a scene is built the adapter has already replaced the defaults.
+struct OsWorker {
+  std::thread thread;
+  void* result = nullptr;
+};
+
+ecs_os_thread_t os_thread_new(ecs_os_thread_callback_t callback, void* param) {
+  auto* worker = new OsWorker();
+  worker->thread = std::thread([worker, callback, param] { worker->result = callback(param); });
+  return static_cast<ecs_os_thread_t>(reinterpret_cast<std::uintptr_t>(worker));
+}
+
+void* os_thread_join(ecs_os_thread_t handle) {
+  auto* worker = reinterpret_cast<OsWorker*>(static_cast<std::uintptr_t>(handle));
+  worker->thread.join();
+  void* result = worker->result;
+  delete worker;
+  return result;
+}
+
+// flecs' thread hooks are a process-wide global, so the `os_threads` row borrows them for
+// exactly the two moments they are read — when a world takes its workers and when it gives them
+// back — and puts the adapter's back afterwards.
+struct OsThreadHooks {
+  ecs_os_api_thread_new_t saved_new = nullptr;
+  ecs_os_api_thread_join_t saved_join = nullptr;
+  OsThreadHooks() : saved_new(ecs_os_api.thread_new_), saved_join(ecs_os_api.thread_join_) {
+    ecs_os_api.thread_new_ = &os_thread_new;
+    ecs_os_api.thread_join_ = &os_thread_join;
+  }
+  ~OsThreadHooks() {
+    ecs_os_api.thread_new_ = saved_new;
+    ecs_os_api.thread_join_ = saved_join;
+  }
 };
 
 struct Scene {
-  Scene(u32 workers, u32 grid_relationship_cells, Hosting hosting = Hosting::Tasks)
-      : jobs(make_config(workers)), adapter(jobs), grid_cells(grid_relationship_cells) {
+  Scene(u32 workers, u32 grid_relationship_cells, Hosting how = Hosting::Threads)
+      : jobs(make_config(workers, how)),
+        adapter(jobs),
+        grid_cells(grid_relationship_cells),
+        hosting(how) {
     build();
     if (hosting == Hosting::OsThreads) {
+      const OsThreadHooks borrow;
       ecs_set_threads(sim.world().c_ptr(), static_cast<i32>(workers));
     } else {
-      ecs::set_workers(sim.world(), workers);
+      ecs::set_workers(
+          sim.world(), workers,
+          hosting == Hosting::Threads ? ecs::WorkerHosting::Threads : ecs::WorkerHosting::Tasks);
     }
   }
 
-  void report(u32 workers, Hosting hosting) const {
-    std::printf("# e6 ecs: scene workers=%u hosting=%s grid_relationship=%u tables=%d\n", workers,
-                hosting == Hosting::OsThreads ? "os_threads" : "tasks", grid_cells,
-                static_cast<int>(sim.world().get_info()->table_count));
+  ~Scene() {
+    // Before ~SimWorld, and with the hooks the world's workers were created through, so an
+    // os_threads world joins real threads and a hosted one gives its pool workers back.
+    if (hosting == Hosting::OsThreads) {
+      const OsThreadHooks borrow;
+      ecs_set_threads(sim.world().c_ptr(), 1);
+    } else {
+      ecs::stop_workers(sim.world());
+    }
+  }
+
+  ENGINE_NON_COPYABLE(Scene);
+
+  void report(u32 workers) const {
+    std::printf(
+        "# e6 ecs: scene workers=%u hosting=%s pool_kept=%u grid_relationship=%u tables=%d\n",
+        workers, hosting_name(hosting), adapter.pool_workers_kept(), grid_cells,
+        static_cast<int>(sim.world().get_info()->table_count));
     std::fflush(stdout);
   }
 
-  static jobs::JobSystemConfig make_config(u32 workers) {
+  static const char* hosting_name(Hosting how) {
+    switch (how) {
+      case Hosting::OsThreads: return "os_threads";
+      case Hosting::Tasks: return "tasks";
+      case Hosting::TasksNeverSleep: return "tasks_never_sleep";
+      default: return "threads";
+    }
+  }
+
+  static jobs::JobSystemConfig make_config(u32 workers, Hosting how) {
     jobs::JobSystemConfig config;
     config.performance_workers = workers;
     config.efficiency_workers = 1;
+    // The control for the per-tick hosting's second cost: idle pool workers that spin for far
+    // longer than a tick instead of sleeping, so a per-tick worker is never a wake. About 27 ms
+    // of spinning, which bridges every gap inside a run and still lets the scene's threads go
+    // quiet soon after it, since the scene stays resident for the process.
+    if (how == Hosting::TasksNeverSleep) config.spin_iterations = 2'000'000;
     return config;
   }
 
@@ -223,6 +310,7 @@ struct Scene {
   ecs::JobOsApi adapter;
   ecs::SimWorld sim;
   u32 grid_cells;  // 0: no (InCell, cell) relationship on entities
+  Hosting hosting;
   std::vector<flecs::entity> factions;
   std::vector<flecs::entity> cells;
   Aggregate aggregate;
@@ -403,9 +491,10 @@ void Scene::build_systems() {
 }
 
 // Scenes are expensive to build and are reused across repeats, so one is kept per configuration
-// for the life of the process. Destruction order inside Scene (world, then adapter, then job
-// system) is what lets a flecs world with task workers be torn down safely.
-Scene& scene_for(u32 workers, u32 grid_cells, Hosting hosting = Hosting::Tasks) {
+// for the life of the process. `~Scene` gives the world's workers back before ~SimWorld runs, and
+// the member order (job system, adapter, world) then tears the three down in the only order that
+// works: a pool thread parked inside flecs cannot be joined by the job system.
+Scene& scene_for(u32 workers, u32 grid_cells, Hosting hosting = Hosting::Threads) {
   static std::vector<std::unique_ptr<Scene>> cache;
   static std::vector<u64> keys;
   const u64 key =
@@ -416,7 +505,19 @@ Scene& scene_for(u32 workers, u32 grid_cells, Hosting hosting = Hosting::Tasks) 
   report_environment_once();
   cache.push_back(std::make_unique<Scene>(workers, grid_cells, hosting));
   keys.push_back(key);
-  cache.back()->report(workers, hosting);
+  cache.back()->report(workers);
+  return *cache.back();
+}
+
+// A job system with a world's configuration and no world on it, for the submit-and-join control.
+jobs::JobSystem& bare_pool_for(u32 workers) {
+  static std::vector<std::unique_ptr<jobs::JobSystem>> cache;
+  static std::vector<u32> keys;
+  for (usize i = 0; i < keys.size(); ++i) {
+    if (keys[i] == workers) return *cache[i];
+  }
+  cache.push_back(std::make_unique<jobs::JobSystem>(Scene::make_config(workers, Hosting::Threads)));
+  keys.push_back(workers);
   return *cache.back();
 }
 
@@ -440,12 +541,25 @@ ENGINE_BENCH_ARGS(ecs_tick_workers, "ecs.tick.four_systems", 1, 2, 4, 8, 16) {
   state.set_items(k_entities);
 }
 
-// The same tick, with flecs' own long-running OS threads instead of the engine's task adapter.
-// The two rows are the whole of the 2026-09-18 finding: hosting flecs' workers as per-tick jobs
-// costs more than the parallelism it buys, and the pair is here so that any future fix has
-// something to be checked against. One worker is not measured, because the two configurations are
-// the same code path there — `ecs.tick.four_systems/1` is the shared serial baseline.
-ENGINE_BENCH_ARGS(ecs_tick_os_threads, "ecs.tick.four_systems.os_threads", 2, 4, 8) {
+// The same tick with the per-tick task hosting, which is what the engine used to ship and what
+// the 2026-09-18 measurement rejected. It stays selectable because the finding is a comparison,
+// and a comparison nobody can re-run is a paragraph rather than evidence. One worker is not
+// measured: every hosting is the same code path there, and `ecs.tick.four_systems/1` is the
+// shared serial baseline.
+ENGINE_BENCH_ARGS(ecs_tick_tasks, "ecs.tick.four_systems.tasks", 2, 4, 8, 16) {
+  const u32 workers = clamp_workers(static_cast<u32>(state.arg()));
+  Scene& scene = scene_for(workers, 0, Hosting::Tasks);
+  while (state.keep_running()) {
+    scene.sim.step();
+    bench::keep(scene.aggregate.wealth[0]);
+  }
+  state.set_items(k_entities);
+}
+
+// The same tick with flecs' own OS threads, which is the number the engine's hosting has to
+// match: the same pipeline with nothing of ours in it, at the cost of an unpinned second thread
+// set that oversubscribes the pool's cores.
+ENGINE_BENCH_ARGS(ecs_tick_os_threads, "ecs.tick.four_systems.os_threads", 2, 4, 8, 16) {
   const u32 workers = clamp_workers(static_cast<u32>(state.arg()));
   Scene& scene = scene_for(workers, 0, Hosting::OsThreads);
   while (state.keep_running()) {
@@ -455,21 +569,38 @@ ENGINE_BENCH_ARGS(ecs_tick_os_threads, "ecs.tick.four_systems.os_threads", 2, 4,
   state.set_items(k_entities);
 }
 
-// The control for that comparison: what one tick's worth of task submission and blocking join
-// costs on its own, with no flecs in it at all — `workers - 1` empty jobs on the same pool the
-// adapter uses, joined the way `JobOsApi::join_task` joins. It is here because the adapter's
-// premise is that this is cheap, and the premise is *correct*: it is microseconds, three orders
-// of magnitude below what the adapter adds to a tick. Whatever costs that time is therefore not
-// job submission or wake latency, and a fix aimed at those would be aimed at the wrong thing.
+// The per-tick hosting again, on a pool whose idle workers spin far longer than a tick instead
+// of sleeping. It is the control that splits that hosting's cost in two: what remains is flecs'
+// per-tick create-and-join protocol, and what it removes is the pool wake every per-tick worker
+// pays because the pool worker that ran the last tick's has gone to sleep in between. It is
+// last because its scenes keep spinning for a moment after it, which would tax whatever ran
+// next.
+ENGINE_BENCH_ARGS(ecs_tick_tasks_awake, "ecs.tick.four_systems.tasks_never_sleep", 2, 4, 8) {
+  const u32 workers = clamp_workers(static_cast<u32>(state.arg()));
+  Scene& scene = scene_for(workers, 0, Hosting::TasksNeverSleep);
+  while (state.keep_running()) {
+    scene.sim.step();
+    bench::keep(scene.aggregate.wealth[0]);
+  }
+  state.set_items(k_entities);
+}
+
+// The control that says where *not* to look: what one tick's worth of job submission and
+// blocking join costs on its own, with no flecs in it at all — `workers - 1` empty jobs on a
+// pool configured exactly as a world's, joined the way `JobOsApi::join_worker` joins. It is
+// microseconds, three orders of magnitude below what per-tick hosting adds to a tick, which is
+// what ruled out submission cost and pointed at the per-tick re-dispatch and flecs' own
+// handshake instead. It gets a pool of its own rather than a scene's, because a scene's pool
+// has that world's workers on it for the world's lifetime and this has to measure an empty one.
 ENGINE_BENCH_ARGS(ecs_task_roundtrip, "ecs.task.roundtrip", 2, 4, 8, 16) {
   const u32 workers = clamp_workers(static_cast<u32>(state.arg()));
-  Scene& scene = scene_for(workers, 0);
+  jobs::JobSystem& pool = bare_pool_for(workers);
   static auto noop = [](void*) {};
   while (state.keep_running()) {
     jobs::Counter counter;
     counter.add(workers - 1);
     for (u32 i = 0; i + 1 < workers; ++i)
-      scene.jobs.schedule(jobs::Pool::Performance, jobs::Job{+noop, nullptr, &counter});
+      pool.schedule(jobs::Pool::Performance, jobs::Job{+noop, nullptr, &counter});
     counter.wait_blocking();
   }
 }

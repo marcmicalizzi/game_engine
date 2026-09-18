@@ -4,7 +4,8 @@
 - **Date:** 2026-09-17. **Machine:** Intel Core i9-10980XE, 18 cores / 36 threads, one package, one NUMA node, one cache domain, 25 MB LLC, Windows 11, NVMe. **Build:** `msvc-release` (RelWithDebInfo). **Versions:** flecs 4.1.6, SQLite 3.53.4.
 - **Machine state (added 2026-09-18):** not recorded at the time; the machine is shared with GPU diffusion workloads and parallel agent builds, and the harness did not yet know how to look ([bench](../subsystems/bench.md#measuring-on-a-shared-machine)). Everything below the horizontal rule is the original run. The headline CPU numbers were re-taken on 2026-09-18 on a verified-quiet machine and the results are in "[Re-measured on a quiet machine](#re-measured-on-a-quiet-machine-2026-09-18)" at the end of this page — **the store numbers came back 7–11% faster and the ECS worker-scaling table did not reproduce at all**, which is the single clearest argument for the rule that produced it.
 - **The ECS worker-scaling table below is withdrawn**, and the reason is now known: see "[What the worker scaling actually was](#what-the-worker-scaling-actually-was-2026-09-18)". The tick does scale — 1.87× at four workers, 2.32× at eight — but only with flecs' own threads; hosting flecs' workers as per-tick jobs on `core/jobs` costs a flat 1.6–2.2 ms a tick and turns the speedup into a slowdown. Every other number on this page reproduces within a few percent.
-- **Decision:** [ADR-0028](../adr/0028-ecs-and-persistent-store.md), **Accepted** 2026-09-18. flecs stays unwrapped and the engine owns five seams; the two findings below that cost the most to learn — the relationship cross-product and "a component is not a spatial index" — became a debug watchdog on the table count and a rule on [ecs](../subsystems/ecs.md) rather than staying paragraphs in this file. The worker-scaling half of the ECS result is **withdrawn**, not decided: see the re-measurement section.
+- **That is fixed.** Later the same day the mechanism was found and the hosting changed: see "[Why per-tick hosting cost what it did](#why-per-tick-hosting-cost-what-it-did-2026-09-18)" and "[Worker hosting, re-measured](#worker-hosting-re-measured-2026-09-18)". flecs' workers are now long-running jobs on the performance pool, the tick scales to within a few percent of flecs' own threads at every worker count, and the decision is [ADR-0030](../adr/0030-flecs-workers-are-long-running-pool-jobs.md).
+- **Decision:** [ADR-0028](../adr/0028-ecs-and-persistent-store.md), **Accepted** 2026-09-18. flecs stays unwrapped and the engine owns five seams; the two findings below that cost the most to learn — the relationship cross-product and "a component is not a spatial index" — became a debug watchdog on the table count and a rule on [ecs](../subsystems/ecs.md) rather than staying paragraphs in this file. The worker-scaling half was **withdrawn** the same day and settled by [ADR-0030](../adr/0030-flecs-workers-are-long-running-pool-jobs.md), which refines ADR-0028 decision 3 rather than editing it.
 
 ## Method
 
@@ -252,4 +253,84 @@ One caveat for whoever re-runs this. In a full `--filter=ecs.*` run the 1-worker
 2. **The task-adapter design is refuted by its own experiment.** [ADR-0028](../adr/0028-ecs-and-persistent-store.md)'s consequences and [ecs](../subsystems/ecs.md) now say so, including the claim on that page that replacing `thread_new_` instead would be "strictly worse" — it would hold `workers - 1` pool threads for the life of the world, which is a real cost, and it is measurably smaller than 1.6–2.2 ms a tick.
 3. **The conclusion E6 drew is unchanged**, and this is why it was drawn that way: **the number that matters is that four cheap systems over 100,000 entities fit in a 16.6 ms frame**, single-threaded, and the parallel speedup was never the reason to choose flecs. Nothing about the storage, the queries or the relationships is affected.
 
-The pair of benchmarks that produced the finding is in the tree — `ecs.tick.four_systems` against `ecs.tick.four_systems.os_threads`, plus `ecs.task.roundtrip` as the control — so a fix has something to be checked against rather than a paragraph to be believed.
+The pair of benchmarks that produced the finding is in the tree, so a fix has something to be checked against rather than a paragraph to be believed. **One renaming to know about when reading this section back:** at the time, `ecs.tick.four_systems` *was* the per-tick hosting, because that is what the engine shipped. Since [ADR-0030](../adr/0030-flecs-workers-are-long-running-pool-jobs.md), `ecs.tick.four_systems` is the long-running hosting the engine now ships and the per-tick one is `ecs.tick.four_systems.tasks`. Every "task adapter" column above is that second benchmark today.
+
+---
+
+## Why per-tick hosting cost what it did (2026-09-18)
+
+The section above ends with "what is left is what happens after a flecs worker is running on a pool thread", which was a hypothesis with an argument attached rather than a measurement. Here is the measurement. **Same machine, same build, same pins; `--wait-quiet=900`, one bench executable at a time.**
+
+A temporary probe was put on flecs' OS-API hooks in `ecs_bench.cpp`. It is worth writing down exactly what it did, because it is not in the tree: it replaces process-global hooks, which is a landmine to leave in a bench file that every other benchmark in it shares. It wrapped `task_new_` and `task_join_` to timestamp the main thread on either side of each call, wrapped the worker callback itself to timestamp the pool thread the moment the body started, counted every call to `mutex_lock_`, and added two no-op systems — one in the first phase, one in the last — that timestamp the main thread's entry into and exit from the pipeline. A tick then splits into **pre** (everything before the first system body), **pipe** (the systems), and **post** (everything after the last one), with the create, the wait and the join broken out of `pre` and `post`.
+
+### One: flecs rebuilds the worker set every tick, and the main thread spins for it
+
+`ecs_set_task_threads` makes `ecs_progress` call `flecs_create_worker_threads` on the way in and `flecs_join_worker_threads` on the way out. Between them, `flecs_workers_progress` calls `flecs_wait_for_workers`, which is a bare `lock / check / unlock` loop on one critical section with no yield, and it does not return until every one of the new workers has taken that same lock to announce itself. With `ecs_set_threads` the workers are already running and the same loop exits on its first iteration.
+
+The count says it plainly. **Calls to `ecs_os_mutex_lock` per tick**, 100,000 entities, four systems:
+
+| Workers | per-tick hosting | flecs' own threads |
+|---|---|---|
+| 2 | 5,400–5,900 | 4 |
+| 4 | 9,900–11,600 | 6 |
+| 8 | 17,900–18,600 | 10 |
+| 16 | 33,000–50,000 | 18 |
+
+Not "more locking": **three to four orders of magnitude** more, and it is one thread spinning on one lock. In wall clock, per tick:
+
+| Workers | pre (create + wait) | post (join) | pipeline | pre + post, flecs' own threads |
+|---|---|---|---|---|
+| 2 | 0.19 ms | 0.13 ms | 3.09 ms | 4.3 µs |
+| 4 | 0.36 ms | 0.21 ms | 2.23 ms | 4.6 µs |
+| 8 | 0.65 ms | 0.35 ms | 1.71 ms | 4.6 µs |
+| 16 | 1.21–1.71 ms | 0.61–0.76 ms | 1.48 ms | 5.1 µs |
+
+### Two: every tick's worker is a fresh job, and the pool worker that ran the last one is asleep
+
+That first mechanism grows with the worker count and does not explain the rest: at two workers the *pipeline itself* is 3.09 ms against flecs' own threads' 1.70 ms. The control that settles it is the same per-tick adapter on a pool whose idle workers spin for far longer than a tick instead of sleeping (`ecs.tick.four_systems.tasks_never_sleep`, a `JobSystemConfig::spin_iterations` change and nothing else):
+
+| Workers | per-tick, pool sleeps | per-tick, pool stays awake | flecs' own threads |
+|---|---|---|---|
+| 4 | pipeline 2.23 ms | pipeline **1.25 ms** | pipeline 1.25 ms |
+| 8 | pipeline 1.71 ms | pipeline **0.99 ms** | pipeline 1.00 ms |
+
+With the pool kept awake the pipeline costs what flecs' own threads cost, to within a percent, and only the per-tick protocol above is left. So the second cost is the **pool's wake path, paid once per worker per tick** — plus the fact that a pinned pool worker's core goes idle during every single-threaded stretch of the tick, which the same control removes. Both are the price of re-dispatching a long-running worker as if it were a short job.
+
+The two costs pull in opposite directions as the worker count rises — the protocol grows, the wake shrinks — which is why the total looked *flat* at 1.6–2.2 ms and why "flat in worker count" was a misleading clue rather than a helpful one.
+
+**And it is still not the job system.** `ecs.task.roundtrip` — the same number of empty jobs submitted to the same pool and joined the same way — reproduces at **1.16, 1.42, 2.12 and 4.4–5.7 µs** for 2, 4, 8 and 16 workers. The pool's spin-then-sleep policy is right for the short jobs it exists for; nothing in `core/jobs` was changed, and a fix aimed at it would have been aimed at the wrong thing.
+
+### The `tasks_never_sleep` control is unstable, and that is worth saying
+
+Its medians drift between about 1.6 ms and 3.0 ms at four workers across runs and even across repeats within a run, while its minimum sits at 1.6 ms. A pool of permanently spinning workers is not a state any machine should be in — it fights the OS for frequency and core-parking decisions — so the control is good for the qualitative split above and should not be quoted as a figure. The mutex counts and the pre/pipe/post split, which are counted rather than timed and reproduce to a few percent, are the load-bearing evidence.
+
+## Worker hosting, re-measured (2026-09-18)
+
+The fix is [ADR-0030](../adr/0030-flecs-workers-are-long-running-pool-jobs.md): `ecs::JobOsApi` now fills in flecs' `thread_new_`/`thread_join_` hooks as well, and `ecs::set_workers` uses `ecs_set_threads`, so a world's *n-1* workers are dispatched to the performance pool **once** and run flecs' worker loop until the world gives them back. flecs keeps its own per-tick signalling, the engine keeps one pinned thread per CPU, and the cost moves from every tick to once per world: a world holds `n-1` pool workers for its lifetime, inside a budget the application sets (`JobOsApiConfig::hosted_worker_budget`, default "all but one").
+
+**Machine state.** Same box, same build (`msvc-release`), flecs 4.1.6. Each hosting was measured **in its own process** (`--filter=*four_systems`, `--filter=*.tasks`, `--filter=*.os_threads`), twice, with `--wait-quiet=900`. This was a working afternoon on a shared box and the two runs of each pair were taken minutes apart: every run started under the 10% others'-CPU threshold, the GPU was 4% busy at 3.4 GB of 32 GB throughout, the session was unlocked, and the runs marked † ended above the threshold and carry the harness's WARNING — **their numbers are upper bounds**, which for the conclusion below is the conservative direction. The per-tick pair carries no warning at either end.
+
+Microseconds per tick, 100,000 entities, four systems, median of seven repeats, two runs per cell. Workers count the calling thread, so *n* means one main thread and *n-1* workers; for the shipped hosting the pool was sized to *n*, so the world holds *n-1* of it and **one pool worker is left for everything else**.
+
+| Workers | Shipped: long-running pool jobs † | Per-tick jobs (what ADR-0030 replaced) | flecs' own OS threads † |
+|---|---|---|---|
+| 1 | **2,424 / 2,428** | *same code path* | *same code path* |
+| 2 | **1,719 / 1,678** (1.42×) | 3,506 / 3,597 (0.68×) | 1,664 / 1,732 (1.43×) |
+| 4 | **1,249 / 1,287** (1.91×) | 2,791 / 2,849 (0.86×) | 1,333 / 1,384 (1.78×) |
+| 8 | **1,143 / 1,072** (2.19×) | 2,689 / 2,827 (0.88×) | 1,199 / 1,230 (1.99×) |
+| 16 | **1,020 / 1,002** (2.40×) | 3,501 / 3,403 (0.70×) | 1,124 / 1,087 (2.19×) |
+
+Speedups are against the shared 2,426 µs single-threaded baseline, on the mean of the pair.
+
+**What it says.** The tick scales, and it keeps scaling: 1.9× at four workers, 2.4× at sixteen, where the per-tick hosting was *slower than one worker at every count* and turned back up after eight. The shipped hosting lands within a few percent of flecs' own OS threads at every worker count, which was the target; it reads slightly ahead at 4, 8 and 16, and **that should not be read as the engine's hosting beating flecs' own.** The difference is inside the unpinned configuration's run-to-run spread: a third `os_threads` run in the same session read 1,696 / 1,788 / 1,102 / 1,314, with the four-worker figure visibly worse than its own two-worker one. Unpinned threads land wherever Windows puts them and are the configuration most sensitive to what else is on the box; the engine's are pinned, and across every run in this session their spread was the smaller of the two. One session on one shared machine is not enough to claim more than that.
+
+**A corroboration nobody asked for.** One `tasks` run started at 5.8% others' CPU and ended at 20.2%, and it came back **faster** — 2,561 / 2,295 / 2,479 / 2,579 µs against the quiet pair's 3,506 / 2,791 / 2,689 / 3,501. A busy machine making a benchmark faster is the wrong shape for contention and the right shape for mechanism two: other processes keep the cores out of deep idle, so the per-tick wake that the hosting pays is cheaper. It is a stray observation from one run, not a measurement, and it is here because it points the same way as the control that was designed.
+
+**Determinism.** Unchanged and now pinned harder: a small world run sixteen ticks at 1, 4 and 8 workers produces bit-identical components (`domain/ecs/tests/ecs_tests.cpp`), and the conflicting-write-set test still pins system order at 1, 2 and 4 workers.
+
+### What it decides
+
+1. **flecs' workers are long-running jobs on `core/jobs`' performance pool**, and how many of that pool a world may hold is the application's number, refused rather than attempted when it is too large. [ADR-0030](../adr/0030-flecs-workers-are-long-running-pool-jobs.md).
+2. **`core/jobs` was not the problem and was not changed.** Its submit-and-join path is microseconds and its spin-then-sleep policy is right for the short jobs it exists for. What was wrong was re-dispatching a long-running worker as if it were one.
+3. **The number to plan against is still the single-threaded one** — 2.42 ms for four cheap systems over 100,000 entities — because a real frame shares this pool with rendering and streaming, and a world that holds `workers - 1` of it makes that sharing sharper. The parallel figures say the headroom exists, not that it is free.
+4. **[ADR-0028](../adr/0028-ecs-and-persistent-store.md) decision 7 is unaffected.** Whether flecs' pipeline stays the tick scheduler is still open, and the two limits it rests on are untouched: flecs splits a system's matched entities evenly rather than letting the pool steal into the tick, and hierarchy propagation cannot be `multi_threaded()` at all. What has changed is that flecs' pipeline now costs what flecs' pipeline costs, which is the baseline any replacement should be measured against.
