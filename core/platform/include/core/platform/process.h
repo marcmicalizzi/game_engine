@@ -64,4 +64,18 @@ class Process {
 // Directory holding the running executable, UTF-8 with forward slashes and no trailing slash.
 std::string executable_directory();
 
+// **What this process is holding in physical memory right now**, in bytes: the working set on
+// Windows (`GetProcessMemoryInfo`) and the resident set on Linux (`/proc/self/statm`). Zero when
+// the OS will not say.
+//
+// It is here because a claim like "streaming bounds host memory" is only worth making if it can
+// be measured, and the number a reader can check is the one the task manager shows. It is a
+// coarse instrument on purpose: it counts the allocator's free lists, the driver's mappings and
+// every mapped file, so it answers "did this run hold less" and not "how large is this array".
+// A frame path must not call it — it is a system call.
+u64 process_memory_bytes() noexcept;
+// And the high-water mark of the same figure over the process's life (the peak working set;
+// `VmHWM` on Linux), which is what says whether a load ever *materialized* what it later freed.
+u64 peak_process_memory_bytes() noexcept;
+
 }  // namespace engine::platform

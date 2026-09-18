@@ -7,7 +7,14 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
+// PSAPI_VERSION 2 maps GetProcessMemoryInfo onto K32GetProcessMemoryInfo, which lives in
+// kernel32, so the working-set query costs no extra import library.
+#define PSAPI_VERSION 2
+#include <psapi.h>
 #else
+#include <cstdio>
+#endif
+#if !ENGINE_PLATFORM_WINDOWS
 #include <errno.h>
 #include <signal.h>
 #include <spawn.h>
@@ -395,6 +402,52 @@ bool Process::read_all(std::string& out) {
   out.swap(pending_);
   pending_.clear();
   return true;
+}
+
+#if !ENGINE_PLATFORM_WINDOWS
+namespace {
+
+// One `VmXxx:` line of /proc/self/status, in bytes. The file is small and read whole; this is not
+// a frame-path query.
+u64 status_field_bytes(const char* key) noexcept {
+  std::FILE* f = std::fopen("/proc/self/status", "rb");
+  if (f == nullptr) return 0;
+  char line[256];
+  u64 out = 0;
+  const usize key_len = std::strlen(key);
+  while (std::fgets(line, sizeof(line), f) != nullptr) {
+    if (std::strncmp(line, key, key_len) != 0) continue;
+    unsigned long long kib = 0;
+    if (std::sscanf(line + key_len, " %llu", &kib) == 1) out = static_cast<u64>(kib) * 1024ull;
+    break;
+  }
+  std::fclose(f);
+  return out;
+}
+
+}  // namespace
+#endif
+
+u64 process_memory_bytes() noexcept {
+#if ENGINE_PLATFORM_WINDOWS
+  PROCESS_MEMORY_COUNTERS counters{};
+  counters.cb = sizeof(counters);
+  if (::GetProcessMemoryInfo(::GetCurrentProcess(), &counters, sizeof(counters)) == 0) return 0;
+  return static_cast<u64>(counters.WorkingSetSize);
+#else
+  return status_field_bytes("VmRSS:");
+#endif
+}
+
+u64 peak_process_memory_bytes() noexcept {
+#if ENGINE_PLATFORM_WINDOWS
+  PROCESS_MEMORY_COUNTERS counters{};
+  counters.cb = sizeof(counters);
+  if (::GetProcessMemoryInfo(::GetCurrentProcess(), &counters, sizeof(counters)) == 0) return 0;
+  return static_cast<u64>(counters.PeakWorkingSetSize);
+#else
+  return status_field_bytes("VmHWM:");
+#endif
 }
 
 }  // namespace engine::platform

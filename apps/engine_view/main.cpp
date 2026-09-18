@@ -14,6 +14,7 @@
 //
 // Exit codes: 0 ok; 1 runtime error; 2 usage; 3 unavailable (no display, no Vulkan device, no
 // mesh shaders, or no presentation support), which tests treat as a skip.
+#include <core/jobs/job_system.h>
 #include <core/json/json.h>
 #include <core/json/json_value.h>
 #include <core/log/log.h>
@@ -29,6 +30,7 @@
 #include <foundation/io/vfs.h>
 #include <foundation/window/window.h>
 #include <systems/renderer/gpu_scene.h>
+#include <systems/renderer/page_source.h>
 #include <systems/renderer/reference.h>
 #include <systems/renderer/scene.h>
 #include <systems/renderer/scene_renderer.h>
@@ -123,6 +125,13 @@ constexpr const char* k_usage =
     "                   every page, which is streaming with nothing to evict. Implies --stream\n"
     "  --upload-budget <KiB>  page payload one frame may copy into the pool (default 256 KiB); a\n"
     "                   value under the largest page is raised to it. Implies --stream\n"
+    "  --page-source <s>  where a streamed page's bytes come from: auto (the default: the meshes'\n"
+    "                   .clusters containers when every mesh has one, host memory otherwise),\n"
+    "                   file (refuse to run if they do not), or host (the SceneData the load\n"
+    "                   produced, which is what streaming saved no host memory with)\n"
+    "  --fly <a> <b> <n>  a scripted fly-in over n frames, from a mesh radii to b, interpolated\n"
+    "                   geometrically because what a LOD cut answers to is the ratio of\n"
+    "                   distances. Overrides --orbit and sets --frames when it is not set\n"
     "  --rt-templates   --raster rt: build one cluster template per cluster at load and\n"
     "                   instantiate the cut's templates each frame instead of rebuilding the CLAS\n"
     "  --animate [clip] play a skinned glTF's animation: the skin becomes a skeleton, a clip is\n"
@@ -190,6 +199,16 @@ struct Options {
   u32 grid_instances = 0;  // n: place the one mesh n x n times
   bool cache = true;
   f32 orbit = 0.0f;  // 0: breathe
+  // `--fly`: a scripted camera path. `fly_frames` of 0 is off, and `--fly` then also sets
+  // `--frames` unless one was given, because a path shorter than itself says nothing.
+  f32 fly_from = 0.0f;
+  f32 fly_to = 0.0f;
+  u32 fly_frames = 0;
+  // Where a streamed page's bytes come from. `auto` takes the containers when every mesh has one;
+  // `file` refuses to run without them, so a measurement cannot silently fall back; `host` is the
+  // in-memory source, which is the A of the host-memory A/B.
+  enum class PageSource : u8 { automatic, file, host };
+  PageSource page_source = PageSource::automatic;
   bool animate = false;
   std::string clip;  // --animate's optional value: a clip name or an index
   f32 anim_speed = 1.0f;
@@ -725,6 +744,13 @@ JsonValue streaming_summary(const renderer::StreamStats& s) {
   out.set("resident_bytes", s.resident_bytes);
   out.set("page_bytes", s.page_bytes);
   out.set("budget_bytes", s.budget_bytes);
+  // Where the payloads came from and what that cost. `source` is "file" or "host"; the three
+  // counters are zero for "host", where the bytes were already in the process.
+  out.set("source", std::string(s.from_file ? "file" : "host"));
+  out.set("file_reads", s.file_reads);
+  out.set("file_bytes", s.file_bytes);
+  out.set("host_bytes_freed", s.host_bytes_freed);
+  out.set("load_waits", s.load_waits);
   return out;
 }
 
@@ -1039,6 +1065,36 @@ int main(int argc, char** argv) {
       options.settings.stream = true;
       if (a == "--page-budget") options.settings.page_budget_bytes = u64{n} * 1024 * 1024;
       if (a == "--upload-budget") options.settings.upload_budget_bytes = n * 1024;
+    } else if (a == "--page-source") {
+      if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
+      if (value == "auto") {
+        options.page_source = Options::PageSource::automatic;
+      } else if (value == "file") {
+        options.page_source = Options::PageSource::file;
+      } else if (value == "host") {
+        options.page_source = Options::PageSource::host;
+      } else {
+        std::fprintf(stderr, "engine-view: --page-source expects auto, file, or host\n");
+        return k_exit_usage;
+      }
+      options.settings.stream = true;
+    } else if (a == "--fly") {
+      // Three values: the distance to start at, the distance to end at, and how many steps.
+      std::string to_text;
+      std::string steps_text;
+      if (!next_value(argc, argv, i, a, value) || !next_value(argc, argv, i, a, to_text) ||
+          !next_value(argc, argv, i, a, steps_text)) {
+        return k_exit_usage;
+      }
+      u32 steps = 0;
+      if (!parse_f32(value, options.fly_from) || !parse_f32(to_text, options.fly_to) ||
+          !parse_u32(steps_text, steps) || steps < 2) {
+        std::fprintf(stderr,
+                     "engine-view: --fly expects two positive distances in mesh radii and a step "
+                     "count of at least 2\n");
+        return k_exit_usage;
+      }
+      options.fly_frames = steps;
     } else if (a == "--raster") {
       if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
       if (!renderer::parse_raster_mode(value, options.settings.raster)) {
@@ -1144,6 +1200,10 @@ int main(int argc, char** argv) {
                  "is the one after a single tick.\n");
   }
   if (!options.capture.empty() && options.frames == 0) options.frames = 60;
+  // A fly-in shorter than the path says nothing about the path, so `--fly` sets the frame count
+  // when nothing else did; a caller that gave one keeps it (a longer run repeats the last step,
+  // which is how "and then it sat there" is measured).
+  if (options.fly_frames > 0 && options.frames == 0) options.frames = options.fly_frames;
 
   log::StreamSink stderr_sink(stderr, log::StreamSink::Format::Text);
   stderr_sink.set_min_level(log::Level::Warn);
@@ -1206,6 +1266,15 @@ int main(int argc, char** argv) {
   renderer::SceneData scene_data;
   renderer::ResolvedSettings resolved;
   renderer::GpuScene scene;
+  // The Efficiency pool a container-backed page source reads on, and the source itself. Two
+  // workers: a page is three or four reads and the budget lets two pages a frame through, so more
+  // threads would only queue deeper. The pool is built whatever the flags say, because a job
+  // system with two workers costs two threads and one branch here would have to be undone the
+  // moment anything else in this app wants one.
+  jobs::JobSystem page_jobs(
+      jobs::JobSystemConfig{.performance_workers = 1, .efficiency_workers = 2});
+  renderer::FilePageSource page_source;
+  const char* page_source_name = "host";
   renderer::SceneRenderer view_renderer;
   u64 rendered = 0;
   i64 started_ns = 0;
@@ -1316,7 +1385,23 @@ int main(int argc, char** argv) {
     deform_whole_mesh_bytes = scene.deform_whole_mesh_bytes();
     template_bytes = scene.template_bytes();
     rt_bytes = scene.rt_bytes();
+    // Where a streamed page's bytes come from. Attaching the container-backed source is also what
+    // releases the merged host streams, so it happens here, after the upload and before the
+    // renderer that will read from it.
+    if (resolved.stream && options.page_source != Options::PageSource::host) {
+      std::string why;
+      if (renderer::attach_page_source(scene_data, scene, page_jobs, page_source, &why)) {
+        page_source_name = "file";
+      } else if (options.page_source == Options::PageSource::file) {
+        exit_code = fail("page source", why);
+        break;
+      } else {
+        ENGINE_LOG_INFO(log_view, "geometry pages stream from host memory",
+                        log::field("reason", why));
+      }
+    }
     renderer::SceneRenderer::Desc renderer_desc;
+    renderer_desc.page_source = page_source.valid() ? &page_source : nullptr;
     renderer_desc.width = swapchain.extent().width;
     renderer_desc.height = swapchain.extent().height;
     renderer_desc.color_format = swapchain.format();
@@ -1432,7 +1517,11 @@ int main(int argc, char** argv) {
 
       renderer::FrameDesc frame;
       frame.camera =
-          renderer::orbit_camera(scene_data.center, scene_data.radius, options.orbit, rendered);
+          options.fly_frames > 0
+              ? renderer::fly_camera(scene_data.center, scene_data.radius, options.fly_from,
+                                     options.fly_to, static_cast<u32>(rendered), options.fly_frames)
+              : renderer::orbit_camera(scene_data.center, scene_data.radius, options.orbit,
+                                       rendered);
       frame.frame_index = rendered;
 #if ENGINE_VIEW_ANIMATION
       // The camera first, then the tick: `update_animation_lod` reads **this** frame's frusta and
@@ -1512,7 +1601,13 @@ int main(int argc, char** argv) {
   } while (false);
 
   const renderer::Stats stats = view_renderer.stats();
+  // The process's own footprint, read before anything is torn down: with a container-backed page
+  // source this is the number the whole change is about, so it is taken where it still means
+  // something. The peak beside it says whether the load ever *materialized* what it then freed.
+  const u64 host_memory = platform::process_memory_bytes();
+  const u64 host_memory_peak = platform::peak_process_memory_bytes();
   view_renderer.destroy();
+  page_source.destroy();
   scene.destroy();
   swapchain.destroy();
   window::Window::destroy_vulkan_surface(device.handles().instance, surface);
@@ -1544,6 +1639,7 @@ int main(int argc, char** argv) {
         "\"deform_overflow_entries\":%u,\"deform_overflow_bytes\":%llu,\"rt_templates\":%s,"
         "\"skinned_instances\":%u,\"joints\":%u,\"clip\":\"%s\",\"anim\":%s,"
         "\"template_bytes\":%llu,\"rt_bytes\":%llu,\"views\":%s,\"streaming\":%s,"
+        "\"host_memory\":{\"bytes\":%llu,\"peak_bytes\":%llu},"
         "\"gpu_memory\":{\"budget_mib\":%llu,\"used_mib\":%llu,"
         "\"device_local_total_mib\":%llu},\"machine_state\":%s,"
         "\"gpu_ms\":{\"cull\":%.4f,\"hw\":%.4f,\"sw\":%.4f,\"hiz\":%.4f,\"resolve\":%.4f,"
@@ -1570,6 +1666,8 @@ int main(int argc, char** argv) {
         resolved.settings.rt_templates ? "true" : "false", skinned_instances, joint_matrices,
         clip_text.c_str(), anim_text.c_str(), static_cast<unsigned long long>(template_bytes),
         static_cast<unsigned long long>(rt_bytes), views_text.c_str(), streaming_text.c_str(),
+        static_cast<unsigned long long>(host_memory),
+        static_cast<unsigned long long>(host_memory_peak),
         static_cast<unsigned long long>(stats.gpu_memory.budget_mib),
         static_cast<unsigned long long>(stats.gpu_memory.used_mib),
         static_cast<unsigned long long>(stats.gpu_memory.device_local_total_mib),

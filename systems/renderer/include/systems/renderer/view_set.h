@@ -57,6 +57,21 @@ Camera orbit_camera(const Vec3& center, f32 radius, f32 distance, u64 frame) noe
 // `distance` of zero is the breathing orbit's rest distance (22 radius-tenths).
 Camera orbit_camera_at(const Vec3& center, f32 radius, f32 distance, f32 yaw, f32 pitch) noexcept;
 
+// A scripted fly-in: step `step` of `steps` on a path from `from` mesh radii to `to`, turning as
+// `orbit_camera` turns so that the cut has to change for two reasons and not one.
+//
+// **The distance is interpolated geometrically, not linearly**, and that is the whole of the
+// design. What a LOD cut and a page budget answer to is the *ratio* of distances: halving the
+// distance doubles every projected error whether it is 50 radii to 25 or 2 to 1. Equal steps in
+// log distance are therefore equal steps in refinement, and a fly-in sampled that way spends its
+// steps where pages are actually arriving instead of spending nine tenths of them on the outer
+// half of the path, where a mesh is a handful of clusters and nothing is requested at all
+// ([geometry](../../../../docs/subsystems/geometry.md), "What it costs on the sample meshes",
+// measured exactly that: the outer 80% of the FlightHelmet's fly-in draws out of one page).
+//
+// `steps` under 2, or a non-positive distance, gives the camera at `from`.
+Camera fly_camera(const Vec3& center, f32 radius, f32 from, f32 to, u32 step, u32 steps) noexcept;
+
 // Reversed-Z perspective through an arbitrary rectangle on the near plane, which is what an
 // off-axis monitor needs and what `core/math`'s symmetric `perspective_reversed_z` cannot express.
 // Same conventions: the camera looks down -z, the near plane maps to 1 and the far plane to 0, and

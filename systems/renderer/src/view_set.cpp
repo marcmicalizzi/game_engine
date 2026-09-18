@@ -35,6 +35,27 @@ Camera orbit_camera_at(const Vec3& center, f32 radius, f32 distance, f32 yaw, f3
   return camera;
 }
 
+Camera fly_camera(const Vec3& center, f32 radius, f32 from, f32 to, u32 step, u32 steps) noexcept {
+  const f32 a = from > 0.0f ? from : 1.0f;
+  const f32 b = to > 0.0f ? to : a;
+  // exp(lerp(log a, log b, t)): equal steps in log distance, which are equal steps in projected
+  // error. `steps - 1` so that step 0 is exactly `from` and the last step exactly `to`.
+  const f32 t =
+      steps > 1 ? static_cast<f32>(step < steps ? step : steps - 1) / static_cast<f32>(steps - 1)
+                : 0.0f;
+  const f32 radii = std::exp(std::log(a) + (std::log(b) - std::log(a)) * t);
+  // `orbit_camera`'s own turn rate against the step index, so the same path is the same camera
+  // whatever produced it, and `--orbit` and `--fly` differ only in the distance.
+  const f32 angle = static_cast<f32>(step) * 0.006f;
+  const f32 d = radii * radius;
+  Camera camera;
+  camera.position = center + Vec3{std::cos(angle) * d, 0.45f * d, std::sin(angle) * d};
+  camera.target = center;
+  camera.fov_y = radians(55.0f);
+  camera.znear = 0.01f * radius;
+  return camera;
+}
+
 Mat4 off_center_reversed_z(f32 left, f32 right, f32 bottom, f32 top, f32 near) noexcept {
   Mat4 m;
   m.at(0, 0) = 2.0f * near / (right - left);

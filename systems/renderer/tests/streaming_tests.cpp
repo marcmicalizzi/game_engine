@@ -68,6 +68,25 @@ void coverage_of(const CapturedFrame& frame, Vector<u8>& out) {
     out[p] = frame.ids[p * k_id_words] != k_no_id ? u8{1} : u8{0};
 }
 
+// How many pixels of `reference` that are **`margin` pixels inside its coverage** are not covered
+// by `cover`. Eroding first is what separates "the surface has a hole in it" from "the silhouette
+// moved", which is the only difference a coarser cut is allowed to make.
+u32 interior_misses(const Vector<u8>& reference, const Vector<u8>& cover, u32 width, u32 height,
+                    u32 margin) {
+  u32 missing = 0;
+  for (u32 y = margin; y + margin < height; ++y) {
+    for (u32 x = margin; x + margin < width; ++x) {
+      bool interior = true;
+      for (u32 dy = 0; dy <= 2 * margin && interior; ++dy) {
+        for (u32 dx = 0; dx <= 2 * margin && interior; ++dx)
+          interior = reference[(y + dy - margin) * width + (x + dx - margin)] != 0;
+      }
+      if (interior && cover[y * width + x] == 0) ++missing;
+    }
+  }
+  return missing;
+}
+
 struct Harness {
   gfx::Device device;
   SceneData data;
@@ -482,6 +501,103 @@ TEST_CASE("streaming: a scene with no container behind it keeps the in-memory so
   // And nothing was released: a refusal leaves the scene exactly as it was, or the run that
   // followed it would have no pages to copy at all.
   CHECK(paged_stream_bytes(h.data) > 0);
+}
+
+TEST_CASE("streaming: a fly-in is coarser at every step and never has a hole") {
+  // **The guarantee the feature owes**, as an assertion rather than a table. A fly-in is where a
+  // budget is actually under pressure — the cut grows by an order of magnitude over the path and
+  // the pages it wants arrive two or three frames after it wanted them — so "coarser, never
+  // holes" has to hold at *every step* and not only once the camera has stopped.
+  //
+  // The reference is the same path drawn with every page resident, step for step: the cameras are
+  // a function of the step index alone, so the two runs look at exactly the same thing.
+  constexpr u32 k_steps = 24;
+  constexpr f32 k_from = 8.0f;  // mesh radii
+  constexpr f32 k_to = 0.9f;
+
+  Harness full;
+  if (!full.build(heightfield_desc(true, 16 * 1024), streamed_settings(0, 0))) {
+    MESSAGE(full.skip);
+    return;
+  }
+  const u64 whole = full.renderer.streamer().stats().page_bytes;
+  REQUIRE(whole > 0);
+  REQUIRE(full.scene.page_count() > 4);
+
+  std::string error;
+  Vector<u32> reference_covered;
+  Vector<Vector<u8>> reference_cover;
+  reference_cover.resize(k_steps);
+  for (u32 s = 0; s < k_steps; ++s) {
+    FrameDesc frame;
+    frame.camera = fly_camera(full.data.center, full.data.radius, k_from, k_to, s, k_steps);
+    frame.frame_index = s;
+    // Every page resident before the shot is taken, so the reference is the fully resident
+    // picture of that step and not a picture of how far *it* had got.
+    for (u32 warm = 0; warm < 8; ++warm)
+      REQUIRE_MESSAGE(full.renderer.render_offscreen(frame, &error), error);
+    CapturedFrame shot;
+    REQUIRE_MESSAGE(full.renderer.capture(frame, {.ids = true}, shot, &error), error);
+    coverage_of(shot, reference_cover[s]);
+    reference_covered.push_back(shot.covered);
+  }
+
+  // A quarter of the page bytes, and a small upload budget so a step cannot converge inside
+  // itself: this is the starved case walking the path, which is what the guarantee is about.
+  Harness lean;
+  if (!lean.build(heightfield_desc(true, 16 * 1024), streamed_settings(whole / 4, 32 * 1024))) {
+    MESSAGE(lean.skip);
+    return;
+  }
+  u32 worst_holes = 0;
+  u32 worst_step = 0;
+  for (u32 s = 0; s < k_steps; ++s) {
+    FrameDesc frame;
+    frame.camera = fly_camera(lean.data.center, lean.data.radius, k_from, k_to, s, k_steps);
+    frame.frame_index = s;
+    REQUIRE_MESSAGE(lean.renderer.render_offscreen(frame, &error), error);
+    CapturedFrame shot;
+    REQUIRE_MESSAGE(lean.renderer.capture(frame, {.ids = true}, shot, &error), error);
+    Vector<u8> cover;
+    coverage_of(shot, cover);
+    REQUIRE(cover.size() == reference_cover[s].size());
+    u32 holes = 0;
+    u32 extra = 0;
+    for (u32 p = 0; p < cover.size(); ++p) {
+      holes += reference_cover[s][p] != 0 && cover[p] == 0 ? 1u : 0u;
+      extra += reference_cover[s][p] == 0 && cover[p] != 0 ? 1u : 0u;
+    }
+    // **The guarantee is about the interior, and that is what is asserted.** A coarser cut moves
+    // a silhouette — the heightfield's horizon is a jagged edge and a parent cluster's is a
+    // different jagged edge — so the two coverages differ along it by construction, and counting
+    // those pixels against an area-scaled tolerance measures the shape of the object rather than
+    // the streaming: at 8 radii the terrain covers 2,494 pixels of 76,800 and its edge is a
+    // sizeable fraction of that, while at 0.9 radii it covers most of the frame and the same
+    // edge is a rounding error. So the reference mask is **eroded by two pixels** and every
+    // surviving pixel must be covered, which says exactly "no region of the surface is missing"
+    // with no tolerance to calibrate. The whole-frame counts stay in the message, because they
+    // are the table docs/subsystems/renderer.md carries.
+    const u32 interior_holes = interior_misses(reference_cover[s], cover, k_width, k_height, 2);
+    if (holes > worst_holes) {
+      worst_holes = holes;
+      worst_step = s;
+    }
+    CHECK_MESSAGE(interior_holes == 0, "step " << s << ": " << interior_holes
+                                               << " interior pixels of " << reference_covered[s]
+                                               << " covered are missing");
+    // And a loose bound on the whole frame, which would catch "half the surface is gone" if the
+    // erosion ever stopped being the tight statement it is.
+    CHECK_MESSAGE(holes * 20 <= reference_covered[s] + 160,
+                  "step " << s << ": " << holes << " holes of " << reference_covered[s]);
+    MESSAGE("step " << s << ": " << reference_covered[s] << " covered, " << holes << " holes, "
+                    << extra << " extra, " << interior_holes << " interior");
+  }
+  const StreamStats& stats = lean.renderer.streamer().stats();
+  MESSAGE("fly-in " << k_from << " -> " << k_to << " radii in " << k_steps << " steps: worst holes "
+                    << worst_holes << " at step " << worst_step << ", " << stats.uploads
+                    << " uploads, " << stats.evictions << " evictions, " << stats.pages_resident
+                    << " of " << stats.pages_total << " pages resident");
+  CHECK(stats.uploads > 0);
 }
 
 TEST_CASE("streaming: a request is served under an upload budget of one page a frame") {
