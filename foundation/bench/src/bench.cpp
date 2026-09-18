@@ -24,6 +24,8 @@ void escape(const volatile void*) noexcept {}
 
 namespace {
 
+bool g_smoke = false;
+
 struct RegistryState {
   platform::SpinLock lock;
   Registration* head = nullptr;
@@ -280,7 +282,10 @@ Stats compute_stats(std::span<const f64> samples) {
 
 // ---- run -------------------------------------------------------------------------------------
 
+bool smoke_mode() noexcept { return g_smoke; }
+
 int run(const Options& options, Vector<Result>* results) {
+  g_smoke = options.smoke;
   if (!options.overrides.empty()) {
     std::string error;
     if (!tunables::apply_overrides(options.overrides, &error)) {

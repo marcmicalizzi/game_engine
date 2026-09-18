@@ -353,7 +353,11 @@ void Scene::build_systems() {
       .run([](flecs::iter& it) {
         // The observer set is read once per invocation, not once per entity: a singleton lookup
         // per entity would dominate a system this cheap.
-        const ObserverSet& observers = it.world().get<ObserverSet>();
+        // Bound to a named world first: GCC 13+ flags a reference obtained through a temporary
+        // `flecs::world` wrapper as dangling (-Wdangling-reference), although the component
+        // lives in the world, not in the wrapper.
+        const flecs::world world_ref = it.world();
+        const ObserverSet& observers = world_ref.get<ObserverSet>();
         while (it.next()) {
           auto tiers = it.field<Tier>(0);
           auto positions = it.field<const Position>(1);

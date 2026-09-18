@@ -28,16 +28,22 @@ using namespace engine::store;
 namespace {
 
 #if ENGINE_DEBUG
-constexpr u32 k_records = 20'000;
-constexpr u32 k_tiles = 64;
+constexpr u32 k_full_records = 20'000;
+constexpr u32 k_full_tiles = 64;
 #else
-constexpr u32 k_records = 1'000'000;
-constexpr u32 k_tiles = 1024;  // plan 03 §3.7's grid: one save file, a thousand tiles
+constexpr u32 k_full_records = 1'000'000;
+constexpr u32 k_full_tiles = 1024;  // plan 03 §3.7's grid: one save file, a thousand tiles
 #endif
+// The CTest smoke run (--smoke) only asks whether the benchmarks run at all, and a million-row
+// corpus took 286 s on a hosted CI runner, so it gets the debug-sized corpus in every build.
+constexpr u32 k_smoke_records = 20'000;
+constexpr u32 k_smoke_tiles = 64;
+u32 records() noexcept { return bench::smoke_mode() ? k_smoke_records : k_full_records; }
+u32 tiles() noexcept { return bench::smoke_mode() ? k_smoke_tiles : k_full_tiles; }
 constexpr u32 k_blob_min = 64;
 constexpr u32 k_blob_max = 256;
-constexpr u32 k_summary_records = k_records / 100;  // the hourly pass touches 1% of the world
-constexpr u32 k_snapshot_records = k_records / 100;
+u32 summary_records() noexcept { return records() / 100; }  // the hourly pass touches 1% of the world
+u32 snapshot_records() noexcept { return records() / 100; }
 constexpr u32 k_snapshot_tile = 7;
 
 struct Rng {
@@ -84,7 +90,7 @@ void report_environment_once() {
   platform::describe_topology(platform::topology(), description, sizeof(description));
   std::printf("# e6 store: %s\n", description);
   std::printf("# e6 store: build=%s sqlite=%s records=%u tiles=%u blob=%u..%u B\n", build_preset(),
-              sqlite3_libversion(), k_records, k_tiles, k_blob_min, k_blob_max);
+              sqlite3_libversion(), records(), tiles(), k_blob_min, k_blob_max);
   std::fflush(stdout);
 }
 
@@ -135,12 +141,12 @@ Corpus::Corpus() {
   // what a world generator produces and what the tile-leading primary key wants: see
   // store.projections.insert_order for what the other order costs.
   constexpr u32 k_batch = 10'000;
-  constexpr u32 k_per_tile = k_records / k_tiles;
+  const u32 k_per_tile = records() / tiles();
   u32 written = 0;
-  while (written < k_records) {
+  while (written < records()) {
     Transaction transaction;
     if (db.begin(transaction, true) != Status::Ok) return;
-    const u32 end = written + k_batch < k_records ? written + k_batch : k_records;
+    const u32 end = written + k_batch < records() ? written + k_batch : records();
     for (; written < end; ++written) {
       ProjectionRecord record;
       record.entity = entity_for(written);
@@ -162,8 +168,8 @@ Corpus::Corpus() {
   std::printf(
       "# e6 store: corpus %u rows in %.2f s (%.0f rows/s, %u KiB cache), db %lld B "
       "(%.1f B/row), wal %llu B\n",
-      k_records, seconds, static_cast<f64>(k_records) / seconds, k_warm_cache_kib,
-      static_cast<long long>(bytes), static_cast<f64>(bytes) / static_cast<f64>(k_records),
+      records(), seconds, static_cast<f64>(records()) / seconds, k_warm_cache_kib,
+      static_cast<long long>(bytes), static_cast<f64>(bytes) / static_cast<f64>(records()),
       size_ec ? 0ull : static_cast<unsigned long long>(wal_bytes));
   std::fflush(stdout);
 
@@ -260,7 +266,7 @@ ENGINE_BENCH_ARGS(store_insert_batch, "store.projections.insert", 1, 100, 1000, 
   Scratch scratch("insert.db", true);
   if (!scratch.ok) return;
   std::vector<u8> blob(k_blob_max, 0x5A);
-  constexpr u32 k_per_tile = k_scratch_limit / k_tiles;
+  const u32 k_per_tile = k_scratch_limit / tiles();
   u32 next = 0;
   while (state.keep_running()) {
     if (next >= k_scratch_limit) {
@@ -294,7 +300,7 @@ ENGINE_BENCH_ARGS(store_insert_order, "store.projections.insert_order", 0, 1) {
   if (!scratch.ok) return;
   std::vector<u8> blob(k_blob_max, 0x5A);
   constexpr u32 k_batch = 1000;
-  constexpr u32 k_per_tile = k_scratch_limit / k_tiles;
+  const u32 k_per_tile = k_scratch_limit / tiles();
   u32 next = 0;
   while (state.keep_running()) {
     if (next >= k_scratch_limit) {
@@ -308,7 +314,7 @@ ENGINE_BENCH_ARGS(store_insert_order, "store.projections.insert_order", 0, 1) {
     for (u32 i = 0; i < k_batch; ++i, ++next) {
       ProjectionRecord record;
       record.entity = entity_for(next);
-      record.tile = round_robin ? next % k_tiles : next / (k_per_tile > 0 ? k_per_tile : 1);
+      record.tile = round_robin ? next % tiles() : next / (k_per_tile > 0 ? k_per_tile : 1);
       record.kind = next % 4;
       record.version = 1;
       record.blob = std::span<const u8>(blob.data(), k_blob_min);
@@ -325,7 +331,7 @@ ENGINE_BENCH(store_upsert_cost, "store.projections.upsert_vs_insert") {
   Scratch scratch("upsert.db", true);
   if (!scratch.ok) return;
   std::vector<u8> blob(k_blob_max, 0x5A);
-  constexpr u32 k_per_tile = k_scratch_limit / k_tiles;
+  const u32 k_per_tile = k_scratch_limit / tiles();
   u32 next = 0;
   while (state.keep_running()) {
     if (next >= k_scratch_limit) {
@@ -357,7 +363,7 @@ ENGINE_BENCH_ARGS(store_journal_mode, "store.journal", 0, 1) {
   Scratch scratch(wal ? "journal_wal.db" : "journal_delete.db", wal);
   if (!scratch.ok) return;
   std::vector<u8> blob(k_blob_max, 0x5A);
-  constexpr u32 k_per_tile = k_scratch_limit / k_tiles;
+  const u32 k_per_tile = k_scratch_limit / tiles();
   u32 next = 0;
   while (state.keep_running()) {
     if (next >= k_scratch_limit) {
@@ -430,7 +436,7 @@ ENGINE_BENCH_ARGS(store_point_lookup, "store.projections.point_lookup", 0, 1) {
   u64 bytes = 0;
   while (state.keep_running()) {
     ProjectionRecord out;
-    const u32 index = rng.next() % k_records;
+    const u32 index = rng.next() % records();
     if (log->load_projection(entity_for(index), index % 4, out) == Status::Ok) {
       bytes += out.blob.size();
     }
@@ -449,10 +455,10 @@ ENGINE_BENCH_ARGS(store_range_by_tile, "store.projections.range_by_tile", 0, 1) 
   Rng rng;
   while (state.keep_running()) {
     u64 bytes = 0;
-    log->projections_by_tile(rng.next() % k_tiles, &count_projection, &bytes);
+    log->projections_by_tile(rng.next() % tiles(), &count_projection, &bytes);
     bench::keep(bytes);
   }
-  state.set_items(k_records / k_tiles);
+  state.set_items(records() / tiles());
 }
 
 ENGINE_BENCH(store_summarize_hour, "store.projections.summarize_hour") {
@@ -460,7 +466,7 @@ ENGINE_BENCH(store_summarize_hour, "store.projections.summarize_hour") {
   // expressed as SQL so the store does the walking rather than a million rows crossing the API.
   Corpus& c = corpus();
   if (c.log == nullptr) return;
-  const u32 tiles_per_pass = k_tiles / 100 > 0 ? k_tiles / 100 : 1;
+  const u32 tiles_per_pass = tiles() / 100 > 0 ? tiles() / 100 : 1;
   Rng rng;
   while (state.keep_running()) {
     Statement stmt;
@@ -469,7 +475,7 @@ ENGINE_BENCH(store_summarize_hour, "store.projections.summarize_hour") {
                      stmt) != Status::Ok) {
       return;
     }
-    const i64 first = rng.next() % (k_tiles - tiles_per_pass);
+    const i64 first = rng.next() % (tiles() - tiles_per_pass);
     stmt.bind(1, first).bind(2, first + tiles_per_pass - 1);
     i64 total = 0;
     for (;;) {
@@ -479,14 +485,14 @@ ENGINE_BENCH(store_summarize_hour, "store.projections.summarize_hour") {
     }
     bench::keep(total);
   }
-  state.set_items(k_summary_records);
+  state.set_items(summary_records());
 }
 
 ENGINE_BENCH(store_summarize_writeback, "store.projections.summarize_writeback") {
   // The other half of a periodic: it writes its result back. One UPDATE over the same slice.
   Corpus& c = corpus();
   if (c.log == nullptr) return;
-  const u32 tiles_per_pass = k_tiles / 100 > 0 ? k_tiles / 100 : 1;
+  const u32 tiles_per_pass = tiles() / 100 > 0 ? tiles() / 100 : 1;
   Rng rng;
   while (state.keep_running()) {
     Transaction transaction;
@@ -496,12 +502,12 @@ ENGINE_BENCH(store_summarize_writeback, "store.projections.summarize_writeback")
                      stmt) != Status::Ok) {
       return;
     }
-    const i64 first = rng.next() % (k_tiles - tiles_per_pass);
+    const i64 first = rng.next() % (tiles() - tiles_per_pass);
     stmt.bind(1, first).bind(2, first + tiles_per_pass - 1);
     if (stmt.run() != Status::Ok) return;
     if (transaction.commit() != Status::Ok) return;
   }
-  state.set_items(k_summary_records);
+  state.set_items(summary_records());
 }
 
 ENGINE_BENCH(store_replay_tile, "store.events.replay_tile") {
@@ -538,7 +544,7 @@ struct SnapshotFixture {
     Transaction transaction;
     if (scratch.db.begin(transaction, true) != Status::Ok) return;
     Rng rng;
-    for (u32 i = 0; i < k_snapshot_records; ++i) {
+    for (u32 i = 0; i < snapshot_records(); ++i) {
       ProjectionRecord record;
       record.entity = entity_for(i);
       record.tile = k_snapshot_tile;
@@ -577,7 +583,7 @@ ENGINE_BENCH(store_snapshot_write, "store.snapshot.write") {
     }
     bench::keep(info.blob_bytes);
   }
-  state.set_items(k_snapshot_records);
+  state.set_items(snapshot_records());
 }
 
 ENGINE_BENCH(store_snapshot_read, "store.snapshot.read") {
@@ -594,5 +600,5 @@ ENGINE_BENCH(store_snapshot_read, "store.snapshot.read") {
     }
     bench::keep(bytes);
   }
-  state.set_items(k_snapshot_records);
+  state.set_items(snapshot_records());
 }

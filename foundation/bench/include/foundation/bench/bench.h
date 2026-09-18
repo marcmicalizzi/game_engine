@@ -153,6 +153,9 @@ struct Result {
 // Runs every registered benchmark matching the filter. Returns a process exit code: 0 on
 // success, 2 for a bad option or tunable. Results are appended to `results` when given.
 int run(const Options& options, Vector<Result>* results = nullptr);
+// True while run() executes with Options::smoke: fixtures built outside any State (a corpus a
+// whole bench file shares) size themselves from this, so the CTest smoke run stays seconds long.
+bool smoke_mode() noexcept;
 
 // Command-line entry point used by every bench executable:
 //   --list  --filter=<glob>  --repeats=N  --warmup=N  --min-time=<ms>  --smoke  --quiet
