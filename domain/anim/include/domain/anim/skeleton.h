@@ -72,15 +72,80 @@ struct Pose {
   }
 };
 
+// A pose that is **not** its own storage: three spans over channels somebody else owns.
+//
+// Why this exists. The header above promises that "every function below writes into storage the
+// caller already owns", and until a system layer arrived that was true enough, because `Pose` was
+// the storage. It stops being true the moment a caller keeps *many* poses: a crowd's poses belong
+// in one arena — three arrays with every instance's joints laid end to end, which is
+// docs/plan/03-data-model.md §3.4's "hot systems own their own data" applied to animation — and a
+// `Pose` per instance is three heap allocations per instance and three pointer chases per sample.
+// `systems/animation`'s pose pool is that arena, and it is the first caller that could not use
+// this module without copying every sampled pose into and out of a scratch `Pose`.
+//
+// So the sampling and blending functions take views, `Pose` converts to one implicitly, and the
+// `Pose&` overloads stay for the callers that want the owning form (and for the resizing
+// behaviour a view cannot have). Nothing about a pose's layout changed: a view is three spans
+// over the same three channels, in the same order, and a blend is still three streaming passes.
+struct PoseView {
+  std::span<Vec3> translation;
+  std::span<Quat> rotation;
+  std::span<Vec3> scale;
+
+  constexpr PoseView() noexcept = default;
+  constexpr PoseView(std::span<Vec3> t, std::span<Quat> r, std::span<Vec3> s) noexcept
+      : translation(t), rotation(r), scale(s) {}
+  // Implicit, so every existing call site that passes a `Pose` keeps compiling.
+  PoseView(Pose& pose) noexcept
+      : translation(pose.translation.data(), pose.translation.size()),
+        rotation(pose.rotation.data(), pose.rotation.size()),
+        scale(pose.scale.data(), pose.scale.size()) {}
+
+  u32 joint_count() const noexcept { return static_cast<u32>(rotation.size()); }
+  // The three channels are the same length. A view assembled from a pool is trusted to be
+  // consistent; a view assembled by hand is checked by the functions that take it.
+  bool consistent() const noexcept {
+    return translation.size() == rotation.size() && scale.size() == rotation.size();
+  }
+};
+
+// The read-only form. `PoseView` converts to it, so a caller holding mutable storage may pass it
+// as either side of a blend.
+struct ConstPoseView {
+  std::span<const Vec3> translation;
+  std::span<const Quat> rotation;
+  std::span<const Vec3> scale;
+
+  constexpr ConstPoseView() noexcept = default;
+  constexpr ConstPoseView(std::span<const Vec3> t, std::span<const Quat> r,
+                          std::span<const Vec3> s) noexcept
+      : translation(t), rotation(r), scale(s) {}
+  constexpr ConstPoseView(PoseView v) noexcept
+      : translation(v.translation), rotation(v.rotation), scale(v.scale) {}
+  ConstPoseView(const Pose& pose) noexcept
+      : translation(pose.translation.data(), pose.translation.size()),
+        rotation(pose.rotation.data(), pose.rotation.size()),
+        scale(pose.scale.data(), pose.scale.size()) {}
+
+  u32 joint_count() const noexcept { return static_cast<u32>(rotation.size()); }
+  bool consistent() const noexcept {
+    return translation.size() == rotation.size() && scale.size() == rotation.size();
+  }
+};
+
 // The skeleton's bind pose as a `Pose`. A clip writes only the joints its tracks name, so this
 // is what a caller fills a pose with before sampling: everything the clip does not animate then
 // holds the bind value rather than whatever was in the buffer.
 void rest_pose(const Skeleton& skeleton, Pose& out);
+// The same into storage that is already the right size. A view cannot be resized, so a length
+// that does not match the skeleton writes nothing rather than half a pose.
+void rest_pose(const Skeleton& skeleton, PoseView out);
 
 // Linear interpolation from `a` to `b` at `t`, clamped to 0..1: lerp for translation and scale,
 // slerp on the short arc for rotation. `out` may alias `a` or `b`. Mismatched lengths leave
 // `out` untouched, which is the one case a blend tree can hit by wiring two rigs together.
 void blend(const Pose& a, const Pose& b, f32 t, Pose& out);
+void blend(ConstPoseView a, ConstPoseView b, f32 t, PoseView out);
 
 // An additive layer: `additive` is a **difference** from its own reference pose, applied on top
 // of `base` with `weight`. Translation and scale add (scaled by the weight), rotation composes
@@ -88,13 +153,15 @@ void blend(const Pose& a, const Pose& b, f32 t, Pose& out);
 // order that makes an additive aim or lean rotate the joint in its own frame rather than in its
 // parent's. `make_additive` is how the difference is built in the first place.
 void blend_additive(const Pose& base, const Pose& additive, f32 weight, Pose& out);
+void blend_additive(ConstPoseView base, ConstPoseView additive, f32 weight, PoseView out);
 
 // The difference `pose` − `reference`, in the form `blend_additive` consumes.
 void make_additive(const Pose& pose, const Pose& reference, Pose& out);
+void make_additive(ConstPoseView pose, ConstPoseView reference, PoseView out);
 
 // Composes a pose's local transforms into model space, one forward pass: out[j] = out[parent] *
 // local[j], with a root's own transform. `out` must hold `skeleton.joint_count()` matrices.
-void local_to_model(const Skeleton& skeleton, const Pose& pose, std::span<Mat4> out);
+void local_to_model(const Skeleton& skeleton, ConstPoseView pose, std::span<Mat4> out);
 
 // A skinning matrix: the affine 3x4 of `model * inverse_bind`, stored as three `float4` **rows**.
 // 48 bytes, GPU-mirrored (deform.slang's `JointMatrix`), pinned by the size table.

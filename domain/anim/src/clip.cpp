@@ -85,8 +85,8 @@ bool Clip::add_track(u32 joint, u8 channel, u8 interpolation, u8 components,
   return true;
 }
 
-void Clip::sample(f32 time, Pose& out, bool loop) const {
-  if (out.joint_count() == 0) return;
+void Clip::sample(f32 time, PoseView out, bool loop) const {
+  if (out.joint_count() == 0 || !out.consistent()) return;
   f32 at = time;
   if (loop && duration > 0.0f) {
     at = std::fmod(time, duration);
@@ -155,7 +155,7 @@ void Clip::sample(f32 time, Pose& out, bool loop) const {
   }
 }
 
-void Clip::sample(GameTime time, Pose& out, bool loop) const {
+void Clip::sample(GameTime time, PoseView out, bool loop) const {
   sample(static_cast<f32>(static_cast<f64>(time.us) * 1.0e-6), out, loop);
 }
 

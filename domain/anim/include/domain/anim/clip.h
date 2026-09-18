@@ -71,10 +71,14 @@ struct Clip {
   // holds its last pose. A track with one key is that key everywhere; a time before the first
   // key or after the last takes that key's value rather than extrapolating, which is what every
   // DCC tool does and what keeps a blend from flying apart at a clip boundary.
-  void sample(f32 time, Pose& out, bool loop = true) const;
+  //
+  // `out` is a `PoseView`, so it may be a slot of a pool rather than a `Pose` of its own — which
+  // is what `systems/animation` samples a crowd into, one arena and no allocation per instance.
+  // A `Pose` converts to one, so an existing caller reads exactly as it did.
+  void sample(f32 time, PoseView out, bool loop = true) const;
   // The same on the engine's game clock, which is integer microseconds (core/time, ADR-0017):
   // a scheduler-driven layer never has to invent a float.
-  void sample(GameTime time, Pose& out, bool loop = true) const;
+  void sample(GameTime time, PoseView out, bool loop = true) const;
 
   // Parallel arrays, runs inside the streams, non-decreasing times, joints under `joint_count`.
   bool validate(std::string* error = nullptr) const;

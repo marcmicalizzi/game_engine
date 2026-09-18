@@ -74,20 +74,36 @@ void Pose::resize(u32 joints) {
   scale.assign(joints, Vec3::one());
 }
 
+// The `Pose&` forms size the output and then do the work on views, so there is exactly one copy
+// of each loop and the owning form cannot drift from the pooled one.
+
 void rest_pose(const Skeleton& skeleton, Pose& out) {
+  out.resize(skeleton.joint_count());
+  rest_pose(skeleton, PoseView{out});
+}
+
+void rest_pose(const Skeleton& skeleton, PoseView out) {
   const u32 joints = skeleton.joint_count();
-  out.resize(joints);
-  for (u32 i = 0; i < joints; ++i) {
+  if (!out.consistent() || out.joint_count() != joints) return;
+  for (u32 i = 0; i < joints; ++i)
     out.translation[i] = skeleton.local_bind[i].position;
+  for (u32 i = 0; i < joints; ++i)
     out.rotation[i] = skeleton.local_bind[i].rotation;
+  for (u32 i = 0; i < joints; ++i)
     out.scale[i] = skeleton.local_bind[i].scale;
-  }
 }
 
 void blend(const Pose& a, const Pose& b, f32 t, Pose& out) {
   const u32 joints = a.joint_count();
   if (b.joint_count() != joints) return;  // two rigs wired together: leave `out` alone
   if (out.joint_count() != joints) out.resize(joints);
+  blend(ConstPoseView{a}, ConstPoseView{b}, t, PoseView{out});
+}
+
+void blend(ConstPoseView a, ConstPoseView b, f32 t, PoseView out) {
+  const u32 joints = a.joint_count();
+  if (b.joint_count() != joints || out.joint_count() != joints) return;
+  if (!a.consistent() || !b.consistent() || !out.consistent()) return;
   const f32 k = clamp01(t);
   // One channel at a time, which is the whole reason a pose is three arrays: this loop is three
   // streaming passes with no strided reads and nothing loaded that is not used.
@@ -103,6 +119,13 @@ void make_additive(const Pose& pose, const Pose& reference, Pose& out) {
   const u32 joints = pose.joint_count();
   if (reference.joint_count() != joints) return;
   if (out.joint_count() != joints) out.resize(joints);
+  make_additive(ConstPoseView{pose}, ConstPoseView{reference}, PoseView{out});
+}
+
+void make_additive(ConstPoseView pose, ConstPoseView reference, PoseView out) {
+  const u32 joints = pose.joint_count();
+  if (reference.joint_count() != joints || out.joint_count() != joints) return;
+  if (!pose.consistent() || !reference.consistent() || !out.consistent()) return;
   for (u32 i = 0; i < joints; ++i)
     out.translation[i] = pose.translation[i] - reference.translation[i];
   for (u32 i = 0; i < joints; ++i)
@@ -115,6 +138,13 @@ void blend_additive(const Pose& base, const Pose& additive, f32 weight, Pose& ou
   const u32 joints = base.joint_count();
   if (additive.joint_count() != joints) return;
   if (out.joint_count() != joints) out.resize(joints);
+  blend_additive(ConstPoseView{base}, ConstPoseView{additive}, weight, PoseView{out});
+}
+
+void blend_additive(ConstPoseView base, ConstPoseView additive, f32 weight, PoseView out) {
+  const u32 joints = base.joint_count();
+  if (additive.joint_count() != joints || out.joint_count() != joints) return;
+  if (!base.consistent() || !additive.consistent() || !out.consistent()) return;
   const f32 k = clamp01(weight);
   for (u32 i = 0; i < joints; ++i)
     out.translation[i] = base.translation[i] + additive.translation[i] * k;
@@ -128,9 +158,9 @@ void blend_additive(const Pose& base, const Pose& additive, f32 weight, Pose& ou
     out.scale[i] = base.scale[i] + additive.scale[i] * k;
 }
 
-void local_to_model(const Skeleton& skeleton, const Pose& pose, std::span<Mat4> out) {
+void local_to_model(const Skeleton& skeleton, ConstPoseView pose, std::span<Mat4> out) {
   const u32 joints = skeleton.joint_count();
-  if (pose.joint_count() != joints || out.size() != joints) return;
+  if (pose.joint_count() != joints || out.size() != joints || !pose.consistent()) return;
   for (u32 i = 0; i < joints; ++i) {
     const Transform3 local{pose.translation[i], pose.rotation[i], pose.scale[i]};
     const Mat4 matrix = mat4_from_transform(local);

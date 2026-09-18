@@ -259,6 +259,73 @@ TEST_CASE("anim blending: the two ends are exact, and an additive layer round-tr
   CHECK(near(untouched.translation[0], Vec3{9.0f, 9.0f, 9.0f}));
 }
 
+TEST_CASE("anim pose views: an arena is storage a clip samples into, with the same answer") {
+  // What `systems/animation`'s pose pool is: three arrays with several instances' joints laid end
+  // to end, and a view per instance. The point of the test is that a slot of an arena and a `Pose`
+  // of its own are the same bytes, so the pooled form is not a second implementation.
+  const Skeleton skeleton = two_bone();
+  const u32 joints = skeleton.joint_count();
+  constexpr u32 k_slots = 3;
+
+  Vector<Vec3> translation(k_slots * 2, Vec3{});
+  Vector<Quat> rotation(k_slots * 2, Quat::identity());
+  Vector<Vec3> scale(k_slots * 2, Vec3::one());
+  auto slot = [&](u32 index) {
+    return PoseView{std::span<Vec3>(translation.data() + index * joints, joints),
+                    std::span<Quat>(rotation.data() + index * joints, joints),
+                    std::span<Vec3>(scale.data() + index * joints, joints)};
+  };
+
+  Clip clip;
+  clip.joint_count = joints;
+  const f32 times[2] = {0.0f, 1.0f};
+  const f32 quarter = 0.70710678f;
+  const f32 turns[8] = {0, 0, 0, 1, 0, 0, quarter, quarter};
+  REQUIRE(clip.add_track(1, k_channel_rotation, k_interp_linear, 4, times, turns));
+
+  // The middle slot, sampled through the pool.
+  rest_pose(skeleton, slot(1));
+  clip.sample(0.5f, slot(1));
+
+  // The same clip at the same time into a `Pose` of its own.
+  Pose owned;
+  rest_pose(skeleton, owned);
+  clip.sample(0.5f, owned);
+  for (u32 j = 0; j < joints; ++j) {
+    CHECK(near(translation[joints + j], owned.translation[j]));
+    CHECK(near(scale[joints + j], owned.scale[j]));
+    CHECK(std::fabs(std::fabs(dot(rotation[joints + j], owned.rotation[j])) - 1.0f) < 1.0e-6f);
+  }
+
+  // The neighbours are untouched: a slot is exactly its own joints and nothing either side.
+  for (u32 j = 0; j < joints; ++j) {
+    CHECK(rotation[j] == Quat::identity());
+    CHECK(rotation[2 * joints + j] == Quat::identity());
+  }
+
+  // A blend reads and writes views, and `local_to_model` takes one, so a pooled pose never needs
+  // to be copied into a `Pose` to be composed.
+  rest_pose(skeleton, slot(0));
+  blend(slot(0), slot(1), 1.0f, slot(2));
+  Vector<Mat4> model(joints, Mat4::identity());
+  local_to_model(skeleton, ConstPoseView{slot(2)}, std::span<Mat4>(model.data(), model.size()));
+  Vector<Mat4> reference(joints, Mat4::identity());
+  local_to_model(skeleton, owned, std::span<Mat4>(reference.data(), reference.size()));
+  for (u32 j = 0; j < joints; ++j) {
+    for (u32 c = 0; c < 4; ++c)
+      CHECK(near(model[j].c[c].xyz(), reference[j].c[c].xyz()));
+  }
+
+  // Three channels of different lengths write nothing rather than half a pose, which is the
+  // answer two mismatched `Pose`s already got.
+  PoseView ragged = slot(0);
+  ragged.scale = std::span<Vec3>(scale.data(), 1);
+  CHECK_FALSE(ragged.consistent());
+  translation[0] = Vec3{7.0f, 7.0f, 7.0f};
+  rest_pose(skeleton, ragged);
+  CHECK(near(translation[0], Vec3{7.0f, 7.0f, 7.0f}));
+}
+
 TEST_CASE("anim skinning: the CPU reference is linear blend skinning out of 255") {
   const Skeleton skeleton = two_bone();
   // The bar of the assets fixture: three rows, bound to the root, half and half, and the tip.
