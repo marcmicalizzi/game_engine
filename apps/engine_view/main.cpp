@@ -21,6 +21,7 @@
 #include <core/math/math.h>
 #include <core/platform/process.h>
 #include <core/time/time.h>
+#include <domain/geometry/cluster_pages.h>
 #include <domain/gfx/capture.h>
 #include <domain/gfx/device.h>
 #include <domain/gfx/swapchain.h>
@@ -125,6 +126,9 @@ constexpr const char* k_usage =
     "                   every page, which is streaming with nothing to evict. Implies --stream\n"
     "  --upload-budget <KiB>  page payload one frame may copy into the pool (default 256 KiB); a\n"
     "                   value under the largest page is raised to it. Implies --stream\n"
+    "  --page-budget-pct <n>  the same budget as a percentage of this scene's page bytes, which\n"
+    "                   is how a budget is thought about and cannot be said before the load.\n"
+    "                   Overrides --page-budget. Implies --stream\n"
     "  --page-source <s>  where a streamed page's bytes come from: auto (the default: the meshes'\n"
     "                   .clusters containers when every mesh has one, host memory otherwise),\n"
     "                   file (refuse to run if they do not), or host (the SceneData the load\n"
@@ -209,6 +213,10 @@ struct Options {
   // in-memory source, which is the A of the host-memory A/B.
   enum class PageSource : u8 { automatic, file, host };
   PageSource page_source = PageSource::automatic;
+  // `--page-budget-pct`: the residency budget as a percentage of *this scene's* page bytes, which
+  // is how a budget is actually thought about ("a quarter of the working set") and the only way to
+  // say it before the scene is loaded and its page table counted. 0 leaves `--page-budget` alone.
+  u32 page_budget_pct = 0;
   bool animate = false;
   std::string clip;  // --animate's optional value: a clip name or an index
   f32 anim_speed = 1.0f;
@@ -1065,6 +1073,15 @@ int main(int argc, char** argv) {
       options.settings.stream = true;
       if (a == "--page-budget") options.settings.page_budget_bytes = u64{n} * 1024 * 1024;
       if (a == "--upload-budget") options.settings.upload_budget_bytes = n * 1024;
+    } else if (a == "--page-budget-pct") {
+      if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
+      u32 n = 0;
+      if (!parse_u32(value, n) || n == 0 || n > 100) {
+        std::fprintf(stderr, "engine-view: --page-budget-pct expects 1..100\n");
+        return k_exit_usage;
+      }
+      options.page_budget_pct = n;
+      options.settings.stream = true;
     } else if (a == "--page-source") {
       if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
       if (value == "auto") {
@@ -1289,6 +1306,11 @@ int main(int argc, char** argv) {
   u64 deform_whole_mesh_bytes = 0;
   u64 template_bytes = 0;
   u64 rt_bytes = 0;
+  // What the scene's geometry would cost uploaded whole against what the page pool, its staging
+  // ring and the always-resident tables actually cost: the pool's own accounting of the device
+  // memory streaming saves, beside the driver's `gpu_memory` estimate of the whole process.
+  u64 geometry_bytes = 0;
+  u64 stream_bytes = 0;
   std::string views_text = "{}";
   std::string streaming_text =
       write_json(streaming_summary(renderer::StreamStats{}), JsonWriteOptions{.pretty = false});
@@ -1345,6 +1367,15 @@ int main(int argc, char** argv) {
       exit_code = fail("mesh", error);
       break;
     }
+    // A budget as a fraction of what this scene's pages come to, which cannot be known until the
+    // page table has been built. `ClusterPageDesc::bytes` is the same number the residency manager
+    // counts against, so 25 here and 25 in a report mean the same thing.
+    if (options.page_budget_pct > 0 && !scene_data.pages.pages.empty()) {
+      u64 total = 0;
+      for (const geometry::ClusterPageDesc& page : scene_data.pages.pages)
+        total += page.bytes;
+      options.settings.page_budget_bytes = total * options.page_budget_pct / 100;
+    }
 
 #if ENGINE_VIEW_ANIMATION
     // ---- part two: the entities, their clips, and the bounds a moving character needs --------
@@ -1385,6 +1416,8 @@ int main(int argc, char** argv) {
     deform_whole_mesh_bytes = scene.deform_whole_mesh_bytes();
     template_bytes = scene.template_bytes();
     rt_bytes = scene.rt_bytes();
+    geometry_bytes = scene.geometry_bytes();
+    stream_bytes = scene.stream_bytes();
     // Where a streamed page's bytes come from. Attaching the container-backed source is also what
     // releases the merged host streams, so it happens here, after the upload and before the
     // renderer that will read from it.
@@ -1638,7 +1671,8 @@ int main(int argc, char** argv) {
         "\"deform_pool_peak_bytes\":%llu,\"deform_entries\":%u,"
         "\"deform_overflow_entries\":%u,\"deform_overflow_bytes\":%llu,\"rt_templates\":%s,"
         "\"skinned_instances\":%u,\"joints\":%u,\"clip\":\"%s\",\"anim\":%s,"
-        "\"template_bytes\":%llu,\"rt_bytes\":%llu,\"views\":%s,\"streaming\":%s,"
+        "\"template_bytes\":%llu,\"rt_bytes\":%llu,\"geometry_bytes\":%llu,\"stream_bytes\":%llu,"
+        "\"views\":%s,\"streaming\":%s,"
         "\"host_memory\":{\"bytes\":%llu,\"peak_bytes\":%llu},"
         "\"gpu_memory\":{\"budget_mib\":%llu,\"used_mib\":%llu,"
         "\"device_local_total_mib\":%llu},\"machine_state\":%s,"
@@ -1665,7 +1699,8 @@ int main(int argc, char** argv) {
         static_cast<unsigned long long>(u64{stats.deform_overflow_vertices} * 3 * sizeof(f32)),
         resolved.settings.rt_templates ? "true" : "false", skinned_instances, joint_matrices,
         clip_text.c_str(), anim_text.c_str(), static_cast<unsigned long long>(template_bytes),
-        static_cast<unsigned long long>(rt_bytes), views_text.c_str(), streaming_text.c_str(),
+        static_cast<unsigned long long>(rt_bytes), static_cast<unsigned long long>(geometry_bytes),
+        static_cast<unsigned long long>(stream_bytes), views_text.c_str(), streaming_text.c_str(),
         static_cast<unsigned long long>(host_memory),
         static_cast<unsigned long long>(host_memory_peak),
         static_cast<unsigned long long>(stats.gpu_memory.budget_mib),
