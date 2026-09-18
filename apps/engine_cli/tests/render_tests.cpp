@@ -234,6 +234,93 @@ TEST_CASE("render: load, capture, benchmark, and compare over the protocol") {
         k_invalid_argument);
 }
 
+// `render.evaluate` and the reference integrator of `render.capture` (docs/plan/04-renderer.md
+// §4.8, docs/subsystems/renderer.md "Reference renderer"). They need a device that can build the
+// frame's cluster acceleration structures, which the hosted runners have not and the baseline
+// tier machines have not either, so both come back 1007 there and the case records a skip — the
+// same shape as the rest of this file.
+TEST_CASE("render: the reference integrator and the evaluate loop over the protocol") {
+  const test::TempDir tmp("engine_render_reference");
+  const std::string out_dir = tmp.path();
+
+  Host host;
+  REQUIRE(host.ok);
+  // `shadows` left at auto: on a device with cluster acceleration structures that is what turns
+  // the chain on, and the reference traces exactly the structures that chain builds.
+  const JsonValue loaded = host.call("render.load", R"({"grid":33,"settings":{"raster":"hw"}})");
+  if (error_code(loaded) == k_render_unavailable) {
+    MESSAGE("render.* unavailable here: " << error_message(loaded));
+    return;
+  }
+  const std::string id = text(result_of(loaded), "scene");
+
+  // A reference capture writes the same file a real-time one does, so a caller comparing the two
+  // needs no second code path.
+  const JsonValue captured = host.call(
+      "render.capture", "{\"scene\":\"" + id +
+                            "\",\"orbit\":{\"distance\":22},\"width\":96,\"height\":96,"
+                            "\"integrator\":\"reference\",\"reference\":{\"spp\":32,\"batch\":16},"
+                            "\"out_dir\":\"" +
+                            out_dir + "\",\"name\":\"ref\"}");
+  if (error_code(captured) == k_render_unavailable) {
+    MESSAGE("the reference needs cluster acceleration structures: " << error_message(captured));
+    return;
+  }
+  const JsonValue& shot = result_of(captured);
+  CHECK(text(shot, "integrator") == "reference");
+  CHECK(number(shot, "samples") == 32);
+  CHECK(number(shot, "width") == 96);
+  CHECK(real(shot, "seconds") > 0.0);
+  const JsonValue* shot_files = shot.find("files");
+  REQUIRE(shot_files != nullptr);
+  CHECK(std::filesystem::exists(uri_at(*shot_files, "color")));
+  // A path tracer writes no visibility buffer, so there is nothing to read an id out of.
+  CHECK(error_code(host.call(
+            "render.capture",
+            "{\"scene\":\"" + id + "\",\"integrator\":\"reference\",\"channels\":[\"ids\"]}")) ==
+        k_invalid_argument);
+  CHECK(error_code(
+            host.call("render.capture", "{\"scene\":\"" + id + "\",\"integrator\":\"quantum\"}")) ==
+        k_invalid_argument);
+
+  // And the loop in one call: both pictures, the heat map, and the numbers.
+  const JsonValue evaluated =
+      host.call("render.evaluate", "{\"scene\":\"" + id +
+                                       "\",\"orbit\":{\"distance\":22},\"width\":96,\"height\":96,"
+                                       "\"reference\":{\"spp\":32,\"batch\":16},\"out_dir\":\"" +
+                                       out_dir + "\",\"name\":\"eval\"}");
+  const JsonValue& evaluation = result_of(evaluated);
+  CHECK(number(evaluation, "width") == 96);
+  CHECK(number(evaluation, "samples") == 32);
+  CHECK(real(evaluation, "reference_seconds") > 0.0);
+  CHECK(real(evaluation, "realtime_seconds") > 0.0);
+  CHECK(real(evaluation, "metrics_ms") > 0.0);
+  const JsonValue* files = evaluation.find("files");
+  REQUIRE(files != nullptr);
+  for (const char* channel : {"realtime", "reference", "flip", "reference_direct", "flip_direct"}) {
+    const std::string path = uri_at(*files, channel);
+    INFO("channel ", channel);
+    CHECK(!path.empty());
+    CHECK(std::filesystem::exists(path));
+  }
+  // The gate's own numbers, and the split the report rests on: a comparison against the full
+  // reference and one against the reference at a single bounce.
+  const JsonValue* full = evaluation.find("full");
+  REQUIRE(full != nullptr);
+  CHECK(real(*full, "flip_mean") >= 0.0);
+  CHECK(real(*full, "ssim") > 0.0);
+  const JsonValue* direct = evaluation.find("direct");
+  REQUIRE(direct != nullptr);
+  CHECK(real(*direct, "flip_mean") >= 0.0);
+  CHECK(evaluation.find("stats") != nullptr);
+  CHECK(evaluation.find("machine_state") != nullptr);
+
+  CHECK(error_code(host.call("render.evaluate", R"({"scene":"nope"})")) == k_not_found);
+  CHECK(error_code(
+            host.call("render.evaluate", "{\"scene\":\"" + id + "\",\"reference\":{\"spp\":0}}")) ==
+        k_invalid_argument);
+}
+
 // `render.compare` is the one render method that never opens a device, so it runs everywhere —
 // including the hosted runners — and it is the method the accept-or-reject loop of
 // docs/plan/04-renderer.md §4.8 calls after a capture. Through engine-cli, one process per call,

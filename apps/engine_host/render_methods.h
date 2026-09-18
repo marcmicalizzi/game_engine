@@ -16,6 +16,7 @@
 #include <domain/gfx/device.h>
 #include <domain/protocol/rpc.h>
 #include <systems/renderer/gpu_scene.h>
+#include <systems/renderer/reference.h>
 #include <systems/renderer/scene.h>
 #include <systems/renderer/scene_renderer.h>
 
@@ -40,6 +41,10 @@ class RenderHost {
     renderer::ResolvedSettings resolved;
     std::unique_ptr<renderer::GpuScene> gpu;
     std::unique_ptr<renderer::SceneRenderer> view;
+    // The reference path tracer over the same scene and the same renderer, created on the first
+    // call that asks for one and kept afterwards: it owns a shader library, two pipelines and two
+    // screen-sized buffers, and an optimization loop calls it once per proposal.
+    std::unique_ptr<renderer::ReferenceRenderer> reference;
     renderer::RenderSettings built;  // what `gpu` and `view` were built with; the frame size is
                                      // the renderer's own (`view->width()`), because a resize
                                      // touches only the screen-sized targets
@@ -60,6 +65,12 @@ class RenderHost {
   bool ensure_renderer(Scene& scene, const renderer::RenderSettings& settings, u32 width,
                        u32 height, std::string& error, bool& unavailable);
 
+  // The same for the reference renderer, which has to come after `ensure_renderer` because it is
+  // built against the `SceneRenderer` that call left in place and reads its extent. `unavailable`
+  // covers both kinds of "this machine cannot": no cluster acceleration structures, and settings
+  // that build none.
+  bool ensure_reference(Scene& scene, std::string& error, bool& unavailable);
+
  private:
   gfx::Device device_;
   Vector<std::unique_ptr<Scene>> scenes_;
@@ -69,8 +80,9 @@ class RenderHost {
   std::string device_error_;
 };
 
-// Registers render.load, render.capture, render.benchmark, and render.compare. The `RenderHost`
-// they work on is the dispatcher's `Context::app`, which the caller sets and owns.
+// Registers render.load, render.capture, render.benchmark, render.compare, and render.evaluate.
+// The `RenderHost` they work on is the dispatcher's `Context::app`, which the caller sets and
+// owns.
 void add_render_methods(protocol::Dispatcher& dispatcher);
 
 }  // namespace engine::host

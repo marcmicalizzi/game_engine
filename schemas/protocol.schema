@@ -472,9 +472,29 @@ struct RenderOrbit @version(1) {
   pitch_deg: f32 = 24.2277
 }
 
+/// What a reference render is asked for (docs/plan/04-renderer.md §4.8,
+/// docs/subsystems/renderer.md "Reference renderer"). The reference traces the acceleration
+/// structures the real-time frame builds, so the scene's settings have to build them —
+/// `"shadows":"rt"` or `"raster":"rt"`, which `"auto"` gives on a device that can.
+struct RenderReference @version(1) {
+  /// Total samples per pixel. The noise floor per scene is in docs/subsystems/renderer.md.
+  spp: u32 = 256
+  /// Scattering events after the primary hit. 1 is direct lighting plus one bounce, which is
+  /// what the real-time resolve approximates with its hemisphere ambient.
+  bounces: u32 = 3
+  /// Build the structures from the finest clusters (LOD threshold 0) instead of from the frame's
+  /// own cut, so the picture is a reference for the source geometry rather than for the geometry
+  /// LOD selection chose.
+  finest: bool = false
+  /// The same seed and the same batch size give the same bytes.
+  seed: u32 = 1
+  /// Samples per dispatch: progress granularity, and how long one submission runs.
+  batch: u32 = 8
+}
+
 /// Parameters of `render.capture`. With neither `camera` nor `orbit` the default orbit frames
 /// the scene.
-struct RenderCaptureParams @version(1) {
+struct RenderCaptureParams @version(2) {
   scene: string
   camera: RenderCamera?
   orbit: RenderOrbit?
@@ -489,6 +509,13 @@ struct RenderCaptureParams @version(1) {
   name: string = "capture"
   /// Frame number, which drives the orbiting lights and the deformation phase.
   frame: u64 = 0
+  /// "realtime" (the default, and what every caller before this field got) or "reference": the
+  /// converged path trace of the same frame, written to the same files. A reference capture has
+  /// only a color channel — a path tracer writes no visibility buffer, so there are no ids, no
+  /// depth and no normals to read back.
+  integrator: string = "realtime" @since(2)
+  /// The reference settings, read only when `integrator` is "reference".
+  reference: RenderReference @since(2)
 }
 
 /// GPU milliseconds per pass, averaged over the frames whose timestamps came back (`frames`,
@@ -563,10 +590,11 @@ struct RenderStats @version(3) {
   oversample: f32 = 1 @since(3)
 }
 
-struct RenderCaptureResult @version(1) {
+struct RenderCaptureResult @version(2) {
   width: u32 = 0
   height: u32 = 0
-  /// Pixels the scene covered.
+  /// Pixels the scene covered. Zero for a reference capture, which has no visibility buffer to
+  /// count them from.
   covered: u32 = 0
   /// The covered depth range the depth PNG is normalized over (reversed-Z clip depth).
   depth_min: f32 = 0
@@ -576,6 +604,14 @@ struct RenderCaptureResult @version(1) {
   /// The id buffer's header, so a client that has the bytes needs no second read.
   ids_header: string
   stats: RenderStats
+  /// Which integrator drew it, echoed back so a caller that asked for "reference" and got a
+  /// picture knows it did.
+  integrator: string = "realtime" @since(2)
+  /// Reference captures only: the samples per pixel that accumulated, the integrator's own GPU
+  /// milliseconds, and the wall time the render took.
+  samples: u32 = 0 @since(2)
+  trace_ms: f64 = 0 @since(2)
+  seconds: f64 = 0 @since(2)
 }
 
 /// Parameters of `render.benchmark`. The camera is held still for every frame, so the LOD cut
@@ -637,4 +673,74 @@ struct RenderCompareResult @version(1) {
   flip_image: string
   /// Wall time of the metrics themselves.
   ms: f64 = 0
+}
+
+// ---- render.evaluate ---------------------------------------------------------------------------
+// Plan 04 §4.8's optimization loop as one call (06 §6.9, "exposed to agents as a single tool"):
+// render the same frame twice, once through the real-time path and once through the reference,
+// compare them, write the two pictures and the FLIP heat map, and return the numbers and the
+// times. Everything it does can be done with render.capture twice and render.compare once; the
+// point of the method is that a change is accepted or rejected on **one** answer, taken under one
+// camera, one frame number and one set of lights, which is what makes the loop mechanical.
+
+/// One pair's metrics, the same numbers `render.compare` returns for two files.
+struct RenderMetrics @version(1) {
+  /// Null for two identical images, where the value is infinite.
+  psnr: f64?
+  identical: bool = false
+  ssim: f64 = 0
+  flip_mean: f64 = 0
+  flip_p95: f64 = 0
+  flip_max: f64 = 0
+  flip_weighted_mean: f64 = 0
+}
+
+struct RenderEvaluateParams @version(1) {
+  scene: string
+  camera: RenderCamera?
+  orbit: RenderOrbit?
+  width: u32 = 1280
+  height: u32 = 720
+  /// Frame number: both pictures use it, so both get the same lights.
+  frame: u64 = 0
+  /// Render the real-time picture with these instead of the ones the scene was loaded with.
+  settings: RenderSettings?
+  reference: RenderReference
+  /// Also render the reference at one bounce and compare against that too, which says how much
+  /// of the difference is **indirect** light the real-time path does not have. It costs a second
+  /// reference render, so a caller measuring a hot loop turns it off.
+  direct_only: bool = true
+  /// "none", or "center" to pool the per-pixel error under a Gaussian attention region.
+  weights: string = "none"
+  ppd: f32 = 67.0206
+  /// Directory the three or five files go in, created when absent.
+  out_dir: string
+  name: string = "evaluate"
+}
+
+struct RenderEvaluateResult @version(1) {
+  width: u32 = 0
+  height: u32 = 0
+  /// "realtime", "reference", "flip", and — with `direct_only` — "reference_direct" and
+  /// "flip_direct", each a file URI.
+  files: map<string, string>
+  /// The real-time picture against the full reference: the gate.
+  full: RenderMetrics
+  /// The real-time picture against the reference at one bounce. The difference between this and
+  /// `full` is the indirect light the real-time path does not have, which is why a threshold on
+  /// a scene with interiors is large and one on an open scene is not.
+  direct: RenderMetrics?
+  /// The real-time frame's statistics, so a caller has the picture, the error, and the cost from
+  /// one call.
+  stats: RenderStats
+  /// Samples per pixel that accumulated, the integrator's own GPU milliseconds, and the wall
+  /// time of each render.
+  samples: u32 = 0
+  reference_trace_ms: f64 = 0
+  reference_seconds: f64 = 0
+  realtime_seconds: f64 = 0
+  metrics_ms: f64 = 0
+  /// Sampled around the run, not inside it. A number taken beside another process's work is an
+  /// upper bound, and the host says so on stderr as well.
+  machine_state: MachineStateSpan
 }

@@ -179,6 +179,54 @@ protocol::MachineState machine_state_of(const bench::MachineState& in) {
   return out;
 }
 
+// The schema's reference block into the renderer's settings, with the bounds a caller can get
+// wrong. `spp` is capped rather than unbounded because a reference render is minutes of GPU work
+// and a typo should not take the host out for an hour.
+bool read_reference(const protocol::RenderReference& in, u64 frame,
+                    renderer::ReferenceSettings& out, protocol::RpcError& error) {
+  out = renderer::ReferenceSettings{};
+  if (in.spp == 0 || in.spp > 65536) {
+    error = invalid("reference.spp must be within 1..65536");
+    return false;
+  }
+  if (in.bounces > 64) {
+    error = invalid("reference.bounces must be at most 64");
+    return false;
+  }
+  if (in.batch == 0 || in.batch > in.spp) {
+    error = invalid("reference.batch must be within 1..spp");
+    return false;
+  }
+  out.spp = in.spp;
+  out.max_bounces = in.bounces;
+  out.finest = in.finest;
+  out.seed = in.seed;
+  out.batch = in.batch;
+  out.frame_index = frame;
+  return true;
+}
+
+void fill_metrics(const image::ImageMetrics& in, protocol::RenderMetrics& out) {
+  out.identical = !std::isfinite(in.psnr);
+  if (!out.identical) out.psnr = static_cast<f64>(in.psnr);
+  out.ssim = static_cast<f64>(in.ssim);
+  out.flip_mean = static_cast<f64>(in.flip_mean);
+  out.flip_p95 = static_cast<f64>(in.flip_percentile);
+  out.flip_max = static_cast<f64>(in.flip_max);
+  out.flip_weighted_mean = static_cast<f64>(in.flip_weighted_mean);
+}
+
+// An RGBA8 buffer as an image the metrics take, without a round trip through a file.
+image::Image image_of(u32 width, u32 height, const Vector<u8>& rgba) {
+  image::Image out;
+  out.width = width;
+  out.height = height;
+  out.channels = 4;
+  out.pixels.resize(rgba.size());
+  std::memcpy(out.pixels.data(), rgba.data(), rgba.size());
+  return out;
+}
+
 renderer::Camera camera_of(const RenderHost::Scene& scene,
                            const std::optional<protocol::RenderCamera>& explicit_camera,
                            const std::optional<protocol::RenderOrbit>& orbit) {
@@ -303,6 +351,24 @@ bool render_capture(protocol::Context& ctx, const protocol::RenderCaptureParams&
     error = invalid("width and height must be within 1..16384");
     return false;
   }
+  const bool reference = params.integrator == "reference";
+  if (!reference && params.integrator != "realtime") {
+    error = invalid("integrator takes realtime or reference; got '" + params.integrator + "'");
+    return false;
+  }
+  renderer::ReferenceSettings reference_settings;
+  if (reference) {
+    // A path tracer writes no visibility buffer, so there are no ids, no depth and no normals to
+    // read back: asking for one is an error with a message rather than a buffer of nothing, the
+    // same rule `--raster direct` follows.
+    for (const std::string& name : params.channels) {
+      if (name != "color") {
+        error = invalid("a reference capture has only a color channel; got '" + name + "'");
+        return false;
+      }
+    }
+    if (!read_reference(params.reference, params.frame, reference_settings, error)) return false;
+  }
   renderer::CaptureChannels channels;
   if (params.channels.empty()) {
     channels.color = true;
@@ -337,7 +403,28 @@ bool render_capture(protocol::Context& ctx, const protocol::RenderCaptureParams&
   frame.frame_index = params.frame;
   renderer::CapturedFrame shot;
   scene->view->reset_stats();
-  if (!scene->view->capture(frame, channels, shot, &message)) {
+  if (reference) {
+    if (!host->ensure_reference(*scene, message, no_device)) {
+      error = no_device
+                  ? unavailable(std::move(message))
+                  : protocol::make_error(protocol::codes::k_internal_error, std::move(message));
+      return false;
+    }
+    renderer::ReferenceFrame picture;
+    if (!scene->reference->render(frame.camera, reference_settings, picture, &message)) {
+      error = protocol::make_error(protocol::codes::k_internal_error, std::move(message));
+      return false;
+    }
+    // Into the same `CapturedFrame` the real-time path fills, so `write_capture` writes the same
+    // file at the same name and a caller comparing the two needs no second code path.
+    shot.width = picture.width;
+    shot.height = picture.height;
+    shot.color = std::move(picture.color);
+    out.integrator = "reference";
+    out.samples = picture.samples;
+    out.trace_ms = picture.trace_ms;
+    out.seconds = picture.seconds;
+  } else if (!scene->view->capture(frame, channels, shot, &message)) {
     error = invalid(std::move(message));
     return false;
   }
@@ -513,11 +600,183 @@ bool render_compare(protocol::Context&, const protocol::RenderCompareParams& par
   return true;
 }
 
+// ---- render.evaluate ---------------------------------------------------------------------------
+
+bool render_evaluate(protocol::Context& ctx, const protocol::RenderEvaluateParams& params,
+                     protocol::RenderEvaluateResult& out, protocol::RpcError& error) {
+  RenderHost* host = host_of(ctx);
+  RenderHost::Scene* scene = host != nullptr ? host->find(params.scene) : nullptr;
+  if (scene == nullptr) {
+    error = protocol::make_error(protocol::codes::k_not_found, "no scene " + params.scene);
+    return false;
+  }
+  if (params.width == 0 || params.height == 0 || params.width > 16384 || params.height > 16384) {
+    error = invalid("width and height must be within 1..16384");
+    return false;
+  }
+  if (!(params.ppd > 0.0f)) {
+    error = invalid("ppd must be a positive number of pixels per degree");
+    return false;
+  }
+  renderer::RenderSettings settings = scene->requested;
+  if (params.settings.has_value() && !read_settings(*params.settings, settings, error))
+    return false;
+  renderer::ReferenceSettings reference_settings;
+  if (!read_reference(params.reference, params.frame, reference_settings, error)) return false;
+
+  std::string message;
+  bool no_device = false;
+  if (!host->ensure_renderer(*scene, settings, params.width, params.height, message, no_device) ||
+      !host->ensure_reference(*scene, message, no_device)) {
+    error = no_device ? unavailable(std::move(message))
+                      : protocol::make_error(protocol::codes::k_internal_error, std::move(message));
+    return false;
+  }
+
+  const bench::MachineState machine_start = bench::sample_machine_state(bench::k_sample_window_ms);
+  renderer::FrameDesc frame;
+  frame.camera = camera_of(*scene, params.camera, params.orbit);
+  frame.frame_index = params.frame;
+
+  // The real-time picture first. `reset_stats` before it, so the statistics returned are this
+  // frame's and not the ones a previous call left in the slot.
+  scene->view->reset_stats();
+  renderer::CapturedFrame realtime;
+  const i64 realtime_started = time::monotonic_ns();
+  if (!scene->view->capture(frame, renderer::CaptureChannels{}, realtime, &message)) {
+    error = invalid(std::move(message));
+    return false;
+  }
+  out.realtime_seconds = static_cast<f64>(time::monotonic_ns() - realtime_started) / 1.0e9;
+
+  // Then the reference of the **same** frame: one camera, one frame number, one set of lights.
+  renderer::ReferenceFrame reference;
+  if (!scene->reference->render(frame.camera, reference_settings, reference, &message)) {
+    error = protocol::make_error(protocol::codes::k_internal_error, std::move(message));
+    return false;
+  }
+  // And, when asked, the same reference at one bounce. The difference between the two
+  // comparisons is the indirect light the real-time path does not have, which is what makes a
+  // per-scene threshold explicable instead of arbitrary.
+  renderer::ReferenceFrame direct;
+  if (params.direct_only) {
+    renderer::ReferenceSettings direct_settings = reference_settings;
+    direct_settings.max_bounces = 1;
+    if (!scene->reference->render(frame.camera, direct_settings, direct, &message)) {
+      error = protocol::make_error(protocol::codes::k_internal_error, std::move(message));
+      return false;
+    }
+  }
+  const bench::MachineState machine_end = bench::sample_machine_state(bench::k_sample_window_ms);
+
+  image::MetricsOptions options;
+  options.pixels_per_degree = params.ppd;
+  image::FloatImage weights;
+  if (params.weights == "center") {
+    image::center_weight_map(realtime.width, realtime.height, image::CenterWeightOptions{},
+                             weights);
+    options.weights = &weights;
+  } else if (params.weights != "none" && !params.weights.empty()) {
+    error = invalid("weights take center or none; got '" + params.weights + "'");
+    return false;
+  }
+  const image::Image a = image_of(realtime.width, realtime.height, realtime.color);
+  const image::Image b = image_of(reference.width, reference.height, reference.color);
+  image::ImageMetrics metrics;
+  image::FloatImage error_map;
+  const i64 metrics_started = time::monotonic_ns();
+  if (!image::compare_images(a, b, options, metrics, &error_map, &message)) {
+    error = protocol::make_error(protocol::codes::k_internal_error, std::move(message));
+    return false;
+  }
+  fill_metrics(metrics, out.full);
+  image::FloatImage direct_map;
+  if (params.direct_only) {
+    const image::Image c = image_of(direct.width, direct.height, direct.color);
+    image::ImageMetrics direct_metrics;
+    if (!image::compare_images(a, c, options, direct_metrics, &direct_map, &message)) {
+      error = protocol::make_error(protocol::codes::k_internal_error, std::move(message));
+      return false;
+    }
+    protocol::RenderMetrics filled;
+    fill_metrics(direct_metrics, filled);
+    out.direct = filled;
+  }
+  out.metrics_ms = static_cast<f64>(time::monotonic_ns() - metrics_started) / 1.0e6;
+
+  // The files. Everything an agent needs to look at the result by eye is on disk beside the
+  // numbers, because a FLIP figure with no heat map says where nothing.
+  if (!params.out_dir.empty()) {
+    const io::Status status = io::make_directories(params.out_dir);
+    if (status != io::Status::Ok) {
+      error = protocol::make_error(protocol::codes::k_io_error, "cannot create " + params.out_dir +
+                                                                    ": " + io::status_name(status));
+      return false;
+    }
+  }
+  auto write = [&](const char* channel, const std::string& suffix, u32 width, u32 height,
+                   u32 channels, std::span<const u8> pixels) {
+    const std::string path = params.out_dir.empty()
+                                 ? params.name + suffix
+                                 : io::join_path(params.out_dir, params.name + suffix);
+    const io::Status status = image::write_png(path, width, height, channels, pixels);
+    if (status != io::Status::Ok) {
+      error = protocol::make_error(protocol::codes::k_io_error,
+                                   "cannot write " + path + ": " + io::status_name(status));
+      return false;
+    }
+    out.files.insert_or_assign(channel, file_uri(path));
+    return true;
+  };
+  image::Image heat;
+  if (!write("realtime", ".realtime.png", a.width, a.height, 4,
+             std::span<const u8>(a.pixels.data(), a.pixels.size())) ||
+      !write("reference", ".reference.png", b.width, b.height, 4,
+             std::span<const u8>(b.pixels.data(), b.pixels.size())) ||
+      !image::flip_heat_map(error_map, heat) ||
+      !write("flip", ".flip.png", heat.width, heat.height, heat.channels,
+             std::span<const u8>(heat.pixels.data(), heat.pixels.size()))) {
+    if (error.code == 0) {
+      error =
+          protocol::make_error(protocol::codes::k_internal_error, "cannot build the FLIP heat map");
+    }
+    return false;
+  }
+  if (params.direct_only) {
+    image::Image direct_heat;
+    if (!write("reference_direct", ".reference_direct.png", direct.width, direct.height, 4,
+               std::span<const u8>(direct.color.data(), direct.color.size())) ||
+        !image::flip_heat_map(direct_map, direct_heat) ||
+        !write("flip_direct", ".flip_direct.png", direct_heat.width, direct_heat.height,
+               direct_heat.channels,
+               std::span<const u8>(direct_heat.pixels.data(), direct_heat.pixels.size()))) {
+      if (error.code == 0) {
+        error = protocol::make_error(protocol::codes::k_internal_error,
+                                     "cannot build the FLIP heat map");
+      }
+      return false;
+    }
+  }
+
+  out.width = realtime.width;
+  out.height = realtime.height;
+  out.samples = reference.samples;
+  out.reference_trace_ms = reference.trace_ms;
+  out.reference_seconds = reference.seconds + direct.seconds;
+  fill_stats(scene->view->stats(), scene->view->views(), out.stats);
+  out.machine_state.start = machine_state_of(machine_start);
+  out.machine_state.end = machine_state_of(machine_end);
+  (void)bench::warn_if_busy(bench::worst_of(machine_start, machine_end), bench::QuietThresholds{},
+                            stderr);
+  return true;
+}
+
 }  // namespace
 
 RenderHost::~RenderHost() {
   // The renderers hold pipelines and the scenes hold buffers; both must go before the device.
   for (const std::unique_ptr<Scene>& scene : scenes_) {
+    scene->reference.reset();  // it holds the renderer and the scene, so it goes first
     scene->view.reset();
     scene->gpu.reset();
   }
@@ -600,7 +859,32 @@ bool RenderHost::ensure_renderer(Scene& scene, const renderer::RenderSettings& s
   if (!view->create(*dev, *gpu, scene.resolved, desc, &error)) return false;
   scene.gpu = std::move(gpu);
   scene.view = std::move(view);
+  scene.reference.reset();  // it holds the renderer that was just replaced
   scene.built = settings;
+  return true;
+}
+
+bool RenderHost::ensure_reference(Scene& scene, std::string& error, bool& unavailable) {
+  unavailable = false;
+  if (scene.view == nullptr) {
+    error = "the renderer has not been built; call ensure_renderer first";
+    return false;
+  }
+  if (scene.reference != nullptr) return scene.reference->resize(&error);
+  gfx::Device* dev = device(0, error);
+  if (dev == nullptr) {
+    unavailable = true;
+    return false;
+  }
+  std::string why;
+  if (!renderer::reference_available(scene.resolved, dev->features(), &why)) {
+    error = std::string(dev->adapter().name) + " " + why;
+    unavailable = true;
+    return false;
+  }
+  auto reference = std::make_unique<renderer::ReferenceRenderer>();
+  if (!reference->create(*dev, *scene.gpu, *scene.view, {}, &error)) return false;
+  scene.reference = std::move(reference);
   return true;
 }
 
@@ -622,6 +906,12 @@ void add_render_methods(protocol::Dispatcher& d) {
   d.add(protocol::method<protocol::RenderCompareParams, protocol::RenderCompareResult,
                          &render_compare>(
       "render.compare", "FLIP, PSNR, and SSIM between two images, with an optional heat map."));
+  d.add(protocol::method<protocol::RenderEvaluateParams, protocol::RenderEvaluateResult,
+                         &render_evaluate>(
+      "render.evaluate",
+      "Render one frame of a loaded scene through the real-time path and through the reference "
+      "path tracer, compare them, write both pictures and the FLIP heat map, and return the "
+      "numbers and the times: plan 04 section 4.8's optimization loop in one call."));
 }
 
 }  // namespace engine::host
