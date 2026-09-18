@@ -308,11 +308,24 @@ Its medians drift between about 1.6 ms and 3.0 ms at four workers across runs an
 
 The fix is [ADR-0030](../adr/0030-flecs-workers-are-long-running-pool-jobs.md): `ecs::JobOsApi` now fills in flecs' `thread_new_`/`thread_join_` hooks as well, and `ecs::set_workers` uses `ecs_set_threads`, so a world's *n-1* workers are dispatched to the performance pool **once** and run flecs' worker loop until the world gives them back. flecs keeps its own per-tick signalling, the engine keeps one pinned thread per CPU, and the cost moves from every tick to once per world: a world holds `n-1` pool workers for its lifetime, inside a budget the application sets (`JobOsApiConfig::hosted_worker_budget`, default "all but one").
 
-**Machine state.** Same box, same build (`msvc-release`), flecs 4.1.6. Each hosting was measured **in its own process** (`--filter=*four_systems`, `--filter=*.tasks`, `--filter=*.os_threads`), twice, with `--wait-quiet=900`. This was a working afternoon on a shared box and the two runs of each pair were taken minutes apart: every run started under the 10% others'-CPU threshold, the GPU was 4% busy at 3.4 GB of 32 GB throughout, the session was unlocked, and the runs marked † ended above the threshold and carry the harness's WARNING — **their numbers are upper bounds**, which for the conclusion below is the conservative direction. The per-tick pair carries no warning at either end.
+**Machine state.** Same box, same build (`msvc-release`), flecs 4.1.6, nothing else changed. Each hosting was measured **in its own process** (`--filter=*four_systems`, `--filter=*.tasks`, `--filter=*.os_threads` — the filter is a substring match unless it contains `*`, in which case it must match the whole name), twice, each run preceded by `--wait-quiet`. This was a working afternoon on the shared box with other agents compiling, and no run of the six was quiet at both ends by the loosest reading, so here is each one rather than a claim. The GPU sat at 4% of 3.4 GB of 32 GB throughout and the session was unlocked in all six.
+
+| Run | Start (others' CPU) | End | Verdict |
+|---|---|---|---|
+| shipped A | 5.4% | 24.0% | WARNING; **upper bound** |
+| shipped B | 9.4% | 10.2% | WARNING, marginally over the 10% default |
+| per-tick A | 5.8%¹ | — | no WARNING at either end |
+| per-tick B | under 10% | — | no WARNING at either end |
+| os_threads A | 4.5% | 9.2% | WARNING **against a threshold I tightened**: this run used `--quiet-cpu=6`. Under the project's 10% default it was quiet at both ends |
+| os_threads B | 7.8% | 13.7% | WARNING; **upper bound** |
+
+¹ The per-tick pair are two separate `--wait-quiet=900` runs at the default threshold, both of which the harness passed at both ends. Runs "shipped A" and "os_threads A" were taken with `--quiet-cpu=6`, which is stricter than the documented default, and it is said here because the bench page asks for that whenever a threshold moves.
+
+Four of the six numbers are therefore upper bounds. That cuts one way for the conclusion and against the other: the shipped hosting's figures can only get *better* on a quieter box, and the per-tick hosting's — the pair with no warning at all — cannot.
 
 Microseconds per tick, 100,000 entities, four systems, median of seven repeats, two runs per cell. Workers count the calling thread, so *n* means one main thread and *n-1* workers; for the shipped hosting the pool was sized to *n*, so the world holds *n-1* of it and **one pool worker is left for everything else**.
 
-| Workers | Shipped: long-running pool jobs † | Per-tick jobs (what ADR-0030 replaced) | flecs' own OS threads † |
+| Workers | Shipped: long-running pool jobs | Per-tick jobs (what ADR-0030 replaced) | flecs' own OS threads |
 |---|---|---|---|
 | 1 | **2,424 / 2,428** | *same code path* | *same code path* |
 | 2 | **1,719 / 1,678** (1.42×) | 3,506 / 3,597 (0.68×) | 1,664 / 1,732 (1.43×) |
@@ -320,9 +333,9 @@ Microseconds per tick, 100,000 entities, four systems, median of seven repeats, 
 | 8 | **1,143 / 1,072** (2.19×) | 2,689 / 2,827 (0.88×) | 1,199 / 1,230 (1.99×) |
 | 16 | **1,020 / 1,002** (2.40×) | 3,501 / 3,403 (0.70×) | 1,124 / 1,087 (2.19×) |
 
-Speedups are against the shared 2,426 µs single-threaded baseline, on the mean of the pair.
+Speedups are against the shared 2,426 µs single-threaded baseline, on the mean of the pair. The two runs of each cell agree to within 7%, and the *ratios* between the three columns — which is what the conclusion turns on — were the same in every run of the session, warned or not.
 
-**What it says.** The tick scales, and it keeps scaling: 1.9× at four workers, 2.4× at sixteen, where the per-tick hosting was *slower than one worker at every count* and turned back up after eight. The shipped hosting lands within a few percent of flecs' own OS threads at every worker count, which was the target; it reads slightly ahead at 4, 8 and 16, and **that should not be read as the engine's hosting beating flecs' own.** The difference is inside the unpinned configuration's run-to-run spread: a third `os_threads` run in the same session read 1,696 / 1,788 / 1,102 / 1,314, with the four-worker figure visibly worse than its own two-worker one. Unpinned threads land wherever Windows puts them and are the configuration most sensitive to what else is on the box; the engine's are pinned, and across every run in this session their spread was the smaller of the two. One session on one shared machine is not enough to claim more than that.
+**What it says.** The tick scales, and it keeps scaling: 1.9× at four workers, 2.4× at sixteen, where the per-tick hosting was *slower than one worker at every count* and turned back up after eight. The shipped hosting lands within a few percent of flecs' own OS threads at every worker count, which was the target; it reads slightly ahead at 4, 8 and 16, and **that should not be read as the engine's hosting beating flecs' own.** The difference is inside the unpinned configuration's run-to-run spread: a third `os_threads` run in the same session, at the default threshold and with no warning at either end, read 1,696 / 1,788 / 1,102 / 1,314 — its four-worker figure visibly worse than its own two-worker one, which is not a thing a real configuration does. Unpinned threads land wherever Windows puts them and are the configuration most sensitive to what else is on the box; the engine's are pinned, and across every run in this session their spread was the smaller of the two. One session on one shared machine is not enough to claim more than that.
 
 **A corroboration nobody asked for.** One `tasks` run started at 5.8% others' CPU and ended at 20.2%, and it came back **faster** — 2,561 / 2,295 / 2,479 / 2,579 µs against the quiet pair's 3,506 / 2,791 / 2,689 / 3,501. A busy machine making a benchmark faster is the wrong shape for contention and the right shape for mechanism two: other processes keep the cores out of deep idle, so the per-tick wake that the hosting pays is cheaper. It is a stray observation from one run, not a measurement, and it is here because it points the same way as the control that was designed.
 
