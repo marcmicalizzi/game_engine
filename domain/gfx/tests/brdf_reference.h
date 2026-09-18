@@ -52,7 +52,9 @@ struct Surface {
   double metallic = 0.0;
 };
 
-// Mirrors gfx::ResolveLight.
+// Mirrors gfx::ResolveLight, plus what the resolve's shadow ray decides about it: `shadowed`
+// removes the light's whole contribution, which is what a hit between the surface and the light
+// does in fs_resolve (the ambient and emissive terms never see a shadow ray).
 struct Light {
   Dvec3 position;
   double radius = 0.0;
@@ -62,6 +64,7 @@ struct Light {
   bool spot = false;
   double cos_inner = 1.0;
   double cos_outer = 0.0;
+  bool shadowed = false;
 };
 
 inline double alpha_of(double roughness) {
@@ -172,11 +175,15 @@ inline Dvec3 map_normal(Dvec3 normal, Dvec3 tangent, Dvec3 bitangent, const u8* 
 
 // The whole shaded branch of fs_resolve: sun, analytic lights, sky hemisphere (diffuse by normal
 // elevation plus a Fresnel sliver so metals are not black), emissive. Linear, before the gamma.
+// `sun_shadowed` and `Light::shadowed` are what the resolve's shadow rays found: a shadowed light
+// contributes nothing, and nothing else about the surface changes.
 inline Dvec3 shade(const Surface& s, Dvec3 sun_dir, double sun_intensity, Dvec3 sky,
-                   const Light* lights, u32 light_count, Dvec3 emissive) {
-  Dvec3 color = direct(s, sun_dir, splat(sun_intensity));
+                   const Light* lights, u32 light_count, Dvec3 emissive,
+                   bool sun_shadowed = false) {
+  Dvec3 color = sun_shadowed ? Dvec3{} : direct(s, sun_dir, splat(sun_intensity));
   for (u32 i = 0; i < light_count; ++i) {
     const Light& light = lights[i];
+    if (light.shadowed) continue;
     const Dvec3 to_light = light.position - s.position;
     const double distance_sq = dot(to_light, to_light);
     double attenuation = distance_attenuation(distance_sq, light.radius);

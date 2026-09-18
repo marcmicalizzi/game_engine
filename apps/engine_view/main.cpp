@@ -56,6 +56,7 @@
 #include <shaders/hiz_build.spv.h>
 #include <shaders/ray_visibility.spv.h>
 #include <shaders/visibility_resolve.spv.h>
+#include <shaders/visibility_resolve_rt.spv.h>
 #include <string>
 #include <string_view>
 
@@ -73,6 +74,7 @@ constexpr const char* k_usage =
     "                   [--raster direct|hw|vertex|sw|auto|rt] [--sw-px <px>] [--view <mode>] [--orbit <d>]\n"
     "                   [--mesh <file.gltf|file.glb|file.clusters>] [--scene <file.json>]\n"
     "                   [--grid-instances <n>] [--no-cache] [--ddc <dir>] [--no-lights]\n"
+    "                   [--shadows off|rt]\n"
     "\n"
     "  --frames <n>     render n frames, then exit (0: until the window closes)\n"
     "  --capture <png>  write the last frame as a PNG (implies --frames 60 when unset)\n"
@@ -91,6 +93,11 @@ constexpr const char* k_usage =
     "  --no-occlusion   skip two-pass occlusion culling (hw mode only; on by default)\n"
     "  --no-cone        skip backface culling of clusters by their normal cones (on by default)\n"
     "  --no-lights      only the sun and the sky; no orbiting point lights (they are on by default)\n"
+    "  --shadows <how>  off, or rt: every light in the resolve casts a ray-traced shadow against\n"
+    "                   the structures the frame built from its own visible list. The default is\n"
+    "                   rt where the device has cluster acceleration structures and ray queries.\n"
+    "                   In a raster mode the frame runs the acceleration structure chain as well,\n"
+    "                   which turns two-pass occlusion culling off (one visible list to build from)\n"
     "  --raster <mode>  direct: mesh shaders to color with a depth buffer; hw (default), vertex, sw,\n"
     "                   auto: the visibility buffer through mesh shaders, a vertex shader (the\n"
     "                   baseline tier, chosen automatically without mesh shaders), software, or\n"
@@ -114,6 +121,8 @@ constexpr u32 k_frames_in_flight = 2;
 constexpr u32 k_view_lights = 2;  // the warm and cool point lights orbiting the scene
 
 enum class RasterMode : u8 { Direct, Hardware, Software, Auto, Vertex, RayTrace };
+// Auto: ray-traced shadows wherever the device can build the structures, off where it cannot.
+enum class ShadowMode : u8 { Auto, Off, RayTraced };
 
 struct Options {
   u32 width = 1280;
@@ -136,6 +145,7 @@ struct Options {
   bool occlusion = true;
   bool cone = true;
   bool lights = true;  // the two orbiting point lights
+  ShadowMode shadows = ShadowMode::Auto;
   RasterMode raster = RasterMode::Hardware;
   f32 sw_px = 32.0f;
   u32 view_mode = static_cast<u32>(gfx::ResolveMode::Shaded);
@@ -683,6 +693,16 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "engine-view: --raster expects direct, hw, vertex, sw, auto, or rt\n");
         return k_exit_usage;
       }
+    } else if (a == "--shadows") {
+      if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
+      if (value == "off") {
+        options.shadows = ShadowMode::Off;
+      } else if (value == "rt") {
+        options.shadows = ShadowMode::RayTraced;
+      } else {
+        std::fprintf(stderr, "engine-view: --shadows expects off or rt\n");
+        return k_exit_usage;
+      }
     } else if (a == "--view") {
       if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
       if (value == "id") {
@@ -807,16 +827,42 @@ int main(int argc, char** argv) {
        options.raster == RasterMode::Auto)) {
     options.raster = RasterMode::Vertex;  // the baseline tier
   }
-  occlusion = options.occlusion && options.cull &&
-              (options.raster == RasterMode::Hardware || options.raster == RasterMode::Vertex);
   const bool vertex_path = options.raster == RasterMode::Vertex;
   const bool ray_path = options.raster == RasterMode::RayTrace;
-  if (ray_path && !options.cull) {
-    options.cull = true;  // the ray tracing geometry is built from the cull output
-    ENGINE_LOG_WARN(log_view, "--no-cull ignored with --raster rt");
+  // Ray-traced shadows want the same per-frame structures --raster rt builds, so they need the
+  // same device and the same cull output. The resolve is where they are shaded, which rules out
+  // the direct path, and they are built from one visible list, which rules out the modes that
+  // produce more than one: the software split's second list, and occlusion culling's second pass.
+  const bool shadow_device =
+      device.features().cluster_acceleration_structure && device.features().ray_query;
+  const bool shadow_mode = ray_path || options.raster == RasterMode::Hardware || vertex_path;
+  bool shadows = options.shadows != ShadowMode::Off && shadow_device && shadow_mode;
+  if (options.shadows == ShadowMode::RayTraced && !shadows) {
+    ENGINE_LOG_WARN(
+        log_view, "ray-traced shadows off", log::field("adapter", device.adapter().name),
+        log::field("reason", !shadow_device ? "no cluster acceleration structures or ray queries"
+                                            : "--raster direct, sw, and auto do not build them"));
+  } else if (options.shadows == ShadowMode::Auto && !shadows && shadow_mode) {
+    ENGINE_LOG_INFO(log_view, "ray-traced shadows off",
+                    log::field("adapter", device.adapter().name),
+                    log::field("reason", "no cluster acceleration structures or ray queries"));
   }
-  const bool ray_ok = !ray_path || (device.features().cluster_acceleration_structure &&
-                                    device.features().ray_query);
+  // The frame's acceleration structures: --raster rt traces the picture against them, and the
+  // shadowed resolve traces the lights against them. Either way the chain is the same passes.
+  const bool rt_chain = ray_path || shadows;
+  occlusion = options.occlusion && options.cull && !shadows &&
+              (options.raster == RasterMode::Hardware || options.raster == RasterMode::Vertex);
+  if (shadows && options.occlusion && !ray_path) {
+    ENGINE_LOG_INFO(log_view, "two-pass occlusion culling off with ray-traced shadows",
+                    log::field("reason", "the structures are built from one visible list"));
+  }
+  if (rt_chain && !options.cull) {
+    options.cull = true;  // the ray tracing geometry is built from the cull output
+    ENGINE_LOG_WARN(log_view, "--no-cull ignored",
+                    log::field("raster", raster_name(options.raster)),
+                    log::field("shadows", shadows));
+  }
+  const bool ray_ok = !ray_path || shadow_device;
   if (!device.features().presentation || !visibility_ok || !ray_ok) {
     const std::string why =
         std::string(device.adapter().name) +
@@ -1082,8 +1128,9 @@ int main(int argc, char** argv) {
       exit_code = fail("upload", error);
       break;
     }
-    // The float positions stay only for --raster rt: the cluster structure builds read them.
-    if (ray_path &&
+    // The float positions stay only for the frames that build acceleration structures — --raster
+    // rt, or ray-traced shadows in a raster mode: the cluster structure builds read them.
+    if (rt_chain &&
         !gfx::upload_buffer(device, lod.mesh.vertices.data(), float_position_bytes,
                             k_storage | gfx::k_build_input_usage, vertex_buffer, &error)) {
       exit_code = fail("upload", error);
@@ -1282,7 +1329,7 @@ int main(int argc, char** argv) {
       exit_code = fail("buffers", error);
       break;
     }
-    if (ray_path) {
+    if (rt_chain) {
       // Every pair may be in some frame's cut, so the cluster acceleration structures are sized
       // for all of them, and a pair's base geometry index is its entry in the visible list, so
       // the largest geometry index is the last pair. One cluster bottom-level structure per
@@ -1369,6 +1416,10 @@ int main(int argc, char** argv) {
                                 shaders::k_cluster_vertex_spirv_size);
     shader_library.add_embedded("visibility_resolve", shaders::k_visibility_resolve_spirv,
                                 shaders::k_visibility_resolve_spirv_size);
+    // The same resolve with the shadow rays in; only a device with acceleration structures may
+    // draw with it, because its `g_scenes[]` is binding 3 of the bindless set.
+    shader_library.add_embedded("visibility_resolve_rt", shaders::k_visibility_resolve_rt_spirv,
+                                shaders::k_visibility_resolve_rt_spirv_size);
     shader_library.add_embedded("clas_records", shaders::k_clas_records_spirv,
                                 shaders::k_clas_records_spirv_size);
     shader_library.add_embedded("ray_visibility", shaders::k_ray_visibility_spirv,
@@ -1394,14 +1445,13 @@ int main(int argc, char** argv) {
       const gfx::Shader* vertex =
           hiz != nullptr ? shader_library.get("cluster_vertex", err) : nullptr;
       const gfx::Shader* resolve =
-          hiz != nullptr ? shader_library.get("visibility_resolve", err) : nullptr;
+          hiz != nullptr
+              ? shader_library.get(shadows ? "visibility_resolve_rt" : "visibility_resolve", err)
+              : nullptr;
       if (resolve == nullptr || vertex == nullptr) return false;
-      if (ray_path) {
+      if (rt_chain) {
         const gfx::Shader* records = shader_library.get("clas_records", err);
-        const gfx::Shader* trace =
-            records != nullptr ? shader_library.get("ray_visibility", err) : nullptr;
-        if (trace == nullptr) return false;
-        const VkDescriptorSetLayout set_layout = bindless.layout();
+        if (records == nullptr) return false;
         if (!gfx::create_compute_pipeline(device, records->module, "records_main", {},
                                           sizeof(gfx::ClusterRecordParams), pipelines.records,
                                           err) ||
@@ -1410,8 +1460,15 @@ int main(int argc, char** argv) {
                                           err) ||
             !gfx::create_compute_pipeline(device, records->module, "emit_main", {},
                                           sizeof(gfx::ClusterRecordParams), pipelines.record_emit,
-                                          err) ||
-            !gfx::create_compute_pipeline(device, trace->module, "trace_main",
+                                          err)) {
+          return false;
+        }
+      }
+      if (ray_path) {
+        const gfx::Shader* trace = shader_library.get("ray_visibility", err);
+        if (trace == nullptr) return false;
+        const VkDescriptorSetLayout set_layout = bindless.layout();
+        if (!gfx::create_compute_pipeline(device, trace->module, "trace_main",
                                           std::span<const VkDescriptorSetLayout>(&set_layout, 1),
                                           sizeof(u64), pipelines.trace, err)) {
           return false;
@@ -1470,10 +1527,10 @@ int main(int argc, char** argv) {
         log::field("lod_levels", lod.level_cluster_counts.size()),
         log::field("build_ms", static_cast<f64>(build_ns) / 1.0e6),
         log::field("raster", raster_name(options.raster)), log::field("occlusion", occlusion),
-        log::field("cone", options.cone), log::field("mesh_primitives", mesh_primitives),
-        log::field("materials", materials.size()), log::field("meshes", parts.size()),
-        log::field("instances", instance_count), log::field("pairs", pair_count),
-        log::field("width", swapchain.extent().width),
+        log::field("shadows", shadows ? "rt" : "off"), log::field("cone", options.cone),
+        log::field("mesh_primitives", mesh_primitives), log::field("materials", materials.size()),
+        log::field("meshes", parts.size()), log::field("instances", instance_count),
+        log::field("pairs", pair_count), log::field("width", swapchain.extent().width),
         log::field("height", swapchain.extent().height));
 
     gfx::RenderGraph graph(device);
@@ -1702,22 +1759,33 @@ int main(int argc, char** argv) {
       lights[1].color_intensity = Vec4{0.50f, 0.68f, 1.0f, 0.8f * light_orbit * light_orbit};
       resolve.lights = resolve_buffers[slot].address + sizeof(resolve);
       resolve.light_count = options.lights ? k_view_lights : 0;
+      // Shadows: every light traces against this frame's top-level structure, which holds the
+      // same visible list the rasterizer drew from, so a shadow can only come from geometry the
+      // picture has. The bias is a thousandth of the scene radius — a couple of centimetres on
+      // the heightfield, well over the half grid step by which a quantized position may differ
+      // from the float one the structures were built from, and far under any feature that casts.
+      resolve.scene = shadows ? tlas_slot : gfx::k_no_scene;
+      resolve.shadow_flags = shadows ? gfx::k_shadow_sun | gfx::k_shadow_lights : 0u;
+      resolve.shadow_bias = 1.0e-3f * scene_radius;
       auto* resolve_block = static_cast<u8*>(resolve_buffers[slot].mapped);
       std::memcpy(resolve_block, &resolve, sizeof(resolve));
       std::memcpy(resolve_block + sizeof(resolve), lights, sizeof(lights));
       const u64 resolve_address = resolve_buffers[slot].address;
 
-      // --raster rt: the records pass turns this frame's visible list into CLAS build records,
-      // the builds follow on the GPU, and the trace pass replaces the rasterizer.
+      // The records pass turns this frame's visible list into CLAS build records and the builds
+      // follow on the GPU. --raster rt then traces the picture against them; a raster mode with
+      // shadows on runs the same chain and the resolve traces the lights against them.
       gfx::ClusterRecordParams record_params{};
       u64 ray_address = 0;
-      if (ray_path) {
+      if (rt_chain) {
         record_params.clusters = cluster_buffer.address;
         record_params.vertices = vertex_buffer.address;
         record_params.indices8 = indices8_buffer.address;
         record_params.instances = instance_buffer.address;
         record_params.visible = run_address[0];
-        record_params.visible_count = args_buffer[0].address;  // count_index 0: the first word
+        // Where the cull pass counted this run's survivors: the mesh path's group count is the
+        // first word of the indirect block, the vertex path's instance count the second.
+        record_params.visible_count = args_buffer[0].address + (vertex_path ? sizeof(u32) : 0);
         record_params.slots = slots_buffer.address;
         record_params.instance_counts = instance_counts_buffer.address;
         record_params.instance_first = instance_first_buffer.address;
@@ -1741,6 +1809,8 @@ int main(int argc, char** argv) {
         gfx::write_instances(
             std::span<const gfx::TlasInstance>(tlas_instances.data(), tlas_instances.size()),
             rt_instances.mapped);
+      }
+      if (ray_path) {
         gfx::RayVisibilityParams ray{};
         ray.view_proj = view_proj;
         ray.inv_view_proj = inverse(view_proj);
@@ -1771,7 +1841,7 @@ int main(int argc, char** argv) {
         gfx::RgBuffer clas_data, clas_addresses, clas_sizes, tlas, instances;
       } rt{};
       Vector<gfx::RgBuffer> rg_blas_data;
-      if (ray_path) {
+      if (rt_chain) {
         rt.records = graph.import_buffer("clas records", records_buffer);
         rt.record_count = graph.import_buffer("clas record count", record_count_buffer);
         rt.slots = graph.import_buffer("clas slots", slots_buffer);
@@ -1806,7 +1876,7 @@ int main(int argc, char** argv) {
             if (occlusion) b.write(rg_flags[cur_flags], gfx::Access::TransferWrite);
             if (fill_flags) b.write(rg_flags[prev_flags], gfx::Access::TransferWrite);
             if (fill_hiz) b.write(rg_hiz, gfx::Access::TransferWrite);
-            if (ray_path) b.write(rt.instance_counts, gfx::Access::TransferWrite);
+            if (rt_chain) b.write(rt.instance_counts, gfx::Access::TransferWrite);
           },
           [&](VkCommandBuffer cb, gfx::RenderGraph&) {
             if (options.cull) {
@@ -1828,7 +1898,7 @@ int main(int argc, char** argv) {
             if (fill_flags)
               vkCmdFillBuffer(cb, flags_buffer[prev_flags].buffer, 0, VK_WHOLE_SIZE, 0);
             if (fill_hiz) vkCmdFillBuffer(cb, targets.hiz.buffer, 0, VK_WHOLE_SIZE, 0);
-            if (ray_path) vkCmdFillBuffer(cb, instance_counts_buffer.buffer, 0, VK_WHOLE_SIZE, 0);
+            if (rt_chain) vkCmdFillBuffer(cb, instance_counts_buffer.buffer, 0, VK_WHOLE_SIZE, 0);
           });
       auto add_cull = [&](u32 block, u32 list) {
         graph.add_pass(
@@ -1967,11 +2037,13 @@ int main(int argc, char** argv) {
                 timer.end(cb);
               });
         }
-        if (ray_path) {
+        if (rt_chain) {
           // The frame's cut becomes the frame's ray tracing geometry with no CPU in between:
           // bucket the visible entries by instance, prefix-sum the per-instance counts, emit the
           // dense CLAS records, build every CLAS in one command, build one cluster bottom-level
-          // structure per instance, and top-level over them.
+          // structure per instance, and top-level over them. The picture is traced against it
+          // under --raster rt and the shadow rays are traced against it whenever shadows are on,
+          // so the chain is the same passes in the same order for both.
           const gfx::ComputePipeline* record_passes[3] = {
               &pipelines.records, &pipelines.record_ranges, &pipelines.record_emit};
           const char* record_names[3] = {"records", "ranges", "emit"};
@@ -2059,6 +2131,8 @@ int main(int argc, char** argv) {
                                 gfx::k_build_fast_trace, rt_scratch);
                 timer.end(cb);
               });
+        }
+        if (ray_path) {
           graph.add_pass(
               "trace", gfx::PassKind::Compute,
               [&](gfx::PassBuilder& b) {
@@ -2084,6 +2158,12 @@ int main(int argc, char** argv) {
             [&](gfx::PassBuilder& b) {
               b.color_attachment(color, VK_ATTACHMENT_LOAD_OP_CLEAR, sky);
               b.read(rg_vis, gfx::Access::FragmentRead);
+              if (shadows) {  // the shadow rays traverse them from the fragment stage
+                b.read(rt.tlas, gfx::Access::FragmentRayQueryRead);
+                for (const gfx::RgBuffer& data : rg_blas_data)
+                  b.read(data, gfx::Access::FragmentRayQueryRead);
+                b.read(rt.clas_data, gfx::Access::FragmentRayQueryRead);
+              }
             },
             [&](VkCommandBuffer cb, gfx::RenderGraph&) {
               timer.begin(cb, "resolve");
@@ -2185,7 +2265,7 @@ int main(int argc, char** argv) {
   }
   gfx::destroy_buffer(device, visible_buffer);
   gfx::destroy_buffer(device, sw_args_buffer);
-  if (ray_path) {
+  if (rt_chain) {
     gfx::destroy_acceleration_structure(device, tlas);
     for (gfx::ClusterBlas& blas : cluster_blas)
       gfx::destroy_cluster_blas(device, blas);
@@ -2237,7 +2317,8 @@ int main(int argc, char** argv) {
         "{\"frames\":%llu,\"seconds\":%.3f,\"avg_ms\":%.3f,\"width\":%u,\"height\":%u,"
         "\"clusters\":%u,\"leaf_clusters\":%u,\"triangles\":%u,\"lod_levels\":%u,\"build_ms\":%.1f,"
         "\"mesh_primitives\":%u,\"mesh_cache\":\"%s\",\"meshes\":%u,\"instances\":%u,\"pairs\":%u,"
-        "\"cull\":%s,\"occlusion\":%s,\"cone\":%s,\"lod_px\":%.2f,\"raster\":\"%s\",\"sw_px\":%.1f,"
+        "\"cull\":%s,\"occlusion\":%s,\"cone\":%s,\"lod_px\":%.2f,\"raster\":\"%s\","
+        "\"shadows\":\"%s\",\"sw_px\":%.1f,"
         "\"visible_hw_last\":%u,\"visible_pass2_last\":%u,\"visible_sw_last\":%u,"
         "\"visible_pairs_last\":%u,\"visible_min\":%u,"
         "\"visible_max\":%u,"
@@ -2251,7 +2332,7 @@ int main(int argc, char** argv) {
         static_cast<f64>(build_ns) / 1.0e6, mesh_primitives, mesh_cache, scene_meshes,
         scene_instance_count, scene_pairs, options.cull ? "true" : "false",
         occlusion ? "true" : "false", options.cone ? "true" : "false",
-        static_cast<f64>(options.lod_px), raster_name(options.raster),
+        static_cast<f64>(options.lod_px), raster_name(options.raster), shadows ? "rt" : "off",
         static_cast<f64>(options.sw_px), visible_hw_last, visible_pass2_last, visible_sw_last,
         visible_hw_last + visible_pass2_last + visible_sw_last, visible_min, visible_max,
         gpu_cull_ms / n, gpu_hw_ms / n, gpu_sw_ms / n, gpu_hiz_ms / n, gpu_resolve_ms / n,

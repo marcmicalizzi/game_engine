@@ -8,7 +8,10 @@
 // matrix: exactly the triangle that was drawn. Materials are a flat table indexed per cluster
 // plus the instance's `material_base`, which is enough until the material graph arrives. Shading
 // is the physically based BSDF of shaders/brdf.slang (GGX specular, Lambert diffuse) under a
-// directional sun, a list of analytic lights, and a sky hemisphere.
+// directional sun, a list of analytic lights, and a sky hemisphere. A light whose bit is set in
+// `shadow_flags` is shadowed by a ray query against the top-level structure in bindless slot
+// `scene` — the one the frame built from the same visible list the rasterizer drew from, so the
+// shadows are cast by exactly the geometry in the picture.
 
 #include <core/base/types.h>
 #include <core/math/math.h>
@@ -16,6 +19,13 @@
 namespace engine::gfx {
 
 inline constexpr u32 k_no_texture = 0xFFFFFFFFu;
+
+// ResolveParams::scene when the frame has no top-level structure: no shadow ray is traced.
+inline constexpr u32 k_no_scene = 0xFFFFFFFFu;
+
+// ResolveParams::shadow_flags.
+inline constexpr u32 k_shadow_sun = 1u;     // the directional sun casts
+inline constexpr u32 k_shadow_lights = 2u;  // the analytic point and spot lights cast
 
 // Mirrors ResolveMaterial in visibility_resolve.slang. 64 bytes. Every texture slot is a
 // bindless sampled image read with the one `sampler` at `uv * uv_scale`. The albedo texture is
@@ -58,7 +68,7 @@ enum class ResolveMode : u32 {
   Uvs = 5,
 };
 
-// Mirrors ResolveParams in visibility_resolve.slang. 208 bytes.
+// Mirrors ResolveParams in visibility_resolve.slang. 224 bytes.
 struct ResolveParams {
   Vec4 sky{};     // rgb shown for empty pixels and used as the hemisphere ambient
   Vec4 sun{};     // xyz normalized direction towards the light, w intensity
@@ -76,10 +86,14 @@ struct ResolveParams {
   u32 height = 0;
   u32 mode = static_cast<u32>(ResolveMode::Shaded);
   u32 light_count = 0;
-  u64 instances = 0;  // InstanceDesc[] (cluster_cull.h)
-  u64 visible = 0;    // u32x2[]: the cull pass's visible list; 0 reads {0, visible_index}
+  u64 instances = 0;       // InstanceDesc[] (cluster_cull.h)
+  u64 visible = 0;         // u32x2[]: the cull pass's visible list; 0 reads {0, visible_index}
+  u32 scene = k_no_scene;  // bindless slot of the top-level structure the shadow rays trace
+  u32 shadow_flags = 0;    // k_shadow_sun | k_shadow_lights; 0 traces nothing
+  f32 shadow_bias = 0.0f;  // world units along the geometric normal, off the surface
+  u32 pad = 0;             // keeps the block 16-byte aligned
 };
-static_assert(sizeof(ResolveParams) == 208);
+static_assert(sizeof(ResolveParams) == 224);
 static_assert(sizeof(ResolveParams) % 16 == 0, "the block is read as float4 rows on the GPU");
 
 }  // namespace engine::gfx

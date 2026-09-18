@@ -80,6 +80,7 @@ enum class Access : u8 {
   AccelerationBuildRead,   // acceleration structure build inputs: geometry, records, references
   AccelerationBuildWrite,  // what a build writes: the structure, addresses, sizes (buffers)
   RayQueryRead,            // an acceleration structure traversed by ray queries in compute
+  FragmentRayQueryRead,    // the same, traversed from a fragment shader (the shadowed resolve)
 };
 bool access_writes(Access access) noexcept;
 

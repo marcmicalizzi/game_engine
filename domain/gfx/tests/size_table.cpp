@@ -18,7 +18,7 @@ ENGINE_EXPECT_SIZE(400, 8, gfx::CullParams);
 
 ENGINE_EXPECT_SIZE(40, 8, gfx::HizParams);
 
-ENGINE_EXPECT_SIZE(208, 8, gfx::ResolveParams);
+ENGINE_EXPECT_SIZE(224, 8, gfx::ResolveParams);
 
 ENGINE_EXPECT_SIZE(64, 4, gfx::ResolveMaterial);
 

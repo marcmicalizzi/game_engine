@@ -17,12 +17,25 @@
 // cluster colors, triangle shading, depth, the interpolated normal before any map, or UVs.
 // Empty pixels (value 0: depth 0 is the far plane and id 0 never occurs there) take the sky
 // color.
+//
+// Ray-traced shadows (docs/plan/04-renderer.md §4.4, "Shadows: RT for the sun and hero lights"):
+// with RESOLVE_RAY_SHADOWS the fragment stage traces one terminate-on-first-hit ray per shadowing
+// light, from the reconstructed surface point offset along the geometric normal, against the
+// top-level structure in bindless slot `ResolveParams::scene`. That structure is the one the
+// frame built from the same visible list the rasterizer drew from, so a pixel is shadowed by
+// exactly the geometry the picture holds. Ambient and emissive are unaffected. The define exists
+// because `g_scenes[]` is binding 3 of the bindless set, which a device without acceleration
+// structures does not have: visibility_resolve_rt.slang is this file with the rays, and the
+// plain module is what every other device draws with.
 
 #include "brdf.slang"
 #include "scene.slang"
 
 [[vk::binding(0, 0)]] Texture2D<float4> g_textures[];
 [[vk::binding(2, 0)]] SamplerState g_samplers[];
+#ifdef RESOLVE_RAY_SHADOWS
+[[vk::binding(3, 0)]] RaytracingAccelerationStructure g_scenes[];
+#endif
 
 // Mirrors gfx::ResolveMaterial (64 bytes).
 struct ResolveMaterial {
@@ -66,6 +79,10 @@ struct ResolveParams {
   uint light_count;
   uint64_t instances;  // InstanceDesc[]
   uint64_t visible;    // uint2[]: the cull pass's visible list; 0 reads {0, visible_index}
+  uint scene;          // bindless slot of the top-level structure; 0xffffffff for none
+  uint shadow_flags;   // bit 0 the sun casts, bit 1 the analytic lights cast
+  float shadow_bias;   // world units along the geometric normal, off the surface
+  uint pad;
 };
 
 struct ResolvePush {
@@ -75,6 +92,9 @@ struct ResolvePush {
 [[vk::push_constant]] ConstantBuffer<ResolvePush> g_push;
 
 static const uint k_no_texture = 0xffffffffu;
+static const uint k_no_scene = 0xffffffffu;
+static const uint k_shadow_sun = 1u;
+static const uint k_shadow_lights = 2u;
 
 struct FullscreenOut {
   float4 position : SV_Position;
@@ -115,7 +135,8 @@ float2 decode_half2(uint packed) { return float2(f16tof32(packed & 0xffffu), f16
 
 struct Surface {
   float3 position;
-  float3 normal;
+  float3 normal;     // shading normal: the interpolated vertex normals, or the triangle plane
+  float3 geometric;  // the triangle's own plane normal, facing the camera: what a ray offsets by
   float2 uv;
 };
 
@@ -157,6 +178,10 @@ Surface reconstruct(ResolveParams* params, InstanceDesc instance, uint2 entry, u
   }
   Surface s;
   s.position = b.x * p[0] + b.y * p[1] + b.z * p[2];
+  // The plane of the triangle that was drawn, turned towards the camera so that offsetting a
+  // shadow ray along it always leaves the surface on the side the picture sees.
+  s.geometric = normalize(cross(p[1] - p[0], p[2] - p[0]));
+  if (dot(s.geometric, params->camera.xyz - s.position) < 0.0) s.geometric = -s.geometric;
   if (params->attributes != 0) {
     VertexAttributes* attributes = (VertexAttributes*)params->attributes;
     const VertexAttributes a0 = attributes[local[0]];
@@ -167,8 +192,7 @@ Surface reconstruct(ResolveParams* params, InstanceDesc instance, uint2 entry, u
     s.normal = transform_normal(instance.world, n);
     s.uv = b.x * decode_half2(a0.uv_half2) + b.y * decode_half2(a1.uv_half2) + b.z * decode_half2(a2.uv_half2);
   } else {
-    s.normal = normalize(cross(p[1] - p[0], p[2] - p[0]));
-    if (dot(s.normal, params->camera.xyz - s.position) < 0.0) s.normal = -s.normal;  // two-sided
+    s.normal = s.geometric;  // two-sided flat shading
     s.uv = float2(0.0, 0.0);
   }
   return s;
@@ -222,6 +246,33 @@ bool tangent_frame(ResolveParams* params, InstanceDesc instance, uint2 entry, ui
   if (b_length < 1e-12) return false;
   bitangent = b / b_length;
   return true;
+}
+
+// Is anything between `origin` and a light `t_max` away in direction `direction`? One ray query
+// with the terminate-on-first-hit flag, which is what a shadow ray wants: any hit ends the
+// traversal and no hit shader runs. False without the shadow bit, without a scene, when the light
+// is below the surface (the BSDF returns nothing there anyway), or when the bias has already
+// eaten the whole distance to the light.
+bool shadow_ray_blocked(ResolveParams* params, uint bit, float3 origin, float3 direction,
+                        float t_max) {
+#ifdef RESOLVE_RAY_SHADOWS
+  if ((params->shadow_flags & bit) == 0 || params->scene == k_no_scene || t_max <= 0.0) {
+    return false;
+  }
+  const uint flags = RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH;
+  RayDesc ray;
+  ray.Origin = origin;
+  ray.Direction = direction;
+  ray.TMin = 0.0;
+  ray.TMax = t_max;
+  RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> query;
+  query.TraceRayInline(g_scenes[NonUniformResourceIndex(params->scene)], flags, 0xff, ray);
+  while (query.Proceed()) {
+  }
+  return query.CommittedStatus() != COMMITTED_NOTHING;
+#else
+  return false;
+#endif
 }
 
 [shader("fragment")]
@@ -296,9 +347,19 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
   surface.roughness = roughness;
   surface.metallic = metallic;
 
-  // The sun: one direction, one intensity, no falloff.
-  float3 color = brdf_direct(surface, params->sun.xyz, float3(params->sun.w));
-  // The analytic lights: inverse square windowed to zero at the radius, spots by their cone.
+  // Shadow rays leave from the surface offset along the geometric normal, so that the quantized
+  // position the resolve reconstructs cannot start the ray inside the float positions the
+  // acceleration structure was built from.
+  const float3 shadow_origin = s.position + s.geometric * params->shadow_bias;
+
+  // The sun: one direction, one intensity, no falloff; a hit anywhere along the ray removes it.
+  float3 color = float3(0.0);
+  if (dot(surface.normal, params->sun.xyz) > 0.0 &&
+      !shadow_ray_blocked(params, k_shadow_sun, shadow_origin, params->sun.xyz, 1e30)) {
+    color = brdf_direct(surface, params->sun.xyz, float3(params->sun.w));
+  }
+  // The analytic lights: inverse square windowed to zero at the radius, spots by their cone, and
+  // a shadow ray that stops short of the light itself.
   ResolveLight* lights = (ResolveLight*)params->lights;
   for (uint i = 0; i < params->light_count; ++i) {
     const ResolveLight light = lights[i];
@@ -310,6 +371,11 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
     if (light.direction_type.w >= 0.5) {
       attenuation *= brdf_spot_attenuation(-light_dir, normalize(light.direction_type.xyz),
                                            light.spot.x, light.spot.y);
+    }
+    if (dot(surface.normal, light_dir) > 0.0 &&
+        shadow_ray_blocked(params, k_shadow_lights, shadow_origin, light_dir,
+                           sqrt(distance_sq) - params->shadow_bias)) {
+      continue;
     }
     color += brdf_direct(surface, light_dir,
                          light.color_intensity.rgb * (light.color_intensity.w * attenuation));

@@ -6,10 +6,17 @@
 // the normals mode returns the plane normal, a light outside its radius of influence changes
 // nothing at all, and a white dielectric lit head-on reflects what the BSDF says it should.
 // Skips without mesh shaders or 64-bit buffer atomics.
+//
+// The second case is the ray-traced shadows: the same quad with an occluder above it that only
+// the acceleration structure holds, shaded with the sun's shadow ray, with the point light's, and
+// against a scene with nothing to occlude. Every pixel is compared against the same CPU
+// reference, told whether that light is shadowed by a CPU ray-quad intersection. Skips without
+// ray queries.
 #include "brdf_reference.h"
 #include "scene_fixture.h"
 
 #include <domain/geometry/cluster.h>
+#include <domain/gfx/acceleration.h>
 #include <domain/gfx/bindless.h>
 #include <domain/gfx/cluster_cull.h>
 #include <domain/gfx/device.h>
@@ -25,7 +32,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <shaders/cluster_mesh.spv.h>
+#include <shaders/cluster_vertex.spv.h>
 #include <shaders/visibility_resolve.spv.h>
+#include <shaders/visibility_resolve_rt.spv.h>
 #include <string>
 
 using namespace engine;
@@ -39,6 +48,25 @@ constexpr u32 k_materials = 8;  // k_roughness x {dielectric, conductor}
 constexpr u32 k_white = 8;      // the reflectance-sanity material
 constexpr u32 k_blocks = 12;    // one ResolveParams, one render target, per block
 constexpr u32 k_size = 128;
+
+// A horizontal rectangle, the shadow test's occluder: y = plane, x in [x0, x1], z in [z0, z1].
+struct Quad {
+  double plane, x0, x1, z0, z1;
+};
+
+// How far inside the rectangle a ray crosses its plane, in world units: positive when the ray is
+// blocked, negative when it passes beside, and far negative when it never reaches the plane
+// within `max_t`. The sign is the CPU's own answer to "is this point shadowed" and the magnitude
+// is the distance to the shadow's edge, so the pixels straddling that edge — where a fraction of
+// a pixel decides the answer — can be left out of the comparison instead of being fudged.
+double quad_margin(ref::Dvec3 origin, ref::Dvec3 direction, const Quad& quad, double max_t) {
+  if (std::fabs(direction.y) < 1e-12) return -1.0e30;
+  const double t = (quad.plane - origin.y) / direction.y;
+  if (t <= 0.0 || t >= max_t) return -1.0e30;
+  const double x = origin.x + direction.x * t;
+  const double z = origin.z + direction.z * t;
+  return std::min(std::min(x - quad.x0, quad.x1 - x), std::min(z - quad.z0, quad.z1 - z));
+}
 
 }  // namespace
 
@@ -400,6 +428,450 @@ TEST_CASE("material resolve: shading matches a CPU reference over roughness and 
   scene.destroy(device);
   for (gfx::BufferResource* b : {&host_color, &params, &vis, &lights, &cluster_materials,
                                  &materials, &triangles, &clusters}) {
+    gfx::destroy_buffer(device, *b);
+  }
+  frames.destroy();
+  device.destroy();
+}
+
+TEST_CASE("material resolve: ray-traced shadows against the geometry the rasterizer drew") {
+  gfx::Device device;
+  std::string error;
+  if (!device.create(gfx::DeviceOptions{}, &error)) {
+    MESSAGE("device unavailable: " << error);
+    return;
+  }
+  if (!device.features().ray_query || !device.features().acceleration_structure ||
+      !device.features().buffer_int64_atomics) {
+    MESSAGE("no ray queries, acceleration structures, or 64-bit buffer atomics on "
+            << device.adapter().name);
+    device.destroy();
+    return;
+  }
+
+  // The lit quad on y = 0, rasterized and traced, and an occluder the acceleration structure
+  // holds but no rasterizer ever draws: the picture is the quad alone with the occluder's shadow
+  // across it. The quad is drawn through the vertex path, so this case needs a ray query and
+  // nothing else.
+  const Vec3 positions[4] = {Vec3{-5.0f, 0.0f, -5.0f}, Vec3{5.0f, 0.0f, -5.0f},
+                             Vec3{5.0f, 0.0f, 5.0f}, Vec3{-5.0f, 0.0f, 5.0f}};
+  const u32 indices[6] = {0, 2, 1, 0, 3, 2};
+  geometry::ClusterMesh mesh;
+  REQUIRE(
+      geometry::build_clusters(positions, indices, geometry::ClusterBuildOptions{}, mesh, &error));
+  REQUIRE(mesh.clusters.size() == 1);
+  const geometry::ClusterDesc& cluster = mesh.clusters[0];
+  const u32 triangles_per_cluster = geometry::ClusterBuildOptions{}.max_triangles;
+
+  // A sun ray travels 4 / sun.y to the occluder's plane and moves 1.80 in z on the way, so an
+  // occluder at z in [-0.2, 3.8] throws its shadow over the middle of the quad; the point light
+  // 12 units up throws a wider one from the same rectangle.
+  const Quad occluder{4.0, -2.0, 2.0, -0.2, 3.8};
+  const Vec3 sun_dir = normalize(Vec3{0.0f, 1.0f, 0.45f});
+  constexpr f32 k_bias = 0.01f;  // world units: 65 steps of this mesh's 16-bit position grid
+
+  constexpr VkBufferUsageFlags k_storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+  gfx::BufferResource clusters;
+  gfx::BufferResource triangles;
+  gfx::BufferResource materials;
+  gfx::BufferResource cluster_materials;
+  gfx::BufferResource lights;
+  gfx::BufferResource as_vertices;
+  gfx::BufferResource as_indices;
+  gfx_test::SingleInstance scene;
+  REQUIRE(gfx::upload_buffer(device, mesh.clusters.data(), sizeof(geometry::ClusterDesc), k_storage,
+                             clusters, &error));
+  REQUIRE(scene.create(device, mesh, 1, &error));
+  REQUIRE(gfx::upload_buffer(device, mesh.triangles.data(), mesh.triangles.size() * sizeof(u32),
+                             k_storage, triangles, &error));
+
+  gfx::ResolveMaterial material_table[1];
+  material_table[0].albedo = Vec4{0.8f, 0.4f, 0.2f, 0.7f};  // a rough dielectric
+  material_table[0].emissive = Vec4{};
+  const u32 material_index[1] = {0};
+  REQUIRE(gfx::upload_buffer(device, material_table, sizeof(material_table), k_storage, materials,
+                             &error));
+  REQUIRE(gfx::upload_buffer(device, material_index, sizeof(material_index), k_storage,
+                             cluster_materials, &error));
+  gfx::ResolveLight light_table[1];
+  light_table[0].position_radius = Vec4{0.0f, 12.0f, 1.8f, 40.0f};
+  light_table[0].color_intensity = Vec4{1.0f, 0.9f, 0.8f, 100.0f};
+  REQUIRE(gfx::upload_buffer(device, light_table, sizeof(light_table), k_storage, lights, &error));
+
+  // The traced geometry: the quad exactly as the rasterizer draws it — the cluster's own vertices
+  // and its own triangles, widened to 16-bit indices — and the occluder after it, so one
+  // bottom-level structure holds two geometries.
+  Vector<Vec3> as_position_data;
+  for (const Vec3& v : mesh.vertices)
+    as_position_data.push_back(v);
+  const u32 occluder_vertex = as_position_data.size();
+  const double corner_x[4] = {occluder.x0, occluder.x1, occluder.x1, occluder.x0};
+  const double corner_z[4] = {occluder.z0, occluder.z0, occluder.z1, occluder.z1};
+  for (u32 i = 0; i < 4; ++i) {
+    as_position_data.push_back(Vec3{static_cast<f32>(corner_x[i]), static_cast<f32>(occluder.plane),
+                                    static_cast<f32>(corner_z[i])});
+  }
+  Vector<u16> as_index_data;
+  gfx::expand_packed_triangles(
+      std::span<const u32>(mesh.triangles.data() + cluster.triangle_offset, cluster.triangle_count),
+      as_index_data);
+  const u32 occluder_index = as_index_data.size();
+  const u16 occluder_triangles[6] = {0, 1, 2, 0, 2, 3};
+  for (const u16 i : occluder_triangles)
+    as_index_data.push_back(i);
+  REQUIRE(gfx::upload_buffer(device, as_position_data.data(),
+                             as_position_data.size() * sizeof(Vec3), gfx::k_build_input_usage,
+                             as_vertices, &error));
+  REQUIRE(gfx::upload_buffer(device, as_index_data.data(), as_index_data.size() * sizeof(u16),
+                             gfx::k_build_input_usage, as_indices, &error));
+  gfx::ClusterGeometry geometries[2];
+  geometries[0].vertices = as_vertices.address + u64{cluster.vertex_offset} * sizeof(Vec3);
+  geometries[0].vertex_count = cluster.vertex_count;
+  geometries[0].indices = as_indices.address;
+  geometries[0].triangle_count = cluster.triangle_count;
+  geometries[1].vertices = as_vertices.address + u64{occluder_vertex} * sizeof(Vec3);
+  geometries[1].vertex_count = 4;
+  geometries[1].indices = as_indices.address + u64{occluder_index} * sizeof(u16);
+  geometries[1].triangle_count = 2;
+
+  // Two scenes: the quad with the occluder, and the quad alone. The second is what says the bias
+  // keeps a flat surface from shadowing itself.
+  gfx::AccelerationStructure blas_scene;
+  gfx::AccelerationStructure blas_quad;
+  gfx::AccelerationStructure tlas_scene;
+  gfx::AccelerationStructure tlas_quad;
+  const std::span<const gfx::ClusterGeometry> both(geometries, 2);
+  const std::span<const gfx::ClusterGeometry> quad_only(geometries, 1);
+  REQUIRE_MESSAGE(gfx::create_blas(device, both, gfx::k_build_fast_trace, blas_scene, &error),
+                  error);
+  REQUIRE_MESSAGE(gfx::create_blas(device, quad_only, gfx::k_build_fast_trace, blas_quad, &error),
+                  error);
+  REQUIRE_MESSAGE(gfx::create_tlas(device, 1, gfx::k_build_fast_trace, tlas_scene, &error), error);
+  REQUIRE_MESSAGE(gfx::create_tlas(device, 1, gfx::k_build_fast_trace, tlas_quad, &error), error);
+  gfx::BufferResource scratch;
+  gfx::BufferResource instances;
+  u64 scratch_bytes = blas_scene.build_scratch_bytes;
+  scratch_bytes = std::max(scratch_bytes, blas_quad.build_scratch_bytes);
+  scratch_bytes = std::max(scratch_bytes, tlas_scene.build_scratch_bytes);
+  scratch_bytes = std::max(scratch_bytes, tlas_quad.build_scratch_bytes);
+  REQUIRE(gfx::create_scratch(device, scratch_bytes, scratch, &error));
+  REQUIRE(gfx::create_buffer(device, gfx::k_instance_record_bytes * 2, gfx::k_build_input_usage,
+                             true, instances, &error));
+  gfx::TlasInstance instance_records[2];
+  instance_records[0].blas = blas_scene.address;
+  instance_records[1].blas = blas_quad.address;
+  gfx::write_instances(std::span<const gfx::TlasInstance>(instance_records, 2), instances.mapped);
+  REQUIRE(gfx::submit_immediate(
+      device,
+      [&](VkCommandBuffer cb) {
+        // One scratch buffer, so every build waits for the one before it.
+        constexpr VkAccessFlags2 k_build_rw = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR |
+                                              VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+        gfx::build_blas(cb, blas_scene, both, gfx::k_build_fast_trace, scratch);
+        gfx::acceleration_build_barrier(
+            cb, VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR, k_build_rw);
+        gfx::build_blas(cb, blas_quad, quad_only, gfx::k_build_fast_trace, scratch);
+        gfx::acceleration_build_barrier(
+            cb, VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR, k_build_rw);
+        gfx::build_tlas(cb, tlas_scene, instances.address, 1, gfx::k_build_fast_trace, scratch);
+        gfx::acceleration_build_barrier(
+            cb, VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR, k_build_rw);
+        gfx::build_tlas(cb, tlas_quad, instances.address + gfx::k_instance_record_bytes, 1,
+                        gfx::k_build_fast_trace, scratch);
+        gfx::acceleration_build_barrier(cb, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                                        VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR);
+      },
+      &error));
+
+  const Vec3 eye{0.0f, 10.0f, 0.0f};
+  const Vec3 target{};
+  const Vec3 up{0.0f, 0.0f, -1.0f};
+  const f32 fov_y = radians(60.0f);
+  const Mat4 view_proj = perspective_reversed_z(fov_y, 1.0f, 0.1f) * look_at(eye, target, up);
+  constexpr u32 k_shadow_blocks = 4;  // unshadowed, sun, light, and a scene with no occluder
+  const u64 vis_bytes = u64{k_size} * k_size * sizeof(u64);
+  gfx::BufferResource vis;
+  gfx::BufferResource params;
+  gfx::BufferResource host_color;
+  REQUIRE(gfx::create_buffer(
+      device, vis_bytes,
+      k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+      false, vis, &error));
+  REQUIRE(gfx::create_buffer(device, sizeof(gfx::ResolveParams) * k_shadow_blocks,
+                             k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, true, params,
+                             &error));
+  REQUIRE(gfx::create_buffer(device, u64{k_size} * k_size * 4 * k_shadow_blocks,
+                             VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, host_color, &error));
+
+  gfx::FrameContext frames;
+  REQUIRE(frames.create(device, 2, &error));
+  gfx::BindlessSet bindless;
+  REQUIRE(bindless.create(device, gfx::BindlessConfig{}, &error));
+  REQUIRE(bindless.has_acceleration_structures());
+  const u32 scene_slot = bindless.add_acceleration_structure(tlas_scene.handle);
+  const u32 quad_slot = bindless.add_acceleration_structure(tlas_quad.handle);
+  REQUIRE(scene_slot != gfx::BindlessSet::k_invalid_slot);
+  REQUIRE(quad_slot != gfx::BindlessSet::k_invalid_slot);
+
+  VkShaderModule vertex_module = gfx::create_shader_module(
+      device, shaders::k_cluster_vertex_spirv, shaders::k_cluster_vertex_spirv_size, &error);
+  VkShaderModule resolve_module =
+      gfx::create_shader_module(device, shaders::k_visibility_resolve_rt_spirv,
+                                shaders::k_visibility_resolve_rt_spirv_size, &error);
+  REQUIRE(vertex_module != VK_NULL_HANDLE);
+  REQUIRE(resolve_module != VK_NULL_HANDLE);
+  gfx::GraphicsPipelineDesc vertex_desc;
+  vertex_desc.vertex = vertex_module;
+  vertex_desc.vertex_entry = "vs_cluster";
+  vertex_desc.fragment = vertex_module;
+  vertex_desc.fragment_entry = "fs_visibility";
+  vertex_desc.layout = bindless.pipeline_layout();
+  VkPipeline vertex_pipeline = VK_NULL_HANDLE;
+  REQUIRE_MESSAGE(gfx::create_graphics_pipeline(device, vertex_desc, vertex_pipeline, &error),
+                  error);
+  gfx::GraphicsPipelineDesc resolve_desc;
+  resolve_desc.vertex = resolve_module;
+  resolve_desc.vertex_entry = "vs_fullscreen";
+  resolve_desc.fragment = resolve_module;
+  resolve_desc.fragment_entry = "fs_resolve";
+  resolve_desc.layout = bindless.pipeline_layout();
+  resolve_desc.color_format = VK_FORMAT_R8G8B8A8_UNORM;
+  VkPipeline resolve_pipeline = VK_NULL_HANDLE;
+  REQUIRE_MESSAGE(gfx::create_graphics_pipeline(device, resolve_desc, resolve_pipeline, &error),
+                  error);
+
+  gfx::ClusterDrawParams draw{};
+  draw.view_proj = view_proj;
+  draw.clusters = clusters.address;
+  draw.mesh = scene.meshes.address;
+  draw.instances = scene.instances.address;
+  draw.triangles = triangles.address;
+  draw.triangles_per_cluster = triangles_per_cluster;
+  draw.visibility = vis.address;
+  draw.width = k_size;
+  draw.height = k_size;
+
+  const Vec4 sky{0.2f, 0.3f, 0.4f, 1.0f};
+  gfx::ResolveParams base{};
+  base.sky = sky;
+  base.sun = Vec4{sun_dir, 1.0f};
+  base.camera = Vec4{eye, 0.0f};
+  base.view_proj = view_proj;
+  base.visibility = vis.address;
+  base.clusters = clusters.address;
+  base.mesh = scene.meshes.address;
+  base.instances = scene.instances.address;
+  base.triangles = triangles.address;
+  base.materials = materials.address;
+  base.cluster_materials = cluster_materials.address;
+  base.lights = lights.address;
+  base.light_count = 1;
+  base.width = k_size;
+  base.height = k_size;
+  base.shadow_bias = k_bias;
+  auto* blocks = static_cast<gfx::ResolveParams*>(params.mapped);
+  blocks[0] = base;  // no shadow ray at all: the lit reference
+  blocks[1] = base;  // the sun casts
+  blocks[1].scene = scene_slot;
+  blocks[1].shadow_flags = gfx::k_shadow_sun;
+  blocks[2] = base;  // the point light casts
+  blocks[2].scene = scene_slot;
+  blocks[2].shadow_flags = gfx::k_shadow_lights;
+  blocks[3] = base;  // both cast, against a scene holding the lit quad alone
+  blocks[3].scene = quad_slot;
+  blocks[3].shadow_flags = gfx::k_shadow_sun | gfx::k_shadow_lights;
+  u64 block_address[k_shadow_blocks];
+  for (u32 i = 0; i < k_shadow_blocks; ++i)
+    block_address[i] = params.address + i * sizeof(gfx::ResolveParams);
+
+  gfx::RenderGraph graph(device);
+  const gfx::RgBuffer rg_vis = graph.import_buffer("vis", vis);
+  const gfx::RgBuffer rg_host = graph.import_buffer("host", host_color);
+  gfx::RgImage targets[k_shadow_blocks];
+  for (u32 i = 0; i < k_shadow_blocks; ++i) {
+    targets[i] = graph.create_image(
+        "resolved", {k_size, k_size, VK_FORMAT_R8G8B8A8_UNORM,
+                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT});
+  }
+  graph.add_pass(
+      "clear", gfx::PassKind::Transfer,
+      [&](gfx::PassBuilder& b) { b.write(rg_vis, gfx::Access::TransferWrite); },
+      [&](VkCommandBuffer cb, gfx::RenderGraph&) {
+        vkCmdFillBuffer(cb, vis.buffer, 0, VK_WHOLE_SIZE, 0);
+      });
+  graph.add_pass(
+      "visibility", gfx::PassKind::Raster,
+      [&](gfx::PassBuilder& b) {
+        b.render_area(k_size, k_size);
+        b.write(rg_vis, gfx::Access::FragmentReadWrite);
+      },
+      [&](VkCommandBuffer cb, gfx::RenderGraph&) {
+        vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, vertex_pipeline);
+        bindless.bind(cb, VK_PIPELINE_BIND_POINT_GRAPHICS);
+        vkCmdPushConstants(cb, bindless.pipeline_layout(), VK_SHADER_STAGE_ALL, 0, sizeof(draw),
+                           &draw);
+        vkCmdDraw(cb, triangles_per_cluster * 3, 1, 0, 0);
+      });
+  for (u32 i = 0; i < k_shadow_blocks; ++i) {
+    graph.add_pass(
+        "resolve", gfx::PassKind::Raster,
+        [&, i](gfx::PassBuilder& b) {
+          VkClearColorValue clear{};
+          b.color_attachment(targets[i], VK_ATTACHMENT_LOAD_OP_CLEAR, clear);
+          b.read(rg_vis, gfx::Access::FragmentRead);
+        },
+        [&, i](VkCommandBuffer cb, gfx::RenderGraph&) {
+          vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, resolve_pipeline);
+          bindless.bind(cb, VK_PIPELINE_BIND_POINT_GRAPHICS);
+          vkCmdPushConstants(cb, bindless.pipeline_layout(), VK_SHADER_STAGE_ALL, 0, sizeof(u64),
+                             &block_address[i]);
+          vkCmdDraw(cb, 3, 1, 0, 0);
+        });
+  }
+  graph.add_pass(
+      "readback", gfx::PassKind::Transfer,
+      [&](gfx::PassBuilder& b) {
+        for (u32 i = 0; i < k_shadow_blocks; ++i)
+          b.read(targets[i], gfx::Access::TransferRead);
+        b.write(rg_host, gfx::Access::TransferWrite);
+      },
+      [&](VkCommandBuffer cb, gfx::RenderGraph& g) {
+        for (u32 i = 0; i < k_shadow_blocks; ++i) {
+          VkBufferImageCopy region{};
+          region.bufferOffset = u64{k_size} * k_size * 4 * i;
+          region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+          region.imageExtent = {k_size, k_size, 1};
+          vkCmdCopyImageToBuffer(cb, g.image(targets[i]).image, g.image_layout(targets[i]),
+                                 host_color.buffer, 1, &region);
+        }
+      });
+  REQUIRE_MESSAGE(graph.compile(&error), error);
+  VkCommandBuffer commands = frames.begin_frame();
+  graph.execute(commands);
+  REQUIRE(frames.wait(frames.end_frame()));
+
+  auto pixel = [&](u32 image, u32 x, u32 y) {
+    return static_cast<const u8*>(host_color.mapped) +
+           (u64{k_size} * k_size * image + y * k_size + x) * 4;
+  };
+  auto is_sky = [](const u8* p) -> bool {
+    return std::abs(int{p[0]} - 51) <= 1 && std::abs(int{p[1]} - 77) <= 1 &&
+           std::abs(int{p[2]} - 102) <= 1;
+  };
+  const ref::Dvec3 sky_ref = ref::dvec3(sky);
+  const ref::Dvec3 sun_ref = ref::dvec3(sun_dir);
+  const ref::Dvec3 light_position = ref::dvec3(light_table[0].position_radius);
+  // A pixel within this much of the shadow's edge is partly covered, while the CPU decides the
+  // whole pixel either way, so those are left out of the comparison rather than fudged. A pixel
+  // is 11.5 / 128 = 0.09 world units wide here.
+  constexpr double k_margin = 0.25;
+
+  auto surface_at = [&](u32 x, u32 y) {
+    ref::Surface s;
+    s.position = ref::pixel_on_plane(ref::dvec3(eye), ref::dvec3(target), ref::dvec3(up),
+                                     static_cast<double>(fov_y), 1.0, k_size, k_size, x, y, 0.0);
+    s.normal = ref::Dvec3{0.0, 1.0, 0.0};
+    s.view = ref::normalize(ref::dvec3(eye) - s.position);
+    s.albedo = ref::dvec3(material_table[0].albedo);
+    s.roughness = static_cast<double>(material_table[0].albedo.w);
+    s.metallic = static_cast<double>(material_table[0].emissive.w);
+    return s;
+  };
+
+  // The sun's shadow, then the point light's: every covered pixel whose shadow test is not a
+  // close call is compared against the reference, told what the ray found.
+  for (u32 pass = 0; pass < 2; ++pass) {
+    const u32 image = pass == 0 ? 1u : 2u;
+    const std::string caster = pass == 0 ? "sun" : "point light";
+    u32 shadowed = 0;
+    u32 lit = 0;
+    u32 skipped = 0;
+    u32 lit_differs = 0;
+    int worst = 0;
+    bool reported = false;
+    for (u32 y = 0; y < k_size; ++y) {
+      for (u32 x = 0; x < k_size; ++x) {
+        const u8* got = pixel(image, x, y);
+        if (is_sky(got)) continue;
+        const ref::Surface s = surface_at(x, y);
+        const ref::Dvec3 origin = s.position + ref::Dvec3{0.0, static_cast<double>(k_bias), 0.0};
+        ref::Light light;
+        light.position = light_position;
+        light.radius = static_cast<double>(light_table[0].position_radius.w);
+        light.color = ref::dvec3(light_table[0].color_intensity);
+        light.intensity = static_cast<double>(light_table[0].color_intensity.w);
+        double margin = 0.0;
+        bool sun_shadowed = false;
+        if (pass == 0) {
+          margin = quad_margin(origin, sun_ref, occluder, 1.0e30);
+          sun_shadowed = margin > 0.0;
+        } else {
+          const ref::Dvec3 to_light = light_position - s.position;
+          const double distance = std::sqrt(ref::dot(to_light, to_light));
+          margin = quad_margin(origin, ref::normalize(to_light), occluder,
+                               distance - static_cast<double>(k_bias));
+          light.shadowed = margin > 0.0;
+        }
+        if (std::fabs(margin) < k_margin) {
+          ++skipped;
+          continue;
+        }
+        (margin > 0.0 ? shadowed : lit) += 1;
+        const ref::Dvec3 linear =
+            ref::shade(s, sun_ref, 1.0, sky_ref, &light, 1, ref::Dvec3{}, sun_shadowed);
+        const u8 expect[3] = {ref::display(linear.x), ref::display(linear.y),
+                              ref::display(linear.z)};
+        int here = 0;
+        for (u32 c = 0; c < 3; ++c)
+          here = std::max(here, std::abs(int{got[c]} - int{expect[c]}));
+        worst = std::max(worst, here);
+        if (here > 2 && !reported) {
+          reported = true;
+          CHECK_MESSAGE(here <= 2, caster << " shadow at " << x << "," << y
+                                          << (margin > 0.0 ? " (shadowed)" : " (lit)") << ": gpu "
+                                          << int{got[0]} << "," << int{got[1]} << "," << int{got[2]}
+                                          << " reference " << int{expect[0]} << ","
+                                          << int{expect[1]} << "," << int{expect[2]});
+        }
+        // A pixel the shadow ray misses must be the unshadowed picture, byte for byte.
+        if (margin < 0.0 && std::memcmp(got, pixel(0, x, y), 4) != 0) ++lit_differs;
+      }
+    }
+    CHECK(shadowed > 500);
+    CHECK(lit > 500);
+    CHECK(worst <= 2);
+    CHECK(lit_differs == 0);
+    MESSAGE(caster << " shadow: " << shadowed << " shadowed and " << lit
+                   << " lit pixels within 2 of the reference (worst " << worst << " of 255), "
+                   << skipped << " edge pixels skipped");
+  }
+
+  // No acne: the same two shadow rays against a scene holding only the lit quad leave the picture
+  // byte-identical to the one traced with no shadow ray at all. The bias is what does it.
+  u32 differing = 0;
+  for (u32 y = 0; y < k_size; ++y) {
+    for (u32 x = 0; x < k_size; ++x) {
+      if (std::memcmp(pixel(3, x, y), pixel(0, x, y), 4) != 0) ++differing;
+    }
+  }
+  CHECK(differing == 0);
+  MESSAGE("self-shadowing on the unoccluded quad at a bias of "
+          << static_cast<double>(k_bias) << ": " << differing << " differing pixels");
+
+  graph.reset();
+  gfx::destroy_pipeline(device, resolve_pipeline);
+  gfx::destroy_pipeline(device, vertex_pipeline);
+  gfx::destroy_shader_module(device, resolve_module);
+  gfx::destroy_shader_module(device, vertex_module);
+  bindless.destroy();
+  scene.destroy(device);
+  gfx::destroy_acceleration_structure(device, tlas_quad);
+  gfx::destroy_acceleration_structure(device, tlas_scene);
+  gfx::destroy_acceleration_structure(device, blas_quad);
+  gfx::destroy_acceleration_structure(device, blas_scene);
+  for (gfx::BufferResource* b :
+       {&host_color, &params, &vis, &instances, &scratch, &as_indices, &as_vertices, &lights,
+        &cluster_materials, &materials, &triangles, &clusters}) {
     gfx::destroy_buffer(device, *b);
   }
   frames.destroy();
