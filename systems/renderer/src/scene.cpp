@@ -224,18 +224,23 @@ bool load_source_mesh(const std::string& path, const SceneDesc& desc, SourceMesh
   if (!assets::load_gltf(path, out.data, &error)) return false;
   out.image_dir = std::string(io::parent_path(path));
   // Exporters duplicate vertices freely; welding the identical ones gives the cluster builder
-  // shared vertices to fill clusters with and the LOD builder edges to collapse.
+  // shared vertices to fill clusters with and the LOD builder edges to collapse. **The skin
+  // bindings are part of the weld key**, so two duplicates that agree on position, normal and UV
+  // but disagree on weights stay two vertices; merging them would silently hand one surface the
+  // other's deformation, and the weld runs before clustering, so there would be no later point
+  // at which the loss could be noticed ([geometry](geometry.md), "Skinned meshes").
   const u32 loaded_vertices = out.data.positions.size();
   const u32 welded_vertices =
       geometry::weld_vertices(out.data.positions, out.data.normals, out.data.uvs,
-                              std::span<u32>(out.data.indices.data(), out.data.indices.size()));
-  ENGINE_LOG_INFO(log_renderer, "mesh loaded", log::field("path", path), log::field("from", "gltf"),
-                  log::field("cache", out.cache), log::field("vertices", loaded_vertices),
-                  log::field("welded", welded_vertices),
-                  log::field("triangles", out.data.indices.size() / 3),
-                  log::field("primitives", out.data.primitives.size()),
-                  log::field("materials", out.data.materials.size()),
-                  log::field("images", out.data.images.size()));
+                              std::span<u32>(out.data.indices.data(), out.data.indices.size()),
+                              out.data.skin_bindings.empty() ? nullptr : &out.data.skin_bindings);
+  ENGINE_LOG_INFO(
+      log_renderer, "mesh loaded", log::field("path", path), log::field("from", "gltf"),
+      log::field("cache", out.cache), log::field("vertices", loaded_vertices),
+      log::field("welded", welded_vertices), log::field("triangles", out.data.indices.size() / 3),
+      log::field("primitives", out.data.primitives.size()),
+      log::field("materials", out.data.materials.size()),
+      log::field("skins", out.data.skins.size()), log::field("images", out.data.images.size()));
   const geometry::AttributeSource attribute_source = assets::attribute_source(out.data);
   Vector<geometry::ClusterLodMesh> parts;
   for (const assets::Primitive& primitive : out.data.primitives) {
@@ -277,7 +282,8 @@ bool load_source_mesh(const std::string& path, const SceneDesc& desc, SourceMesh
 // n x n copies of mesh 0 on a grid, with a rotation and a scale that vary per copy and a
 // non-uniform scale on every third, so one flag exercises the uniform and the non-uniform path,
 // the cone test's precondition, and the LOD scaling all at once.
-void make_instance_grid(u32 n, f32 mesh_radius, Vector<SceneInstance>& out) {
+void make_instance_grid(u32 n, f32 mesh_radius, u32 joints, f32 bounds_padding,
+                        Vector<SceneInstance>& out) {
   const f32 spacing = 3.0f * mesh_radius;
   const f32 center = 0.5f * static_cast<f32>(n - 1);
   for (u32 z = 0; z < n; ++z) {
@@ -285,6 +291,8 @@ void make_instance_grid(u32 n, f32 mesh_radius, Vector<SceneInstance>& out) {
       const u32 k = z * n + x;
       SceneInstance instance;
       instance.mesh = 0;
+      instance.joints = joints;
+      instance.bounds_padding = bounds_padding;
       instance.transform.position = Vec3{(static_cast<f32>(x) - center) * spacing, 0.0f,
                                          (static_cast<f32>(z) - center) * spacing};
       instance.transform.rotation = quat_from_euler(radians(static_cast<f32>(k * 37 % 360)),
@@ -381,6 +389,27 @@ bool read_scene_file(const std::string& path, SceneDesc& out, std::string& error
     if (read_vec(entry.find("rotation"), 4, v))
       instance.transform.rotation = normalize(Quat{v[0], v[1], v[2], v[3]});
     if (read_vec(entry.find("scale"), 3, v)) instance.transform.scale = Vec3{v[0], v[1], v[2]};
+    // {"animation":{"clip":"Run","speed":1.5,"phase":0.4}} — read whole and handed on unread.
+    // An empty object is a legal block and means "the skin's first clip at speed 1"; every field
+    // is optional, so a file may say only what it wants to change.
+    if (const JsonValue* animation = entry.is_object() ? entry.find("animation") : nullptr;
+        animation != nullptr && animation->is_object()) {
+      instance.animation.play = true;
+      std::string_view clip;
+      if (const JsonValue* value = animation->find("clip");
+          value != nullptr && value->get_string(clip)) {
+        instance.animation.clip = std::string(clip);
+      }
+      f64 number = 0.0;
+      if (const JsonValue* value = animation->find("speed");
+          value != nullptr && value->get_f64(number)) {
+        instance.animation.speed = static_cast<f32>(number);
+      }
+      if (const JsonValue* value = animation->find("phase");
+          value != nullptr && value->get_f64(number)) {
+        instance.animation.phase = static_cast<f32>(number);
+      }
+    }
     out.instances.push_back(instance);
   }
   return true;
@@ -434,11 +463,12 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
     f32 mesh_radius = 1.0f;
     mesh_bounds(out.lod, out.parts[0].first_cluster, out.parts[0].leaf_cluster_count, mesh_center,
                 mesh_radius);
-    make_instance_grid(resolved.grid_instances, mesh_radius, instances);
+    make_instance_grid(resolved.grid_instances, mesh_radius, resolved.grid_joints, 0.0f, instances);
   } else if (instances.empty()) {
     instances.push_back(SceneInstance{0, Transform3::identity()});
   }
   u32 pair_count = 0;
+  const u32 palette = out.lod.mesh.skin_joint_count;
   for (const SceneInstance& source : instances) {
     if (source.mesh >= out.parts.size()) {
       error = "an instance names mesh " + std::to_string(source.mesh) + ", which the scene has no";
@@ -448,13 +478,41 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
     gfx::set_instance_transform(instance, mat4_from_transform(source.transform));
     instance.mesh = source.mesh;
     instance.first_pair = pair_count;
+    // The cull pass inflates every sphere of a deformed instance by this, in the instance's own
+    // space (gfx::InstanceDesc::bounds_padding). It is the caller's number: only the caller knows
+    // which clips this instance will play.
+    instance.bounds_padding = source.bounds_padding;
     pair_count += out.parts[source.mesh].cluster_count;
+    // An instance may only be skinned by a mesh that carries a binding stream, and never by more
+    // joints than that stream's palette: a binding names a palette slot with one byte, so a
+    // longer array would be addressed by indices that cannot exist. Both are stated rather than
+    // silently clamped, because either one means the caller and the content disagree.
+    u32 joints = source.joints;
+    if (joints > 0 && out.lod.mesh.skin.empty()) {
+      error = "an instance is skinned, but its mesh carries no skin binding stream";
+      return false;
+    }
+    if (joints > palette) {
+      error = "an instance names " + std::to_string(joints) +
+              " joints, but the mesh's palette is " + std::to_string(palette);
+      return false;
+    }
+    out.instance_joints.push_back(joints);
+    out.skinned_instances += joints > 0 ? 1u : 0u;
     out.instances.push_back(instance);
   }
   out.pair_count = pair_count;
+  out.max_joints = resolved.max_joints;
+  if (out.skinned_instances == 0) out.instance_joints.clear();
 
-  // The camera frames the scene's bounding sphere: the union of the instances' transformed mesh
-  // bounds. The plain heightfield keeps the half extent it has always used.
+  update_scene_bounds(out);
+  out.build_ns = time::monotonic_ns() - build_start;
+  return true;
+}
+
+void update_scene_bounds(SceneData& out) {
+  // The plain heightfield keeps the half extent it has always used, so a run with no mesh gets
+  // exactly the camera it always did.
   if (out.heightfield && out.instances.size() == 1) {
     out.center = Vec3{};
     out.radius = 10.0f;
@@ -467,9 +525,15 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
       mesh_bounds(out.lod, out.parts[m].first_cluster, out.parts[m].leaf_cluster_count, centers[m],
                   radii[m]);
     }
+    // A skinned instance's bounds are its bind pose's plus the displacement bound, for the same
+    // reason the cull pass inflates its spheres: the camera has to frame the character wherever
+    // the clip puts it, not only where it rests.
+    auto instance_radius = [&](const gfx::InstanceDesc& instance) {
+      return (radii[instance.mesh] + instance.bounds_padding) * instance.scale_max;
+    };
     for (const gfx::InstanceDesc& instance : out.instances) {
       const Vec3 c = transform_point(instance.world, centers[instance.mesh]);
-      const f32 r = radii[instance.mesh] * instance.scale_max;
+      const f32 r = instance_radius(instance);
       lo = Vec3{std::min(lo.x, c.x - r), std::min(lo.y, c.y - r), std::min(lo.z, c.z - r)};
       hi = Vec3{std::max(hi.x, c.x + r), std::max(hi.y, c.y + r), std::max(hi.z, c.z + r)};
     }
@@ -477,12 +541,9 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
     out.radius = 1e-6f;
     for (const gfx::InstanceDesc& instance : out.instances) {
       const Vec3 c = transform_point(instance.world, centers[instance.mesh]);
-      out.radius =
-          std::max(out.radius, length(c - out.center) + radii[instance.mesh] * instance.scale_max);
+      out.radius = std::max(out.radius, length(c - out.center) + instance_radius(instance));
     }
   }
-  out.build_ns = time::monotonic_ns() - build_start;
-  return true;
 }
 
 }  // namespace engine::renderer

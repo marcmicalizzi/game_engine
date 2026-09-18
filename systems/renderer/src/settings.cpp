@@ -202,7 +202,12 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
     ENGINE_LOG_WARN(log_renderer, "culling forced on", log::field("raster", raster_name(s.raster)),
                     log::field("shadows", out.shadows));
   }
-  if (s.deform && !s.cull) {
+  // The deformed-vertex pool pass runs when the settings deform every instance *or* when the
+  // scene has a skinned one, and those are the same pass: skinning is `deform.slang`'s third
+  // kind, not a path beside it. Deciding it here rather than at each use is what keeps
+  // renderer.md's "every device- and scene-driven override lives in one function" true.
+  out.deform_pass = s.deform || (scene != nullptr && scene->skinned());
+  if (out.deform_pass && !s.cull) {
     s.cull = true;  // the pool pass walks the cull's visible list, which is the point
     ENGINE_LOG_WARN(log_renderer, "culling forced on with a deformed scene");
   }

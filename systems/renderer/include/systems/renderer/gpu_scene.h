@@ -25,6 +25,7 @@
 #include <core/base/macros.h>
 #include <core/base/types.h>
 #include <core/containers/vector.h>
+#include <domain/anim/skeleton.h>
 #include <domain/gfx/acceleration.h>
 #include <domain/gfx/bindless.h>
 #include <domain/gfx/cluster_acceleration.h>
@@ -34,6 +35,7 @@
 #include <systems/renderer/scene.h>
 #include <systems/renderer/settings.h>
 
+#include <span>
 #include <string>
 
 namespace engine::renderer {
@@ -42,6 +44,13 @@ namespace engine::renderer {
 // 2, and the software rasterizer — so a visibility id names an entry of the whole list however
 // many draws filled it.
 inline constexpr u32 k_visible_runs = 3;
+
+// How many frames' worth of bone matrices the joint buffer holds. The frame writes slot
+// `FrameContext::slot()`, and a slot is not reused until the GPU has finished the frame that last
+// used it, so N regions make the host write safe against N frames in flight with no barrier and
+// no staging copy. Three rather than two so a renderer created with three frames in flight fits;
+// `SceneRenderer::create` refuses more than this rather than overrunning the buffer.
+inline constexpr u32 k_joint_slots = 3;
 
 class GpuScene {
  public:
@@ -88,6 +97,50 @@ class GpuScene {
   u64 rt_bytes() const noexcept { return rt_bytes_; }
   u32 tlas_slot() const noexcept { return tlas_slot_; }
 
+  // ---- skinning ---------------------------------------------------------------------------
+  //
+  // The renderer's half of docs/subsystems/animation.md's contract. A frame hands over one
+  // contiguous span of `anim::JointMatrix` and one `InstanceJoints` per instance; the frame
+  // copies the span into this slot's region of `joints` with **one memcpy**, rewrites this
+  // slot's copy of the deform table so each skinned instance's `DeformDesc::joints` points into
+  // that region, and passes the slot's table address to the pool pass through
+  // `gfx::DeformParams::deform`. Nothing is allocated and nothing is uploaded per instance.
+  //
+  // **Why there are two deform tables.** `MeshDesc::deform` is baked into an array uploaded once,
+  // and `scene.slang`'s `load_position` reads it on every position read of every rasterizer — for
+  // `pool_offset` alone, which never changes. Only `joints` and `joint_count` change per frame,
+  // and only `deform.slang` reads them, through a push constant. So the static table stays
+  // exactly what it was (device-local, written once, what a non-skinned `--deform` run uses) and
+  // the per-frame one is a separate host-visible buffer with a region per slot. A skinned scene
+  // therefore has no host write racing a device read, and a rigid one has no second table at all.
+  bool skinned() const noexcept { return skinned_; }
+  u32 max_joints() const noexcept { return max_joints_; }
+  u32 skinned_instances() const noexcept { return skinned_instances_; }
+  // Entries of the deform table: one per instance that reads the pool, which is every instance
+  // under `--deform` and the skinned ones otherwise.
+  u32 deform_count() const noexcept { return deform_descs_.size(); }
+  // The instance each deform entry belongs to, so the frame can find an entry's `InstanceJoints`.
+  std::span<const u32> deform_instances() const noexcept {
+    return {deform_instance_.data(), deform_instance_.size()};
+  }
+  // The static table as it was uploaded, which is what each frame's copy starts from.
+  std::span<const gfx::DeformDesc> deform_descs() const noexcept {
+    return {deform_descs_.data(), deform_descs_.size()};
+  }
+  u64 joint_bytes() const noexcept { return u64{max_joints_} * sizeof(anim::JointMatrix); }
+  anim::JointMatrix* joint_slot(u32 slot) noexcept {
+    return static_cast<anim::JointMatrix*>(joints.mapped) + u64{slot} * max_joints_;
+  }
+  u64 joint_slot_address(u32 slot) const noexcept {
+    return joints.address + u64{slot} * joint_bytes();
+  }
+  gfx::DeformDesc* deform_frame(u32 slot) noexcept {
+    return static_cast<gfx::DeformDesc*>(deform_frames.mapped) + u64{slot} * deform_count();
+  }
+  u64 deform_frame_address(u32 slot) const noexcept {
+    return deform_frames.address + u64{slot} * deform_count() * sizeof(gfx::DeformDesc);
+  }
+
   // ---- the global buffers, read through device addresses -------------------------------------
   gfx::BufferResource clusters;           // geometry::ClusterDesc[]
   gfx::BufferResource quantized;          // three u16 per vertex on each mesh's own grid
@@ -95,6 +148,7 @@ class GpuScene {
   gfx::BufferResource triangles;          // packed local indices
   gfx::BufferResource lods;               // geometry::ClusterLodDesc[]
   gfx::BufferResource attributes;         // geometry::VertexAttributes[]
+  gfx::BufferResource skin;               // geometry::SkinBinding[]: 8 bytes per scene vertex
   gfx::BufferResource meshes;             // gfx::MeshDesc[], uploaded last
   gfx::BufferResource instances;          // gfx::InstanceDesc[]
   gfx::BufferResource materials;          // gfx::ResolveMaterial[]
@@ -110,6 +164,10 @@ class GpuScene {
   gfx::BufferResource deform_pool;   // f32[3 * pool_vertices]; shared by every view
   gfx::BufferResource deform_table;  // gfx::DeformDesc[] indexed by InstanceDesc::deform
   gfx::BufferResource deform_args;   // one indirect dispatch block per (view, run)
+  // Skinning: the frame's bone matrices and the frame's copy of the deform table, both
+  // host-visible with `k_joint_slots` regions, both absent unless an instance is skinned.
+  gfx::BufferResource joints;         // anim::JointMatrix[k_joint_slots * max_joints]
+  gfx::BufferResource deform_frames;  // gfx::DeformDesc[k_joint_slots * deform_count]
 
   // ---- ray tracing ------------------------------------------------------------------------------
   gfx::BufferResource indices8;         // 8-bit packed cluster indices for the CLAS builds
@@ -142,6 +200,11 @@ class GpuScene {
   Vector<gfx::ImageResource> textures_;  // decoded from the meshes' images
   Vector<VkImageView> texture_views_;
   Vector<gfx::InstanceDesc> instance_table_;  // the scene's, with material_base and deform filled
+  Vector<gfx::DeformDesc> deform_descs_;      // the static table, kept for each frame's copy
+  Vector<u32> deform_instance_;               // the instance of each deform entry
+  u32 max_joints_ = 0;
+  u32 skinned_instances_ = 0;
+  bool skinned_ = false;
   u32 cluster_count_ = 0;
   u32 leaf_count_ = 0;
   u32 instance_count_ = 0;

@@ -38,6 +38,7 @@
 #include <systems/renderer/gpu_scene.h>
 #include <systems/renderer/view_set.h>
 
+#include <span>
 #include <string>
 
 namespace engine::renderer {
@@ -136,14 +137,30 @@ struct Stats {
 };
 
 // One frame's inputs. `color` of a null image draws into the renderer's own offscreen target.
+//
+// **`joints` and `instance_joints` are the whole of the animation contract**, and they are plain
+// spans on purpose: the renderer must not depend on `systems/animation`, on `domain/ecs`, or on
+// flecs, so what crosses the boundary is data and not a system. The caller ticks its world at its
+// own fixed step, takes `AnimationSystem::joint_matrices()` — one contiguous span of every
+// animated instance's bone matrices — and says where each scene instance's run is. The renderer
+// copies the span into this frame slot's region of the joint buffer with one memcpy and points
+// each skinned instance's `gfx::DeformDesc::joints` at its run.
+//
+// An instance whose `InstanceJoints::count` is zero, or that the array does not reach, **draws
+// its rest pose**: that is what an instance at animation LOD3 (no pool slot) looks like from
+// here, and it is a deliberate choice over marking the instance rigid for the frame, which would
+// mean rewriting the instance table — a per-instance upload in the middle of a frame — to save
+// a pool write the cut already paid for.
 struct FrameDesc {
   Camera camera;
   u64 frame_index = 0;      // drives the light orbit and the deformation phase, as engine-view does
   u32 view_mode = ~u32{0};  // override the settings' view mode; ~0 uses it
   gfx::ImageResource color;  // a swapchain image, or null for the renderer's own target
   VkImageLayout final_layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-  VkSemaphore wait = VK_NULL_HANDLE;    // the swapchain acquire, for a presented frame
-  VkSemaphore signal = VK_NULL_HANDLE;  // the swapchain image's render-finished semaphore
+  VkSemaphore wait = VK_NULL_HANDLE;          // the swapchain acquire, for a presented frame
+  VkSemaphore signal = VK_NULL_HANDLE;        // the swapchain image's render-finished semaphore
+  std::span<const anim::JointMatrix> joints;  // every animated instance's, in one span
+  std::span<const InstanceJoints> instance_joints;  // parallel to the scene's instances
 };
 
 class SceneRenderer {
@@ -320,6 +337,7 @@ class SceneRenderer {
   u64 collected_ = 0;  // the timeline value whose statistics were last folded in
   bool flags_dirty_ = true;
   bool recording_ = false;
+  bool joint_overflow_warned_ = false;  // a span longer than the scene was sized for, said once
 };
 
 }  // namespace engine::renderer

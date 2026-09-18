@@ -76,6 +76,11 @@ struct ResolvedSettings {
   bool shadows = false;      // the resolve traces shadow rays
   bool occlusion = false;    // two-pass occlusion culling runs
   bool rt_chain = false;     // the frame builds acceleration structures from its visible list
+  // The deformed-vertex pool pass runs. True when the settings deform every instance and also
+  // when the scene has a skinned instance, which `settings.deform` alone does not say: skinning
+  // is one of `deform.slang`'s kinds rather than a second pass, so a scene with a character in it
+  // fills the pool whether or not anyone asked for `--deform`.
+  bool deform_pass = false;
   // How many views the layout has. The `GpuScene` is created before the `SceneRenderer` and so
   // before the view set, and every per-frame buffer it owns is sized by this, so the count is
   // resolved here rather than read off a `ViewSet` that does not exist yet.

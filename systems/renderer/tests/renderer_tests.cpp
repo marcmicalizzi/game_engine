@@ -12,6 +12,8 @@
 #endif
 
 #include <core/math/math.h>
+#include <domain/anim/skeleton.h>
+#include <domain/geometry/cluster_lod.h>
 #include <domain/gfx/device.h>
 #include <systems/renderer/capture.h>
 #include <systems/renderer/gpu_scene.h>
@@ -23,9 +25,12 @@
 #include <doctest/doctest.h>
 #include <test_temp_dir.h>
 
+#include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -177,6 +182,12 @@ struct Rig {
   bool build(const gfx::Device& device, const SceneDesc& desc, const RenderSettings& settings,
              u32 width, u32 height) {
     if (!load_scene(desc, data, error)) return false;
+    return finish(device, settings, width, height);
+  }
+
+  // The same from a `SceneData` the caller filled in itself, which is how the skinning cases get a
+  // procedural mesh onto the GPU without inventing a skinned glTF to write at test time.
+  bool finish(const gfx::Device& device, const RenderSettings& settings, u32 width, u32 height) {
     resolve_settings(settings, device.features(), &data, resolved);
     if (check_availability(resolved, device.features()) != RenderAvailability::Ok) {
       error = availability_message(check_availability(resolved, device.features()));
@@ -207,6 +218,188 @@ Vec3 view_centre_point(const View& view, const Camera& camera, f32 distance) {
   const Vec4 clip{0.0f, 0.0f, camera.znear / distance, 1.0f};
   const Vec4 world = inverse_vp * clip;
   return Vec3{world.x, world.y, world.z} * (1.0f / world.w);
+}
+
+// ---- the skinning fixture ---------------------------------------------------------------------
+//
+// A two-bone bar: a square column from y = 0 to y = 2, sliced into rings, bound root-to-tip by
+// height. It is built here rather than imported, because a skinned glTF written at test time
+// would be testing the importer as well, and what these cases are about is the *renderer's* half
+// of the contract — the binding stream reaching the GPU, the joint matrices reaching a
+// `DeformDesc`, and the cull pass staying conservative while the bar bends.
+//
+// The bar is the same shape `domain/gfx`'s skinning test uses, for the same reason: every vertex
+// moves under a bend of the tip joint, so a missing weight, a transposed matrix or a stale pose
+// shows up as a picture and not as a rounding difference.
+struct SkinnedBar {
+  anim::Skeleton skeleton;
+  Vector<Vec3> positions;                  // the source mesh, before clustering
+  Vector<geometry::SkinBinding> bindings;  // parallel to `positions`
+  Vector<u32> indices;
+  static constexpr u32 k_rings = 33;  // 32 slices: ~260 triangles, several leaf clusters
+  static constexpr f32 k_height = 2.0f;
+  static constexpr f32 k_half = 0.25f;
+};
+
+void build_skinned_bar(SkinnedBar& bar) {
+  // The skeleton: a root at the origin and a tip halfway up, so a rotation of the tip bends the
+  // top half of the bar and leaves the bottom half where it was.
+  bar.skeleton.resize(2);
+  bar.skeleton.names[0] = "root";
+  bar.skeleton.names[1] = "tip";
+  bar.skeleton.parents[0] = anim::k_no_joint;
+  bar.skeleton.parents[1] = 0;
+  bar.skeleton.local_bind[0] = Transform3::identity();
+  bar.skeleton.local_bind[1] = Transform3::identity();
+  bar.skeleton.local_bind[1].position = Vec3{0.0f, 0.5f * SkinnedBar::k_height, 0.0f};
+  anim::compute_inverse_bind(bar.skeleton);
+
+  const f32 h = SkinnedBar::k_half;
+  const Vec3 ring[4] = {Vec3{-h, 0, -h}, Vec3{h, 0, -h}, Vec3{h, 0, h}, Vec3{-h, 0, h}};
+  for (u32 r = 0; r < SkinnedBar::k_rings; ++r) {
+    const f32 t = static_cast<f32>(r) / static_cast<f32>(SkinnedBar::k_rings - 1);
+    const f32 y = t * SkinnedBar::k_height;
+    // Weight by height: all root at the bottom, all tip at the top, a linear ramp between the
+    // quarter and three-quarter marks so the middle rings mix the two matrices.
+    const f32 tip = t < 0.25f ? 0.0f : (t > 0.75f ? 1.0f : (t - 0.25f) * 2.0f);
+    const u32 joints[4] = {0, 1, 0, 0};
+    const f32 weights[4] = {1.0f - tip, tip, 0.0f, 0.0f};
+    const geometry::SkinBinding binding = geometry::make_skin_binding(joints, weights);
+    for (const Vec3& c : ring) {
+      bar.positions.push_back(Vec3{c.x, y, c.z});
+      bar.bindings.push_back(binding);
+    }
+  }
+  for (u32 r = 0; r + 1 < SkinnedBar::k_rings; ++r) {
+    for (u32 c = 0; c < 4; ++c) {
+      const u32 a = r * 4 + c;
+      const u32 b = r * 4 + (c + 1) % 4;
+      const u32 a2 = a + 4;
+      const u32 b2 = b + 4;
+      const u32 tri[6] = {a, a2, b, b, a2, b2};  // counter-clockwise seen from outside
+      for (const u32 i : tri)
+        bar.indices.push_back(i);
+    }
+  }
+  const u32 top = (SkinnedBar::k_rings - 1) * 4;
+  const u32 caps[12] = {0, 2, 1, 0, 3, 2, top, top + 1, top + 2, top, top + 2, top + 3};
+  for (const u32 i : caps)
+    bar.indices.push_back(i);
+}
+
+// The bar as a `SceneData` of `instances` copies, `joints` of them skinned. Everything the loader
+// would have filled in, filled in by hand: one part, one source with one material, the instance
+// table, and the bounds.
+bool make_bar_scene(const SkinnedBar& bar, u32 instances, u32 skinned_joints, f32 bounds_padding,
+                    SceneData& out, std::string& error) {
+  geometry::AttributeSource attributes;
+  attributes.skin =
+      std::span<const geometry::SkinBinding>(bar.bindings.data(), bar.bindings.size());
+  attributes.joint_count = bar.skeleton.joint_count();
+  if (!geometry::build_cluster_lod(
+          std::span<const Vec3>(bar.positions.data(), bar.positions.size()),
+          std::span<const u32>(bar.indices.data(), bar.indices.size()),
+          geometry::ClusterLodOptions{}, out.lod, &error, attributes)) {
+    return false;
+  }
+  geometry::ClusterMeshPart part;
+  part.cluster_count = out.lod.mesh.clusters.size();
+  part.leaf_cluster_count = out.lod.level_cluster_counts[0];
+  part.quant_origin = out.lod.mesh.quant_origin;
+  part.quant_scale = out.lod.mesh.quant_scale;
+  out.parts.push_back(part);
+  SourceMesh source;
+  source.part_material.push_back(-1);  // one part, no material: the default one is appended
+  source.part_of_cluster.resize(part.cluster_count, 0u);
+  out.sources.push_back(std::move(source));
+  for (u32 i = 0; i < instances; ++i) {
+    gfx::InstanceDesc instance{};
+    Mat4 world = Mat4::identity();
+    world.c[3] = Vec4{static_cast<f32>(i) * 1.5f, 0.0f, 0.0f, 1.0f};
+    gfx::set_instance_transform(instance, world);
+    instance.first_pair = out.pair_count;
+    instance.bounds_padding = skinned_joints > 0 ? bounds_padding : 0.0f;
+    out.pair_count += part.cluster_count;
+    out.instances.push_back(instance);
+    out.instance_joints.push_back(skinned_joints);
+    out.skinned_instances += skinned_joints > 0 ? 1u : 0u;
+  }
+  out.max_joints = skinned_joints * instances;
+  update_scene_bounds(out);
+  return true;
+}
+
+// The bar's skinning matrices for a bend of the tip joint by `degrees` about +Z.
+void bar_matrices(const SkinnedBar& bar, f32 degrees, Vector<anim::JointMatrix>& out) {
+  anim::Pose pose;
+  anim::rest_pose(bar.skeleton, pose);
+  pose.rotation[1] = quat_from_axis_angle(Vec3{0.0f, 0.0f, 1.0f}, radians(degrees));
+  Vector<Mat4> model(bar.skeleton.joint_count(), Mat4::identity());
+  anim::local_to_model(bar.skeleton, pose, std::span<Mat4>(model.data(), model.size()));
+  out.resize(bar.skeleton.joint_count());
+  anim::skinning_matrices(
+      std::span<const Mat4>(model.data(), model.size()),
+      std::span<const Mat4>(bar.skeleton.inverse_bind.data(), bar.skeleton.inverse_bind.size()),
+      std::span<anim::JointMatrix>(out.data(), out.size()));
+}
+
+// Where the CPU reference says the bar's vertices land on screen, as a pixel rectangle. This is
+// the prediction the picture is checked against: `anim::skin_positions` is the definition of what
+// the pass computes, so a bar the GPU drew somewhere else is a bug in the renderer's half.
+struct PixelRect {
+  f32 x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
+};
+
+PixelRect predicted_rect(const SkinnedBar& bar, std::span<const anim::JointMatrix> matrices,
+                         const Mat4& world, const Mat4& view_proj, u32 width, u32 height) {
+  Vector<Vec3> skinned(bar.positions.size());
+  anim::skin_positions(
+      std::span<const Vec3>(bar.positions.data(), bar.positions.size()),
+      std::span<const geometry::SkinBinding>(bar.bindings.data(), bar.bindings.size()), matrices,
+      std::span<Vec3>(skinned.data(), skinned.size()));
+  PixelRect rect;
+  for (const Vec3& p : skinned) {
+    const Vec4 clip = view_proj * (world * Vec4{p, 1.0f});
+    if (clip.w <= 1.0e-6f) continue;
+    const f32 x = (clip.x / clip.w * 0.5f + 0.5f) * static_cast<f32>(width);
+    const f32 y = (0.5f - clip.y / clip.w * 0.5f) * static_cast<f32>(height);
+    rect.x0 = std::min(rect.x0, x);
+    rect.y0 = std::min(rect.y0, y);
+    rect.x1 = std::max(rect.x1, x);
+    rect.y1 = std::max(rect.y1, y);
+  }
+  return rect;
+}
+
+// The rectangle of pixels a capture actually covered, and how many there were.
+PixelRect covered_rect(const CapturedFrame& shot, u32& covered) {
+  PixelRect rect;
+  covered = 0;
+  for (u32 y = 0; y < shot.height; ++y) {
+    for (u32 x = 0; x < shot.width; ++x) {
+      if (pixel_id(shot, x, y)[0] == k_no_id) continue;
+      ++covered;
+      rect.x0 = std::min(rect.x0, static_cast<f32>(x));
+      rect.y0 = std::min(rect.y0, static_cast<f32>(y));
+      rect.x1 = std::max(rect.x1, static_cast<f32>(x) + 1.0f);
+      rect.y1 = std::max(rect.y1, static_cast<f32>(y) + 1.0f);
+    }
+  }
+  return rect;
+}
+
+// One frame of a skinned scene: the whole contract, filled in the way engine-view fills it.
+//
+// The camera sits on +z rather than the +x these cases' neighbours use, because the bar bends
+// about +z: from +x that swing is straight along the view axis and moves nothing on screen, which
+// is a fine way to write a test that cannot fail. From +z it is a sideways swing.
+FrameDesc skinned_frame(const SceneData& data, std::span<const anim::JointMatrix> matrices,
+                        std::span<const InstanceJoints> runs, f32 distance) {
+  FrameDesc frame;
+  frame.camera = orbit_camera_at(data.center, data.radius, distance, radians(90.0f), k_orbit_pitch);
+  frame.joints = matrices;
+  frame.instance_joints = runs;
+  return frame;
 }
 
 }  // namespace
@@ -879,4 +1072,361 @@ TEST_CASE("renderer: a Panini view at d = 0 is the rectilinear picture") {
                                              << worst);
   CHECK(fraction < 0.005);  // docs/experiments/e9-multi-view.md has the measurement
   CHECK(worst <= 128);      // a silhouette pixel taking its neighbour, not a shading difference
+}
+
+// ---- skinned instances ------------------------------------------------------------------------
+//
+// Four cases over the two-bone bar, in the order the property they check was built:
+//
+//   1. a skinned instance at the **bind pose** draws exactly what the rigid one draws;
+//   2. a **bend** moves the picture where `anim::skin_positions` says it does;
+//   3. **culling stays conservative** at every phase of that bend;
+//   4. the mesh, vertex and ray paths **agree** on a posed frame.
+//
+// Everything they need is built here (`build_skinned_bar`, `make_bar_scene`): no glTF, no clip
+// library, and no dependency on `systems/animation` — the renderer's side of the contract is a
+// span of `anim::JointMatrix` and a run per instance, and that is exactly what these hand it.
+
+TEST_CASE("renderer: a skinned instance at the bind pose draws the unskinned picture") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("renderer unavailable here: " << gpu.why);
+    return;
+  }
+  SkinnedBar bar;
+  build_skinned_bar(bar);
+  constexpr u32 k_width = 200;
+  constexpr u32 k_height = 200;
+
+  Rig rigid;
+  REQUIRE_MESSAGE(make_bar_scene(bar, 1, 0, 0.0f, rigid.data, rigid.error), rigid.error);
+  REQUIRE_MESSAGE(rigid.finish(gpu.device, RenderSettings{}, k_width, k_height), rigid.error);
+  CHECK_FALSE(rigid.data.skinned());
+  CHECK_FALSE(rigid.scene.skinned());
+
+  Rig skinned;
+  REQUIRE_MESSAGE(make_bar_scene(bar, 1, 2, 0.0f, skinned.data, skinned.error), skinned.error);
+  REQUIRE_MESSAGE(skinned.finish(gpu.device, RenderSettings{}, k_width, k_height), skinned.error);
+  CHECK(skinned.data.skinned());
+  CHECK(skinned.scene.skinned());
+  CHECK(skinned.scene.skinned_instances() == 1);
+  // The pool pass runs even though nobody asked for `--deform`: skinning is one of its kinds.
+  CHECK(skinned.resolved.deform_pass);
+  CHECK(skinned.scene.deform_pool_bytes() > 0);
+
+  Vector<anim::JointMatrix> matrices;
+  bar_matrices(bar, 0.0f, matrices);  // the bind pose: every skinning matrix is the identity
+  const InstanceJoints runs[1] = {{0, 2}};
+
+  CaptureChannels channels;
+  channels.ids = true;
+  channels.depth = true;
+  CapturedFrame rigid_shot;
+  CapturedFrame skinned_shot;
+  std::string error;
+  FrameDesc plain;
+  plain.camera =
+      orbit_camera_at(rigid.data.center, rigid.data.radius, 22.0f, radians(90.0f), k_orbit_pitch);
+  REQUIRE_MESSAGE(rigid.renderer.capture(plain, channels, rigid_shot, &error), error);
+  const FrameDesc posed = skinned_frame(
+      skinned.data, std::span<const anim::JointMatrix>(matrices.data(), matrices.size()),
+      std::span<const InstanceJoints>(runs, 1), 22.0f);
+  REQUIRE_MESSAGE(skinned.renderer.capture(posed, channels, skinned_shot, &error), error);
+
+  // Identical coverage and identical ids. The depths are not bit-identical and cannot be: the
+  // rigid path dequantizes inside the rasterizer while the skinned one reads the float the pool
+  // pass stored, and the two compilations of the same expression round the last bit differently
+  // (domain/gfx's deform test measures the same thing and states the same tolerance).
+  u32 rigid_covered = 0;
+  u32 skinned_covered = 0;
+  covered_rect(rigid_shot, rigid_covered);
+  covered_rect(skinned_shot, skinned_covered);
+  CHECK(rigid_covered > 1000);
+  CHECK(skinned_covered == rigid_covered);
+  u64 id_differences = 0;
+  f32 worst_depth = 0.0f;
+  for (u32 p = 0; p < k_width * k_height; ++p) {
+    for (u32 c = 0; c < k_id_words; ++c) {
+      if (rigid_shot.ids[p * k_id_words + c] != skinned_shot.ids[p * k_id_words + c])
+        ++id_differences;
+    }
+    const f32 delta = rigid_shot.depth[p] - skinned_shot.depth[p];
+    worst_depth = std::max(worst_depth, delta < 0.0f ? -delta : delta);
+  }
+  MESSAGE("bind pose against rigid: " << rigid_covered << " covered pixels, " << id_differences
+                                      << " id words differ, worst depth " << worst_depth);
+  CHECK(id_differences == 0);
+  CHECK(worst_depth <= 2.0e-7f);
+}
+
+TEST_CASE("renderer: a bend puts the bar where anim::skin_positions says it goes") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("renderer unavailable here: " << gpu.why);
+    return;
+  }
+  SkinnedBar bar;
+  build_skinned_bar(bar);
+  constexpr u32 k_width = 200;
+  constexpr u32 k_height = 200;
+  constexpr f32 k_bend = 60.0f;
+
+  // The padding the instance is culled with: the exact largest displacement the bend produces,
+  // which is what `animation::clip_displacement_bound` bounds from above for a whole clip.
+  Vector<anim::JointMatrix> bent;
+  bar_matrices(bar, k_bend, bent);
+  Vector<Vec3> moved(bar.positions.size());
+  anim::skin_positions(
+      std::span<const Vec3>(bar.positions.data(), bar.positions.size()),
+      std::span<const geometry::SkinBinding>(bar.bindings.data(), bar.bindings.size()),
+      std::span<const anim::JointMatrix>(bent.data(), bent.size()),
+      std::span<Vec3>(moved.data(), moved.size()));
+  f32 displacement = 0.0f;
+  for (u32 v = 0; v < moved.size(); ++v)
+    displacement = std::max(displacement, length(moved[v] - bar.positions[v]));
+  CHECK(displacement > 0.4f);  // the bend is a real one, not a rounding difference
+
+  Rig rig;
+  REQUIRE_MESSAGE(make_bar_scene(bar, 1, 2, displacement, rig.data, rig.error), rig.error);
+  REQUIRE_MESSAGE(rig.finish(gpu.device, RenderSettings{}, k_width, k_height), rig.error);
+  const InstanceJoints runs[1] = {{0, 2}};
+
+  CaptureChannels channels;
+  channels.ids = true;
+  CapturedFrame rest_shot;
+  CapturedFrame bent_shot;
+  std::string error;
+  Vector<anim::JointMatrix> rest;
+  bar_matrices(bar, 0.0f, rest);
+  REQUIRE_MESSAGE(
+      rig.renderer.capture(
+          skinned_frame(rig.data, std::span<const anim::JointMatrix>(rest.data(), rest.size()),
+                        std::span<const InstanceJoints>(runs, 1), 22.0f),
+          channels, rest_shot, &error),
+      error);
+  REQUIRE_MESSAGE(
+      rig.renderer.capture(
+          skinned_frame(rig.data, std::span<const anim::JointMatrix>(bent.data(), bent.size()),
+                        std::span<const InstanceJoints>(runs, 1), 22.0f),
+          channels, bent_shot, &error),
+      error);
+
+  const Mat4& view_proj = rig.renderer.views()[0].view_proj;
+  const Mat4 world = rig.data.instances[0].world;
+  const PixelRect predicted =
+      predicted_rect(bar, std::span<const anim::JointMatrix>(bent.data(), bent.size()), world,
+                     view_proj, k_width, k_height);
+  u32 rest_covered = 0;
+  u32 bent_covered = 0;
+  const PixelRect rest_drawn = covered_rect(rest_shot, rest_covered);
+  const PixelRect bent_drawn = covered_rect(bent_shot, bent_covered);
+
+  // The bend is visible: the two pictures put the bar on different pixels.
+  u64 coverage_changes = 0;
+  for (u32 p = 0; p < k_width * k_height; ++p) {
+    const bool a = rest_shot.ids[p * k_id_words] != k_no_id;
+    const bool b = bent_shot.ids[p * k_id_words] != k_no_id;
+    if (a != b) ++coverage_changes;
+  }
+  MESSAGE("bend " << k_bend << " deg: " << rest_covered << " -> " << bent_covered
+                  << " covered pixels, " << coverage_changes << " changed; rest x ["
+                  << rest_drawn.x0 << ", " << rest_drawn.x1 << "], bent x [" << bent_drawn.x0
+                  << ", " << bent_drawn.x1 << "], predicted x [" << predicted.x0 << ", "
+                  << predicted.x1 << "], y [" << predicted.y0 << ", " << predicted.y1
+                  << "] against drawn y [" << bent_drawn.y0 << ", " << bent_drawn.y1 << "]");
+  CHECK(coverage_changes > u64{rest_covered} / 10);
+  // A straight bar seen side on is as wide as the column; a bent one leans its top half out and is
+  // visibly wider. That is the check a picture which did not move at all, or moved along the view
+  // axis where nothing would show, fails.
+  CHECK(bent_drawn.x1 - bent_drawn.x0 > rest_drawn.x1 - rest_drawn.x0 + 8.0f);
+
+  // And it is where the CPU reference says. Two statements, because the two are not the same:
+  //
+  //   * the drawn rectangle is **inside** the projected one — the picture never reaches past
+  //     where `anim::skin_positions` put the vertices, which is what a wrong weight or a missing
+  //     influence would break;
+  //   * the two ends of the **bend axis** agree to within a pixel and a bit — the tip's
+  //     silhouette is a real extremum of the surface and has to be drawn exactly there.
+  //
+  // The other two edges are only bounded from one side, because the drawn set is a subset of the
+  // projected vertices for two honest reasons: the cut is an LOD cut rather than the source mesh,
+  // and the bar's end caps are backfacing from this camera and are cone-culled, so the lowest
+  // projected vertices are not on screen at all.
+  constexpr f32 k_tolerance = 2.0f;
+  CHECK(bent_drawn.x0 >= predicted.x0 - k_tolerance);
+  CHECK(bent_drawn.x1 <= predicted.x1 + k_tolerance);
+  CHECK(bent_drawn.y0 >= predicted.y0 - k_tolerance);
+  CHECK(bent_drawn.y1 <= predicted.y1 + k_tolerance);
+  CHECK(std::fabs(bent_drawn.x0 - predicted.x0) <= k_tolerance);
+  CHECK(std::fabs(bent_drawn.x1 - predicted.x1) <= k_tolerance);
+}
+
+TEST_CASE("renderer: culling stays conservative at every phase of a bend") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("renderer unavailable here: " << gpu.why);
+    return;
+  }
+  SkinnedBar bar;
+  build_skinned_bar(bar);
+  constexpr u32 k_width = 200;
+  constexpr u32 k_height = 200;
+  constexpr u32 k_phases = 12;
+
+  // The bound over the whole "clip": the largest displacement any vertex reaches at any phase,
+  // which is exactly what a per-instance `bounds_padding` has to be at least as large as.
+  Vector<anim::JointMatrix> matrices;
+  Vector<Vec3> moved(bar.positions.size());
+  f32 bound = 0.0f;
+  for (u32 p = 0; p < k_phases; ++p) {
+    bar_matrices(bar, 90.0f * static_cast<f32>(p) / static_cast<f32>(k_phases - 1), matrices);
+    anim::skin_positions(
+        std::span<const Vec3>(bar.positions.data(), bar.positions.size()),
+        std::span<const geometry::SkinBinding>(bar.bindings.data(), bar.bindings.size()),
+        std::span<const anim::JointMatrix>(matrices.data(), matrices.size()),
+        std::span<Vec3>(moved.data(), moved.size()));
+    for (u32 v = 0; v < moved.size(); ++v)
+      bound = std::max(bound, length(moved[v] - bar.positions[v]));
+  }
+
+  // Two scenes of the same bar: one padded by the bound, one by eight times it. If the smaller
+  // padding ever dropped a cluster the larger one kept, a pixel would differ — so identical
+  // pictures at every phase is the statement that the bound is enough. The camera is close enough
+  // that the bar fills the frame, which is where a frustum test can actually bite.
+  Rig tight;
+  Rig loose;
+  REQUIRE_MESSAGE(make_bar_scene(bar, 1, 2, bound, tight.data, tight.error), tight.error);
+  REQUIRE_MESSAGE(make_bar_scene(bar, 1, 2, bound * 8.0f, loose.data, loose.error), loose.error);
+  // Both scenes must frame the same way, or the two cameras would differ and the comparison would
+  // be meaningless; the tighter one's bounds are the ones both use.
+  loose.data.center = tight.data.center;
+  loose.data.radius = tight.data.radius;
+  REQUIRE_MESSAGE(tight.finish(gpu.device, RenderSettings{}, k_width, k_height), tight.error);
+  REQUIRE_MESSAGE(loose.finish(gpu.device, RenderSettings{}, k_width, k_height), loose.error);
+
+  const InstanceJoints runs[1] = {{0, 2}};
+  CaptureChannels channels;
+  channels.ids = true;
+  u64 worst_differences = 0;
+  u32 fewest_covered = ~u32{0};
+  for (u32 p = 0; p < k_phases; ++p) {
+    bar_matrices(bar, 90.0f * static_cast<f32>(p) / static_cast<f32>(k_phases - 1), matrices);
+    const std::span<const anim::JointMatrix> span(matrices.data(), matrices.size());
+    CapturedFrame a;
+    CapturedFrame b;
+    std::string error;
+    REQUIRE_MESSAGE(
+        tight.renderer.capture(
+            skinned_frame(tight.data, span, std::span<const InstanceJoints>(runs, 1), 12.0f),
+            channels, a, &error),
+        error);
+    REQUIRE_MESSAGE(
+        loose.renderer.capture(
+            skinned_frame(loose.data, span, std::span<const InstanceJoints>(runs, 1), 12.0f),
+            channels, b, &error),
+        error);
+    u64 differences = 0;
+    u32 covered = 0;
+    for (u32 i = 0; i < k_width * k_height; ++i) {
+      if (a.ids[i * k_id_words] != k_no_id) ++covered;
+      for (u32 c = 0; c < k_id_words; ++c) {
+        if (a.ids[i * k_id_words + c] != b.ids[i * k_id_words + c]) ++differences;
+      }
+    }
+    worst_differences = std::max(worst_differences, differences);
+    fewest_covered = std::min(fewest_covered, covered);
+  }
+  MESSAGE("bend sweep: bound " << bound << ", " << fewest_covered
+                               << " covered pixels at the sparsest phase, " << worst_differences
+                               << " id words differ from the 8x-padded scene");
+  CHECK(fewest_covered > 1000);   // the bar is on screen at every phase
+  CHECK(worst_differences == 0);  // nothing visible was culled at any of them
+}
+
+TEST_CASE("renderer: the mesh, vertex and ray paths agree on a posed frame") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("renderer unavailable here: " << gpu.why);
+    return;
+  }
+  SkinnedBar bar;
+  build_skinned_bar(bar);
+  constexpr u32 k_width = 200;
+  constexpr u32 k_height = 200;
+  Vector<anim::JointMatrix> matrices;
+  bar_matrices(bar, 45.0f, matrices);
+  const std::span<const anim::JointMatrix> span(matrices.data(), matrices.size());
+  const InstanceJoints runs[1] = {{0, 2}};
+  CaptureChannels channels;
+  channels.ids = true;
+
+  auto shoot = [&](RasterMode mode, CapturedFrame& out, std::string& why) {
+    Rig rig;
+    if (!make_bar_scene(bar, 1, 2, 1.0f, rig.data, rig.error)) {
+      why = rig.error;
+      return false;
+    }
+    RenderSettings settings;
+    settings.raster = mode;
+    settings.shadows = ShadowMode::Off;  // a shadow is not what these three have to agree about
+    ResolvedSettings probe;
+    resolve_settings(settings, gpu.device.features(), &rig.data, probe);
+    if (check_availability(probe, gpu.device.features()) != RenderAvailability::Ok) {
+      why = availability_message(check_availability(probe, gpu.device.features()));
+      return false;
+    }
+    if (!rig.finish(gpu.device, settings, k_width, k_height)) {
+      why = rig.error;
+      return false;
+    }
+    std::string error;
+    const bool ok = rig.renderer.capture(
+        skinned_frame(rig.data, span, std::span<const InstanceJoints>(runs, 1), 22.0f), channels,
+        out, &error);
+    why = error;
+    return ok;
+  };
+
+  CapturedFrame hardware;
+  std::string why;
+  REQUIRE_MESSAGE(shoot(RasterMode::Hardware, hardware, why), why);
+  u32 hardware_covered = 0;
+  covered_rect(hardware, hardware_covered);
+  CHECK(hardware_covered > 1000);
+
+  CapturedFrame vertex;
+  REQUIRE_MESSAGE(shoot(RasterMode::Vertex, vertex, why), why);
+  u64 vertex_differences = 0;
+  for (u32 i = 0; i < k_width * k_height; ++i) {
+    for (u32 c = 0; c < k_id_words; ++c) {
+      if (hardware.ids[i * k_id_words + c] != vertex.ids[i * k_id_words + c]) ++vertex_differences;
+    }
+  }
+  MESSAGE("posed bar: " << hardware_covered << " covered pixels, vertex path differs in "
+                        << vertex_differences << " id words");
+  CHECK(vertex_differences == 0);  // the two rasterizers write the same words, deformed or not
+
+  CapturedFrame ray;
+  if (!shoot(RasterMode::RayTrace, ray, why)) {
+    MESSAGE("ray path unavailable here: " << why);
+    return;
+  }
+  // A ray and a rasterized edge disagree about the pixels a silhouette decides, exactly as they
+  // do for a rigid mesh (gfx's ray query test), so coverage is compared rather than every word.
+  u64 coverage_differences = 0;
+  u64 triangle_differences = 0;
+  for (u32 i = 0; i < k_width * k_height; ++i) {
+    const bool a = hardware.ids[i * k_id_words] != k_no_id;
+    const bool b = ray.ids[i * k_id_words] != k_no_id;
+    if (a != b) {
+      ++coverage_differences;
+    } else if (a && hardware.ids[i * k_id_words + 2] != ray.ids[i * k_id_words + 2]) {
+      ++triangle_differences;
+    }
+  }
+  MESSAGE("ray against mesh shader: " << coverage_differences << " coverage and "
+                                      << triangle_differences << " triangle differences of "
+                                      << hardware_covered << " covered pixels");
+  CHECK(static_cast<f64>(coverage_differences) < 0.01 * static_cast<f64>(hardware_covered));
+  CHECK(static_cast<f64>(triangle_differences) < 0.02 * static_cast<f64>(hardware_covered));
 }

@@ -31,7 +31,14 @@ bool GpuScene::create(const gfx::Device& device, const SceneData& data,
   device_ = &device;
   data_ = &data;
   ray_tracing_ = resolved.rt_chain;
-  deform_ = resolved.settings.deform;
+  // A scene deforms when the settings say every instance does, or when any instance is skinned.
+  // The two are independent: `--deform wave` on a scene with a skinned character deforms the
+  // rigid instances procedurally and skins the skinned one, because a `DeformDesc` names one kind
+  // per instance and the skinned instance's kind is skinning.
+  skinned_ = data.skinned();
+  skinned_instances_ = skinned_ ? data.skinned_instances : 0;
+  max_joints_ = skinned_ ? data.max_joints : 0;
+  deform_ = resolved.deform_pass;
   view_count_ = resolved.view_count > 0 ? resolved.view_count : 1;
   cluster_count_ = data.cluster_count();
   leaf_count_ = data.leaf_count();
@@ -61,6 +68,7 @@ bool GpuScene::create(const gfx::Device& device, const SceneData& data,
     desc.deform_pool = deform_pool.address;
     desc.deform = deform_table.address;
     desc.templates = clas_templates.addresses.address;
+    desc.skin = skin.address;
     mesh_descs.push_back(desc);
   }
   if (!gfx::upload_buffer(device, mesh_descs.data(), mesh_descs.size() * sizeof(gfx::MeshDesc),
@@ -100,10 +108,14 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
   // by the mesh's first vertex; both are u32 and the bias wraps, which is the arithmetic the
   // shaders do.
   if (deform_) {
-    Vector<gfx::DeformDesc> deform_descs;
     const u32 total_vertices = lod.mesh.vertices.size();
     u32 pool_vertices = 0;
     for (u32 i = 0; i < instance_count_; ++i) {
+      // A skinned instance is deformed whatever the settings say; a rigid one only under
+      // `--deform`, so a scene of one character and a hundred props allocates pool blocks for the
+      // character alone and every prop stays on the instruction-for-instruction rigid path.
+      const u32 instance_joints = skinned_ ? data_->instance_joints[i] : 0u;
+      if (instance_joints == 0 && !resolved.settings.deform) continue;
       const geometry::ClusterMeshPart& part = data_->parts[instance_table_[i].mesh];
       const u32 next = instance_table_[i].mesh + 1 < data_->parts.size()
                            ? data_->parts[instance_table_[i].mesh + 1].first_vertex
@@ -111,10 +123,14 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
       gfx::DeformDesc desc{};
       desc.vertex_count = next - part.first_vertex;
       desc.pool_offset = pool_vertices - part.first_vertex;
-      desc.flags = resolved.settings.deform_kind;
+      desc.flags = instance_joints > 0 ? gfx::k_deform_skin : resolved.settings.deform_kind;
+      // `joints` and `joint_count` stay zero in the *static* table: they are what a frame fills
+      // in, in its own copy. A frame that hands over no matrices therefore leaves the instance at
+      // its rest pose rather than reading an address from a previous frame.
       pool_vertices += desc.vertex_count;
-      instance_table_[i].deform = i;
-      deform_descs.push_back(desc);
+      instance_table_[i].deform = deform_descs_.size();
+      deform_descs_.push_back(desc);
+      deform_instance_.push_back(i);
     }
     deform_pool_bytes_ = u64{pool_vertices} * 3 * sizeof(f32);
     constexpr VkBufferUsageFlags k_pool_usage =
@@ -123,18 +139,41 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
     // One indirect dispatch block per (view, run): every view's pool pass covers its own cut, and
     // a vertex two views both draw is written twice with the same value, which costs bandwidth
     // and nothing else.
-    const bool ok =
+    bool ok =
         gfx::create_buffer(device, deform_pool_bytes_, k_pool_usage, false, deform_pool, error) &&
-        gfx::upload_buffer(device, deform_descs.data(),
-                           deform_descs.size() * sizeof(gfx::DeformDesc), k_storage, deform_table,
+        gfx::upload_buffer(device, deform_descs_.data(),
+                           deform_descs_.size() * sizeof(gfx::DeformDesc), k_storage, deform_table,
                            error) &&
         gfx::create_buffer(device, u64{gfx::k_draw_args_bytes} * k_visible_runs * view_count_,
                            k_args, false, deform_args, error);
+    // The per-frame side of skinning: `k_joint_slots` regions of bone matrices and the same
+    // number of copies of the deform table, both host-visible and persistently mapped, so a tick
+    // is one memcpy of the span plus one rewrite of a table of 24-byte records. Nothing here is
+    // touched again after `create`.
+    if (ok && skinned_) {
+      const u64 joint_region = joint_bytes();
+      ok = gfx::create_buffer(device, joint_region * k_joint_slots, k_address, true, joints,
+                              error) &&
+           gfx::create_buffer(device,
+                              u64{deform_descs_.size()} * sizeof(gfx::DeformDesc) * k_joint_slots,
+                              k_address, true, deform_frames, error);
+      if (ok) {
+        // Every region starts as the static table, so a frame only ever rewrites the two words
+        // that change and a slot that has never been written is still a valid rest pose.
+        for (u32 slot = 0; slot < k_joint_slots; ++slot) {
+          std::memcpy(deform_frame(slot), deform_descs_.data(),
+                      deform_descs_.size() * sizeof(gfx::DeformDesc));
+        }
+        std::memset(joints.mapped, 0, joint_region * k_joint_slots);
+      }
+    }
     if (!ok) return false;
     ENGINE_LOG_INFO(
         log_renderer, "deformed-vertex pool", log::field("mode", deform_name(resolved.settings)),
-        log::field("instances", instance_count_), log::field("pool_vertices", pool_vertices),
-        log::field("pool_bytes", deform_pool_bytes_));
+        log::field("instances", deform_descs_.size()),
+        log::field("skinned_instances", skinned_instances_), log::field("max_joints", max_joints_),
+        log::field("pool_vertices", pool_vertices), log::field("pool_bytes", deform_pool_bytes_),
+        log::field("joint_bytes", skinned_ ? joint_bytes() * k_joint_slots : u64{0}));
   }
   // The float positions stay only for the frames that build acceleration structures: the
   // cluster structure builds read them.
@@ -147,6 +186,15 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
                   log::field("float_bytes", float_position_bytes),
                   log::field("quantized_bytes", quantized_position_bytes),
                   log::field("grid_step", lod.mesh.quant_scale));
+  // The per-vertex binding stream, when the scene has one. It is the *mesh's* — cluster-ordered
+  // and parallel to the positions, so one address serves every mesh of the scene exactly as the
+  // quantized stream does, and a crowd of a hundred characters built from one mesh shares it.
+  // Only the bone matrices are per instance (`DeformDesc::joints`).
+  if (skinned_ && !gfx::upload_buffer(device, lod.mesh.skin.data(),
+                                      u64{lod.mesh.skin.size()} * sizeof(geometry::SkinBinding),
+                                      k_storage, skin, error)) {
+    return false;
+  }
   return gfx::upload_buffer(device, lod.mesh.attributes.data(),
                             u64{lod.mesh.attributes.size()} * sizeof(geometry::VertexAttributes),
                             k_storage, attributes, error);
@@ -471,6 +519,8 @@ void GpuScene::destroy() noexcept {
   gfx::destroy_buffer(device, record_count);
   gfx::destroy_buffer(device, records);
   gfx::destroy_buffer(device, indices8);
+  gfx::destroy_buffer(device, deform_frames);
+  gfx::destroy_buffer(device, joints);
   gfx::destroy_buffer(device, deform_args);
   gfx::destroy_buffer(device, deform_table);
   gfx::destroy_buffer(device, deform_pool);
@@ -482,6 +532,7 @@ void GpuScene::destroy() noexcept {
   gfx::destroy_buffer(device, visible);
   gfx::destroy_buffer(device, cluster_materials);
   gfx::destroy_buffer(device, materials);
+  gfx::destroy_buffer(device, skin);
   gfx::destroy_buffer(device, attributes);
   gfx::destroy_buffer(device, lods);
   gfx::destroy_buffer(device, triangles);
@@ -503,14 +554,17 @@ void GpuScene::destroy() noexcept {
   sampler_ = VK_NULL_HANDLE;
   bindless_.destroy();
   instance_table_.clear();
+  deform_descs_.clear();
+  deform_instance_.clear();
   device_ = nullptr;
   data_ = nullptr;
   cluster_count_ = leaf_count_ = instance_count_ = pair_count_ = material_count_ = 0;
   triangles_per_cluster_ = 0;
   view_count_ = 1;
+  max_joints_ = skinned_instances_ = 0;
   visible_run_bytes_ = deform_pool_bytes_ = template_bytes_ = rt_bytes_ = 0;
   tlas_slot_ = gfx::BindlessSet::k_invalid_slot;
-  ray_tracing_ = deform_ = false;
+  ray_tracing_ = deform_ = skinned_ = false;
 }
 
 }  // namespace engine::renderer

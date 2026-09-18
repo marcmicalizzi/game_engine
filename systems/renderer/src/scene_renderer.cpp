@@ -207,6 +207,19 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
   }
   const u32 views = views_.size();
 
+  // The joint buffer holds `k_joint_slots` frames' worth of bone matrices, one region per frame
+  // slot, which is what makes the host write safe with no staging copy and no barrier. A renderer
+  // with more frames in flight than regions would write a region the GPU is still reading, so it
+  // is refused here rather than discovered as a character that twitches one frame in ten.
+  if (scene.skinned() && desc.frames_in_flight > k_joint_slots) {
+    if (error != nullptr) {
+      *error = "a skinned scene supports at most " + std::to_string(k_joint_slots) +
+               " frames in flight; the joint buffer has one region per frame slot";
+    }
+    destroy();
+    return false;
+  }
+
   if (!frames_.create(device, desc.frames_in_flight, error) ||
       // Every view records its own cull, raster, Hi-Z and resolve zones, so the pool grows with
       // the layout; one view asks for exactly the 24 it always did.
@@ -328,7 +341,7 @@ bool SceneRenderer::create_pipelines(std::string* error) {
           : nullptr;
   if (resolve == nullptr || vertex == nullptr) return false;
   gfx::BindlessSet& bindless = scene_->bindless();
-  if (resolved_.settings.deform) {
+  if (resolved_.deform_pass) {
     const gfx::Shader* deform = shaders_.get("deform", error);
     if (deform == nullptr ||
         !gfx::create_compute_pipeline(device, deform->module, "deform_main", {},
@@ -679,6 +692,48 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   const u64 lights_address = resolves_[slot].address + sizeof(gfx::ResolveParams) * views;
   const f32 deform_time = static_cast<f32>(rendered) / 60.0f;
 
+  // ---- the tick's bone matrices (docs/subsystems/animation.md, "The renderer contract") -------
+  //
+  // One memcpy of the whole population's matrices into this slot's region, then one pass over the
+  // deform table rewriting the two words that change. The slot was not reused until the GPU
+  // finished the frame that last had it, so neither write races a read, and neither allocates.
+  // Everything else about the pool pass — the indirect dispatch, the per-run blocks below — is
+  // exactly what a procedural deformer already does.
+  u64 deform_table_address = scene.deform_table.address;
+  if (scene.skinned()) {
+    const u32 span = static_cast<u32>(frame.joints.size());
+    const u32 uploaded = span < scene.max_joints() ? span : scene.max_joints();
+    if (span > scene.max_joints() && !joint_overflow_warned_) {
+      joint_overflow_warned_ = true;
+      ENGINE_LOG_WARN(log_renderer, "more bone matrices than the scene was sized for",
+                      log::field("joints", span), log::field("max_joints", scene.max_joints()));
+    }
+    if (uploaded > 0) {
+      std::memcpy(scene.joint_slot(slot), frame.joints.data(),
+                  u64{uploaded} * sizeof(anim::JointMatrix));
+    }
+    gfx::DeformDesc* table = scene.deform_frame(slot);
+    const std::span<const gfx::DeformDesc> statics = scene.deform_descs();
+    const std::span<const u32> owners = scene.deform_instances();
+    const u64 base = scene.joint_slot_address(slot);
+    for (u32 d = 0; d < statics.size(); ++d) {
+      gfx::DeformDesc desc = statics[d];
+      const u32 instance = owners[d];
+      if (desc.flags == gfx::k_deform_skin && instance < frame.instance_joints.size()) {
+        const InstanceJoints& run = frame.instance_joints[instance];
+        // A run that is not wholly inside what was uploaded leaves the instance at rest rather
+        // than reading past the end: bad offsets are the caller's bug, and a bind-pose character
+        // is a visible one where a wild address is a crash.
+        if (run.count > 0 && run.first + run.count <= uploaded) {
+          desc.joints = base + u64{run.first} * sizeof(anim::JointMatrix);
+          desc.joint_count = run.count;
+        }
+      }
+      table[d] = desc;
+    }
+    deform_table_address = scene.deform_frame_address(slot);
+  }
+
   // Two point lights orbiting the scene out of phase, one warm and one cool, so the BSDF's
   // specular response sweeps across the surface while the camera turns and metal reads as metal.
   // Reach and intensity scale with the scene radius, intensity with its square because the
@@ -847,7 +902,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           run == 2 ? scene.sw_args.address + vf.args_offset
                    : scene.draw_args[run].address + vf.args_offset + u64{count_index} * sizeof(u32);
       d.pool = scene.deform_pool.address;
-      d.deform = scene.deform_table.address;
+      // This frame's table for a skinned scene, the static one otherwise; the two differ only in
+      // `joints`/`joint_count`, which nothing but this pass reads.
+      d.deform = deform_table_address;
       d.time = deform_time;
       d.amplitude = settings.deform_amplitude;
       d.max_entries = pair_count;
@@ -931,7 +988,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   const gfx::RgBuffer rg_stats = graph.import_buffer("stats", stat_blocks_[slot]);
   gfx::RgBuffer rg_pool{};
   gfx::RgBuffer rg_deform_args{};
-  if (settings.deform) {
+  if (resolved_.deform_pass) {
     rg_pool = graph.import_buffer("deform pool", scene.deform_pool);
     rg_deform_args = graph.import_buffer("deform args", scene.deform_args);
   }
@@ -963,7 +1020,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   const bool fill_hiz = occlusion && targets.hiz_dirty;
   const bool fill_flags = occlusion && flags_dirty_;
   const bool cull_on = settings.cull;
-  const bool deform_on = settings.deform;
+  const bool deform_on = resolved_.deform_pass;
   const u32 raster_width = targets.width;
   const u32 raster_height = targets.height;
 
