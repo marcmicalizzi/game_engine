@@ -29,6 +29,8 @@
 - Hysteresis bands and per-tick rate limits on promotions and demotions prevent thrash and spread materialization cost.
 - Systems implement the materialization contract ([03-data-model §3.4](03-data-model.md#34-the-runtime-world)).
 
+**Status.** Built in `domain/sim` as `TierAssignment`, 2026-09-17: up to eight configurable tiers, the minimum over observers of distance over (weight × importance), hysteresis bands, per-tick promotion and demotion limits that take the nearest first, and changes emitted in entity index order; 10^5 entities cost 2.5 ms on one thread and 1.6 ms on eight, which makes this a budget row rather than a rounding error, as [ADR-0028](../adr/0028-ecs-and-persistent-store.md) warned. The materialization contract it drives lands with the scheduler.
+
 ## 5.5 Reconciliation when a tile activates
 
 1. Load the tile's projections from the persistent store.

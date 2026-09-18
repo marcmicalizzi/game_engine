@@ -1,8 +1,8 @@
 # sim (domain)
 
-**Purpose.** The simulation core of [05 §5.2–§5.5](../plan/05-simulation.md#52-sim-scheduler). This first change builds the hierarchical timing wheel over `GameTime` and its budgeted fast-forward ([§5.3](../plan/05-simulation.md#53-event-scheduler-temporal-lod)); LOD tier assignment and the tick scheduler follow into the same module. It is the registration point capabilities attach to when they tick, schedule, summarize, or materialize ([ADR-0027](../adr/0027-additive-capabilities.md)), which is why it is **not** an optional capability: a registration point that can be switched off is one nobody can register with.
+**Purpose.** The simulation core of [05 §5.2–§5.5](../plan/05-simulation.md#52-sim-scheduler): the hierarchical timing wheel over `GameTime` and its budgeted fast-forward ([§5.3](../plan/05-simulation.md#53-event-scheduler-temporal-lod)), and LOD tier assignment over the observer set ([§5.4](../plan/05-simulation.md#54-lod-tier-assignment)); the tick scheduler follows into the same module. It is the registration point capabilities attach to when they tick, schedule, summarize, or materialize ([ADR-0027](../adr/0027-additive-capabilities.md)), which is why it is **not** an optional capability: a registration point that can be switched off is one nobody can register with.
 
-**Owned data.** The timer slab and its free list, the wheel's buckets and occupancy bits, and the summarizer table. Nothing else may hold a timer's storage; a `TimerHandle` is the only outside reference to one.
+**Owned data.** The timer slab and its free list, the wheel's buckets and occupancy bits, and the summarizer table. Nothing else may hold a timer's storage; a `TimerHandle` is the only outside reference to one. Tier assignment owns only scratch: the caller's SoA arrays stay the caller's.
 
 ## Why a wheel and not a heap
 
@@ -38,19 +38,33 @@ A system that runs at LOD2 or LOD3 registers a `Summarizer` ([05 §5.3](../plan/
 
 A system that cannot meet (1) honestly should not claim LOD2/LOD3 at all: it should keep its periodic un-summarized, and accept that a fast-forward executes it.
 
+## Why tiers are a function over the observer set
+
+A tier is not a property of an entity. `TierAssignment` computes, per entity, the **minimum over observers** of `distance / (observer weight × entity importance)` and maps that score through a table of band boundaries. The observer set is the generalization that keeps working: two players in co-op, a security camera, a quest marker, an audio listener, and a dedicated server with no camera at all are all observers, and nothing in the simulation has to know which one is "the player" — [05 §5.12](../plan/05-simulation.md#512-multiplayer-readiness) calls the same set interest management, and it is the same set. A radius around a singleton camera would have to be unpicked for every one of those cases, and the unpicking would reach into every capability's LOD policy.
+
+Importance and weight divide the distance rather than shifting the boundaries, so one table of boundaries serves every entity and every observer: a named character in a quest is "nearer" to every observer at once, and a heavyweight observer pulls everything near it up a tier without a second table. Importance covers what [05 §5.4](../plan/05-simulation.md#54-lod-tier-assignment) lists — quest relevance, named-character status, being in combat, being audible — as one number the game computes however it likes.
+
+**Hysteresis and rate limits are what make the function usable rather than merely correct.** Promotion tests the band boundary; demotion tests the boundary widened by `hysteresis`. A crowd walking along a boundary therefore crosses once instead of oscillating, and the cost of materializing is paid once per crossing rather than every tick — the module's test walks one entity across a boundary and back with and without the band, because the difference is the whole point. On top of that, at most `max_promotions` and `max_demotions` entities change tier per call, nearest-first for promotions and farthest-first for demotions, so a camera cut that puts ten thousand entities inside the LOD0 radius spreads its materialization over ticks instead of dropping a frame. Deferred candidates are not forgotten; they are simply re-evaluated next tick.
+
+**Changes come out in entity order**, not in the order the rate limit selected them, so a consumer walks its own arrays forwards and two runs produce identical bytes.
+
 ## Invariants
 
 - Every live timer sits in the bucket its due time and the wheel's current position name, its level is the one `choose_level` would pick, and the occupancy bit of every bucket agrees with whether that bucket's list is empty. `TimingWheel::validate()` checks all of this against a linear recomputation; the cascade test calls it after every one of 2,940 advances.
 - A slot's generation is odd while live and even while free, so a handle from a previous occupant of a slot is refused rather than cancelling somebody else's timer.
 - `advance` never moves `now` past an undelivered due timer: the skip search jumps only to the start of a bucket that has work, and a partially covered final bucket is checked for a genuinely due entry before it is returned.
+- `assign_tiers` writes back exactly the transitions it emits, and emits them in ascending entity index.
 
 ## Public API
 
 - `domain/sim/timing_wheel.h`: `TimerHandle`, `TimerPayload`, `TimerEvent`, `EventSink` and `make_sink`, `SummarizeInterval`, `Summarizer`, `TimingWheelConfig`, `FastForwardResult`, `TimingWheel` (`schedule`, `schedule_periodic`, `cancel`, `is_live`, `due_time`, `advance` in both forms, `count_due`, `add_summarizer`, `reset`, `validate`, and the shape accessors).
+- `domain/sim/tiers.h`: `ObserverSet`, `TierParams`, `TierChange`, `TierStats`, `TierInput`, `TierAssignment` (`assign_tiers`, `score`, `tier_of`).
 
-**Determinism stance ([ADR-0010](../adr/0010-deterministic-sim-and-lod-contract.md)):** `hashed`. Every ordering decision here is made on integers the module itself assigned — due time and insertion sequence — so two runs with the same inputs produce the same bytes on every machine.
+**Determinism stance ([ADR-0010](../adr/0010-deterministic-sim-and-lod-contract.md)):** `hashed`. Every ordering decision here is made on integers the module itself assigned (due time, insertion sequence, entity index); the only floating point is the tier score, which is computed per entity from the inputs alone and never compared across entities except through a sort whose ties break on the index.
 
-**Zero-cost-when-unused ([11 §11.10](../plan/11-performance-principles.md#1110-absent-capabilities-are-free)):** no instances. A wheel with no timers scheduled has 1,229 empty buckets and five zero occupancy words, and `advance` over any interval is a bitmask scan that finds nothing. Nothing is allocated per event in steady state: timers come from a slab with a free list.
+**LOD policy.** This module *is* one of the registration points for LOD policy, and it supplies the reference implementation the rest of the engine's capabilities are expected to agree with (`TierAssignment::score`/`tier_of` are public so a capability's own policy can be checked against them).
+
+**Zero-cost-when-unused ([11 §11.10](../plan/11-performance-principles.md#1110-absent-capabilities-are-free)):** no instances. A wheel with no timers scheduled has 1,229 empty buckets and five zero occupancy words, and `advance` over any interval is a bitmask scan that finds nothing. Nothing is allocated per event in steady state: timers come from a slab with a free list, and tier assignment reuses its scratch arrays.
 
 **Depends on.** `base`, `containers`, `time`, `math`, `jobs`, `log`, `ids`.
 
@@ -60,6 +74,7 @@ A system that cannot meet (1) honestly should not claim LOD2/LOD3 at all: it sho
 
 - **Timing wheel**: the level ladder's exact resolutions; due order with ties in insertion order; O(1) cancel and refusal of a stale handle after slot reuse; cascading across all five levels checked with `validate()` after each of 2,940 one-minute advances; a 29-day timer found in a single jump; a periodic firing on its phase (registered at 09:13, first firing at 10:00) and keeping its handle across firings; a timer past the horizon kept in the far list and delivered 2,000 days later; a timer scheduled in the past due immediately; a sink that schedules and cancels mid-delivery; and byte-identical output from two runs of a 4,000-timer schedule with periodics and cancellations, including the same bytes when the same interval is walked in 997 advances instead of one.
 - **Fast-forward**: the plan's own case — an hourly economy over a 30-game-day gap delivers 720 events under a large budget, and under a small one makes exactly one summarize call per registered summarizer and fires nothing; an exact summarizer (a counter of game hours) ends at 720 either way; a periodic with no summarizer and a one-shot timer are delivered anyway; a gap under the budget is bit-for-bit an ordinary advance; and counting stops once it passes the budget.
+- **Tiers**: the minimum over observers, including what importance and observer weight do to it; hysteresis holding an entity through a boundary walk that oscillates without it; rate limits promoting nearest-first and deferring the rest to later ticks; changes emitted in entity order when selection order was the reverse; 20,000 entities over six ticks producing identical tier arrays and identical change bytes at none, one and eight workers; and a configurable tier count with out-of-range tiers repaired.
 
 The size table pins `TimingWheel::Slot` at 56 bytes; at 10^6 timers the slab is 56 MB, so a byte there is a megabyte.
 
