@@ -240,7 +240,19 @@ does not cover this: it orders tests *within* one `ctest` invocation and cannot 
 
 Scratch space is now per test and unguessable (`engine::test::TempDir`, see AGENTS.md's
 "Test hygiene"), so a second suite on the machine is no longer a reason for a run to fail, and two
-`ctest` invocations from two build trees at once pass. What is still genuinely exclusive is the
+`ctest` invocations from two build trees at once pass.
+
+**Measured again on 2026-09-18**, once every remaining test and bench had been converted (nineteen
+files; `tools/lint.ps1`'s `test-temp-path` rule now refuses the old spelling). Four copies of each
+of the thirteen converted binaries started at the same instant — two from `msvc-debug` and two from
+`msvc-release`, 52 processes a round, five rounds — **failed 0 of 260 runs**; `ctest` from both
+build trees at once, twice, passed 51 of 51 tests each time. The control is what makes those
+numbers mean something: the *pre-change* `engine_io_tests`, whose fixture opened
+`<system temp>/engine_io_tests` and began with `remove_all`, **failed 20 of 20 runs** under the same
+four-copies-at-once probe, with `write_file_atomic` returning `IoError` and a directory that existed
+a line earlier reported missing — the shape of one process deleting another's tree mid-test.
+
+What is still genuinely exclusive is the
 hardware: one window, one GPU, one set of input devices. Keep a runner to **one job at a time** — do
 not raise its concurrency — because the GPU tests measure the device and a second suite sharing it
 makes the timings meaningless even when the results stay green. Note also that two `ctest` runs drift
