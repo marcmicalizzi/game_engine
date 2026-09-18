@@ -1055,6 +1055,7 @@ TEST_CASE("cluster pages: a request carries the priority of the cluster that mad
   CHECK(screen_pixels(sphere, view) ==
         doctest::Approx(projected_error(sphere, 4.0f, view)).epsilon(1e-6));
   CHECK(sphere_distance(sphere, view) == doctest::Approx(view.camera.y - 2.0f).epsilon(1e-5));
+}
 
 TEST_CASE("cluster pages: a skinned mesh pages its bindings with its vertices, and pays for them") {
   Vector<Vec3> positions;

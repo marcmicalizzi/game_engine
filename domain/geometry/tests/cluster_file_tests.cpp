@@ -323,7 +323,7 @@ TEST_CASE("cluster file: the page table round-trips, and a file without one read
 }
 
 TEST_CASE("cluster file: the skin bindings round-trip, and a file without them reads unskinned") {
-  TempDir tmp;
+  const test::TempDir tmp("cluster_file_skin");
   ClusterFileData data;
   Vector<u32> indices;
   make_fixture(data, indices);
@@ -340,7 +340,7 @@ TEST_CASE("cluster file: the skin bindings round-trip, and a file without them r
   }
   geo.skin_joint_count = 2;
 
-  const std::string path = tmp.path + "/skinned.clusters";
+  const std::string path = tmp.file("skinned.clusters");
   std::string error;
   REQUIRE_MESSAGE(write_cluster_file(path, data, &error), error);
   ClusterFileData read;
