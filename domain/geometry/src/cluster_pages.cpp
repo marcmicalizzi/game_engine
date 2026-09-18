@@ -317,14 +317,14 @@ bool build_cluster_pages(ClusterLodMesh& mesh, const ClusterPagesOptions& option
   Vector<u32> group_new(group_count, k_no_index);
   Vector<ClusterChildren> runs(group_order.size());
   ClusterPageDesc page;
-  bool open = false;
+  bool page_open = false;
   u32 page_bytes = 0;
   auto close_page = [&]() {
     page.cluster_count = new_to_old.size() - page.first_cluster;
     page.bytes = page_bytes;
     out.pages.push_back(page);
     page_bytes = 0;
-    open = false;
+    page_open = false;
   };
   for (u32 rank = 0; rank < group_order.size(); ++rank) {
     const u32 g = group_order[rank];
@@ -333,13 +333,13 @@ bool build_cluster_pages(ClusterLodMesh& mesh, const ClusterPagesOptions& option
     u32 group_bytes = 0;
     for (u32 k = 0; k < members; ++k)
       group_bytes += cluster_page_bytes(geo, group_clusters[first + k]);
-    if (open && page_bytes + group_bytes > target) close_page();
-    if (!open) {
+    if (page_open && page_bytes + group_bytes > target) close_page();
+    if (!page_open) {
       page = ClusterPageDesc{};
       page.first_cluster = new_to_old.size();
       page.level_min = group_level[g];
       page.level_max = group_level[g];
-      open = true;
+      page_open = true;
     }
     page.level_min = group_level[g] < page.level_min ? group_level[g] : page.level_min;
     page.level_max = group_level[g] > page.level_max ? group_level[g] : page.level_max;
@@ -354,7 +354,7 @@ bool build_cluster_pages(ClusterLodMesh& mesh, const ClusterPagesOptions& option
       close_page();
     }
   }
-  if (open) close_page();
+  if (page_open) close_page();
   // A group with no clusters cannot come out of a builder, but keeping `group_count` meaningful
   // costs two lines and keeps every index inside the table it names.
   u32 next_group = group_order.size();
