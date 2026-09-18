@@ -1,8 +1,8 @@
 # sim (domain)
 
-**Purpose.** The simulation core of [05 §5.2–§5.5](../plan/05-simulation.md#52-sim-scheduler): the hierarchical timing wheel over `GameTime` and its budgeted fast-forward ([§5.3](../plan/05-simulation.md#53-event-scheduler-temporal-lod)), and LOD tier assignment over the observer set ([§5.4](../plan/05-simulation.md#54-lod-tier-assignment)); the tick scheduler follows into the same module. It is the registration point capabilities attach to when they tick, schedule, summarize, or materialize ([ADR-0027](../adr/0027-additive-capabilities.md)), which is why it is **not** an optional capability: a registration point that can be switched off is one nobody can register with.
+**Purpose.** The simulation core of [05 §5.2–§5.5](../plan/05-simulation.md#52-sim-scheduler): the hierarchical timing wheel over `GameTime` and its budgeted fast-forward, LOD tier assignment over the observer set, and the tick scheduler that carries the phase order, the system registration table, the materialization contract of [03 §3.4](../plan/03-data-model.md#34-the-runtime-world), and tile reconciliation. It is the registration point capabilities attach to when they tick, schedule, summarize, or materialize ([ADR-0027](../adr/0027-additive-capabilities.md)), which is why it is **not** an optional capability: a registration point that can be switched off is one nobody can register with.
 
-**Owned data.** The timer slab and its free list, the wheel's buckets and occupancy bits, and the summarizer table. Nothing else may hold a timer's storage; a `TimerHandle` is the only outside reference to one. Tier assignment owns only scratch: the caller's SoA arrays stay the caller's.
+**Owned data.** The timer slab and its free list, the wheel's buckets and occupancy bits, the summarizer table, the system registration table and the schedule computed from it, the materialization hooks table, and the fixed-step and game clocks of one simulation. Nothing else may hold a timer's storage; a `TimerHandle` is the only outside reference to one.
 
 ## Why a wheel and not a heap
 
@@ -48,37 +48,90 @@ Importance and weight divide the distance rather than shifting the boundaries, s
 
 **Changes come out in entity order**, not in the order the rate limit selected them, so a consumer walks its own arrays forwards and two runs produce identical bytes.
 
+## The tick
+
+`SimScheduler` runs the eight phases of [05 §5.2](../plan/05-simulation.md#52-sim-scheduler) in order — input, events in, LOD assignment, systems, physics, post-physics, events out, persistence flush — on a fixed step from `core/time`. The timing wheel is pumped at the top of `events in`, so a phase's systems see this tick's events and nothing arrives mid-phase; the persistence hook closes `persist`.
+
+`step()` reads no clock at all, which is what lets a replay, a headless fast-forward and a live session take the same path ([05 §5.10](../plan/05-simulation.md#510-determinism-and-replay)). `advance(real_ns)` is the same machinery with a `FixedStepClock` in front of it. The scheduler keeps its own tick counter rather than the accumulator's, so `step()` called directly still counts.
+
+**The schedule is a pure function of the registration.** Systems declare read and write component-set masks; two systems conflict when one writes something the other reads or writes (read-read is free, which is the point of declaring the sets). Within a phase, a system is placed one *wave* after the latest system it conflicts with, in declaration order — longest-path layering, which is the fewest barriers that still preserves declaration order between every conflicting pair. Systems in one wave provably do not conflict and run in parallel on `core/jobs`' performance pool; waves are separated by a wait. Nothing about this depends on the worker count, and `schedule_hash()` is a 64-bit summary a test or a tool can compare: the module's test asserts that eight workers produce the same bytes as one and as none.
+
+A system that declares empty masks declares "I conflict with nothing", which is a promise, not an absence of information. Declaring nothing and then racing is a bug in the system, and the masks are where it is visible in review.
+
+**`domain/sim` does not depend on `domain/ecs`.** `sim::TickPhase` is declared here with the same enumerators and the same order as `ecs::TickPhase`, because [ADR-0028 §7](../adr/0028-ecs-and-persistent-store.md) deliberately leaves open whether flecs' pipeline stays the tick scheduler. **The two should become one type in the change that settles that — `ecs::TickPhase` aliasing `sim::TickPhase`** — and not the other way round, which would make the scheduler depend on flecs. Until then the duplication is the honest representation of an open question, and the phase-order tests on both sides pin it.
+
+## The materialization contract
+
+[03 §3.4](../plan/03-data-model.md#34-the-runtime-world)'s four hooks — `materialize(record, tier)`, `promote(entity, from, to)`, `demote(entity, from, to)`, `dematerialize(entity)` — are a table of function pointers with a context and a tier mask, walked in registration order. They are data and not a base class for the same reason `SystemDesc` is: a capability that implements none of them contributes no row and costs nothing, and the tier mask means a hook that only exists at LOD0/LOD1 is not called for a transition that happens entirely beyond it.
+
+`apply_tier_changes(changes, entities)` is the driver: the tier code never sees an entity id (it works on SoA indices) and the hook code never sees a position, and the caller's `entities[change.index]` is the one place they meet.
+
+## Tile reconciliation
+
+`reconcile_tile` is [05 §5.5](../plan/05-simulation.md#55-reconciliation-when-a-tile-activates)'s five steps over those hooks: load the tile's projections from the store, compute the elapsed game time since the tile was last active, run every LOD3 summarizer over the gap from the tile's stored seed, materialize the records at LOD2, then promote by observer distance. The plan's own fifth step — applying derived visual state by selecting damage-state variants — is the renderer's and is deliberately not done here.
+
+The store is a pair of function pointers, not an include of `foundation/store`: reconciliation needs "give me this tile's state" and "give me this tile's records", `domain/sim` must not depend on an optional capability ([ADR-0027](../adr/0027-additive-capabilities.md) decision 1), and a test can hand it a fake. Summarizers run in registration order, so two reconciliations of the same tile produce the same summary in the same order whatever the tile contains.
+
 ## Invariants
 
 - Every live timer sits in the bucket its due time and the wheel's current position name, its level is the one `choose_level` would pick, and the occupancy bit of every bucket agrees with whether that bucket's list is empty. `TimingWheel::validate()` checks all of this against a linear recomputation; the cascade test calls it after every one of 2,940 advances.
 - A slot's generation is odd while live and even while free, so a handle from a previous occupant of a slot is refused rather than cancelling somebody else's timer.
 - `advance` never moves `now` past an undelivered due timer: the skip search jumps only to the start of a bucket that has work, and a partially covered final bucket is checked for a genuinely due entry before it is returned.
 - `assign_tiers` writes back exactly the transitions it emits, and emits them in ascending entity index.
+- A phase's schedule is ordered by (wave, declaration index), and two systems that conflict are never in the same wave.
 
 ## Public API
 
 - `domain/sim/timing_wheel.h`: `TimerHandle`, `TimerPayload`, `TimerEvent`, `EventSink` and `make_sink`, `SummarizeInterval`, `Summarizer`, `TimingWheelConfig`, `FastForwardResult`, `TimingWheel` (`schedule`, `schedule_periodic`, `cancel`, `is_live`, `due_time`, `advance` in both forms, `count_due`, `add_summarizer`, `reset`, `validate`, and the shape accessors).
 - `domain/sim/tiers.h`: `ObserverSet`, `TierParams`, `TierChange`, `TierStats`, `TierInput`, `TierAssignment` (`assign_tiers`, `score`, `tier_of`).
+- `domain/sim/scheduler.h`: `TickPhase` and `phase_name`, `ComponentMask`, `Determinism`, `Batch`, `SystemContext`, `SystemDesc`, `ScheduleEntry`, `EntityRecord`, `MaterializationHooks`, `TileState`, `TileStore`, `ReconcileParams`, `ReconcileResult`, `SimSchedulerConfig`, `SimScheduler`.
 
-**Determinism stance ([ADR-0010](../adr/0010-deterministic-sim-and-lod-contract.md)):** `hashed`. Every ordering decision here is made on integers the module itself assigned (due time, insertion sequence, entity index); the only floating point is the tier score, which is computed per entity from the inputs alone and never compared across entities except through a sort whose ties break on the index.
+**Determinism stance ([ADR-0010](../adr/0010-deterministic-sim-and-lod-contract.md)):** `hashed`. Every ordering decision in the module is made on integers the module itself assigned (due time, insertion sequence, declaration index, entity index); the only floating point is the tier score, which is computed per entity from the inputs alone and never compared across entities except through a sort whose ties break on the index.
 
 **LOD policy.** This module *is* one of the registration points for LOD policy, and it supplies the reference implementation the rest of the engine's capabilities are expected to agree with (`TierAssignment::score`/`tier_of` are public so a capability's own policy can be checked against them).
 
-**Zero-cost-when-unused ([11 §11.10](../plan/11-performance-principles.md#1110-absent-capabilities-are-free)):** no instances. A wheel with no timers scheduled has 1,229 empty buckets and five zero occupancy words, and `advance` over any interval is a bitmask scan that finds nothing. Nothing is allocated per event in steady state: timers come from a slab with a free list, and tier assignment reuses its scratch arrays.
+**Zero-cost-when-unused ([11 §11.10](../plan/11-performance-principles.md#1110-absent-capabilities-are-free)):** no instances. A wheel with no timers scheduled has 1,229 empty buckets and five zero occupancy words, and `advance` over any interval is a bitmask scan that finds nothing; a scheduler with no systems registered runs eight phases of nothing; a hooks table with no rows makes `apply_tier_changes` a loop over an empty vector. The module allocates nothing per event in steady state: timers come from a slab with a free list, and the scheduler's per-wave invocation and job arrays are reserved once when the schedule is built.
 
 **Depends on.** `base`, `containers`, `time`, `math`, `jobs`, `log`, `ids`.
 
 ## Testing
 
-`tools/dev.ps1 test -Preset msvc-debug -Filter sim`:
+`tools/dev.ps1 test -Preset msvc-debug -Filter sim` — 35 cases, 3,210 assertions:
 
 - **Timing wheel**: the level ladder's exact resolutions; due order with ties in insertion order; O(1) cancel and refusal of a stale handle after slot reuse; cascading across all five levels checked with `validate()` after each of 2,940 one-minute advances; a 29-day timer found in a single jump; a periodic firing on its phase (registered at 09:13, first firing at 10:00) and keeping its handle across firings; a timer past the horizon kept in the far list and delivered 2,000 days later; a timer scheduled in the past due immediately; a sink that schedules and cancels mid-delivery; and byte-identical output from two runs of a 4,000-timer schedule with periodics and cancellations, including the same bytes when the same interval is walked in 997 advances instead of one.
 - **Fast-forward**: the plan's own case — an hourly economy over a 30-game-day gap delivers 720 events under a large budget, and under a small one makes exactly one summarize call per registered summarizer and fires nothing; an exact summarizer (a counter of game hours) ends at 720 either way; a periodic with no summarizer and a one-shot timer are delivered anyway; a gap under the budget is bit-for-bit an ordinary advance; and counting stops once it passes the budget.
 - **Tiers**: the minimum over observers, including what importance and observer weight do to it; hysteresis holding an entity through a boundary walk that oscillates without it; rate limits promoting nearest-first and deferring the rest to later ticks; changes emitted in entity order when selection order was the reverse; 20,000 entities over six ticks producing identical tier arrays and identical change bytes at none, one and eight workers; and a configurable tier count with out-of-range tiers repaired.
+- **Scheduler**: the eight phases in plan order when the systems are registered back to front; conflicting systems in declaration order and non-conflicting ones sharing a wave; `schedule_hash()` equal for two identical registrations and different for a reordered one; sixteen systems of four batches over eight ticks producing identical results at none, one and eight workers; `begin_tick`/`end_tick` once a tick around the waves; the fixed step driving game time and the wheel; the persistence hook; tier changes driving the hooks, including a hook that only declared some tiers; `reconcile_tile`'s five steps against a fake store and a fake system, with the summary taken from the tile's seed; the same tile reconciled twice giving the same summary; an unknown tile materialized without a summary; and the component mask's stated 256-type width.
 
-The size table pins `TimingWheel::Slot` at 56 bytes; at 10^6 timers the slab is 56 MB, so a byte there is a megabyte.
+The size table pins `TimingWheel::Slot` at 56 bytes and eighteen other types; at 10^6 timers the slab is 56 MB, so a byte there is a megabyte.
+
+## Performance notes
+
+Measured with `tools/dev.ps1 bench -Preset msvc-release -Filter sim.*` on an i9-10980XE, release, otherwise idle.
+
+| Benchmark | Per operation | What it covers |
+|---|---|---|
+| `sim.wheel.insert` | **68 ns** | 10^6 timers spread over 30 game days into an empty wheel |
+| `sim.wheel.cancel` | **32 ns** | cancelling every second one of those 10^6 |
+| `sim.wheel.advance` | **662 ns** | advancing 30 game days, delivering the surviving 5×10^5 |
+| `sim.wheel.tick` | **106 ns** | one fixed step with 10^6 timers resident and nothing due |
+| `sim.tiers.assign` | **23.0 ns** (no job system) → **6.1 ns** (8 workers) | 10^5 entities, three observers |
+| `sim.scheduler.tick` | **0.97 µs** (no job system) | 16 systems × 4 batches, empty bodies |
+
+Three things the numbers say:
+
+1. **Insert and cancel cost what an O(1) bucket operation should**, and the dominant term is not the list surgery but the integer divisions that map a due time to a level index. Computing all six indices by successive division from level 0 — rather than dividing the due time by each level's resolution and by each level's block size separately — plus caching the wheel's own indices took insert from 176 ns to 68 ns, a 2.6× improvement with no change in behaviour. The next step, if it is ever needed, is a reciprocal-multiply table for the five divisors.
+2. **`advance` is dominated by cascading, not by delivery.** With 5×10^5 timers spread over 30 days, every timer falls from level 4 to level 0 through four cascades, so 5×10^5 deliveries do about 2×10^6 re-links, each one a random access into 56 MB of slab. 662 ns per delivered event is therefore a worst case for a wheel that is being drained from empty; the operating point [05 §5.6](../plan/05-simulation.md#56-what-npc-scale-is-realistic) actually projects — 10^6 LOD3 NPCs at about 3.5k events a second — is 2.3 ms of CPU per wall-clock second, and `sim.wheel.tick` shows that holding those 10^6 timers costs 106 ns of a 16.7 ms tick when none of them is due. If the cascade ever shows up in a profile, the fix is to make a bucket a contiguous array of slot indices with the slot carrying its position, which trades the intrusive list's second random write for one.
+3. **Tier assignment scales 3.7× from no job system to eight workers**, not 8×, because scoring is only part of it: the candidate selection, the two sorts and the write-back are serial. Keeping the serial part to a compare-and-append is what makes even 3.7× possible — both hysteresis bands come out of one walk of the boundary table inside the scoring pass, and moving that work the other way (two separate band lookups in the serial pass) measured 2.6× *slower* overall, which is the sharpest evidence available that the serial tail is what governs here. 0.61 ms for 10^5 entities is comfortably under the 1.6 ms [ADR-0028](../adr/0028-ecs-and-persistent-store.md) records for E6's single-threaded LOD pass, but the ADR's point stands: at that population LOD assignment is a budget item, not a rounding error, and the rate limits exist partly so it does not have to act on everything every tick.
+
+`sim.scheduler.tick` with a job system costs 10–12 µs against 0.97 µs without one, for 64 empty invocations: that is the job submission and counter wait, about 160 ns an invocation, and it is the floor a system's body has to be worth crossing. Systems with real work are the only ones that should declare more than one batch, and a phase of cheap systems is better left to the no-job path.
 
 ## What is stubbed
 
+- **The registration table is not yet static.** [ADR-0027](../adr/0027-additive-capabilities.md) describes `SystemDesc` as constant-initialized descriptors in a link-time table; here they are added at runtime with `add_system`. The shape matches field for field (plus `context` and `batches`, because the ADR's sketch assumes a system reaches its module's globals and a testable one has to be handed its state), so the static form is a mechanical change.
+- **`SystemDesc::tiers` and `Determinism` are recorded, not enforced.** Nothing filters a system's invocation by tier yet, because nothing here owns the entity-to-tier mapping; the scheduler carries the declarations so that the tick which does can read them.
+- **`Batch` is an index range the scheduler does not interpret.** It has no entity store to split, so a system that declares four batches gets four invocations numbered 0–3 and decides itself what they mean. When the scheduler drives an entity store, the batch becomes a row range.
 - **No event bus.** [05 §5.7](../plan/05-simulation.md#57-world-events-and-consequences)'s subscribe-by-type-and-tile, causal depth cap, and per-system event budget are not here; the wheel delivers to one sink and the game routes.
+- **No sim hash.** [05 §5.10](../plan/05-simulation.md#510-determinism-and-replay)'s persistent-state hash for replay comparison needs the store's projections; `schedule_hash()` covers only the schedule.
+- **`reconcile_tile` does no writing back.** It reads the tile and materializes; persisting the summarized state is the caller's, through the `persist` phase.
 - **The far list is linear** and the top level's span is about 2.8 game years; see above for when that stops being the right shape.

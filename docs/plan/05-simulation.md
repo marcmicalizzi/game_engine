@@ -14,6 +14,8 @@
 - Fixed step, 60 Hz default (a game may choose 30). Physics sub-steps if needed.
 - Tick phases: input → events in → LOD assignment → systems (parallel) → physics → post-physics → events out → persistence flush.
 
+**Status.** Built in `domain/sim` as `SimScheduler`, 2026-09-17: the eight phases in this order on a fixed step from `core/time`, systems registered with read/write component-set masks, and a wave schedule that is a pure function of the registration — conflicting systems keep declaration order, the rest run in parallel on `core/jobs`, and eight workers produce the same bytes as one; the static link-time registration table of [ADR-0027](../adr/0027-additive-capabilities.md) and the tier filtering of `SystemDesc::tiers` are not yet built. See [sim](../subsystems/sim.md).
+
 ## 5.3 Event scheduler (temporal LOD)
 
 - A hierarchical timing wheel over game time with levels for ticks, seconds, minutes, hours, and days. O(1) insert and cancel; cancellation via generation counters on the timer handle.
@@ -29,7 +31,7 @@
 - Hysteresis bands and per-tick rate limits on promotions and demotions prevent thrash and spread materialization cost.
 - Systems implement the materialization contract ([03-data-model §3.4](03-data-model.md#34-the-runtime-world)).
 
-**Status.** Built in `domain/sim` as `TierAssignment`, 2026-09-17: up to eight configurable tiers, the minimum over observers of distance over (weight × importance), hysteresis bands, per-tick promotion and demotion limits that take the nearest first, and changes emitted in entity index order; 10^5 entities cost 2.5 ms on one thread and 1.6 ms on eight, which makes this a budget row rather than a rounding error, as [ADR-0028](../adr/0028-ecs-and-persistent-store.md) warned. The materialization contract it drives lands with the scheduler.
+**Status.** Built in `domain/sim` as `TierAssignment` and the scheduler's hooks table, 2026-09-17: up to eight configurable tiers, the minimum over observers of distance over (weight × importance), hysteresis bands, per-tick promotion and demotion limits that take the nearest first, changes emitted in entity index order, and `materialize`/`promote`/`demote`/`dematerialize` driven from those changes; 10^5 entities cost 2.3 ms with no job system and 0.61 ms on eight workers, which makes this a budget row rather than a rounding error, as [ADR-0028](../adr/0028-ecs-and-persistent-store.md) warned.
 
 ## 5.5 Reconciliation when a tile activates
 
@@ -40,6 +42,8 @@
 5. Apply derived visual state (rubble cleared, fence erected) by selecting damage-state variants.
 
 Cost is bounded by construction: summary functions are O(events in gap), and the gap's event count is bounded by the periodic systems' frequencies.
+
+**Status.** Built in `domain/sim` as `SimScheduler::reconcile_tile`, 2026-09-17: steps 1–4 over a `TileStore` of function pointers (so the module does not depend on the optional `foundation/store`) and the materialization hooks, with summarizers run in registration order from the tile's stored seed, and step 4's promotion by observer distance sharing the tier code of [§5.4](#54-lod-tier-assignment); step 5, the derived visual state, belongs to the renderer and is not done here, and nothing is written back yet.
 
 ## 5.6 What NPC scale is realistic
 

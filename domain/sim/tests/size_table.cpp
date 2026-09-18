@@ -10,6 +10,7 @@
 // a crowd crossing together makes that a real array.
 
 #include <core/base/size_table.h>
+#include <domain/sim/scheduler.h>
 #include <domain/sim/tiers.h>
 #include <domain/sim/timing_wheel.h>
 
@@ -32,3 +33,15 @@ ENGINE_EXPECT_SIZE(8, 4, TierChange);
 ENGINE_EXPECT_SIZE(20, 4, TierStats);
 ENGINE_EXPECT_SIZE(52, 4, TierParams);
 ENGINE_EXPECT_SIZE(48, 8, TierInput);
+
+// The scheduler's registration tables.
+ENGINE_EXPECT_SIZE(1, 1, TickPhase);
+ENGINE_EXPECT_SIZE(32, 8, ComponentMask);
+ENGINE_EXPECT_SIZE(8, 4, Batch);
+ENGINE_EXPECT_SIZE(40, 8, SystemContext);
+ENGINE_EXPECT_SIZE(120, 8, SystemDesc);
+ENGINE_EXPECT_SIZE(4, 2, ScheduleEntry);
+ENGINE_EXPECT_SIZE(40, 8, EntityRecord);
+ENGINE_EXPECT_SIZE(56, 8, MaterializationHooks);
+ENGINE_EXPECT_SIZE(16, 8, TileState);
+ENGINE_EXPECT_SIZE(24, 8, TileStore);
