@@ -10,5 +10,5 @@
   "height": 480,
   "frame": 0,
   "reference": { "spp": 1024, "bounces": 3, "batch": 32 },
-  "thresholds": { "flip_mean": 0.03, "flip_p95": 0.05 }
+  "thresholds": { "flip_mean": 0.01, "flip_p95": 0.05 }
 }

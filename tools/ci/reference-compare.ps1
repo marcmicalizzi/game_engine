@@ -213,12 +213,14 @@ try {
       bounces            = $reference['bounces']
       visible_pairs      = $r.stats.visible_pairs
       # Where the geometry came from — "miss" built from the glTF, "hit" read from the derived-data
-      # cache, "file" a container named outright, "none" the heightfield. It is in the report
-      # because it is **not** always the same picture: measured on the Khronos Lantern, the mesh
-      # built in memory and the same mesh round-tripped through a `.clusters` container differ by
-      # 0.019 FLIP, so a run that missed the cache and a run that hit it give different numbers for
-      # that scene (docs/subsystems/renderer.md). A number whose provenance is not recorded is a
-      # number nobody can reproduce.
+      # cache, "file" a container named outright, "none" the heightfield. A number whose provenance
+      # is not recorded is a number nobody can reproduce, and this field has already earned its
+      # place once: it is what identified a `thin-geometry` result that alternated between 0.0116
+      # and 0.0051 as a *container* defect rather than a rendering one — a `.clusters` file did not
+      # carry the images its GLB embedded, so the Lantern drew untextured from the cache and
+      # textured from the source (docs/subsystems/geometry.md, "Embedded images"). Fixed on
+      # 2026-09-18; the corpus now gives the same numbers cold and warm, and the field stays,
+      # because the next divergence will not announce itself either.
       mesh_cache         = $loaded.result.mesh_cache
       full               = [ordered]@{ flip_mean = $r.full.flip_mean; flip_p95 = $r.full.flip_p95
                                        flip_max = $r.full.flip_max; psnr = $r.full.psnr
