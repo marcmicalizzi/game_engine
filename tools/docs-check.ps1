@@ -50,6 +50,10 @@ $problems = New-Object System.Collections.Generic.List[object]
 # with a build directory in it costs nothing to check.
 $excludedDirs = @('build', 'out', '_deps', 'third_party', '.git', '.claude', '.cache', 'node_modules', 'ddc')
 
+# Directories that exist only on a machine that downloaded them: their documents are somebody
+# else's and their links are not this repository's to fix (tools/fetch-samples.ps1).
+$excludedPaths = @('content/samples')
+
 function Get-Rel([string]$path) {
   return ([IO.Path]::GetRelativePath($Root, $path) -replace '\\', '/')
 }
@@ -69,6 +73,7 @@ function Get-TreeFiles([string]$dir, [string]$pattern) {
     $current = $pending.Pop()
     foreach ($sub in [IO.Directory]::EnumerateDirectories($current)) {
       if ($excludedDirs -contains [IO.Path]::GetFileName($sub)) { continue }
+      if ($excludedPaths -contains (Get-Rel $sub)) { continue }
       $pending.Push($sub)
     }
     foreach ($file in [IO.Directory]::EnumerateFiles($current, $pattern)) { $found.Add($file) }
