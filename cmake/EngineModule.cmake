@@ -70,6 +70,13 @@ endfunction()
 #   endif()
 function(engine_capability_enabled capability out_var)
   _engine_capability_option("${capability}" _enabled)
+  # A CMakeLists that guards its whole file with this (because the capability's dependency must
+  # not even be fetched when it is off) still owes modules.json the row that says the capability
+  # exists and is switched off: engine_module() never runs in that configuration to record it,
+  # and an empty "disabled_capabilities" would read as "there is no such capability".
+  if(NOT _enabled)
+    set_property(GLOBAL APPEND PROPERTY ENGINE_DISABLED_CAPABILITIES "${capability}")
+  endif()
   set(${out_var} ${_enabled} PARENT_SCOPE)
 endfunction()
 
