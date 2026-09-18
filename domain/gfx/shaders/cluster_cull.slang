@@ -167,7 +167,14 @@ void cull_main(uint3 thread_id : SV_DispatchThreadID) {
   ClusterDesc* clusters = (ClusterDesc*)params->clusters;
   const ClusterDesc cluster = clusters[index];
   const float3 center = mul(instance.world, float4(cluster.center, 1.0)).xyz;
-  const float radius = cluster.radius * instance.scale_max;
+  // A deformed instance's vertices leave their rest positions, so every sphere this pass tests is
+  // inflated by the caller's bound on that displacement, in world units. It is zero for a rigid
+  // instance, and adding zero to a float is exact, so nothing about the rigid path changes.
+  // The same constant goes on the LOD spheres below, which is what keeps the cut crack-free: a
+  // cluster's parent sphere is its children's own sphere, so one constant per instance still
+  // leaves exactly one cluster per DAG path passing (docs/subsystems/renderer.md).
+  const float padding = instance.bounds_padding * instance.scale_max;
+  const float radius = cluster.radius * instance.scale_max + padding;
 
   if (params->lod.w > 0.0) {
     for (uint p = 0; p < params->plane_count; ++p) {
@@ -184,10 +191,10 @@ void cull_main(uint3 thread_id : SV_DispatchThreadID) {
   if (params->lod.z > 0.0) {
     ClusterLodDesc* lods = (ClusterLodDesc*)params->lods;
     const ClusterLodDesc lod = lods[index];
-    const float4 own_sphere =
-        float4(mul(instance.world, float4(lod.own.xyz, 1.0)).xyz, lod.own.w * instance.scale_max);
+    const float4 own_sphere = float4(mul(instance.world, float4(lod.own.xyz, 1.0)).xyz,
+                                     lod.own.w * instance.scale_max + padding);
     const float4 parent_sphere = float4(mul(instance.world, float4(lod.parent.xyz, 1.0)).xyz,
-                                        lod.parent.w * instance.scale_max);
+                                        lod.parent.w * instance.scale_max + padding);
     const float own = projected_error(own_sphere, lod.own_error * instance.scale_max,
                                       params->camera.xyz, params->camera.w, params->lod.x);
     const float parent =

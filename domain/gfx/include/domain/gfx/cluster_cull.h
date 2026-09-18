@@ -171,6 +171,18 @@ inline constexpr u32 k_instance_uniform_scale = 1u;
 
 // GPU-mirrored; keep in step with the InstanceDesc struct in the shaders. 96 bytes, read through
 // a device address. One per instance of the scene, in order of `first_pair`.
+//
+// `bounds_padding` took the first of the two padding words and is **zero for every instance that
+// existed before skinning**, so the cull arithmetic reduces to exactly what it was (a float plus
+// zero is exact) and the pictures are byte-identical. It is how a *deformed* instance stays
+// conservatively culled: a skinned vertex leaves its rest position, so the cluster sphere the
+// cull pass tests no longer contains it. The caller supplies a bound, in the instance's own mesh
+// space, on how far any vertex of the mesh can move under the deformation it will play, and the
+// cull pass adds `bounds_padding * scale_max` to every cluster sphere radius *and* to both LOD
+// spheres. Adding it to all three keeps the DAG cut crack-free: a cluster's parent sphere is its
+// children's own sphere, so one constant added to every sphere of an instance leaves exactly one
+// cluster per DAG path passing the test, which is the property the cut rests on
+// (docs/subsystems/renderer.md, "Skinned instances").
 struct InstanceDesc {
   Mat4 world;             // mesh space to world; the top three rows are used
   u32 mesh = 0;           // index into the MeshDesc array
@@ -179,7 +191,8 @@ struct InstanceDesc {
   f32 scale_max = 1.0f;   // largest axis scale: radii and LOD errors multiply by it
   u32 flags = k_instance_uniform_scale;
   u32 deform = k_invalid_deform;  // entry of the DeformDesc table; k_invalid_deform: rigid
-  u32 pad[2] = {};
+  f32 bounds_padding = 0.0f;  // mesh-space slack added to every sphere this instance is culled by
+  u32 pad = 0;
 };
 static_assert(sizeof(InstanceDesc) == 96);
 

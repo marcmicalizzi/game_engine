@@ -55,7 +55,11 @@ struct InstanceDesc {
   float scale_max;  // largest axis scale: radii and LOD errors multiply by it
   uint flags;       // bit 0: uniform scale
   uint deform;      // entry of the DeformDesc table; k_invalid_deform: rigid
-  uint2 pad;
+  // Mesh-space slack the cull pass adds to every sphere of this instance, so a deformed instance
+  // whose vertices leave their rest positions is still culled conservatively. Zero for a rigid
+  // one, and a float plus zero is exact, so the rigid arithmetic is unchanged.
+  float bounds_padding;
+  uint pad;
 };
 
 // Mirrors gfx::DeformDesc (24 bytes): one per deformed instance. `joints` is per instance and

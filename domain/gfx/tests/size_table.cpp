@@ -24,7 +24,9 @@ ENGINE_EXPECT_SIZE(24, 8, gfx::DeformDesc);
 
 ENGINE_EXPECT_SIZE(80, 8, gfx::DeformParams);
 
-// Unchanged at 96: `deform` took one of the three pad words.
+// Unchanged at 96: `deform` took one of the three pad words and `bounds_padding` a second, so a
+// deformed instance can say how far its vertices leave their rest positions without the record
+// growing. One pad word is left.
 ENGINE_EXPECT_SIZE(96, 4, gfx::InstanceDesc);
 
 ENGINE_EXPECT_SIZE(128, 8, gfx::ClusterDrawParams);
