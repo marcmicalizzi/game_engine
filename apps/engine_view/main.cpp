@@ -33,8 +33,17 @@
 #include <systems/renderer/scene_renderer.h>
 #include <systems/renderer/settings.h>
 
+#if ENGINE_VIEW_ANIMATION
+#include <core/ids/id128.h>
+#include <domain/ecs/sim_world.h>
+#include <domain/ecs/world_commands.h>
+#include <systems/animation/animation.h>
+#endif
+
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <memory>
 #include <string>
 #include <string_view>
 
@@ -55,6 +64,7 @@ constexpr const char* k_usage =
     "                   [--deform none|identity|wave|lattice] [--deform-amplitude <a>] [--rt-templates]\n"
     "                   [--shadows off|rt] [--views single|surround3|panini] [--side-yaw <deg>]\n"
     "                   [--panini-d <d>] [--peripheral-lod <mult>]\n"
+    "                   [--animate [clip]] [--anim-speed <x>]\n"
     "\n"
     "  --frames <n>     render n frames, then exit (0: until the window closes)\n"
     "  --capture <png>  write the last frame as a PNG (implies --frames 60 when unset)\n"
@@ -94,6 +104,14 @@ constexpr const char* k_usage =
     "  --deform-amplitude <a>  displacement as a fraction of the mesh's bounds (default 0.02)\n"
     "  --rt-templates   --raster rt: build one cluster template per cluster at load and\n"
     "                   instantiate the cut's templates each frame instead of rebuilding the CLAS\n"
+    "  --animate [clip] play a skinned glTF's animation: the skin becomes a skeleton, a clip is\n"
+    "                   ticked at the fixed step, and every instance is skinned through the same\n"
+    "                   deformed-vertex pool --deform uses. The optional value names the clip by\n"
+    "                   name or by index among the skin's clips; with none, the first one plays.\n"
+    "                   With --grid-instances every copy gets its own phase offset, so a crowd is\n"
+    "                   not in lockstep. A scene file says it per instance, in an \"animation\"\n"
+    "                   block: {\"clip\":\"Run\",\"speed\":1.5,\"phase\":0.4}\n"
+    "  --anim-speed <x> multiply every animated instance's playback rate (default 1)\n"
     "  --views <how>    single (default: one rectilinear view over the whole target); surround3:\n"
     "                   three views with per-monitor off-axis frusta, the target divided in three;\n"
     "                   panini: one view rendered rectilinear into an oversampled source and\n"
@@ -132,6 +150,9 @@ struct Options {
   u32 grid_instances = 0;  // n: place the one mesh n x n times
   bool cache = true;
   f32 orbit = 0.0f;  // 0: breathe
+  bool animate = false;
+  std::string clip;  // --animate's optional value: a clip name or an index
+  f32 anim_speed = 1.0f;
   renderer::RenderSettings settings;
 };
 
@@ -170,6 +191,200 @@ bool parse_f32_zero_ok(const std::string& text, f32& out) {
   out = static_cast<f32>(v);
   return true;
 }
+
+// ---- the animated world (docs/subsystems/animation.md, "The app-side glue") -------------------
+//
+// The whole of `--animate`, and it is here rather than in `systems/renderer` on purpose: the
+// renderer must not depend on the animation capability, on `domain/ecs`, or on flecs, so what
+// crosses the boundary is one span of `anim::JointMatrix` and one `renderer::InstanceJoints` per
+// instance and nothing else. A game writes exactly this — a world, a library, one entity per
+// character, a fixed-step tick, and a per-frame read of the runs — which is why it is spelled out
+// instead of folded into the frame loop.
+//
+// It is also the only place in engine-view that an optional capability reaches. Without
+// ENGINE_VIEW_ANIMATION (a minimal build, `ENGINE_WITH_ANIMATION=OFF`, `ENGINE_WITH_ECS=OFF`)
+// none of this compiles and `--animate` is refused with a sentence.
+#if ENGINE_VIEW_ANIMATION
+struct AnimatedScene {
+  // 60 Hz, which is the rate the deformation phase and the light orbit already run at, so
+  // `--frames N` advances the world exactly N steps and two runs draw the same picture.
+  ecs::SimWorld sim;
+  animation::Library library;
+  animation::AnimationSystem system;
+  Vector<Id128> entities;                 // one per scene instance; null where it is rigid
+  Vector<renderer::InstanceJoints> runs;  // refilled every tick; what the renderer reads
+  Vector<u32> mesh_skeleton;              // the skeleton each scene mesh's file contributed
+  u32 joints = 0;                         // the widest skeleton attached
+  u32 instances = 0;                      // entities attached
+  std::string clip_name;                  // what the summary reports
+
+  AnimatedScene() : system(library) {}
+};
+
+// A stable, reproducible id per scene instance. `Id128` is the persistent identity ADR-0028 seam 3
+// asks for; deriving it from the instance index rather than from a counter keeps a capture
+// deterministic across runs.
+Id128 instance_id(u32 instance) { return Id128::from_seed(0x656e67'76696577ull, instance + 1); }
+
+// Loads every skin and clip of the scene's mesh files. A `.clusters` container carries the
+// per-vertex binding stream but neither a skeleton nor a curve — those are in the source glTF —
+// so a run that animates names the glTF, and the derived-data cache still serves its geometry.
+bool load_clips(AnimatedScene& scene, const renderer::SceneDesc& desc, std::string& error) {
+  scene.mesh_skeleton.resize(desc.meshes.size(), animation::Library::k_not_found);
+  for (u32 m = 0; m < desc.meshes.size(); ++m) {
+    const std::string& path = desc.meshes[m];
+    if (path.empty() || io::extension(path) == ".clusters") continue;
+    const u32 before = scene.library.skeleton_count();
+    animation::LoadStats stats;
+    if (!scene.library.load_gltf(path, {}, &stats, &error)) return false;
+    if (scene.library.skeleton_count() > before) scene.mesh_skeleton[m] = before;
+    ENGINE_LOG_INFO(log_view, "clips loaded", log::field("path", path),
+                    log::field("skeletons", stats.skeletons), log::field("clips", stats.clips),
+                    log::field("skipped_channels", stats.skipped_channels));
+  }
+  return true;
+}
+
+// The clip `request` names among the clips of `skeleton`: its index within that skeleton's clips,
+// its full library name, or its name without the library's prefix. An empty request takes the
+// skeleton's first clip. `k_not_found` when nothing matches, which is a usage error and not a
+// silent fall back to some other animation.
+u32 find_clip(const animation::Library& library, u32 skeleton, std::string_view request) {
+  u32 ordinal = 0;
+  u32 index = ~u32{0};
+  const bool numeric =
+      !request.empty() && request.find_first_not_of("0123456789") == std::string_view::npos;
+  if (numeric) index = static_cast<u32>(std::strtoul(std::string(request).c_str(), nullptr, 10));
+  for (u32 i = 0; i < library.clip_count(); ++i) {
+    if (library.clip(i).skeleton != skeleton) continue;
+    if (request.empty() || (numeric && ordinal == index)) return i;
+    const std::string& name = library.clip(i).name;
+    if (!numeric && (name == request ||
+                     (name.size() > request.size() &&
+                      name.compare(name.size() - request.size(), request.size(), request) == 0 &&
+                      name[name.size() - request.size() - 1] == '/'))) {
+      return i;
+    }
+    ++ordinal;
+  }
+  return animation::Library::k_not_found;
+}
+
+// Part two of the glue: one entity per skinned instance, its clip, and its phase.
+//
+// It runs *after* the scene has loaded because the renderer's joint buffer is sized by the pose
+// pool, and the pool only knows its size once the population is attached — which is also the
+// honest place for `SceneData::max_joints` to be filled in.
+bool attach_instances(AnimatedScene& scene, const renderer::SceneDesc& desc,
+                      renderer::SceneData& data, const Options& options, std::string& error) {
+  scene.system.install(scene.sim);
+  const u32 count = data.instances.size();
+  scene.entities.resize(count, Id128{});
+  scene.runs.resize(count, renderer::InstanceJoints{});
+  // The grid is expanded inside `load_scene`, so its instances have no `SceneInstance` of their
+  // own to carry a block; they take the command line's clip and speed and a phase each.
+  const bool from_grid = desc.instances.size() != count;
+
+  ecs::WorldCommands commands(scene.sim.world());
+  for (u32 i = 0; i < count; ++i) {
+    if (data.instance_joints.empty() || data.instance_joints[i] == 0) continue;
+    commands.create(instance_id(i));
+  }
+  commands.apply();
+
+  // The bound each instance's cluster spheres are inflated by is a property of (mesh, clip), not
+  // of the instance, so both halves are computed once and cached: the per-joint influence spheres
+  // per mesh, and the displacement bound per clip. A thousand-strong crowd of one character
+  // samples its clip once.
+  Vector<animation::JointBounds> bounds_of_mesh(data.parts.size());
+  Vector<bool> bounds_built(data.parts.size(), false);
+  Vector<f32> padding_of_clip(scene.library.clip_count(), -1.0f);
+
+  for (u32 i = 0; i < count; ++i) {
+    if (data.instance_joints.empty() || data.instance_joints[i] == 0) continue;
+    const u32 skeleton_index = scene.mesh_skeleton[data.instances[i].mesh];
+    if (skeleton_index == animation::Library::k_not_found) continue;
+    renderer::SceneAnimation request;
+    if (from_grid) {
+      request.clip = options.clip;
+      request.speed = options.anim_speed;
+    } else {
+      request = desc.instances[i].animation;
+      if (request.clip.empty()) request.clip = options.clip;
+      request.speed *= options.anim_speed;
+    }
+    const u32 clip_index = find_clip(scene.library, skeleton_index, request.clip);
+    if (clip_index == animation::Library::k_not_found) {
+      error = request.clip.empty() ? std::string("the skin has no animation to play")
+                                   : "no clip named '" + request.clip + "'";
+      return false;
+    }
+    const Id128 id = instance_id(i);
+    if (!scene.system.attach(id, scene.library.skeleton(skeleton_index).id,
+                             scene.library.clip(clip_index).id)) {
+      error = "the animation library does not hold this skin's skeleton";
+      return false;
+    }
+    // The phase: what the scene file asked for, or a spread over the clip so that a crowd of one
+    // clip is not a crowd of clones. Every copy still starts at a value that is a function of its
+    // index alone, so two runs of `--frames N` draw the same picture.
+    const f32 duration = scene.library.clip_data(clip_index).duration;
+    f32 phase = request.phase;
+    if (phase == 0.0f && count > 1 && duration > 0.0f)
+      phase = duration * static_cast<f32>(i) / static_cast<f32>(count);
+    if (duration > 0.0f) phase = std::fmod(phase, duration);
+    scene.system.set_playhead(id, phase, request.speed);
+    scene.entities[i] = id;
+    ++scene.instances;
+    scene.joints = scene.joints > data.instance_joints[i] ? scene.joints : data.instance_joints[i];
+    if (scene.clip_name.empty()) scene.clip_name = scene.library.clip(clip_index).name;
+
+    // The cull pass tests this instance by its **rest-pose** spheres, and a skinned vertex is not
+    // in them, so it carries a bound on how far the clip it plays can move one.
+    const u32 mesh = data.instances[i].mesh;
+    if (!bounds_built[mesh]) {
+      bounds_built[mesh] = true;
+      const geometry::ClusterMesh& mesh_data = data.lod.mesh;
+      if (!mesh_data.skin.empty()) {
+        // This mesh's own run of the scene's cluster-ordered streams; the bindings index this
+        // mesh's palette, so the spheres are per mesh even though the streams are per scene.
+        const u32 first = data.parts[mesh].first_vertex;
+        const u32 last = mesh + 1 < data.parts.size() ? data.parts[mesh + 1].first_vertex
+                                                      : mesh_data.vertices.size();
+        animation::joint_influence_bounds(
+            std::span<const Vec3>(mesh_data.vertices.data() + first, last - first),
+            std::span<const geometry::SkinBinding>(mesh_data.skin.data() + first, last - first),
+            scene.library.skeleton_data(skeleton_index).joint_count(), bounds_of_mesh[mesh]);
+      }
+    }
+    if (padding_of_clip[clip_index] < 0.0f) {
+      padding_of_clip[clip_index] = animation::clip_displacement_bound(
+          scene.library.skeleton_data(skeleton_index), scene.library.clip_data(clip_index),
+          bounds_of_mesh[mesh]);
+      Vec3 center{};
+      f32 mesh_radius = 0.0f;
+      renderer::mesh_bounds(data.lod, data.parts[mesh].first_cluster,
+                            data.parts[mesh].leaf_cluster_count, center, mesh_radius);
+      ENGINE_LOG_INFO(log_view, "skinned bounds padding",
+                      log::field("clip", scene.library.clip(clip_index).name),
+                      log::field("mesh_radius", mesh_radius),
+                      log::field("padding", padding_of_clip[clip_index]));
+    }
+    data.instances[i].bounds_padding = padding_of_clip[clip_index];
+  }
+  if (scene.instances == 0) {
+    error = "no instance of this scene is skinned";
+    return false;
+  }
+  // The pool hands out one slot per instance and never splits a run, so its capacity now is the
+  // longest span a frame can hand over. The renderer clamps anything longer and says so once.
+  data.max_joints = scene.system.poses().joint_capacity();
+  // The instances now carry their padding, so the scene's bounding sphere — what the camera
+  // frames, and what the light reach and the shadow bias scale with — has to be taken again.
+  renderer::update_scene_bounds(data);
+  return true;
+}
+#endif
 
 // The multi-view block of the summary line: what the layout is, and what each view cost. Built
 // rather than formatted because it is an array of objects, and built while the renderer is still
@@ -290,6 +505,19 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "engine-view: --deform expects none, identity, wave, or lattice\n");
         return k_exit_usage;
       }
+    } else if (a == "--anim-speed") {
+      if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
+      if (!parse_f32(value, options.anim_speed)) {
+        std::fprintf(stderr, "engine-view: --anim-speed expects a positive number\n");
+        return k_exit_usage;
+      }
+    } else if (a == "--animate") {
+      // The one flag whose value is optional: `--animate` plays the skin's first clip and
+      // `--animate Run` names one. A following argument is the clip unless it is another flag,
+      // which is what lets `--animate --frames 6` mean what it reads as.
+      options.animate = true;
+      if (i + 1 < argc && std::string_view(argv[i + 1]).substr(0, 2) != "--")
+        options.clip = argv[++i];
     } else if (a == "--rt-templates") {
       options.settings.rt_templates = true;
     } else if (a == "--raster") {
@@ -364,6 +592,23 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "engine-view: --scene names its own meshes and instances\n");
     return k_exit_usage;
   }
+  if (options.animate && options.mesh.empty() && options.scene.empty()) {
+    std::fprintf(stderr,
+                 "engine-view: --animate needs a skinned mesh: --mesh <file.gltf|file.glb> or a "
+                 "--scene file naming one. The procedural heightfield has no skin.\n");
+    return k_exit_usage;
+  }
+#if !ENGINE_VIEW_ANIMATION
+  if (options.animate) {
+    // The capability is not in this build (ENGINE_WITH_ANIMATION=OFF, ENGINE_WITH_ECS=OFF, or a
+    // minimal preset). Say which switch, rather than drawing a character standing still.
+    std::fprintf(stderr,
+                 "engine-view: --animate needs the animation capability, which this build does "
+                 "not have. Configure with ENGINE_WITH_ANIMATION=ON and ENGINE_WITH_ECS=ON (the "
+                 "minimal presets switch both off).\n");
+    return k_exit_usage;
+  }
+#endif
   if (!options.capture.empty() && options.frames == 0) options.frames = 60;
 
   log::StreamSink stderr_sink(stderr, log::StreamSink::Format::Text);
@@ -413,6 +658,12 @@ int main(int argc, char** argv) {
   }
 
   int exit_code = 0;
+#if ENGINE_VIEW_ANIMATION
+  // Heap, and only when `--animate` asks: constructing an `ecs::SimWorld` builds a flecs world
+  // with the engine's phases in it, and a run that draws a static mesh should pay nothing for a
+  // capability it is not using (plan 11 §11.10).
+  std::unique_ptr<AnimatedScene> animated;
+#endif
   VkSurfaceKHR surface = VK_NULL_HANDLE;
   gfx::Swapchain swapchain;
   renderer::SceneData scene_data;
@@ -432,6 +683,9 @@ int main(int argc, char** argv) {
   u64 template_bytes = 0;
   u64 rt_bytes = 0;
   std::string views_text = "{}";
+  u32 skinned_instances = 0;
+  u32 joint_matrices = 0;
+  std::string clip_text;
 
   // Everything below unwinds through this block so the destruction order stays in one place.
   do {
@@ -467,10 +721,85 @@ int main(int argc, char** argv) {
     } else {
       desc.meshes.push_back(options.mesh);  // empty: the procedural heightfield
     }
+
+#if ENGINE_VIEW_ANIMATION
+    // ---- the animated world, part one: the clips, and which instances play them --------------
+    //
+    // Before the scene loads, because `SceneInstance::joints` is what makes an instance skinned
+    // and the GPU scene's deform table is laid out from it.
+    bool wants_animation = options.animate;
+    for (const renderer::SceneInstance& instance : desc.instances)
+      wants_animation = wants_animation || instance.animation.play;
+    if (wants_animation) {
+      animated = std::make_unique<AnimatedScene>();
+      if (!load_clips(*animated, desc, error)) {
+        exit_code = fail("clips", error);
+        break;
+      }
+      auto joints_of_mesh = [&](u32 mesh) {
+        const u32 skeleton = mesh < animated->mesh_skeleton.size()
+                                 ? animated->mesh_skeleton[mesh]
+                                 : animation::Library::k_not_found;
+        return skeleton == animation::Library::k_not_found
+                   ? 0u
+                   : animated->library.skeleton_data(skeleton).joint_count();
+      };
+      if (desc.instances.empty()) {
+        // `--mesh --animate`: the grid is expanded by the loader and a single instance is not, so
+        // the one case that has no `SceneInstance` yet gets one here.
+        if (desc.grid_instances > 1) {
+          desc.grid_joints = joints_of_mesh(0);
+        } else {
+          renderer::SceneInstance instance;
+          instance.mesh = 0;
+          instance.joints = joints_of_mesh(0);
+          instance.animation.play = true;
+          desc.instances.push_back(instance);
+        }
+      } else {
+        for (renderer::SceneInstance& instance : desc.instances) {
+          if (options.animate) instance.animation.play = true;
+          if (instance.animation.play) instance.joints = joints_of_mesh(instance.mesh);
+        }
+      }
+      const u32 joints = desc.grid_instances > 1
+                             ? desc.grid_joints
+                             : (desc.instances.empty() ? 0u : desc.instances[0].joints);
+      if (joints == 0) {
+        exit_code =
+            fail("clips", "no mesh of this scene has a skin; --animate needs a skinned glTF");
+        break;
+      }
+    }
+#endif
+
     if (!renderer::load_scene(desc, scene_data, error)) {
       exit_code = fail("mesh", error);
       break;
     }
+
+#if ENGINE_VIEW_ANIMATION
+    // ---- part two: the entities, their clips, and the bounds a moving character needs --------
+    if (animated) {
+      if (!attach_instances(*animated, desc, scene_data, options, error)) {
+        exit_code = fail("animate", error);
+        break;
+      }
+      skinned_instances = animated->instances;
+      joint_matrices = static_cast<u32>(animated->system.joint_matrices().size());
+      clip_text = animated->clip_name;
+      // The summary is a JSON line, so a clip name with a quote or a backslash in it would break
+      // whatever reads it. Names come from a file nobody here wrote; replace rather than escape,
+      // since this is a label and not an identifier.
+      for (char& c : clip_text) {
+        if (c == '"' || c == '\\' || static_cast<unsigned char>(c) < 0x20) c = '_';
+      }
+      ENGINE_LOG_INFO(
+          log_view, "animated", log::field("instances", animated->instances),
+          log::field("clip", animated->clip_name), log::field("joints", animated->joints),
+          log::field("joint_matrices", joint_matrices), log::field("speed", options.anim_speed));
+    }
+#endif
     renderer::resolve_settings(options.settings, device.features(), &scene_data, resolved);
     const renderer::RenderAvailability availability =
         renderer::check_availability(resolved, device.features());
@@ -601,10 +930,32 @@ int main(int argc, char** argv) {
       extent_width = view_renderer.width();
       extent_height = view_renderer.height();
 
+#if ENGINE_VIEW_ANIMATION
+      // One fixed step of the world per frame, then read back where each instance's matrices
+      // are. `SimWorld::step` reads no clock, so `--frames N` advances exactly N steps and two
+      // runs produce the same picture whatever the machine was doing.
+      if (animated) {
+        animated->sim.step();
+        for (u32 i = 0; i < animated->entities.size(); ++i) {
+          renderer::InstanceJoints& run = animated->runs[i];
+          run = renderer::InstanceJoints{};
+          if (!animated->entities[i].is_null())
+            animated->system.joint_run(animated->entities[i], run.first, run.count);
+        }
+      }
+#endif
+
       renderer::FrameDesc frame;
       frame.camera =
           renderer::orbit_camera(scene_data.center, scene_data.radius, options.orbit, rendered);
       frame.frame_index = rendered;
+#if ENGINE_VIEW_ANIMATION
+      if (animated) {
+        // The whole contract: one span, and one run per instance.
+        frame.joints = animated->system.joint_matrices();
+        frame.instance_joints = {animated->runs.data(), animated->runs.size()};
+      }
+#endif
       frame.color = swapchain.image(image_index);
       frame.final_layout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
       frame.wait = view_renderer.acquire_semaphore();
@@ -683,6 +1034,7 @@ int main(int argc, char** argv) {
         "\"visible_pairs_last\":%u,\"visible_min\":%u,"
         "\"visible_max\":%u,"
         "\"deform\":\"%s\",\"deform_pool_bytes\":%llu,\"rt_templates\":%s,"
+        "\"skinned_instances\":%u,\"joints\":%u,\"clip\":\"%s\","
         "\"template_bytes\":%llu,\"rt_bytes\":%llu,\"views\":%s,"
         "\"gpu_memory\":{\"budget_mib\":%llu,\"used_mib\":%llu,"
         "\"device_local_total_mib\":%llu},\"machine_state\":%s,"
@@ -701,9 +1053,10 @@ int main(int argc, char** argv) {
         stats.visible_sw, stats.visible_pairs(), visible_min, stats.visible_max,
         renderer::deform_name(resolved.settings),
         static_cast<unsigned long long>(deform_pool_bytes),
-        resolved.settings.rt_templates ? "true" : "false",
-        static_cast<unsigned long long>(template_bytes), static_cast<unsigned long long>(rt_bytes),
-        views_text.c_str(), static_cast<unsigned long long>(stats.gpu_memory.budget_mib),
+        resolved.settings.rt_templates ? "true" : "false", skinned_instances, joint_matrices,
+        clip_text.c_str(), static_cast<unsigned long long>(template_bytes),
+        static_cast<unsigned long long>(rt_bytes), views_text.c_str(),
+        static_cast<unsigned long long>(stats.gpu_memory.budget_mib),
         static_cast<unsigned long long>(stats.gpu_memory.used_mib),
         static_cast<unsigned long long>(stats.gpu_memory.device_local_total_mib),
         machine_text.c_str(), stats.cull_ms(), stats.hw_ms(), stats.sw_ms(), stats.hiz_ms(),

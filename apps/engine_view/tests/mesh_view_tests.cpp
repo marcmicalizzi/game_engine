@@ -205,6 +205,114 @@ bool write_cube_glb(const std::string& path) {
   return f.good();
 }
 
+// A two-bone skinned, animated GLB: a flat bar of three rows standing along +y, bound root to
+// tip by height, with one clip that turns the tip joint a quarter turn about +z over one second.
+//
+// It is written here rather than shared with `systems/animation`'s fixture of the same shape,
+// because a module does not reach into another module's tests directory — that header says so
+// itself. What this one is for is different anyway: `--animate` end to end, so it needs a mesh
+// the renderer will actually draw and a clip whose phase is visible in a capture, not a rig whose
+// keyframe values are hand-checkable.
+bool write_skinned_glb(const std::string& path) {
+  std::vector<u8> bin;
+  const Vec3 positions[6] = {{-0.5f, 0.0f, 0.0f}, {0.5f, 0.0f, 0.0f},  {-0.5f, 1.0f, 0.0f},
+                             {0.5f, 1.0f, 0.0f},  {-0.5f, 2.0f, 0.0f}, {0.5f, 2.0f, 0.0f}};
+  const f32 weights[6][2] = {{1.0f, 0.0f}, {1.0f, 0.0f}, {0.5f, 0.5f},
+                             {0.5f, 0.5f}, {0.0f, 1.0f}, {0.0f, 1.0f}};
+  for (const Vec3& p : positions) {
+    put_f32(bin, p.x);
+    put_f32(bin, p.y);
+    put_f32(bin, p.z);
+  }
+  const u32 joints_offset = static_cast<u32>(bin.size());
+  for (u32 v = 0; v < 6; ++v) {  // JOINTS_0 as four unsigned bytes
+    bin.push_back(0);
+    bin.push_back(1);
+    bin.push_back(0);
+    bin.push_back(0);
+  }
+  const u32 weights_offset = static_cast<u32>(bin.size());
+  for (const auto& w : weights) {
+    put_f32(bin, w[0]);
+    put_f32(bin, w[1]);
+    put_f32(bin, 0.0f);
+    put_f32(bin, 0.0f);
+  }
+  const u32 index_offset = static_cast<u32>(bin.size());
+  const u16 indices[12] = {0, 1, 2, 2, 1, 3, 2, 3, 4, 4, 3, 5};
+  for (const u16 i : indices)
+    put_u16(bin, i);
+  const u32 index_bytes = static_cast<u32>(bin.size()) - index_offset;
+  pad4(bin, 0);
+  // Inverse binds: the root's is the identity, the tip's undoes its height.
+  const u32 inverse_bind_offset = static_cast<u32>(bin.size());
+  for (u32 j = 0; j < 2; ++j) {
+    const f32 m[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, j == 0 ? 0.0f : -1.0f, 0, 1};
+    for (const f32 v : m)
+      put_f32(bin, v);
+  }
+  const u32 times_offset = static_cast<u32>(bin.size());
+  put_f32(bin, 0.0f);
+  put_f32(bin, 1.0f);
+  const u32 rotations_offset = static_cast<u32>(bin.size());
+  const f32 half = 0.70710678f;  // a quarter turn about +z
+  const f32 keys[8] = {0, 0, 0, 1, 0, 0, half, half};
+  for (const f32 v : keys)
+    put_f32(bin, v);
+
+  const std::string json =
+      "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,\"scenes\":[{\"nodes\":[0,1]}],"
+      "\"nodes\":[{\"mesh\":0,\"skin\":0},{\"name\":\"joint_root\",\"children\":[2]},"
+      "{\"name\":\"joint_tip\",\"translation\":[0,1,0]}],"
+      "\"skins\":[{\"name\":\"bar_skin\",\"joints\":[1,2],\"inverseBindMatrices\":4}],"
+      "\"animations\":[{\"name\":\"bend\",\"samplers\":[{\"input\":5,\"output\":6,"
+      "\"interpolation\":\"LINEAR\"}],\"channels\":[{\"sampler\":0,"
+      "\"target\":{\"node\":2,\"path\":\"rotation\"}}]}],"
+      "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0,\"JOINTS_0\":1,"
+      "\"WEIGHTS_0\":2},\"indices\":3,\"material\":0}]}],"
+      "\"materials\":[{\"pbrMetallicRoughness\":{\"baseColorFactor\":[0.7,0.7,0.8,1],"
+      "\"metallicFactor\":0,\"roughnessFactor\":0.5},\"doubleSided\":true}],"
+      "\"accessors\":["
+      "{\"bufferView\":0,\"componentType\":5126,\"count\":6,\"type\":\"VEC3\","
+      "\"min\":[-0.5,0,0],\"max\":[0.5,2,0]},"
+      "{\"bufferView\":1,\"componentType\":5121,\"count\":6,\"type\":\"VEC4\"},"
+      "{\"bufferView\":2,\"componentType\":5126,\"count\":6,\"type\":\"VEC4\"},"
+      "{\"bufferView\":3,\"componentType\":5123,\"count\":12,\"type\":\"SCALAR\"},"
+      "{\"bufferView\":4,\"componentType\":5126,\"count\":2,\"type\":\"MAT4\"},"
+      "{\"bufferView\":5,\"componentType\":5126,\"count\":2,\"type\":\"SCALAR\","
+      "\"min\":[0],\"max\":[1]},"
+      "{\"bufferView\":6,\"componentType\":5126,\"count\":2,\"type\":\"VEC4\"}],"
+      "\"bufferViews\":["
+      "{\"buffer\":0,\"byteOffset\":0,\"byteLength\":" +
+      n(joints_offset) + "},{\"buffer\":0,\"byteOffset\":" + n(joints_offset) +
+      ",\"byteLength\":" + n(weights_offset - joints_offset) +
+      "},{\"buffer\":0,\"byteOffset\":" + n(weights_offset) +
+      ",\"byteLength\":" + n(index_offset - weights_offset) +
+      "},{\"buffer\":0,\"byteOffset\":" + n(index_offset) + ",\"byteLength\":" + n(index_bytes) +
+      "},{\"buffer\":0,\"byteOffset\":" + n(inverse_bind_offset) +
+      ",\"byteLength\":128},{\"buffer\":0,\"byteOffset\":" + n(times_offset) +
+      ",\"byteLength\":8},{\"buffer\":0,\"byteOffset\":" + n(rotations_offset) +
+      ",\"byteLength\":32}],"
+      "\"buffers\":[{\"byteLength\":" +
+      n(static_cast<u32>(bin.size())) + "}]}";
+  std::vector<u8> chunk(json.begin(), json.end());
+  pad4(chunk, ' ');
+  std::vector<u8> glb;
+  put_u32(glb, 0x46546c67u);  // "glTF"
+  put_u32(glb, 2u);
+  put_u32(glb, static_cast<u32>(12 + 8 + chunk.size() + 8 + bin.size()));
+  put_u32(glb, static_cast<u32>(chunk.size()));
+  put_u32(glb, 0x4e4f534au);  // "JSON"
+  glb.insert(glb.end(), chunk.begin(), chunk.end());
+  put_u32(glb, static_cast<u32>(bin.size()));
+  put_u32(glb, 0x004e4942u);  // "BIN\0"
+  glb.insert(glb.end(), bin.begin(), bin.end());
+  std::ofstream f(path, std::ios::binary);
+  if (!f.is_open()) return false;
+  f.write(reinterpret_cast<const char*>(glb.data()), static_cast<std::streamsize>(glb.size()));
+  return f.good();
+}
+
 std::string slashes(const std::filesystem::path& p) {
   std::string s = p.string();
   for (char& c : s) {
@@ -363,4 +471,86 @@ TEST_CASE("engine-view: renders a glTF mesh with one cluster DAG per material") 
   }
   const Run broken = view({"--frames", "1", "--ddc", ddc, "--mesh", not_a_container});
   CHECK(broken.exit_code == 1);
+}
+
+TEST_CASE("engine-view: --animate plays a skinned glTF, deterministically") {
+  const test::TempDir tmp("engine_view_animate");
+  const std::filesystem::path dir = tmp.native();
+  const std::string mesh = slashes(dir / "bar.glb");
+  const std::string cube = slashes(dir / "cube.glb");
+  const std::string ddc = slashes(dir / "ddc");
+  REQUIRE(write_skinned_glb(mesh));
+  REQUIRE(write_cube_glb(cube));
+  const std::vector<std::string> common = {"--width",  "320",   "--height",   "240",
+                                           "--frames", "8",     "--no-vsync", "--orbit",
+                                           "20",       "--ddc", ddc};
+  auto with = [&](std::vector<std::string> extra) {
+    std::vector<std::string> args = common;
+    args.insert(args.end(), extra.begin(), extra.end());
+    return args;
+  };
+
+  // The flag needs a mesh whatever the build: the heightfield has no skin, and saying so is a
+  // usage error rather than a picture of a character standing still.
+  CHECK(view({"--animate"}).exit_code == 2);
+  CHECK(view({"--anim-speed"}).exit_code == 2);
+  CHECK(view({"--anim-speed", "nonsense", "--mesh", mesh}).exit_code == 2);
+
+  const std::string first = slashes(dir / "anim_a.png");
+  const Run run = view(with({"--mesh", mesh, "--animate", "--capture", first}));
+  if (run.exit_code == 2) {
+    // A build without the animation capability (ENGINE_WITH_ANIMATION=OFF, ENGINE_WITH_ECS=OFF,
+    // or a minimal preset) refuses the flag and says which switch. That is the removal proof, and
+    // it is checked here rather than assumed.
+    MESSAGE("--animate refused, which is what a build without the capability does: "
+            << run.output.substr(0, 200));
+    CHECK(run.output.find("animation capability") != std::string::npos);
+    return;
+  }
+  if (run.exit_code == 3) {
+    MESSAGE("engine-view unavailable here (exit 3), skipping --animate");
+    return;
+  }
+  REQUIRE_MESSAGE(run.exit_code == 0, run.output);
+  Summary summary;
+  REQUIRE(parse_summary(run, summary));
+  CHECK(summary.number("skinned_instances") == 1);
+  CHECK(summary.number("joints") == 2);
+  CHECK(summary.text("clip") == "bar/bend");
+  CHECK(summary.number("deform_pool_bytes") > 0);
+  CHECK(summary.number("visible_pairs_last") > 0);
+
+  // The same run again is the same picture: `SimWorld::step` reads no clock, so `--frames N`
+  // advances the world exactly N steps whatever the machine was doing between them.
+  const std::string again = slashes(dir / "anim_b.png");
+  const Run repeat = view(with({"--mesh", mesh, "--animate", "--capture", again}));
+  REQUIRE_MESSAGE(repeat.exit_code == 0, repeat.output);
+  std::ifstream a(first, std::ios::binary);
+  std::ifstream b(again, std::ios::binary);
+  const std::string bytes_a((std::istreambuf_iterator<char>(a)), std::istreambuf_iterator<char>());
+  const std::string bytes_b((std::istreambuf_iterator<char>(b)), std::istreambuf_iterator<char>());
+  CHECK(bytes_a.size() > 8);
+  CHECK(bytes_a == bytes_b);
+
+  // A different phase is a different picture, which is what says the playhead reaches the pool.
+  const std::string fast = slashes(dir / "anim_fast.png");
+  const Run sped =
+      view(with({"--mesh", mesh, "--animate", "--anim-speed", "4", "--capture", fast}));
+  REQUIRE_MESSAGE(sped.exit_code == 0, sped.output);
+  std::ifstream c(fast, std::ios::binary);
+  const std::string bytes_c((std::istreambuf_iterator<char>(c)), std::istreambuf_iterator<char>());
+  CHECK(bytes_c != bytes_a);
+
+  // A crowd: every copy is skinned, every copy has a pool block and a run of the matrix span.
+  const Run crowd = view(with({"--mesh", mesh, "--animate", "--grid-instances", "3"}));
+  REQUIRE_MESSAGE(crowd.exit_code == 0, crowd.output);
+  Summary crowd_summary;
+  REQUIRE(parse_summary(crowd, crowd_summary));
+  CHECK(crowd_summary.number("skinned_instances") == 9);
+  CHECK(crowd_summary.number("joints") == 18);  // nine instances of a two-joint rig, one arena
+
+  // A clip the file does not have is named as an error rather than quietly playing another one,
+  // and a mesh with no skin cannot be animated at all.
+  CHECK(view(with({"--mesh", mesh, "--animate", "sprint"})).exit_code == 1);
+  CHECK(view(with({"--mesh", cube, "--animate"})).exit_code == 1);
 }
