@@ -549,6 +549,26 @@ TEST_CASE("engine-view: --animate plays a skinned glTF, deterministically") {
   CHECK(crowd_summary.number("skinned_instances") == 9);
   CHECK(crowd_summary.number("joints") == 18);  // nine instances of a two-joint rig, one arena
 
+  // A scene file says it per instance: the block is optional, so an instance without one stays
+  // rigid and gets no pool block at all. The renderer carries the block and never reads it — only
+  // this app resolves the clip name — which is why it can live in a scene file without the
+  // renderer knowing what a clip is.
+  const std::string scene_path = slashes(dir / "scene.json");
+  {
+    std::ofstream out(scene_path);
+    out << "{\"meshes\":[{\"path\":\"" << mesh << "\"}],\"instances\":["
+        << "{\"mesh\":0,\"translation\":[0,0,0],\"animation\":{\"clip\":\"bend\",\"speed\":1}},"
+        << "{\"mesh\":0,\"translation\":[3,0,0],\"animation\":{\"phase\":0.25}},"
+        << "{\"mesh\":0,\"translation\":[-3,0,0]}]}";
+  }
+  const Run scene = view(with({"--scene", scene_path}));
+  REQUIRE_MESSAGE(scene.exit_code == 0, scene.output);
+  Summary scene_summary;
+  REQUIRE(parse_summary(scene, scene_summary));
+  CHECK(scene_summary.number("instances") == 3);
+  CHECK(scene_summary.number("skinned_instances") == 2);
+  CHECK(scene_summary.number("joints") == 4);
+
   // A clip the file does not have is named as an error rather than quietly playing another one,
   // and a mesh with no skin cannot be animated at all.
   CHECK(view(with({"--mesh", mesh, "--animate", "sprint"})).exit_code == 1);
