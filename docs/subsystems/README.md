@@ -53,4 +53,5 @@ One page per module, created in the same change that creates the module. Templat
 | nav (capability) | domain | [nav.md](nav.md) |
 | sim | domain | [sim.md](sim.md) |
 | renderer | systems | [renderer.md](renderer.md) |
+| animation | systems | [animation.md](animation.md) |
 | engine_host, engine_cli, engine_view, engine_content, engine_input, engine_image | apps | [apps.md](apps.md) |

@@ -1,0 +1,18 @@
+// animation components and events (ADR-0007, ADR-0027). The capability's own types live with the
+// capability, so adding them touches no shared file, and ENGINE_WITH_ANIMATION=OFF takes them out of
+// the build with everything else it owns.
+namespace engine.animation
+
+/// TODO(animation): the component that makes an entity participate in this capability. An entity
+/// without it costs nothing: no component, no instance, no work (plan 11 §11.10).
+struct Animation @version(1) @kind(component) {
+  /// TODO(animation): replace with the capability's real fields.
+  enabled: bool = true
+}
+
+/// TODO(animation): what this capability tells the rest of the world about. Gameplay-relevant events
+/// are hashed and replay (ADR-0010).
+struct AnimationEvent @version(1) @kind(event) {
+  entity: id128
+  tick: u64 = 0
+}

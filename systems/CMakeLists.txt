@@ -4,3 +4,4 @@
 # this file, dependencies first. `tools/new-capability.ps1` appends to the end of this list,
 # which is always correct for a new capability because its dependencies already exist.
 add_subdirectory(renderer)
+add_subdirectory(animation)
