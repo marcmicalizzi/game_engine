@@ -12,6 +12,35 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # The documentation diff gate (AGENTS.md, "Documentation moves with the code"): a change to an
+  # interface lands with the documentation that describes it. It reads the change's file list and
+  # its commit messages, so it needs no toolchain and no build and answers in seconds — which is
+  # why it is its own job rather than a step inside one that takes twenty minutes.
+  docs:
+    name: Documentation gate
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The push case diffs github.event.before..github.sha, which needs the history that
+          # holds both; the gate falls back to the head commit alone when it does not.
+          fetch-depth: 0
+      - name: Gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            gh api --paginate "repos/${{ github.repository }}/pulls/${{ github.event.number }}/files" \
+              --jq '.[].filename' > /tmp/docs-gate-files.txt
+            gh api --paginate "repos/${{ github.repository }}/pulls/${{ github.event.number }}/commits" \
+              --jq '.[].commit.message' > /tmp/docs-gate-messages.txt
+            tools/docs-gate.sh --files-from /tmp/docs-gate-files.txt --messages-from /tmp/docs-gate-messages.txt
+          else
+            tools/docs-gate.sh --base '${{ github.event.before }}' --head '${{ github.sha }}'
+          fi
+      - name: Documentation check
+        run: tools/docs-check.sh
+
   windows:
     name: Windows ${{ matrix.preset }}
     runs-on: windows-latest
