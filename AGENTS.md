@@ -78,6 +78,7 @@ Module layout: `include/<module>/` holds public headers only, `src/` the impleme
 ## Rules that are checked
 
 - **No banned containers or ownership types in engine code.** `std::map`, `std::set`, `std::unordered_map`, `std::unordered_set`, `std::list`, `std::deque`, `std::shared_ptr`, `std::function` (in hot paths) are replaced by `core/containers`. Allowed in `tools/`, `tests/`, and cold initialization marked with `// engine-lint: allow-std-container <reason>`. `tools/lint.ps1` enforces this and runs under CTest.
+- **Confined includes.** `<flecs.h>` may be included only by `domain/ecs`, `systems/`, `game/`, and their tests and benches ([ADR-0028](docs/adr/0028-ecs-and-persistent-store.md) seam 5), so `physics`, `nav`, `anim`, `gfx`, `geometry`, `sim`, `store` and everything in `core/` and `foundation/` stay ECS-free and bridging code lives in `systems/`. Same lint, same marker convention (`// engine-lint: allow-flecs <reason>`), and unlike the container rule it applies to tests and benches too: a module whose *test* reaches flecs has an ECS dependency in its build. `tools/lint.Tests.ps1` tests the lint.
 - **Size table.** Every hot type has an `ENGINE_EXPECT_SIZE(Type, size, align)` entry in its module's `tests/size_table.cpp`. Changing a hot type's size means updating the entry and saying why in the commit message.
 - **Warnings are errors** on every compiler.
 - **No allocations in the frame loop in steady state** (measured once the frame loop exists; the allocation counter is a CI metric).

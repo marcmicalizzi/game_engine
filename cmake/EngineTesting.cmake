@@ -33,6 +33,15 @@ if(ENGINE_PWSH)
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
   set_tests_properties(lint.banned_patterns PROPERTIES LABELS "lint")
 
+  # And the lint's own tests, over fixture trees in a temporary directory: the rules it enforces
+  # include ADR-0028 seam 5's confinement of <flecs.h>, and a rule that silently stops matching
+  # is worse than no rule.
+  add_test(NAME tools.lint
+    COMMAND "${ENGINE_PWSH}" -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_SOURCE_DIR}/tools/lint.Tests.ps1"
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+  set_tests_properties(tools.lint PROPERTIES LABELS "tools")
+
   # The capability scaffold (ADR-0027) generates into a temporary tree and checks the result.
   add_test(NAME tools.new_capability
     COMMAND "${ENGINE_PWSH}" -NoProfile -ExecutionPolicy Bypass
@@ -56,7 +65,7 @@ if(ENGINE_PWSH)
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
   set_tests_properties(tools.docs_check PROPERTIES LABELS "tools")
 else()
-  message(WARNING "pwsh not found; lint.banned_patterns, tools.new_capability, docs_check, and tools.docs_check tests not registered")
+  message(WARNING "pwsh not found; lint.banned_patterns, tools.lint, tools.new_capability, docs_check, and tools.docs_check tests not registered")
 endif()
 
 # The CI documentation gate is bash, because it runs on the hosted Linux runner
