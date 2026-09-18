@@ -33,7 +33,7 @@ struct VertexAttributes {
   uint uv_half2;
 };
 
-// Mirrors gfx::MeshDesc (56 bytes): one per mesh of the scene. The last three addresses are
+// Mirrors gfx::MeshDesc (64 bytes): one per mesh of the scene. The last four addresses are
 // where a deformed instance's positions come from instead of the grid.
 struct MeshDesc {
   float4 quant;        // xyz grid origin, w grid step: this mesh's own grid
@@ -43,6 +43,7 @@ struct MeshDesc {
   uint64_t deform_pool;  // float[3 * pool_vertices]: the frame's deformed-vertex pool, or 0
   uint64_t deform;       // DeformDesc[], indexed by InstanceDesc::deform, or 0
   uint64_t templates;    // uint64_t[]: a cluster template address per global cluster index, or 0
+  uint64_t skin;         // SkinBinding[]: eight bytes per scene-wide vertex, or 0
 };
 
 // Mirrors gfx::InstanceDesc (96 bytes): one per instance, in order of first_pair.
@@ -57,12 +58,30 @@ struct InstanceDesc {
   uint2 pad;
 };
 
-// Mirrors gfx::DeformDesc (16 bytes): one per deformed instance.
+// Mirrors gfx::DeformDesc (24 bytes): one per deformed instance. `joints` is per instance and
+// `MeshDesc::skin` is per mesh, which is the split a crowd needs: one binding stream, one array
+// of bone matrices per character.
 struct DeformDesc {
   uint pool_offset;  // added to the scene-wide vertex index to reach this instance's slot
   uint vertex_count;
-  uint flags;  // which deformer: k_deform_*
-  uint pad;
+  uint flags;        // which deformer: k_deform_*
+  uint joint_count;  // the bone-matrix array's length; 0 leaves a skinned instance at rest
+  uint64_t joints;   // JointMatrix[joint_count], or 0
+};
+
+// Mirrors geometry::SkinBinding (8 bytes): four u8 joint indices then four u8 weights summing to
+// 255. Read as two 32-bit words, because a byte array through a device address would be four
+// loads where the hardware wants one.
+struct SkinBinding {
+  uint packed_joints;
+  uint packed_weights;
+};
+
+// Mirrors anim::JointMatrix (48 bytes): the affine 3x4 of model * inverse_bind, three float4
+// rows, so skinning a position is three dot products with float4(p, 1) and the fourth row that
+// is always (0, 0, 0, 1) is never stored or loaded.
+struct JointMatrix {
+  float4 rows[3];
 };
 
 static const uint k_instance_uniform_scale = 1u;
@@ -70,6 +89,7 @@ static const uint k_invalid_deform = 0xffffffffu;
 static const uint k_deform_identity = 0u;
 static const uint k_deform_wave = 1u;
 static const uint k_deform_lattice = 2u;
+static const uint k_deform_skin = 3u;
 static const uint k_deform_kind_mask = 3u;
 
 // The rest pose: three u16 at 3 * vertex of the mesh's grid, read as the 32-bit words that

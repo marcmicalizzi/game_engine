@@ -93,24 +93,35 @@ inline constexpr f32 k_raster_split = 2.0f;
 // mesh's 16-bit grid. `pool_offset` is added to the **scene-wide** vertex index, so it is the
 // instance's block base minus its mesh's first vertex (u32 arithmetic, and the bias wraps); the
 // block is as long as the whole mesh's cluster-ordered vertex range, so a cluster's vertices are
-// contiguous in the pool and a CLAS record can point straight at them. 16 bytes, GPU-mirrored.
+// contiguous in the pool and a CLAS record can point straight at them.
+//
+// **24 bytes, not the original 16.** A skinned instance also needs the address of its own bone
+// matrices, and that is per *instance*, not per mesh: two characters share one mesh, one skin
+// binding stream and one skeleton, and have entirely different poses. The word that was `pad`
+// became `joint_count`, which the pass clamps a binding's joint index against, and the address
+// was appended. GPU-mirrored; keep in step with `DeformDesc` in the shaders.
 struct DeformDesc {
   u32 pool_offset = 0;   // added to the scene-wide vertex index to reach this instance's slot
   u32 vertex_count = 0;  // the block's length: the mesh's cluster-ordered vertex count
   u32 flags = 0;         // which deformer: k_deform_*
-  u32 pad = 0;
+  u32 joint_count = 0;   // the bone-matrix array's length; 0 leaves a skinned instance at rest
+  u64 joints = 0;        // anim::JointMatrix[joint_count]: three float4 rows each, or 0
 };
-static_assert(sizeof(DeformDesc) == 16);
+static_assert(sizeof(DeformDesc) == 24);
 
 inline constexpr u32 k_invalid_deform = ~u32{0};  // InstanceDesc::deform: the instance is rigid
-// The deformers of the E25 spike. Identity writes the rest pose into the pool, which is what
-// proves a deformed instance and a rigid one draw the same picture.
+// The deformers. Identity writes the rest pose into the pool, which is what proves a deformed
+// instance and a rigid one draw the same picture; wave and lattice are the E25 spike's procedural
+// stand-ins; **skin** is the first real one (docs/plan/05-simulation.md §5.11), reading the
+// mesh's `geometry::SkinBinding` stream and the instance's `anim::JointMatrix` array.
 inline constexpr u32 k_deform_identity = 0;
 inline constexpr u32 k_deform_wave = 1;     // sinusoidal displacement along the vertex normal
 inline constexpr u32 k_deform_lattice = 2;  // 3x3x3 trilinear cage over the mesh's grid box
-inline constexpr u32 k_deform_kind_mask = 3;
+// Linear blend skinning: MeshDesc::skin (per vertex) x DeformDesc::joints (per instance).
+inline constexpr u32 k_deform_skin = 3;
+inline constexpr u32 k_deform_kind_mask = 3;  // exactly four kinds fit; a fifth needs another bit
 
-// GPU-mirrored; keep in step with the MeshDesc struct in the shaders. 56 bytes, read through a
+// GPU-mirrored; keep in step with the MeshDesc struct in the shaders. 64 bytes, read through a
 // device address. One per mesh of the scene: the 16-bit position grid this mesh's positions are
 // on (`geometry::ClusterMeshPart`), the stream of three u16 per vertex that every mesh shares
 // (`geometry::ClusterMesh::quantized`, indexed by the scene-wide vertex index and padded to an
@@ -118,10 +129,15 @@ inline constexpr u32 k_deform_kind_mask = 3;
 // the range of the global cluster array this mesh owns. Six bytes of position per vertex instead
 // of twelve; the acceleration structure builders still read the float positions.
 //
-// The last three addresses are where a **deformed** instance's positions come from instead. Two
+// The last four addresses are where a **deformed** instance's positions come from instead. Two
 // of them (`deform_pool`, `deform`) are the scene's, the same in every MeshDesc, and they ride
 // here rather than in `ClusterDrawParams` because that push block is full at its 128-byte limit
-// and every position read already holds the MeshDesc. `templates` is the mesh's own.
+// and every position read already holds the MeshDesc. `templates` and `skin` are the mesh's own.
+//
+// `skin` took the struct from 56 to 64 bytes, and it belongs on the mesh rather than on the
+// `DeformDesc` because a skin binding is per *vertex* and the vertex streams are the mesh's: a
+// crowd of a hundred characters built from one mesh shares one binding stream and has a hundred
+// bone-matrix arrays, which is exactly the split between this field and `DeformDesc::joints`.
 struct MeshDesc {
   Vec4 quant{};           // xyz grid origin, w grid step: this mesh's own grid
   u64 quantized = 0;      // u16[3 * vertex_count] of the whole scene, rounded up to an even count
@@ -130,8 +146,9 @@ struct MeshDesc {
   u64 deform_pool = 0;  // f32[3 * pool_vertices]: the frame's pool; 0 when nothing deforms
   u64 deform = 0;       // DeformDesc[], indexed by InstanceDesc::deform; 0 when nothing deforms
   u64 templates = 0;    // u64[]: one cluster template address per global cluster index, or 0
+  u64 skin = 0;         // geometry::SkinBinding[]: eight bytes per scene-wide vertex, or 0
 };
-static_assert(sizeof(MeshDesc) == 56);
+static_assert(sizeof(MeshDesc) == 64);
 
 // InstanceDesc::flags, bit 0: the world transform scales every axis alike, so a normal cone may
 // be tested (rotating its axis keeps it a cone) and a normal only needs the rotation.

@@ -390,11 +390,27 @@ TEST_CASE("engine-content: build writes a cluster file that reads back and valid
   const JsonValue* sections = described.result.find("sections");
   REQUIRE(sections != nullptr);
   REQUIRE(sections->is_array());
-  CHECK(sections->size() == 18);
-  for (const char* name : {"clusters", "lod", "vertices", "attributes", "triangles",
-                           "vertex_source", "level_cluster_counts", "cluster_material", "materials",
-                           "image_paths", "strings", "scalars", "quantized", "source_path",
-                           "source_hash", "pages", "page_children", "page_scalars"}) {
+  CHECK(sections->size() == 20);
+  for (const char* name : {"clusters",
+                           "lod",
+                           "vertices",
+                           "attributes",
+                           "triangles",
+                           "vertex_source",
+                           "level_cluster_counts",
+                           "cluster_material",
+                           "materials",
+                           "image_paths",
+                           "strings",
+                           "scalars",
+                           "quantized",
+                           "source_path",
+                           "source_hash",
+                           "pages",
+                           "page_children",
+                           "page_scalars",
+                           "skin",
+                           "skin_scalars"}) {
     bool found = false;
     for (usize i = 0; i < sections->size(); ++i) {
       const JsonValue* section_name = (*sections)[i].find("name");
@@ -795,7 +811,7 @@ TEST_CASE("engine-content: stats reports the metrics of a container") {
   const JsonValue* sections = bytes->find("sections");
   REQUIRE(sections != nullptr);
   REQUIRE(sections->is_array());
-  CHECK(sections->size() == 18);
+  CHECK(sections->size() == 20);
   u64 section_total = 0;
   for (usize i = 0; i < sections->size(); ++i)
     section_total += number((*sections)[i], "bytes");

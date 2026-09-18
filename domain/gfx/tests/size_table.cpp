@@ -9,13 +9,18 @@
 
 using namespace engine;
 
-// 56, not 32: a MeshDesc also says where a *deformed* instance's positions come from — the
-// frame's deformed-vertex pool, the per-instance deform table, and the mesh's cluster templates
-// (docs/plan/04-renderer.md §4.3). The three addresses ride on the mesh because the rasterizers'
-// push block is full at its 128-byte limit and every position read already holds the MeshDesc.
-ENGINE_EXPECT_SIZE(56, 8, gfx::MeshDesc);
+// 64, not 32: a MeshDesc also says where a *deformed* instance's positions come from — the
+// frame's deformed-vertex pool, the per-instance deform table, the mesh's cluster templates, and
+// (the eighth word) its per-vertex skin bindings (docs/plan/04-renderer.md §4.3,
+// docs/plan/05-simulation.md §5.11). The addresses ride on the mesh because the rasterizers'
+// push block is full at its 128-byte limit and every position read already holds the MeshDesc;
+// the binding stream in particular is per vertex, so it is the mesh's and not the instance's.
+ENGINE_EXPECT_SIZE(64, 8, gfx::MeshDesc);
 
-ENGINE_EXPECT_SIZE(16, 4, gfx::DeformDesc);
+// 24, not 16: a skinned instance carries its own bone-matrix address and joint count, because a
+// pose is per instance while the mesh and its bindings are shared by a whole crowd. The word
+// that was `pad` became `joint_count`.
+ENGINE_EXPECT_SIZE(24, 8, gfx::DeformDesc);
 
 ENGINE_EXPECT_SIZE(80, 8, gfx::DeformParams);
 

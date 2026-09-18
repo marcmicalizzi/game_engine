@@ -43,9 +43,10 @@ if(TARGET engine_gfx_tests)
                                           tests/vertex_path_tests.cpp tests/cone_tests.cpp
                                           tests/rt_tests.cpp tests/rt_cluster_tests.cpp
                                           tests/clas_records_tests.cpp tests/scene_tests.cpp
-                                          tests/deform_tests.cpp)
+                                          tests/deform_tests.cpp tests/skin_tests.cpp)
   target_compile_definitions(engine_gfx_tests PRIVATE
     ENGINE_SHADER_MANIFEST="${CMAKE_BINARY_DIR}/shaders/manifest.json")
+  # engine::anim is the CPU reference the skinning test holds `deform.slang` to.
   target_link_libraries(engine_gfx_tests PRIVATE engine_shaders_gfx_tests engine::geometry
-                                                 engine::window engine::image)
+                                                 engine::anim engine::window engine::image)
 endif()

@@ -10,9 +10,24 @@
 // range. Only the cut's slots are written; every other slot of the pool keeps whatever it held.
 // Entries of rigid instances are skipped outright.
 //
-// Two deformers stand in for the real ones while the solver does not exist (§4.3 says skinning
-// reads bone matrices and a deformable volume reads the tick's cage state; both land in the same
-// pool through the same pass):
+// Three deformers, one real and two stand-ins. §4.3 says skinning reads bone matrices and a
+// deformable volume reads the tick's cage state; both land in the same pool through the same
+// pass, and skinning is the one that exists:
+//
+//   skin     linear blend skinning (docs/plan/05-simulation.md §5.11). Reads the mesh's
+//            `geometry::SkinBinding` stream — four u8 joint indices and four u8 weights summing
+//            to 255 — and the *instance's* `anim::JointMatrix` array, and writes
+//            sum_k (w_k / 255) * (M_k * rest). The CPU reference is `anim::skin_positions`, and
+//            the gfx skinning test holds the two to 1e-5 on a two-bone cylinder.
+//
+//            **Skinning cannot tear**, and the reason is worth stating beside the code that
+//            could: a skinned position is a function of the rest position and the binding, and
+//            both are per-vertex data the cluster build hands every copy of a surface point
+//            byte for byte — duplicates across clusters share them, and a simplified level
+//            inherits them from the original vertex rather than recomputing them, because
+//            clusterlod keeps original vertices. That is the same argument that makes
+//            `lattice` safe and `wave` unsafe, and it is why skinning is position-only: it
+//            never reads the normal.
 //
 //   wave     sinusoidal displacement along the **vertex normal**, animated by frame time. It is
 //            here as the counter-example: a normal is *not* a quantity the cluster build
@@ -103,6 +118,32 @@ float3 axis_weights(float a) {
   return float3(0.0, 1.0 - t, t);
 }
 
+// Linear blend skinning of one vertex: four influences, weights out of 255, a zero weight
+// skipped outright — which is also what makes a stale joint index on a dead influence harmless.
+// A non-zero influence naming a joint past the end of the array is skipped too, so bad data
+// deforms a vertex short rather than reading somewhere it should not. Three dot products per
+// influence against the 3x4: the fourth row of a skinning matrix is always (0, 0, 0, 1), so it
+// is neither stored nor loaded.
+float3 deform_skin(MeshDesc mesh, DeformDesc deform, uint vertex, float3 rest) {
+  if (mesh.skin == 0 || deform.joints == 0 || deform.joint_count == 0) return rest;
+  SkinBinding* bindings = (SkinBinding*)mesh.skin;
+  const SkinBinding binding = bindings[vertex];
+  JointMatrix* matrices = (JointMatrix*)deform.joints;
+  const float4 point = float4(rest, 1.0);
+  float3 moved = float3(0.0, 0.0, 0.0);
+  for (uint k = 0; k < 4; ++k) {
+    const uint weight = (binding.packed_weights >> (8 * k)) & 0xffu;
+    if (weight == 0) continue;
+    const uint joint = (binding.packed_joints >> (8 * k)) & 0xffu;
+    if (joint >= deform.joint_count) continue;
+    const JointMatrix m = matrices[joint];
+    const float3 skinned = float3(dot(m.rows[0], point), dot(m.rows[1], point),
+                                  dot(m.rows[2], point));
+    moved += skinned * (float(weight) * (1.0 / 255.0));
+  }
+  return moved;
+}
+
 // Trilinear free-form deformation: the position's coordinates in the box weight the eight cells'
 // worth of control points. A quadratic Bezier would be smoother; trilinear is what a cage solver
 // hands a renderer, and it is what the transfer pass will read from a real one.
@@ -172,6 +213,8 @@ void deform_main(uint3 group : SV_GroupID, uint3 group_thread : SV_GroupThreadID
       moved = deform_wave(mesh, rest, normal, g_params.time, g_params.amplitude);
     } else if (kind == k_deform_lattice) {
       moved = deform_lattice(mesh, rest, g_params.time, g_params.amplitude);
+    } else if (kind == k_deform_skin) {
+      moved = deform_skin(mesh, deform, vertex, rest);
     }
     // k_deform_identity writes the rest pose, which is what makes a deformed instance and a
     // rigid one draw the same picture.
