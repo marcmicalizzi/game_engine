@@ -71,7 +71,7 @@ TEST_CASE("ecs: the tick phases run in the order of plan 05 section 5.2") {
     const auto which = static_cast<TickPhase>(i - 1);
     // Not the phase's own name: flecs entities are named, so `world.system("sim_lod")` would
     // find the phase entity and turn *it* into a system that depends on itself.
-    names.push_back(std::string("system_in_") + phase_name(which));
+    names.push_back(std::string("system_in_") + phase_entity_name(which));
     sim.world()
         .system(names.back().c_str())
         .kind(sim.phase(which))
@@ -93,7 +93,7 @@ TEST_CASE("ecs: the tick phases run in the order of plan 05 section 5.2") {
     const flecs::entity phase = sim.phases().by_phase[i];
     CHECK(phase.is_valid());
     CHECK(phase.has(flecs::Phase));
-    CHECK(std::string(phase.name().c_str()) == phase_name(static_cast<TickPhase>(i)));
+    CHECK(std::string(phase.name().c_str()) == phase_entity_name(static_cast<TickPhase>(i)));
   }
 
   log.order.clear();
@@ -285,8 +285,8 @@ TEST_CASE("ecs: relationships and queries are flecs' own, unwrapped") {
   CHECK(world.get<SimTick>().value == sim.tick().value);
 }
 
-TEST_CASE("ecs: phase names cover the enum") {
-  CHECK(std::string(phase_name(TickPhase::Input)) == "sim_input");
-  CHECK(std::string(phase_name(TickPhase::Persist)) == "sim_persist");
-  CHECK(std::string(phase_name(TickPhase::Count)) == "unknown");
+TEST_CASE("ecs: phase entity names cover the enum") {
+  CHECK(std::string(phase_entity_name(TickPhase::Input)) == "sim_input");
+  CHECK(std::string(phase_entity_name(TickPhase::Persist)) == "sim_persist");
+  CHECK(std::string(phase_entity_name(TickPhase::Count)) == "unknown");
 }

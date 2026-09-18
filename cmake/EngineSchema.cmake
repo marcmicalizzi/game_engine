@@ -38,8 +38,13 @@ function(engine_schema_library)
     get_filename_component(_abs "${_schema}" ABSOLUTE)
     get_filename_component(_stem "${_schema}" NAME_WE)
     list(APPEND _abs_schemas "${_abs}")
+    # `<stem>_ecs.h` is the ECS backend (ADR-0028 seam 1). It is generated for every schema and
+    # compiled by nobody: it includes <flecs.h>, so only a translation unit that ADR-0028 seam 5
+    # allows to reach flecs can include it, which is also what keeps it out of a build with
+    # ENGINE_WITH_ECS off.
     list(APPEND _outputs
       "${_gen}/include/schemas/${_stem}.h"
+      "${_gen}/include/schemas/${_stem}_ecs.h"
       "${_gen}/src/${_stem}.cpp"
       "${_gen}/json/${_stem}.schema.json"
       "${_gen}/docs/${_stem}.md")

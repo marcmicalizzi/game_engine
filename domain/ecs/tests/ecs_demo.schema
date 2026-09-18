@@ -1,0 +1,37 @@
+// Components for the ECS registration tests (ADR-0028 seam 1). Four types, because the cases
+// that matter are all different: a persisted component whose every field flecs meta can
+// describe, a transient one the persistence layer must skip, a component that is *not* its own
+// bytes because it holds a string, and a plain record that shares the file and must not be
+// registered with the entity store at all.
+namespace engine.ecs.demo
+
+/// Where an entity is and what it is worth, in the world's own units.
+struct Standing @version(1) @kind(component) {
+  position: vec3
+  wealth: i64 = 0
+  importance: f32 = 1.0
+  faction: u32 = 0
+  /// Never serialized even though the component is persisted: the field-level marking is the
+  /// narrow one, and it still has to work inside a component.
+  scratch: u32 @transient
+}
+
+/// This tick's perception result. Recomputed from the world every tick, so it is runtime-only:
+/// writing it to a save file would persist a cache.
+struct Perception @version(1) @kind(component) @transient {
+  nearest: id128
+  distance: f32 = 0.0
+  visible: bool = false
+}
+
+/// A component that is not its own bytes: the string owns a heap allocation, so it round-trips
+/// through JSON and never through `set_bytes`.
+struct Label @version(1) @kind(component) {
+  text: string
+  rank: u8 = 0
+}
+
+/// Not a component: a plain record that happens to live in the same schema file.
+struct DemoNote @version(1) @kind(record) {
+  text: string
+}

@@ -39,13 +39,39 @@ struct AssetProvenance @version(1) @kind(record) {
 
 **Defaults**: integer, float, `true`/`false`, `"string"`, an enumerator name (enum fields), `[]` (arrays, maps), `null` (optionals). A field without a default is value-initialized.
 
-**Attributes**: on structs `@version(n)` (default 1) and `@kind(tag)`; on fields `@since(n)`, `@transient`, `@deprecated`; `@doc("...")` anywhere as an alternative to `///`.
+**Attributes**: on structs `@version(n)` (default 1), `@kind(tag)` and `@transient`; on fields `@since(n)`, `@transient`, `@deprecated`; `@doc("...")` anywhere as an alternative to `///`.
+
+**`@transient` on a struct is not the same thing as `@transient` on a field.** A transient *field* is one column of a type that is otherwise persisted and transmitted. A transient *struct* is a whole type that exists only in the runtime world and is never written to the persistent store ([03 §3.4](../docs/plan/03-data-model.md#34-the-runtime-world)) — a per-tick cache, a perception result, anything the simulation can recompute. Only a component can be transient as a whole, because a component is the only thing the persistence layer writes whole, so `@transient` on a struct without `@kind(component)` is an error rather than a no-op. It reaches C++ as `TypeInfo::flags & schema::TypeFlag::transient`, which is how the store, the protocol and migrations read it without linking an ECS, and as the `ecs::Transient` tag on the flecs component (see below).
 
 **Cross-file references**: `import "core.schema"` then use `Vec3`, or write the qualified name `engine.core.Vec3` (still requires the import). Imports resolve against this directory.
+
+## Components
+
+A struct carrying `@kind(component)` is a **world component** ([ADR-0028](../docs/adr/0028-ecs-and-persistent-store.md) seam 1). It is declared here once and nowhere else: the protocol, persistence, migrations and the systems that iterate it all see the same type, and a hand-registered ECS component is allowed only for module-private state that is never persisted and never visible to the protocol.
+
+```
+namespace engine.cloth
+
+/// One panel's simulated state.
+struct Panel @version(1) @kind(component) {
+  rest_length: f32 = 0.1
+  anchor: id128
+}
+
+/// The solver's working set for this tick. Recomputed every tick, so never saved.
+struct PanelScratch @version(1) @kind(component) @transient {
+  iterations: u32 = 0
+}
+```
+
+`schemac` emits, in addition to the usual outputs, `<schemas/<stem>_ecs.h>` — a header whose `register_<stem>_components(flecs::world&)` registers every component the file declares with the entity store, under its schema-qualified name, with member reflection for the fields that map onto flecs' meta types and with `@transient` as a tag. It is a **header** because the generated schema module sits in the core layer and must not link flecs, while the registration must; a header is compiled only where it is included, and [ADR-0028](../docs/adr/0028-ecs-and-persistent-store.md) seam 5 already restricts who may include `<flecs.h>` to `domain/ecs`, `systems/`, `game/` and their tests and benches. It is written for every schema in every configuration and compiled in none where `ENGINE_WITH_ECS` is off, because nothing may include it there.
+
+A capability's own components live with the capability, in `<layer>/<name>/schemas/<name>.schema`, compiled by `engine_schema_library(NAME <name>_schemas SCHEMAS schemas/<name>.schema CAPABILITY <name>)`, so adding them touches no shared file and they leave the build with the capability ([ADR-0027](../docs/adr/0027-additive-capabilities.md)). What the entity store does with the registration, and which schema kinds it can describe to flecs, is in [docs/subsystems/ecs.md](../docs/subsystems/ecs.md).
 
 ## What is generated
 
 - `<schemas/<stem>.h>`: `enum class` and `struct` definitions with defaults, `k_schema_version`, defaulted `operator==`, and `engine::schema::type_of<T>()` specializations.
+- `<schemas/<stem>_ecs.h>`: `register_<stem>_components(flecs::world&)`, the entity-store registration for this file's `@kind(component)` structs (see "Components" above). Always written; compiled only where `<flecs.h>` may be included.
 - `<stem>.cpp`: constant-initialized `TypeInfo`, `FieldInfo`, and `TypeRef` tables plus a `Registrar` that adds every type to `engine::schema::Registry::global()` at startup.
 - `<stem>.schema.json`: JSON Schema draft 2020-12 with `$defs` per type; `required` lists non-optional, non-container fields without defaults.
 - `<stem>.md`: one table per type.

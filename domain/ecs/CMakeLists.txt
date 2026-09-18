@@ -6,9 +6,10 @@
 # its bench, and the flecs fetch with it. The dependency pin lives in cmake/EngineEcs.cmake.
 engine_module(NAME ecs LAYER domain
   OPTIONAL CAPABILITY ecs
-  DEPS base containers jobs log platform time
+  DEPS base containers ids json jobs log memory platform schema sim time
   EXTERNAL_DEPS flecs::flecs_static
-  SOURCES src/sim_world.cpp src/os_api.cpp)
+  SOURCES src/sim_world.cpp src/os_api.cpp src/components.cpp src/systems.cpp
+          src/identity.cpp src/world_commands.cpp)
 
 # engine_module() has already recorded the capability as disabled and created nothing; the rest
 # of this file configures targets, so it stops here rather than guarding each one.
@@ -21,8 +22,18 @@ endif()
 target_include_directories(engine_ecs SYSTEM PUBLIC
   $<TARGET_PROPERTY:flecs::flecs_static,INTERFACE_INCLUDE_DIRECTORIES>)
 
+# The components the seam-1 tests register: two of them declared in a `.schema` file and
+# compiled by schemac like any other schema, because "a component comes from the IDL" is only a
+# real claim if the test's components do (ADR-0028 seam 1). CAPABILITY ties the generated module
+# to ENGINE_WITH_ECS, so the minimal build takes it with the rest.
+engine_schema_library(NAME ecs_test_types
+  SCHEMAS tests/ecs_demo.schema
+  CAPABILITY ecs)
+
 engine_module_tests(NAME ecs
-  SOURCES tests/ecs_tests.cpp tests/size_table.cpp)
+  SOURCES tests/ecs_tests.cpp tests/component_tests.cpp tests/system_tests.cpp
+          tests/identity_tests.cpp tests/world_command_tests.cpp tests/size_table.cpp
+  DEPS ecs_test_types)
 
 # The E6 half that measures flecs: 10^5 entities with relationships and a hierarchy, four
 # systems a tick, worker scaling, query latency, and churn (docs/experiments/e6-ecs-store.md).

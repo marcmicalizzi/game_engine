@@ -6,7 +6,10 @@ add_subdirectory(anim)
 add_subdirectory(assets)
 add_subdirectory(gfx)
 add_subdirectory(protocol)
+# sim before ecs: ADR-0028 seam 2 makes `ecs::TickPhase` an alias of `sim::TickPhase`, so the
+# scheduler's module is declared first and the entity store depends on it, never the other way
+# round — `domain/sim` has to stay free of flecs for the executor to be replaceable.
+add_subdirectory(sim)
 add_subdirectory(ecs)
 add_subdirectory(physics)
 add_subdirectory(nav)
-add_subdirectory(sim)

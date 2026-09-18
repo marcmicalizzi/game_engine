@@ -5,6 +5,7 @@ add_executable(engine_schemac
   src/parser.cpp
   src/resolve.cpp
   src/emit_cpp.cpp
+  src/emit_ecs.cpp
   src/emit_json_schema.cpp
   src/emit_docs.cpp)
 target_compile_features(engine_schemac PRIVATE cxx_std_20)

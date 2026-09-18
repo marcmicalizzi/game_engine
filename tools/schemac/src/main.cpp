@@ -5,6 +5,7 @@
 //
 // Outputs, per input stem:
 //   <out>/include/schemas/<stem>.h
+//   <out>/include/schemas/<stem>_ecs.h   (flecs registration; ADR-0028 seam 1)
 //   <out>/src/<stem>.cpp
 //   <out>/json/<stem>.schema.json
 //   <out>/docs/<stem>.md
@@ -136,6 +137,8 @@ int main(int argc, char** argv) {
     const bool ok =
         write_if_changed(out_dir / "include" / "schemas" / (file.stem + ".h"),
                          schemac::emit_cpp_header(model, file)) &&
+        write_if_changed(out_dir / "include" / "schemas" / (file.stem + "_ecs.h"),
+                         schemac::emit_ecs_header(model, file)) &&
         write_if_changed(out_dir / "src" / (file.stem + ".cpp"),
                          schemac::emit_cpp_source(model, file)) &&
         write_if_changed(out_dir / "json" / (file.stem + ".schema.json"),

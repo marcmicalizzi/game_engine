@@ -1,19 +1,141 @@
 # ecs (domain)
 
-**Purpose.** The runtime entity store ([03 §3.4](../plan/03-data-model.md#34-the-runtime-world)) and the tick that drives it ([05 §5.2](../plan/05-simulation.md#52-sim-scheduler)). The store is [flecs](https://github.com/SanderMertens/flecs) 4.1 (MIT), an archetype ECS with first-class relationships, a query language, reflection, and an explorer. The module adds three things and nothing else: the engine's tick phases as flecs phase entities in order, a fixed step from `core/time` with the current tick and game time as singletons, and two bindings into the engine's own machinery — flecs' workers onto `core/jobs`, flecs' log onto `core/log`. Evaluated by experiment **E6** ([results](../experiments/e6-ecs-store.md)); the decision is drafted as [ADR-0028](../adr/0028-ecs-and-persistent-store.md), status Proposed.
+**Purpose.** The runtime entity store ([03 §3.4](../plan/03-data-model.md#34-the-runtime-world)) and the tick that drives it ([05 §5.2](../plan/05-simulation.md#52-sim-scheduler)). The store is [flecs](https://github.com/SanderMertens/flecs) 4.1 (MIT), an archetype ECS with first-class relationships, a query language, reflection, and an explorer. It is **exposed directly and not wrapped**, and the engine owns **five narrow seams** through which everything that makes this engine what it is passes. Evaluated by experiment **E6** ([results](../experiments/e6-ecs-store.md)); decided by [ADR-0028](../adr/0028-ecs-and-persistent-store.md).
 
-**Why flecs is not wrapped.** `SimWorld::world()` returns the `flecs::world`, consumers include `<flecs.h>`, and there is no `engine::ecs::Entity`, no `Component<T>`, no `IQuery`. This is deliberate, and it is the decision most likely to be questioned, so:
+## The shape of the module, in one paragraph
 
-- A wrapper that is *useful* has to re-expose relationships, wildcard queries, change detection, staging and deferring, the query DSL, reflection and the explorer. At that point it is flecs with worse documentation and an extra indirection on every query, and [11 §11.4](../plan/11-performance-principles.md#114-branch-free-hot-paths-and-constexpr-dispatch) forbids the indirection.
-- A wrapper that is *thin* — create, destroy, get, set — is the one people write, and it is the one that makes the ECS useless: every interesting system needs the parts the thin wrapper left out, so systems reach through it, and now there are two APIs.
-- The portability it appears to buy is not real. Swapping an archetype ECS means rewriting how every system iterates its data; an interface in between does not change that, it only delays discovering it.
-- The insurance [03 §3.4](../plan/03-data-model.md#34-the-runtime-world) actually specifies is architectural: **hot systems own their own data**. Physics state lives in Jolt, poses in the animation pools, instances in GPU buffers; the ECS holds identity, relationships, and gameplay components and hands out indices into those pools. That is what bounds the damage if flecs ever has to go, and it costs nothing while it stays.
+Write flecs for the things flecs is good at: **system bodies and queries**. A system iterates `Position` as a plain C++ struct through a plain `flecs::query`, uses relationships, wildcards, `cascade()`, staging and the query DSL, and nothing stands in the way. Go through the engine for the five things that are the engine's: **where a component type comes from**, **how a system declares itself**, **what an entity is called across a save**, **how something that is not a system changes the world**, and **who is allowed to see flecs at all**. Everything else is flecs'.
 
-**Owned data.** One `flecs::world` per `SimWorld`, its eight phase entities, and the `SimTick`/`GameTime` singletons. The adapter owns the mapping from flecs' worker tasks to `core/jobs` jobs for the process. Nothing else; components belong to whoever declares them.
+That split is a cost decision, and it is worth stating as one. A full wrapper was rejected — it would have to re-expose relationships, wildcards, staging and the query language to be useful, it would cost an indirection on every query forever, and it would lag the library. But "unwrapped" must not mean "flecs owns the engine's guarantees". With the seams in place, the price of ever replacing flecs is *rewrite the system bodies and queries* — which no wrapper avoids either, because query semantics differ between ECS libraries — and nothing else. The type system, the scheduling contract, identity, persistence and the module graph all survive the swap because none of them is flecs'.
 
-**The tick phases, and why they are shaped this way.** `TickPhase` is `Input, EventsIn, Lod, Systems, Physics, PostPhysics, EventsOut, Persist` — [05 §5.2](../plan/05-simulation.md#52-sim-scheduler)'s list, in its order, and the same enumerators as [ADR-0027](../adr/0027-additive-capabilities.md)'s `SystemDesc::phase`, so a capability's declared phase and the entity it attaches to are one thing spelled twice. They are flecs phase entities chained with `depends_on`, which is what lets the built-in pipeline pick up a system that names one without the pipeline knowing the system exists — ADR-0027's registration point for anything that ticks.
+## Seam 1: components come from the schema IDL
 
-The chain hangs off `flecs::PostFrame`, flecs' last built-in phase. The engine uses none of the built-in phases, but a system that forgets `.kind()` defaults to `OnUpdate`; anchoring at the end means such a system runs *before* the engine's `input` phase instead of somewhere in the middle of the tick — a visible mistake rather than an invisible one. The phase-order test pins the order.
+A component is declared **once**, in a `.schema` file, as a struct carrying `@kind(component)`:
+
+```
+struct Standing @version(1) @kind(component) {
+  position: vec3
+  wealth: i64 = 0
+  scratch: u32 @transient
+}
+
+struct Perception @version(1) @kind(component) @transient { ... }
+```
+
+`schemac` emits the C++ struct as it always has, plus `<schemas/<stem>_ecs.h>`, whose one function registers every component that file declares:
+
+```cpp
+#include <schemas/ecs_demo_ecs.h>
+engine::ecs::demo::register_ecs_demo_components(sim.world());
+```
+
+What the registration does, and why each part of it matters:
+
+- **Under the schema's qualified name.** `engine.ecs.demo.Standing` becomes the flecs path `engine::ecs::demo::Standing`, so the schema namespace is a flecs scope and the explorer's tree is the schema's tree. `ecs::lookup_component(world, "engine.ecs.demo.Standing")` resolves the dotted IDL spelling directly. One name, wherever it is read from: the protocol, a save file, a migration, a log line and the explorer all say the same string.
+- **With member reflection where the schema type maps onto flecs meta.** Scalars, enums (as their underlying integer), `id128` (two `u64`), `vec2/3/4` and `quat` (two to four `f32`), and fixed arrays of scalars are described to flecs at the offset the schema descriptor gives, so flecs points at exactly the bytes the C++ type has. A `string`, a `bytes`, a nested struct, an array, a map, an optional or a `json` payload is **left out rather than described wrongly**, and flecs treats the component as a partial type. That is the honest answer: `core/schema` is the authority on those fields and can render all of them, and duplicating half of its walker in flecs' meta language would give the engine two serializers that have to agree.
+- **With `@transient` carried as a tag.** A `@transient` component gets `ecs::Transient` on its **component entity**, so "what would a save file contain" is a question a walk of the world's components can answer. The same marking is on the schema descriptor as `schema::TypeFlag::transient`, which is how persistence, the protocol and migrations see it without linking an ECS.
+
+**The one exception.** `ecs::register_private_component<T>(world, name)` registers a flecs component for state that is private to a module, never persisted and never visible to the protocol — a per-world cache, a scratch tag. It is marked `Transient` and has no `TypeInfo`, so `WorldCommands` cannot name it and a persistence walk skips it. Saying so at the call site is the point; the distinction is then visible in the world rather than only in a comment.
+
+**The index space.** `sim::ComponentMask` addresses components by a small integer and nothing assigned those integers until now. `ecs::ComponentRegistry` does, in registration order, per world: `ecs::component_index<T>(world)` and `ecs::mask_of<A, B>(world)` are how a system's declared sets and the world's components come to share a vocabulary. A component registered past `sim::k_max_components` gets `k_invalid_component_index` and a logged warning rather than silently aliasing another component's bit ([ADR-0017](../adr/0017-no-hidden-limits.md)).
+
+**`ComponentType::flat`** records whether every field, recursively, is a scalar or a fixed array of scalars. A flat component *is* its bytes, which is what lets `WorldCommands::set_bytes` copy one in without a serializer, and what a future binary protocol encoder will key on.
+
+## Seam 2: systems register through the engine's descriptor
+
+```cpp
+ecs::register_system(sim, k_move_desc, [](flecs::world& w, flecs::entity phase) {
+  return w.system<Position, const Velocity>("move").kind(phase).multi_threaded()
+          .each([](Position& p, const Velocity& v) { p.x += v.x; p.y += v.y; });
+});
+```
+
+One call, two halves. `k_move_desc` is a `sim::SystemDesc` — phase, read and write component sets, LOD tiers, determinism stance — declared to the **engine**; the lambda builds the flecs system with flecs' own builder, flecs' terms and flecs' `each`/`run`. Neither half is wrapped and neither is optional. The callable takes the phase rather than returning a system the caller already built, so `.kind(phase)` cannot be forgotten and cannot disagree with `desc.phase`.
+
+**`sim::TickPhase` is the one phase enum, and `ecs::TickPhase` is an alias of it.** Not "the same enumerators in the same order" — the same type, so a capability's `SystemDesc::phase` and the flecs phase entity its body attaches to cannot drift apart. The dependency goes `domain/ecs` → `domain/sim` and never the other way: the scheduler has to stay free of flecs for the executor to be replaceable at all. `ecs::phase_entity_name()` is the flecs entity's name (`sim_lod`), distinct from `sim::phase_name()`'s short name (`lod`), and prefixed so a phase entity can never collide with a system named after its phase.
+
+**The debug check.** In debug builds, registration reads the built query's terms back and compares them with the declaration. A term the system has and the descriptor does not is an **assert**: the scheduler would run that system in parallel with one that writes the component, and nothing downstream could tell. A declaration the query does not use is **not** an error, because that is how a system tells the schedule about accesses its terms cannot mention — a singleton it reads, a pool it writes through an index, a component it adds. Over-declaring costs parallelism and is visible in `schedule_hash()`; under-declaring costs correctness and is invisible, so only one of the two is worth an assert. `ecs::query_access(world, system)` is the same reading, exposed, so a test can ask what the check asks.
+
+A non-`const` term is flecs' `InOutDefault`, which means the system may write, and the check reads it that way. That is deliberate: a declaration that omits the write is exactly the bug worth finding.
+
+**What v1 does not check.** Relationship terms — `(Likes, *)`, `(ChildOf, parent)` — have no place in a mask that addresses plain components by index, so they are counted (`QueryAccess::pair_terms`) and nothing is claimed about them. Closing that gap means deciding what a relationship's bit means, which is the scheduler's design and not this seam's.
+
+**The executor is still flecs' pipeline**, and the point of the seam is that it does not have to be. `SystemDesc` goes into `ecs::SystemRegistry`, a per-world table in registration order; the flecs system is created with `.kind(phase)` and flecs runs it. Replacing the executor means reading that table in a different order, and not one line of any system's data access ([ADR-0028](../adr/0028-ecs-and-persistent-store.md) decision 7).
+
+## Seam 3: persistent identity is `Id128`
+
+A flecs entity id is a world-local handle with a generation counter: the right thing to hold inside a tick and the wrong thing to hold anywhere else. It does not survive a save, a reload, a tile unload and rematerialization, a replay on another machine, or a second process looking at the same world. `Id128` is the engine's stable identity ([03 §3.1](../plan/03-data-model.md#31-identity)) and it is what the document, the store and the protocol already speak.
+
+**Nothing outside `domain/ecs` stores a flecs entity id in anything that outlives a tick's working set.** Inside a tick, iterate entities; across a tick, across a save, across the wire, name an `Id128`. `ecs::Identity` is the component and `ecs::IdentityMap` is the one place the two meet: `entity_for(world, id)`, `create_entity(world, id)`, `id_of(entity)`.
+
+**One map, not two.** `Id128 → flecs::entity` needs a hash map. The reverse does not: the entity carries the component, so `id_of()` is a component read — the same O(1) with none of the memory and nothing second to keep in agreement.
+
+**Maintained by observers, not by the call sites.** The map has to be right even when an entity is destroyed by something that never heard of it — a `delete_with`, a tile teardown, a system that removes `Identity`. So `OnSet` and `OnRemove` observers on the component maintain it, which means a raw `world.entity().set<ecs::Identity>({id})` joins the map too. That is what makes this a seam rather than a convention reviews have to enforce. Two entities claiming one id is a content or protocol bug rather than an engine one, so it is counted (`IdentityMap::collisions()`) and logged, the last writer holds the row, and the loser leaving does not evict the winner.
+
+`SimWorld` installs the observers in its constructor rather than on first use, because "first use" can be from inside a system body, and **an observer created inside a deferred region does not exist until the merge — by which time the commands it was meant to see have already been applied.** That failure is silent and it cost an afternoon; the module's `detail::Undeferred` exists for the same reason and every per-world accessor here uses it.
+
+## Seam 4: mutation from outside a system is guarded
+
+A system body gets the raw `flecs::world&` and writes it directly. Everything else that wants to change the world — the protocol answering `world.apply`, the persistence layer materializing a tile, a save being loaded, a network packet, an agent's edit — arrives on another thread or between ticks, names entities by `Id128` because that is what survived the trip, and must not land in the middle of a phase. `ecs::WorldCommands` is the queue those callers use:
+
+```cpp
+ecs::WorldCommands commands(sim.world());
+commands.install(sim, ecs::TickPhase::EventsIn);   // drained at a phase boundary, every tick
+
+commands.create(id);
+commands.set_json(id, "engine.ecs.demo.Standing", payload, &diagnostics);
+commands.remove(id, "engine.ecs.demo.Perception");
+commands.destroy(other);
+```
+
+- **A phase boundary.** `install()` puts the drain in a phase, so no system ever sees half of an external edit. `EventsIn` is the default because that is what an external edit is: something that happened since the last tick, delivered at the top of this one ([05 §5.2](../plan/05-simulation.md#52-sim-scheduler)).
+- **`Id128`, not entity handles.**
+- **Schema types, by name.** `set_json` goes through the reflection schemac already generated, so the protocol needs no per-component code and a type the schema does not declare cannot be set at all. `set_bytes` is the flat-component path.
+- **Failure where the mistake is.** The payload is parsed **when it is queued**, so a caller learns its JSON was wrong while it still has somewhere to report it, with `core/schema`'s field path. `apply()` cannot fail on a parse.
+
+**It is not a transaction.** `apply()` walks the queue in order and counts what it could not do; a failed command does not roll back the ones before it. The event log is what makes an edit undoable ([ADR-0003](../adr/0003-event-sourced-persistent-state.md)), not this queue. It is also not thread-safe: queue from one thread, apply from the thread that owns the world.
+
+**Why `apply()` plays by flecs' deferring rules.** `ecs_progress` makes the world **readonly** while the pipeline runs, so a drain inside a tick cannot suspend deferring and mutate directly — that is an assert, not a race. Every command therefore goes through flecs the way a system's would. The consequence is that an entity created in a batch is not in the world's identity map until the batch merges, so `apply()` remembers its own creates: `create` followed by `set` in one request is the shape every caller will write, and it works.
+
+**Where the protocol attaches.** `world.query`, `world.apply` and the rest of [06 §6.2](../plan/06-agent-tooling.md#62-engine-protocol)'s method table are **not wired up**. When they are: `apply`'s parameters map onto `create`/`set_json`/`remove`/`destroy` one for one, the dispatcher owns one `WorldCommands` per session, and `install()` is what makes a session's edits land on a tick boundary. Nothing in `world_commands.h` has to change for that. `world.query` is the other half and is flecs' query DSL over the schema names seam 1 registered.
+
+## Seam 5: include hygiene
+
+`flecs.h` may be included **only** by `domain/ecs`, `systems/*`, `game/*`, and their tests and benches. `tools/lint.ps1` enforces it as a confinement rule (`flecs-include`), checked under CTest as `lint.banned_patterns`, with its own tests in `tools/lint.Tests.ps1` (`tools.lint`). Unlike the container and exception rules, the confinement applies to tests and benches too: a module whose *test* reaches flecs has an ECS dependency in its build.
+
+So `physics`, `nav`, `anim`, `gfx`, `geometry`, `sim`, `store` and everything in `core/` and `foundation/` stay ECS-free, and bridging code between an ECS-free module and the world lives in `systems/`. This is what makes seam 2's "the cost of replacing flecs is bounded" a fact about the build rather than an intention: the set of modules that would have to change is the set the linter names.
+
+The generated `<schemas/<stem>_ecs.h>` is a header precisely because of this rule. The generated schema module sits in the core layer and must not link flecs; the registration must. A header is compiled only where it is included, and the only places that may include it are the places that may see flecs — which is also what keeps it out of a build with `ENGINE_WITH_ECS` off.
+
+## Two traps E6 measured, as guard rails
+
+**1. Relationships multiply archetypes as a cross product.** E6 gave 10,000 children an independent faction as well as a parent: 1,330 tables became **9,096**, the tick went from 2.79 ms to **4.71 ms (1.7×)** and memory from 162 to **773 bytes an entity**, with no change to the data. Nothing failed; it just got slower, which is the kind of regression that reaches a release.
+
+So a world says what its component design expects and a debug build says so in the log when it is badly wrong:
+
+```cpp
+ecs::SimWorldConfig config;
+config.table_watch.expected_archetypes = 1500;   // 0, the default, switches it off
+config.table_watch.warn_multiple = 4.0f;
+```
+
+`SimWorld::step()` checks it every `check_every_ticks` ticks in debug builds only, and `SimWorld::table_watch()` is the reading. It warns rather than asserts because the number is a design estimate, not an invariant: a world legitimately grows tables while it loads, and a game that wants 20,000 of them is allowed to. What it is not allowed to do is get there without noticing. `ecs::TableWatch` is usable on its own against any world.
+
+**2. Where things are, not what they are.** An archetype ECS indexes by *what an entity is*, never by where it is. E6 measured the same coarse spatial grid three ways on the same query (entities of faction F within radius r):
+
+| Implementation | Latency | Against the scan |
+|---|---|---|
+| Scan the faction, distance test | 5.53 µs | 1.0× |
+| Scan the faction, reject on a `Cell` **component** first | 10.04 µs | **1.8× slower** |
+| One cached query per intersecting cell, cell as an `(InCell, cell)` **relationship** | 0.417 µs | **13× faster** |
+
+The rule that generalizes past flecs: **a component the query reads and rejects on is not an index.** It adds a column to the iteration and saves nothing, because the distance test it replaced was already two multiplies. The only way to make a query *skip* entities is to put the discriminator in the archetype — a relationship — or to keep the spatial structure **outside** the ECS entirely, as a grid or a BVH the system owns, with the ECS holding an index into it ([03 §3.4](../plan/03-data-model.md#34-the-runtime-world)'s "hot systems own their own data").
+
+Choose between them by the cost of trap 1. A relationship is the right answer when the discriminator is coarse and slowly changing: `(InCell, cell)` over an 8×8 grid took E6's world from 1,330 tables to 8,158, and that bought 13×. It is the wrong answer when the discriminator is fine-grained or changes every tick, because then every movement is an archetype move *and* the table count is the cell count multiplied by every other archetype. A per-entity cell **component** is never the answer. A capability that adds a relationship **says in its docs page what it does to the archetype set** — that sentence is the review item, and `table_watch` is what catches the ones that were not written down.
+
+## The tick
+
+**The phases.** `TickPhase` is [05 §5.2](../plan/05-simulation.md#52-sim-scheduler)'s list in its order, as flecs phase entities chained with `depends_on`, which is what lets the built-in pipeline pick up a system that names one without the pipeline knowing the system exists — [ADR-0027](../adr/0027-additive-capabilities.md)'s registration point for anything that ticks. The chain hangs off `flecs::PostFrame`, flecs' last built-in phase: the engine uses none of the built-in phases, but a system that forgets `.kind()` defaults to `OnUpdate`, and anchoring at the end means such a system runs *before* the engine's `input` phase instead of somewhere in the middle of the tick — a visible mistake rather than an invisible one.
 
 **The singletons are core/time's own types.** `world.get<SimTick>()` and `world.get<GameTime>()`, not an `ecs::Tick` that has to be kept in agreement with the clock. They are published *before* the pipeline runs, so every phase of a tick sees that tick's numbers, and they exist from construction, so a tool inspecting a world that has never stepped does not read a missing component.
 
@@ -30,29 +152,71 @@ What it buys beyond core residency: a "thread" per tick costs a job submission, 
 
 The hooks are assigned on flecs' public `ecs_os_api` global rather than through `ecs_os_set_api()`, which is one-shot and refuses once anything has claimed the API — and what claims it first depends on whether a `flecs::world` or the adapter was constructed first. Assigning the fields is idempotent and order-independent. Everything else — heap, time, mutexes, condition variables — stays as flecs shipped it: they are thin platform wrappers with nothing engine-specific to gain, and the workers that wait on those condition variables are flecs' own state machine.
 
+## Owned data
+
+One `flecs::world` per `SimWorld`, its eight phase entities, the `SimTick`/`GameTime` singletons, and four per-world singletons the seams keep: `ComponentRegistry`, `SystemRegistry`, `IdentityMap`, and the marker that says the identity observers are installed. The adapter owns the mapping from flecs' worker tasks to `core/jobs` jobs for the process. Nothing else; components belong to whoever declares them.
+
+**Hold a singleton reference only for the call that obtained it.** `components(world)`, `systems(world)` and `identity_map(world)` return references into flecs' storage; a world mutation may move them.
+
+## Invariants
+
+- Every phase is a distinct named entity carrying flecs' `Phase` tag, and the eight run in plan order whatever order their systems were created in.
+- The `SimTick` and `GameTime` singletons exist from construction and advance exactly once per `step()`.
+- A component registered from a schema is findable by its dotted qualified name and by its flecs path, and registering it twice is the first registration.
+- A `@transient` schema struct's component entity carries `ecs::Transient`; a hand-registered private component does too.
+- Every registered component has a distinct `ComponentMask` index below `sim::k_max_components`, or `k_invalid_component_index` and a counted overflow.
+- A live `Identity` is in the identity map, and an entity that is destroyed or loses the component is not — however it was destroyed.
+- `WorldCommands::apply()` leaves the queue empty and every parsed payload freed, whether or not the command succeeded.
+
+## Public API
+
+- `domain/ecs/sim_world.h`: `TickPhase` (an alias of `sim::TickPhase`) and `phase_entity_name`; `Phases`; `TableWatchConfig` and `TableWatch`; `SimWorldConfig`; `SimWorld` (`world`, `phases`, `phase`, `step`, `advance`, `tick`, `game_time`, `step_seconds`, `clock`, `game_clock`, `table_watch`). Includes `<flecs.h>`; that is the point.
+- `domain/ecs/components.h`: `Transient`, `ComponentType`, `ComponentRegistry`, `components`/`components_if_present`, `register_schema_component<T>`, `register_private_component<T>`, `component_index`, `mask_of<Ts...>`, `lookup_component`.
+- `domain/ecs/systems.h`: `RegisteredSystem`, `SystemRegistry`, `systems`/`systems_if_present`, `register_system`, `QueryAccess`, `query_access`.
+- `domain/ecs/identity.h`: `Identity`, `IdentityMap`, `identity_map`/`identity_map_if_present`, `entity_for`, `create_entity`, `id_of`.
+- `domain/ecs/world_commands.h`: `CommandKind`, `CommandStats`, `WorldCommands`.
+- `domain/ecs/os_api.h`: `install_log_sink`, `set_flecs_log_level`, `JobOsApi`, `set_workers`.
+- Generated per schema file: `<schemas/<stem>_ecs.h>`'s `register_<stem>_components(flecs::world&)`.
+
 **Determinism stance ([ADR-0010](../adr/0010-deterministic-sim-and-lod-contract.md)):** `hashed`. The step is fixed, tick and game time are integers, nothing reads a wall clock, and flecs orders systems within a phase by creation order whatever the worker count — the conflicting-write-set test pins that at 1, 2 and 4 workers.
 
-**Zero-cost-when-unused ([11 §11.10](../plan/11-performance-principles.md#1110-absent-capabilities-are-free)):** no linked code. `ENGINE_WITH_ECS=OFF` (and the minimal presets) skip the module, its tests, its bench, *and* the flecs fetch, so a minimal configure does not even download it.
+**Zero-cost-when-unused ([11 §11.10](../plan/11-performance-principles.md#1110-absent-capabilities-are-free)):** no linked code. `ENGINE_WITH_ECS=OFF` (and the minimal presets) skip the module, its tests, its bench, its generated test components, *and* the flecs fetch, so a minimal configure does not even download it. The generated `<stem>_ecs.h` is written for every schema in every configuration and compiled in none of them where the capability is off, because nothing may include it there.
 
-**LOD policy.** The module provides the phase (`TickPhase::Lod`) and the tick the policy runs on; the policy itself belongs to each capability, as ADR-0027 requires. The reference implementation — minimum over observers of f(distance, importance, weight) with a two-tick hysteresis dwell — is in `bench/ecs_bench.cpp`, where it is measured rather than asserted.
+**LOD policy.** The module provides the phase (`TickPhase::Lod`), the tick the policy runs on, and `SystemDesc::tiers` as the place a system declares where it runs; the policy itself belongs to each capability, as ADR-0027 requires. The reference implementation — minimum over observers of f(distance, importance, weight) with a two-tick hysteresis dwell — is in `domain/sim`'s `TierAssignment`, and E6's measured version is in `bench/ecs_bench.cpp`.
 
-**Public API.**
+**Depends on.** `base`, `containers`, `ids`, `json`, `jobs`, `log`, `memory`, `platform`, `schema`, `sim`, `time`, and flecs (`flecs::flecs_static`, included SYSTEM, pinned in `cmake/EngineEcs.cmake`).
 
-- `domain/ecs/sim_world.h`: `TickPhase` and `phase_name`; `Phases` (indexed by `TickPhase`); `SimWorldConfig` (`hz`, `max_steps_per_advance`, `game_seconds_per_real_second`, `epoch`); `SimWorld` (`world`, `phases`, `phase`, `step`, `advance`, `tick`, `game_time`, `step_seconds`, `clock`, `game_clock`). Includes `<flecs.h>`; that is the point.
-- `domain/ecs/os_api.h`: `install_log_sink`, `set_flecs_log_level`, `JobOsApi` (`max_workers`, `job_system`, `tasks_started`), `set_workers`.
+## Testing
 
-**Depends on.** `base`, `containers`, `jobs`, `log`, `platform`, `time`, and flecs (`flecs::flecs_static`, included SYSTEM, pinned in `cmake/EngineEcs.cmake`).
+`tools/dev.ps1 test -Preset msvc-debug -Filter ecs`:
 
-**Testing.** `tools/dev.ps1 test -Filter ecs`: the eight phases run in plan order when the systems are registered back to front; each phase is a distinct named entity carrying flecs' `Phase` tag; the singletons exist before the first step, advance once per step, and advance by `us_per_tick` of game time, with `advance()` running whole steps only, honouring the step cap and the time scale; two systems that both write one component run in creation order at 1, 2 and 4 workers, in both creation orders; a multi-threaded system over 4,096 entities runs on exactly `workers` threads of which `workers - 1` are workers of the engine's job system, the adapter started `workers - 1` tasks, and a worker count above the pool is refused rather than hung; and a relationship query written as plain flecs matches what it should, which is the evidence that a consumer writes flecs and not a wrapper. The size table pins `flecs::entity` at 16 bytes, `Phases` at 128, `SimWorldConfig` at 24.
+- **The tick** (`tests/ecs_tests.cpp`): the eight phases run in plan order when the systems are registered back to front; each phase is a distinct named entity carrying flecs' `Phase` tag; the singletons exist before the first step, advance once per step, and advance by `us_per_tick` of game time, with `advance()` running whole steps only, honouring the step cap and the time scale; two systems that both write one component run in creation order at 1, 2 and 4 workers, in both creation orders; a multi-threaded system over 4,096 entities runs on exactly `workers` threads of which `workers - 1` are workers of the engine's job system, and a worker count above the pool is refused rather than hung; and a relationship query written as plain flecs matches what it should, which is the evidence that a consumer writes flecs and not a wrapper.
+- **Seam 1** (`tests/component_tests.cpp`): components declared in `tests/ecs_demo.schema` and compiled by schemac register under their qualified names and at the matching flecs path; a `@kind(record)` struct in the same file does not; registration is idempotent; `@transient` reaches both the component entity and the schema descriptor, and a field-level `@transient` still works inside a component; member reflection describes `i64`, `f32`, a `vec3` as three floats and an `id128` as two `u64` at the schema's offsets, and leaves a `std::string` out; `flat` is true for the two scalar components and false for the one with a string; the index space is distinct per component and `mask_of` builds from it; a private component is `Transient`, has no descriptor and cannot be named; and the same component still round-trips through `core/schema`'s JSON with its transient field omitted.
+- **Seam 2** (`tests/system_tests.cpp`): `ecs::TickPhase` *is* `sim::TickPhase`; a registration lands the flecs system in the declared phase, runs it, and keeps the descriptor whole in `SystemRegistry`; `query_access` reads `const T` as a read and a non-const term as a write; a relationship term is counted rather than masked; and over-declaring is accepted while the under-declaring case the assert fires on is detected.
+- **Seam 3** (`tests/identity_tests.cpp`): an `Id128` names an entity in both directions and creating one twice is the same entity; the map follows the component when the entity is destroyed through flecs, when the component is removed, and when a raw `set<Identity>` created it; deferred creation and destruction reach the map at the merge; and two entities claiming one id are counted, with the loser's departure leaving the winner's row alone.
+- **Seam 4** (`tests/world_command_tests.cpp`): a batch creates, sets from JSON, removes and destroys by `Id128`, and nothing happens before `apply()`; what flecs then holds round-trips back through `core/schema`; an unknown type, a non-component and JSON that does not fit are all refused where they were queued, with the field path; bytes are accepted for a flat component and refused for the wrong size and for one holding a string; commands for an entity that is gone are counted rather than fatal and a queue that is never applied still frees what it parsed; and an installed drain makes a whole batch visible to a system in a later phase of the same tick.
+
+The size table pins `flecs::entity` at 16 bytes, `Phases` at 128, `SimWorldConfig` at 40, `Identity` at 16 and `ComponentType` at 32.
 
 `tools/dev.ps1 bench -Preset msvc-release -Filter ecs.*` runs experiment E6's half: the four-system tick at 1/2/4/8/16 workers, each system alone, three implementations of a faction-and-radius query, churn with and without deferring, and the working set of a 100,000-entity world. Numbers and what they mean: [docs/experiments/e6-ecs-store.md](../experiments/e6-ecs-store.md).
 
-**Performance notes.** Measured on an i9-10980XE ([E6](../experiments/e6-ecs-store.md)): four systems over 100,000 entities cost 2.79 ms single-threaded and 1.63 ms at four workers; 162 bytes an entity; 1.13 µs to create and destroy an eight-component entity, 0.83 µs inside a deferred scope. **Those two tick figures are under investigation**: re-measured on 2026-09-18 on a machine verified quiet by the harness ([bench](bench.md#measuring-on-a-shared-machine)), the same benchmark gives **2.46 ms single-threaded and 3.12 ms at four workers** — the serial case 12% faster and every parallel case 1.6–1.9× slower, twice, agreeing within 5%. Until that is bisected, treat the single-threaded figure as the one to plan against and the worker scaling as unknown; [E6's re-measurement section](../experiments/e6-ecs-store.md#re-measured-on-a-quiet-machine-2026-09-18) has the tables and the two candidate causes. Three things to know before writing a system here:
+## Performance notes
+
+Measured on an i9-10980XE ([E6](../experiments/e6-ecs-store.md)): 162 bytes an entity; 1.13 µs to create and destroy an eight-component entity, 0.83 µs inside a deferred scope. **The tick's worker scaling is under investigation**: E6 published 2.79 ms single-threaded and 1.63 ms at four workers, and a 2026-09-18 re-measurement on a machine verified quiet by the harness ([bench](bench.md#measuring-on-a-shared-machine)) gives **2.46 ms single-threaded and 3.12 ms at four workers** — the serial case 12% faster and every parallel case 1.6–1.9× slower, twice, agreeing within 5%. Until that is settled, treat the single-threaded figure as the one to plan against and the worker scaling as unknown; [E6's re-measurement section](../experiments/e6-ecs-store.md#re-measured-on-a-quiet-machine-2026-09-18) has the tables and the candidate causes. Three things to know before writing a system here:
 
 1. **`query_builder<...>().build()` is uncached and re-matches every table on every iteration.** A system's query is cached; a hand-built one is not unless it says `.cached()`. E6 measured 328 µs against 0.417 µs for the same query — 790× — on that difference alone.
-2. **A relationship narrows a query; a component does not.** The archetype is the index. A coarse spatial grid held as `(InCell, cell)` made a radius query 13× faster; the same grid held as a `Cell` component made it 1.8× *slower* than no grid at all.
-3. **Relationships multiply archetypes as a cross product.** Giving 10,000 children an independent faction as well as a parent took a world from 1,330 tables to 9,096, the tick from 2.79 ms to 4.71 ms, and memory from 162 to 773 bytes an entity, with no change to the data.
+2. **A relationship narrows a query; a component does not.** See "where things are, not what they are" above.
+3. **Relationships multiply archetypes as a cross product.** See the watchdog above.
+
+The seams themselves are cold by construction: registration happens at world setup, `mask_of` is called once per system, and `WorldCommands` is the external-edit path and not a per-frame one. The one thing in a tick is the table watchdog, which is a world-info read every 64th tick in debug builds and absent in release.
 
 And one flecs limit worth designing around: **hierarchy transform propagation cannot be `multi_threaded()`**. `cascade()` orders tables so parents come before children, but multi-threading splits each table's rows across workers with no barrier between tables, so a worker can read a parent's transform before the worker owning that row has written it. Propagation stays single-threaded until the engine's own scheduler can put a barrier per depth.
 
-**Not yet.** The engine's scheduler. ADR-0027's `SystemDesc` table — declared read/write sets, automatic parallel scheduling within a phase, deterministic ordering for conflicting systems — is what the phases here will eventually feed; today flecs' pipeline schedules, and E6 measured its ceiling (1.72× at four workers, falling above that — a figure the 2026-09-18 re-measurement above does not reproduce). Also absent: the materialization contract of [03 §3.4](../plan/03-data-model.md#34-the-runtime-world) (`Materialize`/`Promote`/`Demote`/`Dematerialize`), the event scheduler's timing wheel ([05 §5.3](../plan/05-simulation.md#53-event-scheduler-temporal-lod)), schema-generated components (`schemas/` types are not yet flecs components), the persistence flush that would join `TickPhase::Persist` to `foundation/store`, and flecs' REST explorer, which is an introspection surface the protocol layer should eventually expose rather than a port the engine opens by itself.
+## Not yet
+
+- **The engine's own scheduler.** `SystemRegistry` is the table it will read; today flecs' pipeline schedules, and E6 published a ceiling of 1.72× at four workers that the 2026-09-18 re-measurement above does not reproduce. `SystemDesc::tiers` and `Determinism` are recorded and not enforced, for the same reason they are in `domain/sim`: nothing here owns the entity-to-tier mapping yet.
+- **The protocol.** `world.query`, `world.apply` and the rest of [06 §6.2](../plan/06-agent-tooling.md#62-engine-protocol)'s table; see seam 4 for where they attach.
+- **The persistence flush.** `TickPhase::Persist` is empty. Joining it to `foundation/store` means walking the non-`Transient` components of the changed entities and writing them clustered by tile ([store](store.md)); the `flat` flag and the `Transient` tag are what that walk will read.
+- **The materialization contract** ([03 §3.4](../plan/03-data-model.md#34-the-runtime-world)) lives in `domain/sim` as a hooks table and is not yet driven from an ECS world.
+- **Relationships in the mask.** `sim::ComponentMask` cannot express a pair, so the debug check counts them and says nothing about them.
+- **flecs' REST explorer**, which is an introspection surface the protocol layer should eventually expose rather than a port the engine opens by itself.
