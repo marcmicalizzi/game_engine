@@ -21,7 +21,13 @@
 // finished. Those entries keep their Job alive. Jolt's own pool owns its queue and empties it
 // when it stops its threads; this adapter's queue belongs to `jobs::JobSystem`, which outlives
 // the world, so nothing would ever empty it. `drain()` is that step and `World::step` calls it
-// (see docs/subsystems/physics.md, "Draining the queue").
+// (see docs/subsystems/physics.md, "The job adapter, and why the step drains the queue").
+//
+// It also tags each job with the backend stage it belongs to, so that "did the soft-body solve
+// actually spread across workers?" is a number a test and a bench can read rather than a
+// profiler session (WorldStats::soft_body_solve_jobs / soft_body_solve_workers, E19). It costs a
+// name compare per job created — tens per step — and one relaxed atomic per solve job executed,
+// which is nothing beside the job itself.
 
 #include "jolt.h"
 
@@ -53,6 +59,12 @@ class JoltJobAdapter final : public JPH::JobSystemWithBarrier {
   // Jobs handed to the pool that have not run yet, and therefore are still holding a Job
   // object out of the free list. Zero once `drain()` has returned.
   u32 pending_count() const noexcept { return pending_.remaining(); }
+  u64 soft_body_count() const noexcept {
+    return soft_body_solve_jobs_.load(std::memory_order_relaxed);
+  }
+  // How many distinct performance workers have executed a soft-body solve job. One word, so
+  // worker 64 and up share the last bit; a pool that wide is not the case this measures.
+  u32 soft_body_worker_count() const noexcept;
 
   // Waits until every job this adapter handed to the job system has run and released its
   // reference. Called at the end of each step and again before the adapter is destroyed, so
@@ -67,17 +79,33 @@ class JoltJobAdapter final : public JPH::JobSystemWithBarrier {
   void FreeJob(Job* job) override;
 
  private:
+  // The backend's step is a graph of named jobs. The names are the only thing that says which
+  // stage a job belongs to, and Jolt only keeps them when its profiler is compiled in (which
+  // it is not here), so the tag is taken from the name at CreateJob and carried on the job.
+  enum class Stage : u8 { Other, SoftBodySolve };
+
+  // Jolt's Job plus that tag. Deriving is what makes the tag reachable from the pointer the
+  // queue hands back: Job is not polymorphic and stores nothing we could hang it on.
+  struct TaggedJob final : Job {
+    TaggedJob(const char* name, JPH::ColorArg color, JPH::JobSystem* system,
+              const JobFunction& function, JPH::uint32 dependencies, Stage job_stage)
+        : Job(name, color, system, function, dependencies), stage(job_stage) {}
+    Stage stage = Stage::Other;
+  };
+
   static void run_job(void* data);
 
   jobs::JobSystem* system_ = nullptr;
   int concurrency_ = 1;
-  JPH::FixedSizeFreeList<Job> jobs_;
+  JPH::FixedSizeFreeList<TaggedJob> jobs_;
   // One outstanding-work counter for the adapter's whole life: incremented before a job is
   // handed to the pool and signalled by the pool once that job has run, so `drain()` is a
   // `JobSystem::wait` and not a hand-rolled spin.
   jobs::Counter pending_;
   std::atomic<u64> queued_{0};
   std::atomic<u64> on_workers_{0};
+  std::atomic<u64> soft_body_solve_jobs_{0};
+  std::atomic<u64> soft_body_solve_workers_{0};
 };
 
 }  // namespace engine::physics

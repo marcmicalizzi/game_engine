@@ -229,6 +229,103 @@ TEST_CASE("physics: a compressed soft lattice springs back") {
   CHECK(recovered > 0.90f * rest_height);
 }
 
+TEST_CASE("physics: a spring attachment lags its anchor and a rigid one does not") {
+  // The difference ADR-0026 and plan 05 §5.14 care about: "bound" is a stiff spring rather than
+  // a weld, so flesh lags a fast bone instead of tracking it exactly. A rigid attachment covers
+  // the whole gap every step and cannot be moved by anything; a spring one keeps its mass, so
+  // it trails an anchor that is moving and carries momentum when the anchor stops.
+  World world;
+  REQUIRE(world.init(small_world_options()) == Status::Ok);
+
+  ShapeId capsule;
+  REQUIRE(world.create_capsule(0.1f, 0.05f, capsule) == Status::Ok);
+  BodyDesc anchor_desc;
+  anchor_desc.shape = capsule;
+  anchor_desc.transform.position = Vec3(0.0f, 2.0f, 0.0f);
+  anchor_desc.motion = MotionType::Kinematic;
+  anchor_desc.layer = Layer::Kinematic;
+  BodyId anchor;
+  REQUIRE(world.create_body(anchor_desc, anchor) == Status::Ok);
+
+  // A small cage hanging on the anchor, with vertex 0 attached and gravity off, so the only
+  // thing moving vertex 0 is the attachment.
+  constexpr u32 k_n = 3;
+  const LatticeVolume lattice = build_lattice_volume(k_n, 0.1f, 1.0e-4f, 1.0e-4f);
+  const u32 vertex_count = k_n * k_n * k_n;
+
+  constexpr f32 k_sweep_per_step = 0.02f;  // 1.2 m/s at 60 Hz
+
+  // Returns how far particle 0 ends up from its anchor: with `sweep`, after the anchor has been
+  // driven sideways at a constant speed; without it, after the cage has been left to hang.
+  const auto run = [&](AttachmentKind kind, f32 follow_rate, bool sweep) {
+    SoftAttachment attachment;
+    attachment.vertex = 0;
+    attachment.body = anchor;
+    attachment.local_point = Vec3::zero();
+    attachment.kind = kind;
+    attachment.follow_rate = follow_rate;
+
+    SoftBodyDesc desc;
+    desc.vertices = std::span<const Vec3>(lattice.vertices);
+    desc.inverse_masses = std::span<const f32>(lattice.inverse_masses);
+    desc.edges = std::span<const SoftEdge>(lattice.edges);
+    desc.volumes = std::span<const SoftVolumeConstraint>(lattice.volumes);
+    desc.faces = std::span<const u32>(lattice.faces);
+    desc.attachments = std::span<const SoftAttachment>(&attachment, 1);
+    desc.transform.position = Vec3(0.0f, 2.0f, 0.0f);
+    desc.iterations = 8;
+    desc.gravity_factor = sweep ? 0.0f : 1.0f;
+    desc.allow_sleeping = false;
+    SoftBodyId cage;
+    REQUIRE(world.create_soft_body(desc, cage) == Status::Ok);
+
+    Vector<Vec3> points(vertex_count);
+    const f32 dt = world.step_seconds();
+    f32 x = 0.0f;
+    for (u32 i = 0; i < 120; ++i) {
+      if (sweep) x += k_sweep_per_step;
+      Transform3 target;
+      target.position = Vec3(x, 2.0f, 0.0f);
+      REQUIRE(world.move_kinematic(anchor, target, dt));
+      REQUIRE(world.step() == Status::Ok);
+    }
+    REQUIRE(world.read_soft_body_vertices(cage, std::span<Vec3>(points)) == vertex_count);
+    Transform3 anchor_now;
+    REQUIRE(world.body_transform(anchor, anchor_now));
+    const f32 offset = length(anchor_now.position - points[0]);
+    REQUIRE(world.destroy_soft_body(cage));
+    // Put the anchor back for the next run.
+    REQUIRE(world.set_body_transform(anchor, anchor_desc.transform));
+    return offset;
+  };
+
+  SUBCASE("a still anchor: rigid holds its particle, spring lets it hang") {
+    const f32 rigid = run(AttachmentKind::Rigid, 0.0f, false);
+    const f32 spring = run(AttachmentKind::Spring, 30.0f, false);
+    INFO("rigid " << rigid << " spring(30/s) " << spring);
+    // Zero inverse mass: nothing the solver or the cage's weight does can move it off the
+    // anchor, which is the "stiffest form" ADR-0026 asks for.
+    CHECK(rigid < 1.0e-4f);
+    // The spring one carries its share of a cage hanging off one corner, so it sags. That it
+    // sags at all is the whole difference: this particle has mass and can be pushed.
+    CHECK(spring > 1.0e-3f);
+  }
+
+  SUBCASE("a sweeping anchor: rigid is one step behind, spring is further") {
+    const f32 rigid = run(AttachmentKind::Rigid, 0.0f, true);
+    const f32 spring = run(AttachmentKind::Spring, 30.0f, true);
+    INFO("step travel " << k_sweep_per_step << ", rigid " << rigid << ", spring " << spring);
+    // The rigid attachment's velocity covers the gap to where the anchor was when the step
+    // began, and the anchor moves during that same step, so a constant-velocity anchor leaves
+    // exactly one step of travel between them and never more. That is `move_kinematic`'s own
+    // behaviour, in particle form, and it is why the number is this exact rather than small.
+    CHECK(rigid == doctest::Approx(k_sweep_per_step).epsilon(0.05));
+    // The spring one is further behind, because closing only part of the gap per step while
+    // dragging a cage's worth of mass is what lagging means.
+    CHECK(spring > 1.4f * k_sweep_per_step);
+  }
+}
+
 TEST_CASE("physics: a soft body validates its cage before the backend sees it") {
   World world;
   REQUIRE(world.init(small_world_options()) == Status::Ok);
@@ -262,6 +359,16 @@ TEST_CASE("physics: a soft body validates its cage before the backend sees it") 
   }
   SUBCASE("zero iterations") {
     desc.iterations = 0;
+    CHECK(world.create_soft_body(desc, body) == Status::InvalidArgument);
+  }
+  SUBCASE("a spring attachment with no follow rate") {
+    // It would never move towards its anchor, so it is a free particle wearing an
+    // attachment's name; refusing beats behaving as if the attachment were not there.
+    SoftAttachment attachment;
+    attachment.vertex = 0;
+    attachment.kind = AttachmentKind::Spring;
+    attachment.follow_rate = 0.0f;
+    desc.attachments = std::span<const SoftAttachment>(&attachment, 1);
     CHECK(world.create_soft_body(desc, body) == Status::InvalidArgument);
   }
   SUBCASE("a valid cage") {

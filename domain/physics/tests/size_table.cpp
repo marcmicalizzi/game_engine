@@ -22,4 +22,8 @@ ENGINE_EXPECT_SIZE(40, 4, physics::ShapeHit);
 // are the description that feeds it.
 ENGINE_EXPECT_SIZE(12, 4, physics::SoftEdge);
 ENGINE_EXPECT_SIZE(20, 4, physics::SoftVolumeConstraint);
-ENGINE_EXPECT_SIZE(24, 4, physics::SoftAttachment);
+// 32, not 24: an attachment gained a kind and a follow rate when the spring kind landed
+// (plan 05 §5.14's "a stiff spring rather than a weld"). There is one per attached particle and
+// they are walked once per step, so the extra eight bytes are a step's read bandwidth and not a
+// per-element cost of the cage.
+ENGINE_EXPECT_SIZE(32, 4, physics::SoftAttachment);

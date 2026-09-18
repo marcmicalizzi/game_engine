@@ -25,6 +25,29 @@
 
 namespace engine::physics {
 
+// --- how wide one cage's solve can go ---------------------------------------------------------
+//
+// The backend solves a cage's constraints in groups that may run concurrently, and it builds
+// those groups by partitioning the cage's *vertices* into batches of at most this many. One
+// thread takes one group; the constraints that straddle two groups are left to a single
+// trailing group solved after them. So the width of a cage's constraint solve is a property of
+// the cage's size and not of the worker count, and a cage under one batch is solved serially
+// however many workers the world was given. That is the single most important thing to know
+// before sizing a cage (E19, docs/experiments/e19-lattice-cage.md): two cages of 400 particles
+// scale where one of 800 does not.
+//
+// The number mirrors the backend's own batch size and is pinned to it by a static assertion in
+// src/soft_body.cpp, so a backend that changes it fails the build rather than making this
+// comment quietly wrong.
+inline constexpr u32 k_soft_body_constraint_batch = 256;
+
+// How many ways the backend can split a cage of `vertex_count` particles. An upper bound: the
+// partition is greedy and spatial, so an awkward cage can end up with a slightly different
+// count, and the trailing group is serial either way.
+constexpr u32 soft_body_solve_width(u32 vertex_count) noexcept {
+  return (vertex_count + k_soft_body_constraint_batch - 1) / k_soft_body_constraint_batch;
+}
+
 // A distance constraint between two particles. `compliance` is the inverse stiffness: 0 is
 // inextensible, 1e-4 is rubbery, 1e-2 is slack.
 struct SoftEdge {
@@ -40,14 +63,36 @@ struct SoftVolumeConstraint {
   f32 compliance = 0.0f;
 };
 
-// A particle held to a rigid body (or, with a null body, to a fixed point in the world). The
-// particle becomes kinematic and is driven from the body's transform every step, which is the
-// "bound to a bone or a rigid body" attachment of ADR-0026 in its stiffest form. A springy
-// attachment is a later addition to this struct, not a different mechanism.
+// How hard a particle is held to its anchor. Both kinds drive the particle from the anchor's
+// transform once per step; they differ in whether the particle still has mass while they do it.
+//
+//   Rigid   the particle's inverse mass is zeroed and its velocity is set to cover the whole
+//           gap to the anchor in one step — the particle form of `move_kinematic`. Nothing the
+//           solver does can move it, so it neither lags nor collides its way out of the anchor.
+//   Spring  the particle keeps its mass and its velocity is steered a fraction of the way
+//           towards the anchor each step (`follow_rate`, in inverse seconds). It therefore
+//           lags a fast anchor, carries momentum, and can be pushed off the anchor by contact
+//           or by the cage pulling on it — which is what plan 05 §5.14 means by "'bound' is a
+//           stiff spring rather than a weld, so flesh lags a fast bone instead of tracking it
+//           exactly", and what makes "no element passes through the core" a real measurement
+//           rather than a consequence of the attachment (E19).
+enum class AttachmentKind : u8 { Rigid, Spring };
+
+// A particle held to a rigid body (or, with a null body, to a fixed point in the world). This
+// is the "bound to a bone or a rigid body" attachment of ADR-0026; `kind` chooses between its
+// stiffest form and a lagging one. Implemented without a backend constraint kind at all: the
+// step writes the particle's velocity, so a new kind is a new formula here and not a new
+// solver feature.
 struct SoftAttachment {
   u32 vertex = 0;
   BodyId body{};
   Vec3 local_point{};  // in the body's local space; the world point when `body` is null
+  // Spring only, and required there: the rate at which the gap to the anchor is closed, in
+  // inverse seconds. `follow_rate * dt` is the fraction of the remaining gap covered in one
+  // step and is clamped to 1, so a rate at or above the step rate tracks the anchor as closely
+  // as Rigid does while still carrying mass. Ignored by Rigid.
+  f32 follow_rate = 0.0f;
+  AttachmentKind kind = AttachmentKind::Rigid;
 };
 
 // Everything needed to instantiate one soft body. The spans are read during creation and not
@@ -98,9 +143,10 @@ ClothSheet build_cloth_sheet(u32 columns, u32 rows, f32 spacing, f32 compliance,
                              f32 shear_compliance);
 
 // An n x n x n lattice of particles filling a cube of side (n - 1) * spacing, centred on the
-// origin. Edges run along the three axes, across every face diagonal, and along the two body
-// diagonals of each cell; each cell also contributes five tetrahedra as volume constraints, so
-// the cube resists compression rather than only stretching.
+// origin. Edges run along the three axes, across every face diagonal, and along all four body
+// diagonals of each cell; each cell also contributes the six tetrahedra of the Kuhn
+// decomposition as volume constraints, so the cube resists compression rather than only
+// stretching (see docs/subsystems/physics.md for why six and not five).
 //
 // Vertex (x, y, z) is at index (z * n + y) * n + x.
 struct LatticeVolume {

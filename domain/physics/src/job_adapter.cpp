@@ -3,7 +3,27 @@
 #include <core/base/assert.h>
 #include <core/jobs/job_system.h>
 
+#include <bit>
+#include <cstring>
+
 namespace engine::physics {
+
+namespace {
+
+// The job the backend runs its soft-body constraint solve in: one per
+// PhysicsSystem::GetMaxConcurrency(), each of which claims constraint groups of every active
+// cage until the step's iterations are done. Matching the name is the only handle we have on
+// the stage — Jolt keeps a job's name only when its profiler is compiled in, and it is not
+// (cmake/EnginePhysics.cmake) — so the name is read here, where it is still a parameter.
+// A rename in a future Jolt shows up as a solve-job count of zero, which the parallelism test
+// asserts against rather than leaving the counter to quietly mean nothing.
+constexpr const char* k_soft_body_solve_job = "SoftBodySimulate";
+
+bool is_soft_body_solve_job(const char* name) noexcept {
+  return name != nullptr && std::strcmp(name, k_soft_body_solve_job) == 0;
+}
+
+}  // namespace
 
 JoltJobAdapter::JoltJobAdapter(jobs::JobSystem* system, u32 concurrency, u32 max_jobs,
                                u32 max_barriers)
@@ -26,13 +46,18 @@ void JoltJobAdapter::drain() {
   if (system_ != nullptr) system_->wait(pending_);
 }
 
+u32 JoltJobAdapter::soft_body_worker_count() const noexcept {
+  return static_cast<u32>(std::popcount(soft_body_solve_workers_.load(std::memory_order_relaxed)));
+}
+
 JPH::JobHandle JoltJobAdapter::CreateJob(const char* name, JPH::ColorArg color,
                                          const JobFunction& function, JPH::uint32 dependencies) {
-  const JPH::uint32 index = jobs_.ConstructObject(name, color, this, function, dependencies);
+  const Stage stage = is_soft_body_solve_job(name) ? Stage::SoftBodySolve : Stage::Other;
+  const JPH::uint32 index = jobs_.ConstructObject(name, color, this, function, dependencies, stage);
   // Jolt sizes its job budget (cMaxPhysicsJobs) for the worst step it can produce, so running
   // out means the world was configured with fewer jobs than the backend needs, not that the
   // caller did something wrong. Failing loudly beats Jolt's own "sleep and retry" spin.
-  ENGINE_VERIFY(index != JPH::FixedSizeFreeList<Job>::cInvalidObjectIndex,
+  ENGINE_VERIFY(index != JPH::FixedSizeFreeList<TaggedJob>::cInvalidObjectIndex,
                 "physics: the backend ran out of jobs");
   Job* job = &jobs_.Get(index);
 
@@ -43,22 +68,36 @@ JPH::JobHandle JoltJobAdapter::CreateJob(const char* name, JPH::ColorArg color,
   return handle;
 }
 
-void JoltJobAdapter::FreeJob(Job* job) { jobs_.DestructObject(job); }
+void JoltJobAdapter::FreeJob(Job* job) { jobs_.DestructObject(static_cast<TaggedJob*>(job)); }
 
 void JoltJobAdapter::run_job(void* data) {
-  Job* job = static_cast<Job*>(data);
+  auto* job = static_cast<TaggedJob*>(data);
   // The job knows which system created it, and it is always one of ours.
   auto* self = static_cast<JoltJobAdapter*>(job->GetJobSystem());
-  if (jobs::JobSystem::current_worker() != nullptr)
-    self->on_workers_.fetch_add(1, std::memory_order_relaxed);
+  const jobs::WorkerInfo* info = jobs::JobSystem::current_worker();
+  if (info != nullptr) self->on_workers_.fetch_add(1, std::memory_order_relaxed);
+  if (job->stage == Stage::SoftBodySolve) {
+    self->soft_body_solve_jobs_.fetch_add(1, std::memory_order_relaxed);
+    if (info != nullptr && info->pool == jobs::Pool::Performance) {
+      const u32 bit = info->index < 63 ? info->index : 63u;
+      self->soft_body_solve_workers_.fetch_or(u64{1} << bit, std::memory_order_relaxed);
+    }
+  }
   job->Execute();
   job->Release();
 }
 
 void JoltJobAdapter::QueueJob(Job* job) {
   queued_.fetch_add(1, std::memory_order_relaxed);
+  // Every job this adapter hands out is one of ours, so the downcast is what recovers the
+  // stage tag on the other side of the queue's void*.
+  auto* tagged = static_cast<TaggedJob*>(job);
   if (system_ == nullptr) {
-    // No job system: run it here and now. The barrier still sees a finished job.
+    // No job system: run it here and now. The barrier still sees a finished job. The counters
+    // that run_job keeps are its own, so they stay at zero, which is the truth: nothing ran on
+    // a worker.
+    if (tagged->stage == Stage::SoftBodySolve)
+      soft_body_solve_jobs_.fetch_add(1, std::memory_order_relaxed);
     job->Execute();
     return;
   }
@@ -66,7 +105,7 @@ void JoltJobAdapter::QueueJob(Job* job) {
   // job is handed over, because the pool may run and signal it before schedule() returns.
   job->AddRef();
   pending_.add(1);
-  system_->schedule(jobs::Pool::Performance, jobs::Job{&run_job, job, &pending_});
+  system_->schedule(jobs::Pool::Performance, jobs::Job{&run_job, tagged, &pending_});
 }
 
 void JoltJobAdapter::QueueJobs(Job** job_array, JPH::uint count) {

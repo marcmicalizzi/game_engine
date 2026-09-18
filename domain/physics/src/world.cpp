@@ -242,6 +242,8 @@ WorldStats World::stats() const noexcept {
   out.backend_jobs = impl_->job_adapter->queued_count();
   out.backend_jobs_on_workers = impl_->job_adapter->worker_count();
   out.backend_jobs_pending = impl_->job_adapter->pending_count();
+  out.soft_body_solve_jobs = impl_->job_adapter->soft_body_count();
+  out.soft_body_solve_workers = impl_->job_adapter->soft_body_worker_count();
   out.body_count = impl_->bodies.size();
   out.active_body_count = active_body_count();
   out.soft_body_count = impl_->soft_bodies.size();
@@ -566,10 +568,18 @@ Status World::step(f32 dt_seconds, u32 sub_steps) {
   impl_->raw_contacts.clear();
   impl_->contacts.clear();
 
-  // Drive every attached particle from the body it hangs on. A pinned particle has zero
-  // inverse mass, so the solver integrates it from its velocity alone: setting that velocity
-  // to cover the gap in one step is the particle form of MoveKinematic, and it is what makes
-  // "bound to a rigid body" of ADR-0026 work without a second constraint kind.
+  // Drive every attached particle from the body it hangs on. Both kinds write a velocity and
+  // nothing else, which is what lets "bound to a rigid body" of ADR-0026 work without a second
+  // backend constraint kind:
+  //
+  //   Rigid   zero inverse mass, so the solver integrates the particle from its velocity
+  //           alone; setting that velocity to cover the whole gap is the particle form of
+  //           MoveKinematic.
+  //   Spring  the particle keeps its mass, and its velocity is steered a fraction `alpha` of
+  //           the way towards the gap-covering velocity. At alpha = 1 that is the Rigid
+  //           formula with mass kept; below 1 it is a critically damped position servo, which
+  //           cannot ring the way an accumulating spring force would because the velocity is
+  //           rewritten each step rather than added to.
   const f32 inv_dt = 1.0f / dt_seconds;
   const JPH::BodyInterface& anchors = impl_->system.GetBodyInterfaceNoLock();
   for (Impl::SoftEntry& entry : impl_->soft_bodies.values()) {
@@ -588,8 +598,14 @@ Status World::step(f32 dt_seconds, u32 sub_steps) {
         target = anchors.GetWorldTransform(anchor->id) * target;
       }
       JPH::SoftBodyVertex& vertex = motion->GetVertex(attachment.vertex);
-      vertex.mInvMass = 0.0f;
-      vertex.mVelocity = (to_local * target - vertex.mPosition) * inv_dt;
+      const JPH::Vec3 gap_velocity = (to_local * target - vertex.mPosition) * inv_dt;
+      if (attachment.kind == AttachmentKind::Rigid) {
+        vertex.mInvMass = 0.0f;
+        vertex.mVelocity = gap_velocity;
+      } else {
+        const f32 alpha = clamp(attachment.follow_rate * dt_seconds, 0.0f, 1.0f);
+        vertex.mVelocity = vertex.mVelocity + (gap_velocity - vertex.mVelocity) * alpha;
+      }
     }
   }
 

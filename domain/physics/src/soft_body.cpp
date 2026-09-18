@@ -8,10 +8,17 @@
 #include <Jolt/Physics/SoftBody/SoftBodyCreationSettings.h>
 #include <Jolt/Physics/SoftBody/SoftBodyMotionProperties.h>
 #include <Jolt/Physics/SoftBody/SoftBodySharedSettings.h>
+#include <Jolt/Physics/SoftBody/SoftBodyUpdateContext.h>
 
 #include <utility>
 
 namespace engine::physics {
+
+// The public header promises that `k_soft_body_constraint_batch` is the backend's own batch
+// size. This is where that promise is kept: a backend that changes it fails the build here
+// rather than turning `soft_body_solve_width` into a plausible-looking wrong answer.
+static_assert(k_soft_body_constraint_batch == JPH::SoftBodyUpdateContext::cVertexConstraintBatch,
+              "physics: the mirrored soft-body constraint batch size no longer matches Jolt's");
 
 namespace {
 
@@ -45,6 +52,10 @@ Status World::create_soft_body(const SoftBodyDesc& desc, SoftBodyId& out) {
     if (attachment.vertex >= vertex_count) return Status::InvalidArgument;
     if (!attachment.body.is_null() && impl_->body_entry(attachment.body) == nullptr)
       return Status::NotFound;
+    // A spring with no rate never moves towards its anchor, so it is a free particle wearing
+    // an attachment's name. Refusing beats behaving as if the attachment were not there.
+    if (attachment.kind == AttachmentKind::Spring && !(attachment.follow_rate > 0.0f))
+      return Status::InvalidArgument;
   }
   // Pressure needs a closed surface to measure a volume over; without faces it is a silent
   // no-op, which is worse than a refusal.
@@ -58,9 +69,14 @@ Status World::create_soft_body(const SoftBodyDesc& desc, SoftBodyId& out) {
     shared->mVertices.push_back(
         SharedSettings::Vertex(JPH::Float3(p.x, p.y, p.z), JPH::Float3(0, 0, 0), inverse_mass));
   }
-  // An attached particle is kinematic to the solver; the step drives it from its anchor.
+  // A rigidly attached particle is kinematic to the solver; the step drives it from its
+  // anchor. A spring-attached one keeps its mass, so the solver, contact, and the cage can all
+  // still move it — that is the whole difference between the two kinds. This has to happen
+  // before Optimize(), which sorts each group's constraints by distance to the nearest
+  // kinematic vertex and would otherwise sort against the wrong set.
   for (const SoftAttachment& attachment : desc.attachments)
-    shared->mVertices[attachment.vertex].mInvMass = 0.0f;
+    if (attachment.kind == AttachmentKind::Rigid)
+      shared->mVertices[attachment.vertex].mInvMass = 0.0f;
 
   shared->mEdgeConstraints.reserve(desc.edges.size());
   for (const SoftEdge& edge : desc.edges)
@@ -81,8 +97,18 @@ Status World::create_soft_body(const SoftBodyDesc& desc, SoftBodyId& out) {
   // at rest in its authored pose whatever that pose is.
   shared->CalculateEdgeLengths();
   shared->CalculateVolumeConstraintVolumes();
-  // Groups constraints so they can be solved in parallel. It reorders constraints but never
-  // vertices, which is why attachment indices stay valid across it.
+  // Groups constraints so they can be solved in parallel, and is not optional: the backend
+  // asserts on a settings object that has no update groups, and without them the whole cage
+  // would be one serial group. It reorders constraints but never vertices (Jolt says so where
+  // it sorts them: reordering vertices "would be much more of a burden to the end user"),
+  // which is why attachment, face, and read_soft_body_vertices indices stay valid across it.
+  //
+  // The grouping is a greedy spatial partition into batches of at most
+  // SoftBodyUpdateContext::cVertexConstraintBatch vertices, plus one trailing group for the
+  // constraints that straddle two batches. So the width of the constraint solve is
+  // ceil(vertices / batch) and not the worker count, which is the finding E19 rests on and
+  // what `soft_body_solve_width` reports. The group array itself is private to the backend,
+  // so the batch size is mirrored in soft_body.h and pinned here instead.
   shared->Optimize();
 
   JPH::SoftBodyCreationSettings settings(shared, to_jph(desc.transform.position),

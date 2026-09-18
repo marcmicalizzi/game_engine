@@ -92,6 +92,13 @@ struct WorldStats {
   // drains them, and the count existing at all is what makes that a checkable invariant
   // rather than a race that only a slow machine loses (docs/subsystems/physics.md).
   u32 backend_jobs_pending = 0;
+  // Of `backend_jobs`, the ones that ran the soft-body constraint solve, and how many distinct
+  // performance workers have executed one since the world was created. The second is the
+  // answer to "does the soft-body solve actually spread?", which the cost of a cage makes
+  // worth asking (ADR-0026's 1.5 ms tick budget); see docs/subsystems/physics.md. Workers past
+  // 64 are folded into the last bit, because the set is one word.
+  u64 soft_body_solve_jobs = 0;
+  u32 soft_body_solve_workers = 0;
   u32 body_count = 0;
   u32 active_body_count = 0;
   u32 soft_body_count = 0;

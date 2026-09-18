@@ -36,8 +36,9 @@ the only thing that advances it is `step()`.
 
 **Public API.** `domain/physics/types.h`: `Status`/`status_name`, `Layer`/`layer_name`/
 `layers_collide`/`LayerMask`, `MotionType`, and the three handle types.
-`domain/physics/soft_body.h`: `SoftEdge`, `SoftVolumeConstraint`, `SoftAttachment`,
-`SoftBodyDesc`, and the two cage builders `build_cloth_sheet` and `build_lattice_volume` with
+`domain/physics/soft_body.h`: `SoftEdge`, `SoftVolumeConstraint`, `AttachmentKind`,
+`SoftAttachment`, `SoftBodyDesc`, `k_soft_body_constraint_batch` and `soft_body_solve_width`,
+and the two cage builders `build_cloth_sheet` and `build_lattice_volume` with
 their `ClothSheet` and `LatticeVolume` results. `domain/physics/physics.h`: `WorldOptions`,
 `WorldStats`, `temp_allocator_size_for`, `CompoundChild`, `HeightfieldDesc`, `BodyDesc`,
 `RayHit`, `ShapeHit`, `ContactPhase`, `ContactEvent`, and `World` itself — shape creation
@@ -262,7 +263,7 @@ where it came from, how it is bound to a render mesh, or which LOD tier it is ru
 |---|---|
 | cage topology | `vertices`, `edges`, `volumes`, `faces` |
 | material parameters (stiffness, damping) | per-constraint `compliance`, per-body `linear_damping`, `friction`, `restitution` |
-| attachment: free, bone, rigid body, static collider | `SoftAttachment{vertex, body, local_point}`; a null `body` is a fixed world point |
+| attachment: free, bone, rigid body, static collider | `SoftAttachment{vertex, body, local_point, kind, follow_rate}`; a null `body` is a fixed world point |
 | closed volume with pressure | `faces` plus `pressure` (refused without a surface to measure over) |
 | per-tick solve against a contact set | `World::step`, with `iterations` as the cost knob the tier table turns |
 | particle-and-shell cage (v1 kind) | `build_cloth_sheet` |
@@ -270,10 +271,44 @@ where it came from, how it is bound to a render mesh, or which LOD tier it is ru
 
 The word "compliance" is the only XPBD-shaped thing in the interface, and every position-based or
 finite-element solver can honour it (0 is a hard constraint; larger is softer, in metres per
-newton). Attachment is implemented without a Jolt constraint kind at all: an attached particle
-gets zero inverse mass, and each step the world sets its velocity to cover the gap to its anchor
-in one step — the particle form of `MoveKinematic`. A springy attachment is a later addition to
-that struct, not a different mechanism.
+newton).
+
+### The two attachment kinds, and why there are two
+
+Attachment is implemented without a Jolt constraint kind at all: the step writes the attached
+particle's velocity and nothing else, so a new kind is a new formula in `World::step` rather than
+a new backend feature.
+
+| Kind | Inverse mass | Velocity each step | What it is |
+|---|---|---|---|
+| `Rigid` | forced to 0 | covers the whole gap to the anchor | the particle form of `MoveKinematic` |
+| `Spring` | the caller's | steered `clamp(follow_rate * dt, 0, 1)` of the way towards that | a stiff spring, not a weld |
+
+`Rigid` was the only kind at first, and it is the right one for a cage element that is *inside*
+the rigid structure it hangs on — a lattice cell that falls inside a bone must not be pushable
+out of the bone. It is the wrong one for everything else, for a reason [05 §5.14](../plan/05-simulation.md#514-deformable-volumes)
+states outright: "'bound' is a stiff spring rather than a weld, so flesh lags a fast bone instead
+of tracking it exactly". A zero-inverse-mass particle does not lag, does not carry momentum, and
+cannot be pushed by contact — which also means that "no element passes through the core", E19's
+own pass criterion, would have been true by construction rather than measured. That is what made
+the second kind necessary rather than merely nice, and E19's fixture uses both: `Rigid` for the
+cage vertices inside a bone capsule, `Spring` for the shell just outside it.
+
+`Spring` steers the velocity rather than adding a force to it, so it cannot ring the way an
+accumulating spring would: at `follow_rate * dt >= 1` it degenerates exactly to the `Rigid`
+formula with the mass kept, and below that it is a critically damped position servo. A rate is
+in inverse seconds because the thing being chosen is "how fast does this close the gap", which is
+what a content-side stiffness in kPa ([07 §7.10](../plan/07-content-pipeline.md#710-deformable-volume-assets))
+has to be converted into anyway; converting it is the deformation system's job, a level up.
+
+Two properties are worth knowing before reading a lag number. A `Rigid` attachment on a
+constant-velocity anchor sits **exactly one step of travel behind it**, because the velocity is
+computed from where the anchor was when the step began and the anchor moves during that same
+step; that is `move_kinematic`'s own behaviour and not a defect. And a `Spring` attachment's lag
+is *not* monotone in `follow_rate` once the cage's inertia is in play — a gentler servo keeps
+more of the particle's previous velocity, which in steady state is closer to the anchor's than a
+"cover the whole gap now" correction the solver then partly undoes. Pick a rate by what the
+motion looks like, not by assuming stiffer tracks better.
 
 **Deliberately not here, because ADR-0026 puts it a level up:** cage generation from a signed
 distance field, layers and their boundary behaviour, adhesion, damage as constraint edits,
@@ -282,6 +317,45 @@ does not do it yet:** soft-against-soft contact (deferred by ADR-0026 — the pa
 quadratic in the interacting set), skinning a cage to a skeleton (`SoftBodySharedSettings`'s
 skinned constraints), per-region materials, and soft-body contact events (the rigid contact
 listener does not see them).
+
+### How wide one cage's solve can go, and why it is not the worker count
+
+`SoftBodySharedSettings::Optimize()` runs when a soft body is created, and it is not optional:
+the backend asserts on settings with no update groups, and without it the whole cage would be one
+serial group. What it does is partition the cage's **vertices** greedily and spatially into
+batches of at most `SoftBodyUpdateContext::cVertexConstraintBatch` — 256 — and put each batch's
+constraints in its own update group, with the constraints that straddle two batches in a single
+trailing group. The solve then takes one group per thread and runs the trailing group once the
+parallel ones are done.
+
+So **the width of a cage's constraint solve is `ceil(vertices / 256)`, a property of the cage,
+and adding workers past that buys nothing.** A 512-particle cage is a two-wide solve on a
+36-thread machine. That number is the one thing to know before sizing a cage, and it is the
+reason [E19](../experiments/e19-lattice-cage.md) recommends more small cages over one large one;
+`soft_body_solve_width(vertex_count)` reports it, and the batch size is mirrored in
+`soft_body.h` and pinned to Jolt's by a static assertion in `src/soft_body.cpp`, because the
+group array itself is private to the backend and a mirror that drifted would be worse than no
+mirror at all.
+
+Two consequences that are easy to get backwards:
+
+- **The backend's solve jobs are not per cage.** `PhysicsSystem` creates `GetMaxConcurrency()`
+  of them and each takes the next available constraint group from *any* active cage, so eight
+  one-batch cages fill eight threads where one eight-batch cage would not. `Optimize` is what
+  makes that possible and the reason it is called at creation rather than lazily.
+- **A worker with nothing to claim spins.** A solve job that finds no group yields and retries
+  until the step's iterations are done, so workers past the width are not idle, they are busy
+  doing nothing. On a pinned pool that is worse than not asking for them.
+
+`WorldStats::soft_body_solve_jobs` and `soft_body_solve_workers` are what turn "does it actually
+spread?" into a number: the job adapter tags the backend job that runs the constraint solve
+(matched by its name, since Jolt keeps job names only with its profiler compiled in) and records
+the set of performance workers that have executed one. The parallelism test asserts the count is
+non-zero, which is also what pins the job name against a future Jolt renaming it.
+
+Vertices are never reordered by `Optimize` — Jolt says so where it sorts the constraints, that
+reordering vertices "would be much more of a burden to the end user" — which is why attachment
+indices, face indices, and `read_soft_body_vertices` indices all stay valid across it.
 
 `build_lattice_volume` uses the six-tetrahedron Kuhn decomposition — the one Jolt's own cube
 fixture uses — rather than the five-tetrahedron alternative. The five-tetrahedron split has to be
@@ -317,7 +391,7 @@ collision groups and sub-shape filtering, overlap and collide-shape queries (onl
 casts are here), soft-body contact events, and Jolt's GPU hair solver. None of them needs the
 public surface to change shape; each is an addition.
 
-**Testing.** `tools/dev.ps1 test -Preset msvc-debug -Filter physics`. Twenty-four cases: a sphere
+**Testing.** `tools/dev.ps1 test -Preset msvc-debug -Filter physics`. Twenty-nine cases: a sphere
 dropped on a static box comes to rest within the penetration slop and falls asleep; a hundred
 boxes in ten towers of ten are still standing after 600 steps, with bounds on sideways drift and
 on how far anything sank; a kinematic box pushes a dynamic one and stays behind it; contact
@@ -335,10 +409,16 @@ workers behaves as none at all (the regression tests for the drain above, and th
 size is an option); the cloth and
 lattice builders produce exactly the constraint counts they promise; a cloth pinned at two
 corners sags, settles, and stays finite; a lattice cube pressed to 70% of its height by a
-kinematic plate recovers more than 90% of it; soft-body descriptions are validated before the
-backend sees them; 600 steps with 1 and with 8 workers are bit-identical; the job adapter runs
-backend jobs on `jobs::JobSystem` workers; and a world with no job system produces the same
-answer as one with four.
+kinematic plate recovers more than 90% of it; a `Rigid` attachment holds its particle against a
+hanging cage's own weight and sits exactly one step of travel behind a sweeping anchor while a
+`Spring` one sags and lags further, and a `Spring` with no follow rate is refused; the
+arithmetic of `soft_body_solve_width` matches the batch rule for the cage sizes E19 sweeps;
+eight cages stepped on eight workers put the backend's constraint solve on more than one of
+them, a world with no job system puts it on none, and two cages stepped 120 times with 1 and
+with 8 workers give bit-identical particle positions; soft-body descriptions are validated
+before the backend sees them; 600 steps with 1 and with 8 workers are bit-identical; the job
+adapter runs backend jobs on `jobs::JobSystem` workers; and a world with no job system produces
+the same answer as one with four.
 
 A single 100-high tower is *not* in the suite, and not because it was awkward to write: it falls
 over inside two seconds. That is a property of sequential-impulse solvers rather than of this
@@ -358,25 +438,24 @@ machine settles layout and traversal decisions, not cross-machine defaults
 
 | benchmark | µs per step |
 |---|---|
-| 1,000 boxes, 1 worker | 2,420 |
-| 1,000 boxes, 4 workers | 1,090 |
-| 1,000 boxes, 8 workers | 752 |
-| 1,000 boxes, no job system | 2,430 |
+| 1,000 boxes, 1 worker | 2,403 |
+| 1,000 boxes, 4 workers | 1,083 |
+| 1,000 boxes, 8 workers | 736 |
+| 1,000 boxes, no job system | 2,426 |
 | 512-particle soft cube, 4 iterations | 481 |
 | 512-particle soft cube, 8 iterations | 942 |
 
 The box benchmark measures a *settled* pile with sleeping switched off: a pile that is allowed to
 sleep costs nothing after a second and would make the number a measure of the sleep heuristic.
-Scaling from one to eight workers is 3.2x, which is what a contact solver that has to sort its
+Scaling from one to eight workers is 3.3x, which is what a contact solver that has to sort its
 islands for determinism looks like — the 1-worker and no-job-system numbers being equal says the
-adapter itself costs nothing measurable.
+adapter itself, and the drain it does at the end of every step, cost nothing measurable.
 
 The soft cube is linear in iterations, as XPBD should be, and it is the number to watch: ADR-0026
 budgets **1.5 ms per 60 Hz tick for all deformable volumes together**, and one 512-particle cage
 at eight iterations already spends 0.94 ms of it. Either the T0 cages of that budget are much
-smaller than 512 elements, or the budget needs the parallel constraint groups that
-`SoftBodySharedSettings::Optimize` sets up and this module does not yet hand to the job system.
-That is E19's question, and this is the first measurement it has.
+smaller than 512 elements, or the budget has to change — and the solve-width result above says
+the pool is not the answer for a single cage. That is E19's question.
 
 Other hot-path decisions: contact recording is lock-free (a per-worker bucket, merged and sorted
 once per step); `read_transforms` takes one pass over the caller's id array against the no-lock
