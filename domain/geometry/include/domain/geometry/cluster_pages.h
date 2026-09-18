@@ -322,6 +322,17 @@ class PageResidencyManager {
 
   // The page the next `admit` would take, without taking it: false when nothing is queued.
   bool next_request(u32& page) const noexcept;
+  // Drops a queued page **without** admitting it, and returns whether it was queued at all.
+  //
+  // This is what a request that has gone **stale** needs, and it is not a convenience. A request
+  // only ever comes from a cluster that is being drawn, so it arrives with a resident parent — but
+  // a queue is not served in the frame it was filled in, and by the time a page reaches the front
+  // the parent that asked for it may have been evicted. Admitting it then would put the finer
+  // geometry back with nothing above it, which is exactly the hole the ancestor-closed invariant
+  // exists to prevent: the parents draw the coarse surface and the children draw the fine one on
+  // top of it. The caller is the one that can tell — it knows which pages hold a page's parents —
+  // so the manager offers the removal rather than deciding.
+  bool drop(u32 page);
 
   // The loader: makes up to `max_pages` queued pages resident, most urgent first, and returns how
   // many. The budget is not consulted here — `evict_to_budget` is what enforces it, after the
@@ -351,6 +362,7 @@ class PageResidencyManager {
   void sift_up(u32 at) noexcept;
   void sift_down(u32 at) noexcept;
   u32 pop_most_urgent() noexcept;
+  void remove_at(u32 at) noexcept;
   void promote_starved() noexcept;
 
   Vector<u32> bytes_;  // per page

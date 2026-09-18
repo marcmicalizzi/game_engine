@@ -998,18 +998,33 @@ void PageResidencyManager::sift_down(u32 at) noexcept {
   heap_at_[page] = at;
 }
 
-u32 PageResidencyManager::pop_most_urgent() noexcept {
-  const u32 page = heap_[0];
+// Takes one entry out of the heap wherever it sits: the last entry moves into the hole and then
+// sifts whichever way its key asks for, because a removal from the middle can leave the hole's new
+// occupant either more or less urgent than the parent it landed under.
+void PageResidencyManager::remove_at(u32 at) noexcept {
+  const u32 page = heap_[at];
   const u32 last = heap_.back();
   heap_.pop_back();
-  if (!heap_.empty()) {
-    heap_[0] = last;
-    heap_at_[last] = 0;
-    sift_down(0);
-  }
   heap_at_[page] = k_no_index;
   starved_[page] = 0;
+  if (at < heap_.size()) {
+    heap_[at] = last;
+    heap_at_[last] = at;
+    sift_up(at);
+    if (heap_[at] == last) sift_down(at);
+  }
+}
+
+u32 PageResidencyManager::pop_most_urgent() noexcept {
+  const u32 page = heap_[0];
+  remove_at(0);
   return page;
+}
+
+bool PageResidencyManager::drop(u32 page) {
+  if (page >= heap_at_.size() || heap_at_[page] == k_no_index) return false;
+  remove_at(heap_at_[page]);
+  return true;
 }
 
 // The starvation guard. `age_page_` is in request order, so everything that has waited long
