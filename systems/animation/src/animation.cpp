@@ -539,6 +539,48 @@ void AnimationSystem::apply_tier(flecs::entity entity, u8 tier) {
                    : static_cast<u8>(instance->pose_slot % (plan.divisor != 0 ? plan.divisor : 1u));
 }
 
+// ---- the Id128-addressed surface (ADR-0028 seam 3) -------------------------------------------
+//
+// One resolution each, through the world's identity map, and then the flecs form above. They
+// exist so that a host which may not see flecs — an app, ADR-0028 seam 5 — can still own an
+// animated world; see the header for the argument.
+
+bool AnimationSystem::attach(const Id128& entity, const Id128& skeleton, const Id128& clip) {
+  if (world_ == nullptr) return false;
+  const flecs::entity found = ecs::entity_for(*world_, entity);
+  return found != 0 && attach(found, skeleton, clip);
+}
+
+bool AnimationSystem::play(const Id128& entity, const Id128& clip, f32 seconds, bool looping) {
+  if (world_ == nullptr) return false;
+  const flecs::entity found = ecs::entity_for(*world_, entity);
+  return found != 0 && play(found, clip, seconds, looping);
+}
+
+bool AnimationSystem::set_playhead(const Id128& entity, f32 time, f32 speed) {
+  if (world_ == nullptr) return false;
+  const flecs::entity found = ecs::entity_for(*world_, entity);
+  if (found == 0) return false;
+  AnimationPlayer* player = found.try_get_mut<AnimationPlayer>();
+  if (player == nullptr) return false;
+  player->time = time;
+  player->speed = speed;
+  return true;
+}
+
+bool AnimationSystem::joint_run(const Id128& entity, u32& first, u32& count) const {
+  first = 0;
+  count = 0;
+  if (world_ == nullptr) return false;
+  const flecs::entity found = ecs::entity_for(*world_, entity);
+  if (found == 0) return false;
+  const SkeletonInstance* instance = found.try_get<SkeletonInstance>();
+  if (instance == nullptr || instance->pose_slot == k_no_slot) return false;
+  first = poses_.first_joint(instance->pose_slot);
+  count = poses_.joint_count(instance->pose_slot);
+  return true;
+}
+
 void AnimationSystem::set_tier(flecs::entity entity, u8 tier) { apply_tier(entity, tier); }
 
 void AnimationSystem::set_tier(const Id128& entity, u8 tier) {

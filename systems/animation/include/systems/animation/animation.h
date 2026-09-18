@@ -182,6 +182,30 @@ class AnimationSystem {
   // machine that changes its mind twice in three ticks cannot accumulate layers.
   bool play(flecs::entity entity, const Id128& clip, f32 seconds = 0.0f, bool looping = true);
 
+  // --- the same, addressed by persistent id ----------------------------------------------------
+  //
+  // ADR-0028 seam 3's vocabulary, and the surface a **host outside `systems/`** drives this
+  // capability through. `<flecs.h>` belongs to `domain/ecs`, `systems/` and `game/` (AGENTS.md,
+  // ADR-0028 seam 5) and `apps/` is deliberately not on that list — so an app that owns an
+  // animated world, as `engine-view --animate` does, would otherwise have to break the seam to
+  // attach a single character. These four resolve the id through `ecs::IdentityMap` exactly as
+  // `set_tier(const Id128&, u8)` already did, and between them they are the whole of what such a
+  // host needs: create the entity with `ecs::WorldCommands`, attach, set the playhead, and read
+  // back the run to hand the renderer. They are also what a *game* copies, which is why they are
+  // written down in docs/subsystems/animation.md rather than left as a test's private helper.
+  //
+  // Every one of them answers false for an id this world does not hold, rather than creating the
+  // entity: an id that names nothing is a caller's bug and silently materializing it would hide it.
+  bool attach(const Id128& entity, const Id128& skeleton, const Id128& clip);
+  bool play(const Id128& entity, const Id128& clip, f32 seconds = 0.0f, bool looping = true);
+  // Puts the playhead at `time` seconds and the rate at `speed`, which is how a crowd built from
+  // one clip is spread out of lockstep: same clip, one phase offset each.
+  bool set_playhead(const Id128& entity, f32 time, f32 speed);
+  // Where this entity's bone matrices are inside `joint_matrices()`, as the two numbers a
+  // renderer's per-instance record wants. False when the entity has no pose slot — LOD3, or never
+  // attached — which a renderer reads as "this instance draws its rest pose this frame".
+  bool joint_run(const Id128& entity, u32& first, u32& count) const;
+
   // --- LOD -------------------------------------------------------------------------------------
 
   // Puts one instance at `tier`, acquiring or releasing its pool slot and advancing its playhead

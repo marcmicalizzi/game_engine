@@ -29,6 +29,7 @@
 #include <domain/anim/clip.h>
 #include <domain/anim/skeleton.h>
 #include <domain/anim/standard_skeleton.h>
+#include <domain/geometry/cluster.h>
 
 #include <span>
 #include <string>
@@ -133,5 +134,63 @@ class Library {
   HashMap<Id128, u32> skeleton_by_id_;
   HashMap<Id128, u32> clip_by_id_;
 };
+
+// How far skinning can move a point of a mesh from its rest position, over a whole clip.
+//
+// A renderer culls a skinned instance by its **rest-pose** cluster spheres, and a skinned vertex
+// is not in them: it is `sum_k w_k M_k p`, a convex combination of the joints' images of `p`, so
+// its displacement from `p` is at most `max_k |M_k p - p|` whatever the weights are. Writing a
+// skinning matrix as a linear part `A` and a translation `t`, and taking `p` anywhere in the
+// mesh's bounding sphere `(center, radius)`:
+//
+//     |M p - p| = |(A - I) p + t| <= |(A - I) center + t| + ||A - I|| radius
+//
+// The first term is how far the joint moves the sphere's **centre**, and keeping it whole is what
+// makes the bound usable: split into `||A - I|| |p| + |t|` it is correct but wildly loose, because
+// a rotation about a joint a hundred units up the rig has a hundred-unit translation that the
+// `(A - I) center` term is supposed to cancel. Measured on the Khronos Fox, the split form padded
+// the mesh by more than its own size and pushed the framing camera far enough back that the animal
+// was a smudge; this form pads it by a few percent.
+//
+// So the bound needs the mesh, and a caller therefore computes it *after* the mesh has loaded. It
+// is conservative for **every** vertex of that mesh and for any weights, which is what the culling
+// guarantee needs: `gfx::InstanceDesc::bounds_padding` is exactly this number.
+//
+// **What it is and is not.** It is exact for the poses it evaluates and it is a *sample* over the
+// clip's timeline: every keyframe time of every track, plus a uniform grid. That is exact for STEP
+// tracks and for LINEAR ones — slerp runs along the geodesic between two keys, so a joint's
+// rotation angle and the displacement it induces are monotone inside a key interval and largest at
+// an end of it — and dense-but-not-proven for CUBICSPLINE, the one interpolation that can overshoot
+// its keys. See docs/subsystems/renderer.md, "Skinned instances", for what being wrong would cost.
+
+// The bind-space bounding sphere of the vertices each palette slot actually influences.
+//
+// **Why per joint and not one sphere for the mesh.** The inequality above holds for any sphere
+// containing `p`, and the obvious choice — the mesh's own bounding sphere, for every joint — is
+// correct and badly loose, because it asks how far the *tail* joint would move a vertex at the
+// *nose*. On the Khronos Fox that gives a padding of 249 units on a mesh of radius 82: three times
+// the model. A vertex is only ever moved by the joints it is bound to, so bounding each joint by
+// the vertices that actually name it is both conservative and tight — the same Fox comes out at a
+// few percent of its radius. A joint no vertex binds gets a negative radius and is skipped.
+struct JointBounds {
+  Vector<Vec4> sphere;  // xyz centre, w radius; w < 0 where nothing binds to that slot
+};
+
+// Fills `out` from a mesh's cluster-ordered positions and its parallel binding stream. `positions`
+// and `skin` must be the same length; `joint_count` is the palette's width
+// (`geometry::ClusterMesh::skin_joint_count`). An influence with weight zero does not count, which
+// is the same rule the shader and `anim::skin_positions` apply.
+void joint_influence_bounds(std::span<const Vec3> positions,
+                            std::span<const geometry::SkinBinding> skin, u32 joint_count,
+                            JointBounds& out);
+
+// The bound over one clip. `samples` is the uniform grid added to the clip's own keyframe times.
+f32 clip_displacement_bound(const anim::Skeleton& skeleton, const anim::Clip& clip,
+                            const JointBounds& bounds, u32 samples = 64);
+// The largest bound over every clip of `skeleton_index` in `library`, which is what an instance
+// that may play any of them has to be padded by. A skeleton with no clips gives zero — correct,
+// because a character holding its rest pose never leaves its rest-pose bounds.
+f32 skeleton_displacement_bound(const Library& library, u32 skeleton_index,
+                                const JointBounds& bounds, u32 samples = 64);
 
 }  // namespace engine::animation

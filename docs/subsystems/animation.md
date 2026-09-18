@@ -2,7 +2,7 @@
 
 **Purpose.** The capability that plays clips. [anim](anim.md) is the data half — skeletons, poses, clips, the blends over a pose, 3×4 skinning matrices — and nothing ticks it; this module is the tick. It owns a playhead per entity, an SoA **pose pool**, and the bone-matrix buffer a skinned instance uploads, and it is the first capability in this engine built end to end through [ADR-0027](../adr/0027-additive-capabilities.md)'s contract: a schema file, three `sim::SystemDesc`s registered with `ecs::register_system`, an LOD policy over `sim`'s tiers, a docs page, tests, a size table and a bench, in one directory, behind one switch.
 
-What it deliberately does not do: **draw**. The renderer contract is a span and two offsets ("The renderer contract" below); wiring it to `gfx::DeformDesc` is the renderer's change. Also absent and named rather than implied: blend trees and state machines as data, IK, motion matching ([05 §5.11](../plan/05-simulation.md#511-integration-notes)).
+What it deliberately does not do: **draw**. The renderer contract is a span and two offsets ("The renderer contract" below), and filling `gfx::DeformDesc` from it is the renderer's change — which has now been made, so a character imported through [assets](assets.md), ticked here, and skinned in `deform.slang` is one command line ([apps](apps.md), `engine-view --animate`). Also absent and named rather than implied: blend trees and state machines as data, IK, motion matching ([05 §5.11](../plan/05-simulation.md#511-integration-notes)).
 
 **Why this shape.**
 
@@ -96,7 +96,46 @@ desc.joint_count = animation.joint_count(instance.pose_slot);
 desc.joints      = upload_address + animation.first_joint(instance.pose_slot) * sizeof(anim::JointMatrix);
 ```
 
-One upload per frame for the whole population rather than one per instance — which is why the pool's slots are a shared arena — while `DeformDesc::joints` is per instance, because two characters share one mesh, one `geometry::SkinBinding` stream and one skeleton and have entirely different poses ([gfx](gfx.md) says the same thing from the other side). **An instance with no slot (LOD3) must get `InstanceDesc::deform = gfx::k_invalid_deform`**; a slot whose `skin` plan is false (LOD2) is not written this tick and has no business being named either. Both are the renderer's call, which is why this module exposes the slot rather than reaching across the boundary to make it. Nothing in `systems/renderer` or `domain/gfx` changed for this capability, and nothing has to until someone wires it up.
+One upload per frame for the whole population rather than one per instance — which is why the pool's slots are a shared arena — while `DeformDesc::joints` is per instance, because two characters share one mesh, one `geometry::SkinBinding` stream and one skeleton and have entirely different poses ([gfx](gfx.md) says the same thing from the other side).
+
+**It is wired up now.** `systems/renderer` takes the span and a `renderer::InstanceJoints` — a `{first, count}` per scene instance — and does the rest: one memcpy into the frame slot's region of a joint buffer, and one pass over its own copy of the deform table pointing each skinned instance's `joints` at its run ([renderer](renderer.md#skinned-instances)). An instance the array does not reach, or whose `count` is zero, **draws its rest pose**, which is what an instance at LOD3 or LOD2 looks like from the other side: the renderer read the absence rather than this module reaching across the boundary to say it.
+
+## The app-side glue
+
+The tick is not the renderer's. A game that animates characters writes the code below, and `engine-view --animate` ([apps](apps.md)) is it, so this is what to copy:
+
+```cpp
+ecs::SimWorld sim;                          // the fixed step; 60 Hz by default
+animation::Library library;                 // the skins and clips of the model files
+animation::AnimationSystem animation(library);
+library.load_gltf(mesh_path);               // skins become skeletons, curves become clips
+animation.install(sim);                     // three systems, three components, once
+
+ecs::WorldCommands commands(sim.world());
+for (u32 i = 0; i < instances; ++i) commands.create(entity_id(i));
+commands.apply();
+for (u32 i = 0; i < instances; ++i) {
+  animation.attach(entity_id(i), skeleton_id, clip_id);
+  animation.set_playhead(entity_id(i), phase_of(i), speed);   // a crowd, out of lockstep
+}
+
+// per frame
+sim.step();
+for (u32 i = 0; i < instances; ++i) {
+  runs[i] = {};
+  animation.joint_run(entity_id(i), runs[i].first, runs[i].count);
+}
+frame.joints = animation.joint_matrices();
+frame.instance_joints = {runs.data(), runs.size()};
+```
+
+**Why there are `Id128` overloads of `attach`, `play`, `set_playhead` and `joint_run` at all.** `<flecs.h>` belongs to `domain/ecs`, `systems/` and `game/` (AGENTS.md, [ADR-0028](../adr/0028-ecs-and-persistent-store.md) seam 5) and `apps/` is deliberately not on that list — so a host outside `systems/` would have had to break the seam to attach a single character. The four overloads resolve the id through `ecs::IdentityMap` exactly as `set_tier(const Id128&, u8)` already did, and between them they are the whole of what such a host needs. They are also the vocabulary seam 3 asks for: an id that survives a tick, a save, and the wire.
+
+**The bound a renderer needs, and why this module computes it.** A skinned instance is culled by its mesh's **rest-pose** cluster spheres, and a skinned vertex is not in them, so the renderer wants one number per instance saying how far skinning can move a vertex ([renderer](renderer.md#bounds-the-cluster-spheres-are-the-rest-poses-and-a-skinned-vertex-is-not-in-them)). That number is a property of a clip and a mesh, and the renderer has neither a clip nor a skeleton, so it lives here: `joint_influence_bounds` takes a mesh's positions and its binding stream and gives each palette slot the bounding sphere of the vertices it actually influences, and `clip_displacement_bound` maximizes `|(A - I) c + t| + ||A - I|| r` over every joint and every sampled phase of the clip. It is conservative for every vertex and any weights.
+
+Both halves of that shape were measured rather than reasoned about. Bounding each joint by the *mesh's* own sphere instead — the obvious simplification — asks how far the tail joint would move a vertex at the nose, and gives the Khronos Fox a padding of 249 units on a mesh of radius 82. Splitting the inequality into `||A - I|| |p| + |t|`, which has the appeal of not needing the mesh at all, is looser again: a rotation about a joint a hundred units up the rig carries a hundred-unit translation that the centre term exists to cancel. The per-joint form gives the Fox 49.3 and RiggedFigure 0.48 on 0.83.
+
+The sampling is every keyframe time of every track plus a uniform grid. That is exact for STEP and LINEAR tracks — slerp runs along the geodesic between two keys, so the displacement a joint induces is largest at an end of the interval — and dense-but-not-proven for CUBICSPLINE, the one glTF interpolation that can overshoot its keys. The test measures the truth by brute force at 997 phases and checks the bound against it: conservative, and 1.38× the measured worst on the fixture rig.
 
 ## The clip library
 
@@ -127,11 +166,11 @@ This capability was built to find out what ADR-0027's contract is like from the 
 - `WorldCommands` can set `engine.animation.AnimationPlayer` from JSON by schema type name, and a type the schema does not declare cannot be named.
 - Every system's query writes only components its `SystemDesc` declares.
 
-**Public API.** `include/systems/animation/animation.h` (`AnimationSystem`, `LodPlan`, `lod_plan`, `tier_params`, `lod_tier`, `AnimationStats`, `AnimationConfig`, `k_determinism`, `k_phase_*`, `k_resource_pose_pool`, `k_resource_joint_matrices`, `k_tier_count`), `library.h` (`Library`, `SkeletonAsset`, `ClipAsset`, `LoadStats`), `pose_pool.h` (`PosePool`, `k_no_slot`). The components come from `schemas/animation.schema` and arrive as `<schemas/animation.h>`.
+**Public API.** `include/systems/animation/animation.h` (`AnimationSystem`, `LodPlan`, `lod_plan`, `tier_params`, `lod_tier`, `AnimationStats`, `AnimationConfig`, `k_determinism`, `k_phase_*`, `k_resource_pose_pool`, `k_resource_joint_matrices`, `k_tier_count`), `library.h` (`Library`, `SkeletonAsset`, `ClipAsset`, `LoadStats`, `JointBounds`, `joint_influence_bounds`, `clip_displacement_bound`, `skeleton_displacement_bound`), `pose_pool.h` (`PosePool`, `k_no_slot`). The components come from `schemas/animation.schema` and arrive as `<schemas/animation.h>`.
 
 **Depends on.** `base`, `containers`, `math`, `time`, `log`, `jobs`, `ids`, `json`, `schema`, `tunables`, `geometry`, `anim`, `assets`, `sim`, `ecs`, `animation_schemas`.
 
-**Testing.** `tools/dev.ps1 test -Preset msvc-debug -Filter animation` — 16 cases over `tests/animation_tests.cpp` (the library, the playhead, the pose against `anim::`, the cross-fade, the weight, `WorldCommands`, the empty world, the declarations — including the three waves the pose-pool resource puts them in — and the bit-identical worker case) and `tests/lod_tests.cpp` (the plans, the agreement with `sim::TierAssignment`, the LOD3 round trip, the divisor, the materialization hooks driven by `EntityHandle`, `materialize` named by `Id128` and answering with a handle, and slot determinism). The fixture is a two-bone skinned GLB with two clips, **written at test time** (`tests/animation_glb.h`) into a `TempDir`, for the reason [assets](assets.md)' fixture is: a binary in the tree is something nobody can review. Benchmarks: `tools/dev.ps1 bench -Preset msvc-release -Filter 'animation.*'`.
+**Testing.** `tools/dev.ps1 test -Preset msvc-debug -Filter animation` — 18 cases over `tests/animation_tests.cpp` (the library, the playhead, the pose against `anim::`, the cross-fade, the weight, `WorldCommands`, the empty world, the declarations — including the three waves the pose-pool resource puts them in — and the bit-identical worker case, **the `Id128` surface a host with no flecs drives — attach, phase-shift two instances, read the runs back, and find them at the offsets the pool reports, with an entity at LOD3 answering false rather than a run of zeros — and the displacement bound, checked against the truth measured by brute force at 997 phases**) and `tests/lod_tests.cpp` (the plans, the agreement with `sim::TierAssignment`, the LOD3 round trip, the divisor, the materialization hooks driven by `EntityHandle`, `materialize` named by `Id128` and answering with a handle, and slot determinism). The fixture is a two-bone skinned GLB with two clips, **written at test time** (`tests/animation_glb.h`) into a `TempDir`, for the reason [assets](assets.md)' fixture is: a binary in the tree is something nobody can review. Benchmarks: `tools/dev.ps1 bench -Preset msvc-release -Filter 'animation.*'`.
 
 ## Performance notes
 
@@ -188,6 +227,6 @@ This is a capability: it was added without editing `core/`, `foundation/`, the r
 - **A track cursor.** `anim::Clip::sample` walks each track's keys from the front, which [anim](anim.md) says is right for a clip and notes belongs with the playback state a system layer owns — that is this module, and it does not do it yet. It is the first thing to try if the sampler shows up in a profile.
 - **Additive layers.** `anim::blend_additive` and `make_additive` exist and nothing here calls them.
 - **IK, foot locking, a contact channel, retarget-driven playback.** `Library::build_retarget` exposes the retarget; no system applies one.
-- **The renderer hookup.** The span and the offsets are here; `gfx::DeformDesc` is not filled by anyone.
-- **Protocol methods.** `animation.play`, `animation.attach` and a query over the library would be a small `register_methods()`.
+- **Protocol methods.** `animation.play`, `animation.attach` and a query over the library would be a small `register_methods()` — and would now have the `Id128` overloads to call, which is what the host-facing surface above was shaped for.
+- **Tiers driven by the camera.** `engine-view --animate` never demotes: it attaches every instance at LOD0 and leaves it there, so a crowd measured through it is the LOD0 row of the bench and not the mixed one. Wiring `sim::TierAssignment` to the renderer's camera is what closes that, and it is what makes the 5.6× the LOD policy claims visible in a frame rather than in a benchmark.
 - **A tier relationship instead of a tier field**, once there is a scene whose tier distribution is worth measuring. See "What the contract could not express".

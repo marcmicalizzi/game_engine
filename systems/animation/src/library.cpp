@@ -5,6 +5,9 @@
 #include <domain/assets/gltf.h>
 #include <systems/animation/library.h>
 
+#include <algorithm>
+#include <cmath>
+
 namespace engine::animation {
 
 namespace {
@@ -269,6 +272,118 @@ void Library::clear() noexcept {
   clips_.clear();
   skeleton_by_id_.clear();
   clip_by_id_.clear();
+}
+
+void joint_influence_bounds(std::span<const Vec3> positions,
+                            std::span<const geometry::SkinBinding> skin, u32 joint_count,
+                            JointBounds& out) {
+  out.sphere.clear();
+  out.sphere.resize(joint_count, Vec4{0.0f, 0.0f, 0.0f, -1.0f});
+  if (joint_count == 0 || positions.size() != skin.size()) return;
+  Vector<Vec3> lo(joint_count, Vec3{1e30f, 1e30f, 1e30f});
+  Vector<Vec3> hi(joint_count, Vec3{-1e30f, -1e30f, -1e30f});
+  Vector<u32> seen(joint_count, 0u);
+  for (usize v = 0; v < positions.size(); ++v) {
+    const Vec3 p = positions[v];
+    for (u32 k = 0; k < 4; ++k) {
+      if (skin[v].weights[k] == 0) continue;
+      const u32 joint = skin[v].joints[k];
+      if (joint >= joint_count) continue;
+      lo[joint] =
+          Vec3{std::min(lo[joint].x, p.x), std::min(lo[joint].y, p.y), std::min(lo[joint].z, p.z)};
+      hi[joint] =
+          Vec3{std::max(hi[joint].x, p.x), std::max(hi[joint].y, p.y), std::max(hi[joint].z, p.z)};
+      ++seen[joint];
+    }
+  }
+  for (u32 j = 0; j < joint_count; ++j) {
+    if (seen[j] == 0) continue;
+    out.sphere[j] = Vec4{(lo[j] + hi[j]) * 0.5f, 0.0f};
+  }
+  // A second pass for the radius: the box centre is a better centre than a running one, and a
+  // sphere around it is tighter than the box's own diagonal for the long thin sets a limb makes.
+  for (usize v = 0; v < positions.size(); ++v) {
+    for (u32 k = 0; k < 4; ++k) {
+      if (skin[v].weights[k] == 0) continue;
+      const u32 joint = skin[v].joints[k];
+      if (joint >= joint_count || seen[joint] == 0) continue;
+      Vec4& sphere = out.sphere[joint];
+      sphere.w = std::max(sphere.w, length(positions[v] - sphere.xyz()));
+    }
+  }
+}
+
+f32 clip_displacement_bound(const anim::Skeleton& skeleton, const anim::Clip& clip,
+                            const JointBounds& bounds, u32 samples) {
+  f32 out = 0.0f;
+  const u32 joint_count = skeleton.joint_count();
+  if (joint_count == 0) return out;
+
+  // The times to evaluate: every keyframe time of every track, plus a uniform grid. The keyframe
+  // times are what makes the answer exact for STEP and LINEAR tracks — a joint's rotation runs
+  // along the geodesic between two keys, so what it induces is largest at an end of the interval
+  // — and the grid is what catches a CUBICSPLINE track overshooting inside one.
+  Vector<f32> times;
+  times.reserve(clip.times.size() + samples + 1);
+  times.push_back(0.0f);
+  for (const f32 t : clip.times) {
+    if (t >= 0.0f && t <= clip.duration) times.push_back(t);
+  }
+  for (u32 i = 0; i < samples && clip.duration > 0.0f; ++i) {
+    times.push_back(clip.duration * static_cast<f32>(i) / static_cast<f32>(samples));
+  }
+
+  anim::Pose pose;
+  Vector<Mat4> model(joint_count, Mat4::identity());
+  Vector<anim::JointMatrix> matrices(joint_count, anim::JointMatrix{});
+  for (const f32 time : times) {
+    anim::rest_pose(skeleton, pose);
+    clip.sample(time, pose, true);
+    anim::local_to_model(skeleton, pose, std::span<Mat4>(model.data(), model.size()));
+    anim::skinning_matrices(
+        std::span<const Mat4>(model.data(), model.size()),
+        std::span<const Mat4>(skeleton.inverse_bind.data(), skeleton.inverse_bind.size()),
+        std::span<anim::JointMatrix>(matrices.data(), matrices.size()));
+    for (u32 j = 0; j < joint_count && j < bounds.sphere.size(); ++j) {
+      const Vec4 sphere = bounds.sphere[j];
+      if (sphere.w < 0.0f) continue;  // nothing binds to this slot; it moves nothing
+      const anim::JointMatrix& m = matrices[j];
+      // `anim::JointMatrix` is three rows of the 3x4, so the translation is the rows' `w` and the
+      // linear part is their `xyz`. The centre term is kept whole — `(A - I) centre + t`, which is
+      // how far this joint moves the centre of what it influences — and only the radius is bounded
+      // by a norm. `||A - I||` is the Frobenius norm, at or above the spectral norm the inequality
+      // needs: conservative, and nine multiply-adds instead of an eigenvalue.
+      f32 sum = 0.0f;
+      f32 moved[3] = {};
+      const f32 p[3] = {sphere.x, sphere.y, sphere.z};
+      for (u32 r = 0; r < 3; ++r) {
+        const f32 a[3] = {m.rows[r].x, m.rows[r].y, m.rows[r].z};
+        f32 row = m.rows[r].w;  // the translation
+        for (u32 c = 0; c < 3; ++c) {
+          const f32 d = a[c] - (r == c ? 1.0f : 0.0f);
+          sum += d * d;
+          row += d * p[c];
+        }
+        moved[r] = row;
+      }
+      const f32 displacement =
+          length(Vec3{moved[0], moved[1], moved[2]}) + std::sqrt(sum) * sphere.w;
+      out = std::max(out, displacement);
+    }
+  }
+  return out;
+}
+
+f32 skeleton_displacement_bound(const Library& library, u32 skeleton_index,
+                                const JointBounds& bounds, u32 samples) {
+  f32 out = 0.0f;
+  if (skeleton_index >= library.skeleton_count()) return out;
+  const anim::Skeleton& skeleton = library.skeleton_data(skeleton_index);
+  for (u32 i = 0; i < library.clip_count(); ++i) {
+    if (library.clip(i).skeleton != skeleton_index) continue;
+    out = std::max(out, clip_displacement_bound(skeleton, library.clip_data(i), bounds, samples));
+  }
+  return out;
 }
 
 }  // namespace engine::animation

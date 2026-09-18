@@ -16,8 +16,10 @@
 #include <doctest/doctest.h>
 #include <test_temp_dir.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -472,4 +474,138 @@ TEST_CASE("animation: two runs and eight workers give bit-identical matrices") {
   REQUIRE(eight.size() == one.size());
   CHECK(std::memcmp(one.data(), one_again.data(), one.size() * sizeof(anim::JointMatrix)) == 0);
   CHECK(std::memcmp(one.data(), eight.data(), one.size() * sizeof(anim::JointMatrix)) == 0);
+}
+
+TEST_CASE("animation: a host with no flecs drives the capability through Id128 alone") {
+  // The surface `engine-view --animate` uses, and the one a game outside `systems/` copies:
+  // create the entity with `ecs::WorldCommands`, attach, set the playhead, read the run back, and
+  // hand the renderer the span. Nothing here names a flecs type, because `apps/` may not see one
+  // (ADR-0028 seam 5) — that is the whole point of these four overloads.
+  Fixture fixture;
+  ecs::SimWorld sim(world_config());
+  AnimationSystem animation(fixture.library);
+  animation.install(sim);
+
+  ecs::WorldCommands commands(sim.world());
+  const Id128 a = Id128::from_seed(0xc0ffee, 1);
+  const Id128 b = Id128::from_seed(0xc0ffee, 2);
+  commands.create(a);
+  commands.create(b);
+  commands.apply();
+
+  REQUIRE(animation.attach(a, fixture.skeleton, fixture.walk));
+  REQUIRE(animation.attach(b, fixture.skeleton, fixture.walk));
+  // An id this world does not hold is refused rather than materialized.
+  CHECK_FALSE(animation.attach(Id128::from_seed(0xc0ffee, 99), fixture.skeleton, fixture.walk));
+
+  // Two instances of one clip, one phase-shifted: the crowd trick, and the reason `set_playhead`
+  // exists at all.
+  REQUIRE(animation.set_playhead(a, 0.0f, 1.0f));
+  REQUIRE(animation.set_playhead(b, 0.5f * test_fixture::k_clip_seconds, 1.0f));
+
+  u32 first_a = 0;
+  u32 count_a = 0;
+  u32 first_b = 0;
+  u32 count_b = 0;
+  REQUIRE(animation.joint_run(a, first_a, count_a));
+  REQUIRE(animation.joint_run(b, first_b, count_b));
+  CHECK(count_a == 2);
+  CHECK(count_b == 2);
+  CHECK(first_a != first_b);  // one arena, a run each
+
+  sim.step();
+  const std::span<const anim::JointMatrix> span = animation.joint_matrices();
+  REQUIRE(first_a + count_a <= span.size());
+  REQUIRE(first_b + count_b <= span.size());
+  // The runs are the pool's, and the pool is the span: this is exactly the arithmetic a renderer
+  // does to point one instance's `gfx::DeformDesc::joints` at its own matrices.
+  CHECK(span.data() + first_a == animation.poses().matrices(0).data());
+  // Out of phase, so the two instances are genuinely different characters and not two draws of
+  // one. A one-joint compare is enough: the walk clip turns joint 1.
+  bool differ = false;
+  for (u32 r = 0; r < 3 && !differ; ++r) {
+    const Vec4 x = span[first_a + 1].rows[r];
+    const Vec4 y = span[first_b + 1].rows[r];
+    differ = std::fabs(x.x - y.x) > 1.0e-4f || std::fabs(x.y - y.y) > 1.0e-4f ||
+             std::fabs(x.z - y.z) > 1.0e-4f || std::fabs(x.w - y.w) > 1.0e-4f;
+  }
+  CHECK(differ);
+
+  // An entity with no slot answers false rather than a run of zeros a caller could mistake for
+  // one, which is what a renderer reads as "this instance draws its rest pose".
+  animation.set_tier(a, 3);
+  u32 first = 0;
+  u32 count = 0;
+  CHECK_FALSE(animation.joint_run(a, first, count));
+  CHECK(count == 0);
+}
+
+TEST_CASE("animation: the displacement bound covers every vertex at every phase of a clip") {
+  // The number a renderer inflates a skinned instance's cluster spheres by
+  // (`gfx::InstanceDesc::bounds_padding`). It has one job — never be smaller than the truth — so
+  // the case measures the truth by brute force and checks the bound against it.
+  Fixture fixture;
+  const u32 skeleton_index = fixture.library.skeleton_index(fixture.skeleton);
+  REQUIRE(skeleton_index != Library::k_not_found);
+  const anim::Skeleton& skeleton = fixture.library.skeleton_data(skeleton_index);
+  const u32 clip_index = fixture.library.clip_index(fixture.walk);
+  REQUIRE(clip_index != Library::k_not_found);
+  const anim::Clip& clip = fixture.library.clip_data(clip_index);
+
+  // A bar of vertices up the two-bone rig, bound root-to-tip by height, and its influence spheres.
+  Vector<Vec3> positions;
+  Vector<geometry::SkinBinding> bindings;
+  for (u32 i = 0; i <= 16; ++i) {
+    const f32 t = static_cast<f32>(i) / 16.0f;
+    const u32 joints[4] = {0, 1, 0, 0};
+    const f32 weights[4] = {1.0f - t, t, 0.0f, 0.0f};
+    const geometry::SkinBinding binding = geometry::make_skin_binding(joints, weights);
+    for (const f32 x : {-0.25f, 0.25f}) {
+      positions.push_back(Vec3{x, t * 2.0f, 0.0f});
+      bindings.push_back(binding);
+    }
+  }
+  JointBounds bounds;
+  joint_influence_bounds(std::span<const Vec3>(positions.data(), positions.size()),
+                         std::span<const geometry::SkinBinding>(bindings.data(), bindings.size()),
+                         skeleton.joint_count(), bounds);
+  REQUIRE(bounds.sphere.size() == skeleton.joint_count());
+  for (const Vec4& sphere : bounds.sphere)
+    CHECK(sphere.w >= 0.0f);  // both joints of this rig carry weight somewhere
+
+  const f32 bound = clip_displacement_bound(skeleton, clip, bounds);
+  CHECK(bound > 0.0f);
+
+  // The truth: the largest distance any vertex actually travels, sampled far more finely than the
+  // bound's own grid so that a bound tuned to its own sample points would fail here.
+  anim::Pose pose;
+  Vector<Mat4> model(skeleton.joint_count(), Mat4::identity());
+  Vector<anim::JointMatrix> matrices(skeleton.joint_count(), anim::JointMatrix{});
+  Vector<Vec3> moved(positions.size());
+  f32 worst = 0.0f;
+  constexpr u32 k_fine = 997;  // prime, so it shares no sample with the bound's uniform grid
+  for (u32 i = 0; i < k_fine; ++i) {
+    const f32 time = clip.duration * static_cast<f32>(i) / static_cast<f32>(k_fine);
+    anim::rest_pose(skeleton, pose);
+    clip.sample(time, pose, true);
+    anim::local_to_model(skeleton, pose, std::span<Mat4>(model.data(), model.size()));
+    anim::skinning_matrices(
+        std::span<const Mat4>(model.data(), model.size()),
+        std::span<const Mat4>(skeleton.inverse_bind.data(), skeleton.inverse_bind.size()),
+        std::span<anim::JointMatrix>(matrices.data(), matrices.size()));
+    anim::skin_positions(std::span<const Vec3>(positions.data(), positions.size()),
+                         std::span<const geometry::SkinBinding>(bindings.data(), bindings.size()),
+                         std::span<const anim::JointMatrix>(matrices.data(), matrices.size()),
+                         std::span<Vec3>(moved.data(), moved.size()));
+    for (u32 v = 0; v < moved.size(); ++v)
+      worst = std::max(worst, length(moved[v] - positions[v]));
+  }
+  MESSAGE("displacement: bound " << bound << ", measured worst " << worst << " ("
+                                 << (bound / std::max(worst, 1.0e-6f)) << "x)");
+  CHECK(bound >= worst);         // conservative, which is the only thing it must be
+  CHECK(bound <= 4.0f * worst);  // and not so loose that culling stops meaning anything
+
+  // A skeleton with no clip moves nothing, and a clip over a rig nothing binds to moves nothing.
+  JointBounds empty;
+  CHECK(clip_displacement_bound(skeleton, clip, empty) == 0.0f);
 }
