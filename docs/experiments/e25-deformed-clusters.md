@@ -128,7 +128,9 @@ which is what makes their *difference* meaningful).
 | heightfield `--lod 0.06` | 4,352 | 34,604,100 B | 8,388,600 B | 3,249,480 B | 0.0121 → 0.0116 ms | 0.0275 ms |
 | 64 FlightHelmets `--lod 1` | 562 | 110,219,520 B | 8,388,600 B | 321,924 B | 0.0093 → 0.0085 ms | 0.0085 ms |
 | 64 FlightHelmets `--lod 0.05` | 24,131 | 110,219,520 B | 8,388,600 B | overflowed | 0.0223 → 0.0206 ms | 0.1234 ms |
-| 1,024 foxes, skinned, 3840×2160 | 1,325 | 12,226,560 B | 8,388,600 B | 597,240 B | 0.1341 → 0.1323 ms | 0.0103 ms |
+| 1,024 foxes, skinned, 3840×2160 † | 1,325 | 12,226,560 B | 8,388,600 B | 597,240 B | 0.1341 → 0.1323 ms | 0.0103 ms |
+
+† `--anim-lod off`, so the comparison is against what main's build does. With the animation LOD at its default that crowd is at LOD3, the pool pass is handed no bone matrices, and the same row is **0.024 ms** — the tick's doing, not the pool's.
 
 - **The cost rule is untouched.** The pool pass moved by under 5% at every cut size, which is what
   a change to *where* a workgroup writes rather than *what* it writes should look like. Refitting

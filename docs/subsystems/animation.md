@@ -133,7 +133,7 @@ frame.instance_joints = {runs.data(), runs.size()};
 
 ## The app-side LOD glue: what the camera decides
 
-The tier policy above sat unused until 2026-09-18, because nothing told it where the cameras were: `engine-view --animate` attached every instance at LOD0 and left it there, so 1,024 foxes cost **3.2 ms** of CPU a frame for a crowd of which most is a smudge. `engine-view --anim-lod` (on by default) closes that, and the code is `apps/engine_view/anim_lod.h` plus forty lines of `main.cpp` — **this is the pattern a game copies**, so it is spelled out rather than folded in.
+The tier policy above sat unused until 2026-09-18, because nothing told it where the cameras were: `engine-view --animate` attached every instance at LOD0 and left it there, so 1,024 foxes cost **3.3 ms** of CPU a frame for a crowd of which most is a smudge. `engine-view --anim-lod` (on by default) closes that, and the code is `apps/engine_view/anim_lod.h` plus forty lines of `main.cpp` — **this is the pattern a game copies**, so it is spelled out rather than folded in.
 
 **Why it is in the app and not in either module.** The tier is `sim::TierAssignment`'s, the pose is this capability's, and where the cameras are is `systems/renderer`'s — and the renderer must not depend on this capability, on `domain/ecs` or on flecs, while `domain/sim` must not depend on the renderer. The one place the three meet is the host that owns all three. What crosses each boundary is data, and nothing else.
 
@@ -166,16 +166,16 @@ sim.step();
 
 | Tier histogram | `--anim-lod-scale` | tick, run 1 / run 2 | lod | against LOD0 |
 |---|---|---|---|---|
-| 1,024 / 0 / 0 / 0 (`--anim-lod off`) | — | 3.263 / 3.218 ms | 0.001 ms | 1.0× |
-| 1,024 / 0 / 0 / 0 | 1600 | 3.118 / 3.254 ms | 0.031 ms | 1.0× |
-| 0 / 1,023 / 1 / 0 | 400 | 1.931 / 1.790 ms | 0.036 ms | **1.7×** |
-| 0 / 0 / 1,024 / 0 | 200 | 0.798 / 0.844 ms | 0.038 ms | **3.9×** |
-| 0 / 0 / 867 / 157 | 120 | 0.754 / 0.727 ms | 0.044 ms | **4.4×** |
-| 0 / 0 / 0 / 1,024 | 1 (default) | 0.284 / 0.312 ms | 0.036 ms | **10.8×** |
+| 1,024 / 0 / 0 / 0 (`--anim-lod off`) | — | 3.287 / 3.374 ms | 0.002 ms | 1.0× |
+| 1,024 / 0 / 0 / 0 | 1600 | 3.320 / 3.199 ms | 0.032 ms | 1.0× |
+| 0 / 1,023 / 1 / 0 | 400 | 1.944 / 1.917 ms | 0.038 ms | **1.7×** |
+| 0 / 0 / 1,024 / 0 | 200 | 0.556 / 0.525 ms | 0.039 ms | **6.1×** |
+| 0 / 0 / 867 / 157 | 120 | 0.481 / 0.485 ms | 0.045 ms | **6.9×** |
+| 0 / 0 / 0 / 1,024 | 1 (default) | 0.072 / 0.056 ms | 0.038 ms | **52×** |
 
-**Machine state:** the box was shared throughout — other processes at 6–27% of the CPU and the GPU 1–97% busy at the ends of the runs, 783 MiB of the card held — so every figure is an **upper bound** ([bench](bench.md#measuring-on-a-shared-machine)). The two runs of each row agree to within 8%, and the *ratios* are what the table is for.
+**Machine state:** the box was shared throughout — other processes at 3–27% of the CPU and the GPU 5–96% busy at the ends of the runs, 783 MiB of the card held by other tenants — so every figure is an **upper bound** ([bench](bench.md#measuring-on-a-shared-machine)). The two runs of each row agree to within 5% except the last, where the numbers are tens of microseconds; the *ratios* are what the table is for.
 
-Three things it says. **The policy's 5.6× is real and the mix decides which multiple you get**: 1.7× at LOD1, 3.9× at LOD2, 10.8× frozen, against the bench's 5.6× for its own 5/15/30/50 mix. **The assignment costs 0.03–0.04 ms for 1,024 instances**, about a hundredth of what it saves, and it is flat across the mix because it scores every instance every tick whatever tier it is at (`sim`'s own note that the rate limits exist partly so LOD assignment does not have to act on everything applies to the *materialization*, not to the scoring). And **the default bands are metres and a sample asset's units may not be**: the Khronos Fox has a bounding radius of 82 in its own units, so a 32×32 grid of them seen from `--orbit 22` is thousands of units away and lands entirely at LOD3 with `--anim-lod-scale 1`. That is the policy working on the numbers it was given, and `--anim-lod-scale` is the knob that says so; a game with metres in its assets would not need it.
+Four things it says. **The policy's 5.6× is real and the mix decides which multiple you get**: 1.7× at LOD1, 6.1× at LOD2, 52× frozen, against the bench's 5.6× for its own 5/15/30/50 mix. **LOD2 and LOD3 are cheaper here than the capability's own bench says** (which has them at 6.2× and 288× of LOD0 per instance) because the app stops asking: an instance whose plan says `skin == false` is not asked for its joint run either, so the per-instance `Id128` lookup in `step_animation` goes away with the skinning — which is the same decision as "what a coarsened instance draws", seen from the CPU side. **The assignment costs 0.03–0.05 ms for 1,024 instances**, a hundredth of what it saves at the coarsest mix and a fortieth at the finest, and it is flat across the mix because it scores every instance every tick whatever tier it is at (`sim`'s note that the rate limits exist partly so LOD assignment need not act on everything applies to the *materialization*, not to the scoring). And **the default bands are metres and a sample asset's units may not be**: the Khronos Fox has a bounding radius of 82 in its own units, so a 32×32 grid of them seen from `--orbit 22` is thousands of units away and lands entirely at LOD3 with `--anim-lod-scale 1`. That is the policy working on the numbers it was given, and `--anim-lod-scale` is the knob that says so; a game with metres in its assets would not need it.
 
 **What a tier change costs the picture, which is what makes the thresholds defensible.** One fox, 1280×720, `--orbit 22`, frame 61, rendered on both sides of each band boundary at the distance where the switch happens (found by bisecting `--anim-lod-scale`, so the two pictures differ in nothing but the tier):
 

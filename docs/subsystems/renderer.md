@@ -338,7 +338,9 @@ Nothing about the frame changed in the move, and the numbers in [apps](apps.md) 
 | heightfield `--lod 0.06` | 4,352 | 0.0121 ms | 0.0116 ms | 0.0275 ms |
 | 64 FlightHelmets `--lod 1` | 562 | 0.0093 ms | 0.0085 ms | 0.0085 ms |
 | 64 FlightHelmets `--lod 0.05` | 24,131 | 0.0223 ms | 0.0206 ms | 0.1234 ms |
-| 1,024 foxes, skinned, 3840×2160 | 1,325 | 0.1341 ms | 0.1323 ms | 0.0103 ms |
+| 1,024 foxes, skinned, 3840×2160 † | 1,325 | 0.1341 ms | 0.1323 ms | 0.0103 ms |
+
+† with `--anim-lod off`, because the default coarsens that crowd to LOD3 and a frozen instance hands the pool pass no bone matrices at all — which takes the same row to **0.024 ms**. That is the animation LOD doing its job rather than the pool's layout doing anything, and it is why the comparison above pins the flag.
 
 Three things it says. **The pool pass itself did not move** — within ±5% at every cut size, which is what a layout change that touches only where a workgroup writes should look like, and E25's 9.4 µs fixed cost plus 0.9 µs per 1,000 visible clusters still describes it (here: 7.8 µs fixed, 0.53 µs per 1,000). **The skinned crowd's 0.13 ms is not the layout's fault and the new layout does not fix it**: at 1,024 instances a workgroup reads a different instance's bone-matrix array and a different `DeformDesc`, and the pass is latency-bound on those scattered reads rather than on the 1.6 MB it writes. Packing the blocks does not change which arrays a workgroup reads; what would is sorting the visible list by instance so that consecutive workgroups share a matrix array, and that is a change to the cull pass, not to the pool. **The allocator is the new cost, and it is serial**: one workgroup means about 5 µs per 1,000 entries, fine at an ordinary cut and 0.12 ms at a 24,000-pair one. A two-level scan — block sums in parallel, one serial pass over the block sums — keeps the exact cursor and removes it; it is the first thing to do here if a frame ever has that many deformed pairs in it.
 
