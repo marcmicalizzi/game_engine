@@ -26,6 +26,13 @@
 // The last two print one `{...}` line per configuration, so their stdout is a JSON-lines file.
 // The `#` lines describe the fixture. Debug builds only smoke-run benchmarks, so the debug
 // fixture is deliberately tiny; every number in the write-up comes from msvc-release.
+//
+// Since ADR-0029 the grids carry a `mode` dimension: `fixed` has both decisions in — the volume
+// compliance derived from the cell size and the authored `limits.max_strain` enforced — `unfixed`
+// is the fixture as the experiment first ran, and `clamp-only` and `conversion-only` turn one of
+// the two on at a time so that a row that moved can say *which* change moved it. The controls run
+// in the same session as the fixed grid, so the write-up compares rows taken minutes apart on a
+// machine whose state is recorded, not rows taken months apart on a machine whose state was not.
 
 #include <core/base/assert.h>
 #include <core/base/macros.h>
@@ -62,10 +69,19 @@ constexpr f32 k_edge_compliance = 1.0e-4f;
 // 1e-4 — four orders of magnitude smaller — and a compliance of 1e-4 does not soften the
 // constraint, it switches it off. Measured: at 1e-4 the cage loses a third of its volume under
 // the press and never gets it back (0.67 of rest an hour later, 68 mm RMS from its rest pose);
-// at 1e-8 it returns to 1.000 of rest within one step of the plate leaving. The rule that falls
-// out is that volume compliance has to scale with cell size, which is a content-pipeline
-// concern ([07 §7.10]'s `material.volume_preservation`) and is E19's least expected result.
-constexpr f32 k_volume_compliance = 1.0e-8f;
+// at 1e-8 it returns to 1.000 of rest within one step of the plate leaving.
+//
+// 1e-8 is the number the first run of this experiment found by hand, and it is what the
+// `unfixed` control mode below still uses. The fixed mode asks
+// `volume_compliance_for(preservation, cell)` for it instead (ADR-0029 decision 3), which is the
+// same material expressed as a number an artist can author and a generator can rescale: at this
+// fixture's 5.71 cm cell the plan's default preservation of 0.8 is 4.2e-9, and 1e-8 is a
+// preservation of 0.63. The two modes are what separate "the conversion works" from "the
+// experiment was re-run on a different day".
+constexpr f32 k_volume_compliance_hand_tuned = 1.0e-8f;
+// plan 07 §7.10's defaults, which the fixed mode authors against instead of hand-tuning.
+constexpr f32 k_volume_preservation = 0.8f;
+constexpr f32 k_max_strain = 0.5f;
 // plan 07 §7.10's default: element mass is density x element volume.
 constexpr f32 k_density = 1000.0f;
 // The core's two bones: a shallow elbow in the XY plane, well inside the cage.
@@ -106,12 +122,38 @@ u32 one_second() { return scaled(60); }
 
 // --- the configuration grid ---------------------------------------------------------------
 //
-// One i64 per benchmark variant is all `ENGINE_BENCH_ARGS` carries, so the four dimensions are
+// One i64 per benchmark variant is all `ENGINE_BENCH_ARGS` carries, so the five dimensions are
 // packed into a decimal key that stays readable in the result name: 512080162 is 512 elements,
-// 8 workers, 16 iterations, 2 sub-steps.
+// 8 workers, 16 iterations, 2 sub-steps with ADR-0029's fixes in, and 1512080162 is the same
+// configuration as the experiment first ran it.
+//
+// `mode` is the control. ADR-0029 changed two things about the fixture — where the volume
+// compliance comes from and whether the authored strain limit is enforced — and a re-run on a
+// different day cannot tell "the fixes did this" from "the machine was quieter this time" unless
+// both are measured in the same session. So the unfixed configurations run beside the fixed ones
+// and the write-up compares rows taken minutes apart rather than months apart.
 
-constexpr i64 e19_key(i64 elements, i64 workers, i64 iterations, i64 sub_steps) {
-  return elements * 1000000 + workers * 10000 + iterations * 10 + sub_steps;
+// ADR-0029 changed two independent things, so the control has four settings rather than two: a
+// row that moves needs to say *which* change moved it.
+enum class Mode : u32 {
+  Fixed = 0,          // both: the compliance conversion and the enforced strain limit
+  Unfixed = 1,        // neither: the experiment exactly as it first ran
+  ClampOnly = 2,      // the hand-tuned 1e-8 compliance, with the limit enforced
+  ConversionOnly = 3  // the conversion, with nothing enforcing the limit
+};
+
+const char* mode_name(Mode mode) {
+  switch (mode) {
+    case Mode::Fixed: return "fixed";
+    case Mode::Unfixed: return "unfixed";
+    case Mode::ClampOnly: return "clamp-only";
+    case Mode::ConversionOnly: return "conversion-only";
+  }
+  return "?";
+}
+
+constexpr i64 e19_key(i64 elements, i64 workers, i64 iterations, i64 sub_steps, i64 mode = 0) {
+  return mode * 1000000000 + elements * 1000000 + workers * 10000 + iterations * 10 + sub_steps;
 }
 
 struct Config {
@@ -119,11 +161,16 @@ struct Config {
   u32 workers = 0;
   u32 iterations = 0;
   u32 sub_steps = 0;
+  Mode mode = Mode::Fixed;
+
+  bool converts() const noexcept { return mode == Mode::Fixed || mode == Mode::ConversionOnly; }
+  bool clamps() const noexcept { return mode == Mode::Fixed || mode == Mode::ClampOnly; }
 };
 
 Config decode(i64 key) {
   Config c;
-  c.elements = static_cast<u32>(key / 1000000);
+  c.mode = static_cast<Mode>(static_cast<u32>(key / 1000000000));
+  c.elements = static_cast<u32>((key / 1000000) % 1000);
   c.workers = static_cast<u32>((key / 10000) % 100);
   c.iterations = static_cast<u32>((key / 10) % 1000);
   c.sub_steps = static_cast<u32>(key % 10);
@@ -213,6 +260,35 @@ struct Scene {
   f32 rest_height = 0.0f;
   f64 rest_volume = 0.0;
   f32 plate_y = 0.0f;
+  f32 spacing = 0.0f;
+  f32 volume_compliance = 0.0f;
+  f32 max_strain = 0.0f;
+  // ADR-0029's budget, sampled every step of the phase the budget is written against: the cage
+  // held under the press with its full contact set.
+  f64 budget_ms_sum = 0.0;
+  f64 budget_ms_peak = 0.0;
+  u32 budget_samples = 0;
+  f64 clamp_sweeps_sum = 0.0;
+  u32 clamp_sweeps_peak = 0;
+  u32 clamp_saturated_ticks = 0;
+
+  void sample_budget() {
+    const SoftBodyBudget budget = world.stats().soft_body_budget;
+    const f64 ms = static_cast<f64>(budget.ambient_ms) + static_cast<f64>(budget.hero_ms);
+    budget_ms_sum += ms;
+    if (ms > budget_ms_peak) budget_ms_peak = ms;
+    clamp_sweeps_sum += static_cast<f64>(budget.strain_clamp_sweeps);
+    if (budget.strain_clamp_sweeps > clamp_sweeps_peak)
+      clamp_sweeps_peak = budget.strain_clamp_sweeps;
+    if (budget.strain_clamp_saturated) ++clamp_saturated_ticks;
+    ++budget_samples;
+  }
+  f64 clamp_sweeps_mean() const noexcept {
+    return budget_samples != 0 ? clamp_sweeps_sum / static_cast<f64>(budget_samples) : 0.0;
+  }
+  f64 budget_ms_mean() const noexcept {
+    return budget_samples != 0 ? budget_ms_sum / static_cast<f64>(budget_samples) : 0.0;
+  }
 
   void read() {
     ENGINE_VERIFY(world.read_soft_body_vertices(cage, std::span<Vec3>(points)) == vertex_count,
@@ -259,7 +335,12 @@ struct Scene {
 
 void Scene::build(const Config& config, jobs::JobSystem* job_system) {
   const u32 n = bench::smoke_mode() ? k_smoke_side : lattice_side(config.elements);
-  const f32 spacing = k_cage_side / static_cast<f32>(n - 1);
+  spacing = k_cage_side / static_cast<f32>(n - 1);
+  // The two things ADR-0029 changed about this fixture. `Unfixed` is the experiment as it first
+  // ran: a hand-tuned volume compliance and an authored strain limit that nothing read.
+  volume_compliance = config.converts() ? volume_compliance_for(k_volume_preservation, spacing)
+                                        : k_volume_compliance_hand_tuned;
+  max_strain = config.clamps() ? k_max_strain : 0.0f;
 
   WorldOptions options;
   options.max_bodies = 64;
@@ -311,7 +392,7 @@ void Scene::build(const Config& config, jobs::JobSystem* job_system) {
   }
 
   // The cage.
-  lattice = build_lattice_volume(n, spacing, k_edge_compliance, k_volume_compliance);
+  lattice = build_lattice_volume(n, spacing, k_edge_compliance, volume_compliance);
   vertex_count = static_cast<u32>(lattice.vertices.size());
   total_mass = k_density * k_cage_side * k_cage_side * k_cage_side;
   const f32 inverse_mass = static_cast<f32>(vertex_count) / total_mass;
@@ -366,6 +447,7 @@ void Scene::build(const Config& config, jobs::JobSystem* job_system) {
   desc.attachments = std::span<const SoftAttachment>(attachments);
   desc.transform.position = Vec3(0.0f, cage_origin_y, 0.0f);
   desc.iterations = config.iterations;
+  desc.max_strain = max_strain;
   desc.friction = k_contact_friction;
   // Particles are points to the solver unless they are given a radius, and a point that ends up
   // inside a collider is pushed out through whichever face is nearest — which, for a particle
@@ -460,13 +542,15 @@ bool report_once(i64 key, u32 tag) {
 
 void print_fixture(const char* what, const Scene& scene, const Config& config) {
   std::printf(
-      "# e19 %s: build=%s elements=%u edges=%u tets=%u faces=%u workers=%u iterations=%u "
-      "sub_steps=%u solve_width=%u attach_rigid=%u attach_spring=%u mass=%.1fkg\n",
-      what, ENGINE_DEBUG ? "debug" : "release", scene.vertex_count,
+      "# e19 %s: build=%s mode=%s elements=%u edges=%u tets=%u faces=%u workers=%u iterations=%u "
+      "sub_steps=%u solve_width=%u attach_rigid=%u attach_spring=%u mass=%.1fkg cell=%.4fm "
+      "volume_compliance=%.3e max_strain=%.2f\n",
+      what, ENGINE_DEBUG ? "debug" : "release", mode_name(config.mode), scene.vertex_count,
       static_cast<u32>(scene.lattice.edges.size()), static_cast<u32>(scene.lattice.volumes.size()),
       static_cast<u32>(scene.lattice.faces.size() / 3), config.workers, config.iterations,
       config.sub_steps, soft_body_solve_width(scene.vertex_count), scene.rigid_attachments,
-      scene.spring_attachments, static_cast<f64>(scene.total_mass));
+      scene.spring_attachments, static_cast<f64>(scene.total_mass), static_cast<f64>(scene.spacing),
+      static_cast<f64>(scene.volume_compliance), static_cast<f64>(scene.max_strain));
 }
 
 // --- the cost grid --------------------------------------------------------------------------
@@ -494,8 +578,14 @@ void press_and_hold(Scene& scene) {
 // The debug grid only has to prove the harness runs; the release grid is the experiment.
 #define ENGINE_E19_TICK_ARGS e19_key(343, 1, 4, 1), e19_key(729, 4, 16, 2)
 #else
+// The 216-particle rows are ADR-0029's default T0 cage — at most one 256-vertex solve group — and
+// the three `Unfixed` rows at the end are the same cages without the strain clamp, which is what
+// makes the clamp's cost a subtraction rather than an estimate.
 #define ENGINE_E19_TICK_ARGS                                                                       \
-  e19_key(343, 1, 4, 1), e19_key(343, 1, 4, 2), e19_key(343, 1, 8, 1), e19_key(343, 1, 8, 2),      \
+  e19_key(216, 1, 8, 1), e19_key(216, 1, 8, 2), e19_key(216, 4, 8, 1), e19_key(216, 4, 8, 2),      \
+      e19_key(216, 8, 8, 1), e19_key(216, 8, 8, 2), e19_key(216, 1, 8, 1, 1),                      \
+      e19_key(343, 1, 8, 1, 1), e19_key(512, 1, 8, 1, 1), e19_key(729, 1, 8, 1, 1),                \
+      e19_key(343, 1, 4, 1), e19_key(343, 1, 4, 2), e19_key(343, 1, 8, 1), e19_key(343, 1, 8, 2),  \
       e19_key(343, 1, 16, 1), e19_key(343, 1, 16, 2), e19_key(343, 4, 4, 1),                       \
       e19_key(343, 4, 4, 2), e19_key(343, 4, 8, 1), e19_key(343, 4, 8, 2), e19_key(343, 4, 16, 1), \
       e19_key(343, 4, 16, 2), e19_key(343, 8, 4, 1), e19_key(343, 8, 4, 2), e19_key(343, 8, 8, 1), \
@@ -571,7 +661,15 @@ PressResult run_press_cycle(Scene& scene) {
     if (result.diverged) return false;
     scene.read();
     for (const Vec3& p : scene.points) {
-      if (std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z)) continue;
+      // Not only "is it a number". A cage can leave the fixture at a hundred million metres and
+      // still be finite — 729 elements at sixteen iterations and two sub-steps did exactly that
+      // while the clamp's velocity correction was at the wrong time scale — and a row of finite
+      // nonsense flagged `diverged: false` is worse than one flagged `nan`. The fixture is a
+      // 0.4 m cube on a 4 m ground plane, so anything past a kilometre has left.
+      if (std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z) &&
+          length_squared(p) < 1.0e6f) {
+        continue;
+      }
       result.diverged = true;
       result.diverged_ms = 1000.0f * static_cast<f32>(sample_tick) * scene.dt;
       return false;
@@ -607,6 +705,8 @@ PressResult run_press_cycle(Scene& scene) {
     const i64 step_start = time::monotonic_ns();
     scene.step();
     hold_ns += time::monotonic_ns() - step_start;
+    // ADR-0029's budget, over the phase it is written against.
+    scene.sample_budget();
     if (!sample()) continue;
     const f64 ratio = surface_volume(std::span<const Vec3>(scene.points),
                                      std::span<const u32>(scene.lattice.faces)) /
@@ -664,25 +764,31 @@ PressResult run_press_cycle(Scene& scene) {
 
 void print_press(i64 key, const Config& config, const Scene& scene, const PressResult& r) {
   std::printf(
-      "{\"experiment\":\"e19\",\"case\":\"press\",\"key\":%lld,\"build\":\"%s\","
+      "{\"experiment\":\"e19\",\"case\":\"press\",\"key\":%lld,\"build\":\"%s\",\"mode\":\"%s\","
       "\"elements\":%u,\"edges\":%u,\"tets\":%u,\"solve_width\":%u,\"workers\":%u,"
       "\"iterations\":%u,\"sub_steps\":%u,\"attach_rigid\":%u,\"attach_spring\":%u,"
-      "\"mass_kg\":%.1f,\"rest_height_m\":%.5f,\"pressed_height_ratio\":%.4f,"
+      "\"mass_kg\":%.1f,\"cell_m\":%.5f,\"volume_compliance\":%.4e,\"max_strain\":%.2f,"
+      "\"rest_height_m\":%.5f,\"pressed_height_ratio\":%.4f,"
       "\"peak_strain\":%.4f,\"held_strain\":%.4f,\"volume_min_under_load\":%.4f,"
       "\"volume_at_release\":%.4f,\"volume_plus_1s\":%.4f,\"height_ratio_plus_1s\":%.4f,"
       "\"recovery_ms\":%.1f,\"rms_mm_plus_1s\":%.4f,"
       "\"interpenetration_peak\":%u,\"interpenetration_ticks\":%u,\"hold_us_per_tick\":%.1f,"
+      "\"budget_ms_mean\":%.4f,\"budget_ms_peak\":%.4f,"
+      "\"clamp_sweeps_mean\":%.2f,\"clamp_sweeps_peak\":%u,\"clamp_saturated_ticks\":%u,"
       "\"diverged\":%s,\"diverged_ms\":%.1f}\n",
-      static_cast<long long>(key), ENGINE_DEBUG ? "debug" : "release", scene.vertex_count,
-      static_cast<u32>(scene.lattice.edges.size()), static_cast<u32>(scene.lattice.volumes.size()),
-      soft_body_solve_width(scene.vertex_count), config.workers, config.iterations,
-      config.sub_steps, scene.rigid_attachments, scene.spring_attachments,
-      static_cast<f64>(scene.total_mass), static_cast<f64>(r.rest_height),
-      static_cast<f64>(r.pressed_ratio), static_cast<f64>(r.peak_strain),
-      static_cast<f64>(r.held_strain), r.volume_min_load, r.volume_at_release, r.volume_plus_1s,
-      static_cast<f64>(r.height_ratio_plus_1s), static_cast<f64>(r.recovery_ms),
-      static_cast<f64>(r.rms_mm), r.interpenetration_peak, r.interpenetration_ticks,
-      r.hold_us_per_tick, r.diverged ? "true" : "false", static_cast<f64>(r.diverged_ms));
+      static_cast<long long>(key), ENGINE_DEBUG ? "debug" : "release", mode_name(config.mode),
+      scene.vertex_count, static_cast<u32>(scene.lattice.edges.size()),
+      static_cast<u32>(scene.lattice.volumes.size()), soft_body_solve_width(scene.vertex_count),
+      config.workers, config.iterations, config.sub_steps, scene.rigid_attachments,
+      scene.spring_attachments, static_cast<f64>(scene.total_mass), static_cast<f64>(scene.spacing),
+      static_cast<f64>(scene.volume_compliance), static_cast<f64>(scene.max_strain),
+      static_cast<f64>(r.rest_height), static_cast<f64>(r.pressed_ratio),
+      static_cast<f64>(r.peak_strain), static_cast<f64>(r.held_strain), r.volume_min_load,
+      r.volume_at_release, r.volume_plus_1s, static_cast<f64>(r.height_ratio_plus_1s),
+      static_cast<f64>(r.recovery_ms), static_cast<f64>(r.rms_mm), r.interpenetration_peak,
+      r.interpenetration_ticks, r.hold_us_per_tick, scene.budget_ms_mean(), scene.budget_ms_peak,
+      scene.clamp_sweeps_mean(), scene.clamp_sweeps_peak, scene.clamp_saturated_ticks,
+      r.diverged ? "true" : "false", static_cast<f64>(r.diverged_ms));
 }
 
 #if ENGINE_DEBUG
@@ -691,12 +797,21 @@ void print_press(i64 key, const Config& config, const Scene& scene, const PressR
 // The physics sweep. Worker count is fixed at 8 because the world is deterministic in it: the
 // cage's shape does not depend on how many ways the solve was split (the soft-body parallel
 // test asserts it), so sweeping workers here would measure nothing the cost grid does not.
+//
+// The four `Unfixed` keys at the end are the control: the two configurations that latched at 512
+// particles, the one that diverged at 343, and the one that latched at 729, run in the same
+// session as the fixed grid so that "the fixes did this" is a comparison and not a claim.
 #define ENGINE_E19_PRESS_ARGS                                                                      \
-  e19_key(343, 8, 4, 1), e19_key(343, 8, 4, 2), e19_key(343, 8, 8, 1), e19_key(343, 8, 8, 2),      \
-      e19_key(343, 8, 16, 1), e19_key(343, 8, 16, 2), e19_key(512, 8, 4, 1),                       \
-      e19_key(512, 8, 4, 2), e19_key(512, 8, 8, 1), e19_key(512, 8, 8, 2), e19_key(512, 8, 16, 1), \
-      e19_key(512, 8, 16, 2), e19_key(729, 8, 4, 1), e19_key(729, 8, 4, 2), e19_key(729, 8, 8, 1), \
-      e19_key(729, 8, 8, 2), e19_key(729, 8, 16, 1), e19_key(729, 8, 16, 2)
+  e19_key(216, 8, 8, 1), e19_key(216, 8, 8, 2), e19_key(343, 8, 4, 1), e19_key(343, 8, 4, 2),      \
+      e19_key(343, 8, 8, 1), e19_key(343, 8, 8, 2), e19_key(343, 8, 16, 1),                        \
+      e19_key(343, 8, 16, 2), e19_key(512, 8, 4, 1), e19_key(512, 8, 4, 2), e19_key(512, 8, 8, 1), \
+      e19_key(512, 8, 8, 2), e19_key(512, 8, 16, 1), e19_key(512, 8, 16, 2),                       \
+      e19_key(729, 8, 4, 1), e19_key(729, 8, 4, 2), e19_key(729, 8, 8, 1), e19_key(729, 8, 8, 2),  \
+      e19_key(729, 8, 16, 1), e19_key(729, 8, 16, 2), e19_key(343, 8, 16, 2, 1),                   \
+      e19_key(512, 8, 8, 1, 1), e19_key(512, 8, 8, 2, 1), e19_key(729, 8, 8, 2, 1),                \
+      e19_key(343, 8, 16, 2, 2), e19_key(343, 8, 16, 2, 3), e19_key(512, 8, 16, 2, 2),             \
+      e19_key(512, 8, 16, 2, 3), e19_key(729, 8, 16, 2, 2), e19_key(729, 8, 16, 2, 3),             \
+      e19_key(512, 8, 16, 2, 1), e19_key(729, 8, 16, 2, 1)
 #endif
 
 }  // namespace
@@ -776,6 +891,7 @@ SustainedResult run_sustained(Scene& scene, f32 load_ratio) {
     previous.clear();
     previous.append(std::span<const Vec3>(scene.points));
     scene.step();
+    scene.sample_budget();
     scene.read();
     const Extent now = vertical_extent(std::span<const Vec3>(scene.points));
     if (now.min < -result.plane_penetration_mm * 0.001f)
@@ -806,18 +922,24 @@ SustainedResult run_sustained(Scene& scene, f32 load_ratio) {
 void print_sustained(const Config& config, const Scene& scene, f32 load_ratio,
                      const SustainedResult& r) {
   std::printf(
-      "{\"experiment\":\"e19\",\"case\":\"sustained\",\"build\":\"%s\",\"elements\":%u,"
+      "{\"experiment\":\"e19\",\"case\":\"sustained\",\"build\":\"%s\",\"mode\":\"%s\","
+      "\"elements\":%u,"
       "\"workers\":%u,\"iterations\":%u,\"sub_steps\":%u,\"seconds\":%.1f,\"load_ratio\":%.1f,"
-      "\"load_kg\":%.1f,\"height_at_2s_m\":%.5f,\"height_at_end_m\":%.5f,\"creep_mm\":%.3f,"
+      "\"load_kg\":%.1f,\"max_strain\":%.2f,\"volume_compliance\":%.4e,"
+      "\"height_at_2s_m\":%.5f,\"height_at_end_m\":%.5f,\"creep_mm\":%.3f,"
       "\"oscillation_mm\":%.3f,\"speed_mm_s_at_2s\":%.3f,\"speed_mm_s_at_end\":%.3f,"
-      "\"plane_penetration_mm\":%.3f,\"volume_at_end\":%.4f,\"us_per_tick\":%.1f}\n",
-      ENGINE_DEBUG ? "debug" : "release", scene.vertex_count, config.workers, config.iterations,
-      config.sub_steps, static_cast<f64>(sustained_steps()) * static_cast<f64>(scene.dt),
+      "\"plane_penetration_mm\":%.3f,\"volume_at_end\":%.4f,\"us_per_tick\":%.1f,"
+      "\"budget_ms_mean\":%.4f,\"budget_ms_peak\":%.4f}\n",
+      ENGINE_DEBUG ? "debug" : "release", mode_name(config.mode), scene.vertex_count,
+      config.workers, config.iterations, config.sub_steps,
+      static_cast<f64>(sustained_steps()) * static_cast<f64>(scene.dt),
       static_cast<f64>(load_ratio), static_cast<f64>(load_ratio * scene.total_mass),
+      static_cast<f64>(scene.max_strain), static_cast<f64>(scene.volume_compliance),
       static_cast<f64>(r.height_at_2s), static_cast<f64>(r.height_at_end),
       static_cast<f64>(r.creep_mm), static_cast<f64>(r.oscillation_mm),
       static_cast<f64>(r.speed_mm_s_at_2s), static_cast<f64>(r.speed_mm_s_at_end),
-      static_cast<f64>(r.plane_penetration_mm), r.volume_at_end, r.us_per_tick);
+      static_cast<f64>(r.plane_penetration_mm), r.volume_at_end, r.us_per_tick,
+      scene.budget_ms_mean(), scene.budget_ms_peak);
 }
 
 }  // namespace
