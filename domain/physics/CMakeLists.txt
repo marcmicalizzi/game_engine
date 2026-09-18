@@ -24,8 +24,11 @@ engine_module_tests(NAME physics
           tests/soft_body_parallel_tests.cpp tests/determinism_tests.cpp tests/size_table.cpp
   DEPS jobs)
 
-# Step cost for falling boxes at 1/4/8 workers and for a soft cube at 4/8 iterations
-# (docs/subsystems/physics.md, "Performance notes").
+# Step cost for falling boxes at 1/4/8 workers and for soft cubes across worker, iteration and
+# cage-size sweeps (docs/subsystems/physics.md, "Performance notes"), plus the E19 lattice-cage
+# experiment: a press-hold-release fixture and a sustained-load one that print their own
+# JSON lines so the run can be repeated on another machine
+# (docs/experiments/e19-lattice-cage.md).
 engine_module_bench(NAME physics
-  SOURCES bench/physics_bench.cpp
+  SOURCES bench/physics_bench.cpp bench/e19_bench.cpp
   DEPS jobs)

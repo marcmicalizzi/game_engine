@@ -431,31 +431,48 @@ The size table pins `BodyId`/`ShapeId`/`SoftBodyId` at 8 bytes, `ContactEvent` a
 line, which is why the user data rides inline instead of being looked up per event), `RayHit`,
 `ShapeHit`, and the three cage-element structs.
 
+**The bench.** `bench/physics_bench.cpp` is the step cost of the module's own fixtures; beside it,
+`bench/e19_bench.cpp` is [experiment E19](../experiments/e19-lattice-cage.md) — a lattice cage
+around a rigid two-bone core pressed to 30% of its depth and released, and the same cage under a
+sustained load — which prints its own JSON lines so the whole experiment re-runs on another
+machine from one command. Both live in `engine_physics_bench`; a benchmark argument is one
+integer, so the E19 sweeps pack their four dimensions into a decimal key
+(`elements * 1e6 + workers * 1e4 + iterations * 10 + sub_steps`).
+
 **Performance notes.** `tools/dev.ps1 bench -Preset msvc-release -Filter "physics.*"`, measured on
 an i9-10980XE (18 cores), `RelWithDebInfo`, cross-platform determinism on, SSE4.2 baseline. One
 machine settles layout and traversal decisions, not cross-machine defaults
 ([11 §11.8](../plan/11-performance-principles.md)):
 
-| benchmark | µs per step |
-|---|---|
-| 1,000 boxes, 1 worker | 2,403 |
-| 1,000 boxes, 4 workers | 1,083 |
-| 1,000 boxes, 8 workers | 736 |
-| 1,000 boxes, no job system | 2,426 |
-| 512-particle soft cube, 4 iterations | 481 |
-| 512-particle soft cube, 8 iterations | 942 |
+| benchmark | 1 worker | 4 workers | 8 workers |
+|---|---|---|---|
+| 1,000 boxes | 2,403 | 1,083 | 736 |
+| 1,000 boxes, no job system | 2,426 | — | — |
+| 512-particle soft cube, 4 iterations | 878 | 596 | 638 |
+| 512-particle soft cube, 8 iterations | 965 | 1,163 | 1,232 |
+| 512-particle soft cube, 16 iterations | 1,889 | 2,281 | 2,393 |
+| **8** × 512-particle soft cube, 8 iterations | 7,475 | 2,236 | **1,159** |
 
-The box benchmark measures a *settled* pile with sleeping switched off: a pile that is allowed to
-sleep costs nothing after a second and would make the number a measure of the sleep heuristic.
-Scaling from one to eight workers is 3.3x, which is what a contact solver that has to sort its
-islands for determinism looks like — the 1-worker and no-job-system numbers being equal says the
-adapter itself, and the drain it does at the end of every step, cost nothing measurable.
+Microseconds per step. The box benchmark measures a *settled* pile with sleeping switched off: a
+pile that is allowed to sleep costs nothing after a second and would make the number a measure of
+the sleep heuristic. Scaling from one to eight workers is 3.3x, which is what a contact solver
+that has to sort its islands for determinism looks like — the 1-worker and no-job-system numbers
+being equal says the adapter itself, and the drain it does at the end of every step, cost nothing
+measurable.
 
-The soft cube is linear in iterations, as XPBD should be, and it is the number to watch: ADR-0026
-budgets **1.5 ms per 60 Hz tick for all deformable volumes together**, and one 512-particle cage
-at eight iterations already spends 0.94 ms of it. Either the T0 cages of that budget are much
-smaller than 512 elements, or the budget has to change — and the solve-width result above says
-the pool is not the answer for a single cage. That is E19's question.
+**The soft-body rows are the interesting ones, and they go the wrong way.** One cage is *slower*
+on eight workers than on one at eight and sixteen iterations, because a 512-particle cage is a
+two-wide solve (above) and the other six solve jobs spin rather than help. Eight cages are
+**6.45× faster** on eight workers than on one, and eight of them together cost **less than one of
+them does** on the same pool — 145 µs a cage against 1,232. So the way to spend a pool on
+deformables is *more cages*, not *bigger* ones, and a deformation system has to step its volumes
+in one world for the backend to be able to interleave them at all.
+
+Against ADR-0026's **1.5 ms per 60 Hz tick for all deformable volumes together**: E19 measures the
+T0 cage at **0.225 µs per element per iteration per sub-step**, so the 512-element cage at the
+eight iterations and two sub-steps that plan 05 §5.14 assumes costs **1.8 ms — more than the whole
+budget, for one volume**, against the 40–120 µs that section estimates. The full grid, what it
+decides, and what fails is in [E19](../experiments/e19-lattice-cage.md).
 
 Other hot-path decisions: contact recording is lock-free (a per-worker bucket, merged and sorted
 once per step); `read_transforms` takes one pass over the caller's id array against the no-lock
