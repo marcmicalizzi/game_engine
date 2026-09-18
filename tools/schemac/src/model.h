@@ -75,8 +75,16 @@ struct StructDecl {
   std::string doc;
   std::string tag;
   uint16_t version = 1;
+  // Struct-level @transient: the whole type is runtime-only and is never persisted
+  // (docs/plan/03-data-model.md §3.4). Field-level @transient, on Field, is the narrower thing:
+  // one field of an otherwise persisted type.
+  bool transient = false;
   SourceLoc loc;
 };
+
+// A struct that carries @kind(component) is a world component: schemac emits its flecs
+// registration as well as its C++ type (ADR-0028 seam 1).
+inline bool is_component(const StructDecl& s) { return s.tag == "component"; }
 
 struct SchemaFile {
   std::string path;
@@ -106,6 +114,10 @@ std::string emit_cpp_header(const Model& model, const SchemaFile& file);
 std::string emit_cpp_source(const Model& model, const SchemaFile& file);
 std::string emit_json_schema(const Model& model, const SchemaFile& file);
 std::string emit_docs(const Model& model, const SchemaFile& file);
+// The ECS backend (ADR-0028 seam 1): flecs registration for this file's @kind(component)
+// structs. Always emitted; only compiled where <flecs.h> may be included, which is why it is a
+// header and not a source file.
+std::string emit_ecs_header(const Model& model, const SchemaFile& file);
 
 // Shared helpers.
 std::string ns_to_cpp(const std::string& dotted);      // "a.b" -> "a::b"

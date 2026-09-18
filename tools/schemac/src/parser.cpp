@@ -372,6 +372,7 @@ class Parser {
         s.version = static_cast<uint16_t>(std::strtoul(a.args[0].c_str(), nullptr, 0));
       if (a.name == "doc" && !a.args.empty()) s.doc = a.args[0];
       if (a.name == "kind" && !a.args.empty()) s.tag = a.args[0];
+      if (a.name == "transient") s.transient = true;
     }
     if (!expect_punct('{', error)) return false;
     while (!at_punct('}')) {

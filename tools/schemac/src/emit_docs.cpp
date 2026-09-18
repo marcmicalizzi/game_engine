@@ -51,7 +51,12 @@ std::string emit_docs(const Model& model, const SchemaFile& file) {
   for (const StructDecl& s : file.structs) {
     out << "## struct `" << s.name << "` (version " << s.version;
     if (!s.tag.empty()) out << ", kind `" << s.tag << "`";
+    if (s.transient) out << ", transient";
     out << ")\n\n";
+    if (is_component(s)) {
+      out << "Registered with the entity store as `" << file.ns << "." << s.name << "`"
+          << (s.transient ? "; transient, so it is never persisted" : "") << ".\n\n";
+    }
     if (!s.doc.empty()) out << s.doc << "\n\n";
     out << "| Field | Type | Default | Since | Flags | Doc |\n|---|---|---|---|---|---|\n";
     for (const Field& f : s.fields) {

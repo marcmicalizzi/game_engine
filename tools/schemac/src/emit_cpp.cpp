@@ -245,6 +245,7 @@ std::string emit_cpp_source(const Model& model, const SchemaFile& file) {
     out << "    .size = sizeof(" << e.name << "),\n";
     out << "    .align = alignof(" << e.name << "),\n";
     out << "    .version = 1,\n";
+    out << "    .flags = 0,\n";
     out << "    .tag = \"" << escape_cpp_string(e.tag) << "\",\n";
     out << "    .doc = \"" << escape_cpp_string(e.doc) << "\",\n";
     out << "    .fields = {},\n";
@@ -264,6 +265,8 @@ std::string emit_cpp_source(const Model& model, const SchemaFile& file) {
     out << "    .size = sizeof(" << s.name << "),\n";
     out << "    .align = alignof(" << s.name << "),\n";
     out << "    .version = " << s.version << ",\n";
+    out << "    .flags = static_cast<engine::u16>("
+        << (s.transient ? "engine::schema::TypeFlag::transient" : "0") << "),\n";
     out << "    .tag = \"" << escape_cpp_string(s.tag) << "\",\n";
     out << "    .doc = \"" << escape_cpp_string(s.doc) << "\",\n";
     if (s.fields.empty()) {

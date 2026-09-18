@@ -197,8 +197,19 @@ bool resolve(Model& model, std::vector<std::string>& errors) {
         }
       }
       for (const Attribute& a : s.attrs) {
-        if (a.name != "version" && a.name != "kind" && a.name != "doc")
+        if (a.name != "version" && a.name != "kind" && a.name != "doc" && a.name != "transient")
           errors.push_back(err(a.loc, "unknown struct attribute '@" + a.name + "'"));
+      }
+      // A component is registered with the entity store by name, so it needs a name nothing
+      // else can take, and it must carry data or be a deliberate tag. What it may not be is
+      // both transient and something the persistence layer would be asked to write, which is
+      // the check the *store* makes; here the only structural rule is that @transient without
+      // @kind(component) says nothing, because only a component type is ever persisted as a
+      // whole (ADR-0028 seam 1, docs/plan/03-data-model.md §3.4).
+      if (s.transient && !is_component(s)) {
+        errors.push_back(err(s.loc, "struct '" + s.name +
+                                        "' is @transient but not @kind(component); mark the "
+                                        "fields @transient instead"));
       }
     }
     for (EnumDecl& e : file.enums) {

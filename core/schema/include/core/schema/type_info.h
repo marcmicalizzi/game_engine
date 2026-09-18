@@ -99,6 +99,19 @@ struct FieldFlag {
   static constexpr u16 deprecated = 2;  // still read and written; flagged for removal
 };
 
+// Whole-type markings, from the struct's own attributes.
+//
+// `transient` is the type-level counterpart of `FieldFlag::transient`: the type exists only in
+// the runtime world and is never written to the persistent store (docs/plan/03-data-model.md
+// §3.4). It lives here, on the descriptor, rather than only on the entity store's side, because
+// persistence, the protocol and migrations have to see it and none of them link an ECS
+// ([ADR-0028](../../../../docs/adr/0028-ecs-and-persistent-store.md) seam 1). What kind of type
+// it is — a component, a record, an event — stays in `tag`, which is `@kind`'s free-form
+// argument; a marking only becomes a flag when generic code has to branch on it.
+struct TypeFlag {
+  static constexpr u16 transient = 1;
+};
+
 struct FieldInfo {
   const char* name;
   TypeRef type;
@@ -130,6 +143,7 @@ struct TypeInfo {
   u32 size;
   u32 align;
   u16 version;      // @version, structs only; 1 when unspecified
+  u16 flags;        // TypeFlag bits
   const char* tag;  // @kind attribute ("component", "event", ...) or ""
   const char* doc;
   std::span<const FieldInfo> fields;      // Struct

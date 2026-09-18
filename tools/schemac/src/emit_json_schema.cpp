@@ -94,6 +94,7 @@ std::string emit_json_schema(const Model& model, const SchemaFile& file) {
     out << "      \"type\": \"object\",\n";
     out << "      \"x-schema-version\": " << s.version << ",\n";
     if (!s.tag.empty()) out << "      \"x-kind\": \"" << escape_json_string(s.tag) << "\",\n";
+    if (s.transient) out << "      \"x-transient\": true,\n";
     out << "      \"properties\": {\n";
     bool first_field = true;
     std::vector<std::string> required;
