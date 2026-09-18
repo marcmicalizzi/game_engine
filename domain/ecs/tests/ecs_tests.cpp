@@ -194,21 +194,26 @@ TEST_CASE("ecs: two systems with conflicting write sets run in the order they we
     JobOsApi adapter(js);
     const u32 requested = workers <= adapter.max_workers() ? workers : adapter.max_workers();
 
-    SimWorld forward;
-    Log forward_log;
-    build(forward, forward_log, true);
-    REQUIRE(set_workers(forward.world(), requested));
-    for (int t = 0; t < 4; ++t)
-      forward.step();
-    CHECK(forward_log.trail == "ABABABAB");
-
-    SimWorld backward;
-    Log backward_log;
-    build(backward, backward_log, false);
-    REQUIRE(set_workers(backward.world(), requested));
-    for (int t = 0; t < 4; ++t)
-      backward.step();
-    CHECK(backward_log.trail == "BABABABA");
+    // One world at a time: a world's workers hold pool workers for the world's lifetime, so two
+    // live worlds share one budget and the second would be refused what the first is holding.
+    {
+      SimWorld forward;
+      Log forward_log;
+      build(forward, forward_log, true);
+      REQUIRE(set_workers(forward.world(), requested));
+      for (int t = 0; t < 4; ++t)
+        forward.step();
+      CHECK(forward_log.trail == "ABABABAB");
+    }
+    {
+      SimWorld backward;
+      Log backward_log;
+      build(backward, backward_log, false);
+      REQUIRE(set_workers(backward.world(), requested));
+      for (int t = 0; t < 4; ++t)
+        backward.step();
+      CHECK(backward_log.trail == "BABABABA");
+    }
   }
 }
 
@@ -219,7 +224,11 @@ TEST_CASE("ecs: a multithreaded system runs on the engine's performance pool") {
   jobs::JobSystem js(config);
   JobOsApi adapter(js);
 
+  // The default budget lends every performance worker but one, so a world may have as many
+  // workers as the pool has threads and the pool still keeps one for everything else.
+  CHECK(adapter.hosted_worker_budget() == js.worker_count(jobs::Pool::Performance) - 1);
   CHECK(adapter.max_workers() == js.worker_count(jobs::Pool::Performance));
+  CHECK(adapter.hosted_workers() == 0);
   CHECK(&adapter.job_system() == &js);
   CHECK(JobOsApi::current() == &adapter);
 
@@ -245,11 +254,18 @@ TEST_CASE("ecs: a multithreaded system runs on the engine's performance pool") {
       });
 
   REQUIRE(set_workers(sim.world(), workers));
-  sim.step();
+  // The adapter, not flecs, created the world's workers, once: n-1 long-running jobs for n
+  // stages, and they are the pool workers the budget has lent out.
+  CHECK(adapter.workers_started() == workers - 1);
+  CHECK(adapter.hosted_workers() == workers - 1);
+  CHECK(adapter.pool_workers_kept() == js.worker_count(jobs::Pool::Performance) - (workers - 1));
 
-  // The adapter, not flecs, created the tick's workers: n-1 tasks for n stages.
-  CHECK(adapter.tasks_started() == workers - 1);
-  CHECK(witness.invocations == 4096);
+  sim.step();
+  sim.step();
+  // Still one dispatch, not one a tick: that is the whole point of the hosting.
+  CHECK(adapter.workers_started() == workers - 1);
+  CHECK(adapter.tasks_started() == 0);
+  CHECK(witness.invocations == 4096);  // p.x is 1 only on the first tick
   // One thread per stage: the caller runs stage 0 and the pool runs the rest.
   CHECK(witness.threads.size() == workers);
   u32 pool_threads = 0;
@@ -257,10 +273,172 @@ TEST_CASE("ecs: a multithreaded system runs on the engine's performance pool") {
     pool_threads += flag;
   CHECK(pool_threads == workers - 1);
 
-  // Asking for more workers than the pool can host is refused rather than hung.
-  CHECK(!set_workers(sim.world(), adapter.max_workers() + 1));
+  // Asking for more workers than the budget can lend is refused rather than hung, and the world
+  // is left single-threaded rather than half-configured. The count is measured against the
+  // budget and not against `max_workers()` at the call, because a world gives back what it
+  // already holds before the request is judged.
+  CHECK(!set_workers(sim.world(), adapter.hosted_worker_budget() + 2));
+  CHECK(adapter.hosted_workers() == 0);
+  sim.step();  // a refusal leaves a world that still ticks
+
+  // The per-tick hosting is still selectable, because the measurement that rejected it is a
+  // comparison: it creates and joins its workers inside every step.
+  REQUIRE(set_workers(sim.world(), workers, WorkerHosting::Tasks));
+  CHECK(adapter.hosted_workers() == 0);  // a task holds nothing between ticks
+  sim.step();
+  CHECK(adapter.tasks_started() == workers - 1);
+  sim.step();
+  CHECK(adapter.tasks_started() == 2 * (workers - 1));
+
   // And a single-threaded world needs no adapter at all.
   CHECK(set_workers(sim.world(), 1));
+  CHECK(adapter.hosted_workers() == 0);
+}
+
+TEST_CASE("ecs: worlds give their pool workers back") {
+  jobs::JobSystemConfig config;
+  config.performance_workers = 4;
+  config.efficiency_workers = 1;
+  jobs::JobSystem js(config);
+  JobOsApi adapter(js);
+  const u32 workers = adapter.max_workers() < 3u ? adapter.max_workers() : 3u;
+  REQUIRE(workers >= 2);
+
+  // Worlds created and destroyed over and over in one process leave nothing occupied. This is
+  // the failure the long-running hosting could plausibly have: a worker that holds a pool
+  // thread for a world's lifetime holds it forever if the world's teardown forgets it.
+  for (int round = 0; round < 8; ++round) {
+    SimWorld sim;
+    for (int i = 0; i < 256; ++i)
+      sim.world().entity().set<Position>(Position{}).set<Velocity>(Velocity{1.0f, 0.5f});
+    sim.world()
+        .system<Position, const Velocity>("move")
+        .kind(sim.phase(TickPhase::Systems))
+        .multi_threaded()
+        .each([](Position& p, const Velocity& v) {
+          p.x += v.x;
+          p.y += v.y;
+        });
+    REQUIRE(set_workers(sim.world(), workers));
+    CHECK(adapter.hosted_workers() == workers - 1);
+    sim.step();
+  }
+  CHECK(adapter.hosted_workers() == 0);
+  CHECK(adapter.pool_workers_kept() == js.worker_count(jobs::Pool::Performance));
+
+  // Two worlds at once share one budget, and the second is refused what the first is holding
+  // rather than being given a worker that has no thread to run on.
+  SimWorld a;
+  SimWorld b;
+  REQUIRE(set_workers(a.world(), adapter.max_workers()));
+  CHECK(adapter.hosted_workers() == adapter.hosted_worker_budget());
+  CHECK(adapter.max_workers() == 1);
+  CHECK(!set_workers(b.world(), 2));
+  b.step();  // refused, so single-threaded, and still a world that ticks
+  // Reconfiguring a world is not counted twice: it gives back what it holds first.
+  REQUIRE(set_workers(a.world(), 2));
+  CHECK(adapter.hosted_workers() == 1);
+  REQUIRE(set_workers(b.world(), 2));
+  CHECK(adapter.hosted_workers() == 2);
+  a.step();
+  b.step();
+}
+
+TEST_CASE("ecs: an adapter that goes away first takes its workers back") {
+  // The world outliving the job system is the dangerous order, because a pool thread parked
+  // inside flecs cannot be joined: the job system's own destructor would hang on it. The
+  // adapter's destructor therefore drops every world it still hosts back to one worker.
+  SimWorld sim;
+  for (int i = 0; i < 256; ++i)
+    sim.world().entity().set<Position>(Position{}).set<Velocity>(Velocity{1.0f, 0.5f});
+  sim.world()
+      .system<Position, const Velocity>("move")
+      .kind(sim.phase(TickPhase::Systems))
+      .multi_threaded()
+      .each([](Position& p, const Velocity& v) {
+        p.x += v.x;
+        p.y += v.y;
+      });
+
+  {
+    jobs::JobSystemConfig config;
+    config.performance_workers = 4;
+    config.efficiency_workers = 1;
+    jobs::JobSystem js(config);
+    JobOsApi adapter(js);
+    REQUIRE(set_workers(sim.world(), 3));
+    sim.step();
+    CHECK(adapter.hosted_workers() == 2);
+  }
+
+  // Both are gone and the world is still usable, single-threaded, and says so when asked for
+  // workers it can no longer have.
+  CHECK(JobOsApi::current() == nullptr);
+  sim.step();
+  CHECK(!set_workers(sim.world(), 4));
+  sim.step();
+}
+
+TEST_CASE("ecs: a tick computes the same thing at every worker count") {
+  // Determinism is the reason the engine may choose a worker count at all (ADR-0010). The world
+  // is small on purpose: what is being checked is that the result does not depend on how the
+  // rows were split, not how fast the split is.
+  struct Sample {
+    f32 x = 0;
+    f32 y = 0;
+    u32 written = 0;
+  };
+  const auto run = [](u32 workers) {
+    jobs::JobSystemConfig config;
+    config.performance_workers = 8;
+    config.efficiency_workers = 1;
+    jobs::JobSystem js(config);
+    JobOsApi adapter(js);
+    SimWorld sim;
+    for (int i = 0; i < 1024; ++i) {
+      sim.world()
+          .entity()
+          .set<Position>(Position{static_cast<f32>(i), static_cast<f32>(i) * 0.5f})
+          .set<Velocity>(Velocity{1.0f / static_cast<f32>(i + 1), 0.25f})
+          .set<Trail>(Trail{});
+    }
+    sim.world()
+        .system<Position, const Velocity>("move")
+        .kind(sim.phase(TickPhase::Systems))
+        .multi_threaded()
+        .each([](Position& p, const Velocity& v) {
+          p.x += v.x;
+          p.y += v.y;
+        });
+    sim.world()
+        .system<Trail, const Position>("stamp")
+        .kind(sim.phase(TickPhase::Lod))
+        .multi_threaded()
+        .each([](Trail& t, const Position& p) { t.written += static_cast<u32>(p.x) + 1u; });
+    if (workers > 1) REQUIRE(set_workers(sim.world(), workers));
+    for (int t = 0; t < 16; ++t)
+      sim.step();
+
+    Vector<Sample> out;
+    sim.world().query_builder<const Position, const Trail>().build().each(
+        [&out](const Position& p, const Trail& t) { out.push_back(Sample{p.x, p.y, t.written}); });
+    return out;
+  };
+
+  const Vector<Sample> one = run(1);
+  REQUIRE(one.size() == 1024);
+  for (const u32 workers : {4u, 8u}) {
+    const Vector<Sample> many = run(workers);
+    REQUIRE(many.size() == one.size());
+    bool identical = true;
+    for (u32 i = 0; i < one.size(); ++i) {
+      // Bit for bit, not approximately: the same rows in the same order doing the same
+      // arithmetic. A tolerance here would hide exactly the bug worth finding.
+      identical = identical && many[i].x == one[i].x && many[i].y == one[i].y &&
+                  many[i].written == one[i].written;
+    }
+    CHECK(identical);
+  }
 }
 
 TEST_CASE("ecs: relationships and queries are flecs' own, unwrapped") {

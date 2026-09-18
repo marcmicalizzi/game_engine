@@ -33,3 +33,4 @@ Numbered, dated, and immutable once accepted. To change a decision, write a new 
 | [0027](0027-additive-capabilities.md) | Capabilities are additive modules: registration points, not forks; the proof is a build, not a runtime layer | Accepted |
 | [0028](0028-ecs-and-persistent-store.md) | flecs is the runtime entity store, exposed directly behind five engine-owned seams; SQLite is the persistent store, tuned by measurement (E6 result) | Accepted |
 | [0029](0029-deformable-volume-budgets.md) | Deformable volume budgets after E19: a hero allowance, a cage that is one solve group, an authored volume preservation, and an enforced strain limit | Accepted |
+| [0030](0030-flecs-workers-are-long-running-pool-jobs.md) | flecs' workers are long-running jobs on the performance pool, inside a budget the application sets; refines ADR-0028's worker hosting | Accepted |

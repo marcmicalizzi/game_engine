@@ -63,10 +63,12 @@ SimWorld::SimWorld(const SimWorldConfig& config)
 }
 
 SimWorld::~SimWorld() {
-  // A world with task workers must stop using them before it is torn down, and doing it here
-  // rather than leaving it to flecs means the adapter's task slots are certainly free by the
-  // time a JobOsApi that outlives this world is destroyed.
-  ecs_set_task_threads(world_.c_ptr(), 1);
+  // A world must give its workers back before it is torn down: flecs' own `ecs_fini` does not
+  // join them, it asserts that they are gone. Doing it here rather than leaving it to the caller
+  // also means the adapter's slots — and, with the default hosting, the pool workers a world
+  // holds for its lifetime — are certainly free by the time a JobOsApi that outlives this world
+  // is destroyed.
+  stop_workers(world_);
 }
 
 void SimWorld::build_phases() {
