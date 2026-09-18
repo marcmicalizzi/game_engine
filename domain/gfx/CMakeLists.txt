@@ -11,7 +11,7 @@ engine_shaders(NAME gfx SOURCES shaders/cluster_mesh.slang shaders/cluster_cull.
                              shaders/visibility_resolve_rt.slang
                              shaders/hiz_build.slang shaders/cluster_vertex.slang
                              shaders/ray_visibility.slang shaders/clas_records.slang
-                             shaders/deform.slang)
+                             shaders/deform.slang shaders/path_trace.slang)
 engine_module(NAME gfx LAYER domain
   DEPS base containers memory hash json log math platform schemas io
   EXTERNAL_DEPS volk::volk GPUOpen::VulkanMemoryAllocator
@@ -43,7 +43,8 @@ if(TARGET engine_gfx_tests)
                                           tests/vertex_path_tests.cpp tests/cone_tests.cpp
                                           tests/rt_tests.cpp tests/rt_cluster_tests.cpp
                                           tests/clas_records_tests.cpp tests/scene_tests.cpp
-                                          tests/deform_tests.cpp tests/skin_tests.cpp)
+                                          tests/deform_tests.cpp tests/skin_tests.cpp
+                                          tests/sampling_tests.cpp)
   target_compile_definitions(engine_gfx_tests PRIVATE
     ENGINE_SHADER_MANIFEST="${CMAKE_BINARY_DIR}/shaders/manifest.json")
   # engine::anim is the CPU reference the skinning test holds `deform.slang` to.

@@ -208,6 +208,157 @@ inline u8 display(double linear) {
   return static_cast<u8>(std::lround((v > 1.0 ? 1.0 : v) * 255.0));
 }
 
+// ---- the sampler's twins (domain/gfx/shaders/sampling.slang) ------------------------------
+//
+// The reference path tracer importance-samples the BSDF above, and a sampler is the half of a
+// Monte Carlo integrator that is easiest to get subtly wrong: a density that does not integrate
+// to one, or one that does not match the direction it claims to have produced, biases every
+// picture by an amount no eye can name. These are the shader's routines in double precision, and
+// `domain/gfx/tests/sampling_tests.cpp` holds them to the three properties that catch that — the
+// density integrates to 1 over the hemisphere, sampling and evaluating and the pdf agree under
+// Monte Carlo, and a white furnace comes back white.
+//
+// The generator is mirrored bit for bit rather than replaced by `<random>`, because it is the
+// one part of the sampler whose *exact* values a capture's determinism depends on.
+
+inline u32 pcg_hash(u32 v) {
+  const u32 state = v * 747796405u + 2891336453u;
+  const u32 word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+  return (word >> 22u) ^ word;
+}
+
+inline u32 rng_seed(u32 pixel_x, u32 pixel_y, u32 sample_index, u32 seed) {
+  const u32 mixed = pcg_hash(pixel_x * 73856093u ^ pixel_y * 19349663u ^ seed * 83492791u);
+  return pcg_hash(mixed + sample_index * 2654435761u);
+}
+
+inline double rng_next(u32& state) {
+  state = state * 747796405u + 2891336453u;
+  u32 word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+  word = (word >> 22u) ^ word;
+  return static_cast<double>(word) * (1.0 / 4294967296.0);
+}
+
+// Duff et al. 2017, branchless.
+inline void onb_from_normal(Dvec3 n, Dvec3& tangent, Dvec3& bitangent) {
+  const double s = n.z >= 0.0 ? 1.0 : -1.0;
+  const double a = -1.0 / (s + n.z);
+  const double b = n.x * n.y * a;
+  tangent = Dvec3{1.0 + s * n.x * n.x * a, s * b, -s * n.x};
+  bitangent = Dvec3{b, s + n.y * n.y * a, -n.y};
+}
+
+inline Dvec3 to_local(Dvec3 v, Dvec3 tangent, Dvec3 bitangent, Dvec3 normal) {
+  return Dvec3{dot(v, tangent), dot(v, bitangent), dot(v, normal)};
+}
+
+inline Dvec3 to_world(Dvec3 v, Dvec3 tangent, Dvec3 bitangent, Dvec3 normal) {
+  return tangent * v.x + bitangent * v.y + normal * v.z;
+}
+
+inline double luminance(Dvec3 c) { return 0.2126 * c.x + 0.7152 * c.y + 0.0722 * c.z; }
+
+inline Dvec3 sample_cosine_hemisphere(double u1, double u2) {
+  const double r = std::sqrt(u1);
+  const double phi = 2.0 * k_pi * u2;
+  return Dvec3{r * std::cos(phi), r * std::sin(phi), std::sqrt(u1 < 1.0 ? 1.0 - u1 : 0.0)};
+}
+
+inline double cosine_hemisphere_pdf(double n_dot_l) {
+  return (n_dot_l > 0.0 ? n_dot_l : 0.0) / k_pi;
+}
+
+// Smith's one-directional masking term; the visible-normal density is written in it.
+inline double ggx_g1(double n_dot_v, double alpha) {
+  const double a2 = alpha * alpha;
+  const double denom = n_dot_v + std::sqrt(a2 + (1.0 - a2) * n_dot_v * n_dot_v);
+  return 2.0 * n_dot_v / (denom < 1e-9 ? 1e-9 : denom);
+}
+
+// Heitz 2018. Local frame, z up, `v` away from the surface.
+inline Dvec3 sample_ggx_vndf(Dvec3 v, double alpha, double u1, double u2) {
+  const Dvec3 vh = normalize(Dvec3{alpha * v.x, alpha * v.y, v.z});
+  const double len_sq = vh.x * vh.x + vh.y * vh.y;
+  const Dvec3 t1 =
+      len_sq > 0.0 ? Dvec3{-vh.y, vh.x, 0.0} * (1.0 / std::sqrt(len_sq)) : Dvec3{1.0, 0.0, 0.0};
+  const Dvec3 t2 = cross(vh, t1);
+  const double r = std::sqrt(u1);
+  const double phi = 2.0 * k_pi * u2;
+  const double p1 = r * std::cos(phi);
+  double p2 = r * std::sin(phi);
+  const double s = 0.5 * (1.0 + vh.z);
+  const double one_minus = 1.0 - p1 * p1;
+  p2 = (1.0 - s) * std::sqrt(one_minus > 0.0 ? one_minus : 0.0) + s * p2;
+  const double z = 1.0 - p1 * p1 - p2 * p2;
+  const Dvec3 nh = t1 * p1 + t2 * p2 + vh * std::sqrt(z > 0.0 ? z : 0.0);
+  return normalize(Dvec3{alpha * nh.x, alpha * nh.y, nh.z > 0.0 ? nh.z : 0.0});
+}
+
+inline double ggx_vndf_pdf(Dvec3 v, Dvec3 l, double alpha) {
+  if (v.z <= 0.0 || l.z <= 0.0) return 0.0;
+  const Dvec3 h = normalize(v + l);
+  if (dot(v, h) <= 0.0) return 0.0;
+  const double denom = 4.0 * v.z;
+  return ggx_g1(v.z, alpha) * d_ggx(h.z, alpha) / (denom < 1e-9 ? 1e-9 : denom);
+}
+
+inline double specular_probability(Dvec3 albedo, double metallic, double n_dot_v, Dvec3 fresnel) {
+  (void)n_dot_v;
+  const double specular = luminance(fresnel);
+  const double diffuse = (1.0 - metallic) * luminance(albedo) * (1.0 - specular);
+  const double total = specular + diffuse;
+  if (total <= 1e-6) return 0.5;
+  const double p = specular / total;
+  return p < 0.05 ? 0.05 : (p > 0.95 ? 0.95 : p);
+}
+
+inline double bsdf_pdf(Dvec3 v, Dvec3 l, double alpha, double p_specular) {
+  return p_specular * ggx_vndf_pdf(v, l, alpha) + (1.0 - p_specular) * cosine_hemisphere_pdf(l.z);
+}
+
+inline double mis_power_heuristic(double pdf_a, double pdf_b) {
+  const double a = pdf_a * pdf_a;
+  const double b = pdf_b * pdf_b;
+  const double total = a + b;
+  return total > 0.0 ? a / total : 0.0;
+}
+
+// One sample of the two-lobe mixture the path tracer draws from: the direction in the local
+// frame, the BSDF times the cosine, and the mixture density. Returns false where the sample is
+// below the surface, which is what the shader treats as the end of the path.
+struct BsdfSample {
+  Dvec3 direction;  // local frame, z up
+  Dvec3 weight;     // f * cos / pdf: what the path's throughput is multiplied by
+  double pdf = 0.0;
+};
+
+inline bool sample_bsdf(const Surface& s, Dvec3 v_local, double u_lobe, double u1, double u2,
+                        BsdfSample& out) {
+  const double n_dot_v = v_local.z;
+  if (n_dot_v <= 0.0) return false;
+  const double alpha = alpha_of(s.roughness);
+  const Dvec3 fresnel = f_schlick(f0_of(s.albedo, s.metallic), n_dot_v);
+  const double p_specular = specular_probability(s.albedo, s.metallic, n_dot_v, fresnel);
+  Dvec3 l_local;
+  if (u_lobe < p_specular) {
+    const Dvec3 h = sample_ggx_vndf(v_local, alpha, u1, u2);
+    l_local = h * (2.0 * dot(v_local, h)) - v_local;  // reflect(-v, h)
+  } else {
+    l_local = sample_cosine_hemisphere(u1, u2);
+  }
+  if (l_local.z <= 0.0) return false;
+  out.pdf = bsdf_pdf(v_local, l_local, alpha, p_specular);
+  if (!(out.pdf > 0.0)) return false;
+  out.direction = l_local;
+  // The BSDF is evaluated in world terms, but the surface here is its own local frame: the
+  // normal is z and the view is `v_local`, so eval() can be called with the local vectors.
+  Surface local = s;
+  local.normal = Dvec3{0.0, 0.0, 1.0};
+  local.view = v_local;
+  out.weight = eval(local, l_local) * (l_local.z / out.pdf);
+  return true;
+}
+
 // The world point the resolve reconstructs at the center of pixel (px, py) on a horizontal plane:
 // the camera ray through that pixel, intersected with the plane. For a planar surface this is
 // exactly what perspective-correct barycentric interpolation of the triangle's vertices gives,

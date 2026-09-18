@@ -5,6 +5,7 @@
 #include <core/base/size_table.h>
 #include <domain/gfx/cluster_acceleration.h>
 #include <domain/gfx/cluster_cull.h>
+#include <domain/gfx/path_trace.h>
 #include <domain/gfx/visibility_resolve.h>
 
 using namespace engine;
@@ -62,6 +63,12 @@ ENGINE_EXPECT_SIZE(48, 8, gfx::HizParams);
 // visibility word for a pixel with nothing in it. Both are zero for a caller that fills neither,
 // and the shader then writes the sky and reads every word, exactly as it always did.
 ENGINE_EXPECT_SIZE(272, 8, gfx::ResolveParams);
+
+// 256: the reference path tracer's block (docs/plan/04-renderer.md §4.8). It is not in a frame
+// path — one dispatch per batch of samples, minutes per picture allowed — so it carries all
+// eleven scene addresses outright rather than packing them, and the padding keeps it a whole
+// number of float4 rows like every other addressed block.
+ENGINE_EXPECT_SIZE(256, 8, gfx::PathTraceParams);
 
 ENGINE_EXPECT_SIZE(64, 4, gfx::ResolveMaterial);
 
