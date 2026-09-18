@@ -115,6 +115,12 @@ struct SourceMesh {
   std::string image_dir;        // what the relative image paths are relative to
   u32 primitives = 0;           // glTF primitives merged into it; 0 from a container
   const char* cache = "none";   // "file", "hit", "miss", or "none"
+  // The `.clusters` container this mesh's bytes are in: the file a `--mesh x.clusters` named, the
+  // derived-data entry a glTF hit, or the one this load just wrote. Empty when there is none —
+  // the procedural heightfield, or a glTF loaded with `--no-cache` — and that is exactly the
+  // condition under which a streamed page has to come out of host memory instead of off disk
+  // (`FilePageSource`, docs/subsystems/renderer.md).
+  std::string container;
 };
 
 // A loaded scene: everything the GPU upload reads, and everything a summary reports.

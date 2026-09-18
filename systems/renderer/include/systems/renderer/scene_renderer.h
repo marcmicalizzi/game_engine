@@ -207,6 +207,11 @@ class SceneRenderer {
     // A shader manifest to prefer over the embedded SPIR-V; empty looks for
     // `<exe dir>/../shaders/manifest.json` and uses the embedded bytes when there is none.
     std::string shader_manifest;
+    // Where a streamed scene's page payloads come from. Null is the in-memory source: the pages
+    // are copied out of the `SceneData`, which must still hold its streams. A source built by
+    // `attach_page_source` reads them out of the meshes' `.clusters` containers instead, and must
+    // outlive the renderer. Ignored for a scene that is not streamed.
+    FilePageSource* page_source = nullptr;
   };
 
   SceneRenderer() noexcept = default;

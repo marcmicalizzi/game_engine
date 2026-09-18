@@ -260,17 +260,24 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
 // without the padding would be a byte or two short of the largest page, which is a page that never
 // loads and a scene that never converges. One formula, used by both, is the only way those two
 // cannot drift apart.
-u64 GpuScene::page_payload_bytes(u32 page) const noexcept {
-  if (!streamed_ || page >= page_count_) return 0;
+GpuScene::PageStage GpuScene::page_stage_layout(u32 page) const noexcept {
+  PageStage out;
+  if (!streamed_ || page >= page_count_) return out;
   const geometry::ClusterPageDesc& desc = data_->pages.pages[page];
   auto align16 = [](u64 value) { return (value + 15) & ~u64{15}; };
-  u64 at = align16(u64{desc.cluster_count} * sizeof(geometry::ClusterDesc));
-  at = align16(at + u64{desc.vertex_count} * 3 * sizeof(u16));                     // quantized
-  at = align16(at + u64{desc.vertex_count} * sizeof(geometry::VertexAttributes));  // attributes
-  at = align16(at + u64{desc.triangle_count} * sizeof(u32));                       // triangles
-  if (!ray_tracing_) return at;
-  at = align16(at + u64{desc.vertex_count} * sizeof(Vec3));  // the float positions a CLAS build
-  return align16(at + u64{desc.triangle_count} * 3);         // reads, and their 8-bit indices
+  out.ray_tracing = ray_tracing_;
+  out.clusters = 0;
+  out.quantized = align16(u64{desc.cluster_count} * sizeof(geometry::ClusterDesc));
+  out.attributes = align16(out.quantized + u64{desc.vertex_count} * 3 * sizeof(u16));
+  out.triangles =
+      align16(out.attributes + u64{desc.vertex_count} * sizeof(geometry::VertexAttributes));
+  out.total = align16(out.triangles + u64{desc.triangle_count} * sizeof(u32));
+  if (!ray_tracing_) return out;
+  // The float positions a CLAS build reads, and their 8-bit indices.
+  out.vertices = out.total;
+  out.indices8 = align16(out.vertices + u64{desc.vertex_count} * sizeof(Vec3));
+  out.total = align16(out.indices8 + u64{desc.triangle_count} * 3);
+  return out;
 }
 
 u32* GpuScene::residency_slot(u32 slot) noexcept {

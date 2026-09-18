@@ -15,11 +15,13 @@
 // drawing rule's fallback clause exists to cover: the picture is coarser in the meantime and never
 // has a hole in it.
 //
-// **What is not here, and why.** The page payloads come out of the `SceneData` the load produced,
-// not out of the `.clusters` container by range: the container reader has no API for a section's
-// file offset and `io::AsyncRead` reads whole files, so a file-backed source is two additive API
-// changes and a source of its own rather than a branch in this one. `PageSource` is the seam it
-// slots into. See docs/subsystems/renderer.md for what that costs today (host memory, not device).
+// **Where a page's bytes come from.** Two answers, and `copy_page` is the seam between them
+// (`systems/renderer/page_source.h`). Out of the `SceneData` the load produced, which is what the
+// procedural heightfield and a glTF loaded with `--no-cache` have to use because there is no file
+// behind them — and which means streaming saves device memory and not host memory. Or out of the
+// `.clusters` containers the meshes came from, by ranged reads on the Efficiency pool, which is
+// what lets the merged host streams be released once the scene is on the GPU. The second is a
+// `FilePageSource` handed to `create`; without one the first is what happens.
 
 #include <core/base/macros.h>
 #include <core/base/types.h>
@@ -27,6 +29,7 @@
 #include <domain/geometry/cluster_pages.h>
 #include <domain/gfx/vulkan.h>
 #include <systems/renderer/gpu_scene.h>
+#include <systems/renderer/page_source.h>
 
 #include <string>
 
@@ -52,6 +55,18 @@ struct StreamStats {
   u64 resident_bytes = 0;
   u64 page_bytes = 0;    // every page of the scene: what streaming is a fraction of
   u64 budget_bytes = 0;  // the residency manager's budget
+  // Where the payloads came from. `from_file` is the container-backed source; with it, `reads`
+  // and `read_bytes` are what came off disk and `host_bytes_freed` is what releasing the merged
+  // streams saved. Without it the three are zero and the bytes came out of host memory.
+  bool from_file = false;
+  u64 file_reads = 0;
+  u64 file_bytes = 0;
+  u64 host_bytes_freed = 0;
+  // Frames in which a page was wanted and its reads had not landed yet. It is the read latency
+  // made visible: a run with a high count against few uploads is waiting on the disk, and one
+  // with none never had to.
+  u64 load_waits = 0;
+  u32 loads_in_flight = 0;
 };
 
 class GeometryStreamer {
@@ -60,10 +75,12 @@ class GeometryStreamer {
   ~GeometryStreamer();
   ENGINE_NON_COPYABLE(GeometryStreamer);
 
-  // `scene` and `device` must outlive the streamer. Does nothing and stays inactive for a scene
-  // that is not streamed, so a caller may create one unconditionally.
+  // `scene`, `device` and `source` must outlive the streamer. Does nothing and stays inactive for
+  // a scene that is not streamed, so a caller may create one unconditionally. A null `source` is
+  // the in-memory path: pages are copied out of `scene.data()`, which has to still hold its
+  // streams.
   bool create(const gfx::Device& device, GpuScene& scene, u32 frames_in_flight,
-              std::string* error = nullptr);
+              FilePageSource* source = nullptr, std::string* error = nullptr);
   void destroy() noexcept;
   bool active() const noexcept { return scene_ != nullptr && scene_->streamed(); }
 
@@ -93,19 +110,39 @@ class GeometryStreamer {
     u32 slot = 0;   // the pool slot it lands in
     u64 stage = 0;  // byte offset in the staging ring
   };
+  // What one attempt to put a page in the pool did. `pending` exists only for the file-backed
+  // source: the page's reads have been started and the bytes will be there in a frame or two,
+  // which stops *this* page being staged but must not stop the manager admitting more — otherwise
+  // a scene would converge at one page per read latency.
+  enum class Stage : u8 { done, pending, blocked };
+
   u64 staged_bytes(u32 page) const noexcept;
   void apply_evictions();
   bool take_slot(u32 page, u32& slot);
-  // One page's bytes into the staging ring, in the order `record_uploads` copies them out: the
-  // patched cluster descriptors first, then the quantized positions, the attributes, the packed
-  // triangles, and — when the frame builds acceleration structures — the float positions and their
-  // 8-bit indices. **This is the seam a file-backed source replaces**: a page is a contiguous run
-  // of each of those streams, so reading one from a `.clusters` container is a handful of range
-  // reads rather than a different shape of code.
+  // Undoes `take_slot` for a page that never became resident, so no frame can be holding it.
+  void give_back_slot(u32 page) noexcept;
+  // One page's bytes into the staging ring, in the order `record_uploads` copies them out and at
+  // the offsets `GpuScene::page_stage_layout` gives: the patched cluster descriptors first, then
+  // the quantized positions, the attributes, the packed triangles, and — when the frame builds
+  // acceleration structures — the float positions and their 8-bit indices.
+  //
+  // **This is the seam the file-backed source slots into.** The four read streams come either
+  // from `scene_->data()` or out of a completed `FilePageSource` load; the two the host computes,
+  // the patched descriptors and the 8-bit indices, are written here either way.
   void copy_page(u32 page, u32 slot, u8* dst);
+  void patch_clusters(u32 page, u32 slot, u8* dst);
+  void pack_indices(u32 page, u8* dst);
+  Stage stage_page(u32 page, u8* ring, u64 ring_base, u64& at, u64& remaining, u64& requested);
+  // Starts a page's reads without staging it, so that the reads of the pages behind a gap overlap
+  // the one the frame is waiting on. A no-op without a file source.
+  void prefetch(u32 page);
+  void cancel_load(u32 page);
+  void cancel_stale_loads();
 
   const gfx::Device* device_ = nullptr;
   GpuScene* scene_ = nullptr;
+  FilePageSource* source_ = nullptr;  // null: the payloads come out of `scene_->data()`
+  Vector<u32> load_of_page_;          // page -> the source's load handle, or k_no_load
   geometry::PageResidencyManager manager_;
   Vector<gfx::BufferResource> feedback_;
   Vector<u32> slot_of_page_;  // page -> pool slot, or ~0

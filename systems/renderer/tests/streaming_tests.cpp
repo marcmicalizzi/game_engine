@@ -10,19 +10,24 @@
 // clause; residency stays ancestor-closed and never drops a pinned page, which is what makes the
 // fallback crack-free; and a request is eventually served under an upload budget small enough that
 // it cannot be served at once.
+#include <core/jobs/job_system.h>
 #include <core/math/math.h>
+#include <domain/geometry/cluster_file.h>
 #include <domain/geometry/cluster_pages.h>
 #include <domain/gfx/device.h>
 #include <systems/renderer/capture.h>
 #include <systems/renderer/gpu_scene.h>
+#include <systems/renderer/page_source.h>
 #include <systems/renderer/scene.h>
 #include <systems/renderer/scene_renderer.h>
 #include <systems/renderer/settings.h>
 
 #include <doctest/doctest.h>
+#include <test_temp_dir.h>
 
 #include <algorithm>
 #include <string>
+#include <utility>
 
 using namespace engine;
 using namespace engine::renderer;
@@ -67,11 +72,16 @@ struct Harness {
   gfx::Device device;
   SceneData data;
   GpuScene scene;
+  FilePageSource source;
   SceneRenderer renderer;
   bool ready = false;
+  bool from_file = false;
   std::string skip;
 
-  bool build(const SceneDesc& desc, const RenderSettings& settings) {
+  // `jobs` non-null asks for the container-backed page source: the meshes' `.clusters` files are
+  // opened and the merged host streams are released, so the run reads its pages off disk.
+  bool build(const SceneDesc& desc, const RenderSettings& settings,
+             jobs::JobSystem* jobs = nullptr) {
     std::string error;
     if (!device.create(gfx::DeviceOptions{}, &error)) {
       skip = "device unavailable: " + error;
@@ -95,6 +105,14 @@ struct Harness {
     SceneRenderer::Desc rd;
     rd.width = k_width;
     rd.height = k_height;
+    if (jobs != nullptr) {
+      if (!attach_page_source(data, scene, *jobs, source, &error)) {
+        skip = "page source: " + error;
+        return false;
+      }
+      rd.page_source = &source;
+      from_file = true;
+    }
     if (!renderer.create(device, scene, resolved, rd, &error)) {
       skip = "renderer: " + error;
       return false;
@@ -105,10 +123,31 @@ struct Harness {
 
   ~Harness() {
     renderer.destroy();
+    source.destroy();
     scene.destroy();
     if (device.valid()) device.destroy();
   }
 };
+
+// The heightfield, laid out in pages and written to a `.clusters` container, so that a scene with
+// a **file** behind it can be built without importing anything: the procedural scene has no
+// container of its own, which is exactly why it keeps the in-memory source.
+bool write_heightfield_container(const std::string& path, u32 page_bytes, std::string& error) {
+  SceneData data;
+  if (!load_scene(heightfield_desc(true, page_bytes), data, error)) return false;
+  geometry::ClusterFileData file;
+  file.mesh = std::move(data.lod);
+  file.pages = std::move(data.pages);
+  return geometry::write_cluster_file(path, file, &error);
+}
+
+SceneDesc container_desc(const std::string& path) {
+  SceneDesc desc;
+  desc.meshes.push_back(path);
+  desc.cache = false;  // the container is named outright; nothing goes near the tree's cache
+  desc.stream = true;
+  return desc;
+}
 
 FrameDesc frame_at(const SceneData& data, f32 distance, u64 index) {
   FrameDesc frame;
@@ -335,6 +374,114 @@ TEST_CASE("streaming: residency stays ancestor-closed and never drops a pinned p
   MESSAGE("evictions " << stats.evictions << ", uploads " << stats.uploads << " ("
                        << stats.uploads_bytes << " bytes), requests " << stats.requests);
   CHECK(stats.evictions > 0);
+}
+
+TEST_CASE("streaming: pages read from the container draw what pages read from memory draw") {
+  const test::TempDir tmp("engine_renderer_pagesrc");
+  const std::string container = tmp.file("terrain.clusters");
+  std::string error;
+  REQUIRE_MESSAGE(write_heightfield_container(container, 16 * 1024, error), error);
+
+  // The same container twice: once with the payloads copied out of the `SceneData` the load
+  // produced, once with them read back out of the file by range. The scene is identical down to
+  // the cluster numbering, so this is the strongest comparison available — not "the same surface"
+  // but **the same bytes and the same ids**, which is what a source that got an offset wrong
+  // could not produce.
+  Harness memory;
+  if (!memory.build(container_desc(container), streamed_settings(0, 0))) {
+    MESSAGE(memory.skip);
+    return;
+  }
+  REQUIRE(memory.scene.streamed());
+  REQUIRE(memory.scene.page_count() > 1);
+  converge(memory.renderer, memory.data, 6.0f, 128);
+  CapturedFrame memory_shot;
+  REQUIRE_MESSAGE(memory.renderer.capture(frame_at(memory.data, 6.0f, 8),
+                                          {.color = true, .ids = true}, memory_shot, &error),
+                  error);
+  CHECK_FALSE(memory.renderer.streamer().stats().from_file);
+
+  jobs::JobSystemConfig config;
+  config.performance_workers = 2;
+  config.efficiency_workers = 2;
+  config.pin_threads = false;
+  jobs::JobSystem js(config);
+
+  Harness file;
+  if (!file.build(container_desc(container), streamed_settings(0, 0), &js)) {
+    MESSAGE(file.skip);
+    return;
+  }
+  // The host streams are gone, which is the whole point: the residency budget now bounds host
+  // memory the way it already bounded device memory.
+  CHECK(file.data.lod.mesh.quantized.empty());
+  CHECK(file.data.lod.mesh.attributes.empty());
+  CHECK(file.data.lod.mesh.triangles.empty());
+  CHECK(file.data.lod.mesh.vertices.empty());
+  CHECK(file.source.released_bytes() > 0);
+  CHECK(paged_stream_bytes(file.data) == 0);
+
+  const u32 frames = converge(file.renderer, file.data, 6.0f, 256);
+  CapturedFrame file_shot;
+  REQUIRE_MESSAGE(file.renderer.capture(frame_at(file.data, 6.0f, 8), {.color = true, .ids = true},
+                                        file_shot, &error),
+                  error);
+  const StreamStats& stats = file.renderer.streamer().stats();
+  MESSAGE("from file: converged in " << frames << " frames, " << stats.uploads << " uploads, "
+                                     << stats.file_reads << " reads of " << stats.file_bytes
+                                     << " bytes, " << stats.host_bytes_freed << " host bytes freed"
+                                     << ", " << stats.load_waits << " frames waiting on a read");
+  CHECK(stats.from_file);
+  CHECK(stats.file_reads > 0);
+  CHECK(stats.file_bytes > 0);
+  CHECK(stats.host_bytes_freed > 0);
+  CHECK(stats.loads_in_flight == 0);
+  CHECK(stats.pending == 0);
+  // A page is three reads here — quantized positions, attributes, triangles — because this scene
+  // builds no acceleration structures. The float positions are the fourth when it does.
+  CHECK(stats.file_reads == stats.uploads * 3);
+
+  REQUIRE(file_shot.color.size() == memory_shot.color.size());
+  u32 differing = 0;
+  for (u32 i = 0; i < file_shot.color.size(); ++i)
+    differing += file_shot.color[i] != memory_shot.color[i] ? 1u : 0u;
+  u32 id_differing = 0;
+  REQUIRE(file_shot.ids.size() == memory_shot.ids.size());
+  for (u32 i = 0; i < file_shot.ids.size(); ++i)
+    id_differing += file_shot.ids[i] != memory_shot.ids[i] ? 1u : 0u;
+  MESSAGE("covered " << file_shot.covered << " vs " << memory_shot.covered << ", " << differing
+                     << " colour bytes and " << id_differing << " id words differ");
+  CHECK(file_shot.covered == memory_shot.covered);
+  CHECK(differing == 0);
+  CHECK(id_differing == 0);
+}
+
+TEST_CASE("streaming: a scene with no container behind it keeps the in-memory source") {
+  // The procedural heightfield has no file, and a source that could answer for some pages and not
+  // others would be worse than none — the caller's next act is to release the streams the rest
+  // would have to come from. So it is refused with the reason, and the run streams from memory.
+  SceneData data;
+  std::string error;
+  REQUIRE_MESSAGE(load_scene(heightfield_desc(true, 16 * 1024), data, error), error);
+  CHECK(paged_stream_bytes(data) > 0);
+
+  Harness h;
+  if (!h.build(heightfield_desc(true, 16 * 1024), streamed_settings(0, 0))) {
+    MESSAGE(h.skip);
+    return;
+  }
+  jobs::JobSystemConfig config;
+  config.performance_workers = 2;
+  config.efficiency_workers = 2;
+  config.pin_threads = false;
+  jobs::JobSystem js(config);
+  FilePageSource source;
+  CHECK_FALSE(attach_page_source(h.data, h.scene, js, source, &error));
+  MESSAGE("refused: " << error);
+  CHECK(error.find("container") != std::string::npos);
+  // And nothing was released: a refusal leaves the scene exactly as it was, or the run that
+  // followed it would have no pages to copy at all.
+  CHECK(paged_stream_bytes(h.data) > 0);
 }
 
 TEST_CASE("streaming: a request is served under an upload budget of one page a frame") {

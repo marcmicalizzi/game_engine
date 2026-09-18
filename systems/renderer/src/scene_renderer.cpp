@@ -231,7 +231,7 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
   // Geometry residency, when the scene was built streamed. It owns the page manager, the staging
   // ring's bookkeeping and the per-slot feedback buffers; the frame owns the passes that clear the
   // feedback, copy the pages in, and copy the feedback out.
-  if (!streamer_.create(device, scene, desc.frames_in_flight, error)) {
+  if (!streamer_.create(device, scene, desc.frames_in_flight, desc.page_source, error)) {
     destroy();
     return false;
   }

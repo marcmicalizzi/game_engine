@@ -197,8 +197,29 @@ class GpuScene {
   // reports against the whole scene's geometry bytes (`geometry_bytes()`).
   u64 stream_bytes() const noexcept { return stream_bytes_; }
   u64 geometry_bytes() const noexcept { return geometry_bytes_; }
+  // Where each stream begins inside a staged page, and what the page costs in total.
+  //
+  // **There is one formula, and this is it.** Four things read this layout and two of them being
+  // a byte apart is a page that never loads or a mesh drawn out of another's bytes: the staging
+  // ring's allocation, the upload budget's floor (a budget under the largest page never
+  // converges), the copies `GeometryStreamer::record_uploads` records, and the byte offsets a
+  // file-backed page source reads its ranges into. Every sub-block is 16-byte aligned and the
+  // padding is counted, because a run of `3 * triangle_count` bytes of 8-bit indices does not end
+  // on a word and a ring whose blocks drift off alignment costs a split write on every stream
+  // behind it.
+  struct PageStage {
+    u64 clusters = 0;    // the patched `geometry::ClusterDesc` records; always at 0
+    u64 quantized = 0;   // three u16 a vertex
+    u64 attributes = 0;  // geometry::VertexAttributes
+    u64 triangles = 0;   // one packed u32 a triangle
+    u64 vertices = 0;    // float positions, only when the frame builds acceleration structures
+    u64 indices8 = 0;    // and their 8-bit form, packed on the host from `triangles`
+    u64 total = 0;
+    bool ray_tracing = false;
+  };
+  PageStage page_stage_layout(u32 page) const noexcept;
   // Every page's payload bytes for each stream, which is what an upload copies and a budget counts.
-  u64 page_payload_bytes(u32 page) const noexcept;
+  u64 page_payload_bytes(u32 page) const noexcept { return page_stage_layout(page).total; }
   // This frame slot's residency word array, host-visible and mapped: the host writes it, the cull
   // pass reads it, and a slot is not reused until the GPU has finished the frame that had it.
   u32* residency_slot(u32 slot) noexcept;

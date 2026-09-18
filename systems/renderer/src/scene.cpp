@@ -50,7 +50,8 @@ void make_terrain(u32 n, f32 extent, Vector<Vec3>& positions, Vector<u32>& indic
 // relative to, plus the streaming page table the clusters were laid out in. `lod` and `pages`
 // are moved into the container and back out again, so neither is ever copied. A cache that
 // cannot be written is a warning and nothing more: the picture does not depend on it.
-void write_cluster_cache(const std::string& path, const std::string& source,
+// True when the entry landed, which is what tells the caller its pages may be read back out of it.
+bool write_cluster_cache(const std::string& path, const std::string& source,
                          const assets::MeshData& mesh_data, const Vector<i32>& part_material,
                          const Vector<u32>& part_of_cluster, geometry::ClusterLodMesh& lod,
                          geometry::ClusterPages& pages) {
@@ -118,6 +119,7 @@ void write_cluster_cache(const std::string& path, const std::string& source,
   }
   lod = std::move(data.mesh);
   pages = std::move(data.pages);
+  return error.empty();
 }
 
 // Reads one mesh: a `.clusters` container named outright, the derived-data cache entry this
@@ -247,7 +249,8 @@ bool load_source_mesh(const std::string& path, const SceneDesc& desc, SourceMesh
     out.image_dir = std::string(io::parent_path(
         container_data.source_path.empty() ? std::string_view(container)
                                            : std::string_view(container_data.source_path)));
-    out.primitives = 0;  // a container does not record how many were merged into it
+    out.primitives = 0;         // a container does not record how many were merged into it
+    out.container = container;  // where its pages can be read from by range
     // The container's own page table, which is the one its clusters were renumbered into. A
     // container written with `--page-bytes 0` carries none, and the layout is run here instead so
     // that a streamed run never depends on which build wrote the cache entry.
@@ -320,8 +323,12 @@ bool load_source_mesh(const std::string& path, const SceneDesc& desc, SourceMesh
   // Into the cache for the next run, as the same container engine-content build writes: either
   // app fills the cache, either app finds it.
   if (!cache_path.empty()) {
-    write_cluster_cache(cache_path, path, out.data, out.part_material, out.part_of_cluster, lod,
-                        built);
+    if (write_cluster_cache(cache_path, path, out.data, out.part_material, out.part_of_cluster, lod,
+                            built)) {
+      // The entry this load just wrote holds the same bytes in the same order this mesh is now in,
+      // so a streamed run may read its pages back out of it rather than out of host memory.
+      out.container = cache_path;
+    }
   }
   if (desc.stream) pages = std::move(built);
   return true;

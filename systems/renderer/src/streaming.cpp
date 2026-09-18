@@ -10,21 +10,17 @@ namespace {
 
 constexpr u32 k_no_slot = ~u32{0};
 
-// Every sub-block of a staged page starts 16-byte aligned. A copy has no alignment requirement in
-// Vulkan, but a run of `3 * triangle_count` bytes of 8-bit indices does not end on a word, and a
-// ring whose blocks drift off alignment costs a split write on every stream behind it.
-u64 align16(u64 value) noexcept { return (value + 15) & ~u64{15}; }
-
 }  // namespace
 
 GeometryStreamer::~GeometryStreamer() { destroy(); }
 
 bool GeometryStreamer::create(const gfx::Device& device, GpuScene& scene, u32 frames_in_flight,
-                              std::string* error) {
+                              FilePageSource* source, std::string* error) {
   destroy();
   if (!scene.streamed()) return true;
   device_ = &device;
   scene_ = &scene;
+  source_ = source != nullptr && source->valid() ? source : nullptr;
   frames_in_flight_ = frames_in_flight > 0 ? frames_in_flight : 1;
   if (frames_in_flight_ > k_stream_slots) {
     if (error != nullptr) {
@@ -42,6 +38,7 @@ bool GeometryStreamer::create(const gfx::Device& device, GpuScene& scene, u32 fr
   slot_of_page_.assign(pages, k_no_slot);
   page_of_slot_.assign(scene.page_slots(), k_no_slot);
   resident_.assign(pages, u8{0});
+  load_of_page_.assign(pages, FilePageSource::k_no_load);
   free_slots_.reserve(scene.page_slots());
   for (u32 s = scene.page_slots(); s > 0; --s)
     free_slots_.push_back(s - 1);
@@ -94,6 +91,15 @@ bool GeometryStreamer::create(const gfx::Device& device, GpuScene& scene, u32 fr
 }
 
 void GeometryStreamer::destroy() noexcept {
+  // Every outstanding read is given back first: a job still writing into a load buffer must not
+  // outlive the source that owns it, and `release` waits.
+  if (source_ != nullptr) {
+    for (u32 p = 0; p < load_of_page_.size(); ++p) {
+      if (load_of_page_[p] != FilePageSource::k_no_load) source_->release(load_of_page_[p]);
+    }
+  }
+  source_ = nullptr;
+  load_of_page_.clear();
   if (device_ != nullptr) {
     for (gfx::BufferResource& buffer : feedback_)
       gfx::destroy_buffer(*device_, buffer);
@@ -133,11 +139,15 @@ void GeometryStreamer::reset_stats() noexcept {
   stats_.pages_resident = manager_.resident_pages();
   stats_.resident_bytes = manager_.resident_bytes();
   stats_.pending = manager_.pending();
+  stats_.from_file = source_ != nullptr;
+  if (source_ != nullptr) stats_.host_bytes_freed = source_->released_bytes();
 }
 
 bool GeometryStreamer::reset_residency(std::string* error) {
   if (!active()) return true;
   if (!manager_.reset(scene_->data().pages, scene_->page_budget_bytes(), error)) return false;
+  for (u32 p = 0; p < load_of_page_.size(); ++p)
+    cancel_load(p);
   slot_of_page_.assign(scene_->page_count(), k_no_slot);
   page_of_slot_.assign(scene_->page_slots(), k_no_slot);
   resident_.assign(scene_->page_count(), u8{0});
@@ -166,11 +176,10 @@ u64 GeometryStreamer::staged_bytes(u32 page) const noexcept {
 // CLAS records, and `gfx::ClusterDrawParams` is full at its 128-byte push limit while
 // `gfx::MeshDesc` is full at 64. See docs/subsystems/gfx.md for what the indirection costs where
 // it *can* be measured.
-void GeometryStreamer::copy_page(u32 page, u32 slot, u8* dst) {
+void GeometryStreamer::patch_clusters(u32 page, u32 slot, u8* dst) {
   const SceneData& data = scene_->data();
   const geometry::ClusterPageDesc& desc = data.pages.pages[page];
   const geometry::ClusterMesh& mesh = data.lod.mesh;
-  const bool rt = scene_->vertices.buffer != VK_NULL_HANDLE;
   const u32 vertex_base = slot * scene_->slot_vertices();
   const u32 triangle_base = slot * scene_->slot_triangles();
   auto* patched = reinterpret_cast<geometry::ClusterDesc*>(scratch_.data());
@@ -180,24 +189,153 @@ void GeometryStreamer::copy_page(u32 page, u32 slot, u8* dst) {
     cluster.triangle_offset = triangle_base + (cluster.triangle_offset - desc.first_triangle);
     patched[k] = cluster;
   }
-  u64 at = 0;
-  auto put = [&](const void* source, u64 bytes) {
+  const u64 bytes = u64{desc.cluster_count} * sizeof(geometry::ClusterDesc);
+  if (bytes > 0) std::memcpy(dst, patched, static_cast<usize>(bytes));
+}
+
+// The 8-bit form the cluster acceleration structure builds read: three bytes a triangle, packed
+// from the **same words** the rasterizers read — out of the staged page rather than out of a
+// second source — so the two can never disagree about a triangle whichever source the page came
+// from.
+void GeometryStreamer::pack_indices(u32 page, u8* dst) {
+  const geometry::ClusterPageDesc& desc = scene_->data().pages.pages[page];
+  const GpuScene::PageStage stage = scene_->page_stage_layout(page);
+  if (!stage.ray_tracing || desc.triangle_count == 0) return;
+  const auto* triangles = reinterpret_cast<const u32*>(dst + stage.triangles);
+  gfx::pack_cluster_indices(std::span<const u32>(triangles, desc.triangle_count), indices8_);
+  std::memcpy(dst + stage.indices8, indices8_.data(), indices8_.size());
+}
+
+void GeometryStreamer::copy_page(u32 page, u32 slot, u8* dst) {
+  const SceneData& data = scene_->data();
+  const geometry::ClusterPageDesc& desc = data.pages.pages[page];
+  const geometry::ClusterMesh& mesh = data.lod.mesh;
+  const GpuScene::PageStage stage = scene_->page_stage_layout(page);
+  auto put = [&](const void* source, u64 at, u64 bytes) {
     if (bytes > 0) std::memcpy(dst + at, source, static_cast<usize>(bytes));
-    at = align16(at + bytes);
   };
-  put(patched, u64{desc.cluster_count} * sizeof(geometry::ClusterDesc));
-  put(mesh.quantized.data() + u64{desc.first_vertex} * 3, u64{desc.vertex_count} * 3 * sizeof(u16));
-  put(mesh.attributes.data() + desc.first_vertex,
+  patch_clusters(page, slot, dst);
+  put(mesh.quantized.data() + u64{desc.first_vertex} * 3, stage.quantized,
+      u64{desc.vertex_count} * 3 * sizeof(u16));
+  put(mesh.attributes.data() + desc.first_vertex, stage.attributes,
       u64{desc.vertex_count} * sizeof(geometry::VertexAttributes));
-  put(mesh.triangles.data() + desc.first_triangle, u64{desc.triangle_count} * sizeof(u32));
-  if (!rt) return;
-  put(mesh.vertices.data() + desc.first_vertex, u64{desc.vertex_count} * sizeof(Vec3));
-  // The 8-bit form the cluster acceleration structure builds read: three bytes a triangle, packed
-  // from the same words the rasterizers read, so the two never disagree about a triangle.
-  gfx::pack_cluster_indices(
-      std::span<const u32>(mesh.triangles.data() + desc.first_triangle, desc.triangle_count),
-      indices8_);
-  put(indices8_.data(), indices8_.size());
+  put(mesh.triangles.data() + desc.first_triangle, stage.triangles,
+      u64{desc.triangle_count} * sizeof(u32));
+  if (!stage.ray_tracing) return;
+  put(mesh.vertices.data() + desc.first_vertex, stage.vertices,
+      u64{desc.vertex_count} * sizeof(Vec3));
+  pack_indices(page, dst);
+}
+
+void GeometryStreamer::give_back_slot(u32 page) noexcept {
+  const u32 slot = slot_of_page_[page];
+  if (slot == k_no_slot) return;
+  // No frame has ever been told this page is resident, so the slot goes straight back rather than
+  // through the retirement list: nothing on the queue can be reading it.
+  slot_of_page_[page] = k_no_slot;
+  page_of_slot_[slot] = k_no_slot;
+  free_slots_.push_back(slot);
+}
+
+void GeometryStreamer::cancel_load(u32 page) {
+  if (source_ == nullptr || load_of_page_[page] == FilePageSource::k_no_load) return;
+  source_->release(load_of_page_[page]);
+  load_of_page_[page] = FilePageSource::k_no_load;
+  if (resident_[page] == 0) give_back_slot(page);
+}
+
+// A page whose reads are in flight can still be evicted by the manager, because the manager's
+// residency and the pool's are two different things and only the pool's knows about the read.
+// `apply_evictions` cannot see it — it walks the pages the *pool* holds — so the cancellation is
+// its own pass, and it is what keeps a load slot and a pool slot from leaking one per eviction.
+void GeometryStreamer::cancel_stale_loads() {
+  if (source_ == nullptr) return;
+  const geometry::PageResidency& held = manager_.page_residency();
+  for (u32 p = 0; p < scene_->page_count(); ++p) {
+    if (load_of_page_[p] == FilePageSource::k_no_load || held.is_resident(p)) continue;
+    cancel_load(p);
+    ++stats_.stale;
+  }
+}
+
+void GeometryStreamer::prefetch(u32 page) {
+  if (source_ == nullptr || load_of_page_[page] != FilePageSource::k_no_load) return;
+  if (source_->in_flight() >= source_->capacity() || free_slots_.empty()) return;
+  u32 pool_slot = 0;
+  if (!take_slot(page, pool_slot)) return;
+  u32 handle = FilePageSource::k_no_load;
+  if (!source_->begin(page, handle)) {
+    give_back_slot(page);
+    return;
+  }
+  load_of_page_[page] = handle;
+}
+
+// One attempt to put a page in the pool. `remaining` is the frame's upload budget over what is
+// actually copied; `requested` is the same budget over what is newly asked for, so a frame can
+// neither copy nor start more than one budget's worth.
+GeometryStreamer::Stage GeometryStreamer::stage_page(u32 page, u8* ring, u64 ring_base, u64& at,
+                                                     u64& remaining, u64& requested) {
+  const u64 bytes = staged_bytes(page);
+  if (source_ == nullptr) {
+    if (bytes > remaining || !free_one_slot()) return Stage::blocked;
+    u32 pool_slot = 0;
+    if (!take_slot(page, pool_slot)) return Stage::blocked;
+    copy_page(page, pool_slot, ring + at);
+    uploads_.push_back(Upload{page, pool_slot, ring_base + at});
+    at += bytes;
+    remaining -= bytes;
+    resident_[page] = 1;
+    stats_.uploads_bytes += bytes;
+    ++stats_.uploads;
+    return Stage::done;
+  }
+
+  u32 handle = load_of_page_[page];
+  if (handle == FilePageSource::k_no_load) {
+    if (bytes > requested) return Stage::blocked;
+    if (source_->in_flight() >= source_->capacity()) return Stage::blocked;
+    if (!free_one_slot()) return Stage::blocked;
+    u32 pool_slot = 0;
+    if (!take_slot(page, pool_slot)) return Stage::blocked;
+    if (!source_->begin(page, handle)) {
+      give_back_slot(page);
+      return Stage::blocked;
+    }
+    load_of_page_[page] = handle;
+    requested -= bytes;
+    ++stats_.load_waits;
+    return Stage::pending;
+  }
+  if (!source_->done(handle)) {
+    ++stats_.load_waits;
+    return Stage::pending;
+  }
+  if (!source_->complete(handle)) {
+    // A read that failed or came back short. The page is dropped rather than staged: the pool
+    // would otherwise hold this page's cluster descriptors over whatever was in the buffer.
+    ENGINE_LOG_WARN(log_renderer, "geometry page read failed", log::field("page", page));
+    cancel_load(page);
+    return Stage::blocked;
+  }
+  if (bytes > remaining) return Stage::pending;  // the bytes are here; the budget is not
+  const u32 pool_slot = slot_of_page_[page];
+  u8* dst = ring + at;
+  std::memcpy(dst, source_->bytes(handle), static_cast<usize>(bytes));
+  // The two blocks the host owns, written over whatever the read left: the descriptors have to
+  // carry *this* slot's offsets, and the 8-bit indices are packed from the triangles that just
+  // landed rather than read a second time.
+  patch_clusters(page, pool_slot, dst);
+  pack_indices(page, dst);
+  source_->release(handle);
+  load_of_page_[page] = FilePageSource::k_no_load;
+  uploads_.push_back(Upload{page, pool_slot, ring_base + at});
+  at += bytes;
+  remaining -= bytes;
+  resident_[page] = 1;
+  stats_.uploads_bytes += bytes;
+  ++stats_.uploads;
+  return Stage::done;
 }
 
 void GeometryStreamer::consume(u32 slot) {
@@ -230,27 +368,14 @@ u64 GeometryStreamer::prepare(u32 slot) {
   // reshuffle of the pool.
   stats_.evictions += manager_.evict_to_budget();
   apply_evictions();
+  cancel_stale_loads();
 
-  u64 remaining = scene_->upload_budget_bytes();
-  u8* ring =
-      static_cast<u8*>(scene_->page_stage.mapped) + u64{slot} * scene_->upload_budget_bytes();
+  const u64 budget = scene_->upload_budget_bytes();
+  u64 remaining = budget;
+  u64 requested = budget;
+  const u64 ring_base = u64{slot} * budget;
+  u8* ring = static_cast<u8*>(scene_->page_stage.mapped) + ring_base;
   u64 at = 0;
-  // Stage one page: take a slot, patch its descriptors into the ring, and record the copy. False
-  // when the frame's byte budget or the pool is spent, which is the whole of the back pressure.
-  auto stage = [&](u32 page) {
-    const u64 bytes = staged_bytes(page);
-    if (bytes > remaining || free_slots_.empty()) return false;
-    u32 pool_slot = 0;
-    if (!take_slot(page, pool_slot)) return false;
-    copy_page(page, pool_slot, ring + at);
-    uploads_.push_back(Upload{page, pool_slot, u64{slot} * scene_->upload_budget_bytes() + at});
-    at += bytes;
-    remaining -= bytes;
-    resident_[page] = 1;
-    stats_.uploads_bytes += bytes;
-    ++stats_.uploads;
-    return true;
-  };
 
   // **The manager's residency and the pool's are two different things**, and the gap between them
   // is the upload budget. A page the manager holds but the pool does not is invisible to the cull
@@ -260,26 +385,40 @@ u64 GeometryStreamer::prepare(u32 slot) {
   // them, and anything admitted in a frame whose budget ran out. Both are served here, in page
   // order, which is coarse first.
   const geometry::PageResidency& held = manager_.page_residency();
-  bool gap = false;
+  bool gap = false;      // this frame stages no page past here
+  bool blocked = false;  // and admits nothing new either
   // In **page order**, which is coarse first and — because the layout puts a cluster's children
   // after it — is also parent before child. That is what keeps the pool ancestor-closed the way the
   // manager keeps its own residency closed: within a frame a parent page is always filled before
   // any page it refines into, and across frames the budget runs out at a page whose children are
   // later still and therefore also unfilled.
+  //
+  // Once there is a gap the walk goes on, but only to **start the reads** of the pages behind it.
+  // That is what keeps a file-backed source from converging at one page per read latency: the
+  // disk works on the queue while the frame waits for the page at the head of it. Nothing behind
+  // the gap is staged, so the page order — and with it the pool's ancestor-closure — holds.
   for (u32 p = 0; p < scene_->page_count(); ++p) {
     if (resident_[p] != 0 || !held.is_resident(p)) continue;
-    if (!free_one_slot() || !stage(p)) {
-      gap = true;
-      break;
+    if (gap) {
+      prefetch(p);
+      continue;
     }
+    const Stage staged = stage_page(p, ring, ring_base, at, remaining, requested);
+    if (staged == Stage::done) continue;
+    gap = true;
+    // **Pending is not blocked.** A page whose reads are on their way stops *this* page being
+    // staged and nothing else: the manager may go on admitting, because what keeps the pool
+    // ancestor-closed is the order pages are staged in, which the loop above enforces whatever
+    // the manager holds. Blocked — no budget, no pool slot, no load capacity — does stop it.
+    blocked = blocked || staged == Stage::blocked;
   }
-  // **Nothing new while the pool is behind the manager.** The manager's ancestor-closure keeps a
-  // parent resident while a child is, but the *pool* is what the cull pass reads, and a parent
-  // still waiting for its bytes with a child already in a slot is exactly the hole the invariant
-  // exists to prevent — the child draws over nothing. Admitting more would make that worse, and
-  // the queue has not lost anything: it is served next frame, one upload budget later.
+  // **Nothing new while the pool is behind the manager and cannot catch up.** The manager's
+  // ancestor-closure keeps a parent resident while a child is, but the *pool* is what the cull
+  // pass reads, and a parent still waiting for its bytes with a child already in a slot is exactly
+  // the hole the invariant exists to prevent — the child draws over nothing. The queue has not
+  // lost anything: it is served next frame, one upload budget later.
   u32 page = 0;
-  while (!gap && remaining > 0 && manager_.next_request(page)) {
+  while (!blocked && remaining > 0 && requested > 0 && manager_.next_request(page)) {
     // A request the queue has outlived: the page that asked for it was evicted while it waited, so
     // loading it now would put fine geometry back under a hole. It is dropped rather than served;
     // a view that still wants it is still drawing its parent and will ask again next frame.
@@ -291,7 +430,7 @@ u64 GeometryStreamer::prepare(u32 slot) {
     if (staged_bytes(page) > remaining) break;  // next frame; the request stays at the heap's head
     if (!free_one_slot()) break;                // the pool is full and nothing may go
     manager_.admit(1);
-    if (!stage(page)) break;
+    if (stage_page(page, ring, ring_base, at, remaining, requested) == Stage::blocked) break;
   }
 
   // This frame's residency words. Writing the whole array is `page_count` words — 6 KB on the
@@ -304,10 +443,17 @@ u64 GeometryStreamer::prepare(u32 slot) {
   stats_.pages_resident = manager_.resident_pages();
   stats_.resident_bytes = manager_.resident_bytes();
   stats_.pending = manager_.pending();
+  if (source_ != nullptr) {
+    stats_.file_reads = source_->reads();
+    stats_.file_bytes = source_->bytes_read();
+    stats_.loads_in_flight = source_->in_flight();
+    stats_.host_bytes_freed = source_->released_bytes();
+  }
   // Convergence: an interval starts the first frame anything is outstanding and ends the first
   // frame nothing is, so the number a summary reports is how long the last one took rather than a
-  // total over the run.
-  const bool busy = stats_.pending > 0 || !uploads_.empty();
+  // total over the run. A read still in flight counts as outstanding, or a run measured against a
+  // file-backed source would report itself converged while a page was still on its way.
+  const bool busy = stats_.pending > 0 || !uploads_.empty() || stats_.loads_in_flight > 0;
   if (busy) {
     converging_ = true;
     ++converge_frames_;
@@ -409,28 +555,29 @@ void GeometryStreamer::record_uploads(VkCommandBuffer commands) {
   const bool rt = scene_->vertices.buffer != VK_NULL_HANDLE;
   for (const Upload& upload : uploads_) {
     const geometry::ClusterPageDesc& desc = data.pages.pages[upload.page];
-    u64 at = upload.stage;
-    auto copy = [&](VkBuffer dst, u64 dst_offset, u64 bytes) {
-      if (bytes > 0) {
-        const VkBufferCopy region{at, dst_offset, bytes};
-        vkCmdCopyBuffer(commands, scene_->page_stage.buffer, dst, 1, &region);
-      }
-      at = align16(at + bytes);
+    // The same layout the page was staged into, from the one function that knows it.
+    const GpuScene::PageStage stage = scene_->page_stage_layout(upload.page);
+    auto copy = [&](VkBuffer dst, u64 src_offset, u64 dst_offset, u64 bytes) {
+      if (bytes == 0) return;
+      const VkBufferCopy region{upload.stage + src_offset, dst_offset, bytes};
+      vkCmdCopyBuffer(commands, scene_->page_stage.buffer, dst, 1, &region);
     };
     const u64 vertex_base = u64{upload.slot} * scene_->slot_vertices();
     const u64 triangle_base = u64{upload.slot} * scene_->slot_triangles();
-    copy(scene_->clusters.buffer, u64{desc.first_cluster} * sizeof(geometry::ClusterDesc),
+    copy(scene_->clusters.buffer, stage.clusters,
+         u64{desc.first_cluster} * sizeof(geometry::ClusterDesc),
          u64{desc.cluster_count} * sizeof(geometry::ClusterDesc));
-    copy(scene_->quantized.buffer, vertex_base * 3 * sizeof(u16),
+    copy(scene_->quantized.buffer, stage.quantized, vertex_base * 3 * sizeof(u16),
          u64{desc.vertex_count} * 3 * sizeof(u16));
-    copy(scene_->attributes.buffer, vertex_base * sizeof(geometry::VertexAttributes),
+    copy(scene_->attributes.buffer, stage.attributes,
+         vertex_base * sizeof(geometry::VertexAttributes),
          u64{desc.vertex_count} * sizeof(geometry::VertexAttributes));
-    copy(scene_->triangles.buffer, triangle_base * sizeof(u32),
+    copy(scene_->triangles.buffer, stage.triangles, triangle_base * sizeof(u32),
          u64{desc.triangle_count} * sizeof(u32));
     if (!rt) continue;
-    copy(scene_->vertices.buffer, vertex_base * sizeof(Vec3),
+    copy(scene_->vertices.buffer, stage.vertices, vertex_base * sizeof(Vec3),
          u64{desc.vertex_count} * sizeof(Vec3));
-    copy(scene_->indices8.buffer, triangle_base * 3, u64{desc.triangle_count} * 3);
+    copy(scene_->indices8.buffer, stage.indices8, triangle_base * 3, u64{desc.triangle_count} * 3);
   }
 }
 
