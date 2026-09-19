@@ -25,6 +25,8 @@
 
 **Testing.** `tools/dev.ps1 test -Filter protocol`. Framing and error paths; the method catalogue; the Phase 0 exit criterion end to end over the dispatcher (open, create, apply, objects, get, atomic rejection, undo, redo, redo-tail drop, layers, diff, validate, close, reopen in a fresh manager); a layer added with `edit: false` that leaves the edit layer alone in the session and after reopening; a three-way merge of three override layers with both kinds of conflict, undone and redone, resolved toward theirs into a second layer, and refused for a missing layer, an empty output layer, and an unknown `prefer`; tunables, log tail, and schema discovery.
 
+**`gpu.adapters` grew the same additive way.** `engine.gfx.AdapterInfo` is at version 2 with `requirements: DeviceRequirement[]` and `verdict: DeviceVerdict` `@since(2)`, so a client that predates them reads the result it always read, and `DeviceRequirement`, `DeviceClamp`, `DeviceVerdict` and the `RequirementLevel` enum are new types of their own. The answer is the one `Device::create()` would give — the check and the report walk one table in `domain/gfx/requirements.h` ([gfx](gfx.md#what-a-device-has-to-have)) — which is what makes it worth sending back from a machine nobody here can log in to.
+
 **Not yet.** Leases and proposal promotion (06 §6.5), long-running operations (06 §6.8), the MCP bridge, sockets, authentication, streaming of large results. Method versioning follows schema versioning: adding a field to a params struct is additive; anything else is a new method name.
 
 ## Methods an app registers, and `render.*`

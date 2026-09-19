@@ -60,13 +60,16 @@ swapchain test skip, and `engine-view` exits 3, which its test treats as a skip.
 does the same when it runs as a service (see Troubleshooting).
 
 Two things the first run on each machine settles, because no one here has run this engine on Maxwell
-or Pascal yet. The vertex path needs `shaderBufferInt64Atomics` for the visibility buffer's 64-bit
-atomic max, and `vertex_path_tests.cpp` skips without it; the adapters report and the CTest log say
-whether NVIDIA's driver offers it there. And `Device::create()` requires Vulkan 1.3 with dynamic
-rendering, synchronization2, maintenance4, buffer device address, descriptor indexing, timeline
-semaphores, scalar block layout, host query reset, and indirect-count draws; if any of it is
-missing, every GPU test reports `device unavailable` with the reason and still passes, which is why
-the log matters more than the exit status on these two.
+or Pascal yet — and **`gpu.adapters` now answers both of them by itself**, before a single test runs.
+Its result carries the whole requirements table checked against each device and a verdict per device
+([gfx](../subsystems/gfx.md#what-a-device-has-to-have)): `verdict.usable` says whether
+`Device::create()` would succeed, `verdict.blocking` says in plain words why not, and
+`verdict.degraded` says what will not run although it does — including the one that decides these two
+machines, that the visibility buffer is a 64-bit atomic max per pixel and every rasterizer writes it,
+so a card without `shaderBufferInt64Atomics` and without mesh shaders cannot draw a frame at all.
+`vertex_path_tests.cpp` skips without that feature; the adapters report says in advance whether it
+will. If a Required row fails, every GPU test reports `device unavailable` with the reason and still
+passes, which is why the log matters more than the exit status on these two.
 
 ## Machine prerequisites
 
@@ -135,12 +138,16 @@ On Windows `vulkaninfo.exe` comes with the Vulkan SDK rather than the driver, so
 report instead. It works on both, and needs nothing installed beyond a built tree:
 
 ```powershell
-build/msvc-release/bin/engine-cli gpu.adapters          # Windows
-build/linux-clang-debug/bin/engine-cli gpu.adapters     # Linux
+build/msvc-release/bin/engine-cli gpu.adapters                      # Windows
+build/msvc-release/bin/engine-cli gpu.adapters --report gpu.json    # the same, as a file to send back
+build/linux-clang-debug/bin/engine-cli gpu.adapters                 # Linux
 ```
 
-`"available": true` with the GPU's name, `"tier": "raster"`, and `VK_EXT_mesh_shader: false` is what
-a correctly set up baseline machine looks like. `"available": false` carries the reason in `"error"`.
+`"available": true` with the GPU's name, `"tier": "raster"`, `VK_EXT_mesh_shader: false` and
+`"verdict": {"usable": true, "tier": "raster"}` is what a correctly set up baseline machine looks
+like. `"available": false` carries the reason in `"error"`, and a device the renderer would refuse
+carries its reasons in `verdict.blocking` — one sentence per unmet requirement, each naming what in
+the engine needs it.
 The smoke scripts print this on every run and warn when it comes back false; `-RequireAdapters` /
 `--require-adapters` turns that warning into a failure, which is worth using once the machines are
 known good, so a driver that stops working does not look like a quiet pass.

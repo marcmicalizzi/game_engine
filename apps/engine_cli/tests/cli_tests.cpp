@@ -8,6 +8,8 @@
 #include <test_temp_dir.h>
 
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -69,6 +71,42 @@ TEST_CASE("cli: engine.info and engine.methods through a spawned host") {
   CHECK(methods.exit_code == 0);
   CHECK(methods.stdout_text.find('\n') == methods.stdout_text.size() - 1);
   CHECK(at(methods.result, "methods").size() >= 20);
+}
+
+TEST_CASE("cli: --report writes the result as a file to send back") {
+  // The flag exists for `gpu.adapters` on a machine nobody here can log in to
+  // (docs/ci/self-hosted-runners.md), but it is generic, so the case uses a method that answers
+  // the same on every machine, GPU or not.
+  test::TempDir tmp("engine_cli_report");
+  REQUIRE(tmp.ok());
+  const std::string path = tmp.file("report.json");
+  Run run = cli({"--report", path, "engine.info"});
+  CHECK(run.exit_code == 0);
+  CHECK_FALSE(run.stdout_text.empty());
+  REQUIRE(std::filesystem::exists(path));
+
+  std::string text;
+  {
+    std::ifstream file(path, std::ios::binary);
+    REQUIRE(file.good());
+    text.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+  }
+  JsonValue report;
+  REQUIRE(parse_json(text, report).ok);
+  CHECK(at(report, "tool") == JsonValue("engine-cli"));
+  CHECK(at(report, "method") == JsonValue("engine.info"));
+  // "2026-09-19T07:54:11Z": a file read weeks later says when it was taken.
+  const std::string when(at(report, "generated_utc").as_string());
+  CHECK(when.size() == 20);
+  CHECK(when[10] == 'T');
+  CHECK(when[19] == 'Z');
+  // The result is the same document the caller saw on stdout.
+  CHECK(at(report, "result") == run.result);
+
+  // A directory that does not exist is a failure, and the answer still reaches stdout first.
+  Run unwritable = cli({"--report", tmp.file("no/such/dir/report.json"), "engine.info"});
+  CHECK(unwritable.exit_code == 1);
+  CHECK_FALSE(unwritable.stdout_text.empty());
 }
 
 TEST_CASE("cli: errors exit non-zero and print nothing on stdout") {

@@ -6,6 +6,7 @@
 #include <core/platform/process.h>
 
 #include <cstdio>
+#include <ctime>
 #include <string>
 #include <string_view>
 
@@ -22,9 +23,12 @@ const char* k_usage =
     "  --name <name>      with --create: the document's name\n"
     "  --mount <spec>     forwarded to engine-host (<scheme>=<dir>[:rw]); repeatable\n"
     "  --compact          print the result on one line\n"
+    "  --report <file>    also write the result to this file as one JSON document, with the\n"
+    "                     method and a UTC timestamp around it: a file to send back\n"
     "\n"
     "examples:\n"
     "  engine-cli engine.methods\n"
+    "  engine-cli gpu.adapters --report adapters.json\n"
     "  engine-cli --doc ./world --create session.info\n"
     "  engine-cli --doc ./world doc.apply "
     "'{\"commands\":[...],\"attribution\":{\"actor\":\"me\"}}'\n"
@@ -77,12 +81,60 @@ struct Client {
   }
 };
 
+// "2026-09-19T07:54:11Z", or an empty string if the clock cannot be read. The report is a file
+// somebody mails back weeks later, so it says when it was taken.
+std::string utc_now() {
+  const std::time_t now = std::time(nullptr);
+  if (now == static_cast<std::time_t>(-1)) return {};
+  std::tm parts{};
+#if defined(_WIN32)
+  if (gmtime_s(&parts, &now) != 0) return {};
+#else
+  if (gmtime_r(&now, &parts) == nullptr) return {};
+#endif
+  char text[32];
+  if (std::strftime(text, sizeof(text), "%Y-%m-%dT%H:%M:%SZ", &parts) == 0) return {};
+  return text;
+}
+
+// One JSON document: what was asked, when, and the answer. Generic on purpose — any method's
+// result can be sent back this way — and the one it exists for is `gpu.adapters`, whose result
+// carries the whole requirements table and a verdict per device on the machine.
+bool write_report(const std::string& path, std::string_view method, const JsonValue& result) {
+  JsonValue envelope = JsonValue::object();
+  envelope.set("tool", JsonValue("engine-cli"));
+  envelope.set("method", JsonValue(method));
+  const std::string when = utc_now();
+  if (!when.empty()) envelope.set("generated_utc", JsonValue(when));
+  envelope.set("result", result);
+  std::string text = write_json(envelope, JsonWriteOptions{.pretty = true});
+  text.push_back('\n');
+  std::FILE* file = nullptr;
+#if defined(_MSC_VER)
+  if (fopen_s(&file, path.c_str(), "wb") != 0) file = nullptr;
+#else
+  file = std::fopen(path.c_str(), "wb");
+#endif
+  if (file == nullptr) {
+    std::fprintf(stderr, "engine-cli: cannot write report to '%s'\n", path.c_str());
+    return false;
+  }
+  const bool written = std::fwrite(text.data(), 1, text.size(), file) == text.size();
+  const bool closed = std::fclose(file) == 0;
+  if (!written || !closed) {
+    std::fprintf(stderr, "engine-cli: report to '%s' was not fully written\n", path.c_str());
+    return false;
+  }
+  return true;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
   std::string host_path;
   std::string doc_dir;
   std::string doc_name;
+  std::string report_path;
   bool create = false;
   bool compact = false;
   Vector<std::string> mounts;
@@ -108,6 +160,8 @@ int main(int argc, char** argv) {
       if (!value(doc_dir)) return 2;
     } else if (a == "--name") {
       if (!value(doc_name)) return 2;
+    } else if (a == "--report") {
+      if (!value(report_path)) return 2;
     } else if (a == "--mount") {
       std::string m;
       if (!value(m)) return 2;
@@ -192,6 +246,9 @@ int main(int argc, char** argv) {
       std::string text = write_json(result, JsonWriteOptions{.pretty = !compact});
       text.push_back('\n');
       std::fwrite(text.data(), 1, text.size(), stdout);
+      // The report is written after the result has printed, so a failure to write it never
+      // costs the caller the answer it already has.
+      if (!report_path.empty() && !write_report(report_path, method, result)) exit_code = 1;
     }
   }
   client.host.close_stdin();

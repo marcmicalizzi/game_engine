@@ -6,16 +6,22 @@
 // nothing above the RHI sees a Vulkan handle. gfx internals and the RHI's own tests reach the
 // handles through domain/gfx/vulkan.h.
 //
-// Required features (creation fails without them): Vulkan 1.3 dynamic rendering,
-// synchronization2, maintenance4; 1.2 buffer device address, descriptor indexing, timeline
-// semaphores, scalar block layout, host query reset, draw indirect count. Optional features are
-// enabled when the device offers them and reported in DeviceFeatures so systems can choose a
-// path once rather than probing.
+// What creation requires, and what it merely enables, is **one table** in
+// domain/gfx/requirements.h: API version, core features, extensions, and the limits the renderer
+// depends on, each with the reason it is there. `create()` walks that table and refuses a device
+// whose Required rows fail, naming them; `enumerate_adapters()` walks the same table and puts
+// the result in `AdapterInfo::requirements` and `AdapterInfo::verdict`, so a report from a
+// machine nobody here owns says exactly what creation would have said. Optional rows are enabled
+// when the device offers them and reported in `DeviceFeatures` so systems choose a path once
+// rather than probing.
 
 #include <core/base/macros.h>
 #include <core/base/types.h>
+#include <core/containers/vector.h>
 #include <domain/gfx/adapter.h>
+#include <domain/gfx/requirements.h>
 
+#include <span>
 #include <string>
 
 namespace engine::gfx {
@@ -32,6 +38,13 @@ struct DeviceOptions {
   // (window::Window::vulkan_instance_extensions()); creation fails when one is missing.
   const char* const* instance_extensions = nullptr;
   u32 instance_extension_count = 0;
+  // Report this device as a weaker one (domain/gfx/requirements.h). The overridden caps are what
+  // the requirements are checked against, what the bindless set is clamped to, *and* what the
+  // enabled feature chain is built from — so a profile that removes mesh shaders creates a
+  // device that really has none. This is how a machine with an RTX 5090 in it exercises the
+  // refusal a 2014 Kepler laptop would get and the clamping a Surface Pro would get; nothing in
+  // the engine sets it.
+  DeviceOverrides overrides;
 };
 
 // What the created device has enabled, beyond the required core features.
@@ -81,13 +94,23 @@ class Device {
   ENGINE_NON_COPYABLE(Device);
 
   // Creates instance, logical device, queues, and allocator. False with `error` when there is
-  // no loader, no driver, no suitable adapter, or a required feature is missing.
+  // no loader, no driver, no suitable adapter, or a Required row of the requirements table
+  // fails — in which case `error` names the rows and `verdict()` holds all of them in full,
+  // because "a required Vulkan 1.2/1.3 feature is missing" is not an answer anyone can act on.
   bool create(const DeviceOptions& options, std::string* error = nullptr);
   void destroy() noexcept;
   bool valid() const noexcept { return impl_ != nullptr; }
 
   const AdapterInfo& adapter() const noexcept;
   const DeviceFeatures& features() const noexcept;
+  // What the requirements were checked against: the device's own properties, with
+  // DeviceOptions::overrides applied. The bindless set clamps itself to these too, so an
+  // override reaches every consumer rather than only the report.
+  const DeviceCaps& caps() const noexcept;
+  // Every row of the table for this device, in table order.
+  std::span<const DeviceRequirement> requirements() const noexcept;
+  // Tier, what blocks it, what is degraded, and what the bindless set was clamped to.
+  const DeviceVerdict& verdict() const noexcept;
   // Family indices; compute and transfer may equal graphics on devices without dedicated
   // queues.
   u32 graphics_family() const noexcept;
@@ -107,6 +130,11 @@ class Device {
  private:
   struct Impl;
   Impl* impl_ = nullptr;
+  // Outside Impl on purpose: a `create()` that refused the device destroys Impl on the way out,
+  // and the answer to "why did it refuse" has to outlive that.
+  DeviceCaps caps_;
+  Vector<DeviceRequirement> requirements_;
+  DeviceVerdict verdict_;
 };
 
 }  // namespace engine::gfx

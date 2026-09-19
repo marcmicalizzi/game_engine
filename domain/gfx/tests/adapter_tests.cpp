@@ -1,4 +1,5 @@
 #include <domain/gfx/adapter.h>
+#include <domain/gfx/requirements.h>
 
 #include <doctest/doctest.h>
 
@@ -29,6 +30,13 @@ TEST_CASE("gfx: adapter enumeration reports devices or a reason") {
     CHECK(a.api_version[0] == '1');
     CHECK(a.extensions.size() == gfx::extensions_of_interest().size());
     CHECK((a.tier == "raster" || a.tier == "rt" || a.tier == "rt-cluster"));
+    // `tier` is what the hardware advertises; the verdict is whether the renderer would run on
+    // it, which is the sentence somebody setting up a new machine needs (see gfx.md).
+    CHECK_FALSE(a.requirements.empty());
+    CHECK((a.verdict.tier == a.tier || a.verdict.tier == "none"));
+    CHECK(a.verdict.usable == (a.verdict.tier != "none"));
+    CHECK(a.verdict.blocking.empty() == a.verdict.usable);
+    MESSAGE(gfx::describe_requirements({a.requirements.data(), a.requirements.size()}));
     CHECK_FALSE(a.queue_families.empty());
     bool graphics = false;
     for (const gfx::QueueFamilyInfo& q : a.queue_families)

@@ -16,7 +16,8 @@ engine_shaders(NAME gfx SOURCES shaders/cluster_mesh.slang shaders/cluster_cull.
 engine_module(NAME gfx LAYER domain
   DEPS base containers memory hash json log math platform schemas io
   EXTERNAL_DEPS volk::volk GPUOpen::VulkanMemoryAllocator
-  SOURCES src/adapter.cpp src/device.cpp src/vma.cpp src/frame.cpp src/render_graph.cpp
+  SOURCES src/adapter.cpp src/device.cpp src/device_caps.cpp src/requirements.cpp src/vma.cpp
+          src/frame.cpp src/render_graph.cpp
           src/bindless.cpp src/swapchain.cpp src/capture.cpp src/shader_library.cpp
           src/gpu_timer.cpp src/acceleration.cpp src/cluster_acceleration.cpp)
 target_link_libraries(engine_gfx PUBLIC engine_shaders_gfx)
@@ -27,7 +28,8 @@ target_include_directories(engine_gfx SYSTEM PUBLIC
   $<TARGET_PROPERTY:VulkanMemoryAllocator,INTERFACE_INCLUDE_DIRECTORIES>)
 
 engine_module_tests(NAME gfx
-  SOURCES tests/adapter_tests.cpp tests/device_tests.cpp tests/size_table.cpp)
+  SOURCES tests/adapter_tests.cpp tests/device_tests.cpp tests/requirements_tests.cpp
+          tests/size_table.cpp)
 
 # Shaders used by the RHI's own tests: the first .slang through the toolchain.
 engine_shaders(NAME gfx_tests

@@ -120,6 +120,11 @@ const DeviceFeatures& Device::features() const noexcept {
   ENGINE_ASSERT(impl_ != nullptr, "Device::features: no device");
   return impl_->features;
 }
+const DeviceCaps& Device::caps() const noexcept { return caps_; }
+std::span<const DeviceRequirement> Device::requirements() const noexcept {
+  return {requirements_.data(), requirements_.size()};
+}
+const DeviceVerdict& Device::verdict() const noexcept { return verdict_; }
 u32 Device::graphics_family() const noexcept {
   return impl_ != nullptr ? impl_->graphics_family : 0;
 }
@@ -165,6 +170,9 @@ void Device::wait_idle() noexcept {
 
 bool Device::create(const DeviceOptions& options, std::string* error) {
   ENGINE_VERIFY(impl_ == nullptr, "Device::create: already created");
+  caps_ = DeviceCaps{};
+  requirements_.clear();
+  verdict_ = DeviceVerdict{};
 
   Vector<AdapterInfo> adapters;
   if (!enumerate_adapters(adapters, error)) return false;
@@ -300,6 +308,35 @@ bool Device::create(const DeviceOptions& options, std::string* error) {
     queue_infos.push_back(q);
   }
 
+  // ---- the requirements table decides whether this device is usable at all ----
+  //
+  // Read once, override, check, and then build the enabled chain from the *same* caps, so that
+  // a profile which pretends a feature is absent creates a device that really lacks it and the
+  // report cannot describe a device other than the one that was made.
+  read_device_caps(h.physical, caps_);
+  std::string override_error;
+  if (!apply_overrides(caps_, options.overrides, &override_error)) {
+    if (error != nullptr) *error = "DeviceOptions::overrides: " + override_error;
+    impl_ = impl;
+    destroy();
+    return false;
+  }
+  evaluate_requirements(caps_, requirements_);
+  device_verdict(caps_, requirements(), verdict_);
+  if (!verdict_.usable) {
+    if (error != nullptr) {
+      *error = "this device cannot run the renderer (" + std::to_string(verdict_.blocking.size()) +
+               " requirement" + (verdict_.blocking.size() == 1 ? "" : "s") + " unmet): ";
+      for (u32 i = 0; i < verdict_.blocking.size(); ++i) {
+        if (i != 0) error->append("; ");
+        error->append(verdict_.blocking[i]);
+      }
+    }
+    impl_ = impl;
+    destroy();
+    return false;
+  }
+
   // ---- extensions ----
   ExtensionSet device_extensions;
   u32 device_extension_count = 0;
@@ -307,195 +344,159 @@ bool Device::create(const DeviceOptions& options, std::string* error) {
   device_extensions.available.resize(device_extension_count);
   vkEnumerateDeviceExtensionProperties(h.physical, nullptr, &device_extension_count,
                                        device_extensions.available.data());
-  impl->features.presentation = device_extensions.enable_if_available("VK_KHR_swapchain");
-  const bool ext_mesh = device_extensions.enable_if_available("VK_EXT_mesh_shader");
+  auto enable_ext = [&](const char* name, u32 wanted) {
+    return wanted != 0 && device_extensions.enable_if_available(name);
+  };
+  impl->features.presentation = enable_ext("VK_KHR_swapchain", caps_.swapchain);
+  const bool ext_mesh = enable_ext("VK_EXT_mesh_shader", caps_.mesh_shader);
   const bool ext_deferred =
-      device_extensions.enable_if_available("VK_KHR_deferred_host_operations");
+      enable_ext("VK_KHR_deferred_host_operations", caps_.deferred_host_operations);
   const bool ext_as =
-      ext_deferred && device_extensions.enable_if_available("VK_KHR_acceleration_structure");
+      ext_deferred && enable_ext("VK_KHR_acceleration_structure", caps_.acceleration_structure);
   const bool ext_rt =
-      ext_as && device_extensions.enable_if_available("VK_KHR_ray_tracing_pipeline");
-  const bool ext_rq = ext_as && device_extensions.enable_if_available("VK_KHR_ray_query");
+      ext_as && enable_ext("VK_KHR_ray_tracing_pipeline", caps_.ray_tracing_pipeline);
+  const bool ext_rq = ext_as && enable_ext("VK_KHR_ray_query", caps_.ray_query);
   if (ext_as) {
     device_extensions.enable_if_available("VK_KHR_ray_tracing_maintenance1");
     device_extensions.enable_if_available("VK_KHR_ray_tracing_position_fetch");
   }
-  const bool ext_cluster =
-      ext_as && device_extensions.enable_if_available("VK_NV_cluster_acceleration_structure");
+  const bool ext_cluster = ext_as && enable_ext("VK_NV_cluster_acceleration_structure",
+                                                caps_.cluster_acceleration_structure);
   const bool ext_descriptor_buffer =
-      device_extensions.enable_if_available("VK_EXT_descriptor_buffer");
+      enable_ext("VK_EXT_descriptor_buffer", caps_.descriptor_buffer);
   const bool ext_decompression =
-      device_extensions.enable_if_available("VK_EXT_memory_decompression");
+      enable_ext("VK_EXT_memory_decompression", caps_.memory_decompression);
   // No feature struct and no device functions of its own: enabling it is what makes
   // vkGetPhysicalDeviceMemoryProperties2 fill VkPhysicalDeviceMemoryBudgetPropertiesEXT.
-  impl->features.memory_budget = device_extensions.enable_if_available("VK_EXT_memory_budget");
+  impl->features.memory_budget = enable_ext("VK_EXT_memory_budget", caps_.memory_budget);
 
-  // ---- features: query, then enable what is supported ----
-  VkPhysicalDeviceVulkan11Features v11{};
-  v11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
-  VkPhysicalDeviceVulkan12Features v12{};
-  v12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
-  VkPhysicalDeviceVulkan13Features v13{};
-  v13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
-  VkPhysicalDeviceMeshShaderFeaturesEXT mesh{};
-  mesh.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT;
-  VkPhysicalDeviceAccelerationStructureFeaturesKHR as{};
-  as.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR;
-  VkPhysicalDeviceRayTracingPipelineFeaturesKHR rt{};
-  rt.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR;
-  VkPhysicalDeviceRayQueryFeaturesKHR rq{};
-  rq.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR;
-  VkPhysicalDeviceDescriptorBufferFeaturesEXT db{};
-  db.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT;
-#if defined(VK_NV_cluster_acceleration_structure)
-  VkPhysicalDeviceClusterAccelerationStructureFeaturesNV cluster{};
-  cluster.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CLUSTER_ACCELERATION_STRUCTURE_FEATURES_NV;
-#endif
-#if defined(VK_EXT_memory_decompression)
-  VkPhysicalDeviceMemoryDecompressionFeaturesEXT decompression{};
-  decompression.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_DECOMPRESSION_FEATURES_EXT;
-#endif
+  // ---- features: enable exactly what `caps_` says, and nothing else ----
+  //
+  // There is no second vkGetPhysicalDeviceFeatures2 here. `read_device_caps` did the query, the
+  // overrides edited the answer, and the chain below is built from that answer — which is what
+  // makes an override real: `absent: ["VK_EXT_mesh_shader"]` does not merely hide a row from the
+  // report, it creates a device on which `create_mesh_pipeline` fails exactly as it would on a
+  // Maxwell card.
+  auto on = [](u32 value) { return value != 0 ? VK_TRUE : VK_FALSE; };
 
-  // Chain: only structs whose extension is enabled may be queried or passed.
-  VkPhysicalDeviceFeatures2 f2{};
-  f2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-  // Every feature struct starts with sType and pNext, so a VkBaseOutStructure view links them.
-  void** tail = &f2.pNext;
-  auto link = [&](VkBaseOutStructure* node) {
-    *tail = node;
-    tail = reinterpret_cast<void**>(&node->pNext);
-  };
-  link(reinterpret_cast<VkBaseOutStructure*>(&v11));
-  link(reinterpret_cast<VkBaseOutStructure*>(&v12));
-  link(reinterpret_cast<VkBaseOutStructure*>(&v13));
-  if (ext_mesh) link(reinterpret_cast<VkBaseOutStructure*>(&mesh));
-  if (ext_as) link(reinterpret_cast<VkBaseOutStructure*>(&as));
-  if (ext_rt) link(reinterpret_cast<VkBaseOutStructure*>(&rt));
-  if (ext_rq) link(reinterpret_cast<VkBaseOutStructure*>(&rq));
-  if (ext_descriptor_buffer) link(reinterpret_cast<VkBaseOutStructure*>(&db));
-#if defined(VK_NV_cluster_acceleration_structure)
-  if (ext_cluster) link(reinterpret_cast<VkBaseOutStructure*>(&cluster));
-#endif
-#if defined(VK_EXT_memory_decompression)
-  if (ext_decompression) link(reinterpret_cast<VkBaseOutStructure*>(&decompression));
-#endif
-  vkGetPhysicalDeviceFeatures2(h.physical, &f2);
-
-  // Required core features.
-  const bool required = v13.dynamicRendering && v13.synchronization2 && v13.maintenance4 &&
-                        v12.bufferDeviceAddress && v12.descriptorIndexing &&
-                        v12.runtimeDescriptorArray && v12.descriptorBindingPartiallyBound &&
-                        v12.timelineSemaphore && v12.scalarBlockLayout && v12.hostQueryReset &&
-                        v12.drawIndirectCount && f2.features.multiDrawIndirect;
-  if (!required)
-    return fail("a required Vulkan 1.2/1.3 feature is missing", VK_ERROR_FEATURE_NOT_PRESENT);
-
-  // Enable exactly what the renderer uses: rebuild the structs with the supported subset.
   VkPhysicalDeviceFeatures base{};
   base.multiDrawIndirect = VK_TRUE;
-  base.samplerAnisotropy = f2.features.samplerAnisotropy;
-  base.shaderInt64 = f2.features.shaderInt64;
-  base.fillModeNonSolid = f2.features.fillModeNonSolid;
-  base.shaderInt16 = f2.features.shaderInt16;
-  base.fragmentStoresAndAtomics = f2.features.fragmentStoresAndAtomics;
-  base.vertexPipelineStoresAndAtomics = f2.features.vertexPipelineStoresAndAtomics;
-  base.shaderStorageImageWriteWithoutFormat = f2.features.shaderStorageImageWriteWithoutFormat;
-  base.shaderStorageImageReadWithoutFormat = f2.features.shaderStorageImageReadWithoutFormat;
-  impl->features.sampler_anisotropy = f2.features.samplerAnisotropy == VK_TRUE;
-  impl->features.shader_int64 = f2.features.shaderInt64 == VK_TRUE;
+  base.samplerAnisotropy = on(caps_.sampler_anisotropy);
+  base.shaderInt64 = VK_TRUE;  // Required row: every push block carries uint64_t addresses.
+  base.fillModeNonSolid = on(caps_.fill_mode_non_solid);
+  base.shaderInt16 = on(caps_.shader_int16);
+  base.fragmentStoresAndAtomics = on(caps_.fragment_stores_and_atomics);
+  base.vertexPipelineStoresAndAtomics = on(caps_.vertex_pipeline_stores_and_atomics);
+  base.shaderStorageImageWriteWithoutFormat = on(caps_.shader_storage_image_write_without_format);
+  base.shaderStorageImageReadWithoutFormat = on(caps_.shader_storage_image_read_without_format);
+  impl->features.sampler_anisotropy = caps_.sampler_anisotropy != 0;
+  impl->features.shader_int64 = true;
 
   VkPhysicalDeviceVulkan11Features e11{};
   e11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
-  e11.shaderDrawParameters = v11.shaderDrawParameters;
-  e11.storageBuffer16BitAccess = v11.storageBuffer16BitAccess;
+  e11.shaderDrawParameters = on(caps_.shader_draw_parameters);
+  e11.storageBuffer16BitAccess = on(caps_.storage_buffer_16bit_access);
   VkPhysicalDeviceVulkan12Features e12{};
   e12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
   e12.bufferDeviceAddress = VK_TRUE;
   e12.descriptorIndexing = VK_TRUE;
   e12.runtimeDescriptorArray = VK_TRUE;
   e12.descriptorBindingPartiallyBound = VK_TRUE;
-  e12.descriptorBindingVariableDescriptorCount = v12.descriptorBindingVariableDescriptorCount;
-  e12.descriptorBindingSampledImageUpdateAfterBind =
-      v12.descriptorBindingSampledImageUpdateAfterBind;
+  e12.descriptorBindingVariableDescriptorCount =
+      on(caps_.descriptor_binding_variable_descriptor_count);
+  e12.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
   e12.descriptorBindingStorageBufferUpdateAfterBind =
-      v12.descriptorBindingStorageBufferUpdateAfterBind;
-  e12.descriptorBindingStorageImageUpdateAfterBind =
-      v12.descriptorBindingStorageImageUpdateAfterBind;
-  e12.shaderSampledImageArrayNonUniformIndexing = v12.shaderSampledImageArrayNonUniformIndexing;
-  e12.shaderStorageBufferArrayNonUniformIndexing = v12.shaderStorageBufferArrayNonUniformIndexing;
+      on(caps_.descriptor_binding_storage_buffer_update_after_bind);
+  e12.descriptorBindingStorageImageUpdateAfterBind = VK_TRUE;
+  e12.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+  e12.shaderStorageBufferArrayNonUniformIndexing =
+      on(caps_.shader_storage_buffer_array_non_uniform_indexing);
   e12.timelineSemaphore = VK_TRUE;
   e12.scalarBlockLayout = VK_TRUE;
   e12.hostQueryReset = VK_TRUE;
   e12.drawIndirectCount = VK_TRUE;
-  e12.shaderInt8 = v12.shaderInt8;
-  e12.storageBuffer8BitAccess = v12.storageBuffer8BitAccess;
-  e12.shaderFloat16 = v12.shaderFloat16;
-  e12.samplerFilterMinmax = v12.samplerFilterMinmax;
-  e12.shaderBufferInt64Atomics = v12.shaderBufferInt64Atomics;
-  impl->features.buffer_int64_atomics = v12.shaderBufferInt64Atomics == VK_TRUE;
+  e12.shaderInt8 = on(caps_.shader_int8);
+  e12.storageBuffer8BitAccess = on(caps_.storage_buffer_8bit_access);
+  e12.shaderFloat16 = on(caps_.shader_float16);
+  e12.samplerFilterMinmax = on(caps_.sampler_filter_minmax);
+  e12.shaderBufferInt64Atomics = on(caps_.shader_buffer_int64_atomics);
+  impl->features.buffer_int64_atomics = caps_.shader_buffer_int64_atomics != 0;
   VkPhysicalDeviceVulkan13Features e13{};
   e13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
   e13.dynamicRendering = VK_TRUE;
   e13.synchronization2 = VK_TRUE;
   e13.maintenance4 = VK_TRUE;
-  e13.shaderDemoteToHelperInvocation = v13.shaderDemoteToHelperInvocation;
-  e13.subgroupSizeControl = v13.subgroupSizeControl;
-  e13.computeFullSubgroups = v13.computeFullSubgroups;
+  e13.shaderDemoteToHelperInvocation = on(caps_.shader_demote_to_helper_invocation);
+  e13.subgroupSizeControl = on(caps_.subgroup_size_control);
+  e13.computeFullSubgroups = on(caps_.compute_full_subgroups);
+
+  VkPhysicalDeviceMeshShaderFeaturesEXT mesh{};
+  mesh.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT;
+  mesh.meshShader = VK_TRUE;
+  mesh.taskShader = on(caps_.task_shader);
+  VkPhysicalDeviceAccelerationStructureFeaturesKHR as{};
+  as.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR;
+  as.accelerationStructure = VK_TRUE;
+  VkPhysicalDeviceRayTracingPipelineFeaturesKHR rt{};
+  rt.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR;
+  rt.rayTracingPipeline = VK_TRUE;
+  VkPhysicalDeviceRayQueryFeaturesKHR rq{};
+  rq.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR;
+  rq.rayQuery = VK_TRUE;
+  VkPhysicalDeviceDescriptorBufferFeaturesEXT db{};
+  db.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT;
+  db.descriptorBuffer = VK_TRUE;
+#if defined(VK_NV_cluster_acceleration_structure)
+  VkPhysicalDeviceClusterAccelerationStructureFeaturesNV cluster{};
+  cluster.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CLUSTER_ACCELERATION_STRUCTURE_FEATURES_NV;
+  cluster.clusterAccelerationStructure = VK_TRUE;
+#endif
+#if defined(VK_EXT_memory_decompression)
+  VkPhysicalDeviceMemoryDecompressionFeaturesEXT decompression{};
+  decompression.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_DECOMPRESSION_FEATURES_EXT;
+  decompression.memoryDecompression = VK_TRUE;
+#endif
 
   VkPhysicalDeviceFeatures2 enable{};
   enable.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
   enable.features = base;
-  tail = &enable.pNext;
+  // Every feature struct starts with sType and pNext, so a VkBaseOutStructure view links them.
+  void** tail = &enable.pNext;
+  auto link = [&](VkBaseOutStructure* node) {
+    *tail = node;
+    tail = reinterpret_cast<void**>(&node->pNext);
+  };
   link(reinterpret_cast<VkBaseOutStructure*>(&e11));
   link(reinterpret_cast<VkBaseOutStructure*>(&e12));
   link(reinterpret_cast<VkBaseOutStructure*>(&e13));
-  if (ext_mesh && mesh.meshShader) {
-    mesh.pNext = nullptr;
-    mesh.multiviewMeshShader = VK_FALSE;
-    mesh.primitiveFragmentShadingRateMeshShader = VK_FALSE;
-    mesh.meshShaderQueries = VK_FALSE;
+  if (ext_mesh) {
     link(reinterpret_cast<VkBaseOutStructure*>(&mesh));
     impl->features.mesh_shader = true;
   }
-  if (ext_as && as.accelerationStructure) {
-    as.pNext = nullptr;
-    as.accelerationStructureCaptureReplay = VK_FALSE;
-    as.accelerationStructureIndirectBuild = VK_FALSE;
-    as.accelerationStructureHostCommands = VK_FALSE;
+  if (ext_as) {
     link(reinterpret_cast<VkBaseOutStructure*>(&as));
     impl->features.acceleration_structure = true;
   }
-  if (impl->features.acceleration_structure && ext_rt && rt.rayTracingPipeline) {
-    rt.pNext = nullptr;
-    rt.rayTracingPipelineShaderGroupHandleCaptureReplay = VK_FALSE;
-    rt.rayTracingPipelineShaderGroupHandleCaptureReplayMixed = VK_FALSE;
+  if (ext_rt) {
     link(reinterpret_cast<VkBaseOutStructure*>(&rt));
     impl->features.ray_tracing_pipeline = true;
   }
-  if (impl->features.acceleration_structure && ext_rq && rq.rayQuery) {
-    rq.pNext = nullptr;
+  if (ext_rq) {
     link(reinterpret_cast<VkBaseOutStructure*>(&rq));
     impl->features.ray_query = true;
   }
-  if (ext_descriptor_buffer && db.descriptorBuffer) {
-    db.pNext = nullptr;
-    db.descriptorBufferCaptureReplay = VK_FALSE;
-    db.descriptorBufferImageLayoutIgnored = VK_FALSE;
-    db.descriptorBufferPushDescriptors = VK_FALSE;
+  if (ext_descriptor_buffer) {
     link(reinterpret_cast<VkBaseOutStructure*>(&db));
     impl->features.descriptor_buffer = true;
   }
 #if defined(VK_NV_cluster_acceleration_structure)
-  if (impl->features.acceleration_structure && ext_cluster &&
-      cluster.clusterAccelerationStructure) {
-    cluster.pNext = nullptr;
+  if (ext_cluster) {
     link(reinterpret_cast<VkBaseOutStructure*>(&cluster));
     impl->features.cluster_acceleration_structure = true;
   }
 #endif
 #if defined(VK_EXT_memory_decompression)
-  if (ext_decompression && decompression.memoryDecompression) {
-    decompression.pNext = nullptr;
+  if (ext_decompression) {
     link(reinterpret_cast<VkBaseOutStructure*>(&decompression));
     impl->features.memory_decompression = true;
   }

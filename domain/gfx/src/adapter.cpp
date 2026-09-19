@@ -1,10 +1,11 @@
 #include <core/log/log.h>
 #include <domain/gfx/adapter.h>
+#include <domain/gfx/requirements.h>
+#include <domain/gfx/vulkan.h>
 
 #include <algorithm>
 #include <cstring>
 #include <mutex>
-#include <volk.h>
 
 namespace engine::gfx {
 
@@ -30,19 +31,6 @@ constexpr const char* k_extensions[] = {
     "VK_EXT_shader_object",
     "VK_NV_cooperative_matrix",
 };
-
-const char* result_name(VkResult r) noexcept {
-  switch (r) {
-    case VK_SUCCESS: return "VK_SUCCESS";
-    case VK_ERROR_OUT_OF_HOST_MEMORY: return "VK_ERROR_OUT_OF_HOST_MEMORY";
-    case VK_ERROR_OUT_OF_DEVICE_MEMORY: return "VK_ERROR_OUT_OF_DEVICE_MEMORY";
-    case VK_ERROR_INITIALIZATION_FAILED: return "VK_ERROR_INITIALIZATION_FAILED";
-    case VK_ERROR_LAYER_NOT_PRESENT: return "VK_ERROR_LAYER_NOT_PRESENT";
-    case VK_ERROR_EXTENSION_NOT_PRESENT: return "VK_ERROR_EXTENSION_NOT_PRESENT";
-    case VK_ERROR_INCOMPATIBLE_DRIVER: return "VK_ERROR_INCOMPATIBLE_DRIVER";
-    default: return "VkResult";
-  }
-}
 
 std::string version_text(u32 v) {
   return std::to_string(VK_API_VERSION_MAJOR(v)) + "." + std::to_string(VK_API_VERSION_MINOR(v)) +
@@ -151,12 +139,15 @@ void fill_adapter(VkPhysicalDevice device, AdapterInfo& info) {
     info.queue_families.push_back(q);
   }
 
-  auto has = [&](const char* name) {
-    const bool* v = info.extensions.find_value(std::string_view(name));
-    return v != nullptr && *v;
-  };
-  const bool rt = has("VK_KHR_acceleration_structure") && has("VK_KHR_ray_tracing_pipeline");
-  info.tier = rt ? (has("VK_NV_cluster_acceleration_structure") ? "rt-cluster" : "rt") : "raster";
+  // The requirements table, checked against this device (docs/subsystems/gfx.md). This is the
+  // same table and the same caps `Device::create()` refuses or accepts a device on, which is the
+  // whole point: a report from a machine nobody here owns is the answer creation would have
+  // given, and not a second implementation of it that can drift.
+  DeviceCaps caps;
+  read_device_caps(device, caps);
+  evaluate_requirements(caps, info.requirements);
+  device_verdict(caps, {info.requirements.data(), info.requirements.size()}, info.verdict);
+  info.tier = hardware_tier(caps);
 }
 
 }  // namespace
@@ -239,6 +230,19 @@ std::string describe_adapters(std::span<const AdapterInfo> adapters) {
     text.append(" MB device-local, tier ");
     text.append(a.tier);
     text.append(")\n");
+    // The tier says what the card is; the verdict says whether the renderer would run on it,
+    // which is the sentence somebody setting up a new machine actually needs.
+    if (a.verdict.usable) {
+      text.append("  renderer: yes, tier ");
+      text.append(a.verdict.tier);
+      text.push_back('\n');
+      for (const std::string& note : a.verdict.degraded)
+        text.append("  - ").append(note).push_back('\n');
+    } else {
+      text.append("  renderer: no\n");
+      for (const std::string& note : a.verdict.blocking)
+        text.append("  ! ").append(note).push_back('\n');
+    }
   }
   return text;
 }

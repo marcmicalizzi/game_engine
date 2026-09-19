@@ -25,31 +25,27 @@ bool BindlessSet::create(const Device& device, const BindlessConfig& config, std
   ENGINE_VERIFY(device_ == nullptr, "BindlessSet::create: already created");
   const Handles& h = device.handles();
 
-  // Clamp to the update-after-bind limits of the device.
-  VkPhysicalDeviceDescriptorIndexingProperties indexing{};
-  indexing.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_PROPERTIES;
-  VkPhysicalDeviceAccelerationStructurePropertiesKHR as_props{};
-  as_props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR;
-  const bool with_as =
-      device.features().acceleration_structure && config.acceleration_structures > 0;
-  if (with_as) indexing.pNext = &as_props;
-  VkPhysicalDeviceProperties2 props{};
-  props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
-  props.pNext = &indexing;
-  vkGetPhysicalDeviceProperties2(h.physical, &props);
+  // Clamp to the device's update-after-bind limits. The clamping rule lives in
+  // `gfx::clamp_bindless` (domain/gfx/requirements.h) rather than here, because `gpu.adapters`
+  // has to report the clamped sizes for a machine no one has run on — and a second copy of the
+  // rule in the report would be a rule that can disagree with the set that is actually created.
+  // It reads `device.caps()`, so `DeviceOptions::overrides` reaches the clamping too: that is
+  // how a device with 1,048,576 update-after-bind slots tests what a Surface Pro gets.
+  BindlessCapacity wanted;
+  wanted.sampled_images = config.sampled_images;
+  wanted.storage_images = config.storage_images;
+  wanted.samplers = config.samplers;
+  wanted.acceleration_structures =
+      device.features().acceleration_structure ? config.acceleration_structures : 0u;
+  wanted.push_constant_bytes = config.push_constant_bytes;
+  const BindlessCapacity granted = clamp_bindless(device.caps(), wanted, nullptr);
   capacity_ = config;
-  capacity_.acceleration_structures =
-      with_as ? std::min(config.acceleration_structures,
-                         as_props.maxDescriptorSetUpdateAfterBindAccelerationStructures)
-              : 0u;
+  capacity_.sampled_images = granted.sampled_images;
+  capacity_.storage_images = granted.storage_images;
+  capacity_.samplers = granted.samplers;
+  capacity_.acceleration_structures = granted.acceleration_structures;
+  capacity_.push_constant_bytes = granted.push_constant_bytes;
   const u32 binding_count = capacity_.acceleration_structures > 0 ? 4u : 3u;
-  capacity_.sampled_images =
-      std::min(config.sampled_images, indexing.maxDescriptorSetUpdateAfterBindSampledImages);
-  capacity_.storage_images =
-      std::min(config.storage_images, indexing.maxDescriptorSetUpdateAfterBindStorageImages);
-  capacity_.samplers = std::min(config.samplers, indexing.maxDescriptorSetUpdateAfterBindSamplers);
-  capacity_.push_constant_bytes =
-      std::min(config.push_constant_bytes, props.properties.limits.maxPushConstantsSize);
   if (capacity_.sampled_images == 0 || capacity_.storage_images == 0 || capacity_.samplers == 0) {
     if (error != nullptr) *error = "device reports no update-after-bind descriptor capacity";
     return false;

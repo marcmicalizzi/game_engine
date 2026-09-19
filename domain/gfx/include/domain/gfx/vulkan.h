@@ -6,6 +6,7 @@
 
 #include <core/base/types.h>
 #include <domain/gfx/device.h>
+#include <domain/gfx/requirements.h>
 
 #include <span>
 #include <string>
@@ -32,6 +33,11 @@ struct Handles {
 };
 
 const char* result_name(VkResult result) noexcept;
+
+// Every property, feature and extension the requirements table reads, in one query
+// (domain/gfx/requirements.h). This is the only place that touches Vulkan for them, so
+// `enumerate_adapters` and `Device::create` check a device against exactly the same numbers.
+void read_device_caps(VkPhysicalDevice physical, DeviceCaps& out);
 
 // ---- resources -------------------------------------------------------------------------------
 
