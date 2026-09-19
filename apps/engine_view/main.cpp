@@ -1291,7 +1291,6 @@ int main(int argc, char** argv) {
   jobs::JobSystem page_jobs(
       jobs::JobSystemConfig{.performance_workers = 1, .efficiency_workers = 2});
   renderer::FilePageSource page_source;
-  const char* page_source_name = "host";
   renderer::SceneRenderer view_renderer;
   u64 rendered = 0;
   i64 started_ns = 0;
@@ -1423,12 +1422,13 @@ int main(int argc, char** argv) {
     // renderer that will read from it.
     if (resolved.stream && options.page_source != Options::PageSource::host) {
       std::string why;
-      if (renderer::attach_page_source(scene_data, scene, page_jobs, page_source, &why)) {
-        page_source_name = "file";
-      } else if (options.page_source == Options::PageSource::file) {
-        exit_code = fail("page source", why);
-        break;
-      } else {
+      // Which source won is reported by the summary out of `StreamStats::from_file`, not from
+      // here; there is nothing to record on success.
+      if (!renderer::attach_page_source(scene_data, scene, page_jobs, page_source, &why)) {
+        if (options.page_source == Options::PageSource::file) {
+          exit_code = fail("page source", why);
+          break;
+        }
         ENGINE_LOG_INFO(log_view, "geometry pages stream from host memory",
                         log::field("reason", why));
       }

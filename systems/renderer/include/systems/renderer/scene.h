@@ -53,7 +53,11 @@ struct SceneInstance {
   Transform3 transform;
   u32 joints = 0;             // bone matrices this instance is skinned by; 0 is rigid
   f32 bounds_padding = 0.0f;  // mesh-space slack on every sphere the cull pass tests it by
-  SceneAnimation animation;   // the scene file's block, for the app; the renderer never reads it
+  // Braced, like every other member's default above it: a member of class type with no
+  // initializer of its own makes every aggregate initialization that stops short of it a
+  // -Wmissing-field-initializers error on Clang, and `SceneInstance{mesh, transform}` is the
+  // spelling three call sites use.
+  SceneAnimation animation{};  // the scene file's block, for the app; the renderer never reads it
 };
 
 // Where one instance's bone matrices are in the frame's one contiguous span. Parallel to the
