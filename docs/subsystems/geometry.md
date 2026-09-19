@@ -18,6 +18,8 @@
 
 **Derived-data cache.** The same header declares where a built mesh lives and what addresses it, because `engine-content` and `engine-view` have to agree byte for byte: what one writes, the other finds. `cluster_cache_key(source_hash, options, weld)` mixes the source's content hash (`assets::source_mesh_hash`: the glTF's own bytes plus the bytes of every external buffer its `buffers[].uri` names) with the per-cluster limits, the cone and ray-tracing switches, welding, and `k_cluster_cache_version`, which is bumped whenever a builder change would make an old entry wrong. `cluster_cache_path(ddc_root, key)` is `<ddc_root>/clusters/<key as 16 lower-case hex digits>.clusters`, and `find_ddc_root(start)` walks up from a directory — an executable's, in practice — to the first one holding an `AGENTS.md` and returns `<that>/ddc`, empty when there is none. Derived data is rebuildable and git-ignored ([07 §7.3](../plan/07-content-pipeline.md)); nothing under `ddc/` is ever committed.
 
+**The limit nothing in this module can fix.** The seam rule stops a collapse crossing an island edge; it cannot make an island survive being smaller than a triangle. Both machine-generated characters have an island whose UV area rounds to **zero** texels of a 4,096 atlas (six triangles on one, a single triangle on the other), and once a level's triangles are larger than an island, the island's texture is unreachable however the collapse is chosen — the geometry simply has nowhere to put those UVs. That is a **texture-space** problem and its fixes are texture-space ones: repack the atlas with fewer, larger islands, or bake per-level textures in the content pipeline ([07 §7.4](../plan/07-content-pipeline.md#74-validation-rules-automatic), where the fragmentation validator belongs). `engine-content stats` reports the numbers that say how close a mesh is to that wall — `islands`, `seam_fraction`, `smallest_island_texels_4096` and its triangle count — and reporting them is as far as the geometry builder can go.
+
 **Not yet.** Quantized positions for the acceleration structure builders (`gfx/acceleration.h`, `gfx/cluster_acceleration.h` and engine-view's `--raster rt` still read the float `vertices`, which is why both streams are kept; the builders take a vertex format, so this is a format change, not a shader change), per-cluster grids finer than the mesh-wide one, tangents, the per-level BVH clusterlod can build over groups (the flat cut is one thread per cluster, which is fine until scenes reach millions of clusters), the GPU half of streaming (pages are built and stored — see "Pages and streaming" below — but the feedback buffer and the GPU residency manager are not), and precomputed cluster-AS inputs.
 
 **Public API.** `domain/geometry/cluster.h`: `ClusterDesc`, `k_cone_none`, `NormalCone`, `encode_cone`, `decode_cone`, `cluster_backfacing`, `VertexAttributes`, `SkinBinding`, `k_max_skin_joints`, `make_skin_binding`, `AttributeSource`, `ClusterBuildOptions`, `ClusterMesh`, `weld_vertices`, `build_clusters`, `fill_cluster_attributes`, `compute_vertex_normals`, `encode_normal_oct`, `decode_normal_oct`, `encode_half2`, `decode_half2`, `quantize_positions`, `dequantize_position`, `validate_clusters`. `domain/geometry/cluster_lod.h`: `ClusterLodDesc`, `SeamRule`, `ClusterLodOptions`, `ClusterLodMesh`, `build_cluster_lod`, `merge_cluster_lod`, `ClusterMeshPart`, `merge_cluster_meshes`, `LodView`, `projected_error`, `lod_selects`, `select_lod`, `select_lod_raw`, `validate_cluster_lod`, `AttributeErrorOptions`, `AttributeError`, `measure_lod_attribute_error`. `domain/geometry/stress_mesh.h`: `ShreddedAtlasOptions`, `ShreddedAtlasMesh`, `build_shredded_atlas_torus`, `build_atlas_probe_texture`. `domain/geometry/cluster_file.h`: `k_cluster_file_version`, `k_cluster_file_alignment`, `ClusterSection`, `cluster_section_name`, `ClusterFileHeader`, `ClusterFileSection`, `ClusterFileScalars`, `ClusterFileMaterial`, `encode_alpha_word`, `alpha_word_mode`, `alpha_word_double_sided`, `alpha_word_cutoff`, `encode_optional_image`, `decode_optional_image`, `ClusterFileImage`, `ClusterImage`, `ClusterFileData`, `write_cluster_file`, `read_cluster_file`, `read_cluster_file_memory`, `read_cluster_file_identity`, `cluster_file_hash`, `ClusterImageSummary`, `summarize_cluster_images`, `k_cluster_section_kinds`, `ClusterFileReader` (`open`, `close`, `valid`, `file`, `path`, `header_hash`, `element_count`, `range`).
@@ -95,6 +97,43 @@ On the fixture, at a matched budget of about a fifth of the source triangles:
 | attributes + protected seams | 40 clusters, 1,836 triangles | 2.6 texels | 8.0 | 10.1 | **1.0%** | 0.50° |
 
 The maximum is the number that says "never crossed an island": an atlas slot is about 240 texels of 4,096 here, so a worst sample of 10 texels cannot have left the island it belongs to, while a worst sample of 4,449 has crossed most of the atlas. The residual 1.0% is samples between 8 and 10 texels — ordinary simplification, measured against a deliberately tight tolerance.
+
+**On real models, and what they cost.** `msvc-release`, an RTX 5090 shared with other work (the harness recorded 15–18% of the CPU and 8–13% of the GPU in other processes, so the times are upper bounds and the picture numbers are unaffected), every figure taken twice. The two machine-generated characters are the project owner's local reproducers and nothing derived from them is committed; the Khronos models are `content/samples`. `before` is `--uv-seams none --uv-weight 0`, which reproduces the old builder exactly, and both builds go through `engine-content build` and `engine-view --mesh <container>` so the comparison is a pair of command lines rather than a pair of builds of the engine.
+
+| Model | islands | seam vertices | clusters | levels | container | build |
+|---|---|---|---|---|---|---|
+| Meshy character, 539,596 tri | 697 | 51,618 of 296,304 (17.4%) | 12,699 → 13,137 (+3.4%) | 14 → 13 | 35.51 → 36.38 MB (+2.5%) | 4.88 → 2.20 s |
+| the same remeshed and rigged, 224,783 tri | 501 | 53,436 of 142,400 (37.5%) | 6,006 → 6,335 (+5.5%) | 13 → 12 | 22.89 → 23.71 MB (+3.6%) | 0.82 → 0.92 s |
+| FlightHelmet, 94,722 tri | 239 | 15,226 of 55,392 (27.5%) | 2,348 → 2,356 (+0.3%) | 10 → 10 | 5.299 → 5.336 MB (+0.7%) | 0.14 → 0.12 s |
+| Suzanne, 3,936 tri | 3 | **0** | 88 → 88 | 7 → 7 | 199,280 → 199,504 B | 0.023 → 0.032 s |
+
+And the picture, at 640×960 with each mesh's coarse cut (`--lod 1`) against **its own leaves**:
+
+| Model | before | after | seams only (`--uv-weight 0`) |
+|---|---|---|---|
+| Meshy character, orbit 14 | 356 pairs, 0.0241 FLIP, 29.6 dB | 510 pairs, **0.0115**, **38.1 dB** | 524 pairs, 0.0111, 38.5 dB |
+| Meshy rigged, orbit 14 | 280 pairs, 0.0223, 28.6 dB | 690 pairs, **0.0083**, **39.7 dB** | 694 pairs, 0.0082, 39.9 dB |
+| FlightHelmet, orbit 22 | 387 pairs, 0.0174, 34.0 dB | 393 pairs, 0.0173, 34.1 dB | 394 pairs, 0.0174, 34.1 dB |
+| Suzanne, orbit 6 | at its leaves already; nothing to measure | | |
+
+Four things are worth reading out of that.
+
+**The finest picture is untouched.** On all four models the before and after builds' leaf-level captures are **byte-identical** (FLIP 0, SSIM 1, null PSNR), which is the assertion that the change moved coarse levels and nothing else.
+
+**The extra clusters are not why it is better.** At `--lod 1` the seam-aware build of the Meshy character draws 510 pairs against 356 — the attribute error is in the stored error, so the same threshold now buys more geometry. Given the *same* geometry it is still better, and by a lot: the position-only build at **569** pairs (more than the fix uses) reaches only **32.3 dB / 0.0160 FLIP**, and the rigged model's at **774** pairs only **35.4 dB / 0.0076**. Both are 4–6 dB behind a seam-aware build with **fewer** triangles. That is the clearest statement of the defect there is: it is not a resolution problem, it is the wrong part of the texture on the right surface, and no triangle budget buys the right one back.
+
+**The weights are not the fix, again.** `--uv-weight 0` with the seam rule on matches the full default to within 0.4 dB on every model — the same result the fixture gave, now on 540,000 triangles of real content.
+
+**And it holds in a pose.** The rigged character was also measured through `engine-view --mesh <glb> --animate`, which builds through the derived-data cache and so picks its entry by the same options — bind pose (`--frames 4`) and one frame of its clip (`--frames 20`), against each build's own leaves:
+
+| | before | after |
+|---|---|---|
+| bind pose | 280 pairs, 0.0223 FLIP, 28.6 dB | 690 pairs, 0.0083, 39.7 dB |
+| posed, frame 20 | 192 pairs, 0.0084, 32.1 dB | 790 pairs, **0.0030**, **40.7 dB** |
+
+The leaf-level pictures are byte-identical in **both** poses (FLIP 0, SSIM 1), which is the assertion that matters for skinning: protecting a skin-weight split changes what the *coarse* levels are and changes the deformation of the finest surface not at all. It also says that the defect is not a rest-pose artefact — a running character carries the same smears through the clip, because they are in the mesh and not in the pose.
+
+**A mesh with no seams pays nothing and gains nothing.** Suzanne's atlas is three large islands with **zero** seam vertices, so the rule tags nothing; its DAG, its cluster count and its container are the same to a few hundred bytes. The FlightHelmet, which has seams but large well-separated islands per material, is likewise unchanged in the picture — the fix is only visible where the atlas is actually fragmented, which is exactly the claim.
 
 ## The shredded atlas
 
