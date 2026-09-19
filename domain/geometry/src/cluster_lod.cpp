@@ -794,8 +794,8 @@ bool measure_lod_attribute_error(const ClusterLodMesh& mesh, std::span<const u32
       const f32 degrees = std::acos(cosine) * 180.0f / 3.14159265358979323846f;
       uv_errors.push_back(uv_texels);
       normal_errors.push_back(degrees);
-      uv_total += uv_texels;
-      normal_total += degrees;
+      uv_total += static_cast<f64>(uv_texels);
+      normal_total += static_cast<f64>(degrees);
       if (uv_texels > options.uv_tolerance_texels) ++out.uv_outliers;
       if (degrees > options.normal_tolerance_deg) ++out.normal_outliers;
       out.uv_max_texels = std::max(out.uv_max_texels, uv_texels);
