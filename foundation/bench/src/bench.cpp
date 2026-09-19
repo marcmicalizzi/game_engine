@@ -89,6 +89,27 @@ bool parse_f64(std::string_view text, f64& out) noexcept {
   return r.ec == std::errc{} && r.ptr == text.data() + text.size();
 }
 
+// A filter may name one variant of an ENGINE_BENCH_ARGS registration the way `--list` prints it
+// — `sim.tiers.assign/4`, `physics.e19.tick/216010081`, `*/4` — and everything before the first
+// '/' is what selects the registration. Without this, the only way to reach one variant of a
+// fifty-variant registration was to run all fifty, and on a shared machine the length of a run
+// is the length of the window that has to stay quiet (see "Measuring on a shared machine").
+std::string_view registration_filter(std::string_view filter) noexcept {
+  const usize slash = filter.find('/');
+  return slash == std::string_view::npos ? filter : filter.substr(0, slash);
+}
+
+// The name one variant would be reported under, which is what a filter carrying a '/' is
+// matched against.
+void variant_name(const Registration& reg, std::span<const i64> args, char* out,
+                  usize capacity) noexcept {
+  if (args.empty()) {
+    std::snprintf(out, capacity, "%s", reg.name());
+  } else {
+    std::snprintf(out, capacity, "%s/%lld", reg.name(), static_cast<long long>(args[0]));
+  }
+}
+
 Vector<const Registration*> matching(std::string_view filter) {
   Vector<const Registration*> out;
   {
@@ -396,7 +417,8 @@ int run(const Options& options, Vector<Result>* results) {
     }
   }
 
-  const Vector<const Registration*> regs = matching(options.filter);
+  const Vector<const Registration*> regs = matching(registration_filter(options.filter));
+  const bool per_variant = options.filter.find('/') != std::string::npos;
   if (!options.quiet) {
     char line[256];
     std::snprintf(line, sizeof(line), "%-56s %12s %12s %8s %12s%s\n", "benchmark", "median/iter",
@@ -434,6 +456,11 @@ int run(const Options& options, Vector<Result>* results) {
       for (usize ai = 0; ai < variants; ++ai) {
         const std::span<const i64> args =
             all_args.empty() ? std::span<const i64>{} : all_args.subspan(ai, 1);
+        if (per_variant) {
+          char variant[256];
+          variant_name(*reg, args, variant, sizeof(variant));
+          if (!glob_match(options.filter, variant)) continue;
+        }
         Result result = Runner::measure_one(*reg, args, options);
         result.tunable = tunable_text;
 
@@ -642,12 +669,17 @@ int run_main(int argc, char** argv) {
   options.overrides = overrides;
 
   if (list) {
-    for (const Registration* reg : matching(options.filter)) {
-      if (reg->args().empty()) {
-        std::printf("%s\n", reg->name());
-      } else {
-        for (const i64 arg : reg->args())
-          std::printf("%s/%lld\n", reg->name(), static_cast<long long>(arg));
+    const bool per_variant = options.filter.find('/') != std::string::npos;
+    for (const Registration* reg : matching(registration_filter(options.filter))) {
+      const std::span<const i64> all_args = reg->args();
+      const usize variants = all_args.empty() ? 1 : all_args.size();
+      for (usize ai = 0; ai < variants; ++ai) {
+        const std::span<const i64> args =
+            all_args.empty() ? std::span<const i64>{} : all_args.subspan(ai, 1);
+        char variant[256];
+        variant_name(*reg, args, variant, sizeof(variant));
+        if (per_variant && !glob_match(options.filter, variant)) continue;
+        std::printf("%s\n", variant);
       }
     }
     return 0;

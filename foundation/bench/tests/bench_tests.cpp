@@ -133,6 +133,43 @@ TEST_CASE("bench: smoke run touches every matching benchmark once") {
   CHECK(g_noop_calls.load() == before + 1);
 }
 
+TEST_CASE("bench: a filter may name one variant the way --list prints it") {
+  // `--list` prints "test.bench.args/8"; before this, a filter could not accept what the list
+  // printed, and reaching one variant of a fifty-variant registration meant running all fifty.
+  // On a shared machine the length of a run is the length of the window that has to stay quiet.
+  bench::Options o = quick("test.bench.args/64");
+  o.smoke = true;
+  Vector<bench::Result> results;
+  CHECK(bench::run(o, &results) == 0);
+  REQUIRE(results.size() == 1);
+  CHECK(results[0].name == "test.bench.args/64");
+
+  // A glob on the variant half selects a subset of one registration's arguments.
+  o.filter = "test.bench.args/*";
+  results.clear();
+  CHECK(bench::run(o, &results) == 0);
+  CHECK(results.size() == 2);
+
+  // And on the registration half it crosses registrations: every variant whose argument is 64.
+  o.filter = "*/64";
+  results.clear();
+  CHECK(bench::run(o, &results) == 0);
+  REQUIRE(results.size() == 1);
+  CHECK(results[0].name == "test.bench.args/64");
+
+  // A filter with no '/' is unchanged: it selects registrations and runs every variant.
+  o.filter = "test.bench.args";
+  results.clear();
+  CHECK(bench::run(o, &results) == 0);
+  CHECK(results.size() == 2);
+
+  // A variant that does not exist matches nothing rather than falling back to the registration.
+  o.filter = "test.bench.args/9999";
+  results.clear();
+  CHECK(bench::run(o, &results) == 0);
+  CHECK(results.empty());
+}
+
 TEST_CASE("bench: measured run calibrates, warms up, and repeats") {
   Vector<bench::Result> results;
   const int before = g_noop_calls.load();
