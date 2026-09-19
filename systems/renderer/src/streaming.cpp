@@ -1,3 +1,4 @@
+#include <core/base/assert.h>
 #include <systems/renderer/streaming.h>
 
 #include <algorithm>
@@ -8,7 +9,9 @@ namespace engine::renderer {
 
 namespace {
 
-constexpr u32 k_no_slot = ~u32{0};
+// One spelling of "this page has no pool slot", shared with the accessor a reader outside the
+// streamer asks with (`GeometryStreamer::slot_of_page`).
+constexpr u32 k_no_slot = GeometryStreamer::k_no_page_slot;
 
 }  // namespace
 
@@ -197,13 +200,33 @@ void GeometryStreamer::patch_clusters(u32 page, u32 slot, u8* dst) {
 // from the **same words** the rasterizers read — out of the staged page rather than out of a
 // second source — so the two can never disagree about a triangle whichever source the page came
 // from.
+//
+// **`indices8_` is a scratch buffer and `pack_cluster_indices` appends**, which is what the whole
+// mesh's pack in `GpuScene::create_ray_tracing` wants and is the opposite of what one page wants.
+// Clearing it is therefore not tidiness: without the clear, page k staged the concatenation of
+// every page staged before it, starting at this page's block, so page 1 onwards went into the
+// pool carrying page 0's triangles and the write ran `k` pages past the end of this page's region
+// of the staging ring — over the region the *other* frame slot's page was staged in and, once it
+// was long enough, off the end of the mapped ring entirely. See docs/subsystems/renderer.md,
+// "A page's 8-bit indices are its own". `clear()` keeps the capacity `create` reserved, so the
+// frame still allocates nothing.
+//
+// The copy is sized from the **page**, not from the scratch buffer, so the block a page writes is
+// a function of the page's own descriptor and of nothing that happened before it. The two asserts
+// say the same thing twice on purpose: the first catches a scratch buffer that was not empty, the
+// second catches a layout that disagrees with the pack about what a page costs.
 void GeometryStreamer::pack_indices(u32 page, u8* dst) {
   const geometry::ClusterPageDesc& desc = scene_->data().pages.pages[page];
   const GpuScene::PageStage stage = scene_->page_stage_layout(page);
   if (!stage.ray_tracing || desc.triangle_count == 0) return;
   const auto* triangles = reinterpret_cast<const u32*>(dst + stage.triangles);
+  const u64 bytes = u64{desc.triangle_count} * 3;
+  indices8_.clear();
   gfx::pack_cluster_indices(std::span<const u32>(triangles, desc.triangle_count), indices8_);
-  std::memcpy(dst + stage.indices8, indices8_.data(), indices8_.size());
+  ENGINE_ASSERT(indices8_.size() == bytes, "a page's 8-bit indices are three bytes a triangle");
+  ENGINE_ASSERT(stage.indices8 + bytes <= stage.total,
+                "a page's staged bytes stay inside the page's own region of the staging ring");
+  std::memcpy(dst + stage.indices8, indices8_.data(), static_cast<usize>(bytes));
 }
 
 void GeometryStreamer::copy_page(u32 page, u32 slot, u8* dst) {

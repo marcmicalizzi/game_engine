@@ -99,6 +99,15 @@ class GeometryStreamer {
   const gfx::BufferResource& feedback(u32 slot) const noexcept { return feedback_[slot]; }
 
   const StreamStats& stats() const noexcept { return stats_; }
+  // Which pool slot holds a page's payload, or `k_no_page_slot`. It is the one piece of the
+  // streamer's bookkeeping a reader outside it needs: a page's bytes are at
+  // `slot * GpuScene::slot_vertices()` and `slot * GpuScene::slot_triangles()` in the pool
+  // streams, so this is how a test (or a diagnostic) says "what is actually in the pool for this
+  // page" without re-deriving the mapping and getting it wrong in the same way twice.
+  static constexpr u32 k_no_page_slot = ~u32{0};
+  u32 slot_of_page(u32 page) const noexcept {
+    return page < slot_of_page_.size() ? slot_of_page_[page] : k_no_page_slot;
+  }
   void reset_stats() noexcept;
   // Puts every page back to the pinned set, which is what a measurement of "frames to converge
   // from cold" starts from. The GPU side follows on the next `prepare`.

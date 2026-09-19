@@ -15,6 +15,7 @@
 #include <domain/geometry/cluster_file.h>
 #include <domain/geometry/cluster_pages.h>
 #include <domain/gfx/device.h>
+#include <domain/gfx/vulkan.h>
 #include <systems/renderer/capture.h>
 #include <systems/renderer/gpu_scene.h>
 #include <systems/renderer/page_source.h>
@@ -26,6 +27,7 @@
 #include <test_temp_dir.h>
 
 #include <algorithm>
+#include <cstring>
 #include <string>
 #include <utility>
 
@@ -181,6 +183,31 @@ FrameDesc frame_at(const SceneData& data, f32 distance, u64 index) {
 // filled it has not been read back yet. A cap, because a test that hangs is worse than one that
 // fails.
 constexpr u32 k_quiet_frames = 4;
+
+// A device-local pool stream copied into host memory. The page pool's buffers are transfer
+// sources for exactly this reason: what a test can say about streaming is otherwise limited to
+// what reaches a picture, and a page whose bytes are wrong is not always a picture at all.
+bool read_pool(const gfx::Device& device, const gfx::BufferResource& source, Vector<u8>& out,
+               std::string* error) {
+  gfx::BufferResource staging;
+  if (!gfx::create_buffer(device, source.size, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, staging,
+                          error)) {
+    return false;
+  }
+  const bool ok = gfx::submit_immediate(
+      device,
+      [&](VkCommandBuffer cb) {
+        const VkBufferCopy copy{0, 0, source.size};
+        vkCmdCopyBuffer(cb, source.buffer, staging.buffer, 1, &copy);
+      },
+      error);
+  if (ok) {
+    out.resize(static_cast<u32>(source.size));
+    std::memcpy(out.data(), staging.mapped, source.size);
+  }
+  gfx::destroy_buffer(device, staging);
+  return ok;
+}
 
 u32 converge(SceneRenderer& renderer, const SceneData& data, f32 distance, u32 max_frames) {
   std::string error;
@@ -598,6 +625,104 @@ TEST_CASE("streaming: a fly-in is coarser at every step and never has a hole") {
                     << " uploads, " << stats.evictions << " evictions, " << stats.pages_resident
                     << " of " << stats.pages_total << " pages resident");
   CHECK(stats.uploads > 0);
+}
+
+TEST_CASE("streaming: a page's 8-bit indices are its own, under a budget that evicts every frame") {
+  // **The case the recorded device loss was in**, and the reason it went unseen: every other case
+  // in this file runs with `ShadowMode::Off`, and the 8-bit index stream the cluster acceleration
+  // structure builds read is staged **only when the frame builds them**
+  // (`GpuScene::page_stage_layout`'s `ray_tracing`). So this one turns the ray chain on and then
+  // asks the pool the flattest question there is: does the slot holding page p hold *page p's*
+  // 8-bit indices?
+  //
+  // The two pool streams are written by the same upload, from the same staged bytes, over the same
+  // range of the same slot — `indices8[3t .. 3t + 3)` is `pack_cluster_indices` of `triangles[t]`
+  // and nothing else can make them agree. That makes this a byte assertion rather than a picture
+  // one, which matters because the failure it guards is not a wrong picture: a page staged with
+  // another page's indices is a CLAS build record pointing at triangles that are not there, and
+  // what that costs is the device.
+  Harness probe;
+  RenderSettings first = streamed_settings(0, 0);
+  first.shadows = ShadowMode::RayTraced;
+  if (!probe.build(heightfield_desc(true, 16 * 1024), first)) {
+    MESSAGE(probe.skip);
+    return;
+  }
+  // A device with no cluster acceleration structures or no ray query resolves the shadows away,
+  // and then there is no 8-bit index stream to check. Say so and skip rather than pass vacuously.
+  if (probe.scene.indices8.buffer == VK_NULL_HANDLE) {
+    MESSAGE("the device builds no cluster acceleration structures; nothing stages 8-bit indices");
+    return;
+  }
+  const u64 whole = probe.renderer.streamer().stats().page_bytes;
+  REQUIRE(whole > 0);
+  probe.renderer.destroy();
+  probe.scene.destroy();
+
+  // A tenth of the page bytes and a quarter-pixel threshold, which is the recipe the
+  // ancestor-closure case above uses to make the pool actually recycle its slots: the cut wants
+  // most of the mesh, the budget holds a fraction of it, and the camera moves so that what the
+  // manager evicts keeps changing.
+  std::string error;
+  RenderSettings settings = streamed_settings(whole / 10, 48 * 1024);
+  settings.shadows = ShadowMode::RayTraced;
+  settings.lod_px = 0.25f;
+  ResolvedSettings resolved;
+  resolve_settings(settings, probe.device.features(), &probe.data, resolved);
+  REQUIRE(resolved.rt_chain);
+  REQUIRE_MESSAGE(probe.scene.create(probe.device, probe.data, resolved, &error), error);
+  SceneRenderer::Desc rd;
+  rd.width = k_width;
+  rd.height = k_height;
+  REQUIRE_MESSAGE(probe.renderer.create(probe.device, probe.scene, resolved, rd, &error), error);
+
+  for (u32 f = 0; f < 48; ++f) {
+    const f32 distance = 1.0f + 3.0f * static_cast<f32>(f % 8) / 7.0f;
+    REQUIRE_MESSAGE(probe.renderer.render_offscreen(frame_at(probe.data, distance, f), &error),
+                    error);
+  }
+  const StreamStats& stats = probe.renderer.streamer().stats();
+  MESSAGE("ray chain under a tenth budget: " << stats.uploads << " uploads, " << stats.evictions
+                                             << " evictions, " << stats.pages_resident << " of "
+                                             << stats.pages_total << " pages resident");
+  // Without both of these the check below would hold of a pool that was filled once and never
+  // recycled, which is the configuration that never failed.
+  REQUIRE(stats.uploads > 1);
+  REQUIRE(stats.evictions > 0);
+
+  Vector<u8> triangle_bytes;
+  Vector<u8> index_bytes;
+  REQUIRE_MESSAGE(read_pool(probe.device, probe.scene.triangles, triangle_bytes, &error), error);
+  REQUIRE_MESSAGE(read_pool(probe.device, probe.scene.indices8, index_bytes, &error), error);
+  const auto* triangles = reinterpret_cast<const u32*>(triangle_bytes.data());
+  const u32 slot_triangles = probe.scene.slot_triangles();
+  u32 checked = 0;
+  u32 wrong = 0;
+  u32 first_wrong_page = ~u32{0};
+  for (u32 p = 0; p < probe.scene.page_count(); ++p) {
+    const u32 slot = probe.renderer.streamer().slot_of_page(p);
+    if (slot == GeometryStreamer::k_no_page_slot) continue;
+    const geometry::ClusterPageDesc& desc = probe.data.pages.pages[p];
+    for (u32 t = 0; t < desc.triangle_count; ++t) {
+      const u64 index = u64{slot} * slot_triangles + t;
+      const u32 packed = triangles[index];
+      const u8* bytes = index_bytes.data() + index * 3;
+      const bool ok = bytes[0] == static_cast<u8>(packed & 0xffu) &&
+                      bytes[1] == static_cast<u8>((packed >> 8) & 0xffu) &&
+                      bytes[2] == static_cast<u8>((packed >> 16) & 0xffu);
+      ++checked;
+      if (!ok && first_wrong_page == ~u32{0}) first_wrong_page = p;
+      wrong += ok ? 0u : 1u;
+    }
+  }
+  MESSAGE("pool triangles checked "
+          << checked << ", 8-bit indices disagreeing " << wrong
+          << (first_wrong_page == ~u32{0} ? std::string()
+                                          : ", first on page " + std::to_string(first_wrong_page)));
+  CHECK(checked > 0);
+  CHECK_MESSAGE(wrong == 0, wrong << " of " << checked
+                                  << " triangles in the page pool carry 8-bit indices that are not "
+                                     "their own");
 }
 
 TEST_CASE("streaming: a request is served under an upload budget of one page a frame") {
