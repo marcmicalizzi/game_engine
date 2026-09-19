@@ -20,13 +20,61 @@ renderer change.
 
 | Runner | Machine | Preset | Labels |
 |---|---|---|---|
-| `windows-maxwell` | Windows 11 desktop, Intel i7-980 (Westmere, SSE4.2, no AVX), NVIDIA GeForce GTX Titan X (Maxwell, 12 GB), 2560×1440 display | `msvc-release` | `self-hosted`, `windows`, `gpu`, `maxwell` |
-| `linux-pascal` | Linux server, headless (no X11, no Wayland), first-generation Skylake Xeon, NVIDIA GeForce GTX Titan Xp (Pascal, 12 GB) | `linux-clang-debug` | `self-hosted`, `linux`, `gpu`, `pascal`, `headless` |
+| `windows-maxwell` | Windows 11 desktop, Intel i7-980 (Westmere, 2010: SSE4.2, no AVX) **until the owner's board swap**, NVIDIA GeForce GTX Titan X (Maxwell, 12 GB), 2560×1440 display | `msvc-release-v2` | `self-hosted`, `windows`, `gpu`, `maxwell` |
+| `linux-pascal` | Linux server, headless (no X11, no Wayland), Intel Xeon E5-2670 (Sandy Bridge-EP, 2012: AVX, **no** AVX2, FMA or BMI2), NVIDIA GeForce GTX Titan Xp (Pascal, 12 GB) | `linux-clang-debug-v2` | `self-hosted`, `linux`, `gpu`, `pascal`, `headless` |
 
-The two presets are deliberately different: `msvc-release` on the slow Westmere box, because a
-release build is what a 30 fps target is measured in and a debug build of this engine on six 2010
-cores is not a weekly proposition; `linux-clang-debug` on the server, because asserts and iterator
-checking are worth more than speed there and it is the preset a Linux contributor runs.
+The two presets are deliberately different in everything but their baseline: a release build on the
+slow Westmere box, because a release build is what a 30 fps target is measured in and a debug build
+of this engine on six 2010 cores is not a weekly proposition; a Clang debug build on the server,
+because asserts and iterator checking are worth more than speed there and it is the preset a Linux
+contributor runs.
+
+## Both GPU runners are x86-64-v2, and that is what the `-v2` presets are for
+
+[ADR-0031](../adr/0031-minimum-cpu-x86-64-v3.md) made **x86-64-v3** the promised minimum CPU on
+2026-09-19: AVX2, FMA, BMI1/2, F16C, LZCNT, MOVBE. Neither of these machines has it.
+
+| Machine | CPU | Has | Missing from v3 |
+|---|---|---|---|
+| `windows-maxwell` | i7-980, Westmere, 2010 | SSE4.2, POPCNT | AVX, AVX2, FMA, BMI1, BMI2, F16C, LZCNT, MOVBE |
+| `linux-pascal` | Xeon E5-2670, Sandy Bridge-EP, 2012 | SSE4.2, POPCNT, **AVX** | AVX2, FMA, BMI1, BMI2, F16C, LZCNT, MOVBE |
+
+So `-DENGINE_CPU_BASELINE=v2` is not a temporary exception for one garage box: it is the **test
+baseline of the project's only two GPU machines that are not the development desktop**, and it
+stays as long as either of them does. The Sandy Bridge server in particular is the only Linux GPU
+runner there is, so retiring v2 would mean having no Linux GPU coverage at all.
+
+A v3 binary on either machine would trap on its first AVX2 instruction. It does not:
+`platform::require_cpu_baseline()` refuses first, with one line
+([platform](../subsystems/platform.md#the-startup-check-and-why-this-module-gives-up-the-arch-flag)).
+On the Xeon that line reads
+
+```
+engine: this build needs x86-64-v3 and this CPU has no AVX2, FMA, BMI1, BMI2, F16C, LZCNT, MOVBE
+(Intel(R) Xeon(R) CPU E5-2670 0 @ 2.60GHz); rebuild with -DENGINE_CPU_BASELINE=v2 ...
+```
+
+and the word to notice is the one that is **absent**: AVX is not in the list, because Sandy Bridge
+has it. A unit test pins that exact string (`core/platform/tests/cpu_baseline_tests.cpp`), so the
+message the runner's owner would read is checked on every build rather than the first time somebody
+uses the wrong preset. A run that builds `msvc-release` or `linux-clang-debug` on one of these
+machines is therefore not a mysterious failure; the log's first line names the flag to change.
+
+**There is no intermediate level for the Xeon, deliberately.** It has AVX and the Westmere does
+not, so an "AVX but not AVX2" tier between them is technically available — and it is not worth
+having. x86-64 defines v2, v3 and v4 and nothing between, so the tier would have to be invented and
+named here; it would add a third column to every build matrix, a third `ENGINE_CPU_BASELINE` value
+to test, and a third set of Jolt options, all for one machine. And what it would buy is small: AVX
+without FMA, without AVX2's integer operations and without BMI is 256-bit float arithmetic and
+little else, which is the half of v3 that matters least to this engine's hot paths. Two levels, one
+of which is only ever a *test* configuration, keeps the matrix small — which is the whole reason
+the microarchitecture levels are named rather than assembled from `-m` flags.
+
+**What retires the `-v2` presets** is both machines going, not either: the owner's Westmere board
+swap to a 4th-generation-or-newer part, *and* a replacement for the Sandy Bridge server. When that
+happens, change these two rows back to `msvc-release` and `linux-clang-debug`, delete the three
+`*-v2` presets and the `v2` branch of `cmake/EngineCpuBaseline.cmake`, and say so in a new ADR.
+The startup check stays either way: it is about users' machines, not about ours.
 
 Both of those machines have a toolchain on them. The next section is for the ones that never will.
 
@@ -175,7 +223,10 @@ mesh shaders), device creation with the required feature chain, compute, frames 
 render graph, bindless descriptors, the raster pass, capture, the shader library and its SPIR-V
 reflection of every shipped shader including the resolve, the CPU LOD reference in `geometry`, and
 every CPU test in the tree. On the Westmere box that CPU side is the point as much as
-the GPU: it is the machine that proves the build carries no ISA above the x86-64 baseline.
+the GPU: it is the machine that proves the **v2** build carries no instruction above x86-64-v2,
+which since [ADR-0031](../adr/0031-minimum-cpu-x86-64-v3.md) is a claim about one preset rather
+than about the tree. The claim about the tree is smaller and is checked elsewhere: a v3 binary
+that reaches a CPU without AVX2 says so and exits 78 rather than trapping.
 
 The headless server has no display, so `window::init()` fails there, the `window` tests and the
 swapchain test skip, and `engine-view` exits 3, which its test treats as a skip. The Windows runner
@@ -262,7 +313,7 @@ report instead. It works on both, and needs nothing installed beyond a built tre
 ```powershell
 build/msvc-release/bin/engine-cli gpu.adapters                      # Windows
 build/msvc-release/bin/engine-cli gpu.adapters --report gpu.json    # the same, as a file to send back
-build/linux-clang-debug/bin/engine-cli gpu.adapters                 # Linux
+build/linux-clang-debug-v2/bin/engine-cli gpu.adapters              # Linux
 ```
 
 `"available": true` with the GPU's name, `"tier": "raster"`, `VK_EXT_mesh_shader: false` and

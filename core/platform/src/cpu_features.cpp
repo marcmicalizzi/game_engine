@@ -65,6 +65,7 @@ CpuFeatures detect_cpu_features() {
     f.fma = bit(l1.ecx, 12);
     f.sse4_1 = bit(l1.ecx, 19);
     f.sse4_2 = bit(l1.ecx, 20);
+    f.movbe = bit(l1.ecx, 22);
     f.popcnt = bit(l1.ecx, 23);
     const bool osxsave = bit(l1.ecx, 27);
     const bool avx_cpu = bit(l1.ecx, 28);
@@ -102,6 +103,12 @@ CpuFeatures detect_cpu_features() {
   }
 
   const Regs ext0 = cpuid(0x80000000u, 0);
+  // LZCNT lives in AMD's extended leaf (the ABM bit) on both vendors; leaf 7's TZCNT bit is
+  // BMI1's and says nothing about it.
+  if (ext0.eax >= 0x80000001u) {
+    const Regs ext1 = cpuid(0x80000001u, 0);
+    f.lzcnt = bit(ext1.ecx, 5);
+  }
   if (ext0.eax >= 0x80000004u) {
     char* out = f.brand;
     for (u32 leaf = 0x80000002u; leaf <= 0x80000004u; ++leaf) {

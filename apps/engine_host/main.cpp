@@ -7,6 +7,7 @@
 #include "render_methods.h"
 
 #include <core/log/log.h>
+#include <core/platform/cpu_baseline.h>
 #include <domain/protocol/rpc.h>
 #include <domain/protocol/session.h>
 #include <foundation/io/vfs.h>
@@ -54,6 +55,7 @@ bool next_value(int argc, char** argv, int& i, std::string_view flag, std::strin
 }  // namespace
 
 int main(int argc, char** argv) {
+  engine::platform::require_cpu_baseline();  // ADR-0031, first statement
   std::string request;
   std::string log_spec;
   std::string log_json;

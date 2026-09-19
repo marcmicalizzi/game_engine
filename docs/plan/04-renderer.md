@@ -9,14 +9,16 @@ Provisional targets, to be confirmed once hardware is in hand:
 | Configuration | Target |
 |---|---|
 | 2560×1440, RTX 4070-class | 60 fps hybrid RT, internal resolution ≥ 67% with upscaler |
-| 2560×1440, GTX Titan X (Maxwell) with an i7-980: the project's minimum test machine (no mesh shaders, no ray tracing, SSE4.2 CPU) | Runs the baseline tier: cluster geometry through a vertex-shader path, raster lighting, no RT; 30 fps at reduced settings is the bar, and the build carries no ISA above x86-64 baseline so the CPU side runs unmodified |
+| 2560×1440, GTX Titan X (Maxwell) on a Haswell-class board: the project's minimum test machine (no mesh shaders, no ray tracing) | Runs the baseline tier: cluster geometry through a vertex-shader path, raster lighting, no RT; 30 fps at reduced settings is the bar |
 | 3840×2160, RTX 4080/5080-class | 60 fps hybrid RT with upscaler |
 | 11520×2160 surround, RTX 5090-class | 60 fps target, 30 fps floor; attention region at full shading rate, peripheral views at reduced rate |
 | Reference mode | Converged path trace; minutes per frame acceptable |
 
 The surround row is the configuration the project owner plays on. Well-optimized non-RT titles reach 70–100 fps there today and poorly optimized ones fail to hold 30; closing that gap with ray tracing enabled is the renderer's defining target.
 
-Non-goals for v1: primary-visibility path tracing in real time; non-RT GPUs as a quality target (they run the baseline tier); mobile.
+**The minimum CPU is separate from the minimum GPU, and is x86-64-v3** ([ADR-0031](../adr/0031-minimum-cpu-x86-64-v3.md), 2026-09-19): AVX2, FMA, BMI1/2, F16C, LZCNT and MOVBE, which means Haswell (2013) or Zen and newer, with 4 cores and 8 threads as the floor and 6+ cores recommended. Every CPU Windows 11 supports has it, and most current games list a 2015–2017 part as their minimum. Until 2026-09-19 the floor was the i7-980 (Westmere, 2010, SSE4.2 and no AVX) in the minimum test machine, and the whole tree was compiled to it. The project's **test** hardware is still below v3 — that desktop until its board is swapped, and the Xeon E5-2670 (Sandy Bridge, AVX but no AVX2) in the headless Linux GPU server, which is not being replaced — so the `*-v2` presets are a supported test configuration rather than a one-machine exception ([self-hosted runners](../ci/self-hosted-runners.md)). They are not a second shipping tier: a game built on this engine promises v3. **The minimum GPU does not move:** the GTX Titan X (Maxwell) is still the baseline tier, and a v3 build runs on it unchanged, because the CPU baseline and the GPU capability tier answer different questions.
+
+Non-goals for v1: primary-visibility path tracing in real time; non-RT GPUs as a quality target (they run the baseline tier); mobile; CPUs below x86-64-v3.
 
 ## 4.2 Frame architecture
 

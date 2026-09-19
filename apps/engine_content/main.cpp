@@ -21,6 +21,7 @@
 #include <core/jobs/job_system.h>
 #include <core/json/json.h>
 #include <core/log/log.h>
+#include <core/platform/cpu_baseline.h>
 #include <core/platform/process.h>
 #include <core/time/time.h>
 #include <domain/assets/gltf.h>
@@ -1814,6 +1815,7 @@ int read_command(int argc, char** argv, const char* name, int (*run)(const std::
 }  // namespace
 
 int main(int argc, char** argv) {
+  engine::platform::require_cpu_baseline();  // ADR-0031, first statement
   if (argc < 2) return usage(nullptr);
   const std::string_view command = argv[1];
   if (command == "--help" || command == "-h" || command == "help") {

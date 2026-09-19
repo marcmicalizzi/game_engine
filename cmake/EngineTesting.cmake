@@ -23,6 +23,11 @@ add_library(engine_test_main STATIC "${CMAKE_SOURCE_DIR}/tests/support/test_main
 target_include_directories(engine_test_main SYSTEM PUBLIC "${doctest_SOURCE_DIR}")
 target_compile_definitions(engine_test_main PUBLIC DOCTEST_CONFIG_USE_STD_HEADERS)
 target_include_directories(engine_test_main PUBLIC "${CMAKE_SOURCE_DIR}/tests/support")
+# The test main calls platform::require_cpu_baseline() first (ADR-0031), so every test
+# executable carries the check without its module having to ask for it. engine::platform is
+# declared later (core layer, and this file is included before add_subdirectory(core)); CMake
+# resolves the link at generate time, the same way engine_bench_main links engine::bench.
+target_link_libraries(engine_test_main PUBLIC engine::platform)
 
 # Banned-pattern lint as a test so CI cannot forget it.
 find_program(ENGINE_PWSH NAMES pwsh powershell)

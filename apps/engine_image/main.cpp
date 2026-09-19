@@ -8,6 +8,7 @@
 // measurement, not a failure, and it is the caller that decides what threshold means what.
 // Anything that stopped it from measuring -- a bad argument, a file that is not there or is
 // not an image, two images of different sizes -- exits 2. There is deliberately no exit 1.
+#include <core/platform/cpu_baseline.h>
 #include <core/time/time.h>
 #include <foundation/image/decode.h>
 #include <foundation/image/metrics.h>
@@ -289,6 +290,7 @@ int info_command(int argc, char** argv) {
 }  // namespace
 
 int main(int argc, char** argv) {
+  engine::platform::require_cpu_baseline();  // ADR-0031, first statement
   if (argc < 2) return usage(nullptr);
   const std::string_view command = argv[1];
   if (command == "--help" || command == "-h" || command == "help") {

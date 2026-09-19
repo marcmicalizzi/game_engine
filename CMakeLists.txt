@@ -15,6 +15,10 @@ set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 
 include(EngineOptions)
+# Before every include() and add_subdirectory() below: the CPU baseline is a directory property
+# and a target inherits it when it is created, so anything fetched or added earlier would be
+# compiled for a different machine than the rest of the tree (ADR-0031).
+include(EngineCpuBaseline)
 include(EngineWarnings)
 include(EngineModule)
 include(EngineTesting)

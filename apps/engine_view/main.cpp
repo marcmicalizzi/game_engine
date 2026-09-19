@@ -19,6 +19,7 @@
 #include <core/json/json_value.h>
 #include <core/log/log.h>
 #include <core/math/math.h>
+#include <core/platform/cpu_baseline.h>
 #include <core/platform/process.h>
 #include <core/time/time.h>
 #include <domain/geometry/cluster_pages.h>
@@ -971,6 +972,7 @@ int run_reference(const Options& options) {
 }  // namespace
 
 int main(int argc, char** argv) {
+  engine::platform::require_cpu_baseline();  // ADR-0031, first statement
   Options options;
   for (int i = 1; i < argc; ++i) {
     const std::string_view a = argv[i];

@@ -3,6 +3,7 @@
 // Because sessions persist their journal and undo position on disk, a sequence of separate
 // invocations behaves like one editing session.
 #include <core/json/json.h>
+#include <core/platform/cpu_baseline.h>
 #include <core/platform/process.h>
 
 #include <cstdio>
@@ -131,6 +132,7 @@ bool write_report(const std::string& path, std::string_view method, const JsonVa
 }  // namespace
 
 int main(int argc, char** argv) {
+  engine::platform::require_cpu_baseline();  // ADR-0031, first statement
   std::string host_path;
   std::string doc_dir;
   std::string doc_name;

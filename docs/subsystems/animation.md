@@ -245,6 +245,23 @@ This capability was built to find out what ADR-0027's contract is like from the 
 | `animation.tick.mixed` | **4.48 ms** | 0.45 µs | 5% / 15% / 30% / 50% across the four tiers |
 | `animation.pool.churn` | 7.3–7.5 ns | per slot | acquire + release, at 256, 4,096 and 65,536 slots |
 
+> **These are the x86-64-v2 numbers, and the default build is now v3.** The table above was taken
+> when the whole tree compiled without an arch flag; since [ADR-0031](../adr/0031-minimum-cpu-x86-64-v3.md)
+> (2026-09-19) every preset but the `*-v2` ones is `/arch:AVX2`, and **this module is the one that
+> got slower**: `lod0` **25.49 → 29.36 ms (+15.2%)**, `lod1` **13.13 → 15.11 ms (+15.1%)**,
+> `mixed` **4.55 → 5.17 ms (+13.6%)**, measured in three sessions that reproduce to under 1% a
+> side. `lod2` (−0.5%), `lod3` (+1.3%) and the pool (−0.3%) do not move.
+>
+> **It is not the sampler.** Dividing the tick rows by their update counts splits an instance in
+> two, and only one half moved: the sampler (LOD2, sample and no skin) is **1.658 → 1.651 µs an
+> update, unchanged**, while skinning (LOD1 minus LOD2 — `local_to_model` plus
+> `skinning_matrices`) is **0.967 → 1.372 µs, +42%**. So the 23 `slerp`s that point 3 below calls
+> the expensive half are exactly as fast as they were, and the 46 `Mat4` products that build a
+> 23-joint skeleton's skinning matrices are what `/arch:AVX2` made worse — a 4×4 product is four
+> 128-bit rows, and MSVC given 256-bit registers makes a worse choice for it. That is a codegen
+> problem in `domain/anim`, and it is **the open follow-up on this page**: fix the kernel, do not
+> exempt the module from the tree's baseline.
+
 Five things these say:
 
 1. **The tier mix is the cost, which is the LOD policy's whole claim.** The same population and the same clip cost **25.28 ms** with nothing coarsened and **4.48 ms** at a plausible distribution: **5.6×**, and it is the only reason a crowd of this size is affordable at all. A build where those two rows are close is a policy that is not working.

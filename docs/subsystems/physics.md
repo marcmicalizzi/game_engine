@@ -154,7 +154,9 @@ is there because the default breaks something:
 | `OVERRIDE_CXX_FLAGS` | ON | OFF | Replaces `CMAKE_CXX_FLAGS_DEBUG`/`RELEASE` wholesale, discarding the preset's flags and Debug's iterator checking. |
 | `USE_STATIC_MSVC_RUNTIME_LIBRARY` | ON | OFF | Builds Jolt against `/MT` while the engine is `/MD`: two C runtimes, two heaps, `LNK2038`. |
 | `CPP_RTTI_ENABLED` | OFF | **ON** | Compiles Jolt `-fno-rtti`. Our `JobSystemWithBarrier` subclass is compiled with RTTI, and under the Itanium ABI a polymorphic base with no typeinfo symbol is an undefined reference at link time — the exact case AGENTS.md's "RTTI stays on everywhere" rule exists for. |
-| `USE_AVX2`, `USE_AVX`, `USE_LZCNT`, `USE_TZCNT`, `USE_F16C` | ON | OFF | `target_compile_options(Jolt PUBLIC /arch:AVX2)` — **PUBLIC**, so it reaches every target that links physics, and the resulting binary crashes on the baseline machine ([self-hosted runners](../ci/self-hosted-runners.md): i7-980, Westmere, SSE4.2, no AVX). `USE_SSE4_1`/`USE_SSE4_2` stay on. |
+| `USE_AVX2`, `USE_AVX`, `USE_LZCNT`, `USE_TZCNT`, `USE_F16C` | ON | **`ENGINE_CPU_BASELINE`** | `target_compile_options(Jolt PUBLIC /arch:AVX2)` — **PUBLIC**, so whatever Jolt decides reaches every target that links physics. So it does not decide: these follow the tree's own baseline ([ADR-0031](../adr/0031-minimum-cpu-x86-64-v3.md)), which is on at `v3` and off at `v2`. `USE_SSE4_1`/`USE_SSE4_2` stay on at both. |
+| `USE_AVX512` | ON | OFF | AVX-512 is never a baseline ([ADR-0031](../adr/0031-minimum-cpu-x86-64-v3.md)): it is dispatch-only, and Jolt has no dispatch. |
+| `USE_FMADD` | ON | OFF | Contraction is what `CROSS_PLATFORM_DETERMINISTIC` costs, and Jolt ignores this option when that one is on. It stays off at every baseline rather than following it, because a switch that reads as if it did something and does not is worse than one that is off. |
 | `INTERPROCEDURAL_OPTIMIZATION` | ON | OFF | LTO on one static library in a tree that does not use it produces objects the other half's archiver cannot read. |
 | `ENABLE_ALL_WARNINGS` | ON | OFF | Judges Jolt's code with `-Wall -Werror`. Its headers are SYSTEM here; its sources are not ours to fix. |
 | `GENERATE_DEBUG_SYMBOLS` | ON | OFF | Adds a second `/Zi` on top of the preset's and an `/DEBUG` exe-linker flag in Jolt's directory scope. |
@@ -611,7 +613,9 @@ a four-a-side cage and phases twelve times shorter, because the release grid reg
 variants and at full length they cost a billed CI runner a minute per run (11 s now).
 
 **Performance notes.** `tools/dev.ps1 bench -Preset msvc-release -Filter "physics.*"`, measured on
-an i9-10980XE (18 cores), `RelWithDebInfo`, cross-platform determinism on, SSE4.2 baseline. One
+an i9-10980XE (18 cores), `RelWithDebInfo`, cross-platform determinism on, **SSE4.2 baseline —
+which is what `msvc-release` was until 2026-09-19 and is what `msvc-release-v2` is now**
+([ADR-0031](../adr/0031-minimum-cpu-x86-64-v3.md)). One
 machine settles layout and traversal decisions, not cross-machine defaults
 ([11 §11.8](../plan/11-performance-principles.md)). **This desktop is shared** — the owner runs GPU
 jobs on it and other agents compile on it — so a measurement is worth what its record of the
@@ -631,6 +635,16 @@ measured before the harness recorded anything.
 | 512-particle soft cube, 8 iterations | 945 | 1,156 | 1,226 |
 | 512-particle soft cube, 16 iterations | 1,857 | 2,277 | 2,401 |
 | **8** × 512-particle soft cube, 8 iterations | 7,475 | 2,236 | **1,159** |
+
+**The v3 build moves three of these rows, and not all the same way** ([ADR-0031](../adr/0031-minimum-cpu-x86-64-v3.md),
+2026-09-19; the table above is the v2/SSE4.2 measurement and the rest of it has not been re-taken).
+The 1,000-box step is **2,396 → 2,234 µs (−6.7%) at one worker** and **731 → 781 µs (+6.8%) at
+eight**, which is not a contradiction but Intel's AVX frequency licensing on this part: one core
+running 256-bit code boosts and eighteen do not. [E19](../experiments/e19-lattice-cage.md)'s
+default 216-element cage tick goes **428 → 484 µs (+13.1%)**, and the 512-particle soft cube is
+within noise (+1.7%). Jolt's own `USE_AVX2`/`USE_LZCNT`/`USE_TZCNT`/`USE_F16C` are what changed
+with the baseline; `CROSS_PLATFORM_DETERMINISTIC` and `USE_FMADD` did not, so none of this changes
+a simulation result.
 
 Every row here but one is within 2% of the figure first recorded on this page, which is the
 answer to "were those numbers taken on a loaded machine?" for the rigid-body path and for eight

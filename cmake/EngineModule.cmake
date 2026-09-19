@@ -411,7 +411,12 @@ function(engine_app)
 
   set(_target engine_${EA_NAME})
   add_executable(${_target} ${EA_SOURCES})
-  target_link_libraries(${_target} PRIVATE ${_dep_targets})
+  # engine::platform is linked into every app whether it asked for it or not: each app's main()
+  # calls platform::require_cpu_baseline() as its first statement (ADR-0031), so the CPU check
+  # is a property of being an app here rather than a dependency six CMakeLists have to remember.
+  # The E2E test target below has had it unconditionally since it was written, for its own
+  # reasons; this is the same idea one target over.
+  target_link_libraries(${_target} PRIVATE ${_dep_targets} engine::platform)
   target_compile_options(${_target} PRIVATE ${ENGINE_NO_EXCEPTIONS_FLAGS})
   engine_apply_warnings(${_target})
   set_target_properties(${_target} PROPERTIES

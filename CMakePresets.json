@@ -29,6 +29,12 @@
       "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo", "ENGINE_TRACY": "ON" }
     },
     {
+      "name": "msvc-release-v2",
+      "displayName": "MSVC Release, x86-64-v2 (the 2010 baseline machine only)",
+      "inherits": "msvc-release",
+      "cacheVariables": { "ENGINE_CPU_BASELINE": "v2" }
+    },
+    {
       "name": "msvc-asan",
       "displayName": "MSVC Debug + AddressSanitizer",
       "inherits": "msvc-debug",
@@ -73,6 +79,12 @@
       "cacheVariables": { "ENGINE_ASAN": "ON", "ENGINE_UBSAN": "ON" }
     },
     {
+      "name": "linux-clang-debug-v2",
+      "displayName": "Linux Clang Debug, x86-64-v2 (the Sandy Bridge GPU runner)",
+      "inherits": "linux-clang-debug",
+      "cacheVariables": { "ENGINE_CPU_BASELINE": "v2" }
+    },
+    {
       "name": "linux-clang-minimal",
       "displayName": "Linux Clang Debug, every optional capability OFF (ADR-0027)",
       "inherits": "linux-clang-debug",
@@ -94,32 +106,44 @@
         "CMAKE_CXX_COMPILER": "g++",
         "ENGINE_TRACY": "ON"
       }
+    },
+    {
+      "name": "linux-gcc-release-v2",
+      "displayName": "Linux GCC RelWithDebInfo, x86-64-v2 (the 2010 baseline machine only)",
+      "inherits": "linux-gcc-release",
+      "cacheVariables": { "ENGINE_CPU_BASELINE": "v2" }
     }
   ],
   "buildPresets": [
     { "name": "msvc-debug", "configurePreset": "msvc-debug" },
     { "name": "msvc-release", "configurePreset": "msvc-release" },
+    { "name": "msvc-release-v2", "configurePreset": "msvc-release-v2" },
     { "name": "msvc-asan", "configurePreset": "msvc-asan" },
     { "name": "msvc-minimal", "configurePreset": "msvc-minimal" },
     { "name": "msvc-no-ecs", "configurePreset": "msvc-no-ecs" },
     { "name": "clangcl-debug", "configurePreset": "clangcl-debug" },
     { "name": "linux-clang-debug", "configurePreset": "linux-clang-debug" },
+    { "name": "linux-clang-debug-v2", "configurePreset": "linux-clang-debug-v2" },
     { "name": "linux-clang-asan", "configurePreset": "linux-clang-asan" },
     { "name": "linux-clang-minimal", "configurePreset": "linux-clang-minimal" },
     { "name": "linux-clang-no-ecs", "configurePreset": "linux-clang-no-ecs" },
-    { "name": "linux-gcc-release", "configurePreset": "linux-gcc-release" }
+    { "name": "linux-gcc-release", "configurePreset": "linux-gcc-release" },
+    { "name": "linux-gcc-release-v2", "configurePreset": "linux-gcc-release-v2" }
   ],
   "testPresets": [
     { "name": "msvc-debug", "configurePreset": "msvc-debug", "output": { "outputOnFailure": true } },
     { "name": "msvc-release", "configurePreset": "msvc-release", "output": { "outputOnFailure": true } },
+    { "name": "msvc-release-v2", "configurePreset": "msvc-release-v2", "output": { "outputOnFailure": true } },
     { "name": "msvc-asan", "configurePreset": "msvc-asan", "output": { "outputOnFailure": true } },
     { "name": "msvc-minimal", "configurePreset": "msvc-minimal", "output": { "outputOnFailure": true } },
     { "name": "msvc-no-ecs", "configurePreset": "msvc-no-ecs", "output": { "outputOnFailure": true } },
     { "name": "clangcl-debug", "configurePreset": "clangcl-debug", "output": { "outputOnFailure": true } },
     { "name": "linux-clang-debug", "configurePreset": "linux-clang-debug", "output": { "outputOnFailure": true } },
+    { "name": "linux-clang-debug-v2", "configurePreset": "linux-clang-debug-v2", "output": { "outputOnFailure": true } },
     { "name": "linux-clang-asan", "configurePreset": "linux-clang-asan", "output": { "outputOnFailure": true } },
     { "name": "linux-clang-minimal", "configurePreset": "linux-clang-minimal", "output": { "outputOnFailure": true } },
     { "name": "linux-clang-no-ecs", "configurePreset": "linux-clang-no-ecs", "output": { "outputOnFailure": true } },
-    { "name": "linux-gcc-release", "configurePreset": "linux-gcc-release", "output": { "outputOnFailure": true } }
+    { "name": "linux-gcc-release", "configurePreset": "linux-gcc-release", "output": { "outputOnFailure": true } },
+    { "name": "linux-gcc-release-v2", "configurePreset": "linux-gcc-release-v2", "output": { "outputOnFailure": true } }
   ]
 }

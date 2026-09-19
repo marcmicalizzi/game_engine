@@ -26,6 +26,7 @@
 #include <core/base/types.h>
 #include <core/containers/vector.h>
 #include <core/json/json.h>
+#include <core/platform/cpu_baseline.h>
 #include <core/platform/thread.h>
 #include <core/time/time.h>
 #include <foundation/input/input.h>
@@ -796,6 +797,7 @@ int command_replay(const std::string& path) {
 }  // namespace
 
 int main(int argc, char** argv) {
+  engine::platform::require_cpu_baseline();  // ADR-0031, first statement
   if (argc < 2) {
     std::fputs(k_usage, stderr);
     return k_exit_usage;

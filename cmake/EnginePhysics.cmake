@@ -46,18 +46,35 @@ function(engine_fetch_jolt)
   set(CROSS_PLATFORM_DETERMINISTIC ON CACHE BOOL "" FORCE)
 
   # --- instruction set --------------------------------------------------------------------
-  # Jolt puts /arch:AVX2 on the Jolt target as PUBLIC, so it would reach every target that
-  # links physics. The baseline machine (docs/ci/self-hosted-runners.md: i7-980, Westmere) has
-  # SSE4.2 and no AVX, LZCNT, TZCNT or F16C, and the rest of the tree compiles for the same
-  # baseline. FMADD is off anyway under CROSS_PLATFORM_DETERMINISTIC.
+  # Jolt is the one dependency here that publishes an arch flag: it puts /arch:AVX2 (or the
+  # -m flags) on the Jolt target as **PUBLIC**, so whatever it decides reaches every target
+  # that links physics. So it does not decide. These options follow ENGINE_CPU_BASELINE
+  # (cmake/EngineCpuBaseline.cmake, ADR-0031), which is also what the rest of the tree is
+  # compiled with, and the JPH_USE_* defines Jolt's headers change shape with therefore agree
+  # with the flags the library was built with — which is the thing physics.md's "Why nothing
+  # from Jolt is public" says silently goes wrong when it does not.
+  #
+  # Until 2026-09-19 every one of these was OFF, because the minimum machine was an i7-980
+  # (Westmere: SSE4.2, no AVX). The minimum is now x86-64-v3 and the v2 build is what that one
+  # machine gets; ADR-0031 has the measurements, including what this change bought physics.
   set(USE_SSE4_1 ON CACHE BOOL "" FORCE)
   set(USE_SSE4_2 ON CACHE BOOL "" FORCE)
-  set(USE_AVX OFF CACHE BOOL "" FORCE)
-  set(USE_AVX2 OFF CACHE BOOL "" FORCE)
+  if(ENGINE_CPU_BASELINE STREQUAL "v3")
+    set(_engine_jolt_v3 ON)
+  else()
+    set(_engine_jolt_v3 OFF)
+  endif()
+  set(USE_AVX ${_engine_jolt_v3} CACHE BOOL "" FORCE)
+  set(USE_AVX2 ${_engine_jolt_v3} CACHE BOOL "" FORCE)
+  set(USE_LZCNT ${_engine_jolt_v3} CACHE BOOL "" FORCE)
+  set(USE_F16C ${_engine_jolt_v3} CACHE BOOL "" FORCE)
+  # TZCNT is BMI1, which x86-64-v3 has, so it follows the baseline like the rest.
+  set(USE_TZCNT ${_engine_jolt_v3} CACHE BOOL "" FORCE)
+  # AVX-512 is never a baseline (ADR-0031): dispatch-only, and Jolt has no dispatch.
   set(USE_AVX512 OFF CACHE BOOL "" FORCE)
-  set(USE_LZCNT OFF CACHE BOOL "" FORCE)
-  set(USE_TZCNT OFF CACHE BOOL "" FORCE)
-  set(USE_F16C OFF CACHE BOOL "" FORCE)
+  # FMADD stays off at every baseline. Jolt itself ignores it under CROSS_PLATFORM_DETERMINISTIC
+  # — contraction is what determinism costs — so turning it on with the baseline would be a
+  # switch that reads as if it did something and does not.
   set(USE_FMADD OFF CACHE BOOL "" FORCE)
 
   # --- things we do not use -----------------------------------------------------------------
