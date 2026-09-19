@@ -862,6 +862,26 @@ TEST_CASE("cluster file: the cache key answers to everything that went into the 
   other = options;
   other.ray_tracing = !options.ray_tracing;
   CHECK(cluster_cache_key(0x1234'5678'9abc'def0ull, other, true, k_page_bytes) != key);
+  // The attribute metric and the seam rules, because they decide which triangles survive: a
+  // container built with one set of them is not the answer to a question that asked for another.
+  other = options;
+  other.normal_weight = options.normal_weight + 0.25f;
+  CHECK(cluster_cache_key(0x1234'5678'9abc'def0ull, other, true, k_page_bytes) != key);
+  other = options;
+  other.uv_weight = 0.0f;
+  CHECK(cluster_cache_key(0x1234'5678'9abc'def0ull, other, true, k_page_bytes) != key);
+  other = options;
+  other.uv_seams = SeamRule::none;
+  CHECK(cluster_cache_key(0x1234'5678'9abc'def0ull, other, true, k_page_bytes) != key);
+  other = options;
+  other.uv_seams = SeamRule::lock;
+  CHECK(cluster_cache_key(0x1234'5678'9abc'def0ull, other, true, k_page_bytes) != key);
+  other = options;
+  other.normal_seams = SeamRule::protect;
+  CHECK(cluster_cache_key(0x1234'5678'9abc'def0ull, other, true, k_page_bytes) != key);
+  other = options;
+  other.skin_seams = SeamRule::none;
+  CHECK(cluster_cache_key(0x1234'5678'9abc'def0ull, other, true, k_page_bytes) != key);
   // And the page target, because paging renumbers the clusters: two page sizes are two
   // containers, and "no pages" is a third.
   CHECK(cluster_cache_key(0x1234'5678'9abc'def0ull, options, true, k_page_bytes / 2) != key);

@@ -13,8 +13,10 @@
 // cluster_cull.slang evaluates the same test as `lod_selects` below.
 //
 // Built with meshoptimizer's clusterlod (demo/clusterlod.h, MIT): clusterize, partition into
-// groups, simplify each group, repeat. Positions only for now; attributes, quantization, and
-// pages follow.
+// groups, simplify each group, repeat. The simplifier is **told where the atlas seams are** and
+// given the UVs as a weighted attribute, because a textured mesh cannot be simplified correctly
+// without the first and is measurably better for the second: see `ClusterLodOptions` below and
+// docs/subsystems/geometry.md, "What the simplifier is given, and why".
 
 #include <domain/geometry/cluster.h>
 
@@ -32,11 +34,65 @@ struct ClusterLodDesc {
 
 inline constexpr f32 k_lod_terminal_error = 3.402823466e+38f;  // FLT_MAX: never coarse enough
 
+// What a collapse may do at a vertex where an attribute is discontinuous — the edge of a UV
+// atlas island, a hard shading edge, a skin-weight split. It matters because clusterlod runs
+// meshoptimizer's **permissive** simplification by default, and permissive means exactly "a
+// collapse may cross an attribute discontinuity unless the vertex is tagged"
+// (`meshopt_SimplifyPermissive`). Untagged, a simplified triangle can therefore span two
+// unrelated parts of an atlas and interpolate the texture across both.
+enum class SeamRule : u8 {
+  // Tag nothing. What the builder did before 2026-09-19; kept so the defect can be measured
+  // against the fix rather than described.
+  none,
+  // `meshopt_SimplifyVertex_Protect`: the vertex stays a seam vertex under permissive mode, so
+  // a collapse may still slide *along* the seam but never *across* it. This is the rule
+  // meshoptimizer's own cluster-LOD sample uses, and the default here.
+  protect,
+  // `meshopt_SimplifyVertex_Lock`: the vertex does not move at all. Strictly stronger than
+  // `protect` and strictly more expensive in triangles; measured in geometry.md.
+  lock,
+};
+
 struct ClusterLodOptions {
   u32 max_triangles = 124;   // per cluster, 4..256
   u32 max_vertices = 64;     // per cluster, at most 255
   bool ray_tracing = false;  // clusterlod's RT-oriented defaults (smaller, spatially compact)
   bool normal_cones = true;  // false: k_cone_none on every cluster (see ClusterBuildOptions)
+
+  // ---- attribute-aware simplification ----------------------------------------------------
+  //
+  // The weights convert an attribute unit into a length. meshoptimizer normalizes the positions
+  // of the subset it is simplifying by that subset's own extent and multiplies each attribute by
+  // its weight, so a weight of w makes one unit of attribute error worth w times the *group's*
+  // size of geometric error — a scale-free number, and the one knob that says how much of the
+  // picture a triangle is allowed to cost. A weight of 0 drops the term and its cost (the
+  // simplifier skips attributes with no weight); both zero and `SeamRule::none` on every seam
+  // reproduces the position-only build exactly.
+  //
+  // The defaults are measured rather than inherited, and the measurement is worth knowing before
+  // changing them (geometry.md has the table). A **UV** weight of 0.5 costs nothing on any mesh
+  // measured — on a sane parametrization the UV is locally affine in the position, so the term is
+  // nearly redundant with the position term and only bites where a collapse *shears* the texture,
+  // which is what it is there for. A **normal** weight is a different animal: at 0.5 it makes a
+  // 129x129 heightfield draw at full detail where it used to draw half, and four times the
+  // triangles at four times the distance, because a normal delta is an absolute number that does
+  // not shrink as the group does. It is therefore **off by default**: it buys shading accuracy
+  // that the LOD threshold already buys more cheaply, and it does nothing at all for the atlas
+  // defect the seam rules below exist for.
+  f32 normal_weight = 0.0f;  // three floats, the vertex normal; 0.1 costs ~28%, 0.5 costs 2-4x
+  f32 uv_weight = 0.5f;      // two floats, the first UV set
+  // Where an atlas island ends. This is the one that fixes the defect: without it a group of
+  // clusters spanning twenty islands simplifies as though the atlas were continuous.
+  SeamRule uv_seams = SeamRule::protect;
+  // Where a hard shading edge is. Off by default: it costs triangles on every mechanical model
+  // and the normal *weight* already prices the shading error, while a UV discontinuity is not a
+  // price but a discontinuity — see geometry.md for the measurement behind the difference.
+  SeamRule normal_seams = SeamRule::none;
+  // A skin binding is per vertex too, and `weld_vertices` deliberately keeps two coincident
+  // vertices with different weights apart; merging their wedges here would undo that and hand
+  // one surface the other's deformation. Protecting them costs nothing on a rigid mesh, which
+  // has no such pairs at all.
+  SeamRule skin_seams = SeamRule::protect;
 };
 
 struct ClusterLodMesh {
@@ -136,5 +192,63 @@ bool merge_cluster_meshes(std::span<const ClusterLodMesh> parts, ClusterLodMesh&
 // lists concatenated with each shifted by the source vertex counts of the parts before it.
 bool validate_cluster_lod(const ClusterLodMesh& mesh, std::span<const u32> source_indices,
                           std::string* error = nullptr);
+
+// ---- how much of the *picture* a cut costs ------------------------------------------------
+//
+// `ClusterLodDesc`'s two errors bound how far a cut has moved the **surface**. They say nothing
+// about how far it has moved the surface's **attributes**, and on a textured mesh that is the
+// term a viewer sees first: a simplified triangle that interpolates its UVs across two unrelated
+// atlas islands paints one part of the model with another part's texture while its silhouette is
+// still within a pixel of the truth. This is the CPU measurement that catches that, needs no GPU,
+// and is what the seam rules above are judged by.
+//
+// The method: sample the **finest** surface (the level-0 clusters), find the closest point on the
+// triangles of `cut`, interpolate both meshes' stored attributes at those two points, and report
+// how far apart they are. Closest point rather than a ray along the normal because it is
+// unconditionally defined and needs no tolerance of its own; the cut approximates the fine
+// surface, so the two agree wherever the simplification was honest.
+//
+// UV distance is reported in **texels of an atlas of `uv_texels` a side**, because that is the
+// unit the damage is visible in and the unit a content author reasons in. The floor of the
+// measurement is the format's own: `VertexAttributes` stores a UV as two half floats, whose
+// spacing near 1.0 is about 0.0005 — two texels of 4096 — so a tolerance under about four texels
+// measures the encoding rather than the simplifier.
+struct AttributeErrorOptions {
+  f32 uv_texels = 4096.0f;           // the atlas size a UV delta is reported in texels of
+  f32 uv_tolerance_texels = 8.0f;    // over this, a sample counts as an outlier
+  f32 normal_tolerance_deg = 20.0f;  // over this, a sample counts as an outlier
+  // Cap on the samples taken, so a 540 k-triangle model is measurable in a test's worth of time.
+  // Level-0 triangles are taken at a fixed stride, so the result is a function of the mesh alone
+  // and two runs agree to the bit. 0 takes every triangle.
+  u32 max_samples = 20000;
+};
+
+struct AttributeError {
+  u32 samples = 0;
+  u32 uv_outliers = 0;      // samples whose UV moved more than the tolerance
+  u32 normal_outliers = 0;  // samples whose normal turned more than the tolerance
+  u32 unmatched = 0;        // samples with no triangle of the cut anywhere near them
+  f32 uv_mean_texels = 0.0f;
+  f32 uv_p99_texels = 0.0f;
+  f32 uv_max_texels = 0.0f;
+  f32 normal_mean_deg = 0.0f;
+  f32 normal_p99_deg = 0.0f;
+  f32 normal_max_deg = 0.0f;
+  // The headline number: the share of the finest surface a coarse cut paints with the wrong part
+  // of the atlas. On a clean simplification it is a fraction of a percent; a build that collapses
+  // across islands puts it in the tens of percent.
+  f32 uv_outlier_fraction() const noexcept {
+    return samples == 0 ? 0.0f : static_cast<f32>(uv_outliers) / static_cast<f32>(samples);
+  }
+  f32 normal_outlier_fraction() const noexcept {
+    return samples == 0 ? 0.0f : static_cast<f32>(normal_outliers) / static_cast<f32>(samples);
+  }
+};
+
+// `cut` is a list of cluster indices — what `select_lod`, `select_lod_raw` or a level's own range
+// produced. Fails on a mesh with no attributes, an empty cut, or an index out of range.
+bool measure_lod_attribute_error(const ClusterLodMesh& mesh, std::span<const u32> cut,
+                                 const AttributeErrorOptions& options, AttributeError& out,
+                                 std::string* error = nullptr);
 
 }  // namespace engine::geometry

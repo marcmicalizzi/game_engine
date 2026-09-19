@@ -390,7 +390,13 @@ bool read_cluster_file_identity(std::string_view path, u64& source_hash, u64& bu
 //    entry built at 5 from a GLB has none of them, so it draws that mesh untextured while the
 //    glTF beside it draws it textured — the same mesh, two pictures, depending on whether the
 //    cache was warm. Such an entry is not merely missing a section: it is the wrong answer.
-inline constexpr u32 k_cluster_cache_version = 6;
+// 7: the LOD simplifier is given the normals and the UVs as weighted attributes and is told
+//    where the atlas seams are (`ClusterLodOptions::normal_weight`/`uv_weight`/`uv_seams`,
+//    geometry.md "What the simplifier is given, and why"). Every entry built at 6 or earlier was
+//    simplified in meshoptimizer's *permissive* mode with no attribute metric and no seam tags,
+//    so on a fragmented atlas its coarse levels interpolate the texture across unrelated islands.
+//    Such an entry is not missing anything the reader can add: its triangles are the wrong ones.
+inline constexpr u32 k_cluster_cache_version = 7;
 
 // The cache key: the source's content hash (`assets::source_mesh_hash`) mixed with the build
 // options and the version above. `page_bytes` is the streaming page target the container was

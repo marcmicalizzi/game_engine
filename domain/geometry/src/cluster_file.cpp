@@ -928,8 +928,17 @@ u64 cluster_cache_key(u64 source_hash, const ClusterLodOptions& options, bool we
   key = hash_combine(key, options.max_triangles);
   key = hash_combine(key, options.max_vertices);
   const u64 flags = (options.ray_tracing ? 1ull : 0ull) | (options.normal_cones ? 2ull : 0ull) |
-                    (weld ? 4ull : 0ull);
+                    (weld ? 4ull : 0ull) | (static_cast<u64>(options.uv_seams) << 3) |
+                    (static_cast<u64>(options.normal_seams) << 5) |
+                    (static_cast<u64>(options.skin_seams) << 7);
   key = hash_combine(key, flags);
+  // The attribute weights change what the simplifier keeps, so two weights are two meshes. The
+  // bits of the float are the identity, not its value, so a weight that reads the same reads the
+  // same everywhere.
+  u32 weight_bits[2] = {};
+  std::memcpy(&weight_bits[0], &options.normal_weight, sizeof(f32));
+  std::memcpy(&weight_bits[1], &options.uv_weight, sizeof(f32));
+  key = hash_combine(key, (u64{weight_bits[0]} << 32) | u64{weight_bits[1]});
   return hash_combine(key, page_bytes);
 }
 
