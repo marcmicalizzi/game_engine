@@ -581,6 +581,24 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
     geometry::ClusterMeshPart part;
     part.cluster_count = out.lod.mesh.clusters.size();
     part.leaf_cluster_count = out.lod.level_cluster_counts[0];
+    // **Where the leaves are has to be found, not assumed.** This branch takes a DAG as it
+    // arrived, and a DAG read from a `.clusters` container arrived in **page order** — coarse
+    // first, leaves last ([geometry](geometry.md), "Pages and streaming") — whether or not anyone
+    // asked to stream from it, because the page layout is part of the derived-data cache key and
+    // every container is written that way. Leaving `first_leaf_cluster` at zero therefore pointed
+    // every consumer of it at the *coarsest* clusters of the mesh. The camera is the one that
+    // showed it: it frames the leaves' bounds, a coarse cluster's sphere is looser than the
+    // surface it stands for, and the looseness depends on how far the simplifier got — so two
+    // builds of one mesh that differ only in their coarse levels drew it at two different sizes.
+    // Found comparing a seam-aware LOD build against a position-only one, whose pictures
+    // disagreed by 0.23 FLIP at the *finest* threshold, where they draw the same triangles.
+    part.first_leaf_cluster = 0;
+    for (u32 i = 0; i < out.lod.lod.size(); ++i) {
+      if (out.lod.lod[i].level == 0) {
+        part.first_leaf_cluster = i;
+        break;
+      }
+    }
     part.quant_origin = out.lod.mesh.quant_origin;
     part.quant_scale = out.lod.mesh.quant_scale;
     out.parts.push_back(part);
@@ -594,8 +612,8 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
     instances.clear();
     Vec3 mesh_center{};
     f32 mesh_radius = 1.0f;
-    mesh_bounds(out.lod, out.parts[0].first_cluster, out.parts[0].leaf_cluster_count, mesh_center,
-                mesh_radius);
+    mesh_bounds(out.lod, out.parts[0].first_cluster + out.parts[0].first_leaf_cluster,
+                out.parts[0].leaf_cluster_count, mesh_center, mesh_radius);
     make_instance_grid(resolved.grid_instances, mesh_radius, resolved.grid_joints, 0.0f, instances);
   } else if (instances.empty()) {
     instances.push_back(SceneInstance{0, Transform3::identity()});
@@ -655,8 +673,16 @@ void update_scene_bounds(SceneData& out) {
     Vector<Vec3> centers(out.parts.size());
     Vector<f32> radii(out.parts.size(), 0.0f);
     for (u32 m = 0; m < out.parts.size(); ++m) {
-      mesh_bounds(out.lod, out.parts[m].first_cluster, out.parts[m].leaf_cluster_count, centers[m],
-                  radii[m]);
+      // `first_leaf_cluster` is not decoration: a **paged** mesh is ordered coarse to fine, so its
+      // leaves are at the *end* of its run and `first_cluster` alone names the coarsest clusters
+      // instead. Their spheres cover the same surface but not the same volume — a coarse cluster's
+      // sphere is loose — so framing them gave a camera distance that depended on the shape of the
+      // DAG. Two builds of one mesh that differ only in how far they could simplify then drew it
+      // at two different sizes, which is how this was found: comparing a seam-aware LOD build
+      // against a position-only one, the pictures disagreed by 0.23 FLIP at the *finest* threshold,
+      // where they draw exactly the same triangles.
+      mesh_bounds(out.lod, out.parts[m].first_cluster + out.parts[m].first_leaf_cluster,
+                  out.parts[m].leaf_cluster_count, centers[m], radii[m]);
     }
     // A skinned instance's bounds are its bind pose's plus the displacement bound, for the same
     // reason the cull pass inflates its spheres: the camera has to frame the character wherever

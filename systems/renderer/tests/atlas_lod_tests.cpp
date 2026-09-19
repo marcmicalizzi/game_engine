@@ -12,6 +12,9 @@
 // The scene is procedural, so this case needs no fixture file, no sample asset and no cache
 // entry; it skips with a message on a machine with no Vulkan device, exactly as engine-view
 // exits 3.
+#include <domain/geometry/cluster_file.h>
+#include <domain/geometry/cluster_pages.h>
+#include <domain/geometry/stress_mesh.h>
 #include <domain/gfx/device.h>
 #include <foundation/image/metrics.h>
 #include <systems/renderer/capture.h>
@@ -21,6 +24,7 @@
 #include <systems/renderer/settings.h>
 
 #include <doctest/doctest.h>
+#include <test_temp_dir.h>
 
 #include <string>
 
@@ -198,4 +202,56 @@ TEST_CASE("renderer: a coarse cut of a shredded atlas paints the same colours as
   CHECK(metrics.psnr > 30.0f);
   CHECK(before.flip_mean > metrics.flip_mean * 3.0f);
   CHECK(before.psnr < metrics.psnr - 6.0f);
+}
+
+TEST_CASE("renderer: a paged container's leaves are where the part says they are") {
+  // Found while measuring the seam rule, and it is the reason that measurement was wrong twice.
+  // A `.clusters` container's clusters are in **page order** — coarse first, leaves last — and
+  // the single-mesh load path built its `ClusterMeshPart` by hand with `first_leaf_cluster` left
+  // at zero, so everything that asks a part where its leaves are got the *coarsest* clusters
+  // instead. The camera is what showed it: it frames the leaves' bounds, a coarse cluster's
+  // sphere is looser than the surface it stands for, and how loose depends on how far the
+  // simplifier got — so two builds of one mesh that differ only in their coarse levels were drawn
+  // at two different sizes, and their pictures disagreed by 0.23 FLIP at the finest threshold,
+  // where they draw exactly the same triangles. With this right they are byte-identical.
+  engine::test::TempDir temp("renderer_paged_leaves");
+  geometry::ShreddedAtlasOptions options;
+  options.segments = 48;
+  options.rings = 24;
+  geometry::ShreddedAtlasMesh fixture;
+  geometry::build_shredded_atlas_torus(options, fixture);
+  geometry::AttributeSource attributes;
+  attributes.normals = std::span<const Vec3>(fixture.normals.data(), fixture.normals.size());
+  attributes.uvs = std::span<const Vec2>(fixture.uvs.data(), fixture.uvs.size());
+  geometry::ClusterFileData file;
+  std::string error;
+  REQUIRE_MESSAGE(
+      geometry::build_cluster_lod(fixture.positions, fixture.indices, geometry::ClusterLodOptions{},
+                                  file.mesh, &error, attributes),
+      error);
+  geometry::ClusterPagesOptions page_options;
+  page_options.page_bytes = 16 * 1024;  // several pages, so the leaves really do move to the end
+  REQUIRE_MESSAGE(
+      geometry::build_cluster_pages(file.mesh, page_options, file.pages, &error, nullptr), error);
+  const std::string path = temp.file("fixture.clusters");
+  REQUIRE_MESSAGE(geometry::write_cluster_file(path, file, &error), error);
+
+  SceneDesc desc;
+  desc.meshes.push_back(path);
+  desc.cache = false;
+  SceneData data;
+  REQUIRE_MESSAGE(load_scene(desc, data, error), error);
+  REQUIRE(data.parts.size() == 1);
+  const geometry::ClusterMeshPart& part = data.parts[0];
+  REQUIRE(part.leaf_cluster_count > 0);
+  REQUIRE(part.first_leaf_cluster + part.leaf_cluster_count <= part.cluster_count);
+  // The leaves are a contiguous run at `first_leaf_cluster`, and nothing before it is one.
+  for (u32 i = 0; i < part.cluster_count; ++i) {
+    const bool leaf = data.lod.lod[part.first_cluster + i].level == 0;
+    CHECK(leaf == (i >= part.first_leaf_cluster));
+  }
+  // And a paged container really is the case that used to be wrong: its leaves are not at zero.
+  CHECK(part.first_leaf_cluster > 0);
+  MESSAGE("paged container: " << part.cluster_count << " clusters, " << part.leaf_cluster_count
+                              << " leaves starting at " << part.first_leaf_cluster);
 }
