@@ -6,6 +6,7 @@
 #include <foundation/io/vfs.h>
 
 #include <doctest/doctest.h>
+#include <test_paths.h>
 #include <test_temp_dir.h>
 
 #include <chrono>
@@ -98,6 +99,22 @@ TEST_CASE("shader reflection: entry points, workgroup sizes, bindings, push cons
   CHECK(error.find("SPIR-V") != std::string::npos);
 }
 
+namespace {
+
+// The build's `shaders/manifest.json`, or nothing at all when this run came out of a test bundle
+// (tests/support/test_paths.h). The manifest is the one thing `tools/package-tests.ps1`
+// deliberately leaves out: it names absolute paths into the build tree and the pinned Slang
+// compiler under `_deps`, which is a toolchain and not a test fixture — and a bundle exists
+// precisely for machines with no toolchain. The two cases that need it say so and stop; the
+// reflection of every shipped shader, which is what those cases are really about, runs from the
+// embedded SPIR-V and needs no file.
+std::string build_manifest() {
+  const std::string path = test::data_path(ENGINE_SHADER_MANIFEST, "shaders/manifest.json");
+  return test::path_exists(path) ? path : std::string{};
+}
+
+}  // namespace
+
 TEST_CASE("shader library: embedded shaders, the build manifest, and hot reload through slangc") {
   gfx::Device device;
   std::string error;
@@ -120,8 +137,18 @@ TEST_CASE("shader library: embedded shaders, the build manifest, and hot reload 
   CHECK(library.get("nope", &error) == nullptr);
   CHECK(error.find("unknown shader") != std::string::npos);
 
+  const std::string build_manifest_path = build_manifest();
+  if (build_manifest_path.empty()) {
+    MESSAGE(
+        "no shaders/manifest.json here: the rest of this case needs the build tree and the "
+        "Slang compiler, which a test bundle does not carry");
+    library.destroy();
+    if (have_device) device.destroy();
+    return;
+  }
+
   // The manifest the build wrote: the same shader from its .spv file hashes identically.
-  REQUIRE_MESSAGE(library.load_manifest(ENGINE_SHADER_MANIFEST, &error), error);
+  REQUIRE_MESSAGE(library.load_manifest(build_manifest_path, &error), error);
   CHECK(library.count() >= 6);
   CHECK_FALSE(library.compiler().empty());
   const gfx::Shader* embedded_mesh = nullptr;
@@ -222,10 +249,17 @@ TEST_CASE("shader library: embedded shaders, the build manifest, and hot reload 
 TEST_CASE("shader library: hot reload follows #include, transitively") {
   // No device: this is about file timestamps and the compiler, both of which work on a machine
   // with no GPU, which is where CI runs it.
+  const std::string build_manifest_path = build_manifest();
+  if (build_manifest_path.empty()) {
+    MESSAGE(
+        "no shaders/manifest.json here: hot reload needs the build tree and the Slang "
+        "compiler, which a test bundle does not carry");
+    return;
+  }
   gfx::ShaderLibrary library;
   std::string error;
   REQUIRE(library.create(nullptr, &error));
-  REQUIRE_MESSAGE(library.load_manifest(ENGINE_SHADER_MANIFEST, &error), error);
+  REQUIRE_MESSAGE(library.load_manifest(build_manifest_path, &error), error);
 
   // The shipped shaders include shaders/scene.slang, and the resolve includes brdf.slang as
   // well; whatever the exact set is on the day, the library has to have found it.

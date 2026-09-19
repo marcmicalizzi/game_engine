@@ -10,6 +10,7 @@
 #include <foundation/io/vfs.h>
 
 #include <doctest/doctest.h>
+#include <test_paths.h>
 #include <test_temp_dir.h>
 
 #include <filesystem>
@@ -26,9 +27,15 @@ struct Run {
 };
 
 // The child's stderr is inherited rather than merged, so stdout stays pure JSON lines.
+// The built executable, or the bundle's copy of it (tests/support/test_paths.h).
+const std::string& input_exe() {
+  static const std::string path = test::app_path(ENGINE_APP_PATH);
+  return path;
+}
+
 Run engine_input(std::vector<std::string> args) {
   std::vector<std::string_view> argv;
-  argv.push_back(ENGINE_APP_PATH);
+  argv.push_back(input_exe());
   for (const std::string& a : args)
     argv.push_back(a);
   platform::Process p;

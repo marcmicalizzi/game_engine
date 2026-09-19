@@ -5,6 +5,7 @@
 #include <core/platform/process.h>
 
 #include <doctest/doctest.h>
+#include <test_paths.h>
 #include <test_temp_dir.h>
 
 #include <filesystem>
@@ -23,11 +24,21 @@ struct Run {
   JsonValue result;  // parsed stdout when it was JSON
 };
 
+// The built executables, or the bundle's copies of them (tests/support/test_paths.h).
+const std::string& cli_exe() {
+  static const std::string path = test::app_path(ENGINE_APP_PATH);
+  return path;
+}
+const std::string& host_exe() {
+  static const std::string path = test::app_path(ENGINE_HOST_PATH);
+  return path;
+}
+
 Run cli(std::vector<std::string> args) {
   std::vector<std::string_view> argv;
-  argv.push_back(ENGINE_APP_PATH);
+  argv.push_back(cli_exe());
   argv.push_back("--host");
-  argv.push_back(ENGINE_HOST_PATH);
+  argv.push_back(host_exe());
   for (const std::string& a : args)
     argv.push_back(a);
   platform::Process p;

@@ -12,6 +12,7 @@
 #include <core/platform/process.h>
 
 #include <doctest/doctest.h>
+#include <test_paths.h>
 #include <test_temp_dir.h>
 
 #include <filesystem>
@@ -28,13 +29,23 @@ constexpr i32 k_invalid_argument = 1004;
 
 // One engine-host process fed a series of requests, so the scene a `render.load` leaves behind
 // is still there for the calls after it.
+// The built executables, or the bundle's copies of them (tests/support/test_paths.h).
+const std::string& cli_exe() {
+  static const std::string path = test::app_path(ENGINE_APP_PATH);
+  return path;
+}
+const std::string& host_exe() {
+  static const std::string path = test::app_path(ENGINE_HOST_PATH);
+  return path;
+}
+
 struct Host {
   platform::Process process;
   u32 next_id = 1;
   bool ok = false;
 
   Host() {
-    const std::string_view argv[2] = {ENGINE_HOST_PATH, "--stdio"};
+    const std::string_view argv[2] = {host_exe(), "--stdio"};
     std::string error;
     if (!process.spawn(std::span<const std::string_view>(argv, 2), &error)) {
       FAIL("cannot spawn engine-host: " << error);
@@ -409,9 +420,9 @@ TEST_CASE("render: the reference integrator and the evaluate loop over the proto
 // which is how a script uses it.
 TEST_CASE("render: compare through engine-cli, on a machine with or without a GPU") {
   std::vector<std::string_view> argv;
-  argv.push_back(ENGINE_APP_PATH);
+  argv.push_back(cli_exe());
   argv.push_back("--host");
-  argv.push_back(ENGINE_HOST_PATH);
+  argv.push_back(host_exe());
   argv.push_back("render.compare");
   argv.push_back(R"({"a":"no-such-file.png","b":"no-such-file.png"})");
   platform::Process p;

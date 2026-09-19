@@ -11,6 +11,7 @@
 #include <foundation/image/png.h>
 
 #include <doctest/doctest.h>
+#include <test_paths.h>
 #include <test_temp_dir.h>
 
 #include <cstring>
@@ -47,7 +48,13 @@ Run run_app(const std::string& app, const std::vector<std::string>& args) {
   return run;
 }
 
-Run view(std::vector<std::string> args) { return run_app(ENGINE_APP_PATH, args); }
+// The built executable, or the bundle's copy of it (tests/support/test_paths.h).
+const std::string& view_exe() {
+  static const std::string path = test::app_path(ENGINE_APP_PATH);
+  return path;
+}
+
+Run view(std::vector<std::string> args) { return run_app(view_exe(), args); }
 
 // The JSON summary is the last line of a run; these read it.
 struct Summary {
@@ -330,7 +337,7 @@ std::string read_bytes(const std::string& path) {
 // engine-content is built into the same directory as engine-view, and writes the container the
 // viewer reads; the test drives the real pair rather than reimplementing either.
 std::string content_app() {
-  const std::filesystem::path app(ENGINE_APP_PATH);
+  const std::filesystem::path app(view_exe());
   return slashes(app.parent_path() / ("engine-content" + app.extension().string()));
 }
 

@@ -30,6 +30,7 @@ tools/dev.ps1 format                           # clang-format over the tree
 tools/dev.ps1 modules   [-Preset msvc-debug]   # prints build/<preset>/modules.json
 
 tools/new-capability.ps1 -Name cloth -Layer systems -Deps "base containers math" [-WithSchema] [-WithBench] [-WithProtocol]
+tools/package-tests.ps1  -Preset msvc-release [-Out <zip>] [-WithSamples] [-WithSymbols]
 ```
 
 The Linux half of CI runs on this machine too, in a container built from the same Ubuntu 24.04
@@ -44,6 +45,8 @@ Run it before pushing anything that touches C++: MSVC forgives a long list of th
 do not, and the Windows build stays silent about every one of them. See
 [local Linux builds](docs/ci/local-linux.md) for the volumes, the measured times, and what the
 first four runs found.
+
+`package-tests.ps1` packs a preset's tests, benches and apps into a ~36 MB zip that runs on a machine with **no toolchain, no checkout and no PowerShell 7** — unzip, double-click `run-tests.cmd`, send back `results.json`, `results.txt` and `adapters.json`. It is how the engine gets tried on hardware nobody here can log in to; see [docs/ci/self-hosted-runners.md](docs/ci/self-hosted-runners.md) ("Trying the engine on a machine with no toolchain"). A test finds its executables and its data through `tests/support/test_paths.h`, because the paths CMake bakes in do not survive the move.
 
 `new-capability.ps1` scaffolds a new capability — module, system skeleton, LOD policy, determinism stance, tests, size table, docs page, and the `ENGINE_WITH_<NAME>` switch that has to be removable — as ADR-0027 requires.
 

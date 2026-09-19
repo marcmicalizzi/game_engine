@@ -9,13 +9,16 @@
 // paragraph in the corpus README, and a row here.
 //
 // The logs are found through ENGINE_SOURCE_DIR (foundation/input/CMakeLists.txt defines it),
-// not relative to the executable, because a test binary can sit anywhere under build/.
+// not relative to the executable, because a test binary can sit anywhere under build/ — or
+// through the test bundle that carries a copy of them, when this run came out of one
+// (tests/support/test_paths.h, tools/package-tests.ps1).
 #include <core/base/types.h>
 #include <foundation/input/input.h>
 #include <foundation/input/input_log.h>
 #include <foundation/io/vfs.h>
 
 #include <doctest/doctest.h>
+#include <test_paths.h>
 #include <test_temp_dir.h>
 
 #include <bit>
@@ -186,7 +189,8 @@ using TempDir = test::TempDir;
 }  // namespace
 
 TEST_CASE("input: the committed device logs replay to the numbers they were recorded with") {
-  const std::string dir = io::join_path(ENGINE_SOURCE_DIR, "content/input-logs");
+  const std::string dir =
+      test::data_path(ENGINE_SOURCE_DIR "/content/input-logs", "content/input-logs");
   std::string readme;
   REQUIRE_MESSAGE(io::read_file(io::join_path(dir, "README.md"), readme) == io::Status::Ok, dir);
 

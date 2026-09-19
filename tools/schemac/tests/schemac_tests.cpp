@@ -5,6 +5,7 @@
 #include <foundation/io/vfs.h>
 
 #include <doctest/doctest.h>
+#include <test_paths.h>
 #include <test_temp_dir.h>
 
 #include <string>
@@ -12,6 +13,12 @@
 using namespace engine;
 
 namespace {
+
+// The built compiler, or the bundle's copy of it (tests/support/test_paths.h).
+const std::string& schemac_exe() {
+  static const std::string path = test::app_path(ENGINE_SCHEMAC_PATH);
+  return path;
+}
 
 // One directory per object under `<system temp>/engine-tests/`, not a fixed path: two copies of
 // this test — another worktree's build, a release build beside a debug one, CI running while a
@@ -29,8 +36,7 @@ Run compile(const TempDir& tmp, const char* name, std::string_view text) {
   const std::string file = io::join_path(tmp.path(), std::string(name) + ".schema");
   REQUIRE(io::write_file(file, text) == io::Status::Ok);
   const std::string out = io::join_path(tmp.path(), "out");
-  const std::string_view argv[] = {ENGINE_SCHEMAC_PATH, "--out",    out,
-                                   "--schema-root",     tmp.path(), file};
+  const std::string_view argv[] = {schemac_exe(), "--out", out, "--schema-root", tmp.path(), file};
   platform::Process p;
   std::string error;
   Run run;
@@ -190,7 +196,7 @@ TEST_CASE("schemac: a transient struct that is not a component is refused") {
 
 TEST_CASE("schemac: usage errors exit 2") {
   platform::Process p;
-  const std::string_view argv[] = {ENGINE_SCHEMAC_PATH};
+  const std::string_view argv[] = {schemac_exe()};
   REQUIRE(p.spawn(argv, nullptr, /*merge_stderr=*/true));
   std::string output;
   p.read_all(output);

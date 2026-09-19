@@ -28,6 +28,126 @@ release build is what a 30 fps target is measured in and a debug build of this e
 cores is not a weekly proposition; `linux-clang-debug` on the server, because asserts and iterator
 checking are worth more than speed there and it is the preset a Linux contributor runs.
 
+Both of those machines have a toolchain on them. The next section is for the ones that never will.
+
+## Trying the engine on a machine with no toolchain
+
+A runner is a commitment: Visual Studio, Git, PowerShell 7, outbound HTTPS for the dependency
+downloads, and a build directory that has to survive between runs. That is the right price for a
+machine that will report every week. It is far too high for the question *"does this even start on
+a Surface Pro?"* — a machine with 8 GB of RAM, a few gigabytes free, and no reason to ever carry a
+compiler.
+
+So there is a second, much cheaper path: **one zip, one double-click, one file back**.
+
+```powershell
+pwsh tools/package-tests.ps1 -Preset msvc-release            # on a machine that can build
+pwsh tools/package-tests.ps1 -Preset msvc-release -Out D:\share\engine-tests.zip -WithSamples
+```
+
+`tools/package-tests.ps1` writes `build/<preset>/engine-tests-<preset>-<commit>.zip`: **about 36 MB
+zipped and 109 MB unpacked** without the sample models, which is the size a USB stick or a home
+network does not think about. In it:
+
+- `bin/` — every test, bench and app executable the preset built, flattened into one directory (no
+  PDBs unless `-WithSymbols`, which roughly triples it). Flattened because `bundle.json` names each
+  test by its executable and the layout under `build/` is a CMake detail nobody at the far end
+  should have to learn.
+- `content/input-logs/` — the device-log corpus `foundation/input` replays. **Bundled rather than
+  skipped**: it is 176 KB and it is the only description of those three devices this repository
+  has, so a machine that cannot replay it is telling us something. `content/test-scenes/` rides
+  along at 17 KB; `content/samples/` only with `-WithSamples`.
+- `bundle.json` — the commit, the branch, the preset, the CPU baseline (read out of the build's
+  `CMakeCache.txt`, or `unknown` where that switch does not exist yet), and the **test list taken
+  from `ctest --show-only=json-v1`** rather than from a glob: each test's executable, arguments,
+  labels, `RESOURCE_LOCK` and timeout, because ctest is the only thing that knows them and the
+  runner has to serialize the GPU end-to-end tests exactly the way a ctest run does.
+- `run-tests.ps1`, `run-tests.cmd`, `README.txt`.
+
+**On the far end**: unzip the folder, double-click `run-tests.cmd`, send back `results.json`,
+`results.txt` and `adapters.json`. Nothing is installed and nothing outside the folder is changed.
+The window stays open at the end so a double-click does not flash and vanish.
+
+`run-tests.ps1` is **Windows PowerShell 5.1** and uses nothing from PowerShell 7, no CMake, no
+ctest and no Visual Studio, because the machines it is for have none of them. It does four things
+in order:
+
+1. **Checks the Visual C++ runtime by DLL name** — `VCRUNTIME140.dll`, `VCRUNTIME140_1.dll`,
+   `MSVCP140.dll` — and, when one is missing, names the installer (*Microsoft Visual C++ 2015-2022
+   Redistributable (x64)*) and its URL and stops with exit code 2. This is the first step for a
+   reason: without it Windows fails every load with `0xC0000135` and prints nothing a person can
+   act on, so all fifty tests "fail" for the same invisible cause and the report is worthless.
+2. **Records the machine**: CPU name, cores and threads, RAM, OS build and architecture, free disk,
+   and every GPU with its driver version and date.
+3. **Runs `bin\engine-cli gpu.adapters --report adapters.json`** and prints each adapter's verdict.
+   That file is the single most useful thing that comes back: the whole requirements table checked
+   against every device on the machine, with a plain-words verdict per device
+   ([gfx](../subsystems/gfx.md#what-a-device-has-to-have)).
+4. **Runs every test in `bundle.json`**, each with its own timeout (the manifest's, or
+   `-DefaultTimeoutSeconds`, 900), each with its own stdout and stderr kept under `logs/`, and with
+   two tests that share a resource lock never overlapping. `-Jobs 1` is the default, because these
+   machines are small; `-Jobs <n>` runs the lock-free tests `n` at a time and still keeps the
+   `e2e_apps` ones to themselves. `-Filter <regex>` runs a subset and `-ListOnly` prints the list
+   without running anything.
+
+`results.json` carries the machine, the bundle's identity, the adapter step, and every test's exit
+code, wall time, doctest counts and log path; `results.txt` is the same thing readable, with the
+**last 50 lines of anything that failed** inline so the first reply does not have to be "send me the
+log". **A test that found no GPU is not a failure**: it exits 0 with `device unavailable` in its
+output, and the runner counts it separately (`gpu_unavailable`) rather than as a pass that means
+more than it does. The script's exit code is 0 when nothing failed, 1 when something did, 2 when the
+bundle could not be run at all.
+
+**Six CTest tests are deliberately left out**, and `bundle.json` lists them with the reason so the
+far end can see it was on purpose: `lint.banned_patterns`, `tools.lint`, `tools.new_capability`,
+`docs_check` and `tools.docs_check` run `pwsh` over the source tree, and `tools.docs_gate` runs
+`bash` over a throwaway git repository. They are checks on the *repository*, not on the machine, and
+CI runs them on every push. Everything else — 47 tests, including every GPU suite and all five
+end-to-end app suites — is in the bundle.
+
+**The one thing the bundle does not carry is the shader manifest**, `build/<preset>/shaders/manifest.json`.
+It names absolute paths into the build tree and the pinned Slang compiler under `_deps`, which is a
+toolchain and not a test fixture — and a bundle exists precisely for machines without one. The two
+`shader_library_tests.cpp` cases that need it say so and stop; the SPIR-V reflection of every shipped
+shader, which is what those cases are really about, runs from the embedded bytes and needs no file.
+
+**Two things Windows PowerShell 5.1 does that cost an afternoon**, written down because the next
+person to touch `run-tests.ps1` will hit both and neither announces itself.
+
+- **`Start-Process -PassThru` hands back a `Process` whose `ExitCode` is empty** once the child has
+  gone, because nothing kept its native handle open. `HasExited` says `True`, `ExitCode` says
+  nothing, and the runner therefore reported **every test as failed** with a blank exit code while
+  their logs all ended in `[doctest] Status: SUCCESS!`. Reading `$proc.Handle` once, while the
+  process is still alive, is what makes the exit code answer afterwards; `Hold-ProcessHandle` does
+  exactly that and is called at every spawn.
+- **Every string `Get-Content` returns carries note properties** — `PSPath`, `PSDrive`,
+  `PSProvider` — and `PSDrive` leads to a provider whose `Drives` collection leads back to the
+  drive. Put one of those lines into an object and hand it to `ConvertTo-Json -Depth 12` and it
+  walks that cycle: measured here, writing `results.json` for two failed tests reached a **6 GB
+  working set and never finished**. The failure mode is a script that hangs *after* every test has
+  passed, which reads like a deadlock in the tests and is not one. `Read-Tail` casts to `[string[]]`,
+  which drops the wrapper and keeps the text.
+
+**Why the bundle can be trusted after being verified on the machine that built it.** The tests know
+their executables and their data as absolute paths CMake baked in (`ENGINE_APP_PATH`,
+`ENGINE_HOST_PATH`, `ENGINE_SCHEMAC_PATH`, `ENGINE_SOURCE_DIR`, `ENGINE_SHADER_MANIFEST`). On the
+target those paths name directories that do not exist — and on the *build* machine they name
+directories that do, so a bundle that merely *fell back* to its own copies would pass here by
+accident and prove nothing. `tests/support/test_paths.h` therefore makes `ENGINE_BUNDLE_ROOT`, which
+`run-tests.ps1` sets, **take over** rather than serve as a fallback: when it is set, every path is
+resolved inside the bundle and nothing consults the compiled-in one. That is what makes the
+out-of-tree run a real test of the bundle.
+
+**A self-hosted runner could use the same bundle later**, and the shape is worth writing down now
+even though no workflow does it: a `package` job on a machine with a toolchain runs
+`tools/package-tests.ps1` and uploads the zip as an artifact, and a `download-and-test` job on a
+runner with `runs-on: [self-hosted, windows, gpu]` downloads it, unzips it and runs
+`run-tests.ps1 -Jobs 1`, uploading `results.json` and `adapters.json`. The runner would then need no
+compiler, no CMake and no checkout — only the Actions agent — which is the difference between "this
+machine can host a runner" and "this machine has a developer's toolchain on it". The workflows are
+not changed now, because `gpu.yml`'s two machines build anyway and the download path would add a
+second way for a run to be wrong without covering anything the first one does not.
+
 ## What runs and what skips
 
 `tools/ci/gpu-smoke.ps1` and `tools/ci/gpu-smoke.sh` build the preset through `tools/dev.ps1`, print

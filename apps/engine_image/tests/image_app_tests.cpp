@@ -10,6 +10,7 @@
 #include <foundation/io/vfs.h>
 
 #include <doctest/doctest.h>
+#include <test_paths.h>
 #include <test_temp_dir.h>
 
 #include <cmath>
@@ -28,9 +29,15 @@ struct Run {
   JsonValue result;
 };
 
+// The built executable, or the bundle's copy of it (tests/support/test_paths.h).
+const std::string& image_exe() {
+  static const std::string path = test::app_path(ENGINE_APP_PATH);
+  return path;
+}
+
 Run image_app(std::vector<std::string> args, bool merge_stderr = false) {
   std::vector<std::string_view> argv;
-  argv.push_back(ENGINE_APP_PATH);
+  argv.push_back(image_exe());
   for (const std::string& a : args)
     argv.push_back(a);
   platform::Process p;
