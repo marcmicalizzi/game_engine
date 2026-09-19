@@ -22,13 +22,15 @@ namespace {
 // settlement's economy is worth simulating a kilometre away, and a character's fingers are not
 // worth sampling at forty metres. These are the one knob a game is most likely to move, which is
 // exactly ADR-0011's case for a tunable rather than a constant.
-tunables::Float lod_near{"animation.lod.near", 12.0f, 0.0f, 4096.0f,
+// `tunables::Float` takes f64: a float literal here is a widening conversion and
+// -Wdouble-promotion is an error on both Linux compilers.
+tunables::Float lod_near{"animation.lod.near", 12.0, 0.0, 4096.0,
                          "Observer score below which an instance is animated every tick"};
-tunables::Float lod_mid{"animation.lod.mid", 40.0f, 0.0f, 4096.0f,
+tunables::Float lod_mid{"animation.lod.mid", 40.0, 0.0, 4096.0,
                         "Observer score below which an instance is animated every second tick"};
-tunables::Float lod_far{"animation.lod.far", 120.0f, 0.0f, 8192.0f,
+tunables::Float lod_far{"animation.lod.far", 120.0, 0.0, 8192.0,
                         "Observer score below which an instance is sampled every fourth tick"};
-tunables::Float lod_hysteresis{"animation.lod.hysteresis", 0.15f, 0.0f, 4.0f,
+tunables::Float lod_hysteresis{"animation.lod.hysteresis", 0.15, 0.0, 4.0,
                                "Demotion tests the band boundary widened by this fraction"};
 tunables::Int lod_max_promotions{"animation.lod.max_promotions", 64, 1, 1 << 20,
                                  "Instances that may re-acquire a pose slot in one tick"};
