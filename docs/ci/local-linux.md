@@ -57,7 +57,7 @@ entire reason for running four of them.
 a configure plus a build of this tree is hundreds of thousands of small-file operations, and the
 Windows build trees under `build/` must not be touched by a Linux CMake anyway. So the checkout
 arrives at `/host` **read-only**, and one `rsync -a --delete` copies it into the `/src` volume.
-608 files, 7.8 MB, about two seconds.
+About 610 files and 8 MB, in about two seconds.
 
 `--delete` makes a file removed on the host disappear in the volume; the excluded paths are
 protected from it by default, which is what keeps `/src/build` alive across syncs. Excluded:
@@ -88,6 +88,8 @@ Dependencies live in the second volume because `-Rebuild` should cost a compile 
 download, and because a warm run then never touches the network at all
 (`FETCHCONTENT_UPDATES_DISCONNECTED=ON` also stops the git-based dependencies re-running
 `git fetch` on every reconfigure; the tags are pinned, so a fetch can only cost time).
+**Checked rather than assumed**: a reconfigure and build of `linux-clang-minimal` in a container
+started with `--network none` succeeds. Only the first run of a given preset needs the network.
 
 **Each preset downloads its own copy of the sources**, because `FETCHCONTENT_BASE_DIR` holds the
 dependencies' *build* directories too and a Debug tree cannot share one with a Release tree.
@@ -234,9 +236,9 @@ any checkout on the machine has built it. The source sync is **about 2 s** every
 
 A warm run is almost entirely the test suite: a warm **build** of `linux-clang-debug` with no
 source change is **6 s end to end including the sync**, of which the container's build step is
-2 s. So a four-preset *compile* check — which is what catches everything in the table below — is
-well under a minute, and `-Test` is what turns it into the eight-minute gate. `-Filter` narrows
-the suite while iterating.
+2 s. So a four-preset *compile* check — which is what catches five of the six entries in the table
+below — costs well under a minute, and `-Test` is what turns it into the seven-minute gate.
+`-Filter` narrows the suite while iterating.
 
 The hosted matrix runs its four Linux presets in parallel on four runners, so on a good day it
 finishes sooner than this does. That was never the problem: the problem was the day it finished
@@ -256,10 +258,14 @@ invisible to MSVC.
 | `linux-gcc-release` | `domain/sim` | **a real bug, not a warning.** `tiers: eight workers produce the same bytes as one, and as none` failed: `TierChange` is `u32 + u8 + u8` in 8 bytes, the test `memcmp`s the change lists, and the **two bytes of tail padding** carried whatever the allocator last left there. The Clang debug build had been handing out fresh zeroed pages and hiding it | a named, zeroed `u16 pad` member; the size table's 8/4 entry is unchanged |
 | all four | `tools/new-capability.Tests.ps1` | `Join-Path ${env:ProgramFiles(x86)} ...` throws on a machine where that variable does not exist, so looking for an *optional* clang-format crashed the test instead of skipping it — the one place the suite assumed Windows | each Windows candidate guarded by its own variable |
 
-Four of the six are the same mistake in different clothes: **MSVC's warning set has no equivalent**
-and the Windows build is silent. The fifth is the one worth remembering — a determinism test that
-compares padding bytes is a test that passes until the allocator changes its mind, and the
-allocator changed its mind when the optimizer did.
+Three of the six are the same mistake in different clothes: **MSVC's warning set has no
+equivalent** and the Windows build is silent. A fourth is two compilers disagreeing about which
+overload a call names. The fifth is the one worth remembering — a determinism test that compares
+padding bytes is a test that passes until the allocator changes its mind, and the allocator
+changed its mind when the optimizer did. The sixth is a test that assumed the machine it was
+written on.
+
+None of the six was fixed with a pragma, a `NOLINT`, a lowered warning level, or a disabled test.
 
 ## Running the documentation gate here
 

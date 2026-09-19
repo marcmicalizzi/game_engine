@@ -237,15 +237,23 @@ function Invoke-Shell {
 }
 
 function Invoke-Prune {
+  $failed = 0
   foreach ($v in @($SrcVolume, $DepsVolume)) {
-    & docker volume inspect $v 2>&1 | Out-Null
+    $size = & docker volume inspect $v --format '{{.Mountpoint}}' 2>$null
     if ($LASTEXITCODE -ne 0) { Write-Host "$v does not exist"; continue }
+    # A volume a container still holds cannot be removed, and docker says so on stderr; let that
+    # reach the caller rather than reporting a removal that did not happen.
     & docker volume rm $v | Out-Null
-    Write-Host "removed $v"
+    if ($LASTEXITCODE -ne 0) {
+      Write-Host "could not remove $v (a container may still be using it)" -ForegroundColor Red
+      $failed = 1
+    } else {
+      Write-Host "removed $v (was at $size)"
+    }
   }
   Write-Host 'The image is shared between checkouts and is left alone; remove it with'
   Write-Host "  docker image rm $Image"
-  exit 0
+  exit $failed
 }
 
 # --- run ---------------------------------------------------------------------------------------
