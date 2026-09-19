@@ -237,6 +237,25 @@ Four things in that table are worth reading carefully.
 
 **A tight budget churns, and the stale-request rule is what makes that safe rather than wrong.** At 25% the run evicts 110 pages, drops 91–97 requests as stale, and uploads 4.3–5.1 MB — nearly twice the whole scene — to hold 0.5 MB at a time. The picture degrades as designed (1,080–1,298 visible pairs against 1,545) and never holes, which is what the fly-in case asserts.
 
+**And the row the table could not hold before: the quarter budget with the ray chain on.** The table above is `--shadows off` because the shadowed run used to lose the device; it does not any more, so here is the same scene with shadows on. Same machine, `msvc-release`, 1920×1080, 120 frames, container-backed source, `--orbit 4` — which is the camera that reproduces the table's own 1,545 visible pairs, so the two sets of rows are the same cut. **Run twice, and every figure below was identical to the digit across the pair unless a range is given.** The card was shared throughout: `nvidia-smi` read 6,049–6,750 MiB used and 5–9% utilization around the batch, and the per-run `machine_state` recorded 4–20% GPU utilization and 9.5–34.4% CPU from other processes, so **every millisecond here is an upper bound**.
+
+| 25% budget (0.71 MB) | shadows off | shadows rt |
+|---|---|---|
+| pool bytes | 1,530,540 | **2,145,330** |
+| pages resident | 6/25, 721,568 B | 6/25, 721,568 B |
+| visible pairs | 1,538 (max 1,545) | 1,553 (max 1,562) |
+| uploads | 15 (1.72 MB) | 13 (2.65 MB) |
+| evictions / stale | 72–73 / 63–64 | 54 / 47 |
+| frames to converge | 75–76 | 72 |
+| `gpu_ms.cull` | 0.0362–0.0363 | 0.0155–0.0157 |
+| `gpu_ms.rt` | — | 1.594–1.622 |
+| `gpu_ms.clas` | — | 0.077–0.080 |
+| `gpu_memory.used_mib` | 662 | 1,712 |
+
+Four things in it are worth saying out loud. **The ray chain costs the pool 40% more bytes** — 1.53 MB against 2.15 MB for the same six slots — because a slot then also holds the float positions (12 bytes a vertex) and the 8-bit indices (3 a triangle) the CLAS builds read, on top of the quantized positions, attributes and triangles the rasterizers do. That is the paged half of what [gfx](gfx.md) calls "a mesh that is ray traced uploads both streams", and it is the ratio a budget has to be set against: **a page costs about 1.4× as much resident with shadows on**. **The same six slots hold the same pages**, so the budget buys the same cut either way; what the ray chain adds is bytes per page, not pages. **`gpu_ms.cull` halves with shadows on**, which is not the cull pass getting faster: shadows turn two-pass occlusion culling off (`resolve_settings`), so the frame runs one cull dispatch instead of two and the zone is summed over one. And **device memory is dominated by the CLAS set, not by streaming**: 1,712 MiB against 662 MiB, because `create_cluster_set` is sized for `views * pair_count` = 150,272 clusters while the frame builds about 1,550 of them. Streaming bounds the *geometry* and does nothing about that; a CLAS set sized for the cut rather than for the scene is the open item beside it.
+
+**A quarter budget is only pressure under a camera that wants more than six pages.** The same command at the default breathing camera — `--orbit` unset, so 8 to 36 radius-tenths — holds **one** page of 25, uploads once, evicts nothing and converges in two frames, at 486–547 visible pairs. That is the same demand-paging point the 100% row makes from the other end, and it is why the rows above name their camera: a budget stated as a percentage of the page bytes says nothing about whether it binds.
+
 **Host memory: the number this change is about.** Same scene, same 25% budget, cold camera, the only difference being where a page's bytes come from:
 
 | source | host working set | peak | released | ranged reads | read |
