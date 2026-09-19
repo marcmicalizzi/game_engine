@@ -146,6 +146,17 @@ Note: `tools/dev.ps1 format` formats the whole tree. It was run and touched only
 the tree was already clean — but anyone running it with uncommitted work elsewhere should check
 `git status` afterwards.
 
+## The corpus gate
+
+`content/test-scenes/shredded-atlas.json`, run through `tools/ci/reference-compare.ps1`, twice with
+identical numbers: **0.0575 FLIP (p95 0.1870), 32.2 dB**. With the seam rule off the same scene
+gives **0.1231 (p95 0.6481), 20.8 dB**. The thresholds are 0.09 / 0.30 — between the two, so the
+regression the scene exists for fails the gate rather than clearing it.
+
+It is the only corpus scene whose reference traces the *finest* geometry while the real-time path
+draws a coarse cut, which is why it is the only one that can move when simplification changes. The
+other five compare the same cut to itself and are structurally blind to this class of defect.
+
 ## Things worth a second opinion
 
 - **`normal_weight = 0` is a judgement, not a measurement.** The measurement says it is expensive
@@ -157,6 +168,15 @@ the tree was already clean — but anyone running it with uncommitted work elsew
   seam is a change of *address* that no weight can price. If hard-edge damage shows up, this is the
   switch.
 - **Residual limit, unfixable here:** below some island size no seam-respecting simplification can
-  be right, because the island is smaller than a triangle at that level. The honest fix is in
-  texture space (atlas repack, or per-level baked textures). Recorded as a follow-up in
-  `geometry.md` and plan 07 §7.4.
+  be right, because the island is smaller than a triangle at that level. Both generated characters
+  already have an island whose UV area rounds to **zero** texels of a 4,096 atlas (six triangles on
+  one, a single triangle on the other). The honest fix is in texture space — atlas repack, or
+  per-level baked textures. Recorded as a follow-up in `geometry.md` and plan 07 §7.4, with the
+  numbers a validator would threshold already reported by `engine-content stats`.
+- **Skin bindings as a weighted attribute is *not* done and the reasoning is in geometry.md.** Joint
+  indices are categorical so a quadric over them is meaningless; the four weights are continuous
+  but largely redundant with position on a well-authored skin; and clusterlod keeps original
+  vertices, so a coarse cluster always carries an authored binding. What is left unprotected is a
+  collapse between two *different* positions with very different weights, bounded by the geometric
+  error the cut already uses. Measured on the rigged model it did not show — but n = 1, and a
+  character with a hard weight boundary (a belt, a shoulder pad) is the case that would.
