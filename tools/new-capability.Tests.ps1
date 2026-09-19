@@ -58,10 +58,16 @@ function Find-ClangFormat {
   $onPath = Get-Command clang-format -ErrorAction SilentlyContinue
   if ($onPath) { return $onPath.Source }
   $candidates = New-Object System.Collections.Generic.List[string]
-  $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
-  if (Test-Path -LiteralPath $vswhere) {
-    $vs = & $vswhere -latest -property installationPath 2>$null
-    if ($vs) { $candidates.Add((Join-Path $vs 'VC\Tools\Llvm\x64\bin\clang-format.exe')) }
+  # The two Windows locations, each guarded by its own environment variable being set at all:
+  # `Join-Path $null ...` throws, so on Linux — where neither exists — the unguarded form turned
+  # "look for an optional tool" into a crash that failed the whole test.
+  $programFilesX86 = ${env:ProgramFiles(x86)}
+  if ($programFilesX86) {
+    $vswhere = Join-Path $programFilesX86 'Microsoft Visual Studio\Installer\vswhere.exe'
+    if (Test-Path -LiteralPath $vswhere) {
+      $vs = & $vswhere -latest -property installationPath 2>$null
+      if ($vs) { $candidates.Add((Join-Path $vs 'VC\Tools\Llvm\x64\bin\clang-format.exe')) }
+    }
   }
   if ($env:ProgramFiles) { $candidates.Add((Join-Path $env:ProgramFiles 'LLVM\bin\clang-format.exe')) }
   foreach ($candidate in $candidates) {
