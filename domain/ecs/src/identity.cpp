@@ -111,7 +111,17 @@ flecs::entity entity_of(flecs::world& world, sim::EntityHandle handle) noexcept 
   // `is_valid()` is the one test that covers both cases — it rejects 0 (where `is_alive()` would
   // assert) and then checks the generation.
   const flecs::entity entity(world.c_ptr(), static_cast<flecs::entity_t>(handle.value));
-  if (!entity.is_valid()) return flecs::entity(world.c_ptr(), flecs::entity_t{0});
+  if (!entity.is_valid()) {
+    // The world pointer is handed over as `const` on purpose. GCC still honours C++03's rule
+    // that *any* integral constant expression of value zero is a null pointer constant, so it
+    // considers `flecs::entity(flecs::world_t*, const char* name, ...)` a candidate for
+    // `entity(world.c_ptr(), flecs::entity_t{0})` — exact on the world, a pointer conversion on
+    // the id — against `entity(const flecs::world_t*, flecs::entity_t)`, which is the reverse,
+    // and calls the pair ambiguous. Clang and MSVC pick the id overload and compile it. Naming
+    // the const overload's parameter type leaves one viable candidate on every compiler.
+    const flecs::world_t* const in = world.c_ptr();
+    return flecs::entity(in, flecs::entity_t{0});
+  }
   return entity;
 }
 
