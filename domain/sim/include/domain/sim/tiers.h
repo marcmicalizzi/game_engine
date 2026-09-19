@@ -83,6 +83,14 @@ struct TierChange {
   u32 index = 0;
   u8 from = 0;
   u8 to = 0;
+  // Named and zeroed rather than left to the compiler, because this type's *bytes* are the
+  // contract: the module's test memcmps the change lists a run with no job system, one worker
+  // and eight produce, and two bytes of tail padding carry whatever the allocator last left in
+  // that slot. It reads as a determinism failure and is a reading of uninitialized memory —
+  // found by the GCC RelWithDebInfo build, where the freed blocks the vector grew into were no
+  // longer zero; the Clang debug build had been handing out fresh zeroed pages and hiding it.
+  // The size table's 8/4 entry is unchanged: this occupies the padding, it does not add to it.
+  u16 pad = 0;
 };
 
 struct TierStats {

@@ -108,6 +108,7 @@ The store is a pair of function pointers, not an include of `foundation/store`: 
 - A slot's generation is odd while live and even while free, so a handle from a previous occupant of a slot is refused rather than cancelling somebody else's timer.
 - `advance` never moves `now` past an undelivered due timer: the skip search jumps only to the start of a bucket that has work, and a partially covered final bucket is checked for a genuinely due entry before it is returned.
 - `assign_tiers` writes back exactly the transitions it emits, and emits them in ascending entity index.
+- **A `TierChange` has no indeterminate bytes.** Its `u16 pad` is a named, zero-initialized member rather than tail padding the compiler leaves to chance, because the determinism claim below is about the change list's *bytes* and the test compares them with `memcmp`. Padding carries whatever the allocator last left in the block a `Vector` grew into, which is a function of the build, not of the simulation: the Clang debug build had been handing out fresh zeroed pages and passing, and the GCC RelWithDebInfo build failed the eight-workers test on 2026-09-19 with two garbage bytes per element. Any type whose bytes are compared, hashed, or written out belongs to this rule, not just this one.
 - A phase's schedule is ordered by (wave, declaration index), and two systems that conflict are never in the same wave.
 
 ## Public API
