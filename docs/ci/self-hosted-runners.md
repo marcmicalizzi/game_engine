@@ -1,5 +1,11 @@
 # Self-hosted GPU runners
 
+> **Linux builds on a Windows machine** are a different thing and live in
+> [local Linux builds](local-linux.md): a container on the development desktop that runs the four
+> Linux presets `ci.yml` builds, in minutes, without a runner and without GitHub. No GPU, no
+> display — it is the compiler-and-CPU half of the gate. The two machines below are the other
+> half, the only ones here that execute a shader.
+
 Hosted GitHub runners have a Vulkan loader and nothing behind it. `enumerate_adapters` says so
 politely, every GPU test prints `device unavailable` and passes, and `.github/workflows/ci.yml` stays
 a compiler and CPU gate: four presets, every push and pull request, no picture ever drawn. That is

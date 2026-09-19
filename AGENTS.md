@@ -32,6 +32,19 @@ tools/dev.ps1 modules   [-Preset msvc-debug]   # prints build/<preset>/modules.j
 tools/new-capability.ps1 -Name cloth -Layer systems -Deps "base containers math" [-WithSchema] [-WithBench] [-WithProtocol]
 ```
 
+The Linux half of CI runs on this machine too, in a container built from the same Ubuntu 24.04
+toolchain the hosted job uses — the four Linux presets, warnings-as-errors on GCC 13 and Clang 18,
+minutes instead of a queue, and no dependency on GitHub answering:
+
+```powershell
+tools/linux-build.ps1 [-Preset all|<name>] [-Test] [-Filter <regex>] [-Jobs 8] [-Shell] [-Rebuild] [-Prune]
+```
+
+Run it before pushing anything that touches C++: MSVC forgives a long list of things GCC and Clang
+do not, and the Windows build stays silent about every one of them. See
+[local Linux builds](docs/ci/local-linux.md) for the volumes, the measured times, and what the
+first four runs found.
+
 `new-capability.ps1` scaffolds a new capability — module, system skeleton, LOD policy, determinism stance, tests, size table, docs page, and the `ENGINE_WITH_<NAME>` switch that has to be removable — as ADR-0027 requires.
 
 The engine as a server, and its command-line client, build into `build/<preset>/bin/`:
@@ -47,7 +60,7 @@ build/msvc-debug/bin/engine-cli gpu.adapters                                   #
 
 Every method's parameters and result are schema types in `schemas/protocol.schema`; `engine-cli schema.describe '{"type":"engine.protocol.ApplyParams"}'` explains any of them. See `docs/subsystems/apps.md` and `protocol.md`.
 
-Presets are in `CMakePresets.json`. Debug builds carry asserts and iterator checking; `msvc-asan` adds AddressSanitizer; the release presets compile Tracy profiling zones in (`ENGINE_TRACY`); `msvc-minimal` and `linux-clang-minimal` set `ENGINE_MINIMAL`, which switches every optional capability off and is the proof that nothing in the tree depends on one (ADR-0027). `msvc-no-ecs` and `linux-clang-no-ecs` are the configuration in between — everything on except `ENGINE_WITH_ECS`, so `animation` follows it off through `engine_capability_requires` — and they are the only ones that exercise the **capability graph**: all-on never consults it and all-off switches everything off for a different reason, so a capability that links another and forgot to declare the edge passes both and fails only here. Every change must build and pass tests in `msvc-debug` before it is committed. CI (`.github/workflows/ci.yml`) builds and tests `msvc-debug`, `msvc-release`, `linux-clang-debug`, `linux-gcc-release`, `linux-clang-minimal`, and `linux-clang-no-ecs` on every push and pull request. Hosted runners have no GPU driver, so every GPU test skips there; `.github/workflows/gpu.yml` runs the same suite weekly on the two self-hosted baseline-tier machines that do, set up as `docs/ci/self-hosted-runners.md` describes.
+Presets are in `CMakePresets.json`. Debug builds carry asserts and iterator checking; `msvc-asan` adds AddressSanitizer; the release presets compile Tracy profiling zones in (`ENGINE_TRACY`); `msvc-minimal` and `linux-clang-minimal` set `ENGINE_MINIMAL`, which switches every optional capability off and is the proof that nothing in the tree depends on one (ADR-0027). `msvc-no-ecs` and `linux-clang-no-ecs` are the configuration in between — everything on except `ENGINE_WITH_ECS`, so `animation` follows it off through `engine_capability_requires` — and they are the only ones that exercise the **capability graph**: all-on never consults it and all-off switches everything off for a different reason, so a capability that links another and forgot to declare the edge passes both and fails only here. Every change must build and pass tests in `msvc-debug` before it is committed. CI (`.github/workflows/ci.yml`) builds and tests `msvc-debug`, `msvc-release`, `linux-clang-debug`, `linux-gcc-release`, `linux-clang-minimal`, and `linux-clang-no-ecs` on every push and pull request; `tools/linux-build.ps1` runs the four Linux ones here, so that gate does not have to wait for a hosted runner and does not disappear when one is unavailable. Hosted runners have no GPU driver, so every GPU test skips there; `.github/workflows/gpu.yml` runs the same suite weekly on the two self-hosted baseline-tier machines that do, set up as `docs/ci/self-hosted-runners.md` describes.
 
 ## Layering (enforced by CMake)
 
