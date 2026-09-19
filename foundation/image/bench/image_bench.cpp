@@ -2,9 +2,15 @@
 // a 4K render-like frame (flat areas, gradients, a few hard edges, a band of noise) and bytes
 // that cannot be compressed at all. The rate column is input bytes per second; the ratio is
 // printed once per benchmark because the harness's result carries rates, not ratios.
+//
+// Beside them, the perceptual metric the optimization loop gates on (docs/plan/04-renderer.md
+// §4.8): one LDR-FLIP over a 4K pair. It is here because it is the module's only float-heavy
+// kernel — a dozen separable filters over a dozen f32 planes — and therefore the one place in
+// `image` where a wider instruction-set baseline could show up at all.
 #include <core/containers/vector.h>
 #include <foundation/bench/bench.h>
 #include <foundation/image/deflate.h>
+#include <foundation/image/metrics.h>
 #include <foundation/image/png.h>
 
 #include <cstdio>
@@ -95,6 +101,79 @@ const Vector<u8>& random_bytes() {
 }
 
 std::span<const u8> view(const Vector<u8>& v) { return std::span<const u8>(v.data(), v.size()); }
+
+// ---- the FLIP pair -----------------------------------------------------------------------
+
+// A pair the way the optimization loop meets one: the same frame twice, with the differences a
+// cheaper renderer actually produces — a slight exposure shift over the whole picture, a hard
+// edge moved by one pixel, and low-amplitude noise where the dither is. FLIP's cost does not
+// depend on the content, but a pair that differs nowhere would be a pair somebody later
+// "optimized" by short-circuiting, so the content is real.
+//
+// The smoke run (CTest) drops to a sixth of the width and height: one 4K FLIP is about two
+// seconds and buys nothing there, while a 640x360 pair still walks every filter.
+u32 flip_width() { return bench::smoke_mode() ? k_width / 6 : k_width; }
+u32 flip_height() { return bench::smoke_mode() ? k_height / 6 : k_height; }
+
+image::Image make_flip_image(bool perturbed) {
+  const u32 width = flip_width();
+  const u32 height = flip_height();
+  image::Image out;
+  out.width = width;
+  out.height = height;
+  out.channels = 4;
+  out.pixels.resize(static_cast<usize>(width) * height * 4);
+  Random rng(perturbed ? 90210u : 31337u);
+  const u32 horizon = height * 5 / 8;
+  for (u32 y = 0; y < height; ++y) {
+    const u32 sky = 60 + (y * 120) / height;
+    for (u32 x = 0; x < width; ++x) {
+      u8* p = out.pixels.data() + (static_cast<usize>(y) * width + x) * 4;
+      i32 r = 0;
+      i32 g = 0;
+      i32 b = 0;
+      if (y < horizon) {
+        r = static_cast<i32>(sky / 2);
+        g = static_cast<i32>(sky);
+        b = static_cast<i32>(200 - sky / 3);
+      } else {
+        r = 70;
+        g = 55;
+        b = 40;
+        // A hard edge, one pixel further right in the perturbed image: the case FLIP's
+        // feature term exists for and a plain per-pixel difference under-reports.
+        const u32 edge = width / 4 + (perturbed ? 1u : 0u);
+        if (x > edge && x < width / 2 && y > horizon + height / 20 && y < horizon + height / 5) {
+          r = 190;
+          g = 30;
+          b = 30;
+        }
+      }
+      if (perturbed) {
+        r = r * 103 / 100;  // 3% exposure
+        const u32 n = rng.next();
+        r += static_cast<i32>(n & 3u) - 1;
+        g += static_cast<i32>((n >> 8) & 3u) - 1;
+        b += static_cast<i32>((n >> 16) & 3u) - 1;
+      }
+      p[0] = static_cast<u8>(r < 0 ? 0 : (r > 255 ? 255 : r));
+      p[1] = static_cast<u8>(g < 0 ? 0 : (g > 255 ? 255 : g));
+      p[2] = static_cast<u8>(b < 0 ? 0 : (b > 255 ? 255 : b));
+      p[3] = 255;
+    }
+  }
+  return out;
+}
+
+const image::Image& flip_reference() {
+  static const image::Image reference = make_flip_image(false);
+  return reference;
+}
+
+const image::Image& flip_test() {
+  static const image::Image test = make_flip_image(true);
+  return test;
+}
 
 // The bench body runs once per repeat, so the ratio line is printed only the first time.
 void report_ratio(const char* name, u32 input, u32 output, bool& printed) {
@@ -188,4 +267,26 @@ ENGINE_BENCH(encode_png_default, "image.encode_png.render_4k.default") {
   }
   state.set_items(pixels.size());
   state.set_bytes(pixels.size());
+}
+
+// ---- the perceptual metric, which is what the optimization loop waits on ------------------
+
+ENGINE_BENCH(flip_pair, "image.flip.render_4k") {
+  const image::Image& reference = flip_reference();
+  const image::Image& test = flip_test();
+  image::FloatImage error;
+  static bool printed = false;
+  if (!printed) {
+    printed = true;
+    image::flip(reference, test, error);
+    std::printf("# %-40s %ux%u, mean FLIP %.4f, p95 %.4f\n", "flip render_4k", reference.width,
+                reference.height, static_cast<f64>(image::pool_mean(error)),
+                static_cast<f64>(image::pool_percentile(error)));
+    std::fflush(stdout);
+  }
+  while (state.keep_running()) {
+    image::flip(reference, test, error);
+    bench::keep(error.values);
+  }
+  state.set_items(static_cast<usize>(reference.width) * reference.height);
 }
