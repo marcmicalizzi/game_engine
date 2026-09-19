@@ -49,8 +49,10 @@ pwsh tools/package-tests.ps1 -Preset msvc-release -Out D:\share\engine-tests.zip
 zipped and 109 MB unpacked** without the sample models, which is the size a USB stick or a home
 network does not think about. In it:
 
-- `bin/` — every test, bench and app executable the preset built, flattened into one directory (no
-  PDBs unless `-WithSymbols`, which roughly triples it). Flattened because `bundle.json` names each
+- `bin/` — every test, bench and app executable the preset built, flattened into one directory.
+  **No PDBs** unless `-WithSymbols`: for `msvc-release` the 56 executables are 109 MB and their
+  PDBs are 751 MB, which is most of the free disk on the machine this exists for, so symbols are
+  what you send *after* a stack trace asks for them. Flattened because `bundle.json` names each
   test by its executable and the layout under `build/` is a CMake detail nobody at the far end
   should have to learn.
 - `content/input-logs/` — the device-log corpus `foundation/input` replays. **Bundled rather than

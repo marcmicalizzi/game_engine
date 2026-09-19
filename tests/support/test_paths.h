@@ -4,7 +4,8 @@
 // produced, and the data files under `content/`.
 //
 // A test knows those as compile-time absolute paths — `ENGINE_APP_PATH`, `ENGINE_HOST_PATH`,
-// `ENGINE_SOURCE_DIR`, `ENGINE_SHADER_MANIFEST` — baked in by CMake. That is exactly right under
+// `ENGINE_SCHEMAC_PATH`, `ENGINE_SOURCE_DIR`, `ENGINE_SHADER_MANIFEST` — baked in by CMake. That
+// is exactly right under
 // CTest and wrong everywhere else. `tools/package-tests.ps1` builds a bundle that runs on a
 // machine with no toolchain and no checkout, where those paths name directories that do not
 // exist; and, worse, **on the build machine they name directories that do**, so a bundle that
