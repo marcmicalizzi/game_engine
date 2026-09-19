@@ -35,6 +35,8 @@ The versioned scene corpus of [04 §4.8](../../docs/plan/04-renderer.md#48-refer
 
 **One of them compares two different cuts, and the reason is a lesson.** A corpus that only ever renders the real-time path and the reference at the *same* LOD threshold cannot see a LOD defect at all: both sides draw the same wrong triangles. `shredded-atlas` sets `"reference": {"finest": true}`, so the reference traces the source geometry while the real-time path draws a coarse cut of it, and the threshold is over the difference between them. Any scene here can be turned into that kind of gate with one field; this is the first one that is.
 
+Its thresholds are also the first set from **both** ends: 0.0575 / 0.1870 measured, and 0.1231 / 0.6481 for the same scene with the LOD builder's seam rule off, so 0.09 / 0.30 sits between what passes and what the defect produces. That is the discipline the `thin-geometry` row had to learn afterwards ([renderer](../../docs/subsystems/renderer.md#reference-renderer)) — a margin sized only around today's number hides tomorrow's symptom.
+
 | Scene | What it is for | Needs a sample |
 |---|---|---|
 | `heightfield` | the scene the engine can build with nothing at all, so this one runs on a fresh clone and on a machine with no content | no |

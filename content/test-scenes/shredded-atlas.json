@@ -1,7 +1,7 @@
 {
   "format": "engine.test-scene.v1",
   "name": "shredded-atlas",
-  "description": "the procedural UV-atlas stress fixture at a coarse LOD threshold, against a reference traced from the finest geometry: the one scene in the corpus that compares two *different* cuts, which is what a LOD defect survives",
+  "description": "the procedural UV-atlas stress fixture at a coarse LOD threshold, against a reference traced from the finest geometry: the one scene in the corpus that compares two *different* cuts, which is what a LOD defect survives. Measured 0.0575 / 0.1870; the LOD builder without its seam rule gives 0.1231 / 0.6481, so the thresholds are deliberately between the two",
   "requires": [],
   "load": { "procedural": "shredded-atlas" },
   "settings": { "raster": "hw", "shadows": "rt", "lod_px": 16, "cone": false },
@@ -10,5 +10,5 @@
   "height": 512,
   "frame": 0,
   "reference": { "spp": 256, "bounces": 1, "batch": 32, "finest": true },
-  "thresholds": { "flip_mean": 0.055, "flip_p95": 0.14 }
+  "thresholds": { "flip_mean": 0.09, "flip_p95": 0.30 }
 }
