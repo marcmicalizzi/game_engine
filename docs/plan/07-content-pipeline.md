@@ -32,7 +32,7 @@ Canonical engine representations, all derived: cluster pages, AS build inputs, c
 
 ## 7.4 Validation rules (automatic)
 
-- **Geometry**: manifoldness where required, degenerate triangles, scale (bounding box against the declared category's size range), pivot placement, up axis, UV coverage and overlap, texel-density range, cluster error budget, triangle budget per category, collision presence and fit (convex hull to mesh volume ratio), open edges.
+- **Geometry**: manifoldness where required, degenerate triangles, scale (bounding box against the declared category's size range), pivot placement, up axis, UV coverage and overlap, texel-density range, **atlas fragmentation** (island count, seam-vertex share, smallest island area — see the status note below), cluster error budget, triangle budget per category, collision presence and fit (convex hull to mesh volume ratio), open edges.
 - **Materials**: texture resolution against on-screen size class, missing maps, energy conservation, naming.
 - **Rigs and animation**: standard-skeleton conformance, bone count, skin-weight normalization, foot-sliding metric, root-motion consistency.
 - **Deformable volumes**: cage covers the render mesh, attachments resolve to existing bones or bodies, layers partition the volume, parameters in range ([§7.10](#710-deformable-volume-assets)).
@@ -40,6 +40,8 @@ Canonical engine representations, all derived: cluster pages, AS build inputs, c
 - **Performance**: per-asset cost estimate (clusters at typical distance, AS memory, texture memory) against budgets by category.
 - **Provenance**: metadata present and license in the allowlist.
 - **Visual**: embedding distance to the approved reference board (soft warning), palette conformance.
+
+**Status, 2026-09-19 — the first validator this list needs is one nobody had written down: how fragmented an atlas is.** The first machine-generated character run through the pipeline imported with zero warnings and drew wrongly at any LOD below the finest, because the LOD simplifier collapsed across the atlas's island edges ([geometry](../subsystems/geometry.md#what-the-simplifier-is-given-and-why)). The builder no longer does that, so this is no longer a correctness bug — but it is now a *cost* the asset controls: protecting the seams keeps the triangles a collapse would have removed, so an atlas of a thousand tiny islands simplifies less than an atlas of ten large ones, and at some island size no seam-respecting simplification can help at all, because the island is smaller than a triangle at that level. That is the number the validator has to report and the repair chain (§7.7's "remesh, decimate, UV, bake") has to act on: an atlas repack, or per-level baked textures, is a **texture-space** fix and cannot be done in the geometry builder. Reporting those numbers is the next step, and turning them into a warning belongs with E10's validators.
 
 ## 7.5 Provenance and licensing metadata
 

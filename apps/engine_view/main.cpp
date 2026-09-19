@@ -79,6 +79,13 @@ constexpr const char* k_usage =
     "  --frames <n>     render n frames, then exit (0: until the window closes)\n"
     "  --capture <png>  write the last frame as a PNG (implies --frames 60 when unset)\n"
     "  --grid <n>       heightfield resolution, n x n vertices (default 257)\n"
+    "  --procedural <n> which scene an absent --mesh builds: heightfield (default), or\n"
+    "                   shredded-atlas, the UV-atlas LOD stress fixture (geometry.md)\n"
+    "  --uv-seams <r>   what a LOD collapse may do at a UV atlas island edge: none, protect\n"
+    "                   (default), or lock. --normal-seams <r> is the same at a hard edge\n"
+    "  --uv-weight <n>  UV weight in the simplifier's error metric, in thousandths (default\n"
+    "                   500); --normal-weight <n> the same for normals (default 0). All four\n"
+    "                   are part of the derived-data cache key\n"
     "  --mesh <file>    render a mesh instead of the heightfield: a glTF 2.0 or GLB file (one\n"
     "                   cluster DAG per primitive; materials with their base-color,\n"
     "                   metallic-roughness, and normal textures from the file), or a .clusters\n"
@@ -197,7 +204,13 @@ struct Options {
   u32 grid = 257;
   std::string log_spec;
   std::string shaders;
-  std::string mesh;        // glTF or .clusters file; empty renders the heightfield
+  std::string mesh;        // glTF or .clusters file; empty renders a procedural scene
+  std::string procedural;  // which one: "" / "heightfield", or "shredded-atlas"
+  // What the LOD builder is told (geometry.md, "What the simplifier is given, and why"). It is
+  // part of the derived-data cache key, so `--uv-seams none` builds and addresses its own
+  // container and `engine-content build --uv-seams none` writes exactly that one: a before and
+  // after comparison of the seam rule is two command lines rather than two builds of the tree.
+  geometry::ClusterLodOptions lod;
   std::string scene;       // a scene JSON file: meshes and instances of them
   std::string ddc;         // derived-data root; empty is found from the executable
   u32 grid_instances = 0;  // n: place the one mesh n x n times
@@ -813,6 +826,9 @@ int run_reference(const Options& options) {
   u32 skinned_instances = 0;
   do {
     renderer::SceneDesc desc;
+    desc.procedural = options.procedural == "shredded-atlas" ? renderer::Procedural::shredded_atlas
+                                                             : renderer::Procedural::heightfield;
+    desc.lod = options.lod;
     desc.heightfield_grid = options.grid;
     desc.grid_instances = options.grid_instances;
     desc.ddc = options.ddc;
@@ -1140,6 +1156,31 @@ int main(int argc, char** argv) {
       if (!next_value(argc, argv, i, a, options.shaders)) return k_exit_usage;
     } else if (a == "--mesh") {
       if (!next_value(argc, argv, i, a, options.mesh)) return k_exit_usage;
+    } else if (a == "--procedural") {
+      if (!next_value(argc, argv, i, a, options.procedural)) return k_exit_usage;
+    } else if (a == "--uv-seams" || a == "--normal-seams") {
+      std::string rule;
+      if (!next_value(argc, argv, i, a, rule)) return k_exit_usage;
+      geometry::SeamRule seam = geometry::SeamRule::protect;
+      if (rule == "none") {
+        seam = geometry::SeamRule::none;
+      } else if (rule == "lock") {
+        seam = geometry::SeamRule::lock;
+      } else if (rule != "protect") {
+        std::fprintf(stderr, "engine-view: a seam rule is none, protect, or lock\n");
+        return k_exit_usage;
+      }
+      (a == "--uv-seams" ? options.lod.uv_seams : options.lod.normal_seams) = seam;
+    } else if (a == "--uv-weight" || a == "--normal-weight") {
+      std::string thousandths;
+      if (!next_value(argc, argv, i, a, thousandths)) return k_exit_usage;
+      f32 weight = 0.0f;
+      if (!parse_f32_zero_ok(thousandths, weight)) {
+        std::fprintf(stderr, "engine-view: %.*s takes a weight in thousandths\n",
+                     static_cast<int>(a.size()), a.data());
+        return k_exit_usage;
+      }
+      (a == "--uv-weight" ? options.lod.uv_weight : options.lod.normal_weight) = weight / 1000.0f;
     } else if (a == "--scene") {
       if (!next_value(argc, argv, i, a, options.scene)) return k_exit_usage;
     } else if (a == "--ddc") {
@@ -1170,6 +1211,11 @@ int main(int argc, char** argv) {
   }
   if (options.grid_instances > 64) {
     std::fprintf(stderr, "engine-view: --grid-instances must be at most 64\n");
+    return k_exit_usage;
+  }
+  if (!options.procedural.empty() && options.procedural != "heightfield" &&
+      options.procedural != "shredded-atlas") {
+    std::fprintf(stderr, "engine-view: --procedural must be heightfield or shredded-atlas\n");
     return k_exit_usage;
   }
   if (options.settings.side_yaw > radians(80.0f)) {
@@ -1340,6 +1386,9 @@ int main(int argc, char** argv) {
 
     // The scene: the file's meshes and instances, a grid of one mesh, or the heightfield.
     renderer::SceneDesc desc;
+    desc.procedural = options.procedural == "shredded-atlas" ? renderer::Procedural::shredded_atlas
+                                                             : renderer::Procedural::heightfield;
+    desc.lod = options.lod;
     desc.heightfield_grid = options.grid;
     desc.grid_instances = options.grid_instances;
     desc.ddc = options.ddc;

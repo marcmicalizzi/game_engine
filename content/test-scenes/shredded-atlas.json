@@ -1,0 +1,14 @@
+{
+  "format": "engine.test-scene.v1",
+  "name": "shredded-atlas",
+  "description": "the procedural UV-atlas stress fixture at a coarse LOD threshold, against a reference traced from the finest geometry: the one scene in the corpus that compares two *different* cuts, which is what a LOD defect survives",
+  "requires": [],
+  "load": { "procedural": "shredded-atlas" },
+  "settings": { "raster": "hw", "shadows": "rt", "lod_px": 16, "cone": false },
+  "orbit": { "distance": 3 },
+  "width": 512,
+  "height": 512,
+  "frame": 0,
+  "reference": { "spp": 256, "bounces": 1, "batch": 32, "finest": true },
+  "thresholds": { "flip_mean": 0.055, "flip_p95": 0.14 }
+}

@@ -321,7 +321,21 @@ bool render_load(protocol::Context& ctx, const protocol::RenderLoadParams& param
     return false;
   }
 
+  // Which procedural scene an empty mesh path builds. An unknown name is refused rather than
+  // silently drawing the terrain, because a corpus scene that asked for the atlas fixture and
+  // quietly got the heightfield would pass its threshold and guard nothing.
+  renderer::Procedural procedural = renderer::Procedural::heightfield;
+  if (!params.procedural.empty() && params.procedural != "heightfield") {
+    if (params.procedural == "shredded-atlas") {
+      procedural = renderer::Procedural::shredded_atlas;
+    } else {
+      error = invalid("procedural must be \"heightfield\" or \"shredded-atlas\"");
+      return false;
+    }
+  }
+
   renderer::SceneDesc desc;
+  desc.procedural = procedural;
   desc.heightfield_grid = params.grid;
   desc.grid_instances = params.grid_instances;
   desc.ddc = params.ddc;

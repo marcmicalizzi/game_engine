@@ -468,9 +468,9 @@ struct RenderViewStats @version(1) {
 }
 
 /// Parameters of `render.load`. Exactly one of `mesh` and `scene` is given.
-struct RenderLoadParams @version(2) {
-  /// A glTF 2.0, GLB, or .clusters file. Empty with an empty `scene` loads the procedural
-  /// heightfield, which is the scene that needs no content at all.
+struct RenderLoadParams @version(3) {
+  /// A glTF 2.0, GLB, or .clusters file. Empty with an empty `scene` loads a **procedural**
+  /// scene, which is what needs no content at all; `procedural` says which one.
   mesh: string
   /// A scene file: {"meshes":[{"path":"..."}],"instances":[{"mesh":0,"translation":[x,y,z],
   /// "rotation":[x,y,z,w],"scale":[x,y,z]}]}, with paths relative to the file.
@@ -495,6 +495,13 @@ struct RenderLoadParams @version(2) {
   /// and a `SceneData` outlives a settings change in this host. `settings.stream` is what turns
   /// the page table on; this only sizes it.
   page_bytes: u32 = 0 @since(2)
+  /// Which procedural scene an empty `mesh` and `scene` build: "" or "heightfield" is the
+  /// dunes-and-ridges grid, "shredded-atlas" is the UV-atlas stress fixture of
+  /// docs/subsystems/geometry.md ("The shredded atlas") — a torus whose atlas is hundreds of
+  /// small islands, with a probe texture whose colour encodes atlas position, so a LOD collapse
+  /// that crosses an island edge shows as the wrong colour rather than as nothing. It is
+  /// procedural so the scene corpus can guard that defect on a fresh clone with no asset.
+  procedural: string @since(3)
 }
 
 /// A loaded scene: the id later calls name it by, and what loading found.

@@ -69,16 +69,34 @@ struct InstanceJoints {
   u32 count = 0;  // 0: this instance has no matrices this tick and draws its rest pose
 };
 
-// What to load. An empty mesh path is the procedural heightfield engine-view has always drawn,
-// which is the only scene the engine can render with no content at all and therefore the one
-// the renderer's own tests and a bring-up on a new machine start from.
+// Which mesh an empty path builds — the scenes the engine can render with **no content at all**,
+// which is what the renderer's own tests and a bring-up on a new machine start from. `heightfield`
+// is the dunes-and-ridges grid engine-view has always drawn with no content at all.
+// `shredded_atlas` is the other kind of scene the engine needs to be able to draw from nothing:
+// `geometry::build_shredded_atlas_torus` with its probe texture, a mesh whose UV atlas is thousands
+// of small islands, which is what an AI mesh generator and a photogrammetry scan produce and what
+// broke LOD simplification until 2026-09-19 ([geometry](geometry.md), "The shredded atlas"). It is
+// a procedural scene rather than a committed asset so that the corpus can guard the defect on a
+// fresh clone and without a third-party model.
+enum class Procedural : u8 { heightfield, shredded_atlas };
+
+// What to load: mesh files and instances of them, or one of the procedural scenes above.
 struct SceneDesc {
-  Vector<std::string> meshes;       // glTF, GLB, or .clusters; one empty path = the heightfield
+  Vector<std::string> meshes;       // glTF, GLB, or .clusters; one empty path = procedural
   Vector<SceneInstance> instances;  // empty: one identity instance of every mesh
   u32 grid_instances = 0;           // n: n x n copies of mesh 0, varied in rotation and scale
-  u32 heightfield_grid = 257;       // vertices a side, when a mesh path is empty
-  std::string ddc;                  // derived-data root; empty and `cache` looks one up
-  bool cache = true;                // read and write <ddc>/clusters/<key>.clusters
+  Procedural procedural = Procedural::heightfield;  // which mesh an empty path builds
+  // What the LOD builder is told about every mesh of this scene: the per-cluster limits, the
+  // attribute weights, and the seam rules (docs/subsystems/geometry.md, "What the simplifier is
+  // given, and why"). It is **part of the derived-data cache key**, so a scene built with
+  // non-default options addresses its own container and `engine-content build` with the matching
+  // flags writes exactly that one — which is the property that makes a before-and-after
+  // comparison a flag rather than two builds of the tree, and the reason this is one field for
+  // every mesh instead of a special case for the procedural fixture.
+  geometry::ClusterLodOptions lod;
+  u32 heightfield_grid = 257;  // vertices a side, when a mesh path is empty
+  std::string ddc;             // derived-data root; empty and `cache` looks one up
+  bool cache = true;           // read and write <ddc>/clusters/<key>.clusters
   // The longest bone-matrix span the caller will hand a frame, which is what the per-frame joint
   // buffer is sized by. It is the caller's number because it comes from the animation capability's
   // pose pool, which the renderer does not know about; a frame handing over more than this is

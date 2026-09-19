@@ -55,6 +55,12 @@ const char* k_usage =
     "      --page-bytes <n>      streaming page target in bytes (default 131072); 0 writes no\n"
     "                            page table and leaves the clusters in builder order\n"
     "      --no-weld             keep the file's duplicate vertices\n"
+    "      --uv-seams <rule>     what a LOD collapse may do at a UV atlas island edge:\n"
+    "                            none, protect (default), or lock\n"
+    "      --normal-seams <rule> the same at a hard shading edge (default none)\n"
+    "      --uv-weight <n>       UV weight in the simplifier's error metric, in thousandths\n"
+    "                            (default 500 = 0.5); 0 removes the term\n"
+    "      --normal-weight <n>   the same for normals (default 0; 500 costs 2-4x the triangles)\n"
     "      --cache               write into the derived-data cache instead of a named output,\n"
     "                            addressed by the source and the options above\n"
     "      --ddc <dir>           the cache root (default: <repo>/ddc, found beside AGENTS.md)\n"
@@ -140,6 +146,15 @@ bool next_u32(int argc, char** argv, int& i, u32& out) {
   return true;
 }
 
+// A non-negative weight, in thousandths of a unit, so the parser stays the integer one above and
+// a weight on the command line is still readable: `--uv-weight 500` is 0.5.
+bool next_weight(int argc, char** argv, int& i, f32& out) {
+  u32 thousandths = 0;
+  if (!next_u32(argc, argv, i, thousandths)) return false;
+  out = static_cast<f32>(thousandths) / 1000.0f;
+  return true;
+}
+
 // ---- what a build is asked for ---------------------------------------------------------------
 
 // The per-mesh knobs, which are also what the cache key is taken over, so that the key and the
@@ -152,13 +167,38 @@ struct MeshOptions {
   // clusters, so two targets are two different containers.
   u32 page_bytes = geometry::ClusterPagesOptions{}.page_bytes;
   bool weld = true;
+  // What the LOD simplifier is given beyond the positions (docs/subsystems/geometry.md, "What
+  // the simplifier is given, and why"). They are on the command line rather than fixed because
+  // the seam rule is the difference between a mesh whose coarse levels paint the right part of
+  // the atlas and one whose coarse levels do not, and the only honest way to say what it costs
+  // is to build both containers and compare them — which is a flag, not a rebuild.
+  f32 normal_weight = geometry::ClusterLodOptions{}.normal_weight;
+  f32 uv_weight = geometry::ClusterLodOptions{}.uv_weight;
+  geometry::SeamRule uv_seams = geometry::ClusterLodOptions{}.uv_seams;
+  geometry::SeamRule normal_seams = geometry::ClusterLodOptions{}.normal_seams;
 };
 
 geometry::ClusterLodOptions lod_options_of(const MeshOptions& options) {
   geometry::ClusterLodOptions lod_options;
   lod_options.max_triangles = options.max_triangles;
   lod_options.max_vertices = options.max_vertices;
+  lod_options.normal_weight = options.normal_weight;
+  lod_options.uv_weight = options.uv_weight;
+  lod_options.uv_seams = options.uv_seams;
+  lod_options.normal_seams = options.normal_seams;
   return lod_options;
+}
+
+bool read_seam_rule(std::string_view text, geometry::SeamRule& out) {
+  if (text == "none")
+    out = geometry::SeamRule::none;
+  else if (text == "protect")
+    out = geometry::SeamRule::protect;
+  else if (text == "lock")
+    out = geometry::SeamRule::lock;
+  else
+    return false;
+  return true;
 }
 
 bool options_in_range(const MeshOptions& options) {
@@ -677,6 +717,16 @@ int build_command(int argc, char** argv) {
       if (!next_u32(argc, argv, i, options.mesh.max_vertices)) return k_exit_usage;
     } else if (a == "--page-bytes") {
       if (!next_u32(argc, argv, i, options.mesh.page_bytes)) return k_exit_usage;
+    } else if (a == "--normal-weight") {
+      if (!next_weight(argc, argv, i, options.mesh.normal_weight)) return k_exit_usage;
+    } else if (a == "--uv-weight") {
+      if (!next_weight(argc, argv, i, options.mesh.uv_weight)) return k_exit_usage;
+    } else if (a == "--uv-seams" || a == "--normal-seams") {
+      std::string rule;
+      if (!next_value(argc, argv, i, rule)) return k_exit_usage;
+      geometry::SeamRule& target =
+          a == "--uv-seams" ? options.mesh.uv_seams : options.mesh.normal_seams;
+      if (!read_seam_rule(rule, target)) return usage("a seam rule is none, protect, or lock");
     } else if (a == "--jobs") {
       if (!next_u32(argc, argv, i, options.jobs)) return k_exit_usage;
     } else if (a == "--log") {
@@ -1263,10 +1313,219 @@ void print_sweep(const Vector<SweepStep>& sweep, u64 budget) {
   }
 }
 
+// ---- the atlas, and what LOD can do with it ----------------------------------------------------
+//
+// How fragmented a UV atlas is decides how far a mesh can be simplified at all, because the LOD
+// builder is forbidden to collapse across an island edge (docs/subsystems/geometry.md, "What the
+// simplifier is given, and why"). Before that rule existed the question did not arise and the
+// builder simply produced the wrong picture; now it is a **cost** the asset controls, which makes
+// it something a content build has to report. These are the numbers §7.4's atlas-fragmentation
+// validator will threshold.
+//
+// An island is a connected component of the level-0 triangles over *source vertex indices*, which
+// is exactly right because the weld keys on the UV: the two sides of an island edge are different
+// source vertices, and only they are. Areas are in UV space, reported in texels of a 4096 atlas
+// because that is the unit an author reasons in and the unit "smaller than a triangle" is decided
+// in.
+struct AtlasStats {
+  u32 islands = 0;
+  u32 source_vertices = 0;    // distinct source vertices the clusters reference
+  u32 seam_vertices = 0;      // of those, ones sharing a position with a different-UV vertex
+  f64 uv_area = 0.0;          // total, in UV units (1.0 is the whole atlas once)
+  f64 smallest_texels = 0.0;  // the smallest island's area, in texels of a 4096 atlas
+  f64 median_texels = 0.0;
+  f64 largest_texels = 0.0;
+  u32 smallest_triangles = 0;
+  bool valid = false;
+};
+
+u32 find_root(Vector<u32>& parent, u32 v) {
+  while (parent[v] != v) {
+    parent[v] = parent[parent[v]];  // path halving; the union-find is over source vertices
+    v = parent[v];
+  }
+  return v;
+}
+
+AtlasStats measure_atlas(const geometry::ClusterLodMesh& lod) {
+  AtlasStats out;
+  const geometry::ClusterMesh& mesh = lod.mesh;
+  if (mesh.attributes.size() != mesh.vertices.size() || mesh.vertex_source.empty()) return out;
+  u32 source_count = 0;
+  for (const u32 source : mesh.vertex_source)
+    source_count = source >= source_count ? source + 1 : source_count;
+  if (source_count == 0) return out;
+
+  // One position and one UV per source vertex, taken from any cluster that carries it: every
+  // cluster's copy of a source vertex holds the same bytes, which is the invariant the weld and
+  // `fill_cluster_attributes` maintain and `validate_clusters` checks.
+  Vector<Vec3> position(source_count, Vec3{});
+  Vector<Vec2> uv(source_count, Vec2{});
+  Vector<u8> present(source_count, u8{0});
+  for (u32 v = 0; v < mesh.vertices.size(); ++v) {
+    const u32 source = mesh.vertex_source[v];
+    position[source] = mesh.vertices[v];
+    uv[source] = geometry::decode_half2(mesh.attributes[v].uv_half2);
+    present[source] = 1u;
+  }
+  for (const u8 seen : present)
+    out.source_vertices += seen;
+
+  // Islands: union the three corners of every level-0 triangle.
+  Vector<u32> parent(source_count);
+  for (u32 i = 0; i < source_count; ++i)
+    parent[i] = i;
+  Vector<f64> area(source_count, 0.0);  // accumulated on the component's root at the end
+  Vector<u32> triangles(source_count, 0u);
+  Vector<u32> corners;
+  corners.reserve(mesh.triangles.size() * 3);
+  for (u32 c = 0; c < mesh.clusters.size(); ++c) {
+    if (lod.lod[c].level != 0) continue;
+    const geometry::ClusterDesc& desc = mesh.clusters[c];
+    for (u32 t = 0; t < desc.triangle_count; ++t) {
+      const u32 packed = mesh.triangles[desc.triangle_offset + t];
+      for (u32 k = 0; k < 3; ++k)
+        corners.push_back(
+            mesh.vertex_source[desc.vertex_offset + geometry::ClusterMesh::unpack(packed, k)]);
+    }
+  }
+  for (u32 i = 0; i + 2 < corners.size(); i += 3) {
+    const u32 a = find_root(parent, corners[i]);
+    const u32 b = find_root(parent, corners[i + 1]);
+    const u32 c = find_root(parent, corners[i + 2]);
+    if (a != b) parent[b] = a;
+    if (a != c) parent[find_root(parent, c)] = a;
+  }
+  for (u32 i = 0; i + 2 < corners.size(); i += 3) {
+    const u32 root = find_root(parent, corners[i]);
+    const Vec2 e0 = uv[corners[i + 1]] - uv[corners[i]];
+    const Vec2 e1 = uv[corners[i + 2]] - uv[corners[i]];
+    const f64 triangle_area = std::fabs(static_cast<f64>(e0.x * e1.y - e0.y * e1.x)) * 0.5;
+    area[root] += triangle_area;
+    ++triangles[root];
+    out.uv_area += triangle_area;
+  }
+
+  // Seam vertices: a source vertex that shares a position with another source vertex that
+  // disagrees about the UV. Sorted by a position key rather than hashed, so the answer is a
+  // function of the container alone.
+  struct PositionKey {
+    f32 x = 0.0f;
+    f32 y = 0.0f;
+    f32 z = 0.0f;
+    u32 vertex = 0;
+  };
+  Vector<PositionKey> keys;
+  keys.reserve(out.source_vertices);
+  for (u32 v = 0; v < source_count; ++v) {
+    if (present[v] == 0) continue;
+    keys.push_back(PositionKey{position[v].x, position[v].y, position[v].z, v});
+  }
+  std::sort(keys.begin(), keys.end(), [](const PositionKey& a, const PositionKey& b) {
+    if (a.x != b.x) return a.x < b.x;
+    if (a.y != b.y) return a.y < b.y;
+    if (a.z != b.z) return a.z < b.z;
+    return a.vertex < b.vertex;
+  });
+  for (u32 i = 0; i < keys.size();) {
+    u32 j = i;
+    while (j < keys.size() && keys[j].x == keys[i].x && keys[j].y == keys[i].y &&
+           keys[j].z == keys[i].z)
+      ++j;
+    if (j - i > 1) {
+      for (u32 k = i; k < j; ++k) {
+        bool differs = false;
+        for (u32 m = i; m < j; ++m) {
+          if (m == k) continue;
+          if (uv[keys[m].vertex].x != uv[keys[k].vertex].x ||
+              uv[keys[m].vertex].y != uv[keys[k].vertex].y) {
+            differs = true;
+          }
+        }
+        if (differs) ++out.seam_vertices;
+      }
+    }
+    i = j;
+  }
+
+  Vector<f64> island_areas;
+  f64 smallest_area = 0.0;
+  for (u32 v = 0; v < source_count; ++v) {
+    if (triangles[v] == 0) continue;
+    if (out.islands == 0 || area[v] < smallest_area) {
+      smallest_area = area[v];
+      out.smallest_triangles = triangles[v];
+    }
+    ++out.islands;
+    island_areas.push_back(area[v]);
+    const f64 texels = area[v] * 4096.0 * 4096.0;
+    if (texels > out.largest_texels) out.largest_texels = texels;
+  }
+  out.smallest_texels = smallest_area * 4096.0 * 4096.0;
+  if (!island_areas.empty()) {
+    std::sort(island_areas.begin(), island_areas.end());
+    out.median_texels = island_areas[island_areas.size() / 2] * 4096.0 * 4096.0;
+  }
+  out.valid = out.islands > 0;
+  return out;
+}
+
+// What a coarse cut does to the texture, on the CPU (`geometry::measure_lod_attribute_error`).
+// Two budgets, because one number cannot say whether the damage grows with the coarseness.
+struct AttributeErrorRow {
+  f64 fraction = 0.0;  // of the leaf triangles
+  u32 clusters = 0;
+  u32 triangles = 0;
+  geometry::AttributeError error;
+};
+
+Vector<AttributeErrorRow> measure_attribute_error(const geometry::ClusterLodMesh& lod) {
+  Vector<AttributeErrorRow> rows;
+  if (lod.mesh.attributes.size() != lod.mesh.vertices.size() || lod.leaf_triangle_count == 0) {
+    return rows;
+  }
+  for (const f64 fraction : {0.25, 0.10}) {
+    const u32 target = static_cast<u32>(static_cast<f64>(lod.leaf_triangle_count) * fraction);
+    // The cut nearest the budget: the raw cut's triangle count is monotone in the threshold, so a
+    // geometric sweep is enough and needs no bracketing.
+    f32 best_threshold = 0.0f;
+    u32 best_distance = ~u32{0};
+    for (u32 step = 0; step <= 64; ++step) {
+      const f32 threshold = std::pow(10.0f, -6.0f + 8.0f * static_cast<f32>(step) / 64.0f);
+      Vector<u32> cut;
+      geometry::select_lod_raw(lod, threshold, cut);
+      u32 triangles = 0;
+      for (const u32 c : cut)
+        triangles += lod.mesh.clusters[c].triangle_count;
+      const u32 distance = triangles > target ? triangles - target : target - triangles;
+      if (distance < best_distance) {
+        best_distance = distance;
+        best_threshold = threshold;
+      }
+    }
+    Vector<u32> cut;
+    geometry::select_lod_raw(lod, best_threshold, cut);
+    if (cut.empty()) continue;
+    AttributeErrorRow row;
+    row.fraction = fraction;
+    row.clusters = cut.size();
+    for (const u32 c : cut)
+      row.triangles += lod.mesh.clusters[c].triangle_count;
+    std::string error;
+    if (!geometry::measure_lod_attribute_error(lod, cut, geometry::AttributeErrorOptions{},
+                                               row.error, &error)) {
+      continue;
+    }
+    rows.push_back(row);
+  }
+  return rows;
+}
+
 // The metrics docs/plan/07-content-pipeline.md §7.3 wants a content build to report about what it
 // produced: how the clusters are spread over the levels, how full they are, how much the cluster
-// layout duplicates the source vertices, where the bytes went, and how coarse the position grid
-// is. One JSON line, so a script can watch them move between builds.
+// layout duplicates the source vertices, where the bytes went, how coarse the position grid is,
+// how fragmented the UV atlas is, and how much of the texture a coarse LOD cut moves. One JSON
+// line, so a script can watch them move between builds.
 int stats(const std::string& path) {
   std::string file;
   geometry::ClusterFileHeader header;
@@ -1456,6 +1715,70 @@ int stats(const std::string& path) {
   images.set("detail", std::move(image_detail));
   summary.set("images", JsonValue(image_summary.count));
   summary.set("image_detail", std::move(images));
+
+  // The atlas, and how much of the texture the LOD cut moves. Both are about the *picture* rather
+  // than the bytes, and both are here because the seam rule of geometry.md made atlas
+  // fragmentation a cost the asset controls rather than a defect the builder hides.
+  const AtlasStats atlas_stats = measure_atlas(data.mesh);
+  if (atlas_stats.valid) {
+    JsonValue atlas = JsonValue::object();
+    atlas.set("islands", JsonValue(atlas_stats.islands));
+    atlas.set("source_vertices", JsonValue(atlas_stats.source_vertices));
+    atlas.set("seam_vertices", JsonValue(atlas_stats.seam_vertices));
+    atlas.set("seam_fraction", JsonValue(atlas_stats.source_vertices == 0
+                                             ? 0.0
+                                             : static_cast<f64>(atlas_stats.seam_vertices) /
+                                                   static_cast<f64>(atlas_stats.source_vertices)));
+    atlas.set("uv_area", JsonValue(atlas_stats.uv_area));
+    atlas.set("smallest_island_texels_4096", JsonValue(atlas_stats.smallest_texels));
+    atlas.set("smallest_island_triangles", JsonValue(atlas_stats.smallest_triangles));
+    atlas.set("median_island_texels_4096", JsonValue(atlas_stats.median_texels));
+    atlas.set("largest_island_texels_4096", JsonValue(atlas_stats.largest_texels));
+    atlas.set("triangles_per_island",
+              JsonValue(atlas_stats.islands == 0 ? 0.0
+                                                 : static_cast<f64>(data.mesh.leaf_triangle_count) /
+                                                       static_cast<f64>(atlas_stats.islands)));
+    summary.set("atlas", std::move(atlas));
+    std::fprintf(stderr,
+                 "  atlas: %u islands, %u of %u vertices on a seam (%.1f%%), smallest island "
+                 "%.0f texels of 4096 over %u triangles\n",
+                 atlas_stats.islands, atlas_stats.seam_vertices, atlas_stats.source_vertices,
+                 atlas_stats.source_vertices == 0
+                     ? 0.0
+                     : 100.0 * static_cast<double>(atlas_stats.seam_vertices) /
+                           static_cast<double>(atlas_stats.source_vertices),
+                 static_cast<double>(atlas_stats.smallest_texels), atlas_stats.smallest_triangles);
+  }
+  const Vector<AttributeErrorRow> attribute_rows = measure_attribute_error(data.mesh);
+  if (!attribute_rows.empty()) {
+    JsonValue rows = JsonValue::array();
+    std::fprintf(stderr, "  LOD attribute error (closest point, texels of a 4096 atlas)\n");
+    std::fprintf(stderr, "  %8s %9s %10s %9s %9s %9s %9s %9s\n", "budget", "clusters", "triangles",
+                 "uv mean", "uv p99", "uv max", "over 8px", "normal");
+    for (const AttributeErrorRow& row : attribute_rows) {
+      JsonValue entry = JsonValue::object();
+      entry.set("triangle_fraction", JsonValue(row.fraction));
+      entry.set("clusters", JsonValue(row.clusters));
+      entry.set("triangles", JsonValue(row.triangles));
+      entry.set("samples", JsonValue(row.error.samples));
+      entry.set("uv_mean_texels", JsonValue(row.error.uv_mean_texels));
+      entry.set("uv_p99_texels", JsonValue(row.error.uv_p99_texels));
+      entry.set("uv_max_texels", JsonValue(row.error.uv_max_texels));
+      entry.set("uv_outlier_fraction", JsonValue(row.error.uv_outlier_fraction()));
+      entry.set("normal_mean_deg", JsonValue(row.error.normal_mean_deg));
+      entry.set("normal_max_deg", JsonValue(row.error.normal_max_deg));
+      rows.push_back(std::move(entry));
+      std::fprintf(stderr, "  %7.0f%% %9u %10u %9.1f %9.1f %9.1f %8.2f%% %8.2f\n",
+                   row.fraction * 100.0, row.clusters, row.triangles,
+                   static_cast<double>(row.error.uv_mean_texels),
+                   static_cast<double>(row.error.uv_p99_texels),
+                   static_cast<double>(row.error.uv_max_texels),
+                   static_cast<double>(row.error.uv_outlier_fraction()) * 100.0,
+                   static_cast<double>(row.error.normal_mean_deg));
+    }
+    summary.set("lod_attribute_error", std::move(rows));
+  }
+
   summary.set("source_path", JsonValue(data.source_path));
   summary.set("source_hash", JsonValue(data.source_hash));
   summary.set("build_key", JsonValue(data.build_key));

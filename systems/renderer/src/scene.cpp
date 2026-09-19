@@ -3,6 +3,8 @@
 #include <core/time/time.h>
 #include <domain/geometry/cluster_file.h>
 #include <domain/geometry/cluster_pages.h>
+#include <domain/geometry/stress_mesh.h>
+#include <foundation/image/png.h>
 #include <foundation/io/vfs.h>
 #include <systems/renderer/scene.h>
 
@@ -148,6 +150,62 @@ bool load_source_mesh(const std::string& path, const SceneDesc& desc, SourceMesh
     ENGINE_LOG_WARN(log_renderer, "cluster pages not built", log::field("mesh", what),
                     log::field("error", page_error));
   };
+  if (path.empty() && desc.procedural == Procedural::shredded_atlas) {
+    // The atlas stress fixture, built here rather than committed as a file so that the scene
+    // corpus can guard the LOD seam defect on a fresh clone and without a third-party model
+    // ([geometry](geometry.md), "The shredded atlas"). It comes with a material and a probe
+    // texture whose colour encodes atlas position, because the whole point of the scene is that a
+    // UV a collapse dragged into the wrong island reads the wrong colour — a picture comparison
+    // of this mesh measures exactly that and nothing else. The texture travels as an encoded PNG
+    // in the mesh's images, which is the same road a GLB's embedded textures take, so nothing
+    // downstream needs to know the mesh was procedural.
+    geometry::ShreddedAtlasMesh fixture;
+    geometry::ShreddedAtlasOptions fixture_options;
+    // Denser than the geometry module's own unit fixture on purpose: a picture comparison needs a
+    // DAG deep enough that a coarse threshold reaches a *much* smaller cut than the finest, and
+    // 192 x 96 quads (36,864 triangles, 1,152 islands) is where that happens while the scene still
+    // loads in well under a second.
+    fixture_options.segments = 192;
+    fixture_options.rings = 96;
+    geometry::build_shredded_atlas_torus(fixture_options, fixture);
+    geometry::AttributeSource attribute_source;
+    attribute_source.normals =
+        std::span<const Vec3>(fixture.normals.data(), fixture.normals.size());
+    attribute_source.uvs = std::span<const Vec2>(fixture.uvs.data(), fixture.uvs.size());
+    if (!geometry::build_cluster_lod(fixture.positions, fixture.indices, desc.lod, lod, &error,
+                                     attribute_source)) {
+      return false;
+    }
+    Vector<u8> texels;
+    geometry::build_atlas_probe_texture(1024, fixture.atlas_cells, texels);
+    assets::ImageRef probe;
+    probe.name = "atlas-probe";
+    probe.mime_type = "image/png";
+    if (!image::encode_png(1024, 1024, 4, std::span<const u8>(texels.data(), texels.size()),
+                           probe.bytes)) {
+      error = "the atlas probe texture could not be encoded";
+      return false;
+    }
+    out.data.images.push_back(std::move(probe));
+    assets::Material material;
+    material.name = "atlas-probe";
+    material.base_color_image = 0;
+    material.metallic = 0.0f;
+    material.roughness = 0.6f;
+    out.data.materials.push_back(std::move(material));
+    out.part_material.push_back(0);
+    out.part_of_cluster.resize(lod.mesh.clusters.size(), 0u);
+    out.primitives = 1;
+    ENGINE_LOG_INFO(log_renderer, "mesh loaded", log::field("from", "shredded atlas"),
+                    log::field("islands", fixture.island_count),
+                    log::field("atlas_cells", fixture.atlas_cells),
+                    log::field("seam_vertices", fixture.seam_vertices),
+                    log::field("triangles", lod.leaf_triangle_count),
+                    log::field("clusters", lod.mesh.clusters.size()),
+                    log::field("lod_levels", lod.level_cluster_counts.size()));
+    page_layout("shredded-atlas", desc.page_bytes);
+    return true;
+  }
   if (path.empty()) {
     Vector<Vec3> positions;
     Vector<u32> indices;
@@ -158,8 +216,7 @@ bool load_source_mesh(const std::string& path, const SceneDesc& desc, SourceMesh
       uvs.push_back(Vec2{(p.x + 10.0f) / 20.0f, (p.z + 10.0f) / 20.0f});
     geometry::AttributeSource attribute_source;
     attribute_source.uvs = std::span<const Vec2>(uvs.data(), uvs.size());  // normals: computed
-    if (!geometry::build_cluster_lod(positions, indices, geometry::ClusterLodOptions{}, lod, &error,
-                                     attribute_source)) {
+    if (!geometry::build_cluster_lod(positions, indices, desc.lod, lod, &error, attribute_source)) {
       return false;
     }
     page_layout("heightfield", desc.page_bytes);
@@ -177,7 +234,7 @@ bool load_source_mesh(const std::string& path, const SceneDesc& desc, SourceMesh
     if (!assets::source_mesh_hash(path, source_hash, &error)) return false;
     // The page target is part of the key, so this has to be the one the build below uses — and
     // the one engine-content uses by default, or the two apps would stop sharing entries.
-    const u64 key = geometry::cluster_cache_key(source_hash, geometry::ClusterLodOptions{}, true,
+    const u64 key = geometry::cluster_cache_key(source_hash, desc.lod, true,
                                                 geometry::ClusterPagesOptions{}.page_bytes);
     cache_path = geometry::cluster_cache_path(desc.ddc, key);
     out.cache = "miss";
@@ -296,8 +353,8 @@ bool load_source_mesh(const std::string& path, const SceneDesc& desc, SourceMesh
     const std::span<const u32> range(out.data.indices.data() + primitive.first_index,
                                      primitive.index_count);
     geometry::ClusterLodMesh part;
-    if (!geometry::build_cluster_lod(out.data.positions, range, geometry::ClusterLodOptions{}, part,
-                                     &error, attribute_source)) {
+    if (!geometry::build_cluster_lod(out.data.positions, range, desc.lod, part, &error,
+                                     attribute_source)) {
       return false;
     }
     parts.push_back(std::move(part));
@@ -489,7 +546,11 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
   }
 
   const i64 build_start = time::monotonic_ns();
-  out.heightfield = resolved.meshes.size() == 1 && resolved.meshes[0].empty();
+  // `heightfield` is what makes the GPU scene synthesize the ripple texture and the height-banded
+  // materials, so it is the *terrain* and not "procedural": the shredded atlas brings its own
+  // material and its own image and goes down the ordinary path.
+  out.heightfield = resolved.meshes.size() == 1 && resolved.meshes[0].empty() &&
+                    resolved.procedural == Procedural::heightfield;
   out.sources.resize(resolved.meshes.size());
   Vector<geometry::ClusterLodMesh> dags(resolved.meshes.size());
   Vector<geometry::ClusterPages> tables(resolved.meshes.size());

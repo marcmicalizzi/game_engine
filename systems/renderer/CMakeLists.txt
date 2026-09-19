@@ -21,4 +21,4 @@ engine_module(NAME renderer LAYER systems
 target_include_directories(engine_renderer PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 
 engine_module_tests(NAME renderer SOURCES tests/renderer_tests.cpp tests/reference_tests.cpp
-                                          tests/streaming_tests.cpp)
+                                          tests/streaming_tests.cpp tests/atlas_lod_tests.cpp)
