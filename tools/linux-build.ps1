@@ -16,6 +16,11 @@
   `all` for the four in that order — the same four, in the same order, as ci.yml's matrix.
   Any other Linux preset in CMakePresets.json works too (linux-clang-asan, for instance).
 
+  The two **headless** presets — linux-server and linux-server-debug, which set
+  ENGINE_WINDOW_BACKENDS=none for the Sandy Bridge GPU server — are built in the Dockerfile's
+  `headless` target instead, which has no X11, Wayland, Mesa or libudev development package at
+  all. Nothing has to be asked for: the preset decides the image. See docs/ci/remote-linux.md.
+
   Commands:
     -Test         also run CTest for the preset after the build (build alone is the default).
     -Filter       a regex on test names, passed to `ctest -R`.
@@ -64,6 +69,12 @@ $Dockerfile = Join-Path $PSScriptRoot 'ci/linux.Dockerfile'
 # The four ci.yml runs, in ci.yml's order.
 $AllPresets = @('linux-clang-debug', 'linux-gcc-release', 'linux-clang-minimal', 'linux-clang-no-ecs')
 
+# The presets that must be built where no display development package exists. They are named
+# rather than derived from the preset file because reading ENGINE_WINDOW_BACKENDS out of
+# CMakePresets.json would mean parsing preset inheritance here, and a two-entry list that a new
+# headless preset has to be added to is the smaller thing to get wrong.
+$HeadlessPresets = @('linux-server', 'linux-server-debug')
+
 # Source paths that must never reach the container: the Windows build trees (which would be
 # overwritten by a Linux configure and are the thing we are protecting), the derived-data cache
 # and sample assets (large, rebuildable, and no test needs them), the agent worktree metadata,
@@ -89,11 +100,17 @@ function Get-ShortHash([string]$text) {
   finally { $sha.Dispose() }
 }
 
-# The image tag is the Dockerfile's own hash, so an edit to the toolchain produces a different
-# image rather than a stale one that happens to share a name. Two worktrees with the same
-# Dockerfile share the image and build it once.
+# The image tag is the Dockerfile's own hash **and the target**, so an edit to the toolchain
+# produces a different image rather than a stale one that happens to share a name, and the
+# headless image can never be mistaken for the desktop one — which would defeat the point of
+# having it. Two worktrees with the same Dockerfile share both images and build each once.
 $DockerfileHash = Get-ShortHash ([System.IO.File]::ReadAllText($Dockerfile))
-$Image = "engine-linux-ci:$DockerfileHash"
+function Get-ImageTag([string]$target) { "engine-linux-ci-${target}:$DockerfileHash" }
+
+function Get-TargetForPreset([string]$name) {
+  if ($HeadlessPresets -contains $name) { return 'headless' }
+  return 'desktop'
+}
 
 # Volumes are per checkout: every agent worktree is a separate tree and must not share a build
 # directory with another one. The path is the identity.
@@ -112,16 +129,20 @@ function Ensure-Docker {
   if ($LASTEXITCODE -ne 0) { throw 'the Docker daemon is not reachable; start Docker Desktop.' }
 }
 
-function Ensure-Image {
-  $existing = & docker image inspect $Image --format '{{.Id}}' 2>$null
+# Builds the image for one target if it is not already there. It deliberately returns **nothing**:
+# `docker build`'s log is this function's output stream, so a function that also returned the tag
+# would return the whole build log with it. Callers ask `Get-ImageTag` for the name.
+function Ensure-Image([string]$target) {
+  $image = Get-ImageTag $target
+  $existing = & docker image inspect $image --format '{{.Id}}' 2>$null
   if ($LASTEXITCODE -eq 0 -and $existing) { return }
-  Write-Step "building $Image from tools/ci/linux.Dockerfile"
+  Write-Step "building $image from tools/ci/linux.Dockerfile (target $target)"
   # An empty build context: the Dockerfile copies nothing from the tree, and sending the
   # checkout as context would be pointless traffic over the 9p share.
   $ctx = Join-Path ([System.IO.Path]::GetTempPath()) "engine-linux-ctx-$DockerfileHash"
   New-Item -ItemType Directory -Force -Path $ctx | Out-Null
   try {
-    & docker build -f $Dockerfile -t $Image $ctx
+    & docker build -f $Dockerfile --target $target -t $image $ctx
     if ($LASTEXITCODE -ne 0) { throw "docker build failed ($LASTEXITCODE)" }
   } finally { Remove-Item -Recurse -Force $ctx -ErrorAction SilentlyContinue }
 }
@@ -136,14 +157,14 @@ function Ensure-Volumes {
   }
 }
 
-function Invoke-Sync {
+function Invoke-Sync([string]$image) {
   Write-Step "syncing $Root into $SrcVolume"
   $excludeArgs = ($SyncExcludes | ForEach-Object { "--exclude=$_" }) -join ' '
   # --delete so a file removed on the host disappears in the volume; excluded paths are
   # protected from it by default, which is what keeps /src/build alive across syncs.
   $syncScript = "rsync -a --delete $excludeArgs /host/ /src/ && echo ""sync: `$(find /src -type f -not -path '/src/build/*' | wc -l) files"""
   $syncArgs = @('run', '--rm', '-v', "${HostMount}:/host:ro", '-v', "${SrcVolume}:/src",
-                $Image, 'bash', '-lc', $syncScript)
+                $image, 'bash', '-lc', $syncScript)
   & docker @syncArgs
   if ($LASTEXITCODE -ne 0) { throw "source sync failed ($LASTEXITCODE)" }
 }
@@ -182,8 +203,10 @@ function Invoke-DocsChecks {
     [System.IO.File]::WriteAllText((Join-Path $gate 'messages.txt'), (($messages -join "`n") + "`n"))
     Write-Step "documentation gate against $Base, and docs-check"
     $mount = $gate -replace '\\', '/'
+    # The documentation checks read files; the display packages make no difference to them, so
+    # they run in the desktop image whatever preset was asked for.
     $docsArgs = @('run', '--rm', '-v', "${SrcVolume}:/src", '-v', "${mount}:/gate:ro", '-w', '/src',
-                  '-e', 'LANG=C.UTF-8', $Image, 'bash', '-lc',
+                  '-e', 'LANG=C.UTF-8', (Get-ImageTag 'desktop'), 'bash', '-lc',
                   'tools/docs-gate.sh --files-from /gate/files.txt --messages-from /gate/messages.txt && tools/docs-check.sh')
     & docker @docsArgs
     exit $LASTEXITCODE
@@ -212,9 +235,15 @@ function Invoke-Preset([string]$name) {
   }
   $runScript = $lines -join "`n"
 
-  Write-Step "$name (jobs=$Jobs$(if ($Test) { ', with tests' }))"
+  # A headless preset is built where no display development package exists, so `none` is verified
+  # rather than merely configured. Ensure-Image is idempotent and cheap once the image is there.
+  $target = Get-TargetForPreset $name
+  Ensure-Image $target
+  $image = Get-ImageTag $target
+
+  Write-Step "$name (jobs=$Jobs, container $target$(if ($Test) { ', with tests' }))"
   $started = [DateTime]::UtcNow
-  $runArgs = @('run') + (Get-RunArgs) + @($Image, 'bash', '-lc', $runScript)
+  $runArgs = @('run') + (Get-RunArgs) + @($image, 'bash', '-lc', $runScript)
   # The compiler's diagnostics are the product of this script, so they go to the caller's
   # streams as they arrive. The status therefore cannot be this function's return value — that
   # is its whole output stream — and is left in a script-scoped variable instead.
@@ -227,11 +256,16 @@ function Invoke-Preset([string]$name) {
 }
 
 function Invoke-Shell {
-  Write-Step "shell in $Image ($SrcVolume at /src, $DepsVolume at /deps)"
+  # -Shell follows -Preset, so `-Preset linux-server -Shell` drops into the headless image and
+  # `ls /usr/include/X11` answering "no such file" is the point.
+  $target = Get-TargetForPreset $(if ($Preset -eq 'all') { $AllPresets[0] } else { $Preset })
+  Ensure-Image $target
+  $image = Get-ImageTag $target
+  Write-Step "shell in $image ($SrcVolume at /src, $DepsVolume at /deps)"
   # -it only when there is a terminal to attach: docker refuses `-t` with redirected input, and
   # "the input device is not a TTY" is a poor way to learn that this switch wants a console.
   $tty = if ([Console]::IsInputRedirected) { @() } else { @('-it') }
-  $runArgs = @('run') + $tty + (Get-RunArgs) + @($Image, 'bash')
+  $runArgs = @('run') + $tty + (Get-RunArgs) + @($image, 'bash')
   & docker @runArgs
   exit $LASTEXITCODE
 }
@@ -251,8 +285,8 @@ function Invoke-Prune {
       Write-Host "removed $v (was at $size)"
     }
   }
-  Write-Host 'The image is shared between checkouts and is left alone; remove it with'
-  Write-Host "  docker image rm $Image"
+  Write-Host 'The images are shared between checkouts and are left alone; remove them with'
+  Write-Host "  docker image rm $(Get-ImageTag 'desktop') $(Get-ImageTag 'headless')"
   exit $failed
 }
 
@@ -260,13 +294,18 @@ function Invoke-Prune {
 
 Ensure-Docker
 if ($Prune) { Invoke-Prune }
-Ensure-Image
 Ensure-Volumes
-if ($Sync) { Invoke-Sync }
-if ($Docs) { Invoke-DocsChecks }
-if ($Shell) { Invoke-Shell }
 
 [string[]]$targets = if ($Preset -eq 'all') { $AllPresets } else { @($Preset) }
+
+# The sync only needs rsync, which both targets have, so it runs in whichever image the first
+# preset wants and a headless-only run never builds the desktop one.
+$syncTarget = Get-TargetForPreset $targets[0]
+if ($Sync -or $Docs -or $Shell) { Ensure-Image $syncTarget }
+if ($Sync) { Invoke-Sync (Get-ImageTag $syncTarget) }
+if ($Docs) { Ensure-Image 'desktop'; Invoke-DocsChecks }
+if ($Shell) { Invoke-Shell }
+
 $results = [ordered]@{}
 $overall = 0
 foreach ($p in $targets) {

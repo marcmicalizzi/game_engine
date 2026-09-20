@@ -46,6 +46,8 @@ do not, and the Windows build stays silent about every one of them. See
 [local Linux builds](docs/ci/local-linux.md) for the volumes, the measured times, and what the
 first four runs found.
 
+`tools/remote-build.ps1 -Host <ssh alias> [-Preset linux-server] [-Test] [-Filter <regex>] [-Jobs <n>] [-Clean] [-Fetch <dir>]` runs the same tree on the headless Linux GPU server instead — a real machine, GCC 14 and clang 22, and a Sandy Bridge CPU with no AVX2, which is what the `linux-server` and `linux-server-debug` presets (`ENGINE_WINDOW_BACKENDS=none`, x86-64-v2) exist for; see [remote Linux builds](docs/ci/remote-linux.md).
+
 `package-tests.ps1` packs a preset's tests, benches and apps into a ~36 MB zip that runs on a machine with **no toolchain, no checkout and no PowerShell 7** — unzip, double-click `run-tests.cmd`, send back `results.json`, `results.txt` and `adapters.json`. It is how the engine gets tried on hardware nobody here can log in to; see [docs/ci/self-hosted-runners.md](docs/ci/self-hosted-runners.md) ("Trying the engine on a machine with no toolchain"). A test finds its executables and its data through `tests/support/test_paths.h`, because the paths CMake bakes in do not survive the move.
 
 `new-capability.ps1` scaffolds a new capability — module, system skeleton, LOD policy, determinism stance, tests, size table, docs page, and the `ENGINE_WITH_<NAME>` switch that has to be removable — as ADR-0027 requires.

@@ -11,22 +11,27 @@
 # digest `docker image inspect ubuntu:24.04 --format '{{index .RepoDigests 0}}'` prints, and
 # change the line below — which changes this file's hash, which is the image tag
 # `linux-build.ps1` computes, so every worktree rebuilds instead of silently disagreeing.
-FROM ubuntu:24.04@sha256:008173c23f95b170204355c12626cb5a965d779a7e1283b09e9cffbb1bf33ca3
+# --- Two targets ------------------------------------------------------------------------------
+#
+# `desktop` (the default, and what the four ci.yml presets are built in) is the hosted runner's
+# package set: the toolchain *plus* the X11, Wayland and Mesa development headers SDL3's Unix
+# configure wants. `headless` is the same toolchain with **none** of them, and it exists to make
+# the headless build's central claim falsifiable rather than asserted:
+# `ENGINE_WINDOW_BACKENDS=none` says the tree builds and its tests pass on a machine that has no
+# display development files at all, and the only way to know that is to build it somewhere that
+# has none. The two share every layer up to the split, so the second image costs one apt layer.
+#
+#   docker build -f tools/ci/linux.Dockerfile --target headless -t engine-linux-ci-headless .
+#
+# `tools/linux-build.ps1` picks the target from the preset and never asks the caller.
+FROM ubuntu:24.04@sha256:008173c23f95b170204355c12626cb5a965d779a7e1283b09e9cffbb1bf33ca3 AS base
 
-# Nothing in this image is an engine dependency. It is a toolchain: compilers, a build system,
-# a shell, and the headers SDL3's configure insists on. docs/ci/local-linux.md lists every
-# package with its license.
+# Nothing in this image is an engine dependency. It is a toolchain: compilers, a build system and
+# a shell. docs/ci/local-linux.md lists every package with its license.
 ENV DEBIAN_FRONTEND=noninteractive
 ENV LANG=C.UTF-8
 
-# --- The toolchain, and the same apt list ci.yml installs -------------------------------------
-#
-# The X11, Wayland, Mesa and libdrm entries are **development headers only**. SDL3 is built from
-# source by FetchContent and its configure refuses to proceed without them; nothing in this
-# image starts an X server or a Wayland compositor, and no display ever exists. At run time
-# `window::init()` fails, the window and swapchain tests skip, and `engine-view` exits 3 — which
-# is exactly what the headless Linux GPU runner does (docs/ci/self-hosted-runners.md) and what
-# the tests are written to treat as a skip. Do not read this list as "the container has a GUI".
+# --- The toolchain, shared by both targets ------------------------------------------------------
 #
 # clang-format is here although ci.yml does not install it: without it
 # `tools/new-capability.Tests.ps1` reports its formatting cases as skipped, and a check that
@@ -45,9 +50,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl gnupg \
       build-essential cmake ninja-build clang clang-format g++ git rsync \
       pkg-config file unzip xz-utils \
-      libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxfixes-dev libxss-dev \
-      libwayland-dev libxkbcommon-dev libegl1-mesa-dev libgl1-mesa-dev libdrm-dev libgbm-dev \
-      libxtst-dev libdecor-0-dev libudev-dev \
  && rm -rf /var/lib/apt/lists/*
 
 # --- PowerShell 7, from Microsoft's apt repository ---------------------------------------------
@@ -95,3 +97,35 @@ RUN git config --global user.email "build@localhost" \
 VOLUME ["/src", "/deps"]
 
 CMD ["/bin/bash"]
+
+# --- headless: the toolchain and nothing that could draw ----------------------------------------
+#
+# Deliberately empty. Every display development package is in `desktop` below, so this target is
+# `base` — and `base` is a machine on which `X11/Xlib.h`, `wayland-client.h`, `xkbcommon/*`,
+# `EGL/egl.h`, `GL/gl.h`, `gbm.h` and `libudev.h` do not exist. `linux-server` and
+# `linux-server-debug` are built here; if `ENGINE_WINDOW_BACKENDS=none` ever quietly starts
+# needing one of those headers again, this target stops building and says which.
+#
+# **libudev-dev is absent too, on purpose.** SDL's `CheckLibUDev` is a soft check — no header
+# means `HAVE_LIBUDEV_H` stays off and SDL polls `/dev/input` instead of subscribing to udev — and
+# "soft" is a claim worth a build rather than a reading of somebody's CMake. The Sandy Bridge
+# server *has* libudev, so this container is the only place the absent case is exercised.
+FROM base AS headless
+
+# --- desktop: what ci.yml's hosted runner has ---------------------------------------------------
+#
+# The X11, Wayland, Mesa and libdrm entries are **development headers only**, and SDL3's Unix
+# configure refuses to proceed without them unless it is told to (`ENGINE_WINDOW_BACKENDS=none`,
+# cmake/EngineGraphics.cmake). Nothing in this image starts an X server or a Wayland compositor,
+# and no display ever exists. At run time `window::init()` fails, the window and swapchain tests
+# skip, and `engine-view` exits 3 — which is what the headless Linux GPU runner does
+# (docs/ci/self-hosted-runners.md) and what the tests are written to treat as a skip. Do not read
+# this list as "the container has a GUI".
+FROM base AS desktop
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxfixes-dev libxss-dev \
+      libwayland-dev libxkbcommon-dev libegl1-mesa-dev libgl1-mesa-dev libdrm-dev libgbm-dev \
+      libxtst-dev libdecor-0-dev libudev-dev \
+ && rm -rf /var/lib/apt/lists/*
+USER build

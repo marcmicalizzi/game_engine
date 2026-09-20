@@ -114,9 +114,12 @@ is the small one for the obvious reason: `ENGINE_MINIMAL=ON` fetches nothing for
 does not contain, so Jolt, flecs, SQLite and Recast never arrive at all.
 
 ```powershell
-pwsh tools/linux-build.ps1 -Prune        # this checkout's two volumes
-docker image rm engine-linux-ci:<tag>    # the image, shared with every other checkout
+pwsh tools/linux-build.ps1 -Prune        # this checkout's two volumes, and it names the images
+docker image rm engine-linux-ci-desktop:<tag> engine-linux-ci-headless:<tag>
 ```
+
+The two images share every layer up to the split, so the headless one costs a few megabytes of
+metadata rather than a second 1.65 GB.
 
 Docker Desktop's WSL2 disk does not shrink on its own; `docker system prune` and, if it matters,
 Docker Desktop's own disk-reclaim are what return the space to Windows.
@@ -158,13 +161,24 @@ error, four times.
 `tools/ci/linux.Dockerfile`. **Ubuntu 24.04** — what `ubuntu-latest` resolves to today, and what
 `ci.yml` names explicitly — pinned by digest, with the same apt list the workflow installs.
 
-The **X11, Wayland, Mesa and libdrm entries are development headers only**. SDL3 is built from
-source by FetchContent and its configure refuses without them. **No X server and no Wayland
-compositor exist in the container, and none is wanted**: `window::init()` fails, the window and
-swapchain tests skip with `no display: SDL_Init(video): No available video device`, and
-`engine-view` exits 3, which its end-to-end test reads as a skip. That is the same behaviour as
-the headless Linux GPU runner in [self-hosted runners](self-hosted-runners.md), and it is the
-intended one.
+**Two targets, and the preset picks one.** `desktop` is that package set and is what the four
+`ci.yml` presets are built in. `headless` is the same toolchain with **none** of the X11, Wayland,
+Mesa, libdrm or libudev development packages, and the `linux-server` presets
+(`ENGINE_WINDOW_BACKENDS=none`) are built there — so "this tree builds where no display
+development file exists" is a build that breaks if it stops being true rather than a claim in a
+document. `tools/linux-build.ps1` reads the target off the preset and never asks; the image tag
+carries the target as well as the Dockerfile's hash, so the two can never be confused. The long
+form is in [remote Linux builds](remote-linux.md).
+
+The **X11, Wayland, Mesa and libdrm entries are development headers only**, and in the `desktop`
+target only. SDL3 is built from source by FetchContent and its configure refuses without them
+unless it is told to do without ([remote-linux](remote-linux.md#the-headless-windowing-switch)
+has what "refuses" actually looks like, which is not what this file used to say). **No X server
+and no Wayland compositor exist in the container, and none is wanted**: `window::init()` fails,
+the window and swapchain tests skip with `no display: SDL_Init(video): No available video
+device`, and `engine-view` exits 3, which its end-to-end test reads as a skip. That is the same
+behaviour as the headless Linux GPU runner in [self-hosted runners](self-hosted-runners.md), and
+it is the intended one.
 
 There is also no GPU: a Vulkan **loader** is present (Mesa's development packages pull it in) but
 no ICD behind it, so every GPU test prints

@@ -112,6 +112,18 @@
       "displayName": "Linux GCC RelWithDebInfo, x86-64-v2 (the Sandy Bridge GPU runner; test baseline, ADR-0031)",
       "inherits": "linux-gcc-release",
       "cacheVariables": { "ENGINE_CPU_BASELINE": "v2" }
+    },
+    {
+      "name": "linux-server",
+      "displayName": "Linux GCC RelWithDebInfo, x86-64-v2, headless (the Sandy Bridge GPU server over SSH)",
+      "inherits": "linux-gcc-release-v2",
+      "cacheVariables": { "ENGINE_WINDOW_BACKENDS": "none" }
+    },
+    {
+      "name": "linux-server-debug",
+      "displayName": "Linux Clang Debug, x86-64-v2, headless (the same server, asserts on)",
+      "inherits": "linux-clang-debug-v2",
+      "cacheVariables": { "ENGINE_WINDOW_BACKENDS": "none" }
     }
   ],
   "buildPresets": [
@@ -128,7 +140,9 @@
     { "name": "linux-clang-minimal", "configurePreset": "linux-clang-minimal" },
     { "name": "linux-clang-no-ecs", "configurePreset": "linux-clang-no-ecs" },
     { "name": "linux-gcc-release", "configurePreset": "linux-gcc-release" },
-    { "name": "linux-gcc-release-v2", "configurePreset": "linux-gcc-release-v2" }
+    { "name": "linux-gcc-release-v2", "configurePreset": "linux-gcc-release-v2" },
+    { "name": "linux-server", "configurePreset": "linux-server" },
+    { "name": "linux-server-debug", "configurePreset": "linux-server-debug" }
   ],
   "testPresets": [
     { "name": "msvc-debug", "configurePreset": "msvc-debug", "output": { "outputOnFailure": true } },
@@ -144,6 +158,8 @@
     { "name": "linux-clang-minimal", "configurePreset": "linux-clang-minimal", "output": { "outputOnFailure": true } },
     { "name": "linux-clang-no-ecs", "configurePreset": "linux-clang-no-ecs", "output": { "outputOnFailure": true } },
     { "name": "linux-gcc-release", "configurePreset": "linux-gcc-release", "output": { "outputOnFailure": true } },
-    { "name": "linux-gcc-release-v2", "configurePreset": "linux-gcc-release-v2", "output": { "outputOnFailure": true } }
+    { "name": "linux-gcc-release-v2", "configurePreset": "linux-gcc-release-v2", "output": { "outputOnFailure": true } },
+    { "name": "linux-server", "configurePreset": "linux-server", "output": { "outputOnFailure": true } },
+    { "name": "linux-server-debug", "configurePreset": "linux-server-debug", "output": { "outputOnFailure": true } }
   ]
 }
