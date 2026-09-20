@@ -273,7 +273,7 @@ TEST_CASE("cluster file: a DAG with materials survives a round trip array by arr
   CHECK(std::memcmp(header.magic, "CLST", 4) == 0);
   CHECK(header.version == k_cluster_file_version);
   CHECK(header.flags == 0);
-  CHECK(header.section_count == 22);
+  CHECK(header.section_count == 29);
   CHECK(header.total_bytes == file.size());
   CHECK(header.content_hash == cluster_file_hash(data));
   for (u32 i = 0; i < header.section_count; ++i) {

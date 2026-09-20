@@ -12,4 +12,5 @@ target_include_directories(engine_geometry SYSTEM PRIVATE "${meshoptimizer_SOURC
 
 engine_module_tests(NAME geometry
   SOURCES tests/cluster_tests.cpp tests/cluster_lod_tests.cpp tests/cluster_pages_tests.cpp
-          tests/cluster_file_tests.cpp tests/atlas_seam_tests.cpp tests/size_table.cpp)
+          tests/cluster_file_tests.cpp tests/atlas_seam_tests.cpp tests/morph_tests.cpp
+          tests/size_table.cpp)

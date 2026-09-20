@@ -1,4 +1,6 @@
+#include <core/containers/hash_map.h>
 #include <core/containers/hash_set.h>
+#include <core/hash/hash.h>
 #include <domain/geometry/cluster.h>
 
 #include <algorithm>
@@ -242,6 +244,8 @@ bool validate_clusters(const ClusterMesh& mesh, std::span<const u32> source_indi
     return fail("the mesh names a joint palette but carries no skin bindings");
   }
 
+  if (!validate_morph_stream(mesh, error)) return false;
+
   // Every source triangle exactly once: compare sorted canonical corner triples.
   Vector<u64> expected;
   Vector<u64> found;
@@ -376,6 +380,312 @@ f32 sign_or_one(f32 v) noexcept { return v < 0.0f ? -1.0f : 1.0f; }
 
 }  // namespace
 
+// ---- morph channels ----------------------------------------------------------------------------
+
+namespace {
+
+// A channel's quantization step: its own largest absolute component over 32767, so the channel
+// spends its 16 bits on its own extent rather than on the mesh's. An all-zero (or empty) channel
+// keeps a scale of 0, which decodes every delta to zero exactly.
+f32 morph_scale_of(std::span<const Vec3> deltas) noexcept {
+  f32 largest = 0.0f;
+  for (const Vec3& d : deltas) {
+    largest = std::max(largest, std::fabs(d.x));
+    largest = std::max(largest, std::fabs(d.y));
+    largest = std::max(largest, std::fabs(d.z));
+  }
+  return std::isfinite(largest) && largest > 0.0f ? largest / 32767.0f : 0.0f;
+}
+
+void quantize_delta(Vec3 delta, f32 scale, i16 out[3]) noexcept {
+  const f32 axis[3] = {delta.x, delta.y, delta.z};
+  for (u32 k = 0; k < 3; ++k) {
+    if (!(scale > 0.0f) || !std::isfinite(axis[k])) {
+      out[k] = 0;
+      continue;
+    }
+    const f32 q = std::round(axis[k] / scale);
+    const f32 c = q < -32767.0f ? -32767.0f : (q > 32767.0f ? 32767.0f : q);
+    out[k] = static_cast<i16>(static_cast<i32>(c));
+  }
+}
+
+u32 pack_i16_pair(i16 a, i16 b) noexcept {
+  return u32{static_cast<u16>(a)} | (u32{static_cast<u16>(b)} << 16);
+}
+
+}  // namespace
+
+void fill_cluster_morph(ClusterMesh& mesh, std::span<const MorphChannelSource> channels) {
+  mesh.morph_channels.clear();
+  mesh.morph_names.clear();
+  mesh.morph_cluster_slices.clear();
+  mesh.morph_slices.clear();
+  mesh.morph_indices.clear();
+  mesh.morph_deltas.clear();
+  mesh.morph_normal_deltas.clear();
+  mesh.morph_delta_count = 0;
+  if (channels.empty() || mesh.clusters.empty()) return;
+
+  // The channel records first, and **from the whole source channel**: the scale, the largest
+  // displacement and the default weight are properties of the channel, so every part of a mesh
+  // and every LOD level of every part quantizes channel k on the same grid and the merges are
+  // pure concatenation.
+  bool any_normals = false;
+  mesh.morph_channels.reserve(static_cast<u32>(channels.size()));
+  mesh.morph_names.reserve(static_cast<u32>(channels.size()));
+  for (const MorphChannelSource& source : channels) {
+    MorphChannel channel;
+    channel.position_scale = morph_scale_of(source.position_deltas);
+    channel.normal_scale = source.normal_deltas.size() == source.vertices.size()
+                               ? morph_scale_of(source.normal_deltas)
+                               : 0.0f;
+    f32 largest = 0.0f;
+    for (const Vec3& d : source.position_deltas) {
+      const f32 l = length(d);
+      if (std::isfinite(l)) largest = std::max(largest, l);
+    }
+    channel.max_displacement = largest;
+    channel.default_weight = std::isfinite(source.default_weight) ? source.default_weight : 0.0f;
+    any_normals = any_normals || channel.normal_scale > 0.0f;
+    mesh.morph_channels.push_back(channel);
+    mesh.morph_names.push_back(source.name);
+  }
+
+  // A CSR from source vertex to the (channel, delta) entries that touch it, so a cluster's
+  // lookup costs its own vertices and the deltas they carry rather than a scan of every channel.
+  const u32 source_vertices = mesh.source_vertex_count;
+  Vector<u32> first(source_vertices + 1);
+  for (u32 i = 0; i <= source_vertices; ++i)
+    first[i] = 0;
+  for (const MorphChannelSource& source : channels) {
+    for (const u32 v : source.vertices) {
+      if (v < source_vertices) ++first[v + 1];
+    }
+  }
+  for (u32 i = 0; i < source_vertices; ++i)
+    first[i + 1] += first[i];
+  Vector<u32> entry_channel(first[source_vertices]);
+  Vector<u32> entry_delta(first[source_vertices]);
+  {
+    Vector<u32> cursor = first;
+    for (u32 c = 0; c < channels.size(); ++c) {
+      const MorphChannelSource& source = channels[c];
+      for (u32 i = 0; i < source.vertices.size(); ++i) {
+        const u32 v = source.vertices[i];
+        if (v >= source_vertices) continue;
+        const u32 slot = cursor[v]++;
+        entry_channel[slot] = c;
+        entry_delta[slot] = i;
+      }
+    }
+  }
+
+  // Now one pass over the clusters, which is what puts the directory in cluster order and the
+  // deltas in slice order — the layout `build_cluster_pages` needs to be able to make a page's
+  // morph payload one contiguous range of each stream.
+  const u32 channel_count = mesh.morph_channels.size();
+  Vector<Vector<u32>> bucket_local(channel_count);  // per channel: this cluster's local vertices
+  Vector<Vector<u32>> bucket_delta(channel_count);  // and the source delta each one names
+  Vector<u32> dirty;
+  mesh.morph_cluster_slices.reserve(mesh.clusters.size() + 1);
+  mesh.morph_cluster_slices.push_back(0);
+  for (u32 c = 0; c < mesh.clusters.size(); ++c) {
+    const ClusterDesc& cluster = mesh.clusters[c];
+    for (const u32 channel : dirty) {
+      bucket_local[channel].clear();
+      bucket_delta[channel].clear();
+    }
+    dirty.clear();
+    for (u32 local = 0; local < cluster.vertex_count; ++local) {
+      const u32 index = cluster.vertex_offset + local;
+      if (index >= mesh.vertex_source.size()) continue;
+      const u32 source = mesh.vertex_source[index];
+      if (source >= source_vertices) continue;
+      for (u32 e = first[source]; e < first[source + 1]; ++e) {
+        const u32 channel = entry_channel[e];
+        if (bucket_local[channel].empty()) dirty.push_back(channel);
+        bucket_local[channel].push_back(local);
+        bucket_delta[channel].push_back(entry_delta[e]);
+      }
+    }
+    std::sort(dirty.begin(), dirty.end());
+    for (const u32 channel : dirty) {
+      MorphSlice slice;
+      slice.channel = channel;
+      slice.first_delta = mesh.morph_delta_count;
+      slice.delta_count = bucket_local[channel].size();
+      const MorphChannelSource& source = channels[channel];
+      const MorphChannel& record = mesh.morph_channels[channel];
+      for (u32 i = 0; i < slice.delta_count; ++i) {
+        const u32 delta = bucket_delta[channel][i];
+        mesh.morph_indices.push_back(static_cast<u8>(bucket_local[channel][i]));
+        i16 p[3];
+        quantize_delta(
+            delta < source.position_deltas.size() ? source.position_deltas[delta] : Vec3{},
+            record.position_scale, p);
+        for (u32 k = 0; k < 3; ++k)
+          mesh.morph_deltas.push_back(p[k]);
+        if (any_normals) {
+          i16 n[3];
+          quantize_delta(record.normal_scale > 0.0f && delta < source.normal_deltas.size()
+                             ? source.normal_deltas[delta]
+                             : Vec3{},
+                         record.normal_scale, n);
+          for (u32 k = 0; k < 3; ++k)
+            mesh.morph_normal_deltas.push_back(n[k]);
+        }
+      }
+      mesh.morph_delta_count += slice.delta_count;
+      mesh.morph_slices.push_back(slice);
+    }
+    mesh.morph_cluster_slices.push_back(mesh.morph_slices.size());
+  }
+  pad_morph_streams(mesh);
+}
+
+void append_cluster_morph(ClusterMesh& to, const ClusterMesh& from, u32 cluster, u32 channel_base,
+                          bool with_normals) {
+  if (cluster + 1 >= from.morph_cluster_slices.size()) return;
+  const bool from_normals = from.morph_normal_deltas.size() >= from.morph_deltas.size() &&
+                            !from.morph_normal_deltas.empty();
+  for (u32 s = from.morph_cluster_slices[cluster]; s < from.morph_cluster_slices[cluster + 1];
+       ++s) {
+    const MorphSlice& slice = from.morph_slices[s];
+    MorphSlice moved;
+    moved.channel = slice.channel + channel_base;
+    moved.first_delta = to.morph_delta_count;
+    moved.delta_count = slice.delta_count;
+    for (u32 i = 0; i < slice.delta_count; ++i) {
+      const u32 delta = slice.first_delta + i;
+      to.morph_indices.push_back(from.morph_indices[delta]);
+      for (u32 k = 0; k < 3; ++k)
+        to.morph_deltas.push_back(from.morph_deltas[delta * 3 + k]);
+      if (with_normals) {
+        for (u32 k = 0; k < 3; ++k)
+          to.morph_normal_deltas.push_back(from_normals ? from.morph_normal_deltas[delta * 3 + k]
+                                                        : i16{0});
+      }
+    }
+    to.morph_delta_count += slice.delta_count;
+    to.morph_slices.push_back(moved);
+  }
+}
+
+void pad_morph_streams(ClusterMesh& mesh) {
+  while ((mesh.morph_indices.size() & 3u) != 0)
+    mesh.morph_indices.push_back(0);
+  if ((mesh.morph_deltas.size() & 1u) != 0) mesh.morph_deltas.push_back(0);
+  if ((mesh.morph_normal_deltas.size() & 1u) != 0) mesh.morph_normal_deltas.push_back(0);
+}
+
+bool validate_morph_stream(const ClusterMesh& mesh, std::string* error) {
+  auto fail = [&](const char* what) {
+    if (error != nullptr) *error = what;
+    return false;
+  };
+  if (mesh.morph_channels.empty()) {
+    if (!mesh.morph_slices.empty() || !mesh.morph_cluster_slices.empty() ||
+        mesh.morph_delta_count != 0)
+      return fail("the mesh carries morph data but names no channels");
+    return true;
+  }
+  if (mesh.morph_names.size() != mesh.morph_channels.size())
+    return fail("the morph channel names are not parallel to the channels");
+  for (const MorphChannel& channel : mesh.morph_channels) {
+    if (!std::isfinite(channel.position_scale) || channel.position_scale < 0.0f ||
+        !std::isfinite(channel.normal_scale) || channel.normal_scale < 0.0f ||
+        !std::isfinite(channel.max_displacement) || channel.max_displacement < 0.0f ||
+        !std::isfinite(channel.default_weight))
+      return fail("a morph channel's scale, displacement or default weight is not finite");
+  }
+  if (mesh.morph_cluster_slices.size() != u64{mesh.clusters.size()} + 1)
+    return fail("the morph cluster directory does not cover every cluster");
+  if (mesh.morph_cluster_slices[0] != 0 ||
+      mesh.morph_cluster_slices[mesh.clusters.size()] != mesh.morph_slices.size())
+    return fail("the morph cluster directory does not span the slices exactly");
+  if (u64{mesh.morph_indices.size()} < mesh.morph_delta_count ||
+      (mesh.morph_indices.size() & 3u) != 0)
+    return fail("the morph index stream is short or not padded to a multiple of four");
+  if (u64{mesh.morph_deltas.size()} < u64{mesh.morph_delta_count} * 3 ||
+      (mesh.morph_deltas.size() & 1u) != 0)
+    return fail("the morph delta stream is short or not padded to an even count");
+  if (!mesh.morph_normal_deltas.empty() &&
+      (u64{mesh.morph_normal_deltas.size()} < u64{mesh.morph_delta_count} * 3 ||
+       (mesh.morph_normal_deltas.size() & 1u) != 0))
+    return fail("the morph normal delta stream is short or not padded to an even count");
+  u32 next_delta = 0;
+  for (u32 c = 0; c < mesh.clusters.size(); ++c) {
+    const u32 lo = mesh.morph_cluster_slices[c];
+    const u32 hi = mesh.morph_cluster_slices[c + 1];
+    if (hi < lo || hi > mesh.morph_slices.size())
+      return fail("a morph cluster directory entry is out of order or out of range");
+    u32 previous_channel = ~0u;
+    for (u32 s = lo; s < hi; ++s) {
+      const MorphSlice& slice = mesh.morph_slices[s];
+      if (slice.channel >= mesh.morph_channels.size())
+        return fail("a morph slice names a channel the mesh does not have");
+      if (previous_channel != ~0u && slice.channel <= previous_channel)
+        return fail("a cluster's morph slices are not in ascending channel order");
+      previous_channel = slice.channel;
+      if (slice.first_delta != next_delta)
+        return fail("a morph slice's deltas are not contiguous with the slice before it");
+      if (u64{slice.first_delta} + slice.delta_count > mesh.morph_delta_count)
+        return fail("a morph slice runs past the end of the delta stream");
+      for (u32 i = 0; i < slice.delta_count; ++i) {
+        if (u32{mesh.morph_indices[slice.first_delta + i]} >= mesh.clusters[c].vertex_count)
+          return fail("a morph delta names a vertex outside its cluster");
+      }
+      next_delta += slice.delta_count;
+    }
+  }
+  if (next_delta != mesh.morph_delta_count)
+    return fail("the morph slices do not account for every delta");
+  return true;
+}
+
+bool morph_delta_at(const ClusterMesh& mesh, u32 cluster, u32 channel, u32 local,
+                    Vec3& position_delta, Vec3& normal_delta) noexcept {
+  position_delta = Vec3{};
+  normal_delta = Vec3{};
+  if (cluster + 1 >= mesh.morph_cluster_slices.size()) return false;
+  if (channel >= mesh.morph_channels.size()) return false;
+  const MorphChannel& record = mesh.morph_channels[channel];
+  const bool have_normals = mesh.morph_normal_deltas.size() >= mesh.morph_deltas.size();
+  for (u32 s = mesh.morph_cluster_slices[cluster]; s < mesh.morph_cluster_slices[cluster + 1];
+       ++s) {
+    const MorphSlice& slice = mesh.morph_slices[s];
+    if (slice.channel != channel) continue;
+    for (u32 i = 0; i < slice.delta_count; ++i) {
+      const u32 delta = slice.first_delta + i;
+      if (mesh.morph_indices[delta] != static_cast<u8>(local)) continue;
+      const u32 w = delta * 3;
+      position_delta = Vec3{static_cast<f32>(mesh.morph_deltas[w]) * record.position_scale,
+                            static_cast<f32>(mesh.morph_deltas[w + 1]) * record.position_scale,
+                            static_cast<f32>(mesh.morph_deltas[w + 2]) * record.position_scale};
+      if (have_normals && record.normal_scale > 0.0f) {
+        normal_delta =
+            Vec3{static_cast<f32>(mesh.morph_normal_deltas[w]) * record.normal_scale,
+                 static_cast<f32>(mesh.morph_normal_deltas[w + 1]) * record.normal_scale,
+                 static_cast<f32>(mesh.morph_normal_deltas[w + 2]) * record.normal_scale};
+      }
+      return true;
+    }
+    return false;
+  }
+  return false;
+}
+
+f32 morph_bounds_padding(const ClusterMesh& mesh, std::span<const f32> weights) noexcept {
+  f32 total = 0.0f;
+  for (u32 c = 0; c < mesh.morph_channels.size() && c < weights.size(); ++c) {
+    const f32 w = weights[c];
+    if (!std::isfinite(w)) continue;
+    total += std::fabs(w) * mesh.morph_channels[c].max_displacement;
+  }
+  return total;
+}
+
 u32 encode_normal_oct(Vec3 normal) noexcept {
   const f32 l1 = std::fabs(normal.x) + std::fabs(normal.y) + std::fabs(normal.z);
   Vec2 p = l1 > 0.0f ? Vec2{normal.x / l1, normal.y / l1} : Vec2{0.0f, 0.0f};
@@ -430,13 +740,20 @@ void compute_vertex_normals(std::span<const Vec3> positions, std::span<const u32
 }
 
 u32 weld_vertices(Vector<Vec3>& positions, Vector<Vec3>& normals, Vector<Vec2>& uvs,
-                  std::span<u32> indices, Vector<SkinBinding>* skin) {
+                  std::span<u32> indices, Vector<SkinBinding>* skin,
+                  Vector<MorphChannelSource>* morph) {
   const u32 vertex_count = positions.size();
   if (vertex_count == 0) return 0;
   const bool have_normals = normals.size() == vertex_count;
   const bool have_uvs = uvs.size() == vertex_count;
   const bool have_skin = skin != nullptr && skin->size() == vertex_count;
-  meshopt_Stream streams[4];
+  Vector<u32> morph_keys;
+  const bool have_morph = morph != nullptr && !morph->empty();
+  if (have_morph) {
+    morph_vertex_keys(std::span<const MorphChannelSource>(morph->data(), morph->size()),
+                      vertex_count, morph_keys);
+  }
+  meshopt_Stream streams[5];
   usize stream_count = 0;
   streams[stream_count++] = meshopt_Stream{positions.data(), sizeof(Vec3), sizeof(Vec3)};
   if (have_normals)
@@ -448,6 +765,9 @@ u32 weld_vertices(Vector<Vec3>& positions, Vector<Vec3>& normals, Vector<Vec2>& 
   if (have_skin)
     streams[stream_count++] =
         meshopt_Stream{skin->data(), sizeof(SkinBinding), sizeof(SkinBinding)};
+  // And the morph deltas are part of it for exactly the same reason, through the interned id.
+  if (have_morph)
+    streams[stream_count++] = meshopt_Stream{morph_keys.data(), sizeof(u32), sizeof(u32)};
 
   Vector<unsigned int> remap(vertex_count);
   const u32 unique = static_cast<u32>(meshopt_generateVertexRemapMulti(
@@ -474,10 +794,142 @@ u32 weld_vertices(Vector<Vec3>& positions, Vector<Vec3>& normals, Vector<Vec2>& 
                               remap.data());
     *skin = std::move(welded);
   }
+  if (have_morph) {
+    // Every channel's vertex list is in the old numbering. Rewrite it, drop the entries whose
+    // vertex the weld dropped (remap ~0u), then sort by the new index and keep one of each run —
+    // exact, because two vertices only merged if `morph_vertex_keys` gave them the same id, which
+    // means bit-identical deltas.
+    Vector<u32> order;
+    Vector<u32> vertices;
+    Vector<Vec3> positions_out;
+    Vector<Vec3> normals_out;
+    for (MorphChannelSource& channel : *morph) {
+      const u32 n = channel.vertices.size();
+      const bool channel_normals = channel.normal_deltas.size() == n;
+      order.clear();
+      order.reserve(n);
+      for (u32 i = 0; i < n; ++i) {
+        const u32 v = channel.vertices[i];
+        if (v >= vertex_count || remap[v] == ~0u) continue;
+        order.push_back(i);
+      }
+      std::sort(order.begin(), order.end(), [&](u32 a, u32 b) {
+        const u32 ra = remap[channel.vertices[a]];
+        const u32 rb = remap[channel.vertices[b]];
+        return ra != rb ? ra < rb : a < b;
+      });
+      vertices.clear();
+      positions_out.clear();
+      normals_out.clear();
+      u32 previous = ~0u;
+      for (const u32 i : order) {
+        const u32 v = remap[channel.vertices[i]];
+        if (v == previous) continue;
+        previous = v;
+        vertices.push_back(v);
+        positions_out.push_back(i < channel.position_deltas.size() ? channel.position_deltas[i]
+                                                                   : Vec3{});
+        if (channel_normals) normals_out.push_back(channel.normal_deltas[i]);
+      }
+      channel.vertices = vertices;
+      channel.position_deltas = positions_out;
+      channel.normal_deltas = channel_normals ? normals_out : Vector<Vec3>{};
+    }
+  }
   if (!indices.empty()) {
     meshopt_remapIndexBuffer(indices.data(), indices.data(), indices.size(), remap.data());
   }
   return unique;
+}
+
+u32 morph_vertex_keys(std::span<const MorphChannelSource> channels, u32 vertex_count,
+                      Vector<u32>& out) {
+  out.clear();
+  out.resize(vertex_count);
+  for (u32 i = 0; i < vertex_count; ++i)
+    out[i] = 0;
+  if (channels.empty() || vertex_count == 0) return 1;
+
+  // The tuple of one vertex, built once per vertex the sparse data mentions: the channel index
+  // and the six quantized components, appended in channel order. Quantized rather than float,
+  // because what matters is whether the two vertices end up with the same **stored** deltas — two
+  // that differ below the channel's step are the same vertex to everything downstream.
+  Vector<u32> touched;         // the vertices any channel mentions, in first-appearance order
+  Vector<u32> tuple_first;     // CSR into `tuple_words`, per entry of `touched`
+  Vector<u32> tuple_words;     // channel, then the six i16 packed into three u32
+  Vector<u32> slot_of_vertex;  // vertex -> entry of `touched`, or ~0u
+  slot_of_vertex.resize(vertex_count);
+  for (u32 i = 0; i < vertex_count; ++i)
+    slot_of_vertex[i] = ~0u;
+
+  // Two passes: collect the words per vertex, then intern. The first pass appends in channel
+  // order, so a vertex's words come out in ascending channel order whatever order the channels
+  // mention it in — which is what makes the tuple a function of the data alone.
+  Vector<Vector<u32>> per_vertex;
+  for (u32 c = 0; c < channels.size(); ++c) {
+    const MorphChannelSource& channel = channels[c];
+    const f32 position_scale = morph_scale_of(channel.position_deltas);
+    const f32 normal_scale = morph_scale_of(channel.normal_deltas);
+    const u32 n = channel.vertices.size();
+    for (u32 i = 0; i < n; ++i) {
+      const u32 v = channel.vertices[i];
+      if (v >= vertex_count) continue;
+      if (slot_of_vertex[v] == ~0u) {
+        slot_of_vertex[v] = touched.size();
+        touched.push_back(v);
+        per_vertex.push_back(Vector<u32>{});
+      }
+      Vector<u32>& words = per_vertex[slot_of_vertex[v]];
+      const Vec3 dp = i < channel.position_deltas.size() ? channel.position_deltas[i] : Vec3{};
+      const Vec3 dn = i < channel.normal_deltas.size() ? channel.normal_deltas[i] : Vec3{};
+      i16 p[3];
+      i16 nrm[3];
+      quantize_delta(dp, position_scale, p);
+      quantize_delta(dn, normal_scale, nrm);
+      words.push_back(c);
+      words.push_back(pack_i16_pair(p[0], p[1]));
+      words.push_back(pack_i16_pair(p[2], nrm[0]));
+      words.push_back(pack_i16_pair(nrm[1], nrm[2]));
+    }
+  }
+  tuple_first.reserve(touched.size() + 1);
+  tuple_first.push_back(0);
+  for (u32 s = 0; s < touched.size(); ++s) {
+    for (const u32 w : per_vertex[s])
+      tuple_words.push_back(w);
+    tuple_first.push_back(tuple_words.size());
+  }
+
+  // Intern. The map is hash -> the ids that hash there; a collision compares the words, so an id
+  // means "bit-identical tuple" and not "same hash".
+  HashMap<u64, Vector<u32>> by_hash;
+  Vector<u32> id_slot;  // the representative entry of each id; id 0 is "no deltas" and has none
+  id_slot.push_back(~0u);
+  for (u32 s = 0; s < touched.size(); ++s) {
+    const u32 first = tuple_first[s];
+    const u32 count = tuple_first[s + 1] - first;
+    const u64 h = hash_bytes(tuple_words.data() + first, usize{count} * sizeof(u32));
+    Vector<u32>& bucket = by_hash[h];
+    u32 id = 0;
+    for (const u32 candidate : bucket) {
+      const u32 other = id_slot[candidate];
+      const u32 other_first = tuple_first[other];
+      const u32 other_count = tuple_first[other + 1] - other_first;
+      if (other_count != count) continue;
+      if (std::memcmp(tuple_words.data() + first, tuple_words.data() + other_first,
+                      usize{count} * sizeof(u32)) == 0) {
+        id = candidate;
+        break;
+      }
+    }
+    if (id == 0) {
+      id = id_slot.size();
+      id_slot.push_back(s);
+      bucket.push_back(id);
+    }
+    out[touched[s]] = id;
+  }
+  return id_slot.size();
 }
 
 void fill_cluster_attributes(ClusterMesh& mesh, std::span<const Vec3> positions,
@@ -503,6 +955,11 @@ void fill_cluster_attributes(ClusterMesh& mesh, std::span<const Vec3> positions,
   // which is what gives every LOD level its bindings, since clusterlod keeps original vertices.
   // That is also why skinning is crack-free — every copy of a source vertex, in every cluster
   // and on every level, gets bitwise the same four joints and four weights.
+  // The morph channels travel the same road for the same reason, and the directory they end up
+  // in is keyed by cluster rather than by vertex because that is the question the deform pass
+  // asks (see `fill_cluster_morph`).
+  fill_cluster_morph(mesh, attributes.morph);
+
   mesh.skin.clear();
   mesh.skin_joint_count = 0;
   if (attributes.skin.size() != positions.size()) return;

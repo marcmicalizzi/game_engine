@@ -24,7 +24,10 @@ namespace {
 
 constexpr u64 k_header_bytes = sizeof(ClusterFileHeader);
 constexpr u64 k_record_bytes = sizeof(ClusterFileSection);
-constexpr u32 k_kind_count = static_cast<u32>(ClusterSection::ImageBytes) + 1;
+// The by-kind lookup table's width. It is the header's `k_cluster_section_kinds` and not a second
+// copy of "the highest kind plus one": adding a kind and forgetting this line reads one past the
+// end of a stack array, which is what it cost once.
+constexpr u32 k_kind_count = k_cluster_section_kinds;
 
 constexpr u64 align_up(u64 value) noexcept {
   const u64 a = k_cluster_file_alignment;
@@ -182,6 +185,37 @@ u64 encode(const ClusterFileData& data, std::string& out) {
   add_section(payloads, ClusterSection::Images, static_cast<u32>(sizeof(ClusterFileImage)),
               image_records.size(), image_records.data());
   add_section(payloads, ClusterSection::ImageBytes, 1u, image_bytes.size(), image_bytes.data());
+  // The morph stream. The two delta arrays go in one section back to back, because they are the
+  // same element and the same length and one section record is cheaper than a second kind that
+  // would only ever be present or absent with the first.
+  add_section(payloads, ClusterSection::MorphChannels, static_cast<u32>(sizeof(MorphChannel)),
+              mesh.morph_channels.size(), mesh.morph_channels.data());
+  Vector<u8> morph_names;
+  for (const std::string& name : mesh.morph_names) {
+    for (const char c : name)
+      morph_names.push_back(static_cast<u8>(c));
+    morph_names.push_back(0);
+  }
+  add_section(payloads, ClusterSection::MorphNames, 1u, morph_names.size(), morph_names.data());
+  add_section(payloads, ClusterSection::MorphClusterSlices, static_cast<u32>(sizeof(u32)),
+              mesh.morph_cluster_slices.size(), mesh.morph_cluster_slices.data());
+  add_section(payloads, ClusterSection::MorphSlices, static_cast<u32>(sizeof(MorphSlice)),
+              mesh.morph_slices.size(), mesh.morph_slices.data());
+  add_section(payloads, ClusterSection::MorphIndices, 1u, mesh.morph_indices.size(),
+              mesh.morph_indices.data());
+  Vector<i16> morph_deltas;
+  morph_deltas.reserve(mesh.morph_deltas.size() + mesh.morph_normal_deltas.size());
+  morph_deltas.append(std::span<const i16>(mesh.morph_deltas.data(), mesh.morph_deltas.size()));
+  const bool morph_normals = !mesh.morph_normal_deltas.empty();
+  if (morph_normals) {
+    morph_deltas.append(
+        std::span<const i16>(mesh.morph_normal_deltas.data(), mesh.morph_normal_deltas.size()));
+  }
+  add_section(payloads, ClusterSection::MorphDeltas, static_cast<u32>(sizeof(i16)),
+              morph_deltas.size(), morph_deltas.data());
+  const u32 morph_scalars[2] = {mesh.morph_delta_count, morph_normals ? 1u : 0u};
+  add_section(payloads, ClusterSection::MorphScalars, static_cast<u32>(sizeof(u32)), 2u,
+              morph_scalars);
 
   u64 offset = k_header_bytes + k_record_bytes * payloads.size();
   for (Payload& payload : payloads) {
@@ -342,6 +376,13 @@ const char* cluster_section_name(u32 kind) noexcept {
     case ClusterSection::SkinScalars: return "skin_scalars";
     case ClusterSection::Images: return "images";
     case ClusterSection::ImageBytes: return "image_bytes";
+    case ClusterSection::MorphChannels: return "morph_channels";
+    case ClusterSection::MorphNames: return "morph_names";
+    case ClusterSection::MorphClusterSlices: return "morph_cluster_slices";
+    case ClusterSection::MorphSlices: return "morph_slices";
+    case ClusterSection::MorphIndices: return "morph_indices";
+    case ClusterSection::MorphDeltas: return "morph_deltas";
+    case ClusterSection::MorphScalars: return "morph_scalars";
   }
   return "unknown";
 }
@@ -517,6 +558,70 @@ bool read_cluster_file_memory(std::span<const u8> bytes, ClusterFileData& out, s
                              std::to_string(width->element_size) + "-byte elements, expected 4");
     }
     std::memcpy(&result.mesh.mesh.skin_joint_count, bytes.data() + width->offset, sizeof(u32));
+  }
+
+  // The morph stream. A file with no `morph_channels` section, or with an empty one, is a mesh
+  // with no channels and every other morph section is ignored — which is exactly what every
+  // container written before these kinds existed is. Past that, the sections travel together, so
+  // a missing one is refused rather than loaded as half a stream.
+  if (const ClusterFileSection* channels = found[static_cast<u32>(ClusterSection::MorphChannels)];
+      channels != nullptr && channels->element_count != 0) {
+    if (channels->element_size != sizeof(MorphChannel)) {
+      return fail(error, "cluster file section morph_channels has " +
+                             std::to_string(channels->element_size) + "-byte elements, expected " +
+                             std::to_string(sizeof(MorphChannel)));
+    }
+    copy_section(bytes, *channels, result.mesh.mesh.morph_channels);
+    const ClusterFileSection* names = found[static_cast<u32>(ClusterSection::MorphNames)];
+    const ClusterFileSection* directory =
+        found[static_cast<u32>(ClusterSection::MorphClusterSlices)];
+    const ClusterFileSection* slices = found[static_cast<u32>(ClusterSection::MorphSlices)];
+    const ClusterFileSection* indices = found[static_cast<u32>(ClusterSection::MorphIndices)];
+    const ClusterFileSection* deltas = found[static_cast<u32>(ClusterSection::MorphDeltas)];
+    const ClusterFileSection* scalars_section =
+        found[static_cast<u32>(ClusterSection::MorphScalars)];
+    if (directory == nullptr || slices == nullptr || indices == nullptr || deltas == nullptr ||
+        scalars_section == nullptr || scalars_section->element_count < 2) {
+      return fail(error, "cluster file has morph channels but not the rest of the stream");
+    }
+    if (directory->element_size != sizeof(u32) || slices->element_size != sizeof(MorphSlice) ||
+        indices->element_size != 1 || deltas->element_size != sizeof(i16) ||
+        scalars_section->element_size != sizeof(u32)) {
+      return fail(error, "a morph section's element size is not what the format says");
+    }
+    u32 morph_scalars[2] = {0, 0};
+    std::memcpy(morph_scalars, bytes.data() + scalars_section->offset, sizeof(morph_scalars));
+    result.mesh.mesh.morph_delta_count = morph_scalars[0];
+    copy_section(bytes, *directory, result.mesh.mesh.morph_cluster_slices);
+    copy_section(bytes, *slices, result.mesh.mesh.morph_slices);
+    copy_section(bytes, *indices, result.mesh.mesh.morph_indices);
+    Vector<i16> packed;
+    copy_section(bytes, *deltas, packed);
+    const bool normals = morph_scalars[1] != 0;
+    const u32 half = normals ? packed.size() / 2 : packed.size();
+    if (normals && (packed.size() & 1u) != 0)
+      return fail(error, "cluster file morph deltas claim normals but hold an odd count");
+    result.mesh.mesh.morph_deltas.append(std::span<const i16>(packed.data(), half));
+    if (normals) {
+      result.mesh.mesh.morph_normal_deltas.append(
+          std::span<const i16>(packed.data() + half, packed.size() - half));
+    }
+    if (names != nullptr && names->element_count != 0 && names->element_size == 1) {
+      const char* text = reinterpret_cast<const char*>(bytes.data() + names->offset);
+      u64 at = 0;
+      while (at < names->element_count &&
+             result.mesh.mesh.morph_names.size() < result.mesh.mesh.morph_channels.size()) {
+        const void* nul = std::memchr(text + at, 0, static_cast<usize>(names->element_count - at));
+        if (nul == nullptr) break;
+        const usize length = static_cast<usize>(static_cast<const char*>(nul) - (text + at));
+        result.mesh.mesh.morph_names.push_back(std::string(text + at, length));
+        at += length + 1;
+      }
+    }
+    // A file that carried fewer names than channels (an older writer, or a truncated table) gets
+    // empty ones rather than a short array, because everything downstream indexes names by channel.
+    while (result.mesh.mesh.morph_names.size() < result.mesh.mesh.morph_channels.size())
+      result.mesh.mesh.morph_names.push_back(std::string());
   }
 
   // The source path; a file from before the section existed leaves it empty, and so does a
@@ -732,12 +837,35 @@ namespace {
 // large member and is here for the reason the header states: a container is a complete answer to
 // "draw this mesh", and textures are uploaded whole.
 constexpr ClusterSection k_resident_kinds[] = {
-    ClusterSection::Clusters,    ClusterSection::Lod,         ClusterSection::LevelClusterCounts,
-    ClusterSection::Scalars,     ClusterSection::Pages,       ClusterSection::PageChildren,
-    ClusterSection::PageScalars, ClusterSection::SkinScalars, ClusterSection::ClusterMaterial,
-    ClusterSection::Materials,   ClusterSection::ImagePaths,  ClusterSection::Strings,
-    ClusterSection::Images,      ClusterSection::ImageBytes,  ClusterSection::SourcePath,
+    ClusterSection::Clusters,
+    ClusterSection::Lod,
+    ClusterSection::LevelClusterCounts,
+    ClusterSection::Scalars,
+    ClusterSection::Pages,
+    ClusterSection::PageChildren,
+    ClusterSection::PageScalars,
+    ClusterSection::SkinScalars,
+    ClusterSection::ClusterMaterial,
+    ClusterSection::Materials,
+    ClusterSection::ImagePaths,
+    ClusterSection::Strings,
+    ClusterSection::Images,
+    ClusterSection::ImageBytes,
+    ClusterSection::SourcePath,
     ClusterSection::SourceHash,
+    // The whole morph stream is resident, deltas included, and that is a decision rather than an
+    // oversight: the renderer **refuses to stream a morphed mesh** and says so
+    // ([renderer](renderer.md)), so a streamed scene never carries one and a resident read of one
+    // that does is the honest answer rather than half a stream. Paging it needs the slice
+    // directory's indices patched per page the way `ClusterDesc`'s vertex offsets are, which is
+    // the same work and belongs with it.
+    ClusterSection::MorphChannels,
+    ClusterSection::MorphNames,
+    ClusterSection::MorphClusterSlices,
+    ClusterSection::MorphSlices,
+    ClusterSection::MorphIndices,
+    ClusterSection::MorphDeltas,
+    ClusterSection::MorphScalars,
 };
 
 // The per-page streams, which a resident read leaves on disk. They are still *listed*, with zero
@@ -930,7 +1058,8 @@ u64 cluster_cache_key(u64 source_hash, const ClusterLodOptions& options, bool we
   const u64 flags = (options.ray_tracing ? 1ull : 0ull) | (options.normal_cones ? 2ull : 0ull) |
                     (weld ? 4ull : 0ull) | (static_cast<u64>(options.uv_seams) << 3) |
                     (static_cast<u64>(options.normal_seams) << 5) |
-                    (static_cast<u64>(options.skin_seams) << 7);
+                    (static_cast<u64>(options.skin_seams) << 7) |
+                    (static_cast<u64>(options.morph_seams) << 9);
   key = hash_combine(key, flags);
   // The attribute weights change what the simplifier keeps, so two weights are two meshes. The
   // bits of the float are the identity, not its value, so a weight that reads the same reads the

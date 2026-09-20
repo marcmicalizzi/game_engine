@@ -104,10 +104,40 @@ enum class ClusterSection : u32 {
   // all, which is what every container built before them is.
   Images = 21,
   ImageBytes = 22,
+  // The morph stream (`cluster.h`, "morph channels"). Six sections, because the stream is six
+  // arrays of five different element sizes and the format's rule is one fixed-size element per
+  // section — the alternative, one blob with offsets inside it, would put a second layout inside
+  // the one the section table already describes.
+  //
+  //   23 MorphChannels       `MorphChannel`, 16 bytes, one per channel
+  //   24 MorphNames          u8, the channels' names as NUL-terminated strings back to back,
+  //                          in channel order. A separate section rather than offsets into
+  //                          `Strings` so that a build which carries no images still writes its
+  //                          channel names, and so that nothing has to renumber when either grows.
+  //   25 MorphClusterSlices  u32, `clusters + 1` of them: the CSR into 26
+  //   26 MorphSlices         `MorphSlice`, 12 bytes
+  //   27 MorphIndices        u8, the cluster-local vertex of each delta, padded to a multiple of 4
+  //   28 MorphDeltas         i16, three per delta then three more per delta for the normals when
+  //                          the mesh has them, so this one section holds both arrays back to
+  //                          back: the second half is present exactly when its element count is
+  //                          twice the first's, which `MorphScalars` says.
+  //   29 MorphScalars        u32, two of them: the delta count, and 1 when normal deltas follow
+  //                          the position deltas in 28.
+  //
+  // All seven are written even for a mesh with no channels — empty, and zero — so a container's
+  // section list says what the format is and not what this mesh happened to have, and a file from
+  // before they existed reads as a mesh with no morph channels rather than as a failure.
+  MorphChannels = 23,
+  MorphNames = 24,
+  MorphClusterSlices = 25,
+  MorphSlices = 26,
+  MorphIndices = 27,
+  MorphDeltas = 28,
+  MorphScalars = 29,
 };
 
 // One past the highest kind this build knows, which is how wide a by-kind table has to be.
-inline constexpr u32 k_cluster_section_kinds = static_cast<u32>(ClusterSection::ImageBytes) + 1;
+inline constexpr u32 k_cluster_section_kinds = static_cast<u32>(ClusterSection::MorphScalars) + 1;
 
 // Names the kinds this build knows, "unknown" for anything else; for diagnostics and for
 // `engine-content info`.
@@ -396,7 +426,13 @@ bool read_cluster_file_identity(std::string_view path, u64& source_hash, u64& bu
 //    simplified in meshoptimizer's *permissive* mode with no attribute metric and no seam tags,
 //    so on a fragmented atlas its coarse levels interpolate the texture across unrelated islands.
 //    Such an entry is not missing anything the reader can add: its triangles are the wrong ones.
-inline constexpr u32 k_cluster_cache_version = 7;
+// 8: a source's morph targets become a per-vertex channel stream (sections 23..29), the weld key
+//    includes a vertex's morph deltas, and `ClusterLodOptions::morph_seams` tags the pairs the
+//    weld kept apart so permissive simplification does not merge them back. An entry built at 7
+//    from a source with morph targets carries none of the stream *and* was welded without the
+//    deltas in the key, which merged two coincident vertices that move differently — the same
+//    class of defect version 5 fixed for skin weights.
+inline constexpr u32 k_cluster_cache_version = 8;
 
 // The cache key: the source's content hash (`assets::source_mesh_hash`) mixed with the build
 // options and the version above. `page_bytes` is the streaming page target the container was

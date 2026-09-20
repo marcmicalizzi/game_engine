@@ -22,11 +22,13 @@
 
 **Not yet.** Quantized positions for the acceleration structure builders (`gfx/acceleration.h`, `gfx/cluster_acceleration.h` and engine-view's `--raster rt` still read the float `vertices`, which is why both streams are kept; the builders take a vertex format, so this is a format change, not a shader change), per-cluster grids finer than the mesh-wide one, tangents, the per-level BVH clusterlod can build over groups (the flat cut is one thread per cluster, which is fine until scenes reach millions of clusters), the GPU half of streaming (pages are built and stored — see "Pages and streaming" below — but the feedback buffer and the GPU residency manager are not), and precomputed cluster-AS inputs.
 
-**Public API.** `domain/geometry/cluster.h`: `ClusterDesc`, `k_cone_none`, `NormalCone`, `encode_cone`, `decode_cone`, `cluster_backfacing`, `VertexAttributes`, `SkinBinding`, `k_max_skin_joints`, `make_skin_binding`, `AttributeSource`, `ClusterBuildOptions`, `ClusterMesh`, `weld_vertices`, `build_clusters`, `fill_cluster_attributes`, `compute_vertex_normals`, `encode_normal_oct`, `decode_normal_oct`, `encode_half2`, `decode_half2`, `quantize_positions`, `dequantize_position`, `validate_clusters`. `domain/geometry/cluster_lod.h`: `ClusterLodDesc`, `SeamRule`, `ClusterLodOptions`, `ClusterLodMesh`, `build_cluster_lod`, `merge_cluster_lod`, `ClusterMeshPart`, `merge_cluster_meshes`, `LodView`, `projected_error`, `lod_selects`, `select_lod`, `select_lod_raw`, `validate_cluster_lod`, `AttributeErrorOptions`, `AttributeError`, `measure_lod_attribute_error`. `domain/geometry/stress_mesh.h`: `ShreddedAtlasOptions`, `ShreddedAtlasMesh`, `build_shredded_atlas_torus`, `build_atlas_probe_texture`. `domain/geometry/cluster_file.h`: `k_cluster_file_version`, `k_cluster_file_alignment`, `ClusterSection`, `cluster_section_name`, `ClusterFileHeader`, `ClusterFileSection`, `ClusterFileScalars`, `ClusterFileMaterial`, `encode_alpha_word`, `alpha_word_mode`, `alpha_word_double_sided`, `alpha_word_cutoff`, `encode_optional_image`, `decode_optional_image`, `ClusterFileImage`, `ClusterImage`, `ClusterFileData`, `write_cluster_file`, `read_cluster_file`, `read_cluster_file_memory`, `read_cluster_file_identity`, `cluster_file_hash`, `ClusterImageSummary`, `summarize_cluster_images`, `k_cluster_section_kinds`, `ClusterFileReader` (`open`, `close`, `valid`, `file`, `path`, `header_hash`, `element_count`, `range`).
+**Public API.** `domain/geometry/cluster.h`: `ClusterDesc`, `k_cone_none`, `NormalCone`, `encode_cone`, `decode_cone`, `cluster_backfacing`, `VertexAttributes`, `SkinBinding`, `k_max_skin_joints`, `make_skin_binding`, `MorphChannel`, `MorphSlice`, `MorphChannelSource`, `AttributeSource`, `ClusterBuildOptions`, `ClusterMesh`, `weld_vertices`, `morph_vertex_keys`, `build_clusters`, `fill_cluster_attributes`, `fill_cluster_morph`, `pad_morph_streams`, `append_cluster_morph`, `morph_delta_at`, `validate_morph_stream`, `morph_bounds_padding`, `compute_vertex_normals`, `encode_normal_oct`, `decode_normal_oct`, `encode_half2`, `decode_half2`, `quantize_positions`, `dequantize_position`, `validate_clusters`. `domain/geometry/cluster_lod.h`: `ClusterLodDesc`, `SeamRule`, `ClusterLodOptions`, `ClusterLodMesh`, `build_cluster_lod`, `merge_cluster_lod`, `ClusterMeshPart`, `merge_cluster_meshes`, `LodView`, `projected_error`, `lod_selects`, `select_lod`, `select_lod_raw`, `validate_cluster_lod`, `AttributeErrorOptions`, `AttributeError`, `measure_lod_attribute_error`. `domain/geometry/stress_mesh.h`: `ShreddedAtlasOptions`, `ShreddedAtlasMesh`, `build_shredded_atlas_torus`, `build_atlas_probe_texture`, `MorphFixtureOptions`, `MorphFixtureMesh`, `build_morph_sphere`, `morph_fixture_position`, `morph_fixture_normal`. `domain/geometry/cluster_file.h`: `k_cluster_file_version`, `k_cluster_file_alignment`, `ClusterSection`, `cluster_section_name`, `ClusterFileHeader`, `ClusterFileSection`, `ClusterFileScalars`, `ClusterFileMaterial`, `encode_alpha_word`, `alpha_word_mode`, `alpha_word_double_sided`, `alpha_word_cutoff`, `encode_optional_image`, `decode_optional_image`, `ClusterFileImage`, `ClusterImage`, `ClusterFileData`, `write_cluster_file`, `read_cluster_file`, `read_cluster_file_memory`, `read_cluster_file_identity`, `cluster_file_hash`, `ClusterImageSummary`, `summarize_cluster_images`, `k_cluster_section_kinds`, `ClusterFileReader` (`open`, `close`, `valid`, `file`, `path`, `header_hash`, `element_count`, `range`).
 
 **Depends on.** `base`, `containers`, `math`, `hash` (the container's content hash), `io` (atomic writes and reads); meshoptimizer v1.2 (MIT, third_party/LICENSES.md).
 
 **Testing.** `tools/dev.ps1 test -Filter geometry`: grids at the default and at tight limits, a single triangle, rejected inputs, packing helpers, the size tables; attribute encoders round-trip normals to 2e-4 and UVs to a thousandth, computed normals of a flat grid, and attributes following `vertex_source` in both builders; cone packing round-trips with the cutoff rounded up, a 2,208-triangle sphere gives 80% of its clusters a cone, a camera at four radii finds 20% to 60% of them backfacing (never one facing it, always one on the far side), the center sees the back of nearly all of them, cones switch off, and a cone pointed inward fails validation; welding folds an unindexed grid's 384 corners back to its 81 vertices with every corner still on its position, keeps a corner with a different normal apart, and drops an unreferenced vertex; quantization gives a unit grid a 1.53e-5 step and a 3.05e-5 one to a sphere, both within half a step everywhere, the same grid a thousand units across a 0.0153 step, an even `u16` count no larger than 3 per vertex plus one, identical integer triples for every copy of a shared vertex, and a degenerate mesh the identity grid; for the DAG, a terrain that validates (level 0 covers the source exactly once, own error never exceeds parent error, raw cuts are never empty and never grow with the threshold), each level smaller than the last, view-dependent cuts that coarsen with distance (full detail up close, a fraction of the triangles far away), the RT configuration, rejected input, and two terrains merged into one mesh that validates against the shifted source indices, keeps its leaves first, names each cluster's part, cuts to the union of the parts' cuts, and carries one grid coarser than either part's over the whole thing. For the container, a terrain DAG wrapped with two materials and three images — one named by a path, two embedded with the same bytes — is written, read back, and compared array by array (and the result revalidated), one material filling all eight of the record's formerly padding words and the other leaving them zero as an older file does, so the round trip covers both the new fields and the reading of a file that has none of them, reading the same bytes from memory gives what reading the file gives, the header's hash is the one `cluster_file_hash` computes, every payload offset is 16-byte aligned and inside the file, a section of an unknown kind inserted by the test is skipped, the source identity round-trips through `read_cluster_file_identity` as well as through a full read and comes back zero (rather than as a failure) from a file whose identity section this build would not recognize, and a truncated file, a wrong magic, an unsupported version, a section moved past the end, a flipped payload byte, and a required section renamed away each fail with their own sentence and an empty result. The size table pins the header, the section record, the scalars, `ClusterFileMaterial`, and `ClusterFileImage`, which are the format itself. The gfx mesh-shader and cull tests consume the format on the GPU, and `tools/dev.ps1 test -Filter engine_content` builds a container end to end. The cache-key test also pins the **build options that decide which triangles survive**: the two attribute weights and all three seam rules move the key, because a container built with one set of them is not the answer to a question that asked for another.
+
+**Testing (morph).** `morph_tests.cpp`: the fixture is deterministic to the bit on two builds, its face rig's deltas are under a quarter of a dense table, and its wide-`falloff` form touches every vertex; the quantization's worst error over 2,210 deltas is an eighth of the position grid's own (the table above is this test's `MESSAGE` output); the weld gains exactly `morph_seam_vertices` vertices when the morph key is supplied and no more, and the channels it remaps come back sorted, deduplicated and in range, and still build and validate; every cluster of a 369-cluster nine-level DAG carries its source vertex's deltas with 56 clusters touched by nothing at all and a directory far smaller than clusters times channels; `merge_cluster_lod` doubles the slices and the deltas of two identical parts and keeps the per-cluster slice counts as a multiset (the deltas cannot be re-looked-up there, because the merge shifts each part's `vertex_source` into its own range of a doubled source — the test says so rather than asserting something weaker and calling it the same check); `merge_cluster_meshes` concatenates two different rigs and the second mesh's slices never name the first's channels; `build_cluster_pages` keeps every cluster's slice count and its deltas, and the page bytes go up by exactly the stream; the container round-trips every one of the seven sections field by field and a mesh with no channels writes them empty and reads back with none; and five broken meshes each fail `validate_clusters` with their own sentence. `morph_bounds_padding` is checked both for its arithmetic and for actually bounding the fixture at a set of played weights.
 
 **Testing (the atlas seam).** `atlas_seam_tests.cpp`: the fixture is a torus of 288 islands in a 17×17 atlas with 4,608 of its 7,200 vertices on a seam, every vertex within 1e-4 of the torus, every UV inside the unit square, and the same bytes on a second build; the probe texture's adjacent slots differ by more than 60 of 255, far more than the within-slot gradient. Then the measurement itself: the finest cut against itself is 0.0008 texels and 0.04° at worst (the half-float floor, and nothing else), two runs agree to the bit, and an empty cut, an out-of-range cluster and a mesh with no attributes each fail with their own sentence. Then the defect and the fix, at a matched triangle budget — the numbers in "What the simplifier is given" above are this test's `MESSAGE` output, and the assertions are that a position-only build puts more than 10% of the surface over the tolerance with a worst sample past 500 texels, while the attribute-aware build keeps every sample under 120 (half an atlas slot: it cannot have left its island), under 3% over the tolerance, and a mean at least ten times smaller. And the cost ordering: `lock` reaches a coarser cut that is strictly larger than `protect`'s in strictly fewer levels. The weight table above is a **skipped** case in the same file, `cluster lod: what the attribute weights cost` — kept as code so the default can be re-taken rather than re-argued, skipped because it builds ten DAGs and asserts nothing the defaults do not already assert; run it with `-ns -s`.
 
@@ -145,6 +147,8 @@ The leaf-level pictures are byte-identical in **both** poses (FLIP 0, SSIM 1), w
 
 Both are deterministic functions of their options — no hashing order, no thread order, no `<random>` distribution (whose results are not specified to agree between standard libraries), so the fixture is the same mesh on every machine.
 
+**The morph fixture lives beside it**, for the same reason and with the same rule. `build_morph_sphere` is a UV sphere with Gaussian channels along its normal, and one generator gives the two shapes the deform chain has to be right on: a **face-like rig** (several channels at a small `falloff`, each touching a few percent of the vertices, which is what the sparse layout is designed for and the case where most clusters are touched by nothing) and a **morphing sphere** (one channel wide enough to reach every vertex, which is where reconstructing a normal from the deformed positions and interpolating a delta normal disagree most, because the curvature changes everywhere). Its normal deltas are the analytic normal of the displaced surface minus the rest one, so a test comparing delta normals against the truth *has* a truth rather than comparing the code with itself. `split_seam` makes the wrap column's deltas differ from column 0's, which is the authored discontinuity the weld key and `morph_seams` exist for; the wrap column is computed at **u = 0** rather than at u = 1 so its position is bit-identical to its twin's, because `cos(2 pi)` in single precision is not `cos(0)` and two positions differing in the last bit are two positions to every weld in the tree — which would make the fixture's seam a position seam instead of the pure attribute seam it is meant to be. `morph_fixture_position`/`_normal` are the float answer at a set of weights, so the stored stream is measured against the source rather than against another copy of the same arithmetic.
+
 ## Pages and streaming
 
 `cluster_pages.h` is [04 §4.3](../plan/04-renderer.md#43-geometry) step 3 and [§4.9](../plan/04-renderer.md#49-streaming-and-residency) on the CPU: the clusters of one mesh laid out in fixed-size **pages** so a viewer can hold part of a mesh and still draw all of it, plus the selection rule and the residency model that go with pages. The GPU half — the cull pass writing requested pages to a feedback buffer, a GPU-side residency manager, the actual I/O — is not here yet.
@@ -237,6 +241,150 @@ That was the format's half of it, and for one release it was the *only* half: th
 
 **Testing (skin).** `cluster_tests.cpp`: `make_skin_binding` normalizes an unnormalized triple to 255 with the rounding on the largest influence, gives a single influence the whole 255, and binds a vertex with no weight rigidly to its first joint; a two-joint grid's bindings follow `vertex_source` vertex for vertex and validate, while a bumped weight, an out-of-palette joint, and a short stream each fail with their own sentence; an unskinned build carries no stream at all; and the unindexed grid welds back to 81 vertices with matching bindings but to 82 when one corner's weights differ. `cluster_lod_tests.cpp` checks the bindings of every *coarse* cluster against the source vertex's, which is the crack-freedom argument as an assertion, and carries the stream through both merges. `cluster_pages_tests.cpp` measures the eight extra bytes a vertex and checks that the permutation keeps every vertex with its own binding. `cluster_file_tests.cpp` round-trips a skinned container, reads one whose `skin` kind this build does not know as an unskinned mesh, and refuses one that kept the bindings but lost the width.
 
+
+## Morph channels: the second per-vertex deformation stream
+
+A **morph channel** is a named per-vertex displacement of the rest mesh played at a weight. Two
+consumers want them and they want different things from them: facial and corrective animation
+drives a handful of channels per frame from an animation clip, and **parametric characters** bake a
+weighted set of shape channels once into a body that is then skinned like any other mesh. Both go
+through the same stream and the same deform stages ([gfx](gfx.md), "The deform chain"); this page
+is the format's half.
+
+**The format is sparse and cluster-ordered, and both halves of that are forced by the GPU pass.**
+
+*Sparse*, because a channel touches a region — a brow, a jaw, one seam — and a character carries
+dozens. Fifty channels over a 300,000-vertex character is 1.8 GB stored densely and a few megabytes
+stored as "the vertices this one moves". So `MorphChannelSource` (the builders' input) and
+`ClusterMesh`'s stream both hold only the affected vertices.
+
+*Cluster-ordered*, because the question the deform pass asks is never "where are channel k's
+deltas" but "which channels touch **this visible cluster**, and where are their deltas" — one
+workgroup runs per cluster of the cut and must read nothing else. The directory is therefore a CSR
+keyed by cluster:
+
+| `ClusterMesh` field | What |
+|---|---|
+| `morph_channels` | `MorphChannel`, **16 bytes**, GPU-mirrored: the two quantization scales, the channel's largest displacement, and the source's default weight. |
+| `morph_names` | one name per channel, host side only — a shader has no use for a name, and putting one in the record would make it variable-length. |
+| `morph_cluster_slices` | `clusters + 1` `u32`: cluster *c*'s slices are `[slices[c], slices[c+1])`. A cluster no channel touches costs **four bytes**. |
+| `morph_slices` | `MorphSlice`, 12 bytes: `{channel, first_delta, delta_count}`, ascending by channel within a cluster, with the delta runs contiguous and in slice order. |
+| `morph_indices` | one `u8` cluster-**local** vertex index per delta (a cluster holds at most 255 vertices), padded to a multiple of four. |
+| `morph_deltas` / `morph_normal_deltas` | three `i16` per delta each, padded to an even count like `quantized`. The normal array is either empty or exactly parallel; a channel that moves no normals writes zeros into it. |
+
+`morph_delta_count` says how many deltas the three arrays really hold, because they are padded and
+their lengths cannot.
+
+**The quantization, and why 16 bits is not a compromise here.** A delta is `i16 * scale`, and the
+scale is **the channel's own** largest absolute component over 32767 — its own extent, not the
+mesh's. That is what makes it free rather than merely cheap, and the argument is one line: the
+position the delta is added to is *already* on a 16-bit grid over the whole mesh's extent
+(`quantize_positions`), so a channel whose displacement is a fraction *f* of the mesh is stored on
+a grid *1/f* times finer than the position it modifies. Measured on the fixture below — a
+two-unit sphere whose largest channel displacement is 0.0797 units:
+
+| | mesh position grid | morph delta grid |
+|---|---|---|
+| step | 3.05e-5 | 2.4e-6 (largest channel) |
+| worst error over 2,210 deltas | 1.53e-5 (half a step) | **1.86e-6** |
+| mean error | — | 9.06e-7 |
+
+The worst morph error is **an eighth of the position grid's own worst error**, so a morphed vertex
+is no less accurate than a rest one and the whole question is settled by the mesh's grid, where it
+already was. Normal deltas quantize the same way against their own scale and come back within
+1e-3 of a unit vector's component, which is finer than the octahedral snorm16 the attribute stream
+stores a normal in. The alternative worth naming: float deltas cost twice the bytes for an
+accuracy no reader can use, and 8-bit deltas would be *coarser* than the position grid on any
+channel that moves more than 1/256 of the mesh, which is most of them.
+
+**The weld key sees a vertex's deltas, and the interning is what makes that affordable.** Two
+vertices identical in position, normal, UV and skin binding but different in *any* channel are
+different vertices — merging them hands one surface the other's displacement, which is the skin
+rule word for word ("Skinned meshes" above). The obvious implementation, a dense per-vertex row of
+every channel's delta as a weld stream, is megabytes a vertex-pass on a character and is exactly
+what the sparse layout exists to avoid. Instead `morph_vertex_keys` gives every source vertex a
+32-bit **id**: its quantized deltas, in channel order, interned through a hash map that compares
+bytes on a collision. Equal ids mean bit-identical delta tuples, so there is no false-merge
+probability to reason about; the walk is over the sparse data, so it costs the deltas and not the
+vertices; and a vertex no channel touches gets id 0 without being visited at all. The id is then
+one more four-byte stream of meshoptimizer's multi-stream remap, beside the position, normal, UV
+and binding ones. `weld_vertices` also **remaps the channels themselves**, rewriting each one's
+vertex list to the new numbering, re-sorting, dropping entries for vertices the weld removed, and
+deduplicating — exact, because two vertices only merged if their tuples were identical.
+
+**`morph_seams` is `protect`, and the argument is the skin one with a sharper consequence.**
+`ClusterLodOptions::morph_seams` tags every vertex whose morph id differs from its position twin's,
+so permissive simplification cannot merge the wedges the weld deliberately kept apart. Skipping it
+would undo the weld at the first LOD level; and where a merged skin wedge is a wrong deformation,
+a merged morph wedge is a **hole** — the two sides of the seam are told to go to different places
+the moment the channel plays. It uses the same interned ids the weld keyed on, so "these two
+vertices carry different deltas" means exactly the same thing in both places. It costs nothing on a
+mesh with no channels (there are no such pairs) and nothing on one whose coincident vertices agree.
+It is in `cluster_cache_key` with the other three seam rules.
+
+**Through the pipeline, and the one property everything else rests on.** The stream reaches a built
+cluster through `vertex_source` exactly as a normal, a UV and a skin binding do
+(`fill_cluster_morph`), so every copy of a source vertex — in every cluster, on every LOD level —
+carries bitwise the same deltas, which is the crack argument. A channel's **scale is computed from
+the whole source channel** and not from the vertices a given part happens to hold: that is what lets
+`merge_cluster_lod` concatenate the parts of one mesh with no requantization, since every part
+quantized channel *k* on the same grid, and it is checked rather than assumed (two parts that
+disagree about a scale are refused). `merge_cluster_meshes` concatenates *different* meshes'
+channel sets and records each mesh's run on `ClusterMeshPart::first_morph_channel`/
+`morph_channel_count`, the same split the skin palette gets and for the same reason: an instance
+reaches its own weights through its deform record, never through the merged mesh.
+`build_cluster_pages` permutes the stream with the clusters it is keyed by — `append_cluster_morph`
+is the one routine all three of them call, in the output's cluster order — so a page's slices and
+deltas come out as one contiguous run of each array, like its positions.
+
+**In the page budget.** `cluster_page_bytes` counts a cluster's own share: four bytes of directory,
+twelve per slice, and one plus six (plus six more with normal deltas) per delta. On the face-rig
+fixture that is +85% on a cluster the channels reach, which is the honest number — a cluster whose
+deltas are not resident cannot be morphed — and **exactly zero** on a mesh with no channels, which
+is why every rigid page in the corpus is the size it was.
+
+**In the container.** Seven more append-only kinds, 23 to 29: `morph_channels`, `morph_names` (the
+names NUL-terminated back to back, a section of their own rather than offsets into `strings` so a
+build with no images still writes them), `morph_cluster_slices`, `morph_slices`, `morph_indices`,
+`morph_deltas` (the position deltas then, when there are any, the normal deltas, back to back in
+one section, since they are the same element and the same length), and `morph_scalars` (the delta
+count, and whether normal deltas follow). All seven are written even for a mesh with no channels,
+so a container's section list says what the format is rather than what this mesh happened to have,
+and a file from before they existed reads as a mesh with no channels. `k_cluster_cache_version` is
+**8**: an entry built at 7 from a source with morph targets carries none of the stream *and* was
+welded without the deltas in the key.
+
+**Not streamed, and that is a decision.** The whole morph stream is in `ClusterFileReader`'s
+*resident* list, deltas included, because the renderer **refuses to stream a morphed mesh** and
+says so ([renderer](renderer.md)). Paging it needs the slice directory's indices patched per page
+the way `ClusterDesc`'s vertex offsets are, which is the same work and belongs with it rather than
+half-done.
+
+**The bound a renderer culls by.** `morph_bounds_padding(mesh, weights)` is the sum over channels
+of |weight| × `MorphChannel::max_displacement`, which goes into `gfx::InstanceDesc::bounds_padding`
+beside skinning's ([renderer](renderer.md), "Skinned instances"). It is the triangle inequality and
+nothing cleverer, deliberately: the channels of a face move the same region in the same direction
+as often as not, so a bound that assumed cancellation would be wrong on exactly the content this
+exists for. A tighter bound is possible and is a follow-up — the largest displacement *per cluster*
+rather than per channel would shrink it by the ratio of the channel's region to the mesh, at the
+cost of a per-(cluster, channel) float the directory would have to carry.
+
+**A second source of displacement is coming, and this stream is only the first.** The characters
+this is for are two-level: a low-resolution canonical **control mesh** (about 13k vertices) carries
+the shape channels, the skin weights and the cage, and a dense detail surface (hundreds of
+thousands to millions of triangles, from a sculpt, a scan or a generator) is bound to it, each
+dense vertex following a few control vertices with weights — the same transfer ADR-0026 plans for
+soft tissue. Under that scheme a dense character's morph data is a function of the **control
+mesh's** size and not the render mesh's, which is the whole point of it. What the render mesh would
+then carry is a per-vertex binding stream of a few indices and weights — the same record shape as
+`SkinBinding`, and the same shape a cage binding needs — plus the control mesh's own channel
+deltas, and the displacement of a render vertex is the weighted sum of its control vertices'.
+Nothing above has to change for that: the per-cluster directory is specific to *this* source, and
+a binding stream needs no directory at all (it is per vertex, like the skin binding, and travels
+through `vertex_source` the same way), so the two are alternative sources under one stage rather
+than a layout that has to be redesigned. The stage's contract in gfx.md is written as "a rest-space
+displacement source evaluated per render vertex" for exactly that reason, and the bound above,
+being per channel, is the same number either way.
 
 ## Embedded images: the container carries them
 

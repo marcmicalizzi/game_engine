@@ -1,6 +1,8 @@
 #include <domain/geometry/stress_mesh.h>
 
+#include <algorithm>
 #include <cmath>
+#include <string>
 
 namespace engine::geometry {
 
@@ -180,6 +182,164 @@ void build_atlas_probe_texture(u32 size, u32 atlas_cells, Vector<u8>& rgba) {
       texel[3] = 255u;
     }
   }
+}
+
+// ---- the morph fixture -------------------------------------------------------------------------
+
+namespace {
+
+// The sphere's surface point and normal at parameter (u, v), u around and v pole to pole. The
+// normal of a unit sphere is the direction, which is what makes the analytic displaced normal
+// below cheap to write down.
+Vec3 sphere_direction(f32 u, f32 v) noexcept {
+  const f32 phi = u * k_two_pi;
+  const f32 theta = v * 3.14159265358979323846f;
+  const f32 st = std::sin(theta);
+  return Vec3{st * std::cos(phi), std::cos(theta), st * std::sin(phi)};
+}
+
+}  // namespace
+
+void build_morph_sphere(const MorphFixtureOptions& options, MorphFixtureMesh& out) {
+  out = MorphFixtureMesh{};
+  const u32 segments = options.segments < 3 ? 3u : options.segments;
+  const u32 rings = options.rings < 2 ? 2u : options.rings;
+  const f32 radius = options.radius > 0.0f ? options.radius : 1.0f;
+
+  // A grid of (segments + 1) x (rings + 1) vertices. The u = 0 and u = 1 columns are the same
+  // point of the sphere held by two vertices, which is the seam every UV sphere has and which
+  // `split_seam` turns into a *morph* discontinuity as well as a UV one.
+  const u32 columns = segments + 1;
+  for (u32 r = 0; r <= rings; ++r) {
+    const f32 v = static_cast<f32>(r) / static_cast<f32>(rings);
+    for (u32 c = 0; c < columns; ++c) {
+      const f32 u = static_cast<f32>(c) / static_cast<f32>(segments);
+      // The wrap column is the **same point** as column 0, computed the same way rather than at
+      // u = 1: `cos(2 pi)` in single precision is not exactly `cos(0)`, and two positions that
+      // differ in the last bit are two positions to every weld in the tree, which would make the
+      // fixture's seam a position seam instead of the pure attribute seam it is meant to be.
+      const Vec3 direction = sphere_direction(c == segments ? 0.0f : u, v);
+      out.positions.push_back(direction * radius);
+      out.normals.push_back(direction);
+      out.uvs.push_back(Vec2{u, v});
+    }
+  }
+  for (u32 r = 0; r < rings; ++r) {
+    for (u32 c = 0; c < segments; ++c) {
+      const u32 a = r * columns + c;
+      out.indices.push_back(a);
+      out.indices.push_back(a + columns);
+      out.indices.push_back(a + 1);
+      out.indices.push_back(a + 1);
+      out.indices.push_back(a + columns);
+      out.indices.push_back(a + columns + 1);
+    }
+  }
+
+  // The channels. Each is a Gaussian in the angle between the vertex direction and the channel's
+  // centre, displacing along the normal; its normal delta is the analytic normal of the displaced
+  // surface minus the rest one, so a test comparing delta normals against the truth has a truth.
+  const u32 vertex_count = out.positions.size();
+  const f32 peak = options.amplitude * radius;
+  const f32 sigma = options.falloff > 1.0e-4f ? options.falloff : 1.0e-4f;
+  u32 state = options.seed == 0 ? 1u : options.seed;
+  for (u32 k = 0; k < options.channels; ++k) {
+    // Centres spread deterministically over the sphere: a golden-angle spiral, jittered by the
+    // seed so two rigs of the same shape are not the same rig.
+    const f32 jitter = static_cast<f32>(next_random(state) & 0xffffu) / 65535.0f;
+    const f32 cv = (static_cast<f32>(k) + 0.5f + 0.25f * (jitter - 0.5f)) /
+                   static_cast<f32>(options.channels == 0 ? 1u : options.channels);
+    const f32 cu = std::fmod(static_cast<f32>(k) * 0.6180339887f + jitter * 0.1f, 1.0f);
+    const Vec3 centre = sphere_direction(cu, cv);
+    MorphChannelSource channel;
+    channel.name = "channel" + std::to_string(k);
+    channel.default_weight = 0.0f;
+    for (u32 i = 0; i < vertex_count; ++i) {
+      const Vec3 direction = out.normals[i];
+      // `split_seam` makes the u = 1 column's deltas differ from the u = 0 column's by a fixed
+      // factor, so the two coincident vertices disagree about every channel that reaches them.
+      const bool second_seam_copy = options.split_seam && (i % columns) == segments;
+      const f32 cosine = dot(direction, centre);
+      const f32 clamped = cosine < -1.0f ? -1.0f : (cosine > 1.0f ? 1.0f : cosine);
+      const f32 angle = std::acos(clamped);
+      f32 weight = std::exp(-0.5f * (angle / sigma) * (angle / sigma));
+      if (second_seam_copy) weight *= 0.5f;
+      if (weight < options.cutoff) continue;
+      const f32 height = peak * weight;
+      channel.vertices.push_back(i);
+      channel.position_deltas.push_back(direction * height);
+      if (options.normals) {
+        // r(theta) = radius + height(theta) displaced radially: the displaced normal tilts by the
+        // surface gradient of the height field. Taking it numerically along the two parameter
+        // directions is both simpler and exactly what a DCC tool writes.
+        const f32 u = static_cast<f32>(i % columns) / static_cast<f32>(segments);
+        const f32 v = static_cast<f32>(i / columns) / static_cast<f32>(rings);
+        const f32 du = 1.0f / static_cast<f32>(segments);
+        const f32 dv = 1.0f / static_cast<f32>(rings);
+        auto displaced = [&](f32 su, f32 sv) {
+          const Vec3 d = sphere_direction(su, sv);
+          const f32 a = std::acos(std::min(1.0f, std::max(-1.0f, dot(d, centre))));
+          const f32 w = std::exp(-0.5f * (a / sigma) * (a / sigma));
+          return d * (radius + peak * (w < options.cutoff ? 0.0f : w));
+        };
+        const Vec3 p = displaced(u, v);
+        const Vec3 tu = displaced(std::fmod(u + du, 1.0f), v) - p;
+        const Vec3 tv = displaced(u, v + dv <= 1.0f ? v + dv : v - dv) - p;
+        Vec3 moved = cross(tu, tv);
+        if (v + dv > 1.0f) moved = moved * -1.0f;
+        if (length_squared(moved) > 1.0e-20f) {
+          moved = normalize(moved);
+          if (dot(moved, direction) < 0.0f) moved = moved * -1.0f;
+        } else {
+          moved = direction;
+        }
+        channel.normal_deltas.push_back(moved - direction);
+      }
+    }
+    out.morph.push_back(channel);
+  }
+
+  // How many vertices carry a delta that their position twin disagrees about — which is what the
+  // weld key and `ClusterLodOptions::morph_seams` are there to keep apart.
+  Vector<u32> keys;
+  morph_vertex_keys(std::span<const MorphChannelSource>(out.morph.data(), out.morph.size()),
+                    vertex_count, keys);
+  for (u32 r = 0; r <= rings; ++r) {
+    const u32 first = r * columns;
+    const u32 last = first + segments;
+    if (keys[first] != keys[last]) ++out.morph_seam_vertices;
+  }
+}
+
+Vec3 morph_fixture_position(const MorphFixtureMesh& mesh, u32 vertex,
+                            std::span<const f32> weights) noexcept {
+  if (vertex >= mesh.positions.size()) return Vec3{};
+  Vec3 p = mesh.positions[vertex];
+  for (u32 c = 0; c < mesh.morph.size() && c < weights.size(); ++c) {
+    const MorphChannelSource& channel = mesh.morph[c];
+    for (u32 i = 0; i < channel.vertices.size(); ++i) {
+      if (channel.vertices[i] != vertex) continue;
+      p = p + channel.position_deltas[i] * weights[c];
+      break;
+    }
+  }
+  return p;
+}
+
+Vec3 morph_fixture_normal(const MorphFixtureMesh& mesh, u32 vertex,
+                          std::span<const f32> weights) noexcept {
+  if (vertex >= mesh.normals.size()) return Vec3{0.0f, 1.0f, 0.0f};
+  Vec3 n = mesh.normals[vertex];
+  for (u32 c = 0; c < mesh.morph.size() && c < weights.size(); ++c) {
+    const MorphChannelSource& channel = mesh.morph[c];
+    if (channel.normal_deltas.size() != channel.vertices.size()) continue;
+    for (u32 i = 0; i < channel.vertices.size(); ++i) {
+      if (channel.vertices[i] != vertex) continue;
+      n = n + channel.normal_deltas[i] * weights[c];
+      break;
+    }
+  }
+  return length_squared(n) > 1.0e-20f ? normalize(n) : mesh.normals[vertex];
 }
 
 }  // namespace engine::geometry

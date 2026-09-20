@@ -180,8 +180,9 @@ bool build_cluster_lod(std::span<const Vec3> positions, std::span<const u32> ind
   const u8 uv_bit = seam_bit(options.uv_seams);
   const u8 normal_bit = seam_bit(options.normal_seams);
   const u8 skin_bit = seam_bit(options.skin_seams);
+  const u8 morph_bit = attributes.morph.empty() ? u8{0} : seam_bit(options.morph_seams);
   const bool weighted = options.normal_weight > 0.0f || options.uv_weight > 0.0f;
-  const bool tagged = uv_bit != 0 || normal_bit != 0 || skin_bit != 0;
+  const bool tagged = uv_bit != 0 || normal_bit != 0 || skin_bit != 0 || morph_bit != 0;
   const u32 vertex_count = static_cast<u32>(positions.size());
   std::span<const Vec3> normals = attributes.normals;
   // Only when something will read them: with `normal_weight` at its default of zero and no
@@ -226,6 +227,11 @@ bool build_cluster_lod(std::span<const Vec3> positions, std::span<const u32> ind
     Vector<unsigned int> position_remap(vertex_count);
     meshopt_generatePositionRemap(position_remap.data(), &positions[0].x, positions.size(),
                                   sizeof(Vec3));
+    // The morph comparison uses the same interned id the weld keyed on, so "these two vertices
+    // carry different deltas" means exactly the same thing in both places, and the walk is over
+    // the sparse data rather than over channels x vertices.
+    Vector<u32> morph_keys;
+    if (morph_bit != 0) morph_vertex_keys(attributes.morph, vertex_count, morph_keys);
     vertex_lock.resize(vertex_count, 0u);
     for (u32 v = 0; v < vertex_count; ++v) {
       const u32 canonical = position_remap[v];
@@ -247,6 +253,10 @@ bool build_cluster_lod(std::span<const Vec3> positions, std::span<const u32> ind
         for (u32 k = 0; k < 4; ++k)
           same = same && a.joints[k] == b.joints[k] && a.weights[k] == b.weights[k];
         if (!same) vertex_lock[v] |= skin_bit;
+      }
+      if (morph_bit != 0 && v < morph_keys.size() && canonical < morph_keys.size() &&
+          morph_keys[v] != morph_keys[canonical]) {
+        vertex_lock[v] |= morph_bit;
       }
     }
     mesh.vertex_lock = vertex_lock.data();
@@ -341,6 +351,52 @@ bool merge_cluster_lod(std::span<const ClusterLodMesh> parts, ClusterLodMesh& ou
   // with no bindings contributes default ones rather than shortening the stream, exactly as it
   // does for attributes.
   const bool skinned = parts[0].mesh.skin.size() == parts[0].mesh.vertices.size();
+  // **The parts of one mesh share one set of morph channels**, by index: glTF requires every
+  // primitive of a mesh to have the same number of targets, and the mesh's weights array drives
+  // all of them, so channel k means the same expression in every part. The scales are computed
+  // from the *whole* source channel (`fill_cluster_morph`), so every part quantized channel k on
+  // the same grid and the merge is a concatenation with no requantization — but only if the parts
+  // really do agree, so that is checked rather than assumed.
+  u32 morph_channels = 0;
+  const ClusterMesh* morph_template = nullptr;
+  for (const ClusterLodMesh& whole : parts) {
+    if (whole.mesh.morph_channels.empty()) continue;
+    if (morph_template == nullptr) {
+      morph_template = &whole.mesh;
+      morph_channels = whole.mesh.morph_channels.size();
+      continue;
+    }
+    if (whole.mesh.morph_channels.size() != morph_channels) {
+      if (error != nullptr)
+        *error = "merge_cluster_lod: the parts disagree about how many morph channels they have";
+      return false;
+    }
+    for (u32 c = 0; c < morph_channels; ++c) {
+      const MorphChannel& a = morph_template->morph_channels[c];
+      const MorphChannel& b = whole.mesh.morph_channels[c];
+      if (a.position_scale != b.position_scale || a.normal_scale != b.normal_scale) {
+        if (error != nullptr)
+          *error = "merge_cluster_lod: two parts quantized one morph channel differently";
+        return false;
+      }
+    }
+  }
+  bool morph_normals = false;
+  if (morph_template != nullptr) {
+    out.mesh.morph_channels.append(std::span<const MorphChannel>(
+        morph_template->morph_channels.data(), morph_template->morph_channels.size()));
+    out.mesh.morph_names = morph_template->morph_names;
+    for (const ClusterLodMesh& whole : parts) {
+      morph_normals = morph_normals || !whole.mesh.morph_normal_deltas.empty();
+      // The largest displacement of a channel is the largest over every part that carries it.
+      for (u32 c = 0; c < whole.mesh.morph_channels.size() && c < morph_channels; ++c) {
+        MorphChannel& into = out.mesh.morph_channels[c];
+        const MorphChannel& from = whole.mesh.morph_channels[c];
+        if (from.max_displacement > into.max_displacement)
+          into.max_displacement = from.max_displacement;
+      }
+    }
+  }
   for (u32 p = 0; p < part_count; ++p) {
     const ClusterMesh& part = parts[p].mesh;
     if (skinned) {
@@ -375,7 +431,9 @@ bool merge_cluster_lod(std::span<const ClusterLodMesh> parts, ClusterLodMesh& ou
       out.level_cluster_counts[level] += parts[p].level_cluster_counts[level];
   }
 
-  // Clusters: every part's leaves, then everything else, in part order.
+  // Clusters: every part's leaves, then everything else, in part order. The morph directory is
+  // filled in that same order, which is what keeps the delta runs in slice order.
+  if (morph_template != nullptr) out.mesh.morph_cluster_slices.push_back(0);
   for (u32 pass = 0; pass < 2; ++pass) {
     for (u32 p = 0; p < part_count; ++p) {
       const ClusterLodMesh& part = parts[p];
@@ -389,10 +447,15 @@ bool merge_cluster_lod(std::span<const ClusterLodMesh> parts, ClusterLodMesh& ou
         lod.group += group_base[p];
         out.mesh.clusters.push_back(desc);
         out.lod.push_back(lod);
+        if (morph_template != nullptr) {
+          append_cluster_morph(out.mesh, part.mesh, i, 0, morph_normals);
+          out.mesh.morph_cluster_slices.push_back(out.mesh.morph_slices.size());
+        }
         if (part_of_cluster != nullptr) part_of_cluster->push_back(p);
       }
     }
   }
+  pad_morph_streams(out.mesh);
   quantize_positions(out.mesh);  // one grid over all the parts, not one per part
   return true;
 }
@@ -424,6 +487,17 @@ bool merge_cluster_meshes(std::span<const ClusterLodMesh> parts, ClusterLodMesh&
   // validator needs: a mesh's own bindings index its own skin, and the renderer reaches the right
   // bone matrices through the *instance's* deform record, never through the merged mesh.
   const bool skinned = parts[0].mesh.skin.size() == parts[0].mesh.vertices.size();
+  // Separate meshes have separate channel sets, so the merged array is their concatenation and a
+  // mesh's run is recorded on its `ClusterMeshPart` — the same split the skin palette gets, and
+  // for the same reason: an instance reaches its own weights through its deform record, never
+  // through the merged mesh.
+  bool morph_normals = false;
+  bool any_morph = false;
+  for (const ClusterLodMesh& whole : parts) {
+    any_morph = any_morph || !whole.mesh.morph_channels.empty();
+    morph_normals = morph_normals || !whole.mesh.morph_normal_deltas.empty();
+  }
+  if (any_morph) out.mesh.morph_cluster_slices.push_back(0);
   for (u32 p = 0; p < parts.size(); ++p) {
     const ClusterLodMesh& whole = parts[p];
     const ClusterMesh& part = whole.mesh;
@@ -440,6 +514,13 @@ bool merge_cluster_meshes(std::span<const ClusterLodMesh> parts, ClusterLodMesh&
         whole.level_cluster_counts.empty() ? 0 : whole.level_cluster_counts[0];
     info.quant_origin = part.quant_origin;
     info.quant_scale = part.quant_scale;
+    info.first_morph_channel = out.mesh.morph_channels.size();
+    info.morph_channel_count = part.morph_channels.size();
+    const u32 morph_base = info.first_morph_channel;
+    out.mesh.morph_channels.append(
+        std::span<const MorphChannel>(part.morph_channels.data(), part.morph_channels.size()));
+    for (const std::string& name : part.morph_names)
+      out.mesh.morph_names.push_back(name);
     const u32 vertex_base = info.first_vertex;
     const u32 triangle_base = out.mesh.triangles.size();
     const u32 group_base = out.group_count;
@@ -477,6 +558,10 @@ bool merge_cluster_meshes(std::span<const ClusterLodMesh> parts, ClusterLodMesh&
       lod.group += group_base;
       out.mesh.clusters.push_back(desc);
       out.lod.push_back(lod);
+      if (any_morph) {
+        append_cluster_morph(out.mesh, part, i, morph_base, morph_normals);
+        out.mesh.morph_cluster_slices.push_back(out.mesh.morph_slices.size());
+      }
     };
     if (order == ClusterOrder::keep) {
       // A paged mesh is already in the one order its page table describes, so the merge only
@@ -498,6 +583,7 @@ bool merge_cluster_meshes(std::span<const ClusterLodMesh> parts, ClusterLodMesh&
   }
   // The shaders read the last triple as two whole 32-bit words.
   if (out.mesh.quantized.size() % 2 != 0) out.mesh.quantized.push_back(0);
+  pad_morph_streams(out.mesh);
   out.mesh.quant_origin = parts[0].mesh.quant_origin;
   out.mesh.quant_scale = parts[0].mesh.quant_scale;
   return true;
@@ -821,6 +907,9 @@ bool validate_cluster_lod(const ClusterLodMesh& mesh, std::span<const u32> sourc
   if (mesh.mesh.clusters.size() != mesh.lod.size())
     return fail("lod table does not match clusters");
   if (mesh.level_cluster_counts.empty()) return fail("no levels");
+  // The morph directory is over *every* cluster of the DAG, so it is checked here rather than on
+  // the level-0 view below, whose clusters are a prefix of them.
+  if (!validate_morph_stream(mesh.mesh, error)) return false;
 
   // Level 0 covers the source exactly once: reuse the plain validator on a level-0 view.
   ClusterMesh leaves;

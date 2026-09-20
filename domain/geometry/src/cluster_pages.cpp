@@ -278,7 +278,21 @@ u32 cluster_page_bytes(const ClusterMesh& mesh, u32 cluster) noexcept {
   // deformed.
   const u32 per_vertex = 6u + (mesh.attributes.size() == mesh.vertices.size() ? 8u : 0u) +
                          (mesh.skin.size() == mesh.vertices.size() ? 8u : 0u);
-  const u32 fixed = static_cast<u32>(sizeof(ClusterDesc) + sizeof(ClusterLodDesc));
+  u32 fixed = static_cast<u32>(sizeof(ClusterDesc) + sizeof(ClusterLodDesc));
+  // The morph stream is counted the same way and for the same reason: a cluster whose deltas are
+  // not resident cannot be morphed. It is the cluster's own share — its directory word, one
+  // `MorphSlice` per channel that touches it, and one index plus six or twelve bytes of delta per
+  // delta — and it is zero for a mesh with no channels, which is why every rigid page in the
+  // corpus is byte-for-byte the size it was.
+  if (cluster + 1 < mesh.morph_cluster_slices.size()) {
+    fixed += static_cast<u32>(sizeof(u32));
+    const u32 lo = mesh.morph_cluster_slices[cluster];
+    const u32 hi = mesh.morph_cluster_slices[cluster + 1];
+    fixed += (hi - lo) * static_cast<u32>(sizeof(MorphSlice));
+    const u32 per_delta = 1u + 6u + (mesh.morph_normal_deltas.empty() ? 0u : 6u);
+    for (u32 s = lo; s < hi; ++s)
+      fixed += mesh.morph_slices[s].delta_count * per_delta;
+  }
   return fixed + desc.vertex_count * per_vertex + desc.triangle_count * 4u;
 }
 
@@ -492,8 +506,23 @@ bool build_cluster_pages(ClusterLodMesh& mesh, const ClusterPagesOptions& option
   if (has_skin) skin.reserve(geo.vertices.size());
   if (has_quantized) quantized.reserve(geo.quantized.size());
   triangles.reserve(geo.triangles.size());
+  // The morph stream is permuted with the clusters it is keyed by, which is what makes a page's
+  // slices and deltas one contiguous run of each array the way its positions are.
+  const bool has_morph = geo.morph_cluster_slices.size() == u64{count} + 1;
+  ClusterMesh morph;
+  if (has_morph) {
+    morph.morph_slices.reserve(geo.morph_slices.size());
+    morph.morph_indices.reserve(geo.morph_indices.size());
+    morph.morph_deltas.reserve(geo.morph_deltas.size());
+    morph.morph_cluster_slices.push_back(0);
+  }
+  const bool morph_normals = !geo.morph_normal_deltas.empty();
   for (u32 n = 0; n < count; ++n) {
     const u32 from = new_to_old[n];
+    if (has_morph) {
+      append_cluster_morph(morph, geo, from, 0, morph_normals);
+      morph.morph_cluster_slices.push_back(morph.morph_slices.size());
+    }
     ClusterDesc desc = geo.clusters[from];
     const u32 first_vertex = desc.vertex_offset;
     const u32 first_triangle = desc.triangle_offset;
@@ -575,6 +604,15 @@ bool build_cluster_pages(ClusterLodMesh& mesh, const ClusterPagesOptions& option
   if (has_attributes) geo.attributes = std::move(attributes);
   if (has_skin) geo.skin = std::move(skin);
   if (has_quantized) geo.quantized = std::move(quantized);
+  if (has_morph) {
+    geo.morph_cluster_slices = std::move(morph.morph_cluster_slices);
+    geo.morph_slices = std::move(morph.morph_slices);
+    geo.morph_indices = std::move(morph.morph_indices);
+    geo.morph_deltas = std::move(morph.morph_deltas);
+    geo.morph_normal_deltas = std::move(morph.morph_normal_deltas);
+    geo.morph_delta_count = morph.morph_delta_count;
+    pad_morph_streams(geo);
+  }
   geo.triangles = std::move(triangles);
   mesh.lod = std::move(lods);
   if (source_of_cluster != nullptr) *source_of_cluster = std::move(new_to_old);

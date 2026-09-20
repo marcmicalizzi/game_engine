@@ -27,6 +27,19 @@ ENGINE_EXPECT_SIZE(8, 4, geometry::VertexAttributes);
 // indices then four u8 weights, no padding, alignment 1 so the stream is a plain byte array.
 ENGINE_EXPECT_SIZE(8, 1, geometry::SkinBinding);
 
+// A morph channel record: four floats the deform chain and the renderer read through a device
+// address — the two quantization scales, the displacement bound an instance's `bounds_padding`
+// is summed from, and the source's default weight. Sixteen bytes is a whole float4 load, and
+// there is deliberately no name in it: names are a host-side array, because a shader has no use
+// for one and putting it here would make the record a variable-length thing.
+ENGINE_EXPECT_SIZE(16, 4, geometry::MorphChannel);
+
+// One channel's run of deltas inside one cluster, read by the deform chain: three words, no
+// padding. The count is stored rather than derived from the next slice's `first_delta` because a
+// slice is also the unit the page layout moves, and an explicit count is one fewer invariant for
+// a permutation to break.
+ENGINE_EXPECT_SIZE(12, 4, geometry::MorphSlice);
+
 // The .clusters container: these three are the file itself, so their size is the format.
 ENGINE_EXPECT_SIZE(32, 8, geometry::ClusterFileHeader);
 

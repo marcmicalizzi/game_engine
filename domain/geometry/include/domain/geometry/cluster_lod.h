@@ -93,6 +93,13 @@ struct ClusterLodOptions {
   // one surface the other's deformation. Protecting them costs nothing on a rigid mesh, which
   // has no such pairs at all.
   SeamRule skin_seams = SeamRule::protect;
+  // A morph delta is per vertex for the third time, and the argument is the skin one word for
+  // word: `weld_vertices` keeps two coincident vertices with different deltas apart, and merging
+  // their wedges here would undo it and hand one surface the other's displacement — which, unlike
+  // a shading change, opens a hole the moment the channel plays. Free on a mesh with no channels
+  // and on one whose coincident vertices agree, which is every mesh a single exporter wrote for
+  // a channel that does not stop at a seam.
+  SeamRule morph_seams = SeamRule::protect;
 };
 
 struct ClusterLodMesh {
@@ -151,6 +158,11 @@ struct ClusterMeshPart {
   u32 page_count = 0;
   Vec3 quant_origin{};  // this mesh's own grid, unchanged by the merge
   f32 quant_scale = 1.0f;
+  // This mesh's run of the scene's morph channel array. Separate meshes have separate channel
+  // sets — one character's "smile" is not another's — so the merge concatenates them and a slice
+  // of this mesh names `first_morph_channel + k`. Zero and zero for a mesh with no channels.
+  u32 first_morph_channel = 0;
+  u32 morph_channel_count = 0;
 };
 
 // Whether a merge reorders each mesh's clusters so its level-0 clusters come first.
