@@ -305,9 +305,10 @@ owner's work; these are wall-clock upper bounds, not costs
 `linux-server-debug` (clang 22.1.8, Debug) tests in **6 m 03 s** — asserts and iterator checking,
 on 2012 cores.
 
-**Disk: 2.1 GB** for everything this tree needs on that machine — checkout, one build tree and
-one set of downloaded dependencies — under `~/game_engine-remote/<checkout-id>/`, on a volume with
-8.6 TB free. `-Clean` drops the build tree and keeps the dependencies.
+**Disk: 2.1 GB for one preset, 3.6 GB for both** — checkout and build trees 1.5 GB, downloaded
+dependencies 2.2 GB — under `~/game_engine-remote/<checkout-id>/`, on a volume with 8.6 TB free.
+`-Clean` drops the build tree and keeps the dependencies. Nothing is written anywhere else on that
+machine and no daemon is left running.
 
 ## What GCC 14 and clang 22 found
 

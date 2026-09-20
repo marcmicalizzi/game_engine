@@ -164,6 +164,39 @@ One thing tried and rejected, so it is not retried: a root joint's `out[i] = mat
 stores it measured **453 ns against 444 ns** — inside the session spread — because one joint in
 twenty-three is a root and a store nothing reads back in the same iteration does not stall.
 
+### GCC and Clang, and the one place this fix loses
+
+MSVC is not the only compiler that builds this, so the same before-and-after ran on the Linux GPU
+server — real GCC 14.3.1 and clang 22.1.8, RelWithDebInfo, on a Sandy Bridge Xeon, at x86-64-v2
+because that is the only baseline that machine can execute. Alternated the same way, six rounds,
+and a second run reproduced every figure to **0.5%**. Nanoseconds per call:
+
+| Benchmark | GCC before | GCC after | Δ | clang before | clang after | Δ |
+|---|---|---|---|---|---|---|
+| `local_to_model.one` | 1,616 | 1,889 | **+17%** | 1,577 | **973** | −38% |
+| `skinning_matrices.one` | 1,238 | **765** | −38% | 1,086 | **761** | −30% |
+| `skinning.one` (both) | 2,856 | **2,637** | −8% | 2,674 | **1,735** | −35% |
+| `skinning.crowd` (µs) | 756.5 | **704.7** | −7% | 711.1 | **466.3** | −34% |
+| `local_matrices.one` (untouched) | 525 | 527 | 0% | 647 | 646 | 0% |
+
+**`skinning_matrices` improves on all three compilers** — 38% on GCC, 30% on clang, 58% on MSVC —
+which is the kernel with no loop-carried dependency and the clearest case.
+
+**`local_to_model` is 17% slower under GCC, and that is a real cost, not noise.** Subtracting the
+untouched `mat4_from_transform` row isolates it to the composition: 1,091 → 1,363 ns on GCC
+(**+25%**) against 930 → 327 ns on clang (**−65%**) for the same source. GCC was already
+auto-vectorizing that loop well and the explicit intrinsics take the choice away from it. The
+likely mechanism, not yet confirmed by reading GCC's output: `const f32* b = matrix.data()` takes
+the address of a local that GCC otherwise keeps in registers — it inlines `mat4_from_transform`,
+where MSVC calls it out of line — so the intrinsic loads force a round trip GCC did not have.
+Confirming that, and finding a form that does not, is the open follow-up on this section.
+
+**The module still comes out ahead on every compiler**, because `local_to_model` is the smaller
+half of what a skinned instance pays: the combined kernel is **−8% on GCC**, −35% on clang and
+−40% on MSVC, and the 256-instance streaming row moves the same way. The trade was taken with the
+numbers above in hand rather than by accident, and if the GCC case is ever what matters most, this
+table is where to start.
+
 ### Determinism, and what a v2 and a v3 build disagree about
 
 Within a build the kernels are **bit-identical across runs and across worker counts**: they are
