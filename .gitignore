@@ -24,3 +24,6 @@ compile_commands.json
 # OS
 Thumbs.db
 .DS_Store
+
+# Agents leave handoff notes for the coordinator at the worktree root; they are never committed.
+NOTES-FOR-COORDINATOR.md
