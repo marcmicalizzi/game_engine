@@ -76,7 +76,7 @@ TEST_CASE("clas records: the shader writes the same build records as the CPU") {
   }
   instance_table[k_deformed].deform = 0;
   gfx::DeformDesc deform{};
-  deform.flags = gfx::k_deform_wave;
+  deform.stages = gfx::k_deform_stage_procedural | gfx::k_deform_wave;
   // The pool is addressed per **visible entry**, so a record's vertex address comes out of
   // `MeshDesc::deform_slots[visible_index]` and not out of the instance. The table is filled below
   // once the visible list exists; the bias keeps a block a few slots off the mesh's own vertex

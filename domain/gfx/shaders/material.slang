@@ -62,6 +62,11 @@ struct SceneGeometry {
   uint64_t materials;          // ResolveMaterial[]
   uint64_t cluster_materials;  // uint[cluster_count]: material index per cluster
   uint64_t visible;            // uint2[]: the cull pass's visible list; 0 reads {0, index}
+  // The deformed **normal** pool, parallel to the position pool and written by the same pass;
+  // 0 when the frame carries none, and every shading normal then comes off the rest attribute
+  // stream as it always has. That is what keeps every picture of a scene with no morph channels
+  // byte-identical (gfx.md, "What happens to the shading normal").
+  uint64_t normal_pool;
 };
 
 struct Surface {
@@ -76,6 +81,12 @@ struct Surface {
 struct TriangleFetch {
   float3 p[3];
   uint local[3];
+  // The pool block this triangle's vertices came out of and where they sit in their cluster, so
+  // that `surface_at` can read the deformed normals beside the positions. `k_no_pool_slot` for
+  // a rigid instance or a cluster the pool had no room for, which is what makes the normal read
+  // fall back to the rest attribute stream for exactly the cases the position read does.
+  uint pool_base;
+  uint pool_local[3];
 };
 
 float sign_or_one(float v) { return v < 0.0 ? -1.0 : 1.0; }
@@ -113,9 +124,11 @@ TriangleFetch fetch_triangle(SceneGeometry geo, InstanceDesc instance, uint entr
   const uint packed = triangles[cluster.triangle_offset + triangle];
   const uint base = deform_base(mesh, instance, entry);
   TriangleFetch fetched;
+  fetched.pool_base = base;
   for (uint i = 0; i < 3; ++i) {
     const uint local = (packed >> (8 * i)) & 0xff;
     fetched.local[i] = cluster.vertex_offset + local;
+    fetched.pool_local[i] = local;
     fetched.p[i] =
         mul(instance.world, float4(load_position(mesh, base, cluster.vertex_offset, local), 1.0))
             .xyz;
@@ -138,8 +151,20 @@ Surface surface_at(SceneGeometry geo, InstanceDesc instance, TriangleFetch tri, 
     const VertexAttributes a0 = attributes[tri.local[0]];
     const VertexAttributes a1 = attributes[tri.local[1]];
     const VertexAttributes a2 = attributes[tri.local[2]];
-    const float3 n = b.x * decode_normal_oct(a0.normal_oct) + b.y * decode_normal_oct(a1.normal_oct) +
-                     b.z * decode_normal_oct(a2.normal_oct);
+    // The three vertex normals: the **deformed** ones out of the frame's normal pool when this
+    // triangle came out of a pool block and the frame carries one, and the rest ones off the
+    // attribute stream otherwise. The branch is on an address that is zero for every scene with
+    // no morph channels, so a picture that had no normal pool reads exactly the instructions it
+    // always read.
+    float3 n0 = decode_normal_oct(a0.normal_oct);
+    float3 n1 = decode_normal_oct(a1.normal_oct);
+    float3 n2 = decode_normal_oct(a2.normal_oct);
+    if (geo.normal_pool != 0 && tri.pool_base != k_no_pool_slot) {
+      n0 = load_pool_normal(geo.normal_pool, tri.pool_base, tri.pool_local[0], n0);
+      n1 = load_pool_normal(geo.normal_pool, tri.pool_base, tri.pool_local[1], n1);
+      n2 = load_pool_normal(geo.normal_pool, tri.pool_base, tri.pool_local[2], n2);
+    }
+    const float3 n = b.x * n0 + b.y * n1 + b.z * n2;
     s.normal = transform_normal(instance.world, n);
     s.uv = b.x * decode_half2(a0.uv_half2) + b.y * decode_half2(a1.uv_half2) + b.z * decode_half2(a2.uv_half2);
   } else {

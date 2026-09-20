@@ -205,7 +205,7 @@ struct DeformScene {
     // What is left on the instance is which deformer it plays; where in the pool it writes is the
     // per-entry table above.
     gfx::DeformDesc desc{};
-    desc.flags = deform_kind;
+    desc.stages = gfx::k_deform_stage_procedural | deform_kind;
     gfx::MeshDesc mesh_desc{};
     mesh_desc.quant = Vec4{lod.mesh.quant_origin, lod.mesh.quant_scale};
     mesh_desc.cluster_count = lod.mesh.clusters.size();

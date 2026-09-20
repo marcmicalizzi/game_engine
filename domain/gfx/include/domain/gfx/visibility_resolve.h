@@ -153,8 +153,18 @@ struct ResolveParams {
   u64 coverage = 0;
   u32 coverage_pitch = 0;  // tiles per row: gfx::hiz_coverage_pitch(width)
   u32 pad2 = 0;            // keeps the block 16-byte aligned
+  // The **deformed normal pool**: one octahedral `u32` per vertex of the frame's deformed-vertex
+  // pool, parallel to it and written by the same pass, in exactly the packing
+  // `geometry::VertexAttributes::normal_oct` uses — so the shader decodes it with the function it
+  // already had. Zero, and every shading normal comes off the rest attribute stream as it always
+  // has; that is what a frame with no morph channels passes, which is why every existing picture
+  // is byte-identical. Read only for a pixel whose visible entry actually has a pool block, so a
+  // rigid instance in a morphed scene is unaffected too (gfx.md, "What happens to the shading
+  // normal").
+  u64 normal_pool = 0;
+  u64 pad3 = 0;  // keeps the block 16-byte aligned
 };
-static_assert(sizeof(ResolveParams) == 272);
+static_assert(sizeof(ResolveParams) == 288);
 static_assert(sizeof(ResolveParams) % 16 == 0, "the block is read as float4 rows on the GPU");
 
 }  // namespace engine::gfx

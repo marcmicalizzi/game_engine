@@ -21,20 +21,37 @@ using namespace engine;
 // and not the instance's deformer.
 ENGINE_EXPECT_SIZE(64, 8, gfx::MeshDesc);
 
-// 16, down from 24: a skinned instance carries its own bone-matrix address and joint count,
-// because a pose is per instance while the mesh and its bindings are shared by a whole crowd —
-// and *where in the pool* is no longer the instance's at all. The per-frame suballocation gives a
-// block to each visible entry, so `pool_offset` and `vertex_count` went away and only the pool
-// pass reads this record now (docs/subsystems/renderer.md, "The deformed-vertex pool").
-ENGINE_EXPECT_SIZE(16, 8, gfx::DeformDesc);
+// 48, up from 16, because the deformer became a **chain of stages** rather than one exclusive
+// mode (gfx.md, "The deform chain"). What was added is exactly what is per *instance*: the stage
+// mask took over the kind word, `weights` is the morph weights of the two morph stages (one array
+// with the static half first, because two addresses would cost eight bytes on every deformed
+// instance to say the same thing), `cache` is where the static stage's kept result lives, and
+// `first_channel`/`channel_count`/`first_vertex` are what index the weights and the cache. What
+// is per *mesh* — the channel records, the slice directory, the delta streams — is deliberately
+// **not** here and not in `MeshDesc` either, which is full at 64 bytes and which every position
+// read in the renderer holds: those are scene-wide arrays behind `DeformParams::morph`. One pad
+// word is left, which is what a fifth stage's address would take.
+ENGINE_EXPECT_SIZE(48, 8, gfx::DeformDesc);
+
+// 16: what the static shape stage keeps per vertex of a cached instance's mesh — the displaced
+// position and its octahedral normal. The normal is in it because a cache of positions alone
+// would leave the stage's morph scan running every frame for the normals, which is the cost the
+// cache exists to remove; sixteen bytes is also one aligned load rather than two.
+ENGINE_EXPECT_SIZE(16, 4, gfx::DeformCacheVertex);
+
+// 48: the scene's morph stream, one block behind `DeformParams::morph` the way `StreamParams`
+// sits behind `CullParams::streaming`. Six addresses, read once per workgroup rather than once
+// per vertex, which is why they are an indirection and the pool's own addresses are not.
+ENGINE_EXPECT_SIZE(48, 8, gfx::MorphParams);
 
 // 16: the frame's pool allocator, one record in a device buffer. Four counters, and it is copied
 // into the per-slot statistics block and read one frame late like the visible counts.
 ENGINE_EXPECT_SIZE(16, 4, gfx::DeformAlloc);
 
-// 88, not 80: the pool pass gained the per-entry allocation table's address and the run's first
-// entry in it, because `visible` points at one run and the table spans the whole list.
-ENGINE_EXPECT_SIZE(88, 8, gfx::DeformParams);
+// 104, not 88: the chain gained the morph stream's block address and the deformed normal pool's.
+// Both are null for a scene with no morph channels, so the pass then runs the instructions it ran
+// before them. The 128-byte push limit is why the morph stream is one address and not six.
+ENGINE_EXPECT_SIZE(104, 8, gfx::DeformParams);
 
 // 72: the allocator's push block. One dispatch per run of the visible list, one workgroup, every
 // view inside it — so it carries the run and the view count rather than a per-view block.
@@ -89,7 +106,11 @@ ENGINE_EXPECT_SIZE(48, 8, gfx::HizParams);
 // the address of the Hi-Z build's per-tile mask and the only way to skip *reading* a 64-bit
 // visibility word for a pixel with nothing in it. Both are zero for a caller that fills neither,
 // and the shader then writes the sky and reads every word, exactly as it always did.
-ENGINE_EXPECT_SIZE(272, 8, gfx::ResolveParams);
+// 288, not 272: `normal_pool` is the deformed shading normals the deform chain writes beside the
+// positions, and it is an address because the resolve reads it per covered pixel. It is zero for
+// every frame with no morph channels, and the shader then reads the rest attribute stream exactly
+// as it did, which is what keeps those pictures byte-identical.
+ENGINE_EXPECT_SIZE(288, 8, gfx::ResolveParams);
 
 // 256: the reference path tracer's block (docs/plan/04-renderer.md §4.8). It is not in a frame
 // path — one dispatch per batch of samples, minutes per picture allowed — so it carries all

@@ -149,14 +149,64 @@ inline constexpr f32 k_raster_split = 2.0f;
 // *instance* and not per mesh because two characters share one mesh, one binding stream and one
 // skeleton and have entirely different poses.
 //
-// **16 bytes, not the 24 it was**: `pool_offset` and `vertex_count` were the per-instance block,
-// and neither survives the change. GPU-mirrored; keep in step with `DeformDesc` in the shaders.
+// **A chain of stages, not one exclusive mode** (docs/plan/04-renderer.md §4.3, gfx.md "The
+// deform chain"). `stages` is a mask, and the pass runs the ones it names **in a fixed order**:
+//
+//   1 static shape   a set of morph channel weights that changes rarely — a character's body,
+//                    baked once from a parametric rig. Its result is cached in a persistent
+//                    per-instance buffer (`cache`), so the per-frame stages start from there and
+//                    it costs nothing until the weights change.
+//   2 pose morphs    per-frame morph weights: expressions, correctives.
+//   3 skinning       linear blend skinning, `joints` x the mesh's `geometry::SkinBinding` stream.
+//   4 procedural     the E25 stand-ins for a cage solver: `wave` and `lattice`, whose kind is in
+//                    `k_deform_kind_mask` of this same word.
+//
+// The order is not a preference; it is what the data means. Morph deltas are authored **in bind
+// space**, against the rest mesh, so they have to be applied before the skin moves that mesh —
+// applying a bind-space delta to a posed vertex would displace it along an axis that has already
+// rotated. A cage acts on the **posed surface**, because that is what a soft-tissue solver sees.
+// Static before pose is not forced by the data but by the cache: the static stage's result is the
+// rest mesh every later frame starts from, and a stage that ran after it could not be cached with
+// it. gfx.md carries the argument and the crack rule stage by stage.
+//
+// **48 bytes, up from 16.** What is here is what is per *instance*: which stages, where its bone
+// matrices are, where its weights are, and where its static cache is. What is per *mesh* — the
+// morph channel records, the per-cluster slice directory, the delta streams — is **not** here and
+// not in `MeshDesc` either (which is full at 64 bytes): those are scene-wide arrays like the
+// clusters and the triangles, so they ride in `DeformParams`, which only the pool pass reads.
 struct DeformDesc {
-  u32 flags = 0;        // which deformer: k_deform_*
-  u32 joint_count = 0;  // the bone-matrix array's length; 0 leaves a skinned instance at rest
-  u64 joints = 0;       // anim::JointMatrix[joint_count]: three float4 rows each, or 0
+  u32 stages = 0;         // k_deform_stage_* | the procedural kind in k_deform_kind_mask
+  u32 joint_count = 0;    // the bone-matrix array's length; 0 leaves a skinned instance at rest
+  u32 first_channel = 0;  // this instance's mesh's first entry of the scene's morph channel array
+  u32 channel_count = 0;  // how many channels it owns, which is `weights`' width
+  // This mesh's first vertex in the scene-wide vertex arrays. The static cache is one block per
+  // *mesh* vertex, and a cluster's `vertex_offset` is scene-wide, so this is what turns the one
+  // into the other. It is here rather than in `MeshDesc` because that record is full at 64 bytes
+  // and this is read by one pass, not by every position read in the renderer.
+  u32 first_vertex = 0;
+  u32 pad = 0;
+  u64 joints = 0;  // anim::JointMatrix[joint_count]: three float4 rows each, or 0
+  // f32[2 * channel_count]: the **static** weights first, then the **pose** weights. One array
+  // rather than two addresses because the two are the same shape, are written by the same host
+  // code, and a second pointer would cost eight bytes on every deformed instance to save nothing.
+  u64 weights = 0;
+  // float3 per vertex of this instance's mesh — the static stage's result, kept between frames.
+  // Zero means the instance has no cache slot (its mesh is bigger than the budget had room for,
+  // or nothing static is playing), and the static stage then runs per frame over the cut, which
+  // is the same answer for more work.
+  u64 cache = 0;
 };
-static_assert(sizeof(DeformDesc) == 16);
+static_assert(sizeof(DeformDesc) == 48);
+
+// One vertex of a static-shape cache: the displaced position and its octahedral normal, in
+// `geometry::encode_normal_oct`'s packing. The normal is here because a cache of positions alone
+// would leave the static stage's morph scan running every frame for the normals, which is the
+// cost the cache exists to remove.
+struct DeformCacheVertex {
+  Vec3 position{};
+  u32 normal_oct = 0;
+};
+static_assert(sizeof(DeformCacheVertex) == 16);
 
 // `MeshDesc::deform_slots[entry]`: the entry's block did not fit the frame's pool budget, so
 // every reader falls back to the **rest pose** for it. Never garbage and never a crash — a
@@ -176,16 +226,32 @@ struct DeformAlloc {
 static_assert(sizeof(DeformAlloc) == 16);
 
 inline constexpr u32 k_invalid_deform = ~u32{0};  // InstanceDesc::deform: the instance is rigid
-// The deformers. Identity writes the rest pose into the pool, which is what proves a deformed
-// instance and a rigid one draw the same picture; wave and lattice are the E25 spike's procedural
-// stand-ins; **skin** is the first real one (docs/plan/05-simulation.md §5.11), reading the
-// mesh's `geometry::SkinBinding` stream and the instance's `anim::JointMatrix` array.
+
+// The **procedural** deformer of the fourth stage, in the low two bits of `DeformDesc::stages`.
+// They kept their values from when they were the whole of the mode word, so a `--deform lattice`
+// run means what it always did.
 inline constexpr u32 k_deform_identity = 0;
 inline constexpr u32 k_deform_wave = 1;     // sinusoidal displacement along the vertex normal
 inline constexpr u32 k_deform_lattice = 2;  // 3x3x3 trilinear cage over the mesh's grid box
-// Linear blend skinning: MeshDesc::skin (per vertex) x DeformDesc::joints (per instance).
-inline constexpr u32 k_deform_skin = 3;
-inline constexpr u32 k_deform_kind_mask = 3;  // exactly four kinds fit; a fifth needs another bit
+// 3 was `k_deform_skin` while the modes were exclusive; skinning is a **stage** now, so the value
+// is retired rather than reused — a container or a saved scene that still holds it would name a
+// procedural deformer that no longer exists, and naming nothing is better than naming the wrong
+// one.
+inline constexpr u32 k_deform_kind_mask = 3;
+
+// The stages, in the order the pass runs them. The mask lives in the same `u32` as the kind
+// above, from bit 8 up, so an instance that skins *and* runs a cage is one record and one pass —
+// which is the whole point of the change (E25 left "skinning plus a cage deformer on one instance
+// needs a second pass or a wider kind field" as the open question, and this is the wider field).
+inline constexpr u32 k_deform_stage_static = 1u << 8;       // morph channels that change rarely
+inline constexpr u32 k_deform_stage_pose = 1u << 9;         // morph channels that change per frame
+inline constexpr u32 k_deform_stage_skin = 1u << 10;        // linear blend skinning
+inline constexpr u32 k_deform_stage_procedural = 1u << 11;  // wave / lattice / identity
+// Set for the one frame in which the static stage's cache has to be filled. The pass then writes
+// `DeformDesc::cache` as well as the pool; every other frame reads the cache and skips the stage.
+inline constexpr u32 k_deform_stage_rebuild_cache = 1u << 12;
+inline constexpr u32 k_deform_stage_mask =
+    k_deform_stage_static | k_deform_stage_pose | k_deform_stage_skin | k_deform_stage_procedural;
 
 // GPU-mirrored; keep in step with the MeshDesc struct in the shaders. 64 bytes, read through a
 // device address. One per mesh of the scene: the 16-bit position grid this mesh's positions are
@@ -296,25 +362,50 @@ static_assert(sizeof(ClusterDrawParams) == 128);
 // thread writes the entry's own block of the pool, which `deform_alloc.slang` handed out before
 // this pass ran; an entry that did not fit writes nothing and draws its rest pose.
 //
-// **88, not the 80 it was**: `slots` is the per-entry allocation table and `visible_offset` is
-// where this run starts in it, because `visible` points at the run and the table is indexed by
-// the entry's index in the *whole* list.
+// The morph stream's scene-wide arrays, one block in a device buffer that `DeformParams::morph`
+// points at. They are scene-wide because `geometry::merge_cluster_meshes` concatenates every
+// mesh's channels, directory and deltas into one set with the slices keyed by the global cluster
+// index — so one block serves every mesh and every view of a frame, exactly as `StreamParams`
+// does for the page table. Null for a scene with no channels.
+struct MorphParams {
+  u64 channels = 0;       // geometry::MorphChannel[]
+  u64 directory = 0;      // u32[cluster_count + 1]: the CSR into `slices`
+  u64 slices = 0;         // geometry::MorphSlice[]
+  u64 indices = 0;        // u8 per delta, cluster-local, padded to a multiple of four
+  u64 deltas = 0;         // i16[3 * delta_count]
+  u64 normal_deltas = 0;  // i16[3 * delta_count], or 0 when no channel of the scene moves normals
+};
+static_assert(sizeof(MorphParams) == 48);
+
+// **104, not the 88 it was.** Two addresses were appended: the morph block above, and the
+// deformed normal pool. Both are null for a scene with no morph channels.
 struct DeformParams {
-  u64 clusters = 0;        // geometry::ClusterDesc[]
-  u64 instances = 0;       // InstanceDesc[]
-  u64 meshes = 0;          // MeshDesc[]
-  u64 attributes = 0;      // geometry::VertexAttributes[]; 0: displace radially instead
-  u64 visible = 0;         // u32x2[]: one run of the visible list, {instance, cluster} per entry
-  u64 visible_count = 0;   // u32: that run's count word, the cull pass's atomic
-  u64 pool = 0;            // f32[3 * pool_vertices] out
-  u64 deform = 0;          // DeformDesc[]
-  u64 slots = 0;           // u32[]: the whole list's per-entry pool bases, from deform_alloc.slang
+  u64 clusters = 0;       // geometry::ClusterDesc[]
+  u64 instances = 0;      // InstanceDesc[]
+  u64 meshes = 0;         // MeshDesc[]
+  u64 attributes = 0;     // geometry::VertexAttributes[]; 0: displace radially instead
+  u64 visible = 0;        // u32x2[]: one run of the visible list, {instance, cluster} per entry
+  u64 visible_count = 0;  // u32: that run's count word, the cull pass's atomic
+  u64 pool = 0;           // f32[3 * pool_vertices] out
+  u64 deform = 0;         // DeformDesc[]
+  u64 slots = 0;          // u32[]: the whole list's per-entry pool bases, from deform_alloc.slang
+  // The morph stream's six addresses, as **one block behind one address** the way
+  // `CullParams::streaming` carries the page table's: the push block is 128 bytes and six more
+  // addresses do not fit beside what is already here, and unlike those they are read once per
+  // workgroup rather than once per vertex. Null for a scene with no morph channels, and the pass
+  // then runs exactly the instructions it ran before morphs existed — which is what keeps every
+  // picture of such a scene byte-identical.
+  u64 morph = 0;  // MorphParams*
+  // The **deformed normal pool**, one octahedral u32 per pool vertex, parallel to `pool`. Zero
+  // when the frame does not carry one, and the resolve then reads the rest normal off the
+  // attribute stream exactly as it always has (gfx.md, "What happens to the shading normal").
+  u64 normal_pool = 0;
   f32 time = 0.0f;         // animation phase in seconds
   f32 amplitude = 1.0f;    // displacement scale as a fraction of the mesh's grid box
   u32 max_entries = 0;     // the run's capacity; the count read from the device is clamped to it
   u32 visible_offset = 0;  // this run's first entry in the whole visible list
 };
-static_assert(sizeof(DeformParams) == 88);
+static_assert(sizeof(DeformParams) == 104);
 
 // Mirrors AllocParams in deform_alloc.slang: the push constants of the pool's allocator. 72
 // bytes. **One workgroup**, once per run of the visible list, looping over the views inside it:

@@ -787,7 +787,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     for (u32 d = 0; d < statics.size(); ++d) {
       gfx::DeformDesc desc = statics[d];
       const u32 instance = owners[d];
-      if (desc.flags == gfx::k_deform_skin && instance < frame.instance_joints.size()) {
+      if ((desc.stages & gfx::k_deform_stage_skin) != 0 &&
+          instance < frame.instance_joints.size()) {
         const InstanceJoints& run = frame.instance_joints[instance];
         // A run that is not wholly inside what was uploaded leaves the instance at rest rather
         // than reading past the end: bad offsets are the caller's bug, and a bind-pose character

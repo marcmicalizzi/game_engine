@@ -140,7 +140,7 @@ struct SkinScene {
     }
 
     gfx::DeformDesc desc{};
-    desc.flags = gfx::k_deform_skin;
+    desc.stages = gfx::k_deform_stage_skin;
     desc.joint_count = joint_count;
     desc.joints = joints.address;
     gfx::InstanceDesc instance;
@@ -241,7 +241,7 @@ TEST_CASE("deform: the skinning mode matches the CPU reference on a two-bone cyl
     // The bone matrices are host visible, so a pose is one memcpy; a real frame would stage them.
     std::memcpy(scene.joints.mapped, matrices.data(), matrices.size() * sizeof(anim::JointMatrix));
     gfx::DeformDesc desc{};
-    desc.flags = gfx::k_deform_skin;
+    desc.stages = gfx::k_deform_stage_skin;
     desc.joint_count = joint_count;
     desc.joints = scene.joints.address;
     gfx::BufferResource table;

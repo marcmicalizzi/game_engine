@@ -11,7 +11,22 @@
 // population. Entries of rigid instances are skipped outright, and so is an entry the budget had
 // no room for: its `deform_slots` word is `k_no_pool_slot`, and every reader takes its rest pose.
 //
-// Three deformers, one real and two stand-ins. §4.3 says skinning reads bone matrices and a
+// **It is a chain of stages, not one exclusive mode.** `DeformDesc::stages` is a mask, and the
+// pass runs what it names in a fixed order: static shape, pose morphs, skinning, then the
+// procedural cage stand-in. The order is what the data means rather than a preference — a morph
+// delta is authored in **bind space** against the rest mesh, so it has to be applied before the
+// skin moves that mesh, and a cage acts on the **posed** surface because that is what a
+// soft-tissue solver sees. gfx.md ("The deform chain") carries the argument and the crack rule
+// stage by stage.
+//
+// The two morph stages are the same arithmetic over different weights, and the split is about
+// *when* they run: the static stage's weights are a character's body, which changes when
+// something authors it and not per frame, so its result is kept in a per-instance cache
+// (`DeformDesc::cache`, filled by `deform_cache_main` over the whole mesh) and the per-frame
+// chain starts from there. The pose stage's weights are an expression, which changes every frame
+// and is paid for every frame — over the **cut**, which is what makes it affordable.
+//
+// Three procedural deformers, all stand-ins. §4.3 says skinning reads bone matrices and a
 // deformable volume reads the tick's cage state; both land in the same pool through the same
 // pass, and skinning is the one that exists:
 //
@@ -46,7 +61,21 @@
 
 #include "scene.slang"
 
-// Mirrors gfx::DeformParams (88 bytes).
+// Mirrors gfx::MorphParams (48 bytes): the scene's morph stream, one block behind one address
+// because `DeformParams` is a 128-byte push block and six more addresses do not fit in it.
+struct MorphParams {
+  uint64_t channels;      // MorphChannel[]
+  uint64_t directory;     // uint[cluster_count + 1]: the CSR into `slices`
+  uint64_t slices;        // MorphSlice[]
+  uint64_t indices;       // uint8 per delta, cluster-local, padded to a multiple of four
+  uint64_t deltas;        // int16[3 * delta_count]
+  uint64_t normal_deltas; // int16[3 * delta_count], or 0
+};
+
+// Mirrors gfx::DeformParams (104 bytes). `deform_cache_main` reads two of the fields with a
+// different meaning, and says so where it uses them, because the block is at the 128-byte limit
+// the renderer allows and the two it needs are the two the cut dispatch uses for the same
+// purpose: where to start, and how many.
 struct DeformParams {
   uint64_t clusters;      // ClusterDesc[]
   uint64_t instances;     // InstanceDesc[]
@@ -57,6 +86,8 @@ struct DeformParams {
   uint64_t pool;          // float[3 * pool_vertices] out
   uint64_t deform;        // DeformDesc[]
   uint64_t slots;         // uint[]: the whole list's per-entry pool bases
+  uint64_t morph;         // MorphParams*, or 0 for a scene with no morph channels
+  uint64_t normal_pool;   // uint[] octahedral, parallel to `pool`, or 0
   float time;             // animation phase in seconds
   float amplitude;        // displacement scale as a fraction of the mesh's grid box
   uint max_entries;       // the run's capacity; the device count is clamped to it
@@ -67,16 +98,75 @@ struct DeformParams {
 
 static const float k_tau = 6.2831853071795864769;
 
-// Inverse of geometry::encode_normal_oct: two snorm16 in a uint. Kept here rather than shared
-// with the resolve so that the pool pass depends on nothing but scene.slang.
-float3 decode_oct(uint packed) {
-  const float x = float(int(packed << 16) >> 16) / 32767.0;
-  const float y = float(int(packed) >> 16) / 32767.0;
-  float3 n = float3(x, y, 1.0 - abs(x) - abs(y));
-  if (n.z < 0.0) {
-    n.xy = float2((1.0 - abs(y)) * (x < 0.0 ? -1.0 : 1.0), (1.0 - abs(x)) * (y < 0.0 ? -1.0 : 1.0));
+float3 decode_oct(uint packed) { return decode_oct_normal(packed); }
+
+// Three int16 at `3 * delta` of a delta stream, read out of the 32-bit words that contain them —
+// the signed twin of `load_quantized_position`'s unpacking, and the reason both streams are
+// padded to an even count on the host.
+float3 load_morph_delta(uint64_t address, uint delta) {
+  uint* words = (uint*)address;
+  const uint i = delta * 3;
+  const uint w0 = words[i >> 1];
+  const uint w1 = words[(i + 1) >> 1];
+  const uint w2 = words[(i + 2) >> 1];
+  const uint x = (i & 1) != 0 ? (w0 >> 16) : (w0 & 0xffff);
+  const uint y = ((i + 1) & 1) != 0 ? (w1 >> 16) : (w1 & 0xffff);
+  const uint z = ((i + 2) & 1) != 0 ? (w2 >> 16) : (w2 & 0xffff);
+  return float3(float(int(x << 16) >> 16), float(int(y << 16) >> 16), float(int(z << 16) >> 16));
+}
+
+// One morph stage over one vertex: sum over the channels that touch this cluster of
+// weight x delta, added to the position and the normal in place.
+//
+// The scan is per **slice** and the lookup inside a slice is a binary search, because a slice's
+// local vertex indices are built in ascending order. That is the shape the cluster-ordered
+// directory was chosen for: a cluster no channel touches reads one word of the directory and
+// stops, and a cluster three channels touch costs three searches of about eight loads, not a
+// walk of the mesh's whole delta stream.
+//
+// `weight_base` is 0 for the static stage's half of `DeformDesc::weights` and `channel_count` for
+// the pose stage's, which is the only difference between the two.
+void morph_stage(uint cluster, uint local, DeformDesc deform, uint weight_base,
+                 inout float3 position, inout float3 normal) {
+  if (g_params.morph == 0 || deform.weights == 0 || deform.channel_count == 0) return;
+  MorphParams* morph = (MorphParams*)g_params.morph;
+  if (morph->directory == 0) return;
+  uint* directory = (uint*)morph->directory;
+  MorphSlice* slices = (MorphSlice*)morph->slices;
+  MorphChannel* channels = (MorphChannel*)morph->channels;
+  uint* indices = (uint*)morph->indices;
+  float* weights = (float*)deform.weights;
+  const uint lo = directory[cluster];
+  const uint hi = directory[cluster + 1];
+  for (uint s = lo; s < hi; ++s) {
+    const MorphSlice slice = slices[s];
+    if (slice.channel < deform.first_channel) continue;
+    const uint index = slice.channel - deform.first_channel;
+    if (index >= deform.channel_count) continue;
+    const float weight = weights[weight_base + index];
+    if (weight == 0.0) continue;
+    // Where `local` sits in this slice's ascending run of cluster-local vertex indices.
+    uint left = 0;
+    uint right = slice.delta_count;
+    while (left < right) {
+      const uint mid = (left + right) >> 1;
+      const uint at = slice.first_delta + mid;
+      const uint value = (indices[at >> 2] >> (8 * (at & 3))) & 0xffu;
+      if (value < local) {
+        left = mid + 1;
+      } else {
+        right = mid;
+      }
+    }
+    if (left >= slice.delta_count) continue;
+    const uint at = slice.first_delta + left;
+    if (((indices[at >> 2] >> (8 * (at & 3))) & 0xffu) != local) continue;
+    const MorphChannel channel = channels[slice.channel];
+    position += load_morph_delta(morph->deltas, at) * (channel.position_scale * weight);
+    if (morph->normal_deltas != 0 && channel.normal_scale > 0.0) {
+      normal += load_morph_delta(morph->normal_deltas, at) * (channel.normal_scale * weight);
+    }
   }
-  return normalize(n);
 }
 
 // The mesh's quantization box: origin and side, in the mesh's own space. geometry's
@@ -146,6 +236,30 @@ float3 deform_skin(MeshDesc mesh, DeformDesc deform, uint vertex, float3 rest) {
   return moved;
 }
 
+// The same blend applied to a **direction**: the matrices' upper-left 3x3 with no translation.
+// It is the rotation part of the skin rather than the inverse transpose, which is exact for the
+// rigid joints every skeleton has and differs only where a joint carries a non-uniform scale.
+// Nothing calls it unless the frame carries a normal pool, so no existing picture sees it.
+float3 skin_normal(MeshDesc mesh, DeformDesc deform, uint vertex, float3 rest) {
+  if (mesh.skin == 0 || deform.joints == 0 || deform.joint_count == 0) return rest;
+  SkinBinding* bindings = (SkinBinding*)mesh.skin;
+  const SkinBinding binding = bindings[vertex];
+  JointMatrix* matrices = (JointMatrix*)deform.joints;
+  const float4 direction = float4(rest, 0.0);
+  float3 moved = float3(0.0, 0.0, 0.0);
+  for (uint k = 0; k < 4; ++k) {
+    const uint weight = (binding.packed_weights >> (8 * k)) & 0xffu;
+    if (weight == 0) continue;
+    const uint joint = (binding.packed_joints >> (8 * k)) & 0xffu;
+    if (joint >= deform.joint_count) continue;
+    const JointMatrix m = matrices[joint];
+    const float3 turned = float3(dot(m.rows[0], direction), dot(m.rows[1], direction),
+                                 dot(m.rows[2], direction));
+    moved += turned * (float(weight) * (1.0 / 255.0));
+  }
+  return dot(moved, moved) > 1.0e-20 ? normalize(moved) : rest;
+}
+
 // Trilinear free-form deformation: the position's coordinates in the box weight the eight cells'
 // worth of control points. A quadratic Bezier would be smoother; trilinear is what a cage solver
 // hands a renderer, and it is what the transfer pass will read from a real one.
@@ -175,6 +289,66 @@ float3 deform_lattice(MeshDesc mesh, float3 p, float time, float amplitude) {
   return moved;
 }
 
+// The rest pose of one vertex and the normal a stage may need with it. `have_normal` is false
+// when the frame carries no attribute stream, and the caller then falls back to the radial
+// direction the `wave` stand-in used before attributes were passed.
+float3 rest_normal(MeshDesc mesh, uint vertex, float3 rest) {
+  if (g_params.attributes != 0) {
+    VertexAttributes* attributes = (VertexAttributes*)g_params.attributes;
+    return decode_oct(attributes[vertex].normal_oct);
+  }
+  const float3 centre = grid_origin(mesh) + float3(0.5 * grid_side(mesh));
+  const float3 radial = rest - centre;
+  const float len = length(radial);
+  return len > 1.0e-9 ? radial / len : float3(0.0, 1.0, 0.0);
+}
+
+// The chain over one vertex. Every stage is optional and the order is fixed; `stages` says which
+// ran, and the whole of the ordering argument is in this file's header and in gfx.md.
+void deform_vertex(MeshDesc mesh, DeformDesc deform, ClusterDesc cluster, uint cluster_index,
+                   uint local, out float3 position, out float3 normal) {
+  const uint stages = deform.stages;
+  const uint vertex = cluster.vertex_offset + local;
+  const bool cached = (stages & k_deform_stage_static) != 0 && deform.cache != 0 &&
+                      (stages & k_deform_stage_rebuild_cache) == 0;
+  if (cached) {
+    DeformCacheVertex* cache = (DeformCacheVertex*)deform.cache;
+    const DeformCacheVertex entry = cache[vertex - deform.first_vertex];
+    position = entry.position;
+    normal = decode_oct(entry.normal);
+  } else {
+    position = load_quantized_position(mesh, vertex);
+    normal = rest_normal(mesh, vertex, position);
+    // Stage 1. Skipped when the cache above already holds its result, which is the whole point
+    // of the cache: a body shape costs a dispatch when it is authored and nothing after that.
+    if ((stages & k_deform_stage_static) != 0) {
+      morph_stage(cluster_index, local, deform, 0, position, normal);
+      normal = normalize(normal);
+    }
+  }
+  // Stage 2.
+  if ((stages & k_deform_stage_pose) != 0) {
+    morph_stage(cluster_index, local, deform, deform.channel_count, position, normal);
+    normal = normalize(normal);
+  }
+  // Stage 3. The normal is turned by the same blend, which is exact for the rigid joints every
+  // skeleton has; it is computed only when the frame carries a normal pool to put it in.
+  if ((stages & k_deform_stage_skin) != 0) {
+    if (g_params.normal_pool != 0) normal = skin_normal(mesh, deform, vertex, normal);
+    position = deform_skin(mesh, deform, vertex, position);
+  }
+  // Stage 4, on the posed surface. `k_deform_identity` writes what it was handed, which is what
+  // proves a deformed instance and a rigid one draw the same picture.
+  if ((stages & k_deform_stage_procedural) != 0) {
+    const uint kind = stages & k_deform_kind_mask;
+    if (kind == k_deform_wave) {
+      position = deform_wave(mesh, position, normal, g_params.time, g_params.amplitude);
+    } else if (kind == k_deform_lattice) {
+      position = deform_lattice(mesh, position, g_params.time, g_params.amplitude);
+    }
+  }
+}
+
 [shader("compute")]
 [numthreads(128, 1, 1)]
 void deform_main(uint3 group : SV_GroupID, uint3 group_thread : SV_GroupThreadID) {
@@ -199,35 +373,55 @@ void deform_main(uint3 group : SV_GroupID, uint3 group_thread : SV_GroupThreadID
   const MeshDesc mesh = meshes[instance.mesh];
   ClusterDesc* clusters = (ClusterDesc*)g_params.clusters;
   const ClusterDesc cluster = clusters[pair.y];
-  const uint kind = deform.flags & k_deform_kind_mask;
 
-  VertexAttributes* attributes = (VertexAttributes*)g_params.attributes;
   float* pool = (float*)g_params.pool;
+  uint* normals = (uint*)g_params.normal_pool;
   for (uint i = group_thread.x; i < cluster.vertex_count; i += 128) {
-    const uint vertex = cluster.vertex_offset + i;
-    const float3 rest = load_quantized_position(mesh, vertex);
-    float3 moved = rest;
-    if (kind == k_deform_wave) {
-      float3 normal;
-      if (g_params.attributes != 0) {
-        normal = decode_oct(attributes[vertex].normal_oct);
-      } else {
-        const float3 centre = grid_origin(mesh) + float3(0.5 * grid_side(mesh));
-        const float3 radial = rest - centre;
-        const float len = length(radial);
-        normal = len > 1.0e-9 ? radial / len : float3(0.0, 1.0, 0.0);
-      }
-      moved = deform_wave(mesh, rest, normal, g_params.time, g_params.amplitude);
-    } else if (kind == k_deform_lattice) {
-      moved = deform_lattice(mesh, rest, g_params.time, g_params.amplitude);
-    } else if (kind == k_deform_skin) {
-      moved = deform_skin(mesh, deform, vertex, rest);
-    }
-    // k_deform_identity writes the rest pose, which is what makes a deformed instance and a
-    // rigid one draw the same picture.
+    float3 moved;
+    float3 normal;
+    deform_vertex(mesh, deform, cluster, pair.y, i, moved, normal);
     const uint slot = (base + i) * 3;
     pool[slot] = moved.x;
     pool[slot + 1] = moved.y;
     pool[slot + 2] = moved.z;
+    if (g_params.normal_pool != 0) normals[base + i] = encode_oct_normal(normal);
+  }
+}
+
+// **The static shape stage's cache, filled over the whole mesh.** One workgroup per cluster of
+// one instance's mesh — not per entry of the cut, because a cache the next frame's cut can start
+// from has to cover every cluster the cut might name.
+//
+// It reuses two fields of `DeformParams` with a different meaning, which is a thing to know
+// before reading the dispatch: `visible_offset` is the **instance** to rebuild and `max_entries`
+// is how many clusters its mesh has. The block is at the 128-byte limit the renderer allows, and
+// those two are the fields the cut dispatch uses for exactly the same two purposes.
+[shader("compute")]
+[numthreads(128, 1, 1)]
+void deform_cache_main(uint3 group : SV_GroupID, uint3 group_thread : SV_GroupThreadID) {
+  const uint local_cluster = group.x;
+  if (local_cluster >= g_params.max_entries) return;
+  InstanceDesc* instances = (InstanceDesc*)g_params.instances;
+  const InstanceDesc instance = instances[g_params.visible_offset];
+  if (instance.deform == k_invalid_deform) return;
+  DeformDesc* table = (DeformDesc*)g_params.deform;
+  const DeformDesc deform = table[instance.deform];
+  if (deform.cache == 0 || (deform.stages & k_deform_stage_static) == 0) return;
+  MeshDesc* meshes = (MeshDesc*)g_params.meshes;
+  const MeshDesc mesh = meshes[instance.mesh];
+  const uint cluster_index = mesh.first_cluster + local_cluster;
+  ClusterDesc* clusters = (ClusterDesc*)g_params.clusters;
+  const ClusterDesc cluster = clusters[cluster_index];
+
+  DeformCacheVertex* cache = (DeformCacheVertex*)deform.cache;
+  for (uint i = group_thread.x; i < cluster.vertex_count; i += 128) {
+    const uint vertex = cluster.vertex_offset + i;
+    float3 position = load_quantized_position(mesh, vertex);
+    float3 normal = rest_normal(mesh, vertex, position);
+    morph_stage(cluster_index, i, deform, 0, position, normal);
+    DeformCacheVertex entry;
+    entry.position = position;
+    entry.normal = encode_oct_normal(normalize(normal));
+    cache[vertex - deform.first_vertex] = entry;
   }
 }

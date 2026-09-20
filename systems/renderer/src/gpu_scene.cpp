@@ -160,7 +160,14 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
                            ? data_->parts[instance_table_[i].mesh + 1].first_vertex
                            : total_vertices;
       gfx::DeformDesc desc{};
-      desc.flags = instance_joints > 0 ? gfx::k_deform_skin : resolved.settings.deform_kind;
+      // The chain's stage mask. A skinned instance runs the skinning stage; a `--deform` one runs
+      // the procedural stage with the kind the flag named. They are separate bits, so an instance
+      // that is both runs both — which is the thing E25 said needed a wider field.
+      desc.stages =
+          (instance_joints > 0 ? gfx::k_deform_stage_skin : 0u) |
+          (resolved.settings.deform ? gfx::k_deform_stage_procedural | resolved.settings.deform_kind
+                                    : 0u);
+      desc.first_vertex = part.first_vertex;
       // `joints` and `joint_count` stay zero in the *static* table: they are what a frame fills
       // in, in its own copy. A frame that hands over no matrices therefore leaves the instance at
       // its rest pose rather than reading an address from a previous frame.

@@ -62,15 +62,46 @@ struct InstanceDesc {
   uint pad;
 };
 
-// Mirrors gfx::DeformDesc (16 bytes): one per deformed instance, read by the pool pass alone.
-// `joints` is per instance and `MeshDesc::skin` is per mesh, which is the split a crowd needs:
-// one binding stream, one array of bone matrices per character. Where in the pool the instance
-// writes is **not** here — the pool is suballocated per frame per visible entry, so that address
-// is `MeshDesc::deform_slots[entry]`.
+// Mirrors gfx::DeformDesc (48 bytes): one per deformed instance, read by the pool pass alone.
+// `stages` is a **mask** of the chain's stages plus the procedural kind, not an exclusive mode.
+// `joints` and `weights` are per instance and `MeshDesc::skin` is per mesh, which is the split a
+// crowd needs: one binding stream, one array of bone matrices and one of weights per character.
+// Where in the pool the instance writes is **not** here — the pool is suballocated per frame per
+// visible entry, so that address is `MeshDesc::deform_slots[entry]`.
 struct DeformDesc {
-  uint flags;        // which deformer: k_deform_*
-  uint joint_count;  // the bone-matrix array's length; 0 leaves a skinned instance at rest
-  uint64_t joints;   // JointMatrix[joint_count], or 0
+  uint stages;         // k_deform_stage_* | the procedural kind in k_deform_kind_mask
+  uint joint_count;    // the bone-matrix array's length; 0 leaves a skinned instance at rest
+  uint first_channel;  // this mesh's first entry of the scene's morph channel array
+  uint channel_count;  // the width of `weights`' two halves
+  uint first_vertex;   // this mesh's first scene-wide vertex: what indexes `cache`
+  uint pad;
+  uint64_t joints;    // JointMatrix[joint_count], or 0
+  uint64_t weights;   // float[2 * channel_count]: static weights then pose weights
+  uint64_t cache;     // float3 per mesh vertex: the static stage's kept result, or 0
+};
+
+// Mirrors geometry::MorphChannel (16 bytes).
+struct MorphChannel {
+  float position_scale;
+  float normal_scale;    // 0: this channel carries no normal deltas
+  float max_displacement;
+  float default_weight;
+};
+
+// Mirrors geometry::MorphSlice (12 bytes): one channel's run of deltas inside one cluster.
+struct MorphSlice {
+  uint channel;
+  uint first_delta;
+  uint delta_count;
+};
+
+// Mirrors gfx::DeformCacheVertex (16 bytes): what the static shape stage keeps between frames,
+// one per vertex of the instance's mesh. The normal is in it because a cache of positions alone
+// would leave the stage's morph scan running every frame for the normals, which is the cost the
+// cache exists to remove.
+struct DeformCacheVertex {
+  float3 position;
+  uint normal;  // octahedral, geometry::encode_normal_oct's packing
 };
 
 // Mirrors geometry::SkinBinding (8 bytes): four u8 joint indices then four u8 weights summing to
@@ -143,8 +174,13 @@ static const uint k_no_pool_slot = 0xffffffffu;
 static const uint k_deform_identity = 0u;
 static const uint k_deform_wave = 1u;
 static const uint k_deform_lattice = 2u;
-static const uint k_deform_skin = 3u;
 static const uint k_deform_kind_mask = 3u;
+// The chain's stages (gfx::k_deform_stage_*), run in this order and never in another.
+static const uint k_deform_stage_static = 0x100u;
+static const uint k_deform_stage_pose = 0x200u;
+static const uint k_deform_stage_skin = 0x400u;
+static const uint k_deform_stage_procedural = 0x800u;
+static const uint k_deform_stage_rebuild_cache = 0x1000u;
 
 // The rest pose: three u16 at 3 * vertex of the mesh's grid, read as the 32-bit words that
 // contain them. The stream is padded to an even u16 count on the CPU, so the last word read is
@@ -193,6 +229,42 @@ float3 load_position(MeshDesc mesh, uint base, uint first, uint local) {
     return float3(pool[slot], pool[slot + 1], pool[slot + 2]);
   }
   return load_quantized_position(mesh, first + local);
+}
+
+// The octahedral normal packing, the inverse of geometry::encode_normal_oct / decode_normal_oct.
+// It is here rather than in the two files that want it because the deform chain **writes** the
+// packing the resolve **reads**, and a pair of encoders in two files is a pair that can drift.
+// `material.slang` keeps its own decoder for the rest attribute stream, deliberately untouched:
+// that one is on the path of every existing picture.
+float3 decode_oct_normal(uint packed) {
+  const float x = float(int(packed << 16) >> 16) / 32767.0;
+  const float y = float(int(packed) >> 16) / 32767.0;
+  float3 n = float3(x, y, 1.0 - abs(x) - abs(y));
+  if (n.z < 0.0) {
+    n.xy = float2((1.0 - abs(y)) * (x < 0.0 ? -1.0 : 1.0), (1.0 - abs(x)) * (y < 0.0 ? -1.0 : 1.0));
+  }
+  return normalize(n);
+}
+
+uint encode_oct_normal(float3 n) {
+  const float l1 = abs(n.x) + abs(n.y) + abs(n.z);
+  float2 p = l1 > 0.0 ? n.xy / l1 : float2(0.0, 0.0);
+  if (n.z < 0.0) {
+    p = float2((1.0 - abs(p.y)) * (p.x < 0.0 ? -1.0 : 1.0),
+               (1.0 - abs(p.x)) * (p.y < 0.0 ? -1.0 : 1.0));
+  }
+  const int x = int(round(clamp(p.x, -1.0, 1.0) * 32767.0));
+  const int y = int(round(clamp(p.y, -1.0, 1.0) * 32767.0));
+  return (uint(x) & 0xffffu) | ((uint(y) & 0xffffu) << 16);
+}
+
+// The deformed shading normal of pool vertex `base + local`, or the rest one when this frame
+// carries no normal pool or this entry has no block. `normal_pool` is `ResolveParams::normal_pool`
+// or `DeformParams::normal_pool`; both are the same array.
+float3 load_pool_normal(uint64_t normal_pool, uint base, uint local, float3 rest) {
+  if (normal_pool == 0 || base == k_no_pool_slot) return rest;
+  uint* packed = (uint*)normal_pool;
+  return decode_oct_normal(packed[base + local]);
 }
 
 // Entry `index` of the visible list. A null list is the identity scene the direct draws use:

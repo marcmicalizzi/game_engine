@@ -85,6 +85,8 @@ struct ResolveParams {
   uint64_t coverage;    // uint[] per 32x32 tile of this view's region; 0: no mask, read every word
   uint coverage_pitch;  // tiles per row of that mask
   uint pad2;
+  uint64_t normal_pool;  // deformed normals, parallel to the deformed-vertex pool; 0 for none
+  uint64_t pad3;
 };
 
 struct ResolvePush {
@@ -140,6 +142,7 @@ SceneGeometry geometry_of(ResolveParams* params) {
   geo.materials = params->materials;
   geo.cluster_materials = params->cluster_materials;
   geo.visible = params->visible;
+  geo.normal_pool = params->normal_pool;
   return geo;
 }
 

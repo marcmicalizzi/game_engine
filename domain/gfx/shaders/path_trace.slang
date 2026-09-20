@@ -85,6 +85,10 @@ SceneGeometry geometry_of(PathTraceParams* params) {
   geo.materials = params->materials;
   geo.cluster_materials = params->cluster_materials;
   geo.visible = params->visible;
+  // The reference tracer has no deformed normal pool of its own: it traces the frame's own
+  // structures, but it is a *reference*, and a morphed scene's comparison against it is the next
+  // step rather than this one.
+  geo.normal_pool = 0;
   return geo;
 }
 
