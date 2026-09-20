@@ -958,6 +958,16 @@ void GpuScene::destroy() noexcept {
   gfx::destroy_buffer(device, page_of_cluster);
   gfx::destroy_buffer(device, page_table);
   gfx::destroy_buffer(device, deform_frames);
+  gfx::destroy_buffer(device, morph_channels);
+  gfx::destroy_buffer(device, morph_directory);
+  gfx::destroy_buffer(device, morph_slices);
+  gfx::destroy_buffer(device, morph_indices);
+  gfx::destroy_buffer(device, morph_deltas);
+  gfx::destroy_buffer(device, morph_normals);
+  gfx::destroy_buffer(device, morph_params);
+  gfx::destroy_buffer(device, morph_weights);
+  gfx::destroy_buffer(device, deform_normals);
+  gfx::destroy_buffer(device, static_cache);
   gfx::destroy_buffer(device, joints);
   gfx::destroy_buffer(device, deform_args);
   gfx::destroy_buffer(device, deform_table);
@@ -996,6 +1006,10 @@ void GpuScene::destroy() noexcept {
   instance_table_.clear();
   deform_descs_.clear();
   deform_instance_.clear();
+  deform_mesh_clusters_.clear();
+  morph_channel_count_ = static_cached_instances_ = 0;
+  static_cache_bytes_ = 0;
+  static_cache_dirty_ = false;
   device_ = nullptr;
   data_ = nullptr;
   cluster_count_ = leaf_count_ = instance_count_ = pair_count_ = material_count_ = 0;

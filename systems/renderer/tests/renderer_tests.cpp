@@ -14,6 +14,7 @@
 #include <core/math/math.h>
 #include <domain/anim/skeleton.h>
 #include <domain/geometry/cluster_lod.h>
+#include <domain/geometry/stress_mesh.h>
 #include <domain/gfx/device.h>
 #include <systems/renderer/capture.h>
 #include <systems/renderer/gpu_scene.h>
@@ -1157,6 +1158,167 @@ TEST_CASE("renderer: a skinned instance at the bind pose draws the unskinned pic
                                       << " id words differ, worst depth " << worst_depth);
   CHECK(id_differences == 0);
   CHECK(worst_depth <= 2.0e-7f);
+}
+
+// ---- morph channels, end to end ----------------------------------------------------------------
+//
+// The GPU chain itself is `domain/gfx`'s to check against a CPU reference; what is this module's
+// is the wiring — the stream uploaded once per scene, the two halves of the weights array, the
+// budgeted static cache, the normal pool reaching the resolve, and the bound the cull pass
+// inflates by. Three properties cover it, and the first is the one that matters most: **a morphed
+// mesh at weight zero draws the picture the same mesh with no channels draws**, because if it does
+// not, every existing picture of every other scene is in question too.
+namespace {
+
+// The morph sphere of `geometry::stress_mesh.h` as a `SceneData`, the way `make_bar_scene` does
+// it for the skinned bar: one part, one source with one material, one instance.
+bool make_morph_scene(const geometry::MorphFixtureMesh& source, bool with_channels, SceneData& out,
+                      std::string& error) {
+  geometry::AttributeSource attributes;
+  attributes.normals = std::span<const Vec3>(source.normals.data(), source.normals.size());
+  attributes.uvs = std::span<const Vec2>(source.uvs.data(), source.uvs.size());
+  if (with_channels) {
+    attributes.morph =
+        std::span<const geometry::MorphChannelSource>(source.morph.data(), source.morph.size());
+  }
+  if (!geometry::build_cluster_lod(
+          std::span<const Vec3>(source.positions.data(), source.positions.size()),
+          std::span<const u32>(source.indices.data(), source.indices.size()),
+          geometry::ClusterLodOptions{}, out.lod, &error, attributes)) {
+    return false;
+  }
+  geometry::ClusterMeshPart part;
+  part.cluster_count = out.lod.mesh.clusters.size();
+  part.leaf_cluster_count = out.lod.level_cluster_counts[0];
+  part.quant_origin = out.lod.mesh.quant_origin;
+  part.quant_scale = out.lod.mesh.quant_scale;
+  part.morph_channel_count = out.lod.mesh.morph_channels.size();
+  out.parts.push_back(part);
+  SourceMesh mesh_source;
+  mesh_source.part_material.push_back(-1);
+  mesh_source.part_of_cluster.resize(part.cluster_count, 0u);
+  out.sources.push_back(std::move(mesh_source));
+  gfx::InstanceDesc instance{};
+  gfx::set_instance_transform(instance, Mat4::identity());
+  instance.first_pair = 0;
+  out.pair_count = part.cluster_count;
+  out.instances.push_back(instance);
+  out.instance_joints.push_back(0u);
+  update_scene_bounds(out);
+  return true;
+}
+
+geometry::MorphFixtureOptions morph_rig() {
+  geometry::MorphFixtureOptions options;
+  options.segments = 48;
+  options.rings = 24;
+  options.channels = 4;
+  options.falloff = 0.4f;
+  options.amplitude = 0.25f;  // large, so a weight of 1 is unmistakable in the picture
+  return options;
+}
+
+}  // namespace
+
+TEST_CASE("renderer: a morphed mesh at weight zero draws the unmorphed picture, and moves at one") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("renderer unavailable here: " << gpu.why);
+    return;
+  }
+  geometry::MorphFixtureMesh source;
+  geometry::build_morph_sphere(morph_rig(), source);
+  constexpr u32 k_width = 220;
+  constexpr u32 k_height = 220;
+
+  Rig plain;
+  REQUIRE_MESSAGE(make_morph_scene(source, false, plain.data, plain.error), plain.error);
+  REQUIRE_MESSAGE(plain.finish(gpu.device, RenderSettings{}, k_width, k_height), plain.error);
+  CHECK_FALSE(plain.data.morphed());
+  CHECK_FALSE(plain.resolved.deform_pass);  // nothing deforms, so no pool at all
+
+  RenderSettings rest;
+  Rig zero;
+  REQUIRE_MESSAGE(make_morph_scene(source, true, zero.data, zero.error), zero.error);
+  REQUIRE_MESSAGE(zero.finish(gpu.device, rest, k_width, k_height), zero.error);
+  CHECK(zero.data.morphed());
+  CHECK(zero.scene.morphed());
+  CHECK(zero.scene.morph_channel_count() == 4);
+  // A morphed mesh is deformed whatever the flags say, exactly as a skinned one is.
+  CHECK(zero.resolved.deform_pass);
+  CHECK(zero.scene.static_cached_instances() == 1);
+  CHECK(zero.scene.static_cache_bytes() ==
+        u64{zero.data.lod.mesh.vertices.size()} * sizeof(gfx::DeformCacheVertex));
+
+  CaptureChannels channels;
+  channels.ids = true;
+  std::string error;
+  FrameDesc frame;
+  frame.camera =
+      orbit_camera_at(plain.data.center, plain.data.radius, 6.0f, radians(90.0f), k_orbit_pitch);
+  CapturedFrame unmorphed;
+  CapturedFrame at_zero;
+  REQUIRE_MESSAGE(plain.renderer.capture(frame, channels, unmorphed, &error), error);
+  REQUIRE_MESSAGE(zero.renderer.capture(frame, channels, at_zero, &error), error);
+
+  // Property one: at weight zero the chain writes the rest position into the pool and the normal
+  // pool holds the rest normal, so the two pictures name the same surface everywhere.
+  u32 plain_covered = 0;
+  u32 zero_covered = 0;
+  covered_rect(unmorphed, plain_covered);
+  covered_rect(at_zero, zero_covered);
+  CHECK(plain_covered > 2000);
+  CHECK(zero_covered == plain_covered);
+  u64 id_differences = 0;
+  for (u32 p = 0; p < k_width * k_height * k_id_words; ++p) {
+    if (unmorphed.ids[p] != at_zero.ids[p]) ++id_differences;
+  }
+  MESSAGE("morph at weight 0 against no channels: " << plain_covered << " covered pixels, "
+                                                    << id_differences << " id words differ");
+  CHECK(id_differences == 0);
+
+  // Property two: a static weight moves the surface, and the cache is what holds it. The scene is
+  // rebuilt rather than re-weighted because the weights are the *scene's* — which is the whole
+  // difference between the static stage and the pose stage.
+  RenderSettings played;
+  played.morph_static_weights.resize(4, 0.0f);
+  played.morph_static_weights[0] = 1.0f;
+  played.morph_static_weights[2] = 1.0f;
+  Rig shaped;
+  REQUIRE_MESSAGE(make_morph_scene(source, true, shaped.data, shaped.error), shaped.error);
+  REQUIRE_MESSAGE(shaped.finish(gpu.device, played, k_width, k_height), shaped.error);
+  // The cull pass has to be told the surface left its rest bounds, or a channel that pushes a
+  // cluster outward is culled while it is on screen.
+  CHECK(shaped.data.instances[0].bounds_padding == 0.0f);  // the caller's; the scene adds its own
+  CHECK(shaped.scene.static_cache_bytes() > 0);
+  CapturedFrame at_one;
+  REQUIRE_MESSAGE(shaped.renderer.capture(frame, channels, at_one, &error), error);
+  u32 shaped_covered = 0;
+  covered_rect(at_one, shaped_covered);
+  u64 moved = 0;
+  for (u32 p = 0; p < k_width * k_height * k_id_words; ++p) {
+    if (at_zero.ids[p] != at_one.ids[p]) ++moved;
+  }
+  MESSAGE("two channels at weight 1: " << shaped_covered << " covered pixels, " << moved
+                                       << " id words differ from the rest shape");
+  CHECK(moved > 200);
+
+  // Property three: the **pose** stage moves it too, from a frame's span, with the scene's static
+  // weights left where they were. One frame at zero and one at one, same scene.
+  Vector<f32> pose(4, 0.0f);
+  FrameDesc posed = frame;
+  posed.morph_weights = {pose.data(), pose.size()};
+  CapturedFrame pose_zero;
+  REQUIRE_MESSAGE(zero.renderer.capture(posed, channels, pose_zero, &error), error);
+  pose[1] = 1.0f;
+  CapturedFrame pose_one;
+  REQUIRE_MESSAGE(zero.renderer.capture(posed, channels, pose_one, &error), error);
+  u64 pose_moved = 0;
+  for (u32 p = 0; p < k_width * k_height * k_id_words; ++p) {
+    if (pose_zero.ids[p] != pose_one.ids[p]) ++pose_moved;
+  }
+  MESSAGE("one pose channel at weight 1: " << pose_moved << " id words differ");
+  CHECK(pose_moved > 100);
 }
 
 // ---- the deformed-vertex pool's per-frame suballocation -----------------------------------------
