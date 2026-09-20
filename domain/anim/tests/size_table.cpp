@@ -17,6 +17,13 @@ ENGINE_EXPECT_SIZE(48, 4, anim::JointMatrix);
 // are walked in order while sampling.
 ENGINE_EXPECT_SIZE(20, 4, anim::Track);
 
+// One record per morph weight track. It is its own record rather than a fourth `Track` channel
+// because a weight key is `channel_count` floats wide — as wide as the rig — and neither the
+// `joint` field nor the one-byte `components` field could carry that; sharing `Clip::times` and
+// `Clip::values` is what keeps a clip two arrays either way. A face rig has a handful of these
+// against hundreds of `Track`s, so 24 bytes buys clarity at no measurable footprint.
+ENGINE_EXPECT_SIZE(24, 4, anim::WeightTrack);
+
 // The per-joint offsets of a retarget, one per target joint: a source index, the source's bind
 // rotation inverse and translation, and the target's own bind transform.
 ENGINE_EXPECT_SIZE(72, 4, anim::RetargetJoint);

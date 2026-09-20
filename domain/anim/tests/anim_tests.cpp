@@ -210,6 +210,58 @@ TEST_CASE("anim clip: a track that does not add up is refused") {
   CHECK(error.find("rotation") != std::string::npos);
 }
 
+TEST_CASE("anim clip: morph weight tracks sample beside the pose and write only what they drive") {
+  const Skeleton skeleton = two_bone();
+  Clip clip;
+  clip.joint_count = skeleton.joint_count();
+  // One track over two channels — which is what glTF writes, one SCALAR sampler for a whole
+  // mesh's targets — starting at channel 1, so channel 0 is one nothing animates.
+  const f32 times[3] = {0.0f, 1.0f, 2.0f};
+  const f32 weights[6] = {0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 0.5f};
+  REQUIRE(clip.add_weight_track(1, 2, k_interp_linear, times, weights));
+  CHECK(clip.morph_count == 3);
+  CHECK(clip.duration == doctest::Approx(2.0f));
+  // A joint track beside it, so the one walk really does both.
+  const f32 translations[6] = {0, 0, 0, 0, 4, 0};
+  const f32 two_times[2] = {0.0f, 2.0f};
+  REQUIRE(clip.add_track(1, k_channel_translation, k_interp_linear, 3, two_times, translations));
+  std::string error;
+  REQUIRE_MESSAGE(clip.validate(&error), error);
+
+  Pose pose;
+  pose.resize(skeleton.joint_count());
+  rest_pose(skeleton, pose);
+  f32 played[3] = {0.25f, -1.0f, -1.0f};  // channel 0 is the caller's default and must survive
+  clip.sample(0.0f, pose, std::span<f32>(played, 3), false);
+  CHECK(played[0] == doctest::Approx(0.25f));
+  CHECK(played[1] == doctest::Approx(0.0f));
+  CHECK(played[2] == doctest::Approx(1.0f));
+  CHECK(near(pose.translation[1], Vec3{0, 0, 0}));
+
+  clip.sample(0.5f, pose, std::span<f32>(played, 3), false);
+  CHECK(played[1] == doctest::Approx(0.5f));
+  CHECK(played[2] == doctest::Approx(0.5f));
+  CHECK(near(pose.translation[1], Vec3{0, 1, 0}));
+
+  clip.sample(2.0f, pose, std::span<f32>(played, 3), false);
+  CHECK(played[1] == doctest::Approx(0.0f));
+  CHECK(played[2] == doctest::Approx(0.5f));
+
+  // A span shorter than the track takes the part that fits rather than writing past the end.
+  f32 narrow[2] = {0.0f, 0.0f};
+  clip.sample_weights(1.0f, std::span<f32>(narrow, 2), false);
+  CHECK(narrow[0] == doctest::Approx(0.0f));
+  CHECK(narrow[1] == doctest::Approx(1.0f));
+
+  // And what the validator refuses.
+  Clip bad = clip;
+  bad.morph_count = 1;
+  CHECK_FALSE(bad.validate(&error));
+  CHECK(error.find("morph channels outside") != std::string::npos);
+  const f32 short_values[3] = {0, 0, 0};
+  CHECK_FALSE(clip.add_weight_track(0, 2, k_interp_linear, times, short_values));
+}
+
 TEST_CASE("anim blending: the two ends are exact, and an additive layer round-trips") {
   const Skeleton skeleton = two_bone();
   Pose a;

@@ -219,6 +219,21 @@ bool Library::add(const assets::MeshData& mesh, std::string_view prefix, LoadSta
         ++local.skipped_channels;
         continue;
       }
+      // A **weights** channel is not per joint: it drives a run of the mesh's morph channels, so
+      // it becomes a `WeightTrack` rather than being matched against the skeleton at all. That
+      // also means a clip may consist of nothing but weight tracks — a facial performance over a
+      // body pose another clip owns — which is why the "no tracks" test below looks at both.
+      if (channel.path == assets::k_path_weights) {
+        const assets::AnimationSampler& sampler = animation.samplers[channel.sampler];
+        if (!asset.clip.add_weight_track(
+                channel.morph_channel, sampler.components, sampler.interpolation,
+                std::span<const f32>(sampler.times.data(), sampler.times.size()),
+                std::span<const f32>(sampler.values.data(), sampler.values.size()))) {
+          return fail(error, "animation: clip '" + asset.name + "' has a weight track whose keys " +
+                                 "and values do not agree");
+        }
+        continue;
+      }
       const i32 joint = to_joint[static_cast<u32>(channel.node)];
       if (joint == anim::k_no_joint) {
         ++local.skipped_channels;
@@ -233,7 +248,7 @@ bool Library::add(const assets::MeshData& mesh, std::string_view prefix, LoadSta
                                "values do not agree");
       }
     }
-    if (asset.clip.tracks.empty()) continue;
+    if (asset.clip.tracks.empty() && asset.clip.weight_tracks.empty()) continue;
     if (animation.duration > asset.clip.duration) asset.clip.duration = animation.duration;
     if (!asset.clip.validate(error)) return false;
     add_clip(std::move(asset));

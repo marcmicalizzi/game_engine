@@ -38,7 +38,33 @@ struct SkinnedGlbOptions {
   bool weights_u8 = false;          // WEIGHTS_0 as normalized UNSIGNED_BYTE rather than float
   bool joint_out_of_range = false;  // one vertex names joint 9 of a two-joint skin
   u32 extra_joints = 0;             // pad the skin out to more joints than a u8 index holds
+  // Two morph targets on the bar's primitive, named through `extras.targetNames`, with default
+  // weights and a `weights` animation channel — so one fixture covers a mesh that is skinned
+  // *and* morphed, which is the case the deform chain's order exists for.
+  bool morph_targets = false;
 };
+
+// The two morph targets the fixture writes, in the file's vertex order. `bulge` pushes the middle
+// row out along +z with a normal to match; `taper` pulls the top row in along x and leaves the
+// normals alone, so one channel has NORMAL deltas and the other does not — which is the case the
+// stream's "one parallel array or none" rule has to handle.
+inline const Vec3* bar_bulge_deltas() noexcept {
+  static const Vec3 k_deltas[6] = {{0, 0, 0},    {0, 0, 0}, {0, 0, 0.5f},
+                                   {0, 0, 0.5f}, {0, 0, 0}, {0, 0, 0}};
+  return k_deltas;
+}
+
+inline const Vec3* bar_bulge_normal_deltas() noexcept {
+  static const Vec3 k_deltas[6] = {{0, 0, 0},     {0, 0, 0}, {0, -0.3f, 0},
+                                   {0, -0.3f, 0}, {0, 0, 0}, {0, 0, 0}};
+  return k_deltas;
+}
+
+inline const Vec3* bar_taper_deltas() noexcept {
+  static const Vec3 k_deltas[6] = {{0, 0, 0}, {0, 0, 0},     {0, 0, 0},
+                                   {0, 0, 0}, {0.25f, 0, 0}, {-0.25f, 0, 0}};
+  return k_deltas;
+}
 
 inline void put_u32(std::vector<u8>& out, u32 v) {
   for (u32 i = 0; i < 4; ++i)
@@ -166,6 +192,44 @@ inline bool write_skinned_glb(const std::string& path, const SkinnedGlbOptions& 
   const f32 scales[18] = {0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 2, 2, 2, 0, 0, 0};
   for (const f32 v : scales)
     put_f32(bin, v);
+  // The morph targets and the weight track, only when they are asked for, so the fixture's
+  // accessor and buffer-view numbering is the one it always had for every other case.
+  u32 bulge_offset = 0;
+  u32 bulge_normal_offset = 0;
+  u32 taper_offset = 0;
+  u32 weight_time_offset = 0;
+  u32 weight_value_offset = 0;
+  if (options.morph_targets) {
+    bulge_offset = static_cast<u32>(bin.size());
+    for (u32 v = 0; v < 6; ++v) {
+      const Vec3 d = bar_bulge_deltas()[v];
+      put_f32(bin, d.x);
+      put_f32(bin, d.y);
+      put_f32(bin, d.z);
+    }
+    bulge_normal_offset = static_cast<u32>(bin.size());
+    for (u32 v = 0; v < 6; ++v) {
+      const Vec3 d = bar_bulge_normal_deltas()[v];
+      put_f32(bin, d.x);
+      put_f32(bin, d.y);
+      put_f32(bin, d.z);
+    }
+    taper_offset = static_cast<u32>(bin.size());
+    for (u32 v = 0; v < 6; ++v) {
+      const Vec3 d = bar_taper_deltas()[v];
+      put_f32(bin, d.x);
+      put_f32(bin, d.y);
+      put_f32(bin, d.z);
+    }
+    // Two keys, two targets per key: both off at t = 0, bulge full and taper half at t = 1.
+    weight_time_offset = static_cast<u32>(bin.size());
+    put_f32(bin, 0.0f);
+    put_f32(bin, 1.0f);
+    weight_value_offset = static_cast<u32>(bin.size());
+    const f32 track[4] = {0.0f, 0.0f, 1.0f, 0.5f};
+    for (const f32 v : track)
+      put_f32(bin, v);
+  }
   const u32 bin_bytes = static_cast<u32>(bin.size());
 
   const std::string joint_component = options.joints_u16 ? "5123" : "5121";
@@ -200,21 +264,42 @@ inline bool write_skinned_glb(const std::string& path, const SkinnedGlbOptions& 
   json += "],";
   json += "\"skins\":[{\"name\":\"bar_skin\",\"joints\":[1,2" + extra_joint_list +
           "],\"skeleton\":1" + inverse_bind + "}],";
+  const std::string targets =
+      options.morph_targets
+          ? std::string(",\"targets\":[{\"POSITION\":13,\"NORMAL\":14},{\"POSITION\":15}]")
+          : std::string();
+  const std::string mesh_extras =
+      options.morph_targets
+          ? std::string(",\"weights\":[0.25,0],\"extras\":{\"targetNames\":[\"bulge\",\"taper\"]}")
+          : std::string();
   json +=
-      "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0,\"NORMAL\":1,"
-      "\"TEXCOORD_0\":2,\"JOINTS_0\":3,\"WEIGHTS_0\":4},\"indices\":5,\"material\":0}]}],";
+      "\"meshes\":[{\"name\":\"bar_mesh\",\"primitives\":[{\"attributes\":{\"POSITION\":0,"
+      "\"NORMAL\":1,\"TEXCOORD_0\":2,\"JOINTS_0\":3,\"WEIGHTS_0\":4},\"indices\":5,"
+      "\"material\":0" +
+      targets + "}]" + mesh_extras + "}],";
   json +=
       "\"materials\":[{\"name\":\"bar_material\",\"pbrMetallicRoughness\":{"
       "\"baseColorFactor\":[0.8,0.8,0.8,1],\"metallicFactor\":0,\"roughnessFactor\":0.6}}],";
+  const std::string weight_sampler =
+      options.morph_targets
+          ? std::string(",{\"input\":16,\"output\":17,\"interpolation\":\"LINEAR\"}")
+          : std::string();
+  const std::string weight_channel =
+      options.morph_targets
+          ? std::string(",{\"sampler\":3,\"target\":{\"node\":3,\"path\":\"weights\"}}")
+          : std::string();
   json +=
       "\"animations\":[{\"name\":\"wave\",\"samplers\":["
       "{\"input\":7,\"output\":8,\"interpolation\":\"LINEAR\"},"
       "{\"input\":9,\"output\":10,\"interpolation\":\"STEP\"},"
-      "{\"input\":11,\"output\":12,\"interpolation\":\"CUBICSPLINE\"}],"
+      "{\"input\":11,\"output\":12,\"interpolation\":\"CUBICSPLINE\"}" +
+      weight_sampler +
+      "],"
       "\"channels\":["
       "{\"sampler\":0,\"target\":{\"node\":2,\"path\":\"rotation\"}},"
       "{\"sampler\":1,\"target\":{\"node\":1,\"path\":\"translation\"}},"
-      "{\"sampler\":2,\"target\":{\"node\":1,\"path\":\"scale\"}}]}],";
+      "{\"sampler\":2,\"target\":{\"node\":1,\"path\":\"scale\"}}" +
+      weight_channel + "]}],";
   json += "\"accessors\":[";
   json +=
       "{\"bufferView\":0,\"componentType\":5126,\"count\":6,\"type\":\"VEC3\","
@@ -238,7 +323,19 @@ inline bool write_skinned_glb(const std::string& path, const SkinnedGlbOptions& 
   json +=
       "{\"bufferView\":11,\"componentType\":5126,\"count\":2,\"type\":\"SCALAR\","
       "\"min\":[0],\"max\":[1]},";
-  json += "{\"bufferView\":12,\"componentType\":5126,\"count\":6,\"type\":\"VEC3\"}],";
+  json += "{\"bufferView\":12,\"componentType\":5126,\"count\":6,\"type\":\"VEC3\"}";
+  if (options.morph_targets) {
+    json += ",{\"bufferView\":13,\"componentType\":5126,\"count\":6,\"type\":\"VEC3\"}";
+    json += ",{\"bufferView\":14,\"componentType\":5126,\"count\":6,\"type\":\"VEC3\"}";
+    json += ",{\"bufferView\":15,\"componentType\":5126,\"count\":6,\"type\":\"VEC3\"}";
+    // The taper target has no NORMAL accessor at all, which is the mixed case the stream's
+    // "one parallel normal array or none" rule has to answer for.
+    json +=
+        ",{\"bufferView\":16,\"componentType\":5126,\"count\":2,\"type\":\"SCALAR\","
+        "\"min\":[0],\"max\":[1]}";
+    json += ",{\"bufferView\":17,\"componentType\":5126,\"count\":4,\"type\":\"SCALAR\"}";
+  }
+  json += "],";
 
   auto view = [](u32 offset, u32 bytes) {
     return "{\"buffer\":0,\"byteOffset\":" + n(offset) + ",\"byteLength\":" + n(bytes) + "}";
@@ -257,6 +354,13 @@ inline bool write_skinned_glb(const std::string& path, const SkinnedGlbOptions& 
   json += view(translation_value_offset, 2 * 12) + ",";
   json += view(scale_time_offset, 2 * 4) + ",";
   json += view(scale_value_offset, 6 * 12);
+  if (options.morph_targets) {
+    json += "," + view(bulge_offset, 6 * 12);
+    json += "," + view(bulge_normal_offset, 6 * 12);
+    json += "," + view(taper_offset, 6 * 12);
+    json += "," + view(weight_time_offset, 2 * 4);
+    json += "," + view(weight_value_offset, 4 * 4);
+  }
   json += "],\"buffers\":[{\"byteLength\":" + n(bin_bytes) + "}]}";
   while (json.size() % 4 != 0)
     json += ' ';

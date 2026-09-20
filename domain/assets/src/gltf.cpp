@@ -243,6 +243,14 @@ struct Context {
   Vector<f32> floats;       // scratch for one attribute accessor
   Vector<f32> more_floats;  // scratch for a second accessor read alongside the first
   Vector<u32> widened;      // scratch for one index accessor
+  // Morph targets. `morph_of_mesh[m]` is where glTF mesh m's channels start in `MeshData::morph`,
+  // or ~0u when that mesh has none or has not been reached yet: within a mesh, target k of every
+  // primitive is one channel, and two different meshes' targets are unrelated even where they
+  // share a name, so the flatten cannot merge them.
+  Vector<u32> morph_of_mesh;
+  Vector<Vec3> local_normals;   // this primitive's NORMAL before the node transform
+  Vector<Vec3> target_deltas;   // scratch for one target's POSITION deltas
+  Vector<Vec3> target_normals;  // scratch for one target's NORMAL deltas
 };
 
 bool read_attribute(Context& ctx, const cgltf_accessor& accessor, u32 components,
@@ -294,8 +302,103 @@ bool append_skin_bindings(Context& ctx, const cgltf_primitive& primitive, u32 ba
   return true;
 }
 
+// The morph targets of one primitive into the channels its **mesh** owns, which the caller has
+// already created. A target's POSITION deltas are directions, so a rigid primitive's node
+// transform reaches them through its linear part alone; a skinned primitive's vertices were left
+// in bind space, and so are its deltas. A NORMAL delta is a *difference of two unit vectors*, so
+// it cannot be transformed on its own: it is recomputed as the world normal of the displaced
+// surface minus the world rest normal, which is why the primitive's own untransformed normals are
+// kept beside it.
+//
+// A delta is kept only when it survives the stream's own 16-bit quantization — at least half a
+// step in some component — so the sparsity is lossless with respect to what would be stored
+// anyway rather than a second, invisible tolerance. The step is the channel's own peak over
+// 32767, and both halves of that are computed here, over this primitive's share of the channel.
+bool append_morph_targets(Context& ctx, const cgltf_primitive& primitive, u32 base, u32 vertices,
+                          const Mat4& world, const Mat4& normal_transform, u32 channel_base) {
+  MeshData& out = *ctx.mesh;
+  const bool have_normals = ctx.local_normals.size() == vertices;
+  for (cgltf_size t = 0; t < primitive.targets_count; ++t) {
+    const cgltf_morph_target& target = primitive.targets[t];
+    const cgltf_accessor* positions = nullptr;
+    const cgltf_accessor* normals = nullptr;
+    for (cgltf_size a = 0; a < target.attributes_count; ++a) {
+      const cgltf_attribute& attribute = target.attributes[a];
+      if (attribute.type == cgltf_attribute_type_position) positions = attribute.data;
+      if (attribute.type == cgltf_attribute_type_normal) normals = attribute.data;
+    }
+    if (positions == nullptr) continue;  // a target that moves only tangents moves nothing here
+    if (positions->count != vertices)
+      return fail(ctx.error, "glTF: a morph target's POSITION count differs from the primitive's");
+    if (!read_attribute(ctx, *positions, 3, "a morph target's POSITION")) return false;
+    ctx.target_deltas.clear();
+    ctx.target_deltas.reserve(vertices);
+    for (u32 i = 0; i < vertices; ++i) {
+      ctx.target_deltas.push_back(transform_direction(
+          world, Vec3{ctx.floats[i * 3], ctx.floats[i * 3 + 1], ctx.floats[i * 3 + 2]}));
+    }
+    ctx.target_normals.clear();
+    if (normals != nullptr && have_normals) {
+      if (normals->count != vertices)
+        return fail(ctx.error, "glTF: a morph target's NORMAL count differs from the primitive's");
+      if (!read_attribute(ctx, *normals, 3, "a morph target's NORMAL")) return false;
+      ctx.target_normals.reserve(vertices);
+      for (u32 i = 0; i < vertices; ++i) {
+        const Vec3 rest = ctx.local_normals[i];
+        const Vec3 moved =
+            rest + Vec3{ctx.floats[i * 3], ctx.floats[i * 3 + 1], ctx.floats[i * 3 + 2]};
+        const Vec3 world_rest = transform_direction(normal_transform, rest);
+        const Vec3 world_moved = transform_direction(normal_transform, moved);
+        const Vec3 a = length_squared(world_rest) > 1.0e-20f ? normalize(world_rest) : Vec3{};
+        const Vec3 b = length_squared(world_moved) > 1.0e-20f ? normalize(world_moved) : a;
+        ctx.target_normals.push_back(b - a);
+      }
+    }
+
+    f32 position_peak = 0.0f;
+    f32 normal_peak = 0.0f;
+    for (u32 i = 0; i < vertices; ++i) {
+      const Vec3& d = ctx.target_deltas[i];
+      position_peak = std::max(position_peak,
+                               std::max(std::fabs(d.x), std::max(std::fabs(d.y), std::fabs(d.z))));
+      if (i < ctx.target_normals.size()) {
+        const Vec3& n = ctx.target_normals[i];
+        normal_peak = std::max(normal_peak,
+                               std::max(std::fabs(n.x), std::max(std::fabs(n.y), std::fabs(n.z))));
+      }
+    }
+    const f32 position_floor = position_peak > 0.0f ? position_peak / 65534.0f : 0.0f;
+    const f32 normal_floor = normal_peak > 0.0f ? normal_peak / 65534.0f : 0.0f;
+
+    geometry::MorphChannelSource& channel = out.morph[channel_base + static_cast<u32>(t)];
+    const bool channel_normals = !ctx.target_normals.empty();
+    for (u32 i = 0; i < vertices; ++i) {
+      const Vec3& d = ctx.target_deltas[i];
+      const bool moves_position = std::fabs(d.x) > position_floor ||
+                                  std::fabs(d.y) > position_floor ||
+                                  std::fabs(d.z) > position_floor;
+      Vec3 n{};
+      bool moves_normal = false;
+      if (i < ctx.target_normals.size()) {
+        n = ctx.target_normals[i];
+        moves_normal = std::fabs(n.x) > normal_floor || std::fabs(n.y) > normal_floor ||
+                       std::fabs(n.z) > normal_floor;
+      }
+      if (!moves_position && !moves_normal) continue;
+      channel.vertices.push_back(base + i);
+      channel.position_deltas.push_back(d);
+      if (channel_normals) channel.normal_deltas.push_back(n);
+    }
+    // A channel whose normal deltas are present for one primitive and absent for another would
+    // not be parallel to its vertices; the parallel form is the contract, so the array is dropped
+    // outright when any primitive of the mesh did not supply one.
+    if (!channel_normals) channel.normal_deltas.clear();
+  }
+  return true;
+}
+
 bool append_primitive(Context& ctx, const cgltf_primitive& primitive, const Mat4& world,
-                      const Mat4& normal_transform, i32 skin_index) {
+                      const Mat4& normal_transform, i32 skin_index, u32 morph_base) {
   MeshData& out = *ctx.mesh;
   if (primitive.type != cgltf_primitive_type_triangles)
     return fail(ctx.error, std::string("glTF: primitive topology is ") +
@@ -326,13 +429,16 @@ bool append_primitive(Context& ctx, const cgltf_primitive& primitive, const Mat4
   if (ctx.has_skins) out.skin_bindings.resize(base + vertices);
 
   const cgltf_accessor* normals = cgltf_find_accessor(&primitive, cgltf_attribute_type_normal, 0);
+  ctx.local_normals.clear();
   if (normals != nullptr) {
     if (normals->count != count)
       return fail(ctx.error, "glTF: NORMAL and POSITION have different counts");
     if (!read_attribute(ctx, *normals, 3, "NORMAL")) return false;
     ctx.saw_normals = true;
+    ctx.local_normals.reserve(vertices);
     for (u32 i = 0; i < vertices; ++i) {
       const Vec3 n{ctx.floats[i * 3], ctx.floats[i * 3 + 1], ctx.floats[i * 3 + 2]};
+      ctx.local_normals.push_back(n);
       out.normals[base + i] = normalize(transform_direction(normal_transform, n));
     }
   }
@@ -351,6 +457,11 @@ bool append_primitive(Context& ctx, const cgltf_primitive& primitive, const Mat4
   // with no skin names nothing, and those vertices were flattened to world space anyway.
   if (skin_index >= 0 && !append_skin_bindings(ctx, primitive, base, vertices, skin_index))
     return false;
+
+  if (primitive.targets_count != 0 && morph_base != ~0u &&
+      !append_morph_targets(ctx, primitive, base, vertices, world, normal_transform, morph_base)) {
+    return false;
+  }
 
   const u32 first = out.indices.size();
   if (primitive.indices != nullptr) {
@@ -400,6 +511,34 @@ bool append_primitive(Context& ctx, const cgltf_primitive& primitive, const Mat4
   return true;
 }
 
+// Where glTF mesh `mesh`'s channels start in `MeshData::morph`, creating them on first sight.
+// `~0u` when the mesh has no targets. Names come from `mesh.extras.targetNames` when the file
+// says and are "<mesh>.<k>" when it does not; default weights come from the node's own `weights`
+// if it has them and the mesh's otherwise, which is the order the glTF specification gives.
+u32 begin_mesh_morph(Context& ctx, const cgltf_node& node, const cgltf_mesh& mesh) {
+  if (mesh.primitives_count == 0 || mesh.primitives[0].targets_count == 0) return ~0u;
+  const u32 index = static_cast<u32>(cgltf_mesh_index(ctx.gltf, &mesh));
+  if (index < ctx.morph_of_mesh.size() && ctx.morph_of_mesh[index] != ~0u)
+    return ctx.morph_of_mesh[index];
+  const u32 base = ctx.mesh->morph.size();
+  const cgltf_size targets = mesh.primitives[0].targets_count;
+  const cgltf_float* weights = node.weights_count == targets
+                                   ? node.weights
+                                   : (mesh.weights_count == targets ? mesh.weights : nullptr);
+  const std::string mesh_name = mesh.name != nullptr ? std::string(mesh.name) : std::string("mesh");
+  for (cgltf_size t = 0; t < targets; ++t) {
+    geometry::MorphChannelSource channel;
+    channel.name = mesh.target_names != nullptr && t < mesh.target_names_count &&
+                           mesh.target_names[t] != nullptr
+                       ? std::string(mesh.target_names[t])
+                       : mesh_name + "." + std::to_string(static_cast<u64>(t));
+    channel.default_weight = weights != nullptr ? static_cast<f32>(weights[t]) : 0.0f;
+    ctx.mesh->morph.push_back(std::move(channel));
+  }
+  if (index < ctx.morph_of_mesh.size()) ctx.morph_of_mesh[index] = base;
+  return base;
+}
+
 bool append_node(Context& ctx, const cgltf_node& node, const Mat4& parent) {
   const Mat4 world = parent * local_transform(node);
   if (node.mesh != nullptr) {
@@ -420,8 +559,15 @@ bool append_node(Context& ctx, const cgltf_node& node, const Mat4& parent) {
     // Normals transform by the inverse transpose, which is the only correct rule under
     // non-uniform scale; renormalized per vertex because the transform is not orthonormal.
     const Mat4 normal_transform = bind_space ? Mat4::identity() : transpose(inverse(world));
+    // The morph channels this mesh owns, created the first time the mesh is reached. A mesh
+    // instanced by two nodes therefore shares one set of channels and the second instance appends
+    // *its own* vertices' deltas to them, which is what "channel k of this mesh" means; the two
+    // instances then play the same weights, which is what the format can express and what glTF
+    // node weights would have to override per instance. That override is a follow-up.
+    const u32 morph_base = begin_mesh_morph(ctx, node, *node.mesh);
     for (cgltf_size i = 0; i < node.mesh->primitives_count; ++i) {
-      if (!append_primitive(ctx, node.mesh->primitives[i], place, normal_transform, skin_index))
+      if (!append_primitive(ctx, node.mesh->primitives[i], place, normal_transform, skin_index,
+                            morph_base))
         return false;
     }
   }
@@ -595,8 +741,8 @@ bool collect_skins(const cgltf_data& data, const Vector<u32>& remap, MeshData& o
   return true;
 }
 
-bool collect_animations(const cgltf_data& data, const Vector<u32>& remap, MeshData& out,
-                        std::string* error) {
+bool collect_animations(const cgltf_data& data, const Vector<u32>& remap,
+                        const Vector<u32>& morph_of_mesh, MeshData& out, std::string* error) {
   out.animations.reserve(static_cast<u32>(data.animations_count));
   for (cgltf_size a = 0; a < data.animations_count; ++a) {
     const cgltf_animation& source = data.animations[a];
@@ -616,12 +762,11 @@ bool collect_animations(const cgltf_data& data, const Vector<u32>& remap, MeshDa
       if (!unpack_accessor(*sampler.input, 1, "an animation sampler's times", curve.times, error))
         return false;
       const cgltf_size components = cgltf_num_components(sampler.output->type);
-      if (components != 3 && components != 4) {
+      if (components != 1 && components != 3 && components != 4) {
         return fail(error,
-                    "glTF: an animation sampler's values are neither three nor four components; "
-                    "morph target weights are not read");
+                    "glTF: an animation sampler's values are neither scalar nor three nor "
+                    "four components");
       }
-      curve.components = static_cast<u8>(components);
       if (!unpack_accessor(*sampler.output, static_cast<u32>(components),
                            "an animation sampler's values", curve.values, error)) {
         return false;
@@ -629,7 +774,27 @@ bool collect_animations(const cgltf_data& data, const Vector<u32>& remap, MeshDa
       // CUBICSPLINE stores in-tangent, value, and out-tangent per key, so three output elements
       // per input time; the other two store one.
       const cgltf_size per_key = curve.interpolation == k_interp_cubic ? 3 : 1;
-      if (sampler.output->count != sampler.input->count * per_key) {
+      // A **weights** sampler is SCALAR with one value per morph target per key, so its output
+      // count is the target count times the key count — which is how the target count is
+      // recovered, since the accessor itself does not say. A TRS sampler has exactly one element
+      // per key, so the same division gives 1 and the check below is what it always was.
+      cgltf_size per_element = 1;
+      if (components == 1 && sampler.input->count * per_key != 0) {
+        const cgltf_size denominator = sampler.input->count * per_key;
+        if (sampler.output->count % denominator != 0 || sampler.output->count == 0) {
+          return fail(error, "glTF: a scalar animation sampler has " +
+                                 std::to_string(sampler.output->count) + " values for " +
+                                 std::to_string(sampler.input->count) +
+                                 " keyframe times, which is not a whole number of targets");
+        }
+        per_element = sampler.output->count / denominator;
+        if (per_element > 255) {
+          return fail(error, "glTF: an animation drives " + std::to_string(per_element) +
+                                 " morph targets, more than the 255 a track holds");
+        }
+      }
+      curve.components = static_cast<u8>(components == 1 ? per_element : components);
+      if (sampler.output->count != sampler.input->count * per_key * per_element) {
         return fail(error, "glTF: an animation sampler has " +
                                std::to_string(sampler.output->count) + " values for " +
                                std::to_string(sampler.input->count) + " keyframe times");
@@ -641,14 +806,14 @@ bool collect_animations(const cgltf_data& data, const Vector<u32>& remap, MeshDa
     entry.channels.reserve(static_cast<u32>(source.channels_count));
     for (cgltf_size c = 0; c < source.channels_count; ++c) {
       const cgltf_animation_channel& channel = source.channels[c];
-      // A `weights` channel drives morph targets, which this module does not read; it is skipped
-      // rather than refused, so an animation that also moves joints still loads.
       if (channel.target_node == nullptr || channel.sampler == nullptr) continue;
       u8 path = k_path_translation;
       if (channel.target_path == cgltf_animation_path_type_rotation) {
         path = k_path_rotation;
       } else if (channel.target_path == cgltf_animation_path_type_scale) {
         path = k_path_scale;
+      } else if (channel.target_path == cgltf_animation_path_type_weights) {
+        path = k_path_weights;
       } else if (channel.target_path != cgltf_animation_path_type_translation) {
         continue;
       }
@@ -657,6 +822,16 @@ bool collect_animations(const cgltf_data& data, const Vector<u32>& remap, MeshDa
           static_cast<i32>(remap[static_cast<u32>(cgltf_node_index(&data, channel.target_node))]);
       entry_channel.sampler = static_cast<u32>(channel.sampler - source.samplers);
       entry_channel.path = path;
+      if (path == k_path_weights) {
+        // Which of the flattened channel array the curve's first value per key drives. The
+        // scene walk fills `morph_of_mesh`, so this runs after it; a channel whose mesh the
+        // default scene never instanced has no channels here and is dropped rather than left
+        // pointing at another mesh's rig.
+        if (channel.target_node->mesh == nullptr) continue;
+        const u32 mesh_index = static_cast<u32>(cgltf_mesh_index(&data, channel.target_node->mesh));
+        if (mesh_index >= morph_of_mesh.size() || morph_of_mesh[mesh_index] == ~0u) continue;
+        entry_channel.morph_channel = morph_of_mesh[mesh_index];
+      }
       entry.channels.push_back(entry_channel);
     }
     out.animations.push_back(std::move(entry));
@@ -675,7 +850,6 @@ bool build_mesh(const cgltf_data& data, MeshData& out, std::string* error) {
   if (rigged) {
     if (!collect_nodes(data, node_remap, out, error)) return false;
     if (!collect_skins(data, node_remap, out, error)) return false;
-    if (!collect_animations(data, node_remap, out, error)) return false;
   }
 
   const cgltf_scene* scene = data.scene;
@@ -687,8 +861,9 @@ bool build_mesh(const cgltf_data& data, MeshData& out, std::string* error) {
   ctx.mesh = &out;
   ctx.error = error;
   ctx.has_skins = !out.skins.empty();
-  ctx.node_remap = std::move(node_remap);
+  ctx.node_remap = node_remap;
   ctx.skin_placed.resize(out.skins.size(), u8{0});
+  ctx.morph_of_mesh.resize(static_cast<u32>(data.meshes_count), ~0u);
   for (cgltf_size i = 0; i < scene->nodes_count; ++i) {
     if (scene->nodes[i] == nullptr) continue;
     if (!append_node(ctx, *scene->nodes[i], Mat4::identity())) return false;
@@ -699,6 +874,13 @@ bool build_mesh(const cgltf_data& data, MeshData& out, std::string* error) {
   // A file whose skins the default scene never instances imports as a static mesh: the stream
   // exists only when something in the picture is actually skinned.
   if (!ctx.saw_skin) out.skin_bindings.clear();
+  // A channel every primitive of its mesh left empty moves nothing; it stays in the array rather
+  // than being removed, because the weight tracks index it by position.
+  //
+  // The animations come **after** the walk, and only because of the weight tracks: a `weights`
+  // channel has to be told which entry of the flattened channel array it drives, and that is
+  // `morph_of_mesh`, which only the walk knows. Nothing else about them changed.
+  if (rigged && !collect_animations(data, node_remap, ctx.morph_of_mesh, out, error)) return false;
   return true;
 }
 
@@ -788,6 +970,9 @@ geometry::AttributeSource attribute_source(const MeshData& mesh) noexcept {
   if (!mesh.normals.empty())
     source.normals = std::span<const Vec3>(mesh.normals.data(), mesh.normals.size());
   if (!mesh.uvs.empty()) source.uvs = std::span<const Vec2>(mesh.uvs.data(), mesh.uvs.size());
+  if (!mesh.morph.empty())
+    source.morph =
+        std::span<const geometry::MorphChannelSource>(mesh.morph.data(), mesh.morph.size());
   if (mesh.skin_bindings.size() == mesh.positions.size() && !mesh.skin_bindings.empty()) {
     source.skin = std::span<const geometry::SkinBinding>(mesh.skin_bindings.data(),
                                                          mesh.skin_bindings.size());

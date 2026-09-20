@@ -232,3 +232,80 @@ TEST_CASE("gltf skins: a broken skin fails with a sentence rather than a wrong l
   CHECK(error.find("256") != std::string::npos);
   CHECK(mesh.positions.empty());
 }
+
+TEST_CASE("gltf morph targets: deltas, names, default weights, and a weights track") {
+  TempDir tmp("engine_assets_morph_tests");
+  const std::string path = tmp.file("bar_morph.glb");
+  test_fixture::SkinnedGlbOptions options;
+  options.morph_targets = true;
+  REQUIRE(test_fixture::write_skinned_glb(path, options));
+
+  MeshData mesh;
+  std::string error;
+  REQUIRE_MESSAGE(load_gltf(path, mesh, &error), error);
+
+  // Two channels, named through `extras.targetNames`, with the mesh's default weights.
+  REQUIRE(mesh.morph.size() == 2);
+  CHECK(mesh.morph[0].name == "bulge");
+  CHECK(mesh.morph[1].name == "taper");
+  CHECK(mesh.morph[0].default_weight == doctest::Approx(0.25f));
+  CHECK(mesh.morph[1].default_weight == doctest::Approx(0.0f));
+
+  // Sparse: only the vertices the target actually moves. The bar's middle row is two vertices
+  // and its top row two more, so each channel holds exactly two entries out of six.
+  REQUIRE(mesh.morph[0].vertices.size() == 2);
+  REQUIRE(mesh.morph[1].vertices.size() == 2);
+  CHECK(mesh.morph[0].vertices[0] == 2);
+  CHECK(mesh.morph[0].vertices[1] == 3);
+  CHECK(mesh.morph[1].vertices[0] == 4);
+  CHECK(mesh.morph[1].vertices[1] == 5);
+  for (u32 i = 0; i < 2; ++i) {
+    CHECK(mesh.morph[0].position_deltas[i].z == doctest::Approx(0.5f));
+    CHECK(std::fabs(mesh.morph[1].position_deltas[i].x) == doctest::Approx(0.25f));
+  }
+  // One channel carries NORMAL deltas and the other does not, and the parallel-array rule holds
+  // for both: present and the same length, or empty.
+  CHECK(mesh.morph[0].normal_deltas.size() == mesh.morph[0].vertices.size());
+  CHECK(mesh.morph[1].normal_deltas.empty());
+  CHECK(mesh.morph[0].normal_deltas[0].y == doctest::Approx(-0.287f).epsilon(0.05));
+
+  // The weights track: a SCALAR sampler with one value per target per key, and the channel says
+  // which entry of the flattened channel array its first value drives.
+  REQUIRE(mesh.animations.size() == 1);
+  const Animation& clip = mesh.animations[0];
+  const AnimationChannel* weights = nullptr;
+  for (const AnimationChannel& channel : clip.channels) {
+    if (channel.path == k_path_weights) weights = &channel;
+  }
+  REQUIRE(weights != nullptr);
+  CHECK(weights->morph_channel == 0);
+  const AnimationSampler& sampler = clip.samplers[weights->sampler];
+  CHECK(sampler.components == 2);  // two targets, not two vector components
+  CHECK(sampler.interpolation == k_interp_linear);
+  REQUIRE(sampler.times.size() == 2);
+  REQUIRE(sampler.values.size() == 4);
+  CHECK(sampler.values[2] == doctest::Approx(1.0f));
+  CHECK(sampler.values[3] == doctest::Approx(0.5f));
+
+  // And the three joint tracks still come through exactly as they did.
+  u32 joint_channels = 0;
+  for (const AnimationChannel& channel : clip.channels)
+    joint_channels += channel.path == k_path_weights ? 0u : 1u;
+  CHECK(joint_channels == 3);
+
+  // `attribute_source` hands the channels to the cluster builders beside the bindings.
+  const geometry::AttributeSource source = attribute_source(mesh);
+  CHECK(source.morph.size() == 2);
+  CHECK(source.skin.size() == mesh.positions.size());
+}
+
+TEST_CASE("gltf morph targets: a file without them imports exactly as it did") {
+  TempDir tmp("engine_assets_morph_none");
+  const std::string path = tmp.file("bar.glb");
+  REQUIRE(test_fixture::write_skinned_glb(path));
+  MeshData mesh;
+  std::string error;
+  REQUIRE_MESSAGE(load_gltf(path, mesh, &error), error);
+  CHECK(mesh.morph.empty());
+  CHECK(attribute_source(mesh).morph.empty());
+}

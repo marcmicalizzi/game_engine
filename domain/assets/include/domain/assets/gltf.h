@@ -19,11 +19,18 @@
 // and the animation curves as `MeshData::animations`, all of which `domain/anim` turns into a
 // `Skeleton`, a `Pose`, and a `Clip`.
 //
+// **Morph targets** arrive as `MeshData::morph`, one `geometry::MorphChannelSource` per (mesh,
+// target) pair, with the POSITION and NORMAL deltas of every primitive of that mesh appended in
+// the flattened vertex space; TANGENT deltas are ignored, since nothing downstream carries
+// tangents. Default weights come from the node's `weights` if it has them and the mesh's
+// otherwise, and an animation's `weights` channels arrive as `k_path_weights` curves whose
+// `components` is the target count.
+//
 // What this module deliberately does not do: decode image pixels (the bytes or the URI are
-// handed on for foundation/image and the texture pipeline), touch the GPU, *evaluate* animations
-// or skins (the curves are read, never sampled), read cameras and lights, or split the merged
-// mesh back into parts. Draco and meshopt-compressed buffer views are not decoded either, so
-// such files fail to load.
+// handed on for foundation/image and the texture pipeline), touch the GPU, *evaluate* animations,
+// skins or morphs (the curves and the deltas are read, never applied), read cameras and lights,
+// or split the merged mesh back into parts. Draco and meshopt-compressed buffer views are not
+// decoded either, so such files fail to load.
 
 #include <core/base/types.h>
 #include <core/containers/vector.h>
@@ -115,15 +122,18 @@ inline constexpr u8 k_interp_linear = 0;  // lerp; slerp for a rotation
 inline constexpr u8 k_interp_step = 1;    // hold the previous key
 inline constexpr u8 k_interp_cubic = 2;   // CUBICSPLINE: in-tangent, value, out-tangent per key
 
-// What an animation channel drives, as `AnimationChannel::path` stores it. glTF's `weights`
-// path (morph targets) is skipped: this module reads no morph targets.
+// What an animation channel drives, as `AnimationChannel::path` stores it.
 inline constexpr u8 k_path_translation = 0;
 inline constexpr u8 k_path_rotation = 1;
 inline constexpr u8 k_path_scale = 2;
+// glTF's `weights` path: one float per morph target of the channel's node's mesh, per key. The
+// channel's `morph_channel` says which of `MeshData::morph` the first of those floats drives.
+inline constexpr u8 k_path_weights = 3;
 
 // One keyframe curve. `times` is seconds, strictly increasing; `values` holds `components` floats
-// per key for LINEAR and STEP (3 for a translation or a scale, 4 for a rotation quaternion) and
-// three times that for CUBICSPLINE, which stores in-tangent, value, and out-tangent per key.
+// per key for LINEAR and STEP (3 for a translation or a scale, 4 for a rotation quaternion, and
+// **one per morph target** for a `weights` curve) and three times that for CUBICSPLINE, which
+// stores in-tangent, value, and out-tangent per key.
 struct AnimationSampler {
   Vector<f32> times;
   Vector<f32> values;
@@ -135,6 +145,10 @@ struct AnimationChannel {
   i32 node = -1;  // into MeshData::nodes
   u32 sampler = 0;
   u8 path = k_path_translation;
+  // For `k_path_weights` only: the entry of `MeshData::morph` that the sampler's first value per
+  // key drives, the rest following in order. It is not derivable from `node`, because the flatten
+  // merges every mesh of the scene into one channel array and a node names a glTF mesh.
+  u32 morph_channel = 0;
 };
 
 struct Animation {
@@ -156,6 +170,16 @@ struct MeshData {
   // same length as `positions`. A rigid primitive in a file that also has skinned ones contributes
   // the default binding (all weight on joint 0), which is what keeps the stream parallel.
   Vector<geometry::SkinBinding> skin_bindings;
+  // Morph channels over the same vertex space, empty unless the file has morph targets. One
+  // channel per (glTF mesh, target index) pair: within one mesh, target k of every primitive is
+  // the same channel driven by the same weight, and two *different* meshes have unrelated targets
+  // even where they share a name, so the flatten cannot merge them. The name is
+  // `mesh.extras.targetNames[k]` when the file says, and "mesh.k" when it does not.
+  //
+  // A delta is kept only when it survives the format's own 16-bit quantization — a component of
+  // at least half the channel's step — so the sparsity is a property of the data and not a
+  // second lossy knob on top of the one `geometry` already documents.
+  Vector<geometry::MorphChannelSource> morph;
   Vector<u32> indices;
   Vector<Primitive> primitives;
   Vector<Material> materials;

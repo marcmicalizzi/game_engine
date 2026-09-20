@@ -1177,6 +1177,8 @@ int info(const std::string& path) {
   summary.set("embedded_images", JsonValue(images.embedded));
   summary.set("deduplicated_images", JsonValue(images.deduplicated));
   summary.set("image_bytes", JsonValue(images.bytes));
+  summary.set("morph_channels", JsonValue(lod.mesh.morph_channels.size()));
+  summary.set("morph_deltas", JsonValue(lod.mesh.morph_delta_count));
   summary.set("source_path", JsonValue(data.source_path));
   summary.set("source_hash", JsonValue(data.source_hash));
   summary.set("build_key", JsonValue(data.build_key));
@@ -1716,6 +1718,61 @@ int stats(const std::string& path) {
   images.set("detail", std::move(image_detail));
   summary.set("images", JsonValue(image_summary.count));
   summary.set("image_detail", std::move(images));
+
+  // The morph stream, channel by channel. The two numbers that decide whether the sparse layout
+  // was worth building are `touched_fraction` — the share of the mesh's cluster vertices a channel
+  // moves — and `bytes`, which is what a page has to carry for it (geometry.md, "Morph channels").
+  if (!mesh.morph_channels.empty()) {
+    Vector<u32> touched(mesh.morph_channels.size(), 0u);
+    for (const geometry::MorphSlice& slice : mesh.morph_slices)
+      touched[slice.channel] += slice.delta_count;
+    const bool normals = !mesh.morph_normal_deltas.empty();
+    const u32 per_delta = 1u + 6u + (normals ? 6u : 0u);
+    JsonValue channels = JsonValue::array();
+    u64 total_bytes = u64{mesh.morph_channels.size()} * sizeof(geometry::MorphChannel) +
+                      u64{mesh.morph_cluster_slices.size()} * sizeof(u32) +
+                      u64{mesh.morph_slices.size()} * sizeof(geometry::MorphSlice) +
+                      u64{mesh.morph_delta_count} * per_delta;
+    for (u32 c = 0; c < mesh.morph_channels.size(); ++c) {
+      JsonValue entry = JsonValue::object();
+      entry.set("name",
+                JsonValue(c < mesh.morph_names.size() ? mesh.morph_names[c] : std::string()));
+      entry.set("deltas", JsonValue(touched[c]));
+      entry.set("touched_fraction",
+                JsonValue(mesh.vertices.empty() ? 0.0
+                                                : static_cast<f64>(touched[c]) /
+                                                      static_cast<f64>(mesh.vertices.size())));
+      entry.set("max_displacement",
+                JsonValue(static_cast<f64>(mesh.morph_channels[c].max_displacement)));
+      entry.set("position_scale",
+                JsonValue(static_cast<f64>(mesh.morph_channels[c].position_scale)));
+      entry.set("default_weight",
+                JsonValue(static_cast<f64>(mesh.morph_channels[c].default_weight)));
+      entry.set("bytes", JsonValue(u64{touched[c]} * per_delta));
+      channels.push_back(std::move(entry));
+    }
+    JsonValue morph = JsonValue::object();
+    morph.set("channels", JsonValue(mesh.morph_channels.size()));
+    morph.set("deltas", JsonValue(mesh.morph_delta_count));
+    morph.set("slices", JsonValue(mesh.morph_slices.size()));
+    morph.set("normal_deltas", JsonValue(normals));
+    morph.set("bytes", JsonValue(total_bytes));
+    morph.set("bytes_per_cluster_vertex",
+              JsonValue(mesh.vertices.empty() ? 0.0
+                                              : static_cast<f64>(total_bytes) /
+                                                    static_cast<f64>(mesh.vertices.size())));
+    morph.set("detail", std::move(channels));
+    summary.set("morph", std::move(morph));
+    std::fprintf(stderr,
+                 "  morph: %u channels, %u deltas over %u slices, %llu bytes (%.2f a cluster "
+                 "vertex)%s\n",
+                 mesh.morph_channels.size(), mesh.morph_delta_count, mesh.morph_slices.size(),
+                 static_cast<unsigned long long>(total_bytes),
+                 mesh.vertices.empty()
+                     ? 0.0
+                     : static_cast<double>(total_bytes) / static_cast<double>(mesh.vertices.size()),
+                 normals ? "" : ", positions only");
+  }
 
   // The atlas, and how much of the texture the LOD cut moves. Both are about the *picture* rather
   // than the bytes, and both are here because the seam rule of geometry.md made atlas

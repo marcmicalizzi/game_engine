@@ -85,15 +85,93 @@ bool Clip::add_track(u32 joint, u8 channel, u8 interpolation, u8 components,
   return true;
 }
 
+bool Clip::add_weight_track(u32 first_channel, u32 channel_count, u8 interpolation,
+                            std::span<const f32> key_times, std::span<const f32> key_values) {
+  if (key_times.empty() || channel_count == 0) return false;
+  const usize per_key = interpolation == k_interp_cubic ? usize{3} : usize{1};
+  if (key_values.size() != key_times.size() * per_key * channel_count) return false;
+  for (usize i = 1; i < key_times.size(); ++i) {
+    if (key_times[i] < key_times[i - 1]) return false;
+  }
+
+  WeightTrack track;
+  track.first_channel = first_channel;
+  track.channel_count = channel_count;
+  track.interpolation = interpolation;
+  track.first_key = times.size();
+  track.key_count = static_cast<u32>(key_times.size());
+  track.first_value = values.size();
+  times.append(key_times);
+  values.append(key_values);
+  weight_tracks.push_back(track);
+  const f32 last = key_times[key_times.size() - 1];
+  if (last > duration) duration = last;
+  if (first_channel + channel_count > morph_count) morph_count = first_channel + channel_count;
+  return true;
+}
+
+// The clip's own time, wrapped or clamped. Both samplers need it and it is the one place the
+// loop rule lives.
+f32 Clip::clip_time(f32 time, bool loop) const noexcept {
+  if (loop && duration > 0.0f) {
+    f32 at = std::fmod(time, duration);
+    if (at < 0.0f) at += duration;
+    return at;
+  }
+  return time < 0.0f ? 0.0f : (time > duration ? duration : time);
+}
+
+void Clip::sample_weights(f32 time, std::span<f32> weights, bool loop) const {
+  if (weights.empty() || weight_tracks.empty()) return;
+  const f32 at = clip_time(time, loop);
+  for (const WeightTrack& track : weight_tracks) {
+    if (track.key_count == 0 || track.first_channel >= weights.size()) continue;
+    const std::span<const f32> key_times(times.data() + track.first_key, track.key_count);
+    const KeyPair pair = locate(key_times, at);
+    const u32 width = track.channel_count;
+    const u32 per_key = track.interpolation == k_interp_cubic ? 3u : 1u;
+    const f32* run = values.data() + track.first_value;
+    const f32* current = run + static_cast<usize>(pair.key) * per_key * width;
+    const f32* value = track.interpolation == k_interp_cubic ? current + width : current;
+    const u32 count = static_cast<u32>(weights.size() - track.first_channel < width
+                                           ? weights.size() - track.first_channel
+                                           : width);
+
+    if (track.interpolation == k_interp_step || pair.fraction <= 0.0f ||
+        pair.key + 1 >= track.key_count) {
+      for (u32 c = 0; c < count; ++c)
+        weights[track.first_channel + c] = value[c];
+      continue;
+    }
+    const f32* next = run + static_cast<usize>(pair.key + 1) * per_key * width;
+    const f32* next_value = track.interpolation == k_interp_cubic ? next + width : next;
+    if (track.interpolation == k_interp_cubic) {
+      const f32 span = key_times[pair.key + 1] - key_times[pair.key];
+      const f32* out_tangent = value + width;
+      const f32* in_tangent = next;
+      for (u32 c = 0; c < count; ++c) {
+        weights[track.first_channel + c] =
+            hermite(value[c], out_tangent[c], next_value[c], in_tangent[c], pair.fraction, span);
+      }
+      continue;
+    }
+    for (u32 c = 0; c < count; ++c)
+      weights[track.first_channel + c] = value[c] + (next_value[c] - value[c]) * pair.fraction;
+  }
+}
+
+void Clip::sample(f32 time, PoseView out, std::span<f32> weights, bool loop) const {
+  sample(time, out, loop);
+  sample_weights(time, weights, loop);
+}
+
+void Clip::sample(GameTime time, PoseView out, std::span<f32> weights, bool loop) const {
+  sample(static_cast<f32>(static_cast<f64>(time.us) * 1.0e-6), out, weights, loop);
+}
+
 void Clip::sample(f32 time, PoseView out, bool loop) const {
   if (out.joint_count() == 0 || !out.consistent()) return;
-  f32 at = time;
-  if (loop && duration > 0.0f) {
-    at = std::fmod(time, duration);
-    if (at < 0.0f) at += duration;
-  } else {
-    at = time < 0.0f ? 0.0f : (time > duration ? duration : time);
-  }
+  const f32 at = clip_time(time, loop);
 
   const u32 joints = out.joint_count();
   for (const Track& track : tracks) {
@@ -178,6 +256,27 @@ bool Clip::validate(std::string* error) const {
     if (track.joint >= joint_count)
       return fail(error, where + " names joint " + std::to_string(track.joint) + ", outside the " +
                              std::to_string(joint_count) + " the clip was authored against");
+    for (u32 k = 1; k < track.key_count; ++k) {
+      if (times[track.first_key + k] < times[track.first_key + k - 1])
+        return fail(error, where + "'s keyframe times are not in order");
+    }
+    if (times[track.first_key + track.key_count - 1] > duration)
+      return fail(error, where + " runs past the clip's duration");
+  }
+  for (u32 t = 0; t < weight_tracks.size(); ++t) {
+    const WeightTrack& track = weight_tracks[t];
+    const std::string where = "clip weight track " + std::to_string(t);
+    if (track.channel_count == 0) return fail(error, where + " drives no channels");
+    if (track.key_count == 0) return fail(error, where + " has no keys");
+    if (u64{track.first_key} + track.key_count > times.size())
+      return fail(error, where + "'s keyframe times run past the end of the clip");
+    const u32 per_key = track.interpolation == k_interp_cubic ? 3u : 1u;
+    const u64 value_count = u64{track.key_count} * per_key * track.channel_count;
+    if (u64{track.first_value} + value_count > values.size())
+      return fail(error, where + "'s values run past the end of the clip");
+    if (u64{track.first_channel} + track.channel_count > morph_count)
+      return fail(error, where + " names morph channels outside the " +
+                             std::to_string(morph_count) + " the clip was authored against");
     for (u32 k = 1; k < track.key_count; ++k) {
       if (times[track.first_key + k] < times[track.first_key + k - 1])
         return fail(error, where + "'s keyframe times are not in order");
