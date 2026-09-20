@@ -339,6 +339,18 @@ void deform_vertex(MeshDesc mesh, DeformDesc deform, ClusterDesc cluster, uint c
   }
   // Stage 4, on the posed surface. `k_deform_identity` writes what it was handed, which is what
   // proves a deformed instance and a rigid one draw the same picture.
+  //
+  // **A note the next person will want.** The two procedural stand-ins produce a picture that is
+  // *not* byte-identical to the one the exclusive-mode pass produced, on a handful of pixels, by
+  // one level of 255 — `--deform wave` on the FlightHelmet measures PSNR 106.5 dB, SSIM 1.000000,
+  // FLIP mean 0.000000 with a worst pixel of 0.0088. Nothing about the arithmetic changed: the
+  // identity deformer, which writes the rest position, is byte-identical, and so is every picture
+  // with no deform pass at all and the skinned Fox through `--animate`. What changed is that the
+  // same expressions are now compiled in a module that also holds the morph stages, and the
+  // driver contracts their multiply-adds differently — the same effect E25 recorded for the pool's
+  // depths ("the two compilations of the same expression round the multiply and the add
+  // differently in the last bit"). Moving the stage back into the caller's loop body was tried and
+  // changed nothing, which is what says the cause is the module and not the call.
   if ((stages & k_deform_stage_procedural) != 0) {
     const uint kind = stages & k_deform_kind_mask;
     if (kind == k_deform_wave) {

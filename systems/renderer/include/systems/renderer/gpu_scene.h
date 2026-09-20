@@ -161,12 +161,56 @@ class GpuScene {
   u64 joint_slot_address(u32 slot) const noexcept {
     return joints.address + u64{slot} * joint_bytes();
   }
+  // Whether the scene has a **per-frame** copy of the deform table. Skinning forces one (the bone
+  // matrices are per frame) and so do morph channels (the pose weights are), and a frame writes
+  // it and passes its address instead of the scene's static one.
+  bool has_frame_table() const noexcept { return deform_frames.mapped != nullptr; }
   gfx::DeformDesc* deform_frame(u32 slot) noexcept {
     return static_cast<gfx::DeformDesc*>(deform_frames.mapped) + u64{slot} * deform_count();
   }
   u64 deform_frame_address(u32 slot) const noexcept {
     return deform_frames.address + u64{slot} * deform_count() * sizeof(gfx::DeformDesc);
   }
+
+  // ---- morph channels (geometry.md, "Morph channels"; gfx.md, "The deform chain") -------------
+  //
+  // The scene's channel array is every mesh's concatenated, and `geometry::ClusterMeshPart`
+  // records each mesh's run. What lives here is the GPU side of it: the stream's six arrays
+  // behind one `gfx::MorphParams` block, one weights region per deformed instance per frame slot
+  // (the static half and the pose half, which is what the two stages read), the normal pool the
+  // chain writes beside the positions, and the static shape caches.
+  u32 morph_channel_count() const noexcept { return morph_channel_count_; }
+  bool morphed() const noexcept { return morph_channel_count_ > 0; }
+  u64 morph_params_address() const noexcept { return morphed() ? morph_params.address : 0; }
+  u64 normal_pool_address() const noexcept { return morphed() ? deform_normals.address : 0; }
+  // The bytes the static shape caches actually hold, and how many instances got one. An instance
+  // that did not runs its static stage every frame, which is a cost and not a defect.
+  u64 static_cache_bytes() const noexcept { return static_cache_bytes_; }
+  u32 static_cached_instances() const noexcept { return static_cached_instances_; }
+  // One frame slot's weights region: `2 * morph_channel_count()` floats per deform entry, the
+  // static half first. The frame writes the pose half from `FrameDesc::morph_weights` and leaves
+  // the static half alone, which is what makes a weights change a *scene* event.
+  f32* morph_weight_slot(u32 slot) noexcept {
+    return static_cast<f32*>(morph_weights.mapped) + u64{slot} * morph_weight_floats();
+  }
+  u64 morph_weight_floats() const noexcept {
+    return u64{deform_count()} * 2 * morph_channel_count_;
+  }
+  u64 morph_weight_slot_address(u32 slot) const noexcept {
+    return morph_weights.address + u64{slot} * morph_weight_floats() * sizeof(f32);
+  }
+  // True while a static weights change has not yet been written into every instance's cache. The
+  // frame clears it by dispatching `deform_cache_main` once per cached instance.
+  bool static_cache_dirty() const noexcept { return static_cache_dirty_; }
+  void clear_static_cache_dirty() noexcept { static_cache_dirty_ = false; }
+  // The mesh's cluster count for deform entry `d`, which is the cache dispatch's group count.
+  u32 deform_mesh_clusters(u32 d) const noexcept {
+    return d < deform_mesh_clusters_.size() ? deform_mesh_clusters_[d] : 0u;
+  }
+  // Rewrites the static half of every frame slot's weights and marks the caches dirty. The
+  // caller's array is indexed by the **scene's** channel, and each instance takes its mesh's run
+  // of it, which is what lets one array drive a scene of several rigs.
+  void set_static_weights(std::span<const f32> weights);
 
   // ---- geometry streaming (04 §4.3 step 3, §4.9; docs/subsystems/renderer.md) -----------------
   //
@@ -267,6 +311,17 @@ class GpuScene {
   // host-visible with `k_joint_slots` regions, both absent unless an instance is skinned.
   gfx::BufferResource joints;         // anim::JointMatrix[k_joint_slots * max_joints]
   gfx::BufferResource deform_frames;  // gfx::DeformDesc[k_joint_slots * deform_count]
+  // The morph stream and the chain's two morph stages.
+  gfx::BufferResource morph_channels;   // geometry::MorphChannel[]
+  gfx::BufferResource morph_directory;  // u32[cluster_count + 1]
+  gfx::BufferResource morph_slices;     // geometry::MorphSlice[]
+  gfx::BufferResource morph_indices;    // u8 per delta
+  gfx::BufferResource morph_deltas;     // i16[3 * delta_count]
+  gfx::BufferResource morph_normals;    // i16[3 * delta_count], or none
+  gfx::BufferResource morph_params;     // one gfx::MorphParams, the block the pass reads
+  gfx::BufferResource morph_weights;    // f32[k_joint_slots * deform_count * 2 * channels]
+  gfx::BufferResource deform_normals;   // u32 octahedral per pool vertex
+  gfx::BufferResource static_cache;     // gfx::DeformCacheVertex[], handed out per instance
 
   // ---- geometry streaming ----------------------------------------------------------------------
   gfx::BufferResource page_table;       // geometry::ClusterPageDesc[page_count]
@@ -302,6 +357,7 @@ class GpuScene {
   bool create_working_set(const ResolvedSettings& resolved, std::string* error);
   bool create_ray_tracing(const ResolvedSettings& resolved, std::string* error);
   bool create_streaming(const ResolvedSettings& resolved, std::string* error);
+  bool create_morph(const ResolvedSettings& resolved, std::string* error);
 
   const gfx::Device* device_ = nullptr;
   const SceneData* data_ = nullptr;
@@ -325,6 +381,11 @@ class GpuScene {
   u32 triangles_per_cluster_ = 0;
   u32 view_count_ = 1;
   u64 visible_run_bytes_ = 0;
+  Vector<u32> deform_mesh_clusters_;  // the cache dispatch's group count per deform entry
+  u32 morph_channel_count_ = 0;
+  u64 static_cache_bytes_ = 0;
+  u32 static_cached_instances_ = 0;
+  bool static_cache_dirty_ = false;
   u32 deform_pool_vertices_ = 0;
   u64 deform_pool_bytes_ = 0;
   u64 deform_whole_mesh_bytes_ = 0;

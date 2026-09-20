@@ -112,6 +112,7 @@ void SceneRenderer::Pipelines::destroy(const gfx::Device& device) noexcept {
   gfx::destroy_compute_pipeline(device, software);
   gfx::destroy_compute_pipeline(device, cull);
   gfx::destroy_compute_pipeline(device, deform);
+  gfx::destroy_compute_pipeline(device, deform_cache);
   gfx::destroy_compute_pipeline(device, deform_alloc);
   gfx::destroy_compute_pipeline(device, hiz);
   gfx::destroy_compute_pipeline(device, records);
@@ -367,6 +368,9 @@ bool SceneRenderer::create_pipelines(std::string* error) {
     if (alloc == nullptr ||
         !gfx::create_compute_pipeline(device, deform->module, "deform_main", {},
                                       sizeof(gfx::DeformParams), pipelines_.deform, error) ||
+        (scene_->morphed() && !gfx::create_compute_pipeline(
+                                  device, deform->module, "deform_cache_main", {},
+                                  sizeof(gfx::DeformParams), pipelines_.deform_cache, error)) ||
         !gfx::create_compute_pipeline(device, alloc->module, "deform_alloc_main", {},
                                       sizeof(gfx::DeformAllocParams), pipelines_.deform_alloc,
                                       error)) {
@@ -803,6 +807,41 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     deform_table_address = scene.deform_frame_address(slot);
   }
 
+  // The **pose** morph weights, on the same contract as the joint matrices: one span in, one
+  // write into this slot's region, and each deformed instance's record pointed at its own run of
+  // it. The static half is the scene's and is left exactly as it was, which is the whole
+  // difference between the two stages.
+  //
+  // A scene with no morph channels reaches none of this and its records keep the addresses the
+  // scene uploaded, so a non-morphed frame is the instructions it always was.
+  u32 cache_rebuilds = 0;
+  if (scene.morphed()) {
+    const u32 channels = scene.morph_channel_count();
+    const std::span<const gfx::DeformDesc> statics = scene.deform_descs();
+    f32* region = scene.morph_weight_slot(slot);
+    for (u32 d = 0; d < statics.size(); ++d) {
+      f32* pose = region + u64{d} * 2 * channels + channels;
+      const u32 first = statics[d].first_channel;
+      for (u32 c = 0; c < statics[d].channel_count; ++c) {
+        const u32 at = first + c;
+        pose[c] = at < frame.morph_weights.size() ? frame.morph_weights[at] : 0.0f;
+      }
+    }
+    // A morphed scene always has a per-frame table, because the pose weights live in a per-slot
+    // region and each record has to point at this slot's.
+    gfx::DeformDesc* table = scene.deform_frame(slot);
+    const u64 weights_base = scene.morph_weight_slot_address(slot);
+    for (u32 d = 0; d < statics.size(); ++d) {
+      if (!scene.skinned()) table[d] = statics[d];
+      table[d].weights = weights_base + u64{d} * 2 * channels * sizeof(f32);
+    }
+    deform_table_address = scene.deform_frame_address(slot);
+    if (scene.static_cache_dirty()) {
+      cache_rebuilds = scene.static_cached_instances();
+      scene.clear_static_cache_dirty();
+    }
+  }
+
   // The frame's lights, shared by every view and living behind the last view's params block in
   // one buffer. They come out of `frame_lighting` rather than being built here, because the
   // reference path tracer has to light the same scene with the same numbers at the same frame
@@ -913,6 +952,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       resolve.coverage = targets_.hiz.address + u64{target.coverage_offset} * 4;
       resolve.coverage_pitch = target.coverage_pitch;
     }
+    // The deformed shading normals the chain wrote beside the positions. Null for a scene with no
+    // morph channels, and the resolve then reads the rest attribute stream exactly as it did.
+    resolve.normal_pool = scene.normal_pool_address();
     resolve.sun = lighting.sun;
     resolve.camera = Vec4{eye, 0.0f};
     resolve.view_proj = view.view_proj;
@@ -970,6 +1012,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       // `joints`/`joint_count`, which nothing but this pass reads.
       d.deform = deform_table_address;
       d.slots = scene.deform_slots.address;
+      d.morph = scene.morph_params_address();
+      d.normal_pool = scene.normal_pool_address();
       d.time = deform_time;
       d.amplitude = settings.deform_amplitude;
       d.max_entries = pair_count;
@@ -1277,6 +1321,35 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   // count into an indirect dispatch block, then one workgroup per surviving cluster. Two runs when
   // occlusion culling splits the cut, because pass 2's entries are not known until its cull has
   // run and the pool has to hold pass 1's positions before pass 1 draws.
+  // The static shape stage, on the frames where it has anything to do. It runs over each cached
+  // instance's **whole mesh** rather than over the cut, because a cache the next frame's cut can
+  // start from has to cover every cluster the cut might name — which is also why it is a cost
+  // measured in "a weights change" and not in "a frame".
+  auto add_static_cache = [&]() {
+    if (cache_rebuilds == 0) return;
+    graph.add_pass(
+        "deform cache", gfx::PassKind::Compute,
+        [&](gfx::PassBuilder& b) { b.write(rg_pool, gfx::Access::ComputeWrite); },
+        [&](VkCommandBuffer cb, gfx::RenderGraph&) {
+          timer.begin(cb, "deform cache");
+          vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines.deform_cache.pipeline);
+          const std::span<const gfx::DeformDesc> statics = scene.deform_descs();
+          const std::span<const u32> owners = scene.deform_instances();
+          for (u32 d = 0; d < statics.size(); ++d) {
+            if (statics[d].cache == 0) continue;
+            gfx::DeformParams p = deform_params[0][0];
+            // `deform_cache_main` reads these two with a different meaning, and says so where it
+            // uses them: the instance to rebuild, and how many clusters its mesh has.
+            p.visible_offset = owners[d];
+            p.max_entries = scene.deform_mesh_clusters(d);
+            if (p.max_entries == 0) continue;
+            vkCmdPushConstants(cb, pipelines.deform_cache.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                               sizeof(gfx::DeformParams), &p);
+            vkCmdDispatch(cb, p.max_entries, 1, 1);
+          }
+          timer.end(cb);
+        });
+  };
   auto add_deform = [&](u32 run) {
     const u64 source_offset = run == 2 ? 0 : u64{count_index} * sizeof(u32);
     const gfx::RgBuffer rg_source = run == 2 ? rg_sw_args : rg_args[run];
@@ -1433,6 +1506,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   };
 
   if (cull_on) add_cull(0, 0);
+  if (deform_on) add_static_cache();
   if (deform_on) add_deform(0);
   if (direct) {
     // The direct path is single-view by construction: it draws mesh shaders straight to color.

@@ -179,6 +179,9 @@ struct SceneData {
   // Whether any instance is skinned, which is what makes the GPU scene allocate the joint buffer
   // and upload the mesh's per-vertex binding stream.
   bool skinned() const noexcept { return skinned_instances > 0 && !lod.mesh.skin.empty(); }
+  // A scene with morph channels is deformed whatever the flags say: the chain has to run for its
+  // instances, exactly as it does for a skinned one.
+  bool morphed() const noexcept { return !lod.mesh.morph_channels.empty(); }
   // Whether the scene can be streamed at all: a page table that covers its clusters.
   bool paged() const noexcept {
     return !pages.pages.empty() && pages.page_of_cluster.size() == cluster_count() &&

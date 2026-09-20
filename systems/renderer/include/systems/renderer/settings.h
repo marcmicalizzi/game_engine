@@ -9,6 +9,7 @@
 // else: a path that probes `DeviceFeatures` inside a frame would drift between the two hosts.
 
 #include <core/base/types.h>
+#include <core/containers/vector.h>
 #include <domain/gfx/cluster_cull.h>
 #include <domain/gfx/device.h>
 #include <domain/gfx/visibility_resolve.h>
@@ -45,6 +46,9 @@ enum class ViewLayout : u8 { Single, Surround3, Panini };
 // exercises is a behaviour nobody knows works.
 inline constexpr u32 k_default_deform_pool_kib = 8 * 1024;
 inline constexpr u32 k_min_deform_pool_kib = 1;  // a pool of nothing is not a pool
+// 16 bytes a mesh vertex: 4 MiB is a 260,000-vertex character, or twenty 13,000-vertex control
+// meshes. It is a default and not a limit; `--static-shape-kib` moves it.
+inline constexpr u32 k_default_static_shape_kib = 4 * 1024;
 
 struct RenderSettings {
   RasterMode raster = RasterMode::Hardware;
@@ -63,6 +67,20 @@ struct RenderSettings {
   // The deformed-vertex pool's budget in kibibytes; 0 takes `k_default_deform_pool_kib`. It sizes
   // a scene buffer, which is why it lives here beside the other things that force a rebuild.
   u32 deform_pool_kib = 0;
+  // The **static shape** stage's weights, one per morph channel of the scene, and the budget for
+  // the per-instance caches that keep its result. Both size scene buffers, which is why they are
+  // here rather than on a frame: a weights change is cheap (one dispatch over the mesh) but
+  // adding a channel is not.
+  //
+  // An entry left at zero is a channel the static stage does not play. The array may be shorter
+  // than the scene's channel array, in which case the rest are zero; a scene with no channels
+  // ignores it entirely, which is what keeps every existing picture byte-identical.
+  Vector<f32> morph_static_weights;
+  // Kibibytes of `gfx::DeformCacheVertex` (16 bytes a mesh vertex) the scene may spend on static
+  // shape caches, handed out in instance order until it runs out. An instance that gets none runs
+  // its static stage every frame over the cut — the same answer for more work, which is the same
+  // graceful degradation `k_no_pool_slot` gives the pool. 0 takes the default.
+  u32 static_shape_kib = 0;
   bool rt_templates = false;  // instantiate prebuilt cluster templates instead of rebuilding
 
   // Geometry streaming (04 §4.3 step 3, §4.9). The scene's clusters are laid out in fixed-size

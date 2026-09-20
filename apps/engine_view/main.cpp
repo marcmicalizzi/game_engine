@@ -75,6 +75,8 @@ constexpr const char* k_usage =
     "                   [--panini-d <d>] [--peripheral-lod <mult>]\n"
     "                   [--animate [clip]] [--anim-speed <x>] [--anim-lod on|off]\n"
     "                   [--anim-lod-scale <x>]\n"
+    "                   [--morph <name|index>=<weight>] [--morph-animate]\n"
+    "                   [--static-shape-kib <n>]\n"
     "                   [--reference <spp>] [--bounces <n>] [--finest] [--spp-batch <n>]\n"
     "\n"
     "  --frames <n>     render n frames, then exit (0: until the window closes)\n"
@@ -153,6 +155,16 @@ constexpr const char* k_usage =
     "                   With --grid-instances every copy gets its own phase offset, so a crowd is\n"
     "                   not in lockstep. A scene file says it per instance, in an \"animation\"\n"
     "                   block: {\"clip\":\"Run\",\"speed\":1.5,\"phase\":0.4}\n"
+    "  --morph <n>=<w>  play morph channel <n> at weight <w> through the deform chain's **static\n"
+    "                   shape** stage, which is cached per instance and costs nothing per frame.\n"
+    "                   <n> is the channel's name (glTF's extras.targetNames) or its index.\n"
+    "                   Repeatable; an unknown name is a usage error rather than a silent zero\n"
+    "  --morph-animate  play the clip's weight tracks through the **pose** stage, per frame, on\n"
+    "                   top of whatever --morph set. Channels the clip does not name keep the\n"
+    "                   asset's own default weights\n"
+    "  --static-shape-kib <n>  the budget for the static shape caches (default 4096). An instance\n"
+    "                   that gets none runs its static stage every frame over the cut: the same\n"
+    "                   picture, more work, and the summary says how many were cached\n"
     "  --anim-speed <x> multiply every animated instance's playback rate (default 1)\n"
     "  --anim-lod on|off  let the camera decide each character's animation tier (default on):\n"
     "                   an observer per view of the layout, the side monitors weighted below the\n"
@@ -233,6 +245,14 @@ struct Options {
   u32 page_budget_pct = 0;
   bool animate = false;
   std::string clip;  // --animate's optional value: a clip name or an index
+  // `--morph <name|index>=<weight>`, repeatable: the **static shape** stage's weights, named the
+  // way an author names them. They are resolved against the loaded mesh's channel names once the
+  // scene exists, because a name is a property of the asset and not of the command line.
+  Vector<std::string> morph_requests;
+  // `--morph-animate`: play the clip's weight tracks through the **pose** stage. It is separate
+  // from `--animate` because a clip may have weight tracks and no joint tracks (a facial
+  // performance) and because a morphed mesh with no skin has no skeleton to animate.
+  bool morph_animate = false;
   f32 anim_speed = 1.0f;
   bool anim_lod = true;       // let the camera decide each character's animation tier
   f32 anim_lod_scale = 1.0f;  // multiplies the capability's band boundaries
@@ -384,6 +404,46 @@ u32 find_clip(const animation::Library& library, u32 skeleton, std::string_view 
     ++ordinal;
   }
   return animation::Library::k_not_found;
+}
+
+// `--morph <name|index>=<weight>` against the loaded mesh's channel names. A name is a property of
+// the asset, so it cannot be resolved until the scene exists; an index is accepted too, because a
+// generated rig may have none worth typing. An unknown name is a **usage error** rather than a
+// silently ignored weight: a misspelt expression that quietly does nothing is the kind of thing
+// that gets debugged in the picture instead of on the command line. Returns false with `error`.
+bool resolve_morph_weights(const renderer::SceneData& data, const Options& options,
+                           Vector<f32>& out, std::string& error) {
+  const geometry::ClusterMesh& mesh = data.lod.mesh;
+  out.clear();
+  if (options.morph_requests.empty()) return true;
+  if (mesh.morph_channels.empty()) {
+    error = "--morph: this mesh has no morph channels";
+    return false;
+  }
+  out.resize(mesh.morph_channels.size(), 0.0f);
+  for (const std::string& request : options.morph_requests) {
+    const usize split = request.find('=');
+    const std::string name = request.substr(0, split);
+    f32 weight = 0.0f;
+    if (!parse_f32(request.substr(split + 1), weight)) {
+      error = "--morph: '" + request.substr(split + 1) + "' is not a number";
+      return false;
+    }
+    u32 channel = ~0u;
+    for (u32 c = 0; c < mesh.morph_names.size(); ++c) {
+      if (mesh.morph_names[c] == name) channel = c;
+    }
+    if (channel == ~0u) {
+      u32 index = 0;
+      if (parse_u32(name, index) && index < mesh.morph_channels.size()) channel = index;
+    }
+    if (channel == ~0u) {
+      error = "--morph: this mesh has no channel named '" + name + "'";
+      return false;
+    }
+    out[channel] = weight;
+  }
+  return true;
 }
 
 // Part one of the glue: does this run animate, and which instances play a clip? It runs **before**
@@ -803,7 +863,7 @@ int unavailable(const char* what, const std::string& error) {
 // creates the device without the presentation extensions and goes straight to the offscreen
 // contract. It shares the flags and the exit codes with the windowed path; what it does not
 // share is the frame loop, because there is one frame.
-int run_reference(const Options& options) {
+int run_reference(Options& options) {
   std::string error;
   gfx::DeviceOptions device_options;
   device_options.adapter_index = options.adapter;
@@ -870,6 +930,10 @@ int run_reference(const Options& options) {
       step_animation(*animated);
     }
 #endif
+    if (!resolve_morph_weights(scene_data, options, options.settings.morph_static_weights, error)) {
+      exit_code = fail("morph", error);
+      break;
+    }
     renderer::resolve_settings(options.settings, device.features(), &scene_data, resolved);
     const renderer::RenderAvailability availability =
         renderer::check_availability(resolved, device.features());
@@ -1032,6 +1096,21 @@ int main(int argc, char** argv) {
       if (!renderer::parse_deform_mode(value, options.settings.deform,
                                        options.settings.deform_kind)) {
         std::fprintf(stderr, "engine-view: --deform expects none, identity, wave, or lattice\n");
+        return k_exit_usage;
+      }
+    } else if (a == "--morph") {
+      if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
+      if (value.find('=') == std::string_view::npos) {
+        std::fprintf(stderr, "engine-view: --morph expects <name|index>=<weight>\n");
+        return k_exit_usage;
+      }
+      options.morph_requests.push_back(std::string(value));
+    } else if (a == "--morph-animate") {
+      options.morph_animate = true;
+    } else if (a == "--static-shape-kib") {
+      if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
+      if (!parse_u32(value, options.settings.static_shape_kib)) {
+        std::fprintf(stderr, "engine-view: --static-shape-kib expects a number\n");
         return k_exit_usage;
       }
     } else if (a == "--anim-lod") {
@@ -1351,6 +1430,13 @@ int main(int argc, char** argv) {
   // Read out of the GPU scene while it is alive, because the summary prints after it is gone.
   u64 deform_pool_bytes = 0;
   u64 deform_whole_mesh_bytes = 0;
+  // The morph chain's summary numbers and the pose stage's per-frame array.
+  u32 morph_channels = 0;
+  u64 static_cache_bytes = 0;
+  u32 static_cached_instances = 0;
+  Vector<f32> morph_pose_weights;
+  Vector<f32> morph_defaults;
+  const anim::Clip* morph_clip = nullptr;
   u64 template_bytes = 0;
   u64 rt_bytes = 0;
   // What the scene's geometry would cost uploaded whole against what the page pool, its staging
@@ -1449,6 +1535,10 @@ int main(int argc, char** argv) {
           log::field("joint_matrices", joint_matrices), log::field("speed", options.anim_speed));
     }
 #endif
+    if (!resolve_morph_weights(scene_data, options, options.settings.morph_static_weights, error)) {
+      exit_code = fail("morph", error);
+      break;
+    }
     renderer::resolve_settings(options.settings, device.features(), &scene_data, resolved);
     const renderer::RenderAvailability availability =
         renderer::check_availability(resolved, device.features());
@@ -1462,6 +1552,28 @@ int main(int argc, char** argv) {
       exit_code = fail("scene", error);
       break;
     }
+    // The pose stage's per-frame array and the defaults it is refilled from, sized once.
+    if (options.morph_animate && scene.morphed()) {
+      morph_pose_weights.resize(scene.morph_channel_count(), 0.0f);
+      morph_defaults.resize(scene.morph_channel_count(), 0.0f);
+      for (u32 c = 0; c < scene.morph_channel_count(); ++c)
+        morph_defaults[c] = scene_data.lod.mesh.morph_channels[c].default_weight;
+#if ENGINE_VIEW_ANIMATION
+      if (animated) {
+        for (u32 k = 0; k < animated->library.clip_count() && morph_clip == nullptr; ++k) {
+          if (!animated->library.clip_data(k).weight_tracks.empty())
+            morph_clip = &animated->library.clip_data(k);
+        }
+      }
+#endif
+      if (morph_clip == nullptr) {
+        ENGINE_LOG_WARN(log_view, "--morph-animate found no weight tracks",
+                        log::field("channels", scene.morph_channel_count()));
+      }
+    }
+    morph_channels = scene.morph_channel_count();
+    static_cache_bytes = scene.static_cache_bytes();
+    static_cached_instances = scene.static_cached_instances();
     deform_pool_bytes = scene.deform_pool_bytes();
     deform_whole_mesh_bytes = scene.deform_whole_mesh_bytes();
     template_bytes = scene.template_bytes();
@@ -1627,6 +1739,20 @@ int main(int argc, char** argv) {
         frame.joints = animated->system.joint_matrices();
         frame.instance_joints = {animated->runs.data(), animated->runs.size()};
       }
+      // `--morph-animate`: the pose stage's weights, sampled from the clip's weight tracks on
+      // exactly the same plain-span contract the joint matrices travel on. The clip writes only
+      // the channels its tracks name, so the array is filled with the mesh's *default* weights
+      // first — a channel nothing animates then plays at what the asset said rather than at zero.
+      if (!morph_pose_weights.empty()) {
+        const f32 seconds = static_cast<f32>(frame.frame_index) / 60.0f * options.anim_speed;
+        for (u32 c = 0; c < morph_pose_weights.size(); ++c)
+          morph_pose_weights[c] = morph_defaults[c];
+        if (morph_clip != nullptr) {
+          morph_clip->sample_weights(
+              seconds, std::span<f32>(morph_pose_weights.data(), morph_pose_weights.size()));
+        }
+        frame.morph_weights = {morph_pose_weights.data(), morph_pose_weights.size()};
+      }
 #endif
       frame.color = swapchain.image(image_index);
       frame.final_layout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
@@ -1720,7 +1846,9 @@ int main(int argc, char** argv) {
         "\"deform\":\"%s\",\"deform_pool_bytes\":%llu,"
         "\"deform_whole_mesh_bytes\":%llu,\"deform_pool_used_bytes\":%llu,"
         "\"deform_pool_peak_bytes\":%llu,\"deform_entries\":%u,"
-        "\"deform_overflow_entries\":%u,\"deform_overflow_bytes\":%llu,\"rt_templates\":%s,"
+        "\"deform_overflow_entries\":%u,\"deform_overflow_bytes\":%llu,"
+        "\"morph_channels\":%u,\"morph_static_cache_bytes\":%llu,"
+        "\"morph_cached_instances\":%u,\"rt_templates\":%s,"
         "\"skinned_instances\":%u,\"joints\":%u,\"clip\":\"%s\",\"anim\":%s,"
         "\"template_bytes\":%llu,\"rt_bytes\":%llu,\"geometry_bytes\":%llu,\"stream_bytes\":%llu,"
         "\"views\":%s,\"streaming\":%s,"
@@ -1748,9 +1876,11 @@ int main(int argc, char** argv) {
         static_cast<unsigned long long>(u64{stats.deform_peak_vertices} * 3 * sizeof(f32)),
         stats.deform_entries, stats.deform_overflow_entries,
         static_cast<unsigned long long>(u64{stats.deform_overflow_vertices} * 3 * sizeof(f32)),
-        resolved.settings.rt_templates ? "true" : "false", skinned_instances, joint_matrices,
-        clip_text.c_str(), anim_text.c_str(), static_cast<unsigned long long>(template_bytes),
-        static_cast<unsigned long long>(rt_bytes), static_cast<unsigned long long>(geometry_bytes),
+        morph_channels, static_cast<unsigned long long>(static_cache_bytes),
+        static_cached_instances, resolved.settings.rt_templates ? "true" : "false",
+        skinned_instances, joint_matrices, clip_text.c_str(), anim_text.c_str(),
+        static_cast<unsigned long long>(template_bytes), static_cast<unsigned long long>(rt_bytes),
+        static_cast<unsigned long long>(geometry_bytes),
         static_cast<unsigned long long>(stream_bytes), views_text.c_str(), streaming_text.c_str(),
         static_cast<unsigned long long>(host_memory),
         static_cast<unsigned long long>(host_memory_peak),

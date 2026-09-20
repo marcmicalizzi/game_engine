@@ -154,8 +154,9 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
       // `--deform`, so a scene of one character and a hundred props allocates pool blocks for the
       // character alone and every prop stays on the instruction-for-instruction rigid path.
       const u32 instance_joints = skinned_ ? data_->instance_joints[i] : 0u;
-      if (instance_joints == 0 && !resolved.settings.deform) continue;
       const geometry::ClusterMeshPart& part = data_->parts[instance_table_[i].mesh];
+      if (instance_joints == 0 && part.morph_channel_count == 0 && !resolved.settings.deform)
+        continue;
       const u32 next = instance_table_[i].mesh + 1 < data_->parts.size()
                            ? data_->parts[instance_table_[i].mesh + 1].first_vertex
                            : total_vertices;
@@ -166,8 +167,13 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
       desc.stages =
           (instance_joints > 0 ? gfx::k_deform_stage_skin : 0u) |
           (resolved.settings.deform ? gfx::k_deform_stage_procedural | resolved.settings.deform_kind
-                                    : 0u);
+                                    : 0u) |
+          (part.morph_channel_count > 0 ? gfx::k_deform_stage_static | gfx::k_deform_stage_pose
+                                        : 0u);
       desc.first_vertex = part.first_vertex;
+      desc.first_channel = part.first_morph_channel;
+      desc.channel_count = part.morph_channel_count;
+      deform_mesh_clusters_.push_back(part.cluster_count);
       // `joints` and `joint_count` stay zero in the *static* table: they are what a frame fills
       // in, in its own copy. A frame that hands over no matrices therefore leaves the instance at
       // its rest pose rather than reading an address from a previous frame.
@@ -218,6 +224,7 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
         std::memset(joints.mapped, 0, joint_region * k_joint_slots);
       }
     }
+    if (ok && !lod.mesh.morph_channels.empty()) ok = create_morph(resolved, error);
     if (!ok) return false;
     ENGINE_LOG_INFO(
         log_renderer, "deformed-vertex pool", log::field("mode", deform_name(resolved.settings)),
@@ -309,6 +316,180 @@ u64 GpuScene::stream_params_address(u32 slot) const noexcept {
 // so the pool is about a tenth larger than the budget it serves, which is the price of a
 // fixed-size slot and is what makes an eviction a slot that can be reused without touching
 // anything else.
+// The morph stream and the chain's two morph stages (geometry.md, "Morph channels"; gfx.md, "The
+// deform chain"). Three things are created here and only here:
+//
+//   - the stream's six arrays and the `gfx::MorphParams` block that names them. They are the
+//     *scene's*: `merge_cluster_meshes` concatenated every mesh's channels and keyed the slices
+//     by the global cluster index, so one block serves every mesh and every view of a frame.
+//   - one weights region per frame slot, `2 * channels` floats per deformed instance. The static
+//     half is written once here and again whenever the settings' weights change; the pose half is
+//     what a frame writes from `FrameDesc::morph_weights`.
+//   - the static shape caches, handed out in instance order until the budget runs out. An
+//     instance that gets none keeps `DeformDesc::cache` at zero and runs its static stage every
+//     frame over the cut — the same answer for more work, which is the same graceful degradation
+//     the pool's `k_no_pool_slot` gives.
+bool GpuScene::create_morph(const ResolvedSettings& resolved, std::string* error) {
+  const gfx::Device& device = *device_;
+  const geometry::ClusterMesh& mesh = data_->lod.mesh;
+  morph_channel_count_ = mesh.morph_channels.size();
+  if (morph_channel_count_ == 0 || deform_descs_.empty()) return true;
+
+  if (!gfx::upload_buffer(device, mesh.morph_channels.data(),
+                          u64{morph_channel_count_} * sizeof(geometry::MorphChannel), k_storage,
+                          morph_channels, error) ||
+      !gfx::upload_buffer(device, mesh.morph_cluster_slices.data(),
+                          u64{mesh.morph_cluster_slices.size()} * sizeof(u32), k_storage,
+                          morph_directory, error) ||
+      !gfx::upload_buffer(device, mesh.morph_slices.data(),
+                          u64{mesh.morph_slices.size()} * sizeof(geometry::MorphSlice), k_storage,
+                          morph_slices, error) ||
+      !gfx::upload_buffer(device, mesh.morph_indices.data(), mesh.morph_indices.size(), k_storage,
+                          morph_indices, error) ||
+      !gfx::upload_buffer(device, mesh.morph_deltas.data(),
+                          u64{mesh.morph_deltas.size()} * sizeof(i16), k_storage, morph_deltas,
+                          error)) {
+    return false;
+  }
+  if (!mesh.morph_normal_deltas.empty() &&
+      !gfx::upload_buffer(device, mesh.morph_normal_deltas.data(),
+                          u64{mesh.morph_normal_deltas.size()} * sizeof(i16), k_storage,
+                          morph_normals, error)) {
+    return false;
+  }
+  gfx::MorphParams params{};
+  params.channels = morph_channels.address;
+  params.directory = morph_directory.address;
+  params.slices = morph_slices.address;
+  params.indices = morph_indices.address;
+  params.deltas = morph_deltas.address;
+  params.normal_deltas = mesh.morph_normal_deltas.empty() ? 0 : morph_normals.address;
+  if (!gfx::upload_buffer(device, &params, sizeof(params), k_storage, morph_params, error))
+    return false;
+
+  // The deformed normal pool, parallel to the position pool: one octahedral word a vertex
+  // against the position's twelve bytes, which is why carrying deformed normals costs a third of
+  // what carrying deformed positions does.
+  if (!gfx::create_buffer(device, u64{deform_pool_vertices_} * sizeof(u32), k_address, false,
+                          deform_normals, error)) {
+    return false;
+  }
+  const u64 weight_floats = morph_weight_floats();
+  if (!gfx::create_buffer(device, weight_floats * sizeof(f32) * k_joint_slots, k_address, true,
+                          morph_weights, error)) {
+    return false;
+  }
+  std::memset(morph_weights.mapped, 0, weight_floats * sizeof(f32) * k_joint_slots);
+
+  // The caches. Budget first, then hand out blocks in instance order.
+  const u64 budget = u64{resolved.settings.static_shape_kib > 0 ? resolved.settings.static_shape_kib
+                                                                : k_default_static_shape_kib} *
+                     1024;
+  const u32 total_vertices = data_->lod.mesh.vertices.size();
+  Vector<u32> cache_offset(deform_descs_.size(), ~0u);
+  u64 used = 0;
+  for (u32 d = 0; d < deform_descs_.size(); ++d) {
+    if ((deform_descs_[d].stages & gfx::k_deform_stage_static) == 0) continue;
+    const u32 instance = deform_instance_[d];
+    const geometry::ClusterMeshPart& part = data_->parts[instance_table_[instance].mesh];
+    const u32 next = instance_table_[instance].mesh + 1 < data_->parts.size()
+                         ? data_->parts[instance_table_[instance].mesh + 1].first_vertex
+                         : total_vertices;
+    const u64 bytes = u64{next - part.first_vertex} * sizeof(gfx::DeformCacheVertex);
+    if (used + bytes > budget) continue;
+    cache_offset[d] = static_cast<u32>(used / sizeof(gfx::DeformCacheVertex));
+    used += bytes;
+    ++static_cached_instances_;
+  }
+  static_cache_bytes_ = used;
+  if (used > 0 && !gfx::create_buffer(device, used, k_address, false, static_cache, error)) {
+    return false;
+  }
+  for (u32 d = 0; d < deform_descs_.size(); ++d) {
+    gfx::DeformDesc& desc = deform_descs_[d];
+    desc.weights = morph_weights.address;  // the frame overrides this with its own slot
+    if (cache_offset[d] != ~0u) {
+      desc.cache = static_cache.address + u64{cache_offset[d]} * sizeof(gfx::DeformCacheVertex);
+    }
+  }
+  // The static weights, written into every slot's static half. They are the scene's, so they are
+  // written once here and again only when the caller changes them.
+  set_static_weights(resolved.settings.morph_static_weights);
+
+  // **What a morphing instance needs from the cull pass**, exactly as a skinned one does: the
+  // cluster spheres and both LOD spheres are the *rest* pose's, and a vertex a channel moves is
+  // no longer inside them. `bounds_padding` is added to all three, so the bound here is
+  // `geometry::morph_bounds_padding`'s — the sum over channels of |weight| x the channel's
+  // largest displacement, which is the triangle inequality and nothing cleverer, because the
+  // channels of a face move the same region in the same direction as often as not.
+  //
+  // The static half is known (the weights are the scene's); the **pose** half is not, so every
+  // channel is priced at weight 1, which is the range a glTF weights track lives in. That is
+  // conservative in the honest direction — a sphere too big draws a cluster that might have been
+  // culled, a sphere too small drops a limb off the screen — and it is a per-instance float, so
+  // tightening it later costs nothing to anyone.
+  for (u32 d = 0; d < deform_descs_.size(); ++d) {
+    const gfx::DeformDesc& desc = deform_descs_[d];
+    if (desc.channel_count == 0) continue;
+    f32 padding = 0.0f;
+    for (u32 c = 0; c < desc.channel_count; ++c) {
+      const geometry::MorphChannel& channel = mesh.morph_channels[desc.first_channel + c];
+      const u32 at = desc.first_channel + c;
+      const f32 weight = at < resolved.settings.morph_static_weights.size()
+                             ? resolved.settings.morph_static_weights[at]
+                             : 0.0f;
+      const f32 magnitude = weight < 0.0f ? -weight : weight;
+      padding += (magnitude + 1.0f) * channel.max_displacement;
+    }
+    gfx::InstanceDesc& instance = instance_table_[deform_instance_[d]];
+    instance.bounds_padding += padding;
+  }
+  // Re-upload the table now that the caches and the weights are on it.
+  gfx::destroy_buffer(device, deform_table);
+  if (!gfx::upload_buffer(device, deform_descs_.data(),
+                          deform_descs_.size() * sizeof(gfx::DeformDesc), k_storage, deform_table,
+                          error)) {
+    return false;
+  }
+  // A morphed scene needs the **per-frame** table even when nothing is skinned, because the pose
+  // weights live in a per-slot region and the record has to point at this slot's. A skinned scene
+  // already has one; this is the case where morphs alone force it.
+  if (!has_frame_table() &&
+      !gfx::create_buffer(device,
+                          u64{deform_descs_.size()} * sizeof(gfx::DeformDesc) * k_joint_slots,
+                          k_address, true, deform_frames, error)) {
+    return false;
+  }
+  for (u32 slot = 0; slot < k_joint_slots; ++slot) {
+    std::memcpy(deform_frame(slot), deform_descs_.data(),
+                deform_descs_.size() * sizeof(gfx::DeformDesc));
+  }
+  ENGINE_LOG_INFO(log_renderer, "morph channels", log::field("channels", morph_channel_count_),
+                  log::field("deltas", mesh.morph_delta_count),
+                  log::field("slices", mesh.morph_slices.size()),
+                  log::field("cached_instances", static_cached_instances_),
+                  log::field("cache_bytes", static_cache_bytes_),
+                  log::field("normal_pool_bytes", u64{deform_pool_vertices_} * sizeof(u32)));
+  return true;
+}
+
+void GpuScene::set_static_weights(std::span<const f32> weights) {
+  if (morph_channel_count_ == 0 || morph_weights.mapped == nullptr) return;
+  const u64 per_slot = morph_weight_floats();
+  for (u32 slot = 0; slot < k_joint_slots; ++slot) {
+    f32* region = morph_weight_slot(slot);
+    for (u32 d = 0; d < deform_descs_.size(); ++d) {
+      const u32 first = deform_descs_[d].first_channel;
+      const u32 count = deform_descs_[d].channel_count;
+      f32* statics = region + u64{d} * 2 * morph_channel_count_;
+      for (u32 c = 0; c < count; ++c)
+        statics[c] = first + c < weights.size() ? weights[first + c] : 0.0f;
+    }
+    (void)per_slot;
+  }
+  static_cache_dirty_ = true;
+}
+
 bool GpuScene::create_streaming(const ResolvedSettings& resolved, std::string* error) {
   if (!streamed_) return true;
   const gfx::Device& device = *device_;

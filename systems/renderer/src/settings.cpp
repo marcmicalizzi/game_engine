@@ -206,7 +206,7 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
   // scene has a skinned one, and those are the same pass: skinning is `deform.slang`'s third
   // kind, not a path beside it. Deciding it here rather than at each use is what keeps
   // renderer.md's "every device- and scene-driven override lives in one function" true.
-  out.deform_pass = s.deform || (scene != nullptr && scene->skinned());
+  out.deform_pass = s.deform || (scene != nullptr && (scene->skinned() || scene->morphed()));
   if (out.deform_pass && !s.cull) {
     s.cull = true;  // the pool pass walks the cull's visible list, which is the point
     ENGINE_LOG_WARN(log_renderer, "culling forced on with a deformed scene");
@@ -265,7 +265,20 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
     }
   }
   out.stream = s.stream;
+  // **A morphed mesh is not streamed**, and the reason is said out loud rather than discovered as
+  // a wrong picture. A page's payload is the cluster's positions, attributes, triangles and
+  // bindings; the morph stream is keyed by cluster too, but its slice directory indexes a
+  // scene-wide delta array whose offsets a page copy would have to patch the way it patches
+  // `ClusterDesc::vertex_offset`. That is the same work and belongs with it. Until then the whole
+  // stream is resident (`ClusterFileReader`'s resident list says so), and a scene that asks for
+  // both gets the one that draws the right picture.
+  if (out.stream && scene != nullptr && scene->morphed()) {
+    out.stream = false;
+    ENGINE_LOG_WARN(log_renderer, "streaming refused",
+                    log::field("reason", "the scene has morph channels, which are not paged yet"));
+  }
   out.settings = s;
+  out.settings.stream = out.stream;
 }
 
 RenderAvailability check_availability(const ResolvedSettings& resolved,

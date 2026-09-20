@@ -185,6 +185,15 @@ struct FrameDesc {
   VkSemaphore signal = VK_NULL_HANDLE;        // the swapchain image's render-finished semaphore
   std::span<const anim::JointMatrix> joints;  // every animated instance's, in one span
   std::span<const InstanceJoints> instance_joints;  // parallel to the scene's instances
+  // The **pose** morph weights, one per channel of the scene's morph channel array, on exactly
+  // the same plain-span contract as the joint matrices: the caller samples a clip's weight tracks
+  // (`anim::Clip::sample(time, pose, weights)`) and hands the array over; the renderer copies it
+  // into this frame slot and points each deformed instance's pose weights at its mesh's run of
+  // it. A span shorter than the scene's channels leaves the rest at zero, and an empty one leaves
+  // every pose weight at zero — which is the rest shape, and what a frame that animates nothing
+  // passes. The **static** weights are not here: they change rarely, they live on the scene, and
+  // that is the whole difference between the two stages.
+  std::span<const f32> morph_weights;
 };
 
 class SceneRenderer {
@@ -306,6 +315,9 @@ class SceneRenderer {
     gfx::ComputePipeline software;
     gfx::ComputePipeline cull;
     gfx::ComputePipeline deform;
+    // The static shape stage over one instance's **whole mesh**, not over the cut: a cache the
+    // next frame's cut can start from has to cover every cluster the cut might name.
+    gfx::ComputePipeline deform_cache;
     gfx::ComputePipeline deform_alloc;
     gfx::ComputePipeline hiz;
     gfx::ComputePipeline records;
