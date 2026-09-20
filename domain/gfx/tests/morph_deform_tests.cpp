@@ -288,7 +288,8 @@ u32 run(const gfx::Device& device, Harness& harness, const gfx::ComputePipeline&
       vkCmdPushConstants(commands, cache_pipeline.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
                          sizeof(cache_params), &cache_params);
       vkCmdDispatch(commands, cache_groups, 1, 1);
-      VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+      VkMemoryBarrier barrier{};
+      barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
       barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
       barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
       vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
@@ -300,7 +301,8 @@ u32 run(const gfx::Device& device, Harness& harness, const gfx::ComputePipeline&
     vkCmdPushConstants(commands, chain_pipeline.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
                        sizeof(params), &params);
     vkCmdDispatch(commands, harness.mesh.clusters.size(), 1, 1);
-    VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    VkMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
     barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
     barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
     vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,

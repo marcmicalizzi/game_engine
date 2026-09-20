@@ -81,7 +81,7 @@ DeltaError compare_deltas(const ClusterMesh& mesh, const MorphFixtureMesh& sourc
         const u32 i = static_cast<u32>(at - channel.vertices.begin());
         const Vec3 want = channel.position_deltas[i];
         const f32 error = length(position_delta - want);
-        out.position_sum += error;
+        out.position_sum += static_cast<f64>(error);
         out.position_max = std::max(out.position_max, error);
         ++out.compared;
         if (channel.normal_deltas.size() == channel.vertices.size()) {
