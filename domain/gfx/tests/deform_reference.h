@@ -18,6 +18,7 @@
 #include <domain/geometry/cluster.h>
 #include <domain/gfx/cluster_cull.h>
 
+#include <algorithm>
 #include <cmath>
 #include <span>
 

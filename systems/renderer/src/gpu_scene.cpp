@@ -475,17 +475,18 @@ bool GpuScene::create_morph(const ResolvedSettings& resolved, std::string* error
 
 void GpuScene::set_static_weights(std::span<const f32> weights) {
   if (morph_channel_count_ == 0 || morph_weights.mapped == nullptr) return;
-  const u64 per_slot = morph_weight_floats();
+  // Every slot, not just the current one: the static weights are the scene's, so a slot the frame
+  // loop has not reached yet must already hold them rather than the previous character's.
   for (u32 slot = 0; slot < k_joint_slots; ++slot) {
     f32* region = morph_weight_slot(slot);
     for (u32 d = 0; d < deform_descs_.size(); ++d) {
       const u32 first = deform_descs_[d].first_channel;
       const u32 count = deform_descs_[d].channel_count;
+      // The static half is the first `morph_channel_count_` floats of this entry's pair of halves.
       f32* statics = region + u64{d} * 2 * morph_channel_count_;
       for (u32 c = 0; c < count; ++c)
         statics[c] = first + c < weights.size() ? weights[first + c] : 0.0f;
     }
-    (void)per_slot;
   }
   static_cache_dirty_ = true;
 }

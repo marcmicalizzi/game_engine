@@ -32,6 +32,7 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <shaders/deform.spv.h>
