@@ -35,3 +35,5 @@ Numbered, dated, and immutable once accepted. To change a decision, write a new 
 | [0029](0029-deformable-volume-budgets.md) | Deformable volume budgets after E19: a hero allowance, a cage that is one solve group, an authored volume preservation, and an enforced strain limit | Accepted |
 | [0030](0030-flecs-workers-are-long-running-pool-jobs.md) | flecs' workers are long-running jobs on the performance pool, inside a budget the application sets; refines ADR-0028's worker hosting | Accepted |
 | [0031](0031-minimum-cpu-x86-64-v3.md) | The minimum CPU is x86-64-v3; AVX-512 is dispatch-only; two v2 presets exist for one 2010 machine | Accepted |
+| [0032](0032-characters-are-parameter-vectors.md) | Characters are parameter vectors over a canonical topology | Accepted |
+| [0033](0033-content-classes-and-view-policies.md) | Content classes and view policies: what an output may contain, decided at instantiation | Accepted |
