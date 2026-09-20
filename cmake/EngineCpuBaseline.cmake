@@ -76,6 +76,53 @@ endif()
 
 message(STATUS "engine CPU baseline: ${ENGINE_CPU_BASELINE} (${ENGINE_CPU_BASELINE_FLAGS})")
 
+# --- the build machine has to be able to run the baseline it is building -----------------------
+#
+# ADR-0031 decision 5 turns "a v3 binary on a v2 machine" from a crash into a sentence, and it
+# does so at *run* time, in every app's main(). That covers the engine. It does not cover the
+# **build**, and the build runs binaries too: `tools/schemac` generates the schema headers, and it
+# is a standalone standard-library-only tool that links no engine module — by design, so that it
+# builds before `core/` exists — which means it has no `platform::require_cpu_baseline()` to call.
+#
+# Measured on the headless Sandy Bridge GPU server on 2026-09-20, configuring `linux-gcc-release`
+# (v3) natively: six minutes of compiling, then
+#
+#     [126/976] schemac: schemas
+#     FAILED: [code=260] schemas/generated/schemas/include/schemas/provenance.h ...
+#
+# and nothing else — 260 is ninja's 256 + SIGILL, the tool having died on the first AVX2
+# instruction in its own code. Run by hand it is `Illegal instruction (core dumped)`, exit 132.
+# `engine-cli` from the same build does the right thing and prints ADR-0031's one line, so the
+# decision works where it was applied; this is the hole beside it.
+#
+# The cheapest honest fix is here, before anything is compiled: a *native* build whose host cannot
+# execute the baseline cannot succeed, so say so now rather than in six minutes in a build log.
+# Only Linux is checked, because /proc/cpuinfo is the one reading that costs nothing and the only
+# machine this project has with a CPU below its default baseline is a Linux one. A cross-compile
+# is exempt — the host never runs the output — and so is anyone who sets the escape hatch.
+option(ENGINE_ALLOW_UNRUNNABLE_BASELINE
+       "Configure even when this machine cannot execute ENGINE_CPU_BASELINE" OFF)
+if(ENGINE_CPU_BASELINE STREQUAL "v3"
+   AND NOT CMAKE_CROSSCOMPILING
+   AND NOT ENGINE_ALLOW_UNRUNNABLE_BASELINE
+   AND CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux"
+   AND EXISTS "/proc/cpuinfo")
+  file(READ "/proc/cpuinfo" _engine_cpuinfo LIMIT 65536)
+  # One flags line is enough: every core of an x86 machine reports the same set.
+  if(NOT _engine_cpuinfo MATCHES "\n *flags *:[^\n]* avx2[ \n]")
+    message(FATAL_ERROR
+      "ENGINE_CPU_BASELINE is v3 (x86-64-v3, the default) but this machine's /proc/cpuinfo does "
+      "not list avx2, so nothing this build produces can run here — including `tools/schemac`, "
+      "which the build itself has to run to generate the schema headers and which dies with "
+      "SIGILL rather than a message because it links no engine module (ADR-0031 decision 5 "
+      "covers the apps, not the host tools).\n"
+      "Use a v2 preset: `linux-server` (headless, what the Sandy Bridge GPU server wants), "
+      "`linux-gcc-release-v2` or `linux-clang-debug-v2`. See docs/ci/remote-linux.md.\n"
+      "If you are building here to run somewhere else, set "
+      "-DENGINE_ALLOW_UNRUNNABLE_BASELINE=ON and expect the schema generation step to fail.")
+  endif()
+endif()
+
 # Takes the baseline flag back off one target, for code that has to be able to run on a CPU the
 # rest of the binary cannot: `core/platform`, which is what decides whether the rest of the
 # binary may run at all (core/platform/src/cpu_baseline.cpp).

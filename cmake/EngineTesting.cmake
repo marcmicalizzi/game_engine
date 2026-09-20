@@ -23,6 +23,23 @@ add_library(engine_test_main STATIC "${CMAKE_SOURCE_DIR}/tests/support/test_main
 target_include_directories(engine_test_main SYSTEM PUBLIC "${doctest_SOURCE_DIR}")
 target_compile_definitions(engine_test_main PUBLIC DOCTEST_CONFIG_USE_STD_HEADERS)
 target_include_directories(engine_test_main PUBLIC "${CMAKE_SOURCE_DIR}/tests/support")
+
+# **clang 22 turns doctest's `__COUNTER__` into 1,797 errors, and it is doctest's, not ours.**
+# `-Wc2y-extensions` is new in clang 22 and fires on `__COUNTER__`, which C standardized only in
+# C2y; `DOCTEST_ANONYMOUS(x)` is `DOCTEST_CAT(x, __COUNTER__)`, so every `TEST_CASE` in the tree
+# trips it and `-Werror` ends the build. Found on the Gentoo GPU server, which ships clang 22.1.8
+# (docs/ci/remote-linux.md); the container's clang 18 has no such warning.
+#
+# Marking doctest SYSTEM above is not enough: clang suppresses diagnostics *inside* a system
+# header, and this one is reported at the expansion site, which is our `.cpp`. So the suppression
+# has to be named, and it is named as narrowly as it can be — one diagnostic, on Clang 22 and
+# newer only, carried by `engine_test_main`'s INTERFACE so that it reaches test executables and
+# **nothing else in the tree**. No engine translation unit uses `__COUNTER__`; if one ever does,
+# it will still be warned about, because the flag is not on that target.
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 22)
+  target_compile_options(engine_test_main INTERFACE -Wno-c2y-extensions)
+  message(STATUS "clang ${CMAKE_CXX_COMPILER_VERSION}: -Wno-c2y-extensions on test targets (doctest's __COUNTER__)")
+endif()
 # The test main calls platform::require_cpu_baseline() first (ADR-0031), so every test
 # executable carries the check without its module having to ask for it. engine::platform is
 # declared later (core layer, and this file is included before add_subdirectory(core)); CMake
