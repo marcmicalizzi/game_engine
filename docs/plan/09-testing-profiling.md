@@ -15,6 +15,7 @@
 | Banned-container and hot-path lint (clang-tidy project checks) | build | every change |
 | World-state invariants (conservation, no orphan references, required regions reachable) | after every headless run | every change |
 | Content validation (all rules in [07 §7.4](07-content-pipeline.md#74-validation-rules-automatic)) | content build | blocks the build |
+| Character parameter-space sweep (the validators of [§9.7](#97-character-validators) over corners, samples, modules and poses) | content build for a base or module; full sweep nightly | blocks the build for the base or module that fails |
 | Fuzzing (destruction sequences, input, save/load points, protocol messages) | nightly | crash or invariant failure |
 | Playtest bots (utility bots × profiles × seeds) | nightly | completion rate, stuck rate, budgets |
 | Agent-content validation (canon, style, boundary contracts) | on proposal | blocks promotion |
@@ -71,3 +72,23 @@ The eight scenarios that must run before solver details are argued about ([05 §
 Two lessons from the re-run generalize past E19 and are worth carrying into every row here. **A re-measurement needs its control in the same session**: the fixture grew a mode that runs the failing configurations exactly as they first ran, beside the fixed ones, because otherwise "the fix did this" cannot be told from "the machine was quieter today" — and on a shared desktop that alternative is real. **And a run needs the machine's state recorded next to its numbers**; E19's first pass did not have it, so every figure from it is an upper bound, and saying so costs one sentence where rediscovering it costs a day.
 
 **Golden replays for cage state.** Every volume with `gameplay_relevant` set contributes its cage positions and velocities to the per-tick sim hash ([§9.2](#92-determinism-infrastructure)), and each scenario above ships a recorded replay (seed, input log, schema version) in the golden corpus. CI replays them on every change and requires a bit-identical final cage state, the same bar the sim replay already meets. A replay that diverges is bisected by tick with both cage states dumped. GPU-side deformation is excluded by construction: it is derived from the cage, never read back, and never enters a hash.
+
+## 9.7 Character validators
+
+A character system is checked by **sweeping its parameter space and computing numbers**, not by looking at a character ([ADR-0032](../adr/0032-characters-are-parameter-vectors.md) decision 12, [07 §7.11](07-content-pipeline.md#711-characters)). The sweep is the corners of the macro space plus a low-discrepancy sample of its interior, times the module set, times a pose set drawn from the standard locomotion and extreme-pose clips. Every validator below produces a number and a threshold, which is what makes the system developable by an agent that does not look at anything and reviewable by a human who reads a report rather than a picture ([12 §12.6](12-ai-usage-policy.md#126-how-this-project-develops-a-character-system)).
+
+| Validator | What it reports | Why it is here |
+|---|---|---|
+| Inverted and degenerate triangles | Counts and the worst offenders, per sample | The first thing an extreme parameter combination breaks |
+| Self-intersection and interpenetration depth | Maximum depth and where, per sample and pose | A shape that reads fine in the neutral pose can pass through itself at a corner of the macro space |
+| Module boundary-loop continuity | Position gap, normal angle, and skin-weight disagreement along the loop, at every DAG level | A graft's seam is the one place a module can crack; **E29** decides whether it survives simplification at all |
+| Volume and proportion bounds | Per-region volume and limb proportion against the base's declared ranges | Catches a rig that drove a channel past what it was sculpted for |
+| Joint-regressor sanity | Joint inside the surface, chain lengths positive, no crossed or inverted chains | A regressed joint outside the body is an animation defect that looks like a clip defect |
+| Skin-weight normalization and influence count | Sum, maximum influences, unnormalized vertices | Same rule the rig validators of [07 §7.4](07-content-pipeline.md#74-validation-rules-automatic) already apply, evaluated on the baked shape |
+| Texel-density ratio | Across the character and against each garment | A garment that is half the body's density shows as a resolution seam, and it is invisible in a wireframe |
+| LOD attribute error | `geometry::measure_lod_attribute_error` per cut, in texels and degrees ([geometry](../subsystems/geometry.md#what-the-simplifier-is-given-and-why)) | The number **E27** is judged on: whether one DAG holds its bounds across the base's parameter space |
+| Garment penetration | Body vertices outside the garment that covers them, by depth | The failure the section-visibility mask exists to prevent, measured rather than assumed |
+| Cage fit | Every render vertex inside a cell, at the sampled extremes ([07 §7.10](07-content-pipeline.md#710-deformable-volume-assets)) | One cage per base archetype only works if it still encloses the body at the corners of the space |
+| Parameter-range conformance | Any axis outside its declared range, named | Where the adult age range of [ADR-0032](../adr/0032-characters-are-parameter-vectors.md) decision 13 is enforced for a vector that reached the build |
+
+Three properties make the set worth building before the content it checks. It is **deterministic**: a fixed sample set and fixed poses, so two runs agree and a regression is a diff. It is **attributable**: a failure names the parameter vector, the module and the pose, so the repro is a line rather than a hunt. And it **replaces pictures** for exactly the content agents may not look at, which is why the review item of [06 §6.10](06-agent-tooling.md#610-multi-agent-roles-review-and-the-human-director) carries a validator report and no capture.

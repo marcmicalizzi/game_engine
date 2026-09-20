@@ -50,6 +50,14 @@ Time progresses continuously through harsh daylight, sunset, night, and sunrise,
 
 First person, third person, and isometric, toggleable at any time; partly gameplay, partly engine qualification. First person stresses very close materials, fine sand detail, footprints directly below the player, close ruin geometry, water close-ups. Third person adds character rendering, animation, skinning, character shadows, sand interaction, camera collision, clothing. Isometric changes the workload: a much larger visible terrain area, many more tiny projected objects, aggressive LOD, streaming, visibility, different UI assumptions. Instant switching gives regression and benchmark cases.
 
+### Player character creator (optional)
+
+**Optional, and explicitly not allowed to delay the first shippable game.** If it threatens the date, it is cut and the game ships with a fixed protagonist; nothing else in Consumer A depends on it. What it is, if it is in: a small **cosmetic-only** creator on **one base** ([07 §7.11](07-content-pipeline.md#711-characters), [ADR-0032](../adr/0032-characters-are-parameter-vectors.md)) — about a dozen semantic parameters, four slots (hair, upper garment, lower garment, one accessory), and no modules. The appearance vector travels in the run and replay header with the seed, so a shared-seed run replays with the character it was played with.
+
+**Cosmetic means cosmetic.** Body parameters feed nothing: no hitbox, no movement speed, no thirst or heat rate, no carry capacity. Runs are seeded and scored against other players' runs, and a body shape that changed a rate would turn a leaderboard into a character-builder metagame. Clothing effects — sun protection, heat retention, sand resistance — come from **item stats**, which is where a survival game's balance belongs anyway, and they are identical whatever body wears them.
+
+What it qualifies for the engine, cheaply: the parameter rig, the bake and its cache key, the layered compositor, the slot system, and the appearance vector's path through save, run record and replay — the whole standard at its smallest useful size, on the game whose content requirements are deliberately small.
+
 ### Seeds and scoring
 
 Generation is deterministic from a seed. A run records survival time, distance travelled, oases found, ruins explored, creatures caught, resources consumed. Modes: random seed, daily challenge, weekly challenge, explicit seed. Shared seeds give identical geography and conditions, so scores compare meaningfully, and because a run is (seed, input log) it replays for verification ([05 §5.10](05-simulation.md#510-determinism-and-replay)).
@@ -117,6 +125,8 @@ Functional elevators exercise moving enclosed spaces, doors, animation, NPC navi
 
 The primary consumer for large human populations: hundreds or more visible NPCs downtown; animation throughput, skinning, navigation, avoidance, perception, shadows, RT character geometry, material diversity; routines, jobs, homes, shops, transit, services, economy, factions. Most persistent NPCs are not simulated in detail. Persistent state is of the form *home: building 184, floor 17, apartment 1702; job: hospital 2, radiology; state: working; next event: shift end*. When neither the NPC nor the location is relevant to an observer, no detailed movement happens; when the region or interior activates, the NPC materializes consistently from persistent state. This is the real-world consumer for spatial and temporal simulation LOD ([05 §5.3–5.6](05-simulation.md#53-event-scheduler-temporal-lod)).
 
+**And the consumer for characters as parameter vectors.** A city's population cannot be a mesh per resident, so a persistent NPC record carries an **appearance parameter vector** beside its home, job and next event — a short named record that is part of the NPC the way its address is ([07 §7.11](07-content-pipeline.md#711-characters), [ADR-0032](../adr/0032-characters-are-parameter-vectors.md)). Only **materialized** NPCs hold a baked vertex stream; at farther tiers the city is drawn from a small set of **archetype presets** with joint scales, and a promotion that needs a bake enqueues it and draws the preset until it lands rather than stalling a tick ([05 §5.16](05-simulation.md#516-characters-at-run-time)). Materializing an NPC twice must produce the same body, for the same reason it must produce the same shift schedule. What a baked character costs, and therefore how many the downtown tier holds, is **E28** ([10 §10.5](10-roadmap-risks.md#105-experiments-to-run-before-committing)).
+
 ### Dense asset and renderer stress
 
 Extremely high instance counts, many unique materials, texture residency, dense lighting, RT acceleration structures, glass, reflections, interiors, foliage mixed with architecture, shadow complexity, skinned characters, crowds, vehicles, audio, navigation, physics, simulation, shader divergence, streaming under movement. A crowded plaza or transit station is an explicit pathological benchmark ([09 §9.4](09-testing-profiling.md#94-benchmark-scene-corpus)).
@@ -149,6 +159,7 @@ Density and complexity: dense asset rendering, massive instance counts, dense ma
 | Destruction with support graphs and downstream consumers; story protection | [05 §5.8–5.9](05-simulation.md#58-destruction) |
 | Run telemetry and the run database | [06 §6.11](06-agent-tooling.md#611-automated-playtesting) |
 | Every limit a tunable | [11 §11.6](11-performance-principles.md#116-no-hidden-limits) |
+| Characters as parameter vectors; the bake cached by parameter hash; archetype presets beyond the materialized tier | [07 §7.11](07-content-pipeline.md#711-characters), [05 §5.16](05-simulation.md#516-characters-at-run-time) |
 
 ## 13.4 Requirements the consumers add or sharpen
 
@@ -167,13 +178,14 @@ Density and complexity: dense asset rendering, massive instance counts, dense ma
 13. **Destruction as a world-model operation.** Structural support, residents, jobs, vertical circulation, utilities, roads, navigation, quests, and persistence all react; a benchmark scenario destroys part of an occupied tower.
 14. **Scored deterministic runs.** Run = (seed, input log, schema version); the run database stores runs; leaderboards are projections; scores are verifiable by replay. Daily and weekly shared seeds.
 15. **Still water and ocean.** Oasis pools with reflection, refraction, and wet shorelines; an effectively infinite ocean with waves and shoreline interaction, potentially underwater rendering. No flow simulation.
+16. **Characters as parameter vectors, at both ends of the range.** Island City needs a resident's body to cost a short named record and a shared bake rather than a mesh, with archetype presets beyond the materialized tier and a materialization that reproduces the same body every time; Desert Survival needs one base, about a dozen cosmetic parameters, four slots, the vector in the run and replay header, and no coupling to gameplay at all. One mechanism serves both ends ([07 §7.11](07-content-pipeline.md#711-characters), [05 §5.16](05-simulation.md#516-characters-at-run-time), [ADR-0032](../adr/0032-characters-are-parameter-vectors.md)). What it must never become is a cost for a third game whose characters are hand-authored: it is optional per asset and per game, and the minimal build is the proof.
 
 ## 13.5 Mapping to the roadmap
 
 - **Phase 1**: heightfield terrain with clipmap LOD; sky and atmosphere; a "dune field, 20 km" vista scene with a distant oasis and a moving sun; a downtown block scene as the first density benchmark; per-cluster visibility with terrain as an occluder.
 - **Phase 2**: RT relevance LOD and the BLAS budget manager tested on the window case; GI stability under a moving sun.
 - **Phase 3**: seeded on-demand tile generation with budgets; `GameClock` day and night; observer set with the three camera rigs; per-tile persistent state; interior cells with the unloaded/coarse/active hierarchy; persistent NPC records at LOD3; critter populations.
-- **Phase 5**: the desert generator (dune-field synthesis from a wind field, ruin kits, oasis and scatter rules) and the first building grammar (footprint to furnished rooms) as `derived` nodes with document parameters.
+- **Phase 5**: the desert generator (dune-field synthesis from a wind field, ruin kits, oasis and scatter rules) and the first building grammar (footprint to furnished rooms) as `derived` nodes with document parameters; the character standard at its smallest useful size if Desert Survival's optional creator is in ([§13.1](#player-character-creator-optional)), and at population size for Island City's residents ([§13.2](#dense-npc-simulation)).
 - **Phase 6**: deformable surfaces v1 with signed deformers, granular relaxation, wind transport on the timing wheel, and `SummarizeInterval` for dune migration; destruction of an occupied tower with all downstream consumers. Added exit criteria: walk across a dune crest and it slumps; leave for a game-week and the dune has moved; destroy part of a tower and its residents' routines change.
 - **Phase 7**: Desert Survival is the recommended **first shippable**, built as the Phase 6 exit demo made playable: seeded runs, score, leaderboard-ready replays. Island City is the standing density benchmark environment and the candidate setting for the narrative game.
 
@@ -226,6 +238,6 @@ Horror is neither of the two consumer games. It is a genre the engine must suppo
 
 ## 13.8 Open design questions for the owner
 
-Desert Survival: day length; death rules (one run, permadeath); ruin interiors (interior cells) or shells; keyboard and mouse versus controller; crash site always tile (0, 0) with an authored layer and everything else procedural (recommended); whether shared-seed leaderboards ship in the first release; whether temperature exposure is in.
+Desert Survival: day length; death rules (one run, permadeath); ruin interiors (interior cells) or shells; keyboard and mouse versus controller; crash site always tile (0, 0) with an authored layer and everything else procedural (recommended); whether shared-seed leaderboards ship in the first release; whether temperature exposure is in; whether the optional cosmetic character creator ([§13.1](#player-character-creator-optional)) is in the first release or the game ships with a fixed protagonist.
 
 Island City: whether it stays a technical environment through Phase 7 or acquires a game; the island's size and the city's footprint (which set the ceiling on "every building is real"); which archetypes the first grammar covers; whether vehicles and transit are in the first density benchmark.
