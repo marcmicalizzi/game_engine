@@ -157,13 +157,49 @@ binary at both ends. So:
    excepted. Tar cannot do this half, and without it a file renamed on Windows leaves its old copy
    behind, still compiling, for as long as the remote directory lives.
 
-**Measured**, LAN, 629 files, 8.4 MB: **1.3–2.1 s** per sync, cold or warm, because it sends
-everything every time. An incremental rsync of the same tree takes about 0.4 s in the container.
-A second and a half, against a dependency this machine would otherwise have to grow, is the trade;
-revisit it if the tree gains large binaries. `content/samples/` and `ddc/` are git-ignored and
-never travel.
+**Measured**, LAN, 632 files, 7.4 MB packed: **22.4 s**, repeatably, and **21 s of that is two SSH
+connections**. See "Connections, not bytes" below — the transfer itself is about a second, and
+sending the whole tree every time rather than a delta is not what this costs. `content/samples/`
+and `ddc/` are git-ignored and never travel.
 
-Three details that each cost a run to find, recorded so the next person does not:
+### Connections, not bytes
+
+`ssh titanxp true` takes **10.6 s**, every time, from Windows' own OpenSSH client and from Git for
+Windows' msys one alike — so it is the far side, and on a machine we may not touch it stays.
+Profiled against the pieces, nothing else is close:
+
+| | |
+|---|---|
+| `git ls-files -z` | 0.16 s |
+| `git ls-files -s` (the modes) | 0.13 s |
+| `tar` create, 7.4 MB | 0.24 s |
+| **one SSH connection, no work** | **10.56 s** |
+| `scp` of the tarball | 11.10 s (10.6 of it the connection) |
+| remote `tar -x`, 632 files | 10.59 s (ditto) |
+
+`ControlMaster` is the usual answer and is **not available here**: Windows OpenSSH does not
+implement multiplexing, and Git for Windows' msys ssh answers a `ControlPath` with
+`mux_client_request_session: read from master failed`. So the script spends connections instead:
+reachability reads `nproc` on the way past, the tarball and both manifests go in one `scp`,
+unpacking and configuring and building and testing and the adapter report are one `ssh`, and
+`-Fetch` brings back a single tarball the run packed rather than four files. **Four connections a
+run, five with `-Fetch`, against a naive eight** — a minute of wall clock. A warm no-op run is
+**61.7 s**, of which 42 s is the tax.
+
+Two more the sync had to learn:
+
+- **The executable bit does not survive.** NTFS has no mode bits, so a `tar` built from the
+  Windows working tree records 0644 for everything, `tools/docs-gate.sh` arrives
+  non-executable, and `tools.docs_gate` — the one bash test a machine with no pwsh still
+  registers — fails eighteen times with `Permission denied` and exit 126. The container never
+  showed it, because Docker's bind mount of a Windows path reports everything as 0777. The modes
+  come from `git ls-files -s`, whose first column is 100755; five files in this tree. An
+  *untracked* file has no index entry and arrives 0644.
+- **`find` must `-prune`, not filter.** `-not -path './build/*'` keeps build/ out of the output
+  but still walks a gigabyte of object files; the first version of the stale-file sweep spent 11 s
+  a sync statting things it then discarded.
+
+Three Windows details that each cost a run to find, recorded so the next person does not:
 
 - **`tar` is ambiguous on Windows.** Windows 11 ships bsdtar as `C:\Windows\System32\tar.exe` and
   it comes first on PATH in PowerShell; Git for Windows ships GNU tar, which is what Git Bash
@@ -198,12 +234,15 @@ the container's `linux-gcc-release-v2` count minus exactly those five.
 
 ### FetchContent, cold, from this machine
 
-Every pinned URL is reachable: doctest, meshoptimizer, Vulkan-Headers, volk, VMA, SDL3, Tracy,
-flecs, Jolt, SQLite and Recast all clone over HTTPS with no proxy configuration. A **cold
-configure** — every dependency cloned — took **96 s**; a warm reconfigure, with
-`FETCHCONTENT_UPDATES_DISCONNECTED=ON` so a pinned tag is never re-fetched, takes **12 s**. The
-downloaded sources are 299 MB and live in `~/game_engine-remote/<id>/deps/<preset>/`, outside the
-build tree, so `-Clean` costs a compile and not a download.
+Every pinned URL is reachable from this machine: doctest, meshoptimizer, Vulkan-Headers, volk,
+VMA, SDL3, Tracy, flecs, Jolt, SQLite and Recast all clone over HTTPS with no proxy
+configuration, first try. The first seven alone are **299 MB** and took 1 m 46 s to fetch; a
+configure that still had four to clone finished in 1 m 37 s, so **a genuinely cold configure is
+two to three minutes** and effectively all of it is `git clone`. A reconfigure with everything
+present is **6 s**, because `FETCHCONTENT_UPDATES_DISCONNECTED=ON` stops the git-based
+dependencies re-fetching a tag that is pinned anyway. The sources live in
+`~/game_engine-remote/<id>/deps/<preset>/`, outside the build tree, so `-Clean` costs a compile
+and not a download.
 
 ## What a v3 build does on this CPU, and the hole it found
 
@@ -252,17 +291,55 @@ Xeon E5-2670, 16 threads, `-Jobs 16`. The machine's load is noted because it is 
 owner's work; these are wall-clock upper bounds, not costs
 ([bench](../subsystems/bench.md#measuring-on-a-shared-machine)).
 
-| | `linux-server` | Load at the start |
+| | `linux-server` (GCC 14.3) | Load average at the start |
 |---|---|---|
-| Sync (629 files, 8.4 MB) | 1.3–2.1 s | — |
-| Cold configure, every dependency cloned | 1 m 36 s | 0.9 |
-| Cold build, 972 targets | *see the table below* | 1.6 |
-| Warm reconfigure + no-op build | 15 s | — |
-| Full CTest suite | *see the table below* | — |
+| Sync, 632 files / 7.4 MB packed | 22.4 s (21 s of it two SSH connections) | — |
+| Configure with **four of eleven dependencies still to clone** | 1 m 37 s | 0.9 |
+| Configure with every dependency already in `deps/` | 1 m 02 s | 1.5 |
+| Cold build, 972 targets, `-j 16` | **9 m 03 s** (114 m of CPU) | 1.7 |
+| Warm reconfigure | 6.1 s | — |
+| Warm no-op build | 0.15 s | — |
+| Full CTest suite, 49 tests | **3 m 30 s** | 9.9 |
+| A warm end-to-end run, nothing to do | 61.7 s | — |
+
+`linux-server-debug` (clang 22.1.8, Debug) tests in **6 m 03 s** — asserts and iterator checking,
+on 2012 cores.
+
+**Disk: 2.1 GB** for everything this tree needs on that machine — checkout, one build tree and
+one set of downloaded dependencies — under `~/game_engine-remote/<checkout-id>/`, on a volume with
+8.6 TB free. `-Clean` drops the build tree and keeps the dependencies.
 
 ## What GCC 14 and clang 22 found
 
-*(filled in below once both compilers have had a full run)*
+The tree had never been compiled by either. Between them they found **one** thing, and it was in
+neither the engine nor its warnings.
+
+**GCC 14.3.1: nothing.** 972 targets with `-Wall -Wextra -Wpedantic -Wshadow -Wold-style-cast
+-Wcast-align -Wdouble-promotion -Wformat=2` and `-Werror`, and the only two warnings in the whole
+log are in Tracy's own sources (`TracyProfiler.cpp` ignoring `pipe()`, `TracySysPower.cpp`
+ignoring `fscanf()`, both `-Wunused-result`), which is third-party code compiled as such. Nothing
+in `core/`, `foundation/`, `domain/`, `systems/`, `apps/` or `tools/` produced a diagnostic. That
+is a better result than GCC 13 in the container had any right to predict and is worth recording as
+a negative: **a GCC major version was not, this time, a source of new warnings.**
+
+**clang 22.1.8: one, 1,797 times, and it is doctest's.** `-Wc2y-extensions` is new in clang 22 and
+fires on `__COUNTER__`, which C standardized only in C2y; `DOCTEST_ANONYMOUS(x)` is
+`DOCTEST_CAT(x, __COUNTER__)`, so every `TEST_CASE` in the tree tripped it and `-Werror` ended the
+build. Every occurrence was in a `tests/` file and **none in engine code**. Marking doctest
+`SYSTEM` does not help: clang suppresses diagnostics *inside* a system header and reports this one
+at the expansion site, which is our `.cpp`. The fix is in `cmake/EngineTesting.cmake` and is as
+narrow as it can be — one diagnostic, on Clang 22 and newer only, on `engine_test_main`'s
+INTERFACE, so it reaches test executables and nothing else in the tree. An engine translation unit
+that ever uses `__COUNTER__` will still be warned about.
+
+**CMake 4.3.4 configures this tree**, which the container (pinned at 3.28, the floor the presets
+promise) cannot tell you. Worth knowing before a rolling distribution is treated as a risk.
+
+### And one thing that is not a compiler's fault
+
+On this CPU the engine found its own edge, described above: a v3 build cannot run here, the
+startup check says so correctly for every app, and `tools/schemac` — which the build itself runs
+— had no check to say it with. That is now a configure-time refusal.
 
 ## When it goes wrong
 

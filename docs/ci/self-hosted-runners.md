@@ -21,13 +21,23 @@ renderer change.
 | Runner | Machine | Preset | Labels |
 |---|---|---|---|
 | `windows-maxwell` | Windows 11 desktop, Intel i7-980 (Westmere, 2010: SSE4.2, no AVX) **until the owner's board swap**, NVIDIA GeForce GTX Titan X (Maxwell, 12 GB), 2560×1440 display | `msvc-release-v2` | `self-hosted`, `windows`, `gpu`, `maxwell` |
-| `linux-pascal` | Linux server, headless (no X11, no Wayland), Intel Xeon E5-2670 (Sandy Bridge-EP, 2012: AVX, **no** AVX2, FMA or BMI2), NVIDIA GeForce GTX Titan Xp (Pascal, 12 GB) | `linux-clang-debug-v2` | `self-hosted`, `linux`, `gpu`, `pascal`, `headless` |
+| `linux-pascal` | Linux server, headless (no X11, no Wayland), Intel Xeon E5-2670 (Sandy Bridge-EP, 2012: AVX, **no** AVX2, FMA or BMI2), NVIDIA GeForce GTX Titan Xp (Pascal, 12 GB) | `linux-server-debug` | `self-hosted`, `linux`, `gpu`, `pascal`, `headless` |
 
 The two presets are deliberately different in everything but their baseline: a release build on the
 slow Westmere box, because a release build is what a 30 fps target is measured in and a debug build
 of this engine on six 2010 cores is not a weekly proposition; a Clang debug build on the server,
 because asserts and iterator checking are worth more than speed there and it is the preset a Linux
 contributor runs.
+
+**`linux-server-debug` is `linux-clang-debug-v2` plus `ENGINE_WINDOW_BACKENDS=none`**, and the
+server needs the second half as much as the first. That machine has a *partial* X11 — `libX11` and
+four of its extensions, no `Xcursor`, no `Xrandr` — which is enough for SDL's configure to select
+the X11 backend and then stop with `Couldn't find dependency package for XCURSOR`. Detection
+cannot be trusted there; it has to be told. `linux-server` is the same switch over
+`linux-gcc-release-v2`, for a release build on that machine.
+[Remote Linux builds](remote-linux.md) has the whole argument, the transcripts, and
+`tools/remote-build.ps1`, which is how this tree is built there today without a runner registered
+at all.
 
 ## Both GPU runners are x86-64-v2, and that is what the `-v2` presets are for
 
@@ -266,22 +276,29 @@ passes, which is why the log matters more than the exit status on these two.
 
 ### Linux server
 
-- **The packages `.github/workflows/ci.yml` installs**, which are what SDL3 needs to build:
+- **A compiler, Ninja and nothing for a display.** The `linux-server*` presets set
+  `ENGINE_WINDOW_BACKENDS=none`, so SDL3 is built with no X11, Wayland, KMS/DRM, dummy or
+  offscreen video driver and **none of the development packages this section used to list are
+  needed**:
 
   ```sh
   sudo apt-get update
-  sudo apt-get install -y ninja-build clang g++ \
-    libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxfixes-dev libxss-dev \
-    libwayland-dev libxkbcommon-dev libegl1-mesa-dev libgl1-mesa-dev libdrm-dev libgbm-dev \
-    libxtst-dev libdecor-0-dev libudev-dev
+  sudo apt-get install -y ninja-build clang g++    # and that is the whole list
   ```
 
-  SDL3 is built from source and wants the X11 and Wayland headers even on a machine that will never
-  open a window; the window tests then skip at run time, which is the intended behaviour.
-- **`cmake` 3.28 or newer** (`CMakePresets.json` requires it; Ubuntu 24.04 ships 3.28) and **`git`**.
-  The hosted runners get CMake for free; a bare server does not.
+  Installing the X11 and Wayland headers instead is the *worse* option on a server, not merely a
+  redundant one: a partial set — which is what a server that had `libX11` pulled in years ago
+  actually has — makes SDL's configure select X11 and then fail on the first extension it cannot
+  find. The window and swapchain tests skip at run time either way, with the same reason string.
+  See [remote Linux builds](remote-linux.md#the-headless-windowing-switch).
+- **`cmake` 3.28 or newer** (`CMakePresets.json` requires it) and **`git`**. The hosted runners get
+  CMake for free; a bare server does not. CMake 4.3 configures this tree too — measured on the
+  Gentoo server — so a rolling distribution is not a problem.
 - **`pwsh`**, PowerShell 7, because `tools/dev.ps1` is the build entry point on both platforms.
-  Microsoft's `.deb` or the `powershell` snap both work.
+  Microsoft's `.deb` or the `powershell` snap both work. Without it five CTest tests are not
+  *failed*, they are not **registered** (`cmake/EngineTesting.cmake`); `remote-build.ps1` runs
+  against a machine with no pwsh on purpose and
+  [names the five](remote-linux.md#what-the-suite-is-missing-there-and-why).
 - **`curl` and `tar`**, for `tools/ci/install-runner.sh`.
 - **The NVIDIA driver, installed headless, with its Vulkan ICD.** No X server and no Wayland
   compositor are needed: NVIDIA's Vulkan implementation works on a machine that never starts a
@@ -313,7 +330,7 @@ report instead. It works on both, and needs nothing installed beyond a built tre
 ```powershell
 build/msvc-release/bin/engine-cli gpu.adapters                      # Windows
 build/msvc-release/bin/engine-cli gpu.adapters --report gpu.json    # the same, as a file to send back
-build/linux-clang-debug-v2/bin/engine-cli gpu.adapters              # Linux
+build/linux-server-debug/bin/engine-cli gpu.adapters                # Linux
 ```
 
 `"available": true` with the GPU's name, `"tier": "raster"`, `VK_EXT_mesh_shader: false` and
@@ -324,6 +341,46 @@ the engine needs it.
 The smoke scripts print this on every run and warn when it comes back false; `-RequireAdapters` /
 `--require-adapters` turns that warning into a failure, which is worth using once the machines are
 known good, so a driver that stops working does not look like a quiet pass.
+
+### The Titan Xp, the moment `nvidia-smi` works again
+
+As of 2026-09-20 that machine's driver is being rebuilt: `nvidia-smi` fails with *"couldn't
+communicate with the NVIDIA driver"*, `gpu.adapters` answers `"available": false`, and **every GPU
+test on it skips** — which the suite reports as passing, so a green remote run today says nothing
+whatever about the GPU. This is the sequence to run the moment it comes back, in this order,
+before anything is read into a green result. It needs no runner registered and no `sudo`; it is
+[remote Linux builds](remote-linux.md) from the Windows desktop.
+
+```powershell
+# 1. The adapter report first, on its own. If this is not right, nothing below means anything.
+pwsh tools/remote-build.ps1 -Host titanxp -Preset linux-server-debug -Fetch .\out\titanxp
+#    Read out\titanxp\adapters.json:  "available": true, the Titan Xp by name,
+#    "tier": "raster", VK_EXT_mesh_shader false, "verdict": {"usable": true, "tier": "raster"}.
+#    A false here is a driver problem on that machine and not a tree problem — stop and say so.
+
+# 2. Then the GPU suites, which until now have only ever skipped there.
+pwsh tools/remote-build.ps1 -Host titanxp -Preset linux-server-debug -Test `
+     -Filter 'gfx|renderer|swapchain|skin' -Fetch .\out\titanxp
+#    LastTest.log is every test binary's own output; a case that still says
+#    "device unavailable: no Vulkan 1.3 driver (ICD) is installed behind the loader"
+#    is the loader or the ICD manifest, not the kernel module (see above).
+
+# 3. Then the whole suite, so the GPU cases are seen beside everything else.
+pwsh tools/remote-build.ps1 -Host titanxp -Preset linux-server-debug -Test -Fetch .\out\titanxp
+
+# 4. And the release preset, which is what a 30 fps claim would ever be measured in.
+pwsh tools/remote-build.ps1 -Host titanxp -Preset linux-server -Test -Fetch .\out\titanxp
+```
+
+Three things to expect the first time, because none of them has ever run on a Pascal card here:
+the **window and swapchain** tests keep skipping — there is still no display server and
+`ENGINE_WINDOW_BACKENDS=none` means there is no video driver to make a surface with, so GPU work
+reaches the device through headless paths only; the **mesh-shader and ray-tracing** cases skip on
+capability, as they do on the Maxwell box; and this is the **first Vulkan driver this engine has
+met that is not NVIDIA-on-Windows**, so a validation-layer complaint or a format the desktop's
+5090 never refused is the interesting kind of failure and is worth an entry in
+[Troubleshooting](#troubleshooting) either way. Registering the runner proper
+(`tools/ci/install-runner.sh`) comes after all four of those pass by hand.
 
 ## Registering a runner
 
