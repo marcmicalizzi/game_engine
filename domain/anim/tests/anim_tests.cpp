@@ -89,6 +89,100 @@ TEST_CASE("anim skeleton: the bind pose, its inverses, and the model transforms 
   CHECK(rebuilt.at(3, 3) == 1.0f);
 }
 
+// `local_to_model` and `skinning_matrices` are hand-vectorized (skeleton.cpp explains why: the
+// plain form compiled to a store-forwarding stall per joint under /arch:AVX2, which is ADR-0031's
+// one recorded regression). A kernel rewritten for speed has to prove it did not also change the
+// answer, and "close enough" is the wrong standard for two reasons: the GPU skinning test asserts
+// the shader reproduces this to a tolerance, so any drift here spends that budget; and a pose
+// composed on one machine and replayed on another has to agree bit for bit. So this compares
+// against `core/math`'s `Mat4 operator*` — the expression the kernel used to be — with `==`.
+//
+// A chain, a branch and a lone root in one skeleton, none of the transforms axis-aligned, so
+// every lane of every column carries a different value and a transposed or swapped one shows.
+TEST_CASE("anim skeleton: the vectorized kernels are bit-identical to the scalar product") {
+  constexpr u32 k_joints = 12;
+  Skeleton skeleton;
+  skeleton.resize(k_joints);
+  const i32 parents[k_joints] = {k_no_joint, 0, 1, 2, 3, 1, 5, 0, 7, k_no_joint, 9, 10};
+  for (u32 j = 0; j < k_joints; ++j)
+    skeleton.parents[j] = parents[j];
+  for (u32 j = 0; j < k_joints; ++j) {
+    const f32 t = static_cast<f32>(j) * 0.41f + 0.13f;
+    skeleton.local_bind[j].position = Vec3{0.31f * t, -0.17f + t, 0.07f * t};
+    skeleton.local_bind[j].rotation = normalize(Quat{0.21f * t, 0.13f, -0.37f * t, 0.83f});
+    skeleton.local_bind[j].scale = Vec3{1.0f + 0.03f * t, 0.97f, 1.11f - 0.02f * t};
+  }
+  compute_inverse_bind(skeleton);
+
+  Pose pose;
+  rest_pose(skeleton, pose);
+  for (u32 j = 0; j < k_joints; ++j) {
+    const f32 t = static_cast<f32>(j) * 0.29f;
+    pose.rotation[j] = normalize(Quat{-0.11f + t, 0.23f * t, 0.19f, 0.71f - 0.05f * t});
+    pose.translation[j] = pose.translation[j] + Vec3{0.02f * t, 0.05f, -0.03f * t};
+    pose.scale[j] = Vec3{1.0f + 0.01f * t, 1.0f, 0.99f};
+  }
+
+  Vector<Mat4> model(k_joints, Mat4::identity());
+  local_to_model(skeleton, pose, std::span<Mat4>(model.data(), model.size()));
+
+  // The reference: the same forward pass written the way the header describes it.
+  Vector<Mat4> reference(k_joints, Mat4::identity());
+  for (u32 j = 0; j < k_joints; ++j) {
+    const Mat4 local =
+        mat4_from_transform(Transform3{pose.translation[j], pose.rotation[j], pose.scale[j]});
+    reference[j] =
+        parents[j] == k_no_joint ? local : reference[static_cast<u32>(parents[j])] * local;
+  }
+  for (u32 j = 0; j < k_joints; ++j) {
+    for (u32 row = 0; row < 4; ++row) {
+      for (u32 col = 0; col < 4; ++col)
+        CHECK(model[j].at(row, col) == reference[j].at(row, col));
+    }
+  }
+
+  Vector<JointMatrix> matrices(k_joints, JointMatrix{});
+  skinning_matrices(std::span<const Mat4>(model.data(), model.size()),
+                    std::span<const Mat4>(skeleton.inverse_bind.data(), k_joints),
+                    std::span<JointMatrix>(matrices.data(), k_joints));
+  for (u32 j = 0; j < k_joints; ++j) {
+    const JointMatrix expected = joint_matrix(reference[j] * skeleton.inverse_bind[j]);
+    for (u32 row = 0; row < 3; ++row) {
+      for (u32 col = 0; col < 4; ++col)
+        CHECK(matrices[j].rows[row][col] == expected.rows[row][col]);
+    }
+  }
+
+  // The fourth row is never written by `skinning_matrices` — it builds the 3x4 directly — so the
+  // row it skips is worth looking at once.
+  //
+  // **It is (0, 0, 0, 1) to floating-point accuracy and not exactly**, and the difference is
+  // instructive: the model matrix's fourth row *is* exact, because it is a product of matrices
+  // built by `mat4_from_transform`, whose fourth row is the literal (0, 0, 0, 1). The inverse
+  // bind's is not, because `compute_inverse_bind` calls `core/math`'s **general** cofactor
+  // `inverse()` rather than an affine one, so its bottom row comes out of the same division every
+  // other entry does. Row 3 of `A * B` is row 3 of `B` when A is exactly affine, so the product
+  // inherits the inverse's error: three of these twelve joints land a few ulp off 1.
+  //
+  // That is exactly why `joint_matrix` documents the row as "dropped, not checked", and why this
+  // kernel is allowed to skip computing it. If an affine inverse ever replaces the general one,
+  // this becomes an equality — but it is not one today and a test that claimed it would be wrong.
+  for (u32 j = 0; j < k_joints; ++j) {
+    const Mat4 full = reference[j] * skeleton.inverse_bind[j];
+    CHECK(full.at(3, 0) == doctest::Approx(0.0f).epsilon(1e-5));
+    CHECK(full.at(3, 1) == doctest::Approx(0.0f).epsilon(1e-5));
+    CHECK(full.at(3, 2) == doctest::Approx(0.0f).epsilon(1e-5));
+    CHECK(full.at(3, 3) == doctest::Approx(1.0f).epsilon(1e-5));
+  }
+
+  // Running it twice into the same storage gives the same bits: the kernel carries no state and
+  // nothing in it depends on where the arrays landed.
+  Vector<Mat4> again(k_joints, Mat4::identity());
+  local_to_model(skeleton, pose, std::span<Mat4>(again.data(), again.size()));
+  for (u32 j = 0; j < k_joints; ++j)
+    CHECK(again[j] == model[j]);
+}
+
 TEST_CASE("anim skeleton: a parent that does not come before its child is refused") {
   Skeleton skeleton;
   skeleton.resize(2);

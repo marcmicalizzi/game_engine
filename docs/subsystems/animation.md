@@ -259,10 +259,30 @@ This capability was built to find out what ADR-0027's contract is like from the 
 > update, unchanged**, while skinning (LOD1 minus LOD2 — `local_to_model` plus
 > `skinning_matrices`) is **0.967 → 1.372 µs, +42%**. So the 23 `slerp`s that point 3 below calls
 > the expensive half are exactly as fast as they were, and the 46 `Mat4` products that build a
-> 23-joint skeleton's skinning matrices are what `/arch:AVX2` made worse — a 4×4 product is four
-> 128-bit rows, and MSVC given 256-bit registers makes a worse choice for it. That is a codegen
-> problem in `domain/anim`, and it is **the open follow-up on this page**: fix the kernel, do not
-> exempt the module from the tree's baseline.
+> 23-joint skeleton's skinning matrices are what `/arch:AVX2` made worse.
+>
+> **Resolved, 2026-09-20 — and the diagnosis in the paragraph above was wrong about the cause.**
+> Neither build vectorized the product at all; `/arch:AVX2` made MSVC copy the 4×4 result through
+> **32-byte** moves instead of 16-byte ones, which cannot forward to the narrower loads the next
+> joint makes of it, and `local_to_model` is a forward pass whose critical path runs through
+> exactly those loads. The kernels are now hand-vectorized in 128-bit registers
+> ([anim](anim.md#the-matrix-kernels-and-the-avx2-regression-they-used-to-be) has the listings, the
+> method and the table), bit-identically to `Mat4 operator*`. Measured directly on the pair, one
+> 23-joint instance: **0.985 → 0.587 µs at v2 and 1.322 → 0.744 µs at v3**, so the v3 build now
+> costs **23% less than the v2 build did before ADR-0031**. `skinning_matrices` alone went from 20%
+> slower at v3 to 1.3% *faster*.
+>
+> **What is left is `core/math`, not this capability.** `local_to_model` is still 28% slower at v3,
+> and 89% of that remainder is `core/math::mat4_from_transform`, which is **+77% at x86-64-v3** and
+> which this change does not touch — a second, larger AVX2 regression that was hidden inside the
+> +42% above. It is named in anim.md with a bench row to move and is deliberately left to be scoped
+> against `core/math`'s whole blast radius.
+>
+> **The tick rows above have not been re-measured.** They are the 10⁴-instance world, they take a
+> quiet machine and half an hour, and the kernel numbers say what to expect rather than what was
+> seen: skinning was about 1.0 µs of a LOD1 instance's 2.6 µs, so `lod0` and `lod1` should come
+> back near or below their v2 figures and `lod2`, `lod3` and the pool should not move at all.
+> Whoever next has a quiet box should take them and replace this paragraph with the numbers.
 
 Five things these say:
 

@@ -12,3 +12,8 @@ engine_module(NAME anim LAYER domain
 
 engine_module_tests(NAME anim
   SOURCES tests/anim_tests.cpp tests/retarget_tests.cpp tests/size_table.cpp)
+
+# The matrix kernels on their own, with no ECS, no pose pool and no world above them: ADR-0031
+# found `local_to_model` + `skinning_matrices` 42% slower at x86-64-v3 by subtracting two tick
+# rows, and this is the direct measurement that inference stood in for.
+engine_module_bench(NAME anim SOURCES bench/anim_bench.cpp)
