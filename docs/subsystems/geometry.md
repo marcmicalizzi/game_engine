@@ -369,8 +369,13 @@ exists for. A tighter bound is possible and is a follow-up — the largest displ
 rather than per channel would shrink it by the ratio of the channel's region to the mesh, at the
 cost of a per-(cluster, channel) float the directory would have to carry.
 
-**A second source of displacement is coming, and this stream is only the first.** The characters
-this is for are two-level: a low-resolution canonical **control mesh** (about 13k vertices) carries
+**A second source of displacement is coming, and this stream is only the first.**
+[ADR-0032](../adr/0032-characters-are-parameter-vectors.md) is the architecture this serves, and
+two of its rules land here: a cluster DAG is built **once per base and once per module, never per
+character**, which is what makes a morph channel the right unit rather than a mesh per character;
+and the stream is **optional per mesh the way the skin stream is**, which is what keeps every
+rigid mesh's bytes and every rigid picture exactly what they were. The characters
+it is for are two-level: a low-resolution canonical **control mesh** (about 13k vertices) carries
 the shape channels, the skin weights and the cage, and a dense detail surface (hundreds of
 thousands to millions of triangles, from a sculpt, a scan or a generator) is bound to it, each
 dense vertex following a few control vertices with weights — the same transfer ADR-0026 plans for
