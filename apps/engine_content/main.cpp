@@ -56,6 +56,7 @@ const char* k_usage =
     "      --page-bytes <n>      streaming page target in bytes (default 131072); 0 writes no\n"
     "                            page table and leaves the clusters in builder order\n"
     "      --no-weld             keep the file's duplicate vertices\n"
+    "      --no-morph            drop the source's morph targets (what does the stream cost?)\n"
     "      --uv-seams <rule>     what a LOD collapse may do at a UV atlas island edge:\n"
     "                            none, protect (default), or lock\n"
     "      --normal-seams <rule> the same at a hard shading edge (default none)\n"
@@ -177,7 +178,26 @@ struct MeshOptions {
   f32 uv_weight = geometry::ClusterLodOptions{}.uv_weight;
   geometry::SeamRule uv_seams = geometry::ClusterLodOptions{}.uv_seams;
   geometry::SeamRule normal_seams = geometry::ClusterLodOptions{}.normal_seams;
+  // `build --no-morph`: drop the source's morph targets before anything else sees them, so the
+  // container is the one the same file would give with no channels — welded without the deltas in
+  // the key, simplified without `morph_seams`, and with the seven morph sections empty. It exists
+  // to answer "what does the morph stream cost this asset?" as a pair of command lines, the way
+  // the seam rules do; the recorded build key says it (see `morph_key`), so a container built
+  // without channels is never mistaken for the answer to a build that wanted them.
+  bool morph = true;
 };
+
+// The build key of a container built with `--no-morph`: the ordinary key, moved by a constant
+// through one SplitMix64 round. `geometry::cluster_cache_key` has no morph term because nothing
+// else builds without the channels; this keeps such a container from recording the key a full
+// build would record, which is what `build-all` skips on.
+u64 morph_key(u64 key, const MeshOptions& options) noexcept {
+  if (options.morph) return key;
+  u64 z = key ^ 0x6e6f2d6d6f727068ull;  // "no-morph"
+  z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ull;
+  z = (z ^ (z >> 27)) * 0x94d049bb133111ebull;
+  return z ^ (z >> 31);
+}
 
 geometry::ClusterLodOptions lod_options_of(const MeshOptions& options) {
   geometry::ClusterLodOptions lod_options;
@@ -414,6 +434,7 @@ bool build_one(const std::string& input, const std::string& output, const MeshOp
     error.message = message;
     return false;
   }
+  if (!options.morph) mesh.morph.clear();
 
   Diagnostics diagnostics;
   if (!validate_mesh(mesh, input, diagnostics)) {
@@ -660,8 +681,9 @@ int build(const BuildCommandOptions& options) {
   u64 source_hash = 0;
   std::string message;
   if (!assets::source_mesh_hash(options.input, source_hash, &message)) return failed(message);
-  const u64 key = geometry::cluster_cache_key(source_hash, lod_options_of(options.mesh),
-                                              options.mesh.weld, options.mesh.page_bytes);
+  const u64 key = morph_key(geometry::cluster_cache_key(source_hash, lod_options_of(options.mesh),
+                                                        options.mesh.weld, options.mesh.page_bytes),
+                            options.mesh);
 
   std::string output = options.output;
   if (options.cache) {
@@ -736,6 +758,8 @@ int build_command(int argc, char** argv) {
       if (!next_value(argc, argv, i, options.ddc)) return k_exit_usage;
     } else if (a == "--no-weld") {
       options.mesh.weld = false;
+    } else if (a == "--no-morph") {
+      options.mesh.morph = false;
     } else if (a == "--cache") {
       options.cache = true;
     } else if (a == "--strict") {

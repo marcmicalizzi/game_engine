@@ -120,6 +120,9 @@ struct CubeOptions {
   f32 scale = 1.0f;
   bool nan_position = false;
   bool external_image = false;
+  // One morph target on every primitive, moving the +x face's four corners out by a quarter:
+  // enough for a channel with deltas on some vertices and none on the rest.
+  bool morph = false;
 };
 
 // The six base colors the generated materials cycle through; the first is the textured one.
@@ -199,6 +202,18 @@ bool write_cube_glb(const std::string& path, const CubeOptions& options = {}) {
   bin.insert(bin.end(), png.begin(), png.end());
   const u32 png_bytes = png.size();
   pad4(bin, 0);
+  const u32 target_offset = static_cast<u32>(bin.size());
+  if (options.morph) {
+    for (u32 f = 0; f < 6; ++f) {
+      for (u32 c = 0; c < 4; ++c) {
+        put_f32(bin, f == 0 ? 0.25f : 0.0f);
+        put_f32(bin, 0.0f);
+        put_f32(bin, 0.0f);
+      }
+    }
+  }
+  const u32 target_bytes = static_cast<u32>(bin.size()) - target_offset;
+  const u32 target_accessor = 3 + options.primitives;
 
   // One index accessor and one material per primitive, all over the same index buffer view.
   const u32 group_indices = 36 / options.primitives;
@@ -213,7 +228,8 @@ bool write_cube_glb(const std::string& path, const CubeOptions& options = {}) {
     }
     primitives +=
         "{\"attributes\":{\"POSITION\":0,\"NORMAL\":1,\"TEXCOORD_0\":2},\"indices\":" + n(3 + g) +
-        ",\"material\":" + n(g) + "}";
+        ",\"material\":" + n(g) +
+        (options.morph ? ",\"targets\":[{\"POSITION\":" + n(target_accessor) + "}]" : "") + "}";
     materials += "{\"pbrMetallicRoughness\":{\"baseColorFactor\":";
     materials += k_base_colors[g];
     if (g == 0) materials += ",\"baseColorTexture\":{\"index\":0}";
@@ -232,8 +248,8 @@ bool write_cube_glb(const std::string& path, const CubeOptions& options = {}) {
       "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,\"scenes\":[{\"nodes\":[0]}],"
       "\"nodes\":[{\"mesh\":0}],"
       "\"meshes\":[{\"primitives\":[" +
-      primitives +
-      "]}],"
+      primitives + "]" + (options.morph ? ",\"weights\":[0]" : "") +
+      "}],"
       "\"materials\":[" +
       materials +
       "],"
@@ -247,6 +263,8 @@ bool write_cube_glb(const std::string& path, const CubeOptions& options = {}) {
       "{\"bufferView\":1,\"componentType\":5126,\"count\":24,\"type\":\"VEC3\"},"
       "{\"bufferView\":2,\"componentType\":5126,\"count\":24,\"type\":\"VEC2\"}," +
       index_accessors +
+      (options.morph ? ",{\"bufferView\":5,\"componentType\":5126,\"count\":24,\"type\":\"VEC3\"}"
+                     : "") +
       "],"
       "\"bufferViews\":["
       "{\"buffer\":0,\"byteOffset\":0,\"byteLength\":" +
@@ -255,8 +273,11 @@ bool write_cube_glb(const std::string& path, const CubeOptions& options = {}) {
       "},{\"buffer\":0,\"byteOffset\":" + n(uv_offset) +
       ",\"byteLength\":" + n(index_offset - uv_offset) +
       "},{\"buffer\":0,\"byteOffset\":" + n(index_offset) + ",\"byteLength\":" + n(index_bytes) +
-      "},{\"buffer\":0,\"byteOffset\":" + n(png_offset) + ",\"byteLength\":" + n(png_bytes) +
-      "}],\"buffers\":[{\"byteLength\":" + n(static_cast<u32>(bin.size())) + "}]}";
+      "},{\"buffer\":0,\"byteOffset\":" + n(png_offset) + ",\"byteLength\":" + n(png_bytes) + "}" +
+      (options.morph ? ",{\"buffer\":0,\"byteOffset\":" + n(target_offset) +
+                           ",\"byteLength\":" + n(target_bytes) + "}"
+                     : "") +
+      "],\"buffers\":[{\"byteLength\":" + n(static_cast<u32>(bin.size())) + "}]}";
   while (json.size() % 4 != 0)
     json += ' ';
 
@@ -540,6 +561,39 @@ TEST_CASE("engine-content: --cache writes the container the source's hash addres
   CHECK(content({"build", mesh, slashes(dir / "out.clusters"), "--cache", "--ddc", ddc}, true)
             .exit_code == 2);
   CHECK(content({"build", mesh, "--ddc", ddc}, true).exit_code == 2);
+}
+
+// `--no-morph` is how "what does the morph stream cost this asset?" becomes a pair of command
+// lines: the same source built twice, once with its targets and once without. The one property it
+// must have beyond dropping the channels is that the container **says** it was built differently
+// — a different build key — or `build-all` would skip a full build over a container that has none
+// of the channels it asked for.
+TEST_CASE("engine-content: --no-morph builds the container without the source's channels") {
+  const test::TempDir tmp("engine_content_morph_tests");
+  const std::filesystem::path dir = tmp.native();
+  const std::string mesh = slashes(dir / "morph_cube.glb");
+  CubeOptions options;
+  options.morph = true;
+  REQUIRE(write_cube_glb(mesh, options));
+
+  const std::string with = slashes(dir / "with.clusters");
+  const std::string without = slashes(dir / "without.clusters");
+  const Run a = content({"build", mesh, with});
+  REQUIRE_MESSAGE(a.exit_code == 0, a.output);
+  const Run b = content({"build", mesh, without, "--no-morph"});
+  REQUIRE_MESSAGE(b.exit_code == 0, b.output);
+  CHECK(number(a.result, "source_hash") == number(b.result, "source_hash"));
+  CHECK(number(a.result, "build_key") != number(b.result, "build_key"));
+
+  const Run info_with = content({"info", with});
+  const Run info_without = content({"info", without});
+  REQUIRE_MESSAGE(info_with.exit_code == 0, info_with.output);
+  REQUIRE_MESSAGE(info_without.exit_code == 0, info_without.output);
+  CHECK(number(info_with.result, "morph_channels") == 1);
+  CHECK(number(info_with.result, "morph_deltas") == 4);  // the +x face's corners, and no others
+  CHECK(number(info_without.result, "morph_channels") == 0);
+  CHECK(number(info_without.result, "morph_deltas") == 0);
+  CHECK(number(b.result, "bytes") < number(a.result, "bytes"));
 }
 
 TEST_CASE("engine-content: the same mesh builds the same bytes whatever --jobs says") {

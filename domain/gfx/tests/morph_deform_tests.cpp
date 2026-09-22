@@ -22,6 +22,7 @@
 #include "deform_reference.h"
 
 #include <domain/anim/skeleton.h>
+#include <domain/assets/gltf.h>
 #include <domain/geometry/cluster.h>
 #include <domain/geometry/stress_mesh.h>
 #include <domain/gfx/cluster_cull.h>
@@ -31,6 +32,7 @@
 #include <domain/gfx/vulkan.h>
 
 #include <doctest/doctest.h>
+#include <test_paths.h>
 
 #include <algorithm>
 #include <cmath>
@@ -519,6 +521,118 @@ TEST_CASE("deform chain: every stage and the whole chain match the CPU reference
                                                << agree.normal_deg << " deg over " << agree.compared
                                                << " vertices");
     CHECK(agree.position < 2.0e-5f);
+    harness.destroy(device);
+  }
+
+  gfx::destroy_compute_pipeline(device, chain_pipeline);
+  gfx::destroy_compute_pipeline(device, cache_pipeline);
+  gfx::destroy_shader_module(device, module);
+}
+
+// **The chain on real files.** Everything above runs on the procedural sphere, which was all the
+// morph stream had when it landed; `tools/fetch-samples.ps1` now fetches the four Khronos models
+// that carry morph targets, and this case runs the static stage over each of them when they are
+// there (it says so and passes when they are not — CI does not fetch them, a test bundle made
+// with `-WithSamples` carries them). Two comparisons per model, every channel at weight 1:
+//
+//   against deform_reference.h   the GPU chain and its CPU twin over the *stored* stream — the
+//                                directory walk, the slices and the 16-bit deltas of a real
+//                                file's layout rather than the fixture's.
+//   against the asset itself     rest position plus the sum of the glTF's own float deltas,
+//                                through `vertex_source` — what the quantization of the stream
+//                                and of the position grid cost on content nobody here authored.
+//
+// Each is held to a bound derived from the mesh rather than a constant: the position grid and the
+// delta steps are properties of each mesh's extent (1.4 to 4.4 units across these four), and a
+// tolerance sized for one file would be meaningless for the next, which may be a hundred times
+// larger.
+TEST_CASE(
+    "deform chain: the Khronos morph samples, against the CPU reference and their own targets") {
+  const char* k_samples[] = {"AnimatedMorphCube/AnimatedMorphCube.glb",
+                             "MorphPrimitivesTest/MorphPrimitivesTest.glb",
+                             "MorphStressTest/MorphStressTest.glb", "SimpleMorph/SimpleMorph.gltf"};
+  gfx::Device device;
+  std::string error;
+  if (!device.create(gfx::DeviceOptions{}, &error)) {
+    MESSAGE("device unavailable: " << error);
+    return;
+  }
+  VkShaderModule module = gfx::create_shader_module(device, shaders::k_deform_spirv,
+                                                    shaders::k_deform_spirv_size, &error);
+  REQUIRE(module != VK_NULL_HANDLE);
+  gfx::ComputePipeline chain_pipeline;
+  gfx::ComputePipeline cache_pipeline;
+  REQUIRE_MESSAGE(gfx::create_compute_pipeline(device, module, "deform_main", {},
+                                               sizeof(gfx::DeformParams), chain_pipeline, &error),
+                  error);
+  REQUIRE_MESSAGE(gfx::create_compute_pipeline(device, module, "deform_cache_main", {},
+                                               sizeof(gfx::DeformParams), cache_pipeline, &error),
+                  error);
+
+  for (const char* relative : k_samples) {
+    const std::string path =
+        test::data_path(std::string(ENGINE_SOURCE_DIR "/content/samples/") + relative,
+                        std::string("content/samples/") + relative);
+    if (!test::path_exists(path)) {
+      MESSAGE("not fetched (tools/fetch-samples.ps1): " << path);
+      continue;
+    }
+    assets::MeshData asset;
+    REQUIRE_MESSAGE(assets::load_gltf(path, asset, &error), error);
+    REQUIRE_MESSAGE(!asset.morph.empty(), relative);
+    geometry::MorphFixtureMesh source;
+    source.positions = asset.positions;
+    source.normals = asset.normals;
+    source.uvs = asset.uvs;
+    source.indices = asset.indices;
+    source.morph = asset.morph;
+
+    Harness harness;
+    REQUIRE_MESSAGE(harness.create(device, source, gfx::k_deform_stage_static, &error), error);
+    const u32 channels = harness.mesh.morph_channels.size();
+    Vector<f32> ones(channels, 1.0f);
+    harness.set_weights(std::span<const f32>(ones.data(), ones.size()), {});
+    harness.record().cache = 0;
+    Vector<Vec3> positions;
+    Vector<u32> normals;
+    run(device, harness, chain_pipeline, cache_pipeline, false, positions, normals);
+    const Agreement chain =
+        compare(harness, harness.chain(gfx::k_deform_stage_static), positions, normals);
+
+    // The asset's own answer, in float: rest position plus every channel's delta at weight 1.
+    Vector<Vec3> moved = asset.positions;
+    for (const geometry::MorphChannelSource& channel : asset.morph) {
+      for (u32 k = 0; k < channel.vertices.size(); ++k)
+        moved[channel.vertices[k]] = moved[channel.vertices[k]] + channel.position_deltas[k];
+    }
+    Aabb3 bounds = Aabb3::empty();
+    for (const Vec3& p : moved)
+      bounds.expand(p);
+    const f32 extent = length(bounds.size());
+    f32 worst_source = 0.0f;
+    for (u32 v = 0; v < harness.mesh.vertices.size(); ++v) {
+      const Vec3 want = moved[harness.mesh.vertex_source[v]];
+      worst_source = std::max(worst_source, length(positions[v] - want));
+    }
+    // The position grid's step, the largest channel's delta step, and their sum over channels:
+    // the error the two quantizations can add, and the bound the stored stream is held to.
+    const f32 grid_step = harness.mesh.quant_scale;
+    f32 delta_steps = 0.0f;
+    for (const geometry::MorphChannel& c : harness.mesh.morph_channels)
+      delta_steps += c.position_scale;
+    MESSAGE(std::string(relative) << ": " << asset.positions.size() << " source vertices, "
+                                  << channels << " channels, " << harness.mesh.morph_delta_count
+                                  << " stored deltas over " << chain.compared
+                                  << " cluster vertices; against the CPU reference worst "
+                                  << chain.position << " (" << chain.position / extent
+                                  << " of the extent), normal " << chain.normal_deg
+                                  << " deg; against the asset's own targets worst " << worst_source
+                                  << " (" << worst_source / extent
+                                  << " of the extent) with a grid step of " << grid_step
+                                  << " and delta steps summing to " << delta_steps);
+    CHECK(chain.position <= 1.0e-6f * extent);
+    CHECK(chain.normal_deg < 0.6f);
+    CHECK(worst_source <= 0.5f * (1.7321f * grid_step + 1.7321f * delta_steps) + 1.0e-6f * extent);
     harness.destroy(device);
   }
 

@@ -48,9 +48,15 @@ if(TARGET engine_gfx_tests)
                                           tests/clas_records_tests.cpp tests/scene_tests.cpp
                                           tests/deform_tests.cpp tests/skin_tests.cpp tests/morph_deform_tests.cpp
                                           tests/sampling_tests.cpp tests/stream_tests.cpp)
+  # ENGINE_SOURCE_DIR is where the morph test looks for the Khronos samples tools/fetch-samples.ps1
+  # fetches into content/samples (through tests/support/test_paths.h, so a bundle made with
+  # -WithSamples finds its own copy); without them that case says so and passes.
   target_compile_definitions(engine_gfx_tests PRIVATE
-    ENGINE_SHADER_MANIFEST="${CMAKE_BINARY_DIR}/shaders/manifest.json")
-  # engine::anim is the CPU reference the skinning test holds `deform.slang` to.
+    ENGINE_SHADER_MANIFEST="${CMAKE_BINARY_DIR}/shaders/manifest.json"
+    ENGINE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+  # engine::anim is the CPU reference the skinning test holds `deform.slang` to; engine::assets
+  # imports the morph samples for the chain's real-file case. Tests only: gfx itself reads neither.
   target_link_libraries(engine_gfx_tests PRIVATE engine_shaders_gfx_tests engine::geometry
-                                                 engine::anim engine::window engine::image)
+                                                 engine::anim engine::assets engine::window
+                                                 engine::image)
 endif()

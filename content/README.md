@@ -25,6 +25,22 @@ Two of the fetched models are skinned and animated, which is what `engine-view -
 | **Fox** | conversion to glTF | @AsoboStudio and @scurest | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) |
 | **RiggedFigure** | everything | Cesium | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) |
 
+Four more carry **morph targets**, which is what the morph stream, `engine-view --morph` and
+`--morph-animate` need a real file for ([geometry](../docs/subsystems/geometry.md), "Morph
+channels"). Two are CC0 and need no attribution; the other two are CC-BY-4.0:
+
+| Model | What | Artist | Owner | Licence |
+|---|---|---|---|---|
+| **AnimatedMorphCube** | everything | Microsoft | Public | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) |
+| **MorphPrimitivesTest** | everything | ft-lab | ft-lab | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) |
+| **MorphPrimitivesTest** | Draco compression (the `glTF-Draco` variant, which is not fetched) | Frank Galligan | Frank Galligan | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) |
+| **MorphStressTest** | everything | Ed Mackey | Analytical Graphics, Inc. | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) |
+| **SimpleMorph** | everything | Marco Hutter | Public | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) |
+
+`AnimatedMorphSphere`, the model usually named beside these, is not in
+`glTF-Sample-Assets` at the pinned commit — it stayed behind in the retired glTF-Sample-Models
+repository — so it is absent rather than refused.
+
 Anything this project publishes that shows a picture of one of them — a document, an experiment
 write-up, a screenshot in a release — carries that row. The models themselves are never
 committed and never redistributed; `tools/fetch-samples.ps1` downloads them from

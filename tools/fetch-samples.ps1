@@ -51,16 +51,33 @@ $allowedLicenses = @('CC0-1.0', 'CC-BY-4.0')
 # notice rather than a copyright licence, but the allow list below is a policy and not a
 # judgement call, so a model whose metadata names a licence this project has not vetted is not
 # fetched. Widening the list is a decision to take deliberately, in a commit that says why.
+#
+# The last four carry **morph targets**, which is what `engine-view --morph` and `--morph-animate`
+# and the morph stream of the `.clusters` container need a real file for (docs/subsystems/
+# geometry.md, "Morph channels"). Each tests something the procedural fixture cannot:
+# AnimatedMorphCube has two targets with POSITION, NORMAL and TANGENT deltas under a node scaled by
+# 100 and one clip that animates both weights (CC0); MorphPrimitivesTest has one target across two
+# primitives with **no NORMAL deltas** and a non-zero default weight on the mesh (CC-BY-4.0, and its
+# second legal entry — the Draco variant's compression, also CC-BY-4.0 — passes the list too);
+# MorphStressTest has eight named targets over two primitives and three clips (CC-BY-4.0); and
+# SimpleMorph is one triangle with **no normals at all** and two targets (CC0). The candidate
+# usually named beside them, AnimatedMorphSphere, is **not in this repository** at the pinned
+# commit — it was left behind in the retired glTF-Sample-Models — so it is not here rather than
+# refused.
 $models = [ordered]@{
-  'Suzanne'      = 'glTF'
-  'Avocado'      = 'glTF-Binary'
-  'BoomBox'      = 'glTF-Binary'
-  'Corset'       = 'glTF-Binary'
-  'Lantern'      = 'glTF-Binary'
-  'SciFiHelmet'  = 'glTF'
-  'FlightHelmet' = 'glTF'
-  'Fox'          = 'glTF-Binary'
-  'RiggedFigure' = 'glTF-Binary'
+  'Suzanne'             = 'glTF'
+  'Avocado'             = 'glTF-Binary'
+  'BoomBox'             = 'glTF-Binary'
+  'Corset'              = 'glTF-Binary'
+  'Lantern'             = 'glTF-Binary'
+  'SciFiHelmet'         = 'glTF'
+  'FlightHelmet'        = 'glTF'
+  'Fox'                 = 'glTF-Binary'
+  'RiggedFigure'        = 'glTF-Binary'
+  'AnimatedMorphCube'   = 'glTF-Binary'
+  'MorphPrimitivesTest' = 'glTF-Binary'
+  'MorphStressTest'     = 'glTF-Binary'
+  'SimpleMorph'         = 'glTF'
 }
 
 $headers = @{ 'User-Agent' = 'engine-fetch-samples' }
