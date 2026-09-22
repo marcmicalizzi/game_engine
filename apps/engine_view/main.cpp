@@ -405,7 +405,11 @@ u32 find_clip(const animation::Library& library, u32 skeleton, std::string_view 
   }
   return animation::Library::k_not_found;
 }
+#endif  // ENGINE_VIEW_ANIMATION
 
+// Outside the animation guard: static morph weights are a renderer setting, not the animation
+// capability, and both frame paths call this whether or not the build has that capability.
+//
 // `--morph <name|index>=<weight>` against the loaded mesh's channel names. A name is a property of
 // the asset, so it cannot be resolved until the scene exists; an index is accepted too, because a
 // generated rig may have none worth typing. An unknown name is a **usage error** rather than a
@@ -446,6 +450,7 @@ bool resolve_morph_weights(const renderer::SceneData& data, const Options& optio
   return true;
 }
 
+#if ENGINE_VIEW_ANIMATION
 // Part one of the glue: does this run animate, and which instances play a clip? It runs **before**
 // the scene loads, because `SceneInstance::joints` is what makes an instance skinned and the GPU
 // scene's deform table is laid out from it. `out` stays null when nothing animates, which is the
@@ -1436,7 +1441,9 @@ int main(int argc, char** argv) {
   u32 static_cached_instances = 0;
   Vector<f32> morph_pose_weights;
   Vector<f32> morph_defaults;
-  const anim::Clip* morph_clip = nullptr;
+#if ENGINE_VIEW_ANIMATION
+  const anim::Clip* morph_clip = nullptr;  // a clip's weight curves: the animation capability's
+#endif
   u64 template_bytes = 0;
   u64 rt_bytes = 0;
   // What the scene's geometry would cost uploaded whole against what the page pool, its staging
@@ -1565,8 +1572,11 @@ int main(int argc, char** argv) {
             morph_clip = &animated->library.clip_data(k);
         }
       }
+      const bool found_clip = morph_clip != nullptr;
+#else
+      const bool found_clip = false;  // weight tracks live in clips, which are that capability's
 #endif
-      if (morph_clip == nullptr) {
+      if (!found_clip) {
         ENGINE_LOG_WARN(log_view, "--morph-animate found no weight tracks",
                         log::field("channels", scene.morph_channel_count()));
       }
