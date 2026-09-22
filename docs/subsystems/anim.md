@@ -144,21 +144,11 @@ paid off.
 **1.3% faster** at v3 than at v2. Nothing about the arithmetic changed between those two states —
 only the width of the stores — which is the evidence that the store width was the whole of it.
 
-### What is left, and it is not in this module
+### What is left, and where it turned out to be
 
-`local_to_model` is still **28% slower at v3 than at v2** after the fix, and the last row of the
-table says where that lives. `anim.skeleton.local_matrices.one` is 23 calls to
-`core/math::mat4_from_transform` and nothing else; this change does not touch it, and it is
-**+77% at x86-64-v3**. Of `local_to_model`'s remaining 216 ns of v3 penalty, 192 ns — **89%** — is
-that function. Both baselines call it out of line (MSVC declines to inline it here), so the
-difference is inside `core/math`, not in the composition around it.
+`local_to_model` was still **28% slower at v3 than at v2** after the fix, and the last row of the table pointed at `core/math::mat4_from_transform`: `anim.skeleton.local_matrices.one` is 23 calls to it and nothing else, it was **+77% at x86-64-v3**, and by subtraction it was 89% of `local_to_model`'s remaining v3 penalty.
 
-That is a second AVX2 regression, larger in ratio than the one ADR-0031 recorded, and it was
-hidden inside the +42% the ADR attributed to "46 `Mat4` products". It belongs to `core/math`,
-which every module in the tree uses, so fixing it is a decision with a much wider blast radius
-than this one and is **left to be scoped deliberately** rather than taken here. The row exists in
-this module's bench so that whoever takes it has a number to move.
-
+**The function is fixed, in `core/math`, and the subtraction was half right** ([math](math.md#aggregates-returned-by-value-and-the-avx2-copy), 2026-09-22). The cause was the same 32-byte copy of a freshly built temporary, plus an out-of-line `mat3_from_quat`; the rotation is now expanded in place. Measured the same way as the table above — {before, after} × {v2, v3} alternated six rounds, two sessions — `local_matrices.one` went **from 245 / 435 ns (v2 / v3) to 162 / 140 ns**: the +77% is gone and v3 is now 14% *faster* than v2. But `local_to_model.one` moved only from 444 / 564 to 449 / 547 ns. The two rows are not the same call: the bench's loop inlines `mat4_from_transform` and was paying the copy the fix removed, while `local_to_model` calls it **out of line** (MSVC declines to inline it here under `/Ob1`), where its result is written with sixteen 4-byte stores at both baselines and then read by `affine_column`'s 16-byte loads — which cannot store-forward at either baseline, so the fix had nothing to remove there. The ~22% that `local_to_model` still costs at v3 is therefore in this module's loop and its call boundary, not in `core/math`, and nothing here says yet which instruction pays it. Two shapes would take the matrix out of memory entirely and are the follow-up: build `affine_column`'s broadcasts from `b[k]` scalars rather than shuffles of a 16-byte load (MSVC keeps an inlined `mat4_from_transform` wholly in registers in that shape), or inline `mat4_from_transform` into the loop. Either is measured against the rows above before it is kept.
 One thing tried and rejected, so it is not retried: a root joint's `out[i] = matrix` compiles to a
 256-bit `vmovups` pair at v3, which looks like the same disease. Written by hand as four 16-byte
 stores it measured **453 ns against 444 ns** — inside the session spread — because one joint in

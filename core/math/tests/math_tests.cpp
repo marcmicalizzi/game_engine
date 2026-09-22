@@ -79,6 +79,36 @@ TEST_CASE("math: matrix products, transpose, inverse") {
       approx_equal(determinant(mat3_from_quat(quat_from_axis_angle(Vec3::unit_x(), 0.7f))), 1.0f));
 }
 
+// `mat4_from_transform`, `mat4_from_quat` and the `Mat4` product were rewritten for MSVC's code
+// generation at x86-64-v3 (docs/subsystems/math.md, "Aggregates returned by value, and the AVX2
+// copy"), and the rewrite promised the **same floats**, not close ones. So each is checked with
+// `==` against the form it replaced, spelled out here: `mat3_from_quat` then a scale per column,
+// and a product assembled column by column from `Mat4 * Vec4`. Over a spread of rotations, scales
+// with a negative and a zero among them, and a quaternion that is not unit length, because the
+// expansion does not normalize and must not start to.
+TEST_CASE("math: the rewritten matrix builders give the old floats exactly") {
+  for (u32 i = 0; i < 64; ++i) {
+    const f32 t = static_cast<f32>(i) * 0.37f;
+    Transform3 x;
+    x.position = Vec3{0.05f * t - 1.0f, 0.25f + 0.01f * t, -0.03f * t};
+    x.rotation = Quat{0.1f + 0.03f * t, 0.2f - 0.01f * t, 0.05f * t, 1.0f};
+    if (i % 3 != 0) x.rotation = normalize(x.rotation);  // one in three is deliberately not unit
+    x.scale = Vec3{1.0f + 0.1f * t, i % 5 == 0 ? -1.5f : 0.75f, i % 7 == 0 ? 0.0f : 2.0f};
+
+    const Mat3 r = mat3_from_quat(x.rotation);
+    const Mat4 old_transform{Vec4(r.c[0] * x.scale.x, 0), Vec4(r.c[1] * x.scale.y, 0),
+                             Vec4(r.c[2] * x.scale.z, 0), Vec4(x.position, 1)};
+    CHECK(mat4_from_transform(x) == old_transform);
+    const Mat4 old_quat{Vec4(r.c[0], 0), Vec4(r.c[1], 0), Vec4(r.c[2], 0), {0, 0, 0, 1}};
+    CHECK(mat4_from_quat(x.rotation) == old_quat);
+
+    const Mat4 a = mat4_from_transform(x);
+    const Mat4 b = old_quat * translation(x.position);
+    const Mat4 old_product{a * b.c[0], a * b.c[1], a * b.c[2], a * b.c[3]};
+    CHECK(a * b == old_product);
+  }
+}
+
 TEST_CASE("math: Transform3 composes, inverts, and matches its matrix") {
   Transform3 parent;
   parent.position = {10, 0, 0};

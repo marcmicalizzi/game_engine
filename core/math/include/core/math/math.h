@@ -289,8 +289,22 @@ constexpr Mat3 operator*(const Mat3& a, const Mat3& b) noexcept {
 constexpr Vec4 operator*(const Mat4& m, Vec4 v) noexcept {
   return m.c[0] * v.x + m.c[1] * v.y + m.c[2] * v.z + m.c[3] * v.w;
 }
+// Written as four column assignments into a named result rather than as `return {a * b.c[0], ...}`,
+// and the difference is not style. MSVC at `/arch:AVX2` built three of the four columns of the
+// braced form in a stack temporary and copied it to the destination with two 32-byte moves; a
+// 32-byte load cannot be store-forwarded from the 16-byte stores that filled the temporary, so
+// every product waited for its own stores to reach L1 — +64% at x86-64-v3 for a batch of
+// independent products and +99% for a chain, against the same source at v2, where the copy is
+// 16 bytes wide and forwards. Assigned column by column, MSVC stores each column straight into
+// the destination at both baselines. Same operations in the same order, so the same floats.
+// docs/subsystems/math.md, "Aggregates returned by value, and the AVX2 copy".
 constexpr Mat4 operator*(const Mat4& a, const Mat4& b) noexcept {
-  return {a * b.c[0], a * b.c[1], a * b.c[2], a * b.c[3]};
+  Mat4 r;
+  r.c[0] = a * b.c[0];
+  r.c[1] = a * b.c[1];
+  r.c[2] = a * b.c[2];
+  r.c[3] = a * b.c[3];
+  return r;
 }
 
 // Transforms a point (w = 1) or a direction (w = 0) by an affine matrix.
@@ -374,9 +388,15 @@ constexpr Mat3 mat3_from_quat(Quat q) noexcept {
           {2 * (xy - wz), 1 - 2 * (xx + zz), 2 * (yz + wx)},
           {2 * (xz + wy), 2 * (yz - wx), 1 - 2 * (xx + yy)}};
 }
+// Expanded here rather than built from `mat3_from_quat`, for the reason `mat4_from_transform`
+// below gives; the nine expressions are `mat3_from_quat`'s, so the result is the same floats.
 constexpr Mat4 mat4_from_quat(Quat q) noexcept {
-  const Mat3 r = mat3_from_quat(q);
-  return {Vec4(r.c[0], 0), Vec4(r.c[1], 0), Vec4(r.c[2], 0), {0, 0, 0, 1}};
+  const f32 xx = q.x * q.x, yy = q.y * q.y, zz = q.z * q.z;
+  const f32 xy = q.x * q.y, xz = q.x * q.z, yz = q.y * q.z;
+  const f32 wx = q.w * q.x, wy = q.w * q.y, wz = q.w * q.z;
+  return {Vec4{1 - 2 * (yy + zz), 2 * (xy + wz), 2 * (xz - wy), 0},
+          Vec4{2 * (xy - wz), 1 - 2 * (xx + zz), 2 * (yz + wx), 0},
+          Vec4{2 * (xz + wy), 2 * (yz - wx), 1 - 2 * (xx + yy), 0}, Vec4{0, 0, 0, 1}};
 }
 inline Quat quat_from_mat3(const Mat3& m) noexcept {
   const f32 trace = m.at(0, 0) + m.at(1, 1) + m.at(2, 2);
@@ -411,10 +431,27 @@ struct Transform3 {
   static constexpr Transform3 identity() noexcept { return {}; }
 };
 
+// **The rotation is expanded in place, and it has to be.** This was `mat3_from_quat` followed by
+// four `Vec4` constructions, and under MSVC at `/arch:AVX2` that shape cost 77% (measured by
+// `domain/anim`'s bench, docs/subsystems/anim.md): `mat3_from_quat` was called out of line —
+// saving and restoring ten XMM registers, returning its nine floats through memory — and two of
+// the result's columns were assembled in a stack temporary with 4-byte stores and copied out with
+// one 32-byte move, a load that cannot be store-forwarded from the stores that fed it. The v2
+// build of the same source copied with 16-byte moves and paid less. Written as nine products and
+// sixteen column entries, MSVC keeps the whole thing in registers at both baselines and stores
+// the result once. The expressions are `mat3_from_quat`'s, each scaled exactly as `r.c[k] * scale`
+// scaled it, so the result is the same floats; `math_tests.cpp` compares the two with `==`.
+// docs/subsystems/math.md, "Aggregates returned by value, and the AVX2 copy".
 constexpr Mat4 mat4_from_transform(const Transform3& t) noexcept {
-  const Mat3 r = mat3_from_quat(t.rotation);
-  return {Vec4(r.c[0] * t.scale.x, 0), Vec4(r.c[1] * t.scale.y, 0), Vec4(r.c[2] * t.scale.z, 0),
-          Vec4(t.position, 1)};
+  const Quat q = t.rotation;
+  const f32 xx = q.x * q.x, yy = q.y * q.y, zz = q.z * q.z;
+  const f32 xy = q.x * q.y, xz = q.x * q.z, yz = q.y * q.z;
+  const f32 wx = q.w * q.x, wy = q.w * q.y, wz = q.w * q.z;
+  const f32 sx = t.scale.x, sy = t.scale.y, sz = t.scale.z;
+  return {Vec4{(1 - 2 * (yy + zz)) * sx, (2 * (xy + wz)) * sx, (2 * (xz - wy)) * sx, 0},
+          Vec4{(2 * (xy - wz)) * sy, (1 - 2 * (xx + zz)) * sy, (2 * (yz + wx)) * sy, 0},
+          Vec4{(2 * (xz + wy)) * sz, (2 * (yz - wx)) * sz, (1 - 2 * (xx + yy)) * sz, 0},
+          Vec4{t.position.x, t.position.y, t.position.z, 1}};
 }
 constexpr Vec3 transform_point(const Transform3& t, Vec3 p) noexcept {
   return rotate(t.rotation, p * t.scale) + t.position;
