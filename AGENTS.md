@@ -31,6 +31,7 @@ tools/dev.ps1 modules   [-Preset msvc-debug]   # prints build/<preset>/modules.j
 
 tools/new-capability.ps1 -Name cloth -Layer systems -Deps "base containers math" [-WithSchema] [-WithBench] [-WithProtocol]
 tools/package-tests.ps1  -Preset msvc-release [-Out <zip>] [-WithSamples] [-WithSymbols]
+tools/gpu-lock.ps1       run -Purpose "<what>" -Exec "<command line>"   # the machine-wide GPU lock; anything heavy on the GPU goes through it (docs/subsystems/bench.md)
 ```
 
 The Linux half of CI runs on this machine too, in a container built from the same Ubuntu 24.04
