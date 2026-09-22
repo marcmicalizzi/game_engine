@@ -323,7 +323,9 @@ static_assert(sizeof(InstanceDesc) == 96);
 
 // Fills `world`, `scale_max`, and the uniform-scale flag from an affine transform. The scales are
 // the lengths of the upper-left 3x3's columns; "uniform" means they agree to a part in 10^4,
-// which is what lets the cone test and the cheap normal transform run.
+// which is what lets the cone test and the cheap normal transform run. A scale that far from
+// uniform turns a normal against the cone's axis by up to 1e-4 radians, which is what
+// `geometry::k_cone_margin` (1e-3) is sized to absorb: loosen this and widen that.
 inline void set_instance_transform(InstanceDesc& instance, const Mat4& world) noexcept {
   instance.world = world;
   const f32 sx = length(world.c[0].xyz());

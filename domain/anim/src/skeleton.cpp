@@ -33,8 +33,11 @@ f32 clamp01(f32 t) noexcept { return t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t); }
 // **left to right**, which is the association `core/math`'s `operator*(const Mat4&, Vec4)` has —
 // `((c0*x + c1*y) + c2*z) + c3*w`. Every lane therefore sees the same three additions in the same
 // order as the scalar code it replaces, so this is not an approximation of the old result, it is
-// the same float. Two tests pin that: `local_to_model` and `skinning_matrices` are checked against
-// `Mat4 operator*` in `anim_tests.cpp`, exactly rather than approximately.
+// the same float — wherever the compiler evaluates what is written. Two tests pin that:
+// `local_to_model` and `skinning_matrices` are checked against `Mat4 operator*` in
+// `anim_tests.cpp`, exactly on MSVC and on every build without FMA. GCC and clang at x86-64-v3
+// fuse multiply-adds on their own (GCC across these intrinsics too, since its `_mm_add_ps` is a
+// plain vector `+`), and fuse different ones on the two sides, so there the test allows 8 ulp.
 ENGINE_FORCE_INLINE __m128 affine_column(__m128 a0, __m128 a1, __m128 a2, __m128 a3,
                                          __m128 b) noexcept {
   __m128 r = _mm_mul_ps(a0, _mm_shuffle_ps(b, b, _MM_SHUFFLE(0, 0, 0, 0)));

@@ -2,6 +2,7 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <string>
 
@@ -306,6 +307,155 @@ TEST_CASE(
     c.cone = saved;
   }
   CHECK(any_failed);
+}
+
+namespace {
+
+// A triangle's normal on the 16-bit grid, as the rasterizers draw it, in double; false for one
+// thinner than a grid step, which the cone deliberately leaves out (geometry.md, "Normal cones").
+bool grid_normal(const ClusterMesh& mesh, u32 v0, u32 v1, u32 v2, f64 n[3], f64 p0[3]) {
+  f64 p[3][3];
+  const u32 v[3] = {v0, v1, v2};
+  for (u32 k = 0; k < 3; ++k) {
+    const Vec3 q = dequantize_position(mesh, v[k]);
+    p[k][0] = static_cast<f64>(q.x);
+    p[k][1] = static_cast<f64>(q.y);
+    p[k][2] = static_cast<f64>(q.z);
+  }
+  const f64 e1[3] = {p[1][0] - p[0][0], p[1][1] - p[0][1], p[1][2] - p[0][2]};
+  const f64 e2[3] = {p[2][0] - p[0][0], p[2][1] - p[0][1], p[2][2] - p[0][2]};
+  const f64 e3[3] = {p[2][0] - p[1][0], p[2][1] - p[1][1], p[2][2] - p[1][2]};
+  n[0] = e1[1] * e2[2] - e1[2] * e2[1];
+  n[1] = e1[2] * e2[0] - e1[0] * e2[2];
+  n[2] = e1[0] * e2[1] - e1[1] * e2[0];
+  auto len = [](const f64 a[3]) { return std::sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]); };
+  const f64 longest = std::max(std::max(len(e1), len(e2)), len(e3));
+  const f64 l = len(n);
+  if (!(l > static_cast<f64>(mesh.quant_scale) * longest)) return false;
+  for (u32 k = 0; k < 3; ++k) {
+    n[k] /= l;
+    p0[k] = p[0][k];
+  }
+  return true;
+}
+
+}  // namespace
+
+// The cone is fit to what the rasterizers draw, which is the 16-bit grid and not the floats. A unit
+// sphere beside one triangle a thousand units away quantizes on a 0.0153 step, eight or nine steps
+// to a triangle edge, so the grid turns normals by a tenth of a radian and more — and a cone tight
+// around the float normals, which is what meshoptimizer builds, is not a cone around the grid. The
+// brute-force half: from cameras all round the sphere at three distances, no cluster the
+// cone test culls holds a grid triangle that faces the camera. Before the refit this failed.
+TEST_CASE("normal cones: fit to the grid the rasterizers draw, with a margin") {
+  Vector<Vec3> positions;
+  Vector<u32> indices;
+  make_sphere(24, 48, positions, indices);
+  const u32 far = positions.size();
+  positions.push_back(Vec3{1000.0f, 0.0f, 0.0f});
+  positions.push_back(Vec3{1000.0f, 1.0f, 0.0f});
+  positions.push_back(Vec3{1000.0f, 0.0f, 1.0f});
+  indices.push_back(far);
+  indices.push_back(far + 1);
+  indices.push_back(far + 2);
+  ClusterMesh mesh;
+  std::string error;
+  REQUIRE_MESSAGE(build_clusters(positions, indices, ClusterBuildOptions{}, mesh, &error), error);
+  CHECK_MESSAGE(validate_clusters(mesh, indices, ClusterBuildOptions{}, &error), error);
+  CHECK(mesh.quant_scale > 0.015f);
+
+  // How far the grid turns a triangle's normal from its float one: the reason this test exists.
+  f64 widest_turn = 0.0;
+  for (const ClusterDesc& c : mesh.clusters) {
+    for (u32 t = 0; t < c.triangle_count; ++t) {
+      const u32 packed = mesh.triangles[c.triangle_offset + t];
+      const u32 v0 = c.vertex_offset + ClusterMesh::unpack(packed, 0);
+      const u32 v1 = c.vertex_offset + ClusterMesh::unpack(packed, 1);
+      const u32 v2 = c.vertex_offset + ClusterMesh::unpack(packed, 2);
+      f64 n[3];
+      f64 p[3];
+      if (!grid_normal(mesh, v0, v1, v2, n, p)) continue;
+      const Vec3 f = normalize(
+          cross(mesh.vertices[v1] - mesh.vertices[v0], mesh.vertices[v2] - mesh.vertices[v0]));
+      const f64 d = n[0] * static_cast<f64>(f.x) + n[1] * static_cast<f64>(f.y) +
+                    n[2] * static_cast<f64>(f.z);
+      widest_turn = std::max(widest_turn, std::acos(std::min(1.0, d)));
+    }
+  }
+  CHECK(widest_turn > 0.05);
+
+  u32 culled = 0;
+  u32 checked = 0;
+  u32 facing = 0;
+  u32 with_cone = 0;
+  for (const ClusterDesc& c : mesh.clusters)
+    with_cone += decode_cone(c.cone).cutoff < 1.0f ? 1u : 0u;
+  constexpr u32 k_cameras = 96;
+  for (u32 i = 0; i < k_cameras; ++i) {
+    // A Fibonacci sphere of directions, at three distances: close, near, and far.
+    const f32 y = 1.0f - 2.0f * (static_cast<f32>(i) + 0.5f) / static_cast<f32>(k_cameras);
+    const f32 r = std::sqrt(std::max(0.0f, 1.0f - y * y));
+    const f32 phi = 2.39996323f * static_cast<f32>(i);
+    const f32 distance = i % 3 == 0 ? 1.2f : (i % 3 == 1 ? 2.5f : 20.0f);
+    const Vec3 camera = Vec3{r * std::cos(phi), y, r * std::sin(phi)} * distance;
+    for (const ClusterDesc& c : mesh.clusters) {
+      if (!cluster_backfacing(c, camera)) continue;
+      ++culled;
+      for (u32 t = 0; t < c.triangle_count; ++t) {
+        const u32 packed = mesh.triangles[c.triangle_offset + t];
+        f64 n[3];
+        f64 p[3];
+        if (!grid_normal(mesh, c.vertex_offset + ClusterMesh::unpack(packed, 0),
+                         c.vertex_offset + ClusterMesh::unpack(packed, 1),
+                         c.vertex_offset + ClusterMesh::unpack(packed, 2), n, p))
+          continue;
+        ++checked;
+        const f64 to_triangle = (p[0] - static_cast<f64>(camera.x)) * n[0] +
+                                (p[1] - static_cast<f64>(camera.y)) * n[1] +
+                                (p[2] - static_cast<f64>(camera.z)) * n[2];
+        if (to_triangle < 0.0) ++facing;  // the camera is in front of this triangle
+      }
+    }
+  }
+  MESSAGE("grid step " << mesh.quant_scale << ", widest turn " << widest_turn << " rad, "
+                       << with_cone << " of " << mesh.clusters.size() << " clusters with a cone, "
+                       << culled << " culls over " << k_cameras << " cameras, " << checked
+                       << " grid triangles checked, " << facing << " facing the camera");
+  CHECK(culled > 0);
+  CHECK(with_cone * 2 >= mesh.clusters.size());  // the margin costs cones, not most of them
+  CHECK(facing == 0);
+}
+
+// Two triangles with no normal, which the cone must neither widen for nor fail on: two coincident
+// corners — a UV sphere's pole, and the triangle whose FMA residue made every x86-64-v3 GCC and
+// clang build fail the morph test (docs/ci/local-linux.md) — and a sliver along an edge through a
+// point placed on it in float, collinear up to rounding. The plane is tilted so no coordinate is
+// round and the sliver's float cross product is rounding residue with a direction of its own.
+TEST_CASE("normal cones: a triangle with no normal neither widens nor breaks its cone") {
+  Vector<Vec3> positions;
+  Vector<u32> indices;
+  make_grid(9, positions, indices);
+  for (Vec3& p : positions)
+    p.z = 0.37f * p.x + 0.21f * p.y;
+  const u32 a = 4 * 9 + 4;  // an interior vertex and its neighbour along x
+  const u32 b = a + 1;
+  const u32 duplicate = positions.size();
+  positions.push_back(positions[a]);
+  const u32 along = positions.size();
+  positions.push_back(positions[a] + (positions[b] - positions[a]) * 0.3f);
+  for (const u32 i : {a, duplicate, b, a, along, b})
+    indices.push_back(i);
+
+  ClusterMesh mesh;
+  std::string error;
+  REQUIRE_MESSAGE(build_clusters(positions, indices, ClusterBuildOptions{}, mesh, &error), error);
+  CHECK_MESSAGE(validate_clusters(mesh, indices, ClusterBuildOptions{}, &error), error);
+  // Every face of a plane has the same normal, so every cluster keeps a cone as narrow as the
+  // snorm8 axis and the margin allow: a few 127ths.
+  for (const ClusterDesc& c : mesh.clusters) {
+    const NormalCone cone = decode_cone(c.cone);
+    CHECK(cone.cutoff <= 3.0f / 127.0f);
+  }
 }
 
 TEST_CASE("weld: unindexed copies merge back, differing attributes stay apart") {

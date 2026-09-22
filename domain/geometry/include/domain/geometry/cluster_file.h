@@ -432,7 +432,12 @@ bool read_cluster_file_identity(std::string_view path, u64& source_hash, u64& bu
 //    from a source with morph targets carries none of the stream *and* was welded without the
 //    deltas in the key, which merged two coincident vertices that move differently — the same
 //    class of defect version 5 fixed for skin weights.
-inline constexpr u32 k_cluster_cache_version = 8;
+// 9: normal cones are refit to the triangles as floats **and on the 16-bit grid** with
+//    `k_cone_margin` of slack (geometry.md, "Normal cones"). An entry built at 8 carries
+//    meshoptimizer's cutoff and apex, tight around its own float normals: a grid triangle the
+//    rasterizers draw can sit outside that cone, and on a GCC or clang build at x86-64-v3 a
+//    degenerate triangle's FMA residue may have widened it. Its cones are the wrong ones.
+inline constexpr u32 k_cluster_cache_version = 9;
 
 // The cache key: the source's content hash (`assets::source_mesh_hash`) mixed with the build
 // options and the version above. `page_bytes` is the streaming page target the container was

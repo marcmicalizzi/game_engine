@@ -6,6 +6,7 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <string>
 
@@ -31,6 +32,44 @@ Skeleton two_bone() {
 bool near(Vec3 a, Vec3 b, f32 eps = 1.0e-5f) {
   return std::fabs(a.x - b.x) < eps && std::fabs(a.y - b.y) < eps && std::fabs(a.z - b.z) < eps;
 }
+
+// Whether this build evaluates a float expression the way it is written. MSVC's /fp:precise never
+// fuses `a*b + c` into one rounding, and an instruction set without FMA cannot; GCC fuses by
+// default (-ffp-contract=fast, which it keeps for C++ even at -std=c++20) and clang within one
+// expression, and at x86-64-v3 both have the instruction. A fused and an unfused sum of the same
+// products differ in the last bits, and the two sides compared below — the kernels' SSE
+// intrinsics and core/math's scalar operator* — are spelled differently enough that GCC fuses
+// different multiplies in each (docs/ci/local-linux.md, "What the first v3 runs found").
+#if (defined(_MSC_VER) && !defined(__clang__)) || !defined(__FMA__)
+constexpr bool k_evaluates_as_written = true;
+#else
+constexpr bool k_evaluates_as_written = false;
+#endif
+
+// How far apart a contracting build may leave them: 8 ulp of max(1, |x|). Every entry is a
+// four-term dot product of unit-scale rotations and translations under 2, fusing moves each of its
+// three additions by at most half an ulp of a partial sum, and the chain below is five joints deep;
+// GCC 13 at x86-64-v3 measured 2 ulp for local_to_model and 3 for skinning_matrices. A transposed
+// lane, a wrong parent or a dropped term is wrong by a hundredth or more, which is five orders of
+// magnitude past this. Where the build evaluates as written, the bound is zero and every entry
+// must be the same float.
+constexpr f64 k_contraction_ulps = k_evaluates_as_written ? 0.0 : 8.0;
+
+struct FloatAgreement {
+  u32 count = 0;
+  u32 differ = 0;
+  f64 worst_ulps = 0.0;
+
+  void add(f32 got, f32 want) {
+    ++count;
+    if (got == want) return;
+    ++differ;
+    const f64 ulp = 1.1920928955078125e-7 * std::max(1.0, std::fabs(static_cast<f64>(want)));
+    const f64 apart = std::fabs(static_cast<f64>(got) - static_cast<f64>(want));
+    worst_ulps = std::max(worst_ulps, apart / ulp);
+  }
+  u32 allowed_differ() const { return k_evaluates_as_written ? 0u : count; }
+};
 
 }  // namespace
 
@@ -92,14 +131,16 @@ TEST_CASE("anim skeleton: the bind pose, its inverses, and the model transforms 
 // `local_to_model` and `skinning_matrices` are hand-vectorized (skeleton.cpp explains why: the
 // plain form compiled to a store-forwarding stall per joint under /arch:AVX2, which is ADR-0031's
 // one recorded regression). A kernel rewritten for speed has to prove it did not also change the
-// answer, and "close enough" is the wrong standard for two reasons: the GPU skinning test asserts
-// the shader reproduces this to a tolerance, so any drift here spends that budget; and a pose
-// composed on one machine and replayed on another has to agree bit for bit. So this compares
-// against `core/math`'s `Mat4 operator*` — the expression the kernel used to be — with `==`.
+// answer, and "close enough" is the wrong standard where the build can do better: the GPU skinning
+// test asserts the shader reproduces this to a tolerance, so any drift here spends that budget. So
+// this compares against `core/math`'s `Mat4 operator*` — the expression the kernel used to be —
+// with `==` wherever the compiler evaluates both as written (MSVC, and every build without FMA),
+// and within `k_contraction_ulps` where it fuses multiply-adds of its own accord (GCC and clang at
+// x86-64-v3), which is a property of the compiler's choices and not of the kernel.
 //
 // A chain, a branch and a lone root in one skeleton, none of the transforms axis-aligned, so
 // every lane of every column carries a different value and a transposed or swapped one shows.
-TEST_CASE("anim skeleton: the vectorized kernels are bit-identical to the scalar product") {
+TEST_CASE("anim skeleton: the vectorized kernels compute the scalar product") {
   constexpr u32 k_joints = 12;
   Skeleton skeleton;
   skeleton.resize(k_joints);
@@ -134,24 +175,36 @@ TEST_CASE("anim skeleton: the vectorized kernels are bit-identical to the scalar
     reference[j] =
         parents[j] == k_no_joint ? local : reference[static_cast<u32>(parents[j])] * local;
   }
+  FloatAgreement composed;
   for (u32 j = 0; j < k_joints; ++j) {
     for (u32 row = 0; row < 4; ++row) {
       for (u32 col = 0; col < 4; ++col)
-        CHECK(model[j].at(row, col) == reference[j].at(row, col));
+        composed.add(model[j].at(row, col), reference[j].at(row, col));
     }
   }
+  MESSAGE("local_to_model: " << composed.differ << " of " << composed.count
+                             << " entries differ from the scalar product, the worst by "
+                             << composed.worst_ulps << " ulp");
+  CHECK(composed.differ <= composed.allowed_differ());
+  CHECK(composed.worst_ulps <= k_contraction_ulps);
 
   Vector<JointMatrix> matrices(k_joints, JointMatrix{});
   skinning_matrices(std::span<const Mat4>(model.data(), model.size()),
                     std::span<const Mat4>(skeleton.inverse_bind.data(), k_joints),
                     std::span<JointMatrix>(matrices.data(), k_joints));
+  FloatAgreement skinning;
   for (u32 j = 0; j < k_joints; ++j) {
     const JointMatrix expected = joint_matrix(reference[j] * skeleton.inverse_bind[j]);
     for (u32 row = 0; row < 3; ++row) {
       for (u32 col = 0; col < 4; ++col)
-        CHECK(matrices[j].rows[row][col] == expected.rows[row][col]);
+        skinning.add(matrices[j].rows[row][col], expected.rows[row][col]);
     }
   }
+  MESSAGE("skinning_matrices: " << skinning.differ << " of " << skinning.count
+                                << " entries differ from the scalar product, the worst by "
+                                << skinning.worst_ulps << " ulp");
+  CHECK(skinning.differ <= skinning.allowed_differ());
+  CHECK(skinning.worst_ulps <= k_contraction_ulps);
 
   // The fourth row is never written by `skinning_matrices` — it builds the 3x4 directly — so the
   // row it skips is worth looking at once.

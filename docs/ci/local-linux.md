@@ -446,6 +446,39 @@ written on.
 
 None of the six was fixed with a pragma, a `NOLINT`, a lowered warning level, or a disabled test.
 
+## What the first v3 runs found
+
+Until 2026-09-22 no x86-64-v3 Linux preset had ever run a test here: `/proc/cpuinfo`'s flags line is
+tab-separated, the configure-time check read it wrong, and every v3 configure was refused
+([remote Linux builds](remote-linux.md) has that story). The first runs of the four v3 presets found
+two failures. Both passed on MSVC at either baseline and on both v2 Linux builds, and both were
+**floating-point contraction**:
+
+| Preset | Where | What | Fix |
+|---|---|---|---|
+| all four | `domain/geometry` (`morph_tests.cpp`, the LOD DAG's validation) | "triangle normal outside its cluster's cone" on a UV sphere's pole triangle, whose two corners coincide. Its edges are the same vector, so each cross-product component is `x*y - x*y`: zero when both products are rounded, **the product's rounding error** (8.6e-12 on a unit sphere) when one is fused. The validator's degenerate test was absolute (`|n|² <= 1e-24`), the residue passed it, `normalize` returned the zero vector, and the check failed | **Not a looser check.** The residue was a symptom: meshoptimizer's cones had no margin for *any* other arithmetic, including the 16-bit grid the rasterizers actually draw. The builder now refits every cone to the triangles as floats and on the grid with an explicit margin, leaves out triangles thinner than a grid step, and the validator checks that the margin is there ([geometry](../subsystems/geometry.md#normal-cones-fit-to-what-is-drawn)) |
+| `linux-gcc-release` | `domain/anim` (`anim_tests.cpp`, the vectorized kernels against `Mat4 operator*`) | `==` between two differently spelled computations of one product. GCC fuses multiply-adds by default and fused different ones on the two sides — including across the SSE intrinsics, whose `_mm_add_ps` is a plain vector `+` in GCC's headers — so 63 of 192 `local_to_model` entries differed by up to 2 ulp and 76 of 144 skinning entries by up to 3 | `==` where the build evaluates as written (MSVC, and any build without FMA), 8 ulp where it may contract, with the reason in the test ([anim](../subsystems/anim.md#determinism-and-what-a-v2-and-a-v3-build-disagree-about)) |
+
+**The lesson, for whoever writes the next float comparison.** A v3 GCC or clang build is not the
+same arithmetic as the MSVC build or any v2 build, and that is not a bug in either: GCC contracts
+`a*b + c` into one rounding by default (`-ffp-contract=fast`, kept for C++ even in ISO mode), clang
+does it within a single expression, MSVC's `/fp:precise` never does, and the FMA instruction exists
+only at v3. So:
+
+- a test that compares two **differently spelled** computations with `==` is asserting the
+  compiler's choice of what to fuse, not the code — clang passed the anim test only because
+  neither side happens to be one expression it can fuse, which is spelling, not a guarantee;
+- code that relies on a difference of equal products being **exactly zero** (`x*y - x*y`, a
+  degenerate triangle's cross product) is relying on there being no FMA;
+- where the answer matters to correctness — a normal cone has to hold whatever arithmetic computes
+  the normal, including the GPU's — the fix is a **margin in the producer**; where it matters only
+  to the test, a bound with its reason written beside it.
+
+The tree deliberately does not pin `-ffp-contract=off` (see [anim](../subsystems/anim.md)'s
+"Determinism" for why); `domain/physics` is the one place that does, because Jolt's
+cross-platform determinism asks for it. Run the v3 presets before trusting a float comparison that
+only MSVC has seen.
+
 ## Running the documentation gate here
 
 CI runs both documentation checks on Linux, so they are worth running where CI runs them:

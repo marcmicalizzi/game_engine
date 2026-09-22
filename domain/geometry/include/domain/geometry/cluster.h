@@ -25,6 +25,15 @@ namespace engine::geometry {
 // A packed normal cone that never culls: zero axis, cutoff 1 (127/127).
 inline constexpr u32 k_cone_none = 0x7f000000u;
 
+// The slack, in radians, every cone keeps around every normal it holds, and in front of its apex
+// (docs/subsystems/geometry.md, "Normal cones"). It is what makes the cone robust to a normal
+// computed some other way than the builder computed it: another compiler or baseline (FMA
+// contraction), the GPU, or a world transform the cull pass treats as uniform although its scales
+// differ by up to 1e-4 (gfx::set_instance_transform), which can turn a normal by that much. The
+// transform dominates, rounding is 1e-6 and below, and 1e-3 covers both ten times over for 0.06
+// degrees of culling.
+inline constexpr f32 k_cone_margin = 1.0e-3f;
+
 // GPU-mirrored; keep in step with the ClusterDesc struct in shaders. 48 bytes.
 struct ClusterDesc {
   u32 vertex_offset = 0;    // first vertex in ClusterMesh::vertices
@@ -36,7 +45,9 @@ struct ClusterDesc {
   // Normal cone for backface culling (meshoptimizer's form): the cluster is entirely
   // backfacing when dot(normalize(cone_apex - camera), axis) >= cutoff. `cone` packs the axis
   // as three snorm8 (bytes 0..2, x/127) and the cutoff as a snorm8 (byte 3); a cutoff of 1
-  // (k_cone_none) marks a cluster that is never culled: two-sided, or normals too spread.
+  // (k_cone_none) marks a cluster that is never culled: two-sided, or normals too spread. The
+  // cone is refit by quantize_positions to the triangles as floats and on the grid, with
+  // k_cone_margin of slack.
   Vec3 cone_apex{};
   u32 cone = k_cone_none;
 };
@@ -332,6 +343,14 @@ f32 morph_bounds_padding(const ClusterMesh& mesh, std::span<const f32> weights) 
 // same integer triple and welded meshes stay crack-free: quantization moves a seam's two copies
 // by exactly the same amount. Public so a mesh built elsewhere can be quantized later; call it
 // again after changing `vertices`.
+//
+// It also **refits every cluster's normal cone** to the new grid, because the rasterizers draw the
+// grid and not the floats: over every triangle at least one grid step thick, both as floats and on
+// the grid, in double precision, the axis becomes whichever of the one already packed in
+// `ClusterDesc::cone` (meshoptimizer's) and the mean normal needs the narrower cone, and the
+// cutoff and apex are recomputed around it with `k_cone_margin` of slack. A cluster whose cone
+// would then be wider than meshoptimizer's own limit (cos 0.1) gets k_cone_none; k_cone_none
+// stays k_cone_none.
 void quantize_positions(ClusterMesh& mesh);
 // The CPU reference of the shaders' load_position: the grid point of `vertex` as a float
 // position. Out-of-range vertices read as the origin.
@@ -339,7 +358,9 @@ Vec3 dequantize_position(const ClusterMesh& mesh, u32 vertex) noexcept;
 
 // Checks the invariants tests rely on: offsets and counts in range, counts within the limits,
 // every source triangle present exactly once, every vertex inside its cluster's sphere, every
-// triangle normal inside its cluster's normal cone (when the cone is not k_cone_none), a
+// triangle normal — as floats and on the grid — inside its cluster's normal cone, with the apex
+// behind the triangle's plane, both with at least half of k_cone_margin to spare (when the cone is
+// not k_cone_none; a triangle thinner than one grid step has no normal and is skipped), a
 // quantized position stream that is present, padded to an even count, and within half a grid
 // step of every float position, — when the mesh is skinned — a binding stream parallel to
 // the vertices whose weights sum to 255 and whose joints are inside `skin_joint_count`, and —

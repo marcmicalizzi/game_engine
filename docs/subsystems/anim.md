@@ -108,8 +108,11 @@ and for `skinning_matrices` the 3×4 built **directly** — the four product col
 registers with three rows stored, so the row `joint_matrix` used to drop is never written. SSE2 is
 guaranteed by x86-64, so this is not dispatch and there is no run-time choice. The summation order
 is `((c0·x + c1·y) + c2·z) + c3·w`, which is exactly `core/math`'s `operator*(const Mat4&, Vec4)`,
-so the result is the same float and not an approximation of it; `anim_tests.cpp` compares both
-kernels against `Mat4 operator*` with `==` rather than `Approx`.
+so the result is the same float and not an approximation of it — wherever the compiler evaluates
+what is written. `anim_tests.cpp` compares both kernels against `Mat4 operator*` with `==` on MSVC
+and on every build without FMA, and within 8 ulp on GCC and clang at x86-64-v3, which fuse
+multiply-adds of their own accord and fuse different ones on the two sides (see "Determinism"
+below).
 
 ### Numbers
 
@@ -209,6 +212,17 @@ and counted:
 So a v3 build's skinning matrices have always differed from a v2 build's in the last bit on those
 compilers, this change did not introduce it, and it slightly *reduces* it on GCC — explicit
 intrinsics leave the optimizer less to contract than free-form scalar float does.
+
+**Inside one v3 GCC build, the kernels and the scalar product disagree too**, which is what the
+first v3 run of the container presets found (2026-09-22, [local Linux
+builds](../ci/local-linux.md#what-the-first-v3-runs-found)): GCC fuses across the intrinsics as
+well — its `_mm_add_ps` is a plain vector `+` — and chose different multiplies to fuse in the
+kernel than in `Mat4 operator*`, so 63 of 192 `local_to_model` entries differed by up to 2 ulp and
+76 of 144 skinning entries by up to 3. Clang agreed exactly, but only because neither side is one
+expression it can fuse, which is an accident of spelling. The test therefore compares with `==`
+where the build evaluates as written (MSVC, and any build without FMA) and within 8 ulp where it
+may contract, and says why beside the bound: a transposed lane or a wrong parent is wrong by a
+hundredth or more, five orders of magnitude past it.
 
 **Nothing depends on cross-baseline equality today**, and two things nearly do. The GPU skinning
 test compares the shader against this CPU reference to a tolerance, which a last-bit difference

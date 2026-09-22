@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <meshoptimizer.h>
 
@@ -16,6 +17,264 @@ u32 pack_cone_s8(const meshopt_Bounds& bounds) noexcept {
   auto byte = [](signed char v) { return u32{static_cast<u8>(v)}; };
   return byte(bounds.cone_axis_s8[0]) | (byte(bounds.cone_axis_s8[1]) << 8) |
          (byte(bounds.cone_axis_s8[2]) << 16) | (byte(bounds.cone_cutoff_s8) << 24);
+}
+
+// ---- normal cones, fit to the triangles as they are drawn ---------------------------------------
+//
+// meshoptimizer chooses a cluster's cone axis well, and its cutoff and apex are tight around the
+// normals **its own float arithmetic** computed from the **float** positions. Neither is what the
+// cull pass has to be right about. The rasterizers draw the 16-bit grid, not the floats, and on a
+// dense mesh the grid turns a small triangle's normal by degrees; and a triangle's normal computed
+// by different arithmetic — a GPU, another compiler, the same compiler at another baseline — is a
+// different number. The failure that made this visible: with FMA contraction (GCC and clang at
+// x86-64-v3), `a*b - c*d` with `a*b == c*d` is not zero but the rounding error of the product, so a
+// triangle with two coincident corners (a UV sphere's pole) gets a unit "normal" pointing wherever
+// the residue says. meshoptimizer put one inside its cone by luck; the validator's copy of the same
+// residue pointed elsewhere, and a mesh MSVC and every v2 build accept failed on every v3 Linux
+// build (docs/ci/local-linux.md, "What the first v3 runs found").
+//
+// So the builder refits the cone itself, in double precision, over **both** representations of
+// every triangle — the float one the ray tracers build and the grid one the rasterizers read — with
+// `k_cone_margin` of slack on each, which is what makes the cone robust to arithmetic nobody here
+// controls instead of agreeing with one copy of it. A triangle thinner than a grid step is left
+// out of both, because its facing is rounding. meshoptimizer still decides whether a cluster gets
+// a cone at all and proposes an axis.
+
+struct F64x3 {
+  f64 x = 0.0;
+  f64 y = 0.0;
+  f64 z = 0.0;
+};
+
+F64x3 widen(Vec3 v) noexcept {
+  return F64x3{static_cast<f64>(v.x), static_cast<f64>(v.y), static_cast<f64>(v.z)};
+}
+F64x3 sub_d(F64x3 a, F64x3 b) noexcept { return F64x3{a.x - b.x, a.y - b.y, a.z - b.z}; }
+F64x3 scale_d(F64x3 a, f64 s) noexcept { return F64x3{a.x * s, a.y * s, a.z * s}; }
+f64 dot_d(F64x3 a, F64x3 b) noexcept { return a.x * b.x + a.y * b.y + a.z * b.z; }
+f64 length_d(F64x3 a) noexcept { return std::sqrt(dot_d(a, a)); }
+F64x3 cross_d(F64x3 a, F64x3 b) noexcept {
+  return F64x3{a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x};
+}
+
+// The unit normal of a triangle given as three double-precision corners, or false when it has
+// none the renderer can promise: when it is **thinner than one grid step** (its height over its
+// longest edge, `min_height`). The grid is the precision positions reach the rasterizers at, so a
+// corner within a step of the opposite edge is on either side of it by rounding, and the
+// triangle's facing is whatever quantization made it — to the rasterizers, which draw the grid,
+// and to everything that computes a float normal, whose rounding residue on a unit mesh is a
+// hundred times thinner still. Such a triangle is left out of the cone rather than allowed to
+// widen it; it covers a pixel only when a grid step does, which is a zoom at which the whole mesh
+// shows its grid anyway. This is the test the old validator lacked: it skipped only
+// |n|^2 <= 1e-24, an absolute threshold that an FMA residue of 1e-11 on a unit sphere passes.
+// Corners that coincide are caught before any arithmetic, because that is the case contraction
+// turns into a residue: e1 == e2 makes every component `x*y - x*y`.
+bool triangle_normal(F64x3 a, F64x3 b, F64x3 c, f64 min_height, F64x3& n) noexcept {
+  auto same = [](F64x3 p, F64x3 q) { return p.x == q.x && p.y == q.y && p.z == q.z; };
+  if (same(a, b) || same(b, c) || same(a, c)) return false;
+  const F64x3 e1 = sub_d(b, a);
+  const F64x3 e2 = sub_d(c, a);
+  const f64 longest = std::max(std::max(length_d(e1), length_d(e2)), length_d(sub_d(c, b)));
+  const F64x3 m = cross_d(e1, e2);
+  const f64 l = length_d(m);
+  if (!(l > min_height * longest)) return false;
+  n = scale_d(m, 1.0 / l);
+  return true;
+}
+
+// The grid point of a cluster-ordered vertex, as the shaders' load_position computes it, in double.
+F64x3 grid_point(const ClusterMesh& mesh, u32 vertex) noexcept {
+  const u16* q = &mesh.quantized[vertex * 3];
+  const f64 s = static_cast<f64>(mesh.quant_scale);
+  return F64x3{static_cast<f64>(mesh.quant_origin.x) + static_cast<f64>(q[0]) * s,
+               static_cast<f64>(mesh.quant_origin.y) + static_cast<f64>(q[1]) * s,
+               static_cast<f64>(mesh.quant_origin.z) + static_cast<f64>(q[2]) * s};
+}
+
+// Calls `visit(normal, point_on_plane, triangle, grid)` for every triangle of `cluster` that has a
+// normal, once as the float triangle and once as the grid triangle. Needs the grid.
+template <typename Visit>
+void visit_cluster_planes(const ClusterMesh& mesh, const ClusterDesc& cluster, Visit&& visit) {
+  const f64 step = static_cast<f64>(mesh.quant_scale);
+  for (u32 t = 0; t < cluster.triangle_count; ++t) {
+    const u32 packed = mesh.triangles[cluster.triangle_offset + t];
+    u32 v[3];
+    for (u32 k = 0; k < 3; ++k)
+      v[k] = cluster.vertex_offset + ClusterMesh::unpack(packed, k);
+    F64x3 n;
+    const F64x3 f0 = widen(mesh.vertices[v[0]]);
+    if (triangle_normal(f0, widen(mesh.vertices[v[1]]), widen(mesh.vertices[v[2]]), step, n))
+      visit(n, f0, t, false);
+    const F64x3 g0 = grid_point(mesh, v[0]);
+    if (triangle_normal(g0, grid_point(mesh, v[1]), grid_point(mesh, v[2]), step, n))
+      visit(n, g0, t, true);
+  }
+}
+
+// The largest distance from `center` to any corner of the cluster, float or grid.
+f64 cluster_reach(const ClusterMesh& mesh, const ClusterDesc& cluster, F64x3 center) noexcept {
+  f64 reach = 0.0;
+  for (u32 v = cluster.vertex_offset; v < cluster.vertex_offset + cluster.vertex_count; ++v) {
+    reach = std::max(reach, length_d(sub_d(widen(mesh.vertices[v]), center)));
+    reach = std::max(reach, length_d(sub_d(grid_point(mesh, v), center)));
+  }
+  return reach;
+}
+
+f64 angle_between(F64x3 unit_a, F64x3 unit_b) noexcept {
+  const f64 c = dot_d(unit_a, unit_b);
+  return std::acos(c < -1.0 ? -1.0 : (c > 1.0 ? 1.0 : c));
+}
+
+// meshoptimizer's own limit: a cone wider than this (cos <= 0.1, about 168 degrees across) culls
+// too little to be worth a test, and its apex construction divides by the cosine.
+constexpr f64 k_cone_min_cos = 0.1;
+
+struct ConePlane {
+  F64x3 normal;
+  F64x3 point;
+};
+
+// Refits `cluster`'s cone: its axis, cutoff and apex. Called by quantize_positions for every
+// cluster that has one, because the grid is half of what it is fit to; `planes` is scratch.
+void fit_cone(const ClusterMesh& mesh, ClusterDesc& cluster, Vector<ConePlane>& planes) {
+  if (decode_cone(cluster.cone).cutoff >= 1.0f) return;  // two-sided, or no useful cone
+  planes.clear();
+  F64x3 sum;
+  visit_cluster_planes(mesh, cluster, [&](F64x3 n, F64x3 p, u32, bool) {
+    planes.push_back(ConePlane{n, p});
+    sum = F64x3{sum.x + n.x, sum.y + n.y, sum.z + n.z};
+  });
+  if (planes.empty()) {
+    // Every triangle is thinner than a grid step, so the cluster draws nothing with a facing.
+    // meshoptimizer's answer for the all-degenerate case is a zero axis and a zero cutoff, which
+    // the CPU test reads as always backfacing and the GPU as never; never culled cannot be wrong.
+    cluster.cone = k_cone_none;
+    return;
+  }
+  // The axis: meshoptimizer's, or the mean of the normals that count, whichever needs the narrower
+  // cone. meshoptimizer centres its axis on every normal its own arithmetic produced, a sliver's
+  // rounding residue included, and one residue can pull a flat cluster's axis tens of degrees off
+  // its only real normal: meshoptimizer's own cone for the tilted plane in cluster_tests.cpp is
+  // 99/127 wide, where 3/127 holds every normal the plane really has.
+  u32 candidates[2] = {cluster.cone & 0x00ffffffu, 0u};
+  u32 candidate_count = 1;
+  const f64 sum_length = length_d(sum);
+  if (sum_length > 0.0) {
+    const F64x3 mean = scale_d(sum, 1.0 / sum_length);
+    candidates[candidate_count++] =
+        encode_cone(
+            Vec3{static_cast<f32>(mean.x), static_cast<f32>(mean.y), static_cast<f32>(mean.z)},
+            1.0f) &
+        0x00ffffffu;
+  }
+  u32 axis_bytes = 0;
+  F64x3 axis;
+  f64 axis_length = 0.0;
+  f64 widest = 4.0;  // more than pi: no candidate yet
+  for (u32 i = 0; i < candidate_count; ++i) {
+    // k_cone_none's axis bytes are zero, so OR-ing them in reads the candidate's axis alone.
+    const F64x3 q = widen(decode_cone(candidates[i] | k_cone_none).axis);
+    const f64 l = length_d(q);
+    if (!(l > 0.0)) continue;
+    const F64x3 u = scale_d(q, 1.0 / l);
+    f64 w = 0.0;
+    for (const ConePlane& plane : planes)
+      w = std::max(w, angle_between(u, plane.normal));
+    if (w < widest) {
+      widest = w;
+      axis = u;
+      axis_length = l;
+      axis_bytes = candidates[i];
+    }
+  }
+  const f64 margin = static_cast<f64>(k_cone_margin);
+  widest += margin;
+  if (!(std::cos(widest) > k_cone_min_cos)) {
+    cluster.cone = k_cone_none;
+    return;
+  }
+  // The cull pass normalizes the axis after the world transform and cluster_backfacing does not,
+  // so the cutoff is scaled by the axis' own length when that is above 1: either reading then
+  // implies the camera sits at least `widest` past every normal.
+  const f64 cutoff = std::sin(widest) * std::max(1.0, axis_length);
+  const f64 cutoff_steps = std::ceil(cutoff * 127.0);
+  if (!(cutoff_steps < 127.0)) {
+    cluster.cone = k_cone_none;
+    return;
+  }
+
+  // The apex: a point on the axis behind every plane by `margin` times its distance, so a normal
+  // turned by up to `margin` still has it behind. With A = C - axis * t and |A - p| <= reach + t,
+  //   dot(C - p, n) - t dot(axis, n) + margin (reach + t) + rounding (|C| + t) <= 0
+  // for every plane, and dot(axis, n) >= cos(widest - margin) > 0.1 keeps the divisor positive.
+  // `rounding` covers the floats on either side of the test: the apex stored as three f32, and a
+  // grid corner the shader dequantizes in f32 rather than in double — half an ulp a component of
+  // something no longer than |C| + t and |C| + reach respectively.
+  const F64x3 center = widen(cluster.center);
+  const f64 reach = cluster_reach(mesh, cluster, center);
+  const f64 rounding = 1.0 / 4194304.0;  // 2^-22: twice what three rounded components can move it
+  const f64 center_length = length_d(center);
+  f64 t = 0.0;
+  for (const ConePlane& plane : planes) {
+    const f64 numerator = dot_d(sub_d(center, plane.point), plane.normal) + margin * reach +
+                          rounding * (2.0 * center_length + reach);
+    const f64 denominator = dot_d(axis, plane.normal) - margin - rounding;
+    t = std::max(t, numerator / denominator);
+  }
+  const F64x3 apex = sub_d(center, scale_d(axis, t));
+  cluster.cone_apex =
+      Vec3{static_cast<f32>(apex.x), static_cast<f32>(apex.y), static_cast<f32>(apex.z)};
+  cluster.cone =
+      axis_bytes | (u32{static_cast<u8>(static_cast<i8>(static_cast<i32>(cutoff_steps)))} << 24);
+}
+
+// validate_clusters' half of the above: every triangle that has a normal, as floats and on the
+// grid, keeps at least **half** of `k_cone_margin` inside the packed cone and in front of the
+// apex. Half rather than all of it so the check says "the margin is there" without depending on
+// the builder's arithmetic to the last bit — which is the property this whole section is about.
+bool check_cone(const ClusterMesh& mesh, const ClusterDesc& cluster, u32 index, NormalCone cone,
+                std::string* error) {
+  const F64x3 axis_q = widen(cone.axis);
+  const f64 axis_length = length_d(axis_q);
+  const F64x3 axis = scale_d(axis_q, 1.0 / axis_length);
+  // The widest a normal may sit from the axis for "the camera is inside the cone" to imply "the
+  // camera is behind the triangle", under either reading of the packed axis (see fit_cone).
+  const f64 limit =
+      std::asin(std::min(1.0, static_cast<f64>(cone.cutoff) / std::max(1.0, axis_length)));
+  const f64 half = 0.5 * static_cast<f64>(k_cone_margin);
+  const F64x3 apex = widen(cluster.cone_apex);
+  const char* what = nullptr;
+  u32 triangle = 0;
+  bool on_grid = false;
+  f64 found = 0.0;
+  f64 allowed = 0.0;
+  visit_cluster_planes(mesh, cluster, [&](F64x3 n, F64x3 p, u32 t, bool grid) {
+    if (what != nullptr) return;
+    const f64 angle = angle_between(axis, n);
+    const F64x3 to_apex = sub_d(apex, p);
+    if (angle + half > limit) {
+      what = "triangle normal outside its cluster's cone";
+      found = angle;
+      allowed = limit - half;
+    } else if (dot_d(to_apex, n) > -half * length_d(to_apex)) {
+      what = "cone apex not behind a triangle's plane";
+      found = dot_d(to_apex, n);
+      allowed = -half * length_d(to_apex);
+    } else {
+      return;
+    }
+    triangle = t;
+    on_grid = grid;
+  });
+  if (what == nullptr) return true;
+  if (error != nullptr) {
+    char detail[160];
+    std::snprintf(detail, sizeof(detail), " (cluster %u, triangle %u %s: %.9g where at most %.9g)",
+                  index, triangle, on_grid ? "on the grid" : "as floats", found, allowed);
+    *error = std::string(what) + detail;
+  }
+  return false;
 }
 
 }  // namespace
@@ -185,6 +444,10 @@ void quantize_positions(ClusterMesh& mesh) {
   }
   // One pad entry so a shader may read every triple as two whole 32-bit words.
   if ((mesh.quantized.size() & 1u) != 0) mesh.quantized.push_back(0);
+  // The cones are fit to the grid as well as to the floats, so a new grid means new cones.
+  Vector<ConePlane> planes;
+  for (ClusterDesc& cluster : mesh.clusters)
+    fit_cone(mesh, cluster, planes);
 }
 
 Vec3 dequantize_position(const ClusterMesh& mesh, u32 vertex) noexcept {
@@ -278,10 +541,6 @@ bool validate_clusters(const ClusterMesh& mesh, std::span<const u32> source_indi
     const bool has_cone = cone.cutoff < 1.0f;
     if (has_cone && std::fabs(length(cone.axis) - 1.0f) > 0.02f)
       return fail("cone axis is not unit length");
-    // Every face normal lies within the cone's half-angle: cos(half-angle) = sqrt(1 - cutoff^2),
-    // with slack for the snorm8 axis and the rounded-up cutoff.
-    const f32 min_cos =
-        has_cone ? std::sqrt(std::max(0.0f, 1.0f - cone.cutoff * cone.cutoff)) : 0.0f;
     for (u32 t = 0; t < d.triangle_count; ++t) {
       const u32 packed = mesh.triangles[d.triangle_offset + t];
       u32 corners[3];
@@ -292,16 +551,8 @@ bool validate_clusters(const ClusterMesh& mesh, std::span<const u32> source_indi
       found.push_back(key_of(mesh.vertex_source[d.vertex_offset + corners[0]],
                              mesh.vertex_source[d.vertex_offset + corners[1]],
                              mesh.vertex_source[d.vertex_offset + corners[2]]));
-      if (has_cone) {
-        const Vec3 p0 = mesh.vertices[d.vertex_offset + corners[0]];
-        const Vec3 p1 = mesh.vertices[d.vertex_offset + corners[1]];
-        const Vec3 p2 = mesh.vertices[d.vertex_offset + corners[2]];
-        const Vec3 face = cross(p1 - p0, p2 - p0);
-        if (length_squared(face) <= 1e-24f) continue;  // degenerate faces have no normal
-        if (dot(normalize(face), normalize(cone.axis)) < min_cos - 0.03f)
-          return fail("triangle normal outside its cluster's cone");
-      }
     }
+    if (has_cone && !check_cone(mesh, d, c, cone, error)) return false;
     total_triangles += d.triangle_count;
   }
   if (total_triangles != mesh.source_triangle_count)
