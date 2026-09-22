@@ -259,8 +259,8 @@ MOVBE (Intel(R) Xeon(R) CPU E5-2670 0 @ 2.60GHz); rebuild with -DENGINE_CPU_BASE
 exit **78**, on stdout and stderr both, one line, naming the build's baseline, the missing
 features, the CPU and the way out. That is the decision working.
 
-**The hole is next to it.** A v3 build never gets as far as running `engine-cli`, because the
-*build* runs a binary of its own:
+**The hole was next to it** (2026-09-20). A v3 build never got as far as running `engine-cli`,
+because the *build* runs a binary of its own:
 
 ```
 [126/976] schemac: schemas
@@ -272,28 +272,47 @@ links no engine module — by design, so that it builds before `core/` exists �
 `platform::require_cpu_baseline()` to call. Run by hand it is `Illegal instruction (core dumped)`,
 exit 132, with nothing printed. Six minutes of compiling for a build that could never have worked.
 
-`cmake/EngineCpuBaseline.cmake` now refuses at **configure** time instead: a native build whose
-`/proc/cpuinfo` does not list `avx2` while `ENGINE_CPU_BASELINE` is `v3` stops with a message
-naming the v2 presets. It is Linux-only (that is where `/proc/cpuinfo` costs nothing and where the
-only sub-v3 machine is), skipped when cross-compiling, and `-DENGINE_ALLOW_UNRUNNABLE_BASELINE=ON`
-is the way past it for someone building here to run elsewhere.
+For two days `cmake/EngineCpuBaseline.cmake` refused such a configure instead (a native v3 build
+whose `/proc/cpuinfo` lacked `avx2` stopped with a message, `ENGINE_ALLOW_UNRUNNABLE_BASELINE` the
+way past it). That stopped the six wasted minutes and was the wrong rule, because it forbade
+building a v3 product on this machine at all when the only thing that could not work was a tool
+that never ships. **[ADR-0034](../adr/0034-host-tools-build-for-the-build-machine.md) replaced
+it:** a *host tool* — anything the build runs on the build machine — is declared with
+`engine_host_tool()` and compiled for the compiler's default, not for `ENGINE_CPU_BASELINE`, and
+`build.cpu_baseline` checks after every build that host tools carry no instruction-set flag,
+everything else carries all of it, and nothing the build runs is anything but a host tool.
 
-**Its first version refused every v3 configure on every Linux machine**, AVX2 or not, and this
+**It also refused every v3 configure on every *other* Linux machine**, AVX2 or not, and this
 server was the one place that could not show it: the kernel writes `flags\t\t: fpu ...` with
 *tabs* between the key and the colon, the pattern allowed only spaces, and so it never matched —
 which on Sandy Bridge is the right answer for the wrong reason. The container's first v3 configure
-after the check landed (2026-09-22, on an i9-10980XE with AVX2 and AVX-512) stopped with this
-message; the pattern now takes `[ \t]*`. A check that is only ever exercised where it should fire
-has not been tested.
+after the check landed (2026-09-22, on an i9-10980XE with AVX2 and AVX-512) stopped with its
+message, and the pattern was fixed to take `[ \t]*` the same day, hours before ADR-0034 removed the
+check altogether. A check that is only ever exercised where it should fire has not been tested.
 
-**Left for the coordinator, because it is an ADR-level call and not a build-script one:** whether
-build-time *host tools* should carry the target's instruction-set baseline at all. `schemac` is
-generated code's generator; it never ships, and compiling it for the product's ISA is what turned
-"this machine is below the baseline" into a SIGILL rather than a sentence. ADR-0031 forbids a
-second caller of `engine_strip_cpu_baseline()` in terms that were aimed at exempting a *module*,
-and a host tool is arguably a different category — but that is a decision to record, not to make
-in `cmake/`.
+**Cross-checked here, 2026-09-22.** `linux-server` configured with `-DENGINE_CPU_BASELINE=v3` into a
+build directory of its own (`build/v3-crosscheck`, beside this checkout's others): the configure
+succeeds, **all 976 targets build with none failing** in 10 min 7 s (at a load average of 15 from
+other work), and `[117/976] schemac: schemas` — the step that used to be code 260 — passes;
+`schemac` itself runs and exits 2, its usage error. `engine-cli` prints the line above and exits
+78. CTest fails 49 of 52, every one an engine test executable exiting 78 with the same line, the
+first being `schemac` (#4 — `engine_schemac_tests`, a *test* of the tool, which carries the
+baseline as a test should); the three that pass read files and run no engine code, and one of them
+is `build.cpu_baseline` saying *829 of 841 translation units carry `-march=x86-64-v3`, the other
+twelve are schemac's seven and `core/platform`'s five, and the build runs [engine_schemac]*. So a v3
+build on this CPU now fails exactly where ADR-0031 designed it to: at the first engine binary that
+runs, which is after the build — CTest's first test, or this script's adapter report — with a
+sentence.
 
+The script to repeat it, run over SSH from this checkout's remote directory:
+
+```sh
+cd ~/game_engine-remote/<checkout-id>/src
+cmake --preset linux-server -B build/v3-crosscheck -DENGINE_CPU_BASELINE=v3 \
+  -DFETCHCONTENT_BASE_DIR="$HOME/game_engine-remote/<checkout-id>/deps/linux-server"
+cmake --build build/v3-crosscheck -j 16 -- -k 0      # builds to the end
+build/v3-crosscheck/bin/engine-cli engine.methods    # one line, exit 78
+```
 ## Measured times
 
 Xeon E5-2670, 16 threads, `-Jobs 16`. The machine's load is noted because it is shared with the
@@ -349,7 +368,7 @@ promise) cannot tell you. Worth knowing before a rolling distribution is treated
 
 On this CPU the engine found its own edge, described above: a v3 build cannot run here, the
 startup check says so correctly for every app, and `tools/schemac` — which the build itself runs
-— had no check to say it with. That is now a configure-time refusal.
+— had no check to say it with. It was a configure-time refusal for two days; [ADR-0034](../adr/0034-host-tools-build-for-the-build-machine.md) made it a host tool, and a v3 build here now builds to the end.
 
 ## When it goes wrong
 
@@ -357,7 +376,9 @@ startup check says so correctly for every app, and `tools/schemac` — which the
   build failure. Try `ssh titanxp uptime` by hand.
 - **`Couldn't find dependency package for XCURSOR`** — an `auto` preset on a machine with a
   partial X11. Use `linux-server`.
-- **`[code=260]` from `schemac`** — a v3 preset on this CPU; see above. The configure should have
-  stopped you first, so if you see this, say so.
+- **`[code=260]` (SIGILL) from a build step** — should not happen any more: `schemac` is a host
+  tool ([ADR-0034](../adr/0034-host-tools-build-for-the-build-machine.md)). If it does, the step runs
+  an executable of this build that was not declared with `engine_host_tool()`, and
+  `build.cpu_baseline` on any machine that can finish the build names it.
 - **A test that fails only here** — check `LastTest.log` from `-Fetch` first. The six pwsh tests
   above are *absent*, not failing; a run that reports fewer tests than the container is expected.

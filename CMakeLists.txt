@@ -49,3 +49,6 @@ add_subdirectory(apps)
 
 engine_write_shader_manifest()
 engine_finalize_modules()
+# Last, when every target that is a host tool or the CPU floor has said so: build.cpu_baseline
+# checks the build against that classification (ADR-0031, ADR-0034).
+engine_cpu_baseline_finalize()

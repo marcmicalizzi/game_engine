@@ -12,6 +12,11 @@ target_compile_features(engine_schemac PRIVATE cxx_std_20)
 target_include_directories(engine_schemac PRIVATE src)
 engine_apply_warnings(engine_schemac)
 set_target_properties(engine_schemac PROPERTIES OUTPUT_NAME schemac)
+# A host tool (ADR-0034): the build runs it on the build machine and it never ships, so it is
+# compiled for the compiler's default rather than for ENGINE_CPU_BASELINE. Compiled for x86-64-v3 it
+# died with SIGILL six minutes into a v3 build on the Sandy Bridge GPU server, having no
+# `require_cpu_baseline()` of its own to say why — it links no engine module, by design.
+engine_host_tool(engine_schemac)
 
 # Negative and positive tests drive the built compiler as a child process.
 if(ENGINE_BUILD_TESTS)

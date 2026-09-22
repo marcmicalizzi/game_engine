@@ -13,7 +13,10 @@
 # Recast, Tracy, stb through our own translation unit). A dependency that publishes an arch flag
 # of its own is made to follow this one rather than argue with it; Jolt is the only one, and
 # cmake/EnginePhysics.cmake is where its USE_AVX*/USE_SSE4_* options are set from these
-# variables. docs/plan/08-toolchain.md §8.9 has the table of what each dependency does.
+# variables. docs/plan/08-toolchain.md §8.9 has the table of what each dependency does. Two kinds
+# of target give the flag back, and only two, both at the bottom of this file: `core/platform`,
+# which has to run on the CPU it is refusing (ADR-0031), and the **host tools** the build itself
+# runs, which never ship and have to run on whatever machine is building (ADR-0034).
 #
 # AVX-512 is never a baseline. It is dispatch-only (ADR-0031): the parts that have it are a
 # minority, the frequency behaviour differs between them, and a kernel that wants it selects it
@@ -76,68 +79,43 @@ endif()
 
 message(STATUS "engine CPU baseline: ${ENGINE_CPU_BASELINE} (${ENGINE_CPU_BASELINE_FLAGS})")
 
-# --- the build machine has to be able to run the baseline it is building -----------------------
+# --- who carries the baseline, and who does not (ADR-0034) --------------------------------------
 #
-# ADR-0031 decision 5 turns "a v3 binary on a v2 machine" from a crash into a sentence, and it
-# does so at *run* time, in every app's main(). That covers the engine. It does not cover the
-# **build**, and the build runs binaries too: `tools/schemac` generates the schema headers, and it
-# is a standalone standard-library-only tool that links no engine module — by design, so that it
-# builds before `core/` exists — which means it has no `platform::require_cpu_baseline()` to call.
+# **Shipped targets carry it; host tools do not.** A *shipped* target is anything that runs on a
+# user's machine or stands in for one: every engine module, app, test and bench, and every
+# third-party library they link. A *host tool* is anything the **build** runs on the build machine
+# — today `tools/schemac`, which generates the schema headers — and it never ships.
 #
-# Measured on the headless Sandy Bridge GPU server on 2026-09-20, configuring `linux-gcc-release`
-# (v3) natively: six minutes of compiling, then
+# The two want opposite things. A shipped target's instruction set is a promise to users and has to
+# be the baseline everywhere, which is what the top-level flag above does. A host tool's speed is
+# irrelevant — schemac spends milliseconds a build — and its portability is the whole point: it has
+# to run on whatever machine is building, including one below the product's baseline. Compiling it
+# for x86-64-v3 is what made a v3 build on the Sandy Bridge GPU server die six minutes in with
+# SIGILL and nothing else (`[126/976] schemac: schemas`, ninja's code 260), because a
+# standard-library-only tool links no `core/platform` and has no `require_cpu_baseline()` to say
+# so. So `engine_host_tool()` takes the flag back off, and a host tool is compiled for the
+# compiler's own default — the build machine's platform promise — whatever ENGINE_CPU_BASELINE is.
+# A v3 build on a v2 machine then builds to the end, and fails where it should: at the first engine
+# binary that runs, with ADR-0031's one line and exit 78.
 #
-#     [126/976] schemac: schemas
-#     FAILED: [code=260] schemas/generated/schemas/include/schemas/provenance.h ...
+# That replaced a configure-time refusal (a native v3 configure on a machine whose /proc/cpuinfo
+# lacked avx2 stopped with a message), which was the right stop-gap and the wrong rule: it forbade
+# building v3 on a v2 machine at all, when the only thing that could not work was the host tool.
 #
-# and nothing else — 260 is ninja's 256 + SIGILL, the tool having died on the first AVX2
-# instruction in its own code. Run by hand it is `Illegal instruction (core dumped)`, exit 132.
-# `engine-cli` from the same build does the right thing and prints ADR-0031's one line, so the
-# decision works where it was applied; this is the hole beside it.
-#
-# The cheapest honest fix is here, before anything is compiled: a *native* build whose host cannot
-# execute the baseline cannot succeed, so say so now rather than in six minutes in a build log.
-# Only Linux is checked, because /proc/cpuinfo is the one reading that costs nothing and the only
-# machine this project has with a CPU below its default baseline is a Linux one. A cross-compile
-# is exempt — the host never runs the output — and so is anyone who sets the escape hatch.
-option(ENGINE_ALLOW_UNRUNNABLE_BASELINE
-       "Configure even when this machine cannot execute ENGINE_CPU_BASELINE" OFF)
-if(ENGINE_CPU_BASELINE STREQUAL "v3"
-   AND NOT CMAKE_CROSSCOMPILING
-   AND NOT ENGINE_ALLOW_UNRUNNABLE_BASELINE
-   AND CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux"
-   AND EXISTS "/proc/cpuinfo")
-  file(READ "/proc/cpuinfo" _engine_cpuinfo LIMIT 65536)
-  # One flags line is enough: every core of an x86 machine reports the same set. The kernel
-  # separates the key from its colon with **tabs** ("flags\t\t: fpu ..."), not spaces; the first
-  # version of this pattern allowed only spaces, matched on no Linux machine at all, and so
-  # refused every v3 configure on hardware that has AVX2 — found on 2026-09-22 by the container
-  # build, which the server's v2 presets had never asked.
-  if(NOT _engine_cpuinfo MATCHES "\n[ \t]*flags[ \t]*:[^\n]* avx2[ \n]")
-    message(FATAL_ERROR
-      "ENGINE_CPU_BASELINE is v3 (x86-64-v3, the default) but this machine's /proc/cpuinfo does "
-      "not list avx2, so nothing this build produces can run here — including `tools/schemac`, "
-      "which the build itself has to run to generate the schema headers and which dies with "
-      "SIGILL rather than a message because it links no engine module (ADR-0031 decision 5 "
-      "covers the apps, not the host tools).\n"
-      "Use a v2 preset: `linux-server` (headless, what the Sandy Bridge GPU server wants), "
-      "`linux-gcc-release-v2` or `linux-clang-debug-v2`. See docs/ci/remote-linux.md.\n"
-      "If you are building here to run somewhere else, set "
-      "-DENGINE_ALLOW_UNRUNNABLE_BASELINE=ON and expect the schema generation step to fail.")
-  endif()
-endif()
+# **The classification is checked, not remembered.** `build.cpu_baseline`
+# (cmake/CheckCpuBaseline.cmake, registered by engine_cpu_baseline_finalize() below) reads
+# `compile_commands.json` and `build.ninja` after every build and fails if a host tool's
+# translation unit carries any instruction-set flag, if any other translation unit lacks the
+# baseline, or if the build runs an executable of its own that is not declared a host tool — so a
+# second generator tool that forgets `engine_host_tool()` is caught by the graph, not by a server
+# six minutes into a build.
 
-# Takes the baseline flag back off one target, for code that has to be able to run on a CPU the
-# rest of the binary cannot: `core/platform`, which is what decides whether the rest of the
-# binary may run at all (core/platform/src/cpu_baseline.cpp).
-#
-# It removes the flag rather than appending an opposite one, because "the last /arch or -march
-# wins" is true but is not the kind of thing a build should rest on — and MSVC has no /arch that
-# means "x86-64-v2" to append in the first place. A target's COMPILE_OPTIONS property is
-# initialized from the directory's when the target is created, so by the time this is called the
-# flag is sitting in a list this function can edit. Verify it in
-# `build/<preset>/compile_commands.json`, which is the artefact the claim rests on.
-function(engine_strip_cpu_baseline target)
+# Removes the baseline flags from one target's COMPILE_OPTIONS. It removes rather than appending an
+# opposite flag, because "the last /arch or -march wins" is true but is not the kind of thing a
+# build should rest on — and MSVC has no /arch that means "x86-64-v2" to append in the first
+# place. A target's COMPILE_OPTIONS property is initialized from the directory's when the target is
+# created, so by the time either caller below runs, the flag is sitting in a list this can edit.
+function(_engine_remove_cpu_baseline_flags target)
   if(NOT ENGINE_CPU_BASELINE_FLAGS)
     return()
   endif()
@@ -149,4 +127,58 @@ function(engine_strip_cpu_baseline target)
     list(REMOVE_ITEM _opts "${_flag}")
   endforeach()
   set_target_properties(${target} PROPERTIES COMPILE_OPTIONS "${_opts}")
+endfunction()
+
+# A **shipped** target that has to run on a CPU the rest of its binary cannot: `core/platform`,
+# which decides whether the rest of the binary may run at all (core/platform/src/cpu_baseline.cpp).
+# ADR-0031's one exemption inside the product, and it stays one: a second caller would be a module
+# quietly opting out of the baseline, which ADR-0031 forbids. `build.cpu_baseline` names every
+# target that calls this, so a second one shows up in a test log rather than in a code review.
+function(engine_strip_cpu_baseline target)
+  _engine_remove_cpu_baseline_flags(${target})
+  set_property(TARGET ${target} PROPERTY ENGINE_CPU_ROLE floor)
+  set_property(GLOBAL APPEND PROPERTY ENGINE_CPU_FLOOR_TARGETS ${target})
+endfunction()
+
+# A **host tool**: an executable the build runs on the build machine, which never ships (ADR-0034).
+# It is compiled with no instruction-set flag from ENGINE_CPU_BASELINE, so it runs on any machine
+# that can run the compiler that built it. Declare every executable an add_custom_command() runs
+# this way, right after its add_executable(); `build.cpu_baseline` fails a build that runs one of
+# its own executables without it.
+function(engine_host_tool target)
+  _engine_remove_cpu_baseline_flags(${target})
+  set_property(TARGET ${target} PROPERTY ENGINE_CPU_ROLE host_tool)
+  set_property(GLOBAL APPEND PROPERTY ENGINE_HOST_TOOL_TARGETS ${target})
+endfunction()
+
+# Registers `build.cpu_baseline` and its self-test. Called once, at the end of the top-level
+# CMakeLists.txt, when every target that will ever call the two functions above has done so.
+#
+# Ninja only, because the check reads two files only a Ninja build writes in the form it parses
+# (`compile_commands.json` is Makefile-and-Ninja; `build.ninja` is Ninja's own), and every preset
+# in CMakePresets.json uses Ninja. Another generator configures fine and simply has no such test.
+function(engine_cpu_baseline_finalize)
+  if(NOT ENGINE_BUILD_TESTS)
+    return()
+  endif()
+  get_property(_host GLOBAL PROPERTY ENGINE_HOST_TOOL_TARGETS)
+  get_property(_floor GLOBAL PROPERTY ENGINE_CPU_FLOOR_TARGETS)
+  string(JOIN "|" _host_arg ${_host})
+  string(JOIN "|" _floor_arg ${_floor})
+  string(JOIN "|" _flags_arg ${ENGINE_CPU_BASELINE_FLAGS})
+  # The self-test runs the classification over synthetic input with a known answer, so a check
+  # that stopped matching anything would fail here rather than pass everywhere quietly.
+  add_test(NAME build.cpu_baseline.self_test
+    COMMAND "${CMAKE_COMMAND}" -DSELF_TEST=ON -P "${CMAKE_SOURCE_DIR}/cmake/CheckCpuBaseline.cmake")
+  set_tests_properties(build.cpu_baseline.self_test PROPERTIES LABELS "build")
+  if(NOT CMAKE_GENERATOR MATCHES "Ninja" OR NOT CMAKE_EXPORT_COMPILE_COMMANDS)
+    message(STATUS "engine CPU baseline: build.cpu_baseline needs Ninja and compile_commands.json; not registered")
+    return()
+  endif()
+  add_test(NAME build.cpu_baseline
+    COMMAND "${CMAKE_COMMAND}" "-DBINARY_DIR=${CMAKE_BINARY_DIR}" "-DBASELINE=${ENGINE_CPU_BASELINE}"
+            "-DFLAGS=${_flags_arg}" "-DHOST_TOOLS=${_host_arg}" "-DFLOOR=${_floor_arg}"
+            -P "${CMAKE_SOURCE_DIR}/cmake/CheckCpuBaseline.cmake")
+  set_tests_properties(build.cpu_baseline PROPERTIES LABELS "build")
+  message(STATUS "engine CPU baseline: host tools [${_host}], floor [${_floor}]")
 endfunction()
