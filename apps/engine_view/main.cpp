@@ -75,7 +75,7 @@ constexpr const char* k_usage =
     "                   [--panini-d <d>] [--peripheral-lod <mult>]\n"
     "                   [--animate [clip]] [--anim-speed <x>] [--anim-lod on|off]\n"
     "                   [--anim-lod-scale <x>]\n"
-    "                   [--morph <name|index>=<weight>] [--morph-animate]\n"
+    "                   [--morph <name|index>=<weight>] [--morph-animate [clip]]\n"
     "                   [--static-shape-kib <n>]\n"
     "                   [--reference <spp>] [--bounces <n>] [--finest] [--spp-batch <n>]\n"
     "\n"
@@ -159,9 +159,11 @@ constexpr const char* k_usage =
     "                   shape** stage, which is cached per instance and costs nothing per frame.\n"
     "                   <n> is the channel's name (glTF's extras.targetNames) or its index.\n"
     "                   Repeatable; an unknown name is a usage error rather than a silent zero\n"
-    "  --morph-animate  play the clip's weight tracks through the **pose** stage, per frame, on\n"
-    "                   top of whatever --morph set. Channels the clip does not name keep the\n"
-    "                   asset's own default weights\n"
+    "  --morph-animate [clip]  play a clip's weight tracks through the **pose** stage, per frame,\n"
+    "                   on top of whatever --morph set. Channels the clip does not name keep the\n"
+    "                   asset's own default weights. The clips come from the mesh file, with or\n"
+    "                   without a skin; the optional value names one by name or by index among\n"
+    "                   the clips that have weight tracks, and with none the first one plays\n"
     "  --static-shape-kib <n>  the budget for the static shape caches (default 4096). An instance\n"
     "                   that gets none runs its static stage every frame over the cut: the same\n"
     "                   picture, more work, and the summary says how many were cached\n"
@@ -249,10 +251,12 @@ struct Options {
   // way an author names them. They are resolved against the loaded mesh's channel names once the
   // scene exists, because a name is a property of the asset and not of the command line.
   Vector<std::string> morph_requests;
-  // `--morph-animate`: play the clip's weight tracks through the **pose** stage. It is separate
-  // from `--animate` because a clip may have weight tracks and no joint tracks (a facial
-  // performance) and because a morphed mesh with no skin has no skeleton to animate.
+  // `--morph-animate [clip]`: play a clip's weight tracks through the **pose** stage. It is
+  // separate from `--animate` because a clip may have weight tracks and no joint tracks (a facial
+  // performance) and because a morphed mesh with no skin has no skeleton to animate — which is
+  // also why it loads the file's clips itself when `--animate` is not given.
   bool morph_animate = false;
+  std::string morph_clip;  // --morph-animate's optional value: a clip name or an index
   f32 anim_speed = 1.0f;
   bool anim_lod = true;       // let the camera decide each character's animation tier
   f32 anim_lod_scale = 1.0f;  // multiplies the capability's band boundaries
@@ -298,6 +302,18 @@ bool parse_f32_zero_ok(const std::string& text, f32& out) {
   char* end = nullptr;
   const double v = std::strtod(text.c_str(), &end);
   if (end == text.c_str() || *end != '\0' || !(v >= 0.0) || v > 1.0e6) return false;
+  out = static_cast<f32>(v);
+  return true;
+}
+
+// A morph weight: any finite number, **zero and negatives included**. `--morph` used to go through
+// `parse_f32`, which is for sizes and speeds and refuses both — so `--morph smile=0` could not turn
+// off a channel the asset authors at a non-zero default, and a negative weight, which glTF allows
+// and a corrective rig uses, was "not a number".
+bool parse_weight(const std::string& text, f32& out) {
+  char* end = nullptr;
+  const double v = std::strtod(text.c_str(), &end);
+  if (end == text.c_str() || *end != '\0' || !(v >= -1.0e6 && v <= 1.0e6)) return false;
   out = static_cast<f32>(v);
   return true;
 }
@@ -405,6 +421,51 @@ u32 find_clip(const animation::Library& library, u32 skeleton, std::string_view 
   }
   return animation::Library::k_not_found;
 }
+
+// `--morph-animate`'s clips when nothing is skinned: the weight curves of every glTF the scene
+// names, in a library of their own. `--animate` refuses a mesh with no skin — it has no skeleton to
+// tick — so before this a morph-only file (every Khronos morph sample is one) played its default
+// weights however `--morph-animate` was spelled, with a warning nobody reads. A file with neither
+// a skin nor a weight curve has nothing to add and is passed over rather than refused: it is still
+// drawn, it just animates nothing.
+void load_morph_clips(animation::Library& library, const renderer::SceneDesc& desc) {
+  for (const std::string& path : desc.meshes) {
+    if (path.empty() || io::extension(path) == ".clusters") continue;
+    animation::LoadStats stats;
+    std::string reason;
+    if (!library.load_gltf(path, {}, &stats, &reason)) {
+      ENGINE_LOG_INFO(log_view, "no clips in this mesh", log::field("path", path),
+                      log::field("reason", reason));
+      continue;
+    }
+    ENGINE_LOG_INFO(log_view, "morph clips loaded", log::field("path", path),
+                    log::field("clips", stats.clips));
+  }
+}
+
+// The clip `--morph-animate` plays, among the clips that have **weight tracks**: the one `request`
+// names — its index among those clips, its full library name, or its name without the library's
+// prefix — or the first of them when there is no request. `k_not_found` when nothing matches.
+u32 find_morph_clip(const animation::Library& library, std::string_view request) {
+  u32 ordinal = 0;
+  u32 index = ~u32{0};
+  const bool numeric =
+      !request.empty() && request.find_first_not_of("0123456789") == std::string_view::npos;
+  if (numeric) index = static_cast<u32>(std::strtoul(std::string(request).c_str(), nullptr, 10));
+  for (u32 i = 0; i < library.clip_count(); ++i) {
+    if (library.clip_data(i).weight_tracks.empty()) continue;
+    if (request.empty() || (numeric && ordinal == index)) return i;
+    const std::string& name = library.clip(i).name;
+    if (!numeric && (name == request ||
+                     (name.size() > request.size() &&
+                      name.compare(name.size() - request.size(), request.size(), request) == 0 &&
+                      name[name.size() - request.size() - 1] == '/'))) {
+      return i;
+    }
+    ++ordinal;
+  }
+  return animation::Library::k_not_found;
+}
 #endif  // ENGINE_VIEW_ANIMATION
 
 // Outside the animation guard: static morph weights are a renderer setting, not the animation
@@ -415,10 +476,30 @@ u32 find_clip(const animation::Library& library, u32 skeleton, std::string_view 
 // generated rig may have none worth typing. An unknown name is a **usage error** rather than a
 // silently ignored weight: a misspelt expression that quietly does nothing is the kind of thing
 // that gets debugged in the picture instead of on the command line. Returns false with `error`.
+//
+// **The asset's own weights are where the static stage starts.** glTF's `weights` on a mesh or a
+// node are the weights it is drawn with when nothing animates them, and a file can author a
+// half-applied target as its rest shape — MorphPrimitivesTest does, at 0.5. So the static half
+// starts from each channel's `default_weight` and `--morph` overrides the channels it names.
+// With `--morph-animate` the defaults are the **pose** stage's starting point instead (the frame
+// loop refills it from them before the clip writes the channels it drives), so here they stay at
+// zero and are counted once. Until the Khronos samples went through it, defaults were used only
+// with `--morph-animate`, and a mesh authored half-morphed drew unmorphed. When every default is
+// zero the array stays empty, which is what it always was for such a mesh.
 bool resolve_morph_weights(const renderer::SceneData& data, const Options& options,
                            Vector<f32>& out, std::string& error) {
   const geometry::ClusterMesh& mesh = data.lod.mesh;
   out.clear();
+  if (!options.morph_animate) {
+    bool authored = false;
+    for (const geometry::MorphChannel& channel : mesh.morph_channels)
+      authored = authored || channel.default_weight != 0.0f;
+    if (authored) {
+      out.resize(mesh.morph_channels.size(), 0.0f);
+      for (u32 c = 0; c < mesh.morph_channels.size(); ++c)
+        out[c] = mesh.morph_channels[c].default_weight;
+    }
+  }
   if (options.morph_requests.empty()) return true;
   if (mesh.morph_channels.empty()) {
     error = "--morph: this mesh has no morph channels";
@@ -429,7 +510,7 @@ bool resolve_morph_weights(const renderer::SceneData& data, const Options& optio
     const usize split = request.find('=');
     const std::string name = request.substr(0, split);
     f32 weight = 0.0f;
-    if (!parse_f32(request.substr(split + 1), weight)) {
+    if (!parse_weight(request.substr(split + 1), weight)) {
       error = "--morph: '" + request.substr(split + 1) + "' is not a number";
       return false;
     }
@@ -1111,7 +1192,11 @@ int main(int argc, char** argv) {
       }
       options.morph_requests.push_back(std::string(value));
     } else if (a == "--morph-animate") {
+      // Optional value, read the way `--animate`'s is: a following argument is the clip unless it
+      // is another flag.
       options.morph_animate = true;
+      if (i + 1 < argc && std::string_view(argv[i + 1]).substr(0, 2) != "--")
+        options.morph_clip = argv[++i];
     } else if (a == "--static-shape-kib") {
       if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
       if (!parse_u32(value, options.settings.static_shape_kib)) {
@@ -1323,6 +1408,15 @@ int main(int argc, char** argv) {
     return k_exit_usage;
   }
 #if !ENGINE_VIEW_ANIMATION
+  if (options.morph_animate) {
+    // The clips come through the capability's library, so the pose stage has no curve to play in
+    // this build; `--morph` (the static stage) is the renderer's and still works.
+    std::fprintf(stderr,
+                 "engine-view: --morph-animate needs the animation capability, which this build "
+                 "does not have. Configure with ENGINE_WITH_ANIMATION=ON and ENGINE_WITH_ECS=ON "
+                 "(the minimal presets switch both off); --morph works without it.\n");
+    return k_exit_usage;
+  }
   if (options.animate) {
     // The capability is not in this build (ENGINE_WITH_ANIMATION=OFF, ENGINE_WITH_ECS=OFF, or a
     // minimal preset). Say which switch, rather than drawing a character standing still.
@@ -1409,6 +1503,9 @@ int main(int argc, char** argv) {
   // with the engine's phases in it, and a run that draws a static mesh should pay nothing for a
   // capability it is not using (plan 11 §11.10).
   std::unique_ptr<AnimatedScene> animated;
+  // `--morph-animate`'s clips when `--animate` loaded none (a mesh with no skin): the library
+  // alone, no world, because a weight curve is sampled on the frame's clock and ticks nothing.
+  std::unique_ptr<animation::Library> morph_library;
 #endif
   VkSurfaceKHR surface = VK_NULL_HANDLE;
   gfx::Swapchain swapchain;
@@ -1444,6 +1541,7 @@ int main(int argc, char** argv) {
 #if ENGINE_VIEW_ANIMATION
   const anim::Clip* morph_clip = nullptr;  // a clip's weight curves: the animation capability's
 #endif
+  std::string morph_clip_text;  // the summary's `morph_clip`: which clip the pose stage played
   u64 template_bytes = 0;
   u64 rt_bytes = 0;
   // What the scene's geometry would cost uploaded whole against what the page pool, its staging
@@ -1566,11 +1664,28 @@ int main(int argc, char** argv) {
       for (u32 c = 0; c < scene.morph_channel_count(); ++c)
         morph_defaults[c] = scene_data.lod.mesh.morph_channels[c].default_weight;
 #if ENGINE_VIEW_ANIMATION
-      if (animated) {
-        for (u32 k = 0; k < animated->library.clip_count() && morph_clip == nullptr; ++k) {
-          if (!animated->library.clip_data(k).weight_tracks.empty())
-            morph_clip = &animated->library.clip_data(k);
+      // The clips `--animate` already loaded when there are any; otherwise the mesh files' own,
+      // which is the case for a morph-only file — it has no skin, so `--animate` refuses it.
+      const animation::Library* clips = animated ? &animated->library : nullptr;
+      if (clips == nullptr) {
+        morph_library = std::make_unique<animation::Library>();
+        load_morph_clips(*morph_library, desc);
+        clips = morph_library.get();
+      }
+      const u32 index = find_morph_clip(*clips, options.morph_clip);
+      if (index != animation::Library::k_not_found) {
+        morph_clip = &clips->clip_data(index);
+        morph_clip_text = clips->clip(index).name;
+        for (char& c : morph_clip_text) {
+          if (c == '"' || c == '\\' || static_cast<unsigned char>(c) < 0x20) c = '_';
         }
+        ENGINE_LOG_INFO(log_view, "morph clip", log::field("clip", clips->clip(index).name),
+                        log::field("weight_tracks", morph_clip->weight_tracks.size()),
+                        log::field("duration", morph_clip->duration));
+      } else if (!options.morph_clip.empty()) {
+        exit_code = fail("morph", "--morph-animate: no clip named '" + options.morph_clip +
+                                      "' has weight tracks");
+        break;
       }
       const bool found_clip = morph_clip != nullptr;
 #else
@@ -1858,7 +1973,7 @@ int main(int argc, char** argv) {
         "\"deform_pool_peak_bytes\":%llu,\"deform_entries\":%u,"
         "\"deform_overflow_entries\":%u,\"deform_overflow_bytes\":%llu,"
         "\"morph_channels\":%u,\"morph_static_cache_bytes\":%llu,"
-        "\"morph_cached_instances\":%u,\"rt_templates\":%s,"
+        "\"morph_cached_instances\":%u,\"morph_clip\":\"%s\",\"rt_templates\":%s,"
         "\"skinned_instances\":%u,\"joints\":%u,\"clip\":\"%s\",\"anim\":%s,"
         "\"template_bytes\":%llu,\"rt_bytes\":%llu,\"geometry_bytes\":%llu,\"stream_bytes\":%llu,"
         "\"views\":%s,\"streaming\":%s,"
@@ -1887,10 +2002,10 @@ int main(int argc, char** argv) {
         stats.deform_entries, stats.deform_overflow_entries,
         static_cast<unsigned long long>(u64{stats.deform_overflow_vertices} * 3 * sizeof(f32)),
         morph_channels, static_cast<unsigned long long>(static_cache_bytes),
-        static_cached_instances, resolved.settings.rt_templates ? "true" : "false",
-        skinned_instances, joint_matrices, clip_text.c_str(), anim_text.c_str(),
-        static_cast<unsigned long long>(template_bytes), static_cast<unsigned long long>(rt_bytes),
-        static_cast<unsigned long long>(geometry_bytes),
+        static_cached_instances, morph_clip_text.c_str(),
+        resolved.settings.rt_templates ? "true" : "false", skinned_instances, joint_matrices,
+        clip_text.c_str(), anim_text.c_str(), static_cast<unsigned long long>(template_bytes),
+        static_cast<unsigned long long>(rt_bytes), static_cast<unsigned long long>(geometry_bytes),
         static_cast<unsigned long long>(stream_bytes), views_text.c_str(), streaming_text.c_str(),
         static_cast<unsigned long long>(host_memory),
         static_cast<unsigned long long>(host_memory_peak),

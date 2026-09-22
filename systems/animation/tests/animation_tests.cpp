@@ -8,6 +8,7 @@
 #include <core/ids/id128.h>
 #include <core/jobs/job_system.h>
 #include <core/json/json.h>
+#include <domain/assets/gltf.h>
 #include <domain/ecs/identity.h>
 #include <domain/ecs/os_api.h>
 #include <domain/ecs/world_commands.h>
@@ -133,6 +134,70 @@ TEST_CASE("animation library: a glTF skin becomes a skeleton and its animations 
   REQUIRE_MESSAGE(second.load_gltf(fixture.tmp.file("rig.glb"), "rig", nullptr, &error), error);
   CHECK(second.skeleton(second.skeleton_index(fixture.skeleton)).id == fixture.skeleton);
   CHECK(second.clip_index(fixture.walk) != Library::k_not_found);
+}
+
+// Regression, found by the Khronos morph samples (AnimatedMorphCube, MorphStressTest, SimpleMorph):
+// every one of them animates morph weights and has no skin, and the library refused the file
+// outright — "the mesh has no skin" — so `engine-view --morph-animate` had no curve to play and
+// drew the default weights at every frame. An animation none of whose channels lands in a skin's
+// palette was also skipped whole, weight tracks and all. Both now load as a skeleton-less clip.
+TEST_CASE("animation library: morph-weight curves load with no skin, as a skeleton-less clip") {
+  assets::MeshData mesh;
+  mesh.nodes.resize(1);
+  mesh.morph.resize(2);  // the channel array the curve's `morph_channel` indexes
+
+  assets::Animation square;
+  square.name = "Square";
+  square.duration = 1.0f;
+  assets::AnimationSampler weights;
+  weights.times = {0.0f, 1.0f};
+  weights.values = {0.0f, 0.0f, 1.0f, 0.5f};  // two targets per key, as glTF writes them
+  weights.interpolation = assets::k_interp_linear;
+  weights.components = 2;
+  square.samplers.push_back(weights);
+  assets::AnimationSampler slide;  // a translation of a node that is no joint: skipped, and counted
+  slide.times = {0.0f, 1.0f};
+  slide.values = {0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f};
+  slide.components = 3;
+  square.samplers.push_back(slide);
+  square.channels.push_back(assets::AnimationChannel{
+      .node = 0, .sampler = 0, .path = assets::k_path_weights, .morph_channel = 0});
+  square.channels.push_back(assets::AnimationChannel{
+      .node = 0, .sampler = 1, .path = assets::k_path_translation, .morph_channel = 0});
+  mesh.animations.push_back(square);
+
+  Library library;
+  LoadStats stats;
+  std::string error;
+  REQUIRE_MESSAGE(library.add(mesh, "cube", &stats, &error), error);
+  CHECK(library.skeleton_count() == 0);
+  REQUIRE(library.clip_count() == 1);
+  CHECK(stats.clips == 1);
+  CHECK(stats.skipped_channels == 1);
+  const ClipAsset& clip = library.clip(0);
+  CHECK(clip.name == "cube/Square");
+  CHECK(clip.skeleton == Library::k_not_found);
+  CHECK(clip.clip.joint_count == 0);
+  CHECK(clip.clip.tracks.empty());
+  REQUIRE(clip.clip.weight_tracks.size() == 1);
+  CHECK(clip.clip.morph_count == 2);
+
+  // The curve plays: halfway through, both targets are halfway to their second key.
+  f32 played[2] = {-1.0f, -1.0f};
+  clip.clip.sample_weights(0.5f, std::span<f32>(played, 2), false);
+  CHECK(played[0] == doctest::Approx(0.5f));
+  CHECK(played[1] == doctest::Approx(0.25f));
+
+  // A file with neither a skin nor a weight curve still has nothing to give, and still says so.
+  assets::MeshData rigid;
+  rigid.nodes.resize(1);
+  assets::Animation spin;
+  spin.samplers.push_back(slide);
+  spin.channels.push_back(assets::AnimationChannel{.node = 0, .sampler = 0});
+  rigid.animations.push_back(spin);
+  Library refuses;
+  CHECK_FALSE(refuses.add(rigid, "prop", nullptr, &error));
+  CHECK(error.find("no skin") != std::string::npos);
 }
 
 TEST_CASE("animation: a player advances by the step and loops exactly") {

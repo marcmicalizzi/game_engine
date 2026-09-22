@@ -115,7 +115,15 @@ u32 Library::add_clip(ClipAsset&& asset) {
 
 bool Library::add(const assets::MeshData& mesh, std::string_view prefix, LoadStats* stats,
                   std::string* error) {
-  if (mesh.skins.empty())
+  // A file with no skin is still worth loading when it animates morph weights: those clips drive
+  // no joint, so they need no skeleton (see the skeleton-less branch below). One with neither has
+  // nothing this library could hold, and says so.
+  bool has_weight_curves = false;
+  for (const assets::Animation& animation : mesh.animations) {
+    for (const assets::AnimationChannel& channel : animation.channels)
+      has_weight_curves = has_weight_curves || channel.path == assets::k_path_weights;
+  }
+  if (mesh.skins.empty() && !has_weight_curves)
     return fail(error, "animation: the mesh has no skin to build a skeleton from");
 
   LoadStats local;
@@ -200,22 +208,39 @@ bool Library::add(const assets::MeshData& mesh, std::string_view prefix, LoadSta
         best_skin = s;
       }
     }
-    if (best_hits == 0) {
-      local.skipped_channels += animation.channels.size();
-      continue;
+    // **No channel in any palette is not the same as nothing to play.** An animation whose only
+    // curves are morph weights — every one of the Khronos morph samples, and a facial take over a
+    // body another clip poses — lands in no skin at all, and used to be skipped whole here, weight
+    // tracks included. It becomes a skeleton-less clip instead: `skeleton` is `k_not_found`,
+    // `joint_count` is zero, and its joint channels (a node that is not a joint) are counted as
+    // skipped exactly as they would be beside a skin.
+    const bool skeletal = best_hits > 0;
+    bool weights_only = false;
+    if (!skeletal) {
+      for (const assets::AnimationChannel& channel : animation.channels)
+        weights_only = weights_only || channel.path == assets::k_path_weights;
+      if (!weights_only) {
+        local.skipped_channels += animation.channels.size();
+        continue;
+      }
     }
 
     ClipAsset asset;
     asset.name = qualify(prefix, animation.name, "animation", a);
     asset.id = clip_id(asset.name);
-    asset.skeleton = skeleton_index[best_skin];
+    asset.skeleton = skeletal ? skeleton_index[best_skin] : k_not_found;
     asset.clip.name = asset.name;
-    asset.clip.joint_count = skeletons_[asset.skeleton].skeleton.joint_count();
+    asset.clip.joint_count = skeletal ? skeletons_[asset.skeleton].skeleton.joint_count() : 0u;
 
-    const Vector<i32>& to_joint = node_to_joint[best_skin];
+    const Vector<i32>* to_joint = skeletal ? &node_to_joint[best_skin] : nullptr;
     for (const assets::AnimationChannel& channel : animation.channels) {
-      if (channel.node < 0 || static_cast<u32>(channel.node) >= mesh.nodes.size() ||
-          channel.sampler >= animation.samplers.size()) {
+      // A weights channel names a node only to say which mesh it drives, and the importer has
+      // already turned that into `morph_channel`, so neither a skin nor a node table (a file
+      // with no skin has none) is needed to place it.
+      const bool in_range =
+          channel.path == assets::k_path_weights ||
+          (channel.node >= 0 && static_cast<u32>(channel.node) < mesh.nodes.size());
+      if (!in_range || channel.sampler >= animation.samplers.size()) {
         ++local.skipped_channels;
         continue;
       }
@@ -234,7 +259,8 @@ bool Library::add(const assets::MeshData& mesh, std::string_view prefix, LoadSta
         }
         continue;
       }
-      const i32 joint = to_joint[static_cast<u32>(channel.node)];
+      const i32 joint =
+          to_joint != nullptr ? (*to_joint)[static_cast<u32>(channel.node)] : anim::k_no_joint;
       if (joint == anim::k_no_joint) {
         ++local.skipped_channels;
         continue;

@@ -60,8 +60,9 @@ std::string n(u32 v) { return std::to_string(v); }
 
 // A unit cube as a GLB: 24 vertices with normals and UVs and one primitive of twelve triangles
 // with one plain material. The same shape apps/engine_view/tests writes, minus the second
-// material and the embedded texture, because nothing here is about materials.
-bool write_cube_glb(const std::string& path) {
+// material and the embedded texture, because nothing here is about materials. `morph` adds one
+// morph target, named "push", that moves the +x face's four corners out by `morph` along x.
+bool write_cube_glb(const std::string& path, f32 morph = 0.0f) {
   const Vec3 normals[6] = {Vec3{1, 0, 0},  Vec3{-1, 0, 0}, Vec3{0, 1, 0},
                            Vec3{0, -1, 0}, Vec3{0, 0, 1},  Vec3{0, 0, -1}};
   const Vec3 tangents[6] = {Vec3{0, 1, 0}, Vec3{0, 1, 0}, Vec3{0, 0, 1},
@@ -104,12 +105,26 @@ bool write_cube_glb(const std::string& path) {
   const u32 index_bytes = static_cast<u32>(bin.size()) - index_offset;
   while (bin.size() % 4 != 0)
     bin.push_back(0);
+  const u32 target_offset = static_cast<u32>(bin.size());
+  if (morph != 0.0f) {
+    for (u32 f = 0; f < 6; ++f) {
+      for (u32 c = 0; c < 4; ++c) {
+        put_f32(bin, f == 0 ? morph : 0.0f);
+        put_f32(bin, 0.0f);
+        put_f32(bin, 0.0f);
+      }
+    }
+  }
+  const bool morphed = morph != 0.0f;
 
   std::string json =
       "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,\"scenes\":[{\"nodes\":[0]}],"
       "\"nodes\":[{\"mesh\":0}],"
       "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0,\"NORMAL\":1,"
-      "\"TEXCOORD_0\":2},\"indices\":3,\"material\":0}]}],"
+      "\"TEXCOORD_0\":2},\"indices\":3,\"material\":0" +
+      std::string(morphed ? ",\"targets\":[{\"POSITION\":4}]}],\"weights\":[0],"
+                            "\"extras\":{\"targetNames\":[\"push\"]}}],"
+                          : "}]}],") +
       "\"materials\":[{\"pbrMetallicRoughness\":{\"baseColorFactor\":[0.8,0.5,0.2,1],"
       "\"metallicFactor\":0,\"roughnessFactor\":0.6}}],"
       "\"accessors\":["
@@ -117,7 +132,11 @@ bool write_cube_glb(const std::string& path) {
       "\"min\":[-0.5,-0.5,-0.5],\"max\":[0.5,0.5,0.5]},"
       "{\"bufferView\":1,\"componentType\":5126,\"count\":24,\"type\":\"VEC3\"},"
       "{\"bufferView\":2,\"componentType\":5126,\"count\":24,\"type\":\"VEC2\"},"
-      "{\"bufferView\":3,\"componentType\":5123,\"count\":36,\"type\":\"SCALAR\"}],"
+      "{\"bufferView\":3,\"componentType\":5123,\"count\":36,\"type\":\"SCALAR\"}" +
+      std::string(morphed ? ",{\"bufferView\":4,\"componentType\":5126,\"count\":24,"
+                            "\"type\":\"VEC3\"}"
+                          : "") +
+      "],"
       "\"bufferViews\":["
       "{\"buffer\":0,\"byteOffset\":0,\"byteLength\":" +
       n(normal_offset) + "},{\"buffer\":0,\"byteOffset\":" + n(normal_offset) +
@@ -125,7 +144,11 @@ bool write_cube_glb(const std::string& path) {
       "},{\"buffer\":0,\"byteOffset\":" + n(uv_offset) +
       ",\"byteLength\":" + n(index_offset - uv_offset) +
       "},{\"buffer\":0,\"byteOffset\":" + n(index_offset) + ",\"byteLength\":" + n(index_bytes) +
-      "}],\"buffers\":[{\"byteLength\":" + n(static_cast<u32>(bin.size())) + "}]}";
+      "}" +
+      (morphed ? ",{\"buffer\":0,\"byteOffset\":" + n(target_offset) +
+                     ",\"byteLength\":" + n(static_cast<u32>(bin.size()) - target_offset) + "}"
+               : std::string()) +
+      "],\"buffers\":[{\"byteLength\":" + n(static_cast<u32>(bin.size())) + "}]}";
   while (json.size() % 4 != 0)
     json += ' ';
 
@@ -1328,6 +1351,67 @@ TEST_CASE("renderer: a morphed mesh at weight zero draws the unmorphed picture, 
 // without room, the pairs that did not fit draw their **rest pose**, are counted, and nothing
 // crashes or reads a wild address. The second half is why `deform_pool_kib` is in kibibytes — a
 // budget a bar's own cut cannot fit has to be expressible, or the overflow rule is untested.
+// Regression, found by the Khronos morph samples: a **single** morphed glTF — the ordinary
+// `engine-view --mesh face.glb` — could not be drawn at all. `load_scene` builds a one-mesh scene
+// without `merge_cluster_meshes`, which is what fills a part's morph channel run, so the part said
+// "no channels" while the stream and `resolve_settings` said otherwise; the GPU scene then gave the
+// instance no deform record, sized the deformed-vertex pool for zero vertices, and the create
+// failed in `vmaCreateBuffer`. The case above never saw it, because it builds its `SceneData` by
+// hand and fills the part in itself. This one goes through the loader, the way both hosts do.
+TEST_CASE("renderer: a single morphed glTF loads, draws, and moves through load_scene") {
+  const test::TempDir tmp("engine_renderer_morph_load");
+  const std::filesystem::path dir = tmp.native();
+  const std::string mesh = slashes(dir / "push.glb");
+  REQUIRE(write_cube_glb(mesh, 0.25f));
+
+  SceneDesc desc;
+  desc.meshes.push_back(mesh);
+  desc.ddc = slashes(dir / "ddc");
+  SceneData data;
+  std::string error;
+  REQUIRE_MESSAGE(load_scene(desc, data, error), error);
+  REQUIRE(data.parts.size() == 1);
+  CHECK(data.lod.mesh.morph_channels.size() == 1);
+  CHECK(data.parts[0].first_morph_channel == 0);
+  CHECK(data.parts[0].morph_channel_count == 1);
+  CHECK(data.morphed());
+
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("renderer unavailable here: " << gpu.why);
+    return;
+  }
+  Rig rest;
+  REQUIRE_MESSAGE(rest.build(gpu.device, desc, RenderSettings{}, 160, 120), rest.error);
+  CHECK(rest.scene.morphed());
+  CHECK(rest.scene.morph_channel_count() == 1);
+  RenderSettings pushed_settings;
+  pushed_settings.morph_static_weights = {1.0f};
+  Rig pushed;
+  REQUIRE_MESSAGE(pushed.build(gpu.device, desc, pushed_settings, 160, 120), pushed.error);
+  CHECK(pushed.scene.static_cached_instances() == 1);
+
+  // The same camera for both — the rest scene's — so the only difference is the face.
+  FrameDesc frame;
+  frame.camera = orbit_camera_at(rest.data.center, rest.data.radius, 40.0f, 0.0f, k_orbit_pitch);
+  CaptureChannels channels;
+  channels.ids = true;
+  CapturedFrame a;
+  CapturedFrame b;
+  REQUIRE_MESSAGE(rest.renderer.capture(frame, channels, a, &error), error);
+  REQUIRE_MESSAGE(pushed.renderer.capture(frame, channels, b, &error), error);
+  CHECK(a.covered > 0);
+  u32 differing = 0;
+  for (u32 p = 0; p < 160u * 120u; ++p) {
+    if (a.ids[p * k_id_words] != b.ids[p * k_id_words]) ++differing;
+  }
+  MESSAGE("the +x face pushed out a quarter: " << a.covered << " covered pixels at rest, "
+                                               << b.covered << " pushed, " << differing
+                                               << " pixels change coverage");
+  CHECK(b.covered > a.covered);
+  CHECK(differing > 0);
+}
+
 TEST_CASE("renderer: the pool holds the frame's cut, and a budget too small falls back to rest") {
   Gpu gpu;
   if (!gpu.ok) {

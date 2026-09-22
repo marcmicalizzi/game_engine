@@ -213,6 +213,118 @@ bool write_cube_glb(const std::string& path) {
   return f.good();
 }
 
+// A cube with one **morph target and no skin**, which is the shape every Khronos morph sample has:
+// the target ("push") moves the +x face's four corners out by half a unit along x, the mesh's own
+// `weights` default it to 0.5, and one clip ("pulse") animates that weight from 0 to 1 over one
+// second. Plain material, no texture: nothing here is about shading.
+bool write_morph_cube_glb(const std::string& path) {
+  const Vec3 normals[6] = {Vec3{1, 0, 0},  Vec3{-1, 0, 0}, Vec3{0, 1, 0},
+                           Vec3{0, -1, 0}, Vec3{0, 0, 1},  Vec3{0, 0, -1}};
+  const Vec3 tangents[6] = {Vec3{0, 1, 0}, Vec3{0, 1, 0}, Vec3{0, 0, 1},
+                            Vec3{0, 0, 1}, Vec3{1, 0, 0}, Vec3{1, 0, 0}};
+  std::vector<u8> bin;
+  for (u32 f = 0; f < 6; ++f) {
+    const Vec3 nrm = normals[f];
+    const Vec3 t = tangents[f];
+    const Vec3 b = cross(nrm, t);
+    const Vec3 corners[4] = {nrm * 0.5f - t * 0.5f - b * 0.5f, nrm * 0.5f + t * 0.5f - b * 0.5f,
+                             nrm * 0.5f + t * 0.5f + b * 0.5f, nrm * 0.5f - t * 0.5f + b * 0.5f};
+    for (const Vec3& c : corners) {
+      put_f32(bin, c.x);
+      put_f32(bin, c.y);
+      put_f32(bin, c.z);
+    }
+  }
+  const u32 normal_offset = static_cast<u32>(bin.size());
+  for (u32 f = 0; f < 6; ++f) {
+    for (u32 c = 0; c < 4; ++c) {
+      put_f32(bin, normals[f].x);
+      put_f32(bin, normals[f].y);
+      put_f32(bin, normals[f].z);
+    }
+  }
+  const u32 index_offset = static_cast<u32>(bin.size());
+  for (u32 f = 0; f < 6; ++f) {
+    const u16 base = static_cast<u16>(f * 4);
+    const u16 tris[6] = {base, static_cast<u16>(base + 1), static_cast<u16>(base + 2),
+                         base, static_cast<u16>(base + 2), static_cast<u16>(base + 3)};
+    for (const u16 i : tris)
+      put_u16(bin, i);
+  }
+  const u32 index_bytes = static_cast<u32>(bin.size()) - index_offset;
+  pad4(bin, 0);
+  const u32 target_offset = static_cast<u32>(bin.size());
+  for (u32 f = 0; f < 6; ++f) {
+    for (u32 c = 0; c < 4; ++c) {
+      put_f32(bin, f == 0 ? 0.5f : 0.0f);
+      put_f32(bin, 0.0f);
+      put_f32(bin, 0.0f);
+    }
+  }
+  const u32 times_offset = static_cast<u32>(bin.size());
+  put_f32(bin, 0.0f);
+  put_f32(bin, 1.0f);
+  const u32 values_offset = static_cast<u32>(bin.size());
+  put_f32(bin, 0.0f);
+  put_f32(bin, 1.0f);
+  const u32 end = static_cast<u32>(bin.size());
+
+  std::string json =
+      "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,\"scenes\":[{\"nodes\":[0]}],"
+      "\"nodes\":[{\"mesh\":0}],"
+      "\"meshes\":[{\"name\":\"box\",\"primitives\":[{\"attributes\":{\"POSITION\":0,"
+      "\"NORMAL\":1},\"indices\":2,\"material\":0,\"targets\":[{\"POSITION\":3}]}],"
+      "\"weights\":[0.5],\"extras\":{\"targetNames\":[\"push\"]}}],"
+      "\"materials\":[{\"pbrMetallicRoughness\":{\"baseColorFactor\":[0.8,0.5,0.2,1],"
+      "\"metallicFactor\":0,\"roughnessFactor\":0.6}}],"
+      "\"animations\":[{\"name\":\"pulse\",\"samplers\":[{\"input\":4,\"output\":5,"
+      "\"interpolation\":\"LINEAR\"}],\"channels\":[{\"sampler\":0,"
+      "\"target\":{\"node\":0,\"path\":\"weights\"}}]}],"
+      "\"accessors\":["
+      "{\"bufferView\":0,\"componentType\":5126,\"count\":24,\"type\":\"VEC3\","
+      "\"min\":[-0.5,-0.5,-0.5],\"max\":[0.5,0.5,0.5]},"
+      "{\"bufferView\":1,\"componentType\":5126,\"count\":24,\"type\":\"VEC3\"},"
+      "{\"bufferView\":2,\"componentType\":5123,\"count\":36,\"type\":\"SCALAR\"},"
+      "{\"bufferView\":3,\"componentType\":5126,\"count\":24,\"type\":\"VEC3\"},"
+      "{\"bufferView\":4,\"componentType\":5126,\"count\":2,\"type\":\"SCALAR\","
+      "\"min\":[0],\"max\":[1]},"
+      "{\"bufferView\":5,\"componentType\":5126,\"count\":2,\"type\":\"SCALAR\"}],"
+      "\"bufferViews\":["
+      "{\"buffer\":0,\"byteOffset\":0,\"byteLength\":" +
+      n(normal_offset) + "},{\"buffer\":0,\"byteOffset\":" + n(normal_offset) +
+      ",\"byteLength\":" + n(index_offset - normal_offset) +
+      "},{\"buffer\":0,\"byteOffset\":" + n(index_offset) + ",\"byteLength\":" + n(index_bytes) +
+      "},{\"buffer\":0,\"byteOffset\":" + n(target_offset) +
+      ",\"byteLength\":" + n(times_offset - target_offset) +
+      "},{\"buffer\":0,\"byteOffset\":" + n(times_offset) +
+      ",\"byteLength\":" + n(values_offset - times_offset) +
+      "},{\"buffer\":0,\"byteOffset\":" + n(values_offset) +
+      ",\"byteLength\":" + n(end - values_offset) + "}],\"buffers\":[{\"byteLength\":" + n(end) +
+      "}]}";
+  while (json.size() % 4 != 0)
+    json += ' ';
+
+  std::vector<u8> glb;
+  put_u32(glb, 0x46546c67u);  // "glTF"
+  put_u32(glb, 2u);
+  put_u32(glb, static_cast<u32>(12 + 8 + json.size() + 8 + bin.size()));
+  put_u32(glb, static_cast<u32>(json.size()));
+  put_u32(glb, 0x4e4f534au);  // "JSON"
+  glb.insert(glb.end(), json.begin(), json.end());
+  put_u32(glb, static_cast<u32>(bin.size()));
+  put_u32(glb, 0x004e4942u);  // "BIN\0"
+  glb.insert(glb.end(), bin.begin(), bin.end());
+  std::ofstream f(path, std::ios::binary);
+  if (!f.is_open()) return false;
+  f.write(reinterpret_cast<const char*>(glb.data()), static_cast<std::streamsize>(glb.size()));
+  return f.good();
+}
+
+std::string file_text(const std::string& path) {
+  std::ifstream in(path, std::ios::binary);
+  return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+}
+
 // A two-bone skinned, animated GLB: a flat bar of three rows standing along +y, bound root to
 // tip by height, with one clip that turns the tip joint a quarter turn about +z over one second.
 //
@@ -499,6 +611,85 @@ TEST_CASE("engine-view: renders a glTF mesh with one cluster DAG per material") 
   }
   const Run broken = view({"--frames", "1", "--ddc", ddc, "--mesh", not_a_container});
   CHECK(broken.exit_code == 1);
+}
+
+// Three regressions the Khronos morph samples found, end to end through the app, because each one
+// lived in a different module and only the whole path showed them:
+//
+//   1. A single morphed glTF did not load — `load_scene` left the one part's channel run at zero
+//      and the GPU scene sized the deformed-vertex pool for no vertices (systems/renderer).
+//   2. The asset's own default weights were ignored unless `--morph-animate` was given, so a mesh
+//      authored half-morphed (MorphPrimitivesTest) drew unmorphed.
+//   3. `--morph-animate` on a mesh with no skin played nothing: the clip library refused a file
+//      with no skin and skipped a weights-only animation (systems/animation), and engine-view only
+//      loaded clips for `--animate`, which refuses a mesh with no skin.
+TEST_CASE("engine-view: a morph-only glTF draws at its default weights and plays its weight clip") {
+  const test::TempDir tmp("engine_view_morph");
+  const std::filesystem::path dir = tmp.native();
+  const std::string mesh = slashes(dir / "box.glb");
+  const std::string ddc = slashes(dir / "ddc");
+  REQUIRE(write_morph_cube_glb(mesh));
+  const std::vector<std::string> common = {"--width", "240",        "--height", "180", "--frames",
+                                           "6",       "--no-vsync", "--orbit",  "6",   "--ddc",
+                                           ddc,       "--mesh",     mesh};
+  auto with = [&](std::vector<std::string> extra) {
+    std::vector<std::string> args = common;
+    args.insert(args.end(), extra.begin(), extra.end());
+    return args;
+  };
+
+  const std::string defaults = slashes(dir / "defaults.png");
+  const Run at_default = view(with({"--capture", defaults}));
+  if (at_default.exit_code == 3) {
+    MESSAGE("engine-view unavailable here (exit 3), skipping the morph case");
+    return;
+  }
+  REQUIRE_MESSAGE(at_default.exit_code == 0, at_default.output);  // (1): it loads at all
+  Summary summary;
+  REQUIRE(parse_summary(at_default, summary));
+  CHECK(summary.number("morph_channels") == 1);
+  CHECK(summary.number("morph_cached_instances") == 1);
+
+  // (2): no flag draws the asset's 0.5, which is the picture `--morph push=0.5` draws and not the
+  // one `--morph push=0` draws.
+  const std::string half = slashes(dir / "half.png");
+  const std::string none = slashes(dir / "none.png");
+  REQUIRE(view(with({"--morph", "push=0.5", "--capture", half})).exit_code == 0);
+  REQUIRE(view(with({"--morph", "push=0", "--capture", none})).exit_code == 0);
+  CHECK(file_text(defaults) == file_text(half));
+  CHECK(file_text(defaults) != file_text(none));
+  // Zero (above) and a negative weight are weights: glTF allows both, and `--morph` refused them
+  // as "not a number" until this case existed. A word is still refused.
+  const std::string inward = slashes(dir / "inward.png");
+  REQUIRE(view(with({"--morph", "push=-0.5", "--capture", inward})).exit_code == 0);
+  CHECK(file_text(inward) != file_text(none));
+  CHECK(view(with({"--morph", "push=lots"})).exit_code != 0);
+
+  // (3): the weight clip plays with no skin anywhere. Two frame counts are two weights, so two
+  // pictures; the same frame count twice is the same picture, because the pose weights are
+  // sampled on the frame counter and not on a clock.
+  const std::string early = slashes(dir / "early.png");
+  const Run animated = view(with({"--morph-animate", "--capture", early}));
+  if (animated.exit_code == 2) {
+    // A build without the animation capability refuses the flag and says which switch.
+    CHECK(animated.output.find("animation capability") != std::string::npos);
+    return;
+  }
+  REQUIRE_MESSAGE(animated.exit_code == 0, animated.output);
+  Summary animated_summary;
+  REQUIRE(parse_summary(animated, animated_summary));
+  CHECK(animated_summary.text("morph_clip") == "box/pulse");
+  const std::string again = slashes(dir / "again.png");
+  REQUIRE(view(with({"--morph-animate", "pulse", "--capture", again})).exit_code == 0);
+  CHECK(file_text(early) == file_text(again));
+  std::vector<std::string> later_args = with({"--morph-animate", "--capture"});
+  const std::string later = slashes(dir / "later.png");
+  later_args.push_back(later);
+  later_args[5] = "40";  // --frames 40: two thirds of the way through the clip, not a tenth
+  REQUIRE(view(later_args).exit_code == 0);
+  CHECK(file_text(early) != file_text(later));
+  // A clip the file does not have is an error, not a silent fall back to the first one.
+  CHECK(view(with({"--morph-animate", "nope"})).exit_code != 0);
 }
 
 TEST_CASE("engine-view: --animate plays a skinned glTF, deterministically") {

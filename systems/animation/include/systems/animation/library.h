@@ -63,7 +63,11 @@ struct ClipAsset {
   Id128 id;
   std::string name;
   anim::Clip clip;
-  u32 skeleton = 0;  // index into the library's skeletons
+  // Index into the library's skeletons, or `Library::k_not_found` for a clip that drives **no
+  // joint** — one made of morph-weight tracks alone, from a file with no skin or from an
+  // animation none of whose channels lands in a skin's palette. Such a clip has `joint_count`
+  // zero and is played through the renderer's morph pose stage, never through a skeleton.
+  u32 skeleton = 0;
 };
 
 class Library {
@@ -71,6 +75,13 @@ class Library {
   // Loads every skin and animation of a glTF or GLB file. Additive: a second call adds to what is
   // already here, and a name that is already taken replaces that asset in place so its `Id128`
   // (and therefore every save that names it) stays valid.
+  //
+  // A file needs a skin **or** morph-weight curves. One with neither is refused, as it always was;
+  // one with weight curves and no skin — a morphing prop, a face with no rig — loads its clips as
+  // skeleton-less weight clips (`ClipAsset::skeleton` is `k_not_found`), which is what
+  // `engine-view --morph-animate` plays. Before that, both halves of it dropped them: the load
+  // refused a file with no skin, and an animation with no channel in a skin's palette was skipped
+  // whole, weight tracks and all.
   //
   // **`prefix` is part of the asset's name and therefore of its id, and an empty one means the
   // file's stem** — never the path. The path is where the file happened to be on the machine that

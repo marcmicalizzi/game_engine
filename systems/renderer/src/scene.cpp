@@ -601,6 +601,17 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
     }
     part.quant_origin = out.lod.mesh.quant_origin;
     part.quant_scale = out.lod.mesh.quant_scale;
+    // **The mesh's channels are the scene's channels**, and this branch has to say so because
+    // nothing else will: `merge_cluster_meshes` fills `first_morph_channel`/`morph_channel_count`
+    // for every part it concatenates, and a single mesh never goes through it. Left at zero, the
+    // GPU scene gave the instance no morph stages and no deform record while `resolve_settings`
+    // (which reads the stream, not the part) had turned the deform pass on — so it sized the pool
+    // for zero vertices and every single morphed mesh failed to load with `vmaCreateBuffer:
+    // VK_ERROR_INITIALIZATION_FAILED`. Found by the first real files through it, the Khronos morph
+    // samples; the renderer's own morph test builds its `SceneData` by hand, sets the part's
+    // channel run itself, and so had never been through `load_scene` at all.
+    part.first_morph_channel = 0;
+    part.morph_channel_count = out.lod.mesh.morph_channels.size();
     out.parts.push_back(part);
   } else if (!geometry::merge_cluster_meshes(dags, out.lod, out.parts, &error)) {
     return false;
