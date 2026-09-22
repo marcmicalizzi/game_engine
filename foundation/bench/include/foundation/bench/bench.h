@@ -136,9 +136,22 @@ struct Options {
   bool require_quiet = false;         // refuse to measure a busy machine: exit code 4, nothing run
   i64 wait_quiet_s = 0;               // poll every 5 s until quiet or this many seconds have passed
   MachineSampler* sampler = nullptr;  // null uses system_sampler(); tests inject a fake
+
+  // The machine-wide GPU lock (gpu_lock.h). With `gpu_lock`, a measured run waits for the lock,
+  // holds it from before its first sample to after its last, refreshes it between benchmarks,
+  // and releases it however it ends; a lock a wrapper already took for this process is used as
+  // it is. A smoke run never takes it.
+  bool gpu_lock = false;
+  i64 gpu_lock_timeout_s = 4 * 3600;  // give up (exit 4) if somebody else still holds it by then
+  i64 gpu_lock_poll_s = 20;           // GPU-LOCK.md asks waiters to look every 15-30 s
+  // Empty: default_gpu_lock_path(), and the sampler's own reading of the lock stands. Set, the
+  // run takes *and* reads the lock here instead — which is how a test keeps the machine's real
+  // lock, and whoever holds it, out of its results.
+  std::string_view gpu_lock_path;
 };
 
-// run() returns this instead of measuring when --require-quiet finds a busy machine.
+// run() returns this instead of measuring when --require-quiet finds a busy machine, and when
+// --gpu-lock gave up waiting for somebody else's lock: both mean "come back later".
 inline constexpr int k_exit_not_quiet = 4;
 
 struct Result {
@@ -179,6 +192,7 @@ bool smoke_mode() noexcept;
 //   --list  --filter=<glob>  --repeats=N  --warmup=N  --min-time=<ms>  --smoke  --quiet
 //   --no-pin  --json=<path>  --sweep=<tunable>=<v1;v2;...>  --set=<tunable=value,...>
 //   --require-quiet  --wait-quiet=<seconds>  --quiet-cpu=<pct>  --quiet-gpu=<pct>
+//   --gpu-lock[=<max wait seconds>]
 // A bare argument is a filter.
 int run_main(int argc, char** argv);
 

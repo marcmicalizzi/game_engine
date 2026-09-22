@@ -7,6 +7,7 @@
 #include <core/platform/topology.h>
 #include <core/time/time.h>
 #include <foundation/bench/bench.h>
+#include <foundation/bench/gpu_lock.h>
 #include <foundation/bench/machine_state.h>
 #include <foundation/tunables/tunables.h>
 
@@ -129,12 +130,30 @@ const char* usage_text() {
          "               [--min-time=<ms>] [--smoke] [--quiet] [--no-pin] [--json=<path>]\n"
          "               [--sweep=<tunable>=<v1;v2;...>] [--set=<tunable=value,...>]\n"
          "               [--require-quiet] [--wait-quiet=<seconds>]\n"
-         "               [--quiet-cpu=<pct>] [--quiet-gpu=<pct>]\n";
+         "               [--quiet-cpu=<pct>] [--quiet-gpu=<pct>] [--gpu-lock[=<max wait s>]]\n";
 }
 
 // How often --wait-quiet looks again. A diffusion job or another agent's build ends on its own
 // schedule and polling faster only costs a CPU sample each time.
 constexpr i64 k_poll_interval_s = 5;
+
+// The lease --gpu-lock writes: long enough to cover the run as the options predict it, twice
+// over, and never shorter than ten minutes, because a benchmark's own setup (a corpus, a world) is
+// outside any prediction and the lease is only refreshed *between* benchmarks. Never longer than
+// an hour either: the lease is also how long a crashed run keeps everyone else waiting, and a
+// run longer than that keeps its lock by refreshing it, not by having asked for it up front.
+constexpr i64 k_min_lease_s = 10 * 60;
+constexpr i64 k_max_lease_s = 60 * 60;
+
+i64 gpu_lock_lease_s(const Options& options, u64 variants) {
+  // Calibration (about two repeats' worth), the warmups and the repeats, each min_time_ns and a
+  // little over — the calibrator aims 20% past the target.
+  const f64 per_variant_s = static_cast<f64>(options.warmup_repeats + options.repeats + 2) *
+                            static_cast<f64>(options.min_time_ns) * 1.2 / 1e9;
+  const f64 predicted_s = per_variant_s * static_cast<f64>(variants);
+  const i64 lease = static_cast<i64>(2.0 * predicted_s) + 120;
+  return std::clamp<i64>(lease, k_min_lease_s, k_max_lease_s);
+}
 
 }  // namespace
 
@@ -353,19 +372,95 @@ int run(const Options& options, Vector<Result>* results) {
     sweep_target->append_value(sweep_original);
   }
 
+  const Vector<const Registration*> regs = matching(registration_filter(options.filter));
+  const bool per_variant = options.filter.find('/') != std::string::npos;
+
   // What else the machine is doing (machine_state.h). A smoke run neither samples nor waits:
   // it answers "does this run at all", CTest runs one per module, and a quarter second plus a
   // process spawn per module buys nothing there. Nothing has been changed yet at this point, so
-  // an early return needs no unwinding.
+  // an early return needs no unwinding — the GPU lock below is released by its destructor.
   MachineSampler& sampler = options.sampler != nullptr ? *options.sampler : system_sampler();
-  MachineState start;
+  const GpuLockIdentity lock_self = current_gpu_lock_identity();
+  const std::string lock_path(options.gpu_lock_path);
+  // A run told where the lock is reads it there rather than trusting the sampler's reading of the
+  // machine default, so a test's scratch lock and the machine's real one never mix.
+  auto sample = [&]() {
+    MachineState state = sampler.sample(k_sample_window_ms);
+    if (!lock_path.empty())
+      state.gpu_lock = read_gpu_lock(lock_path, lock_self, time::wall_unix_ms() / 1000);
+    return state;
+  };
   const bool sampled = !options.smoke;
+
+  // --gpu-lock: the lock is the queue, so it is taken *before* the machine is judged quiet — a
+  // run waits its turn first and then asks whether the machine is quiet enough, holding the GPU
+  // while it asks. A smoke run is not a measurement and never takes it.
+  GpuLockLease lease;
+  if (options.gpu_lock && sampled) {
+    u64 variants = 0;
+    for (const Registration* reg : regs) {
+      const std::span<const i64> all_args = reg->args();
+      const usize count = all_args.empty() ? 1 : all_args.size();
+      for (usize ai = 0; ai < count; ++ai) {
+        if (per_variant) {
+          char variant[256];
+          variant_name(*reg, all_args.empty() ? std::span<const i64>{} : all_args.subspan(ai, 1),
+                       variant, sizeof(variant));
+          if (!glob_match(options.filter, variant)) continue;
+        }
+        ++variants;
+      }
+    }
+    const u64 sweeps = sweep_target != nullptr ? sweep_values.size() : 1;
+    GpuLockLease::Config config;
+    config.path = lock_path;
+    config.self = lock_self;
+    config.purpose = "bench " + std::string(options.filter.empty() ? "*" : options.filter);
+    config.lease_s = gpu_lock_lease_s(options, variants * sweeps);
+    config.poll_s = options.gpu_lock_poll_s;
+    config.timeout_s = options.gpu_lock_timeout_s;
+    config.log = stderr;
+    switch (lease.acquire(config)) {
+      case GpuLockLease::Outcome::Taken:
+      case GpuLockLease::Outcome::AlreadyMine: break;
+      case GpuLockLease::Outcome::NoDirectory:
+        std::fprintf(stderr,
+                     "bench: the gpu lock's directory does not exist (%s); this machine does not "
+                     "use the lock, so the run goes ahead without it\n",
+                     lock_path.empty() ? default_gpu_lock_path().c_str() : lock_path.c_str());
+        break;
+      case GpuLockLease::Outcome::TimedOut: {
+        const GpuLockState held =
+            read_gpu_lock(lock_path.empty() ? default_gpu_lock_path() : lock_path, lock_self,
+                          time::wall_unix_ms() / 1000);
+        std::fprintf(stderr,
+                     "bench: gave up waiting for the gpu lock after %lld s; held by '%s': %s\n",
+                     static_cast<long long>(options.gpu_lock_timeout_s), held.owner.c_str(),
+                     held.purpose.c_str());
+        return k_exit_not_quiet;
+      }
+      case GpuLockLease::Outcome::Error:
+        std::fprintf(stderr, "bench: cannot write the gpu lock at %s\n",
+                     lock_path.empty() ? default_gpu_lock_path().c_str() : lock_path.c_str());
+        return 2;
+    }
+  }
+
+  MachineState start;
   if (sampled) {
-    start = sampler.sample(k_sample_window_ms);
+    start = sample();
     if (!is_quiet(start, options.quiet_thresholds)) {
       if (options.require_quiet) {
         std::fprintf(stderr, "bench: the machine is busy and --require-quiet was given: %s\n",
                      describe(start).c_str());
+        // Every engine agent is "claude-engine", so a lock under this process's own owner label
+        // may still be somebody else's — or this agent's, taken by a separate `acquire` whose
+        // process has exited. The harness cannot tell those apart; the wrapper forms can.
+        if (start.gpu_lock.held_by_other() && start.gpu_lock.owner == lock_self.owner) {
+          std::fprintf(stderr,
+                       "bench: if that gpu lock is yours, take it for this process instead: "
+                       "--gpu-lock, or tools/gpu-lock.ps1 run -Exec \"...\"\n");
+        }
         return k_exit_not_quiet;
       }
       if (options.wait_quiet_s > 0) {
@@ -380,7 +475,7 @@ int run(const Options& options, Vector<Result>* results) {
           if (remaining_ns <= 0) break;
           const i64 sleep_ns = std::min(remaining_ns, k_poll_interval_s * i64{1'000'000'000});
           std::this_thread::sleep_for(std::chrono::nanoseconds(sleep_ns));
-          start = sampler.sample(k_sample_window_ms);
+          start = sample();
           if (is_quiet(start, options.quiet_thresholds)) break;
         }
         std::fprintf(stderr, "bench: proceeding on a %s machine after %.0f s: %s\n",
@@ -417,8 +512,6 @@ int run(const Options& options, Vector<Result>* results) {
     }
   }
 
-  const Vector<const Registration*> regs = matching(registration_filter(options.filter));
-  const bool per_variant = options.filter.find('/') != std::string::npos;
   if (!options.quiet) {
     char line[256];
     std::snprintf(line, sizeof(line), "%-56s %12s %12s %8s %12s%s\n", "benchmark", "median/iter",
@@ -463,6 +556,8 @@ int run(const Options& options, Vector<Result>* results) {
         }
         Result result = Runner::measure_one(*reg, args, options);
         result.tunable = tunable_text;
+        // Between benchmarks and never inside one: a refresh is a file read and a rename.
+        lease.refresh_if_due();
 
         f64 relative = 0;
         if (sweep_target != nullptr) {
@@ -514,7 +609,7 @@ int run(const Options& options, Vector<Result>* results) {
   MachineState finish;
   MachineState worst;
   if (sampled) {
-    finish = sampler.sample(k_sample_window_ms);
+    finish = sample();
     worst = worst_of(start, finish);
   }
   for (Result& result : ran_results) {
@@ -608,6 +703,8 @@ int run_main(int argc, char** argv) {
       options.pin = false;
     } else if (a == "--require-quiet") {
       options.require_quiet = true;
+    } else if (a == "--gpu-lock") {
+      options.gpu_lock = true;
     } else if (a == "--help" || a == "-h") {
       write_line(stdout, usage_text());
       return 0;
@@ -644,6 +741,14 @@ int run_main(int argc, char** argv) {
         return 2;
       }
       options.wait_quiet_s = static_cast<i64>(seconds);
+    } else if (value_of("--gpu-lock=")) {
+      f64 seconds = 0;
+      if (!parse_f64(v, seconds) || seconds < 0) {
+        std::fprintf(stderr, "bench: --gpu-lock= expects the longest wait in seconds\n");
+        return 2;
+      }
+      options.gpu_lock = true;
+      options.gpu_lock_timeout_s = static_cast<i64>(seconds);
     } else if (value_of("--quiet-cpu=")) {
       f64 pct = 0;
       if (!parse_f64(v, pct) || pct < 0 || pct > 100) {

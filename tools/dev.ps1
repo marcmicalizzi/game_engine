@@ -12,6 +12,9 @@
     test        Run CTest for the preset. -Filter is a regex on test names.
     bench       Build, then run every engine_*_bench executable. -Filter is a glob on
                 benchmark names; JSON lines land in build/<preset>/bench/<module>.jsonl.
+                -GpuLock passes --gpu-lock to each: every executable waits for the
+                machine-wide GPU lock, holds it while it measures, and releases it
+                (docs/subsystems/bench.md, "The GPU lock").
     lint        Run the banned-pattern lint over the tree.
     docs        Check that the documentation moved with the code (tools/docs-check.ps1).
     format      Run clang-format in place over engine sources.
@@ -29,7 +32,8 @@ param(
   [string]$Command = 'build',
   [string]$Preset,
   [string]$Filter,
-  [switch]$Fresh
+  [switch]$Fresh,
+  [switch]$GpuLock
 )
 
 $ErrorActionPreference = 'Stop'
@@ -104,6 +108,10 @@ function Invoke-Bench {
     $module = $exe.BaseName -replace '^engine_', '' -replace '_bench$', ''
     $benchArgs = @("--json=$(Join-Path $outDir "$module.jsonl")")
     if ($Filter) { $benchArgs += "--filter=$Filter" }
+    # Per executable rather than once around the loop: each holds the lock for exactly the run it
+    # measures, and another agent waiting for the GPU gets it between two modules rather than after
+    # all of them. What each run measured under is in its own JSON header either way.
+    if ($GpuLock) { $benchArgs += '--gpu-lock' }
     Write-Host "== $module" -ForegroundColor Cyan
     & $exe.FullName @benchArgs
     if ($LASTEXITCODE -ne 0) { throw "bench $module failed ($LASTEXITCODE)" }

@@ -212,7 +212,8 @@ second way for a run to be wrong without covering anything the first one does no
 
 `tools/ci/gpu-smoke.ps1` and `tools/ci/gpu-smoke.sh` build the preset through `tools/dev.ps1`, print
 `engine-cli gpu.adapters` — the machine's capability report, in the same schema-typed form the
-protocol serves — and then run the whole CTest suite. The GPU tests decide for themselves what they
+protocol serves — and then run the whole CTest suite (the Windows one under the machine-wide GPU
+lock; see [More than one suite on one machine](#more-than-one-suite-on-one-machine)). The GPU tests decide for themselves what they
 can do, so the suite passes on every machine and the log is what says how much of it meant anything.
 A fourth step then renders the extreme resolutions of [04 §4.6](../plan/04-renderer.md#46-extreme-displays)
 and writes `build/<preset>/gpu-smoke.json`; see [The extreme resolutions](#the-extreme-resolutions)
@@ -510,7 +511,21 @@ a line earlier reported missing — the shape of one process deleting another's 
 What is still genuinely exclusive is the
 hardware: one window, one GPU, one set of input devices. Keep a runner to **one job at a time** — do
 not raise its concurrency — because the GPU tests measure the device and a second suite sharing it
-makes the timings meaningless even when the results stay green. Note also that two `ctest` runs drift
+makes the timings meaningless even when the results stay green.
+
+The runner's concurrency setting only covers the runner's own jobs, so on a machine whose GPU is
+shared with anything else **`tools/ci/gpu-smoke.ps1` takes the machine-wide GPU lock** around its
+three GPU steps — the adapter report, the suite and the captures — after the build and before the
+report is written ([bench](../subsystems/bench.md#measuring-on-a-shared-machine), "The GPU lock";
+the file and its rules are `D:\workspace\GPU-LOCK.md`'s). It waits while somebody else holds the
+card, prints whom it is waiting for, refreshes its ten-minute lease while the suite runs, and
+releases it however the run ends; the tests and `engine-view` it starts inherit
+`ENGINE_GPU_LOCK_HOLDER`, so their machine-state readings count the lock as theirs. A dedicated
+runner has no lock directory (`D:\workspace`, or wherever `ENGINE_GPU_LOCK` points) and the step
+says so and runs unlocked — create the directory on a runner that should take part.
+`tools/ci/gpu-smoke.sh`, the Linux runner's step, does not take it: the protocol has a PowerShell
+and a C++ implementation and no bash one, and the lock is this desktop's arrangement with the
+agents that share its card. Note also that two `ctest` runs drift
 out of phase within seconds and are therefore a *weak* probe for this class of bug; starting the test
 binaries simultaneously is the sensitive one, and is what to reach for when a collision is suspected.
 

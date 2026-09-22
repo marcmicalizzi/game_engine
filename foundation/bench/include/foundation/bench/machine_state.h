@@ -10,9 +10,13 @@
 // to measure or wait until it is quiet.
 //
 // What is recorded, and nothing else: CPU busy percentage of the whole machine and of this
-// process (from which "others" follows by subtraction), GPU utilization and memory, and whether
-// the Windows session is locked. **No process names, no command lines, no user names** — the
-// question is "how loaded is this box", and the answer does not need to say by whom.
+// process (from which "others" follows by subtraction), GPU utilization and memory, whether
+// the Windows session is locked, and the machine-wide GPU lock (gpu_lock.h). **No process names,
+// no command lines, no user names** — the question is "how loaded is this box", and the answer
+// does not need to say by whom. The one exception is the GPU lock's owner label and purpose line,
+// which its holder wrote into a file every tool on the machine reads precisely so that anyone
+// waiting can see who has the GPU and why; a report that says "the GPU was spoken for" and not
+// by what would leave the reader to guess which of their numbers to distrust.
 //
 //     const MachineState s = sample_machine_state(k_sample_window_ms);
 //     if (!is_quiet(s, QuietThresholds{})) { ... }
@@ -22,6 +26,7 @@
 // be able to tell "quiet" from "not measured".
 
 #include <core/base/types.h>
+#include <foundation/bench/gpu_lock.h>
 
 #include <cstdio>
 #include <string>
@@ -54,6 +59,11 @@ struct MachineState {
 
   // Yes when a lock screen is up (Windows: a LogonUI.exe process exists). Unknown elsewhere.
   Tristate session_locked = Tristate::Unknown;
+
+  // The machine-wide GPU lock as it stood when the sample was taken (gpu_lock.h). Not present
+  // when there is no lock file, which is also what a machine that does not use the protocol
+  // reports.
+  GpuLockState gpu_lock;
 };
 
 // Above either of these, the numbers of a run are upper bounds and the harness says so. The
@@ -64,16 +74,20 @@ struct QuietThresholds {
   f64 gpu_util_pct = 20.0;
 };
 
-// False when another process is using more than the thresholds allow. An unknown field cannot
-// make a machine noisy: a box with no GPU reading is quiet as far as its GPU is concerned,
-// because refusing to measure on missing information would make the flag useless on Linux CI.
+// False when another process is using more than the thresholds allow, or when somebody else
+// holds the GPU lock — whatever the utilization sample says, because a render between frames or
+// a bake loading its scene reads as an idle GPU for the quarter second a sample looks. An unknown
+// field cannot make a machine noisy: a box with no GPU reading is quiet as far as its GPU is
+// concerned, because refusing to measure on missing information would make the flag useless on
+// Linux CI.
 bool is_quiet(const MachineState& state, const QuietThresholds& thresholds) noexcept;
 
-// Field-wise maximum, for reporting the worst of the samples a run took.
+// Field-wise maximum, for reporting the worst of the samples a run took. For the GPU lock the
+// worse is the one somebody else held, then any one present.
 MachineState worst_of(const MachineState& a, const MachineState& b) noexcept;
 
 // One line for a human: "cpu 12.3% (others 9.1%), gpu 41% util 14336/32607 MiB, session
-// unlocked". Unknown fields are named as unknown rather than left out.
+// unlocked, gpu lock free". Unknown fields are named as unknown rather than left out.
 std::string describe(const MachineState& state);
 
 // The `machine_state` object of a report: every field, with null where it is unknown.
@@ -100,7 +114,8 @@ class MachineSampler {
 };
 
 // The real one: GetSystemTimes/GetProcessTimes on Windows, /proc/stat and /proc/self/stat on
-// Linux, nvidia-smi for the GPU when it is on PATH.
+// Linux, nvidia-smi for the GPU when it is on PATH, and the GPU lock at default_gpu_lock_path()
+// judged as current_gpu_lock_identity().
 MachineSampler& system_sampler();
 
 // system_sampler().sample(window_ms).

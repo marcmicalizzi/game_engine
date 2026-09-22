@@ -1,5 +1,7 @@
 #include <core/json/json_value.h>
 #include <core/platform/process.h>
+#include <core/time/time.h>
+#include <foundation/bench/gpu_lock.h>
 #include <foundation/bench/machine_state.h>
 
 #include <algorithm>
@@ -243,6 +245,11 @@ class SystemSampler final : public MachineSampler {
     }
     (void)read_gpu(state);
     state.session_locked = read_session_locked();
+    // Who "we" are does not change during a process, and the path only through the environment
+    // it started with, so both are read once.
+    static const GpuLockIdentity self = current_gpu_lock_identity();
+    static const std::string lock_path = default_gpu_lock_path();
+    state.gpu_lock = read_gpu_lock(lock_path, self, time::wall_unix_ms() / 1000);
     return state;
   }
 };
@@ -261,6 +268,7 @@ MachineState sample_machine_state(i64 window_ms) { return system_sampler().sampl
 bool is_quiet(const MachineState& state, const QuietThresholds& thresholds) noexcept {
   if (state.cpu_valid && state.cpu_others_pct > thresholds.others_cpu_pct) return false;
   if (state.gpu_valid && state.gpu_util_pct > thresholds.gpu_util_pct) return false;
+  if (state.gpu_lock.held_by_other()) return false;
   return true;
 }
 
@@ -286,8 +294,37 @@ MachineState worst_of(const MachineState& a, const MachineState& b) noexcept {
       a.session_locked == Tristate::Yes || b.session_locked == Tristate::Yes
           ? Tristate::Yes
           : (a.session_locked == Tristate::Unknown ? b.session_locked : a.session_locked);
+  if (a.gpu_lock.held_by_other()) {
+    w.gpu_lock = a.gpu_lock;
+  } else if (b.gpu_lock.held_by_other()) {
+    w.gpu_lock = b.gpu_lock;
+  } else {
+    w.gpu_lock = a.gpu_lock.present ? a.gpu_lock : b.gpu_lock;
+  }
   return w;
 }
+
+namespace {
+
+void describe_gpu_lock(const GpuLockState& lock, std::string& out) {
+  if (!lock.present) {
+    out.append(", gpu lock free");
+  } else if (!lock.readable) {
+    out.append(lock.expired ? ", gpu lock unreadable and stale" : ", gpu lock being written");
+  } else {
+    out.append(lock.mine      ? ", gpu lock ours ('"
+               : lock.expired ? ", gpu lock expired ('"
+                              : ", gpu lock held by '");
+    out.append(lock.owner);
+    out.append(lock.mine || lock.expired ? "')" : "'");
+    if (!lock.mine) {
+      out.append(": ");
+      out.append(lock.purpose);
+    }
+  }
+}
+
+}  // namespace
 
 std::string describe(const MachineState& state) {
   char buffer[256];
@@ -312,6 +349,7 @@ std::string describe(const MachineState& state) {
     case Tristate::No: out.append(", session unlocked"); break;
     case Tristate::Unknown: out.append(", session unknown"); break;
   }
+  describe_gpu_lock(state.gpu_lock, out);
   return out;
 }
 
@@ -340,17 +378,39 @@ JsonValue machine_state_json(const MachineState& state) {
     case Tristate::No: o.set("session_locked", false); break;
     case Tristate::Unknown: o.set("session_locked", JsonValue::null()); break;
   }
+  // null when there is no lock file; otherwise what it said, and whether it was this run's own.
+  // An unreadable file is reported with null owner, purpose and expiry rather than left out.
+  const GpuLockState& lock = state.gpu_lock;
+  if (!lock.present) {
+    o.set("gpu_lock", JsonValue::null());
+  } else {
+    JsonValue l = JsonValue::object();
+    l.set("owner", lock.readable ? JsonValue(lock.owner) : JsonValue::null());
+    l.set("purpose", lock.readable ? JsonValue(lock.purpose) : JsonValue::null());
+    l.set("expires", lock.readable ? JsonValue(lock.expires) : JsonValue::null());
+    l.set("mine", lock.mine);
+    l.set("expired", lock.expired);
+    o.set("gpu_lock", std::move(l));
+  }
   return o;
 }
 
 bool warn_if_busy(const MachineState& state, const QuietThresholds& thresholds, std::FILE* out) {
   const bool cpu_busy = state.cpu_valid && state.cpu_others_pct > thresholds.others_cpu_pct;
   const bool gpu_busy = state.gpu_valid && state.gpu_util_pct > thresholds.gpu_util_pct;
-  if (!cpu_busy && !gpu_busy) return false;
+  const bool gpu_taken = state.gpu_lock.held_by_other();
+  if (!cpu_busy && !gpu_busy && !gpu_taken) return false;
+  // The load sentence is the one write-ups already quote; the lock gets a clause of its own in
+  // front of it rather than a second format, so there is still one sentence to explain.
+  std::string lock_clause;
+  if (gpu_taken) {
+    lock_clause = "the GPU lock was held by '" + state.gpu_lock.owner + "' (" +
+                  state.gpu_lock.purpose + "), ";
+  }
   std::fprintf(out,
-               "WARNING: other processes used %.1f%% of the CPU and the GPU was %.0f%% busy; "
+               "WARNING: %sother processes used %.1f%% of the CPU and the GPU was %.0f%% busy; "
                "these numbers are upper bounds (%s)\n",
-               state.cpu_valid ? state.cpu_others_pct : 0.0,
+               lock_clause.c_str(), state.cpu_valid ? state.cpu_others_pct : 0.0,
                state.gpu_valid ? state.gpu_util_pct : 0.0, describe(state).c_str());
   return true;
 }

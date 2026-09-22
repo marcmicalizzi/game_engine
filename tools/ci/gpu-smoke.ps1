@@ -30,6 +30,12 @@
        before it did: each has its own time budget and its own result, so one
        that crashes or hangs cannot hide the rest.
 
+  Steps 2 to 4 run under the machine-wide GPU lock (tools/lib/MachineLock.psm1,
+  docs/subsystems/bench.md "The GPU lock"): on a machine whose GPU other agents
+  share, the suite and the captures wait for the card rather than run beside a
+  render, and the log says whom they waited for. A machine without the lock's
+  directory (D:\workspace, or wherever ENGINE_GPU_LOCK points) runs without it.
+
   Default preset: msvc-release on Windows, linux-clang-debug elsewhere (the
   Linux runner uses tools/ci/gpu-smoke.sh, which does the same four steps).
 
@@ -67,6 +73,7 @@ $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 
 $Root = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
+Import-Module (Join-Path $Root 'tools/lib/MachineLock.psm1') -Force
 $IsWin = $IsWindows -or ($env:OS -eq 'Windows_NT')
 if (-not $Preset) { $Preset = if ($IsWin) { 'msvc-release' } else { 'linux-clang-debug' } }
 
@@ -91,167 +98,184 @@ if ($Clean) {
 Write-Section 'build'
 & $Dev build -Preset $Preset
 
-Write-Section 'gpu.adapters'
-$cliName = if ($IsWin) { 'engine-cli.exe' } else { 'engine-cli' }
-$Cli = Join-Path $BuildDir "bin/$cliName"
-if (-not (Test-Path $Cli)) { throw "engine-cli not found at $Cli; did the build produce it?" }
-
-$adapters = & $Cli gpu.adapters 2>&1
-$adaptersStatus = $LASTEXITCODE
-$adaptersText = ($adapters | Out-String)
-Write-Host $adaptersText.TrimEnd()
-
-# gpu.adapters answers the driver question in its result, not in its exit code:
-# it returns available=false with an error when the loader or the ICD behind it
-# is missing, which is what a hosted runner looks like, and available=true with
-# an empty list when an ICD is installed but no device is reachable.
-$available = $false
-$adapterCount = 0
-$adapterError = ''
-if ($adaptersStatus -eq 0) {
-  try {
-    $parsed = $adaptersText | ConvertFrom-Json
-    $available = [bool]$parsed.available
-    $adapterCount = @($parsed.adapters).Count
-    $adapterError = "$($parsed.error)"
-  }
-  catch { $adapterError = "gpu.adapters printed something that is not JSON: $($_.Exception.Message)" }
-}
-else { $adapterError = "engine-cli exited $adaptersStatus" }
-
-if (-not $available -or $adapterCount -eq 0) {
-  $reason = if ($adapterError) { $adapterError } else { 'the loader reported no physical device' }
-  $message = "no usable Vulkan device on this machine ($reason), so every GPU test will skip. " +
-             'Check that the display driver is installed and that its ICD is registered ' +
-             '(see docs/ci/self-hosted-runners.md).'
-  if ($RequireAdapters) { throw $message }
-  Write-Warning $message
-}
-else { Write-Host "$adapterCount adapter(s) reported" }
-
-Write-Section 'ctest'
-if (-not (Get-Command ctest -ErrorAction SilentlyContinue)) {
-  throw 'ctest not found on PATH. On Windows tools/dev.ps1 supplies it from the Visual Studio installation; install the C++ workload.'
-}
-$ctestArgs = @('--preset', $Preset)
-if ($Filter) { $ctestArgs += @('-R', $Filter) }
-Push-Location $Root
-try {
-  & ctest @ctestArgs
-  $status = $LASTEXITCODE
-}
-finally { Pop-Location }
-
-$log = Join-Path $BuildDir 'Testing/Temporary/LastTest.log'
-
-# ---- extreme-resolution captures (plan 04 section 4.6) ---------------------
+# ---- the GPU lock ----------------------------------------------------------
 #
-# The four resolutions the plan names, plus plain 4K as the number the others
-# are read against. They are here because "no 16-bit screen coordinates
-# anywhere, all screen-space structures sized from the render config" is a
-# claim that only a run at 48:9 and at 8K can check: an overflow in a tile
-# count, a Hi-Z level count, or a workgroup dispatch shows up as a wrong
-# picture or a device loss, and nothing smaller finds it.
-$resolutions = @(
-  [pscustomobject]@{ Width = 3840;  Height = 2160; Why = '4K, the baseline the others are read against' },
-  [pscustomobject]@{ Width = 11520; Height = 2160; Why = 'triple 4K surround, 48:9' },
-  [pscustomobject]@{ Width = 7680;  Height = 4320; Why = '8K' },
-  [pscustomobject]@{ Width = 1080;  Height = 3840; Why = 'portrait' },
-  [pscustomobject]@{ Width = 5120;  Height = 1440; Why = 'ultrawide' }
-)
+# Everything from here to the captures is heavy GPU work on a machine that may
+# share its card with other agents (docs/subsystems/bench.md, "The GPU lock"),
+# so it runs under the machine-wide lock: taken after the build, which needs no
+# GPU, and released before the report is written, whatever happened in
+# between. A runner that does not use the lock (no D:\workspace, or
+# ENGINE_GPU_LOCK naming a directory that does not exist) warns and runs
+# without it. Test executables and engine-view inherit ENGINE_GPU_LOCK_HOLDER,
+# so their machine-state samples know the lock is held on their behalf.
+Write-Section 'gpu lock'
+$gpuLock = Open-MachineLockSession -Kind gpu -Purpose "gpu-smoke $Preset on $([Environment]::MachineName)"
+try {
+  Write-Section 'gpu.adapters'
+  $cliName = if ($IsWin) { 'engine-cli.exe' } else { 'engine-cli' }
+  $Cli = Join-Path $BuildDir "bin/$cliName"
+  if (-not (Test-Path $Cli)) { throw "engine-cli not found at $Cli; did the build produce it?" }
 
-$capturesDir = Join-Path $BuildDir 'captures'
-$captureResults = @()
-$captureFailures = 0
-if ($SkipCaptures) {
-  Write-Section 'extreme-resolution captures (skipped by -SkipCaptures)'
-}
-else {
-  Write-Section 'extreme-resolution captures'
-  $viewName = if ($IsWin) { 'engine-view.exe' } else { 'engine-view' }
-  $View = Join-Path $BuildDir "bin/$viewName"
-  if (-not (Test-Path $View)) {
-    Write-Warning "engine-view not found at $View; skipping the captures"
+  $adapters = & $Cli gpu.adapters 2>&1
+  $adaptersStatus = $LASTEXITCODE
+  $adaptersText = ($adapters | Out-String)
+  Write-Host $adaptersText.TrimEnd()
+
+  # gpu.adapters answers the driver question in its result, not in its exit code:
+  # it returns available=false with an error when the loader or the ICD behind it
+  # is missing, which is what a hosted runner looks like, and available=true with
+  # an empty list when an ICD is installed but no device is reachable.
+  $available = $false
+  $adapterCount = 0
+  $adapterError = ''
+  if ($adaptersStatus -eq 0) {
+    try {
+      $parsed = $adaptersText | ConvertFrom-Json
+      $available = [bool]$parsed.available
+      $adapterCount = @($parsed.adapters).Count
+      $adapterError = "$($parsed.error)"
+    }
+    catch { $adapterError = "gpu.adapters printed something that is not JSON: $($_.Exception.Message)" }
+  }
+  else { $adapterError = "engine-cli exited $adaptersStatus" }
+
+  if (-not $available -or $adapterCount -eq 0) {
+    $reason = if ($adapterError) { $adapterError } else { 'the loader reported no physical device' }
+    $message = "no usable Vulkan device on this machine ($reason), so every GPU test will skip. " +
+               'Check that the display driver is installed and that its ICD is registered ' +
+               '(see docs/ci/self-hosted-runners.md).'
+    if ($RequireAdapters) { throw $message }
+    Write-Warning $message
+  }
+  else { Write-Host "$adapterCount adapter(s) reported" }
+
+  Write-Section 'ctest'
+  if (-not (Get-Command ctest -ErrorAction SilentlyContinue)) {
+    throw 'ctest not found on PATH. On Windows tools/dev.ps1 supplies it from the Visual Studio installation; install the C++ workload.'
+  }
+  $ctestArgs = @('--preset', $Preset)
+  if ($Filter) { $ctestArgs += @('-R', $Filter) }
+  Push-Location $Root
+  try {
+    & ctest @ctestArgs
+    $status = $LASTEXITCODE
+  }
+  finally { Pop-Location }
+
+  $log = Join-Path $BuildDir 'Testing/Temporary/LastTest.log'
+
+  # ---- extreme-resolution captures (plan 04 section 4.6) ---------------------
+  #
+  # The four resolutions the plan names, plus plain 4K as the number the others
+  # are read against. They are here because "no 16-bit screen coordinates
+  # anywhere, all screen-space structures sized from the render config" is a
+  # claim that only a run at 48:9 and at 8K can check: an overflow in a tile
+  # count, a Hi-Z level count, or a workgroup dispatch shows up as a wrong
+  # picture or a device loss, and nothing smaller finds it.
+  $resolutions = @(
+    [pscustomobject]@{ Width = 3840;  Height = 2160; Why = '4K, the baseline the others are read against' },
+    [pscustomobject]@{ Width = 11520; Height = 2160; Why = 'triple 4K surround, 48:9' },
+    [pscustomobject]@{ Width = 7680;  Height = 4320; Why = '8K' },
+    [pscustomobject]@{ Width = 1080;  Height = 3840; Why = 'portrait' },
+    [pscustomobject]@{ Width = 5120;  Height = 1440; Why = 'ultrawide' }
+  )
+
+  $capturesDir = Join-Path $BuildDir 'captures'
+  $captureResults = @()
+  $captureFailures = 0
+  if ($SkipCaptures) {
+    Write-Section 'extreme-resolution captures (skipped by -SkipCaptures)'
   }
   else {
-    New-Item -ItemType Directory -Force -Path $capturesDir | Out-Null
-    foreach ($r in $resolutions) {
-      $name = "$($r.Width)x$($r.Height)"
-      $capture = Join-Path $capturesDir "$name.png"
-      $stdoutPath = Join-Path $capturesDir "$name.stdout.txt"
-      $stderrPath = Join-Path $capturesDir "$name.stderr.txt"
-      Remove-Item -Force -ErrorAction SilentlyContinue $capture, $stdoutPath, $stderrPath
-      $arguments = @('--width', "$($r.Width)", '--height', "$($r.Height)",
-                     '--frames', "$CaptureFrames", '--capture', $capture)
-      Write-Host "-- $name ($($r.Why))"
-      $started = Get-Date
-      # Its own time budget, its own result: one resolution that hangs or dies
-      # must not stop the others from being tried.
-      $proc = Start-Process -FilePath $View -ArgumentList $arguments -NoNewWindow -PassThru `
-                            -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
-      $finished = $proc.WaitForExit($CaptureTimeout * 1000)
-      if (-not $finished) {
-        try { $proc.Kill($true) } catch { }
-        try { $proc.WaitForExit(10000) | Out-Null } catch { }
-      }
-      $seconds = [math]::Round((Get-Date).Subtract($started).TotalSeconds, 2)
-      $exitCode = if ($finished) { $proc.ExitCode } else { $null }
+    Write-Section 'extreme-resolution captures'
+    $viewName = if ($IsWin) { 'engine-view.exe' } else { 'engine-view' }
+    $View = Join-Path $BuildDir "bin/$viewName"
+    if (-not (Test-Path $View)) {
+      Write-Warning "engine-view not found at $View; skipping the captures"
+    }
+    else {
+      New-Item -ItemType Directory -Force -Path $capturesDir | Out-Null
+      foreach ($r in $resolutions) {
+        $name = "$($r.Width)x$($r.Height)"
+        $capture = Join-Path $capturesDir "$name.png"
+        $stdoutPath = Join-Path $capturesDir "$name.stdout.txt"
+        $stderrPath = Join-Path $capturesDir "$name.stderr.txt"
+        Remove-Item -Force -ErrorAction SilentlyContinue $capture, $stdoutPath, $stderrPath
+        $arguments = @('--width', "$($r.Width)", '--height', "$($r.Height)",
+                       '--frames', "$CaptureFrames", '--capture', $capture)
+        Write-Host "-- $name ($($r.Why))"
+        $started = Get-Date
+        # Its own time budget, its own result: one resolution that hangs or dies
+        # must not stop the others from being tried.
+        $proc = Start-Process -FilePath $View -ArgumentList $arguments -NoNewWindow -PassThru `
+                              -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+        $finished = $proc.WaitForExit($CaptureTimeout * 1000)
+        if (-not $finished) {
+          try { $proc.Kill($true) } catch { }
+          try { $proc.WaitForExit(10000) | Out-Null } catch { }
+        }
+        $seconds = [math]::Round((Get-Date).Subtract($started).TotalSeconds, 2)
+        $exitCode = if ($finished) { $proc.ExitCode } else { $null }
 
-      $summary = $null
-      if (Test-Path $stdoutPath) {
-        foreach ($line in (Get-Content -LiteralPath $stdoutPath)) {
-          $trimmed = $line.Trim()
-          if ($trimmed.StartsWith('{')) {
-            try { $summary = $trimmed | ConvertFrom-Json } catch { }
+        $summary = $null
+        if (Test-Path $stdoutPath) {
+          foreach ($line in (Get-Content -LiteralPath $stdoutPath)) {
+            $trimmed = $line.Trim()
+            if ($trimmed.StartsWith('{')) {
+              try { $summary = $trimmed | ConvertFrom-Json } catch { }
+            }
           }
         }
-      }
 
-      # engine-view exits 3 when it cannot draw at all (no display, no Vulkan
-      # device, no mesh shaders, no presentation). That is a skip on a headless
-      # server or a runner that is a service, not a failure.
-      $state = if (-not $finished) { 'timeout' }
-               elseif ($exitCode -eq 0) { 'ok' }
-               elseif ($exitCode -eq 3) { 'skipped' }
-               else { 'failed' }
-      if ($state -eq 'ok' -or $state -eq 'skipped') { } else { $captureFailures++ }
+        # engine-view exits 3 when it cannot draw at all (no display, no Vulkan
+        # device, no mesh shaders, no presentation). That is a skip on a headless
+        # server or a runner that is a service, not a failure.
+        $state = if (-not $finished) { 'timeout' }
+                 elseif ($exitCode -eq 0) { 'ok' }
+                 elseif ($exitCode -eq 3) { 'skipped' }
+                 else { 'failed' }
+        if ($state -eq 'ok' -or $state -eq 'skipped') { } else { $captureFailures++ }
 
-      $result = [ordered]@{
-        name = $name
-        why = $r.Why
-        requested_width = $r.Width
-        requested_height = $r.Height
-        status = $state
-        exit_code = $exitCode
-        seconds = $seconds
-        timeout_seconds = $CaptureTimeout
-        frames = $CaptureFrames
-        capture = if ($state -eq 'ok' -and (Test-Path $capture)) { "captures/$name.png" } else { $null }
-        summary = $summary
-      }
-      # engine-view is a windowed app: a window manager may hand back a smaller
-      # surface than 11520x2160 was asked for, and the summary's width and
-      # height are what was really rendered. Say so rather than let the file
-      # claim a resolution that never reached a rasterizer.
-      if ($summary -ne $null -and $summary.width -ne $null) {
-        $result.rendered_width = [int]$summary.width
-        $result.rendered_height = [int]$summary.height
-        $result.clamped = ([int]$summary.width -ne $r.Width -or [int]$summary.height -ne $r.Height)
-      }
-      $captureResults += [pscustomobject]$result
-
-      switch ($state) {
-        'ok' {
-          $rendered = if ($result.rendered_width) { "$($result.rendered_width)x$($result.rendered_height)" } else { '?' }
-          $note = if ($result.clamped) { " (the window manager gave $rendered)" } else { '' }
-          Write-Host "   ok in $seconds s$note"
+        $result = [ordered]@{
+          name = $name
+          why = $r.Why
+          requested_width = $r.Width
+          requested_height = $r.Height
+          status = $state
+          exit_code = $exitCode
+          seconds = $seconds
+          timeout_seconds = $CaptureTimeout
+          frames = $CaptureFrames
+          capture = if ($state -eq 'ok' -and (Test-Path $capture)) { "captures/$name.png" } else { $null }
+          summary = $summary
         }
-        'skipped' { Write-Host "   skipped (engine-view exited 3: nothing to draw with)" }
-        'timeout' { Write-Warning "   no result within $CaptureTimeout s; the process was killed" }
-        default   { Write-Warning "   engine-view exited $exitCode after $seconds s; see $stderrPath" }
+        # engine-view is a windowed app: a window manager may hand back a smaller
+        # surface than 11520x2160 was asked for, and the summary's width and
+        # height are what was really rendered. Say so rather than let the file
+        # claim a resolution that never reached a rasterizer.
+        if ($summary -ne $null -and $summary.width -ne $null) {
+          $result.rendered_width = [int]$summary.width
+          $result.rendered_height = [int]$summary.height
+          $result.clamped = ([int]$summary.width -ne $r.Width -or [int]$summary.height -ne $r.Height)
+        }
+        $captureResults += [pscustomobject]$result
+
+        switch ($state) {
+          'ok' {
+            $rendered = if ($result.rendered_width) { "$($result.rendered_width)x$($result.rendered_height)" } else { '?' }
+            $note = if ($result.clamped) { " (the window manager gave $rendered)" } else { '' }
+            Write-Host "   ok in $seconds s$note"
+          }
+          'skipped' { Write-Host "   skipped (engine-view exited 3: nothing to draw with)" }
+          'timeout' { Write-Warning "   no result within $CaptureTimeout s; the process was killed" }
+          default   { Write-Warning "   engine-view exited $exitCode after $seconds s; see $stderrPath" }
+        }
       }
     }
   }
+}
+finally {
+  Close-MachineLockSession -Session $gpuLock
 }
 
 # One machine-readable file for the whole run, beside the ctest log: what the

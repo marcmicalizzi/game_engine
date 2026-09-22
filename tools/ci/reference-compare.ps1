@@ -28,6 +28,13 @@
   scene, so a run taken beside other work is readable as the upper bound it is
   (docs/subsystems/bench.md). `-RequireQuiet` refuses to start when the machine is busy.
 
+  **The GPU lock.** Rendering the corpus twice over — real time and path traced — is exactly the
+  heavy GPU work the machine-wide lock exists for, so the script takes it (tools/gpu-lock.ps1's
+  protocol, through tools/lib/MachineLock.psm1) before engine-host starts and releases it when
+  engine-host has gone, waiting while somebody else holds it and saying who. engine-host inherits
+  ENGINE_GPU_LOCK_HOLDER, so its machine-state samples know the lock is held on its behalf. On a
+  machine without the lock's directory it runs without one.
+
       pwsh tools/ci/reference-compare.ps1 [-Preset msvc-release] [-OutDir <dir>]
                                           [-Scene <name>]... [-Spp <n>] [-UpdateThresholds]
                                           [-Margin 1.5] [-RequireQuiet]
@@ -49,6 +56,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot '../lib/MachineLock.psm1') -Force
 
 function Resolve-Host {
   param([string]$root, [string]$preset)
@@ -127,7 +135,9 @@ if ($Scene.Count -gt 0) {
 }
 
 # The corpus is rendered from one process, and the working directory is the repository root so a
-# scene's relative mesh paths mean what they say.
+# scene's relative mesh paths mean what they say. The GPU lock is taken first, so engine-host
+# inherits ENGINE_GPU_LOCK_HOLDER and never starts while somebody else has the card.
+$gpuLock = Open-MachineLockSession -Kind gpu -Purpose "reference-compare $Preset ($($files.Count) scenes)"
 Push-Location $Root
 $results = @()
 $failures = @()
@@ -256,6 +266,7 @@ try {
 } finally {
   if ($null -ne $rpc) { $rpc.Close() }
   Pop-Location
+  Close-MachineLockSession -Session $gpuLock
 }
 
 $report = [ordered]@{

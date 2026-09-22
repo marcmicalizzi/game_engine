@@ -23,7 +23,7 @@ One script drives everything, identically for humans, agents, and CI:
 tools/dev.ps1 configure [-Preset msvc-debug]   # locates Visual Studio, runs CMake with the preset
 tools/dev.ps1 build     [-Preset msvc-debug]
 tools/dev.ps1 test      [-Preset msvc-debug] [-Filter <regex>]
-tools/dev.ps1 bench     [-Preset msvc-release] [-Filter <glob>]  # runs engine_*_bench; JSON lines in build/<preset>/bench/
+tools/dev.ps1 bench     [-Preset msvc-release] [-Filter <glob>] [-GpuLock]  # runs engine_*_bench; JSON lines in build/<preset>/bench/
 tools/dev.ps1 lint                             # banned-pattern lint (also runs as a CTest test)
 tools/dev.ps1 docs                             # documentation check (also runs as a CTest test)
 tools/dev.ps1 format                           # clang-format over the tree

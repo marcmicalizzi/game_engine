@@ -294,9 +294,12 @@ Two blocks, both **added** to the existing fields — nothing was renamed and no
 "gpu_memory":{"budget_mib":31614,"used_mib":297,"device_local_total_mib":32404},
 "machine_state":{"start":{"cpu_total_pct":9.3,"cpu_own_pct":0.0,"cpu_others_pct":9.3,
                           "gpu_util_pct":0.0,"gpu_memory_used_mib":17117,
-                          "gpu_memory_total_mib":32607,"session_locked":false},
+                          "gpu_memory_total_mib":32607,"session_locked":false,
+                          "gpu_lock":null},
                  "end":{...}}
 ```
+
+`gpu_lock` is the machine-wide GPU lock as the sample found it — `null` when nobody held it, else `{"owner","purpose","expires","mine","expired"}` ([bench](bench.md#measuring-on-a-shared-machine), "The GPU lock") — and a lock somebody else held is a WARNING of its own. It is in engine-view's summary only: the protocol's `MachineState` schema type does not carry it yet, so over `render.benchmark` and `render.evaluate` the lock shows in engine-host's stderr WARNING and not in the result. A host started under a lock-holding wrapper (`gpu-lock.ps1 run`, `gpu-smoke.ps1`, `reference-compare.ps1`) inherits `ENGINE_GPU_LOCK_HOLDER` and reports the lock as `"mine":true` rather than warning about its own parent.
 
 `gpu_memory` is the renderer's ([renderer](renderer.md)), read from the Vulkan device around the run. `machine_state` is sampled **outside** the timed region — before the first frame and after the last — because the sampler sleeps for a quarter of a second to get a CPU percentage and spawns `nvidia-smi` for the GPU reading, and neither belongs between two timed frames. Every field is `null` where the platform could not answer, so "quiet" and "not measured" are different answers; no process names are ever reported.
 
