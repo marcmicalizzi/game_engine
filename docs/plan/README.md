@@ -26,7 +26,7 @@ How this repository goes public, and how private and experimental work continues
 
 How generated content is made today — the tool-level generator service of [07 §7.7](07-content-pipeline.md#77-ml-asset-generation-novelty-content), its backends, its provenance sidecar, the credit rules for paid services, and the rule that generated outputs are never committed — is [docs/content-generation.md](../content-generation.md).
 
-Experiment write-ups live in [docs/experiments](../experiments/README.md), which indexes them and carries the skeleton every new one starts from — including the mandatory "Machine state" line: [E1 raster crossover](../experiments/e1-raster-crossover.md), [E2 cluster acceleration structures](../experiments/e2-cluster-acceleration.md), [E6 ECS and persistent store](../experiments/e6-ecs-store.md), [E19 lattice cage](../experiments/e19-lattice-cage.md), [E25 deformed clusters](../experiments/e25-deformed-clusters.md).
+Experiment write-ups live in [docs/experiments](../experiments/README.md), which indexes them and carries the skeleton every new one starts from — including the mandatory "Machine state" line: [E1 raster crossover](../experiments/e1-raster-crossover.md), [E2 cluster acceleration structures](../experiments/e2-cluster-acceleration.md), [E6 ECS and persistent store](../experiments/e6-ecs-store.md), [E10 generated props](../experiments/e10-generated-props.md), [E19 lattice cage](../experiments/e19-lattice-cage.md), [E25 deformed clusters](../experiments/e25-deformed-clusters.md).
 
 ## Executive summary
 

@@ -1027,7 +1027,10 @@ function Invoke-MeshyStage($inputs) {
     }
     if ($inflight.Count -eq 0) { break }
     Start-Sleep -Seconds 10
-    foreach ($j in @($inflight)) {
+    # A snapshot, because the loop removes finished tasks. `.ToArray()` and not `@($inflight)`:
+    # array-wrapping a generic List throws "Argument types do not match" in PowerShell 7.6, which
+    # is how the first E10 batch stopped after its fifth submission (it resumed without paying).
+    foreach ($j in $inflight.ToArray()) {
       try { $t = Invoke-Meshy 'GET' "/image-to-3d/$($j.TaskId)" $null } catch { Write-Warn "$($j.Input.name): poll failed: $($_.Exception.Message)"; continue }
       if ([int]$t.progress -ne $j.Progress -and $t.status -eq 'IN_PROGRESS') { $j.Progress = [int]$t.progress; Write-Note "  $($j.Input.name): $($t.status) $($t.progress)%" }
       if ($t.status -eq 'SUCCEEDED') {
