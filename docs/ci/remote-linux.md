@@ -216,7 +216,7 @@ Three Windows details that each cost a run to find, recorded so the next person 
 ### What the suite is missing there, and why
 
 `cmake/EngineTesting.cmake` does not *fail* a pwsh test on a machine without pwsh, it does not
-**register** it. This machine has no PowerShell and is not getting one, so five tests do not exist
+**register** it. This machine has no PowerShell and is not getting one, so six tests do not exist
 in a remote run:
 
 | Not registered | What it checks |
@@ -226,11 +226,12 @@ in a remote run:
 | `tools.new_capability` | ADR-0027's scaffold |
 | `docs_check` | every module has a page, every ADR is indexed, every link resolves |
 | `tools.docs_check` | that check's own rules |
+| `tools.machine_lock` | the lock protocol the GPU lock and the container build lock share |
 
-All five read files and are machine-independent, so the container and the hosted runner cover them
-completely; nothing is *only* checked here. `tools.docs_gate` **is** registered — it is bash, and
-the machine has bash and git. Everything else in the suite runs: the remote CTest total matches
-the container's `linux-gcc-release-v2` count minus exactly those five.
+All six touch only files and are machine-independent, so the container and the hosted runner
+cover them completely; nothing is *only* checked here. `tools.docs_gate` **is** registered — it is
+bash, and the machine has bash and git. Everything else in the suite runs: the remote CTest total
+matches the container's `linux-gcc-release-v2` count minus exactly those six.
 
 ### FetchContent, cold, from this machine
 
@@ -358,5 +359,5 @@ startup check says so correctly for every app, and `tools/schemac` — which the
   partial X11. Use `linux-server`.
 - **`[code=260]` from `schemac`** — a v3 preset on this CPU; see above. The configure should have
   stopped you first, so if you see this, say so.
-- **A test that fails only here** — check `LastTest.log` from `-Fetch` first. The five pwsh tests
+- **A test that fails only here** — check `LastTest.log` from `-Fetch` first. The six pwsh tests
   above are *absent*, not failing; a run that reports fewer tests than the container is expected.

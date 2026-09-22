@@ -8,118 +8,111 @@
   tools/gpu-lock.ps1 status
   tools/gpu-lock.ps1 wait    [-Purpose <text>] [-Minutes 30] [-PollSeconds 20] [-TimeoutMinutes 240]
   tools/gpu-lock.ps1 refresh [-Minutes 30]
-  tools/gpu-lock.ps1 run -Purpose <text> [-Minutes 30] -Exec "<command line>"
+  tools/gpu-lock.ps1 run -Purpose <text> [-Minutes 10] -Exec "<command line>"
+  ... [-LockFile <path>]
 
-  The protocol (D:\workspace\GPU-LOCK.md, also docs/subsystems/bench.md "Measuring on a shared
-  machine") is shared with other agents on this machine, so the file and its rules are theirs as
-  much as ours: a JSON file at $env:ENGINE_GPU_LOCK (default D:\workspace\gpu.lock), created
-  atomically, carrying an owner, a purpose and an expiry. An expired lock may be broken; an
-  unexpired one never is; a lock owned by "marc" is never broken by a tool.
+  The protocol (D:\workspace\GPU-LOCK.md, also docs/subsystems/bench.md "The GPU lock") is shared
+  with other agents on this machine, so the file and its rules are theirs as much as ours: a JSON
+  file at $env:ENGINE_GPU_LOCK (default D:\workspace\gpu.lock), created atomically, carrying an
+  owner, a purpose and an expiry. An expired lock may be broken; an unexpired one never is; a lock
+  owned by "marc" is never broken by a tool. The implementation is tools/lib/MachineLock.psm1,
+  which tools/linux-build.ps1 uses for its build lock too; -LockFile points this command line at
+  any lock of the same format (`status -LockFile D:\workspace\linux-build.lock` says who is
+  building).
 
   `acquire` exits 0 when the lock is yours and 2 when someone else holds it (without waiting);
-  `wait` waits for it; `run` waits, runs the command, and releases in a finally block so a
-  failing command still releases. Exit code of `run` is the command's.
+  `wait` waits for it; `run` waits, runs the command with the lock refreshed in the background
+  (so -Minutes is the lease a crash would leave behind, not a limit on the command), and releases
+  in a finally block so a failing command still releases. Exit code of `run` is the command's.
+
+  `run` sets ENGINE_GPU_LOCK_HOLDER to its own process id for the command, which is how a bench
+  executable inside it (`--require-quiet`, `--gpu-lock`) knows the lock it finds is held on its
+  behalf. A lock taken with a separate `acquire` belongs to a process that has already exited,
+  and a benchmark cannot tell it from another agent's: prefer `run`, or the harness's own
+  `--gpu-lock`.
+
+  `release` and `refresh` act on a lock whose owner is -Owner, whichever process took it, because
+  `acquire` and `release` are separate processes by design. Every engine agent is
+  "claude-engine", so they are for a lock you know is yours.
 #>
 [CmdletBinding()]
 param(
   [Parameter(Position = 0, Mandatory)] [ValidateSet('acquire', 'release', 'status', 'wait', 'refresh', 'run')] [string]$Action,
   [string]$Purpose = '',
-  [int]$Minutes = 30,
-  [string]$Owner = $(if ($env:ENGINE_GPU_LOCK_OWNER) { $env:ENGINE_GPU_LOCK_OWNER } else { 'claude-engine' }),
+  [int]$Minutes = 0,
+  [string]$Owner = '',
   [int]$PollSeconds = 20,
   [int]$TimeoutMinutes = 240,
-  [string]$Exec = ''
+  [string]$Exec = '',
+  [string]$LockFile = ''
 )
 $ErrorActionPreference = 'Stop'
-$Lock = if ($env:ENGINE_GPU_LOCK) { $env:ENGINE_GPU_LOCK } else { 'D:\workspace\gpu.lock' }
+Import-Module (Join-Path $PSScriptRoot 'lib/MachineLock.psm1') -Force
 
-function Read-Lock {
-  try { Get-Content -Raw -LiteralPath $Lock | ConvertFrom-Json } catch { $null }
-}
-function Now-Utc { [DateTime]::UtcNow }
-function Iso([DateTime]$t) { $t.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') }
-function Expired($held) {
-  if (-not $held -or -not $held.expires) { return $true }
-  try { return ([DateTime]::Parse($held.expires, $null, 'AdjustToUniversal') -lt (Now-Utc)) } catch { return $true }
-}
-function Try-Acquire([string]$purpose, [int]$minutes) {
-  $body = [ordered]@{
-    owner = $Owner; purpose = $purpose; pid = $PID
-    started = Iso (Now-Utc); expires = Iso ((Now-Utc).AddMinutes($minutes)); host = $env:COMPUTERNAME
-  } | ConvertTo-Json -Compress
-  try {
-    $fs = [IO.File]::Open($Lock, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
-    try { $bytes = [Text.Encoding]::UTF8.GetBytes($body); $fs.Write($bytes, 0, $bytes.Length) } finally { $fs.Dispose() }
-    return $true
-  } catch [IO.IOException] { return $false }
-}
-function Break-IfStale {
-  $held = Read-Lock
-  if ($held -and $held.owner -eq 'marc') { return $false }   # a person's lock is never broken by a tool
-  if (Expired $held) {
-    Write-Host "gpu-lock: breaking an expired lock held by '$($held.owner)' ($($held.purpose))" -ForegroundColor Yellow
-    Remove-Item -LiteralPath $Lock -Force -ErrorAction SilentlyContinue
-    return $true
-  }
-  return $false
-}
-function Wait-Acquire([string]$purpose, [int]$minutes) {
-  $deadline = (Now-Utc).AddMinutes($TimeoutMinutes)
-  $announced = ''
-  while ((Now-Utc) -lt $deadline) {
-    if (Try-Acquire $purpose $minutes) { return $true }
-    if (Break-IfStale) { continue }
-    $held = Read-Lock
-    $line = "gpu-lock: GPU held by '$($held.owner)': $($held.purpose) (until $($held.expires))"
-    if ($line -ne $announced) { Write-Host $line -ForegroundColor Yellow; $announced = $line }
-    Start-Sleep -Seconds $PollSeconds
-  }
-  return $false
-}
+$Lock = if ($LockFile) { $LockFile } else { Get-MachineLockPath -Kind gpu }
+if (-not $Owner) { $Owner = Get-MachineLockOwner }
+# `run` refreshes its lease while the command runs, so its lease only bounds what a crash leaves
+# behind and can be short; the one-shot actions cannot refresh and keep the protocol's default.
+if ($Minutes -le 0) { $Minutes = if ($Action -eq 'run') { 10 } else { 30 } }
 
 switch ($Action) {
   'status' {
-    if (-not (Test-Path -LiteralPath $Lock)) { Write-Output "free"; exit 0 }
-    $held = Read-Lock
-    $state = if (Expired $held) { 'EXPIRED' } else { 'held' }
-    Write-Output "$state by '$($held.owner)': $($held.purpose) (pid $($held.pid), since $($held.started), until $($held.expires))"
-    exit $(if ($state -eq 'held') { 2 } else { 0 })
+    $held = Read-MachineLock -Path $Lock
+    if (-not $held.Present) { Write-Output 'free'; exit 0 }
+    $state = if ($held.Blocking) { 'held' } else { 'EXPIRED' }
+    Write-Output "$state by $(Format-MachineLockHolder $held) (pid $($held.Pid), since $($held.Started))"
+    exit $(if ($held.Blocking) { 2 } else { 0 })
   }
   'acquire' {
     if (-not $Purpose) { throw 'acquire needs -Purpose' }
-    if (Try-Acquire $Purpose $Minutes) { Write-Output "acquired ($Owner, $Minutes min)"; exit 0 }
-    if ((Break-IfStale) -and (Try-Acquire $Purpose $Minutes)) { Write-Output "acquired after breaking a stale lock"; exit 0 }
-    $held = Read-Lock; Write-Output "busy: held by '$($held.owner)': $($held.purpose) (until $($held.expires))"; exit 2
+    $r = Enter-MachineLock -Path $Lock -Purpose $Purpose -Owner $Owner -LeaseMinutes $Minutes -Label 'gpu-lock'
+    switch ($r.Outcome) {
+      'Taken' { Write-Output "acquired ($Owner, $Minutes min)"; exit 0 }
+      'NoDirectory' { throw "$(Split-Path -Parent $Lock) does not exist; this machine does not use the lock" }
+      default { Write-Output "busy: held by $(Format-MachineLockHolder $r.Holder)"; exit 2 }
+    }
   }
   'wait' {
     if (-not $Purpose) { throw 'wait needs -Purpose' }
-    if (Wait-Acquire $Purpose $Minutes) { Write-Output "acquired ($Owner, $Minutes min)"; exit 0 }
-    Write-Output "gave up after $TimeoutMinutes minutes"; exit 3
+    $r = Enter-MachineLock -Path $Lock -Purpose $Purpose -Owner $Owner -LeaseMinutes $Minutes -Wait `
+                           -PollSeconds $PollSeconds -TimeoutMinutes $TimeoutMinutes -Label 'gpu-lock'
+    switch ($r.Outcome) {
+      'Taken' { Write-Output "acquired ($Owner, $Minutes min)"; exit 0 }
+      'NoDirectory' { throw "$(Split-Path -Parent $Lock) does not exist; this machine does not use the lock" }
+      default { Write-Output "gave up after $TimeoutMinutes minutes"; exit 3 }
+    }
   }
   'refresh' {
-    $held = Read-Lock
-    if (-not $held) { throw 'no lock to refresh' }
-    if ($held.owner -ne $Owner) { throw "lock is held by '$($held.owner)', not '$Owner'" }
-    $held.expires = Iso ((Now-Utc).AddMinutes($Minutes))
-    $held | ConvertTo-Json -Compress | Set-Content -LiteralPath $Lock -Encoding utf8 -NoNewline
-    Write-Output "refreshed until $($held.expires)"; exit 0
+    $held = Read-MachineLock -Path $Lock
+    if (-not $held.Present) { throw 'no lock to refresh' }
+    if ($held.Owner -ne $Owner) { throw "lock is held by '$($held.Owner)', not '$Owner'" }
+    $handle = [pscustomobject]@{
+      Path = $Lock; Owner = $held.Owner; Purpose = $held.Purpose; Pid = $held.Pid
+      Started = $held.Started; ExpiresText = ''; LeaseMinutes = $Minutes; Host = $held.Host
+    }
+    if (-not (Update-MachineLock -Handle $handle)) { throw 'the lock changed while it was being refreshed' }
+    Write-Output "refreshed until $($handle.ExpiresText)"; exit 0
   }
   'release' {
-    $held = Read-Lock
-    if (-not $held) { Write-Output "already free"; exit 0 }
-    if ($held.owner -ne $Owner -and -not (Expired $held)) { Write-Output "not yours: held by '$($held.owner)'"; exit 2 }
-    Remove-Item -LiteralPath $Lock -Force; Write-Output "released"; exit 0
+    $held = Read-MachineLock -Path $Lock
+    if (-not $held.Present) { Write-Output 'already free'; exit 0 }
+    if ($held.Owner -ne $Owner -and $held.Blocking) { Write-Output "not yours: held by '$($held.Owner)'"; exit 2 }
+    Remove-Item -LiteralPath $Lock -Force; Write-Output 'released'; exit 0
   }
   'run' {
     if (-not $Purpose) { throw 'run needs -Purpose' }
     if (-not $Exec) { throw 'run needs -Exec "<command line>"' }
-    if (-not (Wait-Acquire $Purpose $Minutes)) { Write-Output "gave up after $TimeoutMinutes minutes"; exit 3 }
+    $code = $null
     try {
-      & pwsh -NoProfile -Command $Exec
-      $code = $LASTEXITCODE
-    } finally {
-      Remove-Item -LiteralPath $Lock -Force -ErrorAction SilentlyContinue
+      Invoke-WithMachineLock -Kind gpu -Path $Lock -Purpose $Purpose -Owner $Owner -LeaseMinutes $Minutes `
+                             -TimeoutMinutes $TimeoutMinutes -ScriptBlock {
+        & pwsh -NoProfile -Command $Exec
+        $script:code = $LASTEXITCODE
+      }
+    } catch {
+      Write-Output "$($_.Exception.Message)"
+      exit 3
     }
-    exit $(if ($null -eq $code) { 0 } else { $code })
+    exit $(if ($null -eq $script:code) { 0 } else { $script:code })
   }
 }

@@ -95,8 +95,17 @@ if(ENGINE_PWSH)
             -File "${CMAKE_SOURCE_DIR}/tools/docs-check.Tests.ps1"
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
   set_tests_properties(tools.docs_check PROPERTIES LABELS "tools")
+
+  # The machine-lock protocol (tools/lib/MachineLock.psm1, tools/gpu-lock.ps1) over lock files in
+  # a scratch directory: the GPU lock is shared with tools outside this repository and the Linux
+  # build lock with every checkout on the machine, so its rules are tested as rules.
+  add_test(NAME tools.machine_lock
+    COMMAND "${ENGINE_PWSH}" -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_SOURCE_DIR}/tools/machine-lock.Tests.ps1"
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+  set_tests_properties(tools.machine_lock PROPERTIES LABELS "tools")
 else()
-  message(WARNING "pwsh not found; lint.banned_patterns, tools.lint, tools.new_capability, tools.generate, docs_check, and tools.docs_check tests not registered")
+  message(WARNING "pwsh not found; lint.banned_patterns, tools.lint, tools.new_capability, tools.generate, docs_check, tools.docs_check, and tools.machine_lock tests not registered")
 endif()
 
 # The CI documentation gate is bash, because it runs on the hosted Linux runner
