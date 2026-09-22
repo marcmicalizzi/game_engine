@@ -371,7 +371,13 @@ bool append_morph_targets(Context& ctx, const cgltf_primitive& primitive, u32 ba
     const f32 normal_floor = normal_peak > 0.0f ? normal_peak / 65534.0f : 0.0f;
 
     geometry::MorphChannelSource& channel = out.morph[channel_base + static_cast<u32>(t)];
-    const bool channel_normals = !ctx.target_normals.empty();
+    // A primitive's normal deltas join the channel only if every entry the channel already holds
+    // has one: a channel is **one parallel array or none**, across all the primitives of its mesh.
+    // Checking this primitive alone was not enough — a mesh whose first primitive's target has no
+    // NORMAL and whose second one's does left the array shorter than `vertices` (the drop below
+    // only ever ran for the primitive that lacked them, so it covered the other order).
+    const bool channel_normals =
+        !ctx.target_normals.empty() && channel.normal_deltas.size() == channel.vertices.size();
     for (u32 i = 0; i < vertices; ++i) {
       const Vec3& d = ctx.target_deltas[i];
       const bool moves_position = std::fabs(d.x) > position_floor ||

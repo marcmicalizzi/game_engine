@@ -15,7 +15,9 @@
 #include <test_temp_dir.h>
 
 #include <cmath>
+#include <fstream>
 #include <string>
+#include <vector>
 
 using namespace engine;
 using namespace engine::assets;
@@ -297,6 +299,119 @@ TEST_CASE("gltf morph targets: deltas, names, default weights, and a weights tra
   const geometry::AttributeSource source = attribute_source(mesh);
   CHECK(source.morph.size() == 2);
   CHECK(source.skin.size() == mesh.positions.size());
+}
+
+namespace {
+
+// Two triangles as two primitives of one mesh, each with one morph target moving its first vertex
+// up by half along +z. Only one of the two targets carries NORMAL deltas — the first when
+// `normals_first`, the second otherwise — which is the shape the importer got wrong in one order.
+bool write_mixed_normals_glb(const std::string& path, bool normals_first) {
+  using namespace test_fixture;
+  std::vector<u8> bin;
+  const Vec3 corners[2][3] = {{{0, 0, 0}, {1, 0, 0}, {0, 1, 0}}, {{2, 0, 0}, {3, 0, 0}, {2, 1, 0}}};
+  u32 offsets[2][4] = {};  // position, normal, target position, target normal
+  for (u32 p = 0; p < 2; ++p) {
+    offsets[p][0] = static_cast<u32>(bin.size());
+    for (const Vec3& c : corners[p]) {
+      put_f32(bin, c.x);
+      put_f32(bin, c.y);
+      put_f32(bin, c.z);
+    }
+    offsets[p][1] = static_cast<u32>(bin.size());
+    for (u32 v = 0; v < 3; ++v) {
+      put_f32(bin, 0.0f);
+      put_f32(bin, 0.0f);
+      put_f32(bin, 1.0f);
+    }
+    offsets[p][2] = static_cast<u32>(bin.size());
+    for (u32 v = 0; v < 3; ++v) {
+      put_f32(bin, 0.0f);
+      put_f32(bin, 0.0f);
+      put_f32(bin, v == 0 ? 0.5f : 0.0f);
+    }
+    offsets[p][3] = static_cast<u32>(bin.size());
+    for (u32 v = 0; v < 3; ++v) {
+      put_f32(bin, v == 0 ? 0.3f : 0.0f);
+      put_f32(bin, 0.0f);
+      put_f32(bin, 0.0f);
+    }
+  }
+  const u32 end = static_cast<u32>(bin.size());
+  std::string views;
+  std::string accessors;
+  for (u32 p = 0; p < 2; ++p) {
+    for (u32 k = 0; k < 4; ++k) {
+      if (!views.empty()) {
+        views += ',';
+        accessors += ',';
+      }
+      const u32 view = p * 4 + k;
+      views += "{\"buffer\":0,\"byteOffset\":" + n(offsets[p][k]) + ",\"byteLength\":36}";
+      accessors += "{\"bufferView\":" + n(view) + ",\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"" +
+                   std::string(k == 0 ? ",\"min\":[0,0,0],\"max\":[3,1,0]" : "") + "}";
+    }
+  }
+  auto target = [&](u32 p) {
+    const bool with_normal = (p == 0) == normals_first;
+    return "{\"POSITION\":" + n(p * 4 + 2) + (with_normal ? ",\"NORMAL\":" + n(p * 4 + 3) : "") + "}";
+  };
+  std::string json =
+      "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,\"scenes\":[{\"nodes\":[0]}],"
+      "\"nodes\":[{\"mesh\":0}],\"meshes\":[{\"primitives\":["
+      "{\"attributes\":{\"POSITION\":0,\"NORMAL\":1},\"targets\":[" + target(0) + "]},"
+      "{\"attributes\":{\"POSITION\":4,\"NORMAL\":5},\"targets\":[" + target(1) + "]}]}],"
+      "\"accessors\":[" + accessors + "],\"bufferViews\":[" + views +
+      "],\"buffers\":[{\"byteLength\":" + n(end) + "}]}";
+  while (json.size() % 4 != 0)
+    json += ' ';
+  std::vector<u8> glb;
+  put_u32(glb, 0x46546c67u);  // "glTF"
+  put_u32(glb, 2u);
+  put_u32(glb, static_cast<u32>(12 + 8 + json.size() + 8 + bin.size()));
+  put_u32(glb, static_cast<u32>(json.size()));
+  put_u32(glb, 0x4e4f534au);  // "JSON"
+  glb.insert(glb.end(), json.begin(), json.end());
+  put_u32(glb, static_cast<u32>(bin.size()));
+  put_u32(glb, 0x004e4942u);  // "BIN\0"
+  glb.insert(glb.end(), bin.begin(), bin.end());
+  std::ofstream f(path, std::ios::binary);
+  if (!f.is_open()) return false;
+  f.write(reinterpret_cast<const char*>(glb.data()), static_cast<std::streamsize>(glb.size()));
+  return f.good();
+}
+
+}  // namespace
+
+// Regression. A mesh's target k is one channel across all its primitives, and a channel's normal
+// deltas are one array parallel to its vertices or none. The importer dropped the array when a
+// primitive *without* target normals came after one with them, and not in the other order: there
+// the array came out shorter than `vertices`, which the cluster builders read as parallel. Found
+// reading the importer while the Khronos morph samples went through it; none of the four has the
+// shape, so the fixture is written here.
+TEST_CASE("gltf morph targets: normal deltas stay parallel whichever primitive lacks them") {
+  TempDir tmp("engine_assets_morph_mixed");
+  for (const bool normals_first : {true, false}) {
+    const std::string path = tmp.file(normals_first ? "first.glb" : "second.glb");
+    REQUIRE(write_mixed_normals_glb(path, normals_first));
+    MeshData mesh;
+    std::string error;
+    REQUIRE_MESSAGE(load_gltf(path, mesh, &error), error);
+    REQUIRE(mesh.morph.size() == 1);
+    const geometry::MorphChannelSource& channel = mesh.morph[0];
+    CHECK(channel.vertices.size() == 2);  // the first vertex of each triangle
+    CHECK(channel.position_deltas.size() == channel.vertices.size());
+    // One array or none: here none, because one primitive of the mesh supplied none.
+    CHECK(channel.normal_deltas.empty());
+
+    // And the builder takes it as it would any channel.
+    geometry::ClusterMesh clusters;
+    REQUIRE_MESSAGE(geometry::build_clusters(mesh.positions, mesh.indices,
+                                             geometry::ClusterBuildOptions{}, clusters, &error,
+                                             attribute_source(mesh)),
+                    error);
+    CHECK(clusters.morph_channels.size() == 1);
+  }
 }
 
 TEST_CASE("gltf morph targets: a file without them imports exactly as it did") {
