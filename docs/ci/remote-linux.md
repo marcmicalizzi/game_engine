@@ -277,6 +277,14 @@ naming the v2 presets. It is Linux-only (that is where `/proc/cpuinfo` costs not
 only sub-v3 machine is), skipped when cross-compiling, and `-DENGINE_ALLOW_UNRUNNABLE_BASELINE=ON`
 is the way past it for someone building here to run elsewhere.
 
+**Its first version refused every v3 configure on every Linux machine**, AVX2 or not, and this
+server was the one place that could not show it: the kernel writes `flags\t\t: fpu ...` with
+*tabs* between the key and the colon, the pattern allowed only spaces, and so it never matched —
+which on Sandy Bridge is the right answer for the wrong reason. The container's first v3 configure
+after the check landed (2026-09-22, on an i9-10980XE with AVX2 and AVX-512) stopped with this
+message; the pattern now takes `[ \t]*`. A check that is only ever exercised where it should fire
+has not been tested.
+
 **Left for the coordinator, because it is an ADR-level call and not a build-script one:** whether
 build-time *host tools* should carry the target's instruction-set baseline at all. `schemac` is
 generated code's generator; it never ships, and compiling it for the product's ISA is what turned

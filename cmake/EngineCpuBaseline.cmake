@@ -108,8 +108,12 @@ if(ENGINE_CPU_BASELINE STREQUAL "v3"
    AND CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux"
    AND EXISTS "/proc/cpuinfo")
   file(READ "/proc/cpuinfo" _engine_cpuinfo LIMIT 65536)
-  # One flags line is enough: every core of an x86 machine reports the same set.
-  if(NOT _engine_cpuinfo MATCHES "\n *flags *:[^\n]* avx2[ \n]")
+  # One flags line is enough: every core of an x86 machine reports the same set. The kernel
+  # separates the key from its colon with **tabs** ("flags\t\t: fpu ..."), not spaces; the first
+  # version of this pattern allowed only spaces, matched on no Linux machine at all, and so
+  # refused every v3 configure on hardware that has AVX2 — found on 2026-09-22 by the container
+  # build, which the server's v2 presets had never asked.
+  if(NOT _engine_cpuinfo MATCHES "\n[ \t]*flags[ \t]*:[^\n]* avx2[ \n]")
     message(FATAL_ERROR
       "ENGINE_CPU_BASELINE is v3 (x86-64-v3, the default) but this machine's /proc/cpuinfo does "
       "not list avx2, so nothing this build produces can run here — including `tools/schemac`, "
