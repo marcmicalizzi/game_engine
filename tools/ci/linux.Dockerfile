@@ -1,7 +1,7 @@
 # The Linux toolchain image: what `.github/workflows/ci.yml`'s `linux` job runs on, reproduced
-# locally so a Linux build takes minutes on a Windows desktop and does not depend on GitHub
-# being willing to run a job. `tools/linux-build.ps1` builds this and drives it; see
-# docs/ci/local-linux.md for the command, the volumes, and the measured times.
+# locally so a Linux build runs on a Windows desktop and does not depend on GitHub being willing
+# to run a job. `tools/linux-build.ps1` builds this and drives it; see docs/ci/local-linux.md for
+# the command, the volumes, the build lock, and the measured times, cold and warm.
 #
 # **Ubuntu 24.04 is what `ubuntu-latest` resolves to today** (GitHub's runner image label moved
 # to 24.04 in January 2025), and ci.yml names `ubuntu-24.04` explicitly, so this image is the
@@ -54,8 +54,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # --- PowerShell 7, from Microsoft's apt repository ---------------------------------------------
 #
-# `tools/` is PowerShell 7 by policy (ADR-0021, 08 §8.5), and five CTest tests are pwsh scripts:
-# lint.banned_patterns, tools.lint, tools.new_capability, docs_check and tools.docs_check. A
+# `tools/` is PowerShell 7 by policy (ADR-0021, 08 §8.5), and six CTest tests are pwsh scripts:
+# lint.banned_patterns, tools.lint, tools.new_capability, docs_check, tools.docs_check and
+# tools.machine_lock. A
 # container without pwsh does not fail those tests, it silently does not register them
 # (cmake/EngineTesting.cmake warns and moves on), which would make a green local run mean less
 # than the hosted one. So pwsh is part of the toolchain, not an extra.
@@ -76,10 +77,15 @@ RUN curl -fsSL https://packages.microsoft.com/config/ubuntu/24.04/packages-micro
 # uid 1000 is taken by Ubuntu's own `ubuntu` account in 24.04, so the build user takes 1001.
 # Nothing here writes to the host: the checkout is mounted read-only and everything else lives
 # in named volumes the daemon owns, so the uid only has to be stable, not matched to anyone.
+#
+# /fetch is the machine-wide dependency cache (tools/ci/fetch-cache.cmake). It has to exist in the
+# image, owned by the build user, because an empty named volume takes its mount point's owner
+# from the image the first time it is mounted: without it the volume's root is root's and the
+# first configure cannot write the cache.
 RUN groupadd --gid 1001 build \
  && useradd --uid 1001 --gid 1001 --create-home --shell /bin/bash build \
- && mkdir -p /src /deps \
- && chown build:build /src /deps
+ && mkdir -p /src /deps /fetch \
+ && chown build:build /src /deps /fetch
 
 USER build
 WORKDIR /src
@@ -93,8 +99,10 @@ RUN git config --global user.email "build@localhost" \
  && git config --global --add safe.directory '*'
 
 # A build tree that outlives the container: /src is the synced source (plus build/<preset>/),
-# /deps is FETCHCONTENT_BASE_DIR. linux-build.ps1 mounts a named volume on each.
-VOLUME ["/src", "/deps"]
+# /deps is FETCHCONTENT_BASE_DIR (the dependencies' build directories), both per checkout, and
+# /fetch is the dependencies' downloaded sources, shared by every checkout. linux-build.ps1 mounts
+# a named volume on each.
+VOLUME ["/src", "/deps", "/fetch"]
 
 CMD ["/bin/bash"]
 

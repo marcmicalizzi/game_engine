@@ -40,14 +40,14 @@ Generated images, meshes and the owner's workflow files live under `D:\workspace
 
 The Linux half of CI runs on this machine too, in a container built from the same Ubuntu 24.04
 toolchain the hosted job uses — the four Linux presets, warnings-as-errors on GCC 13 and Clang 18,
-minutes instead of a queue, and no dependency on GitHub answering:
+minutes (once warm) instead of a queue, and no dependency on GitHub answering:
 
 ```powershell
-tools/linux-build.ps1 [-Preset all|<name>] [-Test] [-Filter <regex>] [-Jobs 8] [-Shell] [-Rebuild] [-Prune]
+tools/linux-build.ps1 [-Preset all|<name>] [-Test] [-Filter <regex>] [-Jobs 8] [-Shell] [-Rebuild] [-Prune] [-NoWait] [-Offline]
 ```
 
 Run it before pushing anything that touches C++: MSVC forgives a long list of things GCC and Clang
-do not, and the Windows build stays silent about every one of them. See
+do not, and the Windows build stays silent about every one of them. Only one container build runs on the machine at a time — a second waits for the machine-wide build lock and says whose it is (`-NoWait` exits 2 instead) — and downloaded dependency sources are shared by every checkout, but a fresh worktree's first run still compiles every third-party dependency, so start it early and in the background. See
 [local Linux builds](docs/ci/local-linux.md) for the volumes, the measured times, and what the
 first four runs found.
 

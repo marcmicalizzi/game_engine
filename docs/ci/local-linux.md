@@ -18,7 +18,10 @@ errors on every compiler, and MSVC forgives a long list of things GCC and Clang 
 builds on Windows" had stopped meaning very much.
 
 A gate that only exists on somebody else's machine is a gate that can be taken away. This one is
-local, takes minutes, and needs the network only the first time.
+local, needs the network only for a dependency no checkout on the machine has fetched yet, and —
+warm — takes minutes. **The first run of a fresh checkout is not minutes**, and every agent
+works in a fresh worktree: see [Measured times](#measured-times) for what that costs and
+[Scheduling](#scheduling-warm-early-one-at-a-time) for how to keep it off the critical path.
 
 It does **not** replace `ci.yml`: the workflow is still what gates a push, and the self-hosted GPU
 runners ([self-hosted runners](self-hosted-runners.md)) are still the only machines that execute a
@@ -29,6 +32,7 @@ shader. This is the compiler-and-CPU half of the gate, moved to where the work h
 ```powershell
 pwsh tools/linux-build.ps1 [-Preset <name>|all] [-Test] [-Filter <regex>] [-Jobs <n>]
                            [-Shell] [-Rebuild] [-Docs [-Base <rev>]] [-Prune] [-Sync:$false]
+                           [-NoWait] [-Offline]
 ```
 
 | Flag | What |
@@ -37,19 +41,74 @@ pwsh tools/linux-build.ps1 [-Preset <name>|all] [-Test] [-Filter <regex>] [-Jobs
 | `-Test` | run CTest after the build. Without it the run is a compile check. |
 | `-Filter` | a regex on test names, passed through to `ctest -R`. |
 | `-Jobs` | parallel compile jobs. Default 8; see [Why eight jobs](#why-eight-jobs--and-why-the-worry-was-wrong). |
-| `-Rebuild` | delete `build/<preset>` inside the volume first. The downloaded dependencies are in a different volume and survive, so this costs a compile and not a download. |
+| `-Rebuild` | delete `build/<preset>` inside the volume first. The dependencies' sources and build directories are in other volumes and survive, so this costs an engine compile and not a download or a third-party one. |
 | `-Shell` | an interactive `bash` in the container with the volumes mounted, for when a failure needs poking at. |
 | `-Docs` | run `tools/docs-gate.sh` and `tools/docs-check.sh` in the container and build nothing; `-Base` is what the gate diffs against (default `main`). See [Running the documentation gate here](#running-the-documentation-gate-here). |
-| `-Prune` | delete this checkout's two volumes and exit. |
+| `-Prune` | delete this checkout's two volumes and exit. The machine-wide dependency cache is left alone. |
 | `-Sync:$false` | build what is already in the volume without re-syncing the checkout. |
+| `-NoWait` | if another build holds the [build lock](#one-container-build-at-a-time-whoever-started-it), say whose and exit 2 instead of waiting for it. |
+| `-Offline` | run the build containers with `--network none`. A configure that still needs to download something then fails instead of downloading it, which makes "this build fetched nothing" a result rather than a reading of the log. |
 
 Exit status is the build's, or the tests' with `-Test`. With `all`, every preset is attempted and
 the status is the first failure: nothing stops early, because a second compiler's opinion is the
-entire reason for running four of them.
+entire reason for running four of them. 2 means another build held the lock and `-NoWait` was
+given; 3 means a wait for it gave up after four hours.
 
 `-Preset all` prints a summary table at the end. One preset prints its own line.
 
-## What it does, and the three choices worth arguing about
+## What it does, and the choices worth arguing about
+
+### One container build at a time, whoever started it
+
+On 2026-09-20 three agents, each in a fresh worktree, started a cold four-preset build within
+minutes of each other. Each would have taken about a quarter of an hour alone; together they took
+**over two and a half hours** and ran the 16 GB WSL2 VM out of memory — twenty-four compilers on
+twelve CPUs, where the memory measurement in [Why eight jobs](#why-eight-jobs--and-why-the-worry-was-wrong)
+is of one build's eight. Three builds side by side are not three times slower, they are worse; one
+after another they are three times one.
+
+So a build takes the **machine-wide build lock** first and holds it until its last container has
+exited. It is the GPU lock's protocol and the GPU lock's implementation, pointed at a different
+file ([bench](../subsystems/bench.md#measuring-on-a-shared-machine), "The GPU lock";
+`tools/lib/MachineLock.psm1`): one JSON file, `D:\workspace\linux-build.lock` or
+`$env:ENGINE_LINUX_BUILD_LOCK`, created atomically with an owner, a purpose that names the presets
+and the checkout, and an expiry. An expired lock may be broken, an unexpired one never.
+
+- **A second invocation waits** and says whom for — `linux-build: waiting; held by 'claude-engine':
+  linux-build linux-clang-debug,... -Test in D:\...\agent-xyz (until 21:04:00Z)` — and starts the
+  moment the first releases. `-NoWait` makes it fail at once with exit 2 instead; after four hours
+  it gives up with exit 3.
+- **The lease is ten minutes, refreshed every two** from a background thread while the build runs,
+  so a build whose script is killed outright holds the machine for ten minutes and not for as long
+  as the build would have taken. Ctrl+C is not killed outright: the script removes the container it
+  started (they are named per invocation) before it releases, because a lock released while a
+  container is still compiling is the concurrency it exists to prevent.
+- **It also waits for containers the lock cannot see**: any running container from this toolchain's
+  images that is not a shell or a docs check — another checkout's build started by a copy of this
+  script from before the lock existed, say — holds the build until it has gone, and is named in the
+  log with the `docker rm -f` that ends it. One kind is not waited for but removed: an **orphan**,
+  a container this script started (they are named `engine-linux-<checkout>-<pid>-<preset>`) whose
+  script is no longer running. A tool timeout kills a process tree outright, no `finally` runs,
+  and the daemon keeps the container compiling for nobody; the first time a run was stopped that
+  way here, the lock would have expired on schedule and the orphan would have gone on holding
+  eight cores through its build and its whole suite.
+- **The checkout is synced when the lock is taken**, not when the command started, so what gets
+  built is the tree as it is when the wait ends. That is also what keeps two invocations from the
+  *same* checkout from syncing over each other's build.
+- `-Shell` and `-Docs` take no lock: neither is a build, and a shell is interactive and may sit idle
+  for an hour. Their containers are labelled so a build does not wait for them either.
+- On a machine without the lock's directory (no `D:\workspace`) there is nobody to coordinate with;
+  the build says so and runs unlocked.
+
+`tools/gpu-lock.ps1 status -LockFile D:\workspace\linux-build.lock` says who is building.
+
+**Checked, on 2026-09-22**: two invocations from two checkouts, fifteen seconds apart, with a
+planted orphan (named as this script names its containers, its owner pid dead) and a planted
+unlabelled container running beside them. The first removed the orphan, waited 40 s for the
+unlabelled one, then built; the second printed whose build it was waiting for, waited 1,001 s,
+started the moment the first released, and configured all four presets with `--network none` —
+the cache the first had filled was all it needed (the fresh-checkout column of
+[Measured times](#measured-times) is the same checkout, pruned and built again the same way).
 
 ### The checkout is mounted read-only and rsync'd into a volume
 
@@ -73,50 +132,84 @@ is rsync with extra steps. Second, nothing in the build or the test suite reads 
 `tools/docs-gate.test.sh` builds its own throwaway repositories, and `tools/docs-gate.sh` takes
 `--files-from`/`--messages-from`, which is how CI runs it for a pull request anyway.
 
-### Two named volumes, one per checkout
+### Three volumes: two per checkout, one per machine
 
-| Volume | Mounted at | Holds |
-|---|---|---|
-| `engine-linux-src-<id>` | `/src` | the synced sources and `build/<preset>/` for every preset |
-| `engine-linux-deps-<id>` | `/deps` | `FETCHCONTENT_BASE_DIR`, one directory per preset |
+| Volume | Mounted at | Holds | Shared by |
+|---|---|---|---|
+| `engine-linux-src-<id>` | `/src` | the synced sources and `build/<preset>/` for every preset | this checkout |
+| `engine-linux-deps-<id>` | `/deps` | `FETCHCONTENT_BASE_DIR`: the dependencies' *build* directories, one directory per preset | this checkout |
+| `engine-linux-fetch-cache` | `/fetch` | the dependencies' downloaded *sources*, one directory per pin | every checkout on the machine |
 
-`<id>` is a hash of the checkout's path, so every agent worktree gets its own pair and two of them
-cannot land in one build directory. The image is shared between checkouts — it is a function of
-the Dockerfile alone.
+`<id>` is a hash of the checkout's path, so every agent worktree gets its own pair of build volumes
+and two of them cannot land in one build directory. The image is shared between checkouts — it is
+a function of the Dockerfile alone — and so, now, are the downloads.
 
-Dependencies live in the second volume because `-Rebuild` should cost a compile and not a 700 MB
-download, and because a warm run then never touches the network at all
-(`FETCHCONTENT_UPDATES_DISCONNECTED=ON` also stops the git-based dependencies re-running
-`git fetch` on every reconfigure; the tags are pinned, so a fetch can only cost time).
-**Checked rather than assumed**: a reconfigure and build of `linux-clang-minimal` in a container
-started with `--network none` succeeds. Only the first run of a given preset needs the network.
+**The dependency cache.** Build trees differ between checkouts; the sources of Jolt v5.6.0 do not.
+Keeping the downloads per checkout meant that every agent's first run in a fresh worktree fetched
+every dependency again, once per preset — four copies of the same SDL3, Slang and Vulkan-Headers
+per worktree — so the configure half of a cold build was mostly `git clone`. Now
+`tools/ci/fetch-cache.cmake` is installed as a CMake **dependency provider**
+(`-DCMAKE_PROJECT_TOP_LEVEL_INCLUDES`, CMake 3.24's mechanism for exactly this) on the configure
+line `linux-build.ps1` writes, and nowhere else. It sees every `FetchContent_MakeAvailable()` with
+the details its `FetchContent_Declare()` gave, keys an entry by a hash of **all** of them —
+repository, tag, URL, hash, and the rest — except the three that only say where FetchContent would
+have put things (`SOURCE_DIR`, `BINARY_DIR`, `SUBBUILD_DIR`, which it fills in from the per-preset
+`FETCHCONTENT_BASE_DIR`; the first version keyed on them too and kept one copy of every download
+per preset), fetches the entry into `/fetch/<name>-<key>` if no checkout has yet, and hands it to
+FetchContent as that one dependency's source directory. So a
+pin bump is a new entry and never a stale hit; a new dependency needs no list updated anywhere
+(which is why this was not done before: the only design then on the table was a hand-kept list of
+`FETCHCONTENT_SOURCE_DIR_<NAME>` values in this script, which silently goes stale); and both image
+targets, all presets and every checkout read the same bytes. The details that matter:
 
-**Each preset downloads its own copy of the sources**, because `FETCHCONTENT_BASE_DIR` holds the
-dependencies' *build* directories too and a Debug tree cannot share one with a Release tree.
-Sharing only the sources is possible — a `FETCHCONTENT_SOURCE_DIR_<NAME>` per dependency, pointing
-into a directory populated once — and was **not** done: it would save about 1.9 GB and three
-downloads on the very first run, at the price of a list of dependency names in this script that
-silently goes stale when someone adds a dependency. The disk is the cheaper side of that trade
-today; revisit it if the first-run download starts to hurt.
+- An entry is filled in `/fetch/.partial-*` and renamed into place, so an interrupted download
+  never leaves a directory that looks complete.
+- A filled entry is **read-only**. Every checkout compiles from the same files, so a dependency
+  whose build wrote into its own source tree would be one checkout editing another's sources. None
+  of the current ones does; one that starts to fails its build with a permission error here.
+- The override is taken back out of `CMakeCache.txt` after each call. `FetchContent_Populate()`
+  caches it as a side effect, and a cached `FETCHCONTENT_SOURCE_DIR_<NAME>` is consulted *before*
+  the provider, so without that a pin bump in one checkout would quietly keep building the old
+  sources.
+- `FETCHCONTENT_BASE_DIR` still points at the per-checkout `/deps/<preset>`, because a Debug tree
+  cannot share a dependency's *build* directory with a Release tree, and because it keeps
+  `-Rebuild` a compile of the engine and not of Jolt.
+- `cmake --log-level=VERBOSE` prints what each entry is keyed on, for the day a miss is a surprise.
+
+A configure prints `fetch-cache: <name> from /fetch/<name>-<key>` for a hit and
+`fetch-cache: <name> is not cached yet; fetching it into ...` for a miss, so a log says which
+dependencies a run downloaded. **Checked rather than assumed**: a fresh checkout's first
+four-preset build with `-Offline` (`--network none`) succeeds once any checkout has filled the
+cache — see [Measured times](#measured-times).
 
 ### Size, and getting it back
 
-Measured after all four presets had been built and tested once:
+Measured on 2026-09-22 after all four presets had been built once, in two fresh checkouts of the
+same tree — one with the script as it was, one with the shared cache:
 
-| | `clang-debug` | `gcc-release` | `clang-minimal` | `clang-no-ecs` |
-|---|---|---|---|---|
-| `/deps` | 1.1 GB | 1.3 GB | 686 MB | 884 MB |
-| `/src/build` | 526 MB | 1.1 GB | 363 MB | 450 MB |
+| | `clang-debug` | `gcc-release` | `clang-minimal` | `clang-no-ecs` | all four |
+|---|---|---|---|---|---|
+| `/deps` per checkout, before (sources **and** build directories) | 1.1 GB | 1.3 GB | 685 MB | 884 MB | **3.9 GB** |
+| `/deps` per checkout, now (build directories only) | 230 MB | 437 MB | 94 MB | 206 MB | **966 MB** |
+| `/src/build` per checkout | 561 MB | 886 MB | 394 MB | 483 MB | **2.3 GB** |
 
-**3.9 GB** in the dependency volume and **2.4 GB** in the source volume — **6.3 GB** for all four
-presets — plus a **1.65 GB** image that every checkout on the machine shares. The minimal preset
-is the small one for the obvious reason: `ENGINE_MINIMAL=ON` fetches nothing for a capability it
-does not contain, so Jolt, flecs, SQLite and Recast never arrive at all.
+and **779 MB** in `engine-linux-fetch-cache`, once for the machine: fourteen entries, of which
+Slang (250 MB, a prebuilt release), flecs (134 MB), Vulkan-Headers (114 MB) and SDL3 (109 MB) are
+most of it. Before, every checkout carried that four times over — Slang alone was a gigabyte per
+worktree. A checkout now costs about **3.3 GB** instead of 6.3 GB, plus the shared cache and a
+**1.65 GB** image that every checkout on the machine shares. The minimal preset is the small one
+for the obvious reason: `ENGINE_MINIMAL=ON` fetches nothing for a capability it does not contain,
+so Jolt, flecs, SQLite and Recast never arrive at all.
 
 ```powershell
 pwsh tools/linux-build.ps1 -Prune        # this checkout's two volumes, and it names the images
 docker image rm engine-linux-ci-desktop:<tag> engine-linux-ci-headless:<tag>
+docker volume rm engine-linux-fetch-cache  # every checkout's next configure refetches what it needs
 ```
+
+The cache is never pruned on its own: a pin bump leaves the old entry behind, a few megabytes to a
+few hundred. Removing the volume while no build is running costs the next configure its
+downloads and nothing else.
 
 The two images share every layer up to the split, so the headless one costs a few megabytes of
 metadata rather than a second 1.65 GB.
@@ -196,7 +289,7 @@ Versions, all pinned by the distribution or by an explicit version in the Docker
 | Clang | 18.1.3 | Ubuntu 24.04's default, which is what the hosted `linux-clang-*` jobs get. |
 | GCC | 13.3.0 | Same, for `linux-gcc-release`. `-Wdangling-reference` exists here. |
 | clang-format | 18.1.3 | Not in `ci.yml`'s list. Without it `tools/new-capability.Tests.ps1` reports its formatting cases as **skipped**, and a check that only ever skips is not a check. See the note in [08 §8.5](../plan/08-toolchain.md#85-build-system-and-ci) about which versions have been measured against the scaffold; 18 now agrees with them. |
-| PowerShell | 7.4.12 | Five CTest tests are pwsh scripts (`lint.banned_patterns`, `tools.lint`, `tools.new_capability`, `docs_check`, `tools.docs_check`). Without `pwsh` `cmake/EngineTesting.cmake` does not *fail* them, it does not **register** them — so a container without it would make a green run mean less than the hosted one. |
+| PowerShell | 7.4.12 | Six CTest tests are pwsh scripts (`lint.banned_patterns`, `tools.lint`, `tools.new_capability`, `docs_check`, `tools.docs_check`, `tools.machine_lock`). Without `pwsh` `cmake/EngineTesting.cmake` does not *fail* them, it does not **register** them — so a container without it would make a green run mean less than the hosted one. |
 | git, rsync | 2.43.0, 3.2.7 | `tools.docs_gate` builds throwaway repositories; rsync is the source sync. |
 
 The base image is pinned by digest. To refresh it: `docker pull ubuntu:24.04`, take the digest from
@@ -234,10 +327,49 @@ because the policy says to know what is in the build:
 
 ## Measured times
 
-Development desktop, Docker Desktop 29.6.1, WSL2 VM with 12 CPUs and 15.6 GB, `-Jobs 8`, each run
-with `-Test` so the number is build **and** suite.
+Development desktop (i9-10980XE, 36 logical CPUs), Docker Desktop 29.6.1, WSL2 VM with 12 CPUs
+and 15.6 GB, `-Jobs 8`.
 
-| | Cold: download, configure, build, test | Warm: reconfigure, no-op build, test |
+### The first run of a fresh checkout — which is every agent's first run
+
+Every agent works in a fresh worktree, and a fresh worktree has empty build volumes, so its first
+run is a **cold** build whatever the machine has built before: every third-party dependency —
+Jolt, flecs, SDL3, SQLite, Recast, Tracy, meshoptimizer — is compiled again, for every preset.
+The shared dependency cache takes the *downloads* out of that; the *compiles* it does not touch.
+Configure and build of all four presets, no tests, measured on 2026-09-22 from fresh checkouts of
+one tree (so the three columns built the same sources):
+
+| | Before: per-checkout downloads | Now, cache empty (the first run on the machine) | **Now, cache warm (every run after that)** |
+|---|---|---|---|
+| `linux-clang-debug` | 2 m 33 s (configure 79.5 s) | 2 m 46 s (86.3 s) | **1 m 34 s** (18.4 s) |
+| `linux-gcc-release` | 4 m 21 s (94.8 s) | 3 m 03 s (27.9 s) | **3 m 11 s** (20.7 s) |
+| `linux-clang-minimal` | 1 m 54 s (66.9 s) | 1 m 09 s (21.7 s) | **1 m 10 s** (19.6 s) |
+| `linux-clang-no-ecs` | 2 m 14 s (70.2 s) | 1 m 23 s (22.4 s) | **1 m 26 s** (21.0 s) |
+| **all four** | **11 m 02 s** (5 m 11 s configuring) | **8 m 21 s** (2 m 38 s) | **7 m 21 s** (1 m 20 s) |
+
+Read it as: a fresh worktree's first four-preset compile check went from **eleven minutes to a
+little over seven** (−33%), and the configure half of it from five minutes to under a minute and a
+half; the first run on the whole machine is 8½ minutes because each dependency is now downloaded
+once rather than once per preset. What remains — about six minutes — is compiling, most of it
+third-party code that is identical in every checkout; that is the next thing to share (see
+[Follow-ups](#follow-ups)). The warm column ran with `-Offline`, `--network none`, and succeeded:
+nothing was downloaded, which the log's `fetch-cache: <name> from ...` lines say too.
+
+Machine state for all three: no GPU lock held, no other container; the host's own CPU total read
+15–57% across the runs (the container at eight jobs is about a fifth of this 36-thread host, and an
+otherwise idle desktop with other agents' shells sat at 15–25%), so every number is an upper bound
+in the usual sense and the three are comparable with each other.
+
+**With `-Test`** add the suite, which is the same cold or warm: about 6½ minutes for all four
+(the warm column below). A fresh worktree's full gate is therefore about **14 minutes** with the
+cache warm, where it was about 17½.
+
+### Warm runs
+
+Measured when this page was first written, each run with `-Test` so the number is build **and**
+suite; a warm run reads the dependency cache but never writes it, so the cache changes nothing here.
+
+| | Cold (first run, before the cache) | Warm: reconfigure, no-op build, test |
 |---|---|---|
 | `linux-clang-debug` (53 tests) | 4 m 28 s | 2 m 06 s |
 | `linux-gcc-release` (53 tests) | 5 m 51 s | 1 m 45 s |
@@ -246,7 +378,7 @@ with `-Test` so the number is build **and** suite.
 | **all four, one command** | **17 m** | **6 m 55 s** |
 
 Building the image is a one-off **~1 min** on top of the first cold run, and nothing at all once
-any checkout on the machine has built it. The source sync is **about 2 s** every run (610 files).
+any checkout on the machine has built it. The source sync is **about 2 s** every run (645 files).
 
 A warm run is almost entirely the test suite: a warm **build** of `linux-clang-debug` with no
 source change is **6 s end to end including the sync**, of which the container's build step is
@@ -257,6 +389,39 @@ below — costs well under a minute, and `-Test` is what turns it into the seven
 The hosted matrix runs its four Linux presets in parallel on four runners, so on a good day it
 finishes sooner than this does. That was never the problem: the problem was the day it finished
 never.
+
+### Scheduling: warm early, one at a time
+
+- **Start a fresh worktree's first run early, in the background**, before you need its answer —
+  as soon as the change compiles on Windows, not when you are ready to commit. It is seven to
+  eight minutes of compiling for all four presets with nothing to show for it until the end.
+  A warm run afterwards is the minute-long compile check the rest of this page describes.
+- **One at a time is the rule, and the lock enforces it**; do not work around it with `-Jobs` or
+  a second invocation. A second run waits and says whose build it is waiting for. Three agents
+  starting at once is a queue: the third waits for two fresh-worktree builds — a quarter of an
+  hour without `-Test`, nearly half an hour with it — before its own starts, which is still far
+  better than the two and a half hours three concurrent builds took. `-NoWait` tells you instead
+  of queueing.
+- **Narrow the first run when the answer can be narrower**: `-Preset linux-clang-debug` is a minute
+  and a half fresh, and it is the compiler that finds most of what MSVC misses; run `all` once
+  before pushing.
+- **`-Filter` while iterating on a test**, `-Test` without it before pushing.
+- **Never `wsl --shutdown` or restart Docker Desktop to make a build go faster or to clear a
+  stuck one**; it kills every other checkout's build. An orphaned container is removed by the next
+  run; a stuck lock expires on its own ten minutes after its holder stopped refreshing it.
+
+### Follow-ups
+
+- **Share the compiles too.** Every checkout compiles byte-identical third-party sources with the
+  same flags at the same paths (`/fetch/...`, `/deps/<preset>/...` and `/src` are the same in every
+  container), so a machine-wide compiler cache — `ccache` in the image, one volume beside
+  `engine-linux-fetch-cache`, `CMAKE_<LANG>_COMPILER_LAUNCHER` on the same configure line — would
+  turn most of the remaining six minutes of a fresh worktree's first run into cache hits, and the
+  unchanged engine files with them. Not done here: it changes the image and adds a tool to it, and
+  it wants its own measurement.
+- **`tools/remote-build.ps1` keeps one dependency directory per checkout on the server** (see
+  [remote Linux builds](remote-linux.md)); the same provider would share it there. The server is
+  one machine per run and its first configure is two to three minutes, so it matters less.
 
 ## What the first four runs found
 
@@ -302,6 +467,30 @@ that half; the *gate* is the diff-shaped one and has no CTest equivalent by desi
 
 **`docker not found` / `the Docker daemon is not reachable`.** Docker Desktop is not running, or
 is on the Windows-container engine. `docker version --format '{{.Server.Os}}'` must say `linux`.
+This machine also has an old, broken `Ubuntu` WSL registration that makes WSL look unwell; it is
+not Docker's, and neither `wsl --shutdown` nor restarting Docker Desktop is ever the fix here —
+both kill every other checkout's build.
+
+**`linux-build: waiting; held by ...`.** Another build has the machine; this one starts when it
+finishes. The line names the presets and the checkout. If the holder is gone for good, its lease
+runs out ten minutes after its last refresh and the next waiter breaks it; nobody needs to delete
+the file by hand, and nobody should delete an unexpired one.
+
+**`another build container is running outside the lock`.** A container from these images is
+running that no lock accounts for — most likely a build from a checkout whose `linux-build.ps1`
+predates the lock. The build waits for it; the `docker rm -f <name>` the line prints ends it if
+you know it is abandoned. (An orphan of *this* script, whose owning process is gone, is removed
+without asking: `removing <name>, an orphan whose linux-build.ps1 (pid N) is gone`.)
+
+**`fetch-cache: <name> is not cached yet` on a run you expected to be warm.** Somebody changed that
+dependency's declaration — a pin, a URL, any detail at all is in the key — so this is the first
+configure on the machine to need the new one. `cmake --log-level=VERBOSE` prints what each entry is
+keyed on. It is fetched once and every checkout after that reads it.
+
+**`Permission denied` under `/fetch/...` during a build.** A dependency's build tried to write into
+its own source tree, which is shared by every checkout and read-only for that reason. Point its
+output at the build tree (usually an option of its CMakeLists) rather than making the entry
+writable.
 
 **The build is killed with no message, or a link step dies.** The WSL2 VM ran out of memory. Lower
 `-Jobs`. Docker Desktop's memory allowance is in its settings, or `.wslconfig`.
@@ -315,4 +504,7 @@ container artefact until proven otherwise, and the table above is five examples 
 
 **Everything rebuilds although nothing changed.** rsync preserves timestamps (`-a`), so this
 should not happen; if it does, the usual cause is a `-DFETCHCONTENT_*` or preset change that moved
-a dependency's source directory, which invalidates the objects that included its headers.
+a dependency's source directory, which invalidates the objects that included its headers. The
+first run of a checkout that already had build volumes before the dependency cache existed is
+exactly that, once: every source directory moved from `/deps/<preset>/<name>-src` to
+`/fetch/<name>-<key>`. `-Prune` first to also drop the old `-src` copies it no longer reads.

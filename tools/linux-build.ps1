@@ -6,11 +6,28 @@
 .DESCRIPTION
   tools/linux-build.ps1 [-Preset <name>|all] [-Test] [-Filter <regex>] [-Jobs <n>]
                         [-Shell] [-Rebuild] [-Docs [-Base <rev>]] [-Prune] [-Sync:$false]
+                        [-NoWait] [-Offline]
 
   The same toolchain `.github/workflows/ci.yml`'s `linux` job runs on — Ubuntu 24.04, the
   identical apt list, CMake 3.28, Clang 18, GCC 13, PowerShell 7 — in a container built from
-  tools/ci/linux.Dockerfile, so GCC and Clang verification takes minutes and does not depend on
-  GitHub being willing to run a job. docs/ci/local-linux.md is the long form.
+  tools/ci/linux.Dockerfile, so GCC and Clang verification does not depend on GitHub being
+  willing to run a job. docs/ci/local-linux.md is the long form, with the measured times: a warm
+  run is minutes; the **first run of a fresh checkout** compiles every third-party dependency and
+  is not.
+
+  **One build at a time on this machine, whoever started it.** A build takes the machine-wide
+  build lock first ($env:ENGINE_LINUX_BUILD_LOCK, default D:\workspace\linux-build.lock; the
+  GPU-LOCK.md protocol, implemented once in tools/lib/MachineLock.psm1) and holds it until its
+  last container has exited. A second invocation waits and says whom it is waiting for; -NoWait
+  makes it fail at once with exit 2 instead. Three cold builds at once took over two and a half
+  hours on 2026-09-20 and ran the 16 GB WSL VM out of memory; one after another they are three
+  times one. The checkout is synced when the lock is taken, not when the command started, so
+  what gets built is the tree as it is when the wait ends. -Shell and -Docs take no lock.
+
+  **Downloaded dependency sources are shared by every checkout** (the engine-linux-fetch-cache
+  volume, keyed by the dependency pins through tools/ci/fetch-cache.cmake), so a fresh worktree's
+  first configure downloads nothing another checkout has already fetched. Build trees stay per
+  checkout.
 
   Presets: linux-clang-debug, linux-gcc-release, linux-clang-minimal, linux-clang-no-ecs, or
   `all` for the four in that order — the same four, in the same order, as ci.yml's matrix.
@@ -33,8 +50,12 @@
                   file list and the commit messages and they are mounted read-only at /gate —
                   the same --files-from/--messages-from shape ci.yml uses for a pull request.
     -Base         the revision -Docs diffs against. Default `main`.
-    -Prune        remove this checkout's two volumes and report what they held, then exit.
+    -Prune        remove this checkout's two volumes and report what they held, then exit. The
+                  shared dependency cache is left alone; see docs/ci/local-linux.md.
     -Sync:$false  skip the source sync and build what is already in the volume.
+    -NoWait       if another build holds the lock, say who and exit 2 instead of waiting.
+    -Offline      run the build containers with --network none: proof that everything this
+                  build needs is already in the dependency cache, and a failure if it is not.
 
   Exit status is the build's, or the tests' when -Test is given. With `all`, every preset is
   attempted and the status is the first failure — nothing stops early, because the second
@@ -57,11 +78,14 @@ param(
   [switch]$Docs,
   [string]$Base = 'main',
   [switch]$Prune,
-  [switch]$Sync = $true
+  [switch]$Sync = $true,
+  [switch]$NoWait,
+  [switch]$Offline
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+Import-Module (Join-Path $PSScriptRoot 'lib/MachineLock.psm1') -Force
 
 $Root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $Dockerfile = Join-Path $PSScriptRoot 'ci/linux.Dockerfile'
@@ -112,11 +136,24 @@ function Get-TargetForPreset([string]$name) {
   return 'desktop'
 }
 
-# Volumes are per checkout: every agent worktree is a separate tree and must not share a build
-# directory with another one. The path is the identity.
+# Build volumes are per checkout: every agent worktree is a separate tree and must not share a
+# build directory with another one. The path is the identity.
 $VolumeId = Get-ShortHash $Root.ToLowerInvariant()
 $SrcVolume = "engine-linux-src-$VolumeId"
 $DepsVolume = "engine-linux-deps-$VolumeId"
+# The downloaded dependency *sources* are not: they are a function of the pins, and one volume on
+# the machine holds them for every checkout and both image targets (tools/ci/fetch-cache.cmake).
+$FetchVolume = 'engine-linux-fetch-cache'
+$FetchCacheArgs = '-DCMAKE_PROJECT_TOP_LEVEL_INCLUDES=/src/tools/ci/fetch-cache.cmake -DENGINE_FETCH_CACHE=/fetch'
+
+# Every container this script starts carries this label, with its role as the value, so a build
+# can tell its own kind apart from anything else on the daemon — and tell a build it must wait for
+# (another checkout's, or an orphan whose script was killed) from a shell or a docs check it need
+# not. Build and sync containers are also named, per invocation, so that a build interrupted with
+# Ctrl+C can remove the container it started instead of leaving it compiling after the lock that
+# covered it has been released.
+$RoleLabel = 'engine.linux-build'
+$script:CurrentContainer = $null
 
 # Docker on Windows wants forward slashes in a bind source.
 $HostMount = $Root -replace '\\', '/'
@@ -148,7 +185,7 @@ function Ensure-Image([string]$target) {
 }
 
 function Ensure-Volumes {
-  foreach ($v in @($SrcVolume, $DepsVolume)) {
+  foreach ($v in @($SrcVolume, $DepsVolume, $FetchVolume)) {
     & docker volume inspect $v 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) {
       Write-Step "creating volume $v"
@@ -163,22 +200,86 @@ function Invoke-Sync([string]$image) {
   # --delete so a file removed on the host disappears in the volume; excluded paths are
   # protected from it by default, which is what keeps /src/build alive across syncs.
   $syncScript = "rsync -a --delete $excludeArgs /host/ /src/ && echo ""sync: `$(find /src -type f -not -path '/src/build/*' | wc -l) files"""
-  $syncArgs = @('run', '--rm', '-v', "${HostMount}:/host:ro", '-v', "${SrcVolume}:/src",
+  $script:CurrentContainer = "engine-linux-$VolumeId-$PID-sync"
+  $syncArgs = @('run', '--rm', '--name', $script:CurrentContainer, '--label', "$RoleLabel=sync",
+                '-v', "${HostMount}:/host:ro", '-v', "${SrcVolume}:/src",
                 $image, 'bash', '-lc', $syncScript)
   & docker @syncArgs
-  if ($LASTEXITCODE -ne 0) { throw "source sync failed ($LASTEXITCODE)" }
+  $status = $LASTEXITCODE
+  $script:CurrentContainer = $null
+  if ($status -ne 0) { throw "source sync failed ($status)" }
 }
 
-function Get-RunArgs {
-  @(
+function Get-RunArgs([string]$role) {
+  $runArgs = @(
     '--rm',
+    '--label', "$RoleLabel=$role",
     '-v', "${SrcVolume}:/src",
     '-v', "${DepsVolume}:/deps",
+    '-v', "${FetchVolume}:/fetch",
     '-w', '/src',
     # Ninja and CTest both write plain text; without this the odd UTF-8 in the tree's comments
     # comes back mangled in the Windows console.
     '-e', 'LANG=C.UTF-8'
   )
+  if ($Offline) { $runArgs += @('--network', 'none') }
+  return $runArgs
+}
+
+# Containers from this toolchain's images that a build must not run beside: anything but a shell
+# or a docs check, from any checkout, including one started by a copy of this script that predates
+# the lock (it carries no label at all) and an orphan whose script was killed without its finally.
+function Get-BlockingContainers {
+  $format = '{{.ID}}|{{.Image}}|{{.Names}}|{{.Label "' + $RoleLabel + '"}}|{{.RunningFor}}'
+  $lines = & docker ps --format $format 2>$null
+  if ($LASTEXITCODE -ne 0) { return @() }
+  $found = @()
+  foreach ($line in @($lines)) {
+    $f = "$line" -split '\|'
+    if ($f.Count -lt 5 -or $f[1] -notlike 'engine-linux-ci*') { continue }
+    if ($f[3] -eq 'shell' -or $f[3] -eq 'docs') { continue }
+    # A build or sync container this script started is named engine-linux-<checkout>-<pid>-<what>,
+    # and the pid is the script that owns it.
+    $owner = if ($f[2] -match '^engine-linux-[0-9a-f]{12}-(\d+)-') { [int]$Matches[1] } else { 0 }
+    $found += [pscustomobject]@{ Id = $f[0]; Image = $f[1]; Name = $f[2]; Role = $f[3]; For = $f[4]; OwnerPid = $owner }
+  }
+  return $found
+}
+
+# With the lock held, waits until no other build container is running. Returns false on -NoWait
+# or on the timeout, with the containers named.
+#
+# A container whose owning script is no longer running is an orphan — its script was killed
+# outright (a tool timeout kills a process tree; no finally runs), the daemon kept the container
+# compiling, and nobody will ever read its output. Seen the first time a run here was stopped that
+# way, on 2026-09-22: the lock would have expired ten minutes later as designed, and the orphan
+# would have gone on holding eight cores through its configure, its build and its whole test
+# suite. Such a container is removed rather than waited for. Anything else — an unlabelled
+# container from an older copy of this script, or one whose owner is alive (or whose pid has been
+# reused, which errs on the side of waiting) — is waited for.
+function Wait-BlockingContainers([double]$timeoutMinutes) {
+  $deadline = [DateTime]::UtcNow.AddMinutes($timeoutMinutes)
+  $announced = ''
+  while ($true) {
+    $running = @(Get-BlockingContainers)
+    foreach ($c in $running) {
+      if ($c.OwnerPid -gt 0 -and -not (Get-Process -Id $c.OwnerPid -ErrorAction SilentlyContinue)) {
+        Write-Host "linux-build: removing $($c.Name), an orphan whose linux-build.ps1 (pid $($c.OwnerPid)) is gone" -ForegroundColor Yellow
+        & docker rm -f $c.Name 2>&1 | Out-Null
+      }
+    }
+    $running = @(Get-BlockingContainers | Where-Object {
+        $_.OwnerPid -eq 0 -or (Get-Process -Id $_.OwnerPid -ErrorAction SilentlyContinue) })
+    if ($running.Count -eq 0) { return $true }
+    $names = ($running | ForEach-Object { "$($_.Name) ($($_.Image), up $($_.For))" }) -join ', '
+    $line = "linux-build: another build container is running outside the lock: $names. " +
+            "If it is an orphan of a killed run, 'docker rm -f $($running[0].Name)' ends it."
+    if ($NoWait -or [DateTime]::UtcNow -ge $deadline) { Write-Host $line -ForegroundColor Yellow; return $false }
+    # Once per set of containers, not once per poll: the uptime in the line changes every time.
+    $key = ($running | ForEach-Object { $_.Name }) -join ','
+    if ($key -ne $announced) { Write-Host "$line Waiting." -ForegroundColor Yellow; $announced = $key }
+    Start-Sleep -Seconds 20
+  }
 }
 
 function Invoke-DocsChecks {
@@ -205,7 +306,7 @@ function Invoke-DocsChecks {
     $mount = $gate -replace '\\', '/'
     # The documentation checks read files; the display packages make no difference to them, so
     # they run in the desktop image whatever preset was asked for.
-    $docsArgs = @('run', '--rm', '-v', "${SrcVolume}:/src", '-v', "${mount}:/gate:ro", '-w', '/src',
+    $docsArgs = @('run', '--rm', '--label', "$RoleLabel=docs", '-v', "${SrcVolume}:/src", '-v', "${mount}:/gate:ro", '-w', '/src',
                   '-e', 'LANG=C.UTF-8', (Get-ImageTag 'desktop'), 'bash', '-lc',
                   'tools/docs-gate.sh --files-from /gate/files.txt --messages-from /gate/messages.txt && tools/docs-check.sh')
     & docker @docsArgs
@@ -217,14 +318,15 @@ function Invoke-Preset([string]$name) {
   $lines = @()
   $lines += 'set -o pipefail'
   if ($Rebuild) { $lines += "rm -rf /src/build/$name" }
-  # FETCHCONTENT_BASE_DIR moves the downloaded dependencies out of build/<preset>/_deps and into
-  # the second volume, one directory per preset (the dependencies' *build* directories live
-  # there too and a Debug tree cannot share one with a Release tree). -Rebuild then costs a
-  # compile and not a 700 MB download, and a warm run never touches the network.
+  # The dependencies' *sources* come from the machine-wide cache at /fetch
+  # (tools/ci/fetch-cache.cmake, keyed by the pins), so nothing already fetched by any checkout is
+  # fetched again. Their *build* directories stay in this checkout's second volume, one directory
+  # per preset, because a Debug tree cannot share one with a Release tree: -Rebuild then costs an
+  # engine compile and not a third-party one.
   #
-  # FETCHCONTENT_UPDATES_DISCONNECTED stops the git-based dependencies re-running `git fetch` on
-  # every reconfigure: the tags are pinned, so a fetch can only cost time and a network.
-  $lines += "cmake --preset $name -DFETCHCONTENT_BASE_DIR=/deps/$name -DFETCHCONTENT_UPDATES_DISCONNECTED=ON"
+  # FETCHCONTENT_UPDATES_DISCONNECTED stops a git-based dependency re-running `git fetch` on a
+  # reconfigure should one ever be populated the ordinary way (a configure without the cache).
+  $lines += "cmake --preset $name -DFETCHCONTENT_BASE_DIR=/deps/$name -DFETCHCONTENT_UPDATES_DISCONNECTED=ON $FetchCacheArgs"
   # -k 0 is ci.yml's: keep going after a failure so one run reports every error in the tree
   # rather than the first file Ninja happened to reach.
   $lines += "cmake --build --preset $name -j $Jobs -- -k 0"
@@ -241,14 +343,16 @@ function Invoke-Preset([string]$name) {
   Ensure-Image $target
   $image = Get-ImageTag $target
 
-  Write-Step "$name (jobs=$Jobs, container $target$(if ($Test) { ', with tests' }))"
+  Write-Step "$name (jobs=$Jobs, container $target$(if ($Test) { ', with tests' })$(if ($Offline) { ', no network' }))"
   $started = [DateTime]::UtcNow
-  $runArgs = @('run') + (Get-RunArgs) + @($image, 'bash', '-lc', $runScript)
+  $script:CurrentContainer = "engine-linux-$VolumeId-$PID-$name"
+  $runArgs = @('run', '--name', $script:CurrentContainer) + (Get-RunArgs 'build') + @($image, 'bash', '-lc', $runScript)
   # The compiler's diagnostics are the product of this script, so they go to the caller's
   # streams as they arrive. The status therefore cannot be this function's return value — that
   # is its whole output stream — and is left in a script-scoped variable instead.
   & docker @runArgs
   $script:PresetStatus = $LASTEXITCODE
+  $script:CurrentContainer = $null
   $elapsed = [DateTime]::UtcNow - $started
   $verdict = if ($script:PresetStatus -eq 0) { 'ok' } else { "FAILED ($script:PresetStatus)" }
   $colour = if ($script:PresetStatus -eq 0) { 'Green' } else { 'Red' }
@@ -261,11 +365,11 @@ function Invoke-Shell {
   $target = Get-TargetForPreset $(if ($Preset -eq 'all') { $AllPresets[0] } else { $Preset })
   Ensure-Image $target
   $image = Get-ImageTag $target
-  Write-Step "shell in $image ($SrcVolume at /src, $DepsVolume at /deps)"
+  Write-Step "shell in $image ($SrcVolume at /src, $DepsVolume at /deps, $FetchVolume at /fetch)"
   # -it only when there is a terminal to attach: docker refuses `-t` with redirected input, and
   # "the input device is not a TTY" is a poor way to learn that this switch wants a console.
   $tty = if ([Console]::IsInputRedirected) { @() } else { @('-it') }
-  $runArgs = @('run') + $tty + (Get-RunArgs) + @($image, 'bash')
+  $runArgs = @('run') + $tty + (Get-RunArgs 'shell') + @($image, 'bash')
   & docker @runArgs
   exit $LASTEXITCODE
 }
@@ -287,6 +391,8 @@ function Invoke-Prune {
   }
   Write-Host 'The images are shared between checkouts and are left alone; remove them with'
   Write-Host "  docker image rm $(Get-ImageTag 'desktop') $(Get-ImageTag 'headless')"
+  Write-Host "So is the dependency cache, $FetchVolume; every checkout's next configure refetches if it goes:"
+  Write-Host "  docker volume rm $FetchVolume"
   exit $failed
 }
 
@@ -301,21 +407,62 @@ Ensure-Volumes
 # The sync only needs rsync, which both targets have, so it runs in whichever image the first
 # preset wants and a headless-only run never builds the desktop one.
 $syncTarget = Get-TargetForPreset $targets[0]
-if ($Sync -or $Docs -or $Shell) { Ensure-Image $syncTarget }
-if ($Sync) { Invoke-Sync (Get-ImageTag $syncTarget) }
-if ($Docs) { Ensure-Image 'desktop'; Invoke-DocsChecks }
-if ($Shell) { Invoke-Shell }
+
+# A shell and the documentation checks are not builds: they take no lock, and their containers
+# are labelled so that a build does not wait for them either.
+if ($Docs -or $Shell) {
+  Ensure-Image $syncTarget
+  if ($Sync) { Invoke-Sync (Get-ImageTag $syncTarget) }
+  if ($Docs) { Ensure-Image 'desktop'; Invoke-DocsChecks }
+  if ($Shell) { Invoke-Shell }
+}
+
+# --- the build lock --------------------------------------------------------------------------
+#
+# Taken before anything that costs the machine: the image build, the sync and every preset. The
+# lease is short and refreshed from a background thread while the build runs, so a build whose
+# script is killed holds the machine for ten minutes, not for as long as the build would have
+# taken. On a machine without the lock's directory there is nobody to coordinate with; the build
+# runs unlocked and says so.
+$LockPath = Get-MachineLockPath -Kind linux-build
+$LockTimeoutMinutes = 240
+$purpose = "linux-build $($targets -join ',')$(if ($Test) { ' -Test' }) in $Root"
+$lock = Enter-MachineLock -Path $LockPath -Purpose $purpose -LeaseMinutes 10 -Wait:(-not $NoWait) `
+                          -TimeoutMinutes $LockTimeoutMinutes -Label 'linux-build'
+switch ($lock.Outcome) {
+  'NoDirectory' { Write-Warning "linux-build: $(Split-Path -Parent $LockPath) does not exist; building without the machine-wide lock" }
+  'Busy' { Write-Host "linux-build: another build holds the lock: $(Format-MachineLockHolder $lock.Holder)" -ForegroundColor Yellow; exit 2 }
+  'TimedOut' { Write-Host "linux-build: gave up after $LockTimeoutMinutes minutes; still held by $(Format-MachineLockHolder $lock.Holder)" -ForegroundColor Red; exit 3 }
+}
+$heartbeat = if ($lock.Handle) { Start-MachineLockHeartbeat -Handle $lock.Handle } else { $null }
 
 $results = [ordered]@{}
 $overall = 0
-foreach ($p in $targets) {
-  $script:PresetStatus = 0
-  Invoke-Preset $p
-  $results[$p] = $script:PresetStatus
-  if ($script:PresetStatus -ne 0 -and $overall -eq 0) { $overall = $script:PresetStatus }
+try {
+  if (-not (Wait-BlockingContainers $LockTimeoutMinutes)) {
+    $overall = 2
+  } else {
+    Ensure-Image $syncTarget
+    if ($Sync) { Invoke-Sync (Get-ImageTag $syncTarget) }
+    foreach ($p in $targets) {
+      $script:PresetStatus = 0
+      Invoke-Preset $p
+      $results[$p] = $script:PresetStatus
+      if ($script:PresetStatus -ne 0 -and $overall -eq 0) { $overall = $script:PresetStatus }
+    }
+  }
+} finally {
+  # Ctrl+C lands here with a container still compiling; the lock must not be released while it
+  # is, or the next build starts beside it.
+  if ($script:CurrentContainer) {
+    Write-Host "linux-build: removing $($script:CurrentContainer)" -ForegroundColor Yellow
+    & docker rm -f $script:CurrentContainer 2>&1 | Out-Null
+  }
+  Stop-MachineLockHeartbeat -Job $heartbeat
+  Exit-MachineLock -Handle $lock.Handle
 }
 
-if ($targets.Count -gt 1) {
+if ($targets.Count -gt 1 -and $results.Count -gt 0) {
   Write-Host ''
   Write-Step 'summary'
   foreach ($k in $results.Keys) {
