@@ -3,6 +3,7 @@
 - `test-scenes/` deterministic reference scenes (representative and pathological), versioned with the engine, each holding what to load, how to draw it, how many samples the reference spends, and the FLIP it is allowed to differ by. `tools/ci/reference-compare.ps1` is the gate over them; `test-scenes/README.md` is the format.
 - `golden/` golden images and metrics by scene × resolution × GPU class. `golden/local/` is ignored by git.
 - `migration-corpus/` old documents and saves that every schema migration must still load.
+- `generation/` subject lists for `tools/generate.ps1` ([docs/content-generation.md](../docs/content-generation.md)): the text an image model is asked for, with a name, a category and a rough size per subject. The lists are committed so a generated set can be regenerated; **what they generate never is** — images, meshes and their provenance sidecars live under the local root outside the repository. `e10-desert-props.json` is experiment E10's twenty Desert Survival props.
 - `samples/` permissively licensed sample assets (Khronos glTF samples, CC0 and CC-BY only), fetched by `tools/fetch-samples.ps1` at a pinned commit and ignored by git; `samples/LICENSES.md` records each model's license. `engine-view --mesh content/samples/Suzanne/Suzanne.gltf` renders one.
 
 `golden/` and `migration-corpus/` are empty until their consumers exist.

@@ -71,6 +71,15 @@ if(ENGINE_PWSH)
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
   set_tests_properties(tools.new_capability PROPERTIES LABELS "tools")
 
+  # The generator-service tool (docs/content-generation.md), offline: the ComfyUI workflow
+  # conversion against a synthetic /object_info, and the provenance sidecar through the Tripo
+  # folder backend, which needs no service. Nothing here reaches a network or spends a credit.
+  add_test(NAME tools.generate
+    COMMAND "${ENGINE_PWSH}" -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_SOURCE_DIR}/tools/generate.Tests.ps1"
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+  set_tests_properties(tools.generate PROPERTIES LABELS "tools")
+
   # "Documentation moves with the code" (AGENTS.md), over this tree: a module has a page, an ADR
   # is numbered and indexed, and every link resolves. It reads files, so it runs under every
   # preset including the minimal ones, where the documentation is the same documentation.
@@ -87,7 +96,7 @@ if(ENGINE_PWSH)
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
   set_tests_properties(tools.docs_check PROPERTIES LABELS "tools")
 else()
-  message(WARNING "pwsh not found; lint.banned_patterns, tools.lint, tools.new_capability, docs_check, and tools.docs_check tests not registered")
+  message(WARNING "pwsh not found; lint.banned_patterns, tools.lint, tools.new_capability, tools.generate, docs_check, and tools.docs_check tests not registered")
 endif()
 
 # The CI documentation gate is bash, because it runs on the hosted Linux runner
