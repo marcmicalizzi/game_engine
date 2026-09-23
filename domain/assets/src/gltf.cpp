@@ -1034,4 +1034,13 @@ bool repair_uv_degenerate_triangles(MeshData& mesh, geometry::UvRepairReport& re
   return true;
 }
 
+u32 weld_vertices(MeshData& mesh) {
+  // Every per-vertex stream `MeshData` owns, and nothing is optional here: the weld takes part in
+  // a stream only when it is parallel to the positions (skin) or non-empty (morph), so passing an
+  // absent one costs nothing, while leaving a present one out would leave it in the old numbering.
+  return geometry::weld_vertices(mesh.positions, mesh.normals, mesh.uvs,
+                                 std::span<u32>(mesh.indices.data(), mesh.indices.size()),
+                                 &mesh.skin_bindings, &mesh.morph);
+}
+
 }  // namespace engine::assets

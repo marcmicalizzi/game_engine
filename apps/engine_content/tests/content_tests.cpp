@@ -126,6 +126,10 @@ struct CubeOptions {
   // A face whose four UVs are one point: an atlas island of no area, the defect the content
   // build's UV repair exists for (geometry.md, "UV-degenerate triangles: the repair"). -1: none.
   i32 point_uv_face = -1;
+  // The index buffer names the faces last to first. The weld numbers vertices by first use, so
+  // this makes it renumber every one of them — which the vertex order of the default cube never
+  // does, and which is what a builder that leaves a stream out of the weld gets wrong.
+  bool reverse_faces = false;
 };
 
 // The six base colors the generated materials cycle through; the first is the textured one.
@@ -179,7 +183,8 @@ bool write_cube_glb(const std::string& path, const CubeOptions& options = {}) {
       put_f32(bin, v);
   }
   const u32 index_offset = static_cast<u32>(bin.size());
-  for (u32 f = 0; f < 6; ++f) {
+  for (u32 k = 0; k < 6; ++k) {
+    const u32 f = options.reverse_faces ? 5 - k : k;
     const u16 base = static_cast<u16>(f * 4);
     const u16 tris[6] = {base, static_cast<u16>(base + 1), static_cast<u16>(base + 2),
                          base, static_cast<u16>(base + 2), static_cast<u16>(base + 3)};
@@ -391,8 +396,7 @@ bool merged_source_indices(const std::string& mesh_path, Vector<u32>& out) {
   assets::MeshData mesh;
   std::string error;
   if (!assets::load_gltf(mesh_path, mesh, &error)) return false;
-  geometry::weld_vertices(mesh.positions, mesh.normals, mesh.uvs,
-                          std::span<u32>(mesh.indices.data(), mesh.indices.size()));
+  assets::weld_vertices(mesh);  // the builder's own weld, so the indices are the ones it clustered
   const u32 vertices = mesh.positions.size();
   u32 base = 0;
   for (const assets::Primitive& primitive : mesh.primitives) {
@@ -659,6 +663,55 @@ TEST_CASE("engine-content: --no-morph builds the container without the source's 
   CHECK(number(info_without.result, "morph_channels") == 0);
   CHECK(number(info_without.result, "morph_deltas") == 0);
   CHECK(number(b.result, "bytes") < number(a.result, "bytes"));
+}
+
+// The count above cannot tell a delta on the right vertex from one on the wrong vertex, and the
+// default cube could not have shown the difference anyway: every primitive's vertices come out of
+// the weld in the order they went in. With the faces indexed last to first the weld renumbers all
+// of them, and until cluster cache version 11 — when the builders did not hand the weld the
+// channels — the +x face's four deltas landed on the -z face (geometry.md, "Morph channels"). So
+// this asks the container where they are: on exactly the four vertices whose normal is +x, and
+// on nothing else.
+TEST_CASE("engine-content: a morph delta lands on its own vertex when the weld renumbers") {
+  const test::TempDir tmp("engine_content_morph_place");
+  const std::filesystem::path dir = tmp.native();
+  const std::string mesh = slashes(dir / "morph_cube_reversed.glb");
+  CubeOptions options;
+  options.morph = true;
+  options.reverse_faces = true;
+  REQUIRE(write_cube_glb(mesh, options));
+  const std::string out = slashes(dir / "reversed.clusters");
+  const Run run = content({"build", mesh, out});
+  REQUIRE_MESSAGE(run.exit_code == 0, run.output);
+
+  geometry::ClusterFileData data;
+  std::string error;
+  REQUIRE_MESSAGE(geometry::read_cluster_file(out, data, &error), error);
+  const geometry::ClusterMesh& built = data.mesh.mesh;
+  REQUIRE(built.morph_channels.size() == 1);
+  u32 on_face = 0;    // +x vertices carrying the channel's quarter
+  u32 off_face = 0;   // any other vertex carrying anything
+  u32 face_bare = 0;  // +x vertices carrying nothing
+  for (u32 c = 0; c < built.clusters.size(); ++c) {
+    for (u32 local = 0; local < built.clusters[c].vertex_count; ++local) {
+      const u32 v = built.clusters[c].vertex_offset + local;
+      const Vec3 normal = geometry::decode_normal_oct(built.attributes[v].normal_oct);
+      const bool plus_x = normal.x > 0.999f;
+      Vec3 delta;
+      Vec3 normal_delta;
+      const bool stored = geometry::morph_delta_at(built, c, 0, local, delta, normal_delta);
+      if (plus_x && stored && length(delta - Vec3{0.25f, 0.0f, 0.0f}) < 1.0e-4f) {
+        ++on_face;
+      } else if (plus_x) {
+        ++face_bare;
+      } else if (stored) {
+        ++off_face;
+      }
+    }
+  }
+  CHECK(on_face == 4);
+  CHECK(face_bare == 0);
+  CHECK(off_face == 0);
 }
 
 TEST_CASE("engine-content: the same mesh builds the same bytes whatever --jobs says") {

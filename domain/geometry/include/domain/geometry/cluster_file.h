@@ -443,7 +443,17 @@ bool read_cluster_file_identity(std::string_view path, u64& source_hash, u64& bu
 //    at 9 from a source with such a triangle keeps an atlas island of zero texels that no LOD
 //    level can sample, and its vertex and index streams differ from what a build makes now. A
 //    source with none builds the same bytes as before and merely moves to a new cache path.
-inline constexpr u32 k_cluster_cache_version = 10;
+// 11: 8 was, like 4, the format's half and not the builders'. `weld_vertices` took the morph
+//    channels as an optional stream, but neither `engine-content build` nor `engine-view --mesh`
+//    passed them, so the weld renumbered every vertex while the channels kept the old numbers:
+//    on any source whose weld moved a vertex — dropping an unreferenced one, merging a duplicate,
+//    or only renumbering by first use, which is most indexed files — the deltas landed on
+//    whichever vertex took the old number, and a delta whose old number was past the welded count
+//    was dropped. MorphStressTest had its deltas wrong on 1,124 of its 1,528 vertices. Both
+//    builders now call `assets::weld_vertices`, which hands the weld every stream `MeshData` owns,
+//    so an entry built at 10 from a source with morph targets is the wrong mesh; a source without
+//    any builds the same bytes and moves to a new cache path.
+inline constexpr u32 k_cluster_cache_version = 11;
 
 // The cache key: the source's content hash (`assets::source_mesh_hash`) mixed with the build
 // options and the version above. `page_bytes` is the streaming page target the container was

@@ -103,6 +103,124 @@ f32 largest_delta(const MorphFixtureMesh& source) {
   return largest;
 }
 
+// A strip of four unit quads along x (x = 0..4, y = 0..1, facing +z) written as a triangle soup
+// after one vertex nothing references: the shape an unindexing exporter writes, and one that
+// makes a single weld merge, split, renumber and drop at once. Every copy of a grid point agrees
+// on position, normal and UV, so the two channels alone decide what may merge:
+//
+//   lift  moves the x = 1 and x = 2 columns up, identically at every copy, with normal deltas:
+//         the copies must merge.
+//   tear  moves the x = 2 column's copies from the first two quads by -x and those from the last
+//         two by +x, with no normal deltas: they differ in nothing else, so only the deltas keep
+//         them apart — a morph seam, which merged would open a hole when the channel plays.
+//
+// The unreferenced vertex carries a `lift` delta of its own, so dropping it moves every index
+// after it, and a weld that is not handed the channels leaves no delta on its vertex.
+struct SoupStrip {
+  Vector<Vec3> positions;
+  Vector<Vec3> normals;
+  Vector<Vec2> uvs;
+  Vector<u32> indices;
+  Vector<MorphChannelSource> morph;
+};
+
+SoupStrip soup_strip() {
+  SoupStrip m;
+  auto add = [&](Vec3 p) {
+    m.positions.push_back(p);
+    m.normals.push_back(Vec3{0.0f, 0.0f, 1.0f});
+    m.uvs.push_back(Vec2{p.x * 0.25f, p.y});
+  };
+  add(Vec3{9.0f, 9.0f, 0.0f});  // referenced by nothing
+  for (u32 q = 0; q < 4; ++q) {
+    const f32 x = static_cast<f32>(q);
+    const Vec3 corners[6] = {Vec3{x, 0, 0}, Vec3{x + 1.0f, 0, 0}, Vec3{x + 1.0f, 1, 0},
+                             Vec3{x, 0, 0}, Vec3{x + 1.0f, 1, 0}, Vec3{x, 1, 0}};
+    for (const Vec3& c : corners) {
+      m.indices.push_back(m.positions.size());
+      add(c);
+    }
+  }
+  MorphChannelSource lift;
+  lift.name = "lift";
+  MorphChannelSource tear;
+  tear.name = "tear";
+  for (u32 v = 0; v < m.positions.size(); ++v) {  // quads 0 and 1 are vertices 1..12
+    const f32 x = m.positions[v].x;
+    if (v == 0 || x == 1.0f || x == 2.0f) {
+      lift.vertices.push_back(v);
+      lift.position_deltas.push_back(Vec3{0.0f, 0.0f, 0.5f});
+      lift.normal_deltas.push_back(Vec3{0.2f, 0.0f, -0.02f});
+    }
+    if (v != 0 && x == 2.0f) {
+      tear.vertices.push_back(v);
+      tear.position_deltas.push_back(Vec3{v <= 12 ? -0.3f : 0.3f, 0.0f, 0.0f});
+    }
+  }
+  m.morph.push_back(std::move(lift));
+  m.morph.push_back(std::move(tear));
+  return m;
+}
+
+// Every (cluster vertex, source vertex it stands for, channel) of a mesh built from a welded
+// source, compared with what the **unwelded** source says about that source vertex. The weld's
+// map from source to welded vertex is read off the index buffer, which it rewrites in place, so
+// nothing of the weld's own bookkeeping sits between the two sides of the comparison.
+struct Placement {
+  u32 compared = 0;  // (cluster vertex, source vertex, channel) triples
+  u32 wrong = 0;     // stored delta further from the source's than the stream's precision
+  f32 worst = 0.0f;  // largest |stored - source| position delta
+};
+
+Placement check_placement(const SoupStrip& source, const Vector<u32>& welded_indices,
+                          const ClusterMesh& mesh) {
+  Vector<u32> welded_of(source.positions.size(), ~0u);
+  for (u32 i = 0; i < source.indices.size(); ++i)
+    welded_of[source.indices[i]] = welded_indices[i];
+  Placement out;
+  for (u32 c = 0; c < mesh.clusters.size(); ++c) {
+    for (u32 local = 0; local < mesh.clusters[c].vertex_count; ++local) {
+      const u32 welded = mesh.vertex_source[mesh.clusters[c].vertex_offset + local];
+      for (u32 o = 0; o < source.positions.size(); ++o) {
+        if (welded_of[o] != welded) continue;
+        for (u32 k = 0; k < source.morph.size(); ++k) {
+          const MorphChannelSource& channel = source.morph[k];
+          Vec3 want_p;
+          Vec3 want_n;
+          const auto at = std::lower_bound(channel.vertices.begin(), channel.vertices.end(), o);
+          if (at != channel.vertices.end() && *at == o) {
+            const u32 i = static_cast<u32>(at - channel.vertices.begin());
+            want_p = channel.position_deltas[i];
+            if (!channel.normal_deltas.empty()) want_n = channel.normal_deltas[i];
+          }
+          Vec3 got_p;
+          Vec3 got_n;
+          morph_delta_at(mesh, c, k, local, got_p, got_n);
+          // The stream's precision is half a step of the channel's own scale per axis; a
+          // misplaced delta is off by a whole delta.
+          const f32 step =
+              k < mesh.morph_channels.size() ? mesh.morph_channels[k].position_scale : 0.0f;
+          const f32 normal_step =
+              k < mesh.morph_channels.size() ? mesh.morph_channels[k].normal_scale : 0.0f;
+          const f32 error = length(got_p - want_p);
+          out.worst = std::max(out.worst, error);
+          ++out.compared;
+          if (error > step + 1.0e-6f || length(got_n - want_n) > normal_step + 1.0e-6f) ++out.wrong;
+        }
+      }
+    }
+  }
+  return out;
+}
+
+AttributeSource source_of(const SoupStrip& mesh) {
+  AttributeSource attributes;
+  attributes.normals = std::span<const Vec3>(mesh.normals.data(), mesh.normals.size());
+  attributes.uvs = std::span<const Vec2>(mesh.uvs.data(), mesh.uvs.size());
+  attributes.morph = std::span<const MorphChannelSource>(mesh.morph.data(), mesh.morph.size());
+  return attributes;
+}
+
 }  // namespace
 
 TEST_CASE("morph fixture: channels are sparse, deterministic, and disagree across the seam") {
@@ -242,6 +360,68 @@ TEST_CASE("morph: the weld remaps a channel's vertices and the result still buil
   REQUIRE_MESSAGE(
       build_clusters(positions, indices, ClusterBuildOptions{}, mesh, &error, attributes), error);
   CHECK_MESSAGE(validate_clusters(mesh, indices, ClusterBuildOptions{}, &error), error);
+}
+
+// The case above checks the remapped channels' shape; this one checks where the deltas *land*:
+// through the weld and the LOD builder, every cluster vertex carries, for every channel, the
+// delta of every source vertex it stands for. Until cluster cache version 11 neither builder
+// passed the channels to the weld, and on the Khronos samples that put MorphStressTest's deltas
+// on the wrong vertices at 1,124 of its 1,528 (geometry.md, "Morph channels"); the builders'
+// half is `assets::weld_vertices` and its test, this is the weld's own.
+TEST_CASE("morph: the weld keeps every source vertex's deltas on the vertex that stands for it") {
+  const SoupStrip source = soup_strip();
+  REQUIRE(source.positions.size() == 25);
+
+  SoupStrip welded = source;
+  const u32 count = weld_vertices(welded.positions, welded.normals, welded.uvs,
+                                  std::span<u32>(welded.indices.data(), welded.indices.size()),
+                                  nullptr, &welded.morph);
+  // Ten grid points. The copies at x = 1 agree on their deltas and merge into one vertex a point;
+  // the copies at x = 2 disagree about `tear` across the middle and stay two a point; the
+  // unreferenced vertex is gone.
+  CHECK(count == 12);
+  u32 at_x1 = 0;
+  u32 at_x2 = 0;
+  for (const Vec3& p : welded.positions) {
+    at_x1 += p.x == 1.0f ? 1u : 0u;
+    at_x2 += p.x == 2.0f ? 1u : 0u;
+  }
+  CHECK(at_x1 == 2);
+  CHECK(at_x2 == 4);
+
+  ClusterLodMesh dag;
+  std::string error;
+  REQUIRE_MESSAGE(build_cluster_lod(welded.positions, welded.indices, ClusterLodOptions{}, dag,
+                                    &error, source_of(welded)),
+                  error);
+  CHECK_MESSAGE(validate_cluster_lod(dag, welded.indices, &error), error);
+  const Placement placed = check_placement(source, welded.indices, dag.mesh);
+  MESSAGE("soup strip: 25 source vertices welded to " << count << ", " << placed.compared
+                                                      << " (cluster vertex, source vertex, "
+                                                         "channel) triples, "
+                                                      << placed.wrong << " wrong");
+  CHECK(placed.compared == 48);  // 24 referenced corners, two channels each
+  CHECK(placed.wrong == 0);
+  CHECK(placed.worst < 1.0e-4f);
+
+  // The fixture sees the defect it exists for: welded the way both builders welded before cache
+  // version 11 — the channels not handed over, so left in the old numbering — the same mesh has
+  // the seam merged and deltas on the wrong vertices. Without this, a later edit could make the
+  // fixture's weld the identity and the assertions above would pass whatever the weld did.
+  SoupStrip unfixed = source;
+  const u32 unfixed_count =
+      weld_vertices(unfixed.positions, unfixed.normals, unfixed.uvs,
+                    std::span<u32>(unfixed.indices.data(), unfixed.indices.size()));
+  CHECK(unfixed_count == 10);
+  ClusterLodMesh unfixed_dag;
+  REQUIRE_MESSAGE(build_cluster_lod(unfixed.positions, unfixed.indices, ClusterLodOptions{},
+                                    unfixed_dag, &error, source_of(unfixed)),
+                  error);
+  const Placement misplaced = check_placement(source, unfixed.indices, unfixed_dag.mesh);
+  MESSAGE("the same, welded without the channels: " << misplaced.wrong << " of "
+                                                    << misplaced.compared << " wrong, worst "
+                                                    << misplaced.worst);
+  CHECK(misplaced.wrong * 2 >= misplaced.compared);  // half of them: 24 of 48
 }
 
 TEST_CASE("morph: every LOD level carries the source vertex's deltas") {

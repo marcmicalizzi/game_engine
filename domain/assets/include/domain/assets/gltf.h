@@ -237,4 +237,23 @@ geometry::AttributeSource attribute_source(const MeshData& mesh) noexcept;
 bool repair_uv_degenerate_triangles(MeshData& mesh, geometry::UvRepairReport& report,
                                     std::string* error = nullptr);
 
+// The weld both builders of a cluster container run, after the UV repair and before clustering:
+// `geometry::weld_vertices` over **every per-vertex stream the mesh owns** — positions, normals,
+// UVs, skin bindings and morph channels. Two vertices merge only when they agree on all of them,
+// so two coincident vertices whose deltas differ stay two vertices (a morph seam stays a seam);
+// the streams are compacted, the indices rewritten in place (primitive ranges do not move),
+// unreferenced vertices dropped, and every morph channel's vertex list renumbered to match.
+// Returns the new vertex count.
+//
+// Why one function over the struct rather than each caller spelling out the streams: a stream the
+// weld is not handed is not merely left unwelded, it is left **in the old numbering** while
+// everything else moves. Until cluster cache version 11 both builders called
+// `geometry::weld_vertices` themselves with the skin bindings and without the morph channels, so
+// on a mesh whose weld renumbered a vertex its deltas landed on whichever vertex took the old
+// number, and a delta whose old number was past the welded count was dropped (docs/subsystems/
+// geometry.md, "Morph channels"). The skin bindings had gone missing from both call sites the
+// same way one release earlier. A stream `MeshData` gains is added here, once, and both builders
+// have it.
+u32 weld_vertices(MeshData& mesh);
+
 }  // namespace engine::assets

@@ -345,16 +345,14 @@ bool load_source_mesh(const std::string& path, const SceneDesc& desc, SourceMesh
         log::field("dropped", uv_repair.dropped), log::field("unrepaired", uv_repair.unrepaired));
   }
   // Exporters duplicate vertices freely; welding the identical ones gives the cluster builder
-  // shared vertices to fill clusters with and the LOD builder edges to collapse. **The skin
-  // bindings are part of the weld key**, so two duplicates that agree on position, normal and UV
-  // but disagree on weights stay two vertices; merging them would silently hand one surface the
-  // other's deformation, and the weld runs before clustering, so there would be no later point
-  // at which the loss could be noticed ([geometry](geometry.md), "Skinned meshes").
+  // shared vertices to fill clusters with and the LOD builder edges to collapse. The weld is
+  // `assets::weld_vertices`, the one `engine-content build` calls, because the two write and read
+  // the same cache entries: it hands the weld **every per-vertex stream the mesh owns**, so two
+  // duplicates that disagree on skin weights or morph deltas stay two vertices and the morph
+  // channels are renumbered with the vertices rather than left in the old numbering
+  // ([geometry](geometry.md), "Skinned meshes" and "Morph channels").
   const u32 loaded_vertices = out.data.positions.size();
-  const u32 welded_vertices =
-      geometry::weld_vertices(out.data.positions, out.data.normals, out.data.uvs,
-                              std::span<u32>(out.data.indices.data(), out.data.indices.size()),
-                              out.data.skin_bindings.empty() ? nullptr : &out.data.skin_bindings);
+  const u32 welded_vertices = assets::weld_vertices(out.data);
   ENGINE_LOG_INFO(
       log_renderer, "mesh loaded", log::field("path", path), log::field("from", "gltf"),
       log::field("cache", out.cache), log::field("vertices", loaded_vertices),

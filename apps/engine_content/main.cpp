@@ -469,14 +469,13 @@ bool build_one(const std::string& input, const std::string& output, const MeshOp
   const u32 loaded_vertices = mesh.positions.size();
   u32 vertices = loaded_vertices;
   if (options.weld) {
-    // The skin bindings are part of the weld key when the source has them, so two coincident
-    // vertices with different weights stay two vertices — merging them would hand one surface the
-    // other's deformation, before clustering and therefore beyond noticing
-    // ([geometry](geometry.md), "Skinned meshes"). `engine-view --mesh` welds identically, because
-    // the two apps share cache entries and what one writes the other has to find.
-    vertices = geometry::weld_vertices(mesh.positions, mesh.normals, mesh.uvs,
-                                       std::span<u32>(mesh.indices.data(), mesh.indices.size()),
-                                       mesh.skin_bindings.empty() ? nullptr : &mesh.skin_bindings);
+    // `assets::weld_vertices` hands the weld every per-vertex stream the mesh owns — the skin
+    // bindings and the morph channels as well as the positions, normals and UVs — so two
+    // coincident vertices that disagree about any of them stay two vertices, and the channels are
+    // renumbered with the vertices instead of being left in the old numbering
+    // ([geometry](geometry.md), "Morph channels"). `engine-view --mesh` calls the same function,
+    // because the two apps share cache entries and what one writes the other has to find.
+    vertices = assets::weld_vertices(mesh);
   }
   ENGINE_LOG_INFO(log_content, "mesh loaded", log::field("path", input),
                   log::field("vertices", loaded_vertices), log::field("welded", vertices),
