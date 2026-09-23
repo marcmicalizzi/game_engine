@@ -446,6 +446,12 @@ written on.
 
 None of the six was fixed with a pragma, a `NOLINT`, a lowered warning level, or a disabled test.
 
+The second row came back on 2026-09-23 in a spelling that **reads as explicit**: `f64{v}` for a
+float `v`, twelve lines of `domain/geometry/src/uv_repair.cpp`, merged without this gate and
+failing `linux-clang-debug`. To clang a braced functional cast from `float` to `double` is still an
+implicit promotion, and `-Wdouble-promotion` counts it; MSVC says nothing. `static_cast<f64>(v)` is
+the spelling every compiler here accepts.
+
 ## What the first v3 runs found
 
 Until 2026-09-22 no x86-64-v3 Linux preset had ever run a test here: `/proc/cpuinfo`'s flags line is
@@ -503,6 +509,11 @@ is on the Windows-container engine. `docker version --format '{{.Server.Os}}'` m
 This machine also has an old, broken `Ubuntu` WSL registration that makes WSL look unwell; it is
 not Docker's, and neither `wsl --shutdown` nor restarting Docker Desktop is ever the fix here —
 both kill every other checkout's build.
+
+**`unable to resolve docker endpoint: context "desktop-linux": open ...\.docker\contexts\meta\...\meta.json: The process cannot access the file because it is being used by another process`.**
+Another Docker client on the machine had the context file open at the moment this one read it — a
+Windows sharing violation, not a daemon that is down. Run the command again (it passed on the
+second try on 2026-09-23); this is not a reason to touch Docker Desktop or WSL either.
 
 **`linux-build: waiting; held by ...`.** Another build has the machine; this one starts when it
 finishes. The line names the presets and the checkout. If the holder is gone for good, its lease

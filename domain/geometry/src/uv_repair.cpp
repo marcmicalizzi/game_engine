@@ -69,9 +69,15 @@ Vec2 stored(Vec2 uv) noexcept { return decode_half2(encode_half2(uv)); }
 
 // Twice the area over the longest edge: the triangle's smallest height, in the positions' units.
 f64 thinness(Vec3 a, Vec3 b, Vec3 c) noexcept {
-  const f64 e0[3] = {f64{b.x} - f64{a.x}, f64{b.y} - f64{a.y}, f64{b.z} - f64{a.z}};
-  const f64 e1[3] = {f64{c.x} - f64{a.x}, f64{c.y} - f64{a.y}, f64{c.z} - f64{a.z}};
-  const f64 e2[3] = {f64{c.x} - f64{b.x}, f64{c.y} - f64{b.y}, f64{c.z} - f64{b.z}};
+  const f64 e0[3] = {static_cast<f64>(b.x) - static_cast<f64>(a.x),
+                     static_cast<f64>(b.y) - static_cast<f64>(a.y),
+                     static_cast<f64>(b.z) - static_cast<f64>(a.z)};
+  const f64 e1[3] = {static_cast<f64>(c.x) - static_cast<f64>(a.x),
+                     static_cast<f64>(c.y) - static_cast<f64>(a.y),
+                     static_cast<f64>(c.z) - static_cast<f64>(a.z)};
+  const f64 e2[3] = {static_cast<f64>(c.x) - static_cast<f64>(b.x),
+                     static_cast<f64>(c.y) - static_cast<f64>(b.y),
+                     static_cast<f64>(c.z) - static_cast<f64>(b.z)};
   const f64 n[3] = {e0[1] * e1[2] - e0[2] * e1[1], e0[2] * e1[0] - e0[0] * e1[2],
                     e0[0] * e1[1] - e0[1] * e1[0]};
   const f64 twice_area = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
@@ -236,15 +242,21 @@ void refold(RunAtlas& atlas, const u32 corner[3], u32 island, UvRepairReport& re
       const Vec3 p = atlas.position[a];
       const Vec3 p0 = atlas.position[ends[0]];
       const Vec3 p1 = atlas.position[ends[1]];
-      const f64 d[3] = {f64{p1.x} - f64{p0.x}, f64{p1.y} - f64{p0.y}, f64{p1.z} - f64{p0.z}};
-      const f64 w[3] = {f64{p.x} - f64{p0.x}, f64{p.y} - f64{p0.y}, f64{p.z} - f64{p0.z}};
+      const f64 d[3] = {static_cast<f64>(p1.x) - static_cast<f64>(p0.x),
+                        static_cast<f64>(p1.y) - static_cast<f64>(p0.y),
+                        static_cast<f64>(p1.z) - static_cast<f64>(p0.z)};
+      const f64 w[3] = {static_cast<f64>(p.x) - static_cast<f64>(p0.x),
+                        static_cast<f64>(p.y) - static_cast<f64>(p0.y),
+                        static_cast<f64>(p.z) - static_cast<f64>(p0.z)};
       const f64 dd = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
       f64 t = dd > 0.0 ? (w[0] * d[0] + w[1] * d[1] + w[2] * d[2]) / dd : 0.0;
       t = std::clamp(t, 0.0, 1.0);
       const Vec2 u0 = atlas.uv[ends[0]];
       const Vec2 u1 = atlas.uv[ends[1]];
-      uv = Vec2{static_cast<f32>(f64{u0.x} + (f64{u1.x} - f64{u0.x}) * t),
-                static_cast<f32>(f64{u0.y} + (f64{u1.y} - f64{u0.y}) * t)};
+      uv = Vec2{static_cast<f32>(static_cast<f64>(u0.x) +
+                                 (static_cast<f64>(u1.x) - static_cast<f64>(u0.x)) * t),
+                static_cast<f32>(static_cast<f64>(u0.y) +
+                                 (static_cast<f64>(u1.y) - static_cast<f64>(u0.y)) * t)};
     }
     atlas.uv[a] = uv;
     atlas.label[a] = island;
@@ -257,10 +269,10 @@ void refold(RunAtlas& atlas, const u32 corner[3], u32 island, UvRepairReport& re
 }  // namespace
 
 f64 uv_area_texels(Vec2 a, Vec2 b, Vec2 c) noexcept {
-  const f64 e0x = f64{b.x} - f64{a.x};
-  const f64 e0y = f64{b.y} - f64{a.y};
-  const f64 e1x = f64{c.x} - f64{a.x};
-  const f64 e1y = f64{c.y} - f64{a.y};
+  const f64 e0x = static_cast<f64>(b.x) - static_cast<f64>(a.x);
+  const f64 e0y = static_cast<f64>(b.y) - static_cast<f64>(a.y);
+  const f64 e1x = static_cast<f64>(c.x) - static_cast<f64>(a.x);
+  const f64 e1y = static_cast<f64>(c.y) - static_cast<f64>(a.y);
   return std::fabs(e0x * e1y - e0y * e1x) * 0.5 * k_atlas_texels;
 }
 
@@ -364,7 +376,9 @@ bool repair_uv_degenerate_triangles(std::span<const Vec3> positions, Vector<Vec3
       hi = Vec3{std::max(hi.x, p.x), std::max(hi.y, p.y), std::max(hi.z, p.z)};
     }
   }
-  const f64 extent = std::max(f64{hi.x} - f64{lo.x}, std::max(f64{hi.y} - f64{lo.y}, f64{hi.z} - f64{lo.z}));
+  const f64 extent = std::max(static_cast<f64>(hi.x) - static_cast<f64>(lo.x),
+                              std::max(static_cast<f64>(hi.y) - static_cast<f64>(lo.y),
+                                       static_cast<f64>(hi.z) - static_cast<f64>(lo.z)));
   const f64 grid_step = extent > 0.0 ? extent / 65535.0 : 1.0;
 
   const u32 triangle_count = static_cast<u32>(indices.size() / 3);
