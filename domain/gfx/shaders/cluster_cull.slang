@@ -277,8 +277,16 @@ void cull_main(uint3 thread_id : SV_DispatchThreadID) {
       if (dot(plane.xyz, center) + plane.w < -radius) return;
     }
   }
-  // A non-uniform scale shears the cone open, so the test only runs where the scale is uniform.
-  if (params->cone_cull != 0 && (instance.flags & k_instance_uniform_scale) != 0) {
+  // The cone is a promise about the **rest** triangles, moved by a transform that keeps angles, so
+  // it is tested only where both hold. A non-uniform scale shears the cone open. A deformed
+  // instance — skinned, morphed, or under `--deform` — draws every position out of the frame's
+  // pool, and a turned joint can bring round a cluster whose rest-pose cone still says it faces
+  // away: trusting that cone cuts a hole in the character where it faces the viewer. Its clusters
+  // are therefore never cone-tested (docs/subsystems/geometry.md, "Normal cones"). It is checked
+  // on the instance rather than on whether this frame gave the entry a pool block, because the
+  // pool is allocated from this pass's own output.
+  if (params->cone_cull != 0 && (instance.flags & k_instance_uniform_scale) != 0 &&
+      instance.deform == k_invalid_deform) {
     const float3 apex = mul(instance.world, float4(cluster.cone_apex, 1.0)).xyz;
     const float3 axis = normalize(mul(instance.world, float4(cone_axis(cluster), 0.0)).xyz);
     if (backfacing(cluster, apex, axis, params->camera.xyz)) return;

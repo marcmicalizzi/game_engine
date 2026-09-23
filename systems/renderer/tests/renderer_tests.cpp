@@ -1762,3 +1762,282 @@ TEST_CASE("renderer: the mesh, vertex and ray paths agree on a posed frame") {
   CHECK(static_cast<f64>(coverage_differences) < 0.01 * static_cast<f64>(hardware_covered));
   CHECK(static_cast<f64>(triangle_differences) < 0.02 * static_cast<f64>(hardware_covered));
 }
+
+// ---- normal cones on a deformed instance -----------------------------------------------------
+//
+// A cluster's normal cone is fit to its **rest** triangles (geometry.md, "Normal cones"), and a
+// deformed instance draws every position out of the frame's deformed-vertex pool. A skinned limb
+// that turns far enough therefore puts a cluster in front of the camera that its rest-pose cone
+// still says faces away, and a cull pass that trusted that cone would cut a hole in the character
+// where it faces the viewer. "Culling must never change the picture" (AGENTS.md) is the statement
+// this case makes about that: the same posed frame with cones on and off, every id word and every
+// depth equal, in every raster path the cull pass feeds.
+//
+// The fixture is a ball on a joint — a head, or a wrist — bound wholly to the joint at its centre,
+// so a turn of that joint spins the ball in place and triangles that faced away at rest face the
+// camera. It is a closed sphere with narrow per-cluster cones (the tessellation the gfx cone test
+// uses), so its rest-pose picture is exactly the one cones exist to speed up. A second, rigid copy
+// stands beside it, so the same frame also shows that the cone test is still on where it is valid:
+// with cones on, the rigid ball's back half is culled and the picture does not change.
+namespace {
+
+struct SkinnedBall {
+  anim::Skeleton skeleton;
+  Vector<Vec3> positions;
+  Vector<geometry::SkinBinding> bindings;  // parallel to `positions`: all of it on the head joint
+  Vector<u32> indices;
+  static constexpr u32 k_rings = 24;
+  static constexpr u32 k_segments = 48;  // 2,208 triangles
+  static constexpr f32 k_radius = 0.5f;
+  static constexpr f32 k_height = 1.5f;  // the head joint, and the ball's centre, above the root
+};
+
+void build_skinned_ball(SkinnedBall& ball) {
+  ball.skeleton.resize(2);
+  ball.skeleton.names[0] = "root";
+  ball.skeleton.names[1] = "head";
+  ball.skeleton.parents[0] = anim::k_no_joint;
+  ball.skeleton.parents[1] = 0;
+  ball.skeleton.local_bind[0] = Transform3::identity();
+  ball.skeleton.local_bind[1] = Transform3::identity();
+  ball.skeleton.local_bind[1].position = Vec3{0.0f, SkinnedBall::k_height, 0.0f};
+  anim::compute_inverse_bind(ball.skeleton);
+
+  // A UV sphere wound counter-clockwise seen from outside, as `domain/gfx`'s cone test builds it.
+  const Vec3 centre{0.0f, SkinnedBall::k_height, 0.0f};
+  const f32 r = SkinnedBall::k_radius;
+  constexpr u32 rings = SkinnedBall::k_rings;
+  constexpr u32 segments = SkinnedBall::k_segments;
+  ball.positions.push_back(centre + Vec3{0.0f, r, 0.0f});
+  for (u32 ring = 1; ring < rings; ++ring) {
+    const f32 theta = k_pi * static_cast<f32>(ring) / static_cast<f32>(rings);
+    for (u32 s = 0; s < segments; ++s) {
+      const f32 phi = k_two_pi * static_cast<f32>(s) / static_cast<f32>(segments);
+      const Vec3 unit{std::sin(theta) * std::cos(phi), std::cos(theta),
+                      std::sin(theta) * std::sin(phi)};
+      ball.positions.push_back(centre + unit * r);
+    }
+  }
+  ball.positions.push_back(centre - Vec3{0.0f, r, 0.0f});
+  const u32 bottom = ball.positions.size() - 1;
+  // A constant, so the lambda needs no capture (Clang rejects an unneeded one as an error).
+  auto at = [](u32 ring, u32 s) { return 1 + (ring - 1) * segments + (s % segments); };
+  for (u32 s = 0; s < segments; ++s) {
+    const u32 tri[3] = {0, at(1, s + 1), at(1, s)};
+    for (const u32 i : tri)
+      ball.indices.push_back(i);
+  }
+  for (u32 ring = 1; ring + 1 < rings; ++ring) {
+    for (u32 s = 0; s < segments; ++s) {
+      const u32 a = at(ring, s);
+      const u32 b = at(ring, s + 1);
+      const u32 c = at(ring + 1, s);
+      const u32 d = at(ring + 1, s + 1);
+      const u32 quad[6] = {a, b, c, b, d, c};
+      for (const u32 i : quad)
+        ball.indices.push_back(i);
+    }
+  }
+  for (u32 s = 0; s < segments; ++s) {
+    const u32 tri[3] = {at(rings - 1, s), at(rings - 1, s + 1), bottom};
+    for (const u32 i : tri)
+      ball.indices.push_back(i);
+  }
+  const u32 joints[4] = {1, 0, 0, 0};
+  const f32 weights[4] = {1.0f, 0.0f, 0.0f, 0.0f};
+  const geometry::SkinBinding head = geometry::make_skin_binding(joints, weights);
+  ball.bindings.resize(ball.positions.size(), head);
+}
+
+// The ball as a two-instance `SceneData`: instance 0 skinned by the two joints, instance 1 the
+// same mesh rigid, beside it. Filled in by hand for the reason `make_bar_scene` is.
+bool make_ball_scene(const SkinnedBall& ball, f32 bounds_padding, SceneData& out,
+                     std::string& error) {
+  geometry::AttributeSource attributes;
+  attributes.skin =
+      std::span<const geometry::SkinBinding>(ball.bindings.data(), ball.bindings.size());
+  attributes.joint_count = ball.skeleton.joint_count();
+  if (!geometry::build_cluster_lod(
+          std::span<const Vec3>(ball.positions.data(), ball.positions.size()),
+          std::span<const u32>(ball.indices.data(), ball.indices.size()),
+          geometry::ClusterLodOptions{}, out.lod, &error, attributes)) {
+    return false;
+  }
+  geometry::ClusterMeshPart part;
+  part.cluster_count = out.lod.mesh.clusters.size();
+  part.leaf_cluster_count = out.lod.level_cluster_counts[0];
+  part.quant_origin = out.lod.mesh.quant_origin;
+  part.quant_scale = out.lod.mesh.quant_scale;
+  out.parts.push_back(part);
+  SourceMesh source;
+  source.part_material.push_back(-1);
+  source.part_of_cluster.resize(part.cluster_count, 0u);
+  out.sources.push_back(std::move(source));
+  for (u32 i = 0; i < 2; ++i) {
+    const bool skinned = i == 0;
+    gfx::InstanceDesc instance{};
+    Mat4 world = Mat4::identity();
+    world.c[3] = Vec4{static_cast<f32>(i) * 1.5f, 0.0f, 0.0f, 1.0f};
+    gfx::set_instance_transform(instance, world);
+    instance.first_pair = out.pair_count;
+    instance.bounds_padding = skinned ? bounds_padding : 0.0f;
+    out.pair_count += part.cluster_count;
+    out.instances.push_back(instance);
+    out.instance_joints.push_back(skinned ? 2u : 0u);
+    out.skinned_instances += skinned ? 1u : 0u;
+  }
+  out.max_joints = 2;
+  update_scene_bounds(out);
+  return true;
+}
+
+// The ball's skinning matrices for a turn of the head joint by `degrees` about +y.
+void ball_matrices(const SkinnedBall& ball, f32 degrees, Vector<anim::JointMatrix>& out) {
+  anim::Pose pose;
+  anim::rest_pose(ball.skeleton, pose);
+  pose.rotation[1] = quat_from_axis_angle(Vec3{0.0f, 1.0f, 0.0f}, radians(degrees));
+  Vector<Mat4> model(ball.skeleton.joint_count(), Mat4::identity());
+  anim::local_to_model(ball.skeleton, pose, std::span<Mat4>(model.data(), model.size()));
+  out.resize(ball.skeleton.joint_count());
+  anim::skinning_matrices(
+      std::span<const Mat4>(model.data(), model.size()),
+      std::span<const Mat4>(ball.skeleton.inverse_bind.data(), ball.skeleton.inverse_bind.size()),
+      std::span<anim::JointMatrix>(out.data(), out.size()));
+}
+
+}  // namespace
+
+TEST_CASE("renderer: a turned joint's clusters are not culled by their rest-pose cones") {
+  SkinnedBall ball;
+  build_skinned_ball(ball);
+  constexpr u32 k_width = 200;
+  constexpr u32 k_height = 200;
+  constexpr f32 k_turn = 150.0f;  // far enough to bring the back of the ball round, not a mirror
+
+  Vector<anim::JointMatrix> turned;
+  ball_matrices(ball, k_turn, turned);
+  const std::span<const anim::JointMatrix> joints(turned.data(), turned.size());
+  Vector<Vec3> moved(ball.positions.size());
+  anim::skin_positions(
+      std::span<const Vec3>(ball.positions.data(), ball.positions.size()),
+      std::span<const geometry::SkinBinding>(ball.bindings.data(), ball.bindings.size()), joints,
+      std::span<Vec3>(moved.data(), moved.size()));
+  f32 displacement = 0.0f;
+  for (u32 v = 0; v < moved.size(); ++v)
+    displacement = std::max(displacement, length(moved[v] - ball.positions[v]));
+  CHECK(displacement > 0.9f);  // 2 r sin(75 deg): the ball really turned
+
+  const InstanceJoints runs[2] = {{0, 2}, {0, 0}};
+  CaptureChannels channels;
+  channels.ids = true;
+  channels.depth = true;
+
+  // The witness, on the CPU and so on every machine, a GPU or none: the fixture is the case it
+  // claims to be. The frame's cut is the leaves (`lod_px = 0`), and among the skinned instance's
+  // leaves there are clusters the rest-pose cone test (`geometry::cluster_backfacing`, the shader's
+  // arithmetic) culls from this camera although, turned, a triangle of theirs faces it. Without one
+  // of those the comparison below could not fail, and a test that cannot fail says nothing.
+  u32 witness_leaves = 0;
+  u32 rest_culled = 0;
+  u32 wrongly_culled = 0;
+  {
+    SceneData probe;
+    std::string error;
+    REQUIRE_MESSAGE(make_ball_scene(ball, displacement, probe, error), error);
+    const Vec3 eye = skinned_frame(probe, joints, std::span<const InstanceJoints>(runs, 2), 22.0f)
+                         .camera.position;
+    const geometry::ClusterMesh& mesh = probe.lod.mesh;
+    Vector<Vec3> skinned(mesh.vertices.size());
+    anim::skin_positions(std::span<const Vec3>(mesh.vertices.data(), mesh.vertices.size()),
+                         std::span<const geometry::SkinBinding>(mesh.skin.data(), mesh.skin.size()),
+                         joints, std::span<Vec3>(skinned.data(), skinned.size()));
+    for (u32 c = 0; c < mesh.clusters.size(); ++c) {
+      if (probe.lod.lod[c].level != 0) continue;
+      ++witness_leaves;
+      const geometry::ClusterDesc& cluster = mesh.clusters[c];
+      if (!geometry::cluster_backfacing(cluster, eye)) continue;  // instance 0's world is identity
+      ++rest_culled;
+      bool faces_camera = false;
+      for (u32 t = 0; t < cluster.triangle_count && !faces_camera; ++t) {
+        const u32 packed = mesh.triangles[cluster.triangle_offset + t];
+        const Vec3 a = skinned[cluster.vertex_offset + geometry::ClusterMesh::unpack(packed, 0)];
+        const Vec3 b = skinned[cluster.vertex_offset + geometry::ClusterMesh::unpack(packed, 1)];
+        const Vec3 d = skinned[cluster.vertex_offset + geometry::ClusterMesh::unpack(packed, 2)];
+        faces_camera = dot(cross(b - a, d - a), eye - a) > 0.0f;
+      }
+      if (faces_camera) ++wrongly_culled;
+    }
+  }
+  MESSAGE("turned " << k_turn << " deg: " << witness_leaves << " leaf clusters, " << rest_culled
+                    << " culled by their rest-pose cones, " << wrongly_culled
+                    << " of those face the camera once turned");
+  REQUIRE(wrongly_culled > 0);
+
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("renderer unavailable here: " << gpu.why);
+    return;
+  }
+
+  // The picture, both ways, through every raster path the cull pass feeds. The baseline vertex path
+  // and the software rasterizer read the same visible list the mesh shaders do, and the ray path
+  // builds its geometry from it, so a cluster the cull pass wrongly drops is missing from all four.
+  const RasterMode modes[4] = {RasterMode::Hardware, RasterMode::Vertex, RasterMode::Software,
+                               RasterMode::RayTrace};
+  for (const RasterMode mode : modes) {
+    CapturedFrame shots[2];
+    u32 visible[2] = {0, 0};
+    bool available = true;
+    for (u32 k = 0; k < 2 && available; ++k) {
+      Rig rig;
+      REQUIRE_MESSAGE(make_ball_scene(ball, displacement, rig.data, rig.error), rig.error);
+      RenderSettings settings;
+      settings.raster = mode;
+      settings.cone = k == 1;
+      settings.shadows = ShadowMode::Off;  // shadows are not what the two have to agree about
+      ResolvedSettings resolved;
+      resolve_settings(settings, gpu.device.features(), &rig.data, resolved);
+      const RenderAvailability availability = check_availability(resolved, gpu.device.features());
+      if (availability != RenderAvailability::Ok) {
+        const std::string path = raster_name(mode);
+        MESSAGE(path << " path unavailable here: " << availability_message(availability));
+        available = false;
+        break;
+      }
+      REQUIRE_MESSAGE(rig.finish(gpu.device, settings, k_width, k_height), rig.error);
+      FrameDesc frame =
+          skinned_frame(rig.data, joints, std::span<const InstanceJoints>(runs, 2), 22.0f);
+      frame.lod_px = 0.0f;  // the leaves: the cut the witness above reasoned about
+      std::string error;
+      REQUIRE_MESSAGE(rig.renderer.capture(frame, channels, shots[k], &error), error);
+      visible[k] = rig.renderer.stats().visible_pairs();
+    }
+    if (!available) continue;
+    u64 id_differences = 0;
+    u64 depth_differences = 0;
+    u32 covered = 0;
+    u32 per_instance[2] = {0, 0};
+    for (u32 p = 0; p < k_width * k_height; ++p) {
+      const u32 instance = shots[0].ids[p * k_id_words];
+      if (instance != k_no_id) {
+        ++covered;
+        if (instance < 2) ++per_instance[instance];
+      }
+      for (u32 c = 0; c < k_id_words; ++c) {
+        if (shots[0].ids[p * k_id_words + c] != shots[1].ids[p * k_id_words + c]) ++id_differences;
+      }
+      if (shots[0].depth[p] != shots[1].depth[p]) ++depth_differences;
+    }
+    const std::string path = raster_name(mode);
+    MESSAGE(path << ": " << covered << " covered pixels (" << per_instance[0] << " skinned, "
+                 << per_instance[1] << " rigid), visible pairs " << visible[0]
+                 << " with cones off and " << visible[1] << " on, " << id_differences
+                 << " id words and " << depth_differences << " depths differ");
+    CHECK(per_instance[0] > 1000);  // both balls are on screen
+    CHECK(per_instance[1] > 1000);
+    CHECK(id_differences == 0);
+    CHECK(depth_differences == 0);
+    // And the cone test is still on where it is valid: the rigid ball's back half goes.
+    CHECK(visible[1] < visible[0]);
+  }
+}

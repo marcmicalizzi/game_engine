@@ -97,7 +97,7 @@ void make_sphere(u32 rings, u32 segments, Vector<Vec3>& positions, Vector<u32>& 
 }
 
 // The CPU reference of the pair cull, done exactly as cluster_cull.slang does it: every test in
-// the instance's frame, the cone only where the scale is uniform.
+// the instance's frame, the cone only where the scale is uniform and the instance is rigid.
 Vector<u32> reference_cut(const geometry::ClusterLodMesh& lod,
                           std::span<const geometry::ClusterMeshPart> parts,
                           std::span<const gfx::InstanceDesc> instances, const Frustum& frustum,
@@ -112,7 +112,8 @@ Vector<u32> reference_cut(const geometry::ClusterLodMesh& lod,
       const Vec3 center = transform_point(instance.world, c.center);
       const f32 radius = c.radius * instance.scale_max;
       if (!frustum_contains_sphere(frustum, center, radius)) continue;
-      if (cone_cull && (instance.flags & gfx::k_instance_uniform_scale) != 0) {
+      if (cone_cull && (instance.flags & gfx::k_instance_uniform_scale) != 0 &&
+          instance.deform == gfx::k_invalid_deform) {
         geometry::ClusterDesc moved = c;
         moved.cone_apex = transform_point(instance.world, c.cone_apex);
         const geometry::NormalCone cone = geometry::decode_cone(c.cone);

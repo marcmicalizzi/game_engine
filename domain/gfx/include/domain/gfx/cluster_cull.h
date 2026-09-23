@@ -97,7 +97,8 @@ struct CullParams {
   u32 plane_count = 0;
   u32 count_index = 0;  // which u32 of draw_args counts hardware survivors: 0 for mesh-task
                         // groups {count, 1, 1}, 1 for vkCmdDrawIndirect {verts, count, 0, 0}
-  u32 cone_cull = 0;    // 1: backface-cull clusters by their normal cone (ClusterDesc::cone)
+  u32 cone_cull = 0;    // 1: backface-cull clusters by their normal cone (ClusterDesc::cone), on
+                        // rigid instances of uniform scale only (InstanceDesc)
   u64 clusters = 0;     // geometry::ClusterDesc[]
   u64 lods = 0;         // geometry::ClusterLodDesc[]
   u64 visible = 0;      // u32x2[]: {instance, cluster} of the hardware survivors. Every draw of a
@@ -308,6 +309,12 @@ inline constexpr u32 k_instance_uniform_scale = 1u;
 // children's own sphere, so one constant added to every sphere of an instance leaves exactly one
 // cluster per DAG path passing the test, which is the property the cut rests on
 // (docs/subsystems/renderer.md, "Skinned instances").
+//
+// A padded sphere still bounds a deformed cluster; its **normal cone** does not bound anything,
+// because the cone was fit to the rest triangles and a turned joint turns them by more than any
+// margin. So an instance whose `deform` is not `k_invalid_deform` is never cone-tested — the cone
+// test needs a rigid instance as well as a uniform scale (docs/subsystems/geometry.md, "Normal
+// cones", has the measurement behind choosing that over a per-bone cone).
 struct InstanceDesc {
   Mat4 world;             // mesh space to world; the top three rows are used
   u32 mesh = 0;           // index into the MeshDesc array
