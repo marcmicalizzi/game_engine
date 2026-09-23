@@ -145,6 +145,8 @@ different tree and two of them must not share a build directory.
 
 ### The sync, and what it costs
 
+**What never goes across:** `.claude/`, the Claude Code harness's per-session settings and the git worktrees its agents build in. They are untracked, the tree does not need them, and a live agent worktree changes while tar reads it, which made the sync fail with "file changed as we read it" on 2026-09-23 and the gate report nothing built. The script drops them from the list after `git ls-files`, and `.gitignore` now ignores the directory as well.
+
 Git for Windows ships `ssh`, `scp` and `tar`. It does **not** ship `rsync`, and rsync needs a
 binary at both ends. So:
 

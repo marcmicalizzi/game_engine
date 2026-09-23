@@ -27,3 +27,6 @@ Thumbs.db
 
 # Agents leave handoff notes for the coordinator at the worktree root; they are never committed.
 NOTES-FOR-COORDINATOR.md
+
+# Claude Code harness: per-session settings and agent worktrees; never part of the tree.
+/.claude/
