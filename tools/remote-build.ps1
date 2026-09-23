@@ -157,7 +157,7 @@ function Invoke-SyncTree {
     # untracked, not ignored, and not part of the tree to build. Worse, a live agent worktree changes
     # while tar reads it ("file changed as we read it", exit 1), which is how a gate on 2026-09-23
     # never built anything. So .claude/ never goes across, and the list tar reads is rewritten.
-    $names = @($names | Where-Object { $_ -ne '' -and $_ -notmatch '^.claude(/|$)' })
+    $names = @($names | Where-Object { $_ -ne '' -and $_ -notmatch '^\.claude(/|$)' })
     [System.IO.File]::WriteAllBytes($listPath, [System.Text.Encoding]::UTF8.GetBytes(($names -join "`0") + "`0"))
     if ($names.Count -eq 0 -or ($names.Count -eq 1 -and $names[0] -eq '')) {
       throw "git listed no files under $Root; is this a checkout?"
