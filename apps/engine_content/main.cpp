@@ -26,6 +26,7 @@
 #include <core/time/time.h>
 #include <domain/assets/gltf.h>
 #include <domain/geometry/cluster_file.h>
+#include <engine_build_stamp.h>
 #include <foundation/io/vfs.h>
 
 #include <algorithm>
@@ -76,6 +77,7 @@ const char* k_usage =
     "      --ddc <dir>, --jobs <n>, --strict, --log <spec>   as above\n"
     "  info <file.clusters>                    print the header, sections, and counts\n"
     "  stats <file.clusters>                   print the content-build metrics of a container\n"
+    "  --version                               the commit this binary was built from, as JSON\n"
     "\n"
     "the build-all manifest:\n"
     "  {\"meshes\":[{\"source\":\"a.gltf\",\"output\":\"a.clusters\",\n"
@@ -1901,6 +1903,13 @@ int main(int argc, char** argv) {
   const std::string_view command = argv[1];
   if (command == "--help" || command == "-h" || command == "help") {
     std::fputs(k_usage, stdout);
+    return k_exit_ok;
+  }
+  if (command == "--version") {
+    // The build stamp (cmake/EngineBuildStamp.cmake): tools/e10-harness.ps1 refuses to measure
+    // with a binary built from an older commit than the source it reports.
+    std::printf("{\"tool\":\"engine-content\",\"commit\":\"%s\",\"dirty\":%s}\n",
+                build_stamp::commit(), build_stamp::dirty() ? "true" : "false");
     return k_exit_ok;
   }
   if (command == "build") return build_command(argc, argv);

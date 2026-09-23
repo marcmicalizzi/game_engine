@@ -148,6 +148,26 @@ TEST_CASE("engine-image: usage errors exit 2 and --help exits 0") {
   CHECK(help.output.find("usage: engine-image") != std::string::npos);
 }
 
+// The build stamp every app carries (cmake/EngineBuildStamp.cmake), which tools/e10-harness.ps1
+// compares with the checkout before it measures anything. A build without git to ask (the Linux
+// container syncs the tree without .git) says "unknown" rather than inventing a commit.
+TEST_CASE("engine-image: --version names the commit it was built from") {
+  const Run version = image_app({"--version"});
+  CHECK(version.exit_code == 0);
+  REQUIRE(version.result.is_object());
+  const JsonValue* tool = version.result.find("tool");
+  const JsonValue* commit = version.result.find("commit");
+  const JsonValue* dirty = version.result.find("dirty");
+  REQUIRE(tool != nullptr);
+  REQUIRE(commit != nullptr);
+  REQUIRE(dirty != nullptr);
+  CHECK(tool->as_string() == "engine-image");
+  CHECK(dirty->is_bool());
+  const std::string_view sha = commit->as_string();
+  const bool hex40 = sha.size() == 40 && sha.find_first_not_of("0123456789abcdef") == std::string_view::npos;
+  CHECK_MESSAGE((hex40 || sha == "unknown"), "commit: " << std::string(sha));
+}
+
 TEST_CASE("engine-image: compare reports the numbers the metrics define") {
   const test::TempDir tmp("engine_image_app");
   const std::filesystem::path dir = tmp.native();

@@ -6,10 +6,12 @@
 
 .DESCRIPTION
   tools/e10-harness.ps1 -Folder <dir of .glb>... [-Out <dir>] [-Bin <dir> | -Preset msvc-release]
-                        [-Width 640] [-Height 640] [-Orbit 16] [-Frames 4] [-CoarseLod 1] [-FinestLod 0.05]
+                        [-Width 640] [-Height 640] [-Orbit 0] [-Frames 4] [-CoarseLod 1] [-FinestLod 0.05]
                         [-Shadows off|rt] [-Only <name,...>] [-KeepContainers] [-Title <text>]
                         [-MaxFlip 0.02] [-MinIslandTexels 1] [-MaxWarnings 0] [-DenseTriangles 250000]
+                        [-LowCoverage 0.15] [-AllowStale] [-StalenessPaths <path,...>]
   tools/e10-harness.ps1 -FromReport <report.json> [the threshold flags]
+  tools/e10-harness.ps1 -CheckBinaries -Out <scratch dir> [-Bin <dir> | -Preset msvc-release]   # the staleness check alone
 
   For every GLB (any service; a provenance sidecar beside it, from tools/generate.ps1, adds the
   service, the task and the credits to its row):
@@ -19,8 +21,8 @@
     2. engine-content stats   -> the atlas: islands, seam fraction, smallest island in texels of a
                                  4096 atlas; and the CPU attribute-error table for context
     3. engine-view, twice     -> the same frame at the default LOD threshold (-CoarseLod, 1 px) and
-                                 at -FinestLod (0.05 px, effectively the leaves), from a fixed
-                                 framing orbit
+                                 at -FinestLod (0.05 px, effectively the leaves), from an orbit that
+                                 frames the whole bounds (below)
     4. engine-image compare   -> PSNR, SSIM and FLIP of coarse against finest, and a FLIP heat map
 
   and writes <Out>/report.json and <Out>/report.md: one row per asset, a pass or a fail against the
@@ -52,10 +54,37 @@
                           detail carried by geometry rather than by the atlas (E10's first pass: the
                           picture error followed log triangle count at r = 0.81).
 
+    -LowCoverage 0.15     not a pass criterion: below this share of the frame the object-only FLIP is
+                          flagged as unreliable in the report. It is the whole-frame mean divided by
+                          the coverage, so on a thin object — nearly every pixel of it a silhouette
+                          pixel, where a coarse cut's sub-pixel edge shifts score high, and some of
+                          the error falling outside the finest cut's mask altogether — it inflates:
+                          a bare tree at 10% coverage scored 0.108 over the object while its whole
+                          frame passed at 0.0109. Read its heat map instead.
+
+  THE FRAMING. engine-view's orbit (systems/renderer view_set.cpp) aims at the centre of the
+  mesh's bounds from `orbit` tenths of the bounding radius out, 0.45 of that above, with a 55°
+  vertical field of view. -Orbit 0 (the default) picks the nearest orbit at which the whole
+  bounding sphere is in frame with a 5% margin — 20.8 for a square frame — so a tall trunk or a
+  long log is framed whole from any side. The first E10 pass used a fixed 16, which puts the
+  camera at 1.75 radii where the sphere needs 2.17, and cut a tall tree's trunk in half; its
+  numbers are not comparable with this framing, and -Orbit 16 reproduces them.
+
   WHICH BINARIES. Never the ones in a build tree in place: the harness copies engine-content,
   engine-view and engine-image (from -Bin, or from build/<Preset>/bin of this checkout) into
   <Out>/bin and runs the copies, so a rebuild of that tree during a run neither fails nor changes
   the run, and the report records each copy's SHA-256 and the commit it was built from.
+
+  AND NEVER STALE ONES. On 2026-09-22 a pass measured with build/msvc-release binaries hours older
+  than the HEAD it recorded, which silently dropped every atlas statistic and every embedded
+  texture. So before anything is measured each copy is asked for its build stamp (`--version`, the
+  commit the tree was at when it was built; cmake/EngineBuildStamp.cmake) and is stale when any
+  file under -StalenessPaths changed between that commit and HEAD. A binary with no stamp (built
+  before stamps existed) is judged by time instead: stale when it is older than the last commit
+  touching those paths — which cannot see a commit fast-forwarded in with an older date, which is
+  why the stamp comes first. Either way, a working-tree edit under those paths newer than the
+  binary makes it stale too. A stale binary is refused with the rebuild command, unless
+  -AllowStale, and then report.md and report.json open with a STALE BINARIES caveat.
 
   THE GPU. A capture is a few frames of a small scene; forty of them do not need the machine-wide
   GPU lock (docs/subsystems/bench.md), and the picture metrics do not depend on load. The build
@@ -75,7 +104,7 @@ param(
   [string]$Preset = 'msvc-release',
   [int]$Width = 640,
   [int]$Height = 640,
-  [double]$Orbit = 16,
+  [double]$Orbit = 0,
   [int]$Frames = 4,
   [double]$CoarseLod = 1.0,
   [double]$FinestLod = 0.05,
@@ -84,6 +113,15 @@ param(
   [double]$MinIslandTexels = 1.0,
   [int]$MaxWarnings = 0,
   [long]$DenseTriangles = 250000,
+  [double]$LowCoverage = 0.15,
+  [switch]$AllowStale,
+  [switch]$CheckBinaries,
+  # What the three binaries' numbers are made of, for the staleness check: the three apps, the
+  # import and cluster build, the renderer, and two that move the numbers just as surely —
+  # domain/gfx (the shaders and passes that draw the picture) and foundation/image (FLIP, PSNR and
+  # SSIM themselves).
+  [string[]]$StalenessPaths = @('apps/engine_content', 'apps/engine_view', 'apps/engine_image', 'domain/geometry', 'domain/assets',
+    'systems/renderer', 'domain/gfx', 'foundation/image'),
   [string[]]$Only,
   [switch]$KeepContainers,
   [string]$Title,
@@ -114,6 +152,89 @@ function ConvertTo-Ordered($o) {
 }
 function Get-LockStatus {
   try { return ((& (Join-Path $PSScriptRoot 'gpu-lock.ps1') status *>&1 | Out-String).Trim()) } catch { return 'unknown' }
+}
+
+# ---- stale binaries ------------------------------------------------------------------------------------
+
+function Invoke-Git([string[]]$gitArgs) {
+  # No git (a container that syncs the tree without it) is "cannot say", never a crash.
+  try { $out = & git -C $RepoRoot @gitArgs 2>$null; $ok = $LASTEXITCODE -eq 0 } catch { $out = @(); $ok = $false }
+  return [pscustomobject]@{ Ok = $ok; Lines = [string[]]@($out | Where-Object { $null -ne $_ -and "$_" -ne '' } | ForEach-Object { "$_" }) }
+}
+
+# The build stamp a binary carries (`--version`: {"tool","commit","dirty"}), from the copy — never
+# the build tree's binary in place. A binary from before stamps existed answers with its usage and
+# exit 2, and gets $null.
+function Get-BuildStamp([string]$exe) {
+  try {
+    $lines = & $exe --version 2>$null
+    if ($LASTEXITCODE -ne 0) { return $null }
+    $j = Get-LastJsonLine $lines
+    if ($j -and $j.PSObject.Properties['commit']) { return [ordered]@{ commit = [string]$j.commit; dirty = [bool]$j.dirty } }
+  } catch { }
+  return $null
+}
+
+# Each binary against the checkout (see STALE BINARIES in the help). Adds stamp, judged_by, stale
+# and stale_reasons to every binary record, and returns what the report says about the checkout.
+function Test-StaleBinaries($binaries) {
+  $head = (Invoke-Git @('log', '-1', '--format=%H%x09%cI', 'HEAD')).Lines
+  $last = (Invoke-Git (@('log', '-1', '--format=%H%x09%cI', '--') + $StalenessPaths)).Lines
+  $status = (Invoke-Git (@('status', '--porcelain', '--') + $StalenessPaths)).Lines
+  $headCommit = $null; $headTime = $null; $lastCommit = $null; $lastTime = $null
+  if ($head.Count) { $p = $head[0] -split "`t"; $headCommit = $p[0]; $headTime = [DateTimeOffset]::Parse($p[1], [Globalization.CultureInfo]::InvariantCulture).UtcDateTime }
+  if ($last.Count) { $p = $last[0] -split "`t"; $lastCommit = $p[0]; $lastTime = [DateTimeOffset]::Parse($p[1], [Globalization.CultureInfo]::InvariantCulture).UtcDateTime }
+  $dirty = @()
+  foreach ($line in $status) {
+    $f = "$line".Substring(3); if ($f -match ' -> ') { $f = ($f -split ' -> ')[-1] }
+    $full = Join-Path $RepoRoot $f.Trim('"')
+    if (Test-Path -LiteralPath $full -PathType Leaf) { $dirty += [pscustomobject]@{ path = $f; modified = (Get-Item -LiteralPath $full).LastWriteTimeUtc } }
+  }
+  foreach ($b in $binaries) {
+    $reasons = @()
+    $built = [DateTime]::Parse($b.built, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
+    $stamp = Get-BuildStamp $b.copy
+    $b.stamp = $stamp
+    $known = $stamp -and $stamp.commit -match '^[0-9a-f]{40}$' -and (Invoke-Git @('cat-file', '-e', "$($stamp.commit)^{commit}")).Ok
+    if ($known) {
+      $b.judged_by = 'build stamp'
+      $changed = (Invoke-Git (@('diff', '--name-only', $stamp.commit, 'HEAD', '--') + $StalenessPaths)).Lines
+      if ($changed.Count -gt 0) {
+        $reasons += ("built from {0}, and {1} file(s) it is made of changed between that and HEAD {2} (first: {3})" -f $stamp.commit.Substring(0, 12), $changed.Count, "$headCommit".Substring(0, [math]::Min(12, "$headCommit".Length)), $changed[0])
+      }
+    } else {
+      $b.judged_by = 'modification time (no build stamp)'
+      if ($lastTime -and $built -lt $lastTime) {
+        $reasons += ("built {0:u}, before {1} ({2:u}) changed what it is made of; it has no build stamp to say more" -f $built, "$lastCommit".Substring(0, 12), $lastTime)
+      }
+    }
+    foreach ($d in $dirty) {
+      if ($d.modified -gt $built) { $reasons += ("the working tree's {0} was edited after it was built ({1:u} > {2:u})" -f $d.path, $d.modified, $built) }
+    }
+    $b.stale = $reasons.Count -gt 0
+    $b.stale_reasons = $reasons
+  }
+  return [ordered]@{
+    head = $headCommit; head_time = $(if ($headTime) { $headTime.ToString('o') } else { $null })
+    last_relevant_commit = $lastCommit; last_relevant_time = $(if ($lastTime) { $lastTime.ToString('o') } else { $null })
+    staleness_paths = $StalenessPaths
+    working_tree_edits = @($dirty | ForEach-Object { $_.path })
+    built_from = @($binaries | Where-Object { $_.stamp } | ForEach-Object { $_.stamp.commit } | Sort-Object -Unique)
+    stale = @($binaries | Where-Object { $_.stale }).Count -gt 0
+    allow_stale = [bool]$AllowStale
+  }
+}
+
+# The nearest orbit (engine-view's `--orbit`, tenths of the bounding radius) at which the whole
+# bounding sphere is in frame: the camera sits `orbit/10` radii out on the ground plane and 0.45 of
+# that above (systems/renderer view_set.cpp, orbit_camera), with a 55° vertical field of view and
+# the horizontal one the aspect makes of it. A sphere of radius r at distance D fits when
+# r/D <= sin(half the narrower field of view); the 5% margin keeps a silhouette off the edge.
+function Get-FitOrbit([int]$w, [int]$h) {
+  $halfV = 27.5 * [math]::PI / 180
+  $half = [math]::Atan([math]::Tan($halfV) * [math]::Min(1.0, $w / [double]$h))
+  $raw = 10 * 1.05 / ([math]::Sqrt(1 + 0.45 * 0.45) * [math]::Sin($half))
+  return [math]::Ceiling($raw * 10) / 10
 }
 
 # The object's share of the frame: engine-view clears to one flat sky colour, so every pixel that is
@@ -184,7 +305,7 @@ function Get-Diagnosis($row) {
       $why += ("fragmented atlas ({0:N0} islands, median {1:N0} texels, {2:0.0}% seam vertices): coarse levels keep the seams and smear between them — repack or bake per-level textures" -f $row.islands, $row.median_island_texels_4096, (100 * $row.seam_fraction))
     }
     if ($why.Count -eq 0) { $why += 'neither dense nor fragmented: read the heat map (thin parts collapsing, or a normal-map seam)' }
-    $parts += ("coarse cut is FLIP {0:0.0000} / PSNR {1:0.0} dB from the finest ({2:0.000} over the object's {3:P0} of the frame); {4}" -f $row.flip_mean, $row.psnr, $row.flip_object_mean, $row.coverage, ($why -join '; and '))
+    $parts += ("coarse cut is FLIP {0:0.0000} / PSNR {1:0.0} dB from the finest ({2:0.000} over the object's {3:0}% of the frame); {4}" -f $row.flip_mean, $row.psnr, $row.flip_object_mean, (100 * [double]$row.coverage), ($why -join '; and '))
   }
   if ($row.checks.flip -eq 'unmeasured') { $parts += 'no picture: engine-view could not render here (exit 3)' }
   return ($parts -join ' | ')
@@ -203,6 +324,8 @@ function Set-Verdict($row) {
     elseif ([double]$row.flip_mean -gt $MaxFlip) { $checks.flip = 'fail' }
   }
   $row.checks = $checks
+  # Not a check: whether the object-only FLIP means anything for this asset (-LowCoverage).
+  $row.object_flip_reliable = if ($null -eq $row.coverage -or $null -eq $row.flip_object_mean) { $null } else { [double]$row.coverage -ge $LowCoverage }
   $failed = @($checks.Keys | Where-Object { $checks[$_] -in 'fail', 'unmeasured' })
   $row.status = if ($failed.Count -eq 0) { 'pass' } else { 'fail' }
   $row.diagnosis = if ($failed.Count -eq 0) { '' } else { Get-Diagnosis ([pscustomobject]$row) }
@@ -217,7 +340,7 @@ if ($FromReport) {
   $Out = Split-Path -Parent (Resolve-Path -LiteralPath $FromReport).Path
   foreach ($a in @($old.assets)) {
     $row = ConvertTo-Ordered $a
-    foreach ($k in @('checks', 'status', 'diagnosis')) { if ($row.Contains($k)) { $row.Remove($k) } }
+    foreach ($k in @('checks', 'status', 'diagnosis', 'object_flip_reliable')) { if ($row.Contains($k)) { $row.Remove($k) } }
     Set-Verdict $row
     $rows += [pscustomobject]$row
   }
@@ -225,20 +348,28 @@ if ($FromReport) {
   $toolsBlock = $old.tools
   $settingsBlock = $old.settings
   $machine = $old.machine_state
-  $startedText = [string]$old.started_utc; $finishedText = [string]$old.finished_utc; $seconds = $old.seconds
+  # ConvertFrom-Json turns an ISO 8601 string into a DateTime, which [string] then prints in the
+  # local culture's format; write it back the way it was read.
+  $iso = { param($v) if ($v -is [DateTime]) { $v.ToUniversalTime().ToString('o') } else { [string]$v } }
+  $startedText = & $iso $old.started_utc; $finishedText = & $iso $old.finished_utc; $seconds = $old.seconds
   if (-not $Title) { $Title = [string]$old.title }
   Write-Log "e10: re-judged $($rows.Count) assets from $FromReport under the thresholds given"
 } else {
-  if (-not $Folder) { throw 'give -Folder <dir of .glb> (or -FromReport <report.json> to re-judge one)' }
-  $folders = @()
-  foreach ($f in $Folder) { foreach ($p in ($f -split ',')) { if ($p.Trim()) { $folders += (Resolve-Path -LiteralPath $p.Trim()).Path } } }
-  $glbs = @()
-  foreach ($f in $folders) { $glbs += @(Get-ChildItem -LiteralPath $f -File -Filter '*.glb' | Sort-Object Name) }
-  if ($Only) {
-    $wanted = @($Only | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
-    $glbs = @($glbs | Where-Object { $wanted -contains $_.BaseName })
+  if ($CheckBinaries) {
+    if (-not $Out) { throw '-CheckBinaries copies the binaries before asking them anything; give -Out <scratch dir>' }
+    $folders = @()
+  } else {
+    if (-not $Folder) { throw 'give -Folder <dir of .glb> (or -FromReport <report.json> to re-judge one)' }
+    $folders = @()
+    foreach ($f in $Folder) { foreach ($p in ($f -split ',')) { if ($p.Trim()) { $folders += (Resolve-Path -LiteralPath $p.Trim()).Path } } }
+    $glbs = @()
+    foreach ($f in $folders) { $glbs += @(Get-ChildItem -LiteralPath $f -File -Filter '*.glb' | Sort-Object Name) }
+    if ($Only) {
+      $wanted = @($Only | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+      $glbs = @($glbs | Where-Object { $wanted -contains $_.BaseName })
+    }
+    if ($glbs.Count -eq 0) { throw "no .glb files in $($folders -join ', ')" }
   }
-  if ($glbs.Count -eq 0) { throw "no .glb files in $($folders -join ', ')" }
 
   if (-not $Out) {
     $root = if ($LocalRoot) { $LocalRoot } elseif ($env:ENGINE_LOCAL_ROOT) { $env:ENGINE_LOCAL_ROOT } elseif ($IsWin) { 'D:\workspace\game_engine_local' } else { Join-Path $HOME 'game_engine_local' }
@@ -257,7 +388,9 @@ if ($FromReport) {
     $src = Join-Path $source "$t$Exe"
     if (-not (Test-Path -LiteralPath $src)) { throw "no $t$Exe in $source. Build it (tools/dev.ps1 build -Preset $Preset) or pass -Bin <dir>." }
     Copy-Item -LiteralPath $src -Destination (Join-Path $Out 'bin') -Force
-    $binaries += [ordered]@{ name = "$t$Exe"; sha256 = Get-FileSha256 (Join-Path (Join-Path $Out 'bin') "$t$Exe"); built = (Get-Item -LiteralPath $src).LastWriteTimeUtc.ToString('o') }
+    $copy = Join-Path (Join-Path $Out 'bin') "$t$Exe"
+    $binaries += [ordered]@{ name = "$t$Exe"; sha256 = Get-FileSha256 $copy; built = (Get-Item -LiteralPath $src).LastWriteTimeUtc.ToString('o'); copy = $copy
+      stamp = $null; judged_by = $null; stale = $false; stale_reasons = @() }
   }
   Get-ChildItem -LiteralPath $source -File -Filter '*.dll' -ErrorAction SilentlyContinue | Copy-Item -Destination (Join-Path $Out 'bin') -Force
   $content = Join-Path (Join-Path $Out 'bin') "engine-content$Exe"
@@ -265,6 +398,31 @@ if ($FromReport) {
   $image = Join-Path (Join-Path $Out 'bin') "engine-image$Exe"
   $commit = ''
   try { $commit = (& git -C $RepoRoot rev-parse HEAD 2>$null | Out-String).Trim() } catch { }
+  $freshness = Test-StaleBinaries $binaries
+  foreach ($b in $binaries) {
+    $what = if ($b.stamp) { "built from $($b.stamp.commit.Substring(0, [math]::Min(12, $b.stamp.commit.Length)))$(if ($b.stamp.dirty) { ' (dirty tree)' })" } else { "no build stamp, built $($b.built)" }
+    Write-Log "e10: $($b.name): $what$(if ($b.stale) { ' — STALE' })"
+  }
+  if ($CheckBinaries) {
+    # The check alone, as one JSON line: exit 0 fresh, 3 stale (what tools/e10-harness.Tests.ps1 reads).
+    foreach ($b in $binaries) { $b.Remove('copy') }
+    [Console]::Out.WriteLine(([ordered]@{ source = $source; commit = $commit; freshness = $freshness; binaries = $binaries } | ConvertTo-Json -Depth 8 -Compress))
+    exit $(if ($freshness.stale) { 3 } else { 0 })
+  }
+  if ($freshness.stale) {
+    $lines = @($binaries | Where-Object { $_.stale } | ForEach-Object { "  $($_.name) ($source): $($_.stale_reasons -join '; ')" })
+    $rebuild = if ($Bin) { "rebuild the tree $source came from" } else { "pwsh tools/dev.ps1 build -Preset $Preset" }
+    if (-not $AllowStale) {
+      throw ("refusing to measure with stale binaries — the report would name commit $("$commit".Substring(0, [math]::Min(12, "$commit".Length))) for code older than it:`n" + ($lines -join "`n") +
+        "`nRebuild them ($rebuild), or pass -AllowStale to measure anyway with a STALE BINARIES caveat in the report.")
+    }
+    Write-Log "e10: WARNING: measuring with stale binaries (-AllowStale); the report says so at the top:"
+    foreach ($l in $lines) { Write-Log $l }
+  }
+
+  $orbitUsed = if ($Orbit -gt 0) { $Orbit } else { Get-FitOrbit $Width $Height }
+  $framing = if ($Orbit -gt 0) { "fixed: orbit $Orbit (-Orbit)" } else { "fit: the whole bounding sphere in frame with a 5% margin (orbit $orbitUsed)" }
+  Write-Log "e10: framing $framing"
 
   $started = [DateTime]::UtcNow
   $lockAtStart = Get-LockStatus
@@ -292,6 +450,16 @@ if ($FromReport) {
       $row.model_version = [string]$s.asset_provenance.model_version
       if ($s.backend.meshy) { $row.task_id = [string]$s.backend.meshy.task_id }
       if ($s.prompt) { $row.subject = [string]$s.prompt.subject }
+      # A comfyui-3d sidecar also says how the mesh was post-processed and how long that took,
+      # which is what a parameter sweep is read against.
+      if ($s.PSObject.Properties['timings'] -and $s.parameters -and $s.parameters.PSObject.Properties['decimate']) {
+        $row.generation = [ordered]@{
+          face_count = $s.parameters.decimate.target_face_count; segmenter = $s.parameters.segmenter.value
+          smooth_iters = $s.parameters.remesh.smooth_iters; weld_distance = $s.parameters.unwrap.weld_distance; texture = $s.parameters.texture_resolution
+          unwrap_seconds = $s.timings.unwrap_seconds; wall_seconds = $s.timings.wall_seconds; cached_nodes = @($s.timings.cached_nodes).Count
+          cpu_pct = $s.machine_state.cpu_pct; gpu_util_pct = $s.machine_state.gpu_util_pct; comfyui_cores_busy = $s.machine_state.comfyui_cores_busy
+        }
+      }
     } else {
       $row.service = Split-Path -Leaf (Split-Path -Parent $glb.DirectoryName)
     }
@@ -334,7 +502,7 @@ if ($FromReport) {
     }
 
     # 3. two captures, of one frame, differing only in the LOD threshold
-    $common = @('--mesh', $clusters, '--width', $Width, '--height', $Height, '--frames', $Frames, '--orbit', $Orbit.ToString($Inv), '--no-vsync', '--shadows', $Shadows)
+    $common = @('--mesh', $clusters, '--width', $Width, '--height', $Height, '--frames', $Frames, '--orbit', ([double]$orbitUsed).ToString($Inv), '--no-vsync', '--shadows', $Shadows)
     $picture = $true
     foreach ($cut in @(@{ tag = 'coarse'; lod = $CoarseLod }, @{ tag = 'finest'; lod = $FinestLod })) {
       $png = Join-Path $dir "$($cut.tag).png"
@@ -386,8 +554,10 @@ if ($FromReport) {
     gpu_lock_at_start = $lockAtStart
     gpu_lock_at_end = $lockAtEnd
   }
-  $toolsBlock = [ordered]@{ source = $source; commit = $commit; preset = $(if ($Bin) { $null } else { $Preset }); binaries = $binaries; harness = 'tools/e10-harness.ps1' }
-  $settingsBlock = [ordered]@{ width = $Width; height = $Height; orbit = $Orbit; frames = $Frames; coarse_lod_px = $CoarseLod; finest_lod_px = $FinestLod; shadows = $Shadows; raster = 'hw (default)' }
+  foreach ($b in $binaries) { $b.Remove('copy') }
+  $toolsBlock = [ordered]@{ source = $source; commit = $commit; built_from = $freshness.built_from; preset = $(if ($Bin) { $null } else { $Preset }); binaries = $binaries
+    freshness = $freshness; harness = 'tools/e10-harness.ps1' }
+  $settingsBlock = [ordered]@{ width = $Width; height = $Height; orbit = $orbitUsed; framing = $framing; frames = $Frames; coarse_lod_px = $CoarseLod; finest_lod_px = $FinestLod; shadows = $Shadows; raster = 'hw (default)' }
   if (-not $Title) { $Title = "E10 over $((Split-Path -Leaf (Split-Path -Parent $folders[0])))/$(Split-Path -Leaf $folders[0])" }
 }
 
@@ -437,9 +607,12 @@ $passed = @($rows | Where-Object status -eq 'pass').Count
 $byCheck = [ordered]@{}
 foreach ($k in @('import', 'warnings', 'island', 'flip')) { $byCheck[$k] = @($rows | Where-Object { $_.checks[$k] -in 'fail', 'unmeasured' }).Count }
 
+$staleNames = @($toolsBlock.binaries | Where-Object { $_.stale } | ForEach-Object { $_.name })
 $report = [ordered]@{
   schema = 'engine.e10.report/1'
   title = $Title
+  # Second key, where a reader of the JSON meets it before any number (-AllowStale only).
+  caveat = $(if ($staleNames.Count) { "STALE BINARIES: $($staleNames -join ', ') older than the source at commit $($toolsBlock.commit); measured with -AllowStale (tools.freshness has why)" } else { $null })
   started_utc = $startedText; finished_utc = $finishedText; seconds = $seconds
   judged_utc = [DateTime]::UtcNow.ToString('o')
   folders = $folders
@@ -468,22 +641,55 @@ $commitText = [string]$toolsBlock.commit
 $md = New-Object System.Collections.Generic.List[string]
 $md.Add("# $Title")
 $md.Add('')
-$md.Add("Measured by ``tools/e10-harness.ps1`` from $startedText to $finishedText ($seconds s), binaries from commit ``$($commitText.Substring(0, [math]::Min(12, $commitText.Length)))`` ($($toolsBlock.source), copied); judged $($report.judged_utc).")
-$md.Add("Captures: $($settingsBlock.width)x$($settingsBlock.height), ``--orbit $($settingsBlock.orbit) --frames $($settingsBlock.frames) --shadows $($settingsBlock.shadows)``, coarse ``--lod $($settingsBlock.coarse_lod_px)`` against finest ``--lod $($settingsBlock.finest_lod_px)``.")
+$fresh = $toolsBlock.freshness
+if ($fresh -and $fresh.stale) {
+  # First, before any number: a reader who stops after one line must still know.
+  $md.Add('> **STALE BINARIES.** Measured with `-AllowStale`: at least one binary is older than the source the commit below names, so any number here may come from older code.')
+  foreach ($b in @($toolsBlock.binaries | Where-Object { $_.stale })) { $md.Add("> - ``$($b.name)``: $(@($b.stale_reasons) -join '; ')") }
+  $md.Add('')
+}
+$tick = [string][char]0x60
+$builtFrom = @($toolsBlock.built_from | Where-Object { $_ } | ForEach-Object { $tick + $_.Substring(0, [math]::Min(12, $_.Length)) + $tick })
+$builtText = if ($builtFrom.Count) { $builtFrom -join ', ' } else { 'an unknown commit (no build stamp)' }
+$freshText = if ($fresh -and -not $fresh.stale) { ', none stale' } else { '' }
+$md.Add("Measured by ``tools/e10-harness.ps1`` from $startedText to $finishedText ($seconds s), checkout at ``$($commitText.Substring(0, [math]::Min(12, $commitText.Length)))``, binaries built from $builtText ($($toolsBlock.source), copied)$freshText; judged $($report.judged_utc).")
+$md.Add("Captures: $($settingsBlock.width)x$($settingsBlock.height), ``--orbit $($settingsBlock.orbit) --frames $($settingsBlock.frames) --shadows $($settingsBlock.shadows)``$(if ($settingsBlock.framing) { " (framing $($settingsBlock.framing))" }), coarse ``--lod $($settingsBlock.coarse_lod_px)`` against finest ``--lod $($settingsBlock.finest_lod_px)``.")
 $md.Add('')
 $md.Add("**Pass rate: $passed of $($rows.Count) ($([math]::Round(100 * $report.totals.pass_rate))%).** Failures by check: import $($byCheck.import), warnings $($byCheck.warnings), atlas island $($byCheck.island), coarse-vs-finest FLIP $($byCheck.flip) (an asset can fail more than one).")
 $md.Add('')
 $md.Add("Thresholds: $MaxWarnings warnings; smallest atlas island >= $MinIslandTexels texel of a 4096 atlas; coarse-vs-finest FLIP mean <= $MaxFlip (the seam fix's numbers put every known-good build below 0.02 and every known-bad one above).")
 $md.Add('')
-$md.Add('| asset | triangles | clusters | levels | warn | islands | seam % | smallest island (texels) | container MB | build ms | PSNR dB | FLIP | object FLIP | result |')
-$md.Add('|---|---|---|---|---|---|---|---|---|---|---|---|---|---|')
+$md.Add('| asset | triangles | clusters | levels | warn | islands | seam % | smallest island (texels) | median island (texels) | atlas used % | pairs coarse / finest | GLB MB | container MB | build ms | PSNR dB | FLIP | object FLIP | coverage % | result |')
+$md.Add('|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|')
 foreach ($r in $rows) {
-  $md.Add(('| {0} | {1} | {2} | {3} | {4} | {5} | {6} | {7} | {8} | {9} | {10} | {11} | {12} | {13} |' -f $r.name, (F $r.triangles 'N0'), (F $r.clusters 'N0'), (F $r.lod_levels '0'),
+  $objectFlip = (F $r.flip_object_mean '0.000') + $(if ($r.PSObject.Properties['object_flip_reliable'] -and $r.object_flip_reliable -eq $false) { ' †' } else { '' })
+  $pairs = if ($null -ne $r.coarse_visible_pairs -and $null -ne $r.finest_visible_pairs) { "$(F $r.coarse_visible_pairs 'N0') / $(F $r.finest_visible_pairs 'N0')" } else { '—' }
+  $md.Add(('| {0} | {1} | {2} | {3} | {4} | {5} | {6} | {7} | {8} | {9} | {10} | {11} | {12} | {13} | {14} | {15} | {16} | {17} | {18} |' -f $r.name, (F $r.triangles 'N0'), (F $r.clusters 'N0'), (F $r.lod_levels '0'),
       (F $r.warnings '0'), (F $r.islands 'N0'), (F $(if ($null -ne $r.seam_fraction) { 100 * $r.seam_fraction }) '0.0'), (F $r.smallest_island_texels_4096 '0.###'),
-      (F $(if ($r.container_bytes) { $r.container_bytes / 1MB }) '0.0'), (F $r.build_ms 'N0'), (F $r.psnr '0.0'), (F $r.flip_mean '0.0000'), (F $r.flip_object_mean '0.000'),
+      (F $r.median_island_texels_4096 'N0'), (F $(if ($null -ne $r.uv_area) { 100 * $r.uv_area }) '0.0'), $pairs, (F $(if ($r.glb_bytes) { $r.glb_bytes / 1MB }) '0.0'),
+      (F $(if ($r.container_bytes) { $r.container_bytes / 1MB }) '0.0'), (F $r.build_ms 'N0'), (F $r.psnr '0.0'), (F $r.flip_mean '0.0000'), $objectFlip,
+      (F $(if ($null -ne $r.coverage) { 100 * $r.coverage }) '0.0'),
       $(if ($r.status -eq 'pass') { 'pass' } else { "**fail** ($((@($r.checks.Keys | Where-Object { $r.checks[$_] -in 'fail', 'unmeasured' })) -join ', '))" })))
 }
 $md.Add('')
+$thin = @($rows | Where-Object { $_.PSObject.Properties['object_flip_reliable'] -and $_.object_flip_reliable -eq $false })
+if ($thin.Count -gt 0) {
+  $md.Add(("† **Object FLIP unreliable below {0:0}% coverage** ({1}). It is the whole-frame mean divided by the object's share of the frame, so on a thin object — nearly every pixel of it on the silhouette, where a coarse cut's sub-pixel edge shifts score high, and some of the error falling outside the finest cut's mask altogether — it inflates: a bare tree at 10% coverage scored 0.108 over the object while its whole frame passed at 0.0109. Judge these by the whole-frame FLIP and the heat map." -f (100 * $LowCoverage), (($thin | ForEach-Object { $_.name }) -join ', ')))
+  $md.Add('')
+}
+$gen = @($rows | Where-Object { $_.PSObject.Properties['generation'] -and $_.generation })
+if ($gen.Count -gt 0) {
+  $md.Add('What made them, from each sidecar (`tools/generate.ps1`):')
+  $md.Add('')
+  $md.Add('| asset | service | faces asked | segmenter | smooth iters | weld | texture | unwrap s | generation s | CPU % (min–max) | GPU % (min–max) |')
+  $md.Add('|---|---|---|---|---|---|---|---|---|---|---|')
+  foreach ($r in $gen) {
+    $gx = $r.generation
+    $md.Add(('| {0} | {1} | {2} | {3} | {4} | {5} | {6} | {7} | {8} | {9} | {10} |' -f $r.name, $r.service, (F $gx.face_count 'N0'), $gx.segmenter, $gx.smooth_iters, $gx.weld_distance, $gx.texture,
+        (F $gx.unwrap_seconds '0.0'), (F $gx.wall_seconds '0'), $(if ($gx.cpu_pct) { "$($gx.cpu_pct.min)–$($gx.cpu_pct.max)" } else { '—' }), $(if ($gx.gpu_util_pct) { "$($gx.gpu_util_pct.min)–$($gx.gpu_util_pct.max)" } else { '—' })))
+  }
+  $md.Add('')
+}
 $md.Add('| column | mean | worst | worst asset | best | best asset |')
 $md.Add('|---|---|---|---|---|---|')
 foreach ($c in $colStats.Keys) { $s = $colStats[$c]; $md.Add("| $c | $(F $s.mean 'G5') | $(F $s.worst 'G5') | $($s.worst_asset) | $(F $s.best 'G5') | $($s.best_asset) |") }

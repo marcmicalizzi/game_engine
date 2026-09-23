@@ -27,6 +27,7 @@
 #include <domain/gfx/device.h>
 #include <domain/gfx/swapchain.h>
 #include <domain/gfx/vulkan.h>
+#include <engine_build_stamp.h>
 #include <foundation/bench/machine_state.h>
 #include <foundation/image/png.h>
 #include <foundation/io/vfs.h>
@@ -78,6 +79,7 @@ constexpr const char* k_usage =
     "                   [--morph <name|index>=<weight>] [--morph-animate [clip]]\n"
     "                   [--static-shape-kib <n>]\n"
     "                   [--reference <spp>] [--bounces <n>] [--finest] [--spp-batch <n>]\n"
+    "       engine-view --version    the commit this binary was built from, as one JSON line\n"
     "\n"
     "  --frames <n>     render n frames, then exit (0: until the window closes)\n"
     "  --capture <png>  write the last frame as a PNG (implies --frames 60 when unset)\n"
@@ -1129,6 +1131,12 @@ int main(int argc, char** argv) {
     std::string value;
     if (a == "--help" || a == "-h") {
       std::fputs(k_usage, stdout);
+      return 0;
+    } else if (a == "--version") {
+      // The build stamp (cmake/EngineBuildStamp.cmake), which tools/e10-harness.ps1 checks
+      // before it measures anything with this binary. No window, no device.
+      std::printf("{\"tool\":\"engine-view\",\"commit\":\"%s\",\"dirty\":%s}\n",
+                  engine::build_stamp::commit(), engine::build_stamp::dirty() ? "true" : "false");
       return 0;
     } else if (a == "--width" || a == "--height" || a == "--frames" || a == "--adapter" ||
                a == "--grid" || a == "--grid-instances" || a == "--deform-pool-mib") {

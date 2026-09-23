@@ -10,6 +10,7 @@
 // not an image, two images of different sizes -- exits 2. There is deliberately no exit 1.
 #include <core/platform/cpu_baseline.h>
 #include <core/time/time.h>
+#include <engine_build_stamp.h>
 #include <foundation/image/decode.h>
 #include <foundation/image/metrics.h>
 #include <foundation/image/png.h>
@@ -42,6 +43,7 @@ const char* k_usage =
     "      --json                one JSON object on stdout instead of a readable report\n"
     "  info <file.png>                         size and channel count of an image\n"
     "      --json                as one JSON object\n"
+    "  --version                               the commit this binary was built from, as JSON\n"
     "\n"
     "PNG, JPEG, TGA, and BMP are read. Exit codes: 0 measured, 2 could not measure.\n"
     "\n"
@@ -295,6 +297,12 @@ int main(int argc, char** argv) {
   const std::string_view command = argv[1];
   if (command == "--help" || command == "-h" || command == "help") {
     std::fputs(k_usage, stdout);
+    return k_exit_ok;
+  }
+  if (command == "--version") {
+    // The build stamp (cmake/EngineBuildStamp.cmake), which tools/e10-harness.ps1 checks.
+    std::printf("{\"tool\":\"engine-image\",\"commit\":\"%s\",\"dirty\":%s}\n",
+                build_stamp::commit(), build_stamp::dirty() ? "true" : "false");
     return k_exit_ok;
   }
   if (command == "compare") return compare_command(argc, argv);

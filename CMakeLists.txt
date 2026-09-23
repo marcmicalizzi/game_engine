@@ -21,6 +21,8 @@ include(EngineOptions)
 include(EngineCpuBaseline)
 include(EngineWarnings)
 include(EngineModule)
+# The commit every app was built from (`--version`), refreshed on every build: engine_app links it.
+include(EngineBuildStamp)
 include(EngineTesting)
 include(EngineSchema)
 include(EngineProfiling)

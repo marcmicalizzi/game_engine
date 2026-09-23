@@ -417,6 +417,11 @@ function(engine_app)
   # The E2E test target below has had it unconditionally since it was written, for its own
   # reasons; this is the same idea one target over.
   target_link_libraries(${_target} PRIVATE ${_dep_targets} engine::platform)
+  # And the build stamp (cmake/EngineBuildStamp.cmake): the commit this app was built from, for its
+  # `--version`. Apps only, so a commit relinks bin/ and not every test; the explicit dependency on
+  # the updating target puts the refreshed header in place before main.cpp compiles.
+  target_link_libraries(${_target} PRIVATE engine_build_stamp)
+  add_dependencies(${_target} engine_build_stamp_update)
   target_compile_options(${_target} PRIVATE ${ENGINE_NO_EXCEPTIONS_FLAGS})
   engine_apply_warnings(${_target})
   set_target_properties(${_target} PROPERTIES
