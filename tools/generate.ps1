@@ -23,13 +23,21 @@
   Image:  [-Seed <n>] [-Width <px> -Height <px>] [-Aspect 1:1 -FinalMegapixels 2 -BaseMegapixels <f>]
           [-Negative <text>] [-Raw] [-Set '<title|class|#id>.<input>=<value>'...] [-NoLock] [-NoFree]
   Meshy:  [-AiModel latest] [-CreditsPerTask 30] [-MaxCredits 700] [-MinBalance 165] [-Retries 1]
-          [-Concurrency 5] [-Set '<field>=<value>'...]
+          [-Concurrency 5] [-Set '<field>=<value>'...] [-Offline (with -DryRun: no balance read)]
+          [-Remesh [-TargetPolycount <faces> | -Subjects <list with triangle budgets>] [-Topology triangle|quad]]
   comfyui-3d (the owner's TRELLIS.2 / Pixal3D workflow; the image flags above apply to its image):
           [-Model trellis2|pixal3d] [-FaceCount 100000] [-RemeshResolution <n>] [-RemeshSignMode udf|sdf]
           [-RemeshSmoothIters 3] [-Segmenter pec|adaptive] [-SegmenterTimeoutMinutes 20]
           [-UnwrapResolution <n>] [-UnwrapPadding <n>] [-WeldDistance <f>] [-TextureResolution 2048]
           [-OutputPrefix '3d/Agentic/{date}/{name}'] [-OutputRoot <ComfyUI output dir>] [-Foliage]
           [-TimeoutMinutes 60]
+
+  REMESH (Meshy). Without -Remesh the request is the one E10's first pass was verified with, and
+  Meshy 6/7 do not remesh (`should_remesh` defaults to false for them), so a mesh comes back at
+  whatever density the model reconstructed. -Remesh sets `should_remesh`; the polycount is then
+  -TargetPolycount (faces, as Meshy counts them, 100-300,000) or, per image, the triangle budget of
+  the subject's `budget` class in the -Subjects list (`triangle_budgets`, halved for -Topology quad,
+  whose faces are quads). Both are refused without -Remesh, because the service ignores them then.
 
   WHERE THINGS GO. Every output lands at <LocalRoot>\generated\<service>\<yyyy-MM-dd>\<name>.<ext>
   beside <name>.provenance.json. LocalRoot is $env:ENGINE_LOCAL_ROOT, else
@@ -111,6 +119,10 @@ param(
   [int]$Retries = 1,
   [int]$Concurrency = 5,
   [int]$TimeoutMinutes = 60,
+  [switch]$Remesh,
+  [int]$TargetPolycount = 0,
+  [ValidateSet('triangle', 'quad')] [string]$Topology = 'triangle',
+  [switch]$Offline,
   # comfyui-3d: text -> image -> mesh in one ComfyUI workflow (TRELLIS.2 or Pixal3D)
   [ValidateSet('trellis2', 'pixal3d')] [string]$Model = 'trellis2',
   [int]$FaceCount = 100000,
@@ -1061,10 +1073,17 @@ function Invoke-Meshy([string]$method, [string]$path, $body) {
 
 function Get-MeshyBalance { [int](Invoke-Meshy 'GET' '/balance' $null).balance }
 
-function Get-MeshyBody {
+function Get-MeshyBody([int]$polycount) {
   # The body the owner's first task was verified with (30 credits): the newest model, textured,
-  # with PBR maps, as triangles. Anything else goes through -Set <field>=<value> and is recorded.
-  $body = [ordered]@{ ai_model = $AiModel; should_texture = $true; enable_pbr = $true; topology = 'triangle' }
+  # with PBR maps, as triangles. Without -Remesh it is exactly that body, field for field, so the
+  # first pass's spec hashes still name its outputs and a rerun of it is a cache hit. With -Remesh
+  # the two fields the remesh phase reads follow it (topology is only read when remeshing, which is
+  # why the old body's `topology` is not a remesh). Anything else goes through -Set and is recorded.
+  $body = [ordered]@{ ai_model = $AiModel; should_texture = $true; enable_pbr = $true; topology = $Topology }
+  if ($Remesh) {
+    $body.should_remesh = $true
+    $body.target_polycount = $polycount
+  }
   foreach ($s in @($Set)) {
     if (-not $s) { continue }
     if ($s -notmatch '^(?<key>[a-z_]+)=(?<value>.*)$') { throw "-Set '$s' is not <field>=<value> for the Meshy request" }
@@ -1073,13 +1092,67 @@ function Get-MeshyBody {
   return $body
 }
 
+# Meshy's remesh range for `target_polycount` (openapi v1 image-to-3d, read 2026-09-23). The
+# service says the count it returns "may deviate from the target depending on the geometry".
+$MeshyPolycountMin = 100
+$MeshyPolycountMax = 300000
+
+# The triangle budget per subject, from the -Subjects list: `triangle_budgets.<class>.triangles`
+# for the subject's `budget` class. Keyed by subject name, which is the image's file stem.
+function Get-SubjectBudgets {
+  $map = @{}
+  if (-not $Subjects) { return $map }
+  $doc = Read-JsonFile $Subjects
+  $budgets = $doc.triangle_budgets
+  foreach ($s in @($doc.subjects)) {
+    if (-not $s.budget) { continue }
+    $class = [string]$s.budget
+    if (-not $budgets -or -not $budgets.PSObject.Properties[$class]) { throw "subject '$($s.name)' names budget class '$class', which $Subjects does not define under triangle_budgets" }
+    $tri = [int]$budgets.$class.triangles
+    if ($tri -le 0) { throw "budget class '$class' in $Subjects has no positive 'triangles'" }
+    $map[[string]$s.name] = [pscustomobject]@{ class = $class; triangles = $tri }
+  }
+  return $map
+}
+
+# The polycount one image is remeshed to, and where the number came from (recorded beside it).
+function Get-MeshyPolycount($in, $budgets) {
+  if (-not $Remesh) { return [pscustomobject]@{ faces = 0; from = $null; budget_class = $null; budget_triangles = $null } }
+  if ($TargetPolycount -gt 0) { return [pscustomobject]@{ faces = $TargetPolycount; from = '-TargetPolycount'; budget_class = $null; budget_triangles = $null } }
+  $b = $budgets[$in.name]
+  if (-not $b) { throw "-Remesh needs a polycount for '$($in.name)': pass -TargetPolycount <faces>, or -Subjects <list> in which that subject names a 'budget' class" }
+  # A budget is in triangles; a quad-dominant remesh counts quads, each two triangles.
+  $faces = if ($Topology -eq 'quad') { [int][math]::Floor($b.triangles / 2) } else { $b.triangles }
+  return [pscustomobject]@{ faces = $faces; from = "budget:$($b.class) ($([IO.Path]::GetFileName($Subjects)))"; budget_class = $b.class; budget_triangles = $b.triangles }
+}
+
+function Test-MeshyArguments {
+  if (-not $Remesh) {
+    if ($TargetPolycount -gt 0) { throw '-TargetPolycount without -Remesh: Meshy reads target_polycount only in its remesh phase, which is off unless -Remesh is given' }
+    if ($Topology -ne 'triangle') { throw "-Topology $Topology without -Remesh: Meshy reads topology only in its remesh phase, which is off unless -Remesh is given" }
+  }
+  if ($TargetPolycount -ne 0 -and ($TargetPolycount -lt $MeshyPolycountMin -or $TargetPolycount -gt $MeshyPolycountMax)) {
+    throw "-TargetPolycount $TargetPolycount is outside Meshy's remesh range of $MeshyPolycountMin to $MeshyPolycountMax faces"
+  }
+  if ($Offline -and -not $DryRun) { throw '-Offline is for -DryRun only: a real batch reads the balance before it spends anything' }
+}
+
+# The request without the image: what the sidecar, the task file and the ledger record.
+function Get-RequestRecord($body) { $r = [ordered]@{}; foreach ($k in $body.Keys) { $r[$k] = $body[$k] }; return $r }
+
 function Invoke-MeshyStage($inputs) {
+  Test-MeshyArguments
   $dir = Get-OutputDir 'meshy'
   $ledger = Join-Path (Split-Path -Parent $dir) 'ledger.jsonl'
-  $body = Get-MeshyBody
-  $bodyHash = Get-TextSha256 ($body | ConvertTo-Json -Compress)
+  $budgets = Get-SubjectBudgets
   $jobs = @()
   foreach ($in in $inputs) {
+    # One body per image: with -Remesh from a subject list, each subject carries its own polycount.
+    # The spec hashes that body the way the first pass hashed its one shared body, so a batch
+    # without -Remesh names exactly the outputs it named before.
+    $poly = Get-MeshyPolycount $in $budgets
+    $body = Get-MeshyBody $poly.faces
+    $bodyHash = Get-TextSha256 ($body | ConvertTo-Json -Compress)
     $spec = Get-TextSha256 "$($in.sha256)`n$bodyHash"
     $side = Get-SidecarPath $dir $in.name
     $taskFile = Join-Path $dir "$($in.name).meshy-task.json"
@@ -1089,19 +1162,28 @@ function Invoke-MeshyStage($inputs) {
       $t = Read-JsonFile $taskFile
       if ($t.spec_hash -eq $spec -and $t.task_id) { $state = 'resume'; $taskId = [string]$t.task_id; $attempt = [int]$t.attempt }
     }
-    $jobs += [pscustomobject]@{ Input = $in; Spec = $spec; State = $state; TaskId = $taskId; Attempt = $attempt; Submitted = $null; Progress = -1; Sidecar = $side; TaskFile = $taskFile }
+    # (Not `$remesh`: PowerShell's names ignore case, and a local of that name would shadow the
+    # -Remesh parameter for every function this one calls, through dynamic scope.)
+    $remeshRecord = $null
+    if ($Remesh) { $remeshRecord = [ordered]@{ should_remesh = $true; topology = $Topology; target_polycount = $poly.faces; polycount_from = $poly.from; budget_class = $poly.budget_class; budget_triangles = $poly.budget_triangles } }
+    $jobs += [pscustomobject]@{ Input = $in; Body = $body; Remesh = $remeshRecord; Spec = $spec; State = $state; TaskId = $taskId; Attempt = $attempt; Submitted = $null; Progress = -1; Sidecar = $side; TaskFile = $taskFile }
   }
   $new = @($jobs | Where-Object State -eq 'new')
   $resume = @($jobs | Where-Object State -eq 'resume')
   $estimate = $new.Count * $CreditsPerTask
-  $balance = Get-MeshyBalance
+  $balance = if ($Offline) { $null } else { Get-MeshyBalance }
   Write-Step "meshy: $($jobs.Count) images: $($new.Count) to submit at ~$CreditsPerTask credits = ~$estimate credits; $($resume.Count) already submitted (resumed, no new spend); $($jobs.Count - $new.Count - $resume.Count) already made"
-  Write-Step "meshy: balance $balance -> ~$($balance - $estimate) after; floor $MinBalance; this run's cap $MaxCredits; up to $Retries retry per failed task within the cap"
-  Write-Note "  request: $(($body | ConvertTo-Json -Compress)) + the image as a data URI"
+  if ($Offline) { Write-Step "meshy: balance not read (-Offline); floor $MinBalance; this run's cap $MaxCredits" }
+  else { Write-Step "meshy: balance $balance -> ~$($balance - $estimate) after; floor $MinBalance; this run's cap $MaxCredits; up to $Retries retry per failed task within the cap" }
+  $distinct = @($jobs | ForEach-Object { $_.Body | ConvertTo-Json -Compress } | Sort-Object -Unique)
+  foreach ($d in $distinct) { Write-Note "  request: $d + the image as a data URI ($(@($jobs | Where-Object { ($_.Body | ConvertTo-Json -Compress) -eq $d }).Count) images)" }
   Write-Note "  into $dir"
   if ($estimate -gt $MaxCredits) { throw "refused: ~$estimate credits is over this run's cap of $MaxCredits (-MaxCredits)" }
-  if ($balance - $estimate -lt $MinBalance) { throw "refused: ~$estimate credits would take the balance from $balance below the floor of $MinBalance (-MinBalance)" }
-  if ($DryRun) { return , @($jobs | ForEach-Object { [pscustomobject]@{ name = $_.Input.name; status = "dry-run:$($_.State)"; image = $_.Input.path; task_id = $_.TaskId } }) }
+  if ($null -ne $balance -and $balance - $estimate -lt $MinBalance) { throw "refused: ~$estimate credits would take the balance from $balance below the floor of $MinBalance (-MinBalance)" }
+  if ($DryRun) {
+    return , @($jobs | ForEach-Object {
+        [pscustomobject][ordered]@{ name = $_.Input.name; status = "dry-run:$($_.State)"; image = $_.Input.path; task_id = $_.TaskId; request = (Get-RequestRecord $_.Body); remesh = $_.Remesh; spec_hash = $_.Spec } })
+  }
   if ($new.Count -gt 0 -and -not (Confirm-Action "Spend ~$estimate Meshy credits on $($new.Count) tasks?")) { throw 'not confirmed' }
 
   $results = @()
@@ -1120,7 +1202,7 @@ function Invoke-MeshyStage($inputs) {
         $results += [pscustomobject]@{ name = $j.Input.name; status = 'not-submitted'; reason = 'credit cap or floor' }
         continue
       }
-      $request = [ordered]@{}; foreach ($k in $body.Keys) { $request[$k] = $body[$k] }
+      $request = Get-RequestRecord $j.Body
       $ext = [IO.Path]::GetExtension($j.Input.path).TrimStart('.').ToLowerInvariant(); if ($ext -eq 'jpg') { $ext = 'jpeg' }
       $request.image_url = "data:image/$ext;base64," + [Convert]::ToBase64String([IO.File]::ReadAllBytes($j.Input.path))
       $r = Invoke-Meshy 'POST' '/image-to-3d' $request
@@ -1129,8 +1211,11 @@ function Invoke-MeshyStage($inputs) {
       $j.Progress = -1
       $committed += $CreditsPerTask
       # On disk before the first poll: an interrupted run resumes this task rather than paying again.
-      Write-JsonFile $j.TaskFile ([ordered]@{ name = $j.Input.name; task_id = $j.TaskId; attempt = $j.Attempt; spec_hash = $j.Spec; image = $j.Input.path; image_sha256 = $j.Input.sha256; request = $body; submitted_utc = Format-Utc $j.Submitted })
-      Add-JsonLine $ledger ([ordered]@{ utc = Format-Utc $j.Submitted; event = 'submitted'; name = $j.Input.name; task_id = $j.TaskId; attempt = $j.Attempt; estimate = $CreditsPerTask })
+      Write-JsonFile $j.TaskFile ([ordered]@{ name = $j.Input.name; task_id = $j.TaskId; attempt = $j.Attempt; spec_hash = $j.Spec; image = $j.Input.path; image_sha256 = $j.Input.sha256; request = (Get-RequestRecord $j.Body); remesh = $j.Remesh; submitted_utc = Format-Utc $j.Submitted })
+      # The request goes into the ledger too (without the image), so the ledger alone says what
+      # every credit bought: a remeshed task and an unremeshed one cost the same and are not the
+      # same asset.
+      Add-JsonLine $ledger ([ordered]@{ utc = Format-Utc $j.Submitted; event = 'submitted'; name = $j.Input.name; task_id = $j.TaskId; attempt = $j.Attempt; estimate = $CreditsPerTask; request = (Get-RequestRecord $j.Body); remesh = $j.Remesh })
       Write-Log "  submitted $($j.Input.name) -> $($j.TaskId) (attempt $($j.Attempt))"
       $inflight.Add($j)
     }
@@ -1145,7 +1230,7 @@ function Invoke-MeshyStage($inputs) {
       if ($t.status -eq 'SUCCEEDED') {
         $inflight.Remove($j) | Out-Null
         try {
-          $results += Save-MeshyResult $j $t $dir $body $ledger
+          $results += Save-MeshyResult $j $t $dir $ledger
           $consumed += [int]$t.consumed_credits
         } catch {
           Write-Warn "$($j.Input.name): the task succeeded but saving it failed: $($_.Exception.Message) (the task file is kept; a rerun resumes it)"
@@ -1177,11 +1262,12 @@ function Invoke-MeshyStage($inputs) {
   }
   $after = Get-MeshyBalance
   Write-Step "meshy: balance $balance -> $after ($($balance - $after) spent; the finished tasks report $consumed)"
-  Add-JsonLine $ledger ([ordered]@{ utc = Format-Utc (Get-Utc); event = 'batch'; balance_before = $balance; balance_after = $after; tasks_consumed = $consumed })
+  Add-JsonLine $ledger ([ordered]@{ utc = Format-Utc (Get-Utc); event = 'batch'; balance_before = $balance; balance_after = $after; tasks_consumed = $consumed; remesh = [bool]$Remesh; topology = $Topology; target_polycount = $(if ($Remesh) { if ($TargetPolycount -gt 0) { $TargetPolycount } else { 'per subject budget' } } else { $null }) })
   return , @($results)
 }
 
-function Save-MeshyResult($j, $t, [string]$dir, $body, [string]$ledger) {
+function Save-MeshyResult($j, $t, [string]$dir, [string]$ledger) {
+  $body = Get-RequestRecord $j.Body
   $n = $j.Input.name
   $glb = Join-Path $dir "$n.glb"
   # The URL is a signed link whose signature carries `~` and `&`: it is taken from the parsed JSON
@@ -1207,6 +1293,10 @@ function Save-MeshyResult($j, $t, [string]$dir, $body, [string]$ledger) {
       created_at_ms = $t.created_at; started_at_ms = $t.started_at; finished_at_ms = $t.finished_at
       consumed_credits = $t.consumed_credits
       request = $body
+      # null for a task that was not remeshed; otherwise what was asked for and where the number
+      # came from (a subject's budget class, or -TargetPolycount). The service calls the target
+      # approximate, so what came back is the GLB's to say, not this record's.
+      remesh = $j.Remesh
     }
   }
   $inRec = New-InputRecord $j.Input

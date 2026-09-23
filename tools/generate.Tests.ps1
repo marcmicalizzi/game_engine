@@ -98,9 +98,11 @@ try {
   $wfFile = Join-Path $root 'fixture-workflow.json'
   $ui | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $wfFile -Encoding utf8
 
-  $subjects = [ordered]@{ set = 'test-set'; subjects = @(
-      [ordered]@{ name = 'alpha-rock'; category = 'rock'; size_m = 1.0; subject = 'a grey rock' }
-      [ordered]@{ name = 'beta-cup'; category = 'tool'; size_m = 0.1; subject = 'a tin cup' }) }
+  $subjects = [ordered]@{ set = 'test-set'
+    triangle_budgets = [ordered]@{ hand = [ordered]@{ triangles = 50000 }; large = [ordered]@{ triangles = 250000 } }
+    subjects = @(
+      [ordered]@{ name = 'alpha-rock'; category = 'rock'; budget = 'large'; size_m = 1.0; subject = 'a grey rock' }
+      [ordered]@{ name = 'beta-cup'; category = 'tool'; budget = 'hand'; size_m = 0.1; subject = 'a tin cup' }) }
   $subjectsFile = Join-Path $root 'subjects.json'
   $subjects | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $subjectsFile -Encoding utf8
 
@@ -309,6 +311,40 @@ try {
   Test-That 'the README names every image and where to drop the GLBs' { $t = Get-Content -Raw (Join-Path $tripo 'README.md'); $t -match 'alpha-rock\.glb' -and $t -match 'beta-cup\.png' -and $t.Contains($m.inbox) }
   $r = Invoke-Gen manifest -Backend tripo-folder -Images $images -LocalRoot $local -Date 2026-01-02
   Test-That 'a manifest is not overwritten without -Force (the owner may have written in it)' { $r.Code -ne 0 -and $r.Err -match 'exists' }
+
+  # ---- the Meshy stage, planned offline (no key, no balance, no credits) ----------------------------
+  Write-Host 'meshy -DryRun -Offline'
+  $r = Invoke-Gen 3d -Backend meshy -Images $images -LocalRoot $local -Date 2026-01-02 -DryRun -Offline
+  $a = $r.Json | Where-Object name -eq 'alpha-rock'
+  Test-That 'without -Remesh the request is the first pass''s body, field for field' {
+    $r.Code -eq 0 -and $r.Json.Count -eq 2 -and (($a.request | ConvertTo-Json -Compress) -eq '{"ai_model":"latest","should_texture":true,"enable_pbr":true,"topology":"triangle"}') -and $null -eq $a.remesh }
+  # The first pass's spec was sha256(image sha256 \n sha256(body JSON)); a batch without -Remesh must
+  # still name those outputs, or rerunning it would refuse them as "a different spec".
+  $sha = { param($s) ([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($s)))).ToLowerInvariant() }
+  $alphaSha = (Get-FileHash -Algorithm SHA256 (Join-Path $images 'alpha-rock.png')).Hash.ToLowerInvariant()
+  $oldSpec = & $sha ("$alphaSha`n" + (& $sha '{"ai_model":"latest","should_texture":true,"enable_pbr":true,"topology":"triangle"}'))
+  Test-That 'and its spec hash is the one the first pass recorded' { $a.spec_hash -eq $oldSpec }
+  $r = Invoke-Gen 3d -Backend meshy -Images $images -Subjects $subjectsFile -Remesh -LocalRoot $local -Date 2026-01-02 -DryRun -Offline
+  $a = $r.Json | Where-Object name -eq 'alpha-rock'; $b = $r.Json | Where-Object name -eq 'beta-cup'
+  Test-That '-Remesh -Subjects takes each image''s polycount from its subject''s budget class' {
+    $r.Code -eq 0 -and $a.request.should_remesh -eq $true -and $a.request.target_polycount -eq 250000 -and $b.request.target_polycount -eq 50000 -and $a.request.topology -eq 'triangle' }
+  Test-That 'and records where the number came from' { $a.remesh.budget_class -eq 'large' -and $a.remesh.budget_triangles -eq 250000 -and $a.remesh.polycount_from -match '^budget:large' }
+  Test-That 'a remeshed request is a different spec from the unremeshed one' { $a.spec_hash -ne $oldSpec }
+  $r = Invoke-Gen 3d -Backend meshy -Images $images -Subjects $subjectsFile -Remesh -Topology quad -LocalRoot $local -DryRun -Offline
+  Test-That 'a quad remesh asks for half the budget, because its faces are quads' {
+    ($r.Json | Where-Object name -eq 'alpha-rock').request.target_polycount -eq 125000 -and ($r.Json | Where-Object name -eq 'alpha-rock').request.topology -eq 'quad' }
+  $r = Invoke-Gen 3d -Backend meshy -Images $images -Subjects $subjectsFile -Remesh -TargetPolycount 20000 -LocalRoot $local -DryRun -Offline
+  Test-That '-TargetPolycount overrides the budgets for every image' { @($r.Json | Where-Object { $_.request.target_polycount -eq 20000 -and $_.remesh.polycount_from -eq '-TargetPolycount' }).Count -eq 2 }
+  $r = Invoke-Gen 3d -Backend meshy -Images $images -TargetPolycount 20000 -LocalRoot $local -DryRun -Offline
+  Test-That '-TargetPolycount without -Remesh is refused (the service would ignore it)' { $r.Code -ne 0 -and $r.Err -match 'without -Remesh' }
+  $r = Invoke-Gen 3d -Backend meshy -Images $images -Topology quad -LocalRoot $local -DryRun -Offline
+  Test-That 'and so is -Topology quad' { $r.Code -ne 0 -and $r.Err -match 'without -Remesh' }
+  $r = Invoke-Gen 3d -Backend meshy -Images $images -Remesh -TargetPolycount 50 -LocalRoot $local -DryRun -Offline
+  Test-That 'a polycount outside Meshy''s range is refused' { $r.Code -ne 0 -and $r.Err -match 'outside Meshy' }
+  $r = Invoke-Gen 3d -Backend meshy -Images $images -Remesh -LocalRoot $local -DryRun -Offline
+  Test-That '-Remesh with no polycount and no budget is refused rather than left to the service default' { $r.Code -ne 0 -and $r.Err -match 'needs a polycount' }
+  $r = Invoke-Gen 3d -Backend meshy -Images $images -LocalRoot $local -Offline -MaxCredits 0
+  Test-That '-Offline is refused outside a dry run' { $r.Code -ne 0 -and $r.Err -match 'DryRun only' }
 
   $glbBytes = [Text.Encoding]::ASCII.GetBytes('glTF') + [byte[]](2, 0, 0, 0, 20, 0, 0, 0) + [byte[]](0) * 8
   [IO.File]::WriteAllBytes((Join-Path $m.inbox 'alpha-rock.glb'), $glbBytes)
