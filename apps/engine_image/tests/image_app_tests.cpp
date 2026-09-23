@@ -164,7 +164,8 @@ TEST_CASE("engine-image: --version names the commit it was built from") {
   CHECK(tool->as_string() == "engine-image");
   CHECK(dirty->is_bool());
   const std::string_view sha = commit->as_string();
-  const bool hex40 = sha.size() == 40 && sha.find_first_not_of("0123456789abcdef") == std::string_view::npos;
+  const bool hex40 =
+      sha.size() == 40 && sha.find_first_not_of("0123456789abcdef") == std::string_view::npos;
   CHECK_MESSAGE((hex40 || sha == "unknown"), "commit: " << std::string(sha));
 }
 

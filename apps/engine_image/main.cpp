@@ -10,7 +10,6 @@
 // not an image, two images of different sizes -- exits 2. There is deliberately no exit 1.
 #include <core/platform/cpu_baseline.h>
 #include <core/time/time.h>
-#include <engine_build_stamp.h>
 #include <foundation/image/decode.h>
 #include <foundation/image/metrics.h>
 #include <foundation/image/png.h>
@@ -19,6 +18,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <engine_build_stamp.h>
 #include <span>
 #include <string>
 #include <string_view>

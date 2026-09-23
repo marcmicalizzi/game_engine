@@ -26,13 +26,13 @@
 #include <core/time/time.h>
 #include <domain/assets/gltf.h>
 #include <domain/geometry/cluster_file.h>
-#include <engine_build_stamp.h>
 #include <foundation/io/vfs.h>
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <engine_build_stamp.h>
 #include <span>
 #include <string>
 #include <string_view>

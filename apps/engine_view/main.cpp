@@ -27,7 +27,6 @@
 #include <domain/gfx/device.h>
 #include <domain/gfx/swapchain.h>
 #include <domain/gfx/vulkan.h>
-#include <engine_build_stamp.h>
 #include <foundation/bench/machine_state.h>
 #include <foundation/image/png.h>
 #include <foundation/io/vfs.h>
@@ -38,6 +37,8 @@
 #include <systems/renderer/scene.h>
 #include <systems/renderer/scene_renderer.h>
 #include <systems/renderer/settings.h>
+
+#include <engine_build_stamp.h>
 
 #if ENGINE_VIEW_ANIMATION
 #include "anim_lod.h"

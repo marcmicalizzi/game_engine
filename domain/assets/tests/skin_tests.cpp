@@ -348,21 +348,28 @@ bool write_mixed_normals_glb(const std::string& path, bool normals_first) {
       }
       const u32 view = p * 4 + k;
       views += "{\"buffer\":0,\"byteOffset\":" + n(offsets[p][k]) + ",\"byteLength\":36}";
-      accessors += "{\"bufferView\":" + n(view) + ",\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"" +
+      accessors += "{\"bufferView\":" + n(view) +
+                   ",\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"" +
                    std::string(k == 0 ? ",\"min\":[0,0,0],\"max\":[3,1,0]" : "") + "}";
     }
   }
   auto target = [&](u32 p) {
     const bool with_normal = (p == 0) == normals_first;
-    return "{\"POSITION\":" + n(p * 4 + 2) + (with_normal ? ",\"NORMAL\":" + n(p * 4 + 3) : "") + "}";
+    return "{\"POSITION\":" + n(p * 4 + 2) + (with_normal ? ",\"NORMAL\":" + n(p * 4 + 3) : "") +
+           "}";
   };
   std::string json =
       "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,\"scenes\":[{\"nodes\":[0]}],"
       "\"nodes\":[{\"mesh\":0}],\"meshes\":[{\"primitives\":["
-      "{\"attributes\":{\"POSITION\":0,\"NORMAL\":1},\"targets\":[" + target(0) + "]},"
-      "{\"attributes\":{\"POSITION\":4,\"NORMAL\":5},\"targets\":[" + target(1) + "]}]}],"
-      "\"accessors\":[" + accessors + "],\"bufferViews\":[" + views +
-      "],\"buffers\":[{\"byteLength\":" + n(end) + "}]}";
+      "{\"attributes\":{\"POSITION\":0,\"NORMAL\":1},\"targets\":[" +
+      target(0) +
+      "]},"
+      "{\"attributes\":{\"POSITION\":4,\"NORMAL\":5},\"targets\":[" +
+      target(1) +
+      "]}]}],"
+      "\"accessors\":[" +
+      accessors + "],\"bufferViews\":[" + views + "],\"buffers\":[{\"byteLength\":" + n(end) +
+      "}]}";
   while (json.size() % 4 != 0)
     json += ' ';
   std::vector<u8> glb;
@@ -406,10 +413,10 @@ TEST_CASE("gltf morph targets: normal deltas stay parallel whichever primitive l
 
     // And the builder takes it as it would any channel.
     geometry::ClusterMesh clusters;
-    REQUIRE_MESSAGE(geometry::build_clusters(mesh.positions, mesh.indices,
-                                             geometry::ClusterBuildOptions{}, clusters, &error,
-                                             attribute_source(mesh)),
-                    error);
+    REQUIRE_MESSAGE(
+        geometry::build_clusters(mesh.positions, mesh.indices, geometry::ClusterBuildOptions{},
+                                 clusters, &error, attribute_source(mesh)),
+        error);
     CHECK(clusters.morph_channels.size() == 1);
   }
 }

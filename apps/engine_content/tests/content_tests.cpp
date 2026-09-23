@@ -311,7 +311,7 @@ bool write_cube_glb(const std::string& path, const CubeOptions& options = {}) {
 // that splits its normals along a crease writes one. The weld keeps the edge's two copies apart
 // (their normals differ), so by index the card is two pieces; by the atlas it is one.
 bool write_card_glb(const std::string& path) {
-  const Vec3 positions[8] = {Vec3{0, 0, 0}, Vec3{1, 0, 0},   Vec3{1, 1, 0},   Vec3{0, 1, 0},
+  const Vec3 positions[8] = {Vec3{0, 0, 0}, Vec3{1, 0, 0},    Vec3{1, 1, 0},    Vec3{0, 1, 0},
                              Vec3{1, 0, 0}, Vec3{2, 0, 0.5f}, Vec3{2, 1, 0.5f}, Vec3{1, 1, 0}};
   const Vec3 fold = normalize(Vec3{-0.5f, 0.0f, 1.0f});
   const Vec3 normals[8] = {Vec3{0, 0, 1}, Vec3{0, 0, 1}, Vec3{0, 0, 1}, Vec3{0, 0, 1},
