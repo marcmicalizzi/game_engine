@@ -242,6 +242,11 @@ constexpr const char* k_rule_degenerate = "geometry.degenerate_triangle";
 constexpr const char* k_rule_cluster_budget = "geometry.cluster_budget";
 constexpr const char* k_rule_uv_range = "geometry.uv_range";
 constexpr const char* k_rule_missing_image = "material.missing_image";
+// Not a warning: a **repair**. The build fixes the fault itself, mechanically and the same way
+// every time, and says so on its own line with the counts (docs/subsystems/geometry.md,
+// "UV-degenerate triangles: the repair"). An asset that needed it is still one the pipeline can
+// take unattended, which is the difference between this and a warning.
+constexpr const char* k_rule_uv_degenerate = "geometry.uv_degenerate";
 
 // A UV that far outside the unit square is a broken unwrap or a unit mix-up, not tiling: 16
 // wraps is already a texel density no texture pipeline can serve. A warning, not an error,
@@ -394,6 +399,7 @@ struct BuildResult {
   u64 hash = 0;
   f64 build_ms = 0.0;
   Vector<Diagnostic> warnings;
+  geometry::UvRepairReport uv_repair;  // what the UV repair did; all zero when it had nothing to do
 };
 
 // One primitive's DAG, as a job sees it. The result lives here rather than in a shared list, so
@@ -447,6 +453,16 @@ bool build_one(const std::string& input, const std::string& output, const MeshOp
   if (strict && !out.warnings.empty()) {
     error.rule = out.warnings[0].rule;
     error.message = out.warnings[0].message + " (--strict)";
+    return false;
+  }
+
+  // UV-degenerate triangles are repaired before the weld, so a corner that took its neighbouring
+  // island's UV is merged into that island's vertex by the weld below. After validation, so a
+  // diagnostic still names the triangle as the source numbers it. `engine-view --mesh` calls the
+  // same function at the same point, because the two share cache entries.
+  if (!assets::repair_uv_degenerate_triangles(mesh, out.uv_repair, &message)) {
+    error.rule = k_rule_uv_degenerate;
+    error.message = message;
     return false;
   }
 
@@ -654,6 +670,42 @@ void log_warnings(const std::string& source, const Vector<Diagnostic>& warnings)
   }
 }
 
+// The repairs a build made, as the `repairs` array of its JSON line: one row per rule that fired,
+// empty when none did, so a reader tells "nothing to repair" from "an older build" by the key.
+JsonValue repairs_json(const BuildResult& result) {
+  JsonValue rows = JsonValue::array();
+  const geometry::UvRepairReport& r = result.uv_repair;
+  if (r.triangles != 0) {
+    JsonValue row = JsonValue::object();
+    row.set("rule", JsonValue(k_rule_uv_degenerate));
+    row.set("islands", JsonValue(r.islands));
+    row.set("triangles", JsonValue(r.triangles));
+    row.set("refolded", JsonValue(r.refolded));
+    row.set("dropped", JsonValue(r.dropped));
+    row.set("unrepaired", JsonValue(r.unrepaired));
+    row.set("corners_from_neighbours", JsonValue(r.corners_from_neighbours));
+    row.set("corners_on_edge", JsonValue(r.corners_on_edge));
+    row.set("threshold_texels_4096", JsonValue(r.threshold_texels));
+    rows.push_back(std::move(row));
+  }
+  return rows;
+}
+
+// The same, for a person, on stderr: a `repair` line, which is tool output like the stats table
+// and not a log record — a warning is something to act on, and this is something that was done.
+void print_repairs(const std::string& source, const BuildResult& result) {
+  const geometry::UvRepairReport& r = result.uv_repair;
+  if (r.triangles == 0) return;
+  std::fprintf(stderr,
+               "repair: %s: %s: %u atlas island%s under %g texel%s of a 4096 atlas as stored, "
+               "%u triangle%s: %u refolded into the neighbouring island (%u corners from it, %u "
+               "onto the shared edge), %u dropped, %u unrepaired\n",
+               k_rule_uv_degenerate, source.c_str(), r.islands, r.islands == 1 ? "" : "s",
+               r.threshold_texels, r.threshold_texels == 1.0 ? "" : "s", r.triangles,
+               r.triangles == 1 ? "" : "s", r.refolded, r.corners_from_neighbours,
+               r.corners_on_edge, r.dropped, r.unrepaired);
+}
+
 // The job system the per-primitive and per-mesh builds run on. `worker_count` is `--jobs`; 0
 // leaves the system its own default, one worker per performance CPU. The efficiency pool is
 // asked for one worker because nothing here uses it.
@@ -704,6 +756,7 @@ int build(const BuildCommandOptions& options) {
                             key, result, error);
   log_warnings(options.input, result.warnings);
   if (!ok) return failed(std::string(error.rule) + ": " + error.message);
+  print_repairs(options.input, result);
 
   JsonValue summary = JsonValue::object();
   summary.set("path", JsonValue(result.path));
@@ -724,6 +777,7 @@ int build(const BuildCommandOptions& options) {
   summary.set("deduplicated_images", JsonValue(result.deduplicated_images));
   summary.set("image_bytes", JsonValue(result.image_bytes));
   summary.set("warnings", JsonValue(result.warnings.size()));
+  summary.set("repairs", repairs_json(result));
   summary.set("bytes", JsonValue(result.bytes));
   summary.set("build_ms", JsonValue(result.build_ms));
   summary.set("hash", JsonValue(result.hash));
@@ -1016,6 +1070,7 @@ int build_all(const BuildAllCommandOptions& options) {
     switch (task.state) {
       case TaskState::Built: {
         ++built;
+        print_repairs(task.entry->source, task.result);
         line.set("status", JsonValue("built"));
         line.set("cached", JsonValue(task.result.cached));
         line.set("source_hash", JsonValue(task.result.source_hash));
@@ -1034,6 +1089,7 @@ int build_all(const BuildAllCommandOptions& options) {
         line.set("deduplicated_images", JsonValue(task.result.deduplicated_images));
         line.set("image_bytes", JsonValue(task.result.image_bytes));
         line.set("warnings", JsonValue(task.result.warnings.size()));
+        line.set("repairs", repairs_json(task.result));
         line.set("bytes", JsonValue(task.result.bytes));
         line.set("build_ms", JsonValue(task.result.build_ms));
         line.set("hash", JsonValue(task.result.hash));
@@ -1351,11 +1407,12 @@ void print_sweep(const Vector<SweepStep>& sweep, u64 budget) {
 // it something a content build has to report. These are the numbers §7.4's atlas-fragmentation
 // validator will threshold.
 //
-// An island is a connected component of the level-0 triangles over *source vertex indices*, which
-// is exactly right because the weld keys on the UV: the two sides of an island edge are different
-// source vertices, and only they are. Areas are in UV space, reported in texels of a 4096 atlas
-// because that is the unit an author reasons in and the unit "smaller than a triangle" is decided
-// in.
+// An island is a connected component of the level-0 triangles over *atlas points* — source
+// vertices joined by index and, where the weld kept two apart for their normals alone, by sharing
+// a position and a stored UV — because the two sides of an island edge differ in UV, and a hard
+// edge inside an island does not (the reasoning is at the join below). Areas are in UV space,
+// reported in texels of a 4096 atlas because that is the unit an author reasons in and the unit
+// "smaller than a triangle" is decided in.
 struct AtlasStats {
   u32 islands = 0;
   u32 source_vertices = 0;    // distinct source vertices the clusters reference
@@ -1416,6 +1473,42 @@ AtlasStats measure_atlas(const geometry::ClusterLodMesh& lod) {
       for (u32 k = 0; k < 3; ++k)
         corners.push_back(
             mesh.vertex_source[desc.vertex_offset + geometry::ClusterMesh::unpack(packed, k)]);
+    }
+  }
+  // A UV island is connected **in the atlas**: two source vertices at one position with one UV
+  // (as stored) are one point of it even when the weld kept them apart for a different normal.
+  // So every source vertex is first joined to the others that share its position and stored UV.
+  // Without this, a hard edge inside an island — which a remesher writes along every chart border
+  // it cuts (E10's second pass) — split the island by index, and `smallest_island_texels_4096`
+  // reported a sliver of a sound island as an island of its own. Texture sampling and the LOD
+  // builder's seam rule (`uv_seams`, with `normal_seams` off) both see the atlas the same way.
+  {
+    struct AtlasKey {
+      u32 bits[5] = {};
+      u32 vertex = 0;
+    };
+    Vector<AtlasKey> atlas_keys;
+    atlas_keys.reserve(out.source_vertices);
+    for (u32 v = 0; v < source_count; ++v) {
+      if (present[v] == 0) continue;
+      AtlasKey k;
+      std::memcpy(&k.bits[0], &position[v], sizeof(Vec3));
+      std::memcpy(&k.bits[3], &uv[v], sizeof(Vec2));
+      k.vertex = v;
+      atlas_keys.push_back(k);
+    }
+    std::sort(atlas_keys.begin(), atlas_keys.end(), [](const AtlasKey& a, const AtlasKey& b) {
+      for (u32 i = 0; i < 5; ++i) {
+        if (a.bits[i] != b.bits[i]) return a.bits[i] < b.bits[i];
+      }
+      return a.vertex < b.vertex;
+    });
+    for (u32 i = 1; i < atlas_keys.size(); ++i) {
+      if (std::memcmp(atlas_keys[i].bits, atlas_keys[i - 1].bits, sizeof(atlas_keys[i].bits)) != 0)
+        continue;
+      const u32 a = find_root(parent, atlas_keys[i - 1].vertex);
+      const u32 b = find_root(parent, atlas_keys[i].vertex);
+      if (a != b) parent[b] = a;
     }
   }
   for (u32 i = 0; i + 2 < corners.size(); i += 3) {

@@ -285,15 +285,19 @@ function Get-Diagnosis($row) {
   }
   # Two different atlas defects fail the same threshold, and their repairs differ by an order of
   # magnitude: a few triangles whose UVs coincide or nearly do (an island of no area — a UV-hygiene
-  # fault, fixed by folding them into a neighbouring island) and a genuinely fragmented atlas (a
-  # repack and a rebake). E10's first pass found the first in most of its failures and the second in
-  # a few, so the diagnosis says which, by the atlas's median island and its seam share.
+  # fault, which the content build now folds into the neighbouring island itself, as the repair
+  # `geometry.uv_degenerate`) and a genuinely fragmented atlas (a repack and a rebake). E10's first
+  # pass found the first in most of its failures and the second in a few, so the diagnosis says
+  # which, by the atlas's median island and its seam share. After the repair, a sub-texel island
+  # that is still there is one it could not reach.
   $fragmented = ($null -ne $row.median_island_texels_4096 -and $row.median_island_texels_4096 -lt 1024) -or ($null -ne $row.seam_fraction -and $row.seam_fraction -gt 0.3)
   if ($row.checks.island -eq 'fail') {
     if ($fragmented) {
       $parts += ("fragmented atlas: {0:N0} islands, median {1:N0} texels, smallest {2:0.###} over {3} triangles, {4:0.0}% of vertices on a seam — repack into fewer, larger islands and rebake the textures; the geometry builder cannot help" -f $row.islands, $row.median_island_texels_4096, $row.smallest_island_texels_4096, $row.smallest_island_triangles, (100 * $row.seam_fraction))
     } else {
-      $parts += ("sub-texel island in a sound atlas: the smallest of {0:N0} islands (median {1:N0} texels) is {2} triangle(s) with {3:0.###} texels of UV area — fold those triangles' UVs into the neighbouring island (a UV cleanup pass: no repack, no rebake)" -f $row.islands, $row.median_island_texels_4096, $row.smallest_island_triangles, $row.smallest_island_texels_4096)
+      $folded = @($row.repairs | Where-Object { $_ -and $_.rule -eq 'geometry.uv_degenerate' }) | Select-Object -First 1
+      $by = if ($folded) { " the build's UV repair folded {0:N0} such islands ({1:N0} triangles) and left {2:N0} triangles with no sound island beside them, which is where this one is —" -f [long]$folded.islands, [long]$folded.triangles, [long]$folded.unrepaired } else { '' }
+      $parts += ("sub-texel island in a sound atlas: the smallest of {0:N0} islands (median {1:N0} texels) is {2} triangle(s) with {3:0.###} texels of UV area;{4} fold those triangles' UVs into a neighbouring island by hand, or drop the floating part (a UV cleanup: no repack, no rebake)" -f $row.islands, $row.median_island_texels_4096, $row.smallest_island_triangles, $row.smallest_island_texels_4096, $by)
     }
   }
   if ($row.checks.flip -eq 'fail') {
@@ -487,6 +491,9 @@ if ($FromReport) {
     $row.materials = [int]$b.materials; $row.images = [int]$b.images
     $row.warnings = [int]$b.warnings; $row.warning_rules = [pscustomobject]$rules
     $row.container_bytes = [long]$b.bytes; $row.build_ms = [math]::Round([double]$b.build_ms, 1)
+    # What the build repaired rather than warned about (geometry.md, "UV-degenerate triangles:
+    # the repair"): an empty array when nothing needed it, absent from a build older than the rule.
+    if ($null -ne $b.repairs) { $row.repairs = @($b.repairs) }
 
     # 2. stats
     $statsOut = & $content stats $clusters 2> (Join-Path $dir 'stats.err')

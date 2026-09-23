@@ -123,6 +123,9 @@ struct CubeOptions {
   // One morph target on every primitive, moving the +x face's four corners out by a quarter:
   // enough for a channel with deltas on some vertices and none on the rest.
   bool morph = false;
+  // A face whose four UVs are one point: an atlas island of no area, the defect the content
+  // build's UV repair exists for (geometry.md, "UV-degenerate triangles: the repair"). -1: none.
+  i32 point_uv_face = -1;
 };
 
 // The six base colors the generated materials cycle through; the first is the textured one.
@@ -171,7 +174,8 @@ bool write_cube_glb(const std::string& path, const CubeOptions& options = {}) {
   const u32 uv_offset = static_cast<u32>(bin.size());
   for (u32 f = 0; f < 6; ++f) {
     const f32 uvs[8] = {0, 0, 1, 0, 1, 1, 0, 1};
-    for (const f32 v : uvs)
+    const f32 point[8] = {0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f};
+    for (const f32 v : static_cast<i32>(f) == options.point_uv_face ? point : uvs)
       put_f32(bin, v);
   }
   const u32 index_offset = static_cast<u32>(bin.size());
@@ -281,6 +285,67 @@ bool write_cube_glb(const std::string& path, const CubeOptions& options = {}) {
   while (json.size() % 4 != 0)
     json += ' ';
 
+  std::vector<u8> glb;
+  put_u32(glb, 0x46546c67u);  // "glTF"
+  put_u32(glb, 2u);
+  put_u32(glb, static_cast<u32>(12 + 8 + json.size() + 8 + bin.size()));
+  put_u32(glb, static_cast<u32>(json.size()));
+  put_u32(glb, 0x4e4f534au);  // "JSON"
+  glb.insert(glb.end(), json.begin(), json.end());
+  put_u32(glb, static_cast<u32>(bin.size()));
+  put_u32(glb, 0x004e4942u);  // "BIN\0"
+  glb.insert(glb.end(), bin.begin(), bin.end());
+  std::ofstream f(path, std::ios::binary);
+  if (!f.is_open()) return false;
+  f.write(reinterpret_cast<const char*>(glb.data()), static_cast<std::streamsize>(glb.size()));
+  return f.good();
+}
+
+// A card folded along x = 1: two quads that share that edge **with the same UVs on it** and
+// different normals, which is one atlas island with a hard edge inside it — the way a remesher
+// that splits its normals along a crease writes one. The weld keeps the edge's two copies apart
+// (their normals differ), so by index the card is two pieces; by the atlas it is one.
+bool write_card_glb(const std::string& path) {
+  const Vec3 positions[8] = {Vec3{0, 0, 0}, Vec3{1, 0, 0},   Vec3{1, 1, 0},   Vec3{0, 1, 0},
+                             Vec3{1, 0, 0}, Vec3{2, 0, 0.5f}, Vec3{2, 1, 0.5f}, Vec3{1, 1, 0}};
+  const Vec3 fold = normalize(Vec3{-0.5f, 0.0f, 1.0f});
+  const Vec3 normals[8] = {Vec3{0, 0, 1}, Vec3{0, 0, 1}, Vec3{0, 0, 1}, Vec3{0, 0, 1},
+                           fold,          fold,          fold,          fold};
+  const f32 uvs[16] = {0, 0, 0.5f, 0, 0.5f, 0.5f, 0, 0.5f, 0.5f, 0, 1, 0, 1, 0.5f, 0.5f, 0.5f};
+  const u16 indices[12] = {0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7};
+  std::vector<u8> bin;
+  for (const Vec3& p : positions) {
+    put_f32(bin, p.x);
+    put_f32(bin, p.y);
+    put_f32(bin, p.z);
+  }
+  for (const Vec3& q : normals) {
+    put_f32(bin, q.x);
+    put_f32(bin, q.y);
+    put_f32(bin, q.z);
+  }
+  for (const f32 v : uvs)
+    put_f32(bin, v);
+  for (const u16 i : indices)
+    put_u16(bin, i);
+  pad4(bin, 0);
+  std::string json =
+      "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,\"scenes\":[{\"nodes\":[0]}],"
+      "\"nodes\":[{\"mesh\":0}],\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0,"
+      "\"NORMAL\":1,\"TEXCOORD_0\":2},\"indices\":3}]}],\"accessors\":["
+      "{\"bufferView\":0,\"componentType\":5126,\"count\":8,\"type\":\"VEC3\","
+      "\"min\":[0,0,0],\"max\":[2,1,0.5]},"
+      "{\"bufferView\":1,\"componentType\":5126,\"count\":8,\"type\":\"VEC3\"},"
+      "{\"bufferView\":2,\"componentType\":5126,\"count\":8,\"type\":\"VEC2\"},"
+      "{\"bufferView\":3,\"componentType\":5123,\"count\":12,\"type\":\"SCALAR\"}],"
+      "\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":96},"
+      "{\"buffer\":0,\"byteOffset\":96,\"byteLength\":96},"
+      "{\"buffer\":0,\"byteOffset\":192,\"byteLength\":64},"
+      "{\"buffer\":0,\"byteOffset\":256,\"byteLength\":24}],"
+      "\"buffers\":[{\"byteLength\":" +
+      n(static_cast<u32>(bin.size())) + "}]}";
+  while (json.size() % 4 != 0)
+    json += ' ';
   std::vector<u8> glb;
   put_u32(glb, 0x46546c67u);  // "glTF"
   put_u32(glb, 2u);
@@ -782,6 +847,88 @@ TEST_CASE("engine-content: the validation rules refuse a broken mesh and warn ab
   REQUIRE(write_text(not_json, "{\"nope\":1}"));
   CHECK(content({"build-all", not_json}, true).exit_code == 1);
   CHECK(content({"build-all", slashes(dir / "absent.json")}, true).exit_code == 1);
+}
+
+TEST_CASE("engine-content: an atlas island of no area is repaired and reported, not warned about") {
+  const test::TempDir tmp("engine_content_repair_tests");
+  const std::filesystem::path dir = tmp.native();
+  const std::string out = slashes(dir / "out.clusters");
+
+  // The -x face of the cube (face 1, in the textured first primitive) with its four UVs on one
+  // point. Its +y edge borders the +y face, the one other face of that primitive, so both of its
+  // triangles fold into that island: the first by the two corners on the shared edge, with its
+  // third corner put on that edge, and the second leaning on the first.
+  const std::string mesh = slashes(dir / "point_uv.glb");
+  REQUIRE(write_cube_glb(mesh, CubeOptions{.point_uv_face = 1}));
+  const Run repaired = content({"build", mesh, out});
+  REQUIRE_MESSAGE(repaired.exit_code == 0, repaired.output);
+  CHECK(number(repaired.result, "warnings") == 0);  // a repair is not a warning
+  const JsonValue* repairs = repaired.result.find("repairs");
+  REQUIRE(repairs != nullptr);
+  REQUIRE(repairs->is_array());
+  REQUIRE(repairs->size() == 1);
+  const JsonValue& row = (*repairs)[0];
+  CHECK(text_of(row, "rule") == "geometry.uv_degenerate");
+  CHECK(number(row, "islands") == 1);
+  CHECK(number(row, "triangles") == 2);
+  CHECK(number(row, "refolded") == 2);
+  CHECK(number(row, "dropped") == 0);
+  CHECK(number(row, "unrepaired") == 0);
+  CHECK(number(row, "corners_from_neighbours") == 2);
+  CHECK(number(row, "corners_on_edge") == 2);
+
+  // And it says so on its own `repair` line, for a person.
+  const Run said = content({"build", mesh, out}, true);
+  CHECK_MESSAGE(said.output.find("repair: geometry.uv_degenerate") != std::string::npos,
+                said.output);
+  CHECK(said.output.find("2 refolded") != std::string::npos);
+
+  // The cube as it comes has nothing to repair, and says that with an empty array.
+  const std::string clean = slashes(dir / "clean.glb");
+  REQUIRE(write_cube_glb(clean));
+  const Run nothing = content({"build", clean, out}, true);
+  REQUIRE_MESSAGE(nothing.exit_code == 0, nothing.output);
+  CHECK(nothing.output.find("repair:") == std::string::npos);
+  const Run nothing_json = content({"build", clean, out});
+  const JsonValue* none = nothing_json.result.find("repairs");
+  REQUIRE(none != nullptr);
+  CHECK(none->size() == 0);
+
+  // build-all carries the same row on the entry's line.
+  const std::string manifest = slashes(dir / "meshes.json");
+  REQUIRE(write_text(manifest,
+                     "{\"meshes\":[{\"source\":\"point_uv.glb\",\"output\":\"many.clusters\"}]}"));
+  const Run all = content({"build-all", manifest});
+  REQUIRE_MESSAGE(all.exit_code == 0, all.output);
+  REQUIRE(all.lines.size() == 2);
+  const JsonValue* entry_repairs = all.lines[0].find("repairs");
+  REQUIRE(entry_repairs != nullptr);
+  REQUIRE(entry_repairs->size() == 1);
+  CHECK(number((*entry_repairs)[0], "refolded") == 2);
+}
+
+TEST_CASE("engine-content: stats counts atlas islands, not the pieces a hard edge makes") {
+  const test::TempDir tmp("engine_content_crease_tests");
+  const std::filesystem::path dir = tmp.native();
+  const std::string mesh = slashes(dir / "card.glb");
+  const std::string out = slashes(dir / "card.clusters");
+  REQUIRE(write_card_glb(mesh));
+  const Run built = content({"build", mesh, out});
+  REQUIRE_MESSAGE(built.exit_code == 0, built.output);
+  CHECK(number(built.result, "vertices") == 8);  // the weld kept the crease's copies apart
+  const Run stats = content({"stats", out});
+  REQUIRE_MESSAGE(stats.exit_code == 0, stats.output);
+  const JsonValue* atlas = stats.result.find("atlas");
+  REQUIRE(atlas != nullptr);
+  // One island of half the atlas (two quarters, 8,388,608 texels), and no seam: the halves agree
+  // about the UV along the fold, so a sample crossing it stays in the same part of the texture.
+  CHECK(number(*atlas, "islands") == 1);
+  CHECK(number(*atlas, "seam_vertices") == 0);
+  const JsonValue* smallest = atlas->find("smallest_island_texels_4096");
+  REQUIRE(smallest != nullptr);
+  f64 texels = 0.0;
+  REQUIRE(smallest->get_f64(texels));
+  CHECK(texels == doctest::Approx(8388608.0));
 }
 
 TEST_CASE("engine-content: stats reports the metrics of a container") {

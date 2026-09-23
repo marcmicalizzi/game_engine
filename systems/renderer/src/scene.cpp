@@ -328,6 +328,22 @@ bool load_source_mesh(const std::string& path, const SceneDesc& desc, SourceMesh
   }
   if (!assets::load_gltf(path, out.data, &error)) return false;
   out.image_dir = std::string(io::parent_path(path));
+  // The UV repair, exactly where `engine-content build` runs it — after the load, before the weld
+  // — because the two write and read the same cache entries and have to build the same bytes
+  // ([geometry](geometry.md), "UV-degenerate triangles: the repair"). A mesh the repair refuses
+  // (primitives out of order, which the importer never produces) is drawn unrepaired, as before.
+  geometry::UvRepairReport uv_repair;
+  std::string repair_error;
+  if (!assets::repair_uv_degenerate_triangles(out.data, uv_repair, &repair_error)) {
+    ENGINE_LOG_WARN(log_renderer, "uv repair refused", log::field("path", path),
+                    log::field("error", repair_error));
+  } else if (uv_repair.triangles != 0) {
+    ENGINE_LOG_INFO(
+        log_renderer, "uv repair", log::field("path", path),
+        log::field("rule", "geometry.uv_degenerate"), log::field("islands", uv_repair.islands),
+        log::field("triangles", uv_repair.triangles), log::field("refolded", uv_repair.refolded),
+        log::field("dropped", uv_repair.dropped), log::field("unrepaired", uv_repair.unrepaired));
+  }
   // Exporters duplicate vertices freely; welding the identical ones gives the cluster builder
   // shared vertices to fill clusters with and the LOD builder edges to collapse. **The skin
   // bindings are part of the weld key**, so two duplicates that agree on position, normal and UV

@@ -437,7 +437,13 @@ bool read_cluster_file_identity(std::string_view path, u64& source_hash, u64& bu
 //    meshoptimizer's cutoff and apex, tight around its own float normals: a grid triangle the
 //    rasterizers draw can sit outside that cone, and on a GCC or clang build at x86-64-v3 a
 //    degenerate triangle's FMA residue may have widened it. Its cones are the wrong ones.
-inline constexpr u32 k_cluster_cache_version = 9;
+// 10: both builders repair UV-degenerate triangles before the weld (`uv_repair.h`, geometry.md
+//    "UV-degenerate triangles: the repair"): a triangle whose UVs enclose no area is refolded into
+//    the neighbouring island, or dropped when it is also thinner than a grid step. An entry built
+//    at 9 from a source with such a triangle keeps an atlas island of zero texels that no LOD
+//    level can sample, and its vertex and index streams differ from what a build makes now. A
+//    source with none builds the same bytes as before and merely moves to a new cache path.
+inline constexpr u32 k_cluster_cache_version = 10;
 
 // The cache key: the source's content hash (`assets::source_mesh_hash`) mixed with the build
 // options and the version above. `page_bytes` is the streaming page target the container was

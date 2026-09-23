@@ -36,6 +36,7 @@
 #include <core/containers/vector.h>
 #include <core/math/math.h>
 #include <domain/geometry/cluster.h>
+#include <domain/geometry/uv_repair.h>
 
 #include <span>
 #include <string>
@@ -224,5 +225,16 @@ bool source_mesh_hash(std::string_view path, u64& out, std::string* error = null
 // they compute smooth normals, leave UVs at zero, and build an unskinned mesh. The joint count
 // is the widest skin of the file, which is the palette a merged mesh's indices live in.
 geometry::AttributeSource attribute_source(const MeshData& mesh) noexcept;
+
+// The content build's UV repair (`geometry::repair_uv_degenerate_triangles`) over an imported
+// mesh: one run per primitive, a run's UVs counted as sampled when its material names any image,
+// and the primitive ranges rewritten when a triangle is dropped. Both builders of a cluster
+// container call it — `engine-content build` and the renderer's glTF path behind `engine-view
+// --mesh` — **after loading and before the weld**, because they share derived-data cache entries
+// and have to produce the same bytes; the weld that follows is what merges a refolded corner into
+// the neighbouring island's vertex. Returns false with a sentence only for a mesh the importer
+// would never produce (primitives out of order or overlapping); the mesh is then unchanged.
+bool repair_uv_degenerate_triangles(MeshData& mesh, geometry::UvRepairReport& report,
+                                    std::string* error = nullptr);
 
 }  // namespace engine::assets

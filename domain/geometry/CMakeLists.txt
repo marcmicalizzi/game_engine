@@ -4,7 +4,7 @@ engine_module(NAME geometry LAYER domain
   DEPS base containers math hash io
   EXTERNAL_DEPS meshoptimizer
   SOURCES src/cluster.cpp src/cluster_lod.cpp src/cluster_pages.cpp src/cluster_file.cpp
-          src/stress_mesh.cpp)
+          src/stress_mesh.cpp src/uv_repair.cpp)
 target_include_directories(engine_geometry SYSTEM PUBLIC
   $<TARGET_PROPERTY:meshoptimizer,INTERFACE_INCLUDE_DIRECTORIES>)
 # clusterlod.h (the cluster LOD builder) ships in meshoptimizer's demo directory.
@@ -13,4 +13,4 @@ target_include_directories(engine_geometry SYSTEM PRIVATE "${meshoptimizer_SOURC
 engine_module_tests(NAME geometry
   SOURCES tests/cluster_tests.cpp tests/cluster_lod_tests.cpp tests/cluster_pages_tests.cpp
           tests/cluster_file_tests.cpp tests/atlas_seam_tests.cpp tests/morph_tests.cpp
-          tests/size_table.cpp)
+          tests/uv_repair_tests.cpp tests/size_table.cpp)

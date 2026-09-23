@@ -993,4 +993,45 @@ geometry::AttributeSource attribute_source(const MeshData& mesh) noexcept {
   return source;
 }
 
+bool repair_uv_degenerate_triangles(MeshData& mesh, geometry::UvRepairReport& report,
+                                    std::string* error) {
+  // Runs in index order, which is the order the flatten appends primitives in; `order` maps each
+  // run back to its primitive so a file whose primitives were listed some other way still gets
+  // its own ranges back.
+  Vector<u32> order(mesh.primitives.size());
+  for (u32 p = 0; p < order.size(); ++p)
+    order[p] = p;
+  std::sort(order.begin(), order.end(), [&](u32 a, u32 b) {
+    return mesh.primitives[a].first_index != mesh.primitives[b].first_index
+               ? mesh.primitives[a].first_index < mesh.primitives[b].first_index
+               : a < b;
+  });
+  Vector<geometry::UvRepairRange> ranges;
+  ranges.reserve(order.size());
+  for (const u32 p : order) {
+    const Primitive& primitive = mesh.primitives[p];
+    // Only a material that samples a texture cares what its UVs are; a primitive with no material
+    // or an untextured one is left exactly as the file had it.
+    bool textured = false;
+    if (primitive.material >= 0 && static_cast<u32>(primitive.material) < mesh.materials.size()) {
+      const Material& m = mesh.materials[static_cast<u32>(primitive.material)];
+      textured = m.base_color_image >= 0 || m.metallic_roughness_image >= 0 ||
+                 m.normal_image >= 0 || m.occlusion_image >= 0 || m.emissive_image >= 0;
+    }
+    ranges.push_back(
+        geometry::UvRepairRange{primitive.first_index, primitive.index_count, textured});
+  }
+  if (!geometry::repair_uv_degenerate_triangles(
+          std::span<const Vec3>(mesh.positions.data(), mesh.positions.size()), mesh.normals,
+          mesh.uvs, mesh.indices, std::span<geometry::UvRepairRange>(ranges.data(), ranges.size()),
+          geometry::UvRepairOptions{}, report, error)) {
+    return false;
+  }
+  for (u32 r = 0; r < order.size(); ++r) {
+    mesh.primitives[order[r]].first_index = ranges[r].first;
+    mesh.primitives[order[r]].index_count = ranges[r].count;
+  }
+  return true;
+}
+
 }  // namespace engine::assets
