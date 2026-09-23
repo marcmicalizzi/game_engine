@@ -227,8 +227,23 @@ mkdir -p "@ROOT@/src" "@ROOT@/deps"
 cd "@ROOT@"
 mv -f "$HOME/@MANIFEST@" src/.remote-manifest
 mv -f "$HOME/@EXEC@" src/.remote-exec
-tar -xf "$HOME/@TAR@" -C src
+# **Unpack beside the tree, then copy over only what changed.** `tar -x` restores each file's
+# Windows mtime, and a source edited locally *while a remote build was compiling its previous
+# version* is then older than the object built from the old text, so ninja never rebuilds it:
+# on 2026-09-23 a warm-up build overlapped an edit and the next run linked a test against a
+# stale library. A file whose bytes changed is copied with a fresh mtime, which is what make and
+# ninja key on; an unchanged one keeps its old mtime, so nothing rebuilds for nothing. It is
+# rsync's checksum rule, done with cmp because the far side has no rsync.
+rm -rf .remote-incoming
+mkdir .remote-incoming
+tar -xf "$HOME/@TAR@" -C .remote-incoming
 rm -f "$HOME/@TAR@"
+(cd .remote-incoming && find . -type f -print) | while IFS= read -r f; do
+  if [ -f "src/$f" ] && cmp -s ".remote-incoming/$f" "src/$f"; then continue; fi
+  mkdir -p "src/$(dirname "$f")"
+  cp -- ".remote-incoming/$f" "src/$f"
+done
+rm -rf .remote-incoming
 cd src
 while IFS= read -r f; do
   if [ -n "$f" ] && [ -f "$f" ]; then chmod +x -- "$f"; fi

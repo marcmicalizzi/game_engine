@@ -159,6 +159,19 @@ binary at both ends. So:
    excepted. Tar cannot do this half, and without it a file renamed on Windows leaves its old copy
    behind, still compiling, for as long as the remote directory lives.
 
+**The tarball is unpacked beside the tree, and only files whose bytes changed are copied into
+it**, with a fresh mtime; an unchanged file keeps its old one. Unpacking straight into the tree,
+which is what the script did until 2026-09-23, restores every file's *Windows* mtime — and a
+source edited locally while a remote build was still compiling its previous text is then older
+than the object built from the old one, so ninja never rebuilds it. It happened the first time
+anyone overlapped the two: a warm-up build started before an edit compiled the old
+`settings.cpp` a few minutes after the edit, and the next run recompiled only the test file and
+failed to link it against the stale library ("undefined reference to
+`renderer::unavailable_reason`"). The new rule is rsync's checksum comparison done with `cmp`,
+so a run costs no rebuild it did not cost before. A tree already left stale by the old rule is
+fixed once with `touch` of the edited files under `~/game_engine-remote/<checkout-id>/src`, or
+with `-Clean`.
+
 **Measured**, LAN, 632 files, 7.4 MB packed: **22.4 s**, repeatably, and **21 s of that is two SSH
 connections**. See "Connections, not bytes" below — the transfer itself is about a second, and
 sending the whole tree every time rather than a delta is not what this costs. `content/samples/`
@@ -330,6 +343,7 @@ owner's work; these are wall-clock upper bounds, not costs
 | Warm reconfigure | 6.1 s | — |
 | Warm no-op build | 0.15 s | — |
 | Full CTest suite, 49 tests | **3 m 30 s** | 9.9 |
+| Sync that compares contents before copying (669 files, 8.8 MB) | 25.6 s, against 23.9 s for the plain unpack | 0.6 |
 | A warm end-to-end run, nothing to do | 61.7 s | — |
 
 `linux-server-debug` (clang 22.1.8, Debug) tests in **6 m 03 s** — asserts and iterator checking,
@@ -382,5 +396,8 @@ startup check says so correctly for every app, and `tools/schemac` — which the
   tool ([ADR-0034](../adr/0034-host-tools-build-for-the-build-machine.md)). If it does, the step runs
   an executable of this build that was not declared with `engine_host_tool()`, and
   `build.cpu_baseline` on any machine that can finish the build names it.
+- **An undefined reference to a function that plainly exists, or a test that behaves like the
+  code before your edit** — a stale object from before the sync compared contents (see "The sync,
+  and what it costs"). `touch` the edited files on the remote once, or `-Clean`.
 - **A test that fails only here** — check `LastTest.log` from `-Fetch` first. The six pwsh tests
   above are *absent*, not failing; a run that reports fewer tests than the container is expected.
