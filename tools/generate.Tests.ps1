@@ -195,16 +195,55 @@ try {
 
   # The schema itself, when a configured build tree has generated it: the sidecar's block must be a
   # valid engine.content.AssetProvenance, which is the promise the content build will rely on.
-  $schemaFile = Get-ChildItem -Path (Join-Path $repo 'build/*/schemas/generated/schemas/json/provenance.schema.json') -ErrorAction SilentlyContinue | Select-Object -First 1
+  #
+  # Both texts are used exactly as they are on disk, never round-tripped through ConvertFrom-Json and
+  # ConvertTo-Json, and a result counts only with no error beside it. PowerShell 7.4 writes the
+  # BigInteger that ConvertFrom-Json makes of the schema's u64 bound as an *object*, so a
+  # round-tripped schema does not parse — and Test-Json answers $true for a schema it could not
+  # parse, on 7.4 and 7.6 alike, with only a non-terminating InvalidJsonSchema error to say so. That
+  # made every check here pass vacuously in the Linux container (7.4.12) until the one check that
+  # expects a failure noticed; generate.ps1 ("the sidecar against the generated JSON Schema") has
+  # the whole story, and `verify` uses the same rule.
+  $schemaFile = Get-ChildItem -Path (Join-Path $repo 'build/*/schemas/generated/schemas/json/provenance.schema.json') -ErrorAction SilentlyContinue | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
   if ($schemaFile) {
-    $schema = Get-Content -Raw $schemaFile.FullName | ConvertFrom-Json -AsHashtable
-    $schema['$ref'] = '#/$defs/AssetProvenance'
-    $schemaJson = $schema | ConvertTo-Json -Depth 30
-    $apJson = $side.asset_provenance | ConvertTo-Json -Depth 10
-    Test-That "asset_provenance validates against the generated provenance.schema.json" { Test-Json -Json $apJson -Schema $schemaJson -ErrorAction SilentlyContinue }
-    $bad = $side.asset_provenance | ConvertTo-Json -Depth 10 | ConvertFrom-Json -AsHashtable
-    $bad['surprise'] = 1
-    Test-That 'and a block with a field the schema lacks does not' { -not (Test-Json -Json ($bad | ConvertTo-Json -Depth 10) -Schema $schemaJson -ErrorAction SilentlyContinue) }
+    $schemaText = [IO.File]::ReadAllText($schemaFile.FullName)
+    $at = $schemaText.IndexOf('{')
+    $sidecarSchema = $schemaText.Substring(0, $at + 1) + '"type": "object", "required": ["asset_provenance"], "properties": {"asset_provenance": {"$ref": "#/$defs/AssetProvenance"}}, ' + $schemaText.Substring($at + 1)
+    function Test-Strict([string]$json) {
+      $e = $null
+      $ok = Test-Json -Json $json -Schema $sidecarSchema -ErrorAction SilentlyContinue -ErrorVariable e
+      $list = @($e | Where-Object { $_ })
+      return [pscustomobject]@{ Valid = ([bool]$ok -and $list.Count -eq 0); Ids = @($list | ForEach-Object FullyQualifiedErrorId); Text = (@($list | ForEach-Object { $_.Exception.Message }) -join ' / ') }
+    }
+    $sideText = [IO.File]::ReadAllText($sideFile)
+    Test-That "the generated provenance.schema.json parses under PowerShell $($PSVersionTable.PSVersion) (Test-Json would otherwise pass anything)" {
+      @((Test-Strict '{}').Ids | Where-Object { $_ -like 'InvalidJsonSchema,*' }).Count -eq 0 }
+    Test-That 'the sidecar as written validates against it' { (Test-Strict $sideText).Valid }
+    # Instance Replace with a count: the static overload's fourth argument is RegexOptions, not a count.
+    $surprise = ([regex]'"asset_provenance":\s*\{').Replace($sideText, '"asset_provenance": { "surprise": 1,', 1)
+    Test-That 'and a block with a field the schema lacks does not, as a validation failure rather than an unread schema' {
+      $v = Test-Strict $surprise
+      $surprise -ne $sideText -and -not $v.Valid -and ($v.Ids -join ' ') -match 'InvalidJsonAgainstSchema' -and $v.Text -match '/asset_provenance/surprise' }
+    $big = ([regex]'"prompt_hash":\s*\d+').Replace($sideText, '"prompt_hash": 18446744073709551615', 1)
+    Test-That 'a u64 above 2^63 (half of all prompt hashes) is a number to the validator' { $big -ne $sideText -and (Test-Strict $big).Valid }
+    $wrongType = ([regex]'"commercial_ok":\s*(true|false)').Replace($sideText, '"commercial_ok": "no"', 1)
+    Test-That 'a field of the wrong type fails too' { $wrongType -ne $sideText -and -not (Test-Strict $wrongType).Valid }
+
+    # `verify` applies the same schema, so a type error its field-name check cannot see still fails.
+    $vdir = Join-Path $root 'verify-schema'
+    New-Item -ItemType Directory -Force -Path $vdir | Out-Null
+    Copy-Item -LiteralPath (Join-Path (Join-Path $tripo '2026-01-05') 'alpha-rock.glb') -Destination $vdir
+    [IO.File]::WriteAllText((Join-Path $vdir 'alpha-rock.provenance.json'), $sideText)
+    $r = Invoke-Gen verify -Path $vdir -LocalRoot $local -Schema $schemaFile.FullName
+    Test-That 'verify -Schema passes the sidecar as written and names the schema it used' { $r.Code -eq 0 -and $r.Json[0].status -eq 'ok' -and $r.Json[0].schema -eq $schemaFile.FullName }
+    [IO.File]::WriteAllText((Join-Path $vdir 'alpha-rock.provenance.json'), $wrongType)
+    $r = Invoke-Gen verify -Path $vdir -LocalRoot $local -Schema $schemaFile.FullName
+    Test-That 'and fails one whose asset_provenance has a field of the wrong type' { $r.Code -ne 0 -and ($r.Json[0].problems -join ' ') -match '/asset_provenance/commercial_ok' }
+    $brokenSchema = Join-Path $root 'broken.schema.json'
+    [IO.File]::WriteAllText($brokenSchema, '{"$defs": {"AssetProvenance": {"type": 5}}}')
+    [IO.File]::WriteAllText((Join-Path $vdir 'alpha-rock.provenance.json'), $sideText)
+    $r = Invoke-Gen verify -Path $vdir -LocalRoot $local -Schema $brokenSchema
+    Test-That 'and refuses, rather than passes, when the schema does not parse' { $r.Code -ne 0 -and $r.Err -match 'does not parse' }
   } else {
     Write-Host '  skip the JSON Schema check: no build tree has generated provenance.schema.json'
   }

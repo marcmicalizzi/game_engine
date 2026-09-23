@@ -31,7 +31,7 @@ Services are `comfyui` (images), `comfyui-<workflow>` (meshes a ComfyUI image-to
 | `ingest -Backend tripo-folder -Manifest <file>` | the GLBs the owner dropped in the inbox, each copied beside a sidecar |
 | `balance` | Meshy's balance, and what this machine's ledger says it spent |
 | `free` | ComfyUI: unload the models and free the memory |
-| `prompt -Subject <text>` / `convert -Workflow <ui.json>` / `verify [-Path <dir>]` | the templated prompt; the API form a workflow converts to; re-hash every output against its sidecar |
+| `prompt -Subject <text>` / `convert -Workflow <ui.json>` / `verify [-Path <dir>] [-Schema <file>]` | the templated prompt; the API form a workflow converts to; re-hash every output against its sidecar and check its `asset_provenance` against the generated JSON Schema ([below](#checked-against-the-schema-failing-closed)) |
 
 Common flags: `-Date`, `-LocalRoot`, `-Only <name,...>`, `-DryRun` (plan and print, spend nothing, touch nothing), `-Force` (replace an output made from a different spec), `-Yes` (the Meshy spend confirmation). **stdout is one JSON line per result and nothing else**, so a script or an agent reads it; everything for a person goes to stderr. Exit 0 when every result is good, 1 when any failed (the lines say which) or when the command was refused before it started.
 
@@ -101,6 +101,15 @@ One JSON file per output, `<name>.provenance.json`. Its `asset_provenance` block
 | `tool` | the script, the commit, and whether `tools/` was dirty |
 
 **Open, and recorded rather than guessed:** every licence row carries the schema's conservative defaults, `commercial_ok: false` and `attribution_required: true`, with `license_terms_url` null, until the owner has reviewed each service's terms and the local models' licences; the content build's allowlist will read exactly these fields. A local model is identified by file name, not by the hash of a multi-gigabyte file, so `model_version` is null for ComfyUI and the workflow's SHA-256 pins which names were asked for.
+
+### Checked against the schema, failing closed
+
+`verify` checks each sidecar's `asset_provenance` against the JSON Schema the build generates from `schemas/provenance.schema` (`build/<preset>/schemas/generated/schemas/json/provenance.schema.json`, the newest in this checkout, or `-Schema <file>`) beside its field-name check, so a type or pattern error — `commercial_ok: "no"`, an id that is not 32 hex characters — fails as surely as an extra field. Two PowerShell traps sit between a sidecar and that schema, and **both fail open**, which is how the check was once vacuous on Linux without anyone noticing:
+
+1. **`Test-Json` answers `$true` for a schema it cannot parse** — on 7.4.12 and 7.6.6 alike — and the only sign is a non-terminating `InvalidJsonSchema` error, which `-ErrorAction SilentlyContinue` hides. So a result counts as valid only with no error recorded beside it, and a schema that does not parse is an error, never a pass (`Test-JsonStrict` in `tools/generate.ps1`).
+2. **PowerShell 7.4's `ConvertTo-Json` writes a `System.Numerics.BigInteger` as an object of its properties** (`{"IsPowerOfTwo": false, ...}`), where 7.6 writes the number. `ConvertFrom-Json` makes a BigInteger of any integer above `Int64.MaxValue` — the schema's own u64 bound, 18446744073709551615, and any `prompt_hash` above 2⁶³, which is half of them — so a schema or a sidecar round-tripped through the two cmdlets on 7.4 is no longer the same JSON. The schema then fails to parse, and by trap 1 every document "validates".
+
+`tools.generate` hit both at once: it round-tripped the schema to add a `$ref`, so in the Linux container (the Dockerfile pins pwsh 7.4.12) nothing was validated at all, every check passed — and the one check that expects a *failure*, a block with a field the schema lacks, was the only one that noticed. The fix is to never round-trip either text: the schema is wrapped by splicing text (an object whose `asset_provenance` is `#/$defs/AssetProvenance`), the sidecar is validated as the bytes on disk, and the tests pin both traps — the schema must parse under the running PowerShell, the extra field must fail as a *validation* failure naming `/asset_provenance/surprise`, and a `prompt_hash` of 18446744073709551615 must still be a number to the validator.
 
 ## The E10 harness: `tools/e10-harness.ps1`
 

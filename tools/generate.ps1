@@ -16,7 +16,7 @@
   tools/generate.ps1 free                                                    # ComfyUI: unload models, free VRAM
   tools/generate.ps1 prompt   -Subject <text> [-Raw]                         # the prompt the template makes
   tools/generate.ps1 convert  -Workflow <ui-export.json> [-ObjectInfo <file>] # the API form ComfyUI takes
-  tools/generate.ps1 verify   [-Path <dir|sidecar>]                           # re-hash outputs against sidecars
+  tools/generate.ps1 verify   [-Path <dir|sidecar>] [-Schema <provenance.schema.json>]  # re-hash, and check against the schema
 
   Common: [-Date yyyy-MM-dd] [-LocalRoot <dir>] [-Only <name,...>] [-Force] [-DryRun] [-Yes]
   Image:  [-Seed <n>] [-Width <px> -Height <px>] [-Aspect 1:1 -FinalMegapixels 2 -BaseMegapixels <f>]
@@ -94,6 +94,7 @@ param(
   [string]$LocalRoot,
   [string]$Url = $(if ($env:COMFYUI_URL) { $env:COMFYUI_URL } else { 'http://127.0.0.1:8000' }),
   [string]$ObjectInfo,
+  [string]$Schema,
   [string]$ServerPrefix = 'Agentic/{date}/{name}',
   [int]$TimeoutSec = 900,
   [string]$AiModel = 'latest',
@@ -1311,12 +1312,70 @@ function Invoke-TripoIngest {
 $AssetProvenanceFields = @('generator', 'model_id', 'model_version', 'prompt_hash', 'seed', 'inputs', 'operator_id', 'created_at_unix_ms',
   'license', 'license_class', 'license_terms_url', 'commercial_ok', 'attribution_required', 'derived_from')
 
+# ---- the sidecar against the generated JSON Schema, failing closed ------------------------------------
+#
+# Two PowerShell traps sit between a sidecar and the JSON Schema the build generates from
+# schemas/provenance.schema, and both fail *open*, so each is handled here rather than trusted:
+#
+#   - Test-Json answers $true when it cannot parse the *schema* at all (7.4.12 and 7.6.6 alike). The
+#     only sign is a non-terminating `InvalidJsonSchema` error, which `-ErrorAction SilentlyContinue`
+#     hides. So a result counts as valid only with no error recorded beside it, and a schema that
+#     does not parse is thrown — never read as a pass.
+#   - PowerShell 7.4's ConvertTo-Json writes a System.Numerics.BigInteger — which ConvertFrom-Json
+#     makes of any integer above Int64.MaxValue: the schema's own u64 bound 18446744073709551615, or a
+#     sidecar's prompt_hash above 2^63 — as an *object of its properties* ({"IsPowerOfTwo": ...})
+#     instead of a number; 7.6 writes the number. A schema round-tripped through the two cmdlets on
+#     7.4 stops parsing, and by the first trap every document then "validates". That is how
+#     `tools.generate` passed on Windows (7.6.6) and failed in the Linux container (7.4.12, the
+#     Dockerfile's pin): the one check that expects a *failure* was the only one that noticed.
+#     So neither text is ever round-tripped: the schema is wrapped by splicing text, and a sidecar
+#     is validated as the bytes on disk.
+function Get-ProvenanceSchemaFile {
+  if ($Schema) {
+    if (-not (Test-Path -LiteralPath $Schema)) { throw "no JSON Schema at $Schema" }
+    return (Resolve-Path -LiteralPath $Schema).Path
+  }
+  # This checkout's build trees only (never another checkout's, whose schema may be older or newer).
+  $found = @(Get-ChildItem -Path (Join-Path $RepoRoot 'build/*/schemas/generated/schemas/json/provenance.schema.json') -ErrorAction SilentlyContinue | Sort-Object LastWriteTimeUtc -Descending)
+  if ($found.Count -eq 0) { return $null }
+  return $found[0].FullName
+}
+
+function Get-SidecarSchemaText([string]$schemaFile) {
+  $text = [IO.File]::ReadAllText($schemaFile)
+  $at = $text.IndexOf('{')
+  if ($at -lt 0) { throw "$schemaFile is not a JSON Schema" }
+  # The whole sidecar: an object whose `asset_provenance` is exactly engine.content.AssetProvenance.
+  # The rest of the sidecar is this tool's own record and is checked by name in Invoke-Verify.
+  $wrap = '"type": "object", "required": ["asset_provenance"], "properties": {"asset_provenance": {"$ref": "#/$defs/AssetProvenance"}}, '
+  return $text.Substring(0, $at + 1) + $wrap + $text.Substring($at + 1)
+}
+
+function Test-JsonStrict([string]$json, [string]$schemaText) {
+  $errs = $null
+  $ok = Test-Json -Json $json -Schema $schemaText -ErrorAction SilentlyContinue -ErrorVariable errs
+  $list = @($errs | Where-Object { $_ })
+  $unparsed = @($list | Where-Object { $_.FullyQualifiedErrorId -like 'InvalidJsonSchema,*' })
+  if ($unparsed.Count -gt 0) {
+    throw "the JSON Schema does not parse under PowerShell $($PSVersionTable.PSVersion) ($($unparsed[0].Exception.Message) $($unparsed[0].Exception.InnerException.Message)); nothing was validated"
+  }
+  return [pscustomobject]@{ Valid = ([bool]$ok -and $list.Count -eq 0); Errors = @($list | ForEach-Object { $_.Exception.Message }) }
+}
+
 function Invoke-Verify {
   $target = if ($Path) { $Path } else { Join-Path (Get-LocalRoot) 'generated' }
   $files = @(if (Test-Path -LiteralPath $target -PathType Container) { Get-ChildItem -LiteralPath $target -Recurse -File -Filter '*.provenance.json' | Sort-Object FullName | ForEach-Object FullName } else { $target })
   $problems = New-Object System.Collections.Generic.List[string]
+  $schemaFile = Get-ProvenanceSchemaFile
+  $schemaText = if ($schemaFile) { Get-SidecarSchemaText $schemaFile } else { $null }
+  if ($schemaFile) { Write-Note "verify: asset_provenance against $schemaFile" }
+  else { Write-Warn 'verify: no build tree has generated provenance.schema.json (pass -Schema); checking field names only' }
   foreach ($f in $files) {
     $before = $problems.Count
+    if ($schemaText) {
+      $v = Test-JsonStrict ([IO.File]::ReadAllText($f)) $schemaText
+      foreach ($e in $v.Errors) { $problems.Add("$f`: $e") }
+    }
     $s = Read-JsonFile $f
     if ($s.schema -ne $SidecarSchema) { $problems.Add("$f`: schema is '$($s.schema)', not $SidecarSchema"); continue }
     foreach ($k in @('asset_id', 'name', 'kind', 'service', 'asset_provenance', 'outputs', 'license', 'content_class')) {
@@ -1342,7 +1401,7 @@ function Invoke-Verify {
   }
   Write-Step "verify: $($files.Count) sidecars, $($problems.Count) problems"
   foreach ($p in $problems) { Write-Log "  $p" }
-  return , @([pscustomobject]@{ status = $(if ($problems.Count -eq 0) { 'ok' } else { 'failed' }); sidecars = $files.Count; problems = @($problems) })
+  return , @([pscustomobject]@{ status = $(if ($problems.Count -eq 0) { 'ok' } else { 'failed' }); sidecars = $files.Count; schema = $schemaFile; problems = @($problems) })
 }
 
 # ---- dispatch --------------------------------------------------------------------------------------
