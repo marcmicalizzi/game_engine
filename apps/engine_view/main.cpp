@@ -13,7 +13,9 @@
 // recompile when their sources change.
 //
 // Exit codes: 0 ok; 1 runtime error; 2 usage; 3 unavailable (no display, no Vulkan device, no
-// mesh shaders, or no presentation support), which tests treat as a skip.
+// 64-bit buffer atomics, no presentation support, or `--raster rt` / `--shadows rt` on a device
+// that cannot trace), which tests treat as a skip. A device without mesh shaders is not one of
+// them: it draws through the vertex-shader baseline tier.
 #include <core/jobs/job_system.h>
 #include <core/json/json.h>
 #include <core/json/json_value.h>
@@ -108,14 +110,16 @@ constexpr const char* k_usage =
     "  --no-lights      only the sun and the sky; no orbiting point lights (they are on by default)\n"
     "  --shadows <how>  off, or rt: every light in the resolve casts a ray-traced shadow against\n"
     "                   the structures the frame built from its own visible list. The default is\n"
-    "                   rt where the device has cluster acceleration structures and ray queries.\n"
+    "                   rt where the device has cluster acceleration structures and ray queries,\n"
+    "                   off elsewhere; an explicit rt on a device without them exits 3 with the\n"
+    "                   sentence `engine-cli gpu.adapters` reports for it.\n"
     "                   In a raster mode the frame runs the acceleration structure chain as well,\n"
     "                   which turns two-pass occlusion culling off (one visible list to build from)\n"
     "  --raster <mode>  direct: mesh shaders to color with a depth buffer; hw (default), vertex, sw,\n"
     "                   auto: the visibility buffer through mesh shaders, a vertex shader (the\n"
     "                   baseline tier, chosen automatically without mesh shaders), software, or\n"
     "                   both split by size; rt: ray queries against cluster acceleration structures\n"
-    "                   built every frame from the cull output (NVIDIA RTX only)\n"
+    "                   built every frame from the cull output (NVIDIA RTX only; exit 3 elsewhere)\n"
     "  --sw-px <px>     auto mode: clusters narrower than this go to the software rasterizer (32)\n"
     "  --view <mode>    id, tri, depth, shaded (default: materials with vertex normals, textures,\n"
     "                   and normal maps under a sun), normals, uv\n"
@@ -203,7 +207,8 @@ constexpr const char* k_usage =
     "  --log <spec>     log levels, e.g. \"info,gfx=debug\" (stderr shows warnings and up)\n"
     "  --shaders <m>    shader manifest (default: <exe dir>/../shaders/manifest.json when present);\n"
     "                   shaders recompile and reload when their .slang sources change\n"
-    "exit codes: 0 ok, 1 error, 2 usage, 3 unavailable (no display, device, mesh shaders)\n";
+    "exit codes: 0 ok, 1 error, 2 usage, 3 unavailable (no display, no device, no 64-bit\n"
+    "            buffer atomics, or rt asked of a device that cannot trace)\n";
 // clang-format on
 
 constexpr int k_exit_error = 1;
@@ -1027,14 +1032,11 @@ int run_reference(Options& options) {
     const renderer::RenderAvailability availability =
         renderer::check_availability(resolved, device.features());
     if (availability != renderer::RenderAvailability::Ok) {
-      exit_code = unavailable(
-          (std::string(device.adapter().name) + " " + renderer::availability_message(availability))
-              .c_str(),
-          "");
+      exit_code = unavailable(renderer::unavailable_reason(availability, device).c_str(), "");
       break;
     }
     std::string why;
-    if (!renderer::reference_available(resolved, device.features(), &why)) {
+    if (!renderer::reference_available(resolved, device, &why)) {
       exit_code = unavailable((std::string(device.adapter().name) + " " + why).c_str(), "");
       break;
     }
@@ -1657,8 +1659,7 @@ int main(int argc, char** argv) {
     const renderer::RenderAvailability availability =
         renderer::check_availability(resolved, device.features());
     if (availability != renderer::RenderAvailability::Ok) {
-      const std::string why =
-          std::string(device.adapter().name) + " " + renderer::availability_message(availability);
+      const std::string why = renderer::unavailable_reason(availability, device);
       exit_code = unavailable(why.c_str(), "");
       break;
     }

@@ -1,4 +1,5 @@
 #include <core/log/log.h>
+#include <domain/gfx/requirements.h>
 #include <systems/renderer/scene.h>
 #include <systems/renderer/settings.h>
 #include <systems/renderer/view_set.h>
@@ -166,11 +167,11 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
   const bool shadow_device = features.cluster_acceleration_structure && features.ray_query;
   const bool shadow_mode = out.ray_path || s.raster == RasterMode::Hardware || out.vertex_path;
   out.shadows = s.shadows != ShadowMode::Off && shadow_device && shadow_mode;
-  if (s.shadows == ShadowMode::RayTraced && !out.shadows) {
-    ENGINE_LOG_WARN(
-        log_renderer, "ray-traced shadows off",
-        log::field("reason", !shadow_device ? "no cluster acceleration structures or ray queries"
-                                            : "the direct, sw, and auto paths do not build them"));
+  // An explicit `rt` on a device that cannot trace is not a warning here: `check_availability`
+  // refuses it, and the host prints the device's own verdict (`unavailable_reason`).
+  if (s.shadows == ShadowMode::RayTraced && !out.shadows && shadow_device) {
+    ENGINE_LOG_WARN(log_renderer, "ray-traced shadows off",
+                    log::field("reason", "the direct, sw, and auto paths do not build them"));
   } else if (s.shadows == ShadowMode::Auto && !out.shadows && shadow_mode) {
     ENGINE_LOG_INFO(log_renderer, "ray-traced shadows off",
                     log::field("reason", "no cluster acceleration structures or ray queries"));
@@ -284,10 +285,26 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
 RenderAvailability check_availability(const ResolvedSettings& resolved,
                                       const gfx::DeviceFeatures& features) noexcept {
   if (!features.buffer_int64_atomics) return RenderAvailability::NoVisibilityBuffer;
-  if (resolved.ray_path && !(features.cluster_acceleration_structure && features.ray_query)) {
+  // An explicit request the device cannot meet is refused rather than dropped. `--raster rt`
+  // always was; `--shadows rt` is too, because a picture without the shadows somebody asked for
+  // reads as a shadowing bug, and the adapter report already says the device cannot trace. `auto`
+  // is the request that degrades quietly. The same flag on a *path* that builds no structures
+  // (direct, sw, auto) is a settings conflict rather than a device one, and stays a warning in
+  // `resolve_settings`.
+  const bool can_trace = features.cluster_acceleration_structure && features.ray_query;
+  if (!can_trace && (resolved.ray_path || resolved.settings.shadows == ShadowMode::RayTraced)) {
     return RenderAvailability::NoAccelerationStructures;
   }
   return RenderAvailability::Ok;
+}
+
+std::string unavailable_reason(RenderAvailability availability, const gfx::Device& device) {
+  std::string text(device.adapter().name);
+  if (availability == RenderAvailability::NoAccelerationStructures) {
+    const std::string sentence = gfx::ray_tracing_degradation(device.caps());
+    if (!sentence.empty()) return text + " cannot trace rays: " + sentence;
+  }
+  return text + " " + availability_message(availability);
 }
 
 const char* availability_message(RenderAvailability availability) noexcept {

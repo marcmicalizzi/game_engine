@@ -63,10 +63,10 @@ struct Harness {
       skip = "device unavailable: " + error;
       return false;
     }
-    if (!load_scene(desc, data, error)) {
-      skip = "scene: " + error;
-      return false;
-    }
+    // Only a device that cannot is a skip. A scene that does not load or a renderer that does not
+    // build is a failure, and reporting it as a skip is how this case passed on the first GPU run
+    // on a device without mesh shaders while the renderer could not be created there at all.
+    REQUIRE_MESSAGE(load_scene(desc, data, error), "scene: " << error);
     RenderSettings settings;
     settings.raster = RasterMode::Hardware;
     settings.shadows = ShadowMode::Off;
@@ -79,22 +79,16 @@ struct Harness {
     settings.cone = false;
     ResolvedSettings resolved;
     resolve_settings(settings, device.features(), &data, resolved);
-    if (check_availability(resolved, device.features()) != RenderAvailability::Ok) {
-      skip = std::string("device ") +
-             availability_message(check_availability(resolved, device.features()));
+    const RenderAvailability availability = check_availability(resolved, device.features());
+    if (availability != RenderAvailability::Ok) {
+      skip = "unavailable here: " + unavailable_reason(availability, device);
       return false;
     }
-    if (!scene.create(device, data, resolved, &error)) {
-      skip = "gpu scene: " + error;
-      return false;
-    }
+    REQUIRE_MESSAGE(scene.create(device, data, resolved, &error), "gpu scene: " << error);
     SceneRenderer::Desc rd;
     rd.width = k_width;
     rd.height = k_height;
-    if (!renderer.create(device, scene, resolved, rd, &error)) {
-      skip = "renderer: " + error;
-      return false;
-    }
+    REQUIRE_MESSAGE(renderer.create(device, scene, resolved, rd, &error), "renderer: " << error);
     return true;
   }
 

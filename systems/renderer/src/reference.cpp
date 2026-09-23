@@ -1,6 +1,7 @@
 #include <core/platform/process.h>
 #include <core/time/time.h>
 #include <domain/gfx/path_trace.h>
+#include <domain/gfx/requirements.h>
 #include <foundation/io/vfs.h>
 #include <systems/renderer/lighting.h>
 #include <systems/renderer/reference.h>
@@ -42,13 +43,18 @@ bool read_buffer(const gfx::Device& device, const gfx::BufferResource& source, u
 
 }  // namespace
 
-bool reference_available(const ResolvedSettings& resolved, const gfx::DeviceFeatures& features,
+bool reference_available(const ResolvedSettings& resolved, const gfx::Device& device,
                          std::string* why) {
   // The reference traces the structures the *frame* builds, so it needs both the device that can
   // build them and a frame configured to. That is deliberate rather than a limitation worked
   // around: a reference built from its own geometry would be a reference for a different scene.
+  const gfx::DeviceFeatures& features = device.features();
   if (!features.cluster_acceleration_structure || !features.ray_query) {
-    if (why != nullptr) *why = "has no cluster acceleration structures or ray queries";
+    if (why != nullptr) {
+      const std::string sentence = gfx::ray_tracing_degradation(device.caps());
+      *why = sentence.empty() ? std::string("has no cluster acceleration structures or ray queries")
+                              : "cannot trace rays: " + sentence;
+    }
     return false;
   }
   if (!resolved.rt_chain) {
@@ -79,7 +85,7 @@ bool ReferenceRenderer::create(const gfx::Device& device, GpuScene& scene, Scene
   desc_ = desc;
 
   std::string why;
-  if (!reference_available(renderer.settings(), device.features(), &why)) {
+  if (!reference_available(renderer.settings(), device, &why)) {
     if (error != nullptr) *error = std::string(device.adapter().name) + " " + why;
     destroy();
     return false;

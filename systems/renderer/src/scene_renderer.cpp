@@ -351,8 +351,23 @@ bool SceneRenderer::create_color_target(std::string* error) {
 
 bool SceneRenderer::create_pipelines(std::string* error) {
   const gfx::Device& device = *device_;
-  const gfx::Shader* mesh = shaders_.get("cluster_mesh", error);
-  const gfx::Shader* cull = mesh != nullptr ? shaders_.get("cluster_cull", error) : nullptr;
+  // **The mesh-shader pipelines are built only for a path that draws with them**, and
+  // `cluster_mesh` is not even loaded otherwise. On a device without VK_EXT_mesh_shader
+  // `resolve_settings` has already moved hw, direct and auto to the vertex path, and building a
+  // mesh pipeline anyway fails `create_mesh_pipeline` — and with it the whole renderer, whatever
+  // path was resolved. Every other pipeline below runs on any device `check_availability`
+  // accepted, so it is built as before. The first GPU run on the Pascal server found this: 13 of
+  // the renderer's cases and every `render.*` capture failed there, while the settings said
+  // "vertex" (docs/ci/self-hosted-runners.md, "The first run on the Titan Xp").
+  const bool direct_pipeline = resolved_.direct;
+  const bool mesh_pipeline = !resolved_.direct && !resolved_.vertex_path && !resolved_.ray_path &&
+                             resolved_.settings.raster != RasterMode::Software;
+  const gfx::Shader* mesh = nullptr;
+  if (direct_pipeline || mesh_pipeline) {
+    mesh = shaders_.get("cluster_mesh", error);
+    if (mesh == nullptr) return false;
+  }
+  const gfx::Shader* cull = shaders_.get("cluster_cull", error);
   const gfx::Shader* sw = cull != nullptr ? shaders_.get("cluster_sw_raster", error) : nullptr;
   const gfx::Shader* hiz = sw != nullptr ? shaders_.get("hiz_build", error) : nullptr;
   const gfx::Shader* vertex = hiz != nullptr ? shaders_.get("cluster_vertex", error) : nullptr;
@@ -408,20 +423,26 @@ bool SceneRenderer::create_pipelines(std::string* error) {
   vertex_desc.fragment = vertex->module;
   vertex_desc.fragment_entry = "fs_visibility";
   vertex_desc.layout = bindless.pipeline_layout();
-  gfx::MeshPipelineDesc direct_desc;
-  direct_desc.mesh = mesh->module;
-  direct_desc.fragment = mesh->module;
-  direct_desc.fragment_entry = "fs_color";
-  direct_desc.layout = bindless.pipeline_layout();
-  direct_desc.color_format = desc_.color_format;
-  direct_desc.depth_format = VK_FORMAT_D32_SFLOAT;
-  direct_desc.depth_test = true;
-  direct_desc.depth_write = true;
-  gfx::MeshPipelineDesc hw_desc;
-  hw_desc.mesh = mesh->module;
-  hw_desc.fragment = mesh->module;
-  hw_desc.fragment_entry = "fs_visibility";
-  hw_desc.layout = bindless.pipeline_layout();
+  if (direct_pipeline) {
+    gfx::MeshPipelineDesc direct_desc;
+    direct_desc.mesh = mesh->module;
+    direct_desc.fragment = mesh->module;
+    direct_desc.fragment_entry = "fs_color";
+    direct_desc.layout = bindless.pipeline_layout();
+    direct_desc.color_format = desc_.color_format;
+    direct_desc.depth_format = VK_FORMAT_D32_SFLOAT;
+    direct_desc.depth_test = true;
+    direct_desc.depth_write = true;
+    if (!gfx::create_mesh_pipeline(device, direct_desc, pipelines_.direct, error)) return false;
+  }
+  if (mesh_pipeline) {
+    gfx::MeshPipelineDesc hw_desc;
+    hw_desc.mesh = mesh->module;
+    hw_desc.fragment = mesh->module;
+    hw_desc.fragment_entry = "fs_visibility";
+    hw_desc.layout = bindless.pipeline_layout();
+    if (!gfx::create_mesh_pipeline(device, hw_desc, pipelines_.hardware, error)) return false;
+  }
   gfx::GraphicsPipelineDesc resolve_desc;
   resolve_desc.vertex = resolve->module;
   resolve_desc.vertex_entry = "vs_fullscreen";
@@ -429,9 +450,7 @@ bool SceneRenderer::create_pipelines(std::string* error) {
   resolve_desc.fragment_entry = "fs_resolve";
   resolve_desc.layout = bindless.pipeline_layout();
   resolve_desc.color_format = desc_.color_format;
-  return gfx::create_mesh_pipeline(device, direct_desc, pipelines_.direct, error) &&
-         gfx::create_mesh_pipeline(device, hw_desc, pipelines_.hardware, error) &&
-         gfx::create_graphics_pipeline(device, vertex_desc, pipelines_.vertex, error) &&
+  return gfx::create_graphics_pipeline(device, vertex_desc, pipelines_.vertex, error) &&
          gfx::create_compute_pipeline(device, sw->module, "sw_raster_main", {},
                                       sizeof(gfx::ClusterDrawParams), pipelines_.software, error) &&
          gfx::create_compute_pipeline(device, cull->module, "cull_main", {}, sizeof(u64),

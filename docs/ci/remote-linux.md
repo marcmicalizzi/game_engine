@@ -7,7 +7,7 @@ desktop. It is the third Linux path here and the only one that is a *machine*:
 |---|---|---|
 | `.github/workflows/ci.yml` | GitHub's hosted runners | the reference answer, when GitHub answers |
 | [`tools/linux-build.ps1`](local-linux.md) | a container on this desktop | does it compile under Clang 18 and GCC 13, in minutes |
-| **`tools/remote-build.ps1`** | the headless GPU server, over SSH | does it *run* — on a named CPU, a real kernel, that distribution's own compilers, and eventually a GPU |
+| **`tools/remote-build.ps1`** | the headless GPU server, over SSH | does it *run* — on a named CPU, a real kernel, that distribution's own compilers, and (since 2026-09-23) a Pascal GPU, the baseline tier |
 
 The container cannot answer the third column. It is Ubuntu 24.04 on the desktop's own Comet Lake
 cores, so "it built in the container" says nothing about GCC 14, about clang 22, or about a CPU
@@ -28,10 +28,13 @@ Leave no background daemon behind. Keep disk use modest and say what it is — t
 build and downloaded dependencies came to **1.4 GB** per preset directory, on a volume with 8.6 TB
 free.
 
-**It reboots.** The owner is rebuilding the kernel and the NVIDIA 580 driver, so `nvidia-smi`
-fails, every GPU test skips, and the machine disappears without warning. That is a fact about the
-machine and never a verdict on the tree: `remote-build.ps1` retries the connection three times
-with a backoff and says so in its failure message. Never try to fix anything on that machine.
+**It reboots.** The owner rebuilds the kernel and the NVIDIA 580 driver on it, and while a driver
+is out `nvidia-smi` fails, every GPU test skips, and the machine disappears without warning. The
+driver has worked since 2026-09-23 — 580.178.04, Vulkan 1.4.312 — and the GPU suites run there now;
+[the first run](self-hosted-runners.md#the-first-run-on-the-titan-xp) records what they found.
+A reboot or a missing driver is a fact about the machine and never a verdict on the tree:
+`remote-build.ps1` retries the connection three times with a backoff and says so in its failure
+message. Never try to fix anything on that machine.
 
 ## The headless windowing switch
 
@@ -343,11 +346,16 @@ owner's work; these are wall-clock upper bounds, not costs
 | Warm reconfigure | 6.1 s | — |
 | Warm no-op build | 0.15 s | — |
 | Full CTest suite, 49 tests | **3 m 30 s** | 9.9 |
+| Full CTest suite, 53 tests, **with the GPU tests running** (2026-09-23) | **5 m 48 s** (`renderer` 78 s, `gfx` 39 s, `engine_cli` 31 s) | 0.6 |
 | Sync that compares contents before copying (669 files, 8.8 MB) | 25.6 s, against 23.9 s for the plain unpack | 0.6 |
 | A warm end-to-end run, nothing to do | 61.7 s | — |
 
 `linux-server-debug` (clang 22.1.8, Debug) tests in **6 m 03 s** — asserts and iterator checking,
-on 2012 cores.
+on 2012 cores — and in **10 m 23 s** with the GPU tests running (2026-09-23, load 0.7 at the
+start: `renderer` 165 s, `gfx` 48 s, `engine_cli` 29 s), 53 of 53. The difference is the GPU suites
+running at all, the renderer's most of all: until that day the driver was out, and on its first
+day back the renderer could not be created there
+([self-hosted runners](self-hosted-runners.md#the-first-run-on-the-titan-xp)).
 
 **Disk: 2.1 GB for one preset, 3.6 GB for both** — checkout and build trees 1.5 GB, downloaded
 dependencies 2.2 GB — under `~/game_engine-remote/<checkout-id>/`, on a volume with 8.6 TB free.

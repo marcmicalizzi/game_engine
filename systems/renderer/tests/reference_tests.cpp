@@ -240,8 +240,8 @@ struct Gpu {
       return;
     }
     if (!device.features().cluster_acceleration_structure || !device.features().ray_query) {
-      why = std::string(device.adapter().name) +
-            " has no cluster acceleration structures or ray queries";
+      // In the verdict's own words, which name the extension that is missing.
+      why = unavailable_reason(RenderAvailability::NoAccelerationStructures, device);
       return;
     }
     ok = true;
@@ -264,11 +264,12 @@ struct Rig {
     settings.shadows = ShadowMode::RayTraced;
     if (!load_scene(desc, data, error)) return false;
     resolve_settings(settings, device.features(), &data, resolved);
-    if (check_availability(resolved, device.features()) != RenderAvailability::Ok) {
-      error = availability_message(check_availability(resolved, device.features()));
+    const RenderAvailability availability = check_availability(resolved, device.features());
+    if (availability != RenderAvailability::Ok) {
+      error = unavailable_reason(availability, device);
       return false;
     }
-    if (!reference_available(resolved, device.features(), &error)) return false;
+    if (!reference_available(resolved, device, &error)) return false;
     if (!scene.create(device, data, resolved, &error)) return false;
     SceneRenderer::Desc rd;
     rd.width = width;

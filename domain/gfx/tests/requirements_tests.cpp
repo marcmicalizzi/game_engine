@@ -60,6 +60,109 @@ gfx::DeviceCaps minimal_caps() {
   return caps;
 }
 
+// The TITAN Xp in the project's Linux server, as its first `engine-cli gpu.adapters --report`
+// recorded it on 2026-09-23 (Gentoo, driver 580.178.04, Vulkan 1.4.312; the report's rows are in
+// `k_titan_xp_rows` below and the run is in docs/ci/self-hosted-runners.md). Every Required row at
+// the value it reported and every Optional flag as its extension list had it. The shape that
+// matters: acceleration structures and ray-tracing pipelines present — the driver's compute
+// fallback on Pascal — and no ray query, no mesh shaders, no cluster acceleration structures.
+gfx::DeviceCaps titan_xp_caps() {
+  gfx::DeviceCaps caps = minimal_caps();
+  caps.api_version = 1004;
+  caps.max_push_constants_size = 256;
+  caps.max_compute_workgroup_invocations = 1536;
+  caps.max_compute_workgroup_size_x = 1536;
+  caps.max_compute_workgroup_size_y = 1024;
+  caps.max_compute_shared_memory_size = 49152;
+  caps.max_memory_allocation_count = 4294967295u;
+  caps.max_per_stage_uab_sampled_images = 1048576;
+  caps.max_per_stage_uab_storage_images = 1048576;
+  caps.max_per_stage_uab_samplers = 1048576;
+  caps.max_per_stage_uab_resources = 4294967295u;
+  caps.max_set_uab_sampled_images = 1048576;
+  caps.max_set_uab_storage_images = 1048576;
+  caps.max_set_uab_samplers = 1048576;
+  caps.max_set_uab_acceleration_structures = 1048576;
+  caps.max_storage_buffer_range = 4294967295u;
+  caps.subgroup_size = 32;
+  caps.swapchain = 1;
+  caps.shader_buffer_int64_atomics = 1;
+  caps.fragment_stores_and_atomics = 1;
+  caps.deferred_host_operations = 1;
+  caps.acceleration_structure = 1;
+  caps.ray_tracing_pipeline = 1;
+  caps.memory_budget = 1;
+  caps.descriptor_buffer = 1;
+  caps.sampler_anisotropy = 1;
+  caps.index_type_uint8 = 1;
+  caps.storage_buffer_16bit_access = 1;
+  caps.storage_buffer_8bit_access = 1;
+  // Absent: VK_EXT_mesh_shader, VK_KHR_ray_query, VK_NV_cluster_acceleration_structure,
+  // VK_EXT_memory_decompression, VK_KHR_fragment_shading_rate.
+  return caps;
+}
+
+// The report's rows, name, `found` and `pass`, exactly as the card wrote them. The fixture above
+// has to evaluate to these, which is what makes it this card and not a guess at one.
+struct ReportedRow {
+  const char* name;
+  const char* found;
+  bool pass;
+};
+constexpr ReportedRow k_titan_xp_rows[] = {
+    {"apiVersion", "1.4", true},
+    {"graphics+compute queue family", "1", true},
+    {"dynamicRendering", "true", true},
+    {"synchronization2", "true", true},
+    {"maintenance4", "true", true},
+    {"bufferDeviceAddress", "true", true},
+    {"descriptorIndexing", "true", true},
+    {"runtimeDescriptorArray", "true", true},
+    {"descriptorBindingPartiallyBound", "true", true},
+    {"descriptorBindingSampledImageUpdateAfterBind", "true", true},
+    {"descriptorBindingStorageImageUpdateAfterBind", "true", true},
+    {"shaderSampledImageArrayNonUniformIndexing", "true", true},
+    {"timelineSemaphore", "true", true},
+    {"scalarBlockLayout", "true", true},
+    {"hostQueryReset", "true", true},
+    {"drawIndirectCount", "true", true},
+    {"multiDrawIndirect", "true", true},
+    {"shaderInt64", "true", true},
+    {"maxPushConstantsSize", "256", true},
+    {"maxComputeWorkGroupInvocations", "1536", true},
+    {"maxComputeWorkGroupSize[0]", "1536", true},
+    {"maxComputeWorkGroupSize[1]", "1024", true},
+    {"maxComputeSharedMemorySize", "49152", true},
+    {"maxMemoryAllocationCount", "4294967295", true},
+    {"maxPerStageDescriptorUpdateAfterBindSampledImages", "1048576", true},
+    {"maxPerStageDescriptorUpdateAfterBindStorageImages", "1048576", true},
+    {"maxPerStageDescriptorUpdateAfterBindSamplers", "1048576", true},
+    {"maxPerStageUpdateAfterBindResources", "4294967295", true},
+    {"maxDescriptorSetUpdateAfterBindSampledImages", "1048576", true},
+    {"maxDescriptorSetUpdateAfterBindStorageImages", "1048576", true},
+    {"maxDescriptorSetUpdateAfterBindSamplers", "1048576", true},
+    {"VK_KHR_swapchain", "true", true},
+    {"shaderBufferInt64Atomics", "true", true},
+    {"fragmentStoresAndAtomics", "true", true},
+    {"VK_EXT_mesh_shader", "false", false},
+    {"VK_KHR_deferred_host_operations", "true", true},
+    {"VK_KHR_acceleration_structure", "true", true},
+    {"VK_KHR_ray_query", "false", false},
+    {"VK_KHR_ray_tracing_pipeline", "true", true},
+    {"VK_NV_cluster_acceleration_structure", "false", false},
+    {"maxDescriptorSetUpdateAfterBindAccelerationStructures", "1048576", true},
+    {"VK_EXT_memory_budget", "true", true},
+    {"VK_EXT_memory_decompression", "false", false},
+    {"VK_EXT_descriptor_buffer", "true", true},
+    {"samplerAnisotropy", "true", true},
+    {"VK_KHR_fragment_shading_rate", "false", false},
+    {"maxStorageBufferRange", "4095 MiB", true},
+    {"VK_EXT_index_type_uint8", "true", true},
+    {"subgroupSize", "32", true},
+    {"storageBuffer16BitAccess", "true", true},
+    {"storageBuffer8BitAccess", "true", true},
+};
+
 bool any_mentions(const Vector<std::string>& lines, const char* needle) {
   for (const std::string& line : lines) {
     if (line.find(needle) != std::string::npos) return true;
@@ -168,6 +271,98 @@ TEST_CASE("gfx: the requirements table answers without a device") {
 
   MESSAGE("requirements table: " << required << " required, " << optional << " optional, " << notes
                                  << " notes");
+}
+
+TEST_CASE("gfx: the TITAN Xp's report is the baseline tier, and says why it cannot trace") {
+  const gfx::DeviceCaps caps = titan_xp_caps();
+  Vector<gfx::DeviceRequirement> rows;
+  gfx::evaluate_requirements(caps, rows);
+  for (const ReportedRow& reported : k_titan_xp_rows) {
+    const gfx::DeviceRequirement* row = nullptr;
+    for (const gfx::DeviceRequirement& candidate : rows) {
+      if (candidate.name == reported.name) row = &candidate;
+    }
+    INFO("row ", reported.name);
+    REQUIRE(row != nullptr);
+    CHECK(row->found == reported.found);
+    CHECK(row->pass == reported.pass);
+  }
+  CHECK(gfx::requirements_met({rows.data(), rows.size()}));
+
+  // Acceleration structures and ray-tracing pipelines, and no ray query: "raster", not "rt". The
+  // rule that called this card "rt" keyed on the pipeline, which nothing here builds.
+  CHECK(std::string(gfx::hardware_tier(caps)) == "raster");
+  gfx::DeviceVerdict verdict;
+  gfx::device_verdict(caps, {rows.data(), rows.size()}, verdict);
+  CHECK(verdict.usable);
+  CHECK(verdict.tier == "raster");
+  CHECK(verdict.blocking.empty());
+  CHECK(verdict.clamps.empty());
+  for (const std::string& line : verdict.degraded)
+    MESSAGE(line);
+  // Exactly two things are missing that a reader needs told about: mesh shaders, and every ray.
+  REQUIRE(verdict.degraded.size() == 2);
+  CHECK(verdict.degraded[0].find("no VK_EXT_mesh_shader") == 0);
+  const std::string rays = gfx::ray_tracing_degradation(caps);
+  CHECK(verdict.degraded[1] == rays);
+  CHECK(rays.find("no VK_KHR_ray_query and no VK_NV_cluster_acceleration_structure") == 0);
+  CHECK(rays.find("--shadows rt") != std::string::npos);
+  CHECK(rays.find("--raster rt") != std::string::npos);
+  CHECK(rays.find("\"raster\"") != std::string::npos);
+  CHECK(rays.find("VK_KHR_ray_tracing_pipeline are present") != std::string::npos);
+}
+
+TEST_CASE("gfx: the rt tier is ray queries, not ray-tracing pipelines") {
+  // Every ray-tracing consumer in the engine is a ray query, so the tier keys on that row; and the
+  // sentence the verdict carries names exactly what is missing for the renderer's ray paths, which
+  // today also need the cluster structures (the KHR fallback is gfx's, not the renderer's yet).
+  struct Case {
+    const char* what;
+    u32 acceleration_structure;
+    u32 ray_query;
+    u32 ray_tracing_pipeline;
+    u32 cluster;
+    const char* tier;
+    const char* sentence_starts;  // empty: every ray path of the renderer runs
+  };
+  const Case cases[] = {
+      {"no ray tracing at all", 0, 0, 0, 0, "raster", "no VK_KHR_acceleration_structure:"},
+      {"Pascal's compute fallback", 1, 0, 1, 0, "raster",
+       "no VK_KHR_ray_query and no VK_NV_cluster_acceleration_structure:"},
+      {"cluster structures without ray queries", 1, 0, 1, 1, "raster", "no VK_KHR_ray_query:"},
+      {"ray queries and no pipeline", 1, 1, 0, 0, "rt", "no VK_NV_cluster_acceleration_structure:"},
+      {"KHR ray tracing", 1, 1, 1, 0, "rt", "no VK_NV_cluster_acceleration_structure:"},
+      {"RTX with cluster structures", 1, 1, 1, 1, "rt-cluster", ""},
+  };
+  for (const Case& c : cases) {
+    INFO(c.what);
+    gfx::DeviceCaps caps = minimal_caps();
+    caps.shader_buffer_int64_atomics = 1;
+    caps.fragment_stores_and_atomics = 1;
+    caps.deferred_host_operations = c.acceleration_structure;
+    caps.acceleration_structure = c.acceleration_structure;
+    caps.ray_query = c.ray_query;
+    caps.ray_tracing_pipeline = c.ray_tracing_pipeline;
+    caps.cluster_acceleration_structure = c.cluster;
+    caps.max_set_uab_acceleration_structures = c.acceleration_structure != 0 ? 1024u : 0u;
+    CHECK(std::string(gfx::hardware_tier(caps)) == c.tier);
+    Vector<gfx::DeviceRequirement> rows;
+    gfx::evaluate_requirements(caps, rows);
+    gfx::DeviceVerdict verdict;
+    gfx::device_verdict(caps, {rows.data(), rows.size()}, verdict);
+    CHECK(verdict.tier == c.tier);
+    const std::string sentence = gfx::ray_tracing_degradation(caps);
+    if (c.sentence_starts[0] == '\0') {
+      CHECK(sentence.empty());
+      CHECK_FALSE(any_mentions(verdict.degraded, "--raster rt"));
+    } else {
+      CHECK(sentence.find(c.sentence_starts) == 0);
+      bool carried = false;
+      for (const std::string& line : verdict.degraded)
+        carried = carried || line == sentence;
+      CHECK(carried);
+    }
+  }
 }
 
 TEST_CASE("gfx: the bindless set clamps to the device and keeps its floors") {

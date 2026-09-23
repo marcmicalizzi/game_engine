@@ -14,6 +14,7 @@
 #include <domain/gfx/device.h>
 #include <domain/gfx/visibility_resolve.h>
 
+#include <string>
 #include <string_view>
 
 namespace engine::renderer {
@@ -145,8 +146,10 @@ struct ResolvedSettings {
 // exit code 3 and engine-host into protocol error 1007.
 enum class RenderAvailability : u8 {
   Ok,
-  NoVisibilityBuffer,       // no 64-bit buffer atomics: nothing can write the visibility buffer
-  NoAccelerationStructures  // --raster rt without cluster acceleration structures or ray queries
+  NoVisibilityBuffer,  // no 64-bit buffer atomics: nothing can write the visibility buffer
+  // `--raster rt`, or an explicit `--shadows rt`, on a device without cluster acceleration
+  // structures and ray queries. `ShadowMode::Auto` never gets here: it turns shadows off.
+  NoAccelerationStructures
 };
 
 // Applies every device and scene override, in the order the renderer depends on: the mesh
@@ -162,7 +165,13 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
 // checked: that is the window's requirement, not the renderer's.
 RenderAvailability check_availability(const ResolvedSettings& resolved,
                                       const gfx::DeviceFeatures& features) noexcept;
+// The short phrase for a refusal ("has no 64-bit buffer atomics"), for a caller with no device.
 const char* availability_message(RenderAvailability availability) noexcept;
+// The refusal as a host prints it: the adapter's name and, for a ray-tracing refusal, the
+// sentence the device's verdict carries (`gfx::ray_tracing_degradation`), which names exactly
+// the extensions that are missing. engine-view's exit 3 and engine-host's error 1007 both say
+// this, so what `engine-cli gpu.adapters` reported and what the refusal says cannot drift.
+std::string unavailable_reason(RenderAvailability availability, const gfx::Device& device);
 
 // Names as the command line and the protocol spell them, and the parsers for them. One spelling
 // per concept, shared by engine-view's flags and engine-host's schema strings.

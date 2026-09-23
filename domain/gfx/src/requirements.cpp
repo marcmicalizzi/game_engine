@@ -200,16 +200,20 @@ constexpr Requirement k_requirements[] = {
     {"VK_KHR_ray_query", "extension", RequirementLevel::Optional, Unit::Flag,
      &DeviceCaps::ray_query, 1, "ray-tracing",
      "ray-traced shadows in the resolve, ray_visibility.slang, and the reference path tracer, "
-     "all of which trace from a RayQuery rather than from a ray-tracing pipeline."},
+     "all of which trace from a RayQuery rather than from a ray-tracing pipeline. This row and "
+     "VK_KHR_acceleration_structure are what the \"rt\" tier is decided by."},
     {"VK_KHR_ray_tracing_pipeline", "extension", RequirementLevel::Optional, Unit::Flag,
      &DeviceCaps::ray_tracing_pipeline, 1, "ray-tracing",
-     "no pass uses a ray-tracing pipeline yet; it is what the \"rt\" tier is named for, and the "
-     "tier is what tells a reader the card can trace."},
+     "no pass builds a ray-tracing pipeline, so this row decides nothing and is reported for the "
+     "reader. It used to decide the \"rt\" tier, until a Pascal TITAN Xp advertised it through "
+     "the driver's compute fallback with no ray query and was called \"rt\" while unable to "
+     "trace one ray the renderer asks for."},
     {"VK_NV_cluster_acceleration_structure", "extension", RequirementLevel::Optional, Unit::Flag,
      &DeviceCaps::cluster_acceleration_structure, 1, "cluster-acceleration-structures",
-     "the per-frame cluster structures of ADR-0025, built from the GPU's own cut. The KHR path "
-     "is the fallback and draws the same picture; the reference path tracer traces the cluster "
-     "structures and so needs this."},
+     "the per-frame cluster structures of ADR-0025, built from the GPU's own cut. They are the "
+     "only structures the renderer builds today, so --raster rt, ray-traced shadows and the "
+     "reference path tracer all need this; ADR-0025's KHR fallback draws the same picture in "
+     "gfx's tests and is not wired into the renderer yet."},
     {"maxDescriptorSetUpdateAfterBindAccelerationStructures", "limit", RequirementLevel::Optional,
      Unit::Count, &DeviceCaps::max_set_uab_acceleration_structures, k_min_acceleration_structures,
      "ray-tracing",
@@ -432,9 +436,45 @@ BindlessCapacity clamp_bindless(const DeviceCaps& caps, const BindlessCapacity& 
 // ---- verdict -------------------------------------------------------------------------------
 
 const char* hardware_tier(const DeviceCaps& caps) noexcept {
-  const bool rt = caps.acceleration_structure != 0 && caps.ray_tracing_pipeline != 0;
+  // Ray queries, not ray-tracing pipelines: see the header. The pipeline flag is still reported
+  // (it is a row of the table) and decides nothing.
+  const bool rt = caps.acceleration_structure != 0 && caps.ray_query != 0;
   if (!rt) return "raster";
   return caps.cluster_acceleration_structure != 0 ? "rt-cluster" : "rt";
+}
+
+std::string ray_tracing_degradation(const DeviceCaps& caps) {
+  if (caps.acceleration_structure == 0) {
+    return "no VK_KHR_acceleration_structure: --raster rt, ray-traced shadows (--shadows rt) and "
+           "the reference path tracer are unavailable, and binding 3 of the bindless set does not "
+           "exist.";
+  }
+  if (caps.ray_query == 0) {
+    std::string text = caps.cluster_acceleration_structure == 0
+                           ? "no VK_KHR_ray_query and no VK_NV_cluster_acceleration_structure: "
+                           : "no VK_KHR_ray_query: ";
+    text +=
+        "every ray the renderer traces is a ray query (the shadowed resolve from the fragment "
+        "stage, the ray-traced visibility and the reference path tracer from compute), so --raster "
+        "rt, ray-traced shadows (--shadows rt) and the reference path tracer are unavailable and "
+        "the tier is \"raster\"";
+    if (caps.ray_tracing_pipeline != 0) {
+      text +=
+          ", although VK_KHR_acceleration_structure and VK_KHR_ray_tracing_pipeline are present "
+          "(Pascal's driver advertises both through its compute fallback; nothing here builds a "
+          "ray-tracing pipeline)";
+    }
+    text += ".";
+    return text;
+  }
+  if (caps.cluster_acceleration_structure == 0) {
+    return "no VK_NV_cluster_acceleration_structure: the renderer builds its per-frame structures "
+           "only as cluster acceleration structures, so --raster rt, ray-traced shadows (--shadows "
+           "rt) and the reference path tracer are unavailable. ADR-0025's fallback, one KHR "
+           "geometry per visible cluster and a pixel-identical picture for about three times the "
+           "memory, is built and traced by gfx's own tests but not by the renderer yet.";
+  }
+  return {};
 }
 
 void device_verdict(const DeviceCaps& caps, std::span<const DeviceRequirement> rows,
@@ -488,17 +528,8 @@ void device_verdict(const DeviceCaps& caps, std::span<const DeviceRequirement> r
                   "vertex-shader baseline tier (ADR-0024), which draws the same visibility "
                   "buffer from the same clusters and the same cull pass.");
   }
-  if (caps.acceleration_structure == 0) {
-    append_reason(out.degraded,
-                  "no VK_KHR_acceleration_structure: --raster rt, ray-traced shadows "
-                  "(--shadows rt) and the reference path tracer are unavailable, and binding 3 "
-                  "of the bindless set does not exist.");
-  } else if (caps.cluster_acceleration_structure == 0) {
-    append_reason(out.degraded,
-                  "no VK_NV_cluster_acceleration_structure: the KHR path builds one geometry per "
-                  "visible cluster instead (ADR-0025) and draws a pixel-identical picture for "
-                  "about three times the memory; the reference path tracer traces the cluster "
-                  "structures and stays unavailable.");
+  if (std::string text = ray_tracing_degradation(caps); !text.empty()) {
+    append_reason(out.degraded, std::move(text));
   }
   if (caps.swapchain == 0) {
     append_reason(out.degraded,

@@ -369,8 +369,7 @@ bool render_load(protocol::Context& ctx, const protocol::RenderLoadParams& param
   const renderer::RenderAvailability availability =
       renderer::check_availability(resolved, device->features());
   if (availability != renderer::RenderAvailability::Ok) {
-    error = unavailable(std::string(device->adapter().name) + " " +
-                        renderer::availability_message(availability));
+    error = unavailable(renderer::unavailable_reason(availability, *device));
     return false;
   }
   RenderHost::Scene* scene = host->add_scene();
@@ -905,7 +904,7 @@ bool RenderHost::ensure_renderer(Scene& scene, const renderer::RenderSettings& s
   const renderer::RenderAvailability availability =
       renderer::check_availability(scene.resolved, dev->features());
   if (availability != renderer::RenderAvailability::Ok) {
-    error = std::string(dev->adapter().name) + " " + renderer::availability_message(availability);
+    error = renderer::unavailable_reason(availability, *dev);
     unavailable = true;  // a machine that cannot, not a caller that asked wrongly
     return false;
   }
@@ -956,7 +955,7 @@ bool RenderHost::ensure_reference(Scene& scene, std::string& error, bool& unavai
     return false;
   }
   std::string why;
-  if (!renderer::reference_available(scene.resolved, dev->features(), &why)) {
+  if (!renderer::reference_available(scene.resolved, *dev, &why)) {
     error = std::string(dev->adapter().name) + " " + why;
     unavailable = true;
     return false;

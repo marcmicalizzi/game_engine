@@ -139,6 +139,34 @@ std::string uri_at(const JsonValue& files, const char* channel) {
   return value != nullptr && value->get_string(out) ? path_of_uri(out) : std::string();
 }
 
+// The path `render.load` resolves `"raster":"hw"` to on the adapter the host opened, as that
+// adapter's own report predicts it: the mesh path where the VK_EXT_mesh_shader row passes, the
+// vertex-shader baseline tier where it does not (ADR-0024). Asked of `gpu.adapters` rather than
+// assumed, because the assumption is what the first GPU run on a Pascal card broke: every machine
+// this case had run on until then had mesh shaders, and the host was right to answer "vertex".
+std::string expected_hw_raster(Host& host, const std::string& adapter) {
+  const JsonValue response = host.call("gpu.adapters", "{}");
+  const JsonValue* adapters = result_of(response).find("adapters");
+  REQUIRE(adapters != nullptr);
+  for (usize a = 0; a < adapters->size(); ++a) {
+    const JsonValue& info = (*adapters)[a];
+    if (text(info, "name") != adapter) continue;
+    const JsonValue* rows = info.find("requirements");
+    REQUIRE(rows != nullptr);
+    for (usize r = 0; r < rows->size(); ++r) {
+      const JsonValue& row = (*rows)[r];
+      if (text(row, "name") != "VK_EXT_mesh_shader") continue;
+      bool pass = false;
+      const JsonValue* value = row.find("pass");
+      REQUIRE((value != nullptr && value->get_bool(pass)));
+      return pass ? "hw" : "vertex";
+    }
+    FAIL("gpu.adapters has no VK_EXT_mesh_shader row for " << adapter);
+  }
+  FAIL("the adapter render.load named, " << adapter << ", is not in gpu.adapters");
+  return {};
+}
+
 }  // namespace
 
 TEST_CASE("render: load, capture, benchmark, and compare over the protocol") {
@@ -165,7 +193,11 @@ TEST_CASE("render: load, capture, benchmark, and compare over the protocol") {
   CHECK(number(scene, "leaf_clusters") > 0);
   CHECK(text(scene, "mesh_cache") == "none");  // the heightfield is built, never cached
   CHECK(!text(scene, "adapter").empty());
-  CHECK(text(scene, "raster") == "hw");
+  // What ran, not what was asked for: "hw" on a device with mesh shaders, "vertex" without.
+  const std::string raster = expected_hw_raster(host, text(scene, "adapter"));
+  MESSAGE("render.load resolved raster \"hw\" to \"" << text(scene, "raster") << "\" on "
+                                                     << text(scene, "adapter"));
+  CHECK(text(scene, "raster") == raster);
   CHECK(scene.find("center") != nullptr);
   CHECK(scene.find("radius") != nullptr);
 
@@ -206,7 +238,7 @@ TEST_CASE("render: load, capture, benchmark, and compare over the protocol") {
   const JsonValue& bench = result_of(benchmarked);
   CHECK(number(bench, "width") == 320);
   CHECK(number(bench, "height") == 240);
-  CHECK(text(bench, "raster") == "hw");
+  CHECK(text(bench, "raster") == raster);
   const JsonValue* stats = bench.find("stats");
   REQUIRE(stats != nullptr);
   CHECK(number(*stats, "frames") == 12);
@@ -328,10 +360,12 @@ TEST_CASE("render: geometry streaming over the protocol") {
 }
 
 // `render.evaluate` and the reference integrator of `render.capture` (docs/plan/04-renderer.md
-// §4.8, docs/subsystems/renderer.md "Reference renderer"). They need a device that can build the
-// frame's cluster acceleration structures, which the hosted runners have not and the baseline
-// tier machines have not either, so both come back 1007 there and the case records a skip — the
-// same shape as the rest of this file.
+// §4.8, docs/subsystems/renderer.md "Reference renderer"). They need a device that can build and
+// trace the frame's cluster acceleration structures — VK_NV_cluster_acceleration_structure and
+// VK_KHR_ray_query both — which the hosted runners have not and the baseline tier machines have
+// not either (the TITAN Xp has neither), so both come back 1007 there and the case records a skip
+// whose message is the host's refusal, which names the missing extensions in the words of the
+// adapter's own verdict. Everything before the reference capture still runs there.
 TEST_CASE("render: the reference integrator and the evaluate loop over the protocol") {
   const test::TempDir tmp("engine_render_reference");
   const std::string out_dir = tmp.path();
@@ -356,7 +390,12 @@ TEST_CASE("render: the reference integrator and the evaluate loop over the proto
                             "\"out_dir\":\"" +
                             out_dir + "\",\"name\":\"ref\"}");
   if (error_code(captured) == k_render_unavailable) {
-    MESSAGE("the reference needs cluster acceleration structures: " << error_message(captured));
+    const std::string refusal = error_message(captured);
+    MESSAGE("reference integrator unavailable here: " << refusal);
+    // The refusal names what the device lacks, rather than "one or the other".
+    CHECK((refusal.find("no VK_KHR_ray_query") != std::string::npos ||
+           refusal.find("no VK_NV_cluster_acceleration_structure") != std::string::npos ||
+           refusal.find("no VK_KHR_acceleration_structure") != std::string::npos));
     return;
   }
   const JsonValue& shot = result_of(captured);

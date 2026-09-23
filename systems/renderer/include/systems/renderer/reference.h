@@ -98,8 +98,11 @@ struct ReferenceFrame {
 using ReferenceProgress = bool (*)(u32 done, u32 total, void* user);
 
 // Whether this device and these resolved settings can render a reference at all. False with
-// `why` filled in, which the hosts report the way they report `availability_message`.
-bool reference_available(const ResolvedSettings& resolved, const gfx::DeviceFeatures& features,
+// `why` filled in, which the hosts print after the adapter's name the way they print
+// `unavailable_reason`. A device that cannot trace is described in its verdict's own sentence
+// (`gfx::ray_tracing_degradation`), so the refusal names the missing extension rather than
+// guessing between the two it needs.
+bool reference_available(const ResolvedSettings& resolved, const gfx::Device& device,
                          std::string* why = nullptr);
 
 class ReferenceRenderer {

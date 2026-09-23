@@ -229,7 +229,26 @@ void device_verdict(const DeviceCaps& caps, std::span<const DeviceRequirement> r
 
 // The tier the *hardware* advertises, from the caps alone: "raster", "rt", or "rt-cluster".
 // `AdapterInfo::tier` is this; `DeviceVerdict::tier` is this or "none".
+//
+// "rt" is acceleration structures **and ray queries**, because every ray this engine traces is a
+// ray query — the shadowed resolve from the fragment stage, the ray-traced visibility and the
+// reference path tracer from compute — and nothing builds a ray-tracing pipeline. The rule used
+// to key on `VK_KHR_ray_tracing_pipeline` instead, and the first GPU run on a Pascal TITAN Xp
+// (driver 580) showed what that costs: the driver's compute fallback advertises acceleration
+// structures and ray-tracing pipelines and no ray query, so the card reported "rt" and could not
+// trace one ray the renderer asks for. Such a device is "raster", and its verdict says why.
+// "rt-cluster" is "rt" plus `VK_NV_cluster_acceleration_structure`.
 const char* hardware_tier(const DeviceCaps& caps) noexcept;
+
+// The one sentence the verdict carries about ray tracing on `caps`, or empty when every ray-traced
+// path of the renderer runs there: `--raster rt`, ray-traced shadows, and the reference path
+// tracer, which today need acceleration structures, ray queries and cluster acceleration
+// structures (the renderer builds only the cluster kind; ADR-0025's KHR fallback is gfx's and not
+// wired into the renderer yet). It names exactly what is missing. `device_verdict` puts it in
+// `degraded`, and a host that refuses a ray-traced request prints it
+// (`renderer::unavailable_reason`), so the report a machine's owner reads before running anything
+// and the refusal they get when they run it say the same thing in the same words.
+std::string ray_tracing_degradation(const DeviceCaps& caps);
 
 // One line per requirement for a log or a terminal: "  [x] maxPushConstantsSize  need >= 128,
 // found 256".

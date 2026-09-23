@@ -49,6 +49,10 @@ TEST_CASE("gfx: device creation enables the feature chain the renderer needs") {
   if (f.cluster_acceleration_structure) CHECK(advertised("VK_NV_cluster_acceleration_structure"));
   if (adapter.tier == "rt-cluster") CHECK(f.cluster_acceleration_structure);
   if (adapter.tier != "raster") CHECK(f.acceleration_structure);
+  // The tier is keyed on ray queries, because every ray this engine traces is one: a device
+  // called "rt" that cannot trace one is the mistake the first run on a Pascal card found.
+  if (adapter.tier != "raster") CHECK(f.ray_query);
+  if (f.ray_query) CHECK(advertised("VK_KHR_ray_query"));
   const gfx::Handles& h = device.handles();
   CHECK(h.instance != VK_NULL_HANDLE);
   CHECK(h.device != VK_NULL_HANDLE);

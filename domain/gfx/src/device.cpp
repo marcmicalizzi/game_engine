@@ -551,6 +551,9 @@ bool Device::create(const DeviceOptions& options, std::string* error) {
                   log::field("api", std::string_view(impl->adapter.api_version)),
                   log::field("mesh_shader", impl->features.mesh_shader),
                   log::field("ray_tracing", impl->features.ray_tracing_pipeline),
+                  // Beside the pipeline flag, because the pipeline alone is what made a Pascal
+                  // card that cannot trace one of this engine's rays read as a ray tracing one.
+                  log::field("ray_query", impl->features.ray_query),
                   log::field("cluster_as", impl->features.cluster_acceleration_structure),
                   log::field("descriptor_buffer", impl->features.descriptor_buffer),
                   log::field("validation", impl->features.validation));

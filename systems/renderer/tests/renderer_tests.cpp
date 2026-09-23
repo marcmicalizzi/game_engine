@@ -1,7 +1,10 @@
 // The renderer, headless. Every case here builds a scene from a cube GLB written at test time,
 // renders it into an offscreen color target, and reads the result back: no window, no surface,
 // no swapchain, and no file in the tree. On a machine with no Vulkan device, or one that cannot
-// write the visibility buffer, the cases record a skip, exactly as engine-view exits 3.
+// write the visibility buffer, the cases record a skip, exactly as engine-view exits 3. A device
+// without mesh shaders is **not** a skip: every case about the picture runs there through the
+// vertex-shader baseline tier, which is what `RenderSettings{}` resolves to, and only a case about
+// the mesh path or the ray path itself skips, naming the feature that is missing.
 //
 // The renderer must work without a window, because engine-host has none. That is a build-time
 // property, not a runtime one: `foundation/window` is not a dependency of this module, so its
@@ -18,6 +21,7 @@
 #include <domain/gfx/device.h>
 #include <systems/renderer/capture.h>
 #include <systems/renderer/gpu_scene.h>
+#include <systems/renderer/reference.h>
 #include <systems/renderer/scene.h>
 #include <systems/renderer/scene_renderer.h>
 #include <systems/renderer/settings.h>
@@ -213,8 +217,9 @@ struct Rig {
   // procedural mesh onto the GPU without inventing a skinned glTF to write at test time.
   bool finish(const gfx::Device& device, const RenderSettings& settings, u32 width, u32 height) {
     resolve_settings(settings, device.features(), &data, resolved);
-    if (check_availability(resolved, device.features()) != RenderAvailability::Ok) {
-      error = availability_message(check_availability(resolved, device.features()));
+    const RenderAvailability availability = check_availability(resolved, device.features());
+    if (availability != RenderAvailability::Ok) {
+      error = unavailable_reason(availability, device);
       return false;
     }
     if (!scene.create(device, data, resolved, &error)) return false;
@@ -590,6 +595,37 @@ TEST_CASE("renderer: settings resolve the same way for every host") {
   CHECK(resolved.ray_path);
   CHECK(check_availability(resolved, features) == RenderAvailability::NoAccelerationStructures);
 
+  // The TITAN Xp as its driver reports itself (docs/ci/self-hosted-runners.md, "The first run on
+  // the Titan Xp"): acceleration structures and ray-tracing pipelines through the compute
+  // fallback, and no ray query, no mesh shaders and no cluster structures. The default request is
+  // the baseline tier with occlusion culling and no shadows; an *explicit* ray request — the ray
+  // path or `--shadows rt` — is refused rather than quietly dropped.
+  gfx::DeviceFeatures pascal;
+  pascal.buffer_int64_atomics = true;
+  pascal.shader_int64 = true;
+  pascal.acceleration_structure = true;
+  pascal.ray_tracing_pipeline = true;
+  resolve_settings(RenderSettings{}, pascal, nullptr, resolved);
+  CHECK(resolved.settings.raster == RasterMode::Vertex);
+  CHECK(resolved.vertex_path);
+  CHECK_FALSE(resolved.shadows);
+  CHECK_FALSE(resolved.rt_chain);
+  CHECK(resolved.occlusion);
+  CHECK(check_availability(resolved, pascal) == RenderAvailability::Ok);
+  RenderSettings asked;
+  asked.shadows = ShadowMode::RayTraced;
+  resolve_settings(asked, pascal, nullptr, resolved);
+  CHECK(check_availability(resolved, pascal) == RenderAvailability::NoAccelerationStructures);
+  asked = RenderSettings{};
+  asked.raster = RasterMode::RayTrace;
+  resolve_settings(asked, pascal, nullptr, resolved);
+  CHECK(check_availability(resolved, pascal) == RenderAvailability::NoAccelerationStructures);
+  asked = RenderSettings{};
+  asked.raster = RasterMode::Direct;  // mesh shaders to colour: the baseline tier here too
+  resolve_settings(asked, pascal, nullptr, resolved);
+  CHECK(resolved.vertex_path);
+  CHECK_FALSE(resolved.direct);
+
   features.cluster_acceleration_structure = true;
   features.ray_query = true;
   features.mesh_shader = true;
@@ -604,7 +640,9 @@ TEST_CASE("renderer: settings resolve the same way for every host") {
   CHECK(resolved.settings.rt_templates);
   CHECK(check_availability(resolved, features) == RenderAvailability::Ok);
 
-  // A path that cannot shadow says so and leaves everything else alone.
+  // A path that cannot shadow says so and leaves everything else alone. That is a settings
+  // conflict on a device that can trace, not a device that cannot, so it is a warning and the
+  // frame still runs.
   settings.raster = RasterMode::Software;
   settings.shadows = ShadowMode::RayTraced;
   settings.rt_templates = true;
@@ -612,6 +650,7 @@ TEST_CASE("renderer: settings resolve the same way for every host") {
   CHECK_FALSE(resolved.shadows);
   CHECK_FALSE(resolved.rt_chain);
   CHECK_FALSE(resolved.settings.rt_templates);
+  CHECK(check_availability(resolved, features) == RenderAvailability::Ok);
 }
 
 TEST_CASE("renderer: the direct path has no id or depth channel") {
@@ -645,6 +684,144 @@ TEST_CASE("renderer: the direct path has no id or depth channel") {
   error.clear();
   REQUIRE_MESSAGE(rig.renderer.capture(frame, channels, shot, &error), error);
   CHECK(shot.color.size() == u64{96} * 96 * 4);
+}
+
+// ---- the baseline tier on a device that really lacks the rest ---------------------------------
+//
+// The first GPU run on the Pascal server (docs/ci/self-hosted-runners.md, "The first run on the
+// Titan Xp") failed 13 of this module's cases in one place: `SceneRenderer` built its mesh-shader
+// pipelines whatever path the settings had resolved to, so on a device without mesh shaders no
+// renderer could be created at all while `resolve_settings` said "vertex". Nothing here had seen
+// it, because every GPU this suite had run on has mesh shaders. This case is that device on
+// whatever GPU is present: the TITAN Xp's extension set through `DeviceOptions::overrides`, which
+// creates a device that really lacks what they remove (a mesh pipeline on it fails exactly as on
+// the hardware). It holds the baseline tier to ADR-0024's promise — the default request draws,
+// through the vertex path, the picture the mesh path draws, to the byte — and it holds an explicit
+// ray request to a refusal in the words of the device's own verdict.
+TEST_CASE("renderer: a TITAN-Xp-like device draws the default request through the vertex path") {
+  const test::TempDir tmp("engine_renderer_pascal");
+  const std::filesystem::path dir = tmp.native();
+  const std::string mesh = slashes(dir / "cube.glb");
+  REQUIRE(write_cube_glb(mesh));
+  SceneDesc desc;
+  desc.meshes.push_back(mesh);
+  desc.ddc = slashes(dir / "ddc");
+  // Two rows, one behind the other, so occlusion culling has something to do on both devices.
+  for (i32 z = 0; z < 2; ++z) {
+    for (i32 x = -1; x <= 1; ++x) {
+      SceneInstance instance;
+      instance.transform.position =
+          Vec3{static_cast<f32>(x) * 1.4f, 0.0f, static_cast<f32>(z) * -2.2f};
+      desc.instances.push_back(instance);
+    }
+  }
+  constexpr u32 k_width = 200;
+  constexpr u32 k_height = 120;
+  CaptureChannels channels;
+  channels.ids = true;
+  channels.depth = true;
+  std::string error;
+
+  // **One live device at a time.** `Device::create` loads volk's process-wide dispatch table, so
+  // a second live device with a different extension set replaces the first one's entry points —
+  // with this profile alive, the full device's `vkCmdDrawMeshTasksIndirectEXT` is null, which is
+  // how the first draft of this case crashed (docs/subsystems/gfx.md, "One live device per
+  // process"). So the device as it is draws first and is gone before the profile exists.
+  //
+  // It draws with shadows off, so both frames resolve through the same pipeline with occlusion
+  // culling on: the mesh path wherever there are mesh shaders, and the vertex path — which makes
+  // this comparison weaker but still true — on a device that has none.
+  FrameDesc frame;
+  CapturedFrame b;
+  u32 full_pairs = 0;
+  RasterMode full_raster = RasterMode::Hardware;
+  {
+    Gpu gpu;
+    if (!gpu.ok) {
+      MESSAGE("renderer unavailable here: " << gpu.why);
+      return;
+    }
+    RenderSettings plain;
+    plain.shadows = ShadowMode::Off;
+    Rig full;
+    REQUIRE_MESSAGE(full.build(gpu.device, desc, plain, k_width, k_height), full.error);
+    frame.camera = orbit_camera_at(full.data.center, full.data.radius, 14.0f, 0.3f, k_orbit_pitch);
+    REQUIRE_MESSAGE(full.renderer.capture(frame, channels, b, &error), error);
+    full_pairs = full.renderer.stats().visible_pairs();
+    full_raster = full.resolved.settings.raster;
+  }
+
+  gfx::DeviceOptions options;
+  for (const char* row :
+       {"VK_EXT_mesh_shader", "VK_KHR_ray_query", "VK_NV_cluster_acceleration_structure",
+        "VK_EXT_memory_decompression", "VK_KHR_fragment_shading_rate"}) {
+    options.overrides.absent.push_back(row);
+  }
+  gfx::Device pascal;
+  REQUIRE_MESSAGE(pascal.create(options, &error), error);  // the GPU that just drew above
+  CHECK(pascal.verdict().usable);
+  CHECK(pascal.verdict().tier == "raster");  // acceleration structures without ray queries
+  CHECK_FALSE(pascal.features().mesh_shader);
+  CHECK_FALSE(pascal.features().ray_query);
+
+  Rig baseline;  // declared after `pascal`, so it is destroyed first
+  REQUIRE_MESSAGE(baseline.build(pascal, desc, RenderSettings{}, k_width, k_height),
+                  baseline.error);
+  CHECK(baseline.resolved.settings.raster == RasterMode::Vertex);
+  CHECK(baseline.resolved.vertex_path);
+  CHECK(baseline.resolved.occlusion);
+  CHECK_FALSE(baseline.resolved.shadows);
+  CHECK_FALSE(baseline.resolved.rt_chain);
+  CapturedFrame a;
+  REQUIRE_MESSAGE(baseline.renderer.capture(frame, channels, a, &error), error);
+  REQUIRE(a.covered > 1000);
+  u64 id_differences = 0;
+  u64 colour_differences = 0;
+  u64 depth_differences = 0;
+  for (u32 p = 0; p < k_width * k_height; ++p) {
+    for (u32 w = 0; w < k_id_words; ++w)
+      if (a.ids[p * k_id_words + w] != b.ids[p * k_id_words + w]) ++id_differences;
+    for (u32 c = 0; c < 4; ++c)
+      if (a.color[p * 4 + c] != b.color[p * 4 + c]) ++colour_differences;
+    if (a.depth[p] != b.depth[p]) ++depth_differences;
+  }
+  // `std::string` around every `const char*`: doctest prints a bare `char*` as a pointer.
+  MESSAGE("baseline tier (" << std::string(raster_name(baseline.resolved.settings.raster))
+                            << ") against " << std::string(raster_name(full_raster)) << ": "
+                            << a.covered << " covered pixels, " << id_differences << " id words, "
+                            << colour_differences << " colour bytes and " << depth_differences
+                            << " depths differ");
+  CHECK(a.covered == b.covered);
+  CHECK(id_differences == 0);
+  CHECK(colour_differences == 0);
+  CHECK(depth_differences == 0);
+  CHECK(baseline.renderer.stats().visible_pairs() == full_pairs);
+
+  // An explicit ray request is refused, and the refusal is the verdict's own sentence, naming
+  // the missing ray query: `--shadows rt`, `--raster rt`, and the reference path tracer alike.
+  for (const bool ray_path : {false, true}) {
+    RenderSettings asked;
+    if (ray_path) {
+      asked.raster = RasterMode::RayTrace;
+    } else {
+      asked.shadows = ShadowMode::RayTraced;
+    }
+    ResolvedSettings resolved;
+    resolve_settings(asked, pascal.features(), &baseline.data, resolved);
+    const RenderAvailability availability = check_availability(resolved, pascal.features());
+    REQUIRE(availability == RenderAvailability::NoAccelerationStructures);
+    const std::string reason = unavailable_reason(availability, pascal);
+    MESSAGE(std::string(ray_path ? "--raster rt" : "--shadows rt") << " refused: " << reason);
+    CHECK(reason.find(std::string(pascal.adapter().name)) == 0);
+    CHECK(reason.find("VK_KHR_ray_query") != std::string::npos);
+    bool from_verdict = false;
+    for (const std::string& line : pascal.verdict().degraded)
+      from_verdict = from_verdict || reason.find(line) != std::string::npos;
+    CHECK(from_verdict);
+  }
+  std::string why;
+  CHECK_FALSE(reference_available(baseline.resolved, pascal, &why));
+  CHECK(why.find("VK_KHR_ray_query") != std::string::npos);
 }
 
 // ---- multi-view (docs/plan/04-renderer.md §4.6, experiment E9) ----------------------------------
@@ -913,14 +1090,16 @@ TEST_CASE(
 
   // Both ways of producing visibility, against the same layout: the rasterizers, which write each
   // view's own region of the visibility buffer, and the ray path, which traces every view against
-  // the one top-level structure built from the union of the views' cuts.
+  // the one top-level structure built from the union of the views' cuts. The raster request is
+  // `hw`, which is the vertex path on a device without mesh shaders — a surround is a question
+  // about views and not about which rasterizer, so it runs there too rather than skipping.
   for (const RasterMode mode : {RasterMode::Hardware, RasterMode::RayTrace}) {
     if (mode == RasterMode::RayTrace && !(gpu.device.features().cluster_acceleration_structure &&
                                           gpu.device.features().ray_query)) {
-      MESSAGE("no cluster acceleration structures here: the ray path is skipped");
+      MESSAGE("ray path skipped here: " << unavailable_reason(
+                  RenderAvailability::NoAccelerationStructures, gpu.device));
       continue;
     }
-    if (mode == RasterMode::Hardware && !gpu.device.features().mesh_shader) continue;
     RenderSettings settings;
     settings.raster = mode;
     settings.views = ViewLayout::Surround3;
@@ -938,7 +1117,8 @@ TEST_CASE(
     for (u32 v = 0; v < 3; ++v) {
       const ViewRect& rect = rig.renderer.views()[v].rect;
       const u32* centre = pixel_id(shot, rect.x + rect.width / 2, rect.y + rect.height / 2);
-      INFO("raster " << raster_name(mode) << ", view " << v << " names instance " << centre[0]);
+      INFO("raster " << std::string(raster_name(rig.resolved.settings.raster)) << ", view " << v
+                     << " names instance " << centre[0]);
       CHECK(centre[0] == v);
       CHECK(centre[1] < rig.data.cluster_count() * 3);
     }
@@ -1703,8 +1883,9 @@ TEST_CASE("renderer: the mesh, vertex and ray paths agree on a posed frame") {
     settings.shadows = ShadowMode::Off;  // a shadow is not what these three have to agree about
     ResolvedSettings probe;
     resolve_settings(settings, gpu.device.features(), &rig.data, probe);
-    if (check_availability(probe, gpu.device.features()) != RenderAvailability::Ok) {
-      why = availability_message(check_availability(probe, gpu.device.features()));
+    const RenderAvailability availability = check_availability(probe, gpu.device.features());
+    if (availability != RenderAvailability::Ok) {
+      why = unavailable_reason(availability, gpu.device);
       return false;
     }
     if (!rig.finish(gpu.device, settings, k_width, k_height)) {
@@ -1719,24 +1900,34 @@ TEST_CASE("renderer: the mesh, vertex and ray paths agree on a posed frame") {
     return ok;
   };
 
-  CapturedFrame hardware;
-  std::string why;
-  REQUIRE_MESSAGE(shoot(RasterMode::Hardware, hardware, why), why);
-  u32 hardware_covered = 0;
-  covered_rect(hardware, hardware_covered);
-  CHECK(hardware_covered > 1000);
-
+  // The vertex path is the reference the other two are held to, because it is the one every
+  // device that renders at all has (ADR-0024's baseline tier). The mesh path and the ray path are
+  // compared where the device has them and skipped with the missing feature named where it does
+  // not: asking a device without mesh shaders for `hw` would resolve to the vertex path and
+  // compare it with itself, which checks nothing.
   CapturedFrame vertex;
+  std::string why;
   REQUIRE_MESSAGE(shoot(RasterMode::Vertex, vertex, why), why);
-  u64 vertex_differences = 0;
-  for (u32 i = 0; i < k_width * k_height; ++i) {
-    for (u32 c = 0; c < k_id_words; ++c) {
-      if (hardware.ids[i * k_id_words + c] != vertex.ids[i * k_id_words + c]) ++vertex_differences;
+  u32 covered = 0;
+  covered_rect(vertex, covered);
+  CHECK(covered > 1000);
+
+  if (gpu.device.features().mesh_shader) {
+    CapturedFrame hardware;
+    REQUIRE_MESSAGE(shoot(RasterMode::Hardware, hardware, why), why);
+    u64 mesh_differences = 0;
+    for (u32 i = 0; i < k_width * k_height; ++i) {
+      for (u32 c = 0; c < k_id_words; ++c) {
+        if (hardware.ids[i * k_id_words + c] != vertex.ids[i * k_id_words + c]) ++mesh_differences;
+      }
     }
+    MESSAGE("posed bar: " << covered << " covered pixels, mesh path differs in " << mesh_differences
+                          << " id words");
+    CHECK(mesh_differences == 0);  // the two rasterizers write the same words, deformed or not
+  } else {
+    MESSAGE("mesh path unavailable here: " << gpu.device.adapter().name
+                                           << " has no VK_EXT_mesh_shader");
   }
-  MESSAGE("posed bar: " << hardware_covered << " covered pixels, vertex path differs in "
-                        << vertex_differences << " id words");
-  CHECK(vertex_differences == 0);  // the two rasterizers write the same words, deformed or not
 
   CapturedFrame ray;
   if (!shoot(RasterMode::RayTrace, ray, why)) {
@@ -1748,19 +1939,19 @@ TEST_CASE("renderer: the mesh, vertex and ray paths agree on a posed frame") {
   u64 coverage_differences = 0;
   u64 triangle_differences = 0;
   for (u32 i = 0; i < k_width * k_height; ++i) {
-    const bool a = hardware.ids[i * k_id_words] != k_no_id;
+    const bool a = vertex.ids[i * k_id_words] != k_no_id;
     const bool b = ray.ids[i * k_id_words] != k_no_id;
     if (a != b) {
       ++coverage_differences;
-    } else if (a && hardware.ids[i * k_id_words + 2] != ray.ids[i * k_id_words + 2]) {
+    } else if (a && vertex.ids[i * k_id_words + 2] != ray.ids[i * k_id_words + 2]) {
       ++triangle_differences;
     }
   }
-  MESSAGE("ray against mesh shader: " << coverage_differences << " coverage and "
-                                      << triangle_differences << " triangle differences of "
-                                      << hardware_covered << " covered pixels");
-  CHECK(static_cast<f64>(coverage_differences) < 0.01 * static_cast<f64>(hardware_covered));
-  CHECK(static_cast<f64>(triangle_differences) < 0.02 * static_cast<f64>(hardware_covered));
+  MESSAGE("ray against the rasterizers: " << coverage_differences << " coverage and "
+                                          << triangle_differences << " triangle differences of "
+                                          << covered << " covered pixels");
+  CHECK(static_cast<f64>(coverage_differences) < 0.01 * static_cast<f64>(covered));
+  CHECK(static_cast<f64>(triangle_differences) < 0.02 * static_cast<f64>(covered));
 }
 
 // ---- normal cones on a deformed instance -----------------------------------------------------
@@ -1985,6 +2176,12 @@ TEST_CASE("renderer: a turned joint's clusters are not culled by their rest-pose
   const RasterMode modes[4] = {RasterMode::Hardware, RasterMode::Vertex, RasterMode::Software,
                                RasterMode::RayTrace};
   for (const RasterMode mode : modes) {
+    // `hw` on a device without mesh shaders is the vertex path, which has its own turn below.
+    if (mode == RasterMode::Hardware && !gpu.device.features().mesh_shader) {
+      MESSAGE("hw path unavailable here: " << gpu.device.adapter().name
+                                           << " has no VK_EXT_mesh_shader");
+      continue;
+    }
     CapturedFrame shots[2];
     u32 visible[2] = {0, 0};
     bool available = true;
@@ -2000,7 +2197,7 @@ TEST_CASE("renderer: a turned joint's clusters are not culled by their rest-pose
       const RenderAvailability availability = check_availability(resolved, gpu.device.features());
       if (availability != RenderAvailability::Ok) {
         const std::string path = raster_name(mode);
-        MESSAGE(path << " path unavailable here: " << availability_message(availability));
+        MESSAGE(path << " path unavailable here: " << unavailable_reason(availability, gpu.device));
         available = false;
         break;
       }

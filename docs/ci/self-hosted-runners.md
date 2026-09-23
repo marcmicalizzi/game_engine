@@ -227,7 +227,13 @@ Neither GPU has `VK_EXT_mesh_shader`, so on both machines these skip with a reas
 - the material resolve's numerical tests (`shading_tests.cpp`, `attributes_tests.cpp`),
 - the GPU cull test (`cull_tests.cpp`), which draws its cut through the mesh path.
 
-What they do cover is the baseline tier and everything under it: the vertex-shader cluster path
+`systems/renderer` and the protocol's `render.*` methods, by contrast, **run in full** on both:
+`RenderSettings{}` and `"raster":"hw"` resolve to the vertex path there, every case about the
+picture draws through it, and only the mesh-path and ray halves skip, each naming the missing
+extension in the words of the adapter's verdict ([the first run on the Titan
+Xp](#the-first-run-on-the-titan-xp) is what that took).
+
+What the `gfx` suite does cover there is the baseline tier and everything under it: the vertex-shader cluster path
 (`vertex_path_tests.cpp`, which runs the cull pass with `CullParams::count_index` = 1, the LOD cut,
 the indirect draw, and the visibility buffer, and only its comparison against the mesh path needs
 mesh shaders), device creation with the required feature chain, compute, frames in flight, the
@@ -345,10 +351,11 @@ known good, so a driver that stops working does not look like a quiet pass.
 
 ### The Titan Xp, the moment `nvidia-smi` works again
 
-As of 2026-09-20 that machine's driver is being rebuilt: `nvidia-smi` fails with *"couldn't
-communicate with the NVIDIA driver"*, `gpu.adapters` answers `"available": false`, and **every GPU
-test on it skips** — which the suite reports as passing, so a green remote run today says nothing
-whatever about the GPU. This is the sequence to run the moment it comes back, in this order,
+From 2026-09-20 that machine's driver was being rebuilt: `nvidia-smi` failed with *"couldn't
+communicate with the NVIDIA driver"*, `gpu.adapters` answered `"available": false`, and **every GPU
+test on it skipped** — which the suite reports as passing, so a green remote run then said nothing
+whatever about the GPU. It came back on 2026-09-23; [the first run](#the-first-run-on-the-titan-xp)
+below is what it found. This is the sequence to run whenever the driver changes, in this order,
 before anything is read into a green result. It needs no runner registered and no `sudo`; it is
 [remote Linux builds](remote-linux.md) from the Windows desktop.
 
@@ -382,6 +389,86 @@ met that is not NVIDIA-on-Windows**, so a validation-layer complaint or a format
 5090 never refused is the interesting kind of failure and is worth an entry in
 [Troubleshooting](#troubleshooting) either way. Registering the runner proper
 (`tools/ci/install-runner.sh`) comes after all four of those pass by hand.
+
+### The first run on the Titan Xp
+
+**2026-09-23**, the first time this engine executed a shader on anything but the development RTX
+5090, and **the first real baseline-tier data point**. Gentoo, kernel 7.2.3, NVIDIA driver
+580.178.04, Vulkan 1.4.312, TITAN Xp with 12 GB; `linux-server` (GCC 14.3, x86-64-v2, release).
+**Machine state:** nobody else uses that GPU (`nvidia-smi`: 0 MiB used, 0 % utilization before
+the runs); the before run started 10 minutes after a boot at a load average of 1.07 / 3.15 / 2.16,
+the final after run at 0.59 / 1.72 / 3.71 — and nothing below is a performance number, the times
+are the suite's wall clock.
+
+**What the card reports**, `engine-cli gpu.adapters --report`, the extensions of interest:
+
+| Present | Absent |
+|---|---|
+| `VK_KHR_acceleration_structure`, `VK_KHR_ray_tracing_pipeline`, `VK_KHR_ray_tracing_maintenance1`, `VK_KHR_swapchain`, `VK_EXT_descriptor_buffer`, `VK_EXT_shader_object`, `VK_NV_memory_decompression` | `VK_EXT_mesh_shader`, **`VK_KHR_ray_query`**, `VK_NV_cluster_acceleration_structure`, `VK_KHR_ray_tracing_position_fetch`, `VK_NV_partitioned_acceleration_structure`, `VK_EXT_memory_decompression`, `VK_KHR_fragment_shading_rate`, `VK_EXT_fragment_density_map`, `VK_NV_cooperative_matrix` |
+
+Every Required row passes (`maxPushConstantsSize` 256, 1,536 compute invocations, 48 KiB of shared
+memory, update-after-bind budgets of 1,048,576), and so do `shaderBufferInt64Atomics` and
+`fragmentStoresAndAtomics` — **the visibility buffer works on Pascal**, which was the open question
+of the section above. The acceleration structures and the ray-tracing pipeline are the driver's
+compute fallback for Pascal. The report's rows are a fixture in `domain/gfx/tests/requirements_tests.cpp`.
+
+**The verdict, before and after.** Before: `"tier": "rt"`, with a degraded line promising a KHR
+ray-traced picture — a card that cannot trace one ray the renderer asks for, because every one of
+them is a ray query, reported as the ray tracing tier. The runbook above had predicted `raster`; the
+rule was wrong, not the runbook. After (the rule keys on `VK_KHR_ray_query`,
+[gfx](../subsystems/gfx.md#what-a-device-has-to-have)): `"tier": "raster"`, usable, and two degraded
+lines — mesh shaders fall back to the vertex path, and "no VK_KHR_ray_query and no
+VK_NV_cluster_acceleration_structure: every ray the renderer traces is a ray query …, so --raster
+rt, ray-traced shadows (--shadows rt) and the reference path tracer are unavailable and the tier is
+"raster", although VK_KHR_acceleration_structure and VK_KHR_ray_tracing_pipeline are present …".
+`--raster rt`, `--shadows rt`, `render.load` with either, and the reference integrator are refused
+in exactly that sentence. **The resolved frame:** `raster` `hw` → `vertex`, shadows `auto` → off,
+two-pass occlusion culling on.
+
+**The suite.**
+
+| | before | after |
+|---|---|---|
+| CTest, `linux-server` | 51 of 53 | **53 of 53** |
+| `renderer` cases | 20 of 33 pass, 13 fail — and 9 of the 20 "passed" by skipping on a renderer that never built | **34 of 34** (one new), every picture case drawing through the vertex path |
+| `engine_cli` cases | 7 of 10 | **10 of 10** |
+| `gfx` cases | 52 of 52 | 52 of 52 |
+| `gfx` suite time | 40.2 s | 38.9 s |
+| `renderer` suite time | 21.6 s (almost nothing drew) | 77.9 s |
+| `engine_cli` suite time | 24.3 s | 31.0 s |
+| whole suite, wall clock | 290 s | 348 s |
+
+**What was wrong, and none of it was the driver.**
+
+1. **The renderer could not be created on a device without mesh shaders.** `resolve_settings` chose
+   the vertex path correctly — `render.load` even answered `"raster":"vertex"` — and then
+   `SceneRenderer::create_pipelines` built both mesh-shader pipelines anyway, `create_mesh_pipeline`
+   refused, and every frame of every host failed. It builds only the pipelines the resolved path draws
+   with now ([renderer](../subsystems/renderer.md#the-offscreen-contract)). Nothing had noticed
+   because every GPU the suite had met had mesh shaders; the renderer's tests now reproduce this card
+   on any GPU through `DeviceOptions::overrides` and compare its picture with the mesh path's: 7,931
+   covered pixels, 0 bytes different on the RTX 5090.
+2. **Two test harnesses reported a failed build as a skip**, so the shredded-atlas case and all eight
+   streaming cases were green on the card while drawing nothing. They skip only on "no device" or
+   `check_availability` now.
+3. **The tier rule**, above.
+4. **Once they drew, one tolerance was one GPU's calibration.** "A starved budget is coarser and
+   never has a hole" counted edge pixels against an allowance of 66 and the 5090 left 65; the TITAN Xp
+   left 70, all on silhouettes. It asks for zero missing pixels inside the eroded coverage now, which
+   both meet (see [renderer](../subsystems/renderer.md), the fly-in).
+5. **Tests that were about the picture and not about a path**: "the mesh, vertex and ray paths
+   agree" compares against the vertex path and skips the other two by name; the turned surround
+   and the cone case run their raster half through the vertex path; `render_tests.cpp` asks
+   `gpu.adapters` which raster path `hw` resolves to instead of assuming `hw`.
+
+**What still skips on this card, by name:** the direct path (mesh shaders); the mesh-path halves of
+two renderer cases; every ray half, the four reference cases and the 8-bit-index streaming case
+(ray queries and cluster structures); the reference half of `render_tests.cpp`; and in `gfx`, the
+mesh-path cases listed under [What runs and what skips](#what-runs-and-what-skips) plus the ray
+query, cluster-structure, ray-traced shading and ray-traced deform cases. The window and swapchain
+tests skip for want of a display, as expected. `linux-server-debug` (clang 22.1.8, asserts and
+iterator checking) was run after the fixes as well; its line is in [remote Linux
+builds](remote-linux.md#measured-times).
 
 ## Registering a runner
 

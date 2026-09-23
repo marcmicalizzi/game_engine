@@ -108,36 +108,29 @@ struct Harness {
       skip = "device unavailable: " + error;
       return false;
     }
-    if (!load_scene(desc, data, error)) {
-      skip = "scene: " + error;
-      return false;
-    }
+    // Only a device that cannot is a skip: no device above, and `check_availability` below.
+    // Everything else is a failure. This harness used to report a renderer that would not build
+    // as a skip too, which is how all eight of this file's cases "passed" on the first GPU run on
+    // a device without mesh shaders while not one frame was drawn there.
+    REQUIRE_MESSAGE(load_scene(desc, data, error), "scene: " << error);
     ResolvedSettings resolved;
     resolve_settings(settings, device.features(), &data, resolved);
-    if (check_availability(resolved, device.features()) != RenderAvailability::Ok) {
-      skip = std::string("device ") +
-             availability_message(check_availability(resolved, device.features()));
+    const RenderAvailability availability = check_availability(resolved, device.features());
+    if (availability != RenderAvailability::Ok) {
+      skip = "unavailable here: " + unavailable_reason(availability, device);
       return false;
     }
-    if (!scene.create(device, data, resolved, &error)) {
-      skip = "gpu scene: " + error;
-      return false;
-    }
+    REQUIRE_MESSAGE(scene.create(device, data, resolved, &error), "gpu scene: " << error);
     SceneRenderer::Desc rd;
     rd.width = k_width;
     rd.height = k_height;
     if (jobs != nullptr) {
-      if (!attach_page_source(data, scene, *jobs, source, &error)) {
-        skip = "page source: " + error;
-        return false;
-      }
+      REQUIRE_MESSAGE(attach_page_source(data, scene, *jobs, source, &error),
+                      "page source: " << error);
       rd.page_source = &source;
       from_file = true;
     }
-    if (!renderer.create(device, scene, resolved, rd, &error)) {
-      skip = "renderer: " + error;
-      return false;
-    }
+    REQUIRE_MESSAGE(renderer.create(device, scene, resolved, rd, &error), "renderer: " << error);
     ready = true;
     return true;
   }
@@ -319,11 +312,27 @@ TEST_CASE("streaming: a starved budget is coarser and never has a hole") {
     extra += full_cover[p] == 0 && starved_cover[p] != 0 ? 1u : 0u;
   }
   // A coarser cut moves a silhouette by a pixel or two, so the two coverages are not identical;
-  // what they may not do is leave a *region* of the surface empty. One part in a thousand of the
-  // covered pixels is the width of the silhouettes in this frame.
+  // what they may not do is leave a *region* of the surface empty. That is asked the way the
+  // fly-in below asks it: the reference coverage **eroded by two pixels**, every surviving pixel
+  // covered, with no tolerance to calibrate.
+  //
+  // It used to be a count against "one part in a thousand of the covered pixels, plus eight",
+  // which measured the silhouette's shape rather than the streaming — and was a calibration of
+  // one GPU: this budget never settles (a quarter of the pages cannot hold the cut, so the
+  // manager uploads and evicts until the frame cap), the capture takes whichever pages are in at
+  // that frame, and the RTX 5090 left 65 edge pixels against a tolerance of 66 on the mesh and
+  // the vertex path alike. The TITAN Xp's cut of the same frame left 70, every one of them on an
+  // edge; the first run of this case there, 2026-09-23, failed on that count
+  // (docs/ci/self-hosted-runners.md, "The first run on the Titan Xp").
+  const u32 interior_holes = interior_misses(full_cover, starved_cover, k_width, k_height, 2);
   const u32 tolerance = full_shot.covered / 1000 + 8;
-  MESSAGE("holes " << holes << ", extra " << extra << ", tolerance " << tolerance);
-  CHECK(holes <= tolerance);
+  MESSAGE("holes " << holes << " (" << interior_holes << " interior), extra " << extra
+                   << ", silhouette allowance " << tolerance);
+  CHECK_MESSAGE(interior_holes == 0,
+                interior_holes << " interior pixels of " << full_shot.covered << " are missing");
+  // And the fly-in's loose bound on the whole frame, which would catch "half the surface is gone"
+  // if the erosion ever stopped being the tight statement it is.
+  CHECK(u64{holes} * 20 <= u64{full_shot.covered} + 160);
   CHECK(extra <= tolerance);
 }
 
