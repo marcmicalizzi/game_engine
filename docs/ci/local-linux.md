@@ -49,7 +49,7 @@ pwsh tools/linux-build.ps1 [-Preset <name>|all] [-Test] [-Filter <regex>] [-Jobs
 | `-NoWait` | if another build holds the [build lock](#one-container-build-at-a-time-whoever-started-it), say whose and exit 2 instead of waiting for it. |
 | `-Offline` | run the build containers with `--network none`. A configure that still needs to download something then fails instead of downloading it, which makes "this build fetched nothing" a result rather than a reading of the log. |
 
-Exit status is the build's, or the tests' with `-Test`. With `all`, every preset is attempted and
+Exit status is the build's, or the tests' with `-Test`. **A build that fails ends the run with its status, and the tests do not run.** Until 2026-09-23 they did. The container script had `pipefail` but not `-e`, so a failed `cmake --build` fell through to `ctest`. `ctest` then ran the previous build's test binaries, which passed, and `-Test` printed `ok` with exit 0 over a Clang `-Werror` failure in the one file that had changed. The script is now `set -eo pipefail`. A run whose log says `ninja: build stopped` but whose verdict says `ok` came from before that fix. With `all`, every preset is attempted and
 the status is the first failure: nothing stops early, because a second compiler's opinion is the
 entire reason for running four of them. 2 means another build held the lock and `-NoWait` was
 given; 3 means a wait for it gave up after four hours.

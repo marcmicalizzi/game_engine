@@ -316,7 +316,10 @@ function Invoke-DocsChecks {
 
 function Invoke-Preset([string]$name) {
   $lines = @()
-  $lines += 'set -o pipefail'
+  # -e: a configure or build that fails ends the run with its own status. Without it the script
+  # went on to `ctest`, which ran the *previous* build's binaries, passed, and made the container's
+  # exit status 0: a -Test run printed "ok" over a compile error (2026-09-23, docs/ci/local-linux.md).
+  $lines += 'set -eo pipefail'
   if ($Rebuild) { $lines += "rm -rf /src/build/$name" }
   # The dependencies' *sources* come from the machine-wide cache at /fetch
   # (tools/ci/fetch-cache.cmake, keyed by the pins), so nothing already fetched by any checkout is
