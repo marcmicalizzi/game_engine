@@ -395,6 +395,9 @@ struct BuildResult {
   u32 embedded_images = 0;      // of those, how many the container carries the bytes of
   u32 deduplicated_images = 0;  // slots served by an earlier image's identical bytes
   u64 image_bytes = 0;          // what the distinct embedded images take in the container
+  // Where the canonical vertex ids came from: "authored" when the source carried `_CANONICAL_ID`,
+  // "position_weld" when the build derived them, "none" for a container with none.
+  const char* vertex_id_source = "none";
   u64 bytes = 0;
   u64 hash = 0;
   f64 build_ms = 0.0;
@@ -652,6 +655,7 @@ bool build_one(const std::string& input, const std::string& output, const MeshOp
   out.embedded_images = images.embedded;
   out.deduplicated_images = images.deduplicated;
   out.image_bytes = images.bytes;
+  out.vertex_id_source = geometry::vertex_id_source_name(lod.mesh.vertex_id_source);
   out.bytes = io::stat_file(output, info) == io::Status::Ok ? info.size : 0;
   out.hash = geometry::cluster_file_hash(data);
   out.build_ms = static_cast<f64>(time::monotonic_ns() - start_ns) / 1.0e6;
@@ -775,6 +779,7 @@ int build(const BuildCommandOptions& options) {
   summary.set("embedded_images", JsonValue(result.embedded_images));
   summary.set("deduplicated_images", JsonValue(result.deduplicated_images));
   summary.set("image_bytes", JsonValue(result.image_bytes));
+  summary.set("vertex_id_source", JsonValue(result.vertex_id_source));
   summary.set("warnings", JsonValue(result.warnings.size()));
   summary.set("repairs", repairs_json(result));
   summary.set("bytes", JsonValue(result.bytes));
@@ -1260,6 +1265,11 @@ int info(const std::string& path) {
   summary.set("image_bytes", JsonValue(images.bytes));
   summary.set("morph_channels", JsonValue(lod.mesh.morph_channels.size()));
   summary.set("morph_deltas", JsonValue(lod.mesh.morph_delta_count));
+  // The canonical vertex ids: how many (one per cluster vertex, or none) and what id space they
+  // are in, which is what a file written beside this mesh checks before it names a vertex.
+  summary.set("vertex_ids", JsonValue(lod.mesh.vertex_ids.size()));
+  summary.set("vertex_id_source",
+              JsonValue(geometry::vertex_id_source_name(lod.mesh.vertex_id_source)));
   summary.set("source_path", JsonValue(data.source_path));
   summary.set("source_hash", JsonValue(data.source_hash));
   summary.set("build_key", JsonValue(data.build_key));
@@ -1591,6 +1601,92 @@ AtlasStats measure_atlas(const geometry::ClusterLodMesh& lod) {
   return out;
 }
 
+// The canonical vertex ids over the source vertices the clusters reference (docs/subsystems/
+// geometry.md, "Canonical vertex identity"). A source vertex is a distinct `vertex_source` entry,
+// as `referenced_source_vertices` counts them — so a vertex two primitives share counts once per
+// primitive, which is how the builders see it. What an author or an atlas tool wants to know:
+//
+//   distinct_ids      how many points of the base the mesh names;
+//   sharing           source vertices whose id another source vertex also carries — the seam
+//                     duplicates (a UV seam, a hard edge, a skin or morph split) when the ids are
+//                     derived, since those are exactly the vertices a position weld folds together;
+//   duplicates        source vertices minus distinct ids, among those that have one: what the
+//                     seams cost in vertices;
+//   largest_share     the most source vertices any one id has;
+//   without_id        vertices of a primitive that carried no authored id (`k_no_vertex_id`);
+//   ids_at_several_positions  ids whose vertices do not all sit at one position. Always zero for
+//                     derived ids; for authored ones it is the thing to look at first, because a
+//                     point of the base is one point.
+struct IdentityStats {
+  u32 source_vertices = 0;
+  u32 distinct_ids = 0;
+  u32 sharing = 0;
+  u32 duplicates = 0;
+  u32 largest_share = 0;
+  u32 without_id = 0;
+  u32 ids_at_several_positions = 0;
+  bool valid = false;
+};
+
+IdentityStats measure_identity(const geometry::ClusterMesh& mesh) {
+  IdentityStats out;
+  if (mesh.vertex_ids.empty() || mesh.vertex_ids.size() != mesh.vertices.size() ||
+      mesh.vertex_source.size() != mesh.vertices.size()) {
+    return out;
+  }
+  // One (id, position, source) per source vertex, sorted by id then position, so every question
+  // above is a walk over runs — and the answer is a function of the container, not of a hash order.
+  struct Entry {
+    u32 id = 0;
+    u32 position[3] = {};
+    u32 source = 0;
+  };
+  u32 source_count = 0;
+  for (const u32 source : mesh.vertex_source)
+    source_count = source >= source_count ? source + 1 : source_count;
+  Vector<u8> seen(source_count, u8{0});
+  Vector<Entry> entries;
+  for (u32 v = 0; v < mesh.vertices.size(); ++v) {
+    const u32 source = mesh.vertex_source[v];
+    if (seen[source] != 0) continue;
+    seen[source] = 1;
+    Entry entry;
+    entry.id = mesh.vertex_ids[v];
+    std::memcpy(entry.position, &mesh.vertices[v], sizeof(entry.position));
+    entry.source = source;
+    entries.push_back(entry);
+  }
+  std::sort(entries.begin(), entries.end(), [](const Entry& a, const Entry& b) {
+    if (a.id != b.id) return a.id < b.id;
+    const int order = std::memcmp(a.position, b.position, sizeof(a.position));
+    if (order != 0) return order < 0;
+    return a.source < b.source;
+  });
+  out.source_vertices = entries.size();
+  for (u32 i = 0; i < entries.size();) {
+    u32 j = i;
+    bool one_position = true;
+    while (j < entries.size() && entries[j].id == entries[i].id) {
+      if (std::memcmp(entries[j].position, entries[i].position, sizeof(entries[i].position)) != 0)
+        one_position = false;
+      ++j;
+    }
+    const u32 run = j - i;
+    if (entries[i].id == geometry::k_no_vertex_id) {
+      out.without_id = run;
+    } else {
+      ++out.distinct_ids;
+      if (run > 1) out.sharing += run;
+      out.largest_share = run > out.largest_share ? run : out.largest_share;
+      if (!one_position) ++out.ids_at_several_positions;
+    }
+    i = j;
+  }
+  out.duplicates = out.source_vertices - out.without_id - out.distinct_ids;
+  out.valid = true;
+  return out;
+}
+
 // What a coarse cut does to the texture, on the CPU (`geometry::measure_lod_attribute_error`).
 // Two budgets, because one number cannot say whether the damage grows with the coarseness.
 struct AttributeErrorRow {
@@ -1890,6 +1986,35 @@ int stats(const std::string& path) {
                      ? 0.0
                      : static_cast<double>(total_bytes) / static_cast<double>(mesh.vertices.size()),
                  normals ? "" : ", positions only");
+  }
+
+  // The canonical vertex ids: which id space, and how the mesh's source vertices fall into it.
+  // `sharing` is also an atlas number in its own right — with derived ids it counts the vertices a
+  // seam of any kind duplicated, which is what an atlas repack or a remesh moves.
+  const IdentityStats identity_stats = measure_identity(mesh);
+  {
+    JsonValue identity = JsonValue::object();
+    identity.set("source", JsonValue(geometry::vertex_id_source_name(mesh.vertex_id_source)));
+    identity.set("ids", JsonValue(mesh.vertex_ids.size()));
+    identity.set("bytes", JsonValue(u64{mesh.vertex_ids.size()} * sizeof(u32)));
+    if (identity_stats.valid) {
+      identity.set("source_vertices", JsonValue(identity_stats.source_vertices));
+      identity.set("distinct_ids", JsonValue(identity_stats.distinct_ids));
+      identity.set("sharing", JsonValue(identity_stats.sharing));
+      identity.set("duplicates", JsonValue(identity_stats.duplicates));
+      identity.set("largest_share", JsonValue(identity_stats.largest_share));
+      identity.set("without_id", JsonValue(identity_stats.without_id));
+      identity.set("ids_at_several_positions", JsonValue(identity_stats.ids_at_several_positions));
+      std::fprintf(stderr,
+                   "  identity: %s ids, %u source vertices name %u points of the base; %u share an "
+                   "id (%u duplicates, at most %u on one), %u without one, %u ids at more than one "
+                   "position\n",
+                   geometry::vertex_id_source_name(mesh.vertex_id_source),
+                   identity_stats.source_vertices, identity_stats.distinct_ids,
+                   identity_stats.sharing, identity_stats.duplicates, identity_stats.largest_share,
+                   identity_stats.without_id, identity_stats.ids_at_several_positions);
+    }
+    summary.set("identity", std::move(identity));
   }
 
   // The atlas, and how much of the texture the LOD cut moves. Both are about the *picture* rather

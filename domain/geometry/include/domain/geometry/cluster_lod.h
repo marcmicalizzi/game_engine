@@ -100,6 +100,14 @@ struct ClusterLodOptions {
   // and on one whose coincident vertices agree, which is every mesh a single exporter wrote for
   // a channel that does not stop at a seam.
   SeamRule morph_seams = SeamRule::protect;
+  // A canonical vertex id is the fourth, and the argument is the same one more time:
+  // `weld_vertices` keeps two coincident vertices the author gave different ids apart (two points
+  // of the base that happen to touch — closed lips, the two sides of a module's boundary loop), and
+  // merging their wedges here would give a coarse triangle one side's vertex on the other side's
+  // surface, which a sidecar that moves the two apart turns into a crack. Free on every mesh
+  // without authored ids: a derived id is a function of the position, so no two coincident vertices
+  // ever disagree.
+  SeamRule id_seams = SeamRule::protect;
 };
 
 struct ClusterLodMesh {
@@ -163,6 +171,11 @@ struct ClusterMeshPart {
   // of this mesh names `first_morph_channel + k`. Zero and zero for a mesh with no channels.
   u32 first_morph_channel = 0;
   u32 morph_channel_count = 0;
+  // Where this mesh's canonical vertex ids came from. Each mesh of a scene has its own id space —
+  // two meshes' id 7 are unrelated — so the merge concatenates the streams and says per mesh what
+  // the ids at [first_vertex, next mesh's first_vertex) mean; `none` for a mesh that carried none,
+  // whose run of the merged stream is `k_no_vertex_id` when another mesh's ids made it exist.
+  VertexIdSource vertex_id_source = VertexIdSource::none;
 };
 
 // Whether a merge reorders each mesh's clusters so its level-0 clusters come first.

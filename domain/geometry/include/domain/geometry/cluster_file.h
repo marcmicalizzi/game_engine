@@ -134,10 +134,22 @@ enum class ClusterSection : u32 {
   MorphIndices = 27,
   MorphDeltas = 28,
   MorphScalars = 29,
+  // The canonical vertex ids (`cluster.h`, "canonical vertex identity"): 30 is one `u32` per
+  // cluster vertex, parallel to `Vertices`, and 31 is `u32` words saying what they are — [0] the
+  // `VertexIdSource`, which carries the derivation rule in its value, so a file written beside the
+  // mesh can tell whether it names vertices in this id space. Two sections for the reason `Skin`
+  // and `SkinScalars` are two: the format's rule is one fixed-size element per section, and the ids
+  // are a per-vertex stream a page's slice of is one run of, while the words are not. A reader
+  // takes the words it knows and ignores any a newer build appended. Both are written for every
+  // mesh — empty and `none` when it has no ids — and a file from before they existed reads as a
+  // mesh with no ids.
+  VertexIds = 30,
+  VertexIdScalars = 31,
 };
 
 // One past the highest kind this build knows, which is how wide a by-kind table has to be.
-inline constexpr u32 k_cluster_section_kinds = static_cast<u32>(ClusterSection::MorphScalars) + 1;
+inline constexpr u32 k_cluster_section_kinds =
+    static_cast<u32>(ClusterSection::VertexIdScalars) + 1;
 
 // Names the kinds this build knows, "unknown" for anything else; for diagnostics and for
 // `engine-content info`.
@@ -360,9 +372,10 @@ class ClusterFileReader {
   // replaced with everything **but** the paged streams: the cluster and LOD descriptors, the
   // level counts, the scalars and the 16-bit grid, the page table, the per-cluster material map,
   // the materials, the image paths, records and strings, the source path and the source identity.
-  // `mesh.vertices`, `mesh.quantized`, `mesh.attributes`, `mesh.triangles`, `mesh.vertex_source`
-  // and `mesh.skin` come back **empty** however long they are in the file; `range()` is how to
-  // reach them. Returns false with `error` and leaves the reader closed.
+  // `mesh.vertices`, `mesh.quantized`, `mesh.attributes`, `mesh.triangles`, `mesh.vertex_source`,
+  // `mesh.skin` and `mesh.vertex_ids` come back **empty** however long they are in the file (the
+  // ids' source does not: it is one word); `range()` is how to reach them. Returns false with
+  // `error` and leaves the reader closed.
   bool open(std::string_view path, ClusterFileData* resident = nullptr,
             std::string* error = nullptr);
   void close() noexcept;
@@ -453,7 +466,14 @@ bool read_cluster_file_identity(std::string_view path, u64& source_hash, u64& bu
 //    builders now call `assets::weld_vertices`, which hands the weld every stream `MeshData` owns,
 //    so an entry built at 10 from a source with morph targets is the wrong mesh; a source without
 //    any builds the same bytes and moves to a new cache path.
-inline constexpr u32 k_cluster_cache_version = 11;
+// 12: every mesh carries a canonical vertex id per cluster vertex (sections 30 and 31), from the
+//    source's `_CANONICAL_ID` attribute or derived from a position weld of the source, and the
+//    weld keys on it. An entry built at 11 has no ids at all, so a sidecar that names vertices
+//    cannot be resolved against it; and one built from a source with authored ids was welded
+//    without them, merging two coincident vertices the author named apart. A source without
+//    authored ids welds exactly as before — a derived id is a function of the position — so its
+//    geometry sections are byte-identical and only the two new sections differ.
+inline constexpr u32 k_cluster_cache_version = 12;
 
 // The cache key: the source's content hash (`assets::source_mesh_hash`) mixed with the build
 // options and the version above. `page_bytes` is the streaming page target the container was

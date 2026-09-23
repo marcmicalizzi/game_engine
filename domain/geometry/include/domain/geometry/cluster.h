@@ -162,6 +162,59 @@ struct MorphChannelSource {
   Vector<Vec3> normal_deltas;
 };
 
+// ---- canonical vertex identity ------------------------------------------------------------------
+//
+// A **vertex id** names a vertex of the *canonical base* a mesh was authored against, so that a
+// file written beside the mesh — a binding, a region's membership, a corrective residual — can
+// name vertices and still mean the same ones after the content build (docs/plan/07-content-
+// pipeline.md §7.11, "identity has to survive the weld"). Without it, the only name a built vertex
+// has is `vertex_source`, the index the weld gave it, and that changes whenever anything about the
+// weld's input does.
+//
+// The id lives at the **control level**: every render vertex standing for one point of the base
+// carries that point's id, so the two sides of a UV seam, a hard shading edge or a skin-weight
+// split share it. A binding that names a *refined* point (a limit-surface vertex) is a different
+// kind of name and is not this one; it waits for the limit-surface pass.
+//
+// Ids are **host-side only**: they are not in `VertexAttributes`, not uploaded, and not counted in
+// a streaming page's bytes, because nothing on the GPU reads them. What they cost is four bytes a
+// cluster vertex in the container and in a loaded mesh.
+
+// Where a mesh's ids came from. Stored in the container (`ClusterSection::VertexIdScalars`), so a
+// file written beside the mesh can check it is naming vertices in the same id space. The derivation
+// rule is part of the value: a change to how `position_weld` ids are computed takes a **new**
+// value, never this one, so a sidecar keyed on the old rule is told rather than silently wrong.
+enum class VertexIdSource : u32 {
+  none = 0,           // no ids: the stream is empty
+  authored = 1,       // the source said, per vertex (glTF `_CANONICAL_ID`, assets/gltf.h)
+  position_weld = 2,  // derived, rule 1: the rank of the vertex's position among the source's
+                      // distinct positions (`position_weld_ids`)
+};
+
+// The id of a vertex the source gave none: a primitive without the authored attribute in a file
+// whose other primitives carry it. It is reserved — an authored id may not be this value — and
+// every such vertex carries it, so to the weld they are "no identity" and merge on their other
+// attributes exactly as they did before ids existed.
+inline constexpr u32 k_no_vertex_id = ~0u;
+
+// "none", "authored", "position_weld", or "unknown" for a value a newer build wrote.
+const char* vertex_id_source_name(VertexIdSource source) noexcept;
+
+// The base's own rule for a mesh that carries no authored ids: a vertex's id is **the index of its
+// position in a position weld of the source**, where the weld's output is ordered by the positions
+// themselves — lexicographically by x, then y, then z, in numeric order, with -0 and +0 one
+// position. So two vertices at the same position (the two sides of a UV seam, an exporter's
+// duplicates) get the same id, every distinct position gets its own, the ids are dense (0 to the
+// returned count minus one), and they are a function of the **set** of positions alone: the same
+// mesh with its vertices in a different order gets the same id at every position. Sorted rather
+// than hashed so that nothing depends on a table's iteration order. Fills `out` with one id per
+// position and returns how many distinct positions there are.
+//
+// What it cannot do is survive an edit: moving, adding or removing a vertex changes the ranks of
+// every position after it in that order. A base whose sidecars must outlive edits to its own mesh
+// authors its ids (`VertexIdSource::authored`); this rule is what a mesh gets when nobody did.
+u32 position_weld_ids(std::span<const Vec3> positions, Vector<u32>& out);
+
 // Optional source attributes for the builders, indexed like the source positions. Empty normals
 // are computed from the faces (area-weighted, smooth); empty UVs are zero.
 struct AttributeSource {
@@ -175,6 +228,10 @@ struct AttributeSource {
   // Optional morph channels over the same source vertices. Empty leaves the built mesh with no
   // morph stream at all, which is what every rigid mesh gets and what keeps its bytes identical.
   std::span<const MorphChannelSource> morph;
+  // Optional canonical vertex ids over the same source vertices, and where they came from. Empty
+  // leaves the built mesh with no id stream (`VertexIdSource::none`).
+  std::span<const u32> vertex_ids;
+  VertexIdSource vertex_id_source = VertexIdSource::none;
 };
 
 u32 encode_normal_oct(Vec3 normal) noexcept;
@@ -189,15 +246,18 @@ f32 f16_to_f32(u16 half) noexcept;
 void compute_vertex_normals(std::span<const Vec3> positions, std::span<const u32> indices,
                             Vector<Vec3>& out);
 
-// Merges vertices whose position, normal, UV, skin binding, **and morph deltas** are bit-identical
-// and drops unreferenced ones, rewriting `indices` in place and compacting the streams (`normals`,
-// `uvs`, and `skin` take part when they are parallel to `positions`, and are left alone
-// otherwise). Exporters often write unindexed or seam-split meshes; without welding, the
-// 64-vertex cluster limit caps clusters at 21 triangles and the LOD builder has no connectivity to
-// simplify across. Vertices that differ in any attribute stay distinct, so seams keep their
-// normals and UVs — and **two duplicates with different skin weights or different morph deltas
-// stay two vertices**, because merging them would silently pick one vertex's deformation for the
-// other's surface. Returns the new vertex count.
+// Merges vertices whose position, normal, UV, skin binding, morph deltas, **and canonical id** are
+// bit-identical and drops unreferenced ones, rewriting `indices` in place and compacting the
+// streams (`normals`, `uvs`, `skin` and `vertex_ids` take part when they are parallel to
+// `positions`, and are left alone otherwise). Exporters often write unindexed or seam-split meshes;
+// without welding, the 64-vertex cluster limit caps clusters at 21 triangles and the LOD builder
+// has no connectivity to simplify across. Vertices that differ in any attribute stay distinct, so
+// seams keep their normals and UVs — and **two duplicates with different skin weights or different
+// morph deltas stay two vertices**, because merging them would silently pick one vertex's
+// deformation for the other's surface. **Two duplicates with different ids stay two vertices** for
+// the same reason one level up: the author said they are two points of the base, and a sidecar
+// may move them apart. Equal ids never force a merge; they only permit one the other streams
+// already agree on. Returns the new vertex count.
 //
 // **How the morph deltas reach the key without costing vertices x channels.** The obvious form —
 // a dense per-vertex row of every channel's delta — is megabytes a vertex-pass on a character and
@@ -214,7 +274,7 @@ void compute_vertex_normals(std::span<const Vec3> positions, std::span<const u32
 // entry for a vertex the weld dropped is removed.
 u32 weld_vertices(Vector<Vec3>& positions, Vector<Vec3>& normals, Vector<Vec2>& uvs,
                   std::span<u32> indices, Vector<SkinBinding>* skin = nullptr,
-                  Vector<MorphChannelSource>* morph = nullptr);
+                  Vector<MorphChannelSource>* morph = nullptr, Vector<u32>* vertex_ids = nullptr);
 
 // The interning above, exposed because the weld is not the only place that wants to ask "do these
 // two vertices carry the same morph deltas?". Fills `out` with one id per source vertex — 0 for a
@@ -266,6 +326,12 @@ struct ClusterMesh {
   // How many deltas the three arrays above really hold: they are padded, so their lengths cannot
   // say. It is also the sum of every slice's `delta_count`.
   u32 morph_delta_count = 0;
+  // The canonical id of every cluster vertex, parallel to `vertices`, or empty when the source had
+  // none. It reaches a cluster through `vertex_source` like every other per-vertex stream, so every
+  // copy of a source vertex — in every cluster, on every LOD level — carries the same id. Host
+  // side only: nothing uploads it (see "canonical vertex identity" above).
+  Vector<u32> vertex_ids;
+  VertexIdSource vertex_id_source = VertexIdSource::none;
   Vector<u32> triangles;  // per triangle: local i0 | i1 << 8 | i2 << 16
   // Positions on the mesh-wide 16-bit grid: three u16 per vertex, cluster-ordered like
   // `vertices`, padded with one zero to an even count so a shader may read the last triple as
@@ -290,9 +356,9 @@ bool build_clusters(std::span<const Vec3> positions, std::span<const u32> indice
                     const ClusterBuildOptions& options, ClusterMesh& out,
                     std::string* error = nullptr, const AttributeSource& attributes = {});
 
-// Fills `mesh.attributes` and, when the source carries them, `mesh.skin` and the morph stream
-// from the source attributes through `vertex_source`; the builders call it, and it is public so a
-// mesh built elsewhere can be given attributes later.
+// Fills `mesh.attributes` and, when the source carries them, `mesh.skin`, the morph stream and
+// `mesh.vertex_ids` from the source attributes through `vertex_source`; the builders call it, and
+// it is public so a mesh built elsewhere can be given attributes later.
 void fill_cluster_attributes(ClusterMesh& mesh, std::span<const Vec3> positions,
                              std::span<const u32> indices, const AttributeSource& attributes);
 
@@ -372,7 +438,9 @@ Vec3 dequantize_position(const ClusterMesh& mesh, u32 vertex) noexcept;
 // once in ascending order, slices naming channels that exist in ascending order with no repeats,
 // delta runs that are contiguous and in slice order, local vertex indices inside their cluster,
 // and channel scales that are finite and not negative (a delta is an i16 and cannot itself be
-// infinite, so the scale is where a non-finite displacement would have to come from).
+// infinite, so the scale is where a non-finite displacement would have to come from), and — when
+// the mesh carries ids — an id stream parallel to the vertices, a source that says where it came
+// from, and **one id per source vertex**: every copy of a `vertex_source` entry carries the same.
 bool validate_clusters(const ClusterMesh& mesh, std::span<const u32> source_indices,
                        const ClusterBuildOptions& options, std::string* error = nullptr);
 

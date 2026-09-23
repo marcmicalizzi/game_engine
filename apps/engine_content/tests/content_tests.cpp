@@ -435,6 +435,8 @@ TEST_CASE("engine-content: build writes a cluster file that reads back and valid
   CHECK(number(built.result, "bytes") == std::filesystem::file_size(out));
   CHECK(built.result.find("build_ms") != nullptr);
   CHECK(number(built.result, "hash") != 0);
+  // The cube carries no `_CANONICAL_ID`, so its vertices are named by the position weld.
+  CHECK(text_of(built.result, "vertex_id_source") == "position_weld");
 
   // The container records what it was built from, whatever the destination was.
   u64 source_hash = 0;
@@ -495,10 +497,23 @@ TEST_CASE("engine-content: build writes a cluster file that reads back and valid
   CHECK(number(described.result, "build_key") == key);
   REQUIRE(described.result.find("source_path") != nullptr);
   CHECK(described.result.find("source_path")->as_string() == mesh);
+  // One canonical id per cluster vertex, in the id space the build derived.
+  CHECK(number(described.result, "vertex_ids") == number(built.result, "vertices"));
+  CHECK(text_of(described.result, "vertex_id_source") == "position_weld");
   const JsonValue* sections = described.result.find("sections");
   REQUIRE(sections != nullptr);
   REQUIRE(sections->is_array());
-  CHECK(sections->size() == 29);
+  CHECK(sections->size() == 31);
+  bool ids_listed = false;
+  for (usize i = 0; i < sections->size(); ++i) {
+    const JsonValue& section = (*sections)[i];
+    if (number(section, "kind") != 30) continue;
+    ids_listed = true;
+    CHECK(text_of(section, "name") == "vertex_ids");
+    CHECK(number(section, "element_size") == 4);
+    CHECK(number(section, "element_count") == number(built.result, "vertices"));
+  }
+  CHECK(ids_listed);
   for (const char* name : {"clusters",
                            "lod",
                            "vertices",
@@ -520,7 +535,9 @@ TEST_CASE("engine-content: build writes a cluster file that reads back and valid
                            "skin",
                            "skin_scalars",
                            "images",
-                           "image_bytes"}) {
+                           "image_bytes",
+                           "vertex_ids",
+                           "vertex_id_scalars"}) {
     bool found = false;
     for (usize i = 0; i < sections->size(); ++i) {
       const JsonValue* section_name = (*sections)[i].find("name");
@@ -1087,11 +1104,29 @@ TEST_CASE("engine-content: stats reports the metrics of a container") {
   const JsonValue* sections = bytes->find("sections");
   REQUIRE(sections != nullptr);
   REQUIRE(sections->is_array());
-  CHECK(sections->size() == 29);
+  CHECK(sections->size() == 31);
   u64 section_total = 0;
   for (usize i = 0; i < sections->size(); ++i)
     section_total += number((*sections)[i], "bytes");
   CHECK(section_total == number(*bytes, "payloads"));
+
+  // The canonical ids. The cube's two primitives are imported as two blocks of 24 vertices at the
+  // cube's 8 corners; each primitive names three faces, so the weld keeps 12 vertices of each —
+  // 24 source vertices, three at every corner (a face's normal is its own). Derived ids name the
+  // corners: 8 of them, every source vertex sharing its corner's with two others, 16 of the 24 the
+  // duplicates the per-face normals cost, and no id anywhere at two positions.
+  const JsonValue* identity = stats.result.find("identity");
+  REQUIRE(identity != nullptr);
+  CHECK(text_of(*identity, "source") == "position_weld");
+  CHECK(number(*identity, "ids") == data.mesh.mesh.vertices.size());
+  CHECK(number(*identity, "bytes") == data.mesh.mesh.vertices.size() * 4);
+  CHECK(number(*identity, "source_vertices") == 24);
+  CHECK(number(*identity, "distinct_ids") == 8);
+  CHECK(number(*identity, "sharing") == 24);
+  CHECK(number(*identity, "duplicates") == 16);
+  CHECK(number(*identity, "largest_share") == 3);
+  CHECK(number(*identity, "without_id") == 0);
+  CHECK(number(*identity, "ids_at_several_positions") == 0);
 
   // The page table and the fly-in sweep: one page for a cube, a child-page histogram that adds
   // up to the pages, and one step per camera position, each drawing something and asking only

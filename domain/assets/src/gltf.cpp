@@ -27,6 +27,7 @@
 #endif
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
@@ -237,6 +238,7 @@ struct Context {
   bool saw_normals = false;
   bool saw_uvs = false;
   bool saw_skin = false;
+  bool saw_ids = false;     // some primitive carried `_CANONICAL_ID`
   bool has_skins = false;   // the file declares skins, so the binding stream is kept parallel
   Vector<u32> node_remap;   // cgltf node index -> MeshData::nodes index
   Vector<u8> skin_placed;   // whether a skin's node_transform has been recorded
@@ -299,6 +301,67 @@ bool append_skin_bindings(Context& ctx, const cgltf_primitive& primitive, u32 ba
     out.skin_bindings[base + i] = geometry::make_skin_binding(indices, influence);
   }
   ctx.saw_skin = true;
+  return true;
+}
+
+// The canonical vertex ids of one primitive (`k_canonical_id_attribute`) into
+// `MeshData::vertex_ids`, which the caller has already grown to cover this primitive's vertices
+// with `k_no_vertex_id`. An id is a name, so every form that could round it, wrap it or scale it is
+// refused rather than converted: a signed or normalized component, a fraction, a negative number,
+// a float past 2^24 (where whole numbers stop being exact), and the reserved `k_no_vertex_id`.
+bool append_vertex_ids(Context& ctx, const cgltf_primitive& primitive, u32 base, u32 vertices) {
+  const cgltf_accessor* ids = nullptr;
+  for (cgltf_size a = 0; a < primitive.attributes_count; ++a) {
+    const cgltf_attribute& attribute = primitive.attributes[a];
+    if (attribute.type == cgltf_attribute_type_custom && attribute.name != nullptr &&
+        std::strcmp(attribute.name, k_canonical_id_attribute) == 0) {
+      ids = attribute.data;
+    }
+  }
+  if (ids == nullptr) return true;
+  const std::string what = std::string("glTF: ") + k_canonical_id_attribute;
+  if (ids->count != vertices) return fail(ctx.error, what + " and POSITION have different counts");
+  if (ids->type != cgltf_type_scalar) return fail(ctx.error, what + " is not a scalar accessor");
+  if (ids->is_sparse != 0)
+    return fail(ctx.error, what + " is a sparse accessor, which this importer does not read");
+  if (ids->normalized != 0)
+    return fail(ctx.error, what + " is normalized; an id is a whole number, not a fraction");
+  const bool as_uint = ids->component_type == cgltf_component_type_r_8u ||
+                       ids->component_type == cgltf_component_type_r_16u ||
+                       ids->component_type == cgltf_component_type_r_32u;
+  if (!as_uint && ids->component_type != cgltf_component_type_r_32f) {
+    return fail(ctx.error, what +
+                               " is a signed integer; an id is UNSIGNED_BYTE, UNSIGNED_SHORT, "
+                               "UNSIGNED_INT or FLOAT");
+  }
+  MeshData& out = *ctx.mesh;
+  for (u32 i = 0; i < vertices; ++i) {
+    u32 id = 0;
+    if (as_uint) {
+      cgltf_uint value = 0;
+      if (cgltf_accessor_read_uint(ids, i, &value, 1) == 0)
+        return fail(ctx.error, "glTF: could not read " + std::string(k_canonical_id_attribute));
+      id = value;
+    } else {
+      cgltf_float value = 0.0f;
+      if (cgltf_accessor_read_float(ids, i, &value, 1) == 0)
+        return fail(ctx.error, "glTF: could not read " + std::string(k_canonical_id_attribute));
+      // 2^24 is where a float stops holding every whole number, so an id past it could already
+      // have been rounded onto its neighbour's by whoever wrote the file.
+      if (!(value >= 0.0f && value <= 16777216.0f) || std::floor(value) != value) {
+        return fail(ctx.error, what + " holds " + std::to_string(value) + " at vertex " +
+                                   std::to_string(i) +
+                                   ", which is not a whole number from 0 to 2^24");
+      }
+      id = static_cast<u32>(value);
+    }
+    if (id == geometry::k_no_vertex_id) {
+      return fail(ctx.error, what + " holds 0xFFFFFFFF at vertex " + std::to_string(i) +
+                                 ", which is reserved for a vertex with no id");
+    }
+    out.vertex_ids[base + i] = id;
+  }
+  ctx.saw_ids = true;
   return true;
 }
 
@@ -433,6 +496,9 @@ bool append_primitive(Context& ctx, const cgltf_primitive& primitive, const Mat4
   out.normals.resize(base + vertices);
   out.uvs.resize(base + vertices);
   if (ctx.has_skins) out.skin_bindings.resize(base + vertices);
+  // The ids stay parallel too, "no id" until this primitive's own attribute says otherwise; a file
+  // with no authored ids at all has the whole stream replaced by the derived ones after the walk.
+  out.vertex_ids.resize(base + vertices, geometry::k_no_vertex_id);
 
   const cgltf_accessor* normals = cgltf_find_accessor(&primitive, cgltf_attribute_type_normal, 0);
   ctx.local_normals.clear();
@@ -458,6 +524,8 @@ bool append_primitive(Context& ctx, const cgltf_primitive& primitive, const Mat4
     for (u32 i = 0; i < vertices; ++i)
       out.uvs[base + i] = Vec2{ctx.floats[i * 2], ctx.floats[i * 2 + 1]};
   }
+
+  if (!append_vertex_ids(ctx, primitive, base, vertices)) return false;
 
   // Influences are read only for a primitive whose node actually has a skin: JOINTS_0 on a node
   // with no skin names nothing, and those vertices were flattened to world space anyway.
@@ -880,6 +948,17 @@ bool build_mesh(const cgltf_data& data, MeshData& out, std::string* error) {
   // A file whose skins the default scene never instances imports as a static mesh: the stream
   // exists only when something in the picture is actually skinned.
   if (!ctx.saw_skin) out.skin_bindings.clear();
+  // The canonical ids: the file's own when any primitive carried them, and otherwise the base's
+  // rule for a mesh nobody named — the rank of each vertex's position among the distinct positions
+  // of everything this import produced. Here, over the mesh exactly as imported and before the UV
+  // repair or the weld has run, so that the ids are a function of the source and nothing else.
+  if (ctx.saw_ids) {
+    out.vertex_id_source = geometry::VertexIdSource::authored;
+  } else {
+    geometry::position_weld_ids(std::span<const Vec3>(out.positions.data(), out.positions.size()),
+                                out.vertex_ids);
+    out.vertex_id_source = geometry::VertexIdSource::position_weld;
+  }
   // A channel every primitive of its mesh left empty moves nothing; it stays in the array rather
   // than being removed, because the weight tracks index it by position.
   //
@@ -979,6 +1058,11 @@ geometry::AttributeSource attribute_source(const MeshData& mesh) noexcept {
   if (!mesh.morph.empty())
     source.morph =
         std::span<const geometry::MorphChannelSource>(mesh.morph.data(), mesh.morph.size());
+  if (!mesh.vertex_ids.empty() && mesh.vertex_ids.size() == mesh.positions.size() &&
+      mesh.vertex_id_source != geometry::VertexIdSource::none) {
+    source.vertex_ids = std::span<const u32>(mesh.vertex_ids.data(), mesh.vertex_ids.size());
+    source.vertex_id_source = mesh.vertex_id_source;
+  }
   if (mesh.skin_bindings.size() == mesh.positions.size() && !mesh.skin_bindings.empty()) {
     source.skin = std::span<const geometry::SkinBinding>(mesh.skin_bindings.data(),
                                                          mesh.skin_bindings.size());
@@ -1036,11 +1120,12 @@ bool repair_uv_degenerate_triangles(MeshData& mesh, geometry::UvRepairReport& re
 
 u32 weld_vertices(MeshData& mesh) {
   // Every per-vertex stream `MeshData` owns, and nothing is optional here: the weld takes part in
-  // a stream only when it is parallel to the positions (skin) or non-empty (morph), so passing an
-  // absent one costs nothing, while leaving a present one out would leave it in the old numbering.
+  // a stream only when it is parallel to the positions (skin, ids) or non-empty (morph), so passing
+  // an absent one costs nothing, while leaving a present one out would leave it in the old
+  // numbering — which for the ids would be the whole defect they exist to prevent.
   return geometry::weld_vertices(mesh.positions, mesh.normals, mesh.uvs,
                                  std::span<u32>(mesh.indices.data(), mesh.indices.size()),
-                                 &mesh.skin_bindings, &mesh.morph);
+                                 &mesh.skin_bindings, &mesh.morph, &mesh.vertex_ids);
 }
 
 }  // namespace engine::assets

@@ -626,6 +626,9 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
     // channel run itself, and so had never been through `load_scene` at all.
     part.first_morph_channel = 0;
     part.morph_channel_count = out.lod.mesh.morph_channels.size();
+    // And the same for the id space, for the same reason: only `merge_cluster_meshes` fills it.
+    part.vertex_id_source = out.lod.mesh.vertex_ids.empty() ? geometry::VertexIdSource::none
+                                                            : out.lod.mesh.vertex_id_source;
     out.parts.push_back(part);
   } else if (!geometry::merge_cluster_meshes(dags, out.lod, out.parts, &error)) {
     return false;
@@ -684,6 +687,20 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
   update_scene_bounds(out);
   out.build_ns = time::monotonic_ns() - build_start;
   return true;
+}
+
+std::span<const u32> mesh_vertex_ids(const SceneData& scene, u32 mesh) noexcept {
+  if (mesh >= scene.parts.size()) return {};
+  const geometry::ClusterMeshPart& part = scene.parts[mesh];
+  const Vector<u32>& ids = scene.lod.mesh.vertex_ids;
+  if (part.vertex_id_source == geometry::VertexIdSource::none || ids.empty()) return {};
+  // A part records where its vertices start, not how many it has: the next part's start is where
+  // they end. The id stream's own length stands in for the last part's end, because a streamed
+  // scene has released `vertices` and kept the ids.
+  const u32 first = part.first_vertex;
+  const u32 end = mesh + 1 < scene.parts.size() ? scene.parts[mesh + 1].first_vertex : ids.size();
+  if (first > end || end > ids.size()) return {};
+  return std::span<const u32>(ids.data() + first, end - first);
 }
 
 void update_scene_bounds(SceneData& out) {

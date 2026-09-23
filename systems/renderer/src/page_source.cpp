@@ -236,6 +236,8 @@ bool attach_page_source(SceneData& data, const GpuScene& scene, jobs::JobSystem&
   mesh.vertex_source.shrink_to_fit();
   mesh.skin.clear();
   mesh.skin.shrink_to_fit();
+  // `mesh.vertex_ids` is kept, deliberately: the GPU never had it, so streaming serves nothing it
+  // could stand in for, and `mesh_vertex_ids` answers the same way however the scene was loaded.
   out.set_released_bytes(freed);
   ENGINE_LOG_INFO(log_renderer, "paged host streams released", log::field("bytes", freed),
                   log::field("clusters", mesh.clusters.size()));

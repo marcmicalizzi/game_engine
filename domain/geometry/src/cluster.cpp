@@ -507,6 +507,33 @@ bool validate_clusters(const ClusterMesh& mesh, std::span<const u32> source_indi
     return fail("the mesh names a joint palette but carries no skin bindings");
   }
 
+  // The id stream: present or absent as a whole, with a source that says where it came from, and
+  // one id per source vertex — every copy of a `vertex_source` entry, in every cluster, carries the
+  // same one. That last is the identity contract itself: a vertex's name must not depend on which
+  // cluster or which LOD level a caller happened to find it in.
+  if (!mesh.vertex_ids.empty()) {
+    if (mesh.vertex_ids.size() != mesh.vertices.size())
+      return fail("the vertex id stream is not parallel to the vertices");
+    if (mesh.vertex_id_source == VertexIdSource::none)
+      return fail("the mesh carries vertex ids but does not say where they came from");
+    u32 sources = 0;
+    for (const u32 source : mesh.vertex_source)
+      sources = source >= sources ? source + 1 : sources;
+    Vector<u32> id_of_source(sources, k_no_vertex_id);
+    Vector<u8> seen(sources, u8{0});
+    for (u32 v = 0; v < mesh.vertices.size(); ++v) {
+      const u32 source = mesh.vertex_source[v];
+      if (seen[source] == 0) {
+        seen[source] = 1;
+        id_of_source[source] = mesh.vertex_ids[v];
+      } else if (id_of_source[source] != mesh.vertex_ids[v]) {
+        return fail("two cluster copies of one source vertex carry different vertex ids");
+      }
+    }
+  } else if (mesh.vertex_id_source != VertexIdSource::none) {
+    return fail("the mesh names a vertex id source but carries no ids");
+  }
+
   if (!validate_morph_stream(mesh, error)) return false;
 
   // Every source triangle exactly once: compare sorted canonical corner triples.
@@ -995,19 +1022,20 @@ void compute_vertex_normals(std::span<const Vec3> positions, std::span<const u32
 
 u32 weld_vertices(Vector<Vec3>& positions, Vector<Vec3>& normals, Vector<Vec2>& uvs,
                   std::span<u32> indices, Vector<SkinBinding>* skin,
-                  Vector<MorphChannelSource>* morph) {
+                  Vector<MorphChannelSource>* morph, Vector<u32>* vertex_ids) {
   const u32 vertex_count = positions.size();
   if (vertex_count == 0) return 0;
   const bool have_normals = normals.size() == vertex_count;
   const bool have_uvs = uvs.size() == vertex_count;
   const bool have_skin = skin != nullptr && skin->size() == vertex_count;
+  const bool have_ids = vertex_ids != nullptr && vertex_ids->size() == vertex_count;
   Vector<u32> morph_keys;
   const bool have_morph = morph != nullptr && !morph->empty();
   if (have_morph) {
     morph_vertex_keys(std::span<const MorphChannelSource>(morph->data(), morph->size()),
                       vertex_count, morph_keys);
   }
-  meshopt_Stream streams[5];
+  meshopt_Stream streams[6];
   usize stream_count = 0;
   streams[stream_count++] = meshopt_Stream{positions.data(), sizeof(Vec3), sizeof(Vec3)};
   if (have_normals)
@@ -1022,6 +1050,11 @@ u32 weld_vertices(Vector<Vec3>& positions, Vector<Vec3>& normals, Vector<Vec2>& 
   // And the morph deltas are part of it for exactly the same reason, through the interned id.
   if (have_morph)
     streams[stream_count++] = meshopt_Stream{morph_keys.data(), sizeof(u32), sizeof(u32)};
+  // And the canonical id: two duplicates the author named as two points of the base stay two
+  // vertices. A derived id is a function of the position, so it never splits what the position
+  // stream would have merged, and a mesh with derived ids welds exactly as it did without them.
+  if (have_ids)
+    streams[stream_count++] = meshopt_Stream{vertex_ids->data(), sizeof(u32), sizeof(u32)};
 
   Vector<unsigned int> remap(vertex_count);
   const u32 unique = static_cast<u32>(meshopt_generateVertexRemapMulti(
@@ -1047,6 +1080,12 @@ u32 weld_vertices(Vector<Vec3>& positions, Vector<Vec3>& normals, Vector<Vec2>& 
     meshopt_remapVertexBuffer(welded.data(), skin->data(), vertex_count, sizeof(SkinBinding),
                               remap.data());
     *skin = std::move(welded);
+  }
+  if (have_ids) {
+    Vector<u32> welded(unique);
+    meshopt_remapVertexBuffer(welded.data(), vertex_ids->data(), vertex_count, sizeof(u32),
+                              remap.data());
+    *vertex_ids = std::move(welded);
   }
   if (have_morph) {
     // Every channel's vertex list is in the old numbering. Rewrite it, drop the entries whose
@@ -1186,6 +1225,61 @@ u32 morph_vertex_keys(std::span<const MorphChannelSource> channels, u32 vertex_c
   return id_slot.size();
 }
 
+const char* vertex_id_source_name(VertexIdSource source) noexcept {
+  switch (source) {
+    case VertexIdSource::none: return "none";
+    case VertexIdSource::authored: return "authored";
+    case VertexIdSource::position_weld: return "position_weld";
+  }
+  return "unknown";
+}
+
+u32 position_weld_ids(std::span<const Vec3> positions, Vector<u32>& out) {
+  out.clear();
+  const u32 count = static_cast<u32>(positions.size());
+  out.resize(count);
+  if (count == 0) return 0;
+  // One 16-byte record per vertex — the three coordinates as order-preserving integers, then the
+  // vertex — so the sort touches one contiguous array rather than chasing an index into the
+  // positions. The transform maps a float's bits to an unsigned integer that orders the way the
+  // float does (negative values flipped whole, positive ones with the sign bit set), after folding
+  // -0 into +0 so that the two zeros are one position, as they are to any comparison of values.
+  // NaN has bits too, so a malformed position still sorts somewhere definite rather than making the
+  // order depend on the sort's internals.
+  struct Key {
+    u32 x = 0;
+    u32 y = 0;
+    u32 z = 0;
+    u32 vertex = 0;
+  };
+  auto ordered = [](f32 value) noexcept {
+    u32 bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    if (bits == 0x80000000u) bits = 0;
+    return (bits & 0x80000000u) != 0 ? ~bits : (bits | 0x80000000u);
+  };
+  Vector<Key> keys(count);
+  for (u32 v = 0; v < count; ++v) {
+    const Vec3& p = positions[v];
+    keys[v] = Key{ordered(p.x), ordered(p.y), ordered(p.z), v};
+  }
+  std::sort(keys.begin(), keys.end(), [](const Key& a, const Key& b) {
+    if (a.x != b.x) return a.x < b.x;
+    if (a.y != b.y) return a.y < b.y;
+    if (a.z != b.z) return a.z < b.z;
+    return a.vertex < b.vertex;
+  });
+  u32 id = 0;
+  for (u32 i = 0; i < count; ++i) {
+    if (i > 0 &&
+        (keys[i].x != keys[i - 1].x || keys[i].y != keys[i - 1].y || keys[i].z != keys[i - 1].z)) {
+      ++id;
+    }
+    out[keys[i].vertex] = id;
+  }
+  return id + 1;
+}
+
 void fill_cluster_attributes(ClusterMesh& mesh, std::span<const Vec3> positions,
                              std::span<const u32> indices, const AttributeSource& attributes) {
   Vector<Vec3> computed;
@@ -1213,6 +1307,18 @@ void fill_cluster_attributes(ClusterMesh& mesh, std::span<const Vec3> positions,
   // in is keyed by cluster rather than by vertex because that is the question the deform pass
   // asks (see `fill_cluster_morph`).
   fill_cluster_morph(mesh, attributes.morph);
+
+  // The canonical ids travel the same road again, which is the whole of the identity contract at
+  // this layer: a cluster vertex's id is its source vertex's, on every level and in every cluster.
+  mesh.vertex_ids.clear();
+  mesh.vertex_id_source = VertexIdSource::none;
+  if (attributes.vertex_ids.size() == positions.size() && !attributes.vertex_ids.empty() &&
+      attributes.vertex_id_source != VertexIdSource::none) {
+    mesh.vertex_id_source = attributes.vertex_id_source;
+    mesh.vertex_ids.reserve(mesh.vertex_source.size());
+    for (const u32 source : mesh.vertex_source)
+      mesh.vertex_ids.push_back(attributes.vertex_ids[source]);
+  }
 
   mesh.skin.clear();
   mesh.skin_joint_count = 0;

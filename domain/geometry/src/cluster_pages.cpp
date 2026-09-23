@@ -338,6 +338,12 @@ bool build_cluster_pages(ClusterLodMesh& mesh, const ClusterPagesOptions& option
   const bool has_skin = geo.skin.size() == geo.vertices.size();
   if (!geo.skin.empty() && !has_skin)
     return fail(error, "build_cluster_pages: the skin binding stream is the wrong length");
+  // The canonical ids move with their vertices like every other per-vertex stream, but they are
+  // **not** in `cluster_page_bytes`: nothing on the GPU reads them, so they cost a page nothing and
+  // a mesh's page layout is the same with or without them.
+  const bool has_ids = geo.vertex_ids.size() == geo.vertices.size() && !geo.vertex_ids.empty();
+  if (!geo.vertex_ids.empty() && !has_ids)
+    return fail(error, "build_cluster_pages: the vertex id stream is the wrong length");
 
   // Reordering the clusters reorders their runs of the vertex and triangle streams, which only
   // means anything when those runs tile the streams: one run per cluster, in order, no gaps and
@@ -498,12 +504,14 @@ bool build_cluster_pages(ClusterLodMesh& mesh, const ClusterPagesOptions& option
   Vector<u32> vertex_source;
   Vector<VertexAttributes> attributes;
   Vector<SkinBinding> skin;
+  Vector<u32> vertex_ids;
   Vector<u16> quantized;
   Vector<u32> triangles;
   vertices.reserve(geo.vertices.size());
   vertex_source.reserve(geo.vertices.size());
   if (has_attributes) attributes.reserve(geo.vertices.size());
   if (has_skin) skin.reserve(geo.vertices.size());
+  if (has_ids) vertex_ids.reserve(geo.vertices.size());
   if (has_quantized) quantized.reserve(geo.quantized.size());
   triangles.reserve(geo.triangles.size());
   // The morph stream is permuted with the clusters it is keyed by, which is what makes a page's
@@ -534,6 +542,7 @@ bool build_cluster_pages(ClusterLodMesh& mesh, const ClusterPagesOptions& option
       vertex_source.push_back(geo.vertex_source[source]);
       if (has_attributes) attributes.push_back(geo.attributes[source]);
       if (has_skin) skin.push_back(geo.skin[source]);
+      if (has_ids) vertex_ids.push_back(geo.vertex_ids[source]);
       if (has_quantized) {
         quantized.push_back(geo.quantized[source * 3 + 0]);
         quantized.push_back(geo.quantized[source * 3 + 1]);
@@ -603,6 +612,7 @@ bool build_cluster_pages(ClusterLodMesh& mesh, const ClusterPagesOptions& option
   geo.vertex_source = std::move(vertex_source);
   if (has_attributes) geo.attributes = std::move(attributes);
   if (has_skin) geo.skin = std::move(skin);
+  if (has_ids) geo.vertex_ids = std::move(vertex_ids);
   if (has_quantized) geo.quantized = std::move(quantized);
   if (has_morph) {
     geo.morph_cluster_slices = std::move(morph.morph_cluster_slices);

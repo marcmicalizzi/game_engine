@@ -26,6 +26,12 @@
 // otherwise, and an animation's `weights` channels arrive as `k_path_weights` curves whose
 // `components` is the target count.
 //
+// **Canonical vertex ids** arrive as `MeshData::vertex_ids`, one `u32` per vertex, from the custom
+// attribute `k_canonical_id_attribute` when the file carries it and from the base's own rule
+// (`geometry::position_weld_ids`) when it does not; `MeshData::vertex_id_source` says which. They
+// are what lets a file written beside the mesh name its vertices after the content build
+// (docs/plan/07-content-pipeline.md §7.11), and the weld keys on them.
+//
 // What this module deliberately does not do: decode image pixels (the bytes or the URI are
 // handed on for foundation/image and the texture pipeline), touch the GPU, *evaluate* animations,
 // skins or morphs (the curves and the deltas are read, never applied), read cameras and lights,
@@ -43,6 +49,23 @@
 #include <string_view>
 
 namespace engine::assets {
+
+// The glTF vertex attribute an authoring tool writes a vertex's **canonical id** into: the name of
+// the point of the base mesh this vertex stands for, shared by every duplicate of that point (the
+// two sides of a UV seam, a hard edge, a skin-weight split) and different for two points that
+// merely touch. The name is **reserved** by this engine; glTF requires an application's own
+// attributes to start with an underscore, which is why it does.
+//
+// The accessor is SCALAR, with one id per vertex of the primitive, and one of: UNSIGNED_BYTE,
+// UNSIGNED_SHORT or UNSIGNED_INT, not normalized — the glTF 2.0 core reserves UNSIGNED_INT for
+// indices, but an id space past 65,536 needs it, and the importer takes it; or FLOAT holding whole
+// numbers from 0 to 2^24, which is what a DCC tool that exports integer attributes as floats
+// writes and is exact over that range. `geometry::k_no_vertex_id` (0xFFFFFFFF) is reserved and
+// refused. A signed or normalized type, another shape, a sparse accessor, a fraction, a negative
+// number or a count that differs from POSITION's fails the load with a sentence. In a file where
+// some primitives carry it and some do not, the vertices of those that do not get
+// `k_no_vertex_id`, and the mesh's ids are still `authored`.
+inline constexpr const char k_canonical_id_attribute[] = "_CANONICAL_ID";
 
 // glTF `alphaMode`, as the one byte `Material::alpha_mode` and the cluster container store it.
 inline constexpr u8 k_alpha_opaque = 0;  // alpha is ignored
@@ -181,6 +204,15 @@ struct MeshData {
   // at least half the channel's step — so the sparsity is a property of the data and not a
   // second lossy knob on top of the one `geometry` already documents.
   Vector<geometry::MorphChannelSource> morph;
+  // The canonical id of every vertex, parallel to `positions`, and where the ids came from:
+  // `authored` when any primitive carried `k_canonical_id_attribute`, `position_weld` otherwise —
+  // the id is then the index of the vertex's position among the distinct positions of **every**
+  // vertex this import produced, sorted (`geometry::position_weld_ids`), so the two sides of a UV
+  // seam share one. Computed here, over the mesh exactly as imported, and never again: the UV
+  // repair moves no position and the weld carries the stream, so a later step cannot give a vertex
+  // a different name than the source did.
+  Vector<u32> vertex_ids;
+  geometry::VertexIdSource vertex_id_source = geometry::VertexIdSource::none;
   Vector<u32> indices;
   Vector<Primitive> primitives;
   Vector<Material> materials;
@@ -220,10 +252,11 @@ bool load_gltf_memory(std::span<const u8> bytes, std::string_view base_dir, Mesh
 // `error` when the mesh file itself cannot be read or parsed.
 bool source_mesh_hash(std::string_view path, u64& out, std::string* error = nullptr);
 
-// Spans over the mesh's normals, UVs, and skin bindings for geometry::build_clusters and
-// geometry::build_cluster_lod. Absent attributes stay empty, which is what the builders expect:
-// they compute smooth normals, leave UVs at zero, and build an unskinned mesh. The joint count
-// is the widest skin of the file, which is the palette a merged mesh's indices live in.
+// Spans over the mesh's normals, UVs, skin bindings, morph channels and canonical vertex ids for
+// geometry::build_clusters and geometry::build_cluster_lod. Absent attributes stay empty, which is
+// what the builders expect: they compute smooth normals, leave UVs at zero, and build an unskinned
+// mesh with no ids. The joint count is the widest skin of the file, which is the palette a merged
+// mesh's indices live in.
 geometry::AttributeSource attribute_source(const MeshData& mesh) noexcept;
 
 // The content build's UV repair (`geometry::repair_uv_degenerate_triangles`) over an imported
@@ -239,8 +272,9 @@ bool repair_uv_degenerate_triangles(MeshData& mesh, geometry::UvRepairReport& re
 
 // The weld both builders of a cluster container run, after the UV repair and before clustering:
 // `geometry::weld_vertices` over **every per-vertex stream the mesh owns** — positions, normals,
-// UVs, skin bindings and morph channels. Two vertices merge only when they agree on all of them,
-// so two coincident vertices whose deltas differ stay two vertices (a morph seam stays a seam);
+// UVs, skin bindings, morph channels and canonical vertex ids. Two vertices merge only when they
+// agree on all of them, so two coincident vertices whose deltas differ stay two vertices (a morph
+// seam stays a seam) and so do two the author gave different ids;
 // the streams are compacted, the indices rewritten in place (primitive ranges do not move),
 // unreferenced vertices dropped, and every morph channel's vertex list renumbered to match.
 // Returns the new vertex count.

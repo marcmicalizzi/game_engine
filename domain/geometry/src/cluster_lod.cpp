@@ -54,6 +54,20 @@ u8 seam_bit(SeamRule rule) noexcept {
   return 0;
 }
 
+// Appends `part`'s vertex ids to `to`, or `k_no_vertex_id` for each of its vertices when it carries
+// none, so the merged stream stays parallel to the merged vertices. `to.vertices` must already hold
+// the part's vertices. Nothing is appended when no part of the merge has ids (`wanted` false),
+// which is what keeps a merge of id-less meshes exactly what it was.
+void append_vertex_ids(ClusterMesh& to, const ClusterMesh& part, bool wanted) {
+  if (!wanted) return;
+  if (!part.vertex_ids.empty() && part.vertex_ids.size() == part.vertices.size() &&
+      part.vertex_id_source != VertexIdSource::none) {
+    to.vertex_ids.append(std::span<const u32>(part.vertex_ids.data(), part.vertex_ids.size()));
+  } else {
+    to.vertex_ids.resize(to.vertices.size(), k_no_vertex_id);
+  }
+}
+
 int emit_group(void* context, clodGroup group, const clodCluster* clusters, size_t cluster_count) {
   auto* ctx = static_cast<BuildContext*>(context);
   ClusterLodMesh& out = *ctx->out;
@@ -181,8 +195,12 @@ bool build_cluster_lod(std::span<const Vec3> positions, std::span<const u32> ind
   const u8 normal_bit = seam_bit(options.normal_seams);
   const u8 skin_bit = seam_bit(options.skin_seams);
   const u8 morph_bit = attributes.morph.empty() ? u8{0} : seam_bit(options.morph_seams);
+  const bool have_ids = attributes.vertex_ids.size() == positions.size() &&
+                        attributes.vertex_id_source != VertexIdSource::none;
+  const u8 id_bit = have_ids ? seam_bit(options.id_seams) : u8{0};
   const bool weighted = options.normal_weight > 0.0f || options.uv_weight > 0.0f;
-  const bool tagged = uv_bit != 0 || normal_bit != 0 || skin_bit != 0 || morph_bit != 0;
+  const bool tagged =
+      uv_bit != 0 || normal_bit != 0 || skin_bit != 0 || morph_bit != 0 || id_bit != 0;
   const u32 vertex_count = static_cast<u32>(positions.size());
   std::span<const Vec3> normals = attributes.normals;
   // Only when something will read them: with `normal_weight` at its default of zero and no
@@ -258,6 +276,10 @@ bool build_cluster_lod(std::span<const Vec3> positions, std::span<const u32> ind
           morph_keys[v] != morph_keys[canonical]) {
         vertex_lock[v] |= morph_bit;
       }
+      // Two points of the base the author named apart, at one position: the weld kept them apart,
+      // and so does the simplifier.
+      if (id_bit != 0 && attributes.vertex_ids[v] != attributes.vertex_ids[canonical])
+        vertex_lock[v] |= id_bit;
     }
     mesh.vertex_lock = vertex_lock.data();
   }
@@ -381,6 +403,22 @@ bool merge_cluster_lod(std::span<const ClusterLodMesh> parts, ClusterLodMesh& ou
       }
     }
   }
+  // **The parts of one mesh share one id space** — they were built over the same welded source — so
+  // the ids concatenate unchanged, and the parts must agree about where they came from. A part
+  // built without ids contributes `k_no_vertex_id` rather than shortening the stream, as a part
+  // with no bindings contributes default ones.
+  VertexIdSource id_source = VertexIdSource::none;
+  for (const ClusterLodMesh& whole : parts) {
+    const VertexIdSource source = whole.mesh.vertex_id_source;
+    if (source == VertexIdSource::none) continue;
+    if (id_source != VertexIdSource::none && source != id_source) {
+      if (error != nullptr)
+        *error = "merge_cluster_lod: the parts disagree about where their vertex ids came from";
+      return false;
+    }
+    id_source = source;
+  }
+  out.mesh.vertex_id_source = id_source;
   bool morph_normals = false;
   if (morph_template != nullptr) {
     out.mesh.morph_channels.append(std::span<const MorphChannel>(
@@ -422,6 +460,7 @@ bool merge_cluster_lod(std::span<const ClusterLodMesh> parts, ClusterLodMesh& ou
     } else if (skinned) {
       out.mesh.skin.resize(out.mesh.vertices.size(), SkinBinding{});
     }
+    append_vertex_ids(out.mesh, part, id_source != VertexIdSource::none);
     out.mesh.triangles.append(std::span<const u32>(part.triangles.data(), part.triangles.size()));
     out.mesh.source_vertex_count += part.source_vertex_count;
     out.mesh.source_triangle_count += part.source_triangle_count;
@@ -497,6 +536,17 @@ bool merge_cluster_meshes(std::span<const ClusterLodMesh> parts, ClusterLodMesh&
     any_morph = any_morph || !whole.mesh.morph_channels.empty();
     morph_normals = morph_normals || !whole.mesh.morph_normal_deltas.empty();
   }
+  // Separate meshes have separate id spaces, so the merged stream is their concatenation and each
+  // mesh says on its own `ClusterMeshPart` where its ids came from. The merged mesh's own source is
+  // the first mesh's that has one — what a one-mesh merge needs, and all a whole-scene validator
+  // can ask of it; a caller that wants to know what an id means asks the part.
+  bool any_ids = false;
+  for (const ClusterLodMesh& whole : parts) {
+    if (whole.mesh.vertex_id_source == VertexIdSource::none || whole.mesh.vertex_ids.empty())
+      continue;
+    if (!any_ids) out.mesh.vertex_id_source = whole.mesh.vertex_id_source;
+    any_ids = true;
+  }
   if (any_morph) out.mesh.morph_cluster_slices.push_back(0);
   for (u32 p = 0; p < parts.size(); ++p) {
     const ClusterLodMesh& whole = parts[p];
@@ -539,6 +589,11 @@ bool merge_cluster_meshes(std::span<const ClusterLodMesh> parts, ClusterLodMesh&
     } else if (skinned) {
       out.mesh.skin.resize(out.mesh.vertices.size(), SkinBinding{});
     }
+    info.vertex_id_source =
+        part.vertex_ids.size() == part.vertices.size() && !part.vertex_ids.empty()
+            ? part.vertex_id_source
+            : VertexIdSource::none;
+    append_vertex_ids(out.mesh, part, any_ids);
     out.mesh.triangles.append(std::span<const u32>(part.triangles.data(), part.triangles.size()));
     // Three u16 a vertex, the mesh's own padding dropped so the merged index is 3 * vertex.
     out.mesh.quantized.append(
@@ -923,6 +978,10 @@ bool validate_cluster_lod(const ClusterLodMesh& mesh, std::span<const u32> sourc
   leaves.quant_scale = mesh.mesh.quant_scale;
   leaves.skin = mesh.mesh.skin;  // every level's bindings, so validate_clusters checks them
   leaves.skin_joint_count = mesh.mesh.skin_joint_count;
+  // Every level's ids, for the same reason: one id per source vertex is a property of the whole
+  // DAG, and a coarse cluster's copy of a vertex is where a broken merge or page layout would show.
+  leaves.vertex_ids = mesh.mesh.vertex_ids;
+  leaves.vertex_id_source = mesh.mesh.vertex_id_source;
   for (u32 i = 0; i < mesh.mesh.clusters.size(); ++i) {
     if (mesh.lod[i].level == 0) leaves.clusters.push_back(mesh.mesh.clusters[i]);
   }

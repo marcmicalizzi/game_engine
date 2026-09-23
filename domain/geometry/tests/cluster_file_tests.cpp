@@ -74,8 +74,16 @@ void make_fixture(ClusterFileData& data, Vector<u32>& indices) {
   Vector<Vec3> positions;
   make_terrain(65, 10.0f, positions, indices);
   std::string error;
-  REQUIRE_MESSAGE(build_cluster_lod(positions, indices, ClusterLodOptions{}, data.mesh, &error),
-                  error);
+  // With the ids every container built from a glTF carries: the base's rule for a mesh nobody
+  // named, so the stream is the one `engine-content build` writes.
+  Vector<u32> ids;
+  position_weld_ids(positions, ids);
+  AttributeSource attributes;
+  attributes.vertex_ids = std::span<const u32>(ids.data(), ids.size());
+  attributes.vertex_id_source = VertexIdSource::position_weld;
+  REQUIRE_MESSAGE(
+      build_cluster_lod(positions, indices, ClusterLodOptions{}, data.mesh, &error, attributes),
+      error);
   // Laid out in streaming pages, as `engine-content build` writes it: the clusters are renumbered
   // and the two page sections travel with them.
   ClusterPagesOptions page_options;
@@ -128,6 +136,8 @@ void check_equal(const ClusterFileData& read, const ClusterFileData& written) {
   CHECK(same_bytes(read.mesh.mesh.vertex_source, written.mesh.mesh.vertex_source));
   CHECK(same_bytes(read.mesh.mesh.skin, written.mesh.mesh.skin));
   CHECK(read.mesh.mesh.skin_joint_count == written.mesh.mesh.skin_joint_count);
+  CHECK(same_bytes(read.mesh.mesh.vertex_ids, written.mesh.mesh.vertex_ids));
+  CHECK(read.mesh.mesh.vertex_id_source == written.mesh.mesh.vertex_id_source);
   CHECK(same_bytes(read.mesh.level_cluster_counts, written.mesh.level_cluster_counts));
   CHECK(same_bytes(read.cluster_material, written.cluster_material));
   CHECK(same_bytes(read.materials, written.materials));
@@ -273,7 +283,7 @@ TEST_CASE("cluster file: a DAG with materials survives a round trip array by arr
   CHECK(std::memcmp(header.magic, "CLST", 4) == 0);
   CHECK(header.version == k_cluster_file_version);
   CHECK(header.flags == 0);
-  CHECK(header.section_count == 29);
+  CHECK(header.section_count == 31);
   CHECK(header.total_bytes == file.size());
   CHECK(header.content_hash == cluster_file_hash(data));
   for (u32 i = 0; i < header.section_count; ++i) {
@@ -427,6 +437,12 @@ TEST_CASE("cluster file: a reader gives the resident tables now and the page str
   CHECK(resident.mesh.mesh.vertex_source.empty());
   CHECK(reader.element_count(ClusterSection::Quantized) == whole.mesh.mesh.quantized.size());
   CHECK(reader.element_count(ClusterSection::Triangles) == whole.mesh.mesh.triangles.size());
+  // The ids are a paged stream like the bindings, but the word saying what id space they are in
+  // is resident: it is what a caller checks before fetching any of them.
+  REQUIRE(!whole.mesh.mesh.vertex_ids.empty());
+  CHECK(resident.mesh.mesh.vertex_ids.empty());
+  CHECK(resident.mesh.mesh.vertex_id_source == VertexIdSource::position_weld);
+  CHECK(reader.element_count(ClusterSection::VertexIds) == whole.mesh.mesh.vertex_ids.size());
 
   // Every page's slice of every paged stream is one contiguous range, and reading it gives what
   // the full read has at the same indices. This is the property the whole file-backed page source
@@ -468,6 +484,14 @@ TEST_CASE("cluster file: a reader gives the resident tables now and the page str
     REQUIRE(reader.file().read_at(offset, buffer.data(), bytes, read) == io::Status::Ok);
     REQUIRE(read == bytes);
     CHECK(std::memcmp(buffer.data(), whole.mesh.mesh.vertices.data() + page.first_vertex,
+                      static_cast<usize>(bytes)) == 0);
+
+    REQUIRE(reader.range(ClusterSection::VertexIds, sizeof(u32), page.first_vertex,
+                         page.vertex_count, offset, bytes));
+    buffer.resize(static_cast<u32>(bytes));
+    REQUIRE(reader.file().read_at(offset, buffer.data(), bytes, read) == io::Status::Ok);
+    REQUIRE(read == bytes);
+    CHECK(std::memcmp(buffer.data(), whole.mesh.mesh.vertex_ids.data() + page.first_vertex,
                       static_cast<usize>(bytes)) == 0);
   }
 
@@ -586,6 +610,109 @@ TEST_CASE("cluster file: the skin bindings round-trip, and a file without them r
   ClusterFileData refused;
   CHECK_FALSE(read_cluster_file_memory(view(orphaned), refused, &error));
   CHECK(error.find("joint count") != std::string::npos);
+}
+
+TEST_CASE("cluster file: the vertex ids round-trip, and a file without them reads with none") {
+  const test::TempDir tmp("cluster_file_ids");
+  ClusterFileData data;
+  Vector<u32> indices;
+  make_fixture(data, indices);
+  // Authored ids rather than derived ones, sparse and far from zero, so a reader that assumed ids
+  // were dense ranks would show it. The fixture's source vertices are the terrain's; every copy of
+  // one gets the same id, which is the property the validator checks.
+  ClusterMesh& geo = data.mesh.mesh;
+  for (u32 v = 0; v < geo.vertices.size(); ++v)
+    geo.vertex_ids[v] = geo.vertex_source[v] * 3u + 1000u;
+  geo.vertex_id_source = VertexIdSource::authored;
+
+  const std::string path = tmp.file("ids.clusters");
+  std::string error;
+  REQUIRE_MESSAGE(write_cluster_file(path, data, &error), error);
+  ClusterFileData read;
+  REQUIRE_MESSAGE(read_cluster_file(path, read, &error), error);
+  check_equal(read, data);
+  REQUIRE(read.mesh.mesh.vertex_ids.size() == read.mesh.mesh.vertices.size());
+  CHECK(read.mesh.mesh.vertex_id_source == VertexIdSource::authored);
+  CHECK_MESSAGE(validate_cluster_lod(read.mesh, indices, &error), error);
+
+  std::string file;
+  REQUIRE(io::read_file(path, file) == io::Status::Ok);
+  ClusterFileSection ids{};
+  const usize ids_at = find_section(file, ClusterSection::VertexIds, ids);
+  ClusterFileSection words{};
+  const usize words_at = find_section(file, ClusterSection::VertexIdScalars, words);
+  REQUIRE(ids_at != 0);
+  REQUIRE(words_at != 0);
+  CHECK(ids.kind == 30);
+  CHECK(words.kind == 31);
+  CHECK(ids.element_size == sizeof(u32));
+  CHECK(ids.element_count == geo.vertices.size());
+  CHECK(words.element_count == 1);
+  CHECK(std::string(cluster_section_name(ids.kind)) == "vertex_ids");
+  CHECK(std::string(cluster_section_name(words.kind)) == "vertex_id_scalars");
+
+  // A container written before the ids existed: both kinds become ones this build does not know,
+  // and what comes back is the same mesh with no ids rather than a failure.
+  std::string older = file;
+  ClusterFileSection renamed = ids;
+  renamed.kind = 31344;
+  patch(older, ids_at, &renamed, sizeof(renamed));
+  renamed = words;
+  renamed.kind = 31345;
+  patch(older, words_at, &renamed, sizeof(renamed));
+  rehash(older);
+  ClusterFileData without;
+  REQUIRE_MESSAGE(read_cluster_file_memory(view(older), without, &error), error);
+  CHECK(without.mesh.mesh.vertex_ids.empty());
+  CHECK(without.mesh.mesh.vertex_id_source == VertexIdSource::none);
+  CHECK(same_bytes(without.mesh.mesh.vertices, data.mesh.mesh.vertices));
+
+  // Ids with nothing saying what they are is refused: a name with no meaning is worse than none.
+  std::string orphaned = file;
+  renamed = words;
+  renamed.kind = 31346;
+  patch(orphaned, words_at, &renamed, sizeof(renamed));
+  rehash(orphaned);
+  ClusterFileData refused;
+  CHECK_FALSE(read_cluster_file_memory(view(orphaned), refused, &error));
+  CHECK(error.find("does not say where they came from") != std::string::npos);
+  CHECK(refused.mesh.mesh.clusters.empty());
+
+  // A source this build does not know — a later derivation rule — is kept as the number it is, so
+  // a caller can see it is not the id space it expects rather than being told it is none.
+  std::string newer = file;
+  const u32 later_rule = 3;
+  patch(newer, static_cast<usize>(words.offset), &later_rule, sizeof(later_rule));
+  rehash(newer);
+  ClusterFileData from_newer;
+  REQUIRE_MESSAGE(read_cluster_file_memory(view(newer), from_newer, &error), error);
+  CHECK(static_cast<u32>(from_newer.mesh.mesh.vertex_id_source) == 3);
+  CHECK(std::string(vertex_id_source_name(from_newer.mesh.mesh.vertex_id_source)) == "unknown");
+  CHECK(same_bytes(from_newer.mesh.mesh.vertex_ids, data.mesh.mesh.vertex_ids));
+
+  // A stream that is not one id per vertex is refused by name.
+  std::string short_ids = file;
+  ClusterFileSection shortened = ids;
+  shortened.element_count -= 1;
+  patch(short_ids, ids_at, &shortened, sizeof(shortened));
+  rehash(short_ids);
+  CHECK_FALSE(read_cluster_file_memory(view(short_ids), refused, &error));
+  CHECK(error.find("vertex ids for") != std::string::npos);
+
+  // A mesh with no ids writes both sections — empty, and `none` — and reads back with none.
+  ClusterFileData plain = data;
+  plain.mesh.mesh.vertex_ids.clear();
+  plain.mesh.mesh.vertex_id_source = VertexIdSource::none;
+  const std::string plain_path = tmp.file("plain.clusters");
+  REQUIRE_MESSAGE(write_cluster_file(plain_path, plain, &error), error);
+  ClusterFileData plain_read;
+  REQUIRE_MESSAGE(read_cluster_file(plain_path, plain_read, &error), error);
+  CHECK(plain_read.mesh.mesh.vertex_ids.empty());
+  CHECK(plain_read.mesh.mesh.vertex_id_source == VertexIdSource::none);
+  std::string plain_file;
+  REQUIRE(io::read_file(plain_path, plain_file) == io::Status::Ok);
+  CHECK(find_section(plain_file, ClusterSection::VertexIds, ids) != 0);
+  CHECK(ids.element_count == 0);
 }
 
 TEST_CASE("cluster file: an embedded image travels whole, once per distinct blob") {
@@ -881,6 +1008,12 @@ TEST_CASE("cluster file: the cache key answers to everything that went into the 
   CHECK(cluster_cache_key(0x1234'5678'9abc'def0ull, other, true, k_page_bytes) != key);
   other = options;
   other.skin_seams = SeamRule::none;
+  CHECK(cluster_cache_key(0x1234'5678'9abc'def0ull, other, true, k_page_bytes) != key);
+  other = options;
+  other.morph_seams = SeamRule::none;
+  CHECK(cluster_cache_key(0x1234'5678'9abc'def0ull, other, true, k_page_bytes) != key);
+  other = options;
+  other.id_seams = SeamRule::none;
   CHECK(cluster_cache_key(0x1234'5678'9abc'def0ull, other, true, k_page_bytes) != key);
   // And the page target, because paging renumbers the clusters: two page sizes are two
   // containers, and "no pages" is a third.

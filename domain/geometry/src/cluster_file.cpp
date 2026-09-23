@@ -216,6 +216,13 @@ u64 encode(const ClusterFileData& data, std::string& out) {
   const u32 morph_scalars[2] = {mesh.morph_delta_count, morph_normals ? 1u : 0u};
   add_section(payloads, ClusterSection::MorphScalars, static_cast<u32>(sizeof(u32)), 2u,
               morph_scalars);
+  // The canonical vertex ids and where they came from; empty and `none` for a mesh with no ids,
+  // so the section list is the format's and not this mesh's.
+  add_section(payloads, ClusterSection::VertexIds, static_cast<u32>(sizeof(u32)),
+              mesh.vertex_ids.size(), mesh.vertex_ids.data());
+  const u32 id_scalars[1] = {static_cast<u32>(mesh.vertex_id_source)};
+  add_section(payloads, ClusterSection::VertexIdScalars, static_cast<u32>(sizeof(u32)), 1u,
+              id_scalars);
 
   u64 offset = k_header_bytes + k_record_bytes * payloads.size();
   for (Payload& payload : payloads) {
@@ -383,6 +390,8 @@ const char* cluster_section_name(u32 kind) noexcept {
     case ClusterSection::MorphIndices: return "morph_indices";
     case ClusterSection::MorphDeltas: return "morph_deltas";
     case ClusterSection::MorphScalars: return "morph_scalars";
+    case ClusterSection::VertexIds: return "vertex_ids";
+    case ClusterSection::VertexIdScalars: return "vertex_id_scalars";
   }
   return "unknown";
 }
@@ -624,6 +633,34 @@ bool read_cluster_file_memory(std::span<const u8> bytes, ClusterFileData& out, s
       result.mesh.mesh.morph_names.push_back(std::string());
   }
 
+  // The canonical vertex ids and the word saying where they came from. A file with neither is a
+  // mesh with no ids, which is every container written before cache version 12. The source is read
+  // whether or not the stream is here, because a resident read lists the stream empty and the one
+  // word is still the answer to "what id space is this mesh in"; a value this build does not know
+  // is kept as it is, so a newer rule is reported as unknown rather than mistaken for this one's.
+  // Ids with no source are refused, the way bindings with no palette are: a name nothing says the
+  // meaning of is worse than no name.
+  if (const ClusterFileSection* words = found[static_cast<u32>(ClusterSection::VertexIdScalars)];
+      words != nullptr && words->element_count != 0) {
+    if (words->element_size != sizeof(u32)) {
+      return fail(error, "cluster file section vertex_id_scalars has " +
+                             std::to_string(words->element_size) + "-byte elements, expected 4");
+    }
+    u32 source = 0;
+    std::memcpy(&source, bytes.data() + words->offset, sizeof(u32));
+    result.mesh.mesh.vertex_id_source = static_cast<VertexIdSource>(source);
+  }
+  if (const ClusterFileSection* ids = found[static_cast<u32>(ClusterSection::VertexIds)];
+      ids != nullptr && ids->element_count != 0) {
+    if (ids->element_size != sizeof(u32)) {
+      return fail(error, "cluster file section vertex_ids has " +
+                             std::to_string(ids->element_size) + "-byte elements, expected 4");
+    }
+    if (result.mesh.mesh.vertex_id_source == VertexIdSource::none)
+      return fail(error, "cluster file has vertex ids but does not say where they came from");
+    copy_section(bytes, *ids, result.mesh.mesh.vertex_ids);
+  }
+
   // The source path; a file from before the section existed leaves it empty, and so does a
   // build that had no file behind its bytes.
   if (const ClusterFileSection* source = found[static_cast<u32>(ClusterSection::SourcePath)];
@@ -743,6 +780,10 @@ bool read_cluster_file_memory(std::span<const u8> bytes, ClusterFileData& out, s
     return fail(error, "cluster file has " + std::to_string(mesh.skin.size()) +
                            " skin bindings for " + std::to_string(mesh.vertices.size()) +
                            " vertices");
+  }
+  if (!mesh.vertex_ids.empty() && mesh.vertex_ids.size() != mesh.vertices.size()) {
+    return fail(error, "cluster file has " + std::to_string(mesh.vertex_ids.size()) +
+                           " vertex ids for " + std::to_string(mesh.vertices.size()) + " vertices");
   }
   u64 level_total = 0;
   for (const u32 count : result.mesh.level_cluster_counts)
@@ -866,6 +907,8 @@ constexpr ClusterSection k_resident_kinds[] = {
     ClusterSection::MorphIndices,
     ClusterSection::MorphDeltas,
     ClusterSection::MorphScalars,
+    // One word: which id space the paged `VertexIds` stream is in.
+    ClusterSection::VertexIdScalars,
 };
 
 // The per-page streams, which a resident read leaves on disk. They are still *listed*, with zero
@@ -876,6 +919,7 @@ constexpr ClusterSection k_resident_kinds[] = {
 constexpr ClusterSection k_paged_kinds[] = {
     ClusterSection::Vertices,     ClusterSection::Attributes, ClusterSection::Triangles,
     ClusterSection::VertexSource, ClusterSection::Quantized,  ClusterSection::Skin,
+    ClusterSection::VertexIds,
 };
 
 bool read_exact(const io::FileHandle& file, u64 offset, void* dst, u64 bytes, const char* what,
@@ -1055,11 +1099,11 @@ u64 cluster_cache_key(u64 source_hash, const ClusterLodOptions& options, bool we
   u64 key = hash_combine(source_hash, k_cluster_cache_version);
   key = hash_combine(key, options.max_triangles);
   key = hash_combine(key, options.max_vertices);
-  const u64 flags = (options.ray_tracing ? 1ull : 0ull) | (options.normal_cones ? 2ull : 0ull) |
-                    (weld ? 4ull : 0ull) | (static_cast<u64>(options.uv_seams) << 3) |
-                    (static_cast<u64>(options.normal_seams) << 5) |
-                    (static_cast<u64>(options.skin_seams) << 7) |
-                    (static_cast<u64>(options.morph_seams) << 9);
+  const u64 flags =
+      (options.ray_tracing ? 1ull : 0ull) | (options.normal_cones ? 2ull : 0ull) |
+      (weld ? 4ull : 0ull) | (static_cast<u64>(options.uv_seams) << 3) |
+      (static_cast<u64>(options.normal_seams) << 5) | (static_cast<u64>(options.skin_seams) << 7) |
+      (static_cast<u64>(options.morph_seams) << 9) | (static_cast<u64>(options.id_seams) << 11);
   key = hash_combine(key, flags);
   // The attribute weights change what the simplifier keeps, so two weights are two meshes. The
   // bits of the float are the identity, not its value, so a weight that reads the same reads the

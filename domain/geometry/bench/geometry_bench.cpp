@@ -20,6 +20,9 @@
 //                                  fixture's level-3 surface: 914 is one side of the fixture's
 //                                  footprint, 8,192 a whole region at the render density.
 //   geometry.limit.build.fixture   the content-build cost of the fixture's operator, for scale.
+//   geometry.vertex_ids.position_weld.<n>  deriving canonical vertex ids for n imported vertices
+//                                  (geometry.md, "Canonical vertex identity"): a content-build
+//                                  cost every glTF import without authored ids pays once.
 //
 // Numbers and the machine's state they were taken on: docs/subsystems/geometry.md.
 #include "../tests/limit_fixtures.h"
@@ -27,10 +30,12 @@
 #include <core/base/types.h>
 #include <core/containers/vector.h>
 #include <core/math/math.h>
+#include <domain/geometry/cluster.h>
 #include <domain/geometry/limit_surface.h>
 #include <domain/geometry/surface_binding.h>
 #include <foundation/bench/bench.h>
 
+#include <cmath>
 #include <string>
 
 using namespace engine;
@@ -196,6 +201,29 @@ ENGINE_BENCH_ARGS(geometry_binding_apply, "geometry.binding.apply", 914, 8192) {
     apply_binding(b.bindings, b.base, op.surface.faces, op.reference, surface_state,
                   std::span<Vec3>(b.out.data(), b.out.size()));
     bench::keep(b.out[b.out.size() - 1]);
+  }
+  state.set_items(count);
+}
+
+// The canonical ids a mesh without authored ones is named by (`position_weld_ids`): a content-build
+// cost, paid once per import by both builders, measured on n vertices at n / 4 distinct positions
+// in a scrambled order — every point written four times, the way an exporter that splits at every
+// face writes a quad mesh — so the sort does real work and the runs are real runs.
+ENGINE_BENCH_ARGS(geometry_vertex_ids_position_weld, "geometry.vertex_ids.position_weld", 65536,
+                  1048576) {
+  const u32 count = static_cast<u32>(state.arg());
+  const u32 side = static_cast<u32>(std::sqrt(static_cast<f64>(count / 4)));
+  Vector<Vec3> positions(count);
+  u64 lcg = 0x9e3779b97f4a7c15ull;
+  for (u32 i = 0; i < count; ++i) {
+    lcg = lcg * 6364136223846793005ull + 1442695040888963407ull;
+    const u32 point = static_cast<u32>(lcg >> 33) % (side * side);
+    positions[i] =
+        Vec3{static_cast<f32>(point % side) * 0.01f, 0.0f, static_cast<f32>(point / side) * 0.01f};
+  }
+  Vector<u32> ids;
+  while (state.keep_running()) {
+    bench::keep(position_weld_ids(positions, ids));
   }
   state.set_items(count);
 }

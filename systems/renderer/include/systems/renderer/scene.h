@@ -20,6 +20,7 @@
 #include <domain/geometry/cluster_pages.h>
 #include <domain/gfx/cluster_cull.h>
 
+#include <span>
 #include <string>
 
 namespace engine::renderer {
@@ -207,5 +208,18 @@ void update_scene_bounds(SceneData& out);
 // diagonal, which matters for elongated meshes.
 void mesh_bounds(const geometry::ClusterLodMesh& lod, u32 first, u32 count, Vec3& center,
                  f32& radius);
+
+// The canonical vertex ids of mesh `mesh`'s cluster vertices, read-only: entry i is the id of
+// `scene.lod.mesh.vertices[scene.parts[mesh].first_vertex + i]`, and
+// `scene.parts[mesh].vertex_id_source` says what id space it is in. This is what a binding step
+// looks a vertex up by — a file written beside the mesh names ids, never cluster indices, which the
+// content build renumbers ([geometry](geometry.md), "Canonical vertex identity").
+//
+// **Host side only**: nothing uploads the ids, and they are not in a page's bytes, because no pass
+// reads them yet. They are kept when a streamed scene releases its paged host streams, so the
+// lookup does not depend on how the scene was loaded. Empty for a mesh that has no ids — the
+// procedural scenes, a container built before cluster cache version 12 — and for an index past
+// the scene's meshes.
+std::span<const u32> mesh_vertex_ids(const SceneData& scene, u32 mesh) noexcept;
 
 }  // namespace engine::renderer
