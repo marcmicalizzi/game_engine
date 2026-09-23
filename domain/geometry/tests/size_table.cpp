@@ -5,6 +5,7 @@
 #include <domain/geometry/cluster_file.h>
 #include <domain/geometry/cluster_lod.h>
 #include <domain/geometry/cluster_pages.h>
+#include <domain/geometry/surface_binding.h>
 
 using namespace engine;
 
@@ -52,3 +53,9 @@ ENGINE_EXPECT_SIZE(64, 4, geometry::ClusterFileMaterial);
 // The image record is the format too: three words of range and identity plus the one-based media
 // type, with no padding to leave a later field room in.
 ENGINE_EXPECT_SIZE(24, 8, geometry::ClusterFileImage);
+
+// The surface binding record (surface_binding.h; plan 07 §7.11's proposed packing): a u16 refined
+// triangle, two u16 barycentrics, a half-float normal offset and a u16 blend weight, five u16 and
+// no padding. It is stored once per bound render vertex and read once per frame by the transfer,
+// so its ten bytes are the per-vertex cost of a region; the plan budgets 10, 12 with a region id.
+ENGINE_EXPECT_SIZE(10, 2, geometry::SurfaceBinding);

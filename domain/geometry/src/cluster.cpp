@@ -572,8 +572,6 @@ bool validate_clusters(const ClusterMesh& mesh, std::span<const u32> source_indi
 
 namespace engine::geometry {
 
-namespace {
-
 u16 f32_to_f16(f32 value) noexcept {
   u32 bits = 0;
   std::memcpy(&bits, &value, 4);
@@ -608,14 +606,17 @@ f32 f16_to_f32(u16 half) noexcept {
     if (mantissa == 0) {
       bits = sign;
     } else {
-      // Denormal: renormalize.
+      // Denormal: renormalize. After `e + 1` shifts the value is 1.m * 2^(-14 - (e + 1)), so the
+      // biased exponent is 127 - 15 - e. (It was 113 - e until 2026-09-23, which decoded every
+      // half denormal at twice its value; the GPU's f16tof32 never did, and the surface binding's
+      // decoder test, which walks every half, is what found it.)
       u32 m = mantissa;
       i32 e = -1;
       do {
         m <<= 1;
         ++e;
       } while ((m & 0x400u) == 0);
-      bits = sign | (static_cast<u32>(113 - e) << 23) | ((m & 0x3ffu) << 13);
+      bits = sign | (static_cast<u32>(112 - e) << 23) | ((m & 0x3ffu) << 13);
     }
   } else if (exponent == 31) {
     bits = sign | 0x7f800000u | (mantissa << 13);
@@ -626,6 +627,8 @@ f32 f16_to_f32(u16 half) noexcept {
   std::memcpy(&value, &bits, 4);
   return value;
 }
+
+namespace {
 
 f32 sign_or_one(f32 v) noexcept { return v < 0.0f ? -1.0f : 1.0f; }
 

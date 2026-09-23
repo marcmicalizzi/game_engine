@@ -181,6 +181,10 @@ u32 encode_normal_oct(Vec3 normal) noexcept;
 Vec3 decode_normal_oct(u32 packed) noexcept;
 u32 encode_half2(Vec2 v) noexcept;
 Vec2 decode_half2(u32 packed) noexcept;
+// One IEEE half float, round to nearest even: what `encode_half2` packs two of, and the surface
+// binding's normal offset (surface_binding.h) stores one of.
+u16 f32_to_f16(f32 value) noexcept;
+f32 f16_to_f32(u16 half) noexcept;
 // Area-weighted smooth normals; isolated vertices get +Y.
 void compute_vertex_normals(std::span<const Vec3> positions, std::span<const u32> indices,
                             Vector<Vec3>& out);
