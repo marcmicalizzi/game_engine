@@ -109,3 +109,78 @@ It does **not** decide whether generated props are usable in the game — every 
 - **Semantic fitness was judged by eye**, once, from thumbnails and captures.
 
 The generated images and meshes, their sidecars, the harness's reports, captures and heat maps are the owner's local data under `D:\workspace\game_engine_local\` (`generated\` and `e10\meshy-2026-09-22\`) and are not committed.
+
+## TRELLIS.2 post-processing sweep
+
+- **Question:** the owner's local TRELLIS.2 workflow ([content generation](../content-generation.md#text-to-mesh-in-one-workflow-comfyui-3d-trellis2-and-pixal3d)) makes a textured mesh from a prompt in minutes on the RTX 5090, at no marginal cost. Its post-process — remesh, decimate, unwrap, bake — decides whether the engine can take the result, and each setting has a price. Which settings, for a prop? The owner's two samples had suggested one answer: the palm (`pec` segmenter, 700,000 faces) came back with 27,429 atlas islands and 87.1% of its vertices on a seam, the bare tree (`adaptive`, 500,000) with 1,818 islands and 30.4% — but they were two different meshes, one of them foliage.
+- **Date:** 2026-09-23. **Machine:** as above (i9-10980XE, 64 GB, RTX 5090, Windows 11). **Generator:** `tools/generate.ps1 3d -Backend comfyui-3d` (the sidecars name the tree it ran from, `7430bd8` plus the uncommitted backend that is now `tools/generate.ps1`), ComfyUI 0.37.1, PyTorch 2.10.0+cu130, the workflow at SHA-256 `7f37addd…`, `trellis_2_int8_convrot.safetensors`. **Measured with:** `tools/e10-harness.ps1` over `msvc-release` built from `80d2b73` (build stamp checked, none stale), fit framing (`--orbit 20.8`).
+- **Machine state:** shared and busy; recorded per run in each sidecar (`machine_state`, sampled every 15 s) and quoted in the table. Whole-machine CPU ranged 6–100% during the runs, and ComfyUI itself kept 1.6 cores busy through a `pec` run and 7–15 through an `adaptive` one. The GPU lock was held for the whole batch on its behalf, so no other GPU job ran, but the owner's and other agents' CPU work did: the unwrap seconds of `adaptive` (CPU-bound, many-threaded) are upper bounds; the `pec` and GPU stages barely moved between runs.
+
+### Setup
+
+One subject, the E10 list's **wooden crate** (a hard-surface prop — planks, battens, iron corner brackets — whose Meshy version failed the first pass on an island and on FLIP), through the `image-to-3d/1` template, at the image seed the tool derives for that name (53052348199092), so that every run starts from the **same image**. The four TRELLIS samplers keep their fixed seeds, and the eight runs went through ComfyUI in one GPU-lock batch with the node cache warm: runs 2–8 reused the image and the reconstruction outright (44–50 nodes cached, recorded in each sidecar), so the geometry entering the post-process was identical **by construction**, not only by seed. From the backend's defaults (`adaptive`, 3 smoothing iterations, 100,000 faces, weld 0.0002, texture 2048), one factor at a time, with `pec` repeated where the segmenter might interact with the factor:
+
+```powershell
+pwsh tools/gpu-lock.ps1 run -Purpose "E10 TRELLIS.2 sweep" -Exec "pwsh -File sweep.ps1"   # eight `generate.ps1 3d -Backend comfyui-3d` runs, -NoFree on all but the last
+pwsh tools/e10-harness.ps1 -Folder D:\workspace\game_engine_local\generated\trellis\2026-09-23 -Only <the eight> -Out D:\workspace\game_engine_local\e10\trellis-sweep-2026-09-23
+```
+
+### Results
+
+| run | segmenter | smooth | faces | weld | triangles | islands | seam % | smallest island (texels) | median island (texels) | atlas used % | pairs coarse / finest | FLIP (object) | GLB MB | unwrap s | run s | CPU % min–max (mean); ComfyUI cores |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| base | adaptive | 3 | 100k | 0.0002 | 99,801 | 1,620 | 39.0 | 0 (1 tri) | 26 | 85.0 | 466 / 848 | 0.0168 (0.069) | 14.6 | 115.9 | 407 † | 13–100 (46); 7.0 |
+| segmenter | **pec** | 3 | 100k | 0.0002 | 99,801 | **762** | 45.0 | 0.07 (1 tri) | **541** | 78.4 | 486 / 859 | 0.0139 (0.051) | 14.4 | **2.5** | 78 | 6–26 (20); 1.6 |
+| weld | adaptive | 3 | 100k | **0.001** | 99,603 | 1,634 | 39.2 | 0 (1 tri) | 26 | 84.9 | 424 / 883 | 0.0145 (0.061) | 14.6 | 111.1 | 191 | 12–72 (45); 10.9 |
+| weld | pec | 3 | 100k | **0.001** | 99,603 | 775 | 45.2 | 0.26 (2 tri) | 515 | 75.1 | 498 / 897 | 0.0113 (0.047) | 14.0 | 2.5 | 74 | 12–45 (26); 1.6 |
+| faces | adaptive | 3 | **700k** | 0.0002 | 699,330 | 3,162 | 17.0 | 0 (1 tri) | 10 | 85.0 | 926 / 2,241 | 0.0172 (0.069) | 36.2 | **522.0** | 615 | 7–100 (56); 15.1 |
+| faces | pec | 3 | **700k** | 0.0002 | 699,330 | 1,625 | 25.7 | 0 (1 tri) | 166 | 68.6 | 1,231 / 2,649 | 0.0141 (0.055) | 36.2 | 9.3 | 81 | 11–41 (20); 1.6 |
+| smoothing | adaptive | **0** | 100k | 0.0002 | 98,789 | 1,636 | 39.0 | 0 (1 tri) | 20 | 82.7 | 423 / 820 | 0.0124 (0.064) | 14.6 | 96.3 | 202 | 16–73 (41); 10.2 |
+| smoothing | adaptive | **20** (the workflow's) | 100k | 0.0002 | 99,794 | 1,678 | 39.3 | 0 (1 tri) | 22 | 83.8 | 476 / 889 | 0.0134 (0.058) | 14.4 | 103.8 | 211 | 11–70 (40); 10.3 |
+
+† The one run with nothing cached: image 9.6 s, the four reconstruction samplers 148 s, remesh 19 s, decimate 4 s, unwrap 116 s, the colour, normal and occlusion bakes 74 s (the occlusion bake alone 52 s). Every other run skipped the first two, and those with the same smoothing skipped the remesh. Coverage was 19–27% in every run, so the object-only FLIP is usable here.
+
+For reference, measured the same way (fit framing, the same binaries):
+
+| mesh | triangles | islands | seam % | median island (texels) | atlas used % | pairs coarse / finest | FLIP (object) | GLB MB |
+|---|---|---|---|---|---|---|---|---|
+| Meshy's wooden crate (E10 first pass) | 413,152 | 1,509 | 17.9 | 2,877 | 61.4 | 315 / 1,195 | 0.0135 (0.055) | 19.5 |
+| the owner's palm (TRELLIS.2, `pec`, 700k, 4096 texture) | 683,939 | 27,429 | 87.1 | 112 | 48.6 | 6,429 / 9,741 | 0.0345 (0.118) | 71.8 |
+| the owner's bare tree (TRELLIS.2, `adaptive`, 500k) | 499,892 | 1,818 | 30.4 | 98 | 47.6 | 609 / 3,569 | 0.0073 (0.125, unreliable at 6% coverage) | 44.5 |
+
+At the first pass's `--orbit 16` the palm measured FLIP 0.0386 and the tree 0.0109; the new framing shows each whole, so each is smaller in the frame and scores lower ([content generation](../content-generation.md#the-e10-harness-toolse10-harnessps1), "The framing").
+
+### What it found
+
+1. **On the same geometry, `adaptive` makes more and smaller islands than `pec`, not fewer.** 1,620 islands with a median of 26 texels against 762 with a median of 541 at 100,000 faces; 3,162 (median 10) against 1,625 (median 166) at 700,000. `adaptive` packs the atlas tighter (85% used against 68–78%) and puts fewer vertices on a seam (39% against 45%; 17% against 26%), but a median island of 26 texels in a 4096 atlas is about 13 texels square in the 2048 texture this prop carries, which no mip below the first can sample as itself. The owner's two samples pointed the other way because they were different meshes: the palm's 27,429 islands are its fronds, not its segmenter.
+2. **`adaptive` costs 45–56× the unwrap time**: 96–116 s at 100,000 faces and 522 s at 700,000, on 7–15 CPU cores, against 2.5 s and 9.3 s for `pec`. A cached `pec` run was 74–81 s end to end whatever the face count; an `adaptive` one 191–211 s at 100k and 615 s at 700k. On this crate the unwrap grew 4.5× for 7× the faces — superlinear, but nothing like the palm crown, whose many separate pieces are what made `adaptive` run for hours.
+3. **No run passes the island check, and every run passes FLIP.** All eight have a sub-texel island of one or two triangles (0 to 0.26 texels), and with medians below 1,024 texels the harness calls every atlas fragmented: whichever segmenter, the atlas needs the repair E10's first pass named (fold the degenerate triangles, repack) before this pipeline's props pass unattended. The coarse cut stays within FLIP 0.0113–0.0172 of the finest in all eight, at 100,000 faces and at 700,000 alike.
+4. **100,000 faces costs nothing in the picture and saves 60% of the file**: FLIP 0.0113–0.0168 against 0.0141–0.0172 at 700,000, a 14.0–14.6 MB GLB against 36.2 MB, a 16 MB container against 48 MB. The coarse cut keeps 48–57% of the finest cut's pairs at 100k and 41–46% at 700k: a denser mesh simplifies further, but it has further to go.
+5. **Smoothing and weld distance are in the noise** on this crate: 0, 3 or 20 Taubin iterations and a weld of 0.0002 or 0.001 move the islands by under 4%, the seams by under half a point and FLIP by ±0.002 with no direction. The tooltip's warning that many iterations round off sharp edges did not show in any number here; the crate's edges are soft to begin with.
+6. **Against Meshy's crate**, TRELLIS.2 with `pec` at 100,000 faces has a quarter of the triangles, the same picture error (0.0139 against 0.0135) and a smaller file (14.4 MB against 19.5), but a worse atlas: half the islands, a fifth their median size, and 45% of vertices on a seam against 18%.
+
+### A second prop, for the segmenter: the sandstone boulder
+
+The crate overturned the reason the segmenter default was `adaptive`, so one smooth organic prop settled it: the E10 list's sandstone boulder, at its own derived seed (225752572791587), `pec` then `adaptive` with the second run's image and reconstruction cached, everything else at the defaults.
+
+| boulder | islands | seam % | smallest island (texels) | median island (texels) | atlas used % | pairs coarse / finest | FLIP (object) | GLB MB | unwrap s | run s | CPU % min–max (mean); ComfyUI cores | E10 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| TRELLIS.2, **`pec`**, 100k | **237** | 38.3 | **35.4** (11 tri) | **10,618** | 51.2 | 393 / 774 | 0.0129 (0.048) | 14.5 | **1.4** | 171 (nothing cached) | 16–82 (32); 4.0 | **pass** |
+| TRELLIS.2, `adaptive`, 100k | 354 | 25.8 | 2.8 (1 tri) | 312 | 48.1 | 353 / 716 | 0.0135 (0.048) | 13.1 | 42.7 | 100 | 10–62 (28); 8.5 | **pass** |
+| Meshy (E10 first pass), for reference | 220 | 9.5 | 0 (1 tri) | 38,137 | 70.3 | 378 / 2,658 | 0.0216 (0.074) | 21.4 | — | — | — | fail: island, FLIP |
+
+The same pattern as the crate: `adaptive` makes half as many islands again and a thirtieth the median size, in 30× the time, with fewer seam vertices its one gain. **Both boulders pass E10's checks** — the first TRELLIS.2 meshes to — at 100,000 triangles, where Meshy's boulder, at 574,000, fails the island check and, framed whole, FLIP as well (0.0216; 0.0387 at the first pass's closer framing).
+
+### What it decides
+
+- **`pec` is the backend's default segmenter.** Two props, a hard-surface one and a smooth organic one, with the geometry held identical: `pec` made fewer and larger islands on both, in 1.4–9.3 s against 43–522 s. `adaptive` stays available (and refused on foliage); its only measured advantage is fewer seam vertices, which the engine pays for in vertex duplication and not in picture error.
+- **100,000 faces, texture 2048 and smoothing 3 stay** — the last on the node's own guidance, since the numbers do not choose between 0, 3 and 20.
+- **The island check fails some TRELLIS.2 props for the reasons it failed most of Meshy's**: a degenerate UV triangle or two (the crate, under both segmenters), plus genuinely small islands. The UV-degenerate rule and the atlas repair E10's first pass asked for apply unchanged; a boulder shows the local generator can already pass without them.
+
+### Caveats
+
+- **Two props, one image and one set of reconstruction seeds each.** The segmenter's effect on the island count is large and in the same direction on both, which is enough to change a default, not to promise it for every shape; foliage is excluded by rule, and a thin prop (a pole, a signpost) is the case not measured.
+- **Machine state**: the unwrap and run seconds of `adaptive` are upper bounds from a shared machine; the picture metrics and the counts do not depend on load.
+- **The sidecars of this batch record `bake_seconds` as null**, from a bug fixed after it (a role id PowerShell handed back wrapped, which the timing table then failed to find); every bake node's own seconds are in `timings.nodes`, which is where the numbers above come from.
+
+The meshes, their sidecars and `runs.jsonl` are under `D:\workspace\game_engine_local\generated\trellis\2026-09-23\`, and the harness's reports, captures and heat maps under `e10\trellis-sweep-2026-09-23\` and `e10\trellis-boulder-2026-09-23\`; none is committed.

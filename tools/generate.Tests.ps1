@@ -157,6 +157,141 @@ try {
   $r6 = Invoke-Gen image -Workflow $wfFile -ObjectInfo $infoFile -Subjects $subjectsFile -LocalRoot (Join-Path $repo 'generated-here') -DryRun
   Test-That 'a local root inside the repository is refused' { $r6.Code -ne 0 -and $r6.Err -match 'inside the repository' }
 
+  # ---- comfyui-3d: the TRELLIS.2 workflow's shapes, planned but not run --------------------------------
+  #
+  # A miniature of the owner's text-to-3D workflow with each thing that broke the first converter or
+  # that the backend has to find without ids: a V3 dynamic combo whose option brings its own widgets
+  # (RemeshMesh sign_mode), a LOAD_3D viewport widget stored as "" (Save3DAdvanced), a COLOR swatch
+  # (ImageCropToMask), a texture size wired from a titled PrimitiveInt into the unwrap and the bake,
+  # a model boolean switching between two UNET loaders, and an image sampler beside a
+  # reconstruction sampler with a fixed seed of its own.
+  Write-Host 'comfyui-3d'
+  $bool = { param($d) @('BOOLEAN', @{ default = $d }) }
+  $info3d = [ordered]@{}
+  foreach ($k in @('CheckpointLoaderSimple', 'CLIPTextEncode', 'EmptyLatentImage', 'KSampler', 'VAEDecode')) { $info3d[$k] = $objectInfo[$k] }
+  $info3d.ImageCropToMask = @{ input = @{ required = [ordered]@{ images = @('IMAGE'); masks = @('MASK'); width = @('INT', @{ default = 1024 }); height = @('INT', @{ default = 1024 }); pad_factor = @('FLOAT', @{ default = 1.0 }); grow_mask = @('INT', @{ default = 0 }); background = @('COLOR', @{ default = '#000000'; socketless = $true }) } }
+    input_order = @{ required = @('images', 'masks', 'width', 'height', 'pad_factor', 'grow_mask', 'background') } }
+  $info3d.PreviewImage = @{ input = @{ required = [ordered]@{ images = @('IMAGE') } }; input_order = @{ required = @('images') } }
+  $info3d.Trellis2Conditioning = @{ input = @{ required = [ordered]@{ clip_vision_model = @('CLIP_VISION'); image = @('IMAGE') } }; input_order = @{ required = @('clip_vision_model', 'image') } }
+  $info3d.UNETLoader = @{ input = @{ required = [ordered]@{ unet_name = @(, @('trellis_2_int8.safetensors', 'pixal3d_int8.safetensors'), @{}); weight_dtype = @(, @('default'), @{}) } }; input_order = @{ required = @('unet_name', 'weight_dtype') } }
+  $info3d.PrimitiveBoolean = @{ input = @{ required = [ordered]@{ value = @('BOOLEAN', @{}) } }; input_order = @{ required = @('value') } }
+  $info3d.PrimitiveInt = @{ input = @{ required = [ordered]@{ value = @('INT', @{ control_after_generate = 'fixed' }) } }; input_order = @{ required = @('value') } }
+  $info3d.ComfySwitchNode = @{ input = @{ required = [ordered]@{ switch = @('BOOLEAN', @{}) }; optional = [ordered]@{ on_false = @('COMFY_MATCHTYPE_V3', @{ lazy = $true }); on_true = @('COMFY_MATCHTYPE_V3', @{ lazy = $true }) } }
+    input_order = @{ required = @('switch'); optional = @('on_false', 'on_true') } }
+  $info3d.RemeshMesh = @{ input = @{ required = [ordered]@{ mesh = @('MESH'); resolution = @('INT', @{ default = 512 })
+        sign_mode = @('COMFY_DYNAMICCOMBO_V3', @{ options = @(
+              @{ key = 'udf'; inputs = @{ required = [ordered]@{ qef = (& $bool $false); drop_inverted_components = (& $bool $false); drop_enclosed_components = (& $bool $false) } } },
+              @{ key = 'sdf'; inputs = @{ required = [ordered]@{ qef = (& $bool $true); manifold = (& $bool $false) } } }) })
+        band = @('FLOAT', @{ default = 1.0 }); project_back = @('FLOAT', @{ default = 0.0 }); fix_poles = (& $bool $false); smooth_iters = @('INT', @{ default = 0 })
+        drop_small_components = @('FLOAT', @{ default = 0.01 }); precluster_max_verts = @('INT', @{ default = 20000000 }) } }
+    input_order = @{ required = @('mesh', 'resolution', 'sign_mode', 'band', 'project_back', 'fix_poles', 'smooth_iters', 'drop_small_components', 'precluster_max_verts'); hidden = @('unique_id') } }
+  $info3d.DecimateMesh = @{ input = @{ required = [ordered]@{ mesh = @('MESH'); target_face_count = @('INT', @{ default = 200000 })
+        placement_mode = @('COMFY_DYNAMICCOMBO_V3', @{ options = @(@{ key = 'midpoint'; inputs = @{ required = [ordered]@{} } }, @{ key = 'qem'; inputs = @{ required = [ordered]@{ line_quadric_weight = @('FLOAT', @{ default = 0.0 }) } } }) }) } }
+    input_order = @{ required = @('mesh', 'target_face_count', 'placement_mode') } }
+  $info3d.MeshSmoothNormals = @{ input = @{ required = [ordered]@{ mesh = @('MESH'); crease_angle = @('FLOAT', @{ default = 180.0 }) } }; input_order = @{ required = @('mesh', 'crease_angle') } }
+  $info3d.UnwrapMesh = @{ input = @{ required = [ordered]@{ mesh = @('MESH'); segmenter = @('COMBO', @{ default = 'pec'; options = @('pec', 'adaptive') }); resolution = @('INT', @{ default = 1024 }); padding = @('INT', @{ default = 1 }); weld_distance = @('FLOAT', @{ default = 0.0 }) } }
+    input_order = @{ required = @('mesh', 'segmenter', 'resolution', 'padding', 'weld_distance') } }
+  $info3d.BakeTextureFromVoxel = @{ input = @{ required = [ordered]@{ mesh = @('MESH'); voxel_colors = @('VOXEL'); texture_size = @('INT', @{ default = 2048 }) } }; input_order = @{ required = @('mesh', 'voxel_colors', 'texture_size') } }
+  $info3d.MeshToFile3D = @{ input = @{ required = [ordered]@{ mesh = @('MESH') } }; input_order = @{ required = @('mesh') } }
+  $info3d.Save3DAdvanced = @{ input = @{ required = [ordered]@{ model_3d = @('FILE_3D'); filename_prefix = @('STRING', @{ default = '3d/ComfyUI' }); viewport_state = @('LOAD_3D', @{}); width = @('INT', @{ default = 1024 }); height = @('INT', @{ default = 1024 }) }
+      optional = [ordered]@{ model_3d_info = @('LOAD3D_MODEL_INFO'); camera_info = @('LOAD3D_CAMERA') } }
+    input_order = @{ required = @('model_3d', 'filename_prefix', 'viewport_state', 'width', 'height'); optional = @('model_3d_info', 'camera_info') } }
+  $info3d.RenderUVAtlas = @{ input = @{ required = [ordered]@{ mesh = @('MESH'); resolution = @('INT', @{ default = 1024 }) } }; input_order = @{ required = @('mesh', 'resolution') } }
+  $info3dFile = Join-Path $root 'object_info_3d.json'
+  $info3d | ConvertTo-Json -Depth 30 | Set-Content -LiteralPath $info3dFile -Encoding utf8
+
+  $sock = { param($name, $type, $link) @{ name = $name; type = $type; link = $link } }
+  $wsock = { param($name, $type, $link) @{ name = $name; type = $type; link = $link; widget = @{ name = $name } } }
+  $ui3d = [ordered]@{
+    nodes = @(
+      @{ id = 1; type = 'CheckpointLoaderSimple'; mode = 0; widgets_values = @('model-a.safetensors'); inputs = @() }
+      @{ id = 20; type = 'CLIPTextEncode'; mode = 0; widgets_values = @('a palm tree'); inputs = @((& $sock 'clip' 'CLIP' 201)) }
+      @{ id = 21; type = 'CLIPTextEncode'; mode = 0; widgets_values = @(''); inputs = @((& $sock 'clip' 'CLIP' 202)) }
+      @{ id = 22; type = 'EmptyLatentImage'; mode = 0; widgets_values = @(1024, 1024, 1); inputs = @() }
+      @{ id = 23; type = 'KSampler'; mode = 0; widgets_values = @(304167832764365, 'randomize', 8, 1, 'euler', 'simple', 1)
+        inputs = @((& $sock 'model' 'MODEL' 203), (& $sock 'positive' 'CONDITIONING' 204), (& $sock 'negative' 'CONDITIONING' 205), (& $sock 'latent_image' 'LATENT' 206)) }
+      @{ id = 24; type = 'VAEDecode'; mode = 0; inputs = @((& $sock 'samples' 'LATENT' 207), (& $sock 'vae' 'VAE' 208)) }
+      @{ id = 25; type = 'ImageCropToMask'; mode = 0; widgets_values = @(1024, 1024, 1.1, 0, '#000000'); inputs = @((& $sock 'images' 'IMAGE' 209), (& $sock 'masks' 'MASK' $null)) }
+      @{ id = 27; type = 'PreviewImage'; mode = 0; inputs = @((& $sock 'images' 'IMAGE' 212)) }
+      @{ id = 28; type = 'Trellis2Conditioning'; mode = 0; inputs = @((& $sock 'clip_vision_model' 'CLIP_VISION' $null), (& $sock 'image' 'IMAGE' 213)) }
+      @{ id = 30; type = 'UNETLoader'; mode = 0; widgets_values = @('trellis_2_int8.safetensors', 'default'); inputs = @() }
+      @{ id = 31; type = 'UNETLoader'; mode = 0; widgets_values = @('pixal3d_int8.safetensors', 'default'); inputs = @() }
+      @{ id = 32; type = 'PrimitiveBoolean'; title = 'Boolean (Switch to Trellis2)'; mode = 0; widgets_values = @($true); inputs = @() }
+      @{ id = 33; type = 'ComfySwitchNode'; mode = 0; widgets_values = @($false); inputs = @((& $sock 'on_false' '*' 214), (& $sock 'on_true' '*' 215), (& $wsock 'switch' 'BOOLEAN' 216)) }
+      @{ id = 34; type = 'KSampler'; mode = 0; widgets_values = @(42, 'fixed', 12, 7.5, 'euler', 'normal', 1)
+        inputs = @((& $sock 'model' 'MODEL' 217), (& $sock 'positive' 'CONDITIONING' 218), (& $sock 'negative' 'CONDITIONING' 219), (& $sock 'latent_image' 'LATENT' 220)) }
+      @{ id = 41; type = 'RemeshMesh'; mode = 0; widgets_values = @(768, 'udf', $false, $false, $false, 1, 0, $false, 20, 0.01, 20000000); inputs = @((& $sock 'mesh' 'MESH' $null)) }
+      @{ id = 42; type = 'DecimateMesh'; mode = 0; widgets_values = @(700000, 'midpoint'); inputs = @((& $sock 'mesh' 'MESH' 221)) }
+      @{ id = 43; type = 'MeshSmoothNormals'; mode = 0; widgets_values = @(180); inputs = @((& $sock 'mesh' 'MESH' 222)) }
+      @{ id = 44; type = 'PrimitiveInt'; title = 'Texture Resolution'; mode = 0; widgets_values = @(4096, 'fixed'); inputs = @() }
+      @{ id = 45; type = 'UnwrapMesh'; mode = 0; widgets_values = @('pec', 2048, 1, 0.0002); inputs = @((& $sock 'mesh' 'MESH' 223), (& $wsock 'resolution' 'INT' 224)) }
+      @{ id = 46; type = 'BakeTextureFromVoxel'; mode = 0; widgets_values = @(2048); inputs = @((& $sock 'mesh' 'MESH' 225), (& $sock 'voxel_colors' 'VOXEL' $null), (& $wsock 'texture_size' 'INT' 226)) }
+      @{ id = 47; type = 'MeshToFile3D'; mode = 0; inputs = @((& $sock 'mesh' 'MESH' 227)) }
+      @{ id = 48; type = 'Save3DAdvanced'; mode = 0; widgets_values = @('3d/ComfyUI', '', 1024, 1024)
+        inputs = @((& $sock 'model_3d' 'FILE_3D' 228), (& $sock 'model_3d_info' 'LOAD3D_MODEL_INFO' $null), (& $sock 'camera_info' 'LOAD3D_CAMERA' $null)) }
+      @{ id = 49; type = 'RenderUVAtlas'; mode = 0; widgets_values = @(1024); inputs = @((& $sock 'mesh' 'MESH' 229)) }
+      @{ id = 50; type = 'PreviewImage'; mode = 0; inputs = @((& $sock 'images' 'IMAGE' 230)) }
+    )
+    links = @(
+      @(201, 1, 1, 20, 0, 'CLIP'), @(202, 1, 1, 21, 0, 'CLIP'), @(203, 1, 0, 23, 0, 'MODEL'), @(204, 20, 0, 23, 1, 'CONDITIONING'), @(205, 21, 0, 23, 2, 'CONDITIONING'),
+      @(206, 22, 0, 23, 3, 'LATENT'), @(207, 23, 0, 24, 0, 'LATENT'), @(208, 1, 2, 24, 1, 'VAE'), @(209, 24, 0, 25, 0, 'IMAGE'), @(212, 25, 0, 27, 0, 'IMAGE'),
+      @(213, 27, 0, 28, 1, 'IMAGE'), @(214, 31, 0, 33, 0, 'MODEL'), @(215, 30, 0, 33, 1, 'MODEL'), @(216, 32, 0, 33, 2, 'BOOLEAN'), @(217, 33, 0, 34, 0, 'MODEL'),
+      @(218, 28, 0, 34, 1, 'CONDITIONING'), @(219, 28, 1, 34, 2, 'CONDITIONING'), @(220, 22, 0, 34, 3, 'LATENT'), @(221, 41, 0, 42, 0, 'MESH'), @(222, 42, 0, 43, 0, 'MESH'),
+      @(223, 43, 0, 45, 0, 'MESH'), @(224, 44, 0, 45, 2, 'INT'), @(225, 45, 0, 46, 0, 'MESH'), @(226, 44, 0, 46, 2, 'INT'), @(227, 45, 0, 47, 0, 'MESH'),
+      @(228, 47, 0, 48, 0, 'FILE_3D'), @(229, 45, 0, 49, 0, 'MESH'), @(230, 49, 0, 50, 0, 'IMAGE')
+    )
+  }
+  $wf3d = Join-Path $root 'text-to-3d.json'
+  $ui3d | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $wf3d -Encoding utf8
+
+  $r = Invoke-Gen convert -Workflow $wf3d -ObjectInfo $info3dFile
+  $api3 = ($r.Out -join "`n") | ConvertFrom-Json
+  Test-That 'a dynamic combo''s option widgets are named <combo>.<input>, and the widgets after them stay aligned' {
+    $m = $api3.'41'.inputs
+    $m.sign_mode -eq 'udf' -and $m.'sign_mode.qef' -eq $false -and $m.'sign_mode.drop_enclosed_components' -eq $false -and $m.band -eq 1 -and $m.fix_poles -eq $false -and $m.smooth_iters -eq 20 -and $m.precluster_max_verts -eq 20000000 }
+  Test-That 'an option with no widgets of its own takes no slot' { $api3.'42'.inputs.target_face_count -eq 700000 -and $api3.'42'.inputs.placement_mode -eq 'midpoint' }
+  Test-That 'a LOAD_3D viewport stored as "" is a widget, so width and height after it are read right' {
+    $api3.'48'.inputs.filename_prefix -eq '3d/ComfyUI' -and $api3.'48'.inputs.viewport_state -eq '' -and $api3.'48'.inputs.width -eq 1024 -and $api3.'48'.inputs.height -eq 1024 -and -not $api3.'48'.inputs.PSObject.Properties['model_3d_info'] }
+  Test-That 'a COLOR swatch is a widget too' { $api3.'25'.inputs.pad_factor -eq 1.1 -and $api3.'25'.inputs.background -eq '#000000' }
+  Test-That 'a widget linked from a primitive keeps its link and skips its placeholder' { $api3.'45'.inputs.resolution[0] -eq '44' -and $api3.'45'.inputs.padding -eq 1 -and $api3.'45'.inputs.weld_distance -eq 0.0002 }
+
+  $r = Invoke-Gen 3d -Backend comfyui-3d -Workflow $wf3d -ObjectInfo $info3dFile -Subject 'a weathered wooden crate' -Name crate -LocalRoot $local -Date 2026-01-02 -DryRun
+  $p3 = $r.Json[0]
+  $ov = @($p3.overrides)
+  Test-That 'comfyui-3d plans one run, into generated/trellis' { $r.Code -eq 0 -and $p3.status -eq 'dry-run:new' -and $p3.service -eq 'trellis' }
+  Test-That 'every role is found by what it is wired to, not by id' {
+    $p3.roles.image_sampler -eq '23' -and $p3.roles.positive -eq '20' -and $p3.roles.negative -eq '21' -and $p3.roles.latent -eq '22' -and $p3.roles.remesh -eq '41' -and $p3.roles.decimate -eq '42' -and
+    $p3.roles.unwrap -eq '45' -and $p3.roles.save -eq '48' -and $p3.roles.texture_resolution -eq '44' -and $p3.roles.model_switch -eq '32' -and $p3.roles.input_preview -eq '27' -and $p3.roles.uv_preview -eq '50' -and
+    $p3.roles.bake_texture -eq '46' -and $null -eq $p3.roles.bake_normal -and $p3.settings.bake_texture.texture_size -eq '<- node 44' }
+  Test-That 'the seed goes to the image sampler only; the reconstruction sampler keeps its own' {
+    (Get-Ov '23' 'seed').value -eq $p3.seed -and -not (Get-Ov '34' 'seed') -and $p3.settings.reconstruction_samplers.'34'.seed -eq 42 }
+  Test-That 'the prop defaults: 100,000 faces, texture 2048 on the primitive, pec, smoothing 3' {
+    (Get-Ov '42' 'target_face_count').value -eq 100000 -and (Get-Ov '44' 'value').value -eq 2048 -and (Get-Ov '45' 'segmenter').value -eq 'pec' -and (Get-Ov '41' 'smooth_iters').value -eq 3 -and
+    $p3.settings.unwrap_effective_resolution -eq 2048 -and (Get-Ov '41' 'smooth_iters').workflow_value -eq 20 }
+  Test-That 'the prompt, the TRELLIS model and the output prefix, each recorded against the workflow''s value' {
+    (Get-Ov '20' 'text').value.StartsWith('a weathered wooden crate. A single object') -and (Get-Ov '20' 'text').workflow_value -eq 'a palm tree' -and
+    (Get-Ov '32' 'value').value -eq $true -and $p3.settings.model.file -eq 'trellis_2_int8.safetensors' -and (Get-Ov '48' 'filename_prefix').value -eq '3d/Agentic/2026-01-02/crate' }
+  $r = Invoke-Gen 3d -Backend comfyui-3d -Workflow $wf3d -ObjectInfo $info3dFile -Subject 'a tall palm tree' -Name palm -LocalRoot $local -DryRun
+  Test-That 'foliage gets pec, and says why' { $r.Json[0].segmenter -eq 'pec' -and $r.Json[0].settings.segmenter.reason -match 'foliage' }
+  $r = Invoke-Gen 3d -Backend comfyui-3d -Workflow $wf3d -ObjectInfo $info3dFile -Subject 'a small dead tree with bare leafless branches' -Name deadtree -Segmenter adaptive -LocalRoot $local -DryRun
+  Test-That 'adaptive can still be asked for on what is not foliage ("leafless" is not "leaf")' { $r.Code -eq 0 -and $r.Json[0].segmenter -eq 'adaptive' -and -not $r.Json[0].foliage }
+  $r = Invoke-Gen 3d -Backend comfyui-3d -Workflow $wf3d -ObjectInfo $info3dFile -Subject 'a tall palm tree' -Name palm -Segmenter adaptive -LocalRoot $local -DryRun
+  Test-That 'and adaptive on foliage is refused, not run for hours' { $r.Code -ne 0 -and $r.Err -match 'never run on foliage' }
+  $r = Invoke-Gen 3d -Backend comfyui-3d -Workflow $wf3d -ObjectInfo $info3dFile -Subject 'a weathered wooden crate' -Name crate -LocalRoot $local -Date 2026-01-02 -DryRun `
+    -Model pixal3d -RemeshSignMode sdf -UnwrapResolution 1024 -FaceCount 700000 -Segmenter pec -RemeshSmoothIters 0 -WeldDistance 0.001 -Set '#34.steps=4'
+  $q = $r.Json[0]; $ov = @($q.overrides)
+  Test-That '-Model pixal3d flips the switch to the loader that names it' { (Get-Ov '32' 'value').value -eq $false -and $q.settings.model.file -eq 'pixal3d_int8.safetensors' }
+  Test-That '-RemeshSignMode sdf swaps the option''s inputs for the new option''s defaults' {
+    $m = $q.settings.remesh; $m.sign_mode -eq 'sdf' -and $m.'sign_mode.qef' -eq $true -and $m.'sign_mode.manifold' -eq $false -and -not $m.PSObject.Properties['sign_mode.drop_inverted_components'] }
+  Test-That '-UnwrapResolution overrides the wired texture size, and the link is recorded as what it replaced' {
+    $q.settings.unwrap.resolution -eq 1024 -and (Get-Ov '45' 'resolution').workflow_value[0] -eq '44' -and $q.settings.texture_resolution -eq 2048 }
+  Test-That 'face count, segmenter, smoothing and weld reach the graph' {
+    $q.settings.decimate.target_face_count -eq 700000 -and $q.settings.unwrap.segmenter -eq 'pec' -and $q.settings.remesh.smooth_iters -eq 0 -and $q.settings.unwrap.weld_distance -eq 0.001 }
+  Test-That '-Set #<id> reaches that node and no other of its class' { $q.settings.reconstruction_samplers.'34'.steps -eq 4 -and $q.settings.image.sampler.steps -eq 8 }
+  Test-That 'two different post-processes are two different specs' { $q.spec_hash -ne $p3.spec_hash }
+  $r = Invoke-Gen 3d -Backend comfyui-3d -Workflow $wf3d -ObjectInfo $info3dFile -Subject 'a weathered wooden crate' -Name crate -LocalRoot $local -Date 2026-02-03 -DryRun
+  Test-That 'and the spec does not depend on the date in the prefix' { $r.Json[0].spec_hash -eq $p3.spec_hash }
+
   # ---- provenance, through the Tripo folder --------------------------------------------------------
   Write-Host 'manifest / ingest / verify'
   $images = Join-Path $root 'images'

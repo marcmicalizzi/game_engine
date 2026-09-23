@@ -8,6 +8,7 @@
   tools/generate.ps1 image    -Workflow <ui-export.json> (-Subjects <list.json> | -Subject <text> -Name <name>)
   tools/generate.ps1 3d       -Backend meshy   -Images <png|dir>...
   tools/generate.ps1 3d       -Backend comfyui -Workflow <image-to-3d ui-export.json> -Images <png|dir>...
+  tools/generate.ps1 3d       -Backend comfyui-3d -Workflow <text-to-3d ui-export.json> (-Subjects <list.json> | -Subject <text> -Name <name>)
   tools/generate.ps1 pipeline -Pipeline 'text->image->3d' -Workflow <image workflow> -Subjects <list.json>
                               -Backend meshy|tripo-folder|comfyui [-Workflow3d <image-to-3d workflow>]
   tools/generate.ps1 manifest -Backend tripo-folder -Images <png|dir>...     # the list the owner works from by hand
@@ -20,9 +21,15 @@
 
   Common: [-Date yyyy-MM-dd] [-LocalRoot <dir>] [-Only <name,...>] [-Force] [-DryRun] [-Yes]
   Image:  [-Seed <n>] [-Width <px> -Height <px>] [-Aspect 1:1 -FinalMegapixels 2 -BaseMegapixels <f>]
-          [-Negative <text>] [-Raw] [-Set '<title|class>.<input>=<value>'...] [-NoLock] [-NoFree]
+          [-Negative <text>] [-Raw] [-Set '<title|class|#id>.<input>=<value>'...] [-NoLock] [-NoFree]
   Meshy:  [-AiModel latest] [-CreditsPerTask 30] [-MaxCredits 700] [-MinBalance 165] [-Retries 1]
           [-Concurrency 5] [-Set '<field>=<value>'...]
+  comfyui-3d (the owner's TRELLIS.2 / Pixal3D workflow; the image flags above apply to its image):
+          [-Model trellis2|pixal3d] [-FaceCount 100000] [-RemeshResolution <n>] [-RemeshSignMode udf|sdf]
+          [-RemeshSmoothIters 3] [-Segmenter pec|adaptive] [-SegmenterTimeoutMinutes 20]
+          [-UnwrapResolution <n>] [-UnwrapPadding <n>] [-WeldDistance <f>] [-TextureResolution 2048]
+          [-OutputPrefix '3d/Agentic/{date}/{name}'] [-OutputRoot <ComfyUI output dir>] [-Foliage]
+          [-TimeoutMinutes 60]
 
   WHERE THINGS GO. Every output lands at <LocalRoot>\generated\<service>\<yyyy-MM-dd>\<name>.<ext>
   beside <name>.provenance.json. LocalRoot is $env:ENGINE_LOCAL_ROOT, else
@@ -69,7 +76,7 @@ param(
   [Parameter(Position = 0, Mandatory)]
   [ValidateSet('image', '3d', 'pipeline', 'manifest', 'ingest', 'balance', 'free', 'prompt', 'convert', 'verify')]
   [string]$Command,
-  [ValidateSet('comfyui', 'meshy', 'tripo-folder')] [string]$Backend,
+  [ValidateSet('comfyui', 'meshy', 'tripo-folder', 'comfyui-3d')] [string]$Backend,
   [string]$Workflow,
   [string]$Workflow3d,
   [string]$Pipeline = 'text->image->3d',
@@ -104,6 +111,21 @@ param(
   [int]$Retries = 1,
   [int]$Concurrency = 5,
   [int]$TimeoutMinutes = 60,
+  # comfyui-3d: text -> image -> mesh in one ComfyUI workflow (TRELLIS.2 or Pixal3D)
+  [ValidateSet('trellis2', 'pixal3d')] [string]$Model = 'trellis2',
+  [int]$FaceCount = 100000,
+  [int]$RemeshResolution = 0,
+  [ValidateSet('', 'udf', 'sdf')] [string]$RemeshSignMode = '',
+  [int]$RemeshSmoothIters = 3,
+  [ValidateSet('', 'pec', 'adaptive')] [string]$Segmenter = '',
+  [double]$SegmenterTimeoutMinutes = 20,
+  [int]$UnwrapResolution = 0,
+  [int]$UnwrapPadding = -1,
+  [double]$WeldDistance = -1,
+  [int]$TextureResolution = 2048,
+  [string]$OutputPrefix = '3d/Agentic/{date}/{name}',
+  [string]$OutputRoot = $(if ($env:COMFYUI_OUTPUT) { Split-Path -Parent $env:COMFYUI_OUTPUT } else { '' }),
+  [switch]$Foliage,
   [string]$Operator = $(if ($env:ENGINE_OPERATOR) { $env:ENGINE_OPERATOR } elseif ($env:ENGINE_GPU_LOCK_OWNER) { $env:ENGINE_GPU_LOCK_OWNER } else { 'claude-engine' }),
   [switch]$Yes,
   [switch]$DryRun,
@@ -129,6 +151,10 @@ $LockTool = Join-Path $PSScriptRoot 'gpu-lock.ps1'
 # open item in docs/content-generation.md rather than guessed here.
 $Licences = @{
   'comfyui' = [ordered]@{ license = 'owner-generated-local'; license_class = 'Proprietary'; license_terms_url = $null; commercial_ok = $false; attribution_required = $true }
+  # Local image-to-3D models run in the owner's ComfyUI: the same local row until each model's
+  # licence has been reviewed (TRELLIS.2 and Pixal3D publish their own terms; neither is read here).
+  'trellis' = [ordered]@{ license = 'owner-generated-local'; license_class = 'Proprietary'; license_terms_url = $null; commercial_ok = $false; attribution_required = $true }
+  'pixal3d' = [ordered]@{ license = 'owner-generated-local'; license_class = 'Proprietary'; license_terms_url = $null; commercial_ok = $false; attribution_required = $true }
   'meshy'   = [ordered]@{ license = 'meshy-pro'; license_class = 'Proprietary'; license_terms_url = $null; commercial_ok = $false; attribution_required = $true }
   'tripo'   = [ordered]@{ license = 'tripo-studio-max'; license_class = 'Proprietary'; license_terms_url = $null; commercial_ok = $false; attribution_required = $true }
 }
@@ -358,6 +384,56 @@ function Get-NodeDef([string]$class) {
 
 $UiOnlyNodes = @('Note', 'MarkdownNote', 'Reroute', 'PrimitiveNode')
 $ControlWords = @('fixed', 'increment', 'decrement', 'randomize')
+# Input kinds the frontend draws as a widget, so each takes a slot in `widgets_values`: the
+# primitives, the combo, and the frontend's own widget types that a UI export stores as a value
+# (`COLOR` is a swatch; `LOAD_3D` is the 3D viewport's state, saved as "" until the viewport has
+# been opened; the V3 dynamic combo is below).
+$WidgetKinds = @('INT', 'FLOAT', 'STRING', 'BOOLEAN', 'COMBO', 'COLOR', 'LOAD_3D', 'LOAD_3D_ANIMATION', 'COMFY_DYNAMICCOMBO_V3')
+
+# Whether an input takes a slot in widgets_values. The export itself says so for the frontends this
+# was written against (1.52): `node.inputs` lists the *sockets*, connected or not, and a widget that
+# was converted to a socket carries a `widget` property there — so an input listed without one is a
+# socket and has no widget value, and anything else of a widget kind has one. The kind list is the
+# fallback for an input the export does not list at all. (The TRELLIS.2 workflow is what taught
+# this: Save3DAdvanced's LOAD_3D viewport state and ImageCropToMask's COLOR are widgets the old
+# primitive-only test skipped, and every widget after them shifted by one.)
+function Test-WidgetInput($spec, $listed) {
+  if ($listed -and -not $listed.PSObject.Properties['widget']) { return $false }
+  $kind = $spec[0]
+  if ($kind -is [array]) { return $true }
+  if ($kind -in $WidgetKinds) { return $true }
+  $opts = if ($spec.Count -gt 1) { $spec[1] } else { $null }
+  return [bool]($opts -and ($opts.PSObject.Properties['socketless'] -or $opts.PSObject.Properties['default']))
+}
+
+# A number the export stored as a string ("1536" for Trellis2UpsampleStage's INT resolution) is
+# sent as the number, as the frontend sends it; anything else is passed through as it was saved.
+function ConvertTo-WidgetValue($spec, $value) {
+  if ($value -is [string]) {
+    if ($spec[0] -eq 'INT' -and $value -match '^-?\d+$') { return [long]$value }
+    if ($spec[0] -eq 'FLOAT' -and $value -match '^-?\d+(\.\d+)?([eE][-+]?\d+)?$') { return [double]::Parse($value, [Globalization.CultureInfo]::InvariantCulture) }
+  }
+  return $value
+}
+
+# A V3 dynamic combo (`COMFY_DYNAMICCOMBO_V3`: RemeshMesh's sign_mode, DecimateMesh's
+# placement_mode) is one widget whose chosen option brings its own widgets with it. The export
+# stores the option's values right after the combo's, in the option's order; the API names them
+# `<combo>.<input>` — "sign_mode.qef" — which is what the UI itself sent when the owner ran the
+# workflow (read back from /history). Returns the option's inputs as [name, spec] pairs.
+function Get-DynamicComboInputs($spec, [string]$choice) {
+  $opts = if ($spec.Count -gt 1) { $spec[1] } else { $null }
+  if (-not $opts -or -not $opts.PSObject.Properties['options']) { return , @() }
+  $option = @($opts.options) | Where-Object { [string]$_.key -eq $choice } | Select-Object -First 1
+  if (-not $option -or -not $option.inputs) { return , @() }
+  $pairs = @()
+  foreach ($sec in @('required', 'optional')) {
+    if ($option.inputs.PSObject.Properties[$sec]) {
+      foreach ($p in $option.inputs.$sec.PSObject.Properties) { $pairs += , @($p.Name, @($p.Value)) }
+    }
+  }
+  return , $pairs
+}
 
 function Get-InputSpec($def, [string]$name) {
   if ($def.input.required -and $def.input.required.PSObject.Properties[$name]) { return , @($def.input.required.$name) }
@@ -436,10 +512,10 @@ function Convert-Workflow($ui) {
     foreach ($name in $order) {
       $spec = Get-InputSpec $def $name
       if ($null -eq $spec) { continue }
-      $kind = $spec[0]
-      $isWidget = ($kind -is [array]) -or ($kind -in @('INT', 'FLOAT', 'STRING', 'BOOLEAN', 'COMBO'))
+      $listed = @($n.inputs) | Where-Object { $_ -and $_.name -eq $name } | Select-Object -First 1
+      $isWidget = Test-WidgetInput $spec $listed
       $hasControl = $spec.Count -gt 1 -and $spec[1] -and $spec[1].PSObject.Properties['control_after_generate'] -and $spec[1].control_after_generate
-      $linked = @($n.inputs) | Where-Object { $_ -and $_.name -eq $name -and $null -ne $_.link } | Select-Object -First 1
+      $linked = if ($listed -and $null -ne $listed.link) { $listed } else { $null }
       if ($linked) {
         $src = Resolve-LinkSource $linked.link $nodes $links 0
         if ($src) { $inputs[$name] = $src.Value }
@@ -454,8 +530,21 @@ function Convert-Workflow($ui) {
         if ($n.widgets_values.PSObject.Properties[$name]) { $inputs[$name] = $n.widgets_values.$name }
         continue
       }
-      if ($w -lt $vals.Count) { $inputs[$name] = $vals[$w]; $w++ }
+      if ($w -lt $vals.Count) { $inputs[$name] = ConvertTo-WidgetValue $spec $vals[$w]; $w++ }
       if ($hasControl -and $w -lt $vals.Count -and $vals[$w] -in $ControlWords) { $w++ }
+      if ($spec[0] -eq 'COMFY_DYNAMICCOMBO_V3' -and $inputs.Contains($name)) {
+        foreach ($pair in (Get-DynamicComboInputs $spec ([string]$inputs[$name]))) {
+          $subName = "$name.$($pair[0])"
+          $subListed = @($n.inputs) | Where-Object { $_ -and $_.name -eq $subName } | Select-Object -First 1
+          if ($subListed -and $null -ne $subListed.link) {
+            $src = Resolve-LinkSource $subListed.link $nodes $links 0
+            if ($src) { $inputs[$subName] = $src.Value }
+            if (Test-WidgetInput $pair[1] $subListed) { $w++ }
+          } elseif ((Test-WidgetInput $pair[1] $subListed) -and $w -lt $vals.Count) {
+            $inputs[$subName] = ConvertTo-WidgetValue $pair[1] $vals[$w]; $w++
+          }
+        }
+      }
     }
     $id = [string]$n.id
     $api[$id] = [ordered]@{ class_type = [string]$n.type; inputs = $inputs }
@@ -475,6 +564,9 @@ function Test-IsLink($value) {
 }
 
 function Find-Nodes($graph, [string]$key) {
+  # `#<id>` names one node by id: only for -Set, where a person means a node a class name cannot
+  # single out (the TRELLIS.2 workflow has five KSamplers). The tool itself never looks up by id.
+  if ($key -match '^#(\d+)$') { if ($graph.Api.Contains($Matches[1])) { return @($Matches[1]) } else { return @() } }
   $byTitle = @($graph.Titles.Keys | Where-Object { $graph.Titles[$_] -eq $key })
   if ($byTitle.Count -gt 0) { return $byTitle }
   return @($graph.Api.Keys | Where-Object { $graph.Api[$_].class_type -eq $key })
@@ -568,19 +660,22 @@ function Invoke-ComfyPrompt($api) {
   throw "timed out after $TimeoutSec s waiting for ComfyUI prompt $promptId (the server may be busy with someone else's queue)"
 }
 
-# Every file the run produced, whatever the output node calls its list (`images`, `3d`, `gltf`...).
+# Every file the run produced, whatever the output node calls its list (`images`, `3d`, `gltf`...),
+# one object per file into the pipeline; callers collect with @(). (It used to return the list as
+# one object, `, @($files)`, and every caller's @() then held a single element — the whole list — so
+# a workflow with several output nodes sent all their names to /view as one and got a 400. The
+# image workflows have one output node each, which is why it went unseen until TRELLIS.2's twelve.)
 function Get-ComfyOutputs($hist) {
-  $files = @()
+  if (-not $hist -or -not $hist.outputs) { return }
   foreach ($out in $hist.outputs.PSObject.Properties) {
     foreach ($key in $out.Value.PSObject.Properties) {
       foreach ($item in @($key.Value)) {
         if ($item -and $item.PSObject -and $item.PSObject.Properties['filename']) {
-          $files += [pscustomobject]@{ node = $out.Name; key = $key.Name; filename = [string]$item.filename; subfolder = [string]$item.subfolder; type = $(if ($item.type) { [string]$item.type } else { 'output' }) }
+          [pscustomobject]@{ node = $out.Name; key = $key.Name; filename = [string]$item.filename; subfolder = [string]$item.subfolder; type = $(if ($item.type) { [string]$item.type } else { 'output' }) }
         }
       }
     }
   }
-  return , @($files)
 }
 
 function Save-ComfyFile($f, [string]$destination) {
@@ -611,6 +706,19 @@ $script:LockHeld = $false
 $script:LockRefreshed = [DateTime]::MinValue
 function Enter-GpuLock([string]$purpose) {
   if ($NoLock) { Write-Warn 'running without the GPU lock (-NoLock)'; return }
+  # Already held on this run's behalf: `tools/gpu-lock.ps1 run -Exec ...` sets
+  # ENGINE_GPU_LOCK_HOLDER to its own pid for what it starts (the bench harness's rule,
+  # docs/subsystems/bench.md "Whose lock is mine"). The lock is not re-entrant, so taking it again
+  # would wait on ourselves; the wrapper refreshes and releases it. This is how a sweep of several
+  # runs holds the GPU once, and keeps ComfyUI's node cache warm between them.
+  if ($env:ENGINE_GPU_LOCK_HOLDER) {
+    Import-Module (Join-Path $PSScriptRoot 'lib/MachineLock.psm1') -Force
+    $held = Read-MachineLock -Path (Get-MachineLockPath -Kind gpu)
+    if ($held.Present -and -not $held.Expired -and [string]$held.Pid -eq [string]$env:ENGINE_GPU_LOCK_HOLDER) {
+      Write-Note "gpu-lock: held on this run's behalf by pid $($held.Pid) ($($held.Purpose))"
+      return
+    }
+  }
   # Streamed line by line to stderr: while it waits, the lock tool says who holds the GPU and why,
   # which is what a person watching needs to see.
   & $LockTool wait -Purpose $purpose -Minutes 30 -TimeoutMinutes 240 *>&1 | ForEach-Object { Write-Log "  $_" }
@@ -1188,6 +1296,580 @@ function Invoke-Comfy3dStage($inputs, [string]$workflowFile) {
   return , @($results)
 }
 
+# ---- stage: text to mesh in one ComfyUI workflow (comfyui-3d: TRELLIS.2 or Pixal3D) -----------------
+#
+# The owner's workflow (krea2-turbo-to-trellis2-or-pixal3d.json) is the whole chain in one graph:
+# Krea 2 turbo draws the image from the prompt, the background is removed and the object cropped,
+# TRELLIS.2 — or Pixal3D, by one boolean — reconstructs it, and a post-process chain remeshes
+# (RemeshMesh), decimates (DecimateMesh), smooths normals, unwraps (UnwrapMesh), bakes the colour,
+# normal and occlusion maps and saves a GLB (Save3DAdvanced). The parameters that decide whether
+# the engine can use the result are the post-process ones, so those are this backend's flags, and
+# everything the workflow also carries is recorded beside them.
+#
+# **Every node is found by what it is and what it is wired to, never by id**, so a workflow saved
+# again with new ids still works: the image sampler is the KSampler whose positive comes from a
+# CLIPTextEncode (the four TRELLIS samplers take theirs from the reconstruction stages, keep their
+# fixed seeds, and are recorded), the prompt and negative are that sampler's two encoders, the
+# size is its latent, the post-process nodes are the one node of each class, the texture size is
+# the primitive wired into the unwrap and the bake, and the model is the boolean that drives the
+# switches between the two UNET loaders. Each role's id is recorded in the sidecar.
+#
+# **The segmenter.** UnwrapMesh's `pec` charts on the GPU in seconds; `adaptive` runs on the CPU and
+# is superlinear in the number of separate surface pieces: on a palm crown it ran for hours at a
+# few percent even at 50,000 faces. It was meant to be the default for props, on the owner's two
+# samples (a bare tree with 1,818 islands under `adaptive`, a palm with 27,429 under `pec`), but
+# those were two different meshes. On the same geometry — E10's sweep, a crate and a boulder with
+# the image and the reconstruction held identical — `adaptive` made more and smaller islands than
+# `pec` (crate 1,620 islands of median 26 texels against 762 of 541; boulder 354 of 312 against 237
+# of 10,618) and took 30-56x as long; its one advantage was fewer seam vertices. So `pec` is the
+# default, `adaptive` is there to ask for, it is never run on foliage, and the unwrap node is
+# watched whichever runs: past -SegmenterTimeoutMinutes it is interrupted and the run recorded as
+# aborted. The unwrap's wall time is recorded for every run.
+
+$FoliagePattern = '\b(palms?|fronds?|leaf|leaves|leafy|foliage|bush(es)?|shrubs?|grass(es)?|ferns?|needles|pines?|conifers?|firs?|spruces?|vines?|hedges?|flowers?|blossoms?|petals?|reeds?|bamboo|moss|ivy|hay|straw)\b'
+
+function Test-FoliageSubject($s) {
+  if ($Foliage) { return 'the -Foliage switch' }
+  if ($s.category -and [string]$s.category -match '^(foliage|tree|bush|shrub|grass|flower)$') { return "category '$($s.category)'" }
+  $m = [regex]::Match([string]$s.subject, $FoliagePattern, 'IgnoreCase')
+  if ($m.Success) { return "the subject says '$($m.Value)'" }
+  return $null
+}
+
+function Get-LinkFrom($g, [string]$id, [string]$inputName) {
+  if (-not $g.Api.Contains($id)) { return $null }
+  $v = $g.Api[$id].inputs[$inputName]
+  if (Test-IsLink $v) { return [string]$v[0] }
+  return $null
+}
+function Find-ByClass($g, [string]$pattern) { return , @($g.Api.Keys | Where-Object { $g.Api[$_].class_type -match $pattern } | Sort-Object { [long]$_ }) }
+# The first of some node ids as a plain string, or $null. Not `| Select-Object -First 1`: that hands
+# back a PSObject-wrapped string, and OrderedDictionary.Contains compares string.Equals(PSObject),
+# which is false — so the first sweep's sidecars found no bake node in their timing table and
+# recorded bake_seconds as null, though every bake node's own time is in `timings.nodes`.
+function Get-FirstId($ids) { $a = @($ids | Where-Object { $_ }); if ($a.Count -eq 0) { return $null }; return [string]$a[0].ToString() }
+
+function Get-Comfy3dRoles($g) {
+  $r = [ordered]@{}
+  $samplers = Find-ByClass $g '^KSampler(Advanced)?$'
+  $image = @($samplers | Where-Object { $src = Get-LinkFrom $g $_ 'positive'; $src -and $g.Api[$src].class_type -eq 'CLIPTextEncode' })
+  if ($image.Count -ne 1) { throw "comfyui-3d: the workflow needs exactly one sampler whose positive comes from a CLIPTextEncode (the image sampler); it has $($image.Count)" }
+  $r.image_sampler = $image[0]
+  $r.positive = Get-LinkFrom $g $image[0] 'positive'
+  $neg = Get-LinkFrom $g $image[0] 'negative'
+  $r.negative = if ($neg -and $g.Api[$neg].class_type -eq 'CLIPTextEncode') { $neg } else { $null }
+  $lat = Get-LinkFrom $g $image[0] 'latent_image'
+  $r.latent = if ($lat -and $g.Api[$lat].class_type -match '^Empty.*LatentImage$') { $lat } else { $null }
+  $r.reconstruction_samplers = @($samplers | Where-Object { $_ -ne $image[0] })
+  foreach ($role in @(@('remesh', 'RemeshMesh'), @('decimate', 'DecimateMesh'), @('unwrap', 'UnwrapMesh'))) {
+    $ids = Find-ByClass $g "^$($role[1])$"
+    if ($ids.Count -ne 1) { throw "comfyui-3d: the workflow needs exactly one $($role[1]) node; it has $($ids.Count)" }
+    $r[$role[0]] = $ids[0]
+  }
+  $saves = Find-ByClass $g '^(Save3DAdvanced|SaveGLB)$'
+  if ($saves.Count -ne 1) { throw "comfyui-3d: the workflow needs exactly one Save3DAdvanced (or SaveGLB) node; it has $($saves.Count)" }
+  $r.save = $saves[0]
+  $r.smooth_normals = Find-ByClass $g '^MeshSmoothNormals$'
+  $r.bake_texture = Get-FirstId (Find-ByClass $g '^BakeTextureFromVoxel$')
+  $r.bake_normal = Get-FirstId (Find-ByClass $g '^BakeNormalMapFromMesh$')
+  $r.bake_occlusion = Get-FirstId (Find-ByClass $g '^BakeAmbientOcclusion$')
+  # The texture size: the one primitive wired into the unwrap's atlas resolution and the bake's
+  # texture size (the workflow drives both from "Texture Resolution"), else none and both are set.
+  $tex = Get-LinkFrom $g $r.unwrap 'resolution'
+  if (-not $tex -and $r.bake_texture) { $tex = Get-LinkFrom $g $r.bake_texture 'texture_size' }
+  $r.texture_resolution = if ($tex -and $g.Api[$tex].class_type -match '^Primitive(Int|Integer)$') { $tex } else { $null }
+  # The model: a PrimitiveBoolean that drives switches, one of which chooses between two UNET loaders.
+  $r.model_switch = $null; $r.model_loaders = $null
+  $switches = Find-ByClass $g '^ComfySwitchNode$'
+  $bools = @($switches | ForEach-Object { Get-LinkFrom $g $_ 'switch' } | Where-Object { $_ -and $g.Api[$_].class_type -eq 'PrimitiveBoolean' } | Sort-Object -Unique)
+  if ($bools.Count -gt 1) { throw "comfyui-3d: more than one boolean drives the model switches ($($bools -join ', ')); cannot tell which picks the model" }
+  if ($bools.Count -eq 1) {
+    $r.model_switch = $bools[0]
+    foreach ($s in $switches) {
+      if ((Get-LinkFrom $g $s 'switch') -ne $bools[0]) { continue }
+      $t = Get-LinkFrom $g $s 'on_true'; $f = Get-LinkFrom $g $s 'on_false'
+      if ($t -and $f -and $g.Api[$t].class_type -eq 'UNETLoader' -and $g.Api[$f].class_type -eq 'UNETLoader') { $r.model_loaders = [ordered]@{ on_true = $t; on_false = $f } }
+    }
+  }
+  # What to keep besides the mesh: the image the reconstruction saw, and the atlas render.
+  $cond = Find-ByClass $g '^(Trellis2Conditioning|Pixal3DConditioning)$'
+  $r.input_preview = Get-FirstId @($cond | ForEach-Object { Get-LinkFrom $g $_ 'image' } | Where-Object { $_ -and $g.Api[$_].class_type -eq 'PreviewImage' } | Sort-Object -Unique)
+  $atlas = Find-ByClass $g '^RenderUVAtlas$'
+  $r.uv_preview = Get-FirstId @($g.Api.Keys | Where-Object { $g.Api[$_].class_type -eq 'PreviewImage' -and (Get-LinkFrom $g $_ 'images') -in $atlas })
+  return $r
+}
+
+# Which loader is which model, by its file name: the boolean is set so the requested one is chosen.
+function Get-ModelBranch($g, $roles, [string]$wanted) {
+  $want = if ($wanted -eq 'pixal3d') { 'pixal' } else { 'trellis' }
+  if (-not $roles.model_loaders) { return $null }
+  foreach ($branch in @('on_true', 'on_false')) {
+    $id = $roles.model_loaders[$branch]
+    if ([string]$g.Api[$id].inputs['unet_name'] -match $want) { return [pscustomobject]@{ Value = ($branch -eq 'on_true'); Loader = $id; File = [string]$g.Api[$id].inputs['unet_name'] } }
+  }
+  throw "comfyui-3d: neither UNET loader the model switch chooses between names a $want model"
+}
+
+# Replace a link with a literal (a flag that overrides what the workflow wires, such as an unwrap
+# resolution apart from the texture's); recorded like any override, with the link as the old value.
+function Set-NodeInputOverLink($graph, [string]$id, [string]$inputName, $value, $record, [string]$why) {
+  $node = $graph.Api[$id]
+  $old = if ($node.inputs.Contains($inputName)) { $node.inputs[$inputName] } else { $null }
+  $node.inputs[$inputName] = $value
+  $record.Add([ordered]@{ node = $id; class = $node.class_type; title = $graph.Titles[$id]; input = $inputName; workflow_value = $old; value = $value; why = $why })
+}
+
+# A V3 dynamic combo changed to another option: the old option's inputs go, the new one's arrive at
+# their defaults (ComfyUI refuses a prompt that carries the wrong option's inputs).
+function Set-DynamicCombo($graph, [string]$id, [string]$inputName, [string]$value, $record, [string]$why) {
+  $node = $graph.Api[$id]
+  $old = $node.inputs[$inputName]
+  if ([string]$old -eq $value) { $record.Add([ordered]@{ node = $id; class = $node.class_type; title = $graph.Titles[$id]; input = $inputName; workflow_value = $old; value = $value; why = $why }); return }
+  $def = Get-NodeDef $node.class_type
+  $spec = Get-InputSpec $def $inputName
+  $pairs = Get-DynamicComboInputs $spec $value
+  if ($spec[1].options -and -not (@($spec[1].options) | Where-Object { [string]$_.key -eq $value })) { throw "$($node.class_type).$inputName has no option '$value'" }
+  foreach ($k in @($node.inputs.Keys | Where-Object { $_ -like "$inputName.*" })) { $node.inputs.Remove($k) }
+  $node.inputs[$inputName] = $value
+  foreach ($pair in $pairs) {
+    $d = if ($pair[1].Count -gt 1 -and $pair[1][1].PSObject.Properties['default']) { $pair[1][1].default } else { $null }
+    $node.inputs["$inputName.$($pair[0])"] = $d
+  }
+  $record.Add([ordered]@{ node = $id; class = $node.class_type; title = $graph.Titles[$id]; input = $inputName; workflow_value = $old; value = $value; why = "$why (its options' inputs at their defaults)" })
+}
+
+function Get-NodeLiterals($g, [string]$id) {
+  $o = [ordered]@{}
+  if (-not $id -or -not $g.Api.Contains($id)) { return $null }
+  foreach ($k in $g.Api[$id].inputs.Keys) {
+    if ($k -eq 'viewport_state') { continue }
+    $v = $g.Api[$id].inputs[$k]
+    $o[$k] = if (Test-IsLink $v) { "<- node $($v[0])" } else { $v }
+  }
+  return $o
+}
+
+# Apply this run's parameters to one copy of the graph. Returns the overrides (each with the
+# workflow's value beside the new one), the effective settings read back from the graph, and the
+# segmenter decision with its reason.
+function Set-Comfy3dOverrides($g, $roles, $s, $promptRec, [long]$seedValue) {
+  $ov = New-Object System.Collections.Generic.List[object]
+  $foliageWhy = Test-FoliageSubject $s
+  $seg = $Segmenter
+  $reason = '-Segmenter'
+  if ($seg -eq 'adaptive' -and $foliageWhy) {
+    throw "comfyui-3d: '$($s.name)' is foliage ($foliageWhy), and the adaptive segmenter is never run on foliage: it is superlinear in separate surface pieces and ran for hours on a palm crown at 50,000 faces. Use -Segmenter pec."
+  }
+  if (-not $seg) {
+    $seg = 'pec'
+    $reason = if ($foliageWhy) { "the default, and foliage ($foliageWhy): adaptive is superlinear in separate surface pieces" }
+    else { 'the default: on the same geometry pec made fewer and larger islands than adaptive, 30-56x faster (E10, TRELLIS.2 sweep)' }
+  }
+  $branch = $null
+  if ($roles.model_switch) {
+    $branch = Get-ModelBranch $g $roles $Model
+    if ($branch) { [void](Set-NodeInput $g $roles.model_switch 'value' $branch.Value $ov "model: $Model") }
+  } elseif ($Model -ne 'trellis2') { throw 'comfyui-3d: this workflow has no model switch, so -Model pixal3d cannot be honoured' }
+
+  $posField = if ($g.Api[$roles.positive].inputs.Contains('text')) { 'text' } else { 'prompt' }
+  [void](Set-NodeInput $g $roles.positive $posField $promptRec.text $ov 'prompt')
+  if ($roles.negative) { [void](Set-NodeInput $g $roles.negative 'text' ([string]$promptRec.negative) $ov 'negative prompt') }
+  else { $promptRec.negative = $null }
+  [void](Set-NodeInput $g $roles.image_sampler 'seed' $seedValue $ov 'image seed')
+  if ($roles.latent) {
+    [void](Set-NodeInput $g $roles.latent 'width' $(if ($Width -gt 0) { $Width } else { 1024 }) $ov 'image size')
+    [void](Set-NodeInput $g $roles.latent 'height' $(if ($Height -gt 0) { $Height } else { 1024 }) $ov 'image size')
+  }
+
+  if ($RemeshResolution -gt 0) { [void](Set-NodeInput $g $roles.remesh 'resolution' $RemeshResolution $ov 'remesh resolution') }
+  if ($RemeshSignMode) { Set-DynamicCombo $g $roles.remesh 'sign_mode' $RemeshSignMode $ov 'remesh sign mode' }
+  if ($RemeshSmoothIters -ge 0) { [void](Set-NodeInput $g $roles.remesh 'smooth_iters' $RemeshSmoothIters $ov 'remesh smoothing iterations') }
+  [void](Set-NodeInput $g $roles.decimate 'target_face_count' $FaceCount $ov 'face count')
+  [void](Set-NodeInput $g $roles.unwrap 'segmenter' $seg $ov "segmenter: $reason")
+  if ($UnwrapPadding -ge 0) { [void](Set-NodeInput $g $roles.unwrap 'padding' $UnwrapPadding $ov 'unwrap padding') }
+  if ($WeldDistance -ge 0) { [void](Set-NodeInput $g $roles.unwrap 'weld_distance' $WeldDistance $ov 'unwrap weld distance') }
+  if ($roles.texture_resolution) { [void](Set-NodeInput $g $roles.texture_resolution 'value' $TextureResolution $ov 'texture resolution') }
+  else {
+    [void](Set-NodeInput $g $roles.unwrap 'resolution' $TextureResolution $ov 'texture resolution')
+    if ($roles.bake_texture) { [void](Set-NodeInput $g $roles.bake_texture 'texture_size' $TextureResolution $ov 'texture resolution') }
+  }
+  if ($UnwrapResolution -gt 0) { Set-NodeInputOverLink $g $roles.unwrap 'resolution' $UnwrapResolution $ov 'unwrap resolution, apart from the texture''s' }
+  $prefix = $OutputPrefix.Replace('{date}', $Date).Replace('{name}', $s.name)
+  [void](Set-NodeInput $g $roles.save 'filename_prefix' $prefix $ov 'server file prefix')
+  foreach ($x in @($Set)) {
+    if (-not $x) { continue }
+    if ($x -notmatch '^(?<key>[^=]+)\.(?<input>[^.=]+)=(?<value>.*)$') { throw "-Set '$x' is not <title|class|#id>.<input>=<value>" }
+    $ids = @(Find-Nodes $g $Matches.key)
+    if ($ids.Count -eq 0) { throw "-Set '$x': no node titled or classed '$($Matches.key)'" }
+    $value = ConvertFrom-SetValue $Matches.value
+    foreach ($id in $ids) { if (-not (Set-NodeInput $g $id $Matches.input $value $ov '-Set')) { throw "-Set '$x': that input of node $id is driven by a link" } }
+  }
+
+  # The effective settings, read back from the graph: what the flags set and what the workflow kept.
+  $texValue = if ($roles.texture_resolution) { $g.Api[$roles.texture_resolution].inputs['value'] } else { $TextureResolution }
+  $unwrapRes = $g.Api[$roles.unwrap].inputs['resolution']; if (Test-IsLink $unwrapRes) { $unwrapRes = $texValue }
+  $settings = [ordered]@{
+    model = $(if ($branch) { [ordered]@{ name = $Model; file = $branch.File; switch_value = $branch.Value } } else { [ordered]@{ name = $Model; file = $null } })
+    image = [ordered]@{ sampler = Get-NodeLiterals $g $roles.image_sampler; latent = Get-NodeLiterals $g $roles.latent }
+    reconstruction_samplers = [ordered]@{}
+    remesh = Get-NodeLiterals $g $roles.remesh
+    decimate = Get-NodeLiterals $g $roles.decimate
+    smooth_normals = @($roles.smooth_normals | ForEach-Object { [ordered]@{ node = $_; crease_angle = $g.Api[$_].inputs['crease_angle'] } })
+    unwrap = Get-NodeLiterals $g $roles.unwrap
+    unwrap_effective_resolution = $unwrapRes
+    segmenter = [ordered]@{ value = $seg; reason = $reason; foliage = $foliageWhy; timeout_minutes = $SegmenterTimeoutMinutes }
+    texture_resolution = $texValue
+    bake_texture = Get-NodeLiterals $g $roles.bake_texture
+    bake_normal = Get-NodeLiterals $g $roles.bake_normal
+    bake_occlusion = Get-NodeLiterals $g $roles.bake_occlusion
+    output_prefix = $prefix
+  }
+  foreach ($id in $roles.reconstruction_samplers) { $settings.reconstruction_samplers[$id] = Get-NodeLiterals $g $id }
+  return [pscustomobject]@{ Overrides = $ov; Settings = $settings; Segmenter = $seg; Foliage = $foliageWhy; Model = $branch }
+}
+
+# ---- running one prompt and watching it -----------------------------------------------------------
+#
+# /history says when a prompt finished and what it wrote, but not which node ran when, and the
+# unwrap's wall time and the segmenter timeout both need exactly that. ComfyUI's websocket says it:
+# `executing` names each node as it starts (so a node's time is the gap to the next), `progress`
+# carries a node's own progress, `execution_cached` lists the nodes it reused. The socket is read
+# with one receive pending at a time and polled with a short wait, because cancelling a receive
+# aborts a .NET ClientWebSocket. Without a socket the run still works, from /history alone, with
+# no per-node times and only the overall limit.
+
+function Get-MachineSample {
+  $s = [ordered]@{ utc = Format-Utc (Get-Utc); cpu_pct = $null; gpu_util_pct = $null; gpu_memory_used_mib = $null; gpu_memory_total_mib = $null }
+  if ($IsWin) { try { $s.cpu_pct = [int](@(Get-CimInstance -ClassName Win32_Processor -ErrorAction Stop) | Measure-Object -Property LoadPercentage -Average).Average } catch { } }
+  try {
+    $line = @(& nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits 2>$null)[0]
+    if ($line) { $p = $line -split ',\s*'; $s.gpu_util_pct = [int]$p[0]; $s.gpu_memory_used_mib = [int]$p[1]; $s.gpu_memory_total_mib = [int]$p[2] }
+  } catch { }
+  return $s
+}
+
+function Get-ComfyProcess {
+  if (-not $IsWin) { return $null }
+  try {
+    $port = ([uri]$Url).Port
+    $conn = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction Stop | Select-Object -First 1
+    return Get-Process -Id $conn.OwningProcess -ErrorAction Stop
+  } catch { return $null }
+}
+
+function Get-LockLine { try { return ((& $LockTool status *>&1 | Out-String).Trim()) } catch { return 'unknown' } }
+
+function Invoke-ComfyWatched($api, [string]$watchNode, [double]$watchMinutes, [double]$overallMinutes, $classOf) {
+  $t = [ordered]@{
+    source = 'websocket'; prompt_id = $null; status = $null; error = $null
+    queued_utc = $null; started_utc = $null; finished_utc = $null
+    nodes = [ordered]@{}; order = New-Object System.Collections.Generic.List[string]; cached = @()
+    watch = [ordered]@{ node = $watchNode; seconds = $null; progress = $null; limit_minutes = $watchMinutes; aborted = $false }
+    samples = New-Object System.Collections.Generic.List[object]
+    comfyui_cpu_seconds = $null; gpu_lock_at_start = Get-LockLine; gpu_lock_at_end = $null
+  }
+  $proc = Get-ComfyProcess
+  $cpu0 = if ($proc) { $proc.TotalProcessorTime.TotalSeconds } else { $null }
+  $t.samples.Add((Get-MachineSample))
+  $ws = $null
+  try {
+    $ws = [System.Net.WebSockets.ClientWebSocket]::new()
+    $wsUri = [uri](($Url.TrimEnd('/') -replace '^http', 'ws') + "/ws?clientId=$($script:ClientId)")
+    if (-not $ws.ConnectAsync($wsUri, [Threading.CancellationToken]::None).Wait(10000)) { throw 'no answer in 10 s' }
+  } catch {
+    Write-Warn "comfyui: no websocket ($($_.Exception.Message)); no per-node times, and only the overall limit applies"
+    if ($ws) { $ws.Dispose() }; $ws = $null; $t.source = 'history'
+  }
+  $body = @{ prompt = $api; client_id = $script:ClientId } | ConvertTo-Json -Depth 50 -Compress
+  try {
+    $queued = Invoke-RestMethod -Uri "$Url/prompt" -Method Post -Body ([Text.Encoding]::UTF8.GetBytes($body)) -ContentType 'application/json; charset=utf-8' -TimeoutSec 60
+  } catch {
+    if ($ws) { $ws.Dispose() }
+    $detail = if ($_.ErrorDetails -and $_.ErrorDetails.Message) { $_.ErrorDetails.Message } else { $_.Exception.Message }
+    throw "ComfyUI refused the prompt: $detail"
+  }
+  if ($queued.node_errors -and @($queued.node_errors.PSObject.Properties).Count -gt 0) {
+    if ($ws) { $ws.Dispose() }
+    throw ("ComfyUI node errors: " + ($queued.node_errors | ConvertTo-Json -Depth 8 -Compress))
+  }
+  $promptId = [string]$queued.prompt_id
+  $t.prompt_id = $promptId
+  $t.queued_utc = Get-Utc
+  $deadline = $t.queued_utc.AddMinutes($overallMinutes)
+  $buffer = [byte[]]::new(65536)
+  $segment = [ArraySegment[byte]]::new($buffer)
+  $acc = [IO.MemoryStream]::new()
+  $pending = $null
+  $current = $null; $currentStart = $null
+  $lastCheck = [DateTime]::MinValue; $lastSample = Get-Utc
+  $done = $null
+  try {
+    while (-not $done) {
+      $text = $null
+      if ($ws -and $ws.State -eq [System.Net.WebSockets.WebSocketState]::Open) {
+        try {
+          if (-not $pending) { $pending = $ws.ReceiveAsync($segment, [Threading.CancellationToken]::None) }
+          if ($pending.Wait(1000)) {
+            $res = $pending.Result; $pending = $null
+            if ($res.MessageType -eq [System.Net.WebSockets.WebSocketMessageType]::Close) { $ws.Dispose(); $ws = $null; $t.source = 'websocket, then history' }
+            else {
+              $acc.Write($buffer, 0, $res.Count)
+              if ($res.EndOfMessage) {
+                if ($res.MessageType -eq [System.Net.WebSockets.WebSocketMessageType]::Text) { $text = [Text.Encoding]::UTF8.GetString($acc.ToArray()) }
+                $acc.SetLength(0)   # binary frames are live previews: dropped
+              }
+            }
+          }
+        } catch { Write-Warn "comfyui: the websocket failed ($($_.Exception.Message)); continuing from /history"; $pending = $null; try { $ws.Dispose() } catch { }; $ws = $null; $t.source = 'websocket, then history' }
+      } else { Start-Sleep -Seconds 2 }
+      $now = Get-Utc
+      if ($text) {
+        $m = $null; try { $m = $text | ConvertFrom-Json } catch { }
+        $d = if ($m) { $m.data } else { $null }
+        if ($d -and $d.PSObject.Properties['prompt_id'] -and [string]$d.prompt_id -eq $promptId) {
+          switch ([string]$m.type) {
+            'execution_start' { $t.started_utc = $now }
+            'execution_cached' { $t.cached = @($d.nodes | ForEach-Object { [string]$_ }) }
+            'executing' {
+              if ($current) { $t.nodes[$current] = [math]::Round(($now - $currentStart).TotalSeconds, 2) }
+              $current = if ($null -ne $d.node) { [string]$d.node } else { $null }
+              $currentStart = $now
+              if ($current) { $t.order.Add($current) } else { if (-not $done) { $done = 'success' } }
+            }
+            'progress' { if ([string]$d.node -eq $watchNode) { $t.watch.progress = "$($d.value)/$($d.max)" } }
+            'execution_success' { if ($current) { $t.nodes[$current] = [math]::Round(($now - $currentStart).TotalSeconds, 2); $current = $null }; $done = 'success' }
+            'execution_interrupted' { $done = 'interrupted' }
+            'execution_error' { $t.error = "node $($d.node_id) ($($d.node_type)): $($d.exception_message)"; $done = 'error' }
+          }
+        }
+      }
+      # The watched node (the unwrap): interrupted past its limit, and the run recorded as aborted.
+      if (-not $done -and $watchNode -and $current -eq $watchNode -and -not $t.watch.aborted -and ($now - $currentStart).TotalMinutes -gt $watchMinutes) {
+        Write-Warn ("comfyui: {0} ({1}) has run {2:N1} min, over the {3} min limit (progress {4}); interrupting" -f $watchNode, $classOf[$watchNode], ($now - $currentStart).TotalMinutes, $watchMinutes, $t.watch.progress)
+        $t.watch.aborted = $true
+        $t.nodes[$current] = [math]::Round(($now - $currentStart).TotalSeconds, 2)
+        try { Invoke-RestMethod -Uri "$Url/interrupt" -Method Post -Body (@{ prompt_id = $promptId } | ConvertTo-Json -Compress) -ContentType 'application/json' -TimeoutSec 30 | Out-Null } catch { Write-Warn "comfyui: /interrupt failed: $($_.Exception.Message)" }
+      }
+      if (-not $done -and $now -gt $deadline -and -not $t.watch.aborted) {
+        Write-Warn "comfyui: prompt $promptId still running after $overallMinutes min; interrupting"
+        $t.error = "over the overall limit of $overallMinutes minutes (-TimeoutMinutes)"
+        try { Invoke-RestMethod -Uri "$Url/interrupt" -Method Post -Body (@{ prompt_id = $promptId } | ConvertTo-Json -Compress) -ContentType 'application/json' -TimeoutSec 30 | Out-Null } catch { }
+        $deadline = $now.AddMinutes(5)   # give the interrupt time to land before giving up on it
+        $t.watch.aborted = $true
+      }
+      if (($now - $lastSample).TotalSeconds -ge 15) { $t.samples.Add((Get-MachineSample)); $lastSample = $now; Update-GpuLock }
+      # /history: the fallback without a socket, and the authority on completion with one.
+      if (-not $done -and ($now - $lastCheck).TotalSeconds -ge $(if ($ws) { 15 } else { 2 })) {
+        $lastCheck = $now
+        try {
+          $h = Invoke-RestMethod -Uri "$Url/history/$promptId" -TimeoutSec 30
+          if ($h.PSObject.Properties[$promptId]) {
+            $st = $h.$promptId.status
+            if ($st.completed) { $done = 'success' }
+            elseif ($st.status_str -eq 'error') {
+              $interrupted = @($st.messages | Where-Object { $_[0] -eq 'execution_interrupted' }).Count -gt 0
+              $done = if ($interrupted) { 'interrupted' } else { 'error' }
+              if (-not $interrupted -and -not $t.error) { $t.error = (@($st.messages | Where-Object { $_[0] -eq 'execution_error' } | ForEach-Object { "node $($_[1].node_id) ($($_[1].node_type)): $($_[1].exception_message)" }) -join '; ') }
+            }
+          }
+        } catch { }
+        if (-not $done -and $now -gt $deadline.AddMinutes(10)) { $done = 'error'; $t.error = 'the prompt never finished, even after an interrupt' }
+      }
+    }
+  } finally {
+    if ($ws) { try { $ws.Abort() } catch { }; $ws.Dispose() }
+    $acc.Dispose()
+  }
+  $t.finished_utc = Get-Utc
+  $t.status = if ($t.watch.aborted) { 'aborted' } else { $done }
+  if ($t.watch.node -and $t.nodes.Contains($t.watch.node)) { $t.watch.seconds = $t.nodes[$t.watch.node] }
+  elseif ($t.watch.node -and $t.cached -contains $t.watch.node) { $t.watch.seconds = 0 }
+  $t.samples.Add((Get-MachineSample))
+  if ($proc) { try { $proc.Refresh(); $t.comfyui_cpu_seconds = [math]::Round($proc.TotalProcessorTime.TotalSeconds - $cpu0, 1) } catch { } }
+  $t.gpu_lock_at_end = Get-LockLine
+  $hist = $null
+  try { $h = Invoke-RestMethod -Uri "$Url/history/$promptId" -TimeoutSec 60; if ($h.PSObject.Properties[$promptId]) { $hist = $h.$promptId } } catch { }
+  return [pscustomobject]@{ Track = $t; History = $hist }
+}
+
+# The machine while it ran, in the shape the harness and the bench quote (docs/experiments/README.md).
+function Get-MachineSummary($t) {
+  function Span($field) {
+    $v = @($t.samples | ForEach-Object { $_[$field] } | Where-Object { $null -ne $_ } | ForEach-Object { [double]$_ })
+    if ($v.Count -eq 0) { return $null }
+    return [ordered]@{ min = ($v | Measure-Object -Minimum).Minimum; max = ($v | Measure-Object -Maximum).Maximum; mean = [math]::Round(($v | Measure-Object -Average).Average, 1) }
+  }
+  $wall = if ($t.started_utc -and $t.finished_utc) { ($t.finished_utc - $t.started_utc).TotalSeconds } else { $null }
+  return [ordered]@{
+    samples = $t.samples.Count
+    cpu_pct = Span 'cpu_pct'
+    gpu_util_pct = Span 'gpu_util_pct'
+    gpu_memory_used_mib = Span 'gpu_memory_used_mib'
+    gpu_memory_total_mib = $(if ($t.samples.Count) { $t.samples[0]['gpu_memory_total_mib'] } else { $null })
+    comfyui_cpu_seconds = $t.comfyui_cpu_seconds
+    comfyui_cores_busy = $(if ($t.comfyui_cpu_seconds -and $wall) { [math]::Round($t.comfyui_cpu_seconds / $wall, 2) } else { $null })
+    gpu_lock_at_start = $t.gpu_lock_at_start
+    gpu_lock_at_end = $t.gpu_lock_at_end
+  }
+}
+
+function Get-TimingSummary($t, $roles, $classOf) {
+  $sec = { param($id) if ($id -and $t.nodes.Contains($id)) { $t.nodes[$id] } elseif ($id -and $t.cached -contains $id) { 0 } else { $null } }
+  $execution = if ($t.started_utc -and $t.finished_utc) { [math]::Round(($t.finished_utc - $t.started_utc).TotalSeconds, 1) } else { $null }
+  $bake = @(@($roles.bake_texture, $roles.bake_normal, $roles.bake_occlusion) | Where-Object { $_ } | ForEach-Object { & $sec $_ } | Where-Object { $null -ne $_ })
+  return [ordered]@{
+    source = $t.source
+    queued_utc = $(if ($t.queued_utc) { Format-Utc $t.queued_utc } else { $null })
+    started_utc = $(if ($t.started_utc) { Format-Utc $t.started_utc } else { $null })
+    finished_utc = Format-Utc $t.finished_utc
+    queue_wait_seconds = $(if ($t.started_utc) { [math]::Round(($t.started_utc - $t.queued_utc).TotalSeconds, 1) } else { $null })
+    execution_seconds = $execution
+    wall_seconds = [math]::Round(($t.finished_utc - $t.queued_utc).TotalSeconds, 1)
+    image_sampler_seconds = & $sec $roles.image_sampler
+    reconstruction_seconds = $(if ($roles.reconstruction_samplers) { $v = @($roles.reconstruction_samplers | ForEach-Object { & $sec $_ } | Where-Object { $null -ne $_ }); if ($v.Count) { [math]::Round(($v | Measure-Object -Sum).Sum, 1) } else { $null } } else { $null })
+    remesh_seconds = & $sec $roles.remesh
+    decimate_seconds = & $sec $roles.decimate
+    unwrap_seconds = & $sec $roles.unwrap
+    unwrap_progress = $t.watch.progress
+    bake_seconds = $(if ($bake.Count) { [math]::Round(($bake | Measure-Object -Sum).Sum, 1) } else { $null })
+    cached_nodes = @($t.cached)
+    nodes = @($t.order | Select-Object -Unique | ForEach-Object { [ordered]@{ node = $_; class = $classOf[$_]; seconds = $t.nodes[$_] } })
+  }
+}
+
+# The GLB the save node wrote: from /history, fetched through /view like every other output; else,
+# when a node reports its file somewhere Get-ComfyOutputs does not look, from the output directory —
+# but only under this run's own prefix, never the workflow's shared `3d/ComfyUI` folder, where the
+# owner's own files live.
+function Find-SavedMesh($hist, $roles, [string]$prefix, [DateTime]$since) {
+  $files = @(Get-ComfyOutputs $hist)
+  $mesh = @($files | Where-Object { $_.node -eq $roles.save -and $_.filename -match '\.(glb|gltf)$' }) | Select-Object -First 1
+  if (-not $mesh) { $mesh = @($files | Where-Object { $_.filename -match '\.glb$' -and $_.type -eq 'output' }) | Select-Object -First 1 }
+  if ($mesh) { return [pscustomobject]@{ Remote = $mesh; Local = $null } }
+  if (-not $OutputRoot -or $prefix -notmatch '/' -or $prefix -match '^3d/ComfyUI$') { return $null }
+  $folder = Join-Path $OutputRoot (Split-Path -Parent $prefix)
+  $stem = Split-Path -Leaf $prefix
+  if (-not (Test-Path -LiteralPath $folder)) { return $null }
+  $local = @(Get-ChildItem -LiteralPath $folder -File -Filter "$stem*.glb" | Where-Object { $_.LastWriteTimeUtc -ge $since.AddSeconds(-5) } | Sort-Object LastWriteTimeUtc -Descending) | Select-Object -First 1
+  if ($local) { return [pscustomobject]@{ Remote = $null; Local = $local.FullName } }
+  return $null
+}
+
+function Invoke-ComfyText3dStage {
+  $subjects = Get-SubjectList
+  $wf = Get-WorkflowGraph $Workflow
+  $roles = Get-Comfy3dRoles $wf.Graph
+  $classOf = @{}; foreach ($id in $wf.Graph.Api.Keys) { $classOf[$id] = $wf.Graph.Api[$id].class_type }
+  $service = if ($Model -eq 'pixal3d') { 'pixal3d' } else { 'trellis' }
+  $dir = Get-OutputDir $service
+  $plan = @()
+  foreach ($s in $subjects) {
+    $g = Copy-Graph $wf.Graph
+    $p = Get-PromptFor $s
+    $sd = Get-SeedFor $s
+    $applied = Set-Comfy3dOverrides $g $roles $s $p $sd
+    $spec = Get-SpecHash $wf $g ''
+    $state = Test-Existing (Get-SidecarPath $dir $s.name) $spec "mesh '$($s.name)'"
+    $plan += [pscustomobject]@{ Subject = $s; Graph = $g; Prompt = $p; Seed = $sd; Applied = $applied; Spec = $spec; State = $state }
+  }
+  $todo = @($plan | Where-Object State -eq 'new')
+  Write-Step "comfyui-3d ($service): $($plan.Count) meshes through $($wf.Name): $($todo.Count) to run, $($plan.Count - $todo.Count) already made from the same spec"
+  Write-Note "  roles: $((@($roles.Keys | Where-Object { $roles[$_] -and $roles[$_] -isnot [System.Collections.IDictionary] -and $roles[$_] -isnot [array] } | ForEach-Object { "$_=$($roles[$_])" })) -join ' ')"
+  Write-Note "  into $dir"
+  if ($DryRun) {
+    return , @($plan | ForEach-Object {
+        [pscustomobject][ordered]@{ name = $_.Subject.name; status = "dry-run:$($_.State)"; service = $service; seed = $_.Seed; segmenter = $_.Applied.Segmenter; foliage = $_.Applied.Foliage
+          prompt = $_.Prompt; settings = $_.Applied.Settings; overrides = $_.Applied.Overrides; roles = $roles; spec_hash = $_.Spec }
+      })
+  }
+  $results = @($plan | Where-Object State -eq 'cached' | ForEach-Object { [pscustomobject]@{ name = $_.Subject.name; status = 'cached'; path = (Join-Path $dir "$($_.Subject.name).glb"); sidecar = (Get-SidecarPath $dir $_.Subject.name) } })
+  if ($todo.Count -eq 0) { return , @($results) }
+  $system = Get-ComfySystem
+  $models = Get-ModelFiles $wf.Graph
+  $runs = Join-Path $dir 'runs.jsonl'
+  Enter-GpuLock "comfyui-3d: $($todo.Count) meshes, $($wf.Name)"
+  try {
+    $i = 0
+    foreach ($j in $todo) {
+      $i++
+      Update-GpuLock
+      $n = $j.Subject.name
+      Write-Log ("  [{0}/{1}] {2}: seed {3}, {4} faces, segmenter {5}, smooth {6}, weld {7}, texture {8}" -f $i, $todo.Count, $n, $j.Seed, $j.Applied.Settings.decimate.target_face_count,
+          $j.Applied.Segmenter, $j.Applied.Settings.remesh.smooth_iters, $j.Applied.Settings.unwrap.weld_distance, $j.Applied.Settings.texture_resolution)
+      $t0 = Get-Utc
+      try {
+        $run = Invoke-ComfyWatched $j.Graph.Api $roles.unwrap $SegmenterTimeoutMinutes $TimeoutMinutes $classOf
+        $tr = $run.Track
+        $timings = Get-TimingSummary $tr $roles $classOf
+        $machine = Get-MachineSummary $tr
+        $t1 = Get-Utc
+        $modelFile = if ($j.Applied.Model) { $j.Applied.Model.File } else { @($models | Where-Object { $_.class -eq 'UNETLoader' } | Select-Object -First 1).file }
+        $backend = [ordered]@{
+          comfyui = $system; workflow = $wf.Name; workflow_sha256 = $wf.Sha256; workflow_path = $wf.File
+          models = $models; model_used = $modelFile; roles = $roles; overrides = $j.Applied.Overrides; prompt_id = $tr.prompt_id
+          server_files = @(); api_prompt = $j.Graph.Api
+        }
+        $line = [ordered]@{ utc = Format-Utc $t1; name = $n; status = $tr.status; spec_hash = $j.Spec; seed = $j.Seed; model = $Model
+          face_count = $j.Applied.Settings.decimate.target_face_count; segmenter = $j.Applied.Segmenter; smooth_iters = $j.Applied.Settings.remesh.smooth_iters
+          weld_distance = $j.Applied.Settings.unwrap.weld_distance; texture = $j.Applied.Settings.texture_resolution
+          wall_seconds = $timings.wall_seconds; unwrap_seconds = $timings.unwrap_seconds; unwrap_progress = $timings.unwrap_progress; cached_nodes = @($tr.cached).Count
+          cpu_pct = $machine.cpu_pct; gpu_util_pct = $machine.gpu_util_pct; comfyui_cores_busy = $machine.comfyui_cores_busy }
+        if ($tr.status -ne 'success') {
+          # No mesh, so no provenance sidecar: the attempt is recorded beside where it would have
+          # been, with everything a sidecar would carry, so an abort is a result and not a gap.
+          $record = [ordered]@{
+            schema = 'engine.generation.attempt/1'; name = $n; kind = 'mesh'; service = $service; status = $tr.status; spec_hash = $j.Spec
+            reason = $(if ($tr.watch.aborted -and -not $tr.error) { "the unwrap ($($j.Applied.Segmenter) segmenter) ran past -SegmenterTimeoutMinutes $SegmenterTimeoutMinutes and was interrupted at progress $($tr.watch.progress)" } else { $tr.error })
+            prompt = $j.Prompt; seed = $j.Seed; parameters = $j.Applied.Settings; backend = $backend; timings = $timings; machine_state = $machine
+            operator = $Operator; started_utc = Format-Utc $t0; finished_utc = Format-Utc $t1; tool = Get-ToolInfo
+          }
+          $recordFile = Join-Path $dir "$n.$($tr.status).json"
+          Write-JsonFile $recordFile $record
+          $line.reason = $record.reason
+          Add-JsonLine $runs $line
+          Write-Warn "$n`: $($tr.status): $($record.reason) (recorded in $recordFile)"
+          $results += [pscustomobject]@{ name = $n; status = $(if ($tr.status -eq 'aborted') { 'aborted' } else { 'failed' }); error = $record.reason; record = $recordFile; unwrap_seconds = $timings.unwrap_seconds; wall_seconds = $timings.wall_seconds }
+          continue
+        }
+        $found = Find-SavedMesh $run.History $roles $j.Applied.Settings.output_prefix $t0
+        if (-not $found) { throw 'the run succeeded but no GLB was found, in /history or under the output prefix' }
+        $glb = Join-Path $dir "$n.glb"
+        if ($found.Remote) { Save-ComfyFile $found.Remote $glb; $backend.server_files += ("$($found.Remote.subfolder)/$($found.Remote.filename)").TrimStart('/') }
+        else { Copy-Item -LiteralPath $found.Local -Destination $glb -Force; $backend.server_files += $found.Local }
+        if (-not (Test-GlbMagic $glb)) { throw "$glb is not a GLB" }
+        $outputs = @(New-OutputRecord 'mesh' $glb)
+        $files = @(Get-ComfyOutputs $run.History)
+        foreach ($keep in @(@('image', $roles.input_preview, 'input-image'), @('uv-atlas', $roles.uv_preview, 'uv-atlas'))) {
+          if (-not $keep[1]) { continue }
+          $f = @($files | Where-Object { $_.node -eq $keep[1] -and $_.filename -match '\.(png|jpg|jpeg|webp)$' }) | Select-Object -First 1
+          if (-not $f) { continue }
+          $target = Join-Path $dir ("$n.$($keep[0])" + [IO.Path]::GetExtension($f.filename))
+          try { Save-ComfyFile $f $target; $outputs += New-OutputRecord $keep[2] $target } catch { Write-Warn "$n`: could not fetch the $($keep[0]) preview: $($_.Exception.Message)" }
+        }
+        $side = New-Sidecar -Name $n -Kind 'mesh' -Service $service -Generator "comfyui/$($wf.Name)" -ModelId $modelFile -ModelVersion $null `
+          -Prompt $j.Prompt -SeedValue $j.Seed -Parameters $j.Applied.Settings -Backend $backend -Inputs @() `
+          -Outputs $outputs -Credits 0 -Started $t0 -Finished $t1 -SpecHash $j.Spec -DerivedFrom @()
+        $side['timings'] = $timings
+        $side['machine_state'] = $machine
+        $side['subject'] = [ordered]@{ set = $j.Subject.set; category = $j.Subject.category; size_m = $j.Subject.size_m }
+        Write-JsonFile (Get-SidecarPath $dir $n) $side
+        $line.glb_bytes = (Get-Item -LiteralPath $glb).Length
+        Add-JsonLine $runs $line
+        Write-Log ("  done {0}: {1:N1} MB in {2:N0} s (unwrap {3} s, {4} cached nodes)" -f $n, ((Get-Item -LiteralPath $glb).Length / 1MB), $timings.wall_seconds, $timings.unwrap_seconds, @($tr.cached).Count)
+        $results += [pscustomobject]@{ name = $n; status = 'generated'; path = $glb; sidecar = (Get-SidecarPath $dir $n); wall_seconds = $timings.wall_seconds; unwrap_seconds = $timings.unwrap_seconds }
+      } catch {
+        # Where, too: a bare "400 (Bad Request)" from one of a dozen HTTP calls is not a diagnosis.
+        Write-Warn "$n`: $($_.Exception.Message) (tools/generate.ps1:$($_.InvocationInfo.ScriptLineNumber): $("$($_.InvocationInfo.Line)".Trim()))"
+        $results += [pscustomobject]@{ name = $n; status = 'failed'; error = $_.Exception.Message }
+      }
+    }
+  } finally {
+    if (-not $NoFree) { Invoke-ComfyFree }
+    Exit-GpuLock
+  }
+  return , @($results)
+}
+
 # ---- stage: Tripo, by hand -------------------------------------------------------------------------
 #
 # Tripo's Studio credits cannot be spent through its API, so the owner generates by hand. The tool
@@ -1415,7 +2097,7 @@ function Write-Results($results) {
   foreach ($r in @($results)) {
     if ($null -eq $r) { continue }
     [Console]::Out.WriteLine(($r | ConvertTo-Json -Depth 30 -Compress))
-    if ($r.status -in @('failed', 'timed-out', 'not-submitted')) { $failed = $true }
+    if ($r.status -in @('failed', 'timed-out', 'not-submitted', 'aborted')) { $failed = $true }
   }
   if ($failed) { exit 1 }
 }
@@ -1448,10 +2130,11 @@ switch ($Command) {
   }
   'image' { Write-Results (Invoke-ImageStage) }
   '3d' {
-    if (-not $Backend) { throw '3d needs -Backend meshy|comfyui (tripo-folder is `manifest` and `ingest`)' }
+    if (-not $Backend) { throw '3d needs -Backend meshy|comfyui|comfyui-3d (tripo-folder is `manifest` and `ingest`)' }
     switch ($Backend) {
       'meshy' { Write-Results (Invoke-MeshyStage (Get-ImageInputs)) }
       'comfyui' { Write-Results (Invoke-Comfy3dStage (Get-ImageInputs) $Workflow) }
+      'comfyui-3d' { Write-Results (Invoke-ComfyText3dStage) }
       'tripo-folder' { throw 'tripo-folder has no API stage: `manifest` writes the list, `ingest` reads the GLBs back' }
     }
   }
