@@ -45,17 +45,17 @@ function Invoke-Harness {
 $root = Join-Path ([IO.Path]::GetTempPath()) "engine-e10-harness-$([guid]::NewGuid().ToString('N'))"
 New-Item -ItemType Directory -Force -Path $root | Out-Null
 
-function New-Report([string]$dir, [bool]$stale) {
+function New-Report([string]$dir, [bool]$stale, [bool]$collapse = $false) {
   New-Item -ItemType Directory -Force -Path $dir | Out-Null
   $binary = { param($name) [ordered]@{ name = $name; sha256 = ('0' * 64); built = '2026-09-22T10:00:00.0000000Z'
       stamp = [ordered]@{ commit = ('a' * 40); dirty = $false }; judged_by = 'build stamp'; stale = $stale
       stale_reasons = @(if ($stale) { 'built from aaaaaaaaaaaa, and 3 file(s) it is made of changed between that and HEAD bbbbbbbbbbbb (first: domain/geometry/src/x.cpp)' }) } }
-  $row = { param($name, $coverage, $flip, $smallest)
+  $row = { param($name, $coverage, $flip, $smallest, $coarse = 300, $finest = 900, $seam = 0.2, $median = 5000)
     [ordered]@{ name = $name; source = "$name.glb"; glb_bytes = 1048576; glb_sha256 = ('1' * 64); service = 'trellis'
       triangles = 100000; clusters = 900; lod_levels = 10; materials = 1; images = 3; warnings = 0; warning_rules = [ordered]@{}
-      container_bytes = 2097152; build_ms = 500; islands = 400; seam_fraction = 0.2; smallest_island_texels_4096 = $smallest
-      smallest_island_triangles = 1; median_island_texels_4096 = 5000; uv_area = 0.5
-      coarse_visible_pairs = 300; finest_visible_pairs = 900; psnr = 38.0; ssim = 0.99; flip_mean = $flip; flip_p95 = 0.05; flip_max = 0.5
+      container_bytes = 2097152; build_ms = 500; islands = 400; seam_fraction = $seam; smallest_island_texels_4096 = $smallest
+      smallest_island_triangles = 1; median_island_texels_4096 = $median; uv_area = 0.5
+      coarse_visible_pairs = $coarse; finest_visible_pairs = $finest; psnr = 38.0; ssim = 0.99; flip_mean = $flip; flip_p95 = 0.05; flip_max = 0.5
       coverage = $coverage; flip_object_mean = [math]::Round($flip / $coverage, 5) } }
   $state = [ordered]@{ min = 1; max = 2 }
   $report = [ordered]@{
@@ -66,6 +66,16 @@ function New-Report([string]$dir, [bool]$stale) {
       freshness = [ordered]@{ head = ('b' * 40); stale = $stale; allow_stale = $stale; staleness_paths = @('domain/geometry') }; harness = 'tools/e10-harness.ps1' }
     machine_state = [ordered]@{ samples = 4; cpu_others_pct = $state; gpu_util_pct = $state; gpu_memory_used_mib = $state; gpu_memory_total_mib = $state; captures_warned = 0; gpu_lock_at_start = 'free'; gpu_lock_at_end = 'free' }
     assets = @((& $row 'solid-crate' 0.45 0.009 5.0), (& $row 'thin-tree' 0.06 0.0072 5.0))
+  }
+  if ($collapse) {
+    # The three cases the collapse check tells apart, each measured once in E10: a mesh whose LOD
+    # coarsens, one that does not (Meshy's triangle remesh: a fragmented atlas, the coarse cut is the
+    # finest), and one that does not need to (a low-poly game asset, already sparse on screen).
+    $report.assets = @(
+      (& $row 'sound-crate' 0.45 0.009 5.0 300 900),                      # share 0.33, 4.9 pairs per 1,000 object px
+      (& $row 'stuck-cactus' 0.46 0.0 1.0 2567 2567 0.96 26),             # share 1.00, 13.6 per kpx, fragmented atlas
+      (& $row 'stuck-sound-atlas' 0.45 0.004 5.0 880 900),                # share 0.98, 4.9 per kpx, atlas sound
+      (& $row 'sparse-helmet' 0.452 0.0019 36.0 223 233))                 # share 0.96, but 1.26 per kpx
   }
   $file = Join-Path $dir 'report.json'
   [IO.File]::WriteAllText($file, ($report | ConvertTo-Json -Depth 20))
@@ -102,6 +112,27 @@ try {
   $json = Get-Content -Raw $file | ConvertFrom-Json
   Test-That 'no caveat when nothing is stale, and the report says so' { $md -cnotmatch 'STALE' -and $null -eq $json.caveat -and $md -match 'none stale' }
   Test-That 'times read back from a report stay ISO 8601, not the local culture''s format' { $md -match 'from 2026-09-23T00:00:00' }
+
+  Write-Host '-FromReport, LOD collapse'
+  $file = New-Report (Join-Path $root 'collapse') $false $true
+  $r = Invoke-Harness -FromReport $file
+  $md = Get-Content -Raw (Join-Path $root 'collapse/report.md')
+  $json = Get-Content -Raw $file | ConvertFrom-Json
+  $a = @{}; foreach ($x in $json.assets) { $a[$x.name] = $x }
+  Test-That 'the share is computed from the two counts a report already carries' { $a['sound-crate'].collapse_share -eq 0.3333 -and $a['stuck-cactus'].collapse_share -eq 1 -and $a['sparse-helmet'].finest_pairs_per_kpx -eq 1.259 }
+  Test-That 'a mesh whose LOD coarsens passes the check' { $a['sound-crate'].checks.collapse -eq 'pass' -and $a['sound-crate'].status -eq 'pass' }
+  Test-That 'a mesh whose coarse cut is its finest fails it, though its FLIP is 0' { $a['stuck-cactus'].checks.collapse -eq 'fail' -and $a['stuck-cactus'].checks.flip -eq 'pass' -and $a['stuck-cactus'].status -eq 'fail' }
+  Test-That 'the diagnosis says why: the atlas when it is fragmented, the geometry when it is not' {
+    $a['stuck-cactus'].diagnosis -match 'does not collapse.*100% of the finest cut''s pairs \(2,567 of 2,567\).*the atlas is why' -and
+    $a['stuck-sound-atlas'].diagnosis -match 'does not collapse.*the atlas is not fragmented, so the geometry is why' }
+  Test-That 'a mesh already sparse on screen is not judged: it has nothing to shed at this view' { $a['sparse-helmet'].checks.collapse -eq 'n/a' -and $a['sparse-helmet'].status -eq 'pass' }
+  Test-That 'report.md counts the check, shows the share and the density, and states the line' {
+    $md -match 'LOD collapse 2 \(an asset' -and $md -match '2,567 / 2,567 \(100%; 13\.6\)' -and $md -match '223 / 233 \(96%; 1\.3, too sparse to judge\)' -and $md -match 'the coarse cut draws <= 75% of the finest cut''s pairs' }
+  Test-That 'report.json carries the thresholds and why' { $json.thresholds.max_collapse_share -eq 0.75 -and $json.thresholds.min_collapse_density_pairs_per_kpx -eq 3 -and $json.thresholds.why.collapse -match 'Khronos' }
+  $r = Invoke-Harness -FromReport $file -MaxCollapseShare 1.0 -MinCollapseDensity 1.0
+  $json = Get-Content -Raw $file | ConvertFrom-Json
+  $a = @{}; foreach ($x in $json.assets) { $a[$x.name] = $x }
+  Test-That 're-judged under other lines, the verdicts move with them' { $a['stuck-cactus'].checks.collapse -eq 'pass' -and $a['sparse-helmet'].checks.collapse -eq 'pass' -and $json.totals.failed_by_check.collapse -eq 0 }
 
   Write-Host '-CheckBinaries'
   $exe = if ($IsWindows -or $env:OS -eq 'Windows_NT') { '.exe' } else { '' }

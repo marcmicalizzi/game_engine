@@ -199,6 +199,8 @@ try {
       optional = [ordered]@{ model_3d_info = @('LOAD3D_MODEL_INFO'); camera_info = @('LOAD3D_CAMERA') } }
     input_order = @{ required = @('model_3d', 'filename_prefix', 'viewport_state', 'width', 'height'); optional = @('model_3d_info', 'camera_info') } }
   $info3d.RenderUVAtlas = @{ input = @{ required = [ordered]@{ mesh = @('MESH'); resolution = @('INT', @{ default = 1024 }) } }; input_order = @{ required = @('mesh', 'resolution') } }
+  $info3d.LoadBackgroundRemovalModel = @{ input = @{ required = [ordered]@{ bg_removal_name = @('COMBO', @{ options = @('birefnet.safetensors') }) } }; input_order = @{ required = @('bg_removal_name') } }
+  $info3d.RemoveBackground = @{ input = @{ required = [ordered]@{ bg_removal_model = @('BACKGROUND_REMOVAL'); image = @('IMAGE') } }; input_order = @{ required = @('bg_removal_model', 'image') } }
   $info3dFile = Join-Path $root 'object_info_3d.json'
   $info3d | ConvertTo-Json -Depth 30 | Set-Content -LiteralPath $info3dFile -Encoding utf8
 
@@ -213,7 +215,9 @@ try {
       @{ id = 23; type = 'KSampler'; mode = 0; widgets_values = @(304167832764365, 'randomize', 8, 1, 'euler', 'simple', 1)
         inputs = @((& $sock 'model' 'MODEL' 203), (& $sock 'positive' 'CONDITIONING' 204), (& $sock 'negative' 'CONDITIONING' 205), (& $sock 'latent_image' 'LATENT' 206)) }
       @{ id = 24; type = 'VAEDecode'; mode = 0; inputs = @((& $sock 'samples' 'LATENT' 207), (& $sock 'vae' 'VAE' 208)) }
-      @{ id = 25; type = 'ImageCropToMask'; mode = 0; widgets_values = @(1024, 1024, 1.1, 0, '#000000'); inputs = @((& $sock 'images' 'IMAGE' 209), (& $sock 'masks' 'MASK' $null)) }
+      @{ id = 25; type = 'ImageCropToMask'; mode = 0; widgets_values = @(1024, 1024, 1.1, 0, '#000000'); inputs = @((& $sock 'images' 'IMAGE' 209), (& $sock 'masks' 'MASK' 233)) }
+      @{ id = 26; type = 'RemoveBackground'; mode = 0; inputs = @((& $sock 'bg_removal_model' 'BACKGROUND_REMOVAL' 231), (& $sock 'image' 'IMAGE' 232)) }
+      @{ id = 29; type = 'LoadBackgroundRemovalModel'; mode = 0; widgets_values = @('birefnet.safetensors'); inputs = @() }
       @{ id = 27; type = 'PreviewImage'; mode = 0; inputs = @((& $sock 'images' 'IMAGE' 212)) }
       @{ id = 28; type = 'Trellis2Conditioning'; mode = 0; inputs = @((& $sock 'clip_vision_model' 'CLIP_VISION' $null), (& $sock 'image' 'IMAGE' 213)) }
       @{ id = 30; type = 'UNETLoader'; mode = 0; widgets_values = @('trellis_2_int8.safetensors', 'default'); inputs = @() }
@@ -240,7 +244,8 @@ try {
       @(213, 27, 0, 28, 1, 'IMAGE'), @(214, 31, 0, 33, 0, 'MODEL'), @(215, 30, 0, 33, 1, 'MODEL'), @(216, 32, 0, 33, 2, 'BOOLEAN'), @(217, 33, 0, 34, 0, 'MODEL'),
       @(218, 28, 0, 34, 1, 'CONDITIONING'), @(219, 28, 1, 34, 2, 'CONDITIONING'), @(220, 22, 0, 34, 3, 'LATENT'), @(221, 41, 0, 42, 0, 'MESH'), @(222, 42, 0, 43, 0, 'MESH'),
       @(223, 43, 0, 45, 0, 'MESH'), @(224, 44, 0, 45, 2, 'INT'), @(225, 45, 0, 46, 0, 'MESH'), @(226, 44, 0, 46, 2, 'INT'), @(227, 45, 0, 47, 0, 'MESH'),
-      @(228, 47, 0, 48, 0, 'FILE_3D'), @(229, 45, 0, 49, 0, 'MESH'), @(230, 49, 0, 50, 0, 'IMAGE')
+      @(228, 47, 0, 48, 0, 'FILE_3D'), @(229, 45, 0, 49, 0, 'MESH'), @(230, 49, 0, 50, 0, 'IMAGE'),
+      @(231, 29, 0, 26, 0, 'BACKGROUND_REMOVAL'), @(232, 24, 0, 26, 1, 'IMAGE'), @(233, 26, 0, 25, 1, 'MASK')
     )
   }
   $wf3d = Join-Path $root 'text-to-3d.json'
@@ -293,6 +298,53 @@ try {
   Test-That 'two different post-processes are two different specs' { $q.spec_hash -ne $p3.spec_hash }
   $r = Invoke-Gen 3d -Backend comfyui-3d -Workflow $wf3d -ObjectInfo $info3dFile -Subject 'a weathered wooden crate' -Name crate -LocalRoot $local -Date 2026-02-03 -DryRun
   Test-That 'and the spec does not depend on the date in the prefix' { $r.Json[0].spec_hash -eq $p3.spec_hash }
+
+  # Image in: the same workflow handed a picture instead of drawing one (E10 fed every service the
+  # same images). One image carries a sidecar from the image stage, the other none.
+  Write-Host 'comfyui-3d, image in'
+  $images3d = Join-Path $root 'images3d'
+  New-Item -ItemType Directory -Force -Path $images3d | Out-Null
+  $png1 = [Convert]::FromBase64String('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==')
+  [IO.File]::WriteAllBytes((Join-Path $images3d 'alpha-rock.png'), $png1)
+  [IO.File]::WriteAllBytes((Join-Path $images3d 'beta-cup.png'), $png1 + [byte[]](0))
+  $rockSha = (Get-FileHash -Algorithm SHA256 (Join-Path $images3d 'alpha-rock.png')).Hash.ToLowerInvariant()
+  [ordered]@{ schema = 'engine.generation.provenance/1'; asset_id = ('ab' * 16); name = 'alpha-rock'; kind = 'image'; seed = 7
+    prompt = [ordered]@{ template = 'image-to-3d/1'; subject = 'a grey rock'; text = 'a grey rock. A single object'; negative = $null }
+    subject = [ordered]@{ set = 'test-set'; category = 'rock'; size_m = 1.0 } } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $images3d 'alpha-rock.provenance.json') -Encoding utf8
+  $r = Invoke-Gen 3d -Backend comfyui-3d -Workflow $wf3d -ObjectInfo $info3dFile -Images $images3d -Subjects $subjectsFile -Budget -LocalRoot $local -Date 2026-01-02 -DryRun
+  $rock = $r.Json | Where-Object name -eq 'alpha-rock'
+  $cup = $r.Json | Where-Object name -eq 'beta-cup'
+  $ov = @($rock.overrides)
+  $gr = $rock.graph
+  Test-That 'one plan per image, into generated/trellis' { $r.Code -eq 0 -and @($r.Json).Count -eq 2 -and $rock.status -eq 'dry-run:new' -and $rock.service -eq 'trellis' }
+  Test-That 'a LoadImage replaces the drawn picture on every input it fed: the background removal and the crop' {
+    $gr.'51'.class_type -eq 'LoadImage' -and $gr.'26'.inputs.image[0] -eq '51' -and $gr.'25'.inputs.images[0] -eq '51' -and $gr.'26'.inputs.bg_removal_model[0] -eq '29' }
+  Test-That 'the drawing nodes are dropped: sampler, encoders, decode, and the loader that fed only them' {
+    -not $gr.PSObject.Properties['23'] -and -not $gr.PSObject.Properties['24'] -and -not $gr.PSObject.Properties['20'] -and -not $gr.PSObject.Properties['21'] -and -not $gr.PSObject.Properties['1'] -and
+    @($rock.settings.image.removed_nodes).Count -eq 5 -and $rock.settings.image.replaced_node -eq '24' }
+  Test-That 'a node something else still reads stays (the latent the reconstruction sampler shares)' { $gr.PSObject.Properties['22'] -and $gr.'34'.inputs.latent_image[0] -eq '22' }
+  Test-That 'no prompt, seed or size is set, and the reconstruction sampler keeps its own seed' {
+    -not ($ov | Where-Object { $_.node -in '20', '21', '22', '23' }) -and $gr.'34'.inputs.seed -eq 42 -and $null -eq $rock.roles.image_sampler -and $rock.roles.image_source -eq '51' }
+  Test-That 'the image is recorded as supplied, with its hash, its asset id and its sidecar' {
+    $rock.settings.image.supplied -eq $true -and $rock.settings.image.sha256 -eq $rockSha -and $rock.settings.image.asset_id -eq ('ab' * 16) -and $rock.settings.image.provenance -match 'alpha-rock\.provenance\.json$' -and
+    $null -eq $cup.settings.image.asset_id }
+  Test-That 'the prompt is the picture''s, copied from its sidecar and marked so; none without one' {
+    $rock.prompt.from_input -eq $true -and $rock.prompt.subject -eq 'a grey rock' -and $rock.prompt.image_seed -eq 7 -and $null -eq $cup.prompt }
+  Test-That '-Budget decimates each subject to its class''s budget, and records where the number came from' {
+    $rock.settings.decimate.target_face_count -eq 250000 -and $cup.settings.decimate.target_face_count -eq 50000 -and $rock.settings.face_budget.class -eq 'large' -and
+    ((@($ov) | Where-Object { $_.node -eq '42' -and $_.input -eq 'target_face_count' }).why -match '^face count: budget:large \(subjects\.json\)$') }
+  Test-That 'the spec follows the picture''s bytes' { $rock.spec_hash -ne $cup.spec_hash -and $rock.spec_hash -ne $p3.spec_hash }
+  $images3dCopy = Join-Path $root 'images3d-copy'
+  New-Item -ItemType Directory -Force -Path $images3dCopy | Out-Null
+  Copy-Item -LiteralPath (Join-Path $images3d 'alpha-rock.png') -Destination $images3dCopy
+  $r2 = Invoke-Gen 3d -Backend comfyui-3d -Workflow $wf3d -ObjectInfo $info3dFile -Images $images3dCopy -Subjects $subjectsFile -Budget -LocalRoot $local -Date 2026-03-04 -DryRun
+  Test-That 'and not the folder it came from, nor the date' { $r2.Code -eq 0 -and $r2.Json[0].spec_hash -eq $rock.spec_hash }
+  $r2 = Invoke-Gen 3d -Backend comfyui-3d -Workflow $wf3d -ObjectInfo $info3dFile -Images $images3d -Budget -LocalRoot $local -DryRun
+  Test-That '-Budget without a -Subjects list is refused' { $r2.Code -ne 0 -and $r2.Err -match '-Budget takes each subject' }
+  $r2 = Invoke-Gen 3d -Backend comfyui-3d -Workflow $wf3d -ObjectInfo $info3dFile -Images $images3d -Subjects $subjectsFile -Budget -FaceCount 70000 -LocalRoot $local -DryRun
+  Test-That '-Budget with -FaceCount is refused rather than one silently winning' { $r2.Code -ne 0 -and $r2.Err -match 'both name the face count' }
+  $r2 = Invoke-Gen 3d -Backend comfyui-3d -Workflow $wf3d -ObjectInfo $info3dFile -Images $images3d -Only beta-cup -LocalRoot $local -DryRun
+  Test-That 'without -Budget, -FaceCount''s default as before' { $r2.Code -eq 0 -and $r2.Json[0].settings.decimate.target_face_count -eq 100000 -and $null -eq $r2.Json[0].settings.face_budget }
 
   # ---- provenance, through the Tripo folder --------------------------------------------------------
   Write-Host 'manifest / ingest / verify'

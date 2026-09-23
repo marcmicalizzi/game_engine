@@ -9,12 +9,13 @@
                         [-Width 640] [-Height 640] [-Orbit 0] [-Frames 4] [-CoarseLod 1] [-FinestLod 0.05]
                         [-Shadows off|rt] [-Only <name,...>] [-KeepContainers] [-Title <text>]
                         [-MaxFlip 0.02] [-MinIslandTexels 1] [-MaxWarnings 0] [-DenseTriangles 250000]
-                        [-LowCoverage 0.15] [-AllowStale] [-StalenessPaths <path,...>]
+                        [-LowCoverage 0.15] [-MaxCollapseShare 0.75] [-MinCollapseDensity 3]
+                        [-AllowStale] [-StalenessPaths <path,...>]
   tools/e10-harness.ps1 -FromReport <report.json> [the threshold flags]
   tools/e10-harness.ps1 -CheckBinaries -Out <scratch dir> [-Bin <dir> | -Preset msvc-release]   # the staleness check alone
 
-  For every GLB (any service; a provenance sidecar beside it, from tools/generate.ps1, adds the
-  service, the task and the credits to its row):
+  For every GLB, or .gltf beside its buffers (any service; a provenance sidecar beside it, from
+  tools/generate.ps1, adds the service, the task and the credits to its row):
 
     1. engine-content build   -> triangles, clusters, levels, warnings (by rule), container bytes,
                                  build ms; an import the build refuses is a failure with its rule
@@ -53,6 +54,28 @@
     -DenseTriangles       not a pass criterion: the size above which a FLIP failure is diagnosed as
                           detail carried by geometry rather than by the atlas (E10's first pass: the
                           picture error followed log triangle count at r = 0.81).
+    -MaxCollapseShare 0.75, judged where the finest cut is at least -MinCollapseDensity 3 pairs per
+                          1,000 pixels of the object: how far the LOD collapses. The coarse cut (1 px)
+                          may draw at most three quarters of the finest cut's visible (instance,
+                          cluster) pairs. A mesh whose LOD does not collapse passes the FLIP check for
+                          the wrong reason — a cut that did not coarsen has nothing to lose — while
+                          it costs its finest cut at every distance: E10's second pass (Meshy's
+                          triangle remesh) had six such, their coarse cut 86-100% of the finest, the
+                          share following the seam fraction at r = 0.94. The line is from evidence,
+                          measured at the E10 sets' framing (640x640, orbit 16, 1 px against 0.05 px)
+                          and at the fit framing: the known-good Khronos samples the check judges draw
+                          at most 46% (FlightHelmet); at orbit 16 every mesh not made by the triangle
+                          remesh draws at most 68% (Tripo's barrel cactus), and the six that do not
+                          coarsen at least 86% — 0.75 is between, and means the LOD must shed at least
+                          a quarter of the cut. (Framed whole, the six draw 74-100%, and Tripo's rope
+                          fails at 84%: a sound atlas, but strands at the scale of the view.) The
+                          share depends on the view, so it is judged only where the finest cut is
+                          denser on screen than the threshold can resolve: a low-poly game asset whose
+                          triangles are already several pixels each (SciFiHelmet: 23,000 triangles,
+                          share 0.96 at orbit 16 and 0.85 framed whole, at 1.3 and 2.3 pairs per
+                          1,000 object pixels) has nothing to shed at this view and is not at fault,
+                          while every mesh that did not coarsen was at 4.0 or more; 3 is between.
+                          Off Windows there is no coverage, so no density, and every mesh is judged.
 
     -LowCoverage 0.15     not a pass criterion: below this share of the frame the object-only FLIP is
                           flagged as unreliable in the report. It is the whole-frame mean divided by
@@ -114,6 +137,8 @@ param(
   [int]$MaxWarnings = 0,
   [long]$DenseTriangles = 250000,
   [double]$LowCoverage = 0.15,
+  [double]$MaxCollapseShare = 0.75,
+  [double]$MinCollapseDensity = 3.0,
   [switch]$AllowStale,
   [switch]$CheckBinaries,
   # What the three binaries' numbers are made of, for the staleness check: the three apps, the
@@ -134,6 +159,10 @@ $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $IsWin = $IsWindows -or ($env:OS -eq 'Windows_NT')
 $Exe = if ($IsWin) { '.exe' } else { '' }
 $Inv = [Globalization.CultureInfo]::InvariantCulture
+
+# Why the collapse line is where it is (THE THRESHOLDS; docs/experiments/e10-generated-props.md, "The
+# collapse check"), for report.json and report.md.
+$script:CollapseWhy = 'E10 calibration at 640x640, orbit 16 and fit, 1 px against 0.05 px: known-good Khronos samples judged draw at most 46% (FlightHelmet), at orbit 16 every generated mesh not made by the triangle remesh at most 68%, the six Meshy triangle remeshes that do not coarsen 86-100%; below 3 pairs per 1,000 object pixels a mesh is no denser than the view can show (SciFiHelmet: 1.3 and 2.3)'
 
 function Write-Log([string]$text) { [Console]::Error.WriteLine($text) }
 function Get-FileSha256([string]$file) { (Get-FileHash -Algorithm SHA256 -LiteralPath $file).Hash.ToLowerInvariant() }
@@ -312,20 +341,52 @@ function Get-Diagnosis($row) {
     $parts += ("coarse cut is FLIP {0:0.0000} / PSNR {1:0.0} dB from the finest ({2:0.000} over the object's {3:0}% of the frame); {4}" -f $row.flip_mean, $row.psnr, $row.flip_object_mean, (100 * [double]$row.coverage), ($why -join '; and '))
   }
   if ($row.checks.flip -eq 'unmeasured') { $parts += 'no picture: engine-view could not render here (exit 3)' }
+  # A mesh whose LOD does not collapse passes the picture check for the wrong reason: the coarse cut
+  # is the finest cut, so it has nothing to lose, and the mesh costs its finest cut at every distance.
+  # E10's second pass found the cause in the atlas — a seam vertex is one the simplifier may not
+  # collapse across (geometry.md), and the share followed the seam fraction at r = 0.94 — so the
+  # diagnosis leads with the atlas when it is fragmented, and with the geometry when it is not.
+  if ($row.checks.collapse -eq 'fail') {
+    $what = "the LOD does not collapse: at the default threshold ({0} px) the coarse cut still draws {1:0}% of the finest cut's pairs ({2:N0} of {3:N0}), so the mesh costs close to its finest cut at every distance, and its FLIP ({4:0.0000}) passes for want of anything to lose" -f `
+      $script:JudgedCoarsePx, (100 * [double]$row.collapse_share), [long]$row.coarse_visible_pairs, [long]$row.finest_visible_pairs, [double]$row.flip_mean
+    if ($fragmented) {
+      $what += ("; the atlas is why ({0:N0} islands, median {1:N0} texels, {2:0.0}% of vertices on a seam, and the simplifier may not collapse across a seam) — ask the generator for a sounder atlas (Meshy's quad remesh, TRELLIS.2's pec segmenter) or repack and rebake" -f $row.islands, $row.median_island_texels_4096, (100 * $row.seam_fraction))
+    } else {
+      $levels = if ($row.PSObject.Properties['level_clusters'] -and $row.level_clusters) { " (clusters per level, leaves first: $(@($row.level_clusters) -join ', '))" } else { '' }
+      $what += "; the atlas is not fragmented, so the geometry is why: detail at the scale of the view that any simplification moves by more than the threshold (a rope's strands — decimate and bake it into the normal map), many separate parts, or normals split along every edge; read the heat map and the DAG$($levels)"
+    }
+    $parts += $what
+  }
+  if ($row.checks.collapse -eq 'unmeasured') { $parts += 'no visible pairs recorded: the LOD collapse could not be judged' }
   return ($parts -join ' | ')
 }
 
 # Checks, status and diagnosis, recomputed from the stored measurements every time.
 function Set-Verdict($row) {
-  $checks = [ordered]@{ import = 'pass'; warnings = 'pass'; island = 'pass'; flip = 'pass' }
+  $checks = [ordered]@{ import = 'pass'; warnings = 'pass'; island = 'pass'; flip = 'pass'; collapse = 'pass' }
+  # The share is computed at judging time from the two counts every report since the first carries,
+  # so -FromReport judges a report measured before the check existed.
+  $coarse = if ($row.Contains('coarse_visible_pairs')) { $row.coarse_visible_pairs } else { $null }
+  $finest = if ($row.Contains('finest_visible_pairs')) { $row.finest_visible_pairs } else { $null }
+  $row.collapse_share = if ($null -ne $coarse -and $null -ne $finest -and [long]$finest -gt 0) { [math]::Round([double]$coarse / [double]$finest, 4) } else { $null }
+  # How dense the finest cut is on screen: its pairs per thousand pixels of the object. Below
+  # -MinCollapseDensity the mesh is already no denser than the view can show, and not coarsening
+  # there is not a fault (THE THRESHOLDS).
+  $row.finest_pairs_per_kpx = if ($null -ne $finest -and $null -ne $row.coverage -and [double]$row.coverage -gt 0) { [math]::Round(1000 * [double]$finest / ([double]$row.coverage * $script:JudgedPixels), 3) } else { $null }
   if ($row.Contains('build_rule') -and $row.build_rule) {
-    $checks.import = 'fail'; $checks.warnings = 'n/a'; $checks.island = 'n/a'; $checks.flip = 'n/a'
+    $checks.import = 'fail'; $checks.warnings = 'n/a'; $checks.island = 'n/a'; $checks.flip = 'n/a'; $checks.collapse = 'n/a'
   } else {
     if ([int]$row.warnings -gt $MaxWarnings) { $checks.warnings = 'fail' }
     if ($null -eq $row.smallest_island_texels_4096) { $checks.island = 'unmeasured' }
     elseif ([double]$row.smallest_island_texels_4096 -lt $MinIslandTexels) { $checks.island = 'fail' }
     if ($null -eq $row.flip_mean) { $checks.flip = 'unmeasured' }
     elseif ([double]$row.flip_mean -gt $MaxFlip) { $checks.flip = 'fail' }
+    # -MaxCollapseShare, judged where the finest cut is at least -MinCollapseDensity (THE THRESHOLDS).
+    # With no coverage (off Windows the harness cannot read a capture's pixels) there is no density,
+    # and every mesh is judged on its share alone.
+    if ($null -eq $row.collapse_share) { $checks.collapse = if ($null -eq $row.flip_mean) { 'n/a' } else { 'unmeasured' } }
+    elseif ($null -ne $row.finest_pairs_per_kpx -and [double]$row.finest_pairs_per_kpx -lt $MinCollapseDensity) { $checks.collapse = 'n/a' }
+    elseif ([double]$row.collapse_share -gt $MaxCollapseShare) { $checks.collapse = 'fail' }
   }
   $row.checks = $checks
   # Not a check: whether the object-only FLIP means anything for this asset (-LowCoverage).
@@ -338,13 +399,19 @@ function Set-Verdict($row) {
 # ---- measuring ---------------------------------------------------------------------------------------
 
 $rows = @()
+# What the verdicts are judged against: the settings the captures were made with (a re-judged
+# report's own, which -Width, -Height and -CoarseLod do not change).
+$script:JudgedCoarsePx = $CoarseLod
+$script:JudgedPixels = [double]$Width * $Height
 if ($FromReport) {
   $old = Get-Content -Raw -LiteralPath $FromReport | ConvertFrom-Json
   if ($old.schema -ne 'engine.e10.report/1') { throw "$FromReport is not an engine.e10.report/1 file" }
   $Out = Split-Path -Parent (Resolve-Path -LiteralPath $FromReport).Path
+  if ($old.settings -and $null -ne $old.settings.coarse_lod_px) { $script:JudgedCoarsePx = $old.settings.coarse_lod_px }
+  if ($old.settings -and $old.settings.width -and $old.settings.height) { $script:JudgedPixels = [double]$old.settings.width * $old.settings.height }
   foreach ($a in @($old.assets)) {
     $row = ConvertTo-Ordered $a
-    foreach ($k in @('checks', 'status', 'diagnosis', 'object_flip_reliable')) { if ($row.Contains($k)) { $row.Remove($k) } }
+    foreach ($k in @('checks', 'status', 'diagnosis', 'object_flip_reliable', 'collapse_share', 'finest_pairs_per_kpx')) { if ($row.Contains($k)) { $row.Remove($k) } }
     Set-Verdict $row
     $rows += [pscustomobject]$row
   }
@@ -363,16 +430,18 @@ if ($FromReport) {
     if (-not $Out) { throw '-CheckBinaries copies the binaries before asking them anything; give -Out <scratch dir>' }
     $folders = @()
   } else {
-    if (-not $Folder) { throw 'give -Folder <dir of .glb> (or -FromReport <report.json> to re-judge one)' }
+    if (-not $Folder) { throw 'give -Folder <dir of .glb or .gltf> (or -FromReport <report.json> to re-judge one)' }
     $folders = @()
     foreach ($f in $Folder) { foreach ($p in ($f -split ',')) { if ($p.Trim()) { $folders += (Resolve-Path -LiteralPath $p.Trim()).Path } } }
     $glbs = @()
-    foreach ($f in $folders) { $glbs += @(Get-ChildItem -LiteralPath $f -File -Filter '*.glb' | Sort-Object Name) }
+    # A .gltf beside its buffers and images is taken as readily as a .glb, so the Khronos samples
+    # the collapse limit was calibrated on (content/samples) go through the same harness.
+    foreach ($f in $folders) { $glbs += @(Get-ChildItem -LiteralPath $f -File | Where-Object { $_.Extension -in '.glb', '.gltf' } | Sort-Object Name) }
     if ($Only) {
       $wanted = @($Only | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
       $glbs = @($glbs | Where-Object { $wanted -contains $_.BaseName })
     }
-    if ($glbs.Count -eq 0) { throw "no .glb files in $($folders -join ', ')" }
+    if ($glbs.Count -eq 0) { throw "no .glb or .gltf files in $($folders -join ', ')" }
   }
 
   if (-not $Out) {
@@ -460,8 +529,10 @@ if ($FromReport) {
         $row.generation = [ordered]@{
           face_count = $s.parameters.decimate.target_face_count; segmenter = $s.parameters.segmenter.value
           smooth_iters = $s.parameters.remesh.smooth_iters; weld_distance = $s.parameters.unwrap.weld_distance; texture = $s.parameters.texture_resolution
-          unwrap_seconds = $s.timings.unwrap_seconds; wall_seconds = $s.timings.wall_seconds; cached_nodes = @($s.timings.cached_nodes).Count
+          unwrap_seconds = $s.timings.unwrap_seconds; bake_seconds = $s.timings.bake_seconds; wall_seconds = $s.timings.wall_seconds; cached_nodes = @($s.timings.cached_nodes).Count
           cpu_pct = $s.machine_state.cpu_pct; gpu_util_pct = $s.machine_state.gpu_util_pct; comfyui_cores_busy = $s.machine_state.comfyui_cores_busy
+          # An image-in run (`-Images`) was given its picture rather than drawing it: say so, and which.
+          image_supplied = $(if ($s.parameters.PSObject.Properties['image'] -and $s.parameters.image) { [bool]$s.parameters.image.supplied } else { $false })
         }
       }
     } else {
@@ -507,6 +578,9 @@ if ($FromReport) {
       $row.uv_area = [math]::Round([double]$a.uv_area, 4)
       $row.lod_attribute_error = $st.lod_attribute_error
     }
+    # Clusters per DAG level, leaves first: how far the build could collapse the mesh at all, whatever
+    # the view (the collapse check below judges one view). Recorded, not judged.
+    if ($st -and $null -ne $st.level_clusters) { $row.level_clusters = @($st.level_clusters | ForEach-Object { [long]$_ }) }
 
     # 3. two captures, of one frame, differing only in the LOD threshold
     $common = @('--mesh', $clusters, '--width', $Width, '--height', $Height, '--frames', $Frames, '--orbit', ([double]$orbitUsed).ToString($Inv), '--no-vsync', '--shadows', $Shadows)
@@ -574,7 +648,7 @@ if ($FromReport) {
 $columns = [ordered]@{
   triangles = 'max'; clusters = 'max'; lod_levels = 'min'; warnings = 'max'; islands = 'max'; seam_fraction = 'max'
   smallest_island_texels_4096 = 'min'; container_bytes = 'max'; build_ms = 'max'; psnr = 'min'; flip_mean = 'max'
-  coverage = 'min'; flip_object_mean = 'max'
+  coverage = 'min'; flip_object_mean = 'max'; collapse_share = 'max'
 }
 $colStats = [ordered]@{}
 foreach ($c in $columns.Keys) {
@@ -607,12 +681,14 @@ foreach ($spec in @(@{ k = 'log_triangles'; f = { [math]::Log([double]$args[0].t
   $follows[$spec.k] = [ordered]@{
     flip_mean = Get-Pearson $x @($measured | ForEach-Object { [double]$_.flip_mean })
     flip_object_mean = Get-Pearson $x @($measured | ForEach-Object { [double]$_.flip_object_mean })
+    # And what the LOD collapse follows: E10's second pass found the seam fraction (r = 0.94).
+    collapse_share = $(if (@($measured | Where-Object { $null -eq $_.collapse_share }).Count -eq 0) { Get-Pearson $x @($measured | ForEach-Object { [double]$_.collapse_share }) } else { $null })
   }
 }
 
 $passed = @($rows | Where-Object status -eq 'pass').Count
 $byCheck = [ordered]@{}
-foreach ($k in @('import', 'warnings', 'island', 'flip')) { $byCheck[$k] = @($rows | Where-Object { $_.checks[$k] -in 'fail', 'unmeasured' }).Count }
+foreach ($k in @('import', 'warnings', 'island', 'flip', 'collapse')) { $byCheck[$k] = @($rows | Where-Object { $_.checks[$k] -in 'fail', 'unmeasured' }).Count }
 
 $staleNames = @($toolsBlock.binaries | Where-Object { $_.stale } | ForEach-Object { $_.name })
 $report = [ordered]@{
@@ -627,11 +703,13 @@ $report = [ordered]@{
   settings = $settingsBlock
   thresholds = [ordered]@{
     max_warnings = $MaxWarnings; min_island_texels_4096 = $MinIslandTexels; max_flip_mean = $MaxFlip; dense_triangles = $DenseTriangles
+    max_collapse_share = $MaxCollapseShare; min_collapse_density_pairs_per_kpx = $MinCollapseDensity
     why = [ordered]@{
       warnings = 'an asset that needs a person to read a warning before use is not one the pipeline can take unattended'
       island = 'an island under one texel of a 4096 atlas cannot be sampled as itself and no seam-respecting simplification can coarsen it'
       flip = 'geometry.md seam-fix numbers: defective builds 0.0241 and 0.0223, fixed builds 0.0115 and 0.0083, FlightHelmet 0.0173; 0.02 separates them'
       dense = 'diagnosis only: above this a FLIP failure is read as detail carried by geometry'
+      collapse = $script:CollapseWhy
     }
   }
   machine_state = $machine
@@ -662,15 +740,17 @@ $freshText = if ($fresh -and -not $fresh.stale) { ', none stale' } else { '' }
 $md.Add("Measured by ``tools/e10-harness.ps1`` from $startedText to $finishedText ($seconds s), checkout at ``$($commitText.Substring(0, [math]::Min(12, $commitText.Length)))``, binaries built from $builtText ($($toolsBlock.source), copied)$freshText; judged $($report.judged_utc).")
 $md.Add("Captures: $($settingsBlock.width)x$($settingsBlock.height), ``--orbit $($settingsBlock.orbit) --frames $($settingsBlock.frames) --shadows $($settingsBlock.shadows)``$(if ($settingsBlock.framing) { " (framing $($settingsBlock.framing))" }), coarse ``--lod $($settingsBlock.coarse_lod_px)`` against finest ``--lod $($settingsBlock.finest_lod_px)``.")
 $md.Add('')
-$md.Add("**Pass rate: $passed of $($rows.Count) ($([math]::Round(100 * $report.totals.pass_rate))%).** Failures by check: import $($byCheck.import), warnings $($byCheck.warnings), atlas island $($byCheck.island), coarse-vs-finest FLIP $($byCheck.flip) (an asset can fail more than one).")
+$md.Add("**Pass rate: $passed of $($rows.Count) ($([math]::Round(100 * $report.totals.pass_rate))%).** Failures by check: import $($byCheck.import), warnings $($byCheck.warnings), atlas island $($byCheck.island), coarse-vs-finest FLIP $($byCheck.flip), LOD collapse $($byCheck.collapse) (an asset can fail more than one).")
 $md.Add('')
-$md.Add("Thresholds: $MaxWarnings warnings; smallest atlas island >= $MinIslandTexels texel of a 4096 atlas; coarse-vs-finest FLIP mean <= $MaxFlip (the seam fix's numbers put every known-good build below 0.02 and every known-bad one above).")
+$md.Add("Thresholds: $MaxWarnings warnings; smallest atlas island >= $MinIslandTexels texel of a 4096 atlas; coarse-vs-finest FLIP mean <= $MaxFlip (the seam fix's numbers put every known-good build below 0.02 and every known-bad one above); the coarse cut draws <= $([math]::Round(100 * $MaxCollapseShare))% of the finest cut's pairs, judged where the finest cut has at least $MinCollapseDensity pairs per 1,000 pixels of the object ($($script:CollapseWhy)).")
 $md.Add('')
-$md.Add('| asset | triangles | clusters | levels | warn | islands | seam % | smallest island (texels) | median island (texels) | atlas used % | pairs coarse / finest | GLB MB | container MB | build ms | PSNR dB | FLIP | object FLIP | coverage % | result |')
+$md.Add('| asset | triangles | clusters | levels | warn | islands | seam % | smallest island (texels) | median island (texels) | atlas used % | pairs coarse / finest (share; finest per 1,000 object px) | GLB MB | container MB | build ms | PSNR dB | FLIP | object FLIP | coverage % | result |')
 $md.Add('|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|')
 foreach ($r in $rows) {
   $objectFlip = (F $r.flip_object_mean '0.000') + $(if ($r.PSObject.Properties['object_flip_reliable'] -and $r.object_flip_reliable -eq $false) { ' †' } else { '' })
-  $pairs = if ($null -ne $r.coarse_visible_pairs -and $null -ne $r.finest_visible_pairs) { "$(F $r.coarse_visible_pairs 'N0') / $(F $r.finest_visible_pairs 'N0')" } else { '—' }
+  $pairs = if ($null -ne $r.coarse_visible_pairs -and $null -ne $r.finest_visible_pairs) {
+    "$(F $r.coarse_visible_pairs 'N0') / $(F $r.finest_visible_pairs 'N0') ($(F $(if ($null -ne $r.collapse_share) { 100 * $r.collapse_share }) '0')%; $(F $r.finest_pairs_per_kpx '0.0')$(if ($r.checks.collapse -eq 'n/a') { ', too sparse to judge' }))"
+  } else { '—' }
   $md.Add(('| {0} | {1} | {2} | {3} | {4} | {5} | {6} | {7} | {8} | {9} | {10} | {11} | {12} | {13} | {14} | {15} | {16} | {17} | {18} |' -f $r.name, (F $r.triangles 'N0'), (F $r.clusters 'N0'), (F $r.lod_levels '0'),
       (F $r.warnings '0'), (F $r.islands 'N0'), (F $(if ($null -ne $r.seam_fraction) { 100 * $r.seam_fraction }) '0.0'), (F $r.smallest_island_texels_4096 '0.###'),
       (F $r.median_island_texels_4096 'N0'), (F $(if ($null -ne $r.uv_area) { 100 * $r.uv_area }) '0.0'), $pairs, (F $(if ($r.glb_bytes) { $r.glb_bytes / 1MB }) '0.0'),
@@ -688,12 +768,14 @@ $gen = @($rows | Where-Object { $_.PSObject.Properties['generation'] -and $_.gen
 if ($gen.Count -gt 0) {
   $md.Add('What made them, from each sidecar (`tools/generate.ps1`):')
   $md.Add('')
-  $md.Add('| asset | service | faces asked | segmenter | smooth iters | weld | texture | unwrap s | generation s | CPU % (min–max) | GPU % (min–max) |')
-  $md.Add('|---|---|---|---|---|---|---|---|---|---|---|')
+  $md.Add('| asset | service | image | faces asked | segmenter | smooth iters | weld | texture | unwrap s | bake s | generation s | CPU % (min–max) | GPU % (min–max) |')
+  $md.Add('|---|---|---|---|---|---|---|---|---|---|---|---|---|')
   foreach ($r in $gen) {
     $gx = $r.generation
-    $md.Add(('| {0} | {1} | {2} | {3} | {4} | {5} | {6} | {7} | {8} | {9} | {10} |' -f $r.name, $r.service, (F $gx.face_count 'N0'), $gx.segmenter, $gx.smooth_iters, $gx.weld_distance, $gx.texture,
-        (F $gx.unwrap_seconds '0.0'), (F $gx.wall_seconds '0'), $(if ($gx.cpu_pct) { "$($gx.cpu_pct.min)–$($gx.cpu_pct.max)" } else { '—' }), $(if ($gx.gpu_util_pct) { "$($gx.gpu_util_pct.min)–$($gx.gpu_util_pct.max)" } else { '—' })))
+    $imageText = if ($gx.PSObject.Properties['image_supplied'] -and $gx.image_supplied) { 'supplied' } else { 'drawn' }
+    $md.Add(('| {0} | {1} | {2} | {3} | {4} | {5} | {6} | {7} | {8} | {9} | {10} | {11} | {12} |' -f $r.name, $r.service, $imageText, (F $gx.face_count 'N0'), $gx.segmenter, $gx.smooth_iters, $gx.weld_distance, $gx.texture,
+        (F $gx.unwrap_seconds '0.0'), (F $(if ($gx.PSObject.Properties['bake_seconds']) { $gx.bake_seconds }) '0.0'), (F $gx.wall_seconds '0'),
+        $(if ($gx.cpu_pct) { "$($gx.cpu_pct.min)–$($gx.cpu_pct.max)" } else { '—' }), $(if ($gx.gpu_util_pct) { "$($gx.gpu_util_pct.min)–$($gx.gpu_util_pct.max)" } else { '—' })))
   }
   $md.Add('')
 }
@@ -701,11 +783,11 @@ $md.Add('| column | mean | worst | worst asset | best | best asset |')
 $md.Add('|---|---|---|---|---|---|')
 foreach ($c in $colStats.Keys) { $s = $colStats[$c]; $md.Add("| $c | $(F $s.mean 'G5') | $(F $s.worst 'G5') | $($s.worst_asset) | $(F $s.best 'G5') | $($s.best_asset) |") }
 $md.Add('')
-$md.Add("What the coarse-vs-finest FLIP follows, as Pearson r over the $($measured.Count) measured assets:")
+$md.Add("What the coarse-vs-finest FLIP and the LOD collapse follow, as Pearson r over the $($measured.Count) measured assets:")
 $md.Add('')
-$md.Add('| against | FLIP, whole frame | FLIP, object only |')
-$md.Add('|---|---|---|')
-foreach ($k in $follows.Keys) { $md.Add("| $k | $(F $follows[$k].flip_mean '0.00') | $(F $follows[$k].flip_object_mean '0.00') |") }
+$md.Add('| against | FLIP, whole frame | FLIP, object only | coarse / finest pairs |')
+$md.Add('|---|---|---|---|')
+foreach ($k in $follows.Keys) { $md.Add("| $k | $(F $follows[$k].flip_mean '0.00') | $(F $follows[$k].flip_object_mean '0.00') | $(F $follows[$k].collapse_share '0.00') |") }
 $md.Add('')
 $fails = @($rows | Where-Object status -ne 'pass')
 if ($fails.Count -gt 0) {

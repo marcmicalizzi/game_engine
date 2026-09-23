@@ -9,6 +9,7 @@
   tools/generate.ps1 3d       -Backend meshy   -Images <png|dir>...
   tools/generate.ps1 3d       -Backend comfyui -Workflow <image-to-3d ui-export.json> -Images <png|dir>...
   tools/generate.ps1 3d       -Backend comfyui-3d -Workflow <text-to-3d ui-export.json> (-Subjects <list.json> | -Subject <text> -Name <name>)
+  tools/generate.ps1 3d       -Backend comfyui-3d -Workflow <text-to-3d ui-export.json> -Images <png|dir>... [-Subjects <list.json>]   # image in
   tools/generate.ps1 pipeline -Pipeline 'text->image->3d' -Workflow <image workflow> -Subjects <list.json>
                               -Backend meshy|tripo-folder|comfyui [-Workflow3d <image-to-3d workflow>]
   tools/generate.ps1 manifest -Backend tripo-folder -Images <png|dir>...     # the list the owner works from by hand
@@ -30,7 +31,15 @@
           [-RemeshSmoothIters 3] [-Segmenter pec|adaptive] [-SegmenterTimeoutMinutes 20]
           [-UnwrapResolution <n>] [-UnwrapPadding <n>] [-WeldDistance <f>] [-TextureResolution 2048]
           [-OutputPrefix '3d/Agentic/{date}/{name}'] [-OutputRoot <ComfyUI output dir>] [-Foliage]
-          [-TimeoutMinutes 60]
+          [-TimeoutMinutes 60] [-Budget (with -Subjects: decimate to the subject's triangle budget)]
+
+  IMAGE IN (comfyui-3d with -Images). The workflow draws its own picture with Krea 2; given
+  -Images, it is handed one instead, so a mesh starts from the same bytes another service was
+  given. The picture the image sampler decodes (found by wiring: the VAEDecode of that sampler's
+  latent, which feeds the background removal and the crop) is replaced on every input it fed by a
+  LoadImage of the uploaded file, and every node that only fed that decode (the Krea 2 sampler,
+  its encoders, latent and loaders) is dropped from the prompt. The sidecar records the image as
+  its input and `derived_from` (its asset id), and `parameters.image.supplied` says so.
 
   REMESH (Meshy). Without -Remesh the request is the one E10's first pass was verified with, and
   Meshy 6/7 do not remesh (`should_remesh` defaults to false for them), so a mesh comes back at
@@ -138,6 +147,7 @@ param(
   [string]$OutputPrefix = '3d/Agentic/{date}/{name}',
   [string]$OutputRoot = $(if ($env:COMFYUI_OUTPUT) { Split-Path -Parent $env:COMFYUI_OUTPUT } else { '' }),
   [switch]$Foliage,
+  [switch]$Budget,
   [string]$Operator = $(if ($env:ENGINE_OPERATOR) { $env:ENGINE_OPERATOR } elseif ($env:ENGINE_GPU_LOCK_OWNER) { $env:ENGINE_GPU_LOCK_OWNER } else { 'claude-engine' }),
   [switch]$Yes,
   [switch]$DryRun,
@@ -150,6 +160,9 @@ $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+# Whether -FaceCount was given, not defaulted: read here because $PSBoundParameters inside a function
+# is that function's own (-Budget refuses to guess which of the two was meant).
+$script:FaceCountGiven = $PSBoundParameters.ContainsKey('FaceCount')
 $IsWin = $IsWindows -or ($env:OS -eq 'Windows_NT')
 $SidecarSchema = 'engine.generation.provenance/1'
 $ManifestSchema = 'engine.generation.tripo-manifest/1'
@@ -164,7 +177,8 @@ $LockTool = Join-Path $PSScriptRoot 'gpu-lock.ps1'
 $Licences = @{
   'comfyui' = [ordered]@{ license = 'owner-generated-local'; license_class = 'Proprietary'; license_terms_url = $null; commercial_ok = $false; attribution_required = $true }
   # Local image-to-3D models run in the owner's ComfyUI: the same local row until each model's
-  # licence has been reviewed (TRELLIS.2 and Pixal3D publish their own terms; neither is read here).
+  # licence has been reviewed. What TRELLIS.2 and Pixal3D (and the models they load) publish is in
+  # docs/content-generation.md, "The local models' licences, as published"; the row is the owner's call.
   'trellis' = [ordered]@{ license = 'owner-generated-local'; license_class = 'Proprietary'; license_terms_url = $null; commercial_ok = $false; attribution_required = $true }
   'pixal3d' = [ordered]@{ license = 'owner-generated-local'; license_class = 'Proprietary'; license_terms_url = $null; commercial_ok = $false; attribution_required = $true }
   'meshy'   = [ordered]@{ license = 'meshy-pro'; license_class = 'Proprietary'; license_terms_url = $null; commercial_ok = $false; attribution_required = $true }
@@ -916,11 +930,11 @@ function Get-SpecHash($wf, $g, [string]$extra) {
 }
 
 function Invoke-ImageStage {
-  $subjects = Get-SubjectList
+  $subjectList = Get-SubjectList
   $wf = Get-WorkflowGraph $Workflow
   $dir = Get-OutputDir 'comfyui'
   $plan = @()
-  foreach ($s in $subjects) {
+  foreach ($s in $subjectList) {
     $g = Copy-Graph $wf.Graph
     $p = Get-PromptFor $s
     $sd = Get-SeedFor $s
@@ -1500,6 +1514,84 @@ function Get-ModelBranch($g, $roles, [string]$wanted) {
   throw "comfyui-3d: neither UNET loader the model switch chooses between names a $want model"
 }
 
+# Image in (-Images): the picture is given rather than drawn, so a mesh starts from the same bytes
+# another service was given (E10 fed Meshy and Tripo the ComfyUI images; TRELLIS.2 has to start
+# from those too to be compared like for like). The picture the workflow draws is the VAEDecode of
+# the image sampler's latent — found by that wiring, like every other role — and it feeds the
+# background removal and the crop. A LoadImage takes its place on every input it fed, and then
+# every node that only fed the decode is dropped from the prompt, from the decode backwards, each
+# one only once nothing left reads it: the Krea 2 sampler, its encoders and latent, its UNet, CLIP
+# and VAE loaders. A node something else still reads (a latent a reconstruction sampler shares) stays.
+# Nothing is dropped by class or by id, so a workflow saved again, or one that draws its picture
+# another way, either works or is refused with a sentence.
+function Set-ImageSource($g, [string]$imageSampler) {
+  $decodes = @($g.Api.Keys | Where-Object { $g.Api[$_].class_type -eq 'VAEDecode' -and (Get-LinkFrom $g $_ 'samples') -eq $imageSampler })
+  if ($decodes.Count -ne 1) { throw "comfyui-3d -Images: the workflow needs exactly one VAEDecode of the image sampler's latent (the picture it draws, which the given image replaces); it has $($decodes.Count)" }
+  $decode = [string]$decodes[0]
+  $newId = [string](([long[]]@($g.Api.Keys | ForEach-Object { [long]$_ }) | Measure-Object -Maximum).Maximum + 1)
+  $rewired = New-Object System.Collections.Generic.List[object]
+  foreach ($id in @($g.Api.Keys)) {
+    $node = $g.Api[$id]
+    foreach ($k in @($node.inputs.Keys)) {
+      $v = $node.inputs[$k]
+      if ((Test-IsLink $v) -and [string]$v[0] -eq $decode -and [long]$v[1] -eq 0) {
+        $node.inputs[$k] = @($newId, 0)
+        $rewired.Add([ordered]@{ node = $id; class = $node.class_type; input = $k })
+      }
+    }
+  }
+  if ($rewired.Count -eq 0) { throw "comfyui-3d -Images: nothing reads the image decode (node $decode), so there is nothing for the given image to feed" }
+  $g.Api[$newId] = [ordered]@{ class_type = 'LoadImage'; inputs = [ordered]@{ image = 'pending-upload' } }
+  $removed = New-Object System.Collections.Generic.List[object]
+  $queue = [System.Collections.Generic.Queue[string]]::new()
+  $queue.Enqueue($decode)
+  while ($queue.Count -gt 0) {
+    $id = $queue.Dequeue()
+    if (-not $g.Api.Contains($id)) { continue }
+    $read = $false
+    foreach ($other in @($g.Api.Keys)) {
+      foreach ($v in @($g.Api[$other].inputs.Values)) { if ((Test-IsLink $v) -and [string]$v[0] -eq $id) { $read = $true; break } }
+      if ($read) { break }
+    }
+    if ($read) { continue }
+    $sources = @($g.Api[$id].inputs.Values | Where-Object { Test-IsLink $_ } | ForEach-Object { [string]$_[0] } | Sort-Object -Unique)
+    $removed.Add([ordered]@{ node = $id; class = $g.Api[$id].class_type })
+    $g.Api.Remove($id)
+    foreach ($s in $sources) { $queue.Enqueue($s) }
+  }
+  # .ToArray(), never @($list): array-wrapping a generic List throws "Argument types do not match" on
+  # PowerShell 7.6 (the Meshy stage met it first; see docs/content-generation.md, the credit rules).
+  return [pscustomobject]@{ Node = $newId; Replaced = $decode; Rewired = $rewired.ToArray(); Removed = $removed.ToArray() }
+}
+
+# The subject an image stands for, when the picture is given: the -Subjects list's entry of the same
+# name (its category and budget), else the image's own sidecar (the subject it was drawn from), else
+# the name alone. The foliage rule and the budget read it, as they read a subject in text mode.
+function Get-ImageSubjects($inputs) {
+  $byName = @{}
+  $set = $null
+  if ($Subjects) {
+    $doc = Read-JsonFile $Subjects
+    $set = if ($doc.set) { [string]$doc.set } else { [IO.Path]::GetFileNameWithoutExtension($Subjects) }
+    foreach ($s in @($doc.subjects)) { $byName[[string]$s.name] = $s }
+  }
+  $list = @()
+  foreach ($in in $inputs) {
+    $l = $byName[$in.name]
+    $sd = $in.sidecar_data
+    $list += [pscustomobject]@{
+      name = $in.name
+      subject = $(if ($l) { [string]$l.subject } elseif ($sd -and $sd.prompt) { [string]$sd.prompt.subject } else { $null })
+      category = $(if ($l) { [string]$l.category } elseif ($sd -and $sd.subject) { [string]$sd.subject.category } else { $null })
+      size_m = $(if ($l) { $l.size_m } elseif ($sd -and $sd.subject) { $sd.subject.size_m } else { $null })
+      seed = $null
+      set = $(if ($l) { $set } elseif ($sd -and $sd.subject) { [string]$sd.subject.set } else { $null })
+      input = $in
+    }
+  }
+  return , @($list)
+}
+
 # Replace a link with a literal (a flag that overrides what the workflow wires, such as an unwrap
 # resolution apart from the texture's); recorded like any override, with the link as the old value.
 function Set-NodeInputOverLink($graph, [string]$id, [string]$inputName, $value, $record, [string]$why) {
@@ -1542,7 +1634,7 @@ function Get-NodeLiterals($g, [string]$id) {
 # Apply this run's parameters to one copy of the graph. Returns the overrides (each with the
 # workflow's value beside the new one), the effective settings read back from the graph, and the
 # segmenter decision with its reason.
-function Set-Comfy3dOverrides($g, $roles, $s, $promptRec, [long]$seedValue) {
+function Set-Comfy3dOverrides($g, $roles, $s, $promptRec, [long]$seedValue, $imageIn) {
   $ov = New-Object System.Collections.Generic.List[object]
   $foliageWhy = Test-FoliageSubject $s
   $seg = $Segmenter
@@ -1561,20 +1653,34 @@ function Set-Comfy3dOverrides($g, $roles, $s, $promptRec, [long]$seedValue) {
     if ($branch) { [void](Set-NodeInput $g $roles.model_switch 'value' $branch.Value $ov "model: $Model") }
   } elseif ($Model -ne 'trellis2') { throw 'comfyui-3d: this workflow has no model switch, so -Model pixal3d cannot be honoured' }
 
-  $posField = if ($g.Api[$roles.positive].inputs.Contains('text')) { 'text' } else { 'prompt' }
-  [void](Set-NodeInput $g $roles.positive $posField $promptRec.text $ov 'prompt')
-  if ($roles.negative) { [void](Set-NodeInput $g $roles.negative 'text' ([string]$promptRec.negative) $ov 'negative prompt') }
-  else { $promptRec.negative = $null }
-  [void](Set-NodeInput $g $roles.image_sampler 'seed' $seedValue $ov 'image seed')
-  if ($roles.latent) {
-    [void](Set-NodeInput $g $roles.latent 'width' $(if ($Width -gt 0) { $Width } else { 1024 }) $ov 'image size')
-    [void](Set-NodeInput $g $roles.latent 'height' $(if ($Height -gt 0) { $Height } else { 1024 }) $ov 'image size')
+  # Text in, the picture is drawn here: prompt, seed and size go to the image sampler. Image in, those
+  # nodes are gone (Set-ImageSource) and the picture's own sidecar says how it was drawn.
+  if (-not $imageIn) {
+    $posField = if ($g.Api[$roles.positive].inputs.Contains('text')) { 'text' } else { 'prompt' }
+    [void](Set-NodeInput $g $roles.positive $posField $promptRec.text $ov 'prompt')
+    if ($roles.negative) { [void](Set-NodeInput $g $roles.negative 'text' ([string]$promptRec.negative) $ov 'negative prompt') }
+    else { $promptRec.negative = $null }
+    [void](Set-NodeInput $g $roles.image_sampler 'seed' $seedValue $ov 'image seed')
+    if ($roles.latent) {
+      [void](Set-NodeInput $g $roles.latent 'width' $(if ($Width -gt 0) { $Width } else { 1024 }) $ov 'image size')
+      [void](Set-NodeInput $g $roles.latent 'height' $(if ($Height -gt 0) { $Height } else { 1024 }) $ov 'image size')
+    }
   }
 
   if ($RemeshResolution -gt 0) { [void](Set-NodeInput $g $roles.remesh 'resolution' $RemeshResolution $ov 'remesh resolution') }
   if ($RemeshSignMode) { Set-DynamicCombo $g $roles.remesh 'sign_mode' $RemeshSignMode $ov 'remesh sign mode' }
   if ($RemeshSmoothIters -ge 0) { [void](Set-NodeInput $g $roles.remesh 'smooth_iters' $RemeshSmoothIters $ov 'remesh smoothing iterations') }
-  [void](Set-NodeInput $g $roles.decimate 'target_face_count' $FaceCount $ov 'face count')
+  # -Budget: the subject's triangle budget from the -Subjects list (the classes Meshy's remesh and the
+  # owner's Tripo run were given), so three generators meet at one budget; else -FaceCount.
+  $faces = $FaceCount; $facesWhy = 'face count'; $budgetRec = $null
+  if ($Budget) {
+    $b = $script:SubjectBudgets[$s.name]
+    if (-not $b) { throw "-Budget needs a triangle budget for '$($s.name)': a -Subjects list in which that subject names a 'budget' class under triangle_budgets" }
+    $faces = $b.triangles
+    $facesWhy = "face count: budget:$($b.class) ($([IO.Path]::GetFileName($Subjects)))"
+    $budgetRec = [ordered]@{ class = $b.class; triangles = $b.triangles; from = [IO.Path]::GetFileName($Subjects) }
+  }
+  [void](Set-NodeInput $g $roles.decimate 'target_face_count' $faces $ov $facesWhy)
   [void](Set-NodeInput $g $roles.unwrap 'segmenter' $seg $ov "segmenter: $reason")
   if ($UnwrapPadding -ge 0) { [void](Set-NodeInput $g $roles.unwrap 'padding' $UnwrapPadding $ov 'unwrap padding') }
   if ($WeldDistance -ge 0) { [void](Set-NodeInput $g $roles.unwrap 'weld_distance' $WeldDistance $ov 'unwrap weld distance') }
@@ -1598,9 +1704,18 @@ function Set-Comfy3dOverrides($g, $roles, $s, $promptRec, [long]$seedValue) {
   # The effective settings, read back from the graph: what the flags set and what the workflow kept.
   $texValue = if ($roles.texture_resolution) { $g.Api[$roles.texture_resolution].inputs['value'] } else { $TextureResolution }
   $unwrapRes = $g.Api[$roles.unwrap].inputs['resolution']; if (Test-IsLink $unwrapRes) { $unwrapRes = $texValue }
+  $imageRec = if ($imageIn) {
+    $in = $s.input
+    [ordered]@{
+      supplied = $true; path = $in.path; sha256 = $in.sha256; asset_id = $in.asset_id; provenance = $in.sidecar
+      uploaded_as = $null   # set when it is uploaded, just before the run
+      load_node = $imageIn.Node; replaced_node = $imageIn.Replaced; rewired = $imageIn.Rewired; removed_nodes = $imageIn.Removed
+    }
+  } else { [ordered]@{ supplied = $false; sampler = Get-NodeLiterals $g $roles.image_sampler; latent = Get-NodeLiterals $g $roles.latent } }
   $settings = [ordered]@{
     model = $(if ($branch) { [ordered]@{ name = $Model; file = $branch.File; switch_value = $branch.Value } } else { [ordered]@{ name = $Model; file = $null } })
-    image = [ordered]@{ sampler = Get-NodeLiterals $g $roles.image_sampler; latent = Get-NodeLiterals $g $roles.latent }
+    image = $imageRec
+    face_budget = $budgetRec
     reconstruction_samplers = [ordered]@{}
     remesh = Get-NodeLiterals $g $roles.remesh
     decimate = Get-NodeLiterals $g $roles.decimate
@@ -1846,30 +1961,60 @@ function Find-SavedMesh($hist, $roles, [string]$prefix, [DateTime]$since) {
 }
 
 function Invoke-ComfyText3dStage {
-  $subjects = Get-SubjectList
+  $imageMode = [bool]$Images
+  if ($Budget -and -not $Subjects) { throw '-Budget takes each subject''s triangle budget from a -Subjects list; give one' }
+  if ($Budget -and $script:FaceCountGiven) { throw '-Budget and -FaceCount both name the face count; give one' }
+  $script:SubjectBudgets = if ($Budget) { Get-SubjectBudgets } else { @{} }
+  # Text in, the subjects come from -Subjects or -Subject; image in, from the images (-Images, -Only),
+  # each matched to its -Subjects entry by name for the category, the budget and the foliage rule.
+  # Not `$subjects`: a local of that name is -Subjects to every function this one calls (PowerShell
+  # names ignore case and resolve through dynamic scope), and the budget's record reads -Subjects.
+  $subjectList = if ($imageMode) { Get-ImageSubjects (Get-ImageInputs) } else { Get-SubjectList }
   $wf = Get-WorkflowGraph $Workflow
   $roles = Get-Comfy3dRoles $wf.Graph
   $classOf = @{}; foreach ($id in $wf.Graph.Api.Keys) { $classOf[$id] = $wf.Graph.Api[$id].class_type }
+  if ($imageMode) {
+    # The drawing nodes are dropped from every copy of the graph; the roles that named them name
+    # nothing now, and the image node is new (the same id in every copy: one past the largest).
+    $imageSampler = $roles.image_sampler
+    $probe = Set-ImageSource (Copy-Graph $wf.Graph) $imageSampler
+    $classOf[$probe.Node] = 'LoadImage'
+    foreach ($k in @('image_sampler', 'positive', 'negative', 'latent')) { $roles[$k] = $null }
+    $roles.image_source = $probe.Node
+  }
   $service = if ($Model -eq 'pixal3d') { 'pixal3d' } else { 'trellis' }
   $dir = Get-OutputDir $service
   $plan = @()
-  foreach ($s in $subjects) {
+  foreach ($s in $subjectList) {
     $g = Copy-Graph $wf.Graph
-    $p = Get-PromptFor $s
-    $sd = Get-SeedFor $s
-    $applied = Set-Comfy3dOverrides $g $roles $s $p $sd
-    $spec = Get-SpecHash $wf $g ''
+    if ($imageMode) {
+      $imageIn = Set-ImageSource $g $imageSampler
+      $p = Get-UpstreamPrompt $s.input
+      $sd = if ($s.input.sidecar_data -and $null -ne $s.input.sidecar_data.seed) { [long]$s.input.sidecar_data.seed } else { $null }
+      $applied = Set-Comfy3dOverrides $g $roles $s $p 0 $imageIn
+      # What makes two runs the same run: the graph as sent, and the picture's bytes (the image
+      # node carries a placeholder until the upload names the file on the server).
+      $spec = Get-SpecHash $wf $g "image:$($s.input.sha256)"
+    } else {
+      $imageIn = $null
+      $p = Get-PromptFor $s
+      $sd = Get-SeedFor $s
+      $applied = Set-Comfy3dOverrides $g $roles $s $p $sd $null
+      $spec = Get-SpecHash $wf $g ''
+    }
     $state = Test-Existing (Get-SidecarPath $dir $s.name) $spec "mesh '$($s.name)'"
-    $plan += [pscustomobject]@{ Subject = $s; Graph = $g; Prompt = $p; Seed = $sd; Applied = $applied; Spec = $spec; State = $state }
+    $plan += [pscustomobject]@{ Subject = $s; Graph = $g; Prompt = $p; Seed = $sd; Applied = $applied; Spec = $spec; State = $state; ImageIn = $imageIn }
   }
   $todo = @($plan | Where-Object State -eq 'new')
-  Write-Step "comfyui-3d ($service): $($plan.Count) meshes through $($wf.Name): $($todo.Count) to run, $($plan.Count - $todo.Count) already made from the same spec"
+  Write-Step "comfyui-3d ($service$(if ($imageMode) { ', images in' })): $($plan.Count) meshes through $($wf.Name): $($todo.Count) to run, $($plan.Count - $todo.Count) already made from the same spec"
   Write-Note "  roles: $((@($roles.Keys | Where-Object { $roles[$_] -and $roles[$_] -isnot [System.Collections.IDictionary] -and $roles[$_] -isnot [array] } | ForEach-Object { "$_=$($roles[$_])" })) -join ' ')"
+  if ($imageMode) { Write-Note "  image in: node $($probe.Replaced) ($($classOf[$probe.Replaced])) replaced by LoadImage $($probe.Node) on $(@($probe.Rewired | ForEach-Object { "$($_.class).$($_.input)" }) -join ', '); dropped $(@($probe.Removed | ForEach-Object { "$($_.node) $($_.class)" }) -join ', ')" }
   Write-Note "  into $dir"
   if ($DryRun) {
     return , @($plan | ForEach-Object {
         [pscustomobject][ordered]@{ name = $_.Subject.name; status = "dry-run:$($_.State)"; service = $service; seed = $_.Seed; segmenter = $_.Applied.Segmenter; foliage = $_.Applied.Foliage
-          prompt = $_.Prompt; settings = $_.Applied.Settings; overrides = $_.Applied.Overrides; roles = $roles; spec_hash = $_.Spec }
+          prompt = $_.Prompt; settings = $_.Applied.Settings; overrides = $_.Applied.Overrides; roles = $roles; spec_hash = $_.Spec
+          graph = $(if ($imageMode) { $_.Graph.Api } else { $null }) }
       })
   }
   $results = @($plan | Where-Object State -eq 'cached' | ForEach-Object { [pscustomobject]@{ name = $_.Subject.name; status = 'cached'; path = (Join-Path $dir "$($_.Subject.name).glb"); sidecar = (Get-SidecarPath $dir $_.Subject.name) } })
@@ -1877,17 +2022,26 @@ function Invoke-ComfyText3dStage {
   $system = Get-ComfySystem
   $models = Get-ModelFiles $wf.Graph
   $runs = Join-Path $dir 'runs.jsonl'
-  Enter-GpuLock "comfyui-3d: $($todo.Count) meshes, $($wf.Name)"
+  Enter-GpuLock "comfyui-3d: $($todo.Count) meshes$(if ($imageMode) { ' from given images' }), $($wf.Name)"
   try {
     $i = 0
     foreach ($j in $todo) {
       $i++
       Update-GpuLock
       $n = $j.Subject.name
-      Write-Log ("  [{0}/{1}] {2}: seed {3}, {4} faces, segmenter {5}, smooth {6}, weld {7}, texture {8}" -f $i, $todo.Count, $n, $j.Seed, $j.Applied.Settings.decimate.target_face_count,
-          $j.Applied.Segmenter, $j.Applied.Settings.remesh.smooth_iters, $j.Applied.Settings.unwrap.weld_distance, $j.Applied.Settings.texture_resolution)
+      Write-Log ("  [{0}/{1}] {2}: {3}, {4} faces, segmenter {5}, smooth {6}, weld {7}, texture {8}" -f $i, $todo.Count, $n, $(if ($imageMode) { "image $([IO.Path]::GetFileName($j.Subject.input.path))" } else { "seed $($j.Seed)" }),
+          $j.Applied.Settings.decimate.target_face_count, $j.Applied.Segmenter, $j.Applied.Settings.remesh.smooth_iters, $j.Applied.Settings.unwrap.weld_distance, $j.Applied.Settings.texture_resolution)
       $t0 = Get-Utc
       try {
+        if ($j.ImageIn) {
+          # Uploaded now, inside the lock, as the image stage's inputs are; the name the server
+          # gives it is recorded, and the spec was already fixed by the picture's bytes.
+          $uploaded = Send-ComfyImage $j.Subject.input.path
+          $j.Graph.Api[$j.ImageIn.Node].inputs['image'] = $uploaded
+          $j.Applied.Overrides.Add([ordered]@{ node = $j.ImageIn.Node; class = 'LoadImage'; title = $null; input = 'image'; workflow_value = $null; value = $uploaded
+              why = "input image, supplied (-Images): replaces node $($j.ImageIn.Replaced), the picture the workflow draws" })
+          $j.Applied.Settings.image.uploaded_as = $uploaded
+        }
         $run = Invoke-ComfyWatched $j.Graph.Api $roles.unwrap $SegmenterTimeoutMinutes $TimeoutMinutes $classOf
         $tr = $run.Track
         $timings = Get-TimingSummary $tr $roles $classOf
@@ -1904,6 +2058,7 @@ function Invoke-ComfyText3dStage {
           weld_distance = $j.Applied.Settings.unwrap.weld_distance; texture = $j.Applied.Settings.texture_resolution
           wall_seconds = $timings.wall_seconds; unwrap_seconds = $timings.unwrap_seconds; unwrap_progress = $timings.unwrap_progress; cached_nodes = @($tr.cached).Count
           cpu_pct = $machine.cpu_pct; gpu_util_pct = $machine.gpu_util_pct; comfyui_cores_busy = $machine.comfyui_cores_busy }
+        if ($j.ImageIn) { $line.image_sha256 = $j.Subject.input.sha256 }
         if ($tr.status -ne 'success') {
           # No mesh, so no provenance sidecar: the attempt is recorded beside where it would have
           # been, with everything a sidecar would carry, so an abort is a result and not a gap.
@@ -1936,9 +2091,17 @@ function Invoke-ComfyText3dStage {
           $target = Join-Path $dir ("$n.$($keep[0])" + [IO.Path]::GetExtension($f.filename))
           try { Save-ComfyFile $f $target; $outputs += New-OutputRecord $keep[2] $target } catch { Write-Warn "$n`: could not fetch the $($keep[0]) preview: $($_.Exception.Message)" }
         }
+        # Image in, the mesh is derived from the picture it was given: that picture is its input, and its
+        # asset id (from its own sidecar, else the first 128 bits of its hash) is `derived_from`, as the
+        # Meshy and ComfyUI image-to-3D stages record it. The seed is the picture's, not the mesh's.
+        $inRecs = @(); $derived = @()
+        if ($j.ImageIn) {
+          $inRecs = @(New-InputRecord $j.Subject.input)
+          $derived = @($(if ($j.Subject.input.asset_id) { $j.Subject.input.asset_id } else { ConvertTo-Id128 $j.Subject.input.sha256 }))
+        }
         $side = New-Sidecar -Name $n -Kind 'mesh' -Service $service -Generator "comfyui/$($wf.Name)" -ModelId $modelFile -ModelVersion $null `
-          -Prompt $j.Prompt -SeedValue $j.Seed -Parameters $j.Applied.Settings -Backend $backend -Inputs @() `
-          -Outputs $outputs -Credits 0 -Started $t0 -Finished $t1 -SpecHash $j.Spec -DerivedFrom @()
+          -Prompt $j.Prompt -SeedValue $(if ($j.ImageIn) { $null } else { $j.Seed }) -Parameters $j.Applied.Settings -Backend $backend -Inputs $inRecs `
+          -Outputs $outputs -Credits 0 -Started $t0 -Finished $t1 -SpecHash $j.Spec -DerivedFrom $derived
         $side['timings'] = $timings
         $side['machine_state'] = $machine
         $side['subject'] = [ordered]@{ set = $j.Subject.set; category = $j.Subject.category; size_m = $j.Subject.size_m }
