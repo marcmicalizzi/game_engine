@@ -78,7 +78,7 @@ Other conclusions:
 | Shaders | Slang | High | — |
 | ECS | flecs (evaluate), hot systems own their data | Medium | E6 |
 | Physics / nav | Jolt / Recast | High | E11 |
-| Scripting | Deferred: C++ modules vs Luau vs C#; declarative data first | — | E7 |
+| Scripting | Deferred: C++ modules vs Luau vs C#; declarative data first. The Luau arm is built and measured ([08 §8.2](08-toolchain.md#82-gameplay-and-scripting-layer) status note) | — | E7 |
 | Hardware calibration | Detection, pinning, tunables now; calibration runner only with evidence | High | E3 |
 | Runtime LLM | Tier 0 only for the first game; policy in 12 | High | E8 |
 | Multiplayer | Readiness rules now; transport and replication later | High | — |

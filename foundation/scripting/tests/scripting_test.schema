@@ -1,0 +1,102 @@
+// Document object types the scripting tests and benches read through the generated bindings and
+// type-check against the emitted definition file. Deliberately shaped like the plan's content
+// logic (docs/plan/03-data-model.md §3.9): characters, items, quests with a state machine, and a
+// faction enum, plus one struct of every kind the binding maps.
+namespace engine.scripting_test
+
+/// Where a quest is in its state machine.
+enum QuestState : u8 {
+  NotStarted = 0
+  Active = 1
+  Completed = 2
+  Failed = 3
+}
+
+enum Faction : u8 {
+  Neutral = 0
+  Ironbound = 1
+  Drifters = 2
+}
+
+struct Attributes @version(1) {
+  strength: i32 = 10
+  agility: f32 = 1.5
+}
+
+/// A person in the world.
+struct Character @version(1) @kind(record) {
+  name: string
+  /// Hit points; 0 is dead.
+  health: f32 = 100
+  alive: bool = true
+  faction: Faction = Neutral
+  position: vec3
+  attributes: Attributes
+  /// Ids of the items carried.
+  inventory: id128[]
+  tags: string[]
+  reputation: map<string, f32>
+  home: id128?
+  level: u16 = 1
+  xp: u64 = 0
+}
+
+struct Item @version(1) @kind(record) {
+  name: string
+  weight: f32 = 1
+  value: u32 = 0
+}
+
+/// One quest: a state machine whose conditions scripts evaluate.
+struct Quest @version(1) @kind(record) {
+  title: string
+  state: QuestState = NotStarted
+  stage: u32 = 0
+  giver: id128
+  required_item: id128?
+  required_level: u16 = 1
+  reward_xp: u32 = 100
+}
+
+/// Every schema kind the binding maps, for the conversion tests.
+struct Kinds @version(1) {
+  flag: bool = true
+  tiny: i8 = -3
+  small: u16 = 7
+  whole: i32 = -12
+  count: u32 = 42
+  big: u64 = 9007199254740992
+  huge: u64 = 9007199254740993
+  signed_big: i64 = -5
+  ratio: f32 = 0.25
+  precise: f64 = 0.1
+  text: string = "hello"
+  blob: bytes
+  id: id128
+  flat: vec2
+  point: vec3
+  color: vec4
+  turn: quat
+  extra: json
+  faction: Faction = Drifters
+  fixed: u16[3]
+  attributes: Attributes
+  maybe: Attributes?
+  nothing: i32?
+  crowd: Attributes[]
+  by_id: map<u32, string>
+}
+
+/// Ten scalar properties, for the per-property read bench.
+struct Ten @version(1) {
+  a: f32 = 1
+  b: f32 = 2
+  c: f32 = 3
+  d: i32 = 4
+  e: u32 = 5
+  f: bool = true
+  g: f64 = 7
+  h: f32 = 8
+  i: i16 = 9
+  j: u8 = 10
+}

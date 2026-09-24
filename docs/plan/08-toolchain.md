@@ -31,6 +31,8 @@ Decision deferred to experiment **E7**. Candidates:
 
 Recommendation to test: C++ for systems, **Luau for content logic** (quest conditions, dialogue logic, NPC routines), and **declarative data** for the bulk (state machines, quest graphs, behavior trees as document objects). Declarative-first is the agent-native choice: diffable, validatable, and no compiler in the loop.
 
+**Status (2026-09-24): the Luau third of E7 is built and measured; the other two thirds are not** ([scripting](../subsystems/scripting.md), [write-up](../experiments/e7-luau-spike.md)). `foundation/scripting` embeds Luau 0.739 as an optional capability in the shape this section recommends: a script is a file of named functions over **read-only** document state that return **data**, and mutation stays a schema-typed command ([03 §3.3](03-data-model.md#33-transactions-diffs-and-merges)). The host is a sandbox (no io, os, debug or loadstring; no wall clock; randomness only from a seed the caller passes), a memory limit enforced in the VM's allocator, a **step** budget enforced in its interrupt — counted, not timed, so it is deterministic and a replay cannot diverge on a slow machine — bindings generated from the schema descriptors rather than written per type, hot reload that keeps the last good chunk, and a `.d.luau` type file emitted from the same descriptors. What the spike settles is what Luau costs the engine and what the type file buys an agent; the numbers are in the write-up. What it cannot settle alone is E7's question, which is a comparison: **the same gameplay feature in C++ hot-reload and in C#, with agent error rate and iteration time across all three**, is still to do. The write-up recommends building the C++ hot-reload arm next — the engine needs gameplay DLL reloading for systems anyway, so it is not throwaway — and **deciding C# from its results rather than building it**: the plan's own case against C# (a second runtime and garbage collector beside the engine's heap, runtime size, interop per call) is what the Luau numbers make concrete, and C# earns a build only if both other arms fail on agent error rate. That recommendation is the owner's to accept.
+
 ## 8.3 Graphics API
 
 Verified facts as of September 2026:
@@ -91,7 +93,7 @@ Keep the RHI thin and API-neutral, modeled on Vulkan 1.3/1.4 concepts that map c
 | Profiling | Tracy 0.14 | BSD-3 | |
 | Tools UI | Dear ImGui | MIT | |
 | Game UI (candidate) | RmlUi 6.3 | MIT | HTML/CSS-like; decision deferred |
-| Scripting (candidate) | Luau | MIT | |
+| Scripting (candidate) | Luau | MIT | 0.739 in `foundation/scripting`, the E7 Luau arm (§8.2 status note); the VM and compiler only, the type checker in tests |
 | SIMD kernels | ISPC 1.31 | BSD-3 | Multi-target dispatch |
 | CPU ray tracing (offline, tools) | Embree 4.4 | Apache-2.0 | Baking, validation, AI line-of-sight |
 | Textures | KTX-Software/Basis; bc7enc | Apache-2.0; MIT | |
@@ -154,6 +156,7 @@ Applying it in one place is only half the job: a dependency with an instruction-
 | **Recast/Detour** 1.6 | none | Plain C++, no intrinsics | Nothing |
 | **xatlas** (pinned commit) | none (`XA_MULTITHREADED`, `XA_DEBUG` and friends are not ISA options) | Plain scalar C++, no intrinsics anywhere in `xatlas.cpp` | Nothing for the ISA: compiled by `cmake/EngineAtlas.cmake` in the top-level scope, so it carries the baseline flag like the engine. `XA_MULTITHREADED=0` is set for a different reason — its own scheduler starts a thread per CPU per atlas, whatever the caller's budget ([atlas](../subsystems/atlas.md)) |
 | **stb_image** (pinned commit) | none | `STBI_SSE2` is defined unconditionally on x86-64 (where SSE2 is guaranteed) and `stbi__sse2_available()` is a compile-time `1` there; the NEON paths are the other branch | Nothing. Compiled into `foundation/image`'s own translation unit, so it follows the tree's baseline |
+| **Luau** 0.739 | none that the VM, the compiler or the analyser use (`LUAU_*` build options are about CLI tools, tests and linkage) | **Runtime dispatch, conditionally**, like meshoptimizer: the fast paths of `math.floor`, `math.ceil` and `math.round` use SSE4.1's `ROUNDSD` behind a `cpuid` check when the compiler was not told it has SSE4.1 or AVX (`luaconf.h`), and unconditionally when it was. The native code generator, the one part with an instruction-set opinion, is not built | Nothing to set. At v3 the check disappears; at v2 it selects `ROUNDSD` on both runners, which have SSE4.1. Compiled in the top-level scope, so it carries the baseline and `-ffp-contract=off` like the engine ([scripting](../subsystems/scripting.md)) |
 | **Vulkan-Headers, volk, VMA, cgltf, doctest** | none | Headers only | Nothing |
 | **Slang** | n/a | A downloaded compiler binary, not built here | Nothing |
 

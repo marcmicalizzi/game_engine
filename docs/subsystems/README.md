@@ -42,6 +42,7 @@ One page per module, created in the same change that creates the module. Templat
 | input | foundation | [input.md](input.md) |
 | bench | foundation | [bench.md](bench.md) |
 | store (capability) | foundation | [store.md](store.md) |
+| scripting (capability) | foundation | [scripting.md](scripting.md) |
 | doc | domain | [doc.md](doc.md) |
 | geometry | domain | [geometry.md](geometry.md) |
 | anim | domain | [anim.md](anim.md) |
