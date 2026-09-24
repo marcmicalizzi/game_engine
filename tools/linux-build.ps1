@@ -66,6 +66,10 @@
   container can write to it, and the Windows build trees are never touched. Building over a
   bind mount of an NTFS checkout is what this avoids: WSL2 reaches Windows files over a 9p
   share, and a build of this tree is hundreds of thousands of small-file operations.
+
+  The sync copies a file into the build's tree only when its **bytes** changed, and gives it the
+  time of the copy, so a file edited while a build was running is always recompiled by the next
+  one; see Invoke-Sync and "The sync" in docs/ci/local-linux.md.
 #>
 [CmdletBinding()]
 param(
@@ -194,20 +198,57 @@ function Ensure-Volumes {
   }
 }
 
+# **A file reaches /src with a fresh mtime when, and only when, its bytes changed.** Ninja rebuilds
+# an object when a source is newer than it, so the one thing the sync must never do is give /src a
+# changed file with an *old* time — and `rsync -a`, which is what this was until 2026-09-24, did
+# exactly that: it keeps the host's mtime, and a source edited on Windows while a container build
+# was compiling its previous text is older than the object built from that text. The next run
+# copied the new text across and compiled nothing (docs/ci/local-linux.md, "The sync"). The
+# remote script had the same flaw and the same fix a day earlier (docs/ci/remote-linux.md).
+#
+# Two stages, chosen by measurement over `rsync --checksum` straight from the host, which is as
+# correct but reads every byte over the 9p share on every run (+0.75 s today, and growing with the
+# tree):
+#   1. host -> /deps/.host-mirror with `rsync -a`: the host's mtimes kept, so rsync's quick check
+#      (size and mtime) finds what changed from a stat per file, as before. `--modify-window=-1`
+#      compares the nanoseconds too: by default rsync compares whole seconds, and a same-size edit
+#      in the same second as the previous sync was never copied at all.
+#   2. mirror -> /src with `--checksum` and without `-t`: a file is copied only if its bytes differ
+#      from what the build compiled, and a copied file gets the time of the copy. Both sides are on
+#      the VM's own disk, so reading them is tens of milliseconds.
+# The mirror lives in this checkout's deps volume because nothing reads that volume but CMake's
+# FETCHCONTENT_BASE_DIR, one directory per preset; -Prune removes it with the rest.
 function Invoke-Sync([string]$image) {
   Write-Step "syncing $Root into $SrcVolume"
   $excludeArgs = ($SyncExcludes | ForEach-Object { "--exclude=$_" }) -join ' '
   # --delete so a file removed on the host disappears in the volume; excluded paths are
-  # protected from it by default, which is what keeps /src/build alive across syncs.
-  $syncScript = "rsync -a --delete $excludeArgs /host/ /src/ && echo ""sync: `$(find /src -type f -not -path '/src/build/*' | wc -l) files"""
+  # protected from it by default, which is what keeps /src/build alive across syncs. The second
+  # stage takes the same excludes for that reason alone: the mirror never holds a build/.
+  #
+  # A single-quoted here-string with the excludes substituted afterwards, so that bash's `$` and
+  # quotes reach bash as written.
+  $syncScript = @'
+set -eo pipefail
+mkdir -p /deps/.host-mirror
+rsync -a --delete --modify-window=-1 @EXCLUDES@ /host/ /deps/.host-mirror/
+rsync -rlp --checksum --delete --out-format='%i %n' @EXCLUDES@ /deps/.host-mirror/ /src/ > /tmp/sync.log
+copied=$(grep -c '^>f' /tmp/sync.log || true)
+removed=$(grep -c '^\*deleting' /tmp/sync.log || true)
+files=$(find /src -path /src/build -prune -o -type f -print | wc -l)
+echo "sync: $files files, $copied copied, $removed removed"
+if [ "$copied" -gt 0 ] && [ "$copied" -le 12 ]; then grep '^>f' /tmp/sync.log | cut -d' ' -f2- | sed 's/^/  copied: /'; fi
+'@
+  $syncScript = $syncScript.Replace('@EXCLUDES@', $excludeArgs)
   $script:CurrentContainer = "engine-linux-$VolumeId-$PID-sync"
   $syncArgs = @('run', '--rm', '--name', $script:CurrentContainer, '--label', "$RoleLabel=sync",
-                '-v', "${HostMount}:/host:ro", '-v', "${SrcVolume}:/src",
+                '-v', "${HostMount}:/host:ro", '-v', "${SrcVolume}:/src", '-v', "${DepsVolume}:/deps",
                 $image, 'bash', '-lc', $syncScript)
+  $started = [DateTime]::UtcNow
   & docker @syncArgs
   $status = $LASTEXITCODE
   $script:CurrentContainer = $null
   if ($status -ne 0) { throw "source sync failed ($status)" }
+  Write-Host ("   in {0:N1}s" -f ([DateTime]::UtcNow - $started).TotalSeconds)
 }
 
 function Get-RunArgs([string]$role) {

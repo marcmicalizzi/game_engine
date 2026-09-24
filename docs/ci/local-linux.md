@@ -41,7 +41,7 @@ pwsh tools/linux-build.ps1 [-Preset <name>|all] [-Test] [-Filter <regex>] [-Jobs
 | `-Test` | run CTest after the build. Without it the run is a compile check. |
 | `-Filter` | a regex on test names, passed through to `ctest -R`. |
 | `-Jobs` | parallel compile jobs. Default 8; see [Why eight jobs](#why-eight-jobs--and-why-the-worry-was-wrong). |
-| `-Rebuild` | delete `build/<preset>` inside the volume first. The dependencies' sources and build directories are in other volumes and survive, so this costs an engine compile and not a download or a third-party one. |
+| `-Rebuild` | delete `build/<preset>` inside the volume first. The dependencies' sources are in another volume and survive, so this costs a compile and not a download. It is **the whole compile, third-party code included**: the objects under `/deps/<preset>` survive, but ninja's record of which headers each one read is in `build/<preset>` and goes with it, and ninja rebuilds an object it has no such record for. Measured on 2026-09-24: 1116 edges, all 635 third-party ones among them, the same as a cold build. |
 | `-Shell` | an interactive `bash` in the container with the volumes mounted, for when a failure needs poking at. |
 | `-Docs` | run `tools/docs-gate.sh` and `tools/docs-check.sh` in the container and build nothing; `-Base` is what the gate diffs against (default `main`). See [Running the documentation gate here](#running-the-documentation-gate-here). |
 | `-Prune` | delete this checkout's two volumes and exit. The machine-wide dependency cache is left alone. |
@@ -115,8 +115,8 @@ the cache the first had filled was all it needed (the fresh-checkout column of
 **Never build over a bind mount of the Windows checkout.** WSL2 reaches `D:\` over a 9p share;
 a configure plus a build of this tree is hundreds of thousands of small-file operations, and the
 Windows build trees under `build/` must not be touched by a Linux CMake anyway. So the checkout
-arrives at `/host` **read-only**, and one `rsync -a --delete` copies it into the `/src` volume.
-About 610 files and 8 MB, in about two seconds.
+arrives at `/host` **read-only**, and two rsyncs copy it into the `/src` volume, which the next
+section is about. 682 files and 9.2 MB, in about two and a half seconds.
 
 `--delete` makes a file removed on the host disappear in the volume; the excluded paths are
 protected from it by default, which is what keeps `/src/build` alive across syncs. Excluded:
@@ -132,12 +132,94 @@ is rsync with extra steps. Second, nothing in the build or the test suite reads 
 `tools/docs-gate.test.sh` builds its own throwaway repositories, and `tools/docs-gate.sh` takes
 `--files-from`/`--messages-from`, which is how CI runs it for a pull request anyway.
 
+### The sync: a file gets a new time only when its bytes changed
+
+**The rule.** A file is copied into `/src` only when its bytes differ from what is there, and a
+copied file carries the time of the copy; an unchanged file keeps its old time. Ninja rebuilds an
+object when an input is newer than it, so this rule is what makes "the next run compiles what I
+edited" true whenever the edit happened, while "nothing changed" still builds nothing.
+
+**What it replaced.** Until 2026-09-24 the sync was `rsync -a`, which copies the host's
+modification time along with the bytes. A source edited on Windows while a container build is
+compiling its previous text is then *older* than the object built from that text. The next run
+copies the new text across and compiles nothing, and no later run notices either. Reproduced on
+2026-09-24 in a fresh worktree (times are UTC; the container's clock and Windows' agreed to within
+the second it takes to start a container, so this is not clock skew):
+
+| Time | What happened |
+|---|---|
+| 04:47:25 | run 1, a cold `-Preset linux-clang-debug`, starts; syncs, configures, and starts ninja at 04:47:59.7 |
+| 04:48:17.49 | a comment in `apps/engine_view/tests/mesh_view_tests.cpp` is changed on Windows. Ninja is at edge 551 of 1116 |
+| 04:49:08.1–04:49:11.1 | run 1 compiles that file (edge 1113) from the text synced before the edit |
+| 04:49:42 | run 2 syncs. rsync copies the new text, **dated 04:48:17.49, 54 s older than the object**. Ninja runs the build stamp and nothing else, and `ninja -d explain` on that test target never names the file |
+
+The same thing happened on the remote machine a day earlier. There the symptom was a link failure:
+an "undefined reference" to a function that plainly exists, because the test had been recompiled
+and the library it called had not. `tools/remote-build.ps1` got the same rule then; see [remote
+Linux builds](remote-linux.md#the-sync-and-what-it-costs). Either symptom means a stale object.
+Before their fixes, both scripts produced one whenever a file was edited after a run's sync and
+before that run compiled it.
+
+The old sync had a second, rarer hole. rsync's quick check compares modification times **to the
+whole second** by default, so if a file was edited again in the same second the previous sync read
+it, and the edit kept the same size, it never arrived at all. Checked in the image: a five-byte
+file rewritten 0.6 s later with five other bytes keeps its old contents through `rsync -a` and
+arrives with `--modify-window=-1`.
+
+**How it works now** (`Invoke-Sync` in `tools/linux-build.ps1`): two rsyncs in the sync container.
+
+1. host → `/deps/.host-mirror` with `rsync -a --delete --modify-window=-1`. The mirror keeps the
+   host's times, so rsync's quick check (size and mtime, to the nanosecond) finds what changed from
+   one stat per file over the 9p share, which is what the sync has always cost.
+2. mirror → `/src` with `rsync -rlp --checksum --delete` and **no `-t`**. A file is copied only if
+   its bytes differ from the tree the build reads, and it gets the time of the copy. Both sides are
+   on the VM's own disk, so reading all of them takes tens of milliseconds.
+
+The mirror is in the checkout's `/deps` volume, which nothing else uses except FetchContent's
+per-preset directories. `-Prune` removes it with the rest. A sync that finds it missing fills it
+again, which takes about 4½ s once, and copies nothing into `/src` that has not changed. The sync's
+line says what it copied, for example `sync: 682 files, 1 copied, 0 removed`, followed by the file
+names when there are twelve or fewer: that is the list of sources the build is about to recompile.
+
+**Measured** on 2026-09-24, five syncs of each kind, with the build lock held and nothing else
+running (host CPU 5–9 %, GPU 0 %, no other container). "Wall" is the `docker run` including the
+container's start, "rsync" the time inside it. 682 files, 9.2 MB:
+
+| | No change | One file changed (same size) | Into an empty volume |
+|---|---|---|---|
+| `rsync -a` (until 2026-09-24) | 2.52 s wall (rsync 1.45 s) | 2.52 s (1.44 s), **and the file keeps the host's old time** | 4.30 s |
+| `rsync -rlp --checksum`, host → `/src` | 3.27 s (2.26 s) | 3.26 s (2.18 s) | 5.11 s |
+| **mirror, then `--checksum` into `/src` (now)** | **2.53 s (1.49 s)** | **2.61 s (1.63 s)** | 4.45 s |
+
+Both new rules gave the changed file a time later than the start of the sync and left the other
+681 files alone. `rsync -a` gave it a time earlier than the start of the sync, which is the whole
+flaw in one column. `--checksum` straight from the host is simpler and just as correct, but it reads
+every byte through the 9p share on every run: three quarters of a second today, growing with the
+size of the tree. The mirror's cost grows with the number of files, as the old sync's did.
+
+**Why not ninja's own answer.** Ninja does not have one. Ninja 1.11, the version in the image,
+decides what is dirty from modification times alone: an output older than its newest input, or
+older than the time its log recorded. It does no content hashing. `restat` concerns outputs that a
+command chose not to rewrite and cannot make an input newer; `-d explain` only reports the
+decision. The time has to be right before ninja looks at it.
+
+**Checked after the fix**, the same way round. Run A (`-Rebuild`) was compiling (edge 582 of 1116)
+when the same file was restored to its committed text on Windows at 04:59:11.14. Run A compiled
+the text it had synced before the restore, at 05:00:17. Run B's sync printed `1 copied` and named
+that file. Ninja then compiled
+exactly that object, relinked `engine_engine_view_tests`, and ran the build stamp, which runs every
+time.
+
+**A tree the old rule already left stale stays stale.** Its `/src` already holds the new bytes, so
+the sync finds nothing to copy. Run `-Rebuild` once, or `touch` the file inside `-Shell`. Touching
+it on Windows no longer helps, because its bytes have not changed.
+
 ### Three volumes: two per checkout, one per machine
 
 | Volume | Mounted at | Holds | Shared by |
 |---|---|---|---|
 | `engine-linux-src-<id>` | `/src` | the synced sources and `build/<preset>/` for every preset | this checkout |
-| `engine-linux-deps-<id>` | `/deps` | `FETCHCONTENT_BASE_DIR`: the dependencies' *build* directories, one directory per preset | this checkout |
+| `engine-linux-deps-<id>` | `/deps` | `FETCHCONTENT_BASE_DIR`: the dependencies' *build* directories, one directory per preset; and `.host-mirror`, the [sync](#the-sync-a-file-gets-a-new-time-only-when-its-bytes-changed)'s copy of the host tree with the host's times | this checkout |
 | `engine-linux-fetch-cache` | `/fetch` | the dependencies' downloaded *sources*, one directory per pin | every checkout on the machine |
 
 `<id>` is a hash of the checkout's path, so every agent worktree gets its own pair of build volumes
@@ -172,8 +254,9 @@ targets, all presets and every checkout read the same bytes. The details that ma
   the provider, so without that a pin bump in one checkout would quietly keep building the old
   sources.
 - `FETCHCONTENT_BASE_DIR` still points at the per-checkout `/deps/<preset>`, because a Debug tree
-  cannot share a dependency's *build* directory with a Release tree, and because it keeps
-  `-Rebuild` a compile of the engine and not of Jolt.
+  cannot share a dependency's *build* directory with a Release tree. (This page used to add that it
+  keeps `-Rebuild` a compile of the engine and not of Jolt. It does not; see `-Rebuild` in the
+  table above.)
 - `cmake --log-level=VERBOSE` prints what each entry is keyed on, for the day a miss is a surprise.
 
 A configure prints `fetch-cache: <name> from /fetch/<name>-<key>` for a hit and
@@ -227,8 +310,8 @@ once would exhaust the VM. **Measured, that fear is unfounded on this tree.** Sa
 | Run | Wall | Peak used |
 |---|---|---|
 | cold `linux-clang-debug` + `linux-gcc-release`, `-Jobs 8` (builds Jolt, flecs, SDL3, SQLite, Recast, Tracy from source) | 4 m 28 s + 5 m 51 s | **3.41 GB** of 15.62 |
-| `-Rebuild linux-clang-debug -Jobs 8` (engine code only) | 1 m 36 s | **1.79 GB** |
-| `-Rebuild linux-clang-debug -Jobs 12` (engine code only) | 1 m 20 s | **2.29 GB** |
+| `-Rebuild linux-clang-debug -Jobs 8` | 1 m 36 s | **1.79 GB** |
+| `-Rebuild linux-clang-debug -Jobs 12` | 1 m 20 s | **2.29 GB** |
 
 Twelve jobs is 1.2× faster and still uses a seventh of the machine. Eight stays the default
 because this box runs several agents and a Windows desktop at the same time and the build is not
@@ -236,9 +319,11 @@ the only thing that wants the cores — **not** because memory is tight. Raise i
 the machine is yours alone. The two-second sampling interval can miss a spike inside one link
 step, so read these as the sustained figure rather than a guaranteed ceiling.
 
-Note what `-Rebuild` costs and does not: it removes `build/<preset>`, but the third-party object
-files live under `/deps/<preset>/<name>-build` and survive, so a rebuild recompiles the **engine**
-and not Jolt.
+The two `-Rebuild` rows were first labelled "engine code only", and that was wrong: a `-Rebuild`
+recompiles the third-party code too (see `-Rebuild` in [the flag table](#the-command)). The object
+files under `/deps/<preset>/<name>-build` survive, but ninja's record of which headers each one
+read does not, and without it ninja rebuilds the object. The memory figures are still what a
+whole-preset compile at eight and twelve jobs uses.
 
 CTest runs **serially**, as it does on the hosted runner, so a failure here is a failure there.
 
@@ -378,7 +463,8 @@ suite; a warm run reads the dependency cache but never writes it, so the cache c
 | **all four, one command** | **17 m** | **6 m 55 s** |
 
 Building the image is a one-off **~1 min** on top of the first cold run, and nothing at all once
-any checkout on the machine has built it. The source sync is **about 2 s** every run (645 files).
+any checkout on the machine has built it. The source sync is **about 2½ s** every run (682 files;
+see [the sync](#the-sync-a-file-gets-a-new-time-only-when-its-bytes-changed)).
 
 A warm run is almost entirely the test suite: a warm **build** of `linux-clang-debug` with no
 source change is **6 s end to end including the sync**, of which the container's build step is
@@ -419,6 +505,12 @@ never.
   turn most of the remaining six minutes of a fresh worktree's first run into cache hits, and the
   unchanged engine files with them. Not done here: it changes the image and adds a tool to it, and
   it wants its own measurement.
+- **`-Rebuild` could leave the third-party objects alone**, which is what this page used to claim
+  it did. Deleting `build/<preset>` takes ninja's deps log with it, so every object under
+  `/deps/<preset>` is rebuilt as well: 635 of the 1116 edges of `linux-clang-debug`. Removing only
+  the engine's own object directories and keeping `.ninja_log` and `.ninja_deps` would fix it.
+  That is a change to what `-Rebuild` means, so it wants its own measurement, and a cold compile of
+  this preset is a minute and a half.
 - **`tools/remote-build.ps1` keeps one dependency directory per checkout on the server** (see
   [remote Linux builds](remote-linux.md)); the same provider would share it there. The server is
   one machine per run and its first configure is two to three minutes, so it matters less.
@@ -545,9 +637,18 @@ container artefact until proven otherwise, and the table above is five examples 
 
 **`sync: N files` where N looks wrong.** The excludes are in `$SyncExcludes` in
 `tools/linux-build.ps1`. A newly added top-level directory that should not cross over goes there.
+The same line says how many files were copied and names them when there are twelve or fewer:
+those are exactly the files whose bytes changed, and the only sources this run recompiles.
 
-**Everything rebuilds although nothing changed.** rsync preserves timestamps (`-a`), so this
-should not happen; if it does, the usual cause is a `-DFETCHCONTENT_*` or preset change that moved
+**A test that behaves like the code before your edit, or an undefined reference to a function
+that plainly exists.** That is a stale object: a source whose new text reached `/src` without a
+time newer than the object built from its old text. The sync has not been able to do that since
+2026-09-24 (see [the sync](#the-sync-a-file-gets-a-new-time-only-when-its-bytes-changed)), but a
+volume the old sync left stale stays stale, because its bytes are already current. Run `-Rebuild`
+once, or `touch` the file inside `-Shell`. Touching it on Windows does nothing now.
+
+**Everything rebuilds although nothing changed.** The sync copies only files whose bytes changed,
+so this should not happen. If it does, the usual cause is a `-DFETCHCONTENT_*` or preset change that moved
 a dependency's source directory, which invalidates the objects that included its headers. The
 first run of a checkout that already had build volumes before the dependency cache existed is
 exactly that, once: every source directory moved from `/deps/<preset>/<name>-src` to
