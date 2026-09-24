@@ -4,7 +4,7 @@
 # manifest of meshes, and `info` and `stats` read one back.
 engine_app(NAME engine_content OUTPUT engine-content
   SOURCES main.cpp
-  DEPS base containers math time log platform jobs io json geometry assets
+  DEPS base containers math time log platform jobs io json geometry assets atlas
   E2E_TESTS tests/content_tests.cpp)
 # The end-to-end test writes its own GLB fixture, with an embedded PNG that foundation/image
 # encodes, so nothing binary lives in the tree.

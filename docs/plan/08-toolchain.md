@@ -76,6 +76,7 @@ Keep the RHI thin and API-neutral, modeled on Vulkan 1.3/1.4 concepts that map c
 | GPU memory, loader | Vulkan Memory Allocator 3.4; volk | MIT | D3D12MA if a D3D12 backend is added |
 | Shaders | Slang (2026.x) | Apache-2.0 + LLVM exception | |
 | Mesh processing | meshoptimizer 1.2 | MIT | Includes `clusterlod.h` DAG builder |
+| UV charting and packing | xatlas (pinned commit) | MIT, with BSD-3 OpenNL inside | The content build's `--atlas repack` ([atlas](../subsystems/atlas.md)); build machines only |
 | Graph partitioning | METIS 5.2.1 | Apache-2.0 | Low activity since 2022; meshoptimizer's builder may suffice |
 | Cluster LOD + cluster AS reference | nvpro `vk_lod_clusters`; RTXMG SDK 2.0 | Apache-2.0; NVIDIA RTX SDKs License | Reading material, not linked |
 | ReSTIR | RTXDI 3.1 | **NVIDIA RTX SDKs License** | Proprietary: fine in a shipped game, not redistributable in an open engine. Treat as reference |
@@ -151,6 +152,7 @@ Applying it in one place is only half the job: a dependency with an instruction-
 | **flecs** 4.1 | none | Plain C, no intrinsics anywhere in `src/` or `include/` | Nothing |
 | **SQLite** 3.53 | none | Plain C amalgamation, no intrinsics | Nothing |
 | **Recast/Detour** 1.6 | none | Plain C++, no intrinsics | Nothing |
+| **xatlas** (pinned commit) | none (`XA_MULTITHREADED`, `XA_DEBUG` and friends are not ISA options) | Plain scalar C++, no intrinsics anywhere in `xatlas.cpp` | Nothing for the ISA: compiled by `cmake/EngineAtlas.cmake` in the top-level scope, so it carries the baseline flag like the engine. `XA_MULTITHREADED=0` is set for a different reason — its own scheduler starts a thread per CPU per atlas, whatever the caller's budget ([atlas](../subsystems/atlas.md)) |
 | **stb_image** (pinned commit) | none | `STBI_SSE2` is defined unconditionally on x86-64 (where SSE2 is guaranteed) and `stbi__sse2_available()` is a compile-time `1` there; the NEON paths are the other branch | Nothing. Compiled into `foundation/image`'s own translation unit, so it follows the tree's baseline |
 | **Vulkan-Headers, volk, VMA, cgltf, doctest** | none | Headers only | Nothing |
 | **Slang** | n/a | A downloaded compiler binary, not built here | Nothing |

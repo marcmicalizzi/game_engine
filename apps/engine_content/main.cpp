@@ -5,7 +5,9 @@
 // container together with the material table, the image paths the materials name, the encoded
 // bytes of the images the source embedded rather than named, the source path those paths are
 // relative to, and the source's identity (its content hash and the build key over it and the
-// options), which is what makes a second build able to skip the work. The
+// options), which is what makes a second build able to skip the work. `--atlas repack` puts one
+// more step between the UV repair and the weld: the mesh is re-charted and every texture its
+// materials sample is rebaked into the new atlas (domain/atlas, docs/subsystems/atlas.md). The
 // per-primitive DAG builds run as jobs on the job system's performance pool, and the merge is
 // over the primitives in index order, never in completion order, so the bytes do not depend on
 // how many threads ran them.
@@ -25,6 +27,7 @@
 #include <core/platform/process.h>
 #include <core/time/time.h>
 #include <domain/assets/gltf.h>
+#include <domain/atlas/repack.h>
 #include <domain/geometry/cluster_file.h>
 #include <foundation/io/vfs.h>
 
@@ -64,6 +67,18 @@ const char* k_usage =
     "      --uv-weight <n>       UV weight in the simplifier's error metric, in thousandths\n"
     "                            (default 500 = 0.5); 0 removes the term\n"
     "      --normal-weight <n>   the same for normals (default 0; 500 costs 2-4x the triangles)\n"
+    "      --atlas <mode>        keep (default): the source's UV atlas as it is; repack: re-chart\n"
+    "                            the mesh, pack one atlas per textured material, and rebake its\n"
+    "                            textures into it (the source's UV layout is not kept)\n"
+    "      --atlas-normal-maps <m>  convert (default): through object space into the new tangent\n"
+    "                            frame; resample: as stored, which is wrong where a chart turns\n"
+    "      --atlas-proxy <n>     cut the charts on a copy simplified to about n triangles and\n"
+    "                            carry them onto the mesh (default 2000); 0 charts the mesh\n"
+    "                            itself\n"
+    "      --atlas-chart-cost <n>  how far xatlas lets a chart grow, on the proxy or the mesh, in\n"
+    "                            thousandths of xatlas's maxCost (default 2000)\n"
+    "      --atlas-supersample <n>  1 (default), 2 or 4: the atlas and every rebaked image at n\n"
+    "                            times the source texture's side\n"
     "      --cache               write into the derived-data cache instead of a named output,\n"
     "                            addressed by the source and the options above\n"
     "      --ddc <dir>           the cache root (default: <repo>/ddc, found beside AGENTS.md)\n"
@@ -82,12 +97,13 @@ const char* k_usage =
     "the build-all manifest:\n"
     "  {\"meshes\":[{\"source\":\"a.gltf\",\"output\":\"a.clusters\",\n"
     "               \"options\":{\"max_triangles\":124,\"max_vertices\":64,\"weld\":true,\n"
-    "                           \"page_bytes\":131072}}]}\n"
+    "                           \"page_bytes\":131072,\"atlas\":\"keep\"}}]}\n"
     "  paths are relative to the manifest file; \"output\" and \"options\" are optional.\n"
     "\n"
     "examples:\n"
     "  engine-content build content/samples/Suzanne/Suzanne.gltf ddc/suzanne.clusters\n"
     "  engine-content build content/samples/Suzanne/Suzanne.gltf --cache\n"
+    "  engine-content build prop.glb prop.clusters --atlas repack\n"
     "  engine-content build-all content/meshes.json --cache --jobs 8\n"
     "  engine-content info ddc/suzanne.clusters\n"
     "  engine-content stats ddc/suzanne.clusters\n";
@@ -187,7 +203,18 @@ struct MeshOptions {
   // the seam rules do; the recorded build key says it (see `morph_key`), so a container built
   // without channels is never mistaken for the answer to a build that wanted them.
   bool morph = true;
+  // `build --atlas repack`: re-chart the mesh and rebake its textures before the weld
+  // (docs/subsystems/atlas.md). `keep` is the source's atlas as it is, and the default until E10's
+  // numbers say otherwise (docs/experiments/e10-generated-props.md, "Repack").
+  bool repack = false;
+  atlas::RepackOptions atlas;
 };
+
+u64 split_mix(u64 z) noexcept {
+  z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ull;
+  z = (z ^ (z >> 27)) * 0x94d049bb133111ebull;
+  return z ^ (z >> 31);
+}
 
 // The build key of a container built with `--no-morph`: the ordinary key, moved by a constant
 // through one SplitMix64 round. `geometry::cluster_cache_key` has no morph term because nothing
@@ -195,10 +222,37 @@ struct MeshOptions {
 // build would record, which is what `build-all` skips on.
 u64 morph_key(u64 key, const MeshOptions& options) noexcept {
   if (options.morph) return key;
-  u64 z = key ^ 0x6e6f2d6d6f727068ull;  // "no-morph"
-  z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ull;
-  z = (z ^ (z >> 27)) * 0x94d049bb133111ebull;
-  return z ^ (z >> 31);
+  return split_mix(key ^ 0x6e6f2d6d6f727068ull);  // "no-morph"
+}
+
+// And of one built with `--atlas repack`: moved by the atlas step's own key, which covers every
+// option that changes its bytes and the module's version (`atlas::repack_options_key`). `keep`
+// leaves the key alone, so every container built before the flag existed is still the answer to
+// the question it answered — which is why this is a mix here and not a new term in
+// `geometry::cluster_cache_key`, whose every existing key would have moved with it.
+u64 atlas_key(u64 key, const MeshOptions& options) noexcept {
+  if (!options.repack) return key;
+  return split_mix(key ^ 0x6174726570616b21ull ^ atlas::repack_options_key(options.atlas));
+}
+
+bool read_atlas_mode(std::string_view text, bool& repack) {
+  if (text == "keep")
+    repack = false;
+  else if (text == "repack")
+    repack = true;
+  else
+    return false;
+  return true;
+}
+
+bool read_normal_map_mode(std::string_view text, atlas::NormalMapMode& out) {
+  if (text == "convert")
+    out = atlas::NormalMapMode::convert;
+  else if (text == "resample")
+    out = atlas::NormalMapMode::resample;
+  else
+    return false;
+  return true;
 }
 
 geometry::ClusterLodOptions lod_options_of(const MeshOptions& options) {
@@ -210,6 +264,14 @@ geometry::ClusterLodOptions lod_options_of(const MeshOptions& options) {
   lod_options.uv_seams = options.uv_seams;
   lod_options.normal_seams = options.normal_seams;
   return lod_options;
+}
+
+// Every key a build records: the geometry's, then the two steps outside it.
+u64 build_key_of(u64 source_hash, const MeshOptions& options) noexcept {
+  return atlas_key(morph_key(geometry::cluster_cache_key(source_hash, lod_options_of(options),
+                                                         options.weld, options.page_bytes),
+                             options),
+                   options);
 }
 
 bool read_seam_rule(std::string_view text, geometry::SeamRule& out) {
@@ -247,6 +309,9 @@ constexpr const char* k_rule_missing_image = "material.missing_image";
 // "UV-degenerate triangles: the repair"). An asset that needed it is still one the pipeline can
 // take unattended, which is the difference between this and a warning.
 constexpr const char* k_rule_uv_degenerate = "geometry.uv_degenerate";
+// The atlas step's failure (xatlas refused the mesh, or a rebaked image could not be encoded). A
+// material it merely could not repack is not one: it keeps its own atlas and the JSON says why.
+constexpr const char* k_rule_atlas_repack = "atlas.repack";
 
 // A UV that far outside the unit square is a broken unwrap or a unit mix-up, not tiling: 16
 // wraps is already a texel density no texture pipeline can serve. A warning, not an error,
@@ -403,6 +468,8 @@ struct BuildResult {
   f64 build_ms = 0.0;
   Vector<Diagnostic> warnings;
   geometry::UvRepairReport uv_repair;  // what the UV repair did; all zero when it had nothing to do
+  bool repacked = false;               // `--atlas repack` ran (whether or not it changed anything)
+  atlas::RepackReport atlas;
 };
 
 // One primitive's DAG, as a job sees it. The result lives here rather than in a shared list, so
@@ -467,6 +534,20 @@ bool build_one(const std::string& input, const std::string& output, const MeshOp
     error.rule = k_rule_uv_degenerate;
     error.message = message;
     return false;
+  }
+
+  // `--atlas repack` (docs/subsystems/atlas.md): after the repair, so the rebake samples the
+  // source through the UVs the repair left, and before the weld, which merges what the new atlas
+  // made one point and drops the vertices no repacked triangle references any more. Its images
+  // replace the source's in the container below; nothing of the source's UV layout survives.
+  if (options.repack) {
+    out.repacked = true;
+    if (!atlas::repack_atlas(mesh, io::parent_path(input), options.atlas, pool, out.atlas,
+                             &message)) {
+      error.rule = k_rule_atlas_repack;
+      error.message = "'" + input + "': " + message;
+      return false;
+    }
   }
 
   const u32 loaded_vertices = mesh.positions.size();
@@ -694,6 +775,117 @@ JsonValue repairs_json(const BuildResult& result) {
   return rows;
 }
 
+const char* space_label(atlas::TextureSpace space) {
+  switch (space) {
+    case atlas::TextureSpace::srgb: return "srgb";
+    case atlas::TextureSpace::linear: return "linear";
+    case atlas::TextureSpace::tangent_normal: return "normal";
+  }
+  return "?";
+}
+
+// What the atlas step did, as the `atlas` object of a build's JSON line: `{"mode":"keep"}` when it
+// was not asked for, and otherwise the charts, the atlas per material, every rebaked image with
+// how far it is from its source on the surface, and the time each stage took.
+JsonValue atlas_json(const BuildResult& result, const MeshOptions& options) {
+  JsonValue out = JsonValue::object();
+  out.set("mode", JsonValue(result.repacked ? "repack" : "keep"));
+  if (!result.repacked) return out;
+  const atlas::RepackReport& r = result.atlas;
+  out.set("normal_maps",
+          JsonValue(options.atlas.normal_maps == atlas::NormalMapMode::convert ? "convert"
+                                                                               : "resample"));
+  out.set("proxy_triangles", JsonValue(options.atlas.proxy_triangles));
+  out.set("supersample", JsonValue(options.atlas.supersample));
+  out.set("chart_cost_milli", JsonValue(options.atlas.max_chart_cost_milli));
+  out.set("padding", JsonValue(options.atlas.padding));
+  out.set("materials_repacked", JsonValue(r.materials_repacked));
+  out.set("materials_untextured", JsonValue(r.materials_untextured));
+  out.set("materials_unreadable", JsonValue(r.materials_unreadable));
+  out.set("materials_declined", JsonValue(r.materials_declined));
+  out.set("triangles", JsonValue(r.triangles));
+  out.set("charts", JsonValue(r.charts));
+  out.set("vertices_before", JsonValue(r.vertices_before));
+  out.set("vertices_after", JsonValue(r.vertices_after));
+  out.set("images_before", JsonValue(r.images_before));
+  out.set("images_after", JsonValue(r.images_after));
+  out.set("image_bytes", JsonValue(r.image_bytes));
+  JsonValue ms = JsonValue::object();
+  ms.set("decode", JsonValue(r.decode_ms));
+  ms.set("chart", JsonValue(r.chart_ms));
+  ms.set("rebake", JsonValue(r.rebake_ms));
+  ms.set("encode", JsonValue(r.encode_ms));
+  ms.set("total", JsonValue(r.total_ms));
+  out.set("ms", std::move(ms));
+  JsonValue materials = JsonValue::array();
+  for (const atlas::RepackedMaterial& m : r.materials) {
+    JsonValue row = JsonValue::object();
+    row.set("material", JsonValue(m.material));
+    row.set("triangles", JsonValue(m.triangles));
+    row.set("charts", JsonValue(m.charts));
+    row.set("resolution", JsonValue(m.resolution));
+    row.set("utilization", JsonValue(static_cast<f64>(m.utilization)));
+    row.set("pack_attempts", JsonValue(m.pack_attempts));
+    row.set("proxy_triangles", JsonValue(m.proxy_triangles));
+    row.set("proxy_charts", JsonValue(m.proxy_charts));
+    row.set("folded_triangles", JsonValue(m.folded_triangles));
+    row.set("chart_ms", JsonValue(m.chart_ms));
+    row.set("pack_ms", JsonValue(m.pack_ms));
+    row.set("unatlased_triangles", JsonValue(m.unatlased_triangles));
+    row.set("crumb_charts", JsonValue(m.crumb_charts));
+    row.set("crumb_triangles", JsonValue(m.crumb_triangles));
+    row.set("source_vertices", JsonValue(m.source_vertices));
+    row.set("vertices", JsonValue(m.vertices));
+    materials.push_back(std::move(row));
+  }
+  out.set("detail", std::move(materials));
+  JsonValue images = JsonValue::array();
+  for (const atlas::RebakedImage& im : r.images) {
+    JsonValue row = JsonValue::object();
+    row.set("material", JsonValue(im.material));
+    row.set("source_image", JsonValue(im.source_image));
+    row.set("image", JsonValue(im.image));
+    row.set("space", JsonValue(space_label(im.space)));
+    row.set("size", JsonValue(im.width));
+    row.set("source_width", JsonValue(im.source_width));
+    row.set("source_height", JsonValue(im.source_height));
+    row.set("png_bytes", JsonValue(im.png_bytes));
+    JsonValue e = JsonValue::object();
+    e.set("unit", JsonValue(im.space == atlas::TextureSpace::tangent_normal ? "degrees" : "8-bit"));
+    e.set("samples", JsonValue(im.error.samples));
+    e.set("mean", JsonValue(im.error.mean));
+    e.set("p99", JsonValue(im.error.p99));
+    e.set("max", JsonValue(im.error.max));
+    row.set("rebake_error", std::move(e));
+    images.push_back(std::move(row));
+  }
+  out.set("images", std::move(images));
+  JsonValue notes = JsonValue::array();
+  for (const std::string& note : r.notes)
+    notes.push_back(JsonValue(note));
+  out.set("notes", std::move(notes));
+  return out;
+}
+
+// The atlas step for a person, on stderr, like the repair line below: what was repacked into
+// what, and what was left and why.
+void print_atlas(const std::string& source, const BuildResult& result) {
+  if (!result.repacked) return;
+  const atlas::RepackReport& r = result.atlas;
+  u32 resolution = 0;
+  for (const atlas::RepackedMaterial& m : r.materials)
+    resolution = std::max(resolution, m.resolution);
+  std::fprintf(stderr,
+               "atlas: repack: %s: %u material%s re-charted into %u charts (atlas up to %u), %u "
+               "image%s rebaked (%.1f MB of PNG), %u vertices before and %u after, %.0f ms\n",
+               source.c_str(), r.materials_repacked, r.materials_repacked == 1 ? "" : "s", r.charts,
+               resolution, static_cast<u32>(r.images.size()), r.images.size() == 1 ? "" : "s",
+               static_cast<double>(r.image_bytes) / 1.0e6, r.vertices_before, r.vertices_after,
+               r.total_ms);
+  for (const std::string& note : r.notes)
+    std::fprintf(stderr, "atlas: repack: %s: %s\n", source.c_str(), note.c_str());
+}
+
 // The same, for a person, on stderr: a `repair` line, which is tool output like the stats table
 // and not a log record — a warning is something to act on, and this is something that was done.
 void print_repairs(const std::string& source, const BuildResult& result) {
@@ -738,9 +930,7 @@ int build(const BuildCommandOptions& options) {
   u64 source_hash = 0;
   std::string message;
   if (!assets::source_mesh_hash(options.input, source_hash, &message)) return failed(message);
-  const u64 key = morph_key(geometry::cluster_cache_key(source_hash, lod_options_of(options.mesh),
-                                                        options.mesh.weld, options.mesh.page_bytes),
-                            options.mesh);
+  const u64 key = build_key_of(source_hash, options.mesh);
 
   std::string output = options.output;
   if (options.cache) {
@@ -760,6 +950,7 @@ int build(const BuildCommandOptions& options) {
   log_warnings(options.input, result.warnings);
   if (!ok) return failed(std::string(error.rule) + ": " + error.message);
   print_repairs(options.input, result);
+  print_atlas(options.input, result);
 
   JsonValue summary = JsonValue::object();
   summary.set("path", JsonValue(result.path));
@@ -782,6 +973,7 @@ int build(const BuildCommandOptions& options) {
   summary.set("vertex_id_source", JsonValue(result.vertex_id_source));
   summary.set("warnings", JsonValue(result.warnings.size()));
   summary.set("repairs", repairs_json(result));
+  summary.set("atlas", atlas_json(result, options.mesh));
   summary.set("bytes", JsonValue(result.bytes));
   summary.set("build_ms", JsonValue(result.build_ms));
   summary.set("hash", JsonValue(result.hash));
@@ -810,6 +1002,25 @@ int build_command(int argc, char** argv) {
       geometry::SeamRule& target =
           a == "--uv-seams" ? options.mesh.uv_seams : options.mesh.normal_seams;
       if (!read_seam_rule(rule, target)) return usage("a seam rule is none, protect, or lock");
+    } else if (a == "--atlas") {
+      std::string mode;
+      if (!next_value(argc, argv, i, mode)) return k_exit_usage;
+      if (!read_atlas_mode(mode, options.mesh.repack)) return usage("--atlas is keep or repack");
+    } else if (a == "--atlas-normal-maps") {
+      std::string mode;
+      if (!next_value(argc, argv, i, mode)) return k_exit_usage;
+      if (!read_normal_map_mode(mode, options.mesh.atlas.normal_maps))
+        return usage("--atlas-normal-maps is convert or resample");
+    } else if (a == "--atlas-proxy") {
+      if (!next_u32(argc, argv, i, options.mesh.atlas.proxy_triangles)) return k_exit_usage;
+    } else if (a == "--atlas-supersample") {
+      if (!next_u32(argc, argv, i, options.mesh.atlas.supersample)) return k_exit_usage;
+      const u32 s = options.mesh.atlas.supersample;
+      if (s != 1 && s != 2 && s != 4) return usage("--atlas-supersample is 1, 2 or 4");
+    } else if (a == "--atlas-chart-cost") {
+      if (!next_u32(argc, argv, i, options.mesh.atlas.max_chart_cost_milli)) return k_exit_usage;
+      if (options.mesh.atlas.max_chart_cost_milli == 0)
+        return usage("--atlas-chart-cost is a positive number of thousandths");
     } else if (a == "--jobs") {
       if (!next_u32(argc, argv, i, options.jobs)) return k_exit_usage;
     } else if (a == "--log") {
@@ -947,6 +1158,12 @@ bool read_manifest(const std::string& path, const MeshOptions& defaults, Vector<
         }
         built.options.weld = weld;
       }
+      if (const JsonValue* v = options->find("atlas"); v != nullptr) {
+        if (!v->is_string() || !read_atlas_mode(v->as_string(), built.options.repack)) {
+          error = at + ": \"atlas\" is \"keep\" or \"repack\"";
+          return false;
+        }
+      }
       if (!options_in_range(built.options)) {
         error = at + ": max_triangles is 4..256 and max_vertices is 1..255";
         return false;
@@ -982,8 +1199,7 @@ void run_mesh_task(void* data) {
     task.state = TaskState::Failed;
     return;
   }
-  const u64 key = geometry::cluster_cache_key(source_hash, lod_options_of(entry.options),
-                                              entry.options.weld, entry.options.page_bytes);
+  const u64 key = build_key_of(source_hash, entry.options);
   const bool to_cache = entry.output.empty();
   const std::string output = to_cache ? geometry::cluster_cache_path(*task.ddc, key) : entry.output;
   task.result.path = output;
@@ -1075,6 +1291,7 @@ int build_all(const BuildAllCommandOptions& options) {
       case TaskState::Built: {
         ++built;
         print_repairs(task.entry->source, task.result);
+        print_atlas(task.entry->source, task.result);
         line.set("status", JsonValue("built"));
         line.set("cached", JsonValue(task.result.cached));
         line.set("source_hash", JsonValue(task.result.source_hash));
@@ -1094,6 +1311,7 @@ int build_all(const BuildAllCommandOptions& options) {
         line.set("image_bytes", JsonValue(task.result.image_bytes));
         line.set("warnings", JsonValue(task.result.warnings.size()));
         line.set("repairs", repairs_json(task.result));
+        line.set("atlas", atlas_json(task.result, task.entry->options));
         line.set("bytes", JsonValue(task.result.bytes));
         line.set("build_ms", JsonValue(task.result.build_ms));
         line.set("hash", JsonValue(task.result.hash));

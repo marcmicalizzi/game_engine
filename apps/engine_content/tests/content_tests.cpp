@@ -11,6 +11,7 @@
 #include <core/platform/process.h>
 #include <domain/assets/gltf.h>
 #include <domain/geometry/cluster_file.h>
+#include <foundation/image/decode.h>
 #include <foundation/image/png.h>
 
 #include <doctest/doctest.h>
@@ -729,6 +730,125 @@ TEST_CASE("engine-content: a morph delta lands on its own vertex when the weld r
   CHECK(on_face == 4);
   CHECK(face_bare == 0);
   CHECK(off_face == 0);
+}
+
+// `--atlas repack` (docs/subsystems/atlas.md): the textured material is re-charted and its texture
+// rebaked into the new atlas, the untextured one is left alone, the container carries the rebaked
+// PNG in place of the source's, and the build key says which atlas the container has — so a
+// repacked container is never the answer to a build that asked for the source's atlas, and the
+// normal-map rule, which changes the bytes, moves the key too.
+TEST_CASE("engine-content: --atlas repack re-charts the textured material and rebakes its image") {
+  const test::TempDir tmp("engine_content_atlas_tests");
+  const std::filesystem::path dir = tmp.native();
+  const std::string mesh = slashes(dir / "cube.glb");
+  REQUIRE(write_cube_glb(mesh));  // two primitives: the first textured, the second not
+
+  const std::string kept = slashes(dir / "kept.clusters");
+  const std::string repacked = slashes(dir / "repacked.clusters");
+  const Run keep = content({"build", mesh, kept});
+  REQUIRE_MESSAGE(keep.exit_code == 0, keep.output);
+  const JsonValue* keep_atlas = keep.result.find("atlas");
+  REQUIRE_MESSAGE(keep_atlas != nullptr, keep.output);
+  CHECK(text_of(*keep_atlas, "mode") == "keep");
+
+  const Run run = content({"build", mesh, repacked, "--atlas", "repack", "--jobs", "1"}, true);
+  REQUIRE_MESSAGE(run.exit_code == 0, run.output);
+  CHECK(run.output.find("atlas: repack: ") != std::string::npos);  // the line for a person
+  REQUIRE(!run.lines.empty());
+  const JsonValue& summary = run.lines.back();
+  CHECK(number(summary, "source_hash") == number(keep.result, "source_hash"));
+  CHECK(number(summary, "build_key") != number(keep.result, "build_key"));
+  CHECK(number(summary, "triangles") == 12);
+  CHECK(number(summary, "materials") == 2);
+  CHECK(number(summary, "images") == 1);
+  CHECK(number(summary, "embedded_images") == 1);
+  const JsonValue* atlas = summary.find("atlas");
+  REQUIRE_MESSAGE(atlas != nullptr, run.output);
+  CHECK(text_of(*atlas, "mode") == "repack");
+  CHECK(text_of(*atlas, "normal_maps") == "convert");
+  CHECK(number(*atlas, "materials_repacked") == 1);
+  CHECK(number(*atlas, "materials_untextured") == 1);
+  CHECK(number(*atlas, "triangles") == 6);
+  CHECK(number(*atlas, "images_after") == 1);
+  const JsonValue* images = atlas->find("images");
+  REQUIRE(images != nullptr);
+  REQUIRE(images->size() == 1);
+  const JsonValue& image_row = (*images)[0];
+  CHECK(text_of(image_row, "space") == "srgb");
+  CHECK(number(image_row, "size") == 256);  // the 4x4 checker, raised to the smallest atlas
+  const JsonValue* rebake_error = image_row.find("rebake_error");
+  REQUIRE(rebake_error != nullptr);
+  CHECK(number(*rebake_error, "samples") > 0);
+  f64 mean = 1.0e9;
+  REQUIRE(rebake_error->find("mean") != nullptr);
+  CHECK(rebake_error->find("mean")->get_f64(mean));
+  MESSAGE("cube rebake error, mean " << mean << " of 255");
+  CHECK(mean < 2.0);
+
+  // The container: one image, carried as a PNG with no path, at the atlas's size.
+  geometry::ClusterFileData data;
+  std::string error;
+  REQUIRE_MESSAGE(geometry::read_cluster_file(repacked, data, &error), error);
+  REQUIRE(data.image_paths.size() == 1);
+  CHECK(data.image_paths[0].empty());
+  REQUIRE(data.images.size() == 1);
+  CHECK(data.images[0].mime_type == "image/png");
+  image::Image decoded;
+  REQUIRE(image::decode_image(
+      std::span<const u8>(data.images[0].bytes.data(), data.images[0].bytes.size()), decoded, 4));
+  CHECK(decoded.width == 256);
+  CHECK(decoded.height == 256);
+  CHECK(data.build_key == number(summary, "build_key"));
+
+  // The same bytes whatever --jobs says, and the same through build-all's "atlas" option.
+  const std::string parallel = slashes(dir / "parallel.clusters");
+  const Run eight = content({"build", mesh, parallel, "--atlas", "repack", "--jobs", "8"});
+  REQUIRE_MESSAGE(eight.exit_code == 0, eight.output);
+  const std::string bytes = file_bytes(repacked);
+  CHECK(bytes.size() > 0);
+  CHECK(file_bytes(parallel) == bytes);
+  const std::string manifest = slashes(dir / "atlas.json");
+  REQUIRE(write_text(manifest,
+                     "{\"meshes\":[{\"source\":\"cube.glb\",\"output\":\"m.clusters\","
+                     "\"options\":{\"atlas\":\"repack\"}}]}"));
+  const Run all = content({"build-all", manifest});
+  REQUIRE_MESSAGE(all.exit_code == 0, all.output);
+  CHECK(file_bytes(slashes(dir / "m.clusters")) == bytes);
+  REQUIRE(all.lines.size() == 2);
+  CHECK(number(all.lines[0], "build_key") == number(summary, "build_key"));
+
+  // The normal-map rule and the chart cost change the bytes a repack can make, so they move the
+  // key.
+  const Run resample = content({"build", mesh, slashes(dir / "r.clusters"), "--atlas", "repack",
+                                "--atlas-normal-maps", "resample"});
+  REQUIRE_MESSAGE(resample.exit_code == 0, resample.output);
+  CHECK(number(resample.result, "build_key") != number(summary, "build_key"));
+  const Run costly = content({"build", mesh, slashes(dir / "c.clusters"), "--atlas", "repack",
+                              "--atlas-chart-cost", "4000"});
+  REQUIRE_MESSAGE(costly.exit_code == 0, costly.output);
+  CHECK(number(costly.result, "build_key") != number(summary, "build_key"));
+  // Supersampling is a different container (domain/atlas's test checks the sizes it bakes).
+  const Run doubled = content({"build", mesh, slashes(dir / "s.clusters"), "--atlas", "repack",
+                               "--atlas-supersample", "2"});
+  REQUIRE_MESSAGE(doubled.exit_code == 0, doubled.output);
+  CHECK(number(doubled.result, "build_key") != number(summary, "build_key"));
+  const JsonValue* doubled_atlas = doubled.result.find("atlas");
+  REQUIRE(doubled_atlas != nullptr);
+  CHECK(number(*doubled_atlas, "supersample") == 2);
+
+  // And what is not a mode is a usage error.
+  CHECK(content({"build", mesh, slashes(dir / "x.clusters"), "--atlas", "fresh"}, true).exit_code ==
+        2);
+  CHECK(content({"build", mesh, slashes(dir / "x.clusters"), "--atlas-normal-maps", "flip"}, true)
+            .exit_code == 2);
+  CHECK(content({"build", mesh, slashes(dir / "x.clusters"), "--atlas-chart-cost", "0"}, true)
+            .exit_code == 2);
+  CHECK(content({"build", mesh, slashes(dir / "x.clusters"), "--atlas-supersample", "3"}, true)
+            .exit_code == 2);
+  REQUIRE(write_text(manifest,
+                     "{\"meshes\":[{\"source\":\"cube.glb\",\"output\":\"m.clusters\","
+                     "\"options\":{\"atlas\":\"fresh\"}}]}"));
+  CHECK(content({"build-all", manifest}, true).exit_code == 1);
 }
 
 TEST_CASE("engine-content: the same mesh builds the same bytes whatever --jobs says") {

@@ -1,6 +1,6 @@
 # E10: how much of what a generator makes can the engine take as it comes
 
-- **Question ([10 §10.5](../plan/10-roadmap-risks.md#105-experiments-to-run-before-committing)):** the pass rate of ML-generated props through the validators, and the repair yield — which 07 §7.7 asks for before the pipeline may depend on generation ("measure the pass rate before depending on it"). The **first pass** (2026-09-22) is 20 props from one image model and one image-to-3D service, where the row asks for 200 across services; the **second pass** (2026-09-23, [below](#pass-2-the-same-twenty-remeshed-to-a-triangle-budget)) is the same twenty images remeshed to a triangle budget, beside the owner's Tripo run at the same budgets and a mechanical repair of the atlas fault the first pass found; the owner's two local TRELLIS.2 meshes and the post-processing sweep [follow](#local-generation-the-owners-two-trellis2-samples); then [the collapse check](#the-collapse-check-how-far-the-lod-collapses) the second pass asked for, calibrated and applied to every set, and [TRELLIS.2 from the same twenty images](#trellis2-from-the-same-twenty-images) at the same budgets, the third generator on the one image set.
+- **Question ([10 §10.5](../plan/10-roadmap-risks.md#105-experiments-to-run-before-committing)):** the pass rate of ML-generated props through the validators, and the repair yield — which 07 §7.7 asks for before the pipeline may depend on generation ("measure the pass rate before depending on it"). The **first pass** (2026-09-22) is 20 props from one image model and one image-to-3D service, where the row asks for 200 across services; the **second pass** (2026-09-23, [below](#pass-2-the-same-twenty-remeshed-to-a-triangle-budget)) is the same twenty images remeshed to a triangle budget, beside the owner's Tripo run at the same budgets and a mechanical repair of the atlas fault the first pass found; the owner's two local TRELLIS.2 meshes and the post-processing sweep [follow](#local-generation-the-owners-two-trellis2-samples); then [the collapse check](#the-collapse-check-how-far-the-lod-collapses) the second pass asked for, calibrated and applied to every set, and [TRELLIS.2 from the same twenty images](#trellis2-from-the-same-twenty-images) at the same budgets, the third generator on the one image set; and, 2026-09-24, [the pipeline's own atlas](#repack-the-pipelines-own-atlas) — the repair the collapse check pointed at — over all three sets.
 - **Date:** 2026-09-22. **Machine:** Intel Core i9-10980XE (18 cores, 36 threads), 64 GB, Windows 11 Pro 26200; **GPU:** RTX 5090, driver 610.88, Vulkan. **Build:** `msvc-release` at `5d57bb7` (`engine-content`, `engine-view`, `engine-image`, copied by the harness).
 - **Machine state:** shared and busy, WARNING raised on all 40 capture runs of each measured pass. Of the first pass's two harness runs, the second (the one reported): other processes at **10–46% of the CPU**, the GPU **7–96% busy** with 7.6–8.0 GB of 32.6 GB in use, the GPU lock free at the start and held at the end by another agent timing a morph stage. The first run: others at **12–100%** of the CPU, the GPU 5–16% busy. **The picture metrics and the container bytes were identical in both passes, all 20 assets, to the last digit**, so they do not depend on load; **the build milliseconds are upper bounds** — one asset's build took 3× as long in the first pass as in the second, under a 100% CPU spike from another process. The image batch held the GPU lock; the captures did not need it ([content-generation](../content-generation.md#the-e10-harness-toolse10-harnessps1)).
 - **Decision:** the E10 row in 10 §10.5 is **Measured** (not Done: 80 generated props of the 200, two services and one local model; the repair yield is measured for one repair), and 07 §7.4 carries status notes on which validators the pipeline needs first. The second pass revised the first on two points, marked where they occur: the "zero-area triangles" were points only as stored, and density is the failure only at the extremes. The collapse check revised the second: its 17 of 20 is **11 of 20**, marked where it occurs.
@@ -482,3 +482,84 @@ pwsh tools/e10-harness.ps1 -Folder generated\trellis\2026-09-23-e10 -Only <the t
 - **One timing is misattributed** (the broken pot's unwrap, above); the per-node times are the gaps between socket messages, and a machine sample every 15 s can delay reading a burst of them by about a second.
 
 The meshes, their sidecars, the images the reconstruction saw, the atlas renders and `runs.jsonl` are under `D:\workspace\game_engine_local\generated\trellis\2026-09-23-e10\`; the batch script and its log under `e10\trellis-images-batch-2026-09-23.*`; the two reports under `e10\trellis-2026-09-23-e10-orbit16\` and `e10\trellis-2026-09-23-e10-fit\`. None is committed.
+
+## Repack: the pipeline's own atlas
+
+- **Question.** The passes above ended on "the pipeline needs its own unwrap, repack and rebake, so that a generator's atlas stops deciding whether the engine's LOD can work". With one (`engine-content build --atlas repack`, [atlas](../subsystems/atlas.md)), how far does each set's LOD now collapse, against how far it could with no atlas constraint at all; what does the rebake cost the picture and the build; and which props can it not take?
+- **Date:** 2026-09-24. **Machine:** as above. **Build:** `msvc-release` of this change on `85cd34c` (build stamps checked, none stale), and spot-checked after rebasing it onto `3d34c60`: eight props of the three sets gave the same collapse shares, seam fractions, FLIP and one-camera comparisons to the last digit, their containers larger only by the canonical vertex id section that commit added.
+- **Machine state:** the repack runs on a quiet machine — others 0.2–22% of the CPU, the GPU 0–3% busy, the lock free at both ends; the own-atlas and ceiling runs beside this change's own debug builds, others 3–67% of the CPU, the GPU 1–10%. The counts and pictures do not depend on load; the build milliseconds of the second group are upper bounds.
+
+**Three builds of every prop** of the three sets E10 compares on one image set — Meshy's triangle remesh (pass 2), Tripo, TRELLIS.2 — at orbit 16, 640×640, 1 px against 0.05 px (reports `e10\atlas-<set>-orbit16-{keep,ceiling,repack}\`):
+
+```powershell
+pwsh tools/e10-harness.ps1 -Folder <set> -Only <the twenty> -Orbit 16 -Out e10\atlas-<set>-orbit16-keep
+pwsh tools/e10-harness.ps1 -Folder <set> -Only <the twenty> -Orbit 16 -Out e10\atlas-<set>-orbit16-ceiling -BuildArgs '--uv-seams none --uv-weight 0'
+pwsh tools/e10-harness.ps1 -Folder <set> -Only <the twenty> -Orbit 16 -Out e10\atlas-<set>-orbit16-repack -Atlas repack -CompareKept
+```
+
+The **own atlas** is the build as before. The **ceiling** tells the simplifier there are no UV seams and no attribute error at all: it is how far the LOD could collapse if the atlas were no constraint, the bound any repack is working towards — and its pictures are wrong wherever it collapses across an island, so its FLIP is not a quality number. The **repack** is `--atlas repack` at its defaults, and `-CompareKept` also draws its finest cut and the own atlas's from one camera, with the renderer's orbiting lights off (below).
+
+| set | pass rate: own → repack (ceiling) | median coarse / finest pairs: own → repack (ceiling) | props that do not coarsen | median seam vertices | median islands | coarse-vs-finest FLIP failures | declined by the gate | build, median ms: own → repack |
+|---|---|---|---|---|---|---|---|---|
+| Meshy, triangle remesh | 11 → 11 (6) | 0.69 → **0.46** (0.39) | 6 → 3 | 70% → 24% | 4,749 → 157 | 2 → 5 | 1 | 746 → 11,691 |
+| Tripo | 10 → 10 (6) | 0.52 → **0.45** (0.38) | 0 → 0 | 21% → 21% | 186 → 131 | 10 → 10 | 1 | 493 → 10,529 |
+| TRELLIS.2 | 5 → **8** (8) | 0.88 → **0.81** (0.72) | 13 → 10 | 66% → 40% | 1,846 → 732 | 2 → 2 | **9** | 620 → 11,934 |
+
+Prop by prop, each cell is the coarse cut's share of the finest, own atlas → repack (ceiling in brackets), the seam fraction own → repack, and the result own → repack:
+
+| prop | Meshy (triangle remesh) | Tripo | TRELLIS.2 |
+|---|---|---|---|
+| animal-ribcage | 0.75 → 0.67 (0.55); 77 → 33%; pass → pass | 0.52 → 0.59 (0.43); 25 → 26%; flip → flip | 0.88 → 0.81 (0.76); 76 → 40%; collapse → collapse |
+| barrel-cactus | 1.00 → declined (1.00); collapse | 0.68 → declined (0.53); flip | 1.00 → declined (1.00); collapse |
+| basalt-slab | 0.40 → 0.23 (0.20); 43 → 13%; pass → flip | 0.27 → 0.23 (0.15); 12 → 12%; pass → pass | 0.64 → 0.40 (0.41); 26 → 10%; pass → pass |
+| broken-pot | 0.51 → 0.37 (0.29); 51 → 20%; pass → pass | 0.37 → 0.28 (0.22); 20 → 14%; pass → flip | 0.95 → declined (0.65); collapse |
+| canvas-tent-bundle | 0.85 → 0.70 (0.57); 79 → 28%; collapse → flip | 0.59 → 0.66 (0.53); 20 → 23%; flip → flip | 1.00 → declined (0.95); collapse |
+| cart-wheel | 0.72 → 0.44 (0.25); 77 → 24%; pass → pass | 0.52 → 0.49 (0.44); 25 → 21%; pass → pass | 0.71 → 0.67 (0.52); 65 → 40%; pass → pass |
+| cattle-skull | 0.61 → 0.44 (0.32); 62 → 21%; pass → pass | 0.40 → 0.45 (0.33); 22 → 23%; pass → pass | 1.00 → declined (0.72); collapse |
+| clay-water-jar | 0.67 → 0.55 (0.43); 46 → 15%; pass → pass | 0.61 → 0.54 (0.52); 18 → 13%; flip → flip | 0.88 → 0.91 (0.72); 59 → 45%; collapse → pass (too sparse to judge) |
+| dead-tree | 0.33 → 0.22 (0.12); 43 → 18%; pass → pass | 0.17 → 0.18 (0.14); 14 → 19%; pass → pass | 0.47 → 0.32 (0.27); 62 → 29%; pass → pass |
+| driftwood-log | 0.74 → 0.57 (0.39); 70 → 19%; pass → pass | 0.38 → 0.39 (0.33); 17 → 18%; pass → pass | 1.00 → declined (0.88); collapse |
+| eroded-limestone | 0.52 → 0.46 (0.39); 45 → 13%; flip → flip | 0.32 → 0.37 (0.30); 12 → 14%; flip → flip | 0.87 → 0.69 (0.77); 66 → 26%; collapse → flip |
+| leather-water-skin | 0.86 → 0.64 (0.54); 85 → 28%; collapse → pass | 0.62 → 0.59 (0.55); 29 → 31%; pass → pass | 0.99 → declined (0.92); collapse |
+| oil-lamp | 0.97 → 0.88 (0.69); 86 → 36%; collapse → collapse | 0.65 → 0.65 (0.57); 39 → 33%; flip → flip | 1.00 → declined (0.92); collapse |
+| rope-coil | 1.00 → 1.00 (1.00); 96 → 29%; collapse → collapse | 1.01 → 1.00 (0.97); 26 → 33%; pass → pass | 1.00 → declined (1.00); collapse |
+| saguaro-cactus | 0.69 → 0.42 (0.13); 75 → 26%; pass → pass | 0.19 → 0.19 (0.14); 12 → 21%; pass → pass | 0.56 → 0.47 (0.37); 63 → 39%; pass → pass |
+| sandstone-boulder | 0.34 → 0.21 (0.19); 34 → 6%; flip → flip | 0.27 → 0.25 (0.22); 9 → 8%; flip → flip | 0.52 → 0.38 (0.40); 34 → 8%; flip → flip |
+| signpost | 0.44 → 0.26 (0.13); 34 → 12%; pass → pass | 0.28 → 0.23 (0.16); 23 → 17%; flip → flip | 0.42 → 0.28 (0.21); 42 → 19%; pass → pass |
+| tin-cup | 0.69 → 0.61 (0.41); 59 → 26%; island → island | 0.58 → 0.55 (0.44); 21 → 15%; pass → pass | 0.79 → 0.72 (0.67); 43 → 25%; collapse → pass |
+| well-bucket | 0.87 → 0.71 (0.59); 85 → 35%; collapse → pass | 0.69 → 0.66 (0.58); 30 → 34%; flip → pass | 0.97 → declined (0.90); collapse |
+| wooden-crate | 0.68 → 0.39 (0.22); 75 → 26%; pass → flip | 0.60 → 0.41 (0.38); 44 → 21%; flip → flip | 0.57 → 0.57 (0.47); 39 → 29%; flip → pass |
+
+**What the rebake costs the picture**, from the one-camera comparison of each repacked prop's finest cut with its own atlas's (declined props are not in it; they are their own atlas), and the build's own measure of each rebaked texture against its source on the surface:
+
+| set | repacked | one camera: median FLIP (worst) · median PSNR (worst) | colour texture: median of the mean / p99 error, 8-bit levels | normal map: median of the mean / p99 error, degrees | folded triangles, median (worst) | PNG bytes, median |
+|---|---|---|---|---|---|---|
+| Meshy | 19 | 0.0069 (0.0206) · 46.7 dB (36.0) | 3.5 / 21 | 3.0 / 30 | 0.22% (1.8%) | 11.7 MB |
+| Tripo | 19 | 0.0037 (0.0116) · 50.3 dB (36.5) | 0.9 / 6 | 0.6 / 11 | 0.02% (0.5%) | 9.2 MB |
+| TRELLIS.2 | 11 | 0.0062 (0.0206) · 43.1 dB (33.3) | 8.5 / 137 | 3.0 / 44 | 0.36% (2.1%) | 13.8 MB |
+
+**The comparison was wrong the first time, and the reason is worth keeping.** The harness's first one-camera comparisons put a repacked Tripo clay jar — three textures that matched their sources to a tenth of a level at every sample — 4 levels redder than its own atlas over the whole jar, and a Meshy limestone 11 levels brighter. The textures were not the cause: with every texture removed from both builds the two pictures still differed by as much. The renderer places its two orbiting point lights from the scene's bounds (1.35 radii out, a range of 4 radii; `systems/renderer` `lighting.cpp`), and the bounds are the union of the leaf clusters' spheres — which a different atlas changes, as it changes the default framing. With those lights off the jar's pictures differ by 0.09 of a level on average, and `-CompareKept` now switches them off; the sun is a direction and stays. The same fact makes any comparison of two builds of one mesh through the renderer's default lights a comparison of two lightings.
+
+### What it shows
+
+1. **On the generator whose atlas was the problem, the repack takes most of the way to the ceiling.** Meshy's triangle remesh goes from 0.69 to 0.46 of the finest cut at the coarse threshold, where no atlas at all would allow 0.39; its seams from 70% of vertices to 24%, its islands from a median of 4,749 to 157. Three props still do not coarsen: the barrel cactus (declined: its spines fold 18% of it on the proxy's charts), the oil lamp (0.88, where its ceiling is 0.69) and the rope (1.00 at the ceiling too — geometry, as E10 found).
+2. **The pass rate does not move for Meshy, and that is the check working.** Of the six that did not coarsen, two now pass and a third coarsens and fails the coarse-vs-finest FLIP instead; two that passed now fail that FLIP too — a LOD that coarsens has something to lose, which the ceiling shows at its extreme (6 of 20 pass, 11 FLIP failures). The repack turns "cannot coarsen" into "coarsens and has to be judged on its picture", which is the question E10 was asking all along.
+3. **Tripo's atlases were already sound, and the repack neither helps nor hurts much.** 0.52 → 0.45 (ceiling 0.38) with the seams unchanged at 21%; the pass rate is still 10 of 20 and Tripo's failures are still the coarse picture — detail in geometry at a budget, the first repair of 07 §7.7, which a repack cannot touch.
+4. **TRELLIS.2 is limited by its geometry, and the gate says so first.** Nine of twenty are declined — the rope (50% of its triangles fold or flatten), the barrel cactus and the canvas bundle (17–20%), the skull, the driftwood, the lamp, the bucket, the leather skin, the broken pot (5–10%) — and the ceiling shows seven of those nine do not coarsen even with no atlas. Of the eleven it repacks, the LOD collapses further on most (the limestone 0.87 → 0.69, the tin cup 0.79 → 0.72) and the pass rate rises from 5 to 8. The thin, intricate shapes that fold a 2,000-triangle proxy are the same ones the unwrap fragmented: the problem is one surface, not the atlas on it.
+5. **The picture it bakes is close to the source's, and where it is not the cause is known.** From one camera the median repacked prop is 0.004–0.007 FLIP from its own atlas (PSNR 43–50 dB) and the worst 0.02, the size of the line the coarse cut is itself held to. On the Meshy limestone the parts separate cleanly: the normal-map conversion halves the error a plain resample makes (FLIP 0.0111 against 0.0179), and baking at twice the texture's side takes it to 0.0076 ([atlas](../subsystems/atlas.md#what-it-costs-the-picture)). TRELLIS.2's colour p99 is high (a median of 137 levels); the folded and refused triangles that share texels with a neighbour are 0.4–2.7% of the props it repacked, and the one-camera numbers above are what that costs in the picture.
+6. **It costs ten seconds a prop.** Builds take a median 10.5–11.9 s against 0.5–0.75 s with the own atlas, 9–10.5 s of it charting and packing — the proxy, its transfer and LSCM on 50,000–250,000 triangles — and the PNGs it writes are 9–14 MB a prop, which is where the container's bytes go.
+
+### What it decides
+
+- **`keep` stays the default; `repack` is the setting for generated props from a generator whose atlas fragments** — Meshy's triangle remesh and TRELLIS.2 at these budgets, told apart by the harness's own fragmentation diagnosis (more than 30% of vertices on a seam, or a median island under 1,024 texels). On a sound atlas it buys a few hundredths of the coarse cut for ten seconds and a second rebake of every texture. The status note in [07 §7.4](../plan/07-content-pipeline.md#74-validation-rules-automatic) records this.
+- **The gate stays at 5%.** Nothing measured sat near it: the worst prop it repacked leaves 2.7% of its triangles folded or flat (TRELLIS.2's cart wheel), the least-bad it declined 5.4% (the broken pot), and a declined prop is its own atlas, never worse.
+- **What is left for TRELLIS.2 and the rope is geometry**: decimation to a budget with the detail baked into the normal map (07 §7.7's first repair), which needs this step's rebake with a high-poly source, not another atlas.
+
+### Caveats (repack)
+
+- **One proxy size and one chart cost.** `--atlas-proxy 2000` and xatlas's default `maxCost` throughout. On three Meshy props (ribcage, canvas bundle, oil lamp) a proxy of 500 cut the seams by 2–5 points and folded more on all three, and 4,000 made more charts and more seams; `--atlas-chart-cost` 4,000 and 8,000 changed the ribcage's 168 proxy charts to 177. The seams left (24–40% on the fragmented sets) are mostly the borders between the *pieces* a chart's triangles fall into on a mesh with non-manifold edges and loose parts — the ribcage's 21 proxy charts at a proxy of 500 still made 346 islands — which is where a better transfer would earn more than a different chart count.
+- **Only textured materials, and every one of these props has one.** An untextured material keeps its UVs by design.
+- **The ceiling is a bound, not a target.** Its seam-free collapses draw textures across islands; no atlas reaches it without the texture moving.
+- **One camera, one resolution, lights off.** The one-camera comparison has the sun and the sky only; with the orbiting lights on, the two builds are lit differently for a reason that has nothing to do with the atlas (above).
+
+The reports are under `D:\workspace\game_engine_local\e10\` (`atlas-<set>-orbit16-{keep,ceiling,repack}\`, and the rebased spot checks in `atlas-<set>-orbit16-repack-rebased\`); none is committed.

@@ -45,7 +45,7 @@ function Invoke-Harness {
 $root = Join-Path ([IO.Path]::GetTempPath()) "engine-e10-harness-$([guid]::NewGuid().ToString('N'))"
 New-Item -ItemType Directory -Force -Path $root | Out-Null
 
-function New-Report([string]$dir, [bool]$stale, [bool]$collapse = $false) {
+function New-Report([string]$dir, [bool]$stale, [bool]$collapse = $false, [bool]$atlas = $false) {
   New-Item -ItemType Directory -Force -Path $dir | Out-Null
   $binary = { param($name) [ordered]@{ name = $name; sha256 = ('0' * 64); built = '2026-09-22T10:00:00.0000000Z'
       stamp = [ordered]@{ commit = ('a' * 40); dirty = $false }; judged_by = 'build stamp'; stale = $stale
@@ -76,6 +76,16 @@ function New-Report([string]$dir, [bool]$stale, [bool]$collapse = $false) {
       (& $row 'stuck-cactus' 0.46 0.0 1.0 2567 2567 0.96 26),             # share 1.00, 13.6 per kpx, fragmented atlas
       (& $row 'stuck-sound-atlas' 0.45 0.004 5.0 880 900),                # share 0.98, 4.9 per kpx, atlas sound
       (& $row 'sparse-helmet' 0.452 0.0019 36.0 223 233))                 # share 0.96, but 1.26 per kpx
+  }
+  if ($atlas) {
+    # A repacked build (`-Atlas repack -CompareKept`): the atlas step's block and the one-camera
+    # comparison with the kept build, on the first asset only.
+    $report.settings.atlas = 'repack'
+    $report.settings.compare_kept = $true
+    $report.assets[0].atlas = [ordered]@{ mode = 'repack'; charts = 61; materials = 1; resolution = 2048; utilization = 0.71; pack_attempts = 3
+      unatlased_triangles = 0; proxy_charts = 58; folded_triangles = 233; image_bytes = 12582912; ms = [ordered]@{ total = 9000 }
+      colour_error_mean = 1.17; colour_error_p99 = 13.0; normal_error_mean_deg = 1.04; normal_error_p99_deg = 21.7; notes = @() }
+    $report.assets[0].reference = [ordered]@{ against = 'kept'; psnr = 38.79; ssim = 0.99583; flip_mean = 0.01407; flip_p95 = 0.052; flip_object_mean = 0.031 }
   }
   $file = Join-Path $dir 'report.json'
   [IO.File]::WriteAllText($file, ($report | ConvertTo-Json -Depth 20))
@@ -133,6 +143,15 @@ try {
   $json = Get-Content -Raw $file | ConvertFrom-Json
   $a = @{}; foreach ($x in $json.assets) { $a[$x.name] = $x }
   Test-That 're-judged under other lines, the verdicts move with them' { $a['stuck-cactus'].checks.collapse -eq 'pass' -and $a['sparse-helmet'].checks.collapse -eq 'pass' -and $json.totals.failed_by_check.collapse -eq 0 }
+
+  Write-Host '-FromReport, a repacked build'
+  $file = New-Report (Join-Path $root 'atlas') $false $false $true
+  $r = Invoke-Harness -FromReport $file
+  $md = Get-Content -Raw (Join-Path $root 'atlas/report.md')
+  Test-That 'the captures line names the atlas step and the one-camera comparison' { $md -match 'Containers built with `--atlas repack`' -and $md -match 'compared with the kept build''s from one camera, orbiting lights off' }
+  Test-That 'the atlas table carries the charts, the proxy charts, the folds and the kept comparison' {
+    $md -match '\| solid-crate \| 61 \(58\) \| 233 \| 2048 \| 71\.0 \| 1\.17 / 13\.0 \| 1\.04 / 21\.7 \|' -and $md -match '\| 0\.0141 \(0\.031\) \| 38\.8 \|' }
+  Test-That 'an asset with neither block is not in that table' { -not ($md -match '\| thin-tree \| — \(') }
 
   Write-Host '-CheckBinaries'
   $exe = if ($IsWindows -or $env:OS -eq 'Windows_NT') { '.exe' } else { '' }

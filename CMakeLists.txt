@@ -29,6 +29,7 @@ include(EngineProfiling)
 include(EngineGraphics)
 include(EngineImage)
 include(EngineAssets)
+include(EngineAtlas)
 include(EngineShaders)
 include(EngineBench)
 # Capability dependencies: each returns immediately when its ENGINE_WITH_<NAME> switch is off,

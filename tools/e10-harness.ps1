@@ -132,6 +132,21 @@ param(
   [double]$CoarseLod = 1.0,
   [double]$FinestLod = 0.05,
   [ValidateSet('off', 'rt')] [string]$Shadows = 'off',
+  # The content build's atlas step (docs/subsystems/atlas.md): keep the generator's UV atlas, or
+  # re-chart and rebake it (`engine-content build --atlas repack`). Recorded in the report.
+  [ValidateSet('keep', 'repack')] [string]$Atlas = 'keep',
+  # More `engine-content build` flags, verbatim (one string, split on spaces), for a measurement
+  # that needs a builder setting the harness has no switch for — `--uv-seams none --uv-weight 0`
+  # is the build whose LOD the atlas does not constrain at all, the ceiling any atlas could reach.
+  # Recorded in the report.
+  [string]$BuildArgs = '',
+  # With -Atlas repack: also build each asset with the source's atlas and capture both containers'
+  # finest cut from ONE camera (the kept build's framing) through engine-host, and compare them
+  # (`reference` in the row) — which is how the rebake is judged: the two should agree except at
+  # chart borders. Two engine-view runs cannot do it: engine-view frames the union of the leaf
+  # clusters' spheres, and a different atlas makes different clusters, so the same mesh is framed a
+  # little differently by each build.
+  [switch]$CompareKept,
   [double]$MaxFlip = 0.02,
   [double]$MinIslandTexels = 1.0,
   [int]$MaxWarnings = 0,
@@ -146,7 +161,7 @@ param(
   # domain/gfx (the shaders and passes that draw the picture) and foundation/image (FLIP, PSNR and
   # SSIM themselves).
   [string[]]$StalenessPaths = @('apps/engine_content', 'apps/engine_view', 'apps/engine_image', 'domain/geometry', 'domain/assets',
-    'systems/renderer', 'domain/gfx', 'foundation/image'),
+    'domain/atlas', 'systems/renderer', 'domain/gfx', 'foundation/image'),
   [string[]]$Only,
   [switch]$KeepContainers,
   [string]$Title,
@@ -268,6 +283,55 @@ function Get-FitOrbit([int]$w, [int]$h) {
 
 # The object's share of the frame: engine-view clears to one flat sky colour, so every pixel that is
 # not the corner pixel's colour is the object. Windows only (System.Drawing); null elsewhere.
+# Two containers drawn from ONE camera through engine-host --stdio (`render.load` twice, then
+# `render.capture` twice with an explicit camera): the first container's orbit framing, computed
+# the way engine-view computes it for frame `Frame` (systems/renderer view_set.cpp,
+# `orbit_camera`), used for both. Returns the two PNG paths. The host reads one request per line
+# ending in LF — a PowerShell pipe ends lines in CRLF, which it refuses — so the requests are
+# written through the process's own stream.
+function Invoke-OneCamera([string]$HostExe, [string]$First, [string]$Second, [string]$OutDir, [double]$Distance, [double]$Lod, [int]$Frame) {
+  $psi = New-Object Diagnostics.ProcessStartInfo
+  $psi.FileName = $HostExe
+  $psi.Arguments = '--stdio'
+  $psi.RedirectStandardInput = $true; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
+  $psi.UseShellExecute = $false
+  $process = [Diagnostics.Process]::Start($psi)
+  $null = $process.StandardError.ReadToEndAsync()
+  $process.StandardInput.NewLine = "`n"
+  $script:rpcId = 0
+  $call = {
+    param([string]$method, $params)
+    $script:rpcId++
+    $process.StandardInput.WriteLine(([ordered]@{ jsonrpc = '2.0'; id = $script:rpcId; method = $method; params = $params } | ConvertTo-Json -Depth 10 -Compress))
+    $process.StandardInput.Flush()
+    $response = $process.StandardOutput.ReadLine() | ConvertFrom-Json
+    if ($response.error) { throw "$method failed: $($response.error.message)" }
+    $response.result
+  }
+  try {
+    # The two orbiting point lights off (`lights = false`): the renderer places them from the scene's
+    # bounds (systems/renderer lighting.cpp: 1.35 radii from the centre, a range of 4 radii), and
+    # the bounds are the union of the leaf clusters' spheres, which differ between the two builds
+    # exactly as the framing would. With them on, a repack whose textures matched to a tenth of a
+    # level still drew 2-11 levels brighter or darker overall. The sun is a direction, the same for
+    # both, so the pictures are still lit and still shaded by the normal maps.
+    $settings = [ordered]@{ lod_px = $Lod; shadows = 'off'; raster = 'hw'; lights = $false }
+    $sceneOne = & $call 'render.load' ([ordered]@{ mesh = ($First -replace '\\', '/'); settings = $settings; cache = $false })
+    $sceneTwo = & $call 'render.load' ([ordered]@{ mesh = ($Second -replace '\\', '/'); settings = $settings; cache = $false })
+    $c = @($sceneOne.center); $r = [double]$sceneOne.radius
+    $d = $Distance * ($r / 10.0); $angle = $Frame * 0.006
+    $camera = [ordered]@{ position = @(([double]$c[0] + [math]::Cos($angle) * $d), ([double]$c[1] + 0.45 * $d), ([double]$c[2] + [math]::Sin($angle) * $d))
+      target = @([double]$c[0], [double]$c[1], [double]$c[2]); fov_deg = 55; znear = 0.01 * $r }
+    $dirText = $OutDir -replace '\\', '/'
+    $null = & $call 'render.capture' ([ordered]@{ scene = [string]$sceneOne.scene; camera = $camera; width = $Width; height = $Height; out_dir = $dirText; name = 'one-camera-first'; frame = $Frame })
+    $null = & $call 'render.capture' ([ordered]@{ scene = [string]$sceneTwo.scene; camera = $camera; width = $Width; height = $Height; out_dir = $dirText; name = 'one-camera-second'; frame = $Frame })
+  } finally {
+    $process.StandardInput.Close()
+    if (-not $process.WaitForExit(60000)) { $process.Kill() }
+  }
+  return [pscustomobject]@{ first = (Join-Path $OutDir 'one-camera-first.png'); second = (Join-Path $OutDir 'one-camera-second.png') }
+}
+
 function Get-Coverage([string]$png) {
   if (-not $IsWin) { return $null }
   try {
@@ -457,7 +521,8 @@ if ($FromReport) {
   # The binaries: copies, never the build tree in place.
   $source = if ($Bin) { (Resolve-Path -LiteralPath $Bin).Path } else { Join-Path $RepoRoot "build/$Preset/bin" }
   $binaries = @()
-  foreach ($t in @('engine-content', 'engine-view', 'engine-image')) {
+  # engine-host only for -CompareKept, whose one-camera captures go through the render protocol.
+  foreach ($t in @('engine-content', 'engine-view', 'engine-image') + @(if ($CompareKept) { 'engine-host' })) {
     $src = Join-Path $source "$t$Exe"
     if (-not (Test-Path -LiteralPath $src)) { throw "no $t$Exe in $source. Build it (tools/dev.ps1 build -Preset $Preset) or pass -Bin <dir>." }
     Copy-Item -LiteralPath $src -Destination (Join-Path $Out 'bin') -Force
@@ -493,6 +558,8 @@ if ($FromReport) {
     foreach ($l in $lines) { Write-Log $l }
   }
 
+  if ($CompareKept -and $Atlas -eq 'keep') { throw '-CompareKept compares a repacked build with a kept one; give -Atlas repack' }
+  $hostExe = Join-Path (Join-Path $Out 'bin') "engine-host$Exe"
   $orbitUsed = if ($Orbit -gt 0) { $Orbit } else { Get-FitOrbit $Width $Height }
   $framing = if ($Orbit -gt 0) { "fixed: orbit $Orbit (-Orbit)" } else { "fit: the whole bounding sphere in frame with a 5% margin (orbit $orbitUsed)" }
   Write-Log "e10: framing $framing"
@@ -541,7 +608,10 @@ if ($FromReport) {
 
     # 1. build
     $clusters = Join-Path $dir "$name.clusters"
-    $buildOut = & $content build $glb.FullName $clusters 2> (Join-Path $dir 'build.err')
+    # `--atlas` only when it is not the default, so an older binary (-AllowStale) still builds.
+    $atlasArgs = if ($Atlas -ne 'keep') { @('--atlas', $Atlas) } else { @() }
+    $extraArgs = @($BuildArgs -split ' ' | Where-Object { $_ })
+    $buildOut = & $content build $glb.FullName $clusters @atlasArgs @extraArgs 2> (Join-Path $dir 'build.err')
     $buildCode = $LASTEXITCODE
     $buildErr = "$(Get-Content -Raw -LiteralPath (Join-Path $dir 'build.err') -ErrorAction SilentlyContinue)"
     $b = Get-LastJsonLine $buildOut
@@ -565,6 +635,29 @@ if ($FromReport) {
     # What the build repaired rather than warned about (geometry.md, "UV-degenerate triangles:
     # the repair"): an empty array when nothing needed it, absent from a build older than the rule.
     if ($null -ne $b.repairs) { $row.repairs = @($b.repairs) }
+    # The atlas step (atlas.md): charts, atlas sizes, and how far each rebaked image is from its
+    # source on the surface. Absent from a build older than the flag, {"mode":"keep"} without it.
+    if ($null -ne $b.atlas -and $b.atlas.mode -eq 'repack') {
+      $colour = @($b.atlas.images | Where-Object { $_.space -ne 'normal' })
+      $normal = @($b.atlas.images | Where-Object { $_.space -eq 'normal' })
+      $row.atlas = [ordered]@{
+        mode = 'repack'; charts = [long]$b.atlas.charts; materials = [int]$b.atlas.materials_repacked
+        resolution = @($b.atlas.detail | ForEach-Object { [int]$_.resolution } | Measure-Object -Maximum).Maximum
+        utilization = @($b.atlas.detail | ForEach-Object { [double]$_.utilization } | Measure-Object -Minimum).Minimum
+        pack_attempts = @($b.atlas.detail | ForEach-Object { [int]$_.pack_attempts } | Measure-Object -Maximum).Maximum
+        unatlased_triangles = @($b.atlas.detail | ForEach-Object { [long]$_.unatlased_triangles } | Measure-Object -Sum).Sum
+        proxy_charts = @($b.atlas.detail | ForEach-Object { [long]$_.proxy_charts } | Measure-Object -Sum).Sum
+        folded_triangles = @($b.atlas.detail | ForEach-Object { [long]$_.folded_triangles } | Measure-Object -Sum).Sum
+        image_bytes = [long]$b.atlas.image_bytes; ms = $b.atlas.ms
+        colour_error_mean = $(if ($colour.Count) { [math]::Round((@($colour | ForEach-Object { [double]$_.rebake_error.mean }) | Measure-Object -Maximum).Maximum, 3) } else { $null })
+        colour_error_p99 = $(if ($colour.Count) { [math]::Round((@($colour | ForEach-Object { [double]$_.rebake_error.p99 }) | Measure-Object -Maximum).Maximum, 3) } else { $null })
+        normal_error_mean_deg = $(if ($normal.Count) { [math]::Round((@($normal | ForEach-Object { [double]$_.rebake_error.mean }) | Measure-Object -Maximum).Maximum, 3) } else { $null })
+        normal_error_p99_deg = $(if ($normal.Count) { [math]::Round((@($normal | ForEach-Object { [double]$_.rebake_error.p99 }) | Measure-Object -Maximum).Maximum, 3) } else { $null })
+        crumb_charts = @($b.atlas.detail | ForEach-Object { [long]$_.crumb_charts } | Measure-Object -Sum).Sum
+        supersample = $b.atlas.supersample; declined = [int]$b.atlas.materials_declined
+        notes = @($b.atlas.notes)
+      }
+    }
 
     # 2. stats
     $statsOut = & $content stats $clusters 2> (Join-Path $dir 'stats.err')
@@ -607,6 +700,26 @@ if ($FromReport) {
       $row.flip_max = [math]::Round([double]$cmp.flip_max, 4)
       $row.coverage = Get-Coverage (Join-Path $dir 'finest.png')
       $row.flip_object_mean = if ($row.coverage -gt 0) { [math]::Round($row.flip_mean / $row.coverage, 5) } else { $null }
+      # -CompareKept: the source's atlas against the repacked one, at the finest cut, from one
+      # camera — the rebake's test in the picture (see the parameter).
+      if ($CompareKept) {
+        $kept = Join-Path $dir "$name.kept.clusters"
+        & $content build $glb.FullName $kept @extraArgs 2> (Join-Path $dir 'build-kept.err') | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+          try {
+            $pair = Invoke-OneCamera -HostExe $hostExe -First $kept -Second $clusters -OutDir $dir -Distance ([double]$orbitUsed) -Lod $FinestLod -Frame ($Frames - 1)
+            $rc = & $image compare --json $pair.second $pair.first --flip (Join-Path $dir 'kept-flip.png') 2> (Join-Path $dir 'kept-compare.err') | ConvertFrom-Json
+            $keptCoverage = Get-Coverage $pair.first
+            $row.reference = [ordered]@{
+              against = 'kept'; psnr = if ($null -eq $rc.psnr) { $null } else { [math]::Round([double]$rc.psnr, 2) }
+              ssim = [math]::Round([double]$rc.ssim, 5); flip_mean = [math]::Round([double]$rc.flip_mean, 5)
+              flip_p95 = [math]::Round([double]$rc.flip_p95, 5)
+              flip_object_mean = if ($keptCoverage -gt 0) { [math]::Round([double]$rc.flip_mean / $keptCoverage, 5) } else { $null }
+            }
+          } catch { Write-Log "  one-camera comparison failed: $_" }
+        }
+        if (-not $KeepContainers) { Remove-Item -LiteralPath $kept -Force -ErrorAction SilentlyContinue }
+      }
     }
 
     Set-Verdict $row
@@ -638,7 +751,8 @@ if ($FromReport) {
   foreach ($b in $binaries) { $b.Remove('copy') }
   $toolsBlock = [ordered]@{ source = $source; commit = $commit; built_from = $freshness.built_from; preset = $(if ($Bin) { $null } else { $Preset }); binaries = $binaries
     freshness = $freshness; harness = 'tools/e10-harness.ps1' }
-  $settingsBlock = [ordered]@{ width = $Width; height = $Height; orbit = $orbitUsed; framing = $framing; frames = $Frames; coarse_lod_px = $CoarseLod; finest_lod_px = $FinestLod; shadows = $Shadows; raster = 'hw (default)' }
+  $settingsBlock = [ordered]@{ width = $Width; height = $Height; orbit = $orbitUsed; framing = $framing; frames = $Frames; coarse_lod_px = $CoarseLod; finest_lod_px = $FinestLod; shadows = $Shadows; raster = 'hw (default)'
+    atlas = $Atlas; build_args = $BuildArgs; compare_kept = [bool]$CompareKept }
   if (-not $Title) { $Title = "E10 over $((Split-Path -Leaf (Split-Path -Parent $folders[0])))/$(Split-Path -Leaf $folders[0])" }
 }
 
@@ -738,7 +852,10 @@ $builtFrom = @($toolsBlock.built_from | Where-Object { $_ } | ForEach-Object { $
 $builtText = if ($builtFrom.Count) { $builtFrom -join ', ' } else { 'an unknown commit (no build stamp)' }
 $freshText = if ($fresh -and -not $fresh.stale) { ', none stale' } else { '' }
 $md.Add("Measured by ``tools/e10-harness.ps1`` from $startedText to $finishedText ($seconds s), checkout at ``$($commitText.Substring(0, [math]::Min(12, $commitText.Length)))``, binaries built from $builtText ($($toolsBlock.source), copied)$freshText; judged $($report.judged_utc).")
-$md.Add("Captures: $($settingsBlock.width)x$($settingsBlock.height), ``--orbit $($settingsBlock.orbit) --frames $($settingsBlock.frames) --shadows $($settingsBlock.shadows)``$(if ($settingsBlock.framing) { " (framing $($settingsBlock.framing))" }), coarse ``--lod $($settingsBlock.coarse_lod_px)`` against finest ``--lod $($settingsBlock.finest_lod_px)``.")
+$atlasText = if ($settingsBlock.atlas) { [string]$settingsBlock.atlas } else { 'keep' }
+$referenceText = if ($settingsBlock.compare_kept) { '; each repacked finest cut compared with the kept build''s from one camera, orbiting lights off (engine-host)' } else { '' }
+if ($settingsBlock.build_args) { $atlasText += ' ' + [string]$settingsBlock.build_args }
+$md.Add("Captures: $($settingsBlock.width)x$($settingsBlock.height), ``--orbit $($settingsBlock.orbit) --frames $($settingsBlock.frames) --shadows $($settingsBlock.shadows)``$(if ($settingsBlock.framing) { " (framing $($settingsBlock.framing))" }), coarse ``--lod $($settingsBlock.coarse_lod_px)`` against finest ``--lod $($settingsBlock.finest_lod_px)``. Containers built with ``--atlas $atlasText``$referenceText.")
 $md.Add('')
 $md.Add("**Pass rate: $passed of $($rows.Count) ($([math]::Round(100 * $report.totals.pass_rate))%).** Failures by check: import $($byCheck.import), warnings $($byCheck.warnings), atlas island $($byCheck.island), coarse-vs-finest FLIP $($byCheck.flip), LOD collapse $($byCheck.collapse) (an asset can fail more than one).")
 $md.Add('')
@@ -762,6 +879,27 @@ $md.Add('')
 $thin = @($rows | Where-Object { $_.PSObject.Properties['object_flip_reliable'] -and $_.object_flip_reliable -eq $false })
 if ($thin.Count -gt 0) {
   $md.Add(("† **Object FLIP unreliable below {0:0}% coverage** ({1}). It is the whole-frame mean divided by the object's share of the frame, so on a thin object — nearly every pixel of it on the silhouette, where a coarse cut's sub-pixel edge shifts score high, and some of the error falling outside the finest cut's mask altogether — it inflates: a bare tree at 10% coverage scored 0.108 over the object while its whole frame passed at 0.0109. Judge these by the whole-frame FLIP and the heat map." -f (100 * $LowCoverage), (($thin | ForEach-Object { $_.name }) -join ', ')))
+  $md.Add('')
+}
+$repacked = @($rows | Where-Object { $_.PSObject.Properties['atlas'] -and $_.atlas })
+$referenced = @($rows | Where-Object { $_.PSObject.Properties['reference'] -and $_.reference })
+if ($repacked.Count -gt 0 -or $referenced.Count -gt 0) {
+  $md.Add('The atlas step (`--atlas repack`, docs/subsystems/atlas.md): the charts it made (and the proxy charts they came from), the triangles whose new UVs fold against their chart, the atlas, how far the rebaked textures are from their sources on the surface (colour in 8-bit units, the worst image; a normal map in degrees between the object-space normals), and — with `-CompareKept` — the finest cut of this build against the kept build''s, from one camera with the orbiting lights off (both follow each build''s own bounds).')
+  $md.Add('')
+  $md.Add('| asset | charts (proxy) | folded | atlas | utilization % | colour error mean / p99 | normal error mean / p99 (deg) | PNG MB | repack ms | finest vs kept: FLIP (object) | PSNR dB |')
+  $md.Add('|---|---|---|---|---|---|---|---|---|---|---|')
+  foreach ($r in $rows) {
+    $a = if ($r.PSObject.Properties['atlas']) { $r.atlas } else { $null }
+    $ref = if ($r.PSObject.Properties['reference']) { $r.reference } else { $null }
+    if (-not $a -and -not $ref) { continue }
+    $md.Add(('| {0} | {1} ({13}) | {14} | {2} | {3} | {4} / {5} | {6} / {7} | {8} | {9} | {10} ({11}) | {12} |' -f $r.name,
+        (F $(if ($a) { $a.charts }) 'N0'), (F $(if ($a) { $a.resolution }) '0'), (F $(if ($a) { 100 * $a.utilization }) '0.0'),
+        (F $(if ($a) { $a.colour_error_mean }) '0.00'), (F $(if ($a) { $a.colour_error_p99 }) '0.0'),
+        (F $(if ($a) { $a.normal_error_mean_deg }) '0.00'), (F $(if ($a) { $a.normal_error_p99_deg }) '0.0'),
+        (F $(if ($a) { $a.image_bytes / 1MB }) '0.0'), (F $(if ($a) { $a.ms.total }) 'N0'),
+        (F $(if ($ref) { $ref.flip_mean }) '0.0000'), (F $(if ($ref) { $ref.flip_object_mean }) '0.000'), (F $(if ($ref) { $ref.psnr }) '0.0'),
+        (F $(if ($a) { $a.proxy_charts }) 'N0'), (F $(if ($a) { $a.folded_triangles }) 'N0')))
+  }
   $md.Add('')
 }
 $gen = @($rows | Where-Object { $_.PSObject.Properties['generation'] -and $_.generation })
