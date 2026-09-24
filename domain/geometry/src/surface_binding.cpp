@@ -18,36 +18,116 @@ constexpr f32 k_ratio_squared = k_normal_degenerate_ratio * k_normal_degenerate_
 constexpr f32 k_sine_squared = k_normal_degenerate_sine * k_normal_degenerate_sine;
 constexpr f32 k_interpolated_squared = k_normal_interpolated_length * k_normal_interpolated_length;
 
-// Whether a vector is usable: finite, and its squared length above `floor` (0 for "not zero").
+// Whether a dimensionless vector (unit tangents' cross product, an interpolation of unit normals)
+// is usable: finite, and its squared length above `floor`.
 bool live_vector(Vec3 v, f32 floor) noexcept {
   const f32 squared = dot(v, v);
   return std::isfinite(squared) && squared > floor;
 }
 
-// The change of a unit vector as products with dc (`unit_normal_change`), taken as exactly zero —
-// the reference direction kept — unless `live`. **Liveness is the caller's verdict on the state
-// vector evaluated directly** (the reference plus its change, or the state's own positions), never
-// on the expansion's |c + dc|: near a collapse that length is dominated by the expansion's own
-// rounding (about 1e-7 of |c|), which would call an exactly collapsed triangle live. At the
-// reference the direct state vector is the reference's bit for bit, so the verdict is the
-// reference's validity and the change is the expansion's exact zero.
-Vec3 unit_change(Vec3 c, Vec3 dc, bool live) noexcept {
-  const f32 squared = dot(c, c);
-  const f32 dq = dot(dc, c + c + dc);
-  const f32 state_squared = squared + dq;
-  const f32 length_reference = std::sqrt(squared);
-  const f32 length_state = std::sqrt(std::max(state_squared, 0.0f));
-  const bool usable = live && squared > 0.0f && length_state > 0.0f;
-  const f32 inverse_state = usable ? 1.0f / length_state : 0.0f;
-  const f32 lengths = length_reference * (length_reference + length_state);
-  const f32 inverse_change = usable && lengths > 0.0f ? -(dq * inverse_state) / lengths : 0.0f;
-  return usable ? dc * inverse_state + c * inverse_change : Vec3{};
+// Every component finite and at least one of them not zero: the one test a vector with units is
+// put to where D10 says "zero or not finite", and the same answer at every scale.
+bool nonzero_finite(Vec3 v) noexcept {
+  return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z) &&
+         (v.x != 0.0f || v.y != 0.0f || v.z != 0.0f);
 }
 
-// A unit vector, or zero when `v` is not live against `floor`.
-Vec3 unit_or_zero(Vec3 v, f32 floor) noexcept {
+// **Scale.** A vector with units — a tangent, a facet's cross product, an area-weighted sum — has a
+// squared length that underflows or overflows f32 long before the vector itself does (a tangent
+// under about 1e-19, or over 1e19, of its unit). Where the squared length is inside
+// [2^-100, 2^100] everything below is computed as written; outside it, the vectors are first scaled
+// by the power of two that brings the largest component of the reference into [0.5, 1). Scaling
+// by a power of two is exact, so the answer is the one the unscaled arithmetic would give with an
+// unbounded exponent: the same decision and the same direction under any uniform rescaling of the
+// geometry, and — inside the range, which is every surface the engine has met — the same bits as
+// before this existed.
+constexpr f32 k_squared_low = 0x1.0p-100f;
+constexpr f32 k_squared_high = 0x1.0p100f;
+
+bool squared_in_range(f32 squared) noexcept {
+  return squared >= k_squared_low && squared <= k_squared_high;
+}
+
+int scale_exponent(Vec3 v) noexcept {
+  const f32 m = std::max(std::fabs(v.x), std::max(std::fabs(v.y), std::fabs(v.z)));
+  int e = 0;
+  if (m > 0.0f && std::isfinite(m)) std::frexp(m, &e);
+  return e;
+}
+
+Vec3 scaled(Vec3 v, int e) noexcept {
+  return Vec3{std::ldexp(v.x, -e), std::ldexp(v.y, -e), std::ldexp(v.z, -e)};
+}
+
+// v / |v|, or zero when v is zero or not finite (D10: a normal is never invented). Scale-robust.
+Vec3 unit_vector(Vec3 v) noexcept {
   const f32 squared = dot(v, v);
-  return std::isfinite(squared) && squared > floor ? v * (1.0f / std::sqrt(squared)) : Vec3{};
+  if (squared_in_range(squared)) return v * (1.0f / std::sqrt(squared));
+  if (!nonzero_finite(v)) return Vec3{};
+  const Vec3 w = scaled(v, scale_exponent(v));
+  return w * (1.0f / std::sqrt(dot(w, w)));
+}
+
+// Whether a state vector with units has kept more than `k_normal_degenerate_ratio` of its
+// reference's length (the historical modes' state test): the squares compared on the reference's
+// power-of-two scale, so the decision is the same at every scale. A zero reference makes any
+// nonzero finite state live; the callers have already refused an invalid reference.
+bool relatively_live(Vec3 state, Vec3 reference) noexcept {
+  if (!nonzero_finite(state)) return false;
+  const f32 squared = dot(reference, reference);
+  if (squared_in_range(squared)) return live_vector(state, k_ratio_squared * squared);
+  const int e = scale_exponent(reference);
+  const Vec3 r = scaled(reference, e);
+  const Vec3 s = scaled(state, e);
+  return dot(s, s) > k_ratio_squared * dot(r, r);  // an overflow to infinity is still live
+}
+
+// The change of a unit vector, n(s) - n(c), for a reference vector c, its change dc and the
+// **state vector s evaluated directly** by the caller (the state's own corners, tangents, sums or
+// interpolation; c + dc in exact arithmetic). Three cases, each by construction:
+//
+// - dc exactly zero: exactly zero, by a select, so the reference is the base bit for bit on every
+//   compiler and GPU whatever the rest of this function does (surface_binding.h says why).
+// - `live` false — the caller's verdict on s, which it reports as a fallback — or no reference
+//   direction: zero, the reference normal kept. Nothing else ever returns a silent zero.
+// - otherwise the change to s's own direction. Where s keeps at least a quarter of c's length, the
+//   expansion dc / |s| + c (1/|s| - 1/|c|) with |s|^2 = |c|^2 + dq, every term a product with dc,
+//   whose rounding grows as |c| / |s| and is here at most about four times a direct evaluation's.
+//   Below a quarter, n(s) - n(c) from s itself. **The expansion must not decide or measure a
+//   short state**: |c|^2 + dq keeps about 1e-7 of |c|^2 as rounding, so a state vector shorter
+//   than about 3e-4 of its reference came out of it as length zero — and this function, until
+//   2026-09-24, returned zero change for a state it had been told was live: the reference normal,
+//   silently, with no fallback reported (the D8 function cases' second tangent pair, 90 degrees
+//   off, and the triangle-mode record 35 of the isolated face collapse, 0.45 long). Longer states
+//   inside that band came out with a length of the wrong size and a direction to match.
+constexpr f32 k_expansion_squared_ratio = 1.0f / 16.0f;  // |s| >= |c| / 4
+
+Vec3 unit_change(Vec3 c, Vec3 dc, Vec3 s, bool live) noexcept {
+  if (dc == Vec3{}) return Vec3{};
+  if (!live || !nonzero_finite(c)) return Vec3{};
+  const Vec3 state = s;  // finite: every caller's liveness verdict requires it
+  f32 squared = dot(c, c);
+  if (!squared_in_range(squared)) {
+    const int e = scale_exponent(c);
+    c = scaled(c, e);
+    dc = scaled(dc, e);
+    s = scaled(s, e);
+    squared = dot(c, c);
+  }
+  const f32 inverse_reference = 1.0f / std::sqrt(squared);
+  if (dot(s, s) >= k_expansion_squared_ratio * squared) {
+    const f32 dq = dot(dc, c + c + dc);
+    const f32 state_squared = squared + dq;
+    if (std::isfinite(state_squared) && state_squared > 0.0f) {
+      const f32 length_reference = std::sqrt(squared);
+      const f32 length_state = std::sqrt(state_squared);
+      const f32 inverse_state = 1.0f / length_state;
+      const f32 lengths = length_reference * (length_reference + length_state);
+      const f32 inverse_change = -(dq * inverse_state) / lengths;
+      return dc * inverse_state + c * inverse_change;
+    }
+  }
+  return unit_vector(state) - c * inverse_reference;
 }
 
 // The limit-interpolated rule's vertex stage for one refined vertex (surface_binding.h, "The
@@ -55,38 +135,43 @@ Vec3 unit_or_zero(Vec3 v, f32 floor) noexcept {
 // or not finite, or unit tangents whose cross product's norm (a sine) is at most
 // k_normal_degenerate_sine.
 Vec3 limit_normal_of(Vec3 tu, Vec3 tv) noexcept {
-  const Vec3 u = unit_or_zero(tu, 0.0f);
-  const Vec3 v = unit_or_zero(tv, 0.0f);
+  const Vec3 u = unit_vector(tu);
+  const Vec3 v = unit_vector(tv);
   if (u == Vec3{} || v == Vec3{}) return Vec3{};
-  return unit_or_zero(cross(u, v), k_sine_squared);
+  const Vec3 a = cross(u, v);
+  const f32 squared = dot(a, a);
+  return live_vector(a, k_sine_squared) ? a * (1.0f / std::sqrt(squared)) : Vec3{};
 }
 
 // ... and its change at a state: each unit tangent's change, the change of their cross product,
-// and the normal's change, each a product with the tangents' displacement. The state is judged on
-// its own tangents, tu + dtu and tv + dtv: one that has fallen to zero (at most
-// k_normal_degenerate_ratio of its reference length) or unit tangents whose sine has fallen to
-// k_normal_degenerate_sine make the vertex degenerate, and it keeps its reference normal.
+// and the normal's change, each through `unit_change`. The state is judged on its own tangents,
+// tu + dtu and tv + dtv, exactly as the agreed rule (D10) words it: a tangent that is zero or not
+// finite, or unit tangents whose sine is at most k_normal_degenerate_sine, make the vertex
+// degenerate, and it keeps its reference normal. (Until 2026-09-24 a state tangent was also called
+// zero at 1e-6 of its reference length, a cutoff D10 does not have: a tangent that shrinks a
+// millionfold but keeps its direction still has one.)
 struct NormalChange {
   Vec3 change;
   bool fell_back = false;  // the reference was valid and the state degenerate
 };
 
 NormalChange limit_normal_change(Vec3 tu, Vec3 tv, Vec3 dtu, Vec3 dtv) noexcept {
-  const Vec3 u = unit_or_zero(tu, 0.0f);
-  const Vec3 v = unit_or_zero(tv, 0.0f);
+  const Vec3 u = unit_vector(tu);
+  const Vec3 v = unit_vector(tv);
   if (u == Vec3{} || v == Vec3{}) return NormalChange{};
   const Vec3 a = cross(u, v);
   if (!live_vector(a, k_sine_squared)) return NormalChange{};  // invalid at the reference
   const Vec3 state_u = tu + dtu;
   const Vec3 state_v = tv + dtv;
-  const bool tangents_live = live_vector(state_u, k_ratio_squared * dot(tu, tu)) &&
-                             live_vector(state_v, k_ratio_squared * dot(tv, tv));
-  const Vec3 state_a = cross(unit_or_zero(state_u, 0.0f), unit_or_zero(state_v, 0.0f));
-  const bool live = tangents_live && live_vector(state_a, k_sine_squared);
-  const Vec3 du = unit_change(tu, dtu, live);
-  const Vec3 dv = unit_change(tv, dtv, live);
+  const Vec3 unit_u = unit_vector(state_u);
+  const Vec3 unit_v = unit_vector(state_v);
+  const Vec3 state_a = cross(unit_u, unit_v);
+  const bool live =
+      !(unit_u == Vec3{}) && !(unit_v == Vec3{}) && live_vector(state_a, k_sine_squared);
+  const Vec3 du = unit_change(tu, dtu, state_u, live);
+  const Vec3 dv = unit_change(tv, dtv, state_v, live);
   const Vec3 da = cross(u, dv) + cross(du, v) + cross(du, dv);
-  return NormalChange{unit_change(a, da, live), !live};
+  return NormalChange{unit_change(a, da, state_a, live), !live};
 }
 
 // The footpoint normal's change for barycentrics (w0, w1, w2) of the triangle at `corner`: the
@@ -104,9 +189,10 @@ Vec3 footpoint_turn(const Vec3* reference, const Vec3* displacement, const Vec3*
                    normal_reference[corner[2]] * w2;
     const Vec3 dm = normal_change[corner[0]] * w0 + normal_change[corner[1]] * w1 +
                     normal_change[corner[2]] * w2;
-    const bool live = live_vector(m + dm, k_interpolated_squared);
+    const Vec3 state = m + dm;
+    const bool live = live_vector(state, k_interpolated_squared);
     if (fell_back != nullptr) *fell_back = !live && live_vector(m, k_interpolated_squared);
-    return unit_change(m, dm, live);
+    return unit_change(m, dm, state, live);
   } else {
     // The facet's cross product has units, so its threshold is relative to its reference, and
     // the state facet is judged from the state's own corners, which at the reference are the
@@ -127,9 +213,9 @@ Vec3 footpoint_turn(const Vec3* reference, const Vec3* displacement, const Vec3*
     const Vec3 dc = cross(e1, g2) + cross(g1, e2) + cross(g1, g2);
     const Vec3 s0 = r0 + d0;
     const Vec3 state = cross((r1 + d1) - s0, (r2 + d2) - s0);
-    const bool live = live_vector(state, k_ratio_squared * dot(c, c));
-    if (fell_back != nullptr) *fell_back = !live && live_vector(c, 0.0f);
-    return unit_change(c, dc, live);
+    const bool live = relatively_live(state, c);
+    if (fell_back != nullptr) *fell_back = !live && nonzero_finite(c);
+    return unit_change(c, dc, state, live);
   }
 }
 
@@ -638,25 +724,23 @@ bool parse_normal_mode(std::string_view name, NormalMode& out) noexcept {
   return false;
 }
 
-Vec3 unit_normal(Vec3 c) noexcept {
-  const f32 squared = dot(c, c);
-  return squared > 0.0f && std::isfinite(squared) ? c * (1.0f / std::sqrt(squared)) : Vec3{};
-}
+Vec3 unit_normal(Vec3 c) noexcept { return unit_vector(c); }
 
-// The change of a unit normal, written the long way round (surface_binding.h says why): with c the
-// reference vector and dc its change,
+// The change of a unit normal (surface_binding.h says why it is shaped this way): exactly zero
+// for a zero dc, by a select; zero, the reference kept, for a state c + dc at or under the
+// caller's threshold; otherwise the change to c + dc's own direction — the expansion
 //
 //   dq   = dc . (2c + dc)                              (|c + dc|^2 - |c|^2)
 //   dinv = -dq (1/|c + dc|) / (|c| (|c| + |c + dc|))   (1/|c + dc| - 1/|c|)
 //   n(c + dc) - n(c) = dc / |c + dc| + c dinv
 //
-// At the reference dc is exactly zero, so each line is a product with an exact zero, and a fused
-// multiply-add of anything with zero is exact: the term is zero on any compiler or GPU without
-// relying on two evaluations rounding alike. No intermediate is more than quadratic in |c|, so
-// nothing underflows before |c|^2 would. A state that is not live (`unit_change`) keeps the
-// reference direction: the change is exactly zero.
+// while c + dc keeps a quarter of c's length, and the direct difference below that, where the
+// expansion's |c + dc| is its own rounding (`unit_change`). The state here is c + dc summed in f32,
+// the only one this signature has; the engine's own callers hand `unit_change` the state they
+// evaluated from the state's corners, tangents or sums, which near a collapse is the better one.
 Vec3 unit_normal_change(Vec3 c, Vec3 dc, f32 min_state_squared) noexcept {
-  return unit_change(c, dc, live_vector(c, 0.0f) && live_vector(c + dc, min_state_squared));
+  const Vec3 state = c + dc;
+  return unit_change(c, dc, state, nonzero_finite(c) && live_vector(state, min_state_squared));
 }
 
 void area_weighted_normal_vectors(std::span<const u32> faces, std::span<const Vec3> positions,
@@ -717,9 +801,9 @@ void area_weighted_normal_changes(std::span<const Vec3> vectors,
                 "one change and one state vector per vector");
   for (usize i = 0; i < out.size(); ++i) {
     const Vec3 a = vectors[i];
-    const bool valid = live_vector(a, 0.0f);
-    const bool live = valid && live_vector(state_vectors[i], k_ratio_squared * dot(a, a));
-    out[i] = unit_change(a, vector_change[i], live);
+    const bool valid = nonzero_finite(a);
+    const bool live = valid && relatively_live(state_vectors[i], a);
+    out[i] = unit_change(a, vector_change[i], state_vectors[i], live);
     if (fallback != nullptr && valid && !live) fallback->push_back(static_cast<u32>(i));
   }
 }

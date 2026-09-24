@@ -102,7 +102,9 @@ const char* k_usage =
     "                                          help); present with the tissue capability\n"
     "  limit-dump <control.json> --level <n> --out <dump.json> [--mode <m>]\n"
     "                                          the limit-surface conformance exchange\n"
-    "  --version                               the commit this binary was built from, as JSON\n"
+    "  normal-cases <cases.json> --out <results.json>\n"
+    "                                          the footpoint-normal rule's edge cases, one by one\n"
+    "  --version                              the commit this binary was built from, as JSON\n"
     "\n"
     "the build-all manifest:\n"
     "  {\"meshes\":[{\"source\":\"a.gltf\",\"output\":\"a.clusters\",\n"
@@ -2369,5 +2371,6 @@ int main(int argc, char** argv) {
   if (command == "stats") return read_command(argc, argv, "stats", stats);
   if (command == "tissue") return content::tissue_command(argc, argv);
   if (command == "limit-dump") return content::limit_dump_command(argc, argv);
+  if (command == "normal-cases") return content::normal_cases_command(argc, argv);
   return usage("unknown command");
 }

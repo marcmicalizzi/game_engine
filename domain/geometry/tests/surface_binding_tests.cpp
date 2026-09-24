@@ -370,16 +370,18 @@ TEST_CASE("binding: a unit normal's change is a product with the change, zero wh
     const Vec3 zero_plus = unit_normal_change(c, Vec3{0.0f, 0.0f, 0.0f}, 0.0f);
     const Vec3 zero_minus = unit_normal_change(c, Vec3{-0.0f, -0.0f, -0.0f}, 0.0f);
     not_zero += zero_plus == Vec3{} && zero_minus == Vec3{} ? 0u : 1u;
-    // A change: the difference of the two normals in double, to f32 rounding.
+    // A change: the difference of the two normals in double, to f32 rounding. The state this
+    // signature has is c + dc summed in f32, and its direction is the answer however short it is:
+    // until 2026-09-24 this comparison skipped states under a fifth of the reference's length,
+    // where the expansion's accuracy fell, and that hid a state it lost altogether (below).
     const Vec3 dc{random.uniform(-0.3f, 0.3f), random.uniform(-0.3f, 0.3f),
                   random.uniform(-0.3f, 0.3f)};
     const Vec3 got = unit_normal_change(c, dc, 0.0f);
     const D3 a = d3(c);
-    const D3 b{a.x + static_cast<f64>(dc.x), a.y + static_cast<f64>(dc.y),
-               a.z + static_cast<f64>(dc.z)};
+    const D3 b = d3(c + dc);
     const f64 la = std::sqrt(a.x * a.x + a.y * a.y + a.z * a.z);
     const f64 lb = std::sqrt(b.x * b.x + b.y * b.y + b.z * b.z);
-    if (lb < 0.2 * la) continue;  // near a collapse the expansion's relative accuracy falls
+    if (lb == 0.0) continue;  // collapsed exactly: no change, checked below
     const D3 want{b.x / lb - a.x / la, b.y / lb - a.y / la, b.z / lb - a.z / la};
     worst = std::max(worst, distance(got, want));
   }
@@ -396,6 +398,219 @@ TEST_CASE("binding: a unit normal's change is a product with the change, zero wh
   CHECK_FALSE(unit_normal_change(c, Vec3{1.0e-3f, 0.0f, -2.0f}, floor) == Vec3{});
   CHECK(unit_normal(Vec3{}) == Vec3{});
   CHECK(unit_normal(Vec3{std::numeric_limits<f32>::infinity(), 0.0f, 0.0f}) == Vec3{});
+}
+
+// One footpoint triangle whose reference is the right triangle (0,0,0), (1,0,0), (0,1,0), facet
+// normal +z, and whose third corner swings at the state to (0.5, 0, height): the state facet's
+// cross product is (0, -height, 0), `height` of the reference's length and facing -y (every
+// coordinate exact in f32, so the cross products are exact too), everything times `scale`.
+struct SwungFacet {
+  u32 faces[3] = {0, 1, 2};
+  Vec3 reference[3];
+  Vec3 displacement[3];
+  Vec3 zero[3] = {};
+  SwungFacet(f32 height, f32 scale) {
+    reference[0] = Vec3{0.0f, 0.0f, 0.0f} * scale;
+    reference[1] = Vec3{1.0f, 0.0f, 0.0f} * scale;
+    reference[2] = Vec3{0.0f, 1.0f, 0.0f} * scale;
+    displacement[0] = Vec3{};
+    displacement[1] = Vec3{};
+    displacement[2] = Vec3{0.5f, -1.0f, height} * scale;
+  }
+  BindingSurface view() const { return BindingSurface{faces, reference, displacement, zero, zero}; }
+};
+
+TEST_CASE("binding: a nearly collapsed state turns to its own normal; a collapsed one falls back") {
+  // The D8 audit's scalar counterexample, c = (0, 0, 1) and dc = (0, -1e-5, -1): a state 1e-5 of
+  // the reference's length, live against the relative threshold of 1e-6, facing -y. Until
+  // 2026-09-24 the expansion took |c + dc|^2 as |c|^2 + dq = 1 + (1e-10 - 1), which is 0 in f32,
+  // and returned no change for a state it had been told was live: +z, silently.
+  {
+    const Vec3 c{0.0f, 0.0f, 1.0f};
+    const Vec3 dc{0.0f, -1.0e-5f, -1.0f};
+    const f32 floor = 1.0e-6f * 1.0e-6f * dot(c, c);
+    CHECK(gap(unit_normal(c) + unit_normal_change(c, dc, floor), Vec3{0.0f, -1.0f, 0.0f}) <=
+          1.0e-6);
+  }
+  // Across the band the expansion could not resolve — a state from about 1e-6 to 1 of the
+  // reference's length, turned any way — the state's own direction, or, at or under the threshold,
+  // no change at all.
+  {
+    fixture::Random random(41);
+    f64 worst = 0.0;
+    u32 kept = 0;
+    for (u32 i = 0; i < 4000; ++i) {
+      const Vec3 axis = normalize(Vec3{random.uniform(-1.0f, 1.0f), random.uniform(-1.0f, 1.0f),
+                                       random.uniform(-1.0f, 1.0f)});
+      const Vec3 c = axis * random.uniform(0.5f, 2.0f);
+      const Vec3 turned = normalize(Vec3{random.uniform(-1.0f, 1.0f), random.uniform(-1.0f, 1.0f),
+                                         random.uniform(-1.0f, 1.0f)});
+      const f32 ratio = std::pow(10.0f, random.uniform(-6.2f, 0.0f));
+      const Vec3 dc = turned * (length(c) * ratio) - c;
+      const Vec3 s = c + dc;
+      const f32 floor = 1.0e-6f * 1.0e-6f * dot(c, c);
+      const Vec3 change = unit_normal_change(c, dc, floor);
+      if (!(dot(s, s) > floor)) {
+        kept += change == Vec3{} ? 1u : 0u;
+        continue;
+      }
+      const D3 b = d3(s);
+      const f64 lb = std::sqrt(b.x * b.x + b.y * b.y + b.z * b.z);
+      worst = std::max(worst, distance(unit_normal(c) + change, D3{b.x / lb, b.y / lb, b.z / lb}));
+    }
+    // 9.8e-7 on msvc-debug; the bound is the one the expansion has always been held to above.
+    MESSAGE("the state's own direction across the band, to " << worst);
+    CHECK(worst <= 2.0e-6);
+    CHECK(kept > 0);  // the draw reaches under the threshold, and those keep the reference
+  }
+
+  // Each family, either side of its threshold, through the code the transfer runs.
+  // The facet (triangle mode): 2^-17 of the reference's length turns to -y and is not a fallback;
+  // 2^-21 is one, keeps +z, and the transfer then carries the offset rigidly.
+  {
+    const SwungFacet live(std::ldexp(1.0f, -17), 1.0f);
+    bool fell_back = true;
+    const Vec3 n_ref =
+        footpoint_normal(NormalMode::triangle, live.view(), 0, Vec3{0.2f, 0.3f, 0.5f});
+    const Vec3 turned = footpoint_normal_change(NormalMode::triangle, live.view(), 0,
+                                                Vec3{0.2f, 0.3f, 0.5f}, &fell_back);
+    CHECK_FALSE(fell_back);
+    CHECK(gap(n_ref + turned, Vec3{0.0f, -1.0f, 0.0f}) <= 1.0e-6);
+    const SwungFacet gone(std::ldexp(1.0f, -21), 1.0f);
+    CHECK(footpoint_normal_change(NormalMode::triangle, gone.view(), 0, Vec3{0.2f, 0.3f, 0.5f},
+                                  &fell_back) == Vec3{});
+    CHECK(fell_back);
+    const SurfaceBinding records[] = {record_on(0, 0.2f, 0.3f, 0.002f)};
+    const Vec3 base[] = {Vec3{0.1f, 0.2f, 0.3f}};
+    Vec3 full{};
+    Vec3 moved{};
+    apply_binding(NormalMode::triangle, records, base, gone.view(), std::span<Vec3>(&full, 1));
+    apply_binding(NormalMode::triangle, records, base, gone.view(), std::span<Vec3>(&moved, 1),
+                  BindingTerms::displacement);
+    CHECK(full == moved);
+    apply_binding(NormalMode::triangle, records, base, live.view(), std::span<Vec3>(&full, 1));
+    apply_binding(NormalMode::triangle, records, base, live.view(), std::span<Vec3>(&moved, 1),
+                  BindingTerms::displacement);
+    const f32 h = binding_normal_offset(records[0]);
+    CHECK(gap(full - moved, Vec3{0.0f, -h, -h}) <= 1.0e-7);  // h (n_state - n_ref)
+  }
+  // The area-weighted vertex sum, the same way.
+  {
+    const Vec3 a[] = {Vec3{0.0f, 0.0f, 2.0f}};
+    for (const i32 e : {-16, -20}) {
+      CAPTURE(e);
+      const Vec3 state[] = {Vec3{0.0f, -std::ldexp(1.0f, e), 0.0f}};
+      const Vec3 change[] = {state[0] - a[0]};
+      Vec3 out{};
+      Vector<u32> fallback;
+      area_weighted_normal_changes(a, change, state, std::span<Vec3>(&out, 1), &fallback);
+      if (e == -16) {
+        CHECK(fallback.empty());
+        CHECK(gap(Vec3{0.0f, 0.0f, 1.0f} + out, Vec3{0.0f, -1.0f, 0.0f}) <= 1.0e-6);
+      } else {
+        CHECK(fallback.size() == 1);
+        CHECK(out == Vec3{});
+      }
+    }
+  }
+  // The limit vertex: v turning onto u until their sine is 2^-17 (live: the normal turns from +z to
+  // -y) or 2^-21 (degenerate: +z kept, and listed).
+  {
+    const Vec3 tu[] = {Vec3{1.0f, 0.0f, 0.0f}};
+    const Vec3 tv[] = {Vec3{0.0f, 1.0f, 0.0f}};
+    const Vec3 dtu[] = {Vec3{}};
+    for (const i32 e : {-17, -21}) {
+      CAPTURE(e);
+      const Vec3 dtv[] = {Vec3{1.0f, -1.0f, std::ldexp(1.0f, e)}};
+      Vec3 out{};
+      Vector<u32> fallback;
+      limit_normal_changes(tu, tv, dtu, dtv, std::span<Vec3>(&out, 1), &fallback);
+      if (e == -17) {
+        CHECK(fallback.empty());
+        CHECK(gap(Vec3{0.0f, 0.0f, 1.0f} + out, Vec3{0.0f, -1.0f, 0.0f}) <= 1.0e-6);
+      } else {
+        CHECK(fallback.size() == 1);
+        CHECK(out == Vec3{});
+      }
+    }
+    // A tangent that shrinks to 2^-24 of its reference's length but keeps a direction is not
+    // zero (D10): the vertex turns with it. Until 2026-09-24 a cutoff at 1e-6 of the reference's
+    // length called it degenerate.
+    const Vec3 shrink_u[] = {Vec3{-1.0f, 0.0f, std::ldexp(1.0f, -24)}};  // u becomes 2^-24 z
+    const Vec3 still_v[] = {Vec3{}};
+    Vec3 out{};
+    Vector<u32> fallback;
+    limit_normal_changes(tu, tv, shrink_u, still_v, std::span<Vec3>(&out, 1), &fallback);
+    CHECK(fallback.empty());
+    CHECK(gap(Vec3{0.0f, 0.0f, 1.0f} + out, Vec3{-1.0f, 0.0f, 0.0f}) <= 1.0e-6);
+  }
+  // The interpolation of unit normals: the corners' state normals +y, -y and +x weighted
+  // (1/2 + d, 1/2 - d, 0) interpolate to length 2d: 2^-17 turns to +y, 2^-21 keeps the reference.
+  {
+    const u32 faces[3] = {0, 1, 2};
+    const Vec3 zero[3] = {};
+    const Vec3 normal_reference[3] = {Vec3{1.0f, 0.0f, 0.0f}, Vec3{1.0f, 0.0f, 0.0f},
+                                      Vec3{1.0f, 0.0f, 0.0f}};
+    const Vec3 normal_change[3] = {Vec3{-1.0f, 1.0f, 0.0f}, Vec3{-1.0f, -1.0f, 0.0f}, Vec3{}};
+    const BindingSurface surface{faces, zero, zero, normal_reference, normal_change};
+    for (const i32 e : {-18, -22}) {
+      CAPTURE(e);
+      const f32 d = std::ldexp(1.0f, e);
+      const Vec3 b{0.5f + d, 0.5f - d, 0.0f};
+      bool fell_back = false;
+      const Vec3 n_ref = footpoint_normal(NormalMode::limit_interpolated, surface, 0, b);
+      const Vec3 out =
+          footpoint_normal_change(NormalMode::limit_interpolated, surface, 0, b, &fell_back);
+      CHECK(fell_back == (e == -22));
+      CHECK(gap(n_ref + out, e == -18 ? Vec3{0.0f, 1.0f, 0.0f} : Vec3{1.0f, 0.0f, 0.0f}) <= 1.0e-6);
+    }
+  }
+
+  // Scale: the swung facet at 2^-40 and 2^40 (its cross products at 2^-80 and 2^80), vertex
+  // tangents and plain vectors at 2^-80 and 2^80 — where squared lengths leave f32's range, and
+  // until 2026-09-24 underflowed to "zero" or overflowed to "not finite" — give the same decisions
+  // and the same bits, since a power of two scales every float exactly; at 1e-3 and 1e3 (1e-6 and
+  // 1e6 for the vectors) the same decisions and directions.
+  for (const f32 scale : {std::ldexp(1.0f, -40), std::ldexp(1.0f, 40), 1.0e-3f, 1.0e3f}) {
+    CAPTURE(scale);
+    const bool exact = scale != 1.0e-3f && scale != 1.0e3f;
+    for (const i32 e : {-17, -21}) {
+      CAPTURE(e);
+      const SwungFacet unit_facet(std::ldexp(1.0f, e), 1.0f);
+      const SwungFacet facet(std::ldexp(1.0f, e), scale);
+      const Vec3 b{0.2f, 0.3f, 0.5f};
+      bool unit_fell = false;
+      bool fell = false;
+      const Vec3 a =
+          footpoint_normal(NormalMode::triangle, unit_facet.view(), 0, b) +
+          footpoint_normal_change(NormalMode::triangle, unit_facet.view(), 0, b, &unit_fell);
+      const Vec3 z = footpoint_normal(NormalMode::triangle, facet.view(), 0, b) +
+                     footpoint_normal_change(NormalMode::triangle, facet.view(), 0, b, &fell);
+      CHECK(fell == unit_fell);
+      if (exact) {
+        CHECK(same_bits(a, z));
+      } else {
+        CHECK(gap(a, z) <= 1.0e-6);
+      }
+    }
+    const f32 squared_scale = scale * scale;
+    const Vec3 tu[] = {Vec3{0.3f, 0.1f, 0.0f} * squared_scale};
+    const Vec3 tv[] = {Vec3{-0.1f, 0.4f, 0.2f} * squared_scale};
+    Vec3 n{};
+    CHECK(limit_reference_normals(tu, tv, std::span<Vec3>(&n, 1)) == 0);
+    const Vec3 tu1[] = {Vec3{0.3f, 0.1f, 0.0f}};
+    const Vec3 tv1[] = {Vec3{-0.1f, 0.4f, 0.2f}};
+    Vec3 n1{};
+    REQUIRE(limit_reference_normals(tu1, tv1, std::span<Vec3>(&n1, 1)) == 0);
+    const Vec3 v{3.0f, -4.0f, 12.0f};
+    if (exact) {
+      CHECK(same_bits(n, n1));
+      CHECK(same_bits(unit_normal(v * squared_scale), unit_normal(v)));
+    } else {
+      CHECK(gap(n, n1) <= 1.0e-6);
+      CHECK(gap(unit_normal(v * squared_scale), unit_normal(v)) <= 1.0e-6);
+    }
+  }
 }
 
 TEST_CASE("binding: bind_to_surface finds the footpoint and offset a vertex was placed at") {

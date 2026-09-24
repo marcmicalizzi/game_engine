@@ -80,10 +80,16 @@
 // moved at rest (linux-gcc-release, 2026-09-24). So nothing is written as a difference of
 // evaluations. The nodes are subtracted first, `surface_displacement` pushes that difference
 // through the operator, and every normal's change — a triangle's, a vertex's, a footpoint's — is
-// `unit_normal_change`, which expands it so that every term is a product with the change of the
-// unnormalized vector. At the reference every such product has an exact zero factor, and however
-// a compiler fuses it, the result is zero. Do not "simplify" it back into two normals and a
-// subtraction.
+// `unit_normal_change`'s, which is exactly zero by a select when the unnormalized vector's change
+// is zero and otherwise expands it so that every term is a product with that change. At the
+// reference every such product has an exact zero factor, and however a compiler fuses it, the
+// result is zero. Do not "simplify" it back into two normals and a subtraction. **But never let
+// the expansion measure the state**: its |c + dc|^2 = |c|^2 + dq keeps about 1e-7 of |c|^2 as
+// rounding, so a state vector under about 3e-4 of its reference came out of it as length zero and
+// was given no change — the reference normal, silently, with no fallback (the D8 comparison,
+// 2026-09-24). The state's length is the directly evaluated vector's, and where the state is under
+// a quarter of the reference's length its direction is too (docs/subsystems/geometry.md, "The
+// expansion measured a short state as no state").
 //
 // The record is **10 bytes** (the plan's proposed packing, pinned by the size table): a `u16`
 // refined triangle, two `u16` barycentric weights in 1/65535 (the third is what they leave), an
@@ -153,32 +159,38 @@ bool parse_normal_mode(std::string_view name, NormalMode& out) noexcept;
 inline constexpr f32 k_normal_degenerate_sine = 1.0e-6f;
 // A footpoint's interpolation of unit vertex normals is degenerate at or below this length.
 inline constexpr f32 k_normal_interpolated_length = 1.0e-6f;
-// A vector with units — a tangent, a facet's cross product, an area-weighted sum — is degenerate
-// (zero, for a tangent) at a state when it is at most this fraction of its reference length. The
-// expansion below cannot produce an exact zero from a cancellation, so "zero" for a vector computed
-// as a reference plus a change means this; a reference vector is invalid only at exactly zero or
-// not finite.
+// A vector with units in the historical modes — a facet's cross product, an area-weighted sum — is
+// degenerate at a state when it is at most this fraction of its reference length (the agreed
+// legacy extension); a reference vector is invalid only at exactly zero or not finite. A limit
+// tangent has no such cutoff: the agreed rule (D10) calls it degenerate only when it is zero or
+// not finite, at the reference and at a state alike, and a tangent that shrinks a millionfold but
+// keeps a direction still has a normal. Every length behind these tests is taken scale-robustly (a
+// squared length that would leave f32's range is taken after an exact power-of-two rescaling), so
+// the decisions are the same under any uniform rescaling of the geometry.
 inline constexpr f32 k_normal_degenerate_ratio = 1.0e-6f;
 
 // c / |c|, or the zero vector when c is zero or not finite (an invalid reference normal is not
-// invented).
+// invented). Scale-robust: the same direction at any scale, and at every scale an f32 can hold.
 Vec3 unit_normal(Vec3 c) noexcept;
 
-// n(c + dc) - n(c), n(v) = v / |v|, written so that **every term is a product with dc**:
+// n(c + dc) - n(c), n(v) = v / |v|. **Exactly zero when dc is zero**, by a select, on any compiler
+// or GPU. Zero, too — the reference normal is kept — unless c is nonzero and |c + dc|^2, evaluated
+// directly, exceeds `min_state_squared`, the caller's degeneracy threshold:
+// `k_normal_degenerate_ratio^2 |c|^2` for a vector with units, the square of an absolute threshold
+// for one built from unit vectors. Otherwise the change to c + dc's own direction, written so that
+// **every term is a product with dc** while the state keeps at least a quarter of c's length:
 //
 //   dq   = dc . (2c + dc)                              (|c + dc|^2 - |c|^2)
 //   dinv = -dq (1/|c + dc|) / (|c| (|c| + |c + dc|))   (1/|c + dc| - 1/|c|)
 //   n(c + dc) - n(c) = dc / |c + dc| + c dinv
 //
-// exact in the reals, and exactly zero when dc is zero on any compiler or GPU, since a multiply or
-// fused multiply-add with a zero factor is exact. Zero, too — the reference normal is kept — unless
-// c is nonzero and |c + dc|^2, evaluated directly, exceeds `min_state_squared`, the caller's
-// degeneracy threshold: `k_normal_degenerate_ratio^2 |c|^2` for a vector with units, the square of
-// an absolute threshold for one built from unit vectors. **The test is on the state vector itself,
-// never on the expansion's |c + dc|**, whose rounding near a collapse (about 1e-7 of |c|) would
-// call an exactly collapsed vector live; the transfer judges a facet from the state's own corners
-// for the same reason. Its one cost is relative accuracy where the vector shrinks, since dc then
-// nearly cancels c: the rounding grows as |c| / |c + dc|, about 6e-7 rad at a tenth of the length.
+// exact in the reals, with rounding that grows as |c| / |c + dc|; and below a quarter, the direct
+// n(c + dc) - n(c). **Both the test and the length are the state vector's own, never the
+// expansion's |c|^2 + dq**, whose rounding (about 1e-7 of |c|^2) would call an exactly collapsed
+// vector live, and — the defect the D8 comparison found on 2026-09-24 — measured a live state under
+// about 3e-4 of c's length as length zero and returned no change for it: the reference normal,
+// silently. The transfer's own callers hand the same function the state they evaluated from the
+// state's corners, tangents or sums; this signature has only c + dc, summed in f32.
 Vec3 unit_normal_change(Vec3 c, Vec3 dc, f32 min_state_squared) noexcept;
 
 // ---- the per-vertex normal field of the two interpolated modes --------------------------------
@@ -211,9 +223,11 @@ void area_weighted_normal_changes(std::span<const Vec3> vectors,
 
 // limit-interpolated, the agreed rule: `tangent_u`/`tangent_v` are the tangent operators applied to
 // the reference nodes, `*_change` to the nodes' displacement. The unit tangents' changes, their
-// cross product's change and the normal's change are each `unit_normal_change`, so the whole chain
-// is a product with the displacement; the degeneracy tests are selects on the state's own tangents
-// and cross product, which at the reference are the reference's bit for bit.
+// cross product's change and the normal's change are each `unit_normal_change`'s, so the whole
+// chain is a product with the displacement wherever the state is not short; the degeneracy tests
+// are selects on the state's own tangents (zero or not finite, D10) and their unit cross product (a
+// sine of at most `k_normal_degenerate_sine`), which at the reference are the reference's bit for
+// bit.
 u32 limit_reference_normals(std::span<const Vec3> tangent_u, std::span<const Vec3> tangent_v,
                             std::span<Vec3> out, Vector<u32>* invalid = nullptr) noexcept;
 void limit_normal_changes(std::span<const Vec3> tangent_u, std::span<const Vec3> tangent_v,
