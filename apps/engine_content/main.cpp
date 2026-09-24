@@ -20,6 +20,7 @@
 // the numbers without parsing prose; everything else goes through the log to stderr.
 //
 // Exit codes: 0 ok; 1 a file could not be loaded, validated, built, or written; 2 usage.
+#include <core/hash/hash.h>
 #include <core/jobs/job_system.h>
 #include <core/json/json.h>
 #include <core/log/log.h>
@@ -1456,6 +1457,12 @@ int info(const std::string& path) {
     entry.set("element_size", JsonValue(section.element_size));
     entry.set("element_count", JsonValue(section.element_count));
     entry.set("offset", JsonValue(section.offset));
+    // The payload's own hash, so two containers can be compared section by section: the header's
+    // content hash covers every byte, the source path included, and that differs between two
+    // machines that built the same mesh from two directories.
+    const u64 payload = u64{section.element_size} * section.element_count;
+    if (section.offset <= file.size() && payload <= file.size() - section.offset)
+      entry.set("hash", JsonValue(hash_bytes(file.data() + section.offset, payload)));
     sections.push_back(std::move(entry));
   }
 
