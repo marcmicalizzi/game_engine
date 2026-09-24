@@ -45,6 +45,7 @@ scene::FrameRecord frame_record(const FrameStats& stats, u32 repeat, u32 frame, 
   out.gpu_ms.resolve = stats.gpu_resolve;
   out.gpu_ms.rt = stats.gpu_rt;
   out.gpu_ms.clas = stats.gpu_clas;
+  out.gpu_ms.blas = stats.gpu_blas;
   out.gpu_ms.deform = stats.gpu_deform;
   out.gpu_ms.deform_alloc = stats.gpu_deform_alloc;
   out.gpu_ms.trace = stats.gpu_trace;
@@ -54,7 +55,27 @@ scene::FrameRecord frame_record(const FrameStats& stats, u32 repeat, u32 frame, 
   out.evictions = stats.evictions;
   out.requests = stats.requests;
   out.pages_resident = stats.pages_resident;
+  out.pending = stats.pending;
+  out.loads_in_flight = stats.loads_in_flight;
+  out.pool_pages = stats.pool_pages;
+  out.rt_built = stats.rt_built;
+  out.rt_wanted = stats.rt_wanted;
+  out.rt_capacity = stats.rt_capacity;
   return out;
+}
+
+void summarize_rt(const RtStats& stats, scene::FlythroughRt& out) {
+  out.capacity = stats.capacity;
+  out.peak_capacity = stats.peak_capacity;
+  out.limit = stats.limit;
+  out.union_clusters = stats.union_clusters;
+  out.bytes = stats.bytes;
+  out.peak_bytes = stats.peak_bytes;
+  out.grows = stats.grows;
+  out.shrinks = stats.shrinks;
+  out.overflow_frames = stats.overflow_frames;
+  out.dropped_instances = stats.dropped_instances;
+  out.dropped_caster_instances = stats.dropped_caster_instances;
 }
 
 bool fly_camera_path(SceneRenderer& renderer, const CameraPath& path, const FlightOptions& options,
@@ -149,7 +170,24 @@ void summarize_frames(std::span<const scene::FrameRecord> records, u32 frames, u
     if (r.frame < frames && r.repeat < repeats) slot[r.frame * repeats + r.repeat] = &r;
   }
   // A frame's figure is the median of its repeats; the path's are percentiles over frames.
-  enum Pass : u32 { cull, hw, sw, hiz, resolve, rt, deform, trace, total, pairs, casters, passes };
+  enum Pass : u32 {
+    cull,
+    hw,
+    sw,
+    hiz,
+    resolve,
+    rt,
+    deform,
+    trace,
+    total,
+    pairs,
+    casters,
+    clas,
+    blas,
+    rt_built,
+    rt_wanted,
+    passes
+  };
   Vector<f64> per_frame[passes];
   Vector<f64> repeats_of;
   out.deterministic = true;
@@ -196,7 +234,11 @@ void summarize_frames(std::span<const scene::FrameRecord> records, u32 frames, u
                                     ms.trace,
                                     ms.total,
                                     static_cast<f64>(r->visible_pairs),
-                                    static_cast<f64>(r->shadow_casters)};
+                                    static_cast<f64>(r->shadow_casters),
+                                    ms.clas,
+                                    ms.blas,
+                                    static_cast<f64>(r->rt_built),
+                                    static_cast<f64>(r->rt_wanted)};
         repeats_of.push_back(values[p]);
       }
       per_frame[p].push_back(median_of(repeats_of));
@@ -216,6 +258,10 @@ void summarize_frames(std::span<const scene::FrameRecord> records, u32 frames, u
   out.gpu_ms.total = over(total);
   out.visible_pairs = over(pairs);
   out.shadow_casters = over(casters);
+  out.gpu_ms.clas = over(clas);
+  out.gpu_ms.blas = over(blas);
+  out.rt.built = over(rt_built);
+  out.rt.wanted = over(rt_wanted);
 
   out.markers.clear();
   for (const CameraPathMarker& marker : path.markers) {

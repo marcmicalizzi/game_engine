@@ -202,7 +202,7 @@ struct CameraPath @version(1) {
 }
 
 /// GPU milliseconds of one frame, pass by pass, from `gfx::GpuTimer` (`renderer::Stats` names).
-struct PassMs @version(1) {
+struct PassMs @version(2) {
   cull: f64 = 0
   hw: f64 = 0
   sw: f64 = 0
@@ -216,10 +216,12 @@ struct PassMs @version(1) {
   trace: f64 = 0
   /// The sum of the timed zones: what the frame's passes cost, not its wall time.
   total: f64 = 0
+  /// The bottom-level build inside `rt`: every instance's cluster structure in one command.
+  blas: f64 = 0 @since(2)
 }
 
 /// One frame of a flythrough benchmark. One line of the `.jsonl` a run writes.
-struct FrameRecord @version(1) {
+struct FrameRecord @version(2) {
   /// Which pass over the path, from 0.
   repeat: u32 = 0
   /// The path frame, from 0.
@@ -243,6 +245,19 @@ struct FrameRecord @version(1) {
   evictions: u32 = 0
   requests: u32 = 0
   pages_resident: u32 = 0
+  /// Streaming's state after the frame: requests queued and not admitted, page loads outstanding,
+  /// and the pages the **pool** holds — what the cull pass can draw out of, which lags the
+  /// manager's `pages_resident` by the upload budget and the read latency.
+  pending: u32 = 0 @since(2)
+  loads_in_flight: u32 = 0 @since(2)
+  pool_pages: u32 = 0 @since(2)
+  /// The ray tracing chain: the cluster structures the frame built, the ones it wanted (its cut
+  /// plus its shadow casters), and the capacity it built them into. `rt_wanted > rt_built` is a
+  /// frame that dropped whole instances' structures (docs/subsystems/renderer.md, "The ray
+  /// tracing chain's memory"). Zero without the chain.
+  rt_built: u32 = 0 @since(2)
+  rt_wanted: u32 = 0 @since(2)
+  rt_capacity: u32 = 0 @since(2)
   /// The census, when the run took one: visible pairs by DAG level (0 is the source geometry)
   /// and by scene mesh, read back from this frame's visible list in a second, untimed pass.
   levels: u32[]
@@ -261,7 +276,7 @@ struct Percentiles @version(1) {
   mean: f64 = 0
 }
 
-struct PassPercentiles @version(1) {
+struct PassPercentiles @version(2) {
   cull: Percentiles
   hw: Percentiles
   sw: Percentiles
@@ -271,6 +286,9 @@ struct PassPercentiles @version(1) {
   deform: Percentiles
   trace: Percentiles
   total: Percentiles
+  /// Inside `rt`: the cluster build and the bottom-level build.
+  clas: Percentiles @since(2)
+  blas: Percentiles @since(2)
 }
 
 /// One mesh as a run loaded it: what a number was measured on.
@@ -344,8 +362,30 @@ struct OcclusionCheck @version(1) {
   differing: OcclusionFrame[]
 }
 
+/// What the ray tracing chain held over a flythrough (`renderer::RtStats`): the capacity in
+/// clusters at the end and at its largest, the budget as a capacity, what the chain would be sized
+/// for if it were sized by the scene (`views * pairs`), its device bytes at the end and at their
+/// largest, how often it was resized, and the frames that wanted more than it held. All zero
+/// without the chain.
+struct FlythroughRt @version(1) {
+  capacity: u32 = 0
+  peak_capacity: u32 = 0
+  limit: u32 = 0
+  union_clusters: u32 = 0
+  bytes: u64 = 0
+  peak_bytes: u64 = 0
+  grows: u32 = 0
+  shrinks: u32 = 0
+  overflow_frames: u64 = 0
+  dropped_instances: u64 = 0
+  dropped_caster_instances: u64 = 0
+  /// Per frame, over the path: what the chain built and what the frame wanted.
+  built: Percentiles
+  wanted: Percentiles
+}
+
 /// The last line of a flythrough benchmark's `.jsonl`, and engine-view's summary line.
-struct FlythroughSummary @version(1) {
+struct FlythroughSummary @version(2) {
   /// "engine.flythrough.v1".
   format: string
   scene: string
@@ -395,4 +435,6 @@ struct FlythroughSummary @version(1) {
   /// The harness's samples around the run, as `foundation/bench` writes them.
   machine_state: json
   quiet: bool = false
+  /// The ray tracing chain's memory and what it built (see `FlythroughRt`).
+  rt: FlythroughRt @since(2)
 }

@@ -88,6 +88,12 @@ struct RenderSettings {
   // graceful degradation `k_no_pool_slot` gives the pool. 0 takes the default.
   u32 static_shape_kib = 0;
   bool rt_templates = false;  // instantiate prebuilt cluster templates instead of rebuilding
+  // The most device memory the per-frame cluster acceleration structures may take, in mebibytes;
+  // 0 takes the `renderer.rt.budget_mib` tunable (1024 by default). The structures are sized by
+  // what the frames build and only ever reach this under a cut that large; past it a frame drops
+  // whole instances' structures, shadow casters first (docs/subsystems/renderer.md, "The ray
+  // tracing chain's memory"). It bounds a scene buffer, which is why it lives here.
+  u32 rt_budget_mib = 0;
 
   // Geometry streaming (04 §4.3 step 3, §4.9). The scene's clusters are laid out in fixed-size
   // pages, the GPU holds a budgeted subset of them in a page pool, the cull pass draws whatever is

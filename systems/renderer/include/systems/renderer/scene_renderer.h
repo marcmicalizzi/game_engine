@@ -36,6 +36,7 @@
 #include <domain/gfx/shader_library.h>
 #include <systems/renderer/capture.h>
 #include <systems/renderer/gpu_scene.h>
+#include <systems/renderer/rt_capacity.h>
 #include <systems/renderer/streaming.h>
 #include <systems/renderer/view_set.h>
 
@@ -124,13 +125,52 @@ struct FrameStats {
   f64 gpu_deform_alloc = 0.0;
   f64 gpu_trace = 0.0;
   f64 gpu_total = 0.0;
+  f64 gpu_blas = 0.0;  // the bottom-level build inside `gpu_rt`
   u32 uploads = 0;
   u64 upload_bytes = 0;
   u32 evictions = 0;
   u32 requests = 0;
   u32 pages_resident = 0;
+  // Streaming's state after this frame, beside what it did in it: requests queued in the manager
+  // and not admitted, page loads outstanding, and pages the **pool** holds, which lags the
+  // manager's `pages_resident` by the upload budget and the read latency. A run whose pool stops
+  // growing while its queue does not drain is stalled, and these are what show it frame by frame.
+  u32 pending = 0;
+  u32 loads_in_flight = 0;
+  u32 pool_pages = 0;
+  // The ray tracing chain (Stats::rt_*): what this frame built, what it wanted, and the capacity
+  // it was built into. `rt_wanted > rt_built` is a frame that dropped structures.
+  u32 rt_built = 0;
+  u32 rt_wanted = 0;
+  u32 rt_capacity = 0;
 
   u32 visible_pairs() const noexcept { return visible_hw + visible_pass2 + visible_sw; }
+};
+
+// What the ray tracing chain held and did over a run (docs/subsystems/renderer.md, "The ray
+// tracing chain's memory"). The per-frame structures are sized by the frames: `capacity` is what
+// they hold room for now and `bytes` what the whole chain holds now, `peak_*` the most of either
+// in the run, `limit` the budget in clusters. `built` and `wanted` are the last frame's, one frame
+// late like the visible counts. `overflow_frames` counts frames that wanted more than the capacity
+// held and so dropped whole instances' structures — `dropped_instances` of them lost their drawn
+// clusters and `dropped_caster_instances` only their shadow casters, summed over those frames —
+// which is zero on any run whose demand stays under the budget and moves by less than the headroom
+// between two resizes.
+struct RtStats {
+  u32 capacity = 0;
+  u32 limit = 0;
+  u32 union_clusters = 0;  // what the chain would be sized for if it were sized by the scene
+  u32 peak_capacity = 0;
+  u64 bytes = 0;
+  u64 peak_bytes = 0;
+  u32 built = 0;
+  u32 wanted = 0;
+  u32 peak_wanted = 0;
+  u32 grows = 0;
+  u32 shrinks = 0;
+  u64 overflow_frames = 0;
+  u64 dropped_instances = 0;
+  u64 dropped_caster_instances = 0;
 };
 
 struct Stats {
@@ -168,6 +208,7 @@ struct Stats {
   f64 gpu_resolve = 0.0;
   f64 gpu_rt = 0.0;  // records + ranges + emit + CLAS + cluster BLAS + TLAS
   f64 gpu_clas = 0.0;
+  f64 gpu_blas = 0.0;  // the one bottom-level build of every instance's structure
   f64 gpu_deform = 0.0;
   // The pool's suballocator, kept apart from the pool pass it feeds: one dispatch covers every
   // view of a run, so it is the frame's cost and no view's, and E25's "9.4 µs plus 0.9 µs per
@@ -182,6 +223,8 @@ struct Stats {
   // Geometry residency, folded in with the rest when a frame slot comes around. Zero for a scene
   // that is uploaded whole (`stream.pages_total == 0` is what says so).
   StreamStats stream;
+  // The ray tracing chain's memory and what it built. Zero when the frame builds no structures.
+  RtStats rt;
   // The per-view breakdown. `view_count` is 1 for a single view, and `views[0]` then holds the
   // same numbers the totals do.
   u32 view_count = 1;
@@ -200,6 +243,7 @@ struct Stats {
   f64 resolve_ms() const noexcept { return gpu_resolve / timed(); }
   f64 rt_ms() const noexcept { return gpu_rt / timed(); }
   f64 clas_ms() const noexcept { return gpu_clas / timed(); }
+  f64 blas_ms() const noexcept { return gpu_blas / timed(); }
   f64 deform_ms() const noexcept { return gpu_deform / timed(); }
   f64 deform_alloc_ms() const noexcept { return gpu_deform_alloc / timed(); }
   f64 trace_ms() const noexcept { return gpu_trace / timed(); }
@@ -238,6 +282,12 @@ struct FrameDesc {
   // (docs/plan/04-renderer.md §4.8). It is per frame and not per renderer because the same
   // renderer draws both pictures of a comparison.
   f32 lod_px = -1.0f;
+  // Under `render_offscreen`, build every ray tracing structure this frame wants even past the
+  // budget, up to the scene's whole union (docs/subsystems/renderer.md, "The ray tracing chain's
+  // memory"). The reference renderer sets it: its one real-time frame is the geometry every ray of
+  // a converged picture traces, and at `lod_px = 0` that is every leaf in view, which no budget
+  // sized for real-time cuts holds. The next ordinary frame shrinks the chain back to the budget.
+  bool rt_complete = false;
   gfx::ImageResource color;  // a swapchain image, or null for the renderer's own target
   VkImageLayout final_layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
   VkSemaphore wait = VK_NULL_HANDLE;          // the swapchain acquire, for a presented frame
@@ -465,6 +515,15 @@ class SceneRenderer {
   bool joint_overflow_warned_ = false;   // a span longer than the scene was sized for, said once
   bool deform_overflow_warned_ = false;  // the pool budget refused a pair, said once
   bool vertex_fallback_warned_ = false;  // the index budget sent a cluster to the fallback, once
+  bool rt_overflow_warned_ = false;      // a frame dropped instances' structures, said once
+  bool rt_hold_ = false;  // render_offscreen is redrawing a frame it grew the chain for
+  // The ray tracing chain's capacity policy (rt_capacity.h): fed every folded frame's demand, and
+  // the reason `GpuScene::resize_ray_tracing` is ever called.
+  RtCapacity rt_capacity_;
+  // Resizes the chain to `capacity` when it differs, waiting for the device first. False only when
+  // the allocation failed, in which case the chain keeps nothing and the frame must not be drawn.
+  bool apply_rt_capacity(u32 capacity, std::string* error, bool beyond_budget = false);
+  void note_rt_bytes() noexcept;
 };
 
 }  // namespace engine::renderer

@@ -202,6 +202,10 @@ bool ReferenceRenderer::render(const Camera& camera, const ReferenceSettings& se
   frame.camera = camera;
   frame.frame_index = settings.frame_index;
   frame.lod_px = settings.finest ? 0.0f : -1.0f;
+  // Every structure the frame wants, budget or not: the converged picture traces nothing else, and
+  // the finest cut is every leaf in view (docs/subsystems/renderer.md, "The ray tracing chain's
+  // memory"). The chain returns under its budget on the next real-time frame.
+  frame.rt_complete = true;
   // The pose, straight through. The frame writes the deformed-vertex pool from it and builds the
   // acceleration structures from the pool, so every ray below traces the character in the pose the
   // caller's tick produced without this file knowing what a clip is.

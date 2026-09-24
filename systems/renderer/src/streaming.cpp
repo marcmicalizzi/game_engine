@@ -460,10 +460,14 @@ u64 GeometryStreamer::prepare(u32 slot) {
   // heightfield's 1,500 pages — against the branch a dirty list would need in the middle of a
   // mapped write, and it is the only thing in the block that changes from frame to frame.
   u32* words = scene_->residency_slot(slot);
-  for (u32 p = 0; p < scene_->page_count(); ++p)
+  u32 pool_pages = 0;
+  for (u32 p = 0; p < scene_->page_count(); ++p) {
     words[p] = resident_[p];
+    pool_pages += resident_[p];
+  }
 
   stats_.pages_resident = manager_.resident_pages();
+  stats_.pool_pages = pool_pages;
   stats_.resident_bytes = manager_.resident_bytes();
   stats_.pending = manager_.pending();
   if (source_ != nullptr) {

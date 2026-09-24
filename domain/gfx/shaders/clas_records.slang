@@ -10,21 +10,28 @@
 // ray path settles a tied distance by the pair (ray_visibility.slang), not by traversal order.
 //
 //   records_main  one thread per visible entry, bucketing it into its instance's slice of
-//                 `slots` (slot = instance.first_pair * views + a per-instance atomic) and
-//                 counting the instance's survivors. The slices are as long as the instances'
+//                 `slots` — a drawn entry from the bottom of the slice up, a shadow caster from
+//                 the top down — and counting it. The slices are as long as the instances'
 //                 meshes times the view count, so the result is sparse.
-//   ranges_main   one thread: the prefix sum of the per-instance counts, the total record count
-//                 the CLAS build reads from the device, and one 16-byte bottom-level record per
-//                 instance over that instance's run of CLAS addresses.
-//   emit_main     one thread per pair slot, moving the bucketed entries down into the dense
-//                 `records` array and writing the 64-byte CLAS build record there. A record's
-//                 cluster id and base geometry index are the entry's **visible index**, which
-//                 leads to the same {instance, cluster} the rasterizer drew, so the ray-traced
-//                 picture writes the same pair (ray_visibility.slang).
+//   ranges_main   one thread: what the set's capacity keeps (below), the prefix sum of it, the
+//                 total record count the CLAS build reads from the device, and one 16-byte
+//                 bottom-level record per instance over that instance's run of CLAS addresses.
+//   emit_main     one thread per pair slot, moving the kept entries down into the dense
+//                 `records` array — an instance's drawn clusters, then its casters — and writing
+//                 the 64-byte CLAS build record there. A record's cluster id and base geometry
+//                 index are the entry's **visible index**, which leads to the same {instance,
+//                 cluster} the rasterizer drew, so the ray-traced picture writes the same pair
+//                 (ray_visibility.slang).
+//
+// **The capacity is the frame's, not the scene's** (docs/subsystems/renderer.md, "The ray
+// tracing chain's memory"). The set holds `capacity` structures, a step above what recent frames
+// built; what a frame wants beyond it is dropped by `ranges_main` whole instances at a time,
+// every instance's drawn clusters before any caster, so which instances lose their structures is
+// a function of the per-instance counts and not of the order the atomics ran in.
 //
 // A deformed instance's record points at the frame's deformed-vertex pool instead of the mesh's
-// rest-pose positions, so the ray geometry deforms with the raster geometry (§4.3). With
-// `instantiate` set, emit_main writes 32-byte instantiate records naming each cluster's prebuilt
+// rest-pose positions, so the ray geometry deforms with the raster geometry (§4.3). With the
+// instantiate mode, emit_main writes 32-byte instantiate records naming each cluster's prebuilt
 // template (MeshDesc::templates) and this frame's positions for it, which is what cluster
 // acceleration structure templates exist for.
 //
@@ -33,17 +40,17 @@
 // `(r * views + v) * pair_count` — so the *first* run of every view is one contiguous range at
 // the front of the list, which is exactly the range the ray tracing chain consumes: one
 // records_main dispatch covers `views * pair_count` entries, reads each view's own count word out
-// of its indirect argument block, and `views` widens every instance's slice of `slots` so that a
-// cluster drawn by every view has a slot in each. A record's base geometry index stays the entry's
-// visible index, unique across the frame because the runs share one list.
+// of its indirect argument block, and the view count widens every instance's slice of `slots` so
+// that a cluster drawn by every view has a slot in each. A record's base geometry index stays the
+// entry's visible index, unique across the frame because the runs share one list.
 //
 // **Shadow casters** (docs/subsystems/geometry.md, "Normal cones"): with `caster_count` set the
 // cull pass also left the pairs its cone test alone rejected in run `k_caster_run` of every view,
-// and records_main covers that run too. A caster lands in its instance's slice like a drawn pair
-// (in one view a pair is one or the other, never both, so the slices are still long enough) and
-// is written **without the opaque flag**: the shadow rays force opacity and stop on it, the
-// primary rays cull non-opaque geometry and pass through, so the traced picture stays the
-// rasterized one and only the shadows gain the clusters that face away from the camera.
+// and records_main covers that run too. A caster lands in its instance's slice from the top (in
+// one view a pair is drawn or a caster, never both, so the two ends never meet) and is written
+// **without the opaque flag**: the shadow rays force opacity and stop on it, the primary rays cull
+// non-opaque geometry and pass through, so the traced picture stays the rasterized one and only
+// the shadows gain the clusters that face away from the camera.
 
 #include "scene.slang"
 
@@ -86,21 +93,22 @@ struct RecordParams {
   uint64_t vertices;         // float3[]: cluster-ordered rest positions
   uint64_t indices8;         // uint8[3 * triangles]: packed cluster indices
   uint64_t instances;        // InstanceDesc[instance_count]
-  uint64_t meshes;           // MeshDesc[]: the deformed-vertex pool and the cluster templates
-  uint64_t visible;        // uint2[]: the cull pass's visible list, from its first run
-  uint64_t visible_count;  // uint: view 0's count word; view v's is k_draw_args_bytes further on
+  uint64_t meshes;           // MeshDesc[]: cluster counts, the deformed-vertex pool, templates
+  uint64_t visible;          // uint2[]: the cull pass's visible list, from its first run
+  uint64_t visible_count;    // uint: view 0's count word; view v's is k_draw_args_bytes further on
   uint64_t slots;            // uint[views * pair_count]: visible index per pair slot
-  // uint[2 * instance_count]: survivors per instance (zeroed first), then the dense record bases
+  // uint[3 * instance_count]: drawn and caster counts per instance (zeroed first), then the dense
+  // record bases
   uint64_t instance_counts;
   uint64_t caster_count;     // uint: view 0's caster count word, or 0 for no caster run
-  uint64_t records;          // ClusterRecord[] or InstantiateRecord[] out, views * pair_count long
-  uint64_t record_count;     // uint out
+  uint64_t records;          // ClusterRecord[] or InstantiateRecord[] out, `capacity` long
+  uint64_t record_count;     // uint[4] out: built, wanted, instances dropped, casters dropped
   uint64_t blas_records;     // BlasRecord[instance_count] out
   uint64_t clas_addresses;   // uint64_t[]: where the CLAS build writes each address
   uint instance_count;
-  uint pair_count;   // the scene's; one run's count cannot exceed it
-  uint views;        // how many views' runs accumulate into this set
-  uint instantiate;  // 1: write InstantiateRecord from MeshDesc::templates instead
+  uint pair_count;  // the scene's; one run's count cannot exceed it
+  uint mode;        // low 16 bits: views whose runs accumulate here; bit 16: instantiate
+  uint capacity;    // the structures the set holds; ranges_main keeps no more
 };
 
 [[vk::push_constant]] ConstantBuffer<RecordParams> g_params;
@@ -109,13 +117,30 @@ static const uint k_index_type_8bit = 1;
 static const uint k_geometry_opaque = 4;
 static const uint k_draw_args_bytes = 16;  // gfx::k_draw_args_bytes: one block per view
 static const uint k_caster_run = 2;        // gfx::k_caster_run: the casters' run of the list
+static const uint k_instantiate = 0x10000;  // gfx::k_cluster_records_instantiate
+
+uint view_count() { return g_params.mode & 0xffff; }
+bool instantiating() { return (g_params.mode & k_instantiate) != 0; }
 
 // The first visible index of the caster run: nothing below it is a caster.
-uint caster_base() { return k_caster_run * g_params.views * g_params.pair_count; }
+uint caster_base() { return k_caster_run * view_count() * g_params.pair_count; }
 
-// Each instance's dense record base: the second half of `instance_counts`.
-uint* instance_first() {
+// The three thirds of `instance_counts`: each instance's drawn entries, its casters, and its dense
+// record base.
+uint* drawn_counts() { return (uint*)g_params.instance_counts; }
+uint* caster_counts() {
   return (uint*)(g_params.instance_counts + uint64_t(g_params.instance_count) * 4);
+}
+uint* instance_first() {
+  return (uint*)(g_params.instance_counts + uint64_t(g_params.instance_count) * 8);
+}
+
+// An instance's slice of `slots`: `views` slots per cluster of its mesh, starting at its first
+// pair times the view count.
+uint slice_base(InstanceDesc instance) { return instance.first_pair * view_count(); }
+uint slice_length(InstanceDesc instance) {
+  MeshDesc* meshes = (MeshDesc*)g_params.meshes;
+  return meshes[instance.mesh].cluster_count * view_count();
 }
 
 // Bucket each visible entry into its instance's slice of the pair-indexed scratch array. The
@@ -124,7 +149,7 @@ uint* instance_first() {
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void records_main(uint3 thread_id : SV_DispatchThreadID) {
-  const uint run_entries = g_params.views * g_params.pair_count;
+  const uint run_entries = view_count() * g_params.pair_count;
   const uint runs = g_params.caster_count != 0 ? 2u : 1u;
   if (thread_id.x >= runs * run_entries) return;
   const bool caster = thread_id.x >= run_entries;
@@ -139,31 +164,71 @@ void records_main(uint3 thread_id : SV_DispatchThreadID) {
   uint2* visible = (uint2*)g_params.visible;
   const uint instance_index = visible[index].x;
   InstanceDesc* instances = (InstanceDesc*)g_params.instances;
-  Atomic<uint>* counts = (Atomic<uint>*)g_params.instance_counts;
-  const uint local = counts[instance_index].add(1);
+  const InstanceDesc instance = instances[instance_index];
   uint* slots = (uint*)g_params.slots;
-  slots[instances[instance_index].first_pair * g_params.views + local] = index;
+  if (caster) {
+    Atomic<uint>* counts = (Atomic<uint>*)caster_counts();
+    const uint local = counts[instance_index].add(1);
+    slots[slice_base(instance) + slice_length(instance) - 1 - local] = index;
+  } else {
+    Atomic<uint>* counts = (Atomic<uint>*)drawn_counts();
+    const uint local = counts[instance_index].add(1);
+    slots[slice_base(instance) + local] = index;
+  }
 }
 
-// The prefix sum over the instances, the total, and one bottom-level record per instance.
+// What the capacity keeps, the prefix sum over the instances, the total, and one bottom-level
+// record per instance. One thread, over the instances: at 90 instances it is nothing, and it is
+// the one place that sees every instance's count, which is what "whole instances, in order" needs.
 [shader("compute")]
 [numthreads(1, 1, 1)]
 void ranges_main() {
-  uint* counts = (uint*)g_params.instance_counts;
+  uint* drawn = drawn_counts();
+  uint* casters = caster_counts();
   uint* first = instance_first();
   BlasRecord* blas = (BlasRecord*)g_params.blas_records;
+  uint wanted = 0;
+  for (uint i = 0; i < g_params.instance_count; ++i)
+    wanted += drawn[i] + casters[i];
+  // Drawn clusters first, instance by instance; an instance that does not fit keeps nothing — its
+  // casters go with its drawn clusters, since they would cast a part of its shadow and not the
+  // rest — and the next one is tried, so a large instance cannot starve every small one behind
+  // it. Then the other instances' casters, the same way, from what is left.
+  uint left = g_params.capacity;
+  uint dropped_drawn = 0;
+  for (uint i = 0; i < g_params.instance_count; ++i) {
+    if (drawn[i] <= left) {
+      left -= drawn[i];
+    } else {
+      drawn[i] = 0;
+      casters[i] = 0;
+      ++dropped_drawn;
+    }
+  }
+  uint dropped_casters = 0;
+  for (uint i = 0; i < g_params.instance_count; ++i) {
+    if (casters[i] <= left) {
+      left -= casters[i];
+    } else {
+      casters[i] = 0;
+      ++dropped_casters;
+    }
+  }
   uint total = 0;
   for (uint i = 0; i < g_params.instance_count; ++i) {
     first[i] = total;
     BlasRecord record;
-    record.count = counts[i];
+    record.count = drawn[i] + casters[i];
     record.stride = 8;
     record.references = g_params.clas_addresses + uint64_t(total) * 8;
     blas[i] = record;
-    total += counts[i];
+    total += drawn[i] + casters[i];
   }
   uint* record_count = (uint*)g_params.record_count;
-  *record_count = total;
+  record_count[0] = total;  // what the build reads: never more than the capacity
+  record_count[1] = wanted;
+  record_count[2] = dropped_drawn;
+  record_count[3] = dropped_casters;
 }
 
 // Where a cluster's twelve-byte positions live this frame: the mesh's rest-pose float array for
@@ -179,23 +244,34 @@ uint64_t cluster_vertex_address(MeshDesc mesh, InstanceDesc instance, ClusterDes
   return g_params.vertices + uint64_t(cluster.vertex_offset) * 12;
 }
 
-// Move the bucketed entries down to the dense array and write their CLAS build records, or, in
-// the templates variant, the instantiate records that name the cluster's template and this
-// frame's positions for it.
+// Move the kept entries down to the dense array and write their CLAS build records, or, in the
+// templates variant, the instantiate records that name the cluster's template and this frame's
+// positions for it.
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void emit_main(uint3 thread_id : SV_DispatchThreadID) {
   const uint slot = thread_id.x;
-  if (slot >= g_params.views * g_params.pair_count) return;
+  const uint views = view_count();
+  if (slot >= views * g_params.pair_count) return;
   InstanceDesc* instances = (InstanceDesc*)g_params.instances;
   // An instance's slice is `views` times its mesh's cluster count, so dividing the slot by the
   // view count lands back in the pair space the prefix sum `first_pair` is in.
   const uint instance_index =
-      instance_of_pair(instances, g_params.instance_count, slot / g_params.views);
+      instance_of_pair(instances, g_params.instance_count, slot / views);
   const InstanceDesc instance = instances[instance_index];
-  const uint local = slot - instance.first_pair * g_params.views;
-  uint* counts = (uint*)g_params.instance_counts;
-  if (local >= counts[instance_index]) return;  // this instance drew fewer clusters than it has
+  const uint local = slot - slice_base(instance);
+  // Drawn entries fill the slice from the bottom, casters from the top; what ranges_main left in
+  // the two counts is what was kept (all of an instance's, or none).
+  const uint drawn = drawn_counts()[instance_index];
+  const uint from_top = slice_length(instance) - 1 - local;
+  uint dense_local = 0;
+  if (local < drawn) {
+    dense_local = local;
+  } else if (from_top < caster_counts()[instance_index]) {
+    dense_local = drawn + from_top;
+  } else {
+    return;  // this instance drew fewer clusters than it has, or lost them to the capacity
+  }
   uint* slots = (uint*)g_params.slots;
   const uint visible_index = slots[slot];
   uint2* visible = (uint2*)g_params.visible;
@@ -204,11 +280,10 @@ void emit_main(uint3 thread_id : SV_DispatchThreadID) {
   const ClusterDesc cluster = clusters[cluster_id];
   MeshDesc* meshes = (MeshDesc*)g_params.meshes;
   const MeshDesc mesh = meshes[instance.mesh];
-  uint* first = instance_first();
-  const uint dense = first[instance_index] + local;
+  const uint dense = instance_first()[instance_index] + dense_local;
   const uint64_t vertex_address = cluster_vertex_address(mesh, instance, cluster, visible_index);
 
-  if (g_params.instantiate != 0) {
+  if (instantiating()) {
     uint64_t* templates = (uint64_t*)mesh.templates;
     InstantiateRecord record;
     record.cluster_id_offset = visible_index;

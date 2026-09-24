@@ -39,13 +39,14 @@ namespace engine::renderer {
 // counters are cumulative over the run; `pages_resident` and `pending` are the latest frame's.
 struct StreamStats {
   u32 pages_total = 0;
-  u32 pages_resident = 0;
-  u32 pages_pinned = 0;   // `geometry::k_page_root`: resident from the start, never evicted
-  u32 page_slots = 0;     // the pool's fixed-size slots
-  u32 pending = 0;        // requests queued in the manager and not yet admitted
-  u64 requests = 0;       // request entries the cull passes wrote, summed over the run
-  u64 uploads_bytes = 0;  // payload copied into the pool
-  u64 uploads = 0;        // pages copied
+  u32 pages_resident = 0;  // the manager's: admitted, whether or not the bytes have landed
+  u32 pool_pages = 0;      // the pool's: what the cull pass can draw out of this frame
+  u32 pages_pinned = 0;    // `geometry::k_page_root`: resident from the start, never evicted
+  u32 page_slots = 0;      // the pool's fixed-size slots
+  u32 pending = 0;         // requests queued in the manager and not yet admitted
+  u64 requests = 0;        // request entries the cull passes wrote, summed over the run
+  u64 uploads_bytes = 0;   // payload copied into the pool
+  u64 uploads = 0;         // pages copied
   u64 evictions = 0;
   u64 stale = 0;      // requests dropped because the page that asked has been evicted since
   u64 overflows = 0;  // frames whose request buffer was full: the pages come back next frame

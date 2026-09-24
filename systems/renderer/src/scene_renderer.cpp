@@ -36,6 +36,9 @@ constexpr u32 k_stat_words = 13;
 // The deformed-vertex pool's allocation record, copied in behind every view's block: it is one
 // record for the frame, not one per view, because the pool's budget is the frame's.
 constexpr u32 k_alloc_words = sizeof(gfx::DeformAlloc) / sizeof(u32);
+// The ray tracing chain's record count block, behind that: built, wanted, and the instances that
+// lost their drawn clusters and their casters to the capacity (gfx::ClusterRecordParams).
+constexpr u32 k_rt_words = gfx::k_cluster_record_count_words;
 
 // The sky is `renderer::k_sky` in `lighting.h`, and there are now **three** things that have to
 // be the same number rather than two. The resolve pass's clear value and `ResolveParams::sky`,
@@ -243,6 +246,17 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
     destroy();
     return false;
   }
+  // The ray tracing chain's capacity policy starts from what the scene allocated and grows or
+  // shrinks it from what the frames build (rt_capacity.h). The tunables are read here, once.
+  if (resolved_.rt_chain) {
+    RtCapacityConfig config;
+    config.limit = scene.rt_capacity_limit();
+    config.headroom_pct = rt_headroom_pct_tunable();
+    config.shrink_frames = rt_shrink_frames_tunable();
+    config.step = rt_step_tunable();
+    rt_capacity_.reset(config, scene.rt_capacity());
+    note_rt_bytes();
+  }
   if (!frames_.create(device, desc.frames_in_flight, error) ||
       // Every view records its own cull, raster, Hi-Z and resolve zones, so the pool grows with
       // the layout; one view asks for exactly the 24 it always did.
@@ -261,7 +275,7 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
   slot_submission_.assign(desc.frames_in_flight, 0);
   constexpr VkBufferUsageFlags k_address =
       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
-  const u64 stat_bytes = sizeof(u32) * (u64{k_stat_words} * views + k_alloc_words);
+  const u64 stat_bytes = sizeof(u32) * (u64{k_stat_words} * views + k_alloc_words + k_rt_words);
   bool ok = true;
   for (u32 slot = 0; slot < desc.frames_in_flight && ok; ++slot) {
     // Two cull blocks per view, one resolve block per view with the frame's lights behind the
@@ -532,6 +546,9 @@ void SceneRenderer::destroy() noexcept {
   collected_ = 0;
   flags_dirty_ = true;
   recording_ = false;
+  rt_capacity_ = RtCapacity{};
+  rt_overflow_warned_ = false;
+  stats_.rt = RtStats{};
 }
 
 // The warm-up counter goes back with the numbers. A slot's per-frame statistics block survives a
@@ -542,6 +559,7 @@ void SceneRenderer::reset_stats() noexcept {
   stats_ = Stats{};
   streamer_.reset_stats();
   stats_.stream = streamer_.stats();
+  note_rt_bytes();  // what the chain holds is state, not a count: it survives a reset
   fill_view_layout();
   submitted_ = 0;
   sample_gpu_memory();  // a reset must not leave a summary with no memory figure at all
@@ -631,6 +649,31 @@ void SceneRenderer::fold_visible(u32 slot) {
   const u32 total = stats_.visible_pairs();
   stats_.visible_min = total < stats_.visible_min ? total : stats_.visible_min;
   stats_.visible_max = total > stats_.visible_max ? total : stats_.visible_max;
+  if (resolved_.rt_chain) {
+    const u32* rt = stats + u64{k_stat_words} * view_count() + k_alloc_words;
+    RtStats& chain = stats_.rt;
+    chain.built = rt[0];
+    chain.wanted = rt[1];
+    chain.peak_wanted = std::max(chain.peak_wanted, chain.wanted);
+    if (rt[2] + rt[3] > 0) {
+      ++chain.overflow_frames;
+      chain.dropped_instances += rt[2];
+      chain.dropped_caster_instances += rt[3];
+      // Said once, because it is a capacity question: those instances cast no shadow this frame
+      // (and under the ray path were not in the picture), the casters' lost only the shadows of
+      // what faces away from the camera. Frames before a growth lands can do it; a run that keeps
+      // doing it is past its budget.
+      if (!rt_overflow_warned_) {
+        rt_overflow_warned_ = true;
+        ENGINE_LOG_WARN(log_renderer, "the ray tracing chain dropped instances' structures",
+                        log::field("wanted", chain.wanted), log::field("built", chain.built),
+                        log::field("capacity", scene_->rt_capacity()),
+                        log::field("limit", scene_->rt_capacity_limit()),
+                        log::field("instances", rt[2]), log::field("caster_instances", rt[3]),
+                        log::field("remedy", "raise RenderSettings::rt_budget_mib"));
+      }
+    }
+  }
   if (resolved_.deform_pass) {
     const u32* alloc = stats + u64{k_stat_words} * view_count();
     stats_.deform_vertices = alloc[0];
@@ -676,6 +719,12 @@ void SceneRenderer::collect_slot(u32 slot) {
   last.evictions = static_cast<u32>(stats_.stream.evictions - before.evictions);
   last.requests = static_cast<u32>(stats_.stream.requests - before.requests);
   last.pages_resident = stats_.stream.pages_resident;
+  last.pending = stats_.stream.pending;
+  last.loads_in_flight = stats_.stream.loads_in_flight;
+  last.pool_pages = stats_.stream.pool_pages;
+  last.rt_built = stats_.rt.built;
+  last.rt_wanted = stats_.rt.wanted;
+  last.rt_capacity = scene_->rt_capacity();
   ++stats_.folded;
   if (!timer_.results().empty()) {
     last.timed = true;
@@ -692,6 +741,7 @@ void SceneRenderer::collect_slot(u32 slot) {
     last.gpu_rt = timer_.ms("records") + timer_.ms("ranges") + timer_.ms("emit") +
                   timer_.ms("clas") + timer_.ms("blas") + timer_.ms("tlas");
     last.gpu_clas = timer_.ms("clas");
+    last.gpu_blas = timer_.ms("blas");
     last.gpu_total = timer_.total_ms();
   }
   if (!timer_.results().empty()) {
@@ -721,6 +771,7 @@ void SceneRenderer::collect_slot(u32 slot) {
     stats_.gpu_rt += timer_.ms("records") + timer_.ms("ranges") + timer_.ms("emit") +
                      timer_.ms("clas") + timer_.ms("blas") + timer_.ms("tlas");
     stats_.gpu_clas += timer_.ms("clas");
+    stats_.gpu_blas += timer_.ms("blas");
     stats_.gpu_total += timer_.total_ms();
     ++stats_.timed_frames;
   }
@@ -732,8 +783,55 @@ void SceneRenderer::begin_frame() {
   commands_ = frames_.begin_frame();
   timer_.begin_frame(commands_, frames_.slot());
   // The frame that last used this slot has completed: its statistics are readable.
-  if (submitted_ >= frames_.frames_in_flight()) collect_slot(frames_.slot());
+  if (submitted_ >= frames_.frames_in_flight()) {
+    collect_slot(frames_.slot());
+    // What it built is what the ray tracing chain is sized by (rt_capacity.h). A resize waits for
+    // the device, so it happens here — before this frame records anything — and only when the
+    // demand crossed a threshold, never as a matter of course.
+    if (resolved_.rt_chain && !rt_hold_) {
+      const u32 next = rt_capacity_.observe(stats_.rt.wanted);
+      if (next != scene_->rt_capacity() && !apply_rt_capacity(next, nullptr)) {
+        // The allocation failed: the device is out of memory. Say so and fall back to the smallest
+        // step, which a frame can still record into, rather than drawing with nothing.
+        ENGINE_LOG_ERROR(log_renderer, "the ray tracing chain could not be resized",
+                         log::field("capacity", next));
+        (void)apply_rt_capacity(rt_capacity_.config().step, nullptr);
+      }
+    }
+  }
   recording_ = true;
+}
+
+bool SceneRenderer::apply_rt_capacity(u32 capacity, std::string* error, bool beyond_budget) {
+  GpuScene& scene = *scene_;
+  const u32 before = scene.rt_capacity();
+  if (capacity == before) return true;
+  // Every frame in flight imports the chain's buffers by handle; none may still be reading them.
+  frames_.wait_idle();
+  if (!scene.resize_ray_tracing(capacity, error, beyond_budget)) return false;
+  rt_capacity_.resized(scene.rt_capacity());
+  RtStats& chain = stats_.rt;
+  if (scene.rt_capacity() > before) {
+    ++chain.grows;
+  } else {
+    ++chain.shrinks;
+  }
+  note_rt_bytes();
+  ENGINE_LOG_INFO(log_renderer, "ray tracing chain resized", log::field("from", before),
+                  log::field("to", scene.rt_capacity()), log::field("wanted", chain.wanted),
+                  log::field("bytes", scene.rt_bytes()));
+  return true;
+}
+
+void SceneRenderer::note_rt_bytes() noexcept {
+  if (scene_ == nullptr || !resolved_.rt_chain) return;
+  RtStats& chain = stats_.rt;
+  chain.capacity = scene_->rt_capacity();
+  chain.limit = scene_->rt_capacity_limit();
+  chain.union_clusters = scene_->rt_union_clusters();
+  chain.bytes = scene_->rt_bytes();
+  chain.peak_capacity = std::max(chain.peak_capacity, chain.capacity);
+  chain.peak_bytes = std::max(chain.peak_bytes, chain.bytes);
 }
 
 u64 SceneRenderer::submit_frame(const FrameDesc& frame, std::string* error) {
@@ -784,15 +882,46 @@ void SceneRenderer::abort_frame() {
 }
 
 bool SceneRenderer::render_offscreen(const FrameDesc& frame, std::string* error) {
-  begin_frame();
-  const u64 value = submit_frame(frame, error);
-  if (value == 0) return false;
-  if (!frames_.wait(value)) {
-    if (error != nullptr) *error = "the GPU did not finish the frame";
-    return false;
+  // At most twice: once, and once more if the frame's ray tracing structures did not fit. While
+  // the second is drawn the capacity policy holds still: that frame's own `begin_frame` folds an
+  // older frame's demand, which must not undo the growth before the frame that asked for it is
+  // drawn.
+  bool ok = true;
+  for (u32 attempt = 0; attempt < 2 && ok; ++attempt) {
+    begin_frame();
+    const u64 value = submit_frame(frame, error);
+    if (value == 0) {
+      ok = false;
+      break;
+    }
+    if (!frames_.wait(value)) {
+      if (error != nullptr) *error = "the GPU did not finish the frame";
+      ok = false;
+      break;
+    }
+    collect_visible();
+    // **A blocking frame is drawn complete.** The capacity policy sizes the chain from frames that
+    // have already finished, so the first frame of a large scene, a camera cut, or the reference
+    // renderer's finest cut can want more than it holds. A frame drawn in flight lives with that
+    // for the frames a growth takes to land; a frame somebody waits for — a capture, the
+    // reference, a test — is the picture they asked for, so it grows the chain to fit (within the
+    // budget) and is drawn again. Past the budget there is nothing to grow into, and the frame
+    // keeps what the stated rule kept — except a frame that asked to be complete (the reference
+    // renderer's), which may go past the budget up to the scene's whole union; the next ordinary
+    // frame's policy brings the chain back under it.
+    const u32 ceiling =
+        frame.rt_complete ? scene_->rt_union_clusters() : scene_->rt_capacity_limit();
+    if (attempt > 0 || !resolved_.rt_chain || stats_.rt.wanted <= stats_.rt.built ||
+        scene_->rt_capacity() >= ceiling) {
+      break;
+    }
+    u32 capacity = rt_capacity_.grow_to(stats_.rt.wanted);
+    if (frame.rt_complete) capacity = std::max(capacity, std::min(stats_.rt.wanted, ceiling));
+    ok = apply_rt_capacity(capacity, error, frame.rt_complete);
+    rt_hold_ = true;
   }
-  collect_visible();
-  return true;
+  rt_hold_ = false;
+  return ok;
 }
 
 // One frame, from the cull pass to the resolve, for every view of the set. Every parameter block
@@ -1251,14 +1380,12 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   // one view the geometry is the **union** of the views' cuts: the visible list is run-major, so
   // every view's first run is one contiguous range at the front and one dispatch covers them all.
   gfx::ClusterRecordParams record_params{};
-  Vector<gfx::TlasInstance> tlas_instances;
   if (rt_chain) {
     record_params.clusters = scene.clusters.address;
     record_params.vertices = scene.vertices.address;
     record_params.indices8 = scene.indices8.address;
     record_params.instances = scene.instances.address;
     record_params.meshes = scene.meshes.address;
-    record_params.instantiate = settings.rt_templates ? 1u : 0u;
     record_params.visible = scene.visible.address;
     // Where the cull pass counted each view's survivors: the mesh path's group count is the first
     // word of the view's indirect block, the vertex path's instance count the second, and the
@@ -1275,20 +1402,13 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     record_params.clas_addresses = scene.clas_set.addresses.address;
     record_params.instance_count = instance_count;
     record_params.pair_count = pair_count;
-    record_params.views = views;
-    // One top-level instance per scene instance: the world transform, the instance as the custom
-    // index, and that instance's own cluster bottom-level structure. One structure for the whole
-    // set: the views share it, which is what makes them one view set and not three renderers.
-    for (u32 i = 0; i < instance_count; ++i) {
-      gfx::TlasInstance record;
-      record.transform = data.instances[i].world;
-      record.custom_index = i;
-      record.blas = scene.cluster_blas[i].address;
-      tlas_instances.push_back(record);
-    }
-    gfx::write_instances(
-        std::span<const gfx::TlasInstance>(tlas_instances.data(), tlas_instances.size()),
-        scene.rt_instances.mapped);
+    record_params.mode = gfx::cluster_records_mode(views, settings.rt_templates);
+    // What the frame's structures hold room for: the records pass keeps no more, dropping whole
+    // instances past it (gfx::ClusterRecordParams). The top-level instance records — one per scene
+    // instance, the world transform and the instance as the custom index, shared by every view —
+    // were written once with the scene; the frame only copies each instance's bottom-level address
+    // into them after the one build that decides it.
+    record_params.capacity = scene.rt_capacity();
   }
 
   gfx::RenderGraph& graph = *graph_;
@@ -1366,9 +1486,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   };
   struct RtBuffers {
     gfx::RgBuffer records, record_count, slots, instance_counts, blas_records;
-    gfx::RgBuffer clas_data, clas_addresses, clas_sizes, tlas, instances;
+    gfx::RgBuffer clas_data, clas_addresses, clas_sizes, blas_data, blas_addresses, tlas, instances;
   } rt{};
-  Vector<gfx::RgBuffer> rg_blas_data;
   if (rt_chain) {
     rt.records = graph.import_buffer("clas records", scene.records);
     rt.record_count = graph.import_buffer("clas record count", scene.record_count);
@@ -1378,8 +1497,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     rt.clas_data = graph.import_buffer("clas", scene.clas_set.data);
     rt.clas_addresses = graph.import_buffer("clas addresses", scene.clas_set.addresses);
     rt.clas_sizes = graph.import_buffer("clas sizes", scene.clas_set.sizes);
-    for (u32 i = 0; i < instance_count; ++i)
-      rg_blas_data.push_back(graph.import_buffer("cluster blas", scene.cluster_blas[i].data));
+    rt.blas_data = graph.import_buffer("cluster blas", scene.blas_set.data);
+    rt.blas_addresses = graph.import_buffer("cluster blas addresses", scene.blas_set.addresses);
     rt.tlas = graph.import_buffer("tlas", scene.tlas.buffer);
     rt.instances = graph.import_buffer("tlas instances", scene.rt_instances);
   }
@@ -1903,30 +2022,35 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             b.read(rt.blas_records, gfx::Access::AccelerationBuildRead);
             b.read(rt.clas_addresses, gfx::Access::AccelerationBuildRead);
             b.read(rt.clas_data, gfx::Access::AccelerationBuildRead);
-            for (const gfx::RgBuffer& d : rg_blas_data)
-              b.write(d, gfx::Access::AccelerationBuildWrite);
+            b.write(rt.blas_data, gfx::Access::AccelerationBuildWrite);
+            b.write(rt.blas_addresses, gfx::Access::AccelerationBuildWrite);
           },
           [&](VkCommandBuffer cb, gfx::RenderGraph&) {
-            // One build per instance; they share the scratch, so each waits for the last.
+            // Every instance's structure in **one** build, packed into one buffer by the driver
+            // (gfx::ClusterBlasSet). It used to be a build per instance, each waiting for the last
+            // because they shared the scratch — 90 of them a frame on the desert overlook.
             timer.begin(cb, "blas");
-            for (u32 i = 0; i < instance_count; ++i) {
-              if (i != 0) {
-                gfx::acceleration_build_barrier(
-                    cb, VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
-                    VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR |
-                        VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR);
-              }
-              gfx::build_cluster_blas_indirect(
-                  cb, scene.cluster_blas[i], scene.rt_scratch,
-                  scene.blas_records.address + u64{i} * gfx::k_cluster_blas_record_bytes);
-            }
+            gfx::build_cluster_blas_set(cb, scene.blas_set, scene.blas_records.address, 0,
+                                        scene.rt_scratch);
             timer.end(cb);
+          });
+      // Each instance's bottom-level address, which the build just decided, into the reference
+      // field of its top-level record. One copy of `instance_count` eight-byte regions, built once
+      // with the scene (`GpuScene::rt_instance_copies`), so the frame allocates nothing for it.
+      graph.add_pass(
+          "tlas instances", gfx::PassKind::Transfer,
+          [&](gfx::PassBuilder& b) {
+            b.read(rt.blas_addresses, gfx::Access::TransferRead);
+            b.write(rt.instances, gfx::Access::TransferWrite);
+          },
+          [&](VkCommandBuffer cb, gfx::RenderGraph&) {
+            vkCmdCopyBuffer(cb, scene.blas_set.addresses.buffer, scene.rt_instances.buffer,
+                            scene.rt_instance_copies.size(), scene.rt_instance_copies.data());
           });
       graph.add_pass(
           "tlas", gfx::PassKind::Compute,
           [&](gfx::PassBuilder& b) {
-            for (const gfx::RgBuffer& d : rg_blas_data)
-              b.read(d, gfx::Access::AccelerationBuildRead);
+            b.read(rt.blas_data, gfx::Access::AccelerationBuildRead);
             b.read(rt.instances, gfx::Access::AccelerationBuildRead);
             b.write(rt.tlas, gfx::Access::AccelerationBuildWrite);
           },
@@ -1942,8 +2066,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           "trace", gfx::PassKind::Compute,
           [&](gfx::PassBuilder& b) {
             b.read(rt.tlas, gfx::Access::RayQueryRead);
-            for (const gfx::RgBuffer& d : rg_blas_data)
-              b.read(d, gfx::Access::RayQueryRead);
+            b.read(rt.blas_data, gfx::Access::RayQueryRead);
             b.read(rt.clas_data, gfx::Access::RayQueryRead);
             b.read(rg_visible, gfx::Access::ComputeRead);  // a hit's entry -> its pair, the id
             b.write(rg_vis, gfx::Access::ComputeWrite);
@@ -1980,8 +2103,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           read_pool(b, gfx::Access::FragmentRead);
           if (shadows) {  // the shadow rays traverse them from the fragment stage
             b.read(rt.tlas, gfx::Access::FragmentRayQueryRead);
-            for (const gfx::RgBuffer& d : rg_blas_data)
-              b.read(d, gfx::Access::FragmentRayQueryRead);
+            b.read(rt.blas_data, gfx::Access::FragmentRayQueryRead);
             b.read(rt.clas_data, gfx::Access::FragmentRayQueryRead);
           }
         },
@@ -2009,6 +2131,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           b.read(rg_sw_args, gfx::Access::TransferRead);
           if (deform_on) b.read(rg_alloc, gfx::Access::TransferRead);
           if (vertex_indexed) b.read(rg_vertex_headers, gfx::Access::TransferRead);
+          if (rt_chain) b.read(rt.record_count, gfx::Access::TransferRead);
           b.write(rg_stats, gfx::Access::TransferWrite);
         },
         [&, stat_target](VkCommandBuffer cb, gfx::RenderGraph&) {
@@ -2037,6 +2160,12 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             const VkBufferCopy copy{0, sizeof(u32) * u64{k_stat_words} * views,
                                     sizeof(gfx::DeformAlloc)};
             vkCmdCopyBuffer(cb, scene.deform_alloc.buffer, stat_target->buffer, 1, &copy);
+          }
+          // What the ray tracing chain built and wanted, which is what its capacity is sized by.
+          if (rt_chain) {
+            const VkBufferCopy copy{0, sizeof(u32) * (u64{k_stat_words} * views + k_alloc_words),
+                                    sizeof(u32) * k_rt_words};
+            vkCmdCopyBuffer(cb, scene.record_count.buffer, stat_target->buffer, 1, &copy);
           }
         });
   }

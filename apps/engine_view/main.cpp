@@ -80,6 +80,7 @@ constexpr const char* k_usage =
     "                   [--mesh <file.gltf|file.glb|file.clusters>] [--scene <file.json>]\n"
     "                   [--grid-instances <n>] [--no-cache] [--ddc <dir>] [--no-lights]\n"
     "                   [--deform none|identity|wave|lattice] [--deform-amplitude <a>] [--rt-templates]\n"
+    "                   [--rt-budget-mib <n>]\n"
     "                   [--stream] [--page-budget <MiB>] [--upload-budget <KiB>]\n"
     "                   [--shadows off|rt] [--no-shadow-casters]\n"
     "                   [--views single|surround3|panini] [--side-yaw <deg>]\n"
@@ -173,6 +174,11 @@ constexpr const char* k_usage =
     "                   distances. Overrides --orbit and sets --frames when it is not set\n"
     "  --rt-templates   --raster rt: build one cluster template per cluster at load and\n"
     "                   instantiate the cut's templates each frame instead of rebuilding the CLAS\n"
+    "  --rt-budget-mib <n>  the most device memory the per-frame cluster acceleration structures\n"
+    "                   may take (default: the renderer.rt.budget_mib tunable, 1024). They are\n"
+    "                   sized by what the frames build, a step above it; a frame that wants more\n"
+    "                   than the budget holds drops whole instances' structures, shadow casters\n"
+    "                   first, and the summary's \"rt\" block counts it\n"
     "  --animate [clip] play a skinned glTF's animation: the skin becomes a skeleton, a clip is\n"
     "                   ticked at the fixed step, and every instance is skinned through the same\n"
     "                   deformed-vertex pool --deform uses. The optional value names the clip by\n"
@@ -919,6 +925,29 @@ JsonValue anim_summary(const AnimatedScene& scene, u64 frames) {
 }
 #endif
 
+// The ray tracing chain's block of the summary line (renderer::RtStats): what the per-frame
+// structures hold room for now and at most, the budget as a capacity, what they would be sized for
+// if they were sized by the scene, their bytes, the resizes, and the frames that wanted more than
+// they held. `rt_bytes` beside it is the same `bytes`, kept under its old name.
+JsonValue rt_summary(const renderer::RtStats& rt) {
+  JsonValue out = JsonValue::object();
+  out.set("capacity", rt.capacity);
+  out.set("peak_capacity", rt.peak_capacity);
+  out.set("limit", rt.limit);
+  out.set("union_clusters", rt.union_clusters);
+  out.set("bytes", rt.bytes);
+  out.set("peak_bytes", rt.peak_bytes);
+  out.set("built_last", rt.built);
+  out.set("wanted_last", rt.wanted);
+  out.set("peak_wanted", rt.peak_wanted);
+  out.set("grows", rt.grows);
+  out.set("shrinks", rt.shrinks);
+  out.set("overflow_frames", rt.overflow_frames);
+  out.set("dropped_instances", rt.dropped_instances);
+  out.set("dropped_caster_instances", rt.dropped_caster_instances);
+  return out;
+}
+
 // The multi-view block of the summary line: what the layout is, and what each view cost. Built
 // rather than formatted because it is an array of objects, and built while the renderer is still
 // alive because the summary prints after it is gone. A single-view run still carries it, with one
@@ -993,6 +1022,9 @@ JsonValue streaming_summary(const renderer::StreamStats& s) {
   out.set("file_bytes", s.file_bytes);
   out.set("host_bytes_freed", s.host_bytes_freed);
   out.set("load_waits", s.load_waits);
+  // The pool's own page count beside the manager's `pages_resident`: a pool that stops short of the
+  // manager while `pending` grows is a stall.
+  out.set("pool_pages", s.pool_pages);
   return out;
 }
 
@@ -1666,6 +1698,7 @@ int run_offscreen(Options& options) {
     summary.frames = frames;
     summary.repeats = measured ? repeats : 0;
     summary.warmup = measured ? options.warmup : 0;
+    if (view_renderer.valid()) renderer::summarize_rt(view_renderer.stats().rt, summary.rt);
     if (measured) {
       renderer::summarize_frames(
           std::span<const scene::FrameRecord>(records.data(), records.size()), frames, repeats,
@@ -1740,7 +1773,8 @@ int main(int argc, char** argv) {
                   engine::build_stamp::commit(), engine::build_stamp::dirty() ? "true" : "false");
       return 0;
     } else if (a == "--width" || a == "--height" || a == "--frames" || a == "--adapter" ||
-               a == "--grid" || a == "--grid-instances" || a == "--deform-pool-mib") {
+               a == "--grid" || a == "--grid-instances" || a == "--deform-pool-mib" ||
+               a == "--rt-budget-mib") {
       if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
       u32 n = 0;
       if (!parse_u32(value, n)) {
@@ -1757,6 +1791,7 @@ int main(int argc, char** argv) {
       // The flag is mebibytes, the setting kibibytes: a caller of the module may want a finer
       // budget than a whole MiB (and a test needs one), while a person at a command line does not.
       if (a == "--deform-pool-mib") options.settings.deform_pool_kib = n * 1024;
+      if (a == "--rt-budget-mib") options.settings.rt_budget_mib = n;
     } else if (a == "--lod" || a == "--sw-px" || a == "--orbit" || a == "--deform-amplitude") {
       if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
       f32 px = 0.0f;
@@ -2628,6 +2663,9 @@ int main(int argc, char** argv) {
   } while (false);
 
   const renderer::Stats stats = view_renderer.stats();
+  // The chain's bytes move with its capacity, so the figure is the run's last, not the load's.
+  if (stats.rt.bytes > 0) rt_bytes = stats.rt.bytes;
+  const std::string rt_text = write_json(rt_summary(stats.rt), JsonWriteOptions{.pretty = false});
   // The process's own footprint, read before anything is torn down: with a container-backed page
   // source this is the number the whole change is about, so it is taken where it still means
   // something. The peak beside it says whether the load ever *materialized* what it then freed.
@@ -2668,7 +2706,7 @@ int main(int argc, char** argv) {
         "\"morph_cached_instances\":%u,\"morph_clip\":\"%s\",\"rt_templates\":%s,"
         "\"skinned_instances\":%u,\"joints\":%u,\"clip\":\"%s\",\"anim\":%s,"
         "\"template_bytes\":%llu,\"rt_bytes\":%llu,\"geometry_bytes\":%llu,\"stream_bytes\":%llu,"
-        "\"views\":%s,\"streaming\":%s,"
+        "\"rt\":%s,\"views\":%s,\"streaming\":%s,"
         "\"host_memory\":{\"bytes\":%llu,\"peak_bytes\":%llu},"
         "\"gpu_memory\":{\"budget_mib\":%llu,\"used_mib\":%llu,"
         "\"device_local_total_mib\":%llu},\"machine_state\":%s,"
@@ -2699,8 +2737,8 @@ int main(int argc, char** argv) {
         resolved.settings.rt_templates ? "true" : "false", skinned_instances, joint_matrices,
         clip_text.c_str(), anim_text.c_str(), static_cast<unsigned long long>(template_bytes),
         static_cast<unsigned long long>(rt_bytes), static_cast<unsigned long long>(geometry_bytes),
-        static_cast<unsigned long long>(stream_bytes), views_text.c_str(), streaming_text.c_str(),
-        static_cast<unsigned long long>(host_memory),
+        static_cast<unsigned long long>(stream_bytes), rt_text.c_str(), views_text.c_str(),
+        streaming_text.c_str(), static_cast<unsigned long long>(host_memory),
         static_cast<unsigned long long>(host_memory_peak),
         static_cast<unsigned long long>(stats.gpu_memory.budget_mib),
         static_cast<unsigned long long>(stats.gpu_memory.used_mib),

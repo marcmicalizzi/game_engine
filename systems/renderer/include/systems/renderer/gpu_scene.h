@@ -140,9 +140,36 @@ class GpuScene {
   // function of the scene alone, like the id, so a capture decodes an id without reading anything
   // back from the frame that wrote it. False for a pair past the scene's.
   bool pair_cluster(u32 pair, u32& instance, u32& cluster) const noexcept;
-  // The bytes of the CLAS records, structures and scratch the ray tracing chain holds, which is
-  // what a summary reports as the multi-view memory cost.
+  // ---- the ray tracing chain's memory (docs/subsystems/renderer.md) ----------------------------
+  //
+  // **Sized by the frame.** The per-frame structures — the CLAS records, the cluster structures,
+  // the one bottom-level set over them and the scratch the builds share — hold `rt_capacity()`
+  // clusters, which `SceneRenderer` keeps a step above what recent frames built
+  // (`systems/renderer/rt_capacity.h`), and never more than `rt_capacity_limit()`, the budget in
+  // clusters. `rt_union_clusters()` is what they used to be sized for — every pair in every view —
+  // and a scene whose union fits under both the budget and `k_initial_rt_clusters` is still given
+  // exactly that, so it can never drop anything. What stays sized by the scene is small and says
+  // so: the bucketing scratch (four bytes a pair a view), three words and a record an instance,
+  // the top-level structure, and the 8-bit indices and float positions the builds read.
+  //
+  // Everything the chain holds right now, in bytes: the per-frame part at the current capacity,
+  // the scene-sized part, and the templates' storage. What a summary reports as the chain's cost.
   u64 rt_bytes() const noexcept { return rt_bytes_; }
+  u32 rt_capacity() const noexcept { return rt_capacity_; }
+  u32 rt_capacity_limit() const noexcept { return rt_capacity_limit_; }
+  u32 rt_union_clusters() const noexcept { return rt_union_clusters_; }
+  // What one cluster of capacity costs in the per-frame part, from the driver's own sizes: the
+  // structure, its address and size words, its record, its share of the bottom-level set and of
+  // the scratch. It is what turns the byte budget into `rt_capacity_limit()`.
+  u64 rt_bytes_per_cluster() const noexcept { return rt_bytes_per_cluster_; }
+  // Reallocates the per-frame part for `clusters` structures (clamped to the limit). The device
+  // must be idle with respect to every buffer of the chain: the caller waits first. Nothing else
+  // changes — the top-level structure, its bindless slot and the scene-sized buffers stay — so a
+  // frame recorded afterwards simply imports the new buffers.
+  // `beyond_budget` lets the capacity pass `rt_capacity_limit()`, up to `rt_union_clusters()`: a
+  // frame that asked to be complete (`FrameDesc::rt_complete`, the reference renderer's) and
+  // nothing else.
+  bool resize_ray_tracing(u32 capacity, std::string* error = nullptr, bool beyond_budget = false);
   // The vertex path's indexed draw (gfx::VertexDrawHeader): for each view and each of the two
   // hardware runs, run-major like the visible list, a header, a record per pair and an index array
   // of `vertex_index_capacity()` triangles, in three buffers. Empty unless the resolved settings
@@ -386,20 +413,28 @@ class GpuScene {
   gfx::BufferResource page_stage;       // the staging ring: one upload budget per frame slot
 
   // ---- ray tracing ------------------------------------------------------------------------------
-  gfx::BufferResource indices8;      // 8-bit packed cluster indices for the CLAS builds
-  gfx::BufferResource records;       // CLAS build records written from the cull output
-  gfx::BufferResource record_count;  // u32: how many
-  gfx::BufferResource slots;         // u32 per pair: the records pass's bucketing scratch
-  // Two u32 per instance: its surviving clusters, then (behind all of those) its dense record base.
+  // Sized by the scene:
+  gfx::BufferResource indices8;  // 8-bit packed cluster indices for the CLAS builds
+  // u32[k_cluster_record_count_words]: built, wanted, instances that lost their drawn clusters,
+  // instances that lost their casters (gfx::ClusterRecordParams). A transfer source, because the
+  // frame's statistics copy it out for the capacity policy.
+  gfx::BufferResource record_count;
+  gfx::BufferResource slots;  // u32 per pair per view: the records pass's bucketing scratch
+  // Three u32 per instance: its drawn clusters, its casters, then its dense record base.
   gfx::BufferResource instance_counts;
   gfx::BufferResource blas_records;  // one 16-byte bottom-level record per instance
-  gfx::BufferResource rt_instances;  // one top-level instance record per instance
-  gfx::BufferResource rt_scratch;
-  gfx::BufferResource template_records;
-  gfx::ClusterSet clas_set;
-  gfx::ClusterTemplateSet clas_templates;
-  Vector<gfx::ClusterBlas> cluster_blas;  // one per scene instance
+  // One top-level instance record per instance, device-local and written once: the transforms
+  // never change, and the one field that does — the bottom-level address, which the implicit
+  // build of `blas_set` decides each frame — is copied in on the GPU (`rt_instance_copies`).
+  gfx::BufferResource rt_instances;
+  Vector<VkBufferCopy> rt_instance_copies;  // blas_set.addresses[i] -> rt_instances[i].reference
   gfx::AccelerationStructure tlas;
+  gfx::ClusterTemplateSet clas_templates;  // --rt-templates: one per cluster, packed to size
+  // Sized by the frame (`rt_capacity()` clusters), and replaced by `resize_ray_tracing`:
+  gfx::BufferResource records;  // CLAS build or instantiate records written from the cull output
+  gfx::ClusterSet clas_set;
+  gfx::ClusterBlasSet blas_set;  // every instance's cluster bottom-level structure, one build
+  gfx::BufferResource rt_scratch;
 
  private:
   bool upload_geometry(const ResolvedSettings& resolved, std::string* error);
@@ -442,6 +477,13 @@ class GpuScene {
   u64 deform_whole_mesh_bytes_ = 0;
   u64 template_bytes_ = 0;
   u64 rt_bytes_ = 0;
+  u64 rt_scene_bytes_ = 0;  // the chain's scene-sized part, which a resize leaves alone
+  u64 rt_bytes_per_cluster_ = 0;
+  u32 rt_capacity_ = 0;
+  u32 rt_capacity_limit_ = 0;
+  u32 rt_union_clusters_ = 0;
+  u32 rt_max_per_instance_ = 0;      // the most references one instance's structure can hold
+  gfx::ClusterSetLimits rt_limits_;  // what every per-frame set is created with, but the count
   u32 tlas_slot_ = gfx::BindlessSet::k_invalid_slot;
   bool ray_tracing_ = false;
   bool deform_ = false;

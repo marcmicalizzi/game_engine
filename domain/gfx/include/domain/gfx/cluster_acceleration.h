@@ -75,6 +75,20 @@ void pack_cluster_indices(std::span<const u32> packed, Vector<u8>& out);
 // Writes the device records the build consumes, k_cluster_build_record_bytes each.
 void write_cluster_build_records(std::span<const ClusterBuildInput> clusters, void* out) noexcept;
 
+// What a set of `limits` costs before anything is allocated: the driver's worst-case storage for
+// `limits.max_clusters` structures (with the alignment slack `create_cluster_set` adds), and the
+// scratch one build of them needs. The storage is linear in the cluster count — a cluster of
+// `max_triangles_per_cluster` triangles and `max_vertices_per_cluster` vertices is what every
+// structure is reserved for, 6,144 bytes for 124 and 64 on the RTX 5090 at driver 610 — which is
+// what lets a caller turn a byte budget into a cluster count (docs/subsystems/renderer.md, "The
+// ray tracing chain's memory").
+struct ClusterBuildSizes {
+  u64 data_bytes = 0;
+  u64 scratch_bytes = 0;
+};
+bool cluster_set_build_sizes(const Device& device, const ClusterSetLimits& limits,
+                             ClusterBuildSizes& out) noexcept;
+
 // Storage for up to max_clusters CLAS built in one command (implicit destinations): the packed
 // structures, the resulting address of each, and its size.
 struct ClusterSet {
@@ -126,6 +140,20 @@ bool create_cluster_templates(const Device& device, const ClusterSetLimits& limi
 void build_cluster_templates(VkCommandBuffer commands, const ClusterTemplateSet& set,
                              VkDeviceAddress records, VkDeviceAddress count,
                              const BufferResource& scratch);
+// **Templates at the size they are, not the size they could be.** `create_cluster_templates`
+// reserves the driver's worst case for every template, which for a scene is one worst-case
+// template per cluster of every mesh — about 2.2 KB each on the RTX 5090 at driver 610, where the
+// desert overlook's templates occupy 504–532 bytes once built — so a quarter of the storage is used
+// and the rest is reserved for triangles no cluster has. This does the whole job at load, in
+// three blocking submissions: the build in COMPUTE_SIZES mode writes each template's size, the
+// host packs them back to back at the device's template alignment, and the build runs again in
+// EXPLICIT_DESTINATIONS mode into one buffer of exactly that sum. `records` are
+// `limits.max_clusters` template build records in a buffer the build can read; `out.addresses`
+// then holds each template's address and `out.sizes` its size, as after `build_cluster_templates`.
+// The scratch it needs is allocated and freed inside, because nothing per frame shares it.
+bool create_packed_cluster_templates(const Device& device, const ClusterSetLimits& limits,
+                                     VkDeviceAddress records, ClusterTemplateSet& out,
+                                     std::string* error = nullptr);
 void destroy_cluster_templates(const Device& device, ClusterTemplateSet& set) noexcept;
 
 // The 72-byte template build record: the 64-byte cluster build record followed by one more
@@ -169,31 +197,49 @@ inline constexpr u64 k_cluster_blas_record_bytes = 16;
 // order its atomics produced. Three small passes sort that out without a CPU round trip:
 //
 //   `records_main`  one thread per visible entry: bucket the entry into its instance's slice of
-//                   `slots` (a pair-indexed scratch array, so slot = instance.first_pair * views +
-//                   a per-instance atomic) and count the instance's survivors into
-//                   `instance_counts`. Sparse: an instance's slice is as long as its mesh, times
-//                   the number of views whose cuts accumulate into this set.
-//   `ranges_main`   one thread: the prefix sum of the counts into the second half of
-//                   `instance_counts` (each instance's dense record base), the total into
+//                   `slots` (a pair-indexed scratch array) and count it into `instance_counts`.
+//                   A drawn entry takes the next slot from the **bottom** of the slice
+//                   (instance.first_pair * views + a per-instance atomic), a shadow caster the next
+//                   from the **top** (the slice's last slot minus a second atomic), so the two
+//                   never mix and the emit pass can tell them apart. Sparse: an instance's slice is
+//                   as long as its mesh, times the number of views whose cuts accumulate here.
+//   `ranges_main`   one thread: decide what the set's `capacity` can hold (below), the prefix sum
+//                   of what it holds into each instance's dense record base, the total into
 //                   `record_count`, and one 16-byte bottom-level record per instance pointing at
 //                   that instance's run of CLAS addresses.
-//   `emit_main`     one thread per pair slot: move the bucketed entries down to the dense
-//                   `records` array at `first[instance] + local` and write the 64-byte
-//                   CLAS build record there. A record's base geometry index is the entry's
-//                   **visible index**, which is what the visibility buffer's id holds, so a hit's
-//                   GeometryIndex names the same pair the rasterizer would have.
+//   `emit_main`     one thread per pair slot: move the kept entries down to the dense `records`
+//                   array — an instance's drawn clusters first, then its casters — and write the
+//                   64-byte CLAS build record there. A record's base geometry index is the entry's
+//                   **visible index**, so a hit's GeometryIndex leads to the same pair the
+//                   rasterizer drew.
 //
-// The counts half of `instance_counts` must be zeroed before `records_main`. A deformed
-// instance's record points at the frame's deformed-vertex pool (`MeshDesc::deform_pool`) rather
-// than `vertices`, and with `instantiate` set the emit pass writes instantiate records naming each
-// cluster's template (`MeshDesc::templates`) instead of build records.
+// **The set is sized by the frame, not by the scene** (docs/subsystems/renderer.md, "The ray
+// tracing chain's memory"). `capacity` is how many structures the set was created for, which the
+// renderer keeps a step above what recent frames built; a frame that wants more than it holds
+// keeps what fits and drops the rest **whole instances at a time, casters before drawn clusters**:
+// every instance's drawn clusters are taken in instance order while they fit, an instance whose
+// drawn clusters do not fit is skipped entirely (its casters with them), and the other instances'
+// casters are then taken the same way from what is left. Whole instances because a partial one
+// would keep whichever clusters the atomics happened to bucket first, which is not the same twice;
+// casters last because a caster only adds a shadow of a surface facing away from the camera,
+// while a drawn cluster that loses its structure loses its shadow and, under the ray path, its
+// place in the picture. `record_count` then holds four words: what was built (the count the CLAS
+// build reads), what the frame wanted, how many instances lost their drawn clusters (and with
+// them everything), and how many kept those but lost their casters.
+//
+// `instance_counts` is three words an instance: the drawn entries, the casters (both counted by
+// `records_main`, and must be zeroed before it; `ranges_main` rewrites each to what was kept, 0 or
+// all of it), and the dense record base. A deformed instance's record points at the frame's
+// deformed-vertex pool (`MeshDesc::deform_pool`) rather than `vertices`, and with the instantiate
+// mode the emit pass writes instantiate records naming each cluster's template
+// (`MeshDesc::templates`) instead of build records.
 //
 // **More than one view** ([04 §4.6](docs/plan/04-renderer.md)): the RT geometry of a
 // `renderer::ViewSet` is the union of the views' cuts under one top-level structure, so
-// `records_main` is dispatched once per view against that view's own run of the visible list and
-// the counts accumulate. `views` is what makes the bucketing fit: every instance's slice of
-// `slots` is `views` times its mesh's cluster count, because in the worst case every view draws
-// every cluster of it. Mirrors RecordParams in the shader.
+// `records_main` covers every view's run of the visible list and the counts accumulate. The view
+// count is what makes the bucketing fit: every instance's slice of `slots` is that many times its
+// mesh's cluster count, because in the worst case every view draws every cluster of it. Mirrors
+// RecordParams in the shader.
 //
 // **Shadow casters** (docs/subsystems/geometry.md, "Normal cones"). With `caster_count` set, the
 // cull pass has also appended the pairs its cone test alone rejected to the visible list's run
@@ -202,30 +248,32 @@ inline constexpr u64 k_cluster_blas_record_bytes = 16;
 // but **without the opaque flag**. The shadow rays trace with `RAY_FLAG_FORCE_OPAQUE` and so hit
 // it; the primary rays of the ray path and the reference trace with `RAY_FLAG_CULL_NON_OPAQUE`
 // and so do not, which keeps the traced picture the rasterized one word for word. A drawn pair
-// and a caster are the same pair only in different views, so an instance's slice of `slots` is
-// still `views` times its mesh. The templates variant cannot mark a record (the flags are the
-// template's), so the renderer never asks for casters with `instantiate` set.
+// and a caster are the same pair only in different views, so the drawn entries and the casters of
+// one instance together never outgrow its slice. The templates variant cannot mark a record (the
+// flags are the template's), so the renderer never asks for casters in that mode.
 //
 // 128 bytes, the largest push block the renderer allows — which is why `instance_first` is not a
-// field of its own: it is the second half of the `instance_counts` array, and the word it freed
-// is `caster_count`.
+// field of its own (it is the last third of `instance_counts`), and why the view count and the
+// instantiate flag share `mode`: the word that freed is `capacity`.
 struct ClusterRecordParams {
   u64 clusters = 0;       // geometry::ClusterDesc[]
   u64 vertices = 0;       // float3[]: cluster-ordered rest positions
   u64 indices8 = 0;       // u8[]: pack_cluster_indices of every cluster, in triangle order
   u64 instances = 0;      // gfx::InstanceDesc[instance_count]
-  u64 meshes = 0;         // gfx::MeshDesc[]: the deformed-vertex pool and the templates
+  u64 meshes = 0;         // gfx::MeshDesc[]: cluster counts, the deformed-vertex pool, templates
   u64 visible = 0;        // u32x2[]: the visible list, {instance, cluster} per entry
   u64 visible_count = 0;  // u32: the cull pass's count word
   u64 slots = 0;          // u32[views * pair_count]: visible index per pair slot (records_main out)
-  // u32[2 * instance_count]: the survivors per instance (records_main out; zeroed first), then
-  // each instance's dense record base (ranges_main out).
+  // u32[3 * instance_count]: drawn and caster counts per instance (records_main out; zeroed
+  // first; ranges_main rewrites them to what was kept), then each instance's dense record base.
   u64 instance_counts = 0;
   // u32: view 0's count of shadow casters, view v's `k_draw_args_bytes` further on; the casters
   // themselves are run `k_caster_run` of the visible list. 0: there is no caster run.
   u64 caster_count = 0;
-  u64 records = 0;         // build or instantiate records out, the matching stride each
-  u64 record_count = 0;    // u32 out: what the build reads as `count`
+  u64 records = 0;  // build or instantiate records out, the matching stride each
+  // u32[4] out: built (what the build reads as `count`), wanted, instances that lost their drawn
+  // clusters, instances that lost their casters (k_cluster_record_count_words).
+  u64 record_count = 0;
   u64 blas_records = 0;    // k_cluster_blas_record_bytes per instance (ranges_main out)
   u64 clas_addresses = 0;  // ClusterSet::addresses.address
   u32 instance_count = 0;
@@ -234,11 +282,53 @@ struct ClusterRecordParams {
   // for one view and the wrong one for several: a run is filled by one atomic over a dispatch of
   // `pair_count` threads and cannot exceed it, while the set holds `views` runs.
   u32 pair_count = 0;
-  u32 views = 1;        // how many views' cuts accumulate into this set (see above)
-  u32 instantiate = 0;  // 1: write k_cluster_instantiate_record_bytes records from templates
+  // The low 16 bits: how many views' cuts accumulate into this set (see above). Bit 16: write
+  // k_cluster_instantiate_record_bytes records from templates instead of build records.
+  u32 mode = 1;
+  u32 capacity = 0;  // the structures the set holds: ranges_main keeps no more (see above)
 };
 static_assert(sizeof(ClusterRecordParams) == 128);
 inline constexpr u32 k_cluster_records_workgroup = 64;
+inline constexpr u32 k_cluster_records_instantiate = 1u << 16;  // ClusterRecordParams::mode
+inline constexpr u32 k_cluster_record_count_words = 4;
+constexpr u32 cluster_records_mode(u32 views, bool instantiate) noexcept {
+  return (views & 0xffffu) | (instantiate ? k_cluster_records_instantiate : 0u);
+}
+
+// Every instance's cluster bottom-level structure, built by **one** command into one buffer
+// (implicit destinations), with each structure's address written to `addresses` by the build.
+//
+// It replaces a `ClusterBlas` per instance, and for two reasons. The memory: a structure with an
+// explicit destination has to be reserved for everything it could ever hold, which for a scene is
+// every cluster of its mesh in every view — the sum over the instances is `views * pairs`, the
+// scene again — while one implicit build over `max_clusters` references in total is reserved for
+// what a frame builds. And the time: one command in place of one per instance, each waiting on the
+// last because they shared a scratch buffer, which was most of the ray tracing chain's
+// milliseconds on a scene of 90 instances. The price is that an address is known only on the
+// device after the build, so the top-level instance records take their `blas` field from
+// `addresses` by a copy on the GPU rather than being written once on the host.
+struct ClusterBlasSet {
+  BufferResource data;       // every structure, packed by the driver
+  BufferResource addresses;  // u64[max_structures], written by the build; a transfer source
+  u64 build_scratch_bytes = 0;
+  u32 max_structures = 0;  // bottom-level structures per build (one per scene instance)
+  u32 max_clusters = 0;    // CLAS references over all of them
+  u32 max_clusters_per_structure = 0;
+  u32 alignment = 0;
+};
+bool cluster_blas_set_build_sizes(const Device& device, u32 max_structures, u32 max_clusters,
+                                  u32 max_clusters_per_structure, ClusterBuildSizes& out) noexcept;
+bool create_cluster_blas_set(const Device& device, u32 max_structures, u32 max_clusters,
+                             u32 max_clusters_per_structure, ClusterBlasSet& out,
+                             std::string* error = nullptr);
+// Builds one structure per 16-byte record at `records` (k_cluster_blas_record_bytes each, as
+// clas_records.slang's `ranges_main` writes them); `count` is a device address of a u32 count, or
+// 0 for `max_structures`. The records' reference counts must sum to at most `max_clusters` and
+// none may exceed `max_clusters_per_structure`.
+void build_cluster_blas_set(VkCommandBuffer commands, const ClusterBlasSet& set,
+                            VkDeviceAddress records, VkDeviceAddress count,
+                            const BufferResource& scratch);
+void destroy_cluster_blas_set(const Device& device, ClusterBlasSet& set) noexcept;
 
 // A bottom-level structure over CLAS references (the addresses a ClusterSet build wrote). Built
 // to an explicit destination, so its address is known when it is created and a top-level

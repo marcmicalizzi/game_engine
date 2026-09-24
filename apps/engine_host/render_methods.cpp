@@ -115,6 +115,7 @@ bool read_settings(const protocol::RenderSettings& in, renderer::RenderSettings&
   out.lights = in.lights;
   out.deform_amplitude = in.deform_amplitude;
   out.rt_templates = in.rt_templates;
+  out.rt_budget_mib = in.rt_budget_mib;
   out.side_yaw = radians(in.side_yaw_deg);
   out.panini_d = in.panini_d;
   out.peripheral_lod = in.peripheral_lod;
@@ -177,6 +178,23 @@ void fill_stats(const renderer::Stats& in, const renderer::ViewSet& views,
   out.stream.host_bytes_freed = stream.host_bytes_freed;
   out.stream.load_waits = stream.load_waits;
   out.stream.loads_in_flight = stream.loads_in_flight;
+  out.stream.pool_pages = stream.pool_pages;
+  // The ray tracing chain, under engine-view's `rt` summary keys.
+  const renderer::RtStats& rt = in.rt;
+  out.rt.capacity = rt.capacity;
+  out.rt.peak_capacity = rt.peak_capacity;
+  out.rt.limit = rt.limit;
+  out.rt.union_clusters = rt.union_clusters;
+  out.rt.bytes = rt.bytes;
+  out.rt.peak_bytes = rt.peak_bytes;
+  out.rt.built_last = rt.built;
+  out.rt.wanted_last = rt.wanted;
+  out.rt.peak_wanted = rt.peak_wanted;
+  out.rt.grows = rt.grows;
+  out.rt.shrinks = rt.shrinks;
+  out.rt.overflow_frames = rt.overflow_frames;
+  out.rt.dropped_instances = rt.dropped_instances;
+  out.rt.dropped_caster_instances = rt.dropped_caster_instances;
   const f64 timed = in.timed();
   out.views.clear();
   for (u32 v = 0; v < in.view_count; ++v) {
@@ -669,6 +687,7 @@ bool render_benchmark(protocol::Context& ctx, const protocol::RenderBenchmarkPar
             : 0.0;
     summary.gpu_memory_used_mib = scene->view->stats().gpu_memory.used_mib;
     summary.gpu_memory_budget_mib = scene->view->stats().gpu_memory.budget_mib;
+    renderer::summarize_rt(scene->view->stats().rt, summary.rt);
     JsonValue machine = JsonValue::object();
     machine.set("start", bench::machine_state_json(machine_start));
     machine.set("end", bench::machine_state_json(machine_end));

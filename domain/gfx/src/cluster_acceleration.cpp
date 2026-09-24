@@ -1,5 +1,6 @@
 #include <domain/gfx/cluster_acceleration.h>
 
+#include <algorithm>
 #include <cstring>
 
 namespace engine::gfx {
@@ -61,14 +62,16 @@ VkClusterAccelerationStructureInputInfoNV set_input(
 }
 
 VkClusterAccelerationStructureInputInfoNV blas_input(
-    u32 max_clusters, VkClusterAccelerationStructureClustersBottomLevelInputNV& clusters) {
+    u32 max_clusters, VkClusterAccelerationStructureClustersBottomLevelInputNV& clusters,
+    u32 max_structures = 1, u32 max_per_structure = 0) {
   clusters = VkClusterAccelerationStructureClustersBottomLevelInputNV{};
   clusters.sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_CLUSTERS_BOTTOM_LEVEL_INPUT_NV;
   clusters.maxTotalClusterCount = max_clusters;
-  clusters.maxClusterCountPerAccelerationStructure = max_clusters;
+  clusters.maxClusterCountPerAccelerationStructure =
+      max_per_structure != 0 ? max_per_structure : max_clusters;
   VkClusterAccelerationStructureInputInfoNV info{};
   info.sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_INPUT_INFO_NV;
-  info.maxAccelerationStructureCount = 1;
+  info.maxAccelerationStructureCount = max_structures;
   info.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
   info.opType = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_CLUSTERS_BOTTOM_LEVEL_NV;
   info.opMode = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_IMPLICIT_DESTINATIONS_NV;
@@ -82,6 +85,18 @@ constexpr VkBufferUsageFlags k_structure_usage =
 constexpr VkBufferUsageFlags k_output_usage =
     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
     VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
+// A bottom-level set's addresses are copied into the top-level instance records on the GPU.
+constexpr VkBufferUsageFlags k_blas_address_usage =
+    k_output_usage | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+
+// The limits every set is checked against, in one place: a set the device cannot build is refused
+// before anything is asked of the driver.
+bool limits_fit(const ClusterSetLimits& limits, const ClusterAsProperties& props) noexcept {
+  return limits.max_clusters != 0 &&
+         limits.max_triangles_per_cluster <= props.max_triangles_per_cluster &&
+         limits.max_vertices_per_cluster <= props.max_vertices_per_cluster &&
+         limits.max_geometry_index <= props.max_geometry_index;
+}
 
 }  // namespace
 
@@ -184,6 +199,22 @@ void write_cluster_instantiate_records(std::span<const ClusterInstantiateInput> 
   }
 }
 
+bool cluster_set_build_sizes(const Device& device, const ClusterSetLimits& limits,
+                             ClusterBuildSizes& out) noexcept {
+  out = ClusterBuildSizes{};
+  ClusterAsProperties props;
+  if (!cluster_as_properties(device, props) || !limits_fit(limits, props)) return false;
+  VkClusterAccelerationStructureTriangleClusterInputNV triangles = triangle_input(limits);
+  const VkClusterAccelerationStructureInputInfoNV input = set_input(limits, triangles);
+  VkAccelerationStructureBuildSizesInfoKHR sizes{};
+  sizes.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
+  vkGetClusterAccelerationStructureBuildSizesNV(device.handles().device, &input, &sizes);
+  // The same slack `create_cluster_set` adds, so a budget computed from this is what it allocates.
+  out.data_bytes = sizes.accelerationStructureSize + props.cluster_alignment;
+  out.scratch_bytes = sizes.buildScratchSize + props.scratch_alignment;
+  return true;
+}
+
 bool create_cluster_set(const Device& device, const ClusterSetLimits& limits, ClusterSet& out,
                         std::string* error) {
   out = ClusterSet{};
@@ -192,10 +223,7 @@ bool create_cluster_set(const Device& device, const ClusterSetLimits& limits, Cl
     set_message(error, "create_cluster_set: the device has no cluster acceleration structures");
     return false;
   }
-  if (limits.max_clusters == 0 ||
-      limits.max_triangles_per_cluster > props.max_triangles_per_cluster ||
-      limits.max_vertices_per_cluster > props.max_vertices_per_cluster ||
-      limits.max_geometry_index > props.max_geometry_index) {
+  if (!limits_fit(limits, props)) {
     set_message(error, "create_cluster_set: limits exceed what the device allows");
     return false;
   }
@@ -259,10 +287,7 @@ bool create_cluster_templates(const Device& device, const ClusterSetLimits& limi
                 "create_cluster_templates: the device has no cluster acceleration structures");
     return false;
   }
-  if (limits.max_clusters == 0 ||
-      limits.max_triangles_per_cluster > props.max_triangles_per_cluster ||
-      limits.max_vertices_per_cluster > props.max_vertices_per_cluster ||
-      limits.max_geometry_index > props.max_geometry_index) {
+  if (!limits_fit(limits, props)) {
     set_message(error, "create_cluster_templates: limits exceed what the device allows");
     return false;
   }
@@ -307,6 +332,117 @@ void build_cluster_templates(VkCommandBuffer commands, const ClusterTemplateSet&
   info.srcInfosCount = count;
   info.addressResolutionFlags = 0;
   vkCmdBuildClusterAccelerationStructureIndirectNV(commands, &info);
+}
+
+bool create_packed_cluster_templates(const Device& device, const ClusterSetLimits& limits,
+                                     VkDeviceAddress records, ClusterTemplateSet& out,
+                                     std::string* error) {
+  out = ClusterTemplateSet{};
+  ClusterAsProperties props;
+  if (!cluster_as_properties(device, props)) {
+    set_message(error,
+                "create_packed_cluster_templates: the device has no cluster acceleration "
+                "structures");
+    return false;
+  }
+  if (!limits_fit(limits, props)) {
+    set_message(error, "create_packed_cluster_templates: limits exceed what the device allows");
+    return false;
+  }
+  constexpr VkClusterAccelerationStructureOpTypeNV k_op =
+      VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_TRIANGLE_CLUSTER_TEMPLATE_NV;
+  // The scratch of both passes: the sizes pass and the explicit build ask for their own.
+  u64 scratch_bytes = 0;
+  for (const VkClusterAccelerationStructureOpModeNV mode :
+       {VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_COMPUTE_SIZES_NV,
+        VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_EXPLICIT_DESTINATIONS_NV}) {
+    VkClusterAccelerationStructureTriangleClusterInputNV triangles = triangle_input(limits);
+    VkClusterAccelerationStructureInputInfoNV input = op_input(limits, k_op, triangles);
+    input.opMode = mode;
+    VkAccelerationStructureBuildSizesInfoKHR sizes{};
+    sizes.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
+    vkGetClusterAccelerationStructureBuildSizesNV(device.handles().device, &input, &sizes);
+    scratch_bytes = std::max<u64>(scratch_bytes, sizes.buildScratchSize);
+  }
+  scratch_bytes += props.scratch_alignment;
+  out.alignment = props.template_alignment;
+  out.limits = limits;
+  out.max_clusters = limits.max_clusters;
+  out.build_scratch_bytes = scratch_bytes;
+  BufferResource scratch;
+  auto fail = [&]() {
+    destroy_buffer(device, scratch);
+    destroy_cluster_templates(device, out);
+    return false;
+  };
+  if (!create_buffer(device, u64{limits.max_clusters} * sizeof(u64), k_output_usage, true,
+                     out.addresses, error) ||
+      !create_buffer(device, u64{limits.max_clusters} * sizeof(u32), k_output_usage, true,
+                     out.sizes, error) ||
+      !create_buffer(device, scratch_bytes, k_structure_usage, false, scratch, error)) {
+    return fail();
+  }
+  auto commands = [&](VkClusterAccelerationStructureOpModeNV mode, VkDeviceAddress implicit) {
+    VkClusterAccelerationStructureTriangleClusterInputNV triangles = triangle_input(limits);
+    VkClusterAccelerationStructureCommandsInfoNV info{};
+    info.sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_COMMANDS_INFO_NV;
+    info.input = op_input(limits, k_op, triangles);
+    info.input.opMode = mode;
+    info.dstImplicitData = implicit;
+    info.scratchData = align_up(scratch.address, props.scratch_alignment);
+    // Sizes out in both passes; in the explicit pass the addresses are the destinations, in.
+    info.dstAddressesArray = mode == VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_COMPUTE_SIZES_NV
+                                 ? VkStridedDeviceAddressRegionKHR{0, 0, 0}
+                                 : VkStridedDeviceAddressRegionKHR{out.addresses.address,
+                                                                   sizeof(u64), out.addresses.size};
+    info.dstSizesArray = {out.sizes.address, sizeof(u32), out.sizes.size};
+    info.srcInfosArray = {records, k_cluster_template_record_bytes,
+                          k_cluster_template_record_bytes * limits.max_clusters};
+    info.srcInfosCount = 0;
+    info.addressResolutionFlags = 0;
+    return info;
+  };
+  // Pass 1: what every template will occupy, and nothing built.
+  if (!submit_immediate(
+          device,
+          [&](VkCommandBuffer cb) {
+            const VkClusterAccelerationStructureCommandsInfoNV info =
+                commands(VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_COMPUTE_SIZES_NV, 0);
+            vkCmdBuildClusterAccelerationStructureIndirectNV(cb, &info);
+          },
+          error)) {
+    return fail();
+  }
+  // Pack them back to back at the template alignment, on the host.
+  const auto* sizes = static_cast<const u32*>(out.sizes.mapped);
+  const u64 alignment = props.template_alignment != 0 ? props.template_alignment : 1;
+  u64 total = 0;
+  for (u32 c = 0; c < limits.max_clusters; ++c)
+    total += (u64{sizes[c]} + alignment - 1) / alignment * alignment;
+  if (!create_buffer(device, total + alignment, k_structure_usage, false, out.data, error)) {
+    return fail();
+  }
+  auto* addresses = static_cast<u64*>(out.addresses.mapped);
+  u64 at = align_up(out.data.address, alignment);
+  for (u32 c = 0; c < limits.max_clusters; ++c) {
+    addresses[c] = at;
+    at += (u64{sizes[c]} + alignment - 1) / alignment * alignment;
+  }
+  // Pass 2: the build, into exactly that.
+  if (!submit_immediate(
+          device,
+          [&](VkCommandBuffer cb) {
+            const VkClusterAccelerationStructureCommandsInfoNV info =
+                commands(VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_EXPLICIT_DESTINATIONS_NV, 0);
+            vkCmdBuildClusterAccelerationStructureIndirectNV(cb, &info);
+            acceleration_build_barrier(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                                       VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
+          },
+          error)) {
+    return fail();
+  }
+  destroy_buffer(device, scratch);
+  return true;
 }
 
 void destroy_cluster_templates(const Device& device, ClusterTemplateSet& set) noexcept {
@@ -387,6 +523,86 @@ void destroy_cluster_blas(const Device& device, ClusterBlas& blas) noexcept {
   destroy_buffer(device, blas.record);
   destroy_buffer(device, blas.destination);
   blas = ClusterBlas{};
+}
+
+bool cluster_blas_set_build_sizes(const Device& device, u32 max_structures, u32 max_clusters,
+                                  u32 max_clusters_per_structure, ClusterBuildSizes& out) noexcept {
+  out = ClusterBuildSizes{};
+  ClusterAsProperties props;
+  if (!cluster_as_properties(device, props) || max_structures == 0 || max_clusters == 0) {
+    return false;
+  }
+  VkClusterAccelerationStructureClustersBottomLevelInputNV clusters;
+  const VkClusterAccelerationStructureInputInfoNV input = blas_input(
+      max_clusters, clusters, max_structures,
+      std::min(max_clusters_per_structure != 0 ? max_clusters_per_structure : max_clusters,
+               max_clusters));
+  VkAccelerationStructureBuildSizesInfoKHR sizes{};
+  sizes.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
+  vkGetClusterAccelerationStructureBuildSizesNV(device.handles().device, &input, &sizes);
+  out.data_bytes = sizes.accelerationStructureSize + props.bottom_level_alignment;
+  out.scratch_bytes = sizes.buildScratchSize + props.scratch_alignment;
+  return true;
+}
+
+bool create_cluster_blas_set(const Device& device, u32 max_structures, u32 max_clusters,
+                             u32 max_clusters_per_structure, ClusterBlasSet& out,
+                             std::string* error) {
+  out = ClusterBlasSet{};
+  ClusterAsProperties props;
+  if (!cluster_as_properties(device, props)) {
+    set_message(error,
+                "create_cluster_blas_set: the device has no cluster acceleration structures");
+    return false;
+  }
+  if (max_structures == 0 || max_clusters == 0) {
+    set_message(error, "create_cluster_blas_set: no structures or no clusters");
+    return false;
+  }
+  const u32 per_structure = std::min(
+      max_clusters_per_structure != 0 ? max_clusters_per_structure : max_clusters, max_clusters);
+  ClusterBuildSizes sizes;
+  if (!cluster_blas_set_build_sizes(device, max_structures, max_clusters, per_structure, sizes)) {
+    set_message(error, "create_cluster_blas_set: the driver gave no sizes");
+    return false;
+  }
+  out.alignment = props.bottom_level_alignment;
+  out.max_structures = max_structures;
+  out.max_clusters = max_clusters;
+  out.max_clusters_per_structure = per_structure;
+  out.build_scratch_bytes = sizes.scratch_bytes;
+  if (!create_buffer(device, sizes.data_bytes, k_structure_usage, false, out.data, error) ||
+      !create_buffer(device, u64{max_structures} * sizeof(u64), k_blas_address_usage, false,
+                     out.addresses, error)) {
+    destroy_cluster_blas_set(device, out);
+    return false;
+  }
+  return true;
+}
+
+void build_cluster_blas_set(VkCommandBuffer commands, const ClusterBlasSet& set,
+                            VkDeviceAddress records, VkDeviceAddress count,
+                            const BufferResource& scratch) {
+  VkClusterAccelerationStructureClustersBottomLevelInputNV clusters;
+  VkClusterAccelerationStructureCommandsInfoNV info{};
+  info.sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_COMMANDS_INFO_NV;
+  info.input =
+      blas_input(set.max_clusters, clusters, set.max_structures, set.max_clusters_per_structure);
+  info.dstImplicitData = align_up(set.data.address, set.alignment);
+  info.scratchData = align_up(scratch.address, set.alignment);
+  info.dstAddressesArray = {set.addresses.address, sizeof(u64), set.addresses.size};
+  info.dstSizesArray = {0, 0, 0};
+  info.srcInfosArray = {records, k_cluster_blas_record_bytes,
+                        k_cluster_blas_record_bytes * set.max_structures};
+  info.srcInfosCount = count;
+  info.addressResolutionFlags = 0;
+  vkCmdBuildClusterAccelerationStructureIndirectNV(commands, &info);
+}
+
+void destroy_cluster_blas_set(const Device& device, ClusterBlasSet& set) noexcept {
+  destroy_buffer(device, set.data);
+  destroy_buffer(device, set.addresses);
+  set = ClusterBlasSet{};
 }
 
 }  // namespace engine::gfx

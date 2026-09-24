@@ -2,6 +2,7 @@
 #include <foundation/image/decode.h>
 #include <foundation/io/vfs.h>
 #include <systems/renderer/gpu_scene.h>
+#include <systems/renderer/rt_capacity.h>
 
 #include <algorithm>
 #include <cmath>
@@ -867,19 +868,15 @@ bool GpuScene::create_ray_tracing(const ResolvedSettings& resolved, std::string*
   if (!ray_tracing_) return true;
   const gfx::Device& device = *device_;
   const geometry::ClusterLodMesh& lod = data_->lod;
-  // Every pair may be in some frame's cut, so the cluster acceleration structures are sized for
-  // all of them, and a pair's base geometry index is its entry in the visible list, so the
-  // largest geometry index is the last pair. One cluster bottom-level structure per instance,
-  // sized for that instance's mesh; the top-level structure instances them with the world
-  // transforms and a custom index that is the scene instance.
-  //
-  // **Times the view count.** The structures hold the union of the views' cuts, and in the worst
-  // case every view draws every pair, so the capacity is `views * pair_count` and the largest
-  // geometry index is the last entry of the views' first runs, which run-major ordering puts at
-  // `views * pair_count - 1`. The capacity is what is allocated; what a frame actually builds is
-  // `record_count`, and on a surround the views see nearly disjoint thirds of the world, so the
-  // records built stay close to one view's while the allocation is three times it.
-  const u32 union_clusters = pair_count_ * view_count_;
+  // **What a frame could build is `views * pairs`; what it does build is its cut.** A pair's base
+  // geometry index is its entry in the visible list, so the largest geometry index is the last
+  // entry of the views' first runs, which run-major ordering puts at `views * pair_count - 1`, and
+  // every per-frame set is created able to *name* any of them. What it is created able to *hold*
+  // is the capacity (docs/subsystems/renderer.md, "The ray tracing chain's memory"): until
+  // 2026-09-24 that was the union too, 6,144 bytes of cluster structure reserved for every pair in
+  // every view — 16.2 GB for the desert overlook's landmarks on a surround, whose frames build at
+  // most 43,291 clusters. Now it is what `SceneRenderer` measures the frames to need.
+  rt_union_clusters_ = pair_count_ * view_count_;
   Vector<u8> packed;
   // Under streaming the 8-bit indices are one more page-pool stream, filled a page at a time
   // beside the float positions, because a CLAS record addresses them at the same slot-relative
@@ -889,59 +886,84 @@ bool GpuScene::create_ray_tracing(const ResolvedSettings& resolved, std::string*
         std::span<const u32>(lod.mesh.triangles.data(), lod.mesh.triangles.size()), packed);
   }
   gfx::ClusterSetLimits limits;
-  limits.max_clusters = union_clusters;
+  limits.max_clusters = rt_union_clusters_;
   limits.max_triangles_per_cluster = triangles_per_cluster_;
   limits.max_vertices_per_cluster = geometry::ClusterLodOptions{}.max_vertices;
-  limits.max_geometry_index = union_clusters - 1;
+  limits.max_geometry_index = rt_union_clusters_ - 1;
   // A shadow caster's geometry index is its visible index too, and the casters are the list's run
   // `k_caster_run`, so with them the largest index is that run's last entry. The record count is
   // unchanged: in one view a pair is drawn or a caster, never both, so the union of the views'
   // runs still holds at most `views * pair_count` clusters.
   if (resolved.casters) {
-    limits.max_geometry_index = (gfx::k_caster_run + 1) * union_clusters - 1;
+    limits.max_geometry_index = (gfx::k_caster_run + 1) * rt_union_clusters_ - 1;
   }
   limits.instantiate = resolved.settings.rt_templates;
+  rt_limits_ = limits;
+  // One instance's structure can reference at most its mesh's clusters in every view.
+  rt_max_per_instance_ = 0;
+  for (const gfx::InstanceDesc& instance : instance_table_) {
+    rt_max_per_instance_ =
+        std::max(rt_max_per_instance_, data_->parts[instance.mesh].cluster_count * view_count_);
+  }
+
   constexpr VkBufferUsageFlags k_record_usage =
       k_address | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
+  // The top-level instance records, once: world transform, the instance as the custom index, and
+  // a bottom-level address of zero, which the frame's copy from `blas_set.addresses` overwrites
+  // before every top-level build. An instance whose structure a frame did not build keeps a zero
+  // there, which the top-level build treats as an inactive instance.
+  Vector<gfx::TlasInstance> tlas_records;
+  tlas_records.reserve(instance_count_);
+  rt_instance_copies.clear();
+  rt_instance_copies.reserve(instance_count_);
+  for (u32 i = 0; i < instance_count_; ++i) {
+    gfx::TlasInstance record;
+    record.transform = data_->instances[i].world;
+    record.custom_index = i;
+    record.blas = 0;
+    tlas_records.push_back(record);
+    rt_instance_copies.push_back(VkBufferCopy{
+        u64{i} * sizeof(u64),
+        u64{i} * gfx::k_instance_record_bytes + gfx::k_instance_record_bytes - sizeof(u64),
+        sizeof(u64)});
+  }
+  Vector<u8> tlas_bytes(u64{instance_count_} * gfx::k_instance_record_bytes, u8{0});
+  gfx::write_instances(std::span<const gfx::TlasInstance>(tlas_records.data(), tlas_records.size()),
+                       tlas_bytes.data());
   bool ok = (streamed_ || gfx::upload_buffer(device, packed.data(), packed.size(),
                                              gfx::k_build_input_usage, indices8, error)) &&
-            gfx::create_buffer(device, gfx::k_cluster_build_record_bytes * union_clusters,
-                               k_record_usage, false, records, error) &&
-            gfx::create_buffer(device, sizeof(u32), k_record_usage, false, record_count, error) &&
-            gfx::create_buffer(device, u64{union_clusters} * sizeof(u32), k_address, false, slots,
-                               error) &&
-            // Two words an instance: its survivors, then its dense record base
+            gfx::create_buffer(device, sizeof(u32) * gfx::k_cluster_record_count_words,
+                               k_record_usage | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, false,
+                               record_count, error) &&
+            gfx::create_buffer(device, u64{rt_union_clusters_} * sizeof(u32), k_address, false,
+                               slots, error) &&
+            // Three words an instance: its drawn clusters, its casters, then its dense record base
             // (`gfx::ClusterRecordParams::instance_counts`).
-            gfx::create_buffer(device, u64{instance_count_} * 2 * sizeof(u32),
+            gfx::create_buffer(device, u64{instance_count_} * 3 * sizeof(u32),
                                k_address | VK_BUFFER_USAGE_TRANSFER_DST_BIT, false, instance_counts,
                                error) &&
             gfx::create_buffer(device, gfx::k_cluster_blas_record_bytes * instance_count_,
                                k_record_usage, false, blas_records, error) &&
-            gfx::create_cluster_set(device, limits, clas_set, error) &&
             gfx::create_tlas(device, instance_count_, gfx::k_build_fast_trace, tlas, error) &&
-            gfx::create_buffer(device, gfx::k_instance_record_bytes * instance_count_,
-                               gfx::k_build_input_usage, true, rt_instances, error);
-  u64 blas_bytes = 0;
-  cluster_blas.resize(instance_count_);
-  for (u32 i = 0; i < instance_count_ && ok; ++i) {
-    ok = gfx::create_cluster_blas(device,
-                                  data_->parts[instance_table_[i].mesh].cluster_count * view_count_,
-                                  cluster_blas[i], error);
-    if (ok) blas_bytes += cluster_blas[i].data.size;
-  }
+            gfx::upload_buffer(device, tlas_bytes.data(), tlas_bytes.size(),
+                               gfx::k_build_input_usage | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                               rt_instances, error);
   // One template per cluster of the scene, built from the rest pose, with cluster id and base
   // geometry index zero so an instantiate record's offsets are the visible entry outright. Built
-  // once below; instantiated from the pool every frame.
+  // once, **packed to the size each one is** rather than to the driver's worst case (about 2.2 KB
+  // reserved against 504–532 bytes used on the desert overlook), and instantiated from the pool
+  // every frame.
   if (ok && resolved.settings.rt_templates) {
     gfx::ClusterSetLimits template_limits = limits;
     template_limits.max_clusters = cluster_count_;
     template_limits.max_geometry_index = 0;
     template_limits.instantiate = false;
-    ok = gfx::create_cluster_templates(device, template_limits, clas_templates, error) &&
-         gfx::create_buffer(device, gfx::k_cluster_template_record_bytes * cluster_count_,
+    gfx::BufferResource template_records;
+    ok = gfx::create_buffer(device, gfx::k_cluster_template_record_bytes * cluster_count_,
                             k_record_usage, true, template_records, error);
     if (ok) {
       Vector<gfx::ClusterBuildInput> template_inputs;
+      template_inputs.reserve(cluster_count_);
       for (u32 c = 0; c < cluster_count_; ++c) {
         const geometry::ClusterDesc& desc = lod.mesh.clusters[c];
         gfx::ClusterBuildInput in;
@@ -955,49 +977,116 @@ bool GpuScene::create_ray_tracing(const ResolvedSettings& resolved, std::string*
       gfx::write_cluster_template_records(
           std::span<const gfx::ClusterBuildInput>(template_inputs.data(), template_inputs.size()),
           template_records.mapped);
+      ok = gfx::create_packed_cluster_templates(device, template_limits, template_records.address,
+                                                clas_templates, error);
     }
-  }
-  if (ok) {
-    u64 scratch_bytes = clas_set.build_scratch_bytes;
-    scratch_bytes = std::max(scratch_bytes, tlas.build_scratch_bytes);
-    scratch_bytes = std::max(scratch_bytes, clas_templates.build_scratch_bytes);
-    for (const gfx::ClusterBlas& blas : cluster_blas)
-      scratch_bytes = std::max(scratch_bytes, blas.build_scratch_bytes);
-    ok = gfx::create_scratch(device, scratch_bytes, rt_scratch, error);
-    tlas_slot_ = bindless_.add_acceleration_structure(tlas.handle);
-    if (tlas_slot_ == gfx::BindlessSet::k_invalid_slot) {
-      ok = false;
-      if (error != nullptr) *error = "no bindless slot for the top-level structure";
-    }
-  }
-  // The templates are built once, before any frame: everything after them is per frame.
-  if (ok && resolved.settings.rt_templates) {
-    ok = gfx::submit_immediate(
-        device,
-        [&](VkCommandBuffer cb) {
-          gfx::build_cluster_templates(cb, clas_templates, template_records.address, 0, rt_scratch);
-          gfx::acceleration_build_barrier(
-              cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-              VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
-        },
-        error);
+    gfx::destroy_buffer(device, template_records);
     if (ok) {
       const auto* sizes = static_cast<const u32*>(clas_templates.sizes.mapped);
       for (u32 c = 0; c < cluster_count_; ++c)
         template_bytes_ += sizes[c];
     }
   }
+  if (ok) {
+    tlas_slot_ = bindless_.add_acceleration_structure(tlas.handle);
+    if (tlas_slot_ == gfx::BindlessSet::k_invalid_slot) {
+      ok = false;
+      if (error != nullptr) *error = "no bindless slot for the top-level structure";
+    }
+  }
   if (!ok) return false;
-  rt_bytes_ = clas_set.data.size + blas_bytes + rt_scratch.size + tlas.buffer.size + records.size +
-              template_bytes_;
-  ENGINE_LOG_INFO(log_renderer, "ray tracing ready", log::field("pairs", pair_count_),
-                  log::field("views", view_count_), log::field("union_clusters", union_clusters),
-                  log::field("instances", instance_count_),
-                  log::field("clas_bytes", clas_set.data.size),
-                  log::field("blas_bytes", blas_bytes),
-                  log::field("scratch_bytes", rt_scratch.size), log::field("rt_bytes", rt_bytes_),
-                  log::field("templates", resolved.settings.rt_templates ? cluster_count_ : 0u),
-                  log::field("template_bytes", template_bytes_));
+  rt_scene_bytes_ = indices8.size + record_count.size + slots.size + instance_counts.size +
+                    blas_records.size + tlas.buffer.size + rt_instances.size +
+                    clas_templates.data.size + clas_templates.addresses.size +
+                    clas_templates.sizes.size;
+
+  // **The budget, in clusters.** What one cluster of capacity costs comes from the driver's own
+  // sizes at a probe count — the structure, its address and size words, its record, its share of
+  // the bottom-level set and of the scratch the builds share — so the byte budget the caller gave
+  // becomes a count the capacity policy can reason in. Linear in the count, which is how the
+  // driver reserves them (6,144 bytes a cluster of 124 triangles and 64 vertices on the RTX 5090).
+  constexpr u32 k_probe = 65536;
+  gfx::ClusterSetLimits probe = limits;
+  probe.max_clusters = k_probe;
+  gfx::ClusterBuildSizes set_sizes;
+  gfx::ClusterBuildSizes blas_sizes;
+  if (!gfx::cluster_set_build_sizes(device, probe, set_sizes) ||
+      !gfx::cluster_blas_set_build_sizes(device, instance_count_, k_probe,
+                                         std::min(rt_max_per_instance_, k_probe), blas_sizes)) {
+    if (error != nullptr) *error = "the driver gave no cluster acceleration structure sizes";
+    return false;
+  }
+  const u64 record_bytes = resolved.settings.rt_templates ? gfx::k_cluster_instantiate_record_bytes
+                                                          : gfx::k_cluster_build_record_bytes;
+  const u64 probe_bytes = set_sizes.data_bytes + blas_sizes.data_bytes +
+                          std::max(set_sizes.scratch_bytes, blas_sizes.scratch_bytes) +
+                          u64{k_probe} * (record_bytes + sizeof(u64) + sizeof(u32));
+  rt_bytes_per_cluster_ = (probe_bytes + k_probe - 1) / k_probe;
+  const u32 budget_mib = resolved.settings.rt_budget_mib != 0 ? resolved.settings.rt_budget_mib
+                                                              : rt_budget_mib_tunable();
+  const u64 budget_clusters = u64{budget_mib} * 1024 * 1024 / rt_bytes_per_cluster_;
+  rt_capacity_limit_ =
+      static_cast<u32>(std::max<u64>(1, std::min<u64>(budget_clusters, u64{rt_union_clusters_})));
+  // The first capacity, before any frame has said what it builds: the whole union when that fits
+  // (which is every scene the tests draw, and so every picture they pin), `k_initial_rt_clusters`
+  // otherwise. The renderer grows or shrinks it from the frames' own demand.
+  const u32 initial = std::min(rt_capacity_limit_, k_initial_rt_clusters);
+  if (!resize_ray_tracing(rt_union_clusters_ <= initial ? rt_union_clusters_ : initial, error)) {
+    return false;
+  }
+  ENGINE_LOG_INFO(
+      log_renderer, "ray tracing ready", log::field("pairs", pair_count_),
+      log::field("views", view_count_), log::field("union_clusters", rt_union_clusters_),
+      log::field("instances", instance_count_), log::field("capacity", rt_capacity_),
+      log::field("capacity_limit", rt_capacity_limit_), log::field("budget_mib", budget_mib),
+      log::field("bytes_per_cluster", rt_bytes_per_cluster_),
+      log::field("clas_bytes", clas_set.data.size), log::field("blas_bytes", blas_set.data.size),
+      log::field("scratch_bytes", rt_scratch.size), log::field("rt_bytes", rt_bytes_),
+      log::field("templates", resolved.settings.rt_templates ? cluster_count_ : 0u),
+      log::field("template_bytes", template_bytes_),
+      log::field("template_storage", clas_templates.data.size));
+  return true;
+}
+
+bool GpuScene::resize_ray_tracing(u32 capacity, std::string* error, bool beyond_budget) {
+  if (!ray_tracing_ || device_ == nullptr) return true;
+  const gfx::Device& device = *device_;
+  const u32 ceiling =
+      beyond_budget || rt_capacity_limit_ == 0 ? rt_union_clusters_ : rt_capacity_limit_;
+  capacity = std::max(1u, std::min(capacity, ceiling));
+  gfx::destroy_buffer(device, records);
+  gfx::destroy_cluster_set(device, clas_set);
+  gfx::destroy_cluster_blas_set(device, blas_set);
+  gfx::destroy_buffer(device, rt_scratch);
+  rt_capacity_ = 0;
+  gfx::ClusterSetLimits limits = rt_limits_;
+  limits.max_clusters = capacity;
+  constexpr VkBufferUsageFlags k_record_usage =
+      k_address | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
+  const u64 record_bytes = limits.instantiate ? gfx::k_cluster_instantiate_record_bytes
+                                              : gfx::k_cluster_build_record_bytes;
+  bool ok =
+      gfx::create_buffer(device, record_bytes * capacity, k_record_usage, false, records, error) &&
+      gfx::create_cluster_set(device, limits, clas_set, error) &&
+      gfx::create_cluster_blas_set(device, instance_count_, capacity,
+                                   std::min(rt_max_per_instance_, capacity), blas_set, error);
+  if (ok) {
+    u64 scratch_bytes = clas_set.build_scratch_bytes;
+    scratch_bytes = std::max(scratch_bytes, blas_set.build_scratch_bytes);
+    scratch_bytes = std::max(scratch_bytes, tlas.build_scratch_bytes);
+    ok = gfx::create_scratch(device, scratch_bytes, rt_scratch, error);
+  }
+  if (!ok) {
+    gfx::destroy_buffer(device, records);
+    gfx::destroy_cluster_set(device, clas_set);
+    gfx::destroy_cluster_blas_set(device, blas_set);
+    gfx::destroy_buffer(device, rt_scratch);
+    rt_bytes_ = rt_scene_bytes_;
+    return false;
+  }
+  rt_capacity_ = capacity;
+  rt_bytes_ = rt_scene_bytes_ + records.size + clas_set.data.size + clas_set.addresses.size +
+              clas_set.sizes.size + blas_set.data.size + blas_set.addresses.size + rt_scratch.size;
   return true;
 }
 
@@ -1006,12 +1095,10 @@ void GpuScene::destroy() noexcept {
   const gfx::Device& device = *device_;
   gfx::destroy_buffer(device, meshes);
   gfx::destroy_cluster_templates(device, clas_templates);
-  gfx::destroy_buffer(device, template_records);
   gfx::destroy_acceleration_structure(device, tlas);
-  for (gfx::ClusterBlas& blas : cluster_blas)
-    gfx::destroy_cluster_blas(device, blas);
-  cluster_blas.clear();
+  gfx::destroy_cluster_blas_set(device, blas_set);
   gfx::destroy_cluster_set(device, clas_set);
+  rt_instance_copies.clear();
   gfx::destroy_buffer(device, rt_scratch);
   gfx::destroy_buffer(device, rt_instances);
   gfx::destroy_buffer(device, blas_records);
@@ -1095,7 +1182,9 @@ void GpuScene::destroy() noexcept {
   view_count_ = 1;
   max_joints_ = skinned_instances_ = deform_pool_vertices_ = 0;
   visible_run_bytes_ = deform_pool_bytes_ = deform_whole_mesh_bytes_ = 0;
-  template_bytes_ = rt_bytes_ = 0;
+  template_bytes_ = rt_bytes_ = rt_scene_bytes_ = rt_bytes_per_cluster_ = 0;
+  rt_capacity_ = rt_capacity_limit_ = rt_union_clusters_ = rt_max_per_instance_ = 0;
+  rt_limits_ = gfx::ClusterSetLimits{};
   vertex_index_capacity_ = 0;
   tlas_slot_ = gfx::BindlessSet::k_invalid_slot;
   ray_tracing_ = deform_ = skinned_ = streamed_ = false;
