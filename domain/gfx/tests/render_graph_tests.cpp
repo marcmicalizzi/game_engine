@@ -1,6 +1,8 @@
 // Render graph v0: declared accesses drive barriers and layouts; pass bodies only bind and
 // dispatch. Two compute passes chained through a transient buffer, an image cleared and read
 // back, and the validation of a read without a producer.
+#include "raster_path.h"
+
 #include <domain/gfx/device.h>
 #include <domain/gfx/frame.h>
 #include <domain/gfx/render_graph.h>
@@ -93,10 +95,7 @@ struct ScaleParams {
 TEST_CASE("render graph: compute passes chained through a transient buffer") {
   gfx::Device device;
   std::string error;
-  if (!device.create(gfx::DeviceOptions{}, &error)) {
-    MESSAGE("device unavailable: " << error);
-    return;
-  }
+  if (!gfx_test::open_device(device)) return;
   constexpr u32 k_count = 1000;
   const u64 bytes = u64{k_count} * sizeof(u32);
 
@@ -225,10 +224,7 @@ TEST_CASE("render graph: compute passes chained through a transient buffer") {
 TEST_CASE("render graph: image layouts follow declared accesses") {
   gfx::Device device;
   std::string error;
-  if (!device.create(gfx::DeviceOptions{}, &error)) {
-    MESSAGE("device unavailable: " << error);
-    return;
-  }
+  if (!gfx_test::open_device(device)) return;
   constexpr u32 k_size = 32;
   const u64 bytes = u64{k_size} * k_size * 4;
   gfx::BufferResource readback;
@@ -333,10 +329,7 @@ TEST_CASE("render graph: image layouts follow declared accesses") {
 TEST_CASE("render graph: a read without a producer is rejected at compile") {
   gfx::Device device;
   std::string error;
-  if (!device.create(gfx::DeviceOptions{}, &error)) {
-    MESSAGE("device unavailable: " << error);
-    return;
-  }
+  if (!gfx_test::open_device(device)) return;
   gfx::RenderGraph graph(device);
   const gfx::RgBuffer orphan =
       graph.create_buffer("orphan", {256, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, false});

@@ -1,6 +1,8 @@
 // SPIR-V reflection against the shaders this module ships, the library's embedded and file
 // paths (through the build's manifest), and hot reload through slangc with a temporary shader.
 // Everything but module creation runs without a GPU, so CI covers the compiler round trip.
+#include "raster_path.h"
+
 #include <domain/gfx/device.h>
 #include <domain/gfx/shader_library.h>
 #include <foundation/io/vfs.h>
@@ -118,8 +120,8 @@ std::string build_manifest() {
 TEST_CASE("shader library: embedded shaders, the build manifest, and hot reload through slangc") {
   gfx::Device device;
   std::string error;
-  const bool have_device = device.create(gfx::DeviceOptions{}, &error);
-  if (!have_device) MESSAGE("no device, reflection only: " << error);
+  const bool have_device = device.create(gfx_test::device_options(), &error);
+  if (!have_device) MESSAGE("part skipped: the device half, reflection only: " << error);
 
   gfx::ShaderLibrary library;
   REQUIRE(library.create(have_device ? &device : nullptr, &error));

@@ -1,6 +1,8 @@
 // The bindless model end to end (ADR-0023): a texture and a sampler registered in the global set,
 // sampled by index from a compute shader into a storage image registered in the same set, then
 // read back; a buffer written through its device address; slot recycling on the timeline.
+#include "raster_path.h"
+
 #include <domain/gfx/bindless.h>
 #include <domain/gfx/device.h>
 #include <domain/gfx/frame.h>
@@ -37,10 +39,7 @@ struct BdaParams {
 TEST_CASE("bindless: texture, sampler, and storage image by index") {
   gfx::Device device;
   std::string error;
-  if (!device.create(gfx::DeviceOptions{}, &error)) {
-    MESSAGE("device unavailable: " << error);
-    return;
-  }
+  if (!gfx_test::open_device(device)) return;
   gfx::FrameContext frames;
   REQUIRE(frames.create(device, 2, &error));
   gfx::BindlessSet bindless;
@@ -221,10 +220,7 @@ TEST_CASE("bindless: texture, sampler, and storage image by index") {
 TEST_CASE("bindless: buffers are reached through device addresses") {
   gfx::Device device;
   std::string error;
-  if (!device.create(gfx::DeviceOptions{}, &error)) {
-    MESSAGE("device unavailable: " << error);
-    return;
-  }
+  if (!gfx_test::open_device(device)) return;
   gfx::BindlessSet bindless;
   REQUIRE(bindless.create(device, gfx::BindlessConfig{}, &error));
   constexpr u32 k_count = 300;

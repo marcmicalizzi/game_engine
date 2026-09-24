@@ -1,3 +1,5 @@
+#include "raster_path.h"
+
 #include <domain/gfx/device.h>
 #include <domain/gfx/frame.h>
 #include <domain/gfx/vulkan.h>
@@ -21,10 +23,7 @@ u32 live_allocations(const gfx::Device& device) {
 TEST_CASE("gfx: frames in flight advance a timeline and recycle deferred resources") {
   gfx::Device device;
   std::string error;
-  if (!device.create(gfx::DeviceOptions{}, &error)) {
-    MESSAGE("device unavailable: " << error);
-    return;
-  }
+  if (!gfx_test::open_device(device)) return;
   gfx::FrameContext frames;
   REQUIRE_MESSAGE(frames.create(device, 2, &error), error);
   CHECK(frames.frames_in_flight() == 2);

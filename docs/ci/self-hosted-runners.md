@@ -219,27 +219,43 @@ A fourth step then renders the extreme resolutions of [04 §4.6](../plan/04-rend
 and writes `build/<preset>/gpu-smoke.json`; see [The extreme resolutions](#the-extreme-resolutions)
 below for what it does and what it treats as a skip.
 
-Neither GPU has `VK_EXT_mesh_shader`, so on both machines these skip with a reason:
+Neither GPU has `VK_EXT_mesh_shader` or `VK_KHR_ray_query`, and no suite treats that as a reason
+to skip what it can still check: the baseline tier
+([ADR-0024](../adr/0024-hardware-rasterization-first.md)) draws the same clusters into the same
+visibility buffer through the vertex shader, so **every GPU case about the picture runs on both
+machines**, through that path.
 
-- the mesh-shader test (`mesh_shader_tests.cpp`),
-- the visibility test, which is also the software rasterizer's only coverage (`visibility_tests.cpp`),
-- the two-pass occlusion test (`occlusion_tests.cpp`),
-- the material resolve's numerical tests (`shading_tests.cpp`, `attributes_tests.cpp`),
-- the GPU cull test (`cull_tests.cpp`), which draws its cut through the mesh path.
+- `domain/gfx`, since 2026-09-24: the material resolve's numerical tests against the
+  double-precision reference (`shading_tests.cpp`, `attributes_tests.cpp`), the GPU cull test
+  against its CPU reference (`cull_tests.cpp`), two-pass occlusion culling (`occlusion_tests.cpp`,
+  and the scene test's occlusion half), the visibility test, which is also the software
+  rasterizer's only coverage (`visibility_tests.cpp`), the cone and vertex-path tests, the scene
+  test's pair cull and instances, and the identity deformer. They draw through
+  `gfx_test::ClusterRaster` (`domain/gfx/tests/raster_path.h`), the mesh path where the device has
+  one and the vertex path where it does not ([gfx](../subsystems/gfx.md), "On a device without
+  mesh shaders or ray queries").
+- `systems/renderer` and the protocol's `render.*` methods, since 2026-09-23: `RenderSettings{}`
+  and `"raster":"hw"` resolve to the vertex path there, every case about the picture draws through
+  it, and only the mesh-path and ray halves skip, each naming the missing extension in the words of
+  the adapter's verdict ([the first run on the Titan Xp](#the-first-run-on-the-titan-xp) is what
+  that took).
 
-`systems/renderer` and the protocol's `render.*` methods, by contrast, **run in full** on both:
-`RenderSettings{}` and `"raster":"hw"` resolve to the vertex path there, every case about the
-picture draws through it, and only the mesh-path and ray halves skip, each naming the missing
-extension in the words of the adapter's verdict ([the first run on the Titan
-Xp](#the-first-run-on-the-titan-xp) is what that took).
+What skips is what is about a path the card does not have, each case naming the row it lacks: in
+`gfx` the mesh-shader test (`mesh_shader_tests.cpp`, `VK_EXT_mesh_shader`, because it is about
+the mesh stage itself), five ray cases (`VK_KHR_ray_query`: ray-query visibility, the ray-traced
+shadows, the wave deformer, and with `VK_NV_cluster_acceleration_structure` the cluster
+structures and the cluster templates), and the mesh and ray halves of the cases that compare
+paths. A skipped case prints `skipped: <adapter> has no <rows>` and a skipped half `part skipped:
+<what>: ...`, and doctest counts a skipped case as passed — so `grep -c "MESSAGE: skipped:"` over
+`LastTest.log` is how many cases checked nothing, and the green summary line is not.
+`ENGINE_GFX_TEST_DEVICE=titanxp` runs the `gfx` suite on any GPU with this card's absences, so what
+it will skip here can be seen before a build ever reaches it.
 
-What the `gfx` suite does cover there is the baseline tier and everything under it: the vertex-shader cluster path
-(`vertex_path_tests.cpp`, which runs the cull pass with `CullParams::count_index` = 1, the LOD cut,
-the indirect draw, and the visibility buffer, and only its comparison against the mesh path needs
-mesh shaders), device creation with the required feature chain, compute, frames in flight, the
-render graph, bindless descriptors, the raster pass, capture, the shader library and its SPIR-V
-reflection of every shipped shader including the resolve, the CPU LOD reference in `geometry`, and
-every CPU test in the tree. On the Westmere box that CPU side is the point as much as
+Under those cases the `gfx` suite covers everything else the baseline tier stands on: device
+creation with the required feature chain, compute, frames in flight, the render graph, bindless
+descriptors, the raster pass, capture, the shader library and its SPIR-V reflection of every
+shipped shader including the resolve, the CPU LOD reference in `geometry`, and every CPU test in
+the tree. On the Westmere box that CPU side is the point as much as
 the GPU: it is the machine that proves the **v2** build carries no instruction above x86-64-v2,
 which since [ADR-0031](../adr/0031-minimum-cpu-x86-64-v3.md) is a claim about one preset rather
 than about the tree. The claim about the tree is smaller and is checked elsewhere: a v3 binary
@@ -257,9 +273,11 @@ Its result carries the whole requirements table checked against each device and 
 `verdict.degraded` says what will not run although it does — including the one that decides these two
 machines, that the visibility buffer is a 64-bit atomic max per pixel and every rasterizer writes it,
 so a card without `shaderBufferInt64Atomics` and without mesh shaders cannot draw a frame at all.
-`vertex_path_tests.cpp` skips without that feature; the adapters report says in advance whether it
-will. If a Required row fails, every GPU test reports `device unavailable` with the reason and still
-passes, which is why the log matters more than the exit status on these two.
+Every picture case of `gfx` skips without that feature (`skipped: ... has no
+shaderBufferInt64Atomics`); the adapters report says in advance whether it will. If a Required row
+fails, every GPU test reports the device unavailable with the reason (`gfx`: `skipped: device
+unavailable: ...`) and still passes, which is why the log matters more than the exit status on
+these two.
 
 ## Machine prerequisites
 
@@ -464,11 +482,49 @@ two-pass occlusion culling on.
 **What still skips on this card, by name:** the direct path (mesh shaders); the mesh-path halves of
 two renderer cases; every ray half, the four reference cases and the 8-bit-index streaming case
 (ray queries and cluster structures); the reference half of `render_tests.cpp`; and in `gfx`, the
-mesh-path cases listed under [What runs and what skips](#what-runs-and-what-skips) plus the ray
-query, cluster-structure, ray-traced shading and ray-traced deform cases. The window and swapchain
-tests skip for want of a display, as expected. `linux-server-debug` (clang 22.1.8, asserts and
-iterator checking) was run after the fixes as well; its line is in [remote Linux
-builds](remote-linux.md#measured-times).
+mesh-shader test and the ray query, cluster-structure, ray-traced shading and ray-traced deform
+cases — plus, until the next day, six `gfx` picture cases that skipped for want of mesh shaders
+without being about them (below). The window and swapchain tests skip for want of a display, as
+expected. `linux-server-debug` (clang 22.1.8, asserts and iterator checking) was run after the
+fixes as well; its line is in [remote Linux builds](remote-linux.md#measured-times).
+
+**2026-09-24: the `gfx` suite on the baseline tier.** The table above counts `gfx` as 52 of 52 on
+both days, and that was the least informative line in it: doctest has no skip at run time and
+counts a case that returns early as passed, and 13 of the 52 returned early on this card — seven
+for want of mesh shaders, five for want of ray queries, one for want of a display. Six of the seven
+were not about the mesh stage at all: the lighting model against its double-precision reference
+(the shading case and both attributes cases), the cull pass against its CPU reference, two-pass
+occlusion culling, and the visibility test that is the software rasterizer's only coverage — each
+had simply been written against `create_mesh_pipeline`. They draw through the device's own raster
+path now, the vertex path here, and so does the scene test's occlusion half, which had sat inside
+its mesh-path branch and was skipped without a word ([gfx](../subsystems/gfx.md), "On a device
+without mesh shaders or ray queries"). `linux-server`, GCC 14.3, driver 580.178.04; the before run
+started at a load average of 0.67 and the after run straight behind this checkout's own cold build,
+at 2.74 / 14.76 / 15.93 — the times are wall clock and no performance claim.
+
+| `gfx` on the TITAN Xp | before (9465a07) | after |
+|---|---|---|
+| doctest's count | 52 of 52 | 52 of 52 |
+| cases that checked something | 39 | **45** |
+| skipped: no `VK_EXT_mesh_shader` | 7 | **1**, the mesh-stage test |
+| skipped: no `VK_KHR_ray_query` | 5 | 5 |
+| skipped: no display | 1, the swapchain | 1 |
+| halves skipped | 5, four of them without a message | 4, each named: the mesh halves of the vertex-path, scene and identity-deformer cases, and the scene's ray half |
+| suite time | 39.3 s | 43.0 s |
+
+**What the baseline tier measured**, the same as the RTX 5090 wherever the number is the GPU's:
+the lighting model agrees with `brdf_reference.h` to **0 of 255** on every compared pixel (the
+eight-material sweep, the off-centre pixel, the white dielectric at 149, the tilted normal and four
+texels, the four metallic-roughness quadrants and the normal map) against a tolerance of 2, so no
+tolerance had to move and the one that exists has its whole margin left on Pascal; the hardware and
+software visibility buffers differ on 1 pixel of coverage and 29 of 21,195 ids; two-pass occlusion
+culling draws 56 of 108 clusters and changes 0 pixels, and the scene's drops the hidden instance
+(76 pairs to 73) with 0 changed; the identity deformer draws what the rigid instance draws with not
+even a depth bit apart. The counts that come from the CPU side differ, because this build and the
+desktop's make different LOD DAGs from the same terrain (181 clusters here, 184 there, so a cull cut
+of 23 against 24), and each is checked against the CPU reference built beside it. What skips now is
+exactly what [What runs and what skips](#what-runs-and-what-skips) lists, and
+`ENGINE_GFX_TEST_DEVICE=titanxp` reproduces that list on the RTX 5090.
 
 ## Registering a runner
 

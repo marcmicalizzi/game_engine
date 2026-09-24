@@ -4,6 +4,7 @@
 // test), a third to a half of the sphere must be culled, and the visibility buffer must not
 // change: every pixel the culled draw covers holds the same word, and only silhouette pixels
 // that back faces alone touched may differ. Runs on any GPU with 64-bit buffer atomics.
+#include "raster_path.h"
 #include "scene_fixture.h"
 
 #include <domain/geometry/cluster.h>
@@ -72,15 +73,8 @@ void make_sphere(u32 rings, u32 segments, Vector<Vec3>& positions, Vector<u32>& 
 TEST_CASE("normal cones: the cull pass drops backfacing clusters without changing the picture") {
   gfx::Device device;
   std::string error;
-  if (!device.create(gfx::DeviceOptions{}, &error)) {
-    MESSAGE("device unavailable: " << error);
-    return;
-  }
-  if (!device.features().buffer_int64_atomics) {
-    MESSAGE("no 64-bit buffer atomics on " << device.adapter().name);
-    device.destroy();
-    return;
-  }
+  if (!gfx_test::open_device(device)) return;
+  if (!gfx_test::require(device, {gfx_test::Need::VisibilityBuffer})) return;
 
   Vector<Vec3> positions;
   Vector<u32> indices;

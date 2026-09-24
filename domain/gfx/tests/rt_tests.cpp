@@ -3,7 +3,8 @@
 // through the vertex path into the visibility buffer and traced with a ray per pixel against a
 // bottom-level structure with one geometry per cut cluster under a one-instance top-level
 // structure; the two 64-bit buffers must agree on coverage, on the triangle under nearly every
-// covered pixel, and on depth. Skips without ray queries or 64-bit buffer atomics.
+// covered pixel, and on depth. Skips without VK_KHR_ray_query or 64-bit buffer atomics.
+#include "raster_path.h"
 #include "scene_fixture.h"
 
 #include <domain/geometry/cluster_lod.h>
@@ -64,13 +65,8 @@ f32 depth_of(u64 word) {
 TEST_CASE("ray query: primary visibility matches the rasterized LOD cut") {
   gfx::Device device;
   std::string error;
-  if (!device.create(gfx::DeviceOptions{}, &error)) {
-    MESSAGE("device unavailable: " << error);
-    return;
-  }
-  if (!device.features().ray_query || !device.features().buffer_int64_atomics) {
-    MESSAGE("no ray queries or 64-bit buffer atomics on " << device.adapter().name);
-    device.destroy();
+  if (!gfx_test::open_device(device)) return;
+  if (!gfx_test::require(device, {gfx_test::Need::VisibilityBuffer, gfx_test::Need::RayQuery})) {
     return;
   }
 

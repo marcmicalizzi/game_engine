@@ -10,13 +10,15 @@ using namespace engine;
 
 namespace {
 
-// Creates a device or skips the test with the reason (machines without a usable driver).
+// Creates a device or skips the test with the reason (machines without a usable driver). The GPU
+// as it is, whatever ENGINE_GFX_TEST_DEVICE says (raster_path.h): these cases compare the enabled
+// features with the adapter's own report, which a profile would make disagree on purpose.
 bool open_device(gfx::Device& device) {
   std::string error;
   gfx::DeviceOptions options;
   options.validation = false;
   if (!device.create(options, &error)) {
-    MESSAGE("device unavailable: " << error);
+    MESSAGE("skipped: device unavailable: " << error);
     CHECK_FALSE(error.empty());
     CHECK_FALSE(device.valid());
     return false;

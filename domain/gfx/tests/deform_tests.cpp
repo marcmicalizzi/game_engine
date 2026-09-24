@@ -17,8 +17,11 @@
 //      rest pose, instantiated per frame from the pool — traces the same picture as rebuilding
 //      the cluster structures every frame, and costs less to do it.
 //
-// Test 1 runs on any device with 64-bit buffer atomics; 2 needs ray queries; 3 needs cluster
-// acceleration structures (NVIDIA RTX).
+// Test 1 runs on any device with 64-bit buffer atomics (its mesh-path third needs
+// VK_EXT_mesh_shader and is skipped by name without it); 2 needs VK_KHR_ray_query; 3 needs
+// VK_NV_cluster_acceleration_structure (NVIDIA RTX).
+#include "raster_path.h"
+
 #include <domain/geometry/cluster_lod.h>
 #include <domain/gfx/acceleration.h>
 #include <domain/gfx/bindless.h>
@@ -291,16 +294,9 @@ struct DeformScene {
 TEST_CASE("deform: the identity deformer draws exactly what the rigid instance draws") {
   gfx::Device device;
   std::string error;
-  if (!device.create(gfx::DeviceOptions{}, &error)) {
-    MESSAGE("device unavailable: " << error);
-    return;
-  }
-  if (!device.features().buffer_int64_atomics) {
-    MESSAGE("no 64-bit buffer atomics on " << device.adapter().name);
-    device.destroy();
-    return;
-  }
-  const bool have_mesh = device.features().mesh_shader;
+  if (!gfx_test::open_device(device)) return;
+  if (!gfx_test::require(device, {gfx_test::Need::VisibilityBuffer})) return;
+  const bool have_mesh = gfx_test::part(device, "the mesh path", {gfx_test::Need::MeshShader});
 
   DeformScene scene;
   REQUIRE_MESSAGE(scene.create(device, 97, gfx::k_deform_identity, &error), error);
@@ -476,10 +472,10 @@ TEST_CASE("deform: the identity deformer draws exactly what the rigid instance d
     CHECK(c.coverage_mismatch == 0);
     CHECK(c.id_mismatch == 0);
     CHECK(c.max_depth_diff < 2.0e-7f);
-    MESSAGE(names[path] << ": " << c.covered_a << " px covered, coverage mismatch "
-                        << c.coverage_mismatch << ", id mismatch " << c.id_mismatch
-                        << ", worst depth difference " << c.max_depth_diff << " over "
-                        << c.word_mismatch << " pixels whose depth bits differ");
+    MESSAGE(std::string(names[path])
+            << ": " << c.covered_a << " px covered, coverage mismatch " << c.coverage_mismatch
+            << ", id mismatch " << c.id_mismatch << ", worst depth difference " << c.max_depth_diff
+            << " over " << c.word_mismatch << " pixels whose depth bits differ");
   }
 
   // Every slot the allocator handed out holds a number; every slot past the cut's blocks still
@@ -530,13 +526,8 @@ TEST_CASE("deform: the identity deformer draws exactly what the rigid instance d
 TEST_CASE("deform: the wave deformer reaches the rasterizer and the ray path alike") {
   gfx::Device device;
   std::string error;
-  if (!device.create(gfx::DeviceOptions{}, &error)) {
-    MESSAGE("device unavailable: " << error);
-    return;
-  }
-  if (!device.features().buffer_int64_atomics || !device.features().ray_query) {
-    MESSAGE("no ray queries or 64-bit atomics on " << device.adapter().name);
-    device.destroy();
+  if (!gfx_test::open_device(device)) return;
+  if (!gfx_test::require(device, {gfx_test::Need::VisibilityBuffer, gfx_test::Need::RayQuery})) {
     return;
   }
   DeformScene scene;
@@ -776,15 +767,9 @@ TEST_CASE("deform: the wave deformer reaches the rasterizer and the ray path ali
 TEST_CASE("deform: instantiated cluster templates trace what the rebuilt clusters trace") {
   gfx::Device device;
   std::string error;
-  if (!device.create(gfx::DeviceOptions{}, &error)) {
-    MESSAGE("device unavailable: " << error);
-    return;
-  }
-  if (!device.features().cluster_acceleration_structure || !device.features().ray_query ||
-      !device.features().buffer_int64_atomics) {
-    MESSAGE("no cluster acceleration structures, ray queries, or 64-bit atomics on "
-            << device.adapter().name);
-    device.destroy();
+  if (!gfx_test::open_device(device)) return;
+  if (!gfx_test::require(device, {gfx_test::Need::VisibilityBuffer, gfx_test::Need::RayQuery,
+                                  gfx_test::Need::ClusterAccelerationStructure})) {
     return;
   }
   gfx::ClusterAsProperties props;

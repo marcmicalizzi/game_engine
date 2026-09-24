@@ -1,5 +1,7 @@
 // The first raster pass: dynamic rendering through the render graph, a graphics pipeline with no
 // vertex input, and a pixel-exact readback of what was drawn.
+#include "raster_path.h"
+
 #include <domain/gfx/bindless.h>
 #include <domain/gfx/device.h>
 #include <domain/gfx/frame.h>
@@ -26,10 +28,7 @@ struct TriangleParams {
 TEST_CASE("raster: a triangle through the render graph lands on the expected pixels") {
   gfx::Device device;
   std::string error;
-  if (!device.create(gfx::DeviceOptions{}, &error)) {
-    MESSAGE("device unavailable: " << error);
-    return;
-  }
+  if (!gfx_test::open_device(device)) return;
   gfx::FrameContext frames;
   REQUIRE(frames.create(device, 2, &error));
   gfx::BindlessSet bindless;

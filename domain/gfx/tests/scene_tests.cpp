@@ -5,7 +5,11 @@
 // (instance, cluster) pair and its survivors must equal a CPU reference that does every test in
 // the instance's frame; the mesh-shader and vertex paths must fill the visibility buffer
 // identically; the ray-traced picture must match the rasterized one; and two-pass occlusion
-// culling must drop the hidden instance without changing the picture.
+// culling must drop the hidden instance without changing the picture. The vertex path is the
+// reference every device draws; the mesh half needs VK_EXT_mesh_shader and the ray half
+// VK_KHR_ray_query, and each is skipped by name where it is missing, while the cull, the
+// instances and the occlusion half run on the baseline tier too.
+#include "raster_path.h"
 #include "scene_fixture.h"
 
 #include <domain/geometry/cluster_lod.h>
@@ -206,17 +210,13 @@ f32 depth_of(u64 word) {
 TEST_CASE("scene: the pair cull, the two rasterizers, ray tracing, and occlusion over instances") {
   gfx::Device device;
   std::string error;
-  if (!device.create(gfx::DeviceOptions{}, &error)) {
-    MESSAGE("device unavailable: " << error);
-    return;
-  }
-  if (!device.features().buffer_int64_atomics) {
-    MESSAGE("no 64-bit buffer atomics on " << device.adapter().name);
-    device.destroy();
-    return;
-  }
-  const bool have_mesh = device.features().mesh_shader;
-  const bool have_rt = device.features().ray_query;
+  if (!gfx_test::open_device(device)) return;
+  if (!gfx_test::require(device, {gfx_test::Need::VisibilityBuffer})) return;
+  // The vertex path is the reference every device draws; the mesh path is compared with it where
+  // the device has mesh shaders, and the ray-traced picture where it has ray queries.
+  const bool have_mesh =
+      gfx_test::part(device, "the mesh path against the vertex path", {gfx_test::Need::MeshShader});
+  const bool have_rt = gfx_test::part(device, "the ray-traced picture", {gfx_test::Need::RayQuery});
 
   Scene scene;
   REQUIRE_MESSAGE(build_scene(scene, error), error);
@@ -868,13 +868,15 @@ TEST_CASE("scene: the pair cull, the two rasterizers, ray tracing, and occlusion
       gfx::destroy_acceleration_structure(device, b);
     for (gfx::BufferResource* b : {&scratch, &tlas_instances, &base_buffer, &indices16})
       gfx::destroy_buffer(device, *b);
-  } else {
-    MESSAGE("no ray queries on " << device.adapter().name << ": the ray comparison is skipped");
   }
 
   // Two-pass occlusion culling over the scene: the instance behind the big sphere must drop out,
-  // and the picture must not change. The two passes append to their own runs of one list.
-  if (have_mesh) {
+  // and the picture must not change. The two passes append to their own runs of one list. They
+  // draw through the device's own path — the mesh path where there are mesh shaders, the vertex
+  // path (the baseline tier) where there are not — and are held to that path's single-pass
+  // picture, since "culling never changes the picture" has to hold on both tiers.
+  {
+    const u64* single_out = have_mesh ? mesh_out : vertex_out;
     gfx::CullParams pass1 = base;
     pass1.count_index = 1;
     pass1.pass = 1;
@@ -911,12 +913,12 @@ TEST_CASE("scene: the pair cull, the two rasterizers, ray tracing, and occlusion
             });
       }
       add_cull(1, 0);
-      add_mesh_args(0);
-      add_draw(3, 0, true, &draw_to[3]);
+      if (have_mesh) add_mesh_args(0);
+      add_draw(3, 0, have_mesh, &draw_to[3]);
       add_hiz(3);
       add_cull(2, 1);
-      add_mesh_args(1);
-      add_draw(3, 1, true, &draw2);
+      if (have_mesh) add_mesh_args(1);
+      add_draw(3, 1, have_mesh, &draw2);
       add_hiz(3);
       add_readback();
       REQUIRE_MESSAGE(graph.compile(&error), error);
@@ -950,15 +952,16 @@ TEST_CASE("scene: the pair cull, the two rasterizers, ray tracing, and occlusion
     u32 occl_coverage_mismatch = 0;
     u32 occl_id_mismatch = 0;
     for (u32 i = 0; i < k_w * k_h; ++i) {
-      const bool a = mesh_out[i] != 0;
+      const bool a = single_out[i] != 0;
       const bool b = occl_out[i] != 0;
       if (a != b) ++occl_coverage_mismatch;
-      if (a && b && surface_of(mesh_out[i], list_out) != surface_of(occl_out[i], occl_list))
+      if (a && b && surface_of(single_out[i], list_out) != surface_of(occl_out[i], occl_list))
         ++occl_id_mismatch;
     }
     CHECK(occl_coverage_mismatch == 0);
     CHECK(occl_id_mismatch * 1000 <= covered);
-    MESSAGE("occlusion: " << expected.size() << " pairs become " << steady << ", coverage mismatch "
+    MESSAGE("occlusion, " << std::string(have_mesh ? "mesh" : "vertex") << " path: "
+                          << expected.size() << " pairs become " << steady << ", coverage mismatch "
                           << occl_coverage_mismatch << ", id mismatch " << occl_id_mismatch);
   }
 

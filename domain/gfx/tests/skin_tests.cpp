@@ -11,6 +11,8 @@
 // The pass itself is the one E25 built, so this case dispatches it and reads the pool back rather
 // than drawing anything: the rasterizers' side of the pool is already covered by
 // `deform_tests.cpp`, and nothing here needs a raster pipeline or 64-bit atomics.
+#include "raster_path.h"
+
 #include <domain/anim/skeleton.h>
 #include <domain/geometry/cluster.h>
 #include <domain/gfx/cluster_cull.h>
@@ -207,10 +209,7 @@ struct SkinScene {
 TEST_CASE("deform: the skinning mode matches the CPU reference on a two-bone cylinder") {
   gfx::Device device;
   std::string error;
-  if (!device.create(gfx::DeviceOptions{}, &error)) {
-    MESSAGE("device unavailable: " << error);
-    return;
-  }
+  if (!gfx_test::open_device(device)) return;
 
   // `joint_count` is 2 in the first two poses and 1 in the last, which is how the out-of-range
   // clamp is exercised on both sides at once.

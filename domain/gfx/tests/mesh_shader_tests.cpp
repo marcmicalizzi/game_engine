@@ -1,6 +1,11 @@
 // Mesh-shader cluster rasterization end to end: build clusters on the CPU, upload them to
 // device-address buffers, draw one workgroup per cluster into a visibility-ID target through
 // the render graph, and check that every triangle's ID appears where the mesh covers pixels.
+// This is the case about the mesh stage itself — its workgroup per cluster, and the
+// `SV_PrimitiveID` it must write per primitive for the fragment stage to read — so it is the one
+// raster case in this suite that needs VK_EXT_mesh_shader, and it skips naming it. Every case
+// about the picture runs on the vertex path where mesh shaders are absent (raster_path.h).
+#include "raster_path.h"
 #include "scene_fixture.h"
 
 #include <domain/geometry/cluster.h>
@@ -50,15 +55,8 @@ void make_grid(u32 n, f32 extent, Vector<Vec3>& positions, Vector<u32>& indices)
 TEST_CASE("mesh shaders: clusters rasterize to visibility IDs") {
   gfx::Device device;
   std::string error;
-  if (!device.create(gfx::DeviceOptions{}, &error)) {
-    MESSAGE("device unavailable: " << error);
-    return;
-  }
-  if (!device.features().mesh_shader) {
-    MESSAGE("no mesh shader support on " << device.adapter().name);
-    device.destroy();
-    return;
-  }
+  if (!gfx_test::open_device(device)) return;
+  if (!gfx_test::require(device, {gfx_test::Need::MeshShader})) return;
 
   // Geometry: a 17x17 grid (512 triangles) covering [-0.9, 0.9]^2 in clip space.
   Vector<Vec3> positions;

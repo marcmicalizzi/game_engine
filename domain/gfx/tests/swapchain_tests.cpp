@@ -1,6 +1,8 @@
 // Presentation end to end: a real window, a surface, a swapchain, frames acquired and
 // presented through the frame context and the render graph, a resize, and a capture of the
 // presented image. Skips on machines without a display or a Vulkan driver.
+#include "raster_path.h"
+
 #include <domain/gfx/capture.h>
 #include <domain/gfx/device.h>
 #include <domain/gfx/frame.h>
@@ -18,12 +20,12 @@ using namespace engine;
 TEST_CASE("swapchain: acquire, render, present, resize, capture") {
   std::string error;
   if (!window::init(&error)) {
-    MESSAGE("no display: " << error);
+    MESSAGE("skipped: no display: " << error);
     return;
   }
   const auto extensions = window::Window::vulkan_instance_extensions();
   if (extensions.empty()) {
-    MESSAGE("SDL has no Vulkan support here");
+    MESSAGE("skipped: SDL has no Vulkan support here");
     window::shutdown();
     return;
   }
@@ -33,7 +35,7 @@ TEST_CASE("swapchain: acquire, render, present, resize, capture") {
   window_desc.height = 120;
   window::Window window;
   if (!window.create(window_desc, &error)) {
-    MESSAGE("cannot create a window here: " << error);
+    MESSAGE("skipped: cannot create a window here: " << error);
     window::shutdown();
     return;
   }
@@ -42,8 +44,7 @@ TEST_CASE("swapchain: acquire, render, present, resize, capture") {
   options.instance_extensions = extensions.data();
   options.instance_extension_count = static_cast<u32>(extensions.size());
   gfx::Device device;
-  if (!device.create(options, &error)) {
-    MESSAGE("device unavailable: " << error);
+  if (!gfx_test::open_device(device, options)) {
     window.destroy();
     window::shutdown();
     return;

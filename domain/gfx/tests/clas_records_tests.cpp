@@ -6,6 +6,8 @@
 // the two instances is **deformed**, so its records must name the frame's deformed-vertex pool
 // instead of the mesh's rest positions, which is the rule every position reader follows. The
 // shader needs no ray tracing feature, so this runs on any device with a driver.
+#include "raster_path.h"
+
 #include <domain/geometry/cluster.h>
 #include <domain/gfx/cluster_acceleration.h>
 #include <domain/gfx/cluster_cull.h>
@@ -48,10 +50,7 @@ void make_grid(u32 n, Vector<Vec3>& positions, Vector<u32>& indices) {
 TEST_CASE("clas records: the shader writes the same build records as the CPU") {
   gfx::Device device;
   std::string error;
-  if (!device.create(gfx::DeviceOptions{}, &error)) {
-    MESSAGE("device unavailable: " << error);
-    return;
-  }
+  if (!gfx_test::open_device(device)) return;
   Vector<Vec3> positions;
   Vector<u32> indices;
   make_grid(33, positions, indices);  // 2,048 triangles

@@ -1,9 +1,13 @@
 // The visibility buffer written two ways: every leaf cluster of a terrain through the hardware
-// path (mesh shader plus fs_visibility, an attachment-less raster pass) and through the software
-// rasterizer (one compute workgroup per cluster). The two buffers must agree on coverage and,
-// where both cover a pixel, on which triangle is nearest, up to the edge-rule differences along
-// shared edges and silhouettes. Then the resolve pass turns the buffer into colors, and the GPU
-// timer reports how long each path took. Skips without mesh shaders or 64-bit buffer atomics.
+// rasterizer (fs_visibility in an attachment-less raster pass, fed by the mesh shader where the
+// device has one and by the vertex shader, the baseline tier, where it does not; raster_path.h)
+// and through the software rasterizer (one compute workgroup per cluster). The two buffers must
+// agree on coverage and, where both cover a pixel, on which triangle is nearest, up to the
+// edge-rule differences along shared edges and silhouettes. Then the resolve pass turns the
+// buffer into colors, and the GPU timer reports how long each path took. This is the software
+// rasterizer's only coverage, so it runs on every device that can write the buffer: it skips only
+// without 64-bit buffer atomics.
+#include "raster_path.h"
 #include "scene_fixture.h"
 
 #include <domain/geometry/cluster_lod.h>
@@ -21,7 +25,6 @@
 
 #include <cmath>
 #include <cstring>
-#include <shaders/cluster_mesh.spv.h>
 #include <shaders/cluster_sw_raster.spv.h>
 #include <shaders/visibility_resolve.spv.h>
 #include <string>
@@ -58,15 +61,8 @@ void make_terrain(u32 n, f32 extent, Vector<Vec3>& positions, Vector<u32>& indic
 TEST_CASE("visibility buffer: hardware and software rasterization agree, resolve shows it") {
   gfx::Device device;
   std::string error;
-  if (!device.create(gfx::DeviceOptions{}, &error)) {
-    MESSAGE("device unavailable: " << error);
-    return;
-  }
-  if (!device.features().mesh_shader || !device.features().buffer_int64_atomics) {
-    MESSAGE("no mesh shaders or 64-bit buffer atomics on " << device.adapter().name);
-    device.destroy();
-    return;
-  }
+  if (!gfx_test::open_device(device)) return;
+  if (!gfx_test::require(device, {gfx_test::Need::VisibilityBuffer})) return;
 
   Vector<Vec3> positions;
   Vector<u32> indices;
@@ -119,25 +115,19 @@ TEST_CASE("visibility buffer: hardware and software rasterization agree, resolve
   REQUIRE_MESSAGE(timer.create(device, 2, 8, &error), error);
   REQUIRE(bindless.capacity().push_constant_bytes >= sizeof(gfx::ClusterDrawParams));
 
-  VkShaderModule mesh_module = gfx::create_shader_module(
-      device, shaders::k_cluster_mesh_spirv, shaders::k_cluster_mesh_spirv_size, &error);
   VkShaderModule sw_module = gfx::create_shader_module(
       device, shaders::k_cluster_sw_raster_spirv, shaders::k_cluster_sw_raster_spirv_size, &error);
   VkShaderModule resolve_module =
       gfx::create_shader_module(device, shaders::k_visibility_resolve_spirv,
                                 shaders::k_visibility_resolve_spirv_size, &error);
-  REQUIRE(mesh_module != VK_NULL_HANDLE);
   REQUIRE(sw_module != VK_NULL_HANDLE);
   REQUIRE(resolve_module != VK_NULL_HANDLE);
 
-  // Hardware path: mesh shader with the visibility fragment, no attachments.
-  gfx::MeshPipelineDesc hw_desc;
-  hw_desc.mesh = mesh_module;
-  hw_desc.fragment = mesh_module;
-  hw_desc.fragment_entry = "fs_visibility";
-  hw_desc.layout = bindless.pipeline_layout();
-  VkPipeline hw_pipeline = VK_NULL_HANDLE;
-  REQUIRE_MESSAGE(gfx::create_mesh_pipeline(device, hw_desc, hw_pipeline, &error), error);
+  // Hardware path: the mesh or the vertex shader with the visibility fragment, no attachments.
+  gfx_test::ClusterRaster raster;
+  REQUIRE_MESSAGE(raster.create(device, bindless.pipeline_layout(),
+                                geometry::ClusterBuildOptions{}.max_triangles, &error),
+                  error);
   // Software path: compute, same push constants.
   gfx::ComputePipeline sw_pipeline;
   REQUIRE_MESSAGE(gfx::create_compute_pipeline(device, sw_module, "sw_raster_main", {},
@@ -212,11 +202,7 @@ TEST_CASE("visibility buffer: hardware and software rasterization agree, resolve
       },
       [&](VkCommandBuffer cb, gfx::RenderGraph&) {
         timer.begin(cb, "hardware");
-        vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, hw_pipeline);
-        bindless.bind(cb, VK_PIPELINE_BIND_POINT_GRAPHICS);
-        vkCmdPushConstants(cb, bindless.pipeline_layout(), VK_SHADER_STAGE_ALL, 0, sizeof(draw_hw),
-                           &draw_hw);
-        vkCmdDrawMeshTasksEXT(cb, cluster_count, 1, 1);
+        raster.draw(cb, bindless, draw_hw, cluster_count);
         timer.end(cb);
       });
   graph.add_pass(
@@ -282,10 +268,10 @@ TEST_CASE("visibility buffer: hardware and software rasterization agree, resolve
     frames.wait_idle();
   }
   CHECK(timer.results().size() == 2);
-  MESSAGE("gpu ms: hardware " << timer.ms("hardware") << ", software " << timer.ms("software")
-                              << " (" << cluster_count << " clusters, "
-                              << mesh.source_triangle_count << " triangles at " << k_size << "x"
-                              << k_size << ")");
+  MESSAGE("gpu ms: hardware (" << std::string(raster.name()) << " path) " << timer.ms("hardware")
+                               << ", software " << timer.ms("software") << " (" << cluster_count
+                               << " clusters, " << mesh.source_triangle_count << " triangles at "
+                               << k_size << "x" << k_size << ")");
   CHECK(timer.ms("hardware") > 0.0);
   CHECK(timer.ms("software") > 0.0);
 
@@ -340,11 +326,10 @@ TEST_CASE("visibility buffer: hardware and software rasterization agree, resolve
 
   graph.reset();
   gfx::destroy_pipeline(device, resolve_pipeline);
-  gfx::destroy_pipeline(device, hw_pipeline);
+  raster.destroy(device);
   gfx::destroy_compute_pipeline(device, sw_pipeline);
   gfx::destroy_shader_module(device, resolve_module);
   gfx::destroy_shader_module(device, sw_module);
-  gfx::destroy_shader_module(device, mesh_module);
   timer.destroy();
   bindless.destroy();
   scene.destroy(device);

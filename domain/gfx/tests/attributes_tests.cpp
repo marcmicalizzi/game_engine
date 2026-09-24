@@ -5,9 +5,12 @@
 // roughness and metallic from a 2x2 metallic-roughness map, and its shading normal from a
 // tangent-space normal map. The expected colors come from the CPU mirror of the BSDF
 // (brdf_reference.h), the same reference the shading test uses, evaluated with the normal, the
-// roughness, the metallic, and the albedo the maps produce. Skips without mesh shaders or 64-bit
-// buffer atomics.
+// roughness, the metallic, and the albedo the maps produce. The quads are drawn through the
+// device's own raster path (raster_path.h) — the vertex path, the baseline tier, where there are
+// no mesh shaders — so both tiers are held to the reference. Skips only without 64-bit buffer
+// atomics.
 #include "brdf_reference.h"
+#include "raster_path.h"
 #include "scene_fixture.h"
 
 #include <domain/geometry/cluster.h>
@@ -24,7 +27,6 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
-#include <shaders/cluster_mesh.spv.h>
 #include <shaders/visibility_resolve.spv.h>
 #include <string>
 
@@ -34,15 +36,8 @@ namespace ref = engine::brdf_ref;
 TEST_CASE("material resolve: vertex normals steer the shading and textures sample by UV") {
   gfx::Device device;
   std::string error;
-  if (!device.create(gfx::DeviceOptions{}, &error)) {
-    MESSAGE("device unavailable: " << error);
-    return;
-  }
-  if (!device.features().mesh_shader || !device.features().buffer_int64_atomics) {
-    MESSAGE("no mesh shaders or 64-bit buffer atomics on " << device.adapter().name);
-    device.destroy();
-    return;
-  }
+  if (!gfx_test::open_device(device)) return;
+  if (!gfx_test::require(device, {gfx_test::Need::VisibilityBuffer})) return;
 
   // A quad on y = 0 with vertex normals tilted 45 degrees towards +z and UVs spanning [0, 1].
   const Vec3 positions[4] = {Vec3{-5.0f, 0.0f, -5.0f}, Vec3{5.0f, 0.0f, -5.0f},
@@ -125,20 +120,14 @@ TEST_CASE("material resolve: vertex normals steer the shading and textures sampl
 
   gfx::FrameContext frames;
   REQUIRE(frames.create(device, 2, &error));
-  VkShaderModule mesh_module = gfx::create_shader_module(
-      device, shaders::k_cluster_mesh_spirv, shaders::k_cluster_mesh_spirv_size, &error);
   VkShaderModule resolve_module =
       gfx::create_shader_module(device, shaders::k_visibility_resolve_spirv,
                                 shaders::k_visibility_resolve_spirv_size, &error);
-  REQUIRE(mesh_module != VK_NULL_HANDLE);
   REQUIRE(resolve_module != VK_NULL_HANDLE);
-  gfx::MeshPipelineDesc hw_desc;
-  hw_desc.mesh = mesh_module;
-  hw_desc.fragment = mesh_module;
-  hw_desc.fragment_entry = "fs_visibility";
-  hw_desc.layout = bindless.pipeline_layout();
-  VkPipeline hw_pipeline = VK_NULL_HANDLE;
-  REQUIRE(gfx::create_mesh_pipeline(device, hw_desc, hw_pipeline, &error));
+  gfx_test::ClusterRaster raster;  // the mesh path, or the vertex path without mesh shaders
+  REQUIRE_MESSAGE(raster.create(device, bindless.pipeline_layout(),
+                                geometry::ClusterBuildOptions{}.max_triangles, &error),
+                  error);
   gfx::GraphicsPipelineDesc resolve_desc;
   resolve_desc.vertex = resolve_module;
   resolve_desc.vertex_entry = "vs_fullscreen";
@@ -209,13 +198,7 @@ TEST_CASE("material resolve: vertex normals steer the shading and textures sampl
         b.render_area(k_size, k_size);
         b.write(rg_vis, gfx::Access::FragmentReadWrite);
       },
-      [&](VkCommandBuffer cb, gfx::RenderGraph&) {
-        vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, hw_pipeline);
-        bindless.bind(cb, VK_PIPELINE_BIND_POINT_GRAPHICS);
-        vkCmdPushConstants(cb, bindless.pipeline_layout(), VK_SHADER_STAGE_ALL, 0, sizeof(draw),
-                           &draw);
-        vkCmdDrawMeshTasksEXT(cb, 1, 1, 1);
-      });
+      [&](VkCommandBuffer cb, gfx::RenderGraph&) { raster.draw(cb, bindless, draw, 1); });
   for (u32 i = 0; i < 3; ++i) {
     graph.add_pass(
         "resolve", gfx::PassKind::Raster,
@@ -261,6 +244,7 @@ TEST_CASE("material resolve: vertex normals steer the shading and textures sampl
   // The reference surface at a pixel: the point the resolve reconstructs on the quad's plane,
   // the tilted vertex normal (the same at every vertex, so interpolation cannot change it), the
   // view from there, and the albedo the material and the texture produce together.
+  int worst = 0;
   auto expect_pixel = [&](u32 image, u32 x, u32 y, Vec3 albedo, const std::string& what) {
     ref::Surface s;
     s.position = ref::pixel_on_plane(ref::dvec3(eye), ref::dvec3(target), ref::dvec3(up),
@@ -274,6 +258,8 @@ TEST_CASE("material resolve: vertex normals steer the shading and textures sampl
         ref::shade(s, ref::dvec3(sun_dir), 1.0, ref::dvec3(sky), nullptr, 0, ref::Dvec3{});
     const u8 expect[3] = {ref::display(linear.x), ref::display(linear.y), ref::display(linear.z)};
     const u8* p = pixel(image, x, y);
+    for (u32 c = 0; c < 3; ++c)
+      worst = std::max(worst, std::abs(int{p[c]} - int{expect[c]}));
     const bool matches = std::abs(int{p[0]} - int{expect[0]}) <= 2 &&
                          std::abs(int{p[1]} - int{expect[1]}) <= 2 &&
                          std::abs(int{p[2]} - int{expect[2]}) <= 2;
@@ -304,12 +290,13 @@ TEST_CASE("material resolve: vertex normals steer the shading and textures sampl
   expect_pixel(2, cx + quarter, cy - quarter, Vec3{0.0f, 1.0f, 0.0f}, "green texel");
   expect_pixel(2, cx - quarter, cy + quarter, Vec3{0.0f, 0.0f, 1.0f}, "blue texel");
   expect_pixel(2, cx + quarter, cy + quarter, Vec3{1.0f, 1.0f, 1.0f}, "white texel");
+  MESSAGE("worst reference-vs-GPU difference over the tilted normal and the texels, "
+          << std::string(raster.name()) << " path: " << worst << " of 255 (tolerance 2)");
 
   graph.reset();
   gfx::destroy_pipeline(device, resolve_pipeline);
-  gfx::destroy_pipeline(device, hw_pipeline);
+  raster.destroy(device);
   gfx::destroy_shader_module(device, resolve_module);
-  gfx::destroy_shader_module(device, mesh_module);
   bindless.destroy();
   gfx::destroy_sampler(device, nearest);
   gfx::destroy_image_view(device, texture_view);
@@ -330,19 +317,12 @@ TEST_CASE("material resolve: vertex normals steer the shading and textures sampl
 // map tilted 45 degrees about the tangent axis, once at normal_scale 1 and once at 0. The
 // expected colors again come from brdf_reference.h, now with the quadrant's roughness and
 // metallic and with the tangent frame and the perturbed normal it computes the way the shader
-// does. Skips without mesh shaders or 64-bit buffer atomics.
+// does. Through the device's raster path, as above; skips only without 64-bit buffer atomics.
 TEST_CASE("material resolve: metallic-roughness and normal maps") {
   gfx::Device device;
   std::string error;
-  if (!device.create(gfx::DeviceOptions{}, &error)) {
-    MESSAGE("device unavailable: " << error);
-    return;
-  }
-  if (!device.features().mesh_shader || !device.features().buffer_int64_atomics) {
-    MESSAGE("no mesh shaders or 64-bit buffer atomics on " << device.adapter().name);
-    device.destroy();
-    return;
-  }
+  if (!gfx_test::open_device(device)) return;
+  if (!gfx_test::require(device, {gfx_test::Need::VisibilityBuffer})) return;
 
   // The same quad as above, but with the plane's own normal at every vertex.
   const Vec3 positions[4] = {Vec3{-5.0f, 0.0f, -5.0f}, Vec3{5.0f, 0.0f, -5.0f},
@@ -456,20 +436,14 @@ TEST_CASE("material resolve: metallic-roughness and normal maps") {
 
   gfx::FrameContext frames;
   REQUIRE(frames.create(device, 2, &error));
-  VkShaderModule mesh_module = gfx::create_shader_module(
-      device, shaders::k_cluster_mesh_spirv, shaders::k_cluster_mesh_spirv_size, &error);
   VkShaderModule resolve_module =
       gfx::create_shader_module(device, shaders::k_visibility_resolve_spirv,
                                 shaders::k_visibility_resolve_spirv_size, &error);
-  REQUIRE(mesh_module != VK_NULL_HANDLE);
   REQUIRE(resolve_module != VK_NULL_HANDLE);
-  gfx::MeshPipelineDesc hw_desc;
-  hw_desc.mesh = mesh_module;
-  hw_desc.fragment = mesh_module;
-  hw_desc.fragment_entry = "fs_visibility";
-  hw_desc.layout = bindless.pipeline_layout();
-  VkPipeline hw_pipeline = VK_NULL_HANDLE;
-  REQUIRE(gfx::create_mesh_pipeline(device, hw_desc, hw_pipeline, &error));
+  gfx_test::ClusterRaster raster;  // the mesh path, or the vertex path without mesh shaders
+  REQUIRE_MESSAGE(raster.create(device, bindless.pipeline_layout(),
+                                geometry::ClusterBuildOptions{}.max_triangles, &error),
+                  error);
   gfx::GraphicsPipelineDesc resolve_desc;
   resolve_desc.vertex = resolve_module;
   resolve_desc.vertex_entry = "vs_fullscreen";
@@ -538,13 +512,7 @@ TEST_CASE("material resolve: metallic-roughness and normal maps") {
         b.render_area(k_size, k_size);
         b.write(rg_vis, gfx::Access::FragmentReadWrite);
       },
-      [&](VkCommandBuffer cb, gfx::RenderGraph&) {
-        vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, hw_pipeline);
-        bindless.bind(cb, VK_PIPELINE_BIND_POINT_GRAPHICS);
-        vkCmdPushConstants(cb, bindless.pipeline_layout(), VK_SHADER_STAGE_ALL, 0, sizeof(draw),
-                           &draw);
-        vkCmdDrawMeshTasksEXT(cb, 1, 1, 1);
-      });
+      [&](VkCommandBuffer cb, gfx::RenderGraph&) { raster.draw(cb, bindless, draw, 1); });
   for (u32 i = 0; i < k_blocks; ++i) {
     graph.add_pass(
         "resolve", gfx::PassKind::Raster,
@@ -667,13 +635,13 @@ TEST_CASE("material resolve: metallic-roughness and normal maps") {
   CHECK_MESSAGE(scale_zero <= 1, "normal_scale 0 changed the picture by " << scale_zero);
   MESSAGE("normal_scale 0 against no normal map at all: worst pixel difference " << scale_zero
                                                                                  << " of 255");
-  MESSAGE("worst reference-vs-GPU difference over the maps: " << worst << " of 255");
+  MESSAGE("worst reference-vs-GPU difference over the maps, "
+          << std::string(raster.name()) << " path: " << worst << " of 255 (tolerance 2)");
 
   graph.reset();
   gfx::destroy_pipeline(device, resolve_pipeline);
-  gfx::destroy_pipeline(device, hw_pipeline);
+  raster.destroy(device);
   gfx::destroy_shader_module(device, resolve_module);
-  gfx::destroy_shader_module(device, mesh_module);
   bindless.destroy();
   gfx::destroy_sampler(device, nearest);
   gfx::destroy_image_view(device, normal_view);

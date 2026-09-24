@@ -20,6 +20,7 @@
 // Like `skin_tests.cpp` this dispatches the pass and reads the pool back rather than drawing, so
 // it needs no raster pipeline and no 64-bit atomics and runs on any device with a driver.
 #include "deform_reference.h"
+#include "raster_path.h"
 
 #include <domain/anim/skeleton.h>
 #include <domain/assets/gltf.h>
@@ -357,10 +358,7 @@ Agreement compare(const Harness& harness, const DeformChain& chain, std::span<co
 TEST_CASE("deform chain: every stage and the whole chain match the CPU reference") {
   gfx::Device device;
   std::string error;
-  if (!device.create(gfx::DeviceOptions{}, &error)) {
-    MESSAGE("device unavailable: " << error);
-    return;
-  }
+  if (!gfx_test::open_device(device)) return;
   VkShaderModule module = gfx::create_shader_module(device, shaders::k_deform_spirv,
                                                     shaders::k_deform_spirv_size, &error);
   REQUIRE(module != VK_NULL_HANDLE);
@@ -553,10 +551,7 @@ TEST_CASE(
                              "MorphStressTest/MorphStressTest.glb", "SimpleMorph/SimpleMorph.gltf"};
   gfx::Device device;
   std::string error;
-  if (!device.create(gfx::DeviceOptions{}, &error)) {
-    MESSAGE("device unavailable: " << error);
-    return;
-  }
+  if (!gfx_test::open_device(device)) return;
   VkShaderModule module = gfx::create_shader_module(device, shaders::k_deform_spirv,
                                                     shaders::k_deform_spirv_size, &error);
   REQUIRE(module != VK_NULL_HANDLE);
@@ -574,7 +569,7 @@ TEST_CASE(
         test::data_path(std::string(ENGINE_SOURCE_DIR "/content/samples/") + relative,
                         std::string("content/samples/") + relative);
     if (!test::path_exists(path)) {
-      MESSAGE("not fetched (tools/fetch-samples.ps1): " << path);
+      MESSAGE("part skipped: not fetched (tools/fetch-samples.ps1): " << path);
       continue;
     }
     assets::MeshData asset;

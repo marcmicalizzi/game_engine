@@ -6,6 +6,7 @@
 // pixels, and the two must match each other. The test reports build and trace times and
 // memory for each path, which is the data E2 exists to produce. Skips without cluster
 // acceleration structures (NVIDIA RTX only), ray queries, or 64-bit buffer atomics.
+#include "raster_path.h"
 #include "scene_fixture.h"
 
 #include <domain/geometry/cluster_lod.h>
@@ -505,15 +506,9 @@ void run_comparison(gfx::Device& device, u32 grid, f32 threshold_px, u32 k_w, u3
 TEST_CASE("cluster acceleration structures: the cut traced through CLAS matches KHR and raster") {
   gfx::Device device;
   std::string error;
-  if (!device.create(gfx::DeviceOptions{}, &error)) {
-    MESSAGE("device unavailable: " << error);
-    return;
-  }
-  if (!device.features().cluster_acceleration_structure || !device.features().ray_query ||
-      !device.features().buffer_int64_atomics) {
-    MESSAGE("no cluster acceleration structures, ray queries, or 64-bit atomics on "
-            << device.adapter().name);
-    device.destroy();
+  if (!gfx_test::open_device(device)) return;
+  if (!gfx_test::require(device, {gfx_test::Need::VisibilityBuffer, gfx_test::Need::RayQuery,
+                                  gfx_test::Need::ClusterAccelerationStructure})) {
     return;
   }
   // A frame-sized cut, then every leaf of the engine-view terrain: the per-frame build case and

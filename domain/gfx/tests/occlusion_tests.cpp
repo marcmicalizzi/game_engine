@@ -4,7 +4,12 @@
 // set against last frame's Hi-Z; Hi-Z rebuilt from pass 1; pass 2: the rest against it;
 // Hi-Z rebuilt again for the next frame). Occlusion culling must not change the picture: the
 // third frame's visibility buffer must match the reference, while drawing fewer clusters.
-// The Hi-Z pyramid itself is checked against a CPU recomputation.
+// The Hi-Z pyramid itself is checked against a CPU recomputation. Every draw goes through the
+// device's own raster path (raster_path.h): mesh tasks counted into word 0 of the argument block
+// where there are mesh shaders, and on the baseline tier `vkCmdDrawIndirect` with the cull pass
+// counting into word 1 (`CullParams::count_index` = 1), which is the tier the invariant most
+// needs to hold on. Skips only without 64-bit buffer atomics.
+#include "raster_path.h"
 #include "scene_fixture.h"
 
 #include <domain/geometry/cluster_lod.h>
@@ -20,7 +25,6 @@
 #include <cmath>
 #include <cstring>
 #include <shaders/cluster_cull.spv.h>
-#include <shaders/cluster_mesh.spv.h>
 #include <shaders/hiz_build.spv.h>
 #include <string>
 
@@ -56,15 +60,8 @@ void make_terrain(u32 n, f32 extent, Vector<Vec3>& positions, Vector<u32>& indic
 TEST_CASE("occlusion culling: two passes draw fewer clusters and the same picture") {
   gfx::Device device;
   std::string error;
-  if (!device.create(gfx::DeviceOptions{}, &error)) {
-    MESSAGE("device unavailable: " << error);
-    return;
-  }
-  if (!device.features().mesh_shader || !device.features().buffer_int64_atomics) {
-    MESSAGE("no mesh shaders or 64-bit buffer atomics on " << device.adapter().name);
-    device.destroy();
-    return;
-  }
+  if (!gfx_test::open_device(device)) return;
+  if (!gfx_test::require(device, {gfx_test::Need::VisibilityBuffer})) return;
 
   Vector<Vec3> positions;
   Vector<u32> indices;
@@ -150,7 +147,7 @@ TEST_CASE("occlusion culling: two passes draw fewer clusters and the same pictur
   REQUIRE(gfx::create_buffer(device, visible_bytes, k_address | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                              false, visible, &error));
   for (u32 i = 0; i < 2; ++i) {
-    REQUIRE(gfx::create_buffer(device, 12, k_args, false, args[i], &error));
+    REQUIRE(gfx::create_buffer(device, gfx::k_draw_args_bytes, k_args, false, args[i], &error));
     REQUIRE(gfx::create_buffer(device, u64{cluster_count} * 4,
                                k_address | VK_BUFFER_USAGE_TRANSFER_DST_BIT, false, flags[i],
                                &error));
@@ -166,8 +163,8 @@ TEST_CASE("occlusion culling: two passes draw fewer clusters and the same pictur
                              host_list, &error));
   REQUIRE(gfx::create_buffer(device, u64{hiz_elements} * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true,
                              host_hiz, &error));
-  REQUIRE(
-      gfx::create_buffer(device, 24, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, host_args, &error));
+  REQUIRE(gfx::create_buffer(device, gfx::k_draw_args_bytes * 2, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                             true, host_args, &error));
 
   gfx::FrameContext frames;
   REQUIRE(frames.create(device, 2, &error));
@@ -175,12 +172,9 @@ TEST_CASE("occlusion culling: two passes draw fewer clusters and the same pictur
   REQUIRE(bindless.create(device, gfx::BindlessConfig{}, &error));
   VkShaderModule cull_module = gfx::create_shader_module(
       device, shaders::k_cluster_cull_spirv, shaders::k_cluster_cull_spirv_size, &error);
-  VkShaderModule mesh_module = gfx::create_shader_module(
-      device, shaders::k_cluster_mesh_spirv, shaders::k_cluster_mesh_spirv_size, &error);
   VkShaderModule hiz_module = gfx::create_shader_module(device, shaders::k_hiz_build_spirv,
                                                         shaders::k_hiz_build_spirv_size, &error);
   REQUIRE(cull_module != VK_NULL_HANDLE);
-  REQUIRE(mesh_module != VK_NULL_HANDLE);
   REQUIRE(hiz_module != VK_NULL_HANDLE);
   gfx::ComputePipeline cull_pipeline;
   gfx::ComputePipeline hiz_pipeline;
@@ -190,13 +184,10 @@ TEST_CASE("occlusion culling: two passes draw fewer clusters and the same pictur
   REQUIRE_MESSAGE(gfx::create_compute_pipeline(device, hiz_module, "hiz_build_main", {},
                                                sizeof(gfx::HizParams), hiz_pipeline, &error),
                   error);
-  gfx::MeshPipelineDesc mesh_desc;
-  mesh_desc.mesh = mesh_module;
-  mesh_desc.fragment = mesh_module;
-  mesh_desc.fragment_entry = "fs_visibility";
-  mesh_desc.layout = bindless.pipeline_layout();
-  VkPipeline mesh_pipeline = VK_NULL_HANDLE;
-  REQUIRE_MESSAGE(gfx::create_mesh_pipeline(device, mesh_desc, mesh_pipeline, &error), error);
+  gfx_test::ClusterRaster raster;
+  REQUIRE_MESSAGE(raster.create(device, bindless.pipeline_layout(),
+                                geometry::ClusterLodOptions{}.max_triangles, &error),
+                  error);
 
   // Parameter blocks: reference (single pass, no Hi-Z), pass 1, pass 2.
   gfx::CullParams base{};
@@ -206,6 +197,7 @@ TEST_CASE("occlusion culling: two passes draw fewer clusters and the same pictur
   base.lod = Vec4{proj_scale, 0.5f, 1.0f, 1.0f};
   base.raster = Vec4{0.0f, gfx::k_raster_hardware, 0.0f, 0.0f};
   base.cluster_count = cluster_count;
+  base.count_index = raster.count_index();
   base.clusters = clusters.address;
   base.lods = lods.address;
   base.instances = scene.instances.address;
@@ -265,10 +257,8 @@ TEST_CASE("occlusion culling: two passes draw fewer clusters and the same pictur
         },
         [&, clear_hiz, flags_to_clear](VkCommandBuffer cb, gfx::RenderGraph&) {
           vkCmdFillBuffer(cb, vis.buffer, 0, VK_WHOLE_SIZE, 0);
-          for (u32 i = 0; i < 2; ++i) {
-            vkCmdFillBuffer(cb, args[i].buffer, 0, 4, 0);
-            vkCmdFillBuffer(cb, args[i].buffer, 4, 8, 1);
-          }
+          for (u32 i = 0; i < 2; ++i)
+            raster.reset_args(cb, args[i].buffer);
           if (clear_hiz) vkCmdFillBuffer(cb, hiz.buffer, 0, VK_WHOLE_SIZE, 0);
           if (flags_to_clear < 2)
             vkCmdFillBuffer(cb, flags[flags_to_clear].buffer, 0, VK_WHOLE_SIZE, 0);
@@ -301,14 +291,10 @@ TEST_CASE("occlusion culling: two passes draw fewer clusters and the same pictur
           b.render_area(k_w, k_h);
           b.write(rg_vis, gfx::Access::FragmentReadWrite);
           b.read(rg_args[list], gfx::Access::IndirectRead);
-          b.read(rg_visible, gfx::Access::MeshRead);
+          b.read(rg_visible, raster.geometry_read());
         },
         [&, list](VkCommandBuffer cb, gfx::RenderGraph&) {
-          vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, mesh_pipeline);
-          bindless.bind(cb, VK_PIPELINE_BIND_POINT_GRAPHICS);
-          vkCmdPushConstants(cb, bindless.pipeline_layout(), VK_SHADER_STAGE_ALL, 0,
-                             sizeof(draw_pass[list]), &draw_pass[list]);
-          vkCmdDrawMeshTasksIndirectEXT(cb, args[list].buffer, 0, 1, 12);
+          raster.draw_indirect(cb, bindless, draw_pass[list], args[list].buffer);
         });
   };
   // One dispatch folds a 32 x 32 tile into six mips, so the pyramid is a handful of dispatches
@@ -375,7 +361,7 @@ TEST_CASE("occlusion culling: two passes draw fewer clusters and the same pictur
           const VkBufferCopy list_copy{0, 0, visible_bytes};
           vkCmdCopyBuffer(cb, visible.buffer, list_host->buffer, 1, &list_copy);
           for (u32 i = 0; i < 2; ++i) {
-            const VkBufferCopy args_copy{0, i * 12, 12};
+            const VkBufferCopy args_copy{0, i * gfx::k_draw_args_bytes, gfx::k_draw_args_bytes};
             vkCmdCopyBuffer(cb, args[i].buffer, host_args.buffer, 1, &args_copy);
           }
           if (with_hiz) {
@@ -398,10 +384,14 @@ TEST_CASE("occlusion culling: two passes draw fewer clusters and the same pictur
   add_readback(host_vis_ref, host_list_ref, false);
   REQUIRE_MESSAGE(graph.compile(&error), error);
   run_frame();
+  // One argument block per pass, `gfx::k_draw_args_bytes` apart, counting in the raster path's
+  // word.
   const auto* args_out = static_cast<const u32*>(host_args.mapped);
-  const u32 reference_count = args_out[0];
+  constexpr u32 k_block_words = gfx::k_draw_args_bytes / sizeof(u32);
+  const u32 reference_count = raster.survivors(args_out);
   REQUIRE(reference_count > 20);
-  MESSAGE("reference: " << reference_count << " clusters of " << cluster_count);
+  MESSAGE("reference: " << reference_count << " clusters of " << cluster_count << ", "
+                        << std::string(raster.name()) << " path");
 
   // Three frames of two-pass occlusion culling; Hi-Z starts empty (everything far).
   u32 drawn[3][2] = {};
@@ -444,8 +434,8 @@ TEST_CASE("occlusion culling: two passes draw fewer clusters and the same pictur
     add_readback(host_vis, host_list, true);
     REQUIRE_MESSAGE(graph.compile(&error), error);
     run_frame();
-    drawn[frame][0] = args_out[0];
-    drawn[frame][1] = args_out[3];
+    drawn[frame][0] = raster.survivors(args_out);
+    drawn[frame][1] = raster.survivors(args_out + k_block_words);
     MESSAGE("frame " << frame << ": pass 1 drew " << drawn[frame][0] << ", pass 2 drew "
                      << drawn[frame][1]);
   }
@@ -519,11 +509,10 @@ TEST_CASE("occlusion culling: two passes draw fewer clusters and the same pictur
         0.0f);  // the wall fills the view: no sky, nothing at the far plane
 
   graph.reset();
-  gfx::destroy_pipeline(device, mesh_pipeline);
+  raster.destroy(device);
   gfx::destroy_compute_pipeline(device, hiz_pipeline);
   gfx::destroy_compute_pipeline(device, cull_pipeline);
   gfx::destroy_shader_module(device, hiz_module);
-  gfx::destroy_shader_module(device, mesh_module);
   gfx::destroy_shader_module(device, cull_module);
   bindless.destroy();
   scene.destroy(device);
@@ -553,10 +542,7 @@ TEST_CASE("occlusion culling: two passes draw fewer clusters and the same pictur
 TEST_CASE("hi-z: the folded pyramid equals the mip-at-a-time one at an awkward size") {
   gfx::Device device;
   std::string error;
-  if (!device.create(gfx::DeviceOptions{}, &error)) {
-    MESSAGE("device unavailable: " << error);
-    return;
-  }
+  if (!gfx_test::open_device(device)) return;
   constexpr u32 k_w = 2053;
   constexpr u32 k_h = 1027;
   u32 hiz_offsets[gfx::k_hiz_max_mips];

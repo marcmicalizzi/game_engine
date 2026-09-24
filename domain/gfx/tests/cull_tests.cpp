@@ -1,7 +1,13 @@
 // GPU cluster culling and LOD selection end to end: build a terrain's LOD DAG, run the cull
 // pass against a camera, and check that the survivors are exactly what the CPU reference
-// selects, that the indirect mesh draw of the cut covers the same pixels as drawing every
-// leaf cluster, and that a camera looking away culls everything.
+// selects, that the indirect draw of the cut covers the same pixels as drawing every leaf
+// cluster, and that a camera looking away culls everything. Both draws go through the device's
+// own raster path into visibility buffers (raster_path.h): mesh tasks where there are mesh
+// shaders, and on the baseline tier the vertex shader with the cull pass counting into
+// vkCmdDrawIndirect's instance count (`CullParams::count_index` = 1). The cull is the same pass
+// either way, and it is checked against its CPU reference on both. Runs on any device with 64-bit
+// buffer atomics.
+#include "raster_path.h"
 #include "scene_fixture.h"
 
 #include <domain/geometry/cluster_lod.h>
@@ -18,14 +24,11 @@
 #include <cmath>
 #include <cstring>
 #include <shaders/cluster_cull.spv.h>
-#include <shaders/cluster_mesh.spv.h>
 #include <string>
 
 using namespace engine;
 
 namespace {
-
-using MeshParams = gfx::ClusterDrawParams;
 
 void make_terrain(u32 n, f32 extent, Vector<Vec3>& positions, Vector<u32>& indices) {
   for (u32 z = 0; z < n; ++z) {
@@ -55,15 +58,8 @@ void make_terrain(u32 n, f32 extent, Vector<Vec3>& positions, Vector<u32>& indic
 TEST_CASE("cluster cull: GPU selection matches the CPU reference and the cut covers the leaves") {
   gfx::Device device;
   std::string error;
-  if (!device.create(gfx::DeviceOptions{}, &error)) {
-    MESSAGE("device unavailable: " << error);
-    return;
-  }
-  if (!device.features().mesh_shader) {
-    MESSAGE("no mesh shader support on " << device.adapter().name);
-    device.destroy();
-    return;
-  }
+  if (!gfx_test::open_device(device)) return;
+  if (!gfx_test::require(device, {gfx_test::Need::VisibilityBuffer})) return;
 
   Vector<Vec3> positions;
   Vector<u32> indices;
@@ -75,6 +71,7 @@ TEST_CASE("cluster cull: GPU selection matches the CPU reference and the cut cov
   REQUIRE(geometry::validate_cluster_lod(lod, indices, &error));
   const u32 cluster_count = lod.mesh.clusters.size();
   const u32 leaf_count = lod.level_cluster_counts[0];
+  const u32 triangles_per_cluster = geometry::ClusterLodOptions{}.max_triangles;
 
   gfx::BufferResource clusters;
   gfx::BufferResource triangles;
@@ -92,6 +89,8 @@ TEST_CASE("cluster cull: GPU selection matches the CPU reference and the cut cov
                              cluster_count * sizeof(geometry::ClusterLodDesc), k_storage, lods,
                              &error));
 
+  // One argument block of `gfx::k_draw_args_bytes`, which holds either path's: {survivors, 1, 1}
+  // for mesh tasks, {vertex count, survivors, 0, 0} for vkCmdDrawIndirect.
   gfx::BufferResource visible;
   gfx::BufferResource args;
   gfx::BufferResource params;
@@ -103,7 +102,7 @@ TEST_CASE("cluster cull: GPU selection matches the CPU reference and the cut cov
       k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
       false, visible, &error));
   REQUIRE(gfx::create_buffer(
-      device, sizeof(u32) * 3,
+      device, gfx::k_draw_args_bytes,
       k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
           VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
       false, args, &error));
@@ -112,7 +111,7 @@ TEST_CASE("cluster cull: GPU selection matches the CPU reference and the cut cov
                              &error));
   REQUIRE(gfx::create_buffer(device, visible_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true,
                              visible_host, &error));
-  REQUIRE(gfx::create_buffer(device, sizeof(u32) * 3, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true,
+  REQUIRE(gfx::create_buffer(device, gfx::k_draw_args_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true,
                              args_host, &error));
 
   // Camera above and in front of the terrain, 60 degree vertical field of view, 256 px tall.
@@ -128,11 +127,20 @@ TEST_CASE("cluster cull: GPU selection matches the CPU reference and the cut cov
   view.proj_scale = 1.0f / std::tan(radians(60.0f) * 0.5f) * static_cast<f32>(k_size) * 0.5f;
   view.threshold_px = 1.0f;
 
+  gfx::FrameContext frames;
+  REQUIRE(frames.create(device, 2, &error));
+  gfx::BindlessSet bindless;
+  REQUIRE(bindless.create(device, gfx::BindlessConfig{}, &error));
+  gfx_test::ClusterRaster raster;  // the mesh path, or the vertex path without mesh shaders
+  REQUIRE_MESSAGE(raster.create(device, bindless.pipeline_layout(), triangles_per_cluster, &error),
+                  error);
+
   gfx::CullParams cull{};
   gfx::set_frustum(cull, frustum);
   cull.camera = Vec4{eye, znear};
   cull.lod = Vec4{view.proj_scale, view.threshold_px, 1.0f, 1.0f};
   cull.cluster_count = cluster_count;
+  cull.count_index = raster.count_index();
   cull.clusters = clusters.address;
   cull.lods = lods.address;
   cull.visible = visible.address;
@@ -155,47 +163,46 @@ TEST_CASE("cluster cull: GPU selection matches the CPU reference and the cut cov
   REQUIRE(expected.size() > 4);
   REQUIRE(expected.size() < cluster_count);
   MESSAGE("clusters " << cluster_count << " (leaves " << leaf_count << "), expected visible "
-                      << expected.size());
+                      << expected.size() << ", " << std::string(raster.name()) << " path");
 
-  gfx::FrameContext frames;
-  REQUIRE(frames.create(device, 2, &error));
-  gfx::BindlessSet bindless;
-  REQUIRE(bindless.create(device, gfx::BindlessConfig{}, &error));
   VkShaderModule cull_module = gfx::create_shader_module(
       device, shaders::k_cluster_cull_spirv, shaders::k_cluster_cull_spirv_size, &error);
-  VkShaderModule mesh_module = gfx::create_shader_module(
-      device, shaders::k_cluster_mesh_spirv, shaders::k_cluster_mesh_spirv_size, &error);
   REQUIRE(cull_module != VK_NULL_HANDLE);
-  REQUIRE(mesh_module != VK_NULL_HANDLE);
   gfx::ComputePipeline cull_pipeline;
   REQUIRE_MESSAGE(gfx::create_compute_pipeline(device, cull_module, "cull_main", {}, sizeof(u64),
                                                cull_pipeline, &error),
                   error);
-  gfx::MeshPipelineDesc mesh_desc;
-  mesh_desc.mesh = mesh_module;
-  mesh_desc.fragment = mesh_module;
-  mesh_desc.layout = bindless.pipeline_layout();
-  mesh_desc.color_format = VK_FORMAT_R32_UINT;
-  VkPipeline mesh_pipeline = VK_NULL_HANDLE;
-  REQUIRE_MESSAGE(gfx::create_mesh_pipeline(device, mesh_desc, mesh_pipeline, &error), error);
 
-  const u64 image_bytes = u64{k_size} * k_size * 4;
+  // Two visibility buffers, the cut's and every leaf's. The id's high bits are the entry of the
+  // visible list the draw read, so the cut's pixels name survivors through that list.
+  const u64 vis_bytes = u64{k_size} * k_size * sizeof(u64);
+  const VkBufferUsageFlags k_vis = k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+                                   VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                                   VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+  gfx::BufferResource vis_cut;
+  gfx::BufferResource vis_leaves;
   gfx::BufferResource cut_host;
   gfx::BufferResource leaves_host;
-  REQUIRE(gfx::create_buffer(device, image_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, cut_host,
+  REQUIRE(gfx::create_buffer(device, vis_bytes, k_vis, false, vis_cut, &error));
+  REQUIRE(gfx::create_buffer(device, vis_bytes, k_vis, false, vis_leaves, &error));
+  REQUIRE(gfx::create_buffer(device, vis_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, cut_host,
                              &error));
-  REQUIRE(gfx::create_buffer(device, image_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true,
-                             leaves_host, &error));
+  REQUIRE(gfx::create_buffer(device, vis_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, leaves_host,
+                             &error));
 
-  MeshParams mesh_params{};
-  mesh_params.view_proj = view_proj;
-  mesh_params.clusters = clusters.address;
-  mesh_params.mesh = scene.meshes.address;
-  mesh_params.instances = scene.instances.address;
-  mesh_params.triangles = triangles.address;
-  mesh_params.visible = visible.address;
-  MeshParams leaf_params = mesh_params;
-  leaf_params.visible = 0;
+  gfx::ClusterDrawParams cut_params{};
+  cut_params.view_proj = view_proj;
+  cut_params.clusters = clusters.address;
+  cut_params.mesh = scene.meshes.address;
+  cut_params.instances = scene.instances.address;
+  cut_params.triangles = triangles.address;
+  cut_params.visible = visible.address;
+  cut_params.visibility = vis_cut.address;
+  cut_params.width = k_size;
+  cut_params.height = k_size;
+  gfx::ClusterDrawParams leaf_params = cut_params;
+  leaf_params.visible = 0;  // clusters 0..leaf_count-1: the leaves come first
+  leaf_params.visibility = vis_leaves.address;
   const u64 params_address = params.address;
 
   gfx::RenderGraph graph(device);
@@ -203,10 +210,7 @@ TEST_CASE("cluster cull: GPU selection matches the CPU reference and the cut cov
     graph.add_pass(
         "reset", gfx::PassKind::Transfer,
         [&](gfx::PassBuilder& b) { b.write(rg_args, gfx::Access::TransferWrite); },
-        [&](VkCommandBuffer cb, gfx::RenderGraph&) {
-          vkCmdFillBuffer(cb, args.buffer, 0, sizeof(u32), 0);
-          vkCmdFillBuffer(cb, args.buffer, sizeof(u32), sizeof(u32) * 2, 1);
-        });
+        [&](VkCommandBuffer cb, gfx::RenderGraph&) { raster.reset_args(cb, args.buffer); });
     graph.add_pass(
         "cull", gfx::PassKind::Compute,
         [&](gfx::PassBuilder& b) {
@@ -225,79 +229,81 @@ TEST_CASE("cluster cull: GPU selection matches the CPU reference and the cut cov
   const gfx::RgBuffer rg_visible = graph.import_buffer("visible", visible);
   const gfx::RgBuffer rg_visible_host = graph.import_buffer("visible_host", visible_host);
   const gfx::RgBuffer rg_args_host = graph.import_buffer("args_host", args_host);
+  const gfx::RgBuffer rg_cut = graph.import_buffer("vis_cut", vis_cut);
+  const gfx::RgBuffer rg_leaves = graph.import_buffer("vis_leaves", vis_leaves);
   const gfx::RgBuffer rg_cut_host = graph.import_buffer("cut_host", cut_host);
   const gfx::RgBuffer rg_leaves_host = graph.import_buffer("leaves_host", leaves_host);
-  const gfx::RgImageDesc id_desc{
-      k_size, k_size, VK_FORMAT_R32_UINT,
-      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT};
-  const gfx::RgImage cut_ids = graph.create_image("cut", id_desc);
-  const gfx::RgImage leaf_ids = graph.create_image("leaves", id_desc);
-  VkClearColorValue clear{};
-  clear.uint32[0] = 0xFFFFFFFFu;
+  graph.add_pass(
+      "clear", gfx::PassKind::Transfer,
+      [&](gfx::PassBuilder& b) {
+        b.write(rg_cut, gfx::Access::TransferWrite);
+        b.write(rg_leaves, gfx::Access::TransferWrite);
+      },
+      [&](VkCommandBuffer cb, gfx::RenderGraph&) {
+        vkCmdFillBuffer(cb, vis_cut.buffer, 0, VK_WHOLE_SIZE, 0);
+        vkCmdFillBuffer(cb, vis_leaves.buffer, 0, VK_WHOLE_SIZE, 0);
+      });
   add_cull_passes(rg_args, rg_visible);
   graph.add_pass(
       "draw cut", gfx::PassKind::Raster,
       [&](gfx::PassBuilder& b) {
-        b.color_attachment(cut_ids, VK_ATTACHMENT_LOAD_OP_CLEAR, clear);
+        b.render_area(k_size, k_size);
+        b.write(rg_cut, gfx::Access::FragmentReadWrite);
         b.read(rg_args, gfx::Access::IndirectRead);
-        b.read(rg_visible, gfx::Access::MeshRead);
+        b.read(rg_visible, raster.geometry_read());
       },
       [&](VkCommandBuffer cb, gfx::RenderGraph&) {
-        vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, mesh_pipeline);
-        bindless.bind(cb, VK_PIPELINE_BIND_POINT_GRAPHICS);
-        vkCmdPushConstants(cb, bindless.pipeline_layout(), VK_SHADER_STAGE_ALL, 0,
-                           sizeof(mesh_params), &mesh_params);
-        vkCmdDrawMeshTasksIndirectEXT(cb, args.buffer, 0, 1, sizeof(u32) * 3);
+        raster.draw_indirect(cb, bindless, cut_params, args.buffer);
       });
   graph.add_pass(
       "draw leaves", gfx::PassKind::Raster,
       [&](gfx::PassBuilder& b) {
-        b.color_attachment(leaf_ids, VK_ATTACHMENT_LOAD_OP_CLEAR, clear);
+        b.render_area(k_size, k_size);
+        b.write(rg_leaves, gfx::Access::FragmentReadWrite);
       },
       [&](VkCommandBuffer cb, gfx::RenderGraph&) {
-        vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, mesh_pipeline);
-        bindless.bind(cb, VK_PIPELINE_BIND_POINT_GRAPHICS);
-        vkCmdPushConstants(cb, bindless.pipeline_layout(), VK_SHADER_STAGE_ALL, 0,
-                           sizeof(leaf_params), &leaf_params);
-        vkCmdDrawMeshTasksEXT(cb, leaf_count, 1, 1);
+        raster.draw(cb, bindless, leaf_params, leaf_count);
       });
   graph.add_pass(
       "readback", gfx::PassKind::Transfer,
       [&](gfx::PassBuilder& b) {
         b.read(rg_args, gfx::Access::TransferRead);
         b.read(rg_visible, gfx::Access::TransferRead);
-        b.read(cut_ids, gfx::Access::TransferRead);
-        b.read(leaf_ids, gfx::Access::TransferRead);
+        b.read(rg_cut, gfx::Access::TransferRead);
+        b.read(rg_leaves, gfx::Access::TransferRead);
         b.write(rg_args_host, gfx::Access::TransferWrite);
         b.write(rg_visible_host, gfx::Access::TransferWrite);
         b.write(rg_cut_host, gfx::Access::TransferWrite);
         b.write(rg_leaves_host, gfx::Access::TransferWrite);
       },
-      [&](VkCommandBuffer cb, gfx::RenderGraph& g) {
-        const VkBufferCopy args_copy{0, 0, sizeof(u32) * 3};
+      [&](VkCommandBuffer cb, gfx::RenderGraph&) {
+        const VkBufferCopy args_copy{0, 0, gfx::k_draw_args_bytes};
         vkCmdCopyBuffer(cb, args.buffer, args_host.buffer, 1, &args_copy);
         const VkBufferCopy visible_copy{0, 0, visible_bytes};
         vkCmdCopyBuffer(cb, visible.buffer, visible_host.buffer, 1, &visible_copy);
-        VkBufferImageCopy region{};
-        region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-        region.imageExtent = {k_size, k_size, 1};
-        vkCmdCopyImageToBuffer(cb, g.image(cut_ids).image, g.image_layout(cut_ids), cut_host.buffer,
-                               1, &region);
-        vkCmdCopyImageToBuffer(cb, g.image(leaf_ids).image, g.image_layout(leaf_ids),
-                               leaves_host.buffer, 1, &region);
+        const VkBufferCopy vis_copy{0, 0, vis_bytes};
+        vkCmdCopyBuffer(cb, vis_cut.buffer, cut_host.buffer, 1, &vis_copy);
+        vkCmdCopyBuffer(cb, vis_leaves.buffer, leaves_host.buffer, 1, &vis_copy);
       });
   REQUIRE_MESSAGE(graph.compile(&error), error);
-  CHECK(graph.stats().buffer_barriers >= 3);  // fill -> cull, cull -> indirect/mesh read, -> copies
+  CHECK(graph.stats().buffer_barriers >= 3);  // fill -> cull, cull -> indirect/draw read, -> copies
 
   VkCommandBuffer commands = frames.begin_frame();
   graph.execute(commands);
   REQUIRE(frames.wait(frames.end_frame()));
 
-  // Survivors equal the reference set.
+  // Survivors equal the reference set, and the cull pass counted into the raster path's word and
+  // left the rest of the block as the reset wrote it.
   const auto* args_out = static_cast<const u32*>(args_host.mapped);
-  CHECK(args_out[1] == 1);
-  CHECK(args_out[2] == 1);
-  const u32 count = args_out[0];
+  if (raster.path() == gfx_test::RasterPath::Mesh) {
+    CHECK(args_out[1] == 1);
+    CHECK(args_out[2] == 1);
+  } else {
+    CHECK(args_out[0] == triangles_per_cluster * 3);
+    CHECK(args_out[2] == 0);
+    CHECK(args_out[3] == 0);
+  }
+  const u32 count = raster.survivors(args_out);
   CHECK(count == expected.size());
   // A visible entry is {instance, cluster}; there is one instance, so every entry names it.
   Vector<u32> got;
@@ -319,19 +325,19 @@ TEST_CASE("cluster cull: GPU selection matches the CPU reference and the cut cov
   CHECK(mismatched == 0);
 
   // The cut covers the same pixels as every leaf cluster, and every cut pixel names a survivor.
-  const auto* cut_pixels = static_cast<const u32*>(cut_host.mapped);
-  const auto* leaf_pixels = static_cast<const u32*>(leaves_host.mapped);
+  const auto* cut_pixels = static_cast<const u64*>(cut_host.mapped);
+  const auto* leaf_pixels = static_cast<const u64*>(leaves_host.mapped);
   u32 covered = 0;
   u32 coverage_mismatch = 0;
   u32 foreign = 0;
   for (u32 i = 0; i < k_size * k_size; ++i) {
-    const bool in_cut = cut_pixels[i] != 0xFFFFFFFFu;
-    const bool in_leaves = leaf_pixels[i] != 0xFFFFFFFFu;
+    const bool in_cut = cut_pixels[i] != 0;
+    const bool in_leaves = leaf_pixels[i] != 0;
     if (in_leaves) ++covered;
     if (in_cut != in_leaves) ++coverage_mismatch;
     // The id's high bits are the entry in the visible list, which names the cluster.
     if (in_cut) {
-      const u32 entry = cut_pixels[i] >> 8;
+      const u32 entry = static_cast<u32>(cut_pixels[i]) >> 8;
       const u32 cluster = entry < count ? cluster_of_entry[entry] : ~u32{0};
       if (!std::binary_search(expected.begin(), expected.end(), cluster)) ++foreign;
     }
@@ -360,24 +366,24 @@ TEST_CASE("cluster cull: GPU selection matches the CPU reference and the cut cov
         b.write(rg_args_host2, gfx::Access::TransferWrite);
       },
       [&](VkCommandBuffer cb, gfx::RenderGraph&) {
-        const VkBufferCopy args_copy{0, 0, sizeof(u32) * 3};
+        const VkBufferCopy args_copy{0, 0, gfx::k_draw_args_bytes};
         vkCmdCopyBuffer(cb, args.buffer, args_host.buffer, 1, &args_copy);
       });
   REQUIRE(graph.compile(&error));
   commands = frames.begin_frame();
   graph.execute(commands);
   REQUIRE(frames.wait(frames.end_frame()));
-  CHECK(args_out[0] == 0);
+  CHECK(raster.survivors(args_out) == 0);
 
   graph.reset();
-  gfx::destroy_pipeline(device, mesh_pipeline);
+  raster.destroy(device);
   gfx::destroy_compute_pipeline(device, cull_pipeline);
-  gfx::destroy_shader_module(device, mesh_module);
   gfx::destroy_shader_module(device, cull_module);
   bindless.destroy();
   scene.destroy(device);
-  for (gfx::BufferResource* b : {&cut_host, &leaves_host, &visible_host, &args_host, &params, &args,
-                                 &visible, &lods, &triangles, &clusters}) {
+  for (gfx::BufferResource* b :
+       {&cut_host, &leaves_host, &vis_cut, &vis_leaves, &visible_host, &args_host, &params, &args,
+        &visible, &lods, &triangles, &clusters}) {
     gfx::destroy_buffer(device, *b);
   }
   frames.destroy();

@@ -2,6 +2,7 @@
 // the mesh-shader path does from the same clusters, both drawn directly and through the cull
 // pass counting into vkCmdDrawIndirect's instance count. The mesh comparison needs mesh shaders;
 // the vertex path itself and its indirect draw run on any device with 64-bit buffer atomics.
+#include "raster_path.h"
 #include "scene_fixture.h"
 
 #include <domain/geometry/cluster_lod.h>
@@ -53,16 +54,10 @@ void make_terrain(u32 n, f32 extent, Vector<Vec3>& positions, Vector<u32>& indic
 TEST_CASE("vertex path: the baseline tier fills the visibility buffer like the mesh path") {
   gfx::Device device;
   std::string error;
-  if (!device.create(gfx::DeviceOptions{}, &error)) {
-    MESSAGE("device unavailable: " << error);
-    return;
-  }
-  if (!device.features().buffer_int64_atomics) {
-    MESSAGE("no 64-bit buffer atomics on " << device.adapter().name);
-    device.destroy();
-    return;
-  }
-  const bool have_mesh = device.features().mesh_shader;
+  if (!gfx_test::open_device(device)) return;
+  if (!gfx_test::require(device, {gfx_test::Need::VisibilityBuffer})) return;
+  const bool have_mesh =
+      gfx_test::part(device, "the comparison with the mesh path", {gfx_test::Need::MeshShader});
 
   Vector<Vec3> positions;
   Vector<u32> indices;

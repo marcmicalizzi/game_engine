@@ -1,5 +1,7 @@
 // The shader toolchain end to end: slangc at build time, SPIR-V embedded in a header, a shader
 // module, a descriptor set, a compute pipeline, a dispatch, and a readback.
+#include "raster_path.h"
+
 #include <domain/gfx/device.h>
 #include <domain/gfx/vulkan.h>
 
@@ -32,10 +34,7 @@ TEST_CASE("gfx: a Slang compute shader fills a buffer") {
 
   gfx::Device device;
   std::string error;
-  if (!device.create(gfx::DeviceOptions{}, &error)) {
-    MESSAGE("device unavailable: " << error);
-    return;
-  }
+  if (!gfx_test::open_device(device)) return;
   const gfx::Handles& h = device.handles();
 
   VkShaderModule module =

@@ -173,7 +173,7 @@ bool any_mentions(const Vector<std::string>& lines, const char* needle) {
 // Creates a device or skips with the reason, as the other gfx tests do.
 bool open_device(gfx::Device& device, const gfx::DeviceOptions& options, std::string& error) {
   if (!device.create(options, &error)) {
-    MESSAGE("device unavailable: " << error);
+    MESSAGE("skipped: device unavailable: " << error);
     return false;
   }
   return true;
@@ -196,7 +196,7 @@ const std::string& driver_error() {
 
 bool driver_available() {
   if (driver_error().empty()) return true;
-  MESSAGE("device unavailable: " << driver_error());
+  MESSAGE("skipped: device unavailable: " << driver_error());
   return false;
 }
 

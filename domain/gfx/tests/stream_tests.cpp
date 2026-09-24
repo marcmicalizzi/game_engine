@@ -9,6 +9,7 @@
 // The tests run the cull pass with the frustum, the cone test and occlusion **off**, because the
 // CPU reference is a pure LOD cut and knows nothing about any of them. Everything else — the
 // instance transform, the projection, the threshold — is the identity or shared.
+#include "raster_path.h"
 #include "scene_fixture.h"
 
 #include <domain/geometry/cluster_lod.h>
@@ -92,10 +93,7 @@ void random_residency(const geometry::ClusterPages& pages, Rng& rng, u32 evictio
 TEST_CASE("cluster cull: the streaming drawing rule is the CPU reference, page for page") {
   gfx::Device device;
   std::string error;
-  if (!device.create(gfx::DeviceOptions{}, &error)) {
-    MESSAGE("device unavailable: " << error);
-    return;
-  }
+  if (!gfx_test::open_device(device)) return;
 
   Vector<Vec3> positions;
   Vector<u32> indices;

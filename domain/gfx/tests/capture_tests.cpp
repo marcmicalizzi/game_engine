@@ -1,6 +1,8 @@
 // The capture path: draw the test triangle through the graph, capture the attachment, convert
 // to RGBA8, encode a PNG, and check the pixels the same way the raster test does. Also covers
 // the render graph's set_final_layout, since captures of presented frames rely on it.
+#include "raster_path.h"
+
 #include <domain/gfx/bindless.h>
 #include <domain/gfx/capture.h>
 #include <domain/gfx/device.h>
@@ -19,10 +21,7 @@ using namespace engine;
 TEST_CASE("capture: an attachment left in a requested layout captures pixel-exact") {
   gfx::Device device;
   std::string error;
-  if (!device.create(gfx::DeviceOptions{}, &error)) {
-    MESSAGE("device unavailable: " << error);
-    return;
-  }
+  if (!gfx_test::open_device(device)) return;
   gfx::FrameContext frames;
   REQUIRE(frames.create(device, 2, &error));
   gfx::BindlessSet bindless;
