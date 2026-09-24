@@ -1518,6 +1518,9 @@ int run_reference(Options& options) {
     machine.set("start", bench::machine_state_json(machine_start));
     machine.set("end", bench::machine_state_json(machine_end));
     const std::string machine_text = write_json(machine, JsonWriteOptions{.pretty = false});
+    // The caveat first and the summary last (see the windowed summary for why the order matters).
+    (void)bench::warn_if_busy(bench::worst_of(machine_start, machine_end), bench::QuietThresholds{},
+                              stderr);
     std::printf(
         "{\"reference\":true,\"spp\":%u,\"bounces\":%u,\"finest\":%s,\"width\":%u,\"height\":%u,"
         "\"seconds\":%.3f,\"trace_ms\":%.3f,\"samples\":%u,\"visible_pairs\":%u,"
@@ -1533,9 +1536,7 @@ int run_reference(Options& options) {
         static_cast<unsigned long long>(stats.gpu_memory.used_mib),
         static_cast<unsigned long long>(stats.gpu_memory.device_local_total_mib),
         machine_text.c_str(), captured ? "true" : "false");
-    std::fflush(stdout);  // whole, before stderr says anything (see the windowed summary)
-    (void)bench::warn_if_busy(bench::worst_of(machine_start, machine_end), bench::QuietThresholds{},
-                              stderr);
+    std::fflush(stdout);
   }
   return exit_code;
 }
@@ -1621,6 +1622,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
   Vector<scene::FrameRecord> records;
   scene::FlythroughSummary summary;
   summary.format = "engine.flythrough.v1";
+  std::string summary_line;  // printed after the teardown, so it is the last thing out
   bench::MachineState machine_start;
   bench::MachineState machine_end;
   bool measured = false;
@@ -2134,28 +2136,14 @@ int run_offscreen(Options& options, Interactive& interactive) {
       summary.quiet =
           bench::is_quiet(bench::worst_of(machine_start, machine_end), bench::QuietThresholds{});
     }
-    const std::string line =
-        write_json(schema::to_json(summary), JsonWriteOptions{.pretty = false});
+    summary_line = write_json(schema::to_json(summary), JsonWriteOptions{.pretty = false});
     if (!options.benchmark.empty()) {
       const io::Status status = write_benchmark(
           options.benchmark, std::span<const scene::FrameRecord>(records.data(), records.size()),
-          line);
+          summary_line);
       if (status != io::Status::Ok) {
         exit_code = fail("benchmark", std::string("cannot write ") + options.benchmark + ": " +
                                           io::status_name(status));
-      }
-    }
-    if (exit_code == 0) {
-      // The summary line, with the two fields a plain run's readers look for beside it.
-      std::printf("%s\n", line.c_str());
-      std::fflush(stdout);  // whole, before stderr says anything (see the windowed summary)
-      if (!measured) {
-        std::fprintf(stderr, "engine-view: offscreen, %llu frames, captured %s\n",
-                     static_cast<unsigned long long>(rendered), captured ? "yes" : "no");
-      }
-      if (measured) {
-        (void)bench::warn_if_busy(bench::worst_of(machine_start, machine_end),
-                                  bench::QuietThresholds{}, stderr);
       }
     }
   }
@@ -2166,6 +2154,20 @@ int run_offscreen(Options& options, Interactive& interactive) {
   scene_off.destroy();
   scene.destroy();
   device.destroy();
+  if (exit_code == 0) {
+    // Everything bound for stderr first — the note a plain run's readers look for, the busy
+    // caveat, and anything the teardown above logged — and the summary line last and whole, as
+    // the windowed path does and for the same reason.
+    if (!measured) {
+      std::fprintf(stderr, "engine-view: offscreen, %llu frames, captured %s\n",
+                   static_cast<unsigned long long>(rendered), captured ? "yes" : "no");
+    } else {
+      (void)bench::warn_if_busy(bench::worst_of(machine_start, machine_end),
+                                bench::QuietThresholds{}, stderr);
+    }
+    std::printf("%s\n", summary_line.c_str());
+    std::fflush(stdout);
+  }
   return exit_code;
 }
 
@@ -3453,6 +3455,14 @@ int main(int argc, char** argv) {
     machine.set("start", bench::machine_state_json(machine_start));
     machine.set("end", bench::machine_state_json(machine_end));
     const std::string machine_text = write_json(machine, JsonWriteOptions{.pretty = false});
+    // stdout is the summary; the caveat goes beside it on stderr, the same line and the same
+    // thresholds the bench harness prints — **before** the summary, which is the last thing out
+    // and goes out whole. Scripts and the end-to-end tests read the last line of the two streams
+    // merged, and stdout into a pipe is fully buffered: printed first and flushed at exit, as it
+    // used to be, a summary longer than the buffer (an interactive one is) had the caveat spliced
+    // into its middle.
+    (void)bench::warn_if_busy(bench::worst_of(machine_start, machine_end), bench::QuietThresholds{},
+                              stderr);
     std::printf(
         "{\"frames\":%llu,\"seconds\":%.3f,\"avg_ms\":%.3f,\"width\":%u,\"height\":%u,"
         "\"clusters\":%u,\"leaf_clusters\":%u,\"triangles\":%u,\"lod_levels\":%u,\"build_ms\":%.1f,"
@@ -3518,14 +3528,7 @@ int main(int argc, char** argv) {
         stats.deform_alloc_ms(), stats.trace_ms(), stats.shadow_ms(), stats.shadow_cull_ms(),
         stats.total_ms(), static_cast<unsigned long long>(stats.timed_frames),
         captured ? "true" : "false", interactive_text.c_str());
-    // The whole line out before anything goes to stderr. stdout into a pipe is fully buffered, so
-    // a summary longer than the buffer (an interactive one is) leaves its tail in it, and a
-    // caller that merges the two streams would read the WARNING below spliced into the middle.
     std::fflush(stdout);
-    // stdout is the summary; the caveat goes beside it on stderr, the same line and the same
-    // thresholds the bench harness prints.
-    (void)bench::warn_if_busy(bench::worst_of(machine_start, machine_end), bench::QuietThresholds{},
-                              stderr);
   }
   log::remove_sink(&stderr_sink);
   return exit_code;
