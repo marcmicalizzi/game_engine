@@ -23,7 +23,7 @@ Source is one directory per module, layered lowest to highest, and CMake refuses
 | `apps/` | L4 | the executables below |
 | `game/` | L5 | per-game code (none yet) |
 
-The executables build into `build/<preset>/bin/`: `engine-host` (the engine as a JSON-RPC 2.0 server), `engine-cli` (its command-line client), `engine-view` (renders a mesh or a scene to a window or a PNG, flies camera paths, benchmarks), `engine-content` (the content build: glTF to `.clusters`, the derived-data cache, tissue definitions), `engine-image` (image decode and encode checks), and `engine-input` (the input-device probe). `docs/subsystems/apps.md` documents each.
+The executables build into `build/<preset>/bin/`: `engine-host` (the engine as a JSON-RPC 2.0 server), `engine-cli` (its command-line client), `engine-view` (renders a mesh or a scene to a window or a PNG, flies camera paths, benchmarks), `engine-content` (the content build: glTF to `.clusters`, the derived-data cache, tissue definitions), `engine-image` (image decode and encode checks), `engine-input` (the input-device probe), and `engine-mcp` (the MCP bridge: a Model Context Protocol server for agents' clients over an engine-host of its own). `docs/subsystems/apps.md` documents each.
 
 `schemas/` is the IDL source of truth, `tools/` holds the PowerShell 7 scripts and small C++ tools that drive everything, `content/` holds test scenes, golden images and recorded input, and `third_party/` holds vendored dependencies under permissive licenses only.
 

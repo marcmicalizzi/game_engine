@@ -18,6 +18,9 @@ compile_commands.json
 
 # Derived data and local content caches (content-addressed, rebuildable)
 /ddc/
+# engine-mcp's default workspace (captures, benchmark results) when an MCP client starts it at the
+# repository root; bulk outputs are never committed (docs/subsystems/apps.md, "engine-mcp").
+/mcp-workspace/
 /content/golden/local/
 /content/samples/
 

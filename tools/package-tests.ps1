@@ -209,9 +209,10 @@ Write-Host "tests:    $($tests.Count) from ctest, $($excluded.Count) excluded"
 # ---- the executables -------------------------------------------------------------------------
 #
 # Every test's own executable, plus every app: `engine-cli` is what the runner asks for the
-# adapter report, `engine-host` is what `engine-cli` spawns, `engine-content` is what the
-# engine-view tests drive, and `schemac` is a test's child process. Taking all of them is both
-# simpler and more honest than trying to work out which app some test spawns.
+# adapter report, `engine-host` is what `engine-cli` and `engine-mcp` spawn, `engine-content` is
+# what the engine-view tests drive, and `schemac` is a test's child process. Taking all of them is
+# both simpler and more honest than trying to work out which app some test spawns: `engine-mcp`
+# arrived after this was written and needed no line here.
 
 $allExes = Get-ChildItem -Path $BuildDir -Recurse -File |
   Where-Object { $_.FullName -notmatch '[\\/]_deps[\\/]' } |

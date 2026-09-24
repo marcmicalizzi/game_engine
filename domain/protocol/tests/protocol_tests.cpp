@@ -604,6 +604,27 @@ TEST_CASE("protocol: tunables, log, and schema methods") {
     }
   }
   CHECK(has_record);
+  // Every field states the value an absent one becomes, in the form a caller would send it: the
+  // schema's declared default, a value-initialized one where it declares none, null for an empty
+  // optional, and an enumerator by name. A client generating JSON Schema from this needs no
+  // second copy of any default (the MCP bridge, docs/subsystems/apps.md).
+  const auto default_of = [&](const char* type, const char* field) {
+    JsonValue d2 = host.ok("schema.describe", obj({{"type", JsonValue(type)}}));
+    const JsonValue& fields = at(at(d2, "description"), "fields");
+    for (usize i = 0; i < fields.size(); ++i) {
+      if (at(fields[i], "name") == JsonValue(field)) return at(fields[i], "default");
+    }
+    FAIL("no field " << field << " in " << type);
+    return JsonValue();
+  };
+  CHECK(default_of("engine.protocol.SessionOpenParams", "create") == JsonValue(false));
+  CHECK(default_of("engine.protocol.SessionOpenParams", "path") == JsonValue(""));
+  CHECK(default_of("engine.protocol.ObjectsParams", "limit") == JsonValue(u32{1000}));
+  CHECK(default_of("engine.protocol.ObjectsParams", "parent").is_null());
+  CHECK(default_of("engine.protocol.AddLayerParams", "role") == JsonValue("Feature"));
+  CHECK(default_of("engine.protocol.AddLayerParams", "edit") == JsonValue(true));
+  CHECK(default_of("engine.doc.Command", "kind") == JsonValue("SetProperty"));
+  CHECK(default_of("engine.protocol.ApplyParams", "commands") == JsonValue::array());
   JsonValue role = host.ok("schema.describe", obj({{"type", JsonValue("engine.doc.LayerRole")}}));
   CHECK(at(at(role, "description"), "kind") == JsonValue("enum"));
   CHECK(at(at(role, "description"), "values").size() == 4);

@@ -1,6 +1,8 @@
 // The day-one method set (docs/plan/06-agent-tooling.md §6.9): sessions, document editing and
 // introspection, tunables, the log ring, and schema discovery.
+#include <core/base/macros.h>
 #include <core/log/log.h>
+#include <core/schema/json_reflect.h>
 #include <core/schema/type_info.h>
 #include <domain/gfx/adapter.h>
 #include <domain/protocol/rpc.h>
@@ -8,7 +10,9 @@
 #include <foundation/tunables/tunables.h>
 
 #include <algorithm>
+#include <cstddef>
 #include <cstring>
+#include <new>
 
 #if ENGINE_PLATFORM_WINDOWS
 #include <process.h>
@@ -347,6 +351,39 @@ void render_type(const schema::TypeRef& t, std::string& out) {
   }
 }
 
+// A default-constructed instance of a schema struct, which is where a field's default lives:
+// schemac writes the declared defaults into the C++ initializers and nowhere else, and the
+// protocol's reader leaves an absent field at exactly this value. Reading it back through the
+// type's own JSON writer means `schema.describe` states a default in the same form a caller
+// would send it, and a client that generates forms or JSON Schema from the description (the MCP
+// bridge does, docs/subsystems/apps.md "engine-mcp") needs no second copy of any default.
+class DefaultObject {
+ public:
+  explicit DefaultObject(const schema::TypeInfo& type) : type_(type) {
+    if (type.ops == nullptr || type.ops->construct == nullptr || type.size == 0) return;
+    align_ = std::max<usize>(type.align, alignof(std::max_align_t));
+    storage_ = ::operator new(type.size, std::align_val_t{align_});
+    type.ops->construct(storage_);
+  }
+  ~DefaultObject() {
+    if (storage_ == nullptr) return;
+    if (type_.ops->destroy != nullptr) type_.ops->destroy(storage_);
+    ::operator delete(storage_, std::align_val_t{align_});
+  }
+  ENGINE_NON_COPYABLE(DefaultObject);
+
+  // The field's default as JSON, or false when there is no object to read it from.
+  bool field(const schema::FieldInfo& f, JsonValue& out) const {
+    if (storage_ == nullptr) return false;
+    return schema::to_json(f.type, static_cast<const std::byte*>(storage_) + f.offset, out);
+  }
+
+ private:
+  const schema::TypeInfo& type_;
+  void* storage_ = nullptr;
+  usize align_ = 0;
+};
+
 bool schema_types(Context&, SchemaTypesResult& out, RpcError&) {
   for (const schema::TypeInfo* t : schema::Registry::global().all()) {
     out.types.push_back(t->qualified_name);
@@ -370,6 +407,7 @@ bool schema_describe(Context&, const SchemaDescribeParams& params, SchemaDescrib
   d.set("tag", JsonValue(t->tag != nullptr ? t->tag : ""));
   d.set("doc", JsonValue(t->doc != nullptr ? t->doc : ""));
   if (t->kind == schema::Kind::Struct) {
+    const DefaultObject defaults(*t);
     JsonValue fields = JsonValue::array();
     for (const schema::FieldInfo& f : t->fields) {
       JsonValue fo = JsonValue::object();
@@ -378,9 +416,15 @@ bool schema_describe(Context&, const SchemaDescribeParams& params, SchemaDescrib
       render_type(f.type, type_text);
       fo.set("type", JsonValue(type_text));
       fo.set("since", JsonValue(static_cast<u32>(f.since_version)));
-      fo.set("transient", JsonValue((f.flags & schema::FieldFlag::transient) != 0));
+      const bool transient = (f.flags & schema::FieldFlag::transient) != 0;
+      fo.set("transient", JsonValue(transient));
       fo.set("deprecated", JsonValue((f.flags & schema::FieldFlag::deprecated) != 0));
       fo.set("doc", JsonValue(f.doc != nullptr ? f.doc : ""));
+      // What an absent field becomes. A transient field is never read, so it has none to state.
+      JsonValue default_value;
+      if (!transient && defaults.field(f, default_value)) {
+        fo.set("default", std::move(default_value));
+      }
       fields.push_back(std::move(fo));
     }
     d.set("fields", std::move(fields));

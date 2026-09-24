@@ -1,0 +1,236 @@
+#pragma once
+
+// engine-mcp: the Model Context Protocol bridge of docs/plan/06-agent-tooling.md §6.3
+// (docs/subsystems/apps.md, "engine-mcp").
+//
+// MCP is the cognitive interface and the engine protocol the mechanical one. This process speaks
+// MCP on its own stdio and the engine protocol to one engine-host it spawns, exactly as engine-cli
+// does; everything in between is here: the curated tools, their JSON Schema (generated at startup
+// from the host's own `schema.describe`, so no field list is copied by hand), attribution rules,
+// pagination, workspace files for bulk results, and error messages that say what to do next.
+//
+// It is a separate process rather than a second front end on the dispatcher because the methods
+// it needs are not all in one library: `render.*` is registered by engine-host over
+// systems/renderer, and the only thing that has every method is the host. Being a client also
+// keeps the plan's shape — the editor, the CLI and this bridge are equal clients of one server —
+// and one host per bridge keeps session ownership simple: every session and scene id the agent
+// sees was made by this bridge's host, and they all go when it does.
+
+#include <core/base/macros.h>
+#include <core/base/types.h>
+#include <core/containers/flat_map.h>
+#include <core/containers/vector.h>
+#include <core/json/json_value.h>
+#include <core/platform/process.h>
+
+#include <memory>
+#include <span>
+#include <string>
+#include <string_view>
+
+namespace engine::mcp {
+
+struct BridgeOptions {
+  std::string host_path;
+  Vector<std::string> mounts;
+  // Absolute, forward slashes, no trailing slash. Created on the first bulk write.
+  std::string workspace;
+  // The attribution actor a mutation carries when the caller names none.
+  std::string actor;
+};
+
+// ---- the host --------------------------------------------------------------------------------
+
+// One engine-host behind the bridge, spoken to one JSON-RPC line at a time. A host that has died
+// is noticed on the call that finds its pipes closed — its stdin refuses the write, or its stdout
+// ends before the answer — which is when a dead process can be told from a slow one without a
+// timeout that would also cut off a long reference render.
+class HostClient {
+ public:
+  enum class Status : u8 { ok, error, gone };
+  struct Error {
+    i32 code = 0;
+    std::string message;
+    JsonValue data;
+  };
+
+  HostClient() = default;
+  ~HostClient();
+  ENGINE_NON_COPYABLE(HostClient);
+
+  bool start(const BridgeOptions& options, std::string& error);
+  // `gone` fills `error.message` with what happened to the host and `error.code` with its exit
+  // code; the process is reaped, and the next `start` makes a new one.
+  Status call(std::string_view method, const JsonValue& params, JsonValue& result, Error& error);
+  bool running() const noexcept { return process_ != nullptr; }
+  // Closes the host's stdin and waits for it; the host exits when its input ends.
+  void stop();
+  // Incremented by every start: a scene id from an earlier generation names nothing.
+  u32 generation() const noexcept { return generation_; }
+
+ private:
+  void reap(Error& error, std::string_view what);
+
+  std::unique_ptr<platform::Process> process_;
+  u64 next_id_ = 1;
+  u32 generation_ = 0;
+};
+
+// ---- JSON Schema from the host's schema descriptions ------------------------------------------
+
+// The method catalogue and the schema types, as the host describes them, turned into JSON Schema.
+// A type is described once and cached; the host is the one source of truth, so a field added to
+// a params struct reaches the tool's input schema by rebuilding the host, not by editing here.
+class SchemaGen {
+ public:
+  struct Method {
+    std::string name;
+    std::string doc;
+    std::string params_type;
+    std::string result_type;
+  };
+
+  explicit SchemaGen(HostClient& host) : host_(host) {}
+
+  bool load_methods(std::string& error);
+  const Method* method(std::string_view name) const noexcept;
+  std::span<const Method> methods() const noexcept { return {methods_.data(), methods_.size()}; }
+
+  // schema.describe's own answer for a qualified type, cached.
+  bool describe(std::string_view qualified, JsonValue& out, std::string& error);
+  // JSON Schema of a type as schema.describe spells it: "u32", "engine.doc.Command[]",
+  // "engine.protocol.RenderCamera?", "map<string, json>".
+  bool type_schema(std::string_view type, JsonValue& out, std::string& error);
+  // The object schema of a method's params type; an empty object schema for a method with none.
+  bool params_schema(std::string_view method, JsonValue& out, std::string& error);
+
+ private:
+  bool type_schema_at(std::string_view type, u32 depth, JsonValue& out, std::string& error);
+
+  HostClient& host_;
+  Vector<Method> methods_;
+  FlatMap<std::string, JsonValue> described_;
+};
+
+// ---- tools -------------------------------------------------------------------------------------
+
+// What a tool call produced: a short summary for a reader, the data as an object (the MCP
+// `structuredContent`, and a compact JSON text block for clients that read only text), and links
+// to files the call wrote.
+struct ToolOutcome {
+  struct Link {
+    std::string uri;
+    std::string name;
+    std::string mime;
+  };
+  bool error = false;
+  std::string summary;
+  JsonValue data = JsonValue::object();
+  Vector<Link> links;
+};
+
+class Bridge;
+
+using ToolSchema = bool (*)(Bridge& bridge, JsonValue& schema, std::string& error);
+using ToolRun = void (*)(Bridge& bridge, const JsonValue& args, ToolOutcome& out);
+
+struct ToolDef {
+  const char* name;
+  const char* title;
+  const char* description;
+  // The protocol methods the tool calls, space-separated. A tool whose methods the host does not
+  // serve is not offered, rather than offered and failing.
+  const char* methods;
+  bool read_only;
+  bool destructive;
+  bool idempotent;
+  ToolSchema schema;
+  ToolRun run;
+};
+
+std::span<const ToolDef> tool_table() noexcept;
+
+// ---- the bridge --------------------------------------------------------------------------------
+
+class Bridge {
+ public:
+  explicit Bridge(BridgeOptions options);
+  ~Bridge();
+  ENGINE_NON_COPYABLE(Bridge);
+
+  // Starts the host and builds every tool's input schema. False with a reason when either fails.
+  bool start(std::string& error);
+  // One MCP message in; the response to write, or null when nothing is to be sent.
+  JsonValue handle_text(std::string_view line);
+  JsonValue handle(const JsonValue& message);
+  void shutdown();
+
+  // ---- for the tools ----
+
+  const BridgeOptions& options() const noexcept { return options_; }
+  SchemaGen& schemas() noexcept { return schemas_; }
+  HostClient& host() noexcept { return host_; }
+
+  // Calls the host, starting a new one first when the last one died. On failure `out` is the
+  // error result — the code, the message, the diagnostics and a hint — and the call returns false.
+  bool call(std::string_view method, const JsonValue& params, JsonValue& result, ToolOutcome& out);
+
+  // A scene the render tools work on: `scene` as given, or `load` loaded now — or reused, when
+  // this host already loaded exactly that. `info` is the load's answer when there was one.
+  bool scene_for(const JsonValue& args, std::string& scene, JsonValue& info, bool& reused,
+                 ToolOutcome& out);
+
+  // The protocol version agreed at initialize: what the result is allowed to contain.
+  std::string_view protocol_version() const noexcept { return protocol_version_; }
+  bool structured_results() const noexcept;
+
+ private:
+  struct Tool {
+    const ToolDef* def;
+    JsonValue schema;
+  };
+  struct LoadedScene {
+    std::string key;
+    std::string id;
+    JsonValue info;
+  };
+
+  JsonValue on_initialize(const JsonValue* params);
+  JsonValue on_tools_list() const;
+  bool on_tools_call(const JsonValue* params, JsonValue& result, i32& code, std::string& message);
+  JsonValue tool_result(const ToolOutcome& outcome) const;
+  const Tool* find_tool(std::string_view name) const noexcept;
+
+  BridgeOptions options_;
+  HostClient host_;
+  SchemaGen schemas_;
+  Vector<Tool> tools_;
+  Vector<LoadedScene> scenes_;
+  u32 scenes_generation_ = 0;
+  std::string protocol_version_;
+};
+
+// ---- shared helpers
+// ------------------------------------------------------------------------------
+
+// Members of a JSON object, with a fallback when absent or of another kind.
+std::string text_of(const JsonValue& object, std::string_view key, std::string_view fallback = {});
+u64 uint_of(const JsonValue& object, std::string_view key, u64 fallback = 0);
+f64 real_of(const JsonValue& object, std::string_view key, f64 fallback = 0.0);
+bool bool_of(const JsonValue& object, std::string_view key, bool fallback = false);
+
+// A `file://` URI of a native path, and back.
+std::string file_uri(std::string_view path);
+std::string path_of_uri(std::string_view uri);
+
+// The protocol's error codes by name, and a sentence about what to do about one.
+const char* code_name(i32 code) noexcept;
+std::string hint_for(std::string_view method, i32 code, std::string_view message);
+
+// Formats a failed protocol call as a tool result.
+void fail_from_host(std::string_view method, const HostClient::Status status,
+                    const HostClient::Error& error, ToolOutcome& out);
+// A tool result for something the bridge itself refused, with the hint on its own line.
+void fail(ToolOutcome& out, std::string_view message, std::string_view hint);
+
+}  // namespace engine::mcp

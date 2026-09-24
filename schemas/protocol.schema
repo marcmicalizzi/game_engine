@@ -317,7 +317,8 @@ struct SchemaDescribeParams @version(1) {
 
 struct SchemaDescribeResult @version(1) {
   /// {name, ns, kind, version, tag, doc, fields: [{name, type, since, transient, deprecated,
-  /// doc}], values: [{name, value, doc}]}.
+  /// doc, default}], values: [{name, value, doc}]}. `default` is what the field becomes when a
+  /// caller leaves it out, in the form a caller would send it; a transient field has none.
   description: json
 }
 
