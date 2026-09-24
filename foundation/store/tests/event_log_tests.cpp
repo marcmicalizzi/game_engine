@@ -119,6 +119,83 @@ TEST_CASE("store: appends get ascending per-tile sequences and replay in order")
   CHECK(empty.sequences.empty());
 }
 
+namespace {
+
+struct Scanned {
+  Vector<LogPosition> positions;
+  Vector<u32> types;
+};
+
+void collect_position(const EventRecord& record, void* user) {
+  auto* seen = static_cast<Scanned*>(user);
+  seen->positions.push_back(LogPosition{record.sim_tick, record.tile, record.sequence});
+  seen->types.push_back(record.type);
+}
+
+}  // namespace
+
+TEST_CASE("store: scan walks the whole log by tick, tile and sequence, and resumes after a place") {
+  Database db;
+  REQUIRE(db.open_memory() == Status::Ok);
+  EventLog log(db);
+  REQUIRE(log.open() == Status::Ok);
+
+  // Three tiles, appended out of tile order; ticks 101, 102, 102, 103, 104 (make_event puts the
+  // tick at 100 + type), so the order the scan must give is by tick first and tile second.
+  EventRecord events[] = {make_event(20, 1, "a"), make_event(10, 2, "b"), make_event(5, 2, "c"),
+                          make_event(10, 3, "d"), make_event(20, 4, "e")};
+  REQUIRE(log.append(std::span<EventRecord>(events, 5)) == Status::Ok);
+  u64 count = 0;
+  REQUIRE(log.count_events(count) == Status::Ok);
+  CHECK(count == 5);
+
+  Scanned all;
+  REQUIRE(log.scan(nullptr, 0, 100, &collect_position, &all) == Status::Ok);
+  REQUIRE(all.positions.size() == 5);
+  CHECK(all.positions[0].tile == 20);
+  CHECK(all.positions[1].tile == 5);  // tick 102: tile 5 before tile 10
+  CHECK(all.positions[2].tile == 10);
+  CHECK(all.positions[3].sim_tick == 103);
+  CHECK(all.positions[4].sim_tick == 104);
+
+  // Two at a time, each page resuming after the last event of the one before, visits the same
+  // five in the same order and nothing twice.
+  Scanned paged;
+  const LogPosition* after = nullptr;
+  LogPosition at;
+  for (u32 page = 0; page < 4; ++page) {
+    Scanned one;
+    REQUIRE(log.scan(after, 0, 2, &collect_position, &one) == Status::Ok);
+    for (u32 i = 0; i < one.positions.size(); ++i) {
+      paged.positions.push_back(one.positions[i]);
+      at = one.positions[i];
+      after = &at;
+    }
+    if (one.positions.empty()) break;
+  }
+  REQUIRE(paged.positions.size() == 5);
+  for (u32 i = 0; i < 5; ++i) {
+    CHECK(paged.positions[i].tile == all.positions[i].tile);
+    CHECK(paged.positions[i].sequence == all.positions[i].sequence);
+  }
+
+  // `since_tick` starts a fresh read at a tick; an event appended later at a later tick is found
+  // after the place a reader stopped at, whatever tile it lands in.
+  Scanned late;
+  REQUIRE(log.scan(nullptr, 103, 100, &collect_position, &late) == Status::Ok);
+  CHECK(late.positions.size() == 2);
+  EventRecord later = make_event(1, 9, "later");  // tile 1 sorts first, but its tick is 109
+  REQUIRE(log.append(later) == Status::Ok);
+  Scanned tail;
+  REQUIRE(log.scan(&all.positions[4], 0, 100, &collect_position, &tail) == Status::Ok);
+  REQUIRE(tail.positions.size() == 1);
+  CHECK(tail.types[0] == 9);
+  // A limit of zero visits nothing and is not an error.
+  Scanned none;
+  REQUIRE(log.scan(nullptr, 0, 0, &collect_position, &none) == Status::Ok);
+  CHECK(none.positions.empty());
+}
+
 TEST_CASE("store: a failed batch append leaves the log untouched") {
   Database db;
   REQUIRE(db.open_memory() == Status::Ok);

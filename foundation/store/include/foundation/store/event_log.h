@@ -97,6 +97,18 @@ struct SnapshotInfo {
 using EventVisitor = void (*)(const EventRecord& record, void* user);
 using ProjectionVisitor = void (*)(const ProjectionRecord& record, void* user);
 
+// A place in the whole log, across tiles, in the order `EventLog::scan` walks it: simulation tick,
+// then tile, then the tile's own sequence. The sequence alone is per tile, so it cannot say "after
+// this event" for the log as a whole; the tick leads because a log is appended in tick order, so a
+// reader that stops at a position and comes back later finds every event appended since after it.
+// The tile and the tick are compared as the table stores them, as signed 64-bit integers, which is
+// consistent between the comparison and the order and is all a cursor needs.
+struct LogPosition {
+  u64 sim_tick = 0;
+  TileId tile = 0;
+  u64 sequence = 0;
+};
+
 class EventLog {
  public:
   explicit EventLog(Database& db) noexcept : db_(&db) {}
@@ -120,6 +132,16 @@ class EventLog {
   // Visits the tile's events with sequence >= from_sequence, in sequence order. The record and
   // its payload are valid only for the duration of the call.
   Status replay(TileId tile, u64 from_sequence, EventVisitor fn, void* user);
+
+  // Visits at most `limit` events of the whole log in `LogPosition` order — (tick, tile,
+  // sequence) — with a tick of at least `since_tick` and, when `after` is not null, strictly after
+  // it. It is the reader for tools and the protocol (`session.events`), not for the simulation: the
+  // table's key leads with the tile, so this is a sort over the matching rows rather than a walk of
+  // the B-tree, which is fine for an introspection page and wrong for anything that runs per tick.
+  // The record and its payload are valid only for the duration of the call.
+  Status scan(const LogPosition* after, u64 since_tick, u32 limit, EventVisitor fn, void* user);
+  // How many events the log holds, over every tile.
+  Status count_events(u64& out);
 
   // Writes the projection, replacing any previous value for (entity, kind) — including one
   // filed under a different tile, which costs one seek of the secondary index per call.

@@ -218,6 +218,72 @@ Status EventLog::replay(TileId tile, u64 from_sequence, EventVisitor fn, void* u
   }
 }
 
+Status EventLog::scan(const LogPosition* after, u64 since_tick, u32 limit, EventVisitor fn,
+                      void* user) {
+  if (db_ == nullptr || !db_->is_open()) return Status::NotOpen;
+  if (fn == nullptr) return Status::InvalidArgument;
+  if (limit == 0) return Status::Ok;
+  // Two texts rather than one with a sentinel position: a position at the start of the order is a
+  // real place, and the smallest signed tick is not one a caller should have to know about. The
+  // row-value comparison is SQLite's own (3.15 and later), so "after" means exactly the ORDER BY's
+  // "after".
+  Statement stmt;
+  const Status status =
+      after != nullptr ? db_->prepare(
+                             "SELECT tile,seq,sim_tick,game_time,type,depth,origin,subject_hi,"
+                             "subject_lo,cause,payload FROM events WHERE sim_tick>=?1 AND "
+                             "(sim_tick,tile,seq)>(?2,?3,?4) ORDER BY sim_tick,tile,seq LIMIT ?5",
+                             stmt)
+                       : db_->prepare(
+                             "SELECT tile,seq,sim_tick,game_time,type,depth,origin,subject_hi,"
+                             "subject_lo,cause,payload FROM events WHERE sim_tick>=?1 "
+                             "ORDER BY sim_tick,tile,seq LIMIT ?2",
+                             stmt);
+  if (status != Status::Ok) return status;
+  stmt.bind(1, as_i64(since_tick));
+  if (after != nullptr) {
+    stmt.bind(2, as_i64(after->sim_tick))
+        .bind(3, as_i64(after->tile))
+        .bind(4, as_i64(after->sequence))
+        .bind(5, static_cast<i64>(limit));
+  } else {
+    stmt.bind(2, static_cast<i64>(limit));
+  }
+
+  EventRecord record;
+  for (;;) {
+    bool row = false;
+    const Status step = stmt.step(row);
+    if (step != Status::Ok) return step;
+    if (!row) return Status::Ok;
+    record.tile = as_u64(stmt.column_i64(0));
+    record.sequence = as_u64(stmt.column_i64(1));
+    record.sim_tick = as_u64(stmt.column_i64(2));
+    record.game_time_us = stmt.column_i64(3);
+    record.type = static_cast<u32>(stmt.column_i64(4));
+    record.depth = static_cast<u16>(stmt.column_i64(5));
+    record.origin = static_cast<EventOrigin>(stmt.column_i64(6));
+    record.subject.hi = as_u64(stmt.column_i64(7));
+    record.subject.lo = as_u64(stmt.column_i64(8));
+    record.cause = as_u64(stmt.column_i64(9));
+    record.payload = stmt.column_blob(10);
+    fn(record, user);
+  }
+}
+
+Status EventLog::count_events(u64& out) {
+  out = 0;
+  if (db_ == nullptr || !db_->is_open()) return Status::NotOpen;
+  Statement stmt;
+  const Status status = db_->prepare("SELECT count(*) FROM events", stmt);
+  if (status != Status::Ok) return status;
+  bool row = false;
+  const Status step = stmt.step(row);
+  if (step != Status::Ok) return step;
+  if (row) out = as_u64(stmt.column_i64(0));
+  return Status::Ok;
+}
+
 Status EventLog::insert_projection(const ProjectionRecord& record) {
   if (db_ == nullptr || !db_->is_open()) return Status::NotOpen;
   Statement stmt;
