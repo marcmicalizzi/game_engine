@@ -34,9 +34,10 @@ tools/package-tests.ps1  -Preset msvc-release [-Out <zip>] [-WithSamples] [-With
 tools/gpu-lock.ps1       run -Purpose "<what>" -Exec "<command line>"   # the machine-wide GPU lock; anything heavy on the GPU goes through it (docs/subsystems/bench.md)
 tools/generate.ps1       image|3d|pipeline|manifest|ingest|balance ...  # generated images and meshes with provenance sidecars, outside the repo (docs/content-generation.md)
 tools/e10-harness.ps1    -Folder <dir of .glb>                          # content build + coarse-vs-finest picture check over generated meshes (E10)
+tools/blender-run.ps1    -Script <file.py> [-Out <dir>] [-GpuLock] -- <script args>   # headless Blender for a bpy script outside the repo; sidecars like generate.ps1's (E33)
 ```
 
-Generated images, meshes and the owner's workflow files live under `D:\workspace\game_engine_local\` and are **never committed**; `tools/generate.ps1` refuses an output directory inside the repository, and its Meshy stage enforces the credit rules ([docs/content-generation.md](docs/content-generation.md)).
+Generated images, meshes and the owner's workflow files live under `D:\workspace\game_engine_local\` and are **never committed**; `tools/generate.ps1` refuses an output directory inside the repository, and its Meshy stage enforces the credit rules ([docs/content-generation.md](docs/content-generation.md)). The bpy scripts of a procedural kit live there too (`blender-kits\<kit>\scripts\`), because the repository takes no Python: `tools/blender-run.ps1` runs one in a background Blender with its own empty profile — never the owner's running session — and refuses a script or an output inside the repository ([content generation](docs/content-generation.md#blender-toolsblender-runps1)).
 
 The Linux half of CI runs on this machine too, in a container built from the same Ubuntu 24.04
 toolchain the hosted job uses — the four Linux presets, warnings-as-errors on GCC 13 and Clang 18,

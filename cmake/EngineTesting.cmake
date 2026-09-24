@@ -89,6 +89,15 @@ if(ENGINE_PWSH)
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
   set_tests_properties(tools.e10_harness PROPERTIES LABELS "tools")
 
+  # The Blender wrapper (docs/content-generation.md, "Blender"), through a PowerShell stand-in for
+  # Blender: the refusals, the command line and environment Blender gets, and the provenance
+  # sidecar a declared output earns. No Blender and no GPU.
+  add_test(NAME tools.blender_run
+    COMMAND "${ENGINE_PWSH}" -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_SOURCE_DIR}/tools/blender-run.Tests.ps1"
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+  set_tests_properties(tools.blender_run PROPERTIES LABELS "tools")
+
   # "Documentation moves with the code" (AGENTS.md), over this tree: a module has a page, an ADR
   # is numbered and indexed, and every link resolves. It reads files, so it runs under every
   # preset including the minimal ones, where the documentation is the same documentation.
@@ -114,7 +123,7 @@ if(ENGINE_PWSH)
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
   set_tests_properties(tools.machine_lock PROPERTIES LABELS "tools")
 else()
-  message(WARNING "pwsh not found; lint.banned_patterns, tools.lint, tools.new_capability, tools.generate, tools.e10_harness, docs_check, tools.docs_check, and tools.machine_lock tests not registered")
+  message(WARNING "pwsh not found; lint.banned_patterns, tools.lint, tools.new_capability, tools.generate, tools.e10_harness, tools.blender_run, docs_check, tools.docs_check, and tools.machine_lock tests not registered")
 endif()
 
 # The CI documentation gate is bash, because it runs on the hosted Linux runner
