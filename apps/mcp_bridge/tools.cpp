@@ -1505,6 +1505,149 @@ void run_host_info(Bridge& b, const JsonValue&, ToolOutcome& out) {
                 b.options().actor + "'; MCP " + std::string(b.protocol_version()) + ".";
 }
 
+// ---- the day-one operations (content.build, session.events, engine.budgets,
+// session.run_headless, engine.run_tests) ------------------------------------------------------
+//
+// Thin on purpose: the host's results are already what an agent reads, so the bridge adds a
+// summary line and keeps bulk out of the answer — a content build's per-output metrics go to the
+// workspace as a file, since they are the one result here that grows with the input.
+
+bool schema_build_content(Bridge& b, JsonValue& s, std::string& e) {
+  if (!b.schemas().params_schema("content.build", s, e)) return false;
+  note(s, "source",
+       "Paths are the host's; relative ones are relative to where engine-mcp started.");
+  props(s).set("name",
+               prop("string",
+                    "The whole result, metrics included, lands in "
+                    "<workspace>/builds/<name>.json; omitted, the bridge picks build-NNN."));
+  return true;
+}
+
+void run_build_content(Bridge& b, const JsonValue& args, ToolOutcome& out) {
+  std::string dir;
+  std::string name;
+  if (!workspace_dir(b, "builds", dir, out)) return;
+  if (!output_name(args, dir, "build", name, out)) return;
+  JsonValue r;
+  if (!b.call("content.build", without(args, {"name"}), r, out)) return;
+  const std::string result_path = dir + "/" + name + ".json";
+  if (!write_json_file(result_path, r, out)) return;
+  JsonValue outputs = JsonValue::array();
+  std::string lines;
+  if (const JsonValue* all = r.find("outputs"); all != nullptr) {
+    for (usize i = 0; i < all->size(); ++i) {
+      const JsonValue& o = (*all)[i];
+      JsonValue row = JsonValue::object();
+      for (const char* key : {"source", "path", "status", "clusters", "triangles", "bytes",
+                              "build_ms", "rule", "error"}) {
+        if (const JsonValue* v = o.find(key); v != nullptr) row.set(key, *v);
+      }
+      outputs.push_back(std::move(row));
+      lines += "\n  " + text_of(o, "status") + ": " + text_of(o, "path") +
+               (text_of(o, "status") == "failed"
+                    ? " (" + text_of(o, "rule") + ": " + text_of(o, "error") + ")"
+                    : "");
+    }
+  }
+  out.data = JsonValue::object();
+  for (const char* key : {"built", "skipped", "failed", "seconds", "ddc"}) {
+    if (const JsonValue* v = r.find(key); v != nullptr) out.data.set(key, *v);
+  }
+  out.data.set("outputs", std::move(outputs));
+  out.data.set("result", JsonValue(file_uri(result_path)));
+  out.summary = std::to_string(uint_of(r, "built")) + " built, " +
+                std::to_string(uint_of(r, "skipped")) + " skipped, " +
+                std::to_string(uint_of(r, "failed")) + " failed:" + lines +
+                "\nThe whole result, with every output's metrics: " + file_uri(result_path);
+  link(out, file_uri(result_path), name + " result", "application/json");
+}
+
+bool schema_events(Bridge& b, JsonValue& s, std::string& e) {
+  if (!schema_session_ref(b, "session.events", s, e)) return false;
+  note(s, "cursor", "Pass the next a previous call returned; it is also what to poll with.");
+  return true;
+}
+
+void run_events(Bridge& b, const JsonValue& args, ToolOutcome& out) {
+  JsonValue r;
+  if (!b.call("session.events", args, r, out)) return;
+  const JsonValue* events = r.find("events");
+  out.summary = std::to_string(events != nullptr ? events->size() : 0) + " event(s)" +
+                (bool_of(r, "more") ? ", more to read" : "") + "; the journal holds " +
+                std::to_string(uint_of(r, "journal_total")) + " commit(s), the event log is " +
+                text_of(r, "store_status") + ". Continue with cursor \"" + text_of(r, "next") +
+                "\".";
+  out.data = r;
+}
+
+bool schema_budgets(Bridge& b, JsonValue& s, std::string& e) {
+  return b.schemas().params_schema("engine.budgets", s, e);
+}
+
+void run_budgets(Bridge& b, const JsonValue& args, ToolOutcome& out) {
+  JsonValue r;
+  if (!b.call("engine.budgets", args, r, out)) return;
+  const JsonValue* list = r.find("budgets");
+  out.summary = std::to_string(list != nullptr ? list->size() : 0) + " budget(s):";
+  for (usize i = 0; list != nullptr && i < list->size(); ++i) {
+    const JsonValue& budget = (*list)[i];
+    const auto amount = [&](const char* key) {
+      const JsonValue* v = budget.find(key);
+      return v == nullptr || v->is_null() ? std::string("-") : fixed(real_of(budget, key), 0);
+    };
+    out.summary += "\n  " + text_of(budget, "name") + " [" + text_of(budget, "scope") +
+                   "]: " + amount("used") + " of " + amount("limit") + " " +
+                   text_of(budget, "unit") + " (" + text_of(budget, "source") + " " +
+                   text_of(budget, "key") + ")";
+  }
+  out.data = r;
+}
+
+bool schema_run_headless(Bridge& b, JsonValue& s, std::string& e) {
+  return schema_session_ref(b, "session.run_headless", s, e);
+}
+
+void run_run_headless(Bridge& b, const JsonValue& args, ToolOutcome& out) {
+  JsonValue r;
+  if (!b.call("session.run_headless", args, r, out)) return;
+  const JsonValue* predicate = r.find("predicate");
+  out.summary = "Ran " + std::to_string(uint_of(r, "ticks")) + " tick(s), " +
+                fixed(real_of(r, "game_seconds"), 3) + " game seconds, in " +
+                fixed(real_of(r, "wall_ms"), 1) + " ms; stopped on " + text_of(r, "stopped") +
+                (predicate != nullptr && !predicate->is_null()
+                     ? std::string(", until is ") + (bool_of(r, "predicate") ? "true" : "false")
+                     : std::string()) +
+                ". The " + text_of(r, "world") + " world is at tick " +
+                std::to_string(uint_of(r, "tick")) + "; " +
+                std::to_string(uint_of(r, "materialized")) +
+                " entities are materialized from the document.";
+  out.data = r;
+}
+
+bool schema_run_tests(Bridge& b, JsonValue& s, std::string& e) {
+  return b.schemas().params_schema("engine.run_tests", s, e);
+}
+
+void run_run_tests(Bridge& b, const JsonValue& args, ToolOutcome& out) {
+  JsonValue r;
+  if (!b.call("engine.run_tests", args, r, out)) return;
+  out.summary = std::string(bool_of(r, "ok") ? "OK" : "FAILED") + ": " +
+                std::to_string(uint_of(r, "passed")) + " passed, " +
+                std::to_string(uint_of(r, "failed")) + " failed (" +
+                std::to_string(uint_of(r, "errors")) + " errors, " +
+                std::to_string(uint_of(r, "warnings")) + " warnings), " +
+                std::to_string(uint_of(r, "skipped")) + " skipped.";
+  if (const JsonValue* checks = r.find("checks"); checks != nullptr) {
+    for (usize i = 0; i < checks->size(); ++i) {
+      const JsonValue& c = (*checks)[i];
+      if (text_of(c, "verdict") != "fail") continue;
+      out.summary += "\n  " + text_of(c, "id") + " (" + text_of(c, "severity") + ") " +
+                     text_of(c, "subject") + ": " + text_of(c, "message");
+    }
+  }
+  out.data = r;
+}
+
 // ---- the table ----------------------------------------------------------------------------------
 
 constexpr ToolDef k_tools[] = {
@@ -1635,6 +1778,26 @@ constexpr ToolDef k_tools[] = {
      "What the bridge is talking to: the engine-host's version, build, process id and method "
      "count, the workspace directory, the default actor, and the MCP version agreed.",
      "engine.info", true, false, true, &schema_host_info, &run_host_info},
+    {"build_content", "Build content",
+     "Build a glTF/GLB file or a manifest into .clusters containers with the derived-data cache "
+     "and the identity skip; metrics go to <workspace>/builds.",
+     "content.build", false, false, true, &schema_build_content, &run_build_content},
+    {"events", "Read events",
+     "What happened to a document, a page at a time: its journal's commits with attribution and, "
+     "when there is one, the world's event log.",
+     "session.events", true, false, true, &schema_events, &run_events},
+    {"budgets", "Read budgets",
+     "The budgets the engine knows and what uses them (renderer, audio, memory, GPU), by stable "
+     "name, with limit, use, unit and source.",
+     "engine.budgets", true, false, true, &schema_budgets, &run_budgets},
+    {"run_headless", "Run headless",
+     "Step the session's runtime world at the fixed step with no rendering, for game seconds or "
+     "until a predicate holds.",
+     "session.run_headless", false, false, false, &schema_run_headless, &run_run_headless},
+    {"run_tests", "Run the engine's checks",
+     "Run the document, tissue and content validators that are safe inside the host and get one "
+     "structured report.",
+     "engine.run_tests", true, false, true, &schema_run_tests, &run_run_tests},
 };
 
 }  // namespace

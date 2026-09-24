@@ -1,5 +1,7 @@
 #include "render_methods.h"
 
+#include "host_state.h"
+
 #include <core/hash/hash.h>
 #include <core/json/json_value.h>
 #include <core/log/log.h>
@@ -24,7 +26,10 @@ namespace {
 
 ENGINE_LOG_CATEGORY_DEFINE(log_render, "host.render");
 
-RenderHost* host_of(protocol::Context& ctx) { return static_cast<RenderHost*>(ctx.app); }
+// `Context::app` is the host's whole state (host_state.h); the renderer's part of it is here.
+RenderHost* host_of(protocol::Context& ctx) {
+  return ctx.app != nullptr ? &static_cast<HostState*>(ctx.app)->render : nullptr;
+}
 
 protocol::RpcError unavailable(std::string message) {
   return protocol::make_error(protocol::codes::k_render_unavailable, std::move(message));

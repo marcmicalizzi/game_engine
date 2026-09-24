@@ -631,3 +631,91 @@ TEST_CASE("protocol: tunables, log, and schema methods") {
   CHECK(host.error_code("schema.describe", obj({{"type", JsonValue("nope.Type")}})) ==
         codes::k_not_found);
 }
+
+// The day-one operations' types (content.build, session.events, engine.budgets,
+// session.run_headless, engine.run_tests). The methods are engine-host's (apps/engine_host) and
+// their end-to-end cases are apps/engine_cli/tests/ops_tests.cpp; what the protocol owns is the
+// types, so these pin what a client relies on without a host: the schema's defaults, the optional
+// fields a result leaves null, and a round trip through the reader the dispatcher uses.
+TEST_CASE("protocol: the day-one operations' schema types, their defaults and their round trips") {
+  Host host;
+  const auto default_of = [&](const char* type, const char* field) {
+    JsonValue d = host.ok("schema.describe", obj({{"type", JsonValue(type)}}));
+    const JsonValue& fields = at(at(d, "description"), "fields");
+    for (usize i = 0; i < fields.size(); ++i) {
+      if (at(fields[i], "name") == JsonValue(field)) return at(fields[i], "default");
+    }
+    FAIL("no field " << field << " in " << type);
+    return JsonValue();
+  };
+  CHECK(default_of("engine.protocol.ContentBuildParams", "stats") == JsonValue(true));
+  CHECK(default_of("engine.protocol.ContentBuildParams", "force") == JsonValue(false));
+  CHECK(default_of("engine.protocol.ContentBuildOptions", "max_triangles") == JsonValue(u32{124}));
+  CHECK(default_of("engine.protocol.ContentBuildOptions", "page_bytes") == JsonValue(u32{131072}));
+  CHECK(default_of("engine.protocol.ContentBuildOptions", "uv_seams") == JsonValue("protect"));
+  CHECK(default_of("engine.protocol.ContentBuildOptions", "atlas") == JsonValue("keep"));
+  CHECK(default_of("engine.protocol.SessionEventsParams", "limit") == JsonValue(u32{100}));
+  CHECK(default_of("engine.protocol.SessionEventsParams", "source") == JsonValue(""));
+  CHECK(default_of("engine.protocol.RunHeadlessParams", "seconds") == JsonValue(0.0));
+  CHECK(default_of("engine.protocol.RunHeadlessParams", "until").is_null());
+  CHECK(default_of("engine.protocol.RunTestsParams", "tissue_modes") == JsonValue(true));
+  CHECK(default_of("engine.protocol.RunTestsParams", "containers") == JsonValue::array());
+  CHECK(default_of("engine.protocol.Budget", "limit").is_null());
+  CHECK(default_of("engine.protocol.SessionEvent", "attribution").is_null());
+
+  // A budget with no limit and no use says null for both, not 0: "counted, not bounded" and "not
+  // in use yet" are different answers from "a limit of nothing".
+  Budget budget;
+  budget.name = "memory.allocations";
+  budget.used = 12.0;
+  JsonValue written = schema::to_json(budget);
+  CHECK(at(written, "limit").is_null());
+  CHECK(at(written, "used") == JsonValue(12.0));
+  CHECK(at(written, "peak").is_null());
+  Budget read_back;
+  schema::ReadContext ctx;
+  REQUIRE(schema::from_json(read_back, written, ctx));
+  CHECK(read_back == budget);
+
+  // A journal event carries its attribution; a store event carries none, and says null.
+  SessionEvent journal;
+  journal.source = "journal";
+  journal.kind = "commit";
+  journal.attribution = doc::Attribution{"agent", "environment", "t1", "because", 5};
+  SessionEvent stored;
+  stored.source = "store";
+  stored.tick = 42;
+  stored.subject = Id128::from_seed(3, 4);
+  SessionEventsResult events;
+  events.events.push_back(journal);
+  events.events.push_back(stored);
+  events.next = "j=1;s=42:0:1";
+  JsonValue events_json = schema::to_json(events);
+  CHECK(at(at(at(events_json, "events")[0], "attribution"), "rationale") == JsonValue("because"));
+  CHECK(at(at(events_json, "events")[1], "attribution").is_null());
+  SessionEventsResult events_back;
+  schema::ReadContext events_ctx;
+  REQUIRE(schema::from_json(events_back, events_json, events_ctx));
+  CHECK(events_back == events);
+
+  // The run's predicate is JSON the reader passes through untouched, and the result's own
+  // predicate is null when none was asked for.
+  JsonValue run_params = obj({{"session", JsonValue("s1")},
+                              {"seconds", JsonValue(0.5)},
+                              {"until", obj({{"ticks_at_least", JsonValue(15)}})}});
+  RunHeadlessParams run;
+  schema::ReadContext run_ctx;
+  REQUIRE(schema::from_json(run, run_params, run_ctx));
+  CHECK(run.seconds == 0.5);
+  CHECK(at(run.until, "ticks_at_least") == JsonValue(15));
+  RunHeadlessResult ran;
+  CHECK(at(schema::to_json(ran), "predicate").is_null());
+  ran.predicate = true;
+  CHECK(at(schema::to_json(ran), "predicate") == JsonValue(true));
+
+  // content.build's params refuse a field they do not have, like every params struct.
+  ContentBuildParams build;
+  schema::ReadContext build_ctx;
+  CHECK_FALSE(schema::from_json(build, obj({{"sorce", JsonValue("a.gltf")}}), build_ctx));
+  CHECK_FALSE(build_ctx.diagnostics.empty());
+}

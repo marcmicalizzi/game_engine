@@ -8,6 +8,9 @@ add_subdirectory(assets)
 add_subdirectory(atlas)
 # After geometry: the built texture, whose per-image records a `.clusters` container carries.
 add_subdirectory(texture)
+# After atlas and texture: the content build calls the atlas step and the texture build, so it
+# sits above geometry, assets, atlas and texture, and engine-content and engine-host both link it.
+add_subdirectory(content_build)
 add_subdirectory(gfx)
 add_subdirectory(protocol)
 # sim before ecs: ADR-0028 seam 2 makes `ecs::TickPhase` an alias of `sim::TickPhase`, so the

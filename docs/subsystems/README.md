@@ -48,6 +48,7 @@ One page per module, created in the same change that creates the module. Templat
 | assets | domain | [assets.md](assets.md) |
 | atlas | domain | [atlas.md](atlas.md) |
 | texture | domain | [texture.md](texture.md) |
+| content_build | domain | [content_build.md](content_build.md) |
 | gfx | domain | [gfx.md](gfx.md) |
 | protocol | domain | [protocol.md](protocol.md) |
 | ecs (capability) | domain | [ecs.md](ecs.md) |

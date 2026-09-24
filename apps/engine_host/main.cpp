@@ -3,7 +3,11 @@
 // MCP bridge, and engine-cli are clients of this. Beyond the document methods it now serves
 // `render.*` over `systems/renderer` (render_methods.cpp) — offscreen, with no window anywhere
 // in the process, which is what the Phase 1 exit criterion asks for: agents capture and
-// benchmark, and an agent has no display.
+// benchmark, and an agent has no display — and the rest of plan 06 §6.9's day-one operations,
+// content.build, session.events, engine.budgets, session.run_headless and engine.run_tests
+// (ops_methods.cpp).
+#include "host_state.h"
+#include "ops_methods.h"
 #include "render_methods.h"
 
 #include <core/log/log.h>
@@ -158,13 +162,17 @@ int main(int argc, char** argv) {
   }
 
   protocol::SessionManager sessions(vfs);
-  // The renderer's state reaches its handlers through Context::app; it owns a Vulkan device and
-  // every loaded scene, and it must outlive the dispatcher. Nothing is created until the first
-  // render.* call, so a host that only edits documents never opens a device.
-  host::RenderHost render_host;
-  protocol::Dispatcher dispatcher(protocol::Context{&sessions, &ring, nullptr, &render_host});
+  // The host's own methods' state reaches their handlers through Context::app (host_state.h): the
+  // renderer's device and scenes, and the sessions' runtime worlds. It must outlive the
+  // dispatcher. Nothing is created until a call asks for it, so a host that only edits documents
+  // never opens a device and never builds a world.
+  host::HostState state;
+  protocol::Dispatcher dispatcher(protocol::Context{&sessions, &ring, nullptr, &state});
   protocol::add_builtin_methods(dispatcher);
   host::add_render_methods(dispatcher);
+  // content.build, session.events, engine.budgets, session.run_headless, engine.run_tests
+  // (ops_methods.h): the rest of plan 06 §6.9's day-one list.
+  host::add_ops_methods(dispatcher);
 #if defined(ENGINE_HOST_AUDIO)
   audio::register_methods(dispatcher);
 #endif
@@ -194,7 +202,8 @@ int main(int argc, char** argv) {
   }
   std::fflush(stdout);
   ENGINE_LOG_INFO(log_host, "engine-host exiting", log::field("sessions", sessions.count()),
-                  log::field("scenes", render_host.count()));
+                  log::field("scenes", state.render.count()),
+                  log::field("worlds", state.ops.count()));
   log::flush();
   log::remove_sink(&json_sink);
   log::remove_sink(&stderr_sink);

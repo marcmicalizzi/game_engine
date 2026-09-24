@@ -13,7 +13,7 @@
 # ENGINE_CONTENT_TISSUE so the commands compile, and otherwise build an engine-content that refuses
 # `tissue` with a sentence. `msvc-minimal` is the proof that the second half works.
 set(_content_deps base containers math hash time log platform jobs io json geometry assets atlas
-    texture)
+    texture content_build)
 set(_content_tests tests/content_tests.cpp tests/determinism_tests.cpp tests/limit_dump_tests.cpp
     tests/normal_cases_tests.cpp tests/texture_tests.cpp)
 if(TARGET engine::tissue)

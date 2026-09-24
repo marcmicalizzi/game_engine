@@ -21,6 +21,7 @@
 #include <systems/renderer/scene_renderer.h>
 
 #include <memory>
+#include <span>
 #include <string>
 
 namespace engine::host {
@@ -57,6 +58,13 @@ class RenderHost {
   Scene* add_scene();
   Scene* find(std::string_view id) noexcept;
   usize count() const noexcept { return scenes_.size(); }
+  // Every loaded scene, in load order: what `engine.budgets` reports a scene's budgets from.
+  std::span<const std::unique_ptr<Scene>> scenes() const noexcept {
+    return {scenes_.data(), scenes_.size()};
+  }
+  // The device a render.* call opened, or null when none has. Opens nothing: a question about the
+  // device must not be the thing that creates one.
+  const gfx::Device* open_device() const noexcept { return device_ready_ ? &device_ : nullptr; }
 
   // Rebuilds `scene.gpu` and `scene.view` when the settings or the frame size differ from what
   // they were built with, and leaves them alone when they do not. `unavailable` tells the two
@@ -81,8 +89,8 @@ class RenderHost {
 };
 
 // Registers render.load, render.capture, render.benchmark, render.compare, and render.evaluate.
-// The `RenderHost` they work on is the dispatcher's `Context::app`, which the caller sets and
-// owns.
+// The `RenderHost` they work on is the `render` member of the `HostState` the dispatcher's
+// `Context::app` points at (host_state.h), which the caller sets and owns.
 void add_render_methods(protocol::Dispatcher& dispatcher);
 
 }  // namespace engine::host

@@ -921,3 +921,358 @@ struct RenderEvaluateResult @version(1) {
   /// upper bound, and the host says so on stderr as well.
   machine_state: MachineStateSpan
 }
+
+// ---- content.build -----------------------------------------------------------------------------
+// The content build over the protocol (docs/plan/07-content-pipeline.md §7.3, 06 §6.9's
+// `build_content`): what `engine-content build` and `build-all` do, run in the host's own process
+// through `domain/content_build` — the same code, so the same bytes, the same cache keys and the
+// same skip. Paths are the host's native paths.
+
+/// The build options of one mesh: `engine-content build`'s flags. The defaults are the build's own
+/// (`content_build::MeshOptions`), and that module's test holds the two together.
+struct ContentBuildOptions @version(1) {
+  /// Triangles a cluster, 4..256.
+  max_triangles: u32 = 124
+  /// Vertices a cluster, 1..255.
+  max_vertices: u32 = 64
+  /// The streaming page target in bytes; 0 writes no page table. It is part of the cache key.
+  page_bytes: u32 = 131072
+  /// Weld the file's duplicate vertices; every per-vertex stream is part of the weld key.
+  weld: bool = true
+  /// Keep the source's morph targets. False is `--no-morph`, which moves the build key.
+  morph: bool = true
+  /// What a LOD collapse may do at a UV atlas island edge: "none", "protect" or "lock".
+  uv_seams: string = "protect"
+  /// The same at a hard shading edge.
+  normal_seams: string = "none"
+  /// The UV term's weight in the simplifier's error metric; 0 removes it.
+  uv_weight: f32 = 0.5
+  /// The normal term's weight (0.5 costs two to four times the triangles).
+  normal_weight: f32 = 0
+  /// "keep" the source's UV atlas, or "repack": re-chart the mesh and rebake its textures
+  /// (docs/subsystems/atlas.md). A repack moves the build key.
+  atlas: string = "keep"
+  /// A repack's tangent-space normal maps: "convert" through object space, or "resample" as
+  /// stored.
+  atlas_normal_maps: string = "convert"
+  /// Triangles of the simplified copy a repack's charts are cut on; 0 charts the mesh itself.
+  atlas_proxy: u32 = 2000
+  /// How far xatlas lets a chart grow, in thousandths of its maxCost; positive.
+  atlas_chart_cost: u32 = 2000
+  /// 1, 2 or 4: the atlas and every rebaked image at this multiple of the source texture's side.
+  atlas_supersample: u32 = 1
+}
+
+/// Parameters of `content.build`: one source mesh (`engine-content build`) or a manifest of them
+/// (`engine-content build-all`), not both.
+struct ContentBuildParams @version(1) {
+  /// A glTF or GLB file to build.
+  source: string
+  /// Where `source`'s container is written. Empty with `cache` is the derived-data cache entry
+  /// the source and the options address.
+  output: string
+  /// A manifest, `{"meshes":[{"source","output","options"}]}`, its paths relative to itself; an
+  /// entry's `options` (max_triangles, max_vertices, page_bytes, weld, atlas) override `options`.
+  manifest: string
+  /// The build options of `source`, and the defaults of a manifest's entries.
+  options: ContentBuildOptions
+  /// Outputs that name no path go to the derived-data cache.
+  cache: bool = false
+  /// The cache root. Empty is `<repo>/ddc`, found by walking up from the host executable to the
+  /// directory holding AGENTS.md.
+  ddc: string
+  /// Performance-pool workers for this call; 0 is one per performance CPU. The bytes a build
+  /// writes do not depend on it.
+  jobs: u32 = 0
+  /// Treat validation warnings as errors.
+  strict: bool = false
+  /// Rebuild an output that already records this source's hash and this build key. Without it
+  /// such an output is skipped, as `build-all` skips it; `engine-content build` always rebuilds.
+  force: bool = false
+  /// Compute every built or skipped output's content-build metrics into its `stats`.
+  stats: bool = true
+  /// Build every image the meshes' materials sample into `<ddc>/textures/<key>.tex`
+  /// (docs/subsystems/texture.md) — when the call has a derived-data root, `cache` or a named
+  /// `ddc`, as engine-content does. False is `--no-textures`; the containers record the keys
+  /// either way.
+  textures: bool = true
+}
+
+/// One output of `content.build`: a line of `engine-content build-all`, plus its metrics.
+struct ContentBuildOutput @version(1) {
+  source: string
+  path: string
+  /// "built", "skipped" (the container there already recorded this source and these options), or
+  /// "failed".
+  status: string
+  /// The output is the derived-data cache's entry.
+  cached: bool = false
+  /// The source's content hash and the build key over it and the options: what the container
+  /// records, and what addresses its cache entry.
+  source_hash: u64 = 0
+  build_key: u64 = 0
+  /// The container's size on disk.
+  bytes: u64 = 0
+  /// Import, validation, clustering and the write; 0 for a skip.
+  build_ms: f64 = 0
+  clusters: u32 = 0
+  leaf_clusters: u32 = 0
+  triangles: u32 = 0
+  lod_levels: u32 = 0
+  vertices: u32 = 0
+  pages: u32 = 0
+  materials: u32 = 0
+  images: u32 = 0
+  embedded_images: u32 = 0
+  /// The container's content hash.
+  hash: u64 = 0
+  /// Validation warnings: `path` is the rule id (`geometry.uv_range`, `material.missing_image`),
+  /// `message` the sentence.
+  warnings: Diagnostic[]
+  /// What the build repaired and what its atlas step did, exactly as engine-content's JSON line
+  /// carries them.
+  repairs: json
+  atlas: json
+  /// A failure's rule id and sentence.
+  rule: string
+  error: string
+  /// The container's content-build metrics — the object `engine-content stats` prints — for a
+  /// built or skipped output when `stats` was asked for; null otherwise.
+  stats: json
+  /// This mesh's share of the texture step, as engine-content's `textures` object with a row per
+  /// image: built, skipped, shared, missing, failed or unreadable, the key, the format and the
+  /// time. `enabled` false when the call had no derived-data root or asked for no textures.
+  textures: json
+}
+
+struct ContentBuildResult @version(1) {
+  /// In the manifest's order, whatever order the jobs finished in.
+  outputs: ContentBuildOutput[]
+  built: u32 = 0
+  skipped: u32 = 0
+  failed: u32 = 0
+  /// Wall time of the whole call.
+  seconds: f64 = 0
+  /// The derived-data root the call used; empty when it had none.
+  ddc: string
+  /// The texture step's totals over every mesh: a texture two meshes share is built once, for the
+  /// first. A failed texture write is counted here and does not fail the call.
+  textures: json
+}
+
+// ---- session.events ----------------------------------------------------------------------------
+// 06 §6.6's `events(since, filter)`: what has happened to a document, a page at a time. The
+// journal is always there; the persistent world's event log (docs/plan/03-data-model.md §3.5,
+// foundation/store) is read when the store capability is built and the document has one.
+
+/// Parameters of `session.events`. Read-only.
+struct SessionEventsParams @version(1) {
+  session: string
+  /// Which log: "journal" (the document's committed transactions), "store" (the world's event
+  /// log), or empty for both, the journal's events first.
+  source: string
+  /// The `next` a previous call returned: continue after what it saw. Empty starts at `since`.
+  cursor: string
+  /// Where a read with no cursor starts: the journal's first patch index, and the event log's
+  /// first simulation tick.
+  since: u64 = 0
+  /// Only events of this kind: "commit" for the journal, a store event's schema type id in
+  /// decimal. Empty keeps every kind.
+  kind: string
+  /// Only events by this actor: a commit's attribution actor, or a store event's origin
+  /// ("deterministic", "player", "agent", "llm", "debug"). Empty keeps every actor.
+  actor: string
+  /// The event log to read. Empty is the document directory's `world.db`, when there is one.
+  store: string
+  /// Events a page holds, 1..10000.
+  limit: u32 = 100
+}
+
+/// One event of `session.events`.
+struct SessionEvent @version(1) {
+  /// "journal" or "store".
+  source: string
+  /// Journal: the patch's index. Store: the event's sequence within its tile.
+  sequence: u64 = 0
+  /// Store: the tile the event happened in.
+  tile: u64 = 0
+  /// Store: the simulation tick and game time it happened at. A journal patch has neither: an
+  /// edit to the document happens outside any simulation.
+  tick: u64 = 0
+  game_time_us: i64 = 0
+  /// Journal: "commit". Store: the event's schema type id, in decimal.
+  kind: string
+  /// Journal: the attribution's actor. Store: the event's origin.
+  actor: string
+  /// Journal: who made the change, in what role, for what task, why, and when.
+  attribution: engine.doc.Attribution?
+  /// Journal: the layer the patch edited and how many commands it holds.
+  layer: string
+  commands: u32 = 0
+  /// Journal: false for a patch that has been undone and sits in the redo tail.
+  applied: bool = false
+  /// Store: what the event happened to, its causal parent's sequence in the same tile (0 for
+  /// none), the causal chain's length, and the size of its payload.
+  subject: id128
+  cause: u64 = 0
+  depth: u32 = 0
+  payload_bytes: u32 = 0
+}
+
+struct SessionEventsResult @version(1) {
+  events: SessionEvent[]
+  /// Pass back as `cursor` to read what comes after. It moves only past what was returned, so it
+  /// is also what to poll with.
+  next: string
+  /// More events matched the filter when the page filled.
+  more: bool = false
+  /// The journal's length and how many of its patches are applied.
+  journal_total: u32 = 0
+  journal_position: u32 = 0
+  /// "read"; "absent" when the document has no event log; "not built" when this host was built
+  /// without the store capability; "not asked" when `source` was "journal".
+  store_status: string
+  /// The event log's path, when there is one.
+  store_path: string
+}
+
+// ---- engine.budgets ----------------------------------------------------------------------------
+// 06 §6.9's `get_budgets`: the budgets the engine knows and what is using them, so a client learns
+// what a budget is called before it is exceeded (ADR-0017: a limit is stated, never hidden).
+
+struct BudgetsParams @version(1) {
+  /// Only budgets whose scope starts with this: "process", "scene", "session", "adapter". Empty
+  /// is every one.
+  scope: string
+}
+
+/// One budget.
+struct Budget @version(1) {
+  /// Stable and dotted: `renderer.deform_pool`, `renderer.page_budget`, `renderer.upload_budget`,
+  /// `renderer.rt`, `audio.clips`, `audio.voices`, `memory.allocations`, `memory.heap`,
+  /// `gpu.memory`.
+  name: string
+  /// What it bounds, in a sentence.
+  doc: string
+  /// The limit, in `unit`. Null when the quantity is counted but nothing bounds it.
+  limit: f64?
+  /// What is using it now, in `unit`. Null when nothing in this host is using it yet — no scene
+  /// rendered, no runtime world — which is not the same as 0.
+  used: f64?
+  /// The most it has used, where its owner keeps that.
+  peak: f64?
+  /// "bytes", "bytes/frame", "voices" or "allocations".
+  unit: string
+  /// Where the limit comes from: "tunable", "setting" (a render setting or a flag), "default" (a
+  /// compile-time constant a setting overrides), "device", or "counter".
+  source: string
+  /// The tunable's name, the setting that sets it, or the device's name.
+  key: string
+  /// "process"; "scene:<id>" for a loaded scene; "session:<id>" for a session's runtime world;
+  /// "adapter:<index>" for a GPU.
+  scope: string
+}
+
+struct BudgetsResult @version(1) {
+  budgets: Budget[]
+}
+
+// ---- session.run_headless ----------------------------------------------------------------------
+// 06 §6.9's `run_headless(seconds | until predicate)`: step the session's runtime world at the
+// fixed step with no rendering (06 §6.11's headless `sim` mode). The world is the host's, one per
+// session, made on the first call and kept while the host runs, so a second call continues where
+// the first stopped. What it is not yet is a materialization of the document: see
+// docs/subsystems/protocol.md, "session.run_headless and the materialization gap".
+
+/// Parameters of `session.run_headless`.
+struct RunHeadlessParams @version(1) {
+  session: string
+  /// Game seconds to advance at the fixed step; with `until`, the most to advance before giving
+  /// up. 0..3600.
+  seconds: f64 = 0
+  /// Stop as soon as this holds; it is tested before the first tick and after every one. Terms:
+  /// `{"object": "<id>", "property": "<name>", "equals": <value>}` (a live document object's
+  /// composed property), `{"object": "<id>", "exists": true|false}`, `{"ticks_at_least": n}` and
+  /// `{"seconds_at_least": s}` (this call's own ticks and game seconds), and `{"all": [...]}`,
+  /// `{"any": [...]}`, `{"not": term}` over them. Null runs the whole `seconds`.
+  until: json
+}
+
+struct RunHeadlessResult @version(1) {
+  /// Ticks this call ran, and the game time they advanced.
+  ticks: u64 = 0
+  game_seconds: f64 = 0
+  /// Wall time of the ticks, which says how much faster than real time the world runs.
+  wall_ms: f64 = 0
+  /// The predicate's value when the call returned; null without `until`.
+  predicate: bool?
+  /// "seconds" (the time ran out) or "predicate" (`until` held).
+  stopped: string
+  /// The world's own tick and game time after the call: they count across calls.
+  tick: u64 = 0
+  game_time_us: i64 = 0
+  /// The fixed step's rate.
+  hz: u32 = 0
+  /// "ecs" (a flecs world driven by its tick pipeline), or "scheduler" (`sim::SimScheduler`, in a
+  /// build without the ECS capability).
+  world: string
+  /// The systems the world ticks, by name, in registration order.
+  systems: string[]
+  /// Entities with a persistent identity (an `Id128`) in the world; always 0 in the scheduler's.
+  entities: u32 = 0
+  /// Entities materialized from the document. 0 until a materialization layer exists; the
+  /// document terms of `until` read the document, which nothing in the world writes back to.
+  materialized: u32 = 0
+}
+
+// ---- engine.run_tests --------------------------------------------------------------------------
+// 06 §6.9's `run_tests`: the engine's own checks that are safe to run inside a host — the document
+// validators, the tissue validators and the content validators — as one structured report. It
+// never spawns a process (ctest and the test executables are CI's) and never opens a socket.
+
+/// Parameters of `engine.run_tests`. Every input is optional; an empty call checks nothing.
+struct RunTestsParams @version(1) {
+  /// A session whose document to check: `doc.validate` and the composed index's own check.
+  session: string
+  /// A tissue definition, a `.tissue` container or an interchange `.json`, to run the tissue
+  /// validators over.
+  tissue: string
+  /// Also transfer every tissue binding under the other two normal modes and compare them.
+  tissue_modes: bool = true
+  /// Built `.clusters` containers to run the content checks over.
+  containers: string[]
+}
+
+/// One check of `engine.run_tests`.
+struct TestCheck @version(1) {
+  /// "document", "tissue" or "content".
+  suite: string
+  /// The check's stable id: `doc.schema`, `doc.index`, `content.read`, `content.lod`,
+  /// `content.pages`, `content.identity`, `content.images`, `content.cluster_budget`, or a tissue
+  /// validator row's own id.
+  id: string
+  /// What it ran on: the session, the file, or a tissue row's subject.
+  subject: string
+  /// "error", "warning" or "info".
+  severity: string
+  /// "pass", "fail", "skipped" or "info".
+  verdict: string
+  /// What was checked and, when it failed, what was found.
+  message: string
+  /// Pathed findings: the document validator's `<layer>/<id>/<property>` paths.
+  diagnostics: Diagnostic[]
+  /// A tissue row's measured value; null elsewhere.
+  value: json
+}
+
+struct RunTestsResult @version(1) {
+  /// No error-severity check failed.
+  ok: bool = false
+  checks: TestCheck[]
+  passed: u32 = 0
+  /// Checks whose verdict is "fail": `errors` of them error-severity, `warnings` warning-severity.
+  failed: u32 = 0
+  errors: u32 = 0
+  warnings: u32 = 0
+  skipped: u32 = 0
+}
