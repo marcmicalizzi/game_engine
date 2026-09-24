@@ -139,12 +139,13 @@ The TITAN Xp's cut is the RTX 5090's to within the terrain's clustering: the GCC
 
 `--verify-occlusion` drew all 2,401 frames at 1920×1080 twice, with and without occlusion culling, in lockstep, and compared the (instance, cluster) under every pixel and every colour byte.
 
-| set | frames differing | pixels, surface differs | of those: a nearer surface lost | depths tied exactly | colour bytes differing |
+| card, set | frames differing | pixels, surface differs | of those: a nearer surface lost | depths tied exactly | colour bytes differing |
 |---|---|---|---|---|---|
-| substitute | 64 of 2,401 | 69 | **0** | 69 | 195 |
-| overlay | 1,118 of 2,401 | 3,673 | **0** | 3,673 | 8,838 |
+| RTX 5090 (mesh path), substitute | 64 of 2,401 | 69 | **0** | 69 | 195 |
+| RTX 5090 (mesh path), overlay | 1,118 of 2,401 | 3,673 | **0** | 3,673 | 8,838 |
+| TITAN Xp (vertex path), substitute | 60 of 2,401 | 62 | **0** | 62 | 180 |
 
-**Not one pixel lost a nearer surface to occlusion culling.** Every differing pixel is two surfaces at exactly the same depth: palm fronds in 3,640 of the overlay's 3,673 (the Tripo palm's leaves, and the SciFiHelmet's parts in the substitute, are coincident back-to-back faces), a few terrain and landmark pixels in the rest. The visibility buffer's 64-bit atomic max breaks a depth tie on the payload, `visible_index << 8 | triangle`, and the visible list's order is the cull pass's append order — culling changes it, and nothing makes it repeatable anyway: two identical checks of the same build disagreed by 9 and 13 tied pixels. The renderer's own occlusion test compares a wall of cubes, which has no coincident faces, and could not have seen this.
+**Not one pixel lost a nearer surface to occlusion culling.** Every differing pixel is two surfaces at exactly the same depth: palm fronds in 3,640 of the overlay's 3,673 (the Tripo palm's leaves, and the SciFiHelmet's parts in the substitute, are coincident back-to-back faces), a few terrain and landmark pixels in the rest; on the TITAN Xp's vertex path, 57 of 62 are the SciFiHelmet palms, the same story on the other rasterizer. The visibility buffer's 64-bit atomic max breaks a depth tie on the payload, `visible_index << 8 | triangle`, and the visible list's order is the cull pass's append order — culling changes it, and nothing makes it repeatable anyway: two identical checks of the same build disagreed by 9 and 13 tied pixels. The renderer's own occlusion test compares a wall of cubes, which has no coincident faces, and could not have seen this.
 
 ## What surprised me
 
@@ -158,7 +159,7 @@ The TITAN Xp's cut is the RTX 5090's to within the terrain's clustering: the GCC
 
 **Occlusion culling should not be on by default on the RTX 5090 class**, and the reason is structural, not a tuning miss: on this scene it removes most of what is hidden and adds 33–52% to a frame that is almost all fixed cost. **On the baseline tier it is a smaller net cost (17–20%) and not yet a settled one**: the vertex path makes a culled pair worth ten to twenty times more, the substitute set has too few pairs to reach the break-even, and the overlay's palms would. Recorded as a status note in [04 §4.3](../plan/04-renderer.md#43-geometry): the default stays as it is until the overlay has been flown on the TITAN Xp and one of the cheaper Hi-Z variants measured, and the decision — plausibly per tier — is then a settings change with these rows as its evidence. **What would change the answer:** a Hi-Z that costs a fraction of today's (half-resolution mip 0, or reusing the previous frame's pyramid — each changes the cut and needs its own measurement, [04 §4.6](../plan/04-renderer.md#46-extreme-displays)); per-pair work downstream of the cut that grows (deformation, the acceleration-structure build — though occluded casters must still cast); or more pairs in view at a rasterizer's per-pair cost, which is what the overlay on the baseline tier would test. Decoupling the resolve's tile skip from the Hi-Z moves the answer the other way, since occlusion culling would stop being the only way to get it.
 
-**The invariance test is restated**, in the harness and in [renderer](../subsystems/renderer.md#scenes-camera-paths-and-flythroughs): occlusion culling never removes a visible surface (`frames_culled_visible`, 0 over both sets and 4,802 frames); which of two surfaces at exactly one depth a pixel shows is decided by the visible list's order and is not an invariant of anything today.
+**The invariance test is restated**, in the harness and in [renderer](../subsystems/renderer.md#scenes-camera-paths-and-flythroughs): occlusion culling never removes a visible surface (`frames_culled_visible`, 0 over both sets and both rasterizers, 7,203 frames); which of two surfaces at exactly one depth a pixel shows is decided by the visible list's order and is not an invariant of anything today.
 
 **What it does not decide:** anything about lighting beyond direct sun, sky and two point lights (no GI, no denoiser, no post), about textures streaming (textures are uploaded whole), or about the Maxwell TITAN X of plan 04's baseline row.
 

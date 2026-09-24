@@ -178,7 +178,11 @@ with `-Clean`.
 **Measured**, LAN, 632 files, 7.4 MB packed: **22.4 s**, repeatably, and **21 s of that is two SSH
 connections**. See "Connections, not bytes" below — the transfer itself is about a second, and
 sending the whole tree every time rather than a delta is not what this costs. `content/samples/`
-and `ddc/` are git-ignored and never travel.
+and `ddc/` are git-ignored and never travel — and because step 3 deletes whatever the manifest
+does not name, samples copied into the remote tree by hand, and the remote's `ddc/`, are **gone
+after the next run**: copy the samples after the build you mean to use, not before it, and expect
+the first run of a scene to rebuild its derived data (found 2026-09-24, when a flythrough started
+after a gate run could not find its Khronos samples).
 
 ### Connections, not bytes
 
