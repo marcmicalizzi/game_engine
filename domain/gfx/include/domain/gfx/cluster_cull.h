@@ -14,9 +14,10 @@
 // of culling is the **pair** (instance, cluster): instance i owns `pair_count` of them starting
 // at `InstanceDesc::first_pair`, a prefix sum over the instances in order, so the cull dispatch
 // covers `CullParams::pair_count` threads and thread t finds its instance by binary search.
-// Survivors append a `uint2 {instance, cluster}` to the visible list, and the visibility buffer's
-// id is `visible_index << 8 | triangle`: the rasterizers and the resolve read `visible[i]` to get
-// back to the instance and the cluster.
+// Survivors append a `uint2 {instance, cluster}` to the visible list, and the rasterizers read
+// `visible[i]` to get the instance and the cluster. The visibility buffer's id is not the entry but
+// the scene's pair, `pair << 8 | triangle` (docs/subsystems/gfx.md, "The tie rule"), and the
+// resolve gets from a pair back to its entry through `CullParams::pair_entries`.
 //
 //     CullParams params{};
 //     set_frustum(params, frustum_from_view_proj(view_proj));
@@ -93,7 +94,7 @@ inline constexpr u32 k_draw_args_bytes = 16;
 // entry's. `clas_records.slang` mirrors the number, because it builds that run beside run 0.
 inline constexpr u32 k_caster_run = 2;
 
-// Mirrors CullParams in cluster_cull.slang. 448 bytes.
+// Mirrors CullParams in cluster_cull.slang. 464 bytes.
 struct CullParams {
   Vec4 planes[6];         // inward-facing, normalized
   Vec4 camera;            // xyz position, w = znear
@@ -149,8 +150,18 @@ struct CullParams {
   // `cull_main` never does.
   u64 vertex_draw = 0;     // VertexDrawHeader
   u64 vertex_records = 0;  // VertexDrawRecord[pair_count]
+  // **The way back from a pixel to the entry** (docs/subsystems/gfx.md, "The tie rule"). The
+  // visibility id carries the scene's pair, not the visible entry, so that a depth tie is settled
+  // by the scene's order rather than by which thread reached the append first; the resolve then
+  // needs the entry the pair was drawn as this frame, for its {instance, cluster} and a deformed
+  // instance's pool block. The cull pass writes it here, one word per pair of this view, for every
+  // pair it draws: `visible_base + slot` for the hardware run and `sw_visible_base + slot` for the
+  // software one, the entry's index in the whole list. 0 writes nothing.
+  u64 pair_entries = 0;     // u32[pair_count], this view's
+  u32 visible_base = 0;     // the whole list's index of `visible[0]`
+  u32 sw_visible_base = 0;  // and of `sw_visible[0]`
 };
-static_assert(sizeof(CullParams) == 448);
+static_assert(sizeof(CullParams) == 464);
 static_assert(sizeof(CullParams) % 16 == 0, "the block is read as float4 rows on the GPU");
 
 inline constexpr f32 k_raster_hardware = 0.0f;  // CullParams::raster.y
@@ -460,9 +471,10 @@ struct ClusterDrawParams {
   u64 clusters = 0;
   u64 mesh = 0;  // MeshDesc[]: the quantized positions and each mesh's grid
   u64 triangles = 0;
-  // Index of this draw's first entry in the whole scene's visible list, which the id carries and
-  // the resolve indexes. Occlusion pass 2 and the software rasterizer append to their own runs of
-  // one list, so `visible` points at the run and this shifts the ids back onto the whole list.
+  // Index of this draw's first entry in the whole scene's visible list, which is what everything
+  // per entry is indexed by (a deformed instance's pool block). Occlusion pass 2 and the software
+  // rasterizer append to their own runs of one list, so `visible` points at the run and this
+  // shifts a slot back onto the whole list. The visibility id is the scene's pair, not the entry.
   u32 visible_offset = 0;
   u32 triangles_per_cluster = 0;  // vertex path only: the draw's vertex count / 3
   u64 visible = 0;     // u32x2[]: {instance, cluster} per entry; 0 draws {0, i} in index order

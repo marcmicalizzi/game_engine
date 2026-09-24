@@ -1046,6 +1046,11 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     cull.draw_args = scene.draw_args[0].address + vf.args_offset;
     cull.sw_visible = vf.run_address[2];
     cull.sw_args = scene.sw_args.address + vf.args_offset;
+    // The way back from a pixel's pair to the entry this frame drew it as (gfx.md, "The tie rule"):
+    // this view's table, and where each run the pass appends to starts in the whole list.
+    cull.pair_entries = scene.pair_entries_address(v);
+    cull.visible_base = vf.run_base[0];
+    cull.sw_visible_base = vf.run_base[2];
     cull.instances = scene.instances.address;
     cull.meshes = scene.meshes.address;
     cull.instance_count = instance_count;
@@ -1092,6 +1097,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     cull_pass2 = cull;
     cull_pass2.pass = 2;
     cull_pass2.visible = vf.run_address[1];
+    cull_pass2.visible_base = vf.run_base[1];
     cull_pass2.draw_args = scene.draw_args[1].address + vf.args_offset;
     if (vertex_indexed) {
       cull_pass2.vertex_draw = scene.vertex_headers.address + scene.vertex_header_offset(v, 1);
@@ -1127,6 +1133,11 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     resolve.mesh = scene.meshes.address;
     resolve.instances = scene.instances.address;
     resolve.visible = settings.cull ? scene.visible.address : 0;
+    // A pixel's id is the scene's pair: the scene's pair table decodes it, and this view's
+    // pair-to-entry table says which entry the frame drew it as, which only a deformed instance's
+    // pool block needs. Without culling the list is null and the pair is the entry.
+    resolve.pairs = scene.pair_table.address;
+    resolve.pair_entries = settings.cull ? scene.pair_entries_address(v) : 0;
     resolve.triangles = scene.triangles.address;
     resolve.materials = scene.materials.address;
     resolve.cluster_materials = scene.cluster_materials.address;
@@ -1194,6 +1205,12 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       ray.width = vf.width;
       ray.height = vf.height;
       ray.scene = scene.tlas_slot();
+      // The id the pass writes is the entry's pair (gfx.md, "The tie rule"), and its second look
+      // at a tied distance leaves the shadow casters' run out.
+      ray.visible = scene.visible.address;
+      ray.instances = scene.instances.address;
+      ray.meshes = scene.meshes.address;
+      ray.caster_base = casters ? scene.visible_base(0, gfx::k_caster_run) : ~u32{0};
       vf.ray_address = ray_params_[slot].address + sizeof(gfx::RayVisibilityParams) * v;
       std::memcpy(static_cast<u8*>(ray_params_[slot].mapped) + sizeof(gfx::RayVisibilityParams) * v,
                   &ray, sizeof(ray));
@@ -1284,6 +1301,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   const gfx::RgBuffer rg_args[2] = {graph.import_buffer("draw_args", scene.draw_args[0]),
                                     graph.import_buffer("draw_args2", scene.draw_args[1])};
   const gfx::RgBuffer rg_visible = graph.import_buffer("visible", scene.visible);
+  const gfx::RgBuffer rg_pair_entries = graph.import_buffer("pair entries", scene.pair_entries);
   gfx::RgBuffer rg_vertex_headers{};
   gfx::RgBuffer rg_vertex_records{};
   gfx::RgBuffer rg_vertex_indices{};
@@ -1472,6 +1490,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
         [&, list](gfx::PassBuilder& b) {
           b.write(rg_args[list], gfx::Access::ComputeReadWrite);
           b.write(rg_visible, gfx::Access::ComputeWrite);
+          b.write(rg_pair_entries, gfx::Access::ComputeWrite);
           if (vertex_indexed) {
             b.write(rg_vertex_headers, gfx::Access::ComputeReadWrite);
             b.write(rg_vertex_records, gfx::Access::ComputeWrite);
@@ -1926,6 +1945,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             for (const gfx::RgBuffer& d : rg_blas_data)
               b.read(d, gfx::Access::RayQueryRead);
             b.read(rt.clas_data, gfx::Access::RayQueryRead);
+            b.read(rg_visible, gfx::Access::ComputeRead);  // a hit's entry -> its pair, the id
             b.write(rg_vis, gfx::Access::ComputeWrite);
           },
           [&](VkCommandBuffer cb, gfx::RenderGraph&) {
@@ -1948,6 +1968,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
         [&](gfx::PassBuilder& b) {
           b.color_attachment(color, VK_ATTACHMENT_LOAD_OP_CLEAR, sky);
           b.read(rg_vis, gfx::Access::FragmentRead);
+          // A pixel's pair decodes through the scene's pair table, which no pass writes; the entry
+          // it was drawn as is read only for a deformed instance's pool block.
+          if (cull_on && deform_on) b.read(rg_pair_entries, gfx::Access::FragmentRead);
           // The per-tile coverage mask the last Hi-Z build left behind it, in the same buffer.
           if (occlusion) b.read(rg_hiz, gfx::Access::FragmentRead);
           if (deform_on) {
@@ -2102,31 +2125,24 @@ bool SceneRenderer::capture(const FrameDesc& frame, const CaptureChannels& chann
   return true;
 }
 
-// The visibility buffer holds `depth << 32 | (visible_index << 8 | triangle)` and the visible
-// list turns a `visible_index` into the {instance, cluster} pair it names — the same decode the
-// resolve does in `visible_entry`, including the no-cull case where the list is null and entry i
-// is {0, i}. Both are read back here so that what a capture reports is the pair, not an index
-// into a list that will not exist a frame later.
+// The visibility buffer holds `depth << 32 | (pair << 8 | triangle)`, and the pair is the scene's
+// (docs/subsystems/gfx.md, "The tie rule"), so it decodes into the {instance, cluster} it names
+// with nothing but the scene: `GpuScene::pair_cluster`, the inverse of the cull pass's arithmetic.
+// That is what a capture reports — the pair, not an index into a list that will not exist a frame
+// later — and it needs no readback of the frame's list. The no-cull case, where the list is null
+// and the rasterizers draw instance 0's clusters in index order, names cluster i as pair i.
 //
 // **A capture is in the target's pixels, whatever the layout.** Each view owns a rectangle of the
 // target and a region of the visibility buffer, so the walk is per view: a pixel inside a view's
 // rectangle reads that view's region, a pixel no view covers is empty, and a view whose source is
 // wider than its rectangle — a Panini view — is sampled through the same map the resolve used, so
-// an id in a capture names what is under that pixel of the picture. The ids of two views are
-// looked up in the *same* list, because the runs share one array and one index space.
+// an id in a capture names what is under that pixel of the picture.
 bool SceneRenderer::read_visibility(CapturedFrame& out, const CaptureChannels& channels,
                                     std::string* error) {
   Vector<u8> vis_bytes;
   if (!read_buffer(*device_, targets_.vis, targets_.vis.size, vis_bytes, error)) return false;
-  Vector<u8> visible_bytes;
   const bool has_list = resolved_.settings.cull && scene_->visible_run_bytes() > 0;
-  const u64 list_bytes = scene_->visible_run_bytes() * k_visible_runs * scene_->view_count();
-  if (has_list && !read_buffer(*device_, scene_->visible, list_bytes, visible_bytes, error)) {
-    return false;
-  }
   const auto* values = reinterpret_cast<const u64*>(vis_bytes.data());
-  const auto* entries = reinterpret_cast<const u32*>(visible_bytes.data());
-  const u32 entry_count = has_list ? static_cast<u32>(list_bytes / 8) : 0;
   const u32 pixel_count = static_cast<u32>(u64{width_} * height_);
   if (channels.ids) out.ids.resize(pixel_count * k_id_words);
   if (channels.depth) out.depth.resize(pixel_count);
@@ -2165,14 +2181,11 @@ bool SceneRenderer::read_visibility(CapturedFrame& out, const CaptureChannels& c
           }
         }
         if (!channels.ids) continue;
-        const u32 index = id >> 8;
+        const u32 pair = id >> 8;
         u32 instance = 0;
-        u32 cluster = index;
-        if (has_list && index < entry_count) {
-          instance = entries[index * 2 + 0];
-          cluster = entries[index * 2 + 1];
-        } else if (has_list) {
-          instance = k_no_id;  // an id past the list: the frame and the readback disagree
+        u32 cluster = pair;
+        if (has_list && !scene_->pair_cluster(pair, instance, cluster)) {
+          instance = k_no_id;  // a pair past the scene's: the frame and the scene disagree
           cluster = k_no_id;
         }
         out.ids[p * k_id_words + 0] = instance;

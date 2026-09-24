@@ -2,16 +2,17 @@
 
 // Parameters of the visibility resolve (shaders/visibility_resolve.slang): the first material
 // pass. Read through a device address; the fragment pass pushes only the address. A pixel's id
-// is `visible_index << 8 | triangle`, so the resolve reads `visible[visible_index]` to recover
-// the (instance, cluster) pair the rasterizer drew, decodes the positions off that instance's
-// mesh's 16-bit grid (`MeshDesc` in cluster_cull.h) and transforms them by the instance's world
-// matrix: exactly the triangle that was drawn. Materials are a flat table indexed per cluster
-// plus the instance's `material_base`, which is enough until the material graph arrives. Shading
-// is the physically based BSDF of shaders/brdf.slang (GGX specular, Lambert diffuse) under a
-// directional sun, a list of analytic lights, and a sky hemisphere. A light whose bit is set in
-// `shadow_flags` is shadowed by a ray query against the top-level structure in bindless slot
-// `scene` — the one the frame built from the same visible list the rasterizer drew from, so the
-// shadows are cast by exactly the geometry in the picture.
+// is `pair << 8 | triangle`, the scene's pair, so the resolve reads the scene's pair table
+// (`pairs`) to recover the (instance, cluster) the rasterizer drew — and, for a deformed instance,
+// this view's `pair_entries` for the visible entry whose pool block holds its positions — decodes
+// the positions off that instance's mesh's 16-bit grid (`MeshDesc` in cluster_cull.h) and
+// transforms them by the instance's world matrix: exactly the triangle that was drawn. Materials
+// are a flat table indexed per cluster plus the instance's `material_base`, which is enough until
+// the material graph arrives. Shading is the physically based BSDF of shaders/brdf.slang (GGX
+// specular, Lambert diffuse) under a directional sun, a list of analytic lights, and a sky
+// hemisphere. A light whose bit is set in `shadow_flags` is shadowed by a ray query against the
+// top-level structure in bindless slot `scene` — the one the frame built from the same visible list
+// the rasterizer drew from, so the shadows are cast by exactly the geometry in the picture.
 //
 // **One resolve per view.** A `renderer::ViewSet` (docs/plan/04-renderer.md §4.6) puts N views in
 // one color target, so the pass runs once per view with that view's viewport rectangle and that
@@ -100,7 +101,7 @@ inline f32 panini_oversample(f32 d, f32 half_fov_x) noexcept {
   return panini > 0.0f ? std::tan(half_fov_x) / panini : 1.0f;
 }
 
-// Mirrors ResolveParams in visibility_resolve.slang. 256 bytes.
+// Mirrors ResolveParams in visibility_resolve.slang. 304 bytes.
 struct ResolveParams {
   Vec4 sky{};     // rgb shown for empty pixels and used as the hemisphere ambient
   Vec4 sun{};     // xyz normalized direction towards the light, w intensity
@@ -119,7 +120,7 @@ struct ResolveParams {
   u32 mode = static_cast<u32>(ResolveMode::Shaded);
   u32 light_count = 0;
   u64 instances = 0;       // InstanceDesc[] (cluster_cull.h)
-  u64 visible = 0;         // u32x2[]: the cull pass's visible list; 0 reads {0, visible_index}
+  u64 visible = 0;         // u32x2[]: the cull pass's visible list; 0 reads {0, pair}
   u32 scene = k_no_scene;  // bindless slot of the top-level structure the shadow rays trace
   u32 shadow_flags = 0;    // k_shadow_sun | k_shadow_lights; 0 traces nothing
   f32 shadow_bias = 0.0f;  // world units along the geometric normal, off the surface
@@ -166,9 +167,18 @@ struct ResolveParams {
   // rigid instance in a morphed scene is unaffected too (gfx.md, "What happens to the shading
   // normal").
   u64 normal_pool = 0;
+  // **This view's pair-to-entry table** (`CullParams::pair_entries`). A pixel's id is the scene's
+  // pair and triangle (docs/subsystems/gfx.md, "The tie rule"), and the entry the pair was drawn
+  // as this frame is where a deformed instance's pool block is found, so the resolve reads this
+  // only for a pixel of a deformed instance. 0 with a null `visible`, where the pair is the entry.
+  u64 pair_entries = 0;
+  // **The scene's pair table**: u32x2 {instance, cluster} per pair, the inverse of `pair_of`,
+  // which is how a pixel's id is decoded in one load. 0 decodes through `pair_entries` and
+  // `visible` instead, two dependent loads, which is what a caller without the table gets.
+  u64 pairs = 0;
   u64 pad3 = 0;  // keeps the block 16-byte aligned
 };
-static_assert(sizeof(ResolveParams) == 288);
+static_assert(sizeof(ResolveParams) == 304);
 static_assert(sizeof(ResolveParams) % 16 == 0, "the block is read as float4 rows on the GPU");
 
 }  // namespace engine::gfx

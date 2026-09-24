@@ -314,21 +314,15 @@ TEST_CASE("vertex path: the baseline tier fills the visibility buffer like the m
   const u64* vertex_out = mesh_out + k_w * k_h;
   const u64* indirect_out = vertex_out + k_w * k_h;
   const auto* args_out = reinterpret_cast<const u32*>(indirect_out + k_w * k_h);
-  const auto* visible_out = args_out + 4;  // uint2 per entry: {instance, cluster}
   CHECK(args_out[0] == triangles_per_cluster * 3);
   CHECK(args_out[1] > 0);
   CHECK(args_out[1] <= leaf_count);
   MESSAGE("indirect: " << args_out[1] << " of " << leaf_count << " leaf clusters in the frustum");
 
-  // A visibility id names an entry of the visible list, not a cluster, so the indirect draw's
-  // words differ from the direct draw's even where they name the same triangle. What must agree
-  // is the surface: the (cluster, triangle) the id leads to, and the depth.
-  auto surface_of = [&](u64 word, u64 offset) {
-    const u32 id = static_cast<u32>(word);
-    const u32 entry = id >> 8;
-    const u32 cluster = offset == 0 ? entry : visible_out[entry * 2 + 1];
-    return (u64{cluster} << 40) | (u64{id & 0xff} << 32) | (word >> 32);
-  };
+  // A visibility id names the scene's pair, not an entry of the visible list (gfx.md, "The tie
+  // rule"), and for the one identity instance of one mesh the pair is the cluster, so the indirect
+  // draw and the direct draw write the same word for the same triangle at the same depth.
+  auto surface_of = [](u64 word, u64) { return word; };
   u32 covered = 0;
   u32 coverage_mismatch = 0;
   u32 id_mismatch = 0;
@@ -350,11 +344,14 @@ TEST_CASE("vertex path: the baseline tier fills the visibility buffer like the m
     }
   }
   CHECK(covered > k_w * k_h / 8);
+  // Exact, since the id became the scene's pair (gfx.md, "The tie rule"): a depth tie along a
+  // shared edge goes to the larger (pair, triangle) in every draw, where it used to follow the
+  // order each draw's list happened to be in.
   if (have_mesh) {
     CHECK(coverage_mismatch == 0);
-    CHECK(id_mismatch * 500 <= covered);  // depth ties along shared edges differ between two draws
+    CHECK(id_mismatch == 0);
   }
-  CHECK(indirect_mismatch * 500 <= covered);
+  CHECK(indirect_mismatch == 0);
   MESSAGE("covered " << covered << " px; mesh vs vertex coverage mismatch " << coverage_mismatch
                      << ", id mismatch " << id_mismatch << "; indirect mismatch "
                      << indirect_mismatch);
@@ -939,13 +936,10 @@ TEST_CASE("vertex path: the indexed draw draws the cut's own triangles, the same
   MESSAGE("budget of " << header_b.index_capacity << " triangles: " << overflowed << " of "
                        << survivors << " clusters through the fallback");
 
-  // What a pixel shows, as the (cluster, triangle, depth) its id names through its own list.
-  auto surface = [](u64 word, const u32* visible) -> u64 {
-    if (word == 0) return 0;
-    const u32 id = static_cast<u32>(word);
-    const u32 cluster = visible[(id >> 8) * 2 + 1];
-    return (u64{cluster} << 40) | (u64{id & 0xff} << 32) | (word >> 32);
-  };
+  // What a pixel shows: the word itself, whose id names the scene's pair — for one identity
+  // instance the cluster — and not an entry of a list (gfx.md, "The tie rule"), so two draws of
+  // one surface through different lists write the same word.
+  auto surface = [](u64 word, const u32*) -> u64 { return word; };
   const auto* a = reinterpret_cast<const u64*>(out_a.data());
   const auto* b = reinterpret_cast<const u64*>(out_b.data());
   const auto* capacity = reinterpret_cast<const u64*>(out_capacity.data());
@@ -979,21 +973,21 @@ TEST_CASE("vertex path: the indexed draw draws the cut's own triangles, the same
     }
   }
   CHECK(covered > k_w * k_h / 8);
-  // 2. The capacity draw's picture: the same coverage, and the same surface but for depth ties
-  //    along shared edges, which two draws may resolve to either triangle.
+  // 2. The capacity draw's picture: the same coverage and the same words. A depth tie along a
+  //    shared edge goes to the larger (pair, triangle) in both draws (gfx.md, "The tie rule").
   CHECK(vs_capacity_coverage == 0);
-  CHECK(vs_capacity * 500 <= covered);
+  CHECK(vs_capacity == 0);
   // 3. The software rasterizer's, to its edge rules (the visibility test's tolerances).
   CHECK(vs_sw_coverage * 100 < covered);
   CHECK(vs_sw_same_id * 100 >= vs_sw_both * 90);
   // 4. The mesh path's, where there is one: the same buffer the vertex path test holds it to.
   if (have_mesh) {
     CHECK(vs_mesh_coverage == 0);
-    CHECK(vs_mesh_ids * 500 <= covered);
+    CHECK(vs_mesh_ids == 0);
   }
   // 5. A budget too small changes nothing in the picture.
   CHECK(vs_budget_coverage == 0);
-  CHECK(vs_budget * 500 <= covered);
+  CHECK(vs_budget == 0);
   MESSAGE("covered " << covered << " px; against the capacity draw " << vs_capacity_coverage
                      << " coverage / " << vs_capacity << " surface; against software "
                      << vs_sw_coverage << " coverage, " << vs_sw_same_id << " of " << vs_sw_both

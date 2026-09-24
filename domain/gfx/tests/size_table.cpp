@@ -83,7 +83,11 @@ ENGINE_EXPECT_SIZE(128, 8, gfx::ClusterRecordParams);
 // survivor's triangles under, and the records it writes the survivor to (gfx::VertexDrawHeader).
 // Only `cull_vertex_main` reads them; `cull_main` is compiled without that code, which is why the
 // mesh path's cull costs what it did (docs/experiments/e1-pascal-rerun.md, "After").
-ENGINE_EXPECT_SIZE(448, 8, gfx::CullParams);
+// 464, not 448: the visibility id became the scene's pair instead of the visible entry, so that a
+// depth tie is settled by the scene's order and not by the append's (gfx.md, "The tie rule"), and
+// the resolve needs the way back: `pair_entries`, this view's pair-to-entry table the pass writes
+// for every pair it draws, and the two run bases an entry is counted from.
+ENGINE_EXPECT_SIZE(464, 8, gfx::CullParams);
 
 // The vertex path's indexed draw, per run: the header is the draw's, the fallback's and the
 // expansion's indirect arguments in one aligned block; a record is the entry the vertex stage reads
@@ -124,7 +128,12 @@ ENGINE_EXPECT_SIZE(48, 8, gfx::HizParams);
 // positions, and it is an address because the resolve reads it per covered pixel. It is zero for
 // every frame with no morph channels, and the shader then reads the rest attribute stream exactly
 // as it did, which is what keeps those pictures byte-identical.
-ENGINE_EXPECT_SIZE(288, 8, gfx::ResolveParams);
+// 304, not 288: the visibility id became the scene's pair (docs/subsystems/gfx.md, "The tie
+// rule"), so the resolve decodes it through the scene's pair table (`pairs`, one load, as
+// `visible[entry]` was) and reaches the entry through the view's pair-to-entry table
+// (`pair_entries`) only for a deformed instance's pool block. The old pad word went to
+// `pair_entries`; `pairs` added the sixteen bytes after it.
+ENGINE_EXPECT_SIZE(304, 8, gfx::ResolveParams);
 
 // 256: the reference path tracer's block (docs/plan/04-renderer.md §4.8). It is not in a frame
 // path — one dispatch per batch of samples, minutes per picture allowed — so it carries all

@@ -1,6 +1,8 @@
 // Fullscreen resolve of the 64-bit visibility buffer (docs/plan/04-renderer.md §4.3 step 4):
-// the first material pass. A pixel's id is `visible_index << 8 | triangle`, so the visible list
-// gives back the (instance, cluster) pair the rasterizer drew; the cluster and the triangle lead
+// the first material pass. A pixel's id is `pair << 8 | triangle`, the scene's pair (scene.slang,
+// `pair_of`); the scene's pair table gives back its (instance, cluster) — and, for a deformed
+// instance only, this view's pair-to-entry table the visible entry whose pool block holds its
+// positions; the cluster and the triangle lead
 // to the three vertices, whose positions come off the 16-bit grid of that instance's mesh — or,
 // for a deformed instance, out of the frame's deformed-vertex pool (MeshDesc, load_position) —
 // and go through the instance's world matrix, exactly as the
@@ -50,7 +52,7 @@
 // the visibility buffer. A **Panini** view goes one step further: its region holds a wider
 // rectilinear picture, and `panini_x`/`source_x`/`panini_d` map each output pixel back into it.
 //
-// Read through a device address; mirrors gfx::ResolveParams (256 bytes).
+// Read through a device address; mirrors gfx::ResolveParams (304 bytes).
 struct ResolveParams {
   float4 sky;     // rgb, shown for empty pixels and used as the hemisphere ambient
   float4 sun;     // xyz normalized direction towards the light, w intensity
@@ -70,7 +72,7 @@ struct ResolveParams {
               // 6 the sun's shadow alone
   uint light_count;
   uint64_t instances;  // InstanceDesc[]
-  uint64_t visible;    // uint2[]: the cull pass's visible list; 0 reads {0, visible_index}
+  uint64_t visible;    // uint2[]: the cull pass's visible list; 0 reads {0, pair}
   uint scene;          // bindless slot of the top-level structure; 0xffffffff for none
   uint shadow_flags;   // bit 0 the sun casts, bit 1 the analytic lights cast
   float shadow_bias;   // world units along the geometric normal, off the surface
@@ -87,6 +89,8 @@ struct ResolveParams {
   uint coverage_pitch;  // tiles per row of that mask
   uint pad2;
   uint64_t normal_pool;  // deformed normals, parallel to the deformed-vertex pool; 0 for none
+  uint64_t pair_entries;  // uint[pair_count]: this view's pair -> visible entry; 0: the pair is it
+  uint64_t pairs;         // uint2[pair_count]: the scene's {instance, cluster} per pair; 0: none
   uint64_t pad3;
 };
 
@@ -239,7 +243,17 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
   if (value == 0) return sky_pixel(params);
   const uint id = uint(value & 0xffffffffu);
   const float depth = asfloat(uint(value >> 32));
-  const uint2 entry = visible_entry(params->visible, id >> 8);
+  // The id's pair is the scene's, and the scene's pair table gives its {instance, cluster} in one
+  // load, as `visible[entry]` did when the id was the entry. The entry the pair was drawn as this
+  // frame is a second, dependent load, so it is read only where it is needed: for a deformed
+  // instance's pool block. Without the table both come from the frame's lists.
+  const uint pair = id >> 8;
+  uint2 entry;
+  if (params->pairs != 0) {
+    entry = ((uint2*)params->pairs)[pair];
+  } else {
+    entry = visible_entry(params->visible, entry_of_pair(params->pair_entries, pair));
+  }
   switch (params->mode) {
     case 0: return float4(id_color(entry), 1.0);
     case 1:
@@ -250,7 +264,9 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
   const SceneGeometry geo = geometry_of(params);
   InstanceDesc* instances = (InstanceDesc*)params->instances;
   const InstanceDesc instance = instances[entry.x];
-  const Surface s = reconstruct_screen(geo, instance, id >> 8, entry.y, id & 0xff, source,
+  const uint visible_index =
+      instance.deform == k_invalid_deform ? 0u : entry_of_pair(params->pair_entries, pair);
+  const Surface s = reconstruct_screen(geo, instance, visible_index, entry.y, id & 0xff, source,
                                        params->view_proj, params->camera.xyz, params->width,
                                        params->height);
   if (params->mode == 4) return float4(s.normal * 0.5 + 0.5, 1.0);
@@ -266,7 +282,7 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
     float3 bitangent;
     // The triangle a second time rather than one held across the reconstruction, which is what
     // this block always did: the frame is needed only where a normal map is.
-    const TriangleFetch tri = fetch_triangle(geo, instance, id >> 8, entry.y, id & 0xff);
+    const TriangleFetch tri = fetch_triangle(geo, instance, visible_index, entry.y, id & 0xff);
     if (tangent_frame(geo, tri, s.normal, tangent, bitangent)) {
       shading_normal = apply_normal_map(material, uv, s.normal, tangent, bitangent);
     }

@@ -280,7 +280,6 @@ TEST_CASE("normal cones: the cull pass drops backfacing clusters without changin
   const auto* bytes = static_cast<const u8*>(host.mapped);
   const auto* vis_off = reinterpret_cast<const u64*>(bytes);
   const auto* vis_on = reinterpret_cast<const u64*>(bytes + vis_bytes);
-  const auto* list_off = reinterpret_cast<const u32*>(bytes + vis_bytes * 2);
   const auto* list_on = reinterpret_cast<const u32*>(bytes + vis_bytes * 2 + list_bytes);
   const auto* args_off = reinterpret_cast<const u32*>(bytes + vis_bytes * 2 + list_bytes * 2);
   const u32* args_on = args_off + 4;
@@ -303,20 +302,15 @@ TEST_CASE("normal cones: the cull pass drops backfacing clusters without changin
   // The picture: every pixel the culled draw covers holds the same surface as the full draw (the
   // back faces of a closed convex body never win the depth race), and pixels only the full
   // draw covers are silhouette pixels back faces alone touched. The two draws have their own
-  // visible lists, so a pixel's id names a different entry in each; the (cluster, triangle,
-  // depth) it leads to is what must agree.
-  auto surface_of = [&](u64 word, const u32* list) {
-    const u32 id = static_cast<u32>(word);
-    return (u64{list[(id >> 8) * 2 + 1]} << 40) | (u64{id & 0xff} << 32) | (word >> 32);
-  };
+  // visible lists, but a pixel's id names the scene's pair and not an entry of either
+  // (gfx.md, "The tie rule"), so the words themselves — pair, triangle and depth — must agree.
   u32 covered = 0;
   u32 changed = 0;
   u32 lost = 0;
   for (u32 i = 0; i < k_size * k_size; ++i) {
     if (vis_on[i] != 0) {
       ++covered;
-      if (vis_off[i] == 0 || surface_of(vis_off[i], list_off) != surface_of(vis_on[i], list_on))
-        ++changed;
+      if (vis_off[i] != vis_on[i]) ++changed;
     } else if (vis_off[i] != 0) {
       ++lost;
     }

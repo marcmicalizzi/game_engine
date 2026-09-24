@@ -664,11 +664,20 @@ TEST_CASE("scene: the pair cull, the two rasterizers, ray tracing, and occlusion
                      << ", id mismatch " << id_mismatch);
   // Every instance in the reference set put pixels on the screen, so the transforms reach the
   // rasterizer and not only the cull pass.
+  // A pixel's id is the scene's pair (gfx.md, "The tie rule"), whose instance is the last one whose
+  // first pair is at or below it.
+  auto instance_of_id = [&](u32 id) {
+    const u32 pair = id >> 8;
+    u32 k = 0;
+    while (k + 1 < instance_count && scene.instances[k + 1].first_pair <= pair)
+      ++k;
+    return k;
+  };
   Vector<u32> pixels_per_instance(instance_count, 0u);
   for (u32 i = 0; i < k_w * k_h; ++i) {
     if (vertex_out[i] == 0) continue;
-    const u32 entry = static_cast<u32>(vertex_out[i]) >> 8;
-    if (entry < drawn) ++pixels_per_instance[list_out[entry * 2]];
+    const u32 id = static_cast<u32>(vertex_out[i]);
+    if ((id >> 8) < pair_count) ++pixels_per_instance[instance_of_id(id)];
   }
   for (u32 i = 0; i < instance_count; ++i) {
     if (i != scene.hidden_instance) CHECK(pixels_per_instance[i] > 0);
@@ -778,6 +787,17 @@ TEST_CASE("scene: the pair cull, the two rasterizers, ray tracing, and occlusion
         &error));
     const u32 scene_slot = bindless.add_acceleration_structure(tlas.handle);
     REQUIRE(scene_slot != gfx::BindlessSet::k_invalid_slot);
+    // What each geometry stands for, as the ray pass reads it: GeometryIndex plus the instance's
+    // base names geometry g, and `geometry_list[g]` is the {instance, cluster} of its entry, whose
+    // pair is the id the pass writes (gfx.md, "The tie rule").
+    Vector<u32> geometry_pairs;
+    for (const u32 entry : geometry_entry) {
+      geometry_pairs.push_back(list_out[entry * 2]);
+      geometry_pairs.push_back(list_out[entry * 2 + 1]);
+    }
+    gfx::BufferResource geometry_list;
+    REQUIRE(gfx::upload_buffer(device, geometry_pairs.data(), geometry_pairs.size() * sizeof(u32),
+                               k_storage, geometry_list, &error));
     gfx::RayVisibilityParams ray{};
     ray.view_proj = view_proj;
     ray.inv_view_proj = inverse(view_proj);
@@ -787,6 +807,9 @@ TEST_CASE("scene: the pair cull, the two rasterizers, ray tracing, and occlusion
     ray.width = k_w;
     ray.height = k_h;
     ray.scene = scene_slot;
+    ray.visible = geometry_list.address;
+    ray.instances = instances.address;
+    ray.meshes = meshes.address;
     std::memcpy(ray_params.mapped, &ray, sizeof(ray));
     const u64 ray_address = ray_params.address;
     VkShaderModule trace_module = gfx::create_shader_module(
@@ -824,17 +847,10 @@ TEST_CASE("scene: the pair cull, the two rasterizers, ray tracing, and occlusion
     run_frame();
 
     const auto* ray_out = reinterpret_cast<const u64*>(host_bytes + host_vis_offset[2]);
-    // What must agree is the surface: the (instance, cluster, triangle) each id leads to.
-    auto raster_surface = [&](u64 word) {
-      const u32 id = static_cast<u32>(word);
-      const u32 entry = id >> 8;
-      return (u64{list_out[entry * 2]} << 40) | (u64{list_out[entry * 2 + 1]} << 8) | (id & 0xff);
-    };
-    auto ray_surface = [&](u64 word) {
-      const u32 id = static_cast<u32>(word);
-      const u32 entry = geometry_entry[id >> 8];
-      return (u64{list_out[entry * 2]} << 40) | (u64{list_out[entry * 2 + 1]} << 8) | (id & 0xff);
-    };
+    // What must agree is the surface: the (instance, cluster, triangle) each id leads to, and both
+    // pictures name it the same way, by the scene's pair (gfx.md, "The tie rule").
+    auto raster_surface = [&](u64 word) { return static_cast<u32>(word); };
+    auto ray_surface = [&](u64 word) { return static_cast<u32>(word); };
     u32 rt_coverage_mismatch = 0;
     u32 rt_id_mismatch = 0;
     u32 both = 0;
@@ -866,7 +882,8 @@ TEST_CASE("scene: the pair cull, the two rasterizers, ray tracing, and occlusion
     gfx::destroy_acceleration_structure(device, tlas);
     for (gfx::AccelerationStructure& b : blas)
       gfx::destroy_acceleration_structure(device, b);
-    for (gfx::BufferResource* b : {&scratch, &tlas_instances, &base_buffer, &indices16})
+    for (gfx::BufferResource* b :
+         {&scratch, &tlas_instances, &base_buffer, &indices16, &geometry_list})
       gfx::destroy_buffer(device, *b);
   }
 
@@ -935,7 +952,8 @@ TEST_CASE("scene: the pair cull, the two rasterizers, ray tracing, and occlusion
     CHECK(pass_counts[1][0] + pass_counts[1][1] == steady);
 
     // The hidden instance contributes nothing once the Hi-Z has it, and the picture is the same
-    // surface everywhere: an id names an entry of that frame's list, so the words differ.
+    // surface everywhere: an id names the scene's pair, not an entry of that frame's list
+    // (gfx.md, "The tie rule"), so the ids agree word for word.
     const auto* occl_out = reinterpret_cast<const u64*>(host_bytes + host_vis_offset[3]);
     const auto* occl_list = reinterpret_cast<const u32*>(host_bytes + host_list_offset);
     u32 hidden_pairs = 0;
@@ -944,18 +962,13 @@ TEST_CASE("scene: the pair cull, the two rasterizers, ray tracing, and occlusion
       if (occl_list[entry * 2] == scene.hidden_instance) ++hidden_pairs;
     }
     CHECK(hidden_pairs == 0);
-    auto surface_of = [](u64 word, const u32* list) {
-      const u32 id = static_cast<u32>(word);
-      const u32 entry = id >> 8;
-      return (u64{list[entry * 2]} << 40) | (u64{list[entry * 2 + 1]} << 8) | (id & 0xff);
-    };
     u32 occl_coverage_mismatch = 0;
     u32 occl_id_mismatch = 0;
     for (u32 i = 0; i < k_w * k_h; ++i) {
       const bool a = single_out[i] != 0;
       const bool b = occl_out[i] != 0;
       if (a != b) ++occl_coverage_mismatch;
-      if (a && b && surface_of(single_out[i], list_out) != surface_of(occl_out[i], occl_list))
+      if (a && b && static_cast<u32>(single_out[i]) != static_cast<u32>(occl_out[i]))
         ++occl_id_mismatch;
     }
     CHECK(occl_coverage_mismatch == 0);

@@ -38,7 +38,7 @@ struct StreamParams {
   uint64_t request_mask;     // uint per page
 };
 
-// Read through a device address; mirrors gfx::CullParams (448 bytes).
+// Read through a device address; mirrors gfx::CullParams (464 bytes).
 struct CullParams {
   float4 planes[6];  // inward-facing, normalized: dot(n, p) + w >= 0 inside
   float4 camera;     // xyz position, w = znear
@@ -81,6 +81,13 @@ struct CullParams {
   // cull_vertex_main only.
   uint64_t vertex_draw;     // gfx::VertexDrawHeader, as sixteen words
   uint64_t vertex_records;  // uint4[pair_count]: {instance, cluster, first triangle, overflowed}
+  // The visibility id names a pair, not an entry (scene.slang, `pair_of`), so the resolve needs a
+  // way back from the pair to the entry this frame drew it as: this view's table, one word per
+  // pair, written for every pair drawn. 0 writes none. The two bases say where `visible[0]` and
+  // `sw_visible[0]` are in the whole list, which is what an entry index is counted from.
+  uint64_t pair_entries;  // uint[pair_count]
+  uint visible_base;
+  uint sw_visible_base;
 };
 
 struct CullPush {
@@ -418,20 +425,33 @@ void cull_pair(uint pair, bool vertex_draw) {
     const float diameter_px = 2.0 * radius / distance * params->lod.x;
     software = diameter_px < params->raster.x;
   }
+  uint entry;
   if (software) {
     Atomic<uint>* count = (Atomic<uint>*)params->sw_args;
     const uint slot = count->add(1);
     uint2* visible = (uint2*)params->sw_visible;
     visible[slot] = uint2(instance_index, index);
+    entry = params->sw_visible_base + slot;
   } else {
     Atomic<uint>* count = (Atomic<uint>*)(params->draw_args + uint64_t(params->count_index) * 4);
     const uint slot = count->add(1);
     uint2* visible = (uint2*)params->visible;
     visible[slot] = uint2(instance_index, index);
+    entry = params->visible_base + slot;
     if (vertex_draw) {
       allocate_vertex_draw(params->vertex_draw, params->vertex_records, slot, instance_index,
                            index, cluster.triangle_count);
     }
+  }
+  // The slot is whichever the append handed out, so the entry's index is not a function of the
+  // frame; the visibility id is the pair, which is, and this is the way back from it to the entry
+  // (docs/subsystems/gfx.md, "The tie rule"). A pair is drawn at most once per view per frame —
+  // pass 2 skips what pass 1 drew, the software and hardware runs split the survivors, a caster is
+  // not drawn — so one word per pair per view is enough, and a word left over from an earlier
+  // frame is never read: only a pair this frame drew can be under a pixel.
+  if (params->pair_entries != 0) {
+    uint* pair_entries = (uint*)params->pair_entries;
+    pair_entries[pair] = entry;
   }
 }
 

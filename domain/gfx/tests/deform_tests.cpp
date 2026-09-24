@@ -638,6 +638,9 @@ TEST_CASE("deform: the wave deformer reaches the rasterizer and the ray path ali
   ray.width = k_w;
   ray.height = k_h;
   ray.scene = scene_slot;
+  ray.visible = draw_deformed.visible;  // the entry's pair is the id (gfx.md, "The tie rule")
+  ray.instances = draw_deformed.instances;
+  ray.meshes = draw_deformed.mesh;
   std::memcpy(ray_params.mapped, &ray, sizeof(ray));
   const u64 ray_address = ray_params.address;
 
@@ -991,6 +994,9 @@ TEST_CASE("deform: instantiated cluster templates trace what the rebuilt cluster
     ray.width = k_w;
     ray.height = k_h;
     ray.scene = scene_slot[i];
+    ray.visible = scene.visible[0].address;  // the entry's pair is the id (gfx.md, "The tie rule")
+    ray.instances = scene.instances.address;
+    ray.meshes = scene.meshes.address;
     std::memcpy(ray_params[i].mapped, &ray, sizeof(ray));
   }
   const u64 ray_address[2] = {ray_params[0].address, ray_params[1].address};

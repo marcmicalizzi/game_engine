@@ -7,7 +7,8 @@
 // instance's frame, and collapses the vertices of triangles past the cluster's count so they
 // never rasterize. Driven by vkCmdDrawIndirect with {vertex_count, instance_count = survivors,
 // 0, 0}, where the cull pass counts into the second word (CullParams::count_index = 1).
-// SV_InstanceID is therefore the **visible index**, which is what the visibility id carries.
+// SV_InstanceID is therefore the **visible index**, which leads to the entry's (instance, cluster)
+// and so to the scene's pair, which is what the visibility id carries (scene.slang, `pair_of`).
 
 #include "scene.slang"
 
@@ -31,7 +32,7 @@ struct VertexParams {
 
 struct ClusterVertex {
   float4 position : SV_Position;
-  nointerpolation uint id : VISIBILITY_ID;  // visible index << 8 | triangle
+  nointerpolation uint id : VISIBILITY_ID;  // pair << 8 | triangle
 };
 
 [shader("vertex")]
@@ -45,16 +46,17 @@ ClusterVertex vs_cluster(uint vertex_id : SV_VertexID, uint instance_id : SV_Ins
   const uint triangle = vertex_id / 3;
   const uint corner = vertex_id - triangle * 3;
   ClusterVertex out;
-  out.id = (visible_index << 8) | (triangle & 0xff);
   if (triangle >= cluster.triangle_count) {
+    out.id = 0;  // never rasterized
     out.position = float4(0.0, 0.0, 0.0, 0.0);  // degenerate: all three corners coincide
     return out;
   }
+  MeshDesc* meshes = (MeshDesc*)g_params.mesh;
+  const MeshDesc mesh = meshes[instance.mesh];
+  out.id = (pair_of(instance, mesh, entry.y) << 8) | (triangle & 0xff);
   uint* triangles = (uint*)g_params.triangles;
   const uint packed = triangles[cluster.triangle_offset + triangle];
   const uint local = (packed >> (8 * corner)) & 0xff;
-  MeshDesc* meshes = (MeshDesc*)g_params.mesh;
-  const MeshDesc mesh = meshes[instance.mesh];
   const uint base = deform_base(mesh, instance, visible_index);
   const float3 p = load_position(mesh, base, cluster.vertex_offset, local);
   const float3 world = mul(instance.world, float4(p, 1.0)).xyz;

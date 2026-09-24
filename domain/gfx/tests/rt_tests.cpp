@@ -257,6 +257,10 @@ TEST_CASE("ray query: primary visibility matches the rasterized LOD cut") {
   ray.width = k_w;
   ray.height = k_h;
   ray.scene = scene;
+  // The entry's pair is the id both pictures write (gfx.md, "The tie rule").
+  ray.visible = draw.visible;
+  ray.instances = draw.instances;
+  ray.meshes = draw.mesh;
   std::memcpy(params.mapped, &ray, sizeof(ray));
   const u64 params_address = params.address;
 

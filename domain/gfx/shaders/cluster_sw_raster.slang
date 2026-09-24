@@ -3,8 +3,9 @@
 // instance's frame and transformed to pixel space in shared memory, then one thread per triangle
 // walks the triangle's bounding box with edge functions and writes depth << 32 | id into the
 // visibility buffer with a 64-bit atomic max, exactly as the hardware path's fs_visibility does.
-// The id's high 24 bits are the workgroup's **visible index**, the same word the mesh and vertex
-// paths write. Meant for clusters a few dozen pixels across, where a hardware triangle costs
+// The id's high 24 bits are the scene's **pair** of the workgroup's entry (scene.slang, `pair_of`),
+// the same word the mesh and vertex paths write, so a depth tie between this pass and a hardware
+// one goes to the same surface either way. Meant for clusters a few dozen pixels across, where a hardware triangle costs
 // more in setup than in coverage; the cull pass decides which pairs come here. No clipping: a
 // triangle with a vertex behind the camera is skipped, and clusters that close go through the
 // hardware path anyway.
@@ -89,7 +90,7 @@ void sw_raster_main(uint3 group_thread : SV_GroupThreadID, uint3 group : SV_Grou
   const int2 max_px = int2(min(ceil(hi), size - 1.0));
   if (uint(max_px.x - min_px.x + 1) * uint(max_px.y - min_px.y + 1) > k_max_bbox_pixels) return;
 
-  const uint id = (visible_index << 8) | (t & 0xff);
+  const uint id = (pair_of(instance, mesh, entry.y) << 8) | (t & 0xff);
   Atomic<uint64_t>* visibility = (Atomic<uint64_t>*)g_params.visibility;
   const float inv_area = 1.0 / area;
   for (int y = min_px.y; y <= max_px.y; ++y) {

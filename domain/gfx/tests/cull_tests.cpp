@@ -307,12 +307,10 @@ TEST_CASE("cluster cull: GPU selection matches the CPU reference and the cut cov
   CHECK(count == expected.size());
   // A visible entry is {instance, cluster}; there is one instance, so every entry names it.
   Vector<u32> got;
-  Vector<u32> cluster_of_entry(cluster_count, ~u32{0});
   const auto* visible_out = static_cast<const u32*>(visible_host.mapped);
   u32 foreign_instance = 0;
   for (u32 i = 0; i < count && i < cluster_count; ++i) {
     if (visible_out[i * 2] != 0) ++foreign_instance;
-    cluster_of_entry[i] = visible_out[i * 2 + 1];
     got.push_back(visible_out[i * 2 + 1]);
   }
   CHECK(foreign_instance == 0);
@@ -335,10 +333,10 @@ TEST_CASE("cluster cull: GPU selection matches the CPU reference and the cut cov
     const bool in_leaves = leaf_pixels[i] != 0;
     if (in_leaves) ++covered;
     if (in_cut != in_leaves) ++coverage_mismatch;
-    // The id's high bits are the entry in the visible list, which names the cluster.
+    // The id's high bits are the scene's pair (gfx.md, "The tie rule"), which for the one identity
+    // instance of one mesh is the cluster itself.
     if (in_cut) {
-      const u32 entry = static_cast<u32>(cut_pixels[i]) >> 8;
-      const u32 cluster = entry < count ? cluster_of_entry[entry] : ~u32{0};
+      const u32 cluster = static_cast<u32>(cut_pixels[i]) >> 8;
       if (!std::binary_search(expected.begin(), expected.end(), cluster)) ++foreign;
     }
   }

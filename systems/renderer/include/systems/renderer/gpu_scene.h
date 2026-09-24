@@ -131,6 +131,15 @@ class GpuScene {
   }
   // Entries of the whole visible list, which is what `deform_slots` has one word each of.
   u32 visible_entries() const noexcept { return k_visible_runs * view_count_ * pair_count_; }
+  // This view's pair-to-entry table (`pair_entries`), as the address the cull and the resolve take.
+  u64 pair_entries_address(u32 view) const noexcept {
+    return pair_entries.address + u64{view} * pair_count_ * sizeof(u32);
+  }
+  // The (instance, cluster) a visibility id's pair stands for: the inverse of the cull pass's
+  // `first_cluster + (pair - first_pair)`, by binary search over the instances' prefix sum. It is a
+  // function of the scene alone, like the id, so a capture decodes an id without reading anything
+  // back from the frame that wrote it. False for a pair past the scene's.
+  bool pair_cluster(u32 pair, u32& instance, u32& cluster) const noexcept;
   // The bytes of the CLAS records, structures and scratch the ray tracing chain holds, which is
   // what a summary reports as the multi-view memory cost.
   u64 rt_bytes() const noexcept { return rt_bytes_; }
@@ -316,7 +325,14 @@ class GpuScene {
   gfx::BufferResource cluster_materials;  // u32 per cluster
 
   // ---- the frame's working set, sized by the scene and the view count --------------------------
-  gfx::BufferResource visible;       // u32x2[3 * views * pair_count]: {instance, cluster} per entry
+  gfx::BufferResource visible;  // u32x2[3 * views * pair_count]: {instance, cluster} per entry
+  // u32[views * pair_count]: the visible entry each pair this frame drew is, per view. The id a
+  // pixel holds is the pair (docs/subsystems/gfx.md, "The tie rule"); this is the way back to
+  // what is kept per entry, which the resolve needs only for a deformed instance's pool block.
+  gfx::BufferResource pair_entries;
+  // u32x2[pair_count]: the {instance, cluster} of every pair, written once at upload — the inverse
+  // of the rasterizers' `pair_of`, and how the resolve decodes an id (`ResolveParams::pairs`).
+  gfx::BufferResource pair_table;
   gfx::BufferResource draw_args[2];  // occlusion pass 1 and pass 2 indirect blocks, one per view
   gfx::BufferResource sw_args;       // the software rasterizer's indirect dispatch block, per view
   gfx::BufferResource flags[2];      // drawn last frame / this frame, ping-pong, by pair, per view

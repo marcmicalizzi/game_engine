@@ -69,6 +69,17 @@ bool GpuScene::create(const gfx::Device& device, const SceneData& data,
   pair_count_ = data.pair_count;
   triangles_per_cluster_ = geometry::ClusterLodOptions{}.max_triangles;
   instance_table_ = data.instances;
+  // The visibility id is `pair << 8 | triangle` in 32 bits (gfx.md, "The tie rule"), so a scene
+  // names at most 2^24 pairs; past that two pairs would share an id and the picture would be wrong
+  // without a word, so refuse the scene instead.
+  if (pair_count_ > (1ull << 24)) {
+    if (error != nullptr) {
+      *error = "the scene has " + std::to_string(pair_count_) +
+               " (instance, cluster) pairs; the visibility id names at most 16777216";
+    }
+    destroy();
+    return false;
+  }
 
   if (!bindless_.create(device, gfx::BindlessConfig{}, error) ||
       !create_streaming(resolved, error) || !upload_geometry(resolved, error) ||
@@ -99,6 +110,28 @@ bool GpuScene::create(const gfx::Device& device, const SceneData& data,
                           k_storage, meshes, error)) {
     destroy();
     return false;
+  }
+  // The {instance, cluster} of every pair, the inverse of `pair_of`: what the resolve reads a
+  // pixel's id through. It is the scene's, not the frame's, so it is written once here, and it
+  // costs the resolve one load per pixel — the same one `visible[entry]` was when the id was the
+  // entry. Going through the view's pair-to-entry table instead was a second, dependent load on
+  // every pixel and cost the TITAN Xp's resolve 2-3% (docs/experiments/visible-order.md).
+  if (pair_count_ > 0) {
+    // At most 2^24 pairs (checked above), so twice that is a u32.
+    Vector<u32> table(pair_count_ * 2u, 0u);
+    for (u32 i = 0; i < instance_table_.size(); ++i) {
+      const gfx::InstanceDesc& instance = instance_table_[i];
+      const geometry::ClusterMeshPart& part = data.parts[instance.mesh];
+      for (u32 c = 0; c < part.cluster_count; ++c) {
+        table[(instance.first_pair + c) * 2u] = i;
+        table[(instance.first_pair + c) * 2u + 1u] = part.first_cluster + c;
+      }
+    }
+    if (!gfx::upload_buffer(device, table.data(), u64{table.size()} * sizeof(u32), k_storage,
+                            pair_table, error)) {
+      destroy();
+      return false;
+    }
   }
   return true;
 }
@@ -783,8 +816,14 @@ bool GpuScene::create_working_set(const ResolvedSettings& resolved, std::string*
   // tracing chain builds the union of the views' cuts from in a single dispatch.
   const u64 visible_entry_bytes = 2 * sizeof(u32);
   visible_run_bytes_ = u64{pair_count_} * visible_entry_bytes;
+  // The visibility id names a pair, not an entry (docs/subsystems/gfx.md, "The tie rule"), so the
+  // resolve reads the entry a pair was drawn as out of this: one word per pair per view, written
+  // by the cull pass for every pair it draws. A pair is drawn at most once per view per frame, so
+  // one table per view serves every run, and a word from an earlier frame is never read.
   bool ok = gfx::create_buffer(device, visible_run_bytes_ * k_visible_runs * view_count_,
                                k_readable, false, visible, error) &&
+            gfx::create_buffer(device, u64{pair_count_} * view_count_ * sizeof(u32), k_address,
+                               false, pair_entries, error) &&
             gfx::create_buffer(device, u64{gfx::k_draw_args_bytes} * view_count_, k_args, false,
                                sw_args, error);
   for (u32 i = 0; i < 2; ++i) {
@@ -1016,6 +1055,8 @@ void GpuScene::destroy() noexcept {
   gfx::destroy_buffer(device, vertex_headers);
   gfx::destroy_buffer(device, vertex_records);
   gfx::destroy_buffer(device, vertex_indices);
+  gfx::destroy_buffer(device, pair_entries);
+  gfx::destroy_buffer(device, pair_table);
   gfx::destroy_buffer(device, visible);
   gfx::destroy_buffer(device, cluster_materials);
   gfx::destroy_buffer(device, materials);
@@ -1061,6 +1102,29 @@ void GpuScene::destroy() noexcept {
   page_count_ = page_slots_ = slot_vertices_ = slot_triangles_ = max_requests_ = 0;
   upload_budget_bytes_ = 0;
   page_budget_bytes_ = stream_bytes_ = geometry_bytes_ = 0;
+}
+
+bool GpuScene::pair_cluster(u32 pair, u32& instance, u32& cluster) const noexcept {
+  if (pair >= pair_count_ || instance_table_.empty() || data_ == nullptr) return false;
+  // The last instance whose first pair is at or below `pair`, exactly as scene.slang's
+  // `instance_of_pair` finds it.
+  u32 lo = 0;
+  u32 hi = instance_table_.size() - 1;
+  while (lo < hi) {
+    const u32 mid = (lo + hi + 1) / 2;
+    if (instance_table_[mid].first_pair <= pair) {
+      lo = mid;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  const gfx::InstanceDesc& desc = instance_table_[lo];
+  if (desc.mesh >= data_->parts.size()) return false;
+  const geometry::ClusterMeshPart& part = data_->parts[desc.mesh];
+  if (pair - desc.first_pair >= part.cluster_count) return false;
+  instance = lo;
+  cluster = part.first_cluster + (pair - desc.first_pair);
+  return true;
 }
 
 }  // namespace engine::renderer

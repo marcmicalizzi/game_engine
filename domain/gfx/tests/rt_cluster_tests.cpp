@@ -354,6 +354,10 @@ void run_comparison(gfx::Device& device, u32 grid, f32 threshold_px, u32 k_w, u3
     ray.width = k_w;
     ray.height = k_h;
     ray.scene = p == 0 ? khr_scene : clas_scene;
+    // The entry's pair is the id every picture writes (gfx.md, "The tie rule").
+    ray.visible = draw.visible;
+    ray.instances = draw.instances;
+    ray.meshes = draw.mesh;
     std::memcpy(params[p].mapped, &ray, sizeof(ray));
     params_address[p] = params[p].address;
   }

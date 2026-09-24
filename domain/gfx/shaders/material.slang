@@ -111,7 +111,8 @@ float material_edge(float2 a, float2 b, float2 c) {
 // for a deformed instance (load_position), and go through the instance's world matrix, exactly
 // as the rasterizer and the acceleration structure builds moved them.
 //
-// `entry` is the **visible index** the pixel's id or the ray's geometry index carried, which is
+// `entry` is the **visible index**: the one the pixel's pair was drawn as this frame (the resolve
+// reads it out of the view's pair-to-entry table) or the ray's geometry index carried, which is
 // how the pool block is found: the pool is suballocated per frame per visible entry, so the same
 // (instance, cluster) pair drawn by two views has two blocks holding the same positions.
 TriangleFetch fetch_triangle(SceneGeometry geo, InstanceDesc instance, uint entry,

@@ -10,7 +10,9 @@
 // the **pair** (instance, cluster): instance i owns its mesh's clusters starting at
 // `first_pair`, a prefix sum over the instances in order. The visible list holds one
 // `uint2 {instance, cluster}` per surviving pair, and the visibility buffer's id is
-// `visible_index << 8 | triangle`.
+// `pair << 8 | triangle` — the scene's pair, not the list entry, so that a depth tie goes to the
+// same surface whatever order the frame drew in (`pair_of`, and docs/subsystems/gfx.md, "The tie
+// rule").
 
 #ifndef ENGINE_SCENE_SLANG
 #define ENGINE_SCENE_SLANG
@@ -281,11 +283,33 @@ static const uint k_vertex_draw_overflow = 15;           // survivors the fallba
 
 // Entry `index` of the visible list. A null list is the identity scene the direct draws use:
 // instance 0 and the cluster in index order, which is what a single-mesh draw without culling
-// wants and what keeps a visibility id meaningful in both cases.
+// wants, and there entry i is pair i too (`pair_of`, below).
 uint2 visible_entry(uint64_t visible, uint index) {
   if (visible == 0) return uint2(0, index);
   uint2* entries = (uint2*)visible;
   return entries[index];
+}
+
+// The scene's pair index of `cluster` drawn by `instance`: the inverse of the cull pass's
+// `first_cluster + (pair - first_pair)`. It is what the visibility id carries in its high 24 bits,
+// so that the id is a function of the scene alone — the same for every run of the visible list,
+// every occlusion pass, every rasterizer and every frame — and a depth tie, which the 64-bit atomic
+// max settles on the id, goes to the larger (pair, triangle) whatever order the pairs were drawn
+// in. A null visible list draws instance 0's clusters in index order, and there the pair *is* the
+// cluster, because the first instance's pairs start at 0 and the first mesh's clusters do too.
+uint pair_of(InstanceDesc instance, MeshDesc mesh, uint cluster) {
+  return instance.first_pair + (cluster - mesh.first_cluster);
+}
+
+// The visible entry a pixel's pair was drawn as this frame, which is where everything kept per
+// entry is found — a deformed instance's block of the pool above all; the {instance, cluster} is
+// the scene's pair table's to give, in one load instead of two. `pair_entries` is this view's
+// table, written by the cull pass for every pair it drew; 0, with a null visible list, means the
+// entry is the pair.
+uint entry_of_pair(uint64_t pair_entries, uint pair) {
+  if (pair_entries == 0) return pair;
+  uint* entries = (uint*)pair_entries;
+  return entries[pair];
 }
 
 // The instance that owns pair `pair`: the last one whose first_pair is at or below it. The

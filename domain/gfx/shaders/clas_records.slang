@@ -4,7 +4,10 @@
 //
 // A scene builds one cluster bottom-level structure per instance, so an instance's CLAS records
 // have to be contiguous, while the cull pass's visible list is in whatever order its atomics
-// produced. Three passes sort that out (gfx::ClusterRecordParams documents the buffers):
+// produced. Three passes sort that out (gfx::ClusterRecordParams documents the buffers). The
+// order they leave an instance's records in is still arrival order, so the structure a frame
+// builds is not a function of the frame; nothing the picture shows depends on that, because the
+// ray path settles a tied distance by the pair (ray_visibility.slang), not by traversal order.
 //
 //   records_main  one thread per visible entry, bucketing it into its instance's slice of
 //                 `slots` (slot = instance.first_pair * views + a per-instance atomic) and
@@ -15,9 +18,9 @@
 //                 instance over that instance's run of CLAS addresses.
 //   emit_main     one thread per pair slot, moving the bucketed entries down into the dense
 //                 `records` array and writing the 64-byte CLAS build record there. A record's
-//                 cluster id and base geometry index are the entry's **visible index**, the same
-//                 word the rasterizer puts in the visibility buffer, so the ray-traced and
-//                 rasterized pictures name the same pair.
+//                 cluster id and base geometry index are the entry's **visible index**, which
+//                 leads to the same {instance, cluster} the rasterizer drew, so the ray-traced
+//                 picture writes the same pair (ray_visibility.slang).
 //
 // A deformed instance's record points at the frame's deformed-vertex pool instead of the mesh's
 // rest-pose positions, so the ray geometry deforms with the raster geometry (§4.3). With

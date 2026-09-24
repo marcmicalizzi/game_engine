@@ -451,14 +451,10 @@ TEST_CASE("occlusion culling: two passes draw fewer clusters and the same pictur
   // The picture is unchanged.
   const auto* ref = static_cast<const u64*>(host_vis_ref.mapped);
   const auto* cur_vis = static_cast<const u64*>(host_vis.mapped);
-  const auto* ref_list = static_cast<const u32*>(host_list_ref.mapped);
-  const auto* cur_list = static_cast<const u32*>(host_list.mapped);
-  // A visibility id names an entry of that frame's visible list, and the two frames filled the
-  // list differently, so what must agree is the (cluster, triangle) the id leads to.
-  auto surface_of = [](u64 word, const u32* list) {
-    const u32 id = static_cast<u32>(word);
-    return (u64{list[(id >> 8) * 2 + 1]} << 8) | (id & 0xff);
-  };
+  // The two frames filled their visible lists differently — one run against two — but a
+  // visibility id names the scene's pair and not an entry (gfx.md, "The tie rule"), so a depth tie
+  // along a shared edge goes to the same triangle in both and the words agree exactly. Until the
+  // id became the pair, that tie followed the list's order and this allowed a pixel in a thousand.
   u32 covered = 0;
   u32 coverage_mismatch = 0;
   u32 id_mismatch = 0;
@@ -467,11 +463,11 @@ TEST_CASE("occlusion culling: two passes draw fewer clusters and the same pictur
     const bool b = cur_vis[i] != 0;
     covered += a;
     if (a != b) ++coverage_mismatch;
-    if (a && b && surface_of(ref[i], ref_list) != surface_of(cur_vis[i], cur_list)) ++id_mismatch;
+    if (a && b && ref[i] != cur_vis[i]) ++id_mismatch;
   }
   CHECK(covered > k_w * k_h / 16);
   CHECK(coverage_mismatch == 0);
-  CHECK(id_mismatch * 1000 <= covered);  // depth ties along shared edges only
+  CHECK(id_mismatch == 0);
   MESSAGE("covered " << covered << " px, coverage mismatch " << coverage_mismatch
                      << ", id mismatch " << id_mismatch);
 

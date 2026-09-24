@@ -16,9 +16,10 @@
 // rasterizer's everywhere measured (docs/experiments/e1-pascal-rerun.md, "After").
 //
 // The fragment stage names the triangle with SV_PrimitiveID, which counts the draw's triangles, so
-// the vertex stage hands it `(visible index << 8) - the cluster's first triangle in the draw` as a
-// flat value and the sum is the visibility id — the same word the mesh path, the capacity draw and
-// the software rasterizer write. SV_PrimitiveID in a fragment shader of a vertex pipeline is the
+// the vertex stage hands it `(pair << 8) - the cluster's first triangle in the draw` as a flat
+// value and the sum is the visibility id — the same word the mesh path, the capacity draw and the
+// software rasterizer write (the scene's pair, scene.slang's `pair_of`; the arithmetic is modulo
+// 2^32 and the sum is exact). SV_PrimitiveID in a fragment shader of a vertex pipeline is the
 // SPIR-V Geometry capability, so this module needs the device's geometryShader feature, which is
 // why it is a module of its own: without the feature the renderer draws the capacity draw from
 // cluster_vertex.slang, which declares nothing of the kind. The renderer also wants
@@ -52,18 +53,20 @@ struct VertexParams {
 
 struct IndexedVertex {
   float4 position : SV_Position;
-  // (visible index << 8) - the cluster's first triangle in the draw: add SV_PrimitiveID for the id
+  // (pair << 8) - the cluster's first triangle in the draw: add SV_PrimitiveID for the id
   nointerpolation uint id_base : VISIBILITY_ID;
 };
 
-// The position of `local` of the entry's cluster: the grid or this frame's deformed-vertex pool.
-float4 clip_position(uint4 record, uint visible_index, uint local) {
+// The position of `local` of the entry's cluster — the grid or this frame's deformed-vertex pool —
+// and the scene's pair the entry names, which is what the id carries.
+float4 clip_position(uint4 record, uint visible_index, uint local, out uint pair) {
   InstanceDesc* instances = (InstanceDesc*)g_params.instances;
   const InstanceDesc instance = instances[record.x];
   ClusterDesc* clusters = (ClusterDesc*)g_params.clusters;
   const ClusterDesc cluster = clusters[record.y];
   MeshDesc* meshes = (MeshDesc*)g_params.mesh;
   const MeshDesc mesh = meshes[instance.mesh];
+  pair = pair_of(instance, mesh, record.y);
   const uint base = deform_base(mesh, instance, visible_index);
   const float3 p = load_position(mesh, base, cluster.vertex_offset, local);
   const float3 world = mul(instance.world, float4(p, 1.0)).xyz;
@@ -77,8 +80,9 @@ IndexedVertex vs_cluster_indexed(uint index : SV_VulkanVertexID) {
   const uint4 record = records[slot];
   const uint visible_index = g_params.visible_offset + slot;
   IndexedVertex out;
-  out.position = clip_position(record, visible_index, index & 0xff);
-  out.id_base = (visible_index << 8) - record.z;
+  uint pair;
+  out.position = clip_position(record, visible_index, index & 0xff, pair);
+  out.id_base = (pair << 8) - record.z;
   return out;
 }
 
@@ -98,7 +102,7 @@ void fs_visibility_indexed(IndexedVertex v, uint primitive_id : SV_PrimitiveID) 
 // stage.
 struct FallbackVertex {
   float4 position : SV_Position;
-  nointerpolation uint id : VISIBILITY_ID;  // visible index << 8 | triangle
+  nointerpolation uint id : VISIBILITY_ID;  // pair << 8 | triangle
 };
 
 [shader("vertex")]
@@ -110,7 +114,7 @@ FallbackVertex vs_cluster_fallback(uint vertex_id : SV_VulkanVertexID,
   const uint triangle = vertex_id / 3;
   const uint corner = vertex_id - triangle * 3;
   FallbackVertex out;
-  out.id = (visible_index << 8) | (triangle & 0xff);
+  out.id = 0;                                  // a degenerate triangle is never rasterized
   out.position = float4(0.0, 0.0, 0.0, 0.0);  // degenerate unless the entry overflowed
   if (record.w == 0) return out;              // the indexed draw drew it
   ClusterDesc* clusters = (ClusterDesc*)g_params.clusters;
@@ -118,6 +122,8 @@ FallbackVertex vs_cluster_fallback(uint vertex_id : SV_VulkanVertexID,
   if (triangle >= cluster.triangle_count) return out;
   uint* triangles = (uint*)g_params.triangles;
   const uint packed = triangles[cluster.triangle_offset + triangle];
-  out.position = clip_position(record, visible_index, (packed >> (8 * corner)) & 0xff);
+  uint pair;
+  out.position = clip_position(record, visible_index, (packed >> (8 * corner)) & 0xff, pair);
+  out.id = (pair << 8) | (triangle & 0xff);
   return out;
 }
