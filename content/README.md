@@ -1,6 +1,6 @@
 # Content
 
-- `test-scenes/` deterministic reference scenes (representative and pathological), versioned with the engine, each holding what to load, how to draw it, how many samples the reference spends, and the FLIP it is allowed to differ by. `tools/ci/reference-compare.ps1` is the gate over them; `test-scenes/README.md` is the format.
+- `test-scenes/` deterministic reference scenes (representative and pathological), versioned with the engine, each holding what to load, how to draw it, how many samples the reference spends, and the FLIP it is allowed to differ by. `tools/ci/reference-compare.ps1` is the gate over them; `test-scenes/README.md` is the format. The benchmark scenes of plan 09 §9.4 — a scene, a camera path and the frames to read their numbers against — are subdirectories, starting with `test-scenes/desert-overlook/`.
 - `golden/` golden images and metrics by scene × resolution × GPU class. `golden/local/` is ignored by git.
 - `migration-corpus/` old documents and saves that every schema migration must still load.
 - `generation/` subject lists for `tools/generate.ps1` ([docs/content-generation.md](../docs/content-generation.md)): the text an image model is asked for, with a name, a category and a rough size per subject. The lists are committed so a generated set can be regenerated; **what they generate never is** — images, meshes and their provenance sidecars live under the local root outside the repository. `e10-desert-props.json` is experiment E10's twenty Desert Survival props.

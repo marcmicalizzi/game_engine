@@ -1,0 +1,67 @@
+{
+  "format": "engine.scene.v1",
+  "name": "desert-overlook",
+  "description": "A 5.1 km dune field with two rock ridges, an oasis basin with palms, props along the approach, and five landmarks at 100 m to 2.6 km placed so that the camera path in camera-path.json holds them hidden, partly hidden and in view at known frames (README.md). The meshes are Khronos samples fitted to the landmarks' sizes; an overlay manifest (engine-view --overlay) replaces the six placeholders that name an overlay hash with the owner's generated landmarks.",
+  "meshes": [
+    {"name": "skyscraper", "path": "../../samples/Lantern/Lantern.glb", "hash": "ffc0afdd1bc803ce", "overlay": "733773f40d248614", "fit": {"height": 270}},
+    {"name": "office-tower", "path": "../../samples/Corset/Corset.glb", "hash": "ee4c1c8be38b0e6d", "overlay": "7a97e8a6628de329", "fit": {"height": 150}},
+    {"name": "cathedral", "path": "../../samples/FlightHelmet/FlightHelmet.gltf", "hash": "84dd530fb67e4a9d", "overlay": "b12f62f4bf62abf6", "fit": {"height": 95}},
+    {"name": "mosque", "path": "../../samples/Suzanne/Suzanne.gltf", "hash": "74fef9db20b66d96", "overlay": "732623efe77bde02", "fit": {"height": 55}},
+    {"name": "airplane-wreck", "path": "../../samples/BoomBox/BoomBox.glb", "hash": "278559b810e63c72", "overlay": "fde41005d2c2fa04", "fit": {"extent": 48}},
+    {"name": "palm", "path": "../../samples/SciFiHelmet/SciFiHelmet.gltf", "hash": "8fa4d013a805f5b5", "overlay": "142d0a5d0c146395", "fit": {"height": 12}},
+    {"name": "prop-helmet", "path": "../../samples/FlightHelmet/FlightHelmet.gltf", "hash": "84dd530fb67e4a9d", "fit": {"height": 0.7}},
+    {"name": "prop-boombox", "path": "../../samples/BoomBox/BoomBox.glb", "hash": "278559b810e63c72", "fit": {"extent": 0.6}},
+    {"name": "prop-lantern", "path": "../../samples/Lantern/Lantern.glb", "hash": "ffc0afdd1bc803ce", "fit": {"height": 1.4}},
+    {"name": "prop-corset", "path": "../../samples/Corset/Corset.glb", "hash": "ee4c1c8be38b0e6d", "fit": {"height": 1.7}},
+    {"name": "prop-avocado", "path": "../../samples/Avocado/Avocado.glb", "hash": "445da36a04f980bb", "fit": {"height": 0.35}},
+    {"name": "prop-suzanne", "path": "../../samples/Suzanne/Suzanne.gltf", "hash": "74fef9db20b66d96", "fit": {"height": 0.8}},
+    {"name": "prop-scifi-helmet", "path": "../../samples/SciFiHelmet/SciFiHelmet.gltf", "hash": "8fa4d013a805f5b5", "fit": {"height": 0.7}}
+  ],
+  "instances": [
+    {"mesh": 0, "name": "skyscraper", "translation": [-1350, -2, -1950], "ground": true, "yaw_deg": 20},
+    {"mesh": 1, "name": "office tower", "translation": [900, -2, -1250], "ground": true, "yaw_deg": -35},
+    {"mesh": 2, "name": "cathedral", "translation": [-520, -2, -720], "ground": true, "yaw_deg": 160},
+    {"mesh": 3, "name": "mosque", "translation": [380, -1, -150], "ground": true, "yaw_deg": 210},
+    {"mesh": 4, "name": "airplane wreck", "translation": [-260, -1.5, -60], "ground": true, "yaw_deg": 25},
+
+    {"mesh": 6, "name": "camp: helmet", "translation": [6, 0, 860], "ground": true, "yaw_deg": 200},
+    {"mesh": 7, "name": "camp: boombox", "translation": [7, 0, 858], "ground": true, "yaw_deg": 170},
+    {"mesh": 8, "name": "camp: lantern", "translation": [4.5, 0, 861], "ground": true},
+    {"mesh": 9, "name": "camp: corset", "translation": [9, 0, 862], "ground": true, "yaw_deg": 240},
+    {"mesh": 10, "name": "camp: avocado", "translation": [6.5, 0.02, 858.5], "ground": true},
+    {"mesh": 10, "name": "camp: avocado", "translation": [6.9, 0.02, 858.8], "ground": true, "yaw_deg": 90},
+    {"mesh": 11, "name": "camp: suzanne", "translation": [-5, 0, 830], "ground": true, "yaw_deg": 150},
+    {"mesh": 12, "name": "camp: sci-fi helmet", "translation": [-6, 0, 828], "ground": true, "yaw_deg": 120},
+    {"mesh": 8, "name": "trail: lantern", "translation": [-4, 0, 790], "ground": true},
+    {"mesh": 8, "name": "trail: lantern", "translation": [4, 0, 740], "ground": true},
+    {"mesh": 8, "name": "trail: lantern", "translation": [-4, 0, 690], "ground": true},
+    {"mesh": 8, "name": "trail: lantern", "translation": [4, 0, 640], "ground": true},
+    {"mesh": 7, "name": "trail: boombox", "translation": [-7, 0, 720], "ground": true, "yaw_deg": 30},
+    {"mesh": 6, "name": "trail: helmet", "translation": [8, 0, 680], "ground": true, "yaw_deg": 300},
+    {"mesh": 12, "name": "trail: sci-fi helmet", "translation": [-9, 0, 610], "ground": true, "yaw_deg": 60},
+    {"mesh": 9, "name": "oasis: corset", "translation": [-18, 0, 70], "ground": true, "yaw_deg": 90},
+    {"mesh": 6, "name": "oasis: helmet", "translation": [-22, 0, 66], "ground": true, "yaw_deg": 45},
+    {"mesh": 7, "name": "oasis: boombox", "translation": [-20, 0, 74], "ground": true},
+    {"mesh": 8, "name": "wreck: lantern", "translation": [-215, 0, -40], "ground": true},
+    {"mesh": 11, "name": "wreck: suzanne", "translation": [-225, 0, -30], "ground": true, "yaw_deg": 80}
+  ],
+  "scatters": [
+    {"mesh": 5, "name": "oasis palms", "center": [0, 60], "radius_min": 28, "radius_max": 95, "count": 40, "seed": 11, "scale_min": 0.8, "scale_max": 1.25, "y": -0.3},
+    {"mesh": 5, "name": "outer palms", "center": [0, 60], "radius_min": 110, "radius_max": 175, "count": 24, "seed": 12, "scale_min": 0.7, "scale_max": 1.1, "y": -0.3}
+  ],
+  "terrain": {
+    "size": 2049,
+    "extent": 2560,
+    "seed": 23,
+    "dune_height": 8,
+    "dune_wavelength": 110,
+    "ridges": [
+      {"from": [-2200, 420], "to": [-100, 330], "height": 75, "width": 150, "roughness": 0.18},
+      {"from": [100, 330], "to": [2200, 460], "height": 70, "width": 150, "roughness": 0.18},
+      {"from": [-700, -260], "to": [520, -340], "height": 55, "width": 110, "roughness": 0.2}
+    ],
+    "basins": [
+      {"center": [0, 60], "radius": 200, "depth": 9}
+    ]
+  }
+}

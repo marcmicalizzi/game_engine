@@ -12,6 +12,7 @@ A write-up is not a benchmark log. It is the page a future contributor reads ins
 | E6 | [e6-ecs-store.md](e6-ecs-store.md) | flecs at 10^5 entities and SQLite at 10^6 projection records ([ADR-0028](../adr/0028-ecs-and-persistent-store.md)) |
 | E9 | [e9-multi-view.md](e9-multi-view.md) | a three-view surround against a Panini projection at 11520×2160, and what a `ViewSet` costs |
 | E10 | [e10-generated-props.md](e10-generated-props.md) | how many generated props the engine takes as they come, and which validators and repairs the rest need (twenty props through Meshy twice, Tripo and TRELLIS.2 from one image set; the collapse check calibrated on the Khronos samples) |
+| Flythrough | [flythrough-desert-overlook.md](flythrough-desert-overlook.md) | the first benchmark-corpus scene of [09 §9.4](../plan/09-testing-profiling.md#94-benchmark-scene-corpus) along its 2,401-frame path (RTX 5090 at 1080p to the 11520×2160 surround, TITAN Xp at 1080p and 1440p; Khronos substitutes and the owner's landmarks): what the frame costs per pass, whether occlusion culling pays once there are real occluders, streaming under a budget, and the occlusion invariant over a whole path |
 | E19 | [e19-lattice-cage.md](e19-lattice-cage.md) | what a lattice cage costs against ADR-0026's per-tick budget |
 | E25 | [e25-deformed-clusters.md](e25-deformed-clusters.md) | the deformed-vertex pool, and cluster templates for deforming geometry |
 

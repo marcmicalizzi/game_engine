@@ -250,6 +250,8 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
   resolves_.resize(desc.frames_in_flight);
   stat_blocks_.resize(desc.frames_in_flight);
   ray_params_.resize(desc.frames_in_flight);
+  slot_frame_.assign(desc.frames_in_flight, 0);
+  slot_submission_.assign(desc.frames_in_flight, 0);
   constexpr VkBufferUsageFlags k_address =
       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
   const u64 stat_bytes = sizeof(u32) * (u64{k_stat_words} * views + k_alloc_words);
@@ -493,6 +495,7 @@ void SceneRenderer::destroy() noexcept {
   scene_ = nullptr;
   width_ = height_ = 0;
   submitted_ = 0;
+  recorded_ = 0;
   collected_ = 0;
   flags_dirty_ = true;
   recording_ = false;
@@ -604,8 +607,42 @@ void SceneRenderer::collect_slot(u32 slot) {
   // The page feedback of the frame that last used this slot, read now that the slot has come
   // around and the GPU is known to be done with it. This is the whole of §4.9's "the CPU reads it
   // back N frames later without stalling": N is `frames_in_flight`.
+  const StreamStats before = stats_.stream;
   streamer_.consume(slot);
   stats_.stream = streamer_.stats();
+  // The frame on its own, beside the sums: which one it was, its visible counts (just folded),
+  // its zones, and what streaming did since the last fold.
+  FrameStats& last = stats_.last;
+  last = FrameStats{};
+  last.frame = slot < slot_frame_.size() ? slot_frame_[slot] : 0;
+  last.submission = slot < slot_submission_.size() ? slot_submission_[slot] : 0;
+  last.visible_hw = stats_.visible_hw;
+  last.visible_pass2 = stats_.visible_pass2;
+  last.visible_sw = stats_.visible_sw;
+  last.shadow_casters = stats_.shadow_casters;
+  last.uploads = static_cast<u32>(stats_.stream.uploads - before.uploads);
+  last.upload_bytes = stats_.stream.uploads_bytes - before.uploads_bytes;
+  last.evictions = static_cast<u32>(stats_.stream.evictions - before.evictions);
+  last.requests = static_cast<u32>(stats_.stream.requests - before.requests);
+  last.pages_resident = stats_.stream.pages_resident;
+  ++stats_.folded;
+  if (!timer_.results().empty()) {
+    last.timed = true;
+    for (u32 v = 0; v < view_count(); ++v) {
+      last.gpu_cull += timer_.ms(k_zone_names[k_zone_cull][v]);
+      last.gpu_hw += timer_.ms(k_zone_names[k_zone_hw][v]);
+      last.gpu_sw += timer_.ms(k_zone_names[k_zone_sw][v]);
+      last.gpu_hiz += timer_.ms(k_zone_names[k_zone_hiz][v]);
+      last.gpu_resolve += timer_.ms(k_zone_names[k_zone_resolve][v]);
+      last.gpu_deform += timer_.ms(k_zone_names[k_zone_deform][v]);
+      last.gpu_trace += timer_.ms(k_zone_names[k_zone_trace][v]);
+    }
+    last.gpu_deform_alloc = timer_.ms("deform alloc");
+    last.gpu_rt = timer_.ms("records") + timer_.ms("ranges") + timer_.ms("emit") +
+                  timer_.ms("clas") + timer_.ms("blas") + timer_.ms("tlas");
+    last.gpu_clas = timer_.ms("clas");
+    last.gpu_total = timer_.total_ms();
+  }
   if (!timer_.results().empty()) {
     for (u32 v = 0; v < view_count(); ++v) {
       ViewStats& view = stats_.views[v];
@@ -651,6 +688,7 @@ void SceneRenderer::begin_frame() {
 u64 SceneRenderer::submit_frame(const FrameDesc& frame, std::string* error) {
   ENGINE_ASSERT(recording_, "SceneRenderer::submit_frame: begin_frame was not called");
   const i64 started = time::monotonic_ns();
+  const u32 slot = frames_.slot();
   const gfx::ImageResource& color = frame.color.image != VK_NULL_HANDLE ? frame.color : color_;
   if (color.image == VK_NULL_HANDLE) {
     if (error != nullptr) *error = "the frame names no color target and the renderer owns none";
@@ -675,6 +713,11 @@ u64 SceneRenderer::submit_frame(const FrameDesc& frame, std::string* error) {
     value = frames_.end_frame();
   }
   recording_ = false;
+  if (slot < slot_frame_.size()) {
+    slot_frame_[slot] = frame.frame_index;
+    slot_submission_[slot] = submitted_;
+  }
+  ++recorded_;
   ++submitted_;
   ++stats_.frames;
   targets_.hiz_dirty = false;
@@ -759,7 +802,14 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
                 "occlusion culling");
   // A negative override means "what the settings say", which is every caller but the reference.
   const f32 frame_lod_px = frame.lod_px >= 0.0f ? frame.lod_px : settings.lod_px;
-  const u32 cur_flags = static_cast<u32>(rendered % 2);
+  // The occlusion history ping-pongs on the renderer's own count of frames recorded, **not** on
+  // the caller's frame number: that number drives the lights, and a caller may repeat it — a
+  // benchmark's warm-up holds frame 0, `render.capture` asks for the same frame twice — and a
+  // repeated parity made pass 1 read the flags buffer written two frames earlier, or never. The
+  // picture was right either way (pass 2 catches what pass 1 missed), and the visible pairs and
+  // the timings were not those of the frame before it (found by the flythrough's warm-up,
+  // docs/subsystems/renderer.md "Scenes, camera paths and flythroughs").
+  const u32 cur_flags = static_cast<u32>(recorded_ % 2);
   const u32 prev_flags = 1 - cur_flags;
   const u32 count_index = vertex_path ? 1u : 0u;
   const f32 raster_mode =

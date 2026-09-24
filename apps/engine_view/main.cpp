@@ -16,6 +16,7 @@
 // 64-bit buffer atomics, no presentation support, or `--raster rt` / `--shadows rt` on a device
 // that cannot trace), which tests treat as a skip. A device without mesh shaders is not one of
 // them: it draws through the vertex-shader baseline tier.
+#include <core/hash/hash.h>
 #include <core/jobs/job_system.h>
 #include <core/json/json.h>
 #include <core/json/json_value.h>
@@ -23,6 +24,8 @@
 #include <core/math/math.h>
 #include <core/platform/cpu_baseline.h>
 #include <core/platform/process.h>
+#include <core/platform/thread.h>
+#include <core/schema/json_reflect.h>
 #include <core/time/time.h>
 #include <domain/geometry/cluster_pages.h>
 #include <domain/gfx/capture.h>
@@ -33,6 +36,8 @@
 #include <foundation/image/png.h>
 #include <foundation/io/vfs.h>
 #include <foundation/window/window.h>
+#include <systems/renderer/camera_path.h>
+#include <systems/renderer/flythrough.h>
 #include <systems/renderer/gpu_scene.h>
 #include <systems/renderer/page_source.h>
 #include <systems/renderer/reference.h>
@@ -41,6 +46,7 @@
 #include <systems/renderer/settings.h>
 
 #include <engine_build_stamp.h>
+#include <schemas/scene.h>
 
 #if ENGINE_VIEW_ANIMATION
 #include "anim_lod.h"
@@ -83,6 +89,11 @@ constexpr const char* k_usage =
     "                   [--morph <name|index>=<weight>] [--morph-animate [clip]]\n"
     "                   [--static-shape-kib <n>]\n"
     "                   [--reference <spp>] [--bounces <n>] [--finest] [--spp-batch <n>]\n"
+    "                   [--camera-path <file.json>] [--overlay <manifest.json>] [--offscreen]\n"
+    "                   [--benchmark <out.jsonl>] [--repeat <n>] [--warmup <frames>] [--census]\n"
+    "                   [--warmup-seconds <s>] [--census-pixels]\n"
+    "                   [--verify-occlusion] [--marker-captures <dir>]\n"
+    "                   [--require-quiet] [--wait-quiet <seconds>]\n"
     "       engine-view --version    the commit this binary was built from, as one JSON line\n"
     "\n"
     "  --frames <n>     render n frames, then exit (0: until the window closes)\n"
@@ -211,16 +222,46 @@ constexpr const char* k_usage =
     "                   a reference for the source geometry and not for the geometry LOD chose\n"
     "  --spp-batch <n>  --reference: samples per dispatch (default 8); smaller keeps each\n"
     "                   submission short and reports progress more often\n"
+    "  --camera-path <f>  fly a camera path (engine.scene.CameraPath): keyframes of position,\n"
+    "                   look-at or orientation and field of view. --frames resamples it; without\n"
+    "                   it the path's own frame count is flown\n"
+    "  --overlay <m>    a landmark overlay (engine.scene.Overlay): a local manifest from content\n"
+    "                   hashes to files, which replace the scene's meshes that name those hashes\n"
+    "  --offscreen      render without a window, into the renderer's own target, at --width x\n"
+    "                   --height whatever the display is (11520x2160 on any machine)\n"
+    "  --benchmark <f>  offscreen: fly the path and write one engine.scene.FrameRecord per frame\n"
+    "                   to <f> (JSON lines: GPU ms per pass, visible pairs, page uploads and\n"
+    "                   evictions), then an engine.scene.FlythroughSummary with the median, p95\n"
+    "                   and p99 per pass, which is also the summary line on stdout\n"
+    "  --repeat <n>     --benchmark: fly the path n times (default 3); a frame's figure is the\n"
+    "                   median of its repeats\n"
+    "  --warmup <n>     --benchmark: frames at the path's first camera before each repeat\n"
+    "                   (default 240), so the clocks are up and the history is the same\n"
+    "  --warmup-seconds <s>  --benchmark: and at least s seconds of them (default 2): a fast\n"
+    "                   card needs time, not frames, to bring its clocks up\n"
+    "  --census         --benchmark: fly the path again, untimed, reading each frame's visible\n"
+    "                   list back: visible pairs by DAG level and by mesh, per frame\n"
+    "  --census-pixels  --census, and the pixels each mesh covers from an id capture per frame:\n"
+    "                   the frame a landmark comes into view is the frame its count leaves zero\n"
+    "  --verify-occlusion  fly the path twice more, with and without occlusion culling, and\n"
+    "                   compare the (instance, cluster) under every pixel and every colour byte\n"
+    "  --marker-captures <d>  offscreen: write a PNG of every marker frame of the path into <d>\n"
+    "  --require-quiet  --benchmark: measure nothing on a busy machine; exit 4 instead\n"
+    "  --wait-quiet <s> --benchmark: wait up to s seconds for a quiet machine, then run anyway\n"
     "  --log <spec>     log levels, e.g. \"info,gfx=debug\" (stderr shows warnings and up)\n"
     "  --shaders <m>    shader manifest (default: <exe dir>/../shaders/manifest.json when present);\n"
     "                   shaders recompile and reload when their .slang sources change\n"
     "exit codes: 0 ok, 1 error, 2 usage, 3 unavailable (no display, no device, no 64-bit\n"
-    "            buffer atomics, or rt asked of a device that cannot trace)\n";
+    "            buffer atomics, or rt asked of a device that cannot trace), 4 the machine was\n"
+    "            busy and --require-quiet refused to measure\n";
 // clang-format on
 
 constexpr int k_exit_error = 1;
 constexpr int k_exit_usage = 2;
 constexpr int k_exit_unavailable = 3;
+// --require-quiet on a busy machine: the bench harness's own code (bench::k_exit_not_quiet), so a
+// script tells "come back later" from a failure the same way for both.
+constexpr int k_exit_busy = 4;
 constexpr u32 k_frames_in_flight = 2;
 
 struct Options {
@@ -282,6 +323,23 @@ struct Options {
   u32 bounces = 3;
   u32 spp_batch = 8;
   bool finest = false;
+  // The flythrough (docs/plan/09-testing-profiling.md §9.4, renderer.md "Scenes, camera paths and
+  // flythroughs"). A camera path drives the camera in either frame path; `--offscreen` takes the
+  // windowless one, and `--benchmark` implies it, because a composited window is a source of noise
+  // a measurement does not need (E1 on Pascal) and because 11520x2160 does not fit most displays.
+  std::string camera_path;
+  std::string overlay;
+  bool offscreen = false;
+  std::string benchmark;  // the .jsonl the per-frame records and the summary go to
+  u32 repeats = 3;
+  u32 warmup = 240;
+  f32 warmup_seconds = 2.0f;
+  bool census = false;
+  bool census_pixels = false;  // and the pixels each mesh covers, from an id capture per frame
+  bool verify_occlusion = false;
+  std::string marker_captures;
+  bool require_quiet = false;
+  u32 wait_quiet_s = 0;
   renderer::RenderSettings settings;
 };
 
@@ -1000,7 +1058,8 @@ int run_reference(Options& options) {
     // is what the derived-data cache key promises and runs either way.
     desc.stream = options.settings.stream;
     if (!options.scene.empty()) {
-      if (!renderer::read_scene_file(options.scene, desc, error)) {
+      if (!renderer::read_scene_file(options.scene, renderer::SceneFileOptions{options.overlay},
+                                     desc, error)) {
         exit_code = fail("scene", error);
         break;
       }
@@ -1132,6 +1191,537 @@ int run_reference(Options& options) {
   return exit_code;
 }
 
+// A marker's name as a file name: letters, digits, '-' and '_' kept, everything else '_'.
+std::string file_stem(std::string_view name) {
+  std::string out;
+  for (const char c : name) {
+    const bool plain = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+                       c == '-' || c == '_';
+    out.push_back(plain ? c : '_');
+  }
+  return out.empty() ? std::string("marker") : out;
+}
+
+// Waits up to `seconds` for a quiet machine, sampling every five, the way the bench harness's
+// `--wait-quiet` does (docs/subsystems/bench.md), and says on stderr which way it ended.
+bench::MachineState wait_for_quiet(u32 seconds) {
+  bench::MachineState state = bench::sample_machine_state(bench::k_sample_window_ms);
+  if (seconds == 0 || bench::is_quiet(state, bench::QuietThresholds{})) return state;
+  std::fprintf(stderr, "engine-view: waiting up to %u s for a quiet machine: %s\n", seconds,
+               bench::describe(state).c_str());
+  const i64 deadline = time::monotonic_ns() + i64{seconds} * 1'000'000'000;
+  while (time::monotonic_ns() < deadline) {
+    const i64 remaining_ms = (deadline - time::monotonic_ns()) / 1'000'000;
+    platform::sleep_ms(
+        static_cast<u32>(remaining_ms < 5000 ? (remaining_ms > 0 ? remaining_ms : 0) : 5000));
+    state = bench::sample_machine_state(bench::k_sample_window_ms);
+    if (bench::is_quiet(state, bench::QuietThresholds{})) {
+      std::fprintf(stderr, "engine-view: the machine is quiet\n");
+      return state;
+    }
+  }
+  std::fprintf(stderr, "engine-view: still busy after %u s, measuring anyway: %s\n", seconds,
+               bench::describe(state).c_str());
+  return state;
+}
+
+// `--offscreen`, `--benchmark`, `--census`, `--verify-occlusion`, `--marker-captures`: the whole
+// run with no window, no surface and no swapchain — the flythrough harness of plan 09 §9.4
+// (docs/subsystems/renderer.md, "Scenes, camera paths and flythroughs"; docs/subsystems/apps.md).
+//
+// **The timed pass keeps frames in flight** exactly as the windowed loop and `render.benchmark`
+// do, and reads each frame's own numbers out of `Stats::last` when its slot comes around; it never
+// waits on a frame, because a measurement that waited would let the clocks fall between frames and
+// measure that. Each repeat starts with `--warmup` frames at the path's first camera, which brings
+// the clocks up and gives every repeat the same occlusion history, so a frame's visible pairs can
+// be compared across repeats — the summary's `deterministic`.
+//
+// **Everything that reads back comes after it, untimed**: the census (visible pairs by DAG level
+// and mesh, per frame), the occlusion check (every frame drawn twice more, with and without
+// occlusion culling, compared pixel for pixel), and the marker captures.
+int run_offscreen(Options& options) {
+  std::string error;
+  gfx::DeviceOptions device_options;
+  device_options.adapter_index = options.adapter;
+  device_options.validation = options.validation;
+  gfx::Device device;
+  if (!device.create(device_options, &error)) return unavailable("no Vulkan device", error);
+
+  int exit_code = 0;
+  renderer::SceneData scene_data;
+  renderer::ResolvedSettings resolved;
+  renderer::GpuScene scene;
+  jobs::JobSystem page_jobs(
+      jobs::JobSystemConfig{.performance_workers = 1, .efficiency_workers = 2});
+  renderer::FilePageSource page_source;
+  renderer::SceneRenderer view_renderer;
+  renderer::ResolvedSettings resolved_off;
+  renderer::GpuScene scene_off;
+  renderer::SceneRenderer renderer_off;
+  renderer::VisibleCensus census;
+  renderer::CameraPath path;
+  bool have_path = false;
+  u32 frames = 0;
+  Vector<scene::FrameRecord> records;
+  scene::FlythroughSummary summary;
+  summary.format = "engine.flythrough.v1";
+  bench::MachineState machine_start;
+  bench::MachineState machine_end;
+  bool measured = false;
+  bool captured = false;
+  f64 timed_seconds = 0.0;
+  u64 rendered = 0;
+  const u32 repeats = options.benchmark.empty() ? 1u : options.repeats;
+  do {
+    renderer::SceneDesc desc;
+    desc.procedural = options.procedural == "shredded-atlas" ? renderer::Procedural::shredded_atlas
+                                                             : renderer::Procedural::heightfield;
+    desc.lod = options.lod;
+    desc.heightfield_grid = options.grid;
+    desc.grid_instances = options.grid_instances;
+    desc.ddc = options.ddc;
+    desc.cache = options.cache;
+    desc.stream = options.settings.stream;
+    if (!options.scene.empty()) {
+      renderer::SceneFileOptions file_options;
+      file_options.overlay = options.overlay;
+      if (!renderer::read_scene_file(options.scene, file_options, desc, error)) {
+        exit_code = fail("scene", error);
+        break;
+      }
+    } else {
+      desc.meshes.push_back(options.mesh);
+    }
+    if (!renderer::load_scene(desc, scene_data, error)) {
+      exit_code = fail("mesh", error);
+      break;
+    }
+    if (options.page_budget_pct > 0 && !scene_data.pages.pages.empty()) {
+      u64 total = 0;
+      for (const geometry::ClusterPageDesc& page : scene_data.pages.pages)
+        total += page.bytes;
+      options.settings.page_budget_bytes = total * options.page_budget_pct / 100;
+    }
+    if (!resolve_morph_weights(scene_data, options, options.settings.morph_static_weights, error)) {
+      exit_code = fail("morph", error);
+      break;
+    }
+    renderer::resolve_settings(options.settings, device.features(), &scene_data, resolved);
+    const renderer::RenderAvailability availability =
+        renderer::check_availability(resolved, device.features());
+    if (availability != renderer::RenderAvailability::Ok) {
+      exit_code = unavailable(renderer::unavailable_reason(availability, device).c_str(), "");
+      break;
+    }
+    if (options.verify_occlusion && resolved.stream) {
+      exit_code = fail("verify-occlusion",
+                       "the occlusion check draws the path twice from two uploads of the scene, "
+                       "and a streamed scene releases its geometry once the first is made; run "
+                       "it without --stream");
+      break;
+    }
+    if (!options.camera_path.empty()) {
+      if (!renderer::read_camera_path(options.camera_path,
+                                      scene_data.terrain.enabled ? &scene_data.terrain : nullptr,
+                                      path, error)) {
+        exit_code = fail("camera path", error);
+        break;
+      }
+      have_path = true;
+    }
+    frames = options.frames != 0 ? options.frames : (have_path ? path.frame_count() : 60u);
+    if (!scene.create(device, scene_data, resolved, &error)) {
+      exit_code = fail("scene", error);
+      break;
+    }
+    // The occlusion check's second scene is built before a page source could release the host
+    // streams it uploads from; streaming and the check were refused together above anyway.
+    if (options.verify_occlusion) {
+      renderer::RenderSettings off = options.settings;
+      off.occlusion = false;
+      renderer::resolve_settings(off, device.features(), &scene_data, resolved_off);
+      if (!scene_off.create(device, scene_data, resolved_off, &error)) {
+        exit_code = fail("scene", error);
+        break;
+      }
+    }
+    if (resolved.stream && options.page_source != Options::PageSource::host) {
+      std::string why;
+      if (!renderer::attach_page_source(scene_data, scene, page_jobs, page_source, &why)) {
+        if (options.page_source == Options::PageSource::file) {
+          exit_code = fail("page source", why);
+          break;
+        }
+        ENGINE_LOG_INFO(log_view, "geometry pages stream from host memory",
+                        log::field("reason", why));
+      }
+    }
+    renderer::SceneRenderer::Desc renderer_desc;
+    renderer_desc.page_source = page_source.valid() ? &page_source : nullptr;
+    renderer_desc.width = options.width;
+    renderer_desc.height = options.height;
+    renderer_desc.frames_in_flight = k_frames_in_flight;
+    renderer_desc.offscreen = true;
+    renderer_desc.shader_manifest = options.shaders;
+    renderer_desc.views.layout = resolved.settings.views;
+    renderer_desc.views.surround.side_yaw = resolved.settings.side_yaw;
+    renderer_desc.views.panini_d = resolved.settings.panini_d;
+    renderer_desc.views.peripheral_lod = resolved.settings.peripheral_lod;
+    if (!view_renderer.create(device, scene, resolved, renderer_desc, &error)) {
+      exit_code = fail("renderer", error);
+      break;
+    }
+    auto camera_at = [&](u32 f) {
+      return have_path
+                 ? renderer::camera_path_frame(path, f, frames)
+                 : renderer::orbit_camera(scene_data.center, scene_data.radius, options.orbit, f);
+    };
+
+    if (!options.benchmark.empty()) {
+      // ---- the timed pass -----------------------------------------------------------------
+      bench::MachineState before = wait_for_quiet(options.wait_quiet_s);
+      if (options.require_quiet && !bench::is_quiet(before, bench::QuietThresholds{})) {
+        std::fprintf(stderr, "engine-view: the machine is busy, and --require-quiet: %s\n",
+                     bench::describe(before).c_str());
+        exit_code = k_exit_busy;
+        break;
+      }
+      machine_start = before;
+      renderer::FlightOptions flight_options;
+      flight_options.frames = frames;
+      flight_options.repeats = repeats;
+      flight_options.warmup = options.warmup;
+      flight_options.warmup_seconds = static_cast<f64>(options.warmup_seconds);
+      flight_options.frames_in_flight = k_frames_in_flight;
+      renderer::Flight flight;
+      if (!renderer::fly_camera_path(view_renderer, path, flight_options, flight, &error)) {
+        exit_code = fail("frame", error);
+        break;
+      }
+      records = std::move(flight.records);
+      timed_seconds = flight.seconds;
+      view_renderer.sample_gpu_memory();
+      machine_end = bench::sample_machine_state(bench::k_sample_window_ms);
+      rendered = flight.submitted;
+      measured = true;
+
+      // ---- the census: the same path again, one frame at a time, each list read back ------
+      if (options.census) {
+        if (!census.create(device, scene, &error)) {
+          exit_code = fail("census", error);
+          break;
+        }
+        // The same warm-up the timed repeats had, so the occlusion history the census starts
+        // from is theirs and its visible pairs can be compared with theirs frame by frame.
+        bool ok = true;
+        for (u32 w = 0; w < options.warmup && ok; ++w) {
+          view_renderer.begin_frame();
+          renderer::FrameDesc frame;
+          frame.camera = camera_at(0);
+          frame.frame_index = 0;
+          ok = view_renderer.submit_frame(frame, &error) != 0;
+        }
+        view_renderer.wait_idle();
+        Vector<Vector<u32>> levels_of(frames);
+        Vector<Vector<u32>> meshes_of(frames);
+        Vector<Vector<u32>> pixels_of(frames);
+        Vector<u32> pairs_of(frames, 0u);
+        renderer::CaptureChannels id_channel{false, true, false, false};
+        for (u32 f = 0; f < frames && ok; ++f) {
+          renderer::FrameDesc frame;
+          frame.camera = camera_at(f);
+          frame.frame_index = f;
+          // With pixels the frame is drawn by the capture, which reads the ids back after it;
+          // either way it is one frame per camera, as in the timed pass, so the history matches.
+          renderer::CapturedFrame shot;
+          ok = options.census_pixels ? view_renderer.capture(frame, id_channel, shot, &error)
+                                     : view_renderer.render_offscreen(frame, &error);
+          ok = ok && census.count(scene_data, scene, view_renderer.stats(), levels_of[f],
+                                  meshes_of[f], &error);
+          pairs_of[f] = view_renderer.stats().visible_pairs();
+          if (ok && options.census_pixels) {
+            pixels_of[f].assign(scene_data.parts.size(), 0u);
+            const u32 pixels = shot.width * shot.height;
+            for (u32 p = 0; p < pixels; ++p) {
+              const u32 instance = shot.ids[p * renderer::k_id_words];
+              if (instance < scene_data.instances.size())
+                ++pixels_of[f][scene_data.instances[instance].mesh];
+            }
+          }
+        }
+        if (!ok) {
+          exit_code = fail("census", error);
+          break;
+        }
+        summary.census = true;
+        for (scene::FrameRecord& record : records) {
+          if (record.frame >= frames) continue;
+          record.levels = levels_of[record.frame];
+          record.meshes = meshes_of[record.frame];
+          record.pixels = pixels_of[record.frame];
+          if (record.repeat == 0 && record.visible_pairs != pairs_of[record.frame])
+            ++summary.census_mismatched_frames;
+        }
+      }
+    } else if (!options.verify_occlusion && options.marker_captures.empty()) {
+      // ---- a plain offscreen run: the frames, and the last one captured -------------------
+      view_renderer.reset_stats();
+      u64 last = 0;
+      for (u32 f = 0; f < frames; ++f) {
+        view_renderer.begin_frame();
+        renderer::FrameDesc frame;
+        frame.camera = camera_at(f);
+        frame.frame_index = f;
+        last = view_renderer.submit_frame(frame, &error);
+        if (last == 0) break;
+        ++rendered;
+      }
+      if (last == 0) {
+        exit_code = fail("frame", error);
+        break;
+      }
+      view_renderer.wait(last);
+      view_renderer.collect_visible();
+    }
+
+    // ---- the occlusion check: every frame of the path with and without it --------------------
+    if (options.verify_occlusion) {
+      renderer::SceneRenderer::Desc off_desc = renderer_desc;
+      off_desc.page_source = nullptr;
+      if (!renderer_off.create(device, scene_off, resolved_off, off_desc, &error)) {
+        exit_code = fail("renderer", error);
+        break;
+      }
+      scene::OcclusionCheck check;
+      check.frames = frames;
+      check.width = view_renderer.width();
+      check.height = view_renderer.height();
+      check.covered_min = ~u32{0};
+      renderer::CaptureChannels channels;
+      channels.ids = true;
+      channels.depth = true;
+      bool ok = true;
+      for (u32 f = 0; f < frames && ok; ++f) {
+        renderer::FrameDesc frame;
+        frame.camera = camera_at(f);
+        frame.frame_index = f;
+        renderer::CapturedFrame a;
+        renderer::CapturedFrame b;
+        ok = view_renderer.capture(frame, channels, a, &error) &&
+             renderer_off.capture(frame, channels, b, &error);
+        if (!ok) break;
+        u64 surface = 0;
+        u64 colour = 0;
+        u64 triangle = 0;
+        scene::OcclusionFrame differing;
+        differing.frame = f;
+        differing.lost.assign(scene_data.parts.size(), 0u);
+        // A capture is at most 16384 x 16384, so a pixel's first id word fits a u32 index.
+        const u32 pixels = a.width * a.height;
+        for (u32 p = 0; p < pixels; ++p) {
+          u32 pixel_colour = 0;
+          for (u32 c = 0; c < 4; ++c)
+            pixel_colour += a.color[p * 4 + c] != b.color[p * 4 + c] ? 1u : 0u;
+          colour += pixel_colour;
+          const u32* ia = &a.ids[p * renderer::k_id_words];
+          const u32* ib = &b.ids[p * renderer::k_id_words];
+          const bool same_surface = ia[0] == ib[0] && ia[1] == ib[1];
+          surface += same_surface ? 0u : 1u;
+          triangle += same_surface && ia[2] != ib[2] ? 1u : 0u;
+          if (same_surface) continue;
+          // Reversed-Z: the larger depth is the nearer surface.
+          if (b.depth[p] > a.depth[p]) {
+            ++differing.lost_nearer;
+          } else if (b.depth[p] < a.depth[p]) {
+            ++differing.gained_nearer;
+          } else {
+            ++differing.tied;
+          }
+          if (ib[0] < scene_data.instances.size())
+            ++differing.lost[scene_data.instances[ib[0]].mesh];
+        }
+        check.lost_nearer += differing.lost_nearer;
+        check.tied += differing.tied;
+        check.gained_nearer += differing.gained_nearer;
+        check.frames_culled_visible +=
+            differing.lost_nearer + differing.gained_nearer > 0 ? 1u : 0u;
+        if (surface + colour > 0) {
+          differing.surface = static_cast<u32>(surface);
+          differing.colour = static_cast<u32>(colour);
+          check.differing.push_back(std::move(differing));
+        }
+        check.frames_differing += surface + colour > 0 ? 1u : 0u;
+        check.surface_differences += surface;
+        check.colour_differences += colour;
+        check.triangle_differences += triangle;
+        check.covered_min = a.covered < check.covered_min ? a.covered : check.covered_min;
+        check.covered_max = a.covered > check.covered_max ? a.covered : check.covered_max;
+      }
+      if (!ok) {
+        exit_code = fail("verify-occlusion", error);
+        break;
+      }
+      if (check.covered_min == ~u32{0}) check.covered_min = 0;
+      summary.occlusion_check = check;
+    }
+
+    // ---- a picture of every marker, for the README and the write-up -------------------------
+    if (!options.marker_captures.empty()) {
+      if (!have_path) {
+        exit_code = fail("marker-captures", "there is no camera path to take markers from");
+        break;
+      }
+      if (io::make_directories(options.marker_captures) != io::Status::Ok) {
+        exit_code = fail("marker-captures", "cannot create " + options.marker_captures);
+        break;
+      }
+      bool ok = true;
+      for (const renderer::CameraPathMarker& marker : path.markers) {
+        const u32 f = renderer::marker_frame(path, marker.frame, frames);
+        renderer::FrameDesc frame;
+        frame.camera = camera_at(f);
+        frame.frame_index = f;
+        // A few frames at the marker's camera first, so a streamed scene has its pages and the
+        // occlusion history is this view's, and then the picture.
+        for (u32 k = 0; k < 8 && ok; ++k)
+          ok = view_renderer.render_offscreen(frame, &error);
+        renderer::CapturedFrame shot;
+        ok = ok && view_renderer.capture(frame, renderer::CaptureChannels{}, shot, &error);
+        if (!ok) break;
+        char prefix[16];
+        std::snprintf(prefix, sizeof(prefix), "%05u-", f);
+        const std::string file = io::join_path(
+            options.marker_captures, std::string(prefix) + file_stem(marker.name) + ".png");
+        if (image::write_png(file, shot.width, shot.height, 4,
+                             std::span<const u8>(shot.color.data(), shot.color.size())) !=
+            io::Status::Ok) {
+          error = "cannot write " + file;
+          ok = false;
+          break;
+        }
+      }
+      if (!ok) {
+        exit_code = fail("marker-captures", error);
+        break;
+      }
+    }
+    if (!options.capture.empty()) {
+      renderer::FrameDesc frame;
+      frame.camera = camera_at(frames > 0 ? frames - 1 : 0);
+      frame.frame_index = frames > 0 ? frames - 1 : 0;
+      renderer::CapturedFrame shot;
+      if (!view_renderer.capture(frame, renderer::CaptureChannels{}, shot, &error)) {
+        exit_code = fail("capture", error);
+        break;
+      }
+      const io::Status status =
+          image::write_png(options.capture, shot.width, shot.height, 4,
+                           std::span<const u8>(shot.color.data(), shot.color.size()));
+      if (status != io::Status::Ok) {
+        exit_code = fail("capture", std::string("cannot write ") + options.capture + ": " +
+                                        io::status_name(status));
+        break;
+      }
+      captured = true;
+    }
+  } while (false);
+
+  // ---- the summary: what was measured, on what, beside what ---------------------------------
+  if (exit_code == 0) {
+    summary.scene = !scene_data.name.empty() ? scene_data.name : options.scene;
+    summary.scene_hash = renderer::hash_hex(scene_data.file_hash);
+    summary.path = have_path ? path.name : std::string();
+    summary.path_hash = renderer::hash_hex(have_path ? path.hash : 0);
+    u64 identity = hash_combine(scene_data.file_hash, have_path ? path.hash : 0);
+    for (u32 m = 0; m < scene_data.parts.size(); ++m) {
+      const renderer::SourceMesh& source = scene_data.sources[m];
+      identity = hash_combine(identity, source.source_hash);
+      scene::MeshIdentity mesh;
+      const bool described = m < scene_data.mesh_info.size();
+      mesh.name = described ? scene_data.mesh_info[m].name : std::string();
+      mesh.source = described ? scene_data.mesh_info[m].origin : "scene";
+      mesh.path = source.container.empty() ? mesh.source : source.container;
+      mesh.hash = renderer::hash_hex(source.source_hash);
+      mesh.clusters = scene_data.parts[m].cluster_count;
+      const geometry::ClusterMeshPart& part = scene_data.parts[m];
+      for (u32 c = 0; c < part.leaf_cluster_count; ++c)
+        mesh.triangles +=
+            scene_data.lod.mesh.clusters[part.first_cluster + part.first_leaf_cluster + c]
+                .triangle_count;
+      summary.meshes.push_back(std::move(mesh));
+    }
+    summary.identity = renderer::hash_hex(identity);
+    summary.width = view_renderer.width();
+    summary.height = view_renderer.height();
+    summary.views = renderer::view_layout_name(resolved.settings.views);
+    summary.raster = renderer::raster_name(resolved.settings.raster);
+    summary.shadows = resolved.shadows ? "rt" : "off";
+    summary.occlusion = resolved.occlusion;
+    summary.lod_px = resolved.settings.lod_px;
+    summary.stream = resolved.stream;
+    summary.page_budget_bytes = resolved.settings.page_budget_bytes;
+    summary.instances = scene_data.instances.size();
+    summary.pairs = scene_data.pair_count;
+    summary.clusters = scene_data.cluster_count();
+    summary.frames = frames;
+    summary.repeats = measured ? repeats : 0;
+    summary.warmup = measured ? options.warmup : 0;
+    if (measured) {
+      renderer::summarize_frames(
+          std::span<const scene::FrameRecord>(records.data(), records.size()), frames, repeats,
+          path, summary);
+      summary.seconds = timed_seconds;
+      summary.wall_ms_per_frame =
+          frames > 0 ? timed_seconds * 1000.0 / (static_cast<f64>(frames) * repeats) : 0.0;
+      const renderer::Stats& stats = view_renderer.stats();
+      summary.gpu_memory_used_mib = stats.gpu_memory.used_mib;
+      summary.gpu_memory_budget_mib = stats.gpu_memory.budget_mib;
+      JsonValue machine = JsonValue::object();
+      machine.set("start", bench::machine_state_json(machine_start));
+      machine.set("end", bench::machine_state_json(machine_end));
+      summary.machine_state = std::move(machine);
+      summary.quiet =
+          bench::is_quiet(bench::worst_of(machine_start, machine_end), bench::QuietThresholds{});
+    }
+    const std::string line =
+        write_json(schema::to_json(summary), JsonWriteOptions{.pretty = false});
+    if (!options.benchmark.empty()) {
+      std::string text;
+      for (const scene::FrameRecord& record : records) {
+        write_json(schema::to_json(record), text, JsonWriteOptions{.pretty = false});
+        text.push_back('\n');
+      }
+      text += line;
+      text.push_back('\n');
+      const io::Status status = io::write_file(options.benchmark, text);
+      if (status != io::Status::Ok) {
+        exit_code = fail("benchmark", std::string("cannot write ") + options.benchmark + ": " +
+                                          io::status_name(status));
+      }
+    }
+    if (exit_code == 0) {
+      // The summary line, with the two fields a plain run's readers look for beside it.
+      std::printf("%s\n", line.c_str());
+      if (!measured) {
+        std::fprintf(stderr, "engine-view: offscreen, %llu frames, captured %s\n",
+                     static_cast<unsigned long long>(rendered), captured ? "yes" : "no");
+      }
+      if (measured) {
+        (void)bench::warn_if_busy(bench::worst_of(machine_start, machine_end),
+                                  bench::QuietThresholds{}, stderr);
+      }
+    }
+  }
+  census.destroy();
+  renderer_off.destroy();
+  view_renderer.destroy();
+  page_source.destroy();
+  scene_off.destroy();
+  scene.destroy();
+  device.destroy();
+  return exit_code;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1179,7 +1769,8 @@ int main(int argc, char** argv) {
        : a == "--sw-px" ? options.settings.sw_px
        : a == "--orbit" ? options.orbit
                         : options.settings.deform_amplitude) = px;
-    } else if (a == "--side-yaw" || a == "--panini-d" || a == "--peripheral-lod") {
+    } else if (a == "--side-yaw" || a == "--panini-d" || a == "--peripheral-lod" ||
+               a == "--warmup-seconds") {
       if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
       f32 v = 0.0f;
       if (!parse_f32_zero_ok(value, v)) {
@@ -1190,6 +1781,7 @@ int main(int argc, char** argv) {
       if (a == "--side-yaw") options.settings.side_yaw = radians(v);
       if (a == "--panini-d") options.settings.panini_d = v;
       if (a == "--peripheral-lod") options.settings.peripheral_lod = v;
+      if (a == "--warmup-seconds") options.warmup_seconds = v;
     } else if (a == "--views") {
       if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
       if (!renderer::parse_view_layout(value, options.settings.views)) {
@@ -1391,6 +1983,39 @@ int main(int argc, char** argv) {
       options.settings.lights = false;
     } else if (a == "--validation") {
       options.validation = true;
+    } else if (a == "--camera-path") {
+      if (!next_value(argc, argv, i, a, options.camera_path)) return k_exit_usage;
+    } else if (a == "--overlay") {
+      if (!next_value(argc, argv, i, a, options.overlay)) return k_exit_usage;
+    } else if (a == "--offscreen") {
+      options.offscreen = true;
+    } else if (a == "--benchmark") {
+      if (!next_value(argc, argv, i, a, options.benchmark)) return k_exit_usage;
+      options.offscreen = true;
+    } else if (a == "--marker-captures") {
+      if (!next_value(argc, argv, i, a, options.marker_captures)) return k_exit_usage;
+      options.offscreen = true;
+    } else if (a == "--census") {
+      options.census = true;
+    } else if (a == "--census-pixels") {
+      options.census = true;
+      options.census_pixels = true;
+    } else if (a == "--verify-occlusion") {
+      options.verify_occlusion = true;
+      options.offscreen = true;
+    } else if (a == "--require-quiet") {
+      options.require_quiet = true;
+    } else if (a == "--repeat" || a == "--warmup" || a == "--wait-quiet") {
+      if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
+      u32 n = 0;
+      if (!parse_u32(value, n) || (a == "--repeat" && (n == 0 || n > 100))) {
+        std::fprintf(stderr, "engine-view: %.*s expects a number%s\n", static_cast<int>(a.size()),
+                     a.data(), a == "--repeat" ? " within 1..100" : "");
+        return k_exit_usage;
+      }
+      if (a == "--repeat") options.repeats = n;
+      if (a == "--warmup") options.warmup = n;
+      if (a == "--wait-quiet") options.wait_quiet_s = n;
     } else {
       std::fprintf(stderr, "engine-view: unknown argument %.*s\n%s", static_cast<int>(a.size()),
                    a.data(), k_usage);
@@ -1463,7 +2088,31 @@ int main(int argc, char** argv) {
                  "engine-view: --reference renders one frame, so --frames is ignored and the pose "
                  "is the one after a single tick.\n");
   }
-  if (!options.capture.empty() && options.frames == 0) options.frames = 60;
+  if (!options.benchmark.empty() && options.camera_path.empty()) {
+    std::fprintf(stderr,
+                 "engine-view: --benchmark flies a camera path; name one with --camera-path (a "
+                 "still camera is render.benchmark's)\n");
+    return k_exit_usage;
+  }
+  if (options.census && options.benchmark.empty()) {
+    std::fprintf(stderr, "engine-view: --census reads back a --benchmark run's frames\n");
+    return k_exit_usage;
+  }
+  if (options.reference != 0 && !options.camera_path.empty()) {
+    std::fprintf(stderr,
+                 "engine-view: --reference renders one frame from the orbit camera; fly a path "
+                 "with --offscreen or in the window\n");
+    return k_exit_usage;
+  }
+  if (options.offscreen && (options.animate || options.morph_animate || options.reference != 0)) {
+    std::fprintf(stderr,
+                 "engine-view: --offscreen, --benchmark, --verify-occlusion and --marker-captures "
+                 "draw rigid scenes; --animate, --morph-animate and --reference have their own "
+                 "paths\n");
+    return k_exit_usage;
+  }
+  if (!options.capture.empty() && options.frames == 0 && options.camera_path.empty())
+    options.frames = 60;
   // A fly-in shorter than the path says nothing about the path, so `--fly` sets the frame count
   // when nothing else did; a caller that gave one keeps it (a longer run repeats the last step,
   // which is how "and then it sat there" is measured).
@@ -1479,8 +2128,14 @@ int main(int argc, char** argv) {
     log::apply_level_spec(options.log_spec);
   }
 
-  // The reference path never opens a window, so it comes before the display is even asked for.
+  // The reference path never opens a window, so it comes before the display is even asked for,
+  // and neither does the offscreen one.
   if (options.reference != 0) return run_reference(options);
+  if (options.offscreen) {
+    const int code = run_offscreen(options);
+    log::remove_sink(&stderr_sink);
+    return code;
+  }
 
   std::string error;
   if (!window::init(&error)) return unavailable("no display", error);
@@ -1542,6 +2197,7 @@ int main(int argc, char** argv) {
       jobs::JobSystemConfig{.performance_workers = 1, .efficiency_workers = 2});
   renderer::FilePageSource page_source;
   renderer::SceneRenderer view_renderer;
+  renderer::CameraPath window_path;  // --camera-path; empty keys: the orbit or the fly-in
   u64 rendered = 0;
   i64 started_ns = 0;
   i64 finished_ns = 0;
@@ -1609,7 +2265,8 @@ int main(int argc, char** argv) {
     desc.cache = options.cache;
     desc.stream = options.settings.stream;  // keep the page table for the residency manager
     if (!options.scene.empty()) {
-      if (!renderer::read_scene_file(options.scene, desc, error)) {
+      if (!renderer::read_scene_file(options.scene, renderer::SceneFileOptions{options.overlay},
+                                     desc, error)) {
         exit_code = fail("scene", error);
         break;
       }
@@ -1637,6 +2294,17 @@ int main(int argc, char** argv) {
       for (const geometry::ClusterPageDesc& page : scene_data.pages.pages)
         total += page.bytes;
       options.settings.page_budget_bytes = total * options.page_budget_pct / 100;
+    }
+    // A camera path, read against the scene it flies over: a key may hold a height above its
+    // terrain. With no `--frames` the window flies the path once at its own rate and closes.
+    if (!options.camera_path.empty()) {
+      if (!renderer::read_camera_path(options.camera_path,
+                                      scene_data.terrain.enabled ? &scene_data.terrain : nullptr,
+                                      window_path, error)) {
+        exit_code = fail("camera path", error);
+        break;
+      }
+      if (options.frames == 0) options.frames = window_path.frame_count();
     }
 
 #if ENGINE_VIEW_ANIMATION
@@ -1858,7 +2526,11 @@ int main(int argc, char** argv) {
 
       renderer::FrameDesc frame;
       frame.camera =
-          options.fly_frames > 0
+          !window_path.keys.empty()
+              ? renderer::camera_path_frame(
+                    window_path, static_cast<u32>(rendered),
+                    options.frames != 0 ? options.frames : window_path.frame_count())
+          : options.fly_frames > 0
               ? renderer::fly_camera(scene_data.center, scene_data.radius, options.fly_from,
                                      options.fly_to, static_cast<u32>(rendered), options.fly_frames)
               : renderer::orbit_camera(scene_data.center, scene_data.radius, options.orbit,

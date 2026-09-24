@@ -19,9 +19,11 @@
 #include <domain/geometry/cluster_lod.h>
 #include <domain/geometry/cluster_pages.h>
 #include <domain/gfx/cluster_cull.h>
+#include <systems/renderer/terrain.h>
 
 #include <span>
 #include <string>
+#include <string_view>
 
 namespace engine::renderer {
 
@@ -81,6 +83,27 @@ struct InstanceJoints {
 // fresh clone and without a third-party model.
 enum class Procedural : u8 { heightfield, shredded_atlas };
 
+// How a mesh is scaled and placed in its own space before any instance transform
+// (`engine.scene.Fit`). A fitted mesh occupies the same volume whichever file stands in for it —
+// which is what lets a Khronos placeholder and the owner's 2-million-triangle landmark share one
+// set of placements and one camera path, and the occlusion a path was laid out around hold for
+// both.
+struct MeshFit {
+  f32 height = 0.0f;   // scale so the bounding box is this tall; 0 is no height fit
+  f32 extent = 0.0f;   // or so its longest side is this long, when `height` is 0
+  bool ground = true;  // bottom centre of the box to the origin; false centres the box there
+  bool active() const noexcept { return height > 0.0f || extent > 0.0f; }
+};
+
+// What a scene file said about one mesh besides its path: what to call it, which bytes it must
+// be, where it came from, and how to fit it. Parallel to `SceneDesc::meshes`, or empty.
+struct SceneMeshInfo {
+  std::string name;
+  u64 hash = 0;                  // `assets::source_mesh_hash` the file must have; 0 is unchecked
+  const char* origin = "scene";  // "scene", "overlay" (a manifest's replacement), or "terrain"
+  MeshFit fit;
+};
+
 // What to load: mesh files and instances of them, or one of the procedural scenes above.
 struct SceneDesc {
   Vector<std::string> meshes;       // glTF, GLB, or .clusters; one empty path = procedural
@@ -120,13 +143,39 @@ struct SceneDesc {
   // heightfield has no cache entry, so a caller that wants many small pages — a test, or a
   // measurement of what a budget does — may say so. Zero is the default target.
   u32 page_bytes = 0;
+  // ---- what a scene file adds (schema `engine.scene.Scene`) ------------------------------------
+  // Per mesh: a name, the hash its bytes must have, and a fit. Empty, or parallel to `meshes`.
+  Vector<SceneMeshInfo> mesh_info;
+  // The procedural terrain. When `enabled`, an empty mesh path builds it rather than the classic
+  // heightfield, and it is cached in the derived-data root under a key over its fields.
+  TerrainDesc terrain;
+  std::string name;   // the scene file's own name
+  u64 file_hash = 0;  // of the scene file's bytes; 0 for a scene no file described
 };
 
-// Reads `{"meshes":[{"path":"..."}],"instances":[{"mesh":0,"translation":[x,y,z],
-// "rotation":[x,y,z,w],"scale":[x,y,z]}]}`. Mesh paths resolve against the file's own
-// directory, so a scene file is movable as a unit. Every field but the mesh list is optional;
-// an empty instance list gives one identity instance of every mesh.
+// What `read_scene_file` may be told besides the path.
+struct SceneFileOptions {
+  // A landmark overlay manifest (`engine.scene.Overlay`): a local file mapping content hashes to
+  // paths. A mesh whose `overlay` hash the manifest names is drawn from the manifest's file
+  // instead, which the load then hashes and refuses if the bytes disagree. Empty: no overlay.
+  std::string overlay;
+};
+
+// Reads a scene file (schema `engine.scene.Scene`): meshes with an optional name, content hash,
+// overlay hash and fit; instances with a translation, rotation, yaw, scale and an optional height
+// above the terrain; seeded scatters of instances; and an optional terrain. The oldest spelling —
+// `{"meshes":[{"path":"..."}],"instances":[{"mesh":0,"translation":[x,y,z],"rotation":[x,y,z,w],
+// "scale":[x,y,z]}]}` — is a valid scene of the same type and reads exactly as it always did.
+// Mesh paths resolve against the file's own directory, so a scene file is movable as a unit; an
+// empty instance list gives one identity instance of every mesh. The terrain, when present, is
+// the last mesh and has one identity instance, after the file's own.
 bool read_scene_file(const std::string& path, SceneDesc& out, std::string& error);
+bool read_scene_file(const std::string& path, const SceneFileOptions& options, SceneDesc& out,
+                     std::string& error);
+
+// A 64-bit content hash as the scene format writes it: 16 lower-case hex digits.
+std::string hash_hex(u64 hash);
+bool parse_hash_hex(std::string_view text, u64& out) noexcept;
 
 // One mesh of the scene as it arrived: the materials and images it named, and which primitive —
 // and so which material — each of its clusters came from. The DAG itself has been moved into
@@ -144,6 +193,10 @@ struct SourceMesh {
   // condition under which a streamed page has to come out of host memory instead of off disk
   // (`FilePageSource`, docs/subsystems/renderer.md).
   std::string container;
+  // What these bytes are: `assets::source_mesh_hash` of the file for a glTF or GLB, the terrain's
+  // `terrain_hash`, zero when nothing computed one (a container named outright, the classic
+  // procedural scenes, a glTF loaded with no cache and no expected hash).
+  u64 source_hash = 0;
 };
 
 // A loaded scene: everything the GPU upload reads, and everything a summary reports.
@@ -172,6 +225,12 @@ struct SceneData {
   u32 mesh_primitives = 0;    // of the first mesh, as the summary reports it
   const char* mesh_cache = "none";
   i64 build_ns = 0;  // import, weld, cluster, page, and merge
+  // Carried from the `SceneDesc`, for a host that has only the loaded scene: the terrain answers
+  // a camera path's heights above the ground, and the rest names what a measurement measured.
+  TerrainDesc terrain;
+  Vector<SceneMeshInfo> mesh_info;
+  std::string name;
+  u64 file_hash = 0;
 
   u32 cluster_count() const noexcept { return lod.mesh.clusters.size(); }
   u32 leaf_count() const noexcept {

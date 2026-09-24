@@ -1,5 +1,7 @@
 #include "render_methods.h"
 
+#include <core/hash/hash.h>
+#include <core/json/json_value.h>
 #include <core/log/log.h>
 #include <core/time/time.h>
 #include <foundation/bench/machine_state.h>
@@ -7,11 +9,14 @@
 #include <foundation/image/metrics.h>
 #include <foundation/image/png.h>
 #include <foundation/io/vfs.h>
+#include <systems/renderer/camera_path.h>
 #include <systems/renderer/capture.h>
+#include <systems/renderer/flythrough.h>
 #include <systems/renderer/settings.h>
 
 #include <cmath>
 #include <cstring>
+#include <schemas/scene.h>
 
 namespace engine::host {
 
@@ -351,8 +356,14 @@ bool render_load(protocol::Context& ctx, const protocol::RenderLoadParams& param
   desc.stream = settings.stream;
   desc.page_bytes = params.page_bytes;
   std::string load_error;
+  if (!params.overlay.empty() && params.scene.empty()) {
+    error = invalid("an overlay replaces a scene file's meshes; name the scene");
+    return false;
+  }
   if (!params.scene.empty()) {
-    if (!renderer::read_scene_file(params.scene, desc, load_error)) {
+    renderer::SceneFileOptions file_options;
+    file_options.overlay = params.overlay;
+    if (!renderer::read_scene_file(params.scene, file_options, desc, load_error)) {
       error = protocol::make_error(protocol::codes::k_io_error, std::move(load_error));
       return false;
     }
@@ -533,9 +544,27 @@ bool render_benchmark(protocol::Context& ctx, const protocol::RenderBenchmarkPar
     error = invalid("width and height must be within 1..16384");
     return false;
   }
-  if (params.frames == 0 || params.frames > 100000) {
+  const bool flythrough = !params.camera_path.empty();
+  if (!flythrough && (params.frames == 0 || params.frames > 100000)) {
     error = invalid("frames must be within 1..100000");
     return false;
+  }
+  if (params.path_frames > 100000 || params.repeats == 0 || params.repeats > 100 ||
+      params.warmup > 100000) {
+    error = invalid(
+        "path_frames must be at most 100000, repeats within 1..100, warmup at most "
+        "100000");
+    return false;
+  }
+  renderer::CameraPath path;
+  if (flythrough) {
+    std::string path_error;
+    if (!renderer::read_camera_path(params.camera_path,
+                                    scene->data.terrain.enabled ? &scene->data.terrain : nullptr,
+                                    path, path_error)) {
+      error = protocol::make_error(protocol::codes::k_io_error, std::move(path_error));
+      return false;
+    }
   }
   renderer::RenderSettings settings = scene->requested;
   if (params.settings.has_value() && !read_settings(*params.settings, settings, error))
@@ -556,23 +585,40 @@ bool render_benchmark(protocol::Context& ctx, const protocol::RenderBenchmarkPar
   // for the GPU reading, and neither belongs between two timed frames.
   const bench::MachineState machine_start = bench::sample_machine_state(bench::k_sample_window_ms);
 
-  const renderer::Camera camera = camera_of(*scene, params.camera, params.orbit);
-  scene->view->reset_stats();
   const i64 started = time::monotonic_ns();
-  u64 last = 0;
-  for (u32 i = 0; i < params.frames; ++i) {
-    renderer::FrameDesc frame;
-    frame.camera = camera;
-    frame.frame_index = i;
-    scene->view->begin_frame();
-    last = scene->view->submit_frame(frame, &message);
-    if (last == 0) {
+  renderer::Flight flight;
+  if (flythrough) {
+    // The flythrough: the timed pass engine-view --benchmark runs, from the same function, so a
+    // number from either host names the same thing (docs/plan/09-testing-profiling.md §9.4).
+    renderer::FlightOptions options;
+    options.frames = params.path_frames;
+    options.repeats = params.repeats;
+    options.warmup = params.warmup;
+    options.warmup_seconds = params.warmup_seconds;
+    options.frames_in_flight = 2;  // SceneRenderer::Desc's default, which ensure_renderer keeps
+    if (!renderer::fly_camera_path(*scene->view, path, options, flight, &message)) {
       error = protocol::make_error(protocol::codes::k_internal_error, std::move(message));
       return false;
     }
+    scene->view->collect_visible();
+  } else {
+    const renderer::Camera camera = camera_of(*scene, params.camera, params.orbit);
+    scene->view->reset_stats();
+    u64 last = 0;
+    for (u32 i = 0; i < params.frames; ++i) {
+      renderer::FrameDesc frame;
+      frame.camera = camera;
+      frame.frame_index = i;
+      scene->view->begin_frame();
+      last = scene->view->submit_frame(frame, &message);
+      if (last == 0) {
+        error = protocol::make_error(protocol::codes::k_internal_error, std::move(message));
+        return false;
+      }
+    }
+    scene->view->wait(last);
+    scene->view->collect_visible();
   }
-  scene->view->wait(last);
-  scene->view->collect_visible();
   out.seconds = static_cast<f64>(time::monotonic_ns() - started) / 1.0e9;
   scene->view->sample_gpu_memory();  // after the run: what the card looked like while it ran
   const bench::MachineState machine_end = bench::sample_machine_state(bench::k_sample_window_ms);
@@ -583,6 +629,52 @@ bool render_benchmark(protocol::Context& ctx, const protocol::RenderBenchmarkPar
   fill_stats(scene->view->stats(), scene->view->views(), out.stats);
   out.machine_state.start = machine_state_of(machine_start);
   out.machine_state.end = machine_state_of(machine_end);
+  if (flythrough) {
+    // The summary engine-view ends its .jsonl with, minus the lines: what was measured (the
+    // hashes), how (the settings), and the percentiles over the path's frames.
+    scene::FlythroughSummary summary;
+    summary.format = "engine.flythrough.v1";
+    summary.scene = scene->data.name;
+    summary.scene_hash = renderer::hash_hex(scene->data.file_hash);
+    summary.path = path.name;
+    summary.path_hash = renderer::hash_hex(path.hash);
+    u64 identity = hash_combine(scene->data.file_hash, path.hash);
+    for (const renderer::SourceMesh& source : scene->data.sources)
+      identity = hash_combine(identity, source.source_hash);
+    summary.identity = renderer::hash_hex(identity);
+    summary.width = out.width;
+    summary.height = out.height;
+    summary.views = renderer::view_layout_name(scene->resolved.settings.views);
+    summary.raster = out.raster;
+    summary.shadows = out.shadows;
+    summary.occlusion = scene->resolved.occlusion;
+    summary.lod_px = scene->resolved.settings.lod_px;
+    summary.stream = scene->resolved.stream;
+    summary.page_budget_bytes = scene->resolved.settings.page_budget_bytes;
+    summary.instances = scene->data.instances.size();
+    summary.pairs = scene->data.pair_count;
+    summary.clusters = scene->data.cluster_count();
+    summary.frames = flight.frames;
+    summary.repeats = params.repeats;
+    summary.warmup = params.warmup;
+    renderer::summarize_frames(
+        std::span<const scene::FrameRecord>(flight.records.data(), flight.records.size()),
+        flight.frames, params.repeats, path, summary);
+    summary.seconds = flight.seconds;
+    summary.wall_ms_per_frame =
+        flight.frames > 0
+            ? flight.seconds * 1000.0 / (static_cast<f64>(flight.frames) * params.repeats)
+            : 0.0;
+    summary.gpu_memory_used_mib = scene->view->stats().gpu_memory.used_mib;
+    summary.gpu_memory_budget_mib = scene->view->stats().gpu_memory.budget_mib;
+    JsonValue machine = JsonValue::object();
+    machine.set("start", bench::machine_state_json(machine_start));
+    machine.set("end", bench::machine_state_json(machine_end));
+    summary.machine_state = std::move(machine);
+    summary.quiet =
+        bench::is_quiet(bench::worst_of(machine_start, machine_end), bench::QuietThresholds{});
+    out.flythrough = std::move(summary);
+  }
   // stdout belongs to the protocol, so the caveat goes to stderr — the same line and the same
   // thresholds the bench harness prints.
   (void)bench::warn_if_busy(bench::worst_of(machine_start, machine_end), bench::QuietThresholds{},

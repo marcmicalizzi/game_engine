@@ -5,6 +5,7 @@
 namespace engine.protocol
 import "doc.schema"
 import "gfx.schema"
+import "scene.schema"
 
 /// JSON-RPC 2.0 error object. Codes -32700..-32600 are the standard ones; engine codes are
 /// positive (domain/protocol/rpc.h).
@@ -477,7 +478,7 @@ struct RenderViewStats @version(2) {
 }
 
 /// Parameters of `render.load`. Exactly one of `mesh` and `scene` is given.
-struct RenderLoadParams @version(3) {
+struct RenderLoadParams @version(4) {
   /// A glTF 2.0, GLB, or .clusters file. Empty with an empty `scene` loads a **procedural**
   /// scene, which is what needs no content at all; `procedural` says which one.
   mesh: string
@@ -511,6 +512,9 @@ struct RenderLoadParams @version(3) {
   /// that crosses an island edge shows as the wrong colour rather than as nothing. It is
   /// procedural so the scene corpus can guard that defect on a fresh clone with no asset.
   procedural: string @since(3)
+  /// A landmark overlay manifest (`engine.scene.Overlay`) for a `scene` file: its entries replace
+  /// the scene's meshes that name their content hashes. Empty: none.
+  overlay: string @since(4)
 }
 
 /// A loaded scene: the id later calls name it by, and what loading found.
@@ -710,10 +714,14 @@ struct RenderCaptureResult @version(2) {
   seconds: f64 = 0 @since(2)
 }
 
-/// Parameters of `render.benchmark`. The camera is held still for every frame, so the LOD cut
-/// is the same one each time; the frame number still advances, so the lights orbit and a
-/// deformed scene deforms.
-struct RenderBenchmarkParams @version(1) {
+/// Parameters of `render.benchmark`. Without `camera_path` the camera is held still for every
+/// frame, so the LOD cut is the same one each time; the frame number still advances, so the
+/// lights orbit and a deformed scene deforms. With one, the run is a flythrough
+/// (docs/plan/09-testing-profiling.md §9.4): the path is flown `repeats` times after `warmup`
+/// frames at its first camera, `frames` is ignored, and the result's `flythrough` carries the
+/// median, p95 and p99 per pass over the path's frames — the same summary `engine-view
+/// --benchmark` ends its `.jsonl` with, minus the per-frame lines.
+struct RenderBenchmarkParams @version(2) {
   scene: string
   width: u32 = 1280
   height: u32 = 720
@@ -723,9 +731,18 @@ struct RenderBenchmarkParams @version(1) {
   /// Render with these instead of the ones the scene was loaded with; the scene itself is not
   /// reloaded, only its GPU buffers and pipelines are rebuilt.
   settings: RenderSettings?
+  /// A camera path file (`engine.scene.CameraPath`), resolved against the loaded scene's terrain.
+  camera_path: string @since(2)
+  /// Frames to sample the path at; 0 is its own frame count.
+  path_frames: u32 = 0 @since(2)
+  repeats: u32 = 1 @since(2)
+  warmup: u32 = 0 @since(2)
+  /// And at least this many seconds of warm-up frames: a fast card needs time, not frames, to
+  /// bring its clocks up.
+  warmup_seconds: f64 = 0 @since(2)
 }
 
-struct RenderBenchmarkResult @version(2) {
+struct RenderBenchmarkResult @version(3) {
   width: u32 = 0
   height: u32 = 0
   raster: string
@@ -737,6 +754,8 @@ struct RenderBenchmarkResult @version(2) {
   /// whose numbers were taken beside another process's work is an upper bound, and the host
   /// says so on stderr as well.
   machine_state: MachineStateSpan @since(2)
+  /// A flythrough's summary, when the parameters named a camera path.
+  flythrough: engine.scene.FlythroughSummary? @since(3)
 }
 
 /// Parameters of `render.compare` (docs/plan/04-renderer.md §4.8): the accept-or-reject gate of

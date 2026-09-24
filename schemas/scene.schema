@@ -1,0 +1,398 @@
+// Scene descriptions, camera paths and flythrough records (docs/plan/09-testing-profiling.md §9.4,
+// docs/subsystems/renderer.md "Scenes, camera paths and flythroughs"). A scene file is what
+// `engine-view --scene` and `render.load`'s `scene` read; a camera path is what
+// `engine-view --camera-path` and `render.benchmark`'s `camera_path` fly; the records are what a
+// flythrough benchmark writes, one per frame, and the summary it ends with.
+//
+// **Why a JSON file keyed to schema types, and not a document layer.** The plan says a world is a
+// `doc::Document` (03 §3.2), and a benchmark scene will become a layer export once placements are
+// document objects with a transform property. It is not one yet for three reasons: the renderer
+// reads scenes and must not depend on the document model's journal, undo and ids to do it; a
+// corpus scene is a fixture whose identity is its bytes, so one committed file that diffs as text
+// and hashes as a unit is the honest unit; and the types below are chosen to map one-to-one onto
+// the placement objects a layer will hold (`Instance` is a placement, `Scatter` a generator of
+// them), so the move is an export, not a redesign.
+namespace engine.scene
+
+/// How a mesh is scaled and placed in its own space before any instance transform applies. A
+/// fitted mesh occupies the same volume whichever file stands in for it, which is what lets a
+/// substitute and the owner's landmark share one set of placements.
+struct Fit @version(1) {
+  /// Scale uniformly so the mesh's bounding box is this many metres tall. 0: no height fit.
+  height: f32 = 0
+  /// Scale uniformly so the longest side of the box is this many metres. Used when `height` is 0.
+  extent: f32 = 0
+  /// Move the box's bottom centre to the mesh's origin, so an instance placed on a point stands
+  /// on it. False centres the box on the origin instead.
+  ground: bool = true
+}
+
+/// One mesh a scene draws.
+struct Mesh @version(1) {
+  /// What the README, the overlay and a run's summary call it.
+  name: string
+  /// A glTF, GLB or .clusters file, relative to the scene file.
+  path: string
+  /// `assets::source_mesh_hash` of `path`, as 16 lower-case hex digits. A load whose file hashes
+  /// differently fails, because a number measured on other bytes would carry this scene's name.
+  /// Empty: not checked.
+  hash: string
+  /// The content hash of the mesh an overlay manifest may put in this one's place, in the same
+  /// form as `hash`. The scene names the replacement only by its bytes; where it lives is the
+  /// manifest's business, which is what keeps a paid-plan asset out of the repository.
+  overlay: string
+  fit: Fit?
+}
+
+/// A skinned instance's clip, carried for the host and never read by the renderer.
+struct Animation @version(1) {
+  /// The clip's name; empty is the skin's first clip.
+  clip: string
+  speed: f32 = 1
+  /// Seconds added to the starting playhead.
+  phase: f32 = 0
+}
+
+/// One placement of one mesh.
+struct Instance @version(1) {
+  /// Index into the scene's `meshes`.
+  mesh: u32 = 0
+  name: string
+  translation: vec3
+  rotation: quat
+  /// Degrees about +y, applied after `rotation`: the spelling a placement on a map wants.
+  yaw_deg: f32 = 0
+  /// Absent: 1, 1, 1.
+  scale: vec3?
+  /// `translation.y` is metres above the terrain's surface at (x, z) rather than absolute.
+  ground: bool = false
+  animation: Animation?
+}
+
+/// Instances of one mesh scattered over an annulus, from a seed: the oasis's palms are one of
+/// these. The expansion is a function of the fields alone, so the same file places the same
+/// instances on every machine.
+struct Scatter @version(1) {
+  mesh: u32 = 0
+  name: string
+  /// The annulus's centre, x and z.
+  center: vec2
+  radius_min: f32 = 0
+  radius_max: f32 = 10
+  count: u32 = 0
+  seed: u32 = 1
+  /// A uniform scale per instance, drawn between these two.
+  scale_min: f32 = 1
+  scale_max: f32 = 1
+  /// Stand each instance on the terrain's surface, `y` metres above it (negative sinks it).
+  ground: bool = true
+  y: f32 = 0
+}
+
+/// A rock ridge: a raised band along a segment, full height on the segment and falling to nothing
+/// `width` metres from it with a cosine profile, roughened by a seeded noise.
+struct Ridge @version(1) {
+  /// The segment's ends, x and z.
+  from: vec2
+  to: vec2
+  height: f32 = 50
+  width: f32 = 100
+  /// The noise's amplitude as a fraction of `height`.
+  roughness: f32 = 0.15
+}
+
+/// A bowl: `depth` metres at the centre, a smooth rim at `radius`, and the dunes flattened inside.
+struct Basin @version(1) {
+  center: vec2
+  radius: f32 = 100
+  depth: f32 = 5
+}
+
+/// The procedural terrain: seeded dunes, plus ridges and basins placed by hand so that a camera
+/// path can be laid out against them. It is built into a cluster LOD DAG like any mesh, and its
+/// derived-data cache entry is keyed by these fields, so it is content-addressed like a file.
+struct Terrain @version(1) {
+  /// Vertices a side. 2 to 4097.
+  size: u32 = 1025
+  /// Half the side, in metres: the terrain spans [-extent, extent] in x and z.
+  extent: f32 = 1000
+  seed: u32 = 1
+  /// Amplitude of the dune field, metres.
+  dune_height: f32 = 3
+  /// Typical crest-to-crest distance, metres.
+  dune_wavelength: f32 = 90
+  ridges: Ridge[]
+  basins: Basin[]
+}
+
+/// A scene: meshes, placements of them, and an optional terrain.
+struct Scene @version(1) {
+  /// "engine.scene.v1". Empty is accepted, for the files written before the field existed.
+  format: string
+  name: string
+  description: string
+  meshes: Mesh[]
+  instances: Instance[]
+  scatters: Scatter[]
+  terrain: Terrain?
+}
+
+/// Where the owner's replacements for a scene's placeholders are: a local file, never committed.
+struct OverlayEntry @version(1) {
+  /// `assets::source_mesh_hash` of the file, 16 lower-case hex digits: the key a scene's
+  /// `Mesh.overlay` names. The file is hashed on load and refused when it disagrees.
+  hash: string
+  /// Absolute, or relative to the manifest.
+  path: string
+  name: string
+}
+
+struct Overlay @version(1) {
+  /// "engine.scene-overlay.v1".
+  format: string
+  description: string
+  entries: OverlayEntry[]
+}
+
+enum Interpolation : u8 {
+  /// Straight segments between keys.
+  Linear = 0
+  /// A cubic through every key, with tangents from its neighbours (Catmull-Rom on the key times).
+  Smooth = 1
+}
+
+/// One keyframe of a camera path.
+struct CameraKey @version(1) {
+  /// Seconds from the path's start. Keys are in increasing time.
+  time: f64 = 0
+  position: vec3
+  /// The point looked at. When absent, `rotation` says where the camera faces instead.
+  target: vec3?
+  /// -z forward, +y up. Turned into a point 100 m ahead so that both forms interpolate alike.
+  rotation: quat?
+  /// Vertical field of view in degrees.
+  fov_deg: f32 = 55
+  /// `position.y` is metres above the terrain's surface at (x, z).
+  ground: bool = false
+  /// `target.y` is metres above the terrain's surface at its (x, z).
+  target_ground: bool = false
+}
+
+/// A named frame of a path: the frames a README tells a reader to look at.
+struct CameraMarker @version(1) {
+  /// At the path's own `fps`.
+  frame: u32 = 0
+  name: string
+  note: string
+}
+
+/// A camera path: keyframes and how to get between them.
+struct CameraPath @version(1) {
+  /// "engine.camera-path.v1".
+  format: string
+  name: string
+  description: string
+  interpolation: Interpolation = Smooth
+  /// Frames per second of path time: frame f is at time f / fps.
+  fps: f32 = 60
+  /// Near plane, metres. Reversed-Z, so there is no far plane.
+  znear: f32 = 0.1
+  keys: CameraKey[]
+  markers: CameraMarker[]
+}
+
+/// GPU milliseconds of one frame, pass by pass, from `gfx::GpuTimer` (`renderer::Stats` names).
+struct PassMs @version(1) {
+  cull: f64 = 0
+  hw: f64 = 0
+  sw: f64 = 0
+  hiz: f64 = 0
+  resolve: f64 = 0
+  /// The whole acceleration structure chain; `clas` is the cluster build inside it.
+  rt: f64 = 0
+  clas: f64 = 0
+  deform: f64 = 0
+  deform_alloc: f64 = 0
+  trace: f64 = 0
+  /// The sum of the timed zones: what the frame's passes cost, not its wall time.
+  total: f64 = 0
+}
+
+/// One frame of a flythrough benchmark. One line of the `.jsonl` a run writes.
+struct FrameRecord @version(1) {
+  /// Which pass over the path, from 0.
+  repeat: u32 = 0
+  /// The path frame, from 0.
+  frame: u32 = 0
+  /// Path time, seconds.
+  time: f64 = 0
+  /// Surviving (instance, cluster) pairs, by the draw that produced them.
+  visible_pairs: u32 = 0
+  visible_hw: u32 = 0
+  visible_pass2: u32 = 0
+  visible_sw: u32 = 0
+  /// Pairs the cone test kept out of the picture that the frame still built into its
+  /// acceleration structures so they cast shadows (`renderer::Stats::shadow_casters`); zero
+  /// without ray-traced shadows. Not visible pairs.
+  shadow_casters: u32 = 0
+  gpu_ms: PassMs
+  /// Geometry streaming during this frame: pages copied into the pool and their bytes, pages
+  /// evicted, requests written, and the pages resident after it. Zero when nothing streams.
+  uploads: u32 = 0
+  upload_bytes: u64 = 0
+  evictions: u32 = 0
+  requests: u32 = 0
+  pages_resident: u32 = 0
+  /// The census, when the run took one: visible pairs by DAG level (0 is the source geometry)
+  /// and by scene mesh, read back from this frame's visible list in a second, untimed pass.
+  levels: u32[]
+  meshes: u32[]
+  /// With `--census-pixels`: pixels of the picture each scene mesh covers, from the id channel.
+  /// A mesh that comes into view is the frame this goes above zero.
+  pixels: u32[]
+}
+
+/// A distribution over a path's frames.
+struct Percentiles @version(1) {
+  median: f64 = 0
+  p95: f64 = 0
+  p99: f64 = 0
+  max: f64 = 0
+  mean: f64 = 0
+}
+
+struct PassPercentiles @version(1) {
+  cull: Percentiles
+  hw: Percentiles
+  sw: Percentiles
+  hiz: Percentiles
+  resolve: Percentiles
+  rt: Percentiles
+  deform: Percentiles
+  trace: Percentiles
+  total: Percentiles
+}
+
+/// One mesh as a run loaded it: what a number was measured on.
+struct MeshIdentity @version(1) {
+  name: string
+  path: string
+  /// The source hash the load computed, 16 hex digits; the terrain's is over its fields.
+  hash: string
+  /// "scene" (the committed file), "overlay" (the manifest's replacement), or "terrain".
+  source: string
+  clusters: u32 = 0
+  triangles: u32 = 0
+}
+
+/// A marker frame's numbers, so a table can be read against the scene's README.
+struct MarkerRecord @version(1) {
+  frame: u32 = 0
+  name: string
+  total_ms: f64 = 0
+  visible_pairs: u32 = 0
+  /// Visible pairs by scene mesh, when the run took a census, and the pixels each covers when it
+  /// took them too.
+  meshes: u32[]
+  pixels: u32[]
+}
+
+/// One frame where occlusion culling changed the picture, and how.
+struct OcclusionFrame @version(1) {
+  frame: u32 = 0
+  /// Pixels whose (instance, cluster) differ, and colour bytes that differ.
+  surface: u32 = 0
+  colour: u32 = 0
+  /// Of the differing pixels: where the frame without occlusion culling had a nearer surface
+  /// (something visible was culled), where the depths tie exactly (two surfaces at one depth, and
+  /// the visibility buffer's tie-break is the visible entry's index, which culling renumbers), and
+  /// where the frame with it is nearer.
+  lost_nearer: u32 = 0
+  tied: u32 = 0
+  gained_nearer: u32 = 0
+  /// By scene mesh: what the frame without occlusion culling drew at the differing pixels.
+  lost: u32[]
+}
+
+/// Whether occlusion culling changed the picture anywhere on the path
+/// (`engine-view --verify-occlusion`): every frame drawn twice, with and without it, and the
+/// (instance, cluster) under every pixel and every colour byte compared.
+struct OcclusionCheck @version(1) {
+  frames: u32 = 0
+  width: u32 = 0
+  height: u32 = 0
+  /// Frames whose pictures differ at all; 0 is the invariant.
+  frames_differing: u32 = 0
+  surface_differences: u64 = 0
+  colour_differences: u64 = 0
+  /// Pixels whose triangle differs with the surface the same: a shared edge where depths tie.
+  triangle_differences: u64 = 0
+  /// The surface differences by depth (see `OcclusionFrame`). **`lost_nearer` and
+  /// `gained_nearer` are the invariant**: a pixel where the frame without occlusion culling had a
+  /// nearer surface is a visible cluster that was culled. `tied` is two surfaces at exactly one
+  /// depth — coincident geometry, such as a leaf modelled as two back-to-back faces — where the
+  /// visibility buffer keeps the larger visible-entry index, and the list's order is the GPU's
+  /// append order, which culling changes and nothing makes repeatable.
+  lost_nearer: u64 = 0
+  tied: u64 = 0
+  gained_nearer: u64 = 0
+  /// Frames with at least one pixel lost or gained nearer: 0 is the invariant.
+  frames_culled_visible: u32 = 0
+  covered_min: u32 = 0
+  covered_max: u32 = 0
+  /// Every frame that differed, in path order.
+  differing: OcclusionFrame[]
+}
+
+/// The last line of a flythrough benchmark's `.jsonl`, and engine-view's summary line.
+struct FlythroughSummary @version(1) {
+  /// "engine.flythrough.v1".
+  format: string
+  scene: string
+  /// Hashes of the scene file's and the camera path file's bytes, and of both together with
+  /// every mesh's, which is the one number that names what was measured.
+  scene_hash: string
+  path: string
+  path_hash: string
+  identity: string
+  meshes: MeshIdentity[]
+  width: u32 = 0
+  height: u32 = 0
+  views: string
+  raster: string
+  shadows: string
+  occlusion: bool = false
+  lod_px: f32 = 1
+  stream: bool = false
+  page_budget_bytes: u64 = 0
+  instances: u32 = 0
+  pairs: u32 = 0
+  clusters: u32 = 0
+  frames: u32 = 0
+  repeats: u32 = 0
+  warmup: u32 = 0
+  /// Per pass, over the path's frames, of each frame's median across the repeats.
+  gpu_ms: PassPercentiles
+  visible_pairs: Percentiles
+  /// The shadow chain's extra casters per frame (`FrameRecord.shadow_casters`).
+  shadow_casters: Percentiles
+  /// True when every repeat drew the same visible pairs at every frame.
+  deterministic: bool = false
+  mismatched_frames: u32 = 0
+  /// Frames where the census pass's visible pairs differ from the timed pass's first repeat.
+  census_mismatched_frames: u32 = 0
+  census: bool = false
+  uploads: u64 = 0
+  upload_bytes: u64 = 0
+  evictions: u64 = 0
+  markers: MarkerRecord[]
+  occlusion_check: OcclusionCheck?
+  /// Wall time of the timed passes, and per frame: barriers, gaps and the CPU included.
+  seconds: f64 = 0
+  wall_ms_per_frame: f64 = 0
+  gpu_memory_used_mib: u64 = 0
+  gpu_memory_budget_mib: u64 = 0
+  /// The harness's samples around the run, as `foundation/bench` writes them.
+  machine_state: json
+  quiet: bool = false
+}

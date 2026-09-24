@@ -1,0 +1,38 @@
+{
+  "format": "engine.camera-path.v1",
+  "name": "desert-overlook",
+  "description": "Forty seconds at 60 fps: low through the dunes past the camp with every landmark behind ridge A, up the saddle as they rise over it, a raised overlook panning from the skyscraper to the office tower, down into the oasis as ridge B takes the far three back out of view, and low past the palms to the airplane wreck. README.md says which landmark is hidden, partly hidden and in view at each marker.",
+  "interpolation": "Smooth",
+  "fps": 60,
+  "znear": 0.1,
+  "keys": [
+    {"time": 0, "position": [0, 2.5, 900], "ground": true, "target": [0, 40, 300]},
+    {"time": 3, "position": [8, 2.5, 760], "ground": true, "target": [0, 40, 300]},
+    {"time": 6, "position": [0, 3, 600], "ground": true, "target": [0, 50, 300]},
+    {"time": 10, "position": [0, 3, 460], "ground": true, "target": [0, 45, 200]},
+    {"time": 14, "position": [0, 3, 360], "ground": true, "target": [0, 30, 0]},
+    {"time": 16, "position": [0, 3, 330], "ground": true, "target": [0, 20, -200]},
+    {"time": 18, "position": [0, 30, 320], "ground": true, "target": [-1350, 150, -1950]},
+    {"time": 21, "position": [0, 60, 310], "ground": true, "target": [0, 40, -700]},
+    {"time": 24, "position": [0, 60, 300], "ground": true, "target": [900, 80, -1250]},
+    {"time": 28, "position": [0, 25, 200], "ground": true, "target": [0, 10, -100]},
+    {"time": 32, "position": [0, 16, 130], "ground": true, "target": [0, 5, 0]},
+    {"time": 35, "position": [-40, 16, 40], "ground": true, "target": [-260, 10, -60]},
+    {"time": 38, "position": [-150, 16, 0], "ground": true, "target": [-260, 8, -60]},
+    {"time": 40, "position": [-200, 8, 10], "ground": true, "target": [-260, 5, -60]}
+  ],
+  "markers": [
+    {"frame": 0, "name": "behind-ridge-a", "note": "all five landmarks and the palms inside the frustum and fully occluded by ridge A"},
+    {"frame": 30, "name": "camp", "note": "the camp's props 10-40 m ahead; every landmark still hidden"},
+    {"frame": 852, "name": "saddle-face", "note": "the saddle's face fills the frame: occlusion culling leaves 7 visible pairs of about 1,730"},
+    {"frame": 859, "name": "disocclusion", "note": "the first sky over the saddle: last frame's 7 pairs build the Hi-Z, and occlusion culling culls nothing"},
+    {"frame": 942, "name": "crest", "note": "skyscraper, office tower and cathedral come into view; the cathedral mostly behind ridge B"},
+    {"frame": 1080, "name": "west", "note": "skyscraper and airplane wreck in view; the cathedral partly occluded by ridge B"},
+    {"frame": 1260, "name": "overlook", "note": "60 m above the saddle: all five landmarks in view, the cathedral's base behind ridge B"},
+    {"frame": 1440, "name": "east", "note": "office tower and mosque in view; the three west landmarks out of frame"},
+    {"frame": 1720, "name": "sinking", "note": "descending: the cathedral in frame and fully behind ridge B, the skyscraper partly"},
+    {"frame": 1860, "name": "grove", "note": "the palm grove at its densest; skyscraper and office tower in slivers over ridge B"},
+    {"frame": 1980, "name": "oasis", "note": "skyscraper and cathedral in frame and fully behind ridge B; the airplane wreck in view"},
+    {"frame": 2400, "name": "wreck", "note": "the airplane wreck about 90 m away; the far landmarks behind ridge B"}
+  ]
+}

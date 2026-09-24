@@ -16,6 +16,7 @@
 #include <test_temp_dir.h>
 
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -451,6 +452,75 @@ TEST_CASE("render: the reference integrator and the evaluate loop over the proto
   CHECK(error_code(
             host.call("render.evaluate", "{\"scene\":\"" + id + "\",\"reference\":{\"spp\":0}}")) ==
         k_invalid_argument);
+}
+
+// A flythrough over the protocol (docs/plan/09-testing-profiling.md §9.4): a scene file with a
+// terrain and nothing else, a camera path whose keys hold a height above that terrain, and
+// `render.benchmark` flying it twice. The result carries the same summary `engine-view
+// --benchmark` ends its .jsonl with: the frame count the path asked for, the percentiles per pass,
+// the hashes that name what was measured, and whether both repeats drew the same pairs.
+TEST_CASE("render: a camera path flown over the protocol") {
+  const test::TempDir tmp("engine_render_flythrough");
+  const std::string scene_file = tmp.file("scene.json");
+  const std::string path_file = tmp.file("path.json");
+  {
+    std::ofstream out(scene_file);
+    out << R"({"format":"engine.scene.v1","name":"dunes","terrain":{"size":33,"extent":40,)"
+        << R"("seed":5,"ridges":[{"from":[-30,0],"to":[30,0],"height":8,"width":8}]}})";
+  }
+  {
+    std::ofstream out(path_file);
+    out << R"({"format":"engine.camera-path.v1","name":"rise","fps":10,"keys":[)"
+        << R"({"time":0,"position":[0,2,30],"ground":true,"target":[0,0,-20]},)"
+        << R"({"time":1,"position":[0,20,10],"target":[0,0,-20]}],)"
+        << R"("markers":[{"frame":10,"name":"top"}]})";
+  }
+  Host host;
+  REQUIRE(host.ok);
+  const JsonValue loaded =
+      host.call("render.load", R"({"scene":")" + scene_file + R"(","ddc":")" + tmp.file("ddc") +
+                                   R"(","settings":{"shadows":"off"}})");
+  if (error_code(loaded) == k_render_unavailable) {
+    MESSAGE("render.* unavailable here: " << error_message(loaded));
+    return;
+  }
+  const std::string id = text(result_of(loaded), "scene");
+  const JsonValue flown = host.call(
+      "render.benchmark", R"({"scene":")" + id + R"(","width":160,"height":90,"camera_path":")" +
+                              path_file + R"(","repeats":2,"warmup":2})");
+  const JsonValue& bench = result_of(flown);
+  const JsonValue* summary = bench.find("flythrough");
+  REQUIRE(summary != nullptr);
+  CHECK(text(*summary, "format") == "engine.flythrough.v1");
+  CHECK(text(*summary, "scene") == "dunes");
+  CHECK(text(*summary, "path") == "rise");
+  CHECK(text(*summary, "path_hash").size() == 16);
+  CHECK(text(*summary, "identity").size() == 16);
+  CHECK(number(*summary, "frames") == 11);  // one second at 10 fps, both ends
+  CHECK(number(*summary, "repeats") == 2);
+  bool deterministic = false;
+  REQUIRE((summary->find("deterministic") != nullptr &&
+           summary->find("deterministic")->get_bool(deterministic)));
+  CHECK(deterministic);
+  const JsonValue* gpu = summary->find("gpu_ms");
+  REQUIRE(gpu != nullptr);
+  const JsonValue* total = gpu->find("total");
+  REQUIRE(total != nullptr);
+  CHECK(real(*total, "median") > 0.0);
+  CHECK(real(*total, "p99") >= real(*total, "median"));
+  const JsonValue* markers = summary->find("markers");
+  REQUIRE(markers != nullptr);
+  REQUIRE(markers->size() == 1);
+  CHECK(number((*markers)[0], "frame") == 10);
+
+  // A path that asks for heights above a terrain the scene does not have is refused.
+  const JsonValue refused = host.call("render.load", R"({"grid":17,"settings":{"shadows":"off"}})");
+  const std::string heightfield = text(result_of(refused), "scene");
+  const JsonValue no_ground =
+      host.call("render.benchmark",
+                R"({"scene":")" + heightfield + R"(","camera_path":")" + path_file + R"("})");
+  CHECK(error_code(no_ground) != 0);
+  CHECK(error_message(no_ground).find("terrain") != std::string::npos);
 }
 
 // `render.compare` is the one render method that never opens a device, so it runs everywhere —

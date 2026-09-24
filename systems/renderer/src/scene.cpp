@@ -1,5 +1,7 @@
+#include <core/hash/hash.h>
 #include <core/json/json.h>
 #include <core/platform/process.h>
+#include <core/schema/json_reflect.h>
 #include <core/time/time.h>
 #include <domain/geometry/cluster_file.h>
 #include <domain/geometry/cluster_pages.h>
@@ -7,14 +9,37 @@
 #include <foundation/image/png.h>
 #include <foundation/io/vfs.h>
 #include <systems/renderer/scene.h>
+#include <systems/renderer/terrain.h>
 
 #include <algorithm>
 #include <cmath>
 #include <renderer_log.h>
+#include <schemas/scene.h>
+#include <utility>
 
 namespace engine::renderer {
 
 namespace {
+
+std::string schema_errors(const schema::ReadContext& ctx) {
+  std::string text;
+  for (const schema::Diagnostic& d : ctx.diagnostics) {
+    if (!text.empty()) text += "; ";
+    text += d.path.empty() ? d.message : d.path + ": " + d.message;
+  }
+  return text.empty() ? std::string("not a valid scene") : text;
+}
+
+// splitmix64 to a float in [0, 1): the scatters' generator. Seeded per scatter, so adding a
+// scatter to a file moves nothing another one placed.
+f32 seeded_unit(u64& state) noexcept {
+  state += 0x9E3779B97F4A7C15ull;
+  u64 z = state;
+  z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+  z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+  z ^= z >> 31;
+  return static_cast<f32>(z >> 40) / static_cast<f32>(1u << 24);
+}
 
 // An (n x n) heightfield over [-extent, extent]^2 in XZ, dunes-and-ridges in Y. The scene that
 // needs no content at all: it is what a bring-up on a new machine draws, and what the
@@ -124,32 +149,217 @@ bool write_cluster_cache(const std::string& path, const std::string& source,
   return error.empty();
 }
 
+// The page layout renumbers a mesh's clusters, so it is only ever run where the result is
+// already the renumbered one — the glTF, terrain and container paths below, whose layout is part
+// of the derived-data cache key — or where nothing has been built yet and the caller asked to
+// stream. Paging the classic heightfield unconditionally would change every id and every cut of
+// the scene the renderer's own tests draw, for a table nobody would read.
+void lay_out_pages(const SceneDesc& desc, const char* what, u32 page_bytes, SourceMesh& out,
+                   geometry::ClusterLodMesh& lod, geometry::ClusterPages& pages) {
+  if (!desc.stream) return;
+  Vector<u32> source_of_cluster;
+  std::string page_error;
+  geometry::ClusterPagesOptions options;
+  if (page_bytes > 0) options.page_bytes = page_bytes;
+  if (geometry::build_cluster_pages(lod, options, pages, &page_error, &source_of_cluster)) {
+    geometry::permute_cluster_array(source_of_cluster, out.part_of_cluster);
+    return;
+  }
+  pages = geometry::ClusterPages{};
+  ENGINE_LOG_WARN(log_renderer, "cluster pages not built", log::field("mesh", what),
+                  log::field("error", page_error));
+}
+
+// A container's materials, images, material map and (when streaming) page table, in the shape the
+// glTF path leaves behind, so that everything downstream is the same code for both: one part per
+// material, and the file's own map from cluster to part. `container` is where it was read from.
+void adopt_container(geometry::ClusterFileData& container_data, const std::string& container,
+                     const SceneDesc& desc, SourceMesh& out, geometry::ClusterLodMesh& lod,
+                     geometry::ClusterPages& pages) {
+  lod = std::move(container_data.mesh);
+  out.data.materials.reserve(container_data.materials.size());
+  out.part_material.reserve(container_data.materials.size());
+  for (const geometry::ClusterFileMaterial& source : container_data.materials) {
+    assets::Material material;
+    material.base_color = source.base_color;
+    material.metallic = source.metallic;
+    material.roughness = source.roughness;
+    material.base_color_image = source.base_color_image;
+    material.normal_image = source.normal_image;
+    material.metallic_roughness_image =
+        geometry::decode_optional_image(source.metallic_roughness_image);
+    material.occlusion_image = geometry::decode_optional_image(source.occlusion_image);
+    material.emissive_image = geometry::decode_optional_image(source.emissive_image);
+    material.emissive = source.emissive;
+    material.normal_scale = source.normal_scale;
+    material.alpha_mode = geometry::alpha_word_mode(source.alpha);
+    material.double_sided = geometry::alpha_word_double_sided(source.alpha);
+    material.alpha_cutoff = geometry::alpha_word_cutoff(source.alpha);
+    out.data.materials.push_back(std::move(material));
+    out.part_material.push_back(static_cast<i32>(out.part_material.size()));
+  }
+  // The images: a path names a file beside the source mesh, and an image the source embedded
+  // travels inside the container, so everything below is the same code for both and a container
+  // draws what its source draws. A container written before the bytes were carried has the
+  // paths alone, and an embedded image of one still draws untextured with a warning.
+  out.data.images.reserve(container_data.image_paths.size());
+  for (u32 i = 0; i < container_data.image_paths.size(); ++i) {
+    assets::ImageRef image;
+    image.uri = container_data.image_paths[i];
+    if (i < container_data.images.size()) {
+      image.mime_type = std::move(container_data.images[i].mime_type);
+      image.bytes = std::move(container_data.images[i].bytes);
+    }
+    out.data.images.push_back(std::move(image));
+  }
+  out.part_of_cluster = std::move(container_data.cluster_material);
+  if (out.part_of_cluster.empty()) {  // a container with no material map: one default for all
+    out.part_of_cluster = Vector<u32>(lod.mesh.clusters.size(), out.part_material.size());
+    out.part_material.push_back(-1);
+  }
+  // Relative image paths belong to the mesh the container was built from; a container that
+  // does not name one resolves them beside itself.
+  out.image_dir = std::string(io::parent_path(container_data.source_path.empty()
+                                                  ? std::string_view(container)
+                                                  : std::string_view(container_data.source_path)));
+  out.primitives = 0;         // a container does not record how many were merged into it
+  out.container = container;  // where its pages can be read from by range
+  // The container's own page table, which is the one its clusters were renumbered into. A
+  // container written with `--page-bytes 0` carries none, and the layout is run here instead so
+  // that a streamed run never depends on which build wrote the cache entry.
+  if (desc.stream) {
+    pages = std::move(container_data.pages);
+    if (pages.pages.empty()) lay_out_pages(desc, container.c_str(), 0, out, lod, pages);
+  }
+  ENGINE_LOG_INFO(log_renderer, "mesh loaded", log::field("path", container),
+                  log::field("from", "cluster file"),
+                  log::field("source", container_data.source_path), log::field("cache", out.cache),
+                  log::field("clusters", lod.mesh.clusters.size()),
+                  log::field("vertices", lod.mesh.vertices.size()),
+                  log::field("triangles", lod.leaf_triangle_count),
+                  log::field("lod_levels", lod.level_cluster_counts.size()),
+                  log::field("materials", out.data.materials.size()),
+                  log::field("images", out.data.images.size()));
+}
+
+// The scene file's terrain (terrain.h): read from the derived-data cache when an entry for these
+// fields and these LOD options exists, built and written there otherwise — so a 2049 x 2049
+// terrain costs its clustering once per machine, like a glTF. It is always laid out in pages,
+// exactly as a glTF's cache entry is, because the layout renumbers the clusters and a cache hit
+// has to be the same scene as the build that wrote it.
+//
+// Its materials are the desert's four — sand, ridge rock, basin sand and the basin's floor —
+// chosen per cluster from the features under the cluster's centre, and they are ordinary file
+// materials: the terrain is a mesh like any other from here on, which is what lets it share a
+// scene with glTF meshes (the classic heightfield's height-banded palette is the GPU scene's own
+// and only exists when the heightfield is the whole scene).
+bool load_terrain(const SceneDesc& desc, SourceMesh& out, geometry::ClusterLodMesh& lod,
+                  geometry::ClusterPages& pages, std::string& error) {
+  const u64 hash = terrain_hash(desc.terrain);
+  out.source_hash = hash;
+  std::string cache_path;
+  if (desc.cache) {
+    const u64 key = geometry::cluster_cache_key(hash, desc.lod, false,
+                                                geometry::ClusterPagesOptions{}.page_bytes);
+    cache_path = geometry::cluster_cache_path(desc.ddc, key);
+    out.cache = "miss";
+    if (io::exists(cache_path)) {
+      geometry::ClusterFileData container_data;
+      std::string read_error;
+      if (geometry::read_cluster_file(cache_path, container_data, &read_error)) {
+        out.cache = "hit";
+        adopt_container(container_data, cache_path, desc, out, lod, pages);
+        return true;
+      }
+      ENGINE_LOG_WARN(log_renderer, "cluster cache entry ignored", log::field("path", cache_path),
+                      log::field("error", read_error));
+    }
+  }
+  Vector<Vec3> positions;
+  Vector<u32> indices;
+  Vector<Vec2> uvs;
+  if (!build_terrain_mesh(desc.terrain, positions, indices, uvs, &error)) return false;
+  // The normals are the grid's own, by central differences, and they go to the builder as an
+  // attribute rather than being recomputed per level. An edge collapse keeps source vertices, so a
+  // coarse cluster then shades with the fine surface's normals; recomputed from the coarse
+  // triangles they made every LOD boundary a visible change of shade — a darker patch of sand the
+  // shape of a cluster, a few hundred metres out, which is what the first pictures showed.
+  const u32 n = desc.terrain.size;
+  Vector<Vec3> normals(positions.size());
+  for (u32 zi = 0; zi < n; ++zi) {
+    for (u32 xi = 0; xi < n; ++xi) {
+      const u32 x0 = xi > 0 ? xi - 1 : xi;
+      const u32 x1 = xi + 1 < n ? xi + 1 : xi;
+      const u32 z0 = zi > 0 ? zi - 1 : zi;
+      const u32 z1 = zi + 1 < n ? zi + 1 : zi;
+      const Vec3 dx = positions[zi * n + x1] - positions[zi * n + x0];
+      const Vec3 dz = positions[z1 * n + xi] - positions[z0 * n + xi];
+      normals[zi * n + xi] = normalize(cross(dz, dx));  // +y for a flat grid
+    }
+  }
+  geometry::AttributeSource attribute_source;
+  attribute_source.uvs = std::span<const Vec2>(uvs.data(), uvs.size());
+  attribute_source.normals = std::span<const Vec3>(normals.data(), normals.size());
+  if (!geometry::build_cluster_lod(positions, indices, desc.lod, lod, &error, attribute_source))
+    return false;
+  geometry::ClusterPages built;
+  std::string page_error;
+  if (!geometry::build_cluster_pages(lod, geometry::ClusterPagesOptions{}, built, &page_error)) {
+    ENGINE_LOG_WARN(log_renderer, "cluster pages not built", log::field("mesh", "terrain"),
+                    log::field("error", page_error));
+  }
+  // The materials, picked per cluster after the layout has renumbered them, by a vote of the
+  // cluster's own vertices: a cluster is one material, so a border between sand and rock is a
+  // cluster edge, and a coarse cluster that spans a ridge's foot and a stretch of plain is sand.
+  constexpr f32 k_colours[k_terrain_materials][4] = {
+      {0.84f, 0.69f, 0.47f, 0.92f},  // sand: albedo and roughness
+      {0.47f, 0.39f, 0.32f, 0.78f},  // ridge rock
+      {0.62f, 0.52f, 0.36f, 0.95f},  // basin sand
+      {0.36f, 0.40f, 0.22f, 0.85f},  // the basin's floor
+  };
+  constexpr const char* k_names[k_terrain_materials] = {"sand", "rock", "basin", "floor"};
+  for (u32 m = 0; m < k_terrain_materials; ++m) {
+    assets::Material material;
+    material.name = k_names[m];
+    material.base_color = Vec4{k_colours[m][0], k_colours[m][1], k_colours[m][2], 1.0f};
+    material.roughness = k_colours[m][3];
+    material.metallic = 0.0f;
+    out.data.materials.push_back(std::move(material));
+    out.part_material.push_back(static_cast<i32>(m));
+  }
+  out.part_of_cluster.resize(lod.mesh.clusters.size(), 0u);
+  for (u32 c = 0; c < lod.mesh.clusters.size(); ++c) {
+    const geometry::ClusterDesc& cluster = lod.mesh.clusters[c];
+    out.part_of_cluster[c] = terrain_majority_material(
+        desc.terrain, std::span<const Vec3>(lod.mesh.vertices.data() + cluster.vertex_offset,
+                                            cluster.vertex_count));
+  }
+  out.primitives = 1;
+  ENGINE_LOG_INFO(log_renderer, "mesh loaded", log::field("from", "terrain"),
+                  log::field("size", desc.terrain.size), log::field("extent", desc.terrain.extent),
+                  log::field("triangles", lod.leaf_triangle_count),
+                  log::field("clusters", lod.mesh.clusters.size()),
+                  log::field("lod_levels", lod.level_cluster_counts.size()));
+  if (!cache_path.empty() && write_cluster_cache(cache_path, "", out.data, out.part_material,
+                                                 out.part_of_cluster, lod, built)) {
+    out.container = cache_path;
+  }
+  if (desc.stream) pages = std::move(built);
+  return true;
+}
+
 // Reads one mesh: a `.clusters` container named outright, the derived-data cache entry this
 // glTF and these options address, or the glTF itself (imported, welded, clustered per primitive
 // so every cluster has a single material, merged, and written into the cache for the next run).
-// An empty `path` builds the procedural heightfield instead.
-bool load_source_mesh(const std::string& path, const SceneDesc& desc, SourceMesh& out,
-                      geometry::ClusterLodMesh& lod, geometry::ClusterPages& pages,
+// An empty `path` builds the scene's terrain when it has one and the procedural scene otherwise.
+// `expected_hash`, when not zero, is the source hash the file must have (a scene file's `hash`).
+bool load_source_mesh(const std::string& path, const SceneDesc& desc, u64 expected_hash,
+                      SourceMesh& out, geometry::ClusterLodMesh& lod, geometry::ClusterPages& pages,
                       std::string& error) {
-  // The page layout renumbers a mesh's clusters, so it is only ever run where the result is
-  // already the renumbered one — the glTF and container paths below, whose layout is part of the
-  // derived-data cache key — or where nothing has been built yet and the caller asked to stream.
-  // Paging the heightfield unconditionally would change every id and every cut of the scene the
-  // renderer's own tests draw, for a table nobody would read.
   auto page_layout = [&](const char* what, u32 page_bytes) {
-    if (!desc.stream) return;
-    Vector<u32> source_of_cluster;
-    std::string page_error;
-    geometry::ClusterPagesOptions options;
-    if (page_bytes > 0) options.page_bytes = page_bytes;
-    if (geometry::build_cluster_pages(lod, options, pages, &page_error, &source_of_cluster)) {
-      geometry::permute_cluster_array(source_of_cluster, out.part_of_cluster);
-      return;
-    }
-    pages = geometry::ClusterPages{};
-    ENGINE_LOG_WARN(log_renderer, "cluster pages not built", log::field("mesh", what),
-                    log::field("error", page_error));
+    lay_out_pages(desc, what, page_bytes, out, lod, pages);
   };
+  if (path.empty() && desc.terrain.enabled) return load_terrain(desc, out, lod, pages, error);
   if (path.empty() && desc.procedural == Procedural::shredded_atlas) {
     // The atlas stress fixture, built here rather than committed as a file so that the scene
     // corpus can guard the LOD seam defect on a fresh clone and without a third-party model
@@ -229,16 +439,26 @@ bool load_source_mesh(const std::string& path, const SceneDesc& desc, SourceMesh
   if (io::extension(path) == ".clusters") {
     container = path;
     out.cache = "file";
-  } else if (desc.cache) {
+  } else if (desc.cache || expected_hash != 0) {
     u64 source_hash = 0;
     if (!assets::source_mesh_hash(path, source_hash, &error)) return false;
-    // The page target is part of the key, so this has to be the one the build below uses — and
-    // the one engine-content uses by default, or the two apps would stop sharing entries.
-    const u64 key = geometry::cluster_cache_key(source_hash, desc.lod, true,
-                                                geometry::ClusterPagesOptions{}.page_bytes);
-    cache_path = geometry::cluster_cache_path(desc.ddc, key);
-    out.cache = "miss";
-    if (io::exists(cache_path)) container = cache_path;
+    out.source_hash = source_hash;
+    // A scene that names a mesh by its bytes gets those bytes or nothing: a number measured on a
+    // different file would still carry this scene's name (plan 09 §9.4, "content-addressed").
+    if (expected_hash != 0 && source_hash != expected_hash) {
+      error = path + " hashes to " + hash_hex(source_hash) + ", and the scene names " +
+              hash_hex(expected_hash);
+      return false;
+    }
+    if (desc.cache) {
+      // The page target is part of the key, so this has to be the one the build below uses —
+      // and the one engine-content uses by default, or the two apps would stop sharing entries.
+      const u64 key = geometry::cluster_cache_key(source_hash, desc.lod, true,
+                                                  geometry::ClusterPagesOptions{}.page_bytes);
+      cache_path = geometry::cluster_cache_path(desc.ddc, key);
+      out.cache = "miss";
+      if (io::exists(cache_path)) container = cache_path;
+    }
   }
   geometry::ClusterFileData container_data;
   bool from_container = false;
@@ -257,73 +477,7 @@ bool load_source_mesh(const std::string& path, const SceneDesc& desc, SourceMesh
     }
   }
   if (from_container) {
-    lod = std::move(container_data.mesh);
-    // The container's materials, images, and material map, in the shape the glTF path leaves
-    // behind so that everything below is the same code for both: one part per material, and the
-    // file's own map from cluster to part.
-    out.data.materials.reserve(container_data.materials.size());
-    out.part_material.reserve(container_data.materials.size());
-    for (const geometry::ClusterFileMaterial& source : container_data.materials) {
-      assets::Material material;
-      material.base_color = source.base_color;
-      material.metallic = source.metallic;
-      material.roughness = source.roughness;
-      material.base_color_image = source.base_color_image;
-      material.normal_image = source.normal_image;
-      material.metallic_roughness_image =
-          geometry::decode_optional_image(source.metallic_roughness_image);
-      material.occlusion_image = geometry::decode_optional_image(source.occlusion_image);
-      material.emissive_image = geometry::decode_optional_image(source.emissive_image);
-      material.emissive = source.emissive;
-      material.normal_scale = source.normal_scale;
-      material.alpha_mode = geometry::alpha_word_mode(source.alpha);
-      material.double_sided = geometry::alpha_word_double_sided(source.alpha);
-      material.alpha_cutoff = geometry::alpha_word_cutoff(source.alpha);
-      out.data.materials.push_back(std::move(material));
-      out.part_material.push_back(static_cast<i32>(out.part_material.size()));
-    }
-    // The images: a path names a file beside the source mesh, and an image the source embedded
-    // travels inside the container, so everything below is the same code for both and a container
-    // draws what its source draws. A container written before the bytes were carried has the
-    // paths alone, and an embedded image of one still draws untextured with a warning.
-    out.data.images.reserve(container_data.image_paths.size());
-    for (u32 i = 0; i < container_data.image_paths.size(); ++i) {
-      assets::ImageRef image;
-      image.uri = container_data.image_paths[i];
-      if (i < container_data.images.size()) {
-        image.mime_type = std::move(container_data.images[i].mime_type);
-        image.bytes = std::move(container_data.images[i].bytes);
-      }
-      out.data.images.push_back(std::move(image));
-    }
-    out.part_of_cluster = std::move(container_data.cluster_material);
-    if (out.part_of_cluster.empty()) {  // a container with no material map: one default for all
-      out.part_of_cluster = Vector<u32>(lod.mesh.clusters.size(), out.part_material.size());
-      out.part_material.push_back(-1);
-    }
-    // Relative image paths belong to the mesh the container was built from; a container that
-    // does not name one resolves them beside itself.
-    out.image_dir = std::string(io::parent_path(
-        container_data.source_path.empty() ? std::string_view(container)
-                                           : std::string_view(container_data.source_path)));
-    out.primitives = 0;         // a container does not record how many were merged into it
-    out.container = container;  // where its pages can be read from by range
-    // The container's own page table, which is the one its clusters were renumbered into. A
-    // container written with `--page-bytes 0` carries none, and the layout is run here instead so
-    // that a streamed run never depends on which build wrote the cache entry.
-    if (desc.stream) {
-      pages = std::move(container_data.pages);
-      if (pages.pages.empty()) page_layout(container.c_str(), 0);
-    }
-    ENGINE_LOG_INFO(
-        log_renderer, "mesh loaded", log::field("path", container),
-        log::field("from", "cluster file"), log::field("source", container_data.source_path),
-        log::field("cache", out.cache), log::field("clusters", lod.mesh.clusters.size()),
-        log::field("vertices", lod.mesh.vertices.size()),
-        log::field("triangles", lod.leaf_triangle_count),
-        log::field("lod_levels", lod.level_cluster_counts.size()),
-        log::field("materials", out.data.materials.size()),
-        log::field("images", out.data.images.size()));
+    adopt_container(container_data, container, desc, out, lod, pages);
     return true;
   }
   if (!assets::load_gltf(path, out.data, &error)) return false;
@@ -452,7 +606,38 @@ void mesh_bounds(const geometry::ClusterLodMesh& lod, u32 first, u32 count, Vec3
   }
 }
 
+std::string hash_hex(u64 hash) {
+  static constexpr char k_digits[] = "0123456789abcdef";
+  std::string text(16, '0');
+  for (u32 i = 0; i < 16; ++i)
+    text[15 - i] = k_digits[(hash >> (4 * i)) & 0xfu];
+  return text;
+}
+
+bool parse_hash_hex(std::string_view text, u64& out) noexcept {
+  if (text.size() != 16) return false;
+  u64 value = 0;
+  for (const char c : text) {
+    u64 digit = 0;
+    if (c >= '0' && c <= '9') {
+      digit = static_cast<u64>(c - '0');
+    } else if (c >= 'a' && c <= 'f') {
+      digit = static_cast<u64>(c - 'a' + 10);
+    } else {
+      return false;
+    }
+    value = value << 4 | digit;
+  }
+  out = value;
+  return true;
+}
+
 bool read_scene_file(const std::string& path, SceneDesc& out, std::string& error) {
+  return read_scene_file(path, SceneFileOptions{}, out, error);
+}
+
+bool read_scene_file(const std::string& path, const SceneFileOptions& options, SceneDesc& out,
+                     std::string& error) {
   std::string text;
   const io::Status status = io::read_file(path, text);
   if (status != io::Status::Ok) {
@@ -465,78 +650,201 @@ bool read_scene_file(const std::string& path, SceneDesc& out, std::string& error
     error = std::string(path) + ":" + std::to_string(parsed.line) + ": " + parsed.message;
     return false;
   }
-  const JsonValue* mesh_list = root.is_object() ? root.find("meshes") : nullptr;
-  if (mesh_list == nullptr || !mesh_list->is_array() || mesh_list->size() == 0) {
-    error = std::string(path) + ": no \"meshes\" array";
+  // One grammar, and it is the schema's: an unknown field is refused with its path rather than
+  // skipped, because a misspelt `"ground"` that quietly did nothing would float a building.
+  scene::Scene file;
+  schema::ReadContext ctx;
+  if (!schema::from_json(file, root, ctx) || !ctx.ok()) {
+    error = path + ": " + schema_errors(ctx);
     return false;
   }
+  if (!file.format.empty() && file.format != "engine.scene.v1") {
+    error = path + ": format is '" + file.format + "', not engine.scene.v1";
+    return false;
+  }
+  if (file.meshes.empty() && !file.terrain.has_value()) {
+    error = path + ": no \"meshes\" and no \"terrain\": a scene needs at least one";
+    return false;
+  }
+  out.name = file.name;
+  out.file_hash = hash_bytes(text.data(), text.size());
+
+  // The overlay: a map from content hash to a local file, read before the meshes so that a mesh
+  // it names is loaded from there and checked against the hash the scene gave for it.
+  Vector<std::pair<u64, std::string>> overlay;  // hash, path
+  if (!options.overlay.empty()) {
+    std::string overlay_text;
+    const io::Status read = io::read_file(options.overlay, overlay_text);
+    if (read != io::Status::Ok) {
+      error = "cannot read the overlay " + options.overlay + ": " + io::status_name(read);
+      return false;
+    }
+    JsonValue overlay_json;
+    const JsonParseResult overlay_parsed = parse_json(overlay_text, overlay_json);
+    scene::Overlay manifest;
+    schema::ReadContext overlay_ctx;
+    if (!overlay_parsed.ok) {
+      error = options.overlay + ":" + std::to_string(overlay_parsed.line) + ": " +
+              overlay_parsed.message;
+      return false;
+    }
+    if (!schema::from_json(manifest, overlay_json, overlay_ctx) || !overlay_ctx.ok()) {
+      error = options.overlay + ": " + schema_errors(overlay_ctx);
+      return false;
+    }
+    const std::string overlay_dir(io::parent_path(options.overlay));
+    for (const scene::OverlayEntry& entry : manifest.entries) {
+      u64 hash = 0;
+      if (!parse_hash_hex(entry.hash, hash)) {
+        error = options.overlay + ": '" + entry.hash + "' is not 16 lower-case hex digits";
+        return false;
+      }
+      overlay.push_back({hash, io::is_absolute_path(entry.path) || overlay_dir.empty()
+                                   ? entry.path
+                                   : io::join_path(overlay_dir, entry.path)});
+    }
+  }
+
   const std::string dir(io::parent_path(path));
-  for (usize i = 0; i < mesh_list->size(); ++i) {
-    const JsonValue& entry = (*mesh_list)[i];
-    std::string_view mesh_path;
-    const JsonValue* value = entry.is_object() ? entry.find("path") : nullptr;
-    if (value == nullptr || !value->get_string(mesh_path) || mesh_path.empty()) {
-      error = std::string(path) + ": mesh " + std::to_string(i) + " has no \"path\"";
+  for (u32 i = 0; i < file.meshes.size(); ++i) {
+    const scene::Mesh& mesh = file.meshes[i];
+    const std::string where = path + ": mesh " + std::to_string(i);
+    if (mesh.path.empty()) {
+      error = where + " has no \"path\"";
       return false;
     }
-    const std::string relative(mesh_path);
-    out.meshes.push_back(
-        io::is_absolute_path(relative) || dir.empty() ? relative : io::join_path(dir, relative));
-  }
-  auto read_vec = [](const JsonValue* value, u32 count, f32* values) {
-    if (value == nullptr || !value->is_array() || value->size() != count) return false;
-    for (u32 i = 0; i < count; ++i) {
-      f64 v = 0.0;
-      if (!(*value)[i].get_f64(v)) return false;
-      values[i] = static_cast<f32>(v);
+    SceneMeshInfo info;
+    info.name = mesh.name;
+    if (!mesh.hash.empty() && !parse_hash_hex(mesh.hash, info.hash)) {
+      error = where + ": hash '" + mesh.hash + "' is not 16 lower-case hex digits";
+      return false;
     }
-    return true;
+    if (mesh.fit.has_value()) {
+      info.fit.height = mesh.fit->height;
+      info.fit.extent = mesh.fit->extent;
+      info.fit.ground = mesh.fit->ground;
+    }
+    std::string resolved =
+        io::is_absolute_path(mesh.path) || dir.empty() ? mesh.path : io::join_path(dir, mesh.path);
+    if (!mesh.overlay.empty()) {
+      u64 wanted = 0;
+      if (!parse_hash_hex(mesh.overlay, wanted)) {
+        error = where + ": overlay '" + mesh.overlay + "' is not 16 lower-case hex digits";
+        return false;
+      }
+      for (const auto& [hash, overlay_path] : overlay) {
+        if (hash != wanted) continue;
+        resolved = overlay_path;
+        info.hash = hash;  // the load hashes the replacement and refuses other bytes
+        info.origin = "overlay";
+        break;
+      }
+      if (!overlay.empty() && std::string_view(info.origin) != "overlay") {
+        ENGINE_LOG_WARN(log_renderer, "the overlay does not name this mesh; the scene's file stays",
+                        log::field("mesh", mesh.name), log::field("overlay", mesh.overlay));
+      }
+    }
+    out.meshes.push_back(std::move(resolved));
+    out.mesh_info.push_back(std::move(info));
+  }
+  if (file.terrain.has_value()) {
+    const scene::Terrain& t = *file.terrain;
+    out.terrain.enabled = true;
+    out.terrain.size = t.size;
+    out.terrain.extent = t.extent;
+    out.terrain.seed = t.seed;
+    out.terrain.dune_height = t.dune_height;
+    out.terrain.dune_wavelength = t.dune_wavelength;
+    for (const scene::Ridge& r : t.ridges)
+      out.terrain.ridges.push_back(TerrainRidge{r.from, r.to, r.height, r.width, r.roughness});
+    for (const scene::Basin& b : t.basins)
+      out.terrain.basins.push_back(TerrainBasin{b.center, b.radius, b.depth});
+    if (t.size < 2 || t.size > k_terrain_max_size || !(t.extent > 0.0f)) {
+      error = path + ": terrain size must be within 2.." + std::to_string(k_terrain_max_size) +
+              " and extent positive";
+      return false;
+    }
+  }
+  const u32 file_meshes = file.meshes.size();
+  auto ground_at = [&](f32 x, f32 z) {
+    return out.terrain.enabled ? terrain_height(out.terrain, x, z) : 0.0f;
   };
-  const JsonValue* instance_list = root.find("instances");
-  if (instance_list == nullptr || !instance_list->is_array() || instance_list->size() == 0) {
-    for (u32 i = 0; i < out.meshes.size(); ++i)
-      out.instances.push_back(SceneInstance{i, Transform3::identity()});
-    return true;
-  }
-  for (usize i = 0; i < instance_list->size(); ++i) {
-    const JsonValue& entry = (*instance_list)[i];
-    SceneInstance instance;
-    u64 mesh_index = 0;
-    const JsonValue* mesh_value = entry.is_object() ? entry.find("mesh") : nullptr;
-    if (mesh_value != nullptr && !mesh_value->get_u64(mesh_index)) mesh_index = ~u64{0};
-    if (mesh_index >= out.meshes.size()) {
-      error = std::string(path) + ": instance " + std::to_string(i) + " names no known mesh";
+
+  for (u32 i = 0; i < file.instances.size(); ++i) {
+    const scene::Instance& entry = file.instances[i];
+    if (entry.mesh >= file_meshes) {
+      error = path + ": instance " + std::to_string(i) + " names no known mesh";
       return false;
     }
-    instance.mesh = static_cast<u32>(mesh_index);
-    f32 v[4] = {};
-    if (read_vec(entry.find("translation"), 3, v))
-      instance.transform.position = Vec3{v[0], v[1], v[2]};
-    if (read_vec(entry.find("rotation"), 4, v))
-      instance.transform.rotation = normalize(Quat{v[0], v[1], v[2], v[3]});
-    if (read_vec(entry.find("scale"), 3, v)) instance.transform.scale = Vec3{v[0], v[1], v[2]};
+    if (entry.ground && !out.terrain.enabled) {
+      error = path + ": instance " + std::to_string(i) + " stands on a terrain the scene has not";
+      return false;
+    }
+    SceneInstance instance;
+    instance.mesh = entry.mesh;
+    instance.transform.position = entry.translation;
+    if (entry.ground)
+      instance.transform.position.y += ground_at(entry.translation.x, entry.translation.z);
+    instance.transform.rotation =
+        normalize(quat_from_axis_angle(Vec3{0.0f, 1.0f, 0.0f}, radians(entry.yaw_deg)) *
+                  normalize(entry.rotation));
+    if (entry.scale.has_value()) instance.transform.scale = *entry.scale;
     // {"animation":{"clip":"Run","speed":1.5,"phase":0.4}} — read whole and handed on unread.
-    // An empty object is a legal block and means "the skin's first clip at speed 1"; every field
-    // is optional, so a file may say only what it wants to change.
-    if (const JsonValue* animation = entry.is_object() ? entry.find("animation") : nullptr;
-        animation != nullptr && animation->is_object()) {
+    // An empty object is a legal block and means "the skin's first clip at speed 1".
+    if (entry.animation.has_value()) {
       instance.animation.play = true;
-      std::string_view clip;
-      if (const JsonValue* value = animation->find("clip");
-          value != nullptr && value->get_string(clip)) {
-        instance.animation.clip = std::string(clip);
-      }
-      f64 number = 0.0;
-      if (const JsonValue* value = animation->find("speed");
-          value != nullptr && value->get_f64(number)) {
-        instance.animation.speed = static_cast<f32>(number);
-      }
-      if (const JsonValue* value = animation->find("phase");
-          value != nullptr && value->get_f64(number)) {
-        instance.animation.phase = static_cast<f32>(number);
-      }
+      instance.animation.clip = entry.animation->clip;
+      instance.animation.speed = entry.animation->speed;
+      instance.animation.phase = entry.animation->phase;
     }
     out.instances.push_back(instance);
+  }
+  // Scatters, expanded here from their seeds, so the renderer sees plain instances and two
+  // machines place the same ones.
+  for (u32 s = 0; s < file.scatters.size(); ++s) {
+    const scene::Scatter& scatter = file.scatters[s];
+    if (scatter.mesh >= file_meshes) {
+      error = path + ": scatter " + std::to_string(s) + " names no known mesh";
+      return false;
+    }
+    if (scatter.ground && !out.terrain.enabled) {
+      error = path + ": scatter " + std::to_string(s) + " stands on a terrain the scene has not";
+      return false;
+    }
+    u64 state = static_cast<u64>(scatter.seed) * 0x9E3779B97F4A7C15ull + s;
+    for (u32 k = 0; k < scatter.count; ++k) {
+      // Uniform over the annulus's area, not its radius, so the middle is not crowded.
+      const f32 angle = seeded_unit(state) * 2.0f * k_pi;
+      const f32 r0 = scatter.radius_min * scatter.radius_min;
+      const f32 r1 = scatter.radius_max * scatter.radius_max;
+      const f32 radius = std::sqrt(r0 + (r1 - r0) * seeded_unit(state));
+      const f32 scale =
+          scatter.scale_min + (scatter.scale_max - scatter.scale_min) * seeded_unit(state);
+      const f32 yaw = seeded_unit(state) * 2.0f * k_pi;
+      SceneInstance instance;
+      instance.mesh = scatter.mesh;
+      const f32 x = scatter.center.x + std::cos(angle) * radius;
+      const f32 z = scatter.center.y + std::sin(angle) * radius;
+      instance.transform.position =
+          Vec3{x, scatter.y + (scatter.ground ? ground_at(x, z) : 0.0f), z};
+      instance.transform.rotation = quat_from_axis_angle(Vec3{0.0f, 1.0f, 0.0f}, yaw);
+      instance.transform.scale = Vec3{scale, scale, scale};
+      out.instances.push_back(instance);
+    }
+  }
+  if (file.instances.empty() && file.scatters.empty()) {
+    for (u32 i = 0; i < file_meshes; ++i)
+      out.instances.push_back(SceneInstance{i, Transform3::identity()});
+  }
+  // The terrain is the last mesh, with one identity instance after everything the file placed,
+  // so every index the file used still names what it named.
+  if (out.terrain.enabled) {
+    out.meshes.push_back(std::string());
+    SceneMeshInfo info;
+    info.name = "terrain";
+    info.origin = "terrain";
+    out.mesh_info.push_back(std::move(info));
+    out.instances.push_back(SceneInstance{file_meshes, Transform3::identity()});
   }
   return true;
 }
@@ -564,14 +872,28 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
   // materials, so it is the *terrain* and not "procedural": the shredded atlas brings its own
   // material and its own image and goes down the ordinary path.
   out.heightfield = resolved.meshes.size() == 1 && resolved.meshes[0].empty() &&
-                    resolved.procedural == Procedural::heightfield;
+                    resolved.procedural == Procedural::heightfield && !resolved.terrain.enabled;
+  const bool described = resolved.mesh_info.size() == resolved.meshes.size();
+  if (!resolved.mesh_info.empty() && !described) {
+    error = "SceneDesc::mesh_info must be empty or parallel to meshes";
+    return false;
+  }
   out.sources.resize(resolved.meshes.size());
   Vector<geometry::ClusterLodMesh> dags(resolved.meshes.size());
   Vector<geometry::ClusterPages> tables(resolved.meshes.size());
   for (u32 m = 0; m < resolved.meshes.size(); ++m) {
-    if (!load_source_mesh(resolved.meshes[m], resolved, out.sources[m], dags[m], tables[m], error))
+    const u64 expected = described ? resolved.mesh_info[m].hash : 0;
+    if (!load_source_mesh(resolved.meshes[m], resolved, expected, out.sources[m], dags[m],
+                          tables[m], error)) {
+      if (described && !resolved.mesh_info[m].name.empty())
+        error = resolved.mesh_info[m].name + ": " + error;
       return false;
+    }
   }
+  out.terrain = resolved.terrain;
+  out.mesh_info = resolved.mesh_info;
+  out.name = resolved.name;
+  out.file_hash = resolved.file_hash;
   out.mesh_primitives = out.sources[0].primitives;
   out.mesh_cache = out.sources[0].cache;
   // Streaming needs one page table over the whole scene, and it is a different merge: a paged mesh
@@ -646,6 +968,34 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
   } else if (instances.empty()) {
     instances.push_back(SceneInstance{0, Transform3::identity()});
   }
+  // Each fitted mesh's own transform, from the box of its vertices — every level's vertices, which
+  // for an edge-collapse DAG are a subset of the source's, so the box is the source's box. It is
+  // read here, while the merged float positions still exist (a streamed scene releases them once
+  // its page source is attached).
+  Vector<Mat4> fit_of_mesh(out.parts.size(), Mat4::identity());
+  if (described) {
+    for (u32 m = 0; m < out.parts.size(); ++m) {
+      const MeshFit& fit = resolved.mesh_info[m].fit;
+      if (!fit.active()) continue;
+      const u32 first = out.parts[m].first_vertex;
+      const u32 end =
+          m + 1 < out.parts.size() ? out.parts[m + 1].first_vertex : out.lod.mesh.vertices.size();
+      Vec3 lo{1e30f, 1e30f, 1e30f};
+      Vec3 hi{-1e30f, -1e30f, -1e30f};
+      for (u32 v = first; v < end; ++v) {
+        const Vec3 p = out.lod.mesh.vertices[v];
+        lo = Vec3{std::min(lo.x, p.x), std::min(lo.y, p.y), std::min(lo.z, p.z)};
+        hi = Vec3{std::max(hi.x, p.x), std::max(hi.y, p.y), std::max(hi.z, p.z)};
+      }
+      const Vec3 size = hi - lo;
+      const f32 longest = std::max(size.x, std::max(size.y, size.z));
+      const f32 scale = fit.height > 0.0f ? (size.y > 0.0f ? fit.height / size.y : 1.0f)
+                                          : (longest > 0.0f ? fit.extent / longest : 1.0f);
+      const Vec3 anchor{0.5f * (lo.x + hi.x), fit.ground ? lo.y : 0.5f * (lo.y + hi.y),
+                        0.5f * (lo.z + hi.z)};
+      fit_of_mesh[m] = scaling(Vec3{scale, scale, scale}) * translation(-anchor);
+    }
+  }
   u32 pair_count = 0;
   const u32 palette = out.lod.mesh.skin_joint_count;
   for (const SceneInstance& source : instances) {
@@ -654,7 +1004,8 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
       return false;
     }
     gfx::InstanceDesc instance{};
-    gfx::set_instance_transform(instance, mat4_from_transform(source.transform));
+    gfx::set_instance_transform(instance,
+                                mat4_from_transform(source.transform) * fit_of_mesh[source.mesh]);
     instance.mesh = source.mesh;
     instance.first_pair = pair_count;
     // The cull pass inflates every sphere of a deformed instance by this, in the instance's own

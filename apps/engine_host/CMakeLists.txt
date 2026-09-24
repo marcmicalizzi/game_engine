@@ -4,7 +4,7 @@
 # system: apps are L4 and systems are L3.
 engine_app(NAME engine_host OUTPUT engine-host
   SOURCES main.cpp render_methods.cpp
-  DEPS base containers json log io image tunables protocol renderer bench)
+  DEPS base containers hash json log io image tunables protocol renderer schema schemas bench)
 # `bench` is here for foundation/bench/machine_state.h alone: render.benchmark reports what else
 # the machine was doing, in the same shape and with the same thresholds the CPU benchmarks use,
 # rather than growing a second copy of the sampler (docs/subsystems/bench.md).

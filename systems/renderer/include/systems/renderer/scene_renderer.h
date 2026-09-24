@@ -90,6 +90,47 @@ struct GpuMemory {
   u64 device_local_total_mib = 0;
 };
 
+// One frame's numbers, as the renderer folds them in when that frame's slot comes around again
+// (`Stats::last`). The sums beside it answer "what does this scene cost on average"; a flythrough
+// asks "what did frame 1,412 cost", which a sum cannot answer and a CPU clock must not
+// (docs/subsystems/renderer.md, "Scenes, camera paths and flythroughs").
+//
+// **Which frame it is** is carried rather than inferred, because the fold lags the submission by
+// the frames in flight and a caller counting that lag itself would be wrong the first time the
+// count changed: `frame` is the frame's own `FrameDesc::frame_index`, and `submission` is its
+// place among the frames submitted since the last `reset_stats()`, from 0.
+//
+// The GPU milliseconds are that frame's zones from `gfx::GpuTimer`, summed over the views; the
+// streaming numbers are what changed while it was the latest frame folded in: pages copied into
+// the pool and their bytes, pages evicted, requests written, and the pages resident afterwards.
+struct FrameStats {
+  u64 frame = 0;
+  u64 submission = 0;
+  bool timed = false;  // the timestamps came back; the milliseconds are zero otherwise
+  u32 visible_hw = 0;
+  u32 visible_pass2 = 0;
+  u32 visible_sw = 0;
+  u32 shadow_casters = 0;  // Stats::shadow_casters: built into the structures, not drawn
+  f64 gpu_cull = 0.0;
+  f64 gpu_hw = 0.0;
+  f64 gpu_sw = 0.0;
+  f64 gpu_hiz = 0.0;
+  f64 gpu_resolve = 0.0;
+  f64 gpu_rt = 0.0;
+  f64 gpu_clas = 0.0;
+  f64 gpu_deform = 0.0;
+  f64 gpu_deform_alloc = 0.0;
+  f64 gpu_trace = 0.0;
+  f64 gpu_total = 0.0;
+  u32 uploads = 0;
+  u64 upload_bytes = 0;
+  u32 evictions = 0;
+  u32 requests = 0;
+  u32 pages_resident = 0;
+
+  u32 visible_pairs() const noexcept { return visible_hw + visible_pass2 + visible_sw; }
+};
+
 struct Stats {
   u64 frames = 0;         // frames submitted
   u64 timed_frames = 0;   // frames whose timestamps came back
@@ -136,6 +177,10 @@ struct Stats {
   // same numbers the totals do.
   u32 view_count = 1;
   ViewStats views[k_max_views];
+  // The frame folded in most recently, and how many have been. A caller that records a run frame
+  // by frame reads `last` after every `begin_frame()` whose fold moved `folded` on.
+  FrameStats last;
+  u64 folded = 0;
 
   u32 visible_pairs() const noexcept { return visible_hw + visible_pass2 + visible_sw; }
   f64 timed() const noexcept { return timed_frames > 0 ? static_cast<f64>(timed_frames) : 1.0; }
@@ -391,11 +436,18 @@ class SceneRenderer {
   Vector<gfx::BufferResource> resolves_;     // one ResolveParams per view plus the lights, a slot
   Vector<gfx::BufferResource> stat_blocks_;  // host-visible copies of the argument blocks
   Vector<gfx::BufferResource> ray_params_;   // one RayVisibilityParams per view, per slot
+  // Which frame each slot last carried, for `Stats::last`: its FrameDesc::frame_index and its
+  // submission since the last reset.
+  Vector<u64> slot_frame_;
+  Vector<u64> slot_submission_;
   Stats stats_;
   VkCommandBuffer commands_ = VK_NULL_HANDLE;  // the frame between begin_frame and submit_frame
   u32 width_ = 0;
   u32 height_ = 0;
   u64 submitted_ = 0;  // frames submitted; also the slot-warmup counter
+  // Frames recorded since create, never reset: the occlusion flags' ping-pong parity, which has
+  // to alternate every frame whatever frame number the caller passes and whatever reset_stats did.
+  u64 recorded_ = 0;
   u64 collected_ = 0;  // the timeline value whose statistics were last folded in
   bool flags_dirty_ = true;
   bool recording_ = false;

@@ -12,7 +12,8 @@
 # does the same thing by hand: link the module when this configuration has it, define
 # ENGINE_VIEW_ANIMATION so the glue compiles, and otherwise build an engine-view that refuses
 # `--animate` with a sentence. `msvc-minimal` is the proof that the second half works.
-set(_view_deps base containers math time jobs log platform window image io gfx renderer json bench)
+set(_view_deps base containers hash math time jobs log platform window image io gfx renderer json
+               schema schemas bench)
 if(TARGET engine::animation)
   list(APPEND _view_deps ids animation)
 endif()
