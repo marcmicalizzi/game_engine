@@ -63,6 +63,9 @@ AccessInfo access_info(Access access) noexcept {
     case Access::VertexRead:
       return {VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT, VK_ACCESS_2_SHADER_READ_BIT,
               VK_IMAGE_LAYOUT_UNDEFINED, false};
+    case Access::IndexRead:
+      return {VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT, VK_ACCESS_2_INDEX_READ_BIT,
+              VK_IMAGE_LAYOUT_UNDEFINED, false};
     case Access::AccelerationBuildRead:
       return {VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
               VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR,

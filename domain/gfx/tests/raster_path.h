@@ -120,6 +120,8 @@ enum class Need : u8 {
   AccelerationStructure,
   RayQuery,
   ClusterAccelerationStructure,
+  GeometryShader,  // SV_PrimitiveID in a vertex pipeline: the vertex path's indexed draw
+  FullDrawIndex,   // index values past 2^24 - 1: the same draw's `slot << 8 | local` indices
 };
 
 // The requirement-table row that provides it, which is the name a skip gives.
@@ -130,6 +132,8 @@ inline const char* need_row(Need need) noexcept {
     case Need::AccelerationStructure: return "VK_KHR_acceleration_structure";
     case Need::RayQuery: return "VK_KHR_ray_query";
     case Need::ClusterAccelerationStructure: return "VK_NV_cluster_acceleration_structure";
+    case Need::GeometryShader: return "geometryShader";
+    case Need::FullDrawIndex: return "fullDrawIndexUint32";
   }
   return "?";
 }
@@ -141,6 +145,8 @@ inline bool has(const gfx::DeviceFeatures& f, Need need) noexcept {
     case Need::AccelerationStructure: return f.acceleration_structure;
     case Need::RayQuery: return f.ray_query;
     case Need::ClusterAccelerationStructure: return f.cluster_acceleration_structure;
+    case Need::GeometryShader: return f.geometry_shader;
+    case Need::FullDrawIndex: return f.full_draw_index_uint32;
   }
   return false;
 }
@@ -285,7 +291,11 @@ class ClusterRaster {
     }
   }
 
-  // The same, with the entry count the cull pass wrote into the block at `offset` of `args`.
+  // The same, with the entry count the cull pass wrote into the block at `offset` of `args`. On
+  // the vertex path this is the **capacity** draw, which is what the renderer draws with culling
+  // off or without geometryShader; its culled draw elsewhere is indexed (gfx::VertexDrawHeader),
+  // and vertex_path_tests.cpp holds the two to one picture, so a case here about the cut or the
+  // picture is answered the same by either.
   void draw_indirect(VkCommandBuffer commands, const gfx::BindlessSet& bindless,
                      gfx::ClusterDrawParams params, VkBuffer args, VkDeviceSize offset = 0) const {
     bind(commands, bindless, params);

@@ -95,6 +95,9 @@ gfx::DeviceCaps titan_xp_caps() {
   caps.descriptor_buffer = 1;
   caps.sampler_anisotropy = 1;
   caps.index_type_uint8 = 1;
+  // Reported true by the card (2026-09-24); both rows came after its first report.
+  caps.geometry_shader = 1;
+  caps.full_draw_index_uint32 = 1;
   caps.storage_buffer_16bit_access = 1;
   caps.storage_buffer_8bit_access = 1;
   // Absent: VK_EXT_mesh_shader, VK_KHR_ray_query, VK_NV_cluster_acceleration_structure,
@@ -248,6 +251,8 @@ TEST_CASE("gfx: the requirements table answers without a device") {
   CHECK(any_mentions(verdict.degraded, "shaderBufferInt64Atomics"));
   CHECK(any_mentions(verdict.degraded, "32-bit visibility buffer"));
   CHECK(any_mentions(verdict.degraded, "VK_EXT_mesh_shader"));
+  // No indexed vertex path, and both of the rows it needs named.
+  CHECK(any_mentions(verdict.degraded, "no geometryShader or fullDrawIndexUint32 either"));
   CHECK(any_mentions(verdict.degraded, "VK_KHR_acceleration_structure"));
   CHECK(any_mentions(verdict.degraded, "VK_KHR_swapchain"));
 

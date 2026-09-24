@@ -91,6 +91,8 @@ struct DeviceCaps {
   u32 shader_storage_image_write_without_format = 0;
   u32 shader_storage_image_read_without_format = 0;
   u32 vertex_pipeline_stores_and_atomics = 0;
+  u32 geometry_shader = 0;
+  u32 full_draw_index_uint32 = 0;
 
   // Vulkan 1.1 features.
   u32 shader_draw_parameters = 0;

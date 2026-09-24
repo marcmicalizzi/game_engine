@@ -661,7 +661,7 @@ struct MachineStateSpan @version(1) {
   end: MachineState
 }
 
-struct RenderStats @version(5) {
+struct RenderStats @version(6) {
   /// Frames submitted.
   frames: u64 = 0
   /// The last frame's surviving (instance, cluster) pairs, by the draw that produced them.
@@ -688,6 +688,12 @@ struct RenderStats @version(5) {
   /// Geometry residency over the run. Present on every result so a script never has to test for
   /// it; `stream.pages_total` is 0 when the scene was uploaded whole.
   stream: RenderStreamStats @since(4)
+  /// The vertex path's indexed draw in the last frame, both hardware passes and every view: the
+  /// triangles the cut's clusters hold, which is what it draws (three indices each), and how many
+  /// of those clusters its index budget had no room for, which the capacity draw drew instead at
+  /// one vertex invocation per corner of the cluster's whole capacity. Both 0 on every other draw.
+  triangles_hw: u64 = 0 @since(6)
+  vertex_fallback: u32 = 0 @since(6)
 }
 
 struct RenderCaptureResult @version(2) {

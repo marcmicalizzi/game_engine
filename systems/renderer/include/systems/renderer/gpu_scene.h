@@ -48,6 +48,15 @@ namespace engine::renderer {
 inline constexpr u32 k_visible_runs = 3;
 static_assert(gfx::k_caster_run < k_visible_runs);
 
+// The vertex path's index budget per region, in triangles of twelve bytes: how much of one hardware
+// run of one view it draws indexed before later survivors go to the fallback draw, which draws
+// their clusters' whole capacity at one vertex invocation per triangle corner
+// (gfx::VertexDrawHeader). A region is sized to the scene's own bound instead when that is smaller
+// — every triangle of every pair, which no cut can exceed — so a small scene can never fall back
+// at all. 2^20 triangles is 12 MiB a region; the largest cut measured, 64 FlightHelmets at LOD
+// 0.25 and 3840x2160, is 0.85 M.
+inline constexpr u32 k_vertex_index_budget = 1u << 20;
+
 // How many frames' worth of bone matrices the joint buffer holds. The frame writes slot
 // `FrameContext::slot()`, and a slot is not reused until the GPU has finished the frame that last
 // used it, so N regions make the host write safe against N frames in flight with no barrier and
@@ -125,6 +134,24 @@ class GpuScene {
   // The bytes of the CLAS records, structures and scratch the ray tracing chain holds, which is
   // what a summary reports as the multi-view memory cost.
   u64 rt_bytes() const noexcept { return rt_bytes_; }
+  // The vertex path's indexed draw (gfx::VertexDrawHeader): for each view and each of the two
+  // hardware runs, run-major like the visible list, a header, a record per pair and an index array
+  // of `vertex_index_capacity()` triangles, in three buffers. Empty unless the resolved settings
+  // draw indexed. These are byte offsets into `vertex_headers`, `vertex_records`, `vertex_indices`.
+  u64 vertex_header_offset(u32 view, u32 run) const noexcept {
+    return (u64{run} * view_count_ + view) * sizeof(gfx::VertexDrawHeader);
+  }
+  u64 vertex_records_offset(u32 view, u32 run) const noexcept {
+    return (u64{run} * view_count_ + view) * pair_count_ * sizeof(gfx::VertexDrawRecord);
+  }
+  u64 vertex_indices_offset(u32 view, u32 run) const noexcept {
+    return (u64{run} * view_count_ + view) * vertex_index_capacity_ *
+           gfx::k_vertex_draw_index_bytes;
+  }
+  u32 vertex_index_capacity() const noexcept { return vertex_index_capacity_; }
+  u64 vertex_draw_bytes() const noexcept {
+    return vertex_headers.size + vertex_records.size + vertex_indices.size;
+  }
   u32 tlas_slot() const noexcept { return tlas_slot_; }
 
   // ---- skinning ---------------------------------------------------------------------------
@@ -293,6 +320,10 @@ class GpuScene {
   gfx::BufferResource draw_args[2];  // occlusion pass 1 and pass 2 indirect blocks, one per view
   gfx::BufferResource sw_args;       // the software rasterizer's indirect dispatch block, per view
   gfx::BufferResource flags[2];      // drawn last frame / this frame, ping-pong, by pair, per view
+  // The vertex path's indexed draw, two hardware runs a view (gfx::VertexDrawHeader).
+  gfx::BufferResource vertex_headers;  // VertexDrawHeader: arguments, cursor, fallback, dispatch
+  gfx::BufferResource vertex_records;  // VertexDrawRecord per pair
+  gfx::BufferResource vertex_indices;  // the index buffers, three u32 a triangle
 
   // ---- the deformed-vertex pool ----------------------------------------------------------------
   //
@@ -384,6 +415,7 @@ class GpuScene {
   u32 triangles_per_cluster_ = 0;
   u32 view_count_ = 1;
   u64 visible_run_bytes_ = 0;
+  u32 vertex_index_capacity_ = 0;
   Vector<u32> deform_mesh_clusters_;  // the cache dispatch's group count per deform entry
   u32 morph_channel_count_ = 0;
   u64 static_cache_bytes_ = 0;

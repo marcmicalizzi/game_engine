@@ -129,6 +129,8 @@ void fill_stats(const renderer::Stats& in, const renderer::ViewSet& views,
   out.visible_hw = in.visible_hw;
   out.visible_pass2 = in.visible_pass2;
   out.visible_sw = in.visible_sw;
+  out.triangles_hw = in.triangles_hw;
+  out.vertex_fallback = in.vertex_fallback;
   out.visible_pairs = in.visible_pairs();
   out.shadow_casters = in.shadow_casters;
   out.visible_min = in.visible_min == ~u32{0} ? 0u : in.visible_min;

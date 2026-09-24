@@ -136,6 +136,11 @@ struct ResolvedSettings {
   // are traced, the cone test is on, and the records are build records rather than template
   // instantiations (which cannot mark a caster non-opaque) — see `resolve_settings`.
   bool casters = false;
+  // The vertex path draws a culled cut with one indexed draw per run (cluster_vertex_indexed.slang)
+  // rather than every cluster's triangle capacity: `vertex_path`, the cull pass on, and a device
+  // with geometryShader, which the draw's SV_PrimitiveID needs, and fullDrawIndexUint32, which
+  // its `slot << 8 | local` indices need past 65,536 clusters in a run.
+  bool vertex_indexed = false;
   // The deformed-vertex pool pass runs. True when the settings deform every instance and also
   // when the scene has a skinned instance, which `settings.deform` alone does not say: skinning
   // is one of `deform.slang`'s kinds rather than a second pass, so a scene with a character in it

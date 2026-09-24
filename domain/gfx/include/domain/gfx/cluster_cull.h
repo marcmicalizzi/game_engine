@@ -93,7 +93,7 @@ inline constexpr u32 k_draw_args_bytes = 16;
 // entry's. `clas_records.slang` mirrors the number, because it builds that run beside run 0.
 inline constexpr u32 k_caster_run = 2;
 
-// Mirrors CullParams in cluster_cull.slang. 432 bytes.
+// Mirrors CullParams in cluster_cull.slang. 448 bytes.
 struct CullParams {
   Vec4 planes[6];         // inward-facing, normalized
   Vec4 camera;            // xyz position, w = znear
@@ -143,13 +143,104 @@ struct CullParams {
   // whichever way it faces. 0 drops such a pair, which is what the pass always did.
   u64 casters = 0;       // u32x2[]: {instance, cluster}, a run of its own
   u64 caster_count = 0;  // u32: the atomic the run is appended under
+  // **The vertex path's indexed draw** (`VertexDrawHeader`, below): this run's header, which the
+  // `cull_vertex_main` entry point allocates each hardware survivor's triangles under, and its
+  // records, where it writes the survivor's `VertexDrawRecord`. Only that entry point reads them;
+  // `cull_main` never does.
+  u64 vertex_draw = 0;     // VertexDrawHeader
+  u64 vertex_records = 0;  // VertexDrawRecord[pair_count]
 };
-static_assert(sizeof(CullParams) == 432);
+static_assert(sizeof(CullParams) == 448);
 static_assert(sizeof(CullParams) % 16 == 0, "the block is read as float4 rows on the GPU");
 
 inline constexpr f32 k_raster_hardware = 0.0f;  // CullParams::raster.y
 inline constexpr f32 k_raster_software = 1.0f;
 inline constexpr f32 k_raster_split = 2.0f;
+
+// ---- the vertex path's indexed draw (cluster_vertex_indexed.slang, docs/subsystems/gfx.md) ----
+//
+// The baseline tier draws one hardware run of the visible list with **one indexed draw of exactly
+// the triangles the run's clusters hold**, and an index is `slot << 8 | local vertex`, so the
+// post-transform vertex cache shares a cluster's vertices between its triangles. Measured on the
+// TITAN Xp (docs/experiments/e1-pascal-rerun.md, "After"): the pass is bound by the vertex stage's
+// invocations, and the draw it replaced ran three per triangle corner of every cluster's capacity
+// — the ones past a cluster's count turned out nearly free, the three per corner did not.
+//
+// Each (view, hardware run) owns one slot of three buffers, run-major like the visible list: a
+// `VertexDrawHeader`, one `VertexDrawRecord` per pair (a survivor's slot indexes it), and an index
+// array of three u32 per triangle of `index_capacity`. Three buffers and not one region because
+// the draw reads each a different way — arguments, storage, indices — and the render graph orders
+// a pass against a buffer by the one access it declares. The frame's reset writes the header;
+// `cull_vertex_main` allocates a survivor's triangles under `cursor` and writes its record;
+// `expand_main` (vertex_expand.slang) writes the indices, one workgroup per survivor, and finishes
+// `index_count`; the draw reads the header's first twenty bytes as a
+// `VkDrawIndexedIndirectCommand` and the array as its index buffer.
+//
+// **The index array is a budget, and running out of it draws the same picture more slowly.** A
+// survivor whose triangles do not fit is flagged in its record and drawn by the fallback — the
+// capacity draw, 3 x `triangles_per_cluster` vertices per cluster with the ones past its count
+// collapsed, instanced over the slots up to the highest one that overflowed — so nothing is ever
+// missing. Allocation is in atomic order, so the survivors that fit are exactly those allocated
+// before the first that did not, and `fit_end` (that one's start) is where the indexed draw stops.
+struct VertexDrawHeader {
+  // VkDrawIndexedIndirectCommand, finished by `expand_main` from the two words after it.
+  u32 index_count = 0;  // 3 x min(cursor, fit_end)
+  u32 instance_count = 1;
+  u32 first_index = 0;
+  i32 vertex_offset = 0;
+  u32 first_instance = 0;
+  u32 cursor = 0;          // triangles the cull pass allocated, whether or not they fit
+  u32 fit_end = 0;         // atomic min over the overflowing survivors' starts; reset to capacity
+  u32 index_capacity = 0;  // triangles the run's index array holds
+  // VkDrawIndirectCommand of the fallback: {3 x triangles_per_cluster, 1 + the highest slot that
+  // overflowed (0 when none did), 0, 0}.
+  u32 fallback_vertex_count = 0;
+  u32 fallback_instance_count = 0;
+  u32 fallback_first_vertex = 0;
+  u32 fallback_first_instance = 0;
+  // VkDispatchIndirectCommand of `expand_main`: one workgroup per survivor.
+  u32 expand_groups = 0;
+  u32 expand_y = 1;
+  u32 expand_z = 1;
+  u32 overflow = 0;  // survivors drawn by the fallback
+};
+static_assert(sizeof(VertexDrawHeader) == 64);
+
+// One per pair slot of a run, written by `cull_vertex_main` at the survivor's slot. Everything the
+// draw needs of an entry is here, so its vertex stage never reads the visible list.
+struct VertexDrawRecord {
+  u32 instance = 0;
+  u32 cluster = 0;
+  u32 first_triangle = 0;  // where its triangles start in the run's index array
+  u32 overflow = 0;        // 1: it did not fit, and the fallback draws it
+};
+static_assert(sizeof(VertexDrawRecord) == 16);
+
+inline constexpr u64 k_vertex_draw_fallback_offset = 32;  // the fallback's VkDrawIndirectCommand
+inline constexpr u64 k_vertex_draw_expand_offset = 48;    // expand_main's VkDispatchIndirectCommand
+inline constexpr u32 k_vertex_draw_index_bytes = 3 * sizeof(u32);  // one triangle of the array
+
+// The header a frame starts a run from: nothing allocated, the whole array free.
+inline VertexDrawHeader vertex_draw_reset(u32 index_capacity, u32 triangles_per_cluster) noexcept {
+  VertexDrawHeader h;
+  h.fit_end = index_capacity;
+  h.index_capacity = index_capacity;
+  h.fallback_vertex_count = triangles_per_cluster * 3;
+  return h;
+}
+
+// Mirrors ExpandParams in vertex_expand.slang: the push constants of `expand_main`, dispatched
+// indirectly from the header's own `expand_groups`, so workgroup g expands slot g. 40 bytes.
+struct VertexExpandParams {
+  u64 header = 0;     // VertexDrawHeader of the run
+  u64 records = 0;    // VertexDrawRecord[pair_count]
+  u64 indices = 0;    // u32[3 * index_capacity], the index buffer
+  u64 clusters = 0;   // geometry::ClusterDesc[]
+  u64 triangles = 0;  // the packed triangles: three local indices in a u32
+};
+static_assert(sizeof(VertexExpandParams) == 40);
+
+inline constexpr u32 k_expand_workgroup_size = 64;  // numthreads of expand_main
 
 // Per-instance deformation (docs/plan/04-renderer.md §4.3, ADR-0026 decision 7). An instance
 // whose `InstanceDesc::deform` is not `k_invalid_deform` is **deformed**: every position read for

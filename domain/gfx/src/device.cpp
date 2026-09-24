@@ -387,9 +387,13 @@ bool Device::create(const DeviceOptions& options, std::string* error) {
   base.shaderInt16 = on(caps_.shader_int16);
   base.fragmentStoresAndAtomics = on(caps_.fragment_stores_and_atomics);
   base.vertexPipelineStoresAndAtomics = on(caps_.vertex_pipeline_stores_and_atomics);
+  base.geometryShader = on(caps_.geometry_shader);
+  base.fullDrawIndexUint32 = on(caps_.full_draw_index_uint32);
   base.shaderStorageImageWriteWithoutFormat = on(caps_.shader_storage_image_write_without_format);
   base.shaderStorageImageReadWithoutFormat = on(caps_.shader_storage_image_read_without_format);
   impl->features.sampler_anisotropy = caps_.sampler_anisotropy != 0;
+  impl->features.geometry_shader = caps_.geometry_shader != 0;
+  impl->features.full_draw_index_uint32 = caps_.full_draw_index_uint32 != 0;
   impl->features.shader_int64 = true;
 
   VkPhysicalDeviceVulkan11Features e11{};

@@ -2659,7 +2659,7 @@ int main(int argc, char** argv) {
         "\"shadows\":\"%s\",\"shadow_casters\":%s,\"sw_px\":%.1f,"
         "\"visible_hw_last\":%u,\"visible_pass2_last\":%u,\"visible_sw_last\":%u,"
         "\"visible_pairs_last\":%u,\"shadow_casters_last\":%u,\"visible_min\":%u,"
-        "\"visible_max\":%u,"
+        "\"visible_max\":%u,\"triangles_hw_last\":%u,\"vertex_fallback_last\":%u,"
         "\"deform\":\"%s\",\"deform_pool_bytes\":%llu,"
         "\"deform_whole_mesh_bytes\":%llu,\"deform_pool_used_bytes\":%llu,"
         "\"deform_pool_peak_bytes\":%llu,\"deform_entries\":%u,"
@@ -2686,8 +2686,8 @@ int main(int argc, char** argv) {
         renderer::raster_name(resolved.settings.raster), resolved.shadows ? "rt" : "off",
         resolved.casters ? "true" : "false", static_cast<f64>(resolved.settings.sw_px),
         stats.visible_hw, stats.visible_pass2, stats.visible_sw, stats.visible_pairs(),
-        stats.shadow_casters, visible_min, stats.visible_max,
-        renderer::deform_name(resolved.settings),
+        stats.shadow_casters, visible_min, stats.visible_max, stats.triangles_hw,
+        stats.vertex_fallback, renderer::deform_name(resolved.settings),
         static_cast<unsigned long long>(deform_pool_bytes),
         static_cast<unsigned long long>(deform_whole_mesh_bytes),
         static_cast<unsigned long long>(u64{stats.deform_vertices} * 3 * sizeof(f32)),

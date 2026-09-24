@@ -77,6 +77,7 @@ enum class Access : u8 {
   FragmentRead,            // storage read in fragment shaders (buffers)
   FragmentReadWrite,       // storage read and write (atomics) in fragment shaders (buffers)
   VertexRead,              // storage read in vertex shaders (buffers)
+  IndexRead,               // an index buffer read by an indexed draw (buffers)
   AccelerationBuildRead,   // acceleration structure build inputs: geometry, records, references
   AccelerationBuildWrite,  // what a build writes: the structure, addresses, sizes (buffers)
   RayQueryRead,            // an acceleration structure traversed by ray queries in compute

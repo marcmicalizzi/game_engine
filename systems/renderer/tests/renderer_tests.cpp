@@ -796,6 +796,12 @@ TEST_CASE("renderer: a TITAN-Xp-like device draws the default request through th
   CHECK(colour_differences == 0);
   CHECK(depth_differences == 0);
   CHECK(baseline.renderer.stats().visible_pairs() == full_pairs);
+  // The TITAN Xp has geometryShader and fullDrawIndexUint32, so its culled cut is the indexed
+  // draw: exactly the cut's triangles, none of them through the fallback on a scene this small
+  // (gfx::VertexDrawHeader).
+  CHECK(baseline.resolved.vertex_indexed);
+  CHECK(baseline.renderer.stats().triangles_hw > 0);
+  CHECK(baseline.renderer.stats().vertex_fallback == 0);
 
   // An explicit ray request is refused, and the refusal is the verdict's own sentence, naming
   // the missing ray query: `--shadows rt`, `--raster rt`, and the reference path tracer alike.
@@ -822,6 +828,119 @@ TEST_CASE("renderer: a TITAN-Xp-like device draws the default request through th
   std::string why;
   CHECK_FALSE(reference_available(baseline.resolved, pascal, &why));
   CHECK(why.find("VK_KHR_ray_query") != std::string::npos);
+}
+
+// The baseline tier on a device without geometryShader. The vertex path's culled draw names each
+// triangle by SV_PrimitiveID, which a vertex pipeline only has with that feature, so without it
+// `resolve_settings` leaves `vertex_indexed` off and the path draws every culled cluster's
+// capacity instead (cluster_vertex.slang, docs/subsystems/gfx.md "Baseline tier"); the same holds
+// without fullDrawIndexUint32, and removing one of the two is enough to make the point. The two
+// draws must be one picture to the byte — that is what lets the renderer choose between them by a
+// device feature alone — and the capacity draw reports no indexed triangles.
+TEST_CASE("renderer: without geometryShader the vertex path capacity-draws the same picture") {
+  const test::TempDir tmp("engine_renderer_capacity");
+  const std::filesystem::path dir = tmp.native();
+  const std::string mesh = slashes(dir / "cube.glb");
+  REQUIRE(write_cube_glb(mesh));
+  SceneDesc desc;
+  desc.meshes.push_back(mesh);
+  desc.ddc = slashes(dir / "ddc");
+  for (i32 z = 0; z < 2; ++z) {
+    for (i32 x = -1; x <= 1; ++x) {
+      SceneInstance instance;
+      instance.transform.position =
+          Vec3{static_cast<f32>(x) * 1.4f, 0.0f, static_cast<f32>(z) * -2.2f};
+      desc.instances.push_back(instance);
+    }
+  }
+  constexpr u32 k_width = 200;
+  constexpr u32 k_height = 120;
+  CaptureChannels channels;
+  channels.ids = true;
+  channels.depth = true;
+  RenderSettings settings;  // the default request: occlusion on, so both hardware runs draw
+  settings.shadows = ShadowMode::Off;
+  std::string error;
+
+  // One live device at a time (the case above says why): each profile draws in its own scope.
+  struct Drawn {
+    CapturedFrame frame;
+    bool indexed = false;
+    u32 triangles = 0;
+    u32 pairs = 0;
+  };
+  FrameDesc frame;
+  bool have_camera = false;
+  auto draw_with = [&](bool geometry_shader, Drawn& out) {
+    gfx::DeviceOptions options;
+    options.overrides.absent.push_back("VK_EXT_mesh_shader");
+    if (!geometry_shader) options.overrides.absent.push_back("geometryShader");
+    gfx::Device device;
+    if (!device.create(options, &error)) return false;
+    bool ok = false;
+    {
+      Rig rig;
+      ok = rig.build(device, desc, settings, k_width, k_height);
+      if (!ok) error = rig.error;
+      if (ok && !have_camera) {
+        frame.camera =
+            orbit_camera_at(rig.data.center, rig.data.radius, 14.0f, 0.3f, k_orbit_pitch);
+        have_camera = true;
+      }
+      if (ok) ok = rig.renderer.capture(frame, channels, out.frame, &error);
+      if (ok) {
+        out.indexed = rig.resolved.vertex_indexed;
+        out.triangles = rig.renderer.stats().triangles_hw;
+        out.pairs = rig.renderer.stats().visible_pairs();
+      }
+    }
+    device.destroy();
+    return ok;
+  };
+  {
+    Gpu probe;  // skips, as every renderer case does, where there is no device at all
+    if (!probe.ok) {
+      MESSAGE("renderer unavailable here: " << probe.why);
+      return;
+    }
+    const gfx::DeviceFeatures& f = probe.device.features();
+    if (!f.geometry_shader || !f.full_draw_index_uint32) {
+      MESSAGE("skipped: " << std::string(probe.device.adapter().name) << " has no "
+                          << (f.geometry_shader ? "fullDrawIndexUint32" : "geometryShader"));
+      return;
+    }
+  }
+  Drawn indexed;
+  Drawn capacity;
+  REQUIRE_MESSAGE(draw_with(true, indexed), error);
+  REQUIRE_MESSAGE(draw_with(false, capacity), error);
+  CHECK(indexed.indexed);
+  CHECK_FALSE(capacity.indexed);
+  CHECK(indexed.triangles > 0);
+  CHECK(capacity.triangles == 0);
+  CHECK(indexed.pairs == capacity.pairs);
+  REQUIRE(indexed.frame.covered > 1000);
+  u64 id_differences = 0;
+  u64 colour_differences = 0;
+  u64 depth_differences = 0;
+  for (u32 p = 0; p < k_width * k_height; ++p) {
+    for (u32 w = 0; w < k_id_words; ++w) {
+      if (indexed.frame.ids[p * k_id_words + w] != capacity.frame.ids[p * k_id_words + w])
+        ++id_differences;
+    }
+    for (u32 c = 0; c < 4; ++c) {
+      if (indexed.frame.color[p * 4 + c] != capacity.frame.color[p * 4 + c]) ++colour_differences;
+    }
+    if (indexed.frame.depth[p] != capacity.frame.depth[p]) ++depth_differences;
+  }
+  MESSAGE("indexed against capacity: "
+          << indexed.frame.covered << " covered pixels, " << indexed.triangles
+          << " triangles drawn indexed, " << id_differences << " id words, " << colour_differences
+          << " colour bytes and " << depth_differences << " depths differ");
+  CHECK(indexed.frame.covered == capacity.frame.covered);
+  CHECK(id_differences == 0);
+  CHECK(colour_differences == 0);
+  CHECK(depth_differences == 0);
 }
 
 // ---- multi-view (docs/plan/04-renderer.md §4.6, experiment E9) ----------------------------------

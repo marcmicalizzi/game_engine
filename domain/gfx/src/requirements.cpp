@@ -107,9 +107,10 @@ constexpr Requirement k_requirements[] = {
     {"drawIndirectCount", "feature", RequirementLevel::Required, Unit::Flag,
      &DeviceCaps::draw_indirect_count, 1, k_none,
      "required by Device::create() since the first indirect draw. Today's call sites are "
-     "vkCmdDrawIndirect and vkCmdDrawMeshTasksIndirectEXT with a draw count of one, which needs "
-     "neither this nor multiDrawIndirect, so this row is the first to relax if a device is ever "
-     "refused for it."},
+     "vkCmdDrawIndirect, vkCmdDrawIndexedIndirect and vkCmdDrawMeshTasksIndirectEXT with a draw "
+     "count of one, which needs neither this nor multiDrawIndirect, so this row is the first to "
+     "relax if a device is ever refused for it. A draw per cluster through vkCmdDrawIndirectCount "
+     "was measured for the vertex path and cost the TITAN Xp 0.45 ms a frame whatever the cut."},
     {"multiDrawIndirect", "feature", RequirementLevel::Required, Unit::Flag,
      &DeviceCaps::multi_draw_indirect, 1, k_none,
      "enabled beside drawIndirectCount and required with it; see that row."},
@@ -190,6 +191,19 @@ constexpr Requirement k_requirements[] = {
      "one workgroup per cluster (cluster_mesh.slang). Without it --raster hw, direct and auto "
      "fall back to the vertex-shader baseline tier, which draws the same visibility buffer "
      "(ADR-0024)."},
+    {"geometryShader", "feature", RequirementLevel::Optional, Unit::Flag,
+     &DeviceCaps::geometry_shader, 1, "indexed-vertex-path",
+     "not for a geometry shader — none exists here — but for SV_PrimitiveID in the fragment "
+     "stage of a vertex pipeline, which is the same SPIR-V capability. The vertex path draws a "
+     "culled cut indexed, so the vertex cache shares a cluster's vertices between its triangles, "
+     "and names each triangle by its primitive id (cluster_vertex_indexed.slang); without it the "
+     "path draws every cluster's whole triangle capacity, one vertex invocation per corner."},
+    {"fullDrawIndexUint32", "feature", RequirementLevel::Optional, Unit::Flag,
+     &DeviceCaps::full_draw_index_uint32, 1, "indexed-vertex-path",
+     "an index of the vertex path's indexed draw is `slot << 8 | local vertex`, so a run of more "
+     "than 65,536 visible clusters has index values past 2^24 - 1, the most a device without "
+     "this feature has to honour. Wanted beside geometryShader; without either the path draws "
+     "every cluster's capacity."},
     {"VK_KHR_deferred_host_operations", "extension", RequirementLevel::Optional, Unit::Flag,
      &DeviceCaps::deferred_host_operations, 1, "ray-tracing",
      "VK_KHR_acceleration_structure requires it; the engine enables neither without the other."},
@@ -249,8 +263,8 @@ constexpr Requirement k_requirements[] = {
      &DeviceCaps::index_type_uint8, 1, k_none,
      "not needed. The cluster format's 8-bit local indices are widened on the host for the KHR "
      "builders (expand_packed_triangles) and consumed natively by "
-     "VK_NV_cluster_acceleration_structure; the rasterizers pull indices out of 32-bit words and "
-     "no index buffer is ever bound."},
+     "VK_NV_cluster_acceleration_structure. The one index buffer bound, the vertex path's indexed "
+     "draw, is 32-bit because an index carries the visible slot beside the local vertex."},
     {"subgroupSize", "limit", RequirementLevel::Note, Unit::Count, &DeviceCaps::subgroup_size, 1,
      k_none,
      "not needed. No shader in the tree uses a subgroup operation; subgroupSizeControl and "
@@ -527,6 +541,18 @@ void device_verdict(const DeviceCaps& caps, std::span<const DeviceRequirement> r
                   "no VK_EXT_mesh_shader: --raster hw, direct and auto fall back to the "
                   "vertex-shader baseline tier (ADR-0024), which draws the same visibility "
                   "buffer from the same clusters and the same cull pass.");
+    if (caps.geometry_shader == 0 || caps.full_draw_index_uint32 == 0) {
+      std::string missing = caps.geometry_shader == 0 ? "geometryShader" : "";
+      if (caps.full_draw_index_uint32 == 0) {
+        missing += missing.empty() ? "fullDrawIndexUint32" : " or fullDrawIndexUint32";
+      }
+      append_reason(out.degraded,
+                    "no " + missing +
+                        " either: the baseline tier cannot draw its cut indexed, so it runs a "
+                        "vertex invocation per triangle corner of every cluster's whole "
+                        "capacity — on a TITAN Xp drawing 64 FlightHelmets that was 1.8 times the "
+                        "indexed draw's raster pass.");
+    }
   }
   if (std::string text = ray_tracing_degradation(caps); !text.empty()) {
     append_reason(out.degraded, std::move(text));

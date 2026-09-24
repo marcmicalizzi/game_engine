@@ -267,6 +267,18 @@ float3 load_pool_normal(uint64_t normal_pool, uint base, uint local, float3 rest
   return decode_oct_normal(packed[base + local]);
 }
 
+// The vertex path's indexed draw of one hardware run: word offsets into gfx::VertexDrawHeader (64
+// bytes). Its records (gfx::VertexDrawRecord, a uint4 per pair slot) and its index array are
+// buffers of their own. cluster_cull.slang allocates into it, vertex_expand.slang writes the
+// indices, and cluster_vertex_indexed.slang draws from it; the offsets are written down once, here.
+static const uint k_vertex_draw_index_count = 0;  // VkDrawIndexedIndirectCommand: words 0..4
+static const uint k_vertex_draw_cursor = 5;       // triangles allocated, fitting or not
+static const uint k_vertex_draw_fit_end = 6;      // atomic min of the overflowing survivors' starts
+static const uint k_vertex_draw_capacity = 7;     // triangles the index array holds
+static const uint k_vertex_draw_fallback_instances = 9;  // of the fallback's draw, words 8..11
+static const uint k_vertex_draw_expand_groups = 12;      // vertex_expand's dispatch, words 12..14
+static const uint k_vertex_draw_overflow = 15;           // survivors the fallback draws
+
 // Entry `index` of the visible list. A null list is the identity scene the direct draws use:
 // instance 0 and the cluster in index order, which is what a single-mesh draw without culling
 // wants and what keeps a visibility id meaningful in both cases.

@@ -770,7 +770,7 @@ bool GpuScene::upload_materials(const ResolvedSettings&, std::string* error) {
                             error);
 }
 
-bool GpuScene::create_working_set(const ResolvedSettings&, std::string* error) {
+bool GpuScene::create_working_set(const ResolvedSettings& resolved, std::string* error) {
   const gfx::Device& device = *device_;
   // One visible list for the whole frame, in three runs per view: the hardware pass 1, the
   // hardware pass 2, and the software rasterizer. A visibility id names an entry of the whole
@@ -793,6 +793,33 @@ bool GpuScene::create_working_set(const ResolvedSettings&, std::string* error) {
                             draw_args[i], error) &&
          gfx::create_buffer(device, u64{pair_count_} * view_count_ * sizeof(u32),
                             k_address | VK_BUFFER_USAGE_TRANSFER_DST_BIT, false, flags[i], error);
+  }
+  // The vertex path's indexed draw: for each view and each of the two hardware runs, run-major like
+  // the visible list, a header, a record per pair and an index array. The array holds
+  // the scene's own bound — every triangle of every pair, which no cut can exceed — or the budget,
+  // whichever is smaller; past the budget a survivor is drawn by the fallback, not dropped.
+  if (ok && resolved.vertex_indexed) {
+    const geometry::ClusterLodMesh& lod = data_->lod;
+    Vector<u64> mesh_triangles(data_->parts.size(), 0);
+    for (u32 m = 0; m < data_->parts.size(); ++m) {
+      const geometry::ClusterMeshPart& part = data_->parts[m];
+      for (u32 c = 0; c < part.cluster_count; ++c)
+        mesh_triangles[m] += lod.mesh.clusters[part.first_cluster + c].triangle_count;
+    }
+    u64 bound = 0;
+    for (const gfx::InstanceDesc& instance : instance_table_)
+      bound += mesh_triangles[instance.mesh];
+    vertex_index_capacity_ =
+        static_cast<u32>(bound < k_vertex_index_budget ? bound : k_vertex_index_budget);
+    if (vertex_index_capacity_ == 0) vertex_index_capacity_ = 1;  // a scene of no triangles
+    const u64 runs = u64{2} * view_count_;
+    ok = gfx::create_buffer(device, runs * sizeof(gfx::VertexDrawHeader), k_args, false,
+                            vertex_headers, error) &&
+         gfx::create_buffer(device, runs * pair_count_ * sizeof(gfx::VertexDrawRecord), k_address,
+                            false, vertex_records, error) &&
+         gfx::create_buffer(device, runs * vertex_index_capacity_ * gfx::k_vertex_draw_index_bytes,
+                            k_address | VK_BUFFER_USAGE_INDEX_BUFFER_BIT, false, vertex_indices,
+                            error);
   }
   return ok;
 }
@@ -986,6 +1013,9 @@ void GpuScene::destroy() noexcept {
     gfx::destroy_buffer(device, draw_args[i]);
   }
   gfx::destroy_buffer(device, sw_args);
+  gfx::destroy_buffer(device, vertex_headers);
+  gfx::destroy_buffer(device, vertex_records);
+  gfx::destroy_buffer(device, vertex_indices);
   gfx::destroy_buffer(device, visible);
   gfx::destroy_buffer(device, cluster_materials);
   gfx::destroy_buffer(device, materials);
@@ -1025,6 +1055,7 @@ void GpuScene::destroy() noexcept {
   max_joints_ = skinned_instances_ = deform_pool_vertices_ = 0;
   visible_run_bytes_ = deform_pool_bytes_ = deform_whole_mesh_bytes_ = 0;
   template_bytes_ = rt_bytes_ = 0;
+  vertex_index_capacity_ = 0;
   tlas_slot_ = gfx::BindlessSet::k_invalid_slot;
   ray_tracing_ = deform_ = skinned_ = streamed_ = false;
   page_count_ = page_slots_ = slot_vertices_ = slot_triangles_ = max_requests_ = 0;

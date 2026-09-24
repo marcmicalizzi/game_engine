@@ -79,7 +79,18 @@ ENGINE_EXPECT_SIZE(128, 8, gfx::ClusterRecordParams);
 // 432, not 416: the shadow casters' run and its counter (docs/subsystems/geometry.md, "Normal
 // cones"). Both null keep the cone test dropping what it rejects, which is every caller but the
 // renderer with ray-traced shadows on, so every picture without shadows is byte-identical.
-ENGINE_EXPECT_SIZE(432, 8, gfx::CullParams);
+// 448, not 432: the vertex path's indexed draw — the run's header the cull allocates each hardware
+// survivor's triangles under, and the records it writes the survivor to (gfx::VertexDrawHeader).
+// Only `cull_vertex_main` reads them; `cull_main` is compiled without that code, which is why the
+// mesh path's cull costs what it did (docs/experiments/e1-pascal-rerun.md, "After").
+ENGINE_EXPECT_SIZE(448, 8, gfx::CullParams);
+
+// The vertex path's indexed draw, per run: the header is the draw's, the fallback's and the
+// expansion's indirect arguments in one aligned block; a record is the entry the vertex stage reads
+// instead of the visible list; the expansion's push block is five addresses.
+ENGINE_EXPECT_SIZE(64, 4, gfx::VertexDrawHeader);
+ENGINE_EXPECT_SIZE(16, 4, gfx::VertexDrawRecord);
+ENGINE_EXPECT_SIZE(40, 8, gfx::VertexExpandParams);
 
 // 64: eight addresses, no counts — the page table and the per-cluster tables the drawing rule
 // reads, and the three feedback arrays it writes. It is read through a device address rather than

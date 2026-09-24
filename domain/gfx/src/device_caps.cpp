@@ -116,6 +116,8 @@ void read_device_caps(VkPhysicalDevice physical, DeviceCaps& out) {
   out.shader_storage_image_read_without_format =
       flag(f2.features.shaderStorageImageReadWithoutFormat);
   out.vertex_pipeline_stores_and_atomics = flag(f2.features.vertexPipelineStoresAndAtomics);
+  out.geometry_shader = flag(f2.features.geometryShader);
+  out.full_draw_index_uint32 = flag(f2.features.fullDrawIndexUint32);
 
   out.shader_draw_parameters = flag(v11.shaderDrawParameters);
   out.storage_buffer_16bit_access = flag(v11.storageBuffer16BitAccess);

@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstring>
 #include <renderer_log.h>
 #include <shaders/clas_records.spv.h>
@@ -15,10 +16,12 @@
 #include <shaders/cluster_mesh.spv.h>
 #include <shaders/cluster_sw_raster.spv.h>
 #include <shaders/cluster_vertex.spv.h>
+#include <shaders/cluster_vertex_indexed.spv.h>
 #include <shaders/deform.spv.h>
 #include <shaders/deform_alloc.spv.h>
 #include <shaders/hiz_build.spv.h>
 #include <shaders/ray_visibility.spv.h>
+#include <shaders/vertex_expand.spv.h>
 #include <shaders/visibility_resolve.spv.h>
 #include <shaders/visibility_resolve_rt.spv.h>
 
@@ -27,7 +30,9 @@ namespace engine::renderer {
 namespace {
 
 constexpr u32 k_view_lights = k_frame_lights;  // the warm and cool point lights (lighting.h)
-constexpr u32 k_stat_words = 9;                // three indirect blocks of three u32, per view
+// Per view: three indirect blocks of three u32, then the vertex path's indexed draw's cursor
+// and fallback count for each of its two runs (gfx::VertexDrawHeader).
+constexpr u32 k_stat_words = 13;
 // The deformed-vertex pool's allocation record, copied in behind every view's block: it is one
 // record for the frame, not one per view, because the pool's budget is the frame's.
 constexpr u32 k_alloc_words = sizeof(gfx::DeformAlloc) / sizeof(u32);
@@ -108,9 +113,11 @@ void SceneRenderer::Pipelines::destroy(const gfx::Device& device) noexcept {
   if (direct != VK_NULL_HANDLE) gfx::destroy_pipeline(device, direct);
   if (hardware != VK_NULL_HANDLE) gfx::destroy_pipeline(device, hardware);
   if (vertex != VK_NULL_HANDLE) gfx::destroy_pipeline(device, vertex);
+  if (vertex_fallback != VK_NULL_HANDLE) gfx::destroy_pipeline(device, vertex_fallback);
   if (resolve != VK_NULL_HANDLE) gfx::destroy_pipeline(device, resolve);
   gfx::destroy_compute_pipeline(device, software);
   gfx::destroy_compute_pipeline(device, cull);
+  gfx::destroy_compute_pipeline(device, expand);
   gfx::destroy_compute_pipeline(device, deform);
   gfx::destroy_compute_pipeline(device, deform_cache);
   gfx::destroy_compute_pipeline(device, deform_alloc);
@@ -119,7 +126,7 @@ void SceneRenderer::Pipelines::destroy(const gfx::Device& device) noexcept {
   gfx::destroy_compute_pipeline(device, record_ranges);
   gfx::destroy_compute_pipeline(device, record_emit);
   gfx::destroy_compute_pipeline(device, trace);
-  direct = hardware = vertex = resolve = VK_NULL_HANDLE;
+  direct = hardware = vertex = vertex_fallback = resolve = VK_NULL_HANDLE;
 }
 
 // The views' visibility regions and Hi-Z pyramids, packed back to back into one buffer each. A
@@ -292,6 +299,10 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
   shaders_.add_embedded("hiz_build", shaders::k_hiz_build_spirv, shaders::k_hiz_build_spirv_size);
   shaders_.add_embedded("cluster_vertex", shaders::k_cluster_vertex_spirv,
                         shaders::k_cluster_vertex_spirv_size);
+  shaders_.add_embedded("cluster_vertex_indexed", shaders::k_cluster_vertex_indexed_spirv,
+                        shaders::k_cluster_vertex_indexed_spirv_size);
+  shaders_.add_embedded("vertex_expand", shaders::k_vertex_expand_spirv,
+                        shaders::k_vertex_expand_spirv_size);
   shaders_.add_embedded("visibility_resolve", shaders::k_visibility_resolve_spirv,
                         shaders::k_visibility_resolve_spirv_size);
   // The same resolve with the shadow rays in; only a device with acceleration structures may
@@ -425,6 +436,27 @@ bool SceneRenderer::create_pipelines(std::string* error) {
   vertex_desc.fragment = vertex->module;
   vertex_desc.fragment_entry = "fs_visibility";
   vertex_desc.layout = bindless.pipeline_layout();
+  // The vertex path's culled draw is indexed where the device allows it (ResolvedSettings::
+  // vertex_indexed): its own module, because SV_PrimitiveID in that fragment stage is the Geometry
+  // capability, and a fallback that capacity-draws what the index budget had no room for with
+  // cluster_vertex's own fragment stage. The cull's entry point writes the draw's records.
+  if (resolved_.vertex_indexed) {
+    const gfx::Shader* indexed = shaders_.get("cluster_vertex_indexed", error);
+    const gfx::Shader* expand = indexed != nullptr ? shaders_.get("vertex_expand", error) : nullptr;
+    if (expand == nullptr) return false;
+    gfx::GraphicsPipelineDesc fallback_desc = vertex_desc;
+    fallback_desc.vertex = indexed->module;
+    fallback_desc.vertex_entry = "vs_cluster_fallback";
+    vertex_desc.vertex = indexed->module;
+    vertex_desc.vertex_entry = "vs_cluster_indexed";
+    vertex_desc.fragment = indexed->module;
+    vertex_desc.fragment_entry = "fs_visibility_indexed";
+    if (!gfx::create_graphics_pipeline(device, fallback_desc, pipelines_.vertex_fallback, error) ||
+        !gfx::create_compute_pipeline(device, expand->module, "expand_main", {},
+                                      sizeof(gfx::VertexExpandParams), pipelines_.expand, error)) {
+      return false;
+    }
+  }
   if (direct_pipeline) {
     gfx::MeshPipelineDesc direct_desc;
     direct_desc.mesh = mesh->module;
@@ -455,8 +487,9 @@ bool SceneRenderer::create_pipelines(std::string* error) {
   return gfx::create_graphics_pipeline(device, vertex_desc, pipelines_.vertex, error) &&
          gfx::create_compute_pipeline(device, sw->module, "sw_raster_main", {},
                                       sizeof(gfx::ClusterDrawParams), pipelines_.software, error) &&
-         gfx::create_compute_pipeline(device, cull->module, "cull_main", {}, sizeof(u64),
-                                      pipelines_.cull, error) &&
+         gfx::create_compute_pipeline(device, cull->module,
+                                      resolved_.vertex_indexed ? "cull_vertex_main" : "cull_main",
+                                      {}, sizeof(u64), pipelines_.cull, error) &&
          gfx::create_compute_pipeline(device, hiz->module, "hiz_build_main", {},
                                       sizeof(gfx::HizParams), pipelines_.hiz, error) &&
          gfx::create_graphics_pipeline(device, resolve_desc, pipelines_.resolve, error);
@@ -563,6 +596,8 @@ void SceneRenderer::fold_visible(u32 slot) {
   stats_.visible_pass2 = 0;
   stats_.visible_sw = 0;
   stats_.shadow_casters = 0;
+  stats_.triangles_hw = 0;
+  stats_.vertex_fallback = 0;
   for (u32 v = 0; v < view_count(); ++v) {
     const u32* block = stats + v * k_stat_words;
     ViewStats& view = stats_.views[v];
@@ -576,6 +611,22 @@ void SceneRenderer::fold_visible(u32 slot) {
     stats_.visible_pass2 += view.visible_pass2;
     stats_.visible_sw += view.visible_sw;
     stats_.shadow_casters += view.shadow_casters;
+    if (resolved_.vertex_indexed) {
+      view.triangles_hw = block[9] + block[11];
+      view.vertex_fallback = block[10] + block[12];
+    }
+    stats_.triangles_hw += view.triangles_hw;
+    stats_.vertex_fallback += view.vertex_fallback;
+  }
+  // Said once, because it is a budget question and not a per-frame event: those clusters drew the
+  // same triangles through the capacity draw, whose raster pass was 1.8 times the indexed draw's on
+  // the TITAN Xp's helmet grid.
+  if (stats_.vertex_fallback > 0 && !vertex_fallback_warned_) {
+    vertex_fallback_warned_ = true;
+    ENGINE_LOG_WARN(log_renderer, "the vertex path's index budget overflowed",
+                    log::field("clusters", stats_.vertex_fallback),
+                    log::field("index_capacity", scene_->vertex_index_capacity()),
+                    log::field("remedy", "raise renderer::k_vertex_index_budget"));
   }
   const u32 total = stats_.visible_pairs();
   stats_.visible_min = total < stats_.visible_min ? total : stats_.visible_min;
@@ -812,6 +863,12 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   const u32 cur_flags = static_cast<u32>(recorded_ % 2);
   const u32 prev_flags = 1 - cur_flags;
   const u32 count_index = vertex_path ? 1u : 0u;
+  // The vertex path's culled draw, indexed (cluster_vertex_indexed.slang): per view and hardware
+  // run a header the reset starts from and the expansion's push block.
+  const bool vertex_indexed = resolved_.vertex_indexed;
+  const gfx::VertexDrawHeader vertex_reset =
+      gfx::vertex_draw_reset(scene.vertex_index_capacity(), triangles_per_cluster);
+  gfx::VertexExpandParams expand_params[k_max_views][2];
   const f32 raster_mode =
       direct || settings.raster == RasterMode::Hardware || vertex_path || ray_path
           ? gfx::k_raster_hardware
@@ -959,6 +1016,10 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       draw.triangles_per_cluster = triangles_per_cluster;
       // Run 0 with culling off draws every leaf in index order, which is what a null list means.
       draw.visible = run == 0 && !settings.cull ? 0 : vf.run_address[run];
+      // The indexed draw and its fallback read the run's records, which carry the entry.
+      if (vertex_indexed && run < 2) {
+        draw.visible = scene.vertex_records.address + scene.vertex_records_offset(v, run);
+      }
       draw.visible_offset = vf.run_base[run];
       draw.visibility = vf.vis_address;
       draw.width = vf.width;
@@ -994,6 +1055,19 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     cull.streaming = stream_params;
     cull.page_count = scene.page_count();
     cull.max_requests = scene.max_requests();
+    if (vertex_indexed) {
+      cull.vertex_draw = scene.vertex_headers.address + scene.vertex_header_offset(v, 0);
+      cull.vertex_records = scene.vertex_records.address + scene.vertex_records_offset(v, 0);
+      for (u32 run = 0; run < 2; ++run) {
+        gfx::VertexExpandParams& e = expand_params[v][run];
+        e = gfx::VertexExpandParams{};
+        e.header = scene.vertex_headers.address + scene.vertex_header_offset(v, run);
+        e.records = scene.vertex_records.address + scene.vertex_records_offset(v, run);
+        e.indices = scene.vertex_indices.address + scene.vertex_indices_offset(v, run);
+        e.clusters = scene.clusters.address;
+        e.triangles = scene.triangles.address;
+      }
+    }
     // What the cone test rejects, kept for the shadows: this view's caster run, counted in this
     // view's software argument block (docs/subsystems/renderer.md, "Shadows").
     if (casters) {
@@ -1019,6 +1093,10 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     cull_pass2.pass = 2;
     cull_pass2.visible = vf.run_address[1];
     cull_pass2.draw_args = scene.draw_args[1].address + vf.args_offset;
+    if (vertex_indexed) {
+      cull_pass2.vertex_draw = scene.vertex_headers.address + scene.vertex_header_offset(v, 1);
+      cull_pass2.vertex_records = scene.vertex_records.address + scene.vertex_records_offset(v, 1);
+    }
 
     // ---- the resolve's block ------------------------------------------------------------------
     gfx::ResolveParams resolve{};
@@ -1206,6 +1284,14 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   const gfx::RgBuffer rg_args[2] = {graph.import_buffer("draw_args", scene.draw_args[0]),
                                     graph.import_buffer("draw_args2", scene.draw_args[1])};
   const gfx::RgBuffer rg_visible = graph.import_buffer("visible", scene.visible);
+  gfx::RgBuffer rg_vertex_headers{};
+  gfx::RgBuffer rg_vertex_records{};
+  gfx::RgBuffer rg_vertex_indices{};
+  if (vertex_indexed) {
+    rg_vertex_headers = graph.import_buffer("vertex draw headers", scene.vertex_headers);
+    rg_vertex_records = graph.import_buffer("vertex draw records", scene.vertex_records);
+    rg_vertex_indices = graph.import_buffer("vertex draw indices", scene.vertex_indices);
+  }
   const gfx::RgBuffer rg_flags[2] = {graph.import_buffer("flags0", scene.flags[0]),
                                      graph.import_buffer("flags1", scene.flags[1])};
   const gfx::RgBuffer rg_sw_args = graph.import_buffer("sw_args", scene.sw_args);
@@ -1305,6 +1391,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
         if (fill_hiz) b.write(rg_hiz, gfx::Access::TransferWrite);
         if (rt_chain) b.write(rt.instance_counts, gfx::Access::TransferWrite);
         if (deform_on) b.write(rg_deform_args, gfx::Access::TransferWrite);
+        if (vertex_indexed) b.write(rg_vertex_headers, gfx::Access::TransferWrite);
         if (streaming) {  // the page feedback is per frame, so it starts every frame empty
           b.write(sb.used, gfx::Access::TransferWrite);
           b.write(sb.request_mask, gfx::Access::TransferWrite);
@@ -1332,6 +1419,14 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           }
         }
         if (!direct) vkCmdFillBuffer(cb, targets.vis.buffer, 0, VK_WHOLE_SIZE, 0);
+        if (vertex_indexed) {
+          for (u32 v = 0; v < views; ++v) {
+            for (u32 run = 0; run < 2; ++run) {
+              vkCmdUpdateBuffer(cb, scene.vertex_headers.buffer, scene.vertex_header_offset(v, run),
+                                sizeof(vertex_reset), &vertex_reset);
+            }
+          }
+        }
         if (occlusion) vkCmdFillBuffer(cb, scene.flags[cur_flags].buffer, 0, VK_WHOLE_SIZE, 0);
         if (fill_flags) vkCmdFillBuffer(cb, scene.flags[prev_flags].buffer, 0, VK_WHOLE_SIZE, 0);
         if (fill_hiz) vkCmdFillBuffer(cb, targets.hiz.buffer, 0, VK_WHOLE_SIZE, 0);
@@ -1377,6 +1472,10 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
         [&, list](gfx::PassBuilder& b) {
           b.write(rg_args[list], gfx::Access::ComputeReadWrite);
           b.write(rg_visible, gfx::Access::ComputeWrite);
+          if (vertex_indexed) {
+            b.write(rg_vertex_headers, gfx::Access::ComputeReadWrite);
+            b.write(rg_vertex_records, gfx::Access::ComputeWrite);
+          }
           if (use_sw || casters) {  // the software run's counter, or the casters'
             b.write(rg_sw_args, gfx::Access::ComputeReadWrite);
           }
@@ -1495,6 +1594,36 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           }
         });
   };
+  // The indexed draw's indices, between the cull pass that allocated them and the draw that reads
+  // them: one workgroup per survivor, dispatched from the count the cull kept in the header
+  // (vertex_expand.slang). Timed as the raster pass's, because it is what drawing indexed costs.
+  auto add_expand = [&](u32 run) {
+    graph.add_pass(
+        "expand", gfx::PassKind::Compute,
+        [&](gfx::PassBuilder& b) {
+          // Its own dispatch, then the index count it finishes. The order is load-bearing: the
+          // render graph leaves a buffer in the state of the pass's *last* use of it, and it has to
+          // be the write, or the draw's read of the count gets no barrier and sees the reset's
+          // zero.
+          b.read(rg_vertex_headers, gfx::Access::IndirectRead);
+          b.write(rg_vertex_headers, gfx::Access::ComputeReadWrite);
+          b.read(rg_vertex_records, gfx::Access::ComputeRead);
+          b.write(rg_vertex_indices, gfx::Access::ComputeWrite);
+          read_pool(b, gfx::Access::ComputeRead);
+        },
+        [&, run](VkCommandBuffer cb, gfx::RenderGraph&) {
+          vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines.expand.pipeline);
+          for (u32 v = 0; v < views; ++v) {
+            timer.begin(cb, k_zone_names[k_zone_hw][v]);
+            vkCmdPushConstants(cb, pipelines.expand.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                               sizeof(gfx::VertexExpandParams), &expand_params[v][run]);
+            vkCmdDispatchIndirect(
+                cb, scene.vertex_headers.buffer,
+                scene.vertex_header_offset(v, run) + gfx::k_vertex_draw_expand_offset);
+            timer.end(cb);
+          }
+        });
+  };
   // One raster pass, one draw per view, each through a viewport at the origin of its own source
   // rectangle: a view rasterizes into its own region of the visibility buffer, in view-local
   // pixels, which is why none of the three rasterizers needed a line changed for multi-view.
@@ -1504,7 +1633,11 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
         [&, list](gfx::PassBuilder& b) {
           b.render_area(raster_width, raster_height);
           b.write(rg_vis, gfx::Access::FragmentReadWrite);
-          if (cull_on) {
+          if (vertex_indexed) {  // arguments, records and indices, each one way
+            b.read(rg_vertex_headers, gfx::Access::IndirectRead);
+            b.read(rg_vertex_records, gfx::Access::VertexRead);
+            b.read(rg_vertex_indices, gfx::Access::IndexRead);
+          } else if (cull_on) {
             b.read(rg_args[list], gfx::Access::IndirectRead);
             b.read(rg_visible, vertex_path ? gfx::Access::VertexRead : gfx::Access::MeshRead);
           }
@@ -1526,7 +1659,22 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             set_view_viewport(cb, 0, 0, view_frames[v].width, view_frames[v].height);
             vkCmdPushConstants(cb, bindless.pipeline_layout(), VK_SHADER_STAGE_ALL, 0,
                                sizeof(gfx::ClusterDrawParams), &draws[v][run]);
-            if (vertex_path) {
+            if (vertex_indexed) {
+              // The run's triangles, indexed, then whatever its index budget had no room for
+              // through the capacity draw — an empty draw unless something overflowed.
+              const u64 header = scene.vertex_header_offset(v, run);
+              vkCmdBindIndexBuffer(cb, scene.vertex_indices.buffer,
+                                   scene.vertex_indices_offset(v, run), VK_INDEX_TYPE_UINT32);
+              vkCmdDrawIndexedIndirect(cb, scene.vertex_headers.buffer, header, 1,
+                                       sizeof(VkDrawIndexedIndirectCommand));
+              vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.vertex_fallback);
+              vkCmdDrawIndirect(cb, scene.vertex_headers.buffer,
+                                header + gfx::k_vertex_draw_fallback_offset, 1,
+                                sizeof(VkDrawIndirectCommand));
+              if (v + 1 < views) {
+                vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.vertex);
+              }
+            } else if (vertex_path) {
               if (cull_on) {
                 vkCmdDrawIndirect(cb, scene.draw_args[list].buffer, view_frames[v].args_offset, 1,
                                   sizeof(u32) * 4);
@@ -1627,11 +1775,15 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           timer.end(cb);
         });
   } else {
-    if (use_hw) add_hw_draw(0, 0);
+    if (use_hw) {
+      if (vertex_indexed) add_expand(0);
+      add_hw_draw(0, 0);
+    }
     if (occlusion) {
       add_hiz(0);
       add_cull(1, 1);
       if (deform_on) add_deform(1);
+      if (vertex_indexed) add_expand(1);
       add_hw_draw(1, 1);
       add_hiz(1);
     }
@@ -1833,6 +1985,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           b.read(rg_args[1], gfx::Access::TransferRead);
           b.read(rg_sw_args, gfx::Access::TransferRead);
           if (deform_on) b.read(rg_alloc, gfx::Access::TransferRead);
+          if (vertex_indexed) b.read(rg_vertex_headers, gfx::Access::TransferRead);
           b.write(rg_stats, gfx::Access::TransferWrite);
         },
         [&, stat_target](VkCommandBuffer cb, gfx::RenderGraph&) {
@@ -1844,6 +1997,17 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
                                       sizeof(u32) * (u64{v} * k_stat_words + 3 * i),
                                       sizeof(u32) * 3};
               vkCmdCopyBuffer(cb, arg_blocks[i]->buffer, stat_target->buffer, 1, &copy);
+            }
+            // The indexed draw's cursor and fallback count, words 5 and 15 of each run's header.
+            for (u32 run = 0; vertex_indexed && run < 2; ++run) {
+              const u64 header = scene.vertex_header_offset(v, run);
+              const u64 at = sizeof(u32) * (u64{v} * k_stat_words + 9 + 2 * run);
+              const VkBufferCopy cursor{header + offsetof(gfx::VertexDrawHeader, cursor), at,
+                                        sizeof(u32)};
+              const VkBufferCopy overflow{header + offsetof(gfx::VertexDrawHeader, overflow),
+                                          at + sizeof(u32), sizeof(u32)};
+              vkCmdCopyBuffer(cb, scene.vertex_headers.buffer, stat_target->buffer, 1, &cursor);
+              vkCmdCopyBuffer(cb, scene.vertex_headers.buffer, stat_target->buffer, 1, &overflow);
             }
           }
           if (deform_on) {

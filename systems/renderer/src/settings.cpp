@@ -291,6 +291,15 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
     ENGINE_LOG_WARN(log_renderer, "streaming refused",
                     log::field("reason", "the scene has morph channels, which are not paged yet"));
   }
+  // **The vertex path draws a culled cut indexed** (cluster_vertex_indexed.slang): one draw of the
+  // cut's own triangles, whose indices let the vertex cache share a cluster's vertices. Its
+  // fragment stage reads SV_PrimitiveID, which a vertex pipeline only has with geometryShader, and
+  // an index carries the visible slot above the local vertex, which past 65,536 clusters in a run
+  // needs fullDrawIndexUint32. Without either, or without the cull pass to allocate from, the path
+  // draws every cluster's whole capacity instead — the same picture, one vertex invocation per
+  // corner of every triangle it could hold (gfx.md, "Baseline tier").
+  out.vertex_indexed =
+      out.vertex_path && s.cull && features.geometry_shader && features.full_draw_index_uint32;
   out.settings = s;
   out.settings.stream = out.stream;
 }

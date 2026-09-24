@@ -38,7 +38,7 @@ struct StreamParams {
   uint64_t request_mask;     // uint per page
 };
 
-// Read through a device address; mirrors gfx::CullParams (432 bytes).
+// Read through a device address; mirrors gfx::CullParams (448 bytes).
 struct CullParams {
   float4 planes[6];  // inward-facing, normalized: dot(n, p) + w >= 0 inside
   float4 camera;     // xyz position, w = znear
@@ -77,6 +77,10 @@ struct CullParams {
   // not necessarily from a light. 0 drops them; otherwise they are appended here (see cull_main).
   uint64_t casters;       // uint2[pair_count]: {instance, cluster}, a run of its own
   uint64_t caster_count;  // uint: the atomic the run is appended under
+  // The vertex path's indexed draw: this run's header and records (scene.slang). Read by
+  // cull_vertex_main only.
+  uint64_t vertex_draw;     // gfx::VertexDrawHeader, as sixteen words
+  uint64_t vertex_records;  // uint4[pair_count]: {instance, cluster, first triangle, overflowed}
 };
 
 struct CullPush {
@@ -242,11 +246,36 @@ float3 cone_axis(ClusterDesc cluster) {
                 int(cluster.cone << 8) >> 24) / 127.0;
 }
 
-[shader("compute")]
-[numthreads(64, 1, 1)]
-void cull_main(uint3 thread_id : SV_DispatchThreadID) {
+// A hardware survivor's share of its run's indexed draw (gfx::VertexDrawHeader): its triangles are
+// allocated under the cursor, its record says where they start, and vertex_expand.slang is given
+// one workgroup for it. A survivor that does not fit is flagged instead, pulls the indexed draw's
+// end back to where it would have started, and is drawn by the fallback — a region that runs out
+// costs time, never a hole. Allocation is in atomic order, so everything allocated after the first
+// survivor that did not fit did not fit either, and the survivors that did are one prefix.
+void allocate_vertex_draw(uint64_t header_address, uint64_t records_address, uint slot,
+                          uint instance, uint cluster, uint triangles) {
+  uint* header = (uint*)header_address;
+  Atomic<uint>* words = (Atomic<uint>*)header_address;
+  const uint first = words[k_vertex_draw_cursor].add(triangles);
+  const uint capacity = header[k_vertex_draw_capacity];
+  const bool fits = first <= capacity && triangles <= capacity - first;
+  uint4* records = (uint4*)records_address;
+  records[slot] = uint4(instance, cluster, first, fits ? 0u : 1u);
+  words[k_vertex_draw_expand_groups].add(1u);
+  if (!fits) {
+    words[k_vertex_draw_fit_end].min(first);
+    words[k_vertex_draw_fallback_instances].max(slot + 1u);
+    words[k_vertex_draw_overflow].add(1u);
+  }
+}
+
+// The pass for one pair. `vertex_draw` is a literal at both entry points below, so each is its own
+// program: the vertex path's bookkeeping is compiled out of `cull_main` rather than branched
+// around, because code in the survivor tail costs every thread of the dispatch and not only the
+// survivors (measured on the RTX 5090: 2 µs on a 10 µs pass whatever the survivor count).
+[ForceInline]
+void cull_pair(uint pair, bool vertex_draw) {
   CullParams* params = (CullParams*)g_push.params;
-  const uint pair = thread_id.x;
   if (pair >= params->pair_count) return;
 
   if (params->pass == 1) {
@@ -399,5 +428,23 @@ void cull_main(uint3 thread_id : SV_DispatchThreadID) {
     const uint slot = count->add(1);
     uint2* visible = (uint2*)params->visible;
     visible[slot] = uint2(instance_index, index);
+    if (vertex_draw) {
+      allocate_vertex_draw(params->vertex_draw, params->vertex_records, slot, instance_index,
+                           index, cluster.triangle_count);
+    }
   }
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void cull_main(uint3 thread_id : SV_DispatchThreadID) {
+  cull_pair(thread_id.x, false);
+}
+
+// The vertex path's cull: the same pass, and every hardware survivor also gets its triangles in
+// this run's indexed draw (gfx::VertexDrawHeader). Needs `count_index` = 1.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void cull_vertex_main(uint3 thread_id : SV_DispatchThreadID) {
+  cull_pair(thread_id.x, true);
 }

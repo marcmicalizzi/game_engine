@@ -59,7 +59,9 @@ struct ViewStats {
   u32 visible_hw = 0;
   u32 visible_pass2 = 0;
   u32 visible_sw = 0;
-  u32 shadow_casters = 0;  // see Stats::shadow_casters
+  u32 shadow_casters = 0;   // see Stats::shadow_casters
+  u32 triangles_hw = 0;     // see Stats::triangles_hw
+  u32 vertex_fallback = 0;  // see Stats::vertex_fallback
   f64 gpu_cull = 0.0;
   f64 gpu_hw = 0.0;
   f64 gpu_sw = 0.0;
@@ -141,6 +143,13 @@ struct Stats {
   // structures anyway, so that they cast shadows (ResolvedSettings::casters). Not visible pairs:
   // nothing draws them, and `visible_pairs()` does not count them. One frame late, like the rest.
   u32 shadow_casters = 0;
+  // The vertex path's indexed draw, last frame, both hardware passes and every view: the triangles
+  // the cut's clusters hold, which is what it draws (three indices each), and how many of those
+  // clusters the index budget had no room for, which the fallback drew instead at one vertex
+  // invocation per corner of each one's whole capacity (gfx::VertexDrawHeader). Zero on every
+  // other draw. One frame late.
+  u32 triangles_hw = 0;
+  u32 vertex_fallback = 0;
   u32 visible_min = ~u32{0};
   u32 visible_max = 0;
   // The deformed-vertex pool's suballocation, one frame late like the visible counts and read the
@@ -361,9 +370,11 @@ class SceneRenderer {
     VkPipeline direct = VK_NULL_HANDLE;
     VkPipeline hardware = VK_NULL_HANDLE;
     VkPipeline vertex = VK_NULL_HANDLE;
+    VkPipeline vertex_fallback = VK_NULL_HANDLE;  // the indexed draw's overflow: capacity-drawn
     VkPipeline resolve = VK_NULL_HANDLE;
     gfx::ComputePipeline software;
     gfx::ComputePipeline cull;
+    gfx::ComputePipeline expand;  // vertex_expand.slang: the indexed draw's indices
     gfx::ComputePipeline deform;
     // The static shape stage over one instance's **whole mesh**, not over the cut: a cache the
     // next frame's cut can start from has to cover every cluster the cut might name.
@@ -453,6 +464,7 @@ class SceneRenderer {
   bool recording_ = false;
   bool joint_overflow_warned_ = false;   // a span longer than the scene was sized for, said once
   bool deform_overflow_warned_ = false;  // the pool budget refused a pair, said once
+  bool vertex_fallback_warned_ = false;  // the index budget sent a cluster to the fallback, once
 };
 
 }  // namespace engine::renderer

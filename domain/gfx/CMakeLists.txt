@@ -10,6 +10,7 @@ engine_shaders(NAME gfx SOURCES shaders/cluster_mesh.slang shaders/cluster_cull.
                              shaders/cluster_sw_raster.slang shaders/visibility_resolve.slang
                              shaders/visibility_resolve_rt.slang
                              shaders/hiz_build.slang shaders/cluster_vertex.slang
+                             shaders/cluster_vertex_indexed.slang shaders/vertex_expand.slang
                              shaders/ray_visibility.slang shaders/clas_records.slang
                              shaders/deform.slang shaders/deform_alloc.slang
                              shaders/path_trace.slang)
