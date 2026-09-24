@@ -283,7 +283,7 @@ TEST_CASE("cluster file: a DAG with materials survives a round trip array by arr
   CHECK(std::memcmp(header.magic, "CLST", 4) == 0);
   CHECK(header.version == k_cluster_file_version);
   CHECK(header.flags == 0);
-  CHECK(header.section_count == 31);
+  CHECK(header.section_count == 32);
   CHECK(header.total_bytes == file.size());
   CHECK(header.content_hash == cluster_file_hash(data));
   for (u32 i = 0; i < header.section_count; ++i) {
@@ -810,6 +810,71 @@ TEST_CASE("cluster file: an embedded image travels whole, once per distinct blob
   ClusterFileData outside;
   CHECK_FALSE(read_cluster_file_memory(view(overrun), outside, &error));
   CHECK(error.find("image payload") != std::string::npos);
+}
+
+TEST_CASE("cluster file: the built-texture records round-trip, and a file without them has none") {
+  const test::TempDir tmp("cluster_file_textures");
+  ClusterFileData data;
+  Vector<u32> indices;
+  make_fixture(data, indices);
+  // One record per image: the file named by path records its options and no key (its bytes are
+  // not the container's), the two embedded ones a key over their bytes, and the values are the
+  // records' own business — this module stores them and does not interpret them.
+  data.textures.resize(3);
+  data.textures[0].options = 0x96u;
+  data.textures[0].roles = 17u;
+  data.textures[1].key = 0x1111'2222'3333'4444ull;
+  data.textures[1].source_hash = 0x5555'6666'7777'8888ull;
+  data.textures[1].options = 0xa5u;
+  data.textures[1].roles = 14u;
+  data.textures[2] = data.textures[1];
+  const std::string path = tmp.file("textures.clusters");
+  std::string error;
+  REQUIRE_MESSAGE(write_cluster_file(path, data, &error), error);
+  ClusterFileData read;
+  REQUIRE_MESSAGE(read_cluster_file(path, read, &error), error);
+  REQUIRE(read.textures.size() == 3);
+  for (u32 i = 0; i < 3; ++i) {
+    CHECK(read.textures[i].key == data.textures[i].key);
+    CHECK(read.textures[i].source_hash == data.textures[i].source_hash);
+    CHECK(read.textures[i].options == data.textures[i].options);
+    CHECK(read.textures[i].roles == data.textures[i].roles);
+  }
+  // The streaming reader's resident read carries them too: the texture upload reads them at load.
+  ClusterFileReader reader;
+  ClusterFileData resident;
+  REQUIRE_MESSAGE(reader.open(path, &resident, &error), error);
+  REQUIRE(resident.textures.size() == 3);
+  CHECK(resident.textures[1].key == data.textures[1].key);
+  reader.close();
+
+  std::string file;
+  REQUIRE(io::read_file(path, file) == io::Status::Ok);
+  ClusterFileSection record{};
+  const usize at = find_section(file, ClusterSection::Textures, record);
+  REQUIRE(at != 0);
+  CHECK(record.element_size == sizeof(ClusterFileTexture));
+  CHECK(record.element_count == 3);
+
+  // A file from before the section existed — the kind renamed to one this build does not know —
+  // reads with no records, which draws every image through the decode.
+  std::string older = file;
+  ClusterFileSection renamed = record;
+  renamed.kind = 4243;
+  patch(older, at, &renamed, sizeof(renamed));
+  rehash(older);
+  ClusterFileData without;
+  REQUIRE_MESSAGE(read_cluster_file_memory(view(older), without, &error), error);
+  CHECK(without.textures.empty());
+  CHECK(without.image_paths.size() == 3);
+
+  // Records that disagree with the paths about how many images there are are refused.
+  data.textures.resize(2);
+  const std::string short_path = tmp.file("short.clusters");
+  REQUIRE_MESSAGE(write_cluster_file(short_path, data, &error), error);
+  ClusterFileData refused;
+  CHECK_FALSE(read_cluster_file(short_path, refused, &error));
+  CHECK_MESSAGE(error.find("texture records for 3 image paths") != std::string::npos, error);
 }
 
 TEST_CASE("cluster file: a section of an unknown kind is skipped") {

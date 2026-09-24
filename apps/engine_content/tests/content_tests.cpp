@@ -504,7 +504,7 @@ TEST_CASE("engine-content: build writes a cluster file that reads back and valid
   const JsonValue* sections = described.result.find("sections");
   REQUIRE(sections != nullptr);
   REQUIRE(sections->is_array());
-  CHECK(sections->size() == 31);
+  CHECK(sections->size() == 32);
   bool ids_listed = false;
   for (usize i = 0; i < sections->size(); ++i) {
     const JsonValue& section = (*sections)[i];
@@ -1224,7 +1224,7 @@ TEST_CASE("engine-content: stats reports the metrics of a container") {
   const JsonValue* sections = bytes->find("sections");
   REQUIRE(sections != nullptr);
   REQUIRE(sections->is_array());
-  CHECK(sections->size() == 31);
+  CHECK(sections->size() == 32);
   u64 section_total = 0;
   for (usize i = 0; i < sections->size(); ++i)
     section_total += number((*sections)[i], "bytes");

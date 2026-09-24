@@ -16,6 +16,7 @@
 #include <core/containers/vector.h>
 #include <core/math/math.h>
 #include <domain/assets/gltf.h>
+#include <domain/geometry/cluster_file.h>
 #include <domain/geometry/cluster_lod.h>
 #include <domain/geometry/cluster_pages.h>
 #include <domain/gfx/cluster_cull.h>
@@ -197,6 +198,14 @@ struct SourceMesh {
   // `terrain_hash`, zero when nothing computed one (a container named outright, the classic
   // procedural scenes, a glTF loaded with no cache and no expected hash).
   u64 source_hash = 0;
+  // Where each image's built texture is (`geometry::ClusterFileTexture`,
+  // docs/subsystems/texture.md), parallel to `data.images` or empty: the container's own records,
+  // or the ones this load wrote into the cache entry it made. Empty — every image decoded as
+  // before — for a glTF loaded with no cache and for a container that records none.
+  Vector<geometry::ClusterFileTexture> textures;
+  // The derived-data root those textures are looked up under; empty when the load reads no cache
+  // (`SceneDesc::cache` off), and then the built textures are not used either.
+  std::string texture_ddc;
 };
 
 // A loaded scene: everything the GPU upload reads, and everything a summary reports.

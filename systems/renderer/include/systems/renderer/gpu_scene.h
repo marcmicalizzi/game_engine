@@ -344,6 +344,12 @@ class GpuScene {
   // reports against the whole scene's geometry bytes (`geometry_bytes()`).
   u64 stream_bytes() const noexcept { return stream_bytes_; }
   u64 geometry_bytes() const noexcept { return geometry_bytes_; }
+  // What the materials' textures take on the device, as the allocator reports it, and how many
+  // were the content build's built textures against how many were decoded from their source images
+  // (docs/subsystems/texture.md, "In the renderer").
+  u64 texture_bytes() const noexcept { return texture_bytes_; }
+  u32 textures_built() const noexcept { return textures_built_; }
+  u32 textures_decoded() const noexcept { return textures_decoded_; }
   // Where each stream begins inside a staged page, and what the page costs in total.
   //
   // **There is one formula, and this is it.** Four things read this layout and two of them being
@@ -488,8 +494,12 @@ class GpuScene {
   gfx::ImageResource procedural_texture_;
   VkImageView procedural_view_ = VK_NULL_HANDLE;
   VkSampler sampler_ = VK_NULL_HANDLE;
-  Vector<gfx::ImageResource> textures_;  // decoded from the meshes' images
+  VkSampler mip_sampler_ = VK_NULL_HANDLE;  // built textures: trilinear and anisotropic
+  Vector<gfx::ImageResource> textures_;     // built, or decoded from the meshes' images
   Vector<VkImageView> texture_views_;
+  u64 texture_bytes_ = 0;
+  u32 textures_built_ = 0;
+  u32 textures_decoded_ = 0;
   Vector<gfx::InstanceDesc> instance_table_;  // the scene's, with material_base and deform filled
   Vector<gfx::DeformDesc> deform_descs_;      // the static table, kept for each frame's copy
   Vector<u32> deform_instance_;               // the instance of each deform entry

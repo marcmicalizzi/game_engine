@@ -175,13 +175,25 @@ struct ResolveMaterial {
   u32 albedo_texture = k_no_texture;    // multiplies albedo
   u32 sampler = 0;                      // bindless sampler slot
   f32 uv_scale = 1.0f;
-  u32 flags = 0;
+  u32 flags = 0;                                  // k_material_mipped | k_material_normal_rg
   u32 metallic_roughness_texture = k_no_texture;  // glTF packing: G roughness, B metallic
   u32 normal_texture = k_no_texture;              // tangent space, UNORM, remapped to -1..1
   f32 normal_scale = 1.0f;                        // scales the map's xy before it is normalized
   u32 pad = 0;
 };
 static_assert(sizeof(ResolveMaterial) == 64);
+
+// ResolveMaterial::flags, mirrored in material.slang. Both are zero for a material whose textures
+// were decoded from their sources and uploaded at one level, which is what keeps that picture the
+// one it always was (docs/subsystems/texture.md, "In the renderer").
+//
+// `k_material_mipped`: the material's textures are the content build's mipmapped ones, sampled
+// through `create_mip_sampler`, and the resolve samples them with the UV derivatives it computes
+// from the triangle (SampleGrad) instead of at level 0.
+inline constexpr u32 k_material_mipped = 1u;
+// `k_material_normal_rg`: the normal map stores x and y only (BC5, which reads blue as zero), so
+// the shader reconstructs z = sqrt(1 - x^2 - y^2) before `normal_scale` is applied.
+inline constexpr u32 k_material_normal_rg = 2u;
 
 inline constexpr f32 k_light_point = 0.0f;  // ResolveLight::direction_type.w
 inline constexpr f32 k_light_spot = 1.0f;
@@ -209,6 +221,10 @@ enum class ResolveMode : u32 {
   // have seen, as a picture that can be counted (renderer.md, "Shadows"). A ray answers black or
   // white; the cascaded maps answer the filtered fraction, grey levels across a penumbra.
   Shadow = 6,
+  // The material's base colour after its texture, unlit, through the display transform: what the
+  // texture filtering and mip selection alone put on a pixel, which is how the texture tests
+  // measure them without the lights in the way (texture.md, "In the renderer").
+  Albedo = 7,
 };
 
 // The Panini projection of parameter d (docs/plan/04-renderer.md §4.6, experiment E9), as the

@@ -382,6 +382,7 @@ bool Device::create(const DeviceOptions& options, std::string* error) {
   VkPhysicalDeviceFeatures base{};
   base.multiDrawIndirect = VK_TRUE;
   base.samplerAnisotropy = on(caps_.sampler_anisotropy);
+  base.textureCompressionBC = on(caps_.texture_compression_bc);
   base.shaderInt64 = VK_TRUE;  // Required row: every push block carries uint64_t addresses.
   base.fillModeNonSolid = on(caps_.fill_mode_non_solid);
   base.shaderInt16 = on(caps_.shader_int16);
@@ -392,6 +393,7 @@ bool Device::create(const DeviceOptions& options, std::string* error) {
   base.shaderStorageImageWriteWithoutFormat = on(caps_.shader_storage_image_write_without_format);
   base.shaderStorageImageReadWithoutFormat = on(caps_.shader_storage_image_read_without_format);
   impl->features.sampler_anisotropy = caps_.sampler_anisotropy != 0;
+  impl->features.texture_compression_bc = caps_.texture_compression_bc != 0;
   impl->features.geometry_shader = caps_.geometry_shader != 0;
   impl->features.full_draw_index_uint32 = caps_.full_draw_index_uint32 != 0;
   impl->features.shader_int64 = true;
@@ -638,8 +640,9 @@ bool create_image_2d(const Device& device, u32 width, u32 height, VkFormat forma
   info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
   VmaAllocationCreateInfo alloc{};
   alloc.usage = VMA_MEMORY_USAGE_AUTO;
+  VmaAllocationInfo allocation_info{};
   const VkResult r =
-      vmaCreateImage(h.allocator, &info, &alloc, &out.image, &out.allocation, nullptr);
+      vmaCreateImage(h.allocator, &info, &alloc, &out.image, &out.allocation, &allocation_info);
   if (r != VK_SUCCESS) {
     set_error(error, "vmaCreateImage", r);
     return false;
@@ -647,6 +650,8 @@ bool create_image_2d(const Device& device, u32 width, u32 height, VkFormat forma
   out.format = format;
   out.width = width;
   out.height = height;
+  out.levels = 1;
+  out.bytes = allocation_info.size;
   return true;
 }
 
@@ -1052,6 +1057,119 @@ bool upload_image_2d(const Device& device, u32 width, u32 height, VkFormat forma
                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
                       VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                       VK_ACCESS_2_SHADER_READ_BIT);
+      },
+      error);
+  destroy_buffer(device, staging);
+  if (!ok) destroy_image(device, out);
+  return ok;
+}
+
+bool upload_image_2d_levels(const Device& device, u32 width, u32 height, VkFormat format,
+                            std::span<const ImageLevelData> levels, ImageResource& out,
+                            std::string* error) {
+  out = ImageResource{};
+  if (levels.empty() || width == 0 || height == 0) {
+    if (error != nullptr) *error = "upload_image_2d_levels: nothing to upload";
+    return false;
+  }
+  u64 total = 0;
+  for (const ImageLevelData& level : levels) {
+    if (level.data == nullptr || level.bytes == 0) {
+      if (error != nullptr) *error = "upload_image_2d_levels: a level has no bytes";
+      return false;
+    }
+    // Each level's copy source is aligned to 16 bytes, which covers every block size (8 or 16)
+    // and the 4-byte texel of an uncompressed format — vkCmdCopyBufferToImage requires the offset
+    // to be a multiple of the texel block size.
+    total = (total + 15) / 16 * 16 + level.bytes;
+  }
+  const Handles& h = device.handles();
+  VkImageCreateInfo info{};
+  info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+  info.imageType = VK_IMAGE_TYPE_2D;
+  info.format = format;
+  info.extent = {width, height, 1};
+  info.mipLevels = static_cast<u32>(levels.size());
+  info.arrayLayers = 1;
+  info.samples = VK_SAMPLE_COUNT_1_BIT;
+  info.tiling = VK_IMAGE_TILING_OPTIMAL;
+  info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+  info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  VmaAllocationCreateInfo alloc{};
+  alloc.usage = VMA_MEMORY_USAGE_AUTO;
+  VmaAllocationInfo allocation_info{};
+  const VkResult r =
+      vmaCreateImage(h.allocator, &info, &alloc, &out.image, &out.allocation, &allocation_info);
+  if (r != VK_SUCCESS) {
+    set_error(error, "vmaCreateImage", r);
+    out = ImageResource{};
+    return false;
+  }
+  out.format = format;
+  out.width = width;
+  out.height = height;
+  out.levels = static_cast<u32>(levels.size());
+  out.bytes = allocation_info.size;
+
+  BufferResource staging;
+  if (!create_buffer(device, total, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true, staging, error)) {
+    destroy_image(device, out);
+    return false;
+  }
+  Vector<VkBufferImageCopy> regions;
+  regions.reserve(static_cast<u32>(levels.size()));
+  u64 offset = 0;
+  for (u32 i = 0; i < levels.size(); ++i) {
+    offset = (offset + 15) / 16 * 16;
+    std::memcpy(static_cast<u8*>(staging.mapped) + offset, levels[i].data,
+                static_cast<usize>(levels[i].bytes));
+    const u32 w = (width >> i) == 0 ? 1u : (width >> i);
+    const u32 hgt = (height >> i) == 0 ? 1u : (height >> i);
+    VkBufferImageCopy region{};
+    region.bufferOffset = offset;
+    region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, i, 0, 1};
+    region.imageExtent = {w, hgt, 1};
+    regions.push_back(region);
+    offset += levels[i].bytes;
+  }
+  const u32 level_count = out.levels;
+  // One barrier over every level each way: the whole chain goes from nothing to a copy target,
+  // and then to what the shaders read.
+  auto transition = [&](VkCommandBuffer commands, VkImageLayout from, VkImageLayout to,
+                        VkPipelineStageFlags2 src_stage, VkAccessFlags2 src_access,
+                        VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access) {
+    VkImageMemoryBarrier2 barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+    barrier.srcStageMask = src_stage;
+    barrier.srcAccessMask = src_access;
+    barrier.dstStageMask = dst_stage;
+    barrier.dstAccessMask = dst_access;
+    barrier.oldLayout = from;
+    barrier.newLayout = to;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = out.image;
+    barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, level_count, 0, 1};
+    VkDependencyInfo dependency{};
+    dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    dependency.imageMemoryBarrierCount = 1;
+    dependency.pImageMemoryBarriers = &barrier;
+    vkCmdPipelineBarrier2(commands, &dependency);
+  };
+  const bool ok = submit_immediate(
+      device,
+      [&](VkCommandBuffer commands) {
+        transition(commands, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                   VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE, VK_PIPELINE_STAGE_2_COPY_BIT,
+                   VK_ACCESS_2_TRANSFER_WRITE_BIT);
+        vkCmdCopyBufferToImage(commands, staging.buffer, out.image,
+                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, regions.size(),
+                               regions.data());
+        transition(commands, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                   VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                   VK_ACCESS_2_SHADER_READ_BIT);
       },
       error);
   destroy_buffer(device, staging);

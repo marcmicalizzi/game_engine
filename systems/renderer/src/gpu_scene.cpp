@@ -1,4 +1,7 @@
+#include <core/hash/hash.h>
 #include <domain/geometry/cluster_lod.h>
+#include <domain/texture/texture_build.h>
+#include <domain/texture/texture_file.h>
 #include <foundation/image/decode.h>
 #include <foundation/io/vfs.h>
 #include <systems/renderer/gpu_scene.h>
@@ -39,6 +42,105 @@ u32 pool_budget_vertices(const ResolvedSettings& resolved, u64 whole_mesh_vertic
   if (vertices < 1) vertices = 1;
   if (vertices > whole_mesh_vertices) vertices = whole_mesh_vertices;
   return static_cast<u32>(vertices);
+}
+
+// The Vulkan format a built texture is sampled as: the format and colour space the build decided,
+// from the same material slots the decode path guesses from, so the two agree.
+VkFormat texture_vk_format(const texture::TextureData& t) noexcept {
+  const bool srgb = t.color_space == texture::ColorSpace::srgb;
+  switch (t.format) {
+    case texture::TextureFormat::rgba8:
+      return srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+    case texture::TextureFormat::bc1:
+      return srgb ? VK_FORMAT_BC1_RGB_SRGB_BLOCK : VK_FORMAT_BC1_RGB_UNORM_BLOCK;
+    case texture::TextureFormat::bc3:
+      return srgb ? VK_FORMAT_BC3_SRGB_BLOCK : VK_FORMAT_BC3_UNORM_BLOCK;
+    case texture::TextureFormat::bc4: return VK_FORMAT_BC4_UNORM_BLOCK;
+    case texture::TextureFormat::bc5: return VK_FORMAT_BC5_UNORM_BLOCK;
+    case texture::TextureFormat::bc7:
+      return srgb ? VK_FORMAT_BC7_SRGB_BLOCK : VK_FORMAT_BC7_UNORM_BLOCK;
+  }
+  return VK_FORMAT_UNDEFINED;
+}
+
+// A mesh's built textures (docs/subsystems/texture.md, "In the renderer"): one per image the
+// resolve samples — base colour, metallic-roughness, normal — found in the derived-data root
+// through the container's records, and read with their identity checked against the bytes they
+// were built from. An image the container carries is found by its recorded key; one named by
+// path is hashed as the file is *now*, so a repainted image finds its new texture or none, never
+// the stale one. **All or nothing**: false, with the reason, as soon as one is missing, so a mesh
+// draws wholly from built textures or wholly as it always did, never a mix of two samplers.
+// `needed` is how many images the resolve samples; zero leaves the mesh on the old path, which
+// for a mesh with no textures is no path at all.
+bool find_built_textures(const SourceMesh& mesh, Vector<texture::TextureData>& out, u32& needed,
+                         std::string& why) {
+  out.clear();
+  needed = 0;
+  const assets::MeshData& data = mesh.data;
+  Vector<bool> sampled(data.images.size(), false);
+  for (const assets::Material& material : data.materials) {
+    for (const i32 image :
+         {material.base_color_image, material.metallic_roughness_image, material.normal_image}) {
+      if (image >= 0 && static_cast<u32>(image) < sampled.size() &&
+          !sampled[static_cast<u32>(image)]) {
+        sampled[static_cast<u32>(image)] = true;
+        ++needed;
+      }
+    }
+  }
+  if (needed == 0) return false;
+  if (mesh.texture_ddc.empty()) {
+    why = "the load reads no derived-data cache";
+    return false;
+  }
+  if (mesh.textures.size() != data.images.size()) {
+    why = "the container records no built textures (built before cache version 14, or with none)";
+    return false;
+  }
+  out.resize(data.images.size());
+  for (u32 i = 0; i < sampled.size(); ++i) {
+    if (!sampled[i]) continue;
+    const std::string image = "image " + std::to_string(i);
+    const geometry::ClusterFileTexture& record = mesh.textures[i];
+    texture::TextureBuildOptions options;
+    if (record.options == 0 || !texture::unpack_texture_options(record.options, options)) {
+      why = image + " has no texture record this build reads";
+      return false;
+    }
+    u64 source_hash = record.source_hash;
+    u64 key = record.key;
+    if (key == 0) {
+      const assets::ImageRef& ref = data.images[i];
+      if (ref.uri.empty()) {
+        why = image + " has neither bytes nor a path";
+        return false;
+      }
+      const std::string file =
+          mesh.image_dir.empty() ? ref.uri : io::join_path(mesh.image_dir, ref.uri);
+      std::string bytes;
+      if (io::read_file(file, bytes) != io::Status::Ok) {
+        why = image + " ('" + file + "') cannot be read";
+        return false;
+      }
+      source_hash = hash_bytes(bytes.data(), bytes.size());
+      key = texture::texture_cache_key(source_hash, options);
+    }
+    const std::string path = texture::texture_cache_path(mesh.texture_ddc, key);
+    if (!io::exists(path)) {
+      why = image + " has not been built (engine-content build --cache builds it)";
+      return false;
+    }
+    std::string error;
+    if (!texture::read_texture_file(path, out[i], &error)) {
+      why = image + ": " + error;
+      return false;
+    }
+    if (out[i].source_hash != source_hash || out[i].build_key != key) {
+      why = image + ": '" + path + "' was built from other bytes or options";
+      return false;
+    }
+  }
+  return true;
 }
 
 }  // namespace
@@ -670,6 +772,12 @@ bool GpuScene::upload_materials(const ResolvedSettings&, std::string* error) {
   const geometry::ClusterLodMesh& lod = data_->lod;
   if (!gfx::create_sampler(device, VK_FILTER_LINEAR, sampler_, error)) return false;
   const u32 sampler_slot = bindless_.add_sampler(sampler_);
+  // The built textures' sampler, made when the first mesh that has them is met, so a scene with
+  // none has exactly the bindless set it always had.
+  u32 mip_sampler_slot = gfx::BindlessSet::k_invalid_slot;
+  texture_bytes_ = 0;
+  textures_built_ = 0;
+  textures_decoded_ = 0;
   Vector<gfx::ResolveMaterial> material_table;
   Vector<u32> cluster_material(cluster_count_);
   Vector<u32> mesh_material_base(data_->parts.size(), 0u);
@@ -695,6 +803,7 @@ bool GpuScene::upload_materials(const ResolvedSettings&, std::string* error) {
         !gfx::create_image_view(device, procedural_texture_, procedural_view_, error)) {
       return false;
     }
+    texture_bytes_ += procedural_texture_.bytes;
     const u32 texture_slot =
         bindless_.add_sampled_image(procedural_view_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     // Materials: a flat table indexed per cluster by the height band of the cluster's center.
@@ -720,10 +829,37 @@ bool GpuScene::upload_materials(const ResolvedSettings&, std::string* error) {
     // sRGB, so that sampling returns linear; metallic-roughness and normal maps are data, not
     // color, and go up UNORM. A glTF never gives one image both roles, so the format an image is
     // first asked for is the one it keeps.
+    //
+    // **Built textures** (docs/subsystems/texture.md, "In the renderer"): when the content build
+    // has made every image this mesh's materials sample into a block-compressed, mipmapped `.tex`
+    // in the derived-data root — which the container's records name — those are uploaded as they
+    // are stored, with the whole chain, and sampled through the mipmapping sampler with the UV
+    // derivatives the resolve computes (`k_material_mipped`). Otherwise the mesh takes exactly the
+    // path above: decode, one level, level-0 sampling. All or nothing per mesh, so no material
+    // mixes the two samplers.
     for (u32 m = 0; m < data_->sources.size(); ++m) {
       const SourceMesh& source_mesh = data_->sources[m];
       const assets::MeshData& mesh_data = source_mesh.data;
       mesh_material_base[m] = material_table.size();
+      Vector<texture::TextureData> built;
+      u32 sampled_images = 0;
+      std::string why;
+      bool use_built = find_built_textures(source_mesh, built, sampled_images, why);
+      if (use_built && !device.features().texture_compression_bc) {
+        use_built = false;
+        why = "the device has no textureCompressionBC";
+        ENGINE_LOG_WARN(log_renderer, "built textures unusable", log::field("mesh", m),
+                        log::field("reason", why));
+      }
+      if (use_built && mip_sampler_ == VK_NULL_HANDLE) {
+        if (!gfx::create_mip_sampler(device, 16.0f, mip_sampler_, error)) return false;
+        mip_sampler_slot = bindless_.add_sampler(mip_sampler_);
+      }
+      if (sampled_images != 0) {
+        ENGINE_LOG_INFO(log_renderer, "mesh textures", log::field("mesh", m),
+                        log::field("from", use_built ? "built" : "decoded"),
+                        log::field("images", sampled_images), log::field("reason", why));
+      }
       Vector<u32> image_slot(mesh_data.images.size(), gfx::k_no_texture);
       Vector<bool> image_tried(mesh_data.images.size(), false);
       const std::string& mesh_dir = source_mesh.image_dir;  // the glTF's or the container's
@@ -734,32 +870,52 @@ bool GpuScene::upload_materials(const ResolvedSettings&, std::string* error) {
         if (image_tried[index]) return image_slot[index];
         image_tried[index] = true;
         const assets::ImageRef& ref = mesh_data.images[index];
-        image::Image decoded;
-        std::string image_error;
-        bool ok = false;
-        if (!ref.bytes.empty()) {
-          ok = image::decode_image(std::span<const u8>(ref.bytes.data(), ref.bytes.size()), decoded,
-                                   4, &image_error);
-        } else if (!ref.uri.empty()) {
-          const std::string path = mesh_dir.empty() ? ref.uri : io::join_path(mesh_dir, ref.uri);
-          ok = image::read_image(path, decoded, 4, &image_error) == io::Status::Ok;
-        } else {
-          image_error = "image has neither bytes nor a uri";
-        }
         gfx::ImageResource uploaded;
         VkImageView view = VK_NULL_HANDLE;
-        if (ok && (!gfx::upload_image_2d(device, decoded.width, decoded.height, format,
-                                         decoded.pixels.data(), decoded.pixels.size(), uploaded,
-                                         &image_error) ||
-                   !gfx::create_image_view(device, uploaded, view, &image_error))) {
-          if (uploaded.image != VK_NULL_HANDLE) gfx::destroy_image(device, uploaded);
-          ok = false;
+        std::string image_error;
+        bool ok = false;
+        if (use_built) {
+          // As stored: the blocks of every level, one staging copy, no decode.
+          const texture::TextureData& t = built[index];
+          Vector<gfx::ImageLevelData> levels;
+          levels.reserve(t.levels.size());
+          for (u32 l = 0; l < t.levels.size(); ++l) {
+            const std::span<const u8> bytes = t.level_bytes(l);
+            levels.push_back(gfx::ImageLevelData{bytes.data(), bytes.size()});
+          }
+          ok = gfx::upload_image_2d_levels(
+                   device, t.width, t.height, texture_vk_format(t),
+                   std::span<const gfx::ImageLevelData>(levels.data(), levels.size()), uploaded,
+                   &image_error) &&
+               gfx::create_image_view(device, uploaded, view, &image_error);
+          if (!ok && uploaded.image != VK_NULL_HANDLE) gfx::destroy_image(device, uploaded);
+          if (ok) ++textures_built_;
+        } else {
+          image::Image decoded;
+          if (!ref.bytes.empty()) {
+            ok = image::decode_image(std::span<const u8>(ref.bytes.data(), ref.bytes.size()),
+                                     decoded, 4, &image_error);
+          } else if (!ref.uri.empty()) {
+            const std::string path = mesh_dir.empty() ? ref.uri : io::join_path(mesh_dir, ref.uri);
+            ok = image::read_image(path, decoded, 4, &image_error) == io::Status::Ok;
+          } else {
+            image_error = "image has neither bytes nor a uri";
+          }
+          if (ok && (!gfx::upload_image_2d(device, decoded.width, decoded.height, format,
+                                           decoded.pixels.data(), decoded.pixels.size(), uploaded,
+                                           &image_error) ||
+                     !gfx::create_image_view(device, uploaded, view, &image_error))) {
+            if (uploaded.image != VK_NULL_HANDLE) gfx::destroy_image(device, uploaded);
+            ok = false;
+          }
+          if (ok) ++textures_decoded_;
         }
         if (!ok) {
           ENGINE_LOG_WARN(log_renderer, "texture skipped", log::field("image", index),
                           log::field("name", ref.name), log::field("error", image_error));
           return gfx::k_no_texture;
         }
+        texture_bytes_ += uploaded.bytes;
         textures_.push_back(uploaded);
         texture_views_.push_back(view);
         image_slot[index] =
@@ -780,8 +936,17 @@ bool GpuScene::upload_materials(const ResolvedSettings&, std::string* error) {
             texture_slot_of(source.metallic_roughness_image, VK_FORMAT_R8G8B8A8_UNORM);
         material.normal_texture = texture_slot_of(source.normal_image, VK_FORMAT_R8G8B8A8_UNORM);
         material.normal_scale = source.normal_scale;
-        material.sampler = sampler_slot;
+        material.sampler = use_built ? mip_sampler_slot : sampler_slot;
         material.uv_scale = 1.0f;
+        if (use_built) {
+          material.flags |= gfx::k_material_mipped;
+          // A BC5 normal map holds x and y; the shader rebuilds z (material.slang).
+          const i32 normal = source.normal_image;
+          if (normal >= 0 && static_cast<u32>(normal) < built.size() &&
+              built[static_cast<u32>(normal)].format == texture::TextureFormat::bc5) {
+            material.flags |= gfx::k_material_normal_rg;
+          }
+        }
         material_table.push_back(material);
       }
       const u32 local_count = material_table.size() - mesh_material_base[m];
@@ -1183,6 +1348,10 @@ void GpuScene::destroy() noexcept {
   procedural_texture_ = gfx::ImageResource{};
   gfx::destroy_sampler(device, sampler_);
   sampler_ = VK_NULL_HANDLE;
+  gfx::destroy_sampler(device, mip_sampler_);
+  mip_sampler_ = VK_NULL_HANDLE;
+  texture_bytes_ = 0;
+  textures_built_ = textures_decoded_ = 0;
   bindless_.destroy();
   instance_table_.clear();
   deform_descs_.clear();

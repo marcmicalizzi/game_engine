@@ -145,11 +145,17 @@ enum class ClusterSection : u32 {
   // mesh with no ids.
   VertexIds = 30,
   VertexIdScalars = 31,
+  // The built texture of every image (docs/subsystems/texture.md): one `ClusterFileTexture` per
+  // image, parallel to `ImagePaths`, naming the derived-data entry the content build writes the
+  // image's block-compressed, mipmapped texture to (`<ddc>/textures/<key>.tex`), so that the
+  // renderer finds it from this file alone. Written for every mesh — empty when it has no images —
+  // and a file without it reads with no records, which draws every image through the decode it
+  // always did.
+  Textures = 32,
 };
 
 // One past the highest kind this build knows, which is how wide a by-kind table has to be.
-inline constexpr u32 k_cluster_section_kinds =
-    static_cast<u32>(ClusterSection::VertexIdScalars) + 1;
+inline constexpr u32 k_cluster_section_kinds = static_cast<u32>(ClusterSection::Textures) + 1;
 
 // Names the kinds this build knows, "unknown" for anything else; for diagnostics and for
 // `engine-content info`.
@@ -254,11 +260,34 @@ struct ClusterFileImage {
   u32 mime = 0;
 };
 
+// Where one image's **built** texture is, as the `Textures` section records it. 24 bytes.
+//
+// The content build turns every image a material samples into a `.tex` (domain/texture) addressed
+// by `texture::texture_cache_key(source hash, options)`. This record is what the renderer needs to
+// find that entry from the container alone: the options the image is built with (a function of
+// the material slots that name it, `texture::options_for_roles`) and, for an image whose bytes
+// this container carries, the source hash and the key themselves.
+//
+// **An image named by path records no hash and no key**, deliberately. The container is addressed
+// by the glTF's bytes and its buffers (`assets::source_mesh_hash`), not by the image files beside
+// it — which is why a texture can be repainted without rebuilding the mesh — so a key taken over a
+// file's bytes at build time would go stale under the same container key, and a container that
+// said so would be a function of something its key does not cover. A reader hashes the file and
+// takes the key from the recorded options instead. Zero `options` is an image no material slot
+// names, for which nothing is built.
+struct ClusterFileTexture {
+  u64 key = 0;          // the texture's cache key; 0 for an image named by path, or none wanted
+  u64 source_hash = 0;  // hash_bytes over the embedded bytes the key was taken over; 0 likewise
+  u32 options = 0;      // texture::pack_texture_options, or 0: no slot samples this image
+  u32 roles = 0;        // texture::k_role_*: which material slots name the image
+};
+
 static_assert(sizeof(ClusterFileHeader) == 32, "the cluster file header is 32 bytes on the wire");
 static_assert(sizeof(ClusterFileSection) == 24, "a cluster file section record is 24 bytes");
 static_assert(sizeof(ClusterFileScalars) == 32, "the cluster file scalars section is 32 bytes");
 static_assert(sizeof(ClusterFileMaterial) == 64, "ClusterFileMaterial is a 64-byte GPU record");
 static_assert(sizeof(ClusterFileImage) == 24, "a cluster file image record is 24 bytes");
+static_assert(sizeof(ClusterFileTexture) == 24, "a cluster file texture record is 24 bytes");
 
 // One image's bytes as a caller holds them: the encoded file (PNG or JPEG, undecoded) and the
 // media type the source stated, if it stated one. `bytes` is empty for an image that lives in a
@@ -299,6 +328,9 @@ struct ClusterFileData {
   Vector<ClusterFileMaterial> materials;
   Vector<std::string> image_paths;
   Vector<ClusterImage> images;  // empty, or parallel to image_paths
+  // Empty, or parallel to image_paths: where each image's built texture is (`ClusterFileTexture`).
+  // Empty in a container written before cache version 14, which draws every image by decoding it.
+  Vector<ClusterFileTexture> textures;
   std::string source_path;
   u64 source_hash = 0;
   u64 build_key = 0;
@@ -481,7 +513,12 @@ bool read_cluster_file_identity(std::string_view path, u64& source_hash, u64& bu
 //    same key, so a shared cache or a copied container handed one machine another's mesh. An
 //    entry MSVC or a v2 build made at 12 is byte-identical to what a build makes now (checked on
 //    eleven sources) and merely moves to a new cache path.
-inline constexpr u32 k_cluster_cache_version = 13;
+// 14: a container records, per image, where its built texture is (section 32, `Textures`;
+//    docs/subsystems/texture.md). An entry built at 13 has no records, so the renderer would draw
+//    it by decoding every image forever, and `engine-content build-all` would skip it forever
+//    because its identity still matched. Its geometry sections are byte-identical to what a build
+//    makes now; only the new section and the identity differ.
+inline constexpr u32 k_cluster_cache_version = 14;
 
 // The cache key: the source's content hash (`assets::source_mesh_hash`) mixed with the build
 // options and the version above. `page_bytes` is the streaming page target the container was

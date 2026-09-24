@@ -6,6 +6,8 @@ add_subdirectory(anim)
 add_subdirectory(assets)
 # After assets: the atlas step rewrites an imported mesh (`assets::MeshData`) in place.
 add_subdirectory(atlas)
+# After geometry: the built texture, whose per-image records a `.clusters` container carries.
+add_subdirectory(texture)
 add_subdirectory(gfx)
 add_subdirectory(protocol)
 # sim before ecs: ADR-0028 seam 2 makes `ecs::TickPhase` an alias of `sim::TickPhase`, so the

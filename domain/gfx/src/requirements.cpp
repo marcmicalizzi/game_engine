@@ -246,7 +246,13 @@ constexpr Requirement k_requirements[] = {
      "a profile; it is enabled and unused."},
     {"samplerAnisotropy", "feature", RequirementLevel::Optional, Unit::Flag,
      &DeviceCaps::sampler_anisotropy, 1, "anisotropic-filtering",
-     "create_sampler asks for no anisotropy today; the material pipeline will."},
+     "the built textures are sampled through create_mip_sampler at 16x; without it that sampler "
+     "is trilinear, and create_sampler, the tooling one, never asks."},
+    {"textureCompressionBC", "feature", RequirementLevel::Optional, Unit::Flag,
+     &DeviceCaps::texture_compression_bc, 1, "block-compressed-textures",
+     "the content build's textures (BC1, BC3, BC4, BC5, BC7 with mips; docs/subsystems/texture.md) "
+     "are uploaded as they are stored. Without it every material draws its decoded source image "
+     "instead: uncompressed, one level, and a warning per mesh."},
     {"VK_KHR_fragment_shading_rate", "extension", RequirementLevel::Optional, Unit::Flag,
      &DeviceCaps::fragment_shading_rate, 1, "fragment-shading-rate",
      "reported for the peripheral-quality work of plan 04 §4.6; nothing reads it today."},
@@ -567,6 +573,13 @@ void device_verdict(const DeviceCaps& caps, std::span<const DeviceRequirement> r
                   "no VK_EXT_memory_budget: Device::memory_budget() reports the heaps' size "
                   "rather than this process's share of them, so a measurement cannot say whether "
                   "the card was busy.");
+  }
+  if (caps.texture_compression_bc == 0) {
+    append_reason(out.degraded,
+                  "no textureCompressionBC: the content build's block-compressed, mipmapped "
+                  "textures cannot be sampled, so every material decodes its source image and "
+                  "uploads it uncompressed at one level — about four times the memory and no "
+                  "filtering at a distance. Every desktop GPU has it.");
   }
 }
 

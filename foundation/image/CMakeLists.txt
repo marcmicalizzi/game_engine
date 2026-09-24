@@ -1,7 +1,7 @@
 # image: PNG encoding with the engine's own deflate (RFC 1951, no compression library) for
-# captures and tests, and CPU decoding of PNG/JPEG/TGA/BMP through stb_image. KTX2 with
-# block-compressed formats and EXR for HDR captures arrive with the capture and texture
-# pipelines' consumers (docs/plan/06-tooling.md).
+# captures and tests, and CPU decoding of PNG/JPEG/TGA/BMP through stb_image. Block-compressed,
+# mipmapped textures are domain/texture's (docs/subsystems/texture.md), which decodes through this
+# module; EXR for HDR captures arrives with its consumer (docs/plan/06-tooling.md).
 engine_module(NAME image LAYER foundation
   DEPS base containers io
   SOURCES src/png.cpp src/deflate.cpp src/decode.cpp src/metrics.cpp)

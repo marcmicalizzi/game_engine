@@ -69,7 +69,7 @@ struct ResolveParams {
   uint width;
   uint height;
   uint mode;  // 0 cluster colors, 1 with triangle shade, 2 depth, 3 shaded, 4 normals, 5 uvs,
-              // 6 the sun's shadow alone
+              // 6 the sun's shadow alone, 7 the textured albedo unlit
   uint light_count;
   uint64_t instances;  // InstanceDesc[]
   uint64_t visible;    // uint2[]: the cull pass's visible list; 0 reads {0, pair}
@@ -412,8 +412,19 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
 
   const ResolveMaterial material = material_of(geo, instance, entry.y);
   const float2 uv = s.uv * material.uv_scale;
-  const MaterialSample sampled = sample_material(material, uv);
+  // Mip selection (texture.md): a mipmapped material samples at the level its own triangle's UV
+  // derivatives select, since the quad's derivatives straddle other triangles in this pass.
+  float2 duv_dx = float2(0.0, 0.0);
+  float2 duv_dy = float2(0.0, 0.0);
+  if ((material.flags & k_material_mipped) != 0) {
+    screen_uv_gradients(geo, fetch_triangle(geo, instance, visible_index, entry.y, id & 0xff),
+                        source, params->view_proj, params->width, params->height, duv_dx, duv_dy);
+    duv_dx *= material.uv_scale;
+    duv_dy *= material.uv_scale;
+  }
+  const MaterialSample sampled = sample_material_grad(material, uv, duv_dx, duv_dy);
   const float3 albedo = sampled.albedo;
+  if (params->mode == 7) return float4(display_encode(albedo), 1.0);
   float3 shading_normal = s.normal;
   if (material.normal_texture != k_no_texture) {
     float3 tangent;
@@ -422,7 +433,8 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
     // this block always did: the frame is needed only where a normal map is.
     const TriangleFetch tri = fetch_triangle(geo, instance, visible_index, entry.y, id & 0xff);
     if (tangent_frame(geo, tri, s.normal, tangent, bitangent)) {
-      shading_normal = apply_normal_map(material, uv, s.normal, tangent, bitangent);
+      shading_normal =
+          apply_normal_map_grad(material, uv, duv_dx, duv_dy, s.normal, tangent, bitangent);
     }
   }
   BrdfSurface surface;

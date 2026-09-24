@@ -39,3 +39,4 @@ Numbered, dated, and immutable once accepted. To change a decision, write a new 
 | [0033](0033-content-classes-and-view-policies.md) | Content classes and view policies: what an output may contain, decided at instantiation | Accepted |
 | [0034](0034-host-tools-build-for-the-build-machine.md) | Host tools compile for the build machine, never for the target baseline; only shipped targets carry x86-64-v3 | Accepted |
 | [0035](0035-no-floating-point-contraction.md) | No floating-point contraction anywhere in the tree; the content build's bytes are a function of its input | Accepted |
+| [0036](0036-built-textures-in-the-engines-own-container.md) | Built textures go in the engine's own sectioned container, not KTX2 | Accepted |

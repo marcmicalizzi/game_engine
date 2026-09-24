@@ -27,6 +27,10 @@
 [[vk::binding(2, 0)]] SamplerState g_samplers[];
 
 static const uint k_no_texture = 0xffffffffu;
+// ResolveMaterial::flags (gfx::k_material_*). Both zero for textures decoded from their sources at
+// one level, which read exactly as they always did.
+static const uint k_material_mipped = 1u;     // built, mipmapped textures: sample with gradients
+static const uint k_material_normal_rg = 2u;  // a two-channel (BC5) normal map: rebuild z
 
 // Mirrors gfx::ResolveMaterial (64 bytes).
 struct ResolveMaterial {
@@ -35,7 +39,7 @@ struct ResolveMaterial {
   uint albedo_texture;  // bindless sampled-image slot; 0xffffffff for none
   uint sampler;         // bindless sampler slot
   float uv_scale;
-  uint flags;
+  uint flags;           // k_material_mipped | k_material_normal_rg
   uint metallic_roughness_texture;  // glTF packing: G roughness, B metallic
   uint normal_texture;              // tangent space, UNORM, remapped to -1..1
   float normal_scale;               // scales the map's xy before it is normalized
@@ -208,6 +212,64 @@ Surface reconstruct_screen(SceneGeometry geo, InstanceDesc instance, uint entry,
   return surface_at(geo, instance, tri, b, camera);
 }
 
+// The UV's derivatives across the screen at `pixel_center`, taken from the triangle itself rather
+// than from neighbouring fragments (docs/subsystems/texture.md, "Mip selection without quads").
+// A visibility-buffer resolve is a fullscreen pass: the 2x2 quad a derivative instruction would
+// difference holds pixels of *other* triangles wherever an edge crosses it — often other meshes,
+// other UV islands — so ddx(uv) there is garbage and a texture fetch picks a level from it. The
+// triangle's own derivatives are exact and cost one more pass over its three vertices:
+//
+//   screen barycentrics are affine in the pixel, l_i = edge(s_j, s_k, p) / area, so
+//     dl_i/dx = -(s_k.y - s_j.y) / area   and   dl_i/dy = (s_k.x - s_j.x) / area;
+//   the perspective-correct ones are b_i = q_i / Q with q_i = l_i / w_i and Q = sum q_j, so
+//     db_i = (dq_i - b_i dQ) / Q   with dq_i = dl_i / w_i;
+//   and uv = sum b_i uv_i, so duv = sum db_i uv_i.
+//
+// Zero for a triangle with no attributes, a degenerate screen area, or w that has collapsed,
+// which SampleGrad reads as level 0.
+void screen_uv_gradients(SceneGeometry geo, TriangleFetch tri, float2 pixel_center,
+                         column_major float4x4 view_proj, uint width, uint height,
+                         out float2 duv_dx, out float2 duv_dy) {
+  duv_dx = float2(0.0, 0.0);
+  duv_dy = float2(0.0, 0.0);
+  if (geo.attributes == 0) return;
+  float4 clip[3];
+  float2 screen[3];
+  const float2 size = float2(float(width), float(height));
+  for (uint i = 0; i < 3; ++i) {
+    clip[i] = mul(view_proj, float4(tri.p[i], 1.0));
+    const float2 ndc = clip[i].xy / clip[i].w;
+    screen[i] = float2((ndc.x * 0.5 + 0.5) * size.x, (0.5 - ndc.y * 0.5) * size.y);
+  }
+  const float area = material_edge(screen[0], screen[1], screen[2]);
+  if (abs(area) <= 1e-12) return;
+  float3 l;
+  l.x = material_edge(screen[1], screen[2], pixel_center) / area;
+  l.y = material_edge(screen[2], screen[0], pixel_center) / area;
+  l.z = 1.0 - l.x - l.y;
+  const float3 dl_dx =
+      float3(screen[1].y - screen[2].y, screen[2].y - screen[0].y, screen[0].y - screen[1].y) /
+      area;
+  const float3 dl_dy =
+      float3(screen[2].x - screen[1].x, screen[0].x - screen[2].x, screen[1].x - screen[0].x) /
+      area;
+  const float3 inv_w = 1.0 / float3(clip[0].w, clip[1].w, clip[2].w);
+  const float3 q = l * inv_w;
+  const float q_sum = q.x + q.y + q.z;
+  if (abs(q_sum) <= 1e-20) return;
+  const float3 b = q / q_sum;
+  const float3 dq_dx = dl_dx * inv_w;
+  const float3 dq_dy = dl_dy * inv_w;
+  const float3 db_dx = (dq_dx - b * (dq_dx.x + dq_dx.y + dq_dx.z)) / q_sum;
+  const float3 db_dy = (dq_dy - b * (dq_dy.x + dq_dy.y + dq_dy.z)) / q_sum;
+  VertexAttributes* attributes = (VertexAttributes*)geo.attributes;
+  const float2 uv0 = decode_half2(attributes[tri.local[0]].uv_half2);
+  const float2 uv1 = decode_half2(attributes[tri.local[1]].uv_half2);
+  const float2 uv2 = decode_half2(attributes[tri.local[2]].uv_half2);
+  duv_dx = db_dx.x * uv0 + db_dx.y * uv1 + db_dx.z * uv2;
+  duv_dy = db_dy.x * uv0 + db_dy.y * uv1 + db_dy.z * uv2;
+}
+
 // The hit triangle's tangent frame, from its own positions and UVs: with dp1 = T du1 + B dv1 and
 // dp2 = T du2 + B dv2, the two edge deltas and the two UV deltas solve for T and B, which are
 // then Gram-Schmidt orthonormalized against the shading normal so the frame is orthonormal and
@@ -255,7 +317,9 @@ ResolveMaterial material_of(SceneGeometry geo, InstanceDesc instance, uint clust
 
 // A material's factors after its textures: the albedo texture multiplies the base color, and a
 // glTF metallic-roughness map multiplies both factors out of G and B. Sampled at level 0, which
-// is what a compute stage with no derivatives can do and what the fragment stage already did.
+// is what a compute stage with no derivatives can do (the reference path tracer) and all a texture
+// decoded at one level has; the resolve samples a mipmapped material through
+// `sample_material_grad` below.
 struct MaterialSample {
   float3 albedo;
   float roughness;
@@ -284,15 +348,68 @@ MaterialSample sample_material(ResolveMaterial material, float2 uv) {
   return sampled;
 }
 
+// `sample_material` for the resolve, which knows the UV's derivatives (`screen_uv_gradients`): a
+// material whose textures are the content build's mipmapped ones samples them at the level and
+// with the anisotropy those derivatives select; every other material is exactly
+// `sample_material`, level 0, the reads it always made.
+MaterialSample sample_material_grad(ResolveMaterial material, float2 uv, float2 duv_dx,
+                                    float2 duv_dy) {
+  if ((material.flags & k_material_mipped) == 0) return sample_material(material, uv);
+  MaterialSample sampled;
+  sampled.albedo = material.albedo.rgb;
+  if (material.albedo_texture != k_no_texture) {
+    sampled.albedo *= g_textures[NonUniformResourceIndex(material.albedo_texture)]
+                          .SampleGrad(g_samplers[NonUniformResourceIndex(material.sampler)], uv,
+                                      duv_dx, duv_dy)
+                          .rgb;
+  }
+  sampled.roughness = material.albedo.w;
+  sampled.metallic = material.emissive.w;
+  if (material.metallic_roughness_texture != k_no_texture) {
+    const float4 mr =
+        g_textures[NonUniformResourceIndex(material.metallic_roughness_texture)].SampleGrad(
+            g_samplers[NonUniformResourceIndex(material.sampler)], uv, duv_dx, duv_dy);
+    sampled.roughness *= mr.g;
+    sampled.metallic *= mr.b;
+  }
+  sampled.emissive = material.emissive.rgb;
+  return sampled;
+}
+
+// A normal-map texel to the tangent-space vector, before `normal_scale`: xyz remapped from 0..1,
+// or — for a two-channel map, which the content build stores as BC5 and which samples blue as
+// zero — x and y remapped and z rebuilt as the unit vector's third component.
+float3 normal_map_vector(ResolveMaterial material, float4 texel) {
+  if ((material.flags & k_material_normal_rg) == 0) return texel.xyz * 2.0 - 1.0;
+  const float2 xy = texel.xy * 2.0 - 1.0;
+  return float3(xy, sqrt(saturate(1.0 - dot(xy, xy))));
+}
+
 // The normal map: a UNORM texture whose xyz are a unit vector remapped to 0..1 in the triangle's
 // own tangent frame. `normal_scale` widens or flattens the tangential part before the vector is
 // renormalized, so 0 gives the interpolated normal back exactly.
 float3 apply_normal_map(ResolveMaterial material, float2 uv, float3 normal, float3 tangent,
                         float3 bitangent) {
-  float3 tangent_normal = g_textures[NonUniformResourceIndex(material.normal_texture)]
-                              .SampleLevel(g_samplers[NonUniformResourceIndex(material.sampler)],
-                                           uv, 0)
-                              .xyz * 2.0 - 1.0;
+  float3 tangent_normal = normal_map_vector(
+      material, g_textures[NonUniformResourceIndex(material.normal_texture)].SampleLevel(
+                    g_samplers[NonUniformResourceIndex(material.sampler)], uv, 0));
+  tangent_normal.xy *= material.normal_scale;
+  const float length_sq = dot(tangent_normal, tangent_normal);
+  if (length_sq <= 1e-12) return normal;
+  tangent_normal *= rsqrt(length_sq);
+  return normalize(tangent * tangent_normal.x + bitangent * tangent_normal.y +
+                   normal * tangent_normal.z);
+}
+
+// `apply_normal_map` with the UV's derivatives, as `sample_material_grad` is to `sample_material`.
+float3 apply_normal_map_grad(ResolveMaterial material, float2 uv, float2 duv_dx, float2 duv_dy,
+                             float3 normal, float3 tangent, float3 bitangent) {
+  if ((material.flags & k_material_mipped) == 0) {
+    return apply_normal_map(material, uv, normal, tangent, bitangent);
+  }
+  float3 tangent_normal = normal_map_vector(
+      material, g_textures[NonUniformResourceIndex(material.normal_texture)].SampleGrad(
+                    g_samplers[NonUniformResourceIndex(material.sampler)], uv, duv_dx, duv_dy));
   tangent_normal.xy *= material.normal_scale;
   const float length_sq = dot(tangent_normal, tangent_normal);
   if (length_sq <= 1e-12) return normal;

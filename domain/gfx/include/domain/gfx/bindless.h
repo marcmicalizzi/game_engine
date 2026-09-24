@@ -128,6 +128,12 @@ void destroy_image_view(const Device& device, VkImageView view) noexcept;
 // Nearest or linear filtering, clamp to edge, no anisotropy, no mips: the tooling default.
 bool create_sampler(const Device& device, VkFilter filter, VkSampler& out,
                     std::string* error = nullptr);
+// The material sampler of built, mipmapped textures (docs/subsystems/texture.md): linear within
+// and between levels, clamp to edge like `create_sampler`, the whole chain, and `max_anisotropy`
+// (clamped to 16, the minimum every device with the feature supports) where
+// DeviceFeatures::sampler_anisotropy is on — trilinear where it is not.
+bool create_mip_sampler(const Device& device, f32 max_anisotropy, VkSampler& out,
+                        std::string* error = nullptr);
 void destroy_sampler(const Device& device, VkSampler sampler) noexcept;
 
 }  // namespace engine::gfx

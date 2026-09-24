@@ -331,7 +331,7 @@ bool create_image_view(const Device& device, const ImageResource& image, VkImage
   info.image = image.image;
   info.viewType = VK_IMAGE_VIEW_TYPE_2D;
   info.format = image.format;
-  info.subresourceRange = {aspect, 0, 1, 0, 1};
+  info.subresourceRange = {aspect, 0, image.levels == 0 ? 1u : image.levels, 0, 1};
   const VkResult r = vkCreateImageView(device.handles().device, &info, nullptr, &out);
   if (r != VK_SUCCESS) {
     set_error(error, "vkCreateImageView", r);
@@ -355,6 +355,34 @@ bool create_sampler(const Device& device, VkFilter filter, VkSampler& out, std::
   info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
   info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
   info.maxLod = 0.0f;
+  const VkResult r = vkCreateSampler(device.handles().device, &info, nullptr, &out);
+  if (r != VK_SUCCESS) {
+    set_error(error, "vkCreateSampler", r);
+    out = VK_NULL_HANDLE;
+    return false;
+  }
+  return true;
+}
+
+bool create_mip_sampler(const Device& device, f32 max_anisotropy, VkSampler& out,
+                        std::string* error) {
+  VkSamplerCreateInfo info{};
+  info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+  info.magFilter = VK_FILTER_LINEAR;
+  info.minFilter = VK_FILTER_LINEAR;
+  info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+  // Clamped like `create_sampler`, so a built texture and its decoded fallback read the same
+  // texels at the edges and the two pictures differ only by what compression and mips do.
+  info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  info.minLod = 0.0f;
+  info.maxLod = VK_LOD_CLAMP_NONE;
+  const bool anisotropic = device.features().sampler_anisotropy && max_anisotropy > 1.0f;
+  info.anisotropyEnable = anisotropic ? VK_TRUE : VK_FALSE;
+  // Every device with the feature supports at least 16 (the Vulkan minimum for
+  // maxSamplerAnisotropy when samplerAnisotropy is true), so 16 needs no limit query.
+  info.maxAnisotropy = anisotropic ? (max_anisotropy > 16.0f ? 16.0f : max_anisotropy) : 1.0f;
   const VkResult r = vkCreateSampler(device.handles().device, &info, nullptr, &out);
   if (r != VK_SUCCESS) {
     set_error(error, "vkCreateSampler", r);

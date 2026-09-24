@@ -109,6 +109,7 @@ void read_device_caps(VkPhysicalDevice physical, DeviceCaps& out) {
   out.shader_int64 = flag(f2.features.shaderInt64);
   out.fragment_stores_and_atomics = flag(f2.features.fragmentStoresAndAtomics);
   out.sampler_anisotropy = flag(f2.features.samplerAnisotropy);
+  out.texture_compression_bc = flag(f2.features.textureCompressionBC);
   out.fill_mode_non_solid = flag(f2.features.fillModeNonSolid);
   out.shader_int16 = flag(f2.features.shaderInt16);
   out.shader_storage_image_write_without_format =

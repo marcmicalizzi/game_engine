@@ -54,6 +54,10 @@ ENGINE_EXPECT_SIZE(64, 4, geometry::ClusterFileMaterial);
 // type, with no padding to leave a later field room in.
 ENGINE_EXPECT_SIZE(24, 8, geometry::ClusterFileImage);
 
+// The built-texture record (section 32): the key and the source hash it was taken over, the packed
+// build options and the roles, with no padding — the same size as the image record it sits beside.
+ENGINE_EXPECT_SIZE(24, 8, geometry::ClusterFileTexture);
+
 // The surface binding record (surface_binding.h; plan 07 §7.11's proposed packing): a u16 refined
 // triangle, two u16 barycentrics, a half-float normal offset and a u16 blend weight, five u16 and
 // no padding. It is stored once per bound render vertex and read once per frame by the transfer,

@@ -224,10 +224,12 @@ void check_against(const char* name, bool ray_tracing, u64 golden_content,
   }
 }
 
-// Taken on MSVC 14.51 (msvc-debug and msvc-release agree), 2026-09-24, at cache version 13.
-// 180 clusters in 8 levels and 2 pages; the ray-tracing build 266 in 8 and 3. The empty sections
-// (no images, no skin) all hash to 0x9ca066f1a4ab2eea, which is `hash_bytes` of nothing.
-constexpr u64 k_raster_content = 0xc97c07597a655721ull;
+// Taken on MSVC 14.51 (msvc-debug and msvc-release agree), 2026-09-24, at cache version 13; the
+// section list grew by kind 32 (`textures`, empty here) at version 14, which moved the two content
+// hashes — they cover the section table — and no section's own hash. 180 clusters in 8 levels and
+// 2 pages; the ray-tracing build 266 in 8 and 3. The empty sections (no images, no skin, no
+// textures) all hash to 0x9ca066f1a4ab2eea, which is `hash_bytes` of nothing.
+constexpr u64 k_raster_content = 0xbf1fdadb89fa1be5ull;
 constexpr SectionHash k_raster_sections[] = {
     {1, 0x5c01f613aafe7769ull},   // clusters
     {2, 0x098fa5888c192cfbull},   // lod
@@ -260,8 +262,9 @@ constexpr SectionHash k_raster_sections[] = {
     {29, 0xaec380763763bf80ull},  // morph_scalars
     {30, 0x37c459dab3378470ull},  // vertex_ids
     {31, 0x89af6b25f28e6045ull},  // vertex_id_scalars
+    {32, 0x9ca066f1a4ab2eeaull},  // textures: none, since the fixture has no images
 };
-constexpr u64 k_ray_tracing_content = 0xedf33b619c01445full;
+constexpr u64 k_ray_tracing_content = 0xc86611875c8af106ull;
 constexpr SectionHash k_ray_tracing_sections[] = {
     {1, 0xfcbbc6820607644cull},   // clusters
     {2, 0x9f1ca027f3b30a57ull},   // lod
@@ -294,6 +297,7 @@ constexpr SectionHash k_ray_tracing_sections[] = {
     {29, 0xfafe6ffb3a6a47f8ull},  // morph_scalars
     {30, 0x2b3195264c33db68ull},  // vertex_ids
     {31, 0x89af6b25f28e6045ull},  // vertex_id_scalars
+    {32, 0x9ca066f1a4ab2eeaull},  // textures: none, since the fixture has no images
 };
 
 }  // namespace

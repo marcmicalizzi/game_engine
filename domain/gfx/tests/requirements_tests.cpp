@@ -98,6 +98,9 @@ gfx::DeviceCaps titan_xp_caps() {
   // Reported true by the card (2026-09-24); both rows came after its first report.
   caps.geometry_shader = 1;
   caps.full_draw_index_uint32 = 1;
+  // BC texture sampling: a core Vulkan 1.0 feature every desktop driver exposes, Pascal's
+  // included. Its row came after the card's report, so it is not in `k_titan_xp_rows` below.
+  caps.texture_compression_bc = 1;
   caps.storage_buffer_16bit_access = 1;
   caps.storage_buffer_8bit_access = 1;
   // Absent: VK_EXT_mesh_shader, VK_KHR_ray_query, VK_NV_cluster_acceleration_structure,
@@ -255,6 +258,8 @@ TEST_CASE("gfx: the requirements table answers without a device") {
   CHECK(any_mentions(verdict.degraded, "no geometryShader or fullDrawIndexUint32 either"));
   CHECK(any_mentions(verdict.degraded, "VK_KHR_acceleration_structure"));
   CHECK(any_mentions(verdict.degraded, "VK_KHR_swapchain"));
+  // And no block-compressed textures, which costs the built textures and not the picture.
+  CHECK(any_mentions(verdict.degraded, "no textureCompressionBC"));
 
   // A row name that does not exist is an error, so a misspelled profile cannot quietly test
   // nothing.

@@ -6,6 +6,7 @@
 #include <domain/geometry/cluster_file.h>
 #include <domain/geometry/cluster_pages.h>
 #include <domain/geometry/stress_mesh.h>
+#include <domain/texture/material_textures.h>
 #include <foundation/image/png.h>
 #include <foundation/io/vfs.h>
 #include <systems/renderer/scene.h>
@@ -81,7 +82,8 @@ void make_terrain(u32 n, f32 extent, Vector<Vec3>& positions, Vector<u32>& indic
 bool write_cluster_cache(const std::string& path, const std::string& source,
                          const assets::MeshData& mesh_data, const Vector<i32>& part_material,
                          const Vector<u32>& part_of_cluster, geometry::ClusterLodMesh& lod,
-                         geometry::ClusterPages& pages) {
+                         geometry::ClusterPages& pages,
+                         Vector<geometry::ClusterFileTexture>& textures) {
   geometry::ClusterFileData data;
   data.mesh = std::move(lod);
   data.pages = std::move(pages);
@@ -131,6 +133,10 @@ bool write_cluster_cache(const std::string& path, const std::string& source,
     carried.bytes = image.bytes;
     data.images.push_back(std::move(carried));
   }
+  // Where each image's built texture is, by the same function engine-content build calls, so the
+  // two apps' entries stay the same bytes; the records come back to the caller whether or not the
+  // entry lands, because the texture lookup does not depend on it (texture.md).
+  texture::fill_cluster_texture_records(data);
 
   std::string error;
   const io::Status status = io::make_directories(io::parent_path(path));
@@ -146,6 +152,7 @@ bool write_cluster_cache(const std::string& path, const std::string& source,
   }
   lod = std::move(data.mesh);
   pages = std::move(data.pages);
+  textures = std::move(data.textures);
   return error.empty();
 }
 
@@ -212,6 +219,7 @@ void adopt_container(geometry::ClusterFileData& container_data, const std::strin
     }
     out.data.images.push_back(std::move(image));
   }
+  out.textures = std::move(container_data.textures);  // where the built textures are, if any
   out.part_of_cluster = std::move(container_data.cluster_material);
   if (out.part_of_cluster.empty()) {  // a container with no material map: one default for all
     out.part_of_cluster = Vector<u32>(lod.mesh.clusters.size(), out.part_material.size());
@@ -341,7 +349,7 @@ bool load_terrain(const SceneDesc& desc, SourceMesh& out, geometry::ClusterLodMe
                   log::field("clusters", lod.mesh.clusters.size()),
                   log::field("lod_levels", lod.level_cluster_counts.size()));
   if (!cache_path.empty() && write_cluster_cache(cache_path, "", out.data, out.part_material,
-                                                 out.part_of_cluster, lod, built)) {
+                                                 out.part_of_cluster, lod, built, out.textures)) {
     out.container = cache_path;
   }
   if (desc.stream) pages = std::move(built);
@@ -359,6 +367,9 @@ bool load_source_mesh(const std::string& path, const SceneDesc& desc, u64 expect
   auto page_layout = [&](const char* what, u32 page_bytes) {
     lay_out_pages(desc, what, page_bytes, out, lod, pages);
   };
+  // Built textures live in the same derived-data root as built meshes, and a load that reads no
+  // cache reads neither (texture.md, "In the renderer").
+  out.texture_ddc = desc.cache ? desc.ddc : std::string();
   if (path.empty() && desc.terrain.enabled) return load_terrain(desc, out, lod, pages, error);
   if (path.empty() && desc.procedural == Procedural::shredded_atlas) {
     // The atlas stress fixture, built here rather than committed as a file so that the scene
@@ -549,7 +560,7 @@ bool load_source_mesh(const std::string& path, const SceneDesc& desc, u64 expect
   // app fills the cache, either app finds it.
   if (!cache_path.empty()) {
     if (write_cluster_cache(cache_path, path, out.data, out.part_material, out.part_of_cluster, lod,
-                            built)) {
+                            built, out.textures)) {
       // The entry this load just wrote holds the same bytes in the same order this mesh is now in,
       // so a streamed run may read its pages back out of it rather than out of host memory.
       out.container = cache_path;

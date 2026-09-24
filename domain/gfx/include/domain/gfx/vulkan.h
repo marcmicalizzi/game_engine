@@ -55,6 +55,16 @@ struct ImageResource {
   VkFormat format = VK_FORMAT_UNDEFINED;
   u32 width = 0;
   u32 height = 0;
+  u32 levels = 1;  // mip levels; a view made by create_image_view covers all of them
+  u64 bytes = 0;   // what the allocation takes on the device, as VMA reports it
+};
+
+// One mip level's bytes for `upload_image_2d_levels`, tightly packed: rows of texels for an
+// uncompressed format, rows of 4x4 blocks for a block-compressed one (a level whose sides are not
+// multiples of four still takes whole blocks).
+struct ImageLevelData {
+  const void* data = nullptr;
+  u64 bytes = 0;
 };
 
 // host_visible buffers are persistently mapped and host-coherent (upload and readback);
@@ -71,6 +81,14 @@ bool upload_buffer(const Device& device, const void* data, u64 bytes, VkBufferUs
 bool upload_image_2d(const Device& device, u32 width, u32 height, VkFormat format,
                      const void* pixels, u64 bytes, ImageResource& out,
                      std::string* error = nullptr);
+// The same with a mip chain: `levels.size()` levels of `width` x `height` halved (rounded down,
+// never below one) at each step, level 0 first, all copied from one staging buffer in one
+// submission and left in SHADER_READ_ONLY_OPTIMAL. The format may be block-compressed (the BC
+// formats need DeviceFeatures::texture_compression_bc); each level's bytes are then its blocks.
+// This is how the content build's textures reach the GPU without a decode (texture.md).
+bool upload_image_2d_levels(const Device& device, u32 width, u32 height, VkFormat format,
+                            std::span<const ImageLevelData> levels, ImageResource& out,
+                            std::string* error = nullptr);
 
 bool create_image_2d(const Device& device, u32 width, u32 height, VkFormat format,
                      VkImageUsageFlags usage, ImageResource& out, std::string* error = nullptr);

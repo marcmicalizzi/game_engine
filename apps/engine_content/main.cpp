@@ -15,9 +15,14 @@
 // `build-all` reads a manifest of meshes and builds every entry that is not already up to date,
 // one job per mesh. `--cache` puts a build into the derived-data cache, under the hash of the
 // source and the build options, which is the path `engine-view --mesh` looks in before it builds
-// anything. `info` prints what a container holds; `stats` prints the content-build metrics of a
-// container. Every command prints one JSON line per result on stdout, so scripts and agents read
-// the numbers without parsing prose; everything else goes through the log to stderr.
+// anything. Every image a mesh's materials sample is also a derived node of its own
+// (docs/subsystems/texture.md): a build that has a derived-data root builds each into
+// `<ddc>/textures/<key>.tex` — block-compressed, mipmapped, keyed by the image's own bytes and the
+// options its material slots ask for — and records the key in the container, so the renderer
+// finds it from the container alone. `texture` builds one image the same way. `info` prints what a
+// container or a texture holds; `stats` prints the content-build metrics of a container. Every
+// command prints one JSON line per result on stdout, so scripts and agents read the numbers without
+// parsing prose; everything else goes through the log to stderr.
 //
 // `tissue` and `limit-dump` live beside this file (content_commands.h): the tissue definition's
 // import, info, validators and report, and the limit-surface conformance exchange.
@@ -35,6 +40,9 @@
 #include <domain/assets/gltf.h>
 #include <domain/atlas/repack.h>
 #include <domain/geometry/cluster_file.h>
+#include <domain/texture/material_textures.h>
+#include <domain/texture/texture_build.h>
+#include <domain/texture/texture_file.h>
 #include <foundation/io/vfs.h>
 
 #include <algorithm>
@@ -87,16 +95,32 @@ const char* k_usage =
     "                            times the source texture's side\n"
     "      --cache               write into the derived-data cache instead of a named output,\n"
     "                            addressed by the source and the options above\n"
-    "      --ddc <dir>           the cache root (default: <repo>/ddc, found beside AGENTS.md)\n"
+    "      --ddc <dir>           the cache root (default: <repo>/ddc, found beside AGENTS.md).\n"
+    "                            The images the materials sample are built into\n"
+    "                            <ddc>/textures/ whenever the build has a root: with --cache,\n"
+    "                            or with --ddc named outright. A named output with neither\n"
+    "                            writes the container and touches nothing else\n"
+    "      --no-textures         build no textures (the container still records their keys)\n"
     "      --jobs <n>            performance-pool workers: one per primitive here, one per\n"
-    "                            mesh in build-all (default: the machine's performance CPUs)\n"
+    "                            mesh in build-all, and a texture's block rows in both\n"
+    "                            (default: the machine's performance CPUs)\n"
     "      --strict              treat validation warnings as errors\n"
     "      --log <spec>          log levels, e.g. \"info\" or \"warn,content=debug\"\n"
     "  build-all <manifest.json>               build every mesh a manifest names\n"
     "      --cache               entries with no \"output\" go to the derived-data cache\n"
     "      --page-bytes <n>      the default for entries whose \"options\" do not say\n"
-    "      --ddc <dir>, --jobs <n>, --strict, --log <spec>   as above\n"
-    "  info <file.clusters>                    print the header, sections, and counts\n"
+    "      --ddc <dir>, --no-textures, --jobs <n>, --strict, --log <spec>   as above; a mesh\n"
+    "                            that is up to date still has its textures checked\n"
+    "  texture <in.png|jpg|tga|bmp> <out.tex>   build one image into a block-compressed texture\n"
+    "      --format <f>          auto (default), bc1, bc3, bc4, bc5, bc7 or rgba8. auto is bc5\n"
+    "                            for a normal map, bc4 for a one-channel --linear image, bc7\n"
+    "                            otherwise\n"
+    "      --srgb | --linear     what the image's bytes are: colour (default) or data\n"
+    "      --normal              a tangent-space normal map: renormalized, filtered as vectors\n"
+    "      --no-mips             level 0 alone (default: the full chain to 1x1)\n"
+    "      --cache               write <ddc>/textures/<key>.tex instead of a named output\n"
+    "      --ddc <dir>, --jobs <n>, --log <spec>   as above\n"
+    "  info <file.clusters|file.tex>           print the header, sections, and counts\n"
     "  stats <file.clusters>                   print the content-build metrics of a container\n"
     "  tissue import|info|validate|report|example ...   tissue definitions (engine-content tissue\n"
     "                                          help); present with the tissue capability\n"
@@ -117,6 +141,8 @@ const char* k_usage =
     "  engine-content build content/samples/Suzanne/Suzanne.gltf --cache\n"
     "  engine-content build prop.glb prop.clusters --atlas repack\n"
     "  engine-content build-all content/meshes.json --cache --jobs 8\n"
+    "  engine-content texture albedo.png albedo.tex --format bc7 --srgb\n"
+    "  engine-content texture normal.png normal.tex --normal\n"
     "  engine-content info ddc/suzanne.clusters\n"
     "  engine-content stats ddc/suzanne.clusters\n";
 
@@ -454,6 +480,38 @@ bool validate_mesh(const assets::MeshData& mesh, const std::string& source, Diag
 
 // ---- building one mesh ------------------------------------------------------------------------
 
+// One image a mesh's materials sample, as the texture step needs it: which image, the options its
+// slots ask for (`texture::options_for_roles`, packed), and where its bytes are — carried in the
+// container, or in a file beside the source.
+struct TextureSource {
+  u32 image = 0;
+  u32 options = 0;
+  std::string file;  // the image file, resolved against the source's directory; empty if embedded
+  Vector<u8> bytes;  // the embedded bytes; empty when `file` names them
+};
+
+// The images of a container's records that have a texture to build, in image order. `dir` is what
+// a path in the container is relative to: the source mesh's directory.
+void collect_texture_sources(const geometry::ClusterFileData& data, std::string_view dir,
+                             Vector<TextureSource>& out) {
+  out.clear();
+  for (u32 i = 0; i < data.textures.size(); ++i) {
+    const geometry::ClusterFileTexture& record = data.textures[i];
+    if (record.options == 0) continue;
+    TextureSource source;
+    source.image = i;
+    source.options = record.options;
+    if (i < data.images.size() && !data.images[i].bytes.empty()) {
+      source.bytes = data.images[i].bytes;
+    } else if (i < data.image_paths.size() && !data.image_paths[i].empty()) {
+      source.file = dir.empty() ? data.image_paths[i] : io::join_path(dir, data.image_paths[i]);
+    } else {
+      continue;  // an image with neither bytes nor a path: validation has already said so
+    }
+    out.push_back(std::move(source));
+  }
+}
+
 struct BuildResult {
   std::string path;
   bool cached = false;
@@ -482,6 +540,8 @@ struct BuildResult {
   geometry::UvRepairReport uv_repair;  // what the UV repair did; all zero when it had nothing to do
   bool repacked = false;               // `--atlas repack` ran (whether or not it changed anything)
   atlas::RepackReport atlas;
+  // The images the texture step builds for this mesh, from the records the container carries.
+  Vector<TextureSource> texture_sources;
 };
 
 // One primitive's DAG, as a job sees it. The result lives here rather than in a shared list, so
@@ -714,6 +774,11 @@ bool build_one(const std::string& input, const std::string& output, const MeshOp
     data.images.push_back(std::move(carried));
   }
   const geometry::ClusterImageSummary images = geometry::summarize_cluster_images(data);
+  // Where each image's built texture is: the options its material slots ask for and, for the
+  // images this container carries, the key (docs/subsystems/texture.md). engine-view's own cache
+  // writer calls the same function, because the two share cache entries byte for byte.
+  texture::fill_cluster_texture_records(data);
+  collect_texture_sources(data, io::parent_path(input), out.texture_sources);
 
   // The source as it was given, so the renderer resolves the image paths above against its
   // directory however it came by the container, and the source's identity, so that a later build
@@ -923,6 +988,270 @@ jobs::JobSystemConfig job_config(u32 worker_count) {
   return config;
 }
 
+// ---- the texture step (docs/subsystems/texture.md) ---------------------------------------------
+
+// A missing image file is the validation warning `material.missing_image` again, not a new
+// failure: the mesh built, and that texture draws as it always did without its file.
+constexpr const char* k_rule_texture_missing = "material.missing_image";
+constexpr const char* k_rule_texture_build = "texture.build";
+// An image the decoder cannot read (a WebP or KTX2 source, a truncated PNG) or the builder cannot
+// take (a side past 16,384) is a warning of its own: the mesh still builds and the image draws as
+// it did before textures were built, which for an unreadable one is not at all. A write that
+// fails is `texture.build` and fails the command.
+constexpr const char* k_rule_texture_unreadable = "texture.unreadable";
+
+enum class TextureState : u8 { Built, Skipped, Shared, Missing, Failed, Unreadable };
+
+const char* texture_state_name(TextureState state) noexcept {
+  switch (state) {
+    case TextureState::Built: return "built";
+    case TextureState::Skipped: return "skipped";
+    case TextureState::Shared: return "shared";
+    case TextureState::Missing: return "missing";
+    case TextureState::Failed: return "failed";
+    case TextureState::Unreadable: return "unreadable";
+  }
+  return "?";
+}
+
+// One texture of the step, in the order the step met it.
+struct TextureResult {
+  u32 mesh = 0;  // the manifest entry (0 for `build`) that first asked for it
+  u32 image = 0;
+  TextureState state = TextureState::Failed;
+  std::string path;
+  std::string error;
+  u64 source_hash = 0;
+  u64 key = 0;
+  u64 source_bytes = 0;
+  u64 bytes = 0;  // of the .tex, built or found
+  texture::TextureFormat format = texture::TextureFormat::rgba8;
+  texture::ColorSpace color_space = texture::ColorSpace::linear;
+  u32 width = 0;
+  u32 height = 0;
+  u32 levels = 0;
+  f64 build_ms = 0.0;
+  texture::TextureBuildReport report;
+};
+
+f64 ms_since(i64 start_ns) noexcept {
+  return static_cast<f64>(time::monotonic_ns() - start_ns) / 1.0e6;
+}
+
+// A number JSON can hold: PSNR is infinite for an exact texture, and JSON has no infinity.
+JsonValue finite_or_null(f64 value) {
+  return std::isfinite(value) ? JsonValue(value) : JsonValue();
+}
+
+// One texture of the step on its way through: the source's bytes, owned when they came from a
+// file, and what building them needs. A job writes its own task and nothing else.
+struct TextureTask {
+  TextureResult result;
+  std::string file_bytes;
+  std::span<const u8> bytes;
+  texture::TextureBuildOptions options;
+  jobs::JobSystem* pool = nullptr;
+  i64 start_ns = 0;
+};
+
+void build_texture_task(void* data) {
+  TextureTask& task = *static_cast<TextureTask*>(data);
+  TextureResult& out = task.result;
+  const i64 start_ns = time::monotonic_ns();
+  texture::TextureData built;
+  std::string error;
+  if (!texture::build_texture_from_encoded(task.bytes, task.options, built, task.pool, &error,
+                                           &out.report)) {
+    out.state = TextureState::Unreadable;
+    out.error = error;
+    return;
+  }
+  const io::Status made = io::make_directories(io::parent_path(out.path));
+  if (made != io::Status::Ok || !texture::write_texture_file(out.path, built, &error)) {
+    out.state = TextureState::Failed;
+    out.error =
+        made != io::Status::Ok
+            ? std::string("cannot create the texture cache directory: ") + io::status_name(made)
+            : error;
+    return;
+  }
+  io::FileInfo info;
+  out.bytes = io::stat_file(out.path, info) == io::Status::Ok ? info.size : 0;
+  out.format = built.format;
+  out.color_space = built.color_space;
+  out.width = built.width;
+  out.height = built.height;
+  out.levels = built.levels.size();
+  out.build_ms = ms_since(start_ns);
+  out.state = TextureState::Built;
+}
+
+// The texture step over `sources` (with `mesh_of`, the manifest entry each came from), into
+// `ddc`. Two passes:
+//
+//   1. In order, on the calling thread: read each source's bytes, hash them, and take the key —
+//      a function of the bytes and the options, never of a path or a timestamp, so a repainted
+//      file is a new key and an entry already built under a key is a hit however it got there.
+//      A key met earlier in the step is `shared` (two slots or two meshes naming identical bytes
+//      with identical options cost one build); an entry whose recorded identity matches is
+//      `skipped`.
+//   2. Every texture left, one job each on the performance pool, and each of those spreads its
+//      mip rows and block rows over the same pool — a nested wait helps rather than blocks — so a
+//      mesh of fifteen textures keeps every worker busy through the serial parts of each (the
+//      decode above all), and one large texture still uses them all.
+//
+// Every job writes its own slot and its own file, so neither the files nor `out`'s order depends
+// on which finished first.
+void run_texture_step(std::span<const TextureSource* const> sources, std::span<const u32> mesh_of,
+                      const std::string& ddc, jobs::JobSystem& pool, Vector<TextureResult>& out) {
+  out.clear();
+  Vector<TextureTask> tasks(static_cast<u32>(sources.size()));
+  Vector<u64> seen;
+  Vector<jobs::Job> job_list;
+  jobs::Counter counter;
+  for (u32 i = 0; i < sources.size(); ++i) {
+    const TextureSource& source = *sources[i];
+    TextureTask& task = tasks[i];
+    TextureResult& r = task.result;
+    task.start_ns = time::monotonic_ns();
+    r.mesh = mesh_of[i];
+    r.image = source.image;
+    task.bytes = std::span<const u8>(source.bytes.data(), source.bytes.size());
+    if (!source.file.empty()) {
+      const io::Status status = io::read_file(source.file, task.file_bytes);
+      if (status != io::Status::Ok) {
+        r.state = TextureState::Missing;
+        r.path = source.file;
+        r.error = "cannot read '" + source.file + "': " + io::status_name(status);
+        continue;
+      }
+      task.bytes = std::span<const u8>(reinterpret_cast<const u8*>(task.file_bytes.data()),
+                                       task.file_bytes.size());
+    }
+    if (!texture::unpack_texture_options(source.options, task.options)) {
+      r.state = TextureState::Failed;
+      r.error = "the container's texture options word " + std::to_string(source.options) +
+                " is not one this build reads";
+      continue;
+    }
+    r.source_bytes = task.bytes.size();
+    r.source_hash = hash_bytes(task.bytes.data(), task.bytes.size());
+    r.key = texture::texture_cache_key(r.source_hash, task.options);
+    r.path = texture::texture_cache_path(ddc, r.key);
+    bool shared = false;
+    for (const u64 key : seen)
+      shared = shared || key == r.key;
+    if (shared) {
+      r.state = TextureState::Shared;
+      continue;
+    }
+    seen.push_back(r.key);
+    // Up to date when the entry that is there was built from these bytes with these options; the
+    // identity is checked rather than trusted from the file name, the way a container's is.
+    u64 had_hash = 0;
+    u64 had_key = 0;
+    if (io::exists(r.path) && texture::read_texture_file_identity(r.path, had_hash, had_key) &&
+        had_hash == r.source_hash && had_key == r.key) {
+      io::FileInfo info;
+      r.bytes = io::stat_file(r.path, info) == io::Status::Ok ? info.size : 0;
+      r.state = TextureState::Skipped;
+      continue;
+    }
+    task.pool = &pool;
+    r.state = TextureState::Failed;  // until the job says otherwise
+    job_list.push_back(jobs::Job{build_texture_task, &task, &counter});
+  }
+  if (!job_list.empty()) {
+    pool.schedule(jobs::Pool::Performance,
+                  std::span<const jobs::Job>(job_list.data(), job_list.size()), counter);
+    pool.wait(counter);
+  }
+  out.reserve(tasks.size());
+  for (TextureTask& task : tasks)
+    out.push_back(std::move(task.result));
+}
+
+// The step's totals and rows as a build's `textures` object, over the results of `mesh` or of every
+// mesh (`~0`). `enabled` false says why nothing was built, so an empty object is never mistaken
+// for a mesh with no textures.
+JsonValue textures_json(const Vector<TextureResult>& results, u32 mesh, bool enabled, bool detail) {
+  JsonValue out = JsonValue::object();
+  out.set("enabled", JsonValue(enabled));
+  u32 counts[6] = {0, 0, 0, 0, 0, 0};
+  u64 bytes = 0;
+  u64 source_bytes = 0;
+  f64 build_ms = 0.0;
+  JsonValue rows = JsonValue::array();
+  for (const TextureResult& r : results) {
+    if (mesh != ~u32{0} && r.mesh != mesh) continue;
+    ++counts[static_cast<u32>(r.state)];
+    if (r.state == TextureState::Built || r.state == TextureState::Skipped) {
+      bytes += r.bytes;
+      source_bytes += r.source_bytes;
+    }
+    build_ms += r.build_ms;
+    if (!detail) continue;
+    JsonValue row = JsonValue::object();
+    row.set("image", JsonValue(r.image));
+    row.set("status", JsonValue(texture_state_name(r.state)));
+    row.set("path", JsonValue(r.path));
+    row.set("key", JsonValue(r.key));
+    row.set("source_bytes", JsonValue(r.source_bytes));
+    if (r.state == TextureState::Built) {
+      row.set("format", JsonValue(texture::texture_format_name(r.format)));
+      row.set("color_space", JsonValue(texture::color_space_name(r.color_space)));
+      row.set("width", JsonValue(r.width));
+      row.set("height", JsonValue(r.height));
+      row.set("levels", JsonValue(r.levels));
+      row.set("bytes", JsonValue(r.bytes));
+      row.set("psnr", finite_or_null(r.report.psnr));
+      row.set("max_error", JsonValue(r.report.max_error));
+      JsonValue ms = JsonValue::object();
+      ms.set("decode", JsonValue(r.report.decode_ms));
+      ms.set("mips", JsonValue(r.report.mip_ms));
+      ms.set("encode", JsonValue(r.report.encode_ms));
+      ms.set("total", JsonValue(r.build_ms));
+      row.set("ms", std::move(ms));
+    } else if (r.state == TextureState::Skipped) {
+      row.set("bytes", JsonValue(r.bytes));
+    }
+    if (!r.error.empty()) row.set("error", JsonValue(r.error));
+    rows.push_back(std::move(row));
+  }
+  out.set("built", JsonValue(counts[static_cast<u32>(TextureState::Built)]));
+  out.set("skipped", JsonValue(counts[static_cast<u32>(TextureState::Skipped)]));
+  out.set("shared", JsonValue(counts[static_cast<u32>(TextureState::Shared)]));
+  out.set("missing", JsonValue(counts[static_cast<u32>(TextureState::Missing)]));
+  out.set("failed", JsonValue(counts[static_cast<u32>(TextureState::Failed)]));
+  out.set("unreadable", JsonValue(counts[static_cast<u32>(TextureState::Unreadable)]));
+  out.set("bytes", JsonValue(bytes));
+  out.set("source_bytes", JsonValue(source_bytes));
+  out.set("build_ms", JsonValue(build_ms));
+  if (detail) out.set("detail", std::move(rows));
+  return out;
+}
+
+// What went wrong in the step, on stderr, for a person: a failure is an error line, a missing file
+// the validation warning it already was.
+u32 report_texture_problems(const Vector<TextureResult>& results) {
+  u32 failures = 0;
+  for (const TextureResult& r : results) {
+    if (r.state == TextureState::Failed) {
+      ++failures;
+      std::fprintf(stderr, "engine-content: %s: image %u: %s\n", k_rule_texture_build, r.image,
+                   r.error.c_str());
+    } else if (r.state == TextureState::Missing) {
+      ENGINE_LOG_WARN(log_content, "texture not built", log::field("rule", k_rule_texture_missing),
+                      log::field("image", r.image), log::field("detail", r.error));
+    } else if (r.state == TextureState::Unreadable) {
+      ENGINE_LOG_WARN(log_content, "texture not built",
+                      log::field("rule", k_rule_texture_unreadable), log::field("image", r.image),
+                      log::field("detail", r.error));
+    }
+  }
+  return failures;
+}
+
 // ---- build ------------------------------------------------------------------------------------
 
 struct BuildCommandOptions {
@@ -934,6 +1263,12 @@ struct BuildCommandOptions {
   u32 jobs = 0;
   bool cache = false;
   bool strict = false;
+  // The texture step runs when the build has a derived-data root to put textures in: `--cache`, or
+  // `--ddc` named outright. A named output with neither touches nothing but that output, which is
+  // what every build did before textures were derived and what every test that builds into its own
+  // scratch directory relies on.
+  bool textures = true;
+  bool ddc_named = false;
 };
 
 int build(const BuildCommandOptions& options) {
@@ -964,6 +1299,21 @@ int build(const BuildCommandOptions& options) {
   print_repairs(options.input, result);
   print_atlas(options.input, result);
 
+  // The texture step, after the container: every image a material samples, reported in the
+  // container's image order whatever order the jobs finished in (`run_texture_step`).
+  const bool textures = options.textures && (options.cache || options.ddc_named);
+  Vector<TextureResult> texture_results;
+  if (textures) {
+    Vector<const TextureSource*> sources;
+    for (const TextureSource& source : result.texture_sources)
+      sources.push_back(&source);
+    const Vector<u32> mesh_of(sources.size(), 0u);
+    run_texture_step(std::span<const TextureSource* const>(sources.data(), sources.size()),
+                     std::span<const u32>(mesh_of.data(), mesh_of.size()), options.ddc, pool,
+                     texture_results);
+  }
+  const u32 texture_failures = report_texture_problems(texture_results);
+
   JsonValue summary = JsonValue::object();
   summary.set("path", JsonValue(result.path));
   summary.set("cached", JsonValue(options.cache));
@@ -986,11 +1336,12 @@ int build(const BuildCommandOptions& options) {
   summary.set("warnings", JsonValue(result.warnings.size()));
   summary.set("repairs", repairs_json(result));
   summary.set("atlas", atlas_json(result, options.mesh));
+  summary.set("textures", textures_json(texture_results, ~u32{0}, textures, true));
   summary.set("bytes", JsonValue(result.bytes));
   summary.set("build_ms", JsonValue(result.build_ms));
   summary.set("hash", JsonValue(result.hash));
   print_json(summary);
-  return k_exit_ok;
+  return texture_failures == 0 ? k_exit_ok : k_exit_error;
 }
 
 int build_command(int argc, char** argv) {
@@ -1039,6 +1390,9 @@ int build_command(int argc, char** argv) {
       if (!next_value(argc, argv, i, options.log_spec)) return k_exit_usage;
     } else if (a == "--ddc") {
       if (!next_value(argc, argv, i, options.ddc)) return k_exit_usage;
+      options.ddc_named = true;
+    } else if (a == "--no-textures") {
+      options.textures = false;
     } else if (a == "--no-weld") {
       options.mesh.weld = false;
     } else if (a == "--no-morph") {
@@ -1247,7 +1601,27 @@ struct BuildAllCommandOptions {
   u32 jobs = 0;
   bool cache = false;
   bool strict = false;
+  bool textures = true;    // as `build`: when there is a derived-data root
+  bool ddc_named = false;  // --ddc was given
 };
+
+// The texture sources of a container already on disk and up to date, which `build-all` skipped:
+// its resident sections hold the records, the carried bytes and the paths, so the mesh is not
+// rebuilt to find out which images it samples. A container that cannot be opened contributes
+// nothing and says so.
+void texture_sources_of_container(const std::string& path, const std::string& source,
+                                  Vector<TextureSource>& out) {
+  out.clear();
+  geometry::ClusterFileReader reader;
+  geometry::ClusterFileData resident;
+  std::string error;
+  if (!reader.open(path, &resident, &error)) {
+    ENGINE_LOG_WARN(log_content, "textures not checked", log::field("path", path),
+                    log::field("error", error));
+    return;
+  }
+  collect_texture_sources(resident, io::parent_path(source), out);
+}
 
 int build_all(const BuildAllCommandOptions& options) {
   const i64 start_ns = time::monotonic_ns();
@@ -1277,8 +1651,8 @@ int build_all(const BuildAllCommandOptions& options) {
     tasks.push_back(std::move(task));
   }
 
+  jobs::JobSystem pool(job_config(options.jobs));
   {
-    jobs::JobSystem pool(job_config(options.jobs));
     Vector<jobs::Job> job_list;
     job_list.reserve(tasks.size());
     jobs::Counter counter;
@@ -1291,14 +1665,48 @@ int build_all(const BuildAllCommandOptions& options) {
     }
   }
 
+  // The texture step, once every container is settled, in manifest order and then image order —
+  // never completion order — with a texture two meshes share built once, for the first of them.
+  // A mesh that was up to date still has its textures checked, because a texture's entry can be
+  // missing (a cache that lost it, a container engine-view wrote) while its container is current.
+  const bool textures = options.textures && (options.cache || options.ddc_named);
+  Vector<TextureResult> texture_results;
+  if (textures) {
+    // The up-to-date meshes' sources come out of their containers; each list lives until the step
+    // is done, since the step holds pointers into them.
+    Vector<Vector<TextureSource>> from_containers(tasks.size());
+    Vector<const TextureSource*> sources;
+    Vector<u32> mesh_of;
+    for (u32 m = 0; m < tasks.size(); ++m) {
+      const MeshTask& task = tasks[m];
+      const Vector<TextureSource>* list = &task.result.texture_sources;
+      if (task.state == TaskState::Skipped) {
+        texture_sources_of_container(task.result.path, task.entry->source, from_containers[m]);
+        list = &from_containers[m];
+      } else if (task.state != TaskState::Built) {
+        continue;
+      }
+      for (const TextureSource& source : *list) {
+        sources.push_back(&source);
+        mesh_of.push_back(m);
+      }
+    }
+    run_texture_step(std::span<const TextureSource* const>(sources.data(), sources.size()),
+                     std::span<const u32>(mesh_of.data(), mesh_of.size()), options.ddc, pool,
+                     texture_results);
+  }
+  const u32 texture_failures = report_texture_problems(texture_results);
+
   u32 built = 0;
   u32 skipped = 0;
   u32 failures = 0;
-  for (const MeshTask& task : tasks) {
+  for (u32 m = 0; m < tasks.size(); ++m) {
+    const MeshTask& task = tasks[m];
     log_warnings(task.entry->source, task.result.warnings);
     JsonValue line = JsonValue::object();
     line.set("source", JsonValue(task.entry->source));
     line.set("path", JsonValue(task.result.path));
+    line.set("textures", textures_json(texture_results, m, textures, false));
     switch (task.state) {
       case TaskState::Built: {
         ++built;
@@ -1355,9 +1763,10 @@ int build_all(const BuildAllCommandOptions& options) {
   summary.set("built", JsonValue(built));
   summary.set("skipped", JsonValue(skipped));
   summary.set("failed", JsonValue(failures));
+  summary.set("textures", textures_json(texture_results, ~u32{0}, textures, true));
   summary.set("seconds", JsonValue(static_cast<f64>(time::monotonic_ns() - start_ns) / 1.0e9));
   print_json(summary);
-  return failures == 0 ? k_exit_ok : k_exit_error;
+  return failures == 0 && texture_failures == 0 ? k_exit_ok : k_exit_error;
 }
 
 int build_all_command(int argc, char** argv) {
@@ -1373,6 +1782,9 @@ int build_all_command(int argc, char** argv) {
       if (!next_value(argc, argv, i, options.log_spec)) return k_exit_usage;
     } else if (a == "--ddc") {
       if (!next_value(argc, argv, i, options.ddc)) return k_exit_usage;
+      options.ddc_named = true;
+    } else if (a == "--no-textures") {
+      options.textures = false;
     } else if (a == "--cache") {
       options.cache = true;
     } else if (a == "--strict") {
@@ -1395,6 +1807,151 @@ int build_all_command(int argc, char** argv) {
   log::StreamSink stderr_sink(stderr, log::StreamSink::Format::Text);
   start_logging(stderr_sink, options.log_spec);
   const int code = build_all(options);
+  log::remove_sink(&stderr_sink);
+  return code;
+}
+
+// ---- texture ------------------------------------------------------------------------------------
+
+struct TextureCommandOptions {
+  std::string input;
+  std::string output;
+  std::string log_spec;
+  std::string ddc;
+  texture::TextureBuildOptions build;
+  u32 jobs = 0;
+  bool cache = false;
+};
+
+// One image into a `.tex`: the same function the mesh build's texture step calls, with the options
+// given on the command line instead of taken from a material slot, so a texture built here for the
+// same bytes and options is the same bytes and the same cache entry.
+int texture_command_run(const TextureCommandOptions& options) {
+  const i64 start_ns = time::monotonic_ns();
+  std::string bytes;
+  const io::Status status = io::read_file(options.input, bytes);
+  if (status != io::Status::Ok) {
+    return failed("cannot read '" + options.input + "': " + io::status_name(status));
+  }
+  const std::span<const u8> encoded(reinterpret_cast<const u8*>(bytes.data()), bytes.size());
+  const u64 source_hash = hash_bytes(encoded.data(), encoded.size());
+  const u64 key = texture::texture_cache_key(source_hash, options.build);
+  std::string output = options.output;
+  if (options.cache) {
+    output = texture::texture_cache_path(options.ddc, key);
+    const io::Status made = io::make_directories(io::parent_path(output));
+    if (made != io::Status::Ok) {
+      return failed("cannot create the cache directory '" + std::string(io::parent_path(output)) +
+                    "': " + io::status_name(made));
+    }
+  }
+  jobs::JobSystem pool(job_config(options.jobs));
+  texture::TextureData data;
+  texture::TextureBuildReport report;
+  std::string error;
+  if (!texture::build_texture_from_encoded(encoded, options.build, data, &pool, &error, &report))
+    return failed(std::string(k_rule_texture_build) + ": '" + options.input + "': " + error);
+  if (!texture::write_texture_file(output, data, &error))
+    return failed("output.unwritable: " + error);
+  io::FileInfo info;
+  const u64 written = io::stat_file(output, info) == io::Status::Ok ? info.size : 0;
+
+  JsonValue summary = JsonValue::object();
+  summary.set("path", JsonValue(output));
+  summary.set("cached", JsonValue(options.cache));
+  summary.set("source", JsonValue(options.input));
+  summary.set("source_bytes", JsonValue(static_cast<u64>(bytes.size())));
+  summary.set("source_channels", JsonValue(data.source_channels));
+  summary.set("source_hash", JsonValue(data.source_hash));
+  summary.set("build_key", JsonValue(data.build_key));
+  summary.set("format", JsonValue(texture::texture_format_name(data.format)));
+  summary.set("color_space", JsonValue(texture::color_space_name(data.color_space)));
+  summary.set("normal_map", JsonValue((data.flags & texture::k_texture_normal_map) != 0));
+  summary.set("has_alpha", JsonValue((data.flags & texture::k_texture_has_alpha) != 0));
+  summary.set("width", JsonValue(data.width));
+  summary.set("height", JsonValue(data.height));
+  summary.set("levels", JsonValue(data.levels.size()));
+  summary.set("block_bytes", JsonValue(data.data.size()));
+  summary.set("bytes", JsonValue(written));
+  summary.set("psnr", finite_or_null(report.psnr));
+  summary.set("max_error", JsonValue(report.max_error));
+  JsonValue ms = JsonValue::object();
+  ms.set("decode", JsonValue(report.decode_ms));
+  ms.set("mips", JsonValue(report.mip_ms));
+  ms.set("encode", JsonValue(report.encode_ms));
+  ms.set("total", JsonValue(ms_since(start_ns)));
+  summary.set("ms", std::move(ms));
+  summary.set("jobs", JsonValue(pool.worker_count(jobs::Pool::Performance)));
+  summary.set("hash", JsonValue(texture::texture_file_hash(data)));
+  print_json(summary);
+  return k_exit_ok;
+}
+
+int texture_command(int argc, char** argv) {
+  TextureCommandOptions options;
+  Vector<std::string> positional;
+  bool srgb_given = false;
+  bool linear_given = false;
+  for (int i = 2; i < argc; ++i) {
+    const std::string_view a = argv[i];
+    if (a == "--format") {
+      std::string value;
+      if (!next_value(argc, argv, i, value)) return k_exit_usage;
+      if (!texture::parse_format_choice(value, options.build.format))
+        return usage("--format is auto, bc1, bc3, bc4, bc5, bc7 or rgba8");
+    } else if (a == "--srgb") {
+      srgb_given = true;
+      options.build.color_space = texture::ColorSpace::srgb;
+    } else if (a == "--linear") {
+      linear_given = true;
+      options.build.color_space = texture::ColorSpace::linear;
+    } else if (a == "--normal") {
+      options.build.normal_map = true;
+    } else if (a == "--no-mips") {
+      options.build.mips = false;
+    } else if (a == "--jobs") {
+      if (!next_u32(argc, argv, i, options.jobs)) return k_exit_usage;
+    } else if (a == "--log") {
+      if (!next_value(argc, argv, i, options.log_spec)) return k_exit_usage;
+    } else if (a == "--ddc") {
+      if (!next_value(argc, argv, i, options.ddc)) return k_exit_usage;
+    } else if (a == "--cache") {
+      options.cache = true;
+    } else if (!a.empty() && a[0] == '-') {
+      return usage("unknown option for texture");
+    } else {
+      positional.push_back(std::string(a));
+    }
+  }
+  if (srgb_given && linear_given) return usage("--srgb and --linear are each other's opposite");
+  // A normal map is data whatever else was said, and saying --srgb of one is a mistake worth
+  // naming rather than quietly overriding.
+  if (options.build.normal_map && srgb_given) return usage("a --normal map is --linear data");
+  if (options.build.normal_map) options.build.color_space = texture::ColorSpace::linear;
+  if (positional.size() != (options.cache ? 1u : 2u)) {
+    return usage(options.cache ? "texture --cache takes an input image and no output file"
+                               : "texture takes an input image and an output file");
+  }
+  options.input = positional[0];
+  if (!options.cache) options.output = positional[1];
+  if (options.cache && options.ddc.empty()) {
+    options.ddc = geometry::find_ddc_root(platform::executable_directory());
+    if (options.ddc.empty())
+      return usage("--cache found no repository root above the executable; pass --ddc <dir>");
+  }
+  if (options.jobs > 4096) return usage("--jobs is 1..4096, or absent for one per CPU");
+  texture::TextureFormat resolved = texture::TextureFormat::bc7;
+  std::string why;
+  // The source's channel count is not known until it is read; this catches the combinations that
+  // are wrong whatever it is (BC4 or BC5 asked for as sRGB colour).
+  if (options.build.format != texture::FormatChoice::automatic &&
+      !texture::resolve_texture_format(options.build, 4, resolved, &why)) {
+    return usage(why.c_str());
+  }
+
+  log::StreamSink stderr_sink(stderr, log::StreamSink::Format::Text);
+  start_logging(stderr_sink, options.log_spec);
+  const int code = texture_command_run(options);
   log::remove_sink(&stderr_sink);
   return code;
 }
@@ -1450,7 +2007,100 @@ JsonValue page_summary(const geometry::ClusterPages& pages) {
   return out;
 }
 
+// `info` on a `.tex`: the header, the section table with each payload's hash (so two textures can
+// be compared section by section, as two containers can), and what the texture is.
+int texture_info(const std::string& path) {
+  std::string file;
+  const io::Status status = io::read_file(path, file);
+  if (status != io::Status::Ok) {
+    return failed("cannot read '" + path + "': " + io::status_name(status));
+  }
+  const std::span<const u8> bytes(reinterpret_cast<const u8*>(file.data()), file.size());
+  texture::TextureData data;
+  std::string error;
+  if (!texture::read_texture_file_memory(bytes, data, &error)) return failed(error);
+  texture::TextureFileHeader header;
+  Vector<texture::TextureFileSection> records;
+  if (!texture::read_texture_file_table(bytes, header, records, &error)) return failed(error);
+
+  JsonValue sections = JsonValue::array();
+  for (const texture::TextureFileSection& section : records) {
+    JsonValue entry = JsonValue::object();
+    entry.set("kind", JsonValue(section.kind));
+    entry.set("name", JsonValue(texture::texture_section_name(section.kind)));
+    entry.set("element_size", JsonValue(section.element_size));
+    entry.set("element_count", JsonValue(section.element_count));
+    entry.set("offset", JsonValue(section.offset));
+    const u64 payload = u64{section.element_size} * section.element_count;
+    if (section.offset <= file.size() && payload <= file.size() - section.offset)
+      entry.set("hash", JsonValue(hash_bytes(file.data() + section.offset, payload)));
+    sections.push_back(std::move(entry));
+  }
+  JsonValue levels = JsonValue::array();
+  for (const texture::TextureFileLevel& level : data.levels) {
+    JsonValue entry = JsonValue::object();
+    entry.set("width", JsonValue(level.width));
+    entry.set("height", JsonValue(level.height));
+    entry.set("bytes", JsonValue(level.bytes));
+    levels.push_back(std::move(entry));
+  }
+  JsonValue summary = JsonValue::object();
+  summary.set("path", JsonValue(path));
+  summary.set("kind", JsonValue("texture"));
+  summary.set("version", JsonValue(header.version));
+  summary.set("flags", JsonValue(header.flags));
+  summary.set("total_bytes", JsonValue(header.total_bytes));
+  summary.set("hash", JsonValue(header.content_hash));
+  summary.set("sections", std::move(sections));
+  summary.set("format", JsonValue(texture::texture_format_name(data.format)));
+  summary.set("color_space", JsonValue(texture::color_space_name(data.color_space)));
+  summary.set("normal_map", JsonValue((data.flags & texture::k_texture_normal_map) != 0));
+  summary.set("has_alpha", JsonValue((data.flags & texture::k_texture_has_alpha) != 0));
+  summary.set("width", JsonValue(data.width));
+  summary.set("height", JsonValue(data.height));
+  summary.set("source_channels", JsonValue(data.source_channels));
+  summary.set("block_bytes", JsonValue(data.data.size()));
+  summary.set("levels", std::move(levels));
+  summary.set("source_hash", JsonValue(data.source_hash));
+  summary.set("build_key", JsonValue(data.build_key));
+  print_json(summary);
+  return k_exit_ok;
+}
+
+// A container's texture records, the ones that name a texture: which image, which slots, what the
+// texture is built as, and — for an image the container carries — the key it is found under.
+JsonValue texture_records_json(const geometry::ClusterFileData& data) {
+  JsonValue rows = JsonValue::array();
+  for (u32 i = 0; i < data.textures.size(); ++i) {
+    const geometry::ClusterFileTexture& record = data.textures[i];
+    if (record.options == 0) continue;
+    JsonValue row = JsonValue::object();
+    row.set("image", JsonValue(i));
+    row.set("roles", JsonValue(record.roles));
+    texture::TextureBuildOptions options;
+    if (texture::unpack_texture_options(record.options, options)) {
+      row.set("format", JsonValue(texture::format_choice_name(options.format)));
+      row.set("color_space", JsonValue(texture::color_space_name(options.color_space)));
+      row.set("normal_map", JsonValue(options.normal_map));
+      row.set("mips", JsonValue(options.mips));
+    } else {
+      row.set("options", JsonValue(record.options));  // a newer build's word, shown as it is
+    }
+    row.set("key", JsonValue(record.key));
+    row.set("source_hash", JsonValue(record.source_hash));
+    rows.push_back(std::move(row));
+  }
+  return rows;
+}
+
 int info(const std::string& path) {
+  // A texture or a container, told apart by the magic rather than by the file's name.
+  u8 magic[4] = {0, 0, 0, 0};
+  u64 got = 0;
+  if (io::read_file_range(path, 0, magic, sizeof(magic), got) == io::Status::Ok &&
+      got == sizeof(magic) && texture::is_texture_file(std::span<const u8>(magic, sizeof(magic)))) {
+    return texture_info(path);
+  }
   std::string file;
   geometry::ClusterFileHeader header;
   Vector<geometry::ClusterFileSection> records;
@@ -1499,6 +2149,7 @@ int info(const std::string& path) {
   summary.set("embedded_images", JsonValue(images.embedded));
   summary.set("deduplicated_images", JsonValue(images.deduplicated));
   summary.set("image_bytes", JsonValue(images.bytes));
+  summary.set("textures", texture_records_json(data));
   summary.set("morph_channels", JsonValue(lod.mesh.morph_channels.size()));
   summary.set("morph_deltas", JsonValue(lod.mesh.morph_delta_count));
   // The canonical vertex ids: how many (one per cluster vertex, or none) and what id space they
@@ -2337,7 +2988,7 @@ int read_command(int argc, char** argv, const char* name, int (*run)(const std::
     }
   }
   if (positional.size() != 1) {
-    const std::string message = std::string(name) + " takes one cluster file";
+    const std::string message = std::string(name) + " takes one file";
     return usage(message.c_str());
   }
 
@@ -2367,6 +3018,7 @@ int main(int argc, char** argv) {
   }
   if (command == "build") return build_command(argc, argv);
   if (command == "build-all") return build_all_command(argc, argv);
+  if (command == "texture") return texture_command(argc, argv);
   if (command == "info") return read_command(argc, argv, "info", info);
   if (command == "stats") return read_command(argc, argv, "stats", stats);
   if (command == "tissue") return content::tissue_command(argc, argv);

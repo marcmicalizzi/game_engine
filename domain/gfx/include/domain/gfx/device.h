@@ -59,6 +59,7 @@ struct DeviceFeatures {
   bool shader_int64 = false;
   bool buffer_int64_atomics = false;  // 64-bit atomics on storage buffers (visibility buffer)
   bool sampler_anisotropy = false;
+  bool texture_compression_bc = false;  // BC1-BC7 formats: the content build's built textures
   bool geometry_shader = false;  // SV_PrimitiveID in a vertex pipeline: the indexed vertex path
   bool full_draw_index_uint32 = false;  // index values past 2^24 - 1: the indexed vertex path
   bool presentation = false;            // VK_KHR_swapchain is enabled

@@ -150,7 +150,8 @@ constexpr const char* k_usage =
     "  --sw-px <px>     auto mode: clusters narrower than this go to the software rasterizer (32)\n"
     "  --view <mode>    id, tri, depth, shaded (default: materials with vertex normals, textures,\n"
     "                   and normal maps under a sun), normals, uv, shadow (the sun's shadow\n"
-    "                   alone: white lit, black shadowed, grey facing away)\n"
+    "                   alone: white lit, black shadowed, grey facing away), albedo (the\n"
+    "                   textured base colour, unlit: what filtering and mip selection alone do)\n"
     "  --orbit <d>      orbit at a fixed distance instead of breathing between 8 and 36 units;\n"
     "                   distances scale with the scene radius (10 for the heightfield)\n"
     "  --deform <mode>  deform every instance through the per-frame deformed-vertex pool\n"
@@ -2289,6 +2290,9 @@ int main(int argc, char** argv) {
   // memory streaming saves, beside the driver's `gpu_memory` estimate of the whole process.
   u64 geometry_bytes = 0;
   u64 stream_bytes = 0;
+  u64 texture_bytes = 0;  // the materials' textures on the device (texture.md)
+  u32 textures_built = 0;
+  u32 textures_decoded = 0;
   std::string views_text = "{}";
   std::string streaming_text =
       write_json(streaming_summary(renderer::StreamStats{}), JsonWriteOptions{.pretty = false});
@@ -2456,6 +2460,9 @@ int main(int argc, char** argv) {
     rt_bytes = scene.rt_bytes();
     geometry_bytes = scene.geometry_bytes();
     stream_bytes = scene.stream_bytes();
+    texture_bytes = scene.texture_bytes();
+    textures_built = scene.textures_built();
+    textures_decoded = scene.textures_decoded();
     // Where a streamed page's bytes come from. Attaching the container-backed source is also what
     // releases the merged host streams, so it happens here, after the upload and before the
     // renderer that will read from it.
@@ -2736,6 +2743,7 @@ int main(int argc, char** argv) {
         "\"morph_cached_instances\":%u,\"morph_clip\":\"%s\",\"rt_templates\":%s,"
         "\"skinned_instances\":%u,\"joints\":%u,\"clip\":\"%s\",\"anim\":%s,"
         "\"template_bytes\":%llu,\"rt_bytes\":%llu,\"geometry_bytes\":%llu,\"stream_bytes\":%llu,"
+        "\"textures\":{\"built\":%u,\"decoded\":%u,\"bytes\":%llu},"
         "\"rt\":%s,\"views\":%s,\"streaming\":%s,"
         "\"host_memory\":{\"bytes\":%llu,\"peak_bytes\":%llu},"
         "\"gpu_memory\":{\"budget_mib\":%llu,\"used_mib\":%llu,"
@@ -2769,7 +2777,8 @@ int main(int argc, char** argv) {
         resolved.settings.rt_templates ? "true" : "false", skinned_instances, joint_matrices,
         clip_text.c_str(), anim_text.c_str(), static_cast<unsigned long long>(template_bytes),
         static_cast<unsigned long long>(rt_bytes), static_cast<unsigned long long>(geometry_bytes),
-        static_cast<unsigned long long>(stream_bytes), rt_text.c_str(), views_text.c_str(),
+        static_cast<unsigned long long>(stream_bytes), textures_built, textures_decoded,
+        static_cast<unsigned long long>(texture_bytes), rt_text.c_str(), views_text.c_str(),
         streaming_text.c_str(), static_cast<unsigned long long>(host_memory),
         static_cast<unsigned long long>(host_memory_peak),
         static_cast<unsigned long long>(stats.gpu_memory.budget_mib),

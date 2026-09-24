@@ -223,6 +223,10 @@ u64 encode(const ClusterFileData& data, std::string& out) {
   const u32 id_scalars[1] = {static_cast<u32>(mesh.vertex_id_source)};
   add_section(payloads, ClusterSection::VertexIdScalars, static_cast<u32>(sizeof(u32)), 1u,
               id_scalars);
+  // Where each image's built texture is; empty for a mesh with no images, and written even then so
+  // the section list is the format's and not this mesh's.
+  add_section(payloads, ClusterSection::Textures, static_cast<u32>(sizeof(ClusterFileTexture)),
+              data.textures.size(), data.textures.data());
 
   u64 offset = k_header_bytes + k_record_bytes * payloads.size();
   for (Payload& payload : payloads) {
@@ -392,6 +396,7 @@ const char* cluster_section_name(u32 kind) noexcept {
     case ClusterSection::MorphScalars: return "morph_scalars";
     case ClusterSection::VertexIds: return "vertex_ids";
     case ClusterSection::VertexIdScalars: return "vertex_id_scalars";
+    case ClusterSection::Textures: return "textures";
   }
   return "unknown";
 }
@@ -762,6 +767,24 @@ bool read_cluster_file_memory(std::span<const u8> bytes, ClusterFileData& out, s
     }
   }
 
+  // The built-texture records, parallel to the paths like the image records are, and refused the
+  // same way when they disagree with them about how many images there are. A file with none is one
+  // written before cache version 14, and every image of it draws through the decode.
+  if (const ClusterFileSection* records = found[static_cast<u32>(ClusterSection::Textures)];
+      records != nullptr && records->element_count != 0) {
+    if (records->element_size != sizeof(ClusterFileTexture)) {
+      return fail(error, "cluster file section textures has " +
+                             std::to_string(records->element_size) + "-byte elements, expected " +
+                             std::to_string(sizeof(ClusterFileTexture)));
+    }
+    if (records->element_count != result.image_paths.size()) {
+      return fail(error, "cluster file has " + std::to_string(records->element_count) +
+                             " texture records for " + std::to_string(result.image_paths.size()) +
+                             " image paths");
+    }
+    copy_section(bytes, *records, result.textures);
+  }
+
   // Counts that the rest of the engine indexes by, checked once here so no caller has to.
   const ClusterMesh& mesh = result.mesh.mesh;
   if (result.mesh.lod.size() != mesh.clusters.size()) {
@@ -909,6 +932,8 @@ constexpr ClusterSection k_resident_kinds[] = {
     ClusterSection::MorphScalars,
     // One word: which id space the paged `VertexIds` stream is in.
     ClusterSection::VertexIdScalars,
+    // 24 bytes an image: where its built texture is, which the texture upload reads at load.
+    ClusterSection::Textures,
 };
 
 // The per-page streams, which a resident read leaves on disk. They are still *listed*, with zero

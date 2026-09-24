@@ -86,6 +86,7 @@ struct DeviceCaps {
   u32 shader_int64 = 0;
   u32 fragment_stores_and_atomics = 0;
   u32 sampler_anisotropy = 0;
+  u32 texture_compression_bc = 0;  // BC1-BC7 sampled as stored: the content build's textures
   u32 fill_mode_non_solid = 0;
   u32 shader_int16 = 0;
   u32 shader_storage_image_write_without_format = 0;
