@@ -66,7 +66,7 @@ bool read_settings(const protocol::RenderSettings& in, renderer::RenderSettings&
     return false;
   }
   if (!renderer::parse_shadow_mode(in.shadows, out.shadows)) {
-    error = invalid("shadows must be off, rt, or auto; got '" + in.shadows + "'");
+    error = invalid("shadows must be off, rt, csm, or auto; got '" + in.shadows + "'");
     return false;
   }
   if (!renderer::parse_view_mode(in.view, out.view_mode)) {
@@ -93,6 +93,18 @@ bool read_settings(const protocol::RenderSettings& in, renderer::RenderSettings&
     error = invalid("panini_d must not be negative");
     return false;
   }
+  if (in.shadow_cascades < 1 || in.shadow_cascades > 4) {
+    error = invalid("shadow_cascades must be within 1..4");
+    return false;
+  }
+  if (in.shadow_map < 64 || in.shadow_map > renderer::k_max_shadow_map) {
+    error = invalid("shadow_map must be within 64..4096 texels");
+    return false;
+  }
+  if (!(in.shadow_distance >= 0.0f)) {
+    error = invalid("shadow_distance must not be negative");
+    return false;
+  }
   // The two streaming budgets are MiB and KiB on the wire and bytes in the renderer, which is the
   // same split engine-view's `--page-budget` and `--upload-budget` have: a budget is chosen at the
   // scale of a scene and an upload at the scale of a frame, while the renderer sizes buffers and
@@ -112,6 +124,9 @@ bool read_settings(const protocol::RenderSettings& in, renderer::RenderSettings&
   out.occlusion = in.occlusion;
   out.cone = in.cone;
   out.shadow_casters = in.shadow_casters;
+  out.shadow_cascades = in.shadow_cascades;
+  out.shadow_map = in.shadow_map;
+  out.shadow_distance = in.shadow_distance;
   out.lights = in.lights;
   out.deform_amplitude = in.deform_amplitude;
   out.rt_templates = in.rt_templates;
@@ -134,6 +149,8 @@ void fill_stats(const renderer::Stats& in, const renderer::ViewSet& views,
   out.vertex_fallback = in.vertex_fallback;
   out.visible_pairs = in.visible_pairs();
   out.shadow_casters = in.shadow_casters;
+  out.shadow_pairs = in.shadow_pairs;
+  out.shadow_fallback = in.shadow_fallback;
   out.visible_min = in.visible_min == ~u32{0} ? 0u : in.visible_min;
   out.visible_max = in.visible_max;
   out.cpu_ms_per_frame = in.cpu_ms_per_frame();
@@ -146,6 +163,8 @@ void fill_stats(const renderer::Stats& in, const renderer::ViewSet& views,
   out.gpu_ms.clas = in.clas_ms();
   out.gpu_ms.deform = in.deform_ms();
   out.gpu_ms.trace = in.trace_ms();
+  out.gpu_ms.shadow = in.shadow_ms();
+  out.gpu_ms.shadow_cull = in.shadow_cull_ms();
   out.gpu_ms.total = in.total_ms();
   out.gpu_ms.frames = in.timed_frames;
   out.gpu_memory.budget_mib = in.gpu_memory.budget_mib;
@@ -427,7 +446,7 @@ bool render_load(protocol::Context& ctx, const protocol::RenderLoadParams& param
   out.center = scene->data.center;
   out.radius = scene->data.radius;
   out.raster = renderer::raster_name(scene->resolved.settings.raster);
-  out.shadows = scene->resolved.shadows ? "rt" : "off";
+  out.shadows = renderer::resolved_shadow_name(scene->resolved);
   out.cull = scene->resolved.settings.cull;
   out.occlusion = scene->resolved.occlusion;
   out.deform = renderer::deform_name(scene->resolved.settings);
@@ -646,7 +665,7 @@ bool render_benchmark(protocol::Context& ctx, const protocol::RenderBenchmarkPar
   out.width = scene->view->width();
   out.height = scene->view->height();
   out.raster = renderer::raster_name(scene->resolved.settings.raster);
-  out.shadows = scene->resolved.shadows ? "rt" : "off";
+  out.shadows = renderer::resolved_shadow_name(scene->resolved);
   fill_stats(scene->view->stats(), scene->view->views(), out.stats);
   out.machine_state.start = machine_state_of(machine_start);
   out.machine_state.end = machine_state_of(machine_end);

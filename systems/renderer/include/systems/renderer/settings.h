@@ -25,8 +25,21 @@ struct SceneData;
 // depth buffer and has no visibility buffer, so it has no id or depth capture either.
 enum class RasterMode : u8 { Direct, Hardware, Software, Auto, Vertex, RayTrace };
 
-// `Auto`: ray-traced shadows wherever the device can build the structures, off where it cannot.
-enum class ShadowMode : u8 { Auto, Off, RayTraced };
+// How the sun (and, traced, the point lights) cast shadows (docs/subsystems/renderer.md,
+// "Shadows"). `RayTraced` is a ray query per light against the frame's own acceleration
+// structures; `Cascaded` is the sun's cascaded shadow maps, drawn by the cull pass and the
+// rasterizers from the light and filtered in the resolve. `Auto` is ray-traced wherever the device
+// has ray queries and cluster acceleration structures, cascaded maps where it has not, and off on
+// a path that can have neither (direct, sw, auto). Changing the RTX-class default to maps is a
+// decision the flythrough measurements inform, not one made here.
+enum class ShadowMode : u8 { Auto, Off, RayTraced, Cascaded };
+
+// The cascaded shadow maps' defaults (docs/subsystems/renderer.md, "Shadows"). Four cascades of
+// 2048 x 2048 texels, side by side in one D32 atlas: 64 MiB, and the cascades split the camera's
+// depth logarithmically from the nearest geometry to the farthest (`fit_shadow_cascades`).
+inline constexpr u32 k_default_shadow_cascades = 4;
+inline constexpr u32 k_default_shadow_map = 2048;
+inline constexpr u32 k_max_shadow_map = 4096;
 
 // How many views the frame has and how they are laid out over the target (04 §4.6,
 // systems/renderer/view_set.h). `Single` is one rectilinear view over the whole target and is
@@ -66,6 +79,24 @@ struct RenderSettings {
   // (docs/subsystems/renderer.md, "Shadows"). Off is the old behaviour, in which a card seen from
   // behind throws no shadow; it exists to measure what the casters cost and what they restore.
   bool shadow_casters = true;
+  // The cascaded shadow maps (`ShadowMode::Cascaded`): how many cascades (1..4), how many texels a
+  // side each, and how far from the camera they reach — 0 is the far side of the scene's bounds.
+  // They size the depth atlas, which is why they are here where a change forces a rebuild.
+  u32 shadow_cascades = k_default_shadow_cascades;
+  u32 shadow_map = k_default_shadow_map;
+  f32 shadow_distance = 0.0f;
+  // The cascades' light-view cull tests each pair against the cascade's box. Off draws every pair
+  // of the camera's cut into every cascade, which must cast exactly the same shadow — the test of
+  // "culling never changes the picture" for the maps; it is a switch for that test, not a mode.
+  bool shadow_frustum = true;
+  // Multiplies the LOD threshold of the cascades' cull only. 1 — the only value anything but a
+  // measurement uses — draws each cascade from exactly the picture's cut; larger is a coarser cut
+  // in the maps than in the picture, which is the question "should a shadow's LOD be the light's
+  // own" asked in numbers (docs/subsystems/renderer.md, "Shadows", has the answer).
+  f32 shadow_lod_scale = 1.0f;
+  // Texels the cascaded maps' lookup leaves the surface along its geometric normal at a grazing
+  // surface (gfx::ShadowMapParams::normal_offset); negative is k_shadow_normal_offset_texels.
+  f32 shadow_normal_offset = -1.0f;
   bool lights = true;   // the two orbiting point lights beside the sun
   bool deform = false;  // every instance reads the per-frame deformed-vertex pool
   u32 deform_kind = gfx::k_deform_identity;
@@ -135,8 +166,13 @@ struct ResolvedSettings {
   bool vertex_path = false;  // raster == Vertex
   bool ray_path = false;     // raster == RayTrace
   bool shadows = false;      // the resolve traces shadow rays
-  bool occlusion = false;    // two-pass occlusion culling runs
-  bool rt_chain = false;     // the frame builds acceleration structures from its visible list
+  // The frame draws the sun's cascaded shadow maps and the resolve filters them: `Cascaded`, or
+  // `Auto` on a device without ray queries, on a path that rasterizes the picture into the
+  // visibility buffer in one list per pass (hw, vertex). Never together with `shadows`.
+  bool csm = false;
+  u32 shadow_cascades = 0;  // the cascades drawn, 1..4 with `csm`, else 0
+  bool occlusion = false;   // two-pass occlusion culling runs
+  bool rt_chain = false;    // the frame builds acceleration structures from its visible list
   // The cull pass keeps what its cone test rejects as shadow casters, in the visible list's run
   // `gfx::k_caster_run`, and the chain builds them beside the drawn clusters. True when shadows
   // are traced, the cone test is on, and the records are build records rather than template
@@ -200,6 +236,8 @@ const char* raster_name(RasterMode mode) noexcept;
 bool parse_raster_mode(std::string_view text, RasterMode& out) noexcept;
 const char* shadow_name(ShadowMode mode) noexcept;
 bool parse_shadow_mode(std::string_view text, ShadowMode& out) noexcept;
+// What the frame actually shadows with, as a summary reports it: "rt", "csm", or "off".
+const char* resolved_shadow_name(const ResolvedSettings& resolved) noexcept;
 // "none", "identity", "wave", or "lattice" into `deform` and `deform_kind`.
 const char* deform_name(const RenderSettings& settings) noexcept;
 bool parse_deform_mode(std::string_view text, bool& deform, u32& kind) noexcept;

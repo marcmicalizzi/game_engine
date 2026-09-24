@@ -202,7 +202,7 @@ struct CameraPath @version(1) {
 }
 
 /// GPU milliseconds of one frame, pass by pass, from `gfx::GpuTimer` (`renderer::Stats` names).
-struct PassMs @version(2) {
+struct PassMs @version(3) {
   cull: f64 = 0
   hw: f64 = 0
   sw: f64 = 0
@@ -214,6 +214,11 @@ struct PassMs @version(2) {
   deform: f64 = 0
   deform_alloc: f64 = 0
   trace: f64 = 0
+  /// The sun's cascaded shadow maps: every pass that draws them (the light-view culls, the
+  /// cascades' pool and index passes, the depth raster), and the culls' share of that. The
+  /// filtering is in `resolve`, where it runs.
+  shadow: f64 = 0 @since(3)
+  shadow_cull: f64 = 0 @since(3)
   /// The sum of the timed zones: what the frame's passes cost, not its wall time.
   total: f64 = 0
   /// The bottom-level build inside `rt`: every instance's cluster structure in one command.
@@ -221,7 +226,7 @@ struct PassMs @version(2) {
 }
 
 /// One frame of a flythrough benchmark. One line of the `.jsonl` a run writes.
-struct FrameRecord @version(2) {
+struct FrameRecord @version(3) {
   /// Which pass over the path, from 0.
   repeat: u32 = 0
   /// The path frame, from 0.
@@ -237,6 +242,9 @@ struct FrameRecord @version(2) {
   /// acceleration structures so they cast shadows (`renderer::Stats::shadow_casters`); zero
   /// without ray-traced shadows. Not visible pairs.
   shadow_casters: u32 = 0
+  /// Pairs the cascaded shadow maps' light-view culls drew into the atlas, summed over the
+  /// cascades (`renderer::Stats::shadow_pairs`); zero without maps. Not visible pairs.
+  shadow_pairs: u32 = 0 @since(3)
   gpu_ms: PassMs
   /// Geometry streaming during this frame: pages copied into the pool and their bytes, pages
   /// evicted, requests written, and the pages resident after it. Zero when nothing streams.
@@ -276,7 +284,7 @@ struct Percentiles @version(1) {
   mean: f64 = 0
 }
 
-struct PassPercentiles @version(2) {
+struct PassPercentiles @version(3) {
   cull: Percentiles
   hw: Percentiles
   sw: Percentiles
@@ -285,6 +293,7 @@ struct PassPercentiles @version(2) {
   rt: Percentiles
   deform: Percentiles
   trace: Percentiles
+  shadow: Percentiles @since(3)
   total: Percentiles
   /// Inside `rt`: the cluster build and the bottom-level build.
   clas: Percentiles @since(2)
@@ -385,7 +394,7 @@ struct FlythroughRt @version(1) {
 }
 
 /// The last line of a flythrough benchmark's `.jsonl`, and engine-view's summary line.
-struct FlythroughSummary @version(2) {
+struct FlythroughSummary @version(3) {
   /// "engine.flythrough.v1".
   format: string
   scene: string
@@ -416,6 +425,8 @@ struct FlythroughSummary @version(2) {
   visible_pairs: Percentiles
   /// The shadow chain's extra casters per frame (`FrameRecord.shadow_casters`).
   shadow_casters: Percentiles
+  /// The cascaded shadow maps' pairs per frame (`FrameRecord.shadow_pairs`).
+  shadow_pairs: Percentiles @since(3)
   /// True when every repeat drew the same visible pairs at every frame.
   deterministic: bool = false
   mismatched_frames: u32 = 0

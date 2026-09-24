@@ -37,6 +37,7 @@
 #include <systems/renderer/capture.h>
 #include <systems/renderer/gpu_scene.h>
 #include <systems/renderer/rt_capacity.h>
+#include <systems/renderer/shadow_cascades.h>
 #include <systems/renderer/streaming.h>
 #include <systems/renderer/view_set.h>
 
@@ -113,7 +114,10 @@ struct FrameStats {
   u32 visible_hw = 0;
   u32 visible_pass2 = 0;
   u32 visible_sw = 0;
-  u32 shadow_casters = 0;  // Stats::shadow_casters: built into the structures, not drawn
+  u32 shadow_casters = 0;     // Stats::shadow_casters: built into the structures, not drawn
+  u32 shadow_pairs = 0;       // Stats::shadow_pairs: drawn into the cascaded maps
+  f64 gpu_shadow = 0.0;       // the cascaded maps' passes, cull included
+  f64 gpu_shadow_cull = 0.0;  // of which the light-view cull
   f64 gpu_cull = 0.0;
   f64 gpu_hw = 0.0;
   f64 gpu_sw = 0.0;
@@ -191,6 +195,12 @@ struct Stats {
   // other draw. One frame late.
   u32 triangles_hw = 0;
   u32 vertex_fallback = 0;
+  // The sun's cascaded shadow maps, last frame (ResolvedSettings::csm): the (instance, cluster)
+  // pairs every cascade's light-view cull drew into the atlas, summed over the cascades — a pair
+  // in two cascades counts twice — and, on the vertex path's indexed draw, the cascade survivors
+  // its index budget sent to the capacity draw. Not visible pairs. One frame late.
+  u32 shadow_pairs = 0;
+  u32 shadow_fallback = 0;
   u32 visible_min = ~u32{0};
   u32 visible_max = 0;
   // The deformed-vertex pool's suballocation, one frame late like the visible counts and read the
@@ -216,6 +226,11 @@ struct Stats {
   // 1,000 visible clusters" is a statement about the pool pass alone.
   f64 gpu_deform_alloc = 0.0;
   f64 gpu_trace = 0.0;
+  // Every pass of the cascaded shadow maps: the light-view culls, the pool and index passes of
+  // the cascades' cuts, and the depth raster. `gpu_shadow_cull` is the cull's share of it. The
+  // filtering is in `gpu_resolve`, where it runs.
+  f64 gpu_shadow = 0.0;
+  f64 gpu_shadow_cull = 0.0;
   f64 gpu_total = 0.0;
   f64 cpu_ns = 0.0;  // wall time inside submit_frame, summed
   // Sampled by sample_gpu_memory(), not by a frame: it is a driver query and the frame path
@@ -248,6 +263,8 @@ struct Stats {
   f64 deform_ms() const noexcept { return gpu_deform / timed(); }
   f64 deform_alloc_ms() const noexcept { return gpu_deform_alloc / timed(); }
   f64 trace_ms() const noexcept { return gpu_trace / timed(); }
+  f64 shadow_ms() const noexcept { return gpu_shadow / timed(); }
+  f64 shadow_cull_ms() const noexcept { return gpu_shadow_cull / timed(); }
   f64 total_ms() const noexcept { return gpu_total / timed(); }
   // What one view cost a frame, everything but the shared acceleration structure chain.
   f64 view_ms(u32 view) const noexcept {
@@ -374,6 +391,10 @@ class SceneRenderer {
   gfx::ShaderLibrary& shaders() noexcept { return shaders_; }
   // The renderer's own color target; null when it was created without one.
   const gfx::ImageResource& color_target() const noexcept { return color_; }
+  // The sun's cascades the last frame was drawn with (`ResolvedSettings::csm`); `count` 0 without
+  // maps. The fit is the CPU's (`fit_shadow_cascades`), so this is what the frame used, not a
+  // readback.
+  const ShadowCascades& shadow_cascades() const noexcept { return cascades_; }
 
   // Screen-sized resources for a new size. The GPU must be idle (the renderer waits).
   bool resize(u32 width, u32 height, std::string* error = nullptr);
@@ -422,6 +443,11 @@ class SceneRenderer {
     VkPipeline hardware = VK_NULL_HANDLE;
     VkPipeline vertex = VK_NULL_HANDLE;
     VkPipeline vertex_fallback = VK_NULL_HANDLE;  // the indexed draw's overflow: capacity-drawn
+    // The cascaded shadow maps' depth-only draws: the picture's own rasterizer — the mesh path's
+    // mesh stage, or the vertex path's indexed (and fallback) or capacity vertex stage — with no
+    // fragment stage and the atlas as its depth attachment.
+    VkPipeline shadow = VK_NULL_HANDLE;
+    VkPipeline shadow_fallback = VK_NULL_HANDLE;
     VkPipeline resolve = VK_NULL_HANDLE;
     gfx::ComputePipeline software;
     gfx::ComputePipeline cull;
@@ -471,6 +497,8 @@ class SceneRenderer {
 
   bool create_pipelines(std::string* error);
   bool create_color_target(std::string* error);
+  bool create_shadow_maps(std::string* error);
+  void destroy_shadow_maps() noexcept;
   // Declares every pass, compiles, and executes, all in one function: the render graph stores
   // pass bodies in an arena and requires them to capture by reference, so every parameter block
   // a body pushes has to still be alive when execute() records it.
@@ -492,8 +520,17 @@ class SceneRenderer {
   gfx::FrameContext frames_;
   gfx::GpuTimer timer_;
   GeometryStreamer streamer_;
-  gfx::RenderGraph* graph_ = nullptr;        // heap: RenderGraph is not default-constructible
-  gfx::ImageResource color_;                 // the offscreen target, when the renderer owns one
+  gfx::RenderGraph* graph_ = nullptr;  // heap: RenderGraph is not default-constructible
+  gfx::ImageResource color_;           // the offscreen target, when the renderer owns one
+  // The sun's depth atlas: one `shadow_map`-texel square per cascade, side by side, D32, drawn as
+  // a depth attachment and sampled by the resolve through the scene's bindless set. It is sized
+  // by the settings, not the screen, so a resize leaves it alone.
+  gfx::ImageResource shadow_atlas_;
+  VkImageView shadow_view_ = VK_NULL_HANDLE;
+  VkSampler shadow_sampler_ = VK_NULL_HANDLE;
+  u32 shadow_texture_slot_ = gfx::BindlessSet::k_invalid_slot;
+  u32 shadow_sampler_slot_ = gfx::BindlessSet::k_invalid_slot;
+  ShadowCascades cascades_;
   Vector<gfx::BufferResource> params_;       // two CullParams per view, per slot
   Vector<gfx::BufferResource> resolves_;     // one ResolveParams per view plus the lights, a slot
   Vector<gfx::BufferResource> stat_blocks_;  // host-visible copies of the argument blocks
@@ -516,6 +553,7 @@ class SceneRenderer {
   bool joint_overflow_warned_ = false;   // a span longer than the scene was sized for, said once
   bool deform_overflow_warned_ = false;  // the pool budget refused a pair, said once
   bool vertex_fallback_warned_ = false;  // the index budget sent a cluster to the fallback, once
+  bool shadow_fallback_warned_ = false;  // the same, for a shadow cascade's cut
   bool rt_overflow_warned_ = false;      // a frame dropped instances' structures, said once
   bool rt_hold_ = false;  // render_offscreen is redrawing a frame it grew the chain for
   // The ray tracing chain's capacity policy (rt_capacity.h): fed every folded frame's demand, and

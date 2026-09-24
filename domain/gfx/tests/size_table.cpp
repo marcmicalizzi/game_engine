@@ -133,7 +133,16 @@ ENGINE_EXPECT_SIZE(48, 8, gfx::HizParams);
 // `visible[entry]` was) and reaches the entry through the view's pair-to-entry table
 // (`pair_entries`) only for a deformed instance's pool block. The old pad word went to
 // `pair_entries`; `pairs` added the sixteen bytes after it.
+// Still 304 with cascaded shadow maps: `shadow_maps`, the address of the block below, took the pad
+// word behind `pairs`. It is zero for every frame that draws no maps.
 ENGINE_EXPECT_SIZE(304, 8, gfx::ResolveParams);
+
+// The cascaded shadow maps (docs/subsystems/renderer.md, "Shadows"): per cascade its world-to-tile
+// matrix and three numbers the filter and the bias need; per frame four cascades, the light's
+// frame and the atlas. Read through `ResolveParams::shadow_maps`, once per shaded pixel, so it is
+// a device-address block beside the resolve's own rather than more words in it.
+ENGINE_EXPECT_SIZE(80, 4, gfx::ShadowCascade);
+ENGINE_EXPECT_SIZE(400, 4, gfx::ShadowMapParams);
 
 // 256: the reference path tracer's block (docs/plan/04-renderer.md §4.8). It is not in a frame
 // path — one dispatch per batch of samples, minutes per picture allowed — so it carries all

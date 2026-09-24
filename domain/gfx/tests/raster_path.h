@@ -215,20 +215,27 @@ class ClusterRaster {
     return create(device, raster_path(device.features()), layout, triangles_per_cluster, error);
   }
 
-  // A named path, for a case that compares the two.
+  // A named path, for a case that compares the two. `depth_format` other than undefined builds
+  // the same geometry stage **depth-only** — no fragment stage, depth tested and written
+  // greater-or-equal (reversed) — which is how the renderer draws a shadow map's cascades.
   bool create(const gfx::Device& device, RasterPath path, VkPipelineLayout layout,
-              u32 triangles_per_cluster, std::string* error) {
+              u32 triangles_per_cluster, std::string* error,
+              VkFormat depth_format = VK_FORMAT_UNDEFINED) {
     path_ = path;
     triangles_per_cluster_ = triangles_per_cluster;
+    const bool depth_only = depth_format != VK_FORMAT_UNDEFINED;
     if (path == RasterPath::Mesh) {
       module_ = gfx::create_shader_module(device, shaders::k_cluster_mesh_spirv,
                                           shaders::k_cluster_mesh_spirv_size, error);
       if (module_ == VK_NULL_HANDLE) return false;
       gfx::MeshPipelineDesc desc;
       desc.mesh = module_;
-      desc.fragment = module_;
+      desc.fragment = depth_only ? VK_NULL_HANDLE : module_;
       desc.fragment_entry = "fs_visibility";
       desc.layout = layout;
+      desc.depth_format = depth_format;
+      desc.depth_test = depth_only;
+      desc.depth_write = depth_only;
       return gfx::create_mesh_pipeline(device, desc, pipeline_, error);
     }
     module_ = gfx::create_shader_module(device, shaders::k_cluster_vertex_spirv,
@@ -237,9 +244,12 @@ class ClusterRaster {
     gfx::GraphicsPipelineDesc desc;
     desc.vertex = module_;
     desc.vertex_entry = "vs_cluster";
-    desc.fragment = module_;
+    desc.fragment = depth_only ? VK_NULL_HANDLE : module_;
     desc.fragment_entry = "fs_visibility";
     desc.layout = layout;
+    desc.depth_format = depth_format;
+    desc.depth_test = depth_only;
+    desc.depth_write = depth_only;
     return gfx::create_graphics_pipeline(device, desc, pipeline_, error);
   }
 

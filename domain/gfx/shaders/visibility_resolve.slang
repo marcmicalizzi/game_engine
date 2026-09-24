@@ -91,7 +91,32 @@ struct ResolveParams {
   uint64_t normal_pool;  // deformed normals, parallel to the deformed-vertex pool; 0 for none
   uint64_t pair_entries;  // uint[pair_count]: this view's pair -> visible entry; 0: the pair is it
   uint64_t pairs;         // uint2[pair_count]: the scene's {instance, cluster} per pair; 0: none
-  uint64_t pad3;
+  uint64_t shadow_maps;   // ShadowMapParams*, read with k_shadow_cascades; 0: none
+};
+
+// Mirrors gfx::ShadowCascade (80 bytes): one cascade of the sun's depth atlas.
+struct ShadowCascade {
+  column_major float4x4 view_proj;  // world -> x, y in [-1, 1] over the tile; depth 1 towards the light
+  float texel_world;                // world units a texel spans across the light
+  float depth_range;                // world units from depth 0 to depth 1
+  float bias;                       // depth units the reference moves towards the light
+  float pad;
+};
+
+// Mirrors gfx::ShadowMapParams (400 bytes).
+struct ShadowMapParams {
+  ShadowCascade cascades[4];  // gfx::k_max_shadow_cascades
+  float4 light_right;
+  float4 light_up;
+  float4 light_dir;  // towards the light
+  uint cascade_count;
+  uint resolution;  // texels per cascade side; cascade c is the atlas's columns c * resolution on
+  uint texture;     // bindless slot of the depth atlas
+  uint sampler;     // bindless slot of a nearest, clamped sampler
+  float max_slope;  // the receiver plane's |depth slope| is clamped to this
+  uint tiles;       // the atlas's width in cascades, as allocated (>= cascade_count)
+  float normal_offset;  // texels along the geometric normal at grazing; (1 - n.l) of it elsewhere
+  uint pad2;
 };
 
 struct ResolvePush {
@@ -103,6 +128,7 @@ struct ResolvePush {
 static const uint k_no_scene = 0xffffffffu;
 static const uint k_shadow_sun = 1u;
 static const uint k_shadow_lights = 2u;
+static const uint k_shadow_cascades = 4u;  // the sun's shadow is read from the cascaded maps
 
 struct FullscreenOut {
   float4 position : SV_Position;
@@ -202,6 +228,118 @@ bool shadow_ray_blocked(ResolveParams* params, uint bit, float3 origin, float3 d
 #endif
 }
 
+// ---- the cascaded shadow maps (docs/subsystems/renderer.md, "Shadows") --------------------------
+//
+// One 2x2 block of the filter: the four depths a gather returned, compared against the receiver's
+// plane at each texel's centre. `z` is the reference at the block's first texel (lowest column,
+// lowest row), and `dzdi`/`dzdj` are the plane's depth per texel along the columns and the rows.
+// Vulkan's gather order is x = (i0, j1), y = (i1, j1), z = (i1, j0), w = (i0, j0). A texel is lit
+// where its caster is no nearer the light than the plane (depth 1 is the light's side).
+float shadow_block(float4 g, float z, float dzdi, float dzdj, float wx0, float wx1, float wy0,
+                   float wy1) {
+  return wx0 * wy0 * step(g.w, z) + wx1 * wy0 * step(g.z, z + dzdi) +
+         wx0 * wy1 * step(g.x, z + dzdj) + wx1 * wy1 * step(g.y, z + dzdi + dzdj);
+}
+
+// The sun's visibility at `position` through the cascaded depth maps: 1 where it reaches the
+// surface, 0 where casters nearer the light cover the whole filter, and the covered fraction in
+// between. `geometric` is the triangle's own normal, turned towards the camera.
+//
+// **Which cascade:** the first whose tile holds the filter's whole footprint and whose depth range
+// holds the point. The cascades are nested outwards from the camera, so the first that holds it is
+// the finest; a point beyond the last is lit, because there is nothing known about it.
+//
+// **The filter** is 3x3 bilinear PCF: nine bilinear taps a texel apart, which is a 4x4 texel
+// footprint with the separable weights (1 - f, 1, 1, f) / 3 along each axis, f the point's
+// fraction of a texel. It is evaluated as four gathers rather than nine comparison samples so
+// that every one of the sixteen texels can be compared against its own reference, which is what
+// the bias needs.
+//
+// **The bias is the receiver's plane.** Each texel is compared against the depth the receiver's
+// plane has at that texel's centre, read off the geometric normal in the light's frame — which is
+// exactly the depth the rasterizer wrote there for the receiver's own triangle — so a flat surface
+// never shadows itself at any angle and the kernel's width costs no extra bias. On top of it,
+// `ShadowCascade::bias` (a constant in texels of the cascade) covers what is not planar: curvature
+// across the footprint, a neighbouring triangle, and the float error between the reconstruction
+// and the rasterizer. The slope is clamped at `max_slope`, which only a grazing surface reaches.
+//
+// **The normal offset is for what is not planar.** The point looked up leaves the surface along
+// its geometric normal by `normal_offset` texels of the cascade times (1 - N.L): nothing on a
+// surface facing the light, where the receiver's plane is exact, and the whole offset at grazing
+// and beyond. Without it a low-poly curved surface shadows itself twice over: in every concave
+// crease, where the neighbouring triangle rises above the receiver's plane inside the footprint,
+// and along the terminator, where a triangle whose geometric normal just faces away from the sun
+// still has a shading normal that faces it. A shadow ray lifted off such a triangle skims the
+// convex surface and reaches the sun, and a lookup lifted clear of the footprint does too, so the
+// two implementations answer alike there (docs/subsystems/renderer.md, "Shadows", has the counts
+// on the Khronos samples, and the offset they chose). With no offset a back-facing surface is its
+// own shadow.
+float cascade_visibility(ShadowMapParams* maps, float3 position, float3 geometric) {
+  const float n_d = dot(geometric, maps->light_dir.xyz);
+  if (n_d <= 0.0 && maps->normal_offset <= 0.0) return 0.0;
+  const float res = float(maps->resolution);
+  const float2 atlas = float2(res * float(maps->tiles), res);
+  const float inv_n = 1.0 / max(n_d, 1.0e-4);
+  const float slope_r =
+      clamp(-dot(geometric, maps->light_right.xyz) * inv_n, -maps->max_slope, maps->max_slope);
+  const float slope_u =
+      clamp(-dot(geometric, maps->light_up.xyz) * inv_n, -maps->max_slope, maps->max_slope);
+  const float lift = maps->normal_offset * saturate(1.0 - n_d);
+  for (uint c = 0; c < maps->cascade_count; ++c) {
+    const ShadowCascade cascade = maps->cascades[c];
+    const float3 lifted = position + geometric * (lift * cascade.texel_world);
+    const float4 clip = mul(cascade.view_proj, float4(lifted, 1.0));
+    if (clip.z < 0.0 || clip.z > 1.0) continue;
+    // Texel-centre coordinates in the tile (texel k's centre is at k); rows run down the tile,
+    // because the raster pass that drew it flips the viewport.
+    const float2 t = float2((clip.x * 0.5 + 0.5) * res, (0.5 - clip.y * 0.5) * res) - 0.5;
+    const float2 base = floor(t);
+    if (base.x < 1.0 || base.y < 1.0 || base.x > res - 3.0 || base.y > res - 3.0) continue;
+    const float2 f = t - base;
+    // Depth per texel along the columns (the light's right) and the rows (its down).
+    const float scale = cascade.texel_world / cascade.depth_range;
+    const float dzdi = slope_r * scale;
+    const float dzdj = -slope_u * scale;
+    // The reference at the footprint's first texel, (base - 1, base - 1).
+    const float z = clip.z + cascade.bias + dzdi * (base.x - 1.0 - t.x) +
+                    dzdj * (base.y - 1.0 - t.y);
+    // A gather at a texel corner returns the 2x2 texels around it: these four cover the 4x4.
+    // The atlas and its sampler are the same for every pixel of the pass, so the indices are
+    // uniform and need no NonUniformResourceIndex.
+    const float x0 = float(c) * res + base.x;
+    const uint tex = maps->texture;
+    const uint smp = maps->sampler;
+    const float4 g00 = g_textures[tex].Gather(g_samplers[smp], float2(x0, base.y) / atlas);
+    const float4 g10 = g_textures[tex].Gather(g_samplers[smp], float2(x0 + 2.0, base.y) / atlas);
+    const float4 g01 = g_textures[tex].Gather(g_samplers[smp], float2(x0, base.y + 2.0) / atlas);
+    const float4 g11 =
+        g_textures[tex].Gather(g_samplers[smp], float2(x0 + 2.0, base.y + 2.0) / atlas);
+    float lit = shadow_block(g00, z, dzdi, dzdj, 1.0 - f.x, 1.0, 1.0 - f.y, 1.0);
+    lit += shadow_block(g10, z + 2.0 * dzdi, dzdi, dzdj, 1.0, f.x, 1.0 - f.y, 1.0);
+    lit += shadow_block(g01, z + 2.0 * dzdj, dzdi, dzdj, 1.0 - f.x, 1.0, 1.0, f.y);
+    lit += shadow_block(g11, z + 2.0 * (dzdi + dzdj), dzdi, dzdj, 1.0, f.x, 1.0, f.y);
+    return lit * (1.0 / 9.0);
+  }
+  return 1.0;
+}
+
+// **The resolve's shadow query: one function, two implementations** (04 §4.4). How much of a
+// light reaches the surface, from 0 (blocked) to 1 (lit). `k_shadow_cascades` in `shadow_flags`
+// picks the cascaded maps, which shadow the sun alone and answer a fraction at a penumbra;
+// otherwise it is the ray query, which answers 0 or 1 and so leaves every ray-traced picture
+// exactly what it was. `position` and `geometric` are the reconstructed surface: the ray leaves
+// it offset along the geometric normal by `shadow_bias`, the map is looked up at it unmoved.
+float shadow_visibility(ResolveParams* params, uint bit, float3 position, float3 geometric,
+                        float3 direction, float t_max) {
+  if ((params->shadow_flags & bit) == 0) return 1.0;
+  if ((params->shadow_flags & k_shadow_cascades) != 0) {
+    if (bit != k_shadow_sun || params->shadow_maps == 0) return 1.0;
+    return cascade_visibility((ShadowMapParams*)params->shadow_maps, position, geometric);
+  }
+  const float3 origin = position + geometric * params->shadow_bias;
+  return shadow_ray_blocked(params, bit, origin, direction, t_max) ? 0.0 : 1.0;
+}
+
 [shader("fragment")]
 float4 fs_resolve(FullscreenOut in) : SV_Target {
   ResolveParams* params = (ResolveParams*)g_push.params;
@@ -294,31 +432,35 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
   surface.roughness = sampled.roughness;
   surface.metallic = sampled.metallic;
 
-  // Shadow rays leave from the surface offset along the geometric normal, so that the quantized
-  // position the resolve reconstructs cannot start the ray inside the float positions the
-  // acceleration structure was built from.
-  const float3 shadow_origin = s.position + s.geometric * params->shadow_bias;
+  // Shadows are `shadow_visibility`'s: a ray leaves the surface offset along the geometric normal
+  // (so that the quantized position the resolve reconstructs cannot start it inside the float
+  // positions the acceleration structure was built from), and the cascaded maps are read at the
+  // surface itself, whose own triangle the rasterizer drew into them from the same 16-bit grid.
 
-  // The shadow view (ResolveMode::Shadow): the sun's shadow query and nothing else, in three flat
-  // values a test or a person can count. White where the sun reaches the surface, black where the
-  // shadow ray is blocked, and mid grey where the surface faces away from the sun, so no ray is
-  // traced. It asks exactly the question the shaded view below asks, with the same normal and the
-  // same origin, so a pixel that is black here is a pixel the sun term is missing from there.
+  // The shadow view (ResolveMode::Shadow): the sun's shadow query and nothing else, in flat values
+  // a test or a person can count. White where the sun reaches the surface, black where it is
+  // blocked, and mid grey where the surface faces away from the sun, so nothing is asked. It asks
+  // exactly the question the shaded view below asks, with the same normal and the same surface, so
+  // a pixel that is black here is a pixel the sun term is missing from there. A ray answers 0 or 1;
+  // the cascaded maps answer the filtered fraction, so their penumbra is grey between the two.
   if (params->mode == 6) {
     if (dot(surface.normal, params->sun.xyz) <= 0.0) return float4(0.5, 0.5, 0.5, 1.0);
-    return shadow_ray_blocked(params, k_shadow_sun, shadow_origin, params->sun.xyz, 1e30)
-               ? float4(0.0, 0.0, 0.0, 1.0)
-               : float4(1.0, 1.0, 1.0, 1.0);
+    const float v =
+        shadow_visibility(params, k_shadow_sun, s.position, s.geometric, params->sun.xyz, 1e30);
+    return float4(v, v, v, 1.0);
   }
 
-  // The sun: one direction, one intensity, no falloff; a hit anywhere along the ray removes it.
+  // The sun: one direction, one intensity, no falloff; a hit anywhere along the ray removes it,
+  // and a filtered map removes the fraction it covers. A visibility of 1 multiplies nothing, so a
+  // ray-traced or unshadowed pixel is the bytes it always was.
   float3 color = float3(0.0);
-  if (dot(surface.normal, params->sun.xyz) > 0.0 &&
-      !shadow_ray_blocked(params, k_shadow_sun, shadow_origin, params->sun.xyz, 1e30)) {
-    color = brdf_direct(surface, params->sun.xyz, float3(params->sun.w));
+  if (dot(surface.normal, params->sun.xyz) > 0.0) {
+    const float v =
+        shadow_visibility(params, k_shadow_sun, s.position, s.geometric, params->sun.xyz, 1e30);
+    if (v > 0.0) color = brdf_direct(surface, params->sun.xyz, float3(params->sun.w) * v);
   }
   // The analytic lights: inverse square windowed to zero at the radius, spots by their cone, and
-  // a shadow ray that stops short of the light itself.
+  // a shadow ray that stops short of the light itself. The cascaded maps do not shadow them.
   ResolveLight* lights = (ResolveLight*)params->lights;
   for (uint i = 0; i < params->light_count; ++i) {
     float3 light_dir;
@@ -326,8 +468,8 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
     float light_distance;
     if (!light_sample(lights[i], s.position, light_dir, radiance, light_distance)) continue;
     if (dot(surface.normal, light_dir) > 0.0 &&
-        shadow_ray_blocked(params, k_shadow_lights, shadow_origin, light_dir,
-                           light_distance - params->shadow_bias)) {
+        shadow_visibility(params, k_shadow_lights, s.position, s.geometric, light_dir,
+                          light_distance - params->shadow_bias) <= 0.0) {
       continue;
     }
     color += brdf_direct(surface, light_dir, radiance);

@@ -39,6 +39,16 @@ constexpr u32 k_alloc_words = sizeof(gfx::DeformAlloc) / sizeof(u32);
 // The ray tracing chain's record count block, behind that: built, wanted, and the instances that
 // lost their drawn clusters and their casters to the capacity (gfx::ClusterRecordParams).
 constexpr u32 k_rt_words = gfx::k_cluster_record_count_words;
+// Per shadow cascade, behind the chain's block: its indirect block's three words, then the
+// vertex path's indexed-draw cursor and fallback count for its region.
+constexpr u32 k_shadow_stat_words = 5;
+// Where the cascades' blocks start, in words.
+constexpr u64 shadow_stat_base(u32 views) noexcept {
+  return u64{k_stat_words} * views + k_alloc_words + k_rt_words;
+}
+// The depth atlas's format: 32-bit float, because a cascade's depth range is the scene's extent
+// along the light — kilometres on the desert overlook — and 16 bits of that is 8 cm.
+constexpr VkFormat k_shadow_format = VK_FORMAT_D32_SFLOAT;
 
 // The sky is `renderer::k_sky` in `lighting.h`, and there are now **three** things that have to
 // be the same number rather than two. The resolve pass's clear value and `ResolveParams::sky`,
@@ -117,6 +127,8 @@ void SceneRenderer::Pipelines::destroy(const gfx::Device& device) noexcept {
   if (hardware != VK_NULL_HANDLE) gfx::destroy_pipeline(device, hardware);
   if (vertex != VK_NULL_HANDLE) gfx::destroy_pipeline(device, vertex);
   if (vertex_fallback != VK_NULL_HANDLE) gfx::destroy_pipeline(device, vertex_fallback);
+  if (shadow != VK_NULL_HANDLE) gfx::destroy_pipeline(device, shadow);
+  if (shadow_fallback != VK_NULL_HANDLE) gfx::destroy_pipeline(device, shadow_fallback);
   if (resolve != VK_NULL_HANDLE) gfx::destroy_pipeline(device, resolve);
   gfx::destroy_compute_pipeline(device, software);
   gfx::destroy_compute_pipeline(device, cull);
@@ -129,7 +141,8 @@ void SceneRenderer::Pipelines::destroy(const gfx::Device& device) noexcept {
   gfx::destroy_compute_pipeline(device, record_ranges);
   gfx::destroy_compute_pipeline(device, record_emit);
   gfx::destroy_compute_pipeline(device, trace);
-  direct = hardware = vertex = vertex_fallback = resolve = VK_NULL_HANDLE;
+  direct = hardware = vertex = vertex_fallback = shadow = shadow_fallback = resolve =
+      VK_NULL_HANDLE;
 }
 
 // The views' visibility regions and Hi-Z pyramids, packed back to back into one buffer each. A
@@ -225,6 +238,17 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
     return false;
   }
   const u32 views = views_.size();
+  // The same for the shadow cascades: each has a run of the scene's visible list, so a renderer
+  // that draws maps needs a scene built for them.
+  if (resolved.csm && scene.shadow_cascades() != resolved.shadow_cascades) {
+    if (error != nullptr) {
+      *error =
+          "the shadow cascades do not match the ones the scene was built with; pass the same "
+          "RenderSettings to resolve_settings, the scene and the renderer";
+    }
+    destroy();
+    return false;
+  }
 
   // The joint buffer holds `k_joint_slots` frames' worth of bone matrices, one region per frame
   // slot, which is what makes the host write safe with no staging copy and no barrier. A renderer
@@ -262,11 +286,14 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
       // the layout; one view asks for exactly the 24 it always did.
       // 28 per view: the two cull passes, the two hardware draws, the two Hi-Z builds, the three
       // pool passes and the three allocations, the software raster, the six acceleration
-      // structure zones, the trace and the resolve, with room to spare.
-      !timer_.create(device, desc.frames_in_flight, 28 + 16 * (views - 1), error)) {
+      // structure zones, the trace and the resolve, with room to spare. The shadow cascades add
+      // one cull zone and at most two per cascade plus two (index expansion, pool pass and its
+      // allocation, the depth raster), twelve.
+      !timer_.create(device, desc.frames_in_flight, 40 + 16 * (views - 1), error)) {
     destroy();
     return false;
   }
+  const u32 cascades = resolved.csm ? scene.shadow_cascades() : 0u;
   params_.resize(desc.frames_in_flight);
   resolves_.resize(desc.frames_in_flight);
   stat_blocks_.resize(desc.frames_in_flight);
@@ -275,16 +302,20 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
   slot_submission_.assign(desc.frames_in_flight, 0);
   constexpr VkBufferUsageFlags k_address =
       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
-  const u64 stat_bytes = sizeof(u32) * (u64{k_stat_words} * views + k_alloc_words + k_rt_words);
+  const u64 stat_bytes =
+      sizeof(u32) * (shadow_stat_base(views) + u64{k_shadow_stat_words} * cascades);
   bool ok = true;
   for (u32 slot = 0; slot < desc.frames_in_flight && ok; ++slot) {
-    // Two cull blocks per view, one resolve block per view with the frame's lights behind the
-    // last, and one statistics block per view.
-    ok = gfx::create_buffer(device, sizeof(gfx::CullParams) * 2 * views, k_address, true,
-                            params_[slot], error) &&
-         gfx::create_buffer(
-             device, sizeof(gfx::ResolveParams) * views + k_view_lights * sizeof(gfx::ResolveLight),
-             k_address, true, resolves_[slot], error) &&
+    // Two cull blocks per view and one per shadow cascade behind them, one resolve block per view
+    // with the frame's lights behind the last and the shadow maps' block behind those, and one
+    // statistics block per view.
+    ok = gfx::create_buffer(device, sizeof(gfx::CullParams) * (2 * views + cascades), k_address,
+                            true, params_[slot], error) &&
+         gfx::create_buffer(device,
+                            sizeof(gfx::ResolveParams) * views +
+                                k_view_lights * sizeof(gfx::ResolveLight) +
+                                sizeof(gfx::ShadowMapParams),
+                            k_address, true, resolves_[slot], error) &&
          gfx::create_buffer(device, stat_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true,
                             stat_blocks_[slot], error);
     if (ok) std::memset(stat_blocks_[slot].mapped, 0, stat_bytes);
@@ -345,7 +376,7 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
 
   graph_ = new gfx::RenderGraph(device);
   if (!create_pipelines(error) || !targets_.create(device, views_, error) ||
-      !create_color_target(error)) {
+      !create_color_target(error) || !create_shadow_maps(error)) {
     destroy();
     return false;
   }
@@ -365,6 +396,59 @@ void SceneRenderer::sample_gpu_memory() noexcept {
   stats_.gpu_memory.budget_mib = budget.budget_bytes / k_mib;
   stats_.gpu_memory.used_mib = budget.used_bytes / k_mib;
   stats_.gpu_memory.device_local_total_mib = budget.device_local_bytes / k_mib;
+}
+
+// The sun's depth atlas, its view, and the sampler the resolve gathers it through, registered in
+// the scene's bindless set. Nearest filtering and clamping: the resolve reads texels, never a
+// filtered value, because it compares every texel of its footprint against its own reference
+// (visibility_resolve.slang, `cascade_visibility`).
+bool SceneRenderer::create_shadow_maps(std::string* error) {
+  if (!resolved_.csm) return true;
+  const gfx::Device& device = *device_;
+  const u32 cascades = scene_->shadow_cascades();
+  const u32 map = resolved_.settings.shadow_map;
+  gfx::BindlessSet& bindless = scene_->bindless();
+  if (!gfx::create_image_2d(
+          device, map * cascades, map, k_shadow_format,
+          VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, shadow_atlas_,
+          error) ||
+      !gfx::create_image_view(device, shadow_atlas_, shadow_view_, error) ||
+      !gfx::create_sampler(device, VK_FILTER_NEAREST, shadow_sampler_, error)) {
+    return false;
+  }
+  shadow_texture_slot_ =
+      bindless.add_sampled_image(shadow_view_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+  shadow_sampler_slot_ = bindless.add_sampler(shadow_sampler_);
+  if (shadow_texture_slot_ == gfx::BindlessSet::k_invalid_slot ||
+      shadow_sampler_slot_ == gfx::BindlessSet::k_invalid_slot) {
+    if (error != nullptr) *error = "no bindless slot for the shadow atlas";
+    return false;
+  }
+  ENGINE_LOG_INFO(log_renderer, "cascaded shadow maps", log::field("cascades", cascades),
+                  log::field("texels", map),
+                  log::field("atlas_bytes", u64{map} * map * cascades * sizeof(f32)));
+  return true;
+}
+
+// The GPU is idle (destroy waits), so the slots are released as of now.
+void SceneRenderer::destroy_shadow_maps() noexcept {
+  if (device_ == nullptr) return;
+  if (scene_ != nullptr && scene_->valid()) {
+    gfx::BindlessSet& bindless = scene_->bindless();
+    if (shadow_texture_slot_ != gfx::BindlessSet::k_invalid_slot)
+      bindless.release_sampled_image(shadow_texture_slot_, 0);
+    if (shadow_sampler_slot_ != gfx::BindlessSet::k_invalid_slot)
+      bindless.release_sampler(shadow_sampler_slot_, 0);
+    bindless.recycle(0);
+  }
+  shadow_texture_slot_ = shadow_sampler_slot_ = gfx::BindlessSet::k_invalid_slot;
+  gfx::destroy_sampler(*device_, shadow_sampler_);
+  gfx::destroy_image_view(*device_, shadow_view_);
+  if (shadow_atlas_.image != VK_NULL_HANDLE) gfx::destroy_image(*device_, shadow_atlas_);
+  shadow_sampler_ = VK_NULL_HANDLE;
+  shadow_view_ = VK_NULL_HANDLE;
+  shadow_atlas_ = gfx::ImageResource{};
+  cascades_ = ShadowCascades{};
 }
 
 bool SceneRenderer::create_color_target(std::string* error) {
@@ -491,6 +575,39 @@ bool SceneRenderer::create_pipelines(std::string* error) {
     hw_desc.layout = bindless.pipeline_layout();
     if (!gfx::create_mesh_pipeline(device, hw_desc, pipelines_.hardware, error)) return false;
   }
+  // **The shadow maps are drawn by the picture's own rasterizer**: the same mesh stage, or the
+  // same vertex stage (indexed with its fallback, or the capacity draw), with no fragment stage
+  // and the depth atlas as the attachment — so a cascade's triangles come off the same 16-bit grid
+  // (or the same pool block) through the same arithmetic as the picture's, which is what lets the
+  // resolve compare a receiver's own plane against them. Reversed depth, like everything else.
+  if (resolved_.csm) {
+    if (mesh_pipeline) {
+      gfx::MeshPipelineDesc shadow_desc;
+      shadow_desc.mesh = mesh->module;
+      shadow_desc.fragment = VK_NULL_HANDLE;
+      shadow_desc.layout = bindless.pipeline_layout();
+      shadow_desc.depth_format = k_shadow_format;
+      shadow_desc.depth_test = true;
+      shadow_desc.depth_write = true;
+      if (!gfx::create_mesh_pipeline(device, shadow_desc, pipelines_.shadow, error)) return false;
+    } else {
+      gfx::GraphicsPipelineDesc shadow_desc = vertex_desc;
+      shadow_desc.fragment = VK_NULL_HANDLE;
+      shadow_desc.depth_format = k_shadow_format;
+      shadow_desc.depth_test = true;
+      shadow_desc.depth_write = true;
+      if (!gfx::create_graphics_pipeline(device, shadow_desc, pipelines_.shadow, error)) {
+        return false;
+      }
+      if (resolved_.vertex_indexed) {
+        shadow_desc.vertex_entry = "vs_cluster_fallback";  // same module as the indexed draw's
+        if (!gfx::create_graphics_pipeline(device, shadow_desc, pipelines_.shadow_fallback,
+                                           error)) {
+          return false;
+        }
+      }
+    }
+  }
   gfx::GraphicsPipelineDesc resolve_desc;
   resolve_desc.vertex = resolve->module;
   resolve_desc.vertex_entry = "vs_fullscreen";
@@ -520,6 +637,7 @@ void SceneRenderer::destroy() noexcept {
   }
   targets_.destroy(device);
   pipelines_.destroy(device);
+  destroy_shadow_maps();
   shaders_.destroy();
   if (color_.image != VK_NULL_HANDLE) gfx::destroy_image(device, color_);
   color_ = gfx::ImageResource{};
@@ -646,6 +764,26 @@ void SceneRenderer::fold_visible(u32 slot) {
                     log::field("index_capacity", scene_->vertex_index_capacity()),
                     log::field("remedy", "raise renderer::k_vertex_index_budget"));
   }
+  // The shadow cascades' cuts, behind the allocation record: what each cascade drew, and on the
+  // indexed draw what its index budget sent to the fallback.
+  stats_.shadow_pairs = 0;
+  stats_.shadow_fallback = 0;
+  if (resolved_.csm) {
+    const u32* shadow = stats + shadow_stat_base(view_count());
+    const u32 count_word = resolved_.vertex_path ? 1u : 0u;
+    for (u32 c = 0; c < scene_->shadow_cascades(); ++c) {
+      const u32* block = shadow + u64{c} * k_shadow_stat_words;
+      stats_.shadow_pairs += block[count_word];
+      if (resolved_.vertex_indexed) stats_.shadow_fallback += block[4];
+    }
+    if (stats_.shadow_fallback > 0 && !shadow_fallback_warned_) {
+      shadow_fallback_warned_ = true;
+      ENGINE_LOG_WARN(log_renderer, "a shadow cascade's index budget overflowed",
+                      log::field("clusters", stats_.shadow_fallback),
+                      log::field("index_capacity", scene_->vertex_index_capacity()),
+                      log::field("remedy", "raise renderer::k_vertex_index_budget"));
+    }
+  }
   const u32 total = stats_.visible_pairs();
   stats_.visible_min = total < stats_.visible_min ? total : stats_.visible_min;
   stats_.visible_max = total > stats_.visible_max ? total : stats_.visible_max;
@@ -714,6 +852,7 @@ void SceneRenderer::collect_slot(u32 slot) {
   last.visible_pass2 = stats_.visible_pass2;
   last.visible_sw = stats_.visible_sw;
   last.shadow_casters = stats_.shadow_casters;
+  last.shadow_pairs = stats_.shadow_pairs;
   last.uploads = static_cast<u32>(stats_.stream.uploads - before.uploads);
   last.upload_bytes = stats_.stream.uploads_bytes - before.uploads_bytes;
   last.evictions = static_cast<u32>(stats_.stream.evictions - before.evictions);
@@ -742,6 +881,8 @@ void SceneRenderer::collect_slot(u32 slot) {
                   timer_.ms("clas") + timer_.ms("blas") + timer_.ms("tlas");
     last.gpu_clas = timer_.ms("clas");
     last.gpu_blas = timer_.ms("blas");
+    last.gpu_shadow_cull = timer_.ms("shadow cull");
+    last.gpu_shadow = last.gpu_shadow_cull + timer_.ms("shadow");
     last.gpu_total = timer_.total_ms();
   }
   if (!timer_.results().empty()) {
@@ -772,6 +913,9 @@ void SceneRenderer::collect_slot(u32 slot) {
                      timer_.ms("clas") + timer_.ms("blas") + timer_.ms("tlas");
     stats_.gpu_clas += timer_.ms("clas");
     stats_.gpu_blas += timer_.ms("blas");
+    // The cascaded maps are drawn once for every view, so they are the frame's cost too.
+    stats_.gpu_shadow_cull += timer_.ms("shadow cull");
+    stats_.gpu_shadow += timer_.ms("shadow cull") + timer_.ms("shadow");
     stats_.gpu_total += timer_.total_ms();
     ++stats_.timed_frames;
   }
@@ -980,6 +1124,12 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   ENGINE_ASSERT(!casters || (!use_sw && !occlusion && rt_chain),
                 "the caster run is the software run of a frame with neither a software pass nor "
                 "occlusion culling");
+  // The sun's cascaded shadow maps: a run of the visible list per cascade behind every view's
+  // three, culled from the light, drawn depth-only into the atlas, and filtered by the resolve.
+  const bool csm = resolved_.csm;
+  const u32 cascade_runs = csm ? scene.shadow_cascades() : 0u;
+  ENGINE_ASSERT(!csm || (!shadows && !use_sw && !ray_path && !direct),
+                "cascaded shadow maps are drawn on the hw and vertex paths, never beside rays");
   // A negative override means "what the settings say", which is every caller but the reference.
   const f32 frame_lod_px = frame.lod_px >= 0.0f ? frame.lod_px : settings.lod_px;
   // The occlusion history ping-pongs on the renderer's own count of frames recorded, **not** on
@@ -1116,6 +1266,43 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   frame_lighting(data, rendered, settings.lights, lighting);
   std::memcpy(resolve_bytes + sizeof(gfx::ResolveParams) * views, lighting.lights,
               sizeof(lighting.lights));
+
+  // ---- the sun's cascades (shadow_cascades.h) -------------------------------------------------
+  //
+  // Fit on the CPU from this frame's camera and layout, and written behind the lights for the
+  // resolve. The cascades' cut is **the camera's cut over each cascade's box**: the cull pass runs
+  // with the cascade's six planes and the camera's own LOD — its eye, its projection scale and
+  // its threshold, the finest of the views' — so the LOD test, which does not look at the frustum,
+  // makes exactly the decision it makes for the picture. A shadow is cast by the picture's LOD,
+  // which is what makes a receiver's own triangle land in the map at the depth the resolve's
+  // receiver plane predicts, and a caster outside the frustum by the LOD the camera would draw it
+  // at from where it stands.
+  const u64 shadow_maps_address =
+      resolves_[slot].address + sizeof(gfx::ResolveParams) * views + sizeof(lighting.lights);
+  u32 shadow_lod_view = 0;
+  if (csm) {
+    ShadowFit fit;
+    fit.cascades = cascade_runs;
+    fit.resolution = settings.shadow_map;
+    fit.distance = settings.shadow_distance;
+    fit_shadow_cascades(views_, frame.camera, lighting.sun.xyz(), data.center, data.radius, fit,
+                        cascades_);
+    gfx::ShadowMapParams maps;
+    shadow_map_params(cascades_, shadow_texture_slot_, cascade_runs, shadow_sampler_slot_, maps);
+    if (settings.shadow_normal_offset >= 0.0f) maps.normal_offset = settings.shadow_normal_offset;
+    std::memcpy(resolve_bytes + sizeof(gfx::ResolveParams) * views + sizeof(lighting.lights), &maps,
+                sizeof(maps));
+    // The view whose cut is finest: the largest projection scale over threshold.
+    f32 finest = -1.0f;
+    for (u32 v = 0; v < views; ++v) {
+      const f32 threshold = frame_lod_px * views_[v].quality.lod_scale;
+      const f32 ratio = threshold > 0.0f ? views_[v].proj_scale / threshold : 3.0e38f;
+      if (ratio > finest) {
+        finest = ratio;
+        shadow_lod_view = v;
+      }
+    }
+  }
 
   for (u32 v = 0; v < views; ++v) {
     const View& view = views_[v];
@@ -1294,6 +1481,11 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     resolve.scene = shadows ? scene.tlas_slot() : gfx::k_no_scene;
     resolve.shadow_flags = shadows ? gfx::k_shadow_sun | gfx::k_shadow_lights : 0u;
     resolve.shadow_bias = lighting.shadow_bias;
+    // Or the sun's cascaded maps: the same query, filtered out of the atlas, and the sun alone.
+    if (csm) {
+      resolve.shadow_flags = gfx::k_shadow_sun | gfx::k_shadow_cascades;
+      resolve.shadow_maps = shadow_maps_address;
+    }
     std::memcpy(resolve_bytes + sizeof(gfx::ResolveParams) * v, &resolve, sizeof(resolve));
 
     // ---- the deformed-vertex pool, one block per run ------------------------------------------
@@ -1346,6 +1538,102 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     }
   }
 
+  // ---- the shadow cascades' cull blocks, draws, index expansions and pool passes ---------------
+  //
+  // One cull block per cascade behind the views' pairs: the cascade's planes, the camera's LOD, no
+  // normal cones (a caster's facing to the camera says nothing about the light), no occlusion
+  // (there is no Hi-Z from the light) and no pair-to-entry table (the resolve decodes the picture's
+  // pairs, never a cascade's). Everything goes to the hardware run, which the cascade's own draw
+  // reads.
+  const u32 cascades_drawn = csm ? cascades_.count : 0u;
+  gfx::ClusterDrawParams shadow_draws[gfx::k_max_shadow_cascades];
+  gfx::VertexExpandParams shadow_expand[gfx::k_max_shadow_cascades];
+  gfx::DeformParams shadow_deform[gfx::k_max_shadow_cascades];
+  gfx::DeformAllocParams shadow_alloc{};
+  const u32 shadow_map = settings.shadow_map;
+  for (u32 c = 0; c < cascades_drawn; ++c) {
+    const gfx::ShadowCascade& cascade = cascades_.cascades[c];
+    const View& lod_view = views_[shadow_lod_view];
+    const u32 base = scene.cascade_base(c);
+    const u64 run_address = scene.visible.address + u64{base} * 2 * sizeof(u32);
+    const u64 args_address = scene.shadow_args.address + scene.shadow_args_offset(c);
+    gfx::CullParams cull{};
+    gfx::set_frustum(cull, frustum_from_view_proj(cascade.view_proj));
+    cull.view_proj = cascade.view_proj;
+    cull.camera = Vec4{eye, znear};
+    cull.lod = Vec4{lod_view.proj_scale,
+                    frame_lod_px * lod_view.quality.lod_scale * settings.shadow_lod_scale, 1.0f,
+                    settings.shadow_frustum ? 1.0f : 0.0f};
+    cull.raster = Vec4{settings.sw_px, gfx::k_raster_hardware, 0.0f, 0.0f};
+    cull.cluster_count = cluster_count;
+    cull.count_index = count_index;
+    cull.cone_cull = 0;
+    cull.clusters = scene.clusters.address;
+    cull.lods = scene.lods.address;
+    cull.visible = run_address;
+    cull.draw_args = args_address;
+    cull.sw_visible = run_address;  // never appended to: the raster mode is hardware
+    cull.sw_args = args_address;
+    cull.visible_base = base;
+    cull.sw_visible_base = base;
+    cull.instances = scene.instances.address;
+    cull.meshes = scene.meshes.address;
+    cull.instance_count = instance_count;
+    cull.pair_count = pair_count;
+    cull.streaming = stream_params;
+    cull.page_count = scene.page_count();
+    cull.max_requests = scene.max_requests();
+    if (vertex_indexed) {
+      cull.vertex_draw = scene.vertex_headers.address + scene.shadow_vertex_header_offset(c);
+      cull.vertex_records = scene.vertex_records.address + scene.shadow_vertex_records_offset(c);
+      gfx::VertexExpandParams& e = shadow_expand[c];
+      e = gfx::VertexExpandParams{};
+      e.header = cull.vertex_draw;
+      e.records = cull.vertex_records;
+      e.indices = scene.vertex_indices.address + scene.shadow_vertex_indices_offset(c);
+      e.clusters = scene.clusters.address;
+      e.triangles = scene.triangles.address;
+    }
+    cull_blocks[views * 2 + c] = cull;
+
+    gfx::ClusterDrawParams& draw = shadow_draws[c];
+    draw = gfx::ClusterDrawParams{};
+    draw.view_proj = cascade.view_proj;
+    draw.clusters = scene.clusters.address;
+    draw.mesh = scene.meshes.address;
+    draw.instances = scene.instances.address;
+    draw.triangles = scene.triangles.address;
+    draw.triangles_per_cluster = triangles_per_cluster;
+    draw.visible = vertex_indexed ? cull.vertex_records : run_address;
+    draw.visible_offset = base;
+    draw.visibility = 0;  // depth only: no fragment stage reads it
+    draw.width = shadow_map;
+    draw.height = shadow_map;
+
+    if (resolved_.deform_pass) {
+      gfx::DeformParams& d = shadow_deform[c];
+      d = deform_params[0][0];
+      d.visible = run_address;
+      d.visible_count = args_address + u64{count_index} * sizeof(u32);
+      d.visible_offset = base;
+    }
+  }
+  if (resolved_.deform_pass && cascades_drawn > 0) {
+    // The cascades' runs, in one dispatch after the camera's three have been allocated, carrying
+    // the frame's cursor on: every cascade entry of a deformed instance gets its own block.
+    shadow_alloc.clusters = scene.clusters.address;
+    shadow_alloc.instances = scene.instances.address;
+    shadow_alloc.visible = scene.visible.address;
+    shadow_alloc.visible_counts = scene.shadow_args.address + u64{count_index} * sizeof(u32);
+    shadow_alloc.slots = scene.deform_slots.address;
+    shadow_alloc.alloc = scene.deform_alloc.address;
+    shadow_alloc.pool_vertices = scene.deform_pool_vertices();
+    shadow_alloc.pair_count = pair_count;
+    shadow_alloc.views = cascades_drawn;
+    shadow_alloc.first_entry = scene.cascade_base(0);
+    shadow_alloc.reset = 0;
+  }
+
   // ---- the pool's allocator, one block per run ------------------------------------------------
   //
   // The budget is the *frame's*, so the runs share one cursor: run 0 resets it and the later runs
@@ -1369,7 +1657,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       a.pool_vertices = scene.deform_pool_vertices();
       a.pair_count = pair_count;
       a.views = views;
-      a.run = run;
+      a.first_entry = scene.visible_base(0, run);
       a.reset = run == 0 ? 1u : 0u;
     }
   }
@@ -1433,6 +1721,17 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   const gfx::RgBuffer rg_flags[2] = {graph.import_buffer("flags0", scene.flags[0]),
                                      graph.import_buffer("flags1", scene.flags[1])};
   const gfx::RgBuffer rg_sw_args = graph.import_buffer("sw_args", scene.sw_args);
+  // The cascades' argument blocks and the depth atlas. The atlas is cleared every frame, so its
+  // old contents are discarded; what is carried in is that the previous frame's resolve sampled
+  // it, which the first write of this frame has to wait for.
+  gfx::RgBuffer rg_shadow_args{};
+  gfx::RgImage rg_atlas{};
+  if (csm) {
+    rg_shadow_args = graph.import_buffer("shadow args", scene.shadow_args);
+    rg_atlas = graph.import_image("shadow atlas", shadow_atlas_, VK_IMAGE_LAYOUT_UNDEFINED,
+                                  VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                                  VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+  }
   const gfx::RgBuffer rg_vis = graph.import_buffer("visibility", targets.vis);
   const gfx::RgBuffer rg_hiz = graph.import_buffer("hiz", targets.hiz);
   const gfx::RgBuffer rg_stats = graph.import_buffer("stats", stat_blocks_[slot]);
@@ -1522,6 +1821,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           b.write(rg_args[1], gfx::Access::TransferWrite);
           b.write(rg_sw_args, gfx::Access::TransferWrite);
         }
+        if (csm) b.write(rg_shadow_args, gfx::Access::TransferWrite);
         if (!direct) b.write(rg_vis, gfx::Access::TransferWrite);
         if (occlusion) b.write(rg_flags[cur_flags], gfx::Access::TransferWrite);
         if (fill_flags) b.write(rg_flags[prev_flags], gfx::Access::TransferWrite);
@@ -1555,6 +1855,19 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             vkCmdFillBuffer(cb, scene.sw_args.buffer, at + sizeof(u32), sizeof(u32) * 2, 1);
           }
         }
+        // Each cascade's block, in the shape its draw reads: the vertex path's
+        // {vertexCount, instanceCount = 0, ...} or the mesh path's {groups = 0, 1, 1}.
+        for (u32 c = 0; c < cascade_runs; ++c) {
+          const u64 at = scene.shadow_args_offset(c);
+          if (vertex_path) {
+            vkCmdFillBuffer(cb, scene.shadow_args.buffer, at, sizeof(u32),
+                            triangles_per_cluster * 3);
+            vkCmdFillBuffer(cb, scene.shadow_args.buffer, at + sizeof(u32), sizeof(u32) * 3, 0);
+          } else {
+            vkCmdFillBuffer(cb, scene.shadow_args.buffer, at, sizeof(u32), 0);
+            vkCmdFillBuffer(cb, scene.shadow_args.buffer, at + sizeof(u32), sizeof(u32) * 2, 1);
+          }
+        }
         if (!direct) vkCmdFillBuffer(cb, targets.vis.buffer, 0, VK_WHOLE_SIZE, 0);
         if (vertex_indexed) {
           for (u32 v = 0; v < views; ++v) {
@@ -1563,13 +1876,17 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
                                 sizeof(vertex_reset), &vertex_reset);
             }
           }
+          for (u32 c = 0; c < cascade_runs; ++c) {
+            vkCmdUpdateBuffer(cb, scene.vertex_headers.buffer, scene.shadow_vertex_header_offset(c),
+                              sizeof(vertex_reset), &vertex_reset);
+          }
         }
         if (occlusion) vkCmdFillBuffer(cb, scene.flags[cur_flags].buffer, 0, VK_WHOLE_SIZE, 0);
         if (fill_flags) vkCmdFillBuffer(cb, scene.flags[prev_flags].buffer, 0, VK_WHOLE_SIZE, 0);
         if (fill_hiz) vkCmdFillBuffer(cb, targets.hiz.buffer, 0, VK_WHOLE_SIZE, 0);
         if (rt_chain) vkCmdFillBuffer(cb, scene.instance_counts.buffer, 0, VK_WHOLE_SIZE, 0);
         if (deform_on) {  // {groups = 0, 1, 1}; the copy below fills in the count
-          for (u32 i = 0; i < views * k_visible_runs; ++i) {
+          for (u32 i = 0; i < views * k_visible_runs + cascade_runs; ++i) {
             const u64 at = u64{i} * gfx::k_draw_args_bytes;
             vkCmdFillBuffer(cb, scene.deform_args.buffer, at, sizeof(u32), 0);
             vkCmdFillBuffer(cb, scene.deform_args.buffer, at + sizeof(u32), sizeof(u32) * 2, 1);
@@ -1878,6 +2195,175 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     }
   };
 
+  // **The sun's cascaded shadow maps** (docs/subsystems/renderer.md, "Shadows"): each cascade's
+  // light-view cull into its own run, the pool and the index expansion for those runs where the
+  // path has them, and one depth-only raster pass that draws every cascade into its tile of the
+  // atlas through the picture's own rasterizer. They run after the picture's passes and before the
+  // resolve, which reads the atlas. Each stage is one graph pass with a loop over the cascades, as
+  // the views' stages are, because the cascades write disjoint slices of the same buffers.
+  auto add_shadow_maps = [&]() {
+    const u32 count = cascades_drawn;
+    if (count == 0) return;
+    graph.add_pass(
+        "shadow cull", gfx::PassKind::Compute,
+        [&](gfx::PassBuilder& b) {
+          b.write(rg_shadow_args, gfx::Access::ComputeReadWrite);
+          b.write(rg_visible, gfx::Access::ComputeWrite);
+          if (vertex_indexed) {
+            b.write(rg_vertex_headers, gfx::Access::ComputeReadWrite);
+            b.write(rg_vertex_records, gfx::Access::ComputeWrite);
+          }
+          read_pool(b, gfx::Access::ComputeRead);
+          if (streaming) {  // a caster the camera cannot see still asks for its pages
+            b.write(sb.used, gfx::Access::ComputeWrite);
+            b.write(sb.requests, gfx::Access::ComputeWrite);
+            b.write(sb.request_count, gfx::Access::ComputeReadWrite);
+            b.write(sb.request_mask, gfx::Access::ComputeReadWrite);
+          }
+        },
+        [&, count](VkCommandBuffer cb, gfx::RenderGraph&) {
+          vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines.cull.pipeline);
+          timer.begin(cb, "shadow cull");
+          for (u32 c = 0; c < count; ++c) {
+            const u64 block = params_[slot].address + sizeof(gfx::CullParams) * (views * 2 + c);
+            vkCmdPushConstants(cb, pipelines.cull.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                               sizeof(u64), &block);
+            vkCmdDispatch(cb, gfx::cull_group_count(pair_count), 1, 1);
+          }
+          timer.end(cb);
+        });
+    if (deform_on) {
+      // The cascades' entries of a deformed instance get pool blocks of their own, allocated after
+      // the camera's and deformed by the same pass, so a moving character casts its pose.
+      graph.add_pass(
+          "shadow deform alloc", gfx::PassKind::Compute,
+          [&](gfx::PassBuilder& b) {
+            b.read(rg_shadow_args, gfx::Access::ComputeRead);
+            b.read(rg_visible, gfx::Access::ComputeRead);
+            b.write(rg_slots, gfx::Access::ComputeWrite);
+            b.write(rg_alloc, gfx::Access::ComputeReadWrite);
+          },
+          [&](VkCommandBuffer cb, gfx::RenderGraph&) {
+            timer.begin(cb, "shadow");
+            vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines.deform_alloc.pipeline);
+            vkCmdPushConstants(cb, pipelines.deform_alloc.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                               sizeof(gfx::DeformAllocParams), &shadow_alloc);
+            vkCmdDispatch(cb, 1, 1, 1);
+            timer.end(cb);
+          });
+      graph.add_pass(
+          "shadow deform args", gfx::PassKind::Transfer,
+          [&](gfx::PassBuilder& b) {
+            b.read(rg_shadow_args, gfx::Access::TransferRead);
+            b.write(rg_deform_args, gfx::Access::TransferWrite);
+          },
+          [&, count](VkCommandBuffer cb, gfx::RenderGraph&) {
+            for (u32 c = 0; c < count; ++c) {
+              const VkBufferCopy copy{scene.shadow_args_offset(c) + u64{count_index} * sizeof(u32),
+                                      scene.shadow_deform_args_offset(c), sizeof(u32)};
+              vkCmdCopyBuffer(cb, scene.shadow_args.buffer, scene.deform_args.buffer, 1, &copy);
+            }
+          });
+      graph.add_pass(
+          "shadow deform", gfx::PassKind::Compute,
+          [&](gfx::PassBuilder& b) {
+            b.read(rg_shadow_args, gfx::Access::ComputeRead);
+            b.read(rg_deform_args, gfx::Access::IndirectRead);
+            b.read(rg_visible, gfx::Access::ComputeRead);
+            b.read(rg_slots, gfx::Access::ComputeRead);
+            b.write(rg_pool, gfx::Access::ComputeWrite);
+          },
+          [&, count](VkCommandBuffer cb, gfx::RenderGraph&) {
+            vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines.deform.pipeline);
+            timer.begin(cb, "shadow");
+            for (u32 c = 0; c < count; ++c) {
+              vkCmdPushConstants(cb, pipelines.deform.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                                 sizeof(gfx::DeformParams), &shadow_deform[c]);
+              vkCmdDispatchIndirect(cb, scene.deform_args.buffer,
+                                    scene.shadow_deform_args_offset(c));
+            }
+            timer.end(cb);
+          });
+    }
+    if (vertex_indexed) {
+      graph.add_pass(
+          "shadow expand", gfx::PassKind::Compute,
+          [&](gfx::PassBuilder& b) {
+            // The dispatch's arguments, then the count it finishes: the write is declared last so
+            // the draw's read of the count gets its barrier (see add_expand).
+            b.read(rg_vertex_headers, gfx::Access::IndirectRead);
+            b.write(rg_vertex_headers, gfx::Access::ComputeReadWrite);
+            b.read(rg_vertex_records, gfx::Access::ComputeRead);
+            b.write(rg_vertex_indices, gfx::Access::ComputeWrite);
+            read_pool(b, gfx::Access::ComputeRead);
+          },
+          [&, count](VkCommandBuffer cb, gfx::RenderGraph&) {
+            vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines.expand.pipeline);
+            timer.begin(cb, "shadow");
+            for (u32 c = 0; c < count; ++c) {
+              vkCmdPushConstants(cb, pipelines.expand.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                                 sizeof(gfx::VertexExpandParams), &shadow_expand[c]);
+              vkCmdDispatchIndirect(
+                  cb, scene.vertex_headers.buffer,
+                  scene.shadow_vertex_header_offset(c) + gfx::k_vertex_draw_expand_offset);
+            }
+            timer.end(cb);
+          });
+    }
+    graph.add_pass(
+        "shadow raster", gfx::PassKind::Raster,
+        [&](gfx::PassBuilder& b) {
+          // Reversed depth: the clear is the far end, 0, and the nearest caster to the light wins.
+          b.depth_attachment(rg_atlas, VK_ATTACHMENT_LOAD_OP_CLEAR, 0.0f);
+          if (vertex_indexed) {
+            b.read(rg_vertex_headers, gfx::Access::IndirectRead);
+            b.read(rg_vertex_records, gfx::Access::VertexRead);
+            b.read(rg_vertex_indices, gfx::Access::IndexRead);
+          } else {
+            b.read(rg_shadow_args, gfx::Access::IndirectRead);
+            b.read(rg_visible, vertex_path ? gfx::Access::VertexRead : gfx::Access::MeshRead);
+          }
+          const gfx::Access stage = vertex_path ? gfx::Access::VertexRead : gfx::Access::MeshRead;
+          if (deform_on) {
+            b.read(rg_pool, stage);
+            b.read(rg_slots, stage);
+          }
+          read_pool(b, stage);
+        },
+        [&, count](VkCommandBuffer cb, gfx::RenderGraph&) {
+          vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.shadow);
+          bindless.bind(cb, VK_PIPELINE_BIND_POINT_GRAPHICS);
+          timer.begin(cb, "shadow");
+          for (u32 c = 0; c < count; ++c) {
+            // Cascade c's tile of the atlas, flipped like every raster pass's viewport.
+            set_view_viewport(cb, c * shadow_map, 0, shadow_map, shadow_map);
+            vkCmdPushConstants(cb, bindless.pipeline_layout(), VK_SHADER_STAGE_ALL, 0,
+                               sizeof(gfx::ClusterDrawParams), &shadow_draws[c]);
+            if (vertex_indexed) {
+              const u64 header = scene.shadow_vertex_header_offset(c);
+              vkCmdBindIndexBuffer(cb, scene.vertex_indices.buffer,
+                                   scene.shadow_vertex_indices_offset(c), VK_INDEX_TYPE_UINT32);
+              vkCmdDrawIndexedIndirect(cb, scene.vertex_headers.buffer, header, 1,
+                                       sizeof(VkDrawIndexedIndirectCommand));
+              vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.shadow_fallback);
+              vkCmdDrawIndirect(cb, scene.vertex_headers.buffer,
+                                header + gfx::k_vertex_draw_fallback_offset, 1,
+                                sizeof(VkDrawIndirectCommand));
+              if (c + 1 < count) {
+                vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.shadow);
+              }
+            } else if (vertex_path) {
+              vkCmdDrawIndirect(cb, scene.shadow_args.buffer, scene.shadow_args_offset(c), 1,
+                                sizeof(u32) * 4);
+            } else {
+              vkCmdDrawMeshTasksIndirectEXT(cb, scene.shadow_args.buffer,
+                                            scene.shadow_args_offset(c), 1, sizeof(u32) * 3);
+            }
+          }
+          timer.end(cb);
+        });
+  };
+
   if (cull_on) add_cull(0, 0);
   if (deform_on) add_static_cache();
   if (deform_on) add_deform(0);
@@ -2084,6 +2570,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             }
           });
     }
+    if (csm) add_shadow_maps();
     // One resolve pass, one fullscreen draw per view through that view's rectangle of the target.
     // The clear covers the whole target once, so a pixel no view owns keeps the sky.
     graph.add_pass(
@@ -2091,6 +2578,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
         [&](gfx::PassBuilder& b) {
           b.color_attachment(color, VK_ATTACHMENT_LOAD_OP_CLEAR, sky);
           b.read(rg_vis, gfx::Access::FragmentRead);
+          if (csm && cascades_drawn > 0) b.read(rg_atlas, gfx::Access::SampledRead);
           // A pixel's pair decodes through the scene's pair table, which no pass writes; the entry
           // it was drawn as is read only for a deformed instance's pool block.
           if (cull_on && deform_on) b.read(rg_pair_entries, gfx::Access::FragmentRead);
@@ -2132,6 +2620,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           if (deform_on) b.read(rg_alloc, gfx::Access::TransferRead);
           if (vertex_indexed) b.read(rg_vertex_headers, gfx::Access::TransferRead);
           if (rt_chain) b.read(rt.record_count, gfx::Access::TransferRead);
+          if (csm) b.read(rg_shadow_args, gfx::Access::TransferRead);
           b.write(rg_stats, gfx::Access::TransferWrite);
         },
         [&, stat_target](VkCommandBuffer cb, gfx::RenderGraph&) {
@@ -2166,6 +2655,22 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             const VkBufferCopy copy{0, sizeof(u32) * (u64{k_stat_words} * views + k_alloc_words),
                                     sizeof(u32) * k_rt_words};
             vkCmdCopyBuffer(cb, scene.record_count.buffer, stat_target->buffer, 1, &copy);
+          }
+          // Each shadow cascade's block and, on the indexed draw, its cursor and fallback count,
+          // behind the chain's.
+          for (u32 c = 0; c < cascade_runs; ++c) {
+            const u64 at = sizeof(u32) * (shadow_stat_base(views) + u64{k_shadow_stat_words} * c);
+            const VkBufferCopy args{scene.shadow_args_offset(c), at, sizeof(u32) * 3};
+            vkCmdCopyBuffer(cb, scene.shadow_args.buffer, stat_target->buffer, 1, &args);
+            if (vertex_indexed) {
+              const u64 header = scene.shadow_vertex_header_offset(c);
+              const VkBufferCopy cursor{header + offsetof(gfx::VertexDrawHeader, cursor),
+                                        at + 3 * sizeof(u32), sizeof(u32)};
+              const VkBufferCopy overflow{header + offsetof(gfx::VertexDrawHeader, overflow),
+                                          at + 4 * sizeof(u32), sizeof(u32)};
+              vkCmdCopyBuffer(cb, scene.vertex_headers.buffer, stat_target->buffer, 1, &cursor);
+              vkCmdCopyBuffer(cb, scene.vertex_headers.buffer, stat_target->buffer, 1, &overflow);
+            }
           }
         });
   }

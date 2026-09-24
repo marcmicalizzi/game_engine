@@ -115,10 +115,13 @@ void destroy_compute_pipeline(const Device& device, ComputePipeline& pipeline) n
 
 // A graphics pipeline for dynamic rendering: no vertex input (geometry is pulled through device
 // addresses or generated), dynamic viewport and scissor, one color attachment, optional depth.
+// A null `fragment` builds a **depth-only** pipeline with no fragment stage at all — what a
+// shadow map is drawn with: the rasterizer writes depth and nothing is shaded, so the hardware
+// never launches a fragment invocation.
 struct GraphicsPipelineDesc {
   VkShaderModule vertex = VK_NULL_HANDLE;
   const char* vertex_entry = "vs_main";
-  VkShaderModule fragment = VK_NULL_HANDLE;
+  VkShaderModule fragment = VK_NULL_HANDLE;  // null: depth only, no fragment stage
   const char* fragment_entry = "fs_main";
   VkPipelineLayout layout = VK_NULL_HANDLE;
   VkFormat color_format = VK_FORMAT_UNDEFINED;
@@ -140,7 +143,7 @@ struct MeshPipelineDesc {
   const char* task_entry = "task_main";
   VkShaderModule mesh = VK_NULL_HANDLE;
   const char* mesh_entry = "mesh_main";
-  VkShaderModule fragment = VK_NULL_HANDLE;
+  VkShaderModule fragment = VK_NULL_HANDLE;  // null: depth only, as GraphicsPipelineDesc
   const char* fragment_entry = "fs_main";
   VkPipelineLayout layout = VK_NULL_HANDLE;
   VkFormat color_format = VK_FORMAT_UNDEFINED;

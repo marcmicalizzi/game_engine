@@ -49,7 +49,10 @@ struct AllocParams {
   uint pool_vertices;       // the budget
   uint pair_count;          // one view's run is at most this long
   uint views;
-  uint run;    // run-major: entry (view v, this run) starts at (run * views + v) * pair_count
+  // Where view 0's run starts in the whole list; view v's is `pair_count` entries per view on. For
+  // a run of the camera's views that is `(run * views) * pair_count`, run-major; for the shadow
+  // cascades' runs, which follow every view's three, it is the first cascade's entry.
+  uint first_entry;
   uint reset;  // 1: the frame's first allocation dispatch, which zeroes the record
   uint pad;
 };
@@ -88,7 +91,7 @@ void deform_alloc_main(uint3 group_thread : SV_GroupThreadID) {
     uint* count_word = (uint*)(g_params.visible_counts + uint64_t(view) * k_draw_args_bytes);
     // The run is filled by one atomic over a dispatch of pair_count threads, so that is its bound.
     const uint count = min(*count_word, g_params.pair_count);
-    const uint base_entry = (g_params.run * g_params.views + view) * g_params.pair_count;
+    const uint base_entry = g_params.first_entry + view * g_params.pair_count;
     for (uint block = 0; block < count; block += k_group) {
       const uint index = block + lane;
       // A rigid instance's entry takes no pool vertices, and neither does a lane past the count.

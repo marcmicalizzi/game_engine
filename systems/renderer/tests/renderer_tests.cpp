@@ -598,8 +598,8 @@ TEST_CASE("renderer: settings resolve the same way for every host") {
   // The TITAN Xp as its driver reports itself (docs/ci/self-hosted-runners.md, "The first run on
   // the Titan Xp"): acceleration structures and ray-tracing pipelines through the compute
   // fallback, and no ray query, no mesh shaders and no cluster structures. The default request is
-  // the baseline tier with occlusion culling and no shadows; an *explicit* ray request — the ray
-  // path or `--shadows rt` — is refused rather than quietly dropped.
+  // the baseline tier with occlusion culling and the sun's cascaded shadow maps; an *explicit* ray
+  // request — the ray path or `--shadows rt` — is refused rather than quietly dropped.
   gfx::DeviceFeatures pascal;
   pascal.buffer_int64_atomics = true;
   pascal.shader_int64 = true;
@@ -609,6 +609,7 @@ TEST_CASE("renderer: settings resolve the same way for every host") {
   CHECK(resolved.settings.raster == RasterMode::Vertex);
   CHECK(resolved.vertex_path);
   CHECK_FALSE(resolved.shadows);
+  CHECK(resolved.csm);
   CHECK_FALSE(resolved.rt_chain);
   CHECK(resolved.occlusion);
   CHECK(check_availability(resolved, pascal) == RenderAvailability::Ok);
@@ -764,9 +765,13 @@ TEST_CASE("renderer: a TITAN-Xp-like device draws the default request through th
   CHECK_FALSE(pascal.features().mesh_shader);
   CHECK_FALSE(pascal.features().ray_query);
 
+  // The default request here shadows with cascaded maps — `auto` without ray queries — so the
+  // byte comparison with the full device's shadowless frame asks for no shadows on both sides; the
+  // maps are checked below it.
+  RenderSettings shadowless;
+  shadowless.shadows = ShadowMode::Off;
   Rig baseline;  // declared after `pascal`, so it is destroyed first
-  REQUIRE_MESSAGE(baseline.build(pascal, desc, RenderSettings{}, k_width, k_height),
-                  baseline.error);
+  REQUIRE_MESSAGE(baseline.build(pascal, desc, shadowless, k_width, k_height), baseline.error);
   CHECK(baseline.resolved.settings.raster == RasterMode::Vertex);
   CHECK(baseline.resolved.vertex_path);
   CHECK(baseline.resolved.occlusion);
@@ -828,6 +833,30 @@ TEST_CASE("renderer: a TITAN-Xp-like device draws the default request through th
   std::string why;
   CHECK_FALSE(reference_available(baseline.resolved, pascal, &why));
   CHECK(why.find("VK_KHR_ray_query") != std::string::npos);
+
+  // **The default request shadows with cascaded maps** here (docs/plan/04-renderer.md §4.4, the
+  // 2026-09-23 direction note): `auto` without ray queries, drawn by the vertex path's indexed draw
+  // from the light, with two-pass occlusion culling still on for the picture. The picture's ids
+  // are the shadowless frame's word for word — the maps change the lighting and nothing drawn.
+  Rig mapped;
+  REQUIRE_MESSAGE(mapped.build(pascal, desc, RenderSettings{}, k_width, k_height), mapped.error);
+  CHECK(mapped.resolved.csm);
+  CHECK_FALSE(mapped.resolved.shadows);
+  CHECK(mapped.resolved.occlusion);
+  CHECK(mapped.resolved.vertex_indexed);
+  CHECK(mapped.resolved.shadow_cascades == k_default_shadow_cascades);
+  CapturedFrame m;
+  REQUIRE_MESSAGE(mapped.renderer.capture(frame, channels, m, &error), error);
+  CHECK(mapped.renderer.stats().shadow_pairs > 0);
+  CHECK(mapped.renderer.stats().shadow_fallback == 0);
+  CHECK(mapped.renderer.shadow_cascades().count >= 1);
+  u64 mapped_ids = 0;
+  for (u32 w = 0; w < m.ids.size() && w < a.ids.size(); ++w)
+    mapped_ids += m.ids[w] != a.ids[w] ? 1u : 0u;
+  CHECK(mapped_ids == 0);
+  MESSAGE("the default request on the profile: csm, "
+          << mapped.renderer.shadow_cascades().count << " cascades drawn, "
+          << mapped.renderer.stats().shadow_pairs << " pairs in the maps");
 }
 
 // The baseline tier on a device without geometryShader. The vertex path's culled draw names each
@@ -1738,7 +1767,10 @@ TEST_CASE("renderer: the pool holds the frame's cut, and a budget too small fall
   const std::span<const InstanceJoints> joint_runs(runs.data(), runs.size());
 
   // With the default budget: nothing overflows, every visible pair has a block, and the pool's
-  // occupancy is what the cut needs rather than what the instances' meshes are.
+  // occupancy is what the cut needs rather than what the instances' meshes are. Where the default
+  // request draws the sun's cascaded shadow maps (a device without ray queries), every cascade's
+  // cut of these deformed bars is in the pool too, one block per entry like the picture's, so the
+  // entries are the visible pairs plus the maps' pairs; `shadow_pairs` is 0 everywhere else.
   Rig roomy;
   REQUIRE_MESSAGE(make_bar_scene(bar, k_instances, 2, 0.6f, roomy.data, roomy.error), roomy.error);
   REQUIRE_MESSAGE(roomy.finish(gpu.device, RenderSettings{}, k_width, k_height), roomy.error);
@@ -1750,9 +1782,10 @@ TEST_CASE("renderer: the pool holds the frame's cut, and a budget too small fall
   MESSAGE("roomy pool: " << roomy.scene.deform_pool_bytes() << " B budgeted of "
                          << roomy.scene.deform_whole_mesh_bytes() << " B whole-mesh, "
                          << wide.deform_vertices << " vertices used by " << wide.deform_entries
-                         << " of " << wide.visible_pairs() << " visible pairs");
+                         << " of " << wide.visible_pairs() << " visible pairs and "
+                         << wide.shadow_pairs << " in the shadow maps");
   CHECK(wide.deform_overflow_entries == 0);
-  CHECK(wide.deform_entries == wide.visible_pairs());
+  CHECK(wide.deform_entries == wide.visible_pairs() + wide.shadow_pairs);
   CHECK(wide.deform_vertices > 0);
   CHECK(wide.deform_vertices <= roomy.scene.deform_pool_vertices());
   u32 roomy_covered = 0;
@@ -1774,9 +1807,11 @@ TEST_CASE("renderer: the pool holds the frame's cut, and a budget too small fall
   const Stats& narrow = cramped.renderer.stats();
   MESSAGE("cramped pool: " << cramped.scene.deform_pool_bytes() << " B, " << narrow.deform_entries
                            << " placed, " << narrow.deform_overflow_entries << " refused of "
-                           << narrow.visible_pairs() << " visible pairs");
+                           << narrow.visible_pairs() << " visible pairs and " << narrow.shadow_pairs
+                           << " in the shadow maps");
   CHECK(narrow.deform_overflow_entries > 0);
-  CHECK(narrow.deform_entries + narrow.deform_overflow_entries == narrow.visible_pairs());
+  CHECK(narrow.deform_entries + narrow.deform_overflow_entries ==
+        narrow.visible_pairs() + narrow.shadow_pairs);
   CHECK(narrow.deform_vertices <= cramped.scene.deform_pool_vertices());
   // The frame is still a picture of the same scene: covered, and covered by the same instances.
   u32 cramped_covered = 0;

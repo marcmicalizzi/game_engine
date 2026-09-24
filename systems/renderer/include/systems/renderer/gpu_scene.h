@@ -129,8 +129,45 @@ class GpuScene {
   u64 deform_args_offset(u32 view, u32 run) const noexcept {
     return (u64{view} * k_visible_runs + run) * gfx::k_draw_args_bytes;
   }
-  // Entries of the whole visible list, which is what `deform_slots` has one word each of.
-  u32 visible_entries() const noexcept { return k_visible_runs * view_count_ * pair_count_; }
+  // Entries of the whole visible list, which is what `deform_slots` has one word each of: every
+  // view's three runs, then one run per shadow cascade.
+  u32 visible_entries() const noexcept {
+    return (k_visible_runs * view_count_ + cascade_count_) * pair_count_;
+  }
+
+  // ---- the sun's cascaded shadow maps (renderer.md, "Shadows") --------------------------------
+  //
+  // Each cascade is one more run of the cull pass's output, **behind** every view's three, so the
+  // camera's runs and everything indexed by them — the ray tracing chain's union, the census, the
+  // pool's run-major allocation of the camera's runs — are exactly where they were, and a cascade's
+  // entries share the one index space everything per entry is kept in (a deformed instance's pool
+  // block above all). A cascade has its own indirect argument block (`shadow_args`, one per
+  // cascade, `k_draw_args_bytes` apart like the views') and, on the vertex path's indexed draw,
+  // its own header, records and index array behind the views' two runs.
+  u32 shadow_cascades() const noexcept { return cascade_count_; }
+  u32 cascade_base(u32 cascade) const noexcept {
+    return (k_visible_runs * view_count_ + cascade) * pair_count_;
+  }
+  u64 shadow_args_offset(u32 cascade) const noexcept {
+    return u64{cascade} * gfx::k_draw_args_bytes;
+  }
+  // The pool pass's indirect dispatch block for a cascade's run, behind the views' (view, run)
+  // ones.
+  u64 shadow_deform_args_offset(u32 cascade) const noexcept {
+    return (u64{k_visible_runs} * view_count_ + cascade) * gfx::k_draw_args_bytes;
+  }
+  // The vertex path's indexed-draw region of a cascade: region `2 * views + cascade` of the three
+  // buffers, behind the views' two hardware runs.
+  u64 shadow_vertex_header_offset(u32 cascade) const noexcept {
+    return (u64{2} * view_count_ + cascade) * sizeof(gfx::VertexDrawHeader);
+  }
+  u64 shadow_vertex_records_offset(u32 cascade) const noexcept {
+    return (u64{2} * view_count_ + cascade) * pair_count_ * sizeof(gfx::VertexDrawRecord);
+  }
+  u64 shadow_vertex_indices_offset(u32 cascade) const noexcept {
+    return (u64{2} * view_count_ + cascade) * vertex_index_capacity_ *
+           gfx::k_vertex_draw_index_bytes;
+  }
   // This view's pair-to-entry table (`pair_entries`), as the address the cull and the resolve take.
   u64 pair_entries_address(u32 view) const noexcept {
     return pair_entries.address + u64{view} * pair_count_ * sizeof(u32);
@@ -362,6 +399,7 @@ class GpuScene {
   gfx::BufferResource pair_table;
   gfx::BufferResource draw_args[2];  // occlusion pass 1 and pass 2 indirect blocks, one per view
   gfx::BufferResource sw_args;       // the software rasterizer's indirect dispatch block, per view
+  gfx::BufferResource shadow_args;   // one indirect block per shadow cascade; none without maps
   gfx::BufferResource flags[2];      // drawn last frame / this frame, ping-pong, by pair, per view
   // The vertex path's indexed draw, two hardware runs a view (gfx::VertexDrawHeader).
   gfx::BufferResource vertex_headers;  // VertexDrawHeader: arguments, cursor, fallback, dispatch
@@ -465,6 +503,7 @@ class GpuScene {
   u32 material_count_ = 0;
   u32 triangles_per_cluster_ = 0;
   u32 view_count_ = 1;
+  u32 cascade_count_ = 0;  // shadow cascades whose runs follow the views'
   u64 visible_run_bytes_ = 0;
   u32 vertex_index_capacity_ = 0;
   Vector<u32> deform_mesh_clusters_;  // the cache dispatch's group count per deform entry

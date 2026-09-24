@@ -38,6 +38,7 @@ scene::FrameRecord frame_record(const FrameStats& stats, u32 repeat, u32 frame, 
   out.visible_sw = stats.visible_sw;
   out.visible_pairs = stats.visible_pairs();
   out.shadow_casters = stats.shadow_casters;
+  out.shadow_pairs = stats.shadow_pairs;
   out.gpu_ms.cull = stats.gpu_cull;
   out.gpu_ms.hw = stats.gpu_hw;
   out.gpu_ms.sw = stats.gpu_sw;
@@ -49,6 +50,8 @@ scene::FrameRecord frame_record(const FrameStats& stats, u32 repeat, u32 frame, 
   out.gpu_ms.deform = stats.gpu_deform;
   out.gpu_ms.deform_alloc = stats.gpu_deform_alloc;
   out.gpu_ms.trace = stats.gpu_trace;
+  out.gpu_ms.shadow = stats.gpu_shadow;
+  out.gpu_ms.shadow_cull = stats.gpu_shadow_cull;
   out.gpu_ms.total = stats.gpu_total;
   out.uploads = stats.uploads;
   out.upload_bytes = stats.upload_bytes;
@@ -179,6 +182,7 @@ void summarize_frames(std::span<const scene::FrameRecord> records, u32 frames, u
     rt,
     deform,
     trace,
+    shadow,
     total,
     pairs,
     casters,
@@ -186,6 +190,7 @@ void summarize_frames(std::span<const scene::FrameRecord> records, u32 frames, u
     blas,
     rt_built,
     rt_wanted,
+    shadow_pairs,
     passes
   };
   Vector<f64> per_frame[passes];
@@ -232,13 +237,15 @@ void summarize_frames(std::span<const scene::FrameRecord> records, u32 frames, u
                                     ms.rt,
                                     ms.deform,
                                     ms.trace,
+                                    ms.shadow,
                                     ms.total,
                                     static_cast<f64>(r->visible_pairs),
                                     static_cast<f64>(r->shadow_casters),
                                     ms.clas,
                                     ms.blas,
                                     static_cast<f64>(r->rt_built),
-                                    static_cast<f64>(r->rt_wanted)};
+                                    static_cast<f64>(r->rt_wanted),
+                                    static_cast<f64>(r->shadow_pairs)};
         repeats_of.push_back(values[p]);
       }
       per_frame[p].push_back(median_of(repeats_of));
@@ -255,6 +262,7 @@ void summarize_frames(std::span<const scene::FrameRecord> records, u32 frames, u
   out.gpu_ms.rt = over(rt);
   out.gpu_ms.deform = over(deform);
   out.gpu_ms.trace = over(trace);
+  out.gpu_ms.shadow = over(shadow);
   out.gpu_ms.total = over(total);
   out.visible_pairs = over(pairs);
   out.shadow_casters = over(casters);
@@ -262,6 +270,7 @@ void summarize_frames(std::span<const scene::FrameRecord> records, u32 frames, u
   out.gpu_ms.blas = over(blas);
   out.rt.built = over(rt_built);
   out.rt.wanted = over(rt_wanted);
+  out.shadow_pairs = over(shadow_pairs);
 
   out.markers.clear();
   for (const CameraPathMarker& marker : path.markers) {

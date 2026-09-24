@@ -813,6 +813,8 @@ bool create_graphics_pipeline(const Device& device, const GraphicsPipelineDesc& 
   stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
   stages[1].module = desc.fragment;
   stages[1].pName = desc.fragment_entry;
+  // No fragment module is a depth-only pipeline: rasterization writes depth, nothing is shaded.
+  const u32 stage_count = desc.fragment != VK_NULL_HANDLE ? 2u : 1u;
 
   VkPipelineVertexInputStateCreateInfo vertex_input{};
   vertex_input.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
@@ -858,7 +860,7 @@ bool create_graphics_pipeline(const Device& device, const GraphicsPipelineDesc& 
   VkGraphicsPipelineCreateInfo info{};
   info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
   info.pNext = &rendering;
-  info.stageCount = 2;
+  info.stageCount = stage_count;
   info.pStages = stages;
   info.pVertexInputState = &vertex_input;
   info.pInputAssemblyState = &assembly;
@@ -910,11 +912,13 @@ bool create_mesh_pipeline(const Device& device, const MeshPipelineDesc& desc, Vk
   stages[stage_count].module = desc.mesh;
   stages[stage_count].pName = desc.mesh_entry;
   ++stage_count;
-  stages[stage_count].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-  stages[stage_count].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-  stages[stage_count].module = desc.fragment;
-  stages[stage_count].pName = desc.fragment_entry;
-  ++stage_count;
+  if (desc.fragment != VK_NULL_HANDLE) {  // none: depth only
+    stages[stage_count].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[stage_count].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[stage_count].module = desc.fragment;
+    stages[stage_count].pName = desc.fragment_entry;
+    ++stage_count;
+  }
 
   VkPipelineViewportStateCreateInfo viewport{};
   viewport.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;

@@ -12,7 +12,7 @@
 
 **The path** is 40 s at 60 fps, 2,401 frames: low through the dunes with every landmark behind ridge A; up a saddle whose face fills the frame; over the crest, where the landmarks come into view; up 60 m for an overlook that pans from the skyscraper to the office tower; down into the oasis as ridge B takes the far three back out of view; low over the palms to the wreck. The [scene's README](../../content/test-scenes/desert-overlook/README.md) names the frames at which each landmark is hidden, partly hidden and in view, measured with `--census-pixels` against a run with occlusion culling off.
 
-**The harness** is new in this change ([renderer](../subsystems/renderer.md#scenes-camera-paths-and-flythroughs), [apps](../subsystems/apps.md#flythroughs)): `engine-view --benchmark` flies the path offscreen, three repeats, each after 240 frames and at least 2 s at the first camera — a count alone does not warm a card that draws the frame in 0.1 ms — with frames kept in flight and every frame's GPU milliseconds per pass read from `gfx::GpuTimer` when its slot comes around. A frame's figure is the **median of its three repeats**; the tables give the median, p95 and p99 of those over the 2,401 frames. `--census` then flies the path again, untimed, reading every frame's visible list back for pairs by DAG level and by mesh. 11520×2160 is drawn as the owner's three-monitor surround (`--views surround3`, flat). **Shadows are `auto` by default in both hosts** — ray-traced on the RTX 5090, off on the TITAN Xp, which has no ray queries — and every occlusion row passes `--shadows off`, because a frame that traces shadows runs one visible list and turns occlusion culling off; the ray-traced shadows are measured separately, with `--shadows rt`, and their rows count the extra casters the shadow chain keeps (`shadow_casters`, the clusters the cone test drops from the picture that can still face a light).
+**The harness** is new in this change ([renderer](../subsystems/renderer.md#scenes-camera-paths-and-flythroughs), [apps](../subsystems/apps.md#flythroughs)): `engine-view --benchmark` flies the path offscreen, three repeats, each after 240 frames and at least 2 s at the first camera — a count alone does not warm a card that draws the frame in 0.1 ms — with frames kept in flight and every frame's GPU milliseconds per pass read from `gfx::GpuTimer` when its slot comes around. A frame's figure is the **median of its three repeats**; the tables give the median, p95 and p99 of those over the 2,401 frames. `--census` then flies the path again, untimed, reading every frame's visible list back for pairs by DAG level and by mesh. 11520×2160 is drawn as the owner's three-monitor surround (`--views surround3`, flat). **Shadows are `auto` by default in both hosts** — ray-traced on the RTX 5090, off on the TITAN Xp, which has no ray queries (since the cascaded shadow maps, later the same day, `auto` is the maps there; [below](#cascaded-shadow-maps-rtx-5090-and-titan-xp)) — and every occlusion row passes `--shadows off`, because a frame that traces shadows runs one visible list and turns occlusion culling off; the ray-traced shadows are measured separately, with `--shadows rt`, and their rows count the extra casters the shadow chain keeps (`shadow_casters`, the clusters the cone test drops from the picture that can still face a light).
 
 ```powershell
 tools/fetch-samples.ps1
@@ -90,6 +90,35 @@ What occlusion culling removed and what it cost, by stretch of the path: the fra
 
 *(2026-09-24, later the same day: the device memory column is what a chain allocated for every pair of the scene in every view held, and most of the rt chain column was 90 bottom-level builds one after another. Both changed; [below](#the-ray-tracing-chain-sized-by-the-frame) has the same runs before and after.)*
 
+### Cascaded shadow maps (RTX 5090 and TITAN Xp)
+
+*Added 2026-09-24, with the maps ([cascaded shadow maps](cascaded-shadow-maps.md), [renderer](../subsystems/renderer.md#cascaded-shadow-maps)); main at `12fda09` plus that change.* `--shadows csm`: the sun's shadow from four cascades, each culled by the same cull pass at the camera's cut and drawn depth-only by the picture's own rasterizer, then filtered in the resolve. Unlike rays, the maps need nothing from the visible list, so **occlusion culling stays on** and both settings are measured. The rows without shadows beside them were taken with the same build in the same session, except the overlay's, which are this page's rows above. `tools/flythrough.ps1 -Shadows csm|off -Resolutions 1920x1080,3840x2160 -Occlusion on,off -WaitQuiet 10` on the RTX 5090, one GPU-lock group per set and mode, with 60 s between groups; on the TITAN Xp, the same `engine-view` flags from a shell loop gated as above.
+
+Frame and the maps' passes (every pass that draws them: the four culls, the depth raster, and the vertex path's index passes) as median / p95 / p99 over the path; the resolve's median without and with maps (the difference is the filter); pairs medians, the maps' summed over the cascades, with their p95.
+
+| card, set | resolution | occlusion | no shadows | maps | maps' passes | resolve | pairs: picture / maps (p95) |
+|---|---|---|---|---|---|---|---|
+| RTX 5090, substitute | 1920×1080 | on | 0.119 / 0.147 / 0.153 | 0.215 / 0.267 / 0.275 | 0.080 / 0.103 / 0.106 | 0.047 → 0.063 | 1,522 / 11,695 (25,659) |
+| RTX 5090, substitute | 1920×1080 | off | 0.081 / 0.108 / 0.115 | 0.178 / 0.227 / 0.235 | 0.080 / 0.103 / 0.106 | 0.046 → 0.061 | 2,597 / 11,695 (25,659) |
+| RTX 5090, substitute | 3840×2160 | on | 0.350 / 0.432 / 0.448 | 0.487 / 0.605 / 0.690 | 0.094 / 0.132 / 0.141 | 0.157 → 0.197 | 2,243 / 18,200 (38,657) |
+| RTX 5090, substitute | 3840×2160 | off | 0.240 / 0.332 / 0.350 | 0.383 / 0.496 / 0.527 | 0.088 / 0.128 / 0.137 | 0.156 → 0.201 | 4,085 / 18,200 (38,657) |
+| RTX 5090, overlay | 1920×1080 | on | 0.134 / 0.199 / 0.218 | 0.312 / 0.491 / 0.512 | 0.150 / 0.276 / 0.297 | 0.047 → 0.064 | 3,798 / 41,299 (109,167) |
+| RTX 5090, overlay | 1920×1080 | off | 0.097 / 0.153 / 0.173 | 0.277 / 0.451 / 0.472 | 0.150 / 0.275 / 0.298 | 0.045 → 0.064 | 9,561 / 41,299 (109,167) |
+| RTX 5090, overlay | 3840×2160 | on | 0.375 / 0.509 / 0.554 | 0.639 / 0.944 / 0.996 | 0.214 / 0.406 / 0.426 | 0.157 → 0.198 | 5,525 / 75,447 (160,941) |
+| RTX 5090, overlay | 3840×2160 | off | 0.281 / 0.412 / 0.457 | 0.537 / 0.825 / 0.877 | 0.199 / 0.392 / 0.411 | 0.160 → 0.206 | 20,778 / 75,447 (160,941) |
+| TITAN Xp, substitute | 1920×1080 | on | 0.794 / 1.029 / 1.083 | 1.391 / 1.839 / 1.902 | 0.437 / 0.699 / 0.716 | 0.430 → 0.567 | 1,520 / 11,527 (25,507) |
+| TITAN Xp, substitute | 1920×1080 | off | 0.657 / 0.909 / 0.954 | 1.271 / 1.696 / 1.767 | 0.439 / 0.700 / 0.717 | 0.449 → 0.585 | 2,495 / 11,527 (25,507) |
+| TITAN Xp, substitute | 3840×2160 | on | 2.819 / 3.767 / 3.970 | 3.966 / 5.729 / 5.944 | 0.557 / 1.883 / 1.947 | 1.653 → 2.166 | 2,198 / 18,202 (38,759) |
+| TITAN Xp, substitute | 3840×2160 | off | 2.480 / 3.495 / 3.739 | 3.696 / 5.375 / 5.637 | 0.558 / 1.872 / 1.933 | 1.786 → 2.277 | 4,054 / 18,202 (38,759) |
+
+Machine state: **RTX 5090**, under the GPU lock, the harness raised its WARNING on every run: other processes used 8–43% of the CPU (the owner's resident ComfyUI backend and other agents' builds), the GPU was 6–8% busy before each run, and 8.6–11.2 GB of its 32 GB was held by other processes. **TITAN Xp**, quiet: every run started at a load average of 0.46–0.99 with the GPU 0% busy, other processes used at most 7.1% of the CPU, and the card held 1.3–1.6 GB, all of it this process's.
+
+**What the maps cost here.** On the RTX 5090 they add 0.10–0.14 ms to the substitute set's median frame and 0.18–0.26 ms to the overlay's. Rays added 2.3–5.7 ms to the same frames (against occlusion culling off, which rays impose), 20 to 24 times more, with the chain this page's earlier rows measured. **Since the chain is sized by the frame** ([below](#the-ray-tracing-chain-sized-by-the-frame), which landed first; these maps rows were taken on the tree before it), its 1080p chain is 0.400 ms (substitute) and 0.606 ms (overlay) at the median and the frame with rays 0.548 and 0.783 ms. Against those, the maps' passes are a fifth and a quarter of the chain, and the frame with maps a third to two-fifths of the frame with rays. The maps' own passes are 0.08–0.21 ms and hardly move with resolution; the filter in the resolve is 0.015–0.046 ms and does. **The frame with maps is still under a millisecond at 4K with the owner's landmarks** (0.64 / 0.94 / 1.00 ms, occlusion on). On the TITAN Xp the maps add 0.60–0.61 ms at 1080p and 1.15–1.22 ms at 4K, and the tail is theirs: the maps' passes reach 1.9 ms at 4K p95. The resolve's filter is 0.14 ms at 1080p and 0.49–0.51 ms at 4K there, ten times the RTX 5090's.
+
+**The maps draw seven to fourteen times the picture's pairs** with occlusion culling on (four to five times with it off), and those pairs are their whole cost. A cascade is a sphere around a slice of the view, extended towards the light to the far side of the scene, so it holds terrain beside and behind the frustum, and with no `--shadow-distance` the last cascade reaches the far side of the 5 km scene. All of it is drawn at the camera's cut. The overlay's palms, whose cut does not coarsen, take the maps to 41,299 pairs at the median and 160,941 at the 4K p95. The p95 is the overlook, where the camera stands 60 m up and every cascade is long. Tighter caster volumes and cached far cascades are the follow-ups ([cascaded shadow maps](cascaded-shadow-maps.md#follow-ups)).
+
+**Occlusion culling's answer does not change under maps.** It still costs more than it saves on this path, 0.035–0.10 ms on the RTX 5090 and 0.12–0.27 ms on the TITAN Xp. Maps do not force the question the way rays do: occlusion culling stays available with them, and the default stays the owner's decision, as above.
+
 ### `--raster auto` (RTX 5090)
 
 The mesh path and the software rasterizer split at 32 px of projected cluster diameter. **`auto` turns occlusion culling off by design** — occlusion runs only on the paths with no software pass — so these rows are the occlusion-off rows with the split added: 0.101 / 0.144 / 0.266 / 0.963 ms (substitute) and 0.107 / 0.160 / 0.298 / 1.043 ms (overlay) at 1080p / 1440p / 4K / 11520×2160, **13–28% slower than `hw`** with occlusion off, the raster pass 1.4–1.8× the mesh path's. E1's result carries over to a scene: the software rasterizer loses on this card at every size the path draws.
@@ -154,7 +183,7 @@ Every stalled run was in exactly the state the mechanism predicts and none other
 
 ### TITAN Xp: the baseline tier, substitute set
 
-The server has no mesh shaders, so `--raster hw` resolves to the vertex path (`cluster_vertex.slang`, the cull pass's indirect draw), and no ray queries, so there are no shadows to turn on. The substitute set only: the owner's landmarks were not copied to the server.
+The server has no mesh shaders, so `--raster hw` resolves to the vertex path (`cluster_vertex.slang`, the cull pass's indirect draw), and no ray queries, so there were no shadows to turn on (the cascaded shadow maps are its shadows now, [above](#cascaded-shadow-maps-rtx-5090-and-titan-xp)). The substitute set only: the owner's landmarks were not copied to the server.
 
 | resolution | occlusion | frame | cull | raster (vertex) | Hi-Z | resolve | visible pairs |
 |---|---|---|---|---|---|---|---|
@@ -223,11 +252,11 @@ Occlusion culling on and off now give the same id channel and the same colour on
 
 ## The frame against plan 04's budget
 
-| configuration | plan 04 target | this path, shadows off (median / p99) | with ray-traced shadows |
-|---|---|---|---|
-| 11520×2160 surround, RTX 5090 | 60 fps target, 30 floor: 16.7 / 33.3 ms | 0.83–0.87 / 1.12–1.17 ms, 5% of the target | 4.4–7.8 / 6.3–10.8 ms, 26–47% |
-| 3840×2160, RTX 4080/5080 class (measured on a 5090) | 60 fps: 16.7 ms | 0.24–0.28 / 0.35–0.46 ms | 3.1–6.0 / 3.9–8.1 ms |
-| 2560×1440, TITAN Xp (Pascal, above plan 04's Maxwell floor), substitute set | 30 fps: 33.3 ms | 1.10 / 1.60 ms (occlusion off), 1.29 / 1.75 ms (on): 3–5% | — (no ray queries) |
+| configuration | plan 04 target | this path, shadows off (median / p99) | with ray-traced shadows | with cascaded shadow maps |
+|---|---|---|---|---|
+| 11520×2160 surround, RTX 5090 | 60 fps target, 30 floor: 16.7 / 33.3 ms | 0.83–0.87 / 1.12–1.17 ms, 5% of the target | 4.4–7.8 / 6.3–10.8 ms, 26–47% | not measured |
+| 3840×2160, RTX 4080/5080 class (measured on a 5090) | 60 fps: 16.7 ms | 0.24–0.28 / 0.35–0.46 ms | 3.1–6.0 / 3.9–8.1 ms | 0.38–0.64 / 0.53–1.00 ms |
+| 2560×1440, TITAN Xp (Pascal, above plan 04's Maxwell floor), substitute set | 30 fps: 33.3 ms | 1.10 / 1.60 ms (occlusion off), 1.29 / 1.75 ms (on): 3–5% | — (no ray queries) | not measured at 1440p; 1.27–1.39 / 1.77–1.90 ms at 1080p and 3.70–3.97 / 5.64–5.94 ms at 4K, 18% of the 1440p budget at 4K's p99 |
 
 What fills the rest of the budget does not exist yet — global illumination, a denoiser, post-processing and an upscaler — and the ray-traced shadow chain as it is today would take half of the surround's 60 fps budget with the owner's landmarks.
 
@@ -244,6 +273,7 @@ What fills the rest of the budget does not exist yet — global illumination, a 
 - **The E10 props.** The direction note asked for E10's generated props along the path; they are the owner's generated outputs too, so they belong in the overlay beside the landmarks rather than in the committed scene. The props here are Khronos samples at human scale in both sets, and adding the E10 set is an overlay manifest and six more `overlay` hashes on the prop slots.
 - **The overlay on the TITAN Xp**, which decides the baseline tier's occlusion default (above). It means copying the owner's six landmarks and the palm to the server outside the repository — his call, since they are his paid-plan outputs — and fits the card: the renderer held 3.6 GB for the overlay at 1080p and 1440p on the RTX 5090 without shadows, against the TITAN Xp's 12 GB.
 - **The Maxwell TITAN X**, when it is reachable, with the same command lines.
+- **The cascaded maps' pairs** (added with them): seven to fourteen times the picture's along this path, most of them terrain beside and behind the view and the overlay's palms. A tighter caster volume, a default shadow distance short of the scene's far side, and cached far cascades are in [cascaded shadow maps](cascaded-shadow-maps.md#follow-ups); on the TITAN Xp at 4K they are the tail.
 
 ## Caveats
 

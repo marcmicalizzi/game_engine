@@ -551,7 +551,11 @@ struct DeformAllocParams {
   u32 pool_vertices = 0;   // the budget, in vertices
   u32 pair_count = 0;      // one view's run is at most this long
   u32 views = 0;
-  u32 run = 0;    // which run of the list; run-major, so entry (v, run) is (run*views+v)*pairs
+  // The whole list's entry where view 0's run of this dispatch starts; view v's is v * pair_count
+  // further on. A camera run is run-major, `run * views * pair_count`; the shadow cascades' runs
+  // follow every view's three, and their dispatch passes the cascade count as `views`. It was the
+  // run index until the cascades needed a run the run-major formula cannot name.
+  u32 first_entry = 0;
   u32 reset = 0;  // 1: the frame's first allocation dispatch, which zeroes the record
   u32 pad = 0;
 };

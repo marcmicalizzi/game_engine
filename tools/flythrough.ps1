@@ -7,7 +7,7 @@
 .DESCRIPTION
   tools/flythrough.ps1 [-Preset msvc-release] [-Set substitute|overlay]
                        [-Resolutions 1920x1080,2560x1440,3840x2160,11520x2160]
-                       [-Occlusion on,off] [-Raster hw] [-Shadows off] [-Repeat 3] [-Warmup 240]
+                       [-Occlusion on,off] [-Raster hw] [-Shadows off|rt|csm|auto] [-Repeat 3] [-Warmup 240]
                        [-Frames 0] [-PageBudgetPct 0] [-Census] [-Verify] [-Markers]
                        [-Out <dir>] [-Overlay <manifest>] [-WaitQuiet 600] [-RequireQuiet]
                        [-Exe <engine-view>] [-Scene <scene.json>] [-CameraPath <path.json>]
@@ -77,7 +77,8 @@ if (-not $Out) {
 }
 New-Item -ItemType Directory -Force -Path $Out | Out-Null
 $common = @('--scene', $Scene, '--camera-path', $CameraPath, '--raster', $Raster)
-# engine-view takes off or rt; auto is what no flag means (rt where the device can trace).
+# engine-view takes off, rt or csm; auto is what no flag means (rt where the device can trace, the
+# cascaded shadow maps where it cannot).
 if ($Shadows -ne 'auto') { $common += @('--shadows', $Shadows) }
 if ($Set -eq 'overlay') {
   if (-not (Test-Path $Overlay)) { throw "flythrough: no overlay manifest at $Overlay" }
@@ -186,18 +187,21 @@ $md = @(
   '',
   "engine-view $Exe; scene $Scene; path $CameraPath. Milliseconds are GPU time from gfx::GpuTimer, per frame: each frame's median over the repeats, then the median, p95 and p99 over the path.",
   '',
-  '| resolution | views | occlusion | raster | frames x repeats | frame median | p95 | p99 | cull | raster pass | hiz | resolve | visible pairs (median) | wall ms/frame | deterministic | machine state |',
-  '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|'
+  '| resolution | views | occlusion | raster | shadows | frames x repeats | frame median | p95 | p99 | cull | raster pass | hiz | resolve | rt chain | shadow maps | visible pairs (median) | shadow pairs (median) | wall ms/frame | deterministic | machine state |',
+  '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|'
 )
 foreach ($r in $results) {
   $s = $r.Summary
   $raster = [double]$s.gpu_ms.hw.median + [double]$s.gpu_ms.sw.median
-  $md += '| {0} | {1} | {2} | {3} | {4} x {5} | {6} | {7} | {8} | {9} | {10} | {11} | {12} | {13:N0} | {14:N3} | {15} | {16} |' -f `
-    $r.Resolution, $s.views, $r.Occlusion, $s.raster, $s.frames, $s.repeats,
+  # The shadow maps' column is every pass that draws them; an older engine-view's summary has none.
+  $shadow = if ($null -ne $s.gpu_ms.shadow) { Format-Ms $s.gpu_ms.shadow.median } else { '-' }
+  $shadowPairs = if ($null -ne $s.shadow_pairs) { '{0:N0}' -f [double]$s.shadow_pairs.median } else { '-' }
+  $md += '| {0} | {1} | {2} | {3} | {4} | {5} x {6} | {7} | {8} | {9} | {10} | {11} | {12} | {13} | {14} | {15} | {16:N0} | {17} | {18:N3} | {19} | {20} |' -f `
+    $r.Resolution, $s.views, $r.Occlusion, $s.raster, $s.shadows, $s.frames, $s.repeats,
     (Format-Ms $s.gpu_ms.total.median), (Format-Ms $s.gpu_ms.total.p95), (Format-Ms $s.gpu_ms.total.p99),
     (Format-Ms $s.gpu_ms.cull.median), (Format-Ms $raster), (Format-Ms $s.gpu_ms.hiz.median),
-    (Format-Ms $s.gpu_ms.resolve.median), $s.visible_pairs.median, $s.wall_ms_per_frame,
-    $s.deterministic, (Get-State $s)
+    (Format-Ms $s.gpu_ms.resolve.median), (Format-Ms $s.gpu_ms.rt.median), $shadow,
+    $s.visible_pairs.median, $shadowPairs, $s.wall_ms_per_frame, $s.deterministic, (Get-State $s)
 }
 if ($results.Count -gt 0) {
   $first = $results[0].Summary

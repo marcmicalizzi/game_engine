@@ -312,12 +312,26 @@ void BindlessSet::bind(VkCommandBuffer commands, VkPipelineBindPoint bind_point)
 
 bool create_image_view(const Device& device, const ImageResource& image, VkImageView& out,
                        std::string* error) {
+  // A depth format's view names the depth aspect: a shadow map is sampled through one, and the
+  // render graph's depth attachments (the direct path's, the shadow atlas) are viewed through this
+  // function too. Vulkan requires the view's aspect to be one the format has, so a colour aspect
+  // on a depth image was invalid usage however quietly it drew.
+  VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT;
+  switch (image.format) {
+    case VK_FORMAT_D16_UNORM:
+    case VK_FORMAT_D32_SFLOAT:
+    case VK_FORMAT_X8_D24_UNORM_PACK32:
+    case VK_FORMAT_D16_UNORM_S8_UINT:
+    case VK_FORMAT_D24_UNORM_S8_UINT:
+    case VK_FORMAT_D32_SFLOAT_S8_UINT: aspect = VK_IMAGE_ASPECT_DEPTH_BIT; break;
+    default: break;
+  }
   VkImageViewCreateInfo info{};
   info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
   info.image = image.image;
   info.viewType = VK_IMAGE_VIEW_TYPE_2D;
   info.format = image.format;
-  info.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+  info.subresourceRange = {aspect, 0, 1, 0, 1};
   const VkResult r = vkCreateImageView(device.handles().device, &info, nullptr, &out);
   if (r != VK_SUCCESS) {
     set_error(error, "vkCreateImageView", r);

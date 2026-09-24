@@ -82,7 +82,8 @@ constexpr const char* k_usage =
     "                   [--deform none|identity|wave|lattice] [--deform-amplitude <a>] [--rt-templates]\n"
     "                   [--rt-budget-mib <n>]\n"
     "                   [--stream] [--page-budget <MiB>] [--upload-budget <KiB>]\n"
-    "                   [--shadows off|rt] [--no-shadow-casters]\n"
+    "                   [--shadows off|rt|csm] [--no-shadow-casters]\n"
+    "                   [--shadow-cascades <n>] [--shadow-map <texels>] [--shadow-distance <d>]\n"
     "                   [--views single|surround3|panini] [--side-yaw <deg>]\n"
     "                   [--panini-d <d>] [--peripheral-lod <mult>]\n"
     "                   [--animate [clip]] [--anim-speed <x>] [--anim-lod on|off]\n"
@@ -121,13 +122,21 @@ constexpr const char* k_usage =
     "  --no-occlusion   skip two-pass occlusion culling (hw mode only; on by default)\n"
     "  --no-cone        skip backface culling of clusters by their normal cones (on by default)\n"
     "  --no-lights      only the sun and the sky; no orbiting point lights (they are on by default)\n"
-    "  --shadows <how>  off, or rt: every light in the resolve casts a ray-traced shadow against\n"
-    "                   the structures the frame built from its own visible list. The default is\n"
-    "                   rt where the device has cluster acceleration structures and ray queries,\n"
-    "                   off elsewhere; an explicit rt on a device without them exits 3 with the\n"
-    "                   sentence `engine-cli gpu.adapters` reports for it.\n"
-    "                   In a raster mode the frame runs the acceleration structure chain as well,\n"
-    "                   which turns two-pass occlusion culling off (one visible list to build from)\n"
+    "  --shadows <how>  off, rt, or csm. rt: every light in the resolve casts a ray-traced shadow\n"
+    "                   against the structures the frame built from its own visible list; in a\n"
+    "                   raster mode the frame runs the acceleration structure chain as well, which\n"
+    "                   turns two-pass occlusion culling off (one visible list to build from).\n"
+    "                   csm: the sun casts through cascaded shadow maps, drawn from the light by\n"
+    "                   the cull pass and the picture's own rasterizer and filtered (3x3 PCF) in\n"
+    "                   the resolve; the point lights are unshadowed; hw and vertex paths only.\n"
+    "                   The default is rt where the device has cluster acceleration structures\n"
+    "                   and ray queries, csm where it has not; an explicit rt on a device without\n"
+    "                   them exits 3 with the sentence `engine-cli gpu.adapters` reports for it\n"
+    "  --shadow-cascades <n>  csm: cascades, 1 to 4 (default 4); a frame whose first cascades\n"
+    "                   already hold the whole scene draws fewer\n"
+    "  --shadow-map <texels>  csm: texels a side per cascade, a power of two (default 2048)\n"
+    "  --shadow-distance <d>  csm: how far from the camera the cascades reach (default: the far\n"
+    "                   side of the scene's bounds)\n"
     "  --no-shadow-casters  with rt shadows, drop what the normal-cone test culls from the\n"
     "                   shadows too. By default a cluster that faces away from the camera is\n"
     "                   kept out of the picture but still built into the frame's acceleration\n"
@@ -1689,7 +1698,7 @@ int run_offscreen(Options& options) {
     summary.height = view_renderer.height();
     summary.views = renderer::view_layout_name(resolved.settings.views);
     summary.raster = renderer::raster_name(resolved.settings.raster);
-    summary.shadows = resolved.shadows ? "rt" : "off";
+    summary.shadows = renderer::resolved_shadow_name(resolved);
     summary.occlusion = resolved.occlusion;
     summary.lod_px = resolved.settings.lod_px;
     summary.stream = resolved.stream;
@@ -1957,7 +1966,24 @@ int main(int argc, char** argv) {
       if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
       // `auto` is the default, not a spelling the flag takes: it is what no flag means.
       if (value == "auto" || !renderer::parse_shadow_mode(value, options.settings.shadows)) {
-        std::fprintf(stderr, "engine-view: --shadows expects off or rt\n");
+        std::fprintf(stderr, "engine-view: --shadows expects off, rt, or csm\n");
+        return k_exit_usage;
+      }
+    } else if (a == "--shadow-cascades" || a == "--shadow-map") {
+      if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
+      u32 n = 0;
+      const bool cascades = a == "--shadow-cascades";
+      if (!parse_u32(value, n) || (cascades && (n < 1 || n > 4)) ||
+          (!cascades && (n < 64 || n > renderer::k_max_shadow_map))) {
+        std::fprintf(stderr, cascades ? "engine-view: --shadow-cascades expects 1 to 4\n"
+                                      : "engine-view: --shadow-map expects 64 to 4096 texels\n");
+        return k_exit_usage;
+      }
+      (cascades ? options.settings.shadow_cascades : options.settings.shadow_map) = n;
+    } else if (a == "--shadow-distance") {
+      if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
+      if (!parse_f32(value, options.settings.shadow_distance)) {
+        std::fprintf(stderr, "engine-view: --shadow-distance expects a positive distance\n");
         return k_exit_usage;
       }
     } else if (a == "--view") {
@@ -2475,7 +2501,7 @@ int main(int argc, char** argv) {
                     log::field("build_ms", static_cast<f64>(scene_data.build_ns) / 1.0e6),
                     log::field("raster", renderer::raster_name(resolved.settings.raster)),
                     log::field("occlusion", resolved.occlusion),
-                    log::field("shadows", resolved.shadows ? "rt" : "off"),
+                    log::field("shadows", renderer::resolved_shadow_name(resolved)),
                     log::field("cone", resolved.settings.cone),
                     log::field("mesh_primitives", scene_data.mesh_primitives),
                     log::field("materials", scene.material_count()),
@@ -2696,9 +2722,11 @@ int main(int argc, char** argv) {
         "\"clusters\":%u,\"leaf_clusters\":%u,\"triangles\":%u,\"lod_levels\":%u,\"build_ms\":%.1f,"
         "\"mesh_primitives\":%u,\"mesh_cache\":\"%s\",\"meshes\":%u,\"instances\":%u,\"pairs\":%u,"
         "\"cull\":%s,\"occlusion\":%s,\"cone\":%s,\"lod_px\":%.2f,\"raster\":\"%s\","
-        "\"shadows\":\"%s\",\"shadow_casters\":%s,\"sw_px\":%.1f,"
+        "\"shadows\":\"%s\",\"shadow_casters\":%s,\"shadow_cascades\":%u,\"shadow_map\":%u,"
+        "\"sw_px\":%.1f,"
         "\"visible_hw_last\":%u,\"visible_pass2_last\":%u,\"visible_sw_last\":%u,"
-        "\"visible_pairs_last\":%u,\"shadow_casters_last\":%u,\"visible_min\":%u,"
+        "\"visible_pairs_last\":%u,\"shadow_casters_last\":%u,\"shadow_pairs_last\":%u,"
+        "\"shadow_fallback_last\":%u,\"visible_min\":%u,"
         "\"visible_max\":%u,\"triangles_hw_last\":%u,\"vertex_fallback_last\":%u,"
         "\"deform\":\"%s\",\"deform_pool_bytes\":%llu,"
         "\"deform_whole_mesh_bytes\":%llu,\"deform_pool_used_bytes\":%llu,"
@@ -2714,7 +2742,7 @@ int main(int argc, char** argv) {
         "\"device_local_total_mib\":%llu},\"machine_state\":%s,"
         "\"gpu_ms\":{\"cull\":%.4f,\"hw\":%.4f,\"sw\":%.4f,\"hiz\":%.4f,\"resolve\":%.4f,"
         "\"rt\":%.4f,\"clas\":%.4f,\"deform\":%.4f,\"deform_alloc\":%.4f,"
-        "\"trace\":%.4f,\"total\":%.4f,"
+        "\"trace\":%.4f,\"shadow\":%.4f,\"shadow_cull\":%.4f,\"total\":%.4f,"
         "\"frames\":%llu},\"captured\":%s}\n",
         static_cast<unsigned long long>(rendered), seconds, avg_ms, extent_width, extent_height,
         scene_data.cluster_count(), scene_data.leaf_count(), scene_data.lod.leaf_triangle_count,
@@ -2723,11 +2751,13 @@ int main(int argc, char** argv) {
         scene_data.instances.size(), scene_data.pair_count,
         resolved.settings.cull ? "true" : "false", resolved.occlusion ? "true" : "false",
         resolved.settings.cone ? "true" : "false", static_cast<f64>(resolved.settings.lod_px),
-        renderer::raster_name(resolved.settings.raster), resolved.shadows ? "rt" : "off",
-        resolved.casters ? "true" : "false", static_cast<f64>(resolved.settings.sw_px),
+        renderer::raster_name(resolved.settings.raster), renderer::resolved_shadow_name(resolved),
+        resolved.casters ? "true" : "false", resolved.shadow_cascades,
+        resolved.csm ? resolved.settings.shadow_map : 0u, static_cast<f64>(resolved.settings.sw_px),
         stats.visible_hw, stats.visible_pass2, stats.visible_sw, stats.visible_pairs(),
-        stats.shadow_casters, visible_min, stats.visible_max, stats.triangles_hw,
-        stats.vertex_fallback, renderer::deform_name(resolved.settings),
+        stats.shadow_casters, stats.shadow_pairs, stats.shadow_fallback, visible_min,
+        stats.visible_max, stats.triangles_hw, stats.vertex_fallback,
+        renderer::deform_name(resolved.settings),
         static_cast<unsigned long long>(deform_pool_bytes),
         static_cast<unsigned long long>(deform_whole_mesh_bytes),
         static_cast<unsigned long long>(u64{stats.deform_vertices} * 3 * sizeof(f32)),
@@ -2747,8 +2777,9 @@ int main(int argc, char** argv) {
         static_cast<unsigned long long>(stats.gpu_memory.device_local_total_mib),
         machine_text.c_str(), stats.cull_ms(), stats.hw_ms(), stats.sw_ms(), stats.hiz_ms(),
         stats.resolve_ms(), stats.rt_ms(), stats.clas_ms(), stats.deform_ms(),
-        stats.deform_alloc_ms(), stats.trace_ms(), stats.total_ms(),
-        static_cast<unsigned long long>(stats.timed_frames), captured ? "true" : "false");
+        stats.deform_alloc_ms(), stats.trace_ms(), stats.shadow_ms(), stats.shadow_cull_ms(),
+        stats.total_ms(), static_cast<unsigned long long>(stats.timed_frames),
+        captured ? "true" : "false");
     // stdout is the summary; the caveat goes beside it on stderr, the same line and the same
     // thresholds the bench harness prints.
     (void)bench::warn_if_busy(bench::worst_of(machine_start, machine_end), bench::QuietThresholds{},

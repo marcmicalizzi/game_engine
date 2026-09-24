@@ -44,6 +44,7 @@ const char* shadow_name(ShadowMode mode) noexcept {
     case ShadowMode::Auto: return "auto";
     case ShadowMode::Off: return "off";
     case ShadowMode::RayTraced: return "rt";
+    case ShadowMode::Cascaded: return "csm";
   }
   return "?";
 }
@@ -53,12 +54,18 @@ bool parse_shadow_mode(std::string_view text, ShadowMode& out) noexcept {
     out = ShadowMode::Off;
   } else if (text == "rt") {
     out = ShadowMode::RayTraced;
+  } else if (text == "csm") {
+    out = ShadowMode::Cascaded;
   } else if (text == "auto") {
     out = ShadowMode::Auto;
   } else {
     return false;
   }
   return true;
+}
+
+const char* resolved_shadow_name(const ResolvedSettings& resolved) noexcept {
+  return resolved.shadows ? "rt" : (resolved.csm ? "csm" : "off");
 }
 
 const char* deform_name(const RenderSettings& settings) noexcept {
@@ -169,15 +176,46 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
   // pass.
   const bool shadow_device = features.cluster_acceleration_structure && features.ray_query;
   const bool shadow_mode = out.ray_path || s.raster == RasterMode::Hardware || out.vertex_path;
-  out.shadows = s.shadows != ShadowMode::Off && shadow_device && shadow_mode;
+  out.shadows = (s.shadows == ShadowMode::RayTraced || s.shadows == ShadowMode::Auto) &&
+                shadow_device && shadow_mode;
+  // **Cascaded shadow maps** are the baseline tier's shadow (04 §4.4, the 2026-09-23 direction
+  // note). They are drawn by the cull pass and the rasterizers from the light and read by the
+  // resolve, so they need a path that rasterizes the picture into the visibility buffer and
+  // resolves it: hw (the mesh path, or the vertex path it fell back to) and vertex. The ray path
+  // traces its picture and has its own shadows, and the direct, sw and auto paths are refused for
+  // the reason rt is: `auto` resolves to maps exactly where it cannot trace.
+  const bool map_mode = s.raster == RasterMode::Hardware || out.vertex_path;
+  out.csm = map_mode &&
+            (s.shadows == ShadowMode::Cascaded || (s.shadows == ShadowMode::Auto && !out.shadows));
   // An explicit `rt` on a device that cannot trace is not a warning here: `check_availability`
   // refuses it, and the host prints the device's own verdict (`unavailable_reason`).
   if (s.shadows == ShadowMode::RayTraced && !out.shadows && shadow_device) {
     ENGINE_LOG_WARN(log_renderer, "ray-traced shadows off",
                     log::field("reason", "the direct, sw, and auto paths do not build them"));
-  } else if (s.shadows == ShadowMode::Auto && !out.shadows && shadow_mode) {
-    ENGINE_LOG_INFO(log_renderer, "ray-traced shadows off",
+  } else if (s.shadows == ShadowMode::Auto && out.csm) {
+    ENGINE_LOG_INFO(log_renderer, "cascaded shadow maps instead of ray-traced shadows",
                     log::field("reason", "no cluster acceleration structures or ray queries"));
+  } else if (s.shadows == ShadowMode::Cascaded && !out.csm) {
+    ENGINE_LOG_WARN(log_renderer, "cascaded shadow maps off",
+                    log::field("reason", "the direct, sw, auto, and rt paths do not draw them"));
+  }
+  if (out.csm) {
+    const u32 cascades = s.shadow_cascades;
+    s.shadow_cascades = cascades < 1                            ? 1u
+                        : cascades > gfx::k_max_shadow_cascades ? gfx::k_max_shadow_cascades
+                                                                : cascades;
+    // A power of two keeps the atlas's texel grid exact in the resolve's arithmetic; the size
+    // is clamped to what one atlas row of four cascades can hold on any device.
+    u32 map = 64;
+    while (map < s.shadow_map && map < k_max_shadow_map)
+      map <<= 1;
+    if (map != s.shadow_map) {
+      ENGINE_LOG_INFO(log_renderer, "shadow map size rounded", log::field("asked", s.shadow_map),
+                      log::field("texels", map));
+    }
+    s.shadow_map = map;
+    if (!(s.shadow_distance >= 0.0f)) s.shadow_distance = 0.0f;
+    out.shadow_cascades = s.shadow_cascades;
   }
   out.rt_chain = out.ray_path || out.shadows;
   // More than one view needs the cull pass: every view's draw reads its own run of the visible
@@ -205,6 +243,10 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
     s.cull = true;  // the ray tracing geometry is built from the cull output
     ENGINE_LOG_WARN(log_renderer, "culling forced on", log::field("raster", raster_name(s.raster)),
                     log::field("shadows", out.shadows));
+  }
+  if (out.csm && !s.cull) {
+    s.cull = true;  // every cascade is the cull pass's output, run from the light
+    ENGINE_LOG_WARN(log_renderer, "culling forced on with cascaded shadow maps");
   }
   // The deformed-vertex pool pass runs when the settings deform every instance *or* when the
   // scene has a skinned one, and those are the same pass: skinning is `deform.slang`'s third

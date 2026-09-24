@@ -121,7 +121,7 @@ class BindlessSet {
   Vector<Pending> pending_;
 };
 
-// Image views and samplers the set holds.
+// Image views and samplers the set holds. A view of a depth format covers the depth aspect.
 bool create_image_view(const Device& device, const ImageResource& image, VkImageView& out,
                        std::string* error = nullptr);
 void destroy_image_view(const Device& device, VkImageView view) noexcept;

@@ -336,12 +336,15 @@ struct AdaptersResult @version(1) {
 // with the same functions in systems/renderer/settings.h.
 
 /// Every knob the renderer has. Absent fields keep the defaults, which are engine-view's.
-struct RenderSettings @version(5) {
+struct RenderSettings @version(6) {
   /// direct, hw, vertex, sw, auto, or rt. `hw` and `direct` fall back to `vertex` on a device
   /// without mesh shaders; the result says which one ran.
   raster: string = "hw"
-  /// off, rt, or auto (rt wherever the device has cluster acceleration structures and ray
-  /// queries, off where it does not).
+  /// off, rt, csm, or auto. rt: every light's shadow is a ray query against the frame's own
+  /// acceleration structures. csm: the sun's shadow is filtered out of cascaded shadow maps the
+  /// cull pass and the picture's rasterizer draw from the light (hw and vertex paths; the point
+  /// lights are unshadowed). auto: rt wherever the device has cluster acceleration structures and
+  /// ray queries, csm where it has not (docs/subsystems/renderer.md, "Shadows").
   shadows: string = "auto"
   /// id, tri, depth, shaded, normals, uv, or shadow (the sun's shadow alone: white where it
   /// reaches the surface, black where a shadow ray is blocked, grey where the surface faces away).
@@ -397,6 +400,12 @@ struct RenderSettings @version(5) {
   /// instances' structures, shadow casters first (docs/subsystems/renderer.md, "The ray tracing
   /// chain's memory"). It is `engine-view --rt-budget-mib`.
   rt_budget_mib: u32 = 0 @since(5)
+  /// csm: how many cascades (1..4), how many texels a side each (64..4096, rounded up to a power
+  /// of two), and how far from the camera they reach (0: the far side of the scene's bounds).
+  /// `engine-view --shadow-cascades`, `--shadow-map`, `--shadow-distance`.
+  shadow_cascades: u32 = 4 @since(6)
+  shadow_map: u32 = 2048 @since(6)
+  shadow_distance: f32 = 0 @since(6)
 }
 
 /// The ray tracing chain's memory over a run, mirroring `renderer::RtStats`: the capacity of the
@@ -650,7 +659,7 @@ struct RenderCaptureParams @version(2) {
 /// which is short of the frames rendered by the frames in flight, because a timestamp pool is
 /// read when its slot is reused). `rt` is the whole acceleration structure chain and `clas` the
 /// cluster structure build inside it.
-struct RenderGpuMs @version(1) {
+struct RenderGpuMs @version(2) {
   cull: f64 = 0
   hw: f64 = 0
   sw: f64 = 0
@@ -660,6 +669,10 @@ struct RenderGpuMs @version(1) {
   clas: f64 = 0
   deform: f64 = 0
   trace: f64 = 0
+  /// The cascaded shadow maps' passes (light-view culls, the cascades' pool and index passes, the
+  /// depth raster) and the culls' share of them; their filtering is in `resolve`.
+  shadow: f64 = 0 @since(2)
+  shadow_cull: f64 = 0 @since(2)
   total: f64 = 0
   frames: u64 = 0
 }
@@ -696,7 +709,7 @@ struct MachineStateSpan @version(1) {
   end: MachineState
 }
 
-struct RenderStats @version(7) {
+struct RenderStats @version(8) {
   /// Frames submitted.
   frames: u64 = 0
   /// The last frame's surviving (instance, cluster) pairs, by the draw that produced them.
@@ -731,6 +744,11 @@ struct RenderStats @version(7) {
   vertex_fallback: u32 = 0 @since(6)
   /// The ray tracing chain's memory and what it built (see `RenderRtStats`).
   rt: RenderRtStats @since(7)
+  /// The last frame's cascaded shadow maps: the pairs every cascade's light-view cull drew into
+  /// the atlas, summed over the cascades, and on the vertex path's indexed draw the cascades'
+  /// survivors its index budget sent to the capacity draw. Not in `visible_pairs`.
+  shadow_pairs: u32 = 0 @since(8)
+  shadow_fallback: u32 = 0 @since(8)
 }
 
 struct RenderCaptureResult @version(2) {

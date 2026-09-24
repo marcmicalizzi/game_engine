@@ -64,6 +64,9 @@ bool GpuScene::create(const gfx::Device& device, const SceneData& data,
   streamed_ = resolved.stream && data.paged();
   page_count_ = streamed_ ? data.pages.pages.size() : 0u;
   view_count_ = resolved.view_count > 0 ? resolved.view_count : 1;
+  // Before anything is sized: a cascade's run is part of the visible list, and so of the pool's
+  // per-entry table.
+  cascade_count_ = resolved.csm ? resolved.shadow_cascades : 0u;
   cluster_count_ = data.cluster_count();
   leaf_count_ = data.leaf_count();
   instance_count_ = data.instances.size();
@@ -217,7 +220,10 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
       deform_instance_.push_back(i);
     }
     deform_whole_mesh_bytes_ = whole_mesh_vertices * 3 * sizeof(f32);
-    deform_pool_vertices_ = pool_budget_vertices(resolved, whole_mesh_vertices);
+    // Each shadow cascade's cut deforms its own copy of the pairs it draws, so the clamp that keeps
+    // a small scene from ever overflowing allows the camera's whole meshes once per cascade too.
+    deform_pool_vertices_ =
+        pool_budget_vertices(resolved, whole_mesh_vertices * (u64{1} + cascade_count_));
     deform_pool_bytes_ = u64{deform_pool_vertices_} * 3 * sizeof(f32);
     constexpr VkBufferUsageFlags k_pool_usage =
         k_address | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
@@ -235,8 +241,9 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
         gfx::upload_buffer(device, deform_descs_.data(),
                            deform_descs_.size() * sizeof(gfx::DeformDesc), k_storage, deform_table,
                            error) &&
-        gfx::create_buffer(device, u64{gfx::k_draw_args_bytes} * k_visible_runs * view_count_,
-                           k_args, false, deform_args, error);
+        gfx::create_buffer(
+            device, u64{gfx::k_draw_args_bytes} * (k_visible_runs * view_count_ + cascade_count_),
+            k_args, false, deform_args, error);
     // The per-frame side of skinning: `k_joint_slots` regions of bone matrices and the same
     // number of copies of the deform table, both host-visible and persistently mapped, so a tick
     // is one memcpy of the span plus one rewrite of a table of 24-byte records. Nothing here is
@@ -821,8 +828,14 @@ bool GpuScene::create_working_set(const ResolvedSettings& resolved, std::string*
   // resolve reads the entry a pair was drawn as out of this: one word per pair per view, written
   // by the cull pass for every pair it draws. A pair is drawn at most once per view per frame, so
   // one table per view serves every run, and a word from an earlier frame is never read.
-  bool ok = gfx::create_buffer(device, visible_run_bytes_ * k_visible_runs * view_count_,
+  // A shadow cascade's run follows every view's three (`cascade_base`), with an argument block of
+  // its own.
+  bool ok = gfx::create_buffer(device,
+                               visible_run_bytes_ * (k_visible_runs * view_count_ + cascade_count_),
                                k_readable, false, visible, error) &&
+            (cascade_count_ == 0 ||
+             gfx::create_buffer(device, u64{gfx::k_draw_args_bytes} * cascade_count_, k_args, false,
+                                shadow_args, error)) &&
             gfx::create_buffer(device, u64{pair_count_} * view_count_ * sizeof(u32), k_address,
                                false, pair_entries, error) &&
             gfx::create_buffer(device, u64{gfx::k_draw_args_bytes} * view_count_, k_args, false,
@@ -852,7 +865,9 @@ bool GpuScene::create_working_set(const ResolvedSettings& resolved, std::string*
     vertex_index_capacity_ =
         static_cast<u32>(bound < k_vertex_index_budget ? bound : k_vertex_index_budget);
     if (vertex_index_capacity_ == 0) vertex_index_capacity_ = 1;  // a scene of no triangles
-    const u64 runs = u64{2} * view_count_;
+    // Two hardware runs a view, and one region per shadow cascade behind them: a cascade's cut is
+    // the camera's LOD over the cascade's box, drawn with the same indexed draw.
+    const u64 runs = u64{2} * view_count_ + cascade_count_;
     ok = gfx::create_buffer(device, runs * sizeof(gfx::VertexDrawHeader), k_args, false,
                             vertex_headers, error) &&
          gfx::create_buffer(device, runs * pair_count_ * sizeof(gfx::VertexDrawRecord), k_address,
@@ -1139,6 +1154,7 @@ void GpuScene::destroy() noexcept {
     gfx::destroy_buffer(device, draw_args[i]);
   }
   gfx::destroy_buffer(device, sw_args);
+  gfx::destroy_buffer(device, shadow_args);
   gfx::destroy_buffer(device, vertex_headers);
   gfx::destroy_buffer(device, vertex_records);
   gfx::destroy_buffer(device, vertex_indices);
@@ -1180,6 +1196,7 @@ void GpuScene::destroy() noexcept {
   cluster_count_ = leaf_count_ = instance_count_ = pair_count_ = material_count_ = 0;
   triangles_per_cluster_ = 0;
   view_count_ = 1;
+  cascade_count_ = 0;
   max_joints_ = skinned_instances_ = deform_pool_vertices_ = 0;
   visible_run_bytes_ = deform_pool_bytes_ = deform_whole_mesh_bytes_ = 0;
   template_bytes_ = rt_bytes_ = rt_scene_bytes_ = rt_bytes_per_cluster_ = 0;
