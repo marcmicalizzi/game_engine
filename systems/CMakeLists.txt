@@ -5,3 +5,4 @@
 # which is always correct for a new capability because its dependencies already exist.
 add_subdirectory(renderer)
 add_subdirectory(animation)
+add_subdirectory(audio_system)

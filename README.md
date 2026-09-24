@@ -18,8 +18,8 @@ Source is one directory per module, layered lowest to highest, and CMake refuses
 |---|---|---|
 | `core/` | L0 | platform, memory, containers, math, jobs, log, schema runtime, serialization, hash, time, ids |
 | `foundation/` | L1 | io, image, input, window, store, tunables, bench |
-| `domain/` | L2 | gfx (RHI and render graph), geometry, assets, atlas, physics, nav, anim, ecs, doc, protocol, sim, tissue |
-| `systems/` | L3 | renderer, animation |
+| `domain/` | L2 | gfx (RHI and render graph), geometry, assets, atlas, physics, nav, anim, ecs, doc, protocol, sim, tissue, audio |
+| `systems/` | L3 | renderer, animation, audio_system |
 | `apps/` | L4 | the executables below |
 | `game/` | L5 | per-game code (none yet) |
 

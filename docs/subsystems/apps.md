@@ -28,7 +28,10 @@ engine-cli --doc ./world doc.diff '{"from_layer":"base","to_layer":"quest"}'
 engine-cli --doc ./world doc.merge '{"base_layer":"base","ours_layer":"quest","theirs_layer":"other","output_layer":"merged"}'
 engine-cli gpu.adapters                       # what the machine's GPUs support (see gfx.md)
 engine-cli gpu.adapters --report adapters.json  # the same, as a file to send back
+engine-cli audio.devices                      # what it can play to, each endpoint's layout (see audio.md)
 ```
+
+`audio.devices` is registered by engine-host only when the build has the audio capability (ADR-0027): the app links `domain/audio` when the target exists and defines `ENGINE_HOST_AUDIO` for the one registration line, as engine-view does for animation, and a minimal build's host answers it "method not found". An empty device list is a normal answer — a CI runner or the headless server has no audio device — exactly as an empty adapter list is.
 
 **engine-view.**
 ```

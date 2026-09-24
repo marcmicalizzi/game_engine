@@ -1,0 +1,165 @@
+// audio components, records and enumerations (ADR-0007, ADR-0027). The capability's own types live
+// with the capability, so adding them touches no shared file, and ENGINE_WITH_AUDIO=OFF takes them
+// out of the build with everything else it owns.
+//
+// The two components are declared here, beside the mixer, and registered with a world by
+// `systems/audio_system` — the module allowed to see flecs (ADR-0028 seam 5). The generated
+// structs are plain C++ and link nothing, so the protocol, a save file and the document model can
+// name them in a build that has no ECS at all. The enumerations are the mixer's own: domain/audio
+// uses these generated types directly, so the schema and the C++ API cannot disagree about what a
+// distance model or a speaker layout is.
+//
+// Both components are **desired state**: what the game wants to hear. Nothing the audio thread
+// does is written back into them — whether a one-shot has finished is a fact about the device's
+// timing, not about the simulation, and writing it into a hashed component would make a replay
+// depend on when a sound card asked for its next block. The system keeps that fact in its own
+// transient state (docs/subsystems/audio_system.md).
+//
+// The source model is an object all the way down (docs/plan/05-simulation.md §5.11, "Direction
+// note, 2026-09-24: audio is an object-based sound stage, decoded last"): an emitter carries its
+// position, orientation, directivity, spread and distance model, never a pre-panned channel pair,
+// and the conversion to the player's speakers happens once, at the end, against a declared layout.
+namespace engine.audio
+
+/// A speaker-layout profile from the shipped table (domain/audio/format.h): what the master bus is
+/// declared to feed, and what a device's channel map says it is. Channels interleave in WAVE order
+/// (FL FR FC LFE BL BR SL SR, then the height ring TFL TFR TBL TBR). `Unknown` is a device whose
+/// channel map matches no profile; it is never a mixer's layout.
+enum ChannelLayout : u8 {
+  Unknown = 0
+  Mono = 1
+  Stereo = 2
+  /// Two channels at the ears. The stereo panner treats it exactly as stereo; binaural rendering
+  /// arrives with Steam Audio.
+  Headphones = 3
+  Quad = 4
+  Surround51 = 5
+  Surround71 = 6
+  /// 7.1 plus a height ring of four at 45 degrees up.
+  Surround714 = 7
+}
+
+/// How a source's level falls with distance between `min_distance` and `max_distance`.
+enum DistanceModel : u8 {
+  /// Inverse distance (-6 dB per doubling), tapered linearly to silence at `max_distance`.
+  InverseTapered = 0
+  /// Linear from full level at `min_distance` to silence at `max_distance`.
+  Linear = 1
+  /// No attenuation: the source is as loud at any distance.
+  None = 2
+}
+
+/// A source's radiation pattern.
+enum Directivity : u8 {
+  /// The same level in every direction.
+  Omni = 0
+  /// Full level inside the inner cone around the source's facing, `cone_outer_gain` outside the
+  /// outer cone, and a blend between.
+  Cone = 1
+}
+
+/// How a 2D source's own channels land on the layout.
+enum ChannelMapping : u8 {
+  /// A source: whatever its bus says. A bus: `FrontPair`.
+  Inherit = 0
+  /// Mono to the front pair, panned by `pan` at constant power; stereo left and right to front
+  /// left and front right, balanced by `pan`.
+  FrontPair = 1
+  /// Source channel k to layout channel k, at unity, `pan` ignored — a stem authored for the
+  /// layout.
+  Direct = 2
+}
+
+/// A sound source in the world.
+///
+/// The emitter system turns every change to this component into the smallest set of mixer
+/// commands that implies it (docs/subsystems/audio_system.md, "What a change sends"): a new or
+/// restarted emitter is one play, a moved or turned one is one source update, a louder one is one
+/// parameter update, an unchanged one is nothing at all.
+struct AudioEmitter @version(1) @kind(component) {
+  /// The clip, as the clip store knows it: an asset id, or `audio::clip_key()` of the encoded
+  /// bytes. An emitter whose clip is not loaded (yet) sounds nothing and retries every tick.
+  clip: id128
+  /// World position. The engine has no transform component yet; when it has one the system reads
+  /// that and this field is migrated away.
+  position: vec3
+  /// Which way the source faces: its -z axis, core/math's "ahead". Only a directional source
+  /// (`directivity` other than Omni) sounds different when it turns.
+  orientation: quat
+  /// Linear gain, >= 0.
+  gain: f32 = 1.0
+  /// Playback rate: 2 is an octave up. [1/64, 64].
+  pitch: f32 = 1.0
+  /// -1 left .. +1 right, for a 2D source. A 3D source is placed by its position.
+  pan: f32 = 0.0
+  /// Full level at and inside this distance, in metres.
+  min_distance: f32 = 1.0
+  /// Silent at and beyond this distance (for the tapered and linear models), and the distance
+  /// past which the LOD policy takes the emitter's voice away.
+  max_distance: f32 = 50.0
+  distance_model: DistanceModel = InverseTapered
+  directivity: Directivity = Omni
+  /// Full width of the inner cone, in degrees: full level inside it.
+  cone_inner_degrees: f32 = 360.0
+  /// Full width of the outer cone, in degrees: `cone_outer_gain` outside it.
+  cone_outer_degrees: f32 = 360.0
+  cone_outer_gain: f32 = 1.0
+  /// How much of the layout the source fills: 0 is a point, 1 is everywhere at once.
+  spread: f32 = 0.0
+  /// Bump to restart: any change starts the clip again from its beginning — a one-shot retrigger,
+  /// or a loop's restart.
+  cue: u32 = 0
+  /// Index into the mixer's bus tree. The default tree is 0 master, 1 music, 2 sfx, 3 voice,
+  /// 4 ambient.
+  bus: u8 = 2
+  /// Voice priority when the pool is full: higher outranks lower, and equal steals the oldest.
+  priority: u8 = 128
+  /// For a 2D source, how its channels map onto the layout.
+  mapping: ChannelMapping = Inherit
+  /// Loop the clip until the emitter stops playing.
+  looping: bool = false
+  /// Non-diegetic — music, interface, narration: not positioned, not attenuated, mapped onto the
+  /// layout by `mapping` and `pan`. A source on a 2D bus (the default tree's music bus) is 2D
+  /// whatever this says.
+  two_d: bool = false
+  /// Whether the emitter should be sounding. A one-shot plays once each time this turns true (or
+  /// `cue` changes) and then stays silent until it does again.
+  playing: bool = true
+}
+
+/// Where the world is heard from. One per world is expected: with several, the system uses the
+/// one with the lowest entity id and counts the rest.
+struct AudioListener @version(1) @kind(component) {
+  position: vec3
+  /// Need not be normalized. Zero means -z, core/math's "ahead".
+  forward: vec3
+  /// Need not be normalized or orthogonal to `forward`. Zero, or parallel to `forward`, means +y.
+  up: vec3
+}
+
+/// One playback device, as `audio.devices` reports it.
+struct AudioDevice @version(1) {
+  name: string
+  /// The endpoint's own layout, read from its channel map; `Unknown` when the map matches no
+  /// declared layout or the device would not say.
+  layout: ChannelLayout = Unknown
+  /// The endpoint's native channel count; 0 when the device would not say.
+  channels: u32 = 0
+  /// The endpoint's native sample rate; 0 when the device would not say.
+  sample_rate: u32 = 0
+  is_default: bool = false
+}
+
+/// Result of `audio.devices`: what this machine can play to. An empty `devices` is a normal answer
+/// — a CI runner or a headless server has no audio device — and the engine then mixes into the
+/// null backend.
+struct AudioDevicesResult @version(1) {
+  /// "wasapi", "pulseaudio", "alsa", or "none" when no platform audio API would start.
+  backend: string
+  devices: AudioDevice[]
+  /// The layout a mixer would be declared with now: the `audio.layout` setting, or the default
+  /// device's own layout when the setting is `auto`, or stereo when neither says.
+  mix_layout: ChannelLayout = Stereo
+  /// The mix rate, which every clip is converted to at decode time.
+  mix_sample_rate: u32 = 48000
+}

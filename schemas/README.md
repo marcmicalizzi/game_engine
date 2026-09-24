@@ -68,6 +68,8 @@ struct PanelScratch @version(1) @kind(component) @transient {
 
 A capability's own components live with the capability, in `<layer>/<name>/schemas/<name>.schema`, compiled by `engine_schema_library(NAME <name>_schemas SCHEMAS schemas/<name>.schema CAPABILITY <name>)`, so adding them touches no shared file and they leave the build with the capability ([ADR-0027](../docs/adr/0027-additive-capabilities.md)). What the entity store does with the registration, and which schema kinds it can describe to flecs, is in [docs/subsystems/ecs.md](../docs/subsystems/ecs.md).
 
+**Declared in one module, registered by another.** A capability split across layers declares its components with the ECS-free half and registers them from the half that may see flecs. `domain/audio/schemas/audio.schema` is the first: `AudioEmitter` and `AudioListener` are declared beside the mixer, and `systems/audio_system` calls the generated `register_audio_components()`, because the generated struct is plain C++ that any module may use and only the registration needs `<flecs.h>`. The same file's enumerations (`ChannelLayout`, `DistanceModel`, `Directivity`, `ChannelMapping`) are the mixer's C++ API types directly, so the IDL and the API cannot disagree about what a speaker layout or a distance model is ([docs/subsystems/audio.md](../docs/subsystems/audio.md)).
+
 ## What is generated
 
 - `<schemas/<stem>.h>`: `enum class` and `struct` definitions with defaults, `k_schema_version`, defaulted `operator==`, and `engine::schema::type_of<T>()` specializations.

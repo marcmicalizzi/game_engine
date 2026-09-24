@@ -19,6 +19,12 @@
 #include <string>
 #include <string_view>
 
+// `audio.devices` when this build has the audio capability (ADR-0027); CMakeLists.txt defines the
+// switch only when it does, and a minimal build is the proof that the host needs nothing from it.
+#if defined(ENGINE_HOST_AUDIO)
+#include <domain/audio/protocol.h>
+#endif
+
 #if ENGINE_PLATFORM_WINDOWS
 #include <fcntl.h>
 #include <io.h>
@@ -159,6 +165,9 @@ int main(int argc, char** argv) {
   protocol::Dispatcher dispatcher(protocol::Context{&sessions, &ring, nullptr, &render_host});
   protocol::add_builtin_methods(dispatcher);
   host::add_render_methods(dispatcher);
+#if defined(ENGINE_HOST_AUDIO)
+  audio::register_methods(dispatcher);
+#endif
   ENGINE_LOG_INFO(log_host, "engine-host ready",
                   log::field("methods", static_cast<u64>(dispatcher.methods().size())),
                   log::field("mounts", static_cast<u64>(vfs.mounts().size())));

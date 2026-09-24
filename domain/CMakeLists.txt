@@ -18,3 +18,6 @@ add_subdirectory(nav)
 # After geometry (the limit surface and the binding) and physics (the cage-size verdict): the
 # tissue definition and its validators.
 add_subdirectory(tissue)
+# After protocol (audio.devices): the device and mixing half of audio. Its ECS half is
+# systems/audio_system, because flecs belongs to systems/ (ADR-0028 seam 5).
+add_subdirectory(audio)
