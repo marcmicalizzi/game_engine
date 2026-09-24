@@ -179,6 +179,7 @@ void fill_stats(const renderer::Stats& in, const renderer::ViewSet& views,
   out.stream.load_waits = stream.load_waits;
   out.stream.loads_in_flight = stream.loads_in_flight;
   out.stream.pool_pages = stream.pool_pages;
+  out.stream.steals = stream.steals;
   // The ray tracing chain, under engine-view's `rt` summary keys.
   const renderer::RtStats& rt = in.rt;
   out.rt.capacity = rt.capacity;

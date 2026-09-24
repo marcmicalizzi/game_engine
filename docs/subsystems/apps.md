@@ -295,10 +295,13 @@ The JSON summary gains a **`streaming`** object, present on every run so that a 
 "streaming":{"pages_total":25,"pages_resident":16,"pages_pinned":1,"page_slots":25,"pending":0,
  "requests":58,"uploads":16,"uploads_bytes":1851392,"evictions":0,"stale":0,"overflows":0,
  "frames_to_converge":2,"resident_bytes":1929216,"page_bytes":2989678,"budget_bytes":2989678,
- "source":"file","file_reads":48,"file_bytes":1772544,"host_bytes_freed":5060512,"load_waits":15}
+ "source":"file","file_reads":48,"file_bytes":1772544,"host_bytes_freed":5060512,"load_waits":15,
+ "pool_pages":16,"steals":0}
 ```
 
 and a **`host_memory`** block beside `gpu_memory`, which is what a claim about host memory is checked with: `"host_memory":{"bytes":318193664,"peak_bytes":354398208}` — the process's working set as the OS reports it (`platform::process_memory_bytes`) and its high-water mark, read after the last frame and before anything is torn down.
+
+`pool_pages` is what the page pool holds, beside the manager's `pages_resident`: the two differ only while admitted pages are on their way, and a pool that stops short of the manager while `pending` grows is the stall [renderer](renderer.md#admission-never-waits-on-a-read-it-cannot-start) describes. `steals` counts the loads the streamer gave up so that the page at the head of the pool's walk could start its own read — each one a read done twice, and many of them mean too few load slots for the source's latency.
 
 Three of the flags a run might combine with it are **refused rather than half-applied**, each with a line on stderr under the `renderer` category: `--deform` and a skinned scene (the deformed-vertex pool is indexed by the scene-wide vertex index and a streamed scene's vertices are at slot-relative ones), `--rt-templates` (a template is built at load from every cluster's positions, which a streamed scene does not hold), and `--no-cull` (the drawing rule's fallback *is* the LOD cut). A mesh with no page table turns streaming off outright.
 

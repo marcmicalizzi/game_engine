@@ -89,6 +89,116 @@ u32 interior_misses(const Vector<u8>& reference, const Vector<u8>& cover, u32 wi
   return missing;
 }
 
+// A page source whose loads land **when it says**, not when a disk does: `latency` ticks after
+// they begin, where the test ticks once a frame. The bytes are the scene's own host streams laid
+// out as `GpuScene::page_stage_layout` says, so a page it serves is the page a file would have
+// served. A read that `fail_page` names comes back short `fail_times` times before it lands.
+//
+// It exists because the stall it reproduces needs reads that take several frames, which a
+// container the test just wrote — sitting in the OS file cache — never does: the flythrough of
+// 2026-09-24 stalled on its first run over a cold cache and on none of the three reruns
+// (docs/subsystems/renderer.md, "Admission never waits on a read it cannot start").
+class SlowPageSource final : public PageSource {
+ public:
+  static constexpr u32 k_loads = k_page_loads;  // the file source's load slots
+
+  void create(const SceneData& data, const GpuScene& scene, u32 latency) {
+    data_ = &data;
+    scene_ = &scene;
+    latency_ = latency;
+    u64 stride = 0;
+    for (u32 p = 0; p < scene.page_count(); ++p)
+      stride = std::max(stride, scene.page_payload_bytes(p));
+    stride_ = stride;
+    buffers_.assign(static_cast<u32>(stride * k_loads), u8{0});
+  }
+  void tick() noexcept { ++now_; }
+  u32 fail_page = ~u32{0};
+  u32 fail_times = 0;
+
+  bool valid() const noexcept override { return scene_ != nullptr; }
+  bool begin(u32 page, u32& handle) override {
+    handle = k_no_load;
+    u32 slot = k_loads;
+    for (u32 i = 0; i < k_loads; ++i) {
+      if (!loads_[i].busy) {
+        slot = i;
+        break;
+      }
+    }
+    if (slot == k_loads) return false;
+    const geometry::ClusterPageDesc& desc = data_->pages.pages[page];
+    const geometry::ClusterMesh& mesh = data_->lod.mesh;
+    const GpuScene::PageStage stage = scene_->page_stage_layout(page);
+    u8* dst = buffers_.data() + stride_ * slot;
+    auto put = [&](const void* source, u64 at, u64 bytes) {
+      if (bytes > 0) std::memcpy(dst + at, source, static_cast<size_t>(bytes));
+    };
+    put(mesh.quantized.data() + u64{desc.first_vertex} * 3, stage.quantized,
+        u64{desc.vertex_count} * 3 * sizeof(u16));
+    put(mesh.attributes.data() + desc.first_vertex, stage.attributes,
+        u64{desc.vertex_count} * sizeof(geometry::VertexAttributes));
+    put(mesh.triangles.data() + desc.first_triangle, stage.triangles,
+        u64{desc.triangle_count} * sizeof(u32));
+    if (stage.ray_tracing) {
+      put(mesh.vertices.data() + desc.first_vertex, stage.vertices,
+          u64{desc.vertex_count} * sizeof(Vec3));
+    }
+    Load& load = loads_[slot];
+    load.busy = true;
+    load.page = page;
+    load.began = now_;
+    load.fails = page == fail_page && failed_ < fail_times;
+    if (load.fails) ++failed_;
+    ++in_flight_;
+    ++reads_;
+    bytes_read_ += stage.total;
+    ++begun_;
+    handle = slot;
+    return true;
+  }
+  bool done(u32 handle) const noexcept override {
+    return handle < k_loads && loads_[handle].busy && now_ - loads_[handle].began >= latency_;
+  }
+  bool complete(u32 handle) const noexcept override {
+    return done(handle) && !loads_[handle].fails;
+  }
+  const u8* bytes(u32 handle) const noexcept override {
+    return handle < k_loads ? buffers_.data() + stride_ * handle : nullptr;
+  }
+  void release(u32 handle) override {
+    if (handle >= k_loads || !loads_[handle].busy) return;
+    loads_[handle].busy = false;
+    --in_flight_;
+  }
+  u32 in_flight() const noexcept override { return in_flight_; }
+  u32 capacity() const noexcept override { return k_loads; }
+  u64 bytes_read() const noexcept override { return bytes_read_; }
+  u64 reads() const noexcept override { return reads_; }
+  u64 released_bytes() const noexcept override { return 0; }
+  u64 begun() const noexcept { return begun_; }
+
+ private:
+  struct Load {
+    u64 began = 0;
+    u32 page = 0;
+    bool busy = false;
+    bool fails = false;
+  };
+  const SceneData* data_ = nullptr;
+  const GpuScene* scene_ = nullptr;
+  u32 latency_ = 0;
+  u64 now_ = 0;
+  u64 stride_ = 0;
+  Vector<u8> buffers_;
+  Load loads_[k_loads];
+  u32 in_flight_ = 0;
+  u32 failed_ = 0;
+  u64 reads_ = 0;
+  u64 bytes_read_ = 0;
+  u64 begun_ = 0;
+};
+
 struct Harness {
   gfx::Device device;
   SceneData data;
@@ -100,9 +210,11 @@ struct Harness {
   std::string skip;
 
   // `jobs` non-null asks for the container-backed page source: the meshes' `.clusters` files are
-  // opened and the merged host streams are released, so the run reads its pages off disk.
-  bool build(const SceneDesc& desc, const RenderSettings& settings,
-             jobs::JobSystem* jobs = nullptr) {
+  // opened and the merged host streams are released, so the run reads its pages off disk. `slow`
+  // non-null serves the pages from a `SlowPageSource` of `latency` ticks instead, over the host
+  // streams, which it keeps.
+  bool build(const SceneDesc& desc, const RenderSettings& settings, jobs::JobSystem* jobs = nullptr,
+             SlowPageSource* slow = nullptr, u32 latency = 0) {
     std::string error;
     if (!device.create(gfx::DeviceOptions{}, &error)) {
       skip = "device unavailable: " + error;
@@ -128,6 +240,10 @@ struct Harness {
       REQUIRE_MESSAGE(attach_page_source(data, scene, *jobs, source, &error),
                       "page source: " << error);
       rd.page_source = &source;
+      from_file = true;
+    } else if (slow != nullptr) {
+      slow->create(data, scene, latency);
+      rd.page_source = slow;
       from_file = true;
     }
     REQUIRE_MESSAGE(renderer.create(device, scene, resolved, rd, &error), "renderer: " << error);
@@ -732,6 +848,137 @@ TEST_CASE("streaming: a page's 8-bit indices are its own, under a budget that ev
   CHECK_MESSAGE(wrong == 0, wrong << " of " << checked
                                   << " triangles in the page pool carry 8-bit indices that are not "
                                      "their own");
+}
+
+namespace {
+
+// What a run against a slow source did: how many frames it drew before nothing was outstanding
+// (or the cap), and the longest stretch in which something was outstanding and the pool did not
+// gain a page — the number a stalled streamer grows without bound.
+struct SlowRun {
+  u32 frames = 0;
+  bool converged = false;
+  u32 longest_stall = 0;
+  u32 pool_pages = 0;
+  u32 manager_pages = 0;
+  u64 uploads = 0;
+  u64 steals = 0;
+  u32 pending = 0;
+  u32 loads_in_flight = 0;
+};
+
+SlowRun fly_slow(Harness& h, SlowPageSource& slow, u32 max_frames) {
+  std::string error;
+  SlowRun out;
+  u32 quiet = 0;
+  u32 stall = 0;
+  u32 last_pool = 0;
+  for (u32 f = 0; f < max_frames; ++f) {
+    // A fly-in over the first 48 frames, then held: the cut grows by an order of magnitude and
+    // asks for pages in an order the page table does not share, which is what fills the load
+    // slots with pages the walk cannot reach yet.
+    FrameDesc frame;
+    frame.camera = fly_camera(h.data.center, h.data.radius, 6.0f, 0.5f, std::min(f, 47u), 48);
+    frame.frame_index = f;
+    REQUIRE_MESSAGE(h.renderer.render_offscreen(frame, &error), error);
+    slow.tick();
+    const StreamStats& s = h.renderer.streamer().stats();
+    const bool outstanding = s.pending > 0 || s.loads_in_flight > 0 ||
+                             s.pool_pages < s.pages_resident || h.renderer.streamer().has_uploads();
+    if (outstanding && s.pool_pages <= last_pool) {
+      ++stall;
+      out.longest_stall = std::max(out.longest_stall, stall);
+    } else {
+      stall = 0;
+    }
+    last_pool = s.pool_pages;
+    quiet = !outstanding && f >= 48 ? quiet + 1 : 0;
+    out.frames = f + 1;
+    if (quiet >= k_quiet_frames) {
+      out.converged = true;
+      break;
+    }
+  }
+  const StreamStats& s = h.renderer.streamer().stats();
+  out.pool_pages = s.pool_pages;
+  out.manager_pages = s.pages_resident;
+  out.uploads = s.uploads;
+  out.steals = s.steals;
+  out.pending = s.pending;
+  out.loads_in_flight = s.loads_in_flight;
+  return out;
+}
+
+}  // namespace
+
+TEST_CASE("streaming: admission never waits on a read it cannot start") {
+  // **The stuck flythrough of 2026-09-24**, made to happen every time. One streamed run of the
+  // desert overlook admitted nothing for 2,401 frames while three reruns were normal. The cause was
+  // a circular wait: the pool is filled in page order, so a load that has landed behind a page
+  // still waiting for its read cannot be staged, and a load slot is given back only when its page
+  // is staged — so when every load slot held a page behind the walk's head, and the head (a page
+  // admitted after them, in priority order, with a lower index) had no load of its own, the head
+  // could never start its read and nothing behind it could ever land. Reads that take several
+  // frames are what fill the load slots behind the head, which a cold file cache gives a real run
+  // and a container this test just wrote never does; the slow source gives it here.
+  //
+  // Whether the slots fill behind the head depends on the order the cut asks for pages in, and
+  // that differs by device (a page's request keeps the priority of whichever lane won it): on the
+  // RTX 5090 this fly-in does it on every run and the old streamer stalls at 12 of 21 pages, and
+  // on the TITAN Xp it did not, so there the case holds convergence only. The message says which.
+  constexpr u32 k_latency = 6;
+  SlowPageSource slow;
+  Harness h;
+  if (!h.build(heightfield_desc(true, 16 * 1024), streamed_settings(0, 32 * 1024), nullptr, &slow,
+               k_latency)) {
+    MESSAGE(h.skip);
+    return;
+  }
+  REQUIRE(h.scene.page_count() > 2 * SlowPageSource::k_loads);
+  const SlowRun run = fly_slow(h, slow, 1200);
+  MESSAGE(
+      "a " << k_latency << "-frame source: " << std::string(run.converged ? "converged" : "stalled")
+           << " after " << run.frames << " frames, " << run.uploads << " uploads, pool "
+           << run.pool_pages << " of " << run.manager_pages << " admitted pages, " << run.pending
+           << " queued, " << run.loads_in_flight << " loads in flight, " << run.steals
+           << " loads given up for the walk's head, longest stall " << run.longest_stall
+           << " frames"
+           << std::string(run.steals == 0 ? " (the slots never filled behind the head here)" : ""));
+  CHECK(run.converged);
+  CHECK(run.pool_pages == run.manager_pages);
+  // A page at the head waits for its own read and for the frames it takes the feedback to come
+  // back, and nothing else: the pool gains a page at least every few read latencies.
+  CHECK(run.longest_stall <= 4 * k_latency + 8);
+}
+
+TEST_CASE("streaming: a read that fails is read again, and the rest of the queue goes on") {
+  // A short read drops the page rather than staging it (the pool would hold its descriptors over
+  // whatever was in the buffer). Dropping it must not strand it: the walk reaches it again, starts
+  // its read again, and when that lands the pages behind it follow.
+  constexpr u32 k_latency = 3;
+  SlowPageSource slow;
+  Harness h;
+  if (!h.build(heightfield_desc(true, 16 * 1024), streamed_settings(0, 32 * 1024), nullptr, &slow,
+               k_latency)) {
+    MESSAGE(h.skip);
+    return;
+  }
+  // The first page past the roots: everything the fly-in refines into is behind it.
+  u32 first_child = 0;
+  while (first_child < h.data.pages.pages.size() &&
+         (h.data.pages.pages[first_child].flags & geometry::k_page_root) != 0) {
+    ++first_child;
+  }
+  REQUIRE(first_child < h.data.pages.pages.size());
+  slow.fail_page = first_child;
+  slow.fail_times = 4;
+  const SlowRun run = fly_slow(h, slow, 1200);
+  MESSAGE("page " << first_child << " failed " << slow.fail_times << " times: "
+                  << std::string(run.converged ? "converged" : "stalled") << " after " << run.frames
+                  << " frames, " << run.uploads << " uploads, pool " << run.pool_pages << " of "
+                  << run.manager_pages << ", longest stall " << run.longest_stall << " frames");
+  CHECK(run.converged);
+  CHECK(run.pool_pages == run.manager_pages);
 }
 
 TEST_CASE("streaming: a request is served under an upload budget of one page a frame") {

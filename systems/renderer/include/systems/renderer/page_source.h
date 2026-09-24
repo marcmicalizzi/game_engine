@@ -48,10 +48,41 @@ inline constexpr u32 k_page_loads = 8;
 // the triangles that were just read, so neither of those is a read.
 inline constexpr u32 k_page_reads = 4;
 
-class FilePageSource {
+// What `GeometryStreamer` asks of a source of page payloads that arrive **later**: start a page's
+// load into one of a fixed number of load slots, poll it, take its bytes, give the slot back.
+// `FilePageSource` is the one the hosts use; a test puts a source here whose loads take as long as
+// it says, which is how a stall that needs a cold disk to happen is made to happen on every run
+// (docs/subsystems/renderer.md, "Admission never waits on a read it cannot start").
+class PageSource {
+ public:
+  static constexpr u32 k_no_load = ~u32{0};
+  virtual ~PageSource() = default;
+
+  virtual bool valid() const noexcept = 0;
+  // Starts page `page`'s load. False when every load slot is busy or the page cannot be read;
+  // `handle` names the load until `release`.
+  virtual bool begin(u32 page, u32& handle) = 0;
+  // Whether the load has finished. Polls; never waits.
+  virtual bool done(u32 handle) const noexcept = 0;
+  // Whether it finished *and* every byte landed. A load that did not must not be staged.
+  virtual bool complete(u32 handle) const noexcept = 0;
+  // The page, laid out as `GpuScene::PageStage` says; the descriptor block at offset 0 and the
+  // 8-bit indices are the streamer's to fill.
+  virtual const u8* bytes(u32 handle) const noexcept = 0;
+  // Gives the load slot back, waiting first if the load is still outstanding.
+  virtual void release(u32 handle) = 0;
+  virtual u32 in_flight() const noexcept = 0;
+  virtual u32 capacity() const noexcept = 0;
+  // What a summary reports: reads started, their bytes, and what the source let the host free.
+  virtual u64 bytes_read() const noexcept = 0;
+  virtual u64 reads() const noexcept = 0;
+  virtual u64 released_bytes() const noexcept = 0;
+};
+
+class FilePageSource final : public PageSource {
  public:
   FilePageSource() noexcept = default;
-  ~FilePageSource() { destroy(); }
+  ~FilePageSource() override { destroy(); }
   ENGINE_NON_COPYABLE(FilePageSource);
 
   // Opens one reader per mesh of the scene and sizes the load buffers.
@@ -64,33 +95,31 @@ class FilePageSource {
   bool create(const SceneData& data, const GpuScene& scene, jobs::JobSystem& jobs,
               std::string* error = nullptr);
   void destroy() noexcept;
-  bool valid() const noexcept { return scene_ != nullptr; }
+  bool valid() const noexcept override { return scene_ != nullptr; }
 
   // Starts page `page`'s reads into a load buffer. False when every load is busy; `handle` names
   // the load until `release`.
-  bool begin(u32 page, u32& handle);
+  bool begin(u32 page, u32& handle) override;
   // Whether every read of the load has finished. Polls a counter; never waits.
-  bool done(u32 handle) const noexcept;
+  bool done(u32 handle) const noexcept override;
   // Whether it finished *and* every range landed in full. A short or failed read is a page that
   // must not be staged: the pool would hold a cluster's descriptors over somebody else's bytes.
-  bool complete(u32 handle) const noexcept;
+  bool complete(u32 handle) const noexcept override;
   // The staged page, laid out as `GpuScene::PageStage` says, ready to be copied into the ring.
   // The cluster-descriptor block at offset 0 and the 8-bit indices are the streamer's to fill.
-  const u8* bytes(u32 handle) const noexcept;
+  const u8* bytes(u32 handle) const noexcept override;
   u32 page_of(u32 handle) const noexcept;
   // Gives the load back. Waits first if it is still outstanding, because the buffer it is reading
   // into is about to be handed to another page — which happens only when a scene is torn down or
   // a load is cancelled, never in a steady frame.
-  void release(u32 handle);
-  u32 in_flight() const noexcept { return in_flight_; }
-  u32 capacity() const noexcept { return k_page_loads; }
-  u64 bytes_read() const noexcept { return bytes_read_; }
-  u64 reads() const noexcept { return reads_; }
+  void release(u32 handle) override;
+  u32 in_flight() const noexcept override { return in_flight_; }
+  u32 capacity() const noexcept override { return k_page_loads; }
+  u64 bytes_read() const noexcept override { return bytes_read_; }
+  u64 reads() const noexcept override { return reads_; }
   // What the merged host streams cost, which is what releasing them saves.
-  u64 released_bytes() const noexcept { return released_bytes_; }
+  u64 released_bytes() const noexcept override { return released_bytes_; }
   void set_released_bytes(u64 bytes) noexcept { released_bytes_ = bytes; }
-
-  static constexpr u32 k_no_load = ~u32{0};
 
  private:
   // One mesh's container, and the bases that turn a merged page's ranges back into the file's own.

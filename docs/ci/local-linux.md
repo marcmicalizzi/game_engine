@@ -166,6 +166,15 @@ it, and the edit kept the same size, it never arrived at all. Checked in the ima
 file rewritten 0.6 s later with five other bytes keeps its old contents through `rsync -a` and
 arrives with `--modify-window=-1`.
 
+**The same trap needs no container.** Restoring a source from a backup copy with PowerShell's
+`Copy-Item` (or `cp -p`, or `robocopy`) gives it the backup's modification time, which is older
+than the object compiled from whatever the file said in between, so `tools/dev.ps1 build`
+compiles nothing and the binary keeps the text the restore meant to undo. It produced one
+misleading run on 2026-09-24: a streamer built with a rule switched off for a before-and-after
+test, the file restored with `Copy-Item`, and the "after" binary stalling exactly like the
+"before". Set the time after restoring (`(Get-Item <file>).LastWriteTime = Get-Date`, or
+`touch`), or restore with `git checkout`, which writes a fresh one.
+
 **How it works now** (`Invoke-Sync` in `tools/linux-build.ps1`): two rsyncs in the sync container.
 
 1. host → `/deps/.host-mirror` with `rsync -a --delete --modify-window=-1`. The mirror keeps the

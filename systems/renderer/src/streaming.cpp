@@ -18,7 +18,7 @@ constexpr u32 k_no_slot = GeometryStreamer::k_no_page_slot;
 GeometryStreamer::~GeometryStreamer() { destroy(); }
 
 bool GeometryStreamer::create(const gfx::Device& device, GpuScene& scene, u32 frames_in_flight,
-                              FilePageSource* source, std::string* error) {
+                              PageSource* source, std::string* error) {
   destroy();
   if (!scene.streamed()) return true;
   device_ = &device;
@@ -41,7 +41,7 @@ bool GeometryStreamer::create(const gfx::Device& device, GpuScene& scene, u32 fr
   slot_of_page_.assign(pages, k_no_slot);
   page_of_slot_.assign(scene.page_slots(), k_no_slot);
   resident_.assign(pages, u8{0});
-  load_of_page_.assign(pages, FilePageSource::k_no_load);
+  load_of_page_.assign(pages, PageSource::k_no_load);
   free_slots_.reserve(scene.page_slots());
   for (u32 s = scene.page_slots(); s > 0; --s)
     free_slots_.push_back(s - 1);
@@ -98,7 +98,7 @@ void GeometryStreamer::destroy() noexcept {
   // outlive the source that owns it, and `release` waits.
   if (source_ != nullptr) {
     for (u32 p = 0; p < load_of_page_.size(); ++p) {
-      if (load_of_page_[p] != FilePageSource::k_no_load) source_->release(load_of_page_[p]);
+      if (load_of_page_[p] != PageSource::k_no_load) source_->release(load_of_page_[p]);
     }
   }
   source_ = nullptr;
@@ -261,9 +261,9 @@ void GeometryStreamer::give_back_slot(u32 page) noexcept {
 }
 
 void GeometryStreamer::cancel_load(u32 page) {
-  if (source_ == nullptr || load_of_page_[page] == FilePageSource::k_no_load) return;
+  if (source_ == nullptr || load_of_page_[page] == PageSource::k_no_load) return;
   source_->release(load_of_page_[page]);
-  load_of_page_[page] = FilePageSource::k_no_load;
+  load_of_page_[page] = PageSource::k_no_load;
   if (resident_[page] == 0) give_back_slot(page);
 }
 
@@ -275,18 +275,42 @@ void GeometryStreamer::cancel_stale_loads() {
   if (source_ == nullptr) return;
   const geometry::PageResidency& held = manager_.page_residency();
   for (u32 p = 0; p < scene_->page_count(); ++p) {
-    if (load_of_page_[p] == FilePageSource::k_no_load || held.is_resident(p)) continue;
+    if (load_of_page_[p] == PageSource::k_no_load || held.is_resident(p)) continue;
     cancel_load(p);
     ++stats_.stale;
   }
 }
 
+// Frees a load slot, and the pool slot that load holds, for `head`: the page at the head of the
+// walk, which nothing behind it can get past without its read. A load of a page the manager no
+// longer holds goes first, since nothing wants it; otherwise the load of the page furthest behind
+// the head, which is the one the walk would reach last. Every load belongs to a page at or behind
+// the head — the pages before it are in the pool, and a pool page has no load — so when the head
+// has none and the slots are full there is always one to take. False when the head was blocked by
+// something a slot cannot fix: the frame's upload budget, or a page the source refused to begin.
+bool GeometryStreamer::steal_load_for(u32 head) {
+  if (source_ == nullptr) return false;
+  if (source_->in_flight() < source_->capacity() && !free_slots_.empty()) return false;
+  const geometry::PageResidency& held = manager_.page_residency();
+  u32 victim = k_no_slot;
+  for (u32 q = 0; q < scene_->page_count() && victim == k_no_slot; ++q) {
+    if (load_of_page_[q] != PageSource::k_no_load && !held.is_resident(q)) victim = q;
+  }
+  for (u32 q = scene_->page_count(); victim == k_no_slot && q-- > head + 1;) {
+    if (load_of_page_[q] != PageSource::k_no_load) victim = q;
+  }
+  if (victim == k_no_slot) return false;
+  cancel_load(victim);
+  ++stats_.steals;
+  return true;
+}
+
 void GeometryStreamer::prefetch(u32 page) {
-  if (source_ == nullptr || load_of_page_[page] != FilePageSource::k_no_load) return;
+  if (source_ == nullptr || load_of_page_[page] != PageSource::k_no_load) return;
   if (source_->in_flight() >= source_->capacity() || free_slots_.empty()) return;
   u32 pool_slot = 0;
   if (!take_slot(page, pool_slot)) return;
-  u32 handle = FilePageSource::k_no_load;
+  u32 handle = PageSource::k_no_load;
   if (!source_->begin(page, handle)) {
     give_back_slot(page);
     return;
@@ -315,7 +339,7 @@ GeometryStreamer::Stage GeometryStreamer::stage_page(u32 page, u8* ring, u64 rin
   }
 
   u32 handle = load_of_page_[page];
-  if (handle == FilePageSource::k_no_load) {
+  if (handle == PageSource::k_no_load) {
     if (bytes > requested) return Stage::blocked;
     if (source_->in_flight() >= source_->capacity()) return Stage::blocked;
     if (!free_one_slot()) return Stage::blocked;
@@ -351,7 +375,7 @@ GeometryStreamer::Stage GeometryStreamer::stage_page(u32 page, u8* ring, u64 rin
   patch_clusters(page, pool_slot, dst);
   pack_indices(page, dst);
   source_->release(handle);
-  load_of_page_[page] = FilePageSource::k_no_load;
+  load_of_page_[page] = PageSource::k_no_load;
   uploads_.push_back(Upload{page, pool_slot, ring_base + at});
   at += bytes;
   remaining -= bytes;
@@ -426,7 +450,20 @@ u64 GeometryStreamer::prepare(u32 slot) {
       prefetch(p);
       continue;
     }
-    const Stage staged = stage_page(p, ring, ring_base, at, remaining, requested);
+    Stage staged = stage_page(p, ring, ring_base, at, remaining, requested);
+    // **The head of the walk always gets a load** (docs/subsystems/renderer.md, "Admission never
+    // waits on a read it cannot start"). A load slot comes back only when its page is staged, and
+    // pages are staged only in this order, so a slot held by a page *behind* the head cannot come
+    // back before the head is staged. When every slot is held that way and the head has none, the
+    // head can never start its read and nothing behind it can ever land: the pool stops, admission
+    // stops with it, and requests pile up for the rest of the run. That is not a race that
+    // resolves itself — it needs only reads slower than the frames (a cold file cache) and a page
+    // admitted, in priority order, below every page that already holds a load. So the head takes
+    // a slot from behind it, and the page it took one from reads again later.
+    if (staged == Stage::blocked && source_ != nullptr &&
+        load_of_page_[p] == PageSource::k_no_load && steal_load_for(p)) {
+      staged = stage_page(p, ring, ring_base, at, remaining, requested);
+    }
     if (staged == Stage::done) continue;
     gap = true;
     // **Pending is not blocked.** A page whose reads are on their way stops *this* page being

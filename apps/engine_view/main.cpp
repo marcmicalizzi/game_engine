@@ -1022,9 +1022,11 @@ JsonValue streaming_summary(const renderer::StreamStats& s) {
   out.set("file_bytes", s.file_bytes);
   out.set("host_bytes_freed", s.host_bytes_freed);
   out.set("load_waits", s.load_waits);
-  // The pool's own page count beside the manager's `pages_resident`: a pool that stops short of the
-  // manager while `pending` grows is a stall.
+  // The pool's own page count beside the manager's `pages_resident`, and the loads given up so the
+  // walk's head could start its read (renderer.md, "Admission never waits on a read it cannot
+  // start"). A pool that stops short of the manager while `pending` grows is a stall.
   out.set("pool_pages", s.pool_pages);
+  out.set("steals", s.steals);
   return out;
 }
 

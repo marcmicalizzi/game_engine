@@ -68,6 +68,12 @@ struct StreamStats {
   // with none never had to.
   u64 load_waits = 0;
   u32 loads_in_flight = 0;
+  // Loads given up so that the page at the head of the walk could start its own: every load slot
+  // held a page the walk cannot stage before the head, which is the circular wait that stalled
+  // the desert flythrough (docs/subsystems/renderer.md, "Admission never waits on a read it cannot
+  // start"). Each one is a read done twice; a run that counts many has too few load slots for its
+  // read latency.
+  u64 steals = 0;
 };
 
 class GeometryStreamer {
@@ -81,7 +87,7 @@ class GeometryStreamer {
   // the in-memory path: pages are copied out of `scene.data()`, which has to still hold its
   // streams.
   bool create(const gfx::Device& device, GpuScene& scene, u32 frames_in_flight,
-              FilePageSource* source = nullptr, std::string* error = nullptr);
+              PageSource* source = nullptr, std::string* error = nullptr);
   void destroy() noexcept;
   bool active() const noexcept { return scene_ != nullptr && scene_->streamed(); }
 
@@ -148,11 +154,13 @@ class GeometryStreamer {
   void prefetch(u32 page);
   void cancel_load(u32 page);
   void cancel_stale_loads();
+  // Gives up the load of a page behind `head` so that `head` can start its own; see `prepare`.
+  bool steal_load_for(u32 head);
 
   const gfx::Device* device_ = nullptr;
   GpuScene* scene_ = nullptr;
-  FilePageSource* source_ = nullptr;  // null: the payloads come out of `scene_->data()`
-  Vector<u32> load_of_page_;          // page -> the source's load handle, or k_no_load
+  PageSource* source_ = nullptr;  // null: the payloads come out of `scene_->data()`
+  Vector<u32> load_of_page_;      // page -> the source's load handle, or k_no_load
   geometry::PageResidencyManager manager_;
   Vector<gfx::BufferResource> feedback_;
   Vector<u32> slot_of_page_;  // page -> pool slot, or ~0

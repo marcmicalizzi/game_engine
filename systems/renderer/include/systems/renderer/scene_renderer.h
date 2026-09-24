@@ -134,7 +134,8 @@ struct FrameStats {
   // Streaming's state after this frame, beside what it did in it: requests queued in the manager
   // and not admitted, page loads outstanding, and pages the **pool** holds, which lags the
   // manager's `pages_resident` by the upload budget and the read latency. A run whose pool stops
-  // growing while its queue does not drain is stalled, and these are what show it frame by frame.
+  // growing while its queue does not drain is the stall docs/subsystems/renderer.md
+  // ("Admission never waits on a read it cannot start") describes.
   u32 pending = 0;
   u32 loads_in_flight = 0;
   u32 pool_pages = 0;
@@ -329,7 +330,7 @@ class SceneRenderer {
     // are copied out of the `SceneData`, which must still hold its streams. A source built by
     // `attach_page_source` reads them out of the meshes' `.clusters` containers instead, and must
     // outlive the renderer. Ignored for a scene that is not streamed.
-    FilePageSource* page_source = nullptr;
+    PageSource* page_source = nullptr;
   };
 
   SceneRenderer() noexcept = default;

@@ -472,6 +472,9 @@ struct RenderStreamStats @version(2) {
   /// The pages the **pool** holds — what the cull pass can draw out of — beside the manager's
   /// `pages_resident`, which counts a page from its admission, before its bytes land.
   pool_pages: u32 = 0 @since(2)
+  /// Loads given up so that the page at the head of the pool's walk could start its own read
+  /// (docs/subsystems/renderer.md, "Admission never waits on a read it cannot start").
+  steals: u64 = 0 @since(2)
 }
 
 /// What one view of a `ViewSet` costs, beside the totals in `RenderStats` (04 §4.6). The
