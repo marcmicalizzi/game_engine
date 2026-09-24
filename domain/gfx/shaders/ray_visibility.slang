@@ -47,8 +47,12 @@ void trace_main(uint3 id : SV_DispatchThreadID) {
   ray.Direction = direction;
   ray.TMin = 0.0;
   ray.TMax = 1e30;
-  RayQuery<RAY_FLAG_FORCE_OPAQUE> query;
-  query.TraceRayInline(g_scenes[params->scene], RAY_FLAG_FORCE_OPAQUE, 0xff, ray);
+  // Everything the picture draws is built opaque. The one non-opaque geometry is a **shadow
+  // caster**: a cluster the cull pass's cone test kept out of the picture but not out of the
+  // shadows (clas_records.slang). Culling non-opaque geometry is what keeps it out of this ray,
+  // so the traced picture stays the rasterized one word for word.
+  RayQuery<RAY_FLAG_CULL_NON_OPAQUE> query;
+  query.TraceRayInline(g_scenes[params->scene], RAY_FLAG_CULL_NON_OPAQUE, 0xff, ray);
   while (query.Proceed()) {
   }
 

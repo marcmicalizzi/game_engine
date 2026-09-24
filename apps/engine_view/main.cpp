@@ -75,7 +75,8 @@ constexpr const char* k_usage =
     "                   [--grid-instances <n>] [--no-cache] [--ddc <dir>] [--no-lights]\n"
     "                   [--deform none|identity|wave|lattice] [--deform-amplitude <a>] [--rt-templates]\n"
     "                   [--stream] [--page-budget <MiB>] [--upload-budget <KiB>]\n"
-    "                   [--shadows off|rt] [--views single|surround3|panini] [--side-yaw <deg>]\n"
+    "                   [--shadows off|rt] [--no-shadow-casters]\n"
+    "                   [--views single|surround3|panini] [--side-yaw <deg>]\n"
     "                   [--panini-d <d>] [--peripheral-lod <mult>]\n"
     "                   [--animate [clip]] [--anim-speed <x>] [--anim-lod on|off]\n"
     "                   [--anim-lod-scale <x>]\n"
@@ -115,6 +116,11 @@ constexpr const char* k_usage =
     "                   sentence `engine-cli gpu.adapters` reports for it.\n"
     "                   In a raster mode the frame runs the acceleration structure chain as well,\n"
     "                   which turns two-pass occlusion culling off (one visible list to build from)\n"
+    "  --no-shadow-casters  with rt shadows, drop what the normal-cone test culls from the\n"
+    "                   shadows too. By default a cluster that faces away from the camera is\n"
+    "                   kept out of the picture but still built into the frame's acceleration\n"
+    "                   structures, so a card seen from behind casts its shadow; this is the old\n"
+    "                   behaviour, for measuring what that costs and restores\n"
     "  --raster <mode>  direct: mesh shaders to color with a depth buffer; hw (default), vertex, sw,\n"
     "                   auto: the visibility buffer through mesh shaders, a vertex shader (the\n"
     "                   baseline tier, chosen automatically without mesh shaders), software, or\n"
@@ -122,7 +128,8 @@ constexpr const char* k_usage =
     "                   built every frame from the cull output (NVIDIA RTX only; exit 3 elsewhere)\n"
     "  --sw-px <px>     auto mode: clusters narrower than this go to the software rasterizer (32)\n"
     "  --view <mode>    id, tri, depth, shaded (default: materials with vertex normals, textures,\n"
-    "                   and normal maps under a sun), normals, uv\n"
+    "                   and normal maps under a sun), normals, uv, shadow (the sun's shadow\n"
+    "                   alone: white lit, black shadowed, grey facing away)\n"
     "  --orbit <d>      orbit at a fixed distance instead of breathing between 8 and 36 units;\n"
     "                   distances scale with the scene radius (10 for the heightfield)\n"
     "  --deform <mode>  deform every instance through the per-frame deformed-vertex pool\n"
@@ -885,6 +892,7 @@ JsonValue views_summary(const renderer::ViewSet& views, const renderer::Stats& s
     entry.set("visible_pass2", s.visible_pass2);
     entry.set("visible_sw", s.visible_sw);
     entry.set("visible_pairs", s.visible_pairs());
+    entry.set("shadow_casters", s.shadow_casters);
     JsonValue ms = JsonValue::object();
     ms.set("cull", s.gpu_cull / timed);
     ms.set("hw", s.gpu_hw / timed);
@@ -1326,8 +1334,8 @@ int main(int argc, char** argv) {
     } else if (a == "--view") {
       if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
       if (!renderer::parse_view_mode(value, options.settings.view_mode)) {
-        std::fprintf(stderr,
-                     "engine-view: --view expects id, tri, depth, shaded, normals, or uv\n");
+        std::fprintf(
+            stderr, "engine-view: --view expects id, tri, depth, shaded, normals, uv, or shadow\n");
         return k_exit_usage;
       }
     } else if (a == "--capture") {
@@ -1377,6 +1385,8 @@ int main(int argc, char** argv) {
       options.settings.occlusion = false;
     } else if (a == "--no-cone") {
       options.settings.cone = false;
+    } else if (a == "--no-shadow-casters") {
+      options.settings.shadow_casters = false;
     } else if (a == "--no-lights") {
       options.settings.lights = false;
     } else if (a == "--validation") {
@@ -1974,9 +1984,9 @@ int main(int argc, char** argv) {
         "\"clusters\":%u,\"leaf_clusters\":%u,\"triangles\":%u,\"lod_levels\":%u,\"build_ms\":%.1f,"
         "\"mesh_primitives\":%u,\"mesh_cache\":\"%s\",\"meshes\":%u,\"instances\":%u,\"pairs\":%u,"
         "\"cull\":%s,\"occlusion\":%s,\"cone\":%s,\"lod_px\":%.2f,\"raster\":\"%s\","
-        "\"shadows\":\"%s\",\"sw_px\":%.1f,"
+        "\"shadows\":\"%s\",\"shadow_casters\":%s,\"sw_px\":%.1f,"
         "\"visible_hw_last\":%u,\"visible_pass2_last\":%u,\"visible_sw_last\":%u,"
-        "\"visible_pairs_last\":%u,\"visible_min\":%u,"
+        "\"visible_pairs_last\":%u,\"shadow_casters_last\":%u,\"visible_min\":%u,"
         "\"visible_max\":%u,"
         "\"deform\":\"%s\",\"deform_pool_bytes\":%llu,"
         "\"deform_whole_mesh_bytes\":%llu,\"deform_pool_used_bytes\":%llu,"
@@ -2002,8 +2012,9 @@ int main(int argc, char** argv) {
         resolved.settings.cull ? "true" : "false", resolved.occlusion ? "true" : "false",
         resolved.settings.cone ? "true" : "false", static_cast<f64>(resolved.settings.lod_px),
         renderer::raster_name(resolved.settings.raster), resolved.shadows ? "rt" : "off",
-        static_cast<f64>(resolved.settings.sw_px), stats.visible_hw, stats.visible_pass2,
-        stats.visible_sw, stats.visible_pairs(), visible_min, stats.visible_max,
+        resolved.casters ? "true" : "false", static_cast<f64>(resolved.settings.sw_px),
+        stats.visible_hw, stats.visible_pass2, stats.visible_sw, stats.visible_pairs(),
+        stats.shadow_casters, visible_min, stats.visible_max,
         renderer::deform_name(resolved.settings),
         static_cast<unsigned long long>(deform_pool_bytes),
         static_cast<unsigned long long>(deform_whole_mesh_bytes),

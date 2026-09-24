@@ -96,6 +96,7 @@ const char* view_mode_name(u32 mode) noexcept {
     case 3: return "shaded";
     case 4: return "normals";
     case 5: return "uv";
+    case 6: return "shadow";
     default: return "?";
   }
 }
@@ -113,6 +114,8 @@ bool parse_view_mode(std::string_view text, u32& out) noexcept {
     out = 4;
   } else if (text == "uv") {
     out = 5;
+  } else if (text == "shadow") {
+    out = 6;
   } else {
     return false;
   }
@@ -266,6 +269,16 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
     }
   }
   out.stream = s.stream;
+  // **Shadow casters.** The cone test drops a cluster that faces away from the *camera*, and the
+  // shadow rays trace what the cull pass kept, so without this a card seen from behind casts no
+  // shadow and a lit box seen from its dark side loses part of its own (docs/subsystems/
+  // geometry.md, "Normal cones"). The pass keeps those clusters instead, in a run no rasterizer
+  // reads, and the chain builds them non-opaque so the primary rays pass through them. Only where
+  // it means something: shadows traced, the cone test on, and build records rather than template
+  // instantiations — an instantiated cluster takes its flags from its template, which is opaque,
+  // so a caster could not be kept out of a primary ray. Templates are for deforming meshes, whose
+  // instances are never cone-tested at all, so what they give up is a rigid instance's casters.
+  out.casters = out.shadows && s.cone && s.shadow_casters && !s.rt_templates;
   // **A morphed mesh is not streamed**, and the reason is said out loud rather than discovered as
   // a wrong picture. A page's payload is the cluster's positions, attributes, triangles and
   // bindings; the morph stream is keyed by cluster too, but its slice directory indexes a

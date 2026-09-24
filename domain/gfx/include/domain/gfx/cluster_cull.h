@@ -85,7 +85,15 @@ static_assert(sizeof(StreamParams) == 64);
 // word out of one buffer (docs/plan/04-renderer.md §4.6).
 inline constexpr u32 k_draw_args_bytes = 16;
 
-// Mirrors CullParams in cluster_cull.slang. 416 bytes.
+// The run of the visible list the shadow casters go in (`CullParams::casters`): the software
+// rasterizer's, because a frame that builds ray tracing geometry never fills it — the chain needs
+// `hw`, `vertex` or `rt`, and none of them splits clusters off to the software rasterizer. Run r of
+// view v starts at entry `(r * views + v) * pair_count`, so the casters of view v start at
+// `(k_caster_run * views + v) * pair_count` and their visible indices never collide with a drawn
+// entry's. `clas_records.slang` mirrors the number, because it builds that run beside run 0.
+inline constexpr u32 k_caster_run = 2;
+
+// Mirrors CullParams in cluster_cull.slang. 432 bytes.
 struct CullParams {
   Vec4 planes[6];         // inward-facing, normalized
   Vec4 camera;            // xyz position, w = znear
@@ -126,8 +134,17 @@ struct CullParams {
   u64 streaming = 0;     // StreamParams*
   u32 page_count = 0;    // the scene's page table, which bounds every page index below
   u32 max_requests = 0;  // the request buffer's capacity; the atomic is clamped to it
+  // **Shadow casters** (docs/subsystems/geometry.md, "Normal cones", and renderer.md, "Shadows").
+  // A pair the cone test alone rejected faces away from the camera, not from the light, so with
+  // `casters` set it is not dropped: it goes on through the frustum's, the cut's and the page
+  // table's tests like any other pair, and a survivor is appended here instead of to `visible`.
+  // Nothing draws this run; the ray tracing chain builds it into the frame's acceleration
+  // structures beside the drawn one, so a shadow is cast by the geometry at the picture's own LOD
+  // whichever way it faces. 0 drops such a pair, which is what the pass always did.
+  u64 casters = 0;       // u32x2[]: {instance, cluster}, a run of its own
+  u64 caster_count = 0;  // u32: the atomic the run is appended under
 };
-static_assert(sizeof(CullParams) == 416);
+static_assert(sizeof(CullParams) == 432);
 static_assert(sizeof(CullParams) % 16 == 0, "the block is read as float4 rows on the GPU");
 
 inline constexpr f32 k_raster_hardware = 0.0f;  // CullParams::raster.y

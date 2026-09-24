@@ -155,9 +155,14 @@ float3 trace_path(PathTraceParams* params, float3 origin, float3 direction, inou
     ray.Direction = direction;
     ray.TMin = 0.0;
     ray.TMax = 1e30;
-    RayQuery<RAY_FLAG_FORCE_OPAQUE> query;
-    query.TraceRayInline(g_scenes[NonUniformResourceIndex(params->scene)], RAY_FLAG_FORCE_OPAQUE,
-                         0xff, ray);
+    // The camera ray culls non-opaque geometry and every later ray forces opacity. The one
+    // non-opaque geometry is a **shadow caster** (clas_records.slang): a cluster the cone test
+    // kept out of the picture because it faces away from the camera. The first hit therefore
+    // stays the real-time picture's, as ray_visibility.slang's does, while a bounce or a shadow
+    // ray is stopped by it as by any other surface.
+    const uint flags = bounce == 0 ? RAY_FLAG_CULL_NON_OPAQUE : RAY_FLAG_FORCE_OPAQUE;
+    RayQuery<RAY_FLAG_NONE> query;
+    query.TraceRayInline(g_scenes[NonUniformResourceIndex(params->scene)], flags, 0xff, ray);
     while (query.Proceed()) {
     }
     if (query.CommittedStatus() != COMMITTED_TRIANGLE_HIT) {

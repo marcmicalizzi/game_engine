@@ -42,8 +42,11 @@ namespace engine::renderer {
 
 // The frame's visible list is one array in three runs — the hardware pass 1, the hardware pass
 // 2, and the software rasterizer — so a visibility id names an entry of the whole list however
-// many draws filled it.
+// many draws filled it. A frame that traces shadows never has a pass 2 or a software run, and
+// puts its **shadow casters** in the third (`gfx::k_caster_run`): what the cone test kept out of
+// the picture but not out of the shadows (renderer.md, "Shadows").
 inline constexpr u32 k_visible_runs = 3;
+static_assert(gfx::k_caster_run < k_visible_runs);
 
 // How many frames' worth of bone matrices the joint buffer holds. The frame writes slot
 // `FrameContext::slot()`, and a slot is not reused until the GPU has finished the frame that last
@@ -336,14 +339,14 @@ class GpuScene {
   gfx::BufferResource page_stage;       // the staging ring: one upload budget per frame slot
 
   // ---- ray tracing ------------------------------------------------------------------------------
-  gfx::BufferResource indices8;         // 8-bit packed cluster indices for the CLAS builds
-  gfx::BufferResource records;          // CLAS build records written from the cull output
-  gfx::BufferResource record_count;     // u32: how many
-  gfx::BufferResource slots;            // u32 per pair: the records pass's bucketing scratch
-  gfx::BufferResource instance_counts;  // u32 per instance: its surviving clusters
-  gfx::BufferResource instance_first;   // u32 per instance: its dense record base
-  gfx::BufferResource blas_records;     // one 16-byte bottom-level record per instance
-  gfx::BufferResource rt_instances;     // one top-level instance record per instance
+  gfx::BufferResource indices8;      // 8-bit packed cluster indices for the CLAS builds
+  gfx::BufferResource records;       // CLAS build records written from the cull output
+  gfx::BufferResource record_count;  // u32: how many
+  gfx::BufferResource slots;         // u32 per pair: the records pass's bucketing scratch
+  // Two u32 per instance: its surviving clusters, then (behind all of those) its dense record base.
+  gfx::BufferResource instance_counts;
+  gfx::BufferResource blas_records;  // one 16-byte bottom-level record per instance
+  gfx::BufferResource rt_instances;  // one top-level instance record per instance
   gfx::BufferResource rt_scratch;
   gfx::BufferResource template_records;
   gfx::ClusterSet clas_set;

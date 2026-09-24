@@ -54,15 +54,20 @@ inline constexpr u32 k_default_static_shape_kib = 4 * 1024;
 struct RenderSettings {
   RasterMode raster = RasterMode::Hardware;
   ShadowMode shadows = ShadowMode::Auto;
-  // gfx::ResolveMode: cluster ids, triangle shading, depth, shaded, normals, uvs.
+  // gfx::ResolveMode: cluster ids, triangle shading, depth, shaded, normals, uvs, the sun's shadow.
   u32 view_mode = static_cast<u32>(gfx::ResolveMode::Shaded);
   f32 lod_px = 1.0f;      // screen-space error threshold for LOD selection
   f32 sw_px = 32.0f;      // Auto: clusters narrower than this go to the software rasterizer
   bool cull = true;       // GPU culling and LOD selection
   bool occlusion = true;  // two-pass occlusion culling against a Hi-Z
   bool cone = true;       // backface culling of clusters by their normal cones
-  bool lights = true;     // the two orbiting point lights beside the sun
-  bool deform = false;    // every instance reads the per-frame deformed-vertex pool
+  // The clusters the cone test keeps out of the picture still cast ray-traced shadows: the cull
+  // pass hands them to the acceleration structures as a run of their own, at the picture's LOD
+  // (docs/subsystems/renderer.md, "Shadows"). Off is the old behaviour, in which a card seen from
+  // behind throws no shadow; it exists to measure what the casters cost and what they restore.
+  bool shadow_casters = true;
+  bool lights = true;   // the two orbiting point lights beside the sun
+  bool deform = false;  // every instance reads the per-frame deformed-vertex pool
   u32 deform_kind = gfx::k_deform_identity;
   f32 deform_amplitude = 0.02f;
   // The deformed-vertex pool's budget in kibibytes; 0 takes `k_default_deform_pool_kib`. It sizes
@@ -126,6 +131,11 @@ struct ResolvedSettings {
   bool shadows = false;      // the resolve traces shadow rays
   bool occlusion = false;    // two-pass occlusion culling runs
   bool rt_chain = false;     // the frame builds acceleration structures from its visible list
+  // The cull pass keeps what its cone test rejects as shadow casters, in the visible list's run
+  // `gfx::k_caster_run`, and the chain builds them beside the drawn clusters. True when shadows
+  // are traced, the cone test is on, and the records are build records rather than template
+  // instantiations (which cannot mark a caster non-opaque) — see `resolve_settings`.
+  bool casters = false;
   // The deformed-vertex pool pass runs. True when the settings deform every instance and also
   // when the scene has a skinned instance, which `settings.deform` alone does not say: skinning
   // is one of `deform.slang`'s kinds rather than a second pass, so a scene with a character in it

@@ -76,7 +76,10 @@ ENGINE_EXPECT_SIZE(128, 8, gfx::ClusterRecordParams);
 // uploaded whole and the pass then runs the instructions it always ran, which is why a
 // non-streamed picture is byte-identical; the two counts went beside it rather than into
 // `StreamParams` because a bound has to be readable before the block it bounds is dereferenced.
-ENGINE_EXPECT_SIZE(416, 8, gfx::CullParams);
+// 432, not 416: the shadow casters' run and its counter (docs/subsystems/geometry.md, "Normal
+// cones"). Both null keep the cone test dropping what it rejects, which is every caller but the
+// renderer with ray-traced shadows on, so every picture without shadows is byte-identical.
+ENGINE_EXPECT_SIZE(432, 8, gfx::CullParams);
 
 // 64: eight addresses, no counts — the page table and the per-cluster tables the drawing rule
 // reads, and the three feedback arrays it writes. It is read through a device address rather than

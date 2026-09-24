@@ -128,7 +128,7 @@ void fill_triangle_record(Record& record, const ClusterBuildInput& c) noexcept {
   record.opacityMicromapIndexType = 0;
   record.baseGeometryIndexAndGeometryFlags.geometryIndex = c.cluster_id & 0xffffffu;
   record.baseGeometryIndexAndGeometryFlags.geometryFlags =
-      VK_CLUSTER_ACCELERATION_STRUCTURE_GEOMETRY_OPAQUE_BIT_NV;
+      c.opaque ? static_cast<u32>(VK_CLUSTER_ACCELERATION_STRUCTURE_GEOMETRY_OPAQUE_BIT_NV) : 0u;
   record.indexBufferStride = 1;
   record.vertexBufferStride = sizeof(f32) * 3;
   record.geometryIndexAndFlagsBufferStride = 0;

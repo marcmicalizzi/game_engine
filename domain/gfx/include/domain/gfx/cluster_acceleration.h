@@ -63,6 +63,10 @@ struct ClusterBuildInput {
   u32 vertex_count = 0;    // at most 256
   VkDeviceAddress vertices = 0;
   VkDeviceAddress indices = 0;  // u8[3 * triangle_count]
+  // Every cluster the picture draws is opaque. A **shadow caster** — a cluster the cone test kept
+  // out of the picture but not out of the shadows (ClusterRecordParams) — is not, so a primary ray
+  // that culls non-opaque geometry passes through it and a shadow ray that forces opacity stops.
+  bool opaque = true;
 };
 inline constexpr u64 k_cluster_build_record_bytes =
     64;  // one VkClusterAccelerationStructureBuildTriangleClusterInfoNV
@@ -169,19 +173,20 @@ inline constexpr u64 k_cluster_blas_record_bytes = 16;
 //                   a per-instance atomic) and count the instance's survivors into
 //                   `instance_counts`. Sparse: an instance's slice is as long as its mesh, times
 //                   the number of views whose cuts accumulate into this set.
-//   `ranges_main`   one thread: the prefix sum of `instance_counts` into `instance_first`, the
-//                   total into `record_count`, and one 16-byte bottom-level record per instance
-//                   pointing at that instance's run of CLAS addresses.
+//   `ranges_main`   one thread: the prefix sum of the counts into the second half of
+//                   `instance_counts` (each instance's dense record base), the total into
+//                   `record_count`, and one 16-byte bottom-level record per instance pointing at
+//                   that instance's run of CLAS addresses.
 //   `emit_main`     one thread per pair slot: move the bucketed entries down to the dense
-//                   `records` array at `instance_first[instance] + local` and write the 64-byte
+//                   `records` array at `first[instance] + local` and write the 64-byte
 //                   CLAS build record there. A record's base geometry index is the entry's
 //                   **visible index**, which is what the visibility buffer's id holds, so a hit's
 //                   GeometryIndex names the same pair the rasterizer would have.
 //
-// `instance_counts` must be zeroed before `records_main`. A deformed instance's record points at
-// the frame's deformed-vertex pool (`MeshDesc::deform_pool`) rather than `vertices`, and with
-// `instantiate` set the emit pass writes instantiate records naming each cluster's template
-// (`MeshDesc::templates`) instead of build records.
+// The counts half of `instance_counts` must be zeroed before `records_main`. A deformed
+// instance's record points at the frame's deformed-vertex pool (`MeshDesc::deform_pool`) rather
+// than `vertices`, and with `instantiate` set the emit pass writes instantiate records naming each
+// cluster's template (`MeshDesc::templates`) instead of build records.
 //
 // **More than one view** ([04 §4.6](docs/plan/04-renderer.md)): the RT geometry of a
 // `renderer::ViewSet` is the union of the views' cuts under one top-level structure, so
@@ -189,7 +194,21 @@ inline constexpr u64 k_cluster_blas_record_bytes = 16;
 // the counts accumulate. `views` is what makes the bucketing fit: every instance's slice of
 // `slots` is `views` times its mesh's cluster count, because in the worst case every view draws
 // every cluster of it. Mirrors RecordParams in the shader.
-// 128 bytes, the largest push block the renderer allows.
+//
+// **Shadow casters** (docs/subsystems/geometry.md, "Normal cones"). With `caster_count` set, the
+// cull pass has also appended the pairs its cone test alone rejected to the visible list's run
+// `k_caster_run`, and `records_main` covers that run of every view as well: a caster is built into
+// its instance's structure like any drawn cluster, with its visible index as its geometry index,
+// but **without the opaque flag**. The shadow rays trace with `RAY_FLAG_FORCE_OPAQUE` and so hit
+// it; the primary rays of the ray path and the reference trace with `RAY_FLAG_CULL_NON_OPAQUE`
+// and so do not, which keeps the traced picture the rasterized one word for word. A drawn pair
+// and a caster are the same pair only in different views, so an instance's slice of `slots` is
+// still `views` times its mesh. The templates variant cannot mark a record (the flags are the
+// template's), so the renderer never asks for casters with `instantiate` set.
+//
+// 128 bytes, the largest push block the renderer allows — which is why `instance_first` is not a
+// field of its own: it is the second half of the `instance_counts` array, and the word it freed
+// is `caster_count`.
 struct ClusterRecordParams {
   u64 clusters = 0;       // geometry::ClusterDesc[]
   u64 vertices = 0;       // float3[]: cluster-ordered rest positions
@@ -199,12 +218,16 @@ struct ClusterRecordParams {
   u64 visible = 0;        // u32x2[]: the visible list, {instance, cluster} per entry
   u64 visible_count = 0;  // u32: the cull pass's count word
   u64 slots = 0;          // u32[views * pair_count]: visible index per pair slot (records_main out)
-  u64 instance_counts = 0;  // u32[instance_count]: survivors per instance (records_main out)
-  u64 instance_first = 0;   // u32[instance_count]: dense record base (ranges_main out)
-  u64 records = 0;          // build or instantiate records out, the matching stride each
-  u64 record_count = 0;     // u32 out: what the build reads as `count`
-  u64 blas_records = 0;     // k_cluster_blas_record_bytes per instance (ranges_main out)
-  u64 clas_addresses = 0;   // ClusterSet::addresses.address
+  // u32[2 * instance_count]: the survivors per instance (records_main out; zeroed first), then
+  // each instance's dense record base (ranges_main out).
+  u64 instance_counts = 0;
+  // u32: view 0's count of shadow casters, view v's `k_draw_args_bytes` further on; the casters
+  // themselves are run `k_caster_run` of the visible list. 0: there is no caster run.
+  u64 caster_count = 0;
+  u64 records = 0;         // build or instantiate records out, the matching stride each
+  u64 record_count = 0;    // u32 out: what the build reads as `count`
+  u64 blas_records = 0;    // k_cluster_blas_record_bytes per instance (ranges_main out)
+  u64 clas_addresses = 0;  // ClusterSet::addresses.address
   u32 instance_count = 0;
   // The scene's pair count: `emit_main` covers `views * pair_count` slots, and one visible run's
   // count is clamped to it. The clamp used to be the CLAS set's capacity, which is the same bound

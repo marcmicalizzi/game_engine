@@ -559,15 +559,20 @@ void SceneRenderer::fold_visible(u32 slot) {
   stats_.visible_hw = 0;
   stats_.visible_pass2 = 0;
   stats_.visible_sw = 0;
+  stats_.shadow_casters = 0;
   for (u32 v = 0; v < view_count(); ++v) {
     const u32* block = stats + v * k_stat_words;
     ViewStats& view = stats_.views[v];
     view.visible_hw = block[resolved_.vertex_path ? 1 : 0];
     view.visible_pass2 = block[resolved_.vertex_path ? 4 : 3];
-    view.visible_sw = block[6];
+    // The software block counts the software rasterizer's survivors, or — in a frame that traces
+    // shadows, which has no software pass — the shadow casters, which are not visible pairs.
+    view.visible_sw = resolved_.casters ? 0u : block[6];
+    view.shadow_casters = resolved_.casters ? block[6] : 0u;
     stats_.visible_hw += view.visible_hw;
     stats_.visible_pass2 += view.visible_pass2;
     stats_.visible_sw += view.visible_sw;
+    stats_.shadow_casters += view.shadow_casters;
   }
   const u32 total = stats_.visible_pairs();
   stats_.visible_min = total < stats_.visible_min ? total : stats_.visible_min;
@@ -746,6 +751,12 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   const bool use_hw = settings.raster != RasterMode::Software && !ray_path;
   const bool use_sw = !direct && !ray_path && settings.raster != RasterMode::Hardware &&
                       settings.raster != RasterMode::Vertex && settings.cull;
+  // The shadow casters live in the software rasterizer's run and are counted in its argument
+  // block, which a frame that traces shadows never fills (gfx::k_caster_run).
+  const bool casters = resolved_.casters;
+  ENGINE_ASSERT(!casters || (!use_sw && !occlusion && rt_chain),
+                "the caster run is the software run of a frame with neither a software pass nor "
+                "occlusion culling");
   // A negative override means "what the settings say", which is every caller but the reference.
   const f32 frame_lod_px = frame.lod_px >= 0.0f ? frame.lod_px : settings.lod_px;
   const u32 cur_flags = static_cast<u32>(rendered % 2);
@@ -933,6 +944,12 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     cull.streaming = stream_params;
     cull.page_count = scene.page_count();
     cull.max_requests = scene.max_requests();
+    // What the cone test rejects, kept for the shadows: this view's caster run, counted in this
+    // view's software argument block (docs/subsystems/renderer.md, "Shadows").
+    if (casters) {
+      cull.casters = vf.run_address[gfx::k_caster_run];
+      cull.caster_count = scene.sw_args.address + vf.args_offset;
+    }
     if (occlusion) {
       // This view's own pyramid, at its own mip offsets into the shared buffer, and its own slice
       // of the drawn-last-frame flags: a cluster may be occluded in one view and visible in
@@ -1104,7 +1121,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     record_params.visible_count = scene.draw_args[0].address + u64{count_index} * sizeof(u32);
     record_params.slots = scene.slots.address;
     record_params.instance_counts = scene.instance_counts.address;
-    record_params.instance_first = scene.instance_first.address;
+    // The shadow casters' count words, in the software argument blocks the cull pass counted them
+    // in; the runs themselves are `gfx::k_caster_run` of every view, where the shader looks.
+    record_params.caster_count = casters ? scene.sw_args.address : 0;
     record_params.records = scene.records.address;
     record_params.record_count = scene.record_count.address;
     record_params.blas_records = scene.blas_records.address;
@@ -1192,7 +1211,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     }
   };
   struct RtBuffers {
-    gfx::RgBuffer records, record_count, slots, instance_counts, instance_first, blas_records;
+    gfx::RgBuffer records, record_count, slots, instance_counts, blas_records;
     gfx::RgBuffer clas_data, clas_addresses, clas_sizes, tlas, instances;
   } rt{};
   Vector<gfx::RgBuffer> rg_blas_data;
@@ -1201,7 +1220,6 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     rt.record_count = graph.import_buffer("clas record count", scene.record_count);
     rt.slots = graph.import_buffer("clas slots", scene.slots);
     rt.instance_counts = graph.import_buffer("clas instance counts", scene.instance_counts);
-    rt.instance_first = graph.import_buffer("clas instance first", scene.instance_first);
     rt.blas_records = graph.import_buffer("cluster blas records", scene.blas_records);
     rt.clas_data = graph.import_buffer("clas", scene.clas_set.data);
     rt.clas_addresses = graph.import_buffer("clas addresses", scene.clas_set.addresses);
@@ -1309,7 +1327,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
         [&, list](gfx::PassBuilder& b) {
           b.write(rg_args[list], gfx::Access::ComputeReadWrite);
           b.write(rg_visible, gfx::Access::ComputeWrite);
-          if (use_sw) {
+          if (use_sw || casters) {  // the software run's counter, or the casters'
             b.write(rg_sw_args, gfx::Access::ComputeReadWrite);
           }
           if (occlusion) {
@@ -1598,22 +1616,27 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       // records, build every CLAS in one command, build one cluster bottom-level structure per
       // instance, and top-level over them. The picture is traced against it under the ray path
       // and the shadow rays are traced against it whenever shadows are on, so the chain is the
-      // same passes in the same order for both. Its dispatches cover every view's first run.
+      // same passes in the same order for both. Its dispatches cover every view's first run, and
+      // with shadow casters every view's caster run as well — the bucketing pass reads both, the
+      // emit pass covers the pair slots, which the casters share with the drawn pairs.
       const gfx::ComputePipeline* record_passes[3] = {&pipelines.records, &pipelines.record_ranges,
                                                       &pipelines.record_emit};
       const char* record_names[3] = {"records", "ranges", "emit"};
       const u32 union_groups = (views * pair_count + gfx::k_cluster_records_workgroup - 1) /
                                gfx::k_cluster_records_workgroup;
-      const u32 record_groups[3] = {union_groups, 1, union_groups};
+      const u32 bucket_groups =
+          ((casters ? 2u : 1u) * views * pair_count + gfx::k_cluster_records_workgroup - 1) /
+          gfx::k_cluster_records_workgroup;
+      const u32 record_groups[3] = {bucket_groups, 1, union_groups};
       for (u32 p = 0; p < 3; ++p) {
         graph.add_pass(
             record_names[p], gfx::PassKind::Compute,
             [&, p](gfx::PassBuilder& b) {
               b.read(rg_args[0], gfx::Access::ComputeRead);
+              if (casters) b.read(rg_sw_args, gfx::Access::ComputeRead);  // the casters' counts
               b.read(rg_visible, gfx::Access::ComputeRead);
               b.write(rt.slots, gfx::Access::ComputeReadWrite);
               b.write(rt.instance_counts, gfx::Access::ComputeReadWrite);
-              b.write(rt.instance_first, gfx::Access::ComputeReadWrite);
               if (p != 0) b.write(rt.records, gfx::Access::ComputeWrite);
               if (p == 1) {
                 b.write(rt.record_count, gfx::Access::ComputeWrite);

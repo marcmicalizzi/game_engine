@@ -66,7 +66,8 @@ struct ResolveParams {
   uint64_t lights;             // ResolveLight[light_count]
   uint width;
   uint height;
-  uint mode;  // 0 cluster colors, 1 with triangle shade, 2 depth, 3 shaded, 4 normals, 5 uvs
+  uint mode;  // 0 cluster colors, 1 with triangle shade, 2 depth, 3 shaded, 4 normals, 5 uvs,
+              // 6 the sun's shadow alone
   uint light_count;
   uint64_t instances;  // InstanceDesc[]
   uint64_t visible;    // uint2[]: the cull pass's visible list; 0 reads {0, visible_index}
@@ -281,6 +282,18 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
   // position the resolve reconstructs cannot start the ray inside the float positions the
   // acceleration structure was built from.
   const float3 shadow_origin = s.position + s.geometric * params->shadow_bias;
+
+  // The shadow view (ResolveMode::Shadow): the sun's shadow query and nothing else, in three flat
+  // values a test or a person can count. White where the sun reaches the surface, black where the
+  // shadow ray is blocked, and mid grey where the surface faces away from the sun, so no ray is
+  // traced. It asks exactly the question the shaded view below asks, with the same normal and the
+  // same origin, so a pixel that is black here is a pixel the sun term is missing from there.
+  if (params->mode == 6) {
+    if (dot(surface.normal, params->sun.xyz) <= 0.0) return float4(0.5, 0.5, 0.5, 1.0);
+    return shadow_ray_blocked(params, k_shadow_sun, shadow_origin, params->sun.xyz, 1e30)
+               ? float4(0.0, 0.0, 0.0, 1.0)
+               : float4(1.0, 1.0, 1.0, 1.0);
+  }
 
   // The sun: one direction, one intensity, no falloff; a hit anywhere along the ray removes it.
   float3 color = float3(0.0);

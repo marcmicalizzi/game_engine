@@ -827,6 +827,13 @@ bool GpuScene::create_ray_tracing(const ResolvedSettings& resolved, std::string*
   limits.max_triangles_per_cluster = triangles_per_cluster_;
   limits.max_vertices_per_cluster = geometry::ClusterLodOptions{}.max_vertices;
   limits.max_geometry_index = union_clusters - 1;
+  // A shadow caster's geometry index is its visible index too, and the casters are the list's run
+  // `k_caster_run`, so with them the largest index is that run's last entry. The record count is
+  // unchanged: in one view a pair is drawn or a caster, never both, so the union of the views'
+  // runs still holds at most `views * pair_count` clusters.
+  if (resolved.casters) {
+    limits.max_geometry_index = (gfx::k_caster_run + 1) * union_clusters - 1;
+  }
   limits.instantiate = resolved.settings.rt_templates;
   constexpr VkBufferUsageFlags k_record_usage =
       k_address | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
@@ -837,11 +844,11 @@ bool GpuScene::create_ray_tracing(const ResolvedSettings& resolved, std::string*
             gfx::create_buffer(device, sizeof(u32), k_record_usage, false, record_count, error) &&
             gfx::create_buffer(device, u64{union_clusters} * sizeof(u32), k_address, false, slots,
                                error) &&
-            gfx::create_buffer(device, u64{instance_count_} * sizeof(u32),
+            // Two words an instance: its survivors, then its dense record base
+            // (`gfx::ClusterRecordParams::instance_counts`).
+            gfx::create_buffer(device, u64{instance_count_} * 2 * sizeof(u32),
                                k_address | VK_BUFFER_USAGE_TRANSFER_DST_BIT, false, instance_counts,
                                error) &&
-            gfx::create_buffer(device, u64{instance_count_} * sizeof(u32), k_address, false,
-                               instance_first, error) &&
             gfx::create_buffer(device, gfx::k_cluster_blas_record_bytes * instance_count_,
                                k_record_usage, false, blas_records, error) &&
             gfx::create_cluster_set(device, limits, clas_set, error) &&
@@ -942,7 +949,6 @@ void GpuScene::destroy() noexcept {
   gfx::destroy_buffer(device, rt_scratch);
   gfx::destroy_buffer(device, rt_instances);
   gfx::destroy_buffer(device, blas_records);
-  gfx::destroy_buffer(device, instance_first);
   gfx::destroy_buffer(device, instance_counts);
   gfx::destroy_buffer(device, slots);
   gfx::destroy_buffer(device, record_count);

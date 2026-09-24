@@ -106,6 +106,7 @@ bool read_settings(const protocol::RenderSettings& in, renderer::RenderSettings&
   out.cull = in.cull;
   out.occlusion = in.occlusion;
   out.cone = in.cone;
+  out.shadow_casters = in.shadow_casters;
   out.lights = in.lights;
   out.deform_amplitude = in.deform_amplitude;
   out.rt_templates = in.rt_templates;
@@ -124,6 +125,7 @@ void fill_stats(const renderer::Stats& in, const renderer::ViewSet& views,
   out.visible_pass2 = in.visible_pass2;
   out.visible_sw = in.visible_sw;
   out.visible_pairs = in.visible_pairs();
+  out.shadow_casters = in.shadow_casters;
   out.visible_min = in.visible_min == ~u32{0} ? 0u : in.visible_min;
   out.visible_max = in.visible_max;
   out.cpu_ms_per_frame = in.cpu_ms_per_frame();
@@ -185,6 +187,7 @@ void fill_stats(const renderer::Stats& in, const renderer::ViewSet& views,
     entry.visible_pass2 = s.visible_pass2;
     entry.visible_sw = s.visible_sw;
     entry.visible_pairs = s.visible_pairs();
+    entry.shadow_casters = s.shadow_casters;
     entry.cull_ms = s.gpu_cull / timed;
     entry.hw_ms = s.gpu_hw / timed;
     entry.sw_ms = s.gpu_sw / timed;

@@ -59,6 +59,7 @@ struct ViewStats {
   u32 visible_hw = 0;
   u32 visible_pass2 = 0;
   u32 visible_sw = 0;
+  u32 shadow_casters = 0;  // see Stats::shadow_casters
   f64 gpu_cull = 0.0;
   f64 gpu_hw = 0.0;
   f64 gpu_sw = 0.0;
@@ -95,6 +96,10 @@ struct Stats {
   u32 visible_hw = 0;     // the hardware pass's survivors, one frame late
   u32 visible_pass2 = 0;  // occlusion pass 2's
   u32 visible_sw = 0;     // the software rasterizer's
+  // The pairs the cone test kept out of the picture and the frame built into its acceleration
+  // structures anyway, so that they cast shadows (ResolvedSettings::casters). Not visible pairs:
+  // nothing draws them, and `visible_pairs()` does not count them. One frame late, like the rest.
+  u32 shadow_casters = 0;
   u32 visible_min = ~u32{0};
   u32 visible_max = 0;
   // The deformed-vertex pool's suballocation, one frame late like the visible counts and read the

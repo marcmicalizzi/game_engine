@@ -38,7 +38,7 @@ struct StreamParams {
   uint64_t request_mask;     // uint per page
 };
 
-// Read through a device address; mirrors gfx::CullParams (416 bytes).
+// Read through a device address; mirrors gfx::CullParams (432 bytes).
 struct CullParams {
   float4 planes[6];  // inward-facing, normalized: dot(n, p) + w >= 0 inside
   float4 camera;     // xyz position, w = znear
@@ -73,6 +73,10 @@ struct CullParams {
   uint64_t streaming;   // StreamParams*, or 0: the scene is uploaded whole
   uint page_count;
   uint max_requests;
+  // Shadow casters: the pairs the cone test alone rejected, which face away from the camera and
+  // not necessarily from a light. 0 drops them; otherwise they are appended here (see cull_main).
+  uint64_t casters;       // uint2[pair_count]: {instance, cluster}, a run of its own
+  uint64_t caster_count;  // uint: the atomic the run is appended under
 };
 
 struct CullPush {
@@ -285,11 +289,24 @@ void cull_main(uint3 thread_id : SV_DispatchThreadID) {
   // are therefore never cone-tested (docs/subsystems/geometry.md, "Normal cones"). It is checked
   // on the instance rather than on whether this frame gave the entry a pool block, because the
   // pool is allocated from this pass's own output.
+  //
+  // **Facing away from the camera is not facing away from a light.** The shadow rays trace the
+  // structures this frame builds from the cull output, so a cluster dropped here also stops
+  // casting: a card or a leaf seen from behind throws no shadow at all, and a floating box lit
+  // from one side and seen from the other loses every shadow ray that enters by its bottom and
+  // leaves by its lit side (docs/subsystems/geometry.md, "Normal cones"). With `casters` set the
+  // pair is kept as a **shadow caster** instead: it takes every test below exactly as a drawn pair
+  // does, so it is in the same cut at the same LOD, and it ends in a run of its own that no
+  // rasterizer reads.
+  bool caster = false;
   if (params->cone_cull != 0 && (instance.flags & k_instance_uniform_scale) != 0 &&
       instance.deform == k_invalid_deform) {
     const float3 apex = mul(instance.world, float4(cluster.cone_apex, 1.0)).xyz;
     const float3 axis = normalize(mul(instance.world, float4(cone_axis(cluster), 0.0)).xyz);
-    if (backfacing(cluster, apex, axis, params->camera.xyz)) return;
+    if (backfacing(cluster, apex, axis, params->camera.xyz)) {
+      if (params->casters == 0) return;
+      caster = true;
+    }
   }
   // The page this cluster's payload is in. Streaming is only ever on together with LOD selection
   // (renderer::resolve_settings forces the cut on with it), because the fallback clause of the
@@ -349,6 +366,16 @@ void cull_main(uint3 thread_id : SV_DispatchThreadID) {
   if (params->streaming != 0) {
     uint* used = (uint*)stream->used;
     used[page] = 1u;
+  }
+  // A caster is in the frame's ray tracing geometry and nowhere else. It is not drawn, so it is
+  // not in the drawn-this-frame flags either — and a frame with casters has no second occlusion
+  // pass to read them, because the ray tracing chain turns occlusion culling off.
+  if (caster) {
+    Atomic<uint>* count = (Atomic<uint>*)params->caster_count;
+    const uint slot = count->add(1);
+    uint2* casters = (uint2*)params->casters;
+    casters[slot] = uint2(instance_index, index);
+    return;
   }
   if (params->pass != 0) {
     uint* flags = (uint*)params->flags;

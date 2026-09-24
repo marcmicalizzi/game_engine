@@ -335,14 +335,15 @@ struct AdaptersResult @version(1) {
 // with the same functions in systems/renderer/settings.h.
 
 /// Every knob the renderer has. Absent fields keep the defaults, which are engine-view's.
-struct RenderSettings @version(3) {
+struct RenderSettings @version(4) {
   /// direct, hw, vertex, sw, auto, or rt. `hw` and `direct` fall back to `vertex` on a device
   /// without mesh shaders; the result says which one ran.
   raster: string = "hw"
   /// off, rt, or auto (rt wherever the device has cluster acceleration structures and ray
   /// queries, off where it does not).
   shadows: string = "auto"
-  /// id, tri, depth, shaded, normals, or uv.
+  /// id, tri, depth, shaded, normals, uv, or shadow (the sun's shadow alone: white where it
+  /// reaches the surface, black where a shadow ray is blocked, grey where the surface faces away).
   view: string = "shaded"
   /// Screen-space error threshold in pixels for LOD selection.
   lod_px: f32 = 1
@@ -384,6 +385,11 @@ struct RenderSettings @version(3) {
   /// page fits in would never converge. KiB because an upload is a fraction of a frame, and it
   /// is the unit `engine-view --upload-budget` takes.
   upload_budget_kib: u32 = 0 @since(3)
+  /// With ray-traced shadows, the clusters the normal-cone test keeps out of the picture still
+  /// cast: the cull pass hands them to the frame's acceleration structures at the picture's LOD
+  /// (docs/subsystems/renderer.md, "Shadows"). False is the old behaviour, in which a card seen
+  /// from behind throws no shadow; it is `engine-view --no-shadow-casters`.
+  shadow_casters: bool = true @since(4)
 }
 
 /// What a run of geometry streaming did (04 §4.9, docs/subsystems/renderer.md "Geometry
@@ -438,7 +444,7 @@ struct RenderStreamStats @version(1) {
 /// What one view of a `ViewSet` costs, beside the totals in `RenderStats` (04 §4.6). The
 /// milliseconds are per frame, as the totals are. A single-view run reports one entry whose
 /// numbers are the totals.
-struct RenderViewStats @version(1) {
+struct RenderViewStats @version(2) {
   /// The view's rectangle of the color target.
   x: u32 = 0
   y: u32 = 0
@@ -455,6 +461,9 @@ struct RenderViewStats @version(1) {
   visible_pass2: u32 = 0
   visible_sw: u32 = 0
   visible_pairs: u32 = 0
+  /// Pairs the cone test kept out of this view's picture and the frame built into its
+  /// acceleration structures so that they cast shadows. Not in `visible_pairs`: nothing draws them.
+  shadow_casters: u32 = 0 @since(2)
   /// GPU milliseconds a frame, this view alone. The acceleration structure chain is not in it:
   /// it is built once from the union of the views' cuts and belongs to no single view.
   cull_ms: f64 = 0
@@ -648,7 +657,7 @@ struct MachineStateSpan @version(1) {
   end: MachineState
 }
 
-struct RenderStats @version(4) {
+struct RenderStats @version(5) {
   /// Frames submitted.
   frames: u64 = 0
   /// The last frame's surviving (instance, cluster) pairs, by the draw that produced them.
@@ -658,6 +667,10 @@ struct RenderStats @version(4) {
   visible_pairs: u32 = 0
   visible_min: u32 = 0
   visible_max: u32 = 0
+  /// The last frame's shadow casters: pairs the cone test kept out of the picture and the frame
+  /// built into its acceleration structures anyway (`RenderSettings.shadow_casters`). Not in
+  /// `visible_pairs`, because nothing draws them.
+  shadow_casters: u32 = 0 @since(5)
   /// Wall time inside the renderer's own submit, per frame.
   cpu_ms_per_frame: f64 = 0
   gpu_ms: RenderGpuMs

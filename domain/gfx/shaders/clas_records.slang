@@ -33,6 +33,14 @@
 // of its indirect argument block, and `views` widens every instance's slice of `slots` so that a
 // cluster drawn by every view has a slot in each. A record's base geometry index stays the entry's
 // visible index, unique across the frame because the runs share one list.
+//
+// **Shadow casters** (docs/subsystems/geometry.md, "Normal cones"): with `caster_count` set the
+// cull pass also left the pairs its cone test alone rejected in run `k_caster_run` of every view,
+// and records_main covers that run too. A caster lands in its instance's slice like a drawn pair
+// (in one view a pair is one or the other, never both, so the slices are still long enough) and
+// is written **without the opaque flag**: the shadow rays force opacity and stop on it, the
+// primary rays cull non-opaque geometry and pass through, so the traced picture stays the
+// rasterized one and only the shadows gain the clusters that face away from the camera.
 
 #include "scene.slang"
 
@@ -79,8 +87,9 @@ struct RecordParams {
   uint64_t visible;        // uint2[]: the cull pass's visible list, from its first run
   uint64_t visible_count;  // uint: view 0's count word; view v's is k_draw_args_bytes further on
   uint64_t slots;            // uint[views * pair_count]: visible index per pair slot
-  uint64_t instance_counts;  // uint[instance_count]: survivors per instance (zeroed first)
-  uint64_t instance_first;   // uint[instance_count]: dense record base
+  // uint[2 * instance_count]: survivors per instance (zeroed first), then the dense record bases
+  uint64_t instance_counts;
+  uint64_t caster_count;     // uint: view 0's caster count word, or 0 for no caster run
   uint64_t records;          // ClusterRecord[] or InstantiateRecord[] out, views * pair_count long
   uint64_t record_count;     // uint out
   uint64_t blas_records;     // BlasRecord[instance_count] out
@@ -96,19 +105,34 @@ struct RecordParams {
 static const uint k_index_type_8bit = 1;
 static const uint k_geometry_opaque = 4;
 static const uint k_draw_args_bytes = 16;  // gfx::k_draw_args_bytes: one block per view
+static const uint k_caster_run = 2;        // gfx::k_caster_run: the casters' run of the list
+
+// The first visible index of the caster run: nothing below it is a caster.
+uint caster_base() { return k_caster_run * g_params.views * g_params.pair_count; }
+
+// Each instance's dense record base: the second half of `instance_counts`.
+uint* instance_first() {
+  return (uint*)(g_params.instance_counts + uint64_t(g_params.instance_count) * 4);
+}
 
 // Bucket each visible entry into its instance's slice of the pair-indexed scratch array. The
-// dispatch covers every view's first run at once, because those runs are contiguous.
+// dispatch covers every view's first run at once, because those runs are contiguous, and then —
+// when there is a caster run — every view's caster run, which is contiguous too.
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void records_main(uint3 thread_id : SV_DispatchThreadID) {
-  const uint index = thread_id.x;
-  if (index >= g_params.views * g_params.pair_count) return;
-  const uint view = index / g_params.pair_count;
-  const uint local_index = index - view * g_params.pair_count;
-  uint* visible_count = (uint*)(g_params.visible_count + uint64_t(view) * k_draw_args_bytes);
+  const uint run_entries = g_params.views * g_params.pair_count;
+  const uint runs = g_params.caster_count != 0 ? 2u : 1u;
+  if (thread_id.x >= runs * run_entries) return;
+  const bool caster = thread_id.x >= run_entries;
+  const uint within = caster ? thread_id.x - run_entries : thread_id.x;
+  const uint view = within / g_params.pair_count;
+  const uint local_index = within - view * g_params.pair_count;
+  const uint64_t count_word = caster ? g_params.caster_count : g_params.visible_count;
+  uint* visible_count = (uint*)(count_word + uint64_t(view) * k_draw_args_bytes);
   // The run is filled by one atomic over a dispatch of pair_count threads, so that is its bound.
   if (local_index >= min(*visible_count, g_params.pair_count)) return;
+  const uint index = caster ? caster_base() + within : within;
   uint2* visible = (uint2*)g_params.visible;
   const uint instance_index = visible[index].x;
   InstanceDesc* instances = (InstanceDesc*)g_params.instances;
@@ -123,7 +147,7 @@ void records_main(uint3 thread_id : SV_DispatchThreadID) {
 [numthreads(1, 1, 1)]
 void ranges_main() {
   uint* counts = (uint*)g_params.instance_counts;
-  uint* first = (uint*)g_params.instance_first;
+  uint* first = instance_first();
   BlasRecord* blas = (BlasRecord*)g_params.blas_records;
   uint total = 0;
   for (uint i = 0; i < g_params.instance_count; ++i) {
@@ -177,7 +201,7 @@ void emit_main(uint3 thread_id : SV_DispatchThreadID) {
   const ClusterDesc cluster = clusters[cluster_id];
   MeshDesc* meshes = (MeshDesc*)g_params.meshes;
   const MeshDesc mesh = meshes[instance.mesh];
-  uint* first = (uint*)g_params.instance_first;
+  uint* first = instance_first();
   const uint dense = first[instance_index] + local;
   const uint64_t vertex_address = cluster_vertex_address(mesh, instance, cluster, visible_index);
 
@@ -199,7 +223,10 @@ void emit_main(uint3 thread_id : SV_DispatchThreadID) {
   record.cluster_flags = 0;
   record.counts = (cluster.triangle_count & 0x1ff) | ((cluster.vertex_count & 0x1ff) << 9) |
                   (k_index_type_8bit << 24);
-  record.geometry = (visible_index & 0xffffff) | (k_geometry_opaque << 29);
+  // Everything the picture draws is opaque; a shadow caster is not, which is the whole of how the
+  // primary rays leave it out (RAY_FLAG_CULL_NON_OPAQUE) while the shadow rays keep it.
+  const bool opaque = g_params.caster_count == 0 || visible_index < caster_base();
+  record.geometry = (visible_index & 0xffffff) | ((opaque ? k_geometry_opaque : 0u) << 29);
   record.strides0 = 1 | (12 << 16);
   record.strides1 = 0;
   record.index_buffer = g_params.indices8 + uint64_t(cluster.triangle_offset) * 3;

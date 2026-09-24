@@ -4,8 +4,11 @@
 // bottom-level record per instance. The shader's bytes must equal what write_cluster_build_records
 // writes on the CPU for the same clusters, so the CPU and GPU paths can never drift apart. One of
 // the two instances is **deformed**, so its records must name the frame's deformed-vertex pool
-// instead of the mesh's rest positions, which is the rule every position reader follows. The
-// shader needs no ray tracing feature, so this runs on any device with a driver.
+// instead of the mesh's rest positions, which is the rule every position reader follows. A run of
+// **shadow casters** sits where the renderer puts it (`k_caster_run`): those are built into their
+// instance's records like the drawn entries, with their visible index as their geometry index, but
+// not opaque, which is what keeps a primary ray from seeing them. The shader needs no ray tracing
+// feature, so this runs on any device with a driver.
 #include "raster_path.h"
 
 #include <domain/geometry/cluster.h>
@@ -94,6 +97,25 @@ TEST_CASE("clas records: the shader writes the same build records as the CPU") {
   }
   const u32 entry_count = visible.size() / 2;
   const u32 count = entry_count - 1;
+  // The shadow casters: the rigid instance's odd clusters, which the list above does not draw, in
+  // run `k_caster_run` of the one view, and again one entry beyond their count. A deformed
+  // instance is never cone-tested, so it never has one.
+  Vector<u32> caster_entries;
+  for (u32 i = 1; i < cluster_count; i += 2) {
+    caster_entries.push_back(0);
+    caster_entries.push_back(i);
+  }
+  const u32 caster_count = caster_entries.size() / 2 - 1;
+  const u32 caster_base = gfx::k_caster_run * pair_count;  // run-major, one view
+  REQUIRE(count + caster_count + 1 < pair_count);          // the last record stays untouched
+  // The whole list as the renderer lays it out: three runs of `pair_count` entries.
+  Vector<u32> list(u64{3} * pair_count * 2, 0xffffffffu);
+  for (u32 i = 0; i < visible.size(); ++i)
+    list[i] = visible[i];
+  for (u32 i = 0; i < caster_entries.size(); ++i)
+    list[u64{caster_base} * 2 + i] = caster_entries[i];
+  auto entry_instance = [&](u32 entry) { return list[u64{entry} * 2]; };
+  auto entry_cluster = [&](u32 entry) { return list[u64{entry} * 2 + 1]; };
   Vector<u8> indices8;
   gfx::pack_cluster_indices(std::span<const u32>(mesh.triangles.data(), mesh.triangles.size()),
                             indices8);
@@ -106,9 +128,9 @@ TEST_CASE("clas records: the shader writes the same build records as the CPU") {
   gfx::BufferResource instances;
   gfx::BufferResource visible_buffer;
   gfx::BufferResource count_buffer;
+  gfx::BufferResource caster_count_buffer;
   gfx::BufferResource slots;
-  gfx::BufferResource instance_counts;
-  gfx::BufferResource instance_first;
+  gfx::BufferResource instance_counts;  // the counts, then the dense record bases
   gfx::BufferResource records;
   gfx::BufferResource record_count;
   gfx::BufferResource blas_records;
@@ -119,7 +141,7 @@ TEST_CASE("clas records: the shader writes the same build records as the CPU") {
   // One word per entry of the visible list: where that entry's block is. The deformed instance's
   // entries get the mesh-ordered layout plus the bias, which is a legal allocation and keeps the
   // expected address below a plain expression.
-  Vector<u32> deform_slot_table(entry_count, gfx::k_no_pool_slot);
+  Vector<u32> deform_slot_table(u64{3} * pair_count, gfx::k_no_pool_slot);
   for (u32 e = 0; e < entry_count; ++e) {
     if (visible[e * 2] != k_deformed) continue;
     deform_slot_table[e] = k_pool_bias + mesh.clusters[visible[e * 2 + 1]].vertex_offset;
@@ -132,9 +154,11 @@ TEST_CASE("clas records: the shader writes the same build records as the CPU") {
   REQUIRE(gfx::upload_buffer(device, indices8.data(), indices8.size(), k_storage, index8, &error));
   REQUIRE(gfx::upload_buffer(device, instance_table, sizeof(instance_table), k_storage, instances,
                              &error));
-  REQUIRE(gfx::upload_buffer(device, visible.data(), visible.size() * sizeof(u32), k_storage,
+  REQUIRE(gfx::upload_buffer(device, list.data(), list.size() * sizeof(u32), k_storage,
                              visible_buffer, &error));
   REQUIRE(gfx::upload_buffer(device, &count, sizeof(u32), k_storage, count_buffer, &error));
+  REQUIRE(gfx::upload_buffer(device, &caster_count, sizeof(u32), k_storage, caster_count_buffer,
+                             &error));
   REQUIRE(gfx::upload_buffer(device, &deform, sizeof(deform), k_storage, deform_table, &error));
   REQUIRE(gfx::upload_buffer(device, deform_slot_table.data(),
                              deform_slot_table.size() * sizeof(u32), k_address, deform_slots,
@@ -149,10 +173,8 @@ TEST_CASE("clas records: the shader writes the same build records as the CPU") {
   const u64 records_bytes = gfx::k_cluster_build_record_bytes * pair_count;
   REQUIRE(
       gfx::create_buffer(device, u64{pair_count} * sizeof(u32), k_address, false, slots, &error));
-  REQUIRE(gfx::create_buffer(device, sizeof(u32) * k_instances,
+  REQUIRE(gfx::create_buffer(device, sizeof(u32) * k_instances * 2,
                              k_address | VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, instance_counts,
-                             &error));
-  REQUIRE(gfx::create_buffer(device, sizeof(u32) * k_instances, k_address, true, instance_first,
                              &error));
   REQUIRE(gfx::create_buffer(device, records_bytes, k_address, true, records, &error));
   REQUIRE(gfx::create_buffer(device, sizeof(u32), k_address, true, record_count, &error));
@@ -173,7 +195,7 @@ TEST_CASE("clas records: the shader writes the same build records as the CPU") {
   params.visible_count = count_buffer.address;
   params.slots = slots.address;
   params.instance_counts = instance_counts.address;
-  params.instance_first = instance_first.address;
+  params.caster_count = caster_count_buffer.address;
   params.records = records.address;
   params.record_count = record_count.address;
   params.blas_records = blas_records.address;
@@ -210,7 +232,8 @@ TEST_CASE("clas records: the shader writes the same build records as the CPU") {
         dependency.memoryBarrierCount = 1;
         dependency.pMemoryBarriers = &barrier;
         const gfx::ComputePipeline* passes[3] = {&bucket, &ranges, &emit};
-        const u32 groups[3] = {(pair_count + 63) / 64, 1, (pair_count + 63) / 64};
+        // The bucketing pass covers the drawn run and the caster run; the emit pass the slots.
+        const u32 groups[3] = {(2 * pair_count + 63) / 64, 1, (pair_count + 63) / 64};
         for (u32 p = 0; p < 3; ++p) {
           vkCmdPipelineBarrier2(cb, &dependency);
           vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, passes[p]->pipeline);
@@ -225,10 +248,13 @@ TEST_CASE("clas records: the shader writes the same build records as the CPU") {
   // per-instance atomic can produce (within an instance the order is arbitrary, so the records
   // are compared as a set of entries rather than position by position).
   const auto* counts_out = static_cast<const u32*>(instance_counts.mapped);
-  const auto* first_out = static_cast<const u32*>(instance_first.mapped);
+  const u32* first_out = counts_out + k_instances;  // the second half of the same array
   u32 expected_per_instance[k_instances] = {};
   for (u32 i = 0; i < count; ++i)
     ++expected_per_instance[visible[i * 2]];
+  for (u32 i = 0; i < caster_count; ++i)
+    ++expected_per_instance[caster_entries[i * 2]];
+  const u32 expected_records = count + caster_count;
   u32 total = 0;
   for (u32 k = 0; k < k_instances; ++k) {
     CHECK(counts_out[k] == expected_per_instance[k]);
@@ -237,30 +263,44 @@ TEST_CASE("clas records: the shader writes the same build records as the CPU") {
   }
   u32 got_count = 0;
   std::memcpy(&got_count, record_count.mapped, sizeof(got_count));
-  CHECK(got_count == count);
-  CHECK(total == count);
+  CHECK(got_count == expected_records);
+  CHECK(total == expected_records);
 
   // Every record must be byte-identical to what the CPU writes for the entry its cluster id
-  // names, and must sit in its instance's run.
+  // names, and must sit in its instance's run. The entries are the drawn run's first `count` and
+  // the caster run's first `caster_count`; nothing else may appear.
+  auto listed = [&](u32 entry) {
+    return entry < count || (entry >= caster_base && entry < caster_base + caster_count);
+  };
   const auto* got = static_cast<const u8*>(records.mapped);
   u32 differing = 0;
   u32 misplaced = 0;
-  Vector<u32> seen(count, 0u);
-  for (u32 r = 0; r < count; ++r) {
+  u32 casters_built = 0;
+  u32 casters_opaque = 0;
+  Vector<u32> seen(u64{3} * pair_count, 0u);
+  for (u32 r = 0; r < expected_records; ++r) {
     u32 entry = 0;
     std::memcpy(&entry, got + u64{r} * gfx::k_cluster_build_record_bytes, sizeof(entry));
-    REQUIRE(entry < count);
+    REQUIRE(listed(entry));
     ++seen[entry];
-    const u32 instance_index = visible[entry * 2];
+    const u32 instance_index = entry_instance(entry);
     if (r < first_out[instance_index] ||
         r >= first_out[instance_index] + counts_out[instance_index]) {
       ++misplaced;
     }
-    const geometry::ClusterDesc& desc = mesh.clusters[visible[entry * 2 + 1]];
+    const bool caster = entry >= caster_base;
+    u32 geometry_word = 0;  // the base geometry index, with the flags in the top three bits
+    std::memcpy(&geometry_word, got + u64{r} * gfx::k_cluster_build_record_bytes + 12, 4);
+    if (caster) {
+      ++casters_built;
+      casters_opaque += (geometry_word >> 29) == gfx::k_cluster_geometry_opaque ? 1u : 0u;
+    }
+    const geometry::ClusterDesc& desc = mesh.clusters[entry_cluster(entry)];
     gfx::ClusterBuildInput in;
     in.cluster_id = entry;  // the visible index is the cluster id and the base geometry index
     in.triangle_count = desc.triangle_count;
     in.vertex_count = desc.vertex_count;
+    in.opaque = !caster;
     // A deformed instance's positions come out of the pool, at the block this frame gave **that
     // visible entry** — the word `deform_slots[entry]` holds.
     in.vertices = instance_index == k_deformed
@@ -274,11 +314,13 @@ TEST_CASE("clas records: the shader writes the same build records as the CPU") {
   }
   CHECK(differing == 0);
   CHECK(misplaced == 0);
+  CHECK(casters_built == caster_count);
+  CHECK(casters_opaque == 0);
   u32 unseen = 0;
-  for (const u32 s : seen)
-    unseen += s != 1;
+  for (u32 e = 0; e < seen.size(); ++e)
+    unseen += seen[e] != (listed(e) ? 1u : 0u);
   CHECK(unseen == 0);
-  // The entry past the count stays untouched.
+  // The records past the count stay untouched.
   CHECK(got[u64{pair_count - 1} * gfx::k_cluster_build_record_bytes] == 0xcd);
 
   // One bottom-level record per instance, over that instance's run of CLAS addresses.
@@ -295,7 +337,8 @@ TEST_CASE("clas records: the shader writes the same build records as the CPU") {
     CHECK(blas_stride == 8);
     CHECK(blas_references == fake_addresses + u64{first_out[k]} * 8);
   }
-  MESSAGE("records for " << count << " of " << pair_count << " pairs over " << k_instances
+  MESSAGE("records for " << count << " drawn and " << caster_count << " caster entries of "
+                         << pair_count << " pairs over " << k_instances
                          << " instances (one deformed) match the CPU");
 
   gfx::destroy_compute_pipeline(device, bucket);
@@ -303,9 +346,9 @@ TEST_CASE("clas records: the shader writes the same build records as the CPU") {
   gfx::destroy_compute_pipeline(device, emit);
   gfx::destroy_shader_module(device, module);
   for (gfx::BufferResource* b :
-       {&clusters, &vertices, &index8, &instances, &visible_buffer, &count_buffer, &slots,
-        &instance_counts, &instance_first, &records, &record_count, &blas_records, &meshes,
-        &deform_table, &deform_slots, &pool}) {
+       {&clusters, &vertices, &index8, &instances, &visible_buffer, &count_buffer,
+        &caster_count_buffer, &slots, &instance_counts, &records, &record_count, &blas_records,
+        &meshes, &deform_table, &deform_slots, &pool}) {
     gfx::destroy_buffer(device, *b);
   }
   device.destroy();

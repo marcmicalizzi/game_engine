@@ -76,6 +76,10 @@ enum class ResolveMode : u32 {
   Shaded = 3,
   Normals = 4,
   Uvs = 5,
+  // The sun's shadow alone: white where it reaches the surface, black where a shadow ray is
+  // blocked, mid grey where the surface faces away and no ray is traced. What the shaded view's
+  // sun term would have seen, as a picture that can be counted (renderer.md, "Shadows").
+  Shadow = 6,
 };
 
 // The Panini projection of parameter d (docs/plan/04-renderer.md §4.6, experiment E9), as the
