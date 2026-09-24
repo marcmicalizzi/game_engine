@@ -38,11 +38,9 @@ f32 half_to_f32_branchless(u16 half) noexcept {
   return value;
 }
 
-Vec3 unit_or_zero(Vec3 v) noexcept {
-  const f32 length = std::sqrt(dot(v, v));
-  const f32 inverse = length > 0.0f ? 1.0f / length : 0.0f;
-  return v * inverse;
-}
+// base + step, except that a zero step leaves the base's own bits: IEEE addition turns -0 + 0
+// into +0, and a mirrored mesh's midline is full of -0.
+f32 add_step(f32 base, f32 step) noexcept { return step == 0.0f ? base : base + step; }
 
 // ---- nearest point on a triangle mesh ----------------------------------------------------------
 
@@ -422,35 +420,84 @@ bool validate_surface_bindings(std::span<const SurfaceBinding> bindings, u32 sur
   return true;
 }
 
+void surface_displacement(const CsrMatrix& limit, std::span<const Vec3> reference_nodes,
+                          std::span<const Vec3> state_nodes, std::span<Vec3> node_displacement,
+                          std::span<Vec3> out) noexcept {
+  ENGINE_ASSERT(reference_nodes.size() == state_nodes.size() &&
+                    node_displacement.size() == state_nodes.size(),
+                "one reference node, one state node and one scratch entry per node");
+  // x - x is +0 for every finite x, and every product in the operator then has a zero factor, so
+  // an unmoved cage gives a displacement of exactly zero whatever `apply` fuses.
+  for (usize c = 0; c < state_nodes.size(); ++c)
+    node_displacement[c] = state_nodes[c] - reference_nodes[c];
+  apply(limit, node_displacement, out);
+}
+
+// The transfer, and why its normal term is written the long way round. The obvious form,
+// normalize(state triangle's cross product) - normalize(the reference's), is a difference of two
+// evaluations, and GCC 13 at x86-64-v3 (FMA contraction on by default for C++) fused one side's
+// final multiply into the subtraction: fma(c, 1/|c|, -round(c * (1/|c|))) is that product's
+// rounding error, up to 2^-25, not zero, and h times it moved one vertex in 300 at rest. So the
+// change is expanded until **every term is a product with the displacement**, with c the
+// reference's cross product of edges e, g the edges' displacements and dc the change g makes to c:
+//
+//   dc   = e1 x g2 + g1 x e2 + g1 x g2                 (c + dc is the state triangle's)
+//   dq   = dc . (2c + dc)                              (|c + dc|^2 - |c|^2)
+//   dinv = -dq (1/|c + dc|) / (|c| (|c| + |c + dc|))   (1/|c + dc| - 1/|c|)
+//   n(c + dc) - n(c) = dc / |c + dc| + c dinv
+//
+// At the reference g is exactly zero, so each line is a product with an exact zero, and a fused
+// multiply-add of anything with zero is exact: the term is zero on any compiler or GPU without
+// relying on two evaluations rounding alike. It is exact in the reals, not an approximation, and
+// no intermediate is more than quadratic in |c|, so nothing underflows before |c|^2 would. It does
+// cost relative accuracy when a footpoint triangle is squashed, since dc then nearly cancels c: the
+// normal's rounding grows as |c| / |c + dc|, 6e-7 rad at a tenth of the area. A triangle collapsed
+// to nothing keeps its reference normal (1/|c + dc| is taken as zero, and with it both terms), the
+// limit of a uniform shrink.
 void apply_binding(std::span<const SurfaceBinding> bindings, std::span<const Vec3> base_positions,
                    std::span<const u32> surface_faces, std::span<const Vec3> surface_reference,
-                   std::span<const Vec3> surface_state, std::span<Vec3> out) noexcept {
+                   std::span<const Vec3> surface_displacement, std::span<Vec3> out) noexcept {
   ENGINE_ASSERT(bindings.size() == base_positions.size() && out.size() == bindings.size(),
                 "one binding per base vertex and per output");
-  ENGINE_ASSERT(surface_reference.size() == surface_state.size(),
-                "the reference and the state are the same surface");
+  ENGINE_ASSERT(surface_reference.size() == surface_displacement.size(),
+                "one displacement per point of the reference surface");
   const u32* faces = surface_faces.data();
   const Vec3* reference = surface_reference.data();
-  const Vec3* state = surface_state.data();
+  const Vec3* displacement = surface_displacement.data();
   for (usize i = 0; i < bindings.size(); ++i) {
     const SurfaceBinding b = bindings[i];
     const u32* corner = faces + 3 * u32{b.triangle};
     const Vec3 r0 = reference[corner[0]];
-    const Vec3 r1 = reference[corner[1]];
-    const Vec3 r2 = reference[corner[2]];
-    const Vec3 s0 = state[corner[0]];
-    const Vec3 s1 = state[corner[1]];
-    const Vec3 s2 = state[corner[2]];
+    const Vec3 d0 = displacement[corner[0]];
+    const Vec3 d1 = displacement[corner[1]];
+    const Vec3 d2 = displacement[corner[2]];
     const f32 w0 = static_cast<f32>(b.barycentric[0]) / k_unorm16;
     const f32 w1 = static_cast<f32>(b.barycentric[1]) / k_unorm16;
     const f32 w2 = 1.0f - w0 - w1;
-    // The surface's change at the footpoint, and the normal's change there times the offset.
-    const Vec3 moved = (s0 - r0) * w0 + (s1 - r1) * w1 + (s2 - r2) * w2;
-    const Vec3 turned =
-        unit_or_zero(cross(s1 - s0, s2 - s0)) - unit_or_zero(cross(r1 - r0, r2 - r0));
-    const Vec3 delta = moved + turned * half_to_f32_branchless(b.normal_offset);
+    // The surface's displacement at the footpoint.
+    const Vec3 moved = d0 * w0 + d1 * w1 + d2 * w2;
+    // The footpoint normal's change, as the comment above expands it.
+    const Vec3 e1 = reference[corner[1]] - r0;
+    const Vec3 e2 = reference[corner[2]] - r0;
+    const Vec3 g1 = d1 - d0;
+    const Vec3 g2 = d2 - d0;
+    const Vec3 c = cross(e1, e2);
+    const Vec3 dc = cross(e1, g2) + cross(g1, e2) + cross(g1, g2);
+    const f32 squared = dot(c, c);
+    const f32 dq = dot(dc, c + c + dc);
+    const f32 length_reference = std::sqrt(squared);
+    const f32 length_state = std::sqrt(std::max(squared + dq, 0.0f));
+    const f32 inverse_state = length_state > 0.0f ? 1.0f / length_state : 0.0f;
+    const f32 lengths = length_reference * (length_reference + length_state);
+    const f32 inverse_change = lengths > 0.0f ? -(dq * inverse_state) / lengths : 0.0f;
+    const Vec3 turned = dc * inverse_state + c * inverse_change;
+    // A zero offset takes the normal term out entirely rather than multiplying it by zero.
+    const f32 offset = half_to_f32_branchless(b.normal_offset);
+    const Vec3 delta = offset == 0.0f ? moved : moved + turned * offset;
+    const Vec3 step = delta * (static_cast<f32>(b.weight) / k_unorm16);
     const Vec3 base = base_positions[i];
-    const Vec3 blended = base + delta * (static_cast<f32>(b.weight) / k_unorm16);
+    const Vec3 blended{add_step(base.x, step.x), add_step(base.y, step.y),
+                       add_step(base.z, step.z)};
     // A select, not a branch: weight 0 is the base's own bits, whatever `delta` holds.
     out[i] = b.weight == 0 ? base : blended;
   }

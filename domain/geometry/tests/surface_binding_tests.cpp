@@ -3,7 +3,8 @@
 // displacement transfer's contract — the base bitwise where the weight is zero, a rigid motion of
 // the cage carried rigidly at weight one, a seam two modules share and neither owns left alone
 // whichever runs first, linearity in the node state when the offsets are zero, and the base itself
-// at the reference state.
+// at the reference state — bit for bit, on every compiler, which is why the transfer is written in
+// the displacement form (surface_binding.h).
 #include "limit_fixtures.h"
 
 #include <domain/geometry/cluster.h>
@@ -176,11 +177,21 @@ Vector<Vec3> deformed(const Vector<Vec3>& nodes, u64 seed, f32 amount) {
   return out;
 }
 
+// The refined surface's displacement at a node state, the way a frame computes it.
+Vector<Vec3> displacement(const Region& r, std::span<const Vec3> state_nodes) {
+  Vector<Vec3> scratch(static_cast<u32>(state_nodes.size()));
+  Vector<Vec3> out(r.surface.limit.rows());
+  surface_displacement(r.surface.limit, r.nodes, state_nodes,
+                       std::span<Vec3>(scratch.data(), scratch.size()),
+                       std::span<Vec3>(out.data(), out.size()));
+  return out;
+}
+
 Vector<Vec3> transfer(const Region& r, std::span<const SurfaceBinding> bindings,
                       std::span<const Vec3> base, std::span<const Vec3> state_nodes) {
-  const Vector<Vec3> state = evaluate(r.surface.limit, state_nodes);
+  const Vector<Vec3> moved = displacement(r, state_nodes);
   Vector<Vec3> out(static_cast<u32>(base.size()));
-  apply_binding(bindings, base, r.faces(), r.reference, state,
+  apply_binding(bindings, base, r.faces(), r.reference, moved,
                 std::span<Vec3>(out.data(), out.size()));
   return out;
 }
@@ -365,8 +376,8 @@ TEST_CASE("binding: a seam that belongs to neither module stays the base whichev
   const Vector<SurfaceBinding> left_bindings = bind(left, left_span, left_weights);
   const Vector<SurfaceBinding> right_bindings = bind(right, right_span, right_weights);
 
-  const Vector<Vec3> left_state = evaluate(left.surface.limit, deformed(left.nodes, 31, 0.012f));
-  const Vector<Vec3> right_state = evaluate(right.surface.limit, deformed(right.nodes, 32, 0.012f));
+  const Vector<Vec3> left_state = displacement(left, deformed(left.nodes, 31, 0.012f));
+  const Vector<Vec3> right_state = displacement(right, deformed(right.nodes, 32, 0.012f));
   const auto run = [&](bool left_first) {
     Vector<Vec3> out = base;
     const std::span<Vec3> whole(out.data(), out.size());
@@ -472,6 +483,103 @@ TEST_CASE("binding: at the reference state every vertex is its base") {
   for (u32 i = 0; i < points.size(); ++i)
     unchanged += out[i] == points[i] ? 1u : 0u;
   CHECK(unchanged == points.size());
+}
+
+// The contract the displacement form exists for (surface_binding.h, "Why the displacement form"):
+// with the nodes at the paired reference every output is its base, bit for bit, under any weight
+// in (0, 1] and any offset, on every compiler. The first transfer computed two footpoint normals
+// and subtracted them; GCC 13 at x86-64-v3 fused one normal's last multiply into the subtraction,
+// and the test above failed there with 299 of 300. So this one is built to see any change at all:
+// besides the placed vertices (some with a -0 coordinate, which x + 0 would turn into +0) it moves
+// a base of signed zeros, denormals and tiny values, on which a change of 1e-40 would show, and it
+// runs on the fixture and on a copy turned 73 degrees about a skew axis, so that no normal has a
+// zero component to spare it rounding. Then, from the same reference, a rigid motion at weight one
+// carries the vertices rigidly: the transfer is not simply the identity. Put back the old form and
+// GCC 13 at x86-64-v3 changes 2,000 of the 2,000 sensitive vertices on both surfaces.
+TEST_CASE("binding: the base bit for bit at the reference, and rigid under a motion of the cage") {
+  const Rigid pose(Vec3{-2.0f, 1.0f, 0.5f}, 73.0, Vec3{0.31f, 1.12f, -0.47f});
+  const Rigid motion(Vec3{0.3f, -1.0f, 2.0f}, 35.0, Vec3{-0.15f, 0.2f, 0.05f});
+  const Region dome = make_region(Vec3{});
+  Region turned = make_region(Vec3{});
+  for (Vec3& p : turned.nodes)
+    p = pose.to_f32(p);
+  turned.reference = evaluate(turned.surface.limit, turned.nodes);
+
+  fixture::Random random(30);
+  // For the reference: the whole dome, inside it and out, and some vertices on the midline with
+  // -0 as a mirrored mesh writes it.
+  Vector<Vec3> placed;
+  place(dome, random, 2000, 0.95f, -0.004f, 0.004f, placed);
+  for (u32 i = 0; i < placed.size(); i += 97)
+    placed[i].x = -0.0f;
+  Vector<f32> weights;
+  for (u32 i = 0; i < placed.size(); ++i)
+    weights.push_back(i % 7 == 0 ? 1.0f : random.uniform(1.0e-4f, 1.0f));
+  // Values on which any nonzero step, however small, changes the bits.
+  const f32 detectors[] = {0.0f, -0.0f, 0x1.0p-149f, -0x1.0p-140f, 1.0e-30f, -3.0e-38f};
+  Vector<Vec3> sensitive;
+  for (u32 i = 0; i < placed.size(); ++i)
+    sensitive.push_back(Vec3{detectors[i % 6], detectors[(i + 2) % 6], detectors[(i + 4) % 6]});
+  // For the motion: outside the convex top, where a vertex's footpoint is the triangle it was
+  // placed over and the record reconstructs it (the rigid test above says why that matters).
+  Vector<Vec3> outside;
+  place(dome, random, 500, 0.5f, 0.0005f, 0.004f, outside);
+
+  const Region* const regions[] = {&dome, &turned};
+  for (const Region* r : regions) {
+    const auto posed = [&](const Vector<Vec3>& points) {
+      Vector<Vec3> out;
+      for (const Vec3& p : points)
+        out.push_back(r == &dome ? p : pose.to_f32(p));
+      return out;
+    };
+    const Vector<Vec3> base = posed(placed);
+    const Vector<SurfaceBinding> bindings = bind(*r, base, weights);
+    u32 offset_bindings = 0;
+    for (const SurfaceBinding& b : bindings)
+      offset_bindings += binding_normal_offset(b) != 0.0f && b.weight != 0 ? 1u : 0u;
+    CHECK(offset_bindings == bindings.size());  // nothing escapes through a zero weight or offset
+
+    // The displacement of an unmoved cage is zero, exactly.
+    const Vector<Vec3> still = displacement(*r, r->nodes);
+    u32 nonzero = 0;
+    for (const Vec3& d : still)
+      nonzero += d == Vec3{} ? 0u : 1u;
+    CHECK(nonzero == 0);
+
+    const auto changed = [](const Vector<Vec3>& a, const Vector<Vec3>& b) {
+      u32 count = 0;
+      for (u32 i = 0; i < a.size(); ++i)
+        count += same_bits(a[i], b[i]) ? 0u : 1u;
+      return count;
+    };
+    CHECK(changed(transfer(*r, bindings, base, r->nodes), base) == 0);
+    CHECK(changed(transfer(*r, bindings, sensitive, r->nodes), sensitive) == 0);
+    Vector<Vec3> in_place = sensitive;  // `out` may be the base itself
+    apply_binding(bindings, in_place, r->faces(), r->reference, still,
+                  std::span<Vec3>(in_place.data(), in_place.size()));
+    CHECK(changed(in_place, sensitive) == 0);
+
+    // From the same reference, the cage moved rigidly: at weight one the vertices follow it.
+    const Vector<Vec3> over = posed(outside);
+    SurfaceBindReport report;
+    const Vector<SurfaceBinding> whole = bind(*r, over, {}, &report);
+    Vector<Vec3> state;
+    for (const Vec3& p : r->nodes)
+      state.push_back(motion.to_f32(p));
+    const Vector<Vec3> carried = transfer(*r, whole, over, state);
+    f64 worst = 0.0;
+    for (u32 i = 0; i < over.size(); ++i)
+      worst = std::max(worst, distance(carried[i], motion(over[i])));
+    // Off rigid by (R - I) times the record's own reconstruction error, and f32 arithmetic.
+    const f64 bound = 2.0 * static_cast<f64>(report.max_quantization_error) + 2.0e-6;
+    MESSAGE(std::string(r == &dome ? "the dome" : "the turned copy")
+            << ": 2000 vertices up to 4 mm off, the base bit for bit at the reference; a 35 degree "
+               "turn of the cage carries 500 more to within "
+            << worst * 1.0e6 << " um of rigid (record quantization "
+            << report.max_quantization_error * 1.0e6f << " um)");
+    CHECK(worst <= bound);
+  }
 }
 
 TEST_CASE("binding: footpoints on the boundary and offsets over the limit are reported") {

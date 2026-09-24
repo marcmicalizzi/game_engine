@@ -193,12 +193,16 @@ ENGINE_BENCH_ARGS(geometry_binding_apply, "geometry.binding.apply", 914, 8192) {
                            make_bound(static_cast<u32>(k_bound_counts[1]))};
   Bound& b = bound[count == static_cast<u32>(k_bound_counts[0]) ? 0 : 1];
   Operator& op = fixture_operator();
-  // The surface at the state is the matvec's output; it is computed once here so the row is the
+  // The surface's displacement at the state is the matvec's output (`surface_displacement`, the
+  // same product as geometry.limit.apply.fixture); it is computed once here so the row is the
   // transfer alone (add geometry.limit.apply.fixture for the whole per-frame cost).
-  Vector<Vec3> surface_state(op.surface.limit.rows());
-  apply(op.surface.limit, op.state, std::span<Vec3>(surface_state.data(), surface_state.size()));
+  Vector<Vec3> node_displacement(op.nodes.size());
+  Vector<Vec3> moved(op.surface.limit.rows());
+  surface_displacement(op.surface.limit, op.nodes, op.state,
+                       std::span<Vec3>(node_displacement.data(), node_displacement.size()),
+                       std::span<Vec3>(moved.data(), moved.size()));
   while (state.keep_running()) {
-    apply_binding(b.bindings, b.base, op.surface.faces, op.reference, surface_state,
+    apply_binding(b.bindings, b.base, op.surface.faces, op.reference, moved,
                   std::span<Vec3>(b.out.data(), b.out.size()));
     bench::keep(b.out[b.out.size() - 1]);
   }
