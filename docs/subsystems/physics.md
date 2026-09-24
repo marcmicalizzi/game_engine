@@ -573,7 +573,9 @@ the same answer as one with four.
 [ADR-0029](../adr/0029-deformable-volume-budgets.md) adds seven more, in
 `tests/deformable_tests.cpp`: the volume-compliance conversion scales as the cube of the cell size
 and reproduces E19's hand-tuned working point at E19's cell; the cage size verdicts are the ones
-the content validator will apply and the default cage is exactly one backend solve group; **a cage
+the content validator applies (the tissue definition's `region.cage_size` row reads
+`cage_size_verdict()` directly, [tissue](tissue.md)) and the default cage is exactly one backend
+solve group; **a cage
 pressed to 70% of its height and released recovers to within 1% of its rest volume at three cell
 sizes**, each built with the compliance the conversion returns for its own cell; a cage hung under
 thirty gravities stretches past the authored limit without the clamp and sits at or under it with

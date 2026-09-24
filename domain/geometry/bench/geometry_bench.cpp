@@ -17,8 +17,16 @@
 //                                  dense surface drawn on its own would pay, and why the binding
 //                                  does not.
 //   geometry.binding.apply.<n>     the displacement transfer for n bound render vertices on the
-//                                  fixture's level-3 surface: 914 is one side of the fixture's
-//                                  footprint, 8,192 a whole region at the render density.
+//                                  fixture's level-3 surface, under the plan's limit-interpolated
+//                                  normal: 914 is one side of the fixture's footprint, 8,192 a
+//                                  whole region at the render density.
+//   geometry.binding.apply.triangle/914  the same under the footpoint triangle's own normal, the
+//                                  mode the transfer had before 2026-09-24.
+//   geometry.binding.field.<mode>  the per-frame normal field the interpolated modes read, over all
+//                                  7,009 refined vertices: `limit` is the two tangent matvecs of
+//                                  the nodes' displacement and each vertex's unit-tangent, cross
+//                                  and normal changes; `area` each refined triangle's cross-product
+//                                  change, the state's own sums and each vertex's normal change.
 //   geometry.limit.build.fixture   the content-build cost of the fixture's operator, for scale.
 //   geometry.vertex_ids.position_weld.<n>  deriving canonical vertex ids for n imported vertices
 //                                  (geometry.md, "Canonical vertex identity"): a content-build
@@ -89,8 +97,26 @@ Operator& cage800() {
   return op;
 }
 
+// The fixture's surface at its state under each normal mode (surface_binding.h): the displacement
+// and, for the interpolated modes, the reference vertex normals and their change, evaluated once so
+// the transfer rows time the transfer alone.
+struct Frames {
+  BindingFrame mode[k_normal_mode_count];
+};
+
+Frames& fixture_frames() {
+  static Frames frames = [] {
+    Frames f;
+    Operator& op = fixture_operator();
+    for (u32 m = 0; m < k_normal_mode_count; ++m)
+      evaluate_binding_frame(static_cast<NormalMode>(m), op.surface, op.nodes, op.state, f.mode[m]);
+    return f;
+  }();
+  return frames;
+}
+
 // Render vertices bound to the fixture's level-3 surface: points a few millimetres off it, spread
-// over the footprint, as a region's skin would be.
+// over the footprint, as a region's skin would be, bound under the plan's limit-interpolated rule.
 struct Bound {
   Vector<Vec3> base;
   Vector<SurfaceBinding> bindings;
@@ -99,6 +125,8 @@ struct Bound {
 
 Bound make_bound(u32 count) {
   const Operator& op = fixture_operator();
+  const BindingFrame& rest =
+      fixture_frames().mode[static_cast<u32>(NormalMode::limit_interpolated)];
   Bound b;
   fixture::Random random(29 + count);
   const u32 triangles = op.surface.triangle_count();
@@ -115,7 +143,8 @@ Bound make_bound(u32 count) {
   }
   SurfaceBindOptions options;
   std::string error;
-  bind_to_surface(b.base, op.reference, op.surface.faces, options, b.bindings, nullptr, &error);
+  bind_to_surface(NormalMode::limit_interpolated, b.base, rest.view(op.surface.faces), options,
+                  b.bindings, nullptr, &error);
   b.out.resize(count);
   return b;
 }
@@ -193,20 +222,86 @@ ENGINE_BENCH_ARGS(geometry_binding_apply, "geometry.binding.apply", 914, 8192) {
                            make_bound(static_cast<u32>(k_bound_counts[1]))};
   Bound& b = bound[count == static_cast<u32>(k_bound_counts[0]) ? 0 : 1];
   Operator& op = fixture_operator();
-  // The surface's displacement at the state is the matvec's output (`surface_displacement`, the
-  // same product as geometry.limit.apply.fixture); it is computed once here so the row is the
-  // transfer alone (add geometry.limit.apply.fixture for the whole per-frame cost).
-  Vector<Vec3> node_displacement(op.nodes.size());
-  Vector<Vec3> moved(op.surface.limit.rows());
-  surface_displacement(op.surface.limit, op.nodes, op.state,
-                       std::span<Vec3>(node_displacement.data(), node_displacement.size()),
-                       std::span<Vec3>(moved.data(), moved.size()));
+  // The surface's displacement and normal field at the state are computed once here, so the row is
+  // the transfer alone (add geometry.limit.apply.fixture and geometry.binding.field.limit for the
+  // whole per-frame cost).
+  const BindingFrame& f = fixture_frames().mode[static_cast<u32>(NormalMode::limit_interpolated)];
+  const BindingSurface surface = f.view(op.surface.faces);
   while (state.keep_running()) {
-    apply_binding(b.bindings, b.base, op.surface.faces, op.reference, moved,
+    apply_binding(NormalMode::limit_interpolated, b.bindings, b.base, surface,
                   std::span<Vec3>(b.out.data(), b.out.size()));
     bench::keep(b.out[b.out.size() - 1]);
   }
   state.set_items(count);
+}
+
+// The same transfer under the other two modes, for the comparison the mode choice rests on.
+ENGINE_BENCH(geometry_binding_apply_triangle, "geometry.binding.apply.triangle/914") {
+  static Bound b = make_bound(static_cast<u32>(k_bound_counts[0]));
+  Operator& op = fixture_operator();
+  const BindingSurface surface =
+      fixture_frames().mode[static_cast<u32>(NormalMode::triangle)].view(op.surface.faces);
+  while (state.keep_running()) {
+    apply_binding(NormalMode::triangle, b.bindings, b.base, surface,
+                  std::span<Vec3>(b.out.data(), b.out.size()));
+    bench::keep(b.out[b.out.size() - 1]);
+  }
+  state.set_items(b.base.size());
+}
+
+// The per-frame normal field of the limit rule, over every refined vertex of the fixture: the two
+// tangent matvecs of the nodes' displacement and each vertex's unit-tangent, cross-product and
+// normal changes. The reference half (the tangents at the reference and the reference normals) is
+// evaluated once and kept, as a per-frame pass would.
+ENGINE_BENCH(geometry_binding_field_limit, "geometry.binding.field.limit") {
+  Operator& op = fixture_operator();
+  const u32 rows = op.surface.limit.rows();
+  Vector<Vec3> tu(rows);
+  Vector<Vec3> tv(rows);
+  apply(op.surface.tangent_u, op.nodes, std::span<Vec3>(tu.data(), rows));
+  apply(op.surface.tangent_v, op.nodes, std::span<Vec3>(tv.data(), rows));
+  Vector<Vec3> node_displacement(op.nodes.size());
+  Vector<Vec3> dtu(rows);
+  Vector<Vec3> dtv(rows);
+  Vector<Vec3> change(rows);
+  while (state.keep_running()) {
+    for (u32 c = 0; c < op.nodes.size(); ++c)
+      node_displacement[c] = op.state[c] - op.nodes[c];
+    apply(op.surface.tangent_u, node_displacement, std::span<Vec3>(dtu.data(), rows));
+    apply(op.surface.tangent_v, node_displacement, std::span<Vec3>(dtv.data(), rows));
+    limit_normal_changes(tu, tv, dtu, dtv, std::span<Vec3>(change.data(), rows));
+    bench::keep(change[rows - 1]);
+  }
+  state.set_items(rows);
+}
+
+// The same for the area-weighted mode: every refined triangle's cross-product change and the
+// state's own sums (for the degeneracy test), then each vertex's normal change, from the surface
+// displacement geometry.limit.apply.fixture produces.
+ENGINE_BENCH(geometry_binding_field_area, "geometry.binding.field.area") {
+  Operator& op = fixture_operator();
+  const BindingFrame& f =
+      fixture_frames().mode[static_cast<u32>(NormalMode::interpolated_vertex_area_weighted)];
+  const u32 rows = op.surface.limit.rows();
+  Vector<Vec3> vectors(rows);
+  area_weighted_normal_vectors(op.surface.faces, op.reference,
+                               std::span<Vec3>(vectors.data(), rows));
+  Vector<Vec3> vector_change(rows);
+  Vector<Vec3> state_positions(rows);
+  Vector<Vec3> state_vectors(rows);
+  Vector<Vec3> change(rows);
+  while (state.keep_running()) {
+    area_weighted_normal_vector_change(op.surface.faces, op.reference, f.displacement,
+                                       std::span<Vec3>(vector_change.data(), rows));
+    for (u32 i = 0; i < rows; ++i)
+      state_positions[i] = op.reference[i] + f.displacement[i];
+    area_weighted_normal_vectors(op.surface.faces, state_positions,
+                                 std::span<Vec3>(state_vectors.data(), rows));
+    area_weighted_normal_changes(vectors, vector_change, state_vectors,
+                                 std::span<Vec3>(change.data(), rows));
+    bench::keep(change[rows - 1]);
+  }
+  state.set_items(rows);
 }
 
 // The canonical ids a mesh without authored ones is named by (`position_weld_ids`): a content-build

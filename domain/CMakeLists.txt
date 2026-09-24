@@ -15,3 +15,6 @@ add_subdirectory(sim)
 add_subdirectory(ecs)
 add_subdirectory(physics)
 add_subdirectory(nav)
+# After geometry (the limit surface and the binding) and physics (the cage-size verdict): the
+# tissue definition and its validators.
+add_subdirectory(tissue)

@@ -1,0 +1,589 @@
+// The tissue definition, v0 (docs/subsystems/tissue.md; docs/plan/05-simulation.md §5.14 and §5.16
+// with its addenda; docs/plan/07-content-pipeline.md §7.10 and §7.11; ADR-0026, ADR-0029,
+// ADR-0032). What the authoring side produces for one deformable tissue body and what the engine's
+// validators read: regions of tetrahedra with their materials in SI units, the closed frames they
+// lie on, the attachments between them, the skin binding as a footprint and a transition band over
+// a declared set of canonical vertex ids, the observation the region reproduces and the contract it
+// was accepted under, and the region's states — the reference the binding is paired with, the rest
+// inverse statics solved for, and the responses the report measures.
+//
+// **Everything bulky is a binary block, referenced by name.** The JSON holds the structure and the
+// scalars; positions, tetrahedra, ids and per-element values live in little-endian blocks listed
+// in `blocks` with their kind, count, byte size and SHA-256, so a Blender script writes one
+// `numpy.ndarray.tofile` per array and one JSON file, and the engine checks every byte it reads
+// against the hash the author wrote. `engine-content tissue import` turns the pair into a `.tissue`
+// container (domain/tissue/tissue_file.h), whose sections are these blocks and this JSON.
+//
+// **Physical quantities only** (ADR-0029): moduli in pascals, membrane stiffness as E·t in N/m,
+// densities in kg/m³, lengths in metres. No solver compliance appears anywhere: the build derives
+// compliances from the cage's cell size, because a compliance authored at one cell size is wrong at
+// every other.
+//
+// **Why the enumerations are few.** A kind names mechanics, never anatomy — the engine does not
+// know what a region depicts (ADR-0032 decision 6) — and a kind nobody has built yet is a new
+// enumerator with the next value, never a renumbering, exactly as the container's section kinds are.
+namespace engine.tissue
+
+// ---- the binary blocks -------------------------------------------------------------------------
+
+/// What a binary block holds, which fixes its element layout. The values are the `.tissue`
+/// container's section kinds, append-only: a kind is never renumbered or reused, and a reader skips
+/// a kind it does not know. 1 to 9 are the container's own structure and never name an
+/// interchange block. Layouts, little-endian: f32 is IEEE binary32, u32 unsigned 32-bit, u8 a byte;
+/// "x3" is three of them per element, back to back.
+enum BlockKind : u32 {
+  /// The container's canonical definition JSON (u8). Never an interchange block.
+  Definition = 1
+  /// NUL-terminated block names, back to back (u8). Never an interchange block.
+  Names = 2
+  /// f32 x3: a region's node positions at the construction the definition was authored at.
+  RegionNodes = 10
+  /// u32 x4: a region's tetrahedra, node indices, positively oriented.
+  Tetrahedra = 11
+  /// u32: a set of a region's node indices (an attachment's nodes, a role).
+  NodeSet = 12
+  /// f32: one value per tetrahedron, a material phase's volume fraction in [0, 1].
+  PhaseFraction = 13
+  /// u32 x3: membrane triangles over a region's nodes.
+  MembraneTriangles = 14
+  /// f32: one E·t per membrane triangle, N/m.
+  MembraneStiffness = 15
+  /// u32 x2: cable end nodes.
+  CableEdges = 16
+  /// f32: one stiffness per cable, N/m.
+  CableStiffness = 17
+  /// u32 x3: a sheet's control triangles over a region's nodes, wound outward.
+  SheetFaces = 18
+  /// u32 x3: the extra triangles that close a region's smooth shell, over the concatenated refined
+  /// vertices of its sheets in the order the region lists them.
+  ShellStitch = 19
+  /// f32 x3: a frame's vertices.
+  FrameVertices = 20
+  /// u32 x3: a frame's triangles, closed and wound outward.
+  FrameTriangles = 21
+  /// f32: one declared cover per frame vertex, metres; NaN where it is undeclared.
+  FrameCover = 22
+  /// u8: one `CoverProvenance` per frame vertex.
+  FrameCoverProvenance = 23
+  /// f32 x3: a named surface's vertices (an attachment target that is not a frame).
+  SurfaceVertices = 24
+  /// u32 x3: a named surface's triangles.
+  SurfaceTriangles = 25
+  /// u32 x3: the declared base's faces as triangles.
+  BaseTriangles = 26
+  /// u32 x4: the declared base's faces as quads, split (0, 1, 2) and (0, 2, 3) wherever a
+  /// triangle is needed — the split study019's volumes were computed with.
+  BaseQuads = 27
+  /// f32 x3: the accepted observation's positions, one per canonical id, in id order.
+  ObservedPositions = 28
+  /// f32 x3: the declared base's positions at every canonical id outside the declared domain, in
+  /// ascending id order: what "bitwise outside the domain" is checked against.
+  BaseOutsidePositions = 29
+  /// u32: canonical ids, strictly ascending (a declared domain, a footprint, a band, a binding's
+  /// domain).
+  CanonicalIds = 30
+  /// f32: one value per canonical id of a set, in the set's order (a signed deviation in metres, a
+  /// band weight).
+  IdValues = 31
+  /// u32: one refined triangle per binding-domain id: the footpoint's triangle on the sheet's
+  /// level-L surface.
+  FootpointTriangles = 32
+  /// f32 x3: one footpoint's barycentrics per binding-domain id, in the triangle's corner order.
+  FootpointBarycentrics = 33
+  /// f32: one authored normal offset per binding-domain id, metres; NaN measures it.
+  FootpointOffsets = 34
+  /// f32 x3: the authoring side's footpoint normal at the reference, per binding-domain id: kept
+  /// for the comparison row, never used to transfer anything.
+  AuthoredNormals = 35
+  /// f32 x3: a region state's node positions.
+  StateNodes = 36
+  /// f32 x3: the authoring side's transferred visible positions at a state, one per binding-domain
+  /// id: kept for the agreement row, never used to transfer anything.
+  ExpectedVisible = 37
+}
+
+/// One binary block of the interchange: a file beside the JSON, or a section of the container.
+struct Block @version(1) {
+  /// What the definition calls it; unique within the definition.
+  name: string
+  kind: BlockKind = RegionNodes
+  /// The file, relative to the interchange JSON. Empty in a container, where the block is a section.
+  file: string
+  /// Elements, not bytes: 275 nodes is a count of 275.
+  count: u64 = 0
+  /// count times the kind's element size; checked before anything is read.
+  bytes: u64 = 0
+  /// SHA-256 of the block's bytes, 64 lower-case hex digits: `hashlib.sha256(array.tobytes())`.
+  sha256: string
+}
+
+// ---- mechanics: regions, materials, element kinds ----------------------------------------------
+
+enum RegionKind : u8 {
+  /// A volume of material: tetrahedra with materials, and whatever membranes and cables it carries.
+  Volume = 0
+  /// A material-free region whose boundary carries a pressure (plan 07 §7.10's `cavity`).
+  Cavity = 1
+}
+
+enum CageKind : u8 {
+  /// Imported tetrahedra (Gmsh on the authoring side; plan 05 §5.14's tetrahedral cage). The only
+  /// kind v0 reads.
+  Tetrahedral = 0
+  Lattice = 1
+  Shell = 2
+}
+
+/// One material a region's cells are made of, in SI units. A region's cells may mix phases.
+struct Material @version(1) {
+  name: string
+  /// K, pascals.
+  bulk_modulus_pa: f64 = 0
+  /// G (the neo-Hookean mu), pascals.
+  shear_modulus_pa: f64 = 0
+  /// kg/m³.
+  density_kg_m3: f64 = 1000
+}
+
+/// A material and how much of each cell it makes up. The first phase takes whatever the others
+/// leave, so it names no block; each other phase names a PhaseFraction block, one value per
+/// tetrahedron, and in every cell the fractions of the others sum to at most one.
+struct MaterialPhase @version(1) {
+  material: Material
+  /// A PhaseFraction block; empty for the first phase.
+  fraction: string
+}
+
+/// Membrane elements on a sheet of the region: a tension field, bearing no compression (plan 05
+/// §5.16, 2026-09-23 addendum item 4), defined on principal stress.
+struct Membrane @version(1) {
+  name: string
+  /// MembraneTriangles over the region's nodes.
+  triangles: string
+  /// MembraneStiffness per triangle; when empty, `stiffness_n_per_m` applies to all.
+  stiffness: string
+  /// E·t, N/m.
+  stiffness_n_per_m: f64 = 0
+  /// Poisson's ratio of the membrane.
+  poisson: f64 = 0.45
+  tension_only: bool = true
+}
+
+/// Tension-only cables: slack before they engage, then a recruitment over which their stiffness
+/// ramps to full.
+struct CableSet @version(1) {
+  name: string
+  /// CableEdges over the region's nodes.
+  edges: string
+  /// CableStiffness per cable, N/m; when empty, `stiffness_n_per_m` applies to all.
+  stiffness: string
+  stiffness_n_per_m: f64 = 0
+  /// The stretch at which a cable engages, as a fraction of its rest length (0.02 is 2% slack).
+  slack: f64 = 0
+  /// The further stretch over which its stiffness ramps from zero to full, as a fraction.
+  recruitment: f64 = 0
+}
+
+/// A named set of the region's nodes, with the role it plays.
+struct NodeSetRef @version(1) {
+  name: string
+  /// A NodeSet block.
+  nodes: string
+  /// Free text, for a reader: "rim", "posterior", "interior". The engine reads attachments, not
+  /// roles.
+  role: string
+}
+
+/// An open surface of the region's control nodes, refined to a Loop limit surface. The region's
+/// visible top surface is one (the skin binding follows it); the face it rests on is another.
+struct Sheet @version(1) {
+  name: string
+  /// SheetFaces over the region's nodes, wound outward from the region.
+  faces: string
+  /// The Loop subdivision level the limit surface is evaluated at.
+  level: u32 = 3
+}
+
+struct Region @version(1) {
+  name: string
+  kind: RegionKind = Volume
+  cage: CageKind = Tetrahedral
+  /// RegionNodes: the nodes at the construction the definition was authored at.
+  nodes: string
+  /// Tetrahedra over them.
+  tetrahedra: string
+  phases: MaterialPhase[]
+  membranes: Membrane[]
+  cables: CableSet[]
+  node_sets: NodeSetRef[]
+  sheets: Sheet[]
+  /// A ShellStitch block: with the sheets' refined triangles, the closed smooth shell the volume
+  /// report measures. Empty when the region has no closed smooth shell.
+  shell_stitch: string
+  /// The sheet the skin binding follows and the one the depth budget calls the roof.
+  top_sheet: string
+  /// The sheet that rests on the region's support.
+  support_sheet: string
+  /// The deliberately authored hero volume of ADR-0029 (the 256-node default does not apply to
+  /// it; 800 still does).
+  hero: bool = false
+}
+
+// ---- frames, surfaces, attachments -------------------------------------------------------------
+
+/// Where a frame vertex's declared cover comes from (plan 05 §5.16: "a frame contracted to fit is a
+/// size changed, not discovered").
+enum CoverProvenance : u8 {
+  /// No cover is declared at this vertex: its depth is undeclared.
+  Undeclared = 0
+  /// Fitted to the skin minus a declared cover.
+  Fitted = 1
+  /// Moved by an authored transform (a scale, an offset) after it was fitted.
+  AuthoredTransform = 2
+  /// Placed by hand.
+  Authored = 3
+}
+
+/// A closed rigid proxy — a thoracic envelope, a pelvic proxy — that regions lie on or around.
+struct Frame @version(1) {
+  name: string
+  /// FrameVertices.
+  vertices: string
+  /// FrameTriangles: closed, consistently wound, facing out.
+  triangles: string
+  /// FrameCover per vertex (the tissue thickness between the frame and the fitted skin); empty
+  /// when nothing is declared.
+  cover: string
+  /// FrameCoverProvenance per vertex; empty when every vertex is `Undeclared`.
+  cover_provenance: string
+  /// How the frame came to be, for a reader: "018's envelope, a 10 mm clearance move, then a
+  /// uniform 0.88 radial scale about each section's centre".
+  provenance: string
+  /// A stand-in for structure that is not modelled.
+  proxy: bool = true
+  /// Frames this one lies inside: the layering relation between frames.
+  inside: string[]
+}
+
+/// An attachment target that is not a frame: an authored support, a proxy for another region.
+struct Surface @version(1) {
+  name: string
+  /// SurfaceVertices.
+  vertices: string
+  /// SurfaceTriangles.
+  triangles: string
+  proxy: bool = true
+  note: string
+}
+
+enum AttachmentKind : u8 {
+  /// Held to the target: a stiff spring, not a weld.
+  Fixed = 0
+  /// Bilateral along the target's normal, free tangentially: the sliding surface attachment.
+  SlidingBilateral = 1
+  /// One-sided: may leave the target, may not cross it.
+  Unilateral = 2
+}
+
+enum TargetKind : u8 {
+  World = 0
+  /// A frame of this definition, by name.
+  Frame = 1
+  /// A surface of this definition, by name.
+  Surface = 2
+  /// Another region's sheet, as "region/sheet".
+  RegionSheet = 3
+  /// A bone of the skeleton the body is rigged to, by the skeleton's name for it.
+  Bone = 4
+}
+
+struct Attachment @version(1) {
+  name: string
+  region: string
+  /// A node set of the region.
+  nodes: string
+  kind: AttachmentKind = Fixed
+  target_kind: TargetKind = World
+  target: string
+  /// Pascals; absent leaves plan 07 §7.10's default.
+  stiffness_pa: f64?
+}
+
+// ---- the skin binding ----------------------------------------------------------------------------
+
+/// The internal attachment footprint: the skin over the part of the region fastened to its
+/// support. Its vertices bind at weight one.
+struct Footprint @version(1) {
+  /// CanonicalIds.
+  ids: string
+}
+
+/// The outer transition band, where the region's surface rejoins the base's: its own authored
+/// object, because a footprint that ends in a step put an 87-degree crease at the rim.
+struct TransitionBand @version(1) {
+  /// CanonicalIds.
+  ids: string
+  /// IdValues, one weight in (0, 1) per id.
+  weights: string
+  /// The band's authored width, metres.
+  width_m: f64 = 0
+  /// How the weight falls across it: "C2 fade over the shortest-edge path from the footprint".
+  profile: string
+}
+
+/// The per-vertex records, one per id of the binding's domain, in the domain's order.
+struct FootpointRecords @version(1) {
+  /// FootpointTriangles.
+  triangles: string
+  /// FootpointBarycentrics.
+  barycentrics: string
+  /// FootpointOffsets; empty measures every offset along the binding's normal.
+  offsets: string
+  /// AuthoredNormals; optional, for the comparison row.
+  authored_normals: string
+}
+
+/// A region's render surface bound to its top sheet's limit surface through the 10-byte records
+/// of domain/geometry/surface_binding.h. The records' weights are not stored: a vertex of the
+/// footprint has weight one, a vertex of the band its band weight, and any other vertex of the
+/// domain weight zero, so the two authored objects are the only place a weight comes from.
+struct SkinBinding @version(1) {
+  name: string
+  region: string
+  /// The sheet whose limit surface the records name triangles of; the region's top sheet.
+  sheet: string
+  /// The Loop level of that surface; must equal the sheet's.
+  level: u32 = 3
+  /// The refinement rule both sides compute the surface with: "loop-hoppe-1994-v1" is Loop's
+  /// scheme with Hoppe et al.'s boundary and corner rules and the numbering of
+  /// docs/subsystems/geometry.md. The engine refuses a rule it does not know.
+  rule: string = "loop-hoppe-1994-v1"
+  /// How the footpoint normal the offsets transport along is produced: "triangle",
+  /// "interpolated-vertex-area-weighted" (study019's) or "limit-interpolated" (the plan's). The
+  /// spelling is the cross-tool contract agreed in the round-five closure, which is why it is a
+  /// string and not an enumeration: an identifier cannot carry the hyphen. Kept as given; never
+  /// substituted.
+  normal_mode: string = "limit-interpolated"
+  /// CanonicalIds: the explicit set of vertices this binding may write.
+  domain: string
+  footprint: Footprint
+  band: TransitionBand
+  records: FootpointRecords
+}
+
+// ---- the observation contract ----------------------------------------------------------------
+
+/// The load a shape is read under: part of every observation and every state.
+struct Load @version(1) {
+  /// m/s², in the body's own coordinates.
+  gravity: vec3
+  /// "air", "water".
+  medium: string = "air"
+  medium_density_kg_m3: f64 = 1.2
+  /// "standing", "supine": a name, for a reader.
+  pose: string
+  /// The regions' fill, 0 to 1.
+  fill: f64 = 1
+}
+
+/// A named point by canonical id.
+struct Landmark @version(1) {
+  name: string
+  id: u32 = 0
+  /// Where the author read it; must be the observation's position at `id`.
+  position: vec3?
+  semantics: string
+}
+
+/// Acceptance is a record beside the geometry, not a validator result: every geometric row may
+/// pass while this reads false.
+struct Acceptance @version(1) {
+  accepted: bool = false
+  who: string
+  /// ISO 8601.
+  when: string
+  /// What was inspected: "renders/standing-observation.png, 019 row".
+  sheet: string
+  note: string
+}
+
+/// The accepted shape the region reproduces, and the contract it was accepted under (plan 05 §5.16,
+/// 2026-09-23 addendum item 2).
+struct Observation @version(1) {
+  /// The declared base: "makehuman-a8bc2d54-adult-age25-torso".
+  base_id: string
+  vertex_count: u32 = 0
+  /// BaseTriangles or BaseQuads: the base's topology.
+  base_faces: string
+  /// SHA-256 over the base's face indices widened to little-endian u64, face by face, corner by
+  /// corner: the spelling study019 recorded (NumPy's default integer), so a hash the authoring side
+  /// already published verifies.
+  topology_sha256: string
+  /// ObservedPositions: the accepted observation, one position per canonical id.
+  positions: string
+  /// CanonicalIds: the explicit declared domain, the only ids where the observation may differ
+  /// from the base.
+  domain: string
+  /// BaseOutsidePositions: the base at every id outside the domain.
+  base_outside: string
+  /// IdValues over the domain: the signed deviation from the base along the base's normals.
+  signed_deviation: string
+  landmarks: Landmark[]
+  load: Load
+  acceptance: Acceptance
+}
+
+// ---- states ------------------------------------------------------------------------------------
+
+enum StateRole : u8 {
+  /// The reference the skin binding is paired with: the transfer gives the observation back here.
+  /// For the engine it is the fixed point of the runtime solver from the rest (InverseSolver), not
+  /// the stationary point of the declared energy; the equilibrium-gap row measures the difference.
+  Reference = 0
+  /// The rest configuration a reference was solved from.
+  Rest = 1
+  /// A loaded state whose response the report measures against the reference.
+  Response = 2
+  /// The nodes as constructed, fitted to the observation before any solve.
+  Construction = 3
+}
+
+enum StateProvenance : u8 {
+  /// The authored construction itself.
+  Authored = 0
+  /// Solved forward from an authored rest.
+  ForwardFromAuthoredRest = 1
+  /// Solved by inverse statics: the rest whose loaded equilibrium reproduces the observation.
+  InverseStatics = 2
+  /// Solved forward from the reference under another load.
+  ForwardFromReference = 3
+}
+
+/// The solver a rest was recovered against. An XPBD relaxation converges to the fixed point of its
+/// constraint projections, which is not the stationary point of the declared energy: a rest
+/// recovered by exact minimization drifts under an XPBD runtime, and a rest recovered against a
+/// solver's fixed point reproduces the observation only under that solver, its iteration count and
+/// its step. So **the engine-facing reference state is the fixed point of the runtime solver**, and
+/// a rest carries the identity of the solver it is a rest for. The validator reports it beside the
+/// reference state, next to the equilibrium gap (the declared energy's gradient there), which says
+/// how far that fixed point is from the energy's stationary point.
+struct InverseSolver @version(1) {
+  /// "xpbd" (a relaxation to the fixed point of constraint projections: declare `iterations` and
+  /// `step_s`) or "static-minimization" (a minimizer of the declared energy: declare
+  /// `gradient_tolerance_n`).
+  kind: string
+  /// xpbd: constraint iterations per step.
+  iterations: u32 = 0
+  /// xpbd: the step, seconds.
+  step_s: f64 = 0
+  /// xpbd: how long the relaxation ran, seconds.
+  duration_s: f64?
+  /// xpbd: velocity damping, per second.
+  damping_per_s: f64?
+  /// static-minimization: the gradient norm it stopped at, newtons.
+  gradient_tolerance_n: f64?
+  /// Which implementation: a name, a version, a hash. Two implementations of one kind share a
+  /// fixed point only when they share their projection order and their constraint forms.
+  implementation: string
+}
+
+/// How an inverse-statics fit placed what one exterior observation cannot identify: the interior.
+/// An observed surface fixes where the tissue's skin is and says nothing about where its interior
+/// nodes rest, so a fit that solved for a rest configuration has to declare the prior it put there,
+/// or two fits of one observation are two different tissues with nothing to tell them apart.
+/// Required on every state that claims `InverseStatics` (the validator refuses one without a method
+/// and an interior extension).
+struct InverseFit @version(1) {
+  /// "surface-targeted" (the fit moved the observed surface nodes toward their targets and extended
+  /// the correction inward), or "legacy-all-nodes" (every node targeted, as the historical fixtures
+  /// were fitted).
+  method: string
+  /// How the correction reached the interior: "harmonic" (minimizing the integrated squared
+  /// displacement gradient on the current rest tetrahedra), "elastic" (placed by the kernel's own
+  /// force law with the surface correction prescribed), or "none".
+  interior_extension: string
+  /// The fraction of each iteration's correction applied.
+  step_alpha: f64 = 0
+  /// The region's node sets held fixed during the fit: the posterior, the attachments.
+  held_node_sets: string[]
+  /// How far the fitted equilibrium is from the observed surface, p95, millimetres.
+  fit_residual_p95_mm: f64?
+  /// The smallest ratio of a cell's volume to its reference volume the fit produced.
+  min_cell_ratio: f64?
+  /// The solver the rest was recovered against; see InverseSolver. The validator warns when it is
+  /// absent and refuses an identity that does not pin a fixed point (an xpbd one without its
+  /// iterations and step).
+  solver: InverseSolver?
+}
+
+struct RegionState @version(1) {
+  name: string
+  region: string
+  role: StateRole = Response
+  provenance: StateProvenance = ForwardFromReference
+  /// StateNodes.
+  nodes: string
+  load: Load
+  /// Required when `provenance` is InverseStatics: the fit's declared interior prior.
+  inverse: InverseFit?
+  /// ExpectedVisible: the authoring side's transferred visible surface at this state, per id of
+  /// `binding`'s domain; empty when there is none.
+  expected_visible: string
+  /// The binding `expected_visible` belongs to.
+  binding: string
+}
+
+// ---- the depth budget ----------------------------------------------------------------------------
+
+/// The layer order along the local outward normal at every point of the roof — frame, clearance,
+/// support, tissue, roof, cover, exterior — with each layer's declared range (plan 05 §5.16,
+/// 2026-09-23 addendum). Never a world axis: a region slopes, and "deeper" gets worse by moving
+/// inward once a support is inside its frame.
+struct DepthBudget @version(1) {
+  region: string
+  frame: string
+  /// The least signed distance of the support from the frame, metres.
+  clearance_min_m: f64 = 0.002
+  /// Above this a clearance is a named slot (below) or an undeclared depth, never a clearance.
+  clearance_slot_m: f64 = 0.005
+  /// The region to be that fills a clearance wider than `clearance_slot_m`: "pectoral".
+  slot: string
+  /// The declared residual layer between the roof and the skin: an authoring choice with a
+  /// purpose, never a measured dermis.
+  cover_min_m: f64 = 0.001
+  cover_max_m: f64 = 0.003
+  cover_target_m: f64 = 0.002
+  cover_purpose: string
+  /// The fraction of the roof's area that must lie inside [cover_min_m, cover_max_m].
+  cover_area_fraction_min: f64 = 0.95
+  /// |visible swept - top-surface swept| allowed at a response, millilitres: an absolute target
+  /// beside the region's volume, never a ratio.
+  visible_minus_top_ml_max: f64 = 2
+  /// The least distance the simulated tissue surface (the tetrahedra's boundary, its nodes, and the
+  /// dense cap) keeps inside the transferred skin at every validated state, metres. 0 is bare
+  /// containment; the clearance distribution is reported beside it either way.
+  skin_clearance_floor_m: f64 = 0
+}
+
+// ---- the definition ------------------------------------------------------------------------------
+
+/// A tissue definition: everything above for one body.
+struct TissueDefinition @version(1) {
+  /// "engine.tissue.v0".
+  format: string
+  name: string
+  description: string
+  /// Everything is SI; "m" is the only unit a position is in.
+  units: string = "m"
+  blocks: Block[]
+  regions: Region[]
+  frames: Frame[]
+  surfaces: Surface[]
+  attachments: Attachment[]
+  bindings: SkinBinding[]
+  observation: Observation
+  states: RegionState[]
+  budgets: DepthBudget[]
+  /// Where the data came from, for a reader: a study, a packet, a script.
+  provenance: string
+}

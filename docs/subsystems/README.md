@@ -52,6 +52,7 @@ One page per module, created in the same change that creates the module. Templat
 | ecs (capability) | domain | [ecs.md](ecs.md) |
 | physics (capability) | domain | [physics.md](physics.md) |
 | nav (capability) | domain | [nav.md](nav.md) |
+| tissue (capability) | domain | [tissue.md](tissue.md) |
 | sim | domain | [sim.md](sim.md) |
 | renderer | systems | [renderer.md](renderer.md) |
 | animation | systems | [animation.md](animation.md) |

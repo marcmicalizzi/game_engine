@@ -19,7 +19,12 @@
 // container. Every command prints one JSON line per result on stdout, so scripts and agents read
 // the numbers without parsing prose; everything else goes through the log to stderr.
 //
+// `tissue` and `limit-dump` live beside this file (content_commands.h): the tissue definition's
+// import, info, validators and report, and the limit-surface conformance exchange.
+//
 // Exit codes: 0 ok; 1 a file could not be loaded, validated, built, or written; 2 usage.
+#include "content_commands.h"
+
 #include <core/hash/hash.h>
 #include <core/jobs/job_system.h>
 #include <core/json/json.h>
@@ -93,6 +98,10 @@ const char* k_usage =
     "      --ddc <dir>, --jobs <n>, --strict, --log <spec>   as above\n"
     "  info <file.clusters>                    print the header, sections, and counts\n"
     "  stats <file.clusters>                   print the content-build metrics of a container\n"
+    "  tissue import|info|validate|report|example ...   tissue definitions (engine-content tissue\n"
+    "                                          help); present with the tissue capability\n"
+    "  limit-dump <control.json> --level <n> --out <dump.json> [--mode <m>]\n"
+    "                                          the limit-surface conformance exchange\n"
     "  --version                               the commit this binary was built from, as JSON\n"
     "\n"
     "the build-all manifest:\n"
@@ -2358,5 +2367,7 @@ int main(int argc, char** argv) {
   if (command == "build-all") return build_all_command(argc, argv);
   if (command == "info") return read_command(argc, argv, "info", info);
   if (command == "stats") return read_command(argc, argv, "stats", stats);
+  if (command == "tissue") return content::tissue_command(argc, argv);
+  if (command == "limit-dump") return content::limit_dump_command(argc, argv);
   return usage("unknown command");
 }
