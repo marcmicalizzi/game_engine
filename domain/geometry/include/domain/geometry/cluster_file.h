@@ -473,7 +473,15 @@ bool read_cluster_file_identity(std::string_view path, u64& source_hash, u64& bu
 //    without them, merging two coincident vertices the author named apart. A source without
 //    authored ids welds exactly as before — a derived id is a function of the position — so its
 //    geometry sections are byte-identical and only the two new sections differ.
-inline constexpr u32 k_cluster_cache_version = 12;
+// 13: the content build computes what its source says on every toolchain (ADR-0035; geometry.md
+//    "The same bytes from every toolchain"): meshoptimizer, the builders and the import are
+//    compiled without floating-point contraction, and the cone refit calls no C library function.
+//    An entry built at 12 by GCC or Clang at x86-64-v3 is a different DAG from the one MSVC or any
+//    v2 build makes from the same source — Suzanne 87 clusters where MSVC builds 88 — under the
+//    same key, so a shared cache or a copied container handed one machine another's mesh. An
+//    entry MSVC or a v2 build made at 12 is byte-identical to what a build makes now (checked on
+//    eleven sources) and merely moves to a new cache path.
+inline constexpr u32 k_cluster_cache_version = 13;
 
 // The cache key: the source's content hash (`assets::source_mesh_hash`) mixed with the build
 // options and the version above. `page_bytes` is the streaming page target the container was

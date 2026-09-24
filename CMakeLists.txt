@@ -19,6 +19,9 @@ include(EngineOptions)
 # and a target inherits it when it is created, so anything fetched or added earlier would be
 # compiled for a different machine than the rest of the tree (ADR-0031).
 include(EngineCpuBaseline)
+# Also before everything: -ffp-contract=off for every target, so GCC and Clang compute what the
+# source says, as MSVC does, and the content build's bytes do not depend on the compiler (ADR-0035).
+include(EngineFpContraction)
 include(EngineWarnings)
 include(EngineModule)
 # The commit every app was built from (`--version`), refreshed on every build: engine_app links it.

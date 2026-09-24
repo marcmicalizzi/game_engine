@@ -385,7 +385,11 @@ bool conformal_map(const Vector<D3>& position, const Vector<u32>& corners, Vecto
     }
   }
   if (triplets.empty()) return false;
-  std::sort(triplets.begin(), triplets.end(), [](const Triplet& x, const Triplet& y) {
+  // Stable, because duplicates of one (row, col) carry different values and are summed in the order
+  // this leaves them: std::sort's order among equal keys is its implementation's, so MSVC's library
+  // and libstdc++ summed them differently, which was one reason a repacked container differed
+  // between Windows and Linux (atlas.md, "Determinism"). Stable keeps insertion order.
+  std::stable_sort(triplets.begin(), triplets.end(), [](const Triplet& x, const Triplet& y) {
     if (x.row != y.row) return x.row < y.row;
     return x.col < y.col;
   });

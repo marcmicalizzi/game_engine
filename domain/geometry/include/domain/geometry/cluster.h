@@ -33,6 +33,13 @@ inline constexpr u32 k_cone_none = 0x7f000000u;
 // transform dominates, rounding is 1e-6 and below, and 1e-3 covers both ten times over for 0.06
 // degrees of culling.
 inline constexpr f32 k_cone_margin = 1.0e-3f;
+// Its cosine and sine, of the double it widens to (0x1.0624dep-10), correctly rounded and written
+// out, so that the cone refit adds the margin by the angle-sum identities and calls nothing from
+// the C library: MSVC's CRT and glibc need not agree on std::cos in the last bit, and a build's
+// output is a function of its input on every toolchain (geometry.md, "The same bytes from every
+// toolchain"). Change the margin and these with it; the determinism test checks all three agree.
+inline constexpr f64 k_cone_margin_cos = 0x1.ffffef39085c0p-1;   // 0.9999994999999942
+inline constexpr f64 k_cone_margin_sin = 0x1.0624db22fdff9p-10;  // 0.0009999998808307693
 
 // GPU-mirrored; keep in step with the ClusterDesc struct in shaders. 48 bytes.
 struct ClusterDesc {

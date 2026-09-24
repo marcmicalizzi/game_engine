@@ -109,10 +109,11 @@ registers with three rows stored, so the row `joint_matrix` used to drop is neve
 guaranteed by x86-64, so this is not dispatch and there is no run-time choice. The summation order
 is `((c0·x + c1·y) + c2·z) + c3·w`, which is exactly `core/math`'s `operator*(const Mat4&, Vec4)`,
 so the result is the same float and not an approximation of it — wherever the compiler evaluates
-what is written. `anim_tests.cpp` compares both kernels against `Mat4 operator*` with `==` on MSVC
-and on every build without FMA, and within 8 ulp on GCC and clang at x86-64-v3, which fuse
-multiply-adds of their own accord and fuse different ones on the two sides (see "Determinism"
-below).
+what is written. `anim_tests.cpp` compares both kernels against `Mat4 operator*` with `==` on every
+build since [ADR-0035](../adr/0035-no-floating-point-contraction.md) compiled the tree without
+floating-point contraction; before that GCC and clang at x86-64-v3 fused multiply-adds of their own
+accord and fused different ones on the two sides, and the bound there was 8 ulp (see
+"Determinism" below).
 
 ### Numbers
 
@@ -233,6 +234,25 @@ header and refuse a replay taken at a different one**, the way `ActionMap`'s has
 binding set that does not match. That is cheaper and more honest than pinning `-ffp-contract=off`
 tree-wide, which would cost every kernel that legitimately wants FMA in order to make one
 comparison work.
+
+**Status, 2026-09-24: the tree pins it now, for a reason this section did not foresee**
+([ADR-0035](../adr/0035-no-floating-point-contraction.md)). The result that leaves the machine
+turned out to be the content build's: at v3, GCC and clang built a different LOD DAG from MSVC's
+out of the same glTF bytes, under a cache key that names no compiler, and switching contraction off
+for the content build's modules alone was measured to leak — `core/math` is header-only, and a
+function the compiler does not inline is one weak copy per object, of which the linker keeps the
+first ([geometry](geometry.md#the-same-bytes-from-every-toolchain)). So every target is compiled
+with `-ffp-contract=off`; GCC and clang at v3 evaluate these kernels as written, they agree with
+`Mat4 operator*` to the float on every build, and the test's `k_evaluates_as_written` reads
+`ENGINE_FP_CONTRACTION=0` and compares with `==` everywhere. The tables above are what the v3
+builds did before. What it cost this module's kernels on GCC 13 at v3, contraction on against off:
+`local_matrices` +10%, `local_to_model` and the humanoid tree +21%, `skinning_matrices` +31%, one
+skinned mesh +18% and the crowd +19% (86 → 113 ns for `skinning_matrices`, 113 → 135 µs for the
+crowd) — still well under MSVC's build of the same kernels (148 ns and 199 µs), which never fused.
+If that ever matters, the way back is `_mm_fmadd_ps` under `ENGINE_CPU_BASELINE_V3` in the kernels
+themselves, which MSVC's v3 build would get too. The replay recommendation above still stands for
+what the flag cannot reach: the C library's transcendentals, and a v2 against a v3 build once a
+kernel fuses explicitly.
 
 **Public API.** `domain/anim/skeleton.h`: `k_no_joint`, `Skeleton`, `compute_inverse_bind`, `Pose`, `PoseView`, `ConstPoseView`, `rest_pose`, `blend`, `make_additive`, `blend_additive`, `local_to_model`, `JointMatrix`, `joint_matrix`, `mat4_from_joint`, `transform_point`, `skinning_matrices`, `skin_positions`. `domain/anim/clip.h`: `k_interp_linear`/`step`/`cubic`, `k_channel_translation`/`rotation`/`scale`, `Track`, `WeightTrack`, `Clip` (`add_track`, `add_weight_track`, `sample`, `sample_weights`, `clip_time`, `validate`). `domain/anim/standard_skeleton.h`: `StandardJoint`, `k_standard_joint_count`, `standard_joint_name`, `standard_joint_from_name`, `JointMapping`, `map_joints`, `RetargetJoint`, `Retarget`, `build_retarget`, `retarget_pose`.
 

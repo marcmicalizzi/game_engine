@@ -521,8 +521,11 @@ software visibility buffers differ on 1 pixel of coverage and 29 of 21,195 ids; 
 culling draws 56 of 108 clusters and changes 0 pixels, and the scene's drops the hidden instance
 (76 pairs to 73) with 0 changed; the identity deformer draws what the rigid instance draws with not
 even a depth bit apart. The counts that come from the CPU side differ, because this build and the
-desktop's make different LOD DAGs from the same terrain (181 clusters here, 184 there, so a cull cut
-of 23 against 24), and each is checked against the CPU reference built beside it. What skips now is
+desktop's make different LOD DAGs from what reads as the same terrain (181 clusters here, 184 there,
+so a cull cut of 23 against 24), and each is checked against the CPU reference built beside it. It
+is not the same terrain: the test makes it with `std::sin` and `std::cos`, and glibc and MSVC's C
+library differ in the last bit of some of those floats; from the same bytes this build makes the
+desktop's 184 ([content-build determinism](../experiments/content-build-determinism.md)). What skips now is
 exactly what [What runs and what skips](#what-runs-and-what-skips) lists, and
 `ENGINE_GFX_TEST_DEVICE=titanxp` reproduces that list on the RTX 5090.
 

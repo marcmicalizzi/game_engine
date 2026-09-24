@@ -27,7 +27,11 @@ namespace {
 // bytes — a change to the charting or packing options it gives xatlas, to the rebake's sampling,
 // or to the xatlas pin — so the content build's cache key moves with it (repack_options_key).
 // 1: the first version (2026-09-23).
-constexpr u64 k_repack_version = 1;
+// 2: the LSCM solve sums a matrix entry's duplicates in insertion order (a stable sort), where it
+//    summed them in whatever order std::sort left equal keys — MSVC's library's on Windows,
+//    libstdc++'s on Linux — and the tree stopped contracting floating-point arithmetic
+//    (ADR-0035). The same mesh can chart to different UVs than at 1.
+constexpr u64 k_repack_version = 2;
 
 // xatlas cuts charts with absolute epsilons (a face under FLT_EPSILON of area is refused, two
 // positions within 1e-4 are one in places), which makes its behaviour a function of the units a

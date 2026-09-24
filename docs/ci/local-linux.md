@@ -572,10 +572,16 @@ only at v3. So:
   the normal, including the GPU's — the fix is a **margin in the producer**; where it matters only
   to the test, a bound with its reason written beside it.
 
-The tree deliberately does not pin `-ffp-contract=off` (see [anim](../subsystems/anim.md)'s
-"Determinism" for why); `domain/physics` is the one place that does, because Jolt's
-cross-platform determinism asks for it. Run the v3 presets before trusting a float comparison that
-only MSVC has seen.
+**Since 2026-09-24 the tree pins `-ffp-contract=off` for every target** ([ADR-0035](../adr/0035-no-floating-point-contraction.md),
+`cmake/EngineFpContraction.cmake`), so GCC and clang at v3 now compute what MSVC and the v2 builds
+compute. Until then it deliberately did not ([anim](../subsystems/anim.md)'s "Determinism" had the
+reasoning, and `domain/physics` was the one place that did, for Jolt), and what changed the answer
+was a result that leaves the machine: at v3 the content build made a different LOD DAG from the
+same glTF bytes on GCC and on clang than on MSVC, under the same cache key, and turning the flag off
+for the content build's modules alone leaked through the linker's choice among header-only
+functions' weak copies ([geometry](../subsystems/geometry.md#the-same-bytes-from-every-toolchain)).
+The lesson above still stands for arithmetic nobody here compiles — the GPU's, and a dependency's
+explicit FMA — and a v3 preset is still where a float comparison only MSVC has seen should run.
 
 ## Running the documentation gate here
 

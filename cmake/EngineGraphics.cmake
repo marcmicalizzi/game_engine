@@ -45,6 +45,10 @@ FetchContent_Declare(meshoptimizer
 set(MESHOPT_INSTALL OFF CACHE BOOL "" FORCE)
 set(MESHOPT_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(meshoptimizer)
+# Its clusterizer, sphere fit and simplifier are float code whose every decision a fused
+# multiply-add can move: compiled with contraction, GCC and Clang at x86-64-v3 build a different
+# LOD DAG from MSVC's out of the same bytes. The tree-wide -ffp-contract=off reaches it because it
+# is added before this file is included (cmake/EngineFpContraction.cmake, ADR-0035).
 
 # SDL3 (zlib): windowing, input, and Vulkan surface creation (ADR-0012, plan 08 §8.3). Static,
 # video and events only for now; audio goes through miniaudio/Steam Audio, rendering through

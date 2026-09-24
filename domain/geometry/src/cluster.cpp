@@ -121,9 +121,13 @@ f64 cluster_reach(const ClusterMesh& mesh, const ClusterDesc& cluster, F64x3 cen
   return reach;
 }
 
-f64 angle_between(F64x3 unit_a, F64x3 unit_b) noexcept {
+f64 cosine_between(F64x3 unit_a, F64x3 unit_b) noexcept {
   const f64 c = dot_d(unit_a, unit_b);
-  return std::acos(c < -1.0 ? -1.0 : (c > 1.0 ? 1.0 : c));
+  return c < -1.0 ? -1.0 : (c > 1.0 ? 1.0 : c);
+}
+
+f64 angle_between(F64x3 unit_a, F64x3 unit_b) noexcept {
+  return std::acos(cosine_between(unit_a, unit_b));
 }
 
 // meshoptimizer's own limit: a cone wider than this (cos <= 0.1, about 168 degrees across) culls
@@ -168,36 +172,51 @@ void fit_cone(const ClusterMesh& mesh, ClusterDesc& cluster, Vector<ConePlane>& 
             1.0f) &
         0x00ffffffu;
   }
+  // Every step from here to the packed cone is IEEE arithmetic and sqrt, both correctly rounded on
+  // every platform, so a cone is the same bytes whatever compiled it (with contraction off, which
+  // cmake/EngineFpContraction.cmake sees to for the whole tree). That is why the widest normal is
+  // tracked as the smallest **cosine** rather than as an angle through std::acos, and why the
+  // margin is added by the angle-sum identities over constants rather than by
+  // std::cos(widest + margin): the same cone to rounding, but rounding the C library does not get
+  // a say in.
   u32 axis_bytes = 0;
   F64x3 axis;
   f64 axis_length = 0.0;
-  f64 widest = 4.0;  // more than pi: no candidate yet
+  f64 nearest = -2.0;  // the widest normal's cosine to the best axis; below -1: no candidate yet
   for (u32 i = 0; i < candidate_count; ++i) {
     // k_cone_none's axis bytes are zero, so OR-ing them in reads the candidate's axis alone.
     const F64x3 q = widen(decode_cone(candidates[i] | k_cone_none).axis);
     const f64 l = length_d(q);
     if (!(l > 0.0)) continue;
     const F64x3 u = scale_d(q, 1.0 / l);
-    f64 w = 0.0;
+    f64 c = 1.0;
     for (const ConePlane& plane : planes)
-      w = std::max(w, angle_between(u, plane.normal));
-    if (w < widest) {
-      widest = w;
+      c = std::min(c, cosine_between(u, plane.normal));
+    if (c > nearest) {
+      nearest = c;
       axis = u;
       axis_length = l;
       axis_bytes = candidates[i];
     }
   }
+  if (nearest < -1.0) {
+    cluster.cone = k_cone_none;
+    return;
+  }
   const f64 margin = static_cast<f64>(k_cone_margin);
-  widest += margin;
-  if (!(std::cos(widest) > k_cone_min_cos)) {
+  // widest = acos(nearest) + margin, as its cosine and sine. sin(acos(c)) is sqrt((1 - c)(1 + c)),
+  // which keeps its precision where 1 - c*c would cancel: near c = 1, the flat clusters.
+  const f64 sin_nearest = std::sqrt((1.0 - nearest) * (1.0 + nearest));
+  const f64 cos_widest = nearest * k_cone_margin_cos - sin_nearest * k_cone_margin_sin;
+  const f64 sin_widest = sin_nearest * k_cone_margin_cos + nearest * k_cone_margin_sin;
+  if (!(cos_widest > k_cone_min_cos)) {
     cluster.cone = k_cone_none;
     return;
   }
   // The cull pass normalizes the axis after the world transform and cluster_backfacing does not,
   // so the cutoff is scaled by the axis' own length when that is above 1: either reading then
   // implies the camera sits at least `widest` past every normal.
-  const f64 cutoff = std::sin(widest) * std::max(1.0, axis_length);
+  const f64 cutoff = sin_widest * std::max(1.0, axis_length);
   const f64 cutoff_steps = std::ceil(cutoff * 127.0);
   if (!(cutoff_steps < 127.0)) {
     cluster.cone = k_cone_none;

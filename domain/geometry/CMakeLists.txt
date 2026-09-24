@@ -16,7 +16,8 @@ engine_module_tests(NAME geometry
   SOURCES tests/cluster_tests.cpp tests/cluster_lod_tests.cpp tests/cluster_pages_tests.cpp
           tests/cluster_file_tests.cpp tests/atlas_seam_tests.cpp tests/morph_tests.cpp
           tests/uv_repair_tests.cpp tests/limit_surface_tests.cpp tests/surface_binding_tests.cpp
-          tests/vertex_id_tests.cpp tests/size_table.cpp)
+          tests/vertex_id_tests.cpp tests/size_table.cpp
+          tests/determinism_tests.cpp)
 
 # The per-frame half of the limit surface: the operator's matvec at the fixture's size and at the
 # cage-size limit, and the displacement transfer over a region's bound vertices.

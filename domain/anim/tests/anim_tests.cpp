@@ -39,8 +39,12 @@ bool near(Vec3 a, Vec3 b, f32 eps = 1.0e-5f) {
 // expression, and at x86-64-v3 both have the instruction. A fused and an unfused sum of the same
 // products differ in the last bits, and the two sides compared below — the kernels' SSE
 // intrinsics and core/math's scalar operator* — are spelled differently enough that GCC fuses
-// different multiplies in each (docs/ci/local-linux.md, "What the first v3 runs found").
-#if (defined(_MSC_VER) && !defined(__clang__)) || !defined(__FMA__)
+// different multiplies in each (docs/ci/local-linux.md, "What the first v3 runs found"). Since
+// ADR-0035 the tree is compiled with -ffp-contract=off (ENGINE_FP_CONTRACTION=0), so every build
+// evaluates as written and the bound below is zero everywhere; the other branch is for a build
+// that turns contraction back on.
+#if (defined(_MSC_VER) && !defined(__clang__)) || !defined(__FMA__) || \
+    (defined(ENGINE_FP_CONTRACTION) && ENGINE_FP_CONTRACTION == 0)
 constexpr bool k_evaluates_as_written = true;
 #else
 constexpr bool k_evaluates_as_written = false;
