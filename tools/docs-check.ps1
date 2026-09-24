@@ -19,6 +19,8 @@
     experiment  an E<n> row of the plan's experiment table that says Done or Measured links
                 its write-up under docs/experiments/.
     plan        docs/plan/README.md's document table lists every docs/plan page.
+    readme      the root README.md exists, names every layer directory and every engine_app(),
+                and links AGENTS.md and the plan, ADR, subsystems and experiments indexes.
 
   Every failure is reported as file:line, and one run reports all of them: a check that stops
   at the first problem costs a round trip per problem.
@@ -272,6 +274,39 @@ foreach ($name in ($apps.Keys | Sort-Object)) {
   if ($appsRowText -and $appsRowText -notmatch $pattern) {
     Add-Problem $subsystemsReadme $readmeRows['apps.md'].Line 'subsystems' `
       "app '$name' is missing from the apps row of the table"
+  }
+}
+
+# The root README is the first page a stranger reads and the one page no module owns, so it
+# rotted: it said "Phase 0, nothing renders yet" for nine days of Phase 1 while every other
+# page moved with the code. It cannot be checked for truth, but it can be checked for shape:
+# it exists, it names every layer directory and every executable, and it links the four
+# indexes that do carry the current state. A README that fails this is a README that lies by
+# omission, which is the failure it had.
+$rootReadme = Join-Path $Root 'README.md'
+if (-not (Test-Path -LiteralPath $rootReadme)) {
+  Add-Problem $rootReadme 1 'readme' 'the repository has no README.md at its root'
+} else {
+  $rootReadmeText = [IO.File]::ReadAllText($rootReadme)
+  foreach ($layerDir in @('core', 'foundation', 'domain', 'systems', 'apps', 'game')) {
+    if (-not (Test-Path -LiteralPath (Join-Path $Root $layerDir))) { continue }
+    if ($rootReadmeText -notmatch ('`' + [regex]::Escape($layerDir) + '/`')) {
+      Add-Problem $rootReadme 1 'readme' "the root README does not name the layer directory '$layerDir/'"
+    }
+  }
+  foreach ($name in ($apps.Keys | Sort-Object)) {
+    $app = $apps[$name]
+    $spellings = @($name, ($name -replace '_', '-'))
+    if ($app.Output) { $spellings += $app.Output }
+    $pattern = ($spellings | ForEach-Object { [regex]::Escape($_) }) -join '|'
+    if ($rootReadmeText -notmatch $pattern) {
+      Add-Problem $rootReadme 1 'readme' "the root README does not name the executable '$name'"
+    }
+  }
+  foreach ($index in @('AGENTS.md', 'docs/plan/README.md', 'docs/adr/README.md', 'docs/subsystems/README.md', 'docs/experiments/README.md')) {
+    if ($rootReadmeText -notmatch ('\(' + [regex]::Escape($index) + '(#[^)]*)?\)')) {
+      Add-Problem $rootReadme 1 'readme' "the root README does not link $index"
+    }
   }
 }
 
@@ -564,7 +599,8 @@ if ($problems.Count -gt 0) {
   }
   Write-Host ''
   Write-Host 'The rule is "Documentation moves with the code" in AGENTS.md: a module has a page, an'
-  Write-Host 'ADR is numbered and indexed, and every link resolves. Fix the documents, not this check.'
+  Write-Host 'ADR is numbered and indexed, every link resolves, and the root README names what exists.'
+  Write-Host 'Fix the documents, not this check.'
   exit 1
 }
 

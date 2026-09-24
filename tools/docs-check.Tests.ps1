@@ -176,6 +176,20 @@ The first decision is [ADR-0001](../adr/0001-first-decision.md#context), the sha
 '@
   Set-FixtureFile $root 'docs/experiments/e1-thing.md' "# E1 — Does it work?`n`nIt does.`n"
 
+  Set-FixtureFile $root 'AGENTS.md' "# Working in this repository`n`nRead the plan first.`n"
+  Set-FixtureFile $root 'docs/experiments/README.md' "# Experiments`n`nOne write-up per experiment.`n"
+  Set-FixtureFile $root 'README.md' @'
+# Fixture engine
+
+Status lives in the plan's ledger. Layers: `core/` holds the bottom of the tree and `apps/` the
+executables; `engine-cli` is the scriptable client.
+
+- [docs/plan/README.md](docs/plan/README.md)
+- [docs/adr/README.md](docs/adr/README.md)
+- [docs/subsystems/README.md](docs/subsystems/README.md)
+- [docs/experiments/README.md](docs/experiments/README.md)
+- [AGENTS.md](AGENTS.md)
+'@
   return $root
 }
 
@@ -344,6 +358,30 @@ Use [0000-template.md](0000-template.md).
   $root = New-Fixture
   Set-FixtureFile $root 'docs/plan/02-scope.md' "# 02 — Scope`n`nIn scope: this.`n"
   Test-Reports 'a plan page the plan does not list' $root "docs/plan/02-scope.md is not listed in the plan's document table"
+
+  Write-Host 'case: the root README'
+  $root = New-Fixture
+  Set-FixtureFile $root 'README.md' @'
+# Fixture engine
+
+Layers: `core/` and `apps/`. See [docs/plan/README.md](docs/plan/README.md), [docs/adr/README.md](docs/adr/README.md),
+[docs/subsystems/README.md](docs/subsystems/README.md), [docs/experiments/README.md](docs/experiments/README.md) and [AGENTS.md](AGENTS.md).
+'@
+  Test-Reports 'a root README that names no executable is reported' $root `
+    "README.md:1: [readme] the root README does not name the executable 'engine_cli'"
+  $root = New-Fixture
+  Set-FixtureFile $root 'README.md' @'
+# Fixture engine
+
+Layers: `core/` and `apps/`; `engine-cli` is the client. See [docs/plan/README.md](docs/plan/README.md),
+[docs/subsystems/README.md](docs/subsystems/README.md), [docs/experiments/README.md](docs/experiments/README.md) and [AGENTS.md](AGENTS.md).
+'@
+  Test-Reports 'a root README that drops an index link is reported' $root `
+    'README.md:1: [readme] the root README does not link docs/adr/README.md'
+  $root = New-Fixture
+  Remove-Item -LiteralPath (Join-Path $root 'README.md')
+  Test-Reports 'a repository with no root README is reported' $root `
+    'README.md:1: [readme] the repository has no README.md at its root'
 
   Write-Host 'case: one run, every problem'
   $root = New-Fixture
