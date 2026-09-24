@@ -24,6 +24,10 @@
     content/input-logs  the device-log corpus foundation/input replays. Bundled
                         rather than skipped: it is 176 KB and it is the only
                         description of those three devices the project has.
+                        Its sessions/ are engine-view's synthetic session and
+                        the trajectory it has to fly.
+    content/input-maps  engine-view's default bindings, which its tests hold
+                        against the compiled-in map (4 KB).
     content/test-scenes the reference-scene definitions (17 KB), for a later
                         job that wants them.
     content/samples     the Khronos glTF models, with -WithSamples only. They
@@ -242,9 +246,9 @@ foreach ($path in $exeFiles) {
   }
 }
 
-# Data the tests open. `content/input-logs` is the one the suite needs; the rest is small and
-# useful to have on the far end.
-$dataDirs = @('content/input-logs', 'content/test-scenes')
+# Data the tests open. `content/input-logs` and `content/input-maps` are the ones the suite needs;
+# the rest is small and useful to have on the far end.
+$dataDirs = @('content/input-logs', 'content/input-maps', 'content/test-scenes')
 if ($WithSamples) { $dataDirs += 'content/samples' }
 $data = @()
 foreach ($rel in $dataDirs) {

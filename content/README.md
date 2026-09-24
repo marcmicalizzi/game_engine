@@ -4,6 +4,8 @@
 - `golden/` golden images and metrics by scene × resolution × GPU class. `golden/local/` is ignored by git.
 - `migration-corpus/` old documents and saves that every schema migration must still load.
 - `generation/` subject lists for `tools/generate.ps1` ([docs/content-generation.md](../docs/content-generation.md)): the text an image model is asked for, with a name, a category and a rough size per subject. The lists are committed so a generated set can be regenerated; **what they generate never is** — images, meshes and their provenance sidecars live under the local root outside the repository. `e10-desert-props.json` is experiment E10's twenty Desert Survival props.
+- `input-logs/` recordings of input, committed as fixtures: real devices nobody here owns (`engine-input probe`), replayed by `foundation/input`'s corpus test, and in `sessions/` recorded `engine-view --interactive` sessions — so far one synthetic session and the camera trajectory it flies, the replay test's fixture. `input-logs/README.md` says what each file is.
+- `input-maps/` action maps as data: `engine-view.json` is the interactive camera's default bindings, byte for byte what engine-view compiles in. `input-maps/README.md` says why changing one stops recorded sessions replaying.
 - `samples/` permissively licensed sample assets (Khronos glTF samples, CC0 and CC-BY only), fetched by `tools/fetch-samples.ps1` at a pinned commit and ignored by git; `samples/LICENSES.md` records each model's license. `engine-view --mesh content/samples/Suzanne/Suzanne.gltf` renders one.
 
 `golden/` and `migration-corpus/` are empty until their consumers exist.

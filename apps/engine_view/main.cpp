@@ -16,6 +16,10 @@
 // 64-bit buffer atomics, no presentation support, or `--raster rt` / `--shadows rt` on a device
 // that cannot trace), which tests treat as a skip. A device without mesh shaders is not one of
 // them: it draws through the vertex-shader baseline tier.
+#include "fly_camera.h"
+#include "pacing.h"
+#include "window_input.h"
+
 #include <core/hash/hash.h>
 #include <core/jobs/job_system.h>
 #include <core/json/json.h>
@@ -34,7 +38,10 @@
 #include <domain/gfx/vulkan.h>
 #include <foundation/bench/machine_state.h>
 #include <foundation/image/png.h>
+#include <foundation/input/input.h>
+#include <foundation/input/input_log.h>
 #include <foundation/io/vfs.h>
+#include <foundation/tunables/tunables.h>
 #include <foundation/window/window.h>
 #include <systems/renderer/camera_path.h>
 #include <systems/renderer/flythrough.h>
@@ -71,6 +78,28 @@ namespace {
 
 ENGINE_LOG_CATEGORY_DEFINE(log_view, "view");
 
+// ---- the interactive camera's parameters (fly_camera.h) ---------------------------------------
+//
+// Read once, when a live session starts, and written into its session header: a replay flies with
+// the numbers its recording was flown with, so changing one of these never changes what an old
+// log replays to. They are the owner's to tune with `--tunable name=value` or `--tunables <file>`.
+tunables::Int fly_tick_hz{"view.fly.tick_hz", 240, 30, 4000,
+                          "Fixed ticks per second the interactive camera integrates at; frames "
+                          "sample it at tick boundaries"};
+tunables::Float fly_speed{"view.fly.speed", 0.0, 0.0, 1.0e6,
+                          "Interactive camera speed in metres per second; 0 flies a tenth of the "
+                          "scene's bounding radius a second, whatever the scene's scale"};
+tunables::Float fly_fast{"view.fly.fast", 4.0, 1.0, 1000.0,
+                         "Speed multiplier while the fast action (Shift) is held"};
+tunables::Float fly_slow{"view.fly.slow", 0.25, 0.001, 1.0,
+                         "Speed multiplier while the slow action (Alt) is held"};
+tunables::Float fly_look{"view.fly.look", 0.0022, 1.0e-5, 0.1,
+                         "Mouse-look sensitivity, radians per pixel of pointer motion"};
+tunables::Float fly_turn_rate{"view.fly.turn_rate", 2.5, 0.01, 100.0,
+                              "Stick turn rate, radians per second at full deflection"};
+tunables::Float fly_pitch_limit{"view.fly.pitch_limit_deg", 89.0, 1.0, 89.9,
+                                "How far the interactive camera may pitch up or down, degrees"};
+
 // clang-format off
 constexpr const char* k_usage =
     "usage: engine-view [--width <px>] [--height <px>] [--frames <n>] [--capture <file.png>]\n"
@@ -96,6 +125,9 @@ constexpr const char* k_usage =
     "                   [--warmup-seconds <s>] [--census-pixels]\n"
     "                   [--verify-occlusion] [--marker-captures <dir>]\n"
     "                   [--require-quiet] [--wait-quiet <seconds>]\n"
+    "                   [--interactive] [--record-input <log.jsonl>] [--replay-input <log.jsonl>]\n"
+    "                   [--inject-input <log.jsonl>] [--input-map <map.json>]\n"
+    "                   [--tunables <file.json>] [--tunable <name=value,...>]\n"
     "       engine-view --version    the commit this binary was built from, as one JSON line\n"
     "\n"
     "  --frames <n>     render n frames, then exit (0: until the window closes)\n"
@@ -264,6 +296,29 @@ constexpr const char* k_usage =
     "  --marker-captures <d>  offscreen: write a PNG of every marker frame of the path into <d>\n"
     "  --require-quiet  --benchmark: measure nothing on a busy machine; exit 4 instead\n"
     "  --wait-quiet <s> --benchmark: wait up to s seconds for a quiet machine, then run anyway\n"
+    "  --interactive    fly the camera: WASD, E/Space up, Q/Ctrl down, the mouse to look while the\n"
+    "                   window holds the pointer (Esc takes it and gives it back), Shift fast, Alt\n"
+    "                   slow, M drops a marker; a gamepad's sticks, triggers, stick clicks, Back\n"
+    "                   and North do the same. The camera integrates at a fixed tick\n"
+    "                   (view.fly.tick_hz, 240) and never from frame time; the title shows the\n"
+    "                   last frame's ms and the p99 over the last second. Starts at the orbit\n"
+    "                   camera, or at --camera-path's first frame. --benchmark writes the flythrough\n"
+    "                   JSONL of the session (one record per frame, ticks included)\n"
+    "  --record-input <f>  --interactive: write the session's input log, with a header naming\n"
+    "                   the scene, the start camera, the tick rate, the map and this build\n"
+    "  --replay-input <f>  fly a recorded session instead of the window's input: the same camera\n"
+    "                   to the last bit, until the log ends (or --frames). In the window at its\n"
+    "                   recorded pace, or offscreen (--offscreen, --benchmark, --marker-captures)\n"
+    "                   at one frame per four ticks; --marker-captures draws every marker. Names\n"
+    "                   its own scene unless --scene or --mesh is given; refuses a log recorded\n"
+    "                   against another action map or another camera integration version\n"
+    "  --inject-input <f>  --interactive: push a log's keys and mouse motion into the window's own\n"
+    "                   event queue at their ticks, as if typed, for a test or a smoke run with\n"
+    "                   nobody at the keyboard; the real pointer is never taken\n"
+    "  --input-map <f>  the action map to fly with (default: engine-view's own, the same as\n"
+    "                   content/input-maps/engine-view.json)\n"
+    "  --tunables <f>   load tunable values from a JSON object file (view.fly.* among them)\n"
+    "  --tunable <s>    set tunables: \"view.fly.speed=20,view.fly.look=0.003\"\n"
     "  --log <spec>     log levels, e.g. \"info,gfx=debug\" (stderr shows warnings and up)\n"
     "  --shaders <m>    shader manifest (default: <exe dir>/../shaders/manifest.json when present);\n"
     "                   shaders recompile and reload when their .slang sources change\n"
@@ -356,6 +411,17 @@ struct Options {
   std::string marker_captures;
   bool require_quiet = false;
   u32 wait_quiet_s = 0;
+  // The interactive camera (fly_camera.h). `--replay-input` implies `interactive`; `offscreen`
+  // is resolved after parsing, because `--benchmark` means "offscreen" for a flythrough and a
+  // replay and "measure the window" for a live session somebody is flying.
+  bool interactive = false;
+  std::string record_input;
+  std::string replay_input;
+  std::string inject_input;
+  std::string input_map;
+  std::string tunables_file;
+  std::string tunable_overrides;
+  bool procedural_given = false;  // --procedural or --grid: a replay then draws what it is told
   renderer::RenderSettings settings;
 };
 
@@ -1060,6 +1126,244 @@ int unavailable(const char* what, const std::string& error) {
   return k_exit_unavailable;
 }
 
+// ---- the interactive camera: what main prepares, and what both frame loops share ------------
+//
+// `--interactive` flies `view::FlySession` from the window's input in the windowed loop in
+// `main`; `--replay-input` flies the same session from a log, in that loop at the recording's
+// pace or in `run_offscreen` at a fixed four ticks a frame. Everything about a session that does
+// not need a device — the map, the log, its header, the refusals — is settled here first, so a
+// log that cannot be replayed is refused before a window or a device is asked for.
+struct Interactive {
+  bool on = false;
+  bool replay = false;
+  input::ActionMap map;
+  input::InputLog log;         // --replay-input: the recording
+  view::SessionHeader header;  // a replay's, from its log; a live session's is built at start
+  u64 log_hash = 0;            // the recording file's bytes, which name what a replay measured
+  input::InputLog injected;    // --inject-input
+  u64 inject_end = 0;          // the tick the injected session ended at
+};
+
+// The per-frame line an interactive `--benchmark` keeps until the frame's GPU numbers fold in
+// (`Stats::last`), a slot's worth of frames later. A ring, because a session is open-ended: the
+// records themselves are the only thing that grows.
+struct PendingFrame {
+  u64 submission = ~u64{0};
+  u32 frame = 0;
+  u32 ticks = 0;
+  f64 time = 0.0;
+  f64 cpu_ms = 0.0;
+  f64 frame_ms = 0.0;
+};
+constexpr u32 k_pending_frames = 8;  // more than k_frames_in_flight + 1
+
+// Moves a folded frame's numbers into a record, if the fold is of a frame this loop submitted.
+void take_folded(const renderer::SceneRenderer& renderer, u64& folded,
+                 const PendingFrame (&pending)[k_pending_frames],
+                 Vector<scene::FrameRecord>& records) {
+  const renderer::Stats& stats = renderer.stats();
+  if (stats.folded == folded) return;
+  folded = stats.folded;
+  const PendingFrame& p = pending[stats.last.submission % k_pending_frames];
+  if (p.submission != stats.last.submission) return;
+  scene::FrameRecord record = renderer::frame_record(stats.last, 0, p.frame, p.time);
+  record.cpu_ms = p.cpu_ms;
+  record.frame_ms = p.frame_ms;
+  record.ticks = p.ticks;
+  records.push_back(std::move(record));
+}
+
+int prepare_interactive(Options& options, Interactive& it) {
+  it.on = true;
+  it.replay = !options.replay_input.empty();
+  std::string error;
+  if (options.input_map.empty()) {
+    it.map = view::default_fly_map();
+  } else {
+    std::string text;
+    JsonValue value;
+    if (io::read_file(options.input_map, text) != io::Status::Ok) {
+      return fail("input map", "cannot read " + options.input_map);
+    }
+    if (const JsonParseResult parsed = parse_json(text, value); !parsed.ok) {
+      return fail("input map", options.input_map + ": " + parsed.message);
+    }
+    if (!it.map.from_json(value, &error)) return fail("input map", error);
+  }
+  view::FlyActions actions;
+  if (!view::resolve_fly_actions(it.map, actions, &error)) return fail("input map", error);
+
+  if (it.replay) {
+    if (it.log.load(options.replay_input, &error) != io::Status::Ok) return fail("replay", error);
+    if (!view::session_from_json(it.log.session(), it.header, &error)) {
+      return fail("replay", options.replay_input + ": " + error);
+    }
+    // The refusal the input module makes, made before anything is loaded: the same key would
+    // mean another action, and the replay would diverge from its session without saying so.
+    const input::InputState probe(it.map);
+    if (!it.log.check_map(probe, &error)) return fail("replay", error);
+    std::string bytes;
+    if (io::read_file(options.replay_input, bytes) == io::Status::Ok) {
+      it.log_hash = hash_bytes(bytes.data(), bytes.size());
+    }
+    // The scene the recording drew, unless the command line names another. The camera flies the
+    // same path over either; the pictures are of whatever is loaded.
+    const view::SessionHeader& h = it.header;
+    if (options.scene.empty() && options.mesh.empty() && !options.procedural_given) {
+      options.scene = h.scene;
+      options.mesh = h.mesh;
+      options.procedural = h.procedural;
+      options.grid = h.grid;
+      options.grid_instances = h.grid_instances;
+    } else if (options.scene != h.scene || options.mesh != h.mesh) {
+      std::fprintf(stderr,
+                   "engine-view: replaying over a scene the recording did not draw (it drew "
+                   "scene '%s' mesh '%s'); the camera flies the same path\n",
+                   h.scene.c_str(), h.mesh.c_str());
+    }
+  }
+  if (!options.inject_input.empty()) {
+    if (it.injected.load(options.inject_input, &error) != io::Status::Ok) {
+      return fail("inject", error);
+    }
+    view::SessionHeader injected;
+    it.inject_end = view::session_from_json(it.injected.session(), injected, nullptr)
+                        ? injected.ticks
+                        : it.injected.last_tick().value + 1;
+  }
+  return 0;
+}
+
+// A live session's header: this build, what the command line drew, and where the camera starts —
+// the camera path's first frame, or the orbit — with the tunables read once, here.
+view::SessionHeader live_header(const Options& options, const renderer::SceneData& scene_data,
+                                const renderer::CameraPath* path) {
+  view::SessionHeader h;
+  h.engine_commit = build_stamp::commit();
+  h.engine_dirty = build_stamp::dirty();
+  h.scene = options.scene;
+  h.mesh = options.mesh;
+  h.procedural = options.procedural;
+  h.grid = options.grid;
+  h.grid_instances = options.grid_instances;
+  renderer::Camera start;
+  if (path != nullptr && !path->keys.empty()) {
+    start = renderer::camera_path_frame(*path, 0, path->frame_count());
+  } else {
+    start = renderer::orbit_camera(scene_data.center, scene_data.radius, options.orbit, 0);
+    // The orbit's near plane is a hundredth of the scene's radius, which is right for a camera
+    // that never comes closer than the scene's edge and 26 m for one flying low over the desert
+    // overlook. Reversed-Z has depth to spare, so a camera that flies in gets a near one.
+    if (start.znear > 0.05f) start.znear = 0.05f;
+  }
+  h.start = view::fly_state_from_camera(start);
+  h.fov_y = start.fov_y;
+  h.znear = start.znear;
+  h.params.tick_hz = static_cast<u32>(fly_tick_hz.get());
+  const f64 speed = fly_speed.get();
+  const f64 scene_speed = static_cast<f64>(scene_data.radius) * 0.1;
+  h.params.speed =
+      static_cast<f32>(speed > 0.0 ? speed : (scene_speed > 1.0e-3 ? scene_speed : 1.0e-3));
+  h.params.fast = static_cast<f32>(fly_fast.get());
+  h.params.slow = static_cast<f32>(fly_slow.get());
+  h.params.look = static_cast<f32>(fly_look.get());
+  h.params.turn_rate = static_cast<f32>(fly_turn_rate.get());
+  h.params.pitch_limit = static_cast<f32>(fly_pitch_limit.get() * 3.14159265358979323846 / 180.0);
+  return h;
+}
+
+// The summary's `interactive` block: how the session was driven, its header, and the trajectory
+// it flew — the hash over every tick's camera, where it ended, and its markers.
+JsonValue interactive_summary(const Interactive& it, const view::FlySession& session,
+                              const Options& options) {
+  JsonValue out = JsonValue::object();
+  out.set("mode", it.replay ? "replay" : "live");
+  out.set("map", it.map.hash());
+  out.set("record_input", options.record_input);
+  out.set("replay_input", options.replay_input);
+  out.set("inject_input", options.inject_input);
+  view::SessionHeader header = session.header();
+  header.ticks = session.tick().value;
+  out.set("session", view::session_to_json(header));
+  out.set("trajectory", view::trajectory_to_json(session.trajectory(), header.params.tick_hz));
+  return out;
+}
+
+// What a run drew and on what, into a flythrough summary: the scene, the path (a camera path, or
+// a replayed session's log), every mesh's identity and one hash over all of them, and the
+// renderer's settings. Shared by the flythrough, the offscreen replay and a live session's
+// `--benchmark`, so the three summaries name what they measured the same way.
+void describe_run(const renderer::SceneData& scene_data, const Options& options,
+                  const std::string& path_name, u64 path_hash,
+                  const renderer::ResolvedSettings& resolved, const renderer::SceneRenderer& view,
+                  scene::FlythroughSummary& summary) {
+  summary.scene = !scene_data.name.empty() ? scene_data.name : options.scene;
+  summary.scene_hash = renderer::hash_hex(scene_data.file_hash);
+  summary.path = path_name;
+  summary.path_hash = renderer::hash_hex(path_hash);
+  u64 identity = hash_combine(scene_data.file_hash, path_hash);
+  for (u32 m = 0; m < scene_data.parts.size(); ++m) {
+    const renderer::SourceMesh& source = scene_data.sources[m];
+    identity = hash_combine(identity, source.source_hash);
+    scene::MeshIdentity mesh;
+    const bool described = m < scene_data.mesh_info.size();
+    mesh.name = described ? scene_data.mesh_info[m].name : std::string();
+    mesh.source = described ? scene_data.mesh_info[m].origin : "scene";
+    mesh.path = source.container.empty() ? mesh.source : source.container;
+    mesh.hash = renderer::hash_hex(source.source_hash);
+    mesh.clusters = scene_data.parts[m].cluster_count;
+    const geometry::ClusterMeshPart& part = scene_data.parts[m];
+    for (u32 c = 0; c < part.leaf_cluster_count; ++c)
+      mesh.triangles +=
+          scene_data.lod.mesh.clusters[part.first_cluster + part.first_leaf_cluster + c]
+              .triangle_count;
+    summary.meshes.push_back(std::move(mesh));
+  }
+  summary.identity = renderer::hash_hex(identity);
+  summary.width = view.width();
+  summary.height = view.height();
+  summary.views = renderer::view_layout_name(resolved.settings.views);
+  summary.raster = renderer::raster_name(resolved.settings.raster);
+  summary.shadows = renderer::resolved_shadow_name(resolved);
+  summary.occlusion = resolved.occlusion;
+  summary.lod_px = resolved.settings.lod_px;
+  summary.stream = resolved.stream;
+  summary.page_budget_bytes = resolved.settings.page_budget_bytes;
+  summary.instances = scene_data.instances.size();
+  summary.pairs = scene_data.pair_count;
+  summary.clusters = scene_data.cluster_count();
+  if (view.valid()) renderer::summarize_rt(view.stats().rt, summary.rt);
+}
+
+// The `.jsonl` a benchmark writes: one record per line, then the summary line.
+io::Status write_benchmark(const std::string& path, std::span<const scene::FrameRecord> records,
+                           const std::string& summary_line) {
+  std::string text;
+  for (const scene::FrameRecord& record : records) {
+    write_json(schema::to_json(record), text, JsonWriteOptions{.pretty = false});
+    text.push_back('\n');
+  }
+  text += summary_line;
+  text.push_back('\n');
+  return io::write_file(path, text);
+}
+
+// Saves a live session's recording: its events, the map's hash, and the session header with the
+// number of ticks it ran, so a replay runs exactly those.
+bool save_recording(const Options& options, const Interactive& it, const view::FlySession& session,
+                    input::InputLog& recording, std::string& error) {
+  view::SessionHeader header = session.header();
+  header.ticks = session.tick().value;
+  recording.set_map(it.map);
+  recording.set_session(view::session_to_json(header));
+  const io::Status status = recording.save(options.record_input);
+  if (status != io::Status::Ok) {
+    error = "cannot write " + options.record_input + ": " + io::status_name(status);
+    return false;
+  }
+  return true;
+}
+
 // `--reference <spp>`: the whole run offscreen, with no window, no surface and no swapchain
 // (docs/plan/04-renderer.md §4.8, docs/subsystems/renderer.md "Reference renderer"). A converged
 // picture is minutes of compute showing nothing until it is done, the machines that run the
@@ -1229,6 +1533,7 @@ int run_reference(Options& options) {
         static_cast<unsigned long long>(stats.gpu_memory.used_mib),
         static_cast<unsigned long long>(stats.gpu_memory.device_local_total_mib),
         machine_text.c_str(), captured ? "true" : "false");
+    std::fflush(stdout);  // whole, before stderr says anything (see the windowed summary)
     (void)bench::warn_if_busy(bench::worst_of(machine_start, machine_end), bench::QuietThresholds{},
                               stderr);
   }
@@ -1283,7 +1588,14 @@ bench::MachineState wait_for_quiet(u32 seconds) {
 // **Everything that reads back comes after it, untimed**: the census (visible pairs by DAG level
 // and mesh, per frame), the occlusion check (every frame drawn twice more, with and without
 // occlusion culling, compared pixel for pixel), and the marker captures.
-int run_offscreen(Options& options) {
+//
+// **`--replay-input` offscreen** flies a recorded session instead of a path: one frame per
+// `tick_hz / 60` ticks (four at the default 240 Hz), whatever the recording's frame rate was. The
+// camera is a function of the ticks alone, so this samples the path the player flew at a steady
+// nominal 60 Hz — which is what makes a replay a benchmark of the *path*, repeatable run to run —
+// and the markers, the ticks where `marker` was pressed, are drawn afterwards from their own
+// cameras, so no frame grouping can move them.
+int run_offscreen(Options& options, Interactive& interactive) {
   std::string error;
   gfx::DeviceOptions device_options;
   device_options.adapter_index = options.adapter;
@@ -1315,7 +1627,13 @@ int run_offscreen(Options& options) {
   bool captured = false;
   f64 timed_seconds = 0.0;
   u64 rendered = 0;
-  const u32 repeats = options.benchmark.empty() ? 1u : options.repeats;
+  // A replay is flown once: its frames are a function of its ticks, and a second pass over them
+  // would measure the same frames again, which `--repeat` exists to do for a path's.
+  const u32 repeats = options.benchmark.empty() || interactive.on ? 1u : options.repeats;
+  view::FlySession session;
+  const u32 tick_hz = interactive.header.params.tick_hz > 0 ? interactive.header.params.tick_hz : 1;
+  const u32 ticks_per_frame =
+      tick_hz / view::k_frame_index_hz > 0 ? tick_hz / view::k_frame_index_hz : 1u;
   do {
     renderer::SceneDesc desc;
     desc.procedural = options.procedural == "shredded-atlas" ? renderer::Procedural::shredded_atlas
@@ -1374,6 +1692,12 @@ int run_offscreen(Options& options) {
       have_path = true;
     }
     frames = options.frames != 0 ? options.frames : (have_path ? path.frame_count() : 60u);
+    if (interactive.on) {
+      // Until the log ends: every tick the recording ran, a frame per `ticks_per_frame` of them.
+      const u64 whole = (interactive.header.ticks + ticks_per_frame - 1) / ticks_per_frame;
+      frames =
+          options.frames != 0 && options.frames < whole ? options.frames : static_cast<u32>(whole);
+    }
     if (!scene.create(device, scene_data, resolved, &error)) {
       exit_code = fail("scene", error);
       break;
@@ -1421,7 +1745,77 @@ int run_offscreen(Options& options) {
                  : renderer::orbit_camera(scene_data.center, scene_data.radius, options.orbit, f);
     };
 
-    if (!options.benchmark.empty()) {
+    if (interactive.on) {
+      // ---- a recorded session, flown again ----------------------------------------------------
+      if (!session.start(interactive.map, interactive.header, &error)) {
+        exit_code = fail("replay", error);
+        break;
+      }
+      if (!options.benchmark.empty()) {
+        const bench::MachineState before = wait_for_quiet(options.wait_quiet_s);
+        if (options.require_quiet && !bench::is_quiet(before, bench::QuietThresholds{})) {
+          std::fprintf(stderr, "engine-view: the machine is busy, and --require-quiet: %s\n",
+                       bench::describe(before).c_str());
+          exit_code = k_exit_busy;
+          break;
+        }
+        machine_start = before;
+      }
+      const u64 end = interactive.header.ticks;
+      records.reserve(frames);
+      view_renderer.reset_stats();
+      PendingFrame pending[k_pending_frames];
+      u64 folded = view_renderer.stats().folded;
+      u64 submissions = 0;
+      u32 cursor = 0;
+      i64 previous_start = 0;
+      const i64 started = time::monotonic_ns();
+      bool ok = true;
+      for (u32 f = 0; f < frames; ++f) {
+        const i64 start = time::monotonic_ns();
+        view_renderer.begin_frame();
+        take_folded(view_renderer, folded, pending, records);
+        const i64 ready = time::monotonic_ns();
+        const u64 before_tick = session.tick().value;
+        const u64 to = before_tick + ticks_per_frame < end ? before_tick + ticks_per_frame : end;
+        cursor = session.run(interactive.log.events(), cursor, SimTick{to});
+        renderer::FrameDesc frame;
+        frame.camera = session.camera();
+        frame.frame_index = session.frame_index();
+        if (view_renderer.submit_frame(frame, &error) == 0) {
+          ok = false;
+          break;
+        }
+        PendingFrame& p = pending[submissions % k_pending_frames];
+        p.submission = submissions;
+        p.frame = f;
+        p.ticks = static_cast<u32>(session.tick().value - before_tick);
+        p.time = static_cast<f64>(session.tick().value) / static_cast<f64>(tick_hz);
+        p.cpu_ms = static_cast<f64>(time::monotonic_ns() - ready) / 1.0e6;
+        p.frame_ms = previous_start != 0 ? static_cast<f64>(start - previous_start) / 1.0e6 : 0.0;
+        previous_start = start;
+        ++submissions;
+        ++rendered;
+      }
+      if (!ok) {
+        exit_code = fail("frame", error);
+        break;
+      }
+      // The last frames' numbers fold in when their slots come around again; bring those around
+      // with nothing drawn in them, rather than drawing frames nobody asked for.
+      for (u32 d = 0; d < k_frames_in_flight; ++d) {
+        view_renderer.begin_frame();
+        take_folded(view_renderer, folded, pending, records);
+        view_renderer.abort_frame();
+      }
+      view_renderer.wait_idle();
+      timed_seconds = static_cast<f64>(time::monotonic_ns() - started) / 1.0e9;
+      if (!options.benchmark.empty()) {
+        view_renderer.sample_gpu_memory();
+        machine_end = bench::sample_machine_state(bench::k_sample_window_ms);
+        measured = true;
+      }
+    } else if (!options.benchmark.empty()) {
       // ---- the timed pass -----------------------------------------------------------------
       bench::MachineState before = wait_for_quiet(options.wait_quiet_s);
       if (options.require_quiet && !bench::is_quiet(before, bench::QuietThresholds{})) {
@@ -1609,8 +2003,46 @@ int run_offscreen(Options& options) {
       summary.occlusion_check = check;
     }
 
+    // ---- a picture of every marker of a replay: the camera after the tick it was pressed on ----
+    //
+    // Drawn from the marker's own camera and clock (the tick at 60 Hz), after the frames and not
+    // among them, so the picture depends on the tick sequence alone — which is what makes two
+    // replays' captures the same bytes.
+    if (interactive.on && !options.marker_captures.empty()) {
+      if (io::make_directories(options.marker_captures) != io::Status::Ok) {
+        exit_code = fail("marker-captures", "cannot create " + options.marker_captures);
+        break;
+      }
+      bool ok = true;
+      for (const view::FlyMarker& marker : session.trajectory().markers) {
+        renderer::FrameDesc frame;
+        frame.camera =
+            view::fly_view(marker.state, interactive.header.fov_y, interactive.header.znear);
+        frame.frame_index = marker.tick * view::k_frame_index_hz / tick_hz;
+        for (u32 k = 0; k < 8 && ok; ++k)
+          ok = view_renderer.render_offscreen(frame, &error);
+        renderer::CapturedFrame shot;
+        ok = ok && view_renderer.capture(frame, renderer::CaptureChannels{}, shot, &error);
+        if (!ok) break;
+        char name[40];
+        std::snprintf(name, sizeof(name), "tick-%07llu.png",
+                      static_cast<unsigned long long>(marker.tick));
+        const std::string file = io::join_path(options.marker_captures, name);
+        if (image::write_png(file, shot.width, shot.height, 4,
+                             std::span<const u8>(shot.color.data(), shot.color.size())) !=
+            io::Status::Ok) {
+          error = "cannot write " + file;
+          ok = false;
+          break;
+        }
+      }
+      if (!ok) {
+        exit_code = fail("marker-captures", error);
+        break;
+      }
+    }
     // ---- a picture of every marker, for the README and the write-up -------------------------
-    if (!options.marker_captures.empty()) {
+    if (!interactive.on && !options.marker_captures.empty()) {
       if (!have_path) {
         exit_code = fail("marker-captures", "there is no camera path to take markers from");
         break;
@@ -1653,6 +2085,10 @@ int run_offscreen(Options& options) {
       renderer::FrameDesc frame;
       frame.camera = camera_at(frames > 0 ? frames - 1 : 0);
       frame.frame_index = frames > 0 ? frames - 1 : 0;
+      if (interactive.on) {  // where the replay ended
+        frame.camera = session.camera();
+        frame.frame_index = session.frame_index();
+      }
       renderer::CapturedFrame shot;
       if (!view_renderer.capture(frame, renderer::CaptureChannels{}, shot, &error)) {
         exit_code = fail("capture", error);
@@ -1672,45 +2108,15 @@ int run_offscreen(Options& options) {
 
   // ---- the summary: what was measured, on what, beside what ---------------------------------
   if (exit_code == 0) {
-    summary.scene = !scene_data.name.empty() ? scene_data.name : options.scene;
-    summary.scene_hash = renderer::hash_hex(scene_data.file_hash);
-    summary.path = have_path ? path.name : std::string();
-    summary.path_hash = renderer::hash_hex(have_path ? path.hash : 0);
-    u64 identity = hash_combine(scene_data.file_hash, have_path ? path.hash : 0);
-    for (u32 m = 0; m < scene_data.parts.size(); ++m) {
-      const renderer::SourceMesh& source = scene_data.sources[m];
-      identity = hash_combine(identity, source.source_hash);
-      scene::MeshIdentity mesh;
-      const bool described = m < scene_data.mesh_info.size();
-      mesh.name = described ? scene_data.mesh_info[m].name : std::string();
-      mesh.source = described ? scene_data.mesh_info[m].origin : "scene";
-      mesh.path = source.container.empty() ? mesh.source : source.container;
-      mesh.hash = renderer::hash_hex(source.source_hash);
-      mesh.clusters = scene_data.parts[m].cluster_count;
-      const geometry::ClusterMeshPart& part = scene_data.parts[m];
-      for (u32 c = 0; c < part.leaf_cluster_count; ++c)
-        mesh.triangles +=
-            scene_data.lod.mesh.clusters[part.first_cluster + part.first_leaf_cluster + c]
-                .triangle_count;
-      summary.meshes.push_back(std::move(mesh));
-    }
-    summary.identity = renderer::hash_hex(identity);
-    summary.width = view_renderer.width();
-    summary.height = view_renderer.height();
-    summary.views = renderer::view_layout_name(resolved.settings.views);
-    summary.raster = renderer::raster_name(resolved.settings.raster);
-    summary.shadows = renderer::resolved_shadow_name(resolved);
-    summary.occlusion = resolved.occlusion;
-    summary.lod_px = resolved.settings.lod_px;
-    summary.stream = resolved.stream;
-    summary.page_budget_bytes = resolved.settings.page_budget_bytes;
-    summary.instances = scene_data.instances.size();
-    summary.pairs = scene_data.pair_count;
-    summary.clusters = scene_data.cluster_count();
+    // A replay's "path" is its log: the file's bytes name what was flown, as a path file's do.
+    const std::string path_name =
+        interactive.on ? options.replay_input : (have_path ? path.name : std::string());
+    const u64 path_hash = interactive.on ? interactive.log_hash : (have_path ? path.hash : 0);
+    describe_run(scene_data, options, path_name, path_hash, resolved, view_renderer, summary);
     summary.frames = frames;
     summary.repeats = measured ? repeats : 0;
-    summary.warmup = measured ? options.warmup : 0;
-    if (view_renderer.valid()) renderer::summarize_rt(view_renderer.stats().rt, summary.rt);
+    summary.warmup = measured && !interactive.on ? options.warmup : 0;
+    if (interactive.on) summary.interactive = interactive_summary(interactive, session, options);
     if (measured) {
       renderer::summarize_frames(
           std::span<const scene::FrameRecord>(records.data(), records.size()), frames, repeats,
@@ -1731,14 +2137,9 @@ int run_offscreen(Options& options) {
     const std::string line =
         write_json(schema::to_json(summary), JsonWriteOptions{.pretty = false});
     if (!options.benchmark.empty()) {
-      std::string text;
-      for (const scene::FrameRecord& record : records) {
-        write_json(schema::to_json(record), text, JsonWriteOptions{.pretty = false});
-        text.push_back('\n');
-      }
-      text += line;
-      text.push_back('\n');
-      const io::Status status = io::write_file(options.benchmark, text);
+      const io::Status status = write_benchmark(
+          options.benchmark, std::span<const scene::FrameRecord>(records.data(), records.size()),
+          line);
       if (status != io::Status::Ok) {
         exit_code = fail("benchmark", std::string("cannot write ") + options.benchmark + ": " +
                                           io::status_name(status));
@@ -1747,6 +2148,7 @@ int run_offscreen(Options& options) {
     if (exit_code == 0) {
       // The summary line, with the two fields a plain run's readers look for beside it.
       std::printf("%s\n", line.c_str());
+      std::fflush(stdout);  // whole, before stderr says anything (see the windowed summary)
       if (!measured) {
         std::fprintf(stderr, "engine-view: offscreen, %llu frames, captured %s\n",
                      static_cast<unsigned long long>(rendered), captured ? "yes" : "no");
@@ -1799,6 +2201,7 @@ int main(int argc, char** argv) {
       if (a == "--frames") options.frames = n;
       if (a == "--adapter") options.adapter = n;
       if (a == "--grid") options.grid = n;
+      if (a == "--grid") options.procedural_given = true;
       if (a == "--grid-instances") options.grid_instances = n;
       // The flag is mebibytes, the setting kibibytes: a caller of the module may want a finer
       // budget than a whole MiB (and a test needs one), while a person at a command line does not.
@@ -2004,6 +2407,7 @@ int main(int argc, char** argv) {
       if (!next_value(argc, argv, i, a, options.mesh)) return k_exit_usage;
     } else if (a == "--procedural") {
       if (!next_value(argc, argv, i, a, options.procedural)) return k_exit_usage;
+      options.procedural_given = true;
     } else if (a == "--uv-seams" || a == "--normal-seams") {
       std::string rule;
       if (!next_value(argc, argv, i, a, rule)) return k_exit_usage;
@@ -2054,11 +2458,26 @@ int main(int argc, char** argv) {
     } else if (a == "--offscreen") {
       options.offscreen = true;
     } else if (a == "--benchmark") {
+      // Offscreen for a flythrough and a replay; a live session measures its window. Resolved
+      // after the loop, once `--interactive` may have been seen.
       if (!next_value(argc, argv, i, a, options.benchmark)) return k_exit_usage;
-      options.offscreen = true;
     } else if (a == "--marker-captures") {
       if (!next_value(argc, argv, i, a, options.marker_captures)) return k_exit_usage;
-      options.offscreen = true;
+    } else if (a == "--interactive") {
+      options.interactive = true;
+    } else if (a == "--record-input") {
+      if (!next_value(argc, argv, i, a, options.record_input)) return k_exit_usage;
+    } else if (a == "--replay-input") {
+      if (!next_value(argc, argv, i, a, options.replay_input)) return k_exit_usage;
+      options.interactive = true;
+    } else if (a == "--inject-input") {
+      if (!next_value(argc, argv, i, a, options.inject_input)) return k_exit_usage;
+    } else if (a == "--input-map") {
+      if (!next_value(argc, argv, i, a, options.input_map)) return k_exit_usage;
+    } else if (a == "--tunables") {
+      if (!next_value(argc, argv, i, a, options.tunables_file)) return k_exit_usage;
+    } else if (a == "--tunable") {
+      if (!next_value(argc, argv, i, a, options.tunable_overrides)) return k_exit_usage;
     } else if (a == "--census") {
       options.census = true;
     } else if (a == "--census-pixels") {
@@ -2066,7 +2485,6 @@ int main(int argc, char** argv) {
       options.census_pixels = true;
     } else if (a == "--verify-occlusion") {
       options.verify_occlusion = true;
-      options.offscreen = true;
     } else if (a == "--require-quiet") {
       options.require_quiet = true;
     } else if (a == "--repeat" || a == "--warmup" || a == "--wait-quiet") {
@@ -2152,7 +2570,61 @@ int main(int argc, char** argv) {
                  "engine-view: --reference renders one frame, so --frames is ignored and the pose "
                  "is the one after a single tick.\n");
   }
-  if (!options.benchmark.empty() && options.camera_path.empty()) {
+  // ---- the interactive camera's flags ----------------------------------------------------------
+  // A live session is somebody at a window; a replay is a file. Everything below follows from
+  // which one this is, which is why `--benchmark` and `--marker-captures` are resolved here.
+  const bool live = options.interactive && options.replay_input.empty();
+  if (options.interactive &&
+      (options.animate || options.morph_animate || options.reference != 0 ||
+       options.fly_frames > 0 || options.census || options.verify_occlusion)) {
+    std::fprintf(stderr,
+                 "engine-view: --interactive and --replay-input fly the camera themselves, a fixed "
+                 "tick at a time; --animate, --morph-animate, --reference, --fly, --census and "
+                 "--verify-occlusion run frame loops of their own\n");
+    return k_exit_usage;
+  }
+  if (live && options.offscreen) {
+    std::fprintf(stderr,
+                 "engine-view: --interactive needs a window, since nobody can fly one that is not "
+                 "there; replay a recording offscreen with --replay-input <log> --offscreen\n");
+    return k_exit_usage;
+  }
+  if (live && !options.marker_captures.empty()) {
+    std::fprintf(stderr,
+                 "engine-view: a live session draws into its window and has no offscreen target "
+                 "to capture a marker from; record it with --record-input, then replay it with "
+                 "--replay-input <log> --marker-captures <dir>\n");
+    return k_exit_usage;
+  }
+  if (!options.record_input.empty() && !live) {
+    std::fprintf(stderr,
+                 "engine-view: --record-input records a live --interactive session; a replay is "
+                 "already a recording\n");
+    return k_exit_usage;
+  }
+  if (!options.inject_input.empty() && !live) {
+    std::fprintf(stderr,
+                 "engine-view: --inject-input feeds the window of a live --interactive "
+                 "session\n");
+    return k_exit_usage;
+  }
+  if (!options.replay_input.empty() && !options.camera_path.empty()) {
+    std::fprintf(stderr,
+                 "engine-view: a replay starts where its recording started; --camera-path would "
+                 "start it somewhere else\n");
+    return k_exit_usage;
+  }
+  if (!options.interactive && !options.input_map.empty()) {
+    std::fprintf(stderr,
+                 "engine-view: --input-map is the interactive camera's bindings; add "
+                 "--interactive or --replay-input\n");
+    return k_exit_usage;
+  }
+  if (!live && (!options.benchmark.empty() || !options.marker_captures.empty() ||
+                options.verify_occlusion)) {
+    options.offscreen = true;
+  }
+  if (!options.benchmark.empty() && options.camera_path.empty() && !options.interactive) {
     std::fprintf(stderr,
                  "engine-view: --benchmark flies a camera path; name one with --camera-path (a "
                  "still camera is render.benchmark's)\n");
@@ -2175,8 +2647,11 @@ int main(int argc, char** argv) {
                  "paths\n");
     return k_exit_usage;
   }
-  if (!options.capture.empty() && options.frames == 0 && options.camera_path.empty())
+  // An interactive session ends when its log does or its window closes, not after a default count.
+  if (!options.capture.empty() && options.frames == 0 && options.camera_path.empty() &&
+      !options.interactive) {
     options.frames = 60;
+  }
   // A fly-in shorter than the path says nothing about the path, so `--fly` sets the frame count
   // when nothing else did; a caller that gave one keeps it (a longer run repeats the last step,
   // which is how "and then it sat there" is measured).
@@ -2192,17 +2667,54 @@ int main(int argc, char** argv) {
     log::apply_level_spec(options.log_spec);
   }
 
+  // Tunables before anything reads one: the renderer's, and the interactive camera's, which a
+  // live session reads once as it starts.
+  if (!options.tunables_file.empty()) {
+    Vector<std::string> problems;
+    if (!tunables::load_file(options.tunables_file.c_str(), &problems)) {
+      for (const std::string& problem : problems)
+        std::fprintf(stderr, "engine-view: --tunables: %s\n", problem.c_str());
+      log::remove_sink(&stderr_sink);
+      return k_exit_usage;
+    }
+  }
+  if (!options.tunable_overrides.empty()) {
+    std::string problem;
+    if (!tunables::apply_overrides(options.tunable_overrides, &problem)) {
+      std::fprintf(stderr, "engine-view: --tunable: %s\n", problem.c_str());
+      log::remove_sink(&stderr_sink);
+      return k_exit_usage;
+    }
+  }
+  Interactive interactive;
+  if (options.interactive) {
+    const int prepared = prepare_interactive(options, interactive);
+    if (prepared != 0) {
+      log::remove_sink(&stderr_sink);
+      return prepared;
+    }
+  }
+
   // The reference path never opens a window, so it comes before the display is even asked for,
   // and neither does the offscreen one.
   if (options.reference != 0) return run_reference(options);
   if (options.offscreen) {
-    const int code = run_offscreen(options);
+    const int code = run_offscreen(options, interactive);
     log::remove_sink(&stderr_sink);
     return code;
   }
 
   std::string error;
-  if (!window::init(&error)) return unavailable("no display", error);
+  if (!window::init(&error)) {
+    if (live) {
+      // Said once, beside the reason, because the build may have no display backend at all
+      // (ENGINE_WINDOW_BACKENDS=none on the headless server): a recording still replays there.
+      std::fprintf(stderr,
+                   "engine-view: --interactive needs a display to fly in; a recorded session "
+                   "replays without one: --replay-input <log.jsonl> --offscreen\n");
+    }
+    return unavailable("no display", error);
+  }
   const auto extensions = window::Window::vulkan_instance_extensions();
   if (extensions.empty()) {
     window::shutdown();
@@ -2300,6 +2812,18 @@ int main(int argc, char** argv) {
   u32 skinned_instances = 0;
   u32 joint_matrices = 0;
   std::string clip_text;
+  // ---- the interactive camera (fly_camera.h), with --interactive or --replay-input ----------
+  view::FlySession session;
+  view::EdgeEvents edge;               // live: converted this frame, fed at the next tick
+  input::InputLog recording;           // --record-input
+  view::FramePacing pacing;            // the title's last-frame and p99 numbers
+  Vector<scene::FrameRecord> records;  // --benchmark
+  std::string interactive_text = "null";
+  bool pointer_captured = false;  // the edge converts pointer motion only while this is true
+  bool pointer_grabbed = false;   // what the window was last asked for
+  // An injected run never takes the real pointer: it happens on somebody's desktop, and the
+  // capture it toggles is only the edge's decision about which motion is looking.
+  const bool grab_pointer = options.inject_input.empty();
 
   // Everything below unwinds through this block so the destruction order stays in one place.
   do {
@@ -2371,7 +2895,8 @@ int main(int argc, char** argv) {
         exit_code = fail("camera path", error);
         break;
       }
-      if (options.frames == 0) options.frames = window_path.frame_count();
+      // An interactive session only starts at the path's first camera; it ends when it ends.
+      if (options.frames == 0 && !interactive.on) options.frames = window_path.frame_count();
     }
 
 #if ENGINE_VIEW_ANIMATION
@@ -2528,11 +3053,60 @@ int main(int argc, char** argv) {
     // region and cost the run nothing.
     machine_start = bench::sample_machine_state(bench::k_sample_window_ms);
 
+    // ---- the interactive camera: its header, its clock, and where it ends ----------------------
+    // A live session's header is built here, where the scene's bounds and the camera path are
+    // known; a replay's came out of its log. `session_end` is the tick a replay or an injected
+    // session stops at, and 0 for somebody at the window, whose session ends when they close it.
+    u64 session_end = 0;
+    if (interactive.on) {
+      if (!interactive.replay) {
+        interactive.header =
+            live_header(options, scene_data, window_path.keys.empty() ? nullptr : &window_path);
+      }
+      if (!session.start(interactive.map, interactive.header, &error)) {
+        exit_code = fail("interactive", error);
+        break;
+      }
+      session_end = interactive.replay ? interactive.header.ticks : interactive.inject_end;
+      if (!options.benchmark.empty()) records.reserve(1u << 14);  // a minute at 240 Hz
+      ENGINE_LOG_INFO(log_view, "interactive", log::field("replay", interactive.replay),
+                      log::field("tick_hz", interactive.header.params.tick_hz),
+                      log::field("speed", interactive.header.params.speed),
+                      log::field("map", interactive.map.hash()));
+    }
+    const u32 session_hz =
+        interactive.header.params.tick_hz > 0 ? interactive.header.params.tick_hz : 240u;
+    // The ticks come from a fixed-step clock fed with wall time: a frame runs however many ticks
+    // are due, none when it came sooner than one and several after a slow one — capped at a
+    // quarter of a second's worth, past which a stall is dropped rather than flown through.
+    FixedStepClock clock(session_hz, session_hz / 4 > 0 ? session_hz / 4 : 1u);
+    i64 clock_ns = 0;
+    u32 replay_cursor = 0;
+    u32 inject_cursor = 0;
+    u32 capture_seen = 0;
+    PendingFrame pending[k_pending_frames];
+    u64 folded = view_renderer.stats().folded;
+    u64 submissions = 0;
+    i64 previous_frame_ns = 0;
+    i64 last_title_ns = 0;
+
     bool running = true;
     bool resize_pending = false;
     i64 last_shader_poll_ns = 0;
     started_ns = time::monotonic_ns();
+    clock_ns = started_ns;
     while (running) {
+      const i64 frame_start = time::monotonic_ns();
+      // --inject-input: the log's keys and motion go onto the window's own queue as their ticks
+      // come due, and come back out of poll() below like anything the platform delivered.
+      const std::span<const input::RawEvent> injected = interactive.injected.events();
+      while (inject_cursor < injected.size() && injected[inject_cursor].tick <= session.next()) {
+        window::Event synthetic;
+        if (view::window_event_of(injected[inject_cursor], synthetic)) {
+          (void)window.push_event(synthetic);
+        }
+        ++inject_cursor;
+      }
       window::Event event;
       while (window.poll(event)) {
         switch (event.kind) {
@@ -2540,10 +3114,18 @@ int main(int argc, char** argv) {
           case window::EventKind::CloseRequested: running = false; break;
           case window::EventKind::Resized: resize_pending = true; break;
           case window::EventKind::KeyDown:
-            if (event.key == window::Key::Escape) running = false;
+            // Escape is an action in an interactive session (it takes and gives back the pointer),
+            // so there the window's close button is the way out.
+            if (!interactive.on && event.key == window::Key::Escape) running = false;
+            break;
+          case window::EventKind::FocusLost:
+            // Whoever switched away gets the pointer back, and Escape takes it again.
+            if (live && pointer_captured && grab_pointer) pointer_captured = false;
             break;
           default: break;
         }
+        // The one conversion (window_input.h): stamped with the tick it will be fed at.
+        if (live) edge.add(event, session.next(), pointer_captured);
       }
       if (!running) break;
 
@@ -2578,7 +3160,13 @@ int main(int argc, char** argv) {
         }
       }
 
+      // The CPU's share of the frame is everything but the two waits below: for a free frame slot
+      // (the GPU) and for a swapchain image (the display).
+      const i64 before_waits = time::monotonic_ns();
       view_renderer.begin_frame();
+      if (interactive.on && !options.benchmark.empty()) {
+        take_folded(view_renderer, folded, pending, records);
+      }
       u32 image_index = 0;
       const gfx::PresentStatus acquired =
           swapchain.acquire(view_renderer.acquire_semaphore(), image_index);
@@ -2591,21 +3179,65 @@ int main(int argc, char** argv) {
         resize_pending = true;  // minimized or out of date: try again next loop
         continue;
       }
+      const i64 after_waits = time::monotonic_ns();
       extent_width = view_renderer.width();
       extent_height = view_renderer.height();
 
       renderer::FrameDesc frame;
-      frame.camera =
-          !window_path.keys.empty()
-              ? renderer::camera_path_frame(
-                    window_path, static_cast<u32>(rendered),
-                    options.frames != 0 ? options.frames : window_path.frame_count())
-          : options.fly_frames > 0
-              ? renderer::fly_camera(scene_data.center, scene_data.radius, options.fly_from,
-                                     options.fly_to, static_cast<u32>(rendered), options.fly_frames)
-              : renderer::orbit_camera(scene_data.center, scene_data.radius, options.orbit,
-                                       rendered);
-      frame.frame_index = rendered;
+      u32 ticks_this_frame = 0;
+      bool session_done = false;
+      if (interactive.on) {
+        // ---- the ticks due by now, as late as possible before the frame is recorded -----------
+        const i64 now = time::monotonic_ns();
+        clock.advance(now - clock_ns);
+        clock_ns = now;
+        while (clock.step()) {
+        }
+        u64 to = clock.tick().value;
+        if (session_end != 0 && to > session_end) to = session_end;
+        const u64 before = session.tick().value;
+        if (interactive.replay) {
+          replay_cursor = session.run(interactive.log.events(), replay_cursor, SimTick{to});
+        } else {
+          (void)session.run(edge.events(), 0, SimTick{to});
+          if (session.tick().value > before) {
+            // Fed, so recorded: what the log holds is exactly what the camera was flown with.
+            // Events still waiting for a tick are neither, and a session that ends with some
+            // waiting drops them from both.
+            if (!options.record_input.empty()) {
+              for (const input::RawEvent& e : edge.events())
+                recording.record(e);
+            }
+            edge.clear();
+          }
+          while (capture_seen != session.capture_presses()) {
+            ++capture_seen;
+            pointer_captured = !pointer_captured;
+          }
+          if (grab_pointer && pointer_grabbed != pointer_captured) {
+            (void)window.set_relative_mouse(pointer_captured);
+            pointer_grabbed = pointer_captured;
+          }
+        }
+        ticks_this_frame = static_cast<u32>(session.tick().value - before);
+        session_done = session_end != 0 && session.tick().value >= session_end;
+        // The camera at the last tick boundary, not interpolated: the frame shows a state the
+        // session actually passed through, which is what a replay's frame shows too.
+        frame.camera = session.camera();
+        frame.frame_index = session.frame_index();
+      } else {
+        frame.camera = !window_path.keys.empty()
+                           ? renderer::camera_path_frame(
+                                 window_path, static_cast<u32>(rendered),
+                                 options.frames != 0 ? options.frames : window_path.frame_count())
+                       : options.fly_frames > 0
+                           ? renderer::fly_camera(scene_data.center, scene_data.radius,
+                                                  options.fly_from, options.fly_to,
+                                                  static_cast<u32>(rendered), options.fly_frames)
+                           : renderer::orbit_camera(scene_data.center, scene_data.radius,
+                                                    options.orbit, rendered);
+        frame.frame_index = rendered;
+      }
 #if ENGINE_VIEW_ANIMATION
       // The camera first, then the tick: `update_animation_lod` reads **this** frame's frusta and
       // sets each instance's tier, and `step_animation` then ticks the world with the divisors
@@ -2650,9 +3282,51 @@ int main(int argc, char** argv) {
         exit_code = fail("frame", error);
         break;
       }
+      if (interactive.on) {
+        // ---- pacing: what the title says, and what a --benchmark record carries --------------
+        const i64 submitted_ns = time::monotonic_ns();
+        const f64 frame_ms = previous_frame_ns != 0
+                                 ? static_cast<f64>(frame_start - previous_frame_ns) / 1.0e6
+                                 : 0.0;
+        previous_frame_ns = frame_start;
+        if (frame_ms > 0.0) pacing.add(frame_start, static_cast<f32>(frame_ms));
+        if (!options.benchmark.empty()) {
+          PendingFrame& p = pending[submissions % k_pending_frames];
+          p.submission = submissions;
+          p.frame = static_cast<u32>(rendered);
+          p.ticks = ticks_this_frame;
+          p.time = static_cast<f64>(session.tick().value) / static_cast<f64>(session_hz);
+          p.cpu_ms =
+              static_cast<f64>((before_waits - frame_start) + (submitted_ns - after_waits)) / 1.0e6;
+          p.frame_ms = frame_ms;
+        }
+        // Four times a second: a title rewritten every frame is unreadable, and setting one is a
+        // round trip to the window system.
+        if (frame_start - last_title_ns >= 250'000'000) {
+          last_title_ns = frame_start;
+          char title[256];
+          const f32 p99 = pacing.percentile(frame_start, 1'000'000'000, 0.99);
+          if (interactive.replay) {
+            std::snprintf(title, sizeof(title),
+                          "engine-view  %.2f ms  p99 %.2f ms (1 s)  replay tick %llu of %llu",
+                          static_cast<f64>(pacing.last_ms()), static_cast<f64>(p99),
+                          static_cast<unsigned long long>(session.tick().value),
+                          static_cast<unsigned long long>(session_end));
+          } else {
+            std::snprintf(
+                title, sizeof(title), "engine-view  %.2f ms  p99 %.2f ms (1 s)  tick %llu%s  %s",
+                static_cast<f64>(pacing.last_ms()), static_cast<f64>(p99),
+                static_cast<unsigned long long>(session.tick().value),
+                options.record_input.empty() ? "" : "  recording",
+                pointer_captured ? "Esc: give the pointer back" : "Esc: take the pointer to look");
+          }
+          window.set_title(title);
+        }
+      }
+      ++submissions;
       ++rendered;
 
-      const bool last = options.frames != 0 && rendered >= options.frames;
+      const bool last = (options.frames != 0 && rendered >= options.frames) || session_done;
       if (last && !options.capture.empty()) {
         view_renderer.wait(value);
         view_renderer.collect_visible();
@@ -2682,8 +3356,27 @@ int main(int argc, char** argv) {
       if (last || exit_code != 0) running = false;
     }
     finished_ns = time::monotonic_ns();
+    if (interactive.on && !options.benchmark.empty() && view_renderer.valid() && exit_code == 0) {
+      // The last frames' GPU numbers fold in when their slots come around again: bring those
+      // around with nothing drawn and nothing presented, and the session's last frames have
+      // records too.
+      for (u32 d = 0; d < k_frames_in_flight; ++d) {
+        view_renderer.begin_frame();
+        take_folded(view_renderer, folded, pending, records);
+        view_renderer.abort_frame();
+      }
+    }
     if (view_renderer.valid()) view_renderer.wait_idle();
     view_renderer.sample_gpu_memory();
+    if (grab_pointer && pointer_grabbed) (void)window.set_relative_mouse(false);
+    if (interactive.on && exit_code == 0) {
+      interactive_text = write_json(interactive_summary(interactive, session, options),
+                                    JsonWriteOptions{.pretty = false});
+      if (!options.record_input.empty() &&
+          !save_recording(options, interactive, session, recording, error)) {
+        exit_code = fail("record-input", error);
+      }
+    }
     if (view_renderer.valid()) {
       views_text = write_json(views_summary(view_renderer.views(), view_renderer.stats()),
                               JsonWriteOptions{.pretty = false});
@@ -2695,6 +3388,42 @@ int main(int argc, char** argv) {
       anim_text = write_json(anim_summary(*animated, rendered), JsonWriteOptions{.pretty = false});
 #endif
     machine_end = bench::sample_machine_state(bench::k_sample_window_ms);
+
+    // ---- an interactive session's --benchmark: the flythrough's JSONL, frame by frame ---------
+    // One record per frame the window presented (the GPU's passes, the CPU's milliseconds, the
+    // frame time, the ticks it consumed, visible pairs, streaming), then the same summary line a
+    // flythrough ends with, so tools/flythrough.ps1's readers read a session without a new case.
+    if (interactive.on && !options.benchmark.empty() && exit_code == 0) {
+      scene::FlythroughSummary summary;
+      summary.format = "engine.flythrough.v1";
+      describe_run(scene_data, options,
+                   interactive.replay ? options.replay_input : std::string("interactive"),
+                   interactive.replay ? interactive.log_hash : 0, resolved, view_renderer, summary);
+      const u32 frames = static_cast<u32>(rendered);
+      renderer::summarize_frames(
+          std::span<const scene::FrameRecord>(records.data(), records.size()), frames, 1,
+          renderer::CameraPath{}, summary);
+      summary.frames = frames;
+      summary.repeats = 1;
+      summary.seconds = static_cast<f64>(finished_ns - started_ns) / 1.0e9;
+      summary.wall_ms_per_frame = frames > 0 ? summary.seconds * 1000.0 / frames : 0.0;
+      summary.gpu_memory_used_mib = view_renderer.stats().gpu_memory.used_mib;
+      summary.gpu_memory_budget_mib = view_renderer.stats().gpu_memory.budget_mib;
+      JsonValue machine = JsonValue::object();
+      machine.set("start", bench::machine_state_json(machine_start));
+      machine.set("end", bench::machine_state_json(machine_end));
+      summary.machine_state = std::move(machine);
+      summary.quiet =
+          bench::is_quiet(bench::worst_of(machine_start, machine_end), bench::QuietThresholds{});
+      summary.interactive = interactive_summary(interactive, session, options);
+      const io::Status status = write_benchmark(
+          options.benchmark, std::span<const scene::FrameRecord>(records.data(), records.size()),
+          write_json(schema::to_json(summary), JsonWriteOptions{.pretty = false}));
+      if (status != io::Status::Ok) {
+        exit_code = fail("benchmark", std::string("cannot write ") + options.benchmark + ": " +
+                                          io::status_name(status));
+      }
+    }
   } while (false);
 
   const renderer::Stats stats = view_renderer.stats();
@@ -2751,7 +3480,7 @@ int main(int argc, char** argv) {
         "\"gpu_ms\":{\"cull\":%.4f,\"hw\":%.4f,\"sw\":%.4f,\"hiz\":%.4f,\"resolve\":%.4f,"
         "\"rt\":%.4f,\"clas\":%.4f,\"deform\":%.4f,\"deform_alloc\":%.4f,"
         "\"trace\":%.4f,\"shadow\":%.4f,\"shadow_cull\":%.4f,\"total\":%.4f,"
-        "\"frames\":%llu},\"captured\":%s}\n",
+        "\"frames\":%llu},\"captured\":%s,\"interactive\":%s}\n",
         static_cast<unsigned long long>(rendered), seconds, avg_ms, extent_width, extent_height,
         scene_data.cluster_count(), scene_data.leaf_count(), scene_data.lod.leaf_triangle_count,
         scene_data.lod.level_cluster_counts.size(), static_cast<f64>(scene_data.build_ns) / 1.0e6,
@@ -2788,7 +3517,11 @@ int main(int argc, char** argv) {
         stats.resolve_ms(), stats.rt_ms(), stats.clas_ms(), stats.deform_ms(),
         stats.deform_alloc_ms(), stats.trace_ms(), stats.shadow_ms(), stats.shadow_cull_ms(),
         stats.total_ms(), static_cast<unsigned long long>(stats.timed_frames),
-        captured ? "true" : "false");
+        captured ? "true" : "false", interactive_text.c_str());
+    // The whole line out before anything goes to stderr. stdout into a pipe is fully buffered, so
+    // a summary longer than the buffer (an interactive one is) leaves its tail in it, and a
+    // caller that merges the two streams would read the WARNING below spliced into the middle.
+    std::fflush(stdout);
     // stdout is the summary; the caveat goes beside it on stderr, the same line and the same
     // thresholds the bench harness prints.
     (void)bench::warn_if_busy(bench::worst_of(machine_start, machine_end), bench::QuietThresholds{},

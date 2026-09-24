@@ -523,6 +523,10 @@ TEST_CASE("flythrough: percentiles and the per-frame summary") {
       record.gpu_ms.total = 1.0 + f + (f == 1 && r == 1 ? 100.0 : 0.0);
       record.visible_pairs = 10 + f + (f == 2 && r == 2 ? 1u : 0u);
       record.uploads = 1;
+      // The CPU's and the wall's milliseconds summarize like a pass does; ticks add up.
+      record.cpu_ms = 0.5 * (f + 1);
+      record.frame_ms = 16.0 + (f == 0 && r == 0 ? 50.0 : 0.0);
+      record.ticks = 4;
       records.push_back(record);
     }
   }
@@ -534,6 +538,10 @@ TEST_CASE("flythrough: percentiles and the per-frame summary") {
   CHECK_FALSE(summary.deterministic);
   CHECK(summary.mismatched_frames == 1);
   CHECK(summary.uploads == 9);
+  CHECK(summary.cpu_ms.median == doctest::Approx(1.0));
+  CHECK(summary.cpu_ms.max == doctest::Approx(1.5));
+  CHECK(summary.frame_ms.max == doctest::Approx(16.0));  // one slow repeat is not the median
+  CHECK(summary.ticks == 36);
   REQUIRE(summary.markers.size() == 1);
   CHECK(summary.markers[0].frame == 2);
   CHECK(summary.markers[0].total_ms == doctest::Approx(3.0));

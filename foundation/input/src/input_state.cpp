@@ -208,6 +208,24 @@ Vec2 InputState::axis2(ActionId action) const noexcept {
   return Vec2{clamp_unit(x), clamp_unit(y)};
 }
 
+Vec2 InputState::delta2(ActionId action) const noexcept {
+  if (map_ == nullptr) return Vec2{};
+  f32 x = 0.0f;
+  f32 y = 0.0f;
+  for (const ActionBinding& ab : map_->bindings(action)) {
+    if (ab.binding.source != Source::MouseAxis) continue;
+    const Signal* signal = find_signal(ab.binding.source, ab.binding.code);
+    if (signal == nullptr) continue;
+    const f32 v = signal->value * ab.binding.scale;
+    if (ab.component == 0) {
+      x += v;
+    } else if (ab.component == 1) {
+      y += v;
+    }
+  }
+  return Vec2{x, y};
+}
+
 u64 InputState::state_hash() const noexcept {
   u64 digest = hash_combine(k_hash_seed, tick_.value);
   if (map_ != nullptr) {
@@ -222,6 +240,9 @@ u64 InputState::state_hash() const noexcept {
       const Vec2 v = axis2(action);
       digest = hash_combine(digest, float_bits(v.x));
       digest = hash_combine(digest, float_bits(v.y));
+      const Vec2 d = delta2(action);
+      digest = hash_combine(digest, float_bits(d.x));
+      digest = hash_combine(digest, float_bits(d.y));
     }
   }
   digest = hash_combine(digest, float_bits(mouse_dx_));

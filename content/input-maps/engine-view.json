@@ -1,0 +1,194 @@
+{
+  "actions": [
+    {
+      "bindings": [
+        {
+          "code": 7,
+          "scale": 1.0,
+          "source": "key"
+        },
+        {
+          "code": 4,
+          "scale": -1.0,
+          "source": "key"
+        },
+        {
+          "code": 26,
+          "component": 1,
+          "scale": 1.0,
+          "source": "key"
+        },
+        {
+          "code": 22,
+          "component": 1,
+          "scale": -1.0,
+          "source": "key"
+        },
+        {
+          "code": 0,
+          "deadzone": 0.15000000596046448,
+          "scale": 1.0,
+          "source": "gamepad_axis"
+        },
+        {
+          "code": 1,
+          "component": 1,
+          "deadzone": 0.15000000596046448,
+          "scale": -1.0,
+          "source": "gamepad_axis"
+        }
+      ],
+      "kind": "axis2",
+      "name": "move"
+    },
+    {
+      "bindings": [
+        {
+          "code": 8,
+          "scale": 1.0,
+          "source": "key"
+        },
+        {
+          "code": 44,
+          "scale": 1.0,
+          "source": "key"
+        },
+        {
+          "code": 20,
+          "scale": -1.0,
+          "source": "key"
+        },
+        {
+          "code": 224,
+          "scale": -1.0,
+          "source": "key"
+        },
+        {
+          "code": 5,
+          "deadzone": 0.05000000074505806,
+          "scale": 1.0,
+          "source": "gamepad_axis"
+        },
+        {
+          "code": 4,
+          "deadzone": 0.05000000074505806,
+          "scale": -1.0,
+          "source": "gamepad_axis"
+        }
+      ],
+      "kind": "axis",
+      "name": "lift"
+    },
+    {
+      "bindings": [
+        {
+          "code": 0,
+          "scale": 1.0,
+          "source": "mouse_axis"
+        },
+        {
+          "code": 1,
+          "component": 1,
+          "scale": -1.0,
+          "source": "mouse_axis"
+        }
+      ],
+      "kind": "axis2",
+      "name": "look"
+    },
+    {
+      "bindings": [
+        {
+          "code": 2,
+          "deadzone": 0.15000000596046448,
+          "scale": 1.0,
+          "source": "gamepad_axis"
+        },
+        {
+          "code": 3,
+          "component": 1,
+          "deadzone": 0.15000000596046448,
+          "scale": -1.0,
+          "source": "gamepad_axis"
+        }
+      ],
+      "kind": "axis2",
+      "name": "turn"
+    },
+    {
+      "bindings": [
+        {
+          "code": 225,
+          "scale": 1.0,
+          "source": "key"
+        },
+        {
+          "code": 229,
+          "scale": 1.0,
+          "source": "key"
+        },
+        {
+          "code": 8,
+          "scale": 1.0,
+          "source": "gamepad_button"
+        }
+      ],
+      "kind": "button",
+      "name": "fast"
+    },
+    {
+      "bindings": [
+        {
+          "code": 226,
+          "scale": 1.0,
+          "source": "key"
+        },
+        {
+          "code": 230,
+          "scale": 1.0,
+          "source": "key"
+        },
+        {
+          "code": 9,
+          "scale": 1.0,
+          "source": "gamepad_button"
+        }
+      ],
+      "kind": "button",
+      "name": "slow"
+    },
+    {
+      "bindings": [
+        {
+          "code": 41,
+          "scale": 1.0,
+          "source": "key"
+        },
+        {
+          "code": 5,
+          "scale": 1.0,
+          "source": "gamepad_button"
+        }
+      ],
+      "kind": "button",
+      "name": "capture"
+    },
+    {
+      "bindings": [
+        {
+          "code": 16,
+          "scale": 1.0,
+          "source": "key"
+        },
+        {
+          "code": 4,
+          "scale": 1.0,
+          "source": "gamepad_button"
+        }
+      ],
+      "kind": "button",
+      "name": "marker"
+    }
+  ],
+  "version": 1
+}

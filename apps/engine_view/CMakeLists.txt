@@ -12,13 +12,22 @@
 # does the same thing by hand: link the module when this configuration has it, define
 # ENGINE_VIEW_ANIMATION so the glue compiles, and otherwise build an engine-view that refuses
 # `--animate` with a sentence. `msvc-minimal` is the proof that the second half works.
+#
+# `--interactive` is the first owner of a window that turns its events into `input::RawEvent`s
+# (window_input.cpp) for something to fly (fly_camera.cpp): `input` for the bindings, the tick
+# state and the log, `tunables` for the camera's speeds and tick rate.
 set(_view_deps base containers hash math time jobs log platform window image io gfx renderer json
-               schema schemas bench)
+               schema schemas bench input tunables)
 if(TARGET engine::animation)
   list(APPEND _view_deps ids animation)
 endif()
 
-set(_view_tests tests/view_tests.cpp tests/mesh_view_tests.cpp)
+# The camera and the conversion are compiled into the tests as well as the app: the trajectory of
+# the committed session fixture is checked with no GPU and no window (tests/fly_tests.cpp), which
+# is the half of the replay test that runs on every machine CI has.
+set(_view_interactive fly_camera.cpp window_input.cpp)
+set(_view_tests tests/view_tests.cpp tests/mesh_view_tests.cpp tests/fly_tests.cpp
+                tests/interactive_tests.cpp ${_view_interactive})
 if(TARGET engine::animation)
   # The animation-LOD glue is a header beside main.cpp (`anim_lod.h`) rather than a block inside
   # it, because it is the pattern a game copies and because it is worth testing on its own: the
@@ -29,9 +38,16 @@ if(TARGET engine::animation)
 endif()
 
 engine_app(NAME engine_view OUTPUT engine-view
-  SOURCES main.cpp
+  SOURCES main.cpp ${_view_interactive}
   DEPS ${_view_deps}
   E2E_TESTS ${_view_tests})
+
+if(TARGET engine_engine_view_tests)
+  # The session fixture, its trajectory and the default map live under content/, found relative to
+  # the source tree (or the test bundle's copy of it: tests/support/test_paths.h).
+  target_compile_definitions(engine_engine_view_tests PRIVATE
+    ENGINE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+endif()
 
 if(TARGET engine::animation)
   # `engine_app(NAME engine_view)` builds the target `engine_engine_view`, and its end-to-end test

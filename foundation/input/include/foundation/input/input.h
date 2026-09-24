@@ -300,6 +300,17 @@ class InputState {
   // per component with the same non-zero deadzone is treated as a stick and gets a radial
   // deadzone, so a diagonal is not harder to reach than an edge.
   Vec2 axis2(ActionId action) const noexcept;
+  // Components 0 and 1 of the action's **delta** bindings — `Source::MouseAxis`: pointer motion
+  // and the wheel — times their scales, summed over this tick and **not clamped**, in the units
+  // the source reports (window pixels for motion, notches for the wheel). Every other source is
+  // left out, because a stick or a key is a position and belongs to `axis2`.
+  //
+  // It exists because a delta is a distance and a position is not: `axis2` clamps its sum to
+  // -1..1, which is right for a stick and would cap how far a mouse can turn a camera in one tick
+  // at one pixel's worth. A mouse says how far; a stick says how fast; a camera reads the first
+  // through this and the second through `axis2`, and a binding table can still invert or scale
+  // either one.
+  Vec2 delta2(ActionId action) const noexcept;
   // Pointer motion accumulated over this tick, in window pixels. Tracked whether or not
   // anything is bound to it, because it is the state's own reading rather than an action.
   Vec2 mouse_delta() const noexcept { return Vec2{mouse_dx_, mouse_dy_}; }

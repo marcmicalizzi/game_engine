@@ -312,6 +312,103 @@ TEST_CASE("input log: a replay against a different map is refused") {
   CHECK(good.held(map.find_action("fire")));
 }
 
+// A game feeds a frame's worth of ticks at a time, not a whole log in one call. `feed_ticks` in
+// pieces of any size, with the cursor carried between them, must be `replay` in one go digest for
+// digest — including pieces that hold no event, a piece of one tick, and a piece that ends on a
+// tick with several events.
+TEST_CASE("input log: fed a few ticks at a time, a log replays as it does in one call") {
+  const ActionMap map = make_map();
+  InputLog log;
+  log.set_map(map);
+  for (const RawEvent& e : scripted_events())
+    log.record(e);
+
+  InputState whole(map);
+  Recorder expected;
+  std::string error;
+  REQUIRE_MESSAGE(log.replay(whole, SimTick{0}, SimTick{11}, {&collect, &expected}, &error), error);
+
+  const u64 piece_sizes[] = {1, 2, 3, 5, 12};
+  for (const u64 piece : piece_sizes) {
+    InputState state(map);
+    REQUIRE(log.check_map(state, &error));
+    Recorder got;
+    u32 cursor = 0;
+    for (u64 from = 0; from <= 11; from += piece) {
+      const u64 to = from + piece - 1 < 11 ? from + piece - 1 : 11;
+      cursor =
+          feed_ticks(state, log.events(), cursor, SimTick{from}, SimTick{to}, {&collect, &got});
+    }
+    CHECK(cursor == log.size());
+    REQUIRE(got.digests.size() == expected.digests.size());
+    for (u32 i = 0; i < got.digests.size(); ++i)
+      CHECK_MESSAGE(got.digests[i] == expected.digests[i], "piece " << piece << " tick " << i);
+  }
+
+  // An empty range feeds nothing and still moves the cursor past what came before `from`.
+  InputState idle(map);
+  Recorder none;
+  CHECK(feed_ticks(idle, log.events(), 0, SimTick{3}, SimTick{2}, {&collect, &none}) == 4);
+  CHECK(none.digests.empty());
+
+  // The refusal `replay` makes, on its own, for a caller that feeds pieces.
+  ActionMap rebound = make_map();
+  rebound.bind(rebound.find_action("fire"), Binding{Source::Key, k_key_w});
+  InputState wrong(rebound);
+  error.clear();
+  CHECK_FALSE(log.check_map(wrong, &error));
+  CHECK(error.find("rebinding invalidates a replay") != std::string::npos);
+  InputState mapless;
+  CHECK_FALSE(log.check_map(mapless, &error));
+}
+
+// The recording application's own header block: stored, saved, loaded back as it was, and absent
+// from the bytes when there is none — which is what keeps every log written before it canonical.
+TEST_CASE("input log: a session block round-trips, and a log without one writes no key") {
+  const TempDir tmp("engine_input_log_session");
+  const ActionMap map = make_map();
+  InputLog log;
+  log.set_map(map);
+  log.record(RawEvent{SimTick{1}, Source::Key, k_key_space, 1.0f, 0});
+  CHECK(log.session().is_null());
+
+  const std::string plain = io::join_path(tmp.path(), "plain.jsonl");
+  REQUIRE(log.save(plain) == io::Status::Ok);
+  std::string plain_text;
+  REQUIRE(io::read_file(plain, plain_text) == io::Status::Ok);
+  CHECK(plain_text.find("session") == std::string::npos);
+
+  JsonValue session = JsonValue::object();
+  session.set("format", "engine.test.session");
+  session.set("version", static_cast<u64>(3));
+  session.set("start", 0.1f);
+  log.set_session(session);
+  const std::string with = io::join_path(tmp.path(), "with.jsonl");
+  REQUIRE(log.save(with) == io::Status::Ok);
+
+  InputLog loaded;
+  std::string error;
+  REQUIRE_MESSAGE(loaded.load(with, &error) == io::Status::Ok, error);
+  REQUIRE(loaded.session().is_object());
+  CHECK(write_json(loaded.session()) == write_json(session));
+  // A float in the block comes back as the same float, which is what lets an application keep
+  // exact numbers — a camera's start, say — in it.
+  f64 start = 0.0;
+  REQUIRE(loaded.session().find("start")->get_f64(start));
+  CHECK(static_cast<f32>(start) == 0.1f);
+  const std::string again = io::join_path(tmp.path(), "again.jsonl");
+  REQUIRE(loaded.save(again) == io::Status::Ok);
+  std::string with_text;
+  std::string again_text;
+  REQUIRE(io::read_file(with, with_text) == io::Status::Ok);
+  REQUIRE(io::read_file(again, again_text) == io::Status::Ok);
+  CHECK(again_text == with_text);
+
+  // Loading a log without one over a log that had one leaves none behind.
+  REQUIRE(loaded.load(plain, &error) == io::Status::Ok);
+  CHECK(loaded.session().is_null());
+}
+
 TEST_CASE("input log: an empty range and an empty log") {
   const ActionMap map = make_map();
   InputLog log;
@@ -361,6 +458,8 @@ TEST_CASE("input log: a broken file is refused with a message") {
       {"out_of_order.jsonl",
        "{\"type\":\"engine.input.log\",\"version\":1,\"map\":1}\n[4,\"key\",4,1.0,0]\n"
        "[1,\"key\",4,0.0,0]\n"},
+      {"session_not_object.jsonl",
+       "{\"type\":\"engine.input.log\",\"version\":1,\"map\":1,\"session\":[1,2]}\n"},
   };
   for (const Case& c : cases) {
     const std::string path = io::join_path(tmp.path(), c.name);

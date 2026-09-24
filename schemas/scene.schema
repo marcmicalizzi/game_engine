@@ -225,14 +225,25 @@ struct PassMs @version(3) {
   blas: f64 = 0 @since(2)
 }
 
-/// One frame of a flythrough benchmark. One line of the `.jsonl` a run writes.
-struct FrameRecord @version(3) {
+/// One frame of a flythrough benchmark, or of an interactive session measured with
+/// `engine-view --interactive --benchmark`. One line of the `.jsonl` a run writes.
+struct FrameRecord @version(4) {
   /// Which pass over the path, from 0.
   repeat: u32 = 0
-  /// The path frame, from 0.
+  /// The path frame, from 0; an interactive session's frame, from 0.
   frame: u32 = 0
-  /// Path time, seconds.
+  /// Path time, seconds; an interactive session's simulated time (its tick over the tick rate).
   time: f64 = 0
+  /// The CPU's own milliseconds for the frame: everything from the top of the loop to the
+  /// submission returning, less the waits for a free frame slot and a swapchain image — input, the
+  /// camera's ticks, and recording the frame.
+  cpu_ms: f64 = 0 @since(4)
+  /// Wall milliseconds from the previous frame's start to this one's: the frame time a player
+  /// sees, and what the window title's p99 is over. With vsync it is the display's cadence.
+  frame_ms: f64 = 0 @since(4)
+  /// The fixed camera ticks this frame consumed (engine-view --interactive): 0 when the frame
+  /// came faster than a tick, several after a slow one. Zero on a flythrough.
+  ticks: u32 = 0 @since(4)
   /// Surviving (instance, cluster) pairs, by the draw that produced them.
   visible_pairs: u32 = 0
   visible_hw: u32 = 0
@@ -393,8 +404,9 @@ struct FlythroughRt @version(1) {
   wanted: Percentiles
 }
 
-/// The last line of a flythrough benchmark's `.jsonl`, and engine-view's summary line.
-struct FlythroughSummary @version(3) {
+/// The last line of a flythrough benchmark's `.jsonl`, and engine-view's summary line. An
+/// interactive session measured with `--benchmark` ends its `.jsonl` with one too.
+struct FlythroughSummary @version(4) {
   /// "engine.flythrough.v1".
   format: string
   scene: string
@@ -448,4 +460,15 @@ struct FlythroughSummary @version(3) {
   quiet: bool = false
   /// The ray tracing chain's memory and what it built (see `FlythroughRt`).
   rt: FlythroughRt @since(2)
+  /// Per frame, over the path's frames, of each frame's median across the repeats: the CPU's
+  /// own milliseconds and the wall milliseconds between frames (`FrameRecord.cpu_ms`,
+  /// `FrameRecord.frame_ms`). An interactive session's `frame_ms.p99` is its pacing number.
+  cpu_ms: Percentiles @since(4)
+  frame_ms: Percentiles @since(4)
+  /// The camera ticks the frames consumed, summed (`FrameRecord.ticks`); zero on a flythrough.
+  ticks: u64 = 0 @since(4)
+  /// An interactive session's own block (`engine-view --interactive` or `--replay-input`): its
+  /// mode, its session header, and its trajectory — the hash over every tick's camera and the
+  /// markers — which is what says two runs flew the same path. Null on a flythrough.
+  interactive: json @since(4)
 }

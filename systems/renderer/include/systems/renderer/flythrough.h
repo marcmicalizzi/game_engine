@@ -33,7 +33,10 @@
 
 namespace engine::renderer {
 
-// The frame `stats` describes, as the benchmark's JSON line has it.
+// The frame `stats` describes, as the benchmark's JSON line has it. `cpu_ms`, `frame_ms` and
+// `ticks` are left at zero for the caller: they are measured around the renderer by whoever runs
+// the frame loop (`fly_camera_path` below, engine-view's interactive loop), which the renderer
+// does not see.
 scene::FrameRecord frame_record(const FrameStats& stats, u32 repeat, u32 frame, f64 time);
 // The run's ray tracing chain into the summary's `rt` block, all but the per-frame percentiles
 // `summarize_frames` fills; both hosts call it after the flight so the numbers are the run's.

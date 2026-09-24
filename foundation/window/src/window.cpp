@@ -881,6 +881,66 @@ void Window::show() noexcept {
   if (handle_ != nullptr) SDL_ShowWindow(static_cast<SDL_Window*>(handle_));
 }
 
+bool Window::set_relative_mouse(bool enabled) noexcept {
+  if (handle_ == nullptr) return false;
+  if (!SDL_SetWindowRelativeMouseMode(static_cast<SDL_Window*>(handle_), enabled)) {
+    ENGINE_LOG_WARN(log_window, "relative mouse mode refused", log::field("enabled", enabled),
+                    log::field("reason", SDL_GetError()));
+    return false;
+  }
+  return true;
+}
+
+bool Window::relative_mouse() const noexcept {
+  return handle_ != nullptr && SDL_GetWindowRelativeMouseMode(static_cast<SDL_Window*>(handle_));
+}
+
+bool Window::push_event(const Event& event) noexcept {
+  if (handle_ == nullptr) return false;
+  SDL_Event e;
+  SDL_zero(e);
+  switch (event.kind) {
+    case EventKind::KeyDown:
+    case EventKind::KeyUp:
+      e.type = event.kind == EventKind::KeyDown ? SDL_EVENT_KEY_DOWN : SDL_EVENT_KEY_UP;
+      e.key.windowID = id_;
+      e.key.scancode = static_cast<SDL_Scancode>(event.scancode);
+      e.key.down = event.kind == EventKind::KeyDown;
+      e.key.repeat = event.repeat;
+      break;
+    case EventKind::MouseButtonDown:
+    case EventKind::MouseButtonUp:
+      e.type = event.kind == EventKind::MouseButtonDown ? SDL_EVENT_MOUSE_BUTTON_DOWN
+                                                        : SDL_EVENT_MOUSE_BUTTON_UP;
+      e.button.windowID = id_;
+      e.button.button = event.button;
+      e.button.down = event.kind == EventKind::MouseButtonDown;
+      e.button.clicks = 1;
+      e.button.x = event.x;
+      e.button.y = event.y;
+      break;
+    case EventKind::MouseMove:
+      e.type = SDL_EVENT_MOUSE_MOTION;
+      e.motion.windowID = id_;
+      e.motion.x = event.x;
+      e.motion.y = event.y;
+      e.motion.xrel = event.dx;
+      e.motion.yrel = event.dy;
+      break;
+    case EventKind::MouseWheel:
+      e.type = SDL_EVENT_MOUSE_WHEEL;
+      e.wheel.windowID = id_;
+      e.wheel.x = event.dx;
+      e.wheel.y = event.dy;
+      e.wheel.mouse_x = event.x;
+      e.wheel.mouse_y = event.y;
+      break;
+    default: return false;
+  }
+  // SDL stamps a zero timestamp with its own clock as the event goes on the queue.
+  return SDL_PushEvent(&e);
+}
+
 std::span<const char* const> Window::vulkan_instance_extensions() {
   Uint32 count = 0;
   const char* const* names = SDL_Vulkan_GetInstanceExtensions(&count);

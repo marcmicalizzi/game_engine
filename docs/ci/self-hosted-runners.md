@@ -115,8 +115,12 @@ network does not think about. In it:
   should have to learn.
 - `content/input-logs/` — the device-log corpus `foundation/input` replays. **Bundled rather than
   skipped**: it is 176 KB and it is the only description of those three devices this repository
-  has, so a machine that cannot replay it is telling us something. `content/test-scenes/` rides
-  along at 17 KB; `content/samples/` only with `-WithSamples`.
+  has, so a machine that cannot replay it is telling us something. Its `sessions/` directory
+  comes with it: engine-view's synthetic session and the trajectory it flies, which is how a
+  machine nobody here can log in to shows that its compiler flies a recording to the same place.
+  `content/input-maps/` (the interactive camera's default bindings, checked against the compiled
+  ones) and `content/test-scenes/` ride along at a few kilobytes; `content/samples/` only with
+  `-WithSamples`.
 - `bundle.json` — the commit, the branch, the preset, the CPU baseline (read out of the build's
   `CMakeCache.txt`, or `unknown` where that switch does not exist yet), and the **test list taken
   from `ctest --show-only=json-v1`** rather than from a glob: each test's executable, arguments,

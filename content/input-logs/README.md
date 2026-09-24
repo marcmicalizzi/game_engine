@@ -99,3 +99,48 @@ what `engine-input ffb` and `window::set_spring` were built for; see docs/subsys
    measured from the file, not chosen; run the test and read them off the failures.
 4. If the driver named it badly or not at all, add its ids to the name table in
    `foundation/window/src/window.cpp` and a line to docs/subsystems/window.md.
+
+## Recorded sessions: `sessions/`
+
+A device recording says what a device sends. A **session** says what somebody did with the
+engine: an `engine-view --interactive --record-input` log whose header carries an
+`engine.view.session` block — the scene it drew, where the camera started, the tick rate, the
+camera's parameters, how many ticks it ran, and the build that recorded it
+([apps](../../docs/subsystems/apps.md#--interactive-a-camera-somebody-flies)). `engine-view
+--replay-input <log>` flies it again, bit for bit. The corpus test above does not read this
+directory; the sessions have tests of their own in `apps/engine_view/tests/`.
+
+### `sessions/fly-synthetic.jsonl` — synthetic, and the replay test's fixture
+
+**Nobody typed this.** CI cannot move a mouse, so the session is scripted by
+`make_synthetic_session` in `apps/engine_view/tests/fly_tests.cpp`, and the committed file is what
+that function writes, checked byte for byte on every build: regenerate it from code, never edit it
+by hand. Two seconds at 240 Hz over the procedural heightfield at `--grid 65` (no sample assets,
+and a fraction of a second to load in a debug build), from a camera 22 m south of the field looking
+north and 0.3 rad down, at 4 m/s:
+
+- Escape at tick 1 (the window takes the pointer, which is what lets a live session read the
+  motion that follows);
+- W from tick 10 to 130 while the pointer moves 4 px right per tick for 60 ticks;
+- D from 140 to 200 with Shift held for 40 of it; E from 210 to 260 while looking up 3 px a tick;
+- S with Alt from 270 to 330; Q and A together from 340 to 400 while looking left and down;
+- one 2,000-pixel pull upwards at tick 430, far past the pitch clamp;
+- W and D together from 440 to 470, the diagonal that must not be faster than W alone;
+- M pressed at ticks 60, 240, 420, 450 and 475: five markers.
+
+Pointer motion is one event per axis per tick, which is what engine-view's edge writes.
+
+### `sessions/fly-synthetic.trajectory.json` — where it goes
+
+The camera the synthetic session flies, as `engine-view` prints it in its summary's
+`interactive.trajectory`: a hash over every tick's position, yaw and pitch **bit for bit**, where
+it ended, and each marker's tick and camera. It was committed from MSVC on Windows, and
+`fly_tests.cpp` replays the fixture and compares with no GPU, so every machine CI has checks that
+its compiler flies the recording to the same place. The end-to-end test replays the fixture twice
+offscreen with `--marker-captures`, and checks that both runs print this same trajectory and draw
+the same five PNGs byte for byte.
+
+It moves only when the camera's integration does. If it does, bump `view::k_fly_version` in
+`apps/engine_view/fly_camera.h` — which makes every older session log refuse to replay rather than
+replay somewhere else — and commit the file the failing test writes into its kept scratch
+directory.

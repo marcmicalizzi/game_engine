@@ -422,6 +422,50 @@ TEST_CASE("input: mouse motion and unbound codes") {
   CHECK_FALSE(fresh.held(walk));
 }
 
+// A mouse says how far, a stick how fast. `delta2` is the first: the tick's pointer motion through
+// the bindings' scales, never clamped, and blind to the positions `axis2` reads — so one action can
+// carry a mouse binding and a stick binding and a camera reads each the way it means.
+TEST_CASE("input: delta2 is the tick's pointer motion, unclamped, and ignores positions") {
+  ActionMap map;
+  const ActionId look = map.add_action("look", ActionKind::Axis2);
+  map.bind(look, Binding{Source::MouseAxis, static_cast<u32>(MouseAxisCode::X), 1.0f}, 0);
+  // Window y grows downwards; a -1 scale makes "up" positive, and is how a player inverts it.
+  map.bind(look, Binding{Source::MouseAxis, static_cast<u32>(MouseAxisCode::Y), -1.0f}, 1);
+  map.bind(look, Binding{Source::GamepadAxis, k_pad_left_x, 1.0f, 0.1f}, 0);
+  InputState state(map);
+
+  const RawEvent tick1[] = {
+      RawEvent{SimTick{1}, Source::MouseAxis, static_cast<u32>(MouseAxisCode::X), 250.0f, 0},
+      RawEvent{SimTick{1}, Source::MouseAxis, static_cast<u32>(MouseAxisCode::X), 150.0f, 0},
+      RawEvent{SimTick{1}, Source::MouseAxis, static_cast<u32>(MouseAxisCode::Y), 30.0f, 0},
+      pad_axis(1, k_pad_left_x, 0.8f),
+  };
+  run_tick(state, 1, tick1);
+  // 400 pixels is 400, not the 1 `axis2` would clamp it to, and the stick is not in it.
+  CHECK(state.delta2(look).x == 400.0f);
+  CHECK(state.delta2(look).y == -30.0f);
+  // axis2 is unchanged by the mouse binding's existence: it sums everything and clamps.
+  CHECK(state.axis2(look).x == doctest::Approx(1.0f));
+
+  // A tick with no motion reads zero, while the stick, a position, stays where it was.
+  run_empty_tick(state, 2);
+  CHECK(state.delta2(look).x == 0.0f);
+  CHECK(state.delta2(look).y == 0.0f);
+  CHECK(state.axis2(look).x == doctest::Approx((0.8f - 0.1f) / 0.9f));
+
+  // An action with no mouse binding, and a state with no map, read zero.
+  ActionMap keys;
+  const ActionId walk = keys.add_action("walk", ActionKind::Axis2);
+  keys.bind(walk, Binding{Source::Key, k_key_w, 1.0f}, 1);
+  InputState key_state(keys);
+  const RawEvent w[] = {key_event(1, k_key_w, true)};
+  run_tick(key_state, 1, w);
+  CHECK(key_state.delta2(walk).y == 0.0f);
+  CHECK(key_state.axis2(walk).y == doctest::Approx(1.0f));
+  InputState none;
+  CHECK(none.delta2(0).x == 0.0f);
+}
+
 TEST_CASE("input: an axis sum is clamped to the unit range") {
   ActionMap map;
   const ActionId push = map.add_action("push", ActionKind::Axis);

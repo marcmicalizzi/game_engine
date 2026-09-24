@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <utility>
 
 namespace engine::renderer {
 
@@ -89,17 +90,23 @@ bool fly_camera_path(SceneRenderer& renderer, const CameraPath& path, const Flig
   out.frames = frames;
   // What each submission was, by its place since the reset — the index `FrameStats::submission`
   // names — so a fold can be told from a warm-up, a path frame and the drain.
+  // The CPU's milliseconds and the wall time since the previous submission are taken here, where
+  // the frame is submitted, and carried until its GPU numbers fold in two frames later.
   struct Submission {
     u32 repeat = 0;
     u32 frame = 0;
     bool recorded = false;
+    f64 cpu_ms = 0.0;
+    f64 frame_ms = 0.0;
   };
   Vector<Submission> submissions;
   submissions.reserve((options.warmup + frames) * repeats + options.frames_in_flight);
   out.records.reserve(frames * repeats);
   renderer.reset_stats();
   u64 folded = renderer.stats().folded;
+  i64 previous_start = 0;
   auto submit = [&](u32 f, bool recorded, u32 repeat) {
+    const i64 start = time::monotonic_ns();
     renderer.begin_frame();
     const Stats& stats = renderer.stats();
     if (stats.folded != folded) {
@@ -107,16 +114,27 @@ bool fly_camera_path(SceneRenderer& renderer, const CameraPath& path, const Flig
       if (stats.last.submission < submissions.size()) {
         const Submission& done = submissions[static_cast<u32>(stats.last.submission)];
         if (done.recorded) {
-          out.records.push_back(frame_record(stats.last, done.repeat, done.frame,
-                                             camera_path_frame_time(path, done.frame, frames)));
+          scene::FrameRecord record =
+              frame_record(stats.last, done.repeat, done.frame,
+                           camera_path_frame_time(path, done.frame, frames));
+          record.cpu_ms = done.cpu_ms;
+          record.frame_ms = done.frame_ms;
+          out.records.push_back(std::move(record));
         }
       }
     }
+    // The wait for the slot is the GPU's time, not the CPU's: the CPU's starts once it is free.
+    const i64 ready = time::monotonic_ns();
     FrameDesc frame;
     frame.camera = camera_path_frame(path, f, frames);
     frame.frame_index = f;
     submissions.push_back(Submission{repeat, f, recorded});
-    return renderer.submit_frame(frame, error) != 0;
+    const bool ok = renderer.submit_frame(frame, error) != 0;
+    Submission& mine = submissions[submissions.size() - 1];
+    mine.cpu_ms = static_cast<f64>(time::monotonic_ns() - ready) / 1.0e6;
+    mine.frame_ms = previous_start != 0 ? static_cast<f64>(start - previous_start) / 1.0e6 : 0.0;
+    previous_start = start;
+    return ok;
   };
   for (u32 r = 0; r < repeats; ++r) {
     const i64 warm_from = time::monotonic_ns();
@@ -191,6 +209,8 @@ void summarize_frames(std::span<const scene::FrameRecord> records, u32 frames, u
     rt_built,
     rt_wanted,
     shadow_pairs,
+    cpu,
+    wall,
     passes
   };
   Vector<f64> per_frame[passes];
@@ -200,11 +220,13 @@ void summarize_frames(std::span<const scene::FrameRecord> records, u32 frames, u
   out.uploads = 0;
   out.upload_bytes = 0;
   out.evictions = 0;
+  out.ticks = 0;
   for (const scene::FrameRecord* r : slot) {
     if (r == nullptr) continue;
     out.uploads += r->uploads;
     out.upload_bytes += r->upload_bytes;
     out.evictions += r->evictions;
+    out.ticks += r->ticks;
   }
   for (u32 f = 0; f < frames; ++f) {
     const scene::FrameRecord* first = nullptr;
@@ -245,7 +267,9 @@ void summarize_frames(std::span<const scene::FrameRecord> records, u32 frames, u
                                     ms.blas,
                                     static_cast<f64>(r->rt_built),
                                     static_cast<f64>(r->rt_wanted),
-                                    static_cast<f64>(r->shadow_pairs)};
+                                    static_cast<f64>(r->shadow_pairs),
+                                    r->cpu_ms,
+                                    r->frame_ms};
         repeats_of.push_back(values[p]);
       }
       per_frame[p].push_back(median_of(repeats_of));
@@ -271,6 +295,8 @@ void summarize_frames(std::span<const scene::FrameRecord> records, u32 frames, u
   out.rt.built = over(rt_built);
   out.rt.wanted = over(rt_wanted);
   out.shadow_pairs = over(shadow_pairs);
+  out.cpu_ms = over(cpu);
+  out.frame_ms = over(wall);
 
   out.markers.clear();
   for (const CameraPathMarker& marker : path.markers) {

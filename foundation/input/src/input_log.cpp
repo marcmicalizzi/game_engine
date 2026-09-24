@@ -61,6 +61,14 @@ void InputLog::record(const RawEvent& event) {
 
 void InputLog::clear() noexcept { events_.clear(); }
 
+// A load that fails leaves nothing of the file behind: not its events, and not the map hash or
+// session its header got as far as setting.
+void InputLog::forget() noexcept {
+  events_.clear();
+  map_hash_ = 0;
+  session_ = JsonValue();
+}
+
 SimTick InputLog::first_tick() const noexcept {
   return events_.empty() ? SimTick{1} : events_.front().tick;
 }
@@ -81,6 +89,8 @@ io::Status InputLog::save(std::string_view native_path) const {
   columns.push_back(JsonValue("value"));
   columns.push_back(JsonValue("device"));
   header.set("columns", JsonValue(std::move(columns)));
+  // Only when there is one, so a log recorded without a session is the bytes it always was.
+  if (!session_.is_null()) header.set("session", session_);
 
   const JsonWriteOptions compact{.pretty = false};
   std::string text = write_json(header, compact);
@@ -95,6 +105,7 @@ io::Status InputLog::save(std::string_view native_path) const {
 io::Status InputLog::load(std::string_view native_path, std::string* error) {
   clear();
   map_hash_ = 0;
+  session_ = JsonValue();
   std::string text;
   const io::Status status = io::read_file(native_path, text);
   if (status != io::Status::Ok) {
@@ -119,7 +130,7 @@ io::Status InputLog::load(std::string_view native_path, std::string* error) {
     JsonValue value;
     if (const JsonParseResult parsed = parse_json(line, value); !parsed.ok) {
       if (error != nullptr) *error = std::string("input log: ") + parsed.message;
-      clear();
+      forget();
       return io::Status::IoError;
     }
     if (!have_header) {
@@ -128,7 +139,7 @@ io::Status InputLog::load(std::string_view native_path, std::string* error) {
       if (!value.is_object() || type_value == nullptr || !type_value->get_string(type) ||
           type != k_log_type) {
         if (error != nullptr) *error = "input log: the first line is not an input log header";
-        clear();
+        forget();
         return io::Status::IoError;
       }
       u64 version = 0;
@@ -138,26 +149,34 @@ io::Status InputLog::load(std::string_view native_path, std::string* error) {
           *error = "input log: version " + std::to_string(version) + " is newer than " +
                    std::to_string(k_log_version);
         }
-        clear();
+        forget();
         return io::Status::IoError;
       }
       const JsonValue* map_value = value.find("map");
       if (map_value == nullptr || !map_value->get_u64(map_hash_)) {
         if (error != nullptr) *error = "input log: the header has no action map hash";
-        clear();
+        forget();
         return io::Status::IoError;
+      }
+      if (const JsonValue* session = value.find("session"); session != nullptr) {
+        if (!session->is_object()) {
+          if (error != nullptr) *error = "input log: the header's session is not an object";
+          forget();
+          return io::Status::IoError;
+        }
+        session_ = *session;
       }
       have_header = true;
       continue;
     }
     RawEvent event;
     if (!event_from_json(value, event, error)) {
-      clear();
+      forget();
       return io::Status::IoError;
     }
     if (!events_.empty() && event.tick < events_.back().tick) {
       if (error != nullptr) *error = "input log: the events are not in tick order";
-      clear();
+      forget();
       return io::Status::IoError;
     }
     events_.push_back(event);
@@ -169,8 +188,24 @@ io::Status InputLog::load(std::string_view native_path, std::string* error) {
   return io::Status::Ok;
 }
 
-bool InputLog::replay(InputState& state, SimTick from, SimTick to, const ReplayOptions& options,
-                      std::string* error) const {
+u32 feed_ticks(InputState& state, std::span<const RawEvent> events, u32 cursor, SimTick from,
+               SimTick to, const ReplayOptions& options) {
+  const u32 count = static_cast<u32>(events.size());
+  while (cursor < count && events[cursor].tick < from)
+    ++cursor;
+  if (to < from) return cursor;
+  for (SimTick t = from;; ++t) {
+    state.begin_tick(t);
+    while (cursor < count && events[cursor].tick == t)
+      state.feed(events[cursor++]);
+    state.end_tick();
+    if (options.on_tick != nullptr) options.on_tick(options.user, t, state);
+    if (t == to) break;
+  }
+  return cursor;
+}
+
+bool InputLog::check_map(const InputState& state, std::string* error) const {
   const ActionMap* bound_map = state.map();
   if (bound_map == nullptr) {
     if (error != nullptr) *error = "input log: replay needs an InputState with an action map";
@@ -184,19 +219,13 @@ bool InputLog::replay(InputState& state, SimTick from, SimTick to, const ReplayO
     }
     return false;
   }
-  if (to < from) return true;
+  return true;
+}
 
-  u32 cursor = 0;
-  while (cursor < events_.size() && events_[cursor].tick < from)
-    ++cursor;
-  for (SimTick t = from;; ++t) {
-    state.begin_tick(t);
-    while (cursor < events_.size() && events_[cursor].tick == t)
-      state.feed(events_[cursor++]);
-    state.end_tick();
-    if (options.on_tick != nullptr) options.on_tick(options.user, t, state);
-    if (t == to) break;
-  }
+bool InputLog::replay(InputState& state, SimTick from, SimTick to, const ReplayOptions& options,
+                      std::string* error) const {
+  if (!check_map(state, error)) return false;
+  (void)feed_ticks(state, events(), 0, from, to, options);
   return true;
 }
 

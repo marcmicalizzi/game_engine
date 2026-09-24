@@ -187,9 +187,57 @@ TEST_CASE("window: create a hidden window, read its size, drain events") {
     CHECK_FALSE(window::haptics_info(slot, haptics));
   }
 
+  // Relative mouse mode: what SDL says is in effect follows what was asked, and turning it off
+  // again leaves the window as it was. The window is hidden and has no focus, so SDL records the
+  // mode without taking the pointer from whoever is at this machine.
+  CHECK_FALSE(window.relative_mouse());
+  if (window.set_relative_mouse(true)) {
+    CHECK(window.relative_mouse());
+    CHECK(window.set_relative_mouse(false));
+  } else {
+    MESSAGE("this platform refused relative mouse mode for a hidden window");
+  }
+  CHECK_FALSE(window.relative_mouse());
+
+  // A synthetic event comes back out of poll() as the platform's own would, through the same
+  // switch: a key by its scancode (with the `Key` the scancode maps to), motion as `dx`/`dy`.
+  // Anything else is refused, since a gamepad slot belongs to a real device.
+  window::Event key;
+  key.kind = window::EventKind::KeyDown;
+  key.scancode = 26;  // SDL_SCANCODE_W
+  window::Event motion;
+  motion.kind = window::EventKind::MouseMove;
+  motion.dx = 12.5f;
+  motion.dy = -3.0f;
+  window::Event pad;
+  pad.kind = window::EventKind::GamepadButtonDown;
+  CHECK_FALSE(window.push_event(pad));
+  if (window.push_event(key) && window.push_event(motion)) {
+    bool saw_key = false;
+    bool saw_motion = false;
+    for (u32 i = 0; i < 1000 && window.poll(event); ++i) {
+      if (event.kind == window::EventKind::KeyDown && event.scancode == 26) {
+        saw_key = true;
+        CHECK(event.key == window::Key::W);
+        CHECK_FALSE(event.repeat);
+      }
+      if (event.kind == window::EventKind::MouseMove && event.dx == 12.5f) {
+        saw_motion = true;
+        CHECK(event.dy == -3.0f);
+      }
+    }
+    CHECK(saw_key);
+    CHECK(saw_motion);
+  } else {
+    MESSAGE("SDL's event queue refused a synthetic event here");
+  }
+
   window.set_title("renamed");
   window.destroy();
   CHECK_FALSE(window.valid());
+  CHECK_FALSE(window.set_relative_mouse(true));
+  CHECK_FALSE(window.relative_mouse());
+  CHECK_FALSE(window.push_event(key));
   window::shutdown();
   CHECK_FALSE(window::initialized());
   // shutdown() closes every device it opened.

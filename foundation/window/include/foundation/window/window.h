@@ -379,6 +379,26 @@ class Window {
   void show() noexcept;
   void* native() const noexcept { return handle_; }  // SDL_Window*
 
+  // **Relative mouse mode**: the cursor is hidden and held inside the window, and `MouseMove`
+  // keeps reporting motion in `dx`/`dy` when the pointer would have stopped at the screen's edge,
+  // which is what a first-person camera needs (docs/subsystems/window.md, "Relative mouse"). Off
+  // by default. SDL keeps the mode per window and suspends it while the window has no focus, so a
+  // player who switches away gets the cursor back. False when there is no window or the platform
+  // refused; `relative_mouse()` reads back what SDL says is in effect for this window.
+  bool set_relative_mouse(bool enabled) noexcept;
+  bool relative_mouse() const noexcept;
+
+  // Puts an event on this window's queue as if the platform had delivered it, so the next
+  // `poll()` returns it through exactly the path a real one takes. Keys (`scancode`), mouse
+  // buttons, motion (`dx`/`dy`) and the wheel only: a gamepad or joystick event names a device
+  // slot this module assigned to a real device, so there is nothing to fake it for. False for any
+  // other kind, with no window, or when SDL's queue refuses it.
+  //
+  // It is for driving a window with nobody at the keyboard — an end-to-end test, a smoke run on a
+  // shared desktop — without handing keystrokes to whatever window the OS has focused, which is
+  // what synthesizing them at the OS level would do (docs/subsystems/apps.md, `--inject-input`).
+  bool push_event(const Event& event) noexcept;
+
   // Instance extensions the platform surface needs; empty (with SDL's reason logged) when
   // Vulkan is unavailable to SDL. Valid after init().
   static std::span<const char* const> vulkan_instance_extensions();
