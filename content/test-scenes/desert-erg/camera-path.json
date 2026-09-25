@@ -1,0 +1,149 @@
+{
+  "format": "engine.camera-path.v1",
+  "name": "desert-erg",
+  "description": "Sixty seconds at 60 fps across the erg, west to east, which is upwind: low on an interdune floor looking at a mega-draa's slip face, to its toe, up the face, over the crest, down its long stoss past the draa and crests on its flank, low across the eastern floor among barchans, and a pull-up looking back over the whole erg. README.md says what each marker shows.",
+  "interpolation": "Smooth",
+  "fps": 60,
+  "znear": 0.1,
+  "keys": [
+    {
+      "time": 0,
+      "position": [
+        -1400,
+        3,
+        0
+      ],
+      "ground": true,
+      "target": [
+        500,
+        150,
+        0
+      ]
+    },
+    {
+      "time": 10,
+      "position": [
+        -600,
+        3,
+        0
+      ],
+      "ground": true,
+      "target": [
+        500,
+        160,
+        0
+      ]
+    },
+    {
+      "time": 18,
+      "position": [
+        100,
+        5,
+        0
+      ],
+      "ground": true,
+      "target": [
+        500,
+        180,
+        60
+      ]
+    },
+    {
+      "time": 26,
+      "position": [
+        350,
+        30,
+        -40
+      ],
+      "ground": true,
+      "target": [
+        700,
+        160,
+        -100
+      ]
+    },
+    {
+      "time": 34,
+      "position": [
+        620,
+        25,
+        -60
+      ],
+      "ground": true,
+      "target": [
+        1500,
+        60,
+        0
+      ]
+    },
+    {
+      "time": 42,
+      "position": [
+        1100,
+        15,
+        0
+      ],
+      "ground": true,
+      "target": [
+        1800,
+        30,
+        300
+      ]
+    },
+    {
+      "time": 50,
+      "position": [
+        1700,
+        3,
+        100
+      ],
+      "ground": true,
+      "target": [
+        2400,
+        5,
+        0
+      ]
+    },
+    {
+      "time": 60,
+      "position": [
+        2300,
+        350,
+        0
+      ],
+      "ground": true,
+      "target": [
+        600,
+        150,
+        0
+      ]
+    }
+  ],
+  "markers": [
+    {
+      "frame": 0,
+      "name": "floor",
+      "note": "an interdune floor: flat, rippled, waves; a mega-draa's slip face in shade ahead"
+    },
+    {
+      "frame": 1080,
+      "name": "toe",
+      "note": "the foot of the mega-draa's slip face: 34 degrees, 150-200 m high, no steps or facets up it"
+    },
+    {
+      "frame": 2040,
+      "name": "crest",
+      "note": "over the crest: sinuous, sharp brink; draa and crest segments on the stoss beyond"
+    },
+    {
+      "frame": 3000,
+      "name": "barchans",
+      "note": "the eastern floor: barchans, waves and ripples, flat ground to the next mega-draa"
+    },
+    {
+      "frame": 3600,
+      "name": "overview",
+      "note": "the erg from 350 m: mega-draa about 2 km apart, open floors between"
+    }
+  ]
+}

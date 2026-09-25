@@ -35,9 +35,50 @@ struct CrestReport @version(1) {
   celerity_m_per_day: f32 = 0
 }
 
+/// One band's share of a region's statistics.
+struct BandStatsReport @version(1) {
+  name: string
+  /// Primitives centred in the region.
+  primitives: u32 = 0
+  /// Crest line inside the region per square kilometre of it, metres.
+  crest_m_per_km2: f32 = 0
+  tallest_m: f32 = 0
+}
+
+/// The numbers that stand in for a picture (docs/subsystems/terrain.md, "What the numbers say"):
+/// over a square of the field, sampled on a grid, at one time.
+struct StatsReport @version(1) {
+  /// The square's corner (x, z) and side, and the grid's spacing, metres.
+  corner: vec2
+  side_m: f32 = 0
+  spacing_m: f32 = 0
+  vertices: u64 = 0
+  /// Height above the interdune floor: the 10th, 50th, 90th and 99th percentiles and the largest.
+  above_floor_m: f32[]
+  /// The slope histogram's upper edges, degrees; its last bin is everything steeper.
+  slope_edges_deg: u32[]
+  /// The share of the sand (not rock) in each slope bin.
+  slope_share: f32[]
+  /// The share of the sand steeper than the angle of repose (34 degrees), and than 36, and how
+  /// many sand vertices are steeper than 36: the repose limiter's number, which must be 0.
+  over_repose_share: f32 = 0
+  over_36_share: f32 = 0
+  over_36_vertices: u64 = 0
+  /// The share of the ground within half a metre of the interdune floor: the flats.
+  flat_share: f32 = 0
+  bands: BandStatsReport[]
+  /// The tallest dune centred in the square, its band, and that band's spacing (the mean distance
+  /// from each of its dunes in the square to the nearest other), metres.
+  tallest_m: f32 = 0
+  tallest_band: string
+  tallest_spacing_m: f32 = 0
+  /// Every count above as one number, 16 hex digits: what the golden tests pin.
+  hash: string
+}
+
 /// `engine-content terrain <scene> --tile x,z --time t`: one tile of a scene's dune field at one
 /// game time, as one JSON line for tests and agents.
-struct TileReport @version(1) {
+struct TileReport @version(2) {
   /// "engine.terrain.tile".
   format: string
   tile_x: i32 = 0
@@ -63,9 +104,13 @@ struct TileReport @version(1) {
   wind_speed_mps: f32 = 0
   flux_m2_per_day: f32 = 0
   saltation_m2_per_day: f32 = 0
-  /// How far each band has moved since time zero, metres (x z): draa, crest, barchan.
+  /// How far each band has moved since time zero, metres (x z), in the table's order.
   displacement_m: vec2[]
   crests: CrestReport[]
   /// Milliseconds the evaluation took.
   eval_ms: f64 = 0
+  /// The tile's own statistics, over its grid.
+  tile_stats: StatsReport? @since(2)
+  /// With --stats: a square round the tile, larger than one dune (4,096 m at 8 m by default).
+  region: StatsReport? @since(2)
 }

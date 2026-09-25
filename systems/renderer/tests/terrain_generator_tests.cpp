@@ -193,3 +193,61 @@ TEST_CASE("renderer: ruins over the dune generator stand on its ground") {
   CHECK(floating == 0);
 }
 #endif
+
+TEST_CASE("renderer: a terrain's band table reads, hashes, and is validated") {
+  const test::TempDir tmp("renderer_terrain_bands");
+  std::string error;
+  const auto scene = [](const std::string& bands) {
+    return std::string(R"({"format":"engine.scene.v1","terrain":{"size":33,"extent":400,"seed":4,)"
+                       R"("generator":"Dunes","time":1000)") +
+           bands + "}}";
+  };
+  const std::string good = tmp.file("good.json");
+  REQUIRE(write_text(
+      good, scene(R"(,"bands":[{"name":"big","height_min":20,"height_max":40,)"
+                  R"("cell":600,"share":0.8,"sinuosity":0.05},)"
+                  R"({"name":"small","kind":"Barchan","height_min":1,"height_max":3,)"
+                  R"("cell":80,"share":0.4,"couple":"Floors","couple_height":2,"far":false}])")));
+  SceneDesc desc;
+  REQUIRE_MESSAGE(read_scene_file(good, desc, error), error);
+  REQUIRE(desc.terrain.has_bands);
+  REQUIRE(desc.terrain.bands.size() == 2);
+  CHECK(desc.terrain.bands[1].kind == 1);
+  CHECK(desc.terrain.bands[1].couple == 2);
+  CHECK_FALSE(desc.terrain.bands[1].far);
+  // The table is part of what the terrain is: its hash and so its cache entry.
+  TerrainDesc without = desc.terrain;
+  without.has_bands = false;
+  without.bands.clear();
+  CHECK(terrain_hash(without) != terrain_hash(desc.terrain));
+  // And it is what the sampler draws: a 20-40 m band stands where the default's 3 m field does not.
+  const TerrainSampler with_bands(desc.terrain);
+  const TerrainSampler default_bands(without);
+  f32 tallest = 0.0f, tallest_default = 0.0f;
+  for (f32 x = -400.0f; x <= 400.0f; x += 10.0f) {
+    for (f32 z = -400.0f; z <= 400.0f; z += 10.0f) {
+      tallest = std::max(tallest, with_bands.height(x, z));
+      tallest_default = std::max(tallest_default, default_bands.height(x, z));
+    }
+  }
+  MESSAGE("tallest with the table " << tallest << " m, with the default " << tallest_default
+                                    << " m");
+  CHECK(tallest > 15.0f);
+  CHECK(tallest_default < 6.0f);
+
+  const std::string empty = tmp.file("empty.json");
+  REQUIRE(write_text(empty, scene(R"(,"bands":[])")));
+  CHECK_FALSE(read_scene_file(empty, desc, error));
+  CHECK(error.find("empty") != std::string::npos);
+  const std::string zero = tmp.file("zero.json");
+  REQUIRE(write_text(
+      zero,
+      scene(R"(,"bands":[{"name":"none","height_min":1,"height_max":2,"cell":90,"share":0}])")));
+  CHECK_FALSE(read_scene_file(zero, desc, error));
+  CHECK(error.find("zero share") != std::string::npos);
+  const std::string small = tmp.file("small.json");
+  REQUIRE(write_text(
+      small, scene(R"(,"bands":[{"name":"tight","height_min":20,"height_max":40,"cell":50}])")));
+  CHECK_FALSE(read_scene_file(small, desc, error));
+  CHECK(error.find("smaller than its own dune") != std::string::npos);
+}

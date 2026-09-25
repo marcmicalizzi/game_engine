@@ -22,14 +22,17 @@
 #include <string_view>
 
 #if ENGINE_CONTENT_TERRAIN
+#include <core/jobs/job_system.h>
 #include <core/json/json_value.h>
 #include <core/schema/json_reflect.h>
 #include <core/time/time.h>
+#include <domain/terrain/stats.h>
 #include <domain/terrain/terrain.h>
 #include <foundation/io/vfs.h>
 
 #include <charconv>
 #include <cmath>
+#include <optional>
 #include <schemas/scene.h>
 #include <schemas/terrain.h>
 #endif
@@ -52,7 +55,11 @@ constexpr int k_exit_error = 1;
     "      --cells <n>         quads a side (default 128: the overlay's 25 cm grid at 32 m)\n"
     "      --detail <d>        full, dunes (default), coarse or floor\n"
     "      --tile-size <m>     a tile's edge in metres (default 32)\n"
-    "      --crests            list every crest line crossing the tile\n";
+    "      --crests            list every crest line crossing the tile\n"
+    "      --stats             the statistics of a square round the tile (`region`)\n"
+    "      --stats-side <m>    its side (default 4096)\n"
+    "      --stats-spacing <m> its grid (default 8)\n"
+    "      --jobs <n>          performance-pool workers for --stats (default: one per CPU)\n";
 
 [[maybe_unused]] int usage(const char* message) {
   if (message != nullptr) std::fprintf(stderr, "engine-content terrain: %s\n", message);
@@ -142,6 +149,31 @@ terrain::FieldDesc field_desc(const scene::Terrain& t) {
     f.basins.push_back(terrain::BasinFeature{terrain::to_mm(b.center.x), terrain::to_mm(b.center.y),
                                              terrain::to_mm(b.radius)});
   }
+  if (t.bands.has_value()) {
+    for (const scene::TerrainBand& b : *t.bands) {
+      terrain::BandMetres m;
+      m.name = b.name;
+      m.kind = b.kind == scene::DuneKind::Barchan ? terrain::PrimitiveKind::barchan
+                                                  : terrain::PrimitiveKind::transverse;
+      m.height_min = b.height_min;
+      m.height_max = b.height_max;
+      m.cell = b.cell;
+      m.share = b.share;
+      m.length_min = b.length_min;
+      m.length_max = b.length_max;
+      m.stoss = b.stoss;
+      m.bend = b.bend;
+      m.sinuosity = b.sinuosity;
+      m.spread_deg = b.spread_deg;
+      m.sharpness = b.sharpness;
+      m.side_days = b.side_days;
+      m.sharp_days = b.sharp_days;
+      m.couple = static_cast<terrain::BandCouple>(b.couple);
+      m.couple_height = b.couple_height;
+      m.far = b.far;
+      f.bands.push_back(terrain::band_from_metres(m));
+    }
+  }
   return f;
 }
 
@@ -149,6 +181,41 @@ std::string hex(u64 v) {
   char text[17];
   std::snprintf(text, sizeof(text), "%016llx", static_cast<unsigned long long>(v));
   return text;
+}
+
+terrain::StatsReport stats_report(const terrain::DuneField& field, const terrain::FieldStats& st) {
+  terrain::StatsReport r;
+  r.corner = Vec2{terrain::height_m(st.x0 * 1000), terrain::height_m(st.z0 * 1000)};
+  r.spacing_m = terrain::height_m(st.spacing_mm * 1000);
+  r.side_m = terrain::height_m(static_cast<i64>(st.nx - 1) * st.spacing_mm * 1000);
+  r.vertices = st.vertices;
+  for (const i64 v : st.above_floor_um)
+    r.above_floor_m.push_back(terrain::height_m(v));
+  for (const u32 e : terrain::k_slope_edges_deg)
+    r.slope_edges_deg.push_back(e);
+  const f64 sand = st.sand_vertices > 0 ? static_cast<f64>(st.sand_vertices) : 1.0;
+  for (const u64 c : st.slope)
+    r.slope_share.push_back(static_cast<f32>(static_cast<f64>(c) / sand));
+  r.over_repose_share = static_cast<f32>(static_cast<f64>(st.over_repose()) / sand);
+  r.over_36_share = static_cast<f32>(static_cast<f64>(st.over_36()) / sand);
+  r.over_36_vertices = st.over_36();
+  r.flat_share = static_cast<f32>(static_cast<f64>(st.flat) /
+                                  static_cast<f64>(st.vertices > 0 ? st.vertices : 1));
+  const f64 side_km = static_cast<f64>(static_cast<i64>(st.nx - 1) * st.spacing_mm) * 1e-6;
+  const f64 km2 = side_km * side_km > 0.0 ? side_km * side_km : 1.0;
+  for (u32 b = 0; b < st.bands; ++b) {
+    terrain::BandStatsReport br;
+    br.name = field.band_name(b);
+    br.primitives = st.band[b].primitives;
+    br.crest_m_per_km2 = static_cast<f32>(static_cast<f64>(st.band[b].crest_mm) * 1e-3 / km2);
+    br.tallest_m = terrain::height_m(st.band[b].tallest_um);
+    r.bands.push_back(std::move(br));
+  }
+  r.tallest_m = terrain::height_m(st.tallest_um);
+  r.tallest_band = st.tallest_um > 0 ? field.band_name(st.tallest_band) : "";
+  r.tallest_spacing_m = terrain::height_m(st.tallest_spacing_mm * 1000);
+  r.hash = hex(st.hash());
+  return r;
 }
 
 #endif
@@ -176,6 +243,10 @@ int terrain_command(int argc, char** argv) {
   u32 cells = 128;
   f64 tile_m = 32.0;
   bool crests = false;
+  bool stats = false;
+  f64 stats_side_m = 4096.0;
+  f64 stats_spacing_m = 8.0;
+  u32 jobs_count = 0;
   terrain::Detail detail = terrain::Detail::dunes;
   for (int i = 3; i < argc; ++i) {
     const std::string_view arg = argv[i];
@@ -223,6 +294,23 @@ int terrain_command(int argc, char** argv) {
         return usage("--detail is full, dunes, coarse or floor");
     } else if (arg == "--crests") {
       crests = true;
+    } else if (arg == "--stats") {
+      stats = true;
+    } else if (arg == "--stats-side") {
+      const char* v = value("--stats-side");
+      if (v == nullptr) return k_exit_usage;
+      if (!parse_f64(v, stats_side_m) || !(stats_side_m >= 1.0) || !(stats_side_m <= 100'000.0))
+        return usage("--stats-side is metres within 1..100000");
+    } else if (arg == "--stats-spacing") {
+      const char* v = value("--stats-spacing");
+      if (v == nullptr) return k_exit_usage;
+      if (!parse_f64(v, stats_spacing_m) || !(stats_spacing_m >= 0.01) ||
+          !(stats_spacing_m <= 1000.0))
+        return usage("--stats-spacing is metres within 0.01..1000");
+    } else if (arg == "--jobs") {
+      const char* v = value("--jobs");
+      if (v == nullptr) return k_exit_usage;
+      if (!parse_u32(v, jobs_count) || jobs_count > 256) return usage("--jobs is 0..256");
     } else {
       return usage(("unknown option " + std::string(arg)).c_str());
     }
@@ -240,7 +328,13 @@ int terrain_command(int argc, char** argv) {
   if (!have_time) time_s = source.time;
   const i64 time_us = static_cast<i64>(std::floor(time_s * 1'000'000.0 + 0.5));
 
-  const terrain::DuneField field(field_desc(source));
+  const terrain::FieldDesc desc = field_desc(source);
+  if (source.bands.has_value() &&
+      !terrain::validate_bands(
+          std::span<const terrain::BandDesc>(desc.bands.data(), desc.bands.size()), &error)) {
+    return failed(scene_path + ": terrain.bands: " + error);
+  }
+  const terrain::DuneField field(desc);
   terrain::TileOptions options;
   options.tile_mm = tile_mm;
   options.cells = cells;
@@ -294,6 +388,30 @@ int terrain_command(int argc, char** argv) {
     }
   }
   report.eval_ms = static_cast<f64>(elapsed) / 1e6;
+
+  // The tile's own statistics over its grid, and with --stats a square round it.
+  const i64 spacing = tile_mm / static_cast<i64>(cells);
+  terrain::FieldStats tile_stats;
+  terrain::field_stats(field, static_cast<i64>(tile_x) * tile_mm,
+                       static_cast<i64>(tile_z) * tile_mm, cells + 1, cells + 1, spacing, time_us,
+                       detail, nullptr, nullptr, tile_stats);
+  report.tile_stats = stats_report(field, tile_stats);
+  if (stats) {
+    const i64 step = static_cast<i64>(std::floor(stats_spacing_m * 1000.0 + 0.5));
+    const i64 side = static_cast<i64>(std::floor(stats_side_m * 1000.0 + 0.5));
+    const u32 n = static_cast<u32>(side / step) + 1;
+    const i64 cx = static_cast<i64>(tile_x) * tile_mm + tile_mm / 2;
+    const i64 cz = static_cast<i64>(tile_z) * tile_mm + tile_mm / 2;
+    std::optional<jobs::JobSystem> pool;
+    jobs::JobSystemConfig config;
+    config.performance_workers = jobs_count;
+    config.pin_threads = false;
+    if (jobs_count != 1) pool.emplace(config);
+    terrain::FieldStats region;
+    terrain::field_stats(field, cx - side / 2, cz - side / 2, n, n, step, time_us, detail, nullptr,
+                         pool.has_value() ? &*pool : nullptr, region);
+    report.region = stats_report(field, region);
+  }
   std::string text = write_json(schema::to_json(report), JsonWriteOptions{.pretty = false});
   text.push_back('\n');
   std::fwrite(text.data(), 1, text.size(), stdout);

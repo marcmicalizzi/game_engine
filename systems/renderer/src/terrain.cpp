@@ -41,6 +41,31 @@ terrain::FieldDesc field_desc(const TerrainDesc& desc) {
     f.basins.push_back(terrain::BasinFeature{terrain::to_mm(b.center.x), terrain::to_mm(b.center.y),
                                              terrain::to_mm(b.radius)});
   }
+  if (desc.has_bands) {
+    for (const TerrainBand& band : desc.bands) {
+      terrain::BandMetres m;
+      m.name = band.name;
+      m.kind =
+          band.kind == 1 ? terrain::PrimitiveKind::barchan : terrain::PrimitiveKind::transverse;
+      m.height_min = band.height_min;
+      m.height_max = band.height_max;
+      m.cell = band.cell;
+      m.share = band.share;
+      m.length_min = band.length_min;
+      m.length_max = band.length_max;
+      m.stoss = band.stoss;
+      m.bend = band.bend;
+      m.sinuosity = band.sinuosity;
+      m.spread_deg = band.spread_deg;
+      m.sharpness = band.sharpness;
+      m.side_days = band.side_days;
+      m.sharp_days = band.sharp_days;
+      m.couple = static_cast<terrain::BandCouple>(band.couple <= 2 ? band.couple : 0);
+      m.couple_height = band.couple_height;
+      m.far = band.far;
+      f.bands.push_back(terrain::band_from_metres(m));
+    }
+  }
   return f;
 }
 
@@ -51,9 +76,21 @@ i64 time_us_of(const TerrainDesc& desc) noexcept {
 }  // namespace
 
 bool terrain_generator_available() noexcept { return true; }
+
+bool terrain_bands_valid(const TerrainDesc& desc, std::string* error) noexcept {
+  if (!desc.has_bands) return true;
+  const terrain::FieldDesc f = field_desc(desc);
+  if (f.bands.empty()) {
+    if (error != nullptr) *error = "the band table is empty: leave it out for the default";
+    return false;
+  }
+  return terrain::validate_bands(std::span<const terrain::BandDesc>(f.bands.data(), f.bands.size()),
+                                 error);
+}
 #else
 struct TerrainSampler::Dunes {};
 bool terrain_generator_available() noexcept { return false; }
+bool terrain_bands_valid(const TerrainDesc&, std::string*) noexcept { return true; }
 #endif
 
 namespace {
@@ -412,6 +449,18 @@ u64 terrain_hash(const TerrainDesc& desc) noexcept {
     h = hash_combine(h, 1u);
     h = hash_combine(h, std::bit_cast<u64>(desc.time_s));
     h = mix_f32(h, desc.sand_flux);
+    if (desc.has_bands) {
+      h = hash_combine(h, desc.bands.size());
+      for (const TerrainBand& b : desc.bands) {
+        h = hash_combine(h, hash_bytes(b.name.data(), b.name.size()));
+        h = hash_combine(hash_combine(hash_combine(h, b.kind), b.couple), b.far ? 1u : 0u);
+        h = hash_combine(hash_combine(h, b.side_days), b.sharp_days);
+        for (const f32 v :
+             {b.height_min, b.height_max, b.cell, b.share, b.length_min, b.length_max, b.stoss,
+              b.bend, b.sinuosity, b.spread_deg, b.sharpness, b.couple_height})
+          h = mix_f32(h, v);
+      }
+    }
   }
   return h;
 }

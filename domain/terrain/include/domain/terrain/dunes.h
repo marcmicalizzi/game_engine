@@ -83,6 +83,24 @@ const char* primitive_kind_name(PrimitiveKind kind) noexcept;
 enum class BandCouple : u8 { none = 0, flanks = 1, floors = 2 };
 const char* band_couple_name(BandCouple couple) noexcept;
 
+// A band as a scene describes it, in metres and fractions (`engine.scene.TerrainBand`); the
+// renderer and the content tool read it from their own types and hand it over in this one.
+struct BandMetres {
+  PrimitiveKind kind = PrimitiveKind::transverse;
+  f32 height_min = 1.0f, height_max = 2.0f;
+  f32 cell = 90.0f;
+  f32 share = 1.0f;
+  f32 length_min = 0.45f, length_max = 0.85f;
+  f32 stoss = 0.4f, bend = 0.25f, sinuosity = 0.0f;
+  f32 spread_deg = 20.0f;
+  f32 sharpness = 1.0f;
+  u32 side_days = 120, sharp_days = 30;
+  BandCouple couple = BandCouple::none;
+  f32 couple_height = 0.0f;
+  bool far = true;
+  std::string name;
+};
+
 // One band of the dune field: a population of primitives of one kind placed on a lattice of
 // square cells, at most one a cell. Every seeded choice is made in centimetres (the lattice, the
 // heights, the centre's jitter) and fractions of the cell in Q16, so a band is the same bits on
@@ -108,6 +126,10 @@ struct BandDesc {
   bool far = true;  // kept by `Detail::coarse`
   char name[15] = {};
 };
+
+// Metres to the band's own units: centimetres and Q16 rounded to nearest, degrees to a binary
+// angle. Validate the result (`validate_bands`); nothing here refuses.
+BandDesc band_from_metres(const BandMetres& band) noexcept;
 
 // The default table: draa two wavelengths apart as tall as the dune height, crest segments at the
 // wavelength half as tall, sparse barchans — exactly the constants of the field before the table.
@@ -163,7 +185,7 @@ struct FieldDesc {
 inline constexpr u32 k_generator_version = 1;
 u64 field_hash(const FieldDesc& desc) noexcept;
 
-// One primitive as a gather holds it at one time: 72 bytes (tests/size_table.cpp). Positions are
+// One primitive as a gather holds it at one time: 88 bytes (tests/size_table.cpp). Positions are
 // in its band's moving frame, mm; `height` is µm; the time-dependent shape (`side_q16`,
 // `sharp_q16`, the barchan's `dir`) was worked out for the gather's time.
 struct Primitive {
@@ -185,7 +207,12 @@ struct Primitive {
   u32 inv_half = 0;
   u32 inv_stoss = 0;
   u32 inv_width = 0;
+  // A crest's meander: its line moves `meander` mm either side, one wave a cell along its length
+  // (Q32 reciprocal of that wavelength), from a seeded phase. Zero for a band with no sinuosity.
+  i32 meander = 0;
+  u32 inv_meander = 0;
   u16 cell_hash = 0;  // the low bits of its cell's hash, for reports
+  u16 meander_phase = 0;
   u8 band = 0;
   u8 kind = 0;  // PrimitiveKind
 };
@@ -199,6 +226,16 @@ struct Gather {
   Vector<Primitive> primitives;  // band order, then cell order
   u32 bands = 0;
   u32 band_begin[k_max_bands + 1] = {};
+  // Each band's primitives binned by lattice cell: the rectangle of cells the gather covered and,
+  // per cell, the index of its primitive or -1. A point visits only the cells whose primitives can
+  // reach it, so a band of ten-metre waves costs a point 25 cells, not the thousand a large gather
+  // holds.
+  i64 grid_i0[k_max_bands] = {};
+  i64 grid_j0[k_max_bands] = {};
+  u32 grid_ni[k_max_bands] = {};
+  u32 grid_nj[k_max_bands] = {};
+  u32 grid_begin[k_max_bands] = {};
+  Vector<i32> grid;
   const LagField* lag = nullptr;
   // The ripples' direction today and yesterday, Q14, their drift, and today's blend.
   i32 ripple_x = 0, ripple_z = 0, ripple_prev_x = 0, ripple_prev_z = 0;
@@ -233,6 +270,9 @@ class DuneField {
   // The surface at a world point, against a gather that covers it.
   Sample sample(const Gather& gather, i64 x, i64 z, Detail detail) const noexcept;
   i64 height_um(const Gather& gather, i64 x, i64 z, Detail detail) const noexcept;
+  // How much of band `b` its coupling lets stand at a point, Q16: 1 for an uncoupled band, and
+  // for a coupled one the fade the evaluation applies there. What the statistics weigh a crest by.
+  i64 band_weight_q16(const Gather& gather, u32 b, i64 x, i64 z) const noexcept;
   // One point on its own: gathers a region of one millimetre. For a handful of queries; anything
   // that asks for a grid gathers once.
   i64 height_um(i64 x, i64 z, i64 time_us, Detail detail = Detail::dunes,
@@ -277,6 +317,7 @@ class DuneField {
   bool make_primitive(u32 band, i64 i, i64 j, const TimeShape& shape,
                       Primitive& out) const noexcept;
   i64 band_sand(const Gather& gather, u32 band, i64 qx, i64 qz) const noexcept;
+  static i64 primitive_height(const Primitive& p, i64 dx, i64 dz) noexcept;
   i64 ridge_lag_mm(i64 x, i64 z) const noexcept;
   i64 detail_um(const Gather& gather, i64 x, i64 z) const noexcept;
   void features(i64 x, i64 z, i64& ridge_q16, i64& basin_flatten_q16,

@@ -434,6 +434,61 @@ struct Basin @version(1) {
   depth: f32 = 5
 }
 
+/// The kind of primitive a band of the dune generator is made of.
+enum DuneKind : u8 {
+  /// A crest line: a gentle windward stoss, a lee that steepens to a slip face in a sustained
+  /// wind, bent and meandering along its length.
+  Transverse = 0
+  /// A crescent: a dome with a scoop whose rim is the brink, horns down the wind.
+  Barchan = 1
+}
+
+/// Where a band may stand relative to the bands before it in the table.
+enum DuneCouple : u8 {
+  /// Anywhere.
+  None = 0
+  /// Only on their flanks: it fades in as their sand rises past `couple_height`.
+  Flanks = 1
+  /// Only on the floors between them: it fades out as their sand rises past `couple_height`.
+  Floors = 2
+}
+
+/// One band of the dune generator's table (docs/subsystems/terrain.md, "The band table"): a
+/// population of primitives of one kind on a lattice of square cells, at most one a cell, which
+/// the wind carries at its sand flux over the band's height. Metres; fractions are of the cell.
+struct TerrainBand @version(1) {
+  name: string
+  kind: DuneKind = Transverse
+  /// The range each primitive's height is drawn from, metres.
+  height_min: f32 = 1
+  height_max: f32 = 2
+  /// The lattice's cell, metres: about the spacing of the band's crests.
+  cell: f32 = 90
+  /// The share of cells that hold a primitive, (0, 1]. Below one leaves open ground.
+  share: f32 = 1
+  /// A crest's half length, as fractions of the cell, drawn between these.
+  length_min: f32 = 0.45
+  length_max: f32 = 0.85
+  /// A crest's windward width, and how far its ends bend down the wind, fractions of the cell.
+  stoss: f32 = 0.4
+  bend: f32 = 0.25
+  /// How far a crest meanders either side of its line, a fraction of the cell: long sinuous crests.
+  sinuosity: f32 = 0
+  /// How far a crest strays from square to the wind, degrees.
+  spread_deg: f32 = 20
+  /// The sharpest its lee gets, [0, 1]: 0 never a slip face (waves), 1 a slip face at the angle of
+  /// repose in a sustained wind.
+  sharpness: f32 = 1
+  /// The days of wind that decide the slip face's side, and its sharpness (a barchan's heading).
+  side_days: u32 = 120
+  sharp_days: u32 = 30
+  couple: DuneCouple = None
+  /// The height of the earlier bands' sand the coupling fades across, metres.
+  couple_height: f32 = 0
+  /// Kept by the far detail (past 2 km): false for bands of a few metres and less.
+  far: bool = true
+}
+
 /// Which dune field a terrain draws.
 enum TerrainGenerator : u8 {
   /// A handful of seeded transverse waves round one prevailing wind: the field every terrain drew
@@ -449,7 +504,7 @@ enum TerrainGenerator : u8 {
 /// path can be laid out against them. It is built into a cluster LOD DAG like any mesh, and its
 /// derived-data cache entry is keyed by these fields, so it is content-addressed like a file.
 /// Version 2 added the generator; a version 1 terrain reads as the waves it always drew.
-struct Terrain @version(2) {
+struct Terrain @version(3) {
   /// Vertices a side. 2 to 4097.
   size: u32 = 1025
   /// Half the side, in metres: the terrain spans [-extent, extent] in x and z.
@@ -469,6 +524,9 @@ struct Terrain @version(2) {
   /// With the generator: the wind's mean sand flux, square metres a year (volume per metre of
   /// width). 200 is a strong trade-wind desert, where a 1 m barchan moves 200 m a year.
   sand_flux: f32 = 200 @since(2)
+  /// With the generator: the band table, tallest first. Null: the default's three bands, derived
+  /// from `dune_height` and `dune_wavelength`. An empty table is refused.
+  bands: TerrainBand[]? @since(3)
 }
 
 /// What a ruins entry is drawn as in one ring of a streamed world (docs/subsystems/world.md).

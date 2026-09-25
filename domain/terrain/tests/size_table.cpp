@@ -9,9 +9,11 @@
 using namespace engine;
 
 // Centre (16), direction (8), height, half length, stoss, bend, reach, side, sharpness, lee (32),
-// three reciprocals (12), the cell's hash, band and kind (4): no padding. It grew from 56 when the
-// reciprocals moved the inner loop's divisions into the gather (terrain.md, "Performance notes").
-ENGINE_EXPECT_SIZE(72, 8, terrain::Primitive);
+// three reciprocals (12), the meander and its reciprocal (8), the cell's hash and the meander's
+// phase (4), band and kind (2), and six bytes of padding. It grew from 56 when the reciprocals
+// moved the inner loop's divisions into the gather, and from 72 to 88 for the band table's
+// sinuous crests (terrain.md, "The band table"); a gather holds a few hundred.
+ENGINE_EXPECT_SIZE(88, 8, terrain::Primitive);
 // Flux x, z and magnitude, speed (16), direction and the calm flag (4).
 ENGINE_EXPECT_SIZE(20, 4, terrain::WindDay);
 // Time (8), centre (8), two radii and a yaw (6), depth and rim (4), kind and five spare bytes (6):

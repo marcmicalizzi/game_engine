@@ -53,6 +53,25 @@ struct TerrainBasin {
   f32 depth = 5.0f;
 };
 
+// One band of the dune generator's table (`engine.scene.TerrainBand`; terrain.md, "The band
+// table"), in metres and fractions of its cell, as the scene says it. The renderer hands it to the
+// terrain capability unchanged; it knows nothing of what it means.
+struct TerrainBand {
+  std::string name;
+  u8 kind = 0;  // 0 transverse, 1 barchan
+  f32 height_min = 1.0f, height_max = 2.0f;
+  f32 cell = 90.0f;
+  f32 share = 1.0f;
+  f32 length_min = 0.45f, length_max = 0.85f;
+  f32 stoss = 0.4f, bend = 0.25f, sinuosity = 0.0f;
+  f32 spread_deg = 20.0f;
+  f32 sharpness = 1.0f;
+  u32 side_days = 120, sharp_days = 30;
+  u8 couple = 0;  // 0 none, 1 flanks, 2 floors
+  f32 couple_height = 0.0f;
+  bool far = true;
+};
+
 struct TerrainDesc {
   bool enabled = false;
   u32 size = 1025;       // vertices a side
@@ -67,7 +86,16 @@ struct TerrainDesc {
   TerrainGenerator generator = TerrainGenerator::waves;
   f64 time_s = 0.0;
   f32 sand_flux = 200.0f;
+  // With `dunes`: the band table, tallest first; `has_bands` false is the default's three bands
+  // (derived from the dune height and wavelength).
+  bool has_bands = false;
+  Vector<TerrainBand> bands;
 };
+
+// With `dunes`: false, with a sentence, when the band table is one the generator cannot be built
+// from (terrain.md, `validate_bands`); true without the capability, which refuses the generator
+// on its own.
+bool terrain_bands_valid(const TerrainDesc& desc, std::string* error) noexcept;
 
 // Bumped when `terrain_height` or the mesh built from it changes, so a cache entry built by an
 // older generator is never mistaken for this one's. 5: one material over baked maps instead of

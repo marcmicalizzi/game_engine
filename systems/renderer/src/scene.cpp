@@ -1153,6 +1153,33 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
                                                                           : TerrainGenerator::waves;
     out.terrain.time_s = t.time;
     out.terrain.sand_flux = t.sand_flux;
+    out.terrain.has_bands = false;
+    out.terrain.bands.clear();
+    if (t.bands.has_value()) {
+      out.terrain.has_bands = true;
+      for (const scene::TerrainBand& b : *t.bands) {
+        TerrainBand band;
+        band.name = b.name;
+        band.kind = b.kind == scene::DuneKind::Barchan ? 1 : 0;
+        band.height_min = b.height_min;
+        band.height_max = b.height_max;
+        band.cell = b.cell;
+        band.share = b.share;
+        band.length_min = b.length_min;
+        band.length_max = b.length_max;
+        band.stoss = b.stoss;
+        band.bend = b.bend;
+        band.sinuosity = b.sinuosity;
+        band.spread_deg = b.spread_deg;
+        band.sharpness = b.sharpness;
+        band.side_days = b.side_days;
+        band.sharp_days = b.sharp_days;
+        band.couple = static_cast<u8>(b.couple);
+        band.couple_height = b.couple_height;
+        band.far = b.far;
+        out.terrain.bands.push_back(std::move(band));
+      }
+    }
     if (out.terrain.generator == TerrainGenerator::dunes && !terrain_generator_available()) {
       error = path +
               ": the terrain names the dune generator (\"generator\": \"Dunes\"), and this build "
@@ -1166,6 +1193,13 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
               ": the dune generator's time must be within [0, 3e11) s and its sand_flux "
               "within [0, 100000] m^2 a year";
       return false;
+    }
+    if (out.terrain.generator == TerrainGenerator::dunes) {
+      std::string why;
+      if (!terrain_bands_valid(out.terrain, &why)) {
+        error = path + ": terrain.bands: " + why;
+        return false;
+      }
     }
     if (t.size < 2 || t.size > k_terrain_max_size || !(t.extent > 0.0f)) {
       error = path + ": terrain size must be within 2.." + std::to_string(k_terrain_max_size) +

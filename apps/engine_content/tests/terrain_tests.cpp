@@ -79,7 +79,7 @@ TEST_CASE("engine-content terrain: a tile of a scene's dune field as one JSON li
   CHECK(number(line, "flux_m2_per_day") >= 0.0);
   const JsonValue* displacement = line.find("displacement_m");
   REQUIRE(displacement != nullptr);
-  CHECK(displacement->size() == 3);
+  CHECK(displacement->size() == 5);  // the erg profile's five bands
   const JsonValue* crests = line.find("crests");
   REQUIRE(crests != nullptr);
   MESSAGE("tile (3, -2) three years in: " << number(line, "min_m") << " .. "
@@ -109,6 +109,50 @@ TEST_CASE("engine-content terrain: a tile of a scene's dune field as one JSON li
   CHECK(number(f0, "min_m") == number(f1, "min_m"));
   CHECK(number(f0, "max_m") == number(f1, "max_m"));
   CHECK(text(f0, "tile_hash") != text(f1, "tile_hash"));  // the hash names the time it was asked at
+}
+
+TEST_CASE("engine-content terrain: the erg's statistics stand in for a picture") {
+  const std::string scene =
+      test::data_path(ENGINE_SOURCE_DIR "/content/test-scenes/desert-erg/scene.json",
+                      "content/test-scenes/desert-erg/scene.json");
+  if (!test::path_exists(scene)) {
+    MESSAGE("skipped: " << scene << " is not here");
+    return;
+  }
+  const Output a = run({"terrain", scene, "--tile", "0,0", "--cells", "16", "--stats",
+                        "--stats-side", "5000", "--stats-spacing", "40", "--jobs", "2"});
+  REQUIRE_MESSAGE(a.exit_code == 0, a.text);
+  JsonValue line;
+  REQUIRE(parse_json(a.text, line).ok);
+  const JsonValue* region = line.find("region");
+  const JsonValue* tile = line.find("tile_stats");
+  REQUIRE(region != nullptr);
+  REQUIRE(tile != nullptr);
+  const JsonValue* bands = region->find("bands");
+  REQUIRE(bands != nullptr);
+  CHECK(bands->size() == 5);
+  CHECK(text(*region, "tallest_band") == "mega-draa");
+  CHECK(number(*region, "tallest_m") > 80.0);
+  CHECK(number(*region, "tallest_spacing_m") > 1500.0);
+  CHECK(number(*region, "flat_share") > 0.2);
+  MESSAGE("erg over 5 km: tallest " << number(*region, "tallest_m") << " m every "
+                                    << number(*region, "tallest_spacing_m") << " m, flat "
+                                    << number(*region, "flat_share"));
+  // The same counts on one thread.
+  const Output b = run({"terrain", scene, "--tile", "0,0", "--cells", "16", "--stats",
+                        "--stats-side", "5000", "--stats-spacing", "40", "--jobs", "1"});
+  JsonValue second;
+  REQUIRE(parse_json(b.text, second).ok);
+  CHECK(text(*second.find("region"), "hash") == text(*region, "hash"));
+  // A band table the generator cannot be built from is refused, naming the band.
+  const test::TempDir tmp("engine_content_terrain_bands");
+  const std::string bad = tmp.file("bad.json");
+  {
+    std::ofstream f(bad);
+    f << R"({"terrain":{"size":3,"extent":10,"bands":[{"name":"none","cell":90,"share":0}]}})";
+  }
+  const Output refused = run({"terrain", bad, "--tile", "0,0"});
+  CHECK(refused.exit_code == 1);
 }
 
 TEST_CASE("engine-content terrain: refusals") {

@@ -6,14 +6,17 @@
 // hashes of a reference tile at three times that MSVC, GCC and Clang must all reproduce.
 #include <core/jobs/job_system.h>
 #include <domain/terrain/fixed.h>
+#include <domain/terrain/stats.h>
 #include <domain/terrain/terrain.h>
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <string>
 #include <string_view>
+#include <vector>
 
 using namespace engine;
 using namespace engine::terrain;
@@ -31,6 +34,69 @@ FieldDesc reference_desc() {
   d.wind.seed = 2026;
   d.ridges.push_back(RidgeFeature{-40'000, 90'000, 120'000, 60'000, 30'000});
   d.basins.push_back(BasinFeature{10'000, -20'000, 25'000});
+  return d;
+}
+
+// The erg profile of content/test-scenes/desert-erg, band for band (terrain.md, "The erg").
+Vector<BandDesc> erg_bands() {
+  const auto band = [](const char* name, PrimitiveKind kind, f32 lo, f32 hi, f32 cell, f32 share) {
+    BandMetres m;
+    m.name = name;
+    m.kind = kind;
+    m.height_min = lo;
+    m.height_max = hi;
+    m.cell = cell;
+    m.share = share;
+    return m;
+  };
+  BandMetres mega = band("mega-draa", PrimitiveKind::transverse, 80, 200, 2400, 0.85f);
+  mega.length_min = 0.6f;
+  mega.length_max = 1.0f;
+  mega.stoss = 0.42f;
+  mega.bend = 0.12f;
+  mega.sinuosity = 0.08f;
+  mega.spread_deg = 15;
+  mega.side_days = 365;
+  mega.sharp_days = 120;
+  BandMetres draa = band("draa", PrimitiveKind::transverse, 10, 25, 360, 0.7f);
+  draa.length_min = 0.5f;
+  draa.length_max = 0.9f;
+  draa.stoss = 0.4f;
+  draa.bend = 0.18f;
+  draa.sinuosity = 0.04f;
+  draa.spread_deg = 25;
+  draa.couple = BandCouple::flanks;
+  draa.couple_height = 8;
+  BandMetres crest = band("crest", PrimitiveKind::transverse, 2.5f, 6, 110, 0.6f);
+  crest.couple = BandCouple::flanks;
+  crest.couple_height = 3;
+  BandMetres barchan = band("barchan", PrimitiveKind::barchan, 1.5f, 5, 150, 0.35f);
+  barchan.couple = BandCouple::floors;
+  barchan.couple_height = 2;
+  barchan.far = false;
+  BandMetres wave = band("wave", PrimitiveKind::transverse, 0.3f, 0.8f, 10, 0.6f);
+  wave.length_min = 0.4f;
+  wave.length_max = 0.8f;
+  wave.stoss = 0.45f;
+  wave.bend = 0.2f;
+  wave.spread_deg = 30;
+  wave.sharpness = 0;
+  wave.side_days = 3;
+  wave.sharp_days = 1;
+  wave.far = false;
+  Vector<BandDesc> bands;
+  for (const BandMetres& m : {mega, draa, crest, barchan, wave})
+    bands.push_back(band_from_metres(m));
+  return bands;
+}
+
+FieldDesc erg_desc() {
+  FieldDesc d;
+  d.seed = 7;
+  d.wind.seed = 7;
+  d.dune_height = 8'000;
+  d.wavelength = 110'000;
+  d.bands = erg_bands();
   return d;
 }
 
@@ -546,4 +612,190 @@ TEST_CASE("terrain: the band table — the default is the three bands, and a bad
   for (u32 k = 0; k <= k_max_bands; ++k)
     many.push_back(explicit_desc.bands[2]);
   CHECK_FALSE(validate_bands(many, &error));
+}
+
+TEST_CASE("terrain: the erg profile — valid, seamless, a function of time, the tall band still") {
+  const FieldDesc desc = erg_desc();
+  std::string error;
+  REQUIRE_MESSAGE(validate_bands(desc.bands, &error), error);
+  const DuneField field(desc);
+  REQUIRE(field.band_count() == 5);
+  TileOptions options;
+  options.cells = 32;
+  const u32 v = options.cells + 1;
+  for (const i64 t : {i64{0}, 200 * k_day + 7 * 3600 * k_us_per_second, 6 * k_year}) {
+    for (const TileCoord base : {TileCoord{0, 0}, TileCoord{17, -3}, TileCoord{-40, 22}}) {
+      TileOutput here, east, north;
+      evaluate_tile(field, base, t, options, nullptr, nullptr, here);
+      evaluate_tile(field, TileCoord{base.x + 1, base.z}, t, options, nullptr, nullptr, east);
+      evaluate_tile(field, TileCoord{base.x, base.z + 1}, t, options, nullptr, nullptr, north);
+      u32 bad = 0;
+      for (u32 k = 0; k < v; ++k) {
+        bad += here.height_um[k * v + (v - 1)] != east.height_um[k * v];
+        bad += !(here.normals[k * v + (v - 1)] == east.normals[k * v]);
+        bad += here.height_um[(v - 1) * v + k] != north.height_um[k];
+        bad += !(here.normals[(v - 1) * v + k] == north.normals[k]);
+      }
+      CHECK(bad == 0);
+    }
+  }
+  // t2 directly is t1 then t2.
+  const DuneField other(desc);
+  TileOutput first, direct, after;
+  evaluate_tile(field, TileCoord{5, 5}, 30 * k_day, options, nullptr, nullptr, first);
+  evaluate_tile(field, TileCoord{5, 5}, 4 * k_year, options, nullptr, nullptr, after);
+  evaluate_tile(other, TileCoord{5, 5}, 4 * k_year, options, nullptr, nullptr, direct);
+  CHECK(after.hash() == direct.hash());
+  // Bagnold: the 140 m band barely moves while the waves run away.
+  i64 dx = 0, dz = 0, wx = 0, wz = 0;
+  field.displacement(0, 3 * k_year, dx, dz);
+  field.displacement(4, 3 * k_year, wx, wz);
+  const i64 mega = fx::length(dx, dz);
+  const i64 waves = fx::length(wx, wz);
+  MESSAGE("three years: the mega-draa moved " << mega / 1000 << " m, the waves " << waves / 1000
+                                              << " m");
+  CHECK(mega < 10'000);
+  CHECK(waves > 100 * mega);
+}
+
+TEST_CASE("terrain: a band coupled to the floors stands only on them") {
+  FieldDesc desc;
+  desc.seed = 11;
+  desc.wind.seed = 11;
+  BandMetres big;
+  big.name = "big";
+  big.height_min = 15;
+  big.height_max = 25;
+  big.cell = 400;
+  big.stoss = 0.4f;
+  BandMetres small;
+  small.name = "small";
+  small.kind = PrimitiveKind::barchan;
+  small.height_min = 2;
+  small.height_max = 4;
+  small.cell = 80;
+  small.share = 0.9f;
+  small.couple = BandCouple::floors;
+  small.couple_height = 2;
+  FieldDesc alone = desc;
+  alone.bands.push_back(band_from_metres(big));
+  desc.bands = alone.bands;
+  desc.bands.push_back(band_from_metres(small));
+  const DuneField with(desc);
+  const DuneField without(alone);
+  u32 on_flanks = 0, on_floor = 0, differ_flank = 0, differ_floor = 0;
+  Gather g1, g2;
+  with.gather(0, 0, 800'000, 800'000, k_year, nullptr, g1);
+  without.gather(0, 0, 800'000, 800'000, k_year, nullptr, g2);
+  for (i64 z = 0; z <= 800'000; z += 4'000) {
+    for (i64 x = 0; x <= 800'000; x += 4'000) {
+      const i64 base = without.sample(g2, x, z, Detail::dunes).sand;
+      const i64 both = with.sample(g1, x, z, Detail::dunes).sand;
+      if (base >= 2'000'000) {
+        ++on_flanks;
+        differ_flank += both != base;
+      } else if (base == 0) {
+        ++on_floor;
+        differ_floor += both != base;
+      }
+    }
+  }
+  MESSAGE(differ_floor << " of " << on_floor << " floor points carry a barchan; " << differ_flank
+                       << " of " << on_flanks << " flank points do");
+  CHECK(on_flanks > 100);
+  CHECK(differ_flank == 0);
+  CHECK(differ_floor > 0);
+}
+
+TEST_CASE("terrain: the statistics are what a brute-force count gives") {
+  const DuneField field(erg_desc());
+  const i64 x0 = 700'000, z0 = -300'000, s = 1'000;
+  const u32 n = 48;
+  const i64 t = 2 * k_year;
+  FieldStats st;
+  field_stats(field, x0, z0, n, n, s, t, Detail::dunes, nullptr, nullptr, st);
+  // Brute force: every height a point query of its own, the slope's bins by std::tan.
+  const auto h = [&](i64 i, i64 j) { return field.height_um(x0 + i * s, z0 + j * s, t); };
+  u64 slope[k_slope_bins] = {};
+  u64 sand = 0, flat = 0;
+  std::vector<i64> above;
+  for (i64 j = 0; j < n; ++j) {
+    for (i64 i = 0; i < n; ++i) {
+      const i64 over = h(i, j) - field.floor_um(x0 + i * s, z0 + j * s);
+      above.push_back(over);
+      flat += over <= k_flat_um ? 1u : 0u;
+      if (material_at(field, x0 + i * s, z0 + j * s) == 1) continue;
+      ++sand;
+      const f64 gx =
+          static_cast<f64>(h(i + 1, j) - h(i - 1, j)) / (2.0 * static_cast<f64>(s) * 1000.0);
+      const f64 gz =
+          static_cast<f64>(h(i, j + 1) - h(i, j - 1)) / (2.0 * static_cast<f64>(s) * 1000.0);
+      const f64 degrees = std::atan(std::sqrt(gx * gx + gz * gz)) * 57.29577951308232;
+      u32 bin = 0;
+      while (bin < k_slope_bins - 1 && degrees >= k_slope_edges_deg[bin])
+        ++bin;
+      ++slope[bin];
+    }
+  }
+  std::sort(above.begin(), above.end());
+  CHECK(st.vertices == u64{n} * n);
+  CHECK(st.sand_vertices == sand);
+  CHECK(st.flat == flat);
+  for (u32 b = 0; b < k_slope_bins; ++b)
+    CHECK(st.slope[b] == slope[b]);
+  CHECK(st.above_floor_um[1] == above[above.size() / 2]);
+  CHECK(st.above_floor_um[4] == above.back());
+  // And the same numbers on any number of threads.
+  jobs::JobSystem pool(jobs::JobSystemConfig{.performance_workers = 3, .pin_threads = false});
+  FieldStats pooled;
+  field_stats(field, x0, z0, n, n, s, t, Detail::dunes, nullptr, &pool, pooled);
+  CHECK(pooled.hash() == st.hash());
+}
+
+// The statistics' goldens (terrain.md, "What the numbers say"): the default reference field over a
+// kilometre, the erg over six, and the erg at half a metre over a mega-draa's slip face — every
+// count, as one hash, and the numbers a reader checks beside it. The same toolchain rule as the
+// tile goldens: a mismatch on one compiler is the bug.
+namespace {
+
+struct StatsRow {
+  const char* name;
+  FieldDesc desc;
+  i64 x0, z0;
+  u32 n;
+  i64 spacing;
+  u64 golden;
+};
+
+void print_stats(const char* name, const DuneField& field, const FieldStats& st) {
+  const f64 sand = static_cast<f64>(st.sand_vertices > 0 ? st.sand_vertices : 1);
+  MESSAGE(
+      std::string(name) << ": hash " << hex(st.hash()) << ", above floor p10/p50/p90/p99/max "
+                        << height_m(st.above_floor_um[0]) << " / " << height_m(st.above_floor_um[1])
+                        << " / " << height_m(st.above_floor_um[2]) << " / "
+                        << height_m(st.above_floor_um[3]) << " / " << height_m(st.above_floor_um[4])
+                        << " m, flat " << static_cast<f64>(st.flat) / static_cast<f64>(st.vertices)
+                        << ", over 34 " << static_cast<f64>(st.over_repose()) / sand << ", over 36 "
+                        << st.over_36() << " vertices, tallest " << height_m(st.tallest_um)
+                        << " m (" << std::string(field.band_name(st.tallest_band)) << ") every "
+                        << static_cast<f64>(st.tallest_spacing_mm) / 1000.0 << " m");
+}
+
+}  // namespace
+
+TEST_CASE("terrain: golden statistics of the default and the erg") {
+  const StatsRow rows[] = {
+      {"default, 1 km at 4 m", reference_desc(), -512'000, -512'000, 257, 4'000,
+       0xe3a283018ff163f6ull},
+      {"erg, 6 km at 24 m", erg_desc(), -3'072'000, -3'072'000, 257, 24'000, 0x980c2a354a4389c1ull},
+      {"erg, a slip face at 0.5 m", erg_desc(), 250'000, -128'000, 513, 500, 0xb789f5c92fc726c2ull},
+  };
+  for (const StatsRow& row : rows) {
+    const DuneField field(row.desc);
+    FieldStats st;
+    field_stats(field, row.x0, row.z0, row.n, row.n, row.spacing, 3 * k_year, Detail::dunes,
+                nullptr, nullptr, st);
+    print_stats(row.name, field, st);
+    CHECK(hex(st.hash()) == hex(row.golden));
+  }
 }
