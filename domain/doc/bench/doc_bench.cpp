@@ -26,8 +26,20 @@
 #include <test_temp_dir.h>
 
 #include <algorithm>
+#include <cstdio>
+#include <filesystem>
 #include <schemas/provenance.h>
 #include <string>
+
+#if ENGINE_PLATFORM_WINDOWS
+#include <fcntl.h>
+#include <io.h>
+#include <share.h>
+#include <sys/stat.h>
+#else
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 
 using namespace engine;
 using namespace engine::doc;
@@ -527,7 +539,58 @@ ENGINE_BENCH_ARGS(fs_write_atomic, "doc.fs.write_atomic", 64, 4096, 65536, 10485
   state.set_bytes(data.size());
 }
 
-// The same bytes written over the file in place: opened, truncated, written, closed.
+// What the store does (document_store.cpp, overwrite_once): the file opened for writing alone and
+// without truncating it, written from the start, cut to the new length, closed. Spelled again here,
+// since the store keeps it private; the two must stay the same calls.
+ENGINE_BENCH_ARGS(fs_overwrite, "doc.fs.overwrite", 64, 4096, 65536, 1048576) {
+  engine::test::TempDir tmp("engine_doc_fs_bench");
+  const std::string path = tmp.file("file.json");
+  const std::string data = payload(state.arg());
+  (void)io::write_file(path, data);
+  while (state.keep_running()) {
+#if ENGINE_PLATFORM_WINDOWS
+    int fd = -1;
+    if (_wsopen_s(&fd, std::filesystem::path(path).c_str(),
+                  _O_WRONLY | _O_BINARY | _O_CREAT | _O_NOINHERIT, _SH_DENYNO,
+                  _S_IREAD | _S_IWRITE) != 0)
+      continue;
+    bench::keep(_write(fd, data.data(), static_cast<unsigned>(data.size())));
+    bench::keep(_chsize_s(fd, static_cast<long long>(data.size())));
+    bench::keep(_close(fd));
+#else
+    const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_CLOEXEC, 0666);
+    if (fd < 0) continue;
+    bench::keep(::write(fd, data.data(), data.size()));
+    bench::keep(::ftruncate(fd, static_cast<off_t>(data.size())));
+    bench::keep(::close(fd));
+#endif
+  }
+  state.set_items(1);
+  state.set_bytes(data.size());
+}
+
+// The same through stdio's "r+b": opened for reading as well as writing, which is what the store
+// first did and what cost 12 ms a write at 64 KiB and above on Windows (docs/subsystems/doc.md).
+ENGINE_BENCH_ARGS(fs_overwrite_rw, "doc.fs.overwrite_rw", 64, 4096, 65536, 1048576) {
+  engine::test::TempDir tmp("engine_doc_fs_bench");
+  const std::string path = tmp.file("file.json");
+  const std::string data = payload(state.arg());
+  (void)io::write_file(path, data);
+  while (state.keep_running()) {
+#if ENGINE_PLATFORM_WINDOWS
+    std::FILE* f = _wfsopen(std::filesystem::path(path).c_str(), L"r+b", _SH_DENYNO);
+#else
+    std::FILE* f = std::fopen(path.c_str(), "r+b");
+#endif
+    if (f == nullptr) continue;
+    bench::keep(std::fwrite(data.data(), 1, data.size(), f));
+    bench::keep(std::fclose(f));
+  }
+  state.set_items(1);
+  state.set_bytes(data.size());
+}
+
+// The same bytes written over the file after truncating it: opened with "wb", written, closed.
 ENGINE_BENCH_ARGS(fs_write_direct, "doc.fs.write_direct", 64, 4096, 65536, 1048576) {
   engine::test::TempDir tmp("engine_doc_fs_bench");
   const std::string path = tmp.file("file.json");

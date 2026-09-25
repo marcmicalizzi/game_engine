@@ -1,6 +1,8 @@
 #include "stored_state.h"
 
+#include <core/base/macros.h>
 #include <core/containers/flat_set.h>
+#include <core/hash/hash.h>
 #include <core/json/json.h>
 #include <core/profiling/profile.h>
 #include <core/schema/json_reflect.h>
@@ -8,8 +10,23 @@
 #include <domain/doc/partition.h>
 
 #include <algorithm>
+#include <cerrno>
+#include <chrono>
+#include <filesystem>
 #include <memory>
 #include <optional>
+#include <span>
+#include <thread>
+
+#if ENGINE_PLATFORM_WINDOWS
+#include <fcntl.h>     // _O_WRONLY, _O_CREAT, _O_BINARY
+#include <io.h>        // _wsopen_s, _write, _chsize_s, _close
+#include <share.h>     // _SH_DENYNO
+#include <sys/stat.h>  // _S_IREAD, _S_IWRITE
+#else
+#include <fcntl.h>   // open
+#include <unistd.h>  // write, ftruncate, close
+#endif
 
 namespace engine::doc {
 
@@ -101,8 +118,7 @@ LayerFiles files_of(std::string_view layer_name) {
   return f;
 }
 
-// --- the index, kept rather than rebuilt
-// ----------------------------------------------------------
+// --- the index, kept rather than rebuilt ----------------------------------------------------
 
 TileCoord coord_of(const TileRef& t) { return TileCoord{t.x, t.y}; }
 
@@ -191,8 +207,7 @@ void fill_places(StoredLayer& layer) {
     layer.places.insert_or_assign(id, Place{false, TileCoord{}});
 }
 
-// --- planning a save
-// --------------------------------------------------------------------------------
+// --- planning a save ------------------------------------------------------------------------
 
 struct PlannedWrite {
   std::string path;  // under the document directory
@@ -236,6 +251,7 @@ class SavePlan {
   void directory(std::string path) { directories_.push_back(std::move(path)); }
 
   std::string native(std::string_view path) const { return join(root_, path); }
+  const std::string& root() const noexcept { return root_; }
   bool probe_all() const noexcept { return probe_all_; }
   StoredState& next() noexcept { return next_; }
   const Vector<PlannedWrite>& writes() const noexcept { return writes_; }
@@ -384,66 +400,328 @@ void plan_partitioned_changes(SavePlan& plan, const Layer& layer, const LayerFil
   if (moved) plan.consider(lf.index, index_text(known.index), false);
 }
 
-// --- carrying a plan out
-// --------------------------------------------------------------------------
+// --- writing a file -------------------------------------------------------------------------
+//
+// What a file operation costs on this project's Windows machine (doc.fs.* in bench/doc_bench.cpp;
+// docs/subsystems/doc.md, "What a save costs"). Writing over an existing file in place, opened for
+// writing alone, costs about what creating a new one does, 0.6-1 ms, whatever its size. Replacing a
+// file by renaming a new one over it costs three to five times that. Truncating a file before
+// writing it, or opening it for reading as well as writing (stdio's "r+"), costs 5-12 ms once the
+// file is 64 KiB or more. Nothing else grows much with the size: the file system charges by the
+// operation, and by the kind. So a save writes each file once, in place, write-only, and makes the
+// save as a whole all or nothing with one log written first (below), instead of making each file
+// atomic with a rename of its own.
+
+io::Status status_of_errno(int err) noexcept {
+  switch (err) {
+    case ENOENT: return io::Status::NotFound;
+    case EACCES: return io::Status::PermissionDenied;
+    case EISDIR: return io::Status::IsDirectory;
+    case ENOTDIR: return io::Status::NotDirectory;
+    default: return io::Status::IoError;
+  }
+}
+
+// Writes `data` over the file — opened for writing alone and without truncating it, written from
+// the start, cut to the new length, closed — creating it when it is not there. With `half`, stops
+// after half the bytes, as a process killed in the middle would: the crash tests' torn write.
+io::Status overwrite_once(const std::string& native, std::string_view data, bool half) {
+  const usize n = half ? data.size() / 2 : data.size();
+  bool ok = true;
+#if ENGINE_PLATFORM_WINDOWS
+  const std::filesystem::path p(
+      std::u8string_view(reinterpret_cast<const char8_t*>(native.data()), native.size()));
+  int fd = -1;
+  // Shared, so a scanner or an indexer that opened the file after the last write does not make
+  // this one fail.
+  if (const errno_t e = _wsopen_s(&fd, p.c_str(), _O_WRONLY | _O_BINARY | _O_CREAT | _O_NOINHERIT,
+                                  _SH_DENYNO, _S_IREAD | _S_IWRITE);
+      e != 0)
+    return status_of_errno(e);
+  for (usize done = 0; ok && done < n;) {
+    const usize chunk = std::min<usize>(n - done, usize{1} << 30);
+    const int wrote = _write(fd, data.data() + done, static_cast<unsigned>(chunk));
+    ok = wrote > 0;
+    if (ok) done += static_cast<usize>(wrote);
+  }
+  if (!half) ok = _chsize_s(fd, static_cast<long long>(data.size())) == 0 && ok;
+  ok = _close(fd) == 0 && ok;
+#else
+  const int fd = ::open(native.c_str(), O_WRONLY | O_CREAT | O_CLOEXEC, 0666);
+  if (fd < 0) return status_of_errno(errno);
+  for (usize done = 0; ok && done < n;) {
+    const ssize_t wrote = ::write(fd, data.data() + done, n - done);
+    if (wrote < 0 && errno == EINTR) continue;
+    ok = wrote > 0;
+    if (ok) done += static_cast<usize>(wrote);
+  }
+  if (!half) ok = ::ftruncate(fd, static_cast<off_t>(data.size())) == 0 && ok;
+  ok = ::close(fd) == 0 && ok;
+#endif
+  return ok ? io::Status::Ok : io::Status::IoError;
+}
+
+// The same, making the file's directory when the write finds it missing — asking for every parent
+// on every write is what `Vfs::write` does, and MSVC's create_directories creates each prefix in
+// turn, which costs more than the write — and retrying briefly while something else holds the file.
+io::Status overwrite_file(const std::string& native, std::string_view data, bool half = false) {
+  for (int attempt = 0;; ++attempt) {
+    io::Status s = overwrite_once(native, data, half);
+    if (s == io::Status::NotFound) {
+      const std::string_view parent = io::parent_path(native);
+      if (parent.empty() || io::make_directories(parent) != io::Status::Ok) return s;
+      s = overwrite_once(native, data, half);
+    }
+    if (s != io::Status::PermissionDenied || attempt >= 40) return s;
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+}
 
 bool ensure_directory(const std::string& native) {
   if (io::exists(native)) return true;
   return io::make_directories(native) == io::Status::Ok;
 }
 
-// Writes one file whole and atomically, making its directory only when the write finds it missing:
-// asking for every parent on every write is what `Vfs::write` does, and on Windows that costs
-// more than the write.
-io::Status write_file(const std::string& native, std::string_view text) {
-  io::Status s = io::write_file_atomic(native, text);
-  if (s == io::Status::NotFound) {
-    const std::string_view parent = io::parent_path(native);
-    if (!parent.empty() && io::make_directories(parent) == io::Status::Ok)
-      s = io::write_file_atomic(native, text);
+// --- the save log ---------------------------------------------------------------------------
+//
+// A save that changes anything first writes one file, `save.pending` in the document directory,
+// holding every file it is about to write, whole, every file it is about to remove, and a last line
+// with a hash of everything above it. Then it writes the files in place and removes the others, and
+// last removes the log. A process that dies while writing the log leaves one whose last line is
+// missing or wrong and has touched no file of the document: the previous state stands. One that
+// dies after leaves a whole log, which says exactly what the directory is to hold: `load` reads the
+// document through it, and the next save carries it out before anything else. Either way what is
+// read is one state or the other, never a mixture of the two.
+
+constexpr std::string_view k_log_header = "engine.doc.save 1\n";
+
+// One file operation, of a plan or of a log: bytes to write over a file, or its removal.
+struct FileOp {
+  std::string_view path;  // under the document directory
+  std::string_view text;
+  bool remove = false;
+  bool tile = false;
+};
+
+std::string hex64(u64 v) {
+  std::string out(16, '0');
+  for (usize i = 16; i > 0; --i) {
+    out[i - 1] = "0123456789abcdef"[v & 15u];
+    v >>= 4;
   }
-  return s;
+  return out;
 }
 
-bool carry_out(const SavePlan& plan, std::string_view dir, std::string* error, SaveReport& report) {
+std::string log_text(std::span<const FileOp> ops) {
+  usize size = k_log_header.size() + 32;
+  for (const FileOp& op : ops)
+    size += op.path.size() + op.text.size() + 32;
+  std::string out;
+  out.reserve(size);
+  out.append(k_log_header);
+  for (const FileOp& op : ops) {
+    if (op.remove) {
+      out.append("remove ").append(op.path).push_back('\n');
+      continue;
+    }
+    out.append("write ").append(op.path).push_back(' ');
+    out.append(std::to_string(op.text.size())).push_back('\n');
+    out.append(op.text).push_back('\n');
+  }
+  const u64 hash = hash_bytes(out.data(), out.size());
+  out.append("end ").append(hex64(hash)).push_back('\n');
+  return out;
+}
+
+// A path the log may name: relative, and staying inside the document directory.
+bool inside(std::string_view path) {
+  if (path.empty() || path.front() == '/' || path.find('\\') != std::string_view::npos ||
+      path.find(':') != std::string_view::npos)
+    return false;
+  usize start = 0;
+  while (start <= path.size()) {
+    const usize slash = path.find('/', start);
+    const std::string_view part = path.substr(
+        start, slash == std::string_view::npos ? std::string_view::npos : slash - start);
+    if (part.empty() || part == "." || part == "..") return false;
+    if (slash == std::string_view::npos) break;
+    start = slash + 1;
+  }
+  return true;
+}
+
+// The operations of a whole log, as views into `text`. False for anything else — a log a process
+// died writing, or one nothing of this store wrote — which means no file was touched by its save.
+bool parse_log(std::string_view text, Vector<FileOp>& out) {
+  out.clear();
+  if (!text.starts_with(k_log_header)) return false;
+  usize pos = k_log_header.size();
+  for (;;) {
+    const usize nl = text.find('\n', pos);
+    if (nl == std::string_view::npos) return false;
+    const std::string_view line = text.substr(pos, nl - pos);
+    if (line.starts_with("end ")) {
+      return nl + 1 == text.size() && line.substr(4) == hex64(hash_bytes(text.data(), pos));
+    }
+    FileOp op;
+    if (line.starts_with("remove ")) {
+      op.remove = true;
+      op.path = line.substr(7);
+      pos = nl + 1;
+    } else if (line.starts_with("write ")) {
+      const std::string_view rest = line.substr(6);
+      const usize space = rest.rfind(' ');
+      if (space == std::string_view::npos || space + 1 == rest.size()) return false;
+      u64 size = 0;
+      for (const char c : rest.substr(space + 1)) {
+        if (c < '0' || c > '9' || size > (u64{1} << 40)) return false;
+        size = size * 10 + static_cast<u64>(c - '0');
+      }
+      if (text.size() - (nl + 1) < size + 1 || text[nl + 1 + size] != '\n') return false;
+      op.path = rest.substr(0, space);
+      op.text = text.substr(nl + 1, size);
+      pos = nl + 1 + size + 1;
+    } else {
+      return false;
+    }
+    if (!inside(op.path)) return false;
+    out.push_back(op);
+  }
+}
+
+// The operations of a plan, in the order they are carried out: the layers' files, the removals,
+// and the manifest last, which is the order a reader of a directory without a log would want.
+Vector<FileOp> ops_of(const SavePlan& plan) {
+  Vector<FileOp> ops;
+  ops.reserve(plan.writes().size() + plan.removals().size());
+  const PlannedWrite* manifest = nullptr;
+  for (const PlannedWrite& w : plan.writes()) {
+    if (w.path == DocumentStore::k_manifest_file) {
+      manifest = &w;
+      continue;
+    }
+    ops.push_back(FileOp{w.path, w.text, false, w.tile});
+  }
+  for (const PlannedRemoval& r : plan.removals())
+    ops.push_back(FileOp{r.path, {}, true, r.tile});
+  if (manifest != nullptr) ops.push_back(FileOp{manifest->path, manifest->text, false, false});
+  return ops;
+}
+
+// Where a crash test makes a save die (SaveOptions): after `stop_after` operations, the log being
+// the first and its removal the last.
+class Mortality {
+ public:
+  explicit Mortality(const SaveOptions& options)
+      : stop_after_(options.stop_after), tear_(options.tear) {}
+  // True when the save dies instead of carrying out the next operation.
+  bool dies() noexcept {
+    if (stop_after_ < 0) return false;
+    if (done_ == stop_after_) return true;
+    ++done_;
+    return false;
+  }
+  bool torn() const noexcept { return tear_; }
+
+ private:
+  i32 stop_after_ = -1;
+  i32 done_ = 0;
+  bool tear_ = false;
+};
+
+// Carries out file operations in order; false, naming the file, at the first that fails, or where
+// `death` says the process died.
+bool apply_ops(const std::string& root, std::string_view dir, std::span<const FileOp> ops,
+               Mortality* death, std::string* error) {
+  for (const FileOp& op : ops) {
+    const std::string native = join(root, op.path);
+    if (death != nullptr && death->dies()) {
+      if (death->torn() && !op.remove) (void)overwrite_file(native, op.text, /*half=*/true);
+      set_error(error, join(dir, op.path), "the save was stopped here (SaveOptions)");
+      return false;
+    }
+    const io::Status s = op.remove ? io::remove_file(native) : overwrite_file(native, op.text);
+    if (s != io::Status::Ok && !(op.remove && s == io::Status::NotFound)) {
+      set_error(error, join(dir, op.path), io::status_name(s));
+      return false;
+    }
+  }
+  return true;
+}
+
+// Finishes what a save that did not finish began: carries out a whole log and removes it, or
+// removes a torn one, whose save touched nothing. Only a process that is about to write the
+// document does this; `load` reads through a log and never acts on it.
+bool finish_pending(const std::string& root, std::string_view dir, std::string* error) {
+  const std::string log_path = join(root, DocumentStore::k_save_log);
+  std::string text;
+  const io::Status s = io::read_file(log_path, text);
+  if (s == io::Status::NotFound) return true;
+  if (s != io::Status::Ok) {
+    set_error(error, join(dir, DocumentStore::k_save_log), io::status_name(s));
+    return false;
+  }
+  Vector<FileOp> ops;
+  if (parse_log(text, ops) && !apply_ops(root, dir, ops, nullptr, error)) return false;
+  if (const io::Status r = io::remove_file(log_path);
+      r != io::Status::Ok && r != io::Status::NotFound) {
+    set_error(error, join(dir, DocumentStore::k_save_log), io::status_name(r));
+    return false;
+  }
+  return true;
+}
+
+// --- carrying a plan out --------------------------------------------------------------------
+
+bool carry_out(const SavePlan& plan, std::string_view dir, const SaveOptions& options,
+               std::string* error, SaveReport& report) {
   for (const std::string& d : plan.directories()) {
     if (!ensure_directory(plan.native(d))) {
       set_error(error, join(dir, d), "could not make the directory");
       return false;
     }
   }
-  // The layers' files first and the manifest last, as it always was: the manifest names what the
-  // others hold.
-  const PlannedWrite* manifest = nullptr;
-  auto write = [&](const PlannedWrite& w) {
-    if (const io::Status s = write_file(plan.native(w.path), w.text); s != io::Status::Ok) {
-      set_error(error, join(dir, w.path), io::status_name(s));
-      return false;
-    }
-    ++report.files_written;
-    report.bytes_written += w.text.size();
-    if (w.tile) ++report.tiles_written;
-    report.written.push_back(w.path);
-    return true;
-  };
-  for (const PlannedWrite& w : plan.writes()) {
-    if (w.path == DocumentStore::k_manifest_file) {
-      manifest = &w;
-      continue;
-    }
-    if (!write(w)) return false;
+  const Vector<FileOp> ops = ops_of(plan);
+  if (ops.empty()) return true;
+
+  Mortality death(options);
+  const std::string log_path = plan.native(DocumentStore::k_save_log);
+  const std::string log = log_text(ops);
+  if (death.dies()) {
+    if (death.torn()) (void)overwrite_file(log_path, log, /*half=*/true);
+    set_error(error, join(dir, DocumentStore::k_save_log),
+              "the save was stopped here (SaveOptions)");
+    return false;
   }
-  for (const PlannedRemoval& r : plan.removals()) {
-    const io::Status s = io::remove_file(plan.native(r.path));
-    if (s != io::Status::Ok && s != io::Status::NotFound) {
-      set_error(error, join(dir, r.path), io::status_name(s));
-      return false;
-    }
-    ++report.files_removed;
-    if (r.tile) ++report.tiles_removed;
-    report.removed.push_back(r.path);
+  if (const io::Status s = overwrite_file(log_path, log); s != io::Status::Ok) {
+    (void)io::remove_file(log_path);  // a log that is not whole names no save; tidy it anyway
+    set_error(error, join(dir, DocumentStore::k_save_log), io::status_name(s));
+    return false;
   }
-  return manifest == nullptr || write(*manifest);
+  if (!apply_ops(plan.root(), dir, ops, &death, error)) return false;
+  if (death.dies()) {
+    set_error(error, join(dir, DocumentStore::k_save_log),
+              "the save was stopped here (SaveOptions)");
+    return false;
+  }
+  if (const io::Status s = io::remove_file(log_path); s != io::Status::Ok) {
+    set_error(error, join(dir, DocumentStore::k_save_log), io::status_name(s));
+    return false;
+  }
+
+  for (const FileOp& op : ops) {
+    if (op.remove) {
+      ++report.files_removed;
+      if (op.tile) ++report.tiles_removed;
+      report.removed.push_back(std::string(op.path));
+    } else {
+      ++report.files_written;
+      report.bytes_written += op.text.size();
+      if (op.tile) ++report.tiles_written;
+      report.written.push_back(std::string(op.path));
+    }
+  }
+  return true;
 }
 
 // What the store now knows: the files it wrote, and not the ones it removed.
@@ -454,29 +732,101 @@ void record(const SavePlan& plan, StoredState& next) {
     next.files.erase(r.path);
 }
 
-// --- loading
-// --------------------------------------------------------------------------------------
+// --- loading --------------------------------------------------------------------------------
+
+// The document's files as `load` reads them: the disk, seen through the log of a save that did not
+// finish when there is a whole one — what that save would have left — without writing anything, so
+// that a reader never changes a directory another process may be saving into.
+class DiskView {
+ public:
+  DiskView(const io::Vfs& vfs, std::string_view dir) : vfs_(vfs), dir_(dir) {}
+  DiskView(const DiskView&) = delete;
+  DiskView& operator=(const DiskView&) = delete;
+
+  // Looks for a log. A whole one is read through from now on; a torn one is ignored, since its save
+  // touched nothing. True when there is a log of either kind: the first save removes it.
+  bool open_log() {
+    if (vfs_.read(full(DocumentStore::k_save_log), log_) != io::Status::Ok) return false;
+    Vector<FileOp> ops;
+    if (!parse_log(log_, ops)) return true;
+    for (const FileOp& op : ops)
+      overlay_.insert_or_assign(std::string(op.path), op);
+    return true;
+  }
+
+  std::string full(std::string_view path) const { return join(dir_, path); }
+
+  io::Status read(const std::string& path, std::string& out) const {
+    if (const FileOp* op = overlay_.find_value(path)) {
+      if (op->remove) return io::Status::NotFound;
+      out.assign(op->text);
+      return io::Status::Ok;
+    }
+    return vfs_.read(full(path), out);
+  }
+
+  bool exists(const std::string& path) const {
+    if (const FileOp* op = overlay_.find_value(path)) return !op->remove;
+    return vfs_.exists(full(path));
+  }
+
+  io::Status list(const std::string& path, Vector<io::DirEntry>& out) const {
+    io::Status s = vfs_.list(full(path), out);
+    if (overlay_.empty()) return s;
+    if (s == io::Status::NotFound) {
+      out.clear();
+    } else if (s != io::Status::Ok) {
+      return s;
+    }
+    bool changed = false;
+    for (u32 i = 0; i < overlay_.size(); ++i) {
+      const std::string& p = overlay_.key_at(i);
+      if (io::parent_path(p) != path) continue;
+      const std::string_view name = io::file_name(p);
+      u32 at = 0;
+      while (at < out.size() && out[at].name != name)
+        ++at;
+      if (overlay_.value_at(i).remove) {
+        if (at < out.size()) out.erase_at(at);
+      } else if (at == out.size()) {
+        io::DirEntry e;
+        e.name = std::string(name);
+        out.push_back(std::move(e));
+      }
+      changed = true;
+    }
+    if (!changed) return s;
+    std::sort(out.begin(), out.end(),
+              [](const io::DirEntry& a, const io::DirEntry& b) { return a.name < b.name; });
+    return io::Status::Ok;
+  }
+
+ private:
+  const io::Vfs& vfs_;
+  std::string dir_;
+  std::string log_;
+  HashMap<std::string, FileOp> overlay_;  // views into log_
+};
 
 // Reads one file of the document and remembers what it held.
-bool read_file(const io::Vfs& vfs, std::string_view dir, const std::string& path, std::string& out,
-               StoredState& known, std::string* error) {
-  const std::string full = join(dir, path);
-  if (const io::Status s = vfs.read(full, out); s != io::Status::Ok) {
-    set_error(error, full, io::status_name(s));
+bool read_file(const DiskView& disk, const std::string& path, std::string& out, StoredState& known,
+               std::string* error) {
+  if (const io::Status s = disk.read(path, out); s != io::Status::Ok) {
+    set_error(error, disk.full(path), io::status_name(s));
     return false;
   }
   known.files.insert_or_assign(path, StoredFile::of(out));
   return true;
 }
 
-bool load_partitioned(const io::Vfs& vfs, std::string_view dir, const LayerRef& ref, Layer& out,
-                      StoredState& known, std::string* error) {
+bool load_partitioned(const DiskView& disk, const LayerRef& ref, Layer& out, StoredState& known,
+                      std::string* error) {
   const LayerFiles lf = files_of(ref.name);
-  const std::string index_path = join(dir, lf.index);
-  const std::string untiled_path = join(dir, lf.untiled);
+  const std::string index_path = disk.full(lf.index);
+  const std::string untiled_path = disk.full(lf.untiled);
   std::string text;
   LayerIndex index;
-  if (!read_file(vfs, dir, lf.index, text, known, error) ||
+  if (!read_file(disk, lf.index, text, known, error) ||
       !parse_schema_text(text, index_path, index, error))
     return false;
   if (index.name != ref.name) {
@@ -510,9 +860,9 @@ bool load_partitioned(const io::Vfs& vfs, std::string_view dir, const LayerRef& 
     }
     listed.insert(std::string_view(t.file));
 
-    const std::string path = join(dir, lf.tile(t.file));
+    const std::string path = disk.full(lf.tile(t.file));
     LayerFile file;
-    if (!read_file(vfs, dir, lf.tile(t.file), text, known, error) ||
+    if (!read_file(disk, lf.tile(t.file), text, known, error) ||
         !parse_schema_text(text, path, file, error))
       return false;
     if (file.name != ref.name) {
@@ -550,10 +900,10 @@ bool load_partitioned(const io::Vfs& vfs, std::string_view dir, const LayerRef& 
   }
 
   Vector<io::DirEntry> entries;
-  if (vfs.list(join(dir, lf.tiles), entries) == io::Status::Ok) {
+  if (disk.list(lf.tiles, entries) == io::Status::Ok) {
     for (const io::DirEntry& e : entries) {
       if (e.is_directory || listed.contains(std::string_view(e.name))) continue;
-      set_error(error, join(dir, lf.tile(e.name)), "a tile file the index does not list");
+      set_error(error, disk.full(lf.tile(e.name)), "a tile file the index does not list");
       return false;
     }
   }
@@ -561,7 +911,7 @@ bool load_partitioned(const io::Vfs& vfs, std::string_view dir, const LayerRef& 
   StoredLayer& stored = known.layers[ref.name];
   stored.partitioned = true;
   if (index.untiled.empty()) {
-    if (vfs.exists(untiled_path)) {
+    if (disk.exists(lf.untiled)) {
       set_error(error, untiled_path, "present although the index lists no untiled records");
       return false;
     }
@@ -570,7 +920,7 @@ bool load_partitioned(const io::Vfs& vfs, std::string_view dir, const LayerRef& 
     return true;
   }
   LayerFile untiled;
-  if (!read_file(vfs, dir, lf.untiled, text, known, error) ||
+  if (!read_file(disk, lf.untiled, text, known, error) ||
       !parse_schema_text(text, untiled_path, untiled, error))
     return false;
   if (untiled.objects.size() != index.untiled.size()) {
@@ -651,7 +1001,8 @@ std::string DocumentStore::layer_file_name(std::string_view layer_name) {
 }
 
 bool DocumentStore::exists(const io::Vfs& vfs, std::string_view dir) {
-  return vfs.exists(path_of(dir, k_manifest_file));
+  // A save log alone is a document too: the very first save of one that died after writing it.
+  return vfs.exists(path_of(dir, k_manifest_file)) || vfs.exists(path_of(dir, k_save_log));
 }
 
 bool DocumentStore::create(const io::Vfs& vfs, std::string_view dir, std::string_view name,
@@ -671,7 +1022,8 @@ bool DocumentStore::create(const io::Vfs& vfs, std::string_view dir, std::string
 }
 
 bool DocumentStore::save(const io::Vfs& vfs, std::string_view dir, Document& doc,
-                         DocumentManifest& manifest, std::string* error, SaveReport* report) {
+                         DocumentManifest& manifest, std::string* error, SaveReport* report,
+                         const SaveOptions& options) {
   ENGINE_PROFILE_ZONE_NAMED("doc.store.save");
   SaveReport discarded;
   SaveReport& stats = report != nullptr ? *report : discarded;
@@ -686,6 +1038,12 @@ bool DocumentStore::save(const io::Vfs& vfs, std::string_view dir, Document& doc
   // saved to it last and nothing has said otherwise; nothing, and every file is written, when it
   // is new, was saved somewhere else, or was marked all dirty.
   const bool known = doc.stored_ != nullptr && doc.stored_->root == root;
+  // A save that did not finish is finished before this one starts: the one `load` read through,
+  // or, when nothing is known, one that may be there.
+  if (!known || doc.stored_->log_pending) {
+    if (!finish_pending(root, dir, error)) return false;
+    if (known) doc.stored_->log_pending = false;
+  }
   std::unique_ptr<StoredState> fresh;
   if (!known) {
     fresh = std::make_unique<StoredState>();
@@ -764,8 +1122,9 @@ bool DocumentStore::save(const io::Vfs& vfs, std::string_view dir, Document& doc
       document.layer_count() > 0 ? document.layer(document.edit_layer()).name() : "";
   plan.consider(std::string(k_manifest_file), manifest_text(manifest), false);
 
-  if (!carry_out(plan, dir, error, stats)) {
-    // What is on disk is now somewhere between the two: the next save knows nothing and looks.
+  if (!carry_out(plan, dir, options, error, stats)) {
+    // The disk holds the old state and perhaps a log of this one: the next save knows nothing,
+    // finishes the log if it is whole, and looks at everything.
     doc.stored_.reset();
     return false;
   }
@@ -793,9 +1152,14 @@ bool DocumentStore::load(const io::Vfs& vfs, std::string_view dir, Document& out
   ENGINE_PROFILE_ZONE_NAMED("doc.store.load");
   auto known = std::make_unique<StoredState>();
   (void)vfs.resolve(dir, known->root);
+  DiskView disk(vfs, dir);
+  // A whole save log means a save stopped after it had begun changing files: what is read is what
+  // it would have left, and the first save of this document finishes it on disk (or removes a torn
+  // one, whose save touched nothing).
+  known->log_pending = disk.open_log();
   const std::string manifest_path = path_of(dir, k_manifest_file);
   std::string text;
-  if (!read_file(vfs, dir, std::string(k_manifest_file), text, *known, error) ||
+  if (!read_file(disk, std::string(k_manifest_file), text, *known, error) ||
       !parse_schema_text(text, manifest_path, manifest, error))
     return false;
 
@@ -803,11 +1167,11 @@ bool DocumentStore::load(const io::Vfs& vfs, std::string_view dir, Document& out
   for (const LayerRef& ref : manifest.layers) {
     Layer layer(ref.name, ref.role);
     if (ref.partition.has_value() && ref.partition->tile_size > 0) {
-      if (!load_partitioned(vfs, dir, ref, layer, *known, error)) return false;
+      if (!load_partitioned(disk, ref, layer, *known, error)) return false;
     } else {
       const std::string rel = join(k_layers_dir, ref.file);
       std::string layer_text;
-      if (!read_file(vfs, dir, rel, layer_text, *known, error)) return false;
+      if (!read_file(disk, rel, layer_text, *known, error)) return false;
       schema::ReadContext layer_ctx;
       if (!Layer::from_json_text(layer_text, layer, layer_ctx)) {
         set_error(error, join(dir, rel), layer_ctx);

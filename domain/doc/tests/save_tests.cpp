@@ -18,11 +18,13 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <optional>
 #include <schemas/doc_test_types.h>
 #include <set>
 #include <sstream>
 #include <string>
 #include <thread>
+#include <utility>
 
 using namespace engine;
 using namespace engine::doc;
@@ -199,6 +201,8 @@ TEST_CASE("doc save: incremental saves leave the bytes a full write would, step 
   doc.set_layer_partition(3, tiles_of(32));
   REQUIRE(DocumentStore::save(vfs, dir, doc, manifest, &error));
 
+  // Every step reads the whole directory back, which is most of this case's time on Windows.
+  constexpr u32 k_steps = 120;
   Rng rng{0x5eedu};
   u32 next_id = 0;
   u32 next_layer = 0;
@@ -210,7 +214,7 @@ TEST_CASE("doc save: incremental saves leave the bytes a full write would, step 
   };
   auto some_id = [&]() { return ids[rng.next(ids.size())]; };
 
-  for (u32 step = 0; step < 160; ++step) {
+  for (u32 step = 0; step < k_steps; ++step) {
     CAPTURE(step);
     doc.set_edit_layer(rng.next(doc.layer_count()));
     const u32 action = ids.empty() ? 0 : rng.next(20);
@@ -373,7 +377,8 @@ TEST_CASE("doc save: incremental saves leave the bytes a full write would, step 
   }
   // The point of it: over the whole run the incremental saves wrote far fewer files than one
   // full write per step would have.
-  MESSAGE("incremental saves wrote " << incremental_writes << " files over 160 steps");
+  MESSAGE("incremental saves wrote " << incremental_writes << " files over " << k_steps
+                                     << " steps");
   CHECK(incremental_writes > 0);
   CHECK(full_writes > 0);
 }
@@ -478,6 +483,194 @@ TEST_CASE("doc save: one record in one tile rewrites that tile, the journal and 
   CHECK(nothing.files_written == 0);
   CHECK(nothing.files_removed == 0);
   CHECK(files_on_disk(tmp.file("world")) == reference_files(doc, manifest));
+}
+
+namespace {
+
+ObjectRecord placed(u32 n, std::optional<std::pair<f64, f64>> at) {
+  ObjectRecord r;
+  r.id = id_of(n);
+  r.type = k_placement;
+  r.parent = ObjectId{};
+  r.properties.insert_or_assign("name", JsonValue("p" + std::to_string(n)));
+  if (at.has_value()) r.properties.insert_or_assign("position", point(at->first, at->second));
+  return r;
+}
+
+// State A, the same bytes every time: a single-file base, a tiled world of six tiles and two
+// untiled records, a single-file overrides layer, and a tiled props layer on a coarser grid.
+void build_before(const io::Vfs& vfs, const std::string& dir, Document& doc,
+                  DocumentManifest& manifest) {
+  std::string error;
+  REQUIRE(DocumentStore::create(vfs, dir, "World", doc, manifest, &error));
+  Layer world("world", LayerRole::Feature);
+  for (u32 i = 0; i < 24; ++i)
+    world.set(placed(i, std::make_pair(static_cast<f64>(i % 3) * 16.0 + 2.0,
+                                       static_cast<f64>(i % 2) * 16.0 + 2.0)));
+  world.set(placed(24, std::nullopt));
+  world.set(placed(25, std::nullopt));
+  const u32 w = doc.add_layer(std::move(world));
+  doc.set_layer_partition(w, tiles_of(16));
+  Layer overrides("overrides", LayerRole::Feature);
+  for (u32 i = 0; i < 6; ++i) {
+    ObjectRecord r;
+    r.id = id_of(i);
+    r.properties.insert_or_assign("name", JsonValue("renamed"));
+    overrides.set(std::move(r));
+  }
+  doc.add_layer(std::move(overrides));
+  Layer props("props", LayerRole::Feature);
+  for (u32 i = 30; i < 38; ++i)
+    props.set(placed(i, std::make_pair(static_cast<f64>(i) * 10.0, 5.0)));
+  const u32 p = doc.add_layer(std::move(props));
+  doc.set_layer_partition(p, tiles_of(32));
+  doc.set_edit_layer(w);
+  REQUIRE(DocumentStore::save(vfs, dir, doc, manifest, &error));
+}
+
+// What turns A into B. Journaled: one commit to world that touches most of its files — every
+// record of tile (0, 0) moved away, so its file goes; a record into a new tile; an untiled record
+// placed and a placed one taken off the grid, so untiled.json and the index change — journaled as
+// a session commits. Otherwise the changes the journal does not see: a layer added with records,
+// overrides repartitioned into tiles, props removed.
+void change(const io::Vfs& vfs, const std::string& dir, Document& doc, DocumentManifest& manifest,
+            bool journaled) {
+  if (journaled) {
+    Transaction tx = doc.begin(who());
+    for (u32 i = 0; i < 24; i += 6)  // i % 3 == 0 and i % 2 == 0: tile (0, 0)
+      REQUIRE(tx.apply(cmd_set(id_of(i), "position", point(40.0, 40.0))));
+    REQUIRE(tx.apply(cmd_set(id_of(1), "position", point(-100.0, 7.0))));
+    REQUIRE(tx.apply(cmd_set(id_of(24), "position", point(20.0, 20.0))));
+    REQUIRE(tx.apply(cmd_clear(id_of(5), "position")));
+    REQUIRE(tx.apply(cmd_set(id_of(7), "name", JsonValue("edited"))));
+    commit(vfs, dir, doc, manifest, tx);
+    return;
+  }
+  Layer extra("extra", LayerRole::Feature);
+  for (u32 i = 50; i < 54; ++i)
+    extra.set(placed(i, std::make_pair(static_cast<f64>(i), 0.0)));
+  const u32 e = doc.add_layer(std::move(extra));
+  doc.set_layer_partition(e, tiles_of(8));
+  doc.set_layer_partition(static_cast<u32>(doc.find_layer("overrides")), tiles_of(16));
+  REQUIRE(doc.remove_layer(static_cast<u32>(doc.find_layer("props"))));
+}
+
+}  // namespace
+
+TEST_CASE("doc save: a save stopped between any two files leaves one whole state or the other") {
+  TempDir tmp("engine_doc_save_crash");
+  io::Vfs vfs;
+  REQUIRE(vfs.mount("docs", tmp.path(), /*writable=*/true) == io::Status::Ok);
+  std::string error;
+
+  for (const bool journaled : {true, false}) {
+    CAPTURE(journaled);
+    // How many file operations the save of B makes: the log, its writes and removals, the log's
+    // removal. Every one of them is a place to die.
+    u32 operations = 0;
+    {
+      const std::string dir = "docs://probe" + std::to_string(journaled);
+      Document doc;
+      DocumentManifest manifest;
+      build_before(vfs, dir, doc, manifest);
+      change(vfs, dir, doc, manifest, journaled);
+      SaveReport report;
+      REQUIRE(DocumentStore::save(vfs, dir, doc, manifest, &error, &report));
+      CHECK(report.files_written >= 4);
+      CHECK(report.files_removed >= 1);
+      operations = 2 + report.files_written + report.files_removed;
+    }
+
+    for (u32 stop = 0; stop < operations; ++stop) {
+      for (const bool tear : {false, true}) {
+        // A torn write is a torn log or a torn file of the document, and the journaled run meets
+        // both; the structural one adds removals and new layers, which do not tear.
+        if (tear && !journaled) continue;
+        CAPTURE(stop);
+        CAPTURE(tear);
+        const std::string name = "run" + std::to_string(journaled) + "_" + std::to_string(stop) +
+                                 "_" + std::to_string(tear);
+        const std::string dir = "docs://" + name;
+        Document doc;
+        DocumentManifest manifest;
+        build_before(vfs, dir, doc, manifest);
+        const Files before = files_on_disk(tmp.file(name));
+        const u32 before_position = manifest.undo_position;
+        change(vfs, dir, doc, manifest, journaled);
+        const Files after = reference_files(doc, manifest);
+        REQUIRE(before != after);
+
+        SaveOptions dies;
+        dies.stop_after = static_cast<i32>(stop);
+        dies.tear = tear;
+        CHECK_FALSE(DocumentStore::save(vfs, dir, doc, manifest, &error, nullptr, dies));
+
+        // Whatever was left, a load reads one whole state and changes nothing on disk doing it.
+        const Files left = files_on_disk(tmp.file(name), /*with_journal=*/true);
+        Document loaded;
+        DocumentManifest loaded_manifest;
+        REQUIRE(DocumentStore::load(vfs, dir, loaded, loaded_manifest, &error));
+        CHECK(files_on_disk(tmp.file(name), /*with_journal=*/true) == left);
+        const Files read = reference_files(loaded, loaded_manifest);
+        // Nothing of the document is touched before the log is whole, so a save stopped at its
+        // first operation — before the log, or halfway through it — leaves A; any later, B.
+        const Files& expected = stop == 0 ? before : after;
+        CHECK_MESSAGE(read == expected, "first difference: " << first_difference(read, expected));
+
+        // The next save finishes what the stopped one began, and the directory is that state's,
+        // byte for byte, with no log left behind.
+        REQUIRE(DocumentStore::save(vfs, dir, loaded, loaded_manifest, &error));
+        CHECK(files_on_disk(tmp.file(name)) == expected);
+        CHECK_FALSE(vfs.exists(dir + "/" + std::string(DocumentStore::k_save_log)));
+
+        // The journal was written before the save: when the save left A, the commit is the first
+        // patch of the redo tail, and redoing it gives B.
+        if (journaled && stop == 0) {
+          REQUIRE(loaded.journal().size() == before_position + 1);
+          CHECK(loaded_manifest.undo_position == before_position);
+          REQUIRE(loaded.redo(loaded.journal().back()));
+          ++loaded_manifest.undo_position;
+          CHECK(reference_files(loaded, loaded_manifest) == after);
+        }
+      }
+    }
+  }
+}
+
+TEST_CASE("doc save: a save log is read through on a read-only mount, and finished by a writer") {
+  TempDir tmp("engine_doc_save_readonly");
+  std::string error;
+  Files after;
+  {
+    io::Vfs vfs;
+    REQUIRE(vfs.mount("docs", tmp.path(), /*writable=*/true) == io::Status::Ok);
+    Document doc;
+    DocumentManifest manifest;
+    build_before(vfs, "docs://world", doc, manifest);
+    change(vfs, "docs://world", doc, manifest, /*journaled=*/true);
+    after = reference_files(doc, manifest);
+    SaveOptions dies;
+    dies.stop_after = 3;  // the log and two files
+    REQUIRE_FALSE(DocumentStore::save(vfs, "docs://world", doc, manifest, &error, nullptr, dies));
+  }
+  io::Vfs readonly;
+  REQUIRE(readonly.mount("docs", tmp.path(), /*writable=*/false) == io::Status::Ok);
+  CHECK(DocumentStore::exists(readonly, "docs://world"));
+  Document loaded;
+  DocumentManifest loaded_manifest;
+  REQUIRE(DocumentStore::load(readonly, "docs://world", loaded, loaded_manifest, &error));
+  CHECK(reference_files(loaded, loaded_manifest) == after);
+  CHECK(readonly.exists("docs://world/" + std::string(DocumentStore::k_save_log)));
+  CHECK_FALSE(DocumentStore::save(readonly, "docs://world", loaded, loaded_manifest, &error));
+
+  io::Vfs writable;
+  REQUIRE(writable.mount("docs", tmp.path(), /*writable=*/true) == io::Status::Ok);
+  Document writer;
+  DocumentManifest writer_manifest;
+  REQUIRE(DocumentStore::load(writable, "docs://world", writer, writer_manifest, &error));
+  REQUIRE(DocumentStore::save(writable, "docs://world", writer, writer_manifest, &error));
+  CHECK(files_on_disk(tmp.file("world")) == after);
+  CHECK_FALSE(writable.exists("docs://world/" + std::string(DocumentStore::k_save_log)));
 }
 
 TEST_CASE("doc save: a file that is not in the canonical form is rewritten by the next save") {

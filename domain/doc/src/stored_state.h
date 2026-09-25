@@ -60,8 +60,9 @@ struct StoredState {
   // .../untiled.json. The journal is not here; it is only ever appended to.
   HashMap<std::string, StoredFile> files;
   HashMap<std::string, StoredLayer> layers;
-  // `load` found the save log of a save that did not finish, and read the document through it: the
-  // files on disk are not yet what `files` says, and the next save finishes that one first.
+  // `load` found the save log of a save that did not finish: a whole one, which it read the
+  // document through, so the files on disk are not yet what `files` says; or a torn one, which it
+  // ignored. The next save finishes the first and removes the second before it does anything else.
   bool log_pending = false;
   // `load` found the journal ending in a line with no newline — an append a process died in — and
   // left it out: the journal is valid up to this many bytes, and the next append cuts the rest
