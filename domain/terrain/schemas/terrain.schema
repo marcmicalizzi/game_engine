@@ -1,0 +1,71 @@
+// The terrain capability's own types (ADR-0007, ADR-0027; docs/subsystems/terrain.md). They live
+// with the capability, so ENGINE_WITH_TERRAIN=OFF takes them out of the build with everything else it
+// owns. The scene description's terrain fields are the engine's (schemas/scene.schema, `Terrain`
+// version 2), because the renderer reads a scene with or without this capability and must be able
+// to refuse one that names the generator with a sentence.
+namespace engine.terrain
+
+/// The kind a tile's deformation overlay is filed under in the persistent store's projections
+/// (docs/subsystems/world.md, "The consumers"): one row per tile whose overlay is not empty, keyed
+/// by the tile, its blob the overlay's own little-endian record (overlay.h: a 56-byte header, the
+/// non-zero 16 x 16 blocks of the 128 x 128 grid, the queue of stamps not yet baked in), at most
+/// 33,848 bytes. The fields below name the record's parts for `schema.describe`; the blob is not
+/// this type's JSON, because the grid is the thing a save carries most of and JSON would triple it.
+struct OverlayTile @version(1) {
+  tile_x: i32 = 0
+  tile_z: i32 = 0
+  /// The record, exactly as `Overlay::write` makes it.
+  record: bytes
+}
+
+/// One crest line of a tile, as `engine-content terrain` reports it: five points along the crest (a
+/// barchan's brink) on the surface, which way its slip face falls, and how it moves.
+struct CrestReport @version(1) {
+  /// draa, crest or barchan.
+  band: string
+  /// transverse or barchan.
+  kind: string
+  /// World metres, x y z, five of them.
+  points: vec3[]
+  /// Down the slip face, horizontal unit vector (x, z).
+  lee: vec2
+  height_m: f32 = 0
+  /// 0 a rounded lee, 1 a slip face at the angle of repose.
+  sharpness: f32 = 0
+  celerity_m_per_day: f32 = 0
+}
+
+/// `engine-content terrain <scene> --tile x,z --time t`: one tile of a scene's dune field at one
+/// game time, as one JSON line for tests and agents.
+struct TileReport @version(1) {
+  /// "engine.terrain.tile".
+  format: string
+  tile_x: i32 = 0
+  tile_z: i32 = 0
+  /// Game seconds since the world's epoch.
+  time_s: f64 = 0
+  tile_m: f32 = 32
+  cells: u32 = 128
+  /// The LOD the tile was evaluated at: full, dunes, coarse or floor.
+  detail: string
+  /// The field's description hash (the generator's version included) and the tile's content hash,
+  /// as 16 hex digits: the number the golden tests pin.
+  field_hash: string
+  tile_hash: string
+  min_m: f32 = 0
+  max_m: f32 = 0
+  mean_m: f32 = 0
+  primitives: u32 = 0
+  /// The share of the tile that is loose sand rather than rock.
+  sand_share: f32 = 0
+  /// The day's wind: where the sand moves to (unit, x z), its speed and the sand it moves.
+  wind_direction: vec2
+  wind_speed_mps: f32 = 0
+  flux_m2_per_day: f32 = 0
+  saltation_m2_per_day: f32 = 0
+  /// How far each band has moved since time zero, metres (x z): draa, crest, barchan.
+  displacement_m: vec2[]
+  crests: CrestReport[]
+  /// Milliseconds the evaluation took.
+  eval_ms: f64 = 0
+}

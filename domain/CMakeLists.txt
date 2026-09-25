@@ -27,3 +27,4 @@ add_subdirectory(tissue)
 # systems/audio_system, because flecs belongs to systems/ (ADR-0028 seam 5).
 add_subdirectory(audio)
 add_subdirectory(ruins)
+add_subdirectory(terrain)
