@@ -23,11 +23,13 @@ engine_schema_library(NAME audio_schemas SCHEMAS schemas/audio.schema CAPABILITY
 
 # WHOLE_ARCHIVE keeps the tunables' registrations (src/audio.cpp) in a binary that links the
 # module for its protocol method alone.
+# `io` for streaming: a streamed clip is read by range through `io::FileHandle` (docs page,
+# "Streaming").
 engine_module(NAME audio LAYER domain OPTIONAL WHOLE_ARCHIVE
-  DEPS base containers math hash ids jobs log tunables protocol audio_schemas
+  DEPS base containers math hash ids jobs log io tunables protocol audio_schemas
   SOURCES src/audio.cpp src/backend.cpp src/clip_store.cpp src/decoder.cpp src/device.cpp
           src/endpoint.cpp src/format.cpp src/limiter.cpp src/mixer.cpp src/protocol.cpp
-          src/spatial.cpp)
+          src/spatial.cpp src/stream.cpp)
 
 # miniaudio is linked PRIVATE: its header, and the defines that shape its structs, reach
 # src/backend.cpp and nothing that includes a public header of this module (physics.md, "Why
@@ -44,6 +46,7 @@ endif()
 engine_module_tests(NAME audio
   SOURCES tests/audio_tests.cpp tests/queue_tests.cpp tests/mixer_tests.cpp tests/clip_tests.cpp
           tests/limiter_tests.cpp tests/determinism_tests.cpp tests/realtime_tests.cpp
+          tests/stream_tests.cpp
           tests/size_table.cpp
   DEPS json schema)
 

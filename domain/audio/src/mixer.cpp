@@ -1,4 +1,5 @@
 #include "audio_log.h"
+#include "stream.h"
 
 #include <core/base/assert.h>
 #include <core/base/macros.h>
@@ -241,6 +242,77 @@ bool read_voice(VoiceState& v, f32* signal, u32 frames) noexcept {
   return ended;
 }
 
+// A streamed voice for one block (stream.h). The ring is read exactly as `read_voice` reads a
+// looping clip of `v.frames` frames — the same runs of `read_run`, the same formula for the frame
+// whose right tap wraps to slot 0 — so a stream that never runs dry mixes to the bytes the same
+// clip does stored. Two limits a stored clip does not have: a run stops where the fill has not
+// written yet (the voice then holds its place and plays silence for the rest of the block, counted
+// in `missing` unless nothing has been decoded at all yet), and a one-shot ends at the stream frame
+// the fill marked as its end, whose slot the fill wrote as a silent frame. Reads `filled` and `end`
+// once, publishes `consumed` once; never waits.
+template <u32 Channels>
+bool read_stream(VoiceState& v, StreamRing& ring, f32* signal, u32 frames, u64& missing) noexcept {
+  // `filled` first: the fill stores `end` before the `filled` that covers it, with release.
+  const u64 avail = ring.filled.load(std::memory_order_acquire);
+  const u64 end = ring.end.load(std::memory_order_acquire);
+  const u64 slots = v.frames;
+  const u64 step = v.step;
+  const f32* samples = v.samples;
+  u64 base = ring.base;
+  u64 position = v.position;  // 32.32 frames into the ring's current pass
+  bool ended = false;
+  u32 i = 0;
+  while (i < frames) {
+    const u64 left = base + (position >> 32);  // the left tap, as a stream frame
+    if (left >= end) {
+      ended = true;
+      std::memset(signal + static_cast<usize>(i) * Channels, 0,
+                  static_cast<usize>(frames - i) * Channels * sizeof(f32));
+      break;
+    }
+    if (left + 1u >= avail) {
+      // The fill has not reached the right tap. Hold here, silent; the next block tries again.
+      std::memset(signal + static_cast<usize>(i) * Channels, 0,
+                  static_cast<usize>(frames - i) * Channels * sizeof(f32));
+      if (avail != 0) missing += frames - i;
+      break;
+    }
+    // The first slot the left tap may not reach in a run: the ring's last (whose right tap wraps),
+    // or the frame whose right tap is not filled, or the end — whichever comes first.
+    u64 limit = slots - 1u;
+    if (avail - 1u - base < limit) limit = avail - 1u - base;
+    if (end - base < limit) limit = end - base;
+    const u64 stop = limit << 32;
+    if (position < stop) {
+      const u64 steps = (stop - position + step - 1u) / step;
+      const u32 remaining = frames - i;
+      const u32 run = steps < remaining ? static_cast<u32>(steps) : remaining;
+      position = read_run<Channels>(samples, position, step, i, run, signal);
+      i += run;
+    } else if (position < (slots << 32)) {
+      // The ring's last slot: its right tap is slot 0, the next stream frame, which the checks
+      // above found filled. The same arithmetic as `read_tail` on a looping clip.
+      const f32 frac = static_cast<f32>(static_cast<u32>(position)) * k_two_to_minus_32;
+      const f32* frame = samples + Channels * (slots - 1u);
+      if constexpr (Channels == 1) {
+        signal[i] = frame[0] + (samples[0] - frame[0]) * frac;
+      } else {
+        signal[2u * i] = frame[0] + (samples[0] - frame[0]) * frac;
+        signal[2u * i + 1u] = frame[1] + (samples[1] - frame[1]) * frac;
+      }
+      position += step;
+      ++i;
+    } else {
+      position -= slots << 32;
+      base += slots;
+    }
+  }
+  v.position = position;
+  ring.base = base;
+  ring.consumed.store(base + (position >> 32), std::memory_order_release);
+  return ended;
+}
+
 }  // namespace
 
 std::span<const BusDesc> default_buses() noexcept { return k_default_buses; }
@@ -274,8 +346,22 @@ Mixer::Mixer(const ClipStore& clips, const MixerConfig& config)
 
   const u32 voices = voices_for(config);
   slots_.resize_exact(voices);
+  slot_stream_.resize_exact(voices, k_no_stream);
   voices_.resize_exact(voices);
+  voice_ring_.resize_exact(voices, nullptr);
   sources_.resize_exact(voices);
+
+  // The streams: records now, rings the first time each one plays. A ring shorter than a few
+  // frames could not hold a frame and its right tap beside the spare slot, and the fill-ahead
+  // cannot exceed what the ring holds.
+  stream_count_ = config.streams != 0 ? config.streams : tunable_streams();
+  ring_frames_ =
+      config.stream_ring_frames != 0 ? config.stream_ring_frames : tunable_stream_ring_frames();
+  if (ring_frames_ < 8u) ring_frames_ = 8u;
+  fill_frames_ =
+      config.stream_fill_frames != 0 ? config.stream_fill_frames : tunable_stream_fill_frames();
+  if (fill_frames_ > ring_frames_ - 2u) fill_frames_ = ring_frames_ - 2u;
+  if (stream_count_ != 0) streams_ = std::make_unique<Stream[]>(stream_count_);
   decoder_state_.resize_exact(voices * decoder_->state_floats, 0.0f);
   scratch_.resize_exact(k_max_block_frames * 2u, 0.0f);
 
@@ -318,14 +404,85 @@ Mixer::Mixer(const ClipStore& clips, const MixerConfig& config)
   publish(audio_stats_);
 }
 
-Mixer::~Mixer() = default;
+// A fill job holds a pointer to its stream: none may outlive the mixer.
+Mixer::~Mixer() { wait_streams(); }
 
 // ---- the controlling thread ---------------------------------------------------------------------
 
 bool Mixer::push(const Command& command) noexcept {
-  if (commands_.try_push(command)) return true;
+  if (commands_.try_push(command)) {
+    ++pushed_;
+    return true;
+  }
   ++control_.queue_full;
   return false;
+}
+
+u32 Mixer::free_stream() const noexcept {
+  for (u32 i = 0; i < stream_count_; ++i) {
+    if (streams_[i].state == k_stream_free) return i;
+  }
+  return k_no_stream;
+}
+
+void Mixer::schedule_fill(Stream& stream) noexcept {
+  ++control_.stream_fills;
+  jobs::JobSystem* jobs = clips_->jobs();
+  if (jobs == nullptr) {
+    fill_stream(stream);
+    return;
+  }
+  stream.pending.add(1);
+  jobs->schedule(jobs::Pool::Efficiency, jobs::Job{&fill_stream_job, &stream, &stream.pending});
+}
+
+void Mixer::wait_streams() noexcept {
+  jobs::JobSystem* jobs = clips_->jobs();
+  for (u32 i = 0; i < stream_count_; ++i) {
+    Stream& stream = streams_[i];
+    if (stream.pending.done()) continue;
+    if (jobs != nullptr) {
+      jobs->wait(stream.pending);
+    } else {
+      stream.pending.wait_blocking();
+    }
+  }
+}
+
+// Once a tick: free the streams whose voices are gone and whose last fill has landed, say once per
+// voice that a stream ran dry, and top up every stream that has less than the fill-ahead decoded.
+void Mixer::service_streams() noexcept {
+  const u64 applied = applied_.load(std::memory_order_acquire);
+  for (u32 i = 0; i < stream_count_; ++i) {
+    Stream& stream = streams_[i];
+    if (stream.state == k_stream_free) continue;
+    if (stream.state == k_stream_playing && stream.retire_after != 0 &&
+        applied >= stream.retire_after) {
+      stream.state = k_stream_retiring;
+    }
+    if (stream.state == k_stream_retiring) {
+      if (!stream.pending.done()) continue;
+      close_stream(stream);
+      stream.state = k_stream_free;
+      --streams_in_use_;
+      continue;
+    }
+    if (!stream.underrun_logged) {
+      const u64 missing = stream.ring.underrun_frames.load(std::memory_order_relaxed);
+      if (missing != 0) {
+        stream.underrun_logged = true;
+        ++control_.stream_underruns;
+        ENGINE_LOG_WARN(log_audio, "stream underrun", log::field("clip", stream.source.key),
+                        log::field("slot", stream.slot),
+                        log::field("generation", stream.generation), log::field("frames", missing),
+                        log::field("ring_frames", ring_frames_),
+                        log::field("fill_frames", fill_frames_));
+      }
+    }
+    // A stolen voice's stream is read only until the steal lands; it needs no more frames.
+    if (stream.retire_after != 0 || !stream.pending.done() || stream.finished) continue;
+    if (stream_buffered(stream) < fill_frames_) schedule_fill(stream);
+  }
 }
 
 u32 Mixer::choose_slot(u8 priority, bool loop, bool& stole) const noexcept {
@@ -375,7 +532,7 @@ VoiceHandle Mixer::play(const PlayParams& params) noexcept {
   update();
 
   const ClipView clip = clips_->view(params.clip);
-  if (clip.samples == nullptr || clip.frames == 0) {
+  if (clip.frames == 0 || (clip.samples == nullptr && !clip.stream)) {
     ++control_.refused_clip;
     return VoiceHandle{};
   }
@@ -384,6 +541,15 @@ VoiceHandle Mixer::play(const PlayParams& params) noexcept {
       !sanitize(params.source, source)) {
     ++control_.refused_params;
     return VoiceHandle{};
+  }
+  // A streamed clip needs a stream as well as a voice; neither is taken until both are there.
+  u32 stream = k_no_stream;
+  if (clip.stream) {
+    stream = free_stream();
+    if (stream == k_no_stream) {
+      ++control_.refused_stream;
+      return VoiceHandle{};
+    }
   }
   bool stole = false;
   const u32 index = choose_slot(params.priority, params.loop, stole);
@@ -410,7 +576,37 @@ VoiceHandle Mixer::play(const PlayParams& params) noexcept {
   p.pitch = params.pitch;
   p.pan = clamp(params.pan, -1.0f, 1.0f);
   p.source = pack(source);
+  p.stream = k_no_stream;
+  if (stream != k_no_stream) {
+    // The voice reads the ring from its slot 0; the fill starts the clip where the voice asked.
+    Stream& st = streams_[stream];
+    reset_stream(st, clips_->source(params.clip), params.start_frame % clip.frames, params.loop,
+                 ring_frames_);
+    c.flags = static_cast<u8>(c.flags | k_voice_stream);
+    c.start_frame = 0;
+    p.samples = st.buffer.data();
+    p.frames = ring_frames_;
+    p.stream = stream;
+  }
   if (!push(c)) return VoiceHandle{};
+
+  // A stolen voice that read a stream reads it until the audio thread applies this Play.
+  if (stole && slot_stream_[index] != k_no_stream)
+    streams_[slot_stream_[index]].retire_after = pushed_;
+  slot_stream_[index] = stream;
+  if (stream != k_no_stream) {
+    Stream& st = streams_[stream];
+    st.state = k_stream_playing;
+    st.slot = index;
+    st.generation = generation;
+    st.clip = params.clip.index;
+    st.retire_after = 0;
+    ++streams_in_use_;
+    ++control_.stream_plays;
+    // The first fill now: with no job system it lands before this returns; with one, the voice
+    // holds, silent, at its first frame until it does — a start latency, not an underrun.
+    schedule_fill(st);
+  }
 
   if (slot.state == k_free) ++live_;
   slot.generation = generation;
@@ -461,6 +657,10 @@ bool Mixer::set_params(VoiceHandle voice, const VoiceParams& params) noexcept {
   c.generation = voice.generation;
   c.payload.params = ParamsPayload{params.gain, params.pitch, clamp(params.pan, -1.0f, 1.0f)};
   if (!push(c)) return false;
+  // A stream decides at the clip's end whether to go round again, when its fill gets there.
+  if (slot_stream_[voice.slot] != k_no_stream) {
+    streams_[slot_stream_[voice.slot]].loop.store(params.loop ? 1u : 0u, std::memory_order_relaxed);
+  }
   ++control_.params;
   return true;
 }
@@ -528,6 +728,12 @@ u32 Mixer::update() noexcept {
     slot.state = k_free;
     slot.stop_pending = 0;
     --live_;
+    // The audio thread freed the voice before it posted this, so its stream is read no more; it is
+    // free once its last fill, if one is in flight, has landed.
+    if (slot_stream_[event.slot] != k_no_stream) {
+      streams_[slot_stream_[event.slot]].state = k_stream_retiring;
+      slot_stream_[event.slot] = k_no_stream;
+    }
   }
   control_.events += drained;
 
@@ -548,6 +754,7 @@ u32 Mixer::update() noexcept {
       }
     }
   }
+  if (streams_in_use_ != 0) service_streams();
   return drained;
 }
 
@@ -560,7 +767,7 @@ u32 Mixer::update() noexcept {
 
 namespace {
 
-constexpr u32 k_stats_words = 10;
+constexpr u32 k_stats_words = 11;
 
 void pack_stats(const MixerStats& s, u64 (&w)[k_stats_words]) noexcept {
   w[0] = s.blocks;
@@ -573,6 +780,7 @@ void pack_stats(const MixerStats& s, u64 (&w)[k_stats_words]) noexcept {
   w[7] = std::bit_cast<u32>(s.peak);
   w[8] = s.limited_frames;
   w[9] = std::bit_cast<u32>(s.limiter_gain);
+  w[10] = s.underrun_frames;
 }
 
 MixerStats unpack_stats(const u64 (&w)[k_stats_words]) noexcept {
@@ -588,6 +796,7 @@ MixerStats unpack_stats(const u64 (&w)[k_stats_words]) noexcept {
   s.peak = std::bit_cast<f32>(static_cast<u32>(w[7]));
   s.limited_frames = w[8];
   s.limiter_gain = std::bit_cast<f32>(static_cast<u32>(w[9]));
+  s.underrun_frames = w[10];
   return s;
 }
 
@@ -640,7 +849,16 @@ void Mixer::apply(const Command& c) noexcept {
       v.gain = p.gain;
       v.pan = p.pan;
       v.step = pitch_step(p.pitch);
-      v.position = static_cast<u64>(c.start_frame % p.frames) << 32;
+      if ((c.flags & k_voice_stream) != 0 && p.stream < stream_count_) {
+        // The ring from its slot 0, which is stream frame 0: the fill put the voice's start there.
+        StreamRing& ring = streams_[p.stream].ring;
+        ring.base = 0;
+        voice_ring_[c.slot] = &ring;
+        v.position = 0;
+      } else {
+        v.flags = static_cast<u8>(v.flags & ~k_voice_stream);
+        v.position = static_cast<u64>(c.start_frame % p.frames) << 32;
+      }
       v.state = k_playing;
       sources_[c.slot] = unpack(p.source);
       return;
@@ -668,7 +886,9 @@ void Mixer::apply(const Command& c) noexcept {
       v.pan = c.payload.params.pan;
       v.step = pitch_step(c.payload.params.pitch);
       v.bus = c.bus;
-      v.flags = static_cast<u8>((v.flags & k_voice_fresh) | c.flags);
+      // Only the loop bit changes: fresh is the audio thread's, and a voice's stream is its Play's.
+      v.flags =
+          static_cast<u8>((v.flags & (k_voice_fresh | k_voice_stream)) | (c.flags & k_voice_loop));
       return;
     }
     case CommandKind::SetSource: {
@@ -711,6 +931,8 @@ void Mixer::render(f32* out, u32 frames) noexcept {
     --budget;
   }
   audio_stats_.commands += applied;
+  // After the commands took effect: a stolen voice's stream is free to reuse from here on.
+  if (applied != 0) applied_.store(audio_stats_.commands, std::memory_order_release);
   if (frames == 0 || out == nullptr) {
     publish(audio_stats_);
     return;
@@ -748,9 +970,22 @@ void Mixer::mix_block(f32* out, u32 frames) noexcept {
     VoiceState& v = voices_[s];
     if (v.state == k_free) continue;
 
-    // 1. The voice loop: the clip at the voice's pitch, before any gain.
-    const bool ended =
-        v.channels == 1 ? read_voice<1>(v, signal, frames) : read_voice<2>(v, signal, frames);
+    // 1. The voice loop: the clip at the voice's pitch, before any gain — from the clip itself, or
+    //    from the voice's stream (stream.h), which reads the same way.
+    bool ended = false;
+    if ((v.flags & k_voice_stream) == 0) {
+      ended = v.channels == 1 ? read_voice<1>(v, signal, frames) : read_voice<2>(v, signal, frames);
+    } else {
+      StreamRing& ring = *voice_ring_[s];
+      u64 missing = 0;
+      ended = v.channels == 1 ? read_stream<1>(v, ring, signal, frames, missing)
+                              : read_stream<2>(v, ring, signal, frames, missing);
+      if (missing != 0) {
+        audio_stats_.underrun_frames += missing;
+        ring.underrun_frames.store(ring.underrun_frames.load(std::memory_order_relaxed) + missing,
+                                   std::memory_order_relaxed);
+      }
+    }
 
     // 2. The level and the source model: the voice's gain, its bus path, and — for a 3D source —
     //    what distance and directivity leave of it (spatial.h, the first seam).

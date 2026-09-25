@@ -284,6 +284,99 @@ TEST_CASE("the session mixes to the same bytes whatever the render calls' sizes"
   CHECK(run_session(ChannelLayout::Stereo, split(many, limited)) == through);
 }
 
+namespace {
+
+// A clip played two ways: stored, and streamed through a ring a sixth of its length that goes
+// round nine times while four voices read it at three pitches — a 3D one-shot running out, a loop
+// started past its middle, a voice stopped mid-clip and one re-pitched while it plays. Nothing runs
+// dry: the controlling thread tops the rings up before every block, as a tick would.
+Vector<f32> run_streamed_session(bool streamed) {
+  // A generated WAV of 16-bit stereo, so the decode is exact on every toolchain.
+  const Vector<f32> sine = exact_sine(14400, 96, 0.45f, 2);
+  Vector<f32> signal = lcg_noise(28800, 5, 0.25f);
+  for (u32 i = 0; i < signal.size(); ++i)
+    signal[i] += (i % 2u == 0) ? sine[i] : -sine[i];
+  const Vector<u8> wav = wav_s16(to_s16(signal), 2, k_sample_rate);
+
+  ClipStoreConfig store_config;
+  store_config.stream_threshold_bytes = streamed ? 1024u : 0u;
+  ClipStore clips(store_config);
+  const ClipHandle clip = clips.load(Id128{7, 7}, {wav.data(), wav.size()});
+  REQUIRE(clips.state(clip) == ClipState::Ready);
+  REQUIRE(clips.info(clip).streamed == streamed);
+
+  MixerConfig config;
+  config.voices = 8;
+  config.streams = 4;
+  config.stream_ring_frames = 2400;  // 50 ms: the tunable's floor
+  config.stream_fill_frames = 1500;
+  Mixer mixer(clips, config);
+  Vector<f32> all;
+  Vector<f32> block;
+  block.resize_exact(k_block_frames * 2u);
+  VoiceHandle stopped;
+  VoiceHandle repitched;
+  for (u32 b = 0; b < 40; ++b) {
+    mixer.update();
+    if (b == 0) {
+      PlayParams p;
+      p.clip = clip;
+      p.pitch = 1.37f;
+      p.loop = true;
+      p.start_frame = 9000;
+      p.bus = k_bus_music;
+      p.pan = -0.4f;
+      mixer.play(p);
+      p = PlayParams{};
+      p.clip = clip;
+      p.pitch = 0.77f;
+      p.source.position = Vec3{3.0f, 0.0f, -2.0f};
+      mixer.play(p);
+    }
+    if (b == 3) {
+      PlayParams p;
+      p.clip = clip;
+      p.loop = true;
+      p.bus = k_bus_ambient;
+      p.source.flags = k_source_2d;
+      stopped = mixer.play(p);
+      p.pitch = 1.9f;
+      p.start_frame = 100;
+      repitched = mixer.play(p);
+    }
+    if (b == 11) mixer.stop(stopped);
+    if (b == 17) {
+      VoiceParams v;
+      v.pitch = 0.53f;
+      v.loop = true;
+      v.bus = k_bus_ambient;
+      mixer.set_params(repitched, v);
+    }
+    mixer.render(block.data(), k_block_frames);
+    all.append(std::span<const f32>(block.data(), block.size()));
+  }
+  const MixerStats stats = mixer.stats();
+  CHECK(stats.underrun_frames == 0u);
+  CHECK(mixer.control_stats().stream_plays == (streamed ? 4u : 0u));
+  CHECK(mixer.control_stats().events > 0u);  // the one-shot ran out and the stopped voice faded
+  return all;
+}
+
+}  // namespace
+
+// Streaming does not move the determinism claim: a clip that never runs dry mixes to the same bytes
+// streamed as stored, so the pin below — taken on MSVC like the others — is the stored mix's, and
+// the streamed session is held to it.
+TEST_CASE("a streamed clip mixes to the stored clip's pinned bytes") {
+  const Vector<f32> stored = run_streamed_session(false);
+  const Vector<f32> streamed = run_streamed_session(true);
+  const u64 hash = hash_mix(ChannelLayout::Stereo, {stored.data(), stored.size()});
+  MESSAGE("streamed session hash " << hex64(hash));
+  CHECK(hash_mix(ChannelLayout::Stereo, {streamed.data(), streamed.size()}) == hash);
+  CHECK(streamed == stored);
+  CHECK(hash == 0xe614cc3f511842e7ull);
+}
+
 TEST_CASE("under the ceiling the limited session is the plain one, 5 ms later, bit for bit") {
   Options limited;
   limited.limiter = true;

@@ -230,6 +230,59 @@ TEST_CASE("the audio thread allocates nothing and logs nothing, whatever the com
   log::remove_sink(&sink);
 }
 
+// The same contract for streamed voices: the ring read, the hold when it runs dry and the count of
+// what was missing are atomics, a memset and arithmetic. The rings here are short (600 frames) and
+// some calls are 4000 frames, so the voices run dry inside a call as well as filling between them;
+// the fills themselves run in `update()`, on the controlling thread, outside what is counted.
+TEST_CASE("a streamed voice's reads allocate nothing and log nothing, running dry included") {
+  CountingSink sink;
+  log::add_sink(&sink);
+  log::set_global_min_level(log::Level::Trace);
+  std::string spec_error;
+  REQUIRE(log::apply_level_spec("trace", &spec_error));
+
+  ClipStoreConfig store_config;
+  store_config.stream_threshold_bytes = 1024;
+  ClipStore clips(store_config);
+  const Vector<f32> tone = exact_sine(9000, 48, 0.4f, 2);
+  const Vector<u8> wav = wav_s16(to_s16(tone), 2, k_sample_rate);
+  const ClipHandle clip = clips.load(Id128{9, 3}, {wav.data(), wav.size()});
+  REQUIRE(clips.info(clip).streamed);
+  MixerConfig config;
+  config.voices = 4;
+  config.streams = 3;
+  config.stream_ring_frames = 600;
+  config.stream_fill_frames = 300;
+  Mixer mixer(clips, config);
+
+  Vector<f32> out;
+  out.resize_exact(4000u * mixer.channels());
+  Counted total;
+  for (u32 block = 0; block < 30; ++block) {
+    mixer.update();
+    if (block % 5u == 0) {
+      PlayParams p;
+      p.clip = clip;
+      p.loop = block % 10u == 0;
+      p.pitch = 0.8f + 0.2f * static_cast<f32>(block % 3u);
+      p.source.position = Vec3{1.0f, 0.0f, -2.0f};
+      mixer.play(p);  // a stream each, until the three are in use; then refused
+    }
+    const Counted c = render_counted(mixer, out.data(), block % 2u == 0 ? 480u : 4000u, sink);
+    total.new_calls += c.new_calls;
+    total.engine_allocations += c.engine_allocations;
+    total.log_records += c.log_records;
+  }
+  mixer.update();
+  CHECK(mixer.control_stats().stream_plays >= 3u);
+  CHECK(mixer.stats().underrun_frames > 0u);
+  CHECK(total.new_calls == 0u);
+  CHECK(total.engine_allocations == 0u);
+  CHECK(total.log_records == 0u);
+  log::reset_levels();
+  log::remove_sink(&sink);
+}
+
 TEST_CASE("the null backend is the same mix, pulled by the caller") {
   ClipStore clips;
   Mixer direct(clips);

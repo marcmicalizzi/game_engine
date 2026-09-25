@@ -147,6 +147,194 @@ DecodeStatus decode(std::span<const u8> encoded, DecodedClip& out) {
   return DecodeStatus::Ok;
 }
 
+// ---- incremental decoding ----------------------------------------------------------------------
+//
+// miniaudio reads a source through a VFS — open, read, seek, tell, size — and the decoder is opened
+// with `ma_decoder_init_vfs`, which is the one entry point that gives every decoder a `tell`
+// (dr_wav uses it to clamp a data chunk that claims more than the file holds; the memory decoder
+// `decode` uses has one too, so the two read a malformed file the same way). The "file" the VFS
+// opens is the StreamDecoder itself, and its reads are the source's: a copy out of the store's
+// bytes, or a positional read of the file by range.
+
+struct StreamDecoder {
+  // First: miniaudio casts the `ma_vfs*` it is handed to `ma_vfs_callbacks*`.
+  ma_vfs_callbacks vfs;
+  ByteSource source;
+  u64 position = 0;
+  ma_decoder decoder;
+  bool open = false;
+};
+
+namespace {
+
+u64 source_size(const ByteSource& source) noexcept {
+  return source.file != nullptr ? source.size : static_cast<u64>(source.memory.size());
+}
+
+StreamDecoder& decoder_of(ma_vfs_file file) noexcept { return *static_cast<StreamDecoder*>(file); }
+
+ma_result vfs_open(ma_vfs* vfs, const char*, ma_uint32, ma_vfs_file* file) {
+  // The file is the decoder the VFS belongs to (its first member, so the same address); every open
+  // starts at the beginning.
+  StreamDecoder& d = *static_cast<StreamDecoder*>(vfs);
+  d.position = 0;
+  *file = &d;
+  return MA_SUCCESS;
+}
+
+ma_result vfs_open_w(ma_vfs* vfs, const wchar_t*, ma_uint32 mode, ma_vfs_file* file) {
+  return vfs_open(vfs, nullptr, mode, file);
+}
+
+ma_result vfs_close(ma_vfs*, ma_vfs_file) { return MA_SUCCESS; }
+
+ma_result vfs_read(ma_vfs*, ma_vfs_file file, void* dst, size_t bytes, size_t* read) {
+  StreamDecoder& d = decoder_of(file);
+  if (read != nullptr) *read = 0;
+  const u64 total = source_size(d.source);
+  const u64 remaining = total > d.position ? total - d.position : 0u;
+  const u64 n = bytes < remaining ? static_cast<u64>(bytes) : remaining;
+  if (n == 0) return bytes == 0 ? MA_SUCCESS : MA_AT_END;
+  u64 got = n;
+  if (d.source.file != nullptr) {
+    if (d.source.file->read_at(d.position, dst, n, got) != io::Status::Ok) return MA_IO_ERROR;
+    if (got == 0) return MA_AT_END;
+  } else {
+    std::memcpy(dst, d.source.memory.data() + d.position, static_cast<size_t>(n));
+  }
+  d.position += got;
+  if (read != nullptr) *read = static_cast<size_t>(got);
+  return MA_SUCCESS;
+}
+
+ma_result vfs_write(ma_vfs*, ma_vfs_file, const void*, size_t, size_t* written) {
+  if (written != nullptr) *written = 0;
+  return MA_NOT_IMPLEMENTED;
+}
+
+ma_result vfs_seek(ma_vfs*, ma_vfs_file file, ma_int64 offset, ma_seek_origin origin) {
+  StreamDecoder& d = decoder_of(file);
+  const i64 total = static_cast<i64>(source_size(d.source));
+  i64 base = 0;
+  if (origin == ma_seek_origin_current) base = static_cast<i64>(d.position);
+  if (origin == ma_seek_origin_end) base = total;
+  const i64 target = base + static_cast<i64>(offset);
+  if (target < 0 || target > total) return MA_BAD_SEEK;
+  d.position = static_cast<u64>(target);
+  return MA_SUCCESS;
+}
+
+ma_result vfs_tell(ma_vfs*, ma_vfs_file file, ma_int64* cursor) {
+  *cursor = static_cast<ma_int64>(decoder_of(file).position);
+  return MA_SUCCESS;
+}
+
+ma_result vfs_info(ma_vfs*, ma_vfs_file file, ma_file_info* info) {
+  info->sizeInBytes = source_size(decoder_of(file).source);
+  return MA_SUCCESS;
+}
+
+// The configuration `decode` uses, so a streamed clip is the same samples as a stored one.
+ma_decoder_config stream_config(u32 channels) noexcept {
+  ma_decoder_config config = ma_decoder_config_init(ma_format_f32, channels, k_sample_rate);
+  config.resampling.algorithm = ma_resample_algorithm_linear;
+  config.resampling.linear.lpfOrder = MA_MAX_FILTER_ORDER;
+  return config;
+}
+
+bool init_stream(StreamDecoder& d, u32 channels) noexcept {
+  const ma_decoder_config config = stream_config(channels);
+  // A name with no extension (miniaudio refuses an empty one): the decoder is found by trying each
+  // in turn, as the memory decoder does, rather than guessed from a suffix.
+  d.open = ma_decoder_init_vfs(&d.vfs, "stream", &config, &d.decoder) == MA_SUCCESS;
+  return d.open;
+}
+
+}  // namespace
+
+StreamDecoder* open_stream_decoder(const ByteSource& source, StreamFormat& format,
+                                   DecodeStatus& status) {
+  format = StreamFormat{};
+  status = DecodeStatus::UnknownFormat;
+  if (source_size(source) == 0) return nullptr;
+  StreamDecoder* d = new StreamDecoder{};
+  d->vfs.onOpen = vfs_open;
+  d->vfs.onOpenW = vfs_open_w;
+  d->vfs.onClose = vfs_close;
+  d->vfs.onRead = vfs_read;
+  d->vfs.onWrite = vfs_write;
+  d->vfs.onSeek = vfs_seek;
+  d->vfs.onTell = vfs_tell;
+  d->vfs.onInfo = vfs_info;
+  d->source = source;
+
+  if (!init_stream(*d, 0)) {
+    delete d;
+    return nullptr;
+  }
+  ma_format source_format = ma_format_unknown;
+  ma_uint32 source_channels = 0;
+  ma_uint32 source_rate = 0;
+  if (ma_data_source_get_data_format(d->decoder.pBackend, &source_format, &source_channels,
+                                     &source_rate, nullptr, 0) != MA_SUCCESS ||
+      source_channels == 0 || source_rate == 0) {
+    close_stream_decoder(d);
+    status = DecodeStatus::Corrupt;
+    return nullptr;
+  }
+  u32 channels = d->decoder.outputChannels;
+  if (channels > 2) {
+    // As `decode` does: opened again with the channel converter folding it to stereo.
+    ma_decoder_uninit(&d->decoder);
+    d->open = false;
+    if (!init_stream(*d, 2)) {
+      delete d;
+      status = DecodeStatus::Corrupt;
+      return nullptr;
+    }
+    channels = d->decoder.outputChannels;
+  }
+  if (channels != 1 && channels != 2) {
+    close_stream_decoder(d);
+    status = DecodeStatus::Corrupt;
+    return nullptr;
+  }
+  ma_uint64 frames = 0;
+  if (ma_decoder_get_length_in_pcm_frames(&d->decoder, &frames) != MA_SUCCESS) frames = 0;
+  format.frames = frames;
+  format.channels = static_cast<u8>(channels);
+  format.source_channels = static_cast<u8>(source_channels > 255u ? 255u : source_channels);
+  format.source_rate = source_rate;
+  status = DecodeStatus::Ok;
+  return d;
+}
+
+u32 read_stream_decoder(StreamDecoder* d, f32* out, u32 frames, DecodeStatus& status) {
+  status = DecodeStatus::Ok;
+  if (frames == 0) return 0;
+  ma_uint64 read = 0;
+  const ma_result result = ma_decoder_read_pcm_frames(&d->decoder, out, frames, &read);
+  if (result != MA_SUCCESS && result != MA_AT_END) status = DecodeStatus::Corrupt;
+  return static_cast<u32>(read);
+}
+
+bool seek_stream_decoder(StreamDecoder* d, u64 frame) {
+  return ma_decoder_seek_to_pcm_frame(&d->decoder, frame) == MA_SUCCESS;
+}
+
+void close_stream_decoder(StreamDecoder* d) noexcept {
+  if (d == nullptr) return;
+  if (d->open) ma_decoder_uninit(&d->decoder);
+  delete d;
+}
+
+DecodeStatus probe(const ByteSource& source, StreamFormat& format) {
+  DecodeStatus status = DecodeStatus::Ok;
+  StreamDecoder* d = open_stream_decoder(source, format, status);
+  close_stream_decoder(d);
+  return status;
+}
+
 namespace {
 
 // ---- channel maps -------------------------------------------------------------------------------

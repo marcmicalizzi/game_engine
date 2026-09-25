@@ -22,8 +22,9 @@
 //   [x] protocol methods  audio.devices, register_methods() in protocol.h
 //   [x] tunables          audio.voices, audio.command_queue, audio.clip_budget_mb,
 //                         audio.period_frames, audio.layout, audio.ramp_ms, audio.limiter,
-//                         audio.limiter.threshold_db, audio.limiter.release_ms — read at
-//                         construction, never in the callback
+//                         audio.limiter.threshold_db, audio.limiter.release_ms,
+//                         audio.stream_threshold_kb, audio.streams, audio.stream_ring_ms,
+//                         audio.stream_fill_ms — read at construction, never in the callback
 //   [x] LOD policy        the emitters' is systems/audio_system's; the mixer's cost is set by its
 //                         voice count, which is the budget
 //   [x] determinism       k_determinism below
@@ -46,6 +47,7 @@
 #include <domain/audio/limiter.h>
 #include <domain/audio/mixer.h>
 #include <domain/audio/spatial.h>
+#include <domain/audio/stream.h>
 
 #include <schemas/audio.h>
 
@@ -67,5 +69,11 @@ f32 tunable_limiter_ceiling() noexcept;
 u32 tunable_limiter_release_frames() noexcept;  // audio.limiter.release_ms, default 100 ms
 // audio.layout, default `Unknown` — spelled "auto": take the device's own layout.
 ChannelLayout tunable_layout() noexcept;
+// audio.stream_threshold_kb, default 1875 KiB (five seconds of stereo): a clip decoded larger than
+// this streams instead of being held whole.
+u64 tunable_stream_threshold_bytes() noexcept;
+u32 tunable_streams() noexcept;             // audio.streams, default 16
+u32 tunable_stream_ring_frames() noexcept;  // audio.stream_ring_ms, default 500 ms
+u32 tunable_stream_fill_frames() noexcept;  // audio.stream_fill_ms, default 250 ms
 
 }  // namespace engine::audio

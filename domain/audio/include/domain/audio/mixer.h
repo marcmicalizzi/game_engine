@@ -66,12 +66,16 @@
 #include <domain/audio/limiter.h>
 #include <domain/audio/spatial.h>
 #include <domain/audio/spsc_queue.h>
+#include <domain/audio/stream.h>
 
 #include <atomic>
+#include <memory>
 #include <schemas/audio.h>
 #include <span>
 
 namespace engine::audio {
+
+struct Stream;  // src/stream.h: a ring and the fill that keeps it ahead of its voice
 
 // ---- buses --------------------------------------------------------------------------------------
 
@@ -130,6 +134,12 @@ struct MixerConfig {
   // The tree. Empty is `default_buses()`. A malformed tree (a parent that is not an earlier bus, a
   // gain that is not finite, more than 255 buses) is replaced by the default one, with a log line.
   std::span<const BusDesc> buses;
+  // Streams: how many streamed voices can play at once (0 reads `audio.streams`, 16), the frames
+  // each one's ring holds (0 reads `audio.stream_ring_ms`, 500 ms) and how far ahead of its voice a
+  // stream is kept (0 reads `audio.stream_fill_ms`, 250 ms; clamped below the ring).
+  u32 streams = 0;
+  u32 stream_ring_frames = 0;
+  u32 stream_fill_frames = 0;
 };
 
 struct PlayParams {
@@ -160,12 +170,16 @@ struct ControlStats {
   u64 refused_clip = 0;    // the clip was not Ready
   u64 refused_params = 0;  // a non-finite or out-of-range parameter, or an unknown bus
   u64 queue_full = 0;      // a command the ring had no room for (a stop is retried, see update())
+  u64 refused_stream = 0;  // a streamed clip with every stream playing
   u64 stops = 0;
   u64 params = 0;
   u64 sources = 0;
   u64 listeners = 0;
   u64 bus_gains = 0;
-  u64 events = 0;  // ended-voice events drained
+  u64 events = 0;            // ended-voice events drained
+  u64 stream_plays = 0;      // of `plays`, the voices that play a stream
+  u64 stream_fills = 0;      // fills scheduled (or run inline, with no job system)
+  u64 stream_underruns = 0;  // streamed voices that ran dry at least once, each logged once
 };
 
 // What the audio thread did, as of the last block it finished. Read with `Mixer::stats()` from any
@@ -178,6 +192,10 @@ struct MixerStats {
   u64 clipped_samples = 0;  // output samples the master's hard clip changed
   u64 events_dropped = 0;   // ended-voice events the ring refused; sized so it never happens
   u64 limited_frames = 0;   // frames the limiter turned down; 0 while it is off
+  // Frames of silence streamed voices played because their stream had not decoded that far: the
+  // underruns. A stream that has not decoded its first frame yet is starting, not starving, and
+  // is not counted.
+  u64 underrun_frames = 0;
   u32 voices_playing = 0;   // after the last block
   u32 voices_peak = 0;      // most voices playing at the end of any block
   f32 peak = 0.0f;          // largest |sample| of the last block, before the limiter and the clip
@@ -245,8 +263,18 @@ class Mixer {
   bool set_bus_gain(u8 bus, f32 gain) noexcept;
 
   // Drains the ended-voice events, freeing their slots, and re-sends any stop the ring refused
-  // earlier. Call once per tick. Returns the events drained.
+  // earlier; tops up every stream that has less than the fill-ahead decoded (a fill job each, on
+  // the clip store's Efficiency pool), frees the streams whose voices have ended, and logs a
+  // streamed voice's first underrun. Call once per tick. Returns the events drained.
   u32 update() noexcept;
+
+  // Blocks until no stream fill is in flight. Tests and load screens; never the tick.
+  void wait_streams() noexcept;
+  u32 stream_count() const noexcept { return stream_count_; }
+  // Streams a voice holds, or that are waiting for their last fill to land before they are free.
+  u32 streams_in_use() const noexcept { return streams_in_use_; }
+  u32 stream_ring_frames() const noexcept { return ring_frames_; }
+  u32 stream_fill_frames() const noexcept { return fill_frames_; }
 
   // The controlling thread's view: started and not yet reported ended. A voice may have gone
   // silent on the audio thread already; it is live here until `update()` reads its event.
@@ -290,6 +318,9 @@ class Mixer {
  private:
   bool push(const Command& command) noexcept;
   u32 choose_slot(u8 priority, bool loop, bool& stole) const noexcept;
+  u32 free_stream() const noexcept;
+  void schedule_fill(Stream& stream) noexcept;
+  void service_streams() noexcept;
   void apply(const Command& command) noexcept;
   void mix_block(f32* out, u32 frames) noexcept;
   void publish(const MixerStats& stats) noexcept;
@@ -301,20 +332,34 @@ class Mixer {
 
   // ---- controlling thread
   Vector<VoiceSlot> slots_;
+  Vector<u32> slot_stream_;  // the stream the slot's current voice reads, or k_no_stream
   Vector<f32> bus_gain_control_;
   ControlStats control_;
   u64 sequence_ = 0;
+  u64 pushed_ = 0;  // commands pushed: a command's sequence number is this, after its push
   u32 live_ = 0;
+  u32 streams_in_use_ = 0;
   bool pending_stops_ = false;
 
-  // ---- shared: the two rings and the stats seqlock
+  // ---- streams: records fixed at construction, rings allocated at first use (stream.h)
+  std::unique_ptr<Stream[]> streams_;
+  u32 stream_count_ = 0;
+  u32 ring_frames_ = 0;
+  u32 fill_frames_ = 0;
+
+  // ---- shared: the two rings, the count of commands applied, and the stats seqlock
   SpscQueue<Command> commands_;
   SpscQueue<VoiceEvent> events_;
+  // Commands the audio thread has applied, stored with release after it applied them: a command
+  // whose sequence number is at most this has taken effect, which is when a stolen voice's
+  // stream is no longer read.
+  alignas(64) std::atomic<u64> applied_{0};
   alignas(64) std::atomic<u64> stats_sequence_{0};
-  std::atomic<u64> stats_words_[10];
+  std::atomic<u64> stats_words_[11];
 
   // ---- audio thread
   alignas(64) Vector<VoiceState> voices_;
+  Vector<StreamRing*> voice_ring_;  // a streamed voice's ring, by slot
   Vector<SourceSpatial> sources_;
   Vector<f32> decoder_state_;  // voices x decoder_->state_floats
   Vector<f32> scratch_;        // one voice's signal for one block: k_max_block_frames x 2

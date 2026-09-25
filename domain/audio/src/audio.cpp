@@ -71,6 +71,41 @@ tunables::Float limiter_threshold_db{"audio.limiter.threshold_db", -1.0, -24.0, 
 tunables::Float limiter_release_ms{"audio.limiter.release_ms", 100.0, 10.0, 2000.0,
                                    "Time constant of the limiter's release, in milliseconds"};
 
+// A clip whose decoded size is over this streams: a voice playing it reads a ring of decoded frames
+// that a decode job keeps ahead of it, instead of the whole clip resident in the store
+// (docs/subsystems/audio.md, "Streaming"). 1875 KiB is five seconds of stereo at the mix format
+// (ten of mono). Five seconds because the two kinds of sound it separates are that far apart: the
+// effects a game triggers in bursts — a footstep, a shot, a door, an explosion with its tail — are
+// under four seconds, are played by many voices at once, and must sound on the block they are
+// triggered in, so they are resident and one copy serves every voice; music, ambience beds and
+// dialogue run for tens of seconds to minutes and are played by one or two voices, which is when
+// a ring per voice (half a second: 188 KiB of stereo) costs less than the clip — a five-second
+// clip is ten rings.
+tunables::Int stream_threshold_kb{"audio.stream_threshold_kb", 1875, 16, 1 << 22,
+                                  "Decoded size in KiB above which a clip streams"};
+
+// Streams the mixer can play at once: each is a ring and a decoder, and the voice that plays a
+// streamed clip holds one. Music, two or three ambience beds and a line of dialogue are the usual
+// load; sixteen leaves room for crossfades between them. The rings are allocated the first time
+// each stream is used, so an unused stream costs its record and nothing else.
+tunables::Int streams{"audio.streams", 16, 0, 256, "Streamed voices the mixer can play at once"};
+
+// The ring a streaming voice reads, in time at the mix rate. It is filled by a decode job the
+// controlling thread schedules at its tick, so it has to hold what the voice plays between the
+// tick that sees it low and the job that tops it up landing: the fill-ahead below plus one fill.
+// 500 ms is 188 KiB of stereo a stream, 3 MiB for the default sixteen.
+tunables::Float stream_ring_ms{"audio.stream_ring_ms", 500.0, 50.0, 10000.0,
+                               "Decoded audio a streaming voice's ring holds, in milliseconds"};
+
+// How far ahead of the playhead a stream is kept: at each tick, a stream with less than this
+// decoded ahead of its voice gets a fill job that tops its ring up. It is the time a fill job has
+// to land before the voice runs dry, less the tick that noticed: 250 ms leaves 233 ms at 60 Hz for
+// the Efficiency pool's queue, a ranged read and the decode, and survives a tick hitch of 200 ms.
+// Half the ring, so each fill decodes about half a ring — one ranged read of a quarter second
+// rather than a stream of small ones.
+tunables::Float stream_fill_ms{"audio.stream_fill_ms", 250.0, 10.0, 5000.0,
+                               "Decoded audio kept ahead of a streaming voice, in milliseconds"};
+
 // The speaker layout the master is declared with. "auto" takes the device's own (device.h,
 // `resolve_layout`); a name forces it, and a device that is something else gets the platform's
 // channel conversion. The choices are indexed by `ChannelLayout`, whose `Unknown` is "auto".
@@ -102,5 +137,17 @@ u32 tunable_limiter_release_frames() noexcept {
   return frames < 1.0 ? 1u : static_cast<u32>(frames);
 }
 ChannelLayout tunable_layout() noexcept { return layout.get(); }
+u64 tunable_stream_threshold_bytes() noexcept {
+  return static_cast<u64>(stream_threshold_kb.get()) * 1024u;
+}
+u32 tunable_streams() noexcept { return static_cast<u32>(streams.get()); }
+u32 tunable_stream_ring_frames() noexcept {
+  const f64 frames = stream_ring_ms.get() * static_cast<f64>(k_sample_rate) / 1000.0 + 0.5;
+  return static_cast<u32>(frames);
+}
+u32 tunable_stream_fill_frames() noexcept {
+  const f64 frames = stream_fill_ms.get() * static_cast<f64>(k_sample_rate) / 1000.0 + 0.5;
+  return static_cast<u32>(frames);
+}
 
 }  // namespace engine::audio

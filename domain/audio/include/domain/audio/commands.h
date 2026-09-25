@@ -12,11 +12,11 @@
 // lock.
 //
 // **Why 128 bytes.** A source is an object all the way down (spatial.h), and a `Play` has to carry
-// the whole of it — clip, level, pitch, and the 56-byte spatial block — so that a voice is never
-// audible for a block with half its description. That is 96 bytes; the rest is padding to two
-// whole cache lines, so no command shares a line with its neighbour. Splitting a play into a play
-// and a source update would halve the ring's footprint (128 KB at the default 1024 commands) and
-// open a window in which a render's drain budget could apply one without the other.
+// the whole of it — clip (or stream), level, pitch, and the 56-byte spatial block — so that a voice
+// is never audible for a block with half its description. That is 104 bytes; the rest is padding to
+// two whole cache lines, so no command shares a line with its neighbour. Splitting a play into a
+// play and a source update would halve the ring's footprint (128 KB at the default 1024 commands)
+// and open a window in which a render's drain budget could apply one without the other.
 //
 // The payloads are plain structs of scalars and float arrays rather than `Vec3`s because they share
 // a union, and a union member may not have a default member initializer.
@@ -48,6 +48,11 @@ enum class CommandKind : u8 {
 
 // Voice flags, in `Command::flags` and in the audio thread's voice.
 inline constexpr u8 k_voice_loop = 1u << 0;
+// The voice plays a stream (stream.h): `samples` is its ring and `frames` the ring's length, and
+// `PlayPayload::stream` names the stream. Set by a Play only; a SetParams never changes it.
+inline constexpr u8 k_voice_stream = 1u << 1;
+// `PlayPayload::stream` of a voice that plays a stored clip.
+inline constexpr u32 k_no_stream = 0xFFFF'FFFFu;
 
 // `SourceSpatial`, flattened.
 struct SourcePayload {
@@ -66,12 +71,13 @@ struct SourcePayload {
 };
 
 struct PlayPayload {
-  const f32* samples;  // the clip's interleaved samples at the mix rate; outlives the voice
+  const f32* samples;  // the clip's interleaved samples at the mix rate, or a stream's ring
   u32 frames;
   f32 gain;
   f32 pitch;
   f32 pan;
   SourcePayload source;
+  u32 stream;  // the mixer's stream the voice reads, or k_no_stream
 };
 
 struct ParamsPayload {
