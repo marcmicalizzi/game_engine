@@ -26,12 +26,20 @@ engine_schema_library(NAME audio_schemas SCHEMAS schemas/audio.schema CAPABILITY
 engine_module(NAME audio LAYER domain OPTIONAL WHOLE_ARCHIVE
   DEPS base containers math hash ids jobs log tunables protocol audio_schemas
   SOURCES src/audio.cpp src/backend.cpp src/clip_store.cpp src/decoder.cpp src/device.cpp
-          src/format.cpp src/limiter.cpp src/mixer.cpp src/protocol.cpp src/spatial.cpp)
+          src/endpoint.cpp src/format.cpp src/limiter.cpp src/mixer.cpp src/protocol.cpp
+          src/spatial.cpp)
 
 # miniaudio is linked PRIVATE: its header, and the defines that shape its structs, reach
 # src/backend.cpp and nothing that includes a public header of this module (physics.md, "Why
 # nothing from Jolt is public", is the same argument).
 target_link_libraries(engine_audio_impl PRIVATE engine::miniaudio)
+
+# src/endpoint.cpp, the module's platform file, talks to the Windows endpoint enumerator through
+# COM (CoInitializeEx, CoCreateInstance): ole32. miniaudio loads it at run time for itself; the
+# engine's own watcher links it, as every Windows system library is linked, from the system.
+if(WIN32)
+  target_link_libraries(engine_audio_impl PRIVATE ole32)
+endif()
 
 engine_module_tests(NAME audio
   SOURCES tests/audio_tests.cpp tests/queue_tests.cpp tests/mixer_tests.cpp tests/clip_tests.cpp

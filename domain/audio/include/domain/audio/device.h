@@ -24,6 +24,13 @@
 // machine with no device falls back to when `OutputConfig::fall_back_to_null` is set (the
 // default): the game keeps running and the mix is simply not heard.
 //
+// **Devices change under a running game** — a headset connects and becomes the default, a USB DAC
+// is unplugged. The platform says so on a thread of its own (miniaudio's `stopped` and `rerouted`
+// notifications; on Windows, the engine's endpoint watcher for a new default), and all that is
+// allowed there is setting a flag (`Output::notify`). `Output::update()`, called once a tick on
+// the controlling thread, acts on it: it closes the device and opens the current one with the same
+// configuration and the mixer's unchanged layout, and the mixer, which never knew, carries on.
+//
 // Why the mix runs on the device's thread and not on the job system's Efficiency pool, which plan
 // 11 §11.5 names for audio mixing: on a machine without efficiency cores that pool runs at
 // below-normal priority, and the one property an audio callback must have is that nothing else on
@@ -36,6 +43,7 @@
 #include <domain/audio/format.h>
 #include <domain/audio/mixer.h>
 
+#include <atomic>
 #include <schemas/audio.h>
 #include <string>
 
@@ -70,6 +78,24 @@ enum class OutputBackend : u8 { Null = 0, Device };
 
 const char* output_backend_name(OutputBackend backend) noexcept;
 
+// What can happen to an open output's device behind the game's back (docs/subsystems/audio.md,
+// "Device changes at run time"). Bits: several can arrive between two updates.
+enum class DeviceEvent : u8 {
+  // miniaudio's `stopped` notification, from a device nobody asked to stop. A hint: PulseAudio
+  // also sends it when a sink is suspended, so it counts only if the device really is stopped.
+  Stopped = 1u << 0,
+  // miniaudio's `rerouted` notification: the platform moved the stream to another endpoint
+  // (PulseAudio moves a default stream when the default sink changes).
+  Rerouted = 1u << 1,
+  // The system's default playback device changed (Windows' endpoint watcher).
+  DefaultChanged = 1u << 2,
+  // The endpoint this output plays to went away: unplugged, disabled, or its stream failed.
+  Lost = 1u << 3,
+};
+
+// The most telling of the events in `events` (a mask of `DeviceEvent` bits), as a word for the log.
+const char* device_event_name(u32 events) noexcept;
+
 struct OutputConfig {
   OutputBackend backend = OutputBackend::Device;
   // A playback device by name, as `enumerate_devices()` spells it; empty is the system default.
@@ -95,6 +121,22 @@ class Output {
   bool open(const OutputConfig& config);
   void close() noexcept;
 
+  // **Device changes at run time.** Call once a tick, from the thread that opened the output. If
+  // the device went away, or — for an output opened on the system default — the default changed,
+  // since the last call, the output is closed and opened again with the same `OutputConfig`: on
+  // the new default, in the mixer's declared layout, which does not change. The mixer is not
+  // touched: its voices, their positions, the buses and the listener carry on from where the old
+  // device's last block left them, and commands sent meanwhile wait in the ring. Returns true when
+  // it reopened, and logs the change. The platform's notifications only set a flag (`notify`);
+  // this is where anything is done about them. A named device does not follow the default.
+  bool update();
+  // Records a device event, as the platform's notification callbacks do: sets a bit and nothing
+  // else, so any thread may call it, the device's real-time thread included. `update()` acts on
+  // it. Also how a test reaches the reopen path without unplugging anything.
+  void notify(DeviceEvent event) noexcept;
+  // Times `update()` has reopened the output.
+  u32 reopens() const noexcept { return reopens_; }
+
   bool is_open() const noexcept { return open_; }
   OutputBackend backend() const noexcept { return backend_; }
   // The opened endpoint as the platform reported it; empty and `Unknown` under the null backend.
@@ -106,13 +148,21 @@ class Output {
   // under the device backend, whose thread is already pulling.
   void render(f32* out, u32 frames) noexcept;
 
-  struct Device;  // src/backend.cpp
+  struct Device;   // src/backend.cpp
+  struct Watcher;  // src/endpoint.cpp
 
  private:
   Mixer* mixer_;
   Device* device_ = nullptr;
+  // The platform's default-device watcher (Windows), alive while a `Device` backend is wanted —
+  // also while it fell back to null, so a device that appears later is found.
+  Watcher* watcher_ = nullptr;
   OutputBackend backend_ = OutputBackend::Null;
   bool open_ = false;
+  u32 reopens_ = 0;
+  // `DeviceEvent` bits set by the notification callbacks, taken by `update()`.
+  std::atomic<u32> events_{0};
+  OutputConfig config_;
   DeviceInfo device_info_;
   std::string fallback_reason_;
 };

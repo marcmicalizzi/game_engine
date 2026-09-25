@@ -14,10 +14,17 @@
 namespace engine::audio {
 
 // The device and the context it was opened from, at addresses that do not move: miniaudio's
-// device thread holds a pointer to both.
+// device thread holds a pointer to both, and its callbacks reach the rest through `pUserData`.
 struct Output::Device {
   ma_context context;
   ma_device device;
+  Mixer* mixer = nullptr;
+  // The output's `DeviceEvent` flags: the notification callback sets bits here and does nothing
+  // else.
+  std::atomic<u32>* events = nullptr;
+  // Set before the device is closed on purpose, so the `stopped` notification that closing
+  // causes is not taken for a lost device.
+  std::atomic<bool> closing{false};
 };
 
 namespace backend {
@@ -252,7 +259,21 @@ DeviceInfo describe(ma_context& context, const ma_device_info& device) {
 // buffer, and `noClip` because render clips itself.
 void data_callback(ma_device* device, void* output, const void* input, ma_uint32 frames) {
   (void)input;
-  static_cast<Mixer*>(device->pUserData)->render(static_cast<f32*>(output), frames);
+  static_cast<Output::Device*>(device->pUserData)->mixer->render(static_cast<f32*>(output), frames);
+}
+
+// miniaudio's device notifications, on whichever thread the backend raises them. They set a bit
+// and return: the reopen is `Output::update()`'s, on the controlling thread (device.h).
+void notification_callback(const ma_device_notification* notification) {
+  auto* device = static_cast<Output::Device*>(notification->pDevice->pUserData);
+  if (device == nullptr || device->closing.load(std::memory_order_acquire)) return;
+  DeviceEvent event;
+  switch (notification->type) {
+    case ma_device_notification_type_stopped: event = DeviceEvent::Stopped; break;
+    case ma_device_notification_type_rerouted: event = DeviceEvent::Rerouted; break;
+    default: return;  // started, and the mobile platforms' interruptions and unlocks
+  }
+  device->events->fetch_or(static_cast<u32>(event), std::memory_order_release);
 }
 
 }  // namespace
@@ -278,10 +299,12 @@ DeviceList enumerate() {
   return list;
 }
 
-Output::Device* open_device(const DeviceRequest& request, Mixer& mixer, DeviceInfo& opened,
-                            std::string& why) {
-  auto* out = new Output::Device;
-  std::memset(static_cast<void*>(out), 0, sizeof(Output::Device));
+Output::Device* open_device(const DeviceRequest& request, Mixer& mixer, std::atomic<u32>& events,
+                            DeviceInfo& opened, std::string& why) {
+  // Value-initialized: miniaudio's two structs start zeroed, as it expects.
+  auto* out = new Output::Device();
+  out->mixer = &mixer;
+  out->events = &events;
   if (!init_context(out->context)) {
     why = "no platform audio API initialized";
     delete out;
@@ -334,7 +357,10 @@ Output::Device* open_device(const DeviceRequest& request, Mixer& mixer, DeviceIn
   }
 
   ma_device_config config = ma_device_config_init(ma_device_type_playback);
-  config.playback.pDeviceID = &chosen.id;
+  // The default is opened as "the default", not by the id it has today: PulseAudio then moves the
+  // stream when the default sink changes and miniaudio says so (`rerouted`); a stream opened by id
+  // is pinned to that sink. A named device is opened by its id.
+  config.playback.pDeviceID = by_name ? &chosen.id : nullptr;
   config.playback.format = ma_format_f32;
   config.playback.channels = layout.channels;
   config.playback.pChannelMap = map;
@@ -347,8 +373,15 @@ Output::Device* open_device(const DeviceRequest& request, Mixer& mixer, DeviceIn
   // period and nothing else on the machine should be able to make it late (device.h). Elsewhere
   // miniaudio's device thread runs at the highest priority the platform grants it.
   config.wasapi.usage = ma_wasapi_usage_pro_audio;
+  // miniaudio's own WASAPI rerouting is off. It reinitializes the device on the COM notification
+  // thread, holding a mutex that `ma_device_uninit` destroys — so an output closed or reopened from
+  // the controlling thread while a reroute was in flight would race it inside miniaudio. The engine
+  // owns the policy instead: its own endpoint watcher (endpoint.cpp) and this device's
+  // notifications only set a flag, and `Output::update()` reopens on the controlling thread.
+  config.wasapi.noAutoStreamRouting = MA_TRUE;
   config.dataCallback = data_callback;
-  config.pUserData = &mixer;
+  config.notificationCallback = notification_callback;
+  config.pUserData = out;
 
   if (ma_device_init(&out->context, &config, &out->device) != MA_SUCCESS) {
     why = "the device would not open";
@@ -366,7 +399,7 @@ Output::Device* open_device(const DeviceRequest& request, Mixer& mixer, DeviceIn
 
   opened = DeviceInfo{};
   opened.name = out->device.playback.name;
-  opened.is_default = chosen.isDefault != MA_FALSE;
+  opened.is_default = !by_name || chosen.isDefault != MA_FALSE;
   opened.channels = out->device.playback.internalChannels;
   opened.sample_rate = out->device.playback.internalSampleRate;
   Speaker speakers[MA_MAX_CHANNELS];
@@ -379,10 +412,24 @@ Output::Device* open_device(const DeviceRequest& request, Mixer& mixer, DeviceIn
 
 void close_device(Output::Device* device) noexcept {
   if (device == nullptr) return;
+  device->closing.store(true, std::memory_order_release);
   // Stops the device and joins its thread: after this no callback is running or will run.
   ma_device_uninit(&device->device);
   ma_context_uninit(&device->context);
   delete device;
+}
+
+bool device_stopped(const Output::Device* device) noexcept {
+  return ma_device_get_state(&device->device) == ma_device_state_stopped;
+}
+
+const endpoint::IdChar* endpoint_id(const Output::Device* device) noexcept {
+#if ENGINE_PLATFORM_WINDOWS
+  return device->context.backend == ma_backend_wasapi ? device->device.playback.id.wasapi : nullptr;
+#else
+  (void)device;
+  return nullptr;
+#endif
 }
 
 }  // namespace backend

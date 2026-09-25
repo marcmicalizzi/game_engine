@@ -29,6 +29,7 @@
 #include <cstdlib>
 #include <new>
 #include <string>
+#include <string_view>
 #include <thread>
 
 #if defined(_WIN32)
@@ -258,6 +259,126 @@ TEST_CASE("the null backend is the same mix, pulled by the caller") {
   CHECK_FALSE(output.is_open());
 }
 
+namespace {
+
+// The value of `key` in the last retained record whose message is `message`, or "" if none.
+std::string last_field(const log::RingSink& ring, std::string_view message, std::string_view key) {
+  std::string value;
+  ring.for_each(0, [&](const log::RingSink::Entry& entry) {
+    if (entry.message != message) return;
+    for (const log::Field& f : entry.fields) {
+      if (f.key == key && f.kind == log::Field::Kind::String) value = std::string(f.string());
+    }
+  });
+  return value;
+}
+
+}  // namespace
+
+// Device changes at run time (device.h, `Output::update`). A machine's default device cannot be
+// changed from a test, and the null backend is no miniaudio device, so miniaudio's notification
+// cannot be raised here: what is tested is the path from the flag on — `notify()` is exactly what
+// the platform's callbacks call, and nothing more — through `update()`'s decision, the reopen and
+// the log line, to a mixer that carries on as if nothing had happened. The opt-in device test
+// below reopens a real endpoint the same way.
+TEST_CASE("a device change reopens the output, and the mixer carries on where it was") {
+  log::RingSink ring(64);
+  log::add_sink(&ring);
+
+  ClipStore clips;
+  Mixer reference(clips);
+  Mixer mixer(clips);
+  const Vector<f32> tone = exact_sine(4800, 48, 0.5f);
+  const ClipHandle clip = clips.add_pcm(Id128{8, 2}, tone, 1);
+  PlayParams p;
+  p.clip = clip;
+  p.loop = true;
+  p.pitch = 0.77f;  // a playhead that is not on a frame boundary when the device goes
+  p.source.position = Vec3{2.0f, 0.0f, -1.0f};
+  REQUIRE_FALSE(reference.play(p).is_null());
+  const VoiceHandle voice = mixer.play(p);
+  REQUIRE_FALSE(voice.is_null());
+
+  Output output(mixer);
+  OutputConfig config;
+  config.backend = OutputBackend::Null;
+  REQUIRE(output.open(config));
+  CHECK_FALSE(output.update());  // nothing happened: nothing to do
+  CHECK(output.reopens() == 0u);
+
+  Vector<f32> expected(960, 0.0f);
+  Vector<f32> got(960, 0.0f);
+  for (int i = 0; i < 3; ++i) {
+    reference.render(expected.data(), 480);
+    output.render(got.data(), 480);
+    CHECK(got == expected);
+  }
+
+  // The default device changed. The flag is all the callback sets; the next update reopens.
+  output.notify(DeviceEvent::DefaultChanged);
+  CHECK(output.is_open());  // nothing yet: notify() only records
+  CHECK(output.update());
+  CHECK(output.reopens() == 1u);
+  CHECK(output.is_open());
+  CHECK(output.backend() == OutputBackend::Null);
+  CHECK(last_field(ring, "output device changed", "reason") == "default_changed");
+  CHECK(last_field(ring, "output device changed", "backend") == "null");
+  CHECK(last_field(ring, "output device changed", "mix_layout") == "stereo");
+  CHECK_FALSE(output.update());  // once per change
+
+  // The mixer did not notice: the voice is live and plays on from where it was, and a command sent
+  // across the reopen is applied at the next block, as ever.
+  CHECK(mixer.is_live(voice));
+  Listener turned;
+  turned.forward = Vec3{1.0f, 0.0f, -1.0f};
+  REQUIRE(reference.set_listener(turned));
+  REQUIRE(mixer.set_listener(turned));
+  for (int i = 0; i < 3; ++i) {
+    reference.render(expected.data(), 480);
+    output.render(got.data(), 480);
+    CHECK(got == expected);
+  }
+
+  // A `stopped` notice from a device that is not stopped is PulseAudio suspending a sink: no loss.
+  output.notify(DeviceEvent::Stopped);
+  CHECK_FALSE(output.update());
+  // A lost device is.
+  output.notify(DeviceEvent::Lost);
+  CHECK(output.update());
+  CHECK(output.reopens() == 2u);
+  CHECK(last_field(ring, "output device changed", "reason") == "lost");
+  // Several at once are one reopen, reported by the most telling.
+  output.notify(DeviceEvent::Rerouted);
+  output.notify(DeviceEvent::DefaultChanged);
+  output.notify(DeviceEvent::Lost);
+  CHECK(output.update());
+  CHECK(output.reopens() == 3u);
+  CHECK(last_field(ring, "output device changed", "reason") == "lost");
+  reference.render(expected.data(), 480);
+  output.render(got.data(), 480);
+  CHECK(got == expected);
+
+  // An output opened on a named device plays to that device: a new default is not its business.
+  Output named(mixer);
+  OutputConfig by_name = config;
+  by_name.device = "Speakers (named)";
+  REQUIRE(named.open(by_name));
+  named.notify(DeviceEvent::DefaultChanged);
+  CHECK_FALSE(named.update());
+  named.notify(DeviceEvent::Lost);
+  CHECK(named.update());
+  CHECK(named.reopens() == 1u);
+
+  // A closed output has nothing to reopen.
+  output.close();
+  output.notify(DeviceEvent::Lost);
+  CHECK_FALSE(output.update());
+
+  CHECK(std::string(device_event_name(0)) == "none");
+  CHECK(std::string(device_event_name(static_cast<u32>(DeviceEvent::Rerouted))) == "rerouted");
+  log::remove_sink(&ring);
+}
+
 TEST_CASE(
     "the device backend pulls the mix on its own thread (opt-in: ENGINE_AUDIO_DEVICE_TEST=1)") {
   // Opening a real endpoint is a side effect on somebody's machine, so the suite does it only when
@@ -288,6 +409,17 @@ TEST_CASE(
                       << std::string(layout_name(output.device().layout)) << " at "
                       << output.device().sample_rate << " Hz, mixing "
                       << std::string(layout_name(mixer.layout())));
+    // The reopen a default-device change causes, on a real endpoint: the device is closed (its
+    // thread joined) and opened again on the default, and its thread pulls the same mixer again.
+    output.notify(DeviceEvent::DefaultChanged);
+    CHECK(output.update());
+    CHECK(output.reopens() == 1u);
+    CHECK(output.backend() == OutputBackend::Device);
+    const u64 before = mixer.stats().blocks;
+    for (int i = 0; i < 50 && mixer.stats().blocks < before + 5u; ++i)
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    CHECK(mixer.stats().blocks >= before + 5u);
+    CHECK_FALSE(output.update());  // a running device raised nothing of its own
   } else {
     MESSAGE("no device (" << output.fallback_reason() << "): the null backend");
   }
