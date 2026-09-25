@@ -11,6 +11,7 @@
 
 #include <doctest/doctest.h>
 
+#include <cmath>
 #include <flecs.h>
 #include <optional>
 #include <string_view>
@@ -272,6 +273,79 @@ TEST_CASE("audio LOD: past max_distance the voice goes, back inside it returns")
   expect(rig.tick(), 0, 0, 0, 0);
 }
 
+TEST_CASE("a loop that comes back within reach resumes where it would have been") {
+  // A clip whose every frame says where it is: frame i holds i / 8192, exact in f32. The emitter
+  // sits straight ahead at its min_distance, so it is heard centred at full level, and the first
+  // sample of the block after a play says which frame the voice started on.
+  Rig rig;
+  const Id128 k_ramp{7, 3};
+  Vector<f32> ramp;
+  for (u32 i = 0; i < 4800; ++i)
+    ramp.push_back(static_cast<f32>(i) / 8192.0f);
+  rig.clips.add_pcm(k_ramp, ramp, 1);
+  const f32 centre = sin_quarter(0.5f);
+  auto frame_at = [&](u32 k) {
+    return static_cast<u32>(std::lround(rig.buffer[2u * k] / centre * 8192.0f));
+  };
+
+  AudioEmitter e = loop_at(Vec3{0.0f, 0.0f, -1.0f});
+  e.clip = k_ramp;
+  e.max_distance = 10.0f;
+  const flecs::entity emitter = rig.sim.world().entity().set(e);
+  auto move_to = [&](f32 z) {
+    emitter.try_get_mut<AudioEmitter>()->position = Vec3{0.0f, 0.0f, z};
+  };
+
+  // Tick 1: the loop starts at its beginning. At 60 Hz a tick is 800 frames of the mix.
+  expect(rig.tick(), 1, 0, 0, 0, 1);
+  CHECK(frame_at(0) == 0u);
+  CHECK(frame_at(1) == 1u);
+  CHECK(rig.audio.stats().resumed == 0u);
+  // Tick 2 it goes out of reach and loses its voice; ticks 3 and 4 it stays out.
+  move_to(-50.0f);
+  expect(rig.tick(), 0, 1, 0, 0);
+  expect(rig.tick(), 0, 0, 0, 0);
+  expect(rig.tick(), 0, 0, 0, 0);
+  // Tick 5 it is back: four ticks after it started, 3,200 frames into its clip — not frame 0.
+  move_to(-1.0f);
+  expect(rig.tick(), 1, 0, 0, 0);
+  CHECK(frame_at(0) == 3200u);
+  CHECK(frame_at(1) == 3201u);
+  CHECK(rig.audio.stats().resumed == 1u);
+
+  // Out again at tick 6; its pitch doubles at tick 7 while it has no voice (nothing is sent); back
+  // at tick 9. Six ticks at pitch 1 and two at pitch 2 are 4,800 + 3,200 frames: 3,200 into a
+  // 4,800-frame loop, now read two frames at a time.
+  move_to(-50.0f);
+  expect(rig.tick(), 0, 1, 0, 0);
+  emitter.try_get_mut<AudioEmitter>()->pitch = 2.0f;
+  expect(rig.tick(), 0, 0, 0, 0);
+  expect(rig.tick(), 0, 0, 0, 0);
+  move_to(-1.0f);
+  expect(rig.tick(), 1, 0, 0, 0);
+  CHECK(frame_at(0) == 3200u);
+  CHECK(frame_at(1) == 3202u);
+
+  // A new cue restarts the loop, and its clock with it: from the beginning. (The block after it
+  // also carries the old voice's fade, so the clock is read off the emitter's state instead.)
+  ++emitter.try_get_mut<AudioEmitter>()->cue;
+  expect(rig.tick(), 1, 1, 0, 0);
+  const EmitterVoice* state = emitter.try_get<EmitterVoice>();
+  REQUIRE(state != nullptr);
+  CHECK(state->loop_tick == rig.sim.tick().value);
+  CHECK(state->loop_frames == 0.0);
+  CHECK(rig.audio.stats().resumed == 0u);
+
+  // The clock is a function of the tick and the clip's length alone.
+  EmitterVoice clock;
+  clock.loop_tick = 10;
+  clock.loop_frames = 100.0;
+  CHECK(loop_position(clock, 10, 800.0, 1.0f, 4800) == 100u);
+  CHECK(loop_position(clock, 16, 800.0, 1.0f, 4800) == 100u);  // 4,900 wraps to 100
+  CHECK(loop_position(clock, 11, 800.0, 0.5f, 4800) == 500u);
+  CHECK(loop_position(clock, 11, 800.0, 1.0f, 0) == 0u);  // no clip: the beginning
+}
+
 TEST_CASE("a full pool turns emitters away once a tick, and a stop lets the next one in") {
   Rig rig(with_voices(2));
   flecs::entity loud[3];
@@ -331,11 +405,17 @@ TEST_CASE(
   // ADR-0038 (proposed): `sim::SimScheduler` owns the clock and the phase order and runs each
   // phase's flecs systems through `ecs::ScheduledTick`. The emitter system declared `EventsOut` and
   // did not change for it, so the commands a sequence of edits sends have to be the same under
-  // either executor, tick for tick.
+  // either executor, tick for tick — and so does the mix they make, which reads the tick too: a
+  // loop that comes back within reach starts where the tick count puts it (loop_position).
+  struct Run {
+    std::vector<Sent> sent;
+    Vector<f32> mix;
+  };
   const auto run = [](bool scheduled) {
     Rig rig;
     sim::SimScheduler scheduler;
-    std::vector<Sent> sent;
+    Run out;
+    std::vector<Sent>& sent = out.sent;
     const flecs::entity emitter = rig.sim.world().entity().set(loop_at(Vec3{2.0f, 0.0f, -3.0f}));
     std::optional<ecs::ScheduledTick> tick;
     if (scheduled) tick.emplace(rig.sim, scheduler);
@@ -348,6 +428,7 @@ TEST_CASE(
       }
       const Sent after = counters(rig.mixer);
       rig.mixer.render(rig.buffer.data(), 480);
+      out.mix.append(std::span<const f32>(rig.buffer.data(), rig.buffer.size()));
       sent.push_back(Sent{after.plays - before.plays, after.stops - before.stops,
                           after.params - before.params, after.sources - before.sources,
                           after.listeners - before.listeners});
@@ -357,15 +438,23 @@ TEST_CASE(
     step();
     emitter.try_get_mut<AudioEmitter>()->position = Vec3{0.0f, 0.0f, -1.0f};
     step();
+    emitter.try_get_mut<AudioEmitter>()->position = Vec3{0.0f, 0.0f, -100.0f};  // out of reach
+    step();
+    step();
+    emitter.try_get_mut<AudioEmitter>()->position = Vec3{0.0f, 0.0f, -1.0f};  // back, resumed
     step();
     emitter.try_get_mut<AudioEmitter>()->playing = false;
     step();
-    CHECK(rig.sim.tick().value == 5);
-    if (scheduled) CHECK(tick->phases_run() == 5);  // EventsOut, once a tick
-    return sent;
+    CHECK(rig.sim.tick().value == 7);
+    if (scheduled) CHECK(tick->phases_run() == 7);  // EventsOut, once a tick
+    CHECK(rig.audio.stats().resumed == 0u);         // the last tick only stopped it
+    return out;
   };
-  const std::vector<Sent> pipeline = run(false);
-  const std::vector<Sent> scheduled = run(true);
+  const Run pipeline_run = run(false);
+  const Run scheduled_run = run(true);
+  const std::vector<Sent>& pipeline = pipeline_run.sent;
+  const std::vector<Sent>& scheduled = scheduled_run.sent;
+  CHECK(scheduled_run.mix == pipeline_run.mix);  // the same bytes, ramps and resumed loop included
   REQUIRE(pipeline.size() == scheduled.size());
   for (usize i = 0; i < pipeline.size(); ++i) {
     INFO("tick " << i + 1);
@@ -379,5 +468,7 @@ TEST_CASE(
   CHECK(scheduled[0].plays == 1u);
   CHECK(scheduled[1].params == 1u);
   CHECK(scheduled[2].sources == 1u);
-  CHECK(scheduled[4].stops == 1u);
+  CHECK(scheduled[3].stops == 1u);  // out of reach: virtual
+  CHECK(scheduled[5].plays == 1u);  // back: 5 ticks after it started, 4,000 frames in
+  CHECK(scheduled[6].stops == 1u);
 }

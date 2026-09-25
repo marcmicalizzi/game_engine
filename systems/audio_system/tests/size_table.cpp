@@ -11,5 +11,7 @@ using namespace engine::audio;
 // spread, cue, bus, priority, mapping and three flags.
 ENGINE_EXPECT_SIZE(96, 8, AudioEmitter);
 ENGINE_EXPECT_SIZE(36, 4, AudioListener);
-// The emitter as last sent — the diff every change is judged against — and its voice.
-ENGINE_EXPECT_SIZE(112, 8, EmitterVoice);
+// The emitter as last sent — the diff every change is judged against — its voice, and the loop's
+// clock (16 bytes: the frames it had played, and the tick it had played them by), which is what a
+// loop coming back within reach resumes from. Two cache lines.
+ENGINE_EXPECT_SIZE(128, 8, EmitterVoice);

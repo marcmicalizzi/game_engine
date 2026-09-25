@@ -3,6 +3,7 @@
 #include <foundation/tunables/tunables.h>
 #include <systems/audio_system/audio_system.h>
 
+#include <cmath>
 #include <schemas/audio_ecs.h>
 
 namespace engine::audio {
@@ -82,6 +83,16 @@ bool same_listener(const Listener& a, const Listener& b) noexcept {
 
 }  // namespace
 
+u32 loop_position(const EmitterVoice& state, u64 tick, f64 frames_per_tick, f32 pitch,
+                  u32 clip_frames) noexcept {
+  if (clip_frames == 0) return 0;
+  const f64 elapsed = tick >= state.loop_tick ? static_cast<f64>(tick - state.loop_tick) : 0.0;
+  const f64 played = state.loop_frames + elapsed * frames_per_tick * static_cast<f64>(pitch);
+  if (!(played >= 0.0) || !std::isfinite(played)) return 0;
+  const u32 frame = static_cast<u32>(std::fmod(played, static_cast<f64>(clip_frames)));
+  return frame < clip_frames ? frame : 0u;
+}
+
 u8 lod_tier(f32 distance_squared, f32 max_distance, u8 current, f32 hysteresis) noexcept {
   const f32 inner = max_distance > 0.0f ? max_distance : 0.0f;
   const f32 outer = inner * (1.0f + (hysteresis > 0.0f ? hysteresis : 0.0f));
@@ -104,6 +115,7 @@ AudioSystem::~AudioSystem() {
 void AudioSystem::install(ecs::SimWorld& sim) {
   flecs::world& world = sim.world();
   world_ = &world;
+  frames_per_tick_ = static_cast<f64>(k_sample_rate) / static_cast<f64>(sim.clock().hz());
 
   // Seam 1: the components come from the schema IDL. The emitter's transient state is the one
   // private component, and flecs' `With` rule gives every AudioEmitter one on the tick it appears,
@@ -180,13 +192,14 @@ void AudioSystem::tick(flecs::iter& it) {
     }
   }
   const f32 hysteresis = static_cast<f32>(lod_hysteresis.get());
+  const u64 now = it.world().get<SimTick>().value;
 
   while (it.next()) {
     auto emitters = it.field<const AudioEmitter>(0);
     auto states = it.field<EmitterVoice>(1);
     for (auto row : it) {
       ++stats.emitters;
-      step(emitters[row], states[row], listener.position, hysteresis, stats);
+      step(emitters[row], states[row], listener.position, hysteresis, now, stats);
     }
   }
 
@@ -203,7 +216,7 @@ void AudioSystem::tick(flecs::iter& it) {
 }
 
 void AudioSystem::step(const AudioEmitter& e, EmitterVoice& state, const Vec3& ear, f32 hysteresis,
-                       AudioSystemStats& stats) {
+                       u64 tick, AudioSystemStats& stats) {
   // 1. The voice this state names: still alive, and claimed by one emitter only.
   if (!state.voice.is_null()) {
     const u32 slot = state.voice.slot;
@@ -228,6 +241,23 @@ void AudioSystem::step(const AudioEmitter& e, EmitterVoice& state, const Vec3& e
   const bool retrigger = state.initialized &&
                          (e.clip != sent.clip || e.cue != sent.cue || (e.playing && !sent.playing));
   if (retrigger) state.finished = false;
+
+  // The loop's clock. It starts when the emitter first wants to loop — new, retriggered, switched
+  // to looping, or turned back on — and runs on while it plays, whether or not it holds a voice; a
+  // pitch change settles what was played at the old pitch and runs on at the new one. Only then
+  // is anything computed: a loop that holds its voice for an hour costs nothing here.
+  if (e.playing && e.looping) {
+    if (!state.initialized || retrigger || !sent.looping || !sent.playing) {
+      state.loop_frames = 0.0;
+      state.loop_tick = tick;
+    } else if (e.pitch != sent.pitch) {
+      const u64 ticks = tick >= state.loop_tick ? tick - state.loop_tick : 0u;
+      state.loop_frames +=
+          static_cast<f64>(ticks) * frames_per_tick_ * static_cast<f64>(sent.pitch);
+      state.loop_tick = tick;
+    }
+  }
+
   if (!state.voice.is_null() && (retrigger || !e.playing)) {
     mixer_->stop(state.voice);
     release(state.voice);
@@ -254,7 +284,8 @@ void AudioSystem::step(const AudioEmitter& e, EmitterVoice& state, const Vec3& e
         claimed_[state.voice.slot] = 0;
         refused_priority_ = -1;
         // A one-shot does not resume: it was at the edge of hearing when it went, and a sound that
-        // restarts from its beginning when the listener walks back is a worse lie than silence.
+        // restarts from its beginning when the listener walks back is a worse lie than silence. A
+        // loop does, where its clock says it would be by then.
         if (!e.looping) state.finished = true;
         state.voice = VoiceHandle{};
       }
@@ -288,6 +319,13 @@ void AudioSystem::step(const AudioEmitter& e, EmitterVoice& state, const Vec3& e
       play.priority = e.priority;
       play.loop = e.looping;
       play.source = source_of(e);
+      // A loop starts where its clock says it would be: its beginning on the tick it started,
+      // somewhere else if it comes back within reach or the pool took a while to let it in. A
+      // one-shot starts at its beginning, and only ever on the tick it is triggered in reach.
+      if (e.looping) {
+        play.start_frame = loop_position(state, tick, frames_per_tick_, e.pitch,
+                                         mixer_->clips().view(clip).frames);
+      }
       const u64 refused_before = mixer_->control_stats().refused_pool;
       const VoiceHandle voice = mixer_->play(play);
       if (voice.is_null()) {
@@ -302,6 +340,7 @@ void AudioSystem::step(const AudioEmitter& e, EmitterVoice& state, const Vec3& e
         claimed_[voice.slot] = 1;
         state.voice = voice;
         ++stats.plays;
+        if (play.start_frame != 0) ++stats.resumed;
       }
     }
   } else if (!state.voice.is_null() && state.initialized) {

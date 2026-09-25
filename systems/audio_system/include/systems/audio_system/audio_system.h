@@ -90,7 +90,21 @@ struct EmitterVoice {
   bool initialized = false;  // `sent` holds a real previous tick
   bool finished = false;     // a one-shot that has played out: silent until retriggered
   bool reserved = false;
+  // A loop's clock, whether or not it holds a voice: at tick `loop_tick` it had played
+  // `loop_frames` frames of its clip since it started (unwrapped; at its pitch). A loop that comes
+  // back within reach, or gets a voice after the pool turned it away, starts where this says it
+  // would have been — computed from ticks, since nothing the audio thread does is read back
+  // (loop_position()).
+  f64 loop_frames = 0.0;
+  u64 loop_tick = 0;
 };
+
+// Where a loop is in its clip at `tick`: the frames it had played at `state.loop_tick`, plus
+// `frames_per_tick` of the mix rate for every tick since at `pitch`, wrapped into the clip's
+// `clip_frames`. IEEE f64 and `fmod`, which is exact: the same tick gives the same frame
+// everywhere.
+u32 loop_position(const EmitterVoice& state, u64 tick, f64 frames_per_tick, f32 pitch,
+                  u32 clip_frames) noexcept;
 
 // What the last tick did. Every counter is a command sent or a decision taken, so a test can say
 // "exactly this" and mean it.
@@ -108,6 +122,7 @@ struct AudioSystemStats {
   u32 swept = 0;          // voices stopped because their emitter is gone
   u32 duplicates = 0;     // copied state (an entity cloned with its EmitterVoice) reset
   u32 listeners = 0;      // AudioListener entities seen; one is used
+  u32 resumed = 0;        // loops started somewhere other than their beginning (loop_position)
 };
 
 class AudioSystem {
@@ -131,7 +146,7 @@ class AudioSystem {
  private:
   void tick(flecs::iter& it);
   void step(const AudioEmitter& emitter, EmitterVoice& state, const Vec3& ear, f32 hysteresis,
-            AudioSystemStats& stats);
+            u64 tick, AudioSystemStats& stats);
   void release(VoiceHandle voice) noexcept;
   Listener current_listener(u32& count);
 
@@ -150,6 +165,9 @@ class AudioSystem {
   // The highest priority the pool refused this tick, or -1. Every voice outranks it until
   // something stops, so an emitter at or below it is refused without asking the mixer again.
   i32 refused_priority_ = -1;
+  // Mix-rate frames in one tick of the world the system is installed in (800 at 60 Hz): the
+  // loops' clock (EmitterVoice::loop_frames).
+  f64 frames_per_tick_ = 800.0;
   AudioSystemStats stats_;
 };
 
