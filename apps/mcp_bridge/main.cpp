@@ -31,6 +31,7 @@ namespace {
 const char* k_usage =
     "usage: engine-mcp [--host <path>] [--host-arg <arg>]... [--mount <scheme>=<dir>[:rw]]...\n"
     "                  [--workspace <dir>] [--actor <name>] [--role <name>] [--task <id>]\n"
+    "                  [--roles <file.json>]\n"
     "                  [--call-timeout <seconds>] [--long-call-timeout <seconds>] [--log <spec>]\n"
     "\n"
     "A Model Context Protocol server on stdin/stdout (newline-delimited JSON-RPC 2.0) over one\n"
@@ -42,8 +43,12 @@ const char* k_usage =
     "  --workspace <dir>    where captures, benchmark results and reports are written (default:\n"
     "                       ./mcp-workspace); tools return file:// URIs into it\n"
     "  --actor <name>       the attribution actor of a mutation that names none (default: mcp)\n"
-    "  --role <name>        the attribution role of a mutation that names none (default: none)\n"
+    "  --role <name>        the attribution role of a mutation that names none (default: none);\n"
+    "                       with --roles, also the role configuration every call runs in\n"
     "  --task <id>          the attribution task of a mutation that names none (default: none)\n"
+    "  --roles <file>       role configurations for the host (content/roles/roles.json): tools\n"
+    "                       the role may not call are not offered, and the host refuses its\n"
+    "                       writes outside the role's layers, tiles and types\n"
     "  --call-timeout <s>   how long a quick call may go unanswered before the host is taken for\n"
     "                       hung, stopped and replaced on the next call (default: 120; 0: never)\n"
     "  --long-call-timeout <s>  the same for renders, content builds, headless runs and the\n"
@@ -107,6 +112,8 @@ int main(int argc, char** argv) {
       if (!value(options.role)) return 2;
     } else if (a == "--task") {
       if (!value(options.task)) return 2;
+    } else if (a == "--roles") {
+      if (!value(options.roles)) return 2;
     } else if (a == "--call-timeout" || a == "--long-call-timeout") {
       std::string text;
       if (!value(text)) return 2;
@@ -177,6 +184,14 @@ int main(int argc, char** argv) {
     options.workspace = utf8(ec ? dir : absolute.lexically_normal());
     while (options.workspace.size() > 1 && options.workspace.back() == '/')
       options.workspace.pop_back();
+  }
+  // Absolute, so that a host started later from anywhere reads the same file.
+  if (!options.roles.empty()) {
+    std::error_code ec;
+    const std::filesystem::path given(std::u8string_view(
+        reinterpret_cast<const char8_t*>(options.roles.data()), options.roles.size()));
+    const std::filesystem::path absolute = std::filesystem::absolute(given, ec);
+    if (!ec) options.roles = utf8(absolute.lexically_normal());
   }
 
   mcp::Bridge bridge(std::move(options));

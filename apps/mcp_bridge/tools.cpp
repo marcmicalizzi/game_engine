@@ -289,6 +289,33 @@ bool attribution_schema(Bridge& b, JsonValue& schema, std::string& error) {
   return true;
 }
 
+// The actor, the role and the task filled from --actor, --role and --task where the attribution
+// leaves them out or blank. Under a role configuration the role is the bridge's, chosen when it
+// was started: a call that names another is refused, since letting a model switch roles per call
+// would make the configuration mean nothing (plan 06 §6.5).
+bool fill_identity(Bridge& b, JsonValue& out, ToolOutcome& failure) {
+  const BridgeOptions& o = b.options();
+  const auto blank = [&](const char* key) {
+    return text_of(out, key).find_first_not_of(" \t") == std::string::npos;
+  };
+  if (b.roles_loaded() && !b.role_name().empty() && !blank("role") &&
+      text_of(out, "role") != b.role_name()) {
+    fail(failure,
+         "refused: this bridge runs in role '" + b.role_name() +
+             "', and a call cannot name "
+             "another ('" +
+             text_of(out, "role") + "').",
+         "Leave attribution.role out; the role configuration is chosen when the bridge is "
+         "started (--role).");
+    return false;
+  }
+  if (blank("actor")) out.set("actor", JsonValue(o.actor));
+  if (blank("role") && !b.role_name().empty()) out.set("role", JsonValue(b.role_name()));
+  if (blank("role") && !o.role.empty()) out.set("role", JsonValue(o.role));
+  if (blank("task") && !o.task.empty()) out.set("task", JsonValue(o.task));
+  return true;
+}
+
 // The attribution a mutation is sent with: the caller's, with the actor, the role and the task
 // filled from --actor, --role and --task where the caller left them out or blank, or a refusal
 // that says what to add.
@@ -313,14 +340,7 @@ bool attribution(Bridge& b, const JsonValue& args, JsonValue& out, ToolOutcome& 
              b.options().actor + "').");
     return false;
   }
-  const BridgeOptions& o = b.options();
-  const auto blank = [&](const char* key) {
-    return text_of(out, key).find_first_not_of(" \t") == std::string::npos;
-  };
-  if (blank("actor")) out.set("actor", JsonValue(o.actor));
-  if (blank("role") && !o.role.empty()) out.set("role", JsonValue(o.role));
-  if (blank("task") && !o.task.empty()) out.set("task", JsonValue(o.task));
-  return true;
+  return fill_identity(b, out, failure);
 }
 
 // Sends commands as one doc.apply transaction and turns the ApplyResult into an outcome: a
@@ -1628,6 +1648,12 @@ void run_host_info(Bridge& b, const JsonValue&, ToolOutcome& out) {
   bridge.set("long_call_timeout_seconds",
              JsonValue(static_cast<f64>(o.long_call_timeout_ms) / 1000.0));
   bridge.set("protocol_version", JsonValue(b.protocol_version()));
+  bridge.set("roles_loaded", JsonValue(b.roles_loaded()));
+  if (b.roles_loaded()) {
+    bridge.set("roles", JsonValue(o.roles));
+    bridge.set("role_configuration", JsonValue(b.role_name()));
+    bridge.set("tools_withheld", JsonValue(b.tools_withheld()));
+  }
   out.data = JsonValue::object();
   if (ping.is_object()) r.set("uptime_seconds", JsonValue(real_of(ping, "uptime_seconds")));
   out.data.set("host", r);
@@ -1644,6 +1670,14 @@ void run_host_info(Bridge& b, const JsonValue&, ToolOutcome& out) {
       (o.task.empty() ? "" : ", task '" + o.task + "'") + "; deadlines " +
       deadline(o.call_timeout_ms) + " a call, " + deadline(o.long_call_timeout_ms) +
       " a render or build; MCP " + std::string(b.protocol_version()) + ".";
+  if (b.roles_loaded()) {
+    out.summary += b.role_name().empty()
+                       ? " A role configuration is loaded; this bridge's calls name no role and "
+                         "are not restricted."
+                       : " Calls run in role '" + b.role_name() + "'; " +
+                             std::to_string(b.tools_withheld()) +
+                             " tool(s) it may not use are not offered.";
+  }
 }
 
 // ---- the day-one operations (content.build, session.events, engine.budgets,
@@ -1821,6 +1855,224 @@ void run_run_tests(Bridge& b, const JsonValue& args, ToolOutcome& out) {
 
 // ---- the table ----------------------------------------------------------------------------------
 
+// ---- roles, leases and proposals (plan 06 §6.5)
+// ------------------------------------------------------------
+
+// The attribution property of a lease tool: the same generated type and defaults as a
+// mutation's, with the rationale optional — a lease records who holds it and for which task.
+bool identity_schema(Bridge& b, JsonValue& schema, std::string& error) {
+  if (!attribution_schema(b, schema, error)) return false;
+  JsonValue& a = *props(schema).find("attribution");
+  a.as_object().erase(std::string_view("required"));
+  if (JsonValue* r = props(a).find("rationale"); r != nullptr)
+    r->set("description", JsonValue("Why, in a sentence. Optional for a lease."));
+  a.set("description", JsonValue("Who holds the lease: the actor, the role and the task."));
+  return true;
+}
+
+bool identity(Bridge& b, const JsonValue& args, JsonValue& out, ToolOutcome& failure) {
+  const JsonValue* given = args.find("attribution");
+  if (given != nullptr && !given->is_object()) {
+    fail(failure, "attribution must be an object", "Pass {\"task\": \"...\"} or leave it out.");
+    return false;
+  }
+  out = given != nullptr ? *given : JsonValue::object();
+  return fill_identity(b, out, failure);
+}
+
+// Sends `args` to `method` with its attribution filled (a lease's) or required (a proposal's).
+bool call_attributed(Bridge& b, const char* method, const JsonValue& args, bool rationale,
+                     JsonValue& r, ToolOutcome& out) {
+  JsonValue attr;
+  if (!(rationale ? attribution(b, args, attr, out) : identity(b, args, attr, out))) return false;
+  JsonValue params = args;
+  params.set("attribution", std::move(attr));
+  return b.call(method, params, r, out);
+}
+
+std::string lease_text(const JsonValue& l) {
+  std::string s = "lease " + std::to_string(uint_of(l, "id")) + " on " + text_of(l, "layer") + ": ";
+  const JsonValue* tiles = l.find("tiles");
+  const JsonValue* types = l.find("object_types");
+  if (tiles != nullptr && tiles->size() > 0) {
+    s += "tiles";
+    for (usize i = 0; i < tiles->size(); ++i) {
+      const JsonValue& t = (*tiles)[i];
+      s += std::string(i == 0 ? " " : ", ") + "(" + fixed(real_of(t, "x0"), 0) + ", " +
+           fixed(real_of(t, "y0"), 0) + ")..(" + fixed(real_of(t, "x1"), 0) + ", " +
+           fixed(real_of(t, "y1"), 0) + ")";
+    }
+  } else if (types != nullptr) {
+    s += "types";
+    for (usize i = 0; i < types->size(); ++i)
+      s += (i == 0 ? " " : ", ") + std::string((*types)[i].as_string());
+  }
+  s += ", held by " + text_of(l, "actor");
+  if (!text_of(l, "task").empty()) s += " for task " + text_of(l, "task");
+  return s;
+}
+
+bool schema_acquire_lease(Bridge& b, JsonValue& s, std::string& e) {
+  if (!b.schemas().params_schema("lease.acquire", s, e)) return false;
+  note(s, "session", "The session id open_session returned.");
+  note(s, "layer",
+       "The layer to lease: a feature layer, or the target your proposal promotes into (an edit "
+       "in a proposal is covered by a lease on its target).");
+  note(s, "tiles", "Give tiles or object_types, not both.");
+  if (!identity_schema(b, s, e)) return false;
+  require(s, {"session", "layer"});
+  return true;
+}
+
+void run_acquire_lease(Bridge& b, const JsonValue& args, ToolOutcome& out) {
+  JsonValue r;
+  if (!call_attributed(b, "lease.acquire", args, false, r, out)) return;
+  const f64 seconds = static_cast<f64>(static_cast<i64>(real_of(r, "expires_unix_ms")) -
+                                       static_cast<i64>(real_of(r, "acquired_unix_ms"))) /
+                      1000.0;
+  out.summary = "Acquired " + lease_text(r) + ", for " + fixed(seconds, 0) +
+                " s. renew_lease extends it; release_lease gives it back when the work is done.";
+  out.data = r;
+}
+
+bool schema_renew_lease(Bridge& b, JsonValue& s, std::string& e) {
+  if (!b.schemas().params_schema("lease.renew", s, e)) return false;
+  note(s, "lease", "The id acquire_lease returned.");
+  if (!identity_schema(b, s, e)) return false;
+  require(s, {"session", "lease"});
+  return true;
+}
+
+void run_renew_lease(Bridge& b, const JsonValue& args, ToolOutcome& out) {
+  JsonValue r;
+  if (!call_attributed(b, "lease.renew", args, false, r, out)) return;
+  out.summary = "Renewed " + lease_text(r) + "; it now expires at " +
+                std::to_string(static_cast<i64>(real_of(r, "expires_unix_ms"))) + " (unix ms).";
+  out.data = r;
+}
+
+bool schema_release_lease(Bridge& b, JsonValue& s, std::string& e) {
+  if (!b.schemas().params_schema("lease.release", s, e)) return false;
+  note(s, "lease", "The id acquire_lease returned.");
+  if (!identity_schema(b, s, e)) return false;
+  require(s, {"session", "lease"});
+  return true;
+}
+
+void run_release_lease(Bridge& b, const JsonValue& args, ToolOutcome& out) {
+  JsonValue r;
+  if (!call_attributed(b, "lease.release", args, false, r, out)) return;
+  out.summary = "Released " + lease_text(r) + ".";
+  out.data = r;
+}
+
+bool schema_leases(Bridge& b, JsonValue& s, std::string& e) {
+  if (!b.schemas().params_schema("lease.list", s, e)) return false;
+  note(s, "session", "The session id open_session returned.");
+  require(s, {"session"});
+  return true;
+}
+
+void run_leases(Bridge& b, const JsonValue& args, ToolOutcome& out) {
+  JsonValue r;
+  if (!b.call("lease.list", args, r, out)) return;
+  const JsonValue* list = r.find("leases");
+  const usize n = list != nullptr ? list->size() : 0;
+  out.summary = std::string(bool_of(r, "required") ? "Edits in this document need a lease. "
+                                                   : "Edits in this document need no lease. ") +
+                std::to_string(n) + " live lease(s)" + (n > 0 ? ":" : ".");
+  const i64 now = static_cast<i64>(real_of(r, "now_unix_ms"));
+  for (usize i = 0; i < n; ++i) {
+    const JsonValue& l = (*list)[i];
+    out.summary +=
+        "\n  " + lease_text(l) + ", " +
+        fixed(static_cast<f64>(static_cast<i64>(real_of(l, "expires_unix_ms")) - now) / 1000.0, 0) +
+        " s left";
+  }
+  out.data = r;
+}
+
+bool schema_propose_layer(Bridge& b, JsonValue& s, std::string& e) {
+  if (!b.schemas().params_schema("doc.propose_layer", s, e)) return false;
+  note(s, "session", "The session id open_session returned.");
+  note(s, "target", "layers lists the document's layers.");
+  if (!attribution_schema(b, s, e)) return false;
+  require(s, {"session", "name", "target", "attribution"});
+  return true;
+}
+
+void run_propose_layer(Bridge& b, const JsonValue& args, ToolOutcome& out) {
+  JsonValue r;
+  if (!call_attributed(b, "doc.propose_layer", args, true, r, out)) return;
+  out.summary = "Proposal " + text_of(args, "name") + " over " + text_of(args, "target") +
+                " is open and yours" +
+                (bool_of(args, "edit", true) ? "; it is the edit layer, so the editing tools write "
+                                               "to it"
+                                             : "") +
+                ". When the work is done, promote merges it into " + text_of(args, "target") +
+                ". " + layers_text(r.find("layers") != nullptr ? *r.find("layers") : JsonValue());
+  out.data = r;
+}
+
+bool schema_promote(Bridge& b, JsonValue& s, std::string& e) {
+  if (!b.schemas().params_schema("doc.promote", s, e)) return false;
+  note(s, "session", "The session id open_session returned.");
+  note(s, "proposal", "The proposal layer's name; layers shows each proposal's owner and state.");
+  if (!attribution_schema(b, s, e)) return false;
+  require(s, {"session", "proposal", "attribution"});
+  return true;
+}
+
+void run_promote(Bridge& b, const JsonValue& args, ToolOutcome& out) {
+  JsonValue r;
+  if (!call_attributed(b, "doc.promote", args, true, r, out)) return;
+  const JsonValue* conflicts = r.find("conflicts");
+  const JsonValue* validation = r.find("validation");
+  const usize nc = conflicts != nullptr ? conflicts->size() : 0;
+  const usize nv = validation != nullptr ? validation->size() : 0;
+  std::string details;
+  for (usize i = 0; i < nc && i < 20; ++i) {
+    const JsonValue& c = (*conflicts)[i];
+    details += "\n  conflict " + text_of(c, "kind") + " on " + text_of(c, "object") +
+               (text_of(c, "property").empty() ? "" : "." + text_of(c, "property"));
+  }
+  for (usize i = 0; i < nv && i < 20; ++i) {
+    const JsonValue& d = (*validation)[i];
+    details += "\n  " + text_of(d, "path") + ": " + text_of(d, "message");
+  }
+  if (nc + nv > 40) details += "\n  ... (the whole list is in the result)";
+  const std::string times = " Merge " + fixed(real_of(r, "merge_ms"), 1) + " ms, validation " +
+                            fixed(real_of(r, "validate_ms"), 1) + " ms, commit " +
+                            fixed(real_of(r, "commit_ms"), 1) + " ms.";
+  if (bool_of(r, "promoted")) {
+    out.summary = "Promoted " + text_of(r, "proposal") + " into " + text_of(r, "target") + ": " +
+                  std::to_string(uint_of(r, "records")) + " record(s) rewritten, " +
+                  std::to_string(uint_of(r, "applied_proposal")) + " change(s) from the proposal" +
+                  (nc > 0 ? ", " + std::to_string(nc) + " conflict(s) settled by prefer" : "") +
+                  ". Journal patches " + std::to_string(uint_of(r, "patch_index")) + " and " +
+                  std::to_string(uint_of(r, "cleared_patch_index")) +
+                  " (undo with steps 2 takes it back); the proposal is empty and closed." + times +
+                  details;
+    out.data = r;
+    return;
+  }
+  if (bool_of(r, "ok")) {
+    out.summary = "Dry run: " + text_of(r, "proposal") + " would promote cleanly into " +
+                  text_of(r, "target") + " (" + std::to_string(uint_of(r, "records")) +
+                  " record(s)); nothing was committed." + times + details;
+    out.data = r;
+    return;
+  }
+  fail(out,
+       "Not promoted: " + text_of(r, "refused") + " (" + std::to_string(nc) + " conflict(s), " +
+           std::to_string(nv) + " new validation problem(s))." + details,
+       nc > 0 ? "A person or a director decides: promote again with prefer \"Target\" (keep what "
+                "the target has), \"Proposal\" or \"Base\"; validation problems need edits to the "
+                "proposal."
+              : "Change the proposal so the merged world validates, then promote again.");
+  out.data.set("result", r);
+}
+
 constexpr ToolDef k_tools[] = {
     {"open_session", "Open a document",
      "Open a document directory and get the session id the document tools take. Pass create: "
@@ -1985,6 +2237,33 @@ constexpr ToolDef k_tools[] = {
      "Run the document, tissue and content validators that are safe inside the host and get one "
      "structured report.",
      "engine.run_tests", true, false, true, &schema_run_tests, &run_run_tests},
+    {"acquire_lease", "Acquire a lease",
+     "Claim tiles (or object types) of a layer for a time before editing them. Refused at once, "
+     "naming the holder, when another agent's live lease overlaps: that is the point, a conflict "
+     "found before the work rather than at its merge. A document that requires leases refuses an "
+     "edit no lease of yours covers.",
+     "lease.acquire", false, false, false, &schema_acquire_lease, &run_acquire_lease},
+    {"renew_lease", "Renew a lease",
+     "Extend a lease you hold by a new time to live from now, before it expires.", "lease.renew",
+     false, false, true, &schema_renew_lease, &run_renew_lease},
+    {"release_lease", "Release a lease",
+     "Give back a lease you hold, so that others can take those tiles or types.", "lease.release",
+     false, false, true, &schema_release_lease, &run_release_lease},
+    {"leases", "List leases",
+     "Every live lease of a document — who holds which tiles or types of which layer, for which "
+     "task, until when — and whether edits there require one. Visible to everyone.",
+     "lease.list", true, false, true, &schema_leases, &run_leases},
+    {"propose_layer", "Open a proposal layer",
+     "Open a layer of your own over a target layer and make it the edit layer: your work lands "
+     "there, readable by everyone and writable by you alone, until promote merges it into the "
+     "target. Reopens a closed proposal of yours by name.",
+     "doc.propose_layer", false, false, false, &schema_propose_layer, &run_propose_layer},
+    {"promote", "Promote a proposal",
+     "Merge a proposal into its target by structural three-way merge, validate the merged world "
+     "first, and commit it as one journaled promotion; refused, with every conflict and new "
+     "validation problem, unless prefer settles the conflicts. dry_run reports without "
+     "committing. A role whose work needs review cannot promote.",
+     "doc.promote", false, false, false, &schema_promote, &run_promote},
 };
 
 }  // namespace

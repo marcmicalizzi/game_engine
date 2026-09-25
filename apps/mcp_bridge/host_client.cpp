@@ -122,6 +122,22 @@ bool HostClient::start(const BridgeOptions& options, std::string& error) {
     argv.push_back("--mount");
     argv.push_back(m);
   }
+  // The host is this agent's alone, so it is told who the agent is: what a call that names no
+  // actor, role or task is attributed to, and with a roles file the role it is checked as.
+  argv.push_back("--actor");
+  argv.push_back(options.actor);
+  if (!options.role.empty()) {
+    argv.push_back("--role");
+    argv.push_back(options.role);
+  }
+  if (!options.task.empty()) {
+    argv.push_back("--task");
+    argv.push_back(options.task);
+  }
+  if (!options.roles.empty()) {
+    argv.push_back("--roles");
+    argv.push_back(options.roles);
+  }
   for (const std::string& a : options.host_args)
     argv.push_back(a);
   auto process = std::make_unique<platform::Process>();

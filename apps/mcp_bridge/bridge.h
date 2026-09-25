@@ -50,6 +50,11 @@ struct BridgeOptions {
   std::string actor;
   std::string role;
   std::string task;
+  // A roles file for the host (`--roles`, absolute), or empty. With one, `role` also names the
+  // role configuration every call runs in: the host is started with `--roles`, `--actor`, `--role`
+  // and `--task`, the tools the role may not call are not offered, and a call that names another
+  // role is refused (docs/subsystems/apps.md, "Roles, leases and proposals").
+  std::string roles;
   // How long one protocol call may go unanswered before the host is taken for hung, in
   // milliseconds; 0 waits for as long as it takes. `long_call_timeout_ms` is for the methods
   // `is_long_call` names.
@@ -235,6 +240,13 @@ class Bridge {
   std::string_view protocol_version() const noexcept { return protocol_version_; }
   bool structured_results() const noexcept;
 
+  // The host restricts calls by a role configuration (engine.roles said so at startup), and the
+  // role every call of this bridge runs in; empty when a call that names none is not restricted.
+  bool roles_loaded() const noexcept { return roles_loaded_; }
+  const std::string& role_name() const noexcept { return role_name_; }
+  // Tools left out because the role may not call one of their methods.
+  u32 tools_withheld() const noexcept { return tools_withheld_; }
+
  private:
   struct Tool {
     const ToolDef* def;
@@ -260,6 +272,10 @@ class Bridge {
   Vector<LoadedScene> scenes_;
   u32 scenes_generation_ = 0;
   std::string protocol_version_;
+  bool roles_loaded_ = false;
+  std::string role_name_;
+  Vector<std::string> role_methods_;  // every method the role may call, reads included
+  u32 tools_withheld_ = 0;
 };
 
 // ---- shared helpers

@@ -13,9 +13,11 @@
 #include <test_paths.h>
 #include <test_temp_dir.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iterator>
 #include <string>
 #include <vector>
@@ -325,7 +327,7 @@ TEST_CASE("mcp: tools/list gives every tool a JSON Schema generated from the eng
 
   const JsonValue list = mcp.request("tools/list", "{}");
   const JsonValue& tools = at(at(list, "result"), "tools");
-  REQUIRE(tools.size() >= 35);
+  REQUIRE(tools.size() >= 41);
   JsonValue names = JsonValue::array();
   const JsonValue* by_name[64] = {};
   const char* wanted[] = {
@@ -335,7 +337,9 @@ TEST_CASE("mcp: tools/list gives every tool a JSON Schema generated from the eng
       "journal",        "diff",          "merge_layers",  "validate",      "describe",
       "list_schema",    "capture",       "benchmark",     "compare",       "evaluate",
       "scenes",         "unload",        "get_logs",      "adapters",      "host_info",
-      "build_content",  "events",        "budgets",       "run_headless",  "run_tests"};
+      "build_content",  "events",        "budgets",       "run_headless",  "run_tests",
+      "acquire_lease",  "renew_lease",   "release_lease", "leases",        "propose_layer",
+      "promote"};
   for (usize i = 0; i < tools.size(); ++i) {
     const JsonValue& t = tools[i];
     const std::string name = str(t, "name");
@@ -472,6 +476,112 @@ TEST_CASE("mcp: --role and --task are attribution defaults a call may override")
   const JsonValue& info = ok(mcp.tool("host_info", "{}"));
   CHECK(str(at(info, "bridge"), "role") == "environment");
   CHECK(str(at(info, "bridge"), "task") == "task-42");
+}
+
+// Plan 06 §6.5 through the bridge (apps.md, "Roles, leases and proposals"): `--roles` selects the
+// configuration `--role` names, the tools it may not use are not offered, a call cannot name
+// another role, the host refuses what the role may not change, and leases and proposals are
+// tools. Three bridges, one after another, on one document: what one granted, the next reads.
+TEST_CASE("mcp: --roles withholds tools, and leases and proposals are tools") {
+  const test::TempDir tmp("mcp_bridge_policy");
+  const std::string roles = tmp.file("roles.json");
+  {
+    std::ofstream f(roles, std::ios::binary);
+    f << R"({"default_role": "qa", "roles": [
+      {"name": "director", "methods": ["*"], "layers": ["*"], "object_types": ["*"]},
+      {"name": "designer", "methods": ["doc.*", "lease.*"], "layers": ["*"],
+       "object_types": ["*"], "review_required": true},
+      {"name": "qa", "methods": []}]})";
+  }
+  const std::string doc = tmp.file("doc");
+  const auto tool_names = [](Mcp& mcp) {
+    std::vector<std::string> names;
+    const JsonValue list = mcp.request("tools/list", "{}");
+    const JsonValue& tools = at(at(list, "result"), "tools");
+    for (usize i = 0; i < tools.size(); ++i)
+      names.push_back(str(tools[i], "name"));
+    return names;
+  };
+  const auto has = [](const std::vector<std::string>& names, const char* name) {
+    return std::find(names.begin(), names.end(), name) != names.end();
+  };
+
+  {
+    // QA looks and changes nothing: no editing tool is offered at all.
+    Mcp qa(tmp.file("ws"), {"--roles", roles, "--role", "qa"});
+    REQUIRE(qa.ok);
+    qa.initialize();
+    const std::vector<std::string> names = tool_names(qa);
+    CHECK(has(names, "objects"));
+    CHECK(has(names, "leases"));
+    CHECK(has(names, "capture"));
+    CHECK_FALSE(has(names, "create_object"));
+    CHECK_FALSE(has(names, "propose_layer"));
+    CHECK_FALSE(has(names, "acquire_lease"));
+    const JsonValue& info = ok(qa.tool("host_info", "{}"));
+    CHECK(at(at(info, "bridge"), "roles_loaded") == JsonValue(true));
+    CHECK(str(at(info, "bridge"), "role_configuration") == "qa");
+    CHECK(num(at(info, "bridge"), "tools_withheld") > 0);
+    // Reading is never restricted, opening included.
+    ok(qa.tool("open_session", "{\"path\":" + write_json(JsonValue(doc)) + ",\"create\":true}"));
+  }
+  {
+    // A designer's work is reviewed: it writes to a proposal of its own and cannot promote.
+    Mcp designer(tmp.file("ws"), {"--roles", roles, "--role", "designer", "--actor", "des"});
+    REQUIRE(designer.ok);
+    designer.initialize();
+    const std::string session =
+        str(ok(designer.tool("open_session", "{\"path\":" + write_json(JsonValue(doc)) + "}")),
+            "session");
+    const std::string s = "\"session\":\"" + session + "\"";
+    const JsonValue direct =
+        designer.tool("create_object", "{" + s + ",\"id\":\"" + k_b + "\",\"type\":\"" + k_type +
+                                           "\",\"attribution\":{\"rationale\":\"direct\"}}");
+    CHECK(is_error(direct));
+    CHECK(text_of(direct).find("1008") != std::string::npos);
+    CHECK(text_of(direct).find("propose_layer") != std::string::npos);  // the hint
+    ok(designer.tool("propose_layer", "{" + s +
+                                          ",\"name\":\"p.des\",\"target\":\"base\","
+                                          "\"attribution\":{\"rationale\":\"a new record\"}}"));
+    ok(designer.tool("create_object", "{" + s + ",\"id\":\"" + k_b + "\",\"type\":\"" + k_type +
+                                          "\",\"attribution\":{\"rationale\":\"proposed\"}}"));
+    // The role is the bridge's: a call cannot name another.
+    const JsonValue claimed = designer.tool(
+        "set_property", "{" + s + ",\"id\":\"" + k_b +
+                            "\",\"name\":\"generator\",\"value\":\"x\",\"attribution\":{"
+                            "\"role\":\"director\",\"rationale\":\"escalate\"}}");
+    CHECK(is_error(claimed));
+    CHECK(text_of(claimed).find("runs in role 'designer'") != std::string::npos);
+    const JsonValue promoted = designer.tool(
+        "promote", "{" + s + ",\"proposal\":\"p.des\",\"attribution\":{\"rationale\":\"mine\"}}");
+    CHECK(is_error(promoted));
+    CHECK(text_of(promoted).find("needs review") != std::string::npos);
+    // A lease on the proposal's target, listed, released.
+    const JsonValue& lease = ok(designer.tool(
+        "acquire_lease", "{" + s + ",\"layer\":\"base\",\"object_types\":[\"" + k_type + "\"]}"));
+    CHECK(str(lease, "actor") == "des");
+    CHECK(str(lease, "role") == "designer");
+    const JsonValue listed = designer.tool("leases", "{" + s + "}");
+    CHECK(at(ok(listed), "leases").size() == 1);
+    CHECK(text_of(listed).find("held by des") != std::string::npos);
+    ok(designer.tool("release_lease",
+                     "{" + s + ",\"lease\":" + std::to_string(num(lease, "id")) + "}"));
+  }
+  {
+    // The director promotes what the designer proposed, from its own host, off the disk.
+    Mcp director(tmp.file("ws"), {"--roles", roles, "--role", "director", "--actor", "boss"});
+    REQUIRE(director.ok);
+    director.initialize();
+    const std::string session =
+        str(ok(director.tool("open_session", "{\"path\":" + write_json(JsonValue(doc)) + "}")),
+            "session");
+    const std::string s = "\"session\":\"" + session + "\"";
+    const JsonValue& done = ok(director.tool(
+        "promote", "{" + s + ",\"proposal\":\"p.des\",\"attribution\":{\"rationale\":\"ok\"}}"));
+    CHECK(at(done, "promoted") == JsonValue(true));
+    const JsonValue& got = ok(director.tool("get", "{" + s + ",\"id\":\"" + k_b + "\"}"));
+    CHECK(str(got, "defining_layer") == "base");
+  }
 }
 
 TEST_CASE("mcp: a scripted editing session") {

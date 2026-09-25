@@ -160,6 +160,9 @@ const char* code_name(i32 code) noexcept {
     case 1005: return "IoError";
     case 1006: return "Unavailable";
     case 1007: return "RenderUnavailable";
+    case 1008: return "Forbidden";
+    case 1009: return "LeaseConflict";
+    case 1010: return "LeaseRequired";
     default: return "Error";
   }
 }
@@ -200,6 +203,21 @@ std::string hint_for(std::string_view method, i32 code, std::string_view message
              "missing ray-tracing extension, load again with settings {\"shadows\":\"off\"} and "
              "a raster mode other than \"rt\"; otherwise render tools cannot run here, and the "
              "document tools still work.";
+    case 1008:
+      if (message.find("needs review") != std::string_view::npos)
+        return "This role's work is reviewed: write to a proposal layer of your own "
+               "(propose_layer), and a director promotes it.";
+      if (message.find("proposal") != std::string_view::npos)
+        return "A proposal layer is written only by its owner while it is open; propose_layer "
+               "opens one of your own.";
+      return "The bridge's role configuration does not allow this; host_info names the role. "
+             "Reading is never restricted.";
+    case 1009:
+      return "Another agent's lease covers that; leases lists who holds what and until when. "
+             "Work on tiles nobody holds, or wait for the lease to be released or to expire.";
+    case 1010:
+      return "This document requires a lease before an edit: acquire_lease the tiles (or the "
+             "object types) on the layer the message names, then call again.";
     default: return "get_logs may say more about what the host was doing.";
   }
 }
@@ -298,20 +316,61 @@ Bridge::~Bridge() { shutdown(); }
 bool Bridge::start(std::string& error) {
   if (!host_.start(options_, error)) return false;
   if (!schemas_.load_methods(error)) return false;
+  // The role configuration (plan 06 §6.5): when the host restricts calls, the role this bridge's
+  // calls run in — `--role`, or the file's default for a bridge started without one — decides
+  // which tools are offered at all. The host checks every call anyway; offering a tool the role
+  // may not use would only teach a model to make calls that fail.
+  if (schemas_.method("engine.roles") != nullptr) {
+    JsonValue roles;
+    HostClient::Error failure;
+    if (host_.call("engine.roles", JsonValue(), roles, failure) != HostClient::Status::ok) {
+      error = "engine.roles failed: " + failure.message;
+      return false;
+    }
+    roles_loaded_ = bool_of(roles, "loaded");
+    if (roles_loaded_) {
+      role_name_ = options_.role.empty() ? text_of(roles, "default_role") : options_.role;
+      const JsonValue* list = roles.find("roles");
+      for (usize i = 0; list != nullptr && i < list->size(); ++i) {
+        const JsonValue& r = (*list)[i];
+        const JsonValue* role = r.find("role");
+        if (role == nullptr || text_of(*role, "name") != role_name_) continue;
+        const JsonValue* allowed = r.find("allowed_methods");
+        for (usize k = 0; allowed != nullptr && k < allowed->size(); ++k)
+          role_methods_.push_back(std::string((*allowed)[k].as_string()));
+      }
+    }
+  }
+  const auto allowed = [&](std::string_view method) {
+    if (!roles_loaded_ || role_name_.empty()) return true;
+    for (const std::string& m : role_methods_) {
+      if (m == method) return true;
+    }
+    return false;
+  };
   for (const ToolDef& def : tool_table()) {
-    // Offered only when the host serves every method the tool calls.
+    // Offered only when the host serves every method the tool calls, and the role may call them.
     std::string_view needs = def.methods;
     std::string missing;
+    std::string forbidden;
     while (!needs.empty()) {
       const usize space = needs.find(' ');
       const std::string_view name = needs.substr(0, space);
       if (!name.empty() && schemas_.method(name) == nullptr) missing = std::string(name);
+      if (!name.empty() && !allowed(name)) forbidden = std::string(name);
       if (space == std::string_view::npos) break;
       needs.remove_prefix(space + 1);
     }
     if (!missing.empty()) {
       ENGINE_LOG_WARN(log_mcp, "tool not offered: the host has no such method",
                       log::field("tool", def.name), log::field("method", missing));
+      continue;
+    }
+    if (!forbidden.empty()) {
+      ENGINE_LOG_INFO(log_mcp, "tool not offered: the role may not call its method",
+                      log::field("tool", def.name), log::field("method", forbidden),
+                      log::field("role", role_name_));
+      ++tools_withheld_;
       continue;
     }
     JsonValue schema;
