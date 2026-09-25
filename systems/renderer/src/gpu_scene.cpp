@@ -200,15 +200,36 @@ bool GpuScene::create(const gfx::Device& device, const SceneData& data,
   leaf_count_ = data.leaf_count();
   instance_count_ = data.instances.size();
   pair_count_ = data.pair_count;
+  // A scene read whole lays its per-pair buffers out by exactly its pairs, as it always has; one
+  // whose instances come and go starts there too and grows when a tail passes it.
+  pair_stride_ = pair_count_;
+  dynamic_ = data.dynamic;
+  static_instances_ = instance_count_;
+  static_pairs_ = pair_count_;
+  resolved_ = resolved;
   triangles_per_cluster_ = geometry::ClusterLodOptions{}.max_triangles;
   instance_table_ = data.instances;
   // The visibility id is `pair << 8 | triangle` in 32 bits (gfx.md, "The tie rule"), so a scene
   // names at most 2^24 pairs; past that two pairs would share an id and the picture would be wrong
   // without a word, so refuse the scene instead.
-  if (pair_count_ > (1ull << 24)) {
+  if (pair_count_ > k_max_pairs) {
     if (error != nullptr) {
       *error = "the scene has " + std::to_string(pair_count_) +
                " (instance, cluster) pairs; the visibility id names at most 16777216";
+    }
+    destroy();
+    return false;
+  }
+  // Instances that come and go are rigid and untraced in v0: the ray tracing chain's top-level
+  // records and bottom-level set, and the deformed-vertex pool's table, are laid out once per
+  // instance, and nothing rewrites them for a tail (renderer.md, "Instances that come and go").
+  if (dynamic_ && (ray_tracing_ || deform_)) {
+    if (error != nullptr) {
+      *error = ray_tracing_ ? "a scene whose instances come and go between frames has no ray "
+                              "tracing chain yet: draw it with --shadows off or csm and a raster "
+                              "path"
+                            : "a scene whose instances come and go between frames draws rigid "
+                              "instances only: no --deform, skinning or morph channels yet";
     }
     destroy();
     return false;
@@ -244,29 +265,168 @@ bool GpuScene::create(const gfx::Device& device, const SceneData& data,
     destroy();
     return false;
   }
-  // The {instance, cluster} of every pair, the inverse of `pair_of`: what the resolve reads a
-  // pixel's id through. It is the scene's, not the frame's, so it is written once here, and it
-  // costs the resolve one load per pixel — the same one `visible[entry]` was when the id was the
-  // entry. Going through the view's pair-to-entry table instead was a second, dependent load on
-  // every pixel and cost the TITAN Xp's resolve 2-3% (docs/experiments/visible-order.md).
-  if (pair_count_ > 0) {
-    // At most 2^24 pairs (checked above), so twice that is a u32.
-    Vector<u32> table(pair_count_ * 2u, 0u);
-    for (u32 i = 0; i < instance_table_.size(); ++i) {
-      const gfx::InstanceDesc& instance = instance_table_[i];
-      const geometry::ClusterMeshPart& part = data.parts[instance.mesh];
-      for (u32 c = 0; c < part.cluster_count; ++c) {
-        table[(instance.first_pair + c) * 2u] = i;
-        table[(instance.first_pair + c) * 2u + 1u] = part.first_cluster + c;
-      }
+  // A dynamic scene's two tables live in buffers kept at a capacity (the pair table's is the
+  // stride), which `write_tables` fills here and a tail's changes write into later.
+  const bool tables = dynamic_ ? (pair_stride_ == 0 ||
+                                  gfx::create_buffer(device, u64{pair_stride_} * 2u * sizeof(u32),
+                                                     k_storage | gfx::BufferUsage::TransferDst |
+                                                         gfx::BufferUsage::ShaderDeviceAddress,
+                                                     false, pair_table, error)) &&
+                                     write_tables(0, 0, error)
+                               : upload_pair_table(error);
+  if (!tables) {
+    destroy();
+    return false;
+  }
+  return true;
+}
+
+// The {instance, cluster} of every pair, the inverse of `pair_of`: what the resolve reads a pixel's
+// id through. It is the scene's, not the frame's, so it is written when the scene is — once, for a
+// scene read whole — and it costs the resolve one load per pixel, the same one `visible[entry]` was
+// when the id was the entry. Going through the view's pair-to-entry table instead was a second,
+// dependent load on every pixel and cost the TITAN Xp's resolve 2-3%
+// (docs/experiments/visible-order.md).
+bool GpuScene::upload_pair_table(std::string* error) {
+  gfx::destroy_buffer(*device_, pair_table);
+  if (pair_count_ == 0) return true;
+  // At most 2^24 pairs (checked by the caller), so twice that is a u32.
+  Vector<u32> table(pair_count_ * 2u, 0u);
+  for (u32 i = 0; i < instance_table_.size(); ++i) {
+    const gfx::InstanceDesc& instance = instance_table_[i];
+    const geometry::ClusterMeshPart& part = data_->parts[instance.mesh];
+    for (u32 c = 0; c < part.cluster_count; ++c) {
+      table[(instance.first_pair + c) * 2u] = i;
+      table[(instance.first_pair + c) * 2u + 1u] = part.first_cluster + c;
     }
-    if (!gfx::upload_buffer(device, table.data(), u64{table.size()} * sizeof(u32), k_storage,
-                            pair_table, error)) {
-      destroy();
+  }
+  return gfx::upload_buffer(*device_, table.data(), u64{table.size()} * sizeof(u32), k_storage,
+                            pair_table, error);
+}
+
+bool GpuScene::set_dynamic_instances(std::span<const SceneInstance> tail, bool& grew,
+                                     std::string* error) {
+  grew = false;
+  if (device_ == nullptr || !dynamic_) {
+    if (error != nullptr) *error = "the scene was not loaded to take instances between frames";
+    return false;
+  }
+  // The cap first, with no GPU touched: the visibility id names 2^24 pairs.
+  u32 pair_count = 0;
+  if (!pairs_after(*data_, static_pairs_, tail, k_max_pairs, pair_count, error)) return false;
+  // The tail's descriptors, the prefix sum carrying on from the prefix's pairs. Built beside the
+  // old table, so a refusal leaves the scene exactly as it was.
+  Vector<gfx::InstanceDesc> descs;
+  descs.reserve(static_cast<u32>(tail.size()));
+  u32 pairs = static_pairs_;
+  for (const SceneInstance& source : tail) {
+    gfx::InstanceDesc instance;
+    if (!make_instance(*data_, source, pairs, instance, error)) return false;
+    instance.material_base =
+        instance.mesh < mesh_material_base_.size() ? mesh_material_base_[instance.mesh] : 0u;
+    pairs += data_->parts[source.mesh].cluster_count;
+    descs.push_back(instance);
+  }
+  // Past the stride, every per-pair buffer is laid out again, with room to grow: half as much
+  // again, in whole pages of 4,096 pairs, so a world that fills its rings reallocates a handful of
+  // times and not on every tile. The pair table is one of them: it is as long as the stride.
+  bool whole = false;
+  if (pair_count > pair_stride_) {
+    u64 stride = u64{pair_count} + u64{pair_count} / 2;
+    stride = (stride + 4095) / 4096 * 4096;
+    if (stride > k_max_pairs) stride = k_max_pairs;
+    destroy_working_set();
+    gfx::destroy_buffer(*device_, pair_table);
+    pair_stride_ = static_cast<u32>(stride);
+    if (!create_working_set(resolved_, error) ||
+        !gfx::create_buffer(
+            *device_, u64{pair_stride_} * 2u * sizeof(u32),
+            k_storage | gfx::BufferUsage::TransferDst | gfx::BufferUsage::ShaderDeviceAddress,
+            false, pair_table, error)) {
+      // Nothing to draw with: the caller has to treat the scene as lost, as it would a failed
+      // `create`.
+      pair_stride_ = 0;
+      return false;
+    }
+    grew = true;
+    whole = true;
+  }
+  instance_table_.resize(static_instances_);
+  for (const gfx::InstanceDesc& instance : descs)
+    instance_table_.push_back(instance);
+  instance_count_ = instance_table_.size();
+  pair_count_ = pair_count;
+  // The instance table keeps a capacity the same way, in pages of 1,024 instances.
+  if (instance_count_ > instance_capacity_) {
+    u64 capacity = u64{instance_count_} + u64{instance_count_} / 2;
+    capacity = (capacity + 1023) / 1024 * 1024;
+    gfx::destroy_buffer(*device_, instances);
+    if (!gfx::create_buffer(
+            *device_, capacity * sizeof(gfx::InstanceDesc),
+            k_storage | gfx::BufferUsage::TransferDst | gfx::BufferUsage::ShaderDeviceAddress,
+            false, instances, error)) {
+      instance_capacity_ = 0;
+      return false;
+    }
+    instance_capacity_ = static_cast<u32>(capacity);
+    whole = true;
+  }
+  // Then only what changed is written: the tail's instances and the tail's pairs, where the prefix
+  // ends, through one kept staging buffer and one submission. Rewriting both tables whole, each
+  // through a buffer made for it, cost a streamed desert 4.4 ms a tile change, most of it the
+  // terrain's 188,000 pairs that never change (docs/experiments/e35-world-streaming.md).
+  return write_tables(whole ? 0u : static_instances_, whole ? 0u : static_pairs_, error);
+}
+
+bool GpuScene::write_tables(u32 first_instance, u32 first_pair, std::string* error) {
+  const u64 instance_bytes = u64{instance_count_ - first_instance} * sizeof(gfx::InstanceDesc);
+  const u64 pair_bytes = u64{pair_count_ - first_pair} * 2u * sizeof(u32);
+  const u64 bytes = instance_bytes + pair_bytes;
+  if (bytes == 0) return true;
+  if (bytes > tail_staging_.size) {
+    gfx::destroy_buffer(*device_, tail_staging_);
+    const u64 size = (bytes + bytes / 2 + 65535) / 65536 * 65536;
+    if (!gfx::create_buffer(*device_, size, gfx::BufferUsage::TransferSrc, true, tail_staging_,
+                            error)) {
       return false;
     }
   }
-  return true;
+  auto* base = static_cast<u8*>(tail_staging_.mapped);
+  if (instance_bytes != 0) {
+    std::memcpy(base, instance_table_.data() + first_instance, static_cast<usize>(instance_bytes));
+  }
+  auto* pair_words = reinterpret_cast<u32*>(base + instance_bytes);
+  for (u32 i = first_instance; i < instance_count_; ++i) {
+    const gfx::InstanceDesc& instance = instance_table_[i];
+    if (instance.first_pair < first_pair) continue;
+    const geometry::ClusterMeshPart& part = data_->parts[instance.mesh];
+    for (u32 c = 0; c < part.cluster_count; ++c) {
+      const u32 at = instance.first_pair + c - first_pair;
+      pair_words[at * 2u] = i;
+      pair_words[at * 2u + 1u] = part.first_cluster + c;
+    }
+  }
+  gfx::BufferCopy regions[2];
+  u32 region_count = 0;
+  const gfx::BufferResource* targets[2] = {};
+  if (instance_bytes != 0) {
+    regions[region_count] =
+        gfx::BufferCopy{0, u64{first_instance} * sizeof(gfx::InstanceDesc), instance_bytes};
+    targets[region_count++] = &instances;
+  }
+  if (pair_bytes != 0) {
+    regions[region_count] =
+        gfx::BufferCopy{instance_bytes, u64{first_pair} * 2u * sizeof(u32), pair_bytes};
+    targets[region_count++] = &pair_table;
+  }
+  const gfx::BufferHandle staging = tail_staging_.buffer;
+  return gfx::submit_immediate(
+      *device_,
+      [&](gfx::CommandList commands) {
+        for (u32 r = 0; r < region_count; ++r)
+          commands.copy_buffer(staging, targets[r]->buffer, regions[r]);
+      },
+      error);
 }
 
 bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* error) {
@@ -1048,18 +1208,32 @@ bool GpuScene::upload_materials(const ResolvedSettings&, std::string* error) {
                     log::field("materials", transform_conflicts_),
                     log::field("drawn_with", "the base colour's, or the first textured slot's"));
   }
-  // Now that the tables are laid out, every instance knows where its mesh's materials start.
+  // Now that the tables are laid out, every instance knows where its mesh's materials start — and
+  // so does every instance a dynamic scene takes later, which is why the table is kept.
   for (gfx::InstanceDesc& instance : instance_table_)
     instance.material_base = mesh_material_base[instance.mesh];
+  mesh_material_base_ = mesh_material_base;
   material_count_ = material_table.size();
+  if (dynamic_) {
+    // Room for a tail from the start, in the pages `set_dynamic_instances` grows by; `create`
+    // writes the prefix into it with the pair table (`write_tables`).
+    const u64 capacity = (u64{instance_count_} + u64{instance_count_} / 2 + 1024) / 1024 * 1024;
+    if (!gfx::create_buffer(
+            device, capacity * sizeof(gfx::InstanceDesc),
+            k_storage | gfx::BufferUsage::TransferDst | gfx::BufferUsage::ShaderDeviceAddress,
+            false, instances, error)) {
+      return false;
+    }
+    instance_capacity_ = static_cast<u32>(capacity);
+  }
   return gfx::upload_buffer(device, material_table.data(),
                             u64{material_count_} * sizeof(gfx::ResolveMaterial), k_storage,
                             materials, error) &&
          gfx::upload_buffer(device, cluster_material.data(), u64{cluster_count_} * sizeof(u32),
                             k_storage, cluster_materials, error) &&
-         gfx::upload_buffer(device, instance_table_.data(),
-                            u64{instance_count_} * sizeof(gfx::InstanceDesc), k_storage, instances,
-                            error);
+         (dynamic_ || gfx::upload_buffer(device, instance_table_.data(),
+                                         u64{instance_count_} * sizeof(gfx::InstanceDesc),
+                                         k_storage, instances, error));
 }
 
 bool GpuScene::create_working_set(const ResolvedSettings& resolved, std::string* error) {
@@ -1073,8 +1247,12 @@ bool GpuScene::create_working_set(const ResolvedSettings& resolved, std::string*
   // Run-major (`visible_base`): run r of view v starts at `(r * views + v) * pair_count`, so the
   // first run of every view is one contiguous range at the front. That range is what the ray
   // tracing chain builds the union of the views' cuts from in a single dispatch.
+  //
+  // Every run is `pair_stride_` long: the pair count for a scene read whole, a capacity above it
+  // for one whose instances come and go (`set_dynamic_instances`), so a tail that changes length
+  // moves no run.
   const u64 visible_entry_bytes = 2 * sizeof(u32);
-  visible_run_bytes_ = u64{pair_count_} * visible_entry_bytes;
+  visible_run_bytes_ = u64{pair_stride_} * visible_entry_bytes;
   // The visibility id names a pair, not an entry (docs/subsystems/gfx.md, "The tie rule"), so the
   // resolve reads the entry a pair was drawn as out of this: one word per pair per view, written
   // by the cull pass for every pair it draws. A pair is drawn at most once per view per frame, so
@@ -1087,7 +1265,7 @@ bool GpuScene::create_working_set(const ResolvedSettings& resolved, std::string*
             (cascade_count_ == 0 ||
              gfx::create_buffer(device, u64{gfx::k_draw_args_bytes} * cascade_count_, k_args, false,
                                 shadow_args, error)) &&
-            gfx::create_buffer(device, u64{pair_count_} * view_count_ * sizeof(u32), k_address,
+            gfx::create_buffer(device, u64{pair_stride_} * view_count_ * sizeof(u32), k_address,
                                false, pair_entries, error) &&
             gfx::create_buffer(device, u64{gfx::k_draw_args_bytes} * view_count_, k_args, false,
                                sw_args, error);
@@ -1095,7 +1273,7 @@ bool GpuScene::create_working_set(const ResolvedSettings& resolved, std::string*
     ok = ok &&
          gfx::create_buffer(device, u64{gfx::k_draw_args_bytes} * view_count_, k_args, false,
                             draw_args[i], error) &&
-         gfx::create_buffer(device, u64{pair_count_} * view_count_ * sizeof(u32),
+         gfx::create_buffer(device, u64{pair_stride_} * view_count_ * sizeof(u32),
                             k_address | gfx::BufferUsage::TransferDst, false, flags[i], error);
   }
   // The vertex path's indexed draw: for each view and each of the two hardware runs, run-major like
@@ -1113,6 +1291,9 @@ bool GpuScene::create_working_set(const ResolvedSettings& resolved, std::string*
     u64 bound = 0;
     for (const gfx::InstanceDesc& instance : instance_table_)
       bound += mesh_triangles[instance.mesh];
+    // A scene whose instances come and go has no bound its load could know: the budget, which a
+    // cut past it survives through the fallback draw rather than by dropping anything.
+    if (dynamic_) bound = k_vertex_index_budget;
     vertex_index_capacity_ =
         static_cast<u32>(bound < k_vertex_index_budget ? bound : k_vertex_index_budget);
     if (vertex_index_capacity_ == 0) vertex_index_capacity_ = 1;  // a scene of no triangles
@@ -1121,12 +1302,29 @@ bool GpuScene::create_working_set(const ResolvedSettings& resolved, std::string*
     const u64 runs = u64{2} * view_count_ + cascade_count_;
     ok = gfx::create_buffer(device, runs * sizeof(gfx::VertexDrawHeader), k_args, false,
                             vertex_headers, error) &&
-         gfx::create_buffer(device, runs * pair_count_ * sizeof(gfx::VertexDrawRecord), k_address,
+         gfx::create_buffer(device, runs * pair_stride_ * sizeof(gfx::VertexDrawRecord), k_address,
                             false, vertex_records, error) &&
          gfx::create_buffer(device, runs * vertex_index_capacity_ * gfx::k_vertex_draw_index_bytes,
                             k_address | gfx::BufferUsage::Index, false, vertex_indices, error);
   }
   return ok;
+}
+
+// Everything `create_working_set` made, which a dynamic scene makes again at a larger stride.
+void GpuScene::destroy_working_set() noexcept {
+  if (device_ == nullptr) return;
+  const gfx::Device& device = *device_;
+  gfx::destroy_buffer(device, visible);
+  gfx::destroy_buffer(device, shadow_args);
+  gfx::destroy_buffer(device, pair_entries);
+  gfx::destroy_buffer(device, sw_args);
+  for (u32 i = 0; i < 2; ++i) {
+    gfx::destroy_buffer(device, draw_args[i]);
+    gfx::destroy_buffer(device, flags[i]);
+  }
+  gfx::destroy_buffer(device, vertex_headers);
+  gfx::destroy_buffer(device, vertex_records);
+  gfx::destroy_buffer(device, vertex_indices);
 }
 
 bool GpuScene::create_ray_tracing(const ResolvedSettings& resolved, std::string* error) {
@@ -1417,6 +1615,7 @@ void GpuScene::destroy() noexcept {
   gfx::destroy_buffer(device, triangles);
   gfx::destroy_buffer(device, vertices);
   gfx::destroy_buffer(device, instances);
+  gfx::destroy_buffer(device, tail_staging_);
   gfx::destroy_buffer(device, quantized);
   gfx::destroy_buffer(device, clusters);
   for (gfx::ImageViewHandle view : texture_views_)
@@ -1448,6 +1647,9 @@ void GpuScene::destroy() noexcept {
   device_ = nullptr;
   data_ = nullptr;
   cluster_count_ = leaf_count_ = instance_count_ = pair_count_ = material_count_ = 0;
+  pair_stride_ = static_instances_ = static_pairs_ = instance_capacity_ = 0;
+  dynamic_ = false;
+  mesh_material_base_.clear();
   triangles_per_cluster_ = 0;
   view_count_ = 1;
   cascade_count_ = 0;

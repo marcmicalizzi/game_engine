@@ -151,6 +151,10 @@ struct FrameStats {
   u32 rt_built = 0;
   u32 rt_wanted = 0;
   u32 rt_capacity = 0;
+  // The scene this frame culled: its instances and its (instance, cluster) pairs — one cull thread
+  // each. Constant for a scene read whole; a streamed world's tiles move both between frames.
+  u32 instances = 0;
+  u32 pairs = 0;
 
   u32 visible_pairs() const noexcept { return visible_hw + visible_pass2 + visible_sw; }
 };
@@ -402,6 +406,14 @@ class SceneRenderer {
   // Screen-sized resources for a new size. The GPU must be idle (the renderer waits).
   bool resize(u32 width, u32 height, std::string* error = nullptr);
 
+  // Replaces the scene's tail of instances between frames (`GpuScene::set_dynamic_instances`,
+  // docs/subsystems/renderer.md "Instances that come and go"): waits for the device, rewrites the
+  // tables, and — when the tail outgrew the per-pair buffers and they were made again — starts the
+  // occlusion history over, since the flags it would read are undefined. Never between
+  // `begin_frame` and `submit_frame`. False, with the scene unchanged unless `error` says it is
+  // lost, when the scene refuses the tail.
+  bool set_dynamic_instances(std::span<const SceneInstance> tail, std::string* error = nullptr);
+
   // ---- one frame ------------------------------------------------------------------------------
   // Waits for the slot to come free, folds the statistics and timings of the frame that last
   // used it into `stats()`, and makes `acquire_semaphore()` safe to hand to a swapchain.
@@ -542,6 +554,8 @@ class SceneRenderer {
   // submission since the last reset.
   Vector<u64> slot_frame_;
   Vector<u64> slot_submission_;
+  Vector<u32> slot_pairs_;  // and the scene it culled, which a world changes between frames
+  Vector<u32> slot_instances_;
   Stats stats_;
   gfx::CommandList commands_;  // the frame between begin_frame and submit_frame
   u32 width_ = 0;

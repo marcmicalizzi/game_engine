@@ -438,8 +438,41 @@ struct Terrain @version(1) {
   basins: Basin[]
 }
 
+/// What a ruins entry is drawn as in one ring of a streamed world (docs/subsystems/world.md).
+enum RingRuins : u8 {
+  /// Laid block by block from the entry's block kit (sections when it names none).
+  Blocks = 0
+  /// The kit's members, with their debris.
+  Sections = 1
+  /// The kit's members without their debris: `ruins::Detail::walls`.
+  Walls = 2
+}
+
+/// One ring of a streamed world: a radius, and what the ruins are drawn as inside it.
+struct WorldRing @version(1) {
+  /// Tiles, from an observer to a tile's centre; each ring's is larger than the one inside it.
+  radius: f32 = 0
+  ruins: RingRuins = Sections
+}
+
+/// A scene streamed tile by tile around its observers (the world capability, docs/subsystems/
+/// world.md): its `ruins` entries are not assembled when the scene is read but a tile at a time as
+/// the ring around the camera activates it, and dropped when it deactivates. Every field has the
+/// capability's default, so `"world": {}` is a streamed scene with the default rings.
+struct WorldRings @version(1) {
+  /// A tile's edge, metres; the ruins entries' own `tile_size` must be the same.
+  tile_size: f32 = 32
+  /// Innermost first. Empty: 1.5 tiles in blocks, 8 in sections, 24 in walls only.
+  rings: WorldRing[]
+  /// A tile leaves a ring only this fraction past its radius.
+  hysteresis: f32 = 0.15
+  /// How many of the rings, innermost first, the simulation runs in: the document is materialized
+  /// and the store reconciled there, and nowhere else.
+  simulated: u32 = 2
+}
+
 /// A scene: meshes, placements of them, and an optional terrain.
-struct Scene @version(3) {
+struct Scene @version(4) {
   /// "engine.scene.v1". Empty is accepted, for the files written before the field existed.
   format: string
   name: string
@@ -459,6 +492,9 @@ struct Scene @version(3) {
   /// buildings and the sand their walls ask for: carried, never read by the renderer.
   ruin_sites: RuinSite[] @since(3)
   sand_drifts: SandDrift[] @since(3)
+  /// Stream the scene tile by tile instead of reading it whole: its ruins entries are assembled
+  /// per tile as the ring round the camera activates them. Null: everything is read at once.
+  world: WorldRings? @since(4)
 }
 
 /// Where the owner's replacements for a scene's placeholders are: a local file, never committed.
@@ -551,7 +587,7 @@ struct PassMs @version(3) {
 
 /// One frame of a flythrough benchmark, or of an interactive session measured with
 /// `engine-view --interactive --benchmark`. One line of the `.jsonl` a run writes.
-struct FrameRecord @version(4) {
+struct FrameRecord @version(5) {
   /// Which pass over the path, from 0.
   repeat: u32 = 0
   /// The path frame, from 0; an interactive session's frame, from 0.
@@ -601,6 +637,10 @@ struct FrameRecord @version(4) {
   rt_built: u32 = 0 @since(2)
   rt_wanted: u32 = 0 @since(2)
   rt_capacity: u32 = 0 @since(2)
+  /// The scene the frame culled: its instances and its (instance, cluster) pairs, one cull thread
+  /// each. Constant for a scene read whole; a streamed world's tiles move both between frames.
+  instances: u32 = 0 @since(5)
+  pairs: u32 = 0 @since(5)
   /// The census, when the run took one: visible pairs by DAG level (0 is the source geometry)
   /// and by scene mesh, read back from this frame's visible list in a second, untimed pass.
   levels: u32[]
@@ -730,7 +770,7 @@ struct FlythroughRt @version(1) {
 
 /// The last line of a flythrough benchmark's `.jsonl`, and engine-view's summary line. An
 /// interactive session measured with `--benchmark` ends its `.jsonl` with one too.
-struct FlythroughSummary @version(4) {
+struct FlythroughSummary @version(5) {
   /// "engine.flythrough.v1".
   format: string
   scene: string
@@ -795,4 +835,8 @@ struct FlythroughSummary @version(4) {
   /// mode, its session header, and its trajectory — the hash over every tick's camera and the
   /// markers — which is what says two runs flew the same path. Null on a flythrough.
   interactive: json @since(4)
+  /// A streamed world's run (`engine.world.TileWorldSummary`: the rings, the updates and events,
+  /// the ring's microseconds, each consumer's cost, the ruins' assembly and the renderer taking
+  /// them). Null for a scene read whole.
+  world: json @since(5)
 }

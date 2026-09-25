@@ -299,6 +299,8 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
   ray_params_.resize(desc.frames_in_flight);
   slot_frame_.assign(desc.frames_in_flight, 0);
   slot_submission_.assign(desc.frames_in_flight, 0);
+  slot_pairs_.assign(desc.frames_in_flight, 0);
+  slot_instances_.assign(desc.frames_in_flight, 0);
   constexpr gfx::BufferUsage k_address =
       gfx::BufferUsage::Storage | gfx::BufferUsage::ShaderDeviceAddress;
   const u64 stat_bytes =
@@ -694,6 +696,25 @@ bool SceneRenderer::resize(u32 width, u32 height, std::string* error) {
   return targets_.create(*device_, views_, error) && create_color_target(error);
 }
 
+bool SceneRenderer::set_dynamic_instances(std::span<const SceneInstance> tail, std::string* error) {
+  if (scene_ == nullptr) return false;
+  if (recording_) {
+    if (error != nullptr) *error = "instances change between frames, not inside one";
+    return false;
+  }
+  // The frames in flight read the tables this replaces (GpuScene: v0 replaces, it does not
+  // double-buffer), so the device finishes them first.
+  frames_.wait_idle();
+  bool grew = false;
+  if (!scene_->set_dynamic_instances(tail, grew, error)) return false;
+  // Made again, the flags hold whatever the allocator left: the next frame fills both, which is
+  // what a first frame does. The prefix's history survives any change that did not grow the stride,
+  // and a tail pair's stale flag only decides which occlusion pass tests it (the picture is the
+  // same either way: pass 2 tests everything pass 1 did not draw).
+  if (grew) flags_dirty_ = true;
+  return true;
+}
+
 bool SceneRenderer::poll_shaders(Vector<std::string>& changed, std::string* error) {
   if (shaders_.poll_changes(changed, error) == 0) return true;
   frames_.wait_idle();
@@ -846,6 +867,8 @@ void SceneRenderer::collect_slot(u32 slot) {
   last = FrameStats{};
   last.frame = slot < slot_frame_.size() ? slot_frame_[slot] : 0;
   last.submission = slot < slot_submission_.size() ? slot_submission_[slot] : 0;
+  last.pairs = slot < slot_pairs_.size() ? slot_pairs_[slot] : 0;
+  last.instances = slot < slot_instances_.size() ? slot_instances_[slot] : 0;
   last.visible_hw = stats_.visible_hw;
   last.visible_pass2 = stats_.visible_pass2;
   last.visible_sw = stats_.visible_sw;
@@ -1007,6 +1030,8 @@ u64 SceneRenderer::submit_frame(const FrameDesc& frame, std::string* error) {
   if (slot < slot_frame_.size()) {
     slot_frame_[slot] = frame.frame_index;
     slot_submission_[slot] = submitted_;
+    slot_pairs_[slot] = scene_->pair_count();
+    slot_instances_[slot] = scene_->instance_count();
   }
   ++recorded_;
   ++submitted_;
@@ -1087,7 +1112,12 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   const SceneData& data = scene.data();
   const RenderSettings& settings = resolved_.settings;
   const u32 slot = frames_.slot();
+  // The pairs there are, which is what the cull dispatches over and bounds-checks against, and the
+  // run length every per-pair buffer is laid out by, which is what every offset into one uses. The
+  // two are one number for a scene read whole; a scene whose instances come and go keeps a stride
+  // above its count so a tile's instances can arrive without moving a run (GpuScene).
   const u32 pair_count = scene.pair_count();
+  const u32 pair_stride = scene.pair_stride();
   const u32 instance_count = scene.instance_count();
   const u32 cluster_count = scene.cluster_count();
   const u32 leaf_count = scene.leaf_count();
@@ -1398,8 +1428,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       // of the drawn-last-frame flags: a cluster may be occluded in one view and visible in
       // another, so the two-pass state cannot be shared.
       cull.hiz = targets_.hiz.address;
-      cull.prev_flags = scene.flags[prev_flags].address + u64{v} * pair_count * sizeof(u32);
-      cull.flags = scene.flags[cur_flags].address + u64{v} * pair_count * sizeof(u32);
+      cull.prev_flags = scene.flags[prev_flags].address + u64{v} * pair_stride * sizeof(u32);
+      cull.flags = scene.flags[cur_flags].address + u64{v} * pair_stride * sizeof(u32);
       cull.hiz_width = vf.width;
       cull.hiz_height = vf.height;
       cull.hiz_mips = target.hiz_mips;
@@ -1510,7 +1540,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       d.normal_pool = scene.normal_pool_address();
       d.time = deform_time;
       d.amplitude = settings.deform_amplitude;
-      d.max_entries = pair_count;
+      d.max_entries = pair_stride;
       d.visible_offset = vf.run_base[run];
     }
 
@@ -1626,7 +1656,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     shadow_alloc.slots = scene.deform_slots.address;
     shadow_alloc.alloc = scene.deform_alloc.address;
     shadow_alloc.pool_vertices = scene.deform_pool_vertices();
-    shadow_alloc.pair_count = pair_count;
+    shadow_alloc.pair_count = pair_stride;
     shadow_alloc.views = cascades_drawn;
     shadow_alloc.first_entry = scene.cascade_base(0);
     shadow_alloc.reset = 0;
@@ -1653,7 +1683,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       a.slots = scene.deform_slots.address;
       a.alloc = scene.deform_alloc.address;
       a.pool_vertices = scene.deform_pool_vertices();
-      a.pair_count = pair_count;
+      a.pair_count = pair_stride;
       a.views = views;
       a.first_entry = scene.visible_base(0, run);
       a.reset = run == 0 ? 1u : 0u;
@@ -1687,7 +1717,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     record_params.blas_records = scene.blas_records.address;
     record_params.clas_addresses = scene.clas_set.addresses.address;
     record_params.instance_count = instance_count;
-    record_params.pair_count = pair_count;
+    record_params.pair_count = pair_stride;
     record_params.mode = gfx::cluster_records_mode(views, settings.rt_templates);
     // What the frame's structures hold room for: the records pass keeps no more, dropping whole
     // instances past it (gfx::ClusterRecordParams). The top-level instance records — one per scene
@@ -2443,10 +2473,10 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       const gfx::ComputePipeline* record_passes[3] = {&pipelines.records, &pipelines.record_ranges,
                                                       &pipelines.record_emit};
       const char* record_names[3] = {"records", "ranges", "emit"};
-      const u32 union_groups = (views * pair_count + gfx::k_cluster_records_workgroup - 1) /
+      const u32 union_groups = (views * pair_stride + gfx::k_cluster_records_workgroup - 1) /
                                gfx::k_cluster_records_workgroup;
       const u32 bucket_groups =
-          ((casters ? 2u : 1u) * views * pair_count + gfx::k_cluster_records_workgroup - 1) /
+          ((casters ? 2u : 1u) * views * pair_stride + gfx::k_cluster_records_workgroup - 1) /
           gfx::k_cluster_records_workgroup;
       const u32 record_groups[3] = {bucket_groups, 1, union_groups};
       for (u32 p = 0; p < 3; ++p) {

@@ -854,6 +854,100 @@ bool expand_ruins(const scene::Scene& file, const std::string& path, const std::
   }
   return true;
 }
+
+// A streamed world's `ruins` entries (docs/subsystems/world.md): the kits are read — so a bad kit
+// is refused when the scene is, not when the first tile asks — and their meshes appended exactly as
+// `expand_ruins` appends them, the section kit's always (the rings beyond the inner one draw
+// sections) and the block kit's when the entry is drawn in blocks; and no building is assembled.
+// Each entry becomes a `StreamedRuins` the world's ruins consumer assembles a tile at a time.
+bool stream_ruins(const scene::Scene& file, const std::string& path, const std::string& dir,
+                  SceneDesc& out, std::string& error) {
+  auto resolve = [&](const std::string& p) {
+    return io::is_absolute_path(p) || dir.empty() ? p : io::join_path(dir, p);
+  };
+  struct Appended {
+    std::string path;
+    u32 first = 0;
+    u32 count = 0;
+  };
+  Vector<Appended> kits;
+  Vector<Appended> block_kits;
+  auto find = [](const Vector<Appended>& list, const std::string& p) -> const Appended* {
+    for (const Appended& a : list) {
+      if (a.path == p) return &a;
+    }
+    return nullptr;
+  };
+  for (u32 r = 0; r < file.ruins.size(); ++r) {
+    const scene::RuinScatter& scatter = file.ruins[r];
+    const std::string where = path + ": ruins " + std::to_string(r);
+    if (scatter.kit.empty()) {
+      error = where + " names no kit";
+      return false;
+    }
+    if (std::abs(scatter.tile_size - out.world.tile_size) > 1e-4f) {
+      error = where + ": its tile_size is " + std::to_string(scatter.tile_size) +
+              " and the world's " + std::to_string(out.world.tile_size) +
+              "; a streamed entry is assembled one ring tile at a time, so they must be one grid";
+      return false;
+    }
+    StreamedRuins entry;
+    entry.kit = resolve(scatter.kit);
+    if (const Appended* seen = find(kits, entry.kit)) {
+      entry.kit_first_mesh = seen->first;
+      entry.kit_meshes = seen->count;
+    } else {
+      ruins::Kit kit;
+      if (!ruins::read_kit_file(entry.kit, kit, error)) {
+        error = where + ": " + error;
+        return false;
+      }
+      Appended made{entry.kit, append_kit_meshes(kit.name, kit.meshes, kit.mesh_hashes, out),
+                    kit.meshes.size()};
+      entry.kit_first_mesh = made.first;
+      entry.kit_meshes = made.count;
+      kits.push_back(std::move(made));
+    }
+    entry.blocks = scatter.representation == scene::RuinRepresentation::Blocks;
+    if (entry.blocks) {
+      if (scatter.block_kit.empty()) {
+        error = where + " is drawn in blocks and names no block_kit";
+        return false;
+      }
+      entry.block_kit = resolve(scatter.block_kit);
+      if (const Appended* seen = find(block_kits, entry.block_kit)) {
+        entry.block_first_mesh = seen->first;
+        entry.block_meshes = seen->count;
+      } else {
+        ruins::BlockKit kit;
+        if (!ruins::read_block_kit_file(entry.block_kit, kit, error)) {
+          error = where + ": " + error;
+          return false;
+        }
+        Appended made{entry.block_kit,
+                      append_kit_meshes(kit.name, kit.meshes, kit.mesh_hashes, out),
+                      kit.meshes.size()};
+        entry.block_first_mesh = made.first;
+        entry.block_meshes = made.count;
+        block_kits.push_back(std::move(made));
+      }
+    }
+    entry.seed = scatter.seed;
+    entry.tile_size = scatter.tile_size;
+    entry.tile_min[0] = scatter.tile_min[0];
+    entry.tile_min[1] = scatter.tile_min[1];
+    entry.tile_max[0] = scatter.tile_max[0];
+    entry.tile_max[1] = scatter.tile_max[1];
+    entry.count = scatter.count;
+    entry.density = scatter.density;
+    entry.wind_deg = scatter.wind_deg;
+    out.streamed_ruins.push_back(std::move(entry));
+  }
+  ENGINE_LOG_INFO(log_renderer, "ruins streamed by the world", log::field("scene", path),
+                  log::field("entries", file.ruins.size()), log::field("kits", kits.size()),
+                  log::field("block_kits", block_kits.size()));
+  return true;
+}
 #endif
 
 }  // namespace
@@ -1110,10 +1204,38 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
       out.instances.push_back(instance);
     }
   }
-  // Ruins, assembled from their kits by the ruins capability, when this build has it.
+  // A streamed world (the file's `world` block, or the caller's `SceneFileOptions::world`): the
+  // ring's parameters, carried for the world capability, and the ruins entries left for it to
+  // assemble a tile at a time.
+  if (file.world.has_value() || options.world) {
+    const scene::WorldRings rings = file.world.has_value() ? *file.world : scene::WorldRings{};
+    out.world.enabled = true;
+    out.world.tile_size = rings.tile_size;
+    out.world.hysteresis = rings.hysteresis;
+    out.world.simulated = rings.simulated;
+    if (rings.rings.size() > 7) {
+      error = path + ": a world has at most 7 rings";
+      return false;
+    }
+    out.world.ring_count = rings.rings.size();
+    for (u32 r = 0; r < rings.rings.size(); ++r) {
+      out.world.radius[r] = rings.rings[r].radius;
+      out.world.ruins[r] = static_cast<u8>(rings.rings[r].ruins);
+    }
+    if (!(out.world.tile_size > 0.0f)) {
+      error = path + ": the world's tile_size must be positive";
+      return false;
+    }
+  }
+  // Ruins, assembled from their kits by the ruins capability, when this build has it — or, in a
+  // streamed world, left for the world to assemble tile by tile.
   if (!file.ruins.empty()) {
 #if ENGINE_RENDERER_RUINS
-    if (!expand_ruins(file, path, dir, ground, out, error)) return false;
+    if (out.world.enabled) {
+      if (!stream_ruins(file, path, dir, out, error)) return false;
+    } else if (!expand_ruins(file, path, dir, ground, out, error)) {
+      return false;
+    }
 #else
     error = path +
             ": the scene names ruins, and this build has no ruins capability "
@@ -1344,6 +1466,10 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
   out.pair_count = pair_count;
   out.max_joints = resolved.max_joints;
   if (out.skinned_instances == 0) out.instance_joints.clear();
+  out.mesh_fit = std::move(fit_of_mesh);
+  out.world = resolved.world;
+  out.streamed_ruins = resolved.streamed_ruins;
+  out.dynamic = resolved.world.enabled;
 
   update_scene_bounds(out);
   out.build_ns = time::monotonic_ns() - build_start;
@@ -1353,6 +1479,56 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
       log_renderer, "scene loaded", log::field("ms", static_cast<f64>(out.build_ns) / 1.0e6),
       log::field("meshes", out.parts.size()), log::field("instances", out.instances.size()),
       log::field("pairs", out.pair_count), log::field("clusters", out.cluster_count()));
+  return true;
+}
+
+bool make_instance(const SceneData& scene, const SceneInstance& source, u32 first_pair,
+                   gfx::InstanceDesc& out, std::string* error) {
+  if (source.mesh >= scene.parts.size()) {
+    if (error != nullptr) {
+      *error = "an instance names mesh " + std::to_string(source.mesh) + ", which the scene has no";
+    }
+    return false;
+  }
+  if (source.joints != 0) {
+    if (error != nullptr) {
+      *error =
+          "an instance added after the load is rigid: a skinned one needs a deform entry the "
+          "scene lays out once";
+    }
+    return false;
+  }
+  out = gfx::InstanceDesc{};
+  const Mat4 fit =
+      source.mesh < scene.mesh_fit.size() ? scene.mesh_fit[source.mesh] : Mat4::identity();
+  gfx::set_instance_transform(out, mat4_from_transform(source.transform) * fit);
+  out.mesh = source.mesh;
+  out.first_pair = first_pair;
+  out.bounds_padding = source.bounds_padding;
+  return true;
+}
+
+bool pairs_after(const SceneData& scene, u32 first_pair, std::span<const SceneInstance> instances,
+                 u32 max_pairs, u32& end_pair, std::string* error) {
+  u64 pairs = first_pair;
+  for (const SceneInstance& source : instances) {
+    if (source.mesh >= scene.parts.size()) {
+      if (error != nullptr) {
+        *error =
+            "an instance names mesh " + std::to_string(source.mesh) + ", which the scene has no";
+      }
+      return false;
+    }
+    pairs += scene.parts[source.mesh].cluster_count;
+    if (pairs > max_pairs) {
+      if (error != nullptr) {
+        *error = "the instances would take the scene past " + std::to_string(max_pairs) +
+                 " (instance, cluster) pairs";
+      }
+      return false;
+    }
+  }
+  end_pair = static_cast<u32>(pairs);
   return true;
 }
 

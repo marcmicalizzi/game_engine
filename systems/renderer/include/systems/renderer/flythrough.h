@@ -42,10 +42,25 @@ scene::FrameRecord frame_record(const FrameStats& stats, u32 repeat, u32 frame, 
 // `summarize_frames` fills; both hosts call it after the flight so the numbers are the run's.
 void summarize_rt(const RtStats& stats, scene::FlythroughRt& out);
 
+// One submission of a flight, as the hook before it sees it (`FlightOptions::before_frame`).
+struct FlightStep {
+  u32 repeat = 0;
+  u32 frame = 0;          // the path frame; a warm-up's is 0 and the drain's the last
+  u32 warmup = ~0u;       // its place in its repeat's warm-up, or ~0 for a path frame or the drain
+  bool recorded = false;  // a path frame whose numbers the flight records
+  Camera camera;          // the camera the frame is drawn from
+};
+// Called before every submission, warm-ups and the drain included, between two frames: where a
+// host that changes the scene as the camera moves — a streamed world (docs/subsystems/world.md) —
+// does it. False stops the flight with `error`.
+using FlightHook = bool (*)(void* context, const FlightStep& step, std::string* error);
+
 // How a timed flight is flown. `frames` of 0 is the path's own frame count; any other count
 // resamples it. `frames_in_flight` must be the renderer's (`SceneRenderer::Desc`), because that
 // many frames are drawn after the last one so that its numbers come back.
 struct FlightOptions {
+  FlightHook before_frame = nullptr;
+  void* before_frame_context = nullptr;
   u32 frames = 0;
   u32 repeats = 1;
   u32 warmup = 0;  // frames at the path's first camera before every repeat

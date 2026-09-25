@@ -171,6 +171,27 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
                                 s.raster == RasterMode::Hardware || s.raster == RasterMode::Auto)) {
     s.raster = RasterMode::Vertex;  // the baseline tier
   }
+  // **A scene whose instances come and go between frames** — a streamed world's — has no ray
+  // tracing chain in v0 and no deformed-vertex pool: both are laid out once per instance, and
+  // nothing rewrites them for a tail (GpuScene, renderer.md "Instances that come and go"). So the
+  // ray path draws with the rasterizer, traced shadows are the maps, and `--deform` is off, each
+  // with a warning; a skinned or morphed scene is refused by the GPU scene.
+  const bool dynamic = scene != nullptr && scene->dynamic;
+  if (dynamic && s.raster == RasterMode::RayTrace) {
+    s.raster = features.mesh_shader ? RasterMode::Hardware : RasterMode::Vertex;
+    ENGINE_LOG_WARN(log_renderer, "the ray path is off",
+                    log::field("reason", "a scene whose instances come and go is not traced yet"));
+  }
+  if (dynamic && s.shadows == ShadowMode::RayTraced) {
+    s.shadows = ShadowMode::Cascaded;
+    ENGINE_LOG_WARN(log_renderer, "cascaded shadow maps instead of ray-traced shadows",
+                    log::field("reason", "a scene whose instances come and go is not traced yet"));
+  }
+  if (dynamic && s.deform) {
+    s.deform = false;
+    ENGINE_LOG_WARN(log_renderer, "deformation off",
+                    log::field("reason", "a scene whose instances come and go draws them rigid"));
+  }
   out.direct = s.raster == RasterMode::Direct;
   out.vertex_path = s.raster == RasterMode::Vertex;
   out.ray_path = s.raster == RasterMode::RayTrace;
@@ -180,7 +201,8 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
   // the direct path, and they are built from one visible list, which rules out the modes that
   // produce more than one: the software split's second list, and occlusion culling's second
   // pass.
-  const bool shadow_device = features.cluster_acceleration_structure && features.ray_query;
+  const bool shadow_device =
+      features.cluster_acceleration_structure && features.ray_query && !dynamic;
   const bool shadow_mode = out.ray_path || s.raster == RasterMode::Hardware || out.vertex_path;
   out.shadows = (s.shadows == ShadowMode::RayTraced || s.shadows == ShadowMode::Auto) &&
                 shadow_device && shadow_mode;
@@ -200,7 +222,9 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
                     log::field("reason", "the direct, sw, and auto paths do not build them"));
   } else if (s.shadows == ShadowMode::Auto && out.csm) {
     ENGINE_LOG_INFO(log_renderer, "cascaded shadow maps instead of ray-traced shadows",
-                    log::field("reason", "no cluster acceleration structures or ray queries"));
+                    log::field("reason", dynamic ? "a scene whose instances come and go"
+                                                 : "no cluster acceleration structures or ray "
+                                                   "queries"));
   } else if (s.shadows == ShadowMode::Cascaded && !out.csm) {
     ENGINE_LOG_WARN(log_renderer, "cascaded shadow maps off",
                     log::field("reason", "the direct, sw, auto, and rt paths do not draw them"));

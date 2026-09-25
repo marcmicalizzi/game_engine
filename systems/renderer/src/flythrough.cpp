@@ -65,6 +65,8 @@ scene::FrameRecord frame_record(const FrameStats& stats, u32 repeat, u32 frame, 
   out.rt_built = stats.rt_built;
   out.rt_wanted = stats.rt_wanted;
   out.rt_capacity = stats.rt_capacity;
+  out.instances = stats.instances;
+  out.pairs = stats.pairs;
   return out;
 }
 
@@ -105,8 +107,20 @@ bool fly_camera_path(SceneRenderer& renderer, const CameraPath& path, const Flig
   renderer.reset_stats();
   u64 folded = renderer.stats().folded;
   i64 previous_start = 0;
-  auto submit = [&](u32 f, bool recorded, u32 repeat) {
+  auto submit = [&](u32 f, bool recorded, u32 repeat, u32 warmup) {
     const i64 start = time::monotonic_ns();
+    // The host's turn, between two frames: a streamed world updates its ring from this camera and
+    // hands the renderer its instances (FlightOptions::before_frame). It is in the frame's wall
+    // time and not in its CPU milliseconds, which are the renderer's own; the hook measures itself.
+    if (options.before_frame != nullptr) {
+      FlightStep step;
+      step.repeat = repeat;
+      step.frame = f;
+      step.warmup = warmup;
+      step.recorded = recorded;
+      step.camera = camera_path_frame(path, f, frames);
+      if (!options.before_frame(options.before_frame_context, step, error)) return false;
+    }
     renderer.begin_frame();
     const Stats& stats = renderer.stats();
     if (stats.folded != folded) {
@@ -140,18 +154,18 @@ bool fly_camera_path(SceneRenderer& renderer, const CameraPath& path, const Flig
     const i64 warm_from = time::monotonic_ns();
     const i64 warm_ns = static_cast<i64>(options.warmup_seconds * 1.0e9);
     for (u32 w = 0; w < options.warmup || time::monotonic_ns() - warm_from < warm_ns; ++w) {
-      if (!submit(0, false, r)) return false;
+      if (!submit(0, false, r, w)) return false;
     }
     const i64 started = time::monotonic_ns();
     for (u32 f = 0; f < frames; ++f) {
-      if (!submit(f, true, r)) return false;
+      if (!submit(f, true, r, ~0u)) return false;
     }
     out.seconds += static_cast<f64>(time::monotonic_ns() - started) / 1.0e9;
   }
   // A frame's numbers fold in when its slot comes around, so the last path frames need that many
   // submissions behind them; these are drawn and not recorded.
   for (u32 d = 0; d < options.frames_in_flight; ++d) {
-    if (!submit(frames - 1, false, repeats - 1)) return false;
+    if (!submit(frames - 1, false, repeats - 1, ~0u)) return false;
   }
   renderer.wait_idle();
   out.submitted = submissions.size();
@@ -344,6 +358,15 @@ bool VisibleCensus::count(const SceneData& data, const GpuScene& scene, const St
     if (error != nullptr) *error = "the census was not created";
     return false;
   }
+  // A scene whose instances come and go may have made its visible list again, longer, since the
+  // census was created (GpuScene::set_dynamic_instances): follow it.
+  if (scene.visible.size > staging_.size) {
+    gfx::destroy_buffer(*device_, staging_);
+    if (!gfx::create_buffer(*device_, scene.visible.size, gfx::BufferUsage::TransferDst, true,
+                            staging_, error)) {
+      return false;
+    }
+  }
   // Every view's three runs, each only as long as the count its argument block recorded: the rest
   // of a run is whatever an earlier frame left there.
   gfx::BufferCopy regions[k_max_views * k_visible_runs];
@@ -386,10 +409,10 @@ bool VisibleCensus::count(const SceneData& data, const GpuScene& scene, const St
       if (level >= levels.size()) levels.resize(level + 1, 0u);
       ++levels[level];
     }
-    if (instance < data.instances.size()) {
-      const u32 mesh = data.instances[instance].mesh;
-      if (mesh < meshes.size()) ++meshes[mesh];
-    }
+    // Through the GPU scene's table, which holds a streamed world's tail of instances as well as
+    // the load's (`SceneData::instances` is only the latter).
+    const u32 mesh = scene.instance_mesh(instance);
+    if (mesh < meshes.size()) ++meshes[mesh];
   }
   return true;
 }

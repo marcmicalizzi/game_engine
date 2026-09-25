@@ -47,6 +47,11 @@ namespace engine::renderer {
 // puts its **shadow casters** in the third (`gfx::k_caster_run`): what the cone test kept out of
 // the picture but not out of the shadows (renderer.md, "Shadows").
 inline constexpr u32 k_visible_runs = 3;
+
+// The most (instance, cluster) pairs a scene may name: the visibility id is `pair << 8 | triangle`
+// in 32 bits (gfx.md, "The tie rule"). Past it two pairs would share an id and the picture would be
+// wrong without a word, so a scene — or a tail of instances — that would pass it is refused.
+inline constexpr u32 k_max_pairs = 1u << 24;
 static_assert(gfx::k_caster_run < k_visible_runs);
 
 // The vertex path's index budget per region, in triangles of twelve bytes: how much of one hardware
@@ -104,6 +109,46 @@ class GpuScene {
   u32 leaf_count() const noexcept { return leaf_count_; }
   u32 instance_count() const noexcept { return instance_count_; }
   u32 pair_count() const noexcept { return pair_count_; }
+  // **The run length every per-pair buffer is laid out by**, which is the pair count for a scene
+  // read whole and a capacity at or above it for one whose instances come and go: the visible
+  // list's runs, the per-view pair-to-entry tables, the occlusion flags and the vertex path's
+  // records are `pair_stride()` apart, so the tail can change length without moving any of them,
+  // and only a tail past the stride reallocates them (`set_dynamic_instances`). The cull dispatch
+  // and its bounds check use `pair_count()`, the pairs there are.
+  u32 pair_stride() const noexcept { return pair_stride_; }
+
+  // ---- instances added and removed between frames ---------------------------------------------
+  // (docs/subsystems/renderer.md, "Instances that come and go")
+  //
+  // A scene whose `SceneData::dynamic` is set — a streamed world's — is its load's instances, a
+  // **fixed prefix**, and a **tail** the caller replaces between frames: a tile's buildings, in
+  // tile order. The meshes are resident from the load (the kits' few dozen), so a tail is instances
+  // and nothing else: the instance table and the pair table are rewritten from the prefix's end,
+  // the prefix sum carries on from the prefix's pairs, and the prefix's pairs keep their ids, so
+  // the terrain's occlusion history survives every change. Nothing here keeps a tile's identity;
+  // the caller's order is the order, which is why the world hands its tiles over in tile order.
+  //
+  // **The device must be idle with respect to this scene** (`SceneRenderer::set_dynamic_instances`
+  // waits for it): the tables are replaced, not double-buffered, which is v0's smallest correct
+  // change and costs a frame's latency on the frame that takes a tail. Refused, with a sentence and
+  // nothing changed: a scene that is not dynamic, a tail past the 2^24 pairs the visibility id
+  // names, and a skinned tail instance. A dynamic scene has no ray tracing chain and no
+  // deformed-vertex pool
+  // (`create` refuses both): the chain's top-level records and the pool's table are laid out once
+  // per instance, and v0 does not rewrite them.
+  bool dynamic() const noexcept { return dynamic_; }
+  u32 static_instance_count() const noexcept { return static_instances_; }
+  u32 static_pair_count() const noexcept { return static_pairs_; }
+  u32 dynamic_instance_count() const noexcept { return instance_count_ - static_instances_; }
+  // `grew` is set when the tail passed the stride and the per-pair buffers were reallocated, whose
+  // contents — the occlusion flags among them — are then undefined until a frame writes them.
+  bool set_dynamic_instances(std::span<const SceneInstance> tail, bool& grew,
+                             std::string* error = nullptr);
+  // The mesh of instance `index`, prefix or tail; ~0 past the end. What a census or an id capture
+  // turns an instance into, since `SceneData::instances` holds only the prefix.
+  u32 instance_mesh(u32 index) const noexcept {
+    return index < instance_table_.size() ? instance_table_[index].mesh : ~0u;
+  }
   u32 material_count() const noexcept { return material_count_; }
   u32 triangles_per_cluster() const noexcept { return triangles_per_cluster_; }
   // The deformed-vertex pool's **budget**, not its occupancy: the pool is suballocated per frame
@@ -122,7 +167,7 @@ class GpuScene {
   // tracing chain builds the union from. With one view this is `run * pair_count`, the layout the
   // list has always had.
   u32 visible_base(u32 view, u32 run) const noexcept {
-    return (run * view_count_ + view) * pair_count_;
+    return (run * view_count_ + view) * pair_stride_;
   }
   // Bytes into `draw_args[pass]` / `sw_args` where this view's indirect block is.
   u64 args_offset(u32 view) const noexcept { return u64{view} * gfx::k_draw_args_bytes; }
@@ -133,7 +178,7 @@ class GpuScene {
   // Entries of the whole visible list, which is what `deform_slots` has one word each of: every
   // view's three runs, then one run per shadow cascade.
   u32 visible_entries() const noexcept {
-    return (k_visible_runs * view_count_ + cascade_count_) * pair_count_;
+    return (k_visible_runs * view_count_ + cascade_count_) * pair_stride_;
   }
 
   // ---- the sun's cascaded shadow maps (renderer.md, "Shadows") --------------------------------
@@ -147,7 +192,7 @@ class GpuScene {
   // its own header, records and index array behind the views' two runs.
   u32 shadow_cascades() const noexcept { return cascade_count_; }
   u32 cascade_base(u32 cascade) const noexcept {
-    return (k_visible_runs * view_count_ + cascade) * pair_count_;
+    return (k_visible_runs * view_count_ + cascade) * pair_stride_;
   }
   u64 shadow_args_offset(u32 cascade) const noexcept {
     return u64{cascade} * gfx::k_draw_args_bytes;
@@ -163,7 +208,7 @@ class GpuScene {
     return (u64{2} * view_count_ + cascade) * sizeof(gfx::VertexDrawHeader);
   }
   u64 shadow_vertex_records_offset(u32 cascade) const noexcept {
-    return (u64{2} * view_count_ + cascade) * pair_count_ * sizeof(gfx::VertexDrawRecord);
+    return (u64{2} * view_count_ + cascade) * pair_stride_ * sizeof(gfx::VertexDrawRecord);
   }
   u64 shadow_vertex_indices_offset(u32 cascade) const noexcept {
     return (u64{2} * view_count_ + cascade) * vertex_index_capacity_ *
@@ -171,7 +216,7 @@ class GpuScene {
   }
   // This view's pair-to-entry table (`pair_entries`), as the address the cull and the resolve take.
   u64 pair_entries_address(u32 view) const noexcept {
-    return pair_entries.address + u64{view} * pair_count_ * sizeof(u32);
+    return pair_entries.address + u64{view} * pair_stride_ * sizeof(u32);
   }
   // The (instance, cluster) a visibility id's pair stands for: the inverse of the cull pass's
   // `first_cluster + (pair - first_pair)`, by binary search over the instances' prefix sum. It is a
@@ -216,7 +261,7 @@ class GpuScene {
     return (u64{run} * view_count_ + view) * sizeof(gfx::VertexDrawHeader);
   }
   u64 vertex_records_offset(u32 view, u32 run) const noexcept {
-    return (u64{run} * view_count_ + view) * pair_count_ * sizeof(gfx::VertexDrawRecord);
+    return (u64{run} * view_count_ + view) * pair_stride_ * sizeof(gfx::VertexDrawRecord);
   }
   u64 vertex_indices_offset(u32 view, u32 run) const noexcept {
     return (u64{run} * view_count_ + view) * vertex_index_capacity_ *
@@ -492,6 +537,12 @@ class GpuScene {
   bool upload_geometry(const ResolvedSettings& resolved, std::string* error);
   bool upload_materials(const ResolvedSettings& resolved, std::string* error);
   bool create_working_set(const ResolvedSettings& resolved, std::string* error);
+  void destroy_working_set() noexcept;
+  bool upload_pair_table(std::string* error);
+  // A dynamic scene's instances from `first_instance` and pairs from `first_pair` to the device,
+  // into the tables' kept buffers.
+  bool write_tables(u32 first_instance, u32 first_pair, std::string* error);
+  ResolvedSettings resolved_;  // what `create` was given, for a working set made again
   bool create_ray_tracing(const ResolvedSettings& resolved, std::string* error);
   bool create_streaming(const ResolvedSettings& resolved, std::string* error);
   bool create_morph(const ResolvedSettings& resolved, std::string* error);
@@ -526,6 +577,13 @@ class GpuScene {
   u32 leaf_count_ = 0;
   u32 instance_count_ = 0;
   u32 pair_count_ = 0;
+  u32 pair_stride_ = 0;
+  bool dynamic_ = false;
+  u32 static_instances_ = 0;
+  u32 static_pairs_ = 0;
+  Vector<u32> mesh_material_base_;    // each mesh's first material, for an instance added later
+  u32 instance_capacity_ = 0;         // a dynamic scene's instance buffer, in instances
+  gfx::BufferResource tail_staging_;  // host visible, kept: what `write_tables` copies from
   u32 material_count_ = 0;
   u32 triangles_per_cluster_ = 0;
   u32 view_count_ = 1;

@@ -105,6 +105,43 @@ struct SceneMeshInfo {
   MeshFit fit;
 };
 
+// A scene streamed tile by tile (schema `engine.scene.WorldRings`), **carried and never
+// interpreted**, like `SceneAnimation`: the tile ring is the world capability's
+// (docs/subsystems/world.md), which the renderer must not depend on, and the scene file is one file
+// read by one parser. What the renderer does with it is only what its reader does differently —
+// the ruins entries become `StreamedRuins` instead of instances — and what `SceneData::dynamic`
+// says: that instances will come and go between frames (`GpuScene::set_dynamic_instances`).
+struct WorldDesc {
+  bool enabled = false;
+  f32 tile_size = 32.0f;
+  u32 ring_count = 0;  // 0: the capability's defaults
+  f32 radius[7] = {};  // tiles, innermost first
+  u8 ruins[7] = {};    // per ring: 0 blocks, 1 sections, 2 walls (`engine.scene.RingRuins`)
+  f32 hysteresis = 0.15f;
+  u32 simulated = 2;  // rings, innermost first, the simulation runs in
+};
+
+// One `ruins` entry of a streamed scene, as the reader left it: its kits' meshes are in the scene
+// (so the renderer has them resident before a tile asks), its buildings are not. Everything the
+// world's ruins consumer needs to assemble a tile's building exactly as `expand_ruins` would have
+// assembled it at load — the same seed, tiles, wind and kits — and where the kits' meshes start.
+struct StreamedRuins {
+  std::string kit;        // resolved against the scene file's directory
+  std::string block_kit;  // empty: sections in every ring
+  bool blocks = false;    // `representation` was `Blocks` (and a block kit is named)
+  u64 seed = 1;
+  f32 tile_size = 32.0f;
+  i32 tile_min[2] = {};
+  i32 tile_max[2] = {};
+  u32 count = 0;
+  f32 density = 0.05f;
+  f32 wind_deg = 0.0f;
+  u32 kit_first_mesh = 0;  // the kit's meshes: scene mesh `kit_first_mesh + Member::mesh_index`
+  u32 kit_meshes = 0;
+  u32 block_first_mesh = 0;  // the block kit's, when there is one
+  u32 block_meshes = 0;
+};
+
 // What to load: mesh files and instances of them, or one of the procedural scenes above.
 struct SceneDesc {
   Vector<std::string> meshes;       // glTF, GLB, or .clusters; one empty path = procedural
@@ -161,6 +198,11 @@ struct SceneDesc {
   // buildings and the pieces, for a host's summary. Zero for a scene with none.
   u32 ruin_buildings = 0;
   u32 ruin_instances = 0;
+  // A streamed world (`engine.scene.WorldRings`): enabled by the file's `world` block or by
+  // `SceneFileOptions::world`, and then every ruins entry is in `streamed_ruins` and none in
+  // `instances`.
+  WorldDesc world;
+  Vector<StreamedRuins> streamed_ruins;
 };
 
 // What `read_scene_file` may be told besides the path.
@@ -169,6 +211,10 @@ struct SceneFileOptions {
   // paths. A mesh whose `overlay` hash the manifest names is drawn from the manifest's file
   // instead, which the load then hashes and refuses if the bytes disagree. Empty: no overlay.
   std::string overlay;
+  // Stream the scene through a world's tile ring even when the file has no `world` block (the
+  // block's defaults then): engine-view `--world`. The same scene read without it is today's
+  // whole read, which is what E35 compares a streamed world against.
+  bool world = false;
 };
 
 // Reads a scene file (schema `engine.scene.Scene`): meshes with an optional name, content hash,
@@ -255,6 +301,17 @@ struct SceneData {
   Vector<SceneMeshInfo> mesh_info;
   std::string name;
   u64 file_hash = 0;
+  // Each mesh's fit (`MeshFit`) as the matrix every instance of it is placed through, identity for
+  // a mesh with none. Kept because an instance added after the load (`make_instance`) is placed the
+  // same way, and the float positions the fit was measured from may be gone by then.
+  Vector<Mat4> mesh_fit;
+  // **Instances come and go between frames.** A streamed world's (`WorldDesc`): `instances` is the
+  // fixed prefix the load produced and the GPU scene takes a tail of more after it
+  // (`GpuScene::set_dynamic_instances`). Carried with the world description and the streamed ruins
+  // entries for the capability that streams them.
+  bool dynamic = false;
+  WorldDesc world;
+  Vector<StreamedRuins> streamed_ruins;
 
   u32 cluster_count() const noexcept { return lod.mesh.clusters.size(); }
   u32 leaf_count() const noexcept {
@@ -276,6 +333,22 @@ struct SceneData {
 // Loads every mesh of `desc`, merges them into one set of buffers, expands the instances, and
 // computes the bounds. `error` says which mesh failed and why.
 bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error);
+
+// One instance in GPU shape, placed as `load_scene` places the instances it expands: the mesh's
+// fit, then the instance's transform, at `first_pair` in the prefix sum. For an instance added
+// after the load. False, with `error`, for a mesh the scene has not or a skinned instance (an
+// instance that comes and goes is rigid: its joints would need a deform entry the GPU scene lays
+// out once).
+bool make_instance(const SceneData& scene, const SceneInstance& source, u32 first_pair,
+                   gfx::InstanceDesc& out, std::string* error = nullptr);
+
+// Where the prefix sum ends after `instances`, starting at `first_pair`: `first_pair` plus each
+// instance's mesh's clusters. False, with `error`, for a mesh the scene has not or a sum past
+// `max_pairs` (the visibility id's 2^24, `k_max_pairs`, unless a caller keeps a budget of its own).
+// No GPU: what `GpuScene::set_dynamic_instances` checks before it touches one, and what a caller
+// can check before it asks.
+bool pairs_after(const SceneData& scene, u32 first_pair, std::span<const SceneInstance> instances,
+                 u32 max_pairs, u32& end_pair, std::string* error = nullptr);
 
 // Re-derives the scene's bounding sphere — what the camera frames and what every distance, bias
 // and light reach scales with — from the instances as they stand. `load_scene` ends with it.
