@@ -136,3 +136,91 @@ TEST_CASE("engine-view: a scene's ruins draw over the terrain, offscreen") {
                     << pixels << " pixels differ from the bare terrain");
   CHECK(differing > pixels / 50);  // more than 2% of the picture is ruins
 }
+
+#if ENGINE_VIEW_WORLD
+TEST_CASE("engine-view: a streamed world draws the ruins its ring holds, as a whole read does") {
+  // The same four buildings, read whole and streamed by the world's ring round the camera
+  // (docs/subsystems/world.md): the entry names no block kit, so every ring draws sections, and all
+  // four are within the rings, so the two pictures are the same ruins — in another instance order,
+  // since a streamed scene's tail follows the terrain in tile order, which leaves the colours
+  // alone.
+  const test::TempDir tmp("engine_view_world");
+  std::string error;
+  REQUIRE_MESSAGE(
+      ruins::write_synthetic_kit(tmp.file("kit"), ruins::SyntheticKitOptions{}, &error, nullptr),
+      error);
+  REQUIRE(write_text(tmp.file("whole.json"), scene_text(true)));
+  std::string streamed = scene_text(true);
+  streamed.insert(streamed.size() - 1, R"(,"world":{"tile_size":24})");
+  REQUIRE(write_text(tmp.file("streamed.json"), streamed));
+  REQUIRE(write_text(tmp.file("path.json"),
+                     R"({"format":"engine.camera-path.v1","name":"over","fps":10,"keys":[)"
+                     R"({"time":0,"position":[22,9,30],"target":[-2,1,-4],"fov_deg":60}]})"));
+  auto draw = [&](const char* scene, const char* capture, std::vector<std::string> extra) {
+    std::vector<std::string> args = {"--scene",
+                                     tmp.file(scene),
+                                     "--camera-path",
+                                     tmp.file("path.json"),
+                                     "--offscreen",
+                                     "--frames",
+                                     "3",
+                                     "--capture",
+                                     tmp.file(capture),
+                                     "--width",
+                                     "320",
+                                     "--height",
+                                     "180",
+                                     "--shadows",
+                                     "off",
+                                     "--ddc",
+                                     tmp.file("ddc")};
+    for (std::string& e : extra)
+      args.push_back(std::move(e));
+    return view(args);
+  };
+  const Run whole = draw("whole.json", "whole.png", {});
+  if (whole.exit_code == 3) {
+    MESSAGE("engine-view unavailable here: " << whole.output);
+    return;
+  }
+  REQUIRE_MESSAGE(whole.exit_code == 0, whole.output);
+  const Run run = draw("streamed.json", "streamed.png", {"--world-log", tmp.file("world.jsonl")});
+  REQUIRE_MESSAGE(run.exit_code == 0, run.output);
+  const usize line_start = run.output.find_last_of('\n', run.output.size() - 2);
+  const std::string last = run.output.substr(line_start == std::string::npos ? 0 : line_start + 1);
+  JsonValue summary;
+  REQUIRE_MESSAGE(parse_json(last, summary).ok, last);
+  const JsonValue* world = summary.find("world");
+  REQUIRE(world != nullptr);
+  REQUIRE(world->is_object());
+  u64 assembled = 0;
+  REQUIRE(world->find("assembled") != nullptr);
+  REQUIRE(world->find("assembled")->get_u64(assembled));
+  CHECK(assembled >= 4);
+  std::ifstream log(tmp.file("world.jsonl"), std::ios::binary);
+  const std::string log_text((std::istreambuf_iterator<char>(log)),
+                             std::istreambuf_iterator<char>());
+  CHECK(log_text.find("\"format\":\"engine.world-log.v1\"") != std::string::npos);
+
+  image::Image a;
+  image::Image b;
+  REQUIRE(image::read_image(tmp.file("whole.png"), a) == io::Status::Ok);
+  REQUIRE(image::read_image(tmp.file("streamed.png"), b) == io::Status::Ok);
+  REQUIRE(a.width == b.width);
+  REQUIRE(a.height == b.height);
+  u32 differing = 0;
+  const u32 pixels = a.width * a.height;
+  for (u32 p = 0; p < pixels; ++p) {
+    bool d = false;
+    for (u32 c = 0; c < 3; ++c)
+      d = d || a.pixels[p * 4 + c] != b.pixels[p * 4 + c];
+    differing += d ? 1u : 0u;
+  }
+  MESSAGE("streamed against whole: " << differing << " of " << pixels << " pixels differ");
+  CHECK(differing == 0);
+
+  // A streamed world is rasterized and rigid in v0: the ray path is refused with the flag.
+  const Run traced = draw("streamed.json", "rt.png", {"--world", "--raster", "rt"});
+  CHECK(traced.exit_code == 2);
+}
+#endif

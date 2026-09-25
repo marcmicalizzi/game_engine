@@ -859,6 +859,108 @@ TEST_CASE(
 }
 #endif
 
+// ---- a streamed world (docs/subsystems/world.md; protocol.md, "session.run_headless") ----------
+
+#if defined(ENGINE_CLI_TESTS_WORLD)
+TEST_CASE("ops: run_headless streams a partitioned document tile by tile round its observers") {
+  const test::TempDir tmp("ops_world");
+  REQUIRE(tmp.ok());
+  const std::string dir = tmp.file("desert");
+  REQUIRE(cli({"--doc", dir, "--create", "--name", "Desert", "session.info"}).exit_code == 0);
+  REQUIRE(cli({"--doc", dir, "doc.add_layer",
+               R"({"name":"places","partition":{"property":"position","tile_size":32}})"})
+              .exit_code == 0);
+  // Three places: one in the tile at the origin, one in the tile east of it, one two kilometres
+  // away. Nodes, the engine's own record type, so they materialize wherever there is an entity
+  // store.
+  auto node = [](const char* id, f64 x, f64 z) {
+    return std::string("{\"kind\":\"CreateObject\",\"id\":\"") + id +
+           "\",\"type\":\"engine.world.Node\",\"value\":{\"name\":\"n\",\"position\":[" +
+           std::to_string(x) + ",0.0," + std::to_string(z) + "]}}";
+  };
+  const char* k_near = "00000000000000300000000000000001";
+  const char* k_east = "00000000000000300000000000000002";
+  const char* k_far = "00000000000000300000000000000003";
+  REQUIRE(cli({"--doc", dir, "doc.apply",
+               apply_params("[" + node(k_near, 5, 5) + "," + node(k_east, 40, 5) + "," +
+                            node(k_far, 2005, 5) + "]")})
+              .exit_code == 0);
+
+  Host host;
+  REQUIRE(host.ok);
+  const std::string session = open_session(host, dir, false);
+  const std::string s = "{\"session\":\"" + session + "\"";
+  // Rings of 1.5 and 3 tiles, the simulation in the inner one: from the origin, the four tiles
+  // round it — the near place's among them; the east place's tile is in the outer ring only.
+  auto stream = [](f64 x, f64 vx) {
+    return std::string(",\"stream\":{\"tile_size\":32,\"rings\":[1.5,3],\"simulated\":1,") +
+           "\"observers\":[{\"position\":[" + std::to_string(x) + ",1.7,0],\"velocity\":[" +
+           std::to_string(vx) + ",0,0]}]}}";
+  };
+  const JsonValue first = host.call("session.run_headless", s + ",\"seconds\":0.1" + stream(0, 0));
+  const JsonValue& run = result_of(first);
+  CHECK(number(run, "ticks") == 6);
+  const JsonValue& world = at(run, "streamed");
+  REQUIRE(world.is_object());
+  CHECK(number(world, "updates") == 7);  // the call's first fill, then one between every two ticks
+  CHECK(number(world, "materialized_tiles") == 4);
+  const JsonValue& tiles = at(world, "tiles");
+  u32 inner = 0;
+  for (usize i = 0; i < tiles.size(); ++i)
+    inner += number(tiles[i], "ring") == 0 ? 1u : 0u;
+  CHECK(inner == 4);
+  CHECK(tiles.size() > 4);
+  CHECK(at(world, "store") == JsonValue(true));
+  CHECK(number(world, "reconciled") == 4);
+  CHECK(number(world, "known") == 0);
+#if defined(ENGINE_CLI_TESTS_KINEMATICS)
+  // With an entity store: the near place is an entity, the other two are not.
+  CHECK(number(world, "created") == 1);
+  CHECK(number(run, "materialized") == 1);
+#endif
+
+  // Two kilometres east: the origin's tiles go (and are written to the store), the far place's
+  // tile comes in.
+  const JsonValue second =
+      host.call("session.run_headless", s + ",\"seconds\":0.1" + stream(2000, 0));
+  const JsonValue& away = at(result_of(second), "streamed");
+  CHECK(number(away, "dematerialized_tiles") == 4);
+  CHECK(number(away, "written") >= 4);
+  CHECK(number(away, "materialized_tiles") == 6);  // on a tile boundary: three columns of two
+#if defined(ENGINE_CLI_TESTS_KINEMATICS)
+  CHECK(number(away, "dematerialized") == 1);
+  CHECK(number(away, "created") == 1);
+#endif
+
+  // Walking back at 600 m/s: a second and a bit of ticks, the budget spreading the tiles over them,
+  // and the origin's tiles reconciled from what the store kept of them.
+  const JsonValue third =
+      host.call("session.run_headless", s + ",\"seconds\":3.3" + stream(2000, -600));
+  const JsonValue& back = at(result_of(third), "streamed");
+  CHECK(number(back, "updates") == number(result_of(third), "ticks") + 1);
+  CHECK(number(back, "activated") > 20);
+  CHECK(number(back, "deactivated") > 20);
+  CHECK(number(back, "known") >= 4);
+  bool origin = false;
+  const JsonValue& now = at(back, "tiles");
+  for (usize i = 0; i < now.size(); ++i) {
+    origin = origin ||
+             (number(now[i], "x") == 0 && number(now[i], "z") == 0 && number(now[i], "ring") == 0);
+  }
+  CHECK(origin);
+
+  // Rings that do not grow outward are refused with a sentence, on a session with no world yet
+  // (the ring's parameters are its first call's, so the desert's would not be looked at again).
+  const std::string other_dir = tmp.file("other");
+  REQUIRE(cli({"--doc", other_dir, "--create", "--name", "Other", "session.info"}).exit_code == 0);
+  const std::string other = open_session(host, other_dir, false);
+  CHECK(error_code(host.call(
+            "session.run_headless",
+            "{\"session\":\"" + other + "\",\"seconds\":0.1,\"stream\":{\"rings\":[3,1.5]}}")) ==
+        k_invalid_argument);
+}
+#endif
+
 TEST_CASE("ops: session.materialize reports which types mapped and which records were skipped") {
   const test::TempDir tmp("ops_materialize");
   REQUIRE(tmp.ok());

@@ -1438,8 +1438,72 @@ struct MaterializeResult @version(1) {
 // call, what changed since on later ones), and what systems change in the writable fields comes
 // back as commits attributed to `system` (docs/subsystems/protocol.md, "session.run_headless").
 
+/// An observer a headless run declares: where it starts, how it moves, and its weight (05 §5.4).
+struct HeadlessObserver @version(1) {
+  position: vec3 @unit(m)
+  /// Metres per game second, applied every tick: a declared observer that walks the world.
+  velocity: vec3
+  weight: f32 = 1
+}
+
+/// A headless run streamed tile by tile (the world capability, docs/subsystems/world.md): the
+/// tile ring round the declared observers, updated between every two ticks, materializing the
+/// document's partitioned layers a tile at a time and reconciling each tile from the store. The
+/// ring outlives the call, as the runtime world does; its parameters are the first call's.
+struct HeadlessWorld @version(1) {
+  /// A tile's edge, metres: the document's partitioned layers must be on the same grid.
+  tile_size: f32 = 32
+  /// Radii of the rings in tiles, innermost first. Empty: the capability's 1.5, 8 and 24.
+  rings: f32[]
+  hysteresis: f32 = 0.15
+  /// How many rings, innermost first, the document is materialized and the store reconciled in.
+  simulated: u32 = 2
+  observers: HeadlessObserver[]
+  /// Keep the tiles in the document's store (`world.db` beside it, created when absent): each
+  /// tile's projections and snapshot written when it goes, and read back when it returns.
+  store: bool = true
+}
+
+/// One active tile of a headless world after the call.
+struct HeadlessTile @version(1) {
+  x: i32 = 0
+  z: i32 = 0
+  ring: u32 = 0
+}
+
+/// What a headless run's world did during the call.
+struct HeadlessWorldResult @version(1) {
+  /// Updates (one a tick, and one before the first) and the tiles' events over them.
+  updates: u32 = 0
+  activated: u32 = 0
+  changed: u32 = 0
+  deactivated: u32 = 0
+  refused: u32 = 0
+  /// Active tiles after the call, in tile order (x, then z).
+  tiles: HeadlessTile[]
+  /// The document consumer: tiles materialized and let go, entities created and dematerialized.
+  materialized_tiles: u32 = 0
+  dematerialized_tiles: u32 = 0
+  created: u32 = 0
+  dematerialized: u32 = 0
+  /// The store consumer: tiles reconciled (and of them known to the store), summarizers run over
+  /// their gaps, records read back, and tiles written when they went.
+  reconciled: u32 = 0
+  known: u32 = 0
+  summarized: u32 = 0
+  records: u32 = 0
+  written: u32 = 0
+  /// The ring update's microseconds, median and worst, and each consumer's milliseconds.
+  ring_us_median: f64 = 0
+  ring_us_max: f64 = 0
+  document_ms: f64 = 0
+  store_ms: f64 = 0
+  /// Whether the store was kept; false when the build has none or `store` was false.
+  store: bool = false
+}
+
 /// Parameters of `session.run_headless`.
-struct RunHeadlessParams @version(2) {
+struct RunHeadlessParams @version(3) {
   session: string
   /// Game seconds to advance at the fixed step; with `until`, the most to advance before giving
   /// up. 0..3600.
@@ -1458,9 +1522,13 @@ struct RunHeadlessParams @version(2) {
   /// (one transaction attributed to `system`, and an event in the store's log when the document
   /// has one). 0 commits only when the call returns, which it always does with whatever is left.
   write_back_every: u32 = 60 @since(2)
+  /// Stream the world tile by tile round these observers instead of materializing the whole
+  /// document (a build with the world capability; 1006 Unavailable without one). Null: the whole
+  /// document, as before.
+  stream: HeadlessWorld? @since(3)
 }
 
-struct RunHeadlessResult @version(2) {
+struct RunHeadlessResult @version(3) {
   /// Ticks this call ran, and the game time they advanced.
   ticks: u64 = 0
   game_seconds: f64 = 0
@@ -1493,6 +1561,8 @@ struct RunHeadlessResult @version(2) {
   /// Write-back commits this call made, and the fields they wrote.
   write_backs: u32 = 0 @since(2)
   written_fields: u32 = 0 @since(2)
+  /// The streamed world's call, when `stream` was given.
+  streamed: HeadlessWorldResult? @since(3)
 }
 
 // ---- engine.run_tests --------------------------------------------------------------------------

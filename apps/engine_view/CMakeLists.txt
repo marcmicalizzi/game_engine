@@ -34,6 +34,13 @@ if(TARGET engine::ruins)
   list(APPEND _view_deps ruins)
   list(APPEND _view_tests tests/ruins_view_tests.cpp)
 endif()
+if(TARGET engine::world)
+  # `--world`: a streamed scene's tile ring with the camera as its observer (world_view.cpp,
+  # docs/subsystems/world.md). The world capability is optional (ADR-0027), so this is the same
+  # hand-made switch as `--animate`'s: linked where it is configured, `--world` refused elsewhere.
+  list(APPEND _view_deps world sim)
+  set(_view_world world_view.cpp)
+endif()
 if(TARGET engine::animation)
   # The animation-LOD glue is a header beside main.cpp (`anim_lod.h`) rather than a block inside
   # it, because it is the pattern a game copies and because it is worth testing on its own: the
@@ -44,7 +51,7 @@ if(TARGET engine::animation)
 endif()
 
 engine_app(NAME engine_view OUTPUT engine-view
-  SOURCES main.cpp ${_view_interactive}
+  SOURCES main.cpp ${_view_interactive} ${_view_world}
   DEPS ${_view_deps}
   E2E_TESTS ${_view_tests})
 # engine-view presents, so it is one of the few targets that see the Vulkan backend set
@@ -65,6 +72,12 @@ if(TARGET engine::animation)
   target_compile_definitions(engine_engine_view PRIVATE ENGINE_VIEW_ANIMATION=1)
   if(TARGET engine_engine_view_tests)
     target_compile_definitions(engine_engine_view_tests PRIVATE ENGINE_VIEW_ANIMATION=1)
+  endif()
+endif()
+if(TARGET engine::world)
+  target_compile_definitions(engine_engine_view PRIVATE ENGINE_VIEW_WORLD=1)
+  if(TARGET engine_engine_view_tests)
+    target_compile_definitions(engine_engine_view_tests PRIVATE ENGINE_VIEW_WORLD=1)
   endif()
 endif()
 # The mesh end-to-end test also drives engine-content; apps/engine_content/CMakeLists.txt adds

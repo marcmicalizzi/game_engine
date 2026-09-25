@@ -25,6 +25,7 @@
 #include "fly_camera.h"
 #include "pacing.h"
 #include "window_input.h"
+#include "world_view.h"  // empty without the world capability (ENGINE_VIEW_WORLD)
 
 #include <core/hash/hash.h>
 #include <core/jobs/job_system.h>
@@ -133,6 +134,7 @@ constexpr const char* k_usage =
     "                   [--warmup-seconds <s>] [--census-pixels]\n"
     "                   [--verify-occlusion] [--marker-captures <dir>] [--capture-channels <list>]\n"
     "                   [--require-quiet] [--wait-quiet <seconds>]\n"
+    "                   [--world] [--world-log <out.jsonl>] [--world-handover <out.jsonl>]\n"
     "                   [--interactive] [--start <x,y,z> <yaw,pitch>] [--record-input <log.jsonl>]\n"
     "                   [--replay-input <log.jsonl>]\n"
     "                   [--inject-input <log.jsonl>] [--input-map <map.json>]\n"
@@ -309,6 +311,17 @@ constexpr const char* k_usage =
     "                   <stem>.ids.bin + .ids.json, <stem>.depth.png and <stem>.normals.png\n"
     "  --require-quiet  --benchmark: measure nothing on a busy machine; exit 4 instead\n"
     "  --wait-quiet <s> --benchmark: wait up to s seconds for a quiet machine, then run anyway\n"
+    "  --world          stream the scene tile by tile round the camera (the world capability,\n"
+    "                   docs/subsystems/world.md): its ruins entries are assembled a tile at a time\n"
+    "                   as the ring activates them — blocks in the inner ring, sections beyond —\n"
+    "                   and dropped when it lets them go. A scene file's \"world\" block does the\n"
+    "                   same with its own rings; without either the scene is read whole. Rigid and\n"
+    "                   rasterized: refuses --raster rt, --shadows rt and --deform\n"
+    "  --world-log <f>  --world: one engine.world.TileFrame per update (tiles, events, the ring's\n"
+    "                   microseconds, each consumer's share), then the run's summary\n"
+    "  --world-handover <f>  --world offscreen: fly the path again, untimed, and at every tile that\n"
+    "                   changes representation draw the frame with its old and its new instances;\n"
+    "                   one engine.world.TileHandover per change: what popped\n"
     "  --interactive    fly the camera: WASD, E/Space up, Q/Ctrl down, the mouse to look while the\n"
     "                   window holds the pointer (Esc takes it and gives it back), Shift fast, Alt\n"
     "                   slow, M drops a marker; a gamepad's sticks, triggers, stick clicks, Back\n"
@@ -351,6 +364,12 @@ constexpr int k_exit_unavailable = 3;
 // script tells "come back later" from a failure the same way for both.
 constexpr int k_exit_busy = 4;
 constexpr u32 k_frames_in_flight = 2;
+
+// How a frame's streamed-world update treats the ring's budget (world_view.h's `Mode`, spelled here
+// so the frame loops read the same with and without the world capability): a moving camera's frame,
+// a capture from a camera the ring has not followed (the whole ring now), or a repeat's start
+// (every tile dropped first, so each repeat begins from the same world).
+enum class WorldStep : u8 { budgeted, complete, restart };
 
 struct Options {
   u32 width = 1280;
@@ -431,6 +450,11 @@ struct Options {
   renderer::CaptureChannels capture_channels;
   bool require_quiet = false;
   u32 wait_quiet_s = 0;
+  // A streamed world (world_view.h): `--world` asks for it on a scene file with no `world` block,
+  // which has one of its own otherwise; the log and the handover pass are the measurements.
+  bool world = false;
+  std::string world_log;
+  std::string world_handover;
   // The interactive camera (fly_camera.h). `--replay-input` implies `interactive`; `offscreen`
   // is resolved after parsing, because `--benchmark` means "offscreen" for a flythrough and a
   // replay and "measure the window" for a live session somebody is flying.
@@ -1726,6 +1750,9 @@ int run_offscreen(Options& options, Interactive& interactive) {
   renderer::GpuScene scene_off;
   renderer::SceneRenderer renderer_off;
   renderer::VisibleCensus census;
+#if ENGINE_VIEW_WORLD
+  view::ViewWorld view_world;  // a streamed world, when the scene is one (world_view.h)
+#endif
   renderer::CameraPath path;
   bool have_path = false;
   u32 frames = 0;
@@ -1759,12 +1786,26 @@ int run_offscreen(Options& options, Interactive& interactive) {
     if (!options.scene.empty()) {
       renderer::SceneFileOptions file_options;
       file_options.overlay = options.overlay;
+      file_options.world = options.world;
       if (!renderer::read_scene_file(options.scene, file_options, desc, error)) {
         exit_code = fail("scene", error);
         break;
       }
     } else {
       desc.meshes.push_back(options.mesh);
+    }
+    if (options.world && !desc.world.enabled) {
+      exit_code = fail("world", "--world streams a scene file's ruins; name one with --scene");
+      break;
+    }
+    // The flags' own conflicts were refused before anything was read; these are the file's.
+    if (desc.world.enabled && (options.verify_occlusion || options.animate ||
+                               options.morph_animate || options.reference != 0)) {
+      exit_code = fail("world",
+                       "the scene file's \"world\" block streams its instances between frames, "
+                       "which --verify-occlusion, --animate, --morph-animate and --reference do "
+                       "not draw");
+      break;
     }
     if (!renderer::load_scene(desc, scene_data, error)) {
       exit_code = fail("mesh", error);
@@ -1856,6 +1897,37 @@ int run_offscreen(Options& options, Interactive& interactive) {
                  ? renderer::camera_path_frame(path, f, frames)
                  : renderer::orbit_camera(scene_data.center, scene_data.radius, options.orbit, f);
     };
+    // A streamed world (world_view.h): its ring round the camera, updated before every frame from
+    // that frame's camera. Everything that draws below calls `world_before` first.
+#if ENGINE_VIEW_WORLD
+    if (scene_data.world.enabled) {
+      if (!view_world.create(scene_data, view_renderer, &error)) {
+        exit_code = fail("world", error);
+        break;
+      }
+      if (!options.world_log.empty() && !view_world.open_log(options.world_log, &error)) {
+        exit_code = fail("world-log", error);
+        break;
+      }
+    } else if (!options.world_log.empty() || !options.world_handover.empty()) {
+      exit_code = fail("world",
+                       "--world-log and --world-handover need a streamed world: --world, "
+                       "or a scene file with a \"world\" block");
+      break;
+    }
+    u64 world_tick = 0;
+    auto world_before = [&](const renderer::Camera& camera, WorldStep step, u32 repeat, u32 f,
+                            bool recorded) {
+      const view::ViewWorld::Mode mode = step == WorldStep::restart ? view::ViewWorld::Mode::Restart
+                                         : step == WorldStep::complete
+                                             ? view::ViewWorld::Mode::Complete
+                                             : view::ViewWorld::Mode::Budgeted;
+      return !view_world.valid() ||
+             view_world.update(camera, world_tick++, mode, repeat, f, recorded, &error);
+    };
+#else
+    auto world_before = [](const renderer::Camera&, WorldStep, u32, u32, bool) { return true; };
+#endif
 
     if (interactive.on) {
       // ---- a recorded session, flown again ----------------------------------------------------
@@ -1885,6 +1957,13 @@ int run_offscreen(Options& options, Interactive& interactive) {
       bool ok = true;
       for (u32 f = 0; f < frames; ++f) {
         const i64 start = time::monotonic_ns();
+        // A streamed world follows the camera a frame behind: the tail changes between frames, and
+        // this frame's camera is only known once its ticks have run, after `begin_frame`.
+        if (!world_before(session.camera(), f == 0 ? WorldStep::restart : WorldStep::budgeted, 0, f,
+                          true)) {
+          ok = false;
+          break;
+        }
         view_renderer.begin_frame();
         take_folded(view_renderer, folded, pending, records);
         const i64 ready = time::monotonic_ns();
@@ -1943,6 +2022,22 @@ int run_offscreen(Options& options, Interactive& interactive) {
       flight_options.warmup = options.warmup;
       flight_options.warmup_seconds = static_cast<f64>(options.warmup_seconds);
       flight_options.frames_in_flight = k_frames_in_flight;
+      // A streamed world updates between frames from each frame's own camera, and starts every
+      // repeat over (its first warm-up frame, or its first frame with no warm-up), so the repeats
+      // fly the same world.
+      struct WorldHook {
+        decltype(world_before)* before = nullptr;
+        bool no_warmup = false;
+      } world_hook{&world_before, options.warmup == 0};
+      flight_options.before_frame = [](void* context, const renderer::FlightStep& step,
+                                       std::string*) {
+        const auto* hook = static_cast<const WorldHook*>(context);
+        const bool first =
+            step.warmup == 0 || (hook->no_warmup && step.recorded && step.frame == 0);
+        return (*hook->before)(step.camera, first ? WorldStep::restart : WorldStep::budgeted,
+                               step.repeat, step.frame, step.recorded);
+      };
+      flight_options.before_frame_context = &world_hook;
       renderer::Flight flight;
       if (!renderer::fly_camera_path(view_renderer, path, flight_options, flight, &error)) {
         exit_code = fail("frame", error);
@@ -1965,12 +2060,15 @@ int run_offscreen(Options& options, Interactive& interactive) {
         // from is theirs and its visible pairs can be compared with theirs frame by frame.
         bool ok = true;
         for (u32 w = 0; w < options.warmup && ok; ++w) {
+          ok = world_before(camera_at(0), w == 0 ? WorldStep::restart : WorldStep::budgeted, 0, 0,
+                            false);
           view_renderer.begin_frame();
           renderer::FrameDesc frame;
           frame.camera = camera_at(0);
           frame.frame_index = 0;
-          ok = view_renderer.submit_frame(frame, &error) != 0;
+          ok = ok && view_renderer.submit_frame(frame, &error) != 0;
         }
+        if (options.warmup == 0) ok = world_before(camera_at(0), WorldStep::restart, 0, 0, false);
         view_renderer.wait_idle();
         Vector<Vector<u32>> levels_of(frames);
         Vector<Vector<u32>> meshes_of(frames);
@@ -1981,6 +2079,10 @@ int run_offscreen(Options& options, Interactive& interactive) {
           renderer::FrameDesc frame;
           frame.camera = camera_at(f);
           frame.frame_index = f;
+          if (!world_before(frame.camera, WorldStep::budgeted, 0, f, false)) {
+            ok = false;
+            break;
+          }
           // With pixels the frame is drawn by the capture, which reads the ids back after it;
           // either way it is one frame per camera, as in the timed pass, so the history matches.
           renderer::CapturedFrame shot;
@@ -1993,9 +2095,9 @@ int run_offscreen(Options& options, Interactive& interactive) {
             pixels_of[f].assign(scene_data.parts.size(), 0u);
             const u32 pixels = shot.width * shot.height;
             for (u32 p = 0; p < pixels; ++p) {
-              const u32 instance = shot.ids[p * renderer::k_id_words];
-              if (instance < scene_data.instances.size())
-                ++pixels_of[f][scene_data.instances[instance].mesh];
+              // Through the GPU scene's table, which holds a streamed world's tail as well.
+              const u32 mesh = scene.instance_mesh(shot.ids[p * renderer::k_id_words]);
+              if (mesh < pixels_of[f].size()) ++pixels_of[f][mesh];
             }
           }
         }
@@ -2013,11 +2115,27 @@ int run_offscreen(Options& options, Interactive& interactive) {
             ++summary.census_mismatched_frames;
         }
       }
+#if ENGINE_VIEW_WORLD
+      // ---- a streamed world's handovers: the same path, one frame at a time, untimed ----------
+      if (!options.world_handover.empty()) {
+        u32 handovers = 0;
+        if (!view_world.fly_handovers(path, frames, options.world_handover, handovers, &error)) {
+          exit_code = fail("world-handover", error);
+          break;
+        }
+        ENGINE_LOG_INFO(log_view, "world handovers", log::field("changes", handovers),
+                        log::field("file", options.world_handover));
+      }
+#endif
     } else if (!options.verify_occlusion && options.marker_captures.empty()) {
       // ---- a plain offscreen run: the frames, and the last one captured -------------------
       view_renderer.reset_stats();
       u64 last = 0;
       for (u32 f = 0; f < frames; ++f) {
+        if (!world_before(camera_at(f), f == 0 ? WorldStep::restart : WorldStep::budgeted, 0, f,
+                          true)) {
+          break;
+        }
         view_renderer.begin_frame();
         renderer::FrameDesc frame;
         frame.camera = camera_at(f);
@@ -2131,6 +2249,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
         frame.camera =
             view::fly_view(marker.state, interactive.header.fov_y, interactive.header.znear);
         frame.frame_index = marker.tick * view::k_frame_index_hz / tick_hz;
+        ok = world_before(frame.camera, WorldStep::complete, 0, 0, false);
         for (u32 k = 0; k < 8 && ok; ++k)
           ok = view_renderer.render_offscreen(frame, &error);
         renderer::CapturedFrame shot;
@@ -2167,7 +2286,8 @@ int run_offscreen(Options& options, Interactive& interactive) {
         frame.camera = camera_at(f);
         frame.frame_index = f;
         // A few frames at the marker's camera first, so a streamed scene has its pages and the
-        // occlusion history is this view's, and then the picture.
+        // occlusion history is this view's, and then the picture — and a streamed world its ring.
+        ok = world_before(frame.camera, WorldStep::complete, 0, f, false);
         for (u32 k = 0; k < 8 && ok; ++k)
           ok = view_renderer.render_offscreen(frame, &error);
         renderer::CapturedFrame shot;
@@ -2196,7 +2316,9 @@ int run_offscreen(Options& options, Interactive& interactive) {
         frame.frame_index = session.frame_index();
       }
       renderer::CapturedFrame shot;
-      if (!view_renderer.capture(frame, options.capture_channels, shot, &error)) {
+      if (!world_before(frame.camera, WorldStep::complete, 0, static_cast<u32>(frame.frame_index),
+                        false) ||
+          !view_renderer.capture(frame, options.capture_channels, shot, &error)) {
         exit_code = fail("capture", error);
         break;
       }
@@ -2218,6 +2340,9 @@ int run_offscreen(Options& options, Interactive& interactive) {
     summary.frames = frames;
     summary.repeats = measured ? repeats : 0;
     summary.warmup = measured && !interactive.on ? options.warmup : 0;
+#if ENGINE_VIEW_WORLD
+    if (view_world.valid()) summary.world = view_world.summary_json();
+#endif
     if (interactive.on) summary.interactive = interactive_summary(interactive, session, options);
     if (measured) {
       renderer::summarize_frames(
@@ -2248,6 +2373,9 @@ int run_offscreen(Options& options, Interactive& interactive) {
     }
   }
   census.destroy();
+#if ENGINE_VIEW_WORLD
+  view_world.close_log();  // the summary line, while the world it summarizes is still whole
+#endif
   renderer_off.destroy();
   view_renderer.destroy();
   page_source.destroy();
@@ -2614,6 +2742,12 @@ int main(int argc, char** argv) {
       options.census_pixels = true;
     } else if (a == "--verify-occlusion") {
       options.verify_occlusion = true;
+    } else if (a == "--world") {
+      options.world = true;
+    } else if (a == "--world-log") {
+      if (!next_value(argc, argv, i, a, options.world_log)) return k_exit_usage;
+    } else if (a == "--world-handover") {
+      if (!next_value(argc, argv, i, a, options.world_handover)) return k_exit_usage;
     } else if (a == "--require-quiet") {
       options.require_quiet = true;
     } else if (a == "--repeat" || a == "--warmup" || a == "--wait-quiet") {
@@ -2793,6 +2927,36 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "engine-view: --census reads back a --benchmark run's frames\n");
     return k_exit_usage;
   }
+  // ---- a streamed world (world_view.h) ----------------------------------------------------------
+  // What the scene file says is only known once it is read, so these are the flags' own
+  // conflicts; a file whose `world` block meets one of them is refused when it is read.
+  if (options.world || !options.world_log.empty() || !options.world_handover.empty()) {
+#if !ENGINE_VIEW_WORLD
+    std::fprintf(stderr,
+                 "engine-view: --world, --world-log and --world-handover need the world "
+                 "capability, and this build has none (ENGINE_WITH_WORLD=OFF or "
+                 "ENGINE_MINIMAL=ON)\n");
+    return k_exit_usage;
+#else
+    if (options.settings.raster == renderer::RasterMode::RayTrace ||
+        options.settings.shadows == renderer::ShadowMode::RayTraced || options.settings.deform ||
+        options.reference != 0 || options.verify_occlusion || options.animate ||
+        options.morph_animate) {
+      std::fprintf(
+          stderr,
+          "engine-view: a streamed world's instances come and go between frames, which "
+          "v0 rasterizes rigid: --raster rt, --shadows rt, --deform, --animate, --morph-animate, "
+          "--reference and --verify-occlusion are refused with --world\n");
+      return k_exit_usage;
+    }
+    if (!options.world_handover.empty() && (!options.offscreen || options.camera_path.empty())) {
+      std::fprintf(stderr,
+                   "engine-view: --world-handover flies a --camera-path offscreen, one frame at a "
+                   "time; add both\n");
+      return k_exit_usage;
+    }
+#endif
+  }
   if (options.reference != 0 && !options.camera_path.empty()) {
     std::fprintf(stderr,
                  "engine-view: --reference renders one frame from the orbit camera; fly a path "
@@ -2932,6 +3096,13 @@ int main(int argc, char** argv) {
       jobs::JobSystemConfig{.performance_workers = 1, .efficiency_workers = 2});
   renderer::FilePageSource page_source;
   renderer::SceneRenderer view_renderer;
+#if ENGINE_VIEW_WORLD
+  // A streamed world, following the camera a frame behind: the loop below knows a frame's camera
+  // only after it has begun the frame, and the tail changes between frames (world_view.h).
+  view::ViewWorld view_world;
+  renderer::Camera world_camera;
+  bool world_camera_set = false;
+#endif
   renderer::CameraPath window_path;  // --camera-path; empty keys: the orbit or the fly-in
   renderer::CameraPath scene_path;   // the scene file's own, read only to start a live session
   u64 rendered = 0;
@@ -3016,13 +3187,28 @@ int main(int argc, char** argv) {
     desc.cache = options.cache;
     desc.stream = options.settings.stream;  // keep the page table for the residency manager
     if (!options.scene.empty()) {
-      if (!renderer::read_scene_file(options.scene, renderer::SceneFileOptions{options.overlay},
-                                     desc, error)) {
+      renderer::SceneFileOptions file_options;
+      file_options.overlay = options.overlay;
+      file_options.world = options.world;
+      if (!renderer::read_scene_file(options.scene, file_options, desc, error)) {
         exit_code = fail("scene", error);
         break;
       }
     } else {
       desc.meshes.push_back(options.mesh);  // empty: the procedural heightfield
+    }
+    if (options.world && !desc.world.enabled) {
+      exit_code = fail("world", "--world streams a scene file's ruins; name one with --scene");
+      break;
+    }
+    // The flags' own conflicts were refused before anything was read; these are the file's.
+    if (desc.world.enabled && (options.verify_occlusion || options.animate ||
+                               options.morph_animate || options.reference != 0)) {
+      exit_code = fail("world",
+                       "the scene file's \"world\" block streams its instances between frames, "
+                       "which --verify-occlusion, --animate, --morph-animate and --reference do "
+                       "not draw");
+      break;
     }
 
 #if ENGINE_VIEW_ANIMATION
@@ -3194,6 +3380,18 @@ int main(int argc, char** argv) {
       exit_code = fail("renderer", error);
       break;
     }
+#if ENGINE_VIEW_WORLD
+    if (scene_data.world.enabled) {
+      if (!view_world.create(scene_data, view_renderer, &error)) {
+        exit_code = fail("world", error);
+        break;
+      }
+      if (!options.world_log.empty() && !view_world.open_log(options.world_log, &error)) {
+        exit_code = fail("world-log", error);
+        break;
+      }
+    }
+#endif
     extent_width = view_renderer.width();
     extent_height = view_renderer.height();
     ENGINE_LOG_INFO(log_view, "ready", log::field("clusters", scene_data.cluster_count()),
@@ -3332,6 +3530,18 @@ int main(int argc, char** argv) {
         }
       }
 
+#if ENGINE_VIEW_WORLD
+      // The streamed world from the last frame's camera, before this frame begins: the first
+      // frame fills the ring whole round where the camera starts.
+      if (view_world.valid() && world_camera_set &&
+          !view_world.update(
+              world_camera, rendered,
+              rendered <= 1 ? view::ViewWorld::Mode::Complete : view::ViewWorld::Mode::Budgeted, 0,
+              static_cast<u32>(rendered), true, &error)) {
+        exit_code = fail("world", error);
+        break;
+      }
+#endif
       // The CPU's share of the frame is everything but the two waits below: for a free frame slot
       // (the GPU) and for a swapchain image (the display).
       const i64 before_waits = time::monotonic_ns();
@@ -3419,6 +3629,10 @@ int main(int argc, char** argv) {
                                                     options.orbit, rendered);
         frame.frame_index = rendered;
       }
+#if ENGINE_VIEW_WORLD
+      world_camera = frame.camera;  // the next frame's world follows this one
+      world_camera_set = true;
+#endif
 #if ENGINE_VIEW_ANIMATION
       // The camera first, then the tick: `update_animation_lod` reads **this** frame's frusta and
       // sets each instance's tier, and `step_animation` then ticks the world with the divisors
@@ -3597,6 +3811,9 @@ int main(int argc, char** argv) {
       summary.quiet =
           bench::is_quiet(bench::worst_of(machine_start, machine_end), bench::QuietThresholds{});
       summary.interactive = interactive_summary(interactive, session, options);
+#if ENGINE_VIEW_WORLD
+      if (view_world.valid()) summary.world = view_world.summary_json();
+#endif
       const io::Status status = write_benchmark(
           options.benchmark, std::span<const scene::FrameRecord>(records.data(), records.size()),
           write_json(schema::to_json(summary), JsonWriteOptions{.pretty = false}));
@@ -3616,6 +3833,9 @@ int main(int argc, char** argv) {
   // something. The peak beside it says whether the load ever *materialized* what it then freed.
   const u64 host_memory = platform::process_memory_bytes();
   const u64 host_memory_peak = platform::peak_process_memory_bytes();
+#if ENGINE_VIEW_WORLD
+  view_world.close_log();  // the world log's summary line, while the world is still whole
+#endif
   view_renderer.destroy();
   page_source.destroy();
   scene.destroy();

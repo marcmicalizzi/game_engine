@@ -32,6 +32,7 @@
 #include <systems/renderer/scene_renderer.h>
 #include <systems/renderer/settings.h>
 
+#include <algorithm>
 #include <cmath>
 #include <memory>
 #include <optional>
@@ -77,6 +78,12 @@
 #if defined(ENGINE_HOST_TISSUE)
 #include <domain/tissue/tissue_file.h>
 #include <domain/tissue/validate.h>
+#endif
+#if defined(ENGINE_HOST_WORLD)
+#include <systems/world/document_tiles.h>
+#include <systems/world/store_tiles.h>
+#include <systems/world/tile_store.h>
+#include <systems/world/world.h>
 #endif
 
 namespace engine::host {
@@ -140,7 +147,48 @@ class RuntimeWorld {
   const audio::Mixer& mixer() const noexcept { return mixer_; }
 #endif
 
+#if defined(ENGINE_HOST_WORLD)
+  // ---- a streamed world (`session.run_headless` with `stream`; docs/subsystems/world.md) --------
+  // The tile ring round the call's declared observers, the document consumer over this world's
+  // driver and the store consumer over the document's `world.db`, made by the first call that asks
+  // and kept, like the rest of the world, while the host runs. Each call sets the observers where
+  // it declares them; the ring's parameters are the first call's.
+  bool stream(const protocol::HeadlessWorld& params, std::string& error);
+  bool streaming() const noexcept { return streamed_ != nullptr; }
+  // One update of the ring, between two ticks: the first of a call fills it with no budget.
+  void stream_update(bool unlimited);
+  // The observers move by their velocities over one fixed step.
+  void advance_observers();
+  // What the world did since `begin_report`, into the call's result.
+  void begin_report();
+  void fill_report(protocol::HeadlessWorldResult& out) const;
+#endif
+
  private:
+#if defined(ENGINE_HOST_WORLD)
+  struct Streamed {
+    world::World world;
+    std::unique_ptr<world::DocumentTiles> document;
+    world::WorldStore store;
+    std::unique_ptr<world::StoreTiles> store_tiles;
+    bool store_open = false;
+    Vector<Vec3> positions;
+    Vector<Vec3> velocities;
+    Vector<f32> weights;
+    // The report's baseline: totals when the call began, and each update's ring time since.
+    u64 events_before = 0;
+    Vector<world::ConsumerStats> consumers_before;
+    world::DocumentTilesStats document_before;
+    world::StoreTilesStats store_before;
+    u32 updates = 0;
+    u32 activated = 0;
+    u32 changed = 0;
+    u32 deactivated = 0;
+    u32 refused = 0;
+    Vector<f64> ring_us;
+  };
+  std::unique_ptr<Streamed> streamed_;
+#endif
   // The rate every other fixed step in the engine runs at (engine-view's animated world, the
   // deformation phase), so a second of `run_headless` is the same sixty ticks it is everywhere.
   static constexpr u32 k_hz = 60;
@@ -330,6 +378,160 @@ bool RuntimeWorld::component_json([[maybe_unused]] const Id128& id,
   return false;
 #endif
 }
+
+#if defined(ENGINE_HOST_WORLD)
+bool RuntimeWorld::stream(const protocol::HeadlessWorld& params, std::string& error) {
+  if (session_ptr_ == nullptr) {
+    error = "the world has no session";
+    return false;
+  }
+  if (streamed_ == nullptr) {
+    world::RingParams ring;
+    ring.tile_size = params.tile_size;
+    if (!params.rings.empty()) {
+      if (params.rings.size() > world::k_max_rings) {
+        error = "world.rings has at most 7 radii";
+        return false;
+      }
+      ring.ring_count = params.rings.size();
+      for (u32 r = 0; r < world::k_max_rings; ++r)
+        ring.radius[r] = r < params.rings.size() ? params.rings[r] : 0.0f;
+    }
+    ring.hysteresis = params.hysteresis;
+    ring.max_activations = world::max_activations_tunable();
+    ring.max_deactivations = world::max_deactivations_tunable();
+    auto made = std::make_unique<Streamed>();
+    const char* why = nullptr;
+    if (!made->world.configure(ring, &why)) {
+      error = std::string("world: ") + why;
+      return false;
+    }
+    // The simulation's rings, innermost first: the document is materialized and the store
+    // reconciled in them and nowhere else (world.md, "The consumers").
+    const u32 simulated = params.simulated < ring.ring_count ? params.simulated : ring.ring_count;
+    const u8 rings = static_cast<u8>((1u << simulated) - 1u);
+    made->document = std::make_unique<world::DocumentTiles>(driver_, scheduler_, ring.tile_size);
+    made->document->bind(&session_ptr_->document());
+    made->world.add_consumer(made->document->consumer(rings));
+    if (params.store) {
+      // The document's own store, `session.events`' convention: `world.db` beside it.
+      std::string native;
+      const std::string wanted = io::join_path(session_ptr_->dir(), "world.db");
+      if (vfs_ != nullptr && vfs_->resolve(wanted, native) == io::Status::Ok) {
+        const store::Status status = made->store.open(native, true);
+        if (status != store::Status::Ok) {
+          error = "world.db could not be opened: " + std::string(store::status_name(status));
+          return false;
+        }
+        made->store_open = true;
+        world::StoreTilesBinding binding;
+        binding.store = &made->store;
+        binding.scheduler = &scheduler_;
+        binding.driver = &driver_;
+        binding.document = &session_ptr_->document();
+        binding.world = &made->world;
+        binding.materialize_tier = k_tier;
+        made->store_tiles = std::make_unique<world::StoreTiles>(binding);
+        made->world.add_consumer(made->store_tiles->consumer(rings));
+      }
+    }
+    streamed_ = std::move(made);
+    ENGINE_LOG_INFO(log_ops, "world", log::field("session", session_),
+                    log::field("tile_size", ring.tile_size), log::field("rings", ring.ring_count),
+                    log::field("simulated", simulated), log::field("store", streamed_->store_open));
+  }
+  // The session's document, which is the host's and may have been reopened since.
+  streamed_->document->bind(&session_ptr_->document());
+  if (streamed_->store_tiles != nullptr)
+    streamed_->store_tiles->rebind_document(&session_ptr_->document());
+  streamed_->positions.clear();
+  streamed_->velocities.clear();
+  streamed_->weights.clear();
+  for (const protocol::HeadlessObserver& o : params.observers) {
+    streamed_->positions.push_back(o.position);
+    streamed_->velocities.push_back(o.velocity);
+    streamed_->weights.push_back(o.weight);
+  }
+  return true;
+}
+
+void RuntimeWorld::stream_update(bool unlimited) {
+  if (streamed_ == nullptr) return;
+  sim::ObserverSet observers;
+  for (u32 i = 0; i < streamed_->positions.size(); ++i)
+    observers.add(streamed_->positions[i], streamed_->weights[i]);
+  const world::UpdateStats& s =
+      streamed_->world.update(observers, scheduler_.tick().value, unlimited);
+  ++streamed_->updates;
+  streamed_->activated += s.activated;
+  streamed_->changed += s.changed;
+  streamed_->deactivated += s.deactivated;
+  streamed_->refused += s.refused;
+  streamed_->ring_us.push_back(static_cast<f64>(s.ring_ns) / 1.0e3);
+}
+
+void RuntimeWorld::advance_observers() {
+  if (streamed_ == nullptr) return;
+  const f32 seconds = static_cast<f32>(scheduler_.step_size().us) / 1.0e6f;
+  for (u32 i = 0; i < streamed_->positions.size(); ++i)
+    streamed_->positions[i] = streamed_->positions[i] + streamed_->velocities[i] * seconds;
+}
+
+void RuntimeWorld::begin_report() {
+  if (streamed_ == nullptr) return;
+  Streamed& s = *streamed_;
+  s.updates = s.activated = s.changed = s.deactivated = s.refused = 0;
+  s.ring_us.clear();
+  s.consumers_before.clear();
+  for (u16 i = 0; i < s.world.consumer_count(); ++i)
+    s.consumers_before.push_back(s.world.consumer_stats(i));
+  s.document_before = s.document->stats();
+  s.store_before = s.store_tiles != nullptr ? s.store_tiles->stats() : world::StoreTilesStats{};
+}
+
+void RuntimeWorld::fill_report(protocol::HeadlessWorldResult& out) const {
+  if (streamed_ == nullptr) return;
+  const Streamed& s = *streamed_;
+  out.updates = s.updates;
+  out.activated = s.activated;
+  out.changed = s.changed;
+  out.deactivated = s.deactivated;
+  out.refused = s.refused;
+  const world::TileRing& ring = s.world.ring();
+  for (u32 i = 0; i < ring.active_count(); ++i) {
+    const world::TileCoord tile = world::tile_of_key(ring.active_keys()[i]);
+    protocol::HeadlessTile t;
+    t.x = tile.x;
+    t.z = tile.z;
+    t.ring = ring.active_rings()[i];
+    out.tiles.push_back(t);
+  }
+  const world::DocumentTilesStats& d = s.document->stats();
+  out.materialized_tiles = static_cast<u32>(d.activated - s.document_before.activated);
+  out.dematerialized_tiles = static_cast<u32>(d.deactivated - s.document_before.deactivated);
+  out.created = static_cast<u32>(d.created - s.document_before.created);
+  out.dematerialized = static_cast<u32>(d.dematerialized - s.document_before.dematerialized);
+  out.document_ms = static_cast<f64>((d.materialize_ns - s.document_before.materialize_ns) +
+                                     (d.dematerialize_ns - s.document_before.dematerialize_ns)) /
+                    1.0e6;
+  if (s.store_tiles != nullptr) {
+    const world::StoreTilesStats& t = s.store_tiles->stats();
+    out.reconciled = static_cast<u32>(t.reconciled - s.store_before.reconciled);
+    out.known = static_cast<u32>(t.known - s.store_before.known);
+    out.summarized = static_cast<u32>(t.summarized - s.store_before.summarized);
+    out.records = static_cast<u32>(t.records - s.store_before.records);
+    out.written = static_cast<u32>(t.written - s.store_before.written);
+    out.store_ms = static_cast<f64>((t.reconcile_ns - s.store_before.reconcile_ns) +
+                                    (t.write_ns - s.store_before.write_ns)) /
+                   1.0e6;
+  }
+  out.store = s.store_open;
+  Vector<f64> sorted = s.ring_us;
+  std::sort(sorted.begin(), sorted.end());
+  out.ring_us_median = sorted.empty() ? 0.0 : sorted[sorted.size() / 2];
+  out.ring_us_max = sorted.empty() ? 0.0 : sorted[sorted.size() - 1];
+}
+#endif
 
 // The write-back's sink: one session transaction — journaled, saved, undoable like any other — and,
 // when the document keeps a `world.db`, one event per record it changed.
@@ -1511,14 +1713,40 @@ bool session_run_headless(protocol::Context& ctx, const protocol::RunHeadlessPar
   RuntimeWorld* world = state->ops.world(params.session, *ctx.sessions, true);
   world->bind(session, &ctx.sessions->vfs());
   world->set_writeback_every(params.write_back_every);
-  // The document into the world before the first tick: all of it on the first call, what changed
-  // since on later ones — edits made through doc.apply between two calls reach the world here.
-  const sim::MaterializeReport pass =
-      world->materialize(session->document(), sim::MaterializeScope::whole());
+  // A streamed world (docs/subsystems/world.md) materializes the document a tile at a time round
+  // the declared observers: the records in no tile once, whole, and the tiles as the ring takes
+  // them. Otherwise the document into the world before the first tick: all of it on the first
+  // call, what changed since on later ones — edits made through doc.apply between two calls reach
+  // the world here.
+  const bool streamed = params.stream.has_value();
+  sim::MaterializeScope scope = sim::MaterializeScope::whole();
+  if (streamed) {
+#if defined(ENGINE_HOST_WORLD)
+    std::string why;
+    if (!world->stream(*params.stream, why)) {
+      error = invalid(std::move(why));
+      return false;
+    }
+    scope = sim::MaterializeScope::untiled();
+#else
+    error = not_built(
+        "a streamed world needs the world capability, and this build has none "
+        "(ENGINE_WITH_WORLD=OFF or ENGINE_MINIMAL=ON)");
+    return false;
+#endif
+  }
+  const sim::MaterializeReport pass = world->materialize(session->document(), scope);
   protocol::MaterializeResult report;
   fill_materialize(pass, RuntimeWorld::tier(), report);
   const u64 flushes_before = world->driver_stats().writeback_flushes;
   const u64 fields_before = world->driver_stats().writeback_fields;
+#if defined(ENGINE_HOST_WORLD)
+  // The ring round where the observers start, filled with no budget: the call's own start.
+  if (streamed) {
+    world->begin_report();
+    world->stream_update(true);
+  }
+#endif
 
   // The document is read through the session each time: a write-back commit changes it in place.
   const u64 target = static_cast<u64>(std::llround(params.seconds * RuntimeWorld::hz()));
@@ -1528,6 +1756,14 @@ bool session_run_headless(protocol::Context& ctx, const protocol::RunHeadlessPar
   while (!holds_now && ran < target) {
     world->step();
     ++ran;
+#if defined(ENGINE_HOST_WORLD)
+    // Between this tick and the next, which is where a tile may be materialized (sim.md, "Between
+    // ticks"): the observers move, the ring follows them within its budget.
+    if (streamed) {
+      world->advance_observers();
+      world->stream_update(false);
+    }
+#endif
     if (has_predicate) holds_now = evaluate(predicate, 0, session->document(), *world, ran);
   }
   // Whatever changed since the last periodic flush, so the document says where the world stopped.
@@ -1552,6 +1788,13 @@ bool session_run_headless(protocol::Context& ctx, const protocol::RunHeadlessPar
   out.materialize = std::move(report);
   out.write_backs = static_cast<u32>(world->driver_stats().writeback_flushes - flushes_before);
   out.written_fields = static_cast<u32>(world->driver_stats().writeback_fields - fields_before);
+#if defined(ENGINE_HOST_WORLD)
+  if (streamed) {
+    protocol::HeadlessWorldResult tiles;
+    world->fill_report(tiles);
+    out.streamed = std::move(tiles);
+  }
+#endif
   ENGINE_LOG_INFO(log_ops, "run_headless", log::field("session", params.session),
                   log::field("ticks", ran), log::field("wall_ms", out.wall_ms),
                   log::field("materialized", out.materialized),
@@ -1794,8 +2037,10 @@ void add_ops_methods(protocol::Dispatcher& d) {
       "what changed on later ones) and step it at the fixed step with no rendering, for game "
       "seconds or until a predicate over document properties, live entity components and the "
       "run's own clock holds; what systems change in writable fields is committed back to the "
-      "document, attributed to system. Returns ticks, game time, the materialization and the "
-      "write-backs."));
+      "document, attributed to system. With `stream`, the document is materialized a tile at a "
+      "time round declared observers that may walk, and each tile reconciled from the document's "
+      "store (the world capability). Returns ticks, game time, the materialization, the "
+      "write-backs and the streamed tiles."));
   d.add(protocol::read_only(protocol::method<protocol::MaterializeParams,
                                              protocol::MaterializeResult, &session_materialize>(
       "session.materialize",

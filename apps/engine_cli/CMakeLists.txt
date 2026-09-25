@@ -22,6 +22,11 @@ if(TARGET engine_engine_cli_tests)
   if(TARGET engine::kinematics)
     target_compile_definitions(engine_engine_cli_tests PRIVATE ENGINE_CLI_TESTS_KINEMATICS=1)
   endif()
+  # session.run_headless streams a partitioned document tile by tile when the host has the world
+  # capability (docs/subsystems/world.md); without it the `stream` field is 1006 Unavailable.
+  if(TARGET engine::world)
+    target_compile_definitions(engine_engine_cli_tests PRIVATE ENGINE_CLI_TESTS_WORLD=1)
+  endif()
   # engine.run_tests runs the tissue validators when the host has the tissue capability; the case
   # makes its fixture with `engine-content tissue example`, which is built in the same
   # configurations. The target is declared after this file, which a generator expression and a
