@@ -494,17 +494,21 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
     color += brdf_direct(surface, light_dir, radiance);
   }
   // The sky hemisphere is the whole indirect term until the lighting passes exist: the diffuse
-  // albedo takes it by normal elevation, and a Fresnel-weighted sliver of it at the view angle
-  // keeps metals, which have no diffuse lobe, from going black. The path tracer picks the same
-  // function up as the radiance an escaped ray carries, which is what makes the two comparable.
+  // albedo takes it by normal elevation, and the specular lobe takes the part of it
+  // `brdf_env_specular` says a lobe of this roughness reflects at this view angle — which keeps
+  // metals, which have no diffuse lobe, from going black, and keeps rough stone matte at grazing
+  // (it was bare Schlick at n.v until 2026-09-25, a mirror's sheen at every roughness; brdf.slang
+  // has why). The path tracer picks the same function up as the radiance an escaped ray carries,
+  // which is what makes the two comparable.
   // The material's ambient occlusion multiplies this term and nothing else — not the sun, not the
   // point lights, not the emission — because it stands in for the part of the hemisphere the
   // surface cannot see, which is exactly what this term assumes it sees all of. A material with no
   // map multiplies nothing.
   const float3 ambient = sky_radiance(params->sky.rgb, surface.normal);
   const float n_dot_v = max(dot(surface.normal, surface.view), 0.0);
-  float3 indirect = ambient * (albedo * (1.0 - surface.metallic) +
-                               brdf_f_schlick(brdf_f0(albedo, surface.metallic), n_dot_v));
+  float3 indirect =
+      ambient * (albedo * (1.0 - surface.metallic) +
+                 brdf_env_specular(brdf_f0(albedo, surface.metallic), surface.roughness, n_dot_v));
   if (material.occlusion_texture != k_no_texture) {
     indirect *= sample_occlusion(material, uv, duv_dx, duv_dy);
   }

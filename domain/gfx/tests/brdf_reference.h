@@ -97,6 +97,20 @@ inline Dvec3 f_schlick(Dvec3 f0, double cos_theta) {
   return f0 + (splat(1.0) - f0) * (m2 * m2 * m);
 }
 
+// brdf.slang's `brdf_env_specular`: the specular lobe's reflectance of a uniform environment in
+// Karis' analytic fit, F0 * a + b.
+inline Dvec3 env_specular(Dvec3 f0, double roughness, double n_dot_v) {
+  const double r =
+      roughness < k_min_roughness ? k_min_roughness : (roughness > 1.0 ? 1.0 : roughness);
+  const double k[4] = {-1.0 * r + 1.0, -0.0275 * r + 0.0425, -0.572 * r + 1.04, 0.022 * r - 0.04};
+  const double falloff = std::exp2(-9.28 * (n_dot_v > 0.0 ? n_dot_v : 0.0));
+  const double a004 = (k[0] * k[0] < falloff ? k[0] * k[0] : falloff) * k[0] + k[1];
+  const double a = -1.04 * a004 + k[2];
+  const double b = 1.04 * a004 + k[3];
+  const Dvec3 out = f0 * a + splat(b);
+  return {out.x > 0.0 ? out.x : 0.0, out.y > 0.0 ? out.y : 0.0, out.z > 0.0 ? out.z : 0.0};
+}
+
 inline Dvec3 eval(const Surface& s, Dvec3 light_dir) {
   const double n_dot_l = dot(s.normal, light_dir);
   const double n_dot_v = dot(s.normal, s.view);
@@ -195,7 +209,8 @@ inline double occlusion_of(u8 red, double strength) {
 }
 
 // The whole shaded branch of fs_resolve: sun, analytic lights, sky hemisphere (diffuse by normal
-// elevation plus a Fresnel sliver so metals are not black), emissive. Linear, before the gamma.
+// elevation plus the specular lobe's share of it, `env_specular`, so metals are not black and
+// rough dielectrics stay matte at grazing), emissive. Linear, before the gamma.
 // `sun_shadowed` and `Light::shadowed` are what the resolve's shadow rays found: a shadowed light
 // contributes nothing, and nothing else about the surface changes. `occlusion` is the material's
 // ambient occlusion (`occlusion_of`), and it multiplies the sky hemisphere term alone — never a
@@ -220,8 +235,8 @@ inline Dvec3 shade(const Surface& s, Dvec3 sun_dir, double sun_intensity, Dvec3 
   }
   const Dvec3 ambient = sky * (0.15 + 0.20 * (s.normal.y * 0.5 + 0.5));
   const double n_dot_v = dot(s.normal, s.view);
-  const Dvec3 fresnel = f_schlick(f0_of(s.albedo, s.metallic), n_dot_v > 0.0 ? n_dot_v : 0.0);
-  color = color + ambient * (s.albedo * (1.0 - s.metallic) + fresnel) * occlusion + emissive;
+  const Dvec3 specular = env_specular(f0_of(s.albedo, s.metallic), s.roughness, n_dot_v);
+  color = color + ambient * (s.albedo * (1.0 - s.metallic) + specular) * occlusion + emissive;
   return color;
 }
 

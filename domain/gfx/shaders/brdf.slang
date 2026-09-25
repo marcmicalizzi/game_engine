@@ -56,6 +56,27 @@ float3 brdf_f_schlick(float3 f0, float cos_theta) {
   return f0 + (float3(1.0) - f0) * (m2 * m2 * m);
 }
 
+// How much of a uniform environment the specular lobe reflects towards the eye: the GGX lobe
+// integrated over the hemisphere, which is the second factor of the split-sum approximation
+// (Karis 2013), in the analytic fit Karis gave for mobile ("Physically Based Shading on Mobile",
+// 2014) — F0 times a scale plus a bias, both functions of roughness and n.v. Face on it is about
+// F0 at any roughness; towards grazing it climbs to one for a mirror and stays within a few
+// hundredths of F0 for a rough surface, whose lobe spreads over directions that mostly miss the
+// eye. The resolve's sky term is weighted by it (visibility_resolve.slang). Until 2026-09-25 that
+// term used bare Schlick at n.v instead, which is the mirror's curve at every roughness: a rough
+// stone wall seen edge-on, or any texel of a normal map turned away from the camera (n.v clamped
+// to zero), reflected the whole sky as a white-blue sheen, which is the "reflective instead of
+// matte" of the second owner session (docs/experiments/second-interactive-session-2026-09-25.md).
+float3 brdf_env_specular(float3 f0, float roughness, float n_dot_v) {
+  const float r = clamp(roughness, k_min_roughness, 1.0);
+  const float4 c0 = float4(-1.0, -0.0275, -0.572, 0.022);
+  const float4 c1 = float4(1.0, 0.0425, 1.04, -0.04);
+  const float4 k = c0 * r + c1;
+  const float a004 = min(k.x * k.x, exp2(-9.28 * max(n_dot_v, 0.0))) * k.x + k.y;
+  const float2 ab = float2(-1.04, 1.04) * a004 + k.zw;
+  return max(f0 * ab.x + ab.y, float3(0.0));
+}
+
 // The BSDF for one incident direction, without the cosine: diffuse plus specular, per steradian.
 float3 brdf_eval(BrdfSurface s, float3 light_dir) {
   const float n_dot_l = dot(s.normal, light_dir);

@@ -608,9 +608,12 @@ TEST_CASE("reference: at one bounce it converges to the resolve's picture") {
     bool emissive;
     f64 flip_bound;
   };
-  // The bounds are today's measurements with room for driver noise and a different GPU, not
-  // targets: 0.019, 0.021 and 0.028 on the RTX 5090 (docs/subsystems/renderer.md), and 0.014 for
-  // the emissive plane when its case was added (2026-09-24). FLIP calls about 0.1 the threshold a
+  // The bounds are measurements with room for driver noise and a different GPU, not targets:
+  // 0.019, 0.021 and 0.028 on the RTX 5090 when they were set (docs/subsystems/renderer.md), and
+  // 0.014 for the emissive plane when its case was added (2026-09-24). Since the resolve's sky
+  // term took the specular lobe's own reflectance of it (brdf_env_specular, 2026-09-25) the four
+  // read 0.013, 0.014, 0.021 and 0.003 — the reference integrates that sky, so the two agree
+  // better — and the bounds were left where they were. FLIP calls about 0.1 the threshold a
   // person starts to notice, so all four are well under "the same picture" and the bounds are
   // there to catch a regression.
   const Case cases[4] = {
