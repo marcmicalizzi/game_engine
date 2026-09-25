@@ -130,17 +130,19 @@ The rename alone is 2.1 ms (`doc.fs.rename`), and MSVC's `create_directories` cr
 
 [E12](../experiments/e12-proposal-layers-and-leases.md#what-surprised-me) found an edit costing 87–158 ms and a promotion about 400 ms on Windows, almost all of it the store, so the store has benchmarks of its own. `doc.store.*` in `bench/doc_bench.cpp` times what `Session::commit_commands` does for one `doc.apply` — a one-command transaction, its journal line, the manifest's undo position, the save — on two declared shapes, with the files and bytes each commit wrote in the items and bytes columns: **store**, eight layers and 10⁴ records (`world` partitioned into 8 × 8 tiles of 64 m with 8,000 placements, seven single-file feature layers of 286 overrides), committing to a tile (`commit.tile`) or to a single-file layer (`commit.plain`), and saving with nothing changed (`save.unchanged`); and **e12**, E12's document with 4 or 16 proposal layers of ten overrides each, one agent committing to its own (`commit.e12/<agents>`). `doc.fs.*` times the file operations a save is made of, one at a time and at four sizes.
 
-Before this section's change (`msvc-release`, one Windows machine, milliseconds per commit; machine state: another agent held the GPU lock and other processes used 12% of the CPU, so these are upper bounds, and the spread was up to 45%):
+Before and after the store wrote only what changed through a log (`msvc-release` on the Windows development machine, an i9-10980XE with an NVMe drive, the two binaries run back to back; the files column counts the journal line as one; machine state: other processes used 4–24% of the CPU during the first run and 8% during the second, the GPU lock free — the first is an upper bound):
 
-| | ms | files | bytes |
-|---|---|---|---|
-| `commit.e12/4` | 142 | 5 | 4,674 |
-| `commit.e12/16` | 262 | 5 | 7,084 |
-| `commit.tile` | 226 | 11 | 406,906 |
-| `commit.plain` | 108 | 11 | 406,765 |
-| `save.unchanged` | 200 | 9 | 362,073 |
+| | before: ms | files | bytes | after: ms | files | bytes |
+|---|---|---|---|---|---|---|
+| `commit.e12/4` | 66.7 | 5 | 4,641 | **2.90** | 3 | 2,416 |
+| `commit.e12/16` | 133.4 | 5 | 7,083 | **3.12** | 3 | 4,723 |
+| `commit.tile` | 107.4 | 11 | 406,913 | **4.75** | 3 | 46,056 |
+| `commit.plain` | 111.9 | 11 | 406,763 | **4.83** | 3 | 53,082 |
+| `save.unchanged` | 96.3 | 9 | 362,073 | **0.025** | 0 | 0 |
 
-A commit wrote five files and spent a quarter of a second doing it: the cost was not the bytes. The same rows in the Linux container (`linux-clang-debug`) took 5.1 ms and 7.9 ms for `commit.e12`, and about 90 ms for the 10⁴-record shape, where a debug build's serialization of every single-file layer on every save is what shows.
+The same rows in the Linux container (`linux-clang-debug`, other processes under 1% of the CPU): `commit.e12/4` 5.55 → 0.63 ms, `commit.e12/16` 7.90 → 0.70 ms, `commit.plain` 91.8 → 4.73 ms, `commit.tile` 91.0 → 8.82 ms, `save.unchanged` 88.8 → 0.13 ms. A debug build checks the kept index against `build_layer_index` on every save of a partitioned layer, which is `commit.tile`'s 8,000-record rebuild; release builds do not.
+
+**What is left of a commit on Windows** is its file operations — the journal line (0.5 ms), the log made and removed (about 1.2 ms), each file (0.5 ms, or 1.2 ms when a file of 8 KiB or more changes length), the manifest (0.5 ms) — and a millisecond or less of serialization and hashing; the 10⁴-record single-file layer costs `commit.plain` its serialization and 53 KB. Before, a commit wrote five files and spent 67–133 ms doing it: the cost was never the bytes but the questions (`index.json` read and parsed, directories made, tiles listed, forms probed) about layers the commit had not touched, `create_directories` on every write, and a rename per file. [E12](../experiments/e12-proposal-layers-and-leases.md#results)'s own matrix, rerun: an edit 4.3 ms and a promotion 19–24 ms, where they were 87–158 ms and about 400 ms; the whole matrix in 4.3 minutes, where it took 1 h 24 min; and every count the same.
 
 ## Change feed
 
