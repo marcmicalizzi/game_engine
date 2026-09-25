@@ -91,6 +91,7 @@ The owner wants sparse volumetric sand blowing off the dune crests: renderer wor
 
 - **The renderer** serves its `TerrainSampler` from the generator when a scene's terrain says `"generator": "Dunes"` (`engine.scene.Terrain` version 2: `generator`, `time`, `sand_flux`), and builds the terrain's mesh from it a 64 × 64 block of vertices at a time; the waves stay the default, and the ruins stand on `TerrainSampler::ground`, the generator's floor ([renderer](renderer.md#scenes-camera-paths-and-flythroughs)). [`content/test-scenes/desert-dunes/`](../../content/test-scenes/desert-dunes/README.md) is the scene for the owner's fly-through.
 - **The world ring** holds a tile of the field for every tile it holds (`world::TerrainTiles`): built on activation at the ring's resolution (128, 64, 32 cells), rebuilt when a lag round it moves, dropped on deactivation; the tile's overlay is a projection in the store (`engine.terrain.OverlayTile`), read and caught up on activation, written back — or erased once buried — on deactivation, and carried in the tile's snapshot ([world](world.md#the-consumers)).
+- **`engine-content terrain <scene> --tile x,z --time t`** prints one tile's statistics, hashes, wind and crest lines as one JSON line, for tests and agents ([apps](apps.md#engine-content-terrain-a-tile-of-the-dune-field)).
 
 ## LOD policy
 

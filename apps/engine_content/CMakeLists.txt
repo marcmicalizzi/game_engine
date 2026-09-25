@@ -27,6 +27,12 @@ if(TARGET engine::ruins)
   list(APPEND _content_deps ruins schema schemas)
   list(APPEND _content_tests tests/ruins_tests.cpp)
 endif()
+# `terrain` the same way, with the terrain capability (docs/subsystems/terrain.md): one tile of a
+# scene's dune field as a JSON line. It reads the scene's terrain through the scene schema.
+if(TARGET engine::terrain)
+  list(APPEND _content_deps terrain terrain_schemas schema schemas)
+  list(APPEND _content_tests tests/terrain_tests.cpp)
+endif()
 # The audio capability's derived step, the `.clip` (docs/subsystems/audio.md, "Built clips"), the
 # same way: `build` of a WAV, FLAC or MP3, a manifest's "clips" and `info` of a `.clip` exist when
 # this configuration has audio. content_build holds the step's table, not the capability, so it is
@@ -39,7 +45,7 @@ list(REMOVE_DUPLICATES _content_deps)
 
 engine_app(NAME engine_content OUTPUT engine-content
   SOURCES main.cpp tissue_commands.cpp ruins_commands.cpp limit_dump.cpp normal_cases.cpp
-          clip_commands.cpp
+          clip_commands.cpp terrain_commands.cpp
   DEPS ${_content_deps}
   E2E_TESTS ${_content_tests})
 
@@ -53,6 +59,13 @@ if(TARGET engine::ruins)
   target_compile_definitions(engine_engine_content PRIVATE ENGINE_CONTENT_RUINS=1)
   if(TARGET engine_engine_content_tests)
     target_compile_definitions(engine_engine_content_tests PRIVATE ENGINE_CONTENT_RUINS=1)
+  endif()
+endif()
+if(TARGET engine::terrain)
+  target_compile_definitions(engine_engine_content PRIVATE ENGINE_CONTENT_TERRAIN=1)
+  if(TARGET engine_engine_content_tests)
+    target_compile_definitions(engine_engine_content_tests PRIVATE ENGINE_CONTENT_TERRAIN=1
+      ENGINE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
   endif()
 endif()
 if(TARGET engine::audio)
