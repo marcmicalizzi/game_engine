@@ -9,8 +9,7 @@
 //
 //     BindlessSet bindless;
 //     bindless.create(device, {});
-//     const u32 albedo = bindless.add_sampled_image(view,
-//     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+//     const u32 albedo = bindless.add_sampled_image(view, ImageLayout::ShaderReadOnly);
 //     ...push {albedo, sampler_index, address}...
 //     bindless.release_sampled_image(albedo, frames.frame_index() + 1);   // free after the GPU is
 //     done bindless.recycle(frames.completed());                               // once per frame
@@ -24,7 +23,9 @@
 #include <core/base/macros.h>
 #include <core/base/types.h>
 #include <core/containers/vector.h>
-#include <domain/gfx/vulkan.h>
+#include <domain/gfx/commands.h>
+#include <domain/gfx/resources.h>
+#include <domain/gfx/rhi.h>
 
 #include <string>
 
@@ -59,14 +60,14 @@ class BindlessSet {
 
   // Registration writes the descriptor immediately (update after bind) and returns a slot, or
   // k_invalid_slot when the array is full.
-  u32 add_sampled_image(VkImageView view, VkImageLayout layout);
-  u32 add_storage_image(VkImageView view);
-  u32 add_sampler(VkSampler sampler);
+  u32 add_sampled_image(ImageViewHandle view, ImageLayout layout);
+  u32 add_storage_image(ImageViewHandle view);
+  u32 add_sampler(SamplerHandle sampler);
   // k_invalid_slot on a device without acceleration structures (has_acceleration_structures()).
-  u32 add_acceleration_structure(VkAccelerationStructureKHR structure);
+  u32 add_acceleration_structure(AccelerationStructureHandle structure);
   // Overwrites a slot in place (a streamed texture replacing its placeholder).
-  void update_sampled_image(u32 slot, VkImageView view, VkImageLayout layout);
-  void update_storage_image(u32 slot, VkImageView view);
+  void update_sampled_image(u32 slot, ImageViewHandle view, ImageLayout layout);
+  void update_storage_image(u32 slot, ImageViewHandle view);
 
   // Returns a slot to its free list once recycle() sees the timeline at or past
   // `safe_after_value`: the value of the last frame that could still read the slot.
@@ -89,11 +90,11 @@ class BindlessSet {
   }
   u32 pending_releases() const noexcept { return pending_.size(); }
 
-  VkDescriptorSetLayout layout() const noexcept { return layout_; }
-  VkDescriptorSet set() const noexcept { return set_; }
+  DescriptorSetLayoutHandle layout() const noexcept { return layout_; }
+  DescriptorSetHandle set() const noexcept { return set_; }
   // Set 0 = this set; one push-constant range of config.push_constant_bytes for all stages.
-  VkPipelineLayout pipeline_layout() const noexcept { return pipeline_layout_; }
-  void bind(VkCommandBuffer commands, VkPipelineBindPoint bind_point) const noexcept;
+  PipelineLayoutHandle pipeline_layout() const noexcept { return pipeline_layout_; }
+  void bind(CommandList commands, BindPoint bind_point) const noexcept;
 
  private:
   struct Pool {
@@ -107,32 +108,32 @@ class BindlessSet {
     u64 safe_after_value;
   };
   u32 allocate(u32 binding);
-  void write_image(u32 binding, u32 slot, VkImageView view, VkImageLayout layout,
-                   VkDescriptorType type);
+  void write_image(u32 binding, u32 slot, ImageViewHandle view, ImageLayout layout,
+                   DescriptorType type);
 
   const Device* device_ = nullptr;
   BindlessConfig capacity_;
-  VkDescriptorSetLayout layout_ = VK_NULL_HANDLE;
-  VkDescriptorPool pool_ = VK_NULL_HANDLE;
-  VkDescriptorSet set_ = VK_NULL_HANDLE;
-  VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
+  DescriptorSetLayoutHandle layout_;
+  DescriptorPoolHandle pool_;
+  DescriptorSetHandle set_;
+  PipelineLayoutHandle pipeline_layout_;
   Pool pools_[4];
   u32 live_[4] = {0, 0, 0, 0};
   Vector<Pending> pending_;
 };
 
 // Image views and samplers the set holds. A view of a depth format covers the depth aspect.
-bool create_image_view(const Device& device, const ImageResource& image, VkImageView& out,
+bool create_image_view(const Device& device, const ImageResource& image, ImageViewHandle& out,
                        std::string* error = nullptr);
-void destroy_image_view(const Device& device, VkImageView view) noexcept;
+void destroy_image_view(const Device& device, ImageViewHandle view) noexcept;
 // Nearest or linear filtering, clamp to edge, no anisotropy, no mips: the tooling default.
-bool create_sampler(const Device& device, VkFilter filter, VkSampler& out,
+bool create_sampler(const Device& device, Filter filter, SamplerHandle& out,
                     std::string* error = nullptr);
 // The material sampler of built, mipmapped textures (docs/subsystems/texture.md): linear within
 // and between levels, clamp to edge like `create_sampler`, the whole chain, and `max_anisotropy`
 // (clamped to 16, the minimum every device with the feature supports) where
 // DeviceFeatures::sampler_anisotropy is on — trilinear where it is not.
-bool create_mip_sampler(const Device& device, f32 max_anisotropy, VkSampler& out,
+bool create_mip_sampler(const Device& device, f32 max_anisotropy, SamplerHandle& out,
                         std::string* error = nullptr);
 
 // A material sampler as a glTF sampler describes one (docs/subsystems/gfx.md, "Samplers"): the
@@ -143,16 +144,16 @@ bool create_mip_sampler(const Device& device, f32 max_anisotropy, VkSampler& out
 // level 0 alone (maxLod 0, no anisotropy), which is what a texture decoded at one level and
 // sampled with an explicit level of 0 has always been read through.
 struct SamplerDesc {
-  VkSamplerAddressMode address_u = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-  VkSamplerAddressMode address_v = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-  VkFilter mag = VK_FILTER_LINEAR;
-  VkFilter min = VK_FILTER_LINEAR;
-  VkSamplerMipmapMode mip = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+  SamplerAddressMode address_u = SamplerAddressMode::Repeat;
+  SamplerAddressMode address_v = SamplerAddressMode::Repeat;
+  Filter mag = Filter::Linear;
+  Filter min = Filter::Linear;
+  SamplerMipmapMode mip = SamplerMipmapMode::Linear;
   bool mipmapped = true;
   f32 max_anisotropy = 16.0f;
 };
-bool create_sampler(const Device& device, const SamplerDesc& desc, VkSampler& out,
+bool create_sampler(const Device& device, const SamplerDesc& desc, SamplerHandle& out,
                     std::string* error = nullptr);
-void destroy_sampler(const Device& device, VkSampler sampler) noexcept;
+void destroy_sampler(const Device& device, SamplerHandle sampler) noexcept;
 
 }  // namespace engine::gfx

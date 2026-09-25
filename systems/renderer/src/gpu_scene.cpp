@@ -18,18 +18,17 @@ namespace engine::renderer {
 
 namespace {
 
-constexpr VkBufferUsageFlags k_storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-constexpr VkBufferUsageFlags k_address = k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
-constexpr VkBufferUsageFlags k_args = k_address | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
-                                      VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                                      VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+constexpr gfx::BufferUsage k_storage = gfx::BufferUsage::Storage;
+constexpr gfx::BufferUsage k_address = k_storage | gfx::BufferUsage::ShaderDeviceAddress;
+constexpr gfx::BufferUsage k_args = k_address | gfx::BufferUsage::Indirect |
+                                    gfx::BufferUsage::TransferDst | gfx::BufferUsage::TransferSrc;
 // The visible list is read back by a capture, which resolves a visibility id into the instance
 // and cluster it names; that is the only reason it is a transfer source.
-constexpr VkBufferUsageFlags k_readable = k_address | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+constexpr gfx::BufferUsage k_readable = k_address | gfx::BufferUsage::TransferSrc;
 // The streaming feedback arrays: cleared by the frame's reset pass and copied back to the host
 // one frame slot later, so both directions are transfers.
-constexpr VkBufferUsageFlags k_transfer =
-    VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+constexpr gfx::BufferUsage k_transfer =
+    gfx::BufferUsage::TransferDst | gfx::BufferUsage::TransferSrc;
 
 // The budget, in vertices. `deform_pool_kib` is what the caller asked for (0 is the default); the
 // clamp **down** to `whole_mesh_vertices` is what keeps a single character costing exactly what it
@@ -46,23 +45,21 @@ u32 pool_budget_vertices(const ResolvedSettings& resolved, u64 whole_mesh_vertic
   return static_cast<u32>(vertices);
 }
 
-// The Vulkan format a built texture is sampled as: the format and colour space the build decided,
+// The GPU format a built texture is sampled as: the format and colour space the build decided,
 // from the same material slots the decode path guesses from, so the two agree.
-VkFormat texture_vk_format(const texture::TextureData& t) noexcept {
+gfx::Format texture_gpu_format(const texture::TextureData& t) noexcept {
   const bool srgb = t.color_space == texture::ColorSpace::srgb;
   switch (t.format) {
     case texture::TextureFormat::rgba8:
-      return srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+      return srgb ? gfx::Format::R8G8B8A8Srgb : gfx::Format::R8G8B8A8Unorm;
     case texture::TextureFormat::bc1:
-      return srgb ? VK_FORMAT_BC1_RGB_SRGB_BLOCK : VK_FORMAT_BC1_RGB_UNORM_BLOCK;
-    case texture::TextureFormat::bc3:
-      return srgb ? VK_FORMAT_BC3_SRGB_BLOCK : VK_FORMAT_BC3_UNORM_BLOCK;
-    case texture::TextureFormat::bc4: return VK_FORMAT_BC4_UNORM_BLOCK;
-    case texture::TextureFormat::bc5: return VK_FORMAT_BC5_UNORM_BLOCK;
-    case texture::TextureFormat::bc7:
-      return srgb ? VK_FORMAT_BC7_SRGB_BLOCK : VK_FORMAT_BC7_UNORM_BLOCK;
+      return srgb ? gfx::Format::Bc1RgbSrgb : gfx::Format::Bc1RgbUnorm;
+    case texture::TextureFormat::bc3: return srgb ? gfx::Format::Bc3Srgb : gfx::Format::Bc3Unorm;
+    case texture::TextureFormat::bc4: return gfx::Format::Bc4Unorm;
+    case texture::TextureFormat::bc5: return gfx::Format::Bc5Unorm;
+    case texture::TextureFormat::bc7: return srgb ? gfx::Format::Bc7Srgb : gfx::Format::Bc7Unorm;
   }
-  return VK_FORMAT_UNDEFINED;
+  return gfx::Format::Undefined;
 }
 
 // A glTF sampler as the device's (docs/subsystems/renderer.md, "Materials"). `mipmapped` is the
@@ -71,22 +68,22 @@ VkFormat texture_vk_format(const texture::TextureData& t) noexcept {
 gfx::SamplerDesc sampler_desc(const geometry::TextureSampler& sampler, bool mipmapped) noexcept {
   auto address = [](geometry::TextureWrap wrap) {
     switch (wrap) {
-      case geometry::TextureWrap::repeat: return VK_SAMPLER_ADDRESS_MODE_REPEAT;
-      case geometry::TextureWrap::mirrored_repeat: return VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
+      case geometry::TextureWrap::repeat: return gfx::SamplerAddressMode::Repeat;
+      case geometry::TextureWrap::mirrored_repeat: return gfx::SamplerAddressMode::MirroredRepeat;
       case geometry::TextureWrap::clamp_to_edge: break;
     }
-    return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    return gfx::SamplerAddressMode::ClampToEdge;
   };
   auto filter = [](geometry::TextureFilter f) {
-    return f == geometry::TextureFilter::nearest ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
+    return f == geometry::TextureFilter::nearest ? gfx::Filter::Nearest : gfx::Filter::Linear;
   };
   gfx::SamplerDesc desc;
   desc.address_u = address(sampler.wrap_s);
   desc.address_v = address(sampler.wrap_t);
   desc.mag = filter(sampler.mag);
   desc.min = filter(sampler.min);
-  desc.mip = sampler.mip == geometry::TextureFilter::nearest ? VK_SAMPLER_MIPMAP_MODE_NEAREST
-                                                             : VK_SAMPLER_MIPMAP_MODE_LINEAR;
+  desc.mip = sampler.mip == geometry::TextureFilter::nearest ? gfx::SamplerMipmapMode::Nearest
+                                                             : gfx::SamplerMipmapMode::Linear;
   desc.mipmapped = mipmapped;
   desc.max_anisotropy = 16.0f;
   return desc;
@@ -283,8 +280,8 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
   // frame — and under streaming the `ClusterDesc` array is also what a page upload **patches**:
   // when a page lands in a slot its clusters' `vertex_offset` and `triangle_offset` are rewritten
   // to point into that slot, so the copy that puts the array here is a transfer destination.
-  const VkBufferUsageFlags cluster_usage =
-      streamed_ ? (k_storage | VK_BUFFER_USAGE_TRANSFER_DST_BIT) : k_storage;
+  const gfx::BufferUsage cluster_usage =
+      streamed_ ? (k_storage | gfx::BufferUsage::TransferDst) : k_storage;
   if (!gfx::upload_buffer(device, lod.mesh.clusters.data(),
                           u64{cluster_count_} * sizeof(geometry::ClusterDesc), cluster_usage,
                           clusters, error) ||
@@ -357,9 +354,9 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
     deform_pool_vertices_ =
         pool_budget_vertices(resolved, whole_mesh_vertices * (u64{1} + cascade_count_));
     deform_pool_bytes_ = u64{deform_pool_vertices_} * 3 * sizeof(f32);
-    constexpr VkBufferUsageFlags k_pool_usage =
-        k_address | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
-        VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
+    constexpr gfx::BufferUsage k_pool_usage = k_address | gfx::BufferUsage::TransferDst |
+                                              gfx::BufferUsage::TransferSrc |
+                                              gfx::BufferUsage::AccelerationBuildInput;
     // One indirect dispatch block per (view, run): every view's pool pass covers its own cut, and
     // a cluster two views both draw gets a block in each, written twice with the same value.
     bool ok =
@@ -368,7 +365,7 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
                            deform_slots, error) &&
         gfx::create_buffer(
             device, sizeof(gfx::DeformAlloc),
-            k_address | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, false,
+            k_address | gfx::BufferUsage::TransferSrc | gfx::BufferUsage::TransferDst, false,
             deform_alloc, error) &&
         gfx::upload_buffer(device, deform_descs_.data(),
                            deform_descs_.size() * sizeof(gfx::DeformDesc), k_storage, deform_table,
@@ -721,9 +718,9 @@ bool GpuScene::create_streaming(const ResolvedSettings& resolved, std::string* e
 
   const u64 slot_vertices = u64{page_slots_} * slot_vertices_;
   const u64 slot_triangles = u64{page_slots_} * slot_triangles_;
-  constexpr VkBufferUsageFlags k_pool =
-      k_address | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-  const VkBufferUsageFlags rt_pool = k_pool | gfx::k_build_input_usage;
+  constexpr gfx::BufferUsage k_pool =
+      k_address | gfx::BufferUsage::TransferDst | gfx::BufferUsage::TransferSrc;
+  const gfx::BufferUsage rt_pool = k_pool | gfx::k_build_input_usage;
   Vector<u32> page_index(cluster_count_);
   Vector<u32> child_ranges(u64{cluster_count_} * 2);
   for (u32 c = 0; c < cluster_count_; ++c) {
@@ -760,7 +757,7 @@ bool GpuScene::create_streaming(const ResolvedSettings& resolved, std::string* e
       gfx::create_buffer(device, sizeof(gfx::StreamParams) * k_stream_slots, k_address, true,
                          stream_params, error) &&
       gfx::create_buffer(device, u64{upload_budget_bytes_} * k_stream_slots,
-                         VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true, page_stage, error);
+                         gfx::BufferUsage::TransferSrc, true, page_stage, error);
   if (ok && ray_tracing_) {
     ok =
         gfx::create_buffer(device, slot_vertices * sizeof(Vec3), rt_pool, false, vertices, error) &&
@@ -800,7 +797,7 @@ bool GpuScene::create_streaming(const ResolvedSettings& resolved, std::string* e
 bool GpuScene::upload_materials(const ResolvedSettings&, std::string* error) {
   const gfx::Device& device = *device_;
   const geometry::ClusterLodMesh& lod = data_->lod;
-  if (!gfx::create_sampler(device, VK_FILTER_LINEAR, sampler_, error)) return false;
+  if (!gfx::create_sampler(device, gfx::Filter::Linear, sampler_, error)) return false;
   const u32 sampler_slot = bindless_.add_sampler(sampler_);
   // The materials' samplers, one per distinct combination a textured slot asks for, made when
   // the first slot that asks for it is met — so a scene with no textures has exactly the bindless
@@ -844,14 +841,14 @@ bool GpuScene::upload_materials(const ResolvedSettings&, std::string* error) {
         t[3] = 255;
       }
     }
-    if (!gfx::upload_image_2d(device, k_texture_size, k_texture_size, VK_FORMAT_R8G8B8A8_UNORM,
+    if (!gfx::upload_image_2d(device, k_texture_size, k_texture_size, gfx::Format::R8G8B8A8Unorm,
                               texels.data(), texels.size(), procedural_texture_, error) ||
         !gfx::create_image_view(device, procedural_texture_, procedural_view_, error)) {
       return false;
     }
     texture_bytes_ += procedural_texture_.bytes;
     const u32 texture_slot =
-        bindless_.add_sampled_image(procedural_view_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        bindless_.add_sampled_image(procedural_view_, gfx::ImageLayout::ShaderReadOnly);
     // Materials: a flat table indexed per cluster by the height band of the cluster's center.
     material_table.resize(3);
     material_table[0].albedo = Vec4{0.86f, 0.72f, 0.46f, 0.9f};  // sand
@@ -905,7 +902,7 @@ bool GpuScene::upload_materials(const ResolvedSettings&, std::string* error) {
       Vector<u32> image_slot(mesh_data.images.size(), gfx::k_no_texture);
       Vector<bool> image_tried(mesh_data.images.size(), false);
       const std::string& mesh_dir = source_mesh.image_dir;  // the glTF's or the container's
-      auto texture_slot_of = [&](i32 image_index, VkFormat format) -> u32 {
+      auto texture_slot_of = [&](i32 image_index, gfx::Format format) -> u32 {
         if (image_index < 0 || static_cast<u32>(image_index) >= mesh_data.images.size())
           return gfx::k_no_texture;
         const u32 index = static_cast<u32>(image_index);
@@ -913,7 +910,7 @@ bool GpuScene::upload_materials(const ResolvedSettings&, std::string* error) {
         image_tried[index] = true;
         const assets::ImageRef& ref = mesh_data.images[index];
         gfx::ImageResource uploaded;
-        VkImageView view = VK_NULL_HANDLE;
+        gfx::ImageViewHandle view;
         std::string image_error;
         bool ok = false;
         if (use_built) {
@@ -926,11 +923,11 @@ bool GpuScene::upload_materials(const ResolvedSettings&, std::string* error) {
             levels.push_back(gfx::ImageLevelData{bytes.data(), bytes.size()});
           }
           ok = gfx::upload_image_2d_levels(
-                   device, t.width, t.height, texture_vk_format(t),
+                   device, t.width, t.height, texture_gpu_format(t),
                    std::span<const gfx::ImageLevelData>(levels.data(), levels.size()), uploaded,
                    &image_error) &&
                gfx::create_image_view(device, uploaded, view, &image_error);
-          if (!ok && uploaded.image != VK_NULL_HANDLE) gfx::destroy_image(device, uploaded);
+          if (!ok && uploaded.image.valid()) gfx::destroy_image(device, uploaded);
           if (ok) ++textures_built_;
         } else {
           image::Image decoded;
@@ -947,7 +944,7 @@ bool GpuScene::upload_materials(const ResolvedSettings&, std::string* error) {
                                            decoded.pixels.data(), decoded.pixels.size(), uploaded,
                                            &image_error) ||
                      !gfx::create_image_view(device, uploaded, view, &image_error))) {
-            if (uploaded.image != VK_NULL_HANDLE) gfx::destroy_image(device, uploaded);
+            if (uploaded.image.valid()) gfx::destroy_image(device, uploaded);
             ok = false;
           }
           if (ok) ++textures_decoded_;
@@ -960,8 +957,7 @@ bool GpuScene::upload_materials(const ResolvedSettings&, std::string* error) {
         texture_bytes_ += uploaded.bytes;
         textures_.push_back(uploaded);
         texture_views_.push_back(view);
-        image_slot[index] =
-            bindless_.add_sampled_image(view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        image_slot[index] = bindless_.add_sampled_image(view, gfx::ImageLayout::ShaderReadOnly);
         return image_slot[index];
       };
       for (const assets::Material& source : mesh_data.materials) {
@@ -972,13 +968,15 @@ bool GpuScene::upload_materials(const ResolvedSettings&, std::string* error) {
         material.emissive = Vec4{source.emissive, source.metallic};
         // Colour goes up sRGB and data UNORM; the order is the order an image shared by two slots
         // keeps the format of (base colour first, as it always was).
-        material.albedo_texture = texture_slot_of(source.base_color_image, VK_FORMAT_R8G8B8A8_SRGB);
+        material.albedo_texture =
+            texture_slot_of(source.base_color_image, gfx::Format::R8G8B8A8Srgb);
         material.metallic_roughness_texture =
-            texture_slot_of(source.metallic_roughness_image, VK_FORMAT_R8G8B8A8_UNORM);
-        material.normal_texture = texture_slot_of(source.normal_image, VK_FORMAT_R8G8B8A8_UNORM);
+            texture_slot_of(source.metallic_roughness_image, gfx::Format::R8G8B8A8Unorm);
+        material.normal_texture = texture_slot_of(source.normal_image, gfx::Format::R8G8B8A8Unorm);
         material.occlusion_texture =
-            texture_slot_of(source.occlusion_image, VK_FORMAT_R8G8B8A8_UNORM);
-        material.emissive_texture = texture_slot_of(source.emissive_image, VK_FORMAT_R8G8B8A8_SRGB);
+            texture_slot_of(source.occlusion_image, gfx::Format::R8G8B8A8Unorm);
+        material.emissive_texture =
+            texture_slot_of(source.emissive_image, gfx::Format::R8G8B8A8Srgb);
         material.normal_scale = source.normal_scale;
         material.occlusion_strength = source.occlusion_strength;
         material.uv_scale = 1.0f;
@@ -1098,7 +1096,7 @@ bool GpuScene::create_working_set(const ResolvedSettings& resolved, std::string*
          gfx::create_buffer(device, u64{gfx::k_draw_args_bytes} * view_count_, k_args, false,
                             draw_args[i], error) &&
          gfx::create_buffer(device, u64{pair_count_} * view_count_ * sizeof(u32),
-                            k_address | VK_BUFFER_USAGE_TRANSFER_DST_BIT, false, flags[i], error);
+                            k_address | gfx::BufferUsage::TransferDst, false, flags[i], error);
   }
   // The vertex path's indexed draw: for each view and each of the two hardware runs, run-major like
   // the visible list, a header, a record per pair and an index array. The array holds
@@ -1126,8 +1124,7 @@ bool GpuScene::create_working_set(const ResolvedSettings& resolved, std::string*
          gfx::create_buffer(device, runs * pair_count_ * sizeof(gfx::VertexDrawRecord), k_address,
                             false, vertex_records, error) &&
          gfx::create_buffer(device, runs * vertex_index_capacity_ * gfx::k_vertex_draw_index_bytes,
-                            k_address | VK_BUFFER_USAGE_INDEX_BUFFER_BIT, false, vertex_indices,
-                            error);
+                            k_address | gfx::BufferUsage::Index, false, vertex_indices, error);
   }
   return ok;
 }
@@ -1174,8 +1171,7 @@ bool GpuScene::create_ray_tracing(const ResolvedSettings& resolved, std::string*
         std::max(rt_max_per_instance_, data_->parts[instance.mesh].cluster_count * view_count_);
   }
 
-  constexpr VkBufferUsageFlags k_record_usage =
-      k_address | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
+  constexpr gfx::BufferUsage k_record_usage = k_address | gfx::BufferUsage::AccelerationBuildInput;
   // The top-level instance records, once: world transform, the instance as the custom index, and
   // a bottom-level address of zero, which the frame's copy from `blas_set.addresses` overwrites
   // before every top-level build. An instance whose structure a frame did not build keeps a zero
@@ -1190,7 +1186,7 @@ bool GpuScene::create_ray_tracing(const ResolvedSettings& resolved, std::string*
     record.custom_index = i;
     record.blas = 0;
     tlas_records.push_back(record);
-    rt_instance_copies.push_back(VkBufferCopy{
+    rt_instance_copies.push_back(gfx::BufferCopy{
         u64{i} * sizeof(u64),
         u64{i} * gfx::k_instance_record_bytes + gfx::k_instance_record_bytes - sizeof(u64),
         sizeof(u64)});
@@ -1201,20 +1197,20 @@ bool GpuScene::create_ray_tracing(const ResolvedSettings& resolved, std::string*
   bool ok = (streamed_ || gfx::upload_buffer(device, packed.data(), packed.size(),
                                              gfx::k_build_input_usage, indices8, error)) &&
             gfx::create_buffer(device, sizeof(u32) * gfx::k_cluster_record_count_words,
-                               k_record_usage | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, false,
-                               record_count, error) &&
+                               k_record_usage | gfx::BufferUsage::TransferSrc, false, record_count,
+                               error) &&
             gfx::create_buffer(device, u64{rt_union_clusters_} * sizeof(u32), k_address, false,
                                slots, error) &&
             // Three words an instance: its drawn clusters, its casters, then its dense record base
             // (`gfx::ClusterRecordParams::instance_counts`).
             gfx::create_buffer(device, u64{instance_count_} * 3 * sizeof(u32),
-                               k_address | VK_BUFFER_USAGE_TRANSFER_DST_BIT, false, instance_counts,
+                               k_address | gfx::BufferUsage::TransferDst, false, instance_counts,
                                error) &&
             gfx::create_buffer(device, gfx::k_cluster_blas_record_bytes * instance_count_,
                                k_record_usage, false, blas_records, error) &&
             gfx::create_tlas(device, instance_count_, gfx::k_build_fast_trace, tlas, error) &&
             gfx::upload_buffer(device, tlas_bytes.data(), tlas_bytes.size(),
-                               gfx::k_build_input_usage | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                               gfx::k_build_input_usage | gfx::BufferUsage::TransferDst,
                                rt_instances, error);
   // One template per cluster of the scene, built from the rest pose, with cluster id and base
   // geometry index zero so an instantiate record's offsets are the visible entry outright. Built
@@ -1329,8 +1325,7 @@ bool GpuScene::resize_ray_tracing(u32 capacity, std::string* error, bool beyond_
   rt_capacity_ = 0;
   gfx::ClusterSetLimits limits = rt_limits_;
   limits.max_clusters = capacity;
-  constexpr VkBufferUsageFlags k_record_usage =
-      k_address | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
+  constexpr gfx::BufferUsage k_record_usage = k_address | gfx::BufferUsage::AccelerationBuildInput;
   const u64 record_bytes = limits.instantiate ? gfx::k_cluster_instantiate_record_bytes
                                               : gfx::k_cluster_build_record_bytes;
   bool ok =
@@ -1424,18 +1419,18 @@ void GpuScene::destroy() noexcept {
   gfx::destroy_buffer(device, instances);
   gfx::destroy_buffer(device, quantized);
   gfx::destroy_buffer(device, clusters);
-  for (VkImageView view : texture_views_)
+  for (gfx::ImageViewHandle view : texture_views_)
     gfx::destroy_image_view(device, view);
   texture_views_.clear();
   for (gfx::ImageResource& image : textures_)
     gfx::destroy_image(device, image);
   textures_.clear();
   gfx::destroy_image_view(device, procedural_view_);
-  procedural_view_ = VK_NULL_HANDLE;
-  if (procedural_texture_.image != VK_NULL_HANDLE) gfx::destroy_image(device, procedural_texture_);
+  procedural_view_ = {};
+  if (procedural_texture_.image.valid()) gfx::destroy_image(device, procedural_texture_);
   procedural_texture_ = gfx::ImageResource{};
   gfx::destroy_sampler(device, sampler_);
-  sampler_ = VK_NULL_HANDLE;
+  sampler_ = {};
   for (const MaterialSampler& made : material_samplers_)
     gfx::destroy_sampler(device, made.sampler);
   material_samplers_.clear();

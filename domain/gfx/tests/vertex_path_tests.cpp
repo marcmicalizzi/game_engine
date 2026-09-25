@@ -12,12 +12,12 @@
 #include "scene_fixture.h"
 
 #include <domain/geometry/cluster_lod.h>
+#include <domain/gfx/backend/vulkan/vulkan.h>
 #include <domain/gfx/bindless.h>
 #include <domain/gfx/cluster_cull.h>
 #include <domain/gfx/device.h>
 #include <domain/gfx/frame.h>
 #include <domain/gfx/render_graph.h>
-#include <domain/gfx/vulkan.h>
 
 #include <doctest/doctest.h>
 
@@ -81,8 +81,8 @@ TEST_CASE("vertex path: the baseline tier fills the visibility buffer like the m
   const u32 leaf_count = lod.level_cluster_counts[0];
   const u32 triangles_per_cluster = geometry::ClusterLodOptions{}.max_triangles;
 
-  constexpr VkBufferUsageFlags k_storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-  constexpr VkBufferUsageFlags k_address = k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+  constexpr gfx::BufferUsage k_storage = gfx::BufferUsage::Storage;
+  constexpr gfx::BufferUsage k_address = k_storage | gfx::BufferUsage::ShaderDeviceAddress;
   gfx::BufferResource clusters;
   gfx::BufferResource triangles;
   gfx::BufferResource lods;
@@ -113,51 +113,50 @@ TEST_CASE("vertex path: the baseline tier fills the visibility buffer like the m
   gfx::BufferResource args;
   gfx::BufferResource params;
   gfx::BufferResource host;
-  const VkBufferUsageFlags k_vis =
-      k_address | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+  const gfx::BufferUsage k_vis =
+      k_address | gfx::BufferUsage::TransferDst | gfx::BufferUsage::TransferSrc;
   REQUIRE(gfx::create_buffer(device, vis_bytes, k_vis, false, vis_mesh, &error));
   REQUIRE(gfx::create_buffer(device, vis_bytes, k_vis, false, vis_vertex, &error));
   REQUIRE(gfx::create_buffer(device, vis_bytes, k_vis, false, vis_indirect, &error));
   const u64 visible_bytes = u64{cluster_count} * 2 * sizeof(u32);  // uint2 per entry
-  REQUIRE(gfx::create_buffer(device, visible_bytes, k_address | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+  REQUIRE(gfx::create_buffer(device, visible_bytes, k_address | gfx::BufferUsage::TransferSrc,
                              false, visible, &error));
   REQUIRE(gfx::create_buffer(device, 16,
-                             k_address | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
-                                 VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                                 VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                             k_address | gfx::BufferUsage::Indirect |
+                                 gfx::BufferUsage::TransferDst | gfx::BufferUsage::TransferSrc,
                              false, args, &error));
   REQUIRE(gfx::create_buffer(device, sizeof(gfx::CullParams), k_address, true, params, &error));
   REQUIRE(gfx::create_buffer(device, vis_bytes * 3 + 16 + visible_bytes,
-                             VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, host, &error));
+                             gfx::BufferUsage::TransferDst, true, host, &error));
 
   gfx::FrameContext frames;
   REQUIRE(frames.create(device, 2, &error));
   gfx::BindlessSet bindless;
   REQUIRE(bindless.create(device, gfx::BindlessConfig{}, &error));
-  VkShaderModule vertex_module = gfx::create_shader_module(
+  gfx::ShaderModuleHandle vertex_module = gfx::create_shader_module(
       device, shaders::k_cluster_vertex_spirv, shaders::k_cluster_vertex_spirv_size, &error);
-  VkShaderModule cull_module = gfx::create_shader_module(
+  gfx::ShaderModuleHandle cull_module = gfx::create_shader_module(
       device, shaders::k_cluster_cull_spirv, shaders::k_cluster_cull_spirv_size, &error);
-  REQUIRE(vertex_module != VK_NULL_HANDLE);
-  REQUIRE(cull_module != VK_NULL_HANDLE);
+  REQUIRE(vertex_module.valid());
+  REQUIRE(cull_module.valid());
   gfx::GraphicsPipelineDesc vertex_desc;
   vertex_desc.vertex = vertex_module;
   vertex_desc.vertex_entry = "vs_cluster";
   vertex_desc.fragment = vertex_module;
   vertex_desc.fragment_entry = "fs_visibility";
   vertex_desc.layout = bindless.pipeline_layout();
-  VkPipeline vertex_pipeline = VK_NULL_HANDLE;
+  gfx::PipelineHandle vertex_pipeline = {};
   REQUIRE_MESSAGE(gfx::create_graphics_pipeline(device, vertex_desc, vertex_pipeline, &error),
                   error);
   gfx::ComputePipeline cull_pipeline;
   REQUIRE(gfx::create_compute_pipeline(device, cull_module, "cull_main", {}, sizeof(u64),
                                        cull_pipeline, &error));
-  VkShaderModule mesh_module = VK_NULL_HANDLE;
-  VkPipeline mesh_pipeline = VK_NULL_HANDLE;
+  gfx::ShaderModuleHandle mesh_module = {};
+  gfx::PipelineHandle mesh_pipeline = {};
   if (have_mesh) {
     mesh_module = gfx::create_shader_module(device, shaders::k_cluster_mesh_spirv,
                                             shaders::k_cluster_mesh_spirv_size, &error);
-    REQUIRE(mesh_module != VK_NULL_HANDLE);
+    REQUIRE(mesh_module.valid());
     gfx::MeshPipelineDesc mesh_desc;
     mesh_desc.mesh = mesh_module;
     mesh_desc.fragment = mesh_module;
@@ -221,12 +220,12 @@ TEST_CASE("vertex path: the baseline tier fills the visibility buffer like the m
         b.write(rg_indirect, gfx::Access::TransferWrite);
         b.write(rg_args, gfx::Access::TransferWrite);
       },
-      [&](VkCommandBuffer cb, gfx::RenderGraph&) {
-        vkCmdFillBuffer(cb, vis_mesh.buffer, 0, VK_WHOLE_SIZE, 0);
-        vkCmdFillBuffer(cb, vis_vertex.buffer, 0, VK_WHOLE_SIZE, 0);
-        vkCmdFillBuffer(cb, vis_indirect.buffer, 0, VK_WHOLE_SIZE, 0);
-        vkCmdFillBuffer(cb, args.buffer, 0, 4, triangles_per_cluster * 3);  // vertexCount
-        vkCmdFillBuffer(cb, args.buffer, 4, 12, 0);                         // instanceCount, first*
+      [&](gfx::CommandList cb, gfx::RenderGraph&) {
+        cb.fill_buffer(vis_mesh.buffer, 0, gfx::k_whole_size, 0);
+        cb.fill_buffer(vis_vertex.buffer, 0, gfx::k_whole_size, 0);
+        cb.fill_buffer(vis_indirect.buffer, 0, gfx::k_whole_size, 0);
+        cb.fill_buffer(args.buffer, 0, 4, triangles_per_cluster * 3);  // vertexCount
+        cb.fill_buffer(args.buffer, 4, 12, 0);                         // instanceCount, first*
       });
   if (have_mesh) {
     graph.add_pass(
@@ -235,12 +234,12 @@ TEST_CASE("vertex path: the baseline tier fills the visibility buffer like the m
           b.render_area(k_w, k_h);
           b.write(rg_mesh, gfx::Access::FragmentReadWrite);
         },
-        [&](VkCommandBuffer cb, gfx::RenderGraph&) {
-          vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, mesh_pipeline);
-          bindless.bind(cb, VK_PIPELINE_BIND_POINT_GRAPHICS);
-          vkCmdPushConstants(cb, bindless.pipeline_layout(), VK_SHADER_STAGE_ALL, 0,
-                             sizeof(draw_mesh), &draw_mesh);
-          vkCmdDrawMeshTasksEXT(cb, leaf_count, 1, 1);
+        [&](gfx::CommandList cb, gfx::RenderGraph&) {
+          cb.bind_pipeline(gfx::BindPoint::Graphics, mesh_pipeline);
+          bindless.bind(cb, gfx::BindPoint::Graphics);
+          cb.push_constants(bindless.pipeline_layout(), gfx::ShaderStage::All, 0, sizeof(draw_mesh),
+                            &draw_mesh);
+          cb.draw_mesh_tasks(leaf_count, 1, 1);
         });
   }
   graph.add_pass(
@@ -249,12 +248,12 @@ TEST_CASE("vertex path: the baseline tier fills the visibility buffer like the m
         b.render_area(k_w, k_h);
         b.write(rg_vertex, gfx::Access::FragmentReadWrite);
       },
-      [&](VkCommandBuffer cb, gfx::RenderGraph&) {
-        vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, vertex_pipeline);
-        bindless.bind(cb, VK_PIPELINE_BIND_POINT_GRAPHICS);
-        vkCmdPushConstants(cb, bindless.pipeline_layout(), VK_SHADER_STAGE_ALL, 0,
-                           sizeof(draw_vertex), &draw_vertex);
-        vkCmdDraw(cb, triangles_per_cluster * 3, leaf_count, 0, 0);
+      [&](gfx::CommandList cb, gfx::RenderGraph&) {
+        cb.bind_pipeline(gfx::BindPoint::Graphics, vertex_pipeline);
+        bindless.bind(cb, gfx::BindPoint::Graphics);
+        cb.push_constants(bindless.pipeline_layout(), gfx::ShaderStage::All, 0, sizeof(draw_vertex),
+                          &draw_vertex);
+        cb.draw(triangles_per_cluster * 3, leaf_count, 0, 0);
       });
   graph.add_pass(
       "cull", gfx::PassKind::Compute,
@@ -262,11 +261,11 @@ TEST_CASE("vertex path: the baseline tier fills the visibility buffer like the m
         b.write(rg_args, gfx::Access::ComputeReadWrite);
         b.write(rg_visible, gfx::Access::ComputeWrite);
       },
-      [&](VkCommandBuffer cb, gfx::RenderGraph&) {
-        vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, cull_pipeline.pipeline);
-        vkCmdPushConstants(cb, cull_pipeline.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(u64),
-                           &params_address);
-        vkCmdDispatch(cb, gfx::cull_group_count(leaf_count), 1, 1);
+      [&](gfx::CommandList cb, gfx::RenderGraph&) {
+        cb.bind_pipeline(gfx::BindPoint::Compute, cull_pipeline.pipeline);
+        cb.push_constants(cull_pipeline.layout, gfx::ShaderStage::Compute, 0, sizeof(u64),
+                          &params_address);
+        cb.dispatch(gfx::cull_group_count(leaf_count), 1, 1);
       });
   graph.add_pass(
       "vertex indirect", gfx::PassKind::Raster,
@@ -276,12 +275,12 @@ TEST_CASE("vertex path: the baseline tier fills the visibility buffer like the m
         b.read(rg_args, gfx::Access::IndirectRead);
         b.read(rg_visible, gfx::Access::VertexRead);
       },
-      [&](VkCommandBuffer cb, gfx::RenderGraph&) {
-        vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, vertex_pipeline);
-        bindless.bind(cb, VK_PIPELINE_BIND_POINT_GRAPHICS);
-        vkCmdPushConstants(cb, bindless.pipeline_layout(), VK_SHADER_STAGE_ALL, 0,
-                           sizeof(draw_indirect), &draw_indirect);
-        vkCmdDrawIndirect(cb, args.buffer, 0, 1, sizeof(u32) * 4);
+      [&](gfx::CommandList cb, gfx::RenderGraph&) {
+        cb.bind_pipeline(gfx::BindPoint::Graphics, vertex_pipeline);
+        bindless.bind(cb, gfx::BindPoint::Graphics);
+        cb.push_constants(bindless.pipeline_layout(), gfx::ShaderStage::All, 0,
+                          sizeof(draw_indirect), &draw_indirect);
+        cb.draw_indirect(args.buffer, 0, 1, sizeof(u32) * 4);
       });
   graph.add_pass(
       "readback", gfx::PassKind::Transfer,
@@ -293,20 +292,20 @@ TEST_CASE("vertex path: the baseline tier fills the visibility buffer like the m
         b.read(rg_visible, gfx::Access::TransferRead);
         b.write(rg_host, gfx::Access::TransferWrite);
       },
-      [&](VkCommandBuffer cb, gfx::RenderGraph&) {
-        const VkBufferCopy mesh_copy{0, 0, vis_bytes};
-        const VkBufferCopy vertex_copy{0, vis_bytes, vis_bytes};
-        const VkBufferCopy indirect_copy{0, vis_bytes * 2, vis_bytes};
-        const VkBufferCopy args_copy{0, vis_bytes * 3, 16};
-        const VkBufferCopy visible_copy{0, vis_bytes * 3 + 16, visible_bytes};
-        vkCmdCopyBuffer(cb, vis_mesh.buffer, host.buffer, 1, &mesh_copy);
-        vkCmdCopyBuffer(cb, vis_vertex.buffer, host.buffer, 1, &vertex_copy);
-        vkCmdCopyBuffer(cb, vis_indirect.buffer, host.buffer, 1, &indirect_copy);
-        vkCmdCopyBuffer(cb, args.buffer, host.buffer, 1, &args_copy);
-        vkCmdCopyBuffer(cb, visible.buffer, host.buffer, 1, &visible_copy);
+      [&](gfx::CommandList cb, gfx::RenderGraph&) {
+        const gfx::BufferCopy mesh_copy{0, 0, vis_bytes};
+        const gfx::BufferCopy vertex_copy{0, vis_bytes, vis_bytes};
+        const gfx::BufferCopy indirect_copy{0, vis_bytes * 2, vis_bytes};
+        const gfx::BufferCopy args_copy{0, vis_bytes * 3, 16};
+        const gfx::BufferCopy visible_copy{0, vis_bytes * 3 + 16, visible_bytes};
+        cb.copy_buffer(vis_mesh.buffer, host.buffer, mesh_copy);
+        cb.copy_buffer(vis_vertex.buffer, host.buffer, vertex_copy);
+        cb.copy_buffer(vis_indirect.buffer, host.buffer, indirect_copy);
+        cb.copy_buffer(args.buffer, host.buffer, args_copy);
+        cb.copy_buffer(visible.buffer, host.buffer, visible_copy);
       });
   REQUIRE_MESSAGE(graph.compile(&error), error);
-  VkCommandBuffer commands = frames.begin_frame();
+  gfx::CommandList commands = frames.begin_frame();
   graph.execute(commands);
   REQUIRE(frames.wait(frames.end_frame()));
 
@@ -357,8 +356,8 @@ TEST_CASE("vertex path: the baseline tier fills the visibility buffer like the m
                      << indirect_mismatch);
 
   graph.reset();
-  if (mesh_pipeline != VK_NULL_HANDLE) gfx::destroy_pipeline(device, mesh_pipeline);
-  if (mesh_module != VK_NULL_HANDLE) gfx::destroy_shader_module(device, mesh_module);
+  if (mesh_pipeline.valid()) gfx::destroy_pipeline(device, mesh_pipeline);
+  if (mesh_module.valid()) gfx::destroy_shader_module(device, mesh_module);
   gfx::destroy_pipeline(device, vertex_pipeline);
   gfx::destroy_compute_pipeline(device, cull_pipeline);
   gfx::destroy_shader_module(device, cull_module);
@@ -448,11 +447,11 @@ struct IndexedRun {
 
   bool create(const gfx::Device& device, u32 pairs, u32 capacity, u32 triangles_per_cluster,
               u64 vis_bytes, std::string* error) {
-    constexpr VkBufferUsageFlags k_address =
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
-    constexpr VkBufferUsageFlags k_readable = k_address | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-    constexpr VkBufferUsageFlags k_args =
-        k_readable | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    constexpr gfx::BufferUsage k_address =
+        gfx::BufferUsage::Storage | gfx::BufferUsage::ShaderDeviceAddress;
+    constexpr gfx::BufferUsage k_readable = k_address | gfx::BufferUsage::TransferSrc;
+    constexpr gfx::BufferUsage k_args =
+        k_readable | gfx::BufferUsage::Indirect | gfx::BufferUsage::TransferDst;
     reset = gfx::vertex_draw_reset(capacity, triangles_per_cluster);
     return gfx::create_buffer(device, u64{pairs} * 8, k_readable, false, visible, error) &&
            gfx::create_buffer(device, gfx::k_draw_args_bytes, k_args, false, args, error) &&
@@ -461,8 +460,7 @@ struct IndexedRun {
            gfx::create_buffer(device, u64{pairs} * sizeof(gfx::VertexDrawRecord), k_readable, false,
                               records, error) &&
            gfx::create_buffer(device, u64{capacity} * gfx::k_vertex_draw_index_bytes,
-                              k_readable | VK_BUFFER_USAGE_INDEX_BUFFER_BIT, false, indices,
-                              error) &&
+                              k_readable | gfx::BufferUsage::Index, false, indices, error) &&
            gfx::create_buffer(device, vis_bytes, k_args, false, vis, error) &&
            gfx::create_buffer(device, sizeof(gfx::CullParams), k_address, true, params, error);
   }
@@ -496,7 +494,7 @@ TEST_CASE("vertex path: the indexed draw draws the cut's own triangles, the same
   const u32 cluster_count = lod.mesh.clusters.size();
   const u32 triangles_per_cluster = geometry::ClusterLodOptions{}.max_triangles;
 
-  constexpr VkBufferUsageFlags k_storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+  constexpr gfx::BufferUsage k_storage = gfx::BufferUsage::Storage;
   gfx::BufferResource clusters;
   gfx::BufferResource triangles;
   gfx::BufferResource lods;
@@ -535,9 +533,8 @@ TEST_CASE("vertex path: the indexed draw draws the cut's own triangles, the same
   gfx::BufferResource vis_capacity;  // the capacity draw over run A's visible list
   gfx::BufferResource vis_sw;        // the software rasterizer over run A's visible list
   gfx::BufferResource vis_mesh;      // the mesh path over run A's visible list
-  const VkBufferUsageFlags k_vis = k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
-                                   VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                                   VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+  const gfx::BufferUsage k_vis = k_storage | gfx::BufferUsage::ShaderDeviceAddress |
+                                 gfx::BufferUsage::TransferDst | gfx::BufferUsage::TransferSrc;
   REQUIRE(gfx::create_buffer(device, vis_bytes, k_vis, false, vis_capacity, &error));
   REQUIRE(gfx::create_buffer(device, vis_bytes, k_vis, false, vis_sw, &error));
   REQUIRE(gfx::create_buffer(device, vis_bytes, k_vis, false, vis_mesh, &error));
@@ -567,22 +564,22 @@ TEST_CASE("vertex path: the indexed draw draws the cut's own triangles, the same
   gfx::BindlessSet bindless;
   REQUIRE(bindless.create(device, gfx::BindlessConfig{}, &error));
 
-  VkShaderModule cull_module = gfx::create_shader_module(
+  gfx::ShaderModuleHandle cull_module = gfx::create_shader_module(
       device, shaders::k_cluster_cull_spirv, shaders::k_cluster_cull_spirv_size, &error);
-  VkShaderModule expand_module = gfx::create_shader_module(
+  gfx::ShaderModuleHandle expand_module = gfx::create_shader_module(
       device, shaders::k_vertex_expand_spirv, shaders::k_vertex_expand_spirv_size, &error);
-  VkShaderModule indexed_module =
+  gfx::ShaderModuleHandle indexed_module =
       gfx::create_shader_module(device, shaders::k_cluster_vertex_indexed_spirv,
                                 shaders::k_cluster_vertex_indexed_spirv_size, &error);
-  VkShaderModule vertex_module = gfx::create_shader_module(
+  gfx::ShaderModuleHandle vertex_module = gfx::create_shader_module(
       device, shaders::k_cluster_vertex_spirv, shaders::k_cluster_vertex_spirv_size, &error);
-  VkShaderModule sw_module = gfx::create_shader_module(
+  gfx::ShaderModuleHandle sw_module = gfx::create_shader_module(
       device, shaders::k_cluster_sw_raster_spirv, shaders::k_cluster_sw_raster_spirv_size, &error);
-  REQUIRE(cull_module != VK_NULL_HANDLE);
-  REQUIRE(expand_module != VK_NULL_HANDLE);
-  REQUIRE(indexed_module != VK_NULL_HANDLE);
-  REQUIRE(vertex_module != VK_NULL_HANDLE);
-  REQUIRE(sw_module != VK_NULL_HANDLE);
+  REQUIRE(cull_module.valid());
+  REQUIRE(expand_module.valid());
+  REQUIRE(indexed_module.valid());
+  REQUIRE(vertex_module.valid());
+  REQUIRE(sw_module.valid());
   gfx::ComputePipeline cull_pipeline;
   gfx::ComputePipeline expand_pipeline;
   gfx::ComputePipeline sw_pipeline;
@@ -602,16 +599,16 @@ TEST_CASE("vertex path: the indexed draw draws the cut's own triangles, the same
   desc.vertex_entry = "vs_cluster_indexed";
   desc.fragment = indexed_module;
   desc.fragment_entry = "fs_visibility_indexed";
-  VkPipeline indexed_pipeline = VK_NULL_HANDLE;
+  gfx::PipelineHandle indexed_pipeline = {};
   REQUIRE_MESSAGE(gfx::create_graphics_pipeline(device, desc, indexed_pipeline, &error), error);
   desc.vertex_entry = "vs_cluster_fallback";
   desc.fragment = vertex_module;
   desc.fragment_entry = "fs_visibility";
-  VkPipeline fallback_pipeline = VK_NULL_HANDLE;
+  gfx::PipelineHandle fallback_pipeline = {};
   REQUIRE_MESSAGE(gfx::create_graphics_pipeline(device, desc, fallback_pipeline, &error), error);
   desc.vertex = vertex_module;
   desc.vertex_entry = "vs_cluster";
-  VkPipeline capacity_pipeline = VK_NULL_HANDLE;
+  gfx::PipelineHandle capacity_pipeline = {};
   REQUIRE_MESSAGE(gfx::create_graphics_pipeline(device, desc, capacity_pipeline, &error), error);
   gfx_test::ClusterRaster mesh_raster;
   if (have_mesh) {
@@ -712,16 +709,16 @@ TEST_CASE("vertex path: the indexed draw draws the cut's own triangles, the same
         b.write(rg_sw, gfx::Access::TransferWrite);
         b.write(rg_mesh, gfx::Access::TransferWrite);
       },
-      [&](VkCommandBuffer cb, gfx::RenderGraph&) {
+      [&](gfx::CommandList cb, gfx::RenderGraph&) {
         for (IndexedRun* run : {&run_a, &run_b}) {
-          vkCmdFillBuffer(cb, run->args.buffer, 0, 4, triangles_per_cluster * 3);
-          vkCmdFillBuffer(cb, run->args.buffer, 4, 12, 0);
-          vkCmdUpdateBuffer(cb, run->header.buffer, 0, sizeof(run->reset), &run->reset);
-          vkCmdFillBuffer(cb, run->vis.buffer, 0, VK_WHOLE_SIZE, 0);
+          cb.fill_buffer(run->args.buffer, 0, 4, triangles_per_cluster * 3);
+          cb.fill_buffer(run->args.buffer, 4, 12, 0);
+          cb.update_buffer(run->header.buffer, 0, sizeof(run->reset), &run->reset);
+          cb.fill_buffer(run->vis.buffer, 0, gfx::k_whole_size, 0);
         }
-        vkCmdFillBuffer(cb, vis_capacity.buffer, 0, VK_WHOLE_SIZE, 0);
-        vkCmdFillBuffer(cb, vis_sw.buffer, 0, VK_WHOLE_SIZE, 0);
-        vkCmdFillBuffer(cb, vis_mesh.buffer, 0, VK_WHOLE_SIZE, 0);
+        cb.fill_buffer(vis_capacity.buffer, 0, gfx::k_whole_size, 0);
+        cb.fill_buffer(vis_sw.buffer, 0, gfx::k_whole_size, 0);
+        cb.fill_buffer(vis_mesh.buffer, 0, gfx::k_whole_size, 0);
       });
   auto add_run = [&](IndexedRun& run, const RgRun& r, const gfx::VertexExpandParams& expand,
                      const gfx::ClusterDrawParams& draw_params) {
@@ -734,11 +731,11 @@ TEST_CASE("vertex path: the indexed draw draws the cut's own triangles, the same
           b.write(r.header, gfx::Access::ComputeReadWrite);
           b.write(r.records, gfx::Access::ComputeWrite);
         },
-        [&, params_address](VkCommandBuffer cb, gfx::RenderGraph&) {
-          vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, cull_pipeline.pipeline);
-          vkCmdPushConstants(cb, cull_pipeline.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(u64),
-                             &params_address);
-          vkCmdDispatch(cb, gfx::cull_group_count(pairs), 1, 1);
+        [&, params_address](gfx::CommandList cb, gfx::RenderGraph&) {
+          cb.bind_pipeline(gfx::BindPoint::Compute, cull_pipeline.pipeline);
+          cb.push_constants(cull_pipeline.layout, gfx::ShaderStage::Compute, 0, sizeof(u64),
+                            &params_address);
+          cb.dispatch(gfx::cull_group_count(pairs), 1, 1);
         });
     graph.add_pass(
         "expand", gfx::PassKind::Compute,
@@ -749,11 +746,11 @@ TEST_CASE("vertex path: the indexed draw draws the cut's own triangles, the same
           b.read(r.records, gfx::Access::ComputeRead);
           b.write(r.indices, gfx::Access::ComputeWrite);
         },
-        [&](VkCommandBuffer cb, gfx::RenderGraph&) {
-          vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, expand_pipeline.pipeline);
-          vkCmdPushConstants(cb, expand_pipeline.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                             sizeof(expand), &expand);
-          vkCmdDispatchIndirect(cb, run.header.buffer, gfx::k_vertex_draw_expand_offset);
+        [&](gfx::CommandList cb, gfx::RenderGraph&) {
+          cb.bind_pipeline(gfx::BindPoint::Compute, expand_pipeline.pipeline);
+          cb.push_constants(expand_pipeline.layout, gfx::ShaderStage::Compute, 0, sizeof(expand),
+                            &expand);
+          cb.dispatch_indirect(run.header.buffer, gfx::k_vertex_draw_expand_offset);
         });
     graph.add_pass(
         "indexed", gfx::PassKind::Raster,
@@ -764,17 +761,16 @@ TEST_CASE("vertex path: the indexed draw draws the cut's own triangles, the same
           b.read(r.records, gfx::Access::VertexRead);
           b.read(r.indices, gfx::Access::IndexRead);
         },
-        [&](VkCommandBuffer cb, gfx::RenderGraph&) {
-          vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, indexed_pipeline);
-          bindless.bind(cb, VK_PIPELINE_BIND_POINT_GRAPHICS);
-          vkCmdPushConstants(cb, bindless.pipeline_layout(), VK_SHADER_STAGE_ALL, 0,
-                             sizeof(draw_params), &draw_params);
-          vkCmdBindIndexBuffer(cb, run.indices.buffer, 0, VK_INDEX_TYPE_UINT32);
-          vkCmdDrawIndexedIndirect(cb, run.header.buffer, 0, 1,
-                                   sizeof(VkDrawIndexedIndirectCommand));
-          vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, fallback_pipeline);
-          vkCmdDrawIndirect(cb, run.header.buffer, gfx::k_vertex_draw_fallback_offset, 1,
-                            sizeof(VkDrawIndirectCommand));
+        [&](gfx::CommandList cb, gfx::RenderGraph&) {
+          cb.bind_pipeline(gfx::BindPoint::Graphics, indexed_pipeline);
+          bindless.bind(cb, gfx::BindPoint::Graphics);
+          cb.push_constants(bindless.pipeline_layout(), gfx::ShaderStage::All, 0,
+                            sizeof(draw_params), &draw_params);
+          cb.bind_index_buffer(run.indices.buffer, 0, gfx::IndexType::Uint32);
+          cb.draw_indexed_indirect(run.header.buffer, 0, 1, sizeof(gfx::DrawIndexedIndirectArgs));
+          cb.bind_pipeline(gfx::BindPoint::Graphics, fallback_pipeline);
+          cb.draw_indirect(run.header.buffer, gfx::k_vertex_draw_fallback_offset, 1,
+                           sizeof(gfx::DrawIndirectArgs));
         });
   };
   add_run(run_a, rg_a, expand_a, draw_a);
@@ -789,12 +785,12 @@ TEST_CASE("vertex path: the indexed draw draws the cut's own triangles, the same
         b.read(rg_a.args, gfx::Access::IndirectRead);
         b.read(rg_a.visible, gfx::Access::VertexRead);
       },
-      [&](VkCommandBuffer cb, gfx::RenderGraph&) {
-        vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, capacity_pipeline);
-        bindless.bind(cb, VK_PIPELINE_BIND_POINT_GRAPHICS);
-        vkCmdPushConstants(cb, bindless.pipeline_layout(), VK_SHADER_STAGE_ALL, 0,
-                           sizeof(draw_capacity), &draw_capacity);
-        vkCmdDrawIndirect(cb, run_a.args.buffer, 0, 1, sizeof(u32) * 4);
+      [&](gfx::CommandList cb, gfx::RenderGraph&) {
+        cb.bind_pipeline(gfx::BindPoint::Graphics, capacity_pipeline);
+        bindless.bind(cb, gfx::BindPoint::Graphics);
+        cb.push_constants(bindless.pipeline_layout(), gfx::ShaderStage::All, 0,
+                          sizeof(draw_capacity), &draw_capacity);
+        cb.draw_indirect(run_a.args.buffer, 0, 1, sizeof(u32) * 4);
       });
   graph.add_pass(
       "software", gfx::PassKind::Compute,
@@ -803,11 +799,11 @@ TEST_CASE("vertex path: the indexed draw draws the cut's own triangles, the same
         b.read(rg_a.header, gfx::Access::IndirectRead);
         b.read(rg_a.visible, gfx::Access::ComputeRead);
       },
-      [&](VkCommandBuffer cb, gfx::RenderGraph&) {
-        vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, sw_pipeline.pipeline);
-        vkCmdPushConstants(cb, sw_pipeline.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(draw_sw),
-                           &draw_sw);
-        vkCmdDispatchIndirect(cb, run_a.header.buffer, gfx::k_vertex_draw_expand_offset);
+      [&](gfx::CommandList cb, gfx::RenderGraph&) {
+        cb.bind_pipeline(gfx::BindPoint::Compute, sw_pipeline.pipeline);
+        cb.push_constants(sw_pipeline.layout, gfx::ShaderStage::Compute, 0, sizeof(draw_sw),
+                          &draw_sw);
+        cb.dispatch_indirect(run_a.header.buffer, gfx::k_vertex_draw_expand_offset);
       });
   if (have_mesh) {
     graph.add_pass(
@@ -818,14 +814,14 @@ TEST_CASE("vertex path: the indexed draw draws the cut's own triangles, the same
           b.read(rg_a.header, gfx::Access::IndirectRead);
           b.read(rg_a.visible, gfx::Access::MeshRead);
         },
-        [&](VkCommandBuffer cb, gfx::RenderGraph&) {
+        [&](gfx::CommandList cb, gfx::RenderGraph&) {
           // The expansion's dispatch block is {survivors, 1, 1}: a mesh-task argument block too.
           mesh_raster.draw_indirect(cb, bindless, draw_mesh, run_a.header.buffer,
                                     gfx::k_vertex_draw_expand_offset);
         });
   }
   REQUIRE_MESSAGE(graph.compile(&error), error);
-  VkCommandBuffer commands = frames.begin_frame();
+  gfx::CommandList commands = frames.begin_frame();
   graph.execute(commands);
   REQUIRE(frames.wait(frames.end_frame()));
 
@@ -833,11 +829,10 @@ TEST_CASE("vertex path: the indexed draw draws the cut's own triangles, the same
   auto read_back = [&](const gfx::BufferResource& src, u64 bytes) {
     std::vector<u8> out(bytes);
     gfx::BufferResource host;
-    REQUIRE(
-        gfx::create_buffer(device, bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, host, &error));
-    VkCommandBuffer cb = frames.begin_frame();
-    const VkBufferCopy region{0, 0, bytes};
-    vkCmdCopyBuffer(cb, src.buffer, host.buffer, 1, &region);
+    REQUIRE(gfx::create_buffer(device, bytes, gfx::BufferUsage::TransferDst, true, host, &error));
+    gfx::CommandList cb = frames.begin_frame();
+    const gfx::BufferCopy region{0, 0, bytes};
+    cb.copy_buffer(src.buffer, host.buffer, region);
     REQUIRE(frames.wait(frames.end_frame()));
     std::memcpy(out.data(), host.mapped, bytes);
     gfx::destroy_buffer(device, host);
@@ -1000,12 +995,13 @@ TEST_CASE("vertex path: the indexed draw draws the cut's own triangles, the same
 
   graph.reset();
   if (have_mesh) mesh_raster.destroy(device);
-  for (VkPipeline p : {indexed_pipeline, fallback_pipeline, capacity_pipeline})
+  for (gfx::PipelineHandle p : {indexed_pipeline, fallback_pipeline, capacity_pipeline})
     gfx::destroy_pipeline(device, p);
   gfx::destroy_compute_pipeline(device, cull_pipeline);
   gfx::destroy_compute_pipeline(device, expand_pipeline);
   gfx::destroy_compute_pipeline(device, sw_pipeline);
-  for (VkShaderModule m : {cull_module, expand_module, indexed_module, vertex_module, sw_module})
+  for (gfx::ShaderModuleHandle m :
+       {cull_module, expand_module, indexed_module, vertex_module, sw_module})
     gfx::destroy_shader_module(device, m);
   bindless.destroy();
   run_a.destroy(device);

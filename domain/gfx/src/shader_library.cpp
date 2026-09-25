@@ -3,6 +3,7 @@
 #include <core/log/log.h>
 #include <core/platform/process.h>
 #include <domain/gfx/device.h>
+#include <domain/gfx/pipeline.h>
 #include <domain/gfx/shader_library.h>
 #include <foundation/io/vfs.h>
 
@@ -60,23 +61,25 @@ enum StorageClass : u32 {
   ScStorageBuffer = 12,
 };
 
-VkShaderStageFlagBits stage_of(u32 execution_model) noexcept {
+// SPIR-V's execution models are the engine's shader stages whatever the backend, which is why the
+// reflection needs no backend at all.
+ShaderStage stage_of(u32 execution_model) noexcept {
   switch (execution_model) {
-    case 0: return VK_SHADER_STAGE_VERTEX_BIT;
-    case 1: return VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
-    case 2: return VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
-    case 3: return VK_SHADER_STAGE_GEOMETRY_BIT;
-    case 4: return VK_SHADER_STAGE_FRAGMENT_BIT;
-    case 5: return VK_SHADER_STAGE_COMPUTE_BIT;
-    case 5313: return VK_SHADER_STAGE_RAYGEN_BIT_KHR;
-    case 5314: return VK_SHADER_STAGE_INTERSECTION_BIT_KHR;
-    case 5315: return VK_SHADER_STAGE_ANY_HIT_BIT_KHR;
-    case 5316: return VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
-    case 5317: return VK_SHADER_STAGE_MISS_BIT_KHR;
-    case 5318: return VK_SHADER_STAGE_CALLABLE_BIT_KHR;
-    case 5364: return VK_SHADER_STAGE_TASK_BIT_EXT;
-    case 5365: return VK_SHADER_STAGE_MESH_BIT_EXT;
-    default: return VK_SHADER_STAGE_FLAG_BITS_MAX_ENUM;
+    case 0: return ShaderStage::Vertex;
+    case 1: return ShaderStage::TessellationControl;
+    case 2: return ShaderStage::TessellationEvaluation;
+    case 3: return ShaderStage::Geometry;
+    case 4: return ShaderStage::Fragment;
+    case 5: return ShaderStage::Compute;
+    case 5313: return ShaderStage::RayGen;
+    case 5314: return ShaderStage::Intersection;
+    case 5315: return ShaderStage::AnyHit;
+    case 5316: return ShaderStage::ClosestHit;
+    case 5317: return ShaderStage::Miss;
+    case 5318: return ShaderStage::Callable;
+    case 5364: return ShaderStage::Task;
+    case 5365: return ShaderStage::Mesh;
+    default: return ShaderStage::None;
   }
 }
 
@@ -361,24 +364,23 @@ bool reflect_spirv(std::span<const u32> words, ShaderReflection& out, std::strin
         const u32 dim = m.operand(type_at, 3);
         const u32 sampled = m.operand(type_at, 7);
         if (dim == 5) {  // Buffer
-          binding.type = sampled == 2 ? VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER
-                                      : VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER;
+          binding.type = sampled == 2 ? DescriptorType::StorageTexelBuffer
+                                      : DescriptorType::UniformTexelBuffer;
         } else {
-          binding.type =
-              sampled == 2 ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+          binding.type = sampled == 2 ? DescriptorType::StorageImage : DescriptorType::SampledImage;
         }
         break;
       }
-      case OpTypeSampler: binding.type = VK_DESCRIPTOR_TYPE_SAMPLER; break;
-      case OpTypeSampledImage: binding.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; break;
+      case OpTypeSampler: binding.type = DescriptorType::Sampler; break;
+      case OpTypeSampledImage: binding.type = DescriptorType::CombinedImageSampler; break;
       case OpTypeAccelerationStructureKHR:
-        binding.type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+        binding.type = DescriptorType::AccelerationStructure;
         break;
       case OpTypeStruct:
         if (storage == ScStorageBuffer || m.decoration(pointee, DecBufferBlock)) {
-          binding.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+          binding.type = DescriptorType::StorageBuffer;
         } else {
-          binding.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+          binding.type = DescriptorType::UniformBuffer;
         }
         break;
       default: continue;
@@ -418,9 +420,8 @@ void ShaderLibrary::destroy() noexcept {
 }
 
 void ShaderLibrary::release(Shader& shader) noexcept {
-  if (shader.module != VK_NULL_HANDLE && device_ != nullptr)
-    destroy_shader_module(*device_, shader.module);
-  shader.module = VK_NULL_HANDLE;
+  if (shader.module && device_ != nullptr) destroy_shader_module(*device_, shader.module);
+  shader.module = {};
 }
 
 ShaderLibrary::Entry* ShaderLibrary::find(std::string_view name) noexcept {
@@ -659,10 +660,10 @@ bool ShaderLibrary::load_bytes(Entry& entry, std::span<const u8> bytes, bool fro
     if (error != nullptr) error->insert(0, entry.name + ": ");
     return false;
   }
-  VkShaderModule module = VK_NULL_HANDLE;
+  ShaderModuleHandle module;
   if (device_ != nullptr) {
     module = create_shader_module(*device_, bytes.data(), bytes.size(), error);
-    if (module == VK_NULL_HANDLE) {
+    if (!module) {
       if (error != nullptr) error->insert(0, entry.name + ": ");
       return false;
     }

@@ -3,8 +3,9 @@
 // The graphics device (docs/plan/04-renderer.md §4.2, ADR-0006): one Vulkan instance, one
 // physical device chosen from enumerate_adapters(), one logical device with the feature chain
 // the renderer relies on, its queues, and a memory allocator. This header is API-neutral:
-// nothing above the RHI sees a Vulkan handle. gfx internals and the RHI's own tests reach the
-// handles through domain/gfx/vulkan.h.
+// nothing above the RHI sees a Vulkan handle. gfx internals, the RHI's own tests and a module
+// that presents reach the handles through the backend set, domain/gfx/backend/vulkan/vulkan.h
+// (docs/subsystems/gfx.md, "The RHI surface and the backend surface").
 //
 // What creation requires, and what it merely enables, is **one table** in
 // domain/gfx/requirements.h: API version, core features, extensions, and the limits the renderer
@@ -35,7 +36,8 @@ struct DeviceOptions {
   // Route validation and driver messages through the log when VK_EXT_debug_utils exists.
   bool debug_messenger = true;
   // Instance extensions a window system needs for its surface
-  // (window::Window::vulkan_instance_extensions()); creation fails when one is missing.
+  // (window::vulkan::instance_extensions(), foundation/window/backend/vulkan/surface.h); creation
+  // fails when one is missing.
   const char* const* instance_extensions = nullptr;
   u32 instance_extension_count = 0;
   // Report this device as a weaker one (domain/gfx/requirements.h). The overridden caps are what
@@ -88,7 +90,7 @@ struct MemoryBudget {
   u64 device_local_bytes = 0;  // the heaps' own size, known either way
 };
 
-struct Handles;  // Vulkan handles; see domain/gfx/vulkan.h
+struct Handles;  // the backend's handles; see domain/gfx/backend/vulkan/vulkan.h
 
 class Device {
  public:
@@ -127,7 +129,8 @@ class Device {
   // a driver query, not a frame path — sample it around a measurement, not inside one.
   bool memory_budget(MemoryBudget& out) const noexcept;
 
-  // Vulkan handles for gfx internals and tests.
+  // The backend's handles, for gfx internals, its tests, and a module that presents; declared
+  // here and defined only in the backend set, so nothing else can read them.
   const Handles& handles() const noexcept;
 
  private:

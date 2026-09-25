@@ -14,11 +14,11 @@
 
 #include <domain/geometry/cluster_lod.h>
 #include <domain/geometry/cluster_pages.h>
+#include <domain/gfx/backend/vulkan/vulkan.h>
 #include <domain/gfx/cluster_cull.h>
 #include <domain/gfx/device.h>
 #include <domain/gfx/frame.h>
 #include <domain/gfx/render_graph.h>
-#include <domain/gfx/vulkan.h>
 
 #include <doctest/doctest.h>
 
@@ -114,10 +114,10 @@ TEST_CASE("cluster cull: the streaming drawing rule is the CPU reference, page f
   REQUIRE(page_count > 4);
   MESSAGE("clusters " << cluster_count << " in " << page_count << " pages");
 
-  constexpr VkBufferUsageFlags k_storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-  constexpr VkBufferUsageFlags k_address = k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
-                                           VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
-                                           VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+  constexpr gfx::BufferUsage k_storage = gfx::BufferUsage::Storage;
+  constexpr gfx::BufferUsage k_address = k_storage | gfx::BufferUsage::ShaderDeviceAddress |
+                                         gfx::BufferUsage::TransferSrc |
+                                         gfx::BufferUsage::TransferDst;
   gfx::BufferResource clusters;
   gfx::BufferResource lods;
   gfx::BufferResource page_table;
@@ -161,7 +161,7 @@ TEST_CASE("cluster cull: the streaming drawing rule is the CPU reference, page f
   REQUIRE(gfx::upload_buffer(device, child_ranges.data(), cluster_count * 2 * sizeof(u32),
                              k_storage, children, &error));
   REQUIRE(gfx::create_buffer(device, u64{page_count} * sizeof(u32),
-                             k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, true, residency,
+                             k_storage | gfx::BufferUsage::ShaderDeviceAddress, true, residency,
                              &error));
   REQUIRE(
       gfx::create_buffer(device, u64{page_count} * sizeof(u32), k_address, false, used, &error));
@@ -170,19 +170,19 @@ TEST_CASE("cluster cull: the streaming drawing rule is the CPU reference, page f
   REQUIRE(gfx::create_buffer(device, u64{page_count} * sizeof(u32), k_address, false, request_mask,
                              &error));
   REQUIRE(gfx::create_buffer(device, sizeof(gfx::StreamParams),
-                             k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, true,
-                             stream_block, &error));
-  REQUIRE(gfx::create_buffer(device, visible_bytes, k_address, false, visible, &error));
-  REQUIRE(gfx::create_buffer(device, sizeof(u32) * 4,
-                             k_address | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT, false, args, &error));
-  REQUIRE(gfx::create_buffer(device, sizeof(gfx::CullParams),
-                             k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, true, params,
+                             k_storage | gfx::BufferUsage::ShaderDeviceAddress, true, stream_block,
                              &error));
-  REQUIRE(gfx::create_buffer(device, visible_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true,
+  REQUIRE(gfx::create_buffer(device, visible_bytes, k_address, false, visible, &error));
+  REQUIRE(gfx::create_buffer(device, sizeof(u32) * 4, k_address | gfx::BufferUsage::Indirect, false,
+                             args, &error));
+  REQUIRE(gfx::create_buffer(device, sizeof(gfx::CullParams),
+                             k_storage | gfx::BufferUsage::ShaderDeviceAddress, true, params,
+                             &error));
+  REQUIRE(gfx::create_buffer(device, visible_bytes, gfx::BufferUsage::TransferDst, true,
                              visible_host, &error));
-  REQUIRE(gfx::create_buffer(device, sizeof(u32) * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true,
+  REQUIRE(gfx::create_buffer(device, sizeof(u32) * 4, gfx::BufferUsage::TransferDst, true,
                              args_host, &error));
-  REQUIRE(gfx::create_buffer(device, request_bytes + sizeof(u32), VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+  REQUIRE(gfx::create_buffer(device, request_bytes + sizeof(u32), gfx::BufferUsage::TransferDst,
                              true, requests_host, &error));
 
   auto* block = static_cast<gfx::StreamParams*>(stream_block.mapped);
@@ -225,9 +225,9 @@ TEST_CASE("cluster cull: the streaming drawing rule is the CPU reference, page f
 
   gfx::FrameContext frames;
   REQUIRE(frames.create(device, 2, &error));
-  VkShaderModule cull_module = gfx::create_shader_module(
+  gfx::ShaderModuleHandle cull_module = gfx::create_shader_module(
       device, shaders::k_cluster_cull_spirv, shaders::k_cluster_cull_spirv_size, &error);
-  REQUIRE(cull_module != VK_NULL_HANDLE);
+  REQUIRE(cull_module.valid());
   gfx::ComputePipeline pipeline;
   REQUIRE_MESSAGE(gfx::create_compute_pipeline(device, cull_module, "cull_main", {}, sizeof(u64),
                                                pipeline, &error),
@@ -260,12 +260,12 @@ TEST_CASE("cluster cull: the streaming drawing rule is the CPU reference, page f
           b.write(rg_count, gfx::Access::TransferWrite);
           b.write(rg_mask, gfx::Access::TransferWrite);
         },
-        [&](VkCommandBuffer cb, gfx::RenderGraph&) {
-          vkCmdFillBuffer(cb, args.buffer, 0, sizeof(u32), 0);
-          vkCmdFillBuffer(cb, args.buffer, sizeof(u32), sizeof(u32) * 2, 1);
-          vkCmdFillBuffer(cb, used.buffer, 0, VK_WHOLE_SIZE, 0);
-          vkCmdFillBuffer(cb, request_count.buffer, 0, VK_WHOLE_SIZE, 0);
-          vkCmdFillBuffer(cb, request_mask.buffer, 0, VK_WHOLE_SIZE, 0);
+        [&](gfx::CommandList cb, gfx::RenderGraph&) {
+          cb.fill_buffer(args.buffer, 0, sizeof(u32), 0);
+          cb.fill_buffer(args.buffer, sizeof(u32), sizeof(u32) * 2, 1);
+          cb.fill_buffer(used.buffer, 0, gfx::k_whole_size, 0);
+          cb.fill_buffer(request_count.buffer, 0, gfx::k_whole_size, 0);
+          cb.fill_buffer(request_mask.buffer, 0, gfx::k_whole_size, 0);
         });
     graph.add_pass(
         "cull", gfx::PassKind::Compute,
@@ -277,11 +277,11 @@ TEST_CASE("cluster cull: the streaming drawing rule is the CPU reference, page f
           b.write(rg_count, gfx::Access::ComputeReadWrite);
           b.write(rg_mask, gfx::Access::ComputeReadWrite);
         },
-        [&](VkCommandBuffer cb, gfx::RenderGraph&) {
-          vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.pipeline);
-          vkCmdPushConstants(cb, pipeline.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(u64),
-                             &params_address);
-          vkCmdDispatch(cb, gfx::cull_group_count(cluster_count), 1, 1);
+        [&](gfx::CommandList cb, gfx::RenderGraph&) {
+          cb.bind_pipeline(gfx::BindPoint::Compute, pipeline.pipeline);
+          cb.push_constants(pipeline.layout, gfx::ShaderStage::Compute, 0, sizeof(u64),
+                            &params_address);
+          cb.dispatch(gfx::cull_group_count(cluster_count), 1, 1);
         });
     graph.add_pass(
         "readback", gfx::PassKind::Transfer,
@@ -294,17 +294,17 @@ TEST_CASE("cluster cull: the streaming drawing rule is the CPU reference, page f
           b.write(rg_visible_host, gfx::Access::TransferWrite);
           b.write(rg_requests_host, gfx::Access::TransferWrite);
         },
-        [&](VkCommandBuffer cb, gfx::RenderGraph&) {
-          const VkBufferCopy a{0, 0, sizeof(u32) * 4};
-          vkCmdCopyBuffer(cb, args.buffer, args_host.buffer, 1, &a);
-          const VkBufferCopy v{0, 0, visible_bytes};
-          vkCmdCopyBuffer(cb, visible.buffer, visible_host.buffer, 1, &v);
-          const VkBufferCopy c{0, 0, sizeof(u32)};
-          vkCmdCopyBuffer(cb, request_count.buffer, requests_host.buffer, 1, &c);
-          const VkBufferCopy r{0, sizeof(u32), request_bytes};
-          vkCmdCopyBuffer(cb, requests.buffer, requests_host.buffer, 1, &r);
+        [&](gfx::CommandList cb, gfx::RenderGraph&) {
+          const gfx::BufferCopy a{0, 0, sizeof(u32) * 4};
+          cb.copy_buffer(args.buffer, args_host.buffer, a);
+          const gfx::BufferCopy v{0, 0, visible_bytes};
+          cb.copy_buffer(visible.buffer, visible_host.buffer, v);
+          const gfx::BufferCopy c{0, 0, sizeof(u32)};
+          cb.copy_buffer(request_count.buffer, requests_host.buffer, c);
+          const gfx::BufferCopy r{0, sizeof(u32), request_bytes};
+          cb.copy_buffer(requests.buffer, requests_host.buffer, r);
         });
-    VkCommandBuffer commands = frames.begin_frame();
+    gfx::CommandList commands = frames.begin_frame();
     REQUIRE(graph.compile(&error));
     graph.execute(commands);
     REQUIRE(frames.wait(frames.end_frame()));

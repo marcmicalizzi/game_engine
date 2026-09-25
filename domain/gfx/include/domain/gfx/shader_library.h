@@ -24,7 +24,8 @@
 #include <core/base/macros.h>
 #include <core/base/types.h>
 #include <core/containers/vector.h>
-#include <domain/gfx/vulkan.h>
+#include <domain/gfx/device.h>
+#include <domain/gfx/rhi.h>
 
 #include <span>
 #include <string>
@@ -34,15 +35,15 @@ namespace engine::gfx {
 
 struct ShaderEntryPoint {
   std::string name;
-  VkShaderStageFlagBits stage = VK_SHADER_STAGE_FLAG_BITS_MAX_ENUM;
-  u32 local_size[3] = {0, 0, 0};  // compute, task, and mesh stages
+  ShaderStage stage = ShaderStage::None;  // None: an execution model the reflection does not know
+  u32 local_size[3] = {0, 0, 0};          // compute, task, and mesh stages
 };
 
 struct ShaderBinding {
   std::string name;
   u32 set = 0;
   u32 binding = 0;
-  VkDescriptorType type = VK_DESCRIPTOR_TYPE_MAX_ENUM;
+  DescriptorType type = DescriptorType::Unknown;
   u32 count = 1;  // 0: unbounded (runtime array)
 };
 
@@ -61,7 +62,7 @@ bool reflect_spirv(std::span<const u32> words, ShaderReflection& out, std::strin
 
 struct Shader {
   std::string name;
-  VkShaderModule module = VK_NULL_HANDLE;  // VK_NULL_HANDLE when the library has no device
+  ShaderModuleHandle module;  // null when the library has no device
   ShaderReflection reflection;
   Vector<u32> spirv;
   u64 hash = 0;        // of the SPIR-V bytes

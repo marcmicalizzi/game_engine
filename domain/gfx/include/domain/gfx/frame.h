@@ -7,7 +7,7 @@
 //     FrameContext frames;
 //     frames.create(device, 2);
 //     for (;;) {
-//       VkCommandBuffer commands = frames.begin_frame();   // waits for slot reuse, resets pool
+//       CommandList commands = frames.begin_frame();       // waits for slot reuse, resets pool
 //       ...record...
 //       frames.defer_destroy(old_buffer);                  // freed when this slot comes around
 //       const u64 value = frames.end_frame();              // submitted; timeline reaches value
@@ -19,7 +19,10 @@
 #include <core/base/macros.h>
 #include <core/base/types.h>
 #include <core/containers/vector.h>
-#include <domain/gfx/vulkan.h>
+#include <domain/gfx/commands.h>
+#include <domain/gfx/device.h>
+#include <domain/gfx/resources.h>
+#include <domain/gfx/rhi.h>
 
 #include <string>
 
@@ -37,23 +40,23 @@ class FrameContext {
   bool valid() const noexcept { return device_ != nullptr; }
 
   // Waits until the GPU has finished the frame that last used this slot, runs that frame's
-  // deferred destructions, resets the pool, and returns a primary command buffer in the
-  // recording state.
-  VkCommandBuffer begin_frame();
+  // deferred destructions, resets the pool, and returns the slot's command list (a primary command
+  // buffer in the backend) in the recording state.
+  CommandList begin_frame();
   // Ends recording and submits on the graphics queue, signaling the timeline with the value
   // returned (frame_index() + 1 at the time of the call).
   u64 end_frame();
   // Binary semaphores around a presented frame: wait for the swapchain acquire before color
   // output, signal the swapchain image's render-finished semaphore when the frame is done.
   struct PresentSync {
-    VkSemaphore wait = VK_NULL_HANDLE;
-    VkPipelineStageFlags2 wait_stage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-    VkSemaphore signal = VK_NULL_HANDLE;
+    SemaphoreHandle wait;
+    PipelineStage wait_stage = PipelineStage::ColorAttachmentOutput;
+    SemaphoreHandle signal;
   };
   u64 end_frame(const PresentSync& sync);
   // A binary semaphore owned by the current slot, for Swapchain::acquire(); safe to reuse
   // because begin_frame() waited for the frame that last waited on it.
-  VkSemaphore acquire_semaphore() const noexcept { return slots_[slot_].acquire; }
+  SemaphoreHandle acquire_semaphore() const noexcept { return slots_[slot_].acquire; }
 
   u32 frames_in_flight() const noexcept { return slots_.size(); }
   u32 slot() const noexcept { return slot_; }
@@ -73,13 +76,13 @@ class FrameContext {
   void defer_destroy(BufferResource buffer);
   void defer_destroy(ImageResource image);
 
-  VkSemaphore timeline() const noexcept { return timeline_; }
+  SemaphoreHandle timeline() const noexcept { return timeline_; }
 
  private:
   struct Slot {
-    VkCommandPool pool = VK_NULL_HANDLE;
-    VkCommandBuffer commands = VK_NULL_HANDLE;
-    VkSemaphore acquire = VK_NULL_HANDLE;
+    CommandPoolHandle pool;
+    CommandListHandle commands;
+    SemaphoreHandle acquire;
     u64 submitted_value = 0;  // 0: never submitted
     Vector<BufferResource> buffers;
     Vector<ImageResource> images;
@@ -87,7 +90,7 @@ class FrameContext {
   void recycle(Slot& slot);
 
   const Device* device_ = nullptr;
-  VkSemaphore timeline_ = VK_NULL_HANDLE;
+  SemaphoreHandle timeline_;
   Vector<Slot> slots_;
   u32 slot_ = 0;
   u64 frame_index_ = 0;

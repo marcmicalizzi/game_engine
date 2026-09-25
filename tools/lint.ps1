@@ -93,23 +93,10 @@ $rules = @(
      Pattern = '\bVk[A-Z]\w+|\bVK_[A-Z][A-Z0-9_]*|^\s*#\s*include\s*[<"](vulkan/|volk\.h|vk_mem_alloc\.h)'
      AllowedPaths = @('domain/gfx/include/domain/gfx/backend/vulkan',
                       'foundation/window/include/foundation/window/backend/vulkan')
-     # The debt as it stood when the rule landed (2026-09-25): 217 lines in these fourteen
-     # headers, reported on every run and not yet failing it. The change that follows retires all
-     # of them and empties the list.
-     Pending = @('domain/gfx/include/domain/gfx/acceleration.h',
-                 'domain/gfx/include/domain/gfx/bindless.h',
-                 'domain/gfx/include/domain/gfx/capture.h',
-                 'domain/gfx/include/domain/gfx/cluster_acceleration.h',
-                 'domain/gfx/include/domain/gfx/frame.h',
-                 'domain/gfx/include/domain/gfx/gpu_timer.h',
-                 'domain/gfx/include/domain/gfx/render_graph.h',
-                 'domain/gfx/include/domain/gfx/shader_library.h',
-                 'domain/gfx/include/domain/gfx/swapchain.h',
-                 'domain/gfx/include/domain/gfx/vulkan.h',
-                 'foundation/window/include/foundation/window/window.h',
-                 'systems/renderer/include/systems/renderer/gpu_scene.h',
-                 'systems/renderer/include/systems/renderer/scene_renderer.h',
-                 'systems/renderer/include/systems/renderer/streaming.h')
+     # The rule landed with 217 lines in fourteen headers on this list; the change that moved gfx,
+     # the renderer and the window onto the engine's vocabulary emptied it the same day. Keep it
+     # empty.
+     Pending = @()
      Message = 'a public header names no Vulkan type, constant or header; say it in the engine''s vocabulary (domain/gfx/rhi.h) or put it in a backend/vulkan/ header, see docs/subsystems/gfx.md "The RHI surface and the backend surface"' },
   # The other half of the same decision: the backend header set, and the Vulkan, volk and VMA
   # headers behind it, are confined to the modules that own a device, a swapchain or a surface —

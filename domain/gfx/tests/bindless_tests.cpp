@@ -3,11 +3,11 @@
 // read back; a buffer written through its device address; slot recycling on the timeline.
 #include "raster_path.h"
 
+#include <domain/gfx/backend/vulkan/vulkan.h>
 #include <domain/gfx/bindless.h>
 #include <domain/gfx/device.h>
 #include <domain/gfx/frame.h>
 #include <domain/gfx/render_graph.h>
-#include <domain/gfx/vulkan.h>
 
 #include <doctest/doctest.h>
 
@@ -54,12 +54,11 @@ TEST_CASE("bindless: texture, sampler, and storage image by index") {
 
   // Source texture with a known pattern, uploaded through a staging buffer.
   gfx::ImageResource texture;
-  REQUIRE(gfx::create_image_2d(device, k_size, k_size, VK_FORMAT_R8G8B8A8_UNORM,
-                               VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-                               texture, &error));
+  REQUIRE(gfx::create_image_2d(device, k_size, k_size, gfx::Format::R8G8B8A8Unorm,
+                               gfx::ImageUsage::Sampled | gfx::ImageUsage::TransferDst, texture,
+                               &error));
   gfx::BufferResource staging;
-  REQUIRE(
-      gfx::create_buffer(device, bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true, staging, &error));
+  REQUIRE(gfx::create_buffer(device, bytes, gfx::BufferUsage::TransferSrc, true, staging, &error));
   auto* pattern = static_cast<u8*>(staging.mapped);
   for (u32 y = 0; y < k_size; ++y) {
     for (u32 x = 0; x < k_size; ++x) {
@@ -71,28 +70,27 @@ TEST_CASE("bindless: texture, sampler, and storage image by index") {
     }
   }
   gfx::ImageResource output;
-  REQUIRE(gfx::create_image_2d(device, k_size, k_size, VK_FORMAT_R8G8B8A8_UNORM,
-                               VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, output,
+  REQUIRE(gfx::create_image_2d(device, k_size, k_size, gfx::Format::R8G8B8A8Unorm,
+                               gfx::ImageUsage::Storage | gfx::ImageUsage::TransferSrc, output,
                                &error));
   gfx::BufferResource readback;
-  REQUIRE(
-      gfx::create_buffer(device, bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, readback, &error));
+  REQUIRE(gfx::create_buffer(device, bytes, gfx::BufferUsage::TransferDst, true, readback, &error));
   std::memset(readback.mapped, 0, static_cast<usize>(bytes));
 
-  VkImageView texture_view = VK_NULL_HANDLE;
-  VkImageView output_view = VK_NULL_HANDLE;
-  VkSampler nearest = VK_NULL_HANDLE;
-  VkSampler linear = VK_NULL_HANDLE;
+  gfx::ImageViewHandle texture_view = {};
+  gfx::ImageViewHandle output_view = {};
+  gfx::SamplerHandle nearest = {};
+  gfx::SamplerHandle linear = {};
   REQUIRE(gfx::create_image_view(device, texture, texture_view, &error));
   REQUIRE(gfx::create_image_view(device, output, output_view, &error));
-  REQUIRE(gfx::create_sampler(device, VK_FILTER_NEAREST, nearest, &error));
-  REQUIRE(gfx::create_sampler(device, VK_FILTER_LINEAR, linear, &error));
+  REQUIRE(gfx::create_sampler(device, gfx::Filter::Nearest, nearest, &error));
+  REQUIRE(gfx::create_sampler(device, gfx::Filter::Linear, linear, &error));
 
   // Occupy slot 0 of each array with something else so the test exercises non-zero indices.
-  const u32 decoy_texture = bindless.add_sampled_image(output_view, VK_IMAGE_LAYOUT_GENERAL);
+  const u32 decoy_texture = bindless.add_sampled_image(output_view, gfx::ImageLayout::General);
   const u32 decoy_sampler = bindless.add_sampler(linear);
   const u32 texture_slot =
-      bindless.add_sampled_image(texture_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+      bindless.add_sampled_image(texture_view, gfx::ImageLayout::ShaderReadOnly);
   const u32 sampler_slot = bindless.add_sampler(nearest);
   const u32 output_slot = bindless.add_storage_image(output_view);
   CHECK(decoy_texture == 0);
@@ -104,24 +102,25 @@ TEST_CASE("bindless: texture, sampler, and storage image by index") {
   CHECK(bindless.live_samplers() == 2);
   CHECK(bindless.live_storage_images() == 1);
 
-  VkShaderModule module = gfx::create_shader_module(device, shaders::k_bindless_copy_spirv,
-                                                    shaders::k_bindless_copy_spirv_size, &error);
-  REQUIRE(module != VK_NULL_HANDLE);
+  gfx::ShaderModuleHandle module = gfx::create_shader_module(
+      device, shaders::k_bindless_copy_spirv, shaders::k_bindless_copy_spirv_size, &error);
+  REQUIRE(module.valid());
   // The bindless pipeline layout is shared: the compute pipeline only needs the module.
   VkComputePipelineCreateInfo pipeline_info{};
   pipeline_info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
   pipeline_info.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
   pipeline_info.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-  pipeline_info.stage.module = module;
+  pipeline_info.stage.module = gfx::vk::native(module);
   pipeline_info.stage.pName = "copy";
-  pipeline_info.layout = bindless.pipeline_layout();
-  VkPipeline pipeline = VK_NULL_HANDLE;
+  pipeline_info.layout = gfx::vk::native(bindless.pipeline_layout());
+  VkPipeline native_pipeline = VK_NULL_HANDLE;
   REQUIRE(vkCreateComputePipelines(device.handles().device, VK_NULL_HANDLE, 1, &pipeline_info,
-                                   nullptr, &pipeline) == VK_SUCCESS);
+                                   nullptr, &native_pipeline) == VK_SUCCESS);
+  const gfx::PipelineHandle pipeline = gfx::vk::wrap(native_pipeline);
 
   gfx::RenderGraph graph(device);
-  const gfx::RgBuffer rg_staging = graph.import_buffer(
-      "staging", staging, VK_PIPELINE_STAGE_2_HOST_BIT, VK_ACCESS_2_HOST_WRITE_BIT);
+  const gfx::RgBuffer rg_staging = graph.import_buffer("staging", staging, gfx::PipelineStage::Host,
+                                                       gfx::MemoryAccess::HostWrite);
   const gfx::RgImage rg_texture = graph.import_image("texture", texture);
   const gfx::RgImage rg_output = graph.import_image("output", output);
   const gfx::RgBuffer rg_readback = graph.import_buffer("readback", readback);
@@ -131,12 +130,13 @@ TEST_CASE("bindless: texture, sampler, and storage image by index") {
         b.read(rg_staging, gfx::Access::TransferRead);
         b.write(rg_texture, gfx::Access::TransferWrite);
       },
-      [&](VkCommandBuffer commands, gfx::RenderGraph& g) {
+      [&](gfx::CommandList commands, gfx::RenderGraph& g) {
         VkBufferImageCopy region{};
         region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
         region.imageExtent = {k_size, k_size, 1};
-        vkCmdCopyBufferToImage(commands, staging.buffer, g.image(rg_texture).image,
-                               g.image_layout(rg_texture), 1, &region);
+        vkCmdCopyBufferToImage(gfx::vk::native(commands), gfx::vk::native(staging.buffer),
+                               gfx::vk::native(g.image(rg_texture).image),
+                               gfx::vk::native(g.image_layout(rg_texture)), 1, &region);
       });
   graph.add_pass(
       "copy through bindless", gfx::PassKind::Compute,
@@ -144,13 +144,13 @@ TEST_CASE("bindless: texture, sampler, and storage image by index") {
         b.read(rg_texture, gfx::Access::SampledRead);
         b.write(rg_output, gfx::Access::ComputeWrite);
       },
-      [&](VkCommandBuffer commands, gfx::RenderGraph&) {
+      [&](gfx::CommandList commands, gfx::RenderGraph&) {
         const CopyParams params{texture_slot, sampler_slot, output_slot, k_size, k_size};
-        vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
-        bindless.bind(commands, VK_PIPELINE_BIND_POINT_COMPUTE);
-        vkCmdPushConstants(commands, bindless.pipeline_layout(), VK_SHADER_STAGE_ALL, 0,
-                           sizeof(params), &params);
-        vkCmdDispatch(commands, (k_size + 7) / 8, (k_size + 7) / 8, 1);
+        commands.bind_pipeline(gfx::BindPoint::Compute, pipeline);
+        bindless.bind(commands, gfx::BindPoint::Compute);
+        commands.push_constants(bindless.pipeline_layout(), gfx::ShaderStage::All, 0,
+                                sizeof(params), &params);
+        commands.dispatch((k_size + 7) / 8, (k_size + 7) / 8, 1);
       });
   graph.add_pass(
       "readback", gfx::PassKind::Transfer,
@@ -158,18 +158,19 @@ TEST_CASE("bindless: texture, sampler, and storage image by index") {
         b.read(rg_output, gfx::Access::TransferRead);
         b.write(rg_readback, gfx::Access::TransferWrite);
       },
-      [&](VkCommandBuffer commands, gfx::RenderGraph& g) {
+      [&](gfx::CommandList commands, gfx::RenderGraph& g) {
         VkBufferImageCopy region{};
         region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
         region.imageExtent = {k_size, k_size, 1};
-        vkCmdCopyImageToBuffer(commands, g.image(rg_output).image, g.image_layout(rg_output),
-                               readback.buffer, 1, &region);
+        vkCmdCopyImageToBuffer(gfx::vk::native(commands), gfx::vk::native(g.image(rg_output).image),
+                               gfx::vk::native(g.image_layout(rg_output)),
+                               gfx::vk::native(readback.buffer), 1, &region);
       });
   REQUIRE_MESSAGE(graph.compile(&error), error);
   CHECK(graph.stats().layout_transitions ==
         4);  // texture: ->DST, ->READ_ONLY; output: ->GENERAL, ->SRC
 
-  VkCommandBuffer commands = frames.begin_frame();
+  gfx::CommandList commands = frames.begin_frame();
   graph.execute(commands);
   const u64 value = frames.end_frame();
   REQUIRE(frames.wait(value));
@@ -202,7 +203,7 @@ TEST_CASE("bindless: texture, sampler, and storage image by index") {
   CHECK(bindless.add_storage_image(output_view) == output_slot);
 
   graph.reset();
-  vkDestroyPipeline(device.handles().device, pipeline, nullptr);
+  vkDestroyPipeline(device.handles().device, native_pipeline, nullptr);
   gfx::destroy_shader_module(device, module);
   bindless.destroy();
   gfx::destroy_sampler(device, nearest);
@@ -227,38 +228,37 @@ TEST_CASE("bindless: buffers are reached through device addresses") {
   const u64 bytes = u64{k_count} * sizeof(u32);
   gfx::BufferResource target;
   REQUIRE(gfx::create_buffer(device, bytes,
-                             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                 VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
-                                 VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                             gfx::BufferUsage::Storage | gfx::BufferUsage::ShaderDeviceAddress |
+                                 gfx::BufferUsage::TransferSrc,
                              false, target, &error));
   REQUIRE(target.address != 0);
   gfx::BufferResource readback;
-  REQUIRE(
-      gfx::create_buffer(device, bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, readback, &error));
+  REQUIRE(gfx::create_buffer(device, bytes, gfx::BufferUsage::TransferDst, true, readback, &error));
 
-  VkShaderModule module = gfx::create_shader_module(device, shaders::k_bda_fill_spirv,
-                                                    shaders::k_bda_fill_spirv_size, &error);
-  REQUIRE(module != VK_NULL_HANDLE);
+  gfx::ShaderModuleHandle module = gfx::create_shader_module(
+      device, shaders::k_bda_fill_spirv, shaders::k_bda_fill_spirv_size, &error);
+  REQUIRE(module.valid());
   VkComputePipelineCreateInfo pipeline_info{};
   pipeline_info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
   pipeline_info.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
   pipeline_info.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-  pipeline_info.stage.module = module;
+  pipeline_info.stage.module = gfx::vk::native(module);
   pipeline_info.stage.pName = "bda_fill";
-  pipeline_info.layout = bindless.pipeline_layout();
-  VkPipeline pipeline = VK_NULL_HANDLE;
+  pipeline_info.layout = gfx::vk::native(bindless.pipeline_layout());
+  VkPipeline native_pipeline = VK_NULL_HANDLE;
   REQUIRE(vkCreateComputePipelines(device.handles().device, VK_NULL_HANDLE, 1, &pipeline_info,
-                                   nullptr, &pipeline) == VK_SUCCESS);
+                                   nullptr, &native_pipeline) == VK_SUCCESS);
+  const gfx::PipelineHandle pipeline = gfx::vk::wrap(native_pipeline);
 
   const BdaParams params{target.address, k_count, 7};
   REQUIRE(gfx::submit_immediate(
       device,
-      [&](VkCommandBuffer commands) {
-        vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
-        bindless.bind(commands, VK_PIPELINE_BIND_POINT_COMPUTE);
-        vkCmdPushConstants(commands, bindless.pipeline_layout(), VK_SHADER_STAGE_ALL, 0,
-                           sizeof(params), &params);
-        vkCmdDispatch(commands, (k_count + 63) / 64, 1, 1);
+      [&](gfx::CommandList commands) {
+        commands.bind_pipeline(gfx::BindPoint::Compute, pipeline);
+        bindless.bind(commands, gfx::BindPoint::Compute);
+        commands.push_constants(bindless.pipeline_layout(), gfx::ShaderStage::All, 0,
+                                sizeof(params), &params);
+        commands.dispatch((k_count + 63) / 64, 1, 1);
         VkMemoryBarrier2 barrier{};
         barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
         barrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
@@ -269,9 +269,9 @@ TEST_CASE("bindless: buffers are reached through device addresses") {
         dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
         dependency.memoryBarrierCount = 1;
         dependency.pMemoryBarriers = &barrier;
-        vkCmdPipelineBarrier2(commands, &dependency);
-        VkBufferCopy copy{0, 0, bytes};
-        vkCmdCopyBuffer(commands, target.buffer, readback.buffer, 1, &copy);
+        vkCmdPipelineBarrier2(gfx::vk::native(commands), &dependency);
+        gfx::BufferCopy copy{0, 0, bytes};
+        commands.copy_buffer(target.buffer, readback.buffer, copy);
       },
       &error));
   const auto* words = static_cast<const u32*>(readback.mapped);
@@ -282,7 +282,7 @@ TEST_CASE("bindless: buffers are reached through device addresses") {
   CHECK(wrong == 0);
   CHECK(words[k_count - 1] == (k_count - 1) * 7);
 
-  vkDestroyPipeline(device.handles().device, pipeline, nullptr);
+  vkDestroyPipeline(device.handles().device, native_pipeline, nullptr);
   gfx::destroy_shader_module(device, module);
   bindless.destroy();
   gfx::destroy_buffer(device, readback);

@@ -1,20 +1,21 @@
 #pragma once
 
 // Render graph v0 (docs/plan/04-renderer.md §4.2): passes declare the resources they read and
-// write; the graph orders them, allocates transient resources, derives every synchronization2
-// barrier and image layout transition, and records into a command buffer. Nothing in a pass
-// body issues a barrier by hand.
+// write; the graph orders them, allocates transient resources, derives every barrier and image
+// layout transition, and records into a command list. Nothing in a pass body issues a barrier by
+// hand, and nothing in the graph's API names the backend: resources, accesses, layouts and stages
+// are the engine's own (rhi.h), and a pass body is handed a `CommandList` (commands.h).
 //
 // clang-format off
 //     RenderGraph graph(device);
-//     const RgBuffer temp = graph.create_buffer("temp", {bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT});
+//     const RgBuffer temp = graph.create_buffer("temp", {bytes, BufferUsage::Storage});
 //     const RgBuffer out = graph.import_buffer("out", out_resource);
 //     graph.add_pass("fill", PassKind::Compute,
 //         [&](PassBuilder& b) { b.write(temp, Access::ComputeWrite); },
-//         [&](VkCommandBuffer cb, RenderGraph& g) { ...dispatch over g.buffer(temp)... });
+//         [&](CommandList cmd, RenderGraph& g) { ...dispatch over g.buffer(temp)... });
 //     graph.add_pass("scale", PassKind::Compute,
 //         [&](PassBuilder& b) { b.read(temp, Access::ComputeRead); b.write(out, Access::ComputeWrite); },
-//         [&](VkCommandBuffer cb, RenderGraph& g) { ... });
+//         [&](CommandList cmd, RenderGraph& g) { ... });
 //     graph.compile(&error);
 //     graph.execute(commands);
 // clang-format on
@@ -29,7 +30,9 @@
 #include <core/base/types.h>
 #include <core/containers/vector.h>
 #include <core/memory/arena.h>
-#include <domain/gfx/vulkan.h>
+#include <domain/gfx/commands.h>
+#include <domain/gfx/resources.h>
+#include <domain/gfx/rhi.h>
 
 #include <string>
 #include <type_traits>
@@ -48,30 +51,30 @@ struct RgImage {
 
 struct RgBufferDesc {
   u64 size = 0;
-  VkBufferUsageFlags usage = 0;
+  BufferUsage usage = BufferUsage::None;
   bool host_visible = false;  // persistently mapped; for readback and upload
 };
 
 struct RgImageDesc {
   u32 width = 0;
   u32 height = 0;
-  VkFormat format = VK_FORMAT_UNDEFINED;
-  VkImageUsageFlags usage = 0;
+  Format format = Format::Undefined;
+  ImageUsage usage = ImageUsage::None;
 };
 
 enum class PassKind : u8 { Compute, Transfer, Raster };
 
-// How a pass touches a resource. Each maps to a stage, an access mask, and (for images) the
-// layout the pass needs; the graph derives barriers from the transitions between them.
+// How a pass touches a resource. Each maps to a pipeline stage, a memory access, and (for images)
+// the ImageLayout the pass needs; the graph derives barriers from the transitions between them.
 enum class Access : u8 {
-  ComputeRead,             // storage read in a compute shader (images: GENERAL)
-  ComputeWrite,            // storage write in a compute shader (images: GENERAL)
+  ComputeRead,             // storage read in a compute shader (images: General)
+  ComputeWrite,            // storage write in a compute shader (images: General)
   ComputeReadWrite,        // both
-  SampledRead,             // sampled/texture read in any shader (images: SHADER_READ_ONLY_OPTIMAL)
-  TransferRead,            // copy source (images: TRANSFER_SRC_OPTIMAL)
-  TransferWrite,           // copy or clear destination (images: TRANSFER_DST_OPTIMAL)
-  ColorAttachment,         // written through dynamic rendering (images: COLOR_ATTACHMENT_OPTIMAL)
-  DepthAttachment,         // depth/stencil attachment (images: DEPTH_ATTACHMENT_OPTIMAL)
+  SampledRead,             // sampled/texture read in any shader (images: ShaderReadOnly)
+  TransferRead,            // copy source (images: TransferSrc)
+  TransferWrite,           // copy or clear destination (images: TransferDst)
+  ColorAttachment,         // written through dynamic rendering (images: ColorAttachment)
+  DepthAttachment,         // depth/stencil attachment (images: DepthAttachment)
   IndirectRead,            // indirect draw or dispatch arguments (buffers)
   MeshRead,                // storage read in task or mesh shaders (buffers)
   FragmentRead,            // storage read in fragment shaders (buffers)
@@ -95,10 +98,8 @@ class PassBuilder {
   void write(RgImage image, Access access);
   // Raster passes only: the graph begins and ends dynamic rendering around the body with these
   // attachments, a full-extent viewport and scissor, and the declared load operation.
-  void color_attachment(RgImage image, VkAttachmentLoadOp load = VK_ATTACHMENT_LOAD_OP_LOAD,
-                        VkClearColorValue clear = {});
-  void depth_attachment(RgImage image, VkAttachmentLoadOp load = VK_ATTACHMENT_LOAD_OP_LOAD,
-                        float clear_depth = 0.0f);
+  void color_attachment(RgImage image, LoadOp load = LoadOp::Load, ClearColor clear = {});
+  void depth_attachment(RgImage image, LoadOp load = LoadOp::Load, float clear_depth = 0.0f);
   // Raster passes without attachments (fragment shaders writing storage through atomics, as the
   // visibility buffer does) declare their render area here instead.
   void render_area(u32 width, u32 height);
@@ -112,7 +113,7 @@ class PassBuilder {
 
 class RenderGraph {
  public:
-  using ExecuteFn = void (*)(VkCommandBuffer commands, RenderGraph& graph, void* context);
+  using ExecuteFn = void (*)(CommandList commands, RenderGraph& graph, void* context);
 
   explicit RenderGraph(const Device& device);
   ~RenderGraph();
@@ -128,15 +129,15 @@ class RenderGraph {
   // Imported resources keep their identity across graphs; the graph is told how the resource
   // was last used so its first barrier is correct, and reports the final state afterwards.
   RgBuffer import_buffer(const char* name, const BufferResource& buffer,
-                         VkPipelineStageFlags2 last_stage = VK_PIPELINE_STAGE_2_NONE,
-                         VkAccessFlags2 last_access = VK_ACCESS_2_NONE);
+                         PipelineStage last_stage = PipelineStage::None,
+                         MemoryAccess last_access = MemoryAccess::None);
   RgImage import_image(const char* name, const ImageResource& image,
-                       VkImageLayout current_layout = VK_IMAGE_LAYOUT_UNDEFINED,
-                       VkPipelineStageFlags2 last_stage = VK_PIPELINE_STAGE_2_NONE,
-                       VkAccessFlags2 last_access = VK_ACCESS_2_NONE);
-  // Layout an image must be in after execute(), such as VK_IMAGE_LAYOUT_PRESENT_SRC_KHR for a
-  // swapchain image; the graph appends the transition after the last pass when needed.
-  void set_final_layout(RgImage image, VkImageLayout layout);
+                       ImageLayout current_layout = ImageLayout::Undefined,
+                       PipelineStage last_stage = PipelineStage::None,
+                       MemoryAccess last_access = MemoryAccess::None);
+  // Layout an image must be in after execute(), such as ImageLayout::Present for a swapchain
+  // image; the graph appends the transition after the last pass when needed.
+  void set_final_layout(RgImage image, ImageLayout layout);
 
   // --- passes ---
   // `setup` runs now with a PassBuilder; `execute` runs during execute(). Both must be trivially
@@ -149,7 +150,7 @@ class RenderGraph {
     E* stored = arena_.create<E>(std::forward<Execute>(execute));
     const u32 pass = add_pass_raw(
         name, kind,
-        [](VkCommandBuffer commands, RenderGraph& graph, void* context) {
+        [](CommandList commands, RenderGraph& graph, void* context) {
           (*static_cast<E*>(context))(commands, graph);
         },
         stored);
@@ -164,20 +165,20 @@ class RenderGraph {
   bool compile(std::string* error = nullptr);
   bool compiled() const noexcept { return compiled_; }
   // Records barriers and pass bodies into `commands`, in order.
-  void execute(VkCommandBuffer commands);
+  void execute(CommandList commands);
 
   // --- lookups for pass bodies ---
   const BufferResource& buffer(RgBuffer handle) const noexcept;
   const ImageResource& image(RgImage handle) const noexcept;
   // The layout an image is in during the currently executing pass (after that pass's barriers).
-  VkImageLayout image_layout(RgImage handle) const noexcept;
-  // A whole-image view, created at compile for images used as attachments (VK_NULL_HANDLE
-  // otherwise); owned by the graph for transients and for imported images alike.
-  VkImageView image_view(RgImage handle) const noexcept;
+  ImageLayout image_layout(RgImage handle) const noexcept;
+  // A whole-image view, created at compile for images used as attachments (null otherwise);
+  // owned by the graph for transients and for imported images alike.
+  ImageViewHandle image_view(RgImage handle) const noexcept;
   // Extent of the current raster pass's attachments.
-  VkExtent2D render_area() const noexcept { return render_area_; }
+  Extent2D render_area() const noexcept { return render_area_; }
   // After execute(): the layout an imported image was left in.
-  VkImageLayout final_layout(RgImage handle) const noexcept;
+  ImageLayout final_layout(RgImage handle) const noexcept;
 
   struct Stats {
     u32 passes = 0;
@@ -196,9 +197,9 @@ class RenderGraph {
   friend class PassBuilder;
 
   struct State {
-    VkPipelineStageFlags2 stage = VK_PIPELINE_STAGE_2_NONE;
-    VkAccessFlags2 access = VK_ACCESS_2_NONE;
-    VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
+    PipelineStage stage = PipelineStage::None;
+    MemoryAccess access = MemoryAccess::None;
+    ImageLayout layout = ImageLayout::Undefined;
     bool written = false;  // the last access wrote
   };
   struct BufferNode {
@@ -213,11 +214,11 @@ class RenderGraph {
     const char* name;
     RgImageDesc desc;
     ImageResource resource;
-    VkImageView view = VK_NULL_HANDLE;  // created at compile when used as an attachment
+    ImageViewHandle view;  // created at compile when used as an attachment
     bool imported = false;
     State state;
-    VkImageLayout final_layout = VK_IMAGE_LAYOUT_UNDEFINED;
-    VkImageLayout requested_final = VK_IMAGE_LAYOUT_UNDEFINED;
+    ImageLayout final_layout = ImageLayout::Undefined;
+    ImageLayout requested_final = ImageLayout::Undefined;
     bool has_producer = false;
   };
   struct Use {
@@ -226,10 +227,11 @@ class RenderGraph {
     Access access;
     bool write;
   };
+  // A raster pass's attachment: the clear value is the colour or, for depth, `clear.float32[0]`.
   struct Attachment {
     u32 image;
-    VkAttachmentLoadOp load;
-    VkClearValue clear;
+    LoadOp load;
+    ClearColor clear;
     bool depth;
   };
   struct Pass {
@@ -241,20 +243,24 @@ class RenderGraph {
     u32 use_count = 0;
     u32 first_attachment = 0;
     u32 attachment_count = 0;
-    VkExtent2D area{};  // explicit render area for attachment-less raster passes
+    Extent2D area{};  // explicit render area for attachment-less raster passes
     u32 first_buffer_barrier = 0;
     u32 buffer_barrier_count = 0;
     u32 first_image_barrier = 0;
     u32 image_barrier_count = 0;
     u32 first_layout = 0;  // into image_layouts_: layout per image use, in use order
   };
+  // The barriers compile() derives, in the backend's own records so execute() hands them over as
+  // they are: defined in src/render_graph.cpp, allocated once with the graph and reused by every
+  // frame's compile, like the vectors above.
+  struct Barriers;
 
   void add_use(u32 pass, bool is_image, u32 index, Access access, bool write);
-  void add_attachment(u32 pass, u32 image, VkAttachmentLoadOp load, VkClearValue clear, bool depth);
+  void add_attachment(u32 pass, u32 image, LoadOp load, const ClearColor& clear, bool depth);
   void set_pass_area(u32 pass, u32 width, u32 height);
   bool allocate_transients(std::string* error);
   bool create_attachment_views(std::string* error);
-  void begin_rendering(VkCommandBuffer commands, const Pass& pass);
+  void begin_rendering(CommandList commands, const Pass& pass);
   void compute_barriers();
 
   const Device* device_;
@@ -264,12 +270,10 @@ class RenderGraph {
   Vector<Use> uses_;
   Vector<Attachment> attachments_;
   Vector<Pass> passes_;
-  Vector<VkMemoryBarrier2> buffer_barriers_;
-  Vector<VkImageMemoryBarrier2> image_barriers_;
-  Vector<VkImageMemoryBarrier2> final_barriers_;  // after the last pass (set_final_layout)
-  Vector<VkImageLayout> pass_image_layouts_;      // per (pass, image) layout during that pass
+  Barriers* barriers_ = nullptr;
+  Vector<ImageLayout> pass_image_layouts_;  // per (pass, image) layout during that pass
   u32 current_pass_ = ~u32{0};
-  VkExtent2D render_area_{};
+  Extent2D render_area_{};
   bool compiled_ = false;
   Stats stats_;
 };

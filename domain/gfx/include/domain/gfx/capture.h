@@ -7,7 +7,9 @@
 
 #include <core/base/types.h>
 #include <core/containers/vector.h>
-#include <domain/gfx/vulkan.h>
+#include <domain/gfx/device.h>
+#include <domain/gfx/resources.h>
+#include <domain/gfx/rhi.h>
 
 #include <string>
 
@@ -16,18 +18,18 @@ namespace engine::gfx {
 struct Capture {
   u32 width = 0;
   u32 height = 0;
-  VkFormat format = VK_FORMAT_UNDEFINED;
+  Format format = Format::Undefined;
   u32 bytes_per_pixel = 0;
   Vector<u8> bytes;  // rows tightly packed, top row first
 };
 
 // Bytes per pixel for the formats capture understands (8-bit RGBA/BGRA UNORM and SRGB, R32
 // UINT/SFLOAT, D32 SFLOAT, R16G16B16A16 SFLOAT, R32G32B32A32 SFLOAT); 0 otherwise.
-u32 capture_bytes_per_pixel(VkFormat format) noexcept;
+u32 capture_bytes_per_pixel(Format format) noexcept;
 
-// `layout` is the image's current layout; it is restored afterwards unless it is UNDEFINED, in
-// which case the image is left in TRANSFER_SRC_OPTIMAL. Blocks until the copy completes.
-bool capture_image(const Device& device, const ImageResource& image, VkImageLayout layout,
+// `layout` is the image's current layout; it is restored afterwards unless it is Undefined, in
+// which case the image is left in TransferSrc. Blocks until the copy completes.
+bool capture_image(const Device& device, const ImageResource& image, ImageLayout layout,
                    Capture& out, std::string* error = nullptr);
 
 // Converts an 8-bit RGBA or BGRA capture to tightly packed RGBA8 (alpha forced opaque when

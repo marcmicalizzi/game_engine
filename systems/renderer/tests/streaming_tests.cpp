@@ -15,7 +15,7 @@
 #include <domain/geometry/cluster_file.h>
 #include <domain/geometry/cluster_pages.h>
 #include <domain/gfx/device.h>
-#include <domain/gfx/vulkan.h>
+#include <domain/gfx/resources.h>
 #include <systems/renderer/capture.h>
 #include <systems/renderer/gpu_scene.h>
 #include <systems/renderer/page_source.h>
@@ -299,15 +299,15 @@ constexpr u32 k_quiet_frames = 4;
 bool read_pool(const gfx::Device& device, const gfx::BufferResource& source, Vector<u8>& out,
                std::string* error) {
   gfx::BufferResource staging;
-  if (!gfx::create_buffer(device, source.size, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, staging,
+  if (!gfx::create_buffer(device, source.size, gfx::BufferUsage::TransferDst, true, staging,
                           error)) {
     return false;
   }
   const bool ok = gfx::submit_immediate(
       device,
-      [&](VkCommandBuffer cb) {
-        const VkBufferCopy copy{0, 0, source.size};
-        vkCmdCopyBuffer(cb, source.buffer, staging.buffer, 1, &copy);
+      [&](gfx::CommandList cb) {
+        const gfx::BufferCopy copy{0, 0, source.size};
+        cb.copy_buffer(source.buffer, staging.buffer, copy);
       },
       error);
   if (ok) {
@@ -775,7 +775,7 @@ TEST_CASE("streaming: a page's 8-bit indices are its own, under a budget that ev
   }
   // A device with no cluster acceleration structures or no ray query resolves the shadows away,
   // and then there is no 8-bit index stream to check. Say so and skip rather than pass vacuously.
-  if (probe.scene.indices8.buffer == VK_NULL_HANDLE) {
+  if (!probe.scene.indices8.buffer.valid()) {
     MESSAGE("the device builds no cluster acceleration structures; nothing stages 8-bit indices");
     return;
   }

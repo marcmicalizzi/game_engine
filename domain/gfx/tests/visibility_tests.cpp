@@ -11,6 +11,7 @@
 #include "scene_fixture.h"
 
 #include <domain/geometry/cluster_lod.h>
+#include <domain/gfx/backend/vulkan/vulkan.h>
 #include <domain/gfx/bindless.h>
 #include <domain/gfx/capture.h>
 #include <domain/gfx/cluster_cull.h>
@@ -19,7 +20,6 @@
 #include <domain/gfx/gpu_timer.h>
 #include <domain/gfx/render_graph.h>
 #include <domain/gfx/visibility_resolve.h>
-#include <domain/gfx/vulkan.h>
 
 #include <doctest/doctest.h>
 
@@ -73,7 +73,7 @@ TEST_CASE("visibility buffer: hardware and software rasterization agree, resolve
       error);
   const u32 cluster_count = mesh.clusters.size();
 
-  constexpr VkBufferUsageFlags k_storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+  constexpr gfx::BufferUsage k_storage = gfx::BufferUsage::Storage;
   gfx::BufferResource clusters;
   gfx::BufferResource triangles;
   gfx_test::SingleInstance scene;
@@ -95,17 +95,16 @@ TEST_CASE("visibility buffer: hardware and software rasterization agree, resolve
   gfx::BufferResource host_hw;
   gfx::BufferResource host_sw;
   gfx::BufferResource host_color;
-  const VkBufferUsageFlags k_vis = k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
-                                   VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                                   VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+  const gfx::BufferUsage k_vis = k_storage | gfx::BufferUsage::ShaderDeviceAddress |
+                                 gfx::BufferUsage::TransferDst | gfx::BufferUsage::TransferSrc;
   REQUIRE(gfx::create_buffer(device, vis_bytes, k_vis, false, vis_hw, &error));
   REQUIRE(gfx::create_buffer(device, vis_bytes, k_vis, false, vis_sw, &error));
-  REQUIRE(gfx::create_buffer(device, vis_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, host_hw,
-                             &error));
-  REQUIRE(gfx::create_buffer(device, vis_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, host_sw,
-                             &error));
-  REQUIRE(gfx::create_buffer(device, u64{k_size} * k_size * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                             true, host_color, &error));
+  REQUIRE(
+      gfx::create_buffer(device, vis_bytes, gfx::BufferUsage::TransferDst, true, host_hw, &error));
+  REQUIRE(
+      gfx::create_buffer(device, vis_bytes, gfx::BufferUsage::TransferDst, true, host_sw, &error));
+  REQUIRE(gfx::create_buffer(device, u64{k_size} * k_size * 4, gfx::BufferUsage::TransferDst, true,
+                             host_color, &error));
 
   gfx::FrameContext frames;
   REQUIRE(frames.create(device, 2, &error));
@@ -115,13 +114,13 @@ TEST_CASE("visibility buffer: hardware and software rasterization agree, resolve
   REQUIRE_MESSAGE(timer.create(device, 2, 8, &error), error);
   REQUIRE(bindless.capacity().push_constant_bytes >= sizeof(gfx::ClusterDrawParams));
 
-  VkShaderModule sw_module = gfx::create_shader_module(
+  gfx::ShaderModuleHandle sw_module = gfx::create_shader_module(
       device, shaders::k_cluster_sw_raster_spirv, shaders::k_cluster_sw_raster_spirv_size, &error);
-  VkShaderModule resolve_module =
+  gfx::ShaderModuleHandle resolve_module =
       gfx::create_shader_module(device, shaders::k_visibility_resolve_spirv,
                                 shaders::k_visibility_resolve_spirv_size, &error);
-  REQUIRE(sw_module != VK_NULL_HANDLE);
-  REQUIRE(resolve_module != VK_NULL_HANDLE);
+  REQUIRE(sw_module.valid());
+  REQUIRE(resolve_module.valid());
 
   // Hardware path: the mesh or the vertex shader with the visibility fragment, no attachments.
   gfx_test::ClusterRaster raster;
@@ -140,8 +139,8 @@ TEST_CASE("visibility buffer: hardware and software rasterization agree, resolve
   resolve_desc.fragment = resolve_module;
   resolve_desc.fragment_entry = "fs_resolve";
   resolve_desc.layout = bindless.pipeline_layout();
-  resolve_desc.color_format = VK_FORMAT_R8G8B8A8_UNORM;
-  VkPipeline resolve_pipeline = VK_NULL_HANDLE;
+  resolve_desc.color_format = gfx::Format::R8G8B8A8Unorm;
+  gfx::PipelineHandle resolve_pipeline = {};
   REQUIRE_MESSAGE(gfx::create_graphics_pipeline(device, resolve_desc, resolve_pipeline, &error),
                   error);
 
@@ -160,7 +159,7 @@ TEST_CASE("visibility buffer: hardware and software rasterization agree, resolve
   // The resolve reads its parameters through an address; cluster colors need no materials.
   gfx::BufferResource resolve_params;
   REQUIRE(gfx::create_buffer(device, sizeof(gfx::ResolveParams),
-                             k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, true,
+                             k_storage | gfx::BufferUsage::ShaderDeviceAddress, true,
                              resolve_params, &error));
   gfx::ResolveParams resolve{};
   resolve.visibility = vis_sw.address;
@@ -182,17 +181,17 @@ TEST_CASE("visibility buffer: hardware and software rasterization agree, resolve
   const gfx::RgBuffer rg_host_sw = graph.import_buffer("host_sw", host_sw);
   const gfx::RgBuffer rg_host_color = graph.import_buffer("host_color", host_color);
   const gfx::RgImage color = graph.create_image(
-      "resolved", {k_size, k_size, VK_FORMAT_R8G8B8A8_UNORM,
-                   VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT});
+      "resolved", {k_size, k_size, gfx::Format::R8G8B8A8Unorm,
+                   gfx::ImageUsage::ColorAttachment | gfx::ImageUsage::TransferSrc});
   graph.add_pass(
       "clear", gfx::PassKind::Transfer,
       [&](gfx::PassBuilder& b) {
         b.write(rg_hw, gfx::Access::TransferWrite);
         b.write(rg_sw, gfx::Access::TransferWrite);
       },
-      [&](VkCommandBuffer cb, gfx::RenderGraph&) {
-        vkCmdFillBuffer(cb, vis_hw.buffer, 0, VK_WHOLE_SIZE, 0);
-        vkCmdFillBuffer(cb, vis_sw.buffer, 0, VK_WHOLE_SIZE, 0);
+      [&](gfx::CommandList cb, gfx::RenderGraph&) {
+        cb.fill_buffer(vis_hw.buffer, 0, gfx::k_whole_size, 0);
+        cb.fill_buffer(vis_sw.buffer, 0, gfx::k_whole_size, 0);
       });
   graph.add_pass(
       "hardware", gfx::PassKind::Raster,
@@ -200,7 +199,7 @@ TEST_CASE("visibility buffer: hardware and software rasterization agree, resolve
         b.render_area(k_size, k_size);
         b.write(rg_hw, gfx::Access::FragmentReadWrite);
       },
-      [&](VkCommandBuffer cb, gfx::RenderGraph&) {
+      [&](gfx::CommandList cb, gfx::RenderGraph&) {
         timer.begin(cb, "hardware");
         raster.draw(cb, bindless, draw_hw, cluster_count);
         timer.end(cb);
@@ -208,27 +207,27 @@ TEST_CASE("visibility buffer: hardware and software rasterization agree, resolve
   graph.add_pass(
       "software", gfx::PassKind::Compute,
       [&](gfx::PassBuilder& b) { b.write(rg_sw, gfx::Access::ComputeReadWrite); },
-      [&](VkCommandBuffer cb, gfx::RenderGraph&) {
+      [&](gfx::CommandList cb, gfx::RenderGraph&) {
         timer.begin(cb, "software");
-        vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, sw_pipeline.pipeline);
-        vkCmdPushConstants(cb, sw_pipeline.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(draw_sw),
-                           &draw_sw);
-        vkCmdDispatch(cb, cluster_count, 1, 1);
+        cb.bind_pipeline(gfx::BindPoint::Compute, sw_pipeline.pipeline);
+        cb.push_constants(sw_pipeline.layout, gfx::ShaderStage::Compute, 0, sizeof(draw_sw),
+                          &draw_sw);
+        cb.dispatch(cluster_count, 1, 1);
         timer.end(cb);
       });
   graph.add_pass(
       "resolve", gfx::PassKind::Raster,
       [&](gfx::PassBuilder& b) {
-        VkClearColorValue clear{};
-        b.color_attachment(color, VK_ATTACHMENT_LOAD_OP_CLEAR, clear);
+        gfx::ClearColor clear{};
+        b.color_attachment(color, gfx::LoadOp::Clear, clear);
         b.read(rg_sw, gfx::Access::FragmentRead);
       },
-      [&](VkCommandBuffer cb, gfx::RenderGraph&) {
-        vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, resolve_pipeline);
-        bindless.bind(cb, VK_PIPELINE_BIND_POINT_GRAPHICS);
-        vkCmdPushConstants(cb, bindless.pipeline_layout(), VK_SHADER_STAGE_ALL, 0, sizeof(u64),
-                           &resolve_address);
-        vkCmdDraw(cb, 3, 1, 0, 0);
+      [&](gfx::CommandList cb, gfx::RenderGraph&) {
+        cb.bind_pipeline(gfx::BindPoint::Graphics, resolve_pipeline);
+        bindless.bind(cb, gfx::BindPoint::Graphics);
+        cb.push_constants(bindless.pipeline_layout(), gfx::ShaderStage::All, 0, sizeof(u64),
+                          &resolve_address);
+        cb.draw(3, 1, 0, 0);
       });
   graph.add_pass(
       "readback", gfx::PassKind::Transfer,
@@ -240,21 +239,22 @@ TEST_CASE("visibility buffer: hardware and software rasterization agree, resolve
         b.write(rg_host_sw, gfx::Access::TransferWrite);
         b.write(rg_host_color, gfx::Access::TransferWrite);
       },
-      [&](VkCommandBuffer cb, gfx::RenderGraph& g) {
-        const VkBufferCopy copy{0, 0, vis_bytes};
-        vkCmdCopyBuffer(cb, vis_hw.buffer, host_hw.buffer, 1, &copy);
-        vkCmdCopyBuffer(cb, vis_sw.buffer, host_sw.buffer, 1, &copy);
+      [&](gfx::CommandList cb, gfx::RenderGraph& g) {
+        const gfx::BufferCopy copy{0, 0, vis_bytes};
+        cb.copy_buffer(vis_hw.buffer, host_hw.buffer, copy);
+        cb.copy_buffer(vis_sw.buffer, host_sw.buffer, copy);
         VkBufferImageCopy region{};
         region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
         region.imageExtent = {k_size, k_size, 1};
-        vkCmdCopyImageToBuffer(cb, g.image(color).image, g.image_layout(color), host_color.buffer,
-                               1, &region);
+        vkCmdCopyImageToBuffer(gfx::vk::native(cb), gfx::vk::native(g.image(color).image),
+                               gfx::vk::native(g.image_layout(color)),
+                               gfx::vk::native(host_color.buffer), 1, &region);
       });
   REQUIRE_MESSAGE(graph.compile(&error), error);
 
   // Two frames so the timer has a completed frame to report.
   for (u32 frame = 0; frame < 2; ++frame) {
-    VkCommandBuffer commands = frames.begin_frame();
+    gfx::CommandList commands = frames.begin_frame();
     timer.begin_frame(commands, frames.slot());
     graph.execute(commands);
     REQUIRE(frames.wait(frames.end_frame()));
@@ -262,7 +262,7 @@ TEST_CASE("visibility buffer: hardware and software rasterization agree, resolve
   frames.wait_idle();
   // Force the last frame's results through: begin another frame in the slot that just ran.
   {
-    VkCommandBuffer commands = frames.begin_frame();
+    gfx::CommandList commands = frames.begin_frame();
     timer.begin_frame(commands, frames.slot());
     frames.end_frame();
     frames.wait_idle();

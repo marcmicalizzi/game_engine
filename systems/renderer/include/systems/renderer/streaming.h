@@ -27,7 +27,8 @@
 #include <core/base/types.h>
 #include <core/containers/vector.h>
 #include <domain/geometry/cluster_pages.h>
-#include <domain/gfx/vulkan.h>
+#include <domain/gfx/commands.h>
+#include <domain/gfx/resources.h>
 #include <systems/renderer/gpu_scene.h>
 #include <systems/renderer/page_source.h>
 
@@ -98,8 +99,8 @@ class GeometryStreamer {
   // write `slot`'s residency words. Returns the address the frame's `gfx::CullParams::streaming`
   // must carry, which is `slot`'s `gfx::StreamParams` block.
   u64 prepare(u32 slot);
-  // The copies `prepare` staged, recorded into the frame's command buffer.
-  void record_uploads(VkCommandBuffer commands);
+  // The copies `prepare` staged, recorded into the frame's command list.
+  void record_uploads(gfx::CommandList commands);
   bool has_uploads() const noexcept { return !uploads_.empty(); }
   // Where the frame's feedback is copied to, one buffer per frame slot: `{u32 count,
   // geometry::PageRequest[max_requests], u32 used[page_count]}`.

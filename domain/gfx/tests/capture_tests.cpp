@@ -3,12 +3,12 @@
 // the render graph's set_final_layout, since captures of presented frames rely on it.
 #include "raster_path.h"
 
+#include <domain/gfx/backend/vulkan/vulkan.h>
 #include <domain/gfx/bindless.h>
 #include <domain/gfx/capture.h>
 #include <domain/gfx/device.h>
 #include <domain/gfx/frame.h>
 #include <domain/gfx/render_graph.h>
-#include <domain/gfx/vulkan.h>
 #include <foundation/image/png.h>
 
 #include <doctest/doctest.h>
@@ -27,27 +27,27 @@ TEST_CASE("capture: an attachment left in a requested layout captures pixel-exac
   gfx::BindlessSet bindless;
   REQUIRE(bindless.create(device, gfx::BindlessConfig{}, &error));
 
-  VkShaderModule module = gfx::create_shader_module(device, shaders::k_triangle_spirv,
-                                                    shaders::k_triangle_spirv_size, &error);
-  REQUIRE(module != VK_NULL_HANDLE);
+  gfx::ShaderModuleHandle module = gfx::create_shader_module(
+      device, shaders::k_triangle_spirv, shaders::k_triangle_spirv_size, &error);
+  REQUIRE(module.valid());
   gfx::GraphicsPipelineDesc desc;
   desc.vertex = module;
   desc.fragment = module;
   desc.layout = bindless.pipeline_layout();
-  desc.color_format = VK_FORMAT_B8G8R8A8_UNORM;
-  VkPipeline pipeline = VK_NULL_HANDLE;
+  desc.color_format = gfx::Format::B8G8R8A8Unorm;
+  gfx::PipelineHandle pipeline = {};
   REQUIRE_MESSAGE(gfx::create_graphics_pipeline(device, desc, pipeline, &error), error);
 
   // A persistent target imported into the graph, like a swapchain image would be.
   constexpr u32 k_size = 32;
   gfx::ImageResource target;
-  REQUIRE(gfx::create_image_2d(
-      device, k_size, k_size, VK_FORMAT_B8G8R8A8_UNORM,
-      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, target, &error));
+  REQUIRE(gfx::create_image_2d(device, k_size, k_size, gfx::Format::B8G8R8A8Unorm,
+                               gfx::ImageUsage::ColorAttachment | gfx::ImageUsage::TransferSrc,
+                               target, &error));
 
   gfx::RenderGraph graph(device);
   const gfx::RgImage color = graph.import_image("target", target);
-  VkClearColorValue clear{};
+  gfx::ClearColor clear{};
   clear.float32[2] = 1.0f;  // blue in BGRA order: byte 0
   clear.float32[3] = 1.0f;
   struct Push {
@@ -56,26 +56,26 @@ TEST_CASE("capture: an attachment left in a requested layout captures pixel-exac
   } push{{1.0f, 0.5f, 0.0f}, 1.0f};
   graph.add_pass(
       "triangle", gfx::PassKind::Raster,
-      [&](gfx::PassBuilder& b) { b.color_attachment(color, VK_ATTACHMENT_LOAD_OP_CLEAR, clear); },
-      [&](VkCommandBuffer commands, gfx::RenderGraph&) {
-        vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-        bindless.bind(commands, VK_PIPELINE_BIND_POINT_GRAPHICS);
-        vkCmdPushConstants(commands, bindless.pipeline_layout(), VK_SHADER_STAGE_ALL, 0,
-                           sizeof(push), &push);
-        vkCmdDraw(commands, 3, 1, 0, 0);
+      [&](gfx::PassBuilder& b) { b.color_attachment(color, gfx::LoadOp::Clear, clear); },
+      [&](gfx::CommandList commands, gfx::RenderGraph&) {
+        commands.bind_pipeline(gfx::BindPoint::Graphics, pipeline);
+        bindless.bind(commands, gfx::BindPoint::Graphics);
+        commands.push_constants(bindless.pipeline_layout(), gfx::ShaderStage::All, 0, sizeof(push),
+                                &push);
+        commands.draw(3, 1, 0, 0);
       });
-  graph.set_final_layout(color, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+  graph.set_final_layout(color, gfx::ImageLayout::Present);
   REQUIRE_MESSAGE(graph.compile(&error), error);
   CHECK(graph.stats().layout_transitions == 2);  // undefined -> color attachment -> present
 
-  VkCommandBuffer commands = frames.begin_frame();
+  gfx::CommandList commands = frames.begin_frame();
   graph.execute(commands);
   REQUIRE(frames.wait(frames.end_frame()));
-  CHECK(graph.final_layout(color) == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+  CHECK(graph.final_layout(color) == gfx::ImageLayout::Present);
 
   gfx::Capture capture;
-  REQUIRE_MESSAGE(
-      gfx::capture_image(device, target, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, capture, &error), error);
+  REQUIRE_MESSAGE(gfx::capture_image(device, target, gfx::ImageLayout::Present, capture, &error),
+                  error);
   CHECK(capture.width == k_size);
   CHECK(capture.height == k_size);
   CHECK(capture.bytes_per_pixel == 4);
@@ -113,14 +113,13 @@ TEST_CASE("capture: an attachment left in a requested layout captures pixel-exac
   // Depth captures come back as floats; an unsupported format is refused.
   gfx::ImageResource depth;
   REQUIRE(gfx::create_image_2d(
-      device, 4, 4, VK_FORMAT_D32_SFLOAT,
-      VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, depth,
-      &error));
+      device, 4, 4, gfx::Format::D32Sfloat,
+      gfx::ImageUsage::DepthStencilAttachment | gfx::ImageUsage::TransferSrc, depth, &error));
   gfx::Capture depth_capture;
-  CHECK(gfx::capture_image(device, depth, VK_IMAGE_LAYOUT_UNDEFINED, depth_capture, &error));
+  CHECK(gfx::capture_image(device, depth, gfx::ImageLayout::Undefined, depth_capture, &error));
   CHECK(depth_capture.bytes.size() == 4 * 4 * 4);
   CHECK_FALSE(gfx::capture_to_rgba8(depth_capture, rgba));
-  CHECK(gfx::capture_bytes_per_pixel(VK_FORMAT_BC7_UNORM_BLOCK) == 0);
+  CHECK(gfx::capture_bytes_per_pixel(gfx::Format::Bc7Unorm) == 0);
 
   graph.reset();
   gfx::destroy_image(device, depth);

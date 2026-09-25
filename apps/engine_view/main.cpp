@@ -6,6 +6,12 @@
 // presents it afterwards, which is the only difference between what this draws and what
 // engine-host's `render.capture` draws offscreen.
 //
+// It is the one app that includes the **backend header set** (docs/subsystems/gfx.md, "The RHI
+// surface and the backend surface"): `domain/gfx/backend/vulkan/` for the swapchain and the
+// device's instance, `foundation/window/backend/vulkan/surface.h` for the surface, because
+// presenting is the one thing here with no engine-neutral form. Everything it hands the renderer
+// — the image, its layout, the two semaphores — is in the engine's own vocabulary.
+//
 // `--frames N --capture out.png` renders N frames and writes the last one as a PNG, then prints
 // the statistics line on exit, so there is no need for a human at the window. `--mesh` takes a
 // glTF file or a `.clusters` container; a glTF is looked up in the derived-data cache first and
@@ -32,16 +38,17 @@
 #include <core/schema/json_reflect.h>
 #include <core/time/time.h>
 #include <domain/geometry/cluster_pages.h>
+#include <domain/gfx/backend/vulkan/swapchain.h>
+#include <domain/gfx/backend/vulkan/vulkan.h>
 #include <domain/gfx/capture.h>
 #include <domain/gfx/device.h>
-#include <domain/gfx/swapchain.h>
-#include <domain/gfx/vulkan.h>
 #include <foundation/bench/machine_state.h>
 #include <foundation/image/png.h>
 #include <foundation/input/input.h>
 #include <foundation/input/input_log.h>
 #include <foundation/io/vfs.h>
 #include <foundation/tunables/tunables.h>
+#include <foundation/window/backend/vulkan/surface.h>
 #include <foundation/window/window.h>
 #include <systems/renderer/camera_path.h>
 #include <systems/renderer/capture.h>
@@ -2867,7 +2874,7 @@ int main(int argc, char** argv) {
     }
     return unavailable("no display", error);
   }
-  const auto extensions = window::Window::vulkan_instance_extensions();
+  const auto extensions = window::vulkan::instance_extensions();
   if (extensions.empty()) {
     window::shutdown();
     return unavailable("SDL has no Vulkan support here", "");
@@ -2980,7 +2987,7 @@ int main(int argc, char** argv) {
 
   // Everything below unwinds through this block so the destruction order stays in one place.
   do {
-    if (!window.create_vulkan_surface(device.handles().instance, surface, &error)) {
+    if (!window::vulkan::create_surface(window, device.handles().instance, surface, &error)) {
       exit_code = fail("surface", error);
       break;
     }
@@ -3448,7 +3455,7 @@ int main(int argc, char** argv) {
       }
 #endif
       frame.color = swapchain.image(image_index);
-      frame.final_layout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+      frame.final_layout = gfx::ImageLayout::Present;
       frame.wait = view_renderer.acquire_semaphore();
       frame.signal = swapchain.render_finished(image_index);
       const u64 value = view_renderer.submit_frame(frame, &error);
@@ -3506,8 +3513,8 @@ int main(int argc, char** argv) {
         view_renderer.collect_visible();
         gfx::Capture shot;
         Vector<u8> rgba;
-        if (!gfx::capture_image(device, swapchain.image(image_index),
-                                VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, shot, &error) ||
+        if (!gfx::capture_image(device, swapchain.image(image_index), gfx::ImageLayout::Present,
+                                shot, &error) ||
             !gfx::capture_to_rgba8(shot, rgba)) {
           exit_code = fail("capture", error.empty() ? "unsupported swapchain format" : error);
         } else if (const io::Status status =
@@ -3613,7 +3620,7 @@ int main(int argc, char** argv) {
   page_source.destroy();
   scene.destroy();
   swapchain.destroy();
-  window::Window::destroy_vulkan_surface(device.handles().instance, surface);
+  window::vulkan::destroy_surface(device.handles().instance, surface);
   device.destroy();
   window.destroy();
   window::shutdown();

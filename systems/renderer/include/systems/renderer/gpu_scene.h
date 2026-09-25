@@ -30,8 +30,9 @@
 #include <domain/gfx/bindless.h>
 #include <domain/gfx/cluster_acceleration.h>
 #include <domain/gfx/cluster_cull.h>
+#include <domain/gfx/resources.h>
+#include <domain/gfx/rhi.h>
 #include <domain/gfx/visibility_resolve.h>
-#include <domain/gfx/vulkan.h>
 #include <systems/renderer/scene.h>
 #include <systems/renderer/settings.h>
 
@@ -478,7 +479,7 @@ class GpuScene {
   // never change, and the one field that does — the bottom-level address, which the implicit
   // build of `blas_set` decides each frame — is copied in on the GPU (`rt_instance_copies`).
   gfx::BufferResource rt_instances;
-  Vector<VkBufferCopy> rt_instance_copies;  // blas_set.addresses[i] -> rt_instances[i].reference
+  Vector<gfx::BufferCopy> rt_instance_copies;  // blas_set.addresses[i] -> rt_instances[i].reference
   gfx::AccelerationStructure tlas;
   gfx::ClusterTemplateSet clas_templates;  // --rt-templates: one per cluster, packed to size
   // Sized by the frame (`rt_capacity()` clusters), and replaced by `resize_ray_tracing`:
@@ -499,19 +500,19 @@ class GpuScene {
   const SceneData* data_ = nullptr;
   gfx::BindlessSet bindless_;
   gfx::ImageResource procedural_texture_;
-  VkImageView procedural_view_ = VK_NULL_HANDLE;
-  VkSampler sampler_ = VK_NULL_HANDLE;  // the heightfield's procedural texture: linear, clamped
+  gfx::ImageViewHandle procedural_view_;
+  gfx::SamplerHandle sampler_;  // the heightfield's procedural texture: linear, clamped
   // One per distinct sampler a material slot asked for: its key (the packed glTF sampler word,
   // and bit 31 for a mipmapped one), the sampler, and its bindless slot.
   struct MaterialSampler {
     u32 key = 0;
-    VkSampler sampler = VK_NULL_HANDLE;
+    gfx::SamplerHandle sampler;
     u32 slot = 0;
   };
   Vector<MaterialSampler> material_samplers_;
   u32 transform_conflicts_ = 0;
   Vector<gfx::ImageResource> textures_;  // built, or decoded from the meshes' images
-  Vector<VkImageView> texture_views_;
+  Vector<gfx::ImageViewHandle> texture_views_;
   u64 texture_bytes_ = 0;
   u32 textures_built_ = 0;
   u32 textures_decoded_ = 0;

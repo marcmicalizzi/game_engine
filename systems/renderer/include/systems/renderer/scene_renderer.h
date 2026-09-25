@@ -31,8 +31,11 @@
 #include <core/math/math.h>
 #include <domain/gfx/frame.h>
 #include <domain/gfx/gpu_timer.h>
+#include <domain/gfx/pipeline.h>
 #include <domain/gfx/ray_visibility.h>
 #include <domain/gfx/render_graph.h>
+#include <domain/gfx/resources.h>
+#include <domain/gfx/rhi.h>
 #include <domain/gfx/shader_library.h>
 #include <systems/renderer/capture.h>
 #include <systems/renderer/gpu_scene.h>
@@ -307,9 +310,9 @@ struct FrameDesc {
   // sized for real-time cuts holds. The next ordinary frame shrinks the chain back to the budget.
   bool rt_complete = false;
   gfx::ImageResource color;  // a swapchain image, or null for the renderer's own target
-  VkImageLayout final_layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-  VkSemaphore wait = VK_NULL_HANDLE;          // the swapchain acquire, for a presented frame
-  VkSemaphore signal = VK_NULL_HANDLE;        // the swapchain image's render-finished semaphore
+  gfx::ImageLayout final_layout = gfx::ImageLayout::TransferSrc;
+  gfx::SemaphoreHandle wait;                  // the swapchain acquire, for a presented frame
+  gfx::SemaphoreHandle signal;                // the swapchain image's render-finished semaphore
   std::span<const anim::JointMatrix> joints;  // every animated instance's, in one span
   std::span<const InstanceJoints> instance_joints;  // parallel to the scene's instances
   // The **pose** morph weights, one per channel of the scene's morph channel array, on exactly
@@ -331,7 +334,7 @@ class SceneRenderer {
     // The pipelines' color format. engine-view passes the swapchain's so that the picture is
     // produced exactly as it is presented; offscreen it is the default, which differs from a
     // typical swapchain's only in channel order and so reads back byte for byte the same.
-    VkFormat color_format = VK_FORMAT_R8G8B8A8_UNORM;
+    gfx::Format color_format = gfx::Format::R8G8B8A8Unorm;
     u32 frames_in_flight = 2;
     // Create an offscreen color target the renderer owns, for frames that name no image.
     bool offscreen = true;
@@ -403,7 +406,7 @@ class SceneRenderer {
   // Waits for the slot to come free, folds the statistics and timings of the frame that last
   // used it into `stats()`, and makes `acquire_semaphore()` safe to hand to a swapchain.
   void begin_frame();
-  VkSemaphore acquire_semaphore() const noexcept { return frames_.acquire_semaphore(); }
+  gfx::SemaphoreHandle acquire_semaphore() const noexcept { return frames_.acquire_semaphore(); }
   // Records and submits the frame begun by begin_frame(). Returns the timeline value it will
   // signal, or 0 when the frame could not be recorded (`error` says why, and nothing was
   // submitted beyond an empty command buffer).
@@ -439,16 +442,16 @@ class SceneRenderer {
 
  private:
   struct Pipelines {
-    VkPipeline direct = VK_NULL_HANDLE;
-    VkPipeline hardware = VK_NULL_HANDLE;
-    VkPipeline vertex = VK_NULL_HANDLE;
-    VkPipeline vertex_fallback = VK_NULL_HANDLE;  // the indexed draw's overflow: capacity-drawn
+    gfx::PipelineHandle direct;
+    gfx::PipelineHandle hardware;
+    gfx::PipelineHandle vertex;
+    gfx::PipelineHandle vertex_fallback;  // the indexed draw's overflow: capacity-drawn
     // The cascaded shadow maps' depth-only draws: the picture's own rasterizer — the mesh path's
     // mesh stage, or the vertex path's indexed (and fallback) or capacity vertex stage — with no
     // fragment stage and the atlas as its depth attachment.
-    VkPipeline shadow = VK_NULL_HANDLE;
-    VkPipeline shadow_fallback = VK_NULL_HANDLE;
-    VkPipeline resolve = VK_NULL_HANDLE;
+    gfx::PipelineHandle shadow;
+    gfx::PipelineHandle shadow_fallback;
+    gfx::PipelineHandle resolve;
     gfx::ComputePipeline software;
     gfx::ComputePipeline cull;
     gfx::ComputePipeline expand;  // vertex_expand.slang: the indexed draw's indices
@@ -526,8 +529,8 @@ class SceneRenderer {
   // a depth attachment and sampled by the resolve through the scene's bindless set. It is sized
   // by the settings, not the screen, so a resize leaves it alone.
   gfx::ImageResource shadow_atlas_;
-  VkImageView shadow_view_ = VK_NULL_HANDLE;
-  VkSampler shadow_sampler_ = VK_NULL_HANDLE;
+  gfx::ImageViewHandle shadow_view_;
+  gfx::SamplerHandle shadow_sampler_;
   u32 shadow_texture_slot_ = gfx::BindlessSet::k_invalid_slot;
   u32 shadow_sampler_slot_ = gfx::BindlessSet::k_invalid_slot;
   ShadowCascades cascades_;
@@ -540,7 +543,7 @@ class SceneRenderer {
   Vector<u64> slot_frame_;
   Vector<u64> slot_submission_;
   Stats stats_;
-  VkCommandBuffer commands_ = VK_NULL_HANDLE;  // the frame between begin_frame and submit_frame
+  gfx::CommandList commands_;  // the frame between begin_frame and submit_frame
   u32 width_ = 0;
   u32 height_ = 0;
   u64 submitted_ = 0;  // frames submitted; also the slot-warmup counter

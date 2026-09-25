@@ -5,8 +5,14 @@
 #include <core/base/size_table.h>
 #include <domain/gfx/cluster_acceleration.h>
 #include <domain/gfx/cluster_cull.h>
+#include <domain/gfx/commands.h>
 #include <domain/gfx/path_trace.h>
+#include <domain/gfx/pipeline.h>
+#include <domain/gfx/resources.h>
+#include <domain/gfx/rhi.h>
 #include <domain/gfx/visibility_resolve.h>
+
+#include <type_traits>
 
 using namespace engine;
 
@@ -158,3 +164,29 @@ ENGINE_EXPECT_SIZE(256, 8, gfx::PathTraceParams);
 ENGINE_EXPECT_SIZE(112, 4, gfx::ResolveMaterial);
 
 ENGINE_EXPECT_SIZE(64, 4, gfx::ResolveLight);
+
+// The RHI's own vocabulary (rhi.h, docs/subsystems/gfx.md "The RHI surface and the backend
+// surface"). A handle carries the bits of the Vulkan handle it replaced, so it is that handle's 8
+// bytes and nothing more, and every struct that holds one kept its size: a BufferResource and an
+// ImageResource are the same 40 bytes the Vulkan-typed structs were, which is why no GPU scene or
+// frame structure moved when the public headers stopped naming Vulkan. The small descriptions
+// that reach a Vulkan call as they are (a buffer copy region, the indirect argument records the
+// GPU reads) are pinned against Vulkan's own layouts in src/rhi_vulkan.cpp as well.
+ENGINE_EXPECT_SIZE(8, 8, gfx::BufferHandle);
+ENGINE_EXPECT_SIZE(8, 8, gfx::ImageHandle);
+ENGINE_EXPECT_SIZE(8, 8, gfx::ImageViewHandle);
+ENGINE_EXPECT_SIZE(8, 8, gfx::SamplerHandle);
+ENGINE_EXPECT_SIZE(8, 8, gfx::PipelineHandle);
+ENGINE_EXPECT_SIZE(8, 8, gfx::AccelerationStructureHandle);
+ENGINE_EXPECT_SIZE(8, 8, gfx::SemaphoreHandle);
+ENGINE_EXPECT_SIZE(8, 8, gfx::CommandList);
+ENGINE_EXPECT_SIZE(40, 8, gfx::BufferResource);
+ENGINE_EXPECT_SIZE(40, 8, gfx::ImageResource);
+ENGINE_EXPECT_SIZE(16, 8, gfx::ComputePipeline);
+ENGINE_EXPECT_SIZE(24, 8, gfx::BufferCopy);
+ENGINE_EXPECT_SIZE(16, 4, gfx::DrawIndirectArgs);
+ENGINE_EXPECT_SIZE(20, 4, gfx::DrawIndexedIndirectArgs);
+ENGINE_EXPECT_SIZE(12, 4, gfx::DispatchIndirectArgs);
+static_assert(std::is_trivially_copyable_v<gfx::BufferHandle> &&
+              std::is_trivially_copyable_v<gfx::CommandList> &&
+              std::is_trivially_copyable_v<gfx::BufferResource>);

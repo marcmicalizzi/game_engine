@@ -9,12 +9,12 @@
 #include "scene_fixture.h"
 
 #include <domain/geometry/cluster.h>
+#include <domain/gfx/backend/vulkan/vulkan.h>
 #include <domain/gfx/bindless.h>
 #include <domain/gfx/cluster_cull.h>
 #include <domain/gfx/device.h>
 #include <domain/gfx/frame.h>
 #include <domain/gfx/render_graph.h>
-#include <domain/gfx/vulkan.h>
 
 #include <doctest/doctest.h>
 
@@ -77,10 +77,10 @@ TEST_CASE("mesh shaders: clusters rasterize to visibility IDs") {
   gfx_test::SingleInstance scene;
   REQUIRE(gfx::upload_buffer(device, mesh.clusters.data(),
                              mesh.clusters.size() * sizeof(geometry::ClusterDesc),
-                             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, cluster_buffer, &error));
+                             gfx::BufferUsage::Storage, cluster_buffer, &error));
   REQUIRE(scene.create(device, mesh, mesh.clusters.size(), &error));
   REQUIRE(gfx::upload_buffer(device, mesh.triangles.data(), mesh.triangles.size() * sizeof(u32),
-                             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, triangle_buffer, &error));
+                             gfx::BufferUsage::Storage, triangle_buffer, &error));
 
   gfx::FrameContext frames;
   REQUIRE(frames.create(device, 2, &error));
@@ -88,45 +88,44 @@ TEST_CASE("mesh shaders: clusters rasterize to visibility IDs") {
   REQUIRE(bindless.create(device, gfx::BindlessConfig{}, &error));
   REQUIRE(bindless.capacity().push_constant_bytes >= sizeof(MeshParams));
 
-  VkShaderModule module = gfx::create_shader_module(device, shaders::k_cluster_mesh_spirv,
-                                                    shaders::k_cluster_mesh_spirv_size, &error);
-  REQUIRE_MESSAGE(module != VK_NULL_HANDLE, error);
+  gfx::ShaderModuleHandle module = gfx::create_shader_module(
+      device, shaders::k_cluster_mesh_spirv, shaders::k_cluster_mesh_spirv_size, &error);
+  REQUIRE_MESSAGE(module.valid(), error);
   gfx::MeshPipelineDesc desc;
   desc.mesh = module;
   desc.fragment = module;
   desc.layout = bindless.pipeline_layout();
-  desc.color_format = VK_FORMAT_R32_UINT;
-  VkPipeline pipeline = VK_NULL_HANDLE;
+  desc.color_format = gfx::Format::R32Uint;
+  gfx::PipelineHandle pipeline = {};
   REQUIRE_MESSAGE(gfx::create_mesh_pipeline(device, desc, pipeline, &error), error);
 
   constexpr u32 k_size = 128;
   const u64 bytes = u64{k_size} * k_size * 4;
   gfx::BufferResource readback;
-  REQUIRE(
-      gfx::create_buffer(device, bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, readback, &error));
+  REQUIRE(gfx::create_buffer(device, bytes, gfx::BufferUsage::TransferDst, true, readback, &error));
 
   gfx::RenderGraph graph(device);
   const gfx::RgImage ids = graph.create_image(
-      "visibility", {k_size, k_size, VK_FORMAT_R32_UINT,
-                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT});
+      "visibility", {k_size, k_size, gfx::Format::R32Uint,
+                     gfx::ImageUsage::ColorAttachment | gfx::ImageUsage::TransferSrc});
   const gfx::RgBuffer host = graph.import_buffer("readback", readback);
-  VkClearColorValue clear{};
+  gfx::ClearColor clear{};
   clear.uint32[0] = 0xFFFFFFFFu;
   graph.add_pass(
       "clusters", gfx::PassKind::Raster,
-      [&](gfx::PassBuilder& b) { b.color_attachment(ids, VK_ATTACHMENT_LOAD_OP_CLEAR, clear); },
-      [&](VkCommandBuffer commands, gfx::RenderGraph&) {
+      [&](gfx::PassBuilder& b) { b.color_attachment(ids, gfx::LoadOp::Clear, clear); },
+      [&](gfx::CommandList commands, gfx::RenderGraph&) {
         MeshParams params{};
         params.view_proj = Mat4::identity();
         params.clusters = cluster_buffer.address;
         params.mesh = scene.meshes.address;
         params.instances = scene.instances.address;
         params.triangles = triangle_buffer.address;
-        vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-        bindless.bind(commands, VK_PIPELINE_BIND_POINT_GRAPHICS);
-        vkCmdPushConstants(commands, bindless.pipeline_layout(), VK_SHADER_STAGE_ALL, 0,
-                           sizeof(params), &params);
-        vkCmdDrawMeshTasksEXT(commands, mesh.clusters.size(), 1, 1);
+        commands.bind_pipeline(gfx::BindPoint::Graphics, pipeline);
+        bindless.bind(commands, gfx::BindPoint::Graphics);
+        commands.push_constants(bindless.pipeline_layout(), gfx::ShaderStage::All, 0,
+                                sizeof(params), &params);
+        commands.draw_mesh_tasks(mesh.clusters.size(), 1, 1);
       });
   graph.add_pass(
       "readback", gfx::PassKind::Transfer,
@@ -134,16 +133,17 @@ TEST_CASE("mesh shaders: clusters rasterize to visibility IDs") {
         b.read(ids, gfx::Access::TransferRead);
         b.write(host, gfx::Access::TransferWrite);
       },
-      [&](VkCommandBuffer commands, gfx::RenderGraph& g) {
+      [&](gfx::CommandList commands, gfx::RenderGraph& g) {
         VkBufferImageCopy region{};
         region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
         region.imageExtent = {k_size, k_size, 1};
-        vkCmdCopyImageToBuffer(commands, g.image(ids).image, g.image_layout(ids), readback.buffer,
-                               1, &region);
+        vkCmdCopyImageToBuffer(gfx::vk::native(commands), gfx::vk::native(g.image(ids).image),
+                               gfx::vk::native(g.image_layout(ids)),
+                               gfx::vk::native(readback.buffer), 1, &region);
       });
   REQUIRE_MESSAGE(graph.compile(&error), error);
 
-  VkCommandBuffer commands = frames.begin_frame();
+  gfx::CommandList commands = frames.begin_frame();
   graph.execute(commands);
   const u64 value = frames.end_frame();
   REQUIRE(frames.wait(value));

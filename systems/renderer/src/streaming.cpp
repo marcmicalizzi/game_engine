@@ -82,7 +82,7 @@ bool GeometryStreamer::create(const gfx::Device& device, GpuScene& scene, u32 fr
                     u64{pages} * sizeof(u32);
   feedback_.resize(frames_in_flight_);
   for (u32 slot = 0; slot < frames_in_flight_; ++slot) {
-    if (!gfx::create_buffer(device, bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, feedback_[slot],
+    if (!gfx::create_buffer(device, bytes, gfx::BufferUsage::TransferDst, true, feedback_[slot],
                             error)) {
       destroy();
       return false;
@@ -613,18 +613,18 @@ bool GeometryStreamer::take_slot(u32 page, u32& slot) {
   return true;
 }
 
-void GeometryStreamer::record_uploads(VkCommandBuffer commands) {
+void GeometryStreamer::record_uploads(gfx::CommandList commands) {
   if (!active() || uploads_.empty()) return;
   const SceneData& data = scene_->data();
-  const bool rt = scene_->vertices.buffer != VK_NULL_HANDLE;
+  const bool rt = scene_->vertices.buffer.valid();
   for (const Upload& upload : uploads_) {
     const geometry::ClusterPageDesc& desc = data.pages.pages[upload.page];
     // The same layout the page was staged into, from the one function that knows it.
     const GpuScene::PageStage stage = scene_->page_stage_layout(upload.page);
-    auto copy = [&](VkBuffer dst, u64 src_offset, u64 dst_offset, u64 bytes) {
+    auto copy = [&](gfx::BufferHandle dst, u64 src_offset, u64 dst_offset, u64 bytes) {
       if (bytes == 0) return;
-      const VkBufferCopy region{upload.stage + src_offset, dst_offset, bytes};
-      vkCmdCopyBuffer(commands, scene_->page_stage.buffer, dst, 1, &region);
+      const gfx::BufferCopy region{upload.stage + src_offset, dst_offset, bytes};
+      commands.copy_buffer(scene_->page_stage.buffer, dst, region);
     };
     const u64 vertex_base = u64{upload.slot} * scene_->slot_vertices();
     const u64 triangle_base = u64{upload.slot} * scene_->slot_triangles();

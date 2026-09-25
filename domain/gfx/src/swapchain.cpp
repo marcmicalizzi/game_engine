@@ -1,6 +1,7 @@
 #include <core/log/log.h>
+#include <domain/gfx/backend/vulkan/swapchain.h>
+#include <domain/gfx/backend/vulkan/vulkan.h>
 #include <domain/gfx/device.h>
-#include <domain/gfx/swapchain.h>
 
 namespace engine::gfx {
 
@@ -65,12 +66,13 @@ bool Swapchain::create_chain(std::string* error) {
   }
   VkSurfaceFormatKHR chosen = formats[0];
   for (const VkSurfaceFormatKHR& f : formats) {
-    if (f.format == desc_.preferred_format && f.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
+    if (f.format == vk::native(desc_.preferred_format) &&
+        f.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
       chosen = f;
       break;
     }
   }
-  format_ = chosen.format;
+  format_ = vk::wrap(chosen.format);
   color_space_ = chosen.colorSpace;
 
   // Present mode.
@@ -95,7 +97,7 @@ bool Swapchain::create_chain(std::string* error) {
 
   // Extent: the surface dictates it when it reports a fixed size; otherwise the window's.
   if (caps.currentExtent.width != 0xFFFFFFFFu) {
-    extent_ = caps.currentExtent;
+    extent_ = vk::wrap(caps.currentExtent);
   } else {
     extent_.width = desc_.width < caps.minImageExtent.width   ? caps.minImageExtent.width
                     : desc_.width > caps.maxImageExtent.width ? caps.maxImageExtent.width
@@ -127,9 +129,9 @@ bool Swapchain::create_chain(std::string* error) {
   info.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
   info.surface = desc_.surface;
   info.minImageCount = image_count;
-  info.imageFormat = format_;
+  info.imageFormat = vk::native(format_);
   info.imageColorSpace = color_space_;
-  info.imageExtent = extent_;
+  info.imageExtent = vk::native(extent_);
   info.imageArrayLayers = 1;
   info.imageUsage = usage;
   info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
@@ -160,7 +162,7 @@ bool Swapchain::create_chain(std::string* error) {
   for (u32 i = 0; i < count; ++i) {
     ImageResource& image = images_[i];
     image = ImageResource{};
-    image.image = raw[i];
+    image.image = vk::wrap(raw[i]);
     image.format = format_;
     image.width = extent_.width;
     image.height = extent_.height;
@@ -168,20 +170,24 @@ bool Swapchain::create_chain(std::string* error) {
     view.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     view.image = raw[i];
     view.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    view.format = format_;
+    view.format = vk::native(format_);
     view.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    if (const VkResult r = vkCreateImageView(h.device, &view, nullptr, &views_[i]);
+    VkImageView image_view = VK_NULL_HANDLE;
+    if (const VkResult r = vkCreateImageView(h.device, &view, nullptr, &image_view);
         r != VK_SUCCESS) {
       set_error(error, "vkCreateImageView(swapchain)", r);
       return false;
     }
+    views_[i] = vk::wrap(image_view);
     VkSemaphoreCreateInfo semaphore{};
     semaphore.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-    if (const VkResult r = vkCreateSemaphore(h.device, &semaphore, nullptr, &render_finished_[i]);
+    VkSemaphore finished = VK_NULL_HANDLE;
+    if (const VkResult r = vkCreateSemaphore(h.device, &semaphore, nullptr, &finished);
         r != VK_SUCCESS) {
       set_error(error, "vkCreateSemaphore(render finished)", r);
       return false;
     }
+    render_finished_[i] = vk::wrap(finished);
   }
   ENGINE_LOG_DEBUG(log_swapchain, "swapchain created", log::field("width", extent_.width),
                    log::field("height", extent_.height), log::field("images", count),
@@ -194,11 +200,11 @@ bool Swapchain::create_chain(std::string* error) {
 void Swapchain::destroy_chain() noexcept {
   if (device_ == nullptr) return;
   const Handles& h = device_->handles();
-  for (VkImageView view : views_) {
-    if (view != VK_NULL_HANDLE) vkDestroyImageView(h.device, view, nullptr);
+  for (const ImageViewHandle view : views_) {
+    if (view) vkDestroyImageView(h.device, vk::native(view), nullptr);
   }
-  for (VkSemaphore semaphore : render_finished_) {
-    if (semaphore != VK_NULL_HANDLE) vkDestroySemaphore(h.device, semaphore, nullptr);
+  for (const SemaphoreHandle semaphore : render_finished_) {
+    if (semaphore) vkDestroySemaphore(h.device, vk::native(semaphore), nullptr);
   }
   views_.clear();
   render_finished_.clear();
@@ -225,23 +231,24 @@ bool Swapchain::resize(u32 width, u32 height, std::string* error) {
   return create_chain(error);
 }
 
-PresentStatus Swapchain::acquire(VkSemaphore signal, u32& image_index, u64 timeout_ns) {
+PresentStatus Swapchain::acquire(SemaphoreHandle signal, u32& image_index, u64 timeout_ns) {
   ENGINE_VERIFY(swapchain_ != VK_NULL_HANDLE, "Swapchain::acquire: not created");
   if (desc_.width == 0 || desc_.height == 0) return PresentStatus::OutOfDate;
   const VkResult r = vkAcquireNextImageKHR(device_->handles().device, swapchain_, timeout_ns,
-                                           signal, VK_NULL_HANDLE, &image_index);
+                                           vk::native(signal), VK_NULL_HANDLE, &image_index);
   if (r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR) return PresentStatus::Ok;
   if (r == VK_ERROR_OUT_OF_DATE_KHR) return PresentStatus::OutOfDate;
   last_error_ = result_name(r);
   return PresentStatus::Error;
 }
 
-PresentStatus Swapchain::present(u32 image_index, VkSemaphore wait) {
+PresentStatus Swapchain::present(u32 image_index, SemaphoreHandle wait) {
   ENGINE_VERIFY(swapchain_ != VK_NULL_HANDLE, "Swapchain::present: not created");
+  const VkSemaphore wait_semaphore = vk::native(wait);
   VkPresentInfoKHR info{};
   info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-  info.waitSemaphoreCount = wait != VK_NULL_HANDLE ? 1 : 0;
-  info.pWaitSemaphores = &wait;
+  info.waitSemaphoreCount = wait ? 1 : 0;
+  info.pWaitSemaphores = &wait_semaphore;
   info.swapchainCount = 1;
   info.pSwapchains = &swapchain_;
   info.pImageIndices = &image_index;

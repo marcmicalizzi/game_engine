@@ -37,13 +37,13 @@
 
 #include <domain/geometry/cluster.h>
 #include <domain/gfx/acceleration.h>
+#include <domain/gfx/backend/vulkan/vulkan.h>
 #include <domain/gfx/bindless.h>
 #include <domain/gfx/cluster_cull.h>
 #include <domain/gfx/device.h>
 #include <domain/gfx/frame.h>
 #include <domain/gfx/render_graph.h>
 #include <domain/gfx/visibility_resolve.h>
-#include <domain/gfx/vulkan.h>
 
 #include <doctest/doctest.h>
 
@@ -104,7 +104,7 @@ TEST_CASE("material resolve: shading matches a CPU reference over roughness and 
       geometry::build_clusters(positions, indices, geometry::ClusterBuildOptions{}, mesh, &error));
   REQUIRE(mesh.clusters.size() == 1);
 
-  constexpr VkBufferUsageFlags k_storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+  constexpr gfx::BufferUsage k_storage = gfx::BufferUsage::Storage;
   gfx::BufferResource clusters;
   gfx::BufferResource triangles;
   gfx_test::SingleInstance scene;
@@ -153,22 +153,22 @@ TEST_CASE("material resolve: shading matches a CPU reference over roughness and 
   gfx::BufferResource host_color;
   REQUIRE(gfx::create_buffer(
       device, vis_bytes,
-      k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-      false, vis, &error));
+      k_storage | gfx::BufferUsage::ShaderDeviceAddress | gfx::BufferUsage::TransferDst, false, vis,
+      &error));
   REQUIRE(gfx::create_buffer(device, sizeof(gfx::ResolveParams) * k_blocks,
-                             k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, true, params,
+                             k_storage | gfx::BufferUsage::ShaderDeviceAddress, true, params,
                              &error));
   REQUIRE(gfx::create_buffer(device, u64{k_size} * k_size * 4 * k_blocks,
-                             VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, host_color, &error));
+                             gfx::BufferUsage::TransferDst, true, host_color, &error));
 
   gfx::FrameContext frames;
   REQUIRE(frames.create(device, 2, &error));
   gfx::BindlessSet bindless;
   REQUIRE(bindless.create(device, gfx::BindlessConfig{}, &error));
-  VkShaderModule resolve_module =
+  gfx::ShaderModuleHandle resolve_module =
       gfx::create_shader_module(device, shaders::k_visibility_resolve_spirv,
                                 shaders::k_visibility_resolve_spirv_size, &error);
-  REQUIRE(resolve_module != VK_NULL_HANDLE);
+  REQUIRE(resolve_module.valid());
   gfx_test::ClusterRaster raster;
   REQUIRE_MESSAGE(raster.create(device, bindless.pipeline_layout(),
                                 geometry::ClusterBuildOptions{}.max_triangles, &error),
@@ -179,8 +179,8 @@ TEST_CASE("material resolve: shading matches a CPU reference over roughness and 
   resolve_desc.fragment = resolve_module;
   resolve_desc.fragment_entry = "fs_resolve";
   resolve_desc.layout = bindless.pipeline_layout();
-  resolve_desc.color_format = VK_FORMAT_R8G8B8A8_UNORM;
-  VkPipeline resolve_pipeline = VK_NULL_HANDLE;
+  resolve_desc.color_format = gfx::Format::R8G8B8A8Unorm;
+  gfx::PipelineHandle resolve_pipeline = {};
   REQUIRE_MESSAGE(gfx::create_graphics_pipeline(device, resolve_desc, resolve_pipeline, &error),
                   error);
 
@@ -240,14 +240,14 @@ TEST_CASE("material resolve: shading matches a CPU reference over roughness and 
   gfx::RgImage targets[k_blocks];
   for (u32 i = 0; i < k_blocks; ++i) {
     targets[i] = graph.create_image(
-        "resolved", {k_size, k_size, VK_FORMAT_R8G8B8A8_UNORM,
-                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT});
+        "resolved", {k_size, k_size, gfx::Format::R8G8B8A8Unorm,
+                     gfx::ImageUsage::ColorAttachment | gfx::ImageUsage::TransferSrc});
   }
   graph.add_pass(
       "clear", gfx::PassKind::Transfer,
       [&](gfx::PassBuilder& b) { b.write(rg_vis, gfx::Access::TransferWrite); },
-      [&](VkCommandBuffer cb, gfx::RenderGraph&) {
-        vkCmdFillBuffer(cb, vis.buffer, 0, VK_WHOLE_SIZE, 0);
+      [&](gfx::CommandList cb, gfx::RenderGraph&) {
+        cb.fill_buffer(vis.buffer, 0, gfx::k_whole_size, 0);
       });
   graph.add_pass(
       "visibility", gfx::PassKind::Raster,
@@ -255,21 +255,21 @@ TEST_CASE("material resolve: shading matches a CPU reference over roughness and 
         b.render_area(k_size, k_size);
         b.write(rg_vis, gfx::Access::FragmentReadWrite);
       },
-      [&](VkCommandBuffer cb, gfx::RenderGraph&) { raster.draw(cb, bindless, draw, 1); });
+      [&](gfx::CommandList cb, gfx::RenderGraph&) { raster.draw(cb, bindless, draw, 1); });
   for (u32 i = 0; i < k_blocks; ++i) {
     graph.add_pass(
         "resolve", gfx::PassKind::Raster,
         [&, i](gfx::PassBuilder& b) {
-          VkClearColorValue clear{};
-          b.color_attachment(targets[i], VK_ATTACHMENT_LOAD_OP_CLEAR, clear);
+          gfx::ClearColor clear{};
+          b.color_attachment(targets[i], gfx::LoadOp::Clear, clear);
           b.read(rg_vis, gfx::Access::FragmentRead);
         },
-        [&, i](VkCommandBuffer cb, gfx::RenderGraph&) {
-          vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, resolve_pipeline);
-          bindless.bind(cb, VK_PIPELINE_BIND_POINT_GRAPHICS);
-          vkCmdPushConstants(cb, bindless.pipeline_layout(), VK_SHADER_STAGE_ALL, 0, sizeof(u64),
-                             &block_address[i]);
-          vkCmdDraw(cb, 3, 1, 0, 0);
+        [&, i](gfx::CommandList cb, gfx::RenderGraph&) {
+          cb.bind_pipeline(gfx::BindPoint::Graphics, resolve_pipeline);
+          bindless.bind(cb, gfx::BindPoint::Graphics);
+          cb.push_constants(bindless.pipeline_layout(), gfx::ShaderStage::All, 0, sizeof(u64),
+                            &block_address[i]);
+          cb.draw(3, 1, 0, 0);
         });
   }
   graph.add_pass(
@@ -279,18 +279,19 @@ TEST_CASE("material resolve: shading matches a CPU reference over roughness and 
           b.read(targets[i], gfx::Access::TransferRead);
         b.write(rg_host, gfx::Access::TransferWrite);
       },
-      [&](VkCommandBuffer cb, gfx::RenderGraph& g) {
+      [&](gfx::CommandList cb, gfx::RenderGraph& g) {
         for (u32 i = 0; i < k_blocks; ++i) {
           VkBufferImageCopy region{};
           region.bufferOffset = u64{k_size} * k_size * 4 * i;
           region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
           region.imageExtent = {k_size, k_size, 1};
-          vkCmdCopyImageToBuffer(cb, g.image(targets[i]).image, g.image_layout(targets[i]),
-                                 host_color.buffer, 1, &region);
+          vkCmdCopyImageToBuffer(gfx::vk::native(cb), gfx::vk::native(g.image(targets[i]).image),
+                                 gfx::vk::native(g.image_layout(targets[i])),
+                                 gfx::vk::native(host_color.buffer), 1, &region);
         }
       });
   REQUIRE_MESSAGE(graph.compile(&error), error);
-  VkCommandBuffer commands = frames.begin_frame();
+  gfx::CommandList commands = frames.begin_frame();
   graph.execute(commands);
   REQUIRE(frames.wait(frames.end_frame()));
 
@@ -472,7 +473,7 @@ TEST_CASE("material resolve: ray-traced shadows against the geometry the rasteri
   const Vec3 sun_dir = normalize(Vec3{0.0f, 1.0f, 0.45f});
   constexpr f32 k_bias = 0.01f;  // world units: 65 steps of this mesh's 16-bit position grid
 
-  constexpr VkBufferUsageFlags k_storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+  constexpr gfx::BufferUsage k_storage = gfx::BufferUsage::Storage;
   gfx::BufferResource clusters;
   gfx::BufferResource triangles;
   gfx::BufferResource materials;
@@ -565,23 +566,20 @@ TEST_CASE("material resolve: ray-traced shadows against the geometry the rasteri
   gfx::write_instances(std::span<const gfx::TlasInstance>(instance_records, 2), instances.mapped);
   REQUIRE(gfx::submit_immediate(
       device,
-      [&](VkCommandBuffer cb) {
+      [&](gfx::CommandList cb) {
         // One scratch buffer, so every build waits for the one before it.
-        constexpr VkAccessFlags2 k_build_rw = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR |
-                                              VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+        constexpr gfx::MemoryAccess k_build_rw = gfx::MemoryAccess::AccelerationStructureRead |
+                                                 gfx::MemoryAccess::AccelerationStructureWrite;
         gfx::build_blas(cb, blas_scene, both, gfx::k_build_fast_trace, scratch);
-        gfx::acceleration_build_barrier(
-            cb, VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR, k_build_rw);
+        gfx::acceleration_build_barrier(cb, gfx::PipelineStage::AccelerationBuild, k_build_rw);
         gfx::build_blas(cb, blas_quad, quad_only, gfx::k_build_fast_trace, scratch);
-        gfx::acceleration_build_barrier(
-            cb, VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR, k_build_rw);
+        gfx::acceleration_build_barrier(cb, gfx::PipelineStage::AccelerationBuild, k_build_rw);
         gfx::build_tlas(cb, tlas_scene, instances.address, 1, gfx::k_build_fast_trace, scratch);
-        gfx::acceleration_build_barrier(
-            cb, VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR, k_build_rw);
+        gfx::acceleration_build_barrier(cb, gfx::PipelineStage::AccelerationBuild, k_build_rw);
         gfx::build_tlas(cb, tlas_quad, instances.address + gfx::k_instance_record_bytes, 1,
                         gfx::k_build_fast_trace, scratch);
-        gfx::acceleration_build_barrier(cb, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-                                        VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR);
+        gfx::acceleration_build_barrier(cb, gfx::PipelineStage::FragmentShader,
+                                        gfx::MemoryAccess::AccelerationStructureRead);
       },
       &error));
 
@@ -597,13 +595,13 @@ TEST_CASE("material resolve: ray-traced shadows against the geometry the rasteri
   gfx::BufferResource host_color;
   REQUIRE(gfx::create_buffer(
       device, vis_bytes,
-      k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-      false, vis, &error));
+      k_storage | gfx::BufferUsage::ShaderDeviceAddress | gfx::BufferUsage::TransferDst, false, vis,
+      &error));
   REQUIRE(gfx::create_buffer(device, sizeof(gfx::ResolveParams) * k_shadow_blocks,
-                             k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, true, params,
+                             k_storage | gfx::BufferUsage::ShaderDeviceAddress, true, params,
                              &error));
   REQUIRE(gfx::create_buffer(device, u64{k_size} * k_size * 4 * k_shadow_blocks,
-                             VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, host_color, &error));
+                             gfx::BufferUsage::TransferDst, true, host_color, &error));
 
   gfx::FrameContext frames;
   REQUIRE(frames.create(device, 2, &error));
@@ -615,20 +613,20 @@ TEST_CASE("material resolve: ray-traced shadows against the geometry the rasteri
   REQUIRE(scene_slot != gfx::BindlessSet::k_invalid_slot);
   REQUIRE(quad_slot != gfx::BindlessSet::k_invalid_slot);
 
-  VkShaderModule vertex_module = gfx::create_shader_module(
+  gfx::ShaderModuleHandle vertex_module = gfx::create_shader_module(
       device, shaders::k_cluster_vertex_spirv, shaders::k_cluster_vertex_spirv_size, &error);
-  VkShaderModule resolve_module =
+  gfx::ShaderModuleHandle resolve_module =
       gfx::create_shader_module(device, shaders::k_visibility_resolve_rt_spirv,
                                 shaders::k_visibility_resolve_rt_spirv_size, &error);
-  REQUIRE(vertex_module != VK_NULL_HANDLE);
-  REQUIRE(resolve_module != VK_NULL_HANDLE);
+  REQUIRE(vertex_module.valid());
+  REQUIRE(resolve_module.valid());
   gfx::GraphicsPipelineDesc vertex_desc;
   vertex_desc.vertex = vertex_module;
   vertex_desc.vertex_entry = "vs_cluster";
   vertex_desc.fragment = vertex_module;
   vertex_desc.fragment_entry = "fs_visibility";
   vertex_desc.layout = bindless.pipeline_layout();
-  VkPipeline vertex_pipeline = VK_NULL_HANDLE;
+  gfx::PipelineHandle vertex_pipeline = {};
   REQUIRE_MESSAGE(gfx::create_graphics_pipeline(device, vertex_desc, vertex_pipeline, &error),
                   error);
   gfx::GraphicsPipelineDesc resolve_desc;
@@ -637,8 +635,8 @@ TEST_CASE("material resolve: ray-traced shadows against the geometry the rasteri
   resolve_desc.fragment = resolve_module;
   resolve_desc.fragment_entry = "fs_resolve";
   resolve_desc.layout = bindless.pipeline_layout();
-  resolve_desc.color_format = VK_FORMAT_R8G8B8A8_UNORM;
-  VkPipeline resolve_pipeline = VK_NULL_HANDLE;
+  resolve_desc.color_format = gfx::Format::R8G8B8A8Unorm;
+  gfx::PipelineHandle resolve_pipeline = {};
   REQUIRE_MESSAGE(gfx::create_graphics_pipeline(device, resolve_desc, resolve_pipeline, &error),
                   error);
 
@@ -692,14 +690,14 @@ TEST_CASE("material resolve: ray-traced shadows against the geometry the rasteri
   gfx::RgImage targets[k_shadow_blocks];
   for (u32 i = 0; i < k_shadow_blocks; ++i) {
     targets[i] = graph.create_image(
-        "resolved", {k_size, k_size, VK_FORMAT_R8G8B8A8_UNORM,
-                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT});
+        "resolved", {k_size, k_size, gfx::Format::R8G8B8A8Unorm,
+                     gfx::ImageUsage::ColorAttachment | gfx::ImageUsage::TransferSrc});
   }
   graph.add_pass(
       "clear", gfx::PassKind::Transfer,
       [&](gfx::PassBuilder& b) { b.write(rg_vis, gfx::Access::TransferWrite); },
-      [&](VkCommandBuffer cb, gfx::RenderGraph&) {
-        vkCmdFillBuffer(cb, vis.buffer, 0, VK_WHOLE_SIZE, 0);
+      [&](gfx::CommandList cb, gfx::RenderGraph&) {
+        cb.fill_buffer(vis.buffer, 0, gfx::k_whole_size, 0);
       });
   graph.add_pass(
       "visibility", gfx::PassKind::Raster,
@@ -707,27 +705,27 @@ TEST_CASE("material resolve: ray-traced shadows against the geometry the rasteri
         b.render_area(k_size, k_size);
         b.write(rg_vis, gfx::Access::FragmentReadWrite);
       },
-      [&](VkCommandBuffer cb, gfx::RenderGraph&) {
-        vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, vertex_pipeline);
-        bindless.bind(cb, VK_PIPELINE_BIND_POINT_GRAPHICS);
-        vkCmdPushConstants(cb, bindless.pipeline_layout(), VK_SHADER_STAGE_ALL, 0, sizeof(draw),
-                           &draw);
-        vkCmdDraw(cb, triangles_per_cluster * 3, 1, 0, 0);
+      [&](gfx::CommandList cb, gfx::RenderGraph&) {
+        cb.bind_pipeline(gfx::BindPoint::Graphics, vertex_pipeline);
+        bindless.bind(cb, gfx::BindPoint::Graphics);
+        cb.push_constants(bindless.pipeline_layout(), gfx::ShaderStage::All, 0, sizeof(draw),
+                          &draw);
+        cb.draw(triangles_per_cluster * 3, 1, 0, 0);
       });
   for (u32 i = 0; i < k_shadow_blocks; ++i) {
     graph.add_pass(
         "resolve", gfx::PassKind::Raster,
         [&, i](gfx::PassBuilder& b) {
-          VkClearColorValue clear{};
-          b.color_attachment(targets[i], VK_ATTACHMENT_LOAD_OP_CLEAR, clear);
+          gfx::ClearColor clear{};
+          b.color_attachment(targets[i], gfx::LoadOp::Clear, clear);
           b.read(rg_vis, gfx::Access::FragmentRead);
         },
-        [&, i](VkCommandBuffer cb, gfx::RenderGraph&) {
-          vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, resolve_pipeline);
-          bindless.bind(cb, VK_PIPELINE_BIND_POINT_GRAPHICS);
-          vkCmdPushConstants(cb, bindless.pipeline_layout(), VK_SHADER_STAGE_ALL, 0, sizeof(u64),
-                             &block_address[i]);
-          vkCmdDraw(cb, 3, 1, 0, 0);
+        [&, i](gfx::CommandList cb, gfx::RenderGraph&) {
+          cb.bind_pipeline(gfx::BindPoint::Graphics, resolve_pipeline);
+          bindless.bind(cb, gfx::BindPoint::Graphics);
+          cb.push_constants(bindless.pipeline_layout(), gfx::ShaderStage::All, 0, sizeof(u64),
+                            &block_address[i]);
+          cb.draw(3, 1, 0, 0);
         });
   }
   graph.add_pass(
@@ -737,18 +735,19 @@ TEST_CASE("material resolve: ray-traced shadows against the geometry the rasteri
           b.read(targets[i], gfx::Access::TransferRead);
         b.write(rg_host, gfx::Access::TransferWrite);
       },
-      [&](VkCommandBuffer cb, gfx::RenderGraph& g) {
+      [&](gfx::CommandList cb, gfx::RenderGraph& g) {
         for (u32 i = 0; i < k_shadow_blocks; ++i) {
           VkBufferImageCopy region{};
           region.bufferOffset = u64{k_size} * k_size * 4 * i;
           region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
           region.imageExtent = {k_size, k_size, 1};
-          vkCmdCopyImageToBuffer(cb, g.image(targets[i]).image, g.image_layout(targets[i]),
-                                 host_color.buffer, 1, &region);
+          vkCmdCopyImageToBuffer(gfx::vk::native(cb), gfx::vk::native(g.image(targets[i]).image),
+                                 gfx::vk::native(g.image_layout(targets[i])),
+                                 gfx::vk::native(host_color.buffer), 1, &region);
         }
       });
   REQUIRE_MESSAGE(graph.compile(&error), error);
-  VkCommandBuffer commands = frames.begin_frame();
+  gfx::CommandList commands = frames.begin_frame();
   graph.execute(commands);
   REQUIRE(frames.wait(frames.end_frame()));
 
@@ -909,7 +908,7 @@ TEST_CASE("material resolve: cascaded shadow maps against the geometry the raste
   REQUIRE(meshes[1].clusters.size() == 1);
   const u32 triangles_per_cluster = geometry::ClusterBuildOptions{}.max_triangles;
 
-  constexpr VkBufferUsageFlags k_storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+  constexpr gfx::BufferUsage k_storage = gfx::BufferUsage::Storage;
   gfx::BufferResource clusters[2];
   gfx::BufferResource triangles[2];
   gfx_test::SingleInstance scenes[2];
@@ -967,28 +966,27 @@ TEST_CASE("material resolve: cascaded shadow maps against the geometry the raste
   gfx::BindlessSet bindless;
   REQUIRE(bindless.create(device, gfx::BindlessConfig{}, &error));
   gfx::ImageResource atlas[k_maps];
-  VkImageView atlas_view[k_maps] = {};
+  gfx::ImageViewHandle atlas_view[k_maps] = {};
   u32 atlas_slot[k_maps] = {};
   for (u32 a = 0; a < k_maps; ++a) {
-    REQUIRE_MESSAGE(gfx::create_image_2d(
-                        device, k_map, k_map, VK_FORMAT_D32_SFLOAT,
-                        VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                        atlas[a], &error),
-                    error);
+    REQUIRE_MESSAGE(
+        gfx::create_image_2d(device, k_map, k_map, gfx::Format::D32Sfloat,
+                             gfx::ImageUsage::DepthStencilAttachment | gfx::ImageUsage::Sampled,
+                             atlas[a], &error),
+        error);
     REQUIRE_MESSAGE(gfx::create_image_view(device, atlas[a], atlas_view[a], &error), error);
-    atlas_slot[a] =
-        bindless.add_sampled_image(atlas_view[a], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    atlas_slot[a] = bindless.add_sampled_image(atlas_view[a], gfx::ImageLayout::ShaderReadOnly);
     REQUIRE(atlas_slot[a] != gfx::BindlessSet::k_invalid_slot);
   }
-  VkSampler point_sampler = VK_NULL_HANDLE;
-  REQUIRE(gfx::create_sampler(device, VK_FILTER_NEAREST, point_sampler, &error));
+  gfx::SamplerHandle point_sampler = {};
+  REQUIRE(gfx::create_sampler(device, gfx::Filter::Nearest, point_sampler, &error));
   const u32 sampler_slot = bindless.add_sampler(point_sampler);
   REQUIRE(sampler_slot != gfx::BindlessSet::k_invalid_slot);
 
   gfx::BufferResource map_params;
   REQUIRE(gfx::create_buffer(device, sizeof(gfx::ShadowMapParams) * k_maps,
-                             k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, true,
-                             map_params, &error));
+                             k_storage | gfx::BufferUsage::ShaderDeviceAddress, true, map_params,
+                             &error));
   auto* maps = static_cast<gfx::ShadowMapParams*>(map_params.mapped);
   u64 map_address[k_maps];
   for (u32 a = 0; a < k_maps; ++a) {
@@ -1018,8 +1016,8 @@ TEST_CASE("material resolve: cascaded shadow maps against the geometry the raste
   gfx::BufferResource vis;
   REQUIRE(gfx::create_buffer(
       device, vis_bytes,
-      k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-      false, vis, &error));
+      k_storage | gfx::BufferUsage::ShaderDeviceAddress | gfx::BufferUsage::TransferDst, false, vis,
+      &error));
   gfx::ResolveParams base{};
   base.sky = sky;
   base.sun = Vec4{sun_dir, 1.0f};
@@ -1060,10 +1058,10 @@ TEST_CASE("material resolve: cascaded shadow maps against the geometry the raste
   gfx::BufferResource params;
   gfx::BufferResource host_color;
   REQUIRE(gfx::create_buffer(device, sizeof(gfx::ResolveParams) * k_map_blocks,
-                             k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, true, params,
+                             k_storage | gfx::BufferUsage::ShaderDeviceAddress, true, params,
                              &error));
   REQUIRE(gfx::create_buffer(device, u64{k_size} * k_size * 4 * k_map_blocks,
-                             VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, host_color, &error));
+                             gfx::BufferUsage::TransferDst, true, host_color, &error));
   u64 block_address[k_map_blocks];
   for (u32 i = 0; i < k_map_blocks; ++i) {
     static_cast<gfx::ResolveParams*>(params.mapped)[i] = blocks[i];
@@ -1072,18 +1070,18 @@ TEST_CASE("material resolve: cascaded shadow maps against the geometry the raste
 
   gfx::FrameContext frames;
   REQUIRE(frames.create(device, 2, &error));
-  VkShaderModule resolve_module =
+  gfx::ShaderModuleHandle resolve_module =
       gfx::create_shader_module(device, shaders::k_visibility_resolve_spirv,
                                 shaders::k_visibility_resolve_spirv_size, &error);
-  REQUIRE(resolve_module != VK_NULL_HANDLE);
+  REQUIRE(resolve_module.valid());
   gfx::GraphicsPipelineDesc resolve_desc;
   resolve_desc.vertex = resolve_module;
   resolve_desc.vertex_entry = "vs_fullscreen";
   resolve_desc.fragment = resolve_module;
   resolve_desc.fragment_entry = "fs_resolve";
   resolve_desc.layout = bindless.pipeline_layout();
-  resolve_desc.color_format = VK_FORMAT_R8G8B8A8_UNORM;
-  VkPipeline resolve_pipeline = VK_NULL_HANDLE;
+  resolve_desc.color_format = gfx::Format::R8G8B8A8Unorm;
+  gfx::PipelineHandle resolve_pipeline = {};
   REQUIRE_MESSAGE(gfx::create_graphics_pipeline(device, resolve_desc, resolve_pipeline, &error),
                   error);
   gfx_test::ClusterRaster picture;  // the quad into the visibility buffer
@@ -1132,7 +1130,7 @@ TEST_CASE("material resolve: cascaded shadow maps against the geometry the raste
     }
     gfx_test::ClusterRaster depth;
     REQUIRE_MESSAGE(depth.create(device, path, bindless.pipeline_layout(), triangles_per_cluster,
-                                 &error, VK_FORMAT_D32_SFLOAT),
+                                 &error, gfx::Format::D32Sfloat),
                     error);
     gfx::RenderGraph graph(device);
     const gfx::RgBuffer rg_vis = graph.import_buffer("vis", vis);
@@ -1143,14 +1141,14 @@ TEST_CASE("material resolve: cascaded shadow maps against the geometry the raste
     gfx::RgImage targets[k_map_blocks];
     for (u32 i = 0; i < k_map_blocks; ++i) {
       targets[i] = graph.create_image(
-          "resolved", {k_size, k_size, VK_FORMAT_R8G8B8A8_UNORM,
-                       VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT});
+          "resolved", {k_size, k_size, gfx::Format::R8G8B8A8Unorm,
+                       gfx::ImageUsage::ColorAttachment | gfx::ImageUsage::TransferSrc});
     }
     graph.add_pass(
         "clear", gfx::PassKind::Transfer,
         [&](gfx::PassBuilder& b) { b.write(rg_vis, gfx::Access::TransferWrite); },
-        [&](VkCommandBuffer cb, gfx::RenderGraph&) {
-          vkCmdFillBuffer(cb, vis.buffer, 0, VK_WHOLE_SIZE, 0);
+        [&](gfx::CommandList cb, gfx::RenderGraph&) {
+          cb.fill_buffer(vis.buffer, 0, gfx::k_whole_size, 0);
         });
     graph.add_pass(
         "visibility", gfx::PassKind::Raster,
@@ -1158,14 +1156,14 @@ TEST_CASE("material resolve: cascaded shadow maps against the geometry the raste
           b.render_area(k_size, k_size);
           b.write(rg_vis, gfx::Access::FragmentReadWrite);
         },
-        [&](VkCommandBuffer cb, gfx::RenderGraph&) { picture.draw(cb, bindless, quad_draw, 1); });
+        [&](gfx::CommandList cb, gfx::RenderGraph&) { picture.draw(cb, bindless, quad_draw, 1); });
     for (u32 a = 0; a < k_maps; ++a) {
       graph.add_pass(
           "shadow map", gfx::PassKind::Raster,
           [&, a](gfx::PassBuilder& b) {
-            b.depth_attachment(rg_atlas[a], VK_ATTACHMENT_LOAD_OP_CLEAR, 0.0f);  // far is 0
+            b.depth_attachment(rg_atlas[a], gfx::LoadOp::Clear, 0.0f);  // far is 0
           },
-          [&, a](VkCommandBuffer cb, gfx::RenderGraph&) {
+          [&, a](gfx::CommandList cb, gfx::RenderGraph&) {
             const Mat4& light_vp = cascades[map_sun[a]].view_proj;
             depth.draw(cb, bindless, draw_of(0, light_vp, 0, k_map), 1);
             if (map_occluder[a]) depth.draw(cb, bindless, draw_of(1, light_vp, 0, k_map), 1);
@@ -1175,18 +1173,18 @@ TEST_CASE("material resolve: cascaded shadow maps against the geometry the raste
       graph.add_pass(
           "resolve", gfx::PassKind::Raster,
           [&, i](gfx::PassBuilder& b) {
-            VkClearColorValue clear{};
-            b.color_attachment(targets[i], VK_ATTACHMENT_LOAD_OP_CLEAR, clear);
+            gfx::ClearColor clear{};
+            b.color_attachment(targets[i], gfx::LoadOp::Clear, clear);
             b.read(rg_vis, gfx::Access::FragmentRead);
             for (u32 a = 0; a < k_maps; ++a)
               b.read(rg_atlas[a], gfx::Access::SampledRead);
           },
-          [&, i](VkCommandBuffer cb, gfx::RenderGraph&) {
-            vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, resolve_pipeline);
-            bindless.bind(cb, VK_PIPELINE_BIND_POINT_GRAPHICS);
-            vkCmdPushConstants(cb, bindless.pipeline_layout(), VK_SHADER_STAGE_ALL, 0, sizeof(u64),
-                               &block_address[i]);
-            vkCmdDraw(cb, 3, 1, 0, 0);
+          [&, i](gfx::CommandList cb, gfx::RenderGraph&) {
+            cb.bind_pipeline(gfx::BindPoint::Graphics, resolve_pipeline);
+            bindless.bind(cb, gfx::BindPoint::Graphics);
+            cb.push_constants(bindless.pipeline_layout(), gfx::ShaderStage::All, 0, sizeof(u64),
+                              &block_address[i]);
+            cb.draw(3, 1, 0, 0);
           });
     }
     graph.add_pass(
@@ -1196,18 +1194,19 @@ TEST_CASE("material resolve: cascaded shadow maps against the geometry the raste
             b.read(targets[i], gfx::Access::TransferRead);
           b.write(rg_host, gfx::Access::TransferWrite);
         },
-        [&](VkCommandBuffer cb, gfx::RenderGraph& g) {
+        [&](gfx::CommandList cb, gfx::RenderGraph& g) {
           for (u32 i = 0; i < k_map_blocks; ++i) {
             VkBufferImageCopy region{};
             region.bufferOffset = u64{k_size} * k_size * 4 * i;
             region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
             region.imageExtent = {k_size, k_size, 1};
-            vkCmdCopyImageToBuffer(cb, g.image(targets[i]).image, g.image_layout(targets[i]),
-                                   host_color.buffer, 1, &region);
+            vkCmdCopyImageToBuffer(gfx::vk::native(cb), gfx::vk::native(g.image(targets[i]).image),
+                                   gfx::vk::native(g.image_layout(targets[i])),
+                                   gfx::vk::native(host_color.buffer), 1, &region);
           }
         });
     REQUIRE_MESSAGE(graph.compile(&error), error);
-    VkCommandBuffer commands = frames.begin_frame();
+    gfx::CommandList commands = frames.begin_frame();
     graph.execute(commands);
     REQUIRE(frames.wait(frames.end_frame()));
     graph.reset();

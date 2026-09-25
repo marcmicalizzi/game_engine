@@ -11,6 +11,7 @@
 
 #include <domain/geometry/cluster_lod.h>
 #include <domain/gfx/acceleration.h>
+#include <domain/gfx/backend/vulkan/vulkan.h>
 #include <domain/gfx/bindless.h>
 #include <domain/gfx/cluster_acceleration.h>
 #include <domain/gfx/cluster_cull.h>
@@ -19,7 +20,6 @@
 #include <domain/gfx/gpu_timer.h>
 #include <domain/gfx/ray_visibility.h>
 #include <domain/gfx/render_graph.h>
-#include <domain/gfx/vulkan.h>
 
 #include <doctest/doctest.h>
 
@@ -141,8 +141,8 @@ void run_comparison(gfx::Device& device, u32 grid, f32 threshold_px, u32 k_w, u3
   REQUIRE(cut_count > 8);
 
   // Geometry on the GPU: positions once, 16-bit indices for the KHR builder, 8-bit ones for CLAS.
-  constexpr VkBufferUsageFlags k_storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-  constexpr VkBufferUsageFlags k_address = k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+  constexpr gfx::BufferUsage k_storage = gfx::BufferUsage::Storage;
+  constexpr gfx::BufferUsage k_address = k_storage | gfx::BufferUsage::ShaderDeviceAddress;
   Vector<u16> indices16;
   Vector<u8> indices8;
   Vector<u32> offset16;
@@ -247,28 +247,28 @@ void run_comparison(gfx::Device& device, u32 grid, f32 threshold_px, u32 k_w, u3
 
   // Frame A: the bottom-level builds, timed.
   {
-    VkCommandBuffer cb = frames.begin_frame();
+    gfx::CommandList cb = frames.begin_frame();
     timer.begin_frame(cb, frames.slot());
     timer.begin(cb, "khr blas");
     gfx::build_blas(cb, khr_blas, geometries, gfx::k_build_fast_trace, scratch);
     timer.end(cb);
-    gfx::acceleration_build_barrier(cb, VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
-                                    VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR |
-                                        VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR);
+    gfx::acceleration_build_barrier(cb, gfx::PipelineStage::AccelerationBuild,
+                                    gfx::MemoryAccess::AccelerationStructureRead |
+                                        gfx::MemoryAccess::AccelerationStructureWrite);
     timer.begin(cb, "clas");
     gfx::build_cluster_set(cb, set, records.address, 0, scratch);
     timer.end(cb);
-    gfx::acceleration_build_barrier(cb, VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
-                                    VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR |
-                                        VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR);
+    gfx::acceleration_build_barrier(cb, gfx::PipelineStage::AccelerationBuild,
+                                    gfx::MemoryAccess::AccelerationStructureRead |
+                                        gfx::MemoryAccess::AccelerationStructureWrite);
     timer.begin(cb, "cluster blas");
     gfx::build_cluster_blas(cb, cluster_blas, set.addresses.address, cut_count, scratch);
     timer.end(cb);
-    gfx::acceleration_build_barrier(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                                    VK_ACCESS_2_MEMORY_READ_BIT);
+    gfx::acceleration_build_barrier(cb, gfx::PipelineStage::AllCommands,
+                                    gfx::MemoryAccess::MemoryRead);
     REQUIRE(frames.wait(frames.end_frame()));
   }
-  const VkDeviceAddress cluster_blas_address = cluster_blas.address;
+  const gfx::DeviceAddress cluster_blas_address = cluster_blas.address;
   REQUIRE(cluster_blas_address != 0);
   u64 clas_bytes = 0;
   const auto* clas_sizes = static_cast<const u32*>(set.sizes.mapped);
@@ -298,29 +298,30 @@ void run_comparison(gfx::Device& device, u32 grid, f32 threshold_px, u32 k_w, u3
   REQUIRE(clas_scene != gfx::BindlessSet::k_invalid_slot);
 
   // Pipelines and buffers for the pictures.
-  VkShaderModule vertex_module = gfx::create_shader_module(
+  gfx::ShaderModuleHandle vertex_module = gfx::create_shader_module(
       device, shaders::k_cluster_vertex_spirv, shaders::k_cluster_vertex_spirv_size, &error);
-  VkShaderModule trace_module = gfx::create_shader_module(
+  gfx::ShaderModuleHandle trace_module = gfx::create_shader_module(
       device, shaders::k_ray_visibility_spirv, shaders::k_ray_visibility_spirv_size, &error);
-  REQUIRE(vertex_module != VK_NULL_HANDLE);
-  REQUIRE(trace_module != VK_NULL_HANDLE);
+  REQUIRE(vertex_module.valid());
+  REQUIRE(trace_module.valid());
   gfx::GraphicsPipelineDesc vertex_desc;
   vertex_desc.vertex = vertex_module;
   vertex_desc.vertex_entry = "vs_cluster";
   vertex_desc.fragment = vertex_module;
   vertex_desc.fragment_entry = "fs_visibility";
   vertex_desc.layout = bindless.pipeline_layout();
-  VkPipeline vertex_pipeline = VK_NULL_HANDLE;
+  gfx::PipelineHandle vertex_pipeline = {};
   REQUIRE(gfx::create_graphics_pipeline(device, vertex_desc, vertex_pipeline, &error));
-  const VkDescriptorSetLayout set_layout = bindless.layout();
+  const gfx::DescriptorSetLayoutHandle set_layout = bindless.layout();
   gfx::ComputePipeline trace_pipeline;
-  REQUIRE(gfx::create_compute_pipeline(device, trace_module, "trace_main",
-                                       std::span<const VkDescriptorSetLayout>(&set_layout, 1),
-                                       sizeof(u64), trace_pipeline, &error));
+  REQUIRE(
+      gfx::create_compute_pipeline(device, trace_module, "trace_main",
+                                   std::span<const gfx::DescriptorSetLayoutHandle>(&set_layout, 1),
+                                   sizeof(u64), trace_pipeline, &error));
 
   const u64 vis_bytes = u64{k_w} * k_h * sizeof(u64);
-  const VkBufferUsageFlags k_vis =
-      k_address | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+  const gfx::BufferUsage k_vis =
+      k_address | gfx::BufferUsage::TransferDst | gfx::BufferUsage::TransferSrc;
   gfx::BufferResource vis[3];  // raster, khr, clas
   gfx::BufferResource params[2];
   gfx::BufferResource host;
@@ -329,8 +330,8 @@ void run_comparison(gfx::Device& device, u32 grid, f32 threshold_px, u32 k_w, u3
   for (gfx::BufferResource& p : params)
     REQUIRE(
         gfx::create_buffer(device, sizeof(gfx::RayVisibilityParams), k_address, true, p, &error));
-  REQUIRE(gfx::create_buffer(device, vis_bytes * 3, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, host,
-                             &error));
+  REQUIRE(
+      gfx::create_buffer(device, vis_bytes * 3, gfx::BufferUsage::TransferDst, true, host, &error));
 
   gfx::ClusterDrawParams draw{};
   draw.view_proj = view_proj;
@@ -373,9 +374,9 @@ void run_comparison(gfx::Device& device, u32 grid, f32 threshold_px, u32 k_w, u3
         for (const gfx::RgBuffer& v : rg_vis)
           b.write(v, gfx::Access::TransferWrite);
       },
-      [&](VkCommandBuffer cb, gfx::RenderGraph&) {
+      [&](gfx::CommandList cb, gfx::RenderGraph&) {
         for (const gfx::BufferResource& v : vis)
-          vkCmdFillBuffer(cb, v.buffer, 0, VK_WHOLE_SIZE, 0);
+          cb.fill_buffer(v.buffer, 0, gfx::k_whole_size, 0);
       });
   graph.add_pass(
       "raster", gfx::PassKind::Raster,
@@ -383,27 +384,27 @@ void run_comparison(gfx::Device& device, u32 grid, f32 threshold_px, u32 k_w, u3
         b.render_area(k_w, k_h);
         b.write(rg_vis[0], gfx::Access::FragmentReadWrite);
       },
-      [&](VkCommandBuffer cb, gfx::RenderGraph&) {
+      [&](gfx::CommandList cb, gfx::RenderGraph&) {
         timer.begin(cb, "raster");
-        vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, vertex_pipeline);
-        bindless.bind(cb, VK_PIPELINE_BIND_POINT_GRAPHICS);
-        vkCmdPushConstants(cb, bindless.pipeline_layout(), VK_SHADER_STAGE_ALL, 0, sizeof(draw),
-                           &draw);
-        vkCmdDraw(cb, triangles_per_cluster * 3, cut_count, 0, 0);
+        cb.bind_pipeline(gfx::BindPoint::Graphics, vertex_pipeline);
+        bindless.bind(cb, gfx::BindPoint::Graphics);
+        cb.push_constants(bindless.pipeline_layout(), gfx::ShaderStage::All, 0, sizeof(draw),
+                          &draw);
+        cb.draw(triangles_per_cluster * 3, cut_count, 0, 0);
         timer.end(cb);
       });
   for (u32 p = 0; p < 2; ++p) {
     graph.add_pass(
         p == 0 ? "trace khr" : "trace clas", gfx::PassKind::Compute,
         [&, p](gfx::PassBuilder& b) { b.write(rg_vis[1 + p], gfx::Access::ComputeWrite); },
-        [&, p](VkCommandBuffer cb, gfx::RenderGraph&) {
+        [&, p](gfx::CommandList cb, gfx::RenderGraph&) {
           timer.begin(cb, p == 0 ? "trace khr" : "trace clas");
-          vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, trace_pipeline.pipeline);
-          bindless.bind(cb, VK_PIPELINE_BIND_POINT_COMPUTE);
-          vkCmdPushConstants(cb, trace_pipeline.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(u64),
-                             &params_address[p]);
-          vkCmdDispatch(cb, gfx::ray_visibility_group_count(k_w),
-                        gfx::ray_visibility_group_count(k_h), 1);
+          cb.bind_pipeline(gfx::BindPoint::Compute, trace_pipeline.pipeline);
+          bindless.bind(cb, gfx::BindPoint::Compute);
+          cb.push_constants(trace_pipeline.layout, gfx::ShaderStage::Compute, 0, sizeof(u64),
+                            &params_address[p]);
+          cb.dispatch(gfx::ray_visibility_group_count(k_w), gfx::ray_visibility_group_count(k_h),
+                      1);
           timer.end(cb);
         });
   }
@@ -414,10 +415,10 @@ void run_comparison(gfx::Device& device, u32 grid, f32 threshold_px, u32 k_w, u3
           b.read(v, gfx::Access::TransferRead);
         b.write(rg_host, gfx::Access::TransferWrite);
       },
-      [&](VkCommandBuffer cb, gfx::RenderGraph&) {
+      [&](gfx::CommandList cb, gfx::RenderGraph&) {
         for (u32 v = 0; v < 3; ++v) {
-          const VkBufferCopy copy{0, vis_bytes * v, vis_bytes};
-          vkCmdCopyBuffer(cb, vis[v].buffer, host.buffer, 1, &copy);
+          const gfx::BufferCopy copy{0, vis_bytes * v, vis_bytes};
+          cb.copy_buffer(vis[v].buffer, host.buffer, copy);
         }
       });
   REQUIRE_MESSAGE(graph.compile(&error), error);
@@ -427,7 +428,7 @@ void run_comparison(gfx::Device& device, u32 grid, f32 threshold_px, u32 k_w, u3
   f64 clas_ms = 0.0;
   f64 cluster_blas_ms = 0.0;
   {
-    VkCommandBuffer cb = frames.begin_frame();
+    gfx::CommandList cb = frames.begin_frame();
     timer.begin_frame(cb, frames.slot());
     khr_blas_ms = timer.ms("khr blas");
     clas_ms = timer.ms("clas");
@@ -435,20 +436,20 @@ void run_comparison(gfx::Device& device, u32 grid, f32 threshold_px, u32 k_w, u3
     timer.begin(cb, "tlas khr");
     gfx::build_tlas(cb, khr_tlas, khr_instances.address, 1, gfx::k_build_fast_trace, scratch);
     timer.end(cb);
-    gfx::acceleration_build_barrier(cb, VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
-                                    VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR |
-                                        VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR);
+    gfx::acceleration_build_barrier(cb, gfx::PipelineStage::AccelerationBuild,
+                                    gfx::MemoryAccess::AccelerationStructureRead |
+                                        gfx::MemoryAccess::AccelerationStructureWrite);
     timer.begin(cb, "tlas clas");
     gfx::build_tlas(cb, clas_tlas, clas_instances.address, 1, gfx::k_build_fast_trace, scratch);
     timer.end(cb);
-    gfx::acceleration_build_barrier(cb, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                                    VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR);
+    gfx::acceleration_build_barrier(cb, gfx::PipelineStage::ComputeShader,
+                                    gfx::MemoryAccess::AccelerationStructureRead);
     graph.execute(cb);
     REQUIRE(frames.wait(frames.end_frame()));
   }
   // Frame C: read frame B's timings.
   {
-    VkCommandBuffer cb = frames.begin_frame();
+    gfx::CommandList cb = frames.begin_frame();
     timer.begin_frame(cb, frames.slot());
     REQUIRE(frames.wait(frames.end_frame()));
   }

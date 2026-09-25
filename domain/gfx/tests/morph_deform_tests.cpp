@@ -26,11 +26,11 @@
 #include <domain/assets/gltf.h>
 #include <domain/geometry/cluster.h>
 #include <domain/geometry/stress_mesh.h>
+#include <domain/gfx/backend/vulkan/vulkan.h>
 #include <domain/gfx/cluster_cull.h>
 #include <domain/gfx/device.h>
 #include <domain/gfx/frame.h>
 #include <domain/gfx/render_graph.h>
-#include <domain/gfx/vulkan.h>
 
 #include <doctest/doctest.h>
 #include <test_paths.h>
@@ -46,8 +46,8 @@ using namespace engine::gfx::test_reference;
 
 namespace {
 
-constexpr VkBufferUsageFlags k_storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-constexpr VkBufferUsageFlags k_address = k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+constexpr gfx::BufferUsage k_storage = gfx::BufferUsage::Storage;
+constexpr gfx::BufferUsage k_address = k_storage | gfx::BufferUsage::ShaderDeviceAddress;
 
 // A sphere with a face-like rig: several channels, each touching a few percent of the vertices,
 // which is the shape the sparse cluster-ordered directory is designed for.
@@ -117,8 +117,8 @@ struct Harness {
 
     const u64 pool_bytes = u64{pool_vertices} * 3 * sizeof(f32);
     const u64 normal_bytes = u64{pool_vertices} * sizeof(u32);
-    const VkBufferUsageFlags k_readback =
-        k_address | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    const gfx::BufferUsage k_readback =
+        k_address | gfx::BufferUsage::TransferDst | gfx::BufferUsage::TransferSrc;
     if (!gfx::upload_buffer(device, mesh.clusters.data(),
                             mesh.clusters.size() * sizeof(geometry::ClusterDesc), k_storage,
                             clusters, error) ||
@@ -131,10 +131,9 @@ struct Harness {
         !gfx::create_buffer(device, normal_bytes, k_readback, false, normal_pool, error) ||
         !gfx::create_buffer(device, u64{pool_vertices} * sizeof(gfx::DeformCacheVertex), k_readback,
                             false, cache, error) ||
-        !gfx::create_buffer(device, pool_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, host,
+        !gfx::create_buffer(device, pool_bytes, gfx::BufferUsage::TransferDst, true, host, error) ||
+        !gfx::create_buffer(device, normal_bytes, gfx::BufferUsage::TransferDst, true, host_normals,
                             error) ||
-        !gfx::create_buffer(device, normal_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true,
-                            host_normals, error) ||
         !gfx::create_buffer(device, u64{weights.size()} * sizeof(f32), k_address, true,
                             weights_buffer, error) ||
         !gfx::create_buffer(device, sizeof(anim::JointMatrix) * 2, k_address, true, joints,
@@ -172,8 +171,7 @@ struct Harness {
     morph.slices = morph_slices.address;
     morph.indices = morph_indices.address;
     morph.deltas = morph_deltas.address;
-    morph.normal_deltas =
-        morph_normal_deltas.buffer != VK_NULL_HANDLE ? morph_normal_deltas.address : 0;
+    morph.normal_deltas = morph_normal_deltas.buffer.valid() ? morph_normal_deltas.address : 0;
     if (!gfx::upload_buffer(device, &morph, sizeof(morph), k_storage, morph_block, error))
       return false;
 
@@ -281,42 +279,41 @@ u32 run(const gfx::Device& device, Harness& harness, const gfx::ComputePipeline&
         const gfx::ComputePipeline& cache_pipeline, bool rebuild, Vector<Vec3>& positions,
         Vector<u32>& normals) {
   u32 cache_groups = 0;
-  gfx::submit_immediate(device, [&](VkCommandBuffer commands) {
+  gfx::submit_immediate(device, [&](gfx::CommandList commands) {
     if (rebuild) {
       gfx::DeformParams cache_params = harness.params();
       cache_params.visible_offset = 0;                          // the instance to rebuild
       cache_params.max_entries = harness.mesh.clusters.size();  // its mesh's cluster count
       cache_groups = harness.mesh.clusters.size();
-      vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, cache_pipeline.pipeline);
-      vkCmdPushConstants(commands, cache_pipeline.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                         sizeof(cache_params), &cache_params);
-      vkCmdDispatch(commands, cache_groups, 1, 1);
+      commands.bind_pipeline(gfx::BindPoint::Compute, cache_pipeline.pipeline);
+      commands.push_constants(cache_pipeline.layout, gfx::ShaderStage::Compute, 0,
+                              sizeof(cache_params), &cache_params);
+      commands.dispatch(cache_groups, 1, 1);
       VkMemoryBarrier barrier{};
       barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
       barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
       barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-      vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+      vkCmdPipelineBarrier(gfx::vk::native(commands), VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &barrier, 0, nullptr, 0,
                            nullptr);
     }
     const gfx::DeformParams params = harness.params();
-    vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, chain_pipeline.pipeline);
-    vkCmdPushConstants(commands, chain_pipeline.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                       sizeof(params), &params);
-    vkCmdDispatch(commands, harness.mesh.clusters.size(), 1, 1);
+    commands.bind_pipeline(gfx::BindPoint::Compute, chain_pipeline.pipeline);
+    commands.push_constants(chain_pipeline.layout, gfx::ShaderStage::Compute, 0, sizeof(params),
+                            &params);
+    commands.dispatch(harness.mesh.clusters.size(), 1, 1);
     VkMemoryBarrier barrier{};
     barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
     barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
     barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+    vkCmdPipelineBarrier(gfx::vk::native(commands), VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                          VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
-    VkBufferCopy copy{};
+    gfx::BufferCopy copy{};
     copy.size = u64{harness.pool_vertices} * 3 * sizeof(f32);
-    vkCmdCopyBuffer(commands, harness.pool.buffer, harness.host.buffer, 1, &copy);
-    VkBufferCopy normal_copy{};
+    commands.copy_buffer(harness.pool.buffer, harness.host.buffer, copy);
+    gfx::BufferCopy normal_copy{};
     normal_copy.size = u64{harness.pool_vertices} * sizeof(u32);
-    vkCmdCopyBuffer(commands, harness.normal_pool.buffer, harness.host_normals.buffer, 1,
-                    &normal_copy);
+    commands.copy_buffer(harness.normal_pool.buffer, harness.host_normals.buffer, normal_copy);
   });
   positions.resize(harness.pool_vertices);
   std::memcpy(positions.data(), harness.host.mapped, u64{harness.pool_vertices} * 3 * sizeof(f32));
@@ -359,9 +356,9 @@ TEST_CASE("deform chain: every stage and the whole chain match the CPU reference
   gfx::Device device;
   std::string error;
   if (!gfx_test::open_device(device)) return;
-  VkShaderModule module = gfx::create_shader_module(device, shaders::k_deform_spirv,
-                                                    shaders::k_deform_spirv_size, &error);
-  REQUIRE(module != VK_NULL_HANDLE);
+  gfx::ShaderModuleHandle module = gfx::create_shader_module(device, shaders::k_deform_spirv,
+                                                             shaders::k_deform_spirv_size, &error);
+  REQUIRE(module.valid());
   gfx::ComputePipeline chain_pipeline;
   gfx::ComputePipeline cache_pipeline;
   REQUIRE_MESSAGE(gfx::create_compute_pipeline(device, module, "deform_main", {},
@@ -552,9 +549,9 @@ TEST_CASE(
   gfx::Device device;
   std::string error;
   if (!gfx_test::open_device(device)) return;
-  VkShaderModule module = gfx::create_shader_module(device, shaders::k_deform_spirv,
-                                                    shaders::k_deform_spirv_size, &error);
-  REQUIRE(module != VK_NULL_HANDLE);
+  gfx::ShaderModuleHandle module = gfx::create_shader_module(device, shaders::k_deform_spirv,
+                                                             shaders::k_deform_spirv_size, &error);
+  REQUIRE(module.valid());
   gfx::ComputePipeline chain_pipeline;
   gfx::ComputePipeline cache_pipeline;
   REQUIRE_MESSAGE(gfx::create_compute_pipeline(device, module, "deform_main", {},

@@ -8,12 +8,12 @@
 #include "scene_fixture.h"
 
 #include <domain/geometry/cluster.h>
+#include <domain/gfx/backend/vulkan/vulkan.h>
 #include <domain/gfx/bindless.h>
 #include <domain/gfx/cluster_cull.h>
 #include <domain/gfx/device.h>
 #include <domain/gfx/frame.h>
 #include <domain/gfx/render_graph.h>
-#include <domain/gfx/vulkan.h>
 
 #include <doctest/doctest.h>
 
@@ -87,8 +87,8 @@ TEST_CASE("normal cones: the cull pass drops backfacing clusters without changin
   const u32 cluster_count = mesh.clusters.size();
   const u32 triangles_per_cluster = geometry::ClusterBuildOptions{}.max_triangles;
 
-  constexpr VkBufferUsageFlags k_storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-  constexpr VkBufferUsageFlags k_address = k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+  constexpr gfx::BufferUsage k_storage = gfx::BufferUsage::Storage;
+  constexpr gfx::BufferUsage k_address = k_storage | gfx::BufferUsage::ShaderDeviceAddress;
   gfx::BufferResource clusters;
   gfx::BufferResource triangles;
   gfx_test::SingleInstance scene;
@@ -118,11 +118,10 @@ TEST_CASE("normal cones: the cull pass drops backfacing clusters without changin
 
   const u64 vis_bytes = u64{k_size} * k_size * sizeof(u64);
   const u64 list_bytes = u64{cluster_count} * 2 * sizeof(u32);  // uint2 per entry
-  const VkBufferUsageFlags k_vis =
-      k_address | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-  const VkBufferUsageFlags k_args = k_address | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
-                                    VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                                    VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+  const gfx::BufferUsage k_vis =
+      k_address | gfx::BufferUsage::TransferDst | gfx::BufferUsage::TransferSrc;
+  const gfx::BufferUsage k_args = k_address | gfx::BufferUsage::Indirect |
+                                  gfx::BufferUsage::TransferDst | gfx::BufferUsage::TransferSrc;
   gfx::BufferResource vis[2];
   gfx::BufferResource visible[2];
   gfx::BufferResource args[2];
@@ -137,25 +136,25 @@ TEST_CASE("normal cones: the cull pass drops backfacing clusters without changin
   }
   const u64 host_bytes = vis_bytes * 2 + list_bytes * 2 + 32;
   REQUIRE(
-      gfx::create_buffer(device, host_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, host, &error));
+      gfx::create_buffer(device, host_bytes, gfx::BufferUsage::TransferDst, true, host, &error));
 
   gfx::FrameContext frames;
   REQUIRE(frames.create(device, 2, &error));
   gfx::BindlessSet bindless;
   REQUIRE(bindless.create(device, gfx::BindlessConfig{}, &error));
-  VkShaderModule vertex_module = gfx::create_shader_module(
+  gfx::ShaderModuleHandle vertex_module = gfx::create_shader_module(
       device, shaders::k_cluster_vertex_spirv, shaders::k_cluster_vertex_spirv_size, &error);
-  VkShaderModule cull_module = gfx::create_shader_module(
+  gfx::ShaderModuleHandle cull_module = gfx::create_shader_module(
       device, shaders::k_cluster_cull_spirv, shaders::k_cluster_cull_spirv_size, &error);
-  REQUIRE(vertex_module != VK_NULL_HANDLE);
-  REQUIRE(cull_module != VK_NULL_HANDLE);
+  REQUIRE(vertex_module.valid());
+  REQUIRE(cull_module.valid());
   gfx::GraphicsPipelineDesc vertex_desc;
   vertex_desc.vertex = vertex_module;
   vertex_desc.vertex_entry = "vs_cluster";
   vertex_desc.fragment = vertex_module;
   vertex_desc.fragment_entry = "fs_visibility";
   vertex_desc.layout = bindless.pipeline_layout();
-  VkPipeline vertex_pipeline = VK_NULL_HANDLE;
+  gfx::PipelineHandle vertex_pipeline = {};
   REQUIRE_MESSAGE(gfx::create_graphics_pipeline(device, vertex_desc, vertex_pipeline, &error),
                   error);
   gfx::ComputePipeline cull_pipeline;
@@ -216,11 +215,11 @@ TEST_CASE("normal cones: the cull pass drops backfacing clusters without changin
           b.write(rg_args[k], gfx::Access::TransferWrite);
         }
       },
-      [&](VkCommandBuffer cb, gfx::RenderGraph&) {
+      [&](gfx::CommandList cb, gfx::RenderGraph&) {
         for (u32 k = 0; k < 2; ++k) {
-          vkCmdFillBuffer(cb, vis[k].buffer, 0, VK_WHOLE_SIZE, 0);
-          vkCmdFillBuffer(cb, args[k].buffer, 0, 4, triangles_per_cluster * 3);  // vertexCount
-          vkCmdFillBuffer(cb, args[k].buffer, 4, 12, 0);  // instanceCount, first vertex, instance
+          cb.fill_buffer(vis[k].buffer, 0, gfx::k_whole_size, 0);
+          cb.fill_buffer(args[k].buffer, 0, 4, triangles_per_cluster * 3);  // vertexCount
+          cb.fill_buffer(args[k].buffer, 4, 12, 0);  // instanceCount, first vertex, instance
         }
       });
   for (u32 k = 0; k < 2; ++k) {
@@ -230,11 +229,11 @@ TEST_CASE("normal cones: the cull pass drops backfacing clusters without changin
           b.write(rg_args[k], gfx::Access::ComputeReadWrite);
           b.write(rg_visible[k], gfx::Access::ComputeWrite);
         },
-        [&, k](VkCommandBuffer cb, gfx::RenderGraph&) {
-          vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, cull_pipeline.pipeline);
-          vkCmdPushConstants(cb, cull_pipeline.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(u64),
-                             &params_address[k]);
-          vkCmdDispatch(cb, gfx::cull_group_count(cluster_count), 1, 1);
+        [&, k](gfx::CommandList cb, gfx::RenderGraph&) {
+          cb.bind_pipeline(gfx::BindPoint::Compute, cull_pipeline.pipeline);
+          cb.push_constants(cull_pipeline.layout, gfx::ShaderStage::Compute, 0, sizeof(u64),
+                            &params_address[k]);
+          cb.dispatch(gfx::cull_group_count(cluster_count), 1, 1);
         });
     graph.add_pass(
         k == 0 ? "draw off" : "draw on", gfx::PassKind::Raster,
@@ -244,12 +243,12 @@ TEST_CASE("normal cones: the cull pass drops backfacing clusters without changin
           b.read(rg_args[k], gfx::Access::IndirectRead);
           b.read(rg_visible[k], gfx::Access::VertexRead);
         },
-        [&, k](VkCommandBuffer cb, gfx::RenderGraph&) {
-          vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, vertex_pipeline);
-          bindless.bind(cb, VK_PIPELINE_BIND_POINT_GRAPHICS);
-          vkCmdPushConstants(cb, bindless.pipeline_layout(), VK_SHADER_STAGE_ALL, 0,
-                             sizeof(draws[k]), &draws[k]);
-          vkCmdDrawIndirect(cb, args[k].buffer, 0, 1, sizeof(u32) * 4);
+        [&, k](gfx::CommandList cb, gfx::RenderGraph&) {
+          cb.bind_pipeline(gfx::BindPoint::Graphics, vertex_pipeline);
+          bindless.bind(cb, gfx::BindPoint::Graphics);
+          cb.push_constants(bindless.pipeline_layout(), gfx::ShaderStage::All, 0, sizeof(draws[k]),
+                            &draws[k]);
+          cb.draw_indirect(args[k].buffer, 0, 1, sizeof(u32) * 4);
         });
   }
   graph.add_pass(
@@ -262,18 +261,18 @@ TEST_CASE("normal cones: the cull pass drops backfacing clusters without changin
         }
         b.write(rg_host, gfx::Access::TransferWrite);
       },
-      [&](VkCommandBuffer cb, gfx::RenderGraph&) {
+      [&](gfx::CommandList cb, gfx::RenderGraph&) {
         for (u32 k = 0; k < 2; ++k) {
-          const VkBufferCopy vis_copy{0, vis_bytes * k, vis_bytes};
-          const VkBufferCopy list_copy{0, vis_bytes * 2 + list_bytes * k, list_bytes};
-          const VkBufferCopy args_copy{0, vis_bytes * 2 + list_bytes * 2 + 16 * k, 16};
-          vkCmdCopyBuffer(cb, vis[k].buffer, host.buffer, 1, &vis_copy);
-          vkCmdCopyBuffer(cb, visible[k].buffer, host.buffer, 1, &list_copy);
-          vkCmdCopyBuffer(cb, args[k].buffer, host.buffer, 1, &args_copy);
+          const gfx::BufferCopy vis_copy{0, vis_bytes * k, vis_bytes};
+          const gfx::BufferCopy list_copy{0, vis_bytes * 2 + list_bytes * k, list_bytes};
+          const gfx::BufferCopy args_copy{0, vis_bytes * 2 + list_bytes * 2 + 16 * k, 16};
+          cb.copy_buffer(vis[k].buffer, host.buffer, vis_copy);
+          cb.copy_buffer(visible[k].buffer, host.buffer, list_copy);
+          cb.copy_buffer(args[k].buffer, host.buffer, args_copy);
         }
       });
   REQUIRE_MESSAGE(graph.compile(&error), error);
-  VkCommandBuffer commands = frames.begin_frame();
+  gfx::CommandList commands = frames.begin_frame();
   graph.execute(commands);
   REQUIRE(frames.wait(frames.end_frame()));
 

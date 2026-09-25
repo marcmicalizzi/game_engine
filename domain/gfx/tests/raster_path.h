@@ -38,11 +38,11 @@
 // of `requirements_tests.cpp` — build their own options and ignore the variable.
 
 #include <core/base/types.h>
+#include <domain/gfx/backend/vulkan/vulkan.h>
 #include <domain/gfx/bindless.h>
 #include <domain/gfx/cluster_cull.h>
 #include <domain/gfx/device.h>
 #include <domain/gfx/render_graph.h>
-#include <domain/gfx/vulkan.h>
 
 #include <doctest/doctest.h>
 #include <test_paths.h>
@@ -210,27 +210,27 @@ class ClusterRaster {
   // capacity (`ClusterBuildOptions::max_triangles`, `ClusterLodOptions::max_triangles`): the
   // vertex path draws three vertices of it per cluster and collapses the ones past the cluster's
   // own count; the mesh path ignores it.
-  bool create(const gfx::Device& device, VkPipelineLayout layout, u32 triangles_per_cluster,
-              std::string* error) {
+  bool create(const gfx::Device& device, gfx::PipelineLayoutHandle layout,
+              u32 triangles_per_cluster, std::string* error) {
     return create(device, raster_path(device.features()), layout, triangles_per_cluster, error);
   }
 
   // A named path, for a case that compares the two. `depth_format` other than undefined builds
   // the same geometry stage **depth-only** — no fragment stage, depth tested and written
   // greater-or-equal (reversed) — which is how the renderer draws a shadow map's cascades.
-  bool create(const gfx::Device& device, RasterPath path, VkPipelineLayout layout,
+  bool create(const gfx::Device& device, RasterPath path, gfx::PipelineLayoutHandle layout,
               u32 triangles_per_cluster, std::string* error,
-              VkFormat depth_format = VK_FORMAT_UNDEFINED) {
+              gfx::Format depth_format = gfx::Format::Undefined) {
     path_ = path;
     triangles_per_cluster_ = triangles_per_cluster;
-    const bool depth_only = depth_format != VK_FORMAT_UNDEFINED;
+    const bool depth_only = depth_format != gfx::Format::Undefined;
     if (path == RasterPath::Mesh) {
       module_ = gfx::create_shader_module(device, shaders::k_cluster_mesh_spirv,
                                           shaders::k_cluster_mesh_spirv_size, error);
-      if (module_ == VK_NULL_HANDLE) return false;
+      if (!module_.valid()) return false;
       gfx::MeshPipelineDesc desc;
       desc.mesh = module_;
-      desc.fragment = depth_only ? VK_NULL_HANDLE : module_;
+      desc.fragment = depth_only ? gfx::ShaderModuleHandle{} : module_;
       desc.fragment_entry = "fs_visibility";
       desc.layout = layout;
       desc.depth_format = depth_format;
@@ -240,11 +240,11 @@ class ClusterRaster {
     }
     module_ = gfx::create_shader_module(device, shaders::k_cluster_vertex_spirv,
                                         shaders::k_cluster_vertex_spirv_size, error);
-    if (module_ == VK_NULL_HANDLE) return false;
+    if (!module_.valid()) return false;
     gfx::GraphicsPipelineDesc desc;
     desc.vertex = module_;
     desc.vertex_entry = "vs_cluster";
-    desc.fragment = depth_only ? VK_NULL_HANDLE : module_;
+    desc.fragment = depth_only ? gfx::ShaderModuleHandle{} : module_;
     desc.fragment_entry = "fs_visibility";
     desc.layout = layout;
     desc.depth_format = depth_format;
@@ -254,10 +254,10 @@ class ClusterRaster {
   }
 
   void destroy(const gfx::Device& device) noexcept {
-    if (pipeline_ != VK_NULL_HANDLE) gfx::destroy_pipeline(device, pipeline_);
-    if (module_ != VK_NULL_HANDLE) gfx::destroy_shader_module(device, module_);
-    pipeline_ = VK_NULL_HANDLE;
-    module_ = VK_NULL_HANDLE;
+    if (pipeline_.valid()) gfx::destroy_pipeline(device, pipeline_);
+    if (module_.valid()) gfx::destroy_shader_module(device, module_);
+    pipeline_ = {};
+    module_ = {};
   }
 
   RasterPath path() const noexcept { return path_; }
@@ -278,26 +278,26 @@ class ClusterRaster {
   // Records the reset of the argument block at `offset` of `args` to what the cull pass counts
   // into: {0, 1, 1} for vkCmdDrawMeshTasksIndirectEXT, {3 x triangles_per_cluster, 0, 0, 0} for
   // vkCmdDrawIndirect. A block is `gfx::k_draw_args_bytes` (16), which holds either.
-  void reset_args(VkCommandBuffer commands, VkBuffer args, VkDeviceSize offset = 0) const {
+  void reset_args(gfx::CommandList commands, gfx::BufferHandle args, u64 offset = 0) const {
     if (path_ == RasterPath::Mesh) {
-      vkCmdFillBuffer(commands, args, offset, sizeof(u32), 0);
-      vkCmdFillBuffer(commands, args, offset + sizeof(u32), sizeof(u32) * 2, 1);
+      commands.fill_buffer(args, offset, sizeof(u32), 0);
+      commands.fill_buffer(args, offset + sizeof(u32), sizeof(u32) * 2, 1);
     } else {
-      vkCmdFillBuffer(commands, args, offset, sizeof(u32), triangles_per_cluster_ * 3);
-      vkCmdFillBuffer(commands, args, offset + sizeof(u32), sizeof(u32) * 3, 0);
+      commands.fill_buffer(args, offset, sizeof(u32), triangles_per_cluster_ * 3);
+      commands.fill_buffer(args, offset + sizeof(u32), sizeof(u32) * 3, 0);
     }
   }
 
   // Binds the pipeline and the bindless set, pushes `params` with `triangles_per_cluster` filled
   // in, and draws `entries` entries of `params.visible` (clusters 0..entries-1 when it is null):
   // one mesh workgroup, or one vertex instance, per entry.
-  void draw(VkCommandBuffer commands, const gfx::BindlessSet& bindless,
+  void draw(gfx::CommandList commands, const gfx::BindlessSet& bindless,
             gfx::ClusterDrawParams params, u32 entries) const {
     bind(commands, bindless, params);
     if (path_ == RasterPath::Mesh) {
-      vkCmdDrawMeshTasksEXT(commands, entries, 1, 1);
+      commands.draw_mesh_tasks(entries, 1, 1);
     } else {
-      vkCmdDraw(commands, triangles_per_cluster_ * 3, entries, 0, 0);
+      commands.draw(triangles_per_cluster_ * 3, entries, 0, 0);
     }
   }
 
@@ -306,28 +306,28 @@ class ClusterRaster {
   // off or without geometryShader; its culled draw elsewhere is indexed (gfx::VertexDrawHeader),
   // and vertex_path_tests.cpp holds the two to one picture, so a case here about the cut or the
   // picture is answered the same by either.
-  void draw_indirect(VkCommandBuffer commands, const gfx::BindlessSet& bindless,
-                     gfx::ClusterDrawParams params, VkBuffer args, VkDeviceSize offset = 0) const {
+  void draw_indirect(gfx::CommandList commands, const gfx::BindlessSet& bindless,
+                     gfx::ClusterDrawParams params, gfx::BufferHandle args, u64 offset = 0) const {
     bind(commands, bindless, params);
     if (path_ == RasterPath::Mesh) {
-      vkCmdDrawMeshTasksIndirectEXT(commands, args, offset, 1, sizeof(u32) * 3);
+      commands.draw_mesh_tasks_indirect(args, offset, 1, sizeof(u32) * 3);
     } else {
-      vkCmdDrawIndirect(commands, args, offset, 1, sizeof(u32) * 4);
+      commands.draw_indirect(args, offset, 1, sizeof(u32) * 4);
     }
   }
 
  private:
-  void bind(VkCommandBuffer commands, const gfx::BindlessSet& bindless,
+  void bind(gfx::CommandList commands, const gfx::BindlessSet& bindless,
             gfx::ClusterDrawParams& params) const {
     params.triangles_per_cluster = triangles_per_cluster_;
-    vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
-    bindless.bind(commands, VK_PIPELINE_BIND_POINT_GRAPHICS);
-    vkCmdPushConstants(commands, bindless.pipeline_layout(), VK_SHADER_STAGE_ALL, 0, sizeof(params),
-                       &params);
+    commands.bind_pipeline(gfx::BindPoint::Graphics, pipeline_);
+    bindless.bind(commands, gfx::BindPoint::Graphics);
+    commands.push_constants(bindless.pipeline_layout(), gfx::ShaderStage::All, 0, sizeof(params),
+                            &params);
   }
 
-  VkShaderModule module_ = VK_NULL_HANDLE;
-  VkPipeline pipeline_ = VK_NULL_HANDLE;
+  gfx::ShaderModuleHandle module_ = {};
+  gfx::PipelineHandle pipeline_ = {};
   RasterPath path_ = RasterPath::Vertex;
   u32 triangles_per_cluster_ = 0;
 };

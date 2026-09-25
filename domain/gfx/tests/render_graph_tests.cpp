@@ -3,10 +3,10 @@
 // back, and the validation of a read without a producer.
 #include "raster_path.h"
 
+#include <domain/gfx/backend/vulkan/vulkan.h>
 #include <domain/gfx/device.h>
 #include <domain/gfx/frame.h>
 #include <domain/gfx/render_graph.h>
-#include <domain/gfx/vulkan.h>
 
 #include <doctest/doctest.h>
 
@@ -25,7 +25,7 @@ struct StorageSet {
   VkDescriptorPool pool = VK_NULL_HANDLE;
   VkDescriptorSet set = VK_NULL_HANDLE;
 
-  bool create(const gfx::Device& device, std::span<const VkBuffer> buffers) {
+  bool create(const gfx::Device& device, std::span<const gfx::BufferHandle> buffers) {
     const gfx::Handles& h = device.handles();
     Vector<VkDescriptorSetLayoutBinding> bindings;
     for (u32 i = 0; i < buffers.size(); ++i) {
@@ -58,7 +58,7 @@ struct StorageSet {
     Vector<VkDescriptorBufferInfo> infos;
     Vector<VkWriteDescriptorSet> writes;
     for (u32 i = 0; i < buffers.size(); ++i)
-      infos.push_back(VkDescriptorBufferInfo{buffers[i], 0, VK_WHOLE_SIZE});
+      infos.push_back(VkDescriptorBufferInfo{gfx::vk::native(buffers[i]), 0, VK_WHOLE_SIZE});
     for (u32 i = 0; i < buffers.size(); ++i) {
       VkWriteDescriptorSet w{};
       w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -103,22 +103,20 @@ TEST_CASE("render graph: compute passes chained through a transient buffer") {
   REQUIRE(frames.create(device, 2, &error));
   gfx::BufferResource output;
   REQUIRE(gfx::create_buffer(device, bytes,
-                             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                             false, output, &error));
+                             gfx::BufferUsage::Storage | gfx::BufferUsage::TransferSrc, false,
+                             output, &error));
   gfx::BufferResource readback;
-  REQUIRE(
-      gfx::create_buffer(device, bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, readback, &error));
+  REQUIRE(gfx::create_buffer(device, bytes, gfx::BufferUsage::TransferDst, true, readback, &error));
 
-  VkShaderModule fill_module =
+  gfx::ShaderModuleHandle fill_module =
       gfx::create_shader_module(device, shaders::k_fill_spirv, shaders::k_fill_spirv_size, &error);
-  VkShaderModule scale_module = gfx::create_shader_module(device, shaders::k_scale_spirv,
-                                                          shaders::k_scale_spirv_size, &error);
-  REQUIRE(fill_module != VK_NULL_HANDLE);
-  REQUIRE(scale_module != VK_NULL_HANDLE);
+  gfx::ShaderModuleHandle scale_module = gfx::create_shader_module(
+      device, shaders::k_scale_spirv, shaders::k_scale_spirv_size, &error);
+  REQUIRE(fill_module.valid());
+  REQUIRE(scale_module.valid());
 
   gfx::RenderGraph graph(device);
-  const gfx::RgBuffer temp =
-      graph.create_buffer("temp", {bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, false});
+  const gfx::RgBuffer temp = graph.create_buffer("temp", {bytes, gfx::BufferUsage::Storage, false});
   const gfx::RgBuffer out = graph.import_buffer("out", output);
   const gfx::RgBuffer host = graph.import_buffer("readback", readback);
 
@@ -132,14 +130,15 @@ TEST_CASE("render graph: compute passes chained through a transient buffer") {
   graph.add_pass(
       "fill", gfx::PassKind::Compute,
       [&](gfx::PassBuilder& b) { b.write(temp, gfx::Access::ComputeWrite); },
-      [&](VkCommandBuffer commands, gfx::RenderGraph&) {
+      [&](gfx::CommandList commands, gfx::RenderGraph&) {
         const FillParams params{k_count, 3, 1};
-        vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, fill_pipeline.pipeline);
-        vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_COMPUTE, fill_pipeline.layout, 0,
-                                1, &fill_set.set, 0, nullptr);
-        vkCmdPushConstants(commands, fill_pipeline.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                           sizeof(params), &params);
-        vkCmdDispatch(commands, (k_count + 63) / 64, 1, 1);
+        commands.bind_pipeline(gfx::BindPoint::Compute, fill_pipeline.pipeline);
+        vkCmdBindDescriptorSets(gfx::vk::native(commands), VK_PIPELINE_BIND_POINT_COMPUTE,
+                                gfx::vk::native(fill_pipeline.layout), 0, 1, &fill_set.set, 0,
+                                nullptr);
+        commands.push_constants(fill_pipeline.layout, gfx::ShaderStage::Compute, 0, sizeof(params),
+                                &params);
+        commands.dispatch((k_count + 63) / 64, 1, 1);
       });
   graph.add_pass(
       "scale", gfx::PassKind::Compute,
@@ -147,14 +146,15 @@ TEST_CASE("render graph: compute passes chained through a transient buffer") {
         b.read(temp, gfx::Access::ComputeRead);
         b.write(out, gfx::Access::ComputeWrite);
       },
-      [&](VkCommandBuffer commands, gfx::RenderGraph&) {
+      [&](gfx::CommandList commands, gfx::RenderGraph&) {
         const ScaleParams params{k_count, 2};
-        vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, scale_pipeline.pipeline);
-        vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_COMPUTE, scale_pipeline.layout, 0,
-                                1, &scale_set.set, 0, nullptr);
-        vkCmdPushConstants(commands, scale_pipeline.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                           sizeof(params), &params);
-        vkCmdDispatch(commands, (k_count + 63) / 64, 1, 1);
+        commands.bind_pipeline(gfx::BindPoint::Compute, scale_pipeline.pipeline);
+        vkCmdBindDescriptorSets(gfx::vk::native(commands), VK_PIPELINE_BIND_POINT_COMPUTE,
+                                gfx::vk::native(scale_pipeline.layout), 0, 1, &scale_set.set, 0,
+                                nullptr);
+        commands.push_constants(scale_pipeline.layout, gfx::ShaderStage::Compute, 0, sizeof(params),
+                                &params);
+        commands.dispatch((k_count + 63) / 64, 1, 1);
       });
   graph.add_pass(
       "readback", gfx::PassKind::Transfer,
@@ -162,9 +162,9 @@ TEST_CASE("render graph: compute passes chained through a transient buffer") {
         b.read(out, gfx::Access::TransferRead);
         b.write(host, gfx::Access::TransferWrite);
       },
-      [&](VkCommandBuffer commands, gfx::RenderGraph& g) {
-        VkBufferCopy copy{0, 0, bytes};
-        vkCmdCopyBuffer(commands, g.buffer(out).buffer, g.buffer(host).buffer, 1, &copy);
+      [&](gfx::CommandList commands, gfx::RenderGraph& g) {
+        gfx::BufferCopy copy{0, 0, bytes};
+        commands.copy_buffer(g.buffer(out).buffer, g.buffer(host).buffer, copy);
       });
 
   REQUIRE_MESSAGE(graph.compile(&error), error);
@@ -176,22 +176,22 @@ TEST_CASE("render graph: compute passes chained through a transient buffer") {
   // (0). readback: out was written (1), host has no history (0). Total 2.
   CHECK(s.buffer_barriers == 2);
   CHECK(s.image_barriers == 0);
-  CHECK(graph.buffer(temp).buffer != VK_NULL_HANDLE);
+  CHECK(graph.buffer(temp).buffer.valid());
   CHECK(graph.buffer(temp).size == bytes);
 
-  const VkBuffer fill_buffers[] = {graph.buffer(temp).buffer};
+  const gfx::BufferHandle fill_buffers[] = {graph.buffer(temp).buffer};
   REQUIRE(fill_set.create(device, fill_buffers));
-  const VkBuffer scale_buffers[] = {graph.buffer(temp).buffer, output.buffer};
+  const gfx::BufferHandle scale_buffers[] = {graph.buffer(temp).buffer, output.buffer};
   REQUIRE(scale_set.create(device, scale_buffers));
-  const VkDescriptorSetLayout fill_layouts[] = {fill_set.layout};
-  const VkDescriptorSetLayout scale_layouts[] = {scale_set.layout};
+  const gfx::DescriptorSetLayoutHandle fill_layouts[] = {gfx::vk::wrap(fill_set.layout)};
+  const gfx::DescriptorSetLayoutHandle scale_layouts[] = {gfx::vk::wrap(scale_set.layout)};
   REQUIRE(gfx::create_compute_pipeline(device, fill_module, "fill", fill_layouts,
                                        sizeof(FillParams), fill_pipeline, &error));
   REQUIRE(gfx::create_compute_pipeline(device, scale_module, "scale", scale_layouts,
                                        sizeof(ScaleParams), scale_pipeline, &error));
 
   std::memset(readback.mapped, 0, static_cast<usize>(bytes));
-  VkCommandBuffer commands = frames.begin_frame();
+  gfx::CommandList commands = frames.begin_frame();
   graph.execute(commands);
   const u64 value = frames.end_frame();
   REQUIRE(frames.wait(value));
@@ -228,34 +228,33 @@ TEST_CASE("render graph: image layouts follow declared accesses") {
   constexpr u32 k_size = 32;
   const u64 bytes = u64{k_size} * k_size * 4;
   gfx::BufferResource readback;
-  REQUIRE(
-      gfx::create_buffer(device, bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, readback, &error));
+  REQUIRE(gfx::create_buffer(device, bytes, gfx::BufferUsage::TransferDst, true, readback, &error));
   gfx::ImageResource persistent;
-  REQUIRE(gfx::create_image_2d(device, k_size, k_size, VK_FORMAT_R8G8B8A8_UNORM,
-                               VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+  REQUIRE(gfx::create_image_2d(device, k_size, k_size, gfx::Format::R8G8B8A8Unorm,
+                               gfx::ImageUsage::TransferDst | gfx::ImageUsage::TransferSrc,
                                persistent, &error));
 
   gfx::RenderGraph graph(device);
-  const gfx::RgImage scratch = graph.create_image(
-      "scratch", {k_size, k_size, VK_FORMAT_R8G8B8A8_UNORM,
-                  VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT});
+  const gfx::RgImage scratch =
+      graph.create_image("scratch", {k_size, k_size, gfx::Format::R8G8B8A8Unorm,
+                                     gfx::ImageUsage::TransferDst | gfx::ImageUsage::TransferSrc});
   const gfx::RgImage imported =
-      graph.import_image("persistent", persistent, VK_IMAGE_LAYOUT_UNDEFINED);
+      graph.import_image("persistent", persistent, gfx::ImageLayout::Undefined);
   const gfx::RgBuffer host = graph.import_buffer("readback", readback);
-  VkImageLayout seen_in_clear = VK_IMAGE_LAYOUT_UNDEFINED;
-  VkImageLayout seen_in_copy = VK_IMAGE_LAYOUT_UNDEFINED;
+  gfx::ImageLayout seen_in_clear = gfx::ImageLayout::Undefined;
+  gfx::ImageLayout seen_in_copy = gfx::ImageLayout::Undefined;
 
   graph.add_pass(
       "clear", gfx::PassKind::Transfer,
       [&](gfx::PassBuilder& b) { b.write(scratch, gfx::Access::TransferWrite); },
-      [&](VkCommandBuffer commands, gfx::RenderGraph& g) {
+      [&](gfx::CommandList commands, gfx::RenderGraph& g) {
         seen_in_clear = g.image_layout(scratch);
         VkClearColorValue color{};
         color.float32[0] = 1.0f;
         color.float32[3] = 1.0f;
         const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-        vkCmdClearColorImage(commands, g.image(scratch).image, g.image_layout(scratch), &color, 1,
-                             &range);
+        vkCmdClearColorImage(gfx::vk::native(commands), gfx::vk::native(g.image(scratch).image),
+                             gfx::vk::native(g.image_layout(scratch)), &color, 1, &range);
       });
   graph.add_pass(
       "blit", gfx::PassKind::Transfer,
@@ -263,14 +262,16 @@ TEST_CASE("render graph: image layouts follow declared accesses") {
         b.read(scratch, gfx::Access::TransferRead);
         b.write(imported, gfx::Access::TransferWrite);
       },
-      [&](VkCommandBuffer commands, gfx::RenderGraph& g) {
+      [&](gfx::CommandList commands, gfx::RenderGraph& g) {
         seen_in_copy = g.image_layout(scratch);
         VkImageCopy region{};
         region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
         region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
         region.extent = {k_size, k_size, 1};
-        vkCmdCopyImage(commands, g.image(scratch).image, g.image_layout(scratch),
-                       g.image(imported).image, g.image_layout(imported), 1, &region);
+        vkCmdCopyImage(gfx::vk::native(commands), gfx::vk::native(g.image(scratch).image),
+                       gfx::vk::native(g.image_layout(scratch)),
+                       gfx::vk::native(g.image(imported).image),
+                       gfx::vk::native(g.image_layout(imported)), 1, &region);
       });
   graph.add_pass(
       "readback", gfx::PassKind::Transfer,
@@ -278,12 +279,13 @@ TEST_CASE("render graph: image layouts follow declared accesses") {
         b.read(imported, gfx::Access::TransferRead);
         b.write(host, gfx::Access::TransferWrite);
       },
-      [&](VkCommandBuffer commands, gfx::RenderGraph& g) {
+      [&](gfx::CommandList commands, gfx::RenderGraph& g) {
         VkBufferImageCopy region{};
         region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
         region.imageExtent = {k_size, k_size, 1};
-        vkCmdCopyImageToBuffer(commands, g.image(imported).image, g.image_layout(imported),
-                               g.buffer(host).buffer, 1, &region);
+        vkCmdCopyImageToBuffer(gfx::vk::native(commands), gfx::vk::native(g.image(imported).image),
+                               gfx::vk::native(g.image_layout(imported)),
+                               gfx::vk::native(g.buffer(host).buffer), 1, &region);
       });
   REQUIRE_MESSAGE(graph.compile(&error), error);
   const auto& s = graph.stats();
@@ -295,10 +297,10 @@ TEST_CASE("render graph: image layouts follow declared accesses") {
   CHECK(s.buffer_barriers == 0);
 
   REQUIRE(gfx::submit_immediate(
-      device, [&](VkCommandBuffer commands) { graph.execute(commands); }, &error));
-  CHECK(seen_in_clear == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-  CHECK(seen_in_copy == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-  CHECK(graph.final_layout(imported) == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+      device, [&](gfx::CommandList commands) { graph.execute(commands); }, &error));
+  CHECK(seen_in_clear == gfx::ImageLayout::TransferDst);
+  CHECK(seen_in_copy == gfx::ImageLayout::TransferSrc);
+  CHECK(graph.final_layout(imported) == gfx::ImageLayout::TransferSrc);
   const auto* pixels = static_cast<const u8*>(readback.mapped);
   u32 wrong = 0;
   for (u32 i = 0; i < k_size * k_size; ++i) {
@@ -309,12 +311,12 @@ TEST_CASE("render graph: image layouts follow declared accesses") {
   // The final layout feeds the next graph's import so the first barrier is exact.
   graph.reset();
   const gfx::RgImage again =
-      graph.import_image("persistent", persistent, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                         VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+      graph.import_image("persistent", persistent, gfx::ImageLayout::TransferSrc,
+                         gfx::PipelineStage::AllTransfer, gfx::MemoryAccess::TransferRead);
   graph.add_pass(
       "read again", gfx::PassKind::Transfer,
       [&](gfx::PassBuilder& b) { b.read(again, gfx::Access::TransferRead); },
-      [&](VkCommandBuffer, gfx::RenderGraph&) {});
+      [&](gfx::CommandList, gfx::RenderGraph&) {});
   REQUIRE(graph.compile(&error));
   // Same layout, read after read: a barrier is still emitted because an import's history is
   // treated as a write, but no layout transition.
@@ -332,11 +334,11 @@ TEST_CASE("render graph: a read without a producer is rejected at compile") {
   if (!gfx_test::open_device(device)) return;
   gfx::RenderGraph graph(device);
   const gfx::RgBuffer orphan =
-      graph.create_buffer("orphan", {256, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, false});
+      graph.create_buffer("orphan", {256, gfx::BufferUsage::Storage, false});
   graph.add_pass(
       "consumer", gfx::PassKind::Compute,
       [&](gfx::PassBuilder& b) { b.read(orphan, gfx::Access::ComputeRead); },
-      [&](VkCommandBuffer, gfx::RenderGraph&) {});
+      [&](gfx::CommandList, gfx::RenderGraph&) {});
   CHECK_FALSE(graph.compile(&error));
   CHECK(error.find("consumer") != std::string::npos);
   CHECK(error.find("orphan") != std::string::npos);

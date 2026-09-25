@@ -3,12 +3,13 @@
 // presented image. Skips on machines without a display or a Vulkan driver.
 #include "raster_path.h"
 
+#include <domain/gfx/backend/vulkan/swapchain.h>
+#include <domain/gfx/backend/vulkan/vulkan.h>
 #include <domain/gfx/capture.h>
 #include <domain/gfx/device.h>
 #include <domain/gfx/frame.h>
 #include <domain/gfx/render_graph.h>
-#include <domain/gfx/swapchain.h>
-#include <domain/gfx/vulkan.h>
+#include <foundation/window/backend/vulkan/surface.h>
 #include <foundation/window/window.h>
 
 #include <doctest/doctest.h>
@@ -23,7 +24,7 @@ TEST_CASE("swapchain: acquire, render, present, resize, capture") {
     MESSAGE("skipped: no display: " << error);
     return;
   }
-  const auto extensions = window::Window::vulkan_instance_extensions();
+  const auto extensions = window::vulkan::instance_extensions();
   if (extensions.empty()) {
     MESSAGE("skipped: SDL has no Vulkan support here");
     window::shutdown();
@@ -51,8 +52,9 @@ TEST_CASE("swapchain: acquire, render, present, resize, capture") {
   }
   REQUIRE(device.features().presentation);
 
-  VkSurfaceKHR surface = VK_NULL_HANDLE;
-  REQUIRE_MESSAGE(window.create_vulkan_surface(device.handles().instance, surface, &error), error);
+  VkSurfaceKHR surface = {};
+  REQUIRE_MESSAGE(
+      window::vulkan::create_surface(window, device.handles().instance, surface, &error), error);
 
   gfx::SwapchainDesc desc;
   desc.surface = surface;
@@ -64,7 +66,7 @@ TEST_CASE("swapchain: acquire, render, present, resize, capture") {
   CHECK(swapchain.image_count() >= 2);
   CHECK(swapchain.extent().width >= 160);
   CHECK(swapchain.extent().height >= 120);
-  CHECK(swapchain.format() != VK_FORMAT_UNDEFINED);
+  CHECK(swapchain.format() != gfx::Format::Undefined);
   MESSAGE("swapchain: " << swapchain.image_count() << " images, format " << swapchain.format()
                         << ", present mode " << swapchain.present_mode() << ", transfer_src "
                         << swapchain.transfer_src());
@@ -75,7 +77,7 @@ TEST_CASE("swapchain: acquire, render, present, resize, capture") {
 
   // Six frames: clear the acquired image to a frame-dependent color and present it.
   auto render_frame = [&](u32 frame, u32& image_index) {
-    VkCommandBuffer commands = frames.begin_frame();
+    gfx::CommandList commands = frames.begin_frame();
     const gfx::PresentStatus acquired = swapchain.acquire(frames.acquire_semaphore(), image_index);
     if (acquired != gfx::PresentStatus::Ok) {
       frames.end_frame();
@@ -83,16 +85,16 @@ TEST_CASE("swapchain: acquire, render, present, resize, capture") {
     }
     graph.reset();
     const gfx::RgImage color = graph.import_image("swapchain", swapchain.image(image_index));
-    VkClearColorValue clear{};
+    gfx::ClearColor clear{};
     clear.float32[0] = static_cast<f32>(frame) / 8.0f;
     clear.float32[1] = 0.25f;
     clear.float32[2] = 1.0f - static_cast<f32>(frame) / 8.0f;
     clear.float32[3] = 1.0f;
     graph.add_pass(
         "clear", gfx::PassKind::Raster,
-        [&](gfx::PassBuilder& b) { b.color_attachment(color, VK_ATTACHMENT_LOAD_OP_CLEAR, clear); },
-        [](VkCommandBuffer, gfx::RenderGraph&) {});
-    graph.set_final_layout(color, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+        [&](gfx::PassBuilder& b) { b.color_attachment(color, gfx::LoadOp::Clear, clear); },
+        [](gfx::CommandList, gfx::RenderGraph&) {});
+    graph.set_final_layout(color, gfx::ImageLayout::Present);
     std::string compile_error;
     REQUIRE_MESSAGE(graph.compile(&compile_error), compile_error);
     graph.execute(commands);
@@ -130,7 +132,7 @@ TEST_CASE("swapchain: acquire, render, present, resize, capture") {
     frames.wait_idle();
     gfx::Capture capture;
     REQUIRE_MESSAGE(gfx::capture_image(device, swapchain.image(image_index),
-                                       VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, capture, &error),
+                                       gfx::ImageLayout::Present, capture, &error),
                     error);
     CHECK(capture.width == swapchain.extent().width);
     Vector<u8> rgba;
@@ -146,7 +148,7 @@ TEST_CASE("swapchain: acquire, render, present, resize, capture") {
   graph.reset();
   swapchain.destroy();
   frames.destroy();
-  window::Window::destroy_vulkan_surface(device.handles().instance, surface);
+  window::vulkan::destroy_surface(device.handles().instance, surface);
   device.destroy();
   window.destroy();
   window::shutdown();

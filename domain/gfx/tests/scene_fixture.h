@@ -8,9 +8,9 @@
 #include <core/base/types.h>
 #include <core/math/math.h>
 #include <domain/geometry/cluster.h>
+#include <domain/gfx/backend/vulkan/vulkan.h>
 #include <domain/gfx/cluster_cull.h>
 #include <domain/gfx/device.h>
-#include <domain/gfx/vulkan.h>
 
 #include <string>
 
@@ -25,7 +25,7 @@ struct SingleInstance {
   bool create(const gfx::Device& device, const geometry::ClusterMesh& mesh, u32 clusters,
               std::string* error) {
     cluster_count = clusters;
-    constexpr VkBufferUsageFlags k_storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    constexpr gfx::BufferUsage k_storage = gfx::BufferUsage::Storage;
     gfx::MeshDesc mesh_desc{};
     mesh_desc.quant = Vec4{mesh.quant_origin, mesh.quant_scale};
     mesh_desc.first_cluster = 0;

@@ -15,11 +15,11 @@
 
 #include <domain/anim/skeleton.h>
 #include <domain/geometry/cluster.h>
+#include <domain/gfx/backend/vulkan/vulkan.h>
 #include <domain/gfx/cluster_cull.h>
 #include <domain/gfx/device.h>
 #include <domain/gfx/frame.h>
 #include <domain/gfx/render_graph.h>
-#include <domain/gfx/vulkan.h>
 
 #include <doctest/doctest.h>
 
@@ -117,10 +117,9 @@ struct SkinScene {
     }
     pool_vertices = mesh.vertices.size();
 
-    constexpr VkBufferUsageFlags k_storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-    const VkBufferUsageFlags k_pool = k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
-                                      VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                                      VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    constexpr gfx::BufferUsage k_storage = gfx::BufferUsage::Storage;
+    const gfx::BufferUsage k_pool = k_storage | gfx::BufferUsage::ShaderDeviceAddress |
+                                    gfx::BufferUsage::TransferDst | gfx::BufferUsage::TransferSrc;
     const u64 pool_bytes = u64{pool_vertices} * 3 * sizeof(f32);
     if (!gfx::upload_buffer(device, mesh.clusters.data(),
                             mesh.clusters.size() * sizeof(geometry::ClusterDesc), k_storage,
@@ -131,12 +130,11 @@ struct SkinScene {
                             mesh.skin.size() * sizeof(geometry::SkinBinding), k_storage, skin,
                             error) ||
         !gfx::create_buffer(device, pool_bytes, k_pool, false, pool, error) ||
-        !gfx::create_buffer(device, pool_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, host,
-                            error) ||
+        !gfx::create_buffer(device, pool_bytes, gfx::BufferUsage::TransferDst, true, host, error) ||
         // Host visible, so a pose is one memcpy, and with the address bit because the pass reads
         // the matrices through a device address rather than a descriptor.
         !gfx::create_buffer(device, sizeof(anim::JointMatrix) * 2,
-                            k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, true, joints,
+                            k_storage | gfx::BufferUsage::ShaderDeviceAddress, true, joints,
                             error)) {
       return false;
     }
@@ -218,9 +216,9 @@ TEST_CASE("deform: the skinning mode matches the CPU reference on a two-bone cyl
 
   gfx::FrameContext frames;
   REQUIRE(frames.create(device, 1, &error));
-  VkShaderModule module = gfx::create_shader_module(device, shaders::k_deform_spirv,
-                                                    shaders::k_deform_spirv_size, &error);
-  REQUIRE(module != VK_NULL_HANDLE);
+  gfx::ShaderModuleHandle module = gfx::create_shader_module(device, shaders::k_deform_spirv,
+                                                             shaders::k_deform_spirv_size, &error);
+  REQUIRE(module.valid());
   gfx::ComputePipeline pipeline;
   REQUIRE_MESSAGE(gfx::create_compute_pipeline(device, module, "deform_main", {},
                                                sizeof(gfx::DeformParams), pipeline, &error),
@@ -244,8 +242,8 @@ TEST_CASE("deform: the skinning mode matches the CPU reference on a two-bone cyl
     desc.joint_count = joint_count;
     desc.joints = scene.joints.address;
     gfx::BufferResource table;
-    REQUIRE(gfx::upload_buffer(device, &desc, sizeof(desc), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                               table, &error));
+    REQUIRE(
+        gfx::upload_buffer(device, &desc, sizeof(desc), gfx::BufferUsage::Storage, table, &error));
     gfx::MeshDesc mesh_desc{};
     mesh_desc.quant = Vec4{scene.mesh.quant_origin, scene.mesh.quant_scale};
     mesh_desc.quantized = scene.quantized.address;
@@ -254,8 +252,8 @@ TEST_CASE("deform: the skinning mode matches the CPU reference on a two-bone cyl
     mesh_desc.deform_slots = scene.slots.address;
     mesh_desc.skin = scene.skin.address;
     gfx::BufferResource meshes;
-    REQUIRE(gfx::upload_buffer(device, &mesh_desc, sizeof(mesh_desc),
-                               VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, meshes, &error));
+    REQUIRE(gfx::upload_buffer(device, &mesh_desc, sizeof(mesh_desc), gfx::BufferUsage::Storage,
+                               meshes, &error));
     gfx::DeformParams local = params;
     local.deform = table.address;
     local.meshes = meshes.address;
@@ -266,17 +264,16 @@ TEST_CASE("deform: the skinning mode matches the CPU reference on a two-bone cyl
     graph.add_pass(
         "clear", gfx::PassKind::Transfer,
         [&](gfx::PassBuilder& b) { b.write(rg_pool, gfx::Access::TransferWrite); },
-        [&](VkCommandBuffer cb, gfx::RenderGraph&) {
-          vkCmdFillBuffer(cb, scene.pool.buffer, 0, VK_WHOLE_SIZE, 0x7fc00000u);  // a quiet NaN
+        [&](gfx::CommandList cb, gfx::RenderGraph&) {
+          cb.fill_buffer(scene.pool.buffer, 0, gfx::k_whole_size, 0x7fc00000u);  // a quiet NaN
         });
     graph.add_pass(
         "skin", gfx::PassKind::Compute,
         [&](gfx::PassBuilder& b) { b.write(rg_pool, gfx::Access::ComputeWrite); },
-        [&](VkCommandBuffer cb, gfx::RenderGraph&) {
-          vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.pipeline);
-          vkCmdPushConstants(cb, pipeline.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(local),
-                             &local);
-          vkCmdDispatch(cb, groups, 1, 1);
+        [&](gfx::CommandList cb, gfx::RenderGraph&) {
+          cb.bind_pipeline(gfx::BindPoint::Compute, pipeline.pipeline);
+          cb.push_constants(pipeline.layout, gfx::ShaderStage::Compute, 0, sizeof(local), &local);
+          cb.dispatch(groups, 1, 1);
         });
     graph.add_pass(
         "readback", gfx::PassKind::Transfer,
@@ -284,12 +281,12 @@ TEST_CASE("deform: the skinning mode matches the CPU reference on a two-bone cyl
           b.read(rg_pool, gfx::Access::TransferRead);
           b.write(rg_host, gfx::Access::TransferWrite);
         },
-        [&](VkCommandBuffer cb, gfx::RenderGraph&) {
-          const VkBufferCopy copy{0, 0, u64{scene.pool_vertices} * 3 * sizeof(f32)};
-          vkCmdCopyBuffer(cb, scene.pool.buffer, scene.host.buffer, 1, &copy);
+        [&](gfx::CommandList cb, gfx::RenderGraph&) {
+          const gfx::BufferCopy copy{0, 0, u64{scene.pool_vertices} * 3 * sizeof(f32)};
+          cb.copy_buffer(scene.pool.buffer, scene.host.buffer, copy);
         });
     REQUIRE_MESSAGE(graph.compile(&error), error);
-    VkCommandBuffer commands = frames.begin_frame();
+    gfx::CommandList commands = frames.begin_frame();
     graph.execute(commands);
     REQUIRE(frames.wait(frames.end_frame()));
     graph.reset();

@@ -1,4 +1,5 @@
 #include <core/log/log.h>
+#include <foundation/window/backend/vulkan/surface.h>
 #include <foundation/window/window.h>
 
 #include <SDL3/SDL.h>
@@ -941,7 +942,13 @@ bool Window::push_event(const Event& event) noexcept {
   return SDL_PushEvent(&e);
 }
 
-std::span<const char* const> Window::vulkan_instance_extensions() {
+}  // namespace engine::window
+
+// ---- the Vulkan surface (backend/vulkan/surface.h) ----------------------------------------------
+
+namespace engine::window::vulkan {
+
+std::span<const char* const> instance_extensions() {
   Uint32 count = 0;
   const char* const* names = SDL_Vulkan_GetInstanceExtensions(&count);
   if (names == nullptr) {
@@ -952,14 +959,15 @@ std::span<const char* const> Window::vulkan_instance_extensions() {
   return std::span<const char* const>(names, count);
 }
 
-bool Window::create_vulkan_surface(VkInstance instance, VkSurfaceKHR& out,
-                                   std::string* error) const {
+bool create_surface(const Window& window, VkInstance instance, VkSurfaceKHR& out,
+                    std::string* error) {
   out = nullptr;
-  if (handle_ == nullptr) {
-    if (error != nullptr) *error = "Window::create_vulkan_surface: no window";
+  if (window.native() == nullptr) {
+    if (error != nullptr) *error = "window::vulkan::create_surface: no window";
     return false;
   }
-  if (!SDL_Vulkan_CreateSurface(static_cast<SDL_Window*>(handle_), instance, nullptr, &out)) {
+  if (!SDL_Vulkan_CreateSurface(static_cast<SDL_Window*>(window.native()), instance, nullptr,
+                                &out)) {
     set_error(error, "SDL_Vulkan_CreateSurface");
     out = nullptr;
     return false;
@@ -967,8 +975,8 @@ bool Window::create_vulkan_surface(VkInstance instance, VkSurfaceKHR& out,
   return true;
 }
 
-void Window::destroy_vulkan_surface(VkInstance instance, VkSurfaceKHR surface) noexcept {
+void destroy_surface(VkInstance instance, VkSurfaceKHR surface) noexcept {
   if (surface != nullptr) SDL_Vulkan_DestroySurface(instance, surface, nullptr);
 }
 
-}  // namespace engine::window
+}  // namespace engine::window::vulkan

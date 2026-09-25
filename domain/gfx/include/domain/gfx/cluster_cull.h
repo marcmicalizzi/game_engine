@@ -29,7 +29,7 @@
 //     params.meshes = meshes.address;        // MeshDesc[]
 //     params.instance_count = n; params.pair_count = total;
 //     ...write to a host-visible buffer, push its address, dispatch cull_group_count(pairs)...
-//     vkCmdDrawMeshTasksIndirectEXT(commands, draw_args.buffer, 0, 1, sizeof(u32) * 3);
+//     commands.draw_mesh_tasks_indirect(draw_args.buffer, 0, 1, sizeof(u32) * 3);
 //
 // Before the dispatch, `draw_args` (and `sw_args`) must hold {0, 1, 1}: the pass counts
 // survivors into x. For occlusion culling, `hiz` points at a pyramid laid out by hiz_layout(),
@@ -80,8 +80,8 @@ struct StreamParams {
 static_assert(sizeof(StreamParams) == 64);
 
 // One indirect argument block, and the stride between two views' blocks in one buffer. Four u32
-// covers both shapes the cull pass fills — `{groups, 1, 1}` for `vkCmdDrawMeshTasksIndirectEXT`
-// and `{vertexCount, instanceCount, 0, 0}` for `vkCmdDrawIndirect` — and keeps every view's block
+// covers both shapes the cull pass fills — `{groups, 1, 1}` for `draw_mesh_tasks_indirect` and
+// `{vertex_count, instance_count, 0, 0}` for `draw_indirect` — and keeps every view's block
 // 16-byte aligned. `clas_records.slang` mirrors the number, because it reads each view's count
 // word out of one buffer (docs/plan/04-renderer.md §4.6).
 inline constexpr u32 k_draw_args_bytes = 16;
@@ -105,7 +105,7 @@ struct CullParams {
   u32 cluster_count = 0;  // the global cluster array; the dispatch covers pair_count instead
   u32 plane_count = 0;
   u32 count_index = 0;  // which u32 of draw_args counts hardware survivors: 0 for mesh-task
-                        // groups {count, 1, 1}, 1 for vkCmdDrawIndirect {verts, count, 0, 0}
+                        // groups {count, 1, 1}, 1 for draw_indirect {verts, count, 0, 0}
   u32 cone_cull = 0;    // 1: backface-cull clusters by their normal cone (ClusterDesc::cone), on
                         // rigid instances of uniform scale only (InstanceDesc)
   u64 clusters = 0;     // geometry::ClusterDesc[]
@@ -113,9 +113,9 @@ struct CullParams {
   u64 visible = 0;      // u32x2[]: {instance, cluster} of the hardware survivors. Every draw of a
                         // frame appends to its own run of one list, so this is the run's address
                         // and the draw's ClusterDrawParams::visible_offset is the run's index.
-  u64 draw_args = 0;    // u32[3] = {survivors, 1, 1} for vkCmdDrawMeshTasksIndirectEXT
+  u64 draw_args = 0;    // u32[3] = {survivors, 1, 1} for draw_mesh_tasks_indirect
   u64 sw_visible = 0;   // u32x2[]: the software-rasterized survivors, in their own run
-  u64 sw_args = 0;      // u32[3] = {survivors, 1, 1} for vkCmdDispatchIndirect
+  u64 sw_args = 0;      // u32[3] = {survivors, 1, 1} for dispatch_indirect
   // Occlusion culling; hiz == 0 disables it.
   Mat4 view_proj;
   u64 hiz = 0;         // f32[] pyramid from hiz_layout()
@@ -184,8 +184,8 @@ inline constexpr f32 k_raster_split = 2.0f;
 // a pass against a buffer by the one access it declares. The frame's reset writes the header;
 // `cull_vertex_main` allocates a survivor's triangles under `cursor` and writes its record;
 // `expand_main` (vertex_expand.slang) writes the indices, one workgroup per survivor, and finishes
-// `index_count`; the draw reads the header's first twenty bytes as a
-// `VkDrawIndexedIndirectCommand` and the array as its index buffer.
+// `index_count`; the draw reads the header's first twenty bytes as a `DrawIndexedIndirectArgs`
+// (rhi.h) and the array as its index buffer.
 //
 // **The index array is a budget, and running out of it draws the same picture more slowly.** A
 // survivor whose triangles do not fit is flagged in its record and drawn by the fallback — the
@@ -194,7 +194,7 @@ inline constexpr f32 k_raster_split = 2.0f;
 // missing. Allocation is in atomic order, so the survivors that fit are exactly those allocated
 // before the first that did not, and `fit_end` (that one's start) is where the indexed draw stops.
 struct VertexDrawHeader {
-  // VkDrawIndexedIndirectCommand, finished by `expand_main` from the two words after it.
+  // DrawIndexedIndirectArgs, finished by `expand_main` from the two words after it.
   u32 index_count = 0;  // 3 x min(cursor, fit_end)
   u32 instance_count = 1;
   u32 first_index = 0;
@@ -203,13 +203,13 @@ struct VertexDrawHeader {
   u32 cursor = 0;          // triangles the cull pass allocated, whether or not they fit
   u32 fit_end = 0;         // atomic min over the overflowing survivors' starts; reset to capacity
   u32 index_capacity = 0;  // triangles the run's index array holds
-  // VkDrawIndirectCommand of the fallback: {3 x triangles_per_cluster, 1 + the highest slot that
+  // DrawIndirectArgs of the fallback: {3 x triangles_per_cluster, 1 + the highest slot that
   // overflowed (0 when none did), 0, 0}.
   u32 fallback_vertex_count = 0;
   u32 fallback_instance_count = 0;
   u32 fallback_first_vertex = 0;
   u32 fallback_first_instance = 0;
-  // VkDispatchIndirectCommand of `expand_main`: one workgroup per survivor.
+  // DispatchIndirectArgs of `expand_main`: one workgroup per survivor.
   u32 expand_groups = 0;
   u32 expand_y = 1;
   u32 expand_z = 1;
@@ -227,8 +227,8 @@ struct VertexDrawRecord {
 };
 static_assert(sizeof(VertexDrawRecord) == 16);
 
-inline constexpr u64 k_vertex_draw_fallback_offset = 32;  // the fallback's VkDrawIndirectCommand
-inline constexpr u64 k_vertex_draw_expand_offset = 48;    // expand_main's VkDispatchIndirectCommand
+inline constexpr u64 k_vertex_draw_fallback_offset = 32;  // the fallback's DrawIndirectArgs
+inline constexpr u64 k_vertex_draw_expand_offset = 48;    // expand_main's DispatchIndirectArgs
 inline constexpr u32 k_vertex_draw_index_bytes = 3 * sizeof(u32);  // one triangle of the array
 
 // The header a frame starts a run from: nothing allocated, the whole array free.

@@ -2,11 +2,11 @@
 // vertex input, and a pixel-exact readback of what was drawn.
 #include "raster_path.h"
 
+#include <domain/gfx/backend/vulkan/vulkan.h>
 #include <domain/gfx/bindless.h>
 #include <domain/gfx/device.h>
 #include <domain/gfx/frame.h>
 #include <domain/gfx/render_graph.h>
-#include <domain/gfx/vulkan.h>
 
 #include <doctest/doctest.h>
 
@@ -37,41 +37,40 @@ TEST_CASE("raster: a triangle through the render graph lands on the expected pix
   constexpr u32 k_size = 64;
   const u64 bytes = u64{k_size} * k_size * 4;
   gfx::BufferResource readback;
-  REQUIRE(
-      gfx::create_buffer(device, bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, readback, &error));
+  REQUIRE(gfx::create_buffer(device, bytes, gfx::BufferUsage::TransferDst, true, readback, &error));
   std::memset(readback.mapped, 0x7f, static_cast<usize>(bytes));
 
-  VkShaderModule module = gfx::create_shader_module(device, shaders::k_triangle_spirv,
-                                                    shaders::k_triangle_spirv_size, &error);
-  REQUIRE_MESSAGE(module != VK_NULL_HANDLE, error);
+  gfx::ShaderModuleHandle module = gfx::create_shader_module(
+      device, shaders::k_triangle_spirv, shaders::k_triangle_spirv_size, &error);
+  REQUIRE_MESSAGE(module.valid(), error);
   gfx::GraphicsPipelineDesc desc;
   desc.vertex = module;
   desc.fragment = module;
   desc.layout = bindless.pipeline_layout();
-  desc.color_format = VK_FORMAT_R8G8B8A8_UNORM;
-  VkPipeline pipeline = VK_NULL_HANDLE;
+  desc.color_format = gfx::Format::R8G8B8A8Unorm;
+  gfx::PipelineHandle pipeline = {};
   REQUIRE_MESSAGE(gfx::create_graphics_pipeline(device, desc, pipeline, &error), error);
 
   gfx::RenderGraph graph(device);
   const gfx::RgImage color = graph.create_image(
-      "color", {k_size, k_size, VK_FORMAT_R8G8B8A8_UNORM,
-                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT});
+      "color", {k_size, k_size, gfx::Format::R8G8B8A8Unorm,
+                gfx::ImageUsage::ColorAttachment | gfx::ImageUsage::TransferSrc});
   const gfx::RgBuffer host = graph.import_buffer("readback", readback);
-  VkClearColorValue clear{};
+  gfx::ClearColor clear{};
   clear.float32[2] = 1.0f;  // blue background
   clear.float32[3] = 1.0f;
-  VkExtent2D seen_area{};
+  gfx::Extent2D seen_area{};
   graph.add_pass(
       "triangle", gfx::PassKind::Raster,
-      [&](gfx::PassBuilder& b) { b.color_attachment(color, VK_ATTACHMENT_LOAD_OP_CLEAR, clear); },
-      [&](VkCommandBuffer commands, gfx::RenderGraph& g) {
+      [&](gfx::PassBuilder& b) { b.color_attachment(color, gfx::LoadOp::Clear, clear); },
+      [&](gfx::CommandList commands, gfx::RenderGraph& g) {
         seen_area = g.render_area();
         const TriangleParams params{{1.0f, 0.5f, 0.0f}, 1.0f};
-        vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-        bindless.bind(commands, VK_PIPELINE_BIND_POINT_GRAPHICS);
-        vkCmdPushConstants(commands, bindless.pipeline_layout(), VK_SHADER_STAGE_ALL, 0,
-                           sizeof(params), &params);
-        vkCmdDraw(commands, 3, 1, 0, 0);
+        commands.bind_pipeline(gfx::BindPoint::Graphics, pipeline);
+        bindless.bind(commands, gfx::BindPoint::Graphics);
+        commands.push_constants(bindless.pipeline_layout(), gfx::ShaderStage::All, 0,
+                                sizeof(params), &params);
+        commands.draw(3, 1, 0, 0);
       });
   graph.add_pass(
       "readback", gfx::PassKind::Transfer,
@@ -79,21 +78,22 @@ TEST_CASE("raster: a triangle through the render graph lands on the expected pix
         b.read(color, gfx::Access::TransferRead);
         b.write(host, gfx::Access::TransferWrite);
       },
-      [&](VkCommandBuffer commands, gfx::RenderGraph& g) {
+      [&](gfx::CommandList commands, gfx::RenderGraph& g) {
         VkBufferImageCopy region{};
         region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
         region.imageExtent = {k_size, k_size, 1};
-        vkCmdCopyImageToBuffer(commands, g.image(color).image, g.image_layout(color),
-                               readback.buffer, 1, &region);
+        vkCmdCopyImageToBuffer(gfx::vk::native(commands), gfx::vk::native(g.image(color).image),
+                               gfx::vk::native(g.image_layout(color)),
+                               gfx::vk::native(readback.buffer), 1, &region);
       });
   REQUIRE_MESSAGE(graph.compile(&error), error);
   CHECK(graph.stats().raster_passes == 1);
   CHECK(graph.stats().transient_images == 1);
-  CHECK(graph.image_view(color) != VK_NULL_HANDLE);
+  CHECK(graph.image_view(color).valid());
   // color: UNDEFINED -> COLOR_ATTACHMENT (triangle), -> TRANSFER_SRC (readback).
   CHECK(graph.stats().layout_transitions == 2);
 
-  VkCommandBuffer commands = frames.begin_frame();
+  gfx::CommandList commands = frames.begin_frame();
   graph.execute(commands);
   const u64 value = frames.end_frame();
   REQUIRE(frames.wait(value));

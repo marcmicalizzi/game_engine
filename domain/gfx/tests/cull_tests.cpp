@@ -11,12 +11,12 @@
 #include "scene_fixture.h"
 
 #include <domain/geometry/cluster_lod.h>
+#include <domain/gfx/backend/vulkan/vulkan.h>
 #include <domain/gfx/bindless.h>
 #include <domain/gfx/cluster_cull.h>
 #include <domain/gfx/device.h>
 #include <domain/gfx/frame.h>
 #include <domain/gfx/render_graph.h>
-#include <domain/gfx/vulkan.h>
 
 #include <doctest/doctest.h>
 
@@ -77,7 +77,7 @@ TEST_CASE("cluster cull: GPU selection matches the CPU reference and the cut cov
   gfx::BufferResource triangles;
   gfx::BufferResource lods;
   gfx_test::SingleInstance scene;
-  constexpr VkBufferUsageFlags k_storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+  constexpr gfx::BufferUsage k_storage = gfx::BufferUsage::Storage;
   REQUIRE(gfx::upload_buffer(device, lod.mesh.clusters.data(),
                              cluster_count * sizeof(geometry::ClusterDesc), k_storage, clusters,
                              &error));
@@ -99,19 +99,19 @@ TEST_CASE("cluster cull: GPU selection matches the CPU reference and the cut cov
   const u64 visible_bytes = u64{cluster_count} * 2 * sizeof(u32);  // uint2 per entry
   REQUIRE(gfx::create_buffer(
       device, visible_bytes,
-      k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-      false, visible, &error));
-  REQUIRE(gfx::create_buffer(
-      device, gfx::k_draw_args_bytes,
-      k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
-          VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-      false, args, &error));
+      k_storage | gfx::BufferUsage::ShaderDeviceAddress | gfx::BufferUsage::TransferSrc, false,
+      visible, &error));
+  REQUIRE(gfx::create_buffer(device, gfx::k_draw_args_bytes,
+                             k_storage | gfx::BufferUsage::ShaderDeviceAddress |
+                                 gfx::BufferUsage::Indirect | gfx::BufferUsage::TransferDst |
+                                 gfx::BufferUsage::TransferSrc,
+                             false, args, &error));
   REQUIRE(gfx::create_buffer(device, sizeof(gfx::CullParams),
-                             k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, true, params,
+                             k_storage | gfx::BufferUsage::ShaderDeviceAddress, true, params,
                              &error));
-  REQUIRE(gfx::create_buffer(device, visible_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true,
+  REQUIRE(gfx::create_buffer(device, visible_bytes, gfx::BufferUsage::TransferDst, true,
                              visible_host, &error));
-  REQUIRE(gfx::create_buffer(device, gfx::k_draw_args_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true,
+  REQUIRE(gfx::create_buffer(device, gfx::k_draw_args_bytes, gfx::BufferUsage::TransferDst, true,
                              args_host, &error));
 
   // Camera above and in front of the terrain, 60 degree vertical field of view, 256 px tall.
@@ -165,9 +165,9 @@ TEST_CASE("cluster cull: GPU selection matches the CPU reference and the cut cov
   MESSAGE("clusters " << cluster_count << " (leaves " << leaf_count << "), expected visible "
                       << expected.size() << ", " << std::string(raster.name()) << " path");
 
-  VkShaderModule cull_module = gfx::create_shader_module(
+  gfx::ShaderModuleHandle cull_module = gfx::create_shader_module(
       device, shaders::k_cluster_cull_spirv, shaders::k_cluster_cull_spirv_size, &error);
-  REQUIRE(cull_module != VK_NULL_HANDLE);
+  REQUIRE(cull_module.valid());
   gfx::ComputePipeline cull_pipeline;
   REQUIRE_MESSAGE(gfx::create_compute_pipeline(device, cull_module, "cull_main", {}, sizeof(u64),
                                                cull_pipeline, &error),
@@ -176,18 +176,17 @@ TEST_CASE("cluster cull: GPU selection matches the CPU reference and the cut cov
   // Two visibility buffers, the cut's and every leaf's. The id's high bits are the entry of the
   // visible list the draw read, so the cut's pixels name survivors through that list.
   const u64 vis_bytes = u64{k_size} * k_size * sizeof(u64);
-  const VkBufferUsageFlags k_vis = k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
-                                   VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                                   VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+  const gfx::BufferUsage k_vis = k_storage | gfx::BufferUsage::ShaderDeviceAddress |
+                                 gfx::BufferUsage::TransferDst | gfx::BufferUsage::TransferSrc;
   gfx::BufferResource vis_cut;
   gfx::BufferResource vis_leaves;
   gfx::BufferResource cut_host;
   gfx::BufferResource leaves_host;
   REQUIRE(gfx::create_buffer(device, vis_bytes, k_vis, false, vis_cut, &error));
   REQUIRE(gfx::create_buffer(device, vis_bytes, k_vis, false, vis_leaves, &error));
-  REQUIRE(gfx::create_buffer(device, vis_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, cut_host,
-                             &error));
-  REQUIRE(gfx::create_buffer(device, vis_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, leaves_host,
+  REQUIRE(
+      gfx::create_buffer(device, vis_bytes, gfx::BufferUsage::TransferDst, true, cut_host, &error));
+  REQUIRE(gfx::create_buffer(device, vis_bytes, gfx::BufferUsage::TransferDst, true, leaves_host,
                              &error));
 
   gfx::ClusterDrawParams cut_params{};
@@ -210,18 +209,18 @@ TEST_CASE("cluster cull: GPU selection matches the CPU reference and the cut cov
     graph.add_pass(
         "reset", gfx::PassKind::Transfer,
         [&](gfx::PassBuilder& b) { b.write(rg_args, gfx::Access::TransferWrite); },
-        [&](VkCommandBuffer cb, gfx::RenderGraph&) { raster.reset_args(cb, args.buffer); });
+        [&](gfx::CommandList cb, gfx::RenderGraph&) { raster.reset_args(cb, args.buffer); });
     graph.add_pass(
         "cull", gfx::PassKind::Compute,
         [&](gfx::PassBuilder& b) {
           b.write(rg_args, gfx::Access::ComputeReadWrite);
           b.write(rg_visible, gfx::Access::ComputeWrite);
         },
-        [&](VkCommandBuffer cb, gfx::RenderGraph&) {
-          vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, cull_pipeline.pipeline);
-          vkCmdPushConstants(cb, cull_pipeline.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(u64),
-                             &params_address);
-          vkCmdDispatch(cb, gfx::cull_group_count(cluster_count), 1, 1);
+        [&](gfx::CommandList cb, gfx::RenderGraph&) {
+          cb.bind_pipeline(gfx::BindPoint::Compute, cull_pipeline.pipeline);
+          cb.push_constants(cull_pipeline.layout, gfx::ShaderStage::Compute, 0, sizeof(u64),
+                            &params_address);
+          cb.dispatch(gfx::cull_group_count(cluster_count), 1, 1);
         });
   };
 
@@ -239,9 +238,9 @@ TEST_CASE("cluster cull: GPU selection matches the CPU reference and the cut cov
         b.write(rg_cut, gfx::Access::TransferWrite);
         b.write(rg_leaves, gfx::Access::TransferWrite);
       },
-      [&](VkCommandBuffer cb, gfx::RenderGraph&) {
-        vkCmdFillBuffer(cb, vis_cut.buffer, 0, VK_WHOLE_SIZE, 0);
-        vkCmdFillBuffer(cb, vis_leaves.buffer, 0, VK_WHOLE_SIZE, 0);
+      [&](gfx::CommandList cb, gfx::RenderGraph&) {
+        cb.fill_buffer(vis_cut.buffer, 0, gfx::k_whole_size, 0);
+        cb.fill_buffer(vis_leaves.buffer, 0, gfx::k_whole_size, 0);
       });
   add_cull_passes(rg_args, rg_visible);
   graph.add_pass(
@@ -252,7 +251,7 @@ TEST_CASE("cluster cull: GPU selection matches the CPU reference and the cut cov
         b.read(rg_args, gfx::Access::IndirectRead);
         b.read(rg_visible, raster.geometry_read());
       },
-      [&](VkCommandBuffer cb, gfx::RenderGraph&) {
+      [&](gfx::CommandList cb, gfx::RenderGraph&) {
         raster.draw_indirect(cb, bindless, cut_params, args.buffer);
       });
   graph.add_pass(
@@ -261,7 +260,7 @@ TEST_CASE("cluster cull: GPU selection matches the CPU reference and the cut cov
         b.render_area(k_size, k_size);
         b.write(rg_leaves, gfx::Access::FragmentReadWrite);
       },
-      [&](VkCommandBuffer cb, gfx::RenderGraph&) {
+      [&](gfx::CommandList cb, gfx::RenderGraph&) {
         raster.draw(cb, bindless, leaf_params, leaf_count);
       });
   graph.add_pass(
@@ -276,19 +275,19 @@ TEST_CASE("cluster cull: GPU selection matches the CPU reference and the cut cov
         b.write(rg_cut_host, gfx::Access::TransferWrite);
         b.write(rg_leaves_host, gfx::Access::TransferWrite);
       },
-      [&](VkCommandBuffer cb, gfx::RenderGraph&) {
-        const VkBufferCopy args_copy{0, 0, gfx::k_draw_args_bytes};
-        vkCmdCopyBuffer(cb, args.buffer, args_host.buffer, 1, &args_copy);
-        const VkBufferCopy visible_copy{0, 0, visible_bytes};
-        vkCmdCopyBuffer(cb, visible.buffer, visible_host.buffer, 1, &visible_copy);
-        const VkBufferCopy vis_copy{0, 0, vis_bytes};
-        vkCmdCopyBuffer(cb, vis_cut.buffer, cut_host.buffer, 1, &vis_copy);
-        vkCmdCopyBuffer(cb, vis_leaves.buffer, leaves_host.buffer, 1, &vis_copy);
+      [&](gfx::CommandList cb, gfx::RenderGraph&) {
+        const gfx::BufferCopy args_copy{0, 0, gfx::k_draw_args_bytes};
+        cb.copy_buffer(args.buffer, args_host.buffer, args_copy);
+        const gfx::BufferCopy visible_copy{0, 0, visible_bytes};
+        cb.copy_buffer(visible.buffer, visible_host.buffer, visible_copy);
+        const gfx::BufferCopy vis_copy{0, 0, vis_bytes};
+        cb.copy_buffer(vis_cut.buffer, cut_host.buffer, vis_copy);
+        cb.copy_buffer(vis_leaves.buffer, leaves_host.buffer, vis_copy);
       });
   REQUIRE_MESSAGE(graph.compile(&error), error);
   CHECK(graph.stats().buffer_barriers >= 3);  // fill -> cull, cull -> indirect/draw read, -> copies
 
-  VkCommandBuffer commands = frames.begin_frame();
+  gfx::CommandList commands = frames.begin_frame();
   graph.execute(commands);
   REQUIRE(frames.wait(frames.end_frame()));
 
@@ -363,9 +362,9 @@ TEST_CASE("cluster cull: GPU selection matches the CPU reference and the cut cov
         b.read(rg_args2, gfx::Access::TransferRead);
         b.write(rg_args_host2, gfx::Access::TransferWrite);
       },
-      [&](VkCommandBuffer cb, gfx::RenderGraph&) {
-        const VkBufferCopy args_copy{0, 0, gfx::k_draw_args_bytes};
-        vkCmdCopyBuffer(cb, args.buffer, args_host.buffer, 1, &args_copy);
+      [&](gfx::CommandList cb, gfx::RenderGraph&) {
+        const gfx::BufferCopy args_copy{0, 0, gfx::k_draw_args_bytes};
+        cb.copy_buffer(args.buffer, args_host.buffer, args_copy);
       });
   REQUIRE(graph.compile(&error));
   commands = frames.begin_frame();

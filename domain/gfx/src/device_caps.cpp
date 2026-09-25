@@ -8,7 +8,7 @@
 // query that describes it must not be the thing that breaks on it.
 
 #include <core/containers/vector.h>
-#include <domain/gfx/vulkan.h>
+#include <domain/gfx/backend/vulkan/vulkan.h>
 
 #include <cstring>
 

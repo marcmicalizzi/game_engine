@@ -13,12 +13,12 @@
 #include "scene_fixture.h"
 
 #include <domain/geometry/cluster_lod.h>
+#include <domain/gfx/backend/vulkan/vulkan.h>
 #include <domain/gfx/bindless.h>
 #include <domain/gfx/cluster_cull.h>
 #include <domain/gfx/device.h>
 #include <domain/gfx/frame.h>
 #include <domain/gfx/render_graph.h>
-#include <domain/gfx/vulkan.h>
 
 #include <doctest/doctest.h>
 
@@ -80,11 +80,10 @@ TEST_CASE("occlusion culling: two passes draw fewer clusters and the same pictur
       error);
   const u32 cluster_count = lod.mesh.clusters.size();
 
-  constexpr VkBufferUsageFlags k_storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-  constexpr VkBufferUsageFlags k_address = k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
-  constexpr VkBufferUsageFlags k_args = k_address | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
-                                        VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                                        VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+  constexpr gfx::BufferUsage k_storage = gfx::BufferUsage::Storage;
+  constexpr gfx::BufferUsage k_address = k_storage | gfx::BufferUsage::ShaderDeviceAddress;
+  constexpr gfx::BufferUsage k_args = k_address | gfx::BufferUsage::Indirect |
+                                      gfx::BufferUsage::TransferDst | gfx::BufferUsage::TransferSrc;
   gfx::BufferResource clusters;
   gfx::BufferResource triangles;
   gfx::BufferResource lods;
@@ -132,50 +131,48 @@ TEST_CASE("occlusion culling: two passes draw fewer clusters and the same pictur
   gfx::BufferResource host_hiz;
   gfx::BufferResource host_args;
   REQUIRE(gfx::create_buffer(
-      device, vis_bytes,
-      k_address | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, false, vis,
-      &error));
-  REQUIRE(gfx::create_buffer(
-      device, u64{hiz_elements} * 4,
-      k_address | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, false, hiz,
-      &error));
+      device, vis_bytes, k_address | gfx::BufferUsage::TransferDst | gfx::BufferUsage::TransferSrc,
+      false, vis, &error));
+  REQUIRE(
+      gfx::create_buffer(device, u64{hiz_elements} * 4,
+                         k_address | gfx::BufferUsage::TransferDst | gfx::BufferUsage::TransferSrc,
+                         false, hiz, &error));
   // The two passes append to their own runs of one visible list, so a visibility id names an
   // entry of the whole list and the resolve needs nothing else: pass 1 starts at 0 and pass 2 at
   // `cluster_count`, which is as many entries as either pass can produce.
   const u64 visible_bytes = u64{cluster_count} * 2 * 8;
   const u64 visible_run[2] = {visible_bytes / 2 * 0, u64{cluster_count} * 8};
-  REQUIRE(gfx::create_buffer(device, visible_bytes, k_address | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+  REQUIRE(gfx::create_buffer(device, visible_bytes, k_address | gfx::BufferUsage::TransferSrc,
                              false, visible, &error));
   for (u32 i = 0; i < 2; ++i) {
     REQUIRE(gfx::create_buffer(device, gfx::k_draw_args_bytes, k_args, false, args[i], &error));
     REQUIRE(gfx::create_buffer(device, u64{cluster_count} * 4,
-                               k_address | VK_BUFFER_USAGE_TRANSFER_DST_BIT, false, flags[i],
-                               &error));
+                               k_address | gfx::BufferUsage::TransferDst, false, flags[i], &error));
   }
   REQUIRE(gfx::create_buffer(device, sizeof(gfx::CullParams) * 3, k_address, true, params, &error));
-  REQUIRE(gfx::create_buffer(device, vis_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true,
-                             host_vis_ref, &error));
-  REQUIRE(gfx::create_buffer(device, vis_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, host_vis,
+  REQUIRE(gfx::create_buffer(device, vis_bytes, gfx::BufferUsage::TransferDst, true, host_vis_ref,
                              &error));
-  REQUIRE(gfx::create_buffer(device, visible_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true,
+  REQUIRE(
+      gfx::create_buffer(device, vis_bytes, gfx::BufferUsage::TransferDst, true, host_vis, &error));
+  REQUIRE(gfx::create_buffer(device, visible_bytes, gfx::BufferUsage::TransferDst, true,
                              host_list_ref, &error));
-  REQUIRE(gfx::create_buffer(device, visible_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true,
-                             host_list, &error));
-  REQUIRE(gfx::create_buffer(device, u64{hiz_elements} * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true,
+  REQUIRE(gfx::create_buffer(device, visible_bytes, gfx::BufferUsage::TransferDst, true, host_list,
+                             &error));
+  REQUIRE(gfx::create_buffer(device, u64{hiz_elements} * 4, gfx::BufferUsage::TransferDst, true,
                              host_hiz, &error));
-  REQUIRE(gfx::create_buffer(device, gfx::k_draw_args_bytes * 2, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+  REQUIRE(gfx::create_buffer(device, gfx::k_draw_args_bytes * 2, gfx::BufferUsage::TransferDst,
                              true, host_args, &error));
 
   gfx::FrameContext frames;
   REQUIRE(frames.create(device, 2, &error));
   gfx::BindlessSet bindless;
   REQUIRE(bindless.create(device, gfx::BindlessConfig{}, &error));
-  VkShaderModule cull_module = gfx::create_shader_module(
+  gfx::ShaderModuleHandle cull_module = gfx::create_shader_module(
       device, shaders::k_cluster_cull_spirv, shaders::k_cluster_cull_spirv_size, &error);
-  VkShaderModule hiz_module = gfx::create_shader_module(device, shaders::k_hiz_build_spirv,
-                                                        shaders::k_hiz_build_spirv_size, &error);
-  REQUIRE(cull_module != VK_NULL_HANDLE);
-  REQUIRE(hiz_module != VK_NULL_HANDLE);
+  gfx::ShaderModuleHandle hiz_module = gfx::create_shader_module(
+      device, shaders::k_hiz_build_spirv, shaders::k_hiz_build_spirv_size, &error);
+  REQUIRE(cull_module.valid());
+  REQUIRE(hiz_module.valid());
   gfx::ComputePipeline cull_pipeline;
   gfx::ComputePipeline hiz_pipeline;
   REQUIRE_MESSAGE(gfx::create_compute_pipeline(device, cull_module, "cull_main", {}, sizeof(u64),
@@ -255,13 +252,13 @@ TEST_CASE("occlusion culling: two passes draw fewer clusters and the same pictur
           if (clear_hiz) b.write(rg_hiz, gfx::Access::TransferWrite);
           if (flags_to_clear < 2) b.write(rg_flags[flags_to_clear], gfx::Access::TransferWrite);
         },
-        [&, clear_hiz, flags_to_clear](VkCommandBuffer cb, gfx::RenderGraph&) {
-          vkCmdFillBuffer(cb, vis.buffer, 0, VK_WHOLE_SIZE, 0);
+        [&, clear_hiz, flags_to_clear](gfx::CommandList cb, gfx::RenderGraph&) {
+          cb.fill_buffer(vis.buffer, 0, gfx::k_whole_size, 0);
           for (u32 i = 0; i < 2; ++i)
             raster.reset_args(cb, args[i].buffer);
-          if (clear_hiz) vkCmdFillBuffer(cb, hiz.buffer, 0, VK_WHOLE_SIZE, 0);
+          if (clear_hiz) cb.fill_buffer(hiz.buffer, 0, gfx::k_whole_size, 0);
           if (flags_to_clear < 2)
-            vkCmdFillBuffer(cb, flags[flags_to_clear].buffer, 0, VK_WHOLE_SIZE, 0);
+            cb.fill_buffer(flags[flags_to_clear].buffer, 0, gfx::k_whole_size, 0);
         });
   };
   // Pass bodies capture by pointer/reference, so the per-pass values live in these arrays.
@@ -277,11 +274,11 @@ TEST_CASE("occlusion culling: two passes draw fewer clusters and the same pictur
           if (prev_flags < 2) b.read(rg_flags[prev_flags], gfx::Access::ComputeRead);
           if (cur_flags < 2) b.write(rg_flags[cur_flags], gfx::Access::ComputeReadWrite);
         },
-        [&, block](VkCommandBuffer cb, gfx::RenderGraph&) {
-          vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, cull_pipeline.pipeline);
-          vkCmdPushConstants(cb, cull_pipeline.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(u64),
-                             &block_addresses[block]);
-          vkCmdDispatch(cb, gfx::cull_group_count(cluster_count), 1, 1);
+        [&, block](gfx::CommandList cb, gfx::RenderGraph&) {
+          cb.bind_pipeline(gfx::BindPoint::Compute, cull_pipeline.pipeline);
+          cb.push_constants(cull_pipeline.layout, gfx::ShaderStage::Compute, 0, sizeof(u64),
+                            &block_addresses[block]);
+          cb.dispatch(gfx::cull_group_count(cluster_count), 1, 1);
         });
   };
   auto add_draw = [&](u32 list) {
@@ -293,7 +290,7 @@ TEST_CASE("occlusion culling: two passes draw fewer clusters and the same pictur
           b.read(rg_args[list], gfx::Access::IndirectRead);
           b.read(rg_visible, raster.geometry_read());
         },
-        [&, list](VkCommandBuffer cb, gfx::RenderGraph&) {
+        [&, list](gfx::CommandList cb, gfx::RenderGraph&) {
           raster.draw_indirect(cb, bindless, draw_pass[list], args[list].buffer);
         });
   };
@@ -324,11 +321,11 @@ TEST_CASE("occlusion culling: two passes draw fewer clusters and the same pictur
             if (d == 0) b.read(rg_vis, gfx::Access::ComputeRead);
             b.write(rg_hiz, gfx::Access::ComputeReadWrite);
           },
-          [&, level, src_w, src_h](VkCommandBuffer cb, gfx::RenderGraph&) {
-            vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, hiz_pipeline.pipeline);
-            vkCmdPushConstants(cb, hiz_pipeline.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                               sizeof(*level), level);
-            vkCmdDispatch(cb, gfx::hiz_group_count(src_w), gfx::hiz_group_count(src_h), 1);
+          [&, level, src_w, src_h](gfx::CommandList cb, gfx::RenderGraph&) {
+            cb.bind_pipeline(gfx::BindPoint::Compute, hiz_pipeline.pipeline);
+            cb.push_constants(hiz_pipeline.layout, gfx::ShaderStage::Compute, 0, sizeof(*level),
+                              level);
+            cb.dispatch(gfx::hiz_group_count(src_w), gfx::hiz_group_count(src_h), 1);
           });
     }
   };
@@ -355,23 +352,23 @@ TEST_CASE("occlusion culling: two passes draw fewer clusters and the same pictur
             b.write(rg_host_hiz, gfx::Access::TransferWrite);
           }
         },
-        [&, vis_host, list_host, with_hiz](VkCommandBuffer cb, gfx::RenderGraph&) {
-          const VkBufferCopy vis_copy{0, 0, vis_bytes};
-          vkCmdCopyBuffer(cb, vis.buffer, vis_host->buffer, 1, &vis_copy);
-          const VkBufferCopy list_copy{0, 0, visible_bytes};
-          vkCmdCopyBuffer(cb, visible.buffer, list_host->buffer, 1, &list_copy);
+        [&, vis_host, list_host, with_hiz](gfx::CommandList cb, gfx::RenderGraph&) {
+          const gfx::BufferCopy vis_copy{0, 0, vis_bytes};
+          cb.copy_buffer(vis.buffer, vis_host->buffer, vis_copy);
+          const gfx::BufferCopy list_copy{0, 0, visible_bytes};
+          cb.copy_buffer(visible.buffer, list_host->buffer, list_copy);
           for (u32 i = 0; i < 2; ++i) {
-            const VkBufferCopy args_copy{0, i * gfx::k_draw_args_bytes, gfx::k_draw_args_bytes};
-            vkCmdCopyBuffer(cb, args[i].buffer, host_args.buffer, 1, &args_copy);
+            const gfx::BufferCopy args_copy{0, i * gfx::k_draw_args_bytes, gfx::k_draw_args_bytes};
+            cb.copy_buffer(args[i].buffer, host_args.buffer, args_copy);
           }
           if (with_hiz) {
-            const VkBufferCopy hiz_copy{0, 0, u64{hiz_elements} * 4};
-            vkCmdCopyBuffer(cb, hiz.buffer, host_hiz.buffer, 1, &hiz_copy);
+            const gfx::BufferCopy hiz_copy{0, 0, u64{hiz_elements} * 4};
+            cb.copy_buffer(hiz.buffer, host_hiz.buffer, hiz_copy);
           }
         });
   };
   auto run_frame = [&]() {
-    VkCommandBuffer commands = frames.begin_frame();
+    gfx::CommandList commands = frames.begin_frame();
     graph.execute(commands);
     REQUIRE(frames.wait(frames.end_frame()));
   };
@@ -421,8 +418,8 @@ TEST_CASE("occlusion culling: two passes draw fewer clusters and the same pictur
       graph.add_pass(
           "clear prev", gfx::PassKind::Transfer,
           [&, prev](gfx::PassBuilder& b) { b.write(rg_flags[prev], gfx::Access::TransferWrite); },
-          [&, prev](VkCommandBuffer cb, gfx::RenderGraph&) {
-            vkCmdFillBuffer(cb, flags[prev].buffer, 0, VK_WHOLE_SIZE, 0);
+          [&, prev](gfx::CommandList cb, gfx::RenderGraph&) {
+            cb.fill_buffer(flags[prev].buffer, 0, gfx::k_whole_size, 0);
           });
     }
     add_cull(1, 0, true, prev, cur);
@@ -561,23 +558,23 @@ TEST_CASE("hi-z: the folded pyramid equals the mip-at-a-time one at an awkward s
     source[i] = (state % 5u) == 0 ? 0 : (u64{bits} << 32) | (state & 0xffffffu);
   }
 
-  constexpr VkBufferUsageFlags k_address =
-      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+  constexpr gfx::BufferUsage k_address =
+      gfx::BufferUsage::Storage | gfx::BufferUsage::ShaderDeviceAddress;
   gfx::BufferResource vis;
   gfx::BufferResource hiz;
   gfx::BufferResource host_hiz;
   REQUIRE(gfx::upload_buffer(device, source.data(), u64{k_w} * k_h * sizeof(u64), k_address, vis,
                              &error));
-  REQUIRE(gfx::create_buffer(
-      device, u64{hiz_elements} * 4,
-      k_address | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, false, hiz,
-      &error));
-  REQUIRE(gfx::create_buffer(device, u64{hiz_elements} * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true,
+  REQUIRE(
+      gfx::create_buffer(device, u64{hiz_elements} * 4,
+                         k_address | gfx::BufferUsage::TransferDst | gfx::BufferUsage::TransferSrc,
+                         false, hiz, &error));
+  REQUIRE(gfx::create_buffer(device, u64{hiz_elements} * 4, gfx::BufferUsage::TransferDst, true,
                              host_hiz, &error));
 
-  VkShaderModule module = gfx::create_shader_module(device, shaders::k_hiz_build_spirv,
-                                                    shaders::k_hiz_build_spirv_size, &error);
-  REQUIRE(module != VK_NULL_HANDLE);
+  gfx::ShaderModuleHandle module = gfx::create_shader_module(
+      device, shaders::k_hiz_build_spirv, shaders::k_hiz_build_spirv_size, &error);
+  REQUIRE(module.valid());
   gfx::ComputePipeline pipeline;
   REQUIRE_MESSAGE(gfx::create_compute_pipeline(device, module, "hiz_build_main", {},
                                                sizeof(gfx::HizParams), pipeline, &error),
@@ -593,8 +590,8 @@ TEST_CASE("hi-z: the folded pyramid equals the mip-at-a-time one at an awkward s
   graph.add_pass(
       "fill", gfx::PassKind::Transfer,
       [&](gfx::PassBuilder& b) { b.write(rg_hiz, gfx::Access::TransferWrite); },
-      [&](VkCommandBuffer cb, gfx::RenderGraph&) {
-        vkCmdFillBuffer(cb, hiz.buffer, 0, VK_WHOLE_SIZE, 0xbadf00du);
+      [&](gfx::CommandList cb, gfx::RenderGraph&) {
+        cb.fill_buffer(hiz.buffer, 0, gfx::k_whole_size, 0xbadf00du);
       });
   Vector<gfx::HizParams> params(dispatches);
   for (u32 d = 0; d < dispatches; ++d) {
@@ -617,11 +614,10 @@ TEST_CASE("hi-z: the folded pyramid equals the mip-at-a-time one at an awkward s
           if (d == 0) b.read(rg_vis, gfx::Access::ComputeRead);
           b.write(rg_hiz, gfx::Access::ComputeReadWrite);
         },
-        [&, level, src_w, src_h](VkCommandBuffer cb, gfx::RenderGraph&) {
-          vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.pipeline);
-          vkCmdPushConstants(cb, pipeline.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(*level),
-                             level);
-          vkCmdDispatch(cb, gfx::hiz_group_count(src_w), gfx::hiz_group_count(src_h), 1);
+        [&, level, src_w, src_h](gfx::CommandList cb, gfx::RenderGraph&) {
+          cb.bind_pipeline(gfx::BindPoint::Compute, pipeline.pipeline);
+          cb.push_constants(pipeline.layout, gfx::ShaderStage::Compute, 0, sizeof(*level), level);
+          cb.dispatch(gfx::hiz_group_count(src_w), gfx::hiz_group_count(src_h), 1);
         });
   }
   graph.add_pass(
@@ -630,12 +626,12 @@ TEST_CASE("hi-z: the folded pyramid equals the mip-at-a-time one at an awkward s
         b.read(rg_hiz, gfx::Access::TransferRead);
         b.write(rg_host, gfx::Access::TransferWrite);
       },
-      [&](VkCommandBuffer cb, gfx::RenderGraph&) {
-        const VkBufferCopy copy{0, 0, u64{hiz_elements} * 4};
-        vkCmdCopyBuffer(cb, hiz.buffer, host_hiz.buffer, 1, &copy);
+      [&](gfx::CommandList cb, gfx::RenderGraph&) {
+        const gfx::BufferCopy copy{0, 0, u64{hiz_elements} * 4};
+        cb.copy_buffer(hiz.buffer, host_hiz.buffer, copy);
       });
   REQUIRE_MESSAGE(graph.compile(&error), error);
-  VkCommandBuffer commands = frames.begin_frame();
+  gfx::CommandList commands = frames.begin_frame();
   graph.execute(commands);
   REQUIRE(frames.wait(frames.end_frame()));
 

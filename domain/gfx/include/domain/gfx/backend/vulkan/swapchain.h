@@ -1,19 +1,27 @@
 #pragma once
 
 // Presentation (docs/plan/04-renderer.md §4.8): a swapchain over a window surface. The window
-// system creates the surface (foundation/window); this class owns the swapchain, its image
-// views, and one render-finished semaphore per image. Acquire semaphores belong to the frame
-// context's slots (FrameContext::acquire_semaphore()), which is the pairing that keeps every
-// binary semaphore unsignaled before reuse.
+// system creates the surface (foundation/window/backend/vulkan/surface.h); this class owns the
+// swapchain, its image views, and one render-finished semaphore per image. Acquire semaphores
+// belong to the frame context's slots (FrameContext::acquire_semaphore()), which is the pairing
+// that keeps every binary semaphore unsignaled before reuse.
+//
+// **This is a backend header** (docs/subsystems/gfx.md, "The RHI surface and the backend
+// surface"): a swapchain is made from a Vulkan surface, and presenting is the one thing a
+// presenting app does that has no engine-neutral form yet, so the class lives in the backend set
+// and only a module that presents includes it (apps/engine_view). What it hands the rest of the
+// engine is engine-typed — its images are `ImageResource`s, its semaphores `SemaphoreHandle`s,
+// its format a `Format` — so the renderer draws into a swapchain image without knowing it is one.
+// A second backend brings a swapchain of its own beside this one.
 //
 //     Swapchain swapchain;
 //     swapchain.create(device, {.surface = surface, .width = w, .height = h});
 //     for (;;) {
-//       VkCommandBuffer commands = frames.begin_frame();
+//       CommandList commands = frames.begin_frame();
 //       u32 image = 0;
 //       if (swapchain.acquire(frames.acquire_semaphore(), image) != PresentStatus::Ok) { resize...
 //       }
-//       ...record, ending with the image in VK_IMAGE_LAYOUT_PRESENT_SRC_KHR...
+//       ...record, ending with the image in ImageLayout::Present...
 //       frames.end_frame({.wait = frames.acquire_semaphore(),
 //                         .signal = swapchain.render_finished(image)});
 //       swapchain.present(image, swapchain.render_finished(image));
@@ -22,7 +30,10 @@
 #include <core/base/macros.h>
 #include <core/base/types.h>
 #include <core/containers/vector.h>
-#include <domain/gfx/vulkan.h>
+#include <domain/gfx/backend/vulkan/vulkan.h>
+#include <domain/gfx/device.h>
+#include <domain/gfx/resources.h>
+#include <domain/gfx/rhi.h>
 
 #include <string>
 
@@ -34,10 +45,10 @@ struct SwapchainDesc {
   u32 height = 0;
   // FIFO when true. Otherwise MAILBOX when the surface offers it, then IMMEDIATE, then FIFO.
   bool vsync = true;
-  // Request VK_IMAGE_USAGE_TRANSFER_SRC_BIT so captures can read the presented image; granted
-  // when the surface supports it (transfer_src() reports the outcome).
+  // Request ImageUsage::TransferSrc so captures can read the presented image; granted when the
+  // surface supports it (transfer_src() reports the outcome).
   bool transfer_src = true;
-  VkFormat preferred_format = VK_FORMAT_B8G8R8A8_UNORM;
+  Format preferred_format = Format::B8G8R8A8Unorm;
   u32 min_image_count = 3;
 };
 
@@ -66,18 +77,18 @@ class Swapchain {
   bool resize(u32 width, u32 height, std::string* error = nullptr);
 
   // Acquires the next image, signaling `signal` when it may be written.
-  PresentStatus acquire(VkSemaphore signal, u32& image_index, u64 timeout_ns = ~u64{0});
+  PresentStatus acquire(SemaphoreHandle signal, u32& image_index, u64 timeout_ns = ~u64{0});
   // Queues `image_index` for presentation once `wait` is signaled.
-  PresentStatus present(u32 image_index, VkSemaphore wait);
+  PresentStatus present(u32 image_index, SemaphoreHandle wait);
 
   u32 image_count() const noexcept { return images_.size(); }
   const ImageResource& image(u32 index) const noexcept { return images_[index]; }
-  VkImageView view(u32 index) const noexcept { return views_[index]; }
-  VkSemaphore render_finished(u32 image_index) const noexcept {
+  ImageViewHandle view(u32 index) const noexcept { return views_[index]; }
+  SemaphoreHandle render_finished(u32 image_index) const noexcept {
     return render_finished_[image_index];
   }
-  VkFormat format() const noexcept { return format_; }
-  VkExtent2D extent() const noexcept { return extent_; }
+  Format format() const noexcept { return format_; }
+  Extent2D extent() const noexcept { return extent_; }
   VkPresentModeKHR present_mode() const noexcept { return mode_; }
   bool transfer_src() const noexcept { return transfer_src_; }
   VkSwapchainKHR handle() const noexcept { return swapchain_; }
@@ -91,11 +102,11 @@ class Swapchain {
   SwapchainDesc desc_{};
   VkSwapchainKHR swapchain_ = VK_NULL_HANDLE;
   Vector<ImageResource> images_;  // not owned by VMA: image + format + extent only
-  Vector<VkImageView> views_;
-  Vector<VkSemaphore> render_finished_;
-  VkFormat format_ = VK_FORMAT_UNDEFINED;
+  Vector<ImageViewHandle> views_;
+  Vector<SemaphoreHandle> render_finished_;
+  Format format_ = Format::Undefined;
   VkColorSpaceKHR color_space_ = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
-  VkExtent2D extent_{};
+  Extent2D extent_{};
   VkPresentModeKHR mode_ = VK_PRESENT_MODE_FIFO_KHR;
   bool transfer_src_ = false;
   const char* last_error_ = "";

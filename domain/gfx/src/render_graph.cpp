@@ -1,9 +1,22 @@
 #include <core/base/assert.h>
 #include <core/log/log.h>
+#include <core/memory/memory.h>
+#include <domain/gfx/backend/vulkan/vulkan.h>
 #include <domain/gfx/bindless.h>
 #include <domain/gfx/render_graph.h>
 
+#include <memory>
+
 namespace engine::gfx {
+
+// The barriers are Vulkan's own records, built once by compile() and handed to
+// vkCmdPipelineBarrier2 by execute() as they are; the header keeps them behind a pointer so it
+// names no Vulkan type (render_graph.h).
+struct RenderGraph::Barriers {
+  Vector<VkMemoryBarrier2> buffer;
+  Vector<VkImageMemoryBarrier2> image;
+  Vector<VkImageMemoryBarrier2> final;  // after the last pass (set_final_layout)
+};
 
 namespace {
 
@@ -86,8 +99,8 @@ AccessInfo access_info(Access access) noexcept {
           true};
 }
 
-VkImageAspectFlags aspect_for(VkFormat format) noexcept {
-  switch (format) {
+VkImageAspectFlags aspect_for(Format format) noexcept {
+  switch (vk::native(format)) {
     case VK_FORMAT_D16_UNORM:
     case VK_FORMAT_D32_SFLOAT:
     case VK_FORMAT_X8_D24_UNORM_PACK32: return VK_IMAGE_ASPECT_DEPTH_BIT;
@@ -117,17 +130,14 @@ void PassBuilder::read(RgImage image, Access access) {
 void PassBuilder::write(RgImage image, Access access) {
   graph_->add_use(pass_, true, image.index, access, true);
 }
-void PassBuilder::color_attachment(RgImage image, VkAttachmentLoadOp load,
-                                   VkClearColorValue clear) {
+void PassBuilder::color_attachment(RgImage image, LoadOp load, ClearColor clear) {
   graph_->add_use(pass_, true, image.index, Access::ColorAttachment, true);
-  VkClearValue value{};
-  value.color = clear;
-  graph_->add_attachment(pass_, image.index, load, value, false);
+  graph_->add_attachment(pass_, image.index, load, clear, false);
 }
-void PassBuilder::depth_attachment(RgImage image, VkAttachmentLoadOp load, float clear_depth) {
+void PassBuilder::depth_attachment(RgImage image, LoadOp load, float clear_depth) {
   graph_->add_use(pass_, true, image.index, Access::DepthAttachment, true);
-  VkClearValue value{};
-  value.depthStencil = {clear_depth, 0};
+  ClearColor value{};  // depth in the first float, stencil 0: VkClearDepthStencilValue's layout
+  value.float32[0] = clear_depth;
   graph_->add_attachment(pass_, image.index, load, value, true);
 }
 void PassBuilder::render_area(u32 width, u32 height) {
@@ -136,9 +146,16 @@ void PassBuilder::render_area(u32 width, u32 height) {
 
 // ---- RenderGraph -----------------------------------------------------------------------------
 
-RenderGraph::RenderGraph(const Device& device) : device_(&device) {}
+RenderGraph::RenderGraph(const Device& device) : device_(&device) {
+  barriers_ = static_cast<Barriers*>(mem::allocate(sizeof(Barriers), alignof(Barriers)));
+  std::construct_at(barriers_);
+}
 
-RenderGraph::~RenderGraph() { reset(); }
+RenderGraph::~RenderGraph() {
+  reset();
+  std::destroy_at(barriers_);
+  mem::deallocate(barriers_, sizeof(Barriers), alignof(Barriers));
+}
 
 void RenderGraph::reset() noexcept {
   for (BufferNode& b : buffers_) {
@@ -153,9 +170,9 @@ void RenderGraph::reset() noexcept {
   uses_.clear();
   attachments_.clear();
   passes_.clear();
-  buffer_barriers_.clear();
-  image_barriers_.clear();
-  final_barriers_.clear();
+  barriers_->buffer.clear();
+  barriers_->image.clear();
+  barriers_->final.clear();
   pass_image_layouts_.clear();
   arena_.reset();
   current_pass_ = ~u32{0};
@@ -182,7 +199,7 @@ RgImage RenderGraph::create_image(const char* name, const RgImageDesc& desc) {
 }
 
 RgBuffer RenderGraph::import_buffer(const char* name, const BufferResource& buffer,
-                                    VkPipelineStageFlags2 last_stage, VkAccessFlags2 last_access) {
+                                    PipelineStage last_stage, MemoryAccess last_access) {
   ENGINE_VERIFY(!compiled_, "RenderGraph: cannot add resources after compile");
   BufferNode node{};
   node.name = name;
@@ -192,17 +209,16 @@ RgBuffer RenderGraph::import_buffer(const char* name, const BufferResource& buff
   node.has_producer = true;
   node.state.stage = last_stage;
   node.state.access = last_access;
-  node.state.written =
-      (last_access & (VK_ACCESS_2_MEMORY_WRITE_BIT | VK_ACCESS_2_SHADER_WRITE_BIT |
-                      VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT |
-                      VK_ACCESS_2_HOST_WRITE_BIT)) != 0;
+  node.state.written = any(last_access & (MemoryAccess::MemoryWrite | MemoryAccess::ShaderWrite |
+                                          MemoryAccess::ShaderStorageWrite |
+                                          MemoryAccess::TransferWrite | MemoryAccess::HostWrite));
   buffers_.push_back(node);
   return RgBuffer{buffers_.size() - 1};
 }
 
 RgImage RenderGraph::import_image(const char* name, const ImageResource& image,
-                                  VkImageLayout current_layout, VkPipelineStageFlags2 last_stage,
-                                  VkAccessFlags2 last_access) {
+                                  ImageLayout current_layout, PipelineStage last_stage,
+                                  MemoryAccess last_access) {
   ENGINE_VERIFY(!compiled_, "RenderGraph: cannot add resources after compile");
   ImageNode node{};
   node.name = name;
@@ -238,10 +254,10 @@ void RenderGraph::set_pass_area(u32 pass, u32 width, u32 height) {
   ENGINE_VERIFY(pass == passes_.size() - 1, "RenderGraph: PassBuilder used outside its pass setup");
   ENGINE_VERIFY(passes_[pass].kind == PassKind::Raster,
                 "RenderGraph: render_area needs a Raster pass");
-  passes_[pass].area = VkExtent2D{width, height};
+  passes_[pass].area = Extent2D{width, height};
 }
 
-void RenderGraph::add_attachment(u32 pass, u32 image, VkAttachmentLoadOp load, VkClearValue clear,
+void RenderGraph::add_attachment(u32 pass, u32 image, LoadOp load, const ClearColor& clear,
                                  bool depth) {
   ENGINE_VERIFY(pass == passes_.size() - 1, "RenderGraph: PassBuilder used outside its pass setup");
   ENGINE_VERIFY(passes_[pass].kind == PassKind::Raster,
@@ -258,7 +274,7 @@ void RenderGraph::add_attachment(u32 pass, u32 image, VkAttachmentLoadOp load, V
 bool RenderGraph::create_attachment_views(std::string* error) {
   for (const Attachment& a : attachments_) {
     ImageNode& node = images_[a.image];
-    if (node.view != VK_NULL_HANDLE) continue;
+    if (node.view) continue;
     if (!create_image_view(*device_, node.resource, node.view, error)) {
       if (error != nullptr) error->insert(0, std::string("attachment view '") + node.name + "': ");
       return false;
@@ -267,7 +283,7 @@ bool RenderGraph::create_attachment_views(std::string* error) {
   return true;
 }
 
-void RenderGraph::begin_rendering(VkCommandBuffer commands, const Pass& pass) {
+void RenderGraph::begin_rendering(CommandList commands, const Pass& pass) {
   VkRenderingAttachmentInfo colors[8]{};
   VkRenderingAttachmentInfo depth{};
   u32 color_count = 0;
@@ -278,39 +294,42 @@ void RenderGraph::begin_rendering(VkCommandBuffer commands, const Pass& pass) {
     const ImageNode& node = images_[a.image];
     VkRenderingAttachmentInfo info{};
     info.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-    info.imageView = node.view;
+    info.imageView = vk::native(node.view);
     info.imageLayout = a.depth ? VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL
                                : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    info.loadOp = a.load;
+    info.loadOp = vk::native(a.load);
     info.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    info.clearValue = a.clear;
+    if (a.depth) {
+      info.clearValue.depthStencil = {a.clear.float32[0], 0};
+    } else {
+      info.clearValue.color = vk::native(a.clear);
+    }
     if (a.depth) {
       depth = info;
       has_depth = true;
     } else if (color_count < 8) {
       colors[color_count++] = info;
     }
-    render_area_ = VkExtent2D{node.resource.width, node.resource.height};
+    render_area_ = Extent2D{node.resource.width, node.resource.height};
   }
   VkRenderingInfo rendering{};
   rendering.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-  rendering.renderArea = {{0, 0}, render_area_};
+  rendering.renderArea = {{0, 0}, vk::native(render_area_)};
   rendering.layerCount = 1;
   rendering.colorAttachmentCount = color_count;
   rendering.pColorAttachments = colors;
   rendering.pDepthAttachment = has_depth ? &depth : nullptr;
-  vkCmdBeginRendering(commands, &rendering);
+  vkCmdBeginRendering(vk::native(commands), &rendering);
   // Negative height flips Vulkan's y-down framebuffer to the y-up clip space core/math produces,
   // so counter-clockwise triangles in y-up space are the front faces.
-  VkViewport viewport{};
+  Viewport viewport{};
   viewport.y = static_cast<float>(render_area_.height);
   viewport.width = static_cast<float>(render_area_.width);
   viewport.height = -static_cast<float>(render_area_.height);
-  viewport.minDepth = 0.0f;
-  viewport.maxDepth = 1.0f;
-  vkCmdSetViewport(commands, 0, 1, &viewport);
-  const VkRect2D scissor{{0, 0}, render_area_};
-  vkCmdSetScissor(commands, 0, 1, &scissor);
+  viewport.min_depth = 0.0f;
+  viewport.max_depth = 1.0f;
+  commands.set_viewport(viewport);
+  commands.set_scissor(Rect2D{{0, 0}, render_area_});
 }
 
 void RenderGraph::add_use(u32 pass, bool is_image, u32 index, Access access, bool write) {
@@ -353,8 +372,8 @@ void RenderGraph::compute_barriers() {
   // only widens the recorded stage mask so a later barrier covers every reader.
   for (u32 p = 0; p < passes_.size(); ++p) {
     Pass& pass = passes_[p];
-    pass.first_buffer_barrier = buffer_barriers_.size();
-    pass.first_image_barrier = image_barriers_.size();
+    pass.first_buffer_barrier = barriers_->buffer.size();
+    pass.first_image_barrier = barriers_->image.size();
     pass.first_layout = pass_image_layouts_.size();
     for (u32 u = pass.first_use; u < pass.first_use + pass.use_count; ++u) {
       const Use& use = uses_[u];
@@ -363,56 +382,59 @@ void RenderGraph::compute_barriers() {
       if (use.is_image) {
         ImageNode& node = images_[use.index];
         State& s = node.state;
-        const bool layout_change = s.layout != info.layout;
+        const ImageLayout layout = vk::wrap(info.layout);
+        const bool layout_change = s.layout != layout;
         const bool needs = s.written || writes || layout_change;
         if (needs) {
           VkImageMemoryBarrier2 barrier{};
           barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-          barrier.srcStageMask =
-              s.stage != VK_PIPELINE_STAGE_2_NONE ? s.stage : VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
-          barrier.srcAccessMask = s.access;
+          barrier.srcStageMask = s.stage != PipelineStage::None
+                                     ? vk::native(s.stage)
+                                     : VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
+          barrier.srcAccessMask = vk::native(s.access);
           barrier.dstStageMask = info.stage;
           barrier.dstAccessMask = info.access;
-          barrier.oldLayout = s.layout;
+          barrier.oldLayout = vk::native(s.layout);
           barrier.newLayout = info.layout;
           barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
           barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-          barrier.image = node.resource.image;
+          barrier.image = vk::native(node.resource.image);
           barrier.subresourceRange = {aspect_for(node.resource.format), 0, 1, 0, 1};
-          image_barriers_.push_back(barrier);
+          barriers_->image.push_back(barrier);
           ++pass.image_barrier_count;
           ++stats_.image_barriers;
           if (layout_change) ++stats_.layout_transitions;
-          s.stage = info.stage;
-          s.access = info.access;
+          s.stage = vk::pipeline_stage(info.stage);
+          s.access = vk::memory_access(info.access);
         } else {
-          s.stage |= info.stage;
-          s.access |= info.access;
+          s.stage |= vk::pipeline_stage(info.stage);
+          s.access |= vk::memory_access(info.access);
         }
-        s.layout = info.layout;
+        s.layout = layout;
         s.written = writes;
-        node.final_layout = info.layout;
-        pass_image_layouts_.push_back(info.layout);
+        node.final_layout = layout;
+        pass_image_layouts_.push_back(layout);
       } else {
         BufferNode& node = buffers_[use.index];
         State& s = node.state;
-        const bool needs = s.written || (writes && s.stage != VK_PIPELINE_STAGE_2_NONE);
+        const bool needs = s.written || (writes && s.stage != PipelineStage::None);
         if (needs) {
           VkMemoryBarrier2 barrier{};
           barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
-          barrier.srcStageMask =
-              s.stage != VK_PIPELINE_STAGE_2_NONE ? s.stage : VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
-          barrier.srcAccessMask = s.access;
+          barrier.srcStageMask = s.stage != PipelineStage::None
+                                     ? vk::native(s.stage)
+                                     : VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
+          barrier.srcAccessMask = vk::native(s.access);
           barrier.dstStageMask = info.stage;
           barrier.dstAccessMask = info.access;
-          buffer_barriers_.push_back(barrier);
+          barriers_->buffer.push_back(barrier);
           ++pass.buffer_barrier_count;
           ++stats_.buffer_barriers;
-          s.stage = info.stage;
-          s.access = info.access;
+          s.stage = vk::pipeline_stage(info.stage);
+          s.access = vk::memory_access(info.access);
         } else {
-          s.stage |= info.stage;
-          s.access |= info.access;
+          s.stage |= vk::pipeline_stage(info.stage);
+          s.access |= vk::memory_access(info.access);
         }
         s.written = writes;
       }
@@ -420,7 +442,7 @@ void RenderGraph::compute_barriers() {
   }
 }
 
-void RenderGraph::set_final_layout(RgImage image, VkImageLayout layout) {
+void RenderGraph::set_final_layout(RgImage image, ImageLayout layout) {
   ENGINE_VERIFY(!compiled_, "RenderGraph: set_final_layout before compile");
   ENGINE_VERIFY(image.index < images_.size(), "RenderGraph::set_final_layout: invalid handle");
   images_[image.index].requested_final = layout;
@@ -456,28 +478,28 @@ bool RenderGraph::compile(std::string* error) {
   if (!create_attachment_views(error)) return false;
   compute_barriers();
   for (ImageNode& node : images_) {
-    if (node.requested_final == VK_IMAGE_LAYOUT_UNDEFINED ||
+    if (node.requested_final == ImageLayout::Undefined ||
         node.requested_final == node.state.layout) {
       continue;
     }
     VkImageMemoryBarrier2 barrier{};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-    barrier.srcStageMask = node.state.stage != VK_PIPELINE_STAGE_2_NONE
-                               ? node.state.stage
+    barrier.srcStageMask = node.state.stage != PipelineStage::None
+                               ? vk::native(node.state.stage)
                                : VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
-    barrier.srcAccessMask = node.state.access;
+    barrier.srcAccessMask = vk::native(node.state.access);
     barrier.dstStageMask = VK_PIPELINE_STAGE_2_NONE;  // consumed by the submit's signal
     barrier.dstAccessMask = VK_ACCESS_2_NONE;
-    barrier.oldLayout = node.state.layout;
-    barrier.newLayout = node.requested_final;
+    barrier.oldLayout = vk::native(node.state.layout);
+    barrier.newLayout = vk::native(node.requested_final);
     barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.image = node.resource.image;
+    barrier.image = vk::native(node.resource.image);
     barrier.subresourceRange = {aspect_for(node.resource.format), 0, 1, 0, 1};
-    final_barriers_.push_back(barrier);
+    barriers_->final.push_back(barrier);
     node.state.layout = node.requested_final;
-    node.state.stage = VK_PIPELINE_STAGE_2_NONE;
-    node.state.access = VK_ACCESS_2_NONE;
+    node.state.stage = PipelineStage::None;
+    node.state.access = MemoryAccess::None;
     node.final_layout = node.requested_final;
     ++stats_.image_barriers;
     ++stats_.layout_transitions;
@@ -495,32 +517,33 @@ bool RenderGraph::compile(std::string* error) {
   return true;
 }
 
-void RenderGraph::execute(VkCommandBuffer commands) {
+void RenderGraph::execute(CommandList commands) {
   ENGINE_VERIFY(compiled_, "RenderGraph::execute: compile first");
+  const VkCommandBuffer cb = vk::native(commands);
   for (u32 p = 0; p < passes_.size(); ++p) {
     const Pass& pass = passes_[p];
     if (pass.buffer_barrier_count > 0 || pass.image_barrier_count > 0) {
       VkDependencyInfo dependency{};
       dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
       dependency.memoryBarrierCount = pass.buffer_barrier_count;
-      dependency.pMemoryBarriers = buffer_barriers_.data() + pass.first_buffer_barrier;
+      dependency.pMemoryBarriers = barriers_->buffer.data() + pass.first_buffer_barrier;
       dependency.imageMemoryBarrierCount = pass.image_barrier_count;
-      dependency.pImageMemoryBarriers = image_barriers_.data() + pass.first_image_barrier;
-      vkCmdPipelineBarrier2(commands, &dependency);
+      dependency.pImageMemoryBarriers = barriers_->image.data() + pass.first_image_barrier;
+      vkCmdPipelineBarrier2(cb, &dependency);
     }
     current_pass_ = p;
     const bool raster =
         pass.kind == PassKind::Raster && (pass.attachment_count > 0 || pass.area.width > 0);
     if (raster) begin_rendering(commands, pass);
     pass.execute(commands, *this, pass.context);
-    if (raster) vkCmdEndRendering(commands);
+    if (raster) vkCmdEndRendering(cb);
   }
-  if (!final_barriers_.empty()) {
+  if (!barriers_->final.empty()) {
     VkDependencyInfo dependency{};
     dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    dependency.imageMemoryBarrierCount = final_barriers_.size();
-    dependency.pImageMemoryBarriers = final_barriers_.data();
-    vkCmdPipelineBarrier2(commands, &dependency);
+    dependency.imageMemoryBarrierCount = barriers_->final.size();
+    dependency.pImageMemoryBarriers = barriers_->final.data();
+    vkCmdPipelineBarrier2(cb, &dependency);
   }
   current_pass_ = ~u32{0};
 }
@@ -535,8 +558,8 @@ const ImageResource& RenderGraph::image(RgImage handle) const noexcept {
   return images_[handle.index].resource;
 }
 
-VkImageLayout RenderGraph::image_layout(RgImage handle) const noexcept {
-  if (current_pass_ == ~u32{0} || handle.index >= images_.size()) return VK_IMAGE_LAYOUT_UNDEFINED;
+ImageLayout RenderGraph::image_layout(RgImage handle) const noexcept {
+  if (current_pass_ == ~u32{0} || handle.index >= images_.size()) return ImageLayout::Undefined;
   const Pass& pass = passes_[current_pass_];
   u32 layout_slot = pass.first_layout;
   for (u32 u = pass.first_use; u < pass.first_use + pass.use_count; ++u) {
@@ -545,16 +568,16 @@ VkImageLayout RenderGraph::image_layout(RgImage handle) const noexcept {
     if (use.index == handle.index) return pass_image_layouts_[layout_slot];
     ++layout_slot;
   }
-  return VK_IMAGE_LAYOUT_UNDEFINED;
+  return ImageLayout::Undefined;
 }
 
-VkImageView RenderGraph::image_view(RgImage handle) const noexcept {
-  return handle.index < images_.size() ? images_[handle.index].view : VK_NULL_HANDLE;
+ImageViewHandle RenderGraph::image_view(RgImage handle) const noexcept {
+  return handle.index < images_.size() ? images_[handle.index].view : ImageViewHandle{};
 }
 
-VkImageLayout RenderGraph::final_layout(RgImage handle) const noexcept {
+ImageLayout RenderGraph::final_layout(RgImage handle) const noexcept {
   return handle.index < images_.size() ? images_[handle.index].final_layout
-                                       : VK_IMAGE_LAYOUT_UNDEFINED;
+                                       : ImageLayout::Undefined;
 }
 
 }  // namespace engine::gfx

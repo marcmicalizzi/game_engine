@@ -1,20 +1,18 @@
 #pragma once
 
-// Windows and input over SDL3 (ADR-0012), and the two pieces of Vulkan glue a window system
-// owns: the instance extensions a surface needs and surface creation. The rest of the engine
-// never sees SDL. Everything here is process-wide and main-thread only.
+// Windows and input over SDL3 (ADR-0012). The rest of the engine never sees SDL. Everything here
+// is process-wide and main-thread only.
 //
 //     if (!window::init(&error)) { /* no display: run headless */ }
 //     window::Window window;
 //     window.create({.title = "view", .width = 1280, .height = 720}, &error);
-//     gfx::DeviceOptions options;
-//     options.instance_extensions = window::Window::vulkan_instance_extensions();
-//     ...
 //     window::Event event;
 //     while (window.poll(event)) { if (event.kind == window::EventKind::Quit) running = false; }
 //
-// Vulkan handle types are forward-declared the way SDL does it, so this header pulls in
-// neither SDL nor the Vulkan headers; on 64-bit targets the typedefs match vulkan_core.h.
+// The Vulkan glue a window system owns — the instance extensions a surface needs, and making and
+// destroying the surface — is not here: it is a backend header,
+// foundation/window/backend/vulkan/surface.h, so that this one names no graphics API
+// (docs/subsystems/window.md, "The Vulkan surface").
 
 #include <core/base/macros.h>
 #include <core/base/types.h>
@@ -22,11 +20,6 @@
 
 #include <span>
 #include <string>
-
-#if !defined(VULKAN_CORE_H_)
-typedef struct VkInstance_T* VkInstance;
-typedef struct VkSurfaceKHR_T* VkSurfaceKHR;
-#endif
 
 namespace engine::window {
 
@@ -352,7 +345,7 @@ struct WindowDesc {
   u32 width = 1280;  // logical size; the pixel size may differ on high-DPI displays
   u32 height = 720;
   bool resizable = true;
-  bool vulkan = true;  // create with Vulkan surface support
+  bool vulkan = true;  // create able to carry a Vulkan surface (backend/vulkan/surface.h)
   bool hidden = false;
 };
 
@@ -398,13 +391,6 @@ class Window {
   // shared desktop — without handing keystrokes to whatever window the OS has focused, which is
   // what synthesizing them at the OS level would do (docs/subsystems/apps.md, `--inject-input`).
   bool push_event(const Event& event) noexcept;
-
-  // Instance extensions the platform surface needs; empty (with SDL's reason logged) when
-  // Vulkan is unavailable to SDL. Valid after init().
-  static std::span<const char* const> vulkan_instance_extensions();
-  bool create_vulkan_surface(VkInstance instance, VkSurfaceKHR& out,
-                             std::string* error = nullptr) const;
-  static void destroy_vulkan_surface(VkInstance instance, VkSurfaceKHR surface) noexcept;
 
  private:
   void* handle_ = nullptr;

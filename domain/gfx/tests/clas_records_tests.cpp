@@ -16,12 +16,12 @@
 #include "raster_path.h"
 
 #include <domain/geometry/cluster.h>
+#include <domain/gfx/backend/vulkan/vulkan.h>
 #include <domain/gfx/cluster_acceleration.h>
 #include <domain/gfx/cluster_cull.h>
 #include <domain/gfx/device.h>
 #include <domain/gfx/frame.h>
 #include <domain/gfx/render_graph.h>
-#include <domain/gfx/vulkan.h>
 
 #include <doctest/doctest.h>
 
@@ -80,7 +80,7 @@ struct RecordsFixture {
   gfx::BufferResource clusters, vertices, index8, instances, visible_buffer, count_buffer,
       caster_count_buffer, slots, instance_counts, records, record_count, blas_records, meshes,
       deform_table, deform_slots, pool;
-  VkShaderModule module = VK_NULL_HANDLE;
+  gfx::ShaderModuleHandle module = {};
   gfx::ComputePipeline bucket, ranges, emit;
   bool ready = false;
 
@@ -143,8 +143,8 @@ struct RecordsFixture {
       if (visible[e * 2] != k_deformed) continue;
       deform_slot_table[e] = k_pool_bias + mesh.clusters[visible[e * 2 + 1]].vertex_offset;
     }
-    constexpr VkBufferUsageFlags k_storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-    constexpr VkBufferUsageFlags k_address = k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+    constexpr gfx::BufferUsage k_storage = gfx::BufferUsage::Storage;
+    constexpr gfx::BufferUsage k_address = k_storage | gfx::BufferUsage::ShaderDeviceAddress;
     REQUIRE(gfx::upload_buffer(device, mesh.clusters.data(),
                                cluster_count * sizeof(geometry::ClusterDesc), k_storage, clusters,
                                &error));
@@ -173,7 +173,7 @@ struct RecordsFixture {
     REQUIRE(
         gfx::create_buffer(device, u64{pair_count} * sizeof(u32), k_address, false, slots, &error));
     REQUIRE(gfx::create_buffer(device, sizeof(u32) * k_instances * 3,
-                               k_address | VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, instance_counts,
+                               k_address | gfx::BufferUsage::TransferDst, true, instance_counts,
                                &error));
     REQUIRE(gfx::create_buffer(device, gfx::k_cluster_build_record_bytes * pair_count, k_address,
                                true, records, &error));
@@ -183,7 +183,7 @@ struct RecordsFixture {
                                true, blas_records, &error));
     module = gfx::create_shader_module(device, shaders::k_clas_records_spirv,
                                        shaders::k_clas_records_spirv_size, &error);
-    REQUIRE(module != VK_NULL_HANDLE);
+    REQUIRE(module.valid());
     const u32 push = sizeof(gfx::ClusterRecordParams);
     REQUIRE_MESSAGE(
         gfx::create_compute_pipeline(device, module, "records_main", {}, push, bucket, &error),
@@ -221,8 +221,8 @@ struct RecordsFixture {
     params.capacity = capacity;
     REQUIRE(gfx::submit_immediate(
         device,
-        [&](VkCommandBuffer cb) {
-          vkCmdFillBuffer(cb, instance_counts.buffer, 0, VK_WHOLE_SIZE, 0);
+        [&](gfx::CommandList cb) {
+          cb.fill_buffer(instance_counts.buffer, 0, gfx::k_whole_size, 0);
           VkMemoryBarrier2 barrier{};
           barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
           barrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
@@ -237,11 +237,11 @@ struct RecordsFixture {
           // The bucketing pass covers the drawn run and the caster run; the emit pass the slots.
           const u32 groups[3] = {(2 * pair_count + 63) / 64, 1, (pair_count + 63) / 64};
           for (u32 p = 0; p < 3; ++p) {
-            vkCmdPipelineBarrier2(cb, &dependency);
-            vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, passes[p]->pipeline);
-            vkCmdPushConstants(cb, passes[p]->layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                               sizeof(params), &params);
-            vkCmdDispatch(cb, groups[p], 1, 1);
+            vkCmdPipelineBarrier2(gfx::vk::native(cb), &dependency);
+            cb.bind_pipeline(gfx::BindPoint::Compute, passes[p]->pipeline);
+            cb.push_constants(passes[p]->layout, gfx::ShaderStage::Compute, 0, sizeof(params),
+                              &params);
+            cb.dispatch(groups[p], 1, 1);
           }
         },
         &error));
@@ -346,7 +346,7 @@ struct RecordsFixture {
     gfx::destroy_compute_pipeline(device, bucket);
     gfx::destroy_compute_pipeline(device, ranges);
     gfx::destroy_compute_pipeline(device, emit);
-    if (module != VK_NULL_HANDLE) gfx::destroy_shader_module(device, module);
+    if (module.valid()) gfx::destroy_shader_module(device, module);
     for (gfx::BufferResource* b :
          {&clusters, &vertices, &index8, &instances, &visible_buffer, &count_buffer,
           &caster_count_buffer, &slots, &instance_counts, &records, &record_count, &blas_records,

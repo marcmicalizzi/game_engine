@@ -9,10 +9,10 @@
 // first two cases below are `DeviceOptions::overrides` pretending to be those machines, which is
 // the only way to test the refusal and the clamping before the hardware is in reach.
 
+#include <domain/gfx/backend/vulkan/vulkan.h>
 #include <domain/gfx/bindless.h>
 #include <domain/gfx/device.h>
 #include <domain/gfx/requirements.h>
-#include <domain/gfx/vulkan.h>
 
 #include <doctest/doctest.h>
 
@@ -464,7 +464,7 @@ TEST_CASE("gfx: an Intel-Gen9-like device clamps the bindless set and still draw
   CHECK(bindless.capacity().storage_images == 64);
   CHECK(bindless.capacity().samplers == 16);
   CHECK(bindless.capacity().push_constant_bytes == gfx::k_push_constant_bytes);
-  CHECK(bindless.pipeline_layout() != VK_NULL_HANDLE);
+  CHECK(bindless.pipeline_layout().valid());
   bindless.destroy();
 
   // And the device really works: the same clear-and-readback device_tests.cpp runs, so a clamp
@@ -472,38 +472,40 @@ TEST_CASE("gfx: an Intel-Gen9-like device clamps the bindless set and still draw
   constexpr u32 k_width = 32;
   constexpr u32 k_height = 24;
   gfx::ImageResource image;
-  REQUIRE_MESSAGE(
-      gfx::create_image_2d(device, k_width, k_height, VK_FORMAT_R8G8B8A8_UNORM,
-                           VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, image,
-                           &error),
-      error);
+  REQUIRE_MESSAGE(gfx::create_image_2d(device, k_width, k_height, gfx::Format::R8G8B8A8Unorm,
+                                       gfx::ImageUsage::TransferDst | gfx::ImageUsage::TransferSrc,
+                                       image, &error),
+                  error);
   gfx::BufferResource readback;
   const u64 bytes = u64{k_width} * k_height * 4;
-  REQUIRE_MESSAGE(gfx::create_buffer(device, bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+  REQUIRE_MESSAGE(gfx::create_buffer(device, bytes, gfx::BufferUsage::TransferDst,
                                      /*host_visible=*/true, readback, &error),
                   error);
   std::memset(readback.mapped, 0, static_cast<usize>(bytes));
   REQUIRE(gfx::submit_immediate(
       device,
-      [&](VkCommandBuffer commands) {
-        gfx::image_barrier(commands, image.image, VK_IMAGE_LAYOUT_UNDEFINED,
-                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_NONE, 0,
-                           VK_PIPELINE_STAGE_2_CLEAR_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+      [&](gfx::CommandList commands) {
+        gfx::image_barrier(gfx::vk::native(commands), gfx::vk::native(image.image),
+                           VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                           VK_PIPELINE_STAGE_2_NONE, 0, VK_PIPELINE_STAGE_2_CLEAR_BIT,
+                           VK_ACCESS_2_TRANSFER_WRITE_BIT);
         VkClearColorValue color{};
         color.float32[0] = 1.0f;
         color.float32[3] = 1.0f;
         const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-        vkCmdClearColorImage(commands, image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &color, 1,
-                             &range);
-        gfx::image_barrier(commands, image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        vkCmdClearColorImage(gfx::vk::native(commands), gfx::vk::native(image.image),
+                             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &color, 1, &range);
+        gfx::image_barrier(gfx::vk::native(commands), gfx::vk::native(image.image),
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_CLEAR_BIT,
                            VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_COPY_BIT,
                            VK_ACCESS_2_TRANSFER_READ_BIT);
         VkBufferImageCopy region{};
         region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
         region.imageExtent = {k_width, k_height, 1};
-        vkCmdCopyImageToBuffer(commands, image.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                               readback.buffer, 1, &region);
+        vkCmdCopyImageToBuffer(gfx::vk::native(commands), gfx::vk::native(image.image),
+                               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                               gfx::vk::native(readback.buffer), 1, &region);
       },
       &error));
   const auto* pixels = static_cast<const u8*>(readback.mapped);

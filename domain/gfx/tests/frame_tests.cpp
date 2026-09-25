@@ -1,8 +1,8 @@
 #include "raster_path.h"
 
+#include <domain/gfx/backend/vulkan/vulkan.h>
 #include <domain/gfx/device.h>
 #include <domain/gfx/frame.h>
-#include <domain/gfx/vulkan.h>
 
 #include <doctest/doctest.h>
 
@@ -32,23 +32,21 @@ TEST_CASE("gfx: frames in flight advance a timeline and recycle deferred resourc
 
   const u32 baseline = live_allocations(device);
   gfx::BufferResource target;
-  REQUIRE(
-      gfx::create_buffer(device, 4096, VK_BUFFER_USAGE_TRANSFER_DST_BIT, false, target, &error));
+  REQUIRE(gfx::create_buffer(device, 4096, gfx::BufferUsage::TransferDst, false, target, &error));
 
   constexpr u32 k_frames = 6;
   u64 last_value = 0;
   for (u32 f = 0; f < k_frames; ++f) {
-    VkCommandBuffer commands = frames.begin_frame();
+    gfx::CommandList commands = frames.begin_frame();
     CHECK(frames.recording());
     CHECK(frames.slot() == f % 2);
     CHECK(frames.frame_index() == f);
     // Per-frame scratch that the GPU reads: destroyed only once this slot is recycled.
     gfx::BufferResource scratch;
-    REQUIRE(
-        gfx::create_buffer(device, 1024, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true, scratch, &error));
-    vkCmdFillBuffer(commands, target.buffer, 0, 4096, f);
-    VkBufferCopy copy{0, 0, 1024};
-    vkCmdCopyBuffer(commands, scratch.buffer, target.buffer, 1, &copy);
+    REQUIRE(gfx::create_buffer(device, 1024, gfx::BufferUsage::TransferSrc, true, scratch, &error));
+    commands.fill_buffer(target.buffer, 0, 4096, f);
+    gfx::BufferCopy copy{0, 0, 1024};
+    commands.copy_buffer(scratch.buffer, target.buffer, copy);
     frames.defer_destroy(scratch);
     last_value = frames.end_frame();
     CHECK(last_value == f + 1);
@@ -63,7 +61,7 @@ TEST_CASE("gfx: frames in flight advance a timeline and recycle deferred resourc
   // Deferred destruction outside a frame attaches to the last submitted frame and runs when
   // its slot is recycled.
   gfx::BufferResource late;
-  REQUIRE(gfx::create_buffer(device, 512, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, false, late, &error));
+  REQUIRE(gfx::create_buffer(device, 512, gfx::BufferUsage::TransferSrc, false, late, &error));
   frames.defer_destroy(late);
   const u32 before = live_allocations(device);
   (void)frames.begin_frame();  // recycles slot 0 (frame 4)

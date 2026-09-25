@@ -11,9 +11,9 @@
 // They walk the same rows now, and a row added here is checked and reported in the same commit.
 //
 // The rows are checked against `DeviceCaps`, a flat copy of every property and feature they
-// read, filled from a physical device by `read_device_caps()` (domain/gfx/vulkan.h, because that
-// half needs Vulkan). `DeviceOverrides` edits that copy before the check, which is how a machine
-// that has everything tests the refusal and the clamping of a machine that does not: the
+// read, filled from a physical device by `read_device_caps()` (domain/gfx/backend/vulkan/vulkan.h,
+// because that half needs Vulkan). `DeviceOverrides` edits that copy before the check, which is how
+// a machine that has everything tests the refusal and the clamping of a machine that does not: the
 // overrides name rows by the same `name` the table and the report use, so a typo is an error
 // rather than a test that silently checks nothing.
 //

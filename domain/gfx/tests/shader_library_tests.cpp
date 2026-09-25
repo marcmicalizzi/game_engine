@@ -40,14 +40,14 @@ TEST_CASE("shader reflection: entry points, workgroup sizes, bindings, push cons
   CHECK(r.spirv_version >= 0x00010600u);
   REQUIRE(r.entry_points.size() == 1);
   CHECK(r.entry_points[0].name == "fill");
-  CHECK(r.entry_points[0].stage == VK_SHADER_STAGE_COMPUTE_BIT);
+  CHECK(r.entry_points[0].stage == gfx::ShaderStage::Compute);
   CHECK(r.entry_points[0].local_size[0] == 64);
   CHECK(r.entry_points[0].local_size[1] == 1);
   CHECK(r.push_constant_bytes == 12);
   REQUIRE(r.bindings.size() == 1);
   CHECK(r.bindings[0].set == 0);
   CHECK(r.bindings[0].binding == 0);
-  CHECK(r.bindings[0].type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+  CHECK(r.bindings[0].type == gfx::DescriptorType::StorageBuffer);
   CHECK(r.bindings[0].count == 1);
   CHECK(r.bindings[0].name == "g_data");
 
@@ -56,17 +56,17 @@ TEST_CASE("shader reflection: entry points, workgroup sizes, bindings, push cons
   REQUIRE(r.bindings.size() == 2);
   CHECK(r.binding_at(0, 0) != nullptr);
   CHECK(r.binding_at(0, 1) != nullptr);
-  CHECK(r.binding_at(0, 1)->type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+  CHECK(r.binding_at(0, 1)->type == gfx::DescriptorType::StorageBuffer);
   CHECK(r.binding_at(1, 0) == nullptr);
 
   REQUIRE(gfx::reflect_spirv(
       words_of(shaders::k_bindless_copy_spirv, shaders::k_bindless_copy_spirv_size), r, &error));
   REQUIRE(r.bindings.size() == 3);
-  CHECK(r.bindings[0].type == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE);
+  CHECK(r.bindings[0].type == gfx::DescriptorType::SampledImage);
   CHECK(r.bindings[0].count == 0);  // unbounded
-  CHECK(r.bindings[1].type == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+  CHECK(r.bindings[1].type == gfx::DescriptorType::StorageImage);
   CHECK(r.bindings[1].count == 0);
-  CHECK(r.bindings[2].type == VK_DESCRIPTOR_TYPE_SAMPLER);
+  CHECK(r.bindings[2].type == gfx::DescriptorType::Sampler);
   CHECK(r.bindings[2].binding == 2);
   REQUIRE(r.entry_points.size() == 1);
   CHECK(r.entry_points[0].local_size[0] == 8);
@@ -77,10 +77,10 @@ TEST_CASE("shader reflection: entry points, workgroup sizes, bindings, push cons
   REQUIRE(r.entry_points.size() == 4);
   const gfx::ShaderEntryPoint* mesh = r.entry("mesh_main");
   REQUIRE(mesh != nullptr);
-  CHECK(mesh->stage == VK_SHADER_STAGE_MESH_BIT_EXT);
+  CHECK(mesh->stage == gfx::ShaderStage::Mesh);
   CHECK(mesh->local_size[0] == 128);
   REQUIRE(r.entry("fs_main") != nullptr);
-  CHECK(r.entry("fs_main")->stage == VK_SHADER_STAGE_FRAGMENT_BIT);
+  CHECK(r.entry("fs_main")->stage == gfx::ShaderStage::Fragment);
   CHECK(r.entry("fs_color") != nullptr);
   CHECK(r.entry("fs_visibility") != nullptr);
   CHECK(r.entry("missing") == nullptr);
@@ -92,7 +92,7 @@ TEST_CASE("shader reflection: entry points, workgroup sizes, bindings, push cons
   REQUIRE(gfx::reflect_spirv(words_of(shaders::k_triangle_spirv, shaders::k_triangle_spirv_size), r,
                              &error));
   REQUIRE(r.entry("vs_main") != nullptr);
-  CHECK(r.entry("vs_main")->stage == VK_SHADER_STAGE_VERTEX_BIT);
+  CHECK(r.entry("vs_main")->stage == gfx::ShaderStage::Vertex);
   CHECK(r.entry("vs_main")->local_size[0] == 0);
   CHECK(r.push_constant_bytes == 16);
 
@@ -135,7 +135,7 @@ TEST_CASE("shader library: embedded shaders, the build manifest, and hot reload 
   CHECK(fill->hash != 0);
   CHECK_FALSE(fill->from_file);
   CHECK(fill->reflection.push_constant_bytes == 12);
-  CHECK((fill->module != VK_NULL_HANDLE) == have_device);
+  CHECK((fill->module.valid()) == have_device);
   CHECK(library.get("nope", &error) == nullptr);
   CHECK(error.find("unknown shader") != std::string::npos);
 

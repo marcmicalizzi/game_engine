@@ -14,13 +14,13 @@
 #include "scene_fixture.h"
 
 #include <domain/geometry/cluster.h>
+#include <domain/gfx/backend/vulkan/vulkan.h>
 #include <domain/gfx/bindless.h>
 #include <domain/gfx/cluster_cull.h>
 #include <domain/gfx/device.h>
 #include <domain/gfx/frame.h>
 #include <domain/gfx/render_graph.h>
 #include <domain/gfx/visibility_resolve.h>
-#include <domain/gfx/vulkan.h>
 
 #include <doctest/doctest.h>
 
@@ -57,20 +57,20 @@ TEST_CASE("material resolve: vertex normals steer the shading and textures sampl
   // A 2x2 texture: red, green / blue, white, sampled nearest through the bindless set.
   const u8 texels[16] = {255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255};
   gfx::ImageResource texture;
-  REQUIRE_MESSAGE(gfx::upload_image_2d(device, 2, 2, VK_FORMAT_R8G8B8A8_UNORM, texels,
+  REQUIRE_MESSAGE(gfx::upload_image_2d(device, 2, 2, gfx::Format::R8G8B8A8Unorm, texels,
                                        sizeof(texels), texture, &error),
                   error);
-  VkImageView texture_view = VK_NULL_HANDLE;
+  gfx::ImageViewHandle texture_view = {};
   REQUIRE(gfx::create_image_view(device, texture, texture_view, &error));
-  VkSampler nearest = VK_NULL_HANDLE;
-  REQUIRE(gfx::create_sampler(device, VK_FILTER_NEAREST, nearest, &error));
+  gfx::SamplerHandle nearest = {};
+  REQUIRE(gfx::create_sampler(device, gfx::Filter::Nearest, nearest, &error));
   gfx::BindlessSet bindless;
   REQUIRE(bindless.create(device, gfx::BindlessConfig{}, &error));
   const u32 texture_slot =
-      bindless.add_sampled_image(texture_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+      bindless.add_sampled_image(texture_view, gfx::ImageLayout::ShaderReadOnly);
   const u32 sampler_slot = bindless.add_sampler(nearest);
 
-  constexpr VkBufferUsageFlags k_storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+  constexpr gfx::BufferUsage k_storage = gfx::BufferUsage::Storage;
   gfx::BufferResource clusters;
   gfx_test::SingleInstance scene;
   gfx::BufferResource triangles;
@@ -110,20 +110,20 @@ TEST_CASE("material resolve: vertex normals steer the shading and textures sampl
   gfx::BufferResource host_color;
   REQUIRE(gfx::create_buffer(
       device, vis_bytes,
-      k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-      false, vis, &error));
+      k_storage | gfx::BufferUsage::ShaderDeviceAddress | gfx::BufferUsage::TransferDst, false, vis,
+      &error));
   REQUIRE(gfx::create_buffer(device, sizeof(gfx::ResolveParams) * 3,
-                             k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, true, params,
+                             k_storage | gfx::BufferUsage::ShaderDeviceAddress, true, params,
                              &error));
-  REQUIRE(gfx::create_buffer(device, u64{k_size} * k_size * 4 * 3, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+  REQUIRE(gfx::create_buffer(device, u64{k_size} * k_size * 4 * 3, gfx::BufferUsage::TransferDst,
                              true, host_color, &error));
 
   gfx::FrameContext frames;
   REQUIRE(frames.create(device, 2, &error));
-  VkShaderModule resolve_module =
+  gfx::ShaderModuleHandle resolve_module =
       gfx::create_shader_module(device, shaders::k_visibility_resolve_spirv,
                                 shaders::k_visibility_resolve_spirv_size, &error);
-  REQUIRE(resolve_module != VK_NULL_HANDLE);
+  REQUIRE(resolve_module.valid());
   gfx_test::ClusterRaster raster;  // the mesh path, or the vertex path without mesh shaders
   REQUIRE_MESSAGE(raster.create(device, bindless.pipeline_layout(),
                                 geometry::ClusterBuildOptions{}.max_triangles, &error),
@@ -134,8 +134,8 @@ TEST_CASE("material resolve: vertex normals steer the shading and textures sampl
   resolve_desc.fragment = resolve_module;
   resolve_desc.fragment_entry = "fs_resolve";
   resolve_desc.layout = bindless.pipeline_layout();
-  resolve_desc.color_format = VK_FORMAT_R8G8B8A8_UNORM;
-  VkPipeline resolve_pipeline = VK_NULL_HANDLE;
+  resolve_desc.color_format = gfx::Format::R8G8B8A8Unorm;
+  gfx::PipelineHandle resolve_pipeline = {};
   REQUIRE(gfx::create_graphics_pipeline(device, resolve_desc, resolve_pipeline, &error));
 
   gfx::ClusterDrawParams draw{};
@@ -183,14 +183,14 @@ TEST_CASE("material resolve: vertex normals steer the shading and textures sampl
   gfx::RgImage targets[3];
   for (u32 i = 0; i < 3; ++i) {
     targets[i] = graph.create_image(
-        "resolved", {k_size, k_size, VK_FORMAT_R8G8B8A8_UNORM,
-                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT});
+        "resolved", {k_size, k_size, gfx::Format::R8G8B8A8Unorm,
+                     gfx::ImageUsage::ColorAttachment | gfx::ImageUsage::TransferSrc});
   }
   graph.add_pass(
       "clear", gfx::PassKind::Transfer,
       [&](gfx::PassBuilder& b) { b.write(rg_vis, gfx::Access::TransferWrite); },
-      [&](VkCommandBuffer cb, gfx::RenderGraph&) {
-        vkCmdFillBuffer(cb, vis.buffer, 0, VK_WHOLE_SIZE, 0);
+      [&](gfx::CommandList cb, gfx::RenderGraph&) {
+        cb.fill_buffer(vis.buffer, 0, gfx::k_whole_size, 0);
       });
   graph.add_pass(
       "visibility", gfx::PassKind::Raster,
@@ -198,21 +198,21 @@ TEST_CASE("material resolve: vertex normals steer the shading and textures sampl
         b.render_area(k_size, k_size);
         b.write(rg_vis, gfx::Access::FragmentReadWrite);
       },
-      [&](VkCommandBuffer cb, gfx::RenderGraph&) { raster.draw(cb, bindless, draw, 1); });
+      [&](gfx::CommandList cb, gfx::RenderGraph&) { raster.draw(cb, bindless, draw, 1); });
   for (u32 i = 0; i < 3; ++i) {
     graph.add_pass(
         "resolve", gfx::PassKind::Raster,
         [&, i](gfx::PassBuilder& b) {
-          VkClearColorValue clear{};
-          b.color_attachment(targets[i], VK_ATTACHMENT_LOAD_OP_CLEAR, clear);
+          gfx::ClearColor clear{};
+          b.color_attachment(targets[i], gfx::LoadOp::Clear, clear);
           b.read(rg_vis, gfx::Access::FragmentRead);
         },
-        [&, i](VkCommandBuffer cb, gfx::RenderGraph&) {
-          vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, resolve_pipeline);
-          bindless.bind(cb, VK_PIPELINE_BIND_POINT_GRAPHICS);
-          vkCmdPushConstants(cb, bindless.pipeline_layout(), VK_SHADER_STAGE_ALL, 0, sizeof(u64),
-                             &block_address[i]);
-          vkCmdDraw(cb, 3, 1, 0, 0);
+        [&, i](gfx::CommandList cb, gfx::RenderGraph&) {
+          cb.bind_pipeline(gfx::BindPoint::Graphics, resolve_pipeline);
+          bindless.bind(cb, gfx::BindPoint::Graphics);
+          cb.push_constants(bindless.pipeline_layout(), gfx::ShaderStage::All, 0, sizeof(u64),
+                            &block_address[i]);
+          cb.draw(3, 1, 0, 0);
         });
   }
   graph.add_pass(
@@ -222,18 +222,19 @@ TEST_CASE("material resolve: vertex normals steer the shading and textures sampl
           b.read(targets[i], gfx::Access::TransferRead);
         b.write(rg_host, gfx::Access::TransferWrite);
       },
-      [&](VkCommandBuffer cb, gfx::RenderGraph& g) {
+      [&](gfx::CommandList cb, gfx::RenderGraph& g) {
         for (u32 i = 0; i < 3; ++i) {
           VkBufferImageCopy region{};
           region.bufferOffset = u64{k_size} * k_size * 4 * i;
           region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
           region.imageExtent = {k_size, k_size, 1};
-          vkCmdCopyImageToBuffer(cb, g.image(targets[i]).image, g.image_layout(targets[i]),
-                                 host_color.buffer, 1, &region);
+          vkCmdCopyImageToBuffer(gfx::vk::native(cb), gfx::vk::native(g.image(targets[i]).image),
+                                 gfx::vk::native(g.image_layout(targets[i])),
+                                 gfx::vk::native(host_color.buffer), 1, &region);
         }
       });
   REQUIRE_MESSAGE(graph.compile(&error), error);
-  VkCommandBuffer commands = frames.begin_frame();
+  gfx::CommandList commands = frames.begin_frame();
   graph.execute(commands);
   REQUIRE(frames.wait(frames.end_frame()));
 
@@ -354,23 +355,22 @@ TEST_CASE("material resolve: metallic-roughness and normal maps") {
                                 k_zero, k_cos45, k_cos45, 255, k_zero, k_cos45, k_cos45, 255};
   gfx::ImageResource mr_image;
   gfx::ImageResource normal_image;
-  REQUIRE_MESSAGE(gfx::upload_image_2d(device, 2, 2, VK_FORMAT_R8G8B8A8_UNORM, mr_texels,
+  REQUIRE_MESSAGE(gfx::upload_image_2d(device, 2, 2, gfx::Format::R8G8B8A8Unorm, mr_texels,
                                        sizeof(mr_texels), mr_image, &error),
                   error);
-  REQUIRE_MESSAGE(gfx::upload_image_2d(device, 2, 2, VK_FORMAT_R8G8B8A8_UNORM, normal_texels,
+  REQUIRE_MESSAGE(gfx::upload_image_2d(device, 2, 2, gfx::Format::R8G8B8A8Unorm, normal_texels,
                                        sizeof(normal_texels), normal_image, &error),
                   error);
-  VkImageView mr_view = VK_NULL_HANDLE;
-  VkImageView normal_view = VK_NULL_HANDLE;
+  gfx::ImageViewHandle mr_view = {};
+  gfx::ImageViewHandle normal_view = {};
   REQUIRE(gfx::create_image_view(device, mr_image, mr_view, &error));
   REQUIRE(gfx::create_image_view(device, normal_image, normal_view, &error));
-  VkSampler nearest = VK_NULL_HANDLE;
-  REQUIRE(gfx::create_sampler(device, VK_FILTER_NEAREST, nearest, &error));
+  gfx::SamplerHandle nearest = {};
+  REQUIRE(gfx::create_sampler(device, gfx::Filter::Nearest, nearest, &error));
   gfx::BindlessSet bindless;
   REQUIRE(bindless.create(device, gfx::BindlessConfig{}, &error));
-  const u32 mr_slot = bindless.add_sampled_image(mr_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-  const u32 normal_slot =
-      bindless.add_sampled_image(normal_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+  const u32 mr_slot = bindless.add_sampled_image(mr_view, gfx::ImageLayout::ShaderReadOnly);
+  const u32 normal_slot = bindless.add_sampled_image(normal_view, gfx::ImageLayout::ShaderReadOnly);
   const u32 sampler_slot = bindless.add_sampler(nearest);
 
   // Four materials, one per block: plain, metallic-roughness mapped (both factors 1, so the
@@ -395,7 +395,7 @@ TEST_CASE("material resolve: metallic-roughness and normal maps") {
   for (u32 i = 0; i < k_blocks; ++i)
     material_index[i] = i;
 
-  constexpr VkBufferUsageFlags k_storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+  constexpr gfx::BufferUsage k_storage = gfx::BufferUsage::Storage;
   gfx::BufferResource clusters;
   gfx_test::SingleInstance scene;
   gfx::BufferResource triangles;
@@ -426,20 +426,20 @@ TEST_CASE("material resolve: metallic-roughness and normal maps") {
   gfx::BufferResource host_color;
   REQUIRE(gfx::create_buffer(
       device, u64{k_size} * k_size * sizeof(u64),
-      k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-      false, vis, &error));
+      k_storage | gfx::BufferUsage::ShaderDeviceAddress | gfx::BufferUsage::TransferDst, false, vis,
+      &error));
   REQUIRE(gfx::create_buffer(device, sizeof(gfx::ResolveParams) * k_blocks,
-                             k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, true, params,
+                             k_storage | gfx::BufferUsage::ShaderDeviceAddress, true, params,
                              &error));
   REQUIRE(gfx::create_buffer(device, u64{k_size} * k_size * 4 * k_blocks,
-                             VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, host_color, &error));
+                             gfx::BufferUsage::TransferDst, true, host_color, &error));
 
   gfx::FrameContext frames;
   REQUIRE(frames.create(device, 2, &error));
-  VkShaderModule resolve_module =
+  gfx::ShaderModuleHandle resolve_module =
       gfx::create_shader_module(device, shaders::k_visibility_resolve_spirv,
                                 shaders::k_visibility_resolve_spirv_size, &error);
-  REQUIRE(resolve_module != VK_NULL_HANDLE);
+  REQUIRE(resolve_module.valid());
   gfx_test::ClusterRaster raster;  // the mesh path, or the vertex path without mesh shaders
   REQUIRE_MESSAGE(raster.create(device, bindless.pipeline_layout(),
                                 geometry::ClusterBuildOptions{}.max_triangles, &error),
@@ -450,8 +450,8 @@ TEST_CASE("material resolve: metallic-roughness and normal maps") {
   resolve_desc.fragment = resolve_module;
   resolve_desc.fragment_entry = "fs_resolve";
   resolve_desc.layout = bindless.pipeline_layout();
-  resolve_desc.color_format = VK_FORMAT_R8G8B8A8_UNORM;
-  VkPipeline resolve_pipeline = VK_NULL_HANDLE;
+  resolve_desc.color_format = gfx::Format::R8G8B8A8Unorm;
+  gfx::PipelineHandle resolve_pipeline = {};
   REQUIRE(gfx::create_graphics_pipeline(device, resolve_desc, resolve_pipeline, &error));
 
   gfx::ClusterDrawParams draw{};
@@ -497,14 +497,14 @@ TEST_CASE("material resolve: metallic-roughness and normal maps") {
   gfx::RgImage targets[k_blocks];
   for (u32 i = 0; i < k_blocks; ++i) {
     targets[i] = graph.create_image(
-        "resolved", {k_size, k_size, VK_FORMAT_R8G8B8A8_UNORM,
-                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT});
+        "resolved", {k_size, k_size, gfx::Format::R8G8B8A8Unorm,
+                     gfx::ImageUsage::ColorAttachment | gfx::ImageUsage::TransferSrc});
   }
   graph.add_pass(
       "clear", gfx::PassKind::Transfer,
       [&](gfx::PassBuilder& b) { b.write(rg_vis, gfx::Access::TransferWrite); },
-      [&](VkCommandBuffer cb, gfx::RenderGraph&) {
-        vkCmdFillBuffer(cb, vis.buffer, 0, VK_WHOLE_SIZE, 0);
+      [&](gfx::CommandList cb, gfx::RenderGraph&) {
+        cb.fill_buffer(vis.buffer, 0, gfx::k_whole_size, 0);
       });
   graph.add_pass(
       "visibility", gfx::PassKind::Raster,
@@ -512,21 +512,21 @@ TEST_CASE("material resolve: metallic-roughness and normal maps") {
         b.render_area(k_size, k_size);
         b.write(rg_vis, gfx::Access::FragmentReadWrite);
       },
-      [&](VkCommandBuffer cb, gfx::RenderGraph&) { raster.draw(cb, bindless, draw, 1); });
+      [&](gfx::CommandList cb, gfx::RenderGraph&) { raster.draw(cb, bindless, draw, 1); });
   for (u32 i = 0; i < k_blocks; ++i) {
     graph.add_pass(
         "resolve", gfx::PassKind::Raster,
         [&, i](gfx::PassBuilder& b) {
-          VkClearColorValue clear{};
-          b.color_attachment(targets[i], VK_ATTACHMENT_LOAD_OP_CLEAR, clear);
+          gfx::ClearColor clear{};
+          b.color_attachment(targets[i], gfx::LoadOp::Clear, clear);
           b.read(rg_vis, gfx::Access::FragmentRead);
         },
-        [&, i](VkCommandBuffer cb, gfx::RenderGraph&) {
-          vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, resolve_pipeline);
-          bindless.bind(cb, VK_PIPELINE_BIND_POINT_GRAPHICS);
-          vkCmdPushConstants(cb, bindless.pipeline_layout(), VK_SHADER_STAGE_ALL, 0, sizeof(u64),
-                             &block_address[i]);
-          vkCmdDraw(cb, 3, 1, 0, 0);
+        [&, i](gfx::CommandList cb, gfx::RenderGraph&) {
+          cb.bind_pipeline(gfx::BindPoint::Graphics, resolve_pipeline);
+          bindless.bind(cb, gfx::BindPoint::Graphics);
+          cb.push_constants(bindless.pipeline_layout(), gfx::ShaderStage::All, 0, sizeof(u64),
+                            &block_address[i]);
+          cb.draw(3, 1, 0, 0);
         });
   }
   graph.add_pass(
@@ -536,18 +536,19 @@ TEST_CASE("material resolve: metallic-roughness and normal maps") {
           b.read(targets[i], gfx::Access::TransferRead);
         b.write(rg_host, gfx::Access::TransferWrite);
       },
-      [&](VkCommandBuffer cb, gfx::RenderGraph& g) {
+      [&](gfx::CommandList cb, gfx::RenderGraph& g) {
         for (u32 i = 0; i < k_blocks; ++i) {
           VkBufferImageCopy region{};
           region.bufferOffset = u64{k_size} * k_size * 4 * i;
           region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
           region.imageExtent = {k_size, k_size, 1};
-          vkCmdCopyImageToBuffer(cb, g.image(targets[i]).image, g.image_layout(targets[i]),
-                                 host_color.buffer, 1, &region);
+          vkCmdCopyImageToBuffer(gfx::vk::native(cb), gfx::vk::native(g.image(targets[i]).image),
+                                 gfx::vk::native(g.image_layout(targets[i])),
+                                 gfx::vk::native(host_color.buffer), 1, &region);
         }
       });
   REQUIRE_MESSAGE(graph.compile(&error), error);
-  VkCommandBuffer commands = frames.begin_frame();
+  gfx::CommandList commands = frames.begin_frame();
   graph.execute(commands);
   REQUIRE(frames.wait(frames.end_frame()));
 
@@ -717,46 +718,45 @@ TEST_CASE("material resolve: emissive and occlusion maps, and the UV transform")
   gfx::ImageResource occlusion_image;
   gfx::ImageResource checker_image;
   gfx::ImageResource orm_image;
-  REQUIRE_MESSAGE(gfx::upload_image_2d(device, 2, 2, VK_FORMAT_R8G8B8A8_UNORM, orm_texels,
+  REQUIRE_MESSAGE(gfx::upload_image_2d(device, 2, 2, gfx::Format::R8G8B8A8Unorm, orm_texels,
                                        sizeof(orm_texels), orm_image, &error),
                   error);
-  VkImageView orm_view = VK_NULL_HANDLE;
+  gfx::ImageViewHandle orm_view = {};
   REQUIRE(gfx::create_image_view(device, orm_image, orm_view, &error));
-  REQUIRE_MESSAGE(gfx::upload_image_2d(device, 2, 2, VK_FORMAT_R8G8B8A8_SRGB, emissive_texels,
+  REQUIRE_MESSAGE(gfx::upload_image_2d(device, 2, 2, gfx::Format::R8G8B8A8Srgb, emissive_texels,
                                        sizeof(emissive_texels), emissive_image, &error),
                   error);
-  REQUIRE_MESSAGE(gfx::upload_image_2d(device, 2, 2, VK_FORMAT_R8G8B8A8_UNORM, occlusion_texels,
+  REQUIRE_MESSAGE(gfx::upload_image_2d(device, 2, 2, gfx::Format::R8G8B8A8Unorm, occlusion_texels,
                                        sizeof(occlusion_texels), occlusion_image, &error),
                   error);
-  REQUIRE_MESSAGE(gfx::upload_image_2d(device, 2, 2, VK_FORMAT_R8G8B8A8_UNORM, checker_texels,
+  REQUIRE_MESSAGE(gfx::upload_image_2d(device, 2, 2, gfx::Format::R8G8B8A8Unorm, checker_texels,
                                        sizeof(checker_texels), checker_image, &error),
                   error);
-  VkImageView emissive_view = VK_NULL_HANDLE;
-  VkImageView occlusion_view = VK_NULL_HANDLE;
-  VkImageView checker_view = VK_NULL_HANDLE;
+  gfx::ImageViewHandle emissive_view = {};
+  gfx::ImageViewHandle occlusion_view = {};
+  gfx::ImageViewHandle checker_view = {};
   REQUIRE(gfx::create_image_view(device, emissive_image, emissive_view, &error));
   REQUIRE(gfx::create_image_view(device, occlusion_image, occlusion_view, &error));
   REQUIRE(gfx::create_image_view(device, checker_image, checker_view, &error));
   // Nearest and clamped for the emissive and occlusion quadrants (the tooling sampler); nearest
   // and repeating for the transform, whose rotated UVs leave [0, 1].
-  VkSampler nearest = VK_NULL_HANDLE;
-  REQUIRE(gfx::create_sampler(device, VK_FILTER_NEAREST, nearest, &error));
+  gfx::SamplerHandle nearest = {};
+  REQUIRE(gfx::create_sampler(device, gfx::Filter::Nearest, nearest, &error));
   gfx::SamplerDesc repeat_desc;
-  repeat_desc.mag = VK_FILTER_NEAREST;
-  repeat_desc.min = VK_FILTER_NEAREST;
+  repeat_desc.mag = gfx::Filter::Nearest;
+  repeat_desc.min = gfx::Filter::Nearest;
   repeat_desc.mipmapped = false;
-  VkSampler repeat = VK_NULL_HANDLE;
+  gfx::SamplerHandle repeat = {};
   REQUIRE_MESSAGE(gfx::create_sampler(device, repeat_desc, repeat, &error), error);
   gfx::BindlessSet bindless;
   REQUIRE(bindless.create(device, gfx::BindlessConfig{}, &error));
   const u32 emissive_slot =
-      bindless.add_sampled_image(emissive_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+      bindless.add_sampled_image(emissive_view, gfx::ImageLayout::ShaderReadOnly);
   const u32 occlusion_slot =
-      bindless.add_sampled_image(occlusion_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+      bindless.add_sampled_image(occlusion_view, gfx::ImageLayout::ShaderReadOnly);
   const u32 checker_slot =
-      bindless.add_sampled_image(checker_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-  const u32 orm_slot =
-      bindless.add_sampled_image(orm_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+      bindless.add_sampled_image(checker_view, gfx::ImageLayout::ShaderReadOnly);
+  const u32 orm_slot = bindless.add_sampled_image(orm_view, gfx::ImageLayout::ShaderReadOnly);
   const u32 nearest_slot = bindless.add_sampler(nearest);
   const u32 repeat_slot = bindless.add_sampler(repeat);
 
@@ -810,7 +810,7 @@ TEST_CASE("material resolve: emissive and occlusion maps, and the UV transform")
   gfx::set_uv_transform(untouched, Vec2{0.0f, 0.0f}, 0.0f, Vec2{1.0f, 1.0f});
   CHECK(untouched.flags == 0);
 
-  constexpr VkBufferUsageFlags k_storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+  constexpr gfx::BufferUsage k_storage = gfx::BufferUsage::Storage;
   gfx::BufferResource clusters;
   gfx_test::SingleInstance scene;
   gfx::BufferResource triangles;
@@ -842,20 +842,20 @@ TEST_CASE("material resolve: emissive and occlusion maps, and the UV transform")
   gfx::BufferResource host_color;
   REQUIRE(gfx::create_buffer(
       device, u64{k_size} * k_size * sizeof(u64),
-      k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-      false, vis, &error));
+      k_storage | gfx::BufferUsage::ShaderDeviceAddress | gfx::BufferUsage::TransferDst, false, vis,
+      &error));
   REQUIRE(gfx::create_buffer(device, sizeof(gfx::ResolveParams) * k_blocks,
-                             k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, true, params,
+                             k_storage | gfx::BufferUsage::ShaderDeviceAddress, true, params,
                              &error));
   REQUIRE(gfx::create_buffer(device, u64{k_size} * k_size * 4 * k_blocks,
-                             VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, host_color, &error));
+                             gfx::BufferUsage::TransferDst, true, host_color, &error));
 
   gfx::FrameContext frames;
   REQUIRE(frames.create(device, 2, &error));
-  VkShaderModule resolve_module =
+  gfx::ShaderModuleHandle resolve_module =
       gfx::create_shader_module(device, shaders::k_visibility_resolve_spirv,
                                 shaders::k_visibility_resolve_spirv_size, &error);
-  REQUIRE(resolve_module != VK_NULL_HANDLE);
+  REQUIRE(resolve_module.valid());
   gfx_test::ClusterRaster raster;
   REQUIRE_MESSAGE(raster.create(device, bindless.pipeline_layout(),
                                 geometry::ClusterBuildOptions{}.max_triangles, &error),
@@ -866,8 +866,8 @@ TEST_CASE("material resolve: emissive and occlusion maps, and the UV transform")
   resolve_desc.fragment = resolve_module;
   resolve_desc.fragment_entry = "fs_resolve";
   resolve_desc.layout = bindless.pipeline_layout();
-  resolve_desc.color_format = VK_FORMAT_R8G8B8A8_UNORM;
-  VkPipeline resolve_pipeline = VK_NULL_HANDLE;
+  resolve_desc.color_format = gfx::Format::R8G8B8A8Unorm;
+  gfx::PipelineHandle resolve_pipeline = {};
   REQUIRE(gfx::create_graphics_pipeline(device, resolve_desc, resolve_pipeline, &error));
 
   gfx::ClusterDrawParams draw{};
@@ -930,14 +930,14 @@ TEST_CASE("material resolve: emissive and occlusion maps, and the UV transform")
   gfx::RgImage targets[k_blocks];
   for (u32 i = 0; i < k_blocks; ++i) {
     targets[i] = graph.create_image(
-        "resolved", {k_size, k_size, VK_FORMAT_R8G8B8A8_UNORM,
-                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT});
+        "resolved", {k_size, k_size, gfx::Format::R8G8B8A8Unorm,
+                     gfx::ImageUsage::ColorAttachment | gfx::ImageUsage::TransferSrc});
   }
   graph.add_pass(
       "clear", gfx::PassKind::Transfer,
       [&](gfx::PassBuilder& b) { b.write(rg_vis, gfx::Access::TransferWrite); },
-      [&](VkCommandBuffer cb, gfx::RenderGraph&) {
-        vkCmdFillBuffer(cb, vis.buffer, 0, VK_WHOLE_SIZE, 0);
+      [&](gfx::CommandList cb, gfx::RenderGraph&) {
+        cb.fill_buffer(vis.buffer, 0, gfx::k_whole_size, 0);
       });
   graph.add_pass(
       "visibility", gfx::PassKind::Raster,
@@ -945,21 +945,21 @@ TEST_CASE("material resolve: emissive and occlusion maps, and the UV transform")
         b.render_area(k_size, k_size);
         b.write(rg_vis, gfx::Access::FragmentReadWrite);
       },
-      [&](VkCommandBuffer cb, gfx::RenderGraph&) { raster.draw(cb, bindless, draw, 1); });
+      [&](gfx::CommandList cb, gfx::RenderGraph&) { raster.draw(cb, bindless, draw, 1); });
   for (u32 i = 0; i < k_blocks; ++i) {
     graph.add_pass(
         "resolve", gfx::PassKind::Raster,
         [&, i](gfx::PassBuilder& b) {
-          VkClearColorValue clear{};
-          b.color_attachment(targets[i], VK_ATTACHMENT_LOAD_OP_CLEAR, clear);
+          gfx::ClearColor clear{};
+          b.color_attachment(targets[i], gfx::LoadOp::Clear, clear);
           b.read(rg_vis, gfx::Access::FragmentRead);
         },
-        [&, i](VkCommandBuffer cb, gfx::RenderGraph&) {
-          vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, resolve_pipeline);
-          bindless.bind(cb, VK_PIPELINE_BIND_POINT_GRAPHICS);
-          vkCmdPushConstants(cb, bindless.pipeline_layout(), VK_SHADER_STAGE_ALL, 0, sizeof(u64),
-                             &block_address[i]);
-          vkCmdDraw(cb, 3, 1, 0, 0);
+        [&, i](gfx::CommandList cb, gfx::RenderGraph&) {
+          cb.bind_pipeline(gfx::BindPoint::Graphics, resolve_pipeline);
+          bindless.bind(cb, gfx::BindPoint::Graphics);
+          cb.push_constants(bindless.pipeline_layout(), gfx::ShaderStage::All, 0, sizeof(u64),
+                            &block_address[i]);
+          cb.draw(3, 1, 0, 0);
         });
   }
   graph.add_pass(
@@ -969,18 +969,19 @@ TEST_CASE("material resolve: emissive and occlusion maps, and the UV transform")
           b.read(targets[i], gfx::Access::TransferRead);
         b.write(rg_host, gfx::Access::TransferWrite);
       },
-      [&](VkCommandBuffer cb, gfx::RenderGraph& g) {
+      [&](gfx::CommandList cb, gfx::RenderGraph& g) {
         for (u32 i = 0; i < k_blocks; ++i) {
           VkBufferImageCopy region{};
           region.bufferOffset = u64{k_size} * k_size * 4 * i;
           region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
           region.imageExtent = {k_size, k_size, 1};
-          vkCmdCopyImageToBuffer(cb, g.image(targets[i]).image, g.image_layout(targets[i]),
-                                 host_color.buffer, 1, &region);
+          vkCmdCopyImageToBuffer(gfx::vk::native(cb), gfx::vk::native(g.image(targets[i]).image),
+                                 gfx::vk::native(g.image_layout(targets[i])),
+                                 gfx::vk::native(host_color.buffer), 1, &region);
         }
       });
   REQUIRE_MESSAGE(graph.compile(&error), error);
-  VkCommandBuffer commands = frames.begin_frame();
+  gfx::CommandList commands = frames.begin_frame();
   graph.execute(commands);
   REQUIRE(frames.wait(frames.end_frame()));
 

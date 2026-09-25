@@ -1,5 +1,5 @@
+#include <domain/gfx/backend/vulkan/vulkan.h>
 #include <domain/gfx/device.h>
-#include <domain/gfx/vulkan.h>
 
 #include <doctest/doctest.h>
 
@@ -72,14 +72,13 @@ TEST_CASE("gfx: offscreen clear and readback") {
   constexpr u32 k_height = 48;
   gfx::ImageResource image;
   std::string error;
-  REQUIRE_MESSAGE(
-      gfx::create_image_2d(device, k_width, k_height, VK_FORMAT_R8G8B8A8_UNORM,
-                           VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, image,
-                           &error),
-      error);
+  REQUIRE_MESSAGE(gfx::create_image_2d(device, k_width, k_height, gfx::Format::R8G8B8A8Unorm,
+                                       gfx::ImageUsage::TransferDst | gfx::ImageUsage::TransferSrc,
+                                       image, &error),
+                  error);
   gfx::BufferResource readback;
   const u64 bytes = u64{k_width} * k_height * 4;
-  REQUIRE_MESSAGE(gfx::create_buffer(device, bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+  REQUIRE_MESSAGE(gfx::create_buffer(device, bytes, gfx::BufferUsage::TransferDst,
                                      /*host_visible=*/true, readback, &error),
                   error);
   REQUIRE(readback.mapped != nullptr);
@@ -87,27 +86,30 @@ TEST_CASE("gfx: offscreen clear and readback") {
 
   const bool submitted = gfx::submit_immediate(
       device,
-      [&](VkCommandBuffer commands) {
-        gfx::image_barrier(commands, image.image, VK_IMAGE_LAYOUT_UNDEFINED,
-                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_NONE, 0,
-                           VK_PIPELINE_STAGE_2_CLEAR_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+      [&](gfx::CommandList commands) {
+        gfx::image_barrier(gfx::vk::native(commands), gfx::vk::native(image.image),
+                           VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                           VK_PIPELINE_STAGE_2_NONE, 0, VK_PIPELINE_STAGE_2_CLEAR_BIT,
+                           VK_ACCESS_2_TRANSFER_WRITE_BIT);
         VkClearColorValue color{};
         color.float32[0] = 0.25f;
         color.float32[1] = 0.5f;
         color.float32[2] = 0.75f;
         color.float32[3] = 1.0f;
         const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-        vkCmdClearColorImage(commands, image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &color, 1,
-                             &range);
-        gfx::image_barrier(commands, image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        vkCmdClearColorImage(gfx::vk::native(commands), gfx::vk::native(image.image),
+                             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &color, 1, &range);
+        gfx::image_barrier(gfx::vk::native(commands), gfx::vk::native(image.image),
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_CLEAR_BIT,
                            VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_COPY_BIT,
                            VK_ACCESS_2_TRANSFER_READ_BIT);
         VkBufferImageCopy region{};
         region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
         region.imageExtent = {k_width, k_height, 1};
-        vkCmdCopyImageToBuffer(commands, image.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                               readback.buffer, 1, &region);
+        vkCmdCopyImageToBuffer(gfx::vk::native(commands), gfx::vk::native(image.image),
+                               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                               gfx::vk::native(readback.buffer), 1, &region);
       },
       &error);
   REQUIRE_MESSAGE(submitted, error);
@@ -129,25 +131,25 @@ TEST_CASE("gfx: offscreen clear and readback") {
   // A device-address buffer round trip through an upload.
   gfx::BufferResource device_local;
   REQUIRE(gfx::create_buffer(device, 256,
-                             VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
-                                 VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                             gfx::BufferUsage::TransferDst | gfx::BufferUsage::TransferSrc |
+                                 gfx::BufferUsage::ShaderDeviceAddress,
                              /*host_visible=*/false, device_local, &error));
   CHECK(device_local.address != 0);
   CHECK(device_local.mapped == nullptr);
   gfx::BufferResource staging_up;
   gfx::BufferResource staging_down;
-  REQUIRE(gfx::create_buffer(device, 256, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, /*host_visible=*/true,
+  REQUIRE(gfx::create_buffer(device, 256, gfx::BufferUsage::TransferSrc, /*host_visible=*/true,
                              staging_up, &error));
-  REQUIRE(gfx::create_buffer(device, 256, VK_BUFFER_USAGE_TRANSFER_DST_BIT, /*host_visible=*/true,
+  REQUIRE(gfx::create_buffer(device, 256, gfx::BufferUsage::TransferDst, /*host_visible=*/true,
                              staging_down, &error));
   for (u32 i = 0; i < 256; ++i)
     static_cast<u8*>(staging_up.mapped)[i] = static_cast<u8>(i);
   std::memset(staging_down.mapped, 0, 256);
   REQUIRE(gfx::submit_immediate(
       device,
-      [&](VkCommandBuffer commands) {
-        VkBufferCopy up{0, 0, 256};
-        vkCmdCopyBuffer(commands, staging_up.buffer, device_local.buffer, 1, &up);
+      [&](gfx::CommandList commands) {
+        gfx::BufferCopy up{0, 0, 256};
+        commands.copy_buffer(staging_up.buffer, device_local.buffer, up);
         VkMemoryBarrier2 barrier{};
         barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
         barrier.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
@@ -158,9 +160,9 @@ TEST_CASE("gfx: offscreen clear and readback") {
         dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
         dependency.memoryBarrierCount = 1;
         dependency.pMemoryBarriers = &barrier;
-        vkCmdPipelineBarrier2(commands, &dependency);
-        VkBufferCopy down{0, 0, 256};
-        vkCmdCopyBuffer(commands, device_local.buffer, staging_down.buffer, 1, &down);
+        vkCmdPipelineBarrier2(gfx::vk::native(commands), &dependency);
+        gfx::BufferCopy down{0, 0, 256};
+        commands.copy_buffer(device_local.buffer, staging_down.buffer, down);
       },
       &error));
   u32 mismatches = 0;

@@ -1,4 +1,5 @@
 #include <domain/gfx/acceleration.h>
+#include <domain/gfx/backend/vulkan/vulkan.h>
 
 #include <cstring>
 
@@ -33,8 +34,8 @@ struct BlasBuild {
   VkAccelerationStructureBuildGeometryInfoKHR info{};
 };
 
-void fill_blas_build(std::span<const ClusterGeometry> clusters,
-                     VkBuildAccelerationStructureFlagsKHR flags, BlasBuild& build) {
+void fill_blas_build(std::span<const ClusterGeometry> clusters, AccelerationBuildFlags flags,
+                     BlasBuild& build) {
   const u32 count = static_cast<u32>(clusters.size());
   build.geometries.resize(count);
   build.ranges.resize(count);
@@ -60,13 +61,13 @@ void fill_blas_build(std::span<const ClusterGeometry> clusters,
   build.info = VkAccelerationStructureBuildGeometryInfoKHR{};
   build.info.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
   build.info.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
-  build.info.flags = flags;
+  build.info.flags = vk::native(flags);
   build.info.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
   build.info.geometryCount = count;
   build.info.pGeometries = build.geometries.data();
 }
 
-void fill_tlas_build(VkDeviceAddress instances, VkBuildAccelerationStructureFlagsKHR flags,
+void fill_tlas_build(VkDeviceAddress instances, AccelerationBuildFlags flags,
                      VkAccelerationStructureGeometryKHR& geometry,
                      VkAccelerationStructureBuildGeometryInfoKHR& info) {
   geometry = VkAccelerationStructureGeometryKHR{};
@@ -79,7 +80,7 @@ void fill_tlas_build(VkDeviceAddress instances, VkBuildAccelerationStructureFlag
   info = VkAccelerationStructureBuildGeometryInfoKHR{};
   info.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
   info.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
-  info.flags = flags;
+  info.flags = vk::native(flags);
   info.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
   info.geometryCount = 1;
   info.pGeometries = &geometry;
@@ -91,26 +92,27 @@ bool create_structure(const Device& device, VkAccelerationStructureTypeKHR type,
                       AccelerationStructure& out, std::string* error) {
   const Handles& h = device.handles();
   if (!create_buffer(device, sizes.accelerationStructureSize,
-                     VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR |
-                         VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                     false, out.buffer, error)) {
+                     BufferUsage::AccelerationStorage | BufferUsage::ShaderDeviceAddress, false,
+                     out.buffer, error)) {
     return false;
   }
   VkAccelerationStructureCreateInfoKHR create_info{};
   create_info.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR;
-  create_info.buffer = out.buffer.buffer;
+  create_info.buffer = vk::native(out.buffer.buffer);
   create_info.size = sizes.accelerationStructureSize;
   create_info.type = type;
+  VkAccelerationStructureKHR structure = VK_NULL_HANDLE;
   if (const VkResult r =
-          vkCreateAccelerationStructureKHR(h.device, &create_info, nullptr, &out.handle);
+          vkCreateAccelerationStructureKHR(h.device, &create_info, nullptr, &structure);
       r != VK_SUCCESS) {
     fail(error, "vkCreateAccelerationStructureKHR", r);
     destroy_buffer(device, out.buffer);
     return false;
   }
+  out.handle = vk::wrap(structure);
   VkAccelerationStructureDeviceAddressInfoKHR address_info{};
   address_info.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR;
-  address_info.accelerationStructure = out.handle;
+  address_info.accelerationStructure = structure;
   out.address = vkGetAccelerationStructureDeviceAddressKHR(h.device, &address_info);
   const u32 alignment = scratch_alignment(device);
   out.scratch_alignment = alignment;
@@ -130,8 +132,7 @@ void expand_packed_triangles(std::span<const u32> packed, Vector<u16>& out) {
 }
 
 bool create_blas(const Device& device, std::span<const ClusterGeometry> clusters,
-                 VkBuildAccelerationStructureFlagsKHR flags, AccelerationStructure& out,
-                 std::string* error) {
+                 AccelerationBuildFlags flags, AccelerationStructure& out, std::string* error) {
   out = AccelerationStructure{};
   if (!device.features().acceleration_structure) {
     if (error != nullptr) *error = "create_blas: the device has no acceleration structures";
@@ -156,20 +157,19 @@ bool create_blas(const Device& device, std::span<const ClusterGeometry> clusters
   return true;
 }
 
-void build_blas(VkCommandBuffer commands, const AccelerationStructure& blas,
-                std::span<const ClusterGeometry> clusters,
-                VkBuildAccelerationStructureFlagsKHR flags, const BufferResource& scratch) {
+void build_blas(CommandList commands, const AccelerationStructure& blas,
+                std::span<const ClusterGeometry> clusters, AccelerationBuildFlags flags,
+                const BufferResource& scratch) {
   BlasBuild build;
   fill_blas_build(clusters, flags, build);
-  build.info.dstAccelerationStructure = blas.handle;
+  build.info.dstAccelerationStructure = vk::native(blas.handle);
   build.info.scratchData.deviceAddress = align_up(scratch.address, blas.scratch_alignment);
   const VkAccelerationStructureBuildRangeInfoKHR* ranges = build.ranges.data();
-  vkCmdBuildAccelerationStructuresKHR(commands, 1, &build.info, &ranges);
+  vkCmdBuildAccelerationStructuresKHR(vk::native(commands), 1, &build.info, &ranges);
 }
 
-bool create_tlas(const Device& device, u32 instance_count,
-                 VkBuildAccelerationStructureFlagsKHR flags, AccelerationStructure& out,
-                 std::string* error) {
+bool create_tlas(const Device& device, u32 instance_count, AccelerationBuildFlags flags,
+                 AccelerationStructure& out, std::string* error) {
   out = AccelerationStructure{};
   if (!device.features().acceleration_structure) {
     if (error != nullptr) *error = "create_tlas: the device has no acceleration structures";
@@ -205,50 +205,48 @@ void write_instances(std::span<const TlasInstance> instances, void* out) noexcep
     record.instanceCustomIndex = desc.custom_index & 0xffffffu;
     record.mask = desc.mask & 0xffu;
     record.instanceShaderBindingTableRecordOffset = 0;
-    record.flags = desc.flags & 0xffu;
+    record.flags = static_cast<u32>(desc.flags) & 0xffu;
     record.accelerationStructureReference = desc.blas;
     static_assert(sizeof(record) == k_instance_record_bytes);
     std::memcpy(bytes + u64{i} * k_instance_record_bytes, &record, sizeof(record));
   }
 }
 
-void build_tlas(VkCommandBuffer commands, const AccelerationStructure& tlas,
-                VkDeviceAddress instances, u32 instance_count,
-                VkBuildAccelerationStructureFlagsKHR flags, const BufferResource& scratch) {
+void build_tlas(CommandList commands, const AccelerationStructure& tlas, DeviceAddress instances,
+                u32 instance_count, AccelerationBuildFlags flags, const BufferResource& scratch) {
   VkAccelerationStructureGeometryKHR geometry;
   VkAccelerationStructureBuildGeometryInfoKHR info;
   fill_tlas_build(instances, flags, geometry, info);
-  info.dstAccelerationStructure = tlas.handle;
+  info.dstAccelerationStructure = vk::native(tlas.handle);
   info.scratchData.deviceAddress = align_up(scratch.address, tlas.scratch_alignment);
   const VkAccelerationStructureBuildRangeInfoKHR range{instance_count, 0, 0, 0};
   const VkAccelerationStructureBuildRangeInfoKHR* ranges = &range;
-  vkCmdBuildAccelerationStructuresKHR(commands, 1, &info, &ranges);
+  vkCmdBuildAccelerationStructuresKHR(vk::native(commands), 1, &info, &ranges);
 }
 
 bool create_scratch(const Device& device, u64 bytes, BufferResource& out, std::string* error) {
-  return create_buffer(
-      device, bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-      false, out, error);
+  return create_buffer(device, bytes, BufferUsage::Storage | BufferUsage::ShaderDeviceAddress,
+                       false, out, error);
 }
 
-void acceleration_build_barrier(VkCommandBuffer commands, VkPipelineStageFlags2 dst_stage,
-                                VkAccessFlags2 dst_access) noexcept {
+void acceleration_build_barrier(CommandList commands, PipelineStage dst_stage,
+                                MemoryAccess dst_access) noexcept {
   VkMemoryBarrier2 barrier{};
   barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
   barrier.srcStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
   barrier.srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
-  barrier.dstStageMask = dst_stage;
-  barrier.dstAccessMask = dst_access;
+  barrier.dstStageMask = vk::native(dst_stage);
+  barrier.dstAccessMask = vk::native(dst_access);
   VkDependencyInfo dependency{};
   dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
   dependency.memoryBarrierCount = 1;
   dependency.pMemoryBarriers = &barrier;
-  vkCmdPipelineBarrier2(commands, &dependency);
+  vkCmdPipelineBarrier2(vk::native(commands), &dependency);
 }
 
 void destroy_acceleration_structure(const Device& device, AccelerationStructure& as) noexcept {
-  if (as.handle != VK_NULL_HANDLE)
-    vkDestroyAccelerationStructureKHR(device.handles().device, as.handle, nullptr);
+  if (as.handle)
+    vkDestroyAccelerationStructureKHR(device.handles().device, vk::native(as.handle), nullptr);
   destroy_buffer(device, as.buffer);
   as = AccelerationStructure{};
 }

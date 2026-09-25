@@ -1,4 +1,5 @@
 #include <core/containers/vector.h>
+#include <foundation/window/backend/vulkan/surface.h>
 #include <foundation/window/window.h>
 
 #include <doctest/doctest.h>
@@ -39,7 +40,7 @@ TEST_CASE("window: create a hidden window, read its size, drain events") {
   CHECK(window.pixel_height() >= 64);
 
   // The surface extensions always include VK_KHR_surface when SDL has a Vulkan loader.
-  const auto extensions = window::Window::vulkan_instance_extensions();
+  const auto extensions = window::vulkan::instance_extensions();
   bool has_surface = false;
   for (const char* name : extensions) {
     if (std::strcmp(name, "VK_KHR_surface") == 0) has_surface = true;

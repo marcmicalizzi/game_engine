@@ -1,5 +1,6 @@
 #include <core/base/assert.h>
 #include <core/log/log.h>
+#include <domain/gfx/backend/vulkan/vulkan.h>
 #include <domain/gfx/bindless.h>
 
 #include <algorithm>
@@ -82,11 +83,13 @@ bool BindlessSet::create(const Device& device, const BindlessConfig& config, std
   layout_info.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
   layout_info.bindingCount = binding_count;
   layout_info.pBindings = bindings;
-  if (const VkResult r = vkCreateDescriptorSetLayout(h.device, &layout_info, nullptr, &layout_);
+  VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;
+  if (const VkResult r = vkCreateDescriptorSetLayout(h.device, &layout_info, nullptr, &set_layout);
       r != VK_SUCCESS) {
     set_error(error, "vkCreateDescriptorSetLayout(bindless)", r);
     return false;
   }
+  layout_ = vk::wrap(set_layout);
   device_ = &device;
 
   const VkDescriptorPoolSize sizes[4] = {
@@ -101,22 +104,26 @@ bool BindlessSet::create(const Device& device, const BindlessConfig& config, std
   pool_info.maxSets = 1;
   pool_info.poolSizeCount = binding_count;
   pool_info.pPoolSizes = sizes;
-  if (const VkResult r = vkCreateDescriptorPool(h.device, &pool_info, nullptr, &pool_);
+  VkDescriptorPool pool = VK_NULL_HANDLE;
+  if (const VkResult r = vkCreateDescriptorPool(h.device, &pool_info, nullptr, &pool);
       r != VK_SUCCESS) {
     set_error(error, "vkCreateDescriptorPool(bindless)", r);
     destroy();
     return false;
   }
+  pool_ = vk::wrap(pool);
   VkDescriptorSetAllocateInfo set_info{};
   set_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-  set_info.descriptorPool = pool_;
+  set_info.descriptorPool = pool;
   set_info.descriptorSetCount = 1;
-  set_info.pSetLayouts = &layout_;
-  if (const VkResult r = vkAllocateDescriptorSets(h.device, &set_info, &set_); r != VK_SUCCESS) {
+  set_info.pSetLayouts = &set_layout;
+  VkDescriptorSet set = VK_NULL_HANDLE;
+  if (const VkResult r = vkAllocateDescriptorSets(h.device, &set_info, &set); r != VK_SUCCESS) {
     set_error(error, "vkAllocateDescriptorSets(bindless)", r);
     destroy();
     return false;
   }
+  set_ = vk::wrap(set);
 
   VkPushConstantRange range{};
   range.stageFlags = VK_SHADER_STAGE_ALL;
@@ -125,16 +132,18 @@ bool BindlessSet::create(const Device& device, const BindlessConfig& config, std
   VkPipelineLayoutCreateInfo pipeline_layout_info{};
   pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
   pipeline_layout_info.setLayoutCount = 1;
-  pipeline_layout_info.pSetLayouts = &layout_;
+  pipeline_layout_info.pSetLayouts = &set_layout;
   pipeline_layout_info.pushConstantRangeCount = capacity_.push_constant_bytes > 0 ? 1 : 0;
   pipeline_layout_info.pPushConstantRanges = &range;
+  VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
   if (const VkResult r =
-          vkCreatePipelineLayout(h.device, &pipeline_layout_info, nullptr, &pipeline_layout_);
+          vkCreatePipelineLayout(h.device, &pipeline_layout_info, nullptr, &pipeline_layout);
       r != VK_SUCCESS) {
     set_error(error, "vkCreatePipelineLayout(bindless)", r);
     destroy();
     return false;
   }
+  pipeline_layout_ = vk::wrap(pipeline_layout);
 
   pools_[0].capacity = capacity_.sampled_images;
   pools_[1].capacity = capacity_.storage_images;
@@ -152,14 +161,13 @@ bool BindlessSet::create(const Device& device, const BindlessConfig& config, std
 void BindlessSet::destroy() noexcept {
   if (device_ == nullptr) return;
   const Handles& h = device_->handles();
-  if (pipeline_layout_ != VK_NULL_HANDLE)
-    vkDestroyPipelineLayout(h.device, pipeline_layout_, nullptr);
-  if (pool_ != VK_NULL_HANDLE) vkDestroyDescriptorPool(h.device, pool_, nullptr);  // frees the set
-  if (layout_ != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(h.device, layout_, nullptr);
-  pipeline_layout_ = VK_NULL_HANDLE;
-  pool_ = VK_NULL_HANDLE;
-  set_ = VK_NULL_HANDLE;
-  layout_ = VK_NULL_HANDLE;
+  if (pipeline_layout_) vkDestroyPipelineLayout(h.device, vk::native(pipeline_layout_), nullptr);
+  if (pool_) vkDestroyDescriptorPool(h.device, vk::native(pool_), nullptr);  // frees the set
+  if (layout_) vkDestroyDescriptorSetLayout(h.device, vk::native(layout_), nullptr);
+  pipeline_layout_ = {};
+  pool_ = {};
+  set_ = {};
+  layout_ = {};
   for (Pool& p : pools_)
     p = Pool{};
   for (u32& l : live_)
@@ -185,49 +193,49 @@ u32 BindlessSet::allocate(u32 binding) {
   return slot;
 }
 
-void BindlessSet::write_image(u32 binding, u32 slot, VkImageView view, VkImageLayout layout,
-                              VkDescriptorType type) {
+void BindlessSet::write_image(u32 binding, u32 slot, ImageViewHandle view, ImageLayout layout,
+                              DescriptorType type) {
   VkDescriptorImageInfo info{};
-  info.imageView = view;
-  info.imageLayout = layout;
+  info.imageView = vk::native(view);
+  info.imageLayout = vk::native(layout);
   VkWriteDescriptorSet write{};
   write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-  write.dstSet = set_;
+  write.dstSet = vk::native(set_);
   write.dstBinding = binding;
   write.dstArrayElement = slot;
   write.descriptorCount = 1;
-  write.descriptorType = type;
+  write.descriptorType = vk::native(type);
   write.pImageInfo = &info;
   vkUpdateDescriptorSets(device_->handles().device, 1, &write, 0, nullptr);
 }
 
-u32 BindlessSet::add_sampled_image(VkImageView view, VkImageLayout layout) {
+u32 BindlessSet::add_sampled_image(ImageViewHandle view, ImageLayout layout) {
   ENGINE_VERIFY(device_ != nullptr, "BindlessSet: not created");
   const u32 slot = allocate(k_binding_sampled_images);
   if (slot != k_invalid_slot)
-    write_image(k_binding_sampled_images, slot, view, layout, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE);
+    write_image(k_binding_sampled_images, slot, view, layout, DescriptorType::SampledImage);
   return slot;
 }
 
-u32 BindlessSet::add_storage_image(VkImageView view) {
+u32 BindlessSet::add_storage_image(ImageViewHandle view) {
   ENGINE_VERIFY(device_ != nullptr, "BindlessSet: not created");
   const u32 slot = allocate(k_binding_storage_images);
   if (slot != k_invalid_slot) {
-    write_image(k_binding_storage_images, slot, view, VK_IMAGE_LAYOUT_GENERAL,
-                VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+    write_image(k_binding_storage_images, slot, view, ImageLayout::General,
+                DescriptorType::StorageImage);
   }
   return slot;
 }
 
-u32 BindlessSet::add_sampler(VkSampler sampler) {
+u32 BindlessSet::add_sampler(SamplerHandle sampler) {
   ENGINE_VERIFY(device_ != nullptr, "BindlessSet: not created");
   const u32 slot = allocate(k_binding_samplers);
   if (slot == k_invalid_slot) return slot;
   VkDescriptorImageInfo info{};
-  info.sampler = sampler;
+  info.sampler = vk::native(sampler);
   VkWriteDescriptorSet write{};
   write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-  write.dstSet = set_;
+  write.dstSet = vk::native(set_);
   write.dstBinding = k_binding_samplers;
   write.dstArrayElement = slot;
   write.descriptorCount = 1;
@@ -237,19 +245,20 @@ u32 BindlessSet::add_sampler(VkSampler sampler) {
   return slot;
 }
 
-u32 BindlessSet::add_acceleration_structure(VkAccelerationStructureKHR structure) {
+u32 BindlessSet::add_acceleration_structure(AccelerationStructureHandle structure) {
   ENGINE_VERIFY(device_ != nullptr, "BindlessSet: not created");
   if (!has_acceleration_structures()) return k_invalid_slot;
   const u32 slot = allocate(k_binding_acceleration_structures);
   if (slot == k_invalid_slot) return slot;
+  const VkAccelerationStructureKHR native_structure = vk::native(structure);
   VkWriteDescriptorSetAccelerationStructureKHR structures{};
   structures.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
   structures.accelerationStructureCount = 1;
-  structures.pAccelerationStructures = &structure;
+  structures.pAccelerationStructures = &native_structure;
   VkWriteDescriptorSet write{};
   write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
   write.pNext = &structures;
-  write.dstSet = set_;
+  write.dstSet = vk::native(set_);
   write.dstBinding = k_binding_acceleration_structures;
   write.dstArrayElement = slot;
   write.descriptorCount = 1;
@@ -258,17 +267,17 @@ u32 BindlessSet::add_acceleration_structure(VkAccelerationStructureKHR structure
   return slot;
 }
 
-void BindlessSet::update_sampled_image(u32 slot, VkImageView view, VkImageLayout layout) {
+void BindlessSet::update_sampled_image(u32 slot, ImageViewHandle view, ImageLayout layout) {
   ENGINE_VERIFY(slot < pools_[k_binding_sampled_images].next,
                 "BindlessSet: slot was never allocated");
-  write_image(k_binding_sampled_images, slot, view, layout, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE);
+  write_image(k_binding_sampled_images, slot, view, layout, DescriptorType::SampledImage);
 }
 
-void BindlessSet::update_storage_image(u32 slot, VkImageView view) {
+void BindlessSet::update_storage_image(u32 slot, ImageViewHandle view) {
   ENGINE_VERIFY(slot < pools_[k_binding_storage_images].next,
                 "BindlessSet: slot was never allocated");
-  write_image(k_binding_storage_images, slot, view, VK_IMAGE_LAYOUT_GENERAL,
-              VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+  write_image(k_binding_storage_images, slot, view, ImageLayout::General,
+              DescriptorType::StorageImage);
 }
 
 void BindlessSet::release_sampled_image(u32 slot, u64 safe_after_value) {
@@ -304,20 +313,22 @@ void BindlessSet::recycle(u64 completed_value) {
   }
 }
 
-void BindlessSet::bind(VkCommandBuffer commands, VkPipelineBindPoint bind_point) const noexcept {
-  vkCmdBindDescriptorSets(commands, bind_point, pipeline_layout_, 0, 1, &set_, 0, nullptr);
+void BindlessSet::bind(CommandList commands, BindPoint bind_point) const noexcept {
+  const VkDescriptorSet set = vk::native(set_);
+  vkCmdBindDescriptorSets(vk::native(commands), vk::native(bind_point),
+                          vk::native(pipeline_layout_), 0, 1, &set, 0, nullptr);
 }
 
 // ---- views and samplers ----------------------------------------------------------------------
 
-bool create_image_view(const Device& device, const ImageResource& image, VkImageView& out,
+bool create_image_view(const Device& device, const ImageResource& image, ImageViewHandle& out,
                        std::string* error) {
   // A depth format's view names the depth aspect: a shadow map is sampled through one, and the
   // render graph's depth attachments (the direct path's, the shadow atlas) are viewed through this
   // function too. Vulkan requires the view's aspect to be one the format has, so a colour aspect
   // on a depth image was invalid usage however quietly it drew.
   VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT;
-  switch (image.format) {
+  switch (vk::native(image.format)) {
     case VK_FORMAT_D16_UNORM:
     case VK_FORMAT_D32_SFLOAT:
     case VK_FORMAT_X8_D24_UNORM_PACK32:
@@ -328,43 +339,47 @@ bool create_image_view(const Device& device, const ImageResource& image, VkImage
   }
   VkImageViewCreateInfo info{};
   info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-  info.image = image.image;
+  info.image = vk::native(image.image);
   info.viewType = VK_IMAGE_VIEW_TYPE_2D;
-  info.format = image.format;
+  info.format = vk::native(image.format);
   info.subresourceRange = {aspect, 0, image.levels == 0 ? 1u : image.levels, 0, 1};
-  const VkResult r = vkCreateImageView(device.handles().device, &info, nullptr, &out);
+  VkImageView view = VK_NULL_HANDLE;
+  const VkResult r = vkCreateImageView(device.handles().device, &info, nullptr, &view);
   if (r != VK_SUCCESS) {
     set_error(error, "vkCreateImageView", r);
-    out = VK_NULL_HANDLE;
+    out = {};
     return false;
   }
+  out = vk::wrap(view);
   return true;
 }
 
-void destroy_image_view(const Device& device, VkImageView view) noexcept {
-  if (view != VK_NULL_HANDLE) vkDestroyImageView(device.handles().device, view, nullptr);
+void destroy_image_view(const Device& device, ImageViewHandle view) noexcept {
+  if (view) vkDestroyImageView(device.handles().device, vk::native(view), nullptr);
 }
 
-bool create_sampler(const Device& device, VkFilter filter, VkSampler& out, std::string* error) {
+bool create_sampler(const Device& device, Filter filter, SamplerHandle& out, std::string* error) {
   VkSamplerCreateInfo info{};
   info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-  info.magFilter = filter;
-  info.minFilter = filter;
+  info.magFilter = vk::native(filter);
+  info.minFilter = vk::native(filter);
   info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
   info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
   info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
   info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
   info.maxLod = 0.0f;
-  const VkResult r = vkCreateSampler(device.handles().device, &info, nullptr, &out);
+  VkSampler sampler = VK_NULL_HANDLE;
+  const VkResult r = vkCreateSampler(device.handles().device, &info, nullptr, &sampler);
   if (r != VK_SUCCESS) {
     set_error(error, "vkCreateSampler", r);
-    out = VK_NULL_HANDLE;
+    out = {};
     return false;
   }
+  out = vk::wrap(sampler);
   return true;
 }
 
-bool create_mip_sampler(const Device& device, f32 max_anisotropy, VkSampler& out,
+bool create_mip_sampler(const Device& device, f32 max_anisotropy, SamplerHandle& out,
                         std::string* error) {
   VkSamplerCreateInfo info{};
   info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
@@ -383,43 +398,47 @@ bool create_mip_sampler(const Device& device, f32 max_anisotropy, VkSampler& out
   // Every device with the feature supports at least 16 (the Vulkan minimum for
   // maxSamplerAnisotropy when samplerAnisotropy is true), so 16 needs no limit query.
   info.maxAnisotropy = anisotropic ? (max_anisotropy > 16.0f ? 16.0f : max_anisotropy) : 1.0f;
-  const VkResult r = vkCreateSampler(device.handles().device, &info, nullptr, &out);
+  VkSampler sampler = VK_NULL_HANDLE;
+  const VkResult r = vkCreateSampler(device.handles().device, &info, nullptr, &sampler);
   if (r != VK_SUCCESS) {
     set_error(error, "vkCreateSampler", r);
-    out = VK_NULL_HANDLE;
+    out = {};
     return false;
   }
+  out = vk::wrap(sampler);
   return true;
 }
 
-bool create_sampler(const Device& device, const SamplerDesc& desc, VkSampler& out,
+bool create_sampler(const Device& device, const SamplerDesc& desc, SamplerHandle& out,
                     std::string* error) {
   VkSamplerCreateInfo info{};
   info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-  info.magFilter = desc.mag;
-  info.minFilter = desc.min;
-  info.mipmapMode = desc.mipmapped ? desc.mip : VK_SAMPLER_MIPMAP_MODE_NEAREST;
-  info.addressModeU = desc.address_u;
-  info.addressModeV = desc.address_v;
+  info.magFilter = vk::native(desc.mag);
+  info.minFilter = vk::native(desc.min);
+  info.mipmapMode = desc.mipmapped ? vk::native(desc.mip) : VK_SAMPLER_MIPMAP_MODE_NEAREST;
+  info.addressModeU = vk::native(desc.address_u);
+  info.addressModeV = vk::native(desc.address_v);
   info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
   info.minLod = 0.0f;
   info.maxLod = desc.mipmapped ? VK_LOD_CLAMP_NONE : 0.0f;
-  const bool anisotropic = desc.mipmapped && desc.min == VK_FILTER_LINEAR &&
+  const bool anisotropic = desc.mipmapped && desc.min == Filter::Linear &&
                            device.features().sampler_anisotropy && desc.max_anisotropy > 1.0f;
   info.anisotropyEnable = anisotropic ? VK_TRUE : VK_FALSE;
   info.maxAnisotropy =
       anisotropic ? (desc.max_anisotropy > 16.0f ? 16.0f : desc.max_anisotropy) : 1.0f;
-  const VkResult r = vkCreateSampler(device.handles().device, &info, nullptr, &out);
+  VkSampler sampler = VK_NULL_HANDLE;
+  const VkResult r = vkCreateSampler(device.handles().device, &info, nullptr, &sampler);
   if (r != VK_SUCCESS) {
     set_error(error, "vkCreateSampler", r);
-    out = VK_NULL_HANDLE;
+    out = {};
     return false;
   }
+  out = vk::wrap(sampler);
   return true;
 }
 
-void destroy_sampler(const Device& device, VkSampler sampler) noexcept {
-  if (sampler != VK_NULL_HANDLE) vkDestroySampler(device.handles().device, sampler, nullptr);
+void destroy_sampler(const Device& device, SamplerHandle sampler) noexcept {
+  if (sampler) vkDestroySampler(device.handles().device, vk::native(sampler), nullptr);
 }
 
 }  // namespace engine::gfx

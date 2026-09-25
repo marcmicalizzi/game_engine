@@ -1,5 +1,6 @@
 #include <core/base/assert.h>
 #include <core/log/log.h>
+#include <domain/gfx/backend/vulkan/vulkan.h>
 #include <domain/gfx/frame.h>
 
 namespace engine::gfx {
@@ -25,45 +26,52 @@ bool FrameContext::create(const Device& device, u32 frames_in_flight, std::strin
   VkSemaphoreCreateInfo semaphore_info{};
   semaphore_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
   semaphore_info.pNext = &type_info;
-  if (const VkResult r = vkCreateSemaphore(h.device, &semaphore_info, nullptr, &timeline_);
+  VkSemaphore timeline = VK_NULL_HANDLE;
+  if (const VkResult r = vkCreateSemaphore(h.device, &semaphore_info, nullptr, &timeline);
       r != VK_SUCCESS) {
     if (error != nullptr) *error = std::string("vkCreateSemaphore(timeline): ") + result_name(r);
     return false;
   }
+  timeline_ = vk::wrap(timeline);
   slots_.resize(frames_in_flight);
   for (Slot& slot : slots_) {
     VkCommandPoolCreateInfo pool_info{};
     pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     pool_info.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
     pool_info.queueFamilyIndex = device.graphics_family();
-    if (const VkResult r = vkCreateCommandPool(h.device, &pool_info, nullptr, &slot.pool);
+    VkCommandPool pool = VK_NULL_HANDLE;
+    if (const VkResult r = vkCreateCommandPool(h.device, &pool_info, nullptr, &pool);
         r != VK_SUCCESS) {
       if (error != nullptr) *error = std::string("vkCreateCommandPool: ") + result_name(r);
       device_ = &device;
       destroy();
       return false;
     }
+    slot.pool = vk::wrap(pool);
     VkCommandBufferAllocateInfo alloc{};
     alloc.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    alloc.commandPool = slot.pool;
+    alloc.commandPool = pool;
     alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     alloc.commandBufferCount = 1;
-    if (const VkResult r = vkAllocateCommandBuffers(h.device, &alloc, &slot.commands);
-        r != VK_SUCCESS) {
+    VkCommandBuffer commands = VK_NULL_HANDLE;
+    if (const VkResult r = vkAllocateCommandBuffers(h.device, &alloc, &commands); r != VK_SUCCESS) {
       if (error != nullptr) *error = std::string("vkAllocateCommandBuffers: ") + result_name(r);
       device_ = &device;
       destroy();
       return false;
     }
+    slot.commands = vk::wrap(commands);
     VkSemaphoreCreateInfo binary{};
     binary.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-    if (const VkResult r = vkCreateSemaphore(h.device, &binary, nullptr, &slot.acquire);
+    VkSemaphore acquire = VK_NULL_HANDLE;
+    if (const VkResult r = vkCreateSemaphore(h.device, &binary, nullptr, &acquire);
         r != VK_SUCCESS) {
       if (error != nullptr) *error = std::string("vkCreateSemaphore(acquire): ") + result_name(r);
       device_ = &device;
       destroy();
       return false;
     }
+    slot.acquire = vk::wrap(acquire);
   }
   device_ = &device;
   ENGINE_LOG_DEBUG(log_frame, "frame context created",
@@ -82,12 +90,12 @@ void FrameContext::destroy() noexcept {
       destroy_image(*device_, i);
     slot.buffers.clear();
     slot.images.clear();
-    if (slot.pool != VK_NULL_HANDLE) vkDestroyCommandPool(h.device, slot.pool, nullptr);
-    if (slot.acquire != VK_NULL_HANDLE) vkDestroySemaphore(h.device, slot.acquire, nullptr);
+    if (slot.pool) vkDestroyCommandPool(h.device, vk::native(slot.pool), nullptr);
+    if (slot.acquire) vkDestroySemaphore(h.device, vk::native(slot.acquire), nullptr);
   }
   slots_.clear();
-  if (timeline_ != VK_NULL_HANDLE) vkDestroySemaphore(h.device, timeline_, nullptr);
-  timeline_ = VK_NULL_HANDLE;
+  if (timeline_) vkDestroySemaphore(h.device, vk::native(timeline_), nullptr);
+  timeline_ = {};
   device_ = nullptr;
   recording_ = false;
 }
@@ -105,19 +113,19 @@ void FrameContext::recycle(Slot& slot) {
   slot.images.clear();
 }
 
-VkCommandBuffer FrameContext::begin_frame() {
+CommandList FrameContext::begin_frame() {
   ENGINE_VERIFY(device_ != nullptr, "FrameContext::begin_frame: not created");
   ENGINE_VERIFY(!recording_, "FrameContext::begin_frame: end_frame was not called");
   slot_ = static_cast<u32>(frame_index_ % slots_.size());
   Slot& slot = slots_[slot_];
   recycle(slot);
-  vkResetCommandPool(device_->handles().device, slot.pool, 0);
+  vkResetCommandPool(device_->handles().device, vk::native(slot.pool), 0);
   VkCommandBufferBeginInfo begin{};
   begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
   begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-  vkBeginCommandBuffer(slot.commands, &begin);
+  vkBeginCommandBuffer(vk::native(slot.commands), &begin);
   recording_ = true;
-  return slot.commands;
+  return CommandList{slot.commands};
 }
 
 u64 FrameContext::end_frame() { return end_frame(PresentSync{}); }
@@ -125,31 +133,31 @@ u64 FrameContext::end_frame() { return end_frame(PresentSync{}); }
 u64 FrameContext::end_frame(const PresentSync& sync) {
   ENGINE_VERIFY(recording_, "FrameContext::end_frame: begin_frame was not called");
   Slot& slot = slots_[slot_];
-  vkEndCommandBuffer(slot.commands);
+  vkEndCommandBuffer(vk::native(slot.commands));
   const u64 value = frame_index_ + 1;
 
   VkCommandBufferSubmitInfo command_info{};
   command_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
-  command_info.commandBuffer = slot.commands;
+  command_info.commandBuffer = vk::native(slot.commands);
   VkSemaphoreSubmitInfo signals[2]{};
   signals[0].sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
-  signals[0].semaphore = timeline_;
+  signals[0].semaphore = vk::native(timeline_);
   signals[0].value = value;
   signals[0].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
   u32 signal_count = 1;
-  if (sync.signal != VK_NULL_HANDLE) {
+  if (sync.signal) {
     signals[1].sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
-    signals[1].semaphore = sync.signal;
+    signals[1].semaphore = vk::native(sync.signal);
     signals[1].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
     signal_count = 2;
   }
   VkSemaphoreSubmitInfo wait{};
   wait.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
-  wait.semaphore = sync.wait;
-  wait.stageMask = sync.wait_stage;
+  wait.semaphore = vk::native(sync.wait);
+  wait.stageMask = vk::native(sync.wait_stage);
   VkSubmitInfo2 submit{};
   submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
-  submit.waitSemaphoreInfoCount = sync.wait != VK_NULL_HANDLE ? 1 : 0;
+  submit.waitSemaphoreInfoCount = sync.wait ? 1 : 0;
   submit.pWaitSemaphoreInfos = &wait;
   submit.commandBufferInfoCount = 1;
   submit.pCommandBufferInfos = &command_info;
@@ -166,16 +174,17 @@ u64 FrameContext::end_frame(const PresentSync& sync) {
 u64 FrameContext::completed() const noexcept {
   if (device_ == nullptr) return 0;
   u64 value = 0;
-  vkGetSemaphoreCounterValue(device_->handles().device, timeline_, &value);
+  vkGetSemaphoreCounterValue(device_->handles().device, vk::native(timeline_), &value);
   return value;
 }
 
 bool FrameContext::wait(u64 value, u64 timeout_ns) const noexcept {
   if (device_ == nullptr) return false;
+  const VkSemaphore timeline = vk::native(timeline_);
   VkSemaphoreWaitInfo info{};
   info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
   info.semaphoreCount = 1;
-  info.pSemaphores = &timeline_;
+  info.pSemaphores = &timeline;
   info.pValues = &value;
   return vkWaitSemaphores(device_->handles().device, &info, timeout_ns) == VK_SUCCESS;
 }
@@ -186,7 +195,7 @@ void FrameContext::wait_idle() const noexcept {
 
 void FrameContext::defer_destroy(BufferResource buffer) {
   ENGINE_VERIFY(device_ != nullptr, "FrameContext::defer_destroy: not created");
-  if (buffer.buffer == VK_NULL_HANDLE) return;
+  if (!buffer.buffer) return;
   // While recording, the current slot; otherwise the slot of the last submitted frame.
   const u32 target = recording_ || frame_index_ == 0
                          ? slot_
@@ -196,7 +205,7 @@ void FrameContext::defer_destroy(BufferResource buffer) {
 
 void FrameContext::defer_destroy(ImageResource image) {
   ENGINE_VERIFY(device_ != nullptr, "FrameContext::defer_destroy: not created");
-  if (image.image == VK_NULL_HANDLE) return;
+  if (!image.image) return;
   const u32 target = recording_ || frame_index_ == 0
                          ? slot_
                          : static_cast<u32>((frame_index_ - 1) % slots_.size());

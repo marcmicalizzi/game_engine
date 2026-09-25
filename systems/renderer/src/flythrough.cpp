@@ -327,12 +327,11 @@ bool VisibleCensus::create(const gfx::Device& device, const GpuScene& scene, std
   // Host-visible and as long as the whole list, so a frame's runs land in it with one submission;
   // it is created once, since a census reads every frame of a path.
   return gfx::create_buffer(device, scene.visible.size > 0 ? scene.visible.size : 8,
-                            VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, staging_, error);
+                            gfx::BufferUsage::TransferDst, true, staging_, error);
 }
 
 void VisibleCensus::destroy() noexcept {
-  if (device_ != nullptr && staging_.buffer != VK_NULL_HANDLE)
-    gfx::destroy_buffer(*device_, staging_);
+  if (device_ != nullptr && staging_.buffer.valid()) gfx::destroy_buffer(*device_, staging_);
   staging_ = gfx::BufferResource{};
   device_ = nullptr;
 }
@@ -341,13 +340,13 @@ bool VisibleCensus::count(const SceneData& data, const GpuScene& scene, const St
                           Vector<u32>& levels, Vector<u32>& meshes, std::string* error) {
   levels.assign(data.lod.level_cluster_counts.size(), 0u);
   meshes.assign(data.parts.size(), 0u);
-  if (device_ == nullptr || staging_.buffer == VK_NULL_HANDLE) {
+  if (device_ == nullptr || !staging_.buffer.valid()) {
     if (error != nullptr) *error = "the census was not created";
     return false;
   }
   // Every view's three runs, each only as long as the count its argument block recorded: the rest
   // of a run is whatever an earlier frame left there.
-  VkBufferCopy regions[k_max_views * k_visible_runs];
+  gfx::BufferCopy regions[k_max_views * k_visible_runs];
   u32 region_count = 0;
   u64 cursor = 0;
   for (u32 v = 0; v < scene.view_count() && v < k_max_views; ++v) {
@@ -361,17 +360,17 @@ bool VisibleCensus::count(const SceneData& data, const GpuScene& scene, const St
         if (error != nullptr) *error = "a visible run is longer than the visible list";
         return false;
       }
-      regions[region_count++] = VkBufferCopy{source, cursor, bytes};
+      regions[region_count++] = gfx::BufferCopy{source, cursor, bytes};
       cursor += bytes;
     }
   }
   if (region_count > 0) {
-    const VkBuffer from = scene.visible.buffer;
-    const VkBuffer to = staging_.buffer;
+    const gfx::BufferHandle from = scene.visible.buffer;
+    const gfx::BufferHandle to = staging_.buffer;
     const bool ok = gfx::submit_immediate(
         *device_,
-        [&](VkCommandBuffer commands) {
-          vkCmdCopyBuffer(commands, from, to, region_count, regions);
+        [&](gfx::CommandList commands) {
+          commands.copy_buffer(from, to, std::span<const gfx::BufferCopy>(regions, region_count));
         },
         error);
     if (!ok) return false;

@@ -9,6 +9,7 @@
 
 #include <domain/geometry/cluster_lod.h>
 #include <domain/gfx/acceleration.h>
+#include <domain/gfx/backend/vulkan/vulkan.h>
 #include <domain/gfx/bindless.h>
 #include <domain/gfx/cluster_cull.h>
 #include <domain/gfx/device.h>
@@ -16,7 +17,6 @@
 #include <domain/gfx/gpu_timer.h>
 #include <domain/gfx/ray_visibility.h>
 #include <domain/gfx/render_graph.h>
-#include <domain/gfx/vulkan.h>
 
 #include <doctest/doctest.h>
 
@@ -106,8 +106,8 @@ TEST_CASE("ray query: primary visibility matches the rasterized LOD cut") {
 
   // Geometry on the GPU: the cluster format for the rasterizer, plus 16-bit indices per cut
   // cluster for the acceleration structure builder.
-  constexpr VkBufferUsageFlags k_storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-  constexpr VkBufferUsageFlags k_address = k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+  constexpr gfx::BufferUsage k_storage = gfx::BufferUsage::Storage;
+  constexpr gfx::BufferUsage k_address = k_storage | gfx::BufferUsage::ShaderDeviceAddress;
   gfx::BufferResource clusters;
   gfx::BufferResource vertices;
   gfx::BufferResource triangles;
@@ -179,14 +179,13 @@ TEST_CASE("ray query: primary visibility matches the rasterized LOD cut") {
   gfx::write_instances(std::span<const gfx::TlasInstance>(&instance, 1), instances.mapped);
   REQUIRE(gfx::submit_immediate(
       device,
-      [&](VkCommandBuffer cb) {
+      [&](gfx::CommandList cb) {
         gfx::build_blas(cb, blas, geometries, gfx::k_build_fast_trace, scratch);
-        gfx::acceleration_build_barrier(cb,
-                                        VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
-                                        VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR);
+        gfx::acceleration_build_barrier(cb, gfx::PipelineStage::AccelerationBuild,
+                                        gfx::MemoryAccess::AccelerationStructureRead);
         gfx::build_tlas(cb, tlas, instances.address, 1, gfx::k_build_fast_trace, scratch);
-        gfx::acceleration_build_barrier(cb, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                                        VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR);
+        gfx::acceleration_build_barrier(cb, gfx::PipelineStage::ComputeShader,
+                                        gfx::MemoryAccess::AccelerationStructureRead);
       },
       &error));
 
@@ -200,32 +199,32 @@ TEST_CASE("ray query: primary visibility matches the rasterized LOD cut") {
   gfx::GpuTimer timer;
   REQUIRE(timer.create(device, 2, 8, &error));
 
-  VkShaderModule vertex_module = gfx::create_shader_module(
+  gfx::ShaderModuleHandle vertex_module = gfx::create_shader_module(
       device, shaders::k_cluster_vertex_spirv, shaders::k_cluster_vertex_spirv_size, &error);
-  VkShaderModule trace_module = gfx::create_shader_module(
+  gfx::ShaderModuleHandle trace_module = gfx::create_shader_module(
       device, shaders::k_ray_visibility_spirv, shaders::k_ray_visibility_spirv_size, &error);
-  REQUIRE(vertex_module != VK_NULL_HANDLE);
-  REQUIRE(trace_module != VK_NULL_HANDLE);
+  REQUIRE(vertex_module.valid());
+  REQUIRE(trace_module.valid());
   gfx::GraphicsPipelineDesc vertex_desc;
   vertex_desc.vertex = vertex_module;
   vertex_desc.vertex_entry = "vs_cluster";
   vertex_desc.fragment = vertex_module;
   vertex_desc.fragment_entry = "fs_visibility";
   vertex_desc.layout = bindless.pipeline_layout();
-  VkPipeline vertex_pipeline = VK_NULL_HANDLE;
+  gfx::PipelineHandle vertex_pipeline = {};
   REQUIRE_MESSAGE(gfx::create_graphics_pipeline(device, vertex_desc, vertex_pipeline, &error),
                   error);
-  const VkDescriptorSetLayout set_layout = bindless.layout();
+  const gfx::DescriptorSetLayoutHandle set_layout = bindless.layout();
   gfx::ComputePipeline trace_pipeline;
   REQUIRE_MESSAGE(
       gfx::create_compute_pipeline(device, trace_module, "trace_main",
-                                   std::span<const VkDescriptorSetLayout>(&set_layout, 1),
+                                   std::span<const gfx::DescriptorSetLayoutHandle>(&set_layout, 1),
                                    sizeof(u64), trace_pipeline, &error),
       error);
 
   const u64 vis_bytes = u64{k_w} * k_h * sizeof(u64);
-  const VkBufferUsageFlags k_vis =
-      k_address | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+  const gfx::BufferUsage k_vis =
+      k_address | gfx::BufferUsage::TransferDst | gfx::BufferUsage::TransferSrc;
   gfx::BufferResource vis_raster;
   gfx::BufferResource vis_rt;
   gfx::BufferResource params;
@@ -234,8 +233,8 @@ TEST_CASE("ray query: primary visibility matches the rasterized LOD cut") {
   REQUIRE(gfx::create_buffer(device, vis_bytes, k_vis, false, vis_rt, &error));
   REQUIRE(gfx::create_buffer(device, sizeof(gfx::RayVisibilityParams), k_address, true, params,
                              &error));
-  REQUIRE(gfx::create_buffer(device, vis_bytes * 2, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, host,
-                             &error));
+  REQUIRE(
+      gfx::create_buffer(device, vis_bytes * 2, gfx::BufferUsage::TransferDst, true, host, &error));
 
   gfx::ClusterDrawParams draw{};
   draw.view_proj = view_proj;
@@ -274,9 +273,9 @@ TEST_CASE("ray query: primary visibility matches the rasterized LOD cut") {
         b.write(rg_raster, gfx::Access::TransferWrite);
         b.write(rg_rt, gfx::Access::TransferWrite);
       },
-      [&](VkCommandBuffer cb, gfx::RenderGraph&) {
-        vkCmdFillBuffer(cb, vis_raster.buffer, 0, VK_WHOLE_SIZE, 0);
-        vkCmdFillBuffer(cb, vis_rt.buffer, 0, VK_WHOLE_SIZE, 0);
+      [&](gfx::CommandList cb, gfx::RenderGraph&) {
+        cb.fill_buffer(vis_raster.buffer, 0, gfx::k_whole_size, 0);
+        cb.fill_buffer(vis_rt.buffer, 0, gfx::k_whole_size, 0);
       });
   graph.add_pass(
       "raster", gfx::PassKind::Raster,
@@ -284,26 +283,25 @@ TEST_CASE("ray query: primary visibility matches the rasterized LOD cut") {
         b.render_area(k_w, k_h);
         b.write(rg_raster, gfx::Access::FragmentReadWrite);
       },
-      [&](VkCommandBuffer cb, gfx::RenderGraph&) {
+      [&](gfx::CommandList cb, gfx::RenderGraph&) {
         timer.begin(cb, "raster");
-        vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, vertex_pipeline);
-        bindless.bind(cb, VK_PIPELINE_BIND_POINT_GRAPHICS);
-        vkCmdPushConstants(cb, bindless.pipeline_layout(), VK_SHADER_STAGE_ALL, 0, sizeof(draw),
-                           &draw);
-        vkCmdDraw(cb, triangles_per_cluster * 3, cut.size(), 0, 0);
+        cb.bind_pipeline(gfx::BindPoint::Graphics, vertex_pipeline);
+        bindless.bind(cb, gfx::BindPoint::Graphics);
+        cb.push_constants(bindless.pipeline_layout(), gfx::ShaderStage::All, 0, sizeof(draw),
+                          &draw);
+        cb.draw(triangles_per_cluster * 3, cut.size(), 0, 0);
         timer.end(cb);
       });
   graph.add_pass(
       "trace", gfx::PassKind::Compute,
       [&](gfx::PassBuilder& b) { b.write(rg_rt, gfx::Access::ComputeWrite); },
-      [&](VkCommandBuffer cb, gfx::RenderGraph&) {
+      [&](gfx::CommandList cb, gfx::RenderGraph&) {
         timer.begin(cb, "trace");
-        vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, trace_pipeline.pipeline);
-        bindless.bind(cb, VK_PIPELINE_BIND_POINT_COMPUTE);
-        vkCmdPushConstants(cb, trace_pipeline.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(u64),
-                           &params_address);
-        vkCmdDispatch(cb, gfx::ray_visibility_group_count(k_w),
-                      gfx::ray_visibility_group_count(k_h), 1);
+        cb.bind_pipeline(gfx::BindPoint::Compute, trace_pipeline.pipeline);
+        bindless.bind(cb, gfx::BindPoint::Compute);
+        cb.push_constants(trace_pipeline.layout, gfx::ShaderStage::Compute, 0, sizeof(u64),
+                          &params_address);
+        cb.dispatch(gfx::ray_visibility_group_count(k_w), gfx::ray_visibility_group_count(k_h), 1);
         timer.end(cb);
       });
   graph.add_pass(
@@ -313,22 +311,22 @@ TEST_CASE("ray query: primary visibility matches the rasterized LOD cut") {
         b.read(rg_rt, gfx::Access::TransferRead);
         b.write(rg_host, gfx::Access::TransferWrite);
       },
-      [&](VkCommandBuffer cb, gfx::RenderGraph&) {
-        const VkBufferCopy raster_copy{0, 0, vis_bytes};
-        const VkBufferCopy rt_copy{0, vis_bytes, vis_bytes};
-        vkCmdCopyBuffer(cb, vis_raster.buffer, host.buffer, 1, &raster_copy);
-        vkCmdCopyBuffer(cb, vis_rt.buffer, host.buffer, 1, &rt_copy);
+      [&](gfx::CommandList cb, gfx::RenderGraph&) {
+        const gfx::BufferCopy raster_copy{0, 0, vis_bytes};
+        const gfx::BufferCopy rt_copy{0, vis_bytes, vis_bytes};
+        cb.copy_buffer(vis_raster.buffer, host.buffer, raster_copy);
+        cb.copy_buffer(vis_rt.buffer, host.buffer, rt_copy);
       });
   REQUIRE_MESSAGE(graph.compile(&error), error);
 
   // Two frames so the timer has a completed frame to report; the picture is the same each time.
   for (u32 frame = 0; frame < 2; ++frame) {
-    VkCommandBuffer commands = frames.begin_frame();
+    gfx::CommandList commands = frames.begin_frame();
     timer.begin_frame(commands, frames.slot());
     graph.execute(commands);
     REQUIRE(frames.wait(frames.end_frame()));
   }
-  VkCommandBuffer commands = frames.begin_frame();
+  gfx::CommandList commands = frames.begin_frame();
   timer.begin_frame(commands, frames.slot());
   REQUIRE(frames.wait(frames.end_frame()));
   MESSAGE("gpu ms: raster " << timer.ms("raster") << ", trace " << timer.ms("trace") << " ("

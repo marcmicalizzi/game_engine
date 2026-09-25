@@ -24,6 +24,7 @@
 
 #include <domain/geometry/cluster_lod.h>
 #include <domain/gfx/acceleration.h>
+#include <domain/gfx/backend/vulkan/vulkan.h>
 #include <domain/gfx/bindless.h>
 #include <domain/gfx/cluster_acceleration.h>
 #include <domain/gfx/cluster_cull.h>
@@ -32,7 +33,6 @@
 #include <domain/gfx/gpu_timer.h>
 #include <domain/gfx/ray_visibility.h>
 #include <domain/gfx/render_graph.h>
-#include <domain/gfx/vulkan.h>
 
 #include <doctest/doctest.h>
 
@@ -183,11 +183,10 @@ struct DeformScene {
       cut_vertices += lod.mesh.clusters[c].vertex_count;
     }
     pool_vertices = cut_vertices + k_pool_slack;
-    constexpr VkBufferUsageFlags k_storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-    constexpr VkBufferUsageFlags k_address = k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
-    const VkBufferUsageFlags k_pool_usage = k_address | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                                            VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
-                                            gfx::k_build_input_usage;
+    constexpr gfx::BufferUsage k_storage = gfx::BufferUsage::Storage;
+    constexpr gfx::BufferUsage k_address = k_storage | gfx::BufferUsage::ShaderDeviceAddress;
+    const gfx::BufferUsage k_pool_usage = k_address | gfx::BufferUsage::TransferDst |
+                                          gfx::BufferUsage::TransferSrc | gfx::k_build_input_usage;
     if (!gfx::upload_buffer(device, lod.mesh.clusters.data(),
                             lod.mesh.clusters.size() * sizeof(geometry::ClusterDesc), k_storage,
                             clusters, error) ||
@@ -303,39 +302,39 @@ TEST_CASE("deform: the identity deformer draws exactly what the rigid instance d
   const u32 cut_count = scene.cut_count();
   const u32 triangles_per_cluster = geometry::ClusterLodOptions{}.max_triangles;
 
-  constexpr VkBufferUsageFlags k_storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-  constexpr VkBufferUsageFlags k_address = k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
-  const VkBufferUsageFlags k_vis =
-      k_address | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+  constexpr gfx::BufferUsage k_storage = gfx::BufferUsage::Storage;
+  constexpr gfx::BufferUsage k_address = k_storage | gfx::BufferUsage::ShaderDeviceAddress;
+  const gfx::BufferUsage k_vis =
+      k_address | gfx::BufferUsage::TransferDst | gfx::BufferUsage::TransferSrc;
   const u64 vis_bytes = u64{k_w} * k_h * sizeof(u64);
   const u64 pool_bytes = u64{scene.pool_vertices} * 3 * sizeof(f32);
   gfx::BufferResource vis[6];  // vertex, software, mesh; deformed then rigid in each pair
   gfx::BufferResource host;
   for (gfx::BufferResource& v : vis)
     REQUIRE(gfx::create_buffer(device, vis_bytes, k_vis, false, v, &error));
-  REQUIRE(gfx::create_buffer(device, vis_bytes * 6 + pool_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+  REQUIRE(gfx::create_buffer(device, vis_bytes * 6 + pool_bytes, gfx::BufferUsage::TransferDst,
                              true, host, &error));
 
   gfx::FrameContext frames;
   gfx::BindlessSet bindless;
   REQUIRE(frames.create(device, 1, &error));
   REQUIRE(bindless.create(device, gfx::BindlessConfig{}, &error));
-  VkShaderModule vertex_module = gfx::create_shader_module(
+  gfx::ShaderModuleHandle vertex_module = gfx::create_shader_module(
       device, shaders::k_cluster_vertex_spirv, shaders::k_cluster_vertex_spirv_size, &error);
-  VkShaderModule sw_module = gfx::create_shader_module(
+  gfx::ShaderModuleHandle sw_module = gfx::create_shader_module(
       device, shaders::k_cluster_sw_raster_spirv, shaders::k_cluster_sw_raster_spirv_size, &error);
-  VkShaderModule deform_module = gfx::create_shader_module(device, shaders::k_deform_spirv,
-                                                           shaders::k_deform_spirv_size, &error);
-  REQUIRE(vertex_module != VK_NULL_HANDLE);
-  REQUIRE(sw_module != VK_NULL_HANDLE);
-  REQUIRE(deform_module != VK_NULL_HANDLE);
+  gfx::ShaderModuleHandle deform_module = gfx::create_shader_module(
+      device, shaders::k_deform_spirv, shaders::k_deform_spirv_size, &error);
+  REQUIRE(vertex_module.valid());
+  REQUIRE(sw_module.valid());
+  REQUIRE(deform_module.valid());
   gfx::GraphicsPipelineDesc vertex_desc;
   vertex_desc.vertex = vertex_module;
   vertex_desc.vertex_entry = "vs_cluster";
   vertex_desc.fragment = vertex_module;
   vertex_desc.fragment_entry = "fs_visibility";
   vertex_desc.layout = bindless.pipeline_layout();
-  VkPipeline vertex_pipeline = VK_NULL_HANDLE;
+  gfx::PipelineHandle vertex_pipeline = {};
   REQUIRE_MESSAGE(gfx::create_graphics_pipeline(device, vertex_desc, vertex_pipeline, &error),
                   error);
   gfx::ComputePipeline sw_pipeline;
@@ -345,12 +344,12 @@ TEST_CASE("deform: the identity deformer draws exactly what the rigid instance d
   REQUIRE_MESSAGE(gfx::create_compute_pipeline(device, deform_module, "deform_main", {},
                                                sizeof(gfx::DeformParams), deform_pipeline, &error),
                   error);
-  VkShaderModule mesh_module = VK_NULL_HANDLE;
-  VkPipeline mesh_pipeline = VK_NULL_HANDLE;
+  gfx::ShaderModuleHandle mesh_module = {};
+  gfx::PipelineHandle mesh_pipeline = {};
   if (have_mesh) {
     mesh_module = gfx::create_shader_module(device, shaders::k_cluster_mesh_spirv,
                                             shaders::k_cluster_mesh_spirv_size, &error);
-    REQUIRE(mesh_module != VK_NULL_HANDLE);
+    REQUIRE(mesh_module.valid());
     gfx::MeshPipelineDesc mesh_desc;
     mesh_desc.mesh = mesh_module;
     mesh_desc.fragment = mesh_module;
@@ -379,20 +378,20 @@ TEST_CASE("deform: the identity deformer draws exactly what the rigid instance d
           b.write(v, gfx::Access::TransferWrite);
         b.write(rg_pool, gfx::Access::TransferWrite);
       },
-      [&](VkCommandBuffer cb, gfx::RenderGraph&) {
+      [&](gfx::CommandList cb, gfx::RenderGraph&) {
         for (const gfx::BufferResource& v : vis)
-          vkCmdFillBuffer(cb, v.buffer, 0, VK_WHOLE_SIZE, 0);
+          cb.fill_buffer(v.buffer, 0, gfx::k_whole_size, 0);
         // Every slot a sentinel: only the cut's may come back as a number.
-        vkCmdFillBuffer(cb, scene.pool.buffer, 0, VK_WHOLE_SIZE, k_sentinel);
+        cb.fill_buffer(scene.pool.buffer, 0, gfx::k_whole_size, k_sentinel);
       });
   graph.add_pass(
       "deform", gfx::PassKind::Compute,
       [&](gfx::PassBuilder& b) { b.write(rg_pool, gfx::Access::ComputeWrite); },
-      [&](VkCommandBuffer cb, gfx::RenderGraph&) {
-        vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, deform_pipeline.pipeline);
-        vkCmdPushConstants(cb, deform_pipeline.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                           sizeof(deform_params), &deform_params);
-        vkCmdDispatch(cb, cut_count, 1, 1);
+      [&](gfx::CommandList cb, gfx::RenderGraph&) {
+        cb.bind_pipeline(gfx::BindPoint::Compute, deform_pipeline.pipeline);
+        cb.push_constants(deform_pipeline.layout, gfx::ShaderStage::Compute, 0,
+                          sizeof(deform_params), &deform_params);
+        cb.dispatch(cut_count, 1, 1);
       });
   for (u32 i = 0; i < 6; ++i) {
     const bool software = i / 2 == 1;
@@ -406,11 +405,11 @@ TEST_CASE("deform: the identity deformer draws exactly what the rigid instance d
             b.write(rg_vis[i], gfx::Access::ComputeReadWrite);
             b.read(rg_pool, gfx::Access::ComputeRead);
           },
-          [&, params](VkCommandBuffer cb, gfx::RenderGraph&) {
-            vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, sw_pipeline.pipeline);
-            vkCmdPushConstants(cb, sw_pipeline.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                               sizeof(*params), params);
-            vkCmdDispatch(cb, cut_count, 1, 1);
+          [&, params](gfx::CommandList cb, gfx::RenderGraph&) {
+            cb.bind_pipeline(gfx::BindPoint::Compute, sw_pipeline.pipeline);
+            cb.push_constants(sw_pipeline.layout, gfx::ShaderStage::Compute, 0, sizeof(*params),
+                              params);
+            cb.dispatch(cut_count, 1, 1);
           });
       continue;
     }
@@ -421,16 +420,15 @@ TEST_CASE("deform: the identity deformer draws exactly what the rigid instance d
           b.write(rg_vis[i], gfx::Access::FragmentReadWrite);
           b.read(rg_pool, mesh_path ? gfx::Access::MeshRead : gfx::Access::VertexRead);
         },
-        [&, params, mesh_path](VkCommandBuffer cb, gfx::RenderGraph&) {
-          vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            mesh_path ? mesh_pipeline : vertex_pipeline);
-          bindless.bind(cb, VK_PIPELINE_BIND_POINT_GRAPHICS);
-          vkCmdPushConstants(cb, bindless.pipeline_layout(), VK_SHADER_STAGE_ALL, 0,
-                             sizeof(*params), params);
+        [&, params, mesh_path](gfx::CommandList cb, gfx::RenderGraph&) {
+          cb.bind_pipeline(gfx::BindPoint::Graphics, mesh_path ? mesh_pipeline : vertex_pipeline);
+          bindless.bind(cb, gfx::BindPoint::Graphics);
+          cb.push_constants(bindless.pipeline_layout(), gfx::ShaderStage::All, 0, sizeof(*params),
+                            params);
           if (mesh_path) {
-            vkCmdDrawMeshTasksEXT(cb, cut_count, 1, 1);
+            cb.draw_mesh_tasks(cut_count, 1, 1);
           } else {
-            vkCmdDraw(cb, triangles_per_cluster * 3, cut_count, 0, 0);
+            cb.draw(triangles_per_cluster * 3, cut_count, 0, 0);
           }
         });
   }
@@ -442,16 +440,16 @@ TEST_CASE("deform: the identity deformer draws exactly what the rigid instance d
         b.read(rg_pool, gfx::Access::TransferRead);
         b.write(rg_host, gfx::Access::TransferWrite);
       },
-      [&](VkCommandBuffer cb, gfx::RenderGraph&) {
+      [&](gfx::CommandList cb, gfx::RenderGraph&) {
         for (u32 i = 0; i < 6; ++i) {
-          const VkBufferCopy copy{0, vis_bytes * i, vis_bytes};
-          vkCmdCopyBuffer(cb, vis[i].buffer, host.buffer, 1, &copy);
+          const gfx::BufferCopy copy{0, vis_bytes * i, vis_bytes};
+          cb.copy_buffer(vis[i].buffer, host.buffer, copy);
         }
-        const VkBufferCopy pool_copy{0, vis_bytes * 6, pool_bytes};
-        vkCmdCopyBuffer(cb, scene.pool.buffer, host.buffer, 1, &pool_copy);
+        const gfx::BufferCopy pool_copy{0, vis_bytes * 6, pool_bytes};
+        cb.copy_buffer(scene.pool.buffer, host.buffer, pool_copy);
       });
   REQUIRE_MESSAGE(graph.compile(&error), error);
-  VkCommandBuffer commands = frames.begin_frame();
+  gfx::CommandList commands = frames.begin_frame();
   graph.execute(commands);
   REQUIRE(frames.wait(frames.end_frame()));
 
@@ -506,8 +504,8 @@ TEST_CASE("deform: the identity deformer draws exactly what the rigid instance d
                    << scene.lod.mesh.vertices.size());
 
   graph.reset();
-  if (mesh_pipeline != VK_NULL_HANDLE) gfx::destroy_pipeline(device, mesh_pipeline);
-  if (mesh_module != VK_NULL_HANDLE) gfx::destroy_shader_module(device, mesh_module);
+  if (mesh_pipeline.valid()) gfx::destroy_pipeline(device, mesh_pipeline);
+  if (mesh_module.valid()) gfx::destroy_shader_module(device, mesh_module);
   gfx::destroy_pipeline(device, vertex_pipeline);
   gfx::destroy_compute_pipeline(device, sw_pipeline);
   gfx::destroy_compute_pipeline(device, deform_pipeline);
@@ -535,10 +533,10 @@ TEST_CASE("deform: the wave deformer reaches the rasterizer and the ray path ali
   const u32 cut_count = scene.cut_count();
   const u32 triangles_per_cluster = geometry::ClusterLodOptions{}.max_triangles;
 
-  constexpr VkBufferUsageFlags k_storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-  constexpr VkBufferUsageFlags k_address = k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
-  const VkBufferUsageFlags k_vis =
-      k_address | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+  constexpr gfx::BufferUsage k_storage = gfx::BufferUsage::Storage;
+  constexpr gfx::BufferUsage k_address = k_storage | gfx::BufferUsage::ShaderDeviceAddress;
+  const gfx::BufferUsage k_vis =
+      k_address | gfx::BufferUsage::TransferDst | gfx::BufferUsage::TransferSrc;
   const u64 vis_bytes = u64{k_w} * k_h * sizeof(u64);
   gfx::BufferResource vis[3];  // raster deformed, raster rigid, ray traced from the pool
   gfx::BufferResource host;
@@ -546,8 +544,8 @@ TEST_CASE("deform: the wave deformer reaches the rasterizer and the ray path ali
   gfx::BufferResource indices16;
   for (gfx::BufferResource& v : vis)
     REQUIRE(gfx::create_buffer(device, vis_bytes, k_vis, false, v, &error));
-  REQUIRE(gfx::create_buffer(device, vis_bytes * 3, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, host,
-                             &error));
+  REQUIRE(
+      gfx::create_buffer(device, vis_bytes * 3, gfx::BufferUsage::TransferDst, true, host, &error));
   REQUIRE(gfx::create_buffer(device, sizeof(gfx::RayVisibilityParams), k_address, true, ray_params,
                              &error));
   // One geometry per cut cluster, positions taken from the pool at the instance's own offset.
@@ -598,31 +596,32 @@ TEST_CASE("deform: the wave deformer reaches the rasterizer and the ray path ali
   REQUIRE(bindless.create(device, gfx::BindlessConfig{}, &error));
   const u32 scene_slot = bindless.add_acceleration_structure(tlas.handle);
   REQUIRE(scene_slot != gfx::BindlessSet::k_invalid_slot);
-  VkShaderModule vertex_module = gfx::create_shader_module(
+  gfx::ShaderModuleHandle vertex_module = gfx::create_shader_module(
       device, shaders::k_cluster_vertex_spirv, shaders::k_cluster_vertex_spirv_size, &error);
-  VkShaderModule deform_module = gfx::create_shader_module(device, shaders::k_deform_spirv,
-                                                           shaders::k_deform_spirv_size, &error);
-  VkShaderModule trace_module = gfx::create_shader_module(
+  gfx::ShaderModuleHandle deform_module = gfx::create_shader_module(
+      device, shaders::k_deform_spirv, shaders::k_deform_spirv_size, &error);
+  gfx::ShaderModuleHandle trace_module = gfx::create_shader_module(
       device, shaders::k_ray_visibility_spirv, shaders::k_ray_visibility_spirv_size, &error);
-  REQUIRE(vertex_module != VK_NULL_HANDLE);
-  REQUIRE(deform_module != VK_NULL_HANDLE);
-  REQUIRE(trace_module != VK_NULL_HANDLE);
+  REQUIRE(vertex_module.valid());
+  REQUIRE(deform_module.valid());
+  REQUIRE(trace_module.valid());
   gfx::GraphicsPipelineDesc vertex_desc;
   vertex_desc.vertex = vertex_module;
   vertex_desc.vertex_entry = "vs_cluster";
   vertex_desc.fragment = vertex_module;
   vertex_desc.fragment_entry = "fs_visibility";
   vertex_desc.layout = bindless.pipeline_layout();
-  VkPipeline vertex_pipeline = VK_NULL_HANDLE;
+  gfx::PipelineHandle vertex_pipeline = {};
   REQUIRE(gfx::create_graphics_pipeline(device, vertex_desc, vertex_pipeline, &error));
   gfx::ComputePipeline deform_pipeline;
   gfx::ComputePipeline trace_pipeline;
   REQUIRE(gfx::create_compute_pipeline(device, deform_module, "deform_main", {},
                                        sizeof(gfx::DeformParams), deform_pipeline, &error));
-  const VkDescriptorSetLayout set_layout = bindless.layout();
-  REQUIRE(gfx::create_compute_pipeline(device, trace_module, "trace_main",
-                                       std::span<const VkDescriptorSetLayout>(&set_layout, 1),
-                                       sizeof(u64), trace_pipeline, &error));
+  const gfx::DescriptorSetLayoutHandle set_layout = bindless.layout();
+  REQUIRE(
+      gfx::create_compute_pipeline(device, trace_module, "trace_main",
+                                   std::span<const gfx::DescriptorSetLayoutHandle>(&set_layout, 1),
+                                   sizeof(u64), trace_pipeline, &error));
 
   gfx::ClusterDrawParams draw_deformed = scene.draw(0);
   draw_deformed.visibility = vis[0].address;
@@ -649,23 +648,22 @@ TEST_CASE("deform: the wave deformer reaches the rasterizer and the ray path ali
   // the graph would give; this keeps the two plainly separate.
   REQUIRE(gfx::submit_immediate(
       device,
-      [&](VkCommandBuffer cb) {
-        vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, deform_pipeline.pipeline);
-        vkCmdPushConstants(cb, deform_pipeline.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                           sizeof(deform_params), &deform_params);
-        vkCmdDispatch(cb, cut_count, 1, 1);
+      [&](gfx::CommandList cb) {
+        cb.bind_pipeline(gfx::BindPoint::Compute, deform_pipeline.pipeline);
+        cb.push_constants(deform_pipeline.layout, gfx::ShaderStage::Compute, 0,
+                          sizeof(deform_params), &deform_params);
+        cb.dispatch(cut_count, 1, 1);
       },
       &error));
   REQUIRE(gfx::submit_immediate(
       device,
-      [&](VkCommandBuffer cb) {
+      [&](gfx::CommandList cb) {
         gfx::build_blas(cb, blas, geometries, gfx::k_build_fast_trace, scratch);
-        gfx::acceleration_build_barrier(cb,
-                                        VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
-                                        VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR);
+        gfx::acceleration_build_barrier(cb, gfx::PipelineStage::AccelerationBuild,
+                                        gfx::MemoryAccess::AccelerationStructureRead);
         gfx::build_tlas(cb, tlas, tlas_instances.address, 1, gfx::k_build_fast_trace, scratch);
-        gfx::acceleration_build_barrier(cb, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                                        VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR);
+        gfx::acceleration_build_barrier(cb, gfx::PipelineStage::ComputeShader,
+                                        gfx::MemoryAccess::AccelerationStructureRead);
       },
       &error));
 
@@ -681,9 +679,9 @@ TEST_CASE("deform: the wave deformer reaches the rasterizer and the ray path ali
         for (const gfx::RgBuffer& v : rg_vis)
           b.write(v, gfx::Access::TransferWrite);
       },
-      [&](VkCommandBuffer cb, gfx::RenderGraph&) {
+      [&](gfx::CommandList cb, gfx::RenderGraph&) {
         for (const gfx::BufferResource& v : vis)
-          vkCmdFillBuffer(cb, v.buffer, 0, VK_WHOLE_SIZE, 0);
+          cb.fill_buffer(v.buffer, 0, gfx::k_whole_size, 0);
       });
   for (u32 i = 0; i < 2; ++i) {
     const gfx::ClusterDrawParams* params = i == 0 ? &draw_deformed : &draw_rigid;
@@ -694,24 +692,23 @@ TEST_CASE("deform: the wave deformer reaches the rasterizer and the ray path ali
           b.write(rg_vis[i], gfx::Access::FragmentReadWrite);
           b.read(rg_pool, gfx::Access::VertexRead);
         },
-        [&, params](VkCommandBuffer cb, gfx::RenderGraph&) {
-          vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, vertex_pipeline);
-          bindless.bind(cb, VK_PIPELINE_BIND_POINT_GRAPHICS);
-          vkCmdPushConstants(cb, bindless.pipeline_layout(), VK_SHADER_STAGE_ALL, 0,
-                             sizeof(*params), params);
-          vkCmdDraw(cb, triangles_per_cluster * 3, cut_count, 0, 0);
+        [&, params](gfx::CommandList cb, gfx::RenderGraph&) {
+          cb.bind_pipeline(gfx::BindPoint::Graphics, vertex_pipeline);
+          bindless.bind(cb, gfx::BindPoint::Graphics);
+          cb.push_constants(bindless.pipeline_layout(), gfx::ShaderStage::All, 0, sizeof(*params),
+                            params);
+          cb.draw(triangles_per_cluster * 3, cut_count, 0, 0);
         });
   }
   graph.add_pass(
       "trace", gfx::PassKind::Compute,
       [&](gfx::PassBuilder& b) { b.write(rg_vis[2], gfx::Access::ComputeWrite); },
-      [&](VkCommandBuffer cb, gfx::RenderGraph&) {
-        vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, trace_pipeline.pipeline);
-        bindless.bind(cb, VK_PIPELINE_BIND_POINT_COMPUTE);
-        vkCmdPushConstants(cb, trace_pipeline.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(u64),
-                           &ray_address);
-        vkCmdDispatch(cb, gfx::ray_visibility_group_count(k_w),
-                      gfx::ray_visibility_group_count(k_h), 1);
+      [&](gfx::CommandList cb, gfx::RenderGraph&) {
+        cb.bind_pipeline(gfx::BindPoint::Compute, trace_pipeline.pipeline);
+        bindless.bind(cb, gfx::BindPoint::Compute);
+        cb.push_constants(trace_pipeline.layout, gfx::ShaderStage::Compute, 0, sizeof(u64),
+                          &ray_address);
+        cb.dispatch(gfx::ray_visibility_group_count(k_w), gfx::ray_visibility_group_count(k_h), 1);
       });
   graph.add_pass(
       "readback", gfx::PassKind::Transfer,
@@ -720,14 +717,14 @@ TEST_CASE("deform: the wave deformer reaches the rasterizer and the ray path ali
           b.read(v, gfx::Access::TransferRead);
         b.write(rg_host, gfx::Access::TransferWrite);
       },
-      [&](VkCommandBuffer cb, gfx::RenderGraph&) {
+      [&](gfx::CommandList cb, gfx::RenderGraph&) {
         for (u32 i = 0; i < 3; ++i) {
-          const VkBufferCopy copy{0, vis_bytes * i, vis_bytes};
-          vkCmdCopyBuffer(cb, vis[i].buffer, host.buffer, 1, &copy);
+          const gfx::BufferCopy copy{0, vis_bytes * i, vis_bytes};
+          cb.copy_buffer(vis[i].buffer, host.buffer, copy);
         }
       });
   REQUIRE_MESSAGE(graph.compile(&error), error);
-  VkCommandBuffer commands = frames.begin_frame();
+  gfx::CommandList commands = frames.begin_frame();
   graph.execute(commands);
   REQUIRE(frames.wait(frames.end_frame()));
 
@@ -784,10 +781,10 @@ TEST_CASE("deform: instantiated cluster templates trace what the rebuilt cluster
   const u32 cut_count = scene.cut_count();
   const u32 cluster_count = scene.lod.mesh.clusters.size();
 
-  constexpr VkBufferUsageFlags k_storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-  constexpr VkBufferUsageFlags k_address = k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
-  const VkBufferUsageFlags k_vis =
-      k_address | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+  constexpr gfx::BufferUsage k_storage = gfx::BufferUsage::Storage;
+  constexpr gfx::BufferUsage k_address = k_storage | gfx::BufferUsage::ShaderDeviceAddress;
+  const gfx::BufferUsage k_vis =
+      k_address | gfx::BufferUsage::TransferDst | gfx::BufferUsage::TransferSrc;
   const u64 vis_bytes = u64{k_w} * k_h * sizeof(u64);
   gfx::BufferResource vis[2];  // rebuilt, instantiated
   gfx::BufferResource host;
@@ -799,8 +796,8 @@ TEST_CASE("deform: instantiated cluster templates trace what the rebuilt cluster
   gfx::BufferResource tlas_instances[2];
   for (gfx::BufferResource& v : vis)
     REQUIRE(gfx::create_buffer(device, vis_bytes, k_vis, false, v, &error));
-  REQUIRE(gfx::create_buffer(device, vis_bytes * 2, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, host,
-                             &error));
+  REQUIRE(
+      gfx::create_buffer(device, vis_bytes * 2, gfx::BufferUsage::TransferDst, true, host, &error));
   for (gfx::BufferResource& p : ray_params)
     REQUIRE(
         gfx::create_buffer(device, sizeof(gfx::RayVisibilityParams), k_address, true, p, &error));
@@ -889,38 +886,39 @@ TEST_CASE("deform: instantiated cluster templates trace what the rebuilt cluster
   REQUIRE(frames.create(device, 1, &error));
   REQUIRE(bindless.create(device, gfx::BindlessConfig{}, &error));
   REQUIRE(timer.create(device, 1, 8, &error));
-  VkShaderModule deform_module = gfx::create_shader_module(device, shaders::k_deform_spirv,
-                                                           shaders::k_deform_spirv_size, &error);
-  VkShaderModule trace_module = gfx::create_shader_module(
+  gfx::ShaderModuleHandle deform_module = gfx::create_shader_module(
+      device, shaders::k_deform_spirv, shaders::k_deform_spirv_size, &error);
+  gfx::ShaderModuleHandle trace_module = gfx::create_shader_module(
       device, shaders::k_ray_visibility_spirv, shaders::k_ray_visibility_spirv_size, &error);
-  REQUIRE(deform_module != VK_NULL_HANDLE);
-  REQUIRE(trace_module != VK_NULL_HANDLE);
+  REQUIRE(deform_module.valid());
+  REQUIRE(trace_module.valid());
   gfx::ComputePipeline deform_pipeline;
   gfx::ComputePipeline trace_pipeline;
   REQUIRE(gfx::create_compute_pipeline(device, deform_module, "deform_main", {},
                                        sizeof(gfx::DeformParams), deform_pipeline, &error));
-  const VkDescriptorSetLayout set_layout = bindless.layout();
-  REQUIRE(gfx::create_compute_pipeline(device, trace_module, "trace_main",
-                                       std::span<const VkDescriptorSetLayout>(&set_layout, 1),
-                                       sizeof(u64), trace_pipeline, &error));
+  const gfx::DescriptorSetLayoutHandle set_layout = bindless.layout();
+  REQUIRE(
+      gfx::create_compute_pipeline(device, trace_module, "trace_main",
+                                   std::span<const gfx::DescriptorSetLayoutHandle>(&set_layout, 1),
+                                   sizeof(u64), trace_pipeline, &error));
 
   // Frame A: the pool, then the templates. Both are the "once" half of the templates variant.
   const gfx::DeformParams deform_params = scene.params(0.75f);
   f64 template_ms = 0.0;
   {
-    VkCommandBuffer cb = frames.begin_frame();
+    gfx::CommandList cb = frames.begin_frame();
     timer.begin_frame(cb, frames.slot());
-    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, deform_pipeline.pipeline);
-    vkCmdPushConstants(cb, deform_pipeline.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                       sizeof(deform_params), &deform_params);
-    vkCmdDispatch(cb, cut_count, 1, 1);
-    gfx::acceleration_build_barrier(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                                    VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
+    cb.bind_pipeline(gfx::BindPoint::Compute, deform_pipeline.pipeline);
+    cb.push_constants(deform_pipeline.layout, gfx::ShaderStage::Compute, 0, sizeof(deform_params),
+                      &deform_params);
+    cb.dispatch(cut_count, 1, 1);
+    gfx::acceleration_build_barrier(cb, gfx::PipelineStage::AllCommands,
+                                    gfx::MemoryAccess::MemoryRead | gfx::MemoryAccess::MemoryWrite);
     timer.begin(cb, "templates");
     gfx::build_cluster_templates(cb, templates, template_records.address, 0, scratch);
     timer.end(cb);
-    gfx::acceleration_build_barrier(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                                    VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
+    gfx::acceleration_build_barrier(cb, gfx::PipelineStage::AllCommands,
+                                    gfx::MemoryAccess::MemoryRead | gfx::MemoryAccess::MemoryWrite);
     REQUIRE(frames.wait(frames.end_frame()));
   }
   u64 template_bytes = 0;
@@ -947,25 +945,25 @@ TEST_CASE("deform: instantiated cluster templates trace what the rebuilt cluster
   f64 rebuild_ms = 0.0;
   f64 instantiate_ms = 0.0;
   {
-    VkCommandBuffer cb = frames.begin_frame();
+    gfx::CommandList cb = frames.begin_frame();
     timer.begin_frame(cb, frames.slot());
     template_ms = timer.ms("templates");
     timer.begin(cb, "rebuild");
     gfx::build_cluster_set(cb, rebuilt, build_records.address, 0, scratch);
     timer.end(cb);
-    gfx::acceleration_build_barrier(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                                    VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
+    gfx::acceleration_build_barrier(cb, gfx::PipelineStage::AllCommands,
+                                    gfx::MemoryAccess::MemoryRead | gfx::MemoryAccess::MemoryWrite);
     timer.begin(cb, "instantiate");
     gfx::instantiate_cluster_templates(cb, instantiated, instantiate_records.address, 0, scratch);
     timer.end(cb);
-    gfx::acceleration_build_barrier(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                                    VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
+    gfx::acceleration_build_barrier(cb, gfx::PipelineStage::AllCommands,
+                                    gfx::MemoryAccess::MemoryRead | gfx::MemoryAccess::MemoryWrite);
     gfx::build_cluster_blas(cb, blas[0], rebuilt.addresses.address, cut_count, scratch);
-    gfx::acceleration_build_barrier(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                                    VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
+    gfx::acceleration_build_barrier(cb, gfx::PipelineStage::AllCommands,
+                                    gfx::MemoryAccess::MemoryRead | gfx::MemoryAccess::MemoryWrite);
     gfx::build_cluster_blas(cb, blas[1], instantiated.addresses.address, cut_count, scratch);
-    gfx::acceleration_build_barrier(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                                    VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
+    gfx::acceleration_build_barrier(cb, gfx::PipelineStage::AllCommands,
+                                    gfx::MemoryAccess::MemoryRead | gfx::MemoryAccess::MemoryWrite);
     REQUIRE(frames.wait(frames.end_frame()));
   }
   u64 rebuilt_bytes = 0;
@@ -1003,32 +1001,32 @@ TEST_CASE("deform: instantiated cluster templates trace what the rebuilt cluster
 
   // Frame C: the two top-level builds and the two traces.
   {
-    VkCommandBuffer cb = frames.begin_frame();
+    gfx::CommandList cb = frames.begin_frame();
     timer.begin_frame(cb, frames.slot());
     rebuild_ms = timer.ms("rebuild");
     instantiate_ms = timer.ms("instantiate");
     for (u32 i = 0; i < 2; ++i) {
       gfx::build_tlas(cb, tlas[i], tlas_instances[i].address, 1, gfx::k_build_fast_trace, scratch);
-      gfx::acceleration_build_barrier(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                                      VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
+      gfx::acceleration_build_barrier(
+          cb, gfx::PipelineStage::AllCommands,
+          gfx::MemoryAccess::MemoryRead | gfx::MemoryAccess::MemoryWrite);
     }
     for (const gfx::BufferResource& v : vis)
-      vkCmdFillBuffer(cb, v.buffer, 0, VK_WHOLE_SIZE, 0);
-    gfx::acceleration_build_barrier(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                                    VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
-    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, trace_pipeline.pipeline);
-    bindless.bind(cb, VK_PIPELINE_BIND_POINT_COMPUTE);
+      cb.fill_buffer(v.buffer, 0, gfx::k_whole_size, 0);
+    gfx::acceleration_build_barrier(cb, gfx::PipelineStage::AllCommands,
+                                    gfx::MemoryAccess::MemoryRead | gfx::MemoryAccess::MemoryWrite);
+    cb.bind_pipeline(gfx::BindPoint::Compute, trace_pipeline.pipeline);
+    bindless.bind(cb, gfx::BindPoint::Compute);
     for (u32 i = 0; i < 2; ++i) {
-      vkCmdPushConstants(cb, trace_pipeline.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(u64),
-                         &ray_address[i]);
-      vkCmdDispatch(cb, gfx::ray_visibility_group_count(k_w), gfx::ray_visibility_group_count(k_h),
-                    1);
+      cb.push_constants(trace_pipeline.layout, gfx::ShaderStage::Compute, 0, sizeof(u64),
+                        &ray_address[i]);
+      cb.dispatch(gfx::ray_visibility_group_count(k_w), gfx::ray_visibility_group_count(k_h), 1);
     }
-    gfx::acceleration_build_barrier(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                                    VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
+    gfx::acceleration_build_barrier(cb, gfx::PipelineStage::AllCommands,
+                                    gfx::MemoryAccess::MemoryRead | gfx::MemoryAccess::MemoryWrite);
     for (u32 i = 0; i < 2; ++i) {
-      const VkBufferCopy copy{0, vis_bytes * i, vis_bytes};
-      vkCmdCopyBuffer(cb, vis[i].buffer, host.buffer, 1, &copy);
+      const gfx::BufferCopy copy{0, vis_bytes * i, vis_bytes};
+      cb.copy_buffer(vis[i].buffer, host.buffer, copy);
     }
     REQUIRE(frames.wait(frames.end_frame()));
   }

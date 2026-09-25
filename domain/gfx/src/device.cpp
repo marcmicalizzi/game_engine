@@ -2,8 +2,10 @@
 #include <core/containers/vector.h>
 #include <core/log/log.h>
 #include <core/memory/memory.h>
+#include <domain/gfx/backend/vulkan/vulkan.h>
 #include <domain/gfx/device.h>
-#include <domain/gfx/vulkan.h>
+#include <domain/gfx/pipeline.h>
+#include <domain/gfx/resources.h>
 
 #include <cstdint>
 #include <cstring>
@@ -583,13 +585,13 @@ void Device::destroy() noexcept {
 
 // ---- resources -------------------------------------------------------------------------------
 
-bool create_buffer(const Device& device, u64 size, VkBufferUsageFlags usage, bool host_visible,
+bool create_buffer(const Device& device, u64 size, BufferUsage usage, bool host_visible,
                    BufferResource& out, std::string* error) {
   const Handles& h = device.handles();
   VkBufferCreateInfo info{};
   info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
   info.size = size;
-  info.usage = usage;
+  info.usage = vk::native(usage);
   info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
   VmaAllocationCreateInfo alloc{};
   alloc.usage = VMA_MEMORY_USAGE_AUTO;
@@ -599,54 +601,63 @@ bool create_buffer(const Device& device, u64 size, VkBufferUsageFlags usage, boo
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
   }
   VmaAllocationInfo result_info{};
+  VkBuffer buffer = VK_NULL_HANDLE;
+  VmaAllocation allocation = nullptr;
   const VkResult r =
-      vmaCreateBuffer(h.allocator, &info, &alloc, &out.buffer, &out.allocation, &result_info);
+      vmaCreateBuffer(h.allocator, &info, &alloc, &buffer, &allocation, &result_info);
   if (r != VK_SUCCESS) {
     set_error(error, "vmaCreateBuffer", r);
     return false;
   }
+  out.buffer = vk::wrap(buffer);
+  out.allocation = vk::wrap(allocation);
   out.size = size;
   out.mapped = result_info.pMappedData;
   out.address = 0;
-  if ((usage & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT) != 0) {
+  if (any(usage & BufferUsage::ShaderDeviceAddress)) {
     VkBufferDeviceAddressInfo address_info{};
     address_info.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
-    address_info.buffer = out.buffer;
+    address_info.buffer = buffer;
     out.address = vkGetBufferDeviceAddress(h.device, &address_info);
   }
   return true;
 }
 
 void destroy_buffer(const Device& device, BufferResource& buffer) noexcept {
-  if (buffer.buffer == VK_NULL_HANDLE) return;
-  vmaDestroyBuffer(device.handles().allocator, buffer.buffer, buffer.allocation);
+  if (!buffer.buffer) return;
+  vmaDestroyBuffer(device.handles().allocator, vk::native(buffer.buffer),
+                   vk::native(buffer.allocation));
   buffer = BufferResource{};
 }
 
-bool create_image_2d(const Device& device, u32 width, u32 height, VkFormat format,
-                     VkImageUsageFlags usage, ImageResource& out, std::string* error) {
+bool create_image_2d(const Device& device, u32 width, u32 height, Format format, ImageUsage usage,
+                     ImageResource& out, std::string* error) {
   const Handles& h = device.handles();
   VkImageCreateInfo info{};
   info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
   info.imageType = VK_IMAGE_TYPE_2D;
-  info.format = format;
+  info.format = vk::native(format);
   info.extent = {width, height, 1};
   info.mipLevels = 1;
   info.arrayLayers = 1;
   info.samples = VK_SAMPLE_COUNT_1_BIT;
   info.tiling = VK_IMAGE_TILING_OPTIMAL;
-  info.usage = usage;
+  info.usage = vk::native(usage);
   info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
   info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
   VmaAllocationCreateInfo alloc{};
   alloc.usage = VMA_MEMORY_USAGE_AUTO;
   VmaAllocationInfo allocation_info{};
+  VkImage image = VK_NULL_HANDLE;
+  VmaAllocation allocation = nullptr;
   const VkResult r =
-      vmaCreateImage(h.allocator, &info, &alloc, &out.image, &out.allocation, &allocation_info);
+      vmaCreateImage(h.allocator, &info, &alloc, &image, &allocation, &allocation_info);
   if (r != VK_SUCCESS) {
     set_error(error, "vmaCreateImage", r);
     return false;
   }
+  out.image = vk::wrap(image);
+  out.allocation = vk::wrap(allocation);
   out.format = format;
   out.width = width;
   out.height = height;
@@ -656,8 +667,9 @@ bool create_image_2d(const Device& device, u32 width, u32 height, VkFormat forma
 }
 
 void destroy_image(const Device& device, ImageResource& image) noexcept {
-  if (image.image == VK_NULL_HANDLE) return;
-  vmaDestroyImage(device.handles().allocator, image.image, image.allocation);
+  if (!image.image) return;
+  vmaDestroyImage(device.handles().allocator, vk::native(image.image),
+                  vk::native(image.allocation));
   image = ImageResource{};
 }
 
@@ -679,7 +691,7 @@ bool submit_immediate(const Device& device, RecordFn record, void* context, std:
   begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
   begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
   vkBeginCommandBuffer(commands, &begin);
-  record(commands, context);
+  record(vk::command_list(commands), context);
   vkEndCommandBuffer(commands);
 
   VkFenceCreateInfo fence_info{};
@@ -733,11 +745,11 @@ void image_barrier(VkCommandBuffer commands, VkImage image, VkImageLayout old_la
 
 namespace engine::gfx {
 
-VkShaderModule create_shader_module(const Device& device, const unsigned char* spirv, usize bytes,
-                                    std::string* error) {
+ShaderModuleHandle create_shader_module(const Device& device, const unsigned char* spirv,
+                                        usize bytes, std::string* error) {
   if (bytes == 0 || (bytes % 4) != 0 || (reinterpret_cast<std::uintptr_t>(spirv) % 4) != 0) {
     if (error != nullptr) *error = "SPIR-V must be a non-empty, 4-byte-aligned multiple of 4 bytes";
-    return VK_NULL_HANDLE;
+    return {};
   }
   VkShaderModuleCreateInfo info{};
   info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
@@ -747,19 +759,24 @@ VkShaderModule create_shader_module(const Device& device, const unsigned char* s
   const VkResult r = vkCreateShaderModule(device.handles().device, &info, nullptr, &module);
   if (r != VK_SUCCESS) {
     set_error(error, "vkCreateShaderModule", r);
-    return VK_NULL_HANDLE;
+    return {};
   }
-  return module;
+  return vk::wrap(module);
 }
 
-void destroy_shader_module(const Device& device, VkShaderModule module) noexcept {
-  if (module != VK_NULL_HANDLE) vkDestroyShaderModule(device.handles().device, module, nullptr);
+void destroy_shader_module(const Device& device, ShaderModuleHandle module) noexcept {
+  if (module) vkDestroyShaderModule(device.handles().device, vk::native(module), nullptr);
 }
 
-bool create_compute_pipeline(const Device& device, VkShaderModule module, const char* entry,
-                             std::span<const VkDescriptorSetLayout> set_layouts,
+bool create_compute_pipeline(const Device& device, ShaderModuleHandle module, const char* entry,
+                             std::span<const DescriptorSetLayoutHandle> set_layouts,
                              u32 push_constant_bytes, ComputePipeline& out, std::string* error) {
   const Handles& h = device.handles();
+  // The handles carry the set layouts' own bits; a pipeline takes a handful at most.
+  VkDescriptorSetLayout layouts[8]{};
+  ENGINE_VERIFY(set_layouts.size() <= 8, "create_compute_pipeline: at most 8 set layouts");
+  for (usize i = 0; i < set_layouts.size(); ++i)
+    layouts[i] = vk::native(set_layouts[i]);
   VkPushConstantRange range{};
   range.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
   range.offset = 0;
@@ -767,37 +784,40 @@ bool create_compute_pipeline(const Device& device, VkShaderModule module, const 
   VkPipelineLayoutCreateInfo layout_info{};
   layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
   layout_info.setLayoutCount = static_cast<u32>(set_layouts.size());
-  layout_info.pSetLayouts = set_layouts.data();
+  layout_info.pSetLayouts = set_layouts.empty() ? nullptr : layouts;
   layout_info.pushConstantRangeCount = push_constant_bytes > 0 ? 1 : 0;
   layout_info.pPushConstantRanges = push_constant_bytes > 0 ? &range : nullptr;
-  if (const VkResult r = vkCreatePipelineLayout(h.device, &layout_info, nullptr, &out.layout);
+  VkPipelineLayout layout = VK_NULL_HANDLE;
+  if (const VkResult r = vkCreatePipelineLayout(h.device, &layout_info, nullptr, &layout);
       r != VK_SUCCESS) {
     set_error(error, "vkCreatePipelineLayout", r);
     return false;
   }
+  out.layout = vk::wrap(layout);
   VkComputePipelineCreateInfo info{};
   info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
   info.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
   info.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-  info.stage.module = module;
+  info.stage.module = vk::native(module);
   info.stage.pName = entry;
-  info.layout = out.layout;
+  info.layout = layout;
+  VkPipeline pipeline = VK_NULL_HANDLE;
   if (const VkResult r =
-          vkCreateComputePipelines(h.device, VK_NULL_HANDLE, 1, &info, nullptr, &out.pipeline);
+          vkCreateComputePipelines(h.device, VK_NULL_HANDLE, 1, &info, nullptr, &pipeline);
       r != VK_SUCCESS) {
     set_error(error, "vkCreateComputePipelines", r);
-    vkDestroyPipelineLayout(h.device, out.layout, nullptr);
-    out.layout = VK_NULL_HANDLE;
+    vkDestroyPipelineLayout(h.device, layout, nullptr);
+    out.layout = {};
     return false;
   }
+  out.pipeline = vk::wrap(pipeline);
   return true;
 }
 
 void destroy_compute_pipeline(const Device& device, ComputePipeline& pipeline) noexcept {
   const Handles& h = device.handles();
-  if (pipeline.pipeline != VK_NULL_HANDLE) vkDestroyPipeline(h.device, pipeline.pipeline, nullptr);
-  if (pipeline.layout != VK_NULL_HANDLE)
-    vkDestroyPipelineLayout(h.device, pipeline.layout, nullptr);
+  if (pipeline.pipeline) vkDestroyPipeline(h.device, vk::native(pipeline.pipeline), nullptr);
+  if (pipeline.layout) vkDestroyPipelineLayout(h.device, vk::native(pipeline.layout), nullptr);
   pipeline = ComputePipeline{};
 }
 
@@ -808,18 +828,19 @@ void destroy_compute_pipeline(const Device& device, ComputePipeline& pipeline) n
 namespace engine::gfx {
 
 bool create_graphics_pipeline(const Device& device, const GraphicsPipelineDesc& desc,
-                              VkPipeline& out, std::string* error) {
+                              PipelineHandle& out, std::string* error) {
   VkPipelineShaderStageCreateInfo stages[2]{};
   stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
   stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-  stages[0].module = desc.vertex;
+  stages[0].module = vk::native(desc.vertex);
   stages[0].pName = desc.vertex_entry;
   stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
   stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-  stages[1].module = desc.fragment;
+  stages[1].module = vk::native(desc.fragment);
   stages[1].pName = desc.fragment_entry;
   // No fragment module is a depth-only pipeline: rasterization writes depth, nothing is shaded.
-  const u32 stage_count = desc.fragment != VK_NULL_HANDLE ? 2u : 1u;
+  const u32 stage_count = desc.fragment ? 2u : 1u;
+  const VkFormat color_format = vk::native(desc.color_format);
 
   VkPipelineVertexInputStateCreateInfo vertex_input{};
   vertex_input.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
@@ -833,7 +854,7 @@ bool create_graphics_pipeline(const Device& device, const GraphicsPipelineDesc& 
   VkPipelineRasterizationStateCreateInfo raster{};
   raster.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
   raster.polygonMode = VK_POLYGON_MODE_FILL;
-  raster.cullMode = desc.cull;
+  raster.cullMode = vk::native(desc.cull);
   raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
   raster.lineWidth = 1.0f;
   VkPipelineMultisampleStateCreateInfo multisample{};
@@ -843,13 +864,13 @@ bool create_graphics_pipeline(const Device& device, const GraphicsPipelineDesc& 
   depth.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
   depth.depthTestEnable = desc.depth_test ? VK_TRUE : VK_FALSE;
   depth.depthWriteEnable = desc.depth_write ? VK_TRUE : VK_FALSE;
-  depth.depthCompareOp = desc.depth_compare;
+  depth.depthCompareOp = vk::native(desc.depth_compare);
   VkPipelineColorBlendAttachmentState blend_attachment{};
   blend_attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
                                     VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
   VkPipelineColorBlendStateCreateInfo blend{};
   blend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-  blend.attachmentCount = desc.color_format != VK_FORMAT_UNDEFINED ? 1 : 0;
+  blend.attachmentCount = desc.color_format != Format::Undefined ? 1 : 0;
   blend.pAttachments = &blend_attachment;
   const VkDynamicState dynamic_states[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
   VkPipelineDynamicStateCreateInfo dynamic{};
@@ -859,8 +880,8 @@ bool create_graphics_pipeline(const Device& device, const GraphicsPipelineDesc& 
   VkPipelineRenderingCreateInfo rendering{};
   rendering.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
   rendering.colorAttachmentCount = blend.attachmentCount;
-  rendering.pColorAttachmentFormats = &desc.color_format;
-  rendering.depthAttachmentFormat = desc.depth_format;
+  rendering.pColorAttachmentFormats = &color_format;
+  rendering.depthAttachmentFormat = vk::native(desc.depth_format);
 
   VkGraphicsPipelineCreateInfo info{};
   info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
@@ -875,19 +896,21 @@ bool create_graphics_pipeline(const Device& device, const GraphicsPipelineDesc& 
   info.pDepthStencilState = &depth;
   info.pColorBlendState = &blend;
   info.pDynamicState = &dynamic;
-  info.layout = desc.layout;
-  const VkResult r =
-      vkCreateGraphicsPipelines(device.handles().device, VK_NULL_HANDLE, 1, &info, nullptr, &out);
+  info.layout = vk::native(desc.layout);
+  VkPipeline pipeline = VK_NULL_HANDLE;
+  const VkResult r = vkCreateGraphicsPipelines(device.handles().device, VK_NULL_HANDLE, 1, &info,
+                                               nullptr, &pipeline);
   if (r != VK_SUCCESS) {
     set_error(error, "vkCreateGraphicsPipelines", r);
-    out = VK_NULL_HANDLE;
+    out = {};
     return false;
   }
+  out = vk::wrap(pipeline);
   return true;
 }
 
-void destroy_pipeline(const Device& device, VkPipeline pipeline) noexcept {
-  if (pipeline != VK_NULL_HANDLE) vkDestroyPipeline(device.handles().device, pipeline, nullptr);
+void destroy_pipeline(const Device& device, PipelineHandle pipeline) noexcept {
+  if (pipeline) vkDestroyPipeline(device.handles().device, vk::native(pipeline), nullptr);
 }
 
 }  // namespace engine::gfx
@@ -896,34 +919,35 @@ void destroy_pipeline(const Device& device, VkPipeline pipeline) noexcept {
 
 namespace engine::gfx {
 
-bool create_mesh_pipeline(const Device& device, const MeshPipelineDesc& desc, VkPipeline& out,
+bool create_mesh_pipeline(const Device& device, const MeshPipelineDesc& desc, PipelineHandle& out,
                           std::string* error) {
   if (!device.features().mesh_shader) {
     if (error != nullptr) *error = "create_mesh_pipeline: the device has no mesh shader support";
-    out = VK_NULL_HANDLE;
+    out = {};
     return false;
   }
   VkPipelineShaderStageCreateInfo stages[3]{};
   u32 stage_count = 0;
-  if (desc.task != VK_NULL_HANDLE) {
+  if (desc.task) {
     stages[stage_count].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stages[stage_count].stage = VK_SHADER_STAGE_TASK_BIT_EXT;
-    stages[stage_count].module = desc.task;
+    stages[stage_count].module = vk::native(desc.task);
     stages[stage_count].pName = desc.task_entry;
     ++stage_count;
   }
   stages[stage_count].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
   stages[stage_count].stage = VK_SHADER_STAGE_MESH_BIT_EXT;
-  stages[stage_count].module = desc.mesh;
+  stages[stage_count].module = vk::native(desc.mesh);
   stages[stage_count].pName = desc.mesh_entry;
   ++stage_count;
-  if (desc.fragment != VK_NULL_HANDLE) {  // none: depth only
+  if (desc.fragment) {  // none: depth only
     stages[stage_count].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stages[stage_count].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-    stages[stage_count].module = desc.fragment;
+    stages[stage_count].module = vk::native(desc.fragment);
     stages[stage_count].pName = desc.fragment_entry;
     ++stage_count;
   }
+  const VkFormat color_format = vk::native(desc.color_format);
 
   VkPipelineViewportStateCreateInfo viewport{};
   viewport.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
@@ -932,7 +956,7 @@ bool create_mesh_pipeline(const Device& device, const MeshPipelineDesc& desc, Vk
   VkPipelineRasterizationStateCreateInfo raster{};
   raster.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
   raster.polygonMode = VK_POLYGON_MODE_FILL;
-  raster.cullMode = desc.cull;
+  raster.cullMode = vk::native(desc.cull);
   raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
   raster.lineWidth = 1.0f;
   VkPipelineMultisampleStateCreateInfo multisample{};
@@ -942,13 +966,13 @@ bool create_mesh_pipeline(const Device& device, const MeshPipelineDesc& desc, Vk
   depth.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
   depth.depthTestEnable = desc.depth_test ? VK_TRUE : VK_FALSE;
   depth.depthWriteEnable = desc.depth_write ? VK_TRUE : VK_FALSE;
-  depth.depthCompareOp = desc.depth_compare;
+  depth.depthCompareOp = vk::native(desc.depth_compare);
   VkPipelineColorBlendAttachmentState blend_attachment{};
   blend_attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
                                     VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
   VkPipelineColorBlendStateCreateInfo blend{};
   blend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-  blend.attachmentCount = desc.color_format != VK_FORMAT_UNDEFINED ? 1 : 0;
+  blend.attachmentCount = desc.color_format != Format::Undefined ? 1 : 0;
   blend.pAttachments = &blend_attachment;
   const VkDynamicState dynamic_states[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
   VkPipelineDynamicStateCreateInfo dynamic{};
@@ -958,8 +982,8 @@ bool create_mesh_pipeline(const Device& device, const MeshPipelineDesc& desc, Vk
   VkPipelineRenderingCreateInfo rendering{};
   rendering.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
   rendering.colorAttachmentCount = blend.attachmentCount;
-  rendering.pColorAttachmentFormats = &desc.color_format;
-  rendering.depthAttachmentFormat = desc.depth_format;
+  rendering.pColorAttachmentFormats = &color_format;
+  rendering.depthAttachmentFormat = vk::native(desc.depth_format);
 
   VkGraphicsPipelineCreateInfo info{};
   info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
@@ -972,14 +996,16 @@ bool create_mesh_pipeline(const Device& device, const MeshPipelineDesc& desc, Vk
   info.pDepthStencilState = &depth;
   info.pColorBlendState = &blend;
   info.pDynamicState = &dynamic;
-  info.layout = desc.layout;
-  const VkResult r =
-      vkCreateGraphicsPipelines(device.handles().device, VK_NULL_HANDLE, 1, &info, nullptr, &out);
+  info.layout = vk::native(desc.layout);
+  VkPipeline pipeline = VK_NULL_HANDLE;
+  const VkResult r = vkCreateGraphicsPipelines(device.handles().device, VK_NULL_HANDLE, 1, &info,
+                                               nullptr, &pipeline);
   if (r != VK_SUCCESS) {
     set_error(error, "vkCreateGraphicsPipelines(mesh)", r);
-    out = VK_NULL_HANDLE;
+    out = {};
     return false;
   }
+  out = vk::wrap(pipeline);
   return true;
 }
 
@@ -989,30 +1015,28 @@ bool create_mesh_pipeline(const Device& device, const MeshPipelineDesc& desc, Vk
 
 namespace engine::gfx {
 
-bool upload_buffer(const Device& device, const void* data, u64 bytes, VkBufferUsageFlags usage,
+bool upload_buffer(const Device& device, const void* data, u64 bytes, BufferUsage usage,
                    BufferResource& out, std::string* error) {
   out = BufferResource{};
   if (data == nullptr || bytes == 0) {
     if (error != nullptr) *error = "upload_buffer: nothing to upload";
     return false;
   }
-  if (!create_buffer(
-          device, bytes,
-          usage | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-          false, out, error)) {
+  if (!create_buffer(device, bytes,
+                     usage | BufferUsage::TransferDst | BufferUsage::ShaderDeviceAddress, false,
+                     out, error)) {
     return false;
   }
   BufferResource staging;
-  if (!create_buffer(device, bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true, staging, error)) {
+  if (!create_buffer(device, bytes, BufferUsage::TransferSrc, true, staging, error)) {
     destroy_buffer(device, out);
     return false;
   }
   std::memcpy(staging.mapped, data, static_cast<usize>(bytes));
   const bool ok = submit_immediate(
       device,
-      [&](VkCommandBuffer commands) {
-        const VkBufferCopy copy{0, 0, bytes};
-        vkCmdCopyBuffer(commands, staging.buffer, out.buffer, 1, &copy);
+      [&](CommandList commands) {
+        commands.copy_buffer(staging.buffer, out.buffer, BufferCopy{0, 0, bytes});
       },
       error);
   destroy_buffer(device, staging);
@@ -1024,36 +1048,38 @@ bool upload_buffer(const Device& device, const void* data, u64 bytes, VkBufferUs
 
 namespace engine::gfx {
 
-bool upload_image_2d(const Device& device, u32 width, u32 height, VkFormat format,
-                     const void* pixels, u64 bytes, ImageResource& out, std::string* error) {
+bool upload_image_2d(const Device& device, u32 width, u32 height, Format format, const void* pixels,
+                     u64 bytes, ImageResource& out, std::string* error) {
   out = ImageResource{};
   if (pixels == nullptr || bytes == 0 || width == 0 || height == 0) {
     if (error != nullptr) *error = "upload_image_2d: nothing to upload";
     return false;
   }
-  if (!create_image_2d(device, width, height, format,
-                       VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, out, error)) {
+  if (!create_image_2d(device, width, height, format, ImageUsage::Sampled | ImageUsage::TransferDst,
+                       out, error)) {
     return false;
   }
   BufferResource staging;
-  if (!create_buffer(device, bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true, staging, error)) {
+  if (!create_buffer(device, bytes, BufferUsage::TransferSrc, true, staging, error)) {
     destroy_image(device, out);
     return false;
   }
   std::memcpy(staging.mapped, pixels, static_cast<usize>(bytes));
   const bool ok = submit_immediate(
       device,
-      [&](VkCommandBuffer commands) {
-        image_barrier(commands, out.image, VK_IMAGE_LAYOUT_UNDEFINED,
+      [&](CommandList list) {
+        const VkCommandBuffer commands = vk::native(list);
+        const VkImage image = vk::native(out.image);
+        image_barrier(commands, image, VK_IMAGE_LAYOUT_UNDEFINED,
                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_NONE,
                       VK_ACCESS_2_NONE, VK_PIPELINE_STAGE_2_COPY_BIT,
                       VK_ACCESS_2_TRANSFER_WRITE_BIT);
         VkBufferImageCopy region{};
         region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
         region.imageExtent = {width, height, 1};
-        vkCmdCopyBufferToImage(commands, staging.buffer, out.image,
+        vkCmdCopyBufferToImage(commands, vk::native(staging.buffer), image,
                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-        image_barrier(commands, out.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        image_barrier(commands, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
                       VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                       VK_ACCESS_2_SHADER_READ_BIT);
@@ -1064,7 +1090,7 @@ bool upload_image_2d(const Device& device, u32 width, u32 height, VkFormat forma
   return ok;
 }
 
-bool upload_image_2d_levels(const Device& device, u32 width, u32 height, VkFormat format,
+bool upload_image_2d_levels(const Device& device, u32 width, u32 height, Format format,
                             std::span<const ImageLevelData> levels, ImageResource& out,
                             std::string* error) {
   out = ImageResource{};
@@ -1087,7 +1113,7 @@ bool upload_image_2d_levels(const Device& device, u32 width, u32 height, VkForma
   VkImageCreateInfo info{};
   info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
   info.imageType = VK_IMAGE_TYPE_2D;
-  info.format = format;
+  info.format = vk::native(format);
   info.extent = {width, height, 1};
   info.mipLevels = static_cast<u32>(levels.size());
   info.arrayLayers = 1;
@@ -1099,13 +1125,17 @@ bool upload_image_2d_levels(const Device& device, u32 width, u32 height, VkForma
   VmaAllocationCreateInfo alloc{};
   alloc.usage = VMA_MEMORY_USAGE_AUTO;
   VmaAllocationInfo allocation_info{};
+  VkImage image = VK_NULL_HANDLE;
+  VmaAllocation allocation = nullptr;
   const VkResult r =
-      vmaCreateImage(h.allocator, &info, &alloc, &out.image, &out.allocation, &allocation_info);
+      vmaCreateImage(h.allocator, &info, &alloc, &image, &allocation, &allocation_info);
   if (r != VK_SUCCESS) {
     set_error(error, "vmaCreateImage", r);
     out = ImageResource{};
     return false;
   }
+  out.image = vk::wrap(image);
+  out.allocation = vk::wrap(allocation);
   out.format = format;
   out.width = width;
   out.height = height;
@@ -1113,7 +1143,7 @@ bool upload_image_2d_levels(const Device& device, u32 width, u32 height, VkForma
   out.bytes = allocation_info.size;
 
   BufferResource staging;
-  if (!create_buffer(device, total, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true, staging, error)) {
+  if (!create_buffer(device, total, BufferUsage::TransferSrc, true, staging, error)) {
     destroy_image(device, out);
     return false;
   }
@@ -1149,7 +1179,7 @@ bool upload_image_2d_levels(const Device& device, u32 width, u32 height, VkForma
     barrier.newLayout = to;
     barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.image = out.image;
+    barrier.image = image;
     barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, level_count, 0, 1};
     VkDependencyInfo dependency{};
     dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
@@ -1159,11 +1189,12 @@ bool upload_image_2d_levels(const Device& device, u32 width, u32 height, VkForma
   };
   const bool ok = submit_immediate(
       device,
-      [&](VkCommandBuffer commands) {
+      [&](CommandList list) {
+        const VkCommandBuffer commands = vk::native(list);
         transition(commands, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                    VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE, VK_PIPELINE_STAGE_2_COPY_BIT,
                    VK_ACCESS_2_TRANSFER_WRITE_BIT);
-        vkCmdCopyBufferToImage(commands, staging.buffer, out.image,
+        vkCmdCopyBufferToImage(commands, vk::native(staging.buffer), image,
                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, regions.size(),
                                regions.data());
         transition(commands, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,

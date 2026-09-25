@@ -48,7 +48,7 @@ constexpr u64 shadow_stat_base(u32 views) noexcept {
 }
 // The depth atlas's format: 32-bit float, because a cascade's depth range is the scene's extent
 // along the light — kilometres on the desert overlook — and 16 bits of that is 8 cm.
-constexpr VkFormat k_shadow_format = VK_FORMAT_D32_SFLOAT;
+constexpr gfx::Format k_shadow_format = gfx::Format::D32Sfloat;
 
 // The sky is `renderer::k_sky` in `lighting.h`, and there are now **three** things that have to
 // be the same number rather than two. The resolve pass's clear value and `ResolveParams::sky`,
@@ -85,17 +85,17 @@ constexpr const char* k_zone_names[k_zone_kinds][k_max_views] = {
 
 // The viewport a pass draws one view through, with the renderer's y flip (clip space is y-up like
 // core/math, so the height is negative and the origin moves to the bottom of the rectangle).
-void set_view_viewport(VkCommandBuffer commands, u32 x, u32 y, u32 width, u32 height) {
-  VkViewport viewport{};
+void set_view_viewport(gfx::CommandList commands, u32 x, u32 y, u32 width, u32 height) {
+  gfx::Viewport viewport{};
   viewport.x = static_cast<f32>(x);
   viewport.y = static_cast<f32>(y + height);
   viewport.width = static_cast<f32>(width);
   viewport.height = -static_cast<f32>(height);
-  viewport.minDepth = 0.0f;
-  viewport.maxDepth = 1.0f;
-  vkCmdSetViewport(commands, 0, 1, &viewport);
-  const VkRect2D scissor{{static_cast<i32>(x), static_cast<i32>(y)}, {width, height}};
-  vkCmdSetScissor(commands, 0, 1, &scissor);
+  viewport.min_depth = 0.0f;
+  viewport.max_depth = 1.0f;
+  commands.set_viewport(viewport);
+  const gfx::Rect2D scissor{{static_cast<i32>(x), static_cast<i32>(y)}, {width, height}};
+  commands.set_scissor(scissor);
 }
 
 // Copies a device buffer into host memory through a staging buffer and a blocking submission.
@@ -103,13 +103,13 @@ void set_view_viewport(VkCommandBuffer commands, u32 x, u32 y, u32 width, u32 he
 bool read_buffer(const gfx::Device& device, const gfx::BufferResource& source, u64 bytes,
                  Vector<u8>& out, std::string* error) {
   gfx::BufferResource staging;
-  if (!gfx::create_buffer(device, bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, staging, error))
+  if (!gfx::create_buffer(device, bytes, gfx::BufferUsage::TransferDst, true, staging, error))
     return false;
   const bool ok = gfx::submit_immediate(
       device,
-      [&](VkCommandBuffer cb) {
-        const VkBufferCopy copy{0, 0, bytes};
-        vkCmdCopyBuffer(cb, source.buffer, staging.buffer, 1, &copy);
+      [&](gfx::CommandList cb) {
+        const gfx::BufferCopy copy{0, 0, bytes};
+        cb.copy_buffer(source.buffer, staging.buffer, copy);
       },
       error);
   if (ok) {
@@ -123,13 +123,13 @@ bool read_buffer(const gfx::Device& device, const gfx::BufferResource& source, u
 }  // namespace
 
 void SceneRenderer::Pipelines::destroy(const gfx::Device& device) noexcept {
-  if (direct != VK_NULL_HANDLE) gfx::destroy_pipeline(device, direct);
-  if (hardware != VK_NULL_HANDLE) gfx::destroy_pipeline(device, hardware);
-  if (vertex != VK_NULL_HANDLE) gfx::destroy_pipeline(device, vertex);
-  if (vertex_fallback != VK_NULL_HANDLE) gfx::destroy_pipeline(device, vertex_fallback);
-  if (shadow != VK_NULL_HANDLE) gfx::destroy_pipeline(device, shadow);
-  if (shadow_fallback != VK_NULL_HANDLE) gfx::destroy_pipeline(device, shadow_fallback);
-  if (resolve != VK_NULL_HANDLE) gfx::destroy_pipeline(device, resolve);
+  if (direct.valid()) gfx::destroy_pipeline(device, direct);
+  if (hardware.valid()) gfx::destroy_pipeline(device, hardware);
+  if (vertex.valid()) gfx::destroy_pipeline(device, vertex);
+  if (vertex_fallback.valid()) gfx::destroy_pipeline(device, vertex_fallback);
+  if (shadow.valid()) gfx::destroy_pipeline(device, shadow);
+  if (shadow_fallback.valid()) gfx::destroy_pipeline(device, shadow_fallback);
+  if (resolve.valid()) gfx::destroy_pipeline(device, resolve);
   gfx::destroy_compute_pipeline(device, software);
   gfx::destroy_compute_pipeline(device, cull);
   gfx::destroy_compute_pipeline(device, expand);
@@ -141,8 +141,7 @@ void SceneRenderer::Pipelines::destroy(const gfx::Device& device) noexcept {
   gfx::destroy_compute_pipeline(device, record_ranges);
   gfx::destroy_compute_pipeline(device, record_emit);
   gfx::destroy_compute_pipeline(device, trace);
-  direct = hardware = vertex = vertex_fallback = shadow = shadow_fallback = resolve =
-      VK_NULL_HANDLE;
+  direct = hardware = vertex = vertex_fallback = shadow = shadow_fallback = resolve = {};
 }
 
 // The views' visibility regions and Hi-Z pyramids, packed back to back into one buffer each. A
@@ -188,11 +187,11 @@ bool SceneRenderer::Targets::create(const gfx::Device& device, const ViewSet& se
   hiz_dirty = true;
   // TRANSFER_SRC on the visibility buffer is what a capture's id and depth channels read back;
   // nothing in a frame ever copies from it.
-  constexpr VkBufferUsageFlags k_buffer_usage =
-      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
-      VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-  return gfx::create_image_2d(device, set.width(), set.height(), VK_FORMAT_D32_SFLOAT,
-                              VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, depth, error) &&
+  constexpr gfx::BufferUsage k_buffer_usage =
+      gfx::BufferUsage::Storage | gfx::BufferUsage::ShaderDeviceAddress |
+      gfx::BufferUsage::TransferDst | gfx::BufferUsage::TransferSrc;
+  return gfx::create_image_2d(device, set.width(), set.height(), gfx::Format::D32Sfloat,
+                              gfx::ImageUsage::DepthStencilAttachment, depth, error) &&
          gfx::create_buffer(device, vis_elements * sizeof(u64), k_buffer_usage, false, vis,
                             error) &&
          gfx::create_buffer(device, u64{hiz_elements} * sizeof(f32), k_buffer_usage, false, hiz,
@@ -200,7 +199,7 @@ bool SceneRenderer::Targets::create(const gfx::Device& device, const ViewSet& se
 }
 
 void SceneRenderer::Targets::destroy(const gfx::Device& device) noexcept {
-  if (depth.image != VK_NULL_HANDLE) gfx::destroy_image(device, depth);
+  if (depth.image.valid()) gfx::destroy_image(device, depth);
   gfx::destroy_buffer(device, vis);
   gfx::destroy_buffer(device, hiz);
   depth = gfx::ImageResource{};
@@ -300,8 +299,8 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
   ray_params_.resize(desc.frames_in_flight);
   slot_frame_.assign(desc.frames_in_flight, 0);
   slot_submission_.assign(desc.frames_in_flight, 0);
-  constexpr VkBufferUsageFlags k_address =
-      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+  constexpr gfx::BufferUsage k_address =
+      gfx::BufferUsage::Storage | gfx::BufferUsage::ShaderDeviceAddress;
   const u64 stat_bytes =
       sizeof(u32) * (shadow_stat_base(views) + u64{k_shadow_stat_words} * cascades);
   bool ok = true;
@@ -316,7 +315,7 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
                                 k_view_lights * sizeof(gfx::ResolveLight) +
                                 sizeof(gfx::ShadowMapParams),
                             k_address, true, resolves_[slot], error) &&
-         gfx::create_buffer(device, stat_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true,
+         gfx::create_buffer(device, stat_bytes, gfx::BufferUsage::TransferDst, true,
                             stat_blocks_[slot], error);
     if (ok) std::memset(stat_blocks_[slot].mapped, 0, stat_bytes);
     if (ok && resolved_.ray_path) {
@@ -408,16 +407,14 @@ bool SceneRenderer::create_shadow_maps(std::string* error) {
   const u32 cascades = scene_->shadow_cascades();
   const u32 map = resolved_.settings.shadow_map;
   gfx::BindlessSet& bindless = scene_->bindless();
-  if (!gfx::create_image_2d(
-          device, map * cascades, map, k_shadow_format,
-          VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, shadow_atlas_,
-          error) ||
+  if (!gfx::create_image_2d(device, map * cascades, map, k_shadow_format,
+                            gfx::ImageUsage::DepthStencilAttachment | gfx::ImageUsage::Sampled,
+                            shadow_atlas_, error) ||
       !gfx::create_image_view(device, shadow_atlas_, shadow_view_, error) ||
-      !gfx::create_sampler(device, VK_FILTER_NEAREST, shadow_sampler_, error)) {
+      !gfx::create_sampler(device, gfx::Filter::Nearest, shadow_sampler_, error)) {
     return false;
   }
-  shadow_texture_slot_ =
-      bindless.add_sampled_image(shadow_view_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+  shadow_texture_slot_ = bindless.add_sampled_image(shadow_view_, gfx::ImageLayout::ShaderReadOnly);
   shadow_sampler_slot_ = bindless.add_sampler(shadow_sampler_);
   if (shadow_texture_slot_ == gfx::BindlessSet::k_invalid_slot ||
       shadow_sampler_slot_ == gfx::BindlessSet::k_invalid_slot) {
@@ -444,19 +441,19 @@ void SceneRenderer::destroy_shadow_maps() noexcept {
   shadow_texture_slot_ = shadow_sampler_slot_ = gfx::BindlessSet::k_invalid_slot;
   gfx::destroy_sampler(*device_, shadow_sampler_);
   gfx::destroy_image_view(*device_, shadow_view_);
-  if (shadow_atlas_.image != VK_NULL_HANDLE) gfx::destroy_image(*device_, shadow_atlas_);
-  shadow_sampler_ = VK_NULL_HANDLE;
-  shadow_view_ = VK_NULL_HANDLE;
+  if (shadow_atlas_.image.valid()) gfx::destroy_image(*device_, shadow_atlas_);
+  shadow_sampler_ = {};
+  shadow_view_ = {};
   shadow_atlas_ = gfx::ImageResource{};
   cascades_ = ShadowCascades{};
 }
 
 bool SceneRenderer::create_color_target(std::string* error) {
   if (!desc_.offscreen) return true;
-  if (color_.image != VK_NULL_HANDLE) gfx::destroy_image(*device_, color_);
+  if (color_.image.valid()) gfx::destroy_image(*device_, color_);
   color_ = gfx::ImageResource{};
   return gfx::create_image_2d(*device_, width_, height_, desc_.color_format,
-                              VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                              gfx::ImageUsage::ColorAttachment | gfx::ImageUsage::TransferSrc,
                               color_, error);
 }
 
@@ -521,10 +518,11 @@ bool SceneRenderer::create_pipelines(std::string* error) {
   if (resolved_.ray_path) {
     const gfx::Shader* trace = shaders_.get("ray_visibility", error);
     if (trace == nullptr) return false;
-    const VkDescriptorSetLayout set_layout = bindless.layout();
-    if (!gfx::create_compute_pipeline(device, trace->module, "trace_main",
-                                      std::span<const VkDescriptorSetLayout>(&set_layout, 1),
-                                      sizeof(u64), pipelines_.trace, error)) {
+    const gfx::DescriptorSetLayoutHandle set_layout = bindless.layout();
+    if (!gfx::create_compute_pipeline(
+            device, trace->module, "trace_main",
+            std::span<const gfx::DescriptorSetLayoutHandle>(&set_layout, 1), sizeof(u64),
+            pipelines_.trace, error)) {
       return false;
     }
   }
@@ -562,7 +560,7 @@ bool SceneRenderer::create_pipelines(std::string* error) {
     direct_desc.fragment_entry = "fs_color";
     direct_desc.layout = bindless.pipeline_layout();
     direct_desc.color_format = desc_.color_format;
-    direct_desc.depth_format = VK_FORMAT_D32_SFLOAT;
+    direct_desc.depth_format = gfx::Format::D32Sfloat;
     direct_desc.depth_test = true;
     direct_desc.depth_write = true;
     if (!gfx::create_mesh_pipeline(device, direct_desc, pipelines_.direct, error)) return false;
@@ -584,7 +582,7 @@ bool SceneRenderer::create_pipelines(std::string* error) {
     if (mesh_pipeline) {
       gfx::MeshPipelineDesc shadow_desc;
       shadow_desc.mesh = mesh->module;
-      shadow_desc.fragment = VK_NULL_HANDLE;
+      shadow_desc.fragment = {};
       shadow_desc.layout = bindless.pipeline_layout();
       shadow_desc.depth_format = k_shadow_format;
       shadow_desc.depth_test = true;
@@ -592,7 +590,7 @@ bool SceneRenderer::create_pipelines(std::string* error) {
       if (!gfx::create_mesh_pipeline(device, shadow_desc, pipelines_.shadow, error)) return false;
     } else {
       gfx::GraphicsPipelineDesc shadow_desc = vertex_desc;
-      shadow_desc.fragment = VK_NULL_HANDLE;
+      shadow_desc.fragment = {};
       shadow_desc.depth_format = k_shadow_format;
       shadow_desc.depth_test = true;
       shadow_desc.depth_write = true;
@@ -639,7 +637,7 @@ void SceneRenderer::destroy() noexcept {
   pipelines_.destroy(device);
   destroy_shadow_maps();
   shaders_.destroy();
-  if (color_.image != VK_NULL_HANDLE) gfx::destroy_image(device, color_);
+  if (color_.image.valid()) gfx::destroy_image(device, color_);
   color_ = gfx::ImageResource{};
   for (gfx::BufferResource& b : params_)
     gfx::destroy_buffer(device, b);
@@ -982,8 +980,8 @@ u64 SceneRenderer::submit_frame(const FrameDesc& frame, std::string* error) {
   ENGINE_ASSERT(recording_, "SceneRenderer::submit_frame: begin_frame was not called");
   const i64 started = time::monotonic_ns();
   const u32 slot = frames_.slot();
-  const gfx::ImageResource& color = frame.color.image != VK_NULL_HANDLE ? frame.color : color_;
-  if (color.image == VK_NULL_HANDLE) {
+  const gfx::ImageResource& color = frame.color.image.valid() ? frame.color : color_;
+  if (!color.image.valid()) {
     if (error != nullptr) *error = "the frame names no color target and the renderer owns none";
     frames_.end_frame();
     recording_ = false;
@@ -997,7 +995,7 @@ u64 SceneRenderer::submit_frame(const FrameDesc& frame, std::string* error) {
     return 0;
   }
   u64 value = 0;
-  if (frame.wait != VK_NULL_HANDLE || frame.signal != VK_NULL_HANDLE) {
+  if (frame.wait.valid() || frame.signal.valid()) {
     gfx::FrameContext::PresentSync sync;
     sync.wait = frame.wait;
     sync.signal = frame.signal;
@@ -1728,9 +1726,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   gfx::RgImage rg_atlas{};
   if (csm) {
     rg_shadow_args = graph.import_buffer("shadow args", scene.shadow_args);
-    rg_atlas = graph.import_image("shadow atlas", shadow_atlas_, VK_IMAGE_LAYOUT_UNDEFINED,
-                                  VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-                                  VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+    rg_atlas = graph.import_image("shadow atlas", shadow_atlas_, gfx::ImageLayout::Undefined,
+                                  gfx::PipelineStage::FragmentShader,
+                                  gfx::MemoryAccess::ShaderSampledRead);
   }
   const gfx::RgBuffer rg_vis = graph.import_buffer("visibility", targets.vis);
   const gfx::RgBuffer rg_hiz = graph.import_buffer("hiz", targets.hiz);
@@ -1801,7 +1799,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     rt.tlas = graph.import_buffer("tlas", scene.tlas.buffer);
     rt.instances = graph.import_buffer("tlas instances", scene.rt_instances);
   }
-  VkClearColorValue sky{};
+  gfx::ClearColor sky{};
   sky.float32[0] = k_sky.x;
   sky.float32[1] = k_sky.y;
   sky.float32[2] = k_sky.z;
@@ -1835,24 +1833,22 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           b.write(sb.request_count, gfx::Access::TransferWrite);
         }
       },
-      [&](VkCommandBuffer cb, gfx::RenderGraph&) {
+      [&](gfx::CommandList cb, gfx::RenderGraph&) {
         if (cull_on) {
           for (u32 v = 0; v < views; ++v) {
             const u64 at = view_frames[v].args_offset;
             for (u32 i = 0; i < 2; ++i) {
               if (vertex_path) {  // {vertexCount, instanceCount = 0, firstVertex, firstInstance}
-                vkCmdFillBuffer(cb, scene.draw_args[i].buffer, at, sizeof(u32),
-                                triangles_per_cluster * 3);
-                vkCmdFillBuffer(cb, scene.draw_args[i].buffer, at + sizeof(u32), sizeof(u32) * 3,
-                                0);
+                cb.fill_buffer(scene.draw_args[i].buffer, at, sizeof(u32),
+                               triangles_per_cluster * 3);
+                cb.fill_buffer(scene.draw_args[i].buffer, at + sizeof(u32), sizeof(u32) * 3, 0);
               } else {  // {groups = 0, 1, 1}
-                vkCmdFillBuffer(cb, scene.draw_args[i].buffer, at, sizeof(u32), 0);
-                vkCmdFillBuffer(cb, scene.draw_args[i].buffer, at + sizeof(u32), sizeof(u32) * 2,
-                                1);
+                cb.fill_buffer(scene.draw_args[i].buffer, at, sizeof(u32), 0);
+                cb.fill_buffer(scene.draw_args[i].buffer, at + sizeof(u32), sizeof(u32) * 2, 1);
               }
             }
-            vkCmdFillBuffer(cb, scene.sw_args.buffer, at, sizeof(u32), 0);
-            vkCmdFillBuffer(cb, scene.sw_args.buffer, at + sizeof(u32), sizeof(u32) * 2, 1);
+            cb.fill_buffer(scene.sw_args.buffer, at, sizeof(u32), 0);
+            cb.fill_buffer(scene.sw_args.buffer, at + sizeof(u32), sizeof(u32) * 2, 1);
           }
         }
         // Each cascade's block, in the shape its draw reads: the vertex path's
@@ -1860,42 +1856,41 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
         for (u32 c = 0; c < cascade_runs; ++c) {
           const u64 at = scene.shadow_args_offset(c);
           if (vertex_path) {
-            vkCmdFillBuffer(cb, scene.shadow_args.buffer, at, sizeof(u32),
-                            triangles_per_cluster * 3);
-            vkCmdFillBuffer(cb, scene.shadow_args.buffer, at + sizeof(u32), sizeof(u32) * 3, 0);
+            cb.fill_buffer(scene.shadow_args.buffer, at, sizeof(u32), triangles_per_cluster * 3);
+            cb.fill_buffer(scene.shadow_args.buffer, at + sizeof(u32), sizeof(u32) * 3, 0);
           } else {
-            vkCmdFillBuffer(cb, scene.shadow_args.buffer, at, sizeof(u32), 0);
-            vkCmdFillBuffer(cb, scene.shadow_args.buffer, at + sizeof(u32), sizeof(u32) * 2, 1);
+            cb.fill_buffer(scene.shadow_args.buffer, at, sizeof(u32), 0);
+            cb.fill_buffer(scene.shadow_args.buffer, at + sizeof(u32), sizeof(u32) * 2, 1);
           }
         }
-        if (!direct) vkCmdFillBuffer(cb, targets.vis.buffer, 0, VK_WHOLE_SIZE, 0);
+        if (!direct) cb.fill_buffer(targets.vis.buffer, 0, gfx::k_whole_size, 0);
         if (vertex_indexed) {
           for (u32 v = 0; v < views; ++v) {
             for (u32 run = 0; run < 2; ++run) {
-              vkCmdUpdateBuffer(cb, scene.vertex_headers.buffer, scene.vertex_header_offset(v, run),
-                                sizeof(vertex_reset), &vertex_reset);
+              cb.update_buffer(scene.vertex_headers.buffer, scene.vertex_header_offset(v, run),
+                               sizeof(vertex_reset), &vertex_reset);
             }
           }
           for (u32 c = 0; c < cascade_runs; ++c) {
-            vkCmdUpdateBuffer(cb, scene.vertex_headers.buffer, scene.shadow_vertex_header_offset(c),
-                              sizeof(vertex_reset), &vertex_reset);
+            cb.update_buffer(scene.vertex_headers.buffer, scene.shadow_vertex_header_offset(c),
+                             sizeof(vertex_reset), &vertex_reset);
           }
         }
-        if (occlusion) vkCmdFillBuffer(cb, scene.flags[cur_flags].buffer, 0, VK_WHOLE_SIZE, 0);
-        if (fill_flags) vkCmdFillBuffer(cb, scene.flags[prev_flags].buffer, 0, VK_WHOLE_SIZE, 0);
-        if (fill_hiz) vkCmdFillBuffer(cb, targets.hiz.buffer, 0, VK_WHOLE_SIZE, 0);
-        if (rt_chain) vkCmdFillBuffer(cb, scene.instance_counts.buffer, 0, VK_WHOLE_SIZE, 0);
+        if (occlusion) cb.fill_buffer(scene.flags[cur_flags].buffer, 0, gfx::k_whole_size, 0);
+        if (fill_flags) cb.fill_buffer(scene.flags[prev_flags].buffer, 0, gfx::k_whole_size, 0);
+        if (fill_hiz) cb.fill_buffer(targets.hiz.buffer, 0, gfx::k_whole_size, 0);
+        if (rt_chain) cb.fill_buffer(scene.instance_counts.buffer, 0, gfx::k_whole_size, 0);
         if (deform_on) {  // {groups = 0, 1, 1}; the copy below fills in the count
           for (u32 i = 0; i < views * k_visible_runs + cascade_runs; ++i) {
             const u64 at = u64{i} * gfx::k_draw_args_bytes;
-            vkCmdFillBuffer(cb, scene.deform_args.buffer, at, sizeof(u32), 0);
-            vkCmdFillBuffer(cb, scene.deform_args.buffer, at + sizeof(u32), sizeof(u32) * 2, 1);
+            cb.fill_buffer(scene.deform_args.buffer, at, sizeof(u32), 0);
+            cb.fill_buffer(scene.deform_args.buffer, at + sizeof(u32), sizeof(u32) * 2, 1);
           }
         }
         if (streaming) {
-          vkCmdFillBuffer(cb, scene.page_used.buffer, 0, VK_WHOLE_SIZE, 0);
-          vkCmdFillBuffer(cb, scene.request_mask.buffer, 0, VK_WHOLE_SIZE, 0);
-          vkCmdFillBuffer(cb, scene.request_count.buffer, 0, VK_WHOLE_SIZE, 0);
+          cb.fill_buffer(scene.page_used.buffer, 0, gfx::k_whole_size, 0);
+          cb.fill_buffer(scene.request_mask.buffer, 0, gfx::k_whole_size, 0);
+          cb.fill_buffer(scene.request_count.buffer, 0, gfx::k_whole_size, 0);
         }
       });
 
@@ -1917,7 +1912,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             b.write(sb.pool_indices8, gfx::Access::TransferWrite);
           }
         },
-        [&](VkCommandBuffer cb, gfx::RenderGraph&) { streamer_.record_uploads(cb); });
+        [&](gfx::CommandList cb, gfx::RenderGraph&) { streamer_.record_uploads(cb); });
   }
 
   auto add_cull = [&](u32 block, u32 list) {
@@ -1947,13 +1942,13 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             b.write(sb.request_mask, gfx::Access::ComputeReadWrite);
           }
         },
-        [&, block](VkCommandBuffer cb, gfx::RenderGraph&) {
-          vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines.cull.pipeline);
+        [&, block](gfx::CommandList cb, gfx::RenderGraph&) {
+          cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.cull.pipeline);
           for (u32 v = 0; v < views; ++v) {
             timer.begin(cb, k_zone_names[k_zone_cull][v]);
-            vkCmdPushConstants(cb, pipelines.cull.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                               sizeof(u64), &view_frames[v].block_address[block]);
-            vkCmdDispatch(cb, gfx::cull_group_count(pair_count), 1, 1);
+            cb.push_constants(pipelines.cull.layout, gfx::ShaderStage::Compute, 0, sizeof(u64),
+                              &view_frames[v].block_address[block]);
+            cb.dispatch(gfx::cull_group_count(pair_count), 1, 1);
             timer.end(cb);
           }
         });
@@ -1971,9 +1966,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     graph.add_pass(
         "deform cache", gfx::PassKind::Compute,
         [&](gfx::PassBuilder& b) { b.write(rg_pool, gfx::Access::ComputeWrite); },
-        [&](VkCommandBuffer cb, gfx::RenderGraph&) {
+        [&](gfx::CommandList cb, gfx::RenderGraph&) {
           timer.begin(cb, "deform cache");
-          vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines.deform_cache.pipeline);
+          cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.deform_cache.pipeline);
           const std::span<const gfx::DeformDesc> statics = scene.deform_descs();
           const std::span<const u32> owners = scene.deform_instances();
           for (u32 d = 0; d < statics.size(); ++d) {
@@ -1984,9 +1979,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             p.visible_offset = owners[d];
             p.max_entries = scene.deform_mesh_clusters(d);
             if (p.max_entries == 0) continue;
-            vkCmdPushConstants(cb, pipelines.deform_cache.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                               sizeof(gfx::DeformParams), &p);
-            vkCmdDispatch(cb, p.max_entries, 1, 1);
+            cb.push_constants(pipelines.deform_cache.layout, gfx::ShaderStage::Compute, 0,
+                              sizeof(gfx::DeformParams), &p);
+            cb.dispatch(p.max_entries, 1, 1);
           }
           timer.end(cb);
         });
@@ -2005,14 +2000,14 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           b.write(rg_slots, gfx::Access::ComputeWrite);
           b.write(rg_alloc, gfx::Access::ComputeReadWrite);
         },
-        [&, run](VkCommandBuffer cb, gfx::RenderGraph&) {
+        [&, run](gfx::CommandList cb, gfx::RenderGraph&) {
           // Its own zone rather than a view's: one dispatch covers every view of the run, so
           // charging it to view 0 would put the whole set's allocation on one monitor's row.
           timer.begin(cb, "deform alloc");
-          vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines.deform_alloc.pipeline);
-          vkCmdPushConstants(cb, pipelines.deform_alloc.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                             sizeof(gfx::DeformAllocParams), &alloc_params[run]);
-          vkCmdDispatch(cb, 1, 1, 1);
+          cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.deform_alloc.pipeline);
+          cb.push_constants(pipelines.deform_alloc.layout, gfx::ShaderStage::Compute, 0,
+                            sizeof(gfx::DeformAllocParams), &alloc_params[run]);
+          cb.dispatch(1, 1, 1);
           timer.end(cb);
         });
     graph.add_pass(
@@ -2021,12 +2016,13 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           b.read(rg_source, gfx::Access::TransferRead);
           b.write(rg_deform_args, gfx::Access::TransferWrite);
         },
-        [&, run, source_offset](VkCommandBuffer cb, gfx::RenderGraph&) {
-          const VkBuffer source = run == 2 ? scene.sw_args.buffer : scene.draw_args[run].buffer;
+        [&, run, source_offset](gfx::CommandList cb, gfx::RenderGraph&) {
+          const gfx::BufferHandle source =
+              run == 2 ? scene.sw_args.buffer : scene.draw_args[run].buffer;
           for (u32 v = 0; v < views; ++v) {
-            const VkBufferCopy copy{view_frames[v].args_offset + source_offset,
-                                    scene.deform_args_offset(v, run), sizeof(u32)};
-            vkCmdCopyBuffer(cb, source, scene.deform_args.buffer, 1, &copy);
+            const gfx::BufferCopy copy{view_frames[v].args_offset + source_offset,
+                                       scene.deform_args_offset(v, run), sizeof(u32)};
+            cb.copy_buffer(source, scene.deform_args.buffer, copy);
           }
         });
     graph.add_pass(
@@ -2038,13 +2034,13 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           b.read(rg_slots, gfx::Access::ComputeRead);
           b.write(rg_pool, gfx::Access::ComputeWrite);
         },
-        [&, run](VkCommandBuffer cb, gfx::RenderGraph&) {
-          vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines.deform.pipeline);
+        [&, run](gfx::CommandList cb, gfx::RenderGraph&) {
+          cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.deform.pipeline);
           for (u32 v = 0; v < views; ++v) {
             timer.begin(cb, k_zone_names[k_zone_deform][v]);
-            vkCmdPushConstants(cb, pipelines.deform.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                               sizeof(gfx::DeformParams), &deform_params[v][run]);
-            vkCmdDispatchIndirect(cb, scene.deform_args.buffer, scene.deform_args_offset(v, run));
+            cb.push_constants(pipelines.deform.layout, gfx::ShaderStage::Compute, 0,
+                              sizeof(gfx::DeformParams), &deform_params[v][run]);
+            cb.dispatch_indirect(scene.deform_args.buffer, scene.deform_args_offset(v, run));
             timer.end(cb);
           }
         });
@@ -2066,15 +2062,14 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           b.write(rg_vertex_indices, gfx::Access::ComputeWrite);
           read_pool(b, gfx::Access::ComputeRead);
         },
-        [&, run](VkCommandBuffer cb, gfx::RenderGraph&) {
-          vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines.expand.pipeline);
+        [&, run](gfx::CommandList cb, gfx::RenderGraph&) {
+          cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.expand.pipeline);
           for (u32 v = 0; v < views; ++v) {
             timer.begin(cb, k_zone_names[k_zone_hw][v]);
-            vkCmdPushConstants(cb, pipelines.expand.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                               sizeof(gfx::VertexExpandParams), &expand_params[v][run]);
-            vkCmdDispatchIndirect(
-                cb, scene.vertex_headers.buffer,
-                scene.vertex_header_offset(v, run) + gfx::k_vertex_draw_expand_offset);
+            cb.push_constants(pipelines.expand.layout, gfx::ShaderStage::Compute, 0,
+                              sizeof(gfx::VertexExpandParams), &expand_params[v][run]);
+            cb.dispatch_indirect(scene.vertex_headers.buffer, scene.vertex_header_offset(v, run) +
+                                                                  gfx::k_vertex_draw_expand_offset);
             timer.end(cb);
           }
         });
@@ -2105,42 +2100,42 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             read_pool(b, stage);
           }
         },
-        [&, list, run](VkCommandBuffer cb, gfx::RenderGraph&) {
-          vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            vertex_path ? pipelines.vertex : pipelines.hardware);
-          bindless.bind(cb, VK_PIPELINE_BIND_POINT_GRAPHICS);
+        [&, list, run](gfx::CommandList cb, gfx::RenderGraph&) {
+          cb.bind_pipeline(gfx::BindPoint::Graphics,
+                           vertex_path ? pipelines.vertex : pipelines.hardware);
+          bindless.bind(cb, gfx::BindPoint::Graphics);
           for (u32 v = 0; v < views; ++v) {
             timer.begin(cb, k_zone_names[k_zone_hw][v]);
             set_view_viewport(cb, 0, 0, view_frames[v].width, view_frames[v].height);
-            vkCmdPushConstants(cb, bindless.pipeline_layout(), VK_SHADER_STAGE_ALL, 0,
-                               sizeof(gfx::ClusterDrawParams), &draws[v][run]);
+            cb.push_constants(bindless.pipeline_layout(), gfx::ShaderStage::All, 0,
+                              sizeof(gfx::ClusterDrawParams), &draws[v][run]);
             if (vertex_indexed) {
               // The run's triangles, indexed, then whatever its index budget had no room for
               // through the capacity draw — an empty draw unless something overflowed.
               const u64 header = scene.vertex_header_offset(v, run);
-              vkCmdBindIndexBuffer(cb, scene.vertex_indices.buffer,
-                                   scene.vertex_indices_offset(v, run), VK_INDEX_TYPE_UINT32);
-              vkCmdDrawIndexedIndirect(cb, scene.vertex_headers.buffer, header, 1,
-                                       sizeof(VkDrawIndexedIndirectCommand));
-              vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.vertex_fallback);
-              vkCmdDrawIndirect(cb, scene.vertex_headers.buffer,
-                                header + gfx::k_vertex_draw_fallback_offset, 1,
-                                sizeof(VkDrawIndirectCommand));
+              cb.bind_index_buffer(scene.vertex_indices.buffer, scene.vertex_indices_offset(v, run),
+                                   gfx::IndexType::Uint32);
+              cb.draw_indexed_indirect(scene.vertex_headers.buffer, header, 1,
+                                       sizeof(gfx::DrawIndexedIndirectArgs));
+              cb.bind_pipeline(gfx::BindPoint::Graphics, pipelines.vertex_fallback);
+              cb.draw_indirect(scene.vertex_headers.buffer,
+                               header + gfx::k_vertex_draw_fallback_offset, 1,
+                               sizeof(gfx::DrawIndirectArgs));
               if (v + 1 < views) {
-                vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.vertex);
+                cb.bind_pipeline(gfx::BindPoint::Graphics, pipelines.vertex);
               }
             } else if (vertex_path) {
               if (cull_on) {
-                vkCmdDrawIndirect(cb, scene.draw_args[list].buffer, view_frames[v].args_offset, 1,
-                                  sizeof(u32) * 4);
+                cb.draw_indirect(scene.draw_args[list].buffer, view_frames[v].args_offset, 1,
+                                 sizeof(u32) * 4);
               } else {
-                vkCmdDraw(cb, triangles_per_cluster * 3, leaf_count, 0, 0);
+                cb.draw(triangles_per_cluster * 3, leaf_count, 0, 0);
               }
             } else if (cull_on) {
-              vkCmdDrawMeshTasksIndirectEXT(cb, scene.draw_args[list].buffer,
-                                            view_frames[v].args_offset, 1, sizeof(u32) * 3);
+              cb.draw_mesh_tasks_indirect(scene.draw_args[list].buffer, view_frames[v].args_offset,
+                                          1, sizeof(u32) * 3);
             } else {
-              vkCmdDrawMeshTasksEXT(cb, leaf_count, 1, 1);
+              cb.draw_mesh_tasks(leaf_count, 1, 1);
             }
             timer.end(cb);
           }
@@ -2183,12 +2178,12 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
               if (first) b.read(rg_vis, gfx::Access::ComputeRead);
               b.write(rg_hiz, gfx::Access::ComputeReadWrite);
             },
-            [&, level, first, last, v, src_w, src_h](VkCommandBuffer cb, gfx::RenderGraph&) {
+            [&, level, first, last, v, src_w, src_h](gfx::CommandList cb, gfx::RenderGraph&) {
               if (first) timer.begin(cb, k_zone_names[k_zone_hiz][v]);
-              vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines.hiz.pipeline);
-              vkCmdPushConstants(cb, pipelines.hiz.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                                 sizeof(*level), level);
-              vkCmdDispatch(cb, gfx::hiz_group_count(src_w), gfx::hiz_group_count(src_h), 1);
+              cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.hiz.pipeline);
+              cb.push_constants(pipelines.hiz.layout, gfx::ShaderStage::Compute, 0, sizeof(*level),
+                                level);
+              cb.dispatch(gfx::hiz_group_count(src_w), gfx::hiz_group_count(src_h), 1);
               if (last) timer.end(cb);
             });
       }
@@ -2221,14 +2216,14 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             b.write(sb.request_mask, gfx::Access::ComputeReadWrite);
           }
         },
-        [&, count](VkCommandBuffer cb, gfx::RenderGraph&) {
-          vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines.cull.pipeline);
+        [&, count](gfx::CommandList cb, gfx::RenderGraph&) {
+          cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.cull.pipeline);
           timer.begin(cb, "shadow cull");
           for (u32 c = 0; c < count; ++c) {
             const u64 block = params_[slot].address + sizeof(gfx::CullParams) * (views * 2 + c);
-            vkCmdPushConstants(cb, pipelines.cull.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                               sizeof(u64), &block);
-            vkCmdDispatch(cb, gfx::cull_group_count(pair_count), 1, 1);
+            cb.push_constants(pipelines.cull.layout, gfx::ShaderStage::Compute, 0, sizeof(u64),
+                              &block);
+            cb.dispatch(gfx::cull_group_count(pair_count), 1, 1);
           }
           timer.end(cb);
         });
@@ -2243,12 +2238,12 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             b.write(rg_slots, gfx::Access::ComputeWrite);
             b.write(rg_alloc, gfx::Access::ComputeReadWrite);
           },
-          [&](VkCommandBuffer cb, gfx::RenderGraph&) {
+          [&](gfx::CommandList cb, gfx::RenderGraph&) {
             timer.begin(cb, "shadow");
-            vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines.deform_alloc.pipeline);
-            vkCmdPushConstants(cb, pipelines.deform_alloc.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                               sizeof(gfx::DeformAllocParams), &shadow_alloc);
-            vkCmdDispatch(cb, 1, 1, 1);
+            cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.deform_alloc.pipeline);
+            cb.push_constants(pipelines.deform_alloc.layout, gfx::ShaderStage::Compute, 0,
+                              sizeof(gfx::DeformAllocParams), &shadow_alloc);
+            cb.dispatch(1, 1, 1);
             timer.end(cb);
           });
       graph.add_pass(
@@ -2257,11 +2252,12 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             b.read(rg_shadow_args, gfx::Access::TransferRead);
             b.write(rg_deform_args, gfx::Access::TransferWrite);
           },
-          [&, count](VkCommandBuffer cb, gfx::RenderGraph&) {
+          [&, count](gfx::CommandList cb, gfx::RenderGraph&) {
             for (u32 c = 0; c < count; ++c) {
-              const VkBufferCopy copy{scene.shadow_args_offset(c) + u64{count_index} * sizeof(u32),
-                                      scene.shadow_deform_args_offset(c), sizeof(u32)};
-              vkCmdCopyBuffer(cb, scene.shadow_args.buffer, scene.deform_args.buffer, 1, &copy);
+              const gfx::BufferCopy copy{
+                  scene.shadow_args_offset(c) + u64{count_index} * sizeof(u32),
+                  scene.shadow_deform_args_offset(c), sizeof(u32)};
+              cb.copy_buffer(scene.shadow_args.buffer, scene.deform_args.buffer, copy);
             }
           });
       graph.add_pass(
@@ -2273,14 +2269,13 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             b.read(rg_slots, gfx::Access::ComputeRead);
             b.write(rg_pool, gfx::Access::ComputeWrite);
           },
-          [&, count](VkCommandBuffer cb, gfx::RenderGraph&) {
-            vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines.deform.pipeline);
+          [&, count](gfx::CommandList cb, gfx::RenderGraph&) {
+            cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.deform.pipeline);
             timer.begin(cb, "shadow");
             for (u32 c = 0; c < count; ++c) {
-              vkCmdPushConstants(cb, pipelines.deform.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                                 sizeof(gfx::DeformParams), &shadow_deform[c]);
-              vkCmdDispatchIndirect(cb, scene.deform_args.buffer,
-                                    scene.shadow_deform_args_offset(c));
+              cb.push_constants(pipelines.deform.layout, gfx::ShaderStage::Compute, 0,
+                                sizeof(gfx::DeformParams), &shadow_deform[c]);
+              cb.dispatch_indirect(scene.deform_args.buffer, scene.shadow_deform_args_offset(c));
             }
             timer.end(cb);
           });
@@ -2297,14 +2292,14 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             b.write(rg_vertex_indices, gfx::Access::ComputeWrite);
             read_pool(b, gfx::Access::ComputeRead);
           },
-          [&, count](VkCommandBuffer cb, gfx::RenderGraph&) {
-            vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines.expand.pipeline);
+          [&, count](gfx::CommandList cb, gfx::RenderGraph&) {
+            cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.expand.pipeline);
             timer.begin(cb, "shadow");
             for (u32 c = 0; c < count; ++c) {
-              vkCmdPushConstants(cb, pipelines.expand.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                                 sizeof(gfx::VertexExpandParams), &shadow_expand[c]);
-              vkCmdDispatchIndirect(
-                  cb, scene.vertex_headers.buffer,
+              cb.push_constants(pipelines.expand.layout, gfx::ShaderStage::Compute, 0,
+                                sizeof(gfx::VertexExpandParams), &shadow_expand[c]);
+              cb.dispatch_indirect(
+                  scene.vertex_headers.buffer,
                   scene.shadow_vertex_header_offset(c) + gfx::k_vertex_draw_expand_offset);
             }
             timer.end(cb);
@@ -2314,7 +2309,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
         "shadow raster", gfx::PassKind::Raster,
         [&](gfx::PassBuilder& b) {
           // Reversed depth: the clear is the far end, 0, and the nearest caster to the light wins.
-          b.depth_attachment(rg_atlas, VK_ATTACHMENT_LOAD_OP_CLEAR, 0.0f);
+          b.depth_attachment(rg_atlas, gfx::LoadOp::Clear, 0.0f);
           if (vertex_indexed) {
             b.read(rg_vertex_headers, gfx::Access::IndirectRead);
             b.read(rg_vertex_records, gfx::Access::VertexRead);
@@ -2330,34 +2325,34 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           }
           read_pool(b, stage);
         },
-        [&, count](VkCommandBuffer cb, gfx::RenderGraph&) {
-          vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.shadow);
-          bindless.bind(cb, VK_PIPELINE_BIND_POINT_GRAPHICS);
+        [&, count](gfx::CommandList cb, gfx::RenderGraph&) {
+          cb.bind_pipeline(gfx::BindPoint::Graphics, pipelines.shadow);
+          bindless.bind(cb, gfx::BindPoint::Graphics);
           timer.begin(cb, "shadow");
           for (u32 c = 0; c < count; ++c) {
             // Cascade c's tile of the atlas, flipped like every raster pass's viewport.
             set_view_viewport(cb, c * shadow_map, 0, shadow_map, shadow_map);
-            vkCmdPushConstants(cb, bindless.pipeline_layout(), VK_SHADER_STAGE_ALL, 0,
-                               sizeof(gfx::ClusterDrawParams), &shadow_draws[c]);
+            cb.push_constants(bindless.pipeline_layout(), gfx::ShaderStage::All, 0,
+                              sizeof(gfx::ClusterDrawParams), &shadow_draws[c]);
             if (vertex_indexed) {
               const u64 header = scene.shadow_vertex_header_offset(c);
-              vkCmdBindIndexBuffer(cb, scene.vertex_indices.buffer,
-                                   scene.shadow_vertex_indices_offset(c), VK_INDEX_TYPE_UINT32);
-              vkCmdDrawIndexedIndirect(cb, scene.vertex_headers.buffer, header, 1,
-                                       sizeof(VkDrawIndexedIndirectCommand));
-              vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.shadow_fallback);
-              vkCmdDrawIndirect(cb, scene.vertex_headers.buffer,
-                                header + gfx::k_vertex_draw_fallback_offset, 1,
-                                sizeof(VkDrawIndirectCommand));
+              cb.bind_index_buffer(scene.vertex_indices.buffer,
+                                   scene.shadow_vertex_indices_offset(c), gfx::IndexType::Uint32);
+              cb.draw_indexed_indirect(scene.vertex_headers.buffer, header, 1,
+                                       sizeof(gfx::DrawIndexedIndirectArgs));
+              cb.bind_pipeline(gfx::BindPoint::Graphics, pipelines.shadow_fallback);
+              cb.draw_indirect(scene.vertex_headers.buffer,
+                               header + gfx::k_vertex_draw_fallback_offset, 1,
+                               sizeof(gfx::DrawIndirectArgs));
               if (c + 1 < count) {
-                vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.shadow);
+                cb.bind_pipeline(gfx::BindPoint::Graphics, pipelines.shadow);
               }
             } else if (vertex_path) {
-              vkCmdDrawIndirect(cb, scene.shadow_args.buffer, scene.shadow_args_offset(c), 1,
-                                sizeof(u32) * 4);
+              cb.draw_indirect(scene.shadow_args.buffer, scene.shadow_args_offset(c), 1,
+                               sizeof(u32) * 4);
             } else {
-              vkCmdDrawMeshTasksIndirectEXT(cb, scene.shadow_args.buffer,
-                                            scene.shadow_args_offset(c), 1, sizeof(u32) * 3);
+              cb.draw_mesh_tasks_indirect(scene.shadow_args.buffer, scene.shadow_args_offset(c), 1,
+                                          sizeof(u32) * 3);
             }
           }
           timer.end(cb);
@@ -2373,8 +2368,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     graph.add_pass(
         "direct", gfx::PassKind::Raster,
         [&](gfx::PassBuilder& b) {
-          b.color_attachment(color, VK_ATTACHMENT_LOAD_OP_CLEAR, sky);
-          b.depth_attachment(depth_target, VK_ATTACHMENT_LOAD_OP_CLEAR,
+          b.color_attachment(color, gfx::LoadOp::Clear, sky);
+          b.depth_attachment(depth_target, gfx::LoadOp::Clear,
                              0.0f);  // reversed Z: far is 0
           if (cull_on) {
             b.read(rg_args[0], gfx::Access::IndirectRead);
@@ -2385,16 +2380,16 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             b.read(rg_slots, gfx::Access::MeshRead);
           }
         },
-        [&, params](VkCommandBuffer cb, gfx::RenderGraph&) {
+        [&, params](gfx::CommandList cb, gfx::RenderGraph&) {
           timer.begin(cb, k_zone_names[k_zone_hw][0]);
-          vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.direct);
-          bindless.bind(cb, VK_PIPELINE_BIND_POINT_GRAPHICS);
-          vkCmdPushConstants(cb, bindless.pipeline_layout(), VK_SHADER_STAGE_ALL, 0,
-                             sizeof(*params), params);
+          cb.bind_pipeline(gfx::BindPoint::Graphics, pipelines.direct);
+          bindless.bind(cb, gfx::BindPoint::Graphics);
+          cb.push_constants(bindless.pipeline_layout(), gfx::ShaderStage::All, 0, sizeof(*params),
+                            params);
           if (cull_on) {
-            vkCmdDrawMeshTasksIndirectEXT(cb, scene.draw_args[0].buffer, 0, 1, sizeof(u32) * 3);
+            cb.draw_mesh_tasks_indirect(scene.draw_args[0].buffer, 0, 1, sizeof(u32) * 3);
           } else {
-            vkCmdDrawMeshTasksEXT(cb, leaf_count, 1, 1);
+            cb.draw_mesh_tasks(leaf_count, 1, 1);
           }
           timer.end(cb);
         });
@@ -2425,13 +2420,13 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             }
             read_pool(b, gfx::Access::ComputeRead);
           },
-          [&](VkCommandBuffer cb, gfx::RenderGraph&) {
-            vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines.software.pipeline);
+          [&](gfx::CommandList cb, gfx::RenderGraph&) {
+            cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.software.pipeline);
             for (u32 v = 0; v < views; ++v) {
               timer.begin(cb, k_zone_names[k_zone_sw][v]);
-              vkCmdPushConstants(cb, pipelines.software.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                                 sizeof(gfx::ClusterDrawParams), &draws[v][2]);
-              vkCmdDispatchIndirect(cb, scene.sw_args.buffer, view_frames[v].args_offset);
+              cb.push_constants(pipelines.software.layout, gfx::ShaderStage::Compute, 0,
+                                sizeof(gfx::ClusterDrawParams), &draws[v][2]);
+              cb.dispatch_indirect(scene.sw_args.buffer, view_frames[v].args_offset);
               timer.end(cb);
             }
           });
@@ -2470,13 +2465,13 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
               }
               read_pool(b, gfx::Access::ComputeRead);
             },
-            [&, p, record_passes, record_names, record_groups](VkCommandBuffer cb,
+            [&, p, record_passes, record_names, record_groups](gfx::CommandList cb,
                                                                gfx::RenderGraph&) {
               timer.begin(cb, record_names[p]);
-              vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, record_passes[p]->pipeline);
-              vkCmdPushConstants(cb, record_passes[p]->layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                                 sizeof(record_params), &record_params);
-              vkCmdDispatch(cb, record_groups[p], 1, 1);
+              cb.bind_pipeline(gfx::BindPoint::Compute, record_passes[p]->pipeline);
+              cb.push_constants(record_passes[p]->layout, gfx::ShaderStage::Compute, 0,
+                                sizeof(record_params), &record_params);
+              cb.dispatch(record_groups[p], 1, 1);
               timer.end(cb);
             });
       }
@@ -2494,7 +2489,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             b.write(rt.clas_sizes, gfx::Access::AccelerationBuildWrite);
             read_pool(b, gfx::Access::AccelerationBuildRead);
           },
-          [&](VkCommandBuffer cb, gfx::RenderGraph&) {
+          [&](gfx::CommandList cb, gfx::RenderGraph&) {
             // The same command either way: a set created with `instantiate` runs the instantiate
             // op over the template records the emit pass wrote.
             timer.begin(cb, "clas");
@@ -2511,7 +2506,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             b.write(rt.blas_data, gfx::Access::AccelerationBuildWrite);
             b.write(rt.blas_addresses, gfx::Access::AccelerationBuildWrite);
           },
-          [&](VkCommandBuffer cb, gfx::RenderGraph&) {
+          [&](gfx::CommandList cb, gfx::RenderGraph&) {
             // Every instance's structure in **one** build, packed into one buffer by the driver
             // (gfx::ClusterBlasSet). It used to be a build per instance, each waiting for the last
             // because they shared the scratch — 90 of them a frame on the desert overlook.
@@ -2529,9 +2524,10 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             b.read(rt.blas_addresses, gfx::Access::TransferRead);
             b.write(rt.instances, gfx::Access::TransferWrite);
           },
-          [&](VkCommandBuffer cb, gfx::RenderGraph&) {
-            vkCmdCopyBuffer(cb, scene.blas_set.addresses.buffer, scene.rt_instances.buffer,
-                            scene.rt_instance_copies.size(), scene.rt_instance_copies.data());
+          [&](gfx::CommandList cb, gfx::RenderGraph&) {
+            cb.copy_buffer(scene.blas_set.addresses.buffer, scene.rt_instances.buffer,
+                           std::span<const gfx::BufferCopy>(scene.rt_instance_copies.data(),
+                                                            scene.rt_instance_copies.size()));
           });
       graph.add_pass(
           "tlas", gfx::PassKind::Compute,
@@ -2540,7 +2536,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             b.read(rt.instances, gfx::Access::AccelerationBuildRead);
             b.write(rt.tlas, gfx::Access::AccelerationBuildWrite);
           },
-          [&](VkCommandBuffer cb, gfx::RenderGraph&) {
+          [&](gfx::CommandList cb, gfx::RenderGraph&) {
             timer.begin(cb, "tlas");
             gfx::build_tlas(cb, scene.tlas, scene.rt_instances.address, instance_count,
                             gfx::k_build_fast_trace, scene.rt_scratch);
@@ -2557,15 +2553,15 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             b.read(rg_visible, gfx::Access::ComputeRead);  // a hit's entry -> its pair, the id
             b.write(rg_vis, gfx::Access::ComputeWrite);
           },
-          [&](VkCommandBuffer cb, gfx::RenderGraph&) {
-            vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines.trace.pipeline);
-            bindless.bind(cb, VK_PIPELINE_BIND_POINT_COMPUTE);
+          [&](gfx::CommandList cb, gfx::RenderGraph&) {
+            cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.trace.pipeline);
+            bindless.bind(cb, gfx::BindPoint::Compute);
             for (u32 v = 0; v < views; ++v) {
               timer.begin(cb, k_zone_names[k_zone_trace][v]);
-              vkCmdPushConstants(cb, pipelines.trace.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                                 sizeof(u64), &view_frames[v].ray_address);
-              vkCmdDispatch(cb, gfx::ray_visibility_group_count(view_frames[v].width),
-                            gfx::ray_visibility_group_count(view_frames[v].height), 1);
+              cb.push_constants(pipelines.trace.layout, gfx::ShaderStage::Compute, 0, sizeof(u64),
+                                &view_frames[v].ray_address);
+              cb.dispatch(gfx::ray_visibility_group_count(view_frames[v].width),
+                          gfx::ray_visibility_group_count(view_frames[v].height), 1);
               timer.end(cb);
             }
           });
@@ -2576,7 +2572,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     graph.add_pass(
         "resolve", gfx::PassKind::Raster,
         [&](gfx::PassBuilder& b) {
-          b.color_attachment(color, VK_ATTACHMENT_LOAD_OP_CLEAR, sky);
+          b.color_attachment(color, gfx::LoadOp::Clear, sky);
           b.read(rg_vis, gfx::Access::FragmentRead);
           if (csm && cascades_drawn > 0) b.read(rg_atlas, gfx::Access::SampledRead);
           // A pixel's pair decodes through the scene's pair table, which no pass writes; the entry
@@ -2595,16 +2591,16 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             b.read(rt.clas_data, gfx::Access::FragmentRayQueryRead);
           }
         },
-        [&](VkCommandBuffer cb, gfx::RenderGraph&) {
-          vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.resolve);
-          bindless.bind(cb, VK_PIPELINE_BIND_POINT_GRAPHICS);
+        [&](gfx::CommandList cb, gfx::RenderGraph&) {
+          cb.bind_pipeline(gfx::BindPoint::Graphics, pipelines.resolve);
+          bindless.bind(cb, gfx::BindPoint::Graphics);
           for (u32 v = 0; v < views; ++v) {
             timer.begin(cb, k_zone_names[k_zone_resolve][v]);
             const View& view = views_[v];
             set_view_viewport(cb, view.rect.x, view.rect.y, view.rect.width, view.rect.height);
-            vkCmdPushConstants(cb, bindless.pipeline_layout(), VK_SHADER_STAGE_ALL, 0, sizeof(u64),
-                               &view_frames[v].resolve_address);
-            vkCmdDraw(cb, 3, 1, 0, 0);
+            cb.push_constants(bindless.pipeline_layout(), gfx::ShaderStage::All, 0, sizeof(u64),
+                              &view_frames[v].resolve_address);
+            cb.draw(3, 1, 0, 0);
             timer.end(cb);
           }
         });
@@ -2623,53 +2619,53 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           if (csm) b.read(rg_shadow_args, gfx::Access::TransferRead);
           b.write(rg_stats, gfx::Access::TransferWrite);
         },
-        [&, stat_target](VkCommandBuffer cb, gfx::RenderGraph&) {
+        [&, stat_target](gfx::CommandList cb, gfx::RenderGraph&) {
           const gfx::BufferResource* arg_blocks[3] = {&scene.draw_args[0], &scene.draw_args[1],
                                                       &scene.sw_args};
           for (u32 v = 0; v < views; ++v) {
             for (u32 i = 0; i < 3; ++i) {
-              const VkBufferCopy copy{view_frames[v].args_offset,
-                                      sizeof(u32) * (u64{v} * k_stat_words + 3 * i),
-                                      sizeof(u32) * 3};
-              vkCmdCopyBuffer(cb, arg_blocks[i]->buffer, stat_target->buffer, 1, &copy);
+              const gfx::BufferCopy copy{view_frames[v].args_offset,
+                                         sizeof(u32) * (u64{v} * k_stat_words + 3 * i),
+                                         sizeof(u32) * 3};
+              cb.copy_buffer(arg_blocks[i]->buffer, stat_target->buffer, copy);
             }
             // The indexed draw's cursor and fallback count, words 5 and 15 of each run's header.
             for (u32 run = 0; vertex_indexed && run < 2; ++run) {
               const u64 header = scene.vertex_header_offset(v, run);
               const u64 at = sizeof(u32) * (u64{v} * k_stat_words + 9 + 2 * run);
-              const VkBufferCopy cursor{header + offsetof(gfx::VertexDrawHeader, cursor), at,
-                                        sizeof(u32)};
-              const VkBufferCopy overflow{header + offsetof(gfx::VertexDrawHeader, overflow),
-                                          at + sizeof(u32), sizeof(u32)};
-              vkCmdCopyBuffer(cb, scene.vertex_headers.buffer, stat_target->buffer, 1, &cursor);
-              vkCmdCopyBuffer(cb, scene.vertex_headers.buffer, stat_target->buffer, 1, &overflow);
+              const gfx::BufferCopy cursor{header + offsetof(gfx::VertexDrawHeader, cursor), at,
+                                           sizeof(u32)};
+              const gfx::BufferCopy overflow{header + offsetof(gfx::VertexDrawHeader, overflow),
+                                             at + sizeof(u32), sizeof(u32)};
+              cb.copy_buffer(scene.vertex_headers.buffer, stat_target->buffer, cursor);
+              cb.copy_buffer(scene.vertex_headers.buffer, stat_target->buffer, overflow);
             }
           }
           if (deform_on) {
-            const VkBufferCopy copy{0, sizeof(u32) * u64{k_stat_words} * views,
-                                    sizeof(gfx::DeformAlloc)};
-            vkCmdCopyBuffer(cb, scene.deform_alloc.buffer, stat_target->buffer, 1, &copy);
+            const gfx::BufferCopy copy{0, sizeof(u32) * u64{k_stat_words} * views,
+                                       sizeof(gfx::DeformAlloc)};
+            cb.copy_buffer(scene.deform_alloc.buffer, stat_target->buffer, copy);
           }
           // What the ray tracing chain built and wanted, which is what its capacity is sized by.
           if (rt_chain) {
-            const VkBufferCopy copy{0, sizeof(u32) * (u64{k_stat_words} * views + k_alloc_words),
-                                    sizeof(u32) * k_rt_words};
-            vkCmdCopyBuffer(cb, scene.record_count.buffer, stat_target->buffer, 1, &copy);
+            const gfx::BufferCopy copy{0, sizeof(u32) * (u64{k_stat_words} * views + k_alloc_words),
+                                       sizeof(u32) * k_rt_words};
+            cb.copy_buffer(scene.record_count.buffer, stat_target->buffer, copy);
           }
           // Each shadow cascade's block and, on the indexed draw, its cursor and fallback count,
           // behind the chain's.
           for (u32 c = 0; c < cascade_runs; ++c) {
             const u64 at = sizeof(u32) * (shadow_stat_base(views) + u64{k_shadow_stat_words} * c);
-            const VkBufferCopy args{scene.shadow_args_offset(c), at, sizeof(u32) * 3};
-            vkCmdCopyBuffer(cb, scene.shadow_args.buffer, stat_target->buffer, 1, &args);
+            const gfx::BufferCopy args{scene.shadow_args_offset(c), at, sizeof(u32) * 3};
+            cb.copy_buffer(scene.shadow_args.buffer, stat_target->buffer, args);
             if (vertex_indexed) {
               const u64 header = scene.shadow_vertex_header_offset(c);
-              const VkBufferCopy cursor{header + offsetof(gfx::VertexDrawHeader, cursor),
-                                        at + 3 * sizeof(u32), sizeof(u32)};
-              const VkBufferCopy overflow{header + offsetof(gfx::VertexDrawHeader, overflow),
-                                          at + 4 * sizeof(u32), sizeof(u32)};
-              vkCmdCopyBuffer(cb, scene.vertex_headers.buffer, stat_target->buffer, 1, &cursor);
-              vkCmdCopyBuffer(cb, scene.vertex_headers.buffer, stat_target->buffer, 1, &overflow);
+              const gfx::BufferCopy cursor{header + offsetof(gfx::VertexDrawHeader, cursor),
+                                           at + 3 * sizeof(u32), sizeof(u32)};
+              const gfx::BufferCopy overflow{header + offsetof(gfx::VertexDrawHeader, overflow),
+                                             at + 4 * sizeof(u32), sizeof(u32)};
+              cb.copy_buffer(scene.vertex_headers.buffer, stat_target->buffer, cursor);
+              cb.copy_buffer(scene.vertex_headers.buffer, stat_target->buffer, overflow);
             }
           }
         });
@@ -2688,15 +2684,15 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           b.read(sb.used, gfx::Access::TransferRead);
           b.write(sb.feedback, gfx::Access::TransferWrite);
         },
-        [&, target](VkCommandBuffer cb, gfx::RenderGraph&) {
+        [&, target](gfx::CommandList cb, gfx::RenderGraph&) {
           const u64 request_bytes = u64{scene.max_requests()} * sizeof(geometry::PageRequest);
-          const VkBufferCopy count{0, 0, sizeof(u32)};
-          vkCmdCopyBuffer(cb, scene.request_count.buffer, target->buffer, 1, &count);
-          const VkBufferCopy requests{0, sizeof(u32), request_bytes};
-          vkCmdCopyBuffer(cb, scene.page_requests.buffer, target->buffer, 1, &requests);
-          const VkBufferCopy used{0, sizeof(u32) + request_bytes,
-                                  u64{scene.page_count()} * sizeof(u32)};
-          vkCmdCopyBuffer(cb, scene.page_used.buffer, target->buffer, 1, &used);
+          const gfx::BufferCopy count{0, 0, sizeof(u32)};
+          cb.copy_buffer(scene.request_count.buffer, target->buffer, count);
+          const gfx::BufferCopy requests{0, sizeof(u32), request_bytes};
+          cb.copy_buffer(scene.page_requests.buffer, target->buffer, requests);
+          const gfx::BufferCopy used{0, sizeof(u32) + request_bytes,
+                                     u64{scene.page_count()} * sizeof(u32)};
+          cb.copy_buffer(scene.page_used.buffer, target->buffer, used);
         });
   }
   graph.set_final_layout(color, frame.final_layout);
@@ -2720,13 +2716,13 @@ bool SceneRenderer::capture(const FrameDesc& frame, const CaptureChannels& chann
   out.height = height_;
   FrameDesc first = frame;
   first.color = gfx::ImageResource{};  // the renderer's own target
-  first.final_layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-  first.wait = VK_NULL_HANDLE;
-  first.signal = VK_NULL_HANDLE;
+  first.final_layout = gfx::ImageLayout::TransferSrc;
+  first.wait = {};
+  first.signal = {};
   if (!render_offscreen(first, error)) return false;
   if (channels.color) {
     gfx::Capture shot;
-    if (!gfx::capture_image(*device_, color_, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, shot, error) ||
+    if (!gfx::capture_image(*device_, color_, gfx::ImageLayout::TransferSrc, shot, error) ||
         !gfx::capture_to_rgba8(shot, out.color)) {
       if (error != nullptr && error->empty()) *error = "unsupported color format";
       return false;
@@ -2744,7 +2740,7 @@ bool SceneRenderer::capture(const FrameDesc& frame, const CaptureChannels& chann
     if (!render_offscreen(second, error)) return false;
     gfx::Capture shot;
     Vector<u8> rgba;
-    if (!gfx::capture_image(*device_, color_, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, shot, error) ||
+    if (!gfx::capture_image(*device_, color_, gfx::ImageLayout::TransferSrc, shot, error) ||
         !gfx::capture_to_rgba8(shot, rgba)) {
       if (error != nullptr && error->empty()) *error = "unsupported color format";
       return false;

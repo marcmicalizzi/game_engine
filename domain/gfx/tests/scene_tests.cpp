@@ -14,13 +14,13 @@
 
 #include <domain/geometry/cluster_lod.h>
 #include <domain/gfx/acceleration.h>
+#include <domain/gfx/backend/vulkan/vulkan.h>
 #include <domain/gfx/bindless.h>
 #include <domain/gfx/cluster_cull.h>
 #include <domain/gfx/device.h>
 #include <domain/gfx/frame.h>
 #include <domain/gfx/ray_visibility.h>
 #include <domain/gfx/render_graph.h>
-#include <domain/gfx/vulkan.h>
 
 #include <doctest/doctest.h>
 
@@ -258,11 +258,10 @@ TEST_CASE("scene: the pair cull, the two rasterizers, ray tracing, and occlusion
     CHECK(per_instance[i] > 0);
 
   // Geometry and the scene on the GPU.
-  constexpr VkBufferUsageFlags k_storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-  constexpr VkBufferUsageFlags k_address = k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
-  constexpr VkBufferUsageFlags k_args = k_address | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
-                                        VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                                        VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+  constexpr gfx::BufferUsage k_storage = gfx::BufferUsage::Storage;
+  constexpr gfx::BufferUsage k_address = k_storage | gfx::BufferUsage::ShaderDeviceAddress;
+  constexpr gfx::BufferUsage k_args = k_address | gfx::BufferUsage::Indirect |
+                                      gfx::BufferUsage::TransferDst | gfx::BufferUsage::TransferSrc;
   Vector<gfx::MeshDesc> mesh_descs;
   gfx::BufferResource clusters;
   gfx::BufferResource lods;
@@ -307,8 +306,8 @@ TEST_CASE("scene: the pair cull, the two rasterizers, ray tracing, and occlusion
   u32 hiz_offsets[gfx::k_hiz_max_mips];
   const u32 hiz_elements = gfx::hiz_layout(k_w, k_h, hiz_offsets);
   const u32 hiz_mips = gfx::hiz_mip_count(k_w, k_h);
-  const VkBufferUsageFlags k_vis =
-      k_address | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+  const gfx::BufferUsage k_vis =
+      k_address | gfx::BufferUsage::TransferDst | gfx::BufferUsage::TransferSrc;
   gfx::BufferResource vis[4];  // mesh, vertex, ray, occlusion
   gfx::BufferResource visible;
   gfx::BufferResource args[2];       // {vertexCount, survivors, 0, 0} for vkCmdDrawIndirect
@@ -325,33 +324,32 @@ TEST_CASE("scene: the pair cull, the two rasterizers, ray tracing, and occlusion
     REQUIRE(gfx::create_buffer(device, 16, k_args, false, args[i], &error));
     REQUIRE(gfx::create_buffer(device, 12, k_args, false, mesh_args[i], &error));
     REQUIRE(gfx::create_buffer(device, u64{pair_count} * 4,
-                               k_address | VK_BUFFER_USAGE_TRANSFER_DST_BIT, false, flags[i],
-                               &error));
+                               k_address | gfx::BufferUsage::TransferDst, false, flags[i], &error));
   }
   REQUIRE(gfx::create_buffer(device, u64{hiz_elements} * 4,
-                             k_address | VK_BUFFER_USAGE_TRANSFER_DST_BIT, false, hiz, &error));
+                             k_address | gfx::BufferUsage::TransferDst, false, hiz, &error));
   REQUIRE(gfx::create_buffer(device, sizeof(gfx::CullParams) * 3, k_address, true, params, &error));
   REQUIRE(gfx::create_buffer(device, sizeof(gfx::RayVisibilityParams), k_address, true, ray_params,
                              &error));
   const u64 host_vis_offset[4] = {0, vis_bytes, vis_bytes * 2, vis_bytes * 3};
   const u64 host_list_offset = vis_bytes * 4;
   const u64 host_args_offset = host_list_offset + run_bytes * 2;
-  REQUIRE(gfx::create_buffer(device, host_args_offset + 32, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true,
+  REQUIRE(gfx::create_buffer(device, host_args_offset + 32, gfx::BufferUsage::TransferDst, true,
                              host, &error));
 
   gfx::FrameContext frames;
   REQUIRE(frames.create(device, 2, &error));
   gfx::BindlessSet bindless;
   REQUIRE(bindless.create(device, gfx::BindlessConfig{}, &error));
-  VkShaderModule cull_module = gfx::create_shader_module(
+  gfx::ShaderModuleHandle cull_module = gfx::create_shader_module(
       device, shaders::k_cluster_cull_spirv, shaders::k_cluster_cull_spirv_size, &error);
-  VkShaderModule vertex_module = gfx::create_shader_module(
+  gfx::ShaderModuleHandle vertex_module = gfx::create_shader_module(
       device, shaders::k_cluster_vertex_spirv, shaders::k_cluster_vertex_spirv_size, &error);
-  VkShaderModule hiz_module = gfx::create_shader_module(device, shaders::k_hiz_build_spirv,
-                                                        shaders::k_hiz_build_spirv_size, &error);
-  REQUIRE(cull_module != VK_NULL_HANDLE);
-  REQUIRE(vertex_module != VK_NULL_HANDLE);
-  REQUIRE(hiz_module != VK_NULL_HANDLE);
+  gfx::ShaderModuleHandle hiz_module = gfx::create_shader_module(
+      device, shaders::k_hiz_build_spirv, shaders::k_hiz_build_spirv_size, &error);
+  REQUIRE(cull_module.valid());
+  REQUIRE(vertex_module.valid());
+  REQUIRE(hiz_module.valid());
   gfx::ComputePipeline cull_pipeline;
   gfx::ComputePipeline hiz_pipeline;
   REQUIRE_MESSAGE(gfx::create_compute_pipeline(device, cull_module, "cull_main", {}, sizeof(u64),
@@ -365,15 +363,15 @@ TEST_CASE("scene: the pair cull, the two rasterizers, ray tracing, and occlusion
   vertex_desc.fragment = vertex_module;
   vertex_desc.fragment_entry = "fs_visibility";
   vertex_desc.layout = bindless.pipeline_layout();
-  VkPipeline vertex_pipeline = VK_NULL_HANDLE;
+  gfx::PipelineHandle vertex_pipeline = {};
   REQUIRE_MESSAGE(gfx::create_graphics_pipeline(device, vertex_desc, vertex_pipeline, &error),
                   error);
-  VkShaderModule mesh_module = VK_NULL_HANDLE;
-  VkPipeline mesh_pipeline = VK_NULL_HANDLE;
+  gfx::ShaderModuleHandle mesh_module = {};
+  gfx::PipelineHandle mesh_pipeline = {};
   if (have_mesh) {
     mesh_module = gfx::create_shader_module(device, shaders::k_cluster_mesh_spirv,
                                             shaders::k_cluster_mesh_spirv_size, &error);
-    REQUIRE(mesh_module != VK_NULL_HANDLE);
+    REQUIRE(mesh_module.valid());
     gfx::MeshPipelineDesc mesh_desc;
     mesh_desc.mesh = mesh_module;
     mesh_desc.fragment = mesh_module;
@@ -456,9 +454,9 @@ TEST_CASE("scene: the pair cull, the two rasterizers, ray tracing, and occlusion
           b.read(rg_args[list], gfx::Access::TransferRead);
           b.write(rg_mesh_args[list], gfx::Access::TransferWrite);
         },
-        [&, list](VkCommandBuffer cb, gfx::RenderGraph&) {
-          const VkBufferCopy copy{sizeof(u32), 0, sizeof(u32)};
-          vkCmdCopyBuffer(cb, args[list].buffer, mesh_args[list].buffer, 1, &copy);
+        [&, list](gfx::CommandList cb, gfx::RenderGraph&) {
+          const gfx::BufferCopy copy{sizeof(u32), 0, sizeof(u32)};
+          cb.copy_buffer(args[list].buffer, mesh_args[list].buffer, copy);
         });
   };
   auto add_cull = [&](u32 block, u32 list) {
@@ -473,11 +471,11 @@ TEST_CASE("scene: the pair cull, the two rasterizers, ray tracing, and occlusion
               b.write(rg_flags[i], gfx::Access::ComputeReadWrite);
           }
         },
-        [&, block](VkCommandBuffer cb, gfx::RenderGraph&) {
-          vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, cull_pipeline.pipeline);
-          vkCmdPushConstants(cb, cull_pipeline.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(u64),
-                             &block_address[block]);
-          vkCmdDispatch(cb, gfx::cull_group_count(pair_count), 1, 1);
+        [&, block](gfx::CommandList cb, gfx::RenderGraph&) {
+          cb.bind_pipeline(gfx::BindPoint::Compute, cull_pipeline.pipeline);
+          cb.push_constants(cull_pipeline.layout, gfx::ShaderStage::Compute, 0, sizeof(u64),
+                            &block_address[block]);
+          cb.dispatch(gfx::cull_group_count(pair_count), 1, 1);
         });
   };
   auto add_draw = [&](u32 target, u32 list, bool use_mesh,
@@ -490,16 +488,15 @@ TEST_CASE("scene: the pair cull, the two rasterizers, ray tracing, and occlusion
           b.read(use_mesh ? rg_mesh_args[list] : rg_args[list], gfx::Access::IndirectRead);
           b.read(rg_visible, use_mesh ? gfx::Access::MeshRead : gfx::Access::VertexRead);
         },
-        [&, list, use_mesh, draw_params](VkCommandBuffer cb, gfx::RenderGraph&) {
-          vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            use_mesh ? mesh_pipeline : vertex_pipeline);
-          bindless.bind(cb, VK_PIPELINE_BIND_POINT_GRAPHICS);
-          vkCmdPushConstants(cb, bindless.pipeline_layout(), VK_SHADER_STAGE_ALL, 0,
-                             sizeof(*draw_params), draw_params);
+        [&, list, use_mesh, draw_params](gfx::CommandList cb, gfx::RenderGraph&) {
+          cb.bind_pipeline(gfx::BindPoint::Graphics, use_mesh ? mesh_pipeline : vertex_pipeline);
+          bindless.bind(cb, gfx::BindPoint::Graphics);
+          cb.push_constants(bindless.pipeline_layout(), gfx::ShaderStage::All, 0,
+                            sizeof(*draw_params), draw_params);
           if (use_mesh) {
-            vkCmdDrawMeshTasksIndirectEXT(cb, mesh_args[list].buffer, 0, 1, sizeof(u32) * 3);
+            cb.draw_mesh_tasks_indirect(mesh_args[list].buffer, 0, 1, sizeof(u32) * 3);
           } else {
-            vkCmdDrawIndirect(cb, args[list].buffer, 0, 1, sizeof(u32) * 4);
+            cb.draw_indirect(args[list].buffer, 0, 1, sizeof(u32) * 4);
           }
         });
   };
@@ -526,11 +523,11 @@ TEST_CASE("scene: the pair cull, the two rasterizers, ray tracing, and occlusion
             if (d == 0) b.read(rg_vis[source], gfx::Access::ComputeRead);
             b.write(rg_hiz, gfx::Access::ComputeReadWrite);
           },
-          [&, level, src_w, src_h](VkCommandBuffer cb, gfx::RenderGraph&) {
-            vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, hiz_pipeline.pipeline);
-            vkCmdPushConstants(cb, hiz_pipeline.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                               sizeof(*level), level);
-            vkCmdDispatch(cb, gfx::hiz_group_count(src_w), gfx::hiz_group_count(src_h), 1);
+          [&, level, src_w, src_h](gfx::CommandList cb, gfx::RenderGraph&) {
+            cb.bind_pipeline(gfx::BindPoint::Compute, hiz_pipeline.pipeline);
+            cb.push_constants(hiz_pipeline.layout, gfx::ShaderStage::Compute, 0, sizeof(*level),
+                              level);
+            cb.dispatch(gfx::hiz_group_count(src_w), gfx::hiz_group_count(src_h), 1);
           });
     }
   };
@@ -547,18 +544,18 @@ TEST_CASE("scene: the pair cull, the two rasterizers, ray tracing, and occlusion
           if (clear_hiz) b.write(rg_hiz, gfx::Access::TransferWrite);
           if (clear_flags < 2) b.write(rg_flags[clear_flags], gfx::Access::TransferWrite);
         },
-        [&, clear_hiz, clear_flags](VkCommandBuffer cb, gfx::RenderGraph&) {
+        [&, clear_hiz, clear_flags](gfx::CommandList cb, gfx::RenderGraph&) {
           for (const gfx::BufferResource& v : vis)
-            vkCmdFillBuffer(cb, v.buffer, 0, VK_WHOLE_SIZE, 0);
+            cb.fill_buffer(v.buffer, 0, gfx::k_whole_size, 0);
           for (u32 i = 0; i < 2; ++i) {
             // {vertexCount, instanceCount, firstVertex, firstInstance} and {groups, 1, 1}.
-            vkCmdFillBuffer(cb, args[i].buffer, 0, 4, triangles_per_cluster * 3);
-            vkCmdFillBuffer(cb, args[i].buffer, 4, 12, 0);
-            vkCmdFillBuffer(cb, mesh_args[i].buffer, 0, 4, 0);
-            vkCmdFillBuffer(cb, mesh_args[i].buffer, 4, 8, 1);
+            cb.fill_buffer(args[i].buffer, 0, 4, triangles_per_cluster * 3);
+            cb.fill_buffer(args[i].buffer, 4, 12, 0);
+            cb.fill_buffer(mesh_args[i].buffer, 0, 4, 0);
+            cb.fill_buffer(mesh_args[i].buffer, 4, 8, 1);
           }
-          if (clear_hiz) vkCmdFillBuffer(cb, hiz.buffer, 0, VK_WHOLE_SIZE, 0);
-          if (clear_flags < 2) vkCmdFillBuffer(cb, flags[clear_flags].buffer, 0, VK_WHOLE_SIZE, 0);
+          if (clear_hiz) cb.fill_buffer(hiz.buffer, 0, gfx::k_whole_size, 0);
+          if (clear_flags < 2) cb.fill_buffer(flags[clear_flags].buffer, 0, gfx::k_whole_size, 0);
         });
   };
   auto add_readback = [&]() {
@@ -572,21 +569,21 @@ TEST_CASE("scene: the pair cull, the two rasterizers, ray tracing, and occlusion
             b.read(rg_args[i], gfx::Access::TransferRead);
           b.write(rg_host, gfx::Access::TransferWrite);
         },
-        [&](VkCommandBuffer cb, gfx::RenderGraph&) {
+        [&](gfx::CommandList cb, gfx::RenderGraph&) {
           for (u32 v = 0; v < 4; ++v) {
-            const VkBufferCopy copy{0, host_vis_offset[v], vis_bytes};
-            vkCmdCopyBuffer(cb, vis[v].buffer, host.buffer, 1, &copy);
+            const gfx::BufferCopy copy{0, host_vis_offset[v], vis_bytes};
+            cb.copy_buffer(vis[v].buffer, host.buffer, copy);
           }
-          const VkBufferCopy list_copy{0, host_list_offset, run_bytes * 2};
-          vkCmdCopyBuffer(cb, visible.buffer, host.buffer, 1, &list_copy);
+          const gfx::BufferCopy list_copy{0, host_list_offset, run_bytes * 2};
+          cb.copy_buffer(visible.buffer, host.buffer, list_copy);
           for (u32 i = 0; i < 2; ++i) {
-            const VkBufferCopy args_copy{0, host_args_offset + i * 16, 16};
-            vkCmdCopyBuffer(cb, args[i].buffer, host.buffer, 1, &args_copy);
+            const gfx::BufferCopy args_copy{0, host_args_offset + i * 16, 16};
+            cb.copy_buffer(args[i].buffer, host.buffer, args_copy);
           }
         });
   };
   auto run_frame = [&]() {
-    VkCommandBuffer cb = frames.begin_frame();
+    gfx::CommandList cb = frames.begin_frame();
     graph.execute(cb);
     REQUIRE(frames.wait(frames.end_frame()));
   };
@@ -763,26 +760,24 @@ TEST_CASE("scene: the pair cull, the two rasterizers, ray tracing, and occlusion
     first = 0;
     REQUIRE(gfx::submit_immediate(
         device,
-        [&](VkCommandBuffer cb) {
+        [&](gfx::CommandList cb) {
           for (u32 k = 0; k < instance_count; ++k) {
             if (k != 0) {
-              gfx::acceleration_build_barrier(
-                  cb, VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
-                  VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR |
-                      VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR);
+              gfx::acceleration_build_barrier(cb, gfx::PipelineStage::AccelerationBuild,
+                                              gfx::MemoryAccess::AccelerationStructureRead |
+                                                  gfx::MemoryAccess::AccelerationStructureWrite);
             }
             const std::span<const gfx::ClusterGeometry> range(geometries.data() + first,
                                                               instance_geometries[k]);
             gfx::build_blas(cb, blas[k], range, gfx::k_build_fast_trace, scratch);
             first += instance_geometries[k];
           }
-          gfx::acceleration_build_barrier(cb,
-                                          VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
-                                          VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR);
+          gfx::acceleration_build_barrier(cb, gfx::PipelineStage::AccelerationBuild,
+                                          gfx::MemoryAccess::AccelerationStructureRead);
           gfx::build_tlas(cb, tlas, tlas_instances.address, instance_count, gfx::k_build_fast_trace,
                           scratch);
-          gfx::acceleration_build_barrier(cb, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                                          VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR);
+          gfx::acceleration_build_barrier(cb, gfx::PipelineStage::ComputeShader,
+                                          gfx::MemoryAccess::AccelerationStructureRead);
         },
         &error));
     const u32 scene_slot = bindless.add_acceleration_structure(tlas.handle);
@@ -812,26 +807,27 @@ TEST_CASE("scene: the pair cull, the two rasterizers, ray tracing, and occlusion
     ray.meshes = meshes.address;
     std::memcpy(ray_params.mapped, &ray, sizeof(ray));
     const u64 ray_address = ray_params.address;
-    VkShaderModule trace_module = gfx::create_shader_module(
+    gfx::ShaderModuleHandle trace_module = gfx::create_shader_module(
         device, shaders::k_ray_visibility_spirv, shaders::k_ray_visibility_spirv_size, &error);
-    REQUIRE(trace_module != VK_NULL_HANDLE);
-    const VkDescriptorSetLayout set_layout = bindless.layout();
+    REQUIRE(trace_module.valid());
+    const gfx::DescriptorSetLayoutHandle set_layout = bindless.layout();
     gfx::ComputePipeline trace_pipeline;
-    REQUIRE(gfx::create_compute_pipeline(device, trace_module, "trace_main",
-                                         std::span<const VkDescriptorSetLayout>(&set_layout, 1),
-                                         sizeof(u64), trace_pipeline, &error));
+    REQUIRE(gfx::create_compute_pipeline(
+        device, trace_module, "trace_main",
+        std::span<const gfx::DescriptorSetLayoutHandle>(&set_layout, 1), sizeof(u64),
+        trace_pipeline, &error));
     graph.reset();
     import_all();
     graph.add_pass(
         "trace", gfx::PassKind::Compute,
         [&](gfx::PassBuilder& b) { b.write(rg_vis[2], gfx::Access::ComputeWrite); },
-        [&](VkCommandBuffer cb, gfx::RenderGraph&) {
-          vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, trace_pipeline.pipeline);
-          bindless.bind(cb, VK_PIPELINE_BIND_POINT_COMPUTE);
-          vkCmdPushConstants(cb, trace_pipeline.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(u64),
-                             &ray_address);
-          vkCmdDispatch(cb, gfx::ray_visibility_group_count(k_w),
-                        gfx::ray_visibility_group_count(k_h), 1);
+        [&](gfx::CommandList cb, gfx::RenderGraph&) {
+          cb.bind_pipeline(gfx::BindPoint::Compute, trace_pipeline.pipeline);
+          bindless.bind(cb, gfx::BindPoint::Compute);
+          cb.push_constants(trace_pipeline.layout, gfx::ShaderStage::Compute, 0, sizeof(u64),
+                            &ray_address);
+          cb.dispatch(gfx::ray_visibility_group_count(k_w), gfx::ray_visibility_group_count(k_h),
+                      1);
         });
     graph.add_pass(
         "readback rt", gfx::PassKind::Transfer,
@@ -839,9 +835,9 @@ TEST_CASE("scene: the pair cull, the two rasterizers, ray tracing, and occlusion
           b.read(rg_vis[2], gfx::Access::TransferRead);
           b.write(rg_host, gfx::Access::TransferWrite);
         },
-        [&](VkCommandBuffer cb, gfx::RenderGraph&) {
-          const VkBufferCopy copy{0, host_vis_offset[2], vis_bytes};
-          vkCmdCopyBuffer(cb, vis[2].buffer, host.buffer, 1, &copy);
+        [&](gfx::CommandList cb, gfx::RenderGraph&) {
+          const gfx::BufferCopy copy{0, host_vis_offset[2], vis_bytes};
+          cb.copy_buffer(vis[2].buffer, host.buffer, copy);
         });
     REQUIRE_MESSAGE(graph.compile(&error), error);
     run_frame();
@@ -925,8 +921,8 @@ TEST_CASE("scene: the pair cull, the two rasterizers, ray tracing, and occlusion
         graph.add_pass(
             "clear prev", gfx::PassKind::Transfer,
             [&, prev](gfx::PassBuilder& b) { b.write(rg_flags[prev], gfx::Access::TransferWrite); },
-            [&, prev](VkCommandBuffer cb, gfx::RenderGraph&) {
-              vkCmdFillBuffer(cb, flags[prev].buffer, 0, VK_WHOLE_SIZE, 0);
+            [&, prev](gfx::CommandList cb, gfx::RenderGraph&) {
+              cb.fill_buffer(flags[prev].buffer, 0, gfx::k_whole_size, 0);
             });
       }
       add_cull(1, 0);
@@ -979,8 +975,8 @@ TEST_CASE("scene: the pair cull, the two rasterizers, ray tracing, and occlusion
   }
 
   graph.reset();
-  if (mesh_pipeline != VK_NULL_HANDLE) gfx::destroy_pipeline(device, mesh_pipeline);
-  if (mesh_module != VK_NULL_HANDLE) gfx::destroy_shader_module(device, mesh_module);
+  if (mesh_pipeline.valid()) gfx::destroy_pipeline(device, mesh_pipeline);
+  if (mesh_module.valid()) gfx::destroy_shader_module(device, mesh_module);
   gfx::destroy_pipeline(device, vertex_pipeline);
   gfx::destroy_compute_pipeline(device, cull_pipeline);
   gfx::destroy_compute_pipeline(device, hiz_pipeline);

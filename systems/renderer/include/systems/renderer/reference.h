@@ -34,8 +34,9 @@
 #include <core/math/math.h>
 #include <domain/gfx/device.h>
 #include <domain/gfx/gpu_timer.h>
+#include <domain/gfx/pipeline.h>
+#include <domain/gfx/resources.h>
 #include <domain/gfx/shader_library.h>
-#include <domain/gfx/vulkan.h>
 #include <systems/renderer/gpu_scene.h>
 #include <systems/renderer/scene_renderer.h>
 #include <systems/renderer/view_set.h>

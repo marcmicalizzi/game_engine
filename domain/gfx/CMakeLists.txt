@@ -16,17 +16,30 @@ engine_shaders(NAME gfx SOURCES shaders/cluster_mesh.slang shaders/cluster_cull.
                              shaders/path_trace.slang)
 engine_module(NAME gfx LAYER domain
   DEPS base containers memory hash json log math platform schemas io
-  EXTERNAL_DEPS volk::volk GPUOpen::VulkanMemoryAllocator
   SOURCES src/adapter.cpp src/device.cpp src/device_caps.cpp src/requirements.cpp src/vma.cpp
-          src/frame.cpp src/render_graph.cpp
+          src/frame.cpp src/render_graph.cpp src/commands.cpp src/rhi_vulkan.cpp
           src/bindless.cpp src/swapchain.cpp src/capture.cpp src/shader_library.cpp
           src/gpu_timer.cpp src/acceleration.cpp src/cluster_acceleration.cpp)
 target_link_libraries(engine_gfx PUBLIC engine_shaders_gfx)
+
+# The Vulkan backend (docs/subsystems/gfx.md, "The RHI surface and the backend surface"). The
+# Vulkan headers, volk and VMA are *not* on engine_gfx's public include path: its public headers
+# name no Vulkan type, and a module that includes them compiles without ever seeing vulkan_core.h.
+# `engine::gfx_vulkan` carries them instead, and only what owns a device, a swapchain or a surface
+# links it — gfx itself, its tests, and engine-view, which presents. So the backend-facing header
+# set (include/domain/gfx/backend/vulkan/) is confined by the build as well as by the lint
+# (`vulkan-backend-include` in tools/lint.ps1): anything else that includes it fails to find
+# volk.h. engine_gfx links it PRIVATE, which for a static library still hands volk's library to
+# every executable that links gfx (as LINK_ONLY) without handing over its headers.
+add_library(engine_gfx_vulkan INTERFACE)
+add_library(engine::gfx_vulkan ALIAS engine_gfx_vulkan)
+target_link_libraries(engine_gfx_vulkan INTERFACE volk::volk GPUOpen::VulkanMemoryAllocator)
 # Third-party headers: the engine's warning policy applies to engine code only.
-target_include_directories(engine_gfx SYSTEM PUBLIC
+target_include_directories(engine_gfx_vulkan SYSTEM INTERFACE
   $<TARGET_PROPERTY:Vulkan::Headers,INTERFACE_INCLUDE_DIRECTORIES>
   $<TARGET_PROPERTY:volk,INTERFACE_INCLUDE_DIRECTORIES>
   $<TARGET_PROPERTY:VulkanMemoryAllocator,INTERFACE_INCLUDE_DIRECTORIES>)
+target_link_libraries(engine_gfx PRIVATE engine_gfx_vulkan)
 
 engine_module_tests(NAME gfx
   SOURCES tests/adapter_tests.cpp tests/device_tests.cpp tests/requirements_tests.cpp
@@ -57,7 +70,9 @@ if(TARGET engine_gfx_tests)
     ENGINE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
   # engine::anim is the CPU reference the skinning test holds `deform.slang` to; engine::assets
   # imports the morph samples for the chain's real-file case. Tests only: gfx itself reads neither.
+  # engine::gfx_vulkan: the RHI's own tests reach behind it through the backend set, as its
+  # sources do (descriptor sets, raw barriers, image copies the RHI does not wrap).
   target_link_libraries(engine_gfx_tests PRIVATE engine_shaders_gfx_tests engine::geometry
                                                  engine::anim engine::assets engine::window
-                                                 engine::image)
+                                                 engine::image engine::gfx_vulkan)
 endif()

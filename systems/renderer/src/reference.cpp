@@ -14,9 +14,9 @@ namespace engine::renderer {
 
 namespace {
 
-constexpr VkBufferUsageFlags k_address =
-    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
-constexpr VkBufferUsageFlags k_readable = k_address | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+constexpr gfx::BufferUsage k_address =
+    gfx::BufferUsage::Storage | gfx::BufferUsage::ShaderDeviceAddress;
+constexpr gfx::BufferUsage k_readable = k_address | gfx::BufferUsage::TransferSrc;
 
 // Copies a device buffer into host memory through a staging buffer and a blocking submission.
 // A reference render is not a frame path — it is minutes of dispatches followed by two
@@ -24,13 +24,13 @@ constexpr VkBufferUsageFlags k_readable = k_address | VK_BUFFER_USAGE_TRANSFER_S
 bool read_buffer(const gfx::Device& device, const gfx::BufferResource& source, u64 bytes,
                  Vector<u8>& out, std::string* error) {
   gfx::BufferResource staging;
-  if (!gfx::create_buffer(device, bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, staging, error))
+  if (!gfx::create_buffer(device, bytes, gfx::BufferUsage::TransferDst, true, staging, error))
     return false;
   const bool ok = gfx::submit_immediate(
       device,
-      [&](VkCommandBuffer cb) {
-        const VkBufferCopy copy{0, 0, bytes};
-        vkCmdCopyBuffer(cb, source.buffer, staging.buffer, 1, &copy);
+      [&](gfx::CommandList cb) {
+        const gfx::BufferCopy copy{0, 0, bytes};
+        cb.copy_buffer(source.buffer, staging.buffer, copy);
       },
       error);
   if (ok) {
@@ -124,8 +124,8 @@ bool ReferenceRenderer::create(const gfx::Device& device, GpuScene& scene, Scene
 bool ReferenceRenderer::create_pipelines(std::string* error) {
   const gfx::Shader* shader = shaders_.get("path_trace", error);
   if (shader == nullptr) return false;
-  const VkDescriptorSetLayout set_layout = scene_->bindless().layout();
-  const std::span<const VkDescriptorSetLayout> layouts(&set_layout, 1);
+  const gfx::DescriptorSetLayoutHandle set_layout = scene_->bindless().layout();
+  const std::span<const gfx::DescriptorSetLayoutHandle> layouts(&set_layout, 1);
   return gfx::create_compute_pipeline(*device_, shader->module, "path_trace_main", layouts,
                                       sizeof(u64), trace_, error) &&
          gfx::create_compute_pipeline(*device_, shader->module, "tonemap_main", layouts,
@@ -278,15 +278,14 @@ bool ReferenceRenderer::render(const Camera& camera, const ReferenceSettings& se
     std::memcpy(params_.mapped, &params, sizeof(params));
     const bool ok = gfx::submit_immediate(
         *device_,
-        [&](VkCommandBuffer cb) {
+        [&](gfx::CommandList cb) {
           timer_.begin_frame(cb, 0);  // reads the previous batch's timestamps, resets the pool
           out.trace_ms += timer_.total_ms();
-          vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, trace_.pipeline);
-          bindless.bind(cb, VK_PIPELINE_BIND_POINT_COMPUTE);
-          vkCmdPushConstants(cb, trace_.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(u64),
-                             &address);
+          cb.bind_pipeline(gfx::BindPoint::Compute, trace_.pipeline);
+          bindless.bind(cb, gfx::BindPoint::Compute);
+          cb.push_constants(trace_.layout, gfx::ShaderStage::Compute, 0, sizeof(u64), &address);
           timer_.begin(cb, "trace");
-          vkCmdDispatch(cb, groups_x, groups_y, 1);
+          cb.dispatch(groups_x, groups_y, 1);
           timer_.end(cb);
         },
         error);
@@ -301,14 +300,13 @@ bool ReferenceRenderer::render(const Camera& camera, const ReferenceSettings& se
   std::memcpy(params_.mapped, &params, sizeof(params));
   if (!gfx::submit_immediate(
           *device_,
-          [&](VkCommandBuffer cb) {
+          [&](gfx::CommandList cb) {
             timer_.begin_frame(cb, 0);  // the last trace batch's timestamps
             out.trace_ms += timer_.total_ms();
-            vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, tonemap_.pipeline);
-            bindless.bind(cb, VK_PIPELINE_BIND_POINT_COMPUTE);
-            vkCmdPushConstants(cb, tonemap_.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(u64),
-                               &address);
-            vkCmdDispatch(cb, groups_x, groups_y, 1);
+            cb.bind_pipeline(gfx::BindPoint::Compute, tonemap_.pipeline);
+            bindless.bind(cb, gfx::BindPoint::Compute);
+            cb.push_constants(tonemap_.layout, gfx::ShaderStage::Compute, 0, sizeof(u64), &address);
+            cb.dispatch(groups_x, groups_y, 1);
           },
           error)) {
     return false;

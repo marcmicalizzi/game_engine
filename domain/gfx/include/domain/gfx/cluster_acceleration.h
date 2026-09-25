@@ -61,15 +61,14 @@ struct ClusterBuildInput {
   u32 cluster_id = 0;      // reported as the cluster's ClusterID and used as its geometry index
   u32 triangle_count = 0;  // at most 256
   u32 vertex_count = 0;    // at most 256
-  VkDeviceAddress vertices = 0;
-  VkDeviceAddress indices = 0;  // u8[3 * triangle_count]
+  DeviceAddress vertices = 0;
+  DeviceAddress indices = 0;  // u8[3 * triangle_count]
   // Every cluster the picture draws is opaque. A **shadow caster** — a cluster the cone test kept
   // out of the picture but not out of the shadows (ClusterRecordParams) — is not, so a primary ray
   // that culls non-opaque geometry passes through it and a shadow ray that forces opacity stops.
   bool opaque = true;
 };
-inline constexpr u64 k_cluster_build_record_bytes =
-    64;  // one VkClusterAccelerationStructureBuildTriangleClusterInfoNV
+inline constexpr u64 k_cluster_build_record_bytes = 64;  // one triangle-cluster build record
 // Appends three bytes per packed cluster triangle (i0 | i1 << 8 | i2 << 16).
 void pack_cluster_indices(std::span<const u32> packed, Vector<u8>& out);
 // Writes the device records the build consumes, k_cluster_build_record_bytes each.
@@ -105,14 +104,14 @@ bool create_cluster_set(const Device& device, const ClusterSetLimits& limits, Cl
 // Builds one CLAS per record: `records` holds ClusterBuildInput records (see
 // write_cluster_build_records) and `count` is a device address of a u32 count, or 0 to build
 // limits.max_clusters records.
-void build_cluster_set(VkCommandBuffer commands, const ClusterSet& set, VkDeviceAddress records,
-                       VkDeviceAddress count, const BufferResource& scratch);
+void build_cluster_set(CommandList commands, const ClusterSet& set, DeviceAddress records,
+                       DeviceAddress count, const BufferResource& scratch);
 // The same command for a set created with `limits.instantiate`: `records` holds instantiate
 // records (k_cluster_instantiate_record_bytes each, see write_cluster_instantiate_records or
 // clas_records.slang's `instantiate` variant), each naming a template and the positions to
 // instantiate it with. The addresses and sizes the build writes are read exactly as a rebuild's.
-void instantiate_cluster_templates(VkCommandBuffer commands, const ClusterSet& set,
-                                   VkDeviceAddress records, VkDeviceAddress count,
+void instantiate_cluster_templates(CommandList commands, const ClusterSet& set,
+                                   DeviceAddress records, DeviceAddress count,
                                    const BufferResource& scratch);
 void destroy_cluster_set(const Device& device, ClusterSet& set) noexcept;
 
@@ -137,8 +136,8 @@ bool create_cluster_templates(const Device& device, const ClusterSetLimits& limi
 // Builds one template per record; `records` holds k_cluster_template_record_bytes each (see
 // write_cluster_template_records) and `count` is a device address of a u32 count, or 0 for
 // limits.max_clusters.
-void build_cluster_templates(VkCommandBuffer commands, const ClusterTemplateSet& set,
-                             VkDeviceAddress records, VkDeviceAddress count,
+void build_cluster_templates(CommandList commands, const ClusterTemplateSet& set,
+                             DeviceAddress records, DeviceAddress count,
                              const BufferResource& scratch);
 // **Templates at the size they are, not the size they could be.** `create_cluster_templates`
 // reserves the driver's worst case for every template, which for a scene is one worst-case
@@ -152,7 +151,7 @@ void build_cluster_templates(VkCommandBuffer commands, const ClusterTemplateSet&
 // then holds each template's address and `out.sizes` its size, as after `build_cluster_templates`.
 // The scratch it needs is allocated and freed inside, because nothing per frame shares it.
 bool create_packed_cluster_templates(const Device& device, const ClusterSetLimits& limits,
-                                     VkDeviceAddress records, ClusterTemplateSet& out,
+                                     DeviceAddress records, ClusterTemplateSet& out,
                                      std::string* error = nullptr);
 void destroy_cluster_templates(const Device& device, ClusterTemplateSet& set) noexcept;
 
@@ -167,8 +166,8 @@ void write_cluster_template_records(std::span<const ClusterBuildInput> clusters,
 struct ClusterInstantiateInput {
   u32 cluster_id = 0;
   u32 geometry_index = 0;
-  VkDeviceAddress cluster_template = 0;
-  VkDeviceAddress vertices = 0;  // float3, stride 12
+  DeviceAddress cluster_template = 0;
+  DeviceAddress vertices = 0;  // float3, stride 12
 };
 // The 32-byte instantiate record as clas_records.slang writes it, in order: u32 clusterIdOffset;
 // u32 geometryIndexOffset in 24 bits; u64 clusterTemplateAddress; then the vertex buffer as a
@@ -325,9 +324,8 @@ bool create_cluster_blas_set(const Device& device, u32 max_structures, u32 max_c
 // clas_records.slang's `ranges_main` writes them); `count` is a device address of a u32 count, or
 // 0 for `max_structures`. The records' reference counts must sum to at most `max_clusters` and
 // none may exceed `max_clusters_per_structure`.
-void build_cluster_blas_set(VkCommandBuffer commands, const ClusterBlasSet& set,
-                            VkDeviceAddress records, VkDeviceAddress count,
-                            const BufferResource& scratch);
+void build_cluster_blas_set(CommandList commands, const ClusterBlasSet& set, DeviceAddress records,
+                            DeviceAddress count, const BufferResource& scratch);
 void destroy_cluster_blas_set(const Device& device, ClusterBlasSet& set) noexcept;
 
 // A bottom-level structure over CLAS references (the addresses a ClusterSet build wrote). Built
@@ -335,9 +333,9 @@ void destroy_cluster_blas_set(const Device& device, ClusterBlasSet& set) noexcep
 // instance record can be written once.
 struct ClusterBlas {
   BufferResource data;
-  BufferResource record;        // k_cluster_blas_record_bytes; host visible
-  BufferResource destination;   // u64: the explicit destination the build is told to use
-  VkDeviceAddress address = 0;  // where the structure lives after any build (TlasInstance::blas)
+  BufferResource record;       // k_cluster_blas_record_bytes; host visible
+  BufferResource destination;  // u64: the explicit destination the build is told to use
+  DeviceAddress address = 0;   // where the structure lives after any build (TlasInstance::blas)
   u64 build_scratch_bytes = 0;
   u32 max_clusters = 0;
   u32 alignment = 0;
@@ -346,14 +344,14 @@ bool create_cluster_blas(const Device& device, u32 max_clusters, ClusterBlas& ou
                          std::string* error = nullptr);
 // Writes the record on the host (`references`: a u64 array of CLAS addresses; `count` how
 // many) and records the build.
-void build_cluster_blas(VkCommandBuffer commands, const ClusterBlas& blas,
-                        VkDeviceAddress references, u32 count, const BufferResource& scratch);
+void build_cluster_blas(CommandList commands, const ClusterBlas& blas, DeviceAddress references,
+                        u32 count, const BufferResource& scratch);
 // Records the build with whatever the record holds: for a record a shader wrote on the GPU.
 // `record_address` overrides `blas.record`, which is how a scene keeps one contiguous array of
 // bottom-level records for its instances (one shader dispatch writes them all) while every
 // instance still has its own structure.
-void build_cluster_blas_indirect(VkCommandBuffer commands, const ClusterBlas& blas,
-                                 const BufferResource& scratch, VkDeviceAddress record_address = 0);
+void build_cluster_blas_indirect(CommandList commands, const ClusterBlas& blas,
+                                 const BufferResource& scratch, DeviceAddress record_address = 0);
 void destroy_cluster_blas(const Device& device, ClusterBlas& blas) noexcept;
 
 }  // namespace engine::gfx

@@ -2,8 +2,8 @@
 // module, a descriptor set, a compute pipeline, a dispatch, and a readback.
 #include "raster_path.h"
 
+#include <domain/gfx/backend/vulkan/vulkan.h>
 #include <domain/gfx/device.h>
-#include <domain/gfx/vulkan.h>
 
 #include <doctest/doctest.h>
 
@@ -37,9 +37,9 @@ TEST_CASE("gfx: a Slang compute shader fills a buffer") {
   if (!gfx_test::open_device(device)) return;
   const gfx::Handles& h = device.handles();
 
-  VkShaderModule module =
+  gfx::ShaderModuleHandle module =
       gfx::create_shader_module(device, shaders::k_fill_spirv, shaders::k_fill_spirv_size, &error);
-  REQUIRE_MESSAGE(module != VK_NULL_HANDLE, error);
+  REQUIRE_MESSAGE(module.valid(), error);
 
   // Descriptor set layout: one storage buffer at binding 0.
   VkDescriptorSetLayoutBinding binding{};
@@ -55,7 +55,7 @@ TEST_CASE("gfx: a Slang compute shader fills a buffer") {
   REQUIRE(vkCreateDescriptorSetLayout(h.device, &layout_info, nullptr, &set_layout) == VK_SUCCESS);
 
   gfx::ComputePipeline pipeline;
-  const VkDescriptorSetLayout layouts[] = {set_layout};
+  const gfx::DescriptorSetLayoutHandle layouts[] = {gfx::vk::wrap(set_layout)};
   REQUIRE_MESSAGE(gfx::create_compute_pipeline(device, module, "fill", layouts, sizeof(FillParams),
                                                pipeline, &error),
                   error);
@@ -65,9 +65,9 @@ TEST_CASE("gfx: a Slang compute shader fills a buffer") {
   gfx::BufferResource storage;
   gfx::BufferResource readback;
   REQUIRE(gfx::create_buffer(device, bytes + 64,
-                             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                             gfx::BufferUsage::Storage | gfx::BufferUsage::TransferSrc,
                              /*host_visible=*/false, storage, &error));
-  REQUIRE(gfx::create_buffer(device, bytes + 64, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+  REQUIRE(gfx::create_buffer(device, bytes + 64, gfx::BufferUsage::TransferDst,
                              /*host_visible=*/true, readback, &error));
   std::memset(readback.mapped, 0xEE, static_cast<usize>(bytes + 64));
 
@@ -77,16 +77,16 @@ TEST_CASE("gfx: a Slang compute shader fills a buffer") {
   pool_info.maxSets = 1;
   pool_info.poolSizeCount = 1;
   pool_info.pPoolSizes = &pool_size;
-  VkDescriptorPool pool = VK_NULL_HANDLE;
+  VkDescriptorPool pool = {};
   REQUIRE(vkCreateDescriptorPool(h.device, &pool_info, nullptr, &pool) == VK_SUCCESS);
   VkDescriptorSetAllocateInfo set_info{};
   set_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
   set_info.descriptorPool = pool;
   set_info.descriptorSetCount = 1;
   set_info.pSetLayouts = &set_layout;
-  VkDescriptorSet set = VK_NULL_HANDLE;
+  VkDescriptorSet set = {};
   REQUIRE(vkAllocateDescriptorSets(h.device, &set_info, &set) == VK_SUCCESS);
-  VkDescriptorBufferInfo buffer_info{storage.buffer, 0, bytes + 64};
+  VkDescriptorBufferInfo buffer_info{gfx::vk::native(storage.buffer), 0, bytes + 64};
   VkWriteDescriptorSet write{};
   write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
   write.dstSet = set;
@@ -99,9 +99,9 @@ TEST_CASE("gfx: a Slang compute shader fills a buffer") {
   const FillParams params{k_count, 3, 1};
   REQUIRE_MESSAGE(gfx::submit_immediate(
                       device,
-                      [&](VkCommandBuffer commands) {
+                      [&](gfx::CommandList commands) {
                         // Zero the whole buffer first so untouched tail words are visible.
-                        vkCmdFillBuffer(commands, storage.buffer, 0, bytes + 64, 0);
+                        commands.fill_buffer(storage.buffer, 0, bytes + 64, 0);
                         VkMemoryBarrier2 to_compute{};
                         to_compute.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
                         to_compute.srcStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT;
@@ -112,15 +112,15 @@ TEST_CASE("gfx: a Slang compute shader fills a buffer") {
                         dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
                         dep.memoryBarrierCount = 1;
                         dep.pMemoryBarriers = &to_compute;
-                        vkCmdPipelineBarrier2(commands, &dep);
+                        vkCmdPipelineBarrier2(gfx::vk::native(commands), &dep);
 
-                        vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                          pipeline.pipeline);
-                        vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                                pipeline.layout, 0, 1, &set, 0, nullptr);
-                        vkCmdPushConstants(commands, pipeline.layout, VK_SHADER_STAGE_COMPUTE_BIT,
-                                           0, sizeof(FillParams), &params);
-                        vkCmdDispatch(commands, (k_count + 63) / 64, 1, 1);
+                        commands.bind_pipeline(gfx::BindPoint::Compute, pipeline.pipeline);
+                        vkCmdBindDescriptorSets(
+                            gfx::vk::native(commands), VK_PIPELINE_BIND_POINT_COMPUTE,
+                            gfx::vk::native(pipeline.layout), 0, 1, &set, 0, nullptr);
+                        commands.push_constants(pipeline.layout, gfx::ShaderStage::Compute, 0,
+                                                sizeof(FillParams), &params);
+                        commands.dispatch((k_count + 63) / 64, 1, 1);
 
                         VkMemoryBarrier2 to_copy{};
                         to_copy.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
@@ -129,9 +129,9 @@ TEST_CASE("gfx: a Slang compute shader fills a buffer") {
                         to_copy.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
                         to_copy.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
                         dep.pMemoryBarriers = &to_copy;
-                        vkCmdPipelineBarrier2(commands, &dep);
-                        VkBufferCopy copy{0, 0, bytes + 64};
-                        vkCmdCopyBuffer(commands, storage.buffer, readback.buffer, 1, &copy);
+                        vkCmdPipelineBarrier2(gfx::vk::native(commands), &dep);
+                        gfx::BufferCopy copy{0, 0, bytes + 64};
+                        commands.copy_buffer(storage.buffer, readback.buffer, copy);
                       },
                       &error),
                   error);

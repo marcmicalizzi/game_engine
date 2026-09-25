@@ -1,7 +1,7 @@
 #include <core/log/log.h>
 #include <domain/gfx/adapter.h>
+#include <domain/gfx/backend/vulkan/vulkan.h>
 #include <domain/gfx/requirements.h>
-#include <domain/gfx/vulkan.h>
 
 #include <algorithm>
 #include <cstring>

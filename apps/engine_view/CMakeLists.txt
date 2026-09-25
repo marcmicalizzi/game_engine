@@ -47,6 +47,10 @@ engine_app(NAME engine_view OUTPUT engine-view
   SOURCES main.cpp ${_view_interactive}
   DEPS ${_view_deps}
   E2E_TESTS ${_view_tests})
+# engine-view presents, so it is one of the few targets that see the Vulkan backend set
+# (domain/gfx/backend/vulkan/: the swapchain, the device's instance for the surface); the renderer
+# it drives does not (docs/subsystems/gfx.md, "The RHI surface and the backend surface").
+target_link_libraries(engine_engine_view PRIVATE engine::gfx_vulkan)
 
 if(TARGET engine_engine_view_tests)
   # The session fixture, its trajectory and the default map live under content/, found relative to

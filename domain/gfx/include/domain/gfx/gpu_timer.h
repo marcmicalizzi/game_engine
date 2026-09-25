@@ -17,7 +17,9 @@
 #include <core/base/macros.h>
 #include <core/base/types.h>
 #include <core/containers/vector.h>
-#include <domain/gfx/vulkan.h>
+#include <domain/gfx/commands.h>
+#include <domain/gfx/device.h>
+#include <domain/gfx/rhi.h>
 
 #include <span>
 #include <string>
@@ -43,10 +45,10 @@ class GpuTimer {
 
   // Reads the slot's previous results and resets its queries. Call right after
   // FrameContext::begin_frame() with FrameContext::slot().
-  void begin_frame(VkCommandBuffer commands, u32 slot);
+  void begin_frame(CommandList commands, u32 slot);
   // Zones nest in declaration order only (no overlap); `name` must outlive the results.
-  void begin(VkCommandBuffer commands, const char* name);
-  void end(VkCommandBuffer commands);
+  void begin(CommandList commands, const char* name);
+  void end(CommandList commands);
 
   // Zones of the most recently completed frame in the slot begin_frame() was last called with.
   std::span<const Zone> results() const noexcept { return {results_.data(), results_.size()}; }
@@ -56,7 +58,7 @@ class GpuTimer {
 
  private:
   struct Slot {
-    VkQueryPool pool = VK_NULL_HANDLE;
+    QueryPoolHandle pool;
     Vector<const char*> names;  // zones recorded in this slot's last frame
     u32 used = 0;               // queries written
   };
