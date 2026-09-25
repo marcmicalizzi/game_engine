@@ -100,6 +100,8 @@ The owner's recording, replayed offscreen at 11520×2160 with the interactive re
 
 ## What remains, and whose it is
 
+**A second cause of the terrain's patches, found the next day.** The fix above put every cluster back on *its own* material, and the terrain's material was still chosen **per cluster**, by a vote of its vertices. A coarse cluster votes over a larger patch than its children, so the borders of the ridges' rock and the basin's floor still moved by whole clusters whenever the cut changed; on this session's markers that hid in "the dunes there are one material", and the second session, flown over the basin, reported it as green and grey patches shifting with position. The terrain's colour is a map over its UVs since 2026-09-25 ([the second session](second-interactive-session-2026-09-25.md)).
+
 - **Present pacing** (the second phase of (1)): the pacing task.
 - **Coincident layers in content**: a validator row for surfaces within the grid step, and the simplifier on thin layered parts — the content pipeline's (E10's validators), not this change.
 - **Textures that were never built**: a scene whose derived-data root only engine-view has filled draws decoded textures and aliases on far assets ([Moving](#moving)); building on a miss, or saying so, is the texture follow-up's. The built path itself showed nothing here that needs a change to the resolve's sampling.

@@ -1,0 +1,77 @@
+# The second owner session, over the ashlar ruins: what it found
+
+- **Question ([09 §9.4](../plan/09-testing-profiling.md#94-benchmark-scene-corpus)):** the owner flew the desert with a hundred ruins of the ashlar kit and reported two things — (1) **the ruins look reflective instead of matte**; (2) **green and grey ground textures shift on different position thresholds**, patches of the ground changing as he moved, with the marker key pressed where he saw it. Where does each come from, and what fixes it?
+- **Date:** 2026-09-25. **Machine:** Intel i9-10980XE, 64 GB, Windows 11 Pro; **GPU:** RTX 5090 (32 GB). **The session:** 12:47 UTC, a `msvc-release` build of main at `d952a5e` (the recording's header names it, not dirty), `fly-ashlar-100.json` — the desert terrain at 2049 × 2049 over 5.12 km (seed 23, 8 m dunes, three ridges, the basin of the oasis at (0, 60)) and 100 buildings of E33's ashlar kit v2 (`kit-ashlar-cc0`, [E33](e33-hard-surface-kits.md)) — at 11520×2160 `--views surround3`, `--shadows csm`, `--start 0,5,-600 0,-4`, `view.fly.speed` 30, over main's derived-data root. **The diagnosis:** `msvc-release` builds of this change's parent (`d952a5e`) and of each fix, replaying the recording offscreen at 3840×720 `surround3` with the session's other flags over a copy of that root.
+- **Machine state:** the session's own summary — other processes at 7.5% of the CPU at the start and 24.6% at the end, the GPU 17% and 6% busy with 9.8 and 9.9 GB of its 32.6 GB held by other tenants, the GPU lock the owner's. Every result below is a picture, an id buffer or a count, which a busy machine does not change; no timing from a replay is used, and the replays ran under the GPU lock (`agent-visual`).
+- **Decision:** the terrain's colour is a map over its UVs rather than a material voted per cluster ([renderer](../subsystems/renderer.md#invariants)), with a test that holds it at the owner's own marker cameras; the ruins' cause is the resolve's sky term, not the kit, and its fix follows.
+
+## The recording
+
+`D:\workspace\game_engine_local\flythrough\interactive-2026-09-25T1226-input.jsonl` (2,368 events after its header; 16,677 ticks at 240 Hz, 69.5 s) and `interactive-2026-09-25T1226-frames.jsonl` (5,677 frames: GPU 2.24 ms median and 3.11 ms p99; the frame time bimodal, 7.19 ms median and 22.6 ms p95, which is the present-pacing item of the [first session](first-interactive-session-2026-09-24.md#1-the-stutter-near-an-asset) and not this page's). The header names the default map's hash (`95496522437046028`), so the marker is scancode 16, M, and the owner pressed it six times:
+
+| Marker | Tick | Camera | What he had just done |
+|---|---|---|---|
+| 1 | 11,413 | (−209, 26, −10), yaw −105°, pitch −11° | stopped, looking east over the basin at the ridges |
+| 2 | 12,063 | (−162, 17, 3), the same angles | flew forward with W (ticks 11,554–11,951) |
+| 3 | 12,543 | (−181, 20, −2), the same angles | backed off with S (12,274–12,432) |
+| 4 | 12,859 | (−161, 17, 3), the same angles | forward again with W (12,625–12,789), to within 0.3 m of marker 2 |
+| 5 | 14,465 | (−46, 10, 37), yaw −105°, pitch −2° | flew down to the basin's edge |
+| 6 | 14,899 | (−29, 9, 42), the same angles | forward with W (14,612–14,752) |
+
+Markers 1 to 4 are a deliberate test: back and forth along one line, stopping to press M, and coming back to marker 2's spot for marker 4. The replay of the recording flew **the session's trajectory to the bit**, hash `65e2dabaad1853d3` both times, which is what makes every picture below the one the owner saw at that tick (at a third of his resolution).
+
+## Method
+
+1. **Replay at the markers** with `--marker-captures` and `--capture-channels ids,depth,normals`: the six markers, each drawn from its own camera after eight frames there.
+2. **Replay along the moves.** A copy of the recording with its M presses replaced by presses every 10 or 20 ticks through the four moves (73 presses; `make-marker-log.ps1`, the first session's script — M moves nothing, so the copy flies the same trajectory), drawn once shaded with ids and once `--view albedo`, the base colour unlit: the only view in which the ground's colour is not also the moving point lights' and the shading's.
+3. **Change the cut, not the camera.** At each marker, `--view albedo` with `--lod 1` and with `--lod 2`: the same camera, two cuts of the LOD DAG. A colour that is a function of the ground cannot change between them except where the cut's own geometric error moves the surface under a pixel.
+4. **A kit member up close.** A scene of two members (`ashlar-section-2m-h100`, `ashlar-corner-h100`) on a small terrain and a three-marker camera path — face on, along the wall at a grazing angle, and the corner — drawn shaded and in albedo by each build.
+5. **The kit's own data.** The GLB's material records and its embedded images, read out of the binary chunk; the metallic-roughness image's channels measured over all its texels; the texture it builds into, read with `engine-content info`.
+
+Everything is under `D:\workspace\game_engine_local\flythrough\diagnosis-2026-09-25\`: `markers\` (before, terrain fix, both fixes), `lod-cut\` (where the albedo moved between the two cuts, before and after), `sheets\move-b-albedo-before-top-after-bottom.png`, `closeup\` (scene, path and captures), `helmet\`, and the scripts (`Vis.cs` and `Glb.cs` are the analysis, loaded by `vis.ps1`).
+
+## (2): the ground — a material voted per cluster
+
+**Cause.** The terrain carried four materials — sand, ridge rock (the grey), basin sand and the basin's floor (the green) — and drew each cluster with the one most of its vertices were (`terrain_majority_material`). A cluster of the LOD DAG is a patch whose area roughly doubles with each level, and a coarse cluster votes over a larger patch than its children did, so near every border the vote comes out differently at different levels. As the camera moves, the cut moves, and the borders of the rock and the green floor move with it by whole clusters: a staircase outline that re-forms at every change of the cut, which is exactly "patches shifting at position thresholds". The [first session](first-interactive-session-2026-09-24.md) found the terrain's patches came from the scene's merge scrambling the material map and fixed that; the map it fixed was still a map from *cluster* to material, which is the part this session caught.
+
+**Evidence.** The same camera, two cuts (`--lod 1` against `--lod 2`), the terrain's pixels in the albedo view:
+
+| Marker | terrain pixels | cluster changed | colour moved > 8/255, before | after |
+|---|---|---|---|---|
+| 1 | 2,312,012 | 682,919 | 80,174 (3.47%) | 247 (0.011%) |
+| 2 | 2,346,359 | 525,269 | 61,472 (2.62%) | 216 (0.009%) |
+| 3 | 2,330,537 | 919,735 | 99,226 (4.26%) | 301 (0.013%) |
+| 4 | 2,347,910 | 522,156 | 62,044 (2.64%) | 253 (0.011%) |
+| 5 | 1,948,125 | 316,193 | 79,896 (4.10%) | 375 (0.019%) |
+| 6 | 1,969,784 | 346,200 | 80,756 (4.10%) | 534 (0.027%) |
+
+Before the fix every pixel whose colour moved was on a changed cluster and none on an unchanged one: 11–25% of the pixels whose cluster changed changed colour. **The cluster columns are the same numbers after the fix** — the change moves no geometry and no cut, only where the colour comes from. Along the moves, the albedo that changed by more than 8 between consecutive captures (the camera moving 1–2 m between them, so edges move too) fell from 59,000–99,000 pixels a pair to 23,000–34,000 on average per move; the rest is the ruins' and the ridges' own edges crossing pixels, which any moving picture has. `sheets\move-b-albedo-before-top-after-bottom.png` is four consecutive captures of move B: the staircase border between sand and basin sand re-forming at every frame above, one smooth gradient below.
+
+**Other causes, ruled out.** Every pixel whose colour moved under a cut change was on a changed cluster, so it was not a texture's mip selection or a sampler's address mode (the terrain had no texture); the albedo view has no shadow in it, so not the cascades' edges; and occlusion culling does not change the picture ([renderer](../subsystems/renderer.md#invariants)), which its own test holds.
+
+**Fix.** The terrain is one material now, and its colour and roughness are two maps over its UVs, baked from the same features (`terrain_surface`: the four materials' values, blended across a band of 0.1 of the feature's weight around each threshold, ten to twenty metres on this desert; `bake_terrain_maps`, one texel per grid cell, 2048² here). Every level of the DAG keeps source vertices and their UVs, and the UV is an affine function of the ground's x and z, so a point of the ground is one colour whichever cluster draws it. The maps are PNG bytes in the terrain's images and go through the texture step like a GLB's embedded textures: mipmapped BC7, built once into the derived-data root (the bake and the PNG encode 646 ms and the texture build 410 ms for both, on a cold cache in `msvc-release`, beside other agents' work — upper bounds). `k_terrain_version` is 5, so an old entry is not found and the terrain is clustered again once (43 s for this one, the bake included). **The picture changes on purpose**: the borders are soft instead of a staircase, and they sit where the features put them rather than where a cluster's vote did (`markers\terrain-fix-*`).
+
+**The test** (`flythrough_tests.cpp`, "the ground's colour does not move when the LOD cut does") draws this session's terrain, cropped to 1.28 km at 5 m a cell, at the owner's six marker cameras from two cuts (1 and 3 pixels) at 480×270 and compares the albedo where both show the terrain. Measured: the cut changes under 8.7% of the terrain's pixels; with the per-cluster vote put back the colour moved on 1.32% of them (15% of those whose cluster changed, 2.3% at the worst camera), with the maps on 0.013% (0.15%, 0.037%). It holds the maps to under 1.5% of the changed pixels and 0.2% of the worst camera's terrain, a decade from each side. The merge test that used the terrain as its multi-material fixture now uses a glTF of two primitives, since the terrain has one material.
+
+## (1): the ruins — a mirror's sheen on rough stone
+
+**Where it was not.** The brief's three suspects, in order:
+
+- **(a) The channel mapping.** glTF packs roughness in G and metallic in B. The kit's `block_orm` goes to a **BC7** linear texture (`options_for_roles`: BC5 would have kept R and G and lost the metallic), which keeps all four channels in place; the resolve reads `mr.g` as roughness and `mr.b` as metallic and multiplies the material's factors (`sample_material_grad`, `material.slang`); the kit's materials have no `metallicFactor` and no `roughnessFactor`, so both factors are glTF's 1. The attributes test holds exactly this against the CPU reference with a texture whose G and B differ per texel. Right.
+- **(b) The kit's ORM.** The member GLBs embed the atlas's images as they are (`export_image_format='AUTO'`; the embedded `block_orm` is the atlas's file byte for byte, 2,904,083 bytes), and they are **JPEG** at quality 92, written by the atlas script with R = 1, G = roughness and B = 0. Over its 4096² texels: **R mean 0.996, G mean 0.763** (1st percentile 0.51, median 0.84, 99th 0.90), **B mean 0.004** (99th percentile 0.039, maximum 0.18). The mortar's is R 0.997, G 0.614, B 0.0035. So JPEG's chroma subsampling does leave a little metallic where roughness changes sharply, up to 18% in a few texels, but it averages to 0.4%: rough, dielectric stone. Not it.
+- **(c) The sampler and the mip chain.** The ORM builds into a full 13-level BC7 chain and is sampled with the triangle's own UV derivatives through the kit's `LINEAR_MIPMAP_LINEAR` sampler, like every other slot. Not it either, as the next experiment shows without reading the texture at all.
+
+**The experiment that settled it.** The resolve built with **roughness forced to 1 and metallic to 0** for every material, everything else unchanged: the grazing close-up keeps its sheen. Over the section member's pixels the share whose blue exceeds their red — warm stone under a warm sun only turns blue where it reflects the sky — is 13.5% as drawn, **13.1% at roughness 1**, and 6.2% with the fix below; the blue channel's mean 73.8, 73.3 and 55.9 (`closeup\captures\before-shaded-*`, `old-ambient-m0-r1-*`, `after-shaded-*`). No value in the kit's map could have made those walls matte.
+
+**Cause.** The resolve's sky term was `ambient * (albedo * (1 − metallic) + F_schlick(F0, n·v))`: the specular share of the sky weighted by Schlick's Fresnel at the view angle. That is a **mirror's** curve — it ignores roughness — and it climbs to 1 as n·v falls to 0: along a wall seen edge-on, over the chamfers and pits of a strong normal map, and at every texel whose mapped normal faces away from the camera (n·v clamped to 0 gives exactly 1). There a rough sandstone block reflected the whole sky, a white-blue sheen on the mortar and the block edges; the far sand at grazing angles got the same. A rough surface's lobe spreads over directions that mostly miss the eye, and integrated over the hemisphere it reflects a few hundredths of the environment at grazing, not all of it.
+
+**Fix.** In the resolve's sky term, in the commit after this one.
+
+**What was not changed, and why.** The kit: its ORM is not the cause, so the generator was not touched and no member regenerated. The atlas script should still write its ORM and normal maps as **PNG** — JPEG's 4:2:0 chroma subsampling puts up to 18% of metallic where roughness steps, and smears a normal map's x against its y — which is the kit author's call and costs a regeneration of every member; it is recorded here for the next kit build. A roughness view (`--view roughness`, `--view metallic`) was not added: the resolve's modes are `gfx::ResolveMode`, a `domain/gfx` public header another change is working in, and the forced-roughness build answered the question a view would have.
+
+## What remains
+
+- **Normal-map filtering into roughness.** A normal map's mip chain is renormalized, so the variance a distant texel averages away is lost rather than moved into roughness (Toksvig, LEAN); a far normal-mapped wall is smoother than its near self. It was not what the owner saw — the sheen was at every distance and at roughness 1 too — but it is the next thing a far ruin's gloss would come from, and it is the texture pipeline's (`domain/texture`, the ORM's mips reading the normal map's).
+- **The kit's JPEG maps** (above): PNG for the ORM and the normal maps at the next regeneration.
+- **The terrain's maps at 4097.** One texel a cell makes 4096² maps for the largest terrain `k_terrain_max_size` allows, 21 MiB each built; a scene that big may want a coarser map, which is a one-line change to `terrain_map_side` and a version bump.
+- **Present pacing**: still the item of the first session's page.

@@ -51,8 +51,9 @@ struct TerrainDesc {
 };
 
 // Bumped when `terrain_height` or the mesh built from it changes, so a cache entry built by an
-// older generator is never mistaken for this one's.
-inline constexpr u32 k_terrain_version = 4;
+// older generator is never mistaken for this one's. 5: one material over baked maps instead of
+// four materials voted per cluster (`terrain_surface`).
+inline constexpr u32 k_terrain_version = 5;
 inline constexpr u32 k_terrain_max_size = 4097;
 
 // The surface height at (x, z), metres. Defined everywhere, including outside the grid, so a
@@ -99,18 +100,50 @@ class TerrainSampler {
 };
 
 // How much of each feature is under (x, z), in [0, 1]: the largest ridge profile and the largest
-// basin weight. The terrain's per-cluster materials are chosen from these.
+// basin weight. The terrain's surface (`terrain_surface`) is chosen from these.
 f32 terrain_ridge_weight(const TerrainDesc& desc, f32 x, f32 z) noexcept;
 f32 terrain_basin_weight(const TerrainDesc& desc, f32 x, f32 z) noexcept;
 
 // Which of `k_terrain_materials` a point is: 0 sand, 1 rock (a ridge), 2 basin sand, 3 the
-// basin's floor.
+// basin's floor — the hard classification `terrain_surface` blends across a band around each
+// threshold.
 inline constexpr u32 k_terrain_materials = 4;
 u32 terrain_material(const TerrainDesc& desc, f32 x, f32 z) noexcept;
-// The material most of `points` (their x and z) are: what one cluster is drawn with. By vote
-// rather than at the cluster's centre, because a coarse cluster can span a ridge's foot and a
-// quarter of a kilometre of plain, and its centre then paints the plain with rock.
-u32 terrain_majority_material(const TerrainDesc& desc, std::span<const Vec3> points) noexcept;
+
+// What the ground is at (x, z): its base colour (linear) and its perceptual roughness. The four
+// materials' own values, blended across a band around each of `terrain_material`'s thresholds
+// (0.1 of the feature's weight wide, which is ten to twenty metres on the desert's ridges and
+// basin), so the ground changes from sand to rock over a stretch of ground rather than at a line.
+//
+// **Why a function of the point and not of a cluster.** Until 2026-09-25 the terrain carried the
+// four materials and drew each cluster with the one most of its vertices were. A cluster of the
+// LOD DAG is a patch whose size doubles with each level, so a coarse cluster's vote is over a
+// larger patch than its children's and comes out differently near every boundary: as the camera
+// moved and the cut changed, patches of rock and of the basin's green floor grew, shrank and
+// jumped by whole clusters — the "green and grey ground textures that shift at position
+// thresholds" of the second owner session
+// (docs/experiments/second-interactive-session-2026-09-25.md). The colour now travels in a
+// texture over the terrain's UVs (`bake_terrain_maps`), which every level interpolates from the
+// same source vertices, so the ground under a pixel is the same colour whichever cut drew it,
+// up to the cut's own geometric error.
+struct TerrainSurface {
+  Vec3 albedo{};
+  f32 roughness = 1.0f;
+};
+TerrainSurface terrain_surface(const TerrainSampler& field, f32 x, f32 z) noexcept;
+
+// The side of the terrain's material maps in texels: one texel per grid cell (`size - 1`),
+// at least one. A cell is 2.5 m on the desert's 2049 grid over 5,120 m, and the colour changes
+// over ten metres or more, so a finer map would store the same picture four times over.
+u32 terrain_map_side(const TerrainDesc& desc) noexcept;
+
+// The terrain's two material maps over its UVs (`build_terrain_mesh`: u across x, v across z,
+// both [0, 1] over the grid), `side * side` RGBA8 texels each, rows in v order and texel centres
+// at the cell centres: `base_color` is `terrain_surface`'s albedo encoded sRGB, alpha 255;
+// `metallic_roughness` is glTF's packing, R 255 (no occlusion), G the roughness, B 0 (no metal).
+// The terrain's one material samples them with factors of one and clamped edges.
+void bake_terrain_maps(const TerrainDesc& desc, u32 side, Vector<u8>& base_color,
+                       Vector<u8>& metallic_roughness);
 
 // A content hash over every field and `k_terrain_version`: the "source hash" of the terrain's
 // derived-data cache key, and what a run's summary names the terrain by.

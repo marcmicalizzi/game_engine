@@ -9,6 +9,7 @@
 #include <core/math/math.h>
 #include <domain/assets/gltf.h>
 #include <domain/gfx/device.h>
+#include <domain/texture/texture_build.h>
 #include <systems/renderer/camera_path.h>
 #include <systems/renderer/capture.h>
 #include <systems/renderer/flythrough.h>
@@ -21,8 +22,10 @@
 #include <doctest/doctest.h>
 #include <test_temp_dir.h>
 
+#include <algorithm>
 #include <bit>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -101,6 +104,96 @@ bool write_cube_glb(const std::string& path) {
       ",\"byteLength\":" + n(index_offset - normal_offset) +
       "},{\"buffer\":0,\"byteOffset\":" + n(index_offset) + ",\"byteLength\":" + n(index_bytes) +
       "}],\"buffers\":[{\"byteLength\":" + n(static_cast<u32>(bin.size())) + "}]}";
+  while (json.size() % 4 != 0)
+    json += ' ';
+  std::vector<u8> glb;
+  put_u32(glb, 0x46546c67u);  // "glTF"
+  put_u32(glb, 2u);
+  put_u32(glb, static_cast<u32>(12 + 8 + json.size() + 8 + bin.size()));
+  put_u32(glb, static_cast<u32>(json.size()));
+  put_u32(glb, 0x4e4f534au);  // "JSON"
+  glb.insert(glb.end(), json.begin(), json.end());
+  put_u32(glb, static_cast<u32>(bin.size()));
+  put_u32(glb, 0x004e4942u);  // "BIN\0"
+  glb.insert(glb.end(), bin.begin(), bin.end());
+  std::ofstream f(path, std::ios::binary);
+  if (!f.is_open()) return false;
+  f.write(reinterpret_cast<const char*>(glb.data()), static_cast<std::streamsize>(glb.size()));
+  return f.good();
+}
+
+// Two flat grids of 24 x 24 quads side by side, x < 0 and x > 0, as two primitives with a
+// material each: a mesh with a real DAG (nine or ten leaves a primitive, and the levels above
+// them) whose every cluster's material can be told from where its vertices are.
+bool write_two_material_glb(const std::string& path) {
+  constexpr u32 k_quads = 24;
+  constexpr u32 k_side = k_quads + 1;
+  constexpr u32 k_vertices = k_side * k_side;
+  constexpr u32 k_indices = k_quads * k_quads * 6;
+  std::vector<u8> bin;
+  u32 position_offset[2] = {};
+  u32 normal_offset[2] = {};
+  u32 index_offset[2] = {};
+  for (u32 p = 0; p < 2; ++p) {
+    const f32 x0 = p == 0 ? -2.05f : 0.05f;
+    position_offset[p] = static_cast<u32>(bin.size());
+    for (u32 z = 0; z < k_side; ++z) {
+      for (u32 x = 0; x < k_side; ++x) {
+        put_f32(bin, x0 + 2.0f * static_cast<f32>(x) / k_quads);
+        put_f32(bin, 0.0f);
+        put_f32(bin, -1.0f + 2.0f * static_cast<f32>(z) / k_quads);
+      }
+    }
+    normal_offset[p] = static_cast<u32>(bin.size());
+    for (u32 v = 0; v < k_vertices; ++v) {
+      put_f32(bin, 0.0f);
+      put_f32(bin, 1.0f);
+      put_f32(bin, 0.0f);
+    }
+    index_offset[p] = static_cast<u32>(bin.size());
+    for (u32 z = 0; z < k_quads; ++z) {
+      for (u32 x = 0; x < k_quads; ++x) {
+        const u32 a = z * k_side + x;
+        for (const u32 i : {a, a + k_side, a + 1, a + 1, a + k_side, a + k_side + 1})
+          put_u32(bin, i);
+      }
+    }
+  }
+  const u32 position_bytes = k_vertices * 12;
+  const u32 index_bytes = k_indices * 4;
+  std::string views;
+  std::string accessors;
+  for (u32 p = 0; p < 2; ++p) {
+    const f32 x0 = p == 0 ? -2.05f : 0.05f;
+    if (p != 0) {
+      views += ",";
+      accessors += ",";
+    }
+    views += "{\"buffer\":0,\"byteOffset\":" + n(position_offset[p]) +
+             ",\"byteLength\":" + n(position_bytes) +
+             "},{\"buffer\":0,\"byteOffset\":" + n(normal_offset[p]) +
+             ",\"byteLength\":" + n(position_bytes) +
+             "},{\"buffer\":0,\"byteOffset\":" + n(index_offset[p]) +
+             ",\"byteLength\":" + n(index_bytes) + "}";
+    accessors += "{\"bufferView\":" + n(p * 3) +
+                 ",\"componentType\":5126,\"count\":" + n(k_vertices) +
+                 ",\"type\":\"VEC3\",\"min\":[" + std::to_string(x0) + ",0,-1],\"max\":[" +
+                 std::to_string(x0 + 2.0f) + ",0,1]},{\"bufferView\":" + n(p * 3 + 1) +
+                 ",\"componentType\":5126,\"count\":" + n(k_vertices) +
+                 ",\"type\":\"VEC3\"},{\"bufferView\":" + n(p * 3 + 2) +
+                 ",\"componentType\":5125,\"count\":" + n(k_indices) + ",\"type\":\"SCALAR\"}";
+  }
+  std::string json =
+      "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,\"scenes\":[{\"nodes\":[0]}],"
+      "\"nodes\":[{\"mesh\":0}],"
+      "\"meshes\":[{\"primitives\":["
+      "{\"attributes\":{\"POSITION\":0,\"NORMAL\":1},\"indices\":2,\"material\":0},"
+      "{\"attributes\":{\"POSITION\":3,\"NORMAL\":4},\"indices\":5,\"material\":1}]}],"
+      "\"materials\":[{\"pbrMetallicRoughness\":{\"baseColorFactor\":[0.8,0.5,0.2,1]}},"
+      "{\"pbrMetallicRoughness\":{\"baseColorFactor\":[0.2,0.5,0.8,1]}}],"
+      "\"accessors\":[" +
+      accessors + "],\"bufferViews\":[" + views +
+      "],\"buffers\":[{\"byteLength\":" + n(static_cast<u32>(bin.size())) + "}]}";
   while (json.size() % 4 != 0)
     json += ' ';
   std::vector<u8> glb;
@@ -420,6 +513,70 @@ TEST_CASE("terrain: a sampler's heights are the direct function's and the mesh's
   CHECK(off_mesh == 0u);
 }
 
+TEST_CASE("terrain: the ground's maps are its surface, blended across each feature's edge") {
+  // The terrain's colour is a function of the point, baked into two maps over its UVs, and no
+  // longer a material voted per cluster (terrain.h, `terrain_surface`;
+  // docs/experiments/second-interactive-session-2026-09-25.md): well inside a feature the surface
+  // is that material's own values, across a feature's edge it changes over a band rather than at
+  // a line, and every texel of the maps is the surface at the texel's centre.
+  TerrainDesc desc;
+  desc.enabled = true;
+  desc.size = 33;
+  desc.extent = 100.0f;
+  desc.seed = 7;
+  desc.dune_height = 2.0f;
+  desc.ridges.push_back(TerrainRidge{Vec2{-50, 0}, Vec2{50, 0}, 30.0f, 20.0f, 0.0f});
+  desc.basins.push_back(TerrainBasin{Vec2{0, 60}, 25.0f, 6.0f});
+  const TerrainSampler field(desc);
+  const TerrainSurface rock = terrain_surface(field, 0.0f, 0.0f);
+  const TerrainSurface floor = terrain_surface(field, 0.0f, 60.0f);
+  const TerrainSurface sand = terrain_surface(field, 80.0f, -80.0f);
+  CHECK(near(rock.albedo, Vec3{0.47f, 0.39f, 0.32f}));
+  CHECK(rock.roughness == doctest::Approx(0.78f));
+  CHECK(near(floor.albedo, Vec3{0.36f, 0.40f, 0.22f}));
+  CHECK(floor.roughness == doctest::Approx(0.85f));
+  CHECK(near(sand.albedo, Vec3{0.84f, 0.69f, 0.47f}));
+  CHECK(sand.roughness == doctest::Approx(0.92f));
+  // From the ridge's crest out to the plain in 5 cm steps: the colour goes all the way from rock
+  // to sand, and no step moves it by more than a small part of that.
+  f32 largest_step = 0.0f;
+  TerrainSurface previous = terrain_surface(field, 0.0f, 0.0f);
+  for (u32 i = 1; i <= 400; ++i) {
+    const TerrainSurface s = terrain_surface(field, 0.0f, -0.05f * static_cast<f32>(i));
+    largest_step = std::max(largest_step, std::fabs(s.albedo.x - previous.albedo.x));
+    previous = s;
+  }
+  CHECK(near(previous.albedo, sand.albedo, 1e-3f));
+  MESSAGE("largest step of the red channel over 5 cm across the ridge's edge: " << largest_step);
+  // Of a change of 0.37, which a border would make in one step. The band is 1.4 m wide on this
+  // 20 m ridge and the smoothstep's steepest slope 1.5 times the band's mean, so about 0.02.
+  CHECK(largest_step < 0.05f);
+
+  const u32 side = terrain_map_side(desc);
+  CHECK(side == 32u);
+  Vector<u8> base_color;
+  Vector<u8> metallic_roughness;
+  bake_terrain_maps(desc, side, base_color, metallic_roughness);
+  REQUIRE(base_color.size() == side * side * 4);
+  REQUIRE(metallic_roughness.size() == side * side * 4);
+  u32 wrong = 0;
+  for (u32 row = 0; row < side; ++row) {
+    for (u32 col = 0; col < side; ++col) {
+      const f32 x = -desc.extent + 2.0f * desc.extent * (static_cast<f32>(col) + 0.5f) / side;
+      const f32 z = -desc.extent + 2.0f * desc.extent * (static_cast<f32>(row) + 0.5f) / side;
+      const TerrainSurface s = terrain_surface(field, x, z);
+      const u32 o = (row * side + col) * 4;
+      wrong += base_color[o] != texture::linear_to_srgb8(s.albedo.x) ? 1u : 0u;
+      wrong += base_color[o + 2] != texture::linear_to_srgb8(s.albedo.z) ? 1u : 0u;
+      wrong += base_color[o + 3] != 255 ? 1u : 0u;
+      wrong += metallic_roughness[o] != 255 ? 1u : 0u;
+      wrong += metallic_roughness[o + 1] != static_cast<u8>(s.roughness * 255.0f + 0.5f) ? 1u : 0u;
+      wrong += metallic_roughness[o + 2] != 0 ? 1u : 0u;
+    }
+  }
+  CHECK(wrong == 0u);
+}
+
 TEST_CASE(
     "scene file: the oldest spelling reads as it did; the new one grounds, scatters and fits") {
   const test::TempDir tmp("engine_renderer_scene_file");
@@ -618,45 +775,69 @@ TEST_CASE("flythrough: a terrain comes back from its cache entry as the terrain 
   CHECK(std::memcmp(first.lod.mesh.vertices.data(), second.lod.mesh.vertices.data(),
                     first.lod.mesh.vertices.size() * sizeof(Vec3)) == 0);
   CHECK(first.sources[terrain].part_of_cluster == second.sources[terrain].part_of_cluster);
-  CHECK(second.sources[terrain].data.materials.size() == k_terrain_materials);
+  // One material over the two baked maps, the images carried in the entry with their texture
+  // records, so a hit samples the same maps the miss built.
+  const SourceMesh& hit = second.sources[terrain];
+  REQUIRE(hit.data.materials.size() == 1);
+  CHECK(hit.data.materials[0].base_color_image == 0);
+  CHECK(hit.data.materials[0].metallic_roughness_image == 1);
+  REQUIRE(hit.data.images.size() == 2);
+  CHECK(hit.data.images[0].bytes == first.sources[terrain].data.images[0].bytes);
+  CHECK(hit.data.images[1].bytes == first.sources[terrain].data.images[1].bytes);
+  CHECK(hit.textures.size() == 2);
 }
 
 TEST_CASE("scene: every cluster keeps its own material through the scene's merge") {
-  // `merge_cluster_meshes` puts each mesh's leaves first, and a mesh that arrives in pages — the
-  // terrain here, and every glTF and container that goes through the cache — arrives leaves last,
-  // so the merge reorders it. Until 2026-09-24 the per-cluster material map was not reordered with
-  // it and clusters drew with other clusters' materials: patches of rock on the dunes and of metal
-  // on the FlightHelmet's leather, changing whenever the LOD cut moved
-  // (docs/experiments/first-interactive-session-2026-09-24.md). The terrain's material is a
-  // function of a cluster's own vertices, so every one of its clusters can be checked, and on
-  // both a cache miss and a hit.
+  // `merge_cluster_meshes` puts each mesh's leaves first, and a mesh that arrives in pages — every
+  // glTF and container that goes through the cache — arrives leaves last, so the merge reorders
+  // it. Until 2026-09-24 the per-cluster material map was not reordered with it and clusters drew
+  // with other clusters' materials: patches of rock on the dunes and of metal on the
+  // FlightHelmet's leather, changing whenever the LOD cut moved
+  // (docs/experiments/first-interactive-session-2026-09-24.md). The fixture is a glTF of two
+  // primitives side by side, so every cluster's material is known from where its vertices are,
+  // and it is checked on both a cache miss and a hit. (The terrain was this test's fixture until
+  // 2026-09-25, when its four per-cluster materials became one material over baked maps.)
   World world;
   REQUIRE_MESSAGE(world.write(), world.error);
+  const std::string two = slashes(world.tmp.native() / "two.glb");
+  REQUIRE(write_two_material_glb(two));
+  SceneDesc desc;
+  desc.ddc = world.desc.ddc;
+  desc.meshes.push_back(slashes(world.tmp.native() / "cube.glb"));
+  desc.meshes.push_back(two);
+  desc.instances.push_back(SceneInstance{0, Transform3{}});
+  desc.instances.push_back(SceneInstance{1, Transform3{}});
   for (u32 pass = 0; pass < 2; ++pass) {
     SceneData data;
-    REQUIRE_MESSAGE(load_scene(world.desc, data, world.error), world.error);
-    REQUIRE(data.parts.size() == 2);  // the cube and the terrain: the merge runs
-    const u32 terrain = data.parts.size() - 1;
-    const geometry::ClusterMeshPart& part = data.parts[terrain];
-    const SourceMesh& source = data.sources[terrain];
+    REQUIRE_MESSAGE(load_scene(desc, data, world.error), world.error);
+    REQUIRE(data.parts.size() == 2);  // the cube and the two grids: the merge runs
+    const geometry::ClusterMeshPart& part = data.parts[1];
+    const SourceMesh& source = data.sources[1];
     CAPTURE(std::string(source.cache));
+    CHECK(std::string(source.cache) == (pass == 0 ? "miss" : "hit"));
     REQUIRE(source.part_of_cluster.size() == part.cluster_count);
+    REQUIRE(source.part_material.size() == 2);
     // The merge did reorder it: its run starts with its leaves, and the container's does not.
     CHECK(data.lod.lod[part.first_cluster].level == 0);
     u32 wrong = 0;
-    u32 rock = 0;
+    u32 second = 0;
+    u32 above_leaves = 0;
     for (u32 i = 0; i < part.cluster_count; ++i) {
       const geometry::ClusterDesc& c = data.lod.mesh.clusters[part.first_cluster + i];
-      const u32 expected = terrain_majority_material(
-          world.desc.terrain,
-          std::span<const Vec3>(data.lod.mesh.vertices.data() + c.vertex_offset, c.vertex_count));
-      wrong += source.part_of_cluster[i] != expected ? 1u : 0u;
-      rock += expected == 1u ? 1u : 0u;
+      f32 x = 0.0f;
+      for (u32 v = 0; v < c.vertex_count; ++v)
+        x += data.lod.mesh.vertices[c.vertex_offset + v].x;
+      const i32 expected = x > 0.0f ? 1 : 0;
+      wrong += source.part_material[source.part_of_cluster[i]] != expected ? 1u : 0u;
+      second += expected == 1 ? 1u : 0u;
+      above_leaves += data.lod.lod[part.first_cluster + i].level > 0 ? 1u : 0u;
     }
-    MESSAGE("terrain clusters: " << part.cluster_count << ", rock " << rock << ", wrong " << wrong);
-    // More than one material, or the check would prove nothing.
-    CHECK(rock > 0);
-    CHECK(rock < part.cluster_count);
+    MESSAGE("clusters: " << part.cluster_count << ", second material " << second
+                         << ", above the leaves " << above_leaves << ", wrong " << wrong);
+    // Both materials and more than one level, or the check would prove nothing.
+    CHECK(second > 0);
+    CHECK(second < part.cluster_count);
+    CHECK(above_leaves > 0);
     CHECK(wrong == 0);
   }
 }
@@ -789,4 +970,143 @@ TEST_CASE("flythrough: occlusion culling changes no pixel on the path, and culls
   // into view: culled while hidden, drawn without occlusion culling, and drawn at the end.
   CHECK(hidden_with < hidden_without);
   CHECK(cubes_last > 0);
+}
+
+namespace {
+
+// The owner's terrain of the second session (fly-ashlar-100.json: seed 23, 8 m dunes, three
+// ridges and the basin at the oasis) cropped to 1.28 km at 5 m a cell, which keeps the basin,
+// the near ridge and the ground every marker looked at while building in a second, and the six
+// cameras he pressed the marker key at, read from the recording's trajectory (tick 11,413 to
+// 14,899; position, yaw and pitch in the fly camera's conventions, apps.md).
+constexpr const char* k_basin_scene_json = R"({
+  "format": "engine.scene.v1",
+  "name": "basin-crop",
+  "terrain": {
+    "size": 257, "extent": 640, "seed": 23, "dune_height": 8, "dune_wavelength": 110,
+    "ridges": [
+      {"from": [-2200, 420], "to": [-100, 330], "height": 75, "width": 150, "roughness": 0.18},
+      {"from": [100, 330], "to": [2200, 460], "height": 70, "width": 150, "roughness": 0.18},
+      {"from": [-700, -260], "to": [520, -340], "height": 55, "width": 110, "roughness": 0.2}],
+    "basins": [{"center": [0, 60], "radius": 200, "depth": 9}]
+  }
+})";
+
+struct MarkerCamera {
+  Vec3 position;
+  f32 yaw;
+  f32 pitch;
+};
+
+constexpr MarkerCamera k_owner_markers[6] = {
+    {{-209.26375f, 26.024311f, -9.5677338f}, -1.8348248f, -0.18861327f},
+    {{-162.20723f, 16.719624f, 3.1532950f}, -1.8348248f, -0.18861327f},
+    {{-180.93501f, 20.422749f, -1.9094846f}, -1.8348248f, -0.18861327f},
+    {{-161.49605f, 16.578999f, 3.3455529f}, -1.8348248f, -0.18861327f},
+    {{-45.882092f, 9.8684425f, 37.036621f}, -1.8392248f, -0.036813259f},
+    {{-29.020290f, 9.2243690f, 41.674911f}, -1.8392248f, -0.036813259f},
+};
+
+// The fly camera's orientation (yaw about +y, pitch about the right axis, forward -z at zero) as
+// the renderer's position-and-target camera.
+Camera marker_camera(const MarkerCamera& m) {
+  Camera camera;
+  camera.position = m.position;
+  const Vec3 forward{-std::sin(m.yaw) * std::cos(m.pitch), std::sin(m.pitch),
+                     -std::cos(m.yaw) * std::cos(m.pitch)};
+  camera.target = m.position + forward * 100.0f;
+  camera.znear = 0.05f;
+  return camera;
+}
+
+}  // namespace
+
+TEST_CASE("terrain: the ground's colour does not move when the LOD cut does") {
+  // The second owner session (docs/experiments/second-interactive-session-2026-09-25.md): "green
+  // and grey ground textures shift on different position thresholds". The terrain drew each
+  // cluster with the material most of its vertices were, and a coarser cluster votes over a
+  // larger patch, so the borders of the ridge's rock and the basin's green floor moved by whole
+  // clusters whenever the cut changed. Its colour is now a map over its UVs, which every level
+  // interpolates from the same source vertices, so a cut change may move the ground's colour
+  // only as far as it moves the ground: the cluster LOD's declared error, a few pixels.
+  //
+  // At each of the owner's marker cameras the unlit albedo is drawn twice, from the cut of a
+  // 1-pixel error threshold and of a 3-pixel one, and compared pixel by pixel where both frames
+  // show the terrain. The cut must really change (else the case proves nothing), and the colour
+  // may move by more than 8 of 255 only where the cut's own error moves the surface across a
+  // blend — a sliver of the picture, against the patches the per-cluster materials gave.
+  //
+  // Measured on 2026-09-25 (RTX 5090): the cut changes under 8.7% of the terrain's pixels over
+  // the six cameras. With the per-cluster vote put back, the colour moved on 1.32% of them —
+  // 15% of the pixels whose cluster changed, 2.3% of the worst camera's terrain; with the maps,
+  // on 0.013% — 0.15% of those whose cluster changed, 0.037% of the worst camera's. The bounds
+  // sit a decade from each side.
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("renderer unavailable here: " << gpu.why);
+    return;
+  }
+  const test::TempDir tmp("engine_renderer_terrain_colour");
+  const std::string scene_file = slashes(tmp.native() / "scene.json");
+  REQUIRE(write_text(scene_file, k_basin_scene_json));
+  SceneDesc desc;
+  std::string error;
+  REQUIRE_MESSAGE(read_scene_file(scene_file, desc, error), error);
+  desc.ddc = slashes(tmp.native() / "ddc");
+  RenderSettings settings;
+  settings.shadows = ShadowMode::Off;
+  constexpr u32 k_width = 480;
+  constexpr u32 k_height = 270;
+  Rig rig;
+  REQUIRE_MESSAGE(rig.build(gpu.device, desc, settings, k_width, k_height), rig.error);
+  CaptureChannels channels;
+  channels.ids = true;
+  constexpr u32 k_empty = 0xFFFFFFFFu;
+  u64 terrain_pixels = 0;
+  u64 cut_changed = 0;
+  u64 colour_moved = 0;
+  f64 worst_marker = 0.0;
+  for (u32 m = 0; m < 6; ++m) {
+    CapturedFrame shot[2];
+    const f32 thresholds[2] = {1.0f, 3.0f};
+    for (u32 t = 0; t < 2; ++t) {
+      FrameDesc frame;
+      frame.camera = marker_camera(k_owner_markers[m]);
+      frame.frame_index = 0;
+      frame.view_mode = static_cast<u32>(gfx::ResolveMode::Albedo);
+      frame.lod_px = thresholds[t];
+      REQUIRE_MESSAGE(rig.renderer.capture(frame, channels, shot[t], &error), error);
+    }
+    u64 covered = 0;
+    u64 changed = 0;
+    u64 moved = 0;
+    for (u32 p = 0; p < k_width * k_height; ++p) {
+      if (shot[0].ids[p * k_id_words] == k_empty || shot[1].ids[p * k_id_words] == k_empty)
+        continue;
+      ++covered;
+      changed += shot[0].ids[p * k_id_words + 1] != shot[1].ids[p * k_id_words + 1] ? 1u : 0u;
+      i32 largest = 0;
+      for (u32 c = 0; c < 3; ++c) {
+        largest = std::max(largest, std::abs(static_cast<i32>(shot[0].color[p * 4 + c]) -
+                                             static_cast<i32>(shot[1].color[p * 4 + c])));
+      }
+      moved += largest > 8 ? 1u : 0u;
+    }
+    MESSAGE("marker " << m + 1 << ": " << covered << " terrain pixels, the cluster changed under "
+                      << changed << ", the colour moved by more than 8 on " << moved);
+    terrain_pixels += covered;
+    cut_changed += changed;
+    colour_moved += moved;
+    if (covered > 0)
+      worst_marker = std::max(worst_marker, static_cast<f64>(moved) / static_cast<f64>(covered));
+  }
+  REQUIRE(terrain_pixels > 0);
+  const f64 changed_share = static_cast<f64>(cut_changed) / static_cast<f64>(terrain_pixels);
+  const f64 moved_share = static_cast<f64>(colour_moved) / static_cast<f64>(terrain_pixels);
+  MESSAGE("all six: the cut changed under " << changed_share * 100.0 << "% of the terrain, the "
+                                            << "colour moved on " << moved_share * 100.0
+                                            << "% (worst marker " << worst_marker * 100.0 << "%)");
+  CHECK(changed_share > 0.04);  // the two thresholds really are two cuts
+  CHECK(static_cast<f64>(colour_moved) / static_cast<f64>(cut_changed) < 0.015);
+  CHECK(worst_marker < 0.002);
 }

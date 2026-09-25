@@ -1,4 +1,5 @@
 #include <core/hash/hash.h>
+#include <domain/texture/texture_build.h>
 #include <systems/renderer/terrain.h>
 
 #include <algorithm>
@@ -201,15 +202,79 @@ u32 terrain_material(const TerrainDesc& desc, f32 x, f32 z) noexcept {
   return material_at(TerrainSampler(desc), x, z);
 }
 
-u32 terrain_majority_material(const TerrainDesc& desc, std::span<const Vec3> points) noexcept {
+namespace {
+
+// The desert's four materials, linear base colour and perceptual roughness, in
+// `terrain_material`'s order. They were four file materials until 2026-09-25 and are the same
+// values now that they are blended into one map.
+constexpr f32 k_surfaces[k_terrain_materials][4] = {
+    {0.84f, 0.69f, 0.47f, 0.92f},  // sand
+    {0.47f, 0.39f, 0.32f, 0.78f},  // ridge rock
+    {0.62f, 0.52f, 0.36f, 0.95f},  // basin sand
+    {0.36f, 0.40f, 0.22f, 0.85f},  // the basin's floor
+};
+
+// Half the width of the band a threshold of `material_at` is blended across, in the feature's
+// weight: the blend is exactly half-way at the threshold, so the hard classification is still
+// what the map says on either side of it.
+constexpr f32 k_surface_band = 0.05f;
+
+f32 band(f32 threshold, f32 weight) noexcept {
+  return smoothstep(threshold - k_surface_band, threshold + k_surface_band, weight);
+}
+
+TerrainSurface mix(TerrainSurface a, u32 material, f32 t) noexcept {
+  const f32* s = k_surfaces[material];
+  a.albedo = Vec3{a.albedo.x + (s[0] - a.albedo.x) * t, a.albedo.y + (s[1] - a.albedo.y) * t,
+                  a.albedo.z + (s[2] - a.albedo.z) * t};
+  a.roughness += (s[3] - a.roughness) * t;
+  return a;
+}
+
+u8 unorm8(f32 v) noexcept { return static_cast<u8>(std::clamp(v, 0.0f, 1.0f) * 255.0f + 0.5f); }
+
+}  // namespace
+
+// The same order of precedence as `material_at`: a basin over everything, a ridge over sand.
+TerrainSurface terrain_surface(const TerrainSampler& field, f32 x, f32 z) noexcept {
+  const f32 basin = field.basin_weight(x, z);
+  const f32 ridge = field.ridge_weight(x, z);
+  TerrainSurface s;
+  s.albedo = Vec3{k_surfaces[0][0], k_surfaces[0][1], k_surfaces[0][2]};
+  s.roughness = k_surfaces[0][3];
+  s = mix(s, 1, band(0.3f, ridge));
+  s = mix(s, 2, band(0.15f, basin));
+  return mix(s, 3, band(0.55f, basin));
+}
+
+u32 terrain_map_side(const TerrainDesc& desc) noexcept { return std::max(desc.size, 2u) - 1u; }
+
+void bake_terrain_maps(const TerrainDesc& desc, u32 side, Vector<u8>& base_color,
+                       Vector<u8>& metallic_roughness) {
+  // At most 4,096 a side (k_terrain_max_size - 1), so every offset below fits in 32 bits.
   const TerrainSampler field(desc);
-  u32 votes[k_terrain_materials] = {};
-  for (const Vec3& p : points)
-    ++votes[material_at(field, p.x, p.z)];
-  u32 best = 0;
-  for (u32 m = 1; m < k_terrain_materials; ++m)
-    best = votes[m] > votes[best] ? m : best;
-  return best;
+  const u32 texels = side * side;
+  base_color.resize(texels * 4);
+  metallic_roughness.resize(texels * 4);
+  const f32 extent = desc.extent;
+  for (u32 row = 0; row < side; ++row) {
+    const f32 v = (static_cast<f32>(row) + 0.5f) / static_cast<f32>(side);
+    const f32 z = -extent + 2.0f * extent * v;
+    for (u32 col = 0; col < side; ++col) {
+      const f32 u = (static_cast<f32>(col) + 0.5f) / static_cast<f32>(side);
+      const f32 x = -extent + 2.0f * extent * u;
+      const TerrainSurface s = terrain_surface(field, x, z);
+      const u32 o = (row * side + col) * 4;
+      base_color[o + 0] = texture::linear_to_srgb8(s.albedo.x);
+      base_color[o + 1] = texture::linear_to_srgb8(s.albedo.y);
+      base_color[o + 2] = texture::linear_to_srgb8(s.albedo.z);
+      base_color[o + 3] = 255;
+      metallic_roughness[o + 0] = 255;
+      metallic_roughness[o + 1] = unorm8(s.roughness);
+      metallic_roughness[o + 2] = 0;
+      metallic_roughness[o + 3] = 255;
+    }
+  }
 }
 
 u64 terrain_hash(const TerrainDesc& desc) noexcept {

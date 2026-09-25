@@ -388,38 +388,57 @@ bool load_terrain(const SceneDesc& desc, SourceMesh& out, geometry::ClusterLodMe
     ENGINE_LOG_WARN(log_renderer, "cluster pages not built", log::field("mesh", "terrain"),
                     log::field("error", page_error));
   }
-  // The materials, picked per cluster after the layout has renumbered them, by a vote of the
-  // cluster's own vertices: a cluster is one material, so a border between sand and rock is a
-  // cluster edge, and a coarse cluster that spans a ridge's foot and a stretch of plain is sand.
-  constexpr f32 k_colours[k_terrain_materials][4] = {
-      {0.84f, 0.69f, 0.47f, 0.92f},  // sand: albedo and roughness
-      {0.47f, 0.39f, 0.32f, 0.78f},  // ridge rock
-      {0.62f, 0.52f, 0.36f, 0.95f},  // basin sand
-      {0.36f, 0.40f, 0.22f, 0.85f},  // the basin's floor
-  };
-  constexpr const char* k_names[k_terrain_materials] = {"sand", "rock", "basin", "floor"};
-  for (u32 m = 0; m < k_terrain_materials; ++m) {
+  // One material for the whole ground, its colour and roughness in two maps over the terrain's
+  // UVs (`bake_terrain_maps`). Every LOD level keeps source vertices and their UVs, so the colour
+  // at a point of the ground is the same whichever cluster draws it; until 2026-09-25 the terrain
+  // had four materials voted per cluster, and a coarse cluster's vote over a larger patch moved
+  // the sand/rock/basin borders by whole clusters whenever the cut changed (terrain.h,
+  // `terrain_surface`). The maps travel as PNG bytes in the mesh's images — the road a GLB's
+  // embedded textures take — so the cache entry carries them and the texture step builds them
+  // into mipmapped block-compressed textures beside it like any other image.
+  const i64 maps_start_ns = time::monotonic_ns();
+  {
+    const u32 side = terrain_map_side(desc.terrain);
+    Vector<u8> base_color;
+    Vector<u8> metallic_roughness;
+    bake_terrain_maps(desc.terrain, side, base_color, metallic_roughness);
+    const char* names[2] = {"terrain-base-color", "terrain-metallic-roughness"};
+    const Vector<u8>* maps[2] = {&base_color, &metallic_roughness};
+    for (u32 i = 0; i < 2; ++i) {
+      assets::ImageRef image;
+      image.name = names[i];
+      image.mime_type = "image/png";
+      if (!image::encode_png(side, side, 4, std::span<const u8>(maps[i]->data(), maps[i]->size()),
+                             image.bytes)) {
+        error = std::string("the terrain's ") + names[i] + " map could not be encoded";
+        return false;
+      }
+      out.data.images.push_back(std::move(image));
+    }
     assets::Material material;
-    material.name = k_names[m];
-    material.base_color = Vec4{k_colours[m][0], k_colours[m][1], k_colours[m][2], 1.0f};
-    material.roughness = k_colours[m][3];
+    material.name = "ground";
+    material.base_color = Vec4{1.0f, 1.0f, 1.0f, 1.0f};
+    material.roughness = 1.0f;
     material.metallic = 0.0f;
+    material.base_color_image = 0;
+    material.metallic_roughness_image = 1;
+    // The maps end at the grid's edge; repeating would blend the far edge's colour into the near.
+    for (const u32 slot : {geometry::k_slot_base_color, geometry::k_slot_metallic_roughness}) {
+      material.sampling[slot].sampler.wrap_s = geometry::TextureWrap::clamp_to_edge;
+      material.sampling[slot].sampler.wrap_t = geometry::TextureWrap::clamp_to_edge;
+    }
     out.data.materials.push_back(std::move(material));
-    out.part_material.push_back(static_cast<i32>(m));
+    out.part_material.push_back(0);
   }
-  out.part_of_cluster.resize(lod.mesh.clusters.size(), 0u);
-  for (u32 c = 0; c < lod.mesh.clusters.size(); ++c) {
-    const geometry::ClusterDesc& cluster = lod.mesh.clusters[c];
-    out.part_of_cluster[c] = terrain_majority_material(
-        desc.terrain, std::span<const Vec3>(lod.mesh.vertices.data() + cluster.vertex_offset,
-                                            cluster.vertex_count));
-  }
+  const f64 maps_ms = static_cast<f64>(time::monotonic_ns() - maps_start_ns) / 1.0e6;
+  out.part_of_cluster.assign(lod.mesh.clusters.size(), 0u);
   out.primitives = 1;
   ENGINE_LOG_INFO(log_renderer, "mesh loaded", log::field("from", "terrain"),
                   log::field("size", desc.terrain.size), log::field("extent", desc.terrain.extent),
                   log::field("triangles", lod.leaf_triangle_count),
                   log::field("clusters", lod.mesh.clusters.size()),
-                  log::field("lod_levels", lod.level_cluster_counts.size()));
+                  log::field("lod_levels", lod.level_cluster_counts.size()),
+                  log::field("maps_ms", maps_ms));
   if (!cache_path.empty() &&
       write_cluster_cache(cache_path, "", desc.ddc, out.data, out.part_material,
                           out.part_of_cluster, lod, built, out.textures)) {
