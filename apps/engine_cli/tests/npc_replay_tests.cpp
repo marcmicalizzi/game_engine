@@ -185,11 +185,11 @@ void same_parts(const Parts& a, const Parts& b) {
   }
 }
 
-// The number the three runs reach at tick 600, the same on MSVC, Clang 18 and GCC 13 — to be pinned
-// from the first run on the owner's machine (it prints it) and then checked in the Linux container.
-// Until it is pinned this check fails, on purpose: an unpinned replay proves only that three runs
-// agree with each other, not that the world has not moved.
-constexpr const char* k_pinned = "(not yet pinned)";
+// The number the three runs reach at tick 600: pinned from the first run on the owner's machine
+// (MSVC, 2026-09-25) and reproduced by Clang 18 and GCC 13 in the Linux container and by GCC 14 at
+// the v2 baseline on the server. A change to the residents' routines, the generator, the wheel, the
+// document consumer or the store moves it; re-pin only when the change is the point of the commit.
+constexpr const char* k_pinned = "53a8c6295e6d4e78";
 
 }  // namespace
 
