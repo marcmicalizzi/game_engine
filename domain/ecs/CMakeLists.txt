@@ -6,10 +6,10 @@
 # its bench, and the flecs fetch with it. The dependency pin lives in cmake/EngineEcs.cmake.
 engine_module(NAME ecs LAYER domain
   OPTIONAL CAPABILITY ecs
-  DEPS base containers ids json jobs log memory platform schema sim time
+  DEPS base containers ids json jobs log memory platform schema sim time doc
   EXTERNAL_DEPS flecs::flecs_static
   SOURCES src/sim_world.cpp src/os_api.cpp src/components.cpp src/systems.cpp
-          src/identity.cpp src/world_commands.cpp)
+          src/identity.cpp src/world_commands.cpp src/materialize.cpp src/scheduled_tick.cpp)
 
 # engine_module() has already recorded the capability as disabled and created nothing; the rest
 # of this file configures targets, so it stops here rather than guarding each one.
@@ -32,13 +32,19 @@ engine_schema_library(NAME ecs_test_types
 
 engine_module_tests(NAME ecs
   SOURCES tests/ecs_tests.cpp tests/component_tests.cpp tests/system_tests.cpp
-          tests/identity_tests.cpp tests/world_command_tests.cpp tests/size_table.cpp
-  DEPS ecs_test_types)
+          tests/identity_tests.cpp tests/world_command_tests.cpp tests/materialize_tests.cpp
+          tests/scheduled_tick_tests.cpp tests/size_table.cpp
+  DEPS ecs_test_types doc)
 
 # The E6 half that measures flecs: 10^5 entities with relationships and a hierarchy, four
 # systems a tick, worker scaling, query latency, and churn (docs/experiments/e6-ecs-store.md).
+#
+# materialize_bench.cpp is the materialization driver over the entity store's hook: 10^4 and 10^5
+# document records into a fresh world, the no-change pass after it, and a 1% change
+# (docs/subsystems/sim.md, "Performance notes").
 engine_module_bench(NAME ecs
-  SOURCES bench/ecs_bench.cpp)
+  SOURCES bench/ecs_bench.cpp bench/materialize_bench.cpp
+  DEPS ecs_test_types doc)
 # The bench reports the process working set, which is psapi's on Windows and /proc/self/statm's
 # on Linux.
 if(WIN32 AND TARGET engine_ecs_bench)

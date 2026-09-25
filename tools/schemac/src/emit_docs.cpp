@@ -63,8 +63,31 @@ std::string emit_docs(const Model& model, const SchemaFile& file) {
       std::string flags;
       if (f.transient) flags += "transient ";
       if (f.deprecated) flags += "deprecated ";
+      if (!f.unit.empty()) flags += "unit " + f.unit + " ";
       out << "| `" << f.name << "` | `" << idl_type(f.type) << "` | " << default_text(f) << " | "
           << f.since << " | " << flags << " | " << one_line(f.doc) << " |\n";
+    }
+    out << "\n";
+  }
+  for (const MaterializeDecl& m : file.materializations) {
+    out << "## materialize `" << m.record_qualified << "`\n\n";
+    if (!m.doc.empty()) out << m.doc << "\n\n";
+    out << "Parent: `" << m.parent << "`. Tiers:";
+    for (unsigned t = 0; t < 8; ++t) {
+      if ((m.tiers >> t) & 1u) out << " " << t;
+    }
+    out << ".\n\n";
+    out << "| Component field | From property | Conversion | Write-back |\n|---|---|---|---|\n";
+    for (const MaterializeRow& row : m.rows) {
+      if (row.kind == MaterializeRow::Kind::Parent) continue;
+      if (row.kind == MaterializeRow::Kind::Component) {
+        out << "| `" << row.component_qualified << "` (schema defaults) | | | |\n";
+        continue;
+      }
+      out << "| `" << row.component_qualified << "." << row.field << "` | `" << row.property
+          << "` | ";
+      if (row.convert) out << "x " << row.scale << " + " << row.offset;
+      out << " | " << (row.writeback ? "yes" : "") << " |\n";
     }
     out << "\n";
   }

@@ -128,8 +128,11 @@ bool Session::merge(const MergeParams& params, MergeResult& result, RpcError& er
   }
   doc::MergeResult merged;
   std::string message;
-  if (!doc::merge_layers(doc_.layer(static_cast<u32>(base)), doc_.layer(static_cast<u32>(ours)),
-                         doc_.layer(static_cast<u32>(theirs)), options, merged, &message)) {
+  // The const accessor: reading a layer is not an edit, and the mutable one marks the composed
+  // index (and the change feed a materialized world reads) for a rebuild.
+  const doc::Document& read = doc_;
+  if (!doc::merge_layers(read.layer(static_cast<u32>(base)), read.layer(static_cast<u32>(ours)),
+                         read.layer(static_cast<u32>(theirs)), options, merged, &message)) {
     error = make_error(codes::k_document_error, std::move(message));
     return false;
   }
@@ -155,7 +158,8 @@ bool Session::merge(const MergeParams& params, MergeResult& result, RpcError& er
   }
 
   const u32 index = static_cast<u32>(output);
-  const Vector<doc::Command> commands = doc::diff_layers(doc_.layer(index), merged.merged);
+  const Vector<doc::Command> commands =
+      doc::diff_layers(static_cast<const doc::Document&>(doc_).layer(index), merged.merged);
   doc::Attribution attribution;
   attribution.actor = "doc.merge";
   attribution.role = "merge";

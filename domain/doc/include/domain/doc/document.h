@@ -150,6 +150,52 @@ class Document {
   // Live objects, without building the list.
   u32 object_count() const noexcept;
 
+  // The two composed fields of a record that are not properties, without composing the properties
+  // `resolve` builds a map of. The defining record's type (empty when no layer defines the id) and
+  // the composed parent (the null id for a root, or for an id no layer holds).
+  std::string_view type_of(ObjectId id) const noexcept;
+  ObjectId parent_of(ObjectId id) const noexcept;
+
+  // Visits every layer's record for `id`, weakest first, as `fn(u32 layer, const ObjectRecord&)`:
+  // what `resolve` composes, for a reader that wants a few properties of many records and should
+  // not pay for a property map per record. Only the layers the index says hold the id are visited.
+  // The strongest layer that sets a property is the last one `fn` sees setting it.
+  template <class Fn>
+  void visit_records(ObjectId id, Fn&& fn) const {
+    ensure_index();
+    const IndexEntry* entry = index_.find_value(id);
+    if (entry != nullptr) for_each_record(id, *entry, fn);
+  }
+
+  // --- change feed ----------------------------------------------------------------------------
+  //
+  // Every mutation stamps the ids whose composition it changed with the document's next revision
+  // and appends them to a feed. A reader that mirrors the document — the runtime world's
+  // materializer (domain/sim/materialize.h) — keeps the revision it last saw and asks what changed
+  // since, so a record nothing touched costs it nothing: no visit, no comparison, no hook.
+  //
+  // The feed is bounded. Past twice the index's size (and at least 4,096 entries) it drops its
+  // older half, and a rebuild of the index (after the mutable `layer()` accessor, or a
+  // `remove_layer`) restamps every id and empties it, because after either the document cannot say
+  // what changed. A reader whose revision fell off the end is told so by `changed_since` returning
+  // false, and resynchronizes by comparing `revision_of` over the live set — correct, and only as
+  // expensive as the full pass it replaces.
+
+  // The document's current revision: the stamp of its latest change. 0 for a document that never
+  // changed.
+  u64 revision() const noexcept { return revision_; }
+  // The revision at which `id`'s composition last changed; 0 when no layer holds it.
+  u64 revision_of(ObjectId id) const noexcept;
+  // The ids whose composition changed after revision `since`, each once, in id order — live,
+  // deleted or gone alike, since the reader has to hear about all three. False, with `out`
+  // untouched, when the feed no longer reaches back to `since`.
+  bool changed_since(u64 since, Vector<ObjectId>& out) const;
+  // The oldest revision `changed_since` can still answer from.
+  u64 feed_floor() const noexcept {
+    ensure_index();
+    return feed_floor_;
+  }
+
   // --- composed index -----------------------------------------------------------------------
 
   // Recomputes the index from the layers. Queries do this by themselves after the mutable
@@ -208,10 +254,17 @@ class Document {
     u32 defining_layer = 0;  // strongest layer whose record carries a type
     u32 record_count = 0;    // layers holding a record for this id
     u64 layer_mask = 0;
+    u64 revision = 0;  // the change feed's stamp for this id's latest change
     bool defined = false;
     bool deleted = false;
 
     bool live() const noexcept { return defined && !deleted; }
+  };
+
+  // One change, in revision order.
+  struct FeedEntry {
+    u64 revision = 0;
+    ObjectId id;
   };
 
   void commit(Patch&& patch) { journal_.push_back(std::move(patch)); }
@@ -232,7 +285,22 @@ class Document {
   void flush_live() const;
   // Visits every layer holding a record for `id`, weakest first.
   template <class Fn>
-  void for_each_record(ObjectId id, const IndexEntry& entry, Fn&& fn) const;
+  void for_each_record(ObjectId id, const IndexEntry& entry, Fn&& fn) const {
+    const u32 count = layers_.size();
+    const u32 masked = count < 63 ? count : 63;
+    for (u32 i = 0; i < masked; ++i) {
+      if ((entry.layer_mask & (u64{1} << i)) == 0) continue;
+      if (const ObjectRecord* r = layers_[i].find(id)) fn(i, *r);
+    }
+    if (count > 63 && (entry.layer_mask & (u64{1} << 63)) != 0) {
+      for (u32 i = 63; i < count; ++i) {
+        if (const ObjectRecord* r = layers_[i].find(id)) fn(i, *r);
+      }
+    }
+  }
+  // Stamps `id` with the next revision and appends it to the feed, trimming the feed's older half
+  // when it has grown past its bound.
+  u64 stamp(ObjectId id) const;
 
   Vector<Layer> layers_;
   Vector<Patch> journal_;
@@ -246,6 +314,11 @@ class Document {
   mutable Vector<ObjectId> live_pending_;  // ids whose liveness changed since the last flush
   mutable bool index_dirty_ = false;
   HashSet<ObjectId> dirty_;
+
+  // The change feed. Mutable for the index's reason: a rebuild a const query triggers restamps.
+  mutable Vector<FeedEntry> feed_;  // revision order
+  mutable u64 revision_ = 0;
+  mutable u64 feed_floor_ = 0;  // changed_since(since) answers only for since >= this
 };
 
 // Groups commands so they commit or roll back together. Rolls back on destruction if neither

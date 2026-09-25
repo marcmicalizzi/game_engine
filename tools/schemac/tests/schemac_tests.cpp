@@ -194,6 +194,119 @@ TEST_CASE("schemac: a transient struct that is not a component is refused") {
                   "is @transient but not @kind(component)");
 }
 
+// ---- materialize (docs/plan/03-data-model.md §3.4; docs/subsystems/schema.md) ----------------
+
+namespace {
+
+// A record type and two components every materialize case below maps between.
+constexpr std::string_view k_world =
+    "struct Place @kind(component) {\n"        // 2
+    "  position: vec3 @unit(m)\n"              // 3
+    "  heading: f32 @unit(rad)\n"              // 4
+    "  label: string\n"                        // 5
+    "}\n"                                      // 6
+    "struct Tag @kind(component) { n: u8 }\n"  // 7
+    "struct Plain { x: u8 }\n"                 // 8
+    "struct Crate @kind(record) {\n"           // 9
+    "  position: vec3 @unit(cm)\n"             // 10
+    "  heading: f32 @unit(deg)\n"              // 11
+    "  label: string\n"                        // 12
+    "  seconds: f32 @unit(s)\n"                // 13
+    "  plain: f32\n"                           // 14
+    "}\n";                                     // 15
+
+std::string world(std::string_view ns, std::string_view tail) {
+  return "namespace " + std::string(ns) + "\n" + std::string(k_world) + std::string(tail);
+}
+
+}  // namespace
+
+TEST_CASE("schemac: a materialize declaration compiles to a mapping table") {
+  TempDir tmp("schemac");
+  const Run run = compile(tmp, "mapped",
+                          world("t.map",
+                                "/// Crates are placed and tagged.\n"
+                                "materialize Crate @tiers(0, 2) {\n"
+                                "  Place.position = position @writeback\n"
+                                "  Place.heading = heading\n"
+                                "  Place.label = label\n"
+                                "  Tag\n"
+                                "  parent = ChildOf\n"
+                                "}\n"));
+  INFO(run.output);
+  REQUIRE(run.exit_code == 0);
+  std::string source;
+  REQUIRE(io::read_file(io::join_path(tmp.path(), "out/src/mapped.cpp"), source) == io::Status::Ok);
+  CHECK(source.find("#include <core/schema/materialize.h>") != std::string::npos);
+  CHECK(source.find("constexpr engine::schema::MaterializeInfo Crate_materialize{") !=
+        std::string::npos);
+  // cm -> m is a scale of 0.01; deg -> rad of pi/180; the string is a plain copy.
+  CHECK(source.find("\"position\", \"position\", 0.01, 0.0") != std::string::npos);
+  CHECK(source.find("\"heading\", \"heading\", 0.017453292519943295, 0.0") != std::string::npos);
+  CHECK(source.find("MaterializeFlag::writeback") != std::string::npos);
+  CHECK(source.find("\"label\", \"label\", 1.0, 0.0, static_cast<engine::u16>(0)") !=
+        std::string::npos);
+  CHECK(source.find("MaterializeParent::ChildOf") != std::string::npos);
+  CHECK(source.find(".tiers = 5,") != std::string::npos);
+  CHECK(source.find("&::t::map::schema_detail::Tag_info") != std::string::npos);
+  CHECK(source.find("MaterializeRegistrar k_materialize_registrar") != std::string::npos);
+  std::string docs;
+  REQUIRE(io::read_file(io::join_path(tmp.path(), "out/docs/mapped.md"), docs) == io::Status::Ok);
+  CHECK(docs.find("## materialize `t.map.Crate`") != std::string::npos);
+  CHECK(docs.find("unit cm") != std::string::npos);
+}
+
+TEST_CASE("schemac: a mapping to an undeclared component is refused") {
+  TempDir tmp("schemac");
+  expect_rejected(tmp, "no_component", world("t.m1", "materialize Crate {\n  Nope.x = label\n}\n"),
+                  17, "'Nope' is not a declared component");
+  expect_rejected(tmp, "not_component",
+                  world("t.m2", "materialize Crate {\n  Plain.x = plain\n}\n"), 17,
+                  "'t.m2.Plain' is not a component (@kind(component))");
+  expect_rejected(tmp, "bare_unknown", world("t.m3", "materialize Crate {\n  Ghost\n}\n"), 17,
+                  "'Ghost' is not a declared component");
+}
+
+TEST_CASE("schemac: materialize rows are checked field by field") {
+  TempDir tmp("schemac");
+  expect_rejected(tmp, "no_record", world("t.r1", "materialize Nothing {\n}\n"), 16,
+                  "'Nothing' is not a declared struct");
+  expect_rejected(tmp, "not_record", world("t.r2", "materialize Place {\n}\n"), 16,
+                  "is not a document record type (@kind(record))");
+  expect_rejected(tmp, "no_field", world("t.r3", "materialize Crate {\n  Place.nope = label\n}\n"),
+                  17, "component 't.r3.Place' has no field 'nope'");
+  expect_rejected(tmp, "no_property",
+                  world("t.r4", "materialize Crate {\n  Place.label = nope\n}\n"), 17,
+                  "record type 't.r4.Crate' has no property 'nope'");
+  expect_rejected(tmp, "bad_types",
+                  world("t.r5", "materialize Crate {\n  Place.label = heading\n}\n"), 17,
+                  "a row joins the same type");
+  // Units: the dimension must agree, and a unit on one side only is ambiguous.
+  expect_rejected(tmp, "bad_dimension",
+                  world("t.r6", "materialize Crate {\n  Place.heading = seconds\n}\n"), 17,
+                  "a unit converts only within its dimension");
+  expect_rejected(tmp, "one_sided",
+                  world("t.r7", "materialize Crate {\n  Place.heading = plain\n}\n"), 17,
+                  "must both declare @unit, or neither");
+  // Write-back compares bytes, so a string cannot carry it.
+  expect_rejected(tmp, "bad_writeback",
+                  world("t.r8", "materialize Crate {\n  Place.label = label @writeback\n}\n"), 17,
+                  "@writeback needs a field that is its own bytes");
+  expect_rejected(
+      tmp, "twice",
+      world("t.r9", "materialize Crate {\n  Place.label = label\n  Place.label = label\n}\n"), 18,
+      "'t.r9.Place.label' is mapped twice");
+  expect_rejected(tmp, "bad_parent", world("t.ra", "materialize Crate {\n  parent = Owner\n}\n"),
+                  17, "parent is ChildOf or none");
+  expect_rejected(tmp, "dup_mapping",
+                  world("t.rb", "materialize Crate {\n}\nmaterialize Crate {\n}\n"), 18,
+                  "a record type has one materialize declaration");
+  expect_rejected(tmp, "bad_unit", "namespace t.rc\nstruct A { x: f32 @unit(furlong) }\n", 2,
+                  "unknown unit 'furlong'");
+  expect_rejected(tmp, "unit_on_text", "namespace t.rd\nstruct A { x: string @unit(m) }\n", 2,
+                  "has no number to measure");
+}
+
 TEST_CASE("schemac: usage errors exit 2") {
   platform::Process p;
   const std::string_view argv[] = {schemac_exe()};

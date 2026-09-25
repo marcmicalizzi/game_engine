@@ -9,7 +9,7 @@ namespace engine.ecs.demo
 struct Standing @version(1) @kind(component) {
   position: vec3
   wealth: i64 = 0
-  importance: f32 = 1.0
+  importance: f32 = 1.0 @unit(ratio)
   faction: u32 = 0
   /// Never serialized even though the component is persisted: the field-level marking is the
   /// narrow one, and it still has to work inside a component.
@@ -31,7 +31,39 @@ struct Label @version(1) @kind(component) {
   rank: u8 = 0
 }
 
-/// Not a component: a plain record that happens to live in the same schema file.
+/// Not a component: a plain record that happens to live in the same schema file. It has no
+/// `materialize` declaration, so it stays in the document.
 struct DemoNote @version(1) @kind(record) {
   text: string
+}
+
+// ---- materialization (domain/ecs/materialize.h) -------------------------------------------------
+
+/// A market stall: stands somewhere, is worth something, says something. Importance is authored
+/// in percent and held as a ratio, so one row converts.
+struct Stall @version(1) @kind(record) {
+  name: string
+  position: vec3
+  wealth: i64 = 100
+  importance: f32 = 100 @unit(percent)
+  sign: string = "open"
+}
+
+materialize Stall {
+  Standing.position = position @writeback
+  Standing.wealth = wealth @writeback
+  Standing.importance = importance
+  Label.text = sign
+  parent = ChildOf
+}
+
+/// A market groups stalls; it stands somewhere and carries nothing else.
+struct Market @version(1) @kind(record) {
+  name: string
+  position: vec3
+}
+
+materialize Market {
+  Standing.position = position
+  parent = ChildOf
 }

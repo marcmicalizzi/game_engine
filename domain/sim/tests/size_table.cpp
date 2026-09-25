@@ -10,6 +10,7 @@
 // a crowd crossing together makes that a real array.
 
 #include <core/base/size_table.h>
+#include <domain/sim/materialize.h>
 #include <domain/sim/scheduler.h>
 #include <domain/sim/tiers.h>
 #include <domain/sim/timing_wheel.h>
@@ -49,8 +50,19 @@ ENGINE_EXPECT_SIZE(8, 8, EntityHandle);
 // 48 and not 40: the record's entity is the `Id128` that survived the store (ADR-0028 seam 3), not
 // a `u64` whose meaning the reader had to guess. A tile's records are loaded in bulk, so this is
 // eight bytes per projection row on the reconciliation path; the price of a name that is the same
-// name in the save, the protocol and the log is worth paying once there.
-ENGINE_EXPECT_SIZE(48, 8, EntityRecord);
+// name in the save, the protocol and the log is worth paying once there. 56 and not 48: `source`,
+// the pointer to the mapping row and property values a document record carries (materialize.h).
+// One is built on the stack per record the driver hands the hooks and none is stored.
+ENGINE_EXPECT_SIZE(56, 8, EntityRecord);
 ENGINE_EXPECT_SIZE(56, 8, MaterializationHooks);
 ENGINE_EXPECT_SIZE(16, 8, TileState);
 ENGINE_EXPECT_SIZE(24, 8, TileStore);
+// The executor seam (ADR-0038): a context and three function pointers, one per world.
+ENGINE_EXPECT_SIZE(32, 8, TickExecutor);
+
+// The materialization driver (materialize.h). `RecordSource` is built per record handed to the
+// hooks; `WriteBackChange` is one per changed writable field per flush.
+ENGINE_EXPECT_SIZE(48, 8, RecordSource);
+ENGINE_EXPECT_SIZE(12, 4, MaterializeScope);
+ENGINE_EXPECT_SIZE(40, 8, MaterializeTarget);
+ENGINE_EXPECT_SIZE(56, 8, WriteBackChange);

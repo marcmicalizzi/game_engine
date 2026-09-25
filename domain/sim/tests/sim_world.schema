@@ -1,0 +1,47 @@
+// Record types, components and the declarations joining them, for the materialization driver's
+// tests (docs/subsystems/sim.md, "The driver"). The driver never sees a component's bytes — the
+// entity store's hook writes them — so what these exercise is the walk: which records are
+// candidates, in what order, with which values, and which are skipped and why.
+namespace engine.sim.test
+
+/// Where a thing is and how fast it goes.
+struct Body @version(1) @kind(component) {
+  position: vec3 @unit(m)
+  speed: f32 @unit("m/s")
+}
+
+/// What is written on it.
+struct Label @version(1) @kind(component) {
+  text: string
+}
+
+/// A crate: placed, labelled, and moving in km/h because that is what its author typed.
+struct Crate @version(1) @kind(record) {
+  name: string
+  position: vec3 @unit(m)
+  speed: f32 = 36 @unit("km/h")
+  label: string = "crate"
+}
+
+/// A shelf materializes only near an observer.
+struct Shelf @version(1) @kind(record) {
+  name: string
+  position: vec3 @unit(m)
+}
+
+/// Canon: never an entity.
+struct Fact @version(1) @kind(record) {
+  claim: string
+}
+
+materialize Crate {
+  Body.position = position @writeback
+  Body.speed = speed
+  Label.text = label
+  parent = ChildOf
+}
+
+materialize Shelf @tiers(0, 1) {
+  Body.position = position
+  parent = ChildOf
+}

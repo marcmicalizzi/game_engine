@@ -16,6 +16,12 @@ if(TARGET engine_engine_cli_tests)
     target_link_libraries(engine_engine_cli_tests PRIVATE engine::store)
     target_compile_definitions(engine_engine_cli_tests PRIVATE ENGINE_CLI_TESTS_STORE=1)
   endif()
+  # session.run_headless moves `Mover` records when the host has the kinematics capability (and so
+  # the entity store); without it the materialization report says why nothing moved, and the case
+  # that checks the report checks that instead.
+  if(TARGET engine::kinematics)
+    target_compile_definitions(engine_engine_cli_tests PRIVATE ENGINE_CLI_TESTS_KINEMATICS=1)
+  endif()
   # engine.run_tests runs the tissue validators when the host has the tissue capability; the case
   # makes its fixture with `engine-content tissue example`, which is built in the same
   # configurations. The target is declared after this file, which a generator expression and a

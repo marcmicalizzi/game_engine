@@ -11,7 +11,9 @@
 #include <domain/assets/gltf.h>
 #include <domain/ecs/identity.h>
 #include <domain/ecs/os_api.h>
+#include <domain/ecs/scheduled_tick.h>
 #include <domain/ecs/world_commands.h>
+#include <domain/sim/scheduler.h>
 #include <systems/animation/animation.h>
 
 #include <doctest/doctest.h>
@@ -539,6 +541,60 @@ TEST_CASE("animation: two runs and eight workers give bit-identical matrices") {
   REQUIRE(eight.size() == one.size());
   CHECK(std::memcmp(one.data(), one_again.data(), one.size() * sizeof(anim::JointMatrix)) == 0);
   CHECK(std::memcmp(one.data(), eight.data(), one.size() * sizeof(anim::JointMatrix)) == 0);
+}
+
+TEST_CASE("animation: the engine's scheduler ticks it in its phase, at the same step, to the bit") {
+  // ADR-0038 (proposed): `sim::SimScheduler` owns the clock and the phase order and runs each
+  // phase's flecs systems through `ecs::ScheduledTick`. The capability declared its three systems
+  // in `Systems` and did not change for it, so the output has to be the same bytes as flecs' own
+  // pipeline gives, with the playheads advanced by the scheduler's step.
+  Fixture fixture;
+  static constexpr u32 k_instances = 16;
+  const auto run = [&fixture](bool scheduled, std::vector<anim::JointMatrix>& matrices,
+                              std::vector<f32>& playheads) {
+    ecs::SimWorld sim(world_config());
+    AnimationSystem animation(fixture.library);
+    animation.install(sim);
+    std::vector<Id128> ids;
+    for (u32 i = 0; i < k_instances; ++i) {
+      const Id128 id = Id128::from_parts(0xA1, i + 1u);
+      ids.push_back(id);
+      const flecs::entity entity = ecs::create_entity(sim.world(), id);
+      REQUIRE(
+          animation.attach(entity, fixture.skeleton, (i % 2) == 0 ? fixture.walk : fixture.idle));
+      entity.try_get_mut<AnimationPlayer>()->time = static_cast<f32>(i) / 64.0f;
+    }
+    sim::SimSchedulerConfig config;
+    config.hz = k_hz;
+    sim::SimScheduler scheduler(config);
+    if (scheduled) {
+      ecs::ScheduledTick tick(sim, scheduler);
+      for (u32 step = 0; step < 20; ++step)
+        tick.step();
+      CHECK(tick.phases_run() == 20);  // one phase a tick holds flecs systems: Systems
+      CHECK(sim.tick().value == scheduler.tick().value);
+    } else {
+      for (u32 step = 0; step < 20; ++step)
+        sim.step();
+    }
+    CHECK(animation.stats().players == k_instances);
+    const std::span<const anim::JointMatrix> span = animation.joint_matrices();
+    matrices.assign(span.begin(), span.end());
+    for (const Id128& id : ids)
+      playheads.push_back(ecs::entity_for(sim.world(), id).get<AnimationPlayer>().time);
+  };
+
+  std::vector<anim::JointMatrix> pipeline_matrices, scheduled_matrices;
+  std::vector<f32> pipeline_playheads, scheduled_playheads;
+  run(false, pipeline_matrices, pipeline_playheads);
+  run(true, scheduled_matrices, scheduled_playheads);
+  REQUIRE(pipeline_matrices.size() == k_instances * 2);
+  REQUIRE(scheduled_matrices.size() == pipeline_matrices.size());
+  CHECK(std::memcmp(pipeline_matrices.data(), scheduled_matrices.data(),
+                    pipeline_matrices.size() * sizeof(anim::JointMatrix)) == 0);
+  CHECK(pipeline_playheads == scheduled_playheads);
+  // The step is unchanged: 20 steps of a 64th of a second from each instance's start, wrapped.
+  CHECK(scheduled_playheads[0] == doctest::Approx(20.0f / 64.0f));
 }
 
 TEST_CASE("animation: a host with no flecs drives the capability through Id128 alone") {

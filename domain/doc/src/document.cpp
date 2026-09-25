@@ -230,21 +230,6 @@ Document::IndexEntry Document::compose(ObjectId id) const {
   return entry;
 }
 
-template <class Fn>
-void Document::for_each_record(ObjectId id, const IndexEntry& entry, Fn&& fn) const {
-  const u32 count = layers_.size();
-  const u32 masked = count < 63 ? count : 63;
-  for (u32 i = 0; i < masked; ++i) {
-    if ((entry.layer_mask & (u64{1} << i)) == 0) continue;
-    if (const ObjectRecord* r = layers_[i].find(id)) fn(i, *r);
-  }
-  if (count > 63 && (entry.layer_mask & (u64{1} << 63)) != 0) {
-    for (u32 i = 63; i < count; ++i) {
-      if (const ObjectRecord* r = layers_[i].find(id)) fn(i, *r);
-    }
-  }
-}
-
 void Document::link_child(ObjectId parent, ObjectId id) const {
   Vector<ObjectId>& list = children_[parent];
   const auto at = std::lower_bound(list.begin(), list.end(), id);
@@ -301,8 +286,17 @@ void Document::rebuild_index() const {
   }
   index_.reserve(ids.size());
   live_.reserve(ids.size());
+  // After a rebuild the document cannot say what changed — the mutable accessor could have edited
+  // anything, and a removed layer shifted every index above it — so every id is stamped with one
+  // fresh revision and the feed starts again above it. A reader behind the new floor resynchronizes
+  // (changed_since returns false) and finds every id newer than what it holds: correct, and no more
+  // than the full pass it would otherwise have had to make.
+  const u64 restamp = ++revision_;
+  feed_.clear();
+  feed_floor_ = restamp;
   for (const ObjectId id : ids) {  // FlatSet iterates in key order, so live_ comes out sorted
-    const IndexEntry entry = compose(id);
+    IndexEntry entry = compose(id);
+    entry.revision = restamp;
     index_.insert(id, entry);
     if (!entry.live()) continue;
     live_.push_back(id);
@@ -310,9 +304,25 @@ void Document::rebuild_index() const {
   }
 }
 
+u64 Document::stamp(ObjectId id) const {
+  const u64 revision = ++revision_;
+  feed_.push_back(FeedEntry{revision, id});
+  // Bounded at twice the index (and never below 4,096, so a small document is not trimming every
+  // few edits): the older half goes, and the floor moves to the last revision it held. An entry is
+  // 24 bytes, so the bound is about 48 bytes per record the document holds.
+  const u32 bound = index_.size() * 2u > 4096u ? index_.size() * 2u : 4096u;
+  if (feed_.size() > bound) {
+    const u32 half = feed_.size() / 2u;
+    feed_floor_ = feed_[half - 1u].revision;
+    feed_.erase(feed_.begin(), feed_.begin() + half);
+  }
+  return revision;
+}
+
 void Document::touch(ObjectId id) {
   ensure_index();
-  const IndexEntry fresh = compose(id);
+  IndexEntry fresh = compose(id);
+  fresh.revision = stamp(id);
   const IndexEntry* existing = index_.find_value(id);
   const bool was_live = existing != nullptr && existing->live();
   const ObjectId was_parent = existing != nullptr ? existing->parent : ObjectId{};
@@ -460,6 +470,47 @@ Vector<ObjectId> Document::children(ObjectId parent) const {
   ensure_index();
   const Vector<ObjectId>* list = children_.find_value(parent);
   return list != nullptr ? *list : Vector<ObjectId>{};
+}
+
+std::string_view Document::type_of(ObjectId id) const noexcept {
+  ensure_index();
+  const IndexEntry* entry = index_.find_value(id);
+  if (entry == nullptr || !entry->defined) return {};
+  const ObjectRecord* r = layers_[entry->defining_layer].find(id);
+  return r != nullptr ? std::string_view(r->type) : std::string_view{};
+}
+
+ObjectId Document::parent_of(ObjectId id) const noexcept {
+  ensure_index();
+  const IndexEntry* entry = index_.find_value(id);
+  return entry != nullptr ? entry->parent : ObjectId{};
+}
+
+// --- Document: the change feed
+// --------------------------------------------------------------------
+
+u64 Document::revision_of(ObjectId id) const noexcept {
+  ensure_index();
+  const IndexEntry* entry = index_.find_value(id);
+  return entry != nullptr ? entry->revision : 0;
+}
+
+bool Document::changed_since(u64 since, Vector<ObjectId>& out) const {
+  ensure_index();
+  if (since < feed_floor_) return false;
+  // The feed is in revision order, so the changes after `since` are a suffix of it.
+  const FeedEntry* begin = feed_.data();
+  const FeedEntry* end = feed_.data() + feed_.size();
+  const FeedEntry* first = std::upper_bound(
+      begin, end, since, [](u64 value, const FeedEntry& e) { return value < e.revision; });
+  const u32 before = out.size();
+  for (const FeedEntry* e = first; e != end; ++e)
+    out.push_back(e->id);
+  // Each id once, in id order: a record edited forty times since the reader last looked is one
+  // record to look at, and id order is what makes what the reader does with them reproducible.
+  std::sort(out.begin() + before, out.end());
+  out.erase(std::unique(out.begin() + before, out.end()), out.end());
+  return true;
 }
 
 bool Document::would_cycle(ObjectId id, ObjectId new_parent) const {
@@ -713,7 +764,11 @@ bool Document::validate(Vector<Diagnostic>& out) const {
 Transaction::Transaction(Document& doc, Attribution attribution) : doc_(&doc) {
   if (attribution.timestamp_unix_ms == 0) attribution.timestamp_unix_ms = time::wall_unix_ms();
   patch_.attribution = std::move(attribution);
-  patch_.layer = doc.layer(doc.edit_layer()).name();
+  // The const accessor. The mutable one marks the composed index for a rebuild, which turned every
+  // transaction into an O(n) recomposition of the whole document on its first query and, with the
+  // change feed, into a reset that sent every reader back to a full resynchronization.
+  const Document& read = doc;
+  patch_.layer = read.layer(read.edit_layer()).name();
 }
 
 Transaction::~Transaction() {

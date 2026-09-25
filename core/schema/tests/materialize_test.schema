@@ -1,0 +1,51 @@
+// The table a `materialize` declaration compiles to (docs/subsystems/schema.md, "Materialization").
+// One record type, three components and the declaration joining them, chosen so every row kind
+// the runtime reads is here once: a direct copy, a unit conversion of a vector, of a scalar and of
+// an affine unit (temperature), a width change with a conversion, a write-back row, a bare
+// component with only its defaults, and the parent. `Note` is a record type with no declaration,
+// which is how a type stays document-only.
+namespace engine.schema_test.world
+
+/// Where a thing is and how heavy.
+struct Place @version(1) @kind(component) {
+  position: vec3 @unit(m)
+  heading: f32 @unit(rad)
+  mass: f64 @unit(kg)
+}
+
+/// How warm it is, and what it says on the side.
+struct Warmth @version(1) @kind(component) {
+  kelvin: f32 @unit(K)
+  label: string
+}
+
+/// A component the declaration names without a field: the entity gets its defaults.
+struct Marker @version(1) @kind(component) {
+  weight: u32 = 7
+}
+
+/// An authored crate, in the units a designer types.
+struct Crate @version(1) @kind(record) {
+  name: string
+  position: vec3 @unit(cm)
+  heading: f32 @unit(deg)
+  mass: f32 @unit(g)
+  celsius: f32 = 20 @unit(degC)
+  label: string = "crate"
+}
+
+/// A crate is placed, warm, and marked.
+materialize Crate @tiers(0, 1, 2) {
+  Place.position = position @writeback
+  Place.heading = heading
+  Place.mass = mass
+  Warmth.kelvin = celsius
+  Warmth.label = label
+  Marker
+  parent = ChildOf
+}
+
+/// Canon, not a thing in the world: no declaration, so it stays in the document.
+struct Note @version(1) @kind(record) {
+  text: string
+}

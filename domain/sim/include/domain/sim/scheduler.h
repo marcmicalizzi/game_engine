@@ -18,12 +18,13 @@
 //   §5.5](../../../docs/plan/05-simulation.md#55-reconciliation-when-a-tile-activates)),
 //      which is the two above plus the timing wheel's summarizers, run in the plan's five steps.
 //
-// **This module does not depend on `domain/ecs`.** `TickPhase` is declared here, with the same
-// enumerators and the same order as `ecs::TickPhase`, because
-// [ADR-0028](../../../docs/adr/0028-ecs-and-persistent-store.md) §7 deliberately leaves open
-// whether flecs' pipeline stays the tick scheduler. The two should become one type —
-// `ecs::TickPhase` aliasing this one — in the change that decides it; doing it the other way round
-// would make the scheduler depend on flecs.
+// **This module does not depend on `domain/ecs`.** `TickPhase` is declared here and
+// `ecs::TickPhase` is an alias of it
+// ([ADR-0028](../../../docs/adr/0028-ecs-and-persistent-store.md) seam 2), the dependency going ecs
+// → sim and never back. That is what lets this scheduler own the tick with flecs' systems run
+// inside its phases by a `TickExecutor` the entity store installs
+// ([ADR-0038](../../../docs/adr/0038-the-scheduler-owns-the-tick.md), proposed): the executor is
+// four function pointers, and nothing here knows what is behind them.
 
 #include <core/base/macros.h>
 #include <core/base/types.h>
@@ -224,9 +225,14 @@ struct EntityHandle {
   bool operator==(const EntityHandle&) const noexcept = default;
 };
 
+// Where a record came from when the authoring document is its source: the mapping row and the
+// record's property values (domain/sim/materialize.h).
+struct RecordSource;
+
 // The persistent record a tile's store hands back for one entity ([03
-// §3.5](../../../docs/plan/03-data-model.md#35-persistent-world-state)). It came off disk, so the
-// only name it can carry is the one that survived the trip: `Id128`.
+// §3.5](../../../docs/plan/03-data-model.md#35-persistent-world-state)), or the document record the
+// materialization driver hands the hooks. Either way it came from outside the world, so the only
+// name it can carry is the one that survived the trip: `Id128`.
 struct EntityRecord {
   Id128 entity;
   u64 seed = 0;
@@ -234,6 +240,10 @@ struct EntityRecord {
   f32 importance = 1.0f;
   u32 kind = 0;
   u8 tier = 3;
+  // Set by the driver for a document record: which components it becomes and with what values.
+  // Null for a record from the store, whose projections are opaque bytes today; a hook then
+  // resolves an entity that already exists and creates none.
+  const RecordSource* source = nullptr;
 };
 
 // The materialization contract of [03
@@ -295,6 +305,28 @@ struct ReconcileResult {
   bool known = false;  // the store had a state for this tile; false means it is new
 };
 
+// An executor for systems the table does not hold — flecs' systems, today
+// ([ADR-0038](../../../docs/adr/0038-the-scheduler-owns-the-tick.md), proposed). The scheduler
+// keeps the clock, the fixed step, the phase order, the timing wheel, the hooks and its own table,
+// and calls the executor at three points of every tick:
+//
+//   begin_tick   once, after the tick and the game clock have advanced and before `Input`
+//   run_phase    once per phase, after the phase's begin_tick hooks and before the table's waves
+//   end_tick     once, after `Persist` and the persist hook
+//
+// So a phase runs: (at `EventsIn`, the wheel), begin_tick hooks, the executor's systems for the
+// phase, the table's waves, end_tick hooks, (at `Persist`, the persist hook). The executor's
+// systems go first because the table today holds engine systems that consume what capabilities'
+// systems wrote in the same phase — the write-back flush at `Persist` is the first — and none that
+// produces for them.
+struct TickExecutor {
+  void* context = nullptr;
+  void (*begin_tick)(void* context, SimTick tick, GameTime time, GameTime step) = nullptr;
+  void (*run_phase)(void* context, TickPhase phase, SimTick tick, GameTime time,
+                    GameTime step) = nullptr;
+  void (*end_tick)(void* context, SimTick tick, GameTime time) = nullptr;
+};
+
 struct SimSchedulerConfig {
   u32 hz = 60;
   u32 max_steps_per_advance = 8;
@@ -335,6 +367,10 @@ class SimScheduler {
   // Called once at the end of `TickPhase::Persist`, which is where a store flush belongs.
   void set_persist_hook(void (*hook)(void* hook_context, SimTick at_tick, GameTime at_time),
                         void* hook_context) noexcept;
+  // The executor for systems outside the table (see `TickExecutor`). One at a time; a default one
+  // detaches.
+  void set_executor(const TickExecutor& executor) noexcept { executor_ = executor; }
+  const TickExecutor& executor() const noexcept { return executor_; }
 
   // One fixed step: advances the tick and game time, then runs the eight phases in order.
   // Reads no clock, which is what lets a replay, a headless fast-forward and a live session
@@ -363,7 +399,12 @@ class SimScheduler {
   void apply_tier_changes(std::span<const TierChange> changes,
                           std::span<const EntityHandle> entities);
   // Returns the handle the record now has, or a null one when no hook gave it a runtime existence.
+  // Hooks run in registration order, so the hook that brings the entity into being registers first.
   EntityHandle materialize(const EntityRecord& record, u8 tier);
+  // Hooks run in **reverse** registration order: the mirror of construction, so every hook that
+  // attached state to an entity lets go of it before the hook that created the entity destroys it.
+  // Walked forwards, the entity store's hook would delete the entity first and every later hook
+  // would be handed a handle that names nothing — and leak whatever it held for it.
   void dematerialize(std::span<const EntityHandle> entities);
 
   // --- tile reconciliation -------------------------------------------------------------------
@@ -417,6 +458,7 @@ class SimScheduler {
   EventSink event_sink_;
   void (*persist_hook_)(void* hook_context, SimTick at_tick, GameTime at_time) = nullptr;
   void* persist_context_ = nullptr;
+  TickExecutor executor_;
   jobs::JobSystem* jobs_ = nullptr;
 };
 

@@ -8,6 +8,8 @@
 //   engine.budgets         BudgetsParams       -> BudgetsResult         get_budgets
 //   session.run_headless   RunHeadlessParams   -> RunHeadlessResult     run_headless
 //   engine.run_tests       RunTestsParams      -> RunTestsResult        run_tests
+//   session.materialize    MaterializeParams   -> MaterializeResult     (the materialization
+//   report)
 //
 // They live in the app rather than in `domain/protocol` for the reason `render.*` does: each is
 // over something above the protocol's layer — the content build (`domain/content_build`), the
@@ -34,11 +36,13 @@ class SessionManager;
 
 namespace engine::host {
 
-// One session's runtime world: made by the first `session.run_headless` on that session and kept
-// while the host runs, so a second call continues from the tick the first stopped at. Defined in
-// ops_methods.cpp, because what it holds depends on the capabilities this build has: a flecs world
-// with the animation and audio emitter systems installed when the ECS capability is built, and the
-// engine's own `sim::SimScheduler` with no systems otherwise.
+// One session's runtime world: a materialization of the session's document, made by the first
+// `session.run_headless` or `session.materialize` on that session and kept while the host runs, so
+// a second call continues from the tick the first stopped at. Defined in ops_methods.cpp, because
+// what it holds depends on the capabilities this build has: always the engine's `sim::SimScheduler`
+// (the tick, the hooks, the write-back) and the materialization driver; with the ECS capability, a
+// flecs world whose systems the scheduler runs, the entity store's hook, and the kinematics,
+// animation and audio emitter capabilities where they are built.
 class RuntimeWorld;
 
 class OpsHost {
@@ -59,8 +63,8 @@ class OpsHost {
   Vector<std::unique_ptr<RuntimeWorld>> worlds_;
 };
 
-// Registers content.build, session.events, engine.budgets, session.run_headless and
-// engine.run_tests. `Context::app` must point at the host's `HostState`.
+// Registers content.build, session.events, engine.budgets, session.run_headless,
+// engine.run_tests and session.materialize. `Context::app` must point at the host's `HostState`.
 void add_ops_methods(protocol::Dispatcher& dispatcher);
 
 }  // namespace engine::host

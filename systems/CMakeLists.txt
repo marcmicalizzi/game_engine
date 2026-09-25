@@ -6,3 +6,4 @@
 add_subdirectory(renderer)
 add_subdirectory(animation)
 add_subdirectory(audio_system)
+add_subdirectory(kinematics)

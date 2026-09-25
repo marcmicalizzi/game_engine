@@ -33,6 +33,8 @@
 #include <core/base/types.h>
 #include <core/containers/hash_map.h>
 #include <core/containers/vector.h>
+#include <core/ids/id128.h>
+#include <core/json/json_value.h>
 #include <core/schema/type_info.h>
 #include <domain/sim/scheduler.h>
 
@@ -170,5 +172,12 @@ sim::ComponentMask mask_of(flecs::world& world) {
 // The component the schema named, or a null entity. `qualified_name` is dotted as the IDL
 // writes it ("engine.sim.Position").
 flecs::entity lookup_component(const flecs::world& world, const char* qualified_name) noexcept;
+
+// The component `qualified_name` of the entity `id` names, rendered by core/schema's JSON: the read
+// half of `WorldCommands::set_json`, by the same names, so a host outside `systems/` — a predicate
+// over live entities, the protocol's future `world.query` — reads a component without a flecs type
+// in sight. False when the entity, the component or its schema type is not there.
+bool component_json(flecs::world& world, const Id128& id, std::string_view qualified_name,
+                    JsonValue& out);
 
 }  // namespace engine::ecs

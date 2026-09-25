@@ -286,6 +286,9 @@ TEST_CASE("ops: the five methods are in the catalogue with schema-typed params a
       {"session.run_headless", "engine.protocol.RunHeadlessParams",
        "engine.protocol.RunHeadlessResult"},
       {"engine.run_tests", "engine.protocol.RunTestsParams", "engine.protocol.RunTestsResult"},
+      // The materialization report beside them (docs/subsystems/protocol.md).
+      {"session.materialize", "engine.protocol.MaterializeParams",
+       "engine.protocol.MaterializeResult"},
   };
   for (const Expected& e : expected) {
     CAPTURE(e.name);
@@ -712,6 +715,205 @@ TEST_CASE("ops: session.run_headless steps 0.5 s at the fixed step, and stops on
         k_invalid_argument);
   CHECK(error_code(host.call("session.run_headless", "{\"session\":\"nope\",\"seconds\":1}")) ==
         k_session_not_found);
+}
+
+// ---- the materialized world (docs/subsystems/protocol.md, "session.run_headless") --------------
+
+namespace {
+
+// Three records of two types, one parent-child pair: a yard (a Node) with a cart in it (a Mover,
+// one metre a second along x), and a buoy (a Mover at the root, turning a quarter turn a second).
+const char* k_yard = "00000000000000200000000000000001";
+const char* k_cart = "00000000000000200000000000000002";
+const char* k_buoy = "00000000000000200000000000000003";
+
+std::string yard_commands() {
+  return std::string("[") + "{\"kind\":\"CreateObject\",\"id\":\"" + k_yard +
+         "\",\"type\":\"engine.world.Node\",\"value\":{\"name\":\"yard\",\"position\":[0,0,0]}}," +
+         "{\"kind\":\"CreateObject\",\"id\":\"" + k_cart +
+         "\",\"type\":\"engine.kinematics.Mover\"," + "\"parent\":\"" + k_yard +
+         "\",\"value\":{\"name\":\"cart\",\"position\":[1,0,0],\"velocity\":[1,0,0]}}," +
+         "{\"kind\":\"CreateObject\",\"id\":\"" + k_buoy +
+         "\",\"type\":\"engine.kinematics.Mover\",\"value\":{\"name\":\"buoy\",\"position\":[0,0,"
+         "5],\"spin\":[0,90,0]}}]";
+}
+
+const JsonValue* type_row(const JsonValue& report, std::string_view type) {
+  const JsonValue& types = at(report, "types");
+  for (usize i = 0; i < types.size(); ++i) {
+    if (text(types[i], "type") == type) return &types[i];
+  }
+  return nullptr;
+}
+
+}  // namespace
+
+#if defined(ENGINE_CLI_TESTS_KINEMATICS)
+TEST_CASE(
+    "ops: run_headless materializes the document, ticks it, and a system's change comes back") {
+  const test::TempDir tmp("ops_materialize");
+  REQUIRE(tmp.ok());
+  const std::string dir = tmp.file("yard");
+  REQUIRE(cli({"--doc", dir, "--create", "--name", "Yard", "session.info"}).exit_code == 0);
+#if defined(ENGINE_CLI_TESTS_STORE)
+  {
+    // The document keeps a world.db, so a write-back is also an event in the store's log.
+    store::Database db;
+    REQUIRE(db.open(dir + "/world.db") == store::Status::Ok);
+    store::EventLog event_log(db);
+    REQUIRE(event_log.open() == store::Status::Ok);
+  }
+#endif
+  Host host;
+  REQUIRE(host.ok);
+  const std::string session = open_session(host, dir, false);
+  const std::string s = "{\"session\":\"" + session + "\"";
+  REQUIRE(at(result_of(host.call("doc.apply", s + ",\"commands\":" + yard_commands() +
+                                                  ",\"attribution\":{\"actor\":\"ops-test\","
+                                                  "\"role\":\"environment\",\"task\":\"t\"}}")),
+             "committed") == JsonValue(true));
+
+  // Half a second: thirty ticks of the materialized world, with the write-back at its default
+  // cadence (a game second) and the flush every call ends with.
+  const JsonValue first = host.call("session.run_headless", s + ",\"seconds\":0.5}");
+  const JsonValue& run = result_of(first);
+  CHECK(number(run, "ticks") == 30);
+  CHECK(text(run, "world") == "ecs");
+  CHECK(text(run, "executor") == "scheduler");
+  CHECK(number(run, "materialized") == 3);
+  CHECK(number(run, "entities") == 3);
+  const JsonValue& pass = at(run, "materialize");
+  CHECK(at(pass, "full") == JsonValue(true));
+  CHECK(number(pass, "created") == 3);
+  const JsonValue* movers = type_row(pass, "engine.kinematics.Mover");
+  REQUIRE(movers != nullptr);
+  CHECK(number(*movers, "materialized") == 2);
+  bool integrates = false;
+  const JsonValue& systems = at(run, "systems");
+  for (usize i = 0; i < systems.size(); ++i)
+    integrates = integrates || systems[i].as_string() == "kinematics.integrate";
+  CHECK(integrates);
+  // The cart moved and the buoy turned: two records, two writable fields, one commit.
+  CHECK(number(run, "write_backs") == 1);
+  CHECK(number(run, "written_fields") == 2);
+
+  // The document says where the world stopped.
+  const JsonValue cart = host.call("doc.get", s + ",\"id\":\"" + k_cart + "\"}");
+  const f64 x = at(at(result_of(cart), "properties"), "position")[0].as_float();
+  CHECK(std::abs(x - 1.5) < 1e-4);
+
+  // And the journal says who wrote it: the system, not an agent.
+  const JsonValue events =
+      host.call("session.events", s + ",\"source\":\"journal\",\"actor\":\"system\"}");
+  const JsonValue& written = at(result_of(events), "events");
+  REQUIRE(written.size() == 1);
+  CHECK(text(written[0], "kind") == "commit");
+  CHECK(text(at(written[0], "attribution"), "task") == "sim.write_back");
+  CHECK(number(written[0], "commands") == 2);
+#if defined(ENGINE_CLI_TESTS_STORE)
+  // One event per record it changed, in the store's log, from the deterministic simulation.
+  const JsonValue logged = host.call("session.events", s + ",\"source\":\"store\"}");
+  CHECK(text(result_of(logged), "store_status") == "read");
+  const JsonValue& rows = at(result_of(logged), "events");
+  REQUIRE(rows.size() == 2);
+  CHECK(text(rows[0], "actor") == "deterministic");
+  CHECK(number(rows[0], "tick") == 30);
+  CHECK(text(rows[0], "subject") == k_cart);
+  CHECK(text(rows[1], "subject") == k_buoy);
+#endif
+
+  // Again, with a write-back every tick and a predicate over both halves: the cart's position as
+  // the document holds it and as its live Transform holds it. It turns true about twelve ticks in,
+  // when the cart passes 1.7 m.
+  const std::string past =
+      std::string("{\"all\":[{\"object\":\"") + k_cart +
+      "\",\"property\":\"position[0]\",\"at_least\":1.7},{\"object\":\"" + k_cart +
+      "\",\"component\":\"engine.world.Transform\",\"field\":\"position[0]\",\"at_least\":1.7}]}";
+  const JsonValue second = host.call(
+      "session.run_headless", s + ",\"seconds\":1,\"write_back_every\":1,\"until\":" + past + "}");
+  const JsonValue& until = result_of(second);
+  CHECK(at(until, "predicate") == JsonValue(true));
+  CHECK(text(until, "stopped") == "predicate");
+  CHECK(number(until, "ticks") >= 11);
+  CHECK(number(until, "ticks") <= 13);
+  CHECK(number(until, "write_backs") == number(until, "ticks"));
+  // The second call's materialization followed the document's change feed: the two records it saw
+  // change were changed by this world's own write-back, so nothing was handed to a hook.
+  const JsonValue& again = at(until, "materialize");
+  CHECK(at(again, "full") == JsonValue(false));
+  CHECK(number(again, "unchanged") == 2);
+  CHECK(number(again, "created") + number(again, "updated") == 0);
+
+  // An agent's edit between calls reaches the world on the next one.
+  REQUIRE(at(result_of(host.call(
+                 "doc.apply",
+                 s + ",\"commands\":[{\"kind\":\"SetProperty\",\"id\":\"" + k_cart +
+                     "\",\"name\":\"velocity\",\"value\":[0,0,0]}],\"attribution\":{\"actor\":"
+                     "\"ops-test\",\"role\":\"environment\",\"task\":\"t\"}}")),
+             "committed") == JsonValue(true));
+  const JsonValue stopped = host.call("session.run_headless", s + ",\"seconds\":0.25}");
+  const JsonValue& still = result_of(stopped);
+  CHECK(number(at(still, "materialize"), "updated") == 1);
+  // The buoy still turns; the cart no longer moves.
+  CHECK(number(still, "written_fields") == 1);
+}
+#endif
+
+TEST_CASE("ops: session.materialize reports which types mapped and which records were skipped") {
+  const test::TempDir tmp("ops_materialize");
+  REQUIRE(tmp.ok());
+  const std::string dir = tmp.file("yard");
+  REQUIRE(cli({"--doc", dir, "--create", "--name", "Yard", "session.info"}).exit_code == 0);
+  // The yard and its movers, and a provenance record: authored data no world needs as an entity.
+  REQUIRE(cli({"--doc", dir, "doc.apply", apply_params(yard_commands())}).exit_code == 0);
+  REQUIRE(
+      cli({"--doc", dir, "doc.apply", apply_params("[" + create(k_a, "rock") + "]")}).exit_code ==
+      0);
+
+  Run report = cli({"--doc", dir, "--compact", "session.materialize", "{}"});
+  REQUIRE(report.exit_code == 0);
+  const JsonValue& r = report.result;
+  CHECK(at(r, "full") == JsonValue(true));
+  CHECK(number(r, "visited") == 4);
+  const JsonValue* provenance = type_row(r, k_type);
+  REQUIRE(provenance != nullptr);
+  CHECK(at(*provenance, "mapped") == JsonValue(false));
+  CHECK(text(*provenance, "reason") == "no mapping");
+
+  // Every mapping this build compiled is listed, the world's own `Node` among them.
+  bool node = false;
+  const JsonValue& mappings = at(r, "mappings");
+  for (usize i = 0; i < mappings.size(); ++i) {
+    if (text(mappings[i], "record") != "engine.world.Node") continue;
+    node = true;
+    CHECK(text(mappings[i], "parent") == "ChildOf");
+    CHECK(at(mappings[i], "components")[0].as_string() == "engine.world.Transform");
+    CHECK(at(at(mappings[i], "fields")[0], "write_back") == JsonValue(true));
+  }
+  CHECK(node);
+
+  const JsonValue* nodes = type_row(r, "engine.world.Node");
+  REQUIRE(nodes != nullptr);
+  CHECK(at(*nodes, "mapped") == JsonValue(true));
+#if defined(ENGINE_CLI_TESTS_KINEMATICS)
+  CHECK(number(r, "live") == 3);
+  CHECK(number(r, "skipped") == 1);
+  CHECK(number(*nodes, "materialized") == 1);
+#else
+  // Without the capability that declares Mover its records are of a type this build never heard
+  // of, and without the entity store nothing becomes an entity at all: the report says which,
+  // rather than returning an empty world.
+  const JsonValue* movers = type_row(r, "engine.kinematics.Mover");
+  REQUIRE(movers != nullptr);
+  CHECK(number(*movers, "skipped") == 2);
+  CHECK(text(*movers, "reason") == "unknown type");
+  CHECK(number(*nodes, "materialized") + number(*nodes, "skipped") == 1);
+  if (number(*nodes, "skipped") == 1) CHECK(text(*nodes, "reason") == "no entity store");
+#endif
+
+  // Refusals: a scope that is not one, and a session that is not open.
+  Run bad = cli({"--doc", dir, "--compact", "session.materialize", "{\"scope\":\"everywhere\"}"});
+  CHECK(bad.exit_code != 0);
 }
 
 TEST_CASE("ops: engine.run_tests over a valid and an invalid document and two containers") {

@@ -14,7 +14,9 @@
 #include <core/jobs/job_system.h>
 #include <core/platform/topology.h>
 #include <domain/ecs/os_api.h>
+#include <domain/ecs/scheduled_tick.h>
 #include <domain/ecs/sim_world.h>
+#include <domain/sim/scheduler.h>
 #include <foundation/bench/bench.h>
 
 #include <cmath>
@@ -204,6 +206,10 @@ enum class Hosting : u32 {
   // sleeping. The control that says how much of that cost is the pool's wake path and how much
   // is flecs' per-tick protocol. Its own numbers drift; read it for the split, not as a figure.
   TasksNeverSleep = 3,
+  // Hosted as `Threads`, but ticked by the engine's scheduler through `ecs::ScheduledTick`: one
+  // flecs pipeline per phase inside `sim::SimScheduler`'s phases instead of one `progress()`
+  // (ADR-0038). The difference against `Threads` is what owning the tick costs.
+  Scheduled = 4,
 };
 
 // flecs' own OS threads, for the `os_threads` row: the plain thread-per-worker the library uses
@@ -255,13 +261,27 @@ struct Scene {
       const OsThreadHooks borrow;
       ecs_set_threads(sim.world().c_ptr(), static_cast<i32>(workers));
     } else {
-      ecs::set_workers(
-          sim.world(), workers,
-          hosting == Hosting::Threads ? ecs::WorkerHosting::Threads : ecs::WorkerHosting::Tasks);
+      const bool per_tick = hosting == Hosting::Tasks || hosting == Hosting::TasksNeverSleep;
+      ecs::set_workers(sim.world(), workers,
+                       per_tick ? ecs::WorkerHosting::Tasks : ecs::WorkerHosting::Threads);
+    }
+    if (hosting == Hosting::Scheduled) {
+      scheduler = std::make_unique<sim::SimScheduler>();
+      scheduled = std::make_unique<ecs::ScheduledTick>(sim, *scheduler);
+    }
+  }
+
+  // One tick by whichever executor this scene has.
+  void step() {
+    if (scheduled != nullptr) {
+      scheduled->step();
+    } else {
+      sim.step();
     }
   }
 
   ~Scene() {
+    scheduled.reset();
     // Before ~SimWorld, and with the hooks the world's workers were created through, so an
     // os_threads world joins real threads and a hosted one gives its pool workers back.
     if (hosting == Hosting::OsThreads) {
@@ -287,6 +307,7 @@ struct Scene {
       case Hosting::OsThreads: return "os_threads";
       case Hosting::Tasks: return "tasks";
       case Hosting::TasksNeverSleep: return "tasks_never_sleep";
+      case Hosting::Scheduled: return "scheduled";
       default: return "threads";
     }
   }
@@ -314,6 +335,9 @@ struct Scene {
   std::vector<flecs::entity> factions;
   std::vector<flecs::entity> cells;
   Aggregate aggregate;
+  // Hosting::Scheduled only; after `sim`, so they go before it.
+  std::unique_ptr<sim::SimScheduler> scheduler;
+  std::unique_ptr<ecs::ScheduledTick> scheduled;
 };
 
 void Scene::build() {
@@ -551,6 +575,19 @@ ENGINE_BENCH_ARGS(ecs_tick_tasks, "ecs.tick.four_systems.tasks", 2, 4, 8, 16) {
   Scene& scene = scene_for(workers, 0, Hosting::Tasks);
   while (state.keep_running()) {
     scene.sim.step();
+    bench::keep(scene.aggregate.wealth[0]);
+  }
+  state.set_items(k_entities);
+}
+
+// The same tick, the same hosting, with the engine's scheduler as the executor (ADR-0038): eight
+// phases each run as its own flecs pipeline inside `sim::SimScheduler::step()`. Against
+// `ecs.tick.four_systems` at the same worker count, it is what owning the tick costs.
+ENGINE_BENCH_ARGS(ecs_tick_scheduled, "ecs.tick.four_systems.scheduled", 1, 4, 16) {
+  const u32 workers = clamp_workers(static_cast<u32>(state.arg()));
+  Scene& scene = scene_for(workers, 0, Hosting::Scheduled);
+  while (state.keep_running()) {
+    scene.step();
     bench::keep(scene.aggregate.wealth[0]);
   }
   state.set_items(k_entities);

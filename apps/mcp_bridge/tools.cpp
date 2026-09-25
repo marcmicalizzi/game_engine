@@ -1620,7 +1620,37 @@ void run_run_headless(Bridge& b, const JsonValue& args, ToolOutcome& out) {
                 ". The " + text_of(r, "world") + " world is at tick " +
                 std::to_string(uint_of(r, "tick")) + "; " +
                 std::to_string(uint_of(r, "materialized")) +
-                " entities are materialized from the document.";
+                " entities are materialized from the document, and " +
+                std::to_string(uint_of(r, "write_backs")) + " write-back commit(s) wrote " +
+                std::to_string(uint_of(r, "written_fields")) + " field(s) back to it.";
+  out.data = r;
+}
+
+bool schema_materialize(Bridge& b, JsonValue& s, std::string& e) {
+  return schema_session_ref(b, "session.materialize", s, e);
+}
+
+void run_materialize(Bridge& b, const JsonValue& args, ToolOutcome& out) {
+  JsonValue r;
+  if (!b.call("session.materialize", args, r, out)) return;
+  std::string lines;
+  if (const JsonValue* types = r.find("types"); types != nullptr) {
+    for (usize i = 0; i < types->size(); ++i) {
+      const JsonValue& t = (*types)[i];
+      lines += "\n  " + text_of(t, "type") + ": " + std::to_string(uint_of(t, "materialized")) +
+               " of " + std::to_string(uint_of(t, "records"));
+      if (uint_of(t, "skipped") != 0) {
+        lines += ", " + std::to_string(uint_of(t, "skipped")) + " skipped (" +
+                 text_of(t, "reason") +
+                 (text_of(t, "detail").empty() ? "" : ": " + text_of(t, "detail")) + ")";
+      }
+    }
+  }
+  out.summary = std::to_string(uint_of(r, "live")) + " entities materialized (" +
+                std::to_string(uint_of(r, "created")) + " created, " +
+                std::to_string(uint_of(r, "updated")) + " updated, " +
+                std::to_string(uint_of(r, "dematerialized")) + " removed), " +
+                std::to_string(uint_of(r, "skipped")) + " record(s) skipped." + lines;
   out.data = r;
 }
 
@@ -1791,9 +1821,14 @@ constexpr ToolDef k_tools[] = {
      "name, with limit, use, unit and source.",
      "engine.budgets", true, false, true, &schema_budgets, &run_budgets},
     {"run_headless", "Run headless",
-     "Step the session's runtime world at the fixed step with no rendering, for game seconds or "
-     "until a predicate holds.",
+     "Materialize the session's document into its runtime world and step it at the fixed step "
+     "with no rendering, for game seconds or until a predicate over document properties and live "
+     "components holds; what systems change in writable fields is committed back.",
      "session.run_headless", false, false, false, &schema_run_headless, &run_run_headless},
+    {"materialize", "Materialize",
+     "Materialize the session's document into its runtime world now and report which record "
+     "types mapped, what became an entity, what was skipped and why, and every mapping.",
+     "session.materialize", false, false, true, &schema_materialize, &run_materialize},
     {"run_tests", "Run the engine's checks",
      "Run the document, tissue and content validators that are safe inside the host and get one "
      "structured report.",

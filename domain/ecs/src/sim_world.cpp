@@ -1,3 +1,4 @@
+#include <core/base/assert.h>
 #include <core/log/log.h>
 #include <domain/ecs/identity.h>
 #include <domain/ecs/os_api.h>
@@ -96,6 +97,10 @@ void SimWorld::run_tick() {
   // Published before the pipeline runs, so every phase of this tick sees this tick's numbers.
   publish_singletons();
   world_.progress(step_seconds_);
+  watch_tables();
+}
+
+void SimWorld::watch_tables() {
 #if ENGINE_DEBUG
   // Debug only: a release build pays nothing for a diagnostic whose whole job is to be read
   // during development. The period keeps even the debug cost to a world-info read every 64th
@@ -105,9 +110,24 @@ void SimWorld::run_tick() {
 #endif
 }
 
-void SimWorld::step() { run_tick(); }
+void SimWorld::sync_clock(SimTick tick, GameTime time) {
+  tick_ = tick;
+  game_clock_.jump_to(time);
+  publish_singletons();
+}
+
+void SimWorld::step() {
+  ENGINE_ASSERT(!scheduled_,
+                "ecs::SimWorld::step: this world is driven by an ecs::ScheduledTick; step the "
+                "scheduler, not the world (one clock, one executor)");
+  run_tick();
+}
 
 u32 SimWorld::advance(i64 real_ns) {
+  ENGINE_ASSERT(
+      !scheduled_,
+      "ecs::SimWorld::advance: this world is driven by an ecs::ScheduledTick; advance the "
+      "scheduler, not the world (one clock, one executor)");
   clock_.advance(real_ns);
   u32 steps = 0;
   while (clock_.step()) {

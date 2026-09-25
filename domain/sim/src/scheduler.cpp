@@ -345,6 +345,12 @@ void SimScheduler::run_phase(TickPhase phase) {
     systems_[i].begin_tick(context);
   }
 
+  // The systems outside the table — flecs', for the entity store — before the table's own waves:
+  // the table's systems in a phase consume what the capabilities wrote in it (ADR-0038).
+  if (executor_.run_phase != nullptr) {
+    executor_.run_phase(executor_.context, phase, tick_, game_clock_.now(), step_size());
+  }
+
   for (u16 wave = 0; wave < phase_waves_[index]; ++wave) {
     run_wave(phase, wave, phase_first_[index], phase_count_[index]);
   }
@@ -365,8 +371,16 @@ void SimScheduler::step() {
   if (schedule_dirty_) rebuild_schedule();
   ++tick_;
   game_clock_.advance_tick();
+  // One clock: the executor is told this tick's number and time and publishes them to whatever it
+  // drives, rather than keeping a clock of its own that would have to agree with this one.
+  if (executor_.begin_tick != nullptr) {
+    executor_.begin_tick(executor_.context, tick_, game_clock_.now(), step_size());
+  }
   for (u32 phase = 0; phase < k_phase_count; ++phase)
     run_phase(static_cast<TickPhase>(phase));
+  if (executor_.end_tick != nullptr) {
+    executor_.end_tick(executor_.context, tick_, game_clock_.now());
+  }
 }
 
 u32 SimScheduler::advance(i64 real_ns) {
@@ -419,8 +433,10 @@ EntityHandle SimScheduler::materialize(const EntityRecord& record, u8 tier) {
 void SimScheduler::dematerialize(std::span<const EntityHandle> entities) {
   for (usize e = 0; e < entities.size(); ++e) {
     if (entities[e].is_null()) continue;
-    for (u32 h = 0; h < hooks_.size(); ++h) {
-      const MaterializationHooks& hook = hooks_[h];
+    // Reverse registration order: the hook that created the entity registered first and so lets go
+    // of it last, after every hook that attached something to it has detached.
+    for (u32 h = hooks_.size(); h > 0; --h) {
+      const MaterializationHooks& hook = hooks_[h - 1u];
       if (hook.dematerialize != nullptr) hook.dematerialize(hook.context, entities[e]);
     }
   }

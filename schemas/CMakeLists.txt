@@ -6,4 +6,5 @@ engine_schema_library(NAME schemas
     gfx.schema
     scene.schema
     protocol.schema
-    tissue.schema)
+    tissue.schema
+    world.schema)

@@ -5,15 +5,18 @@
 
 #include "host_state.h"
 
+#include <core/json/json.h>
 #include <core/json/json_value.h>
 #include <core/log/log.h>
 #include <core/memory/memory.h>
 #include <core/platform/process.h>
 #include <core/schema/json_reflect.h>
+#include <core/schema/materialize.h>
 #include <core/time/time.h>
 #include <domain/content_build/container_stats.h>
 #include <domain/content_build/content_build.h>
 #include <domain/doc/document.h>
+#include <domain/doc/partition.h>
 #include <domain/geometry/cluster.h>
 #include <domain/geometry/cluster_file.h>
 #include <domain/geometry/cluster_lod.h>
@@ -21,6 +24,7 @@
 #include <domain/gfx/adapter.h>
 #include <domain/gfx/device.h>
 #include <domain/protocol/session.h>
+#include <domain/sim/materialize.h>
 #include <domain/sim/scheduler.h>
 #include <foundation/io/vfs.h>
 #include <systems/renderer/gpu_scene.h>
@@ -29,19 +33,30 @@
 #include <systems/renderer/settings.h>
 
 #include <cmath>
+#include <memory>
 #include <optional>
+#include <schemas/world.h>
 #include <span>
 #include <string>
 #include <string_view>
 #include <utility>
 
 // The capabilities these methods reach, each compiled in only when this configuration has it
-// (CMakeLists.txt defines the switch beside the link). `ENGINE_HOST_ANIMATION` and
-// `ENGINE_HOST_AUDIO_SYSTEM` imply `ENGINE_HOST_ECS`, because both capabilities require it.
+// (CMakeLists.txt defines the switch beside the link). `ENGINE_HOST_ANIMATION`,
+// `ENGINE_HOST_AUDIO_SYSTEM` and `ENGINE_HOST_KINEMATICS` imply `ENGINE_HOST_ECS`, because each of
+// those capabilities requires it.
 #if defined(ENGINE_HOST_ECS)
+#include <domain/ecs/components.h>
 #include <domain/ecs/identity.h>
+#include <domain/ecs/materialize.h>
+#include <domain/ecs/scheduled_tick.h>
 #include <domain/ecs/sim_world.h>
 #include <domain/ecs/systems.h>
+
+#include <schemas/world_ecs.h>
+#endif
+#if defined(ENGINE_HOST_KINEMATICS)
+#include <systems/kinematics/kinematics.h>
 #endif
 #if defined(ENGINE_HOST_ANIMATION)
 #include <systems/animation/animation.h>
@@ -68,33 +83,57 @@ namespace engine::host {
 
 // ---- the runtime world -------------------------------------------------------------------------
 
-// One session's world (ops_methods.h). What it is, is what this build can make: a flecs world
-// (`ecs::SimWorld`) with every ticking capability the host links installed into it, or — in a
-// build without the ECS capability — the engine's own scheduler with nothing registered, which
-// still has the fixed step, the tick counter and the game clock `run_headless` reports.
+namespace {
+
+ENGINE_LOG_CATEGORY_DEFINE(log_ops, "host.ops");
+
+}  // namespace
+
+// One session's world (ops_methods.h): a materialization of the session's document
+// (docs/plan/03-data-model.md §3.4), ticked by the engine's scheduler.
 //
-// **What it is not is a materialization of the document** (docs/plan/03-data-model.md §3.4). No
-// document record becomes an entity: nothing maps an authored record's type to the components it
-// would materialize into, `sim::MaterializationHooks` rows exist (the animation capability has one)
-// but no driver walks a document's records through them, and nothing writes runtime state back to
-// the document. So the world ticks the host's systems over no entities, and the predicate's
-// document terms read a document the run does not change. docs/subsystems/protocol.md says so
-// under "session.run_headless and the materialization gap".
+// What it holds is what this build can make. Always: `sim::SimScheduler` — the clock, the fixed
+// step, the phase order, the materialization hooks and the write-back system in its table — and
+// `sim::Materializer`, the driver that walks the document through those hooks. With the ECS
+// capability: a flecs world (`ecs::SimWorld`) whose systems the scheduler runs inside its phases
+// (`ecs::ScheduledTick`, ADR-0038), the entity store's hook (`ecs::RecordMaterializer`) first in
+// the hooks table, and every ticking capability the host links installed into it — `kinematics`
+// (so `Mover` records move), `animation` (over an empty clip library) and `audio_system` (over a
+// mixer on the null backend). Without it: the scheduler alone, which still has the tick and the
+// game clock, and a driver with no target, which materializes nothing and says so in its report.
 class RuntimeWorld {
  public:
   explicit RuntimeWorld(std::string session_id);
-  ~RuntimeWorld() = default;
+  ~RuntimeWorld();
   ENGINE_NON_COPYABLE(RuntimeWorld);
 
   const std::string& session() const noexcept { return session_; }
+
+  // The session whose document this world materializes and whose journal a write-back commits to.
+  // Rebound on every call: the world is kept by session id, and the session object is the host's.
+  void bind(protocol::Session* session, io::Vfs* vfs) noexcept {
+    session_ptr_ = session;
+    vfs_ = vfs;
+  }
+  sim::MaterializeReport materialize(const doc::Document& document,
+                                     const sim::MaterializeScope& scope);
+  void set_writeback_every(u32 ticks) noexcept { driver_.set_writeback_every(ticks); }
   void step();
-  u64 tick() const noexcept;
-  i64 game_time_us() const noexcept;
-  i64 us_per_tick() noexcept;
+  // What systems changed in the writable fields and a periodic flush has not yet committed.
+  u32 flush_writeback();
+
+  u64 tick() const noexcept { return scheduler_.tick().value; }
+  i64 game_time_us() const noexcept { return scheduler_.game_time().us; }
+  i64 us_per_tick() const noexcept { return scheduler_.step_size().us; }
   static constexpr u32 hz() noexcept { return k_hz; }
+  static constexpr u8 tier() noexcept { return k_tier; }
   const char* kind() const noexcept;
   u32 entities() const noexcept;
+  u32 materialized() const noexcept { return driver_.live(); }
+  const sim::MaterializeStats& driver_stats() const noexcept { return driver_.stats(); }
   const Vector<std::string>& systems() const noexcept { return systems_; }
+  // A live entity's component, by the schema's name, as JSON; false without one.
+  bool component_json(const Id128& id, std::string_view component, JsonValue& out);
 
 #if defined(ENGINE_HOST_AUDIO_SYSTEM)
   const audio::ClipStore& clips() const noexcept { return clips_; }
@@ -105,14 +144,26 @@ class RuntimeWorld {
   // The rate every other fixed step in the engine runs at (engine-view's animated world, the
   // deformation phase), so a second of `run_headless` is the same sixty ticks it is everywhere.
   static constexpr u32 k_hz = 60;
+  // A headless run has no observer to promote from, so records materialize at full fidelity.
+  static constexpr u8 k_tier = 0;
+
+  static bool commit_writeback(void* context, const sim::WriteBackBatch& batch);
+  void log_writeback(const sim::WriteBackBatch& batch, u32 patch);
 
   std::string session_;
+  protocol::Session* session_ptr_ = nullptr;
+  io::Vfs* vfs_ = nullptr;
   Vector<std::string> systems_;
+  sim::SimScheduler scheduler_;
 #if defined(ENGINE_HOST_ECS)
   ecs::SimWorld sim_;
+  ecs::RecordMaterializer records_;
+#if defined(ENGINE_HOST_KINEMATICS)
+  kinematics::KinematicsSystem kinematics_;
+#endif
 #if defined(ENGINE_HOST_ANIMATION)
-  // An empty library: the capability is installed, so its three systems tick, over no instances
-  // until something attaches one — which a materialization layer would do.
+  // An empty library: the capability is installed and its three systems tick, over the instances
+  // something attaches — a record whose mapping names `AnimationPlayer`, once a clip is loaded.
   animation::Library library_;
   animation::AnimationSystem animation_;
 #endif
@@ -123,12 +174,27 @@ class RuntimeWorld {
   audio::Mixer mixer_;
   audio::AudioSystem audio_;
 #endif
-#else
-  sim::SimScheduler scheduler_;
+#endif
+  sim::Materializer driver_;
+#if defined(ENGINE_HOST_ECS)
+  // Last, so it is the first to go: it detaches from the scheduler and the world it drives.
+  std::unique_ptr<ecs::ScheduledTick> tick_;
+#endif
+#if defined(ENGINE_HOST_STORE)
+  // The document's `world.db`, opened for writing the first time a write-back has events to log.
+  std::unique_ptr<store::Database> db_;
+  std::unique_ptr<store::EventLog> log_;
+  bool store_checked_ = false;
 #endif
 };
 
 namespace {
+
+sim::SimSchedulerConfig scheduler_config(u32 hz) {
+  sim::SimSchedulerConfig config;
+  config.hz = hz;
+  return config;
+}
 
 #if defined(ENGINE_HOST_ECS)
 ecs::SimWorldConfig world_config(u32 hz) {
@@ -136,21 +202,42 @@ ecs::SimWorldConfig world_config(u32 hz) {
   config.hz = hz;
   return config;
 }
-#else
-sim::SimSchedulerConfig scheduler_config(u32 hz) {
-  sim::SimSchedulerConfig config;
-  config.hz = hz;
+#endif
+
+sim::MaterializeConfig driver_config(u8 tier) {
+  sim::MaterializeConfig config;
+  config.tier = tier;
   return config;
 }
-#endif
+
+// The store's tile for a record: its tile under the partition of the layer that defines it, packed
+// as (x, y) into the store's 64-bit tile id — x in the high half, y in the low, each as its 32-bit
+// two's complement — or 0 for a record in no tile. The store only compares and orders tile ids
+// (docs/subsystems/store.md), so the packing is the host's to choose; this one keeps a tile's
+// events contiguous.
+[[maybe_unused]] u64 store_tile_of(const doc::Document& document, const Id128& id) {
+  const doc::ObjectRecord* defining = nullptr;
+  u32 layer = 0;
+  document.visit_records(id, [&](u32 index, const doc::ObjectRecord& record) {
+    if (record.type.empty()) return;
+    defining = &record;
+    layer = index;
+  });
+  if (defining == nullptr || !document.layer(layer).partitioned()) return 0;
+  doc::TileCoord tile;
+  if (!doc::tile_of(*defining, document.layer(layer).partition(), tile)) return 0;
+  return (static_cast<u64>(static_cast<u32>(tile.x)) << 32) | static_cast<u32>(tile.y);
+}
 
 }  // namespace
 
 RuntimeWorld::RuntimeWorld(std::string session_id)
-    : session_(std::move(session_id))
+    : session_(std::move(session_id)),
+      scheduler_(scheduler_config(k_hz))
 #if defined(ENGINE_HOST_ECS)
       ,
-      sim_(world_config(k_hz))
+      sim_(world_config(k_hz)),
+      records_(sim_.world())
 #if defined(ENGINE_HOST_ANIMATION)
       ,
       animation_(library_)
@@ -160,61 +247,61 @@ RuntimeWorld::RuntimeWorld(std::string session_id)
       mixer_(clips_),
       audio_(mixer_)
 #endif
-#else
-      ,
-      scheduler_(scheduler_config(k_hz))
 #endif
-{
+      ,
+      driver_(scheduler_, driver_config(k_tier)) {
 #if defined(ENGINE_HOST_ECS)
+  // The world's own components first, so `Node` records materialize whichever capabilities this
+  // build has; each capability then registers its own (and `Transform` again, idempotently).
+  world::register_world_components(sim_.world());
+#if defined(ENGINE_HOST_KINEMATICS)
+  kinematics_.install(sim_);
+#endif
 #if defined(ENGINE_HOST_ANIMATION)
   animation_.install(sim_);
 #endif
 #if defined(ENGINE_HOST_AUDIO_SYSTEM)
   audio_.install(sim_);
 #endif
+  // The entity store's hook first: it creates the entity every later hook attaches to, and it is
+  // the last to let go of one (SimScheduler::dematerialize walks the table backwards).
+  scheduler_.add_hooks(records_.hooks());
+#if defined(ENGINE_HOST_ANIMATION)
+  scheduler_.add_hooks(animation_.hooks());
+#endif
+  driver_.set_target(records_.target());
+#endif
+  driver_.set_writeback_sink(sim::WriteBackSink{this, &RuntimeWorld::commit_writeback});
+  driver_.install_writeback();
+#if defined(ENGINE_HOST_ECS)
+  tick_ = std::make_unique<ecs::ScheduledTick>(sim_, scheduler_);
   for (const ecs::RegisteredSystem& system : ecs::systems(sim_.world()).all())
     systems_.push_back(system.desc.name != nullptr ? system.desc.name : "?");
-#else
+#endif
   for (u16 i = 0; i < scheduler_.system_count(); ++i) {
     const char* name = scheduler_.system(i).name;
     systems_.push_back(name != nullptr ? name : "?");
   }
-#endif
+}
+
+RuntimeWorld::~RuntimeWorld() = default;
+
+sim::MaterializeReport RuntimeWorld::materialize(const doc::Document& document,
+                                                 const sim::MaterializeScope& scope) {
+  return driver_.materialize(document, scope);
 }
 
 void RuntimeWorld::step() {
-#if defined(ENGINE_HOST_ECS)
-  sim_.step();
+  // One executor: the scheduler, which runs flecs' systems inside its phases when there is a
+  // flecs world, and its own table — the write-back at Persist — either way.
+  scheduler_.step();
 #if defined(ENGINE_HOST_AUDIO_SYSTEM)
   mixer_.render(nullptr, 0);
 #endif
-#else
-  scheduler_.step();
-#endif
 }
 
-u64 RuntimeWorld::tick() const noexcept {
-#if defined(ENGINE_HOST_ECS)
-  return sim_.tick().value;
-#else
-  return scheduler_.tick().value;
-#endif
-}
-
-i64 RuntimeWorld::game_time_us() const noexcept {
-#if defined(ENGINE_HOST_ECS)
-  return sim_.game_time().us;
-#else
-  return scheduler_.game_time().us;
-#endif
-}
-
-i64 RuntimeWorld::us_per_tick() noexcept {
-#if defined(ENGINE_HOST_ECS)
-  return sim_.game_clock().us_per_tick();
-#else
-  return scheduler_.step_size().us;
-#endif
+u32 RuntimeWorld::flush_writeback() {
+  return driver_.flush_writeback(scheduler_.tick(), scheduler_.game_time());
 }
 
 const char* RuntimeWorld::kind() const noexcept {
@@ -231,6 +318,103 @@ u32 RuntimeWorld::entities() const noexcept {
   return map != nullptr ? map->size() : 0u;
 #else
   return 0;
+#endif
+}
+
+bool RuntimeWorld::component_json([[maybe_unused]] const Id128& id,
+                                  [[maybe_unused]] std::string_view component,
+                                  [[maybe_unused]] JsonValue& out) {
+#if defined(ENGINE_HOST_ECS)
+  return ecs::component_json(sim_.world(), id, component, out);
+#else
+  return false;
+#endif
+}
+
+// The write-back's sink: one session transaction — journaled, saved, undoable like any other — and,
+// when the document keeps a `world.db`, one event per record it changed.
+bool RuntimeWorld::commit_writeback(void* context, const sim::WriteBackBatch& batch) {
+  auto* self = static_cast<RuntimeWorld*>(context);
+  if (self->session_ptr_ == nullptr) return false;
+  protocol::ApplyResult result;
+  protocol::RpcError error;
+  // Not atomic: a record deleted since it was materialized refuses its own command and nothing
+  // else; the next materialization dematerializes it.
+  if (!self->session_ptr_->apply(batch.commands, batch.attribution, /*atomic=*/false, result,
+                                 error)) {
+    ENGINE_LOG_WARN(log_ops, "write-back could not be saved", log::field("error", error.message));
+    return false;
+  }
+  if (!result.committed) return false;
+  self->log_writeback(batch, result.patch_index);
+  return true;
+}
+
+void RuntimeWorld::log_writeback([[maybe_unused]] const sim::WriteBackBatch& batch,
+                                 [[maybe_unused]] u32 patch) {
+#if defined(ENGINE_HOST_STORE)
+  // The store's log is the persistent world's record of what happened (03 §3.5, ADR-0003): a
+  // write-back happened, so it is an event there as well as a commit in the journal. Only where the
+  // document keeps one — `session.events`' convention, `world.db` in its directory.
+  if (!store_checked_) {
+    store_checked_ = true;
+    std::string native;
+    const std::string wanted = io::join_path(session_ptr_->dir(), "world.db");
+    if (vfs_ != nullptr && vfs_->resolve(wanted, native) == io::Status::Ok && io::exists(native)) {
+      auto db = std::make_unique<store::Database>();
+      store::OpenOptions options;
+      options.create = false;
+      if (db->open(native, options) == store::Status::Ok) {
+        auto events = std::make_unique<store::EventLog>(*db);
+        if (events->open() == store::Status::Ok) {
+          db_ = std::move(db);
+          log_ = std::move(events);
+        }
+      }
+      if (log_ == nullptr) {
+        ENGINE_LOG_WARN(log_ops, "world.db is there but could not be opened for writing",
+                        log::field("path", native));
+      }
+    }
+  }
+  if (log_ == nullptr) return;
+  const doc::Document& document = session_ptr_->document();
+  const u32 type = schema::stable_type_id(schema::type_of<world::WriteBack>().qualified_name);
+  Vector<std::string> payloads;
+  Vector<store::EventRecord> records;
+  for (u32 i = 0; i < batch.changes.size();) {
+    world::WriteBack event;
+    event.record = batch.changes[i].record;
+    event.type = std::string(document.type_of(event.record));
+    event.patch = patch;
+    u32 j = i;
+    for (; j < batch.changes.size() && batch.changes[j].record == event.record; ++j) {
+      const sim::WriteBackChange& change = batch.changes[j];
+      event.properties.insert_or_assign(std::string(change.mapping->fields[change.row].property),
+                                        change.value);
+    }
+    payloads.push_back(write_json(schema::to_json(event)));
+    store::EventRecord record;
+    record.tile = store_tile_of(document, event.record);
+    record.sim_tick = batch.tick.value;
+    record.game_time_us = batch.time.us;
+    record.type = type;
+    record.origin = store::EventOrigin::Deterministic;
+    record.subject = event.record;
+    records.push_back(record);
+    i = j;
+  }
+  // The payload spans point into `payloads`, which has stopped growing.
+  for (u32 i = 0; i < records.size(); ++i) {
+    records[i].payload =
+        std::span<const u8>(reinterpret_cast<const u8*>(payloads[i].data()), payloads[i].size());
+  }
+  const store::Status status =
+      log_->append(std::span<store::EventRecord>(records.data(), records.size()));
+  if (status != store::Status::Ok) {
+    ENGINE_LOG_WARN(log_ops, "write-back events not logged",
+                    log::field("status", store::status_name(status)));
+  }
 #endif
 }
 
@@ -259,8 +443,6 @@ RuntimeWorld* OpsHost::world(std::string_view session, const protocol::SessionMa
 }
 
 namespace {
-
-ENGINE_LOG_CATEGORY_DEFINE(log_ops, "host.ops");
 
 HostState* state_of(protocol::Context& ctx) { return static_cast<HostState*>(ctx.app); }
 
@@ -964,6 +1146,96 @@ bool engine_budgets(protocol::Context& ctx, const protocol::BudgetsParams& param
   return true;
 }
 
+// ---- session.materialize -----------------------------------------------------------------------
+
+// A driver report as the protocol's `MaterializeResult`, with every mapping this build compiled
+// beside it, so a client learns what a record type would become before it authors one.
+void fill_materialize(const sim::MaterializeReport& report, u8 tier,
+                      protocol::MaterializeResult& out) {
+  out.full = report.full;
+  out.revision = report.revision;
+  out.visited = report.visited;
+  out.created = report.created;
+  out.updated = report.updated;
+  out.unchanged = report.unchanged;
+  out.dematerialized = report.dematerialized;
+  out.relinked = report.relinked;
+  out.skipped = report.skipped;
+  out.live = report.live;
+  out.orphans = report.orphans;
+  out.ms = report.ms;
+  out.tier = tier;
+  for (const sim::MaterializedType& type : report.types) {
+    protocol::MaterializeTypeReport row;
+    row.type = type.type;
+    row.mapped = type.mapped;
+    row.records = type.records;
+    row.materialized = type.materialized;
+    row.skipped = type.skipped;
+    if (type.skipped != 0) {
+      row.reason = sim::skip_reason_name(type.reason);
+      row.detail = type.detail;
+    }
+    out.types.push_back(std::move(row));
+  }
+  for (const sim::SkippedRecord& skip : report.skips) {
+    protocol::MaterializeSkip row;
+    row.id = skip.id;
+    row.type = skip.type;
+    row.reason = sim::skip_reason_name(skip.reason);
+    out.skips.push_back(std::move(row));
+  }
+  for (const schema::MaterializeInfo* mapping : schema::MaterializeRegistry::global().all()) {
+    protocol::MaterializeMapping row;
+    row.record = mapping->record->qualified_name;
+    for (const schema::TypeInfo* component : mapping->components)
+      row.components.push_back(component->qualified_name);
+    for (const schema::MaterializeField& field : mapping->fields) {
+      protocol::MaterializeFieldInfo info;
+      info.component = field.component->qualified_name;
+      info.field = field.field;
+      info.property = field.property;
+      info.scale = field.scale;
+      info.offset = field.offset;
+      info.converted = (field.flags & schema::MaterializeFlag::convert) != 0;
+      info.write_back = (field.flags & schema::MaterializeFlag::writeback) != 0;
+      row.fields.push_back(std::move(info));
+    }
+    row.parent = schema::materialize_parent_name(mapping->parent);
+    for (u8 t = 0; t < 8; ++t) {
+      if (((mapping->tiers >> t) & 1u) != 0) row.tiers.push_back(t);
+    }
+    out.mappings.push_back(std::move(row));
+  }
+}
+
+bool session_materialize(protocol::Context& ctx, const protocol::MaterializeParams& params,
+                         protocol::MaterializeResult& out, protocol::RpcError& error) {
+  protocol::Session* session = ctx.sessions->require(params.session, error);
+  if (session == nullptr) return false;
+  HostState* state = state_of(ctx);
+  if (state == nullptr) {
+    error = not_built("this host has no runtime worlds attached");
+    return false;
+  }
+  sim::MaterializeScope scope;
+  if (params.scope == "tile") {
+    scope = sim::MaterializeScope::of_tile(doc::TileCoord{params.tile_x, params.tile_y});
+  } else if (params.scope == "untiled") {
+    scope = sim::MaterializeScope::untiled();
+  } else if (params.scope != "whole" && !params.scope.empty()) {
+    error = invalid("scope is whole, tile or untiled; got '" + params.scope + "'");
+    return false;
+  }
+  RuntimeWorld* world = state->ops.world(params.session, *ctx.sessions, true);
+  world->bind(session, &ctx.sessions->vfs());
+  fill_materialize(world->materialize(session->document(), scope), RuntimeWorld::tier(), out);
+  ENGINE_LOG_INFO(log_ops, "materialize", log::field("session", params.session),
+                  log::field("live", out.live), log::field("skipped", out.skipped),
+                  log::field("ms", out.ms));
+  return true;
+}
+
 // ---- session.run_headless ----------------------------------------------------------------------
 
 constexpr f64 k_max_headless_seconds = 3600.0;
@@ -973,15 +1245,41 @@ constexpr u32 k_max_predicate_terms = 1024;
 // The `until` predicate, parsed once into a flat tree so a tick evaluates nodes rather than
 // re-reading JSON.
 struct PredicateNode {
-  enum class Kind : u8 { All, Any, Not, Equals, Exists, Ticks };
+  enum class Kind : u8 { All, Any, Not, Property, Component, Exists, Ticks };
+  enum class Test : u8 { Equals, AtLeast, AtMost };
   Kind kind = Kind::All;
+  Test test = Test::Equals;
   Id128 object;
-  std::string property;
-  JsonValue value;  // Equals
+  std::string property;   // Property: the property; Component: the field
+  std::string component;  // Component: the qualified component type
+  i64 index = -1;         // `name[i]`: one element of an array value; -1 for the whole value
+  JsonValue value;        // Equals
+  f64 bound = 0.0;        // AtLeast, AtMost
   bool exists = true;
   u64 ticks = 0;         // Ticks: this call's ticks at least this many
   Vector<u32> children;  // All, Any, Not
 };
+
+// "name" or "name[i]".
+bool split_index(std::string_view text, std::string& name, i64& index) {
+  index = -1;
+  const usize open = text.find('[');
+  if (open == std::string_view::npos) {
+    name = std::string(text);
+    return !name.empty();
+  }
+  if (open == 0 || text.back() != ']') return false;
+  const std::string_view digits = text.substr(open + 1, text.size() - open - 2);
+  if (digits.empty() || digits.size() > 9) return false;
+  i64 value = 0;
+  for (const char c : digits) {
+    if (c < '0' || c > '9') return false;
+    value = value * 10 + (c - '0');
+  }
+  name = std::string(text.substr(0, open));
+  index = value;
+  return true;
+}
 
 bool parse_predicate(const JsonValue& json, const std::string& path, u32 depth,
                      Vector<PredicateNode>& nodes, u32& index, std::string& error) {
@@ -1027,6 +1325,33 @@ bool parse_predicate(const JsonValue& json, const std::string& path, u32 depth,
       nodes[index].children.push_back(child);
     }
     nodes[index].kind = kind;
+    return true;
+  };
+  // `equals`, `at_least` or `at_most`: exactly one, and a number for the two comparisons.
+  const auto test = [&]() {
+    const JsonValue* equals = json.find("equals");
+    const JsonValue* at_least = json.find("at_least");
+    const JsonValue* at_most = json.find("at_most");
+    u32 given = 0;
+    for (const JsonValue* one : {equals, at_least, at_most}) {
+      if (one != nullptr) ++given;
+    }
+    if (given != 1) {
+      error = path + " needs one of \"equals\", \"at_least\" or \"at_most\": the value waited for";
+      return false;
+    }
+    PredicateNode& node = nodes[index];
+    if (equals != nullptr) {
+      node.test = PredicateNode::Test::Equals;
+      node.value = *equals;
+      return true;
+    }
+    node.test = at_least != nullptr ? PredicateNode::Test::AtLeast : PredicateNode::Test::AtMost;
+    const JsonValue& bound = at_least != nullptr ? *at_least : *at_most;
+    if (!bound.get_f64(node.bound) || !std::isfinite(node.bound)) {
+      error = path + (at_least != nullptr ? ".at_least" : ".at_most") + " is not a number";
+      return false;
+    }
     return true;
   };
   if (json.find("all") != nullptr) return only({"all"}) && list("all", PredicateNode::Kind::All);
@@ -1077,47 +1402,79 @@ bool parse_predicate(const JsonValue& json, const std::string& path, u32 depth,
       nodes[index].kind = PredicateNode::Kind::Exists;
       return true;
     }
-    if (!only({"object", "property", "equals"})) return false;
+    // A live entity's component field: the entity is the object's materialization.
+    if (const JsonValue* component = json.find("component"); component != nullptr) {
+      if (!only({"object", "component", "field", "equals", "at_least", "at_most"})) return false;
+      std::string_view type;
+      const JsonValue* field = json.find("field");
+      std::string_view name;
+      if (!component->get_string(type) || type.empty()) {
+        error = path + ".component is not a component's qualified type name";
+        return false;
+      }
+      if (field == nullptr || !field->get_string(name) ||
+          !split_index(name, nodes[index].property, nodes[index].index)) {
+        error = path + " needs a \"field\" name (or \"name[i]\") beside \"component\"";
+        return false;
+      }
+      nodes[index].kind = PredicateNode::Kind::Component;
+      nodes[index].component = std::string(type);
+      return test();
+    }
+    if (!only({"object", "property", "equals", "at_least", "at_most"})) return false;
     const JsonValue* property = json.find("property");
-    const JsonValue* equals = json.find("equals");
     std::string_view name;
-    if (property == nullptr || !property->get_string(name) || name.empty()) {
-      error = path + " needs a \"property\" name beside \"object\" (or \"exists\")";
+    if (property == nullptr || !property->get_string(name) ||
+        !split_index(name, nodes[index].property, nodes[index].index)) {
+      error = path + " needs a \"property\" name (or \"name[i]\") beside \"object\" (or " +
+              "\"component\", or \"exists\")";
       return false;
     }
-    if (equals == nullptr) {
-      error = path + " needs \"equals\": the value the property is waited for";
-      return false;
-    }
-    nodes[index].kind = PredicateNode::Kind::Equals;
-    nodes[index].property = std::string(name);
-    nodes[index].value = *equals;
-    return true;
+    nodes[index].kind = PredicateNode::Kind::Property;
+    return test();
   }
   error = path + " is not a term: all, any, not, object, ticks_at_least or seconds_at_least";
   return false;
 }
 
+// One value against a term's test, after the term's `[i]`.
+bool holds(const PredicateNode& node, const JsonValue* value) {
+  if (value == nullptr) return false;
+  if (node.index >= 0) {
+    if (!value->is_array() || static_cast<u64>(node.index) >= value->size()) return false;
+    value = &(*value)[static_cast<usize>(node.index)];
+  }
+  if (node.test == PredicateNode::Test::Equals) return *value == node.value;
+  f64 number = 0.0;
+  if (!value->get_f64(number)) return false;
+  return node.test == PredicateNode::Test::AtLeast ? number >= node.bound : number <= node.bound;
+}
+
 bool evaluate(const Vector<PredicateNode>& nodes, u32 index, const doc::Document& document,
-              u64 ticks) {
+              RuntimeWorld& world, u64 ticks) {
   const PredicateNode& node = nodes[index];
   switch (node.kind) {
     case PredicateNode::Kind::All:
       for (const u32 child : node.children) {
-        if (!evaluate(nodes, child, document, ticks)) return false;
+        if (!evaluate(nodes, child, document, world, ticks)) return false;
       }
       return true;
     case PredicateNode::Kind::Any:
       for (const u32 child : node.children) {
-        if (evaluate(nodes, child, document, ticks)) return true;
+        if (evaluate(nodes, child, document, world, ticks)) return true;
       }
       return false;
-    case PredicateNode::Kind::Not: return !evaluate(nodes, node.children[0], document, ticks);
+    case PredicateNode::Kind::Not:
+      return !evaluate(nodes, node.children[0], document, world, ticks);
     case PredicateNode::Kind::Exists: return document.exists(node.object) == node.exists;
-    case PredicateNode::Kind::Equals: {
+    case PredicateNode::Kind::Property: {
       if (!document.exists(node.object)) return false;
-      const JsonValue* value = document.property(node.object, node.property);
-      return value != nullptr && *value == node.value;
+      return holds(node, document.property(node.object, node.property));
+    }
+    case PredicateNode::Kind::Component: {
+      JsonValue component;
+      if (!world.component_json(node.object, node.component, component)) return false;
+      return holds(node, component.find(node.property));
     }
     case PredicateNode::Kind::Ticks: return ticks >= node.ticks;
   }
@@ -1152,32 +1509,53 @@ bool session_run_headless(protocol::Context& ctx, const protocol::RunHeadlessPar
   }
 
   RuntimeWorld* world = state->ops.world(params.session, *ctx.sessions, true);
-  const doc::Document& document = session->document();
+  world->bind(session, &ctx.sessions->vfs());
+  world->set_writeback_every(params.write_back_every);
+  // The document into the world before the first tick: all of it on the first call, what changed
+  // since on later ones — edits made through doc.apply between two calls reach the world here.
+  const sim::MaterializeReport pass =
+      world->materialize(session->document(), sim::MaterializeScope::whole());
+  protocol::MaterializeResult report;
+  fill_materialize(pass, RuntimeWorld::tier(), report);
+  const u64 flushes_before = world->driver_stats().writeback_flushes;
+  const u64 fields_before = world->driver_stats().writeback_fields;
+
+  // The document is read through the session each time: a write-back commit changes it in place.
   const u64 target = static_cast<u64>(std::llround(params.seconds * RuntimeWorld::hz()));
   u64 ran = 0;
-  bool holds = has_predicate && evaluate(predicate, 0, document, 0);
+  bool holds_now = has_predicate && evaluate(predicate, 0, session->document(), *world, 0);
   const i64 start_ns = time::monotonic_ns();
-  while (!holds && ran < target) {
+  while (!holds_now && ran < target) {
     world->step();
     ++ran;
-    if (has_predicate) holds = evaluate(predicate, 0, document, ran);
+    if (has_predicate) holds_now = evaluate(predicate, 0, session->document(), *world, ran);
   }
+  // Whatever changed since the last periodic flush, so the document says where the world stopped.
+  // `stopped` is decided before it; `predicate` is read after it, as the value when the call
+  // returns — a document term may turn true on this last commit, with the time already out.
+  const bool stopped_on_predicate = holds_now;
+  world->flush_writeback();
   out.wall_ms = ms_since(start_ns);
   out.ticks = ran;
   out.game_seconds = static_cast<f64>(ran) * static_cast<f64>(world->us_per_tick()) / 1.0e6;
-  if (has_predicate) out.predicate = holds;
-  out.stopped = holds ? "predicate" : "seconds";
+  if (has_predicate) out.predicate = evaluate(predicate, 0, session->document(), *world, ran);
+  out.stopped = stopped_on_predicate ? "predicate" : "seconds";
   out.tick = world->tick();
   out.game_time_us = world->game_time_us();
   out.hz = RuntimeWorld::hz();
   out.world = world->kind();
+  out.executor = "scheduler";
   for (const std::string& name : world->systems())
     out.systems.push_back(name);
   out.entities = world->entities();
-  out.materialized = 0;
+  out.materialized = world->materialized();
+  out.materialize = std::move(report);
+  out.write_backs = static_cast<u32>(world->driver_stats().writeback_flushes - flushes_before);
+  out.written_fields = static_cast<u32>(world->driver_stats().writeback_fields - fields_before);
   ENGINE_LOG_INFO(log_ops, "run_headless", log::field("session", params.session),
                   log::field("ticks", ran), log::field("wall_ms", out.wall_ms),
-                  log::field("stopped", out.stopped));
+                  log::field("materialized", out.materialized),
+                  log::field("write_backs", out.write_backs), log::field("stopped", out.stopped));
   return true;
 }
 
@@ -1411,9 +1789,18 @@ void add_ops_methods(protocol::Dispatcher& d) {
   d.add(protocol::method<protocol::RunHeadlessParams, protocol::RunHeadlessResult,
                          &session_run_headless>(
       "session.run_headless",
-      "Step the session's runtime world at the fixed step with no rendering, for game seconds or "
-      "until a predicate over document objects and the run's own clock holds; returns ticks, game "
-      "time, wall milliseconds and the predicate's value."));
+      "Materialize the session's document into its runtime world (all of it on the first call, "
+      "what changed on later ones) and step it at the fixed step with no rendering, for game "
+      "seconds or until a predicate over document properties, live entity components and the "
+      "run's own clock holds; what systems change in writable fields is committed back to the "
+      "document, attributed to system. Returns ticks, game time, the materialization and the "
+      "write-backs."));
+  d.add(protocol::method<protocol::MaterializeParams, protocol::MaterializeResult,
+                         &session_materialize>(
+      "session.materialize",
+      "Materialize the session's document (or one tile of it) into its runtime world now, and "
+      "report which record types mapped, how many records became entities, which were skipped and "
+      "why, and every mapping this build compiled."));
   d.add(protocol::method<protocol::RunTestsParams, protocol::RunTestsResult, &engine_run_tests>(
       "engine.run_tests",
       "Run the engine's own checks that are safe inside a host — the document validators, the "

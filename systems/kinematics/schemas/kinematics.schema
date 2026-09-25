@@ -1,0 +1,36 @@
+// kinematics components and record types (ADR-0007, ADR-0027). The capability's own types live
+// with the capability, so adding them touches no shared file, and ENGINE_WITH_KINEMATICS=OFF takes
+// them out of the build with everything else it owns. `Transform` is not here: it is the world's
+// (schemas/world.schema), because every capability that places something reads it.
+namespace engine.kinematics
+import "world.schema"
+
+/// How fast an entity moves and turns, in world space. An entity with it and a `Transform` is
+/// integrated every tick; without it, it costs nothing (plan 11 §11.10).
+struct Velocity @version(1) @kind(component) {
+  /// Metres per second.
+  linear: vec3 @unit("m/s")
+  /// Radians per second about each world axis.
+  angular: vec3 @unit("rad/s")
+}
+
+/// A thing that moves at a set velocity without physics: a cart on a rail, a drifting buoy, a
+/// patrol a scheduled event will stop. Authored in the units a designer types: metres per second
+/// and degrees per second.
+struct Mover @version(1) @kind(record) {
+  name: string
+  position: vec3 @unit(m)
+  orientation: quat
+  velocity: vec3 @unit("m/s")
+  spin: vec3 @unit("deg/s")
+}
+
+/// A mover is a transform and a velocity. Where it has got to is what the world writes back; how
+/// fast it goes is the author's, so it is not.
+materialize Mover {
+  Transform.position = position @writeback
+  Transform.orientation = orientation @writeback
+  Velocity.linear = velocity
+  Velocity.angular = spin
+  parent = ChildOf
+}

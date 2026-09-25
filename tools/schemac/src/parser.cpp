@@ -183,7 +183,11 @@ class Parser {
         if (!parse_struct(doc, error)) return false;
         continue;
       }
-      return fail("expected namespace, import, enum, or struct", error);
+      if (is_ident("materialize")) {
+        if (!parse_materialize(doc, error)) return false;
+        continue;
+      }
+      return fail("expected namespace, import, enum, struct, or materialize", error);
     }
     if (out_.ns.empty()) {
       error = file_ + ":1: file declares no namespace";
@@ -394,12 +398,91 @@ class Parser {
         if (a.name == "transient") f.transient = true;
         if (a.name == "deprecated") f.deprecated = true;
         if (a.name == "doc" && !a.args.empty()) f.doc = a.args[0];
+        if (a.name == "unit" && !a.args.empty()) f.unit = a.args[0];
       }
       if (at_punct(',')) advance();
       s.fields.push_back(std::move(f));
     }
     advance();  // '}'
     out_.structs.push_back(std::move(s));
+    return true;
+  }
+
+  // materialize <RecordType> [@tiers(...)] [@doc("...")] {
+  //   Component.field = property [@writeback]
+  //   Component
+  //   parent = ChildOf | none
+  // }
+  //
+  // The lexer reads `Component.field` as one identifier (a dotted name is one token everywhere in
+  // the language), so the left side splits at its last dot: `engine.world.Transform.position` is
+  // the qualified component `engine.world.Transform` and the field `position`. Names are resolved
+  // and every rule is checked in resolve(); this only builds the rows.
+  bool parse_materialize(const std::string& doc, std::string& error) {
+    MaterializeDecl m;
+    m.doc = doc;
+    m.loc = loc();
+    advance();  // 'materialize'
+    if (!at(Token::Kind::Ident))
+      return fail("expected a record type name after materialize", error);
+    m.record = advance().text;
+    if (!parse_attrs(m.attrs, error)) return false;
+    for (const Attribute& a : m.attrs) {
+      if (a.name == "doc" && !a.args.empty()) m.doc = a.args[0];
+    }
+    if (!expect_punct('{', error)) return false;
+    while (!at_punct('}')) {
+      take_docs();  // a row's own `///` comment documents the source, not the table
+      if (at_punct('}')) break;
+      if (at(Token::Kind::End)) return fail("unterminated materialize block", error);
+      MaterializeRow row;
+      row.loc = loc();
+      if (!at(Token::Kind::Ident)) {
+        return fail("expected 'Component.field = property', a component, or 'parent = ChildOf'",
+                    error);
+      }
+      const std::string lhs = advance().text;
+      if (at_punct('=')) {
+        advance();
+        if (!at(Token::Kind::Ident)) return fail("expected a name after '='", error);
+        const std::string rhs = advance().text;
+        if (lhs == "parent") {
+          row.kind = MaterializeRow::Kind::Parent;
+          row.property = rhs;
+        } else {
+          const size_t dot = lhs.rfind('.');
+          if (dot == std::string::npos || dot == 0 || dot + 1 == lhs.size()) {
+            error = file_ + ":" + std::to_string(row.loc.line) +
+                    ": expected Component.field on "
+                    "the left of '=', got '" +
+                    lhs + "'";
+            return false;
+          }
+          row.kind = MaterializeRow::Kind::Field;
+          row.component = lhs.substr(0, dot);
+          row.field = lhs.substr(dot + 1);
+          row.property = rhs;
+        }
+      } else {
+        row.kind = MaterializeRow::Kind::Component;
+        row.component = lhs;
+      }
+      std::vector<Attribute> attrs;
+      if (!parse_attrs(attrs, error)) return false;
+      for (const Attribute& a : attrs) {
+        if (a.name == "writeback" && row.kind == MaterializeRow::Kind::Field) {
+          row.writeback = true;
+          continue;
+        }
+        error = a.loc.file + ":" + std::to_string(a.loc.line) + ": '@" + a.name +
+                "' is not an attribute of this materialize row (a field row takes @writeback)";
+        return false;
+      }
+      if (at_punct(',')) advance();
+      m.rows.push_back(std::move(row));
+    }
+    advance();  // '}'
+    out_.materializations.push_back(std::move(m));
     return true;
   }
 

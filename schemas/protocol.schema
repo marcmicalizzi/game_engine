@@ -1177,28 +1177,133 @@ struct BudgetsResult @version(1) {
   budgets: Budget[]
 }
 
+// ---- session.materialize -----------------------------------------------------------------------
+// The document into the session's runtime world (docs/plan/03-data-model.md §3.4): the mapping
+// table schemac compiled, the driver's walk, and what it did. `session.run_headless` materializes
+// too; this is the same pass on its own, with the report in full.
+
+/// Parameters of `session.materialize`.
+struct MaterializeParams @version(1) {
+  session: string
+  /// "whole" (every live record), "tile" (the records of tile `tile_x`, `tile_y` of the partitioned
+  /// layers that define them), or "untiled" (every record in no tile).
+  scope: string = "whole"
+  tile_x: i32 = 0
+  tile_y: i32 = 0
+}
+
+/// One record type a materialization met.
+struct MaterializeTypeReport @version(1) {
+  /// The qualified type name.
+  type: string
+  /// The type has a `materialize` declaration in this build.
+  mapped: bool = false
+  /// Live records of the type in scope that the pass looked at.
+  records: u32 = 0
+  /// Of those, the ones with an entity after the pass.
+  materialized: u32 = 0
+  skipped: u32 = 0
+  /// Why the first skipped record was skipped: "no mapping" (document-only by design), "unknown
+  /// type" (not in this build's schema registry), "tier", "missing component" (with the
+  /// component in `detail`), "no entity store" (a build without the ECS), or "no hook".
+  reason: string
+  detail: string
+}
+
+/// One skipped record, by id.
+struct MaterializeSkip @version(1) {
+  id: id128
+  type: string
+  reason: string
+}
+
+/// One row of a mapping: a component field and the record property it comes from.
+struct MaterializeFieldInfo @version(1) {
+  component: string
+  field: string
+  property: string
+  /// component = property × scale + offset when the two sides declare different `@unit`s.
+  scale: f64 = 1
+  offset: f64 = 0
+  converted: bool = false
+  /// The world writes this field back to the record at `Persist`.
+  write_back: bool = false
+}
+
+/// A record type's mapping, as the build compiled it.
+struct MaterializeMapping @version(1) {
+  record: string
+  components: string[]
+  fields: MaterializeFieldInfo[]
+  /// "ChildOf" or "none": what the document's parent becomes.
+  parent: string
+  /// The LOD tiers the type materializes at.
+  tiers: u8[]
+}
+
+/// Result of `session.materialize`, and the pass `session.run_headless` reports.
+struct MaterializeResult @version(1) {
+  /// A full pass compared every live record in scope; otherwise the pass followed the document's
+  /// change feed and looked only at what changed.
+  full: bool = false
+  /// The document revision the world now reflects.
+  revision: u64 = 0
+  visited: u32 = 0
+  created: u32 = 0
+  updated: u32 = 0
+  /// Looked at and left alone: already in sync.
+  unchanged: u32 = 0
+  dematerialized: u32 = 0
+  /// Held records materialized again because their parent now has an entity.
+  relinked: u32 = 0
+  skipped: u32 = 0
+  /// Entities materialized from the document after the pass.
+  live: u32 = 0
+  /// Held records whose document parent has no entity.
+  orphans: u32 = 0
+  /// Wall time of the pass.
+  ms: f64 = 0
+  /// The tier records are materialized at.
+  tier: u8 = 0
+  /// By type name.
+  types: MaterializeTypeReport[]
+  /// The first skipped records, in walk order; the counts above are complete.
+  skips: MaterializeSkip[]
+  /// Every mapping this build has, whether or not the document uses it.
+  mappings: MaterializeMapping[]
+}
+
 // ---- session.run_headless ----------------------------------------------------------------------
 // 06 §6.9's `run_headless(seconds | until predicate)`: step the session's runtime world at the
 // fixed step with no rendering (06 §6.11's headless `sim` mode). The world is the host's, one per
 // session, made on the first call and kept while the host runs, so a second call continues where
-// the first stopped. What it is not yet is a materialization of the document: see
-// docs/subsystems/protocol.md, "session.run_headless and the materialization gap".
+// the first stopped. Every call first materializes the document into it (all of it on the first
+// call, what changed since on later ones), and what systems change in the writable fields comes
+// back as commits attributed to `system` (docs/subsystems/protocol.md, "session.run_headless").
 
 /// Parameters of `session.run_headless`.
-struct RunHeadlessParams @version(1) {
+struct RunHeadlessParams @version(2) {
   session: string
   /// Game seconds to advance at the fixed step; with `until`, the most to advance before giving
   /// up. 0..3600.
   seconds: f64 = 0
   /// Stop as soon as this holds; it is tested before the first tick and after every one. Terms:
-  /// `{"object": "<id>", "property": "<name>", "equals": <value>}` (a live document object's
-  /// composed property), `{"object": "<id>", "exists": true|false}`, `{"ticks_at_least": n}` and
-  /// `{"seconds_at_least": s}` (this call's own ticks and game seconds), and `{"all": [...]}`,
-  /// `{"any": [...]}`, `{"not": term}` over them. Null runs the whole `seconds`.
+  /// `{"object": "<id>", "property": "<name>", <test>}` (a live document object's composed
+  /// property), `{"object": "<id>", "component": "<type>", "field": "<name>", <test>}` (a field of
+  /// a live entity's component, the entity being the object's materialization), where `<test>` is
+  /// `"equals": <value>`, `"at_least": <number>` or `"at_most": <number>` and a name may end in
+  /// `[i]` to take one element of an array; `{"object": "<id>", "exists": true|false}`;
+  /// `{"ticks_at_least": n}` and `{"seconds_at_least": s}` (this call's own ticks and game
+  /// seconds); and `{"all": [...]}`, `{"any": [...]}`, `{"not": term}` over them. Null runs the
+  /// whole `seconds`.
   until: json
+  /// How often, in ticks, what systems changed in the writable fields is committed to the document
+  /// (one transaction attributed to `system`, and an event in the store's log when the document
+  /// has one). 0 commits only when the call returns, which it always does with whatever is left.
+  write_back_every: u32 = 60 @since(2)
 }
 
-struct RunHeadlessResult @version(1) {
+struct RunHeadlessResult @version(2) {
   /// Ticks this call ran, and the game time they advanced.
   ticks: u64 = 0
   game_seconds: f64 = 0
@@ -1213,16 +1318,24 @@ struct RunHeadlessResult @version(1) {
   game_time_us: i64 = 0
   /// The fixed step's rate.
   hz: u32 = 0
-  /// "ecs" (a flecs world driven by its tick pipeline), or "scheduler" (`sim::SimScheduler`, in a
-  /// build without the ECS capability).
+  /// "ecs" (a flecs world, its systems run inside the scheduler's phases), or "scheduler"
+  /// (`sim::SimScheduler` alone, in a build without the ECS capability, which materializes nothing).
   world: string
-  /// The systems the world ticks, by name, in registration order.
+  /// The systems the world ticks, by name: the flecs systems in registration order, then the
+  /// scheduler's own table (`sim.write_back`).
   systems: string[]
   /// Entities with a persistent identity (an `Id128`) in the world; always 0 in the scheduler's.
   entities: u32 = 0
-  /// Entities materialized from the document. 0 until a materialization layer exists; the
-  /// document terms of `until` read the document, which nothing in the world writes back to.
+  /// Entities materialized from the document and held by the driver after the call.
   materialized: u32 = 0
+  /// What owns the tick: "scheduler" — `sim::SimScheduler`, with flecs' systems run inside each of
+  /// its phases (ADR-0038, proposed).
+  executor: string @since(2)
+  /// The materialization this call made before its first tick.
+  materialize: MaterializeResult? @since(2)
+  /// Write-back commits this call made, and the fields they wrote.
+  write_backs: u32 = 0 @since(2)
+  written_fields: u32 = 0 @since(2)
 }
 
 // ---- engine.run_tests --------------------------------------------------------------------------

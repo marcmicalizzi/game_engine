@@ -138,10 +138,25 @@ class SimWorld {
   // Runs exactly one fixed step: publishes the new tick and game time, then runs the pipeline
   // with the fixed delta. Reads no clock at all, which is what makes a replay and a headless
   // fast-forward take the same path as a live session (plan 05 §5.10).
+  //
+  // This is flecs' pipeline as the executor. A world an `ecs::ScheduledTick` drives is stepped by
+  // the engine's scheduler instead (ADR-0038, proposed), and calling this on it is a second
+  // executor and asserts: one clock, one executor.
   void step();
   // Feeds elapsed real time to the accumulator and runs whole steps, at most
   // `max_steps_per_advance` of them. Returns how many ran.
   u32 advance(i64 real_ns);
+
+  // Takes a tick and a game time another clock decided — the engine's scheduler, when it owns the
+  // tick (`ecs::ScheduledTick`) — and publishes them as `SimTick` and `GameTime`, so every system
+  // and `tick()`/`game_time()` read the one clock rather than a copy of it.
+  void sync_clock(SimTick tick, GameTime time);
+  // The debug table watchdog, at its period, as `step()` runs it. For an executor that is not
+  // `step()`; compiled to nothing in a release build.
+  void watch_tables();
+  // Set by `ScheduledTick` for its lifetime: `step()` and `advance()` then refuse.
+  bool scheduled() const noexcept { return scheduled_; }
+  void set_scheduled(bool scheduled) noexcept { scheduled_ = scheduled; }
 
   SimTick tick() const noexcept { return tick_; }
   GameTime game_time() const noexcept { return game_clock_.now(); }
@@ -169,6 +184,7 @@ class SimWorld {
   SimTick tick_;
   TableWatch table_watch_;
   f32 step_seconds_ = 1.0f / 60.0f;
+  bool scheduled_ = false;
 };
 
 }  // namespace engine::ecs

@@ -1,0 +1,47 @@
+// The runtime world's own vocabulary (docs/plan/03-data-model.md §3.4): where a materialized thing
+// is, the simplest document record that has a place, and the event a write-back leaves in the
+// store's log. Engine-level rather than a capability's, because every capability that places
+// something reads `Transform`, and a component two capabilities share belongs to neither.
+namespace engine.world
+
+/// Where an entity is, in world space: the document's positions are world positions (the tile
+/// partition reads them as such), so this is not a local transform and `ChildOf` does not
+/// propagate it.
+struct Transform @version(1) @kind(component) {
+  /// World position, metres, y up (core/math).
+  position: vec3 @unit(m)
+  /// Orientation; identity faces -z.
+  orientation: quat
+}
+
+/// A named place in the world: the least a document record can be and still be somewhere. A
+/// capability's record types (a mover, a prop, a character) add what they need on top; this one is
+/// for grouping and marking — a yard, a spawn point, a waypoint.
+struct Node @version(1) @kind(record) {
+  name: string
+  position: vec3 @unit(m)
+  orientation: quat
+}
+
+/// A node is a transform; its document parent is its `ChildOf`. Position and orientation are what
+/// the plan allows the world to write back (03 §3.5), so both are marked.
+materialize Node {
+  Transform.position = position @writeback
+  Transform.orientation = orientation @writeback
+  parent = ChildOf
+}
+
+/// The event a write-back flush leaves in the store's log, one per record it changed
+/// (docs/subsystems/store.md, "Write-back events"). The store keeps `type` as this struct's stable
+/// type id and the payload as this struct's canonical JSON.
+struct WriteBack @version(1) @kind(event) {
+  /// The record the world wrote back to.
+  record: id128
+  /// Its type, as the document names it.
+  type: string
+  /// The properties written, by name, in the record's units.
+  properties: map<string, json>
+  /// The journal entry the write-back committed as, when the session has a journal; the patch
+  /// index.
+  patch: u32 = 0
+}

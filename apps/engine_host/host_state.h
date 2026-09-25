@@ -15,7 +15,7 @@ struct HostState {
   // The renderer's device and scenes. Nothing is created until the first render.* call, so a host
   // that only edits documents never opens a device.
   RenderHost render;
-  // The sessions' runtime worlds, made by session.run_headless.
+  // The sessions' runtime worlds, made by session.run_headless or session.materialize.
   OpsHost ops;
 };
 

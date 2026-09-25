@@ -1,7 +1,9 @@
 #include "undeferred.h"
 
 #include <core/log/log.h>
+#include <core/schema/json_reflect.h>
 #include <domain/ecs/components.h>
+#include <domain/ecs/identity.h>
 
 namespace engine::ecs {
 
@@ -240,6 +242,17 @@ u32 component_index(flecs::world& world, std::string_view qualified_name) noexce
 
 u32 component_index(flecs::world& world, flecs::entity_t id) noexcept {
   return components(world).index_of(id);
+}
+
+bool component_json(flecs::world& world, const Id128& id, std::string_view qualified_name,
+                    JsonValue& out) {
+  const flecs::entity_t entity = identity_map(world).find(id);
+  if (entity == 0) return false;
+  const ComponentType* type = components(world).find(qualified_name);
+  if (type == nullptr || type->info == nullptr || type->size == 0) return false;
+  const void* value = ecs_get_id(world.c_ptr(), entity, type->id);
+  if (value == nullptr) return false;
+  return schema::to_json(*type->info, value, out);
 }
 
 flecs::entity lookup_component(const flecs::world& world, const char* qualified_name) noexcept {

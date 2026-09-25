@@ -12,12 +12,14 @@
 # for `session.events` with `source: "store"`, the tissue validators for `engine.run_tests` with a
 # tissue file), a method that merely reports less says so in its result (`engine.budgets` without
 # audio), and `audio.devices` is "method not found". The runtime world of `session.run_headless`
-# is a flecs world with the ticking capabilities installed when ECS is built, and the engine's own
-# scheduler when it is not. `msvc-minimal` and the `*-no-ecs` presets are the proof.
+# and `session.materialize` is the engine's own scheduler, with a flecs world whose systems run
+# inside its phases and the ticking capabilities installed when ECS is built, and the scheduler
+# alone — which materializes nothing and says so — when it is not. `msvc-minimal` and the
+# `*-no-ecs` presets are the proof.
 set(_host_deps base containers hash json log io image memory tunables protocol renderer schema
-               schemas bench time platform jobs geometry gfx sim content_build)
+               schemas bench time platform jobs geometry gfx sim content_build doc)
 set(_host_defs)
-foreach(_cap audio ecs animation audio_system store tissue)
+foreach(_cap audio ecs animation audio_system kinematics store tissue)
   if(TARGET engine::${_cap})
     list(APPEND _host_deps ${_cap})
     string(TOUPPER ${_cap} _cap_upper)

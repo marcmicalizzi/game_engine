@@ -62,4 +62,5 @@ One page per module, created in the same change that creates the module. Templat
 | renderer | systems | [renderer.md](renderer.md) |
 | animation | systems | [animation.md](animation.md) |
 | audio_system (capability) | systems | [audio_system.md](audio_system.md) |
+| kinematics (capability) | systems | [kinematics.md](kinematics.md) |
 | engine_host, engine_cli, engine_view, engine_content, engine_input, engine_image, mcp_bridge (engine-mcp) | apps | [apps.md](apps.md) |

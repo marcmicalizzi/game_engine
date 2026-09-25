@@ -39,7 +39,9 @@ struct AssetProvenance @version(1) @kind(record) {
 
 **Defaults**: integer, float, `true`/`false`, `"string"`, an enumerator name (enum fields), `[]` (arrays, maps), `null` (optionals). A field without a default is value-initialized.
 
-**Attributes**: on structs `@version(n)` (default 1), `@kind(tag)` and `@transient`; on fields `@since(n)`, `@transient`, `@deprecated`; `@doc("...")` anywhere as an alternative to `///`.
+**Attributes**: on structs `@version(n)` (default 1), `@kind(tag)` and `@transient`; on fields `@since(n)`, `@transient`, `@deprecated`, `@unit(symbol)`; `@doc("...")` anywhere as an alternative to `///`.
+
+**`@unit(symbol)`** says what physical unit a number field is in: `@unit(m)`, `@unit(deg)`, `@unit("km/h")` (quoted when it has a `/`). The symbols are a small closed table in `tools/schemac/src/resolve.cpp` — length, angle, time, mass, velocity, angular velocity, temperature, ratio — and an unknown one, or one on a field that holds no number, is an error. A unit changes no C++ type; it is read by `materialize` rows, which convert between two units of one dimension (below), and it appears in the generated Markdown.
 
 **`@transient` on a struct is not the same thing as `@transient` on a field.** A transient *field* is one column of a type that is otherwise persisted and transmitted. A transient *struct* is a whole type that exists only in the runtime world and is never written to the persistent store ([03 §3.4](../docs/plan/03-data-model.md#34-the-runtime-world)) — a per-tick cache, a perception result, anything the simulation can recompute. Only a component can be transient as a whole, because a component is the only thing the persistence layer writes whole, so `@transient` on a struct without `@kind(component)` is an error rather than a no-op. It reaches C++ as `TypeInfo::flags & schema::TypeFlag::transient`, which is how the store, the protocol and migrations read it without linking an ECS, and as the `ecs::Transient` tag on the flecs component (see below).
 
@@ -70,13 +72,54 @@ A capability's own components live with the capability, in `<layer>/<name>/schem
 
 **Declared in one module, registered by another.** A capability split across layers declares its components with the ECS-free half and registers them from the half that may see flecs. `domain/audio/schemas/audio.schema` is the first: `AudioEmitter` and `AudioListener` are declared beside the mixer, and `systems/audio_system` calls the generated `register_audio_components()`, because the generated struct is plain C++ that any module may use and only the registration needs `<flecs.h>`. The same file's enumerations (`ChannelLayout`, `DistanceModel`, `Directivity`, `ChannelMapping`) are the mixer's C++ API types directly, so the IDL and the API cannot disagree about what a speaker layout or a distance model is ([docs/subsystems/audio.md](../docs/subsystems/audio.md)).
 
+## `materialize`: what a record becomes
+
+A document record type (`@kind(record)`) becomes entities in the runtime world through a `materialize` declaration: which components it becomes, which record property fills which component field, and what its document parent becomes ([03 §3.4](../docs/plan/03-data-model.md#34-the-runtime-world)). It sits in any schema file that can see both sides — usually the one declaring the record type — and is data, not code: schemac compiles it into a `schema::MaterializeInfo` table the runtime reads, and nothing anywhere is written per type.
+
+```
+namespace engine.kinematics
+import "world.schema"
+
+struct Velocity @version(1) @kind(component) {
+  linear: vec3 @unit("m/s")
+  angular: vec3 @unit("rad/s")
+}
+
+struct Mover @version(1) @kind(record) {
+  name: string
+  position: vec3 @unit(m)
+  orientation: quat
+  velocity: vec3 @unit("m/s")
+  spin: vec3 @unit("deg/s")
+}
+
+/// A mover is a transform and a velocity.
+materialize Mover @tiers(0, 1, 2, 3) {
+  Transform.position = position @writeback      // component field = record property
+  Transform.orientation = orientation @writeback
+  Velocity.linear = velocity                    // same unit: a direct copy
+  Velocity.angular = spin                       // deg/s -> rad/s: converted
+  parent = ChildOf                              // or `none`, the default
+}
+```
+
+- **`Component.field = property`** fills one component field from one record property: a direct copy when the two declare the same unit (or none), a conversion when they declare different units of one dimension — `component = record × scale + offset`, computed by schemac from the unit table, applied in f64. The types must join: the same type, or two float widths. A unit on one side only is an error: it cannot say what the other side meant. A property the record does not set gives the component the record type's default.
+- **`@writeback`** lets the runtime world write the field back to the record property when a system changes it (at `TickPhase::Persist`, as a document command attributed to `system`; [docs/subsystems/sim.md](../docs/subsystems/sim.md#write-back)). Only a field that is its own bytes can carry it — a number, an enum, an id, a vector, a quaternion, or a fixed array of them — on a component and a field that are not transient, and a property has at most one write-back row.
+- **`Component`** alone on a line gives the entity that component with its schema defaults.
+- **`parent = ChildOf`** makes the document's parent the entity's `ChildOf` relationship; `none` (the default) leaves the entity a root.
+- **`@tiers(...)`** lists the LOD tiers the type materializes at (default all of 0–3); a record asked for at another tier is skipped with the reason.
+
+Names resolve like any named type — this file's namespace, then imports, then a qualified name — and the left side splits at its last dot, so `engine.world.Transform.position` works too. Every row is checked: the record type must be `@kind(record)` and every component `@kind(component)` (a mapping to an undeclared component, or to a struct that is not a component, is refused), the fields and properties must exist, and a record type has one declaration. A record type with no declaration stays in the document and never becomes an entity, which is the right answer for canon, quests and provenance.
+
 ## What is generated
 
 - `<schemas/<stem>.h>`: `enum class` and `struct` definitions with defaults, `k_schema_version`, defaulted `operator==`, and `engine::schema::type_of<T>()` specializations.
 - `<schemas/<stem>_ecs.h>`: `register_<stem>_components(flecs::world&)`, the entity-store registration for this file's `@kind(component)` structs (see "Components" above). Always written; compiled only where `<flecs.h>` may be included.
-- `<stem>.cpp`: constant-initialized `TypeInfo`, `FieldInfo`, and `TypeRef` tables plus a `Registrar` that adds every type to `engine::schema::Registry::global()` at startup.
+- `<stem>.cpp`: constant-initialized `TypeInfo`, `FieldInfo`, and `TypeRef` tables plus a `Registrar` that adds every type to `engine::schema::Registry::global()` at startup; and, for a file with `materialize` declarations, one constant-initialized `MaterializeInfo` per declaration and a `MaterializeRegistrar` that adds them to `engine::schema::MaterializeRegistry::global()`.
 - `<stem>.schema.json`: JSON Schema draft 2020-12 with `$defs` per type; `required` lists non-optional, non-container fields without defaults.
-- `<stem>.md`: one table per type.
+- `<stem>.md`: one table per type, with each field's unit, and one per `materialize` declaration.
+
+The engine's own world vocabulary is `world.schema` here: `engine.world.Transform` (the component every placed thing has), `engine.world.Node` (the least a record can be and still be somewhere, with its mapping) and `engine.world.WriteBack` (the event a write-back leaves in the store's log).
 
 ## Runtime
 

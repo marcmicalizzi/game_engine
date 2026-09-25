@@ -4,13 +4,17 @@
 // surely as one it forgot. All headless: the mixer renders into the test's buffer (the null
 // backend) when a test needs voices to run out.
 #include <domain/audio/audio.h>
+#include <domain/ecs/scheduled_tick.h>
 #include <domain/ecs/sim_world.h>
+#include <domain/sim/scheduler.h>
 #include <systems/audio_system/audio_system.h>
 
 #include <doctest/doctest.h>
 
 #include <flecs.h>
+#include <optional>
 #include <string_view>
+#include <vector>
 
 using namespace engine;
 using namespace engine::audio;
@@ -320,4 +324,60 @@ TEST_CASE("a cloned emitter gets a voice of its own rather than sharing its orig
   CHECK(sent.stops == 0u);
   CHECK(rig.audio.stats().duplicates == 1u);
   CHECK(rig.mixer.live_voices() == 2u);
+}
+
+TEST_CASE(
+    "the engine's scheduler ticks the emitter system in EventsOut, sending the same commands") {
+  // ADR-0038 (proposed): `sim::SimScheduler` owns the clock and the phase order and runs each
+  // phase's flecs systems through `ecs::ScheduledTick`. The emitter system declared `EventsOut` and
+  // did not change for it, so the commands a sequence of edits sends have to be the same under
+  // either executor, tick for tick.
+  const auto run = [](bool scheduled) {
+    Rig rig;
+    sim::SimScheduler scheduler;
+    std::vector<Sent> sent;
+    const flecs::entity emitter = rig.sim.world().entity().set(loop_at(Vec3{2.0f, 0.0f, -3.0f}));
+    std::optional<ecs::ScheduledTick> tick;
+    if (scheduled) tick.emplace(rig.sim, scheduler);
+    const auto step = [&]() {
+      const Sent before = counters(rig.mixer);
+      if (scheduled) {
+        scheduler.step();
+      } else {
+        rig.sim.step();
+      }
+      const Sent after = counters(rig.mixer);
+      rig.mixer.render(rig.buffer.data(), 480);
+      sent.push_back(Sent{after.plays - before.plays, after.stops - before.stops,
+                          after.params - before.params, after.sources - before.sources,
+                          after.listeners - before.listeners});
+    };
+    step();
+    emitter.try_get_mut<AudioEmitter>()->gain = 0.5f;
+    step();
+    emitter.try_get_mut<AudioEmitter>()->position = Vec3{0.0f, 0.0f, -1.0f};
+    step();
+    step();
+    emitter.try_get_mut<AudioEmitter>()->playing = false;
+    step();
+    CHECK(rig.sim.tick().value == 5);
+    if (scheduled) CHECK(tick->phases_run() == 5);  // EventsOut, once a tick
+    return sent;
+  };
+  const std::vector<Sent> pipeline = run(false);
+  const std::vector<Sent> scheduled = run(true);
+  REQUIRE(pipeline.size() == scheduled.size());
+  for (usize i = 0; i < pipeline.size(); ++i) {
+    INFO("tick " << i + 1);
+    CHECK(scheduled[i].plays == pipeline[i].plays);
+    CHECK(scheduled[i].stops == pipeline[i].stops);
+    CHECK(scheduled[i].params == pipeline[i].params);
+    CHECK(scheduled[i].sources == pipeline[i].sources);
+    CHECK(scheduled[i].listeners == pipeline[i].listeners);
+  }
+  // The sequence itself, as the tests above pin it one edit at a time.
+  CHECK(scheduled[0].plays == 1u);
+  CHECK(scheduled[1].params == 1u);
+  CHECK(scheduled[2].sources == 1u);
+  CHECK(scheduled[4].stops == 1u);
 }
