@@ -1,5 +1,7 @@
 #include <core/hash/hash.h>
 #include <domain/geometry/cluster_lod.h>
+#include <domain/geometry/material_sampling.h>
+#include <domain/gfx/bindless.h>
 #include <domain/texture/texture_build.h>
 #include <domain/texture/texture_file.h>
 #include <foundation/image/decode.h>
@@ -63,13 +65,40 @@ VkFormat texture_vk_format(const texture::TextureData& t) noexcept {
   return VK_FORMAT_UNDEFINED;
 }
 
+// A glTF sampler as the device's (docs/subsystems/renderer.md, "Materials"). `mipmapped` is the
+// built path: the whole chain, blended as the sampler asks, anisotropic where it minifies linearly.
+// The decoded path reads level 0 alone and keeps what it always had but the wrap and the filters.
+gfx::SamplerDesc sampler_desc(const geometry::TextureSampler& sampler, bool mipmapped) noexcept {
+  auto address = [](geometry::TextureWrap wrap) {
+    switch (wrap) {
+      case geometry::TextureWrap::repeat: return VK_SAMPLER_ADDRESS_MODE_REPEAT;
+      case geometry::TextureWrap::mirrored_repeat: return VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
+      case geometry::TextureWrap::clamp_to_edge: break;
+    }
+    return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  };
+  auto filter = [](geometry::TextureFilter f) {
+    return f == geometry::TextureFilter::nearest ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
+  };
+  gfx::SamplerDesc desc;
+  desc.address_u = address(sampler.wrap_s);
+  desc.address_v = address(sampler.wrap_t);
+  desc.mag = filter(sampler.mag);
+  desc.min = filter(sampler.min);
+  desc.mip = sampler.mip == geometry::TextureFilter::nearest ? VK_SAMPLER_MIPMAP_MODE_NEAREST
+                                                             : VK_SAMPLER_MIPMAP_MODE_LINEAR;
+  desc.mipmapped = mipmapped;
+  desc.max_anisotropy = 16.0f;
+  return desc;
+}
+
 // A mesh's built textures (docs/subsystems/texture.md, "In the renderer"): one per image the
-// resolve samples — base colour, metallic-roughness, normal — found in the derived-data root
-// through the container's records, and read with their identity checked against the bytes they
-// were built from. An image the container carries is found by its recorded key; one named by
-// path is hashed as the file is *now*, so a repainted image finds its new texture or none, never
-// the stale one. **All or nothing**: false, with the reason, as soon as one is missing, so a mesh
-// draws wholly from built textures or wholly as it always did, never a mix of two samplers.
+// resolve samples — base colour, metallic-roughness, normal, occlusion, emissive — found in the
+// derived-data root through the container's records, and read with their identity checked against
+// the bytes they were built from. An image the container carries is found by its recorded key; one
+// named by path is hashed as the file is *now*, so a repainted image finds its new texture or none,
+// never the stale one. **All or nothing**: false, with the reason, as soon as one is missing, so a
+// mesh draws wholly from built textures or wholly as it always did, never a mix of the two.
 // `needed` is how many images the resolve samples; zero leaves the mesh on the old path, which
 // for a mesh with no textures is no path at all.
 bool find_built_textures(const SourceMesh& mesh, Vector<texture::TextureData>& out, u32& needed,
@@ -80,7 +109,8 @@ bool find_built_textures(const SourceMesh& mesh, Vector<texture::TextureData>& o
   Vector<bool> sampled(data.images.size(), false);
   for (const assets::Material& material : data.materials) {
     for (const i32 image :
-         {material.base_color_image, material.metallic_roughness_image, material.normal_image}) {
+         {material.base_color_image, material.metallic_roughness_image, material.normal_image,
+          material.occlusion_image, material.emissive_image}) {
       if (image >= 0 && static_cast<u32>(image) < sampled.size() &&
           !sampled[static_cast<u32>(image)]) {
         sampled[static_cast<u32>(image)] = true;
@@ -772,12 +802,28 @@ bool GpuScene::upload_materials(const ResolvedSettings&, std::string* error) {
   const geometry::ClusterLodMesh& lod = data_->lod;
   if (!gfx::create_sampler(device, VK_FILTER_LINEAR, sampler_, error)) return false;
   const u32 sampler_slot = bindless_.add_sampler(sampler_);
-  // The built textures' sampler, made when the first mesh that has them is met, so a scene with
-  // none has exactly the bindless set it always had.
-  u32 mip_sampler_slot = gfx::BindlessSet::k_invalid_slot;
+  // The materials' samplers, one per distinct combination a textured slot asks for, made when
+  // the first slot that asks for it is met — so a scene with no textures has exactly the bindless
+  // set it always had, and a thousand materials on the glTF default share one sampler.
+  bool sampler_failed = false;
+  auto material_sampler = [&](const geometry::TextureSampler& wanted, bool mipmapped) -> u32 {
+    const u32 key = geometry::pack_texture_sampler(wanted) | (mipmapped ? 0x80000000u : 0u);
+    for (const MaterialSampler& known : material_samplers_)
+      if (known.key == key) return known.slot;
+    MaterialSampler made;
+    made.key = key;
+    if (!gfx::create_sampler(device, sampler_desc(wanted, mipmapped), made.sampler, error)) {
+      sampler_failed = true;
+      return 0;
+    }
+    made.slot = bindless_.add_sampler(made.sampler);
+    material_samplers_.push_back(made);
+    return made.slot;
+  };
   texture_bytes_ = 0;
   textures_built_ = 0;
   textures_decoded_ = 0;
+  transform_conflicts_ = 0;
   Vector<gfx::ResolveMaterial> material_table;
   Vector<u32> cluster_material(cluster_count_);
   Vector<u32> mesh_material_base(data_->parts.size(), 0u);
@@ -851,10 +897,6 @@ bool GpuScene::upload_materials(const ResolvedSettings&, std::string* error) {
         ENGINE_LOG_WARN(log_renderer, "built textures unusable", log::field("mesh", m),
                         log::field("reason", why));
       }
-      if (use_built && mip_sampler_ == VK_NULL_HANDLE) {
-        if (!gfx::create_mip_sampler(device, 16.0f, mip_sampler_, error)) return false;
-        mip_sampler_slot = bindless_.add_sampler(mip_sampler_);
-      }
       if (sampled_images != 0) {
         ENGINE_LOG_INFO(log_renderer, "mesh textures", log::field("mesh", m),
                         log::field("from", use_built ? "built" : "decoded"),
@@ -926,17 +968,19 @@ bool GpuScene::upload_materials(const ResolvedSettings&, std::string* error) {
         gfx::ResolveMaterial material;
         material.albedo =
             Vec4{source.base_color.x, source.base_color.y, source.base_color.z, source.roughness};
-        // The emissive factor goes through as a constant term. A material that modulates it with
-        // an emissive texture is left unlit instead of glowing at full factor everywhere: the
-        // resolve has no emissive slot yet, and too dark is a smaller lie than too bright.
-        const Vec3 emissive = source.emissive_image < 0 ? source.emissive : Vec3{};
-        material.emissive = Vec4{emissive, source.metallic};
+        // The emissive factor, which the emissive texture multiplies where there is one.
+        material.emissive = Vec4{source.emissive, source.metallic};
+        // Colour goes up sRGB and data UNORM; the order is the order an image shared by two slots
+        // keeps the format of (base colour first, as it always was).
         material.albedo_texture = texture_slot_of(source.base_color_image, VK_FORMAT_R8G8B8A8_SRGB);
         material.metallic_roughness_texture =
             texture_slot_of(source.metallic_roughness_image, VK_FORMAT_R8G8B8A8_UNORM);
         material.normal_texture = texture_slot_of(source.normal_image, VK_FORMAT_R8G8B8A8_UNORM);
+        material.occlusion_texture =
+            texture_slot_of(source.occlusion_image, VK_FORMAT_R8G8B8A8_UNORM);
+        material.emissive_texture = texture_slot_of(source.emissive_image, VK_FORMAT_R8G8B8A8_SRGB);
         material.normal_scale = source.normal_scale;
-        material.sampler = use_built ? mip_sampler_slot : sampler_slot;
+        material.occlusion_strength = source.occlusion_strength;
         material.uv_scale = 1.0f;
         if (use_built) {
           material.flags |= gfx::k_material_mipped;
@@ -946,6 +990,39 @@ bool GpuScene::upload_materials(const ResolvedSettings&, std::string* error) {
               built[static_cast<u32>(normal)].format == texture::TextureFormat::bc5) {
             material.flags |= gfx::k_material_normal_rg;
           }
+        }
+        // Each textured slot's own sampler, and one UV transform for the material: the base
+        // colour's where it is textured, the first textured slot's otherwise. A slot with no
+        // texture asks for no sampler and borrows `sampler` (gfx::k_same_sampler), which it never
+        // reads.
+        const u32 slot_texture[geometry::k_material_slots] = {
+            material.albedo_texture, material.metallic_roughness_texture, material.normal_texture,
+            material.occlusion_texture, material.emissive_texture};
+        u32 slot_sampler[geometry::k_material_slots];
+        i32 transform_slot = -1;
+        for (u32 s = 0; s < geometry::k_material_slots; ++s) {
+          slot_sampler[s] = gfx::k_same_sampler;
+          if (slot_texture[s] == gfx::k_no_texture) continue;
+          slot_sampler[s] = material_sampler(source.sampling[s].sampler, use_built);
+          if (transform_slot < 0) transform_slot = static_cast<i32>(s);
+        }
+        if (sampler_failed) return false;
+        material.sampler = slot_sampler[geometry::k_slot_base_color] != gfx::k_same_sampler
+                               ? slot_sampler[geometry::k_slot_base_color]
+                               : (transform_slot >= 0 ? slot_sampler[transform_slot] : 0u);
+        material.samplers_mr_normal = slot_sampler[geometry::k_slot_metallic_roughness] |
+                                      (slot_sampler[geometry::k_slot_normal] << 16);
+        material.samplers_occlusion_emissive = slot_sampler[geometry::k_slot_occlusion] |
+                                               (slot_sampler[geometry::k_slot_emissive] << 16);
+        if (transform_slot >= 0) {
+          const geometry::TextureTransform& transform = source.sampling[transform_slot].transform;
+          bool conflict = false;
+          for (u32 s = 0; s < geometry::k_material_slots; ++s) {
+            if (slot_texture[s] != gfx::k_no_texture && source.sampling[s].transform != transform)
+              conflict = true;
+          }
+          if (conflict) ++transform_conflicts_;
+          gfx::set_uv_transform(material, transform.offset, transform.rotation, transform.scale);
         }
         material_table.push_back(material);
       }
@@ -961,6 +1038,17 @@ bool GpuScene::upload_materials(const ResolvedSettings&, std::string* error) {
                                                                       : local_count;
       }
     }
+  }
+  if (!material_samplers_.empty() || transform_conflicts_ != 0) {
+    ENGINE_LOG_INFO(log_renderer, "material samplers",
+                    log::field("samplers", material_samplers_.size()),
+                    log::field("materials", material_table.size()),
+                    log::field("transform_conflicts", transform_conflicts_));
+  }
+  if (transform_conflicts_ != 0) {
+    ENGINE_LOG_WARN(log_renderer, "texture transforms differ within a material",
+                    log::field("materials", transform_conflicts_),
+                    log::field("drawn_with", "the base colour's, or the first textured slot's"));
   }
   // Now that the tables are laid out, every instance knows where its mesh's materials start.
   for (gfx::InstanceDesc& instance : instance_table_)
@@ -1348,8 +1436,10 @@ void GpuScene::destroy() noexcept {
   procedural_texture_ = gfx::ImageResource{};
   gfx::destroy_sampler(device, sampler_);
   sampler_ = VK_NULL_HANDLE;
-  gfx::destroy_sampler(device, mip_sampler_);
-  mip_sampler_ = VK_NULL_HANDLE;
+  for (const MaterialSampler& made : material_samplers_)
+    gfx::destroy_sampler(device, made.sampler);
+  material_samplers_.clear();
+  transform_conflicts_ = 0;
   texture_bytes_ = 0;
   textures_built_ = textures_decoded_ = 0;
   bindless_.destroy();

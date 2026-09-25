@@ -126,6 +126,9 @@ const char* k_usage =
     "      --srgb | --linear     what the image's bytes are: colour (default) or data\n"
     "      --normal              a tangent-space normal map: renormalized, filtered as vectors\n"
     "      --no-mips             level 0 alone (default: the full chain to 1x1)\n"
+    "      --wrap <mode>[,<mode>]  what the mip filter reads past the edges, across and down:\n"
+    "                            clamp (default), repeat or mirror — the sampler's wrap, so a\n"
+    "                            tiling texture's levels tile too\n"
     "      --cache               write <ddc>/textures/<key>.tex instead of a named output\n"
     "      --ddc <dir>, --jobs <n>, --log <spec>   as above\n"
     "  info <file.clusters|file.tex>           print the header, sections, and counts\n"
@@ -763,6 +766,16 @@ int texture_command(int argc, char** argv) {
       options.build.normal_map = true;
     } else if (a == "--no-mips") {
       options.build.mips = false;
+    } else if (a == "--wrap") {
+      std::string value;
+      if (!next_value(argc, argv, i, value)) return k_exit_usage;
+      const usize comma = value.find(',');
+      const std::string across = value.substr(0, comma);
+      const std::string down = comma == std::string::npos ? across : value.substr(comma + 1);
+      if (!texture::parse_edge_mode(across, options.build.edge_x) ||
+          !texture::parse_edge_mode(down, options.build.edge_y)) {
+        return usage("--wrap is clamp, repeat or mirror, or two of them: <across>,<down>");
+      }
     } else if (a == "--jobs") {
       if (!next_u32(argc, argv, i, options.jobs)) return k_exit_usage;
     } else if (a == "--log") {
@@ -888,6 +901,8 @@ JsonValue texture_records_json(const geometry::ClusterFileData& data) {
       row.set("color_space", JsonValue(texture::color_space_name(options.color_space)));
       row.set("normal_map", JsonValue(options.normal_map));
       row.set("mips", JsonValue(options.mips));
+      row.set("edge_x", JsonValue(texture::edge_mode_name(options.edge_x)));
+      row.set("edge_y", JsonValue(texture::edge_mode_name(options.edge_y)));
     } else {
       row.set("options", JsonValue(record.options));  // a newer build's word, shown as it is
     }

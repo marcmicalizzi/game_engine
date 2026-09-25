@@ -12,8 +12,9 @@
 //   3. **Convergence.** The error against a converged picture falls like 1/sqrt(n).
 //   4. **Agreement with the resolve.** At one bounce, with the pixel jitter off, the reference
 //      converges to the real-time picture on the shading scenes the engine can build with no
-//      content at all — a lit plane, a plane under two point lights, and a plane with something
-//      casting a shadow on it.
+//      content at all — a lit plane, a plane under two point lights, a plane with something
+//      casting a shadow on it, and a dark plane giving off light through an emissive texture,
+//      which the path tracer sees as radiance where its rays land and the resolve adds as it is.
 //
 // Every case skips with a message where the machine cannot run it, the way engine-view exits 3:
 // no Vulkan device, no 64-bit buffer atomics, or — for these, unlike the rest of the renderer's
@@ -22,6 +23,7 @@
 
 #include <domain/gfx/device.h>
 #include <foundation/image/metrics.h>
+#include <foundation/image/png.h>
 #include <systems/renderer/capture.h>
 #include <systems/renderer/gpu_scene.h>
 #include <systems/renderer/reference.h>
@@ -63,13 +65,20 @@ void put_f32(std::vector<u8>& out, f32 v) {
 std::string n(u32 v) { return std::to_string(v); }
 std::string f(f32 v) { return std::to_string(static_cast<double>(v)); }
 
+// An emissive texture for `write_glb`: the encoded PNG the GLB embeds and the factor it multiplies.
+struct Emission {
+  std::vector<u8> png;
+  Vec3 factor{};
+};
+
 // A GLB from explicit geometry and one material's three factors. The renderer's own tests write
 // a cube; these cases need the *material* under their control — a white Lambert surface, a white
 // metal — which is what a furnace is a test of, so the writer takes the factors rather than
-// baking them in.
+// baking them in. `emission`, when given, embeds its PNG as the material's emissive texture.
 bool write_glb(const std::string& path, const std::vector<Vec3>& positions,
                const std::vector<Vec3>& normals, const std::vector<Vec2>& uvs,
-               const std::vector<u16>& indices, Vec3 base_color, f32 metallic, f32 roughness) {
+               const std::vector<u16>& indices, Vec3 base_color, f32 metallic, f32 roughness,
+               const Emission* emission = nullptr) {
   std::vector<u8> bin;
   for (const Vec3& p : positions) {
     put_f32(bin, p.x);
@@ -93,6 +102,26 @@ bool write_glb(const std::string& path, const std::vector<Vec3>& positions,
   const u32 index_bytes = static_cast<u32>(bin.size()) - index_offset;
   while (bin.size() % 4 != 0)
     bin.push_back(0);
+  const u32 png_offset = static_cast<u32>(bin.size());
+  if (emission != nullptr) {
+    bin.insert(bin.end(), emission->png.begin(), emission->png.end());
+    while (bin.size() % 4 != 0)
+      bin.push_back(0);
+  }
+  const std::string emissive_fields =
+      emission == nullptr
+          ? std::string()
+          : ",\"emissiveFactor\":[" + f(emission->factor.x) + "," + f(emission->factor.y) + "," +
+                f(emission->factor.z) + "],\"emissiveTexture\":{\"index\":0}";
+  const std::string image_fields =
+      emission == nullptr ? std::string()
+                          : "\"textures\":[{\"source\":0}],\"images\":[{\"bufferView\":4,"
+                            "\"mimeType\":\"image/png\"}],";
+  const std::string png_view =
+      emission == nullptr
+          ? std::string()
+          : ",{\"buffer\":0,\"byteOffset\":" + n(png_offset) +
+                ",\"byteLength\":" + n(static_cast<u32>(emission->png.size())) + "}";
 
   Vec3 lo = positions[0];
   Vec3 hi = positions[0];
@@ -107,8 +136,8 @@ bool write_glb(const std::string& path, const std::vector<Vec3>& positions,
       "\"TEXCOORD_0\":2},\"indices\":3,\"material\":0}]}],"
       "\"materials\":[{\"pbrMetallicRoughness\":{\"baseColorFactor\":[" +
       f(base_color.x) + "," + f(base_color.y) + "," + f(base_color.z) +
-      ",1],\"metallicFactor\":" + f(metallic) + ",\"roughnessFactor\":" + f(roughness) +
-      "}}],"
+      ",1],\"metallicFactor\":" + f(metallic) + ",\"roughnessFactor\":" + f(roughness) + "}" +
+      emissive_fields + "}]," + image_fields +
       "\"accessors\":["
       "{\"bufferView\":0,\"componentType\":5126,\"count\":" +
       n(static_cast<u32>(positions.size())) + ",\"type\":\"VEC3\",\"min\":[" + f(lo.x) + "," +
@@ -130,7 +159,7 @@ bool write_glb(const std::string& path, const std::vector<Vec3>& positions,
       "},{\"buffer\":0,\"byteOffset\":" + n(uv_offset) +
       ",\"byteLength\":" + n(index_offset - uv_offset) +
       "},{\"buffer\":0,\"byteOffset\":" + n(index_offset) + ",\"byteLength\":" + n(index_bytes) +
-      "}],\"buffers\":[{\"byteLength\":" + n(static_cast<u32>(bin.size())) + "}]}";
+      "}" + png_view + "],\"buffers\":[{\"byteLength\":" + n(static_cast<u32>(bin.size())) + "}]}";
   while (json.size() % 4 != 0)
     json += ' ';
 
@@ -183,7 +212,7 @@ bool write_cube(const std::string& path, Vec3 base_color, f32 metallic, f32 roug
 // A horizontal quad of side `size` at y = 0, split into a grid so that it has enough triangles to
 // cluster and to shade smoothly under a point light.
 bool write_plane(const std::string& path, f32 size, u32 cells, Vec3 base_color, f32 metallic,
-                 f32 roughness) {
+                 f32 roughness, const Emission* emission = nullptr) {
   std::vector<Vec3> positions;
   std::vector<Vec3> normals;
   std::vector<Vec2> uvs;
@@ -211,7 +240,8 @@ bool write_plane(const std::string& path, f32 size, u32 cells, Vec3 base_color, 
         indices.push_back(t);
     }
   }
-  return write_glb(path, positions, normals, uvs, indices, base_color, metallic, roughness);
+  return write_glb(path, positions, normals, uvs, indices, base_color, metallic, roughness,
+                   emission);
 }
 
 std::string slashes(const std::filesystem::path& p) {
@@ -544,30 +574,54 @@ TEST_CASE("reference: at one bounce it converges to the resolve's picture") {
   const std::filesystem::path dir = tmp.native();
   const std::string plane = slashes(dir / "plane.glb");
   const std::string cube = slashes(dir / "cube.glb");
+  const std::string glowing = slashes(dir / "glowing.glb");
   REQUIRE(write_plane(plane, 8.0f, 16, Vec3{0.7f, 0.7f, 0.7f}, 0.0f, 0.8f));
   REQUIRE(write_cube(cube, Vec3{0.6f, 0.3f, 0.2f}, 0.0f, 0.5f));
+  // A dark plane whose emissive texture is a 4x4 checker of a warm and a cool colour, under a
+  // factor that is not white: the emission is most of the picture, and both integrators have to
+  // read the texture through the same UVs and the same sRGB decode for the two to agree.
+  Emission emission;
+  emission.factor = Vec3{1.0f, 0.9f, 0.8f};
+  {
+    std::vector<u8> texels(4 * 4 * 4);
+    for (u32 t = 0; t < 16; ++t) {
+      const bool warm = ((t % 4) + (t / 4)) % 2 == 0;
+      texels[t * 4 + 0] = warm ? 230 : 40;
+      texels[t * 4 + 1] = warm ? 120 : 90;
+      texels[t * 4 + 2] = warm ? 30 : 200;
+      texels[t * 4 + 3] = 255;
+    }
+    Vector<u8> png;
+    REQUIRE(image::encode_png(4, 4, 4, std::span<const u8>(texels.data(), texels.size()), png));
+    emission.png.assign(png.data(), png.data() + png.size());
+  }
+  REQUIRE(write_plane(glowing, 8.0f, 16, Vec3{0.1f, 0.1f, 0.1f}, 0.0f, 0.8f, &emission));
 
-  // Three scenes the engine can build with no content at all, which is what makes this case
+  // Four scenes the engine can build with no content at all, which is what makes this case
   // runnable on any machine that has the device: a lit plane, the same plane with the point
-  // lights off (sun only), and the plane with a cube hanging over it so that something casts.
+  // lights off (sun only), the plane with a cube hanging over it so that something casts, and a
+  // dark plane that gives off light through an emissive texture.
   struct Case {
     const char* name;
     bool lights;
     bool occluder;
+    bool emissive;
     f64 flip_bound;
   };
   // The bounds are today's measurements with room for driver noise and a different GPU, not
-  // targets: 0.019, 0.021 and 0.028 on the RTX 5090 (docs/subsystems/renderer.md). FLIP calls
-  // about 0.1 the threshold a person starts to notice, so all three are well under "the same
-  // picture" and the bounds are there to catch a regression.
-  const Case cases[3] = {
-      {"diffuse plane, sun and two point lights", true, false, 0.05},
-      {"diffuse plane, sun only", false, false, 0.05},
-      {"shadowed: a cube over the plane", true, true, 0.06},
+  // targets: 0.019, 0.021 and 0.028 on the RTX 5090 (docs/subsystems/renderer.md), and 0.014 for
+  // the emissive plane when its case was added (2026-09-24). FLIP calls about 0.1 the threshold a
+  // person starts to notice, so all four are well under "the same picture" and the bounds are
+  // there to catch a regression.
+  const Case cases[4] = {
+      {"diffuse plane, sun and two point lights", true, false, false, 0.05},
+      {"diffuse plane, sun only", false, false, false, 0.05},
+      {"shadowed: a cube over the plane", true, true, false, 0.06},
+      {"emissive: a dark plane lit by its own texture", true, false, true, 0.05},
   };
   for (const Case& c : cases) {
     SceneDesc desc;
-    desc.meshes.push_back(plane);
+    desc.meshes.push_back(c.emissive ? glowing : plane);
     desc.ddc = slashes(dir / "ddc");
     desc.instances.push_back(SceneInstance{0, Transform3{}});
     if (c.occluder) {

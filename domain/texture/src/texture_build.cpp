@@ -24,7 +24,10 @@ constexpr u32 k_pack_srgb = 1u << 4;
 constexpr u32 k_pack_normal = 1u << 5;
 constexpr u32 k_pack_mips = 1u << 6;
 constexpr u32 k_pack_valid = 1u << 7;
-constexpr u32 k_pack_known = 0xfu | k_pack_srgb | k_pack_normal | k_pack_mips | k_pack_valid;
+constexpr u32 k_pack_edge_x_shift = 8;
+constexpr u32 k_pack_edge_y_shift = 10;
+constexpr u32 k_pack_known = 0xfu | k_pack_srgb | k_pack_normal | k_pack_mips | k_pack_valid |
+                             (3u << k_pack_edge_x_shift) | (3u << k_pack_edge_y_shift);
 
 // The largest side the builder takes. Level 1's working set is a float image of half the source
 // and a horizontal pass of half its width at full height, about 12 bytes a source texel, and the
@@ -75,11 +78,33 @@ bool parse_format_choice(std::string_view name, FormatChoice& out) noexcept {
   return false;
 }
 
+const char* edge_mode_name(EdgeMode mode) noexcept {
+  switch (mode) {
+    case EdgeMode::clamp: return "clamp";
+    case EdgeMode::repeat: return "repeat";
+    case EdgeMode::mirror: return "mirror";
+  }
+  return "unknown";
+}
+
+bool parse_edge_mode(std::string_view name, EdgeMode& out) noexcept {
+  for (u32 value = 0; value <= static_cast<u32>(EdgeMode::mirror); ++value) {
+    const EdgeMode mode = static_cast<EdgeMode>(value);
+    if (name == edge_mode_name(mode)) {
+      out = mode;
+      return true;
+    }
+  }
+  return false;
+}
+
 u32 pack_texture_options(const TextureBuildOptions& options) noexcept {
   u32 word = static_cast<u32>(options.format) & 0xfu;
   if (options.color_space == ColorSpace::srgb) word |= k_pack_srgb;
   if (options.normal_map) word |= k_pack_normal;
   if (options.mips) word |= k_pack_mips;
+  word |= static_cast<u32>(options.edge_x) << k_pack_edge_x_shift;
+  word |= static_cast<u32>(options.edge_y) << k_pack_edge_y_shift;
   return word | k_pack_valid;
 }
 
@@ -87,10 +112,16 @@ bool unpack_texture_options(u32 packed, TextureBuildOptions& out) noexcept {
   if ((packed & k_pack_valid) == 0 || (packed & ~k_pack_known) != 0) return false;
   const u32 format = packed & 0xfu;
   if (format > static_cast<u32>(FormatChoice::bc7)) return false;
+  const u32 edge_x = (packed >> k_pack_edge_x_shift) & 3u;
+  const u32 edge_y = (packed >> k_pack_edge_y_shift) & 3u;
+  if (edge_x > static_cast<u32>(EdgeMode::mirror) || edge_y > static_cast<u32>(EdgeMode::mirror))
+    return false;
   out.format = static_cast<FormatChoice>(format);
   out.color_space = (packed & k_pack_srgb) != 0 ? ColorSpace::srgb : ColorSpace::linear;
   out.normal_map = (packed & k_pack_normal) != 0;
   out.mips = (packed & k_pack_mips) != 0;
+  out.edge_x = static_cast<EdgeMode>(edge_x);
+  out.edge_y = static_cast<EdgeMode>(edge_y);
   return true;
 }
 
@@ -164,7 +195,8 @@ bool build_texture(std::span<const u8> rgba, u32 width, u32 height, u32 source_c
 
   const i64 mip_start = time::monotonic_ns();
   Vector<MipLevel> chain;
-  build_mip_chain(rgba, width, height, mode, options.mips, chain, pool);
+  build_mip_chain(rgba, width, height, mode, options.mips, chain, pool, options.edge_x,
+                  options.edge_y);
   r.mip_ms = ms_since(mip_start);
 
   out.format = format;

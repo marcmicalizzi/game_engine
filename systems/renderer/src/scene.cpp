@@ -1,8 +1,10 @@
 #include <core/hash/hash.h>
+#include <core/jobs/job_system.h>
 #include <core/json/json.h>
 #include <core/platform/process.h>
 #include <core/schema/json_reflect.h>
 #include <core/time/time.h>
+#include <domain/content_build/content_build.h>
 #include <domain/geometry/cluster_file.h>
 #include <domain/geometry/cluster_pages.h>
 #include <domain/geometry/stress_mesh.h>
@@ -71,6 +73,58 @@ void make_terrain(u32 n, f32 extent, Vector<Vec3>& positions, Vector<u32>& indic
   }
 }
 
+// The texture step `engine-content build --cache` runs, for a mesh this load reads through the
+// derived-data cache (`content_build::run_texture_step`, the same function, so the two apps build
+// the same `.tex` under the same keys): every image the container's records name is built into
+// `<ddc>/textures/<key>.tex` unless an entry with that identity is already there, which costs a
+// read and a hash per image on a warm cache. Without it a mesh the renderer clustered itself on a
+// cold cache drew its textures decoded at one level — no mips, shimmering at a distance — until
+// someone ran engine-content over it, because only engine-content built textures. A texture that
+// cannot be built is a warning and the mesh draws through the decode, as it always could.
+// `source_dir` is what the records' image paths are relative to.
+void build_cache_textures(const geometry::ClusterFileData& data, std::string_view source_dir,
+                          const std::string& ddc, const std::string& what) {
+  if (ddc.empty()) return;
+  Vector<content_build::TextureSource> sources;
+  content_build::collect_texture_sources(data, source_dir, sources);
+  if (sources.empty()) return;
+  Vector<const content_build::TextureSource*> pointers;
+  Vector<u32> mesh_of;
+  pointers.reserve(sources.size());
+  mesh_of.reserve(sources.size());
+  for (const content_build::TextureSource& source : sources) {
+    pointers.push_back(&source);
+    mesh_of.push_back(0u);
+  }
+  const i64 start_ns = time::monotonic_ns();
+  jobs::JobSystem pool(content_build::job_config(0));
+  Vector<content_build::TextureResult> results;
+  content_build::run_texture_step(
+      std::span<const content_build::TextureSource* const>(pointers.data(), pointers.size()),
+      std::span<const u32>(mesh_of.data(), mesh_of.size()), ddc, pool, results);
+  u32 built = 0;
+  u32 found = 0;
+  for (const content_build::TextureResult& result : results) {
+    switch (result.state) {
+      case content_build::TextureState::Built: ++built; break;
+      case content_build::TextureState::Skipped:
+      case content_build::TextureState::Shared: ++found; break;
+      case content_build::TextureState::Missing:
+      case content_build::TextureState::Failed:
+      case content_build::TextureState::Unreadable:
+        ENGINE_LOG_WARN(log_renderer, "texture not built", log::field("mesh", what),
+                        log::field("image", result.image),
+                        log::field("state", content_build::texture_state_name(result.state)),
+                        log::field("error", result.error));
+        break;
+    }
+  }
+  ENGINE_LOG_INFO(log_renderer, "mesh textures built", log::field("mesh", what),
+                  log::field("built", built), log::field("found", found),
+                  log::field("images", results.size()),
+                  log::field("ms", static_cast<f64>(time::monotonic_ns() - start_ns) / 1.0e6));
+}
+
 // Writes a mesh that was just imported and clustered into the derived-data cache, byte for byte
 // the container `engine-content build` writes from the same source: the DAG, the materials as
 // GPU records, a material index per cluster (a primitive that names none gets one appended
@@ -79,7 +133,9 @@ void make_terrain(u32 n, f32 extent, Vector<Vec3>& positions, Vector<u32>& indic
 // are moved into the container and back out again, so neither is ever copied. A cache that
 // cannot be written is a warning and nothing more: the picture does not depend on it.
 // True when the entry landed, which is what tells the caller its pages may be read back out of it.
-bool write_cluster_cache(const std::string& path, const std::string& source,
+// The textures its records name are built into `ddc` beside it (`build_cache_textures`), landed or
+// not, because the texture lookup reads the records this function hands back, not the file.
+bool write_cluster_cache(const std::string& path, const std::string& source, const std::string& ddc,
                          const assets::MeshData& mesh_data, const Vector<i32>& part_material,
                          const Vector<u32>& part_of_cluster, geometry::ClusterLodMesh& lod,
                          geometry::ClusterPages& pages,
@@ -105,6 +161,8 @@ bool write_cluster_cache(const std::string& path, const std::string& source,
     material.alpha = geometry::encode_alpha_word(
         source_material.alpha_mode, source_material.double_sided, source_material.alpha_cutoff);
     data.materials.push_back(material);
+    data.material_sampling.push_back(geometry::encode_material_sampling(
+        source_material.sampling, source_material.occlusion_strength));
   }
   constexpr u32 k_no_default = ~u32{0};
   u32 default_material = k_no_default;
@@ -118,6 +176,7 @@ bool write_cluster_cache(const std::string& path, const std::string& source,
     if (default_material == k_no_default) {
       default_material = data.materials.size();
       data.materials.push_back(geometry::ClusterFileMaterial{});
+      data.material_sampling.push_back(geometry::ClusterFileMaterialSampling{});
     }
     data.cluster_material.push_back(default_material);
   }
@@ -150,6 +209,7 @@ bool write_cluster_cache(const std::string& path, const std::string& source,
     ENGINE_LOG_WARN(log_renderer, "cluster cache not written", log::field("path", path),
                     log::field("error", error));
   }
+  build_cache_textures(data, io::parent_path(source), ddc, source.empty() ? path : source);
   lod = std::move(data.mesh);
   pages = std::move(data.pages);
   textures = std::move(data.textures);
@@ -186,8 +246,13 @@ void adopt_container(geometry::ClusterFileData& container_data, const std::strin
   lod = std::move(container_data.mesh);
   out.data.materials.reserve(container_data.materials.size());
   out.part_material.reserve(container_data.materials.size());
-  for (const geometry::ClusterFileMaterial& source : container_data.materials) {
+  for (u32 m = 0; m < container_data.materials.size(); ++m) {
+    const geometry::ClusterFileMaterial& source = container_data.materials[m];
     assets::Material material;
+    // How its slots sample their images, or the glTF defaults for a container written before
+    // the records existed (geometry.md, "How a material samples its images").
+    geometry::decode_material_sampling(geometry::cluster_material_sampling(container_data, m),
+                                       material.sampling, material.occlusion_strength);
     material.base_color = source.base_color;
     material.metallic = source.metallic;
     material.roughness = source.roughness;
@@ -348,8 +413,9 @@ bool load_terrain(const SceneDesc& desc, SourceMesh& out, geometry::ClusterLodMe
                   log::field("triangles", lod.leaf_triangle_count),
                   log::field("clusters", lod.mesh.clusters.size()),
                   log::field("lod_levels", lod.level_cluster_counts.size()));
-  if (!cache_path.empty() && write_cluster_cache(cache_path, "", out.data, out.part_material,
-                                                 out.part_of_cluster, lod, built, out.textures)) {
+  if (!cache_path.empty() &&
+      write_cluster_cache(cache_path, "", desc.ddc, out.data, out.part_material,
+                          out.part_of_cluster, lod, built, out.textures)) {
     out.container = cache_path;
   }
   if (desc.stream) pages = std::move(built);
@@ -488,6 +554,14 @@ bool load_source_mesh(const std::string& path, const SceneDesc& desc, u64 expect
     }
   }
   if (from_container) {
+    // A container found in or named beside the cache may have been written before its textures
+    // were built (an older engine-view, a cache that lost them, `engine-content build` without
+    // `--cache`): the step builds whatever of them is missing and finds the rest.
+    if (desc.cache) {
+      const std::string& source = container_data.source_path;
+      build_cache_textures(container_data, io::parent_path(source.empty() ? container : source),
+                           desc.ddc, container);
+    }
     adopt_container(container_data, container, desc, out, lod, pages);
     return true;
   }
@@ -559,8 +633,8 @@ bool load_source_mesh(const std::string& path, const SceneDesc& desc, u64 expect
   // Into the cache for the next run, as the same container engine-content build writes: either
   // app fills the cache, either app finds it.
   if (!cache_path.empty()) {
-    if (write_cluster_cache(cache_path, path, out.data, out.part_material, out.part_of_cluster, lod,
-                            built, out.textures)) {
+    if (write_cluster_cache(cache_path, path, desc.ddc, out.data, out.part_material,
+                            out.part_of_cluster, lod, built, out.textures)) {
       // The entry this load just wrote holds the same bytes in the same order this mesh is now in,
       // so a streamed run may read its pages back out of it rather than out of host memory.
       out.container = cache_path;

@@ -212,6 +212,94 @@ TEST_CASE("mips: an odd side is filtered, not dropped") {
   CHECK(chain[1].rgba[0] < 200);
 }
 
+TEST_CASE("mips: repeating edges make a tiling texture's levels tile, and mirrored ones reflect") {
+  // A 16 x 8 image with no symmetry of its own, integer-made.
+  constexpr u32 w = 16;
+  constexpr u32 h = 8;
+  Vector<u8> image(w * h * 4);
+  for (u32 y = 0; y < h; ++y) {
+    for (u32 x = 0; x < w; ++x) {
+      u8* t = &image[(y * w + x) * 4];
+      t[0] = static_cast<u8>((x * 37 + y * 11) % 251);
+      t[1] = static_cast<u8>((x * x * 5 + y * 3) % 253);
+      t[2] = static_cast<u8>((x * 13 + y * y * 7) % 241);
+      t[3] = 255;
+    }
+  }
+  const std::span<const u8> source(image.data(), image.size());
+
+  // Repeat commutes with a cyclic shift: the image moved two texels across (and two down) has a
+  // level 1 that is the original's level 1 moved one texel, exactly — the filter at the seam reads
+  // the other side of the image, as a repeating sampler does, so no column is special. Clamped
+  // edges break that at the seam, which is what the last check sees.
+  Vector<u8> shifted(image.size());
+  for (u32 y = 0; y < h; ++y) {
+    for (u32 x = 0; x < w; ++x) {
+      std::memcpy(&shifted[(((y + 2) % h) * w + (x + 2) % w) * 4], &image[(y * w + x) * 4], 4);
+    }
+  }
+  for (const MipMode mode : {MipMode::srgb, MipMode::linear}) {
+    Vector<MipLevel> a;
+    Vector<MipLevel> b;
+    build_mip_chain(source, w, h, mode, true, a, nullptr, EdgeMode::repeat, EdgeMode::repeat);
+    build_mip_chain(std::span<const u8>(shifted.data(), shifted.size()), w, h, mode, true, b,
+                    nullptr, EdgeMode::repeat, EdgeMode::repeat);
+    REQUIRE(a.size() == b.size());
+    const u32 lw = a[1].width;
+    const u32 lh = a[1].height;
+    u32 mismatched = 0;
+    for (u32 y = 0; y < lh; ++y) {
+      for (u32 x = 0; x < lw; ++x) {
+        const u8* want = &a[1].rgba[(y * lw + x) * 4];
+        const u8* got = &b[1].rgba[(((y + 1) % lh) * lw + (x + 1) % lw) * 4];
+        if (std::memcmp(want, got, 4) != 0) ++mismatched;
+      }
+    }
+    CHECK(mismatched == 0);
+    Vector<MipLevel> clamped_a;
+    Vector<MipLevel> clamped_b;
+    build_mip_chain(source, w, h, mode, true, clamped_a);
+    build_mip_chain(std::span<const u8>(shifted.data(), shifted.size()), w, h, mode, true,
+                    clamped_b);
+    u32 clamped_mismatched = 0;
+    for (u32 y = 0; y < lh; ++y) {
+      for (u32 x = 0; x < lw; ++x) {
+        const u8* want = &clamped_a[1].rgba[(y * lw + x) * 4];
+        const u8* got = &clamped_b[1].rgba[(((y + 1) % lh) * lw + (x + 1) % lw) * 4];
+        if (std::memcmp(want, got, 4) != 0) ++clamped_mismatched;
+      }
+    }
+    CHECK(clamped_mismatched > 0);
+  }
+
+  // Mirror is repeat of the image and its reflection: filtering the image with mirrored edges
+  // across gives the first half of filtering [image | image reversed] with repeating edges.
+  Vector<u8> doubled(2 * w * h * 4);
+  for (u32 y = 0; y < h; ++y) {
+    for (u32 x = 0; x < 2 * w; ++x) {
+      const u32 from = x < w ? x : 2 * w - 1 - x;
+      std::memcpy(&doubled[(y * 2 * w + x) * 4], &image[(y * w + from) * 4], 4);
+    }
+  }
+  Vector<MipLevel> mirrored;
+  Vector<MipLevel> repeated;
+  build_mip_chain(source, w, h, MipMode::linear, true, mirrored, nullptr, EdgeMode::mirror,
+                  EdgeMode::clamp);
+  build_mip_chain(std::span<const u8>(doubled.data(), doubled.size()), 2 * w, h, MipMode::linear,
+                  true, repeated, nullptr, EdgeMode::repeat, EdgeMode::clamp);
+  const u32 mw = mirrored[1].width;
+  u32 mirror_mismatched = 0;
+  for (u32 y = 0; y < mirrored[1].height; ++y) {
+    for (u32 x = 0; x < mw; ++x) {
+      if (std::memcmp(&mirrored[1].rgba[(y * mw + x) * 4],
+                      &repeated[1].rgba[(y * repeated[1].width + x) * 4], 4) != 0) {
+        ++mirror_mismatched;
+      }
+    }
+  }
+  CHECK(mirror_mismatched == 0);
+}
+
 TEST_CASE("mips: the kernel is Mitchell-Netravali and a partition of unity") {
   CHECK(static_cast<f64>(mip_kernel(0.0f)) == doctest::Approx(16.0 / 18.0).epsilon(1e-6));
   CHECK(static_cast<f64>(mip_kernel(1.0f)) == doctest::Approx(1.0 / 18.0).epsilon(1e-6));

@@ -182,8 +182,9 @@ constexpr u32 k_source_path_kind = 14;
 // Taken on MSVC 14.51, 2026-09-24, at k_cluster_cache_version 13 — which section 15 (the source
 // hash and the build key over it) carries, so a version bump moves that row and only that row —
 // and moved to 14 the same day, which moved row 15 and added row 32 (`textures`, empty: the
-// fixture has no images). 723 clusters. The empty sections all hash to 0x9ca066f1a4ab2eea,
-// `hash_bytes` of nothing.
+// fixture has no images), and to 15 the same day again, which moved row 15 and added row 33
+// (`material_sampling`: one default record per material). 723 clusters. The empty sections all
+// hash to 0x9ca066f1a4ab2eea, `hash_bytes` of nothing.
 constexpr SectionHash k_golden[] = {
     {1, 0xcf16170acf2289bdull},   // clusters
     {2, 0x490fb3784ad8b04eull},   // lod
@@ -198,7 +199,7 @@ constexpr SectionHash k_golden[] = {
     {11, 0x9ca066f1a4ab2eeaull},  // strings
     {12, 0xabbe4b9547eecfedull},  // scalars
     {13, 0x8de2d34a8650a3bcull},  // quantized
-    {15, 0x8285aded40d7eaffull},  // source_hash: the source's hash and the build key
+    {15, 0x4a013abb37af46a9ull},  // source_hash: the source's hash and the build key
     {16, 0x4e5e346448e74edeull},  // pages
     {17, 0xcac3ebbc6dcebd3aull},  // page_children
     {18, 0x1d46f3ca5f069ef3ull},  // page_scalars
@@ -216,6 +217,7 @@ constexpr SectionHash k_golden[] = {
     {30, 0x73c95020f80e9f79ull},  // vertex_ids
     {31, 0x89af6b25f28e6045ull},  // vertex_id_scalars
     {32, 0x9ca066f1a4ab2eeaull},  // textures: none, since the fixture has no images
+    {33, 0x58857a9ce8175a5eull},  // material_sampling: the fixture's materials, at the defaults
 };
 
 }  // namespace

@@ -450,6 +450,9 @@ bool build_one(const std::string& input, const std::string& output, const MeshOp
     material.alpha =
         geometry::encode_alpha_word(source.alpha_mode, source.double_sided, source.alpha_cutoff);
     data.materials.push_back(material);
+    // How its slots sample their images (section 33), which the texture records below read too.
+    data.material_sampling.push_back(
+        geometry::encode_material_sampling(source.sampling, source.occlusion_strength));
   }
   // A primitive that names no material gets one appended default, shared by all of them.
   constexpr u32 k_no_default = ~u32{0};
@@ -464,6 +467,7 @@ bool build_one(const std::string& input, const std::string& output, const MeshOp
     if (default_material == k_no_default) {
       default_material = data.materials.size();
       data.materials.push_back(geometry::ClusterFileMaterial{});
+      data.material_sampling.push_back(geometry::ClusterFileMaterialSampling{});
     }
     data.cluster_material.push_back(default_material);
   }

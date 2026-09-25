@@ -35,6 +35,7 @@
 #include <core/math/math.h>
 #include <domain/geometry/cluster_lod.h>
 #include <domain/geometry/cluster_pages.h>
+#include <domain/geometry/material_sampling.h>
 #include <foundation/io/vfs.h>
 
 #include <span>
@@ -152,10 +153,20 @@ enum class ClusterSection : u32 {
   // and a file without it reads with no records, which draws every image through the decode it
   // always did.
   Textures = 32,
+  // How every material's slots read their images (`material_sampling.h`): one
+  // `ClusterFileMaterialSampling` per material, parallel to `Materials` — each slot's glTF sampler
+  // (wrap s and t, the three filters) and `KHR_texture_transform`, and the occlusion strength. A
+  // section of its own rather than words in the material record, because that record's 64 bytes
+  // are all spoken for and it is a GPU record whose layout every existing container carries.
+  // Written for every mesh — empty when it has no materials — and a file without it reads with no
+  // records, which `cluster_material_sampling` answers with the glTF defaults: repeat in both
+  // directions, linear filtering throughout, no transform, strength 1.
+  MaterialSampling = 33,
 };
 
 // One past the highest kind this build knows, which is how wide a by-kind table has to be.
-inline constexpr u32 k_cluster_section_kinds = static_cast<u32>(ClusterSection::Textures) + 1;
+inline constexpr u32 k_cluster_section_kinds =
+    static_cast<u32>(ClusterSection::MaterialSampling) + 1;
 
 // Names the kinds this build knows, "unknown" for anything else; for diagnostics and for
 // `engine-content info`.
@@ -331,10 +342,22 @@ struct ClusterFileData {
   // Empty, or parallel to image_paths: where each image's built texture is (`ClusterFileTexture`).
   // Empty in a container written before cache version 14, which draws every image by decoding it.
   Vector<ClusterFileTexture> textures;
+  // Empty, or parallel to materials: how each material's slots read their images. Empty in a
+  // container written before cache version 15; `cluster_material_sampling` reads either.
+  Vector<ClusterFileMaterialSampling> material_sampling;
   std::string source_path;
   u64 source_hash = 0;
   u64 build_key = 0;
 };
+
+// Material `material`'s sampling record, or the default one (repeat, linear, no transform,
+// occlusion strength 1) when the container carries none — which is what every container written
+// before section 33 is, and what glTF says a texture with no sampler and no transform reads as.
+inline ClusterFileMaterialSampling cluster_material_sampling(const ClusterFileData& data,
+                                                             u32 material) noexcept {
+  return material < data.material_sampling.size() ? data.material_sampling[material]
+                                                  : ClusterFileMaterialSampling{};
+}
 
 // Writes the file through io::write_file_atomic, so a reader sees the old bytes or the new ones
 // and never a mix. Parent directories are not created. Returns false and fills `error`.
@@ -518,7 +541,16 @@ bool read_cluster_file_identity(std::string_view path, u64& source_hash, u64& bu
 //    it by decoding every image forever, and `engine-content build-all` would skip it forever
 //    because its identity still matched. Its geometry sections are byte-identical to what a build
 //    makes now; only the new section and the identity differ.
-inline constexpr u32 k_cluster_cache_version = 14;
+// 15: a container records how every material slot samples its image (section 33,
+//    `material_sampling`: the glTF sampler's wraps and filters, `KHR_texture_transform`, the
+//    occlusion strength), and each image's texture record asks for the mip chain to be filtered
+//    with the edges its samplers wrap with (texture.md, "The mip chain"). An entry built at 14 has
+//    neither: the renderer would draw it with repeat and linear filtering whatever the source
+//    said, with no transform — a brick texture authored to tile at a scale of eight draws once —
+//    and its records name textures whose mips were filtered with clamped edges. Its geometry
+//    sections are byte-identical to what a build makes now; the new section, the texture records
+//    and the identity differ.
+inline constexpr u32 k_cluster_cache_version = 15;
 
 // The cache key: the source's content hash (`assets::source_mesh_hash`) mixed with the build
 // options and the version above. `page_bytes` is the streaming page target the container was

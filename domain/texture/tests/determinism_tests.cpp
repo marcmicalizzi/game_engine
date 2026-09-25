@@ -42,6 +42,8 @@ struct Case {
   bool normal;
   bool mips;
   bool through_png;
+  EdgeMode edge_x = EdgeMode::clamp;  // what the mip filter reads past each edge
+  EdgeMode edge_y = EdgeMode::clamp;
 };
 
 constexpr Case k_cases[] = {
@@ -53,6 +55,12 @@ constexpr Case k_cases[] = {
     {"bc4_grey", 50, 30, 3, FormatChoice::bc4, ColorSpace::linear, false, true, false},
     {"rgba8_nomips", 33, 17, 0, FormatChoice::rgba8, ColorSpace::linear, false, false, false},
     {"bc7_png", 40, 24, 1, FormatChoice::automatic, ColorSpace::srgb, false, true, true},
+    // The edges a tiling texture's samplers wrap with (texture.md, "The mip chain"): an odd-sided
+    // colour image repeating both ways, and a normal map mirrored across and repeating down.
+    {"bc7_srgb_repeat", 97, 61, 0, FormatChoice::bc7, ColorSpace::srgb, false, true, false,
+     EdgeMode::repeat, EdgeMode::repeat},
+    {"bc5_normal_mirror", 64, 64, 2, FormatChoice::automatic, ColorSpace::linear, true, true, false,
+     EdgeMode::mirror, EdgeMode::repeat},
 };
 
 struct Golden {
@@ -60,7 +68,10 @@ struct Golden {
   u64 blocks;   // the `data` section's payload alone
 };
 
-// Taken on MSVC 14.51 (msvc-debug), 2026-09-24, at k_texture_cache_version 1.
+// Taken on MSVC 14.51 (msvc-debug), 2026-09-24, at k_texture_cache_version 1. The last two rows —
+// the mip filter's repeating and mirrored edges — were added the same day with the edges; the
+// first eight, clamped, did not move, because clamped edges pack to the word they always did and
+// the filter reads what it always read there.
 constexpr Golden k_golden[] = {
     {0xb44fc7fe3316033aull, 0xa95d66a7f41d6a92ull},  // bc7_srgb
     {0xa5e0149565818232ull, 0x5f56dd427532c4c2ull},  // bc7_linear
@@ -70,6 +81,8 @@ constexpr Golden k_golden[] = {
     {0x838478878e8b21d2ull, 0xc681662078f75353ull},  // bc4_grey
     {0x9ffbe791f64659f9ull, 0x72eecca79d48a509ull},  // rgba8_nomips
     {0x630c069169f3816aull, 0xfd256e6c797136c7ull},  // bc7_png
+    {0x1adc7d36da7a4d37ull, 0x89e5ef4589f71741ull},  // bc7_srgb_repeat
+    {0x128666fac4f96983ull, 0xb4badd3d1713d530ull},  // bc5_normal_mirror
 };
 static_assert(std::size(k_golden) == std::size(k_cases));
 
@@ -88,6 +101,8 @@ bool build(const Case& c, jobs::JobSystem* pool, TextureData& out, std::string& 
   options.color_space = c.space;
   options.normal_map = c.normal;
   options.mips = c.mips;
+  options.edge_x = c.edge_x;
+  options.edge_y = c.edge_y;
   Vector<u8> pixels;
   source_pixels(c, pixels);
   if (c.through_png) {

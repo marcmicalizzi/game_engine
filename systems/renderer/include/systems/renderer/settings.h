@@ -68,7 +68,7 @@ struct RenderSettings {
   RasterMode raster = RasterMode::Hardware;
   ShadowMode shadows = ShadowMode::Auto;
   // gfx::ResolveMode: cluster ids, triangle shading, depth, shaded, normals, uvs, the sun's shadow,
-  // and the textured albedo unlit.
+  // the textured albedo unlit, and the material's ambient occlusion as data.
   u32 view_mode = static_cast<u32>(gfx::ResolveMode::Shaded);
   f32 lod_px = 1.0f;      // screen-space error threshold for LOD selection
   f32 sw_px = 32.0f;      // Auto: clusters narrower than this go to the software rasterizer

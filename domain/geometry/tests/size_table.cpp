@@ -58,6 +58,13 @@ ENGINE_EXPECT_SIZE(24, 8, geometry::ClusterFileImage);
 // build options and the roles, with no padding — the same size as the image record it sits beside.
 ENGINE_EXPECT_SIZE(24, 8, geometry::ClusterFileTexture);
 
+// How a material samples its images (section 33): per slot the packed sampler word and the
+// transform's five floats, and per material five slots, the occlusion strength and one word of
+// padding that keeps the record a power of two.
+ENGINE_EXPECT_SIZE(24, 4, geometry::ClusterFileSlotSampling);
+
+ENGINE_EXPECT_SIZE(128, 4, geometry::ClusterFileMaterialSampling);
+
 // The surface binding record (surface_binding.h; plan 07 §7.11's proposed packing): a u16 refined
 // triangle, two u16 barycentrics, a half-float normal offset and a u16 blend weight, five u16 and
 // no padding. It is stored once per bound render vertex and read once per frame by the transfer,

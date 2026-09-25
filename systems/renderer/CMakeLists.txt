@@ -19,7 +19,7 @@
 # are written as them, so `engine-cli schema.describe` explains every one of them.
 engine_module(NAME renderer LAYER systems
   DEPS base containers hash math time jobs log platform io image geometry anim assets gfx json
-       texture tunables
+       texture tunables content_build
        schema schemas
   SOURCES src/settings.cpp src/view_set.cpp src/scene.cpp src/gpu_scene.cpp src/lighting.cpp
           src/page_source.cpp src/streaming.cpp src/scene_renderer.cpp src/reference.cpp

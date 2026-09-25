@@ -12,9 +12,10 @@
 //      detail the resolve's analytic derivatives selected, at four distances.
 //
 // The quad is a glTF written at test time with its image beside it, loaded through the derived-
-// data cache in the test's own scratch directory, so the container's records name the texture
-// and the test writes the `.tex` itself where the renderer will look. Skipped with a message on a
-// machine with no Vulkan device, as every renderer test is.
+// data cache in the test's own scratch directory — where the load, on a cold cache, builds the
+// `.tex` the container's records name, as `engine-content build --cache` would — or with no cache
+// at all, which is the decoded path. Skipped with a message on a machine with no Vulkan device, as
+// every renderer test is.
 #include <core/hash/hash.h>
 #include <core/math/math.h>
 #include <domain/gfx/device.h>
@@ -61,13 +62,16 @@ void put_f32(std::vector<u8>& out, f32 v) {
     out.push_back(static_cast<u8>((bits >> (8 * i)) & 0xffu));
 }
 
-// A unit-half-width quad in the XY plane facing +z, UV (0,0) at the top left, with one white
-// material whose base colour is `image.png` beside it.
-bool write_quad(const std::filesystem::path& dir) {
+// A unit-half-width quad in the XY plane facing +z, UV (0,0) at the top left and (uv_max, uv_max)
+// at the bottom right, with one white material whose base colour is `image.png` beside it.
+// `sampler` is a glTF sampler object for the texture, or empty for none (the glTF defaults);
+// `transform` is a KHR_texture_transform object for the reference, or empty for none.
+bool write_quad(const std::filesystem::path& dir, f32 uv_max = 1.0f,
+                const std::string& sampler = "", const std::string& transform = "") {
   std::vector<u8> bin;
   const f32 positions[12] = {-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0};
   const f32 normals[12] = {0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1};
-  const f32 uvs[8] = {0, 1, 1, 1, 1, 0, 0, 0};
+  const f32 uvs[8] = {0, uv_max, uv_max, uv_max, uv_max, 0, 0, 0};
   for (const f32 v : positions)
     put_f32(bin, v);
   for (const f32 v : normals)
@@ -80,14 +84,23 @@ bool write_quad(const std::filesystem::path& dir) {
     bin.push_back(static_cast<u8>(i >> 8));
   }
   if (!write_file((dir / "quad.bin").string(), bin.data(), bin.size())) return false;
+  const std::string texture_ref =
+      transform.empty()
+          ? std::string("{\"index\":0}")
+          : "{\"index\":0,\"extensions\":{\"KHR_texture_transform\":" + transform + "}}";
   const std::string json =
       "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,\"scenes\":[{\"nodes\":[0]}],"
       "\"nodes\":[{\"mesh\":0}],"
       "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0,\"NORMAL\":1,"
       "\"TEXCOORD_0\":2},\"indices\":3,\"material\":0}]}],"
-      "\"materials\":[{\"pbrMetallicRoughness\":{\"baseColorTexture\":{\"index\":0},"
-      "\"metallicFactor\":0,\"roughnessFactor\":1},\"doubleSided\":true}],"
-      "\"textures\":[{\"source\":0}],\"images\":[{\"uri\":\"image.png\"}],"
+      "\"materials\":[{\"pbrMetallicRoughness\":{\"baseColorTexture\":" +
+      texture_ref +
+      ","
+      "\"metallicFactor\":0,\"roughnessFactor\":1},\"doubleSided\":true}]," +
+      (sampler.empty()
+           ? std::string("\"textures\":[{\"source\":0}],")
+           : "\"samplers\":[" + sampler + "],\"textures\":[{\"source\":0,\"sampler\":0}],") +
+      "\"images\":[{\"uri\":\"image.png\"}],"
       "\"accessors\":["
       "{\"bufferView\":0,\"componentType\":5126,\"count\":4,\"type\":\"VEC3\","
       "\"min\":[-1,-1,0],\"max\":[1,1,0]},"
@@ -148,7 +161,10 @@ struct Harness {
   SceneRenderer renderer;
   std::string skip;
 
-  bool build(const std::string& mesh, const std::string& ddc) {
+  // `cache` true reads and fills the derived-data root in the test's scratch directory — which
+  // builds the quad's texture there as `engine-content build --cache` would — and false draws the
+  // image decoded at one level, the path a load without a cache takes.
+  bool build(const std::string& mesh, const std::string& ddc, bool cache = true) {
     std::string error;
     if (!device.create(gfx::DeviceOptions{}, &error)) {
       skip = "device unavailable: " + error;
@@ -156,7 +172,7 @@ struct Harness {
     }
     SceneDesc desc;
     desc.meshes.push_back(mesh);
-    desc.cache = true;  // the records name the texture in this scratch root, and only there
+    desc.cache = cache;  // the records name the texture in this scratch root, and only there
     desc.ddc = ddc;
     REQUIRE_MESSAGE(load_scene(desc, data, error), "scene: " << error);
     RenderSettings settings;
@@ -197,22 +213,23 @@ struct Harness {
   }
 };
 
-// Builds image.png into the `.tex` the container's record for it names — the options the base
-// colour slot asks for, keyed by the file's bytes — exactly as `engine-content build` would.
-void build_texture_for(const std::filesystem::path& dir, const std::string& ddc,
-                       const Vector<u8>& png) {
+// What `engine-content build --cache` makes of image.png for the quad's base colour: the options
+// that slot asks for, keyed by the file's bytes. The renderer's own cache fill builds exactly this
+// (it calls the same texture step), which the cold-cache test holds it to byte for byte.
+texture::TextureData expected_texture(const Vector<u8>& png) {
   texture::TextureBuildOptions options;
   options.format = texture::FormatChoice::bc7;
   options.color_space = texture::ColorSpace::srgb;
+  // The quad's texture names no sampler, so it repeats both ways (the glTF default), and the
+  // record asks for its mips to be filtered with repeating edges to match.
+  options.edge_x = texture::EdgeMode::repeat;
+  options.edge_y = texture::EdgeMode::repeat;
   texture::TextureData built;
   std::string error;
   REQUIRE_MESSAGE(texture::build_texture_from_encoded(std::span<const u8>(png.data(), png.size()),
                                                       options, built, nullptr, &error),
                   error);
-  const std::string path = texture::texture_cache_path(ddc, built.build_key);
-  std::filesystem::create_directories(std::filesystem::path(path).parent_path());
-  REQUIRE_MESSAGE(texture::write_texture_file(path, built, &error), error);
-  (void)dir;
+  return built;
 }
 
 // The display transform's inverse (material.slang `display_encode`, a 1/2.2 power): what linear
@@ -251,7 +268,7 @@ TEST_CASE("renderer: a built texture at level 0 is its decoded source within BC7
   CapturedFrame decoded;
   {
     Harness h;
-    if (!h.build(mesh, ddc)) {
+    if (!h.build(mesh, ddc, false)) {
       MESSAGE(h.skip);
       return;
     }
@@ -259,9 +276,8 @@ TEST_CASE("renderer: a built texture at level 0 is its decoded source within BC7
     CHECK(h.scene.textures_built() == 0);
     decoded = h.shot(k_near);
   }
-  build_texture_for(dir, ddc, png);
   Harness h;
-  REQUIRE(h.build(mesh, ddc));
+  REQUIRE(h.build(mesh, ddc));  // a cold cache: the load builds the texture it then uploads
   CHECK(h.scene.textures_built() == 1);
   CHECK(h.scene.textures_decoded() == 0);
   const CapturedFrame built = h.shot(k_near);
@@ -287,6 +303,48 @@ TEST_CASE("renderer: a built texture at level 0 is its decoded source within BC7
                                                   << ", texture bytes " << h.scene.texture_bytes());
   CHECK(psnr > 38.0);
   CHECK(worst <= 16);
+}
+
+// A scene loaded from a glTF on a cold cache — nothing under the derived-data root, no
+// `engine-content build` run over it — samples built textures on its first frame: the renderer's
+// own cache fill runs the content build's texture step (content_build::run_texture_step) beside the
+// container it writes, and the `.tex` it leaves is byte for byte what engine-content builds for
+// that image and slot. Until it did, such a scene drew its textures decoded at one level, with no
+// mips, and shimmered at a distance until someone ran engine-content over it. A second load finds
+// the entry rather than building it again.
+TEST_CASE("renderer: a glTF on a cold cache builds its textures and samples them") {
+  const test::TempDir tmp("renderer_texture_cold");
+  const std::filesystem::path dir = tmp.native();
+  REQUIRE(write_quad(dir));
+  Vector<u8> png;
+  REQUIRE(write_image(dir, k_size, smooth_image(k_size), png));
+  const std::string mesh = (dir / "quad.gltf").string();
+  const std::string ddc = (dir / "ddc").string();
+  const texture::TextureData expected = expected_texture(png);
+  const std::string path = texture::texture_cache_path(ddc, expected.build_key);
+  CHECK_FALSE(std::filesystem::exists(path));
+  {
+    Harness h;
+    if (!h.build(mesh, ddc)) {
+      MESSAGE(h.skip);
+      return;
+    }
+    CHECK(h.scene.textures_built() == 1);
+    CHECK(h.scene.textures_decoded() == 0);
+    REQUIRE(std::filesystem::exists(path));
+    texture::TextureData written;
+    std::string error;
+    REQUIRE_MESSAGE(texture::read_texture_file(path, written, &error), error);
+    CHECK(texture::texture_file_hash(written) == texture::texture_file_hash(expected));
+    CHECK(written.levels.size() == texture::texture_full_level_count(k_size, k_size));
+  }
+  // Warm: the container and the texture are both found; nothing is decoded.
+  const auto written_at = std::filesystem::last_write_time(path);
+  Harness h;
+  REQUIRE(h.build(mesh, ddc));
+  CHECK(h.scene.textures_built() == 1);
+  CHECK(h.scene.textures_decoded() == 0);
+  CHECK(std::filesystem::last_write_time(path) == written_at);
 }
 
 TEST_CASE("renderer: a checkerboard far away resolves to its mean through the mips") {
@@ -325,13 +383,12 @@ TEST_CASE("renderer: a checkerboard far away resolves to its mean through the mi
   f64 decoded_deviation = 0.0;
   {
     Harness h;
-    if (!h.build(mesh, ddc)) {
+    if (!h.build(mesh, ddc, false)) {
       MESSAGE(h.skip);
       return;
     }
     spread(h.shot(k_far), decoded_mean, decoded_deviation);
   }
-  build_texture_for(dir, ddc, png);
   Harness h;
   REQUIRE(h.build(mesh, ddc));
   REQUIRE(h.scene.textures_built() == 1);
@@ -367,6 +424,8 @@ TEST_CASE("renderer: the level the resolve picks is the one the UV's finite diff
   texture::TextureBuildOptions options;
   options.format = texture::FormatChoice::bc7;
   options.color_space = texture::ColorSpace::srgb;
+  options.edge_x = texture::EdgeMode::repeat;  // the glTF default sampler's wrap, as above
+  options.edge_y = texture::EdgeMode::repeat;
   texture::TextureData probe;
   probe.format = texture::TextureFormat::rgba8;
   probe.color_space = texture::ColorSpace::linear;
@@ -428,5 +487,133 @@ TEST_CASE("renderer: the level the resolve picks is the one the UV's finite diff
     MESSAGE("distance " << distance << ": " << rho << " texels a pixel, expected level " << expected
                         << ", measured " << measured);
     CHECK(std::abs(measured - expected) < 0.2);
+  }
+}
+
+// The glTF sampler's wrap modes and KHR_texture_transform, end to end: a glTF quad whose UVs run
+// from 0 to 3 across and down, textured with a 2x2 image of four unlike colours through a
+// nearest-magnifying sampler, is drawn through the albedo view and read back cell by cell. The
+// quad is six texels across, so each of its 6 x 6 cells is one texel of one tile:
+//
+//   repeat   nine whole tiles: cell (i, j) shows texel (i mod 2, j mod 2)
+//   mirror   every other tile reflected: the texel column goes 0 1 1 0 0 1 across
+//   clamp    one tile, then the edge texel for ever: column min(i, 1), row min(j, 1)
+//   transform  UVs from 0 to 1 and a KHR_texture_transform scale of 3 on a repeating sampler:
+//            the same nine tiles as `repeat`, from the material table's transform alone
+//
+// Each case is drawn twice — from the decoded source image (one level, the decode path's samplers)
+// and from the built texture (the content build's BC7 with its mips filtered with the sampler's
+// edges, the mipmapping samplers) — because the two paths create their samplers separately and
+// both have to honour the file. A cell is read at its centre and matched to the nearest of the
+// four colours, so neither the 16x16-block compression nor the display curve is in the comparison.
+TEST_CASE("renderer: glTF wrap modes and texture transforms tile, mirror and clamp") {
+  // Red, green / blue, white: row 0 is the top of the image, where v = 0.
+  const u8 colours[4][3] = {{255, 0, 0}, {0, 255, 0}, {0, 0, 255}, {255, 255, 255}};
+  std::vector<u8> rgba(2 * 2 * 4);
+  for (u32 t = 0; t < 4; ++t) {
+    rgba[t * 4 + 0] = colours[t][0];
+    rgba[t * 4 + 1] = colours[t][1];
+    rgba[t * 4 + 2] = colours[t][2];
+    rgba[t * 4 + 3] = 255;
+  }
+  struct Case {
+    const char* name;
+    u32 wrap;  // the glTF enum
+    texture::EdgeMode edge;
+    f32 uv_max;
+    const char* transform;
+    u32 (*texel)(u32 cell);  // the texel column (or row) a cell index shows
+  };
+  const Case cases[] = {
+      {"repeat", 10497, texture::EdgeMode::repeat, 3.0f, "", [](u32 i) { return i % 2; }},
+      {"mirror", 33648, texture::EdgeMode::mirror, 3.0f, "",
+       [](u32 i) { return (i % 4 == 1 || i % 4 == 2) ? 1u : 0u; }},
+      {"clamp", 33071, texture::EdgeMode::clamp, 3.0f, "", [](u32 i) { return i < 1 ? 0u : 1u; }},
+      {"transform", 10497, texture::EdgeMode::repeat, 1.0f, "{\"scale\":[3,3]}",
+       [](u32 i) { return i % 2; }},
+  };
+  constexpr f32 k_distance = 2.3f;
+  const Mat4 view_proj =
+      perspective_reversed_z(k_fov, 1.0f, 0.1f) *
+      look_at(Vec3{0.0f, 0.0f, k_distance}, Vec3{0.0f, 0.0f, 0.0f}, Vec3{0.0f, 1.0f, 0.0f});
+  auto pixel_of = [&](f32 x, f32 y, u32& px, u32& py) {
+    const Vec4 clip = view_proj * Vec4{x, y, 0.0f, 1.0f};
+    px = static_cast<u32>((clip.x / clip.w * 0.5f + 0.5f) * static_cast<f32>(k_size));
+    py = static_cast<u32>((0.5f - clip.y / clip.w * 0.5f) * static_cast<f32>(k_size));
+  };
+
+  const test::TempDir tmp("renderer_texture_wrap");
+  for (const Case& c : cases) {
+    const std::filesystem::path dir = tmp.native() / c.name;
+    std::filesystem::create_directories(dir);
+    const std::string sampler =
+        "{\"magFilter\":9728,\"minFilter\":9984,\"wrapS\":" + std::to_string(c.wrap) +
+        ",\"wrapT\":" + std::to_string(c.wrap) + "}";
+    REQUIRE(write_quad(dir, c.uv_max, sampler, c.transform));
+    Vector<u8> png;
+    REQUIRE(write_image(dir, 2, rgba, png));
+    const std::string mesh = (dir / "quad.gltf").string();
+    const std::string ddc = (dir / "ddc").string();
+    for (const bool built : {false, true}) {
+      // Decoded without a cache; built through one, where the load builds the texture itself —
+      // BC7 sRGB for the base colour, its mips filtered with the edges the sampler wraps with,
+      // which the record asks for and the key names.
+      Harness h;
+      if (!h.build(mesh, ddc, built)) {
+        MESSAGE(h.skip);
+        return;
+      }
+      CHECK(h.scene.textures_built() == (built ? 1u : 0u));
+      if (built) {
+        texture::TextureBuildOptions options;
+        options.format = texture::FormatChoice::bc7;
+        options.color_space = texture::ColorSpace::srgb;
+        options.edge_x = c.edge;
+        options.edge_y = c.edge;
+        const u64 key = texture::texture_cache_key(hash_bytes(png.data(), png.size()), options);
+        CHECK(std::filesystem::exists(texture::texture_cache_path(ddc, key)));
+      }
+      CHECK(h.scene.material_samplers() == 1u);
+      const CapturedFrame f = h.shot(k_distance);
+      u32 wrong = 0;
+      std::string first_wrong;
+      for (u32 j = 0; j < 6; ++j) {
+        for (u32 i = 0; i < 6; ++i) {
+          // The cell's centre on the quad: x runs -1..1 with u, y runs 1..-1 with v.
+          const f32 x = -1.0f + (static_cast<f32>(i) + 0.5f) / 3.0f;
+          const f32 y = 1.0f - (static_cast<f32>(j) + 0.5f) / 3.0f;
+          u32 px = 0;
+          u32 py = 0;
+          pixel_of(x, y, px, py);
+          REQUIRE(px < k_size);
+          REQUIRE(py < k_size);
+          const u8* p = &f.color[(py * k_size + px) * 4];
+          u32 nearest = 0;
+          i32 best = 1 << 30;
+          for (u32 t = 0; t < 4; ++t) {
+            i32 d = 0;
+            for (u32 ch = 0; ch < 3; ++ch) {
+              const i32 e = static_cast<i32>(p[ch]) - colours[t][ch];
+              d += e * e;
+            }
+            if (d < best) {
+              best = d;
+              nearest = t;
+            }
+          }
+          const u32 expected = c.texel(j) * 2 + c.texel(i);
+          if (nearest != expected) {
+            if (wrong == 0) {
+              first_wrong = "cell " + std::to_string(i) + "," + std::to_string(j) +
+                            " shows texel " + std::to_string(nearest) + ", expected " +
+                            std::to_string(expected);
+            }
+            ++wrong;
+          }
+        }
+      }
+      CHECK_MESSAGE(wrong == 0, c.name << (built ? " (built)" : " (decoded)") << ": " << wrong
+                                       << " of 36 cells wrong; " << first_wrong);
+    }
   }
 }

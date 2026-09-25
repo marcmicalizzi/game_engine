@@ -105,6 +105,7 @@ const char* view_mode_name(u32 mode) noexcept {
     case 5: return "uv";
     case 6: return "shadow";
     case 7: return "albedo";
+    case 8: return "occlusion";
     default: return "?";
   }
 }
@@ -126,6 +127,8 @@ bool parse_view_mode(std::string_view text, u32& out) noexcept {
     out = 6;
   } else if (text == "albedo") {
     out = 7;
+  } else if (text == "occlusion") {
+    out = 8;
   } else {
     return false;
   }

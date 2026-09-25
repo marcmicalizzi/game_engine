@@ -656,3 +656,458 @@ TEST_CASE("material resolve: metallic-roughness and normal maps") {
   frames.destroy();
   device.destroy();
 }
+
+// The emissive and occlusion slots and the UV transform, on the flat quad again, each block
+// against the CPU reference (brdf_reference.h):
+//
+//   0. **Unlit emission.** No sun, no sky, no lights: what the resolve writes is the emissive
+//      factor times the sRGB-decoded emissive texel and nothing else, quadrant by quadrant.
+//   1. **Lit emission.** The same material under the sun and the sky: the reference's shade()
+//      with the emissive term added last, as fs_resolve adds it.
+//   2. **Occlusion, lit.** A 2x2 occlusion map at strength 0.75 multiplies the sky hemisphere term
+//      and nothing else: the reference's shade() with `occlusion_of(texel, 0.75)`.
+//   3. **The occlusion view** (ResolveMode::Occlusion) returns 1 + strength * (r - 1) as a byte,
+//      unencoded.
+//   4, 5. **No indirect term, no difference.** With the sky at zero the resolve has no indirect
+//      light, so the occluded material and the same material without its map are the same
+//      picture byte for byte: occlusion never touches the sun.
+//   6. **A quarter turn of KHR_texture_transform** on a 2x2 checker read through a repeating,
+//      nearest sampler: each quadrant shows the texel `gfx::set_uv_transform`'s matrix sends it
+//      to, which pins the GPU's arithmetic to the CPU's and the rotation's direction to the one
+//      that function documents.
+//   7. **An ORM texture** — occlusion in R, roughness in G — named by the metallic-roughness and
+//      the occlusion slot through one sampler, as every FlightHelmet material is: the same
+//      reference as block 2.
+//
+// The tolerance is the file's: 2 of 255 on a displayed value, 1 on the unencoded occlusion.
+TEST_CASE("material resolve: emissive and occlusion maps, and the UV transform") {
+  gfx::Device device;
+  std::string error;
+  if (!gfx_test::open_device(device)) return;
+  if (!gfx_test::require(device, {gfx_test::Need::VisibilityBuffer})) return;
+
+  const Vec3 positions[4] = {Vec3{-5.0f, 0.0f, -5.0f}, Vec3{5.0f, 0.0f, -5.0f},
+                             Vec3{5.0f, 0.0f, 5.0f}, Vec3{-5.0f, 0.0f, 5.0f}};
+  const u32 indices[6] = {0, 2, 1, 0, 3, 2};
+  const Vec3 flat{0.0f, 1.0f, 0.0f};
+  const Vec3 normals[4] = {flat, flat, flat, flat};
+  const Vec2 uvs[4] = {Vec2{0.0f, 0.0f}, Vec2{1.0f, 0.0f}, Vec2{1.0f, 1.0f}, Vec2{0.0f, 1.0f}};
+  geometry::AttributeSource source;
+  source.normals = normals;
+  source.uvs = uvs;
+  geometry::ClusterMesh mesh;
+  REQUIRE(geometry::build_clusters(positions, indices, geometry::ClusterBuildOptions{}, mesh,
+                                   &error, source));
+
+  // Texel order is screen top-left, top-right, bottom-left, bottom-right (the first case above).
+  // The emissive texture is sRGB colour; four unlike values, none of them at an end of the range.
+  const u8 emissive_texels[16] = {200, 40, 10,  255, 30,  180, 90,  255,
+                                  60,  90, 220, 255, 250, 250, 250, 255};
+  // The occlusion map is data, read from R: fully open, half, a quarter, and fully shut.
+  const u8 occlusion_texels[16] = {255, 0, 0, 255, 128, 0, 0, 255, 64, 0, 0, 255, 0, 0, 0, 255};
+  // The checker for the transform: red, green / blue, white.
+  const u8 checker_texels[16] = {255, 0, 0,   255, 0,   255, 0,   255,
+                                 0,   0, 255, 255, 255, 255, 255, 255};
+  // An "ORM" texture — occlusion in R beside roughness in G and metallic in B, as glTF exporters
+  // pack them — named by both the metallic-roughness and the occlusion slot, one texture serving
+  // two slots. G is 153, a roughness of 0.6, and B 0, a dielectric, so the reference is
+  // the occlusion block's with that R.
+  const u8 orm_texels[16] = {255, 153, 0, 255, 128, 153, 0, 255, 64, 153, 0, 255, 0, 153, 0, 255};
+  gfx::ImageResource emissive_image;
+  gfx::ImageResource occlusion_image;
+  gfx::ImageResource checker_image;
+  gfx::ImageResource orm_image;
+  REQUIRE_MESSAGE(gfx::upload_image_2d(device, 2, 2, VK_FORMAT_R8G8B8A8_UNORM, orm_texels,
+                                       sizeof(orm_texels), orm_image, &error),
+                  error);
+  VkImageView orm_view = VK_NULL_HANDLE;
+  REQUIRE(gfx::create_image_view(device, orm_image, orm_view, &error));
+  REQUIRE_MESSAGE(gfx::upload_image_2d(device, 2, 2, VK_FORMAT_R8G8B8A8_SRGB, emissive_texels,
+                                       sizeof(emissive_texels), emissive_image, &error),
+                  error);
+  REQUIRE_MESSAGE(gfx::upload_image_2d(device, 2, 2, VK_FORMAT_R8G8B8A8_UNORM, occlusion_texels,
+                                       sizeof(occlusion_texels), occlusion_image, &error),
+                  error);
+  REQUIRE_MESSAGE(gfx::upload_image_2d(device, 2, 2, VK_FORMAT_R8G8B8A8_UNORM, checker_texels,
+                                       sizeof(checker_texels), checker_image, &error),
+                  error);
+  VkImageView emissive_view = VK_NULL_HANDLE;
+  VkImageView occlusion_view = VK_NULL_HANDLE;
+  VkImageView checker_view = VK_NULL_HANDLE;
+  REQUIRE(gfx::create_image_view(device, emissive_image, emissive_view, &error));
+  REQUIRE(gfx::create_image_view(device, occlusion_image, occlusion_view, &error));
+  REQUIRE(gfx::create_image_view(device, checker_image, checker_view, &error));
+  // Nearest and clamped for the emissive and occlusion quadrants (the tooling sampler); nearest
+  // and repeating for the transform, whose rotated UVs leave [0, 1].
+  VkSampler nearest = VK_NULL_HANDLE;
+  REQUIRE(gfx::create_sampler(device, VK_FILTER_NEAREST, nearest, &error));
+  gfx::SamplerDesc repeat_desc;
+  repeat_desc.mag = VK_FILTER_NEAREST;
+  repeat_desc.min = VK_FILTER_NEAREST;
+  repeat_desc.mipmapped = false;
+  VkSampler repeat = VK_NULL_HANDLE;
+  REQUIRE_MESSAGE(gfx::create_sampler(device, repeat_desc, repeat, &error), error);
+  gfx::BindlessSet bindless;
+  REQUIRE(bindless.create(device, gfx::BindlessConfig{}, &error));
+  const u32 emissive_slot =
+      bindless.add_sampled_image(emissive_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+  const u32 occlusion_slot =
+      bindless.add_sampled_image(occlusion_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+  const u32 checker_slot =
+      bindless.add_sampled_image(checker_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+  const u32 orm_slot =
+      bindless.add_sampled_image(orm_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+  const u32 nearest_slot = bindless.add_sampler(nearest);
+  const u32 repeat_slot = bindless.add_sampler(repeat);
+
+  // The materials: emissive, occluded, plain (the occluded one without its map), and the rotated
+  // checker. Every material's `sampler` is the repeating one, and the emissive and occlusion slots
+  // name the clamped one through their own halves of the per-slot words — so a shader that read
+  // `sampler` for those slots instead would read another sampler, which at these UVs happens to
+  // give the same texels; what the halves are checked by is the transform block, whose base
+  // colour must read `sampler` to repeat.
+  const Vec3 base_color{0.8f, 0.6f, 0.3f};
+  constexpr f32 k_roughness = 0.6f;
+  const Vec3 emissive_factor{0.9f, 0.6f, 0.3f};
+  constexpr f32 k_strength = 0.75f;
+  enum : u32 {
+    k_emissive = 0,
+    k_occluded = 1,
+    k_plain = 2,
+    k_rotated = 3,
+    k_orm = 4,
+    k_materials = 5
+  };
+  gfx::ResolveMaterial material_set[k_materials];
+  for (gfx::ResolveMaterial& material : material_set) {
+    material.albedo = Vec4{base_color, k_roughness};
+    material.emissive = Vec4{};
+    material.sampler = repeat_slot;
+  }
+  material_set[k_emissive].emissive = Vec4{emissive_factor, 0.0f};
+  material_set[k_emissive].emissive_texture = emissive_slot;
+  material_set[k_emissive].samplers_occlusion_emissive = (nearest_slot << 16) | gfx::k_same_sampler;
+  material_set[k_occluded].occlusion_texture = occlusion_slot;
+  material_set[k_occluded].occlusion_strength = k_strength;
+  material_set[k_occluded].samplers_occlusion_emissive = (gfx::k_same_sampler << 16) | nearest_slot;
+  material_set[k_orm].albedo = Vec4{base_color, 1.0f};          // the map is the whole roughness
+  material_set[k_orm].emissive = Vec4{0.0f, 0.0f, 0.0f, 1.0f};  // ... and the whole metallic
+  material_set[k_orm].metallic_roughness_texture = orm_slot;
+  material_set[k_orm].occlusion_texture = orm_slot;
+  material_set[k_orm].occlusion_strength = k_strength;
+  material_set[k_orm].samplers_mr_normal = (gfx::k_same_sampler << 16) | nearest_slot;
+  material_set[k_orm].samplers_occlusion_emissive = (gfx::k_same_sampler << 16) | nearest_slot;
+  material_set[k_rotated].albedo = Vec4{1.0f, 1.0f, 1.0f, k_roughness};
+  material_set[k_rotated].albedo_texture = checker_slot;
+  gfx::set_uv_transform(material_set[k_rotated], Vec2{0.0f, 0.0f}, radians(90.0f),
+                        Vec2{1.0f, 1.0f});
+  CHECK((material_set[k_rotated].flags & gfx::k_material_uv_transform) != 0);
+  u32 material_index[k_materials];
+  for (u32 i = 0; i < k_materials; ++i)
+    material_index[i] = i;
+  // An identity transform sets no flag: a material without one reads its UVs untouched.
+  gfx::ResolveMaterial untouched;
+  gfx::set_uv_transform(untouched, Vec2{0.0f, 0.0f}, 0.0f, Vec2{1.0f, 1.0f});
+  CHECK(untouched.flags == 0);
+
+  constexpr VkBufferUsageFlags k_storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+  gfx::BufferResource clusters;
+  gfx_test::SingleInstance scene;
+  gfx::BufferResource triangles;
+  gfx::BufferResource attributes;
+  gfx::BufferResource materials;
+  gfx::BufferResource cluster_materials;
+  REQUIRE(gfx::upload_buffer(device, mesh.clusters.data(), sizeof(geometry::ClusterDesc), k_storage,
+                             clusters, &error));
+  REQUIRE(scene.create(device, mesh, 1, &error));
+  REQUIRE(gfx::upload_buffer(device, mesh.triangles.data(), mesh.triangles.size() * sizeof(u32),
+                             k_storage, triangles, &error));
+  REQUIRE(gfx::upload_buffer(device, mesh.attributes.data(),
+                             mesh.attributes.size() * sizeof(geometry::VertexAttributes), k_storage,
+                             attributes, &error));
+  REQUIRE(
+      gfx::upload_buffer(device, material_set, sizeof(material_set), k_storage, materials, &error));
+  REQUIRE(gfx::upload_buffer(device, material_index, sizeof(material_index), k_storage,
+                             cluster_materials, &error));
+
+  constexpr u32 k_size = 128;
+  constexpr u32 k_blocks = 8;
+  const Vec3 eye{0.0f, 10.0f, 0.0f};
+  const Vec3 target{};
+  const Vec3 up{0.0f, 0.0f, -1.0f};
+  const f32 fov_y = radians(60.0f);
+  const Mat4 view_proj = perspective_reversed_z(fov_y, 1.0f, 0.1f) * look_at(eye, target, up);
+  gfx::BufferResource vis;
+  gfx::BufferResource params;
+  gfx::BufferResource host_color;
+  REQUIRE(gfx::create_buffer(
+      device, u64{k_size} * k_size * sizeof(u64),
+      k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+      false, vis, &error));
+  REQUIRE(gfx::create_buffer(device, sizeof(gfx::ResolveParams) * k_blocks,
+                             k_storage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, true, params,
+                             &error));
+  REQUIRE(gfx::create_buffer(device, u64{k_size} * k_size * 4 * k_blocks,
+                             VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, host_color, &error));
+
+  gfx::FrameContext frames;
+  REQUIRE(frames.create(device, 2, &error));
+  VkShaderModule resolve_module =
+      gfx::create_shader_module(device, shaders::k_visibility_resolve_spirv,
+                                shaders::k_visibility_resolve_spirv_size, &error);
+  REQUIRE(resolve_module != VK_NULL_HANDLE);
+  gfx_test::ClusterRaster raster;
+  REQUIRE_MESSAGE(raster.create(device, bindless.pipeline_layout(),
+                                geometry::ClusterBuildOptions{}.max_triangles, &error),
+                  error);
+  gfx::GraphicsPipelineDesc resolve_desc;
+  resolve_desc.vertex = resolve_module;
+  resolve_desc.vertex_entry = "vs_fullscreen";
+  resolve_desc.fragment = resolve_module;
+  resolve_desc.fragment_entry = "fs_resolve";
+  resolve_desc.layout = bindless.pipeline_layout();
+  resolve_desc.color_format = VK_FORMAT_R8G8B8A8_UNORM;
+  VkPipeline resolve_pipeline = VK_NULL_HANDLE;
+  REQUIRE(gfx::create_graphics_pipeline(device, resolve_desc, resolve_pipeline, &error));
+
+  gfx::ClusterDrawParams draw{};
+  draw.view_proj = view_proj;
+  draw.clusters = clusters.address;
+  draw.mesh = scene.meshes.address;
+  draw.instances = scene.instances.address;
+  draw.triangles = triangles.address;
+  draw.visibility = vis.address;
+  draw.width = k_size;
+  draw.height = k_size;
+
+  const Vec4 sky{0.2f, 0.3f, 0.4f, 1.0f};
+  const Vec3 sun_dir{0.0f, 1.0f, 0.0f};
+  gfx::ResolveParams base{};
+  base.sky = sky;
+  base.sun = Vec4{sun_dir, 1.0f};
+  base.camera = Vec4{eye, 0.0f};
+  base.view_proj = view_proj;
+  base.visibility = vis.address;
+  base.clusters = clusters.address;
+  base.mesh = scene.meshes.address;
+  base.instances = scene.instances.address;
+  base.triangles = triangles.address;
+  base.materials = materials.address;
+  base.attributes = attributes.address;
+  base.mode = static_cast<u32>(gfx::ResolveMode::Shaded);
+  base.width = k_size;
+  base.height = k_size;
+  struct Block {
+    u32 material;
+    bool lit;  // the sun; off, and with no sky, the frame has no light at all
+    bool sky;  // the sky hemisphere, the resolve's whole indirect term
+    gfx::ResolveMode mode;
+  };
+  const Block block_desc[k_blocks] = {
+      {k_emissive, false, false, gfx::ResolveMode::Shaded},
+      {k_emissive, true, true, gfx::ResolveMode::Shaded},
+      {k_occluded, true, true, gfx::ResolveMode::Shaded},
+      {k_occluded, true, true, gfx::ResolveMode::Occlusion},
+      {k_occluded, true, false, gfx::ResolveMode::Shaded},
+      {k_plain, true, false, gfx::ResolveMode::Shaded},
+      {k_rotated, true, true, gfx::ResolveMode::Albedo},
+      {k_orm, true, true, gfx::ResolveMode::Shaded},
+  };
+  auto* blocks = static_cast<gfx::ResolveParams*>(params.mapped);
+  u64 block_address[k_blocks];
+  for (u32 i = 0; i < k_blocks; ++i) {
+    blocks[i] = base;
+    blocks[i].cluster_materials = cluster_materials.address + block_desc[i].material * sizeof(u32);
+    blocks[i].mode = static_cast<u32>(block_desc[i].mode);
+    if (!block_desc[i].lit) blocks[i].sun = Vec4{sun_dir, 0.0f};
+    if (!block_desc[i].sky) blocks[i].sky = Vec4{0.0f, 0.0f, 0.0f, 1.0f};
+    block_address[i] = params.address + i * sizeof(gfx::ResolveParams);
+  }
+
+  gfx::RenderGraph graph(device);
+  const gfx::RgBuffer rg_vis = graph.import_buffer("vis", vis);
+  const gfx::RgBuffer rg_host = graph.import_buffer("host", host_color);
+  gfx::RgImage targets[k_blocks];
+  for (u32 i = 0; i < k_blocks; ++i) {
+    targets[i] = graph.create_image(
+        "resolved", {k_size, k_size, VK_FORMAT_R8G8B8A8_UNORM,
+                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT});
+  }
+  graph.add_pass(
+      "clear", gfx::PassKind::Transfer,
+      [&](gfx::PassBuilder& b) { b.write(rg_vis, gfx::Access::TransferWrite); },
+      [&](VkCommandBuffer cb, gfx::RenderGraph&) {
+        vkCmdFillBuffer(cb, vis.buffer, 0, VK_WHOLE_SIZE, 0);
+      });
+  graph.add_pass(
+      "visibility", gfx::PassKind::Raster,
+      [&](gfx::PassBuilder& b) {
+        b.render_area(k_size, k_size);
+        b.write(rg_vis, gfx::Access::FragmentReadWrite);
+      },
+      [&](VkCommandBuffer cb, gfx::RenderGraph&) { raster.draw(cb, bindless, draw, 1); });
+  for (u32 i = 0; i < k_blocks; ++i) {
+    graph.add_pass(
+        "resolve", gfx::PassKind::Raster,
+        [&, i](gfx::PassBuilder& b) {
+          VkClearColorValue clear{};
+          b.color_attachment(targets[i], VK_ATTACHMENT_LOAD_OP_CLEAR, clear);
+          b.read(rg_vis, gfx::Access::FragmentRead);
+        },
+        [&, i](VkCommandBuffer cb, gfx::RenderGraph&) {
+          vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, resolve_pipeline);
+          bindless.bind(cb, VK_PIPELINE_BIND_POINT_GRAPHICS);
+          vkCmdPushConstants(cb, bindless.pipeline_layout(), VK_SHADER_STAGE_ALL, 0, sizeof(u64),
+                             &block_address[i]);
+          vkCmdDraw(cb, 3, 1, 0, 0);
+        });
+  }
+  graph.add_pass(
+      "readback", gfx::PassKind::Transfer,
+      [&](gfx::PassBuilder& b) {
+        for (u32 i = 0; i < k_blocks; ++i)
+          b.read(targets[i], gfx::Access::TransferRead);
+        b.write(rg_host, gfx::Access::TransferWrite);
+      },
+      [&](VkCommandBuffer cb, gfx::RenderGraph& g) {
+        for (u32 i = 0; i < k_blocks; ++i) {
+          VkBufferImageCopy region{};
+          region.bufferOffset = u64{k_size} * k_size * 4 * i;
+          region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+          region.imageExtent = {k_size, k_size, 1};
+          vkCmdCopyImageToBuffer(cb, g.image(targets[i]).image, g.image_layout(targets[i]),
+                                 host_color.buffer, 1, &region);
+        }
+      });
+  REQUIRE_MESSAGE(graph.compile(&error), error);
+  VkCommandBuffer commands = frames.begin_frame();
+  graph.execute(commands);
+  REQUIRE(frames.wait(frames.end_frame()));
+
+  auto pixel = [&](u32 image, u32 x, u32 y) {
+    return static_cast<const u8*>(host_color.mapped) +
+           (u64{k_size} * k_size * image + y * k_size + x) * 4;
+  };
+  int worst = 0;
+  auto expect_bytes = [&](u32 image, u32 x, u32 y, const u8* expect, int tolerance,
+                          const std::string& what) {
+    const u8* p = pixel(image, x, y);
+    int here = 0;
+    for (u32 c = 0; c < 3; ++c)
+      here = std::max(here, std::abs(int{p[c]} - int{expect[c]}));
+    worst = std::max(worst, here);
+    CHECK_MESSAGE(here <= tolerance, what << " at " << x << "," << y << ": gpu " << int{p[0]} << ","
+                                          << int{p[1]} << "," << int{p[2]} << " expected "
+                                          << int{expect[0]} << "," << int{expect[1]} << ","
+                                          << int{expect[2]});
+  };
+  // The reference for a shaded block: the surface at the pixel, under the block's light, with the
+  // material's emission and occlusion.
+  auto expect_shaded = [&](u32 image, u32 x, u32 y, const Block& block, ref::Dvec3 emissive,
+                           double occlusion, const std::string& what) {
+    ref::Surface s;
+    s.position = ref::pixel_on_plane(ref::dvec3(eye), ref::dvec3(target), ref::dvec3(up),
+                                     static_cast<double>(fov_y), 1.0, k_size, k_size, x, y, 0.0);
+    s.normal = ref::dvec3(flat);
+    s.view = ref::normalize(ref::dvec3(eye) - s.position);
+    s.albedo = ref::dvec3(base_color);
+    s.roughness = static_cast<double>(k_roughness);
+    s.metallic = 0.0;
+    const ref::Dvec3 sky_used = block.sky ? ref::dvec3(sky) : ref::Dvec3{};
+    const ref::Dvec3 linear = ref::shade(s, ref::dvec3(sun_dir), block.lit ? 1.0 : 0.0, sky_used,
+                                         nullptr, 0, emissive, false, occlusion);
+    const u8 expect[3] = {ref::display(linear.x), ref::display(linear.y), ref::display(linear.z)};
+    expect_bytes(image, x, y, expect, 2, what);
+  };
+
+  const u32 cx = k_size / 2;
+  const u32 cy = k_size / 2;
+  const u32 quarter = static_cast<u32>(5.0f / (10.0f * std::tan(radians(30.0f))) * k_size * 0.25f);
+  const u32 qx[4] = {cx - quarter, cx + quarter, cx - quarter, cx + quarter};
+  const u32 qy[4] = {cy - quarter, cy - quarter, cy + quarter, cy + quarter};
+  for (u32 q = 0; q < 4; ++q) {
+    const std::string quadrant = ", quadrant " + std::to_string(q);
+    const ref::Dvec3 emission =
+        ref::emissive_of(ref::dvec3(emissive_factor), &emissive_texels[q * 4]);
+    // 0: unlit, so the picture is the emission alone — the emissive colour, through the display
+    // transform and nothing else.
+    expect_shaded(0, qx[q], qy[q], block_desc[0], emission, 1.0, "unlit emission" + quadrant);
+    // 1: the same emission on top of the lit surface.
+    expect_shaded(1, qx[q], qy[q], block_desc[1], emission, 1.0, "lit emission" + quadrant);
+    // 2: the occlusion of this quadrant on the sky hemisphere term alone.
+    const double occlusion =
+        ref::occlusion_of(occlusion_texels[q * 4], static_cast<double>(k_strength));
+    expect_shaded(2, qx[q], qy[q], block_desc[2], ref::Dvec3{}, occlusion, "occlusion" + quadrant);
+    // 7: the same occlusion read out of an ORM texture's R, while its G is the roughness the
+    // other blocks have: one texture serving two slots gives the reference's answer.
+    expect_shaded(7, qx[q], qy[q], block_desc[7], ref::Dvec3{}, occlusion, "ORM" + quadrant);
+    // 3: the occlusion view is the same number, as a byte.
+    const u8 grey = static_cast<u8>(std::lround(occlusion * 255.0));
+    const u8 expect_grey[3] = {grey, grey, grey};
+    expect_bytes(3, qx[q], qy[q], expect_grey, 1, "occlusion view" + quadrant);
+  }
+  // The emissive quadrants differ, or the comparisons above would pass on a constant.
+  CHECK(std::abs(int{pixel(0, qx[0], qy[0])[0]} - int{pixel(0, qx[1], qy[1])[0]}) > 30);
+  // And the occlusion darkens the lit picture where it is shut and not where it is open.
+  CHECK(int{pixel(2, qx[3], qy[3])[2]} < int{pixel(2, qx[0], qy[0])[2]});
+
+  // 4 and 5: with no sky there is no indirect term, and the occluded material's picture is the
+  // unoccluded one's, byte for byte.
+  int no_indirect = 0;
+  for (u32 y = 0; y < k_size; ++y) {
+    for (u32 x = 0; x < k_size; ++x) {
+      const u8* a = pixel(4, x, y);
+      const u8* b = pixel(5, x, y);
+      for (u32 c = 0; c < 3; ++c)
+        no_indirect = std::max(no_indirect, std::abs(int{a[c]} - int{b[c]}));
+    }
+  }
+  CHECK_MESSAGE(no_indirect == 0,
+                "an occlusion map changed a picture with no indirect term by " << no_indirect);
+
+  // 6: the quarter turn. gfx::set_uv_transform's matrix at 90 degrees is u' = v, v' = -u, so the
+  // top-left quadrant (u, v) = (0.25, 0.25) reads (0.25, -0.25), which repeats to (0.25, 0.75):
+  // the bottom-left texel. The CPU mirror of that arithmetic picks the texel for every quadrant.
+  const f32 quadrant_uv[4][2] = {{0.25f, 0.25f}, {0.75f, 0.25f}, {0.25f, 0.75f}, {0.75f, 0.75f}};
+  const Vec4 m = material_set[k_rotated].uv_transform;
+  for (u32 q = 0; q < 4; ++q) {
+    const f32 u = quadrant_uv[q][0];
+    const f32 v = quadrant_uv[q][1];
+    f32 tu = m.x * u + m.y * v;
+    f32 tv = m.z * u + m.w * v;
+    tu -= std::floor(tu);
+    tv -= std::floor(tv);
+    const u32 texel = (tv < 0.5f ? 0u : 2u) + (tu < 0.5f ? 0u : 1u);
+    // The albedo view is linear colour through the display transform; the checker's bytes are 0
+    // or 255, which that transform maps to themselves.
+    expect_bytes(6, qx[q], qy[q], &checker_texels[texel * 4], 2,
+                 "rotated checker, quadrant " + std::to_string(q));
+  }
+  // A quarter turn is not the identity: the top-left quadrant no longer shows the red texel.
+  CHECK(int{pixel(6, qx[0], qy[0])[0]} < 128);
+  MESSAGE("worst difference over emission, occlusion and the transform, "
+          << std::string(raster.name()) << " path: " << worst << " of 255");
+
+  graph.reset();
+  gfx::destroy_pipeline(device, resolve_pipeline);
+  raster.destroy(device);
+  gfx::destroy_shader_module(device, resolve_module);
+  bindless.destroy();
+  gfx::destroy_sampler(device, repeat);
+  gfx::destroy_sampler(device, nearest);
+  gfx::destroy_image_view(device, orm_view);
+  gfx::destroy_image(device, orm_image);
+  gfx::destroy_image_view(device, checker_view);
+  gfx::destroy_image_view(device, occlusion_view);
+  gfx::destroy_image_view(device, emissive_view);
+  gfx::destroy_image(device, checker_image);
+  gfx::destroy_image(device, occlusion_image);
+  gfx::destroy_image(device, emissive_image);
+  scene.destroy(device);
+  for (gfx::BufferResource* b : {&host_color, &params, &vis, &cluster_materials, &materials,
+                                 &attributes, &triangles, &clusters}) {
+    gfx::destroy_buffer(device, *b);
+  }
+  frames.destroy();
+  device.destroy();
+}

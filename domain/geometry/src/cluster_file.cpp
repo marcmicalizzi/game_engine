@@ -227,6 +227,11 @@ u64 encode(const ClusterFileData& data, std::string& out) {
   // the section list is the format's and not this mesh's.
   add_section(payloads, ClusterSection::Textures, static_cast<u32>(sizeof(ClusterFileTexture)),
               data.textures.size(), data.textures.data());
+  // How each material samples its images; empty for a mesh with no materials, and written even then
+  // for the same reason.
+  add_section(payloads, ClusterSection::MaterialSampling,
+              static_cast<u32>(sizeof(ClusterFileMaterialSampling)), data.material_sampling.size(),
+              data.material_sampling.data());
 
   u64 offset = k_header_bytes + k_record_bytes * payloads.size();
   for (Payload& payload : payloads) {
@@ -397,6 +402,7 @@ const char* cluster_section_name(u32 kind) noexcept {
     case ClusterSection::VertexIds: return "vertex_ids";
     case ClusterSection::VertexIdScalars: return "vertex_id_scalars";
     case ClusterSection::Textures: return "textures";
+    case ClusterSection::MaterialSampling: return "material_sampling";
   }
   return "unknown";
 }
@@ -696,6 +702,24 @@ bool read_cluster_file_memory(std::span<const u8> bytes, ClusterFileData& out, s
     }
     copy_section(bytes, *materials, result.materials);
   }
+  // How the materials sample their images, parallel to them and refused when it disagrees with
+  // them about how many there are. A file with none is one written before cache version 15, and
+  // every slot of it reads with the glTF defaults (`cluster_material_sampling`).
+  if (const ClusterFileSection* sampling =
+          found[static_cast<u32>(ClusterSection::MaterialSampling)];
+      sampling != nullptr && sampling->element_count != 0) {
+    if (sampling->element_size != sizeof(ClusterFileMaterialSampling)) {
+      return fail(error, "cluster file section material_sampling has " +
+                             std::to_string(sampling->element_size) + "-byte elements, expected " +
+                             std::to_string(sizeof(ClusterFileMaterialSampling)));
+    }
+    if (sampling->element_count != result.materials.size()) {
+      return fail(error, "cluster file has " + std::to_string(sampling->element_count) +
+                             " material sampling records for " +
+                             std::to_string(result.materials.size()) + " materials");
+    }
+    copy_section(bytes, *sampling, result.material_sampling);
+  }
   if (const ClusterFileSection* map = found[static_cast<u32>(ClusterSection::ClusterMaterial)];
       map != nullptr) {
     if (map->element_size != sizeof(u32)) {
@@ -934,6 +958,8 @@ constexpr ClusterSection k_resident_kinds[] = {
     ClusterSection::VertexIdScalars,
     // 24 bytes an image: where its built texture is, which the texture upload reads at load.
     ClusterSection::Textures,
+    // 128 bytes a material: how its slots sample their images, read with the materials.
+    ClusterSection::MaterialSampling,
 };
 
 // The per-page streams, which a resident read leaves on disk. They are still *listed*, with zero

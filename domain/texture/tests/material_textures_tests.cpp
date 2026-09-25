@@ -72,15 +72,22 @@ TEST_CASE("material textures: records key an embedded image by its bytes and lea
   fill_cluster_texture_records(data);
   REQUIRE(data.textures.size() == 3);
 
+  // The container carries no sampling records, so every slot reads the glTF default — repeat in
+  // both directions — and the images' mips are filtered with repeating edges to match.
   const u64 hash = hash_bytes(png, sizeof(png) - 1);
-  const TextureBuildOptions base = options_for_roles(k_role_base_color);
+  TextureBuildOptions base = options_for_roles(k_role_base_color);
+  base.edge_x = EdgeMode::repeat;
+  base.edge_y = EdgeMode::repeat;
   CHECK(data.textures[0].roles == k_role_base_color);
   CHECK(data.textures[0].options == pack_texture_options(base));
   CHECK(data.textures[0].source_hash == hash);
   CHECK(data.textures[0].key == texture_cache_key(hash, base));
 
+  TextureBuildOptions normal = options_for_roles(k_role_normal);
+  normal.edge_x = EdgeMode::repeat;
+  normal.edge_y = EdgeMode::repeat;
   CHECK(data.textures[1].roles == k_role_normal);
-  CHECK(data.textures[1].options == pack_texture_options(options_for_roles(k_role_normal)));
+  CHECK(data.textures[1].options == pack_texture_options(normal));
   CHECK(data.textures[1].source_hash == 0);  // the file's bytes are not the container's
   CHECK(data.textures[1].key == 0);
 
@@ -89,29 +96,96 @@ TEST_CASE("material textures: records key an embedded image by its bytes and lea
   CHECK(data.textures[2].key == 0);
 }
 
+TEST_CASE("material textures: an image's edges are the wrap every slot naming it agrees on") {
+  // Image 0 is a tiling base colour; image 1 a normal map mirrored across and clamped down;
+  // image 2 is named by two slots that disagree across (repeat and mirror) and agree down
+  // (repeat), so it is clamped across and repeats down; image 3 is named by a slot of a material
+  // with no sampling record, which is the glTF default of repeat.
+  geometry::ClusterFileMaterial a;
+  a.base_color_image = 0;
+  a.normal_image = 1;
+  a.metallic_roughness_image = geometry::encode_optional_image(2);
+  geometry::ClusterFileMaterial b;
+  b.occlusion_image = geometry::encode_optional_image(2);
+  geometry::ClusterFileMaterial c;
+  c.emissive_image = geometry::encode_optional_image(3);
+  const geometry::ClusterFileMaterial materials[3] = {a, b, c};
+  geometry::TextureSlotSampling slots_a[geometry::k_material_slots];
+  slots_a[geometry::k_slot_normal].sampler.wrap_s = geometry::TextureWrap::mirrored_repeat;
+  slots_a[geometry::k_slot_normal].sampler.wrap_t = geometry::TextureWrap::clamp_to_edge;
+  geometry::TextureSlotSampling slots_b[geometry::k_material_slots];
+  slots_b[geometry::k_slot_occlusion].sampler.wrap_s = geometry::TextureWrap::mirrored_repeat;
+  const geometry::ClusterFileMaterialSampling sampling[2] = {
+      geometry::encode_material_sampling(slots_a, 1.0f),
+      geometry::encode_material_sampling(slots_b, 1.0f)};  // material c has none
+  Vector<EdgeMode> x;
+  Vector<EdgeMode> y;
+  image_edges(materials, sampling, 5, x, y);
+  REQUIRE(x.size() == 5);
+  CHECK(x[0] == EdgeMode::repeat);
+  CHECK(y[0] == EdgeMode::repeat);
+  CHECK(x[1] == EdgeMode::mirror);
+  CHECK(y[1] == EdgeMode::clamp);
+  CHECK(x[2] == EdgeMode::clamp);  // repeat and mirror disagree: clamp
+  CHECK(y[2] == EdgeMode::repeat);
+  CHECK(x[3] == EdgeMode::repeat);
+  CHECK(y[3] == EdgeMode::repeat);
+  CHECK(x[4] == EdgeMode::clamp);  // named by no slot: nothing is built, and clamp is the zero
+
+  // And the records carry them in the options word, so the key moves with the wrap.
+  geometry::ClusterFileData data;
+  data.materials.assign(materials, materials + 3);
+  data.material_sampling.assign(sampling, sampling + 2);
+  data.image_paths.resize(5);
+  data.images.resize(5);
+  fill_cluster_texture_records(data);
+  TextureBuildOptions options;
+  REQUIRE(unpack_texture_options(data.textures[1].options, options));
+  CHECK(options.normal_map);
+  CHECK(options.edge_x == EdgeMode::mirror);
+  CHECK(options.edge_y == EdgeMode::clamp);
+}
+
 TEST_CASE("material textures: the options word round-trips and refuses what it does not know") {
+  const EdgeMode edges[3] = {EdgeMode::clamp, EdgeMode::repeat, EdgeMode::mirror};
   for (u32 f = 0; f <= static_cast<u32>(FormatChoice::bc7); ++f) {
     for (u32 bits = 0; bits < 8; ++bits) {
-      TextureBuildOptions options;
-      options.format = static_cast<FormatChoice>(f);
-      options.color_space = (bits & 1) != 0 ? ColorSpace::srgb : ColorSpace::linear;
-      options.normal_map = (bits & 2) != 0;
-      options.mips = (bits & 4) != 0;
-      const u32 packed = pack_texture_options(options);
-      CHECK(packed != 0);
-      TextureBuildOptions back;
-      REQUIRE(unpack_texture_options(packed, back));
-      CHECK(back.format == options.format);
-      CHECK(back.color_space == options.color_space);
-      CHECK(back.normal_map == options.normal_map);
-      CHECK(back.mips == options.mips);
+      for (u32 e = 0; e < 9; ++e) {
+        TextureBuildOptions options;
+        options.format = static_cast<FormatChoice>(f);
+        options.color_space = (bits & 1) != 0 ? ColorSpace::srgb : ColorSpace::linear;
+        options.normal_map = (bits & 2) != 0;
+        options.mips = (bits & 4) != 0;
+        options.edge_x = edges[e % 3];
+        options.edge_y = edges[e / 3];
+        const u32 packed = pack_texture_options(options);
+        CHECK(packed != 0);
+        TextureBuildOptions back;
+        REQUIRE(unpack_texture_options(packed, back));
+        CHECK(back.format == options.format);
+        CHECK(back.color_space == options.color_space);
+        CHECK(back.normal_map == options.normal_map);
+        CHECK(back.mips == options.mips);
+        CHECK(back.edge_x == options.edge_x);
+        CHECK(back.edge_y == options.edge_y);
+      }
     }
   }
+  // Clamped edges pack to nothing, so a word written before the edges existed means what it did.
+  TextureBuildOptions clamped;
+  clamped.format = FormatChoice::bc7;
+  CHECK((pack_texture_options(clamped) & 0xf00u) == 0);
   TextureBuildOptions out;
-  CHECK_FALSE(unpack_texture_options(0, out));               // "no texture wanted"
-  CHECK_FALSE(unpack_texture_options(0x1u, out));            // no validity bit
-  CHECK_FALSE(unpack_texture_options(0x80u | 0xfu, out));    // a format past the last
-  CHECK_FALSE(unpack_texture_options(0x80u | 0x100u, out));  // a bit a newer build set
+  CHECK_FALSE(unpack_texture_options(0, out));                // "no texture wanted"
+  CHECK_FALSE(unpack_texture_options(0x1u, out));             // no validity bit
+  CHECK_FALSE(unpack_texture_options(0x80u | 0xfu, out));     // a format past the last
+  CHECK_FALSE(unpack_texture_options(0x80u | 0x300u, out));   // an edge mode past the last
+  CHECK_FALSE(unpack_texture_options(0x80u | 0x1000u, out));  // a bit a newer build set
+  EdgeMode parsed = EdgeMode::clamp;
+  CHECK(parse_edge_mode("mirror", parsed));
+  CHECK(parsed == EdgeMode::mirror);
+  CHECK_FALSE(parse_edge_mode("wrap", parsed));
+  CHECK(std::string(edge_mode_name(EdgeMode::repeat)) == "repeat");
 }
 
 TEST_CASE("material textures: auto picks the format, and sRGB is refused where it cannot be") {

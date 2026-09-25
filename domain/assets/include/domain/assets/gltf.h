@@ -42,6 +42,7 @@
 #include <core/containers/vector.h>
 #include <core/math/math.h>
 #include <domain/geometry/cluster.h>
+#include <domain/geometry/material_sampling.h>
 #include <domain/geometry/uv_repair.h>
 
 #include <span>
@@ -74,7 +75,14 @@ inline constexpr u8 k_alpha_blend = 2;   // alpha weighs the surface against wha
 
 // Metallic-roughness material parameters. Texture slots are indices into MeshData::images, or
 // -1 when the material has no such texture; only TEXCOORD_0 is read, so a texture bound to any
-// other UV set arrives as -1. Factors default to the glTF defaults.
+// other UV set — by the reference's `texCoord` or by its `KHR_texture_transform`'s — arrives as
+// -1. Factors default to the glTF defaults.
+//
+// `sampling[slot]` (indexed by `geometry::k_slot_*`) is how that slot reads its image: the glTF
+// sampler of the texture it names (wrap s and t, the filters; the glTF defaults, repeat and
+// linear, for a texture with no sampler) and the reference's `KHR_texture_transform` (the
+// identity when it has none). It is kept for a slot with no image too, at the defaults, so the
+// array is always whole.
 struct Material {
   std::string name;
   Vec4 base_color{1.0f, 1.0f, 1.0f, 1.0f};
@@ -88,6 +96,9 @@ struct Material {
   i32 normal_image = -1;              // tangent space, UNORM, xyz remapped to -1..1
   i32 occlusion_image = -1;           // R ambient occlusion
   i32 emissive_image = -1;
+  // occlusionTexture.strength: occlusion = 1 + strength * (texel - 1); 1 where there is no map.
+  f32 occlusion_strength = 1.0f;
+  geometry::TextureSlotSampling sampling[geometry::k_material_slots];
   u8 alpha_mode = k_alpha_opaque;
   bool double_sided = false;
 };

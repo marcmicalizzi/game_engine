@@ -65,8 +65,27 @@ needed yet.
 sides are the previous level's halved and rounded down, never below one — what every GPU computes —
 and each level is filtered **from the previous level's floats**, not from its 8-bit rounding, by a
 separable **Mitchell–Netravali** cubic (B = C = 1/3) stretched to the exact ratio of the two sizes,
-so an odd side is filtered rather than a column dropped. The edges clamp, which is the renderer's
-sampler's address mode. Three modes:
+so an odd side is filtered rather than a column dropped.
+
+**A tap past an edge reads what the texture's sampler reads there** (`TextureBuildOptions::edge_x`
+and `edge_y`, `EdgeMode`): the edge texel again for a clamped texture, the other side of the image
+for a repeating one, the reflection for a mirrored one (GL's `MIRRORED_REPEAT`: index −1 reads texel
+0, −2 texel 1). The filter's support is two destination texels each way, so at every level the
+outermost texels are made partly of what lies past the edge, and a repeating sampler will put the
+*other side of the image* beside them at a tile seam. Filtered as clamped, a tiling brick's level 3
+smears the edge row's mortar into the seam instead of the next tile's bricks: the tiles still meet,
+but the join is a line of wrong texels at every distance where that level is read. Filtered as
+repeating, every level is the downsampled *periodic* image, and a seam is no different from any other
+column — the test builds a tiling image shifted by two texels and gets level 1 back shifted by one,
+byte for byte, which clamped edges fail. The edges come from the samplers: `image_edges` takes, per
+image, the wrap every slot that names it agrees on along each axis, and **clamp where they disagree**
+(a repeating base colour that is also a clamped occlusion map), the one choice that bleeds nothing
+from the far edge into a texture that does not tile. They pack into bits 8..11 of the options word
+with clamp as zero, so every word written before them — and the table below — means what it did,
+and the key moves with the wrap: an image the glTF names with no sampler repeats, which is every
+image of the Khronos samples, so each is a new entry after this change (its old, clamped entry is
+not wrong for a clamped sampler and simply goes unread). `engine-content texture --wrap` takes them
+by hand. Three modes:
 
 - **sRGB colour is filtered in linear light.** Averaging sRGB codes darkens every edge between a
   light and a dark region: a black-and-white checkerboard averages to code 128, which is 22% of the
@@ -150,23 +169,100 @@ stale under an unchanged container key, and the container would be a function of
 does not cover. A reader hashes the file as it is now and takes the key from the recorded options:
 a repainted image finds its new texture or none, never the old one. `k_cluster_cache_version` went
 to 14 with the section, because an entry without records would be drawn by decoding forever and
-`build-all` would skip it forever.
+`build-all` would skip it forever, and to 15 when the records' options gained the edges the image's
+samplers wrap with ("The mip chain"), because an entry built at 14 names textures whose mips were
+filtered as clamped.
 
 ## In the renderer
 
 `systems/renderer`'s texture upload (`gpu_scene.cpp`, `find_built_textures`) takes a mesh's built
 textures when the load reads the cache (`--no-cache` reads none) and **every** image the resolve
-samples — base colour, metallic-roughness, normal — has one whose recorded identity matches; it
-uploads them as stored with `gfx::upload_image_2d_levels`, samples them through
-`gfx::create_mip_sampler` (trilinear, 16x anisotropic where the device has `samplerAnisotropy`,
-clamped like the old sampler), and sets `k_material_mipped` on the mesh's materials (and
-`k_material_normal_rg` where the normal map is BC5). Otherwise the mesh takes exactly the path it
-always took — decode, RGBA8 at one level, the linear sampler, level-0 reads — and the flags stay
-zero, which keeps that picture byte for byte what it was. It is all or nothing per mesh, so no
-material mixes the two samplers. A device without `textureCompressionBC` draws the decoded path
+samples — base colour, metallic-roughness, normal, occlusion, emissive — has one whose recorded
+identity matches; it uploads them as stored with `gfx::upload_image_2d_levels`, samples them through
+mipmapping samplers (below), and sets `k_material_mipped` on the mesh's materials (and
+`k_material_normal_rg` where the normal map is BC5). Otherwise the mesh takes the path it always
+took — decode, RGBA8 at one level, level-0 reads — and the flags stay zero. It is all or nothing per
+mesh, so no material mixes the two. A device without `textureCompressionBC` draws the decoded path
 with a warning naming the feature (every desktop GPU has it; `engine-cli gpu.adapters` lists the
 row). `engine-view`'s summary says what happened: `"textures":{"built":n,"decoded":m,"bytes":b}`,
 the bytes being what the allocator gave the images.
+
+**Whoever fills the cache builds the textures.** The renderer's load through the cache runs the
+content build's texture step (`content_build::run_texture_step`) beside the container it writes
+when it clusters a glTF itself, and on a hit for whatever of the container's textures is missing
+([renderer](renderer.md#built-textures)), so a scene on a cold cache samples built, mipmapped
+textures from its first frame. Until 2026-09-24 only engine-content built them, and a scene flown
+without running it first drew them decoded at one level and shimmered at a distance.
+
+## Samplers and texture transforms
+
+**Why.** Until 2026-09-24 every material sampled through one clamped sampler and the UVs as the mesh
+carried them, so a tiling texture could not tile: a brick texture meant to repeat eight times across
+a 10 m wall drew once, stretched, and the clamp smeared its edge texels over everything past UV 1.
+That was the one thing the ruined-wall kits of [07 §7.7](../plan/07-content-pipeline.md#77-ml-asset-generation-novelty-content)
+could not do without, since their surface detail is tileable PBR at a declared texel density.
+
+**What the file says reaches the pixel.** The importer reads each slot's glTF sampler (wrap s and t,
+magnification and minification filters) and `KHR_texture_transform` (offset, rotation, scale) into
+`assets::Material::sampling` ([assets](assets.md)); the container carries them in section 33
+([geometry](geometry.md#how-a-material-samples-its-images)), a container from before it reading the
+glTF defaults — repeat, linear, no transform; and the renderer makes **one bindless sampler per
+distinct (wrap s, wrap t, filters, mipmapped) combination** the scene's textured slots ask for,
+made when the first slot asks and shared by every material after it (`GpuScene::material_samplers`).
+A built texture's sampler samples the whole chain, blends levels as the file asks (linear unless a
+`*_MIPMAP_NEAREST` filter says otherwise), and is 16x anisotropic where the device has
+`samplerAnisotropy` and the minification filter is linear — the pipeline's trilinear-anisotropic
+sampler, now with the file's wrap. A decoded texture's sampler reads level 0 alone, as the decoded
+path always has, with the file's wrap and filters. `NEAREST` magnification is honoured, so a
+pixel-art texture stays crisp; a glTF `NEAREST` or `LINEAR` minification filter, which asks for no
+mip chain, is not, because level 0 alone aliases and the chain is always built
+([geometry](geometry.md#how-a-material-samples-its-images)).
+
+**Every slot names its own sampler** — the material table's `sampler` for the base colour and two
+16-bit halves of two words for the other four — because a sampler is an index and costs the table
+eight bytes. **The UV transform is one per material**, the base colour's (or the first textured
+slot's): 24 bytes a slot on every material would have taken the table from 112 bytes to 208, and
+every exporter the corpus came from writes one mapping for all of a material's textures. The
+container keeps the transform per slot, so a renderer that carries more needs no rebuild; a material
+whose slots disagree is counted (`GpuScene::transform_conflicts`) and logged, and draws every slot
+with the one it kept. The transform is the extension's `T · R · S`: with c and s the rotation's
+cosine and sine, `u' = c·sx·u + s·sy·v + ox` and `v' = −s·sx·u + c·sy·v + oy`, a counter-clockwise
+turn of the image as it appears (v runs down it). `gfx::set_uv_transform` computes it on the CPU and
+leaves `k_material_uv_transform` clear for the identity, so a material without one reads its UVs with
+no arithmetic; with one, the resolve transforms the UV after `uv_scale` and the derivatives by the
+matrix's linear part, so a texture tiled eight times selects its mip level for eight tiles.
+
+**The mips follow the wrap** ("The mip chain" above), which is what makes a tiling texture tile at a
+distance too and not only up close.
+
+## Emissive
+
+The emissive factor times the emissive texture (sRGB colour, so the sample is linear) is **radiance
+the surface gives off**: the resolve adds it to the pixel after the lighting, touched by no shadow
+and no occlusion, and the reference path tracer adds it wherever a ray lands — the camera ray sees it
+directly, and a bounce ray picks it up as light arriving from that direction — through the same
+`sample_material` in `material.slang`, so the two read the same texel. **v1 is radiance only**:
+nothing samples emissive triangles as lights (next-event estimation towards them, with the MIS
+weight it would need against the BSDF ray, is the step after area lights), so an emitter lights its
+surroundings in the reference by being hit and not at all in the real-time picture, whose lighting
+is the sun, the analytic lights and the sky until Phase 2. Before this, a material with an emissive
+texture drew with no emission at all — the resolve had no slot, and full factor everywhere would have
+been a bigger lie than none — which the Lantern's glass was.
+
+## Occlusion
+
+The occlusion texture's red channel with glTF's strength, `1 + strength · (r − 1)`, multiplies **the
+resolve's indirect term and nothing else**. Today that term is the sky hemisphere — the resolve's
+whole ambient, until Phase 2's indirect lighting exists — so an occlusion map darkens the ambient in
+creases and leaves the sun, the point lights and the emission alone: it is a baked estimate of how
+much of the hemisphere a point sees, and direct light's shadows already answer that for direct
+light. **It is never applied in the path tracer**, which computes that visibility by tracing and
+would count it twice. When Phase 2's indirect lighting arrives the map multiplies that instead,
+still never the direct term. `--view occlusion` (`gfx::ResolveMode::Occlusion`) shows the value
+unencoded — a captured byte is the occlusion times 255, 1 where the material has none — beside
+`--view albedo`, which is how a test or a person checks what the map says without the lights in the
+way. An ORM image (occlusion in red beside roughness and metallic) is one texture serving both
+slots, as it already was.
 
 ### Mip selection without quads
 
@@ -264,6 +360,54 @@ is a control panel setting, it is legal filtering, and it is not the engine's to
 renderer's test therefore probes just past whole levels, where it tests the derivatives and not the
 driver's blend, and anyone comparing filtered pictures across vendors should expect the difference.
 
+### What the samplers, emission and occlusion cost
+
+Measured 2026-09-24 on the RTX 5090, `msvc-release`, offscreen (`engine-view --benchmark` over a
+still camera path, 301 frames × 3 repeats after the warm-up, ray-traced shadows), the base
+commit's binary (*before*) against this one's (*after*), interleaved run by run under the GPU lock.
+The machine was not quiet: other processes held 1–28% of the CPU at the samples around each run
+and the GPU was 0–9% busy before each, so these are upper bounds, but before and after ran under
+the same conditions minutes apart.
+
+**Samplers.** The FlightHelmet (seven materials, fifteen built textures) draws through **one**
+material sampler, and so does the Lantern (four decoded images, the emissive one now among them):
+every file of the sample corpus names the glTF default sampler or none, and one combination is
+one sampler however many materials share it. The fifteen `.tex` files are 71.3 MB either way; the
+edges change which texels a level holds, not how many.
+
+**The resolve**, `gpu_ms.resolve` median in milliseconds, cameras 0.9, 1.8 and 5.4 m from the
+helmet (it fills the frame at the first):
+
+| frame | camera | before | after | change |
+|---|---|---|---|---|
+| 1920×1080 | 0.9 m | 0.0704 | 0.0733 | +4.2% |
+| 1920×1080 | 1.8 m | 0.0382 | 0.0394 | +2.9% |
+| 1920×1080 | 5.4 m | 0.0265 | 0.0269 | +1.6% |
+| 3840×2160 | 0.9 m | 0.2135 | 0.2247 | +5.3% |
+| 3840×2160 | 1.8 m | 0.1051 | 0.1100 | +4.7% |
+| 3840×2160 | 5.4 m | 0.0549 | 0.0561 | +2.2% |
+
+**Up to 5% of a pass that is a fifth of a millisecond at 4K**, and it scales with the covered
+pixels, as a per-pixel cost does. About half of it is applying the occlusion: the same build with
+the occlusion multiply taken out cost +2.7% and +3–4% at the two nearest 4K cameras, so the rest —
+the material record grew from 64 to 112 bytes and every textured slot picks its own sampler — is
+about 3%. Reading an ORM material's occlusion out of the metallic-roughness texel already fetched,
+rather than fetching it again, was tried and measured no better (+4.8% and +6.4% against the
+table's +4.2% and +5.3%, within run-to-run spread): the second fetch hits the texel the first just
+brought in, so it was not kept.
+
+**The pictures.** The FlightHelmet lit (1280×720, orbit 12), before against after: PSNR 39.2 dB,
+SSIM 0.993, FLIP mean 0.017 — the occlusion darkening the sky term in the creases, which is the
+change and not an error. The albedo view: PSNR 81 dB, the repeating mip edges moving almost nothing
+on a model whose UVs stay inside their atlas. The Lantern lit: FLIP 0.0065, all of it the glass,
+which glows now and was dark before. Against the reference (`tools/ci/reference-compare.ps1`, the
+whole corpus, 1024 samples) every scene stays inside its band and the two that changed moved
+towards the reference: `flighthelmet` 0.0172 (0.0190 in [renderer](renderer.md#reference-renderer)'s
+table; the occlusion is a crude stand-in for the hemisphere visibility the reference traces, and
+it is the right direction), `thin-geometry` 0.0048 (0.0051; the Lantern's emission now in both
+pictures), `helmet-grid` 0.0052, `heightfield` 0.0348, `wide-frustum` 0.0014, `shredded-atlas`
+0.0575 unchanged.
+
 ## Public API
 
 - `domain/texture/texture_file.h` — `TextureFormat`, `ColorSpace`, `k_texture_normal_map`,
@@ -275,12 +419,13 @@ driver's blend, and anyone comparing filtered pictures across vendors should exp
   `read_texture_file_memory`, `read_texture_file_identity`, `read_texture_file_table`,
   `texture_file_hash`, `is_texture_file`.
 - `domain/texture/texture_build.h` — `k_texture_cache_version`, `FormatChoice`,
-  `TextureBuildOptions`, `format_choice_name`, `parse_format_choice`, `pack_texture_options`,
+  `EdgeMode`, `TextureBuildOptions` (with `edge_x` and `edge_y`), `format_choice_name`,
+  `parse_format_choice`, `edge_mode_name`, `parse_edge_mode`, `pack_texture_options`,
   `unpack_texture_options`, `resolve_texture_format`, `texture_cache_key`, `texture_cache_path`,
   `TextureBuildReport`, `build_texture`, `build_texture_from_encoded`, and the pieces:
   `srgb8_to_linear`, `linear_to_srgb8`, `srgb_decode_table`, `srgb_threshold_table`, `MipMode`,
   `mip_kernel`, `MipLevel`, `build_mip_chain`, `encode_level`, `decode_level`.
-- `domain/texture/material_textures.h` — `k_role_*`, `image_roles`, `options_for_roles`,
+- `domain/texture/material_textures.h` — `k_role_*`, `image_roles`, `options_for_roles`, `image_edges`,
   `fill_cluster_texture_records`, `cluster_texture_records`.
 
 ## Depends on
@@ -302,8 +447,11 @@ record the glue fills); `bc7enc` (the vendored encoders, MIT or public domain).
 - `mips_tests.cpp` — chain sides and counts at seven sizes; the sRGB tables within an ulp of the
   transfer function and every code round-tripping; a black-and-white checker averaging to sRGB 188
   (not 128) and to data 128; constant images constant at every level in every mode; normal maps
-  unit at every level with a short source vector put back; an odd side filtered; the kernel's values
-  and partition of unity; and the same bytes on a four-worker pool.
+  unit at every level with a short source vector put back; an odd side filtered; repeating edges
+  commuting with a cyclic shift (a 16x8 image moved two texels has level 1 moved one, byte for byte,
+  in sRGB and linear, where clamped edges do not) and mirrored edges equal to repeating the image
+  beside its reflection; the kernel's values and partition of unity; and the same bytes on a
+  four-worker pool.
 - `blocks_tests.cpp` — reference BC4 and BC1 decoders written from the format's definition: BC4
   exact on every constant block and on gradients whose values lie on a block's palette, BC5 as two
   independent BC4 channels (and the library's decoder agreeing, with blue zero), BC1 exact on a
@@ -311,14 +459,22 @@ record the glue fills); `bc7enc` (the vendored encoders, MIT or public domain).
   image (gradient above 45 dB and no channel more than 6 codes off, hard-edged tiles above 48 dB,
   per-texel alpha above 30 dB, white noise above 14 dB); and the same blocks on a pool.
 - `material_textures_tests.cpp` — roles and options per slot, an ORM image serving two slots, the
-  records keying an embedded image and leaving a file's key open, the options word round-tripping
-  and refusing unknown bits, the `auto` rules and the sRGB refusal, and the cache key moving with
-  every input.
-- `determinism_tests.cpp` — above.
+  records keying an embedded image and leaving a file's key open (with repeating edges, the glTF
+  default), an image's edges taken from the samplers that name it and clamped where two disagree,
+  the options word round-tripping every format, flag and edge combination and refusing an unknown
+  edge mode or bit, the `auto` rules and the sRGB refusal, and the cache key moving with every
+  input.
+- `determinism_tests.cpp` — above; ten cases, the last two with repeating and mirrored edges.
 - `size_table.cpp` — the header, the section record, the description and the level record.
 
 End to end: `apps/engine_content/tests/texture_tests.cpp` ([apps](apps.md)) and
-`systems/renderer/tests/texture_tests.cpp` ([renderer](renderer.md)).
+`systems/renderer/tests/texture_tests.cpp` ([renderer](renderer.md)) — the latter includes the wrap
+modes: a glTF quad with UVs from 0 to 3 and a 2x2 texture of four colours through a nearest sampler
+shows nine whole tiles under repeat, every other tile reflected under mirror, and one tile then the
+edge texel under clamp, cell by cell, from the decoded image and from the built texture; and UVs
+from 0 to 1 with a `KHR_texture_transform` scale of 3 show the same nine tiles. The emissive and
+occlusion slots and the transform's rotation are held to the CPU reference in
+`domain/gfx/tests/attributes_tests.cpp` ([gfx](gfx.md)).
 
 ## Not yet
 
@@ -329,10 +485,13 @@ End to end: `apps/engine_content/tests/texture_tests.cpp` ([apps](apps.md)) and
   cutoff, which is the material's and not the image's.
 - **Streaming.** Textures are uploaded whole, all levels, at load; the chain is laid out so a
   streamer can fetch the small levels first, but no residency manager asks.
-- **The occlusion and emissive textures** are built but not sampled: the resolve has no slot for
-  them yet ([renderer](renderer.md)).
-- **glTF sampler wrap modes.** The renderer's samplers clamp, as the decoded path always did; the
-  mip filter clamps to match. A tiling texture wants repeat in both.
+- **A UV transform per slot on the GPU.** The container keeps one per slot and the material table
+  one per material ("Samplers and texture transforms"); a material whose slots disagree draws with
+  the base colour's and is counted.
+- **`KHR_materials_emissive_strength`**, which scales the emissive factor past 1 for HDR emitters:
+  not read, so such an emitter draws at its factor.
+- **Emissive surfaces as lights.** Radiance only in both integrators ("Emissive"); next-event
+  estimation towards emissive triangles belongs with area lights.
 - **A KTX2 exporter** ([ADR-0036](../adr/0036-built-textures-in-the-engines-own-container.md)).
 - **`domain/atlas`'s rebake** still uses `std::pow` for its sRGB tables, which is one reason a
   repacked container is not yet the same bytes everywhere ([atlas](atlas.md#determinism)); these

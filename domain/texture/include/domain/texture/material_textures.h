@@ -48,17 +48,30 @@ void image_roles(std::span<const geometry::ClusterFileMaterial> materials, u32 i
 // metallic-roughness and the occlusion slot is BC7 linear and serves both.
 TextureBuildOptions options_for_roles(u32 roles) noexcept;
 
-// Fills `data.textures`, parallel to `data.image_paths`, from `data.materials` and the embedded
-// bytes in `data.images`: the roles, the packed options, and — for an image whose bytes the
-// container carries — the source hash and the cache key. An image named by path records options
-// and roles and a zero key, because its bytes are not the container's and the container has to be
-// a function of what its own key covers (the glTF and its buffers): the renderer and the build
-// hash the file when they need the key. An image no slot names records all zeros.
+// What the mip filter reads past each edge of every image, parallel to the images: the wrap its
+// samplers read it with, taken from every slot that names it (`sampling` parallel to `materials`,
+// or empty, which is every slot at the glTF default of repeat). An image every reference wraps
+// the same way along an axis is filtered that way along it; one whose references disagree — a
+// repeating base colour and the same image clamped as occlusion — is filtered clamped, which is
+// the one choice that bleeds nothing from the far edge into a texture that does not tile.
+void image_edges(std::span<const geometry::ClusterFileMaterial> materials,
+                 std::span<const geometry::ClusterFileMaterialSampling> sampling, u32 image_count,
+                 Vector<EdgeMode>& edge_x, Vector<EdgeMode>& edge_y);
+
+// Fills `data.textures`, parallel to `data.image_paths`, from `data.materials`, their sampling
+// records and the embedded bytes in `data.images`: the roles, the packed options (the slot's
+// format and colour space, and the edges its samplers wrap with), and — for an image whose bytes
+// the container carries — the source hash and the cache key. An image named by path records
+// options and roles and a zero key, because its bytes are not the container's and the container
+// has to be a function of what its own key covers (the glTF and its buffers): the renderer and the
+// build hash the file when they need the key. An image no slot names records all zeros.
 void fill_cluster_texture_records(geometry::ClusterFileData& data);
 
 // The same for images held as `assets::ImageRef`-shaped pairs, for a caller that has no
-// ClusterFileData yet: `embedded[i]` is image i's bytes, empty for an image named by path.
+// ClusterFileData yet: `embedded[i]` is image i's bytes, empty for an image named by path, and
+// `sampling` is parallel to `materials` or empty.
 void cluster_texture_records(std::span<const geometry::ClusterFileMaterial> materials,
+                             std::span<const geometry::ClusterFileMaterialSampling> sampling,
                              std::span<const std::span<const u8>> embedded,
                              Vector<geometry::ClusterFileTexture>& out);
 

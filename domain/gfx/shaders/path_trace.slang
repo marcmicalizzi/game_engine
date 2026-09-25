@@ -13,10 +13,17 @@
 // **What is sampled and what is not.** The sun and the analytic lights are delta lights, so they
 // are estimated by next-event estimation alone and never hit by a BSDF ray; multiple importance
 // sampling therefore weights nothing today, which is why `mis_power_heuristic` appears in the
-// sampler and not here. Emissive geometry is added when a ray lands on it, with weight 1, for
-// the same reason: nothing samples it directly yet. The sky is not sampled directly either — it
-// is what a ray that escapes carries — so a scene lit only by the sky converges through BSDF
-// sampling. Area and environment sampling, and the MIS that comes with them, are the next step.
+// sampler and not here. **Emissive geometry is radiance only**: the emissive factor times the
+// emissive texture (`sample_material`) is added when a ray lands on the surface, with weight 1 —
+// the camera ray sees it directly and a bounce ray picks it up as light arriving from that
+// direction — and nothing samples it directly. That is unbiased and needs no light list, and it
+// converges slowly where a small bright emitter is most of a scene's light; next-event
+// estimation towards emissive triangles, with the MIS weight against the BSDF ray it would then
+// need, is the step after area lights and is not v1's. The sky is not sampled directly either —
+// it is what a ray that escapes carries — so a scene lit only by the sky converges through BSDF
+// sampling. **Occlusion maps are never applied here**: they are a baked stand-in for the
+// hemisphere visibility this integrator computes by tracing, so multiplying them in would count
+// the same occlusion twice.
 //
 // **The sky has the two roles the resolve gives it, on purpose.** A primary miss returns the
 // background color the resolve writes for an empty pixel, in linear (`sky^2.2`, so the display
@@ -183,7 +190,7 @@ float3 trace_path(PathTraceParams* params, float3 origin, float3 direction, inou
     Surface s = surface_at(geo, instance, tri, b, origin);
 
     const ResolveMaterial material = material_of(geo, instance, entry.y);
-    const float2 uv = s.uv * material.uv_scale;
+    const float2 uv = material_uv(material, s.uv * material.uv_scale);
     const MaterialSample sampled = sample_material(material, uv);
     float3 shading_normal = s.normal;
     if (material.normal_texture != k_no_texture) {

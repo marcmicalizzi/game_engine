@@ -392,6 +392,32 @@ bool create_mip_sampler(const Device& device, f32 max_anisotropy, VkSampler& out
   return true;
 }
 
+bool create_sampler(const Device& device, const SamplerDesc& desc, VkSampler& out,
+                    std::string* error) {
+  VkSamplerCreateInfo info{};
+  info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+  info.magFilter = desc.mag;
+  info.minFilter = desc.min;
+  info.mipmapMode = desc.mipmapped ? desc.mip : VK_SAMPLER_MIPMAP_MODE_NEAREST;
+  info.addressModeU = desc.address_u;
+  info.addressModeV = desc.address_v;
+  info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  info.minLod = 0.0f;
+  info.maxLod = desc.mipmapped ? VK_LOD_CLAMP_NONE : 0.0f;
+  const bool anisotropic = desc.mipmapped && desc.min == VK_FILTER_LINEAR &&
+                           device.features().sampler_anisotropy && desc.max_anisotropy > 1.0f;
+  info.anisotropyEnable = anisotropic ? VK_TRUE : VK_FALSE;
+  info.maxAnisotropy =
+      anisotropic ? (desc.max_anisotropy > 16.0f ? 16.0f : desc.max_anisotropy) : 1.0f;
+  const VkResult r = vkCreateSampler(device.handles().device, &info, nullptr, &out);
+  if (r != VK_SUCCESS) {
+    set_error(error, "vkCreateSampler", r);
+    out = VK_NULL_HANDLE;
+    return false;
+  }
+  return true;
+}
+
 void destroy_sampler(const Device& device, VkSampler sampler) noexcept {
   if (sampler != VK_NULL_HANDLE) vkDestroySampler(device.handles().device, sampler, nullptr);
 }

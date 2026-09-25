@@ -165,35 +165,94 @@ struct ShadowMapParams {
 static_assert(sizeof(ShadowMapParams) == 400);
 static_assert(sizeof(ShadowMapParams) % 16 == 0, "the block is read as float4 rows on the GPU");
 
-// Mirrors ResolveMaterial in visibility_resolve.slang. 64 bytes. Every texture slot is a
-// bindless sampled image read with the one `sampler` at `uv * uv_scale`. The albedo texture is
-// uploaded sRGB, so sampling returns linear color; the metallic-roughness and normal textures
-// are data, not color, and are uploaded UNORM.
+// ResolveMaterial's per-slot sampler words hold one bindless sampler slot in each 16-bit half;
+// this value in a half means "the material's `sampler`", which is what a material that sets only
+// `sampler` — every one written before the slots had samplers of their own — gets by default.
+inline constexpr u32 k_same_sampler = 0xFFFFu;
+inline constexpr u32 k_same_samplers = 0xFFFFFFFFu;  // both halves
+
+// Mirrors ResolveMaterial in material.slang. 112 bytes. Every texture slot is a bindless sampled
+// image read at `uv * uv_scale`, then through the material's UV transform when
+// `k_material_uv_transform` is set, with a sampler of its own: `sampler` for the base colour, and
+// the halves of `samplers_mr_normal` and `samplers_occlusion_emissive` for the others (either
+// half `k_same_sampler` borrows `sampler`). The albedo and emissive textures are uploaded sRGB,
+// so sampling returns linear colour; the metallic-roughness, normal and occlusion textures are
+// data, not colour, and are uploaded UNORM.
+//
+// **One UV transform per material**, not one per slot: `KHR_texture_transform` is per texture
+// reference and the container keeps it per slot, but a material whose slots transform differently
+// is rare enough (every exporter the samples came from writes one mapping for all of a material's
+// textures) that 24 bytes a slot on every material in every frame is not worth it. The renderer
+// applies the base colour's — or the first textured slot's — and counts the materials whose other
+// slots disagree (docs/subsystems/renderer.md, "Materials").
 struct ResolveMaterial {
   Vec4 albedo{0.8f, 0.8f, 0.8f, 0.5f};  // rgb linear, w roughness
-  Vec4 emissive{};                      // rgb linear, w metallic
+  Vec4 emissive{};                      // rgb linear factor, w metallic
   u32 albedo_texture = k_no_texture;    // multiplies albedo
-  u32 sampler = 0;                      // bindless sampler slot
+  u32 sampler = 0;                      // bindless sampler slot of the base colour
   f32 uv_scale = 1.0f;
-  u32 flags = 0;                                  // k_material_mipped | k_material_normal_rg
+  u32 flags = 0;  // k_material_mipped | k_material_normal_rg | k_material_uv_transform
   u32 metallic_roughness_texture = k_no_texture;  // glTF packing: G roughness, B metallic
   u32 normal_texture = k_no_texture;              // tangent space, UNORM, remapped to -1..1
   f32 normal_scale = 1.0f;                        // scales the map's xy before it is normalized
-  u32 pad = 0;
+  u32 occlusion_texture = k_no_texture;           // R: occlusion of the indirect term
+  u32 emissive_texture = k_no_texture;            // multiplies the emissive factor
+  // glTF occlusionTexture.strength: occlusion = 1 + strength * (texel.r - 1).
+  f32 occlusion_strength = 1.0f;
+  u32 samplers_mr_normal = k_same_samplers;           // low half metallic-roughness, high normal
+  u32 samplers_occlusion_emissive = k_same_samplers;  // low half occlusion, high emissive
+  // The UV transform, read with k_material_uv_transform: u' = x u + y v + offset.x and
+  // v' = z u + w v + offset.y. `uv_offset.zw` are unused.
+  Vec4 uv_transform{1.0f, 0.0f, 0.0f, 1.0f};
+  Vec4 uv_offset{};
 };
-static_assert(sizeof(ResolveMaterial) == 64);
+static_assert(sizeof(ResolveMaterial) == 112);
+static_assert(sizeof(ResolveMaterial) % 16 == 0, "the table is read as float4 rows on the GPU");
 
-// ResolveMaterial::flags, mirrored in material.slang. Both are zero for a material whose textures
-// were decoded from their sources and uploaded at one level, which is what keeps that picture the
-// one it always was (docs/subsystems/texture.md, "In the renderer").
+// `KHR_texture_transform`'s matrix, T(offset) * R(rotation) * S(scale), into a material's two
+// rows, with the flag that makes the shader read them. The rotation is the extension's: with
+// c = cos(rotation) and s = sin(rotation),
+//
+//     u' =  c * scale.x * u + s * scale.y * v + offset.x
+//     v' = -s * scale.x * u + c * scale.y * v + offset.y
+//
+// which turns the image counter-clockwise as it appears (v runs down it). An identity transform
+// leaves the flag clear and the rows at the identity, so a material without one reads its UVs
+// with no arithmetic at all.
+inline void set_uv_transform(ResolveMaterial& material, Vec2 offset, f32 rotation,
+                             Vec2 scale) noexcept;
+
+// ResolveMaterial::flags, mirrored in material.slang. The first two are zero for a material whose
+// textures were decoded from their sources and uploaded at one level, which is what keeps that
+// picture the one it always was (docs/subsystems/texture.md, "In the renderer").
 //
 // `k_material_mipped`: the material's textures are the content build's mipmapped ones, sampled
-// through `create_mip_sampler`, and the resolve samples them with the UV derivatives it computes
+// through a mipmapping sampler, and the resolve samples them with the UV derivatives it computes
 // from the triangle (SampleGrad) instead of at level 0.
 inline constexpr u32 k_material_mipped = 1u;
 // `k_material_normal_rg`: the normal map stores x and y only (BC5, which reads blue as zero), so
 // the shader reconstructs z = sqrt(1 - x^2 - y^2) before `normal_scale` is applied.
 inline constexpr u32 k_material_normal_rg = 2u;
+// `k_material_uv_transform`: the UVs go through `uv_transform` and `uv_offset` before any slot is
+// sampled, and their derivatives through the transform's linear part.
+inline constexpr u32 k_material_uv_transform = 4u;
+
+inline void set_uv_transform(ResolveMaterial& material, Vec2 offset, f32 rotation,
+                             Vec2 scale) noexcept {
+  const bool identity = offset.x == 0.0f && offset.y == 0.0f && rotation == 0.0f &&
+                        scale.x == 1.0f && scale.y == 1.0f;
+  if (identity) {
+    material.uv_transform = Vec4{1.0f, 0.0f, 0.0f, 1.0f};
+    material.uv_offset = Vec4{};
+    material.flags &= ~k_material_uv_transform;
+    return;
+  }
+  const f32 c = std::cos(rotation);
+  const f32 s = std::sin(rotation);
+  material.uv_transform = Vec4{c * scale.x, s * scale.y, -s * scale.x, c * scale.y};
+  material.uv_offset = Vec4{offset.x, offset.y, 0.0f, 0.0f};
+  material.flags |= k_material_uv_transform;
+}
 
 inline constexpr f32 k_light_point = 0.0f;  // ResolveLight::direction_type.w
 inline constexpr f32 k_light_spot = 1.0f;
@@ -225,6 +284,11 @@ enum class ResolveMode : u32 {
   // texture filtering and mip selection alone put on a pixel, which is how the texture tests
   // measure them without the lights in the way (texture.md, "In the renderer").
   Albedo = 7,
+  // The material's ambient occlusion — `1 + strength * (texel.r - 1)`, 1 where the material has
+  // no map — as grey and **not** through the display transform, because it is data: a captured
+  // byte is the occlusion times 255. What the resolve multiplies its indirect term by, and
+  // nothing else (texture.md, "Occlusion").
+  Occlusion = 8,
 };
 
 // The Panini projection of parameter d (docs/plan/04-renderer.md §4.6, experiment E9), as the

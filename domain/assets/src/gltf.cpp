@@ -222,11 +222,58 @@ bool unpack_accessor(const cgltf_accessor& accessor, u32 components, const char*
 i32 image_slot(const cgltf_data& data, const cgltf_texture_view& view) noexcept {
   if (view.texture == nullptr) return -1;
   if (view.texcoord != 0) return -1;  // TEXCOORD_0 only; the mesh carries one UV set
+  // KHR_texture_transform may name the UV set itself, and when it does its choice overrides the
+  // reference's own: a texture it moves to another set is refused the same way.
+  if (view.has_transform != 0 && view.transform.has_texcoord != 0 && view.transform.texcoord != 0)
+    return -1;
   const cgltf_image* image = view.texture->image;
   if (image == nullptr && view.texture->has_basisu != 0) image = view.texture->basisu_image;
   if (image == nullptr && view.texture->has_webp != 0) image = view.texture->webp_image;
   if (image == nullptr) return -1;
   return static_cast<i32>(cgltf_image_index(&data, image));
+}
+
+geometry::TextureWrap wrap_of(cgltf_wrap_mode mode) noexcept {
+  switch (mode) {
+    case cgltf_wrap_mode_mirrored_repeat: return geometry::TextureWrap::mirrored_repeat;
+    case cgltf_wrap_mode_clamp_to_edge: return geometry::TextureWrap::clamp_to_edge;
+    case cgltf_wrap_mode_repeat: break;
+  }
+  return geometry::TextureWrap::repeat;  // the glTF default, and what an unknown value falls to
+}
+
+// How a texture reference reads its image: the texture's sampler, or the glTF defaults (repeat
+// both ways, filters left to the implementation, which here is linear) when it names none, and
+// the reference's KHR_texture_transform, or the identity. glTF's minification filter names two
+// decisions at once: NEAREST and the NEAREST_MIPMAP_* values filter within a level by nearest,
+// and the *_MIPMAP_NEAREST values pick one level instead of blending two. NEAREST and LINEAR on
+// their own ask for no mip chain, which the engine does not do (material_sampling.h, "mip").
+geometry::TextureSlotSampling slot_sampling(const cgltf_texture_view& view) noexcept {
+  geometry::TextureSlotSampling out;
+  if (view.texture != nullptr && view.texture->sampler != nullptr) {
+    const cgltf_sampler& sampler = *view.texture->sampler;
+    out.sampler.wrap_s = wrap_of(sampler.wrap_s);
+    out.sampler.wrap_t = wrap_of(sampler.wrap_t);
+    out.sampler.mag = sampler.mag_filter == cgltf_filter_type_nearest
+                          ? geometry::TextureFilter::nearest
+                          : geometry::TextureFilter::linear;
+    const cgltf_filter_type min = sampler.min_filter;
+    out.sampler.min = min == cgltf_filter_type_nearest ||
+                              min == cgltf_filter_type_nearest_mipmap_nearest ||
+                              min == cgltf_filter_type_nearest_mipmap_linear
+                          ? geometry::TextureFilter::nearest
+                          : geometry::TextureFilter::linear;
+    out.sampler.mip = min == cgltf_filter_type_nearest_mipmap_nearest ||
+                              min == cgltf_filter_type_linear_mipmap_nearest
+                          ? geometry::TextureFilter::nearest
+                          : geometry::TextureFilter::linear;
+  }
+  if (view.texture != nullptr && view.has_transform != 0) {
+    out.transform.offset = Vec2(view.transform.offset[0], view.transform.offset[1]);
+    out.transform.rotation = view.transform.rotation;
+    out.transform.scale = Vec2(view.transform.scale[0], view.transform.scale[1]);
+  }
+  return out;
 }
 
 // --- the merge ---------------------------------------------------------------------------------
@@ -700,15 +747,32 @@ bool collect_materials(const cgltf_data& data, MeshData& out, std::string* error
       entry.roughness = pbr.roughness_factor;
       entry.base_color_image = image_slot(data, pbr.base_color_texture);
       entry.metallic_roughness_image = image_slot(data, pbr.metallic_roughness_texture);
+      if (entry.base_color_image >= 0)
+        entry.sampling[geometry::k_slot_base_color] = slot_sampling(pbr.base_color_texture);
+      if (entry.metallic_roughness_image >= 0) {
+        entry.sampling[geometry::k_slot_metallic_roughness] =
+            slot_sampling(pbr.metallic_roughness_texture);
+      }
     }
     entry.emissive =
         Vec3(source.emissive_factor[0], source.emissive_factor[1], source.emissive_factor[2]);
     entry.normal_image = image_slot(data, source.normal_texture);
     // cgltf only defaults a texture view's scale to 1 when the view is there to parse, so a
     // material with no normal texture keeps this record's own default instead of a zero.
-    if (entry.normal_image >= 0) entry.normal_scale = source.normal_texture.scale;
+    if (entry.normal_image >= 0) {
+      entry.normal_scale = source.normal_texture.scale;
+      entry.sampling[geometry::k_slot_normal] = slot_sampling(source.normal_texture);
+    }
     entry.occlusion_image = image_slot(data, source.occlusion_texture);
+    // The occlusion reference's `strength` is the same field cgltf calls `scale`, defaulted to 1
+    // the same way, and kept only where there is a map for it to weigh.
+    if (entry.occlusion_image >= 0) {
+      entry.occlusion_strength = source.occlusion_texture.scale;
+      entry.sampling[geometry::k_slot_occlusion] = slot_sampling(source.occlusion_texture);
+    }
     entry.emissive_image = image_slot(data, source.emissive_texture);
+    if (entry.emissive_image >= 0)
+      entry.sampling[geometry::k_slot_emissive] = slot_sampling(source.emissive_texture);
     entry.alpha_cutoff = source.alpha_cutoff;
     entry.alpha_mode =
         source.alpha_mode == cgltf_alpha_mode_mask

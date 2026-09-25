@@ -255,26 +255,79 @@ Device memory is this process's own (`VK_EXT_memory_budget`); the chain's bytes 
 
 The texture upload (`GpuScene::upload_materials`, the only place in the module that knows) takes
 a mesh's images one of two ways. **Built**, when the load reads the derived-data cache and every
-image the resolve samples — base colour, metallic-roughness, normal — has a `.tex` in
-`<ddc>/textures/` whose recorded identity matches: the container's records say where
+image the resolve samples — base colour, metallic-roughness, normal, occlusion, emissive — has a
+`.tex` in `<ddc>/textures/` whose recorded identity matches: the container's records say where
 (`SourceMesh::textures`, section 32 of the `.clusters` file; [geometry](geometry.md#built-textures-where-each-images-texture-is)),
 an image the container carries by its recorded key and an image named by path by the file's bytes
 as they are now, so a repainted file finds its new texture or none. Those upload as stored, every
-level (`gfx::upload_image_2d_levels`), sample through the mipmapping, anisotropic sampler
-(`gfx::create_mip_sampler`, made when the first such mesh is met), and carry `k_material_mipped` —
-plus `k_material_normal_rg` for a BC5 normal map — so the resolve samples them with the UV
-derivatives it computes from the triangle ([texture](texture.md#mip-selection-without-quads)).
-**Decoded** otherwise, exactly as before: the image decoded on the CPU, uploaded RGBA8 at one level,
-the linear sampler, level-0 reads, and flags zero — the same picture byte for byte. It is **all or
-nothing per mesh**, so no material mixes two samplers, and the log says which and why
+level (`gfx::upload_image_2d_levels`), sample through mipmapping, anisotropic samplers ("Materials"
+below), and carry `k_material_mipped` — plus `k_material_normal_rg` for a BC5 normal map — so the
+resolve samples them with the UV derivatives it computes from the triangle
+([texture](texture.md#mip-selection-without-quads)). **Decoded** otherwise, as before: the image
+decoded on the CPU, uploaded RGBA8 at one level, level-0 reads, flags zero, through samplers that
+read level 0 alone — with the file's wrap and filters since 2026-09-24, where the decoded path used
+to clamp, so a decoded texture's picture moved within half a texel of its edges and wherever its
+UVs leave [0, 1]. It is **all or nothing per mesh**, so no material mixes the two, and the log says which and why
 (`mesh textures`, `from: built|decoded`, `reason`). A device without `textureCompressionBC` gets the
 decoded path and a warning naming the feature. `GpuScene::texture_bytes()`, `textures_built()` and
 `textures_decoded()` report what happened, and engine-view prints them as
 `"textures":{"built","decoded","bytes"}`.
 
+**The renderer builds them itself on a cold cache.** A load through the derived-data cache
+(`SceneDesc::cache`) runs the content build's texture step (`content_build::run_texture_step`,
+the function `engine-content build --cache` runs) for every mesh it reads: beside the container it
+writes when it clusters a glTF itself, and on a cache hit for whatever of the container's textures
+is missing. An entry whose recorded identity already matches is found, not rebuilt, so a warm load
+pays a read and a hash per image. Until 2026-09-24 only engine-content built textures, so a scene
+flown without running it first — every `engine-view --mesh <file.gltf>` on a fresh cache, and every
+scene file whose meshes the renderer clustered itself — drew its textures decoded at one level,
+with no mips, and shimmered at a distance; the session-diagnosis run on the desert overlook is
+where that was seen. The `.tex` it leaves is byte for byte engine-content's (`texture_tests.cpp`,
+"a glTF on a cold cache"), because the step, the records and the keys are the same code. A texture
+that cannot be built is a warning (`texture not built`) and its mesh draws through the decode.
+
 The reference path tracer samples the same textures at level 0, as it always sampled everything: it
 is a compute pass with no derivatives, and a converged reference is not the place for a filter
 footprint. Its BC5 normal maps go through the same z reconstruction as the resolve's.
+
+## Materials
+
+**What a material table entry carries** (`gfx::ResolveMaterial`, 112 bytes; [gfx](gfx.md), "The
+material table"): the factors, five texture slots — base colour, metallic-roughness, normal,
+occlusion, emissive — a bindless sampler per slot, the occlusion strength, and one UV transform.
+`upload_materials` fills it from `assets::Material`, which the glTF import or a container's
+section 33 filled ([texture](texture.md#samplers-and-texture-transforms)).
+
+**Samplers, one per combination.** A slot with a texture asks for the sampler its glTF texture
+names — wrap s and t, the three filters — built (the whole chain, 16x anisotropic where the
+minification is linear) or decoded (level 0 alone), and `upload_materials` makes one bindless
+sampler per distinct combination the scene asks for, shared by every material after the first that
+asked (`GpuScene::material_samplers()`, logged as `material samplers`). A slot with no texture asks
+for none and borrows the base colour's slot word, which it never reads. The classic heightfield keeps
+its own clamped tooling sampler, uncounted. Every sample in `content/samples` names the glTF default
+sampler or none, so each of them draws through **one** material sampler.
+
+**The UV transform is one per material** — the base colour's, or the first textured slot's — and a
+material whose other textured slots ask for a different one is counted
+(`GpuScene::transform_conflicts()`) and logged with a warning; it draws every slot with the one kept.
+The container keeps them per slot, so carrying more is a table change and not a rebuild.
+
+**Emission** is the factor times the emissive texture, added after the lighting in the resolve and
+wherever a ray lands in the reference. Before 2026-09-24 a material with an emissive texture drew
+with no emission, because the resolve had no slot for the texture — which is what the Lantern's
+glass did in both pictures, and what `thin-geometry`'s FLIP band was set against. **v1 treats
+emission as radiance only** in the reference: seen directly and by bounce rays, never sampled as a
+light ([texture](texture.md#emissive)).
+
+**What it cost and what it changed** ([texture](texture.md#what-the-samplers-emission-and-occlusion-cost)):
+the resolve 2–5% slower on the FlightHelmet at 1080p and 4K, about half of it the occlusion;
+against the reference, `flighthelmet` from 0.0190 to 0.0172 FLIP and `thin-geometry` from 0.0051 to
+0.0048 — both towards it — and every other scene of the corpus where it was.
+
+**Occlusion** multiplies the resolve's indirect term — the sky hemisphere today — and nothing else,
+and is never applied in the reference, which traces that visibility. `--view occlusion`
+(`ResolveMode::Occlusion`, `render.load`'s `"view":"occlusion"`) shows the value unencoded beside
+`--view albedo`: a captured byte is the occlusion times 255 ([texture](texture.md#occlusion)).
 
 **What it measured** on the FlightHelmet (RTX 5090, `msvc-release`, 600 frames windowed at three
 orbit distances and two resolutions; the table and the machine's state are in
@@ -477,7 +530,7 @@ Measured on the FlightHelmet at 640×480, `--orbit 22`, 1024 samples, three boun
 
 **The finding that cost the most, and the reason a background pixel is not tonemapped.** The first corpus run came back with FLIP means of 0.04 to 0.07 on every scene and a p95 *below* the mean, which is the signature of a flat difference rather than a rendering one. It was: the real-time path writes `sky` for an uncovered pixel as a **display-space** colour straight into a UNORM target, while the reference carried linear radiance and had to round-trip it through `pow(sky, 2.2)` and back. Two things then went wrong at once. The round trip is exact to about a part in ten million, but `sky.g` = 0.70 lands at 178.4999969 of 255 — three millionths under a byte boundary — so the trip moved it to 179. And the shader's own quantization could not have saved it either: `0.699999988 * 255` is 178.4999969 in exact arithmetic, and **rounding that product to float32 gives exactly 178.5**, because the spacing of float32 there is 1.5e-5 and the error is 3e-6. The fixed-function UNORM conversion the resolve's colour target performs does not have that problem; it converts the float exactly and writes 178. So the reference does two things: it keeps a one-bit **coverage** buffer saying whether any sample's primary ray hit geometry, and it writes the background for an uncovered pixel from a value **quantized on the CPU in double precision** (`gfx::pack_unorm_rgba8`). A pixel something did cover is tonemapped as before, including a silhouette pixel whose box filter mixed sky and surface, which is what that pixel should be. Removing the flat one-byte offset took the corpus from 0.019–0.063 FLIP to **0.0014–0.035**: between 45% and 96% of what the gate was measuring was a rounding artefact. The lesson is general enough to write down: *whenever two paths have to agree to the byte, the last quantization must happen once, in the place with precision to spare.*
 
-**The integrator.** Unidirectional paths; next-event estimation to the sun and to the analytic lights, one terminate-on-first-hit ray each, offset along the geometric normal by the same bias the resolve uses; the two-lobe BSDF importance-sampled with a Fresnel-weighted lobe pick, GGX by visible normals and Lambert by cosine, the estimator dividing by the *mixture* density; Russian roulette after three scattering events; emissive added where a ray lands on it. Every light the engine has today is a **delta** light, so nothing a BSDF ray can hit is also sampled directly and every multiple-importance-sampling weight is 1 — the power heuristic is written and tested in `sampling.slang` for the area and environment sampling that will change that, and is not called here. `max_bounces` counts **scattering events after the primary hit**, so 1 is direct lighting plus one bounce, which is exactly what the resolve approximates with its ambient term.
+**The integrator.** Unidirectional paths; next-event estimation to the sun and to the analytic lights, one terminate-on-first-hit ray each, offset along the geometric normal by the same bias the resolve uses; the two-lobe BSDF importance-sampled with a Fresnel-weighted lobe pick, GGX by visible normals and Lambert by cosine, the estimator dividing by the *mixture* density; Russian roulette after three scattering events; emissive — the factor times the emissive texture, through the same `sample_material` the resolve calls — added where a ray lands on it, with weight 1, and never sampled as a light, which is v1's stance on emitters ([texture](texture.md#emissive)); no occlusion map, ever. Every light the engine has today is a **delta** light, so nothing a BSDF ray can hit is also sampled directly and every multiple-importance-sampling weight is 1 — the power heuristic is written and tested in `sampling.slang` for the area and environment sampling that will change that, and is not called here. `max_bounces` counts **scattering events after the primary hit**, so 1 is direct lighting plus one bounce, which is exactly what the resolve approximates with its ambient term.
 
 **What the tests hold it to** (`systems/renderer/tests/reference_tests.cpp`, all headless, all skipping with a message on a device without cluster acceleration structures, since there are then no structures to trace). A **furnace**: a white cube in a closed environment of one radiance with the sun and the lights off — a furnace with a sun in it is not a furnace — where an uncovered pixel returns the environment to 1e-5 and a covered one returns the surface's directional albedo. Measured over ~3,300 covered pixels at 512 spp: a white dielectric at roughness 1 returns **0.9746** of the environment (the CPU quadrature in `domain/gfx/tests/sampling_tests.cpp` says 0.9726 at `n·v` = 0.95) and a white metal at roughness 1 returns **0.3870** (the CPU says 0.3168 head-on; a cube shows grazing angles too, where Fresnel is higher). The metal row is the energy single-scatter GGX loses, and it is a property of the model the two integrators *share*, so it cancels in a comparison. **Determinism**: same seed, byte-identical; different seed, different picture. **Convergence**: the root-mean-square linear error of a 32×32 block against a 4096-spp picture at 16, 64, 256 and 1024 spp falls by 2.08×, 2.06× and 1.64× per quadrupling, against the 2× that 1/√n predicts — the last step is short because the picture it is measured against is itself only 4096 samples converged, which is the honest reading and the reason the bound is a range rather than a number. **Agreement with the resolve** at one bounce, jitter off, 512 spp, 128×128, on three scenes the engine can build with no content at all:
 
@@ -610,7 +663,7 @@ The benchmark corpus of [plan 09 §9.4](../plan/09-testing-profiling.md#94-bench
 - `systems/renderer/rt_capacity.h` — `RtCapacityConfig`, `RtCapacity`, `rt_budget_mib_tunable`, `rt_headroom_pct_tunable`, `rt_shrink_frames_tunable`, `rt_step_tunable`, `k_default_rt_budget_mib`, `k_initial_rt_clusters` ([The ray tracing chain's memory](#the-ray-tracing-chains-memory)).
 
 **Canonical vertex ids, read-only.** `mesh_vertex_ids(scene, mesh)` is a span over the loaded mesh's cluster vertices' canonical ids ([geometry](geometry.md#canonical-vertex-identity)): entry *i* names `lod.mesh.vertices[parts[mesh].first_vertex + i]`, and `parts[mesh].vertex_id_source` says which id space it is in — each mesh of a scene has its own. It is what a future binding step will look a vertex up by, since a file written beside a mesh names ids and never cluster indices, which every rebuild renumbers. **Nothing uploads it**: no pass reads an id yet, so it is not in a page's bytes, not in the GPU scene, and not released with the paged host streams when a streamed scene's pages come off disk (`attach_page_source`) — the lookup answers the same however the scene was loaded. A single-mesh scene fills its one part's source itself, as it does its morph channel run, because it never goes through `merge_cluster_meshes`. The span is empty for a mesh with no ids (the procedural scenes, a container from before cluster cache version 12) and for an index past the scene's meshes.
-- `systems/renderer/gpu_scene.h` — `GpuScene` (including `deform_pool_bytes`, `deform_pool_vertices`, `deform_whole_mesh_bytes`, `visible_entries`, `pair_entries_address`, `pair_cluster`, and the ray tracing chain's `rt_bytes`, `rt_capacity`, `rt_capacity_limit`, `rt_union_clusters`, `rt_bytes_per_cluster` and `resize_ray_tracing`), `k_visible_runs`, `k_joint_slots`, `k_stream_slots`, `k_max_page_requests`, `k_default_upload_budget`.
+- `systems/renderer/gpu_scene.h` — `GpuScene` (including `material_samplers` and `transform_conflicts` ([Materials](#materials)), `deform_pool_bytes`, `deform_pool_vertices`, `deform_whole_mesh_bytes`, `visible_entries`, `pair_entries_address`, `pair_cluster`, and the ray tracing chain's `rt_bytes`, `rt_capacity`, `rt_capacity_limit`, `rt_union_clusters`, `rt_bytes_per_cluster` and `resize_ray_tracing`), `k_visible_runs`, `k_joint_slots`, `k_stream_slots`, `k_max_page_requests`, `k_default_upload_budget`.
 - `systems/renderer/streaming.h` — `StreamStats`, `GeometryStreamer` (see [Geometry streaming](#geometry-streaming-the-gpu-half-of-pages-and-residency)).
 - `systems/renderer/page_source.h` — `k_page_loads`, `k_page_reads`, `PageSource` (the interface the streamer reads pages through), `FilePageSource`, `attach_page_source`, `paged_stream_bytes`: where a streamed page's bytes come from, and the call that releases the host streams once they come from a file.
 - `systems/renderer/scene_renderer.h` — `GpuMemory`, `ViewStats`, `FrameStats`, `RtStats`, `Stats` (including `last`, `folded` and `rt`), `FrameDesc` (including `rt_complete`), `SceneRenderer` (including `sample_gpu_memory` and `views()`).
@@ -630,6 +683,8 @@ The flags and their validation, the window and its events, the surface and the s
 ## Testing
 
 `tools/dev.ps1 test -Preset msvc-debug -Filter renderer` runs the module's tests, all headless. They write a unit-cube GLB at test time (one primitive, one material — the fixture `apps/engine_view/tests` writes, minus the textures) into a `test::TempDir` of their own, with the derived-data root inside it, so nothing in the tree, nothing in the repository's cache, and nothing another copy of the suite is using is touched (AGENTS.md, test hygiene). They skip with a message on a machine with no Vulkan device or no 64-bit buffer atomics, exactly as engine-view exits 3. `vertex_id_tests.cpp` needs no device: a two-quad `.gltf` whose shared edge carries two authored ids loads with all eight vertices, `authored` on its part, and every id at the position the file gave it — from the glTF on a cache miss and again from the container on the hit; a scene of it beside the same file without the attribute keeps one id space per mesh (`authored`, then `position_weld` ranks under 6) with the two spans adding up to the merged vertices; and the procedural terrain exposes no ids. The others check: a cube rendered offscreen into all four channels at once, with the center pixel's id naming instance 0, a cluster of that scene, and a triangle under 128, and an uncovered corner naming nothing; every `Stats` field present and consistent; the four channels landing on disk in the documented shapes, with the id file exactly `width * height * 3 * 4` bytes; two instances of the cube producing exactly the ids 0 and 1 and no others; `resolve_settings` making the same five decisions on a synthetic baseline device, an RT device, and a path that cannot shadow; and the direct path refusing an id capture with a message while still capturing color.
+
+**The glTF sampler's wraps and the texture transform** are a fourth case of `texture_tests.cpp`: a quad with UVs from 0 to 3 and a 2×2 texture of four colours through a nearest sampler shows nine whole tiles under repeat, every other tile reflected under mirror, and one tile then the edge texel under clamp — all 36 cells, matched to the nearest of the four colours at their centres — and UVs from 0 to 1 with a `KHR_texture_transform` scale of 3 show the same nine tiles; each from the decoded image and from the built texture, with one material sampler in the scene. The reference's agreement case gained a **dark plane lit by its own emissive texture**, held to the same kind of FLIP bound as the other three: 0.014 on the RTX 5090, under a bound of 0.05 ([Materials](#materials)). The emissive and occlusion slots, the ORM packing and the transform's rotation are held to the CPU reference at the gfx level, 1 of 255 at worst on the RTX 5090 ([gfx](gfx.md)).
 
 **Built textures have three cases** (`texture_tests.cpp`, [Built textures](#built-textures)), each over a textured quad written at test time and loaded through a derived-data root in the test's scratch directory, drawn through the albedo view (`ResolveMode::Albedo`, the textured base colour unlit, so the lights are not in the comparison), once decoded and once after the test builds the `.tex` the container names. **Up close**, where level 0 is what both paths sample, the built picture is within BC7's bound of the decoded one (PSNR above 38 dB, no channel more than 16 codes off). **Far away**, a one-texel checkerboard resolves to its mean through the mips — display value 186, half the light, since the chain was filtered in linear light — with a spread under 3 codes, where the decoded path aliases to black and white. **The level the hardware picks** is read back from a probe texture written by hand whose level L is red 28 L: at four distances the red, taken back to linear, gives the level of detail the resolve's analytic derivatives selected, and it is log₂ of the texels per pixel that the projection's finite difference across a pixel gives, within 0.2 of a level. The distances put the level just past a whole one on purpose: NVIDIA's driver shortens the blend between two levels (a fraction f of the way reads as min(1, 2f)), which is the driver's filtering and not the derivatives' choice ([texture](texture.md#what-it-measured)).
 

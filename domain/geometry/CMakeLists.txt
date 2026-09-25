@@ -6,6 +6,7 @@ engine_module(NAME geometry LAYER domain
   DEPS base containers math hash io
   EXTERNAL_DEPS meshoptimizer
   SOURCES src/cluster.cpp src/cluster_lod.cpp src/cluster_pages.cpp src/cluster_file.cpp
+          src/material_sampling.cpp
           src/stress_mesh.cpp src/uv_repair.cpp src/limit_surface.cpp src/surface_binding.cpp)
 target_include_directories(engine_geometry SYSTEM PUBLIC
   $<TARGET_PROPERTY:meshoptimizer,INTERFACE_INCLUDE_DIRECTORIES>)

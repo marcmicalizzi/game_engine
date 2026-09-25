@@ -149,11 +149,35 @@ struct Taps {
   Vector<f32> weight;
 };
 
+// Where a tap at source index `i` (which may be past either edge) reads, on an axis of `n` texels:
+// the edge texel (clamp), the texel a period away (repeat), or its reflection (mirror, GL's
+// MIRRORED_REPEAT: index -1 reads texel 0, -2 texel 1, n reads n - 1). Integer arithmetic only.
+u32 edge_index(i32 i, i32 n, EdgeMode edge) noexcept {
+  switch (edge) {
+    case EdgeMode::clamp: break;
+    case EdgeMode::repeat: {
+      const i32 m = i % n;
+      return static_cast<u32>(m < 0 ? m + n : m);
+    }
+    case EdgeMode::mirror: {
+      const i32 period = 2 * n;
+      i32 m = i % period;
+      if (m < 0) m += period;
+      return static_cast<u32>(m < n ? m : period - 1 - m);
+    }
+  }
+  return static_cast<u32>(i < 0 ? 0 : (i >= n ? n - 1 : i));
+}
+
 // The taps of a resampling from `src` texels to `dst` along one axis. At a ratio of one the axis is
 // copied; otherwise the kernel is stretched to the ratio, evaluated at every source texel center
-// inside its support, clamped to the edge (a tap past the edge lands on the edge texel, as a
-// clamp-to-edge sampler would read it), and normalized so a constant image stays constant.
-void make_taps(u32 src, u32 dst, Taps& out) {
+// inside its support, and normalized so a constant image stays constant. A tap past an edge reads
+// what the texture's sampler reads there (`edge_index`): the edge texel for a clamped texture, the
+// other side of the image for a repeating one — so a tiling texture's levels tile too, with no
+// seam where the filter would otherwise have smeared one edge's colour into the join — and the
+// reflection for a mirrored one. Two taps may land on one texel (a repeating axis a level is
+// narrower than the kernel); their weights simply add.
+void make_taps(u32 src, u32 dst, EdgeMode edge, Taps& out) {
   out.first.clear();
   out.index.clear();
   out.weight.clear();
@@ -169,7 +193,6 @@ void make_taps(u32 src, u32 dst, Taps& out) {
   }
   const f32 scale = static_cast<f32>(src) / static_cast<f32>(dst);
   const f32 radius = 2.0f * scale;
-  const i32 last = static_cast<i32>(src) - 1;
   for (u32 d = 0; d < dst; ++d) {
     out.first.push_back(out.index.size());
     const f32 center = (static_cast<f32>(d) + 0.5f) * scale;
@@ -181,8 +204,7 @@ void make_taps(u32 src, u32 dst, Taps& out) {
       const f32 x = (static_cast<f32>(i) + 0.5f - center) / scale;
       const f32 w = mip_kernel(x);
       if (w == 0.0f) continue;
-      const i32 clamped = i < 0 ? 0 : (i > last ? last : i);
-      out.index.push_back(static_cast<u32>(clamped));
+      out.index.push_back(edge_index(i, static_cast<i32>(src), edge));
       out.weight.push_back(w);
       sum += w;
     }
@@ -207,12 +229,12 @@ void for_rows(jobs::JobSystem* pool, u32 count, F&& body) {
 // One separable resampling of a 4-channel float image `fetch(x, y)` of `sw` x `sh` into `dst`
 // (`dw` x `dh` x 4 floats): horizontally into `scratch` (`dw` x `sh` x 4), then vertically.
 template <class Fetch>
-void resample(const Fetch& fetch, u32 sw, u32 sh, u32 dw, u32 dh, Vector<f32>& scratch,
-              Vector<f32>& dst, jobs::JobSystem* pool) {
+void resample(const Fetch& fetch, u32 sw, u32 sh, u32 dw, u32 dh, EdgeMode edge_x, EdgeMode edge_y,
+              Vector<f32>& scratch, Vector<f32>& dst, jobs::JobSystem* pool) {
   Taps horizontal;
   Taps vertical;
-  make_taps(sw, dw, horizontal);
-  make_taps(sh, dh, vertical);
+  make_taps(sw, dw, edge_x, horizontal);
+  make_taps(sh, dh, edge_y, vertical);
   scratch.resize(dw * sh * 4);
   dst.resize(dw * dh * 4);
   f32* mid = scratch.data();
@@ -347,7 +369,8 @@ f32 mip_kernel(f32 x) noexcept {
 }
 
 void build_mip_chain(std::span<const u8> rgba, u32 width, u32 height, MipMode mode, bool mips,
-                     Vector<MipLevel>& out, jobs::JobSystem* pool) {
+                     Vector<MipLevel>& out, jobs::JobSystem* pool, EdgeMode edge_x,
+                     EdgeMode edge_y) {
   out.clear();
   if (width == 0 || height == 0 || rgba.size() < static_cast<usize>(width) * height * 4) return;
   const u32 count = mips ? texture_full_level_count(width, height) : 1u;
@@ -399,7 +422,7 @@ void build_mip_chain(std::span<const u8> rgba, u32 width, u32 height, MipMode mo
         texel[2] = tables.table[2][t[2]];
         texel[3] = tables.table[3][t[3]];
       };
-      resample(fetch, pw, ph, w, h, scratch, next, pool);
+      resample(fetch, pw, ph, w, h, edge_x, edge_y, scratch, next, pool);
     } else {
       const f32* floats = previous.data();
       auto fetch = [&](u32 x, u32 y, f32* texel) {
@@ -409,7 +432,7 @@ void build_mip_chain(std::span<const u8> rgba, u32 width, u32 height, MipMode mo
         texel[2] = t[2];
         texel[3] = t[3];
       };
-      resample(fetch, pw, ph, w, h, scratch, next, pool);
+      resample(fetch, pw, ph, w, h, edge_x, edge_y, scratch, next, pool);
     }
     if (mode == MipMode::normal) {
       f32* texels = next.data();

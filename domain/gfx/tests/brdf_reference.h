@@ -3,11 +3,12 @@
 // The CPU mirror of domain/gfx/shaders/brdf.slang and of the shading block of
 // visibility_resolve.slang, in double precision: the same Cook-Torrance BSDF (GGX, Smith
 // height-correlated visibility, Schlick Fresnel), the same windowed inverse-square falloff, the
-// same sky hemisphere, the same tangent frame and normal-map perturbation, and the same display
-// gamma. The shading and attributes tests render a known surface on the GPU and compare the
-// pixels against this, so the lighting model is pinned by a second implementation rather than by
-// numbers nobody can rederive. Changing brdf.slang means changing this file in the same commit;
-// the tests then say by how much the two disagree.
+// same sky hemisphere and the ambient occlusion that weighs it, the same emissive term (the factor
+// times the sRGB-decoded emissive texel), the same tangent frame and normal-map perturbation, and
+// the same display gamma. The shading and attributes tests render a known surface on the GPU and
+// compare the pixels against this, so the lighting model is pinned by a second implementation
+// rather than by numbers nobody can rederive. Changing brdf.slang means changing this file in the
+// same commit; the tests then say by how much the two disagree.
 
 #include <core/base/types.h>
 #include <core/math/math.h>
@@ -173,13 +174,35 @@ inline Dvec3 map_normal(Dvec3 normal, Dvec3 tangent, Dvec3 bitangent, const u8* 
   return normalize(tangent * n.x + bitangent * n.y + normal * n.z);
 }
 
+// An sRGB-encoded byte to linear light, as a GPU's sRGB view of a UNORM8 texel returns it: the
+// IEC 61966-2-1 curve in double precision.
+inline double srgb_to_linear(u8 code) {
+  const double c = static_cast<double>(code) / 255.0;
+  return c <= 0.04045 ? c / 12.92 : std::pow((c + 0.055) / 1.055, 2.4);
+}
+
+// The emissive term of a material: its factor times the emissive texture's texel, which is sRGB
+// colour and so is decoded to linear first. The mirror of `sample_material`'s emissive branch in
+// material.slang; a material with no emissive texture is its factor alone.
+inline Dvec3 emissive_of(Dvec3 factor, const u8* srgb_texel) {
+  return factor * Dvec3{srgb_to_linear(srgb_texel[0]), srgb_to_linear(srgb_texel[1]),
+                        srgb_to_linear(srgb_texel[2])};
+}
+
+// glTF's ambient occlusion from the map's red byte and the strength: 1 + strength * (r - 1).
+inline double occlusion_of(u8 red, double strength) {
+  return 1.0 + strength * (static_cast<double>(red) / 255.0 - 1.0);
+}
+
 // The whole shaded branch of fs_resolve: sun, analytic lights, sky hemisphere (diffuse by normal
 // elevation plus a Fresnel sliver so metals are not black), emissive. Linear, before the gamma.
 // `sun_shadowed` and `Light::shadowed` are what the resolve's shadow rays found: a shadowed light
-// contributes nothing, and nothing else about the surface changes.
+// contributes nothing, and nothing else about the surface changes. `occlusion` is the material's
+// ambient occlusion (`occlusion_of`), and it multiplies the sky hemisphere term alone — never a
+// light, never the emission — which is the one place the resolve applies it.
 inline Dvec3 shade(const Surface& s, Dvec3 sun_dir, double sun_intensity, Dvec3 sky,
-                   const Light* lights, u32 light_count, Dvec3 emissive,
-                   bool sun_shadowed = false) {
+                   const Light* lights, u32 light_count, Dvec3 emissive, bool sun_shadowed = false,
+                   double occlusion = 1.0) {
   Dvec3 color = sun_shadowed ? Dvec3{} : direct(s, sun_dir, splat(sun_intensity));
   for (u32 i = 0; i < light_count; ++i) {
     const Light& light = lights[i];
@@ -198,7 +221,7 @@ inline Dvec3 shade(const Surface& s, Dvec3 sun_dir, double sun_intensity, Dvec3 
   const Dvec3 ambient = sky * (0.15 + 0.20 * (s.normal.y * 0.5 + 0.5));
   const double n_dot_v = dot(s.normal, s.view);
   const Dvec3 fresnel = f_schlick(f0_of(s.albedo, s.metallic), n_dot_v > 0.0 ? n_dot_v : 0.0);
-  color = color + ambient * (s.albedo * (1.0 - s.metallic) + fresnel) + emissive;
+  color = color + ambient * (s.albedo * (1.0 - s.metallic) + fresnel) * occlusion + emissive;
   return color;
 }
 

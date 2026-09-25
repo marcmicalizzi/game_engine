@@ -69,7 +69,7 @@ struct ResolveParams {
   uint width;
   uint height;
   uint mode;  // 0 cluster colors, 1 with triangle shade, 2 depth, 3 shaded, 4 normals, 5 uvs,
-              // 6 the sun's shadow alone, 7 the textured albedo unlit
+              // 6 the sun's shadow alone, 7 the textured albedo unlit, 8 the ambient occlusion
   uint light_count;
   uint64_t instances;  // InstanceDesc[]
   uint64_t visible;    // uint2[]: the cull pass's visible list; 0 reads {0, pair}
@@ -411,7 +411,9 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
   if (params->mode == 5) return float4(frac(s.uv), 0.0, 1.0);
 
   const ResolveMaterial material = material_of(geo, instance, entry.y);
-  const float2 uv = s.uv * material.uv_scale;
+  // The material's UV transform (KHR_texture_transform) after the scale, and its linear part on
+  // the derivatives: a brick texture authored to tile eight times reads eight tiles.
+  const float2 uv = material_uv(material, s.uv * material.uv_scale);
   // Mip selection (texture.md): a mipmapped material samples at the level its own triangle's UV
   // derivatives select, since the quad's derivatives straddle other triangles in this pass.
   float2 duv_dx = float2(0.0, 0.0);
@@ -419,8 +421,13 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
   if ((material.flags & k_material_mipped) != 0) {
     screen_uv_gradients(geo, fetch_triangle(geo, instance, visible_index, entry.y, id & 0xff),
                         source, params->view_proj, params->width, params->height, duv_dx, duv_dy);
-    duv_dx *= material.uv_scale;
-    duv_dy *= material.uv_scale;
+    duv_dx = material_duv(material, duv_dx * material.uv_scale);
+    duv_dy = material_duv(material, duv_dy * material.uv_scale);
+  }
+  // The occlusion view (ResolveMode::Occlusion): the map's value as data, unencoded.
+  if (params->mode == 8) {
+    const float o = sample_occlusion(material, uv, duv_dx, duv_dy);
+    return float4(o, o, o, 1.0);
   }
   const MaterialSample sampled = sample_material_grad(material, uv, duv_dx, duv_dy);
   const float3 albedo = sampled.albedo;
@@ -490,10 +497,20 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
   // albedo takes it by normal elevation, and a Fresnel-weighted sliver of it at the view angle
   // keeps metals, which have no diffuse lobe, from going black. The path tracer picks the same
   // function up as the radiance an escaped ray carries, which is what makes the two comparable.
+  // The material's ambient occlusion multiplies this term and nothing else — not the sun, not the
+  // point lights, not the emission — because it stands in for the part of the hemisphere the
+  // surface cannot see, which is exactly what this term assumes it sees all of. A material with no
+  // map multiplies nothing.
   const float3 ambient = sky_radiance(params->sky.rgb, surface.normal);
   const float n_dot_v = max(dot(surface.normal, surface.view), 0.0);
-  color += ambient * (albedo * (1.0 - surface.metallic) +
-                      brdf_f_schlick(brdf_f0(albedo, surface.metallic), n_dot_v));
+  float3 indirect = ambient * (albedo * (1.0 - surface.metallic) +
+                               brdf_f_schlick(brdf_f0(albedo, surface.metallic), n_dot_v));
+  if (material.occlusion_texture != k_no_texture) {
+    indirect *= sample_occlusion(material, uv, duv_dx, duv_dy);
+  }
+  color += indirect;
+  // Emission — the factor times the emissive texture — is radiance the surface gives off, added
+  // after the lighting and touched by no shadow and no occlusion.
   color += sampled.emissive;
   return float4(display_encode(color), 1.0);  // linear to display on a UNORM swapchain
 }

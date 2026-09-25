@@ -134,6 +134,25 @@ bool create_sampler(const Device& device, VkFilter filter, VkSampler& out,
 // DeviceFeatures::sampler_anisotropy is on — trilinear where it is not.
 bool create_mip_sampler(const Device& device, f32 max_anisotropy, VkSampler& out,
                         std::string* error = nullptr);
+
+// A material sampler as a glTF sampler describes one (docs/subsystems/gfx.md, "Samplers"): the
+// wrap in u and v, the magnification and minification filters and the blend between levels.
+// `mipmapped` samples the whole chain and turns anisotropy on — `max_anisotropy`, clamped to 16,
+// where DeviceFeatures::sampler_anisotropy is on and the minification filter is linear, since
+// anisotropy is a way of minifying and a nearest one asks for none. Without it the sampler reads
+// level 0 alone (maxLod 0, no anisotropy), which is what a texture decoded at one level and
+// sampled with an explicit level of 0 has always been read through.
+struct SamplerDesc {
+  VkSamplerAddressMode address_u = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+  VkSamplerAddressMode address_v = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+  VkFilter mag = VK_FILTER_LINEAR;
+  VkFilter min = VK_FILTER_LINEAR;
+  VkSamplerMipmapMode mip = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+  bool mipmapped = true;
+  f32 max_anisotropy = 16.0f;
+};
+bool create_sampler(const Device& device, const SamplerDesc& desc, VkSampler& out,
+                    std::string* error = nullptr);
 void destroy_sampler(const Device& device, VkSampler sampler) noexcept;
 
 }  // namespace engine::gfx

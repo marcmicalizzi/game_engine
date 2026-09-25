@@ -27,24 +27,55 @@
 [[vk::binding(2, 0)]] SamplerState g_samplers[];
 
 static const uint k_no_texture = 0xffffffffu;
-// ResolveMaterial::flags (gfx::k_material_*). Both zero for textures decoded from their sources at
-// one level, which read exactly as they always did.
-static const uint k_material_mipped = 1u;     // built, mipmapped textures: sample with gradients
-static const uint k_material_normal_rg = 2u;  // a two-channel (BC5) normal map: rebuild z
+// ResolveMaterial::flags (gfx::k_material_*). The first two are zero for textures decoded from
+// their sources at one level, which read exactly as they always did.
+static const uint k_material_mipped = 1u;        // built, mipmapped textures: sample with gradients
+static const uint k_material_normal_rg = 2u;     // a two-channel (BC5) normal map: rebuild z
+static const uint k_material_uv_transform = 4u;  // the UVs go through uv_transform and uv_offset
+// A per-slot sampler half that borrows the material's `sampler` (gfx::k_same_sampler).
+static const uint k_same_sampler = 0xffffu;
 
-// Mirrors gfx::ResolveMaterial (64 bytes).
+// Mirrors gfx::ResolveMaterial (112 bytes).
 struct ResolveMaterial {
   float4 albedo;    // rgb linear, w roughness
-  float4 emissive;  // rgb linear, w metallic
+  float4 emissive;  // rgb linear factor, w metallic
   uint albedo_texture;  // bindless sampled-image slot; 0xffffffff for none
-  uint sampler;         // bindless sampler slot
+  uint sampler;         // bindless sampler slot of the base colour
   float uv_scale;
-  uint flags;           // k_material_mipped | k_material_normal_rg
+  uint flags;           // k_material_mipped | k_material_normal_rg | k_material_uv_transform
   uint metallic_roughness_texture;  // glTF packing: G roughness, B metallic
   uint normal_texture;              // tangent space, UNORM, remapped to -1..1
   float normal_scale;               // scales the map's xy before it is normalized
-  uint pad;
+  uint occlusion_texture;           // R: occlusion of the indirect term
+  uint emissive_texture;            // multiplies the emissive factor
+  float occlusion_strength;         // occlusion = 1 + strength * (texel.r - 1)
+  uint samplers_mr_normal;          // low half metallic-roughness, high half normal
+  uint samplers_occlusion_emissive; // low half occlusion, high half emissive
+  float4 uv_transform;              // u' = x u + y v + offset.x, v' = z u + w v + offset.y
+  float4 uv_offset;                 // xy; zw unused
 };
+
+// The bindless sampler a slot reads with: its half of a per-slot word, or the material's own
+// `sampler` where the half says k_same_sampler.
+uint slot_sampler(ResolveMaterial material, uint word, uint shift) {
+  const uint slot = (word >> shift) & 0xffffu;
+  return slot == k_same_sampler ? material.sampler : slot;
+}
+
+// The material's UV transform (KHR_texture_transform) on a UV, and its linear part on a UV
+// derivative. Without k_material_uv_transform both are the identity and cost a branch.
+float2 material_uv(ResolveMaterial material, float2 uv) {
+  if ((material.flags & k_material_uv_transform) == 0) return uv;
+  return float2(material.uv_transform.x * uv.x + material.uv_transform.y * uv.y,
+                material.uv_transform.z * uv.x + material.uv_transform.w * uv.y) +
+         material.uv_offset.xy;
+}
+
+float2 material_duv(ResolveMaterial material, float2 duv) {
+  if ((material.flags & k_material_uv_transform) == 0) return duv;
+  return float2(material.uv_transform.x * duv.x + material.uv_transform.y * duv.y,
+                material.uv_transform.z * duv.x + material.uv_transform.w * duv.y);
+}
 
 // Mirrors gfx::ResolveLight (64 bytes).
 struct ResolveLight {
@@ -327,6 +358,11 @@ struct MaterialSample {
   float3 emissive;
 };
 
+//
+// The emissive factor is multiplied by the emissive texture where the material has one — sRGB
+// colour, so it samples linear — and the sum is **radiance leaving the surface**, which both
+// integrators add as it is: the resolve to the pixel, the path tracer wherever a ray lands on it
+// (docs/subsystems/renderer.md, "Materials").
 MaterialSample sample_material(ResolveMaterial material, float2 uv) {
   MaterialSample sampled;
   sampled.albedo = material.albedo.rgb;
@@ -338,13 +374,19 @@ MaterialSample sample_material(ResolveMaterial material, float2 uv) {
   sampled.roughness = material.albedo.w;
   sampled.metallic = material.emissive.w;
   if (material.metallic_roughness_texture != k_no_texture) {
-    const float4 mr =
-        g_textures[NonUniformResourceIndex(material.metallic_roughness_texture)]
-            .SampleLevel(g_samplers[NonUniformResourceIndex(material.sampler)], uv, 0);
+    const uint s = slot_sampler(material, material.samplers_mr_normal, 0);
+    const float4 mr = g_textures[NonUniformResourceIndex(material.metallic_roughness_texture)]
+                          .SampleLevel(g_samplers[NonUniformResourceIndex(s)], uv, 0);
     sampled.roughness *= mr.g;
     sampled.metallic *= mr.b;
   }
   sampled.emissive = material.emissive.rgb;
+  if (material.emissive_texture != k_no_texture) {
+    const uint s = slot_sampler(material, material.samplers_occlusion_emissive, 16);
+    sampled.emissive *= g_textures[NonUniformResourceIndex(material.emissive_texture)]
+                            .SampleLevel(g_samplers[NonUniformResourceIndex(s)], uv, 0)
+                            .rgb;
+  }
   return sampled;
 }
 
@@ -366,14 +408,43 @@ MaterialSample sample_material_grad(ResolveMaterial material, float2 uv, float2 
   sampled.roughness = material.albedo.w;
   sampled.metallic = material.emissive.w;
   if (material.metallic_roughness_texture != k_no_texture) {
+    const uint s = slot_sampler(material, material.samplers_mr_normal, 0);
     const float4 mr =
         g_textures[NonUniformResourceIndex(material.metallic_roughness_texture)].SampleGrad(
-            g_samplers[NonUniformResourceIndex(material.sampler)], uv, duv_dx, duv_dy);
+            g_samplers[NonUniformResourceIndex(s)], uv, duv_dx, duv_dy);
     sampled.roughness *= mr.g;
     sampled.metallic *= mr.b;
   }
   sampled.emissive = material.emissive.rgb;
+  if (material.emissive_texture != k_no_texture) {
+    const uint s = slot_sampler(material, material.samplers_occlusion_emissive, 16);
+    sampled.emissive *= g_textures[NonUniformResourceIndex(material.emissive_texture)]
+                            .SampleGrad(g_samplers[NonUniformResourceIndex(s)], uv, duv_dx, duv_dy)
+                            .rgb;
+  }
   return sampled;
+}
+
+// The material's ambient occlusion at `uv`: glTF's `1 + strength * (texel.r - 1)`, and exactly 1
+// for a material with no occlusion map. **The resolve's alone**, and only ever a factor on its
+// indirect term (the sky hemisphere today, Phase 2's indirect lighting when it exists): an
+// occlusion map is a baked estimate of how much of the hemisphere a point sees, which is what
+// direct light's shadows and a path tracer's bounces already compute, so applying it to either
+// would count the same occlusion twice (docs/subsystems/texture.md, "Occlusion").
+float sample_occlusion(ResolveMaterial material, float2 uv, float2 duv_dx, float2 duv_dy) {
+  if (material.occlusion_texture == k_no_texture) return 1.0;
+  const uint s = slot_sampler(material, material.samplers_occlusion_emissive, 0);
+  float texel;
+  if ((material.flags & k_material_mipped) != 0) {
+    texel = g_textures[NonUniformResourceIndex(material.occlusion_texture)]
+                .SampleGrad(g_samplers[NonUniformResourceIndex(s)], uv, duv_dx, duv_dy)
+                .r;
+  } else {
+    texel = g_textures[NonUniformResourceIndex(material.occlusion_texture)]
+                .SampleLevel(g_samplers[NonUniformResourceIndex(s)], uv, 0)
+                .r;
+  }
+  return 1.0 + material.occlusion_strength * (texel - 1.0);
 }
 
 // A normal-map texel to the tangent-space vector, before `normal_scale`: xyz remapped from 0..1,
@@ -390,9 +461,10 @@ float3 normal_map_vector(ResolveMaterial material, float4 texel) {
 // renormalized, so 0 gives the interpolated normal back exactly.
 float3 apply_normal_map(ResolveMaterial material, float2 uv, float3 normal, float3 tangent,
                         float3 bitangent) {
+  const uint s = slot_sampler(material, material.samplers_mr_normal, 16);
   float3 tangent_normal = normal_map_vector(
       material, g_textures[NonUniformResourceIndex(material.normal_texture)].SampleLevel(
-                    g_samplers[NonUniformResourceIndex(material.sampler)], uv, 0));
+                    g_samplers[NonUniformResourceIndex(s)], uv, 0));
   tangent_normal.xy *= material.normal_scale;
   const float length_sq = dot(tangent_normal, tangent_normal);
   if (length_sq <= 1e-12) return normal;
@@ -407,9 +479,10 @@ float3 apply_normal_map_grad(ResolveMaterial material, float2 uv, float2 duv_dx,
   if ((material.flags & k_material_mipped) == 0) {
     return apply_normal_map(material, uv, normal, tangent, bitangent);
   }
+  const uint s = slot_sampler(material, material.samplers_mr_normal, 16);
   float3 tangent_normal = normal_map_vector(
       material, g_textures[NonUniformResourceIndex(material.normal_texture)].SampleGrad(
-                    g_samplers[NonUniformResourceIndex(material.sampler)], uv, duv_dx, duv_dy));
+                    g_samplers[NonUniformResourceIndex(s)], uv, duv_dx, duv_dy));
   tangent_normal.xy *= material.normal_scale;
   const float length_sq = dot(tangent_normal, tangent_normal);
   if (length_sq <= 1e-12) return normal;

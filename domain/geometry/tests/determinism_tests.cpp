@@ -180,6 +180,16 @@ void check_against(const char* name, bool ray_tracing, u64 golden_content,
   REQUIRE_MESSAGE(validate_cluster_lod(data.mesh, f.indices, &error), error);
   REQUIRE_MESSAGE(build_cluster_pages(data.mesh, ClusterPagesOptions{}, data.pages, &error), error);
   data.materials.push_back(ClusterFileMaterial{});
+  // One sampling record that is not the default, so section 33's bytes are pinned as well as its
+  // presence: a mirrored, clamped, nearest base colour with every transform field set.
+  TextureSlotSampling slots[k_material_slots];
+  slots[k_slot_base_color].sampler.wrap_s = TextureWrap::mirrored_repeat;
+  slots[k_slot_base_color].sampler.wrap_t = TextureWrap::clamp_to_edge;
+  slots[k_slot_base_color].sampler.mag = TextureFilter::nearest;
+  slots[k_slot_base_color].transform.offset = Vec2{0.5f, -0.25f};
+  slots[k_slot_base_color].transform.rotation = 0.75f;
+  slots[k_slot_base_color].transform.scale = Vec2{8.0f, 2.0f};
+  data.material_sampling.push_back(encode_material_sampling(slots, 0.5f));
   data.cluster_material.resize(data.mesh.mesh.clusters.size(), 0u);
   data.source_path = "determinism-fixture.gltf";
   data.source_hash = 0x1234;
@@ -226,10 +236,12 @@ void check_against(const char* name, bool ray_tracing, u64 golden_content,
 
 // Taken on MSVC 14.51 (msvc-debug and msvc-release agree), 2026-09-24, at cache version 13; the
 // section list grew by kind 32 (`textures`, empty here) at version 14, which moved the two content
-// hashes — they cover the section table — and no section's own hash. 180 clusters in 8 levels and
-// 2 pages; the ray-tracing build 266 in 8 and 3. The empty sections (no images, no skin, no
-// textures) all hash to 0x9ca066f1a4ab2eea, which is `hash_bytes` of nothing.
-constexpr u64 k_raster_content = 0xbf1fdadb89fa1be5ull;
+// hashes — they cover the section table — and no section's own hash. At version 15 the list grew by
+// kind 33 (`material_sampling`, one record that is not the default, so its bytes are pinned as well
+// as its presence), which again moved the two content hashes and no other section's. 180 clusters
+// in 8 levels and 2 pages; the ray-tracing build 266 in 8 and 3. The empty sections (no images, no
+// skin, no textures) all hash to 0x9ca066f1a4ab2eea, which is `hash_bytes` of nothing.
+constexpr u64 k_raster_content = 0x6ce070a401b8ea61ull;
 constexpr SectionHash k_raster_sections[] = {
     {1, 0x5c01f613aafe7769ull},   // clusters
     {2, 0x098fa5888c192cfbull},   // lod
@@ -263,8 +275,9 @@ constexpr SectionHash k_raster_sections[] = {
     {30, 0x37c459dab3378470ull},  // vertex_ids
     {31, 0x89af6b25f28e6045ull},  // vertex_id_scalars
     {32, 0x9ca066f1a4ab2eeaull},  // textures: none, since the fixture has no images
+    {33, 0x3b5189557257d5f1ull},  // material_sampling: one record, not the default
 };
-constexpr u64 k_ray_tracing_content = 0xc86611875c8af106ull;
+constexpr u64 k_ray_tracing_content = 0x5ec32c4cf02767b6ull;
 constexpr SectionHash k_ray_tracing_sections[] = {
     {1, 0xfcbbc6820607644cull},   // clusters
     {2, 0x9f1ca027f3b30a57ull},   // lod
@@ -298,6 +311,7 @@ constexpr SectionHash k_ray_tracing_sections[] = {
     {30, 0x2b3195264c33db68ull},  // vertex_ids
     {31, 0x89af6b25f28e6045ull},  // vertex_id_scalars
     {32, 0x9ca066f1a4ab2eeaull},  // textures: none, since the fixture has no images
+    {33, 0x3b5189557257d5f1ull},  // material_sampling: one record, not the default
 };
 
 }  // namespace

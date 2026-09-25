@@ -22,7 +22,7 @@
 
 **Not yet.** Quantized positions for the acceleration structure builders (`gfx/acceleration.h`, `gfx/cluster_acceleration.h` and engine-view's `--raster rt` still read the float `vertices`, which is why both streams are kept; the builders take a vertex format, so this is a format change, not a shader change), per-cluster grids finer than the mesh-wide one, tangents, the per-level BVH clusterlod can build over groups (the flat cut is one thread per cluster, which is fine until scenes reach millions of clusters), the GPU half of streaming (pages are built and stored — see "Pages and streaming" below — but the feedback buffer and the GPU residency manager are not), and precomputed cluster-AS inputs.
 
-**Public API.** `domain/geometry/cluster.h`: `ClusterDesc`, `k_cone_none`, `k_cone_margin`, `k_cone_margin_cos`, `k_cone_margin_sin`, `NormalCone`, `encode_cone`, `decode_cone`, `cluster_backfacing`, `VertexAttributes`, `SkinBinding`, `k_max_skin_joints`, `make_skin_binding`, `MorphChannel`, `MorphSlice`, `MorphChannelSource`, `VertexIdSource`, `k_no_vertex_id`, `vertex_id_source_name`, `position_weld_ids`, `AttributeSource` (with `vertex_ids` and `vertex_id_source`), `ClusterBuildOptions`, `ClusterMesh`, `weld_vertices`, `morph_vertex_keys`, `build_clusters`, `fill_cluster_attributes`, `fill_cluster_morph`, `pad_morph_streams`, `append_cluster_morph`, `morph_delta_at`, `validate_morph_stream`, `morph_bounds_padding`, `compute_vertex_normals`, `encode_normal_oct`, `decode_normal_oct`, `encode_half2`, `decode_half2`, `f32_to_f16`, `f16_to_f32`, `quantize_positions`, `dequantize_position`, `validate_clusters`. `domain/geometry/limit_surface.h`: `CsrMatrix` (`rows`, `nonzeros`, `max_row_width`, `bytes`), `apply`, `k_loop_max_level`, `LoopParentKind`, `LoopParent`, `LoopSurfaceOptions`, `LoopLimitSurface`, `build_loop_limit_surface`, `limit_normals`. `domain/geometry/surface_binding.h`: `SurfaceBinding` (10 bytes, pinned by the size table), `k_surface_binding_max_triangles`, `surface_binding_can_represent`, `binding_weight`, `binding_barycentrics`, `binding_normal_offset`, `SurfaceBindOptions`, `SurfaceBindReport`, `bind_to_surface`, `validate_surface_bindings`, `surface_displacement`, `apply_binding`. `domain/geometry/cluster_lod.h`: `ClusterLodDesc`, `SeamRule`, `ClusterLodOptions` (including `id_seams`), `ClusterLodMesh`, `build_cluster_lod`, `merge_cluster_lod`, `ClusterMeshPart` (including `vertex_id_source`), `merge_cluster_meshes`, `LodView`, `projected_error`, `lod_selects`, `select_lod`, `select_lod_raw`, `validate_cluster_lod`, `AttributeErrorOptions`, `AttributeError`, `measure_lod_attribute_error`. `domain/geometry/stress_mesh.h`: `ShreddedAtlasOptions`, `ShreddedAtlasMesh`, `build_shredded_atlas_torus`, `build_atlas_probe_texture`, `MorphFixtureOptions`, `MorphFixtureMesh`, `build_morph_sphere`, `morph_fixture_position`, `morph_fixture_normal`. `domain/geometry/uv_repair.h`: `k_uv_degenerate_texels`, `UvRepairRange`, `UvRepairOptions`, `UvRepairReport`, `repair_uv_degenerate_triangles`, `uv_area_texels`, `stored_uv_area_texels`. `domain/geometry/cluster_file.h`: `k_cluster_file_version`, `k_cluster_file_alignment`, `ClusterSection`, `cluster_section_name`, `ClusterFileHeader`, `ClusterFileSection`, `ClusterFileScalars`, `ClusterFileMaterial`, `encode_alpha_word`, `alpha_word_mode`, `alpha_word_double_sided`, `alpha_word_cutoff`, `encode_optional_image`, `decode_optional_image`, `ClusterFileImage`, `ClusterFileTexture`, `ClusterImage`, `ClusterFileData` (with `textures`), `write_cluster_file`, `read_cluster_file`, `read_cluster_file_memory`, `read_cluster_file_identity`, `cluster_file_hash`, `ClusterImageSummary`, `summarize_cluster_images`, `k_cluster_section_kinds`, `ClusterFileReader` (`open`, `close`, `valid`, `file`, `path`, `header_hash`, `element_count`, `range`).
+**Public API.** `domain/geometry/cluster.h`: `ClusterDesc`, `k_cone_none`, `k_cone_margin`, `k_cone_margin_cos`, `k_cone_margin_sin`, `NormalCone`, `encode_cone`, `decode_cone`, `cluster_backfacing`, `VertexAttributes`, `SkinBinding`, `k_max_skin_joints`, `make_skin_binding`, `MorphChannel`, `MorphSlice`, `MorphChannelSource`, `VertexIdSource`, `k_no_vertex_id`, `vertex_id_source_name`, `position_weld_ids`, `AttributeSource` (with `vertex_ids` and `vertex_id_source`), `ClusterBuildOptions`, `ClusterMesh`, `weld_vertices`, `morph_vertex_keys`, `build_clusters`, `fill_cluster_attributes`, `fill_cluster_morph`, `pad_morph_streams`, `append_cluster_morph`, `morph_delta_at`, `validate_morph_stream`, `morph_bounds_padding`, `compute_vertex_normals`, `encode_normal_oct`, `decode_normal_oct`, `encode_half2`, `decode_half2`, `f32_to_f16`, `f16_to_f32`, `quantize_positions`, `dequantize_position`, `validate_clusters`. `domain/geometry/limit_surface.h`: `CsrMatrix` (`rows`, `nonzeros`, `max_row_width`, `bytes`), `apply`, `k_loop_max_level`, `LoopParentKind`, `LoopParent`, `LoopSurfaceOptions`, `LoopLimitSurface`, `build_loop_limit_surface`, `limit_normals`. `domain/geometry/surface_binding.h`: `SurfaceBinding` (10 bytes, pinned by the size table), `k_surface_binding_max_triangles`, `surface_binding_can_represent`, `binding_weight`, `binding_barycentrics`, `binding_normal_offset`, `SurfaceBindOptions`, `SurfaceBindReport`, `bind_to_surface`, `validate_surface_bindings`, `surface_displacement`, `apply_binding`. `domain/geometry/cluster_lod.h`: `ClusterLodDesc`, `SeamRule`, `ClusterLodOptions` (including `id_seams`), `ClusterLodMesh`, `build_cluster_lod`, `merge_cluster_lod`, `ClusterMeshPart` (including `vertex_id_source`), `merge_cluster_meshes`, `LodView`, `projected_error`, `lod_selects`, `select_lod`, `select_lod_raw`, `validate_cluster_lod`, `AttributeErrorOptions`, `AttributeError`, `measure_lod_attribute_error`. `domain/geometry/stress_mesh.h`: `ShreddedAtlasOptions`, `ShreddedAtlasMesh`, `build_shredded_atlas_torus`, `build_atlas_probe_texture`, `MorphFixtureOptions`, `MorphFixtureMesh`, `build_morph_sphere`, `morph_fixture_position`, `morph_fixture_normal`. `domain/geometry/uv_repair.h`: `k_uv_degenerate_texels`, `UvRepairRange`, `UvRepairOptions`, `UvRepairReport`, `repair_uv_degenerate_triangles`, `uv_area_texels`, `stored_uv_area_texels`. `domain/geometry/cluster_file.h`: `k_cluster_file_version`, `k_cluster_file_alignment`, `ClusterSection`, `cluster_section_name`, `ClusterFileHeader`, `ClusterFileSection`, `ClusterFileScalars`, `ClusterFileMaterial`, `encode_alpha_word`, `alpha_word_mode`, `alpha_word_double_sided`, `alpha_word_cutoff`, `encode_optional_image`, `decode_optional_image`, `ClusterFileImage`, `ClusterFileTexture`, `ClusterImage`, `ClusterFileData` (with `textures` and `material_sampling`), `cluster_material_sampling`, `write_cluster_file`, `read_cluster_file`, `read_cluster_file_memory`, `read_cluster_file_identity`, `cluster_file_hash`, `ClusterImageSummary`, `summarize_cluster_images`, `k_cluster_section_kinds`, `ClusterFileReader` (`open`, `close`, `valid`, `file`, `path`, `header_hash`, `element_count`, `range`). `domain/geometry/material_sampling.h` ("How a material samples its images" below): `k_slot_base_color`, `k_slot_metallic_roughness`, `k_slot_normal`, `k_slot_occlusion`, `k_slot_emissive`, `k_material_slots`, `TextureWrap`, `TextureFilter`, `TextureSampler`, `TextureTransform`, `TextureSlotSampling`, `pack_texture_sampler`, `unpack_texture_sampler`, `texture_wrap_name`, `ClusterFileSlotSampling`, `ClusterFileMaterialSampling`, `encode_material_sampling`, `decode_material_sampling`.
 
 **Depends on.** `base`, `containers`, `math`, `hash` (the container's content hash), `io` (atomic writes and reads); meshoptimizer v1.2 (MIT, third_party/LICENSES.md).
 
@@ -651,6 +651,71 @@ two embedded ones with a key — round-trip field by field through a full read a
 streaming reader's resident read; the section is 24-byte elements, one per image; a file whose
 `textures` kind this build would not recognize reads with no records and all its paths; and records
 that disagree with the paths about how many images there are are refused.
+
+## How a material samples its images
+
+**Why it is here.** Until cache version 15 a container said which image each material slot names
+and nothing about how the slot reads it, so the renderer clamped everything, sampled it linearly,
+and a brick texture authored to tile eight times across a 10 m wall drew once, stretched — the
+ruined-wall kits of [07 §7.7](../plan/07-content-pipeline.md#77-ml-asset-generation-novelty-content)
+could not be built. glTF says it in two places: the **sampler** is on the texture (`wrapS`, `wrapT`,
+`magFilter`, `minFilter`), and `KHR_texture_transform` is on the **reference** to it (offset,
+rotation, scale, per slot), so one image can tile three times as a base colour and be clamped as an
+occlusion map in the same material.
+
+**`material_sampling.h`** keeps them in the form the engine reads: `TextureSampler` (a
+`TextureWrap` — repeat, mirrored repeat, clamp to edge — for s and t, and a `TextureFilter` —
+linear or nearest — for magnification, minification and the blend between levels),
+`TextureTransform` (offset, rotation, scale; `identity()`), and `TextureSlotSampling`, the two
+together for one slot, indexed by `k_slot_base_color`, `k_slot_metallic_roughness`,
+`k_slot_normal`, `k_slot_occlusion`, `k_slot_emissive`. The types are this module's rather than
+`assets`' because the container carries them and `assets` depends on `geometry`. **Zero is the glTF
+default**: `pack_texture_sampler` puts the sampler in one word (bits 0–1 wrap s, 2–3 wrap t, 4, 5
+and 6 nearest magnification, minification and mip), and the default — repeat both ways, linear
+throughout — packs to 0; `unpack_texture_sampler` refuses a wrap value or a bit it does not know and
+leaves the default. glTF's `NEAREST` and `LINEAR` minification filters ask for no mip chain; the
+engine does not do that (the content build always makes the chain, and level 0 alone aliases), so
+they read with a linear blend between levels, as an undefined filter does.
+
+**Section kind 33, `material_sampling`**, is one `ClusterFileMaterialSampling` per material,
+parallel to `materials`: five 24-byte slot records (the sampler word, then the transform's five
+floats) and the occlusion strength — glTF's `occlusionTexture.strength`, for which the 64-byte
+material record has no word left — in 128 bytes. A section of its own rather than a change to
+`ClusterFileMaterial`, which is a GPU record every container carries and whose layout is therefore
+the format's. It is written for every mesh, empty when there are no materials; records that disagree
+with the materials about how many there are are refused with their own sentence; the streaming
+reader's resident read carries it. **A container without it reads with no records**, and
+`cluster_material_sampling(data, material)` answers every slot of it with the glTF defaults — repeat,
+linear, no transform, strength 1 — which is what glTF says a texture with no sampler and no
+transform reads as. `encode_material_sampling` and `decode_material_sampling` convert, and the
+decoder gives a slot whose word it cannot read the default sampler rather than failing the material:
+a newer build's bits are its own business. Both of the apps' container writers
+(`engine-content build` and engine-view's own cache writer) write it from `assets::Material` with
+the same call, because they share cache entries byte for byte.
+
+**The images' records follow the samplers.** `texture::fill_cluster_texture_records` reads section
+33 to decide what the mip filter reads past each image's edges — the wrap every slot naming the image
+agrees on, clamp where they disagree ([texture](texture.md#the-mip-chain)) — and that goes into
+the record's options, so section 32's bytes moved too for every image whose samplers repeat, which
+is every image of a glTF that names no sampler.
+
+**The cache.** `k_cluster_cache_version` went to **15**: an entry built at 14 carries no sampling
+records, so the renderer would draw it with the defaults whatever the source said — a clamped decal
+repeating, a tiling texture transformed by nothing — and its texture records name textures whose
+mips were filtered with clamped edges. Its geometry sections are byte-identical to what a build
+makes now. The determinism tables moved in exactly the rows that say so: this module's fixture
+gained one non-default record, so row 33 is new and pins the record's bytes, and the two content
+hashes moved with the section table; `apps/engine_content`'s fixture moved row 15 (the build key over
+the new version) and gained row 33 (its materials' default records). No other row moved.
+
+**Testing (sampling).** `cluster_file_tests.cpp`: a mirrored, clamped, nearest base colour with every
+transform field set and a normal map with a transform of its own round-trip through a full read and
+the resident read; the default record's sampler words are zero; the section is 128-byte elements,
+one per material; a file whose kind 33 this build would not recognize reads with no records and
+every slot at the defaults; records that disagree with the materials are refused; all 72
+combinations of the sampler word round-trip, and a wrap value of 3 or an unknown bit is refused and
+decodes to the default. `domain/assets/tests/sampler_tests.cpp` takes the same records from a glTF
+through the container and back ([assets](assets.md)).
 
 ## Canonical vertex identity
 

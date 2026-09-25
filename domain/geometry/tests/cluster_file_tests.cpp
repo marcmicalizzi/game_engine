@@ -141,6 +141,7 @@ void check_equal(const ClusterFileData& read, const ClusterFileData& written) {
   CHECK(same_bytes(read.mesh.level_cluster_counts, written.mesh.level_cluster_counts));
   CHECK(same_bytes(read.cluster_material, written.cluster_material));
   CHECK(same_bytes(read.materials, written.materials));
+  CHECK(same_bytes(read.material_sampling, written.material_sampling));
   CHECK(same_bytes(read.pages.pages, written.pages.pages));
   CHECK(same_bytes(read.pages.child_pages, written.pages.child_pages));
   CHECK(read.pages.page_bytes_target == written.pages.page_bytes_target);
@@ -283,7 +284,7 @@ TEST_CASE("cluster file: a DAG with materials survives a round trip array by arr
   CHECK(std::memcmp(header.magic, "CLST", 4) == 0);
   CHECK(header.version == k_cluster_file_version);
   CHECK(header.flags == 0);
-  CHECK(header.section_count == 32);
+  CHECK(header.section_count == 33);
   CHECK(header.total_bytes == file.size());
   CHECK(header.content_hash == cluster_file_hash(data));
   for (u32 i = 0; i < header.section_count; ++i) {
@@ -875,6 +876,137 @@ TEST_CASE("cluster file: the built-texture records round-trip, and a file withou
   ClusterFileData refused;
   CHECK_FALSE(read_cluster_file(short_path, refused, &error));
   CHECK_MESSAGE(error.find("texture records for 3 image paths") != std::string::npos, error);
+}
+
+TEST_CASE(
+    "cluster file: how materials sample their images round-trips, and an older file reads "
+    "the glTF defaults") {
+  const test::TempDir tmp("cluster_file_sampling");
+  ClusterFileData data;
+  Vector<u32> indices;
+  make_fixture(data, indices);
+  // Material 0 tiles its base colour with a mirrored repeat across s, clamps it in t, reads it
+  // nearest, and carries a transform; its normal map is the default sampler with a transform of
+  // its own. Material 1 has every slot at the glTF default, which is also what a record that is
+  // all zero sampler words and unit scales means.
+  TextureSlotSampling slots[k_material_slots];
+  slots[k_slot_base_color].sampler.wrap_s = TextureWrap::mirrored_repeat;
+  slots[k_slot_base_color].sampler.wrap_t = TextureWrap::clamp_to_edge;
+  slots[k_slot_base_color].sampler.mag = TextureFilter::nearest;
+  slots[k_slot_base_color].sampler.mip = TextureFilter::nearest;
+  slots[k_slot_base_color].transform.offset = Vec2{0.25f, -0.5f};
+  slots[k_slot_base_color].transform.rotation = 0.3f;
+  slots[k_slot_base_color].transform.scale = Vec2{8.0f, 4.0f};
+  slots[k_slot_normal].transform.scale = Vec2{2.0f, 2.0f};
+  data.material_sampling.push_back(encode_material_sampling(slots, 0.6f));
+  TextureSlotSampling defaults[k_material_slots];
+  data.material_sampling.push_back(encode_material_sampling(defaults, 1.0f));
+
+  const std::string path = tmp.file("sampling.clusters");
+  std::string error;
+  REQUIRE_MESSAGE(write_cluster_file(path, data, &error), error);
+  ClusterFileData read;
+  REQUIRE_MESSAGE(read_cluster_file(path, read, &error), error);
+  REQUIRE(read.material_sampling.size() == 2);
+  TextureSlotSampling back[k_material_slots];
+  f32 strength = 0.0f;
+  decode_material_sampling(cluster_material_sampling(read, 0), back, strength);
+  CHECK(strength == 0.6f);
+  for (u32 s = 0; s < k_material_slots; ++s) {
+    CHECK(back[s].sampler == slots[s].sampler);
+    CHECK(back[s].transform == slots[s].transform);
+  }
+  CHECK(back[k_slot_base_color].sampler.min == TextureFilter::linear);
+  CHECK_FALSE(back[k_slot_base_color].transform.identity());
+  CHECK(back[k_slot_occlusion].transform.identity());
+  // The default record packs to zero sampler words: zero is repeat and linear, as in glTF.
+  CHECK(read.material_sampling[1].slots[k_slot_base_color].sampler == 0u);
+  CHECK(pack_texture_sampler(TextureSampler{}) == 0u);
+  // The resident read carries the records with the materials they describe.
+  ClusterFileReader reader;
+  ClusterFileData resident;
+  REQUIRE_MESSAGE(reader.open(path, &resident, &error), error);
+  CHECK(same_bytes(resident.material_sampling, data.material_sampling));
+  reader.close();
+
+  std::string file;
+  REQUIRE(io::read_file(path, file) == io::Status::Ok);
+  ClusterFileSection record{};
+  const usize at = find_section(file, ClusterSection::MaterialSampling, record);
+  REQUIRE(at != 0);
+  CHECK(record.element_size == 128);
+  CHECK(record.element_count == 2);
+
+  // A file from before the section existed reads with no records, and every slot of every
+  // material then reads as glTF says a texture with no sampler and no transform does.
+  std::string older = file;
+  ClusterFileSection renamed = record;
+  renamed.kind = 4244;
+  patch(older, at, &renamed, sizeof(renamed));
+  rehash(older);
+  ClusterFileData without;
+  REQUIRE_MESSAGE(read_cluster_file_memory(view(older), without, &error), error);
+  CHECK(without.material_sampling.empty());
+  CHECK(without.materials.size() == 2);
+  decode_material_sampling(cluster_material_sampling(without, 0), back, strength);
+  CHECK(strength == 1.0f);
+  for (u32 s = 0; s < k_material_slots; ++s) {
+    CHECK(back[s].sampler == TextureSampler{});
+    CHECK(back[s].sampler.wrap_s == TextureWrap::repeat);
+    CHECK(back[s].sampler.min == TextureFilter::linear);
+    CHECK(back[s].transform.identity());
+  }
+
+  // Records that disagree with the materials about how many there are are refused.
+  data.material_sampling.resize(1);
+  const std::string short_path = tmp.file("short.clusters");
+  REQUIRE_MESSAGE(write_cluster_file(short_path, data, &error), error);
+  ClusterFileData refused;
+  CHECK_FALSE(read_cluster_file(short_path, refused, &error));
+  CHECK_MESSAGE(error.find("material sampling records for 2 materials") != std::string::npos,
+                error);
+}
+
+TEST_CASE("cluster file: a sampler word packs every combination and refuses what it cannot read") {
+  const TextureWrap wraps[3] = {TextureWrap::repeat, TextureWrap::mirrored_repeat,
+                                TextureWrap::clamp_to_edge};
+  const TextureFilter filters[2] = {TextureFilter::linear, TextureFilter::nearest};
+  u32 seen = 0;
+  for (const TextureWrap s : wraps) {
+    for (const TextureWrap t : wraps) {
+      for (const TextureFilter mag : filters) {
+        for (const TextureFilter min : filters) {
+          for (const TextureFilter mip : filters) {
+            const TextureSampler sampler{s, t, mag, min, mip};
+            TextureSampler back;
+            REQUIRE(unpack_texture_sampler(pack_texture_sampler(sampler), back));
+            CHECK(back == sampler);
+            ++seen;
+          }
+        }
+      }
+    }
+  }
+  CHECK(seen == 72);
+  // A wrap value of 3, and a bit past the known ones, are a newer build's: refused, and the
+  // output left at the default a reader falls back to.
+  TextureSampler out;
+  out.mag = TextureFilter::nearest;
+  CHECK_FALSE(unpack_texture_sampler(3u, out));
+  CHECK(out == TextureSampler{});
+  CHECK_FALSE(unpack_texture_sampler(1u << 7, out));
+  CHECK_FALSE(unpack_texture_sampler(3u << 2, out));
+  // And the decoder gives such a slot the default sampler rather than failing the material.
+  ClusterFileMaterialSampling record;
+  record.slots[k_slot_emissive].sampler = 0xffu;
+  record.slots[k_slot_emissive].scale[0] = 3.0f;
+  TextureSlotSampling slots[k_material_slots];
+  f32 strength = 0.0f;
+  decode_material_sampling(record, slots, strength);
+  CHECK(slots[k_slot_emissive].sampler == TextureSampler{});
+  CHECK(slots[k_slot_emissive].transform.scale.x == 3.0f);
+  CHECK(strength == 1.0f);
+  CHECK(std::string(texture_wrap_name(TextureWrap::mirrored_repeat)) == "mirrored_repeat");
 }
 
 TEST_CASE("cluster file: a section of an unknown kind is skipped") {

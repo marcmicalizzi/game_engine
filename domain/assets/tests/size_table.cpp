@@ -12,4 +12,8 @@ using namespace engine;
 // its vertices were left in bind space or flattened to world space.
 ENGINE_EXPECT_SIZE(16, 4, assets::Primitive);
 
-ENGINE_EXPECT_SIZE(sizeof(std::string) + 72, 8, assets::Material);
+// 216 around the name, not 72: the occlusion strength and how each of the five slots samples its
+// image (a 5-byte sampler and a 20-byte transform, 28 bytes a slot with alignment) came with the
+// samplers and KHR_texture_transform. Import-time data, never per frame, so the growth is not a
+// hot path's.
+ENGINE_EXPECT_SIZE(sizeof(std::string) + 216, 8, assets::Material);

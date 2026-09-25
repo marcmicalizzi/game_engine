@@ -41,20 +41,34 @@ enum class FormatChoice : u8 {
   bc7 = 6
 };
 
+// What the mip filter reads past an edge of the image, along one axis: the edge texel again
+// (`clamp`, what a clamp-to-edge sampler reads), the opposite edge (`repeat`, what a tiling
+// texture is), or the image reflected (`mirror`, a mirrored-repeat sampler's neighbour). It is the
+// sampler's wrap mode seen from the build: a level whose edges were filtered as clamped is not the
+// level a repeating sampler ought to be reading, because the texels across its seam are the
+// other side of the image, not more of the same edge (texture.md, "The mip chain").
+enum class EdgeMode : u8 { clamp = 0, repeat = 1, mirror = 2 };
+
 struct TextureBuildOptions {
   FormatChoice format = FormatChoice::automatic;
   ColorSpace color_space = ColorSpace::srgb;  // what the source's bytes are
   bool normal_map = false;  // a tangent-space normal map: renormalized, filtered as vectors
   bool mips = true;         // the full chain to 1x1; false writes level 0 alone
+  EdgeMode edge_x = EdgeMode::clamp;  // across the left and right edges (the sampler's wrap s)
+  EdgeMode edge_y = EdgeMode::clamp;  // across the top and bottom edges (its wrap t)
 };
 
 const char* format_choice_name(FormatChoice choice) noexcept;
 bool parse_format_choice(std::string_view name, FormatChoice& out) noexcept;
+const char* edge_mode_name(EdgeMode mode) noexcept;
+bool parse_edge_mode(std::string_view name, EdgeMode& out) noexcept;
 
 // The options as one non-zero word, for the cache key and for the record a `.clusters` container
 // keeps per image (geometry::ClusterFileTexture::options): bits 0..3 the format choice, bit 4 sRGB,
 // bit 5 normal map, bit 6 mips, bit 7 always set so that no valid packing is zero — zero is the
-// record's "no texture wanted". `unpack` refuses a word with unknown bits or an unknown format.
+// record's "no texture wanted" — bits 8..9 `edge_x` and 10..11 `edge_y`. Clamped edges pack to
+// zero there, so every word written before the edges existed means what it meant. `unpack` refuses
+// a word with unknown bits, an unknown format or an unknown edge mode.
 u32 pack_texture_options(const TextureBuildOptions& options) noexcept;
 bool unpack_texture_options(u32 packed, TextureBuildOptions& out) noexcept;
 
@@ -131,10 +145,12 @@ struct MipLevel {
 // 8-bit quantization left short of unit is put back on the sphere, because a two-channel format
 // reconstructs z from x and y and would otherwise reconstruct the wrong direction). Every further
 // level is filtered from the previous level's floats, not from its 8-bit rounding, by a separable
-// Mitchell-Netravali kernel with clamped edges — the edge rule the renderer's sampler uses — at the
-// exact ratio of the two sizes, so an odd side is filtered rather than dropped.
+// Mitchell-Netravali kernel at the exact ratio of the two sizes, so an odd side is filtered rather
+// than dropped. A tap past an edge reads what the sampler the texture is read through would read
+// there: `edge_x` and `edge_y` (clamp by default).
 void build_mip_chain(std::span<const u8> rgba, u32 width, u32 height, MipMode mode, bool mips,
-                     Vector<MipLevel>& out, jobs::JobSystem* pool = nullptr);
+                     Vector<MipLevel>& out, jobs::JobSystem* pool = nullptr,
+                     EdgeMode edge_x = EdgeMode::clamp, EdgeMode edge_y = EdgeMode::clamp);
 
 // Encodes one level of RGBA8 into `format`'s blocks (`texture_level_bytes` of them). Normal maps
 // go to BC5 as R and G; BC4 takes R. `perceptual` weights BC7's error in YCbCr, which is right for

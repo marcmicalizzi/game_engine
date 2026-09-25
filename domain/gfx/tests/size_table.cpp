@@ -150,6 +150,11 @@ ENGINE_EXPECT_SIZE(400, 4, gfx::ShadowMapParams);
 // number of float4 rows like every other addressed block.
 ENGINE_EXPECT_SIZE(256, 8, gfx::PathTraceParams);
 
-ENGINE_EXPECT_SIZE(64, 4, gfx::ResolveMaterial);
+// 112, not 64: the occlusion and emissive textures, the occlusion strength, a sampler for each
+// slot (two 16-bit halves per word, the base colour keeping `sampler`) and one UV transform (a
+// 2x2 matrix and an offset, KHR_texture_transform). The table is read per pixel through the
+// cluster's index, so it is a handful of cache lines a frame whatever its size; one transform per
+// material rather than one per slot is what kept it from 208 (gfx.md, "The material table").
+ENGINE_EXPECT_SIZE(112, 4, gfx::ResolveMaterial);
 
 ENGINE_EXPECT_SIZE(64, 4, gfx::ResolveLight);
