@@ -423,7 +423,121 @@ TEST_CASE("ruins blocks: what stands is under the ruin line and carried, and not
     }
   }
   MESSAGE("standing " << standing << ", fallen and lying " << fallen);
-  CHECK(fallen > standing / 10);
+  // The ruin rule brings walls down, and some of what fell lies beside them (the rubble rule's
+  // share: most is under the sand).
+  CHECK(fallen > 0);
+  CHECK(standing > fallen);
+}
+
+TEST_CASE("ruins blocks: both forms lay their rubble on the same sites, in the same amount") {
+  // The kit of boxes and the synthetic block kit: the section kit's profile block (0.6 m x 0.3 m x
+  // the 0.6 m wall) is the block kit's stretcher, so a site is one stretcher's worth either way.
+  const Kit kit = section_kit();
+  const BlockKit blocks = block_kit();
+  BlockAssembler layer(kit, blocks);
+  Assembler assembler(kit);
+  Assembler field_of(kit);
+  u32 sites = 0;
+  u32 laid = 0;
+  u32 pieces = 0;
+  u32 oversize = 0;
+  f64 site_cm3 = 0.0;
+  f64 block_cm3 = 0.0;
+  f64 stone_cm3 = 0.0;
+  std::vector<f64> wall_ratio;  // the sections' rubble over the blocks', per wall with rubble
+  for (u32 b = 0; b < 80; ++b) {
+    const Placement placement = placement_of(2100 + b, static_cast<u8>(b & 15u));
+    const TileCoord tile{1, 2};
+    BlockOutput laid_out;
+    Output sections;
+    Output scratch;
+    std::string error;
+    REQUIRE(layer.assemble(placement, tile, laid_out, &error));
+    REQUIRE(assembler.assemble(placement, tile, sections, &error));
+    Placement walls = placement;
+    walls.detail = Detail::walls;
+    REQUIRE(field_of.assemble(walls, tile, scratch, &error));
+    const Vector<RubbleSite>& field = field_of.rubble();
+    const u32 wall_count = field_of.sides().size();
+    CAPTURE(b);
+    sites += field.size();
+    site_cm3 += static_cast<f64>(field.size()) * kit.rubble_cm3;
+    auto site_of = [&](u32 wall, u32 index) -> const RubbleSite* {
+      for (const RubbleSite& s : field)
+        if (s.wall == wall && s.index == index) return &s;
+      return nullptr;
+    };
+    auto world_of = [&](const RubbleSite& s, f64& x, f64& z) {
+      i64 wx = 0, wz = 0;
+      field_of.to_world_cm(s.x_cm, s.z_cm, wx, wz);
+      x = static_cast<f64>(wx);
+      z = static_cast<f64>(wz);
+    };
+    std::vector<f64> wall_stones(wall_count, 0.0);
+    std::vector<f64> wall_blocks(wall_count, 0.0);
+    // The sections' debris: every piece on a site of its wall, within the site's radius.
+    for (const Instance& inst : sections.instances) {
+      if (inst.kind != static_cast<u8>(PieceKind::debris)) continue;
+      ++pieces;
+      const RubbleSite* site = site_of(inst.wall, inst.slot);
+      REQUIRE(site != nullptr);
+      const Member& mb = kit.members[inst.member];
+      f64 x = 0.0, z = 0.0;
+      world_of(*site, x, z);
+      const f64 d = std::hypot(static_cast<f64>(inst.position.x) * 100.0 - x,
+                               static_cast<f64>(inst.position.z) * 100.0 - z);
+      CHECK(d <= kit.rubble_radius_cm - mb.radius_cm + 2.0);
+      stone_cm3 += mb.volume_cm3;
+      wall_stones[inst.wall] += mb.volume_cm3;
+    }
+    // The blocks: one fallen block a site, at its centre and turned by its yaw — pushed off it
+    // only when it is longer than the site holds.
+    std::vector<u32> taken(field.size(), 0u);
+    for (const Block& block : laid_out.blocks) {
+      if ((block.flags & k_block_fallen) == 0) continue;
+      ++laid;
+      const RubbleSite* site = site_of(block.wall, block.index);
+      REQUIRE(site != nullptr);
+      ++taken[static_cast<usize>(site - field.data())];
+      const KitBlock& kb = blocks.blocks[block.block];
+      CHECK(block.yaw == site->yaw);
+      const f64 yaw = static_cast<f64>(block.yaw) * 22.5 * 3.14159265358979323846 / 180.0;
+      const f64 cx =
+          static_cast<f64>(block.position.x) * 100.0 + 0.5 * kb.length_cm * std::cos(yaw);
+      const f64 cz =
+          static_cast<f64>(block.position.z) * 100.0 - 0.5 * kb.length_cm * std::sin(yaw);
+      f64 x = 0.0, z = 0.0;
+      world_of(*site, x, z);
+      if (kb.radius_cm <= kit.rubble_radius_cm) {
+        CHECK(std::hypot(cx - x, cz - z) <= 2.0);
+      } else {
+        ++oversize;
+      }
+      const f64 v = static_cast<f64>(kb.length_cm) * kb.height_cm * kb.depth_cm;
+      block_cm3 += v;
+      wall_blocks[block.wall] += v;
+    }
+    for (usize i = 0; i < field.size(); ++i)
+      CHECK(taken[i] <= 1u);
+    for (u32 w = 0; w < wall_count; ++w)
+      if (wall_blocks[w] > 0.0) wall_ratio.push_back(wall_stones[w] / wall_blocks[w]);
+  }
+  std::sort(wall_ratio.begin(), wall_ratio.end());
+  const f64 ratio = stone_cm3 / block_cm3;
+  MESSAGE("rubble over 80 buildings: "
+          << sites << " sites; " << laid << " fallen blocks (" << oversize
+          << " longer than a site) and " << pieces << " debris pieces; volume, blocks "
+          << block_cm3 * 1e-6 << " m3, debris " << stone_cm3 * 1e-6 << " m3, sites "
+          << site_cm3 * 1e-6 << " m3; debris over blocks " << ratio << ", per wall p10 "
+          << wall_ratio[wall_ratio.size() / 10] << " median " << wall_ratio[wall_ratio.size() / 2]
+          << " p90 " << wall_ratio[wall_ratio.size() * 9 / 10]);
+  // Nearly every site takes its block (a long one may not fit), and the two forms put down the
+  // same volume to within the pieces' own sizes.
+  CHECK(sites > 200);
+  CHECK(laid * 100 >= sites * 97);
+  CHECK(laid <= sites);
+  CHECK(ratio > 0.85);
+  CHECK(ratio < 1.15);
 }
 
 TEST_CASE("ruins blocks: an opening is a gap in its courses with a lintel over it") {

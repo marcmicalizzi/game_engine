@@ -18,3 +18,6 @@ ENGINE_EXPECT_SIZE(28, 4, ruins::Block);
 ENGINE_EXPECT_SIZE(40, 4, ruins::Drift);
 // Seed (8), tile (8), origin (12), four counts (16), walls, shape and yaw (4).
 ENGINE_EXPECT_SIZE(48, 8, ruins::Site);
+// A rubble site: its centre and place along the wall (12), wall and index (4), yaw, side and two
+// spare bytes (4). A building has a few dozen, both representations read them.
+ENGINE_EXPECT_SIZE(20, 4, ruins::RubbleSite);

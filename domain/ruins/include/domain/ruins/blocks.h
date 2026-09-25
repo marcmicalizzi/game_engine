@@ -9,14 +9,15 @@
 // courses of every wall alternate by it; an opening is a gap in the courses it crosses, a lintel
 // over it and a sill under a window; the ruin rule's line decides which blocks stand, broken per
 // block by a seeded draw either side of it, and a block stands only where the course under it
-// carries it; and every block that did not stand is debris, dropped beside its wall by the same
-// kind of rule the assembler's debris members follow.
+// carries it; and the blocks that did not stand are the rubble, one on each of the building's
+// rubble sites (`Assembler::rubble`) — the sites the assembler heaps its debris members on — and
+// the rest under the sand.
 //
 // **Why the section assembler decides the building.** One seed has to be one building whichever
 // way it is drawn, or a handover between the two representations (the open question, ruins.md)
-// would swap one ruin for another. So this layer takes the assembler's walls, frame and ruin line
-// (`Assembler::sides`, `frame`, `height_q`) and adds only what blocks need: courses, the bond, the
-// broken top per block, support, and where each fallen block lies.
+// would swap one ruin for another. So this layer takes the assembler's walls, frame, ruin line and
+// rubble field (`Assembler::sides`, `frame`, `height_q`, `rubble`) and adds only what blocks need:
+// courses, the bond, the broken top per block, support, and which fallen block lies on each site.
 //
 // **Pure, and integer in every decision**, as the assembler is: positions along a wall are
 // centimetres, fractions are Q10, every draw is the engine's hash of (building seed, purpose,
@@ -65,14 +66,15 @@ struct KitBlock {
   u32 mesh_index = 0;
 };
 
-// The rules, converted: fractions Q10, lengths centimetres.
+// The rules, converted: fractions Q10, lengths centimetres. How much rubble lies beside a wall is
+// not the block kit's to say: it is the section kit's rubble rule, which both representations lay
+// (the file's `debris_kept` is read and ignored).
 struct BlockRules {
   i32 top_drop_q = 512;
   i32 eroded_exposed_q = 768;
   i32 eroded_q = 205;
   i32 support_q = 512;
   i32 lintel_bearing_cm = 20;
-  i32 debris_kept_q = 1024;
 };
 
 struct BlockKit {
@@ -102,6 +104,8 @@ struct BlockKit {
   Vector<u32> lintels;
   Vector<u32> sills;
   i32 stretcher_cm = 0;  // the bond's block: the stretcher length with the most weight
+  // Its group: what a rubble site takes when its wall has no fallen block left to give it.
+  i32 stretcher_group = -1;
   i32 quoin_group = -1;  // the quoins' group (every quoin is one length), or none
   i32 quoin_cm = 0;
 };
@@ -122,7 +126,7 @@ struct Block {
   u32 block = 0;     // index into BlockKit::blocks
   u32 building = 0;  // index into BlockOutput::sites
   u16 wall = 0;      // the wall it stands in or fell from
-  u16 index = 0;     // its place along its course, or among its wall's fallen blocks
+  u16 index = 0;     // its place along its course, or the rubble site it lies on (RubbleSite)
   u8 course = 0;     // counted from the ground
   u8 role = 0;       // BlockRole
   u8 yaw = 0;        // sixteenths of a turn about +y
@@ -175,7 +179,8 @@ class BlockAssembler {
     i32 u0;
     i32 u1;
   };
-  // A block that did not stand, in the order the courses were laid: the debris pass's input.
+  // A block that did not stand, in the order the courses were laid: what the rubble sites are
+  // filled from.
   struct Fallen {
     u32 wall;
     u32 group;
@@ -201,7 +206,11 @@ class BlockAssembler {
   Vector<u8> corner_here_;
   Vector<Fallen> fallen_;
   Vector<u32> next_wall_;
-  Vector<u16> fallen_index_;
+  // The fallen blocks by wall (`fallen_first_` indexes `fallen_order_`, which indexes `fallen_`),
+  // and which of them a rubble site has taken.
+  Vector<u32> fallen_first_;
+  Vector<u32> fallen_order_;
+  Vector<u8> fallen_taken_;
 };
 
 // Many tiles, on the job system's performance pool when one is given; the output is in the order

@@ -57,6 +57,10 @@ struct Member {
   i32 sill_cm = 0;
   i32 head_cm = 0;
   i32 radius_cm = 0;
+  // A debris piece's volume, cubic centimetres: the file's, or, when it says none, the square
+  // prism of its height inscribed in its radius (2 r^2 h, which E33's measured stones fill 0.59 to
+  // 0.86 of). The rubble rule fills a site with pieces until their volume is the profile's block.
+  i32 volume_cm3 = 0;
   u32 weight = 1;
   // The mesh-to-member transform: translate by `offset`, then turn `yaw_step` sixteenths of a turn
   // about +y. Only rendering reads it, never a decision.
@@ -83,7 +87,9 @@ struct Rules {
   i32 min_height_q = 123;
   i32 max_sink_q = 512;
   i32 opening_q = 614;
-  i32 debris_per_module_q = 3072;  // pieces per fully fallen module, Q10
+  // Rubble per module of wall fully brought down, in the profile's blocks, Q10: how much of what
+  // came down lies beside the wall (the rest is under the sand). Both representations lay it.
+  i32 debris_per_module_q = 3072;
   i32 debris_spread_cm = 150;
   i32 debris_outward_q = 614;
   i32 drift_windward_cm = 34;
@@ -99,6 +105,12 @@ struct Kit {
   i32 module_cm = 200;
   i32 thickness_cm = 64;
   i32 wall_height_cm = 240;
+  // The profile's block: a course high, `block_length_cm` long and the wall thick. It is the unit
+  // the rubble rule counts in — one rubble site is one block's worth of the wall that came down —
+  // because it is what a block-by-block representation drops, and the section form has to put
+  // down the same.
+  i32 course_height_cm = 30;
+  i32 block_length_cm = 60;
   Vector<Member> members;
   Vector<std::string> meshes;  // distinct mesh files, in first-use order
   Vector<u64> mesh_hashes;     // parallel to `meshes`
@@ -119,6 +131,12 @@ struct Kit {
   i32 reflex_in_cm = 0;
   i32 reflex_out_cm = 0;
   bool has_inside_corner = false;
+  // The rubble rule's unit (ruins.md, "The rubble rule"): a site's volume, the profile's block
+  // (`block_length_cm` x `course_height_cm` x `thickness_cm`), and its radius on the ground — the
+  // larger of the block's half diagonal in plan and the largest debris piece's radius — which
+  // every piece laid on a site stays within.
+  i32 rubble_cm3 = 0;
+  i32 rubble_radius_cm = 0;
   // The largest reach of anything past the wall's centre line: debris and drift. A building
   // keeps this much clear of its tile's edge.
   i32 margin_cm = 0;

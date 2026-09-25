@@ -217,6 +217,10 @@ void make_synthetic_kit(const SyntheticKitOptions& o, SyntheticKit& out) {
   kit.module = o.module;
   kit.thickness = o.thickness;
   kit.wall_height = o.wall_height;
+  // The profile's block, which the rubble rule counts in: the synthetic block kit's stretcher and
+  // course, so that a building laid in that kit drops exactly one block a rubble site.
+  kit.course_height = 0.3f;
+  kit.block_length = 0.6f;
   const f32 t = o.thickness;
   const f32 half = 0.5f * t;
   const f32 h = o.wall_height;
@@ -300,7 +304,8 @@ void make_synthetic_kit(const SyntheticKitOptions& o, SyntheticKit& out) {
   };
   if (o.doorway) opening("doorway", scene::RuinPieceKind::Doorway, 1.1f, 0.0f, 2.1f);
   if (o.window) opening("window", scene::RuinPieceKind::Window, 1.0f, 0.9f, 1.9f);
-  // Debris: a block and a slab, standing on the ground about their own centre.
+  // Debris: a block and a slab, standing on the ground about their own centre, with their volume
+  // (a box's is exact), which the rubble rule heaps them by.
   constexpr f32 k_debris_sizes[3][3] = {
       {0.5f, 0.3f, 0.35f}, {0.7f, 0.18f, 0.45f}, {0.4f, 0.25f, 0.3f}};
   for (u32 d = 0; d < std::min<u32>(o.debris_variants, 3u); ++d) {
@@ -311,6 +316,7 @@ void make_synthetic_kit(const SyntheticKitOptions& o, SyntheticKit& out) {
     const f32 sz = 0.5f * k_debris_sizes[d][2];
     m.height = k_debris_sizes[d][1];
     m.radius = std::ceil(std::sqrt(sx * sx + sz * sz) * 100.0f) / 100.0f;
+    m.volume = k_debris_sizes[d][0] * k_debris_sizes[d][1] * k_debris_sizes[d][2];
     const Vector<Box> boxes{Box{Vec3{-sx, 0, -sz}, Vec3{sx, m.height, sz}}};
     add(std::move(m), boxes, k_debris);
   }

@@ -1,3 +1,5 @@
+#include "grid.h"
+
 #include <core/json/json.h>
 #include <core/schema/json_reflect.h>
 #include <domain/ruins/assembler.h>
@@ -149,8 +151,17 @@ bool kit_from_schema(const scene::RuinKit& file, std::string_view dir, Kit& out,
   out.module_cm = to_cm(file.module);
   out.thickness_cm = to_cm(file.thickness);
   out.wall_height_cm = to_cm(file.wall_height);
+  out.course_height_cm = to_cm(file.course_height);
+  out.block_length_cm = to_cm(file.block_length);
   if (out.module_cm < 10 || out.thickness_cm < 1 || out.wall_height_cm < 10) {
     error = "module, thickness and wall_height must be at least 0.1, 0.01 and 0.1 m";
+    return false;
+  }
+  if (out.course_height_cm < 5 || out.block_length_cm < 5 || out.course_height_cm > 1000 ||
+      out.block_length_cm > 1000 || out.thickness_cm > 1000) {
+    error =
+        "course_height and block_length must be 0.05 to 10 m: the rubble rule counts in the "
+        "profile's blocks";
     return false;
   }
 
@@ -220,6 +231,12 @@ bool kit_from_schema(const scene::RuinKit& file, std::string_view dir, Kit& out,
     error = "rules: a minimum above its maximum, or a negative length or rate";
     return false;
   }
+  if (rules.debris_per_module_q > 64 * k_q_one || rules.debris_spread_cm > 10000) {
+    // A fully fallen module of ashlar is some thirty blocks: sixty-four lying beside it is more
+    // rubble than the wall had, and a bound keeps a typo from laying millions of pieces.
+    error = "rules: debris_per_module is at most 64 blocks, and debris_spread at most 100 m";
+    return false;
+  }
 
   // ---- the members ------------------------------------------------------------------------------
   const std::string base(dir);
@@ -283,11 +300,23 @@ bool kit_from_schema(const scene::RuinKit& file, std::string_view dir, Kit& out,
       }
     }
     if (member.kind == PieceKind::debris) {
-      if (member.radius_cm <= 0) {
-        error = where + " is debris with no radius";
+      if (member.radius_cm <= 0 || member.radius_cm > 1000) {
+        error = where + " is debris with no radius, or one over 10 m";
+        return false;
+      }
+      if (!(m.volume >= 0.0f) || m.volume > 10.0f) {
+        error = where + ": volume is cubic metres, 0 (estimated) to 10";
         return false;
       }
       largest_radius = std::max(largest_radius, member.radius_cm);
+      // What a heap counts it as: the kit's measured volume, or the square prism of its height
+      // inscribed in its radius — an estimate on the large side, so a kit that does not say puts
+      // down fewer pieces rather than more.
+      const i64 volume = static_cast<i64>(
+          std::floor(static_cast<f64>(m.volume) * 1.0e6 + 0.5));  // m^3 to cm^3, in double
+      const i64 h = member.height_cm > 0 ? member.height_cm : member.radius_cm;
+      member.volume_cm3 = static_cast<i32>(std::clamp<i64>(
+          volume > 0 ? volume : 2 * i64{member.radius_cm} * member.radius_cm * h, 1, i64{1} << 30));
     }
     // Members that draw the same file draw the same mesh.
     u32 mesh_index = out.meshes.size();
@@ -367,8 +396,18 @@ bool kit_from_schema(const scene::RuinKit& file, std::string_view dir, Kit& out,
       }
     }
   }
-  out.margin_cm = out.thickness_cm / 2 +
-                  std::max(rules.debris_spread_cm + 2 * largest_radius + 2, rules.drift_reach_cm);
+  // The rubble rule's unit: the profile's block, and the radius every piece laid on a site stays
+  // within — the block's half diagonal in plan, or the largest debris piece's if that is more.
+  out.rubble_cm3 = out.block_length_cm * out.course_height_cm * out.thickness_cm;
+  const i32 block_radius =
+      static_cast<i32>((grid::isqrt_ceil(i64{out.block_length_cm} * out.block_length_cm +
+                                         i64{out.thickness_cm} * out.thickness_cm) +
+                        1) /
+                       2);
+  out.rubble_radius_cm = std::max(block_radius, largest_radius);
+  out.margin_cm =
+      out.thickness_cm / 2 +
+      std::max(rules.debris_spread_cm + 2 * out.rubble_radius_cm + 2, rules.drift_reach_cm);
   return true;
 }
 

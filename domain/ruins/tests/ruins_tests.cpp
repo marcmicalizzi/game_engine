@@ -127,6 +127,29 @@ TEST_CASE("ruins: the synthetic kit converts, and a kit that breaks the module i
   CHECK(kit.by_kind[static_cast<u32>(PieceKind::doorway)].size() == 1);
   CHECK(kit.by_kind[static_cast<u32>(PieceKind::debris)].size() == 2);
   CHECK(kit.margin_cm > kit.rules.debris_spread_cm);
+  // The rubble rule's unit: the profile's block (0.6 m x 0.3 m x the 0.6 m wall), and a radius
+  // that holds both it (half its diagonal, 43 cm) and the largest debris piece (42 cm).
+  CHECK(kit.course_height_cm == 30);
+  CHECK(kit.block_length_cm == 60);
+  CHECK(kit.rubble_cm3 == 60 * 30 * 60);
+  CHECK(kit.rubble_radius_cm == 43);
+  CHECK(kit.margin_cm >= kit.thickness_cm / 2 + kit.rules.debris_spread_cm + 2 * 43);
+  {
+    // The synthetic debris says its volume (a box's, exactly); a kit that says none is estimated
+    // as the square prism of its height inscribed in its radius.
+    const Member& block = kit.members[kit.by_kind[static_cast<u32>(PieceKind::debris)][0]];
+    CHECK(block.volume_cm3 == 50 * 30 * 35);
+    SyntheticKit synthetic;
+    make_synthetic_kit(SyntheticKitOptions{}, synthetic);
+    for (scene::RuinMember& m : synthetic.kit.members)
+      m.volume = 0.0f;
+    Kit estimated;
+    std::string why;
+    REQUIRE(kit_from_schema(synthetic.kit, "", estimated, why));
+    const Member& guess =
+        estimated.members[estimated.by_kind[static_cast<u32>(PieceKind::debris)][0]];
+    CHECK(guess.volume_cm3 == 2 * guess.radius_cm * guess.radius_cm * guess.height_cm);
+  }
 
   SyntheticKit synthetic;
   make_synthetic_kit(SyntheticKitOptions{}, synthetic);
@@ -171,6 +194,104 @@ TEST_CASE("ruins: the synthetic kit converts, and a kit that breaks the module i
     file.rules.yaw_steps = 3;
     CHECK_FALSE(kit_from_schema(file, "", refused, error));
   }
+  {
+    // The rubble rule counts in the profile's blocks: a block of no size cannot be counted in.
+    scene::RuinKit file = synthetic.kit;
+    file.course_height = 0.0f;
+    CHECK_FALSE(kit_from_schema(file, "", refused, error));
+    CHECK(error.find("rubble") != std::string::npos);
+  }
+  {
+    scene::RuinKit file = synthetic.kit;
+    file.rules.debris_per_module = 100.0f;
+    CHECK_FALSE(kit_from_schema(file, "", refused, error));
+    CHECK(error.find("debris_per_module") != std::string::npos);
+  }
+  {
+    scene::RuinKit file = synthetic.kit;
+    for (scene::RuinMember& m : file.members)
+      if (m.kind == scene::RuinPieceKind::Debris) m.volume = -1.0f;
+    CHECK_FALSE(kit_from_schema(file, "", refused, error));
+    CHECK(error.find("volume") != std::string::npos);
+  }
+}
+
+TEST_CASE("ruins: the rubble field lies where the walls came down, clear of them and in the tile") {
+  const Kit kit = kit_of(SyntheticKitOptions{});
+  const f64 half = static_cast<f64>((kit.thickness_cm + 1) / 2);
+  const f64 r = static_cast<f64>(kit.rubble_radius_cm);
+  Assembler assembler(kit);
+  Assembler far_assembler(kit);
+  u32 sites = 0;
+  u32 on_intact = 0;
+  f64 removed_modules = 0.0;
+  for (u32 b = 0; b < 250; ++b) {
+    const TileCoord tile{static_cast<i32>(b % 13) - 6, static_cast<i32>(b / 13) - 9};
+    const Placement placement = placement_of(4000 + b, static_cast<u8>(b & 15u));
+    Output out;
+    std::string error;
+    REQUIRE(assembler.assemble(placement, tile, out, &error));
+    const Vector<RubbleSite> field = assembler.rubble();
+    // The field is the building's, whatever detail it was assembled at: the far tier asks for the
+    // same sites.
+    Placement far = placement;
+    far.detail = Detail::walls;
+    Output walls;
+    REQUIRE(far_assembler.assemble(far, tile, walls, &error));
+    const Vector<RubbleSite>& far_field = far_assembler.rubble();
+    REQUIRE(far_field.size() == field.size());
+    CHECK(std::memcmp(far_field.data(), field.data(), field.size() * sizeof(RubbleSite)) == 0);
+    CAPTURE(b);
+    const Vector<Assembler::Side>& sides = assembler.sides();
+    const Assembler::Frame& frame = assembler.frame();
+    // How much came down, in modules of wall fully brought down: the field's measure.
+    for (u32 w = 0; w < sides.size(); ++w) {
+      for (i32 u = 0; u < sides[w].length_cm; ++u)
+        removed_modules += static_cast<f64>(k_q_one - assembler.height_q(w, u)) /
+                           (static_cast<f64>(k_q_one) * kit.module_cm);
+    }
+    for (u32 i = 0; i < field.size(); ++i) {
+      const RubbleSite& site = field[i];
+      ++sites;
+      REQUIRE(site.wall < sides.size());
+      const Assembler::Side& s = sides[site.wall];
+      on_intact += s.state == static_cast<u8>(WallState::intact) ? 1u : 0u;
+      // Where its wall came down: the ruin line is below the intact wall there, within the eighth
+      // of a module the field samples the line at.
+      CHECK(site.along_cm >= 0);
+      CHECK(site.along_cm <= s.length_cm);
+      const i32 step = kit.module_cm / 8;
+      CHECK(std::min({assembler.height_q(site.wall, site.along_cm),
+                      assembler.height_q(site.wall, std::max(site.along_cm - step, 0)),
+                      assembler.height_q(site.wall, std::min(site.along_cm + step, s.length_cm))}) <
+            k_q_one);
+      // Outside every wall by the site's radius, and inside the tile by it.
+      for (const Assembler::Side& w : sides) {
+        const RectD rc = wall_rect(w, half);
+        const bool within = site.x_cm > rc.x0 - r && site.x_cm < rc.x1 + r &&
+                            site.z_cm > rc.z0 - r && site.z_cm < rc.z1 + r;
+        CHECK_FALSE(within);
+      }
+      i64 wx = 0, wz = 0;
+      assembler.to_world_cm(site.x_cm, site.z_cm, wx, wz);
+      CHECK(wx - kit.rubble_radius_cm >= frame.tile_x0_cm);
+      CHECK(wx + kit.rubble_radius_cm <= frame.tile_x0_cm + frame.tile_cm);
+      CHECK(wz - kit.rubble_radius_cm >= frame.tile_z0_cm);
+      CHECK(wz + kit.rubble_radius_cm <= frame.tile_z0_cm + frame.tile_cm);
+      // In draw order within its wall, walls in order.
+      if (i > 0) {
+        const RubbleSite& prev = field[i - 1];
+        CHECK((prev.wall < site.wall || (prev.wall == site.wall && prev.index < site.index)));
+      }
+    }
+  }
+  // An intact wall drops nothing; and the sites are the rule's blocks per module brought down, less
+  // the few that could not be put clear of the walls or inside the tile.
+  CHECK(on_intact == 0);
+  const f64 expected = removed_modules * kit.rules.debris_per_module_q / k_q_one;
+  MESSAGE("rubble sites " << sites << " over 250 buildings; the rule asks for " << expected);
+  CHECK(static_cast<f64>(sites) <= expected * 1.05 + 10.0);
+  CHECK(static_cast<f64>(sites) >= expected * 0.85);
 }
 
 TEST_CASE("ruins: one seed and tile is one building, on one thread or many") {

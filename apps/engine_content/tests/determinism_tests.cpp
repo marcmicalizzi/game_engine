@@ -285,8 +285,11 @@ TEST_CASE("engine-content: a build writes the committed bytes on every toolchain
 // no decision reads it. A change to the grammar, the ruin rule or a draw's purpose moves it; say
 // so in the commit and take the new number from a failing run's message.
 //
-// Taken on MSVC 14.51, 2026-09-24: 64 buildings, 3,272 instances.
-constexpr u64 k_ruins_golden = 0x3667b0bbaa0d803cull;
+// Taken on MSVC 14.51, 2026-09-25: 64 buildings, 5,726 instances. It moved from 0x3667b0bbaa0d803c
+// (3,272 instances) when both representations began laying their rubble on one field
+// (ruins.md, "The rubble rule"): the debris is now a heap of pieces a profile block large on each
+// site, where it was a few pieces per loss by a count of the assembler's own.
+constexpr u64 k_ruins_golden = 0xdc4bfc4a807b427bull;
 
 TEST_CASE("engine-content: ruins assembles the committed buildings on every toolchain") {
   const test::TempDir tmp("engine_content_ruins_determinism");
@@ -326,8 +329,11 @@ TEST_CASE("engine-content: ruins assembles the committed buildings on every tool
 // change to the layer's rules or draws moves it; say so in the commit and take the new number
 // from a failing run's message.
 //
-// Taken on MSVC 14.51, 2026-09-24: 64 buildings, 44,876 blocks.
-constexpr u64 k_ruin_blocks_golden = 0x68ed0c002d78242full;
+// Taken on MSVC 14.51, 2026-09-25: 64 buildings, 25,454 blocks. It moved from 0x68ed0c002d78242f
+// (44,876 blocks) with the assembler's, for the same reason: a fallen block now lies on each site
+// of the building's rubble field, one a site, where every block that fell lay beside its wall
+// (the block kit's `debris_kept`, which is no longer read). The standing blocks did not change.
+constexpr u64 k_ruin_blocks_golden = 0x7f74b136cd3438e6ull;
 
 TEST_CASE("engine-content: ruins laid block by block are the committed blocks on every toolchain") {
   const test::TempDir tmp("engine_content_ruin_blocks_determinism");

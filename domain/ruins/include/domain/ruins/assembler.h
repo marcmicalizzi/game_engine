@@ -124,6 +124,25 @@ struct Output {
   }
 };
 
+// One place a building's rubble lies (docs/subsystems/ruins.md, "The rubble rule"): a block's worth
+// of a wall that came down — the kit's profile block, `Kit::rubble_cm3` — beside the wall it came
+// from, within `Kit::rubble_radius_cm` of its centre. The sites are the building's, drawn from its
+// seed and the wall, and both representations lay their rubble on them: the block layer one fallen
+// block a site, at its centre and turned by its yaw, and the section assembler a heap of the kit's
+// debris members as large as the block. So a building's two forms have their rubble in the same
+// places and in the same amount, and a handover between them does not move what lies on the
+// ground. 20 bytes (tests/size_table.cpp).
+struct RubbleSite {
+  i32 x_cm = 0;  // the site's centre, in the building's frame (Assembler::Frame)
+  i32 z_cm = 0;
+  i32 along_cm = 0;  // where along its wall the material it stands for came down
+  u16 wall = 0;
+  u16 index = 0;   // its draw among its wall's sites; a site that could not be put down is skipped
+  u8 yaw = 0;      // how the piece on it lies: sixteenths of a turn about +y, in the world
+  u8 outward = 0;  // outside the wall, or 0 inside the footprint
+  u8 reserved[2] = {0, 0};
+};
+
 // Assembles buildings one tile at a time into an `Output`, reusing its scratch across calls, so a
 // building allocates nothing but what the output arrays grow by. One per thread; the kit is read
 // only.
@@ -172,6 +191,10 @@ class Assembler {
     i64 origin_z_cm = 0;
     i32 base_cm = 0;
     u8 yaw = 0;
+    // The tile it was fitted to: nothing it puts down, rubble included, leaves this square.
+    i64 tile_x0_cm = 0;
+    i64 tile_z0_cm = 0;
+    i32 tile_cm = 0;
   };
   const Frame& frame() const noexcept { return frame_; }
   // The ruin rule's height at `at_cm` along wall `wall` of the building it last assembled, Q10 of
@@ -180,16 +203,16 @@ class Assembler {
   // A point of the building's frame in the world, centimetres (the Q14 turn, then the origin).
   void to_world_cm(i64 x, i64 z, i64& wx, i64& wz) const noexcept;
 
- private:
-  // What one corner, section or gap lost to the ruin rule: the debris pass's input.
-  struct Loss {
-    u32 wall;
-    u32 slot;
-    i32 at_cm;  // along the wall, from its start vertex
-    i32 length_cm;
-    i32 removed_q;  // the intact height less the height asked of it, Q10
-  };
+  // The rubble field of the building it last assembled (ruins.md, "The rubble rule"), wall by
+  // wall: how much of each wall came down is the ruin line integrated along it, the rule's
+  // `debris_per_module` of it lies beside the wall in blocks' worth, and each site's place along
+  // the wall follows where the wall came down. A function of the building alone, whatever detail
+  // it was assembled at, worked out the first time it is asked for and kept until the next
+  // building: the section assembler heaps its debris members on it, and the block layer, which
+  // assembles the walls only, asks for it to lay its fallen blocks.
+  const Vector<RubbleSite>& rubble();
 
+ private:
   bool build_footprint(u64 seed, i32 tile_cm, u32 attempt);
   bool ring_from(const u8* turns, const i32* lengths, u32 count, i32 x0, i32 z0, u8 ring);
   bool footprint_valid() const noexcept;
@@ -197,10 +220,12 @@ class Assembler {
 
   const Kit& kit_;
   Vector<Side> sides_;
-  Vector<Loss> losses_;
   Vector<u32> candidates_;
   Shape shape_ = Shape::rectangle;
   Frame frame_;
+  Vector<RubbleSite> rubble_;
+  Vector<i64> removed_;  // one wall's removal, cumulative over its samples: the rubble field's
+  bool rubble_ready_ = false;
 };
 
 // The building's seed: the world seed and the tile, through the engine's hash.

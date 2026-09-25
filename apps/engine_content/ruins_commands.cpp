@@ -145,10 +145,14 @@ int ruins_blocks(const ruins::Kit& kit, const std::string& blocks_path,
   u32 roles[ruins::k_block_roles] = {};
   u32 fallen = 0;
   u32 eroded = 0;
+  f64 rubble_cm3 = 0.0;
   for (const ruins::Block& b : out.blocks) {
     ++roles[b.role < ruins::k_block_roles ? b.role : 0];
-    fallen += (b.flags & ruins::k_block_fallen) != 0 ? 1u : 0u;
     eroded += (b.flags & ruins::k_block_eroded) != 0 ? 1u : 0u;
+    if ((b.flags & ruins::k_block_fallen) == 0) continue;
+    ++fallen;
+    const ruins::KitBlock& kb = blocks.blocks[b.block];
+    rubble_cm3 += static_cast<f64>(kb.length_cm) * kb.height_cm * kb.depth_cm;
   }
   u32 lo = ~0u, hi = 0;
   for (const ruins::Site& site : out.sites) {
@@ -165,6 +169,13 @@ int ruins_blocks(const ruins::Kit& kit, const std::string& blocks_path,
   summary.set("standing", JsonValue(out.blocks.size() - fallen));
   summary.set("fallen", JsonValue(fallen));
   summary.set("eroded", JsonValue(eroded));
+  // The rubble: one fallen block a site of the building's rubble field, and their volume — what
+  // the same buildings in sections heap their debris to (ruins.md, "The rubble rule").
+  JsonValue rubble = JsonValue::object();
+  rubble.set("sites", JsonValue(fallen));
+  rubble.set("pieces", JsonValue(fallen));
+  rubble.set("m3", JsonValue(rubble_cm3 * 1.0e-6));
+  summary.set("rubble", std::move(rubble));
   summary.set("drifts", JsonValue(out.drifts.size()));
   JsonValue by_role = JsonValue::object();
   for (u32 r = 0; r < ruins::k_block_roles; ++r)
@@ -300,10 +311,23 @@ int ruins(int argc, char** argv) {
     if (!ruins::write_fragment(out_path, kit, out, name, &error)) return failed(error);
   }
 
-  // What it made: by kind, per building, by shape.
+  // What it made: by kind, per building, by shape; and the rubble — the debris heaps, one a site
+  // of the rubble field (a building's pieces of one wall and slot), and their volume.
   u32 kinds[ruins::k_piece_kinds] = {};
-  for (const ruins::Instance& piece : out.instances)
+  u32 rubble_sites = 0;
+  f64 rubble_cm3 = 0.0;
+  for (u32 i = 0; i < out.instances.size(); ++i) {
+    const ruins::Instance& piece = out.instances[i];
     ++kinds[piece.kind < ruins::k_piece_kinds ? piece.kind : 0];
+    if (piece.kind != static_cast<u8>(ruins::PieceKind::debris)) continue;
+    rubble_cm3 += static_cast<f64>(kit.members[piece.member].volume_cm3);
+    // A heap's pieces are consecutive: a new site wherever the building, wall or slot changes.
+    const ruins::Instance* prev = i > 0 ? &out.instances[i - 1] : nullptr;
+    if (prev == nullptr || prev->kind != piece.kind || prev->building != piece.building ||
+        prev->wall != piece.wall || prev->slot != piece.slot) {
+      ++rubble_sites;
+    }
+  }
   u32 shapes[4] = {};
   u32 lo = ~0u, hi = 0;
   for (const ruins::Site& site : out.sites) {
@@ -323,6 +347,11 @@ int ruins(int argc, char** argv) {
   for (u32 k = 0; k < ruins::k_piece_kinds; ++k)
     by_kind.set(ruins::piece_kind_name(static_cast<ruins::PieceKind>(k)), JsonValue(kinds[k]));
   summary.set("kinds", std::move(by_kind));
+  JsonValue rubble = JsonValue::object();
+  rubble.set("sites", JsonValue(rubble_sites));
+  rubble.set("pieces", JsonValue(kinds[static_cast<u32>(ruins::PieceKind::debris)]));
+  rubble.set("m3", JsonValue(rubble_cm3 * 1.0e-6));
+  summary.set("rubble", std::move(rubble));
   JsonValue per = JsonValue::object();
   per.set("min", JsonValue(lo));
   per.set("max", JsonValue(hi));

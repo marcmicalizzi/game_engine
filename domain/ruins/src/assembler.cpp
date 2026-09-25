@@ -32,10 +32,21 @@ enum Purpose : u64 {
   k_opening_at = 0x7275696e7300000bull,
   k_run = 0x7275696e7300000cull,
   k_variant = 0x7275696e7300000dull,
-  k_debris_count = 0x7275696e7300000eull,
-  k_debris = 0x7275696e7300000full,
+  // 0x...0e and 0x...0f were the debris pieces' own count and placement, before both
+  // representations laid their rubble on one field; they are not reused.
   k_tile_rank = 0x7275696e73000010ull,
+  // The rubble field (ruins.md, "The rubble rule"): how many sites a wall has, and each site's
+  // place, side, distance and yaw. Shared by both representations, so the block layer's fallen
+  // blocks and the assembler's debris lie on the same draws.
+  k_rubble_count = 0x7275696e73000011ull,
+  k_rubble = 0x7275696e73000012ull,
+  // The section form's own: which debris members make a site's heap, and where each lies in it.
+  k_heap = 0x7275696e73000013ull,
 };
+
+// The most debris members one site's heap takes, whatever the kit's pieces weigh: a kit of pebbles
+// fills its sites to this and no further.
+constexpr u32 k_max_heap = 16;
 
 // The seeded draws, the Q14 turn and the quarter turns are the module's one copy, shared with the
 // block layer (src/grid.h).
@@ -380,6 +391,93 @@ void Assembler::to_world_cm(i64 x, i64 z, i64& wx, i64& wz) const noexcept {
   wz += frame_.origin_z_cm;
 }
 
+// ---- the rubble field
+// -------------------------------------------------------------------------------
+//
+// One rule for what a building's walls dropped, which both representations lay: before it, the
+// block layer dropped every block that fell beside its wall while the assembler scattered a few
+// debris members by a count of its own, and the two forms of one building agreed on everything but
+// the ground — which was most of what popped when a tile changed form (E35).
+const Vector<RubbleSite>& Assembler::rubble() {
+  if (rubble_ready_) return rubble_;
+  rubble_ready_ = true;
+  rubble_.clear();
+  const Rules& rules = kit_.rules;
+  if (rules.debris_per_module_q <= 0 || kit_.rubble_cm3 <= 0) return rubble_;
+  const i32 m = kit_.module_cm;
+  const i32 half = (kit_.thickness_cm + 1) / 2;
+  const i32 r = kit_.rubble_radius_cm;
+  const u64 seed = frame_.seed;
+  const u32 spread = static_cast<u32>(rules.debris_spread_cm + 1);
+  // The ruin line is sampled at an eighth of a module: finer than its breaks, which are a module
+  // apart, and coarse enough to cost a building a few hundred samples.
+  const i32 step = std::max(m / 8, 5);
+  for (u32 w = 0; w < sides_.size(); ++w) {
+    const Side& s = sides_[w];
+    // An intact wall stands to the full height all along (the corners' extra loss is for walls
+    // coming down): nothing came down.
+    if (s.state == static_cast<u8>(WallState::intact)) continue;
+    // What came down: the intact height less the ruin line's, along the wall — the removed
+    // material's volume, in centimetres of wall times Q10 of its height. Kept cumulative over
+    // the samples, so a site's place can be drawn where the wall came down.
+    removed_.clear();
+    i64 total = 0;
+    for (i32 a = 0; a < s.length_cm; a += step) {
+      const i32 b = std::min(a + step, s.length_cm);
+      total += i64{k_q_one - profile_q(s, w, seed, a + (b - a) / 2)} * (b - a);
+      removed_.push_back(total);
+    }
+    if (total <= 0) continue;
+    // How many sites: the removed volume in modules of wall fully brought down, times the rule's
+    // blocks of rubble for each, the fraction settled by a draw.
+    const i64 expected = total * rules.debris_per_module_q / (i64{m} * k_q_one);
+    u32 count = static_cast<u32>(expected >> 10);
+    if (static_cast<i64>(pick(draw(seed, k_rubble_count, w), k_q_one)) < (expected & 1023)) ++count;
+    for (u32 k = 0; k < count; ++k) {
+      const u64 key = u64{w} << 40 | u64{k} << 8;
+      // Along the wall where it came down: the inverse of the cumulative removal at a uniform
+      // draw, then anywhere in that sample.
+      const u64 at = ((draw(seed, k_rubble, key) >> 32) * static_cast<u64>(total)) >> 32;
+      const u32 sample = static_cast<u32>(
+          std::upper_bound(removed_.begin(), removed_.end(), static_cast<i64>(at)) -
+          removed_.begin());
+      const i32 a = static_cast<i32>(sample) * step;
+      const i32 b = std::min(a + step, s.length_cm);
+      const i32 along =
+          a + static_cast<i32>(pick(draw(seed, k_rubble, key | 1), static_cast<u32>(b - a)));
+      const bool outward =
+          static_cast<i32>(pick(draw(seed, k_rubble, key | 2), k_q_one)) < rules.debris_outward_q;
+      // Nearer the wall more often than not: the lesser of two draws, so a fallen wall leaves a
+      // heap at its foot thinning outward rather than a ring at a uniform distance.
+      const i32 dist = half + r +
+                       static_cast<i32>(std::min(pick(draw(seed, k_rubble, key | 3), spread),
+                                                 pick(draw(seed, k_rubble, key | 4), spread)));
+      const u8 n = outward ? right_of(s.dir) : left_of(s.dir);
+      i32 x = s.x0 + k_dx[s.dir] * along + k_dx[n] * dist;
+      i32 z = s.z0 + k_dz[s.dir] * along + k_dz[n] * dist;
+      // Out of every wall, pushed across the wall it landed in to the nearer face; a site that
+      // cannot be put clear, or whose piece would leave the tile, is not a site.
+      if (!grid::settle_clear(sides_, half, r, x, z)) continue;
+      i64 wx = 0, wz = 0;
+      to_world_cm(x, z, wx, wz);
+      if (wx - r < frame_.tile_x0_cm || wx + r > frame_.tile_x0_cm + frame_.tile_cm ||
+          wz - r < frame_.tile_z0_cm || wz + r > frame_.tile_z0_cm + frame_.tile_cm) {
+        continue;
+      }
+      RubbleSite site;
+      site.x_cm = x;
+      site.z_cm = z;
+      site.along_cm = along;
+      site.wall = static_cast<u16>(w);
+      site.index = static_cast<u16>(std::min<u32>(k, 0xffffu));
+      site.yaw = static_cast<u8>(pick(draw(seed, k_rubble, key | 5), 16));
+      site.outward = outward ? 1 : 0;
+      rubble_.push_back(site);
+    }
+  }
+  return rubble_;
+}
+
 bool Assembler::assemble(const Placement& placement, TileCoord tile, Output& out,
                          std::string* error) {
   const Kit& kit = kit_;
@@ -486,7 +584,15 @@ bool Assembler::assemble(const Placement& placement, TileCoord tile, Output& out
     }
   }
   const i32 base_cm = static_cast<i32>(std::floor(lowest * 100.0f)) - rules.embed_cm;
-  frame_ = Frame{seed, origin_x, origin_z, base_cm, yaw};
+  frame_ = Frame{seed,
+                 origin_x,
+                 origin_z,
+                 base_cm,
+                 yaw,
+                 i64{tile.x} * tile_cm,
+                 i64{tile.z} * tile_cm,
+                 placement.tile_cm};
+  rubble_ready_ = false;
 
   // ---- 3. each wall's ruin state: the wind and the corners decide how far it came down
   // --------------
@@ -570,8 +676,6 @@ bool Assembler::assemble(const Placement& placement, TileCoord tile, Output& out
   };
   const Vector<u32>& openings_doors = kit.by_kind[static_cast<u32>(PieceKind::doorway)];
   const Vector<u32>& openings_windows = kit.by_kind[static_cast<u32>(PieceKind::window)];
-  Vector<Loss>& losses = losses_;
-  losses.clear();
 
   u32 ring_first = 0;
   for (u32 w = 0; w < sides_.size(); ++w) {
@@ -602,7 +706,6 @@ bool Assembler::assemble(const Placement& placement, TileCoord tile, Output& out
       i32 sink = 0;
       choose(kind, 0, target, u64{w} << 20, member, sink);
       emit(s.x0, s.z0, sink, member, w, 0, target, kind, yaw_local);
-      losses.push_back(Loss{w, 0, 0, s.start_cm, k_q_one - target});
     }
 
     // What fills between the corners: an opening where the wall still stands, and sections.
@@ -672,7 +775,6 @@ bool Assembler::assemble(const Placement& placement, TileCoord tile, Output& out
           emit(s.x0 + k_dx[s.dir] * a, s.z0 + k_dz[s.dir] * a, sink, member, w, slot, target,
                PieceKind::section, static_cast<u32>(s.dir) * 4u);
         }
-        losses.push_back(Loss{w, slot, a, b - a, k_q_one - target});
         ++slot;
         from += len;
         modules -= len;
@@ -694,49 +796,40 @@ bool Assembler::assemble(const Placement& placement, TileCoord tile, Output& out
     }
   }
 
-  // ---- 5. debris: what came down, on the ground beside the wall and never inside one
-  // ----------------
+  // ---- 5. debris: a heap of the kit's debris members on every site of the rubble field
+  // --------------
+  // The field is the building's, and the block layer lays one fallen block on each of its sites;
+  // here a site takes debris members, picked by the kit's weights — which a kit weights inversely
+  // by volume (E33), so every pick brings about the same stone — until the heap is as large as the
+  // block it stands for: the last piece is kept when it brings the heap nearer the block's volume
+  // than stopping short would. The first lies at the site's centre as the block would, turned as
+  // it would be; the rest are scattered round it, every one within the site's radius, which the
+  // site was put clear of the walls and inside the tile by.
   const Vector<u32>& debris = kit.by_kind[static_cast<u32>(PieceKind::debris)];
-  if (placement.detail == Detail::full && !debris.empty() && rules.debris_per_module_q > 0) {
-    const i32 half = (kit.thickness_cm + 1) / 2;
-    const i64 tile_x0 = i64{tile.x} * tile_cm;
-    const i64 tile_z0 = i64{tile.z} * tile_cm;
-    u64 g = 0;
-    for (u32 l = 0; l < losses.size(); ++l) {
-      const Loss& loss = losses[l];
-      if (loss.removed_q <= 0 || loss.length_cm <= 0) continue;
-      const Side& s = sides_[loss.wall];
-      // Pieces this loss drops: removed height times its length in modules times the rate, with
-      // the fraction settled by a draw.
-      const i64 expected =
-          i64{loss.removed_q} * loss.length_cm * rules.debris_per_module_q / (i64{m} * k_q_one);
-      u32 count = static_cast<u32>(expected >> 10);
-      if (static_cast<i64>(pick(draw(seed, k_debris_count, l), k_q_one)) < (expected & 1023))
-        ++count;
-      for (u32 k = 0; k < count; ++k, ++g) {
-        const u32 member = weighted(kit, debris, draw(seed, k_debris, g << 3));
-        const i32 r = kit.members[member].radius_cm;
-        const i32 along = loss.at_cm + static_cast<i32>(pick(draw(seed, k_debris, g << 3 | 1),
-                                                             static_cast<u32>(loss.length_cm)));
-        const bool outward = static_cast<i32>(pick(draw(seed, k_debris, g << 3 | 2), k_q_one)) <
-                             rules.debris_outward_q;
-        // Nearer the wall more often than not: the lesser of two draws, so a fallen wall leaves a
-        // heap at its foot thinning outward rather than a ring at a uniform distance.
-        const u32 spread = static_cast<u32>(rules.debris_spread_cm + 1);
-        const i32 dist = half + r +
-                         static_cast<i32>(std::min(pick(draw(seed, k_debris, g << 3 | 3), spread),
-                                                   pick(draw(seed, k_debris, g << 3 | 5), spread)));
-        const u8 n = outward ? right_of(s.dir) : left_of(s.dir);
-        i32 x = s.x0 + k_dx[s.dir] * along + k_dx[n] * dist;
-        i32 z = s.z0 + k_dz[s.dir] * along + k_dz[n] * dist;
-        // Settle: out of every wall, pushed across the wall it landed in to the nearer face.
-        if (!grid::settle_clear(sides_, half, r, x, z)) continue;
+  if (placement.detail == Detail::full && !debris.empty()) {
+    const Vector<RubbleSite>& sites = rubble();
+    for (const RubbleSite& site : sites) {
+      i64 volume = 0;
+      for (u32 j = 0; j < k_max_heap && volume < kit.rubble_cm3; ++j) {
+        const u64 key = u64{site.wall} << 40 | u64{site.index} << 16 | u64{j} << 4;
+        const u32 member = weighted(kit, debris, draw(seed, k_heap, key));
+        const Member& mb = kit.members[member];
+        if (j > 0 && volume + mb.volume_cm3 - kit.rubble_cm3 > kit.rubble_cm3 - volume) break;
+        volume += mb.volume_cm3;
+        i32 x = site.x_cm;
+        i32 z = site.z_cm;
+        u8 piece_yaw = site.yaw;
+        if (j > 0) {
+          // Anywhere in the square of half side (radius - own radius) / sqrt 2 (181/256), which
+          // keeps the piece inside the site's radius at any draw.
+          const i32 reach = std::max(0, ((kit.rubble_radius_cm - mb.radius_cm) * 181) >> 8);
+          const u32 span = static_cast<u32>(2 * reach + 1);
+          x += static_cast<i32>(pick(draw(seed, k_heap, key | 1), span)) - reach;
+          z += static_cast<i32>(pick(draw(seed, k_heap, key | 2), span)) - reach;
+          piece_yaw = static_cast<u8>(pick(draw(seed, k_heap, key | 3), 16));
+        }
         i64 wx = 0, wz = 0;
         world(x, z, wx, wz);
-        if (wx - r < tile_x0 || wx + r > tile_x0 + tile_cm || wz - r < tile_z0 ||
-            wz + r > tile_z0 + tile_cm) {
-          continue;
-        }
         // On the ground where it lies, not the building's base: debris follows the terrain.
         const f32 ground = placement.ground.at(metres(wx), metres(wz));
         Instance inst;
@@ -745,11 +838,11 @@ bool Assembler::assemble(const Placement& placement, TileCoord tile, Output& out
                  metres(wz)};
         inst.member = member;
         inst.building = building;
-        inst.wall = static_cast<u16>(loss.wall);
-        inst.slot = static_cast<u16>(loss.slot);
+        inst.wall = site.wall;
+        inst.slot = site.index;
         inst.height_q = 0;
         inst.kind = static_cast<u8>(PieceKind::debris);
-        inst.yaw = static_cast<u8>(pick(draw(seed, k_debris, g << 3 | 4), 16));
+        inst.yaw = piece_yaw;
         out.instances.push_back(inst);
       }
     }

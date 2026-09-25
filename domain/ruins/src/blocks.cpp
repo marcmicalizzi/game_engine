@@ -16,19 +16,22 @@ namespace {
 using grid::draw;
 using grid::k_dx;
 using grid::k_dz;
-using grid::left_of;
 using grid::metres;
 using grid::pick;
-using grid::right_of;
 
 // The layer's own draws, beside the assembler's (src/assembler.cpp): a purpose never shared, so a
 // block's draws move nothing the section representation decides.
 enum Purpose : u64 {
   k_block_top = 0x7275696e73000101ull,      // the broken top: a block's own place about the line
   k_block_variant = 0x7275696e73000102ull,  // crisp or eroded, and which of them
-  k_block_kept = 0x7275696e73000103ull,     // a fallen block beside the wall, or under the sand
-  k_block_fall = 0x7275696e73000104ull,     // where a fallen block lies, and how it is turned
+  // 0x...0103 and 0x...0104 were which fallen blocks lay beside the wall and where, before the
+  // rubble field (Assembler::rubble) decided both for the two representations at once; they are
+  // not reused.
 };
+
+// A rubble site's block draws its weathering from a key no standing block's can take: standing
+// keys are (wall << 40 | course << 24 | slot), below bit 56.
+constexpr u64 k_rubble_key = u64{1} << 60;
 
 u32 weighted_block(const BlockKit& kit, const Vector<u32>& list, u64 value) noexcept {
   u64 total = 0;
@@ -340,61 +343,84 @@ bool BlockAssembler::assemble(const Placement& placement, TileCoord tile, BlockO
     std::swap(corner_below_, corner_here_);
   }
 
-  // ---- debris: every block that did not stand, beside its wall and never inside one ----------
-  if (placement.detail == Detail::full && rules.debris_kept_q > 0) {
+  // ---- rubble: a fallen block on every site of the building's rubble field ---------------------
+  // The sites are the section assembler's (`Assembler::rubble`), the same it heaps its debris
+  // members on, so the two representations of a building have their rubble in the same places. A
+  // site takes the fallen block of its wall that stood nearest the place along the wall it stands
+  // for, and lies at the site's centre, turned by its yaw; the blocks no site takes are under the
+  // sand. A block longer than the site holds (a quoin, a lintel) is pushed clear of any wall its
+  // own radius reaches into, and left out if it cannot be or would leave the tile.
+  if (placement.detail == Detail::full) {
+    const Vector<RubbleSite>& field = assembler_.rubble();
     const Rules& section = kit_.rules;
-    const i64 tile_cm = placement.tile_cm;
-    const i64 tile_x0 = i64{tile.x} * tile_cm;
-    const i64 tile_z0 = i64{tile.z} * tile_cm;
-    fallen_index_.assign(wall_count, u16{0});
-    for (u32 g = 0; g < fallen_.size(); ++g) {
-      const Fallen& fall = fallen_[g];
-      if (static_cast<i32>(pick(draw(seed, k_block_kept, g), k_q_one)) >= rules.debris_kept_q)
-        continue;
-      const Assembler::Side& s = sides[fall.wall];
+    const i32 half = (kit_.thickness_cm + 1) / 2;
+    // The fallen blocks by wall, each wall's in the order they fell.
+    fallen_first_.clear();
+    fallen_order_.clear();
+    for (u32 w = 0; w < wall_count; ++w) {
+      fallen_first_.push_back(fallen_order_.size());
+      for (u32 g = 0; g < fallen_.size(); ++g)
+        if (fallen_[g].wall == w) fallen_order_.push_back(g);
+    }
+    fallen_first_.push_back(fallen_order_.size());
+    fallen_taken_.assign(fallen_.size(), u8{0});
+    for (const RubbleSite& site : field) {
+      const Assembler::Side& s = sides[site.wall];
+      i32 best = -1;
+      i32 best_distance = 0x7fffffff;
+      for (u32 k = fallen_first_[site.wall]; k < fallen_first_[site.wall + 1u]; ++k) {
+        const u32 g = fallen_order_[k];
+        if (fallen_taken_[g] != 0) continue;
+        const i32 d = std::abs(std::clamp(fallen_[g].centre_cm, 0, s.length_cm) - site.along_cm);
+        if (d < best_distance) {
+          best_distance = d;
+          best = static_cast<i32>(g);
+        }
+      }
+      u32 group = static_cast<u32>(bk.stretcher_group);
+      u32 course_of = 0;
+      if (best >= 0) {
+        fallen_taken_[static_cast<u32>(best)] = 1;
+        group = fallen_[static_cast<u32>(best)].group;
+        course_of = fallen_[static_cast<u32>(best)].course;
+      }
       bool eroded = false;
       const u32 member =
-          choose_block(bk, fall.group, rules.eroded_exposed_q, seed, u64{g} << 3, eroded);
+          choose_block(bk, group, rules.eroded_exposed_q, seed,
+                       k_rubble_key | u64{site.wall} << 24 | u64{site.index}, eroded);
       const KitBlock& kb = bk.blocks[member];
-      const i32 r = kb.radius_cm;
-      const i32 along = std::clamp(fall.centre_cm, 0, s.length_cm);
-      const u64 at = u64{g} << 3;
-      const bool outward = static_cast<i32>(pick(draw(seed, k_block_fall, at | 2), k_q_one)) <
-                           section.debris_outward_q;
-      // Nearer the wall more often than not, as the assembler's debris: the lesser of two draws.
-      const u32 spread = static_cast<u32>(section.debris_spread_cm + 1);
-      const i32 dist = ht + r +
-                       static_cast<i32>(std::min(pick(draw(seed, k_block_fall, at | 3), spread),
-                                                 pick(draw(seed, k_block_fall, at | 5), spread)));
-      const u8 n = outward ? right_of(s.dir) : left_of(s.dir);
-      i32 x = s.x0 + k_dx[s.dir] * along + k_dx[n] * dist;
-      i32 z = s.z0 + k_dz[s.dir] * along + k_dz[n] * dist;
-      if (!grid::settle_clear(sides, ht, r, x, z)) continue;
+      i32 x = site.x_cm;
+      i32 z = site.z_cm;
       i64 wx = 0;
       i64 wz = 0;
-      assembler_.to_world_cm(x, z, wx, wz);
-      if (wx - r < tile_x0 || wx + r > tile_x0 + tile_cm || wz - r < tile_z0 ||
-          wz + r > tile_z0 + tile_cm) {
-        continue;
+      if (kb.radius_cm > kit_.rubble_radius_cm) {
+        const i32 r = kb.radius_cm;
+        if (!grid::settle_clear(sides, half, r, x, z)) continue;
+        assembler_.to_world_cm(x, z, wx, wz);
+        if (wx - r < frame.tile_x0_cm || wx + r > frame.tile_x0_cm + frame.tile_cm ||
+            wz - r < frame.tile_z0_cm || wz + r > frame.tile_z0_cm + frame.tile_cm) {
+          continue;
+        }
+      } else {
+        assembler_.to_world_cm(x, z, wx, wz);
       }
-      // Lying on the ground where it lands, turned by its own draw; its frame's origin is its
-      // start end, half its length back from where its centre lies.
+      // Lying on the ground where it lands; its frame's origin is its start end, half its length
+      // back from where its centre lies.
       const f32 ground = placement.ground.at(metres(wx), metres(wz));
-      const u8 yaw = static_cast<u8>(pick(draw(seed, k_block_fall, at | 4), 16));
       i64 ox = 0;
       i64 oz = 0;
-      grid::rotate_cm(yaw, kb.length_cm / 2, 0, ox, oz);
+      grid::rotate_cm(site.yaw, kb.length_cm / 2, 0, ox, oz);
       Block block;
       block.position = Vec3{
           metres(wx - ox), metres(static_cast<i64>(std::floor(ground * 100.0f)) - section.embed_cm),
           metres(wz - oz)};
       block.block = member;
       block.building = building;
-      block.wall = static_cast<u16>(fall.wall);
-      block.index = fallen_index_[fall.wall]++;
-      block.course = static_cast<u8>(fall.course);
+      block.wall = site.wall;
+      block.index = site.index;
+      block.course = static_cast<u8>(course_of);
       block.role = static_cast<u8>(kb.role);
-      block.yaw = yaw;
+      block.yaw = site.yaw;
       block.flags = static_cast<u8>(k_block_fallen | (eroded ? k_block_eroded : 0));
       out.blocks.push_back(block);
     }

@@ -90,7 +90,7 @@ struct RuinSocket @version(1) {
 }
 
 /// One member of a kit.
-struct RuinMember @version(1) {
+struct RuinMember @version(2) {
   name: string
   kind: RuinPieceKind = Section
   /// A glTF, GLB or .clusters file, relative to the kit file.
@@ -116,8 +116,14 @@ struct RuinMember @version(1) {
   head: f32 = 0
   /// A debris piece's footprint radius on the ground, metres.
   radius: f32 = 0.3
-  /// Relative weight among the members that could fill the same slot.
+  /// Relative weight among the members that could fill the same slot. A kit's debris pieces are
+  /// weighted inversely by volume (E33), so that every pick brings about the same stone.
   weight: u32 = 1
+  /// A debris piece's volume, cubic metres: what the rubble rule counts it as when it heaps pieces
+  /// to the profile's block on a rubble site (docs/subsystems/ruins.md, "The rubble rule"). Zero:
+  /// estimated as the square prism of its height inscribed in its radius, 2 r^2 h, which is more
+  /// than a broken stone fills.
+  volume: f32 = 0 @since(2)
 }
 
 /// A profile's grammar and ruin rule. Fractions are of the intact wall's height; lengths are
@@ -155,7 +161,10 @@ struct RuinRules @version(1) {
   max_sink: f32 = 0.5
   /// The chance a wall still standing gets an opening.
   opening: f32 = 0.6
-  /// Debris pieces per module of wall fully brought down, how far past the wall face they spread
+  /// The rubble rule, which both representations of a building lay (docs/subsystems/ruins.md,
+  /// "The rubble rule"): how much of a wall that came down lies beside it — rubble per module of
+  /// wall fully brought down, counted in the profile's blocks (`block_length` x `course_height` x
+  /// `thickness`), the rest being under the sand — how far past the wall face it spreads
   /// (metres), and the share that falls outward.
   debris_per_module: f32 = 3
   debris_spread: f32 = 1.5
@@ -181,8 +190,9 @@ struct RuinKit @version(1) {
   /// The wall's thickness and its intact height, metres.
   thickness: f32 = 0.64
   wall_height: f32 = 2.4
-  /// The profile's course height and block length, metres: carried for a block-by-block
-  /// representation and a far tier, not read by the assembler.
+  /// The profile's course height and block length, metres: with the thickness, the block the
+  /// rubble rule counts in — one rubble site is a block's worth of fallen wall, whether a block
+  /// kit lays a fallen block on it or the assembler a heap of debris members.
   course_height: f32 = 0.3
   block_length: f32 = 0.6
   members: RuinMember[]
@@ -249,8 +259,11 @@ struct RuinBlockRules @version(1) {
   support: f32 = 0.5
   /// The least a lintel bears on each jamb, metres.
   lintel_bearing: f32 = 0.2
-  /// The share of the fallen blocks that lie beside the wall; the rest are under the sand.
-  debris_kept: f32 = 1
+  /// Not read. It was the share of the fallen blocks that lie beside the wall, a rule of the block
+  /// kit's own; the rubble a building keeps is now its section kit's rule
+  /// (`RuinRules.debris_per_module`), which both representations lay on the same sites, so that a
+  /// handover between them does not change what lies on the ground.
+  debris_kept: f32 = 1 @deprecated
 }
 
 /// A block kit: a dozen block meshes and the rules a wall is laid and ruined by. The footprint,

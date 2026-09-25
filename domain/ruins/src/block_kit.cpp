@@ -86,13 +86,13 @@ bool block_kit_from_schema(const scene::RuinBlockKit& file, std::string_view dir
   rules.eroded_q = to_q(r.eroded);
   rules.support_q = to_q(r.support);
   rules.lintel_bearing_cm = to_cm(r.lintel_bearing);
-  rules.debris_kept_q = to_q(r.debris_kept);
+  // `debris_kept` is not read: the rubble a building keeps is the section kit's rule, laid on the
+  // same sites by both representations (ruins.md, "The rubble rule").
   const i32 fractions[] = {rules.top_drop_q, rules.eroded_exposed_q, rules.eroded_q,
-                           rules.support_q, rules.debris_kept_q};
+                           rules.support_q};
   for (const i32 q : fractions) {
     if (q < 0 || q > k_q_one) {
-      error =
-          "rules: top_drop, eroded_exposed, eroded, support and debris_kept are fractions, 0 to 1";
+      error = "rules: top_drop, eroded_exposed, eroded and support are fractions, 0 to 1";
       return false;
     }
   }
@@ -195,6 +195,7 @@ bool block_kit_from_schema(const scene::RuinBlockKit& file, std::string_view dir
     if (weight >= best_weight) {
       best_weight = weight;
       out.stretcher_cm = out.groups[g].length_cm;
+      out.stretcher_group = static_cast<i32>(g);
     }
   }
   Vector<u32> halves;
