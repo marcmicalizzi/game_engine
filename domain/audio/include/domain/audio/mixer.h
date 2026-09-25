@@ -243,8 +243,12 @@ class Mixer {
   // was. 1024 frames is 21 ms.
   static constexpr u32 k_max_block_frames = 1024;
 
-  // `clips` must outlive the mixer; a voice holds a pointer into one of its clips.
-  explicit Mixer(const ClipStore& clips, const MixerConfig& config = {});
+  // `clips` must outlive the mixer; a voice holds a pointer into one of its clips. The mixer tells
+  // the store which clips its voices hold (`ClipStore::retain`/`release`), so that the store's
+  // budget never evicts one a voice is reading, and takes the store's finished decodes in
+  // `update()`.
+  explicit Mixer(ClipStore& clips, const MixerConfig& config = {});
+  // Releases every clip its voices still hold. Close any `Output` that renders this mixer first.
   ~Mixer();
   ENGINE_NON_COPYABLE(Mixer);
 
@@ -262,10 +266,12 @@ class Mixer {
   bool set_listener(const Listener& listener) noexcept;
   bool set_bus_gain(u8 bus, f32 gain) noexcept;
 
-  // Drains the ended-voice events, freeing their slots, and re-sends any stop the ring refused
-  // earlier; tops up every stream that has less than the fill-ahead decoded (a fill job each, on
-  // the clip store's Efficiency pool), frees the streams whose voices have ended, and logs a
-  // streamed voice's first underrun. Call once per tick. Returns the events drained.
+  // Drains the ended-voice events, freeing their slots and releasing their clips, and re-sends any
+  // stop the ring refused earlier; releases a stolen voice's clip once the audio thread has applied
+  // the steal; takes the clip store's finished decodes (`ClipStore::update`); tops up every stream
+  // that has less than the fill-ahead decoded (a fill job each, on the clip store's Efficiency
+  // pool), frees the streams whose voices have ended, and logs a streamed voice's first underrun.
+  // Call once per tick. Returns the events drained.
   u32 update() noexcept;
 
   // Blocks until no stream fill is in flight. Tests and load screens; never the tick.
@@ -321,11 +327,18 @@ class Mixer {
   u32 free_stream() const noexcept;
   void schedule_fill(Stream& stream) noexcept;
   void service_streams() noexcept;
+  void release_stolen(u64 applied) noexcept;
   void apply(const Command& command) noexcept;
   void mix_block(f32* out, u32 frames) noexcept;
   void publish(const MixerStats& stats) noexcept;
 
-  const ClipStore* clips_;
+  // A clip a stolen voice still holds, until the audio thread has applied command `sequence`.
+  struct Stolen {
+    u64 sequence = 0;
+    u32 clip = 0;
+  };
+
+  ClipStore* clips_;
   const LayoutInfo* layout_;
   const Decoder* decoder_;
   u32 ramp_frames_;
@@ -333,6 +346,12 @@ class Mixer {
   // ---- controlling thread
   Vector<VoiceSlot> slots_;
   Vector<u32> slot_stream_;  // the stream the slot's current voice reads, or k_no_stream
+  Vector<u32> slot_clip_;    // the clip the slot's current voice holds, or ClipHandle::k_invalid
+  // Stolen voices' clips in the order they were stolen, a ring: at most one per command in the
+  // ring plus the play that is pushing one, so it is sized once, at construction.
+  Vector<Stolen> stolen_;
+  u32 stolen_head_ = 0;
+  u32 stolen_count_ = 0;
   Vector<f32> bus_gain_control_;
   ControlStats control_;
   u64 sequence_ = 0;

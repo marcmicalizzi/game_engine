@@ -1,3 +1,4 @@
+// The clip store (clip_store.h, docs/subsystems/audio.md "Clips", "Streaming", "Eviction").
 #include "audio_log.h"
 #include "backend.h"
 
@@ -5,6 +6,8 @@
 #include <core/jobs/job_system.h>
 #include <domain/audio/audio.h>
 #include <domain/audio/clip_store.h>
+
+#include <utility>
 
 namespace engine::audio {
 
@@ -14,18 +17,37 @@ struct ClipStore::Clip {
   Id128 key;
   ClipStore* store = nullptr;
   ClipSourceKind source = ClipSourceKind::None;
-  std::string path;    // File
+  std::string path;    // File: the file, which an evicted clip streams from and decodes again from
   Vector<u8> encoded;  // Memory: the bytes, until the decode has read them — kept for a stream
   Vector<f32> samples;
   u32 frames = 0;
   u8 channels = 0;
   u8 source_channels = 0;
   u32 source_rate = 0;
-  u64 bytes = 0;
-  bool streamed = false;
-  // Written last by whoever finishes the clip, with release; read with acquire before anything
-  // above it. That pair is the whole synchronization between a decode job and the mixer.
+  u64 bytes = 0;                // what it holds resident: its samples, or a stream's kept bytes
+  bool streamed = false;        // voices stream it
+  bool resident = false;        // its samples are in memory
+  bool over_threshold = false;  // never decoded whole: it always streams
+  bool decoding = false;        // a decode job for it is in flight
+  u32 refs = 0;                 // voices that hold it
+  u64 last_use = 0;             // the store's clock at its last retain, release or commit
+  // Only ever written by the controlling thread; atomic because `state()` is the one question a
+  // tool on another thread might reasonably ask.
   std::atomic<ClipState> state{ClipState::Pending};
+
+  // ---- what the decode job leaves for the controlling thread: written by the job, then `landed`
+  //      with release; read by `take()` after an acquire of `landed`
+  struct Staged {
+    DecodeStatus status = DecodeStatus::Ok;
+    bool stream = false;  // over the threshold: not decoded, stream it
+    u64 kept = 0;         // for a stream from bytes, the bytes kept
+    Vector<f32> samples;
+    u32 frames = 0;
+    u8 channels = 0;
+    u8 source_channels = 0;
+    u32 source_rate = 0;
+  } staged;
+  std::atomic<u8> landed{0};
 };
 
 const char* clip_state_name(ClipState state) noexcept {
@@ -67,15 +89,43 @@ ClipStore::ClipStore(const ClipStoreConfig& config)
       stream_threshold_(config.stream_threshold_bytes != 0 ? config.stream_threshold_bytes
                                                            : tunable_stream_threshold_bytes()) {}
 
-ClipStore::~ClipStore() { wait(); }
-
-void ClipStore::wait() {
+// A job holds a pointer to its clip; none may outlive the store.
+ClipStore::~ClipStore() {
   if (pending_.done()) return;
   if (jobs_ != nullptr) {
     jobs_->wait(pending_);
   } else {
     pending_.wait_blocking();
   }
+}
+
+void ClipStore::wait() {
+  if (!pending_.done()) {
+    if (jobs_ != nullptr) {
+      jobs_->wait(pending_);
+    } else {
+      pending_.wait_blocking();
+    }
+  }
+  update();
+}
+
+u32 ClipStore::update() {
+  // In the order the decodes were started, whatever order they finished in: which clip a commit
+  // evicts depends on the commits before it, and that order is the caller's.
+  u32 taken = 0;
+  u32 kept = 0;
+  for (u32 i = 0; i < in_flight_.size(); ++i) {
+    Clip& clip = *clips_[in_flight_[i]];
+    if (clip.landed.load(std::memory_order_acquire) != 0) {
+      take(clip);
+      ++taken;
+    } else {
+      in_flight_[kept++] = in_flight_[i];
+    }
+  }
+  in_flight_.resize(kept);
+  return taken;
 }
 
 ClipHandle ClipStore::add_entry(const Id128& key) {
@@ -88,12 +138,16 @@ ClipHandle ClipStore::add_entry(const Id128& key) {
   return ClipHandle{index};
 }
 
-void ClipStore::start_decode(Clip& clip) {
+void ClipStore::start_decode(u32 index) {
+  Clip& clip = *clips_[index];
+  clip.decoding = true;
   if (jobs_ != nullptr) {
+    in_flight_.push_back(index);
     pending_.add(1);
     jobs_->schedule(jobs::Pool::Efficiency, jobs::Job{&ClipStore::decode_job, &clip, &pending_});
   } else {
     decode_job(&clip);
+    take(clip);
   }
 }
 
@@ -103,7 +157,7 @@ ClipHandle ClipStore::load(const Id128& key, std::span<const u8> encoded) {
   Clip& clip = *clips_[handle.index];
   clip.source = ClipSourceKind::Memory;
   clip.encoded.append(encoded);
-  start_decode(clip);
+  start_decode(handle.index);
   return handle;
 }
 
@@ -113,7 +167,7 @@ ClipHandle ClipStore::load_file(const Id128& key, std::string_view path) {
   Clip& clip = *clips_[handle.index];
   clip.source = ClipSourceKind::File;
   clip.path = std::string(path);
-  start_decode(clip);
+  start_decode(handle.index);
   return handle;
 }
 
@@ -129,15 +183,17 @@ ClipHandle ClipStore::add_pcm(const Id128& key, std::span<const f32> interleaved
     clip.state.store(ClipState::Failed, std::memory_order_release);
     return handle;
   }
-  DecodedClip decoded;
-  decoded.samples.append(interleaved);
-  decoded.frames = static_cast<u32>(interleaved.size() / channels);
-  decoded.channels = channels;
-  decoded.source_channels = channels;
-  decoded.source_rate = k_sample_rate;
-  commit(clip, decoded);
+  clip.frames = static_cast<u32>(interleaved.size() / channels);
+  clip.channels = channels;
+  clip.source_channels = channels;
+  clip.source_rate = k_sample_rate;
+  Vector<f32> samples;
+  samples.append(interleaved);
+  commit(clip, samples);
   return handle;
 }
+
+// ---- the decode job -----------------------------------------------------------------------------
 
 namespace {
 
@@ -146,13 +202,22 @@ u64 decoded_bytes(const backend::StreamFormat& format) noexcept {
   return format.frames * format.channels * sizeof(f32);
 }
 
-void fail_clip(ClipStore::Clip& clip, const char* message, DecodeStatus status);
+void stage_format(ClipStore::Clip& clip, const backend::StreamFormat& format, u64 kept) {
+  clip.staged.stream = true;
+  clip.staged.kept = kept;
+  clip.staged.frames = static_cast<u32>(format.frames);
+  clip.staged.channels = format.channels;
+  clip.staged.source_channels = format.source_channels;
+  clip.staged.source_rate = format.source_rate;
+}
 
 }  // namespace
 
 void ClipStore::decode_job(void* data) {
   Clip& clip = *static_cast<Clip*>(data);
-  ClipStore& store = *clip.store;
+  const ClipStore& store = *clip.store;
+  Clip::Staged& staged = clip.staged;
+  staged = Clip::Staged{};
 
   // The format first, without decoding: a clip over the threshold is never decoded whole — a voice
   // streams it, from the file by range or from the bytes the store keeps (stream.h). The length is
@@ -166,30 +231,31 @@ void ClipStore::decode_job(void* data) {
     if (file.open(clip.path) != io::Status::Ok) {
       ENGINE_LOG_WARN(log_audio, "clip file unreadable", log::field("clip", clip.key),
                       log::field("path", clip.path));
-      clip.state.store(ClipState::Failed, std::memory_order_release);
+      staged.status = DecodeStatus::UnknownFormat;
+      clip.landed.store(1, std::memory_order_release);
       return;
     }
     backend::ByteSource source;
     source.file = &file;
     source.size = file.size();
-    const DecodeStatus status = backend::probe(source, format);
-    if (status != DecodeStatus::Ok) {
-      fail_clip(clip, "clip decode failed", status);
-      return;
-    }
-    if (format.frames != 0 && decoded_bytes(format) > store.stream_threshold_) {
-      clip.frames = static_cast<u32>(format.frames);
-      clip.channels = format.channels;
-      clip.source_channels = format.source_channels;
-      clip.source_rate = format.source_rate;
-      store.commit_stream(clip, 0);
+    staged.status = backend::probe(source, format);
+    if (staged.status == DecodeStatus::Ok && format.frames != 0 &&
+        decoded_bytes(format) > store.stream_threshold_) {
+      stage_format(clip, format, 0);
+      clip.landed.store(1, std::memory_order_release);
       return;
     }
     // Under the threshold: the whole file, decoded as bytes.
-    if (io::read_file(clip.path, file_bytes) != io::Status::Ok) {
+    if (staged.status == DecodeStatus::Ok &&
+        io::read_file(clip.path, file_bytes) != io::Status::Ok) {
       ENGINE_LOG_WARN(log_audio, "clip file unreadable", log::field("clip", clip.key),
                       log::field("path", clip.path));
-      clip.state.store(ClipState::Failed, std::memory_order_release);
+      staged.status = DecodeStatus::UnknownFormat;
+    }
+    if (staged.status != DecodeStatus::Ok) {
+      ENGINE_LOG_WARN(log_audio, "clip decode failed", log::field("clip", clip.key),
+                      log::field("status", decode_status_name(staged.status)));
+      clip.landed.store(1, std::memory_order_release);
       return;
     }
     encoded =
@@ -199,86 +265,185 @@ void ClipStore::decode_job(void* data) {
     source.memory = encoded;
     if (backend::probe(source, format) == DecodeStatus::Ok && format.frames != 0 &&
         decoded_bytes(format) > store.stream_threshold_) {
-      clip.frames = static_cast<u32>(format.frames);
-      clip.channels = format.channels;
-      clip.source_channels = format.source_channels;
-      clip.source_rate = format.source_rate;
-      store.commit_stream(clip, clip.encoded.size());
+      stage_format(clip, format, clip.encoded.size());
+      clip.landed.store(1, std::memory_order_release);
       return;
     }
     // Anything the probe refused goes on to the decoder, which says why in its own words.
   }
 
   DecodedClip decoded;
-  const DecodeStatus status = backend::decode(encoded, decoded);
-  clip.encoded = Vector<u8>{};
-  if (status != DecodeStatus::Ok) {
-    fail_clip(clip, "clip decode failed", status);
+  staged.status = backend::decode(encoded, decoded);
+  if (clip.source == ClipSourceKind::Memory) clip.encoded = Vector<u8>{};
+  if (staged.status != DecodeStatus::Ok) {
+    ENGINE_LOG_WARN(log_audio, "clip decode failed", log::field("clip", clip.key),
+                    log::field("status", decode_status_name(staged.status)));
+  } else {
+    staged.samples = std::move(decoded.samples);
+    staged.frames = decoded.frames;
+    staged.channels = decoded.channels;
+    staged.source_channels = decoded.source_channels;
+    staged.source_rate = decoded.source_rate;
+  }
+  clip.landed.store(1, std::memory_order_release);
+}
+
+// ---- the controlling thread's side of a decode --------------------------------------------------
+
+void ClipStore::take(Clip& clip) noexcept {
+  clip.landed.store(0, std::memory_order_relaxed);
+  clip.decoding = false;
+  Clip::Staged& staged = clip.staged;
+  const bool first = clip.state.load(std::memory_order_relaxed) == ClipState::Pending;
+  if (staged.status != DecodeStatus::Ok) {
+    // A first load that failed is Failed. A reload that failed leaves the clip as it was: evicted,
+    // streaming from its file.
+    if (first) {
+      clip.encoded = Vector<u8>{};
+      clip.state.store(ClipState::Failed, std::memory_order_release);
+    }
+    staged = Clip::Staged{};
     return;
   }
-  store.commit(clip, decoded);
+  if (first) {
+    clip.frames = staged.frames;
+    clip.channels = staged.channels;
+    clip.source_channels = staged.source_channels;
+    clip.source_rate = staged.source_rate;
+  }
+  if (staged.stream) {
+    clip.over_threshold = true;
+    commit_stream(clip, staged.kept);
+  } else {
+    commit(clip, staged.samples);
+  }
+  staged = Clip::Staged{};
 }
 
-namespace {
+void ClipStore::touch(Clip& clip) noexcept { clip.last_use = ++clock_; }
 
-void fail_clip(ClipStore::Clip& clip, const char* message, DecodeStatus status) {
-  ENGINE_LOG_WARN(log_audio, message, log::field("clip", clip.key),
-                  log::field("status", decode_status_name(status)));
-  clip.encoded = Vector<u8>{};
-  clip.state.store(ClipState::Failed, std::memory_order_release);
+bool ClipStore::make_room(u64 bytes, const Clip* keep) noexcept {
+  if (resident_ + bytes <= budget_) return true;
+  // Even with every clip nothing plays evicted it would not fit: evict nothing.
+  if (resident_ - evictable_bytes_ + bytes > budget_) return false;
+  while (resident_ + bytes > budget_) {
+    // Least recently used first: the oldest last retain, release or commit. A scan, because this
+    // runs only when a decode lands and does not fit, over a store of hundreds of clips.
+    Clip* victim = nullptr;
+    for (const std::unique_ptr<Clip>& c : clips_) {
+      if (c.get() == keep || !c->resident || c->source != ClipSourceKind::File || c->refs != 0 ||
+          c->state.load(std::memory_order_relaxed) != ClipState::Ready) {
+        continue;
+      }
+      if (victim == nullptr || c->last_use < victim->last_use) victim = c.get();
+    }
+    if (victim == nullptr) return false;
+    evict(*victim);
+  }
+  return true;
 }
 
-}  // namespace
+void ClipStore::evict(Clip& clip) noexcept {
+  ENGINE_LOG_DEBUG(log_audio, "clip evicted", log::field("clip", clip.key),
+                   log::field("bytes", clip.bytes), log::field("last_use", clip.last_use),
+                   log::field("resident", resident_), log::field("budget", budget_));
+  evictable_bytes_ -= clip.bytes;
+  resident_ -= clip.bytes;
+  clip.samples = Vector<f32>{};
+  clip.bytes = 0;
+  clip.resident = false;
+  // It stays Ready: a voice started on it streams it from its file, and asks for it back.
+  clip.streamed = true;
+  ++evictions_;
+}
 
 bool ClipStore::commit_stream(Clip& clip, u64 kept_bytes) noexcept {
   // A streamed clip holds no samples; what it keeps resident is the bytes a memory clip streams
-  // from, and those are counted like samples.
-  u64 resident = resident_.load(std::memory_order_relaxed);
-  do {
-    if (resident + kept_bytes > budget_) {
-      over_budget_.fetch_add(1, std::memory_order_relaxed);
-      ENGINE_LOG_WARN(log_audio, "clip over the budget", log::field("clip", clip.key),
-                      log::field("bytes", kept_bytes), log::field("resident", resident),
-                      log::field("budget", budget_));
-      clip.encoded = Vector<u8>{};
-      clip.state.store(ClipState::OverBudget, std::memory_order_release);
-      return false;
-    }
-  } while (!resident_.compare_exchange_weak(resident, resident + kept_bytes,
-                                            std::memory_order_acq_rel, std::memory_order_relaxed));
+  // from, and those are counted like samples — and, being the only copy, are never evicted.
+  if (!make_room(kept_bytes, &clip)) {
+    ++over_budget_;
+    ENGINE_LOG_WARN(log_audio, "clip over the budget", log::field("clip", clip.key),
+                    log::field("bytes", kept_bytes), log::field("resident", resident_),
+                    log::field("budget", budget_));
+    clip.encoded = Vector<u8>{};
+    clip.state.store(ClipState::OverBudget, std::memory_order_release);
+    return false;
+  }
+  resident_ += kept_bytes;
   clip.bytes = kept_bytes;
   clip.streamed = true;
+  touch(clip);
   clip.state.store(ClipState::Ready, std::memory_order_release);
   return true;
 }
 
-bool ClipStore::commit(Clip& clip, DecodedClip& decoded) noexcept {
+bool ClipStore::commit(Clip& clip, Vector<f32>& samples) noexcept {
   // The decoder's buffer grew in steps; the clip keeps exactly its samples, and the budget counts
   // those bytes — so the number `resident_bytes()` reports is the memory the clips occupy.
-  const u64 bytes = static_cast<u64>(decoded.samples.size()) * sizeof(f32);
-  u64 resident = resident_.load(std::memory_order_relaxed);
-  do {
-    if (resident + bytes > budget_) {
-      over_budget_.fetch_add(1, std::memory_order_relaxed);
-      ENGINE_LOG_WARN(log_audio, "clip over the budget", log::field("clip", clip.key),
-                      log::field("bytes", bytes), log::field("resident", resident),
-                      log::field("budget", budget_));
+  const u64 bytes = static_cast<u64>(samples.size()) * sizeof(f32);
+  if (!make_room(bytes, &clip)) {
+    ++over_budget_;
+    const bool from_file = clip.source == ClipSourceKind::File;
+    ENGINE_LOG_WARN(log_audio, "clip over the budget", log::field("clip", clip.key),
+                    log::field("bytes", bytes), log::field("resident", resident_),
+                    log::field("budget", budget_), log::field("streams", from_file));
+    if (from_file) {
+      // Refused residency, not refused: its file is there to stream from, as an evicted clip's is.
+      clip.streamed = true;
+      clip.state.store(ClipState::Ready, std::memory_order_release);
+    } else if (clip.state.load(std::memory_order_relaxed) == ClipState::Pending) {
       clip.state.store(ClipState::OverBudget, std::memory_order_release);
-      return false;
     }
-  } while (!resident_.compare_exchange_weak(resident, resident + bytes, std::memory_order_acq_rel,
-                                            std::memory_order_relaxed));
-
-  clip.samples.reserve(decoded.samples.size());
-  clip.samples.append(std::span<const f32>(decoded.samples.data(), decoded.samples.size()));
-  clip.frames = decoded.frames;
-  clip.channels = decoded.channels;
-  clip.source_channels = decoded.source_channels;
-  clip.source_rate = decoded.source_rate;
+    return false;
+  }
+  clip.samples = Vector<f32>{};
+  clip.samples.reserve(samples.size());
+  clip.samples.append(std::span<const f32>(samples.data(), samples.size()));
+  resident_ += bytes;
   clip.bytes = bytes;
+  clip.resident = true;
+  clip.streamed = false;
+  if (clip.source == ClipSourceKind::File && clip.refs == 0) evictable_bytes_ += bytes;
+  touch(clip);
   clip.state.store(ClipState::Ready, std::memory_order_release);
   return true;
 }
+
+// ---- what the mixer tells the store -------------------------------------------------------------
+
+void ClipStore::retain(ClipHandle handle) noexcept {
+  if (state(handle) != ClipState::Ready) return;
+  Clip& clip = *clips_[handle.index];
+  if (clip.refs == 0 && clip.resident && clip.source == ClipSourceKind::File)
+    evictable_bytes_ -= clip.bytes;
+  ++clip.refs;
+  touch(clip);
+}
+
+void ClipStore::release(ClipHandle handle) noexcept {
+  if (!handle.is_valid() || handle.index >= clips_.size()) return;
+  Clip& clip = *clips_[handle.index];
+  if (clip.refs == 0) return;
+  --clip.refs;
+  if (clip.refs == 0 && clip.resident && clip.source == ClipSourceKind::File)
+    evictable_bytes_ += clip.bytes;
+  touch(clip);
+}
+
+void ClipStore::request(ClipHandle handle) {
+  if (state(handle) != ClipState::Ready) return;
+  Clip& clip = *clips_[handle.index];
+  if (clip.resident || clip.over_threshold || clip.decoding || clip.source != ClipSourceKind::File)
+    return;
+  // Only if it could fit: a clip refused residency because every resident clip is playing would
+  // otherwise be decoded again on every play, to be refused again.
+  const u64 bytes = u64{clip.frames} * clip.channels * sizeof(f32);
+  if (resident_ - evictable_bytes_ + bytes > budget_) return;
+  ++reloads_;
+  start_decode(handle.index);
+}
+
+// ---- queries ------------------------------------------------------------------------------------
 
 ClipHandle ClipStore::find(const Id128& key) const noexcept {
   if (const u32* found = by_key_.find_value(key)) return ClipHandle{*found};
@@ -301,20 +466,23 @@ ClipInfo ClipStore::info(ClipHandle clip) const noexcept {
   out.source_rate = c.source_rate;
   out.bytes = c.bytes;
   out.streamed = c.streamed;
+  out.resident = c.resident;
+  out.evictable = c.source == ClipSourceKind::File;
+  out.refs = c.refs;
   return out;
 }
 
 ClipView ClipStore::view(ClipHandle clip) const noexcept {
   if (state(clip) != ClipState::Ready) return ClipView{};
   const Clip& c = *clips_[clip.index];
-  if (c.streamed) return ClipView{nullptr, c.frames, c.channels, true};
+  if (!c.resident) return ClipView{nullptr, c.frames, c.channels, true};
   return ClipView{c.samples.data(), c.frames, c.channels, false};
 }
 
 ClipSource ClipStore::source(ClipHandle clip) const noexcept {
   if (state(clip) != ClipState::Ready) return ClipSource{};
   const Clip& c = *clips_[clip.index];
-  if (!c.streamed) return ClipSource{};
+  if (c.resident) return ClipSource{};
   ClipSource out;
   out.kind = c.source;
   if (c.source == ClipSourceKind::Memory)

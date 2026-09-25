@@ -176,7 +176,9 @@ TEST_CASE("the clip store decodes once per key and reports what it holds") {
   CHECK(store.state(store.add_pcm(Id128{5, 6}, three, 2)) == ClipState::Failed);  // 3 % 2 != 0
 }
 
-TEST_CASE("a clip past the budget is refused rather than evicting another") {
+// Samples handed to the store are the only copy there is, so nothing evicts them: a clip past the
+// budget with nothing evictable is refused (eviction_tests.cpp has the clips that can be evicted).
+TEST_CASE("a clip past the budget is refused when nothing can be evicted for it") {
   ClipStoreConfig config;
   config.budget_bytes = 10000;
   ClipStore store(config);

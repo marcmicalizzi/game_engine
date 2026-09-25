@@ -324,7 +324,7 @@ u64 hash_mix(ChannelLayout layout, std::span<const f32> samples) noexcept {
 
 // ---- construction -------------------------------------------------------------------------------
 
-Mixer::Mixer(const ClipStore& clips, const MixerConfig& config)
+Mixer::Mixer(ClipStore& clips, const MixerConfig& config)
     : clips_(&clips),
       layout_(&layout_info(config.layout)),
       decoder_(config.decoder != nullptr ? config.decoder : &k_stereo_panner),
@@ -347,6 +347,8 @@ Mixer::Mixer(const ClipStore& clips, const MixerConfig& config)
   const u32 voices = voices_for(config);
   slots_.resize_exact(voices);
   slot_stream_.resize_exact(voices, k_no_stream);
+  slot_clip_.resize_exact(voices, ClipHandle::k_invalid);
+  stolen_.resize_exact(commands_.capacity() + 1u);
   voices_.resize_exact(voices);
   voice_ring_.resize_exact(voices, nullptr);
   sources_.resize_exact(voices);
@@ -404,8 +406,24 @@ Mixer::Mixer(const ClipStore& clips, const MixerConfig& config)
   publish(audio_stats_);
 }
 
-// A fill job holds a pointer to its stream: none may outlive the mixer.
-Mixer::~Mixer() { wait_streams(); }
+// A fill job holds a pointer to its stream: none may outlive the mixer. The clips its voices hold,
+// and its stolen voices' clips, go back to the store, which outlives it.
+Mixer::~Mixer() {
+  wait_streams();
+  for (const u32 clip : slot_clip_) {
+    if (clip != ClipHandle::k_invalid) clips_->release(ClipHandle{clip});
+  }
+  release_stolen(~u64{0});
+}
+
+void Mixer::release_stolen(u64 applied) noexcept {
+  const u32 capacity = static_cast<u32>(stolen_.size());
+  while (stolen_count_ != 0 && stolen_[stolen_head_].sequence <= applied) {
+    clips_->release(ClipHandle{stolen_[stolen_head_].clip});
+    stolen_head_ = stolen_head_ + 1u == capacity ? 0u : stolen_head_ + 1u;
+    --stolen_count_;
+  }
+}
 
 // ---- the controlling thread ---------------------------------------------------------------------
 
@@ -531,6 +549,9 @@ VoiceHandle Mixer::play(const PlayParams& params) noexcept {
   // Drain first: it frees whatever has ended, and it is what bounds the event ring (constructor).
   update();
 
+  // A clip the budget evicted is decoded again for the voices after this one; this one streams it
+  // (with no job system the decode lands here, and this one plays it resident).
+  clips_->request(params.clip);
   const ClipView clip = clips_->view(params.clip);
   if (clip.frames == 0 || (clip.samples == nullptr && !clip.stream)) {
     ++control_.refused_clip;
@@ -590,10 +611,19 @@ VoiceHandle Mixer::play(const PlayParams& params) noexcept {
   }
   if (!push(c)) return VoiceHandle{};
 
-  // A stolen voice that read a stream reads it until the audio thread applies this Play.
+  // A stolen voice reads its clip, or its stream, until the audio thread applies this Play: the
+  // clip is released, and the stream freed, once it has.
   if (stole && slot_stream_[index] != k_no_stream)
     streams_[slot_stream_[index]].retire_after = pushed_;
+  if (stole && slot_clip_[index] != ClipHandle::k_invalid) {
+    const u32 capacity = static_cast<u32>(stolen_.size());
+    const u32 at = (stolen_head_ + stolen_count_) % capacity;
+    stolen_[at] = Stolen{pushed_, slot_clip_[index]};
+    ++stolen_count_;
+  }
   slot_stream_[index] = stream;
+  slot_clip_[index] = params.clip.index;
+  clips_->retain(params.clip);
   if (stream != k_no_stream) {
     Stream& st = streams_[stream];
     st.state = k_stream_playing;
@@ -728,14 +758,20 @@ u32 Mixer::update() noexcept {
     slot.state = k_free;
     slot.stop_pending = 0;
     --live_;
-    // The audio thread freed the voice before it posted this, so its stream is read no more; it is
-    // free once its last fill, if one is in flight, has landed.
+    // The audio thread freed the voice before it posted this, so its clip and its stream are read
+    // no more: the clip goes back to the store, and the stream is free once its last fill, if one
+    // is in flight, has landed.
     if (slot_stream_[event.slot] != k_no_stream) {
       streams_[slot_stream_[event.slot]].state = k_stream_retiring;
       slot_stream_[event.slot] = k_no_stream;
     }
+    if (slot_clip_[event.slot] != ClipHandle::k_invalid) {
+      clips_->release(ClipHandle{slot_clip_[event.slot]});
+      slot_clip_[event.slot] = ClipHandle::k_invalid;
+    }
   }
   control_.events += drained;
+  if (stolen_count_ != 0) release_stolen(applied_.load(std::memory_order_acquire));
 
   if (pending_stops_) {
     pending_stops_ = false;
@@ -754,6 +790,9 @@ u32 Mixer::update() noexcept {
       }
     }
   }
+  // The store's finished decodes, after the releases above, so what they must evict is chosen
+  // from everything no voice holds as of now.
+  clips_->update();
   if (streams_in_use_ != 0) service_streams();
   return drained;
 }

@@ -46,7 +46,7 @@ endif()
 engine_module_tests(NAME audio
   SOURCES tests/audio_tests.cpp tests/queue_tests.cpp tests/mixer_tests.cpp tests/clip_tests.cpp
           tests/limiter_tests.cpp tests/determinism_tests.cpp tests/realtime_tests.cpp
-          tests/stream_tests.cpp
+          tests/stream_tests.cpp tests/eviction_tests.cpp
           tests/size_table.cpp
   DEPS json schema)
 
