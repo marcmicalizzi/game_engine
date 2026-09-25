@@ -297,7 +297,16 @@ void cull_pair(uint pair, bool vertex_draw) {
   const uint instance_index = instance_of_pair(instances, params->instance_count, pair);
   const InstanceDesc instance = instances[instance_index];
   MeshDesc* meshes = (MeshDesc*)params->meshes;
-  const uint index = meshes[instance.mesh].first_cluster + (pair - instance.first_pair);
+  const MeshDesc mesh = meshes[instance.mesh];
+  // A **hole** of a streamed world's pair space (docs/subsystems/renderer.md, "Instances that come
+  // and go"): the slack a tile's block keeps past its instances' pairs, or a freed block, whose
+  // instance slots are null instances of a mesh with no clusters. The search lands on the last
+  // instance at or below the pair, and the pair is past that instance's clusters, so it is
+  // rejected here, before anything about a cluster is read. A scene read whole has no holes and
+  // never takes this branch.
+  const uint local = pair - instance.first_pair;
+  if (local >= mesh.cluster_count) return;
+  const uint index = mesh.first_cluster + local;
 
   ClusterDesc* clusters = (ClusterDesc*)params->clusters;
   const ClusterDesc cluster = clusters[index];

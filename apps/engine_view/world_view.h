@@ -87,7 +87,10 @@ class ViewWorld {
 #if ENGINE_WORLD_RUINS
   world::RuinsTiles ruins_;
   world::RuinsTilesConfig ruins_config_;
+  Vector<world::RuinsTiles::TileRange> ranges_;  // hand_over's: the tail's tiles
+  Vector<renderer::DynamicBlock> blocks_;        // and the blocks they are
 #endif
+  bool compact_next_ = false;  // the next hand-over lays the tiles out from scratch (a restart)
 };
 
 }  // namespace engine::view

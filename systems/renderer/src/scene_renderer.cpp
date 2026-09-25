@@ -20,6 +20,7 @@
 #include <shaders/deform.spv.h>
 #include <shaders/deform_alloc.spv.h>
 #include <shaders/hiz_build.spv.h>
+#include <shaders/pair_expand.spv.h>
 #include <shaders/ray_visibility.spv.h>
 #include <shaders/vertex_expand.spv.h>
 #include <shaders/visibility_resolve.spv.h>
@@ -141,6 +142,7 @@ void SceneRenderer::Pipelines::destroy(const gfx::Device& device) noexcept {
   gfx::destroy_compute_pipeline(device, record_ranges);
   gfx::destroy_compute_pipeline(device, record_emit);
   gfx::destroy_compute_pipeline(device, trace);
+  gfx::destroy_compute_pipeline(device, pair_expand);
   direct = hardware = vertex = vertex_fallback = shadow = shadow_fallback = resolve = {};
 }
 
@@ -262,6 +264,12 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
     return false;
   }
 
+  // A streamed world's tables: one set per frame in flight, so a change is written into a set no
+  // frame in flight reads and never waits for the device (GpuScene, "Instances that come and go").
+  if (!scene.reserve_table_sets(desc.frames_in_flight, error)) {
+    destroy();
+    return false;
+  }
   // Geometry residency, when the scene was built streamed. It owns the page manager, the staging
   // ring's bookkeeping and the per-slot feedback buffers; the frame owns the passes that clear the
   // feedback, copy the pages in, and copy the feedback out.
@@ -287,8 +295,8 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
       // pool passes and the three allocations, the software raster, the six acceleration
       // structure zones, the trace and the resolve, with room to spare. The shadow cascades add
       // one cull zone and at most two per cascade plus two (index expansion, pool pass and its
-      // allocation, the depth raster), twelve.
-      !timer_.create(device, desc.frames_in_flight, 40 + 16 * (views - 1), error)) {
+      // allocation, the depth raster), twelve; a streamed world's table update two more.
+      !timer_.create(device, desc.frames_in_flight, 42 + 16 * (views - 1), error)) {
     destroy();
     return false;
   }
@@ -301,6 +309,9 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
   slot_submission_.assign(desc.frames_in_flight, 0);
   slot_pairs_.assign(desc.frames_in_flight, 0);
   slot_instances_.assign(desc.frames_in_flight, 0);
+  slot_holes_.assign(desc.frames_in_flight, 0);
+  slot_table_slots_.assign(desc.frames_in_flight, 0);
+  slot_table_pairs_.assign(desc.frames_in_flight, 0);
   constexpr gfx::BufferUsage k_address =
       gfx::BufferUsage::Storage | gfx::BufferUsage::ShaderDeviceAddress;
   const u64 stat_bytes =
@@ -362,6 +373,8 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
   shaders_.add_embedded("deform", shaders::k_deform_spirv, shaders::k_deform_spirv_size);
   shaders_.add_embedded("deform_alloc", shaders::k_deform_alloc_spirv,
                         shaders::k_deform_alloc_spirv_size);
+  shaders_.add_embedded("pair_expand", shaders::k_pair_expand_spirv,
+                        shaders::k_pair_expand_spirv_size);
   std::string manifest = desc.shader_manifest;
   if (manifest.empty()) {
     const std::string candidate = platform::executable_directory() + "/../shaders/manifest.json";
@@ -517,6 +530,15 @@ bool SceneRenderer::create_pipelines(std::string* error) {
       return false;
     }
   }
+  // A streamed world's pair-table expansion, which only a scene whose instances come and go runs.
+  if (scene_->dynamic()) {
+    const gfx::Shader* pairs = shaders_.get("pair_expand", error);
+    if (pairs == nullptr ||
+        !gfx::create_compute_pipeline(device, pairs->module, "pair_expand_main", {},
+                                      sizeof(PairExpandParams), pipelines_.pair_expand, error)) {
+      return false;
+    }
+  }
   if (resolved_.ray_path) {
     const gfx::Shader* trace = shaders_.get("ray_visibility", error);
     if (trace == nullptr) return false;
@@ -629,6 +651,27 @@ bool SceneRenderer::create_pipelines(std::string* error) {
 void SceneRenderer::destroy() noexcept {
   if (device_ == nullptr) return;
   const gfx::Device& device = *device_;
+  // A streamed world's changes since the last reset, once: what a run's changes cost the renderer
+  // on the CPU and the GPU, which no per-frame record says whole.
+  if (stats_.tiles.changes > 0 && scene_ != nullptr) {
+    const TileStats& t = stats_.tiles;
+    const f64 frames = t.table_frames > 0 ? static_cast<f64>(t.table_frames) : 1.0;
+    ENGINE_LOG_INFO(log_renderer, "tile changes", log::field("changes", t.changes),
+                    log::field("change_ms_mean", t.change_ns / 1.0e6 / static_cast<f64>(t.changes)),
+                    log::field("change_ms_max", t.change_ns_max / 1.0e6),
+                    log::field("kept", t.kept), log::field("rewritten", t.rewritten),
+                    log::field("reused", t.reused), log::field("appended", t.appended),
+                    log::field("freed", t.freed), log::field("compactions", t.compactions),
+                    log::field("grows", t.grows), log::field("table_frames", t.table_frames),
+                    log::field("table_slots", t.table_slots),
+                    log::field("table_pairs", t.table_pairs),
+                    log::field("tables_ms_mean", t.gpu_tables / frames),
+                    log::field("pair_expand_ms_mean", t.gpu_pair_expand / frames),
+                    log::field("table_sets", scene_->table_sets()),
+                    log::field("hole_pairs", scene_->tile_layout().hole_pairs()),
+                    log::field("free_pairs", scene_->tile_layout().free_pairs()),
+                    log::field("pairs", scene_->pair_count()));
+  }
   frames_.wait_idle();
   if (graph_ != nullptr) {
     graph_->reset();
@@ -696,22 +739,50 @@ bool SceneRenderer::resize(u32 width, u32 height, std::string* error) {
   return targets_.create(*device_, views_, error) && create_color_target(error);
 }
 
-bool SceneRenderer::set_dynamic_instances(std::span<const SceneInstance> tail, std::string* error) {
+bool SceneRenderer::set_dynamic_instances(std::span<const SceneInstance> tail,
+                                          std::span<const DynamicBlock> blocks, std::string* error,
+                                          bool compact) {
   if (scene_ == nullptr) return false;
   if (recording_) {
     if (error != nullptr) *error = "instances change between frames, not inside one";
     return false;
   }
-  // The frames in flight read the tables this replaces (GpuScene: v0 replaces, it does not
-  // double-buffer), so the device finishes them first.
-  frames_.wait_idle();
-  bool grew = false;
-  if (!scene_->set_dynamic_instances(tail, grew, error)) return false;
+  // **No wait for the device.** The change goes into the CPU's table and is marked for every table
+  // set; the next frame flips to a set no frame in flight reads and brings it up to date on the GPU
+  // before anything reads it (record_frame). Until 2026-09-25 this waited for every frame in flight
+  // and rewrote the one set of tables in place: E35's 3.2 ms a change with a kit of boxes and
+  // 15–17 ms with the ashlar kit, a frame's latency every time.
+  const i64 started = time::monotonic_ns();
+  GpuScene::TileChange change;
+  retired_.clear();
+  if (!scene_->set_dynamic_instances(tail, blocks, change, &retired_, error, compact)) {
+    for (const gfx::BufferResource& buffer : retired_)
+      frames_.defer_destroy(buffer);
+    retired_.clear();
+    return false;
+  }
+  // What the change outgrew may still be read by a frame in flight: it goes when that frame's slot
+  // comes round, which is the one wait there is, and nothing waits for it.
+  for (const gfx::BufferResource& buffer : retired_)
+    frames_.defer_destroy(buffer);
+  retired_.clear();
   // Made again, the flags hold whatever the allocator left: the next frame fills both, which is
-  // what a first frame does. The prefix's history survives any change that did not grow the stride,
-  // and a tail pair's stale flag only decides which occlusion pass tests it (the picture is the
-  // same either way: pass 2 tests everything pass 1 did not draw).
-  if (grew) flags_dirty_ = true;
+  // what a first frame does. Every block that did not move keeps its pairs and so its history, and
+  // a pair whose block is new has a flag that only decides which occlusion pass tests it (the
+  // picture is the same either way: pass 2 tests everything pass 1 did not draw).
+  if (change.grew) flags_dirty_ = true;
+  TileStats& tiles = stats_.tiles;
+  ++tiles.changes;
+  tiles.kept += change.layout.kept;
+  tiles.rewritten += change.layout.rewritten;
+  tiles.reused += change.layout.reused;
+  tiles.appended += change.layout.appended;
+  tiles.freed += change.layout.freed;
+  tiles.compactions += change.layout.compacted ? 1u : 0u;
+  tiles.grows += change.grew ? 1u : 0u;
+  const f64 ns = static_cast<f64>(time::monotonic_ns() - started);
+  tiles.change_ns += ns;
+  tiles.change_ns_max = ns > tiles.change_ns_max ? ns : tiles.change_ns_max;
   return true;
 }
 
@@ -869,6 +940,14 @@ void SceneRenderer::collect_slot(u32 slot) {
   last.submission = slot < slot_submission_.size() ? slot_submission_[slot] : 0;
   last.pairs = slot < slot_pairs_.size() ? slot_pairs_[slot] : 0;
   last.instances = slot < slot_instances_.size() ? slot_instances_[slot] : 0;
+  last.hole_pairs = slot < slot_holes_.size() ? slot_holes_[slot] : 0;
+  last.table_slots = slot < slot_table_slots_.size() ? slot_table_slots_[slot] : 0;
+  last.table_pairs = slot < slot_table_pairs_.size() ? slot_table_pairs_[slot] : 0;
+  if (last.table_slots > 0) {
+    ++stats_.tiles.table_frames;
+    stats_.tiles.table_slots += last.table_slots;
+    stats_.tiles.table_pairs += last.table_pairs;
+  }
   last.visible_hw = stats_.visible_hw;
   last.visible_pass2 = stats_.visible_pass2;
   last.visible_sw = stats_.visible_sw;
@@ -904,7 +983,11 @@ void SceneRenderer::collect_slot(u32 slot) {
     last.gpu_blas = timer_.ms("blas");
     last.gpu_shadow_cull = timer_.ms("shadow cull");
     last.gpu_shadow = last.gpu_shadow_cull + timer_.ms("shadow");
+    last.gpu_pair_expand = timer_.ms("pair expand");
+    last.gpu_tables = timer_.ms("table copy") + last.gpu_pair_expand;
     last.gpu_total = timer_.total_ms();
+    stats_.tiles.gpu_tables += last.gpu_tables;
+    stats_.tiles.gpu_pair_expand += last.gpu_pair_expand;
   }
   if (!timer_.results().empty()) {
     for (u32 v = 0; v < view_count(); ++v) {
@@ -1032,6 +1115,9 @@ u64 SceneRenderer::submit_frame(const FrameDesc& frame, std::string* error) {
     slot_submission_[slot] = submitted_;
     slot_pairs_[slot] = scene_->pair_count();
     slot_instances_[slot] = scene_->instance_count();
+    slot_holes_[slot] = scene_->dynamic() ? scene_->tile_layout().hole_pairs() : 0u;
+    slot_table_slots_[slot] = tables_.write ? tables_.slots : 0u;
+    slot_table_pairs_[slot] = tables_.write ? static_cast<u32>(tables_.pairs) : 0u;
   }
   ++recorded_;
   ++submitted_;
@@ -1112,6 +1198,13 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   const SceneData& data = scene.data();
   const RenderSettings& settings = resolved_.settings;
   const u32 slot = frames_.slot();
+  // A streamed world's tables, before anything reads their addresses: after a change the frame
+  // flips `scene.instances` and `scene.pair_table` to the next table set, which no frame in flight
+  // reads, and stages that set's changed slots in this slot's staging for the passes below to copy
+  // and expand (GpuScene::prepare_tables). Nothing for a scene read whole or a frame with no
+  // change.
+  if (!scene.prepare_tables(slot, tables_, error)) return false;
+  const bool write_tables = tables_.write;
   // The pairs there are, which is what the cull dispatches over and bounds-checks against, and the
   // run length every per-pair buffer is laid out by, which is what every offset into one uses. The
   // two are one number for a scene read whole; a scene whose instances come and go keeps a stride
@@ -1763,6 +1856,29 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   const gfx::RgBuffer rg_vis = graph.import_buffer("visibility", targets.vis);
   const gfx::RgBuffer rg_hiz = graph.import_buffer("hiz", targets.hiz);
   const gfx::RgBuffer rg_stats = graph.import_buffer("stats", stat_blocks_[slot]);
+  // A streamed world's table set, on the frame that brings it up to date: the changed instance
+  // slots copied out of this slot's staging, then their pairs expanded from them. Every pass that
+  // reads a table says so (`read_tables`), so the graph orders them after the writes; on any other
+  // frame nothing writes the tables and nothing is declared.
+  gfx::RgBuffer rg_instances{};
+  gfx::RgBuffer rg_pair_table{};
+  gfx::RgBuffer rg_table_staging{};
+  PairExpandParams pair_expand{};
+  if (write_tables) {
+    rg_instances = graph.import_buffer("instances", scene.instances);
+    rg_pair_table = graph.import_buffer("pair table", scene.pair_table);
+    rg_table_staging = graph.import_buffer("table staging", tables_.staging);
+    pair_expand.instances = scene.instances.address;
+    pair_expand.meshes = scene.meshes.address;
+    pair_expand.list = tables_.list_address;
+    pair_expand.pairs = scene.pair_table.address;
+    pair_expand.count = tables_.expand;
+  }
+  auto read_tables = [&, write_tables](gfx::PassBuilder& b, gfx::Access access, bool pairs) {
+    if (!write_tables) return;
+    b.read(rg_instances, access);
+    if (pairs) b.read(rg_pair_table, access);
+  };
   gfx::RgBuffer rg_pool{};
   gfx::RgBuffer rg_slots{};
   gfx::RgBuffer rg_alloc{};
@@ -1945,6 +2061,43 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
         [&](gfx::CommandList cb, gfx::RenderGraph&) { streamer_.record_uploads(cb); });
   }
 
+  // A streamed world's change, into the table set this frame flipped to and nothing else: the
+  // slots the change wrote (every change since this set was last current), then one workgroup per
+  // live instance among them writing its pairs (pair_expand.slang). The frames in flight read the
+  // other sets, so nothing here waits for them.
+  if (write_tables) {
+    graph.add_pass(
+        "table copy", gfx::PassKind::Transfer,
+        [&](gfx::PassBuilder& b) {
+          b.read(rg_table_staging, gfx::Access::TransferRead);
+          b.write(rg_instances, gfx::Access::TransferWrite);
+        },
+        [&](gfx::CommandList cb, gfx::RenderGraph&) {
+          timer.begin(cb, "table copy");
+          cb.copy_buffer(
+              tables_.staging.buffer, scene.instances.buffer,
+              std::span<const gfx::BufferCopy>(tables_.copies.data(), tables_.copies.size()));
+          timer.end(cb);
+        });
+    if (tables_.expand > 0) {
+      graph.add_pass(
+          "pair expand", gfx::PassKind::Compute,
+          [&](gfx::PassBuilder& b) {
+            b.read(rg_table_staging, gfx::Access::ComputeRead);  // the list of instances
+            b.read(rg_instances, gfx::Access::ComputeRead);
+            b.write(rg_pair_table, gfx::Access::ComputeWrite);
+          },
+          [&](gfx::CommandList cb, gfx::RenderGraph&) {
+            timer.begin(cb, "pair expand");
+            cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.pair_expand.pipeline);
+            cb.push_constants(pipelines.pair_expand.layout, gfx::ShaderStage::Compute, 0,
+                              sizeof(PairExpandParams), &pair_expand);
+            cb.dispatch(tables_.expand, 1, 1);
+            timer.end(cb);
+          });
+    }
+  }
+
   auto add_cull = [&](u32 block, u32 list) {
     graph.add_pass(
         "cull", gfx::PassKind::Compute,
@@ -1965,6 +2118,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             b.write(rg_flags[cur_flags], gfx::Access::ComputeReadWrite);
           }
           read_pool(b, gfx::Access::ComputeRead);
+          read_tables(b, gfx::Access::ComputeRead, false);
           if (streaming) {  // the feedback: what the cut used, and what it could not refine into
             b.write(sb.used, gfx::Access::ComputeWrite);
             b.write(sb.requests, gfx::Access::ComputeWrite);
@@ -2128,6 +2282,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
               b.read(rg_slots, stage);
             }
             read_pool(b, stage);
+            read_tables(b, stage, false);
           }
         },
         [&, list, run](gfx::CommandList cb, gfx::RenderGraph&) {
@@ -2234,6 +2389,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
         [&](gfx::PassBuilder& b) {
           b.write(rg_shadow_args, gfx::Access::ComputeReadWrite);
           b.write(rg_visible, gfx::Access::ComputeWrite);
+          read_tables(b, gfx::Access::ComputeRead, false);
           if (vertex_indexed) {
             b.write(rg_vertex_headers, gfx::Access::ComputeReadWrite);
             b.write(rg_vertex_records, gfx::Access::ComputeWrite);
@@ -2354,6 +2510,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             b.read(rg_slots, stage);
           }
           read_pool(b, stage);
+          read_tables(b, stage, false);
         },
         [&, count](gfx::CommandList cb, gfx::RenderGraph&) {
           cb.bind_pipeline(gfx::BindPoint::Graphics, pipelines.shadow);
@@ -2409,6 +2566,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             b.read(rg_pool, gfx::Access::MeshRead);
             b.read(rg_slots, gfx::Access::MeshRead);
           }
+          read_tables(b, gfx::Access::MeshRead, false);
         },
         [&, params](gfx::CommandList cb, gfx::RenderGraph&) {
           timer.begin(cb, k_zone_names[k_zone_hw][0]);
@@ -2444,6 +2602,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             b.write(rg_vis, gfx::Access::ComputeReadWrite);
             b.read(rg_sw_args, gfx::Access::IndirectRead);
             b.read(rg_visible, gfx::Access::ComputeRead);
+            read_tables(b, gfx::Access::ComputeRead, false);
             if (deform_on) {
               b.read(rg_pool, gfx::Access::ComputeRead);
               b.read(rg_slots, gfx::Access::ComputeRead);
@@ -2614,6 +2773,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             b.read(rg_pool, gfx::Access::FragmentRead);
             b.read(rg_slots, gfx::Access::FragmentRead);
           }
+          read_tables(b, gfx::Access::FragmentRead, true);
           read_pool(b, gfx::Access::FragmentRead);
           if (shadows) {  // the shadow rays traverse them from the fragment stage
             b.read(rt.tlas, gfx::Access::FragmentRayQueryRead);

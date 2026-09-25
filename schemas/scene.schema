@@ -575,7 +575,7 @@ struct CameraPath @version(1) {
 }
 
 /// GPU milliseconds of one frame, pass by pass, from `gfx::GpuTimer` (`renderer::Stats` names).
-struct PassMs @version(3) {
+struct PassMs @version(4) {
   cull: f64 = 0
   hw: f64 = 0
   sw: f64 = 0
@@ -596,11 +596,15 @@ struct PassMs @version(3) {
   total: f64 = 0
   /// The bottom-level build inside `rt`: every instance's cluster structure in one command.
   blas: f64 = 0 @since(2)
+  /// A streamed world's table update, on a frame that flipped to a table set behind a change:
+  /// the changed instance slots copied in and their pairs expanded (pair_expand.slang). Zero on
+  /// every other frame and for a scene read whole.
+  tables: f64 = 0 @since(4)
 }
 
 /// One frame of a flythrough benchmark, or of an interactive session measured with
 /// `engine-view --interactive --benchmark`. One line of the `.jsonl` a run writes.
-struct FrameRecord @version(5) {
+struct FrameRecord @version(6) {
   /// Which pass over the path, from 0.
   repeat: u32 = 0
   /// The path frame, from 0; an interactive session's frame, from 0.
@@ -654,6 +658,13 @@ struct FrameRecord @version(5) {
   /// each. Constant for a scene read whole; a streamed world's tiles move both between frames.
   instances: u32 = 0 @since(5)
   pairs: u32 = 0 @since(5)
+  /// A streamed world: the instance slots this frame copied into the table set it flipped to, the
+  /// pairs the GPU expanded for them (zero on a frame with no change behind it), and the pairs of
+  /// the dispatch no instance holds — tiles' slack and freed blocks, which the cull rejects after
+  /// its search (docs/subsystems/renderer.md, "Instances that come and go").
+  table_slots: u32 = 0 @since(6)
+  table_pairs: u32 = 0 @since(6)
+  hole_pairs: u32 = 0 @since(6)
   /// The census, when the run took one: visible pairs by DAG level (0 is the source geometry)
   /// and by scene mesh, read back from this frame's visible list in a second, untimed pass.
   levels: u32[]
@@ -672,7 +683,7 @@ struct Percentiles @version(1) {
   mean: f64 = 0
 }
 
-struct PassPercentiles @version(3) {
+struct PassPercentiles @version(4) {
   cull: Percentiles
   hw: Percentiles
   sw: Percentiles
@@ -686,6 +697,9 @@ struct PassPercentiles @version(3) {
   /// Inside `rt`: the cluster build and the bottom-level build.
   clas: Percentiles @since(2)
   blas: Percentiles @since(2)
+  /// A streamed world's table updates, over every frame (most are zero; FrameRecord.table_slots
+  /// says which were not).
+  tables: Percentiles @since(4)
 }
 
 /// One mesh as a run loaded it: what a number was measured on.

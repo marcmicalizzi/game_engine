@@ -54,6 +54,7 @@ scene::FrameRecord frame_record(const FrameStats& stats, u32 repeat, u32 frame, 
   out.gpu_ms.shadow = stats.gpu_shadow;
   out.gpu_ms.shadow_cull = stats.gpu_shadow_cull;
   out.gpu_ms.total = stats.gpu_total;
+  out.gpu_ms.tables = stats.gpu_tables;
   out.uploads = stats.uploads;
   out.upload_bytes = stats.upload_bytes;
   out.evictions = stats.evictions;
@@ -67,6 +68,9 @@ scene::FrameRecord frame_record(const FrameStats& stats, u32 repeat, u32 frame, 
   out.rt_capacity = stats.rt_capacity;
   out.instances = stats.instances;
   out.pairs = stats.pairs;
+  out.table_slots = stats.table_slots;
+  out.table_pairs = stats.table_pairs;
+  out.hole_pairs = stats.hole_pairs;
   return out;
 }
 
@@ -234,6 +238,7 @@ void summarize_frames(std::span<const scene::FrameRecord> records, u32 frames, u
     shadow_pairs,
     cpu,
     wall,
+    tables,
     passes
   };
   Vector<f64> per_frame[passes];
@@ -292,7 +297,8 @@ void summarize_frames(std::span<const scene::FrameRecord> records, u32 frames, u
                                     static_cast<f64>(r->rt_wanted),
                                     static_cast<f64>(r->shadow_pairs),
                                     r->cpu_ms,
-                                    r->frame_ms};
+                                    r->frame_ms,
+                                    ms.tables};
         repeats_of.push_back(values[p]);
       }
       per_frame[p].push_back(median_of(repeats_of));
@@ -320,6 +326,7 @@ void summarize_frames(std::span<const scene::FrameRecord> records, u32 frames, u
   out.shadow_pairs = over(shadow_pairs);
   out.cpu_ms = over(cpu);
   out.frame_ms = over(wall);
+  out.gpu_ms.tables = over(tables);
 
   out.markers.clear();
   for (const CameraPathMarker& marker : path.markers) {

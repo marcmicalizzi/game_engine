@@ -35,11 +35,26 @@
 #include <domain/gfx/visibility_resolve.h>
 #include <systems/renderer/scene.h>
 #include <systems/renderer/settings.h>
+#include <systems/renderer/tile_layout.h>
 
 #include <span>
 #include <string>
 
 namespace engine::renderer {
+
+// Mirrors PairExpandParams in pair_expand.slang: the push constants of the pass that writes a
+// dynamic scene's changed pair-table entries from its instance table (docs/subsystems/renderer.md,
+// "Instances that come and go"). The dynamic instances test holds it to the shader's reflection.
+struct PairExpandParams {
+  u64 instances = 0;  // gfx::InstanceDesc[]: the table set the frame reads, already uploaded
+  u64 meshes = 0;     // gfx::MeshDesc[]
+  u64 list = 0;       // u32[count]: the instances whose pairs to write
+  u64 pairs = 0;      // u32x2[]: the same set's pair table
+  u32 count = 0;
+  u32 pad = 0;
+};
+static_assert(sizeof(PairExpandParams) == 40);
+inline constexpr u32 k_pair_expand_workgroup = 64;  // numthreads in pair_expand.slang
 
 // The frame's visible list is one array in three runs — the hardware pass 1, the hardware pass
 // 2, and the software rasterizer — so a visibility id names an entry of the whole list however
@@ -121,34 +136,96 @@ class GpuScene {
   // (docs/subsystems/renderer.md, "Instances that come and go")
   //
   // A scene whose `SceneData::dynamic` is set — a streamed world's — is its load's instances, a
-  // **fixed prefix**, and a **tail** the caller replaces between frames: a tile's buildings, in
-  // tile order. The meshes are resident from the load (the kits' few dozen), so a tail is instances
-  // and nothing else: the instance table and the pair table are rewritten from the prefix's end,
-  // the prefix sum carries on from the prefix's pairs, and the prefix's pairs keep their ids, so
-  // the terrain's occlusion history survives every change. Nothing here keeps a tile's identity;
-  // the caller's order is the order, which is why the world hands its tiles over in tile order.
+  // **fixed prefix**, and a **tail** the caller replaces between frames, named block by block: a
+  // streamed world's tiles (`DynamicBlock`). The meshes are resident from the load (the kits' few
+  // dozen), so a tail is instances and nothing else. Each block has **its own run of instance slots
+  // and a reserved run of pairs** (`TileLayout`), so a tile that arrives, leaves or changes writes
+  // its own slots and nothing else, and every other tile keeps its instances and its pairs — and
+  // with them its ids and its occlusion history, as the prefix always did. What no block uses is a
+  // hole, which the cull pass rejects after its binary search (a null instance, of a mesh with no
+  // clusters); holes past `k_default_compact_pct` of the dispatch compact the layout.
   //
-  // **The device must be idle with respect to this scene** (`SceneRenderer::set_dynamic_instances`
-  // waits for it): the tables are replaced, not double-buffered, which is v0's smallest correct
-  // change and costs a frame's latency on the frame that takes a tail. Refused, with a sentence and
-  // nothing changed: a scene that is not dynamic, a tail past the 2^24 pairs the visibility id
-  // names, and a skinned tail instance. A dynamic scene has no ray tracing chain and no
-  // deformed-vertex pool
-  // (`create` refuses both): the chain's top-level records and the pool's table are laid out once
-  // per instance, and v0 does not rewrite them.
+  // **Nothing here waits for the device.** A change is written into `instance_table_` on the CPU
+  // and marked for each **table set** — the instance table and the pair table, one set per frame in
+  // flight (`reserve_table_sets`) — and the next frame to be recorded flips to the next set and
+  // brings it up to date on the GPU before it reads it (`prepare_tables`): it copies the changed
+  // slots out of that frame slot's staging and expands their pairs (pair_expand.slang). A set is
+  // written only by the frame that flips to it, and a set comes round again only after every
+  // other set has been current, so the frames in flight never see one change. Per-pair buffers
+  // outgrown by a change are handed to the caller in `retired` rather than destroyed, for the same
+  // reason. Refused, with a sentence and nothing changed: a scene that is not dynamic, blocks that
+  // do not cover the tail in order or repeat a key, a tail past the 2^24 pairs the visibility id
+  // names, a mesh the scene has not, and a skinned tail instance. A dynamic scene has no ray
+  // tracing chain and no deformed-vertex pool (`create` refuses both): the chain's top-level
+  // records and the pool's table are laid out once per instance, and nothing rewrites them.
   bool dynamic() const noexcept { return dynamic_; }
   u32 static_instance_count() const noexcept { return static_instances_; }
   u32 static_pair_count() const noexcept { return static_pairs_; }
-  u32 dynamic_instance_count() const noexcept { return instance_count_ - static_instances_; }
-  // `grew` is set when the tail passed the stride and the per-pair buffers were reallocated, whose
-  // contents — the occlusion flags among them — are then undefined until a frame writes them.
-  bool set_dynamic_instances(std::span<const SceneInstance> tail, bool& grew,
-                             std::string* error = nullptr);
-  // The mesh of instance `index`, prefix or tail; ~0 past the end. What a census or an id capture
-  // turns an instance into, since `SceneData::instances` holds only the prefix.
+  // The tail's instances and pairs — what the blocks hold, not the slots and pairs they reserve.
+  u32 dynamic_instance_count() const noexcept { return layout_.live_instances(); }
+  u32 dynamic_pair_count() const noexcept { return layout_.live_pairs(); }
+  // What one change did: the layout's blocks, whether the per-pair buffers were made again (their
+  // contents — the occlusion flags among them — are then undefined until a frame writes them), and
+  // how many instance slots it wrote, which is what each table set will copy.
+  struct TileChange {
+    TileLayoutChange layout;
+    bool grew = false;
+    u32 slots_written = 0;
+  };
+  // Replaces the tail. `blocks` cover it in order; none is the whole tail as one block (key 0).
+  // `compact` lays every block out again in the tail's order with no free blocks, which a change
+  // does on its own when the holes pass the declared share; either way it is counted. Buffers a
+  // frame in flight may still read — per-pair buffers and table sets that were outgrown — go to
+  // `retired` for the caller to destroy when those frames are done, or are destroyed at once when
+  // it is null (the device must then be idle).
+  bool set_dynamic_instances(std::span<const SceneInstance> tail,
+                             std::span<const DynamicBlock> blocks, TileChange& change,
+                             Vector<gfx::BufferResource>* retired, std::string* error = nullptr,
+                             bool compact = false);
+  const TileLayout& tile_layout() const noexcept { return layout_; }
+  u64 compactions() const noexcept { return compactions_; }
+  // Where instance slot `slot` came from in the tail last handed over; ~0 for the load's own, a
+  // hole and past the end. What a test compares a streamed scene's ids with a loaded one's through,
+  // since a tile's instances sit wherever its block is.
+  u32 tail_index(u32 slot) const noexcept;
+  // The same for every slot at once (`instance_count()` entries), for a caller turning a whole
+  // capture's ids: one pass over the blocks rather than a search per pixel.
+  void tail_indices(Vector<u32>& out) const;
+  // How many table sets a dynamic scene keeps: at least two, and one per frame in flight. Called
+  // by `SceneRenderer::create`; a set added here is written whole by the first frame that flips to
+  // it. Nothing for a scene read whole.
+  bool reserve_table_sets(u32 frames_in_flight, std::string* error = nullptr);
+  u32 table_sets() const noexcept { return sets_.size(); }
+  // What the frame about to be recorded in frame slot `slot` has to write into the tables it reads
+  // (a dynamic scene only; `write` is false for one read whole and on every frame after the first
+  // since the last change). Flips `instances` and `pair_table` to the next set when anything
+  // changed, stages that set's changed slots and the list of instances whose pairs the GPU writes
+  // into the slot's staging, and says what to copy. The slot's previous frame must be complete (the
+  // caller has been through `begin_frame`).
+  struct TableUpdate {
+    bool write = false;
+    u32 set = 0;
+    gfx::BufferResource staging;     // the instances, then the expansion list (the scene owns it)
+    u64 list_address = 0;            // the expansion list's device address
+    u32 slots = 0;                   // instance slots copied
+    u32 expand = 0;                  // instances whose pairs the GPU writes
+    u64 pairs = 0;                   // the pairs they hold
+    Vector<gfx::BufferCopy> copies;  // staging -> `instances`, one per run of changed slots
+  };
+  bool prepare_tables(u32 slot, TableUpdate& out, std::string* error = nullptr);
+  // The mesh of instance `index`, prefix or tail; ~0 past the end and for a hole's null instance
+  // (whose mesh is `null_mesh()`, one past the scene's). What a census or an id capture turns an
+  // instance into, since `SceneData::instances` holds only the prefix.
   u32 instance_mesh(u32 index) const noexcept {
-    return index < instance_table_.size() ? instance_table_[index].mesh : ~0u;
+    if (index >= instance_count_ || index >= instance_table_.size()) return ~0u;
+    const u32 mesh = instance_table_[index].mesh;
+    return mesh < data_->parts.size() ? mesh : ~0u;
   }
+  // The mesh a hole's null instance names: one `gfx::MeshDesc` past the scene's, with no clusters.
+  u32 null_mesh() const noexcept { return null_mesh_; }
+  // True when every instance slot's `first_pair` is at or above the one before it and every live
+  // slot is where the layout says: what the cull pass's binary search needs. For the tests.
+  bool validate_tables(std::string* why = nullptr) const;
   u32 material_count() const noexcept { return material_count_; }
   u32 triangles_per_cluster() const noexcept { return triangles_per_cluster_; }
   // The deformed-vertex pool's **budget**, not its occupancy: the pool is suballocated per frame
@@ -547,11 +624,40 @@ class GpuScene {
   bool upload_geometry(const ResolvedSettings& resolved, std::string* error);
   bool upload_materials(const ResolvedSettings& resolved, std::string* error);
   bool create_working_set(const ResolvedSettings& resolved, std::string* error);
-  void destroy_working_set() noexcept;
   bool upload_pair_table(std::string* error);
-  // A dynamic scene's instances from `first_instance` and pairs from `first_pair` to the device,
-  // into the tables' kept buffers.
-  bool write_tables(u32 first_instance, u32 first_pair, std::string* error);
+  // ---- a dynamic scene's tables ----
+  // One set of the tables a frame reads: the instance table and the pair table, and the instance
+  // slots changed since this set was last written (`all`: every one).
+  struct InstanceRange {
+    u32 begin = 0;
+    u32 end = 0;
+  };
+  struct TableSet {
+    gfx::BufferResource instances;
+    gfx::BufferResource pairs;
+    Vector<InstanceRange> pending;
+    bool all = true;
+  };
+  // What a live tail slot was made from, to tell a block that came back unchanged.
+  struct InstanceKey {
+    u32 mesh = 0;
+    f32 bounds_padding = 0.0f;
+    Transform3 transform;
+    bool operator==(const InstanceKey&) const = default;
+  };
+  static InstanceKey key_of(const SceneInstance& instance) noexcept {
+    return InstanceKey{instance.mesh, instance.bounds_padding, instance.transform};
+  }
+  // Makes a set's two buffers at the current capacities; the set starts wholly pending.
+  bool create_table_set(TableSet& set, std::string* error);
+  // Gives a buffer back: to `retired` when a frame may still read it, at once otherwise.
+  void retire(gfx::BufferResource& buffer, Vector<gfx::BufferResource>* retired) noexcept;
+  // The layout's writes into `instance_table_`, and every slot they touched marked for every set.
+  bool write_slots(std::span<const SceneInstance> tail, std::span<const DynamicBlock> blocks,
+                   std::span<const SlotWrite> writes, u32& slots, std::string* error);
+  // After a change: the per-pair working set and the table sets grown to fit it.
+  bool fit_tables(TileChange& change, Vector<gfx::BufferResource>* retired, std::string* error);
+  gfx::InstanceDesc null_instance(u32 first_pair) const noexcept;
   ResolvedSettings resolved_;  // what `create` was given, for a working set made again
   bool create_ray_tracing(const ResolvedSettings& resolved, std::string* error);
   bool create_streaming(const ResolvedSettings& resolved, std::string* error);
@@ -598,9 +704,19 @@ class GpuScene {
   bool dynamic_ = false;
   u32 static_instances_ = 0;
   u32 static_pairs_ = 0;
-  Vector<u32> mesh_material_base_;    // each mesh's first material, for an instance added later
-  u32 instance_capacity_ = 0;         // a dynamic scene's instance buffer, in instances
-  gfx::BufferResource tail_staging_;  // host visible, kept: what `write_tables` copies from
+  Vector<u32> mesh_material_base_;        // each mesh's first material, for an instance added later
+  u32 instance_capacity_ = 0;             // a dynamic scene's instance buffers, in slots
+  u32 null_mesh_ = 0;                     // the mesh a hole's null instance names: no clusters
+  TileLayout layout_;                     // where the tail's blocks are
+  Vector<InstanceKey> tail_keys_;         // per instance slot: what a live tail slot was made from
+  Vector<TileLayout::Request> requests_;  // a change's scratch
+  Vector<SlotWrite> writes_;              // and the layout's answer
+  Vector<TableSet> sets_;                 // the table sets; `instances`/`pair_table` alias one
+  u32 current_set_ = 0;                   // the set the last frame read
+  bool tables_changed_ = false;           // a change since the last frame flipped
+  Vector<gfx::BufferResource> table_staging_;  // per frame slot: host visible, kept
+  u32 compact_pct_ = k_default_compact_pct;    // `renderer.tiles.compact_pct`, read at create
+  u64 compactions_ = 0;
   u32 material_count_ = 0;
   u32 triangles_per_cluster_ = 0;
   u32 view_count_ = 1;

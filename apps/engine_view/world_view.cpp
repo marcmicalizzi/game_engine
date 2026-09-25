@@ -72,9 +72,30 @@ bool ViewWorld::create(const renderer::SceneData& data, renderer::SceneRenderer&
   return true;
 }
 
+// The tail goes over tile by tile: each tile's run of it is a block of its own in the renderer,
+// named by the tile's key, so a change costs the renderer the tiles that changed and not the whole
+// tail (docs/subsystems/renderer.md, "Instances that come and go"). The ranges are the ruins
+// consumer's own, for the tail it is handing over.
 bool ViewWorld::hand_over(void* context, std::span<const renderer::SceneInstance> tail,
                           std::string* error) {
-  return static_cast<ViewWorld*>(context)->renderer_->set_dynamic_instances(tail, error);
+  auto* self = static_cast<ViewWorld*>(context);
+#if ENGINE_WORLD_RUINS
+  self->ruins_.tile_ranges(self->ranges_);
+  self->blocks_.clear();
+  for (const world::RuinsTiles::TileRange& range : self->ranges_)
+    self->blocks_.push_back(renderer::DynamicBlock{range.key, range.first, range.count});
+  // A world started over (a flythrough's repeat) is laid out again from scratch, as its first fill
+  // was: without it each repeat would inherit where the last one's tiles ended up, and the repeats'
+  // occlusion histories — and so their visible pair counts — would differ where their pictures
+  // do not.
+  const bool compact = self->compact_next_;
+  self->compact_next_ = false;
+  return self->renderer_->set_dynamic_instances(
+      tail, std::span<const renderer::DynamicBlock>(self->blocks_.data(), self->blocks_.size()),
+      error, compact);
+#else
+  return self->renderer_->set_dynamic_instances(tail, error);
+#endif
 }
 
 // The log is kept in memory and written whole at the end — a line an update is a few hundred bytes,
@@ -105,7 +126,10 @@ void ViewWorld::close_log() {
 bool ViewWorld::update(const renderer::Camera& camera, u64 tick, Mode mode, u32 repeat, u32 frame,
                        bool recorded, std::string* error) {
   if (renderer_ == nullptr) return true;
-  if (mode == Mode::Restart) world_.clear(tick);
+  if (mode == Mode::Restart) {
+    world_.clear(tick);
+    compact_next_ = true;
+  }
   sim::ObserverSet observers;
   observers.add(camera.position, 1.0f);
   log_.before(world_);
@@ -177,7 +201,6 @@ bool ViewWorld::fly_handovers(const renderer::CameraPath& camera_path, u32 frame
   Vector<renderer::SceneInstance> swapped;
   Vector<world::RuinsTiles::TileRange> before_ranges;
   Vector<world::RuinsTiles::TileRange> after_ranges;
-  const u32 prefix = data_->instances.size();
   // A tile the pair budget left out of the tail has no range; it would sit where the next one
   // starts, so that is where an empty range of it is.
   auto range_of = [](const Vector<world::RuinsTiles::TileRange>& ranges, u64 key, u32 total) {
@@ -192,6 +215,40 @@ bool ViewWorld::fly_handovers(const renderer::CameraPath& camera_path, u32 frame
     for (u32 i = 0; i < count; ++i)
       pairs += data_->parts[first[i].mesh].cluster_count;
     return pairs;
+  };
+  // The renderer keeps each tile's instances in a block of their own, wherever the block is, so a
+  // capture's instance slot is turned back into its place in the tail before a tile's pixels are
+  // counted, while the scene still holds the tail that drew it. The load's own instances and an
+  // empty pixel become `k_no_id`.
+  Vector<u32> tail_of_slot;
+  auto to_tail = [&](renderer::CapturedFrame& shot) {
+    renderer_->scene().tail_indices(tail_of_slot);
+    const u32 pixels = shot.width * shot.height;
+    for (u32 p = 0; p < pixels; ++p) {
+      u32& id = shot.ids[p * renderer::k_id_words];
+      if (id == renderer::k_no_id) continue;
+      id = id < tail_of_slot.size() && tail_of_slot[id] != ~0u ? tail_of_slot[id]
+                                                               : renderer::k_no_id;
+    }
+  };
+  // The blocks of a tail laid out as `ranges` say, with tile `key`'s run `count` long.
+  Vector<renderer::DynamicBlock> blocks;
+  auto blocks_of = [&](const Vector<world::RuinsTiles::TileRange>& ranges, u64 key, u32 count) {
+    blocks.clear();
+    u32 first = 0;
+    bool placed = false;
+    for (const world::RuinsTiles::TileRange& range : ranges) {
+      if (!placed && range.key >= key) {
+        if (count > 0) blocks.push_back(renderer::DynamicBlock{key, first, count});
+        first += count;
+        placed = true;
+        if (range.key == key) continue;
+      }
+      blocks.push_back(renderer::DynamicBlock{range.key, first, range.count});
+      first += range.count;
+    }
+    if (!placed && count > 0) blocks.push_back(renderer::DynamicBlock{key, first, count});
+    return std::span<const renderer::DynamicBlock>(blocks.data(), blocks.size());
   };
   for (u32 f = 0; f < frames && ok; ++f) {
     renderer::FrameDesc frame;
@@ -218,6 +275,7 @@ bool ViewWorld::fly_handovers(const renderer::CameraPath& camera_path, u32 frame
     after_tail.assign(ruins_.tail().begin(), ruins_.tail().end());
     after_rubble.assign(ruins_.tail_rubble().begin(), ruins_.tail_rubble().end());
     ruins_.tile_ranges(after_ranges);
+    if (ok) to_tail(after);
     const Vec3 eye = frame.camera.position;
     for (const world::TileEvent& event : world_.last_events()) {
       if (!ok) break;
@@ -236,10 +294,12 @@ bool ViewWorld::fly_handovers(const renderer::CameraPath& camera_path, u32 frame
         swapped.push_back(after_tail[i]);
       renderer::CapturedFrame before;
       ok = renderer_->set_dynamic_instances(
-               std::span<const renderer::SceneInstance>(swapped.data(), swapped.size()), error) &&
+               std::span<const renderer::SceneInstance>(swapped.data(), swapped.size()),
+               blocks_of(after_ranges, key, was.count), error) &&
            renderer_->render_offscreen(frame, error) &&
            renderer_->capture(frame, channels, before, error);
       if (!ok) break;
+      to_tail(before);
       const u32 visible_before = renderer_->stats().visible_pairs();
       // What popped: coverage that came or went, and depths that moved by more than a thousandth
       // of the nearer (reversed-Z: larger is nearer) — binned by how far, the last three bins
@@ -255,7 +315,6 @@ bool ViewWorld::fly_handovers(const renderer::CameraPath& camera_path, u32 frame
       u32 color = 0;
       u32 tile_before = 0;
       u32 tile_after = 0;
-      const u32 first = prefix + now.first;
       const u32 pixels = after.width * after.height;
       for (u32 p = 0; p < pixels; ++p) {
         const f32 a = before.depth[p];
@@ -283,12 +342,16 @@ bool ViewWorld::fly_handovers(const renderer::CameraPath& camera_path, u32 frame
         color += shade ? 1u : 0u;
         const u32 ia = before.ids[u64{p} * renderer::k_id_words];
         const u32 ib = after.ids[u64{p} * renderer::k_id_words];
-        const bool in_before = ia != renderer::k_no_id && ia >= first && ia < first + was.count;
-        const bool in_after = ib != renderer::k_no_id && ib >= first && ib < first + now.count;
+        // Places in the tail each picture drew (`to_tail`): in the swapped tail the tile's run
+        // starts at `now.first` as it does in the update's.
+        const bool in_before =
+            ia != renderer::k_no_id && ia >= now.first && ia < now.first + was.count;
+        const bool in_after =
+            ib != renderer::k_no_id && ib >= now.first && ib < now.first + now.count;
         tile_before += in_before ? 1u : 0u;
         tile_after += in_after ? 1u : 0u;
-        if (popped && ((in_before && before_rubble[was.first + (ia - first)] != 0) ||
-                       (in_after && after_rubble[now.first + (ib - first)] != 0))) {
+        if (popped && ((in_before && before_rubble[was.first + (ia - now.first)] != 0) ||
+                       (in_after && after_rubble[ib] != 0))) {
           ++rubble;
         }
       }
@@ -321,9 +384,14 @@ bool ViewWorld::fly_handovers(const renderer::CameraPath& camera_path, u32 frame
       out += '\n';
       ++handovers;
     }
-    ok = ok &&
-         renderer_->set_dynamic_instances(
-             std::span<const renderer::SceneInstance>(after_tail.data(), after_tail.size()), error);
+    // The update's own tail again, tile by tile: every block but the swapped tile's is where it
+    // was.
+    blocks.clear();
+    for (const world::RuinsTiles::TileRange& range : after_ranges)
+      blocks.push_back(renderer::DynamicBlock{range.key, range.first, range.count});
+    ok = ok && renderer_->set_dynamic_instances(
+                   std::span<const renderer::SceneInstance>(after_tail.data(), after_tail.size()),
+                   std::span<const renderer::DynamicBlock>(blocks.data(), blocks.size()), error);
   }
   if (ok && io::write_file(path, out) != io::Status::Ok) {
     if (error != nullptr) *error = "cannot write " + path;

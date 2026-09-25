@@ -155,8 +155,41 @@ struct FrameStats {
   // each. Constant for a scene read whole; a streamed world's tiles move both between frames.
   u32 instances = 0;
   u32 pairs = 0;
+  // A streamed world's tables (docs/subsystems/renderer.md, "Instances that come and go"): the
+  // instance slots this frame copied into the table set it flipped to and the pairs the GPU
+  // expanded for them — zero on a frame with no change behind it — and the pairs of its dispatch
+  // no instance holds. `gpu_tables` is the copy and the expansion, `gpu_pair_expand` the expansion
+  // alone.
+  u32 table_slots = 0;
+  u32 table_pairs = 0;
+  u32 hole_pairs = 0;
+  f64 gpu_tables = 0.0;
+  f64 gpu_pair_expand = 0.0;
 
   u32 visible_pairs() const noexcept { return visible_hw + visible_pass2 + visible_sw; }
+};
+
+// What a streamed world's changes cost the renderer over a run (docs/subsystems/renderer.md,
+// "Instances that come and go"). A change is one `set_dynamic_instances`; its CPU time is the whole
+// call, which never waits for the device. `table_frames` counts the frames that flipped to a table
+// set behind a change and brought it up to date on the GPU, and the slots, pairs and milliseconds
+// are theirs, summed. The block counts are the layout's (`TileLayoutChange`), summed over changes.
+struct TileStats {
+  u64 changes = 0;
+  f64 change_ns = 0.0;
+  f64 change_ns_max = 0.0;
+  u64 kept = 0;
+  u64 rewritten = 0;
+  u64 reused = 0;
+  u64 appended = 0;
+  u64 freed = 0;
+  u64 compactions = 0;
+  u64 grows = 0;  // changes that made the per-pair buffers again
+  u64 table_frames = 0;
+  u64 table_slots = 0;
+  u64 table_pairs = 0;
+  f64 gpu_tables = 0.0;
+  f64 gpu_pair_expand = 0.0;
 };
 
 // What the ray tracing chain held and did over a run (docs/subsystems/renderer.md, "The ray
@@ -248,6 +281,8 @@ struct Stats {
   StreamStats stream;
   // The ray tracing chain's memory and what it built. Zero when the frame builds no structures.
   RtStats rt;
+  // A streamed world's changes and table updates. Zero for a scene read whole.
+  TileStats tiles;
   // The per-view breakdown. `view_count` is 1 for a single view, and `views[0]` then holds the
   // same numbers the totals do.
   u32 view_count = 1;
@@ -387,6 +422,9 @@ class SceneRenderer {
   }
   const Stats& stats() const noexcept { return stats_; }
   void reset_stats() noexcept;
+  // The scene the renderer draws, for a host that has to turn a capture's instance slots back into
+  // what it handed over (`GpuScene::tail_index`).
+  const GpuScene& scene() const noexcept { return *scene_; }
   // Reads the device's memory budget into `stats().gpu_memory`. A caller samples it around a
   // run — create() does it once so a summary always has a figure, and a host that measures
   // calls it again at the end, which is when the contention it reports actually matters.
@@ -407,12 +445,22 @@ class SceneRenderer {
   bool resize(u32 width, u32 height, std::string* error = nullptr);
 
   // Replaces the scene's tail of instances between frames (`GpuScene::set_dynamic_instances`,
-  // docs/subsystems/renderer.md "Instances that come and go"): waits for the device, rewrites the
-  // tables, and — when the tail outgrew the per-pair buffers and they were made again — starts the
-  // occlusion history over, since the flags it would read are undefined. Never between
-  // `begin_frame` and `submit_frame`. False, with the scene unchanged unless `error` says it is
-  // lost, when the scene refuses the tail.
-  bool set_dynamic_instances(std::span<const SceneInstance> tail, std::string* error = nullptr);
+  // docs/subsystems/renderer.md "Instances that come and go"), block by block — a streamed world's
+  // tiles, `blocks` covering `tail` in order; none is the whole tail as one block. **It does not
+  // wait for the device**: a tile's instances go into its own block on the CPU, and the next frame
+  // brings the table set it flips to up to date on the GPU while the frames in flight read the
+  // others. Buffers the change outgrew are destroyed when the frames that may read them are done,
+  // and when the per-pair buffers were made again the occlusion history starts over, since the
+  // flags it would read are undefined. `compact` lays every block out again (counted in
+  // `Stats::tiles`, like the compaction a change does on its own). Never between `begin_frame` and
+  // `submit_frame`. False, with the scene unchanged unless `error` says it is lost, when the scene
+  // refuses the tail.
+  bool set_dynamic_instances(std::span<const SceneInstance> tail,
+                             std::span<const DynamicBlock> blocks = {},
+                             std::string* error = nullptr, bool compact = false);
+  bool set_dynamic_instances(std::span<const SceneInstance> tail, std::string* error) {
+    return set_dynamic_instances(tail, {}, error);
+  }
 
   // ---- one frame ------------------------------------------------------------------------------
   // Waits for the slot to come free, folds the statistics and timings of the frame that last
@@ -477,6 +525,8 @@ class SceneRenderer {
     gfx::ComputePipeline record_ranges;
     gfx::ComputePipeline record_emit;
     gfx::ComputePipeline trace;
+    // pair_expand.slang: a streamed world's changed pair-table entries, from its instance table.
+    gfx::ComputePipeline pair_expand;
     void destroy(const gfx::Device& device) noexcept;
   };
   // One view's slice of the screen-sized buffers. Every view rasterizes into its own region of
@@ -556,6 +606,11 @@ class SceneRenderer {
   Vector<u64> slot_submission_;
   Vector<u32> slot_pairs_;  // and the scene it culled, which a world changes between frames
   Vector<u32> slot_instances_;
+  Vector<u32> slot_holes_;
+  Vector<u32> slot_table_slots_;  // and what it wrote into the table set it flipped to
+  Vector<u32> slot_table_pairs_;
+  GpuScene::TableUpdate tables_;  // the frame being recorded's table update; its copies are kept
+  Vector<gfx::BufferResource> retired_;  // a change's outgrown buffers, on their way to deferral
   Stats stats_;
   gfx::CommandList commands_;  // the frame between begin_frame and submit_frame
   u32 width_ = 0;
