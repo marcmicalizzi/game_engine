@@ -325,7 +325,13 @@ u32 converge(SceneRenderer& renderer, const SceneData& data, f32 distance, u32 m
     FrameDesc frame = frame_at(data, distance, f);
     REQUIRE_MESSAGE(renderer.render_offscreen(frame, &error), error);
     const StreamStats& stream = renderer.streamer().stats();
-    quiet = stream.pending == 0 && !renderer.streamer().has_uploads() ? quiet + 1 : 0;
+    // A frame is quiet only when nothing is queued, nothing is staged **and no read is still on
+    // its way**. A file-backed source's reads can outlive four frames on a loaded machine (the
+    // TITAN Xp under load had five in flight when the old condition called it converged), and a
+    // read that lands after the loop returns is a page the capture below never drew.
+    quiet = stream.pending == 0 && !renderer.streamer().has_uploads() && stream.loads_in_flight == 0
+                ? quiet + 1
+                : 0;
     if (quiet >= k_quiet_frames) return f + 1;
   }
   return max_frames;
