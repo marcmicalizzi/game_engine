@@ -1,0 +1,44 @@
+{
+  "name": "places",
+  "objects": [
+    {
+      "deleted": false,
+      "id": "0000000000000050000000000000000b",
+      "parent": "00000000000000000000000000000000",
+      "properties": {
+        "name": "place",
+        "position": [
+          39.5,
+          0.0,
+          11.25
+        ]
+      },
+      "type": "engine.world.Node"
+    },
+    {
+      "deleted": false,
+      "id": "000000000000005000000000000003e8",
+      "parent": "00000000000000500000000000000004",
+      "properties": {
+        "name": "cart",
+        "position": [
+          44.99977111816406,
+          0.0,
+          5.0
+        ],
+        "spin": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "velocity": [
+          3.0,
+          0.0,
+          0.0
+        ]
+      },
+      "type": "engine.kinematics.Mover"
+    }
+  ],
+  "role": "Feature"
+}

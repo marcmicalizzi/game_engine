@@ -120,8 +120,10 @@ network does not think about. In it:
   machine nobody here can log in to shows that its compiler flies a recording to the same place.
   `content/input-maps/` (the interactive camera's default bindings, checked against the compiled
   ones), `content/roles/` (the five named role configurations, which the protocol test loads) and
-  `content/test-scenes/` ride along at a few kilobytes; `content/samples/` only with
-  `-WithSamples`.
+  `content/test-scenes/` ride along at a few kilobytes; `content/migration-corpus/` — one save
+  game per version of the save format, about 110 KB each, which engine-cli's corpus test loads
+  and holds to state hashes that must be the same on every machine — rides along too, for the
+  same reason the device logs do; `content/samples/` only with `-WithSamples`.
 - `bundle.json` — the commit, the branch, the preset, the CPU baseline (read out of the build's
   `CMakeCache.txt`, or `unknown` where that switch does not exist yet), and the **test list taken
   from `ctest --show-only=json-v1`** rather than from a glob: each test's executable, arguments,

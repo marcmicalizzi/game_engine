@@ -1,0 +1,2 @@
+# A save's manifest hashes every byte of its files: git must never convert one.
+* -text

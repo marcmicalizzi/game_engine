@@ -24,7 +24,10 @@
 #include <test_paths.h>
 #include <test_temp_dir.h>
 
+#include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -478,6 +481,133 @@ TEST_CASE("save: a save that is not what its manifest says is refused, naming wh
   CHECK(error_code(into) != 0);
   CHECK(error_code(host.call("session.state_hash", "{\"session\":\"nope\"}")) ==
         k_session_not_found);
+}
+
+// ---- the migration corpus (content/migration-corpus/README.md; plan 03 section 3.8)
+// --------------
+
+namespace {
+
+std::string environment(const char* name) {
+#if defined(_MSC_VER)
+  char* value = nullptr;
+  size_t size = 0;
+  if (_dupenv_s(&value, &size, name) != 0 || value == nullptr) return {};
+  std::string out(value);
+  std::free(value);
+  return out;
+#else
+  const char* value = std::getenv(name);
+  return value != nullptr ? std::string(value) : std::string{};
+#endif
+}
+
+// One save of the corpus and what loading it must produce, measured when it was committed: the tick
+// it continues from, the state hash its manifest recorded and the one the loaded world has — which
+// differ exactly when something migrated — every migration step, and the state hash after running
+// on one game second with no new input (the player keeps the log its save kept). The hashes are the
+// same on every compiler; a change that moves one of them on one compiler only is a determinism
+// bug.
+struct CorpusSave {
+  const char* name;
+  u64 tick;
+  const char* saved;
+  const char* loaded;
+  std::vector<std::string> migrations;
+  const char* continued;
+};
+
+const std::vector<CorpusSave>& corpus() {
+  static const std::vector<CorpusSave> saves = {
+      {"v1", 300, "8a6d7d078e00bcbf", "8a6d7d078e00bcbf", {}, "65b302f6a95c001d"},
+  };
+  return saves;
+}
+
+}  // namespace
+
+// The save the current version writes, into `ENGINE_SAVE_CORPUS_OUT/<name>` when that is set
+// (content/migration-corpus/README.md, "Adding a version"): the replay test's world, run to tick
+// 300 and saved. Without the variable it does nothing, so the suite never writes into the
+// repository.
+TEST_CASE("save corpus: write the current version's save when asked") {
+  const std::string out = environment("ENGINE_SAVE_CORPUS_OUT");
+  if (out.empty()) return;
+  const test::TempDir tmp("cli_save_corpus_write");
+  REQUIRE(tmp.ok());
+  const std::string doc = tmp.file("doc");
+  const std::string map_path = tmp.file("move-map.json");
+  const std::string log_path = tmp.file("walk.jsonl");
+  make_input(map_path, log_path);
+  Host host;
+  REQUIRE(host.ok);
+  make_world(host, doc);
+  const std::string s = "{\"session\":\"" + open_session(host, doc, false) + "\"";
+  REQUIRE(
+      number(result_of(host.call("session.run_headless",
+                                 s + ",\"seconds\":5" + stream_params(map_path, log_path) + "}")),
+             "tick") == 300);
+  const JsonValue saved = host.call("session.save_game", s + ",\"path\":" + json_string(out) + "}");
+  MESSAGE("wrote " << out << ": " << write_json(result_of(saved), JsonWriteOptions{false}));
+}
+
+TEST_CASE("save corpus: every save loads, migrates, and runs on as it was measured to") {
+  const std::string root = test::data_path(ENGINE_SOURCE_DIR "/content/migration-corpus/saves",
+                                           "content/migration-corpus/saves");
+  if (!test::path_exists(root)) {
+    // Only a test bundle may leave it out; a build's source tree always has it.
+    REQUIRE_MESSAGE(!test::bundle_root().empty(), "the migration corpus is missing: " << root);
+    MESSAGE("not in this bundle: " << root);
+    return;
+  }
+  // Every directory is a row of the table and every row a directory: a save nobody checks is not
+  // in the corpus, and a row with no save is a save somebody lost.
+  std::vector<std::string> on_disk;
+  for (const auto& entry : std::filesystem::directory_iterator(root)) {
+    if (entry.is_directory()) on_disk.push_back(entry.path().filename().string());
+  }
+  std::sort(on_disk.begin(), on_disk.end());
+  std::vector<std::string> listed;
+  for (const CorpusSave& save : corpus())
+    listed.push_back(save.name);
+  std::sort(listed.begin(), listed.end());
+  CHECK(on_disk == listed);
+
+  const test::TempDir tmp("cli_save_corpus");
+  REQUIRE(tmp.ok());
+  Host host;
+  REQUIRE(host.ok);
+  for (const CorpusSave& save : corpus()) {
+    CAPTURE(save.name);
+    const std::string path = root + "/" + save.name;
+    const JsonValue loaded =
+        host.call("session.load_game", "{\"path\":" + json_string(path) +
+                                           ",\"dir\":" + json_string(tmp.file(save.name)) + "}");
+#if defined(ENGINE_CLI_TESTS_KINEMATICS)
+    const JsonValue& load = result_of(loaded);
+    CHECK(number(load, "tick") == save.tick);
+    CHECK(text(load, "saved_state_hash") == save.saved);
+    CHECK(text(load, "state_hash") == save.loaded);
+    const JsonValue& steps = at(load, "migrations");
+    REQUIRE(steps.size() == save.migrations.size());
+    for (usize i = 0; i < steps.size(); ++i)
+      CHECK(steps[i].as_string() == save.migrations[i]);
+    const std::string session = text(load, "session");
+    const JsonValue run =
+        host.call("session.run_headless", "{\"session\":\"" + session + "\",\"seconds\":1}");
+    CHECK(number(result_of(run), "tick") == save.tick + 60);
+    const Hash on = state_hash(host, session);
+    MESSAGE(std::string(save.name)
+            << " loaded " << text(load, "state_hash") << ", continued " << on.value);
+    CHECK(on.value == std::string(save.continued));
+#else
+    // Its carts are the kinematics capability's, which this build does not have: the load is
+    // refused before it touches anything, naming the type, rather than loading a world whose carts
+    // would not move.
+    CHECK(error_code(loaded) == k_validation_failed);
+    CHECK(error_message(loaded).find("engine.kinematics.Mover") != std::string::npos);
+#endif
+  }
 }
 
 #else

@@ -30,6 +30,10 @@
                         against the compiled-in map (4 KB).
     content/roles       the five named role configurations, which the protocol
                         test reads to check the shipped file loads (3 KB).
+    content/migration-corpus
+                        one save game per version of the save format, which
+                        engine-cli's corpus test loads and holds to its
+                        state hashes (about 110 KB a save).
     content/test-scenes the reference-scene definitions (17 KB), for a later
                         job that wants them.
     content/samples     the Khronos glTF models, with -WithSamples only. They
@@ -248,9 +252,11 @@ foreach ($path in $exeFiles) {
   }
 }
 
-# Data the tests open. `content/input-logs`, `content/input-maps` and `content/roles` are the ones
-# the suite needs; the rest is small and useful to have on the far end.
-$dataDirs = @('content/input-logs', 'content/input-maps', 'content/roles', 'content/test-scenes')
+# Data the tests open. `content/input-logs`, `content/input-maps`, `content/roles` and
+# `content/migration-corpus` are the ones the suite needs; the rest is small and useful to have on
+# the far end.
+$dataDirs = @('content/input-logs', 'content/input-maps', 'content/roles', 'content/test-scenes',
+              'content/migration-corpus')
 if ($WithSamples) { $dataDirs += 'content/samples' }
 $data = @()
 foreach ($rel in $dataDirs) {
