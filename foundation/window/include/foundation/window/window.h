@@ -347,6 +347,12 @@ struct WindowDesc {
   bool resizable = true;
   bool vulkan = true;  // create able to carry a Vulkan surface (backend/vulkan/surface.h)
   bool hidden = false;
+  // No title bar and no border, placed at the top-left corner of the primary display: a window
+  // the size of the display then covers it exactly, which is what lets the compositor hand it the
+  // display (independent flip) instead of composing it (docs/subsystems/window.md, "Borderless
+  // windows and presentation"). Not fullscreen: the display mode never changes and other windows
+  // can still be brought over it.
+  bool borderless = false;
 };
 
 class Window {

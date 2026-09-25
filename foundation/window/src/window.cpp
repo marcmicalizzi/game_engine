@@ -684,11 +684,19 @@ bool Window::create(const WindowDesc& desc, std::string* error) {
   if (desc.resizable) flags |= SDL_WINDOW_RESIZABLE;
   if (desc.vulkan) flags |= SDL_WINDOW_VULKAN;
   if (desc.hidden) flags |= SDL_WINDOW_HIDDEN;
+  if (desc.borderless) flags |= SDL_WINDOW_BORDERLESS;
   SDL_Window* window = SDL_CreateWindow(desc.title, static_cast<int>(desc.width),
                                         static_cast<int>(desc.height), flags);
   if (window == nullptr) {
     set_error(error, "SDL_CreateWindow");
     return false;
+  }
+  if (desc.borderless) {
+    // The primary display's top-left corner, so a window of the display's size covers it.
+    SDL_Rect bounds{};
+    if (SDL_GetDisplayBounds(SDL_GetPrimaryDisplay(), &bounds)) {
+      (void)SDL_SetWindowPosition(window, bounds.x, bounds.y);
+    }
   }
   handle_ = window;
   id_ = SDL_GetWindowID(window);

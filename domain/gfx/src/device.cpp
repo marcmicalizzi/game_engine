@@ -222,6 +222,12 @@ bool Device::create(const DeviceOptions& options, std::string* error) {
       return false;
     }
   }
+  // Present ids, waits and display timing (below) need the surface-capabilities query's second
+  // form on the instance. Asked for only by a caller that brought surface extensions — one that
+  // presents — and only where it exists; nothing fails without it.
+  const bool surface_capabilities2 =
+      options.instance_extension_count > 0 &&
+      instance_extensions.enable_if_available("VK_KHR_get_surface_capabilities2");
 
   VkApplicationInfo app{};
   app.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
@@ -350,6 +356,49 @@ bool Device::create(const DeviceOptions& options, std::string* error) {
     return wanted != 0 && device_extensions.enable_if_available(name);
   };
   impl->features.presentation = enable_ext("VK_KHR_swapchain", caps_.swapchain);
+  // ---- presentation extras: when a frame reached the display ----
+  //
+  // Not rows of the requirements table: nothing the renderer draws depends on them, only a
+  // presenting app's measurement and pacing (docs/subsystems/gfx.md, "Presentation";
+  // docs/subsystems/apps.md, "Pacing"), and a device without them presents exactly as before.
+  // So they are queried here, for this device, only when presentation is enabled and the
+  // instance has the second surface-capabilities query — the one feature query outside
+  // `read_device_caps`, kept to these three structs.
+  VkPhysicalDevicePresentId2FeaturesKHR present_id2{};
+  present_id2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_2_FEATURES_KHR;
+  VkPhysicalDevicePresentWait2FeaturesKHR present_wait2{};
+  present_wait2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_2_FEATURES_KHR;
+  VkPhysicalDevicePresentTimingFeaturesEXT present_timing{};
+  present_timing.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_TIMING_FEATURES_EXT;
+  bool ext_present_id2 = false;
+  bool ext_present_wait2 = false;
+  bool ext_present_timing = false;
+  if (impl->features.presentation && surface_capabilities2 &&
+      device_extensions.has("VK_KHR_present_id2")) {
+    present_id2.pNext = &present_wait2;
+    present_wait2.pNext = &present_timing;
+    VkPhysicalDeviceFeatures2 query{};
+    query.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    query.pNext = &present_id2;
+    vkGetPhysicalDeviceFeatures2(h.physical, &query);
+    present_id2.pNext = nullptr;
+    present_wait2.pNext = nullptr;
+    present_timing.pNext = nullptr;
+    ext_present_id2 = present_id2.presentId2 == VK_TRUE &&
+                      device_extensions.enable_if_available("VK_KHR_present_id2");
+    ext_present_wait2 = ext_present_id2 && present_wait2.presentWait2 == VK_TRUE &&
+                        device_extensions.enable_if_available("VK_KHR_present_wait2");
+    const bool calibrated = device_extensions.has("VK_KHR_calibrated_timestamps");
+    ext_present_timing = ext_present_id2 && calibrated && present_timing.presentTiming == VK_TRUE &&
+                         device_extensions.enable_if_available("VK_EXT_present_timing");
+    if (ext_present_timing) device_extensions.enable_if_available("VK_KHR_calibrated_timestamps");
+    present_wait2.presentWait2 = ext_present_wait2 ? VK_TRUE : VK_FALSE;
+    present_timing.presentAtAbsoluteTime = VK_FALSE;  // nothing here schedules presents yet
+    present_timing.presentAtRelativeTime = VK_FALSE;
+  }
+  h.present_id2 = ext_present_id2;
+  h.present_wait2 = ext_present_wait2;
+  h.present_timing = ext_present_timing;
   const bool ext_mesh = enable_ext("VK_EXT_mesh_shader", caps_.mesh_shader);
   const bool ext_deferred =
       enable_ext("VK_KHR_deferred_host_operations", caps_.deferred_host_operations);
@@ -509,6 +558,9 @@ bool Device::create(const DeviceOptions& options, std::string* error) {
     impl->features.memory_decompression = true;
   }
 #endif
+  if (ext_present_id2) link(reinterpret_cast<VkBaseOutStructure*>(&present_id2));
+  if (ext_present_wait2) link(reinterpret_cast<VkBaseOutStructure*>(&present_wait2));
+  if (ext_present_timing) link(reinterpret_cast<VkBaseOutStructure*>(&present_timing));
   *tail = nullptr;
 
   VkDeviceCreateInfo device_info{};

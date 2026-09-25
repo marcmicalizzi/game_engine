@@ -46,6 +46,14 @@ struct Handles {
   VmaAllocator allocator = nullptr;
   VkDebugUtilsMessengerEXT messenger = VK_NULL_HANDLE;
   VkCommandPool immediate_pool = VK_NULL_HANDLE;  // graphics family, transient
+  // Presentation extras the device enabled beside VK_KHR_swapchain, which only a presenting
+  // module reads (the swapchain, backend/vulkan/swapchain.h), so they are here rather than in the
+  // engine-neutral DeviceFeatures: present ids and waits (VK_KHR_present_id2,
+  // VK_KHR_present_wait2) and display timing (VK_EXT_present_timing with the calibrated
+  // timestamps it needs). Enabled only when the instance brought surface extensions.
+  bool present_id2 = false;
+  bool present_wait2 = false;
+  bool present_timing = false;
 };
 
 const char* result_name(VkResult result) noexcept;

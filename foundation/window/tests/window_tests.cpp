@@ -252,6 +252,35 @@ TEST_CASE("window: create a hidden window, read its size, drain events") {
 
 // The button and axis enums are the input log's vocabulary (docs/subsystems/input.md), so their
 // names and numbering are pinned here: no display and no gamepad are needed to check them.
+TEST_CASE("window: a borderless window is created at the size asked") {
+  // `WindowDesc::borderless` (window.md, "Borderless windows and presentation"): no decorations,
+  // at the primary display's corner. Hidden, so it covers nobody's desktop; what is checked is
+  // that the flag creates a window of the size asked, which is what makes one the display's size
+  // cover the display.
+  std::string error;
+  if (!window::init(&error)) {
+    MESSAGE("no display: " << error);
+    return;
+  }
+  window::WindowDesc desc;
+  desc.title = "engine borderless test";
+  desc.width = 96;
+  desc.height = 64;
+  desc.hidden = true;
+  desc.borderless = true;
+  window::Window window;
+  if (!window.create(desc, &error)) {
+    MESSAGE("cannot create a window here: " << error);
+    window::shutdown();
+    return;
+  }
+  CHECK(window.valid());
+  CHECK(window.pixel_width() >= 96);
+  CHECK(window.pixel_height() >= 64);
+  window.destroy();
+  window::shutdown();
+}
+
 TEST_CASE("window: the gamepad enums are named and numbered for the input log") {
   CHECK(static_cast<u32>(window::GamepadButton::Unknown) == 0);
   CHECK(static_cast<u32>(window::GamepadButton::South) == 1);
