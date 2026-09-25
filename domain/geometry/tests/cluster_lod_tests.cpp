@@ -1,4 +1,5 @@
 #include <domain/geometry/cluster_lod.h>
+#include <domain/geometry/cluster_pages.h>
 
 #include <doctest/doctest.h>
 
@@ -341,6 +342,76 @@ TEST_CASE("cluster lod: separate meshes merge into a scene, each keeping its own
   ClusterLodMesh empty_meshes[2] = {meshes[0], ClusterLodMesh{}};
   CHECK_FALSE(merge_cluster_meshes(empty_meshes, scene, parts, &error));
   CHECK_FALSE(error.empty());
+}
+
+TEST_CASE("cluster lod: a merge says where every cluster came from, so per-cluster arrays follow") {
+  // A mesh laid out in pages is ordered coarse to fine, and the scene convention pulls its leaves
+  // to the front: that is the merge that reorders a mesh, and a caller's own per-cluster array — a
+  // material per cluster — must be reordered with it. The renderer did not, until 2026-09-24, and
+  // every scene of more than one mesh drew its multi-material meshes' clusters with other
+  // clusters' materials (docs/experiments/first-interactive-session-2026-09-24.md).
+  Vector<Vec3> positions_a;
+  Vector<u32> indices_a;
+  make_terrain(33, 20.0f, positions_a, indices_a);
+  Vector<Vec3> positions_b;
+  Vector<u32> indices_b;
+  make_terrain(17, 2.0f, positions_b, indices_b);
+  ClusterLodMesh meshes[2];
+  std::string error;
+  REQUIRE_MESSAGE(build_cluster_lod(positions_a, indices_a, ClusterLodOptions{}, meshes[0], &error),
+                  error);
+  REQUIRE_MESSAGE(build_cluster_lod(positions_b, indices_b, ClusterLodOptions{}, meshes[1], &error),
+                  error);
+  // Mesh 0 as a container holds it: in pages, coarse first. Mesh 1 as the builder left it.
+  ClusterPages pages;
+  REQUIRE_MESSAGE(build_cluster_pages(meshes[0], ClusterPagesOptions{}, pages, &error), error);
+  REQUIRE(meshes[0].lod[0].level > 0);
+  REQUIRE(meshes[1].lod[0].level == 0);
+
+  for (const ClusterOrder order : {ClusterOrder::leaves_first, ClusterOrder::keep}) {
+    CAPTURE(static_cast<u32>(order));
+    ClusterLodMesh scene;
+    Vector<ClusterMeshPart> parts;
+    Vector<u32> source;
+    REQUIRE_MESSAGE(merge_cluster_meshes(meshes, scene, parts, &error, order, &source), error);
+    REQUIRE(source.size() == scene.mesh.clusters.size());
+    u32 moved[2] = {0, 0};
+    for (u32 m = 0; m < 2; ++m) {
+      const ClusterMeshPart& part = parts[m];
+      Vector<u32> seen(meshes[m].mesh.clusters.size(), 0u);
+      for (u32 i = 0; i < part.cluster_count; ++i) {
+        const u32 index = part.first_cluster + i;
+        const u32 from = source[index];
+        REQUIRE(from < meshes[m].mesh.clusters.size());
+        ++seen[from];
+        moved[m] += from != i ? 1u : 0u;
+        // The merged cluster is the one it names, with its offsets shifted.
+        const ClusterDesc& merged = scene.mesh.clusters[index];
+        const ClusterDesc& own = meshes[m].mesh.clusters[from];
+        CHECK(scene.lod[index].level == meshes[m].lod[from].level);
+        CHECK(merged.triangle_count == own.triangle_count);
+        CHECK(merged.vertex_count == own.vertex_count);
+        CHECK(merged.vertex_offset == own.vertex_offset + part.first_vertex);
+      }
+      for (const u32 count : seen)
+        CHECK(count == 1);  // a permutation of the mesh's own clusters
+    }
+    // Only the paged mesh under the scene convention is reordered.
+    CHECK((moved[0] != 0) == (order == ClusterOrder::leaves_first));
+    CHECK(moved[1] == 0);
+    MESSAGE("clusters of the paged mesh that moved: " << moved[0] << " of "
+                                                      << parts[0].cluster_count);
+
+    // And a per-cluster array of the mesh's own, permuted by its run, lines up with the merge.
+    Vector<u32> level_of(meshes[0].mesh.clusters.size());
+    for (u32 i = 0; i < level_of.size(); ++i)
+      level_of[i] = meshes[0].lod[i].level;
+    permute_cluster_array(
+        std::span<const u32>(source.data() + parts[0].first_cluster, parts[0].cluster_count),
+        level_of);
+    for (u32 i = 0; i < parts[0].cluster_count; ++i)
+      CHECK(level_of[i] == scene.lod[parts[0].first_cluster + i].level);
+  }
 }
 
 TEST_CASE("cluster lod: skin bindings reach every level and survive both merges") {

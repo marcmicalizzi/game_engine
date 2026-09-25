@@ -963,8 +963,27 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
     part.vertex_id_source = out.lod.mesh.vertex_ids.empty() ? geometry::VertexIdSource::none
                                                             : out.lod.mesh.vertex_id_source;
     out.parts.push_back(part);
-  } else if (!geometry::merge_cluster_meshes(dags, out.lod, out.parts, &error)) {
-    return false;
+  } else {
+    // **The merge reorders a mesh, and its material map has to follow.** The scene convention
+    // puts each mesh's leaves first, and every mesh that came through the cache arrived in page
+    // order, leaves last — so the merge moves nearly every one of its clusters, and a
+    // `part_of_cluster` left in the mesh's own order gives each merged cluster the material of
+    // whichever cluster used to sit where it now sits. That drew rock on the dunes and metal on
+    // the FlightHelmet's leather in every scene of more than one mesh from 2026-09-17 until the
+    // first interactive session found it
+    // (docs/experiments/first-interactive-session-2026-09-24.md): patches that came and went as the
+    // LOD cut moved, because each cut drew other clusters.
+    Vector<u32> source_of_cluster;
+    if (!geometry::merge_cluster_meshes(dags, out.lod, out.parts, &error,
+                                        geometry::ClusterOrder::leaves_first, &source_of_cluster)) {
+      return false;
+    }
+    for (u32 m = 0; m < out.parts.size(); ++m) {
+      const geometry::ClusterMeshPart& part = out.parts[m];
+      geometry::permute_cluster_array(
+          std::span<const u32>(source_of_cluster.data() + part.first_cluster, part.cluster_count),
+          out.sources[m].part_of_cluster);
+    }
   }
 
   // Instances: the caller's, the grid's, or one identity instance of the one mesh.

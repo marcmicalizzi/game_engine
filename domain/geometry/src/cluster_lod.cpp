@@ -501,9 +501,10 @@ bool merge_cluster_lod(std::span<const ClusterLodMesh> parts, ClusterLodMesh& ou
 
 bool merge_cluster_meshes(std::span<const ClusterLodMesh> parts, ClusterLodMesh& out,
                           Vector<ClusterMeshPart>& parts_out, std::string* error,
-                          ClusterOrder order) {
+                          ClusterOrder order, Vector<u32>* source_of_cluster) {
   out = ClusterLodMesh{};
   parts_out.clear();
+  if (source_of_cluster != nullptr) source_of_cluster->clear();
   if (parts.empty()) {
     if (error != nullptr) *error = "merge_cluster_meshes: no meshes";
     return false;
@@ -613,6 +614,7 @@ bool merge_cluster_meshes(std::span<const ClusterLodMesh> parts, ClusterLodMesh&
       lod.group += group_base;
       out.mesh.clusters.push_back(desc);
       out.lod.push_back(lod);
+      if (source_of_cluster != nullptr) source_of_cluster->push_back(i);
       if (any_morph) {
         append_cluster_morph(out.mesh, part, i, morph_base, morph_normals);
         out.mesh.morph_cluster_slices.push_back(out.mesh.morph_slices.size());

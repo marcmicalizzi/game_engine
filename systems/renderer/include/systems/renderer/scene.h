@@ -182,12 +182,16 @@ bool parse_hash_hex(std::string_view text, u64& out) noexcept;
 // and so which material — each of its clusters came from. The DAG itself has been moved into
 // the scene's merged mesh by then.
 struct SourceMesh {
-  assets::MeshData data;        // materials and images; the positions are spent by now
-  Vector<u32> part_of_cluster;  // the part index of every cluster, mesh-local
-  Vector<i32> part_material;    // the material of every part, -1 for none
-  std::string image_dir;        // what the relative image paths are relative to
-  u32 primitives = 0;           // glTF primitives merged into it; 0 from a container
-  const char* cache = "none";   // "file", "hit", "miss", or "none"
+  assets::MeshData data;  // materials and images; the positions are spent by now
+  // The part index of every cluster of this mesh, in the order of its run of the merged cluster
+  // array (`parts[m].first_cluster + i`): `load_scene` permutes it with the merge, which puts a
+  // mesh's leaves first and so reorders every mesh that arrived in pages (renderer.md, "The
+  // material map follows the merge").
+  Vector<u32> part_of_cluster;
+  Vector<i32> part_material;   // the material of every part, -1 for none
+  std::string image_dir;       // what the relative image paths are relative to
+  u32 primitives = 0;          // glTF primitives merged into it; 0 from a container
+  const char* cache = "none";  // "file", "hit", "miss", or "none"
   // The `.clusters` container this mesh's bytes are in: the file a `--mesh x.clusters` named, the
   // derived-data entry a glTF hit, or the one this load just wrote. Empty when there is none —
   // the procedural heightfield, or a glTF loaded with `--no-cache` — and that is exactly the

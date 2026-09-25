@@ -207,9 +207,21 @@ enum class ClusterOrder : u8 { leaves_first, keep };
 //
 // `order` is `ClusterOrder::keep` when the meshes have been laid out in pages; see the enum, and
 // `merge_paged_cluster_meshes` in cluster_pages.h, which is what a caller with page tables uses.
+//
+// **A merge may reorder a mesh's clusters**, and a caller that keeps anything per cluster of a
+// mesh — a material per cluster above all — has to reorder it the same way. `source_of_cluster`,
+// when given, receives for every merged cluster the index it had in its own mesh
+// (`parts[m].mesh.clusters`), so mesh m's run of it, `[first_cluster, first_cluster +
+// cluster_count)`, is exactly what `permute_cluster_array` (cluster_pages.h) takes. With `keep` it
+// is the identity; with `leaves_first` it is too for a mesh built by `build_cluster_lod` (leaves
+// already first) and is not for one laid out in pages — which is every mesh read from a
+// `.clusters` container. Until 2026-09-24 the renderer did not take it, and every scene of more
+// than one mesh drew its multi-material meshes' clusters with other clusters' materials
+// (docs/experiments/first-interactive-session-2026-09-24.md).
 bool merge_cluster_meshes(std::span<const ClusterLodMesh> parts, ClusterLodMesh& out,
                           Vector<ClusterMeshPart>& parts_out, std::string* error = nullptr,
-                          ClusterOrder order = ClusterOrder::leaves_first);
+                          ClusterOrder order = ClusterOrder::leaves_first,
+                          Vector<u32>* source_of_cluster = nullptr);
 
 // Level 0 covers every source triangle exactly once; every cluster's own error is at most its
 // parent error; the raw cut is non-empty for every threshold; the triangle count of the raw

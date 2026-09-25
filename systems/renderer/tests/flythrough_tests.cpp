@@ -569,6 +569,46 @@ TEST_CASE("flythrough: a terrain comes back from its cache entry as the terrain 
   CHECK(second.sources[terrain].data.materials.size() == k_terrain_materials);
 }
 
+TEST_CASE("scene: every cluster keeps its own material through the scene's merge") {
+  // `merge_cluster_meshes` puts each mesh's leaves first, and a mesh that arrives in pages — the
+  // terrain here, and every glTF and container that goes through the cache — arrives leaves last,
+  // so the merge reorders it. Until 2026-09-24 the per-cluster material map was not reordered with
+  // it and clusters drew with other clusters' materials: patches of rock on the dunes and of metal
+  // on the FlightHelmet's leather, changing whenever the LOD cut moved
+  // (docs/experiments/first-interactive-session-2026-09-24.md). The terrain's material is a
+  // function of a cluster's own vertices, so every one of its clusters can be checked, and on
+  // both a cache miss and a hit.
+  World world;
+  REQUIRE_MESSAGE(world.write(), world.error);
+  for (u32 pass = 0; pass < 2; ++pass) {
+    SceneData data;
+    REQUIRE_MESSAGE(load_scene(world.desc, data, world.error), world.error);
+    REQUIRE(data.parts.size() == 2);  // the cube and the terrain: the merge runs
+    const u32 terrain = data.parts.size() - 1;
+    const geometry::ClusterMeshPart& part = data.parts[terrain];
+    const SourceMesh& source = data.sources[terrain];
+    CAPTURE(std::string(source.cache));
+    REQUIRE(source.part_of_cluster.size() == part.cluster_count);
+    // The merge did reorder it: its run starts with its leaves, and the container's does not.
+    CHECK(data.lod.lod[part.first_cluster].level == 0);
+    u32 wrong = 0;
+    u32 rock = 0;
+    for (u32 i = 0; i < part.cluster_count; ++i) {
+      const geometry::ClusterDesc& c = data.lod.mesh.clusters[part.first_cluster + i];
+      const u32 expected = terrain_majority_material(
+          world.desc.terrain,
+          std::span<const Vec3>(data.lod.mesh.vertices.data() + c.vertex_offset, c.vertex_count));
+      wrong += source.part_of_cluster[i] != expected ? 1u : 0u;
+      rock += expected == 1u ? 1u : 0u;
+    }
+    MESSAGE("terrain clusters: " << part.cluster_count << ", rock " << rock << ", wrong " << wrong);
+    // More than one material, or the check would prove nothing.
+    CHECK(rock > 0);
+    CHECK(rock < part.cluster_count);
+    CHECK(wrong == 0);
+  }
+}
+
 TEST_CASE("flythrough: the same path draws the same pairs, frame by frame, and says which frame") {
   Gpu gpu;
   if (!gpu.ok) {
