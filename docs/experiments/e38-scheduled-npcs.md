@@ -176,7 +176,7 @@ engine_npc_bench --filter='npc.places*' --repeats=3 --wait-quiet=900
 
 | Row | 10^4 | 10^5 | What |
 |---|---|---|---|
-| `npc.tile_pass` (as above, re-taken with the source code in the driver and none registered) | 0.478 ms | 0.580 ms | a tile's activation without the index |
+| `npc.tile_pass` (as above, re-taken on the driver that takes tile sources, with none registered) | 0.478 ms | 0.580 ms | a tile's activation without the index |
 | `npc.tile_pass.scheduled` | 0.671 ms | 0.922 ms | the same with the capability's tile source registered, as engine-host has it |
 | **The index's cost per activation** | **0.19 ms** | **0.34 ms** | 250 and 401 residents' routines visit the bench tile (137 and 154 records): a closed form each, **0.8 µs a resident** |
 | `npc.watch/0`, `/1` (10^4, one tile live, a game day executed) | 1.02 ms, 2.52 ms | | the day without and with the source: 964 and 2,308 events delivered |
