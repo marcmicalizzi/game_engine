@@ -5,14 +5,23 @@
 // tail of more between frames draws **exactly** what a scene loaded with the prefix and the tail
 // from the start draws — the same ids, the same depths, the same colours — through every change:
 // a tail added, grown past the per-pair buffers so they are made again (twice), shrunk, and taken
-// away. The ids can be the same because the tail follows the prefix in both scenes, so every
-// (instance, cluster) pair has the same number in both. Occlusion culling is on, so the flags that
-// survive a change (and the ones that do not) are exercised; they may cost a frame of culling,
-// never a pixel. The CPU half — the pair cap and the placement — needs no device.
+// away. The ids can be the same because a tail handed over as one block follows the prefix in both
+// scenes, so every (instance, cluster) pair has the same number in both. Occlusion culling is on,
+// so the flags that survive a change (and the ones that do not) are exercised; they may cost a
+// frame of culling, never a pixel. The CPU half — the pair cap and the placement — needs no device.
+//
+// **A tail handed over tile by tile** (`DynamicBlock`) puts each tile in a block of its own, which
+// is wherever the layout found room: arrivals, departures that leave holes, a hole reused, a tile
+// rewritten in place, a compaction asked for and one the holes bring on, and the same changes on
+// consecutive frames none of which is waited for. Depth and colour are still compared word for word
+// with the loaded scene; the ids are compared once each instance slot is turned into its place in
+// the tail (`GpuScene::tail_indices`), which is the loaded scene's numbering. The layout's own
+// arithmetic is `tile_layout_tests.cpp`'s.
 #include <core/math/math.h>
 #include <domain/geometry/cluster.h>
 #include <domain/geometry/cluster_lod.h>
 #include <domain/gfx/device.h>
+#include <domain/gfx/shader_library.h>
 #include <systems/renderer/capture.h>
 #include <systems/renderer/gpu_scene.h>
 #include <systems/renderer/scene.h>
@@ -23,6 +32,7 @@
 #include <doctest/doctest.h>
 
 #include <cmath>
+#include <shaders/pair_expand.spv.h>
 #include <span>
 #include <string>
 
@@ -183,13 +193,14 @@ struct Rig {
   std::string error;
 
   bool build(const gfx::Device& device, std::span<const SceneInstance> instances, bool dynamic,
-             const RenderSettings& settings) {
+             const RenderSettings& settings, u32 frames_in_flight = 2) {
     if (!make_scene(instances, dynamic, data, error)) return false;
     resolve_settings(settings, device.features(), &data, resolved);
     if (!scene.create(device, data, resolved, &error)) return false;
     SceneRenderer::Desc rd;
     rd.width = k_width;
     rd.height = k_height;
+    rd.frames_in_flight = frames_in_flight;
     return renderer.create(device, scene, resolved, rd, &error);
   }
 };
@@ -365,6 +376,198 @@ void run_sequence(const gfx::Device& device, const RenderSettings& settings, con
   CHECK(dynamic.scene.dynamic_instance_count() == 0);
 }
 
+// ---- tiles, each a block of its own ------------------------------------------------------------
+
+// A tile of a world: its key and its instances.
+struct Tile {
+  u64 key = 0;
+  Vector<SceneInstance> instances;
+};
+
+Tile make_tile(u64 key, const Vector<SceneInstance>& instances) {
+  Tile t;
+  t.key = key;
+  t.instances = instances;
+  return t;
+}
+
+// Three boxes away from every other tile, so no two tiles' surfaces ever meet at one depth.
+Vector<SceneInstance> tile_d() {
+  Vector<SceneInstance> out;
+  out.push_back(placed(0, Vec3{-3.0f, 0.0f, -6.5f}, 1.0f, 0.2f));
+  out.push_back(placed(0, Vec3{3.0f, 0.3f, -6.5f}, 1.0f, 0.9f));
+  out.push_back(placed(0, Vec3{-6.0f, 0.2f, -6.0f}, 0.9f));
+  return out;
+}
+// Tile a arriving again, drawn differently: five of its boxes, one of them moved.
+Vector<SceneInstance> tile_a2(bool moved) {
+  Vector<SceneInstance> out = tile_a();
+  out.erase_at(4);
+  if (moved) out[0].transform.position = Vec3{-4.5f, 0.2f, -2.5f};
+  return out;
+}
+
+// The tail of `tiles` in the order given, and its blocks.
+void tail_of(std::span<const Tile* const> tiles, Vector<SceneInstance>& tail,
+             Vector<DynamicBlock>& blocks) {
+  tail.clear();
+  blocks.clear();
+  for (const Tile* t : tiles) {
+    if (t == nullptr) continue;
+    blocks.push_back(DynamicBlock{t->key, tail.size(), t->instances.size()});
+    for (const SceneInstance& i : t->instances)
+      tail.push_back(i);
+  }
+}
+
+// A capture of a scene streamed tile by tile against one of a scene **loaded** with the prefix and
+// the tail in the tail's order: depth and colour word for word, and the ids once each instance slot
+// the streamed scene drew is turned into the index the loaded scene gives the same instance — its
+// place in the tail after the prefix. A tile's instances sit wherever its block is; the surfaces,
+// clusters and triangles they name must not.
+Difference compare_through_tail(const CapturedFrame& streamed, const GpuScene& scene,
+                                const CapturedFrame& loaded) {
+  Vector<u32> tail_index;
+  scene.tail_indices(tail_index);
+  CapturedFrame renamed = streamed;
+  const u32 pixels = streamed.width * streamed.height;
+  for (u32 p = 0; p < pixels; ++p) {
+    u32& id = renamed.ids[p * k_id_words];
+    if (id == k_no_id || id < scene.static_instance_count()) continue;
+    // A slot that is not an instance of the tail is renamed to something the other side cannot be.
+    id = id < tail_index.size() && tail_index[id] != ~0u
+             ? scene.static_instance_count() + tail_index[id]
+             : k_no_id - 1;
+  }
+  return compare(renamed, loaded);
+}
+
+// Up to four tiles, in the order the tail holds them; a null one is none.
+struct TileStep {
+  const char* what;
+  const Tile* tiles[4];
+  bool compact = false;
+};
+
+// A world streamed tile by tile — arrivals, departures that leave holes, a block reused, a tile
+// rewritten in place, a compaction asked for and one the holes bring on — against the loaded scene
+// at every step; then the same changes on consecutive frames with frames in flight and nothing
+// waited for, captured at the end.
+void run_tiles(const gfx::Device& device, const RenderSettings& settings, const char* name,
+               u32 frames_in_flight) {
+  const Vector<SceneInstance> head = prefix();
+  const Tile a = make_tile(101, tile_a());
+  const Tile b = make_tile(202, tile_b());
+  const Tile c = make_tile(303, tile_c());
+  const Tile d = make_tile(404, tile_d());
+  const Tile a2 = make_tile(101, tile_a2(false));
+  const Tile a3 = make_tile(101, tile_a2(true));
+  Rig dynamic;
+  REQUIRE_MESSAGE(dynamic.build(device, std::span<const SceneInstance>(head.data(), head.size()),
+                                true, settings, frames_in_flight),
+                  dynamic.error);
+  REQUIRE(dynamic.scene.table_sets() == (frames_in_flight > 2 ? frames_in_flight : 2u));
+  const TileStep steps[] = {
+      {"a", {&a, nullptr, nullptr, nullptr}},
+      {"a and c", {&a, &c, nullptr, nullptr}},
+      {"c: a leaves a hole", {&c, nullptr, nullptr, nullptr}},
+      {"c and d: d takes a's hole", {&c, &d, nullptr, nullptr}},
+      {"b, c and d: b goes to the end", {&b, &c, &d, nullptr}},
+      {"a again, differently", {&a2, &b, &c, &d}},
+      {"a moved, rewritten in place", {&a3, &b, &c, &d}},
+      {"the same, compacted", {&a3, &b, &c, &d}, true},
+      {"b and d: c leaves, and the holes compact", {&b, &d, nullptr, nullptr}},
+      {"nothing", {nullptr, nullptr, nullptr, nullptr}},
+  };
+  const u64 compactions_before = dynamic.scene.compactions();
+  u32 reused = 0;
+  u32 rewritten = 0;
+  u32 holes_seen = 0;
+  Vector<SceneInstance> tail;
+  Vector<DynamicBlock> blocks;
+  for (const TileStep& step : steps) {
+    std::string error;
+    tail_of(std::span<const Tile* const>(step.tiles, 4), tail, blocks);
+    const TileStats before = dynamic.renderer.stats().tiles;
+    REQUIRE_MESSAGE(
+        dynamic.renderer.set_dynamic_instances(
+            std::span<const SceneInstance>(tail.data(), tail.size()),
+            std::span<const DynamicBlock>(blocks.data(), blocks.size()), &error, step.compact),
+        error);
+    const TileStats& after = dynamic.renderer.stats().tiles;
+    reused += static_cast<u32>(after.reused - before.reused);
+    rewritten += static_cast<u32>(after.rewritten - before.rewritten);
+    REQUIRE_MESSAGE(dynamic.scene.validate_tables(&error), error);
+    const u32 holes = dynamic.scene.tile_layout().hole_pairs();
+    holes_seen += holes > 0 ? 1u : 0u;
+    for (u32 f = 0; f < 3; ++f) {
+      REQUIRE_MESSAGE(dynamic.renderer.render_offscreen(
+                          frame_at(k_eye + Vec3{static_cast<f32>(f) - 1.0f, 0.0f, 0.0f}), &error),
+                      error);
+    }
+    CapturedFrame shot;
+    REQUIRE_MESSAGE(dynamic.renderer.capture(frame_at(k_eye), channels(), shot, &error), error);
+    const Vector<SceneInstance> whole = join({&head, &tail});
+    CapturedFrame expected;
+    REQUIRE_MESSAGE(reference(device, std::span<const SceneInstance>(whole.data(), whole.size()),
+                              settings, expected, error),
+                    error);
+    const Difference diff = compare_through_tail(shot, dynamic.scene, expected);
+    MESSAGE(std::string(name) << ", " << frames_in_flight << " in flight, "
+                              << std::string(step.what) << ": "
+                              << dynamic.scene.tile_layout().block_count() << " blocks, "
+                              << dynamic.scene.tile_layout().free_count() << " free, "
+                              << dynamic.scene.pair_count() << " pairs (" << holes << " holes), "
+                              << shot.covered << " covered; " << diff.ids << " id, " << diff.depth
+                              << " depth and " << diff.color << " colour differences");
+    CHECK(shot.covered == expected.covered);
+    CHECK(diff.ids == 0);
+    CHECK(diff.depth == 0);
+    CHECK(diff.color == 0);
+  }
+  CHECK(reused >= 1);
+  CHECK(rewritten >= 1);
+  CHECK(holes_seen >= 3);
+  CHECK(dynamic.scene.compactions() - compactions_before == 2);
+  CHECK(dynamic.scene.pair_count() == dynamic.scene.static_pair_count());
+
+  // The same changes again on consecutive frames, none waited for: every frame flips to a table
+  // set no frame in flight reads and brings it up to date, and the last picture is the last tail's.
+  std::string error;
+  for (const TileStep& step : steps) {
+    tail_of(std::span<const Tile* const>(step.tiles, 4), tail, blocks);
+    REQUIRE_MESSAGE(dynamic.renderer.set_dynamic_instances(
+                        std::span<const SceneInstance>(tail.data(), tail.size()),
+                        std::span<const DynamicBlock>(blocks.data(), blocks.size()), &error),
+                    error);
+    dynamic.renderer.begin_frame();
+    REQUIRE_MESSAGE(dynamic.renderer.submit_frame(frame_at(k_eye), &error) != 0, error);
+  }
+  const Tile* last[] = {&a3, &b, &c, &d};
+  tail_of(std::span<const Tile* const>(last, 4), tail, blocks);
+  REQUIRE_MESSAGE(dynamic.renderer.set_dynamic_instances(
+                      std::span<const SceneInstance>(tail.data(), tail.size()),
+                      std::span<const DynamicBlock>(blocks.data(), blocks.size()), &error),
+                  error);
+  dynamic.renderer.begin_frame();
+  REQUIRE_MESSAGE(dynamic.renderer.submit_frame(frame_at(k_eye), &error) != 0, error);
+  CapturedFrame shot;
+  REQUIRE_MESSAGE(dynamic.renderer.capture(frame_at(k_eye), channels(), shot, &error), error);
+  const Vector<SceneInstance> whole = join({&head, &tail});
+  CapturedFrame expected;
+  REQUIRE_MESSAGE(reference(device, std::span<const SceneInstance>(whole.data(), whole.size()),
+                            settings, expected, error),
+                  error);
+  const Difference diff = compare_through_tail(shot, dynamic.scene, expected);
+  MESSAGE(std::string(name) << ", " << frames_in_flight
+                            << " in flight, a change every frame, none waited for: " << diff.ids
+                            << " id, " << diff.depth << " depth and " << diff.color
+                            << " colour differences over " << shot.covered << " covered");
+  CHECK(diff.ids == 0);
+  CHECK(diff.depth == 0);
+  CHECK(diff.color == 0);
+}
+
 }  // namespace
 
 TEST_CASE("dynamic instances: a tail added and removed between frames draws the loaded scene") {
@@ -386,6 +589,42 @@ TEST_CASE("dynamic instances: a tail added and removed between frames draws the 
   settings.raster = RasterMode::Vertex;
   settings.shadows = ShadowMode::Off;
   run_sequence(gpu.device, settings, "vertex, occlusion");
+}
+
+TEST_CASE(
+    "dynamic instances: tiles arriving and leaving in blocks of their own draw the loaded "
+    "scene") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE(gpu.why);
+    return;
+  }
+  RenderSettings settings;
+  settings.raster = RasterMode::Hardware;  // the vertex path where there are no mesh shaders
+  settings.shadows = ShadowMode::Off;
+  settings.occlusion = true;
+  run_tiles(gpu.device, settings, "hw, occlusion", 2);
+  // Three frames in flight keep three table sets, and a change reaches the third a frame later.
+  run_tiles(gpu.device, settings, "hw, occlusion", 3);
+  settings.shadows = ShadowMode::Cascaded;
+  run_tiles(gpu.device, settings, "hw, occlusion, cascaded shadow maps", 2);
+  settings.raster = RasterMode::Vertex;
+  settings.shadows = ShadowMode::Off;
+  run_tiles(gpu.device, settings, "vertex, occlusion", 2);
+}
+
+TEST_CASE("dynamic instances: the pair expansion's push constants are the shader's") {
+  gfx::ShaderLibrary library;
+  std::string error;
+  REQUIRE_MESSAGE(library.create(nullptr, &error), error);
+  library.add_embedded("pair_expand", shaders::k_pair_expand_spirv,
+                       shaders::k_pair_expand_spirv_size);
+  const gfx::Shader* shader = library.get("pair_expand", &error);
+  REQUIRE_MESSAGE(shader != nullptr, error);
+  CHECK(shader->reflection.push_constant_bytes == sizeof(PairExpandParams));
+  const gfx::ShaderEntryPoint* entry = shader->reflection.entry("pair_expand_main");
+  REQUIRE(entry != nullptr);
+  CHECK(entry->local_size[0] == k_pair_expand_workgroup);
 }
 
 TEST_CASE("dynamic instances: a scene read whole refuses a tail, and a dynamic one is not traced") {
