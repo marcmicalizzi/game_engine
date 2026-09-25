@@ -10,6 +10,12 @@
 //   engine.run_tests       RunTestsParams      -> RunTestsResult        run_tests
 //   session.materialize    MaterializeParams   -> MaterializeResult     (the materialization
 //   report)
+//   session.state_hash     StateHashParams     -> StateHashResult       (05 §5.10's hash)
+//   session.save_game      SaveGameParams      -> SaveGameResult        (03 §3.5's save game)
+//   session.load_game      LoadGameParams      -> LoadGameResult        (and its load)
+//
+// The last three are the world capability's (docs/subsystems/world.md, "Save and load") and answer
+// 1006 in a build without it.
 //
 // They live in the app rather than in `domain/protocol` for the reason `render.*` does: each is
 // over something above the protocol's layer — the content build (`domain/content_build`), the
@@ -68,7 +74,8 @@ class OpsHost {
 };
 
 // Registers content.build, session.events, engine.budgets, session.run_headless,
-// engine.run_tests and session.materialize. `Context::app` must point at the host's `HostState`.
+// engine.run_tests, session.materialize, session.state_hash, session.save_game and
+// session.load_game. `Context::app` must point at the host's `HostState`.
 void add_ops_methods(protocol::Dispatcher& dispatcher);
 
 }  // namespace engine::host

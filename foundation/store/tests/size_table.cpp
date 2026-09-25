@@ -11,7 +11,7 @@
 using namespace engine;
 using namespace engine::store;
 
-ENGINE_EXPECT_SIZE(80, 8, EventRecord);
+ENGINE_EXPECT_SIZE(88, 8, EventRecord);  // 80 until table version 2 added payload_version
 ENGINE_EXPECT_SIZE(56, 8, ProjectionRecord);
 ENGINE_EXPECT_SIZE(40, 8, SnapshotInfo);
 ENGINE_EXPECT_SIZE(24, 8, Statement);

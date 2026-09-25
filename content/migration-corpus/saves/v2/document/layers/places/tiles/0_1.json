@@ -1,0 +1,20 @@
+{
+  "name": "places",
+  "objects": [
+    {
+      "deleted": false,
+      "id": "00000000000000500000000000000009",
+      "parent": "00000000000000000000000000000000",
+      "properties": {
+        "name": "place",
+        "position": [
+          7.5,
+          0.0,
+          43.25
+        ]
+      },
+      "type": "engine.world.Node"
+    }
+  ],
+  "role": "Feature"
+}

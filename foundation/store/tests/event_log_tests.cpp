@@ -422,6 +422,72 @@ TEST_CASE("store: a snapshot round-trips a tile's projections and bounds replay"
   CHECK(stmt.column_i64(0) == 1);
 }
 
+// store.md, "Migrations": table version 2 added `events.payload_version`. A file a version 1 build
+// wrote — the tables as that build created them, at user_version 1 — opens, migrates in one step,
+// reads every old event as payload version 1, and takes new ones at the version they say.
+TEST_CASE("store: a version 1 file migrates, and its events read as payload version 1") {
+  TempDir dir("engine_store_event");
+  const std::string path = dir.file("v1.db");
+  {
+    Database db;
+    REQUIRE(db.open(path) == Status::Ok);
+    // What a version 1 build created, verbatim.
+    REQUIRE(db.exec("CREATE TABLE events (tile INTEGER NOT NULL, seq INTEGER NOT NULL, sim_tick "
+                    "INTEGER NOT NULL, game_time INTEGER NOT NULL, type INTEGER NOT NULL, depth "
+                    "INTEGER NOT NULL, origin INTEGER NOT NULL, subject_hi INTEGER NOT NULL, "
+                    "subject_lo INTEGER NOT NULL, cause INTEGER NOT NULL, payload BLOB, PRIMARY "
+                    "KEY (tile, seq)) WITHOUT ROWID;"
+                    "CREATE TABLE projections (tile INTEGER NOT NULL, entity_hi INTEGER NOT NULL, "
+                    "entity_lo INTEGER NOT NULL, kind INTEGER NOT NULL, version INTEGER NOT NULL, "
+                    "blob BLOB, PRIMARY KEY (tile, entity_hi, entity_lo, kind)) WITHOUT ROWID;"
+                    "CREATE INDEX projections_by_entity ON projections(entity_hi, entity_lo, kind);"
+                    "CREATE TABLE snapshots (tile INTEGER PRIMARY KEY, seq INTEGER NOT NULL, "
+                    "sim_tick INTEGER NOT NULL, game_time INTEGER NOT NULL, record_count INTEGER "
+                    "NOT NULL, blob BLOB NOT NULL);"
+                    "INSERT INTO events VALUES (4, 1, 30, 500000, 7, 0, 0, 1, 2, 0, x'7b7d');"
+                    "INSERT INTO events VALUES (4, 2, 60, 1000000, 7, 0, 0, 1, 2, 0, x'7b7d');") ==
+            Status::Ok);
+    REQUIRE(db.set_user_version(1) == Status::Ok);
+  }
+  Database db;
+  REQUIRE(db.open(path) == Status::Ok);
+  EventLog log(db);
+  REQUIRE(log.open() == Status::Ok);
+  i32 version = 0;
+  REQUIRE(db.user_version(version) == Status::Ok);
+  CHECK(version == 2);
+  CHECK(EventLog::schema_version() == 2);
+
+  struct Versions {
+    Vector<u16> seen;
+    static void visit(const EventRecord& record, void* user) {
+      static_cast<Versions*>(user)->seen.push_back(record.payload_version);
+    }
+  };
+  Versions old;
+  REQUIRE(log.replay(4, 1, &Versions::visit, &old) == Status::Ok);
+  REQUIRE(old.seen.size() == 2);
+  CHECK(old.seen[0] == 1);
+  CHECK(old.seen[1] == 1);
+
+  // A new event says its own version, and reads back through every reader with it.
+  EventRecord upcast = make_event(4, 7, "{\"v\":3}");
+  upcast.payload_version = 3;
+  REQUIRE(log.append(upcast) == Status::Ok);
+  CHECK(upcast.sequence == 3);
+  Versions replayed;
+  REQUIRE(log.replay(4, 3, &Versions::visit, &replayed) == Status::Ok);
+  REQUIRE(replayed.seen.size() == 1);
+  CHECK(replayed.seen[0] == 3);
+  Versions scanned;
+  REQUIRE(log.scan(nullptr, 0, 10, &Versions::visit, &scanned) == Status::Ok);
+  REQUIRE(scanned.seen.size() == 3);
+  CHECK(scanned.seen[2] == 3);
+  Versions visited;
+  REQUIRE(log.visit_events(&Versions::visit, &visited) == Status::Ok);
+  CHECK(visited.seen.size() == 3);
+}
+
 TEST_CASE("store: origins have names") {
   CHECK(std::string_view(origin_name(EventOrigin::Deterministic)) == "deterministic");
   CHECK(std::string_view(origin_name(EventOrigin::Llm)) == "llm");

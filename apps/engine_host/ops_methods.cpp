@@ -856,6 +856,7 @@ void RuntimeWorld::log_writeback([[maybe_unused]] const sim::WriteBackBatch& bat
     record.game_time_us = batch.time.us;
     record.type = type;
     record.origin = store::EventOrigin::Deterministic;
+    record.payload_version = world::WriteBack::k_schema_version;
     record.subject = event.record;
     records.push_back(record);
     i = j;
@@ -2241,6 +2242,7 @@ bool session_save_game(protocol::Context& ctx, const protocol::SaveGameParams& p
   world::SaveManifest manifest;
   manifest.tick = tick;
   manifest.game_time_us = game_time;
+  manifest.saved_by = std::string("engine-host ") + ENGINE_VERSION;
   manifest.hz = RuntimeWorld::hz();
   manifest.write_back_every = world != nullptr ? world->writeback_every() : 1;
   manifest.world_seed = world != nullptr ? world->world_seed() : 1;

@@ -32,6 +32,8 @@ engine_app(NAME engine_host OUTPUT engine-host
 if(_host_defs)
   target_compile_definitions(engine_engine_host PRIVATE ${_host_defs})
 endif()
+# A save names the engine that wrote it (`SaveManifest::saved_by`), as engine.info does.
+target_compile_definitions(engine_engine_host PRIVATE ENGINE_VERSION="${PROJECT_VERSION}")
 # `bench` is here for foundation/bench/machine_state.h alone: render.benchmark reports what else
 # the machine was doing, in the same shape and with the same thresholds the CPU benchmarks use,
 # rather than growing a second copy of the sampler (docs/subsystems/bench.md).

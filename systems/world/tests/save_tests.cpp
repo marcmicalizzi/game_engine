@@ -523,6 +523,39 @@ TEST_CASE("world save: a save reads back as written, and restores to the same by
     CHECK(error.find("autosave_slot") != std::string::npos);
   }
   {
+    // A version 1 manifest, as the first save format wrote it: no `saved_by`, which version 2
+    // added. It reads, with the field at its default, and says it migrated.
+    auto as_version_1 = [](JsonValue& json, bool keep_saved_by) {
+      json.set("version", JsonValue(1u));
+      JsonValue& versions = json["versions"];
+      for (usize i = 0; i < versions.size(); ++i) {
+        if (versions[i]["name"] == JsonValue("engine.world.SaveManifest"))
+          versions[i].set("version", JsonValue(1u));
+      }
+      JsonValue trimmed = JsonValue::object();
+      for (u32 i = 0; i < json.as_object().size(); ++i) {
+        const std::string& key = json.as_object().key_at(i);
+        if (key != "saved_by" || keep_saved_by) trimmed.set(key, json.as_object().value_at(i));
+      }
+      json = std::move(trimmed);
+    };
+    CHECK(manifest.saved_by.empty());  // this test fills none; engine-host does
+    const std::string v1 = edited("v1", [&](JsonValue& json) { as_version_1(json, false); });
+    REQUIRE_MESSAGE(read_save(v1, read, check, error), error);
+    CHECK(read.version == 1);
+    CHECK(read.saved_by.empty());
+    REQUIRE(check.migrations.size() == 1);
+    CHECK(check.migrations[0] == "engine.world.SaveManifest 1 -> 2");
+    // A version 1 manifest that holds a field version 2 added is not one: refused, naming it.
+    const std::string forged = edited("forged", [&](JsonValue& json) {
+      json.set("saved_by", JsonValue("someone"));
+      as_version_1(json, true);
+    });
+    CHECK_FALSE(read_save(forged, read, check, error));
+    CHECK(error.find("saved_by was added to engine.world.SaveManifest in version 2") !=
+          std::string::npos);
+  }
+  {
     const std::string not_a_save = edited(
         "not_a_save", [](JsonValue& json) { json.set("format", JsonValue("engine.scene")); });
     CHECK_FALSE(read_save(not_a_save, read, check, error));

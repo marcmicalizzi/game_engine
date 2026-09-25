@@ -58,6 +58,7 @@ void hash_event(const store::EventRecord& r, void* user) {
   row.u64le(r.subject.hi);
   row.u64le(r.subject.lo);
   row.u64le(r.cause);
+  row.u64le(r.payload_version);
   row.blob(r.payload);
   walk->hash = hash_combine(walk->hash, row.hash());
   ++walk->count;

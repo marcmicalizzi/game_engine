@@ -424,7 +424,7 @@ TEST_CASE(
   // hash"). A change that moves the world — the fixture, a system's arithmetic, the write-back, the
   // hash itself — moves this, and says so here; a change that moves it on one compiler only is a
   // determinism bug (ADR-0035's kind), not an expectation to update.
-  CHECK(a.value == "d94f6796ccfc856f");
+  CHECK(a.value == "c2168e9307bca23b");
 #endif
 }
 
@@ -519,7 +519,13 @@ struct CorpusSave {
 
 const std::vector<CorpusSave>& corpus() {
   static const std::vector<CorpusSave> saves = {
-      {"v1", 300, "8a6d7d078e00bcbf", "8a6d7d078e00bcbf", {}, "65b302f6a95c001d"},
+      {"v1",
+       300,
+       "8a6d7d078e00bcbf",
+       "3d528309eea2b9df",
+       {"engine.world.SaveManifest 1 -> 2", "store.tables 1 -> 2"},
+       "37645e758e706598"},
+      {"v2", 300, "3d528309eea2b9df", "3d528309eea2b9df", {}, "37645e758e706598"},
   };
   return saves;
 }

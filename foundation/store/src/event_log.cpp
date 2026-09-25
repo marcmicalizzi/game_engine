@@ -49,6 +49,13 @@ constexpr Migration k_migrations[] = {
      "  record_count INTEGER NOT NULL,"
      "  blob         BLOB NOT NULL"
      ");"},
+    {2,
+     // Every event says which version of its type its payload was written at, so a reader can
+     // upcast an old one (plan 03 §3.8: "events carry their schema version; migration happens on
+     // read"). A column added with a default is a metadata change in SQLite, not a rewrite of the
+     // table, and the default is the truth about every row a version 1 file holds: no event type
+     // the engine wrote had a second version before this column existed (store.md, "Migrations").
+     "ALTER TABLE events ADD COLUMN payload_version INTEGER NOT NULL DEFAULT 1;"},
 };
 
 constexpr u32 k_snapshot_magic = 0x31'50'4E'53u;  // "SNP1" little-endian
@@ -137,7 +144,8 @@ Status EventLog::append_locked(EventRecord& record) {
   Statement stmt;
   const Status status = db_->prepare(
       "INSERT INTO events(tile,seq,sim_tick,game_time,type,depth,origin,"
-      "subject_hi,subject_lo,cause,payload) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+      "subject_hi,subject_lo,cause,payload,payload_version) "
+      "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
       stmt);
   if (status != Status::Ok) return status;
   stmt.bind(1, as_i64(record.tile))
@@ -149,7 +157,8 @@ Status EventLog::append_locked(EventRecord& record) {
       .bind(7, static_cast<i64>(record.origin))
       .bind(8, as_i64(record.subject.hi))
       .bind(9, as_i64(record.subject.lo))
-      .bind(10, as_i64(record.cause));
+      .bind(10, as_i64(record.cause))
+      .bind(12, static_cast<i64>(record.payload_version));
   if (record.payload.empty()) {
     stmt.bind_null(11);
   } else {
@@ -191,8 +200,8 @@ Status EventLog::replay(TileId tile, u64 from_sequence, EventVisitor fn, void* u
   if (fn == nullptr) return Status::InvalidArgument;
   Statement stmt;
   const Status status = db_->prepare(
-      "SELECT seq,sim_tick,game_time,type,depth,origin,subject_hi,subject_lo,cause,payload "
-      "FROM events WHERE tile=?1 AND seq>=?2 ORDER BY seq",
+      "SELECT seq,sim_tick,game_time,type,depth,origin,subject_hi,subject_lo,cause,payload,"
+      "payload_version FROM events WHERE tile=?1 AND seq>=?2 ORDER BY seq",
       stmt);
   if (status != Status::Ok) return status;
   stmt.bind(1, as_i64(tile)).bind(2, as_i64(from_sequence));
@@ -214,6 +223,7 @@ Status EventLog::replay(TileId tile, u64 from_sequence, EventVisitor fn, void* u
     record.subject.lo = as_u64(stmt.column_i64(7));
     record.cause = as_u64(stmt.column_i64(8));
     record.payload = stmt.column_blob(9);
+    record.payload_version = static_cast<u16>(stmt.column_i64(10));
     fn(record, user);
   }
 }
@@ -228,17 +238,18 @@ Status EventLog::scan(const LogPosition* after, u64 since_tick, u32 limit, Event
   // row-value comparison is SQLite's own (3.15 and later), so "after" means exactly the ORDER BY's
   // "after".
   Statement stmt;
-  const Status status =
-      after != nullptr ? db_->prepare(
-                             "SELECT tile,seq,sim_tick,game_time,type,depth,origin,subject_hi,"
-                             "subject_lo,cause,payload FROM events WHERE sim_tick>=?1 AND "
-                             "(sim_tick,tile,seq)>(?2,?3,?4) ORDER BY sim_tick,tile,seq LIMIT ?5",
-                             stmt)
-                       : db_->prepare(
-                             "SELECT tile,seq,sim_tick,game_time,type,depth,origin,subject_hi,"
-                             "subject_lo,cause,payload FROM events WHERE sim_tick>=?1 "
-                             "ORDER BY sim_tick,tile,seq LIMIT ?2",
-                             stmt);
+  const Status status = after != nullptr
+                            ? db_->prepare(
+                                  "SELECT tile,seq,sim_tick,game_time,type,depth,origin,subject_hi,"
+                                  "subject_lo,cause,payload,payload_version FROM events WHERE "
+                                  "sim_tick>=?1 AND (sim_tick,tile,seq)>(?2,?3,?4) "
+                                  "ORDER BY sim_tick,tile,seq LIMIT ?5",
+                                  stmt)
+                            : db_->prepare(
+                                  "SELECT tile,seq,sim_tick,game_time,type,depth,origin,subject_hi,"
+                                  "subject_lo,cause,payload,payload_version FROM events WHERE "
+                                  "sim_tick>=?1 ORDER BY sim_tick,tile,seq LIMIT ?2",
+                                  stmt);
   if (status != Status::Ok) return status;
   stmt.bind(1, as_i64(since_tick));
   if (after != nullptr) {
@@ -267,6 +278,7 @@ Status EventLog::scan(const LogPosition* after, u64 since_tick, u32 limit, Event
     record.subject.lo = as_u64(stmt.column_i64(8));
     record.cause = as_u64(stmt.column_i64(9));
     record.payload = stmt.column_blob(10);
+    record.payload_version = static_cast<u16>(stmt.column_i64(11));
     fn(record, user);
   }
 }
@@ -577,8 +589,8 @@ Status EventLog::visit_events(EventVisitor fn, void* user) {
   if (fn == nullptr) return Status::InvalidArgument;
   Statement stmt;
   const Status status = db_->prepare(
-      "SELECT tile,seq,sim_tick,game_time,type,depth,origin,subject_hi,subject_lo,cause,payload "
-      "FROM events ORDER BY tile,seq",
+      "SELECT tile,seq,sim_tick,game_time,type,depth,origin,subject_hi,subject_lo,cause,payload,"
+      "payload_version FROM events ORDER BY tile,seq",
       stmt);
   if (status != Status::Ok) return status;
   EventRecord record;
@@ -598,6 +610,7 @@ Status EventLog::visit_events(EventVisitor fn, void* user) {
     record.subject.lo = as_u64(stmt.column_i64(8));
     record.cause = as_u64(stmt.column_i64(9));
     record.payload = stmt.column_blob(10);
+    record.payload_version = static_cast<u16>(stmt.column_i64(11));
     fn(record, user);
   }
 }

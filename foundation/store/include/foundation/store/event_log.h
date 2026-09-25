@@ -67,6 +67,10 @@ struct EventRecord {
   i64 game_time_us = 0;
   u32 type = 0;   // schema type id
   u16 depth = 0;  // causal chain length, bounded by the event budget of plan 05 §5.7
+  // The `@version` of the payload's type when it was written, so a reader can upcast an old one
+  // (plan 03 §3.8). Every event written before table version 2 reads as 1: no event type had a
+  // second version before the column existed.
+  u16 payload_version = 1;
   EventOrigin origin = EventOrigin::Deterministic;
   Id128 subject;
   u64 cause = 0;  // the causal parent's sequence within the same tile; 0 for none

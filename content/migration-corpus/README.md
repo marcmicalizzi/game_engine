@@ -16,7 +16,10 @@ Every save so far holds the same world, the one the replay test runs ([world](..
 
 | Save | Written by | Formats it names | Loaded tick | Hash in its manifest | Hash once loaded | Migrations | Hash after one more second |
 |---|---|---|---|---|---|---|---|
-| `v1` | the first save format, 2026-09-25 | `engine.world.SaveManifest` 1, `store.tables` 1, `engine.input.log` 1, `engine.world.TileProjection` 1, `engine.world.WriteBack` 1, the document's `DocumentManifest`, `LayerFile`, `Patch` 1, `engine.world.Node` 1, `engine.kinematics.Mover` 1 | 300 | `8a6d7d078e00bcbf` | `8a6d7d078e00bcbf` | none | `65b302f6a95c001d` |
+| `v1` | the first save format, 2026-09-25 (no `saved_by`) | `engine.world.SaveManifest` 1, `store.tables` 1, `engine.input.log` 1, `engine.world.TileProjection` 1, `engine.world.WriteBack` 1, the document's `DocumentManifest`, `LayerFile`, `Patch` 1, `engine.world.Node` 1, `engine.kinematics.Mover` 1 | 300 | `8a6d7d078e00bcbf` | `3d528309eea2b9df` | `engine.world.SaveManifest 1 -> 2`, `store.tables 1 -> 2` | `37645e758e706598` |
+| `v2` | `engine-host 0.0.1`, 2026-09-25 | as `v1`, with `engine.world.SaveManifest` 2 (it added `saved_by`) and `store.tables` 2 (it added `events.payload_version`) | 300 | `3d528309eea2b9df` | `3d528309eea2b9df` | none | `37645e758e706598` |
+
+`v1` recorded `8a6d7d078e00bcbf` when it was written and was measured then to load to that same hash and run on to `65b302f6a95c001d`; its two migrations moved both, because the store's events now carry a payload version and the hash reads it. **Migrated, `v1` is exactly `v2`**: the same hash once loaded, which is also the hash `v2` recorded, and the same hash a second later. The migration produces what the current version writes, not merely something that loads.
 
 ### Adding a version
 

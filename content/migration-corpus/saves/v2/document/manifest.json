@@ -1,0 +1,22 @@
+{
+  "edit_layer": "places",
+  "layers": [
+    {
+      "file": "base.json",
+      "name": "base",
+      "partition": null,
+      "role": "Base"
+    },
+    {
+      "file": "places/index.json",
+      "name": "places",
+      "partition": {
+        "property": "position",
+        "tile_size": 32.0
+      },
+      "role": "Feature"
+    }
+  ],
+  "name": "doc",
+  "undo_position": 10
+}

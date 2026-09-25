@@ -91,13 +91,17 @@ struct SaveRngStream @version(1) {
   state: u64[]
 }
 
-/// `save.json`: what a save is and what a load needs besides its files.
-struct SaveManifest @version(1) @kind(document) {
+/// `save.json`: what a save is and what a load needs besides its files. Version 2 added `saved_by`;
+/// a version 1 manifest has none and reads with it empty.
+struct SaveManifest @version(2) @kind(document) {
   /// "engine.save".
   format: string
   /// This manifest's own schema version, read before anything else, since it says how to read the
   /// rest.
   version: u32 = 1
+  /// The engine that wrote the save, as `engine.info` names it — "engine-host 0.1.0" — so a save in
+  /// the migration corpus says which build it came from. Empty in a save written before version 2.
+  saved_by: string @since(2)
   /// The run's clock: the tick the save was taken after and its game time, the fixed step's rate,
   /// and the write-back cadence the last call ran at.
   tick: u64 = 0
