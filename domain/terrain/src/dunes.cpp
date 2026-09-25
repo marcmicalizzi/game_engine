@@ -81,11 +81,15 @@ i64 lattice_value(u64 seed, i64 i, i64 j) noexcept {
 
 }  // namespace
 
-const char* band_name(Band band) noexcept {
-  switch (band) {
-    case Band::draa: return "draa";
-    case Band::crest: return "crest";
-    case Band::barchan: return "barchan";
+const char* primitive_kind_name(PrimitiveKind kind) noexcept {
+  return kind == PrimitiveKind::barchan ? "barchan" : "transverse";
+}
+
+const char* band_couple_name(BandCouple couple) noexcept {
+  switch (couple) {
+    case BandCouple::none: return "none";
+    case BandCouple::flanks: return "flanks";
+    case BandCouple::floors: return "floors";
   }
   return "unknown";
 }
@@ -144,33 +148,159 @@ u64 field_hash(const FieldDesc& desc) noexcept {
     h = hash_combine(hash_combine(h, static_cast<u64>(b.x)), static_cast<u64>(b.z));
     h = hash_combine(h, static_cast<u64>(b.radius));
   }
+  // The band table enters only when there is one, so every field described before it existed
+  // keeps its hash (and its golden).
+  if (!desc.bands.empty()) {
+    h = hash_combine(h, 0x42414E44ull);  // "BAND"
+    h = hash_combine(h, desc.bands.size());
+    for (const BandDesc& b : desc.bands) {
+      const u64 words[] = {static_cast<u64>(b.kind),
+                           static_cast<u64>(b.cell_cm),
+                           static_cast<u64>(b.height_lo_cm),
+                           static_cast<u64>(b.height_hi_cm),
+                           static_cast<u64>(b.presence_q16),
+                           static_cast<u64>(b.half_length_lo_q16),
+                           static_cast<u64>(b.half_length_hi_q16),
+                           static_cast<u64>(b.stoss_q16),
+                           static_cast<u64>(b.bend_q16),
+                           static_cast<u64>(b.spread_turn),
+                           static_cast<u64>(b.sinuosity_q16),
+                           static_cast<u64>(b.sharp_cap_q16),
+                           static_cast<u64>(b.side_days),
+                           static_cast<u64>(b.sharp_days),
+                           static_cast<u64>(b.couple),
+                           static_cast<u64>(b.couple_mm),
+                           b.far ? 1u : 0u};
+      for (const u64 word : words)
+        h = hash_combine(h, word);
+    }
+  }
   return h;
+}
+
+namespace {
+
+void set_name(BandDesc& band, const char* name) noexcept {
+  u32 i = 0;
+  for (; name[i] != 0 && i + 1 < sizeof(band.name); ++i)
+    band.name[i] = name[i];
+  band.name[i] = 0;
+}
+
+// The widest a transverse crest of this band is across (its stoss and its rounded lee), and a
+// barchan's width, cm: the least a cell may be.
+i64 band_extent_cm(const BandDesc& b) noexcept {
+  if (b.kind == PrimitiveKind::barchan) return b.height_hi_cm * 11;
+  const i64 lee_cm = (b.height_hi_cm * k_cot_repose_q16) >> 16;
+  return ((b.cell_cm * b.stoss_q16) >> 16) + 3 * lee_cm;
+}
+
+}  // namespace
+
+Vector<BandDesc> default_bands(i64 dune_height_mm, i64 wavelength_mm) {
+  const i64 h0_cm = max_i64(1, dune_height_mm / 10);
+  const i64 lambda_cm = max_i64(100, wavelength_mm / 10);
+  Vector<BandDesc> bands;
+  bands.resize(3);
+  // Draa: long ridges two wavelengths apart, the dune height tall.
+  BandDesc& draa = bands[0];
+  draa.cell_cm = 2 * lambda_cm;
+  draa.height_lo_cm = (h0_cm * 3) / 4;
+  draa.height_hi_cm = (h0_cm * 5) / 4;
+  draa.presence_q16 = k_one_q16;
+  draa.half_length_lo_q16 = 36045;
+  draa.half_length_hi_q16 = 62259;
+  draa.stoss_q16 = 27525;
+  draa.bend_q16 = 11796;
+  draa.spread_turn = 4551;
+  set_name(draa, "draa");
+  // Crest segments at the wavelength, about half as tall, riding on them.
+  BandDesc& crest = bands[1];
+  crest.cell_cm = lambda_cm;
+  crest.height_lo_cm = (h0_cm * 3) / 10;
+  crest.height_hi_cm = (h0_cm * 6) / 10;
+  crest.presence_q16 = 55706;
+  crest.half_length_lo_q16 = 29491;
+  crest.half_length_hi_q16 = 55706;
+  crest.stoss_q16 = 26214;
+  crest.bend_q16 = 16384;
+  crest.spread_turn = 3641;
+  set_name(crest, "crest");
+  // Barchans on the flats, sparse; dropped by the coarse detail.
+  BandDesc& barchan = bands[2];
+  barchan.kind = PrimitiveKind::barchan;
+  barchan.cell_cm = (lambda_cm * 7) / 10;
+  barchan.height_lo_cm = h0_cm / 5;
+  barchan.height_hi_cm = (h0_cm * 9) / 20;
+  barchan.presence_q16 = 26214;
+  barchan.half_length_lo_q16 = 0;
+  barchan.half_length_hi_q16 = 0;
+  barchan.stoss_q16 = 0;
+  barchan.bend_q16 = 0;
+  barchan.spread_turn = 0;
+  barchan.far = false;
+  set_name(barchan, "barchan");
+  return bands;
+}
+
+bool validate_bands(std::span<const BandDesc> bands, std::string* error) {
+  const auto fail = [&](const std::string& why) {
+    if (error != nullptr) *error = why;
+    return false;
+  };
+  if (bands.empty()) return fail("the band table is empty: leave it out for the default");
+  if (bands.size() > k_max_bands)
+    return fail("the band table has more than " + std::to_string(k_max_bands) + " bands");
+  for (usize i = 0; i < bands.size(); ++i) {
+    const BandDesc& b = bands[i];
+    const std::string where = "band " + std::to_string(i) + " (" + b.name + ")";
+    if (b.presence_q16 <= 0)
+      return fail(where + " occupies no cells: a band with a zero share is not a band");
+    if (b.presence_q16 > k_one_q16) return fail(where + " occupies more than every cell");
+    if (b.height_lo_cm <= 0 || b.height_hi_cm < b.height_lo_cm)
+      return fail(where + ": heights must be positive, the least first");
+    if (b.height_hi_cm > 40'000) return fail(where + ": taller than 400 m");
+    if (b.cell_cm > 2'000'000) return fail(where + ": a cell larger than 20 km");
+    if (b.cell_cm < band_extent_cm(b)) {
+      return fail(where + ": its cell (" + std::to_string(b.cell_cm) +
+                  " cm) is smaller than its own dune (" + std::to_string(band_extent_cm(b)) +
+                  " cm across)");
+    }
+    if (b.kind == PrimitiveKind::transverse &&
+        (b.half_length_lo_q16 <= 0 || b.half_length_hi_q16 < b.half_length_lo_q16 ||
+         b.half_length_hi_q16 > 2 * k_one_q16 || b.stoss_q16 <= 0 || b.stoss_q16 > k_one_q16 ||
+         b.bend_q16 < 0 || b.bend_q16 > k_one_q16 / 2 || b.sinuosity_q16 < 0 ||
+         b.sinuosity_q16 > k_one_q16 / 4)) {
+      return fail(where + ": a crest's length, stoss, bend or sinuosity is out of range");
+    }
+    if (b.sharp_cap_q16 < 0 || b.sharp_cap_q16 > k_one_q16)
+      return fail(where + ": sharpness must be within [0, 1]");
+    if (b.side_days < 1 || b.side_days > 3650 || b.sharp_days < 1 || b.sharp_days > 3650)
+      return fail(where + ": the slip face's windows must be 1 to 3650 days");
+    if (b.couple != BandCouple::none && (i == 0 || b.couple_mm <= 0))
+      return fail(where + ": couples to the bands before it, and needs some and a height");
+    if (i > 0 && b.height_hi_cm > bands[i - 1].height_hi_cm)
+      return fail(where + " is taller than the band before it: order the table tallest first");
+  }
+  return true;
 }
 
 DuneField::DuneField(const FieldDesc& desc)
     : desc_(desc), wind_(desc.wind), hash_(field_hash(desc)) {
-  const i64 h0_cm = max_i64(1, desc.dune_height / 10);
-  const i64 lambda_cm = max_i64(100, desc.wavelength / 10);
-  // Draa: long ridges two wavelengths apart, the dune height tall.
-  band_[0] = BandParams{2 * lambda_cm, (h0_cm * 3) / 4, (h0_cm * 5) / 4, k_one_q16, 36045,
-                        62259,         27525,           11796,           4551};
-  // Crest segments at the wavelength, about half as tall, riding on them.
-  band_[1] = BandParams{
-      lambda_cm, (h0_cm * 3) / 10, (h0_cm * 6) / 10, 55706, 29491, 55706, 26214, 16384, 3641};
-  // Barchans on the flats, sparse.
-  band_[2] = BandParams{(lambda_cm * 7) / 10, h0_cm / 5, (h0_cm * 9) / 20, 26214, 0, 0, 0, 0, 0};
-  for (u32 b = 0; b < k_bands; ++b) {
-    const BandParams& p = band_[b];
+  bands_ = desc.bands.empty() ? default_bands(desc.dune_height, desc.wavelength) : desc.bands;
+  if (bands_.size() > k_max_bands) bands_.resize(k_max_bands);
+  for (u32 b = 0; b < bands_.size(); ++b) {
+    const BandDesc& p = bands_[b];
     cell_[b] = p.cell_cm * 10;
     celerity_height_[b] = max_i64(10, (p.height_lo_cm + p.height_hi_cm) * 5);
     const i64 h_hi_um = p.height_hi_cm * 10'000;
-    if (b == static_cast<u32>(Band::barchan)) {
+    if (p.kind == PrimitiveKind::barchan) {
       reach_[b] = (h_hi_um * 11) / 2000 + 10;
     } else {
       const i64 lee_smooth = 3 * ((h_hi_um * k_cot_repose_q16) / 65'536'000) + 1;
       const i64 cell = cell_[b];
       reach_[b] = ((cell * p.half_length_hi_q16) >> 16) + ((cell * p.stoss_q16) >> 16) +
-                  lee_smooth + ((cell * p.bend_q16) >> 16) + 10;
+                  lee_smooth + ((cell * p.bend_q16) >> 16) + ((cell * p.sinuosity_q16) >> 16) + 10;
     }
   }
   const u64 roll = sub(hash_combine(desc.seed, k_tag_field), k_tag_roll);
@@ -183,11 +313,11 @@ DuneField::DuneField(const FieldDesc& desc)
     max_ridge_lag_ = max_i64(max_ridge_lag_, (r.width * desc.ridge_lag_q16) >> 16);
 }
 
-void DuneField::displacement(Band band, i64 time_us, i64& dx, i64& dz) const noexcept {
+void DuneField::displacement(u32 band, i64 time_us, i64& dx, i64& dz) const noexcept {
   // Bagnold: a dune's celerity is the sand flux over its height, so a band moves by the flux
   // integral over its height — cm^2 over mm, times 100 for mm^2.
   const FluxIntegral in = wind_.integral(time_us);
-  const i64 h = celerity_height_[static_cast<u32>(band)];
+  const i64 h = celerity_height_[band];
   dx = floor_div(in.x * 100, h);
   dz = floor_div(in.z * 100, h);
 }
@@ -196,10 +326,11 @@ i64 DuneField::max_lag_mm(const LagField* lag) const noexcept {
   return max_ridge_lag_ + (lag != nullptr ? lag->max_lag_mm() : 0);
 }
 
-DuneField::TimeShape DuneField::time_shape(i64 time_us) const noexcept {
+DuneField::TimeShape DuneField::time_shape(u32 band, i64 time_us) const noexcept {
   TimeShape s;
-  const FluxIntegral r120 = wind_.between(time_us - 120 * k_us_per_day, time_us);
-  const FluxIntegral r30 = wind_.between(time_us - 30 * k_us_per_day, time_us);
+  const BandDesc& b = bands_[band];
+  const FluxIntegral r120 = wind_.between(time_us - b.side_days * k_us_per_day, time_us);
+  const FluxIntegral r30 = wind_.between(time_us - b.sharp_days * k_us_per_day, time_us);
   s.r120x = r120.x;
   s.r120z = r120.z;
   s.r30x = r30.x;
@@ -207,7 +338,7 @@ DuneField::TimeShape DuneField::time_shape(i64 time_us) const noexcept {
   // Three quarters of a month of the mean flux, blowing one way, is a slip face at the angle of
   // repose; the same against a crest's side, over four months, puts its slip face on the other
   // side.
-  s.sharp_ref = max_i64(1, (30 * static_cast<i64>(desc_.wind.flux_cm2_per_day) * 3) / 4);
+  s.sharp_ref = max_i64(1, (b.sharp_days * static_cast<i64>(desc_.wind.flux_cm2_per_day) * 3) / 4);
   // A barchan points down the month's resultant; with next to no wind it keeps to the prevailing
   // direction, which the small bias below makes continuous through a calm.
   const i64 bias = s.sharp_ref / 8;
@@ -221,7 +352,7 @@ DuneField::TimeShape DuneField::time_shape(i64 time_us) const noexcept {
 
 bool DuneField::make_primitive(u32 band, i64 i, i64 j, const TimeShape& shape,
                                Primitive& out) const noexcept {
-  const BandParams& p = band_[band];
+  const BandDesc& p = bands_[band];
   const u64 h = cell_hash(desc_.seed, band, i, j);
   if (unit_q16(sub(h, 0)) >= p.presence_q16) return false;
   const i64 cell = p.cell_cm;
@@ -235,7 +366,7 @@ bool DuneField::make_primitive(u32 band, i64 i, i64 j, const TimeShape& shape,
   out.band = static_cast<u8>(band);
   out.cell_hash = static_cast<u16>(h);
   const i64 h_mm = height_cm * 10;
-  if (band == static_cast<u32>(Band::barchan)) {
+  if (p.kind == PrimitiveKind::barchan) {
     // A barchan: a dome 4 H upwind, 5.5 H downwind and 5.5 H either side, and a scoop 3.5 H in
     // radius whose rim is the brink, just downwind of the summit: its slip face falls at the angle
     // of repose inside the scoop, and the dome's flanks either side of it are the horns.
@@ -278,14 +409,14 @@ bool DuneField::make_primitive(u32 band, i64 i, i64 j, const TimeShape& shape,
   const i64 across30 = (shape.r30x * nx + shape.r30z * nz) >> 14;
   out.side_q16 =
       static_cast<i32>(clamp_i64((across120 * 65536) / shape.sharp_ref, -k_one_q16, k_one_q16));
-  out.sharp_q16 =
-      static_cast<i32>(clamp_i64((abs_i64(across30) * 65536) / shape.sharp_ref, 0, k_one_q16));
+  out.sharp_q16 = static_cast<i32>(
+      clamp_i64((abs_i64(across30) * 65536) / shape.sharp_ref, 0, p.sharp_cap_q16));
   return true;
 }
 
-bool DuneField::primitive(Band band, i64 cell_i, i64 cell_j, i64 time_us,
+bool DuneField::primitive(u32 band, i64 cell_i, i64 cell_j, i64 time_us,
                           Primitive& out) const noexcept {
-  return make_primitive(static_cast<u32>(band), cell_i, cell_j, time_shape(time_us), out);
+  return make_primitive(band, cell_i, cell_j, time_shape(band, time_us), out);
 }
 
 void DuneField::gather(i64 x0, i64 z0, i64 x1, i64 z1, i64 time_us, const LagField* lag,
@@ -293,10 +424,12 @@ void DuneField::gather(i64 x0, i64 z0, i64 x1, i64 z1, i64 time_us, const LagFie
   out.time_us = time_us;
   out.lag = lag;
   out.primitives.clear();
-  const TimeShape shape = time_shape(time_us);
   const i64 lag_max = max_lag_mm(lag);
-  for (u32 b = 0; b < k_bands; ++b) {
-    displacement(static_cast<Band>(b), time_us, out.dx[b], out.dz[b]);
+  const u32 bands = bands_.size();
+  out.bands = bands;
+  for (u32 b = 0; b < bands; ++b) {
+    const TimeShape shape = time_shape(b, time_us);
+    displacement(b, time_us, out.dx[b], out.dz[b]);
     out.band_begin[b] = out.primitives.size();
     const i64 margin = reach_[b] + lag_max;
     const i64 cell = cell_[b];
@@ -311,7 +444,7 @@ void DuneField::gather(i64 x0, i64 z0, i64 x1, i64 z1, i64 time_us, const LagFie
       }
     }
   }
-  out.band_begin[k_bands] = out.primitives.size();
+  out.band_begin[bands] = out.primitives.size();
 
   // The day's ripples and yesterday's, blended over the first two hours of a day.
   const i64 day = day_of(time_us);
@@ -488,12 +621,12 @@ Sample DuneField::sample(const Gather& gather, i64 x, i64 z, Detail detail) cons
   s.ridge_q16 = static_cast<u16>(min_i64(ridge, 65535));
   s.basin_q16 = static_cast<u16>(min_i64(basin_q16(x, z), 65535));
   if (detail == Detail::floor) return s;
-  const u32 bands = detail == Detail::coarse ? 2u : k_bands;
   const i64 wx = wind_.prevailing_x_q14();
   const i64 wz = wind_.prevailing_z_q14();
   i64 sand = 0;
-  for (u32 b = 0; b < bands; ++b) {
-    const i64 lag = ridge_lag + (gather.lag != nullptr ? gather.lag->lag_mm(b, x, z) : 0);
+  for (u32 b = 0; b < gather.bands; ++b) {
+    if (detail == Detail::coarse && !bands_[b].far) continue;
+    const i64 lag = ridge_lag + (gather.lag != nullptr ? gather.lag->lag_mm(lag_slot(b), x, z) : 0);
     const i64 qx = x - gather.dx[b] + ((wx * lag) >> 14);
     const i64 qz = z - gather.dz[b] + ((wz * lag) >> 14);
     sand += band_sand(gather, b, qx, qz);

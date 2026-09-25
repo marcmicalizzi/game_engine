@@ -271,17 +271,17 @@ int terrain_command(int argc, char** argv) {
   report.wind_speed_mps = tile.wind.speed_mps;
   report.flux_m2_per_day = tile.wind.flux_m2_per_day;
   report.saltation_m2_per_day = tile.wind.saltation_m2_per_day;
-  for (u32 b = 0; b < terrain::k_bands; ++b) {
+  for (u32 b = 0; b < field.band_count(); ++b) {
     i64 dx = 0;
     i64 dz = 0;
-    field.displacement(static_cast<terrain::Band>(b), time_us, dx, dz);
+    field.displacement(b, time_us, dx, dz);
     report.displacement_m.push_back(
         Vec2{terrain::height_m(dx * 1000), terrain::height_m(dz * 1000)});
   }
   if (crests) {
     for (const terrain::CrestLine& c : tile.crests) {
       terrain::CrestReport r;
-      r.band = terrain::band_name(static_cast<terrain::Band>(c.band));
+      r.band = field.band_name(c.band);
       r.kind =
           c.kind == static_cast<u8>(terrain::PrimitiveKind::barchan) ? "barchan" : "transverse";
       for (const Vec3& p : c.points)

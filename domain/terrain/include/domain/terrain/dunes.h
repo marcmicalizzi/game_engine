@@ -46,6 +46,7 @@
 #include <domain/terrain/wind.h>
 
 #include <span>
+#include <string>
 
 namespace engine::terrain {
 
@@ -63,11 +64,59 @@ constexpr u64 tile_key(TileCoord t) noexcept {
   return static_cast<u64>(static_cast<u32>(t.x)) << 32 | static_cast<u32>(t.z);
 }
 
-inline constexpr u32 k_bands = 3;
-enum class Band : u8 { draa = 0, crest = 1, barchan = 2 };
-const char* band_name(Band band) noexcept;
+// A field has at most this many bands (terrain.md, "The band table"): the erg profile uses five.
+inline constexpr u32 k_max_bands = 8;
+// A tile's stored lag has one unit per slot (feedback.h); band b reads slot min(b, 2). Every nudge
+// moves every slot alike, so the slot a band reads changes nothing today, and the record format
+// (three bytes) stays what saves already hold.
+inline constexpr u32 k_lag_slots = 3;
+inline constexpr u32 lag_slot(u32 band) noexcept {
+  return band < k_lag_slots ? band : k_lag_slots - 1;
+}
 
 enum class PrimitiveKind : u8 { transverse = 0, barchan = 1 };
+const char* primitive_kind_name(PrimitiveKind kind) noexcept;
+
+// Where a band may stand relative to the bands before it in the table (terrain.md, "The band
+// table"): anywhere; only on their flanks (it fades in as their sand rises past `couple_mm`); or
+// only on the floors between them (it fades out as their sand rises past `couple_mm`).
+enum class BandCouple : u8 { none = 0, flanks = 1, floors = 2 };
+const char* band_couple_name(BandCouple couple) noexcept;
+
+// One band of the dune field: a population of primitives of one kind placed on a lattice of
+// square cells, at most one a cell. Every seeded choice is made in centimetres (the lattice, the
+// heights, the centre's jitter) and fractions of the cell in Q16, so a band is the same bits on
+// every toolchain. The empty table is the field's default: the three bands `default_bands` derives
+// from the dune height and wavelength, which is what every field was before the table existed.
+struct BandDesc {
+  PrimitiveKind kind = PrimitiveKind::transverse;
+  i64 cell_cm = 9'000;  // the lattice's cell
+  i64 height_lo_cm = 90, height_hi_cm = 180;
+  i32 presence_q16 = 65536;        // the share of cells that hold a primitive
+  i32 half_length_lo_q16 = 29491;  // a crest's half length, of the cell (transverse)
+  i32 half_length_hi_q16 = 55706;
+  i32 stoss_q16 = 26214;   // the windward width, of the cell (transverse)
+  i32 bend_q16 = 16384;    // how far the ends lie downwind, of the cell, either way
+  i32 spread_turn = 3641;  // how far a crest strays from square to the wind
+  // Added in the band table (not in the default's three, which leave them at these values).
+  i32 sinuosity_q16 = 0;      // a crest's meander amplitude, of the cell (transverse)
+  i32 sharp_cap_q16 = 65536;  // the sharpest its lee gets: 0 never a slip face
+  i32 side_days = 120;        // the wind that decides the slip face's side
+  i32 sharp_days = 30;        // and its sharpness (and a barchan's heading)
+  BandCouple couple = BandCouple::none;
+  i64 couple_mm = 0;
+  bool far = true;  // kept by `Detail::coarse`
+  char name[15] = {};
+};
+
+// The default table: draa two wavelengths apart as tall as the dune height, crest segments at the
+// wavelength half as tall, sparse barchans — exactly the constants of the field before the table.
+Vector<BandDesc> default_bands(i64 dune_height_mm, i64 wavelength_mm);
+// False with a reason for a table a field cannot be built from: empty or longer than
+// `k_max_bands`, a band with no cells occupied, heights that are not positive and ordered, a cell
+// smaller than the band's own dune (a transverse crest's stoss and lee, a barchan's width), bands
+// not in order of their tallest (a band is shaped by the ones before it).
+bool validate_bands(std::span<const BandDesc> bands, std::string* error = nullptr);
 
 // The capability's LOD policy (ADR-0027): which terms of the surface an evaluation computes. The
 // tile mesh at the world's 25 cm grid is `dunes`; ripples and grain are a few millimetres over 12
@@ -105,6 +154,8 @@ struct FieldDesc {
   WindParams wind;
   Vector<RidgeFeature> ridges;
   Vector<BasinFeature> basins;
+  // The band table; empty is `default_bands(dune_height, wavelength)`.
+  Vector<BandDesc> bands;
 };
 
 // Bumped when anything a desc evaluates to changes, so a derived-data entry or a golden hash that
@@ -143,10 +194,11 @@ struct Primitive {
 // gathers once and evaluates thousands of points against it.
 struct Gather {
   i64 time_us = 0;
-  i64 dx[k_bands] = {};  // each band's displacement by the wind to `time_us`, mm
-  i64 dz[k_bands] = {};
+  i64 dx[k_max_bands] = {};  // each band's displacement by the wind to `time_us`, mm
+  i64 dz[k_max_bands] = {};
   Vector<Primitive> primitives;  // band order, then cell order
-  u32 band_begin[k_bands + 1] = {};
+  u32 bands = 0;
+  u32 band_begin[k_max_bands + 1] = {};
   const LagField* lag = nullptr;
   // The ripples' direction today and yesterday, Q14, their drift, and today's blend.
   i32 ripple_x = 0, ripple_z = 0, ripple_prev_x = 0, ripple_prev_z = 0;
@@ -172,8 +224,6 @@ class DuneField {
   const WindRecord& wind() const noexcept { return wind_; }
   u64 hash() const noexcept { return hash_; }
 
-  // Each band's displacement by the wind from time 0 to `time_us`, mm: the closed form.
-  void displacement(Band band, i64 time_us, i64& dx, i64& dz) const noexcept;
   // The most the fixed features and a lag field can hold a band back, mm: what a gather adds to its
   // rectangle so no primitive that a point could see is missed.
   i64 max_lag_mm(const LagField* lag) const noexcept;
@@ -200,32 +250,30 @@ class DuneField {
   // the floor in metres.
   static f32 ground_height(const void* context, f32 x, f32 z) noexcept;
 
+  // The table the field was built from (the default's three when the description had none).
+  u32 band_count() const noexcept { return bands_.size(); }
+  const BandDesc& band(u32 b) const noexcept { return bands_[b]; }
+  const char* band_name(u32 b) const noexcept { return bands_[b].name; }
   // The largest reach of any primitive in a band, mm.
-  i64 band_reach(Band band) const noexcept { return reach_[static_cast<u32>(band)]; }
-  i64 band_cell(Band band) const noexcept { return cell_[static_cast<u32>(band)]; }
+  i64 band_reach(u32 b) const noexcept { return reach_[b]; }
+  i64 band_cell(u32 b) const noexcept { return cell_[b]; }
   // The height a band's lattice moves as (its celerity is flux / this), mm.
-  i64 band_height(Band band) const noexcept { return celerity_height_[static_cast<u32>(band)]; }
+  i64 band_height(u32 b) const noexcept { return celerity_height_[b]; }
+
+  // Each band's displacement by the wind from time 0 to `time_us`, mm: the closed form.
+  void displacement(u32 band, i64 time_us, i64& dx, i64& dz) const noexcept;
 
   // The primitive of one cell, at a time: exposed for the tests and for reports.
-  bool primitive(Band band, i64 cell_i, i64 cell_j, i64 time_us, Primitive& out) const noexcept;
+  bool primitive(u32 band, i64 cell_i, i64 cell_j, i64 time_us, Primitive& out) const noexcept;
 
  private:
-  struct BandParams {
-    i64 cell_cm = 0;
-    i64 height_lo_cm = 0, height_hi_cm = 0;
-    i32 presence_q16 = 0;
-    i32 half_length_lo_q16 = 0, half_length_hi_q16 = 0;  // of the cell
-    i32 stoss_q16 = 0;                                   // of the cell
-    i32 bend_q16 = 0;                                    // of the cell, either way
-    i32 spread_turn = 0;  // how far a crest strays from square to the wind
-  };
   struct TimeShape {
-    i64 r120x = 0, r120z = 0;          // the last 120 days' resultant flux
-    i64 r30x = 0, r30z = 0;            // the last 30 days'
-    i64 sharp_ref = 1;                 // a month of the mean flux blowing one way
+    i64 r120x = 0, r120z = 0;          // the side window's resultant flux (120 days by default)
+    i64 r30x = 0, r30z = 0;            // the sharpness window's (30 days)
+    i64 sharp_ref = 1;                 // three quarters of that window of the mean flux, one way
     i32 barchan_x = 0, barchan_z = 0;  // Q14: where barchans point this time
   };
-  TimeShape time_shape(i64 time_us) const noexcept;
+  TimeShape time_shape(u32 band, i64 time_us) const noexcept;
   bool make_primitive(u32 band, i64 i, i64 j, const TimeShape& shape,
                       Primitive& out) const noexcept;
   i64 band_sand(const Gather& gather, u32 band, i64 qx, i64 qz) const noexcept;
@@ -237,12 +285,12 @@ class DuneField {
   FieldDesc desc_;
   WindRecord wind_;
   u64 hash_ = 0;
-  BandParams band_[k_bands];
-  i64 cell_[k_bands] = {};             // mm
-  i64 reach_[k_bands] = {};            // mm
-  i64 celerity_height_[k_bands] = {};  // mm
-  i32 roll_x_ = 0, roll_z_ = 0;        // Q14
-  i64 roll_length_ = 1;                // mm
+  Vector<BandDesc> bands_;
+  i64 cell_[k_max_bands] = {};             // mm
+  i64 reach_[k_max_bands] = {};            // mm
+  i64 celerity_height_[k_max_bands] = {};  // mm
+  i32 roll_x_ = 0, roll_z_ = 0;            // Q14
+  i64 roll_length_ = 1;                    // mm
   u32 roll_phase_ = 0;
   i64 max_ridge_lag_ = 0;  // mm
 };

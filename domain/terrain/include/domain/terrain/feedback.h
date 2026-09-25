@@ -39,7 +39,7 @@ namespace engine::terrain {
 
 // A tile's stored feedback: one lag per band, in `FeedbackRules::lag_unit_mm` units. 4 bytes.
 struct TileLag {
-  u8 units[k_bands] = {};
+  u8 units[k_lag_slots] = {};
   u8 reserved = 0;
   constexpr bool operator==(const TileLag&) const = default;
   bool zero() const noexcept { return units[0] == 0 && units[1] == 0 && units[2] == 0; }
@@ -95,7 +95,7 @@ class LagField {
 
   // The lag at a world point for a band, mm: bilinear between the four nearest tile centres, so it
   // is continuous everywhere and a tile's own centre reads its own lag exactly.
-  i64 lag_mm(u32 band, i64 x, i64 z) const noexcept;
+  i64 lag_mm(u32 slot, i64 x, i64 z) const noexcept;
   i64 max_lag_mm() const noexcept {
     return static_cast<i64>(rules_.lag_max_units) * rules_.lag_unit_mm;
   }

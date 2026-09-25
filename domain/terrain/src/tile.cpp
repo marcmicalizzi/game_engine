@@ -156,16 +156,15 @@ void evaluate_tile(const DuneField& field, TileCoord tile, i64 time_us, const Ti
   const i64 wz = field.wind().prevailing_z_q14();
   for (const Primitive& p : gather.primitives) {
     const u32 b = p.band;
-    if (options.detail == Detail::coarse && b == static_cast<u32>(Band::barchan)) continue;
+    if (options.detail == Detail::coarse && !field.band(b).far) continue;
     CrestLine crest;
     crest.band = p.band;
     crest.kind = p.kind;
     crest.cell_hash = p.cell_hash;
     crest.height_m = height_m(p.height);
     crest.sharpness = static_cast<f32>(p.sharp_q16) / 65536.0f;
-    crest.celerity_m_per_day =
-        static_cast<f32>(static_cast<f64>(day.magnitude) * 100.0 /
-                         static_cast<f64>(field.band_height(static_cast<Band>(b))) * 1e-3);
+    crest.celerity_m_per_day = static_cast<f32>(static_cast<f64>(day.magnitude) * 100.0 /
+                                                static_cast<f64>(field.band_height(b)) * 1e-3);
     bool inside = false;
     i64 lee_x = 0;
     i64 lee_z = 0;
@@ -201,7 +200,7 @@ void evaluate_tile(const DuneField& field, TileCoord tile, i64 time_us, const Ti
       // Back to the world: the band's displacement, less the lag the field reads at the point.
       i64 x = qx + gather.dx[b];
       i64 z = qz + gather.dz[b];
-      const i64 held = (lag != nullptr ? lag->lag_mm(b, x, z) : 0);
+      const i64 held = (lag != nullptr ? lag->lag_mm(lag_slot(b), x, z) : 0);
       x -= (wx * held) >> 14;
       z -= (wz * held) >> 14;
       if (x >= x0 && x < x0 + options.tile_mm && z >= z0 && z < z0 + options.tile_mm) inside = true;

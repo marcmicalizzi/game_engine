@@ -341,7 +341,7 @@ bool Overlay::read(std::span<const u8> in, TileCoord tile, i64 tile_mm, const Ov
     return fail("the overlay record's size is wrong");
   last_nudge_day_ = static_cast<i32>(static_cast<u32>(get(in, 20, 4)));
   as_of_us_ = static_cast<i64>(get(in, 24, 8));
-  for (u32 b = 0; b < k_bands; ++b)
+  for (u32 b = 0; b < k_lag_slots; ++b)
     lag_.units[b] = static_cast<u8>(get(in, 48 + b, 1));
   usize at = k_overlay_header_bytes;
   for (u32 b = 0; b < k_overlay_blocks * k_overlay_blocks; ++b) {

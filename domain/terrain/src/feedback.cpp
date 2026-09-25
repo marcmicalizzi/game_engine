@@ -57,7 +57,7 @@ TileLag LagField::get(TileCoord tile) const noexcept {
   return found != nullptr ? *found : TileLag{};
 }
 
-i64 LagField::lag_mm(u32 band, i64 x, i64 z) const noexcept {
+i64 LagField::lag_mm(u32 slot, i64 x, i64 z) const noexcept {
   if (tiles_.empty()) return 0;
   // Tile centres sit at (i + 1/2) tile; interpolate between the four round the point.
   const i64 half = tile_mm_ / 2;
@@ -66,7 +66,7 @@ i64 LagField::lag_mm(u32 band, i64 x, i64 z) const noexcept {
   const i64 tx = ((x - half - i0 * tile_mm_) * 65536) / tile_mm_;
   const i64 tz = ((z - half - j0 * tile_mm_) * 65536) / tile_mm_;
   const auto at = [&](i64 i, i64 j) -> i64 {
-    return get(TileCoord{static_cast<i32>(i), static_cast<i32>(j)}).units[band];
+    return get(TileCoord{static_cast<i32>(i), static_cast<i32>(j)}).units[slot];
   };
   const i64 a = at(i0, j0);
   const i64 b = at(i0 + 1, j0);

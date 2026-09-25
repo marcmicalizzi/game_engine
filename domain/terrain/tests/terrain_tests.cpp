@@ -138,19 +138,18 @@ TEST_CASE("terrain: the field is a function of time — t2 directly is t1 then t
 TEST_CASE("terrain: bands migrate downwind at the flux over their height") {
   const DuneField field(reference_desc());
   const i64 t = 2 * k_year;
-  i64 dx[k_bands], dz[k_bands], len[k_bands];
-  for (u32 b = 0; b < k_bands; ++b) {
-    field.displacement(static_cast<Band>(b), t, dx[b], dz[b]);
+  i64 dx[k_max_bands], dz[k_max_bands], len[k_max_bands];
+  for (u32 b = 0; b < field.band_count(); ++b) {
+    field.displacement(b, t, dx[b], dz[b]);
     len[b] = fx::length(dx[b], dz[b]);
-    MESSAGE(std::string(band_name(static_cast<Band>(b)))
-            << " moved " << len[b] / 1000 << " m in two years");
+    MESSAGE(std::string(field.band_name(b)) << " moved " << len[b] / 1000 << " m in two years");
   }
   // Bagnold: the lower the band, the faster; the ratio of speeds is the inverse ratio of heights.
   CHECK(len[2] > len[1]);
   CHECK(len[1] > len[0]);
   const f64 ratio = static_cast<f64>(len[2]) / static_cast<f64>(len[0]);
-  const f64 heights = static_cast<f64>(field.band_height(Band::draa)) /
-                      static_cast<f64>(field.band_height(Band::barchan));
+  const f64 heights =
+      static_cast<f64>(field.band_height(0u)) / static_cast<f64>(field.band_height(2u));
   CHECK(ratio == doctest::Approx(heights).epsilon(0.001));
   // Downwind: the displacement points within the seasonal swing of the prevailing direction.
   const i64 along =
@@ -162,8 +161,8 @@ TEST_CASE("terrain: bands migrate downwind at the flux over their height") {
   CHECK(len[2] / 2 < 1'000'000);
   // The field moves with the band: a primitive's surface at t is its surface at 0, displaced.
   Primitive p0, p1;
-  REQUIRE(field.primitive(Band::draa, 0, 0, 0, p0));
-  REQUIRE(field.primitive(Band::draa, 0, 0, t, p1));
+  REQUIRE(field.primitive(0u, 0, 0, 0, p0));
+  REQUIRE(field.primitive(0u, 0, 0, t, p1));
   CHECK(p0.cx == p1.cx);  // the same cell, the same centre in the band's own frame
 }
 
@@ -309,7 +308,7 @@ TEST_CASE("terrain: a reversing wind moves the slip face to the other side, cont
   i32 largest_step = 0;
   for (i64 d = 0; d < 365; ++d) {
     Primitive p;
-    REQUIRE(field.primitive(Band::crest, 3, 4, d * k_day, p));
+    REQUIRE(field.primitive(1u, 3, 4, d * k_day, p));
     lowest = std::min(lowest, p.side_q16);
     highest = std::max(highest, p.side_q16);
     if (d > 0) largest_step = std::max(largest_step, std::abs(p.side_q16 - previous));
@@ -493,4 +492,58 @@ TEST_CASE("terrain: golden hashes of the reference tile on every toolchain") {
                    << height_m(tile.min_um) << " .. " << height_m(tile.max_um) << " m");
     CHECK(hex(tile.hash()) == hex(row.golden));
   }
+}
+
+TEST_CASE("terrain: the band table — the default is the three bands, and a bad table is refused") {
+  // The empty table is the default's three bands, derived from the dune height and wavelength: the
+  // same primitives, the same tile, bit for bit, whether the table is left out or written out.
+  const FieldDesc implicit = reference_desc();
+  FieldDesc explicit_desc = reference_desc();
+  explicit_desc.bands = default_bands(explicit_desc.dune_height, explicit_desc.wavelength);
+  REQUIRE(explicit_desc.bands.size() == 3);
+  const DuneField a(implicit);
+  const DuneField b(explicit_desc);
+  CHECK(a.band_count() == 3);
+  CHECK(std::string(a.band_name(0)) == "draa");
+  CHECK(std::string(a.band_name(2)) == "barchan");
+  TileOutput ta, tb;
+  TileOptions options;
+  options.cells = 64;
+  evaluate_tile(a, TileCoord{0, 0}, 200 * k_day, options, nullptr, nullptr, ta);
+  evaluate_tile(b, TileCoord{0, 0}, 200 * k_day, options, nullptr, nullptr, tb);
+  CHECK(ta.hash() == tb.hash());
+  // The hash names a written-out table (it is a different description), and not an absent one.
+  CHECK(a.hash() != b.hash());
+  std::string error;
+  CHECK(validate_bands(explicit_desc.bands, &error));
+
+  // Refusals, each with its sentence.
+  CHECK_FALSE(validate_bands({}, &error));
+  CHECK(error.find("empty") != std::string::npos);
+  Vector<BandDesc> zero = explicit_desc.bands;
+  zero[1].presence_q16 = 0;
+  CHECK_FALSE(validate_bands(zero, &error));
+  CHECK(error.find("zero share") != std::string::npos);
+  Vector<BandDesc> small_cell = explicit_desc.bands;
+  small_cell[0].cell_cm = 500;  // 5 m cells for a 3.75 m draa
+  CHECK_FALSE(validate_bands(small_cell, &error));
+  CHECK(error.find("smaller than its own dune") != std::string::npos);
+  Vector<BandDesc> small_barchan = explicit_desc.bands;
+  small_barchan[2].cell_cm = small_barchan[2].height_hi_cm * 5;
+  CHECK_FALSE(validate_bands(small_barchan, &error));
+  Vector<BandDesc> order = explicit_desc.bands;
+  std::swap(order[0], order[2]);
+  CHECK_FALSE(validate_bands(order, &error));
+  CHECK(error.find("tallest first") != std::string::npos);
+  Vector<BandDesc> heights = explicit_desc.bands;
+  heights[1].height_lo_cm = heights[1].height_hi_cm + 1;
+  CHECK_FALSE(validate_bands(heights, &error));
+  Vector<BandDesc> couple = explicit_desc.bands;
+  couple[0].couple = BandCouple::floors;
+  couple[0].couple_mm = 1000;
+  CHECK_FALSE(validate_bands(couple, &error));  // the first band has nothing to couple to
+  Vector<BandDesc> many;
+  for (u32 k = 0; k <= k_max_bands; ++k)
+    many.push_back(explicit_desc.bands[2]);
+  CHECK_FALSE(validate_bands(many, &error));
 }
