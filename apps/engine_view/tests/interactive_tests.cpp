@@ -495,7 +495,8 @@ TEST_CASE("engine-view: a replay flown in the window measures its presentation")
         if (line.find("ticks") != nullptr && line.find("ticks")->get_u64(n)) ticks += n;
         if (line.find("wait_ms") != nullptr && line.find("acquire_ms") != nullptr &&
             line.find("present_ms") != nullptr && line.find("pace_ms") != nullptr &&
-            line.find("submit_ms") != nullptr && line.find("shown_ms") != nullptr) {
+            line.find("submit_ms") != nullptr && line.find("shown_ms") != nullptr &&
+            line.find("pose_time") != nullptr && line.find("pose_position") != nullptr) {
           ++waits_named;
         }
         ++records;

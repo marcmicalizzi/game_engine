@@ -667,6 +667,16 @@ struct FrameRecord @version(6) {
   /// runs rather than read it as a number (`docs/subsystems/apps.md`, "Pacing").
   shown_ms: f64 = 0 @since(6)
   latency_ms: f64 = 0 @since(6)
+  /// The camera the frame was drawn with (engine-view --interactive, in the window): its
+  /// position, yaw and pitch (radians, the camera path's conventions), and the simulated time it
+  /// stands for, seconds — `FlySession::camera_at`'s fraction of a tick past the tick before the
+  /// last. Presented one after another, frames should show `pose_time` advancing by a refresh
+  /// each; a frame that advanced by much less shows nearly the pose before it, which is what a
+  /// viewer reads as a frame in its previous position. Zero on a flythrough.
+  pose_position: vec3 @since(6)
+  pose_yaw: f32 = 0 @since(6)
+  pose_pitch: f32 = 0 @since(6)
+  pose_time: f64 = 0 @since(6)
   /// Surviving (instance, cluster) pairs, by the draw that produced them.
   visible_pairs: u32 = 0
   visible_hw: u32 = 0

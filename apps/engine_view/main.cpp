@@ -1268,6 +1268,9 @@ struct PendingFrame {
   u32 pace_depth = 0;
   f64 submit_ms = 0.0;
   u64 present_id = 0;
+  // The camera the frame drew and the simulated time it stands for (FrameRecord's `pose_*`).
+  view::FlyState pose;
+  f64 pose_time = 0.0;
 };
 constexpr u32 k_pending_frames = 8;  // more than the most frames in flight (3) + 1
 
@@ -1292,6 +1295,10 @@ void take_folded(const renderer::SceneRenderer& renderer, u64& folded,
   record.pace_ms = p.pace_ms;
   record.pace_depth = p.pace_depth;
   record.submit_ms = p.submit_ms;
+  record.pose_position = p.pose.position;
+  record.pose_yaw = p.pose.yaw;
+  record.pose_pitch = p.pose.pitch;
+  record.pose_time = p.pose_time;
   records.push_back(std::move(record));
   if (present_ids != nullptr) present_ids->push_back(p.present_id);
 }
@@ -3833,7 +3840,9 @@ int main(int argc, char** argv) {
       renderer::FrameDesc frame;
       u32 ticks_this_frame = 0;
       bool session_done = false;
-      i64 sampled_ns = 0;  // when the frame read the clock: what its display latency is from
+      i64 sampled_ns = 0;    // when the frame read the clock: what its display latency is from
+      view::FlyState drawn;  // the camera the frame draws, and the simulated time it stands for
+      f64 drawn_time = 0.0;
       if (interactive.on) {
         // ---- the ticks due by now, as late as possible before the frame is recorded -----------
         const i64 now = time::monotonic_ns();
@@ -3883,6 +3892,12 @@ int main(int argc, char** argv) {
             session.tick().value == clock.tick().value ? clock.interpolation_alpha() : 1.0f;
         frame.camera = session.camera_at(alpha);
         frame.frame_index = session.frame_index();
+        // What the frame draws, for the frame log: the pose and the simulated time it stands for.
+        drawn = view::fly_interpolate(session.previous(), session.state(), alpha);
+        const u64 last_tick = session.tick().value;
+        drawn_time = last_tick > 0 ? (static_cast<f64>(last_tick - 1) + static_cast<f64>(alpha)) /
+                                         static_cast<f64>(session_hz)
+                                   : 0.0;
       } else {
         frame.camera = !window_path.keys.empty()
                            ? renderer::camera_path_frame(
@@ -3970,6 +3985,8 @@ int main(int argc, char** argv) {
           p.submit_ms = static_cast<f64>(submitted_ns - before_submit) / 1.0e6;
           p.present_ms = 0.0;  // after the present, below
           p.present_id = 0;
+          p.pose = drawn;
+          p.pose_time = drawn_time;
         }
         // Four times a second: a title rewritten every frame is unreadable, and setting one is a
         // round trip to the window system.
