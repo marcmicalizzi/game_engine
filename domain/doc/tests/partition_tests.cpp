@@ -272,14 +272,16 @@ TEST_CASE("doc partition: the file layout and its canonical bytes") {
         "  ]\n"
         "}\n");
 
-  // Saving the same content again writes the same bytes and no tiles.
+  // Saving the same content again leaves every file as it was: nothing changed, so nothing is
+  // written, not even the manifest, whose bytes would be the same.
   const std::string before = text;
   SaveReport again;
   REQUIRE(DocumentStore::save(vfs, dir, doc, manifest, &error, &again));
   REQUIRE(vfs.read("docs://world/layers/base/index.json", text) == io::Status::Ok);
   CHECK(text == before);
   CHECK(again.tiles_written == 0);
-  CHECK(again.files_written == 1);  // the manifest, and nothing else
+  CHECK(again.files_written == 0);
+  CHECK(again.files_removed == 0);
 }
 
 TEST_CASE("doc partition: a round trip against the single-file form, record by record") {
@@ -375,7 +377,11 @@ TEST_CASE("doc partition: a transaction rewrites the tile it touched and no othe
   REQUIRE(DocumentStore::save(vfs, dir, doc, manifest, &error, &second));
   CHECK(second.tiles_written == 1);
   CHECK(second.tiles_removed == 0);
-  CHECK(second.files_written == 2);  // the tile and the manifest; the index did not change
+  // The tile alone: no record changed tiles, so the index is the same, and nothing moved the
+  // undo position or the edit layer, so the manifest is too.
+  CHECK(second.files_written == 1);
+  REQUIRE(second.written.size() == 1);
+  CHECK(second.written[0] == "layers/base/tiles/5_0.json");
 
   // Moving an object across the grid rewrites the tile it left and the one it joined.
   {

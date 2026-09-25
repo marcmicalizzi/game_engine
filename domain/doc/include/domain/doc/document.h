@@ -30,6 +30,7 @@
 #include <core/json/json_value.h>
 #include <core/schema/json_reflect.h>
 
+#include <memory>
 #include <optional>
 #include <schemas/doc.h>
 #include <span>
@@ -40,6 +41,11 @@ namespace engine::doc {
 
 using ObjectId = Id128;
 using schema::Diagnostic;
+
+class DocumentStore;
+// What DocumentStore last wrote to, or read from, the directory it keeps a document in: the store's
+// own, defined beside it (src/stored_state.h) and never read by anything else.
+struct StoredState;
 
 class Layer {
  public:
@@ -95,12 +101,26 @@ struct ResolvedObject {
 
 class Transaction;
 
+// What changed in one layer since the store last saved it (DocumentStore::save): the ids whose
+// record in this layer was added, changed or removed, or `whole` when the store has to look at
+// every record — the layer arrived, changed its storage form, or was handed out through the
+// mutable accessor, after which nothing can say what changed. An id stays listed when a later
+// command put its record back as it was (a rolled-back transaction, an undo); the store finds the
+// bytes unchanged and writes nothing for it.
+struct LayerChanges {
+  HashSet<ObjectId> ids;
+  bool whole = false;
+
+  bool any() const noexcept { return whole || !ids.empty(); }
+};
+
 class Document {
  public:
-  Document() = default;
+  Document();
+  ~Document();
   ENGINE_NON_COPYABLE(Document);
-  Document(Document&&) noexcept = default;
-  Document& operator=(Document&&) noexcept = default;
+  Document(Document&&) noexcept;
+  Document& operator=(Document&&) noexcept;
 
   // --- layers -----------------------------------------------------------------------------
 
@@ -116,16 +136,19 @@ class Document {
   bool remove_layer(u32 index);
   u32 layer_count() const noexcept { return layers_.size(); }
   // The mutable accessor hands out storage the composed index describes, so it marks the index
-  // for a rebuild on the next query. Prefer apply() for edits and the const accessor for reads.
+  // for a rebuild on the next query, and the layer as changed throughout for the next save.
+  // Prefer apply() for edits and the const accessor for reads.
   Layer& layer(u32 index) noexcept {
     index_dirty_ = true;
+    changes_[index].whole = true;
     return layers_[index];
   }
   const Layer& layer(u32 index) const noexcept { return layers_[index]; }
   // Index of the named layer, or -1.
   i32 find_layer(std::string_view name) const noexcept;
   // Storage form of a layer (domain/doc/partition.h). Setting it changes no record, so the
-  // composed index is untouched; DocumentStore::repartition writes the new form.
+  // composed index is untouched; the layer is marked changed throughout, and the next save
+  // (DocumentStore::repartition is one) writes the new form and removes the old one's files.
   void set_layer_partition(u32 index, LayerPartition partition);
 
   void set_edit_layer(u32 index) noexcept;
@@ -207,13 +230,20 @@ class Document {
   bool validate_index(Vector<Diagnostic>* out = nullptr) const;
 
   // --- change tracking ------------------------------------------------------------------------
+  //
+  // Per layer, what changed since the last save, so that DocumentStore::save visits the layers a
+  // commit touched and, in a partitioned one, the tiles those records were and are in — and
+  // leaves every other layer's files alone without so much as asking the file system about them.
 
-  // Ids whose record changed in some layer since the last clear_dirty(). DocumentStore::save
-  // rewrites only the tiles these fall in; an id is reported for every layer that holds it,
-  // which can rewrite one tile more than strictly necessary and never one fewer.
-  const HashSet<ObjectId>& dirty() const noexcept { return dirty_; }
-  void clear_dirty() noexcept { dirty_.clear(); }
-  // Marks every indexed id dirty: what a store does when it cannot tell what is on disk.
+  // What changed in layer `index` since the last clear_dirty().
+  const LayerChanges& changes(u32 index) const noexcept { return changes_[index]; }
+  // True when any layer changed.
+  bool dirty() const noexcept;
+  // What a successful save does: every layer is as the store last wrote it.
+  void clear_dirty() noexcept;
+  // Marks every layer changed throughout and forgets what the store knows of the disk, so the
+  // next save writes every file whole and removes whatever the document no longer has: what a
+  // caller does when files changed behind the store's back.
   void mark_all_dirty();
 
   // --- mutation ---------------------------------------------------------------------------
@@ -245,6 +275,7 @@ class Document {
 
  private:
   friend class Transaction;
+  friend class DocumentStore;
 
   // One id's composed position across the stack. `layer_mask` names the layers holding a record
   // for the id so a query visits only those; bit 63 stands for "layer 63 and every layer above
@@ -279,6 +310,11 @@ class Document {
   // path calls this for the id it touched, and for nothing else: a record only ever changes the
   // composition of its own object.
   void touch(ObjectId id);
+  // touch(), and the id noted as changed in the edit layer: what every command does.
+  void edited(ObjectId id) {
+    touch(id);
+    changes_[edit_layer_].ids.insert(id);
+  }
   void link_child(ObjectId parent, ObjectId id) const;
   void unlink_child(ObjectId parent, ObjectId id) const;
   // Folds the ids whose liveness changed into the sorted live list, in one merge pass.
@@ -313,7 +349,11 @@ class Document {
   mutable Vector<ObjectId> live_;          // sorted by id
   mutable Vector<ObjectId> live_pending_;  // ids whose liveness changed since the last flush
   mutable bool index_dirty_ = false;
-  HashSet<ObjectId> dirty_;
+
+  // One per layer, in the stack's order: what changed since the last save.
+  Vector<LayerChanges> changes_;
+  // What the store knows of the disk; null until a save or a load fills it.
+  std::unique_ptr<StoredState> stored_;
 
   // The change feed. Mutable for the index's reason: a rebuild a const query triggers restamps.
   mutable Vector<FeedEntry> feed_;  // revision order

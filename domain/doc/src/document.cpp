@@ -1,3 +1,5 @@
+#include "stored_state.h"
+
 #include <core/base/assert.h>
 #include <core/containers/flat_set.h>
 #include <core/json/json.h>
@@ -154,12 +156,23 @@ bool Layer::from_json_text(std::string_view text, Layer& out, schema::ReadContex
 
 // --- Document: layers ---------------------------------------------------------------------------
 
+// Out of line because StoredState is complete only here and in the store.
+Document::Document() = default;
+Document::~Document() = default;
+Document::Document(Document&&) noexcept = default;
+Document& Document::operator=(Document&&) noexcept = default;
+
 u32 Document::add_layer(std::string name, LayerRole role) {
   return add_layer(Layer(std::move(name), role));
 }
 
 u32 Document::add_layer(Layer&& layer) {
   layers_.push_back(std::move(layer));
+  // A layer that arrives has never been saved as this layer, even when one of its name was: the
+  // store looks at every record of it.
+  LayerChanges arrived;
+  arrived.whole = true;
+  changes_.push_back(std::move(arrived));
   const u32 index = layers_.size() - 1;
   // A layer arriving with records changes the composition of exactly those ids, and it arrives
   // strongest, so nothing below it moves.
@@ -173,9 +186,10 @@ u32 Document::add_layer(Layer&& layer) {
 
 bool Document::remove_layer(u32 index) {
   if (index >= layers_.size() || layers_.size() == 1) return false;
-  for (const ObjectId id : layers_[index].records().keys())
-    dirty_.insert(id);
+  // Its files are the store's to remove: it knows them from the last save, and the layer's name
+  // is no longer in the stack.
   layers_.erase_at(index);
+  changes_.erase_at(index);
   if (edit_layer_ >= layers_.size()) {
     edit_layer_ = layers_.size() - 1;
   } else if (edit_layer_ > index) {
@@ -195,6 +209,7 @@ i32 Document::find_layer(std::string_view name) const noexcept {
 void Document::set_layer_partition(u32 index, LayerPartition partition) {
   ENGINE_ASSERT(index < layers_.size(), "Document::set_layer_partition: index out of range");
   layers_[index].set_partition(std::move(partition));
+  changes_[index].whole = true;
 }
 
 void Document::set_edit_layer(u32 index) noexcept {
@@ -338,13 +353,26 @@ void Document::touch(ObjectId id) {
   if (was_live != now_live) live_pending_.push_back(id);
   if (was_live && (!now_live || !(was_parent == fresh.parent))) unlink_child(was_parent, id);
   if (now_live && (!was_live || !(was_parent == fresh.parent))) link_child(fresh.parent, id);
-  dirty_.insert(id);
+}
+
+bool Document::dirty() const noexcept {
+  for (const LayerChanges& c : changes_) {
+    if (c.any()) return true;
+  }
+  return false;
+}
+
+void Document::clear_dirty() noexcept {
+  for (LayerChanges& c : changes_) {
+    c.ids.clear();
+    c.whole = false;
+  }
 }
 
 void Document::mark_all_dirty() {
-  ensure_index();
-  for (const ObjectId id : index_.keys())
-    dirty_.insert(id);
+  for (LayerChanges& c : changes_)
+    c.whole = true;
+  stored_.reset();
 }
 
 bool Document::validate_index(Vector<Diagnostic>* out) const {
@@ -555,8 +583,9 @@ bool Document::apply(const Command& cmd, Command* inverse, Vector<Diagnostic>* d
 
   if (cmd.id.is_null()) return fail("command needs an object id");
 
-  // Every case that changes the edit layer ends with touch(cmd.id): a command edits one record,
-  // so exactly one object's place in the composed index moved.
+  // Every case that changes the edit layer ends with edited(cmd.id): a command edits one record,
+  // so exactly one object's place in the composed index moved, and one record of one layer is
+  // what the next save has to look at.
   switch (cmd.kind) {
     case CommandKind::CreateObject: {
       if (cmd.type.empty()) return fail("CreateObject requires a type");
@@ -574,7 +603,7 @@ bool Document::apply(const Command& cmd, Command* inverse, Vector<Diagnostic>* d
         for (auto [name, value] : cmd.value.as_object())
           r.properties.insert_or_assign(name, value);
       }
-      touch(cmd.id);
+      edited(cmd.id);
       return true;
     }
     case CommandKind::DeleteObject: {
@@ -586,7 +615,7 @@ bool Document::apply(const Command& cmd, Command* inverse, Vector<Diagnostic>* d
       } else {
         layer.ensure(cmd.id).deleted = true;  // defined below: tombstone
       }
-      touch(cmd.id);
+      edited(cmd.id);
       return true;
     }
     case CommandKind::SetProperty: {
@@ -594,7 +623,7 @@ bool Document::apply(const Command& cmd, Command* inverse, Vector<Diagnostic>* d
       if (strict && !exists(cmd.id)) return fail("object does not exist");
       snapshot_inverse();
       layer.ensure(cmd.id).properties.insert_or_assign(cmd.name, cmd.value);
-      touch(cmd.id);
+      edited(cmd.id);
       return true;
     }
     case CommandKind::ClearProperty: {
@@ -604,7 +633,7 @@ bool Document::apply(const Command& cmd, Command* inverse, Vector<Diagnostic>* d
         r->properties.erase(cmd.name);
         prune(layer, cmd.id);
       }
-      touch(cmd.id);
+      edited(cmd.id);
       return true;
     }
     case CommandKind::SetParent: {
@@ -616,13 +645,13 @@ bool Document::apply(const Command& cmd, Command* inverse, Vector<Diagnostic>* d
       }
       snapshot_inverse();
       layer.ensure(cmd.id).parent = parent;
-      touch(cmd.id);
+      edited(cmd.id);
       return true;
     }
     case CommandKind::RemoveRecord: {
       snapshot_inverse();
       layer.remove(cmd.id);
-      touch(cmd.id);
+      edited(cmd.id);
       return true;
     }
     case CommandKind::RestoreRecord: {
@@ -634,7 +663,7 @@ bool Document::apply(const Command& cmd, Command* inverse, Vector<Diagnostic>* d
       } else {
         layer.remove(cmd.id);
       }
-      touch(cmd.id);
+      edited(cmd.id);
       return true;
     }
   }

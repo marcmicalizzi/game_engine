@@ -307,7 +307,16 @@ struct StoreShape {
   u32 proposal_records = 0;  // overrides in each
 };
 
-StoreShape declared_shape() { return StoreShape{}; }
+// A tenth of the records under CTest's smoke run, which asks whether the rows run, not what they
+// cost: building and saving 10^4 records five times is seconds in a debug build.
+StoreShape declared_shape() {
+  StoreShape s;
+  if (bench::smoke_mode()) {
+    s.world_records /= 10;
+    s.plain_records /= 10;
+  }
+  return s;
+}
 
 StoreShape e12_shape(u32 agents) {
   StoreShape s;

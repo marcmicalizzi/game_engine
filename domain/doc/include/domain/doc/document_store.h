@@ -16,7 +16,14 @@
 // side by side in one document and `repartition` converts a layer between them. Tiles change
 // nothing above the file layer: the journal is per document, undo and redo replay commands,
 // and a partitioned layer is an ordinary layer in memory that diffs and merges like any other.
-// Saving after a transaction rewrites only the tiles whose records changed (Document::dirty).
+//
+// **A save writes what changed and nothing else** (docs/subsystems/doc.md, "Saving"). The
+// document says which layers changed since the last save and which records in them
+// (`Document::changes`); the store remembers what it last wrote to, or read from, the directory —
+// every file's length and a hash of its bytes, and each partitioned layer's index — so a layer no
+// commit touched is not looked at, a partitioned one is looked at in the tiles its changed records
+// were and are in, and a file whose canonical bytes are the ones already there is not written.
+// What ends up on disk is byte for byte what writing every file would have left.
 
 #include <domain/doc/document.h>
 #include <foundation/io/vfs.h>
@@ -27,14 +34,18 @@
 
 namespace engine::doc {
 
-// What one save() wrote, for callers that care what the store touched — and for the test that
-// asserts a second save rewrites one tile and not the layer.
+// What one save() did, for callers that care what the store touched — and for the tests that
+// assert a transaction rewrites one tile and not the layer.
 struct SaveReport {
   u32 files_written = 0;  // layer, tile, index, and manifest files written this call
   u64 bytes_written = 0;  // what those files hold, summed
+  u32 files_removed = 0;  // files of tiles, forms and layers the document no longer has
   u32 tiles_written = 0;
   u32 tiles_removed = 0;  // tile files that no longer have any records
   u32 tiles_total = 0;    // occupied tiles across every partitioned layer
+  // The paths written and removed, under the document directory, in the order they were.
+  Vector<std::string> written;
+  Vector<std::string> removed;
 };
 
 class DocumentStore {
@@ -56,13 +67,19 @@ class DocumentStore {
   // Loads the manifest, every layer in manifest order, and the journal. A layer the manifest
   // gives a partition is read from its tile files, and a malformed index — a tile file the
   // index does not list, a record in the wrong tile, records out of order — fails the load
-  // with a message naming the file. Leaves the document with nothing dirty.
+  // with a message naming the file. Leaves the document with nothing changed, except a layer
+  // whose files are not byte for byte what a save would write, which the next save rewrites; and
+  // leaves it knowing what it read, so that the next save to `dir` writes only what changes.
   static bool load(const io::Vfs& vfs, std::string_view dir, Document& out,
                    DocumentManifest& manifest, std::string* error);
-  // Writes the layers and the manifest, each file atomically. Refreshes `manifest.layers` and
-  // `manifest.edit_layer` from the document; keeps its name and undo position. Files of layers
-  // the document no longer has are removed. For a partitioned layer only the tiles that changed
-  // are rewritten, which is what `Document::dirty()` is for; a successful save clears it.
+  // Writes what changed since the last save or load: the files of the layers `Document::changes`
+  // names — for a partitioned layer, the tiles its changed records were and are in, and the index
+  // when one changed tiles — and the manifest, each only when its canonical bytes differ from the
+  // ones on disk. Refreshes `manifest.layers` and `manifest.edit_layer` from the document and keeps
+  // its name and undo position. Files of layers the document no longer has, and of a layer's old
+  // form, are removed. A document the store knows nothing of here (new, saved elsewhere, or
+  // marked all dirty) is written whole, and whatever the old form or the manifest left is looked
+  // for on disk. A successful save clears the document's changes.
   static bool save(const io::Vfs& vfs, std::string_view dir, Document& doc,
                    DocumentManifest& manifest, std::string* error, SaveReport* report = nullptr);
 
