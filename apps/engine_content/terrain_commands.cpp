@@ -38,23 +38,23 @@ namespace engine::content {
 
 namespace {
 
-constexpr int k_exit_ok = 0;
+// Without the capability only `failed` is reached; the rest stay for the build that has it.
+[[maybe_unused]] constexpr int k_exit_ok = 0;
 constexpr int k_exit_error = 1;
-constexpr int k_exit_usage = 2;
+[[maybe_unused]] constexpr int k_exit_usage = 2;
 
-const char* k_terrain_usage =
+[[maybe_unused]] const char* k_terrain_usage =
     "usage: engine-content terrain <scene.json> --tile <x,z> [options]\n"
     "  one tile of the scene's dune field at one game time, as one JSON line\n"
-    "  (engine.terrain.TileReport): the terrain's fields are read for the dune generator whether "
-    "or\n"
-    "  not the terrain names it\n"
+    "  (engine.terrain.TileReport): the terrain's fields are read for the dune generator\n"
+    "  whether or not the terrain names it\n"
     "      --time <s>          game seconds since the world's epoch (default: the terrain's time)\n"
     "      --cells <n>         quads a side (default 128: the overlay's 25 cm grid at 32 m)\n"
     "      --detail <d>        full, dunes (default), coarse or floor\n"
     "      --tile-size <m>     a tile's edge in metres (default 32)\n"
     "      --crests            list every crest line crossing the tile\n";
 
-int usage(const char* message) {
+[[maybe_unused]] int usage(const char* message) {
   if (message != nullptr) std::fprintf(stderr, "engine-content terrain: %s\n", message);
   std::fputs(k_terrain_usage, stderr);
   return k_exit_usage;
