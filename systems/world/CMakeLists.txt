@@ -40,6 +40,15 @@ if(TARGET engine::ruins)
   list(APPEND _world_sources src/ruins_tiles.cpp)
 endif()
 
+# The terrain consumer, when this configuration has the terrain capability (ADR-0043): a tile of the
+# dune generator's field for every held tile, and the tile's deformation overlay kept in the store.
+# The same pattern as the ruins: a world without a desert streams its document and its store and
+# links nothing of the generator.
+if(TARGET engine::terrain)
+  list(APPEND _world_deps terrain)
+  list(APPEND _world_sources src/terrain_tiles.cpp)
+endif()
+
 engine_module(NAME world LAYER systems OPTIONAL WHOLE_ARCHIVE
   DEPS ${_world_deps}
   SOURCES ${_world_sources})
@@ -48,12 +57,19 @@ if(TARGET engine::ruins)
   # WHOLE_ARCHIVE): a host includes <systems/world/ruins_tiles.h> only where it exists.
   target_compile_definitions(engine_world INTERFACE ENGINE_WORLD_RUINS=1)
 endif()
+if(TARGET engine::terrain)
+  # Likewise <systems/world/terrain_tiles.h>.
+  target_compile_definitions(engine_world INTERFACE ENGINE_WORLD_TERRAIN=1)
+endif()
 
 set(_world_tests tests/world_tests.cpp tests/tile_store_tests.cpp tests/consumer_tests.cpp
                  tests/save_tests.cpp
                  tests/size_table.cpp)
 if(TARGET engine::ruins)
   list(APPEND _world_tests tests/ruins_tiles_tests.cpp)
+endif()
+if(TARGET engine::terrain)
+  list(APPEND _world_tests tests/terrain_tiles_tests.cpp)
 endif()
 engine_module_tests(NAME world SOURCES ${_world_tests})
 
