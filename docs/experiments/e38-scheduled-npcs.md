@@ -66,7 +66,7 @@ A transition is the wheel's delivery, one closed form, three component writes th
 | One tile's pass, materializing its ~150 residents and places (`npc.tile_pass`) | **2.4 ms** | **36.7 ms** |
 | The same tile let go (dematerialize) | | **0.19 ms** |
 
-**This is the cost that keeps 10^5 from its budget.** A tile pass classifies every live record of the document to find the tile's (sim.md, "A tile pass is a pass over the document"), so it grows with the document — 15× for 10× the records — and not with the tile, whose 150-odd records cost well under a millisecond to materialize. Under the ring's default budget of eight activations an update, a streamed world of 10^5 residents pays **0.3 s in one update** whenever eight tiles come in. The fix sim.md and world.md already name is to ask the document's layer index for a tile's records instead of classifying the document; with it a tile pass would cost its ~150 records, about 0.5 ms. Named, not built: it is `domain/sim`'s driver.
+**This is the cost that keeps 10^5 from its budget.** A tile pass classifies every live record of the document to find the tile's (sim.md, "A tile pass is a pass over the document"), so it grows with the document — 15× for 10× the records — and not with the tile, whose 150-odd records cost well under a millisecond to materialize. Under the ring's default budget of eight activations an update, a streamed world of 10^5 residents pays **0.3 s in one update** whenever eight tiles come in. The fix sim.md and world.md already name is to ask the document's layer index for a tile's records instead of classifying the document; with it a tile pass would cost its ~150 records, about 0.5 ms. Named, not built: it is `domain/sim`'s driver. (Built the same day: [the follow-up](#follow-up-2026-09-25-a-tile-pass-costs-the-tile-and-the-schedule-index), 0.58 ms a tile at 10^5 on the i9.)
 
 Reconciliation from the store (and writing a tile's projections when it goes) was not measured here: this environment builds no store ("Caveats").
 
@@ -122,3 +122,43 @@ It does not decide the store's share of a save or of a tile's activation (not me
 - **One machine, a 4-vCPU cloud container, no GPU, and a reduced configuration.** This environment's network policy refused the Slang release download and sqlite.org, so the build ran with `ENGINE_SHADERS=OFF` and `ENGINE_WITH_STORE=OFF` — no renderer, no store, no world capability (which requires the store), no engine-host. Everything above is the capability, the scheduler, flecs and the document; the store's rows and the end-to-end replay (`apps/engine_cli/tests/npc_replay_tests.cpp`) are for the owner's machine, and the replay's hash is pinned there.
 - The i9-10980XE the other experiments ran on is faster per core; these rows are not comparable to theirs without a re-take.
 - The tier pass ran with no job system; `TierAssignment` scales 3.6× on eight workers (sim.md), which the capability does not use yet.
+
+## Follow-up (2026-09-25): a tile pass costs the tile, and the schedule index
+
+The first of the two costs "What it decides" names — the streaming one — was the driver's, and it is gone: the document keeps a tile index ([doc](../subsystems/doc.md), "Tile index") and a tile pass takes its records from it ([sim](../subsystems/sim.md#the-contract-as-implemented)).
+
+- **Machine:** the owner's i9-10980XE (18 cores, 36 threads), Windows 11, `msvc-release` (MSVC, RelWithDebInfo, x86-64-v3) — not the Xeon container above, whose rows these are not comparable to. The **before** rows were re-taken here from the code before the change (the same bench rows, built from that commit's `domain/doc` with the new rows added), so before and after are one machine.
+- **Machine state:** every run under `--wait-quiet=900`, which found the machine quiet at once each time; the harness recorded 9.7% → 9.4% of the CPU used by others (start → end) for the tile rows before, 9.4% → 9.5% after, and for the document's apply rows 5.7% → 15.2% before and 8.0% → 14.5% after (a build elsewhere starting near the end of both, so those two are upper bounds); the GPU at 4–6%, no GPU lock held, the session unlocked.
+
+```
+engine_npc_bench --filter='npc.tile_*' --repeats=3 --wait-quiet=900
+engine_doc_bench --filter='doc.apply.*' --repeats=3 --wait-quiet=900
+```
+
+### A tile's activation and let-go
+
+Median of three repeats. `npc.tile_pass` and `npc.tile_leave` are E38's fixture — a world holding one tile of `bench_world(n)`, brought in and let go; the `.held` rows are the world a stream actually has, every other record already held (materialized whole first, so each is filed under its tile), where a pass or a let-go that walks everything held to find its tile's records pays for it.
+
+| Row | 10^4 before | 10^4 after | 10^5 before | 10^5 after |
+|---|---|---|---|---|
+| `npc.tile_pass` (a tile of ~150 records in) | 3.98 ms | **0.49 ms** | 60.2 ms | **0.58 ms** |
+| `npc.tile_pass.held` (the same, every other tile held) | 5.26 ms | **0.52 ms** | 77.7 ms | **0.73 ms** |
+| `npc.tile_leave` (the tile let go) | 0.148 ms | 0.148 ms | 0.180 ms | 0.167 ms |
+| `npc.tile_leave.held` (the same, every other tile held) | 0.262 ms | **0.179 ms** | 1.06 ms | **0.197 ms** |
+
+**A tile pass is now its tile.** 0.49 ms at 10^4 and 0.58 ms at 10^5, for one tile of ~150 records, where it was 3.98 and 60.2 ms: 8× and 104×. What is left grows by a fifth for ten times the document, which is the tile's records costing more to reach in larger hash maps (the document's index, the driver's, flecs'), not a walk of anything. The `.held` rows had a second walk the first rows never showed: finding what the driver held under the tile meant visiting everything it held, which was most of a millisecond of the let-go at 10^5 (1.06 ms) and grew with the world. The driver now files what it holds per tile, so a let-go is 0.18–0.20 ms at both sizes — the flecs deletions and the hooks — and a pass in a full world is 0.73 ms.
+
+**Under the ring's default budget** — eight activations an update — a streamed 10^5 now pays about **5 ms** in one update where it paid 0.3 s on the Xeon and would have paid 0.6 s here. That is no longer the cost that keeps 10^5 from its budget: 5 ms is a third of a 60 Hz tick, and it lands only on updates where eight tiles come in at once.
+
+### What the index costs the document
+
+| Row (per command) | 10^3 before | 10^3 after | 10^5 before | 10^5 after |
+|---|---|---|---|---|
+| `doc.apply.set_property` (an unpartitioned property) | 0.308 µs | 0.313 µs | 0.695 µs | 0.706 µs |
+| `doc.apply.move` (a record of a partitioned layer to another of 16 tiles) | 0.692 µs | 0.782 µs | 1.26 µs | 1.39 µs |
+
+A command that moves nothing between tiles costs what it did (within the noise); one that moves a record between tiles pays for its tile being read again and for a sorted insert into the new tile's list, 0.09–0.13 µs — what a resident's write-back of its anchor costs more, at 640 transitions a game minute 0.08 ms a game minute at 10^5. In memory, an index entry is 56 bytes instead of 48 and every live object is in one sorted list (a tile's or the untiled one) at 16 bytes: about 3 MB at 130,500 records, against the 189 MB the document already is.
+
+### What moved the replay hash
+
+Nothing: the tile index changes which records a tile pass looks at to find its own, not which records it materializes, and `npc_replay_tests.cpp` reaches `53a8c6295e6d4e78` on MSVC as before.

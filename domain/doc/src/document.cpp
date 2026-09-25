@@ -6,6 +6,7 @@
 #include <core/schema/type_info.h>
 #include <core/time/time.h>
 #include <domain/doc/document.h>
+#include <domain/doc/partition.h>
 
 #include <algorithm>
 #include <memory>
@@ -210,6 +211,17 @@ void Document::set_layer_partition(u32 index, LayerPartition partition) {
   ENGINE_ASSERT(index < layers_.size(), "Document::set_layer_partition: index out of range");
   layers_[index].set_partition(std::move(partition));
   changes_[index].whole = true;
+  if (index_dirty_) return;  // the next query rebuilds, under the new grid
+  // No record changed, so no composition did and nothing is stamped; but every object this layer
+  // defines is filed under the new grid now, and an object is defined by one of its records, so
+  // this layer's records are the only ones to look at.
+  for (const ObjectId id : layers_[index].records().keys()) {
+    IndexEntry* entry = index_.find_value(id);
+    if (entry == nullptr || !entry->defined || entry->defining_layer != index) continue;
+    const IndexEntry was = *entry;
+    compose_tile(id, *entry);
+    refile_tile(id, was, *entry);
+  }
 }
 
 void Document::set_edit_layer(u32 index) noexcept {
@@ -242,7 +254,24 @@ Document::IndexEntry Document::compose(ObjectId id) const {
       }
     }
   }
+  compose_tile(id, entry);
   return entry;
+}
+
+void Document::compose_tile(ObjectId id, IndexEntry& entry) const {
+  entry.tiled = false;
+  entry.tile = TileCoord{};
+  if (!entry.defined) return;
+  const Layer& layer = layers_[entry.defining_layer];
+  if (!layer.partitioned()) return;
+  // The defining record alone, under its own layer's grid: the rule `layers/<layer>/tiles/` files
+  // it by, so a tile of the index is exactly what the defining layers' tile files hold.
+  const ObjectRecord* defining = layer.find(id);
+  if (defining == nullptr) return;
+  TileCoord tile;
+  if (!doc::tile_of(*defining, layer.partition(), tile)) return;
+  entry.tiled = true;
+  entry.tile = tile;
 }
 
 void Document::link_child(ObjectId parent, ObjectId id) const {
@@ -287,11 +316,60 @@ void Document::flush_live() const {
   live_pending_.clear();
 }
 
+void Document::flush_untiled() const {
+  if (untiled_pending_.empty()) return;
+  // flush_live's merge, with "in no tile" for "live": an id is in the list after the merge exactly
+  // when its entry says so now, whatever it said at each change in between.
+  std::sort(untiled_pending_.begin(), untiled_pending_.end());
+  Vector<ObjectId> merged;
+  merged.reserve(untiled_.size() + untiled_pending_.size());
+  u32 i = 0, j = 0;
+  const u32 n = untiled_.size(), m = untiled_pending_.size();
+  while (i < n || j < m) {
+    if (j < m && (i >= n || !(untiled_[i] < untiled_pending_[j]))) {
+      const ObjectId id = untiled_pending_[j];
+      while (j < m && untiled_pending_[j] == id)
+        ++j;
+      if (i < n && untiled_[i] == id) ++i;
+      const IndexEntry* entry = index_.find_value(id);
+      if (entry != nullptr && entry->untiled()) merged.push_back(id);
+      continue;
+    }
+    merged.push_back(untiled_[i]);
+    ++i;
+  }
+  untiled_ = std::move(merged);
+  untiled_pending_.clear();
+}
+
+void Document::refile_tile(ObjectId id, const IndexEntry& was, const IndexEntry& now) const {
+  const bool same_tile = was.in_tile() && now.in_tile() && was.tile == now.tile;
+  if (was.in_tile() && !same_tile) {
+    const u64 key = tile_key(was.tile);
+    if (Vector<ObjectId>* list = tiles_.find_value(key)) {
+      const auto at = std::lower_bound(list->begin(), list->end(), id);
+      const u32 pos = static_cast<u32>(at - list->begin());
+      if (pos < list->size() && (*list)[pos] == id) list->erase_at(pos);
+      if (list->empty()) tiles_.erase(key);
+    }
+  }
+  if (now.in_tile() && !same_tile) {
+    Vector<ObjectId>& list = tiles_[tile_key(now.tile)];
+    const auto at = std::lower_bound(list.begin(), list.end(), id);
+    const u32 pos = static_cast<u32>(at - list.begin());
+    if (pos >= list.size() || !(list[pos] == id)) list.emplace(pos, id);
+  }
+  if (was.untiled() != now.untiled()) untiled_pending_.push_back(id);
+}
+
 void Document::rebuild_index() const {
   index_.clear();
   children_.clear();
   live_.clear();
   live_pending_.clear();
+  tiles_.clear();
+  untiled_.clear();
+  untiled_pending_.clear();
   index_dirty_ = false;
 
   FlatSet<ObjectId> ids;
@@ -309,13 +387,18 @@ void Document::rebuild_index() const {
   const u64 restamp = ++revision_;
   feed_.clear();
   feed_floor_ = restamp;
-  for (const ObjectId id : ids) {  // FlatSet iterates in key order, so live_ comes out sorted
+  for (const ObjectId id : ids) {  // FlatSet iterates in key order, so every list comes out sorted
     IndexEntry entry = compose(id);
     entry.revision = restamp;
     index_.insert(id, entry);
     if (!entry.live()) continue;
     live_.push_back(id);
     children_[entry.parent].push_back(id);
+    if (entry.tiled) {
+      tiles_[tile_key(entry.tile)].push_back(id);
+    } else {
+      untiled_.push_back(id);
+    }
   }
 }
 
@@ -339,9 +422,13 @@ void Document::touch(ObjectId id) {
   IndexEntry fresh = compose(id);
   fresh.revision = stamp(id);
   const IndexEntry* existing = index_.find_value(id);
-  const bool was_live = existing != nullptr && existing->live();
-  const ObjectId was_parent = existing != nullptr ? existing->parent : ObjectId{};
+  const IndexEntry was = existing != nullptr ? *existing : IndexEntry{};
+  const bool was_live = was.live();
+  const ObjectId was_parent = was.parent;
   const bool now_live = fresh.live();
+  // The same record that moved the object in the stack is the only thing that can move it between
+  // tiles: its defining record's position, its defining layer, or its liveness.
+  refile_tile(id, was, fresh);
 
   if (fresh.record_count == 0) {
     index_.erase(id);
@@ -378,6 +465,7 @@ void Document::mark_all_dirty() {
 bool Document::validate_index(Vector<Diagnostic>* out) const {
   ensure_index();
   flush_live();
+  flush_untiled();
   auto report = [&](ObjectId id, std::string message) {
     diag(out, describe_path("$index", id), std::move(message));
   };
@@ -390,12 +478,19 @@ bool Document::validate_index(Vector<Diagnostic>* out) const {
   }
   Vector<ObjectId> want_live;
   FlatMap<ObjectId, Vector<ObjectId>> want_children;
+  FlatMap<TileCoord, Vector<ObjectId>> want_tiles;
+  Vector<ObjectId> want_untiled;
   u32 mismatches = 0;
   for (const ObjectId id : ids) {
     const IndexEntry want = compose(id);
     if (want.live()) {
       want_live.push_back(id);
       want_children[want.parent].push_back(id);
+      if (want.tiled) {
+        want_tiles[want.tile].push_back(id);
+      } else {
+        want_untiled.push_back(id);
+      }
     }
     const IndexEntry* have = index_.find_value(id);
     if (have == nullptr) {
@@ -408,6 +503,10 @@ bool Document::validate_index(Vector<Diagnostic>* out) const {
         have->layer_mask != want.layer_mask || !(have->parent == want.parent)) {
       ++mismatches;
       report(id, "the index entry disagrees with the layers");
+    }
+    if (have->tiled != want.tiled || (want.tiled && !(have->tile == want.tile))) {
+      ++mismatches;
+      report(id, "the index files the object under another tile than its defining record's");
     }
   }
   for (const ObjectId id : index_.keys()) {
@@ -432,6 +531,29 @@ bool Document::validate_index(Vector<Diagnostic>* out) const {
       ++mismatches;
       report(parent, "the children list names a parent with no live children");
     }
+  }
+  auto tile_path = [](TileCoord tile) {
+    return "$index/tile/" + std::to_string(tile.x) + "_" + std::to_string(tile.y);
+  };
+  for (auto [tile, want] : want_tiles) {
+    const Vector<ObjectId>* have = tiles_.find_value(tile_key(tile));
+    if (have == nullptr || *have != want) {
+      ++mismatches;
+      diag(out, tile_path(tile), "the tile's list disagrees with the layers");
+    }
+  }
+  for (u32 i = 0; i < tiles_.size(); ++i) {
+    const u64 key = tiles_.key_at(i);
+    const TileCoord tile{static_cast<i32>(static_cast<u32>(key >> 32)),
+                         static_cast<i32>(static_cast<u32>(key))};
+    if (!want_tiles.contains(tile)) {
+      ++mismatches;
+      diag(out, tile_path(tile), "the tile index names a tile no live object is in");
+    }
+  }
+  if (untiled_ != want_untiled) {
+    ++mismatches;
+    diag(out, "$index", "the untiled list disagrees with the layers");
   }
   return mismatches == 0;
 }
@@ -498,6 +620,31 @@ Vector<ObjectId> Document::children(ObjectId parent) const {
   ensure_index();
   const Vector<ObjectId>* list = children_.find_value(parent);
   return list != nullptr ? *list : Vector<ObjectId>{};
+}
+
+Vector<ObjectId> Document::ids_in_tile(TileCoord tile) const {
+  ensure_index();
+  const Vector<ObjectId>* list = tiles_.find_value(tile_key(tile));
+  return list != nullptr ? *list : Vector<ObjectId>{};
+}
+
+Vector<ObjectId> Document::untiled() const {
+  ensure_index();
+  flush_untiled();
+  return untiled_;
+}
+
+bool Document::object_tile(ObjectId id, TileCoord& out) const noexcept {
+  ensure_index();
+  const IndexEntry* entry = index_.find_value(id);
+  if (entry == nullptr || !entry->defined || !entry->tiled) return false;
+  out = entry->tile;
+  return true;
+}
+
+u32 Document::occupied_tiles() const noexcept {
+  ensure_index();
+  return tiles_.size();
 }
 
 std::string_view Document::type_of(ObjectId id) const noexcept {

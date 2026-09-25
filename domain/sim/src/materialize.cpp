@@ -37,19 +37,16 @@ u64 seed_of(const Id128& id) noexcept {
 
 // The tile the record's own file is in: the defining record, under the defining layer's partition,
 // by `doc::tile_of` — the same function the layer's file layout uses, so "the records of tile
-// (x, y)" means the records `layers/<layer>/tiles/<x>_<y>.json` holds.
+// (x, y)" means the records `layers/<layer>/tiles/<x>_<y>.json` holds. The document's tile index
+// keeps it for every record (`doc::Document::object_tile`), so this is a hash lookup; it used to be
+// a visit of the record's layers and a read of its position, for every live record of the document
+// on every tile pass.
 bool record_tile(const doc::Document& document, const Id128& id, doc::TileCoord& out) {
-  const doc::ObjectRecord* defining = nullptr;
-  u32 defining_layer = 0;
-  document.visit_records(id, [&](u32 layer, const doc::ObjectRecord& record) {
-    if (record.type.empty()) return;
-    defining = &record;
-    defining_layer = layer;
-  });
-  if (defining == nullptr) return false;
-  const doc::Layer& layer = document.layer(defining_layer);
-  if (!layer.partitioned()) return false;
-  return doc::tile_of(*defining, layer.partition(), out);
+  return document.object_tile(id, out);
+}
+
+u64 tile_key(doc::TileCoord tile) noexcept {
+  return (static_cast<u64>(static_cast<u32>(tile.x)) << 32) | static_cast<u32>(tile.y);
 }
 
 }  // namespace
@@ -283,12 +280,48 @@ bool Materializer::in_scope(const MaterializeScope& scope, bool tiled,
   return false;
 }
 
+Vector<Id128>* Materializer::filing(bool tiled, doc::TileCoord tile, bool create) {
+  if (!tiled) return &filed_untiled_;
+  if (create) return &filed_[tile_key(tile)];
+  return filed_.find_value(tile_key(tile));
+}
+
+void Materializer::filed_in(const MaterializeScope& scope, Vector<Id128>& out) {
+  const Vector<Id128>* list = scope.kind == MaterializeScope::Kind::Untiled
+                                  ? &filed_untiled_
+                                  : filed_.find_value(tile_key(scope.tile));
+  if (list == nullptr) return;
+  for (const Id128& id : *list)
+    out.push_back(id);
+}
+
+void Materializer::file(const Id128& id, Held& held) {
+  Vector<Id128>& list = *filing(held.tiled, held.tile, true);
+  held.slot = list.size();
+  list.push_back(id);
+}
+
+void Materializer::unfile(const Held& held) {
+  Vector<Id128>* list = filing(held.tiled, held.tile, false);
+  if (list == nullptr || held.slot >= list->size()) return;
+  // Swap-remove: the list has no order to keep (a pass sorts what it takes from it), and the record
+  // that takes the slot is told where it now is.
+  const u32 last = list->size() - 1u;
+  if (held.slot != last) {
+    const Id128 moved = (*list)[last];
+    (*list)[held.slot] = moved;
+    if (Held* other = held_.find_value(moved)) other->slot = held.slot;
+  }
+  list->pop_back();
+  if (list->empty() && held.tiled) filed_.erase(tile_key(held.tile));
+}
+
 Materializer::Verdict Materializer::classify(const doc::Document& document, const Id128& id,
                                              const MaterializeScope& scope,
                                              MaterializeReport& report, Candidate& out) {
   out = Candidate{};
   out.id = id;
-  if (any_partitioned_) out.tiled = record_tile(document, id, out.tile);
+  out.tiled = record_tile(document, id, out.tile);
   if (!in_scope(scope, out.tiled, out.tile)) return Verdict::OutOfScope;
   ++report.visited;
 
@@ -375,8 +408,19 @@ bool Materializer::materialize_one(const doc::Document& document, const Candidat
   held.tiled = candidate.tiled;
   held.parent_linked = linked;
   held.seen_pass = pass_;
-  const bool existed = held_.contains(candidate.id);
-  held_.insert_or_assign(candidate.id, held);
+  Held* existing = held_.find_value(candidate.id);
+  const bool existed = existing != nullptr;
+  if (existing == nullptr) {
+    held_.insert(candidate.id, held);
+    file(candidate.id, *held_.find_value(candidate.id));
+  } else if (existing->tiled == held.tiled && (!held.tiled || existing->tile == held.tile)) {
+    held.slot = existing->slot;
+    *existing = held;
+  } else {
+    unfile(*existing);
+    *existing = held;
+    file(candidate.id, *existing);
+  }
   if (!linked) orphans_.push_back(candidate.id);
   // A relink is neither a creation nor an edit of the record, and the pass has already counted
   // the record if it looked at it; the report counts relinks on their own.
@@ -412,7 +456,10 @@ void Materializer::dematerialize_ids(Vector<Id128>& ids, MaterializeReport& repo
   }
   scheduler_->dematerialize(std::span<const EntityHandle>(handles_.data(), handles_.size()));
   for (const Id128& id : ids) {
-    if (held_.erase(id) == 0) continue;
+    const Held* gone = held_.find_value(id);
+    if (gone == nullptr) continue;
+    unfile(*gone);
+    held_.erase(id);
     ++report.dematerialized;
     ++stats_.dematerialized;
     // Children that stay lose their parent's entity, and become orphans until it comes back.
@@ -470,9 +517,6 @@ MaterializeReport Materializer::materialize(const doc::Document& document,
   order_.clear();
   candidates_.clear();
   gone_.clear();
-  any_partitioned_ = false;
-  for (u32 i = 0; i < document.layer_count(); ++i)
-    any_partitioned_ = any_partitioned_ || document.layer(i).partitioned();
 
   // Incremental only for the whole document, and only when the feed still reaches back to what this
   // world reflects. Anything else compares revisions over the live set, which is correct whatever
@@ -509,7 +553,13 @@ MaterializeReport Materializer::materialize(const doc::Document& document,
     }
   } else {
     ++stats_.full_passes;
-    const Vector<Id128> live_ids = document.objects();
+    // The records in scope: every live one for the whole document, and for a tile or the untiled
+    // records what the document's tile index files there — never a classification of the document
+    // to find them, which cost a tile pass the document rather than the tile (E38).
+    const Vector<Id128> live_ids = scope.kind == MaterializeScope::Kind::Whole ? document.objects()
+                                   : scope.kind == MaterializeScope::Kind::Tile
+                                       ? document.ids_in_tile(scope.tile)
+                                       : document.untiled();
     for (const Id128& id : live_ids) {
       Candidate candidate;
       const Verdict verdict = classify(document, id, scope, report, candidate);
@@ -536,11 +586,20 @@ MaterializeReport Materializer::materialize(const doc::Document& document,
       }
       candidates_.push_back(candidate);
     }
-    // Held, in scope, and not live any more: deleted, or removed with a layer.
-    for (u32 i = 0; i < held_.size(); ++i) {
-      const Held& held = held_.value_at(i);
-      if (held.seen_pass == pass_ || !in_scope(scope, held.tiled, held.tile)) continue;
-      gone_.push_back(held_.key_at(i));
+    // Held under this scope and not seen by the pass: deleted, removed with a layer, or — for a
+    // tile or the untiled records — filed elsewhere by the document now. For a tile that is what
+    // the driver files under it, not everything it holds.
+    if (scope.kind == MaterializeScope::Kind::Whole) {
+      for (u32 i = 0; i < held_.size(); ++i) {
+        if (held_.value_at(i).seen_pass != pass_) gone_.push_back(held_.key_at(i));
+      }
+    } else {
+      scratch_ids_.clear();
+      filed_in(scope, scratch_ids_);
+      for (const Id128& id : scratch_ids_) {
+        const Held* held = held_.find_value(id);
+        if (held != nullptr && held->seen_pass != pass_) gone_.push_back(id);
+      }
     }
   }
 
@@ -578,6 +637,8 @@ u32 Materializer::dematerialize_all() {
     gone_.push_back(id);
   dematerialize_ids(gone_, report);
   orphans_.clear();
+  filed_.clear();
+  filed_untiled_.clear();
   synced_ = false;
   return report.dematerialized;
 }
@@ -586,10 +647,7 @@ u32 Materializer::dematerialize(const MaterializeScope& scope) {
   if (scope.kind == MaterializeScope::Kind::Whole) return dematerialize_all();
   MaterializeReport report;
   gone_.clear();
-  for (u32 i = 0; i < held_.size(); ++i) {
-    const Held& held = held_.value_at(i);
-    if (in_scope(scope, held.tiled, held.tile)) gone_.push_back(held_.key_at(i));
-  }
+  filed_in(scope, gone_);
   dematerialize_ids(gone_, report);
   // Anything left in the orphan list that is gone now is skipped by the next relink.
   return report.dematerialized;
@@ -597,9 +655,17 @@ u32 Materializer::dematerialize(const MaterializeScope& scope) {
 
 void Materializer::held(const MaterializeScope& scope, Vector<Id128>& out) const {
   out.clear();
-  for (u32 i = 0; i < held_.size(); ++i) {
-    const Held& held = held_.value_at(i);
-    if (in_scope(scope, held.tiled, held.tile)) out.push_back(held_.key_at(i));
+  if (scope.kind == MaterializeScope::Kind::Whole) {
+    for (const Id128& id : held_.keys())
+      out.push_back(id);
+  } else {
+    const Vector<Id128>* list = scope.kind == MaterializeScope::Kind::Untiled
+                                    ? &filed_untiled_
+                                    : filed_.find_value(tile_key(scope.tile));
+    if (list != nullptr) {
+      for (const Id128& id : *list)
+        out.push_back(id);
+    }
   }
   std::sort(out.begin(), out.end());
 }
@@ -626,11 +692,13 @@ void Materializer::take_moved(Vector<TileMove>& out) {
   }
 }
 
-bool Materializer::refile(const Id128& id, bool tiled, doc::TileCoord tile) noexcept {
+bool Materializer::refile(const Id128& id, bool tiled, doc::TileCoord tile) {
   Held* held = held_.find_value(id);
   if (held == nullptr) return false;
+  unfile(*held);
   held->tiled = tiled;
   held->tile = tiled ? tile : doc::TileCoord{};
+  file(id, *held);
   return true;
 }
 

@@ -74,7 +74,9 @@ struct RecordSource {
 // Which records one call covers. A layer with a partition files each record under one tile
 // (domain/doc/partition.h); `Tile` is the records of one tile of the partitioned layers that define
 // them, `Untiled` everything else — records of unpartitioned layers and records with no position —
-// and `Whole` both.
+// and `Whole` both. A tile or untiled pass takes its records from the document's tile index
+// (`doc::Document::ids_in_tile`, `untiled`) and what the driver holds there from its own filing of
+// them, so it costs the records in its scope and not the document.
 struct MaterializeScope {
   enum class Kind : u8 { Whole, Tile, Untiled };
   Kind kind = Kind::Whole;
@@ -260,7 +262,7 @@ class Materializer {
   void take_moved(Vector<TileMove>& out);
   // Files a held record under the tile the document now puts it in (`tiled` false: in none).
   // False when the driver does not hold it.
-  bool refile(const Id128& id, bool tiled, doc::TileCoord tile) noexcept;
+  bool refile(const Id128& id, bool tiled, doc::TileCoord tile);
   // Dematerializes these held records, deepest first; an id the driver does not hold is ignored.
   // Returns how many went.
   u32 dematerialize(std::span<const Id128> ids);
@@ -290,6 +292,7 @@ class Materializer {
     const schema::MaterializeInfo* mapping = nullptr;
     Id128 parent;
     u32 depth = 0;
+    u32 slot = 0;  // its place in the list of what is filed where it is (`filed_`)
     doc::TileCoord tile;
     bool tiled = false;
     bool parent_linked = false;
@@ -330,6 +333,15 @@ class Materializer {
   void dematerialize_ids(Vector<Id128>& ids, MaterializeReport& report);
   void relink_orphans(const doc::Document& document, MaterializeReport& report);
   bool in_scope(const MaterializeScope& scope, bool tiled, doc::TileCoord tile) const noexcept;
+  // What is filed under one tile, or under none (`tiled` false); null when nothing is and `create`
+  // is false.
+  Vector<Id128>* filing(bool tiled, doc::TileCoord tile, bool create);
+  // The ids filed under a tile or the untiled scope (not the whole one), appended to `out`.
+  void filed_in(const MaterializeScope& scope, Vector<Id128>& out);
+  // A held record into, and out of, the list of where it is filed. Every change of `Held::tile` or
+  // `tiled`, and every insertion into and erasure from `held_`, goes through these two.
+  void file(const Id128& id, Held& held);
+  void unfile(const Held& held);
 
   SimScheduler* scheduler_ = nullptr;
   MaterializeConfig config_;
@@ -339,10 +351,15 @@ class Materializer {
   u64 revision_ = 0;
   bool synced_ =
       false;  // a whole-document pass has run, so the feed can be followed from revision_
-  bool any_partitioned_ = false;  // per call: whether a record's tile has to be read at all
   u64 pass_ = 0;
 
   HashMap<Id128, Held> held_;
+  // The held records by where they are filed — per tile (keyed as the tile's x and y in one word)
+  // and the untiled ones — in no particular order: what a tile's pass looks through for the records
+  // that left it, and what a tile's let-go and `held(scope)` take, so that none of the three walks
+  // everything held to find one tile's records.
+  HashMap<u64, Vector<Id128>> filed_;
+  Vector<Id128> filed_untiled_;
   Vector<MappingState> mappings_;
   HashMap<const schema::MaterializeInfo*, u32> mapping_index_;
   HashMap<Id128, u32> depth_cache_;  // per call

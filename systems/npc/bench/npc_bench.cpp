@@ -4,8 +4,9 @@
 // midst (the LOD1 band moving its trips and the tier pass every sixth tick), one transition off the
 // wheel, the summary of a game week, the first materialization, and the generator. And three costs
 // that are not this capability's but that 10^5 residents put in front of it, so E38 can be re-taken
-// with one command: the write-back's scan of every watched entity, one tile's pass over the
-// document, and a 10^5-resident document's load.
+// with one command: the write-back's scan of every watched entity, one tile's activation and let-go
+// (in a world holding that tile alone, and in one holding every other), and a 10^5-resident
+// document's load.
 #include <domain/doc/document.h>
 #include <domain/doc/document_store.h>
 #include <domain/ecs/materialize.h>
@@ -198,8 +199,10 @@ ENGINE_BENCH_ARGS(npc_writeback_scan, "npc.writeback_scan", 10000, 100000) {
 }
 
 // One tile of the partitioned layer materialized and let go again, in a document of 10^4 or 10^5
-// residents: the driver's tile scope classifies every live record to find the tile's (sim.md, "A
-// tile pass is a pass over the document"), so this grows with the document, not the tile.
+// residents. The driver takes the tile's records from the document's tile index (sim.md, "The
+// contract as implemented"), so this is the tile's cost; it used to classify every live record of
+// the document to find them, and grew with the document (E38: 37 ms a tile at 10^5, and the
+// follow-up's before and after).
 ENGINE_BENCH_ARGS(npc_tile_pass, "npc.tile_pass", 10000, 100000) {
   const u32 residents = population(state);
   World world(residents);
@@ -210,6 +213,53 @@ ENGINE_BENCH_ARGS(npc_tile_pass, "npc.tile_pass", 10000, 100000) {
     state.pause_timing();
     world.driver.dematerialize(sim::MaterializeScope::of_tile(tile));
     state.resume_timing();
+  }
+  state.set_items(1);
+}
+
+// The same tile let go: the mirror of the row above, timed the other way round.
+ENGINE_BENCH_ARGS(npc_tile_leave, "npc.tile_leave", 10000, 100000) {
+  const u32 residents = population(state);
+  World world(residents);
+  const doc::TileCoord tile{0, 0};
+  while (state.keep_running()) {
+    state.pause_timing();
+    world.driver.materialize(world.document, sim::MaterializeScope::of_tile(tile));
+    state.resume_timing();
+    bench::keep(world.driver.dematerialize(sim::MaterializeScope::of_tile(tile)));
+  }
+  state.set_items(1);
+}
+
+// The two rows above in the world a stream actually has: every other tile held (materialized whole
+// first, so each record is filed under its tile), and one tile brought in again and let go. What
+// the driver holds is then the whole document, and a pass or a let-go that walks everything held
+// to find its tile's records pays for it here and not in the rows above.
+ENGINE_BENCH_ARGS(npc_tile_pass_held, "npc.tile_pass.held", 10000, 100000) {
+  const u32 residents = population(state);
+  World world(residents);
+  world.driver.materialize(world.document);
+  const doc::TileCoord tile{0, 0};
+  while (state.keep_running()) {
+    state.pause_timing();
+    world.driver.dematerialize(sim::MaterializeScope::of_tile(tile));
+    state.resume_timing();
+    bench::keep(
+        world.driver.materialize(world.document, sim::MaterializeScope::of_tile(tile)).created);
+  }
+  state.set_items(1);
+}
+
+ENGINE_BENCH_ARGS(npc_tile_leave_held, "npc.tile_leave.held", 10000, 100000) {
+  const u32 residents = population(state);
+  World world(residents);
+  world.driver.materialize(world.document);
+  const doc::TileCoord tile{0, 0};
+  while (state.keep_running()) {
+    state.pause_timing();
+    world.driver.materialize(world.document, sim::MaterializeScope::of_tile(tile));
+    state.resume_timing();
+    bench::keep(world.driver.dematerialize(sim::MaterializeScope::of_tile(tile)));
   }
   state.set_items(1);
 }

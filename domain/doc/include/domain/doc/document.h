@@ -13,8 +13,9 @@
 // through the generated LayerFile schema, so files diff cleanly in git.
 //
 // Composition is answered from an index, not by scanning: a Document keeps every id's resolved
-// position in the layer stack and the live children of every parent, maintained by apply, undo,
-// redo, add_layer, and remove_layer. Never scan the layers for an id; ask the document.
+// position in the layer stack, the live children of every parent, and the live ids of every tile
+// of the partitioned layers' grids, maintained by apply, undo, redo, add_layer, and remove_layer.
+// Never scan the layers for an id; ask the document.
 //
 // v0 scope: single-process, in-memory. A layer is one file, or a set of tile files when it
 // carries a partition (domain/doc/partition.h). Leases and the journal's git integration
@@ -30,6 +31,7 @@
 #include <core/json/json_value.h>
 #include <core/schema/json_reflect.h>
 
+#include <compare>
 #include <memory>
 #include <optional>
 #include <schemas/doc.h>
@@ -41,6 +43,18 @@ namespace engine::doc {
 
 using ObjectId = Id128;
 using schema::Diagnostic;
+
+// A cell of a partitioned layer's grid (domain/doc/partition.h): floor(position / tile_size) on the
+// horizontal plane. Ordered by x then y, which is the order the layer index and the file listing
+// use. Declared here rather than beside the grid's math because the document's tile index is keyed
+// by it.
+struct TileCoord {
+  i32 x = 0;
+  i32 y = 0;
+
+  friend bool operator==(TileCoord, TileCoord) noexcept = default;
+  friend std::strong_ordering operator<=>(TileCoord, TileCoord) noexcept = default;
+};
 
 class DocumentStore;
 // What DocumentStore last wrote to, or read from, the directory it keeps a document in: the store's
@@ -147,8 +161,10 @@ class Document {
   // Index of the named layer, or -1.
   i32 find_layer(std::string_view name) const noexcept;
   // Storage form of a layer (domain/doc/partition.h). Setting it changes no record, so the
-  // composed index is untouched; the layer is marked changed throughout, and the next save
-  // (DocumentStore::repartition is one) writes the new form and removes the old one's files.
+  // composition is untouched and the change feed hears nothing; the tile index files the objects
+  // the layer defines under the new grid (or under none); the layer is marked changed throughout,
+  // and the next save (DocumentStore::repartition is one) writes the new form and removes the old
+  // one's files.
   void set_layer_partition(u32 index, LayerPartition partition);
 
   void set_edit_layer(u32 index) noexcept;
@@ -172,6 +188,28 @@ class Document {
   Vector<ObjectId> children(ObjectId parent) const;
   // Live objects, without building the list.
   u32 object_count() const noexcept;
+
+  // --- the tile index ---------------------------------------------------------------------------
+  //
+  // An object's tile is its **defining** record's (the strongest record that carries a type), under
+  // that record's layer's partition, by `doc::tile_of` — the function the layer's file layout uses,
+  // so tile (x, y) is what `layers/<layer>/tiles/<x>_<y>.json` of the defining layers holds. An
+  // override in another layer does not move the object between tiles, even one that sets its
+  // position: its record is filed in that layer's own files, by that layer's own rule. An object
+  // whose defining layer has no partition, or whose defining record has no usable position, is in
+  // no tile. Tiles of layers on different grids share one coordinate space here, as they did when a
+  // reader classified records by `tile_of` itself.
+
+  // Live objects in `tile` of their defining layer's grid, sorted by id.
+  Vector<ObjectId> ids_in_tile(TileCoord tile) const;
+  // Live objects in no tile, sorted by id.
+  Vector<ObjectId> untiled() const;
+  // The tile `id`'s defining record is in, whether or not the object is deleted — where its record
+  // is filed, which a reader holding an object that has since been deleted still asks about. False
+  // for an id no layer defines, and for one in no tile.
+  bool object_tile(ObjectId id, TileCoord& out) const noexcept;
+  // Tiles that hold at least one live object.
+  u32 occupied_tiles() const noexcept;
 
   // The two composed fields of a record that are not properties, without composing the properties
   // `resolve` builds a map of. The defining record's type (empty when no layer defines the id) and
@@ -286,10 +324,14 @@ class Document {
     u32 record_count = 0;    // layers holding a record for this id
     u64 layer_mask = 0;
     u64 revision = 0;  // the change feed's stamp for this id's latest change
+    TileCoord tile;    // the defining record's tile; meaningful when `tiled`
     bool defined = false;
     bool deleted = false;
+    bool tiled = false;  // the defining record falls in a tile of its layer's partition
 
     bool live() const noexcept { return defined && !deleted; }
+    bool in_tile() const noexcept { return live() && tiled; }
+    bool untiled() const noexcept { return live() && !tiled; }
   };
 
   // One change, in revision order.
@@ -319,6 +361,17 @@ class Document {
   void unlink_child(ObjectId parent, ObjectId id) const;
   // Folds the ids whose liveness changed into the sorted live list, in one merge pass.
   void flush_live() const;
+  // The tile index's side of touch(): moves `id` between the tiles' lists and the untiled set when
+  // its tile or its liveness changed from `was` to `now`.
+  void refile_tile(ObjectId id, const IndexEntry& was, const IndexEntry& now) const;
+  // The defining record's tile under its layer's partition, into `entry`: compose()'s last step,
+  // and what a new partition re-runs for the objects its layer defines.
+  void compose_tile(ObjectId id, IndexEntry& entry) const;
+  // Folds the ids whose untiled membership changed into the sorted untiled list, as flush_live.
+  void flush_untiled() const;
+  static u64 tile_key(TileCoord tile) noexcept {
+    return (static_cast<u64>(static_cast<u32>(tile.x)) << 32) | static_cast<u32>(tile.y);
+  }
   // Visits every layer holding a record for `id`, weakest first.
   template <class Fn>
   void for_each_record(ObjectId id, const IndexEntry& entry, Fn&& fn) const {
@@ -348,6 +401,14 @@ class Document {
   mutable HashMap<ObjectId, Vector<ObjectId>> children_;
   mutable Vector<ObjectId> live_;          // sorted by id
   mutable Vector<ObjectId> live_pending_;  // ids whose liveness changed since the last flush
+  // The tile index: per occupied tile (tile_key), its live objects sorted by id, like a parent's
+  // children; and the live objects in no tile, kept as the live list is — a sorted list and the ids
+  // whose membership changed since the last flush — because in a document with no partitioned
+  // layer that is every object, and an insertion into the middle of it per command would make
+  // building a document quadratic.
+  mutable HashMap<u64, Vector<ObjectId>> tiles_;
+  mutable Vector<ObjectId> untiled_;          // sorted by id
+  mutable Vector<ObjectId> untiled_pending_;  // ids whose untiled membership changed
   mutable bool index_dirty_ = false;
 
   // One per layer, in the stack's order: what changed since the last save.

@@ -165,7 +165,7 @@ The migration corpus gains the record types through a save written by the test's
 
 ## Performance notes
 
-[E38](../experiments/e38-scheduled-npcs.md) has the tables and the machine. In short, on a 4-vCPU Xeon container, GCC release, quiet: a tick with 10^5 residents at LOD2 is **39 µs**; a transition off the wheel **0.33 µs** including its component writes (05 §5.6 budgets ~1 µs); a game week's summary of 10^5 residents **15.8 ms** against **4.9 s** to execute it; the generator 10^5 residents a second and a quarter. The costs that are not this capability's are named there: the write-back flush's scan of every watched entity, and a tile pass that classifies every record of the document.
+[E38](../experiments/e38-scheduled-npcs.md) has the tables and the machine. In short, on a 4-vCPU Xeon container, GCC release, quiet: a tick with 10^5 residents at LOD2 is **39 µs**; a transition off the wheel **0.33 µs** including its component writes (05 §5.6 budgets ~1 µs); a game week's summary of 10^5 residents **15.8 ms** against **4.9 s** to execute it; the generator 10^5 residents a second and a quarter. The costs that are not this capability's are named there: the write-back flush's scan of every watched entity, and a tile pass that classified every record of the document — which since the document keeps a tile index costs its tile, 0.58 ms at 10^5 on the i9 against 60 ms ([E38's follow-up](../experiments/e38-scheduled-npcs.md#follow-up-2026-09-25-a-tile-pass-costs-the-tile-and-the-schedule-index)).
 
 ## Not yet
 

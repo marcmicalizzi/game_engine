@@ -27,22 +27,14 @@
 #include <core/json/json_value.h>
 #include <domain/doc/document.h>
 
-#include <compare>
 #include <schemas/doc.h>
 #include <string>
 #include <string_view>
 
 namespace engine::doc {
 
-// A cell of the layer's grid: floor(position / tile_size) on the horizontal plane. Ordered by
-// x then y, which is the order the index and the file listing use.
-struct TileCoord {
-  i32 x = 0;
-  i32 y = 0;
-
-  friend bool operator==(TileCoord, TileCoord) noexcept = default;
-  friend std::strong_ordering operator<=>(TileCoord, TileCoord) noexcept = default;
-};
+// `TileCoord`, a cell of the layer's grid, is declared in document.h: the document's tile index
+// (`Document::ids_in_tile`) is keyed by it.
 
 // "<x>_<y>.json", the decimal coordinates with a leading '-' where they are negative.
 std::string tile_file_name(TileCoord tile);

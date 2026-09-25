@@ -5,11 +5,13 @@
 #include <core/json/json.h>
 #include <core/schema/materialize.h>
 #include <domain/doc/document.h>
+#include <domain/doc/partition.h>
 #include <domain/sim/materialize.h>
 #include <domain/sim/scheduler.h>
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <map>
 #include <schemas/sim_world.h>
 #include <string>
@@ -589,4 +591,155 @@ TEST_CASE("sim: dematerialization walks the hooks backwards, deepest record firs
     CHECK(log[i + 1] == "world");
   }
   CHECK(rig.world.entities.empty());
+}
+
+namespace {
+
+// The path a tile pass took before the document kept a tile index, kept here as the oracle and
+// nowhere at run time: every live record of the document, its defining record found by visiting its
+// layers, classified by that record's tile under its layer's partition.
+Vector<Id128> classified(const doc::Document& d, const MaterializeScope& scope) {
+  Vector<Id128> out;
+  for (const Id128& id : d.objects()) {
+    const doc::ObjectRecord* defining = nullptr;
+    u32 layer = 0;
+    d.visit_records(id, [&](u32 i, const doc::ObjectRecord& r) {
+      if (r.type.empty()) return;
+      defining = &r;
+      layer = i;
+    });
+    doc::TileCoord tile;
+    bool tiled = false;
+    if (defining != nullptr && d.layer(layer).partitioned())
+      tiled = doc::tile_of(*defining, d.layer(layer).partition(), tile);
+    const bool in =
+        scope.kind == MaterializeScope::Kind::Whole ||
+        (scope.kind == MaterializeScope::Kind::Tile ? tiled && tile == scope.tile : !tiled);
+    if (in) out.push_back(id);
+  }
+  return out;
+}
+
+struct Equivalence {
+  u32 passes = 0;
+  u32 records = 0;
+  std::string first;
+};
+
+// One pass of `scope` against the oracle: it looked at exactly the records the classification
+// finds, every one of them the world can hold is held after it, and nothing filed under the scope
+// is a record the classification would not have put there.
+void check_pass(Rig& rig, const doc::Document& d, const MaterializeScope& scope, Equivalence& e) {
+  const Vector<Id128> want = classified(d, scope);
+  const MaterializeReport report = rig.driver.materialize(d, scope);
+  ++e.passes;
+  e.records += want.size();
+  auto fail = [&](const std::string& what) {
+    if (e.first.empty()) {
+      e.first = "pass " + std::to_string(e.passes) + " of " +
+                (scope.kind == MaterializeScope::Kind::Tile
+                     ? "tile " + std::to_string(scope.tile.x) + "_" + std::to_string(scope.tile.y)
+                     : std::string("the untiled records")) +
+                ": " + what;
+    }
+  };
+  if (report.visited != want.size())
+    fail("visited " + std::to_string(report.visited) + ", the classification finds " +
+         std::to_string(want.size()));
+  for (const Id128& id : want) {
+    const bool holdable = d.type_of(id) != k_fact;
+    if (holdable && !rig.driver.holds(id)) fail("a record of the scope is not held");
+  }
+  Vector<Id128> held;
+  rig.driver.held(scope, held);
+  for (const Id128& id : held) {
+    if (std::find(want.begin(), want.end(), id) == want.end())
+      fail("the scope holds a record the classification puts elsewhere");
+  }
+}
+
+}  // namespace
+
+TEST_CASE("sim: a tile pass through the document's tile index takes what a classification takes") {
+  // Four layers: two partitioned on one grid (one naming the property, one letting the type say),
+  // an unpartitioned layer of overrides, and a partitioned edit layer. Crates and shelves defined
+  // in each, some in parent chains across tiles, some with no position, facts that never
+  // materialize; then three hundred seeded rounds of moves, overrides of the position in the
+  // unpartitioned layer (which move nothing), tombstones, removed records, redefinitions in a
+  // stronger layer, and new records — each followed by passes of random tiles and of the untiled
+  // records, a let-go of a random tile, and now and then a whole pass, every tile or untiled pass
+  // held to the oracle.
+  doc::Document d;
+  d.add_layer("base", doc::LayerRole::Base);
+  d.add_layer("props", doc::LayerRole::Feature);
+  d.add_layer("overrides", doc::LayerRole::Session);
+  d.add_layer("edits", doc::LayerRole::Session);
+  doc::LayerPartition by_type;
+  by_type.tile_size = 10.0;
+  doc::LayerPartition named;
+  named.property = "position";
+  named.tile_size = 10.0;
+  d.set_layer_partition(0, by_type);
+  d.set_layer_partition(1, named);
+  d.set_layer_partition(3, by_type);
+
+  u64 rng = 0x51de'7115'eed0'0001ull;
+  auto next = [&](u32 bound) {
+    rng = rng * 6364136223846793005ull + 1442695040888963407ull;
+    return static_cast<u32>((rng >> 33) % bound);
+  };
+  auto somewhere = [&]() {
+    return vec3(static_cast<f64>(next(60)) - 30.0, 0.0, static_cast<f64>(next(60)) - 30.0);
+  };
+  constexpr u32 k_ids = 90;
+  auto create_in = [&](u32 layer, u64 n) {
+    d.set_edit_layer(layer);
+    const u32 kind = next(10);
+    const char* type = kind < 6 ? k_crate : kind < 9 ? k_shelf : k_fact;
+    JsonValue initial = JsonValue::object();
+    if (type != k_fact && next(5) != 0) initial.set("position", somewhere());
+    const u64 parent = type == k_crate && next(3) == 0 ? 1 + next(k_ids) : 0;
+    const Id128 p = parent != 0 && d.exists(id_of(parent)) ? id_of(parent) : Id128{};
+    (void)d.apply(doc::cmd_create(id_of(n), type, p, std::move(initial)), nullptr, nullptr);
+  };
+  for (u64 n = 1; n <= 60; ++n)
+    create_in(n % 3 == 0 ? 1 : (n % 5 == 0 ? 3 : 0), n);
+
+  Rig rig;
+  Equivalence e;
+  for (u32 round = 0; round < 300 && e.first.empty(); ++round) {
+    for (u32 k = 0; k < 4; ++k) {
+      const u64 n = 1 + next(k_ids);
+      const u32 what = next(10);
+      if (what < 4) {
+        // A move where the record is defined, or an override where it is not.
+        d.set_edit_layer(next(4));
+        (void)d.apply(doc::cmd_set(id_of(n), "position", somewhere()), nullptr, nullptr, false);
+      } else if (what < 5) {
+        d.set_edit_layer(next(4));
+        (void)d.apply(doc::cmd_clear(id_of(n), "position"), nullptr, nullptr);
+      } else if (what < 6) {
+        d.set_edit_layer(next(4));
+        (void)d.apply(doc::cmd_delete(id_of(n)), nullptr, nullptr);
+      } else if (what < 7) {
+        d.set_edit_layer(next(4));
+        (void)d.apply(doc::cmd_remove_record(id_of(n)), nullptr, nullptr);
+      } else {
+        create_in(next(4), n);
+      }
+    }
+    for (u32 k = 0; k < 3; ++k) {
+      const doc::TileCoord tile{static_cast<i32>(next(6)) - 3, static_cast<i32>(next(6)) - 3};
+      check_pass(rig, d, MaterializeScope::of_tile(tile), e);
+    }
+    check_pass(rig, d, MaterializeScope::untiled(), e);
+    rig.driver.dematerialize(MaterializeScope::of_tile(
+        doc::TileCoord{static_cast<i32>(next(6)) - 3, static_cast<i32>(next(6)) - 3}));
+    if (round % 50 == 49) rig.driver.materialize(d);
+    CHECK(d.validate_index());
+  }
+  INFO(e.first);
+  CHECK(e.first.empty());
+  CHECK(e.passes >= 1200);
+  CHECK(e.records > 1000);  // the scopes the passes covered were not empty
 }

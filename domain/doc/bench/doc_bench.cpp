@@ -269,6 +269,30 @@ ENGINE_BENCH_ARGS(apply_set_property, "doc.apply.set_property", 1000, 100000) {
   state.set_items(k_probes);
 }
 
+// Moving a record of a partitioned layer, in the layer that defines it, to another of sixteen
+// tiles: what a write-back of a resident's anchor costs the document, the tile index's move from
+// one tile's list to another's included.
+ENGINE_BENCH_ARGS(apply_move, "doc.apply.move", 1000, 100000) {
+  const u32 count = static_cast<u32>(state.arg());
+  Document d = make_document(count);
+  LayerPartition partition;
+  partition.property = "position";
+  partition.tile_size = 64;
+  d.set_layer_partition(0, partition);
+  d.set_edit_layer(0);
+  u32 n = 0;
+  while (state.keep_running()) {
+    for (u32 i = 0; i < k_probes; ++i) {
+      const ObjectId id = id_of((i * 7919) % count);
+      const f64 x = static_cast<f64>((n++ % 16) * 64 + 5);
+      d.apply(cmd_set(id, "position",
+                      JsonValue(JsonValue::Array{JsonValue(x), JsonValue(0.0), JsonValue(5.0)})),
+              nullptr, nullptr);
+    }
+  }
+  state.set_items(k_probes);
+}
+
 // ---- partitioning ------------------------------------------------------------------------------
 
 ENGINE_BENCH_ARGS(build_index_tiles, "doc.partition.build_index", 1000, 100000) {
