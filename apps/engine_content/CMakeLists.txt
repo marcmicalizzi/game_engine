@@ -46,6 +46,12 @@ endif()
 # same way: `build` of a WAV, FLAC or MP3, a manifest's "clips" and `info` of a `.clip` exist when
 # this configuration has audio. content_build holds the step's table, not the capability, so it is
 # this app that links audio and hands the step over (clip_commands.cpp).
+# The npc generator's command; its test runs either way, and without the capability checks the
+# refusal.
+list(APPEND _content_tests tests/npc_tests.cpp)
+if(TARGET engine::npc)
+  list(APPEND _content_deps npc)
+endif()
 if(TARGET engine::audio)
   list(APPEND _content_deps audio)
   list(APPEND _content_tests tests/clip_tests.cpp)
@@ -54,7 +60,7 @@ list(REMOVE_DUPLICATES _content_deps)
 
 engine_app(NAME engine_content OUTPUT engine-content
   SOURCES main.cpp tissue_commands.cpp ruins_commands.cpp city_commands.cpp limit_dump.cpp
-          normal_cases.cpp clip_commands.cpp terrain_commands.cpp
+          normal_cases.cpp clip_commands.cpp terrain_commands.cpp npc_commands.cpp
   DEPS ${_content_deps}
   E2E_TESTS ${_content_tests})
 
@@ -100,4 +106,10 @@ endif()
 # write the container it then renders.
 if(TARGET engine_engine_view_tests)
   add_dependencies(engine_engine_view_tests engine_engine_content)
+endif()
+if(TARGET engine::npc)
+  target_compile_definitions(engine_engine_content PRIVATE ENGINE_CONTENT_NPC=1)
+  if(TARGET engine_engine_content_tests)
+    target_compile_definitions(engine_engine_content_tests PRIVATE ENGINE_CONTENT_NPC=1)
+  endif()
 endif()

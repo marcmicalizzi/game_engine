@@ -49,5 +49,6 @@ int ruins_kit_command(int argc, char** argv);
 int ruins_block_kit_command(int argc, char** argv);
 int terrain_command(int argc, char** argv);
 int city_command(int argc, char** argv);
+int npcs_command(int argc, char** argv);
 
 }  // namespace engine::content

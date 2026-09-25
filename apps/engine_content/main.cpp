@@ -158,6 +158,10 @@ const char* k_usage =
     "                                          lot's building, the proxy scene fragment and E18's\n"
     "                                          yield (city --help); present with the city\n"
     "                                          capability\n"
+    "  npcs <params.json> --out <document dir> [--jobs <n>]\n"
+    "                                          a seeded, partitioned layer of places and\n"
+    "                                          residents added to a document (npc.md); present\n"
+    "                                          with the npc capability\n"
     "  --version                              the commit this binary was built from, as JSON\n"
     "\n"
     "the build-all manifest:\n"
@@ -1194,5 +1198,6 @@ int main(int argc, char** argv) {
   if (command == "ruins-block-kit") return content::ruins_block_kit_command(argc, argv);
   if (command == "terrain") return content::terrain_command(argc, argv);
   if (command == "city") return content::city_command(argc, argv);
+  if (command == "npcs") return content::npcs_command(argc, argv);
   return usage("unknown command");
 }
