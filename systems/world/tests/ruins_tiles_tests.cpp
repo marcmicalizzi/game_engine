@@ -62,9 +62,10 @@ struct Kits {
   ruins::BlockKit blocks;
 };
 
-// The instances the scene reader would have made of one tile's building, in `detail`.
+// The instances the scene reader would have made of one tile's building, in `detail`, and how many
+// of them are rubble (debris members, fallen blocks).
 Vector<renderer::SceneInstance> expected(const Kits& kits, const renderer::SceneData& scene,
-                                         TileCoord tile, RingRuins detail) {
+                                         TileCoord tile, RingRuins detail, u32* rubble = nullptr) {
   const renderer::StreamedRuins& entry = scene.streamed_ruins[0];
   renderer::TerrainSampler ground(scene.terrain);
   ruins::Placement placement;
@@ -87,6 +88,7 @@ Vector<renderer::SceneInstance> expected(const Kits& kits, const renderer::Scene
       i.mesh = entry.block_first_mesh + kits.blocks.blocks[block.block].mesh_index;
       i.transform.position = ruins::block_translation(kits.blocks, block);
       out.push_back(i);
+      if (rubble != nullptr && (block.flags & ruins::k_block_fallen) != 0) ++*rubble;
     }
     return out;
   }
@@ -99,6 +101,7 @@ Vector<renderer::SceneInstance> expected(const Kits& kits, const renderer::Scene
     i.mesh = entry.kit_first_mesh + kits.kit.members[piece.member].mesh_index;
     i.transform.position = ruins::instance_translation(kits.kit, piece);
     out.push_back(i);
+    if (rubble != nullptr && piece.kind == static_cast<u8>(ruins::PieceKind::debris)) ++*rubble;
   }
   return out;
 }
@@ -185,6 +188,7 @@ TEST_CASE("world ruins: each ring's tiles draw the assembler's building in the r
   world.update(at(12.0f, 12.0f), 0);
   CHECK(sink.calls == 1);
   u32 checked[3] = {};
+  u32 rubble = 0;
   for (u32 i = 0; i < world.ring().active_count(); ++i) {
     const TileCoord tile = tile_of_key(world.ring().active_keys()[i]);
     const u8 ring = world.ring().active_rings()[i];
@@ -194,7 +198,7 @@ TEST_CASE("world ruins: each ring's tiles draw the assembler's building in the r
       continue;
     }
     const Vector<renderer::SceneInstance> want =
-        expected(f.kits, f.scene, tile, config.ruins[ring]);
+        expected(f.kits, f.scene, tile, config.ruins[ring], &rubble);
     CHECK(same(ruins.tile_instances(tile),
                std::span<const renderer::SceneInstance>(want.data(), want.size())));
     ++checked[ring];
@@ -213,6 +217,14 @@ TEST_CASE("world ruins: each ring's tiles draw the assembler's building in the r
   CHECK(ruins.stats().instances == joined.size());
   CHECK(ruins.stats().pairs == joined.size());  // one cluster a mesh
   CHECK(ruins.stats().laid == 9);
+  // Each of the tail's instances says whether it is rubble: as many as the tiles' debris members
+  // and fallen blocks.
+  REQUIRE(ruins.tail_rubble().size() == ruins.tail().size());
+  u32 marked = 0;
+  for (const u8 r : ruins.tail_rubble())
+    marked += r;
+  CHECK(marked == rubble);
+  CHECK(rubble > 0);
 
   // A step east: tile (-1, 0) leaves the inner ring for sections, (2, 0) arrives in blocks, and
   // the tiles that went are gone from the tail.

@@ -161,6 +161,7 @@ void RuinsTiles::tile_ranges(Vector<TileRange>& out) const {
 bool RuinsTiles::build(TileCoord tile, u8 ring, TileBlock& out) {
   out.ring = ring;
   out.instances.clear();
+  out.rubble.clear();
   out.buildings = 0;
   const RingRuins want = ring < config_.ring_count ? config_.ruins[ring] : RingRuins::Walls;
   const u64 key = tile_key(tile);
@@ -186,6 +187,7 @@ bool RuinsTiles::build(TileCoord tile, u8 ring, TileBlock& out) {
             yawed(entry.source.block_first_mesh + entry.block_kit.blocks[block.block].mesh_index,
                   ruins::block_translation(entry.block_kit, block),
                   ruins::block_yaw_step(entry.block_kit, block)));
+        out.rubble.push_back((block.flags & ruins::k_block_fallen) != 0 ? u8{1} : u8{0});
       }
       stats_.lay_ns += time::monotonic_ns() - start;
       ++stats_.laid;
@@ -204,6 +206,8 @@ bool RuinsTiles::build(TileCoord tile, u8 ring, TileBlock& out) {
             yawed(entry.source.kit_first_mesh + entry.kit.members[piece.member].mesh_index,
                   ruins::instance_translation(entry.kit, piece),
                   ruins::instance_yaw_step(entry.kit, piece)));
+        out.rubble.push_back(piece.kind == static_cast<u8>(ruins::PieceKind::debris) ? u8{1}
+                                                                                     : u8{0});
       }
       stats_.assemble_ns += time::monotonic_ns() - start;
       ++stats_.assembled;
@@ -321,6 +325,7 @@ void RuinsTiles::commit(void* context) {
   // a set of tiles has one tail — one numbering of its pairs — whatever order the tiles came in.
   self->admit();
   self->tail_.clear();
+  self->tail_rubble_.clear();
   u32 buildings = 0;
   for (u32 i = 0; i < self->tiles_.size(); ++i) {
     const TileBlock& block = self->tiles_.value_at(i);
@@ -328,6 +333,8 @@ void RuinsTiles::commit(void* context) {
     buildings += block.buildings;
     for (const renderer::SceneInstance& instance : block.instances)
       self->tail_.push_back(instance);
+    for (const u8 rubble : block.rubble)
+      self->tail_rubble_.push_back(rubble);
   }
   self->stats_.buildings = buildings;
   self->stats_.instances = self->tail_.size();

@@ -71,7 +71,7 @@ struct TileFrame @version(1) {
 /// same frame with only this tile's instances put back as they were — everything else the update
 /// did is in both pictures — and what differs between the two. It is the pop a handover without a
 /// cross-fade costs (docs/experiments/e35-world-streaming.md).
-struct TileHandover @version(1) {
+struct TileHandover @version(2) {
   frame: u32 = 0
   x: i32 = 0
   z: i32 = 0
@@ -94,6 +94,16 @@ struct TileHandover @version(1) {
   depth_moved: u32 = 0
   /// Pixels whose colour changed by more than 8 of 255 in any channel: what the eye sees change.
   color_changed: u32 = 0
+  /// Of the pixels that changed (`coverage_changed` and `depth_changed`), those where either
+  /// picture shows the tile's rubble — a section building's debris members, a block building's
+  /// fallen blocks — rather than its walls: which half of the building the pop is in.
+  rubble_changed: u32 = 0 @since(2)
+  /// `depth_changed` by how far the depth moved, as a share of the nearer: above 0.1% and up to
+  /// 0.3%, up to 1%, up to 3%, up to 10%, and beyond — at 47 m, edges of 5 cm, 14 cm, 0.47 m,
+  /// 1.4 m and 4.7 m. The last three are `depth_moved`. With `coverage_changed`, the pop's
+  /// displacement histogram: relief on a surface that stayed, a stone's height, a wall that is
+  /// not there any more.
+  depth_bins: u32[] @since(2)
   /// The frame's visible pairs before and after, each drawn once at this camera before it was
   /// captured so its occlusion history is its own: the cull's side of the same jump.
   visible_before: u32 = 0

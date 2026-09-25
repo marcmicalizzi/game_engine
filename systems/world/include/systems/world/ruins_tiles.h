@@ -102,6 +102,12 @@ class RuinsTiles {
   std::span<const renderer::SceneInstance> tail() const noexcept {
     return {tail_.data(), tail_.size()};
   }
+  // Parallel to `tail()`: 1 where the instance is rubble — a debris member of a building in
+  // sections, a fallen block of one in blocks — and 0 where it is wall. What engine-view's handover
+  // pass splits a pop by.
+  std::span<const u8> tail_rubble() const noexcept {
+    return {tail_rubble_.data(), tail_rubble_.size()};
+  }
   const RuinsTilesStats& stats() const noexcept { return stats_; }
   // Whether a streamed entry puts a building on `tile`.
   bool has_building(TileCoord tile) const noexcept;
@@ -126,6 +132,7 @@ class RuinsTiles {
     u32 pairs = 0;
     u32 buildings = 0;
     Vector<renderer::SceneInstance> instances;
+    Vector<u8> rubble;  // parallel to `instances`
   };
 
   static bool activate(void* context, const TileEvent& event);
@@ -142,6 +149,7 @@ class RuinsTiles {
   std::unique_ptr<renderer::TerrainSampler> ground_;
   FlatMap<u64, TileBlock> tiles_;
   Vector<renderer::SceneInstance> tail_;
+  Vector<u8> tail_rubble_;
   u32 tail_pairs_ = 0;
   const TileRing* ring_ = nullptr;
   struct Rank {

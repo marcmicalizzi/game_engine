@@ -172,6 +172,8 @@ bool ViewWorld::fly_handovers(const renderer::CameraPath& camera_path, u32 frame
   // is in both pictures, so what differs is the one tile's pop and nothing else.
   Vector<renderer::SceneInstance> before_tail;
   Vector<renderer::SceneInstance> after_tail;
+  Vector<u8> before_rubble;
+  Vector<u8> after_rubble;
   Vector<renderer::SceneInstance> swapped;
   Vector<world::RuinsTiles::TileRange> before_ranges;
   Vector<world::RuinsTiles::TileRange> after_ranges;
@@ -196,6 +198,7 @@ bool ViewWorld::fly_handovers(const renderer::CameraPath& camera_path, u32 frame
     frame.camera = renderer::camera_path_frame(camera_path, f, frames);
     frame.frame_index = f;
     before_tail.assign(ruins_.tail().begin(), ruins_.tail().end());
+    before_rubble.assign(ruins_.tail_rubble().begin(), ruins_.tail_rubble().end());
     ruins_.tile_ranges(before_ranges);
     ok = update(frame.camera, tick++, Mode::Budgeted, 0, f, false, error);
     if (!ok) break;
@@ -213,6 +216,7 @@ bool ViewWorld::fly_handovers(const renderer::CameraPath& camera_path, u32 frame
          renderer_->capture(frame, channels, after, error);
     const u32 visible_after = renderer_->stats().visible_pairs();
     after_tail.assign(ruins_.tail().begin(), ruins_.tail().end());
+    after_rubble.assign(ruins_.tail_rubble().begin(), ruins_.tail_rubble().end());
     ruins_.tile_ranges(after_ranges);
     const Vec3 eye = frame.camera.position;
     for (const world::TileEvent& event : world_.last_events()) {
@@ -238,12 +242,16 @@ bool ViewWorld::fly_handovers(const renderer::CameraPath& camera_path, u32 frame
       if (!ok) break;
       const u32 visible_before = renderer_->stats().visible_pairs();
       // What popped: coverage that came or went, and depths that moved by more than a thousandth
-      // of the nearer (reversed-Z: larger is nearer) — and, of those, by more than a hundredth,
-      // which is geometry that moved rather than relief on a surface that stayed; colours that
-      // changed by more than 8 of 255; and the pixels the tile's own instances drew.
+      // of the nearer (reversed-Z: larger is nearer) — binned by how far, the last three bins
+      // being geometry that moved rather than relief on a surface that stayed; colours that
+      // changed by more than 8 of 255; the pixels the tile's own instances drew; and which of the
+      // changed pixels show the tile's rubble in either picture.
+      constexpr f32 k_bin_edges[4] = {3.0e-3f, 1.0e-2f, 3.0e-2f, 1.0e-1f};
       u32 coverage = 0;
       u32 depth = 0;
       u32 moved = 0;
+      u32 bins[5] = {0, 0, 0, 0, 0};
+      u32 rubble = 0;
       u32 color = 0;
       u32 tile_before = 0;
       u32 tile_after = 0;
@@ -252,11 +260,20 @@ bool ViewWorld::fly_handovers(const renderer::CameraPath& camera_path, u32 frame
       for (u32 p = 0; p < pixels; ++p) {
         const f32 a = before.depth[p];
         const f32 b = after.depth[p];
+        bool popped = false;
         if ((a == 0.0f) != (b == 0.0f)) {
           ++coverage;
+          popped = true;
         } else if (a != 0.0f && std::fabs(a - b) > 1.0e-3f * std::max(a, b)) {
           ++depth;
-          moved += std::fabs(a - b) > 1.0e-2f * std::max(a, b) ? 1u : 0u;
+          popped = true;
+          const f32 diff = std::fabs(a - b);
+          const f32 nearer = std::max(a, b);
+          u32 bin = 0;
+          while (bin < 4 && diff > k_bin_edges[bin] * nearer)
+            ++bin;
+          ++bins[bin];
+          moved += bin >= 2 ? 1u : 0u;
         }
         const u8* ca = before.color.data() + u64{p} * 4u;
         const u8* cb = after.color.data() + u64{p} * 4u;
@@ -266,8 +283,14 @@ bool ViewWorld::fly_handovers(const renderer::CameraPath& camera_path, u32 frame
         color += shade ? 1u : 0u;
         const u32 ia = before.ids[u64{p} * renderer::k_id_words];
         const u32 ib = after.ids[u64{p} * renderer::k_id_words];
-        tile_before += ia != renderer::k_no_id && ia >= first && ia < first + was.count ? 1u : 0u;
-        tile_after += ib != renderer::k_no_id && ib >= first && ib < first + now.count ? 1u : 0u;
+        const bool in_before = ia != renderer::k_no_id && ia >= first && ia < first + was.count;
+        const bool in_after = ib != renderer::k_no_id && ib >= first && ib < first + now.count;
+        tile_before += in_before ? 1u : 0u;
+        tile_after += in_after ? 1u : 0u;
+        if (popped && ((in_before && before_rubble[was.first + (ia - first)] != 0) ||
+                       (in_after && after_rubble[now.first + (ib - first)] != 0))) {
+          ++rubble;
+        }
       }
       world::TileHandover line;
       line.frame = f;
@@ -285,6 +308,9 @@ bool ViewWorld::fly_handovers(const renderer::CameraPath& camera_path, u32 frame
       line.depth_changed = depth;
       line.depth_moved = moved;
       line.color_changed = color;
+      line.rubble_changed = rubble;
+      for (const u32 n : bins)
+        line.depth_bins.push_back(n);
       line.visible_before = visible_before;
       line.visible_after = visible_after;
       line.instances_before = was.count;
