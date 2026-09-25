@@ -111,6 +111,10 @@ bool parse_camera_path(std::string_view text, const TerrainDesc* terrain, Camera
   out.znear = file.znear;
   out.hash = hash_bytes(text.data(), text.size());
   out.keys.reserve(file.keys.size());
+  // The dune field drawn once for the path rather than once per key (terrain.h, `TerrainSampler`):
+  // the same heights, bit for bit.
+  const TerrainDesc no_terrain;
+  const TerrainSampler ground(terrain != nullptr ? *terrain : no_terrain);
   for (u32 i = 0; i < file.keys.size(); ++i) {
     const scene::CameraKey& source = file.keys[i];
     const std::string where = "key " + std::to_string(i);
@@ -129,12 +133,10 @@ bool parse_camera_path(std::string_view text, const TerrainDesc* terrain, Camera
     CameraPathKey key;
     key.time = source.time;
     key.position = source.position;
-    if (source.ground)
-      key.position.y += terrain_height(*terrain, source.position.x, source.position.z);
+    if (source.ground) key.position.y += ground.height(source.position.x, source.position.z);
     if (source.target.has_value()) {
       key.target = *source.target;
-      if (source.target_ground)
-        key.target.y += terrain_height(*terrain, key.target.x, key.target.z);
+      if (source.target_ground) key.target.y += ground.height(key.target.x, key.target.z);
     } else {
       const Quat rotation =
           source.rotation.has_value() ? normalize(*source.rotation) : Quat::identity();

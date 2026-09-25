@@ -56,8 +56,47 @@ inline constexpr u32 k_terrain_version = 4;
 inline constexpr u32 k_terrain_max_size = 4097;
 
 // The surface height at (x, z), metres. Defined everywhere, including outside the grid, so a
-// camera or an instance off the edge still has a ground.
+// camera or an instance off the edge still has a ground. It draws the dune field from the seed on
+// every call, which costs more than the height itself (six waves' worth of trigonometry and a
+// `pow` each); a caller that asks more than a handful of times holds a `TerrainSampler` instead.
 f32 terrain_height(const TerrainDesc& desc, f32 x, f32 z) noexcept;
+
+// The terrain's height function with its dune field drawn once: what a scene read asks for every
+// instance it stands on the ground, every building of a ruins scatter asks some forty times (and a
+// block-by-block ruin some hundreds), and a camera path asks for every key. It is the very object
+// `terrain_height` builds per call and `build_terrain_mesh` builds per grid, so a height sampled
+// here is **the same float, bit for bit**, as the direct function and as the mesh's vertex at that
+// point — no cache, no interpolation, nothing that could disagree (the renderer's flythrough test
+// compares them on a grid). It keeps a pointer to `desc`, whose ridges and basins it reads per
+// call, so the description must outlive it and must not change under it.
+class TerrainSampler {
+ public:
+  explicit TerrainSampler(const TerrainDesc& desc) noexcept;
+  f32 height(f32 x, f32 z) const noexcept;
+  f32 ridge_weight(f32 x, f32 z) const noexcept;
+  f32 basin_weight(f32 x, f32 z) const noexcept;
+  const TerrainDesc& desc() const noexcept { return *desc_; }
+
+ private:
+  static constexpr u32 k_waves = 6;
+  struct Wave {
+    f32 kx = 0.0f;
+    f32 kz = 0.0f;
+    f32 phase = 0.0f;
+    f32 mx = 0.0f;
+    f32 mz = 0.0f;
+    f32 meander = 0.0f;
+    f32 meander_phase = 0.0f;
+    f32 amplitude = 0.0f;
+  };
+  f32 dunes(f32 x, f32 z) const noexcept;
+
+  const TerrainDesc* desc_;
+  Wave waves_[k_waves];
+  f32 roll_kx_ = 0.0f;
+  f32 roll_kz_ = 0.0f;
+  f32 roll_phase_ = 0.0f;
+};
 
 // How much of each feature is under (x, z), in [0, 1]: the largest ridge profile and the largest
 // basin weight. The terrain's per-cluster materials are chosen from these.

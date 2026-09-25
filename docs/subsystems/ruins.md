@@ -101,7 +101,14 @@ Measured 2026-09-24 on the development machine (Intel Core i9-10980XE, 36 logica
 | the same on the pool, 4 workers and the caller (`/4`) | 3.08 ms | 2.98 ms |
 | the same, 8 workers and the caller (`/8`) | 1.98 ms | 1.97 ms |
 
-A building allocates nothing once its output's arrays have grown to it: its walls, losses and candidates are the `Assembler`'s scratch, reused. **Read from a scene over a real terrain it costs ten times that**: the desert-overlook terrain's 1,000 buildings took 45–64 ms in `read_scene_file` over two runs (its `ruins assembled` log line), because `renderer::terrain_height` builds its dune field again on every call and a building asks the ground some forty times (every module boundary of every wall, and every debris block). The field is cheap to keep; the terrain code is the renderer's, and it was left as it is.
+A building allocates nothing once its output's arrays have grown to it: its walls, losses and candidates are the `Assembler`'s scratch, reused. **Read from a scene over a real terrain it cost seven times that**, because `renderer::terrain_height` drew its dune field again on every call and a building asks the ground some forty times (every module boundary of every wall, and every debris block). The scene read now holds one `renderer::TerrainSampler` for the whole read, whose heights are the direct function's bit for bit (the renderer's flythrough test compares them on a grid, and the buildings hash to the same `f85b2f0d8e2e1665` either way). The desert-overlook terrain's 1,000 buildings, `ruins assembled` over seven `engine-view --offscreen` reads each, `msvc-release`, 2026-09-24, the CPU 10–53% busy with other agents' builds:
+
+| scene read of 1,000 ruins over the desert overlook | median | range |
+|---|---|---|
+| the dune field drawn per call (`terrain_height`) | 43.9 ms | 43.4–58.6 ms |
+| one `TerrainSampler` for the read | 23.9 ms | 23.3–27.5 ms |
+
+What is left is the height itself (six waves of `sin` each, three ridges and a basin) and the assembly: the same buildings on flat ground cost 6.7 ms.
 
 **Instances per building** (`engine-content ruins … --region -16,-16,31,31 --count 1000`, world seed 2026, 32 m tiles; the far tier is `--walls`):
 

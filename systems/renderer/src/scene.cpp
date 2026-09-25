@@ -676,9 +676,9 @@ void make_instance_grid(u32 n, f32 mesh_radius, u32 joints, f32 bounds_padding,
 }
 
 #if ENGINE_RENDERER_RUINS
-// The terrain as the assembler's height query: a plain function over the scene's description.
+// The terrain as the assembler's height query: a plain function over the read's one sampler.
 f32 terrain_ground(const void* context, f32 x, f32 z) noexcept {
-  return terrain_height(*static_cast<const TerrainDesc*>(context), x, z);
+  return static_cast<const TerrainSampler*>(context)->height(x, z);
 }
 
 // A scene's `ruins` entries (schema `engine.scene.RuinScatter`, docs/subsystems/ruins.md): each
@@ -688,7 +688,7 @@ f32 terrain_ground(const void* context, f32 x, f32 z) noexcept {
 // meshes and nothing else about ruins. Single-threaded on purpose: the loader has no job system,
 // and a thousand buildings cost milliseconds (ruins.md, "Performance notes").
 bool expand_ruins(const scene::Scene& file, const std::string& path, const std::string& dir,
-                  SceneDesc& out, std::string& error) {
+                  const TerrainSampler& ground, SceneDesc& out, std::string& error) {
   struct LoadedKit {
     std::string path;
     ruins::Kit kit;
@@ -740,7 +740,7 @@ bool expand_ruins(const scene::Scene& file, const std::string& path, const std::
     placement.world_seed = scatter.seed;
     placement.tile_cm = tile_cm;
     placement.wind_step = ruins::yaw_step_from_degrees(scatter.wind_deg);
-    if (out.terrain.enabled) placement.ground = ruins::Ground{&terrain_ground, &out.terrain};
+    if (out.terrain.enabled) placement.ground = ruins::Ground{&terrain_ground, &ground};
     ruins::Output built;
     const i64 start = time::monotonic_ns();
     if (!ruins::assemble_tiles(loaded.kit, placement,
@@ -956,9 +956,12 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
     }
   }
   const u32 file_meshes = file.meshes.size();
-  auto ground_at = [&](f32 x, f32 z) {
-    return out.terrain.enabled ? terrain_height(out.terrain, x, z) : 0.0f;
-  };
+  // One sampler for every height this read asks the terrain for — each grounded instance, each
+  // scatter's, and each ruin's dozens — because `terrain_height` draws the dune field again per
+  // call, and that was most of what reading a thousand ruins cost (ruins.md, "Performance
+  // notes"). The heights are the direct function's, bit for bit.
+  const TerrainSampler ground(out.terrain);
+  auto ground_at = [&](f32 x, f32 z) { return out.terrain.enabled ? ground.height(x, z) : 0.0f; };
 
   for (u32 i = 0; i < file.instances.size(); ++i) {
     const scene::Instance& entry = file.instances[i];
@@ -1025,7 +1028,7 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
   // Ruins, assembled from their kits by the ruins capability, when this build has it.
   if (!file.ruins.empty()) {
 #if ENGINE_RENDERER_RUINS
-    if (!expand_ruins(file, path, dir, out, error)) return false;
+    if (!expand_ruins(file, path, dir, ground, out, error)) return false;
 #else
     error = path +
             ": the scene names ruins, and this build has no ruins capability "

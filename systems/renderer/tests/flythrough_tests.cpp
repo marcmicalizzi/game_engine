@@ -21,6 +21,7 @@
 #include <doctest/doctest.h>
 #include <test_temp_dir.h>
 
+#include <bit>
 #include <cmath>
 #include <cstring>
 #include <filesystem>
@@ -370,6 +371,53 @@ TEST_CASE("terrain: the height is a function of the fields, and the hash names t
   CHECK(cross(b - a, c - a).y > 0.0f);
   desc.size = 1;
   CHECK_FALSE(build_terrain_mesh(desc, positions, indices, uvs, &error));
+}
+
+TEST_CASE("terrain: a sampler's heights are the direct function's and the mesh's, bit for bit") {
+  // The scene read, the ruins it assembles and a camera path ask the ground through one
+  // `TerrainSampler` rather than `terrain_height`, which draws the dune field on every call; a
+  // height that moved by one ulp would move a building's base centimetre and every hash pinned on
+  // it, so the two are compared as bits over a grid that crosses a ridge, a basin and plain dunes,
+  // and against the mesh's own vertices.
+  TerrainDesc desc;
+  desc.enabled = true;
+  desc.size = 65;
+  desc.extent = 120.0f;
+  desc.seed = 23;
+  desc.dune_height = 8.0f;
+  desc.dune_wavelength = 110.0f;
+  desc.ridges.push_back(TerrainRidge{Vec2{-100, 20}, Vec2{90, -30}, 55.0f, 40.0f, 0.2f});
+  desc.basins.push_back(TerrainBasin{Vec2{30, 60}, 45.0f, 9.0f});
+  const TerrainSampler sampler(desc);
+  u32 differing = 0;
+  for (i32 zi = -60; zi <= 60; ++zi) {
+    for (i32 xi = -60; xi <= 60; ++xi) {
+      const f32 x = static_cast<f32>(xi) * 2.1f + 0.37f;
+      const f32 z = static_cast<f32>(zi) * 1.9f - 0.61f;
+      differing +=
+          std::bit_cast<u32>(sampler.height(x, z)) != std::bit_cast<u32>(terrain_height(desc, x, z))
+              ? 1u
+              : 0u;
+      differing += std::bit_cast<u32>(sampler.ridge_weight(x, z)) !=
+                           std::bit_cast<u32>(terrain_ridge_weight(desc, x, z))
+                       ? 1u
+                       : 0u;
+      differing += std::bit_cast<u32>(sampler.basin_weight(x, z)) !=
+                           std::bit_cast<u32>(terrain_basin_weight(desc, x, z))
+                       ? 1u
+                       : 0u;
+    }
+  }
+  CHECK(differing == 0u);
+  Vector<Vec3> positions;
+  Vector<u32> indices;
+  Vector<Vec2> uvs;
+  std::string error;
+  REQUIRE(build_terrain_mesh(desc, positions, indices, uvs, &error));
+  u32 off_mesh = 0;
+  for (const Vec3& p : positions)
+    off_mesh += std::bit_cast<u32>(sampler.height(p.x, p.z)) != std::bit_cast<u32>(p.y) ? 1u : 0u;
+  CHECK(off_mesh == 0u);
 }
 
 TEST_CASE(
