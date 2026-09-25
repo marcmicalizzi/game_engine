@@ -52,7 +52,7 @@ Pairs are the scene's (instance, cluster) pairs — one cull thread each — ove
 | *v0* | | | | 0.243 (1.607) | 0.381 (1.987) | 41.7 (54.3) | 2,572 MiB | 5–27% |
 | **ashlar streamed**, default rings, mid blocks near | 487–518 of 555–972 | 16,667,786–16,777,147 (16,760,401) | 30,340 (49,154) | 0.401 (0.413) | 0.550 (0.572) | 34.2 (53.6) | 2,847 MiB\* | 7–10% (quiet) |
 
-\* E34's caveat: each textured ashlar member uploads its own copy of the kit's atlas, so most of these rows' memory over the terrain is duplicated images.
+\* E34's caveat: each textured ashlar member uploads its own copy of the kit's atlas, so most of these rows' memory over the terrain is duplicated images. Since 2026-09-25 the renderer uploads one texture per distinct image ([renderer](../subsystems/renderer.md#one-upload-per-distinct-image)): the kit's six images are 80 MiB instead of 1,440, and the streamed row with mid blocks near, flown for 60 frames (1920 × 1080, `msvc-debug`, other processes at 3–9% of the CPU, quiet), holds 1,098 MiB at its last frame where the build before holds 2,378 MiB at the same frame. The world handed the renderer 62 tails in those frames and not one uploaded a texture; the kit's six were uploaded with the scene's meshes, once.
 
 The ashlar rows with rings of 1.5/6/10 report two frames of 600 whose visible pairs differ between repeats (`deterministic` false): the frames at which the first repeat's tail grew the pair stride, which makes the per-pair buffers again and clears the occlusion history, so that frame's first pass drew nothing and its second pass tested everything (44,418 visible pairs against 21,257 in the later repeats, whose stride was already grown). The pictures are the same; the count is the cull's.
 
