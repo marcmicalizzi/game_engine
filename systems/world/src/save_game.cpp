@@ -486,13 +486,26 @@ bool read_save(std::string_view dir, SaveManifest& out, SaveCheck& check, std::s
     }
     check.bytes += bytes;
   }
-  // And the pieces the rest of the manifest names are among them.
+  // And the pieces the rest of the manifest names are among them — the document a directory of
+  // listed files inside the save, never a path a load would copy from somewhere else.
   auto listed = [&](std::string_view path) {
     for (const SaveFile& file : manifest.files) {
       if (file.path == path) return true;
     }
     return false;
   };
+  bool document_listed = false;
+  for (const SaveFile& file : manifest.files) {
+    document_listed = document_listed ||
+                      (file.path.size() > manifest.document.size() + 1 &&
+                       file.path.compare(0, manifest.document.size(), manifest.document) == 0 &&
+                       file.path[manifest.document.size()] == '/');
+  }
+  if (manifest.document.empty() || manifest.document.find("..") != std::string::npos ||
+      io::is_absolute_path(manifest.document) || !document_listed) {
+    error = "the save's document '" + manifest.document + "' is not a directory of its files";
+    return false;
+  }
   if (!manifest.store.empty() && !listed(manifest.store)) {
     error = "the save's store " + manifest.store + " is not among its files";
     return false;

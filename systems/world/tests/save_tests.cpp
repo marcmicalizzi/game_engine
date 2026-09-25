@@ -556,6 +556,13 @@ TEST_CASE("world save: a save reads back as written, and restores to the same by
           std::string::npos);
   }
   {
+    // A manifest whose document is outside the save: a load would copy it from there.
+    const std::string escaping =
+        edited("escaping", [](JsonValue& json) { json.set("document", JsonValue("../session")); });
+    CHECK_FALSE(read_save(escaping, read, check, error));
+    CHECK(error.find("is not a directory of its files") != std::string::npos);
+  }
+  {
     const std::string not_a_save = edited(
         "not_a_save", [](JsonValue& json) { json.set("format", JsonValue("engine.scene")); });
     CHECK_FALSE(read_save(not_a_save, read, check, error));
