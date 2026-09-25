@@ -438,7 +438,7 @@ struct StoreFixture {
       tx.commit();
     }
     std::string error;
-    ENGINE_VERIFY(DocumentStore::append_journal(vfs, dir, doc.journal().back(), &error),
+    ENGINE_VERIFY(DocumentStore::append_journal(vfs, dir, doc, &error),
                   "doc store bench: journal append failed");
     manifest.undo_position = doc.journal().size();
     SaveReport report;
@@ -564,6 +564,59 @@ ENGINE_BENCH_ARGS(fs_overwrite, "doc.fs.overwrite", 64, 4096, 65536, 1048576) {
     bench::keep(::ftruncate(fd, static_cast<off_t>(data.size())));
     bench::keep(::close(fd));
 #endif
+  }
+  state.set_items(1);
+  state.set_bytes(data.size());
+}
+
+namespace {
+
+// The store's write, of `n` bytes of `data`.
+bool overwrite(const std::string& path, const std::string& data, usize n) {
+#if ENGINE_PLATFORM_WINDOWS
+  int fd = -1;
+  if (_wsopen_s(&fd, std::filesystem::path(path).c_str(),
+                _O_WRONLY | _O_BINARY | _O_CREAT | _O_NOINHERIT, _SH_DENYNO,
+                _S_IREAD | _S_IWRITE) != 0)
+    return false;
+  bool ok = _write(fd, data.data(), static_cast<unsigned>(n)) == static_cast<int>(n);
+  ok = _chsize_s(fd, static_cast<long long>(n)) == 0 && ok;
+  return _close(fd) == 0 && ok;
+#else
+  const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_CLOEXEC, 0666);
+  if (fd < 0) return false;
+  bool ok = ::write(fd, data.data(), n) == static_cast<ssize_t>(n);
+  ok = ::ftruncate(fd, static_cast<off_t>(n)) == 0 && ok;
+  return ::close(fd) == 0 && ok;
+#endif
+}
+
+}  // namespace
+
+// A save's file changes length with nearly every edit — a digit more, a name shorter. The same
+// write as `doc.fs.overwrite`, a byte shorter and a byte longer by turns.
+ENGINE_BENCH_ARGS(fs_overwrite_resize, "doc.fs.overwrite_resize", 4096, 16384, 65536) {
+  engine::test::TempDir tmp("engine_doc_fs_bench");
+  const std::string path = tmp.file("file.json");
+  const std::string data = payload(state.arg());
+  (void)io::write_file(path, data);
+  u64 n = 0;
+  while (state.keep_running())
+    bench::keep(overwrite(path, data, data.size() - (n++ % 2)));
+  state.set_items(1);
+  state.set_bytes(data.size());
+}
+
+// The file removed and made again, which a save's log makes as safe as a write over it.
+ENGINE_BENCH_ARGS(fs_recreate, "doc.fs.recreate", 4096, 16384, 65536) {
+  engine::test::TempDir tmp("engine_doc_fs_bench");
+  const std::string path = tmp.file("file.json");
+  const std::string data = payload(state.arg());
+  (void)io::write_file(path, data);
+  u64 n = 0;
+  while (state.keep_running()) {
+    bench::keep(io::remove_file(path));
+    bench::keep(overwrite(path, data, data.size() - (n++ % 2)));
   }
   state.set_items(1);
   state.set_bytes(data.size());

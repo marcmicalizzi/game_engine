@@ -162,21 +162,16 @@ struct Rng {
   }
 };
 
-// A session's commit, as domain/protocol does it: drop the redo tail, journal, move the undo
-// position. The caller saves.
+// A session's commit, as domain/protocol does it: drop the redo tail, journal (the store cuts the
+// tail off the file in place and appends), move the undo position. The caller saves.
 void commit(const io::Vfs& vfs, const std::string& dir, Document& doc, DocumentManifest& manifest,
             Transaction& tx) {
-  const bool truncated = manifest.undo_position < doc.journal().size();
-  if (truncated) doc.truncate_journal(manifest.undo_position);
+  if (manifest.undo_position < doc.journal().size()) doc.truncate_journal(manifest.undo_position);
   const u32 before = doc.journal().size();
   REQUIRE(tx.commit());
   if (doc.journal().size() == before) return;  // nothing applied, nothing journaled
   std::string error;
-  if (truncated) {
-    REQUIRE(DocumentStore::write_journal(vfs, dir, doc.journal(), &error));
-  } else {
-    REQUIRE(DocumentStore::append_journal(vfs, dir, doc.journal().back(), &error));
-  }
+  REQUIRE(DocumentStore::append_journal(vfs, dir, doc, &error));
   manifest.undo_position = doc.journal().size();
 }
 
@@ -671,6 +666,81 @@ TEST_CASE("doc save: a save log is read through on a read-only mount, and finish
   REQUIRE(DocumentStore::save(writable, "docs://world", writer, writer_manifest, &error));
   CHECK(files_on_disk(tmp.file("world")) == after);
   CHECK_FALSE(writable.exists("docs://world/" + std::string(DocumentStore::k_save_log)));
+}
+
+TEST_CASE("doc save: the journal is cut in place, never rewritten, and a torn line is dropped") {
+  TempDir tmp("engine_doc_save_journal");
+  io::Vfs vfs;
+  REQUIRE(vfs.mount("docs", tmp.path(), /*writable=*/true) == io::Status::Ok);
+  const std::string dir = "docs://world";
+  std::string error;
+  Document doc;
+  DocumentManifest manifest;
+  REQUIRE(DocumentStore::create(vfs, dir, "World", doc, manifest, &error));
+  auto edit = [&](u32 n) {
+    Transaction tx = doc.begin(who());
+    REQUIRE(tx.apply(cmd_create(id_of(n), k_placement)));
+    commit(vfs, dir, doc, manifest, tx);
+    REQUIRE(DocumentStore::save(vfs, dir, doc, manifest, &error));
+  };
+  auto journal_on_disk = [&]() {
+    std::string text;
+    REQUIRE(vfs.read("docs://world/journal.jsonl", text) == io::Status::Ok);
+    return text;
+  };
+  for (u32 n = 0; n < 4; ++n)
+    edit(n);
+  CHECK(journal_on_disk() == journal_text(doc));
+
+  // Two undone, then a new commit: the redo tail is cut off the file and the new line appended,
+  // which leaves the bytes a rewrite would.
+  REQUIRE(doc.undo(doc.journal()[3]));
+  REQUIRE(doc.undo(doc.journal()[2]));
+  manifest.undo_position = 2;
+  REQUIRE(DocumentStore::save(vfs, dir, doc, manifest, &error));
+  edit(10);
+  REQUIRE(doc.journal().size() == 3);
+  CHECK(journal_on_disk() == journal_text(doc));
+
+  // A process died appending: half a line, no newline. The load leaves it out, the document reads
+  // as the patches before it, and the next commit cuts it off before appending its own.
+  const std::string whole = journal_on_disk();
+  const std::string line = journal_text(doc).substr(0, 40);
+  REQUIRE(io::append_file(tmp.file("world/journal.jsonl"), line) == io::Status::Ok);
+  Document loaded;
+  DocumentManifest loaded_manifest;
+  REQUIRE(DocumentStore::load(vfs, dir, loaded, loaded_manifest, &error));
+  CHECK(loaded.journal().size() == 3);
+  CHECK(journal_on_disk() == whole + line);  // a load does not repair: a reader never writes
+  Vector<Patch> read;
+  REQUIRE(DocumentStore::load_journal(vfs, dir, read, &error));
+  CHECK(read.size() == 3);
+  doc = std::move(loaded);
+  manifest = std::move(loaded_manifest);
+  edit(11);
+  CHECK(journal_on_disk() == journal_text(doc));
+  REQUIRE(DocumentStore::load(vfs, dir, loaded, loaded_manifest, &error));
+  CHECK(loaded.journal().size() == 4);
+}
+
+TEST_CASE("doc save: a side file is written only when its bytes change") {
+  TempDir tmp("engine_doc_side_file");
+  io::Vfs vfs;
+  REQUIRE(vfs.mount("docs", tmp.path(), /*writable=*/true) == io::Status::Ok);
+  std::string error;
+  REQUIRE(DocumentStore::write_side_file(vfs, "docs://world/leases.json", "{}\n", &error));
+  const auto first = fs::last_write_time(tmp.native_file("world/leases.json"));
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  REQUIRE(DocumentStore::write_side_file(vfs, "docs://world/leases.json", "{}\n", &error));
+  CHECK(fs::last_write_time(tmp.native_file("world/leases.json")) == first);
+  REQUIRE(DocumentStore::write_side_file(vfs, "docs://world/leases.json", "{\"a\":1}\n", &error));
+  CHECK(read_bytes(tmp.native_file("world/leases.json")) == "{\"a\":1}\n");
+  // An append makes the directory it needs.
+  REQUIRE(
+      DocumentStore::append_side_file(vfs, "docs://world/proposals/p.base.jsonl", "x\n", &error));
+  REQUIRE(
+      DocumentStore::append_side_file(vfs, "docs://world/proposals/p.base.jsonl", "y\n", &error));
+  CHECK(read_bytes(tmp.native_file("world/proposals/p.base.jsonl")) == "x\ny\n");
 }
 
 TEST_CASE("doc save: a file that is not in the canonical form is rewritten by the next save") {

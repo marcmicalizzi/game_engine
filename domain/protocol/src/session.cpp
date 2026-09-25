@@ -71,12 +71,16 @@ bool read_json_file(const io::Vfs& vfs, const std::string& path, T& out, bool& p
   return true;
 }
 
+// Written beside the document through the store (DocumentStore::write_side_file): atomically, not
+// at all when the bytes are the ones there, and without `Vfs::write`'s question about every parent
+// directory, which costs more than the write on Windows (docs/subsystems/doc.md, "Writing a file").
 template <class T>
 bool write_json_file(const io::Vfs& vfs, const std::string& path, const T& value, RpcError& error) {
   std::string text = write_json(schema::to_json(value));
   text.push_back('\n');
-  if (const io::Status s = vfs.write(path, text); s != io::Status::Ok) {
-    error = make_error(codes::k_io_error, path + ": " + io::status_name(s));
+  std::string message;
+  if (!DocumentStore::write_side_file(vfs, path, text, &message)) {
+    error = make_error(codes::k_io_error, std::move(message));
     return false;
   }
   return true;
@@ -379,14 +383,9 @@ bool Session::note_proposal_touches(const doc::Patch& patch, RpcError& error) {
     lines.push_back('\n');
   }
   if (lines.empty()) return true;
-  const std::string dir = DocumentStore::path_of(dir_, k_proposals_dir);
-  if (const io::Status s = vfs_->make_directories(dir); s != io::Status::Ok) {
-    error = make_error(codes::k_io_error, dir + ": " + io::status_name(s));
-    return false;
-  }
-  const std::string path = base_file(patch.layer);
-  if (const io::Status s = vfs_->append(path, lines); s != io::Status::Ok) {
-    error = make_error(codes::k_io_error, path + ": " + io::status_name(s));
+  std::string message;
+  if (!DocumentStore::append_side_file(*vfs_, base_file(patch.layer), lines, &message)) {
+    error = make_error(codes::k_io_error, std::move(message));
     return false;
   }
   return true;
@@ -462,10 +461,11 @@ bool Session::commit_commands(std::span<const doc::Command> commands, doc::Attri
   result.committed = true;
   result.patch_index = doc_.journal().size() - 1;
 
+  // Journaled before the save: a save that dies leaves this commit as the first patch of the redo
+  // tail, and the undo position the manifest keeps says which state the layer files hold. The
+  // store cuts a dropped redo tail off the file in place and appends; it does not rewrite it.
   std::string message;
-  const bool journaled =
-      truncated ? DocumentStore::write_journal(*vfs_, dir_, doc_.journal(), &message)
-                : DocumentStore::append_journal(*vfs_, dir_, doc_.journal().back(), &message);
+  const bool journaled = DocumentStore::append_journal(*vfs_, dir_, doc_, &message);
   if (!journaled) {
     error = make_error(codes::k_io_error, std::move(message));
     return false;

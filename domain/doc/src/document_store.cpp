@@ -209,10 +209,14 @@ void fill_places(StoredLayer& layer) {
 
 // --- planning a save ------------------------------------------------------------------------
 
+// A file's length before a write, when the store does not know it.
+constexpr u64 k_unknown_size = ~u64{0};
+
 struct PlannedWrite {
   std::string path;  // under the document directory
   std::string text;
   bool tile = false;
+  u64 was_size = k_unknown_size;  // what the file held before, as far as the store knows
 };
 
 struct PlannedRemoval {
@@ -228,10 +232,10 @@ class SavePlan {
 
   // Queues `text` for `path` unless the file already holds exactly these bytes.
   void consider(std::string path, std::string text, bool tile) {
-    if (const StoredFile* f = next_.files.find_value(path);
-        f != nullptr && *f == StoredFile::of(text))
-      return;
-    writes_.push_back(PlannedWrite{std::move(path), std::move(text), tile});
+    const StoredFile* f = next_.files.find_value(path);
+    if (f != nullptr && *f == StoredFile::of(text)) return;
+    const u64 was = f != nullptr ? f->size : k_unknown_size;
+    writes_.push_back(PlannedWrite{std::move(path), std::move(text), tile, was});
   }
   // Queues the removal of a file the store knows is there.
   void remove_known(const std::string& path, bool tile) {
@@ -403,14 +407,20 @@ void plan_partitioned_changes(SavePlan& plan, const Layer& layer, const LayerFil
 // --- writing a file -------------------------------------------------------------------------
 //
 // What a file operation costs on this project's Windows machine (doc.fs.* in bench/doc_bench.cpp;
-// docs/subsystems/doc.md, "What a save costs"). Writing over an existing file in place, opened for
-// writing alone, costs about what creating a new one does, 0.6-1 ms, whatever its size. Replacing a
-// file by renaming a new one over it costs three to five times that. Truncating a file before
-// writing it, or opening it for reading as well as writing (stdio's "r+"), costs 5-12 ms once the
-// file is 64 KiB or more. Nothing else grows much with the size: the file system charges by the
-// operation, and by the kind. So a save writes each file once, in place, write-only, and makes the
-// save as a whole all or nothing with one log written first (below), instead of making each file
-// atomic with a rename of its own.
+// docs/subsystems/doc.md, "Writing a file"). Writing over an existing file in place, opened for
+// writing alone, at its own length, costs 0.5 ms whatever its size. Removing a file and making it
+// again costs 1.2 ms. Replacing a file by renaming a new one over it costs 3 ms. Changing a file's
+// length in place, truncating it before writing it, or opening it to read as well as write
+// (stdio's "r+") costs 5-12 ms once the file is 16 KiB or more. The file system charges by the
+// operation, and by its kind, not by the byte. So a save writes each file once, write-only, in
+// place when its length stays or it is small and made again when not, and makes the save as a
+// whole all or nothing with one log written first (below) instead of making each file atomic
+// with a rename of its own.
+
+// At and above this, a file whose length changes is removed and made again rather than cut or
+// grown in place: 0.7 ms against 1.2 ms at 4 KiB, 4.8 ms against 1.2 ms at 16 KiB (doc.fs.
+// overwrite_resize, doc.fs.recreate).
+constexpr u64 k_recreate_from = 8 * 1024;
 
 io::Status status_of_errno(int err) noexcept {
   switch (err) {
@@ -464,7 +474,13 @@ io::Status overwrite_once(const std::string& native, std::string_view data, bool
 // The same, making the file's directory when the write finds it missing — asking for every parent
 // on every write is what `Vfs::write` does, and MSVC's create_directories creates each prefix in
 // turn, which costs more than the write — and retrying briefly while something else holds the file.
-io::Status overwrite_file(const std::string& native, std::string_view data, bool half = false) {
+// A file of k_recreate_from or more whose length changes (`was_size`, when the store knows it) is
+// removed first and made again; the save log is what makes that as safe as a write over it.
+io::Status overwrite_file(const std::string& native, std::string_view data,
+                          u64 was_size = k_unknown_size, bool half = false) {
+  if (was_size != k_unknown_size && was_size != data.size() &&
+      std::max<u64>(was_size, data.size()) >= k_recreate_from)
+    (void)io::remove_file(native);
   for (int attempt = 0;; ++attempt) {
     io::Status s = overwrite_once(native, data, half);
     if (s == io::Status::NotFound) {
@@ -501,6 +517,7 @@ struct FileOp {
   std::string_view text;
   bool remove = false;
   bool tile = false;
+  u64 was_size = k_unknown_size;
 };
 
 std::string hex64(u64 v) {
@@ -600,11 +617,12 @@ Vector<FileOp> ops_of(const SavePlan& plan) {
       manifest = &w;
       continue;
     }
-    ops.push_back(FileOp{w.path, w.text, false, w.tile});
+    ops.push_back(FileOp{w.path, w.text, false, w.tile, w.was_size});
   }
   for (const PlannedRemoval& r : plan.removals())
     ops.push_back(FileOp{r.path, {}, true, r.tile});
-  if (manifest != nullptr) ops.push_back(FileOp{manifest->path, manifest->text, false, false});
+  if (manifest != nullptr)
+    ops.push_back(FileOp{manifest->path, manifest->text, false, false, manifest->was_size});
   return ops;
 }
 
@@ -636,11 +654,12 @@ bool apply_ops(const std::string& root, std::string_view dir, std::span<const Fi
   for (const FileOp& op : ops) {
     const std::string native = join(root, op.path);
     if (death != nullptr && death->dies()) {
-      if (death->torn() && !op.remove) (void)overwrite_file(native, op.text, /*half=*/true);
+      if (death->torn() && !op.remove) (void)overwrite_file(native, op.text, op.was_size, true);
       set_error(error, join(dir, op.path), "the save was stopped here (SaveOptions)");
       return false;
     }
-    const io::Status s = op.remove ? io::remove_file(native) : overwrite_file(native, op.text);
+    const io::Status s =
+        op.remove ? io::remove_file(native) : overwrite_file(native, op.text, op.was_size);
     if (s != io::Status::Ok && !(op.remove && s == io::Status::NotFound)) {
       set_error(error, join(dir, op.path), io::status_name(s));
       return false;
@@ -688,7 +707,7 @@ bool carry_out(const SavePlan& plan, std::string_view dir, const SaveOptions& op
   const std::string log_path = plan.native(DocumentStore::k_save_log);
   const std::string log = log_text(ops);
   if (death.dies()) {
-    if (death.torn()) (void)overwrite_file(log_path, log, /*half=*/true);
+    if (death.torn()) (void)overwrite_file(log_path, log, k_unknown_size, /*half=*/true);
     set_error(error, join(dir, DocumentStore::k_save_log),
               "the save was stopped here (SaveOptions)");
     return false;
@@ -807,6 +826,10 @@ class DiskView {
   std::string log_;
   HashMap<std::string, FileOp> overlay_;  // views into log_
 };
+
+// Defined with the journal's other helpers, below.
+bool parse_journal(std::string_view text, const std::string& path, Vector<Patch>& out,
+                   Vector<u64>* ends, std::string* error);
 
 // Reads one file of the document and remembers what it held.
 bool read_file(const DiskView& disk, const std::string& path, std::string& out, StoredState& known,
@@ -1018,7 +1041,9 @@ bool DocumentStore::create(const io::Vfs& vfs, std::string_view dir, std::string
   manifest.name = std::string(name);
   manifest.undo_position = 0;
   if (!write_journal(vfs, dir, {}, error)) return false;
-  return save(vfs, dir, out, manifest, error);
+  if (!save(vfs, dir, out, manifest, error)) return false;
+  out.stored_->journal_known = true;  // empty, as write_journal left it
+  return true;
 }
 
 bool DocumentStore::save(const io::Vfs& vfs, std::string_view dir, Document& doc,
@@ -1189,8 +1214,22 @@ bool DocumentStore::load(const io::Vfs& vfs, std::string_view dir, Document& out
   const i32 edit = doc.find_layer(manifest.edit_layer);
   doc.set_edit_layer(edit >= 0 ? static_cast<u32>(edit) : doc.layer_count() - 1);
 
+  // The journal, and where each of its lines ends: what lets the next append cut a dropped redo
+  // tail, or a line an append died in, off in place.
   Vector<Patch> journal;
-  if (!load_journal(vfs, dir, journal, error)) return false;
+  {
+    const std::string journal_path = path_of(dir, k_journal_file);
+    std::string journal_text;
+    const io::Status s = vfs.read(journal_path, journal_text);
+    if (s != io::Status::Ok && s != io::Status::NotFound) {
+      set_error(error, journal_path, io::status_name(s));
+      return false;
+    }
+    if (!parse_journal(journal_text, journal_path, journal, &known->journal_ends, error))
+      return false;
+    known->journal_known = true;
+    known->journal_size = journal_text.size();
+  }
   if (manifest.undo_position > journal.size()) manifest.undo_position = journal.size();
   doc.set_journal(std::move(journal));
 
@@ -1206,14 +1245,145 @@ bool DocumentStore::load(const io::Vfs& vfs, std::string_view dir, Document& out
   return true;
 }
 
+// --- the journal and the files beside the document ------------------------------------------
+
+namespace {
+
+std::string journal_line(const Patch& patch) {
+  std::string line = write_json(schema::to_json(patch), JsonWriteOptions{.pretty = false});
+  line.push_back('\n');
+  return line;
+}
+
+// Appends, making the directory when the append finds it missing rather than asking first, which
+// is what `Vfs::append` does and what costs more than the append on Windows.
+io::Status append_native(const std::string& native, std::string_view text) {
+  io::Status s = io::append_file(native, text);
+  if (s == io::Status::NotFound) {
+    const std::string_view parent = io::parent_path(native);
+    if (!parent.empty() && io::make_directories(parent) == io::Status::Ok)
+      s = io::append_file(native, text);
+  }
+  return s;
+}
+
+// Replaces a file whole and atomically, the same way about its directory.
+io::Status replace_native(const std::string& native, std::string_view text) {
+  io::Status s = io::write_file_atomic(native, text);
+  if (s == io::Status::NotFound) {
+    const std::string_view parent = io::parent_path(native);
+    if (!parent.empty() && io::make_directories(parent) == io::Status::Ok)
+      s = io::write_file_atomic(native, text);
+  }
+  return s;
+}
+
+// The journal's patches, and where the line of each ends. A last line with no newline is an append
+// a process died in the middle of — the store writes a line and its newline in one write — so it
+// is left out, whatever it holds: its commit's save never ran, and the manifest's undo position
+// does not count it.
+bool parse_journal(std::string_view text, const std::string& path, Vector<Patch>& out,
+                   Vector<u64>* ends, std::string* error) {
+  out.clear();
+  if (ends != nullptr) ends->clear();
+  usize pos = 0;
+  u32 line_number = 0;
+  while (pos < text.size()) {
+    const usize nl = text.find('\n', pos);
+    if (nl == std::string_view::npos) break;  // torn
+    std::string_view line = text.substr(pos, nl - pos);
+    pos = nl + 1;
+    ++line_number;
+    if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
+    if (line.empty()) continue;
+    JsonValue value;
+    if (const JsonParseResult r = parse_json(line, value); !r.ok) {
+      set_error(error, path, std::string("line ") + std::to_string(line_number) + ": " + r.message);
+      return false;
+    }
+    Patch patch;
+    schema::ReadContext ctx;
+    if (!schema::from_json(patch, value, ctx)) {
+      set_error(error, path, ctx);
+      return false;
+    }
+    out.push_back(std::move(patch));
+    if (ends != nullptr) ends->push_back(pos);
+  }
+  return true;
+}
+
+}  // namespace
+
 bool DocumentStore::append_journal(const io::Vfs& vfs, std::string_view dir, const Patch& patch,
                                    std::string* error) {
   const std::string path = path_of(dir, k_journal_file);
-  std::string line = write_json(schema::to_json(patch), JsonWriteOptions{.pretty = false});
-  line.push_back('\n');
-  if (const io::Status s = vfs.append(path, line); s != io::Status::Ok) {
+  std::string native;
+  io::Status s = vfs.resolve(path, native, /*for_write=*/true);
+  if (s == io::Status::Ok) s = append_native(native, journal_line(patch));
+  if (s != io::Status::Ok) {
     set_error(error, path, io::status_name(s));
     return false;
+  }
+  return true;
+}
+
+bool DocumentStore::append_journal(const io::Vfs& vfs, std::string_view dir, Document& doc,
+                                   std::string* error) {
+  if (doc.journal().empty()) return true;
+  const std::string path = path_of(dir, k_journal_file);
+  std::string root;
+  if (const io::Status s = vfs.resolve(dir, root, /*for_write=*/true); s != io::Status::Ok) {
+    set_error(error, path, io::status_name(s));
+    return false;
+  }
+  const std::string native = join(root, k_journal_file);
+  StoredState* known =
+      doc.stored_ != nullptr && doc.stored_->root == root ? doc.stored_.get() : nullptr;
+  const u32 kept = doc.journal().size() - 1;  // the patches the file should already hold
+  if (known != nullptr && known->journal_known && known->journal_ends.size() >= kept) {
+    // The file holds those patches and perhaps more: a redo tail this commit dropped, or a line an
+    // append died in. Cut it after them, in place, then append the new line.
+    const u64 cut = kept == 0 ? 0 : known->journal_ends[kept - 1];
+    if (cut != known->journal_size) {
+      std::error_code ec;
+      std::filesystem::resize_file(
+          std::filesystem::path(
+              std::u8string_view(reinterpret_cast<const char8_t*>(native.data()), native.size())),
+          cut, ec);
+      if (ec) {
+        set_error(error, path, ec.message());
+        return false;
+      }
+      known->journal_ends.resize(kept);
+      known->journal_size = cut;
+    }
+    const std::string line = journal_line(doc.journal().back());
+    if (const io::Status s = append_native(native, line); s != io::Status::Ok) {
+      known->journal_known = false;  // it may hold half the line now: write it whole next time
+      set_error(error, path, io::status_name(s));
+      return false;
+    }
+    known->journal_size = cut + line.size();
+    known->journal_ends.push_back(known->journal_size);
+    return true;
+  }
+  // Nothing known of the file: write it whole, as the document has it.
+  std::string text;
+  Vector<u64> ends;
+  for (const Patch& patch : doc.journal()) {
+    write_json(schema::to_json(patch), text, JsonWriteOptions{.pretty = false});
+    text.push_back('\n');
+    ends.push_back(text.size());
+  }
+  if (const io::Status s = replace_native(native, text); s != io::Status::Ok) {
+    set_error(error, path, io::status_name(s));
+    return false;
+  }
+  if (known != nullptr) {
+    known->journal_known = true;
+    known->journal_ends = std::move(ends);
+    known->journal_size = text.size();
   }
   return true;
 }
@@ -1226,7 +1396,10 @@ bool DocumentStore::write_journal(const io::Vfs& vfs, std::string_view dir,
     text.push_back('\n');
   }
   const std::string path = path_of(dir, k_journal_file);
-  if (const io::Status s = vfs.write(path, text); s != io::Status::Ok) {
+  std::string native;
+  io::Status s = vfs.resolve(path, native, /*for_write=*/true);
+  if (s == io::Status::Ok) s = replace_native(native, text);
+  if (s != io::Status::Ok) {
     set_error(error, path, io::status_name(s));
     return false;
   }
@@ -1244,27 +1417,33 @@ bool DocumentStore::load_journal(const io::Vfs& vfs, std::string_view dir, Vecto
     set_error(error, path, io::status_name(s));
     return false;
   }
-  std::string_view rest = text;
-  u32 line_number = 0;
-  while (!rest.empty()) {
-    const usize nl = rest.find('\n');
-    std::string_view line = rest.substr(0, nl);
-    rest = nl == std::string_view::npos ? std::string_view{} : rest.substr(nl + 1);
-    ++line_number;
-    if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
-    if (line.empty()) continue;
-    JsonValue value;
-    if (const JsonParseResult r = parse_json(line, value); !r.ok) {
-      set_error(error, path, std::string("line ") + std::to_string(line_number) + ": " + r.message);
-      return false;
-    }
-    Patch patch;
-    schema::ReadContext ctx;
-    if (!schema::from_json(patch, value, ctx)) {
-      set_error(error, path, ctx);
-      return false;
-    }
-    out.push_back(std::move(patch));
+  return parse_journal(text, path, out, nullptr, error);
+}
+
+bool DocumentStore::write_side_file(const io::Vfs& vfs, std::string_view path,
+                                    std::string_view text, std::string* error) {
+  std::string native;
+  io::Status s = vfs.resolve(path, native, /*for_write=*/true);
+  if (s == io::Status::Ok) {
+    std::string existing;
+    if (io::read_file(native, existing) == io::Status::Ok && existing == text) return true;
+    s = replace_native(native, text);
+  }
+  if (s != io::Status::Ok) {
+    set_error(error, path, io::status_name(s));
+    return false;
+  }
+  return true;
+}
+
+bool DocumentStore::append_side_file(const io::Vfs& vfs, std::string_view path,
+                                     std::string_view text, std::string* error) {
+  std::string native;
+  io::Status s = vfs.resolve(path, native, /*for_write=*/true);
+  if (s == io::Status::Ok) s = append_native(native, text);
+  if (s != io::Status::Ok) {
+    set_error(error, path, io::status_name(s));
+    return false;
   }
   return true;
 }

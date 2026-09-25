@@ -64,11 +64,13 @@ struct StoredState {
   // document through, so the files on disk are not yet what `files` says; or a torn one, which it
   // ignored. The next save finishes the first and removes the second before it does anything else.
   bool log_pending = false;
-  // `load` found the journal ending in a line with no newline — an append a process died in — and
-  // left it out: the journal is valid up to this many bytes, and the next append cuts the rest
-  // first. Zero when the journal is whole.
-  u64 journal_valid_bytes = 0;
-  bool journal_torn = false;
+  // The journal as the store last wrote or read it: where each of its whole lines ends, and the
+  // file's length, which is more than the last end when the file finishes in a line an append died
+  // in the middle of. What lets an append that follows an undo cut the redo tail off in place,
+  // and cut a torn line off before it adds its own, instead of rewriting the whole file.
+  bool journal_known = false;
+  Vector<u64> journal_ends;
+  u64 journal_size = 0;
 };
 
 }  // namespace engine::doc

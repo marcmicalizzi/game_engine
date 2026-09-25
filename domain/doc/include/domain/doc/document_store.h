@@ -118,13 +118,36 @@ class DocumentStore {
                           const LayerPartition& partition, std::string* error,
                           SaveReport* report = nullptr);
 
+  // The journal after a commit: makes the file hold exactly `doc.journal()`, which is what the file
+  // held (or a prefix of it — the redo tail the commit dropped) plus the commit's patch. When the
+  // store knows the file (it loaded or wrote it), the file is cut in place after the patches it
+  // keeps — the redo tail, or a line a process died appending — and the new line appended: an
+  // append, never a rewrite. Otherwise it is written whole. What a session calls; the journal is
+  // written before the save, so a save that dies leaves the commit as the first of the redo tail.
+  static bool append_journal(const io::Vfs& vfs, std::string_view dir, Document& doc,
+                             std::string* error);
+  // Appends one patch, for a caller without the document. It cuts nothing, so it is only right on
+  // a journal that ends where the caller thinks it does.
   static bool append_journal(const io::Vfs& vfs, std::string_view dir, const Patch& patch,
                              std::string* error);
-  // Rewrites the whole journal (after the redo tail was dropped).
+  // Rewrites the whole journal, atomically.
   static bool write_journal(const io::Vfs& vfs, std::string_view dir,
                             std::span<const Patch> patches, std::string* error);
+  // Reads the journal. A last line without its newline is an append a process died in the middle
+  // of, and is left out: the store writes a line and its newline in one write, and the commit it
+  // belonged to was never saved.
   static bool load_journal(const io::Vfs& vfs, std::string_view dir, Vector<Patch>& out,
                            std::string* error);
+
+  // Files beside a document that are not the document's own — the protocol's leases.json,
+  // proposals.json and proposals/<layer>.base.jsonl (ADR-0039) — by their Vfs path. A whole file is
+  // replaced atomically and only when its bytes change; an append appends. Either makes a
+  // directory only when the write finds it missing, where `Vfs::write` and `Vfs::append` ask for
+  // every parent on every call, which costs more than the write on Windows.
+  static bool write_side_file(const io::Vfs& vfs, std::string_view path, std::string_view text,
+                              std::string* error);
+  static bool append_side_file(const io::Vfs& vfs, std::string_view path, std::string_view text,
+                               std::string* error);
 
   // "<sanitized name>.json": characters outside [A-Za-z0-9_.-] become '_'.
   static std::string layer_file_name(std::string_view layer_name);
