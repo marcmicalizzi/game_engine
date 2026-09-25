@@ -60,6 +60,7 @@ One page per module, created in the same change that creates the module. Templat
 | audio (capability) | domain | [audio.md](audio.md) |
 | ruins (capability) | domain | [ruins.md](ruins.md) |
 | terrain (capability) | domain | [terrain.md](terrain.md) |
+| city (capability) | domain | [city.md](city.md) |
 | renderer | systems | [renderer.md](renderer.md) |
 | animation | systems | [animation.md](animation.md) |
 | audio_system (capability) | systems | [audio_system.md](audio_system.md) |

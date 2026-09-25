@@ -1,0 +1,689 @@
+// Island City's plan and building grammar (docs/subsystems/city.md; plan 13 §13.2, plan 07 §7.6).
+//
+// Three families of types, all the capability's own so that ENGINE_WITH_CITY=OFF takes them out of
+// the build with everything else it owns:
+//
+//   parameters   `IslandParams` and the tables inside it: what an island is (its seed, its size,
+//                where the mountain and the harbour are), the district mix, one style per kind of
+//                district, the street classes, the park and civic rules, the building rules and
+//                the opening hours. Authored in metres and fractions; converted to integer
+//                centimetres and Q16 fractions once, when read, and never read as floats again.
+//   the plan     `PlanFile`: the whole-island plan the parameters make — districts, streets,
+//                blocks, lots, parks and civic reservations — in integer centimetres. It is a
+//                derived node (`ddc/city/<key>/plan.json`), a cache of a pure function of the
+//                parameters, never an authored file.
+//   a building   `BuildingFile`: one lot's building as a description — floors, cores, spaces,
+//                units, walls with their openings, furniture zones, the occupancy summary the NPC
+//                work reads, and what the validators found. Integer centimetres in the building's
+//                own frame; `origin` and `front` put that frame on the plan.
+//
+// The enumerations are the module's C++ API types directly (as `domain/audio`'s are), so the IDL
+// and the code cannot disagree about what a district or a street class is.
+namespace engine.city
+
+// ---- vocabulary --------------------------------------------------------------------------------
+
+/// What a district of the city is. The plan assigns kinds from the island's shape (distance to the
+/// centre, the harbour, the coast and the mountain) and the parameters' district mix.
+enum DistrictKind : u8 {
+  /// Towers on a regular grid, midblock service alleys.
+  Downtown = 0
+  /// Mid-rise over shops on a coarser grid, perimeter blocks with courtyards.
+  MixedUse = 1
+  /// Low-rise: terraced and detached houses, closes and cul-de-sacs.
+  Residential = 2
+  /// Irregular organic streets, small lots, squares at the junctions, pedestrian lanes.
+  OldTown = 3
+  /// Industry and the port: large lots and wide streets along the harbour.
+  Industrial = 4
+  /// A waterfront: a promenade and a park strip along the coast, mid-rise behind.
+  Waterfront = 5
+  /// Civic and campus: whole blocks reserved, never subdivided.
+  Campus = 6
+}
+
+/// A street's class: its width, and what the graph rules ask of it.
+enum StreetClass : u8 {
+  /// The island's grid: connects everything, never ends in a dead end.
+  Arterial = 0
+  Collector = 1
+  Local = 2
+  /// Service access behind lots; a lot on an alley alone has no frontage.
+  Alley = 3
+  /// Old town lanes and the waterfront promenade.
+  Pedestrian = 4
+}
+
+/// How a district lays its streets inside the arterial grid.
+enum StreetPattern : u8 {
+  /// A regular grid of locals, the middle line a collector.
+  Grid = 0
+  /// The same with larger blocks (mixed use).
+  CoarseGrid = 1
+  /// Long blocks two lots deep with a close (a cul-de-sac) down the middle.
+  Closes = 2
+  /// Jittered lines, merged blocks and pedestrian lanes (old town).
+  Organic = 3
+  /// Few, wide streets (industry and port).
+  Wide = 4
+}
+
+/// How a block is cut into lots.
+enum LotLayout : u8 {
+  /// Lots round the block's four sides, a courtyard in the middle.
+  Perimeter = 0
+  /// Two rows back to back along the block's long axis.
+  Rows = 1
+  /// Lots across the whole block, each fronting both long sides.
+  Whole = 2
+  /// Two rows backing onto a service alley down the block's long axis.
+  AlleyRows = 3
+  /// Lots round a close: two columns either side of it and a row across its head.
+  CloseRows = 4
+}
+
+/// The first archetypes of the building grammar (plan 13 §13.8, "which archetypes the first grammar
+/// covers").
+enum Archetype : u8 {
+  ApartmentTower = 0
+  MidRiseOverShops = 1
+  Office = 2
+  TerracedHouse = 3
+  DetachedHouse = 4
+  Warehouse = 5
+  /// A hospital, a station, a university or a government building: massing, cores and corridors,
+  /// departments as zones without room graphs.
+  CivicShell = 6
+}
+
+enum ParkKind : u8 {
+  None = 0
+  /// Whole superblocks next to downtown.
+  Central = 1
+  /// A block per district, until the district's park share is met.
+  District = 2
+  /// A lot, wherever a dwelling is farther than the walking distance from every park.
+  Pocket = 3
+  /// A block at an old town junction.
+  Square = 4
+  /// The waterfront's coastal blocks.
+  Waterfront = 5
+  /// Where the city meets the mountain.
+  Greenbelt = 6
+}
+
+enum CivicKind : u8 {
+  None = 0
+  Hospital = 1
+  University = 2
+  Station = 3
+  Government = 4
+}
+
+/// What a lot is for.
+enum LotUse : u8 {
+  Building = 0
+  Park = 1
+  /// A civic reservation: the building is a `CivicShell` of the lot's `civic` kind.
+  Civic = 2
+}
+
+/// How far the grammar runs: the capability's LOD policy (docs/subsystems/city.md, "LOD policy").
+enum Stage : u8 {
+  /// Footprint, structural grid, floors and height.
+  Massing = 0
+  /// Plus cores, corridors, entrances, shafts and units, and the occupancy summary.
+  Floors = 1
+  /// Plus rooms, walls, doors, windows and furniture zones.
+  Rooms = 2
+}
+
+/// What a space on a floor is.
+enum SpaceKind : u8 {
+  Corridor = 0
+  Lobby = 1
+  Stair = 2
+  Elevator = 3
+  Shaft = 4
+  Entry = 5
+  LivingKitchen = 6
+  Bedroom = 7
+  Bathroom = 8
+  Wc = 9
+  Landing = 10
+  Kitchen = 11
+  ShopFloor = 12
+  BackRoom = 13
+  OpenOffice = 14
+  Meeting = 15
+  Reception = 16
+  Hall = 17
+  Department = 18
+  Concourse = 19
+  Storage = 20
+}
+
+enum UnitKind : u8 {
+  Studio = 0
+  OneBed = 1
+  TwoBed = 2
+  ThreeBed = 3
+  House = 4
+  Shop = 5
+  OfficeSuite = 6
+  Workshop = 7
+  Department = 8
+}
+
+enum WallKind : u8 {
+  /// One side is outside the building.
+  Exterior = 0
+  /// One side is a stair, an elevator or a shaft.
+  Core = 1
+  /// Between two units, or a unit and a corridor.
+  Party = 2
+  /// Inside one unit.
+  Partition = 3
+}
+
+enum OpeningKind : u8 {
+  Door = 0
+  /// A door from the street.
+  Entrance = 1
+  Window = 2
+  /// A warehouse's loading door, from the street side.
+  Loading = 3
+}
+
+/// A workplace's kind, for the NPC routine work (docs/subsystems/city.md, "The occupancy summary").
+enum WorkKind : u8 {
+  Retail = 0
+  Office = 1
+  Industrial = 2
+  Medical = 3
+  Education = 4
+  Civic = 5
+  Transport = 6
+}
+
+/// A furniture zone: where furniture goes, not the furniture.
+enum ZoneKind : u8 {
+  Bed = 0
+  Sofa = 1
+  Table = 2
+  KitchenRun = 3
+  Bath = 4
+  Toilet = 5
+  Desk = 6
+  Counter = 7
+  Shelving = 8
+  Racking = 9
+  Seating = 10
+}
+
+/// One rule a validator checks. A report counts failures by rule, so it says which rule of the
+/// grammar to fix; nothing is repaired.
+enum Rule : u8 {
+  /// Plan: the street graph is one component, and its vehicle streets are one component.
+  PlanConnectivity = 0
+  /// Plan: an arterial ends where no other vehicle street continues it.
+  PlanDeadEndArterial = 1
+  /// Plan: a block's side is outside its district style's range.
+  PlanBlockSize = 2
+  /// Plan: a district's parks are less than its style's share of its area.
+  PlanParkShare = 3
+  /// Plan: a dwelling lot is farther than the walking distance from every park.
+  PlanParkDistance = 4
+  /// Plan: a lot fronts no street, or only an alley.
+  PlanFrontage = 5
+  /// A room is not reachable from its unit's entry.
+  ReachRoom = 6
+  /// A unit is not reachable from a core or the street.
+  ReachUnit = 7
+  /// A core (or a floor's circulation) is not reachable from an entrance.
+  ReachCore = 8
+  /// Fewer than two stairs above the floor-count threshold.
+  EgressStairs = 9
+  /// The two stairs are closer than the separation rule allows.
+  EgressSeparation = 10
+  /// A unit's entry is farther than the travel distance from a stair.
+  EgressTravel = 11
+  /// A habitable room has no window on an exterior wall.
+  Daylight = 12
+  /// A room is below its semantic's minimum dimensions.
+  FitRoom = 13
+  /// A bedroom cannot take a bed with its clearance.
+  FitBed = 14
+  /// A corridor is narrower than its building's corridor width.
+  FitCorridor = 15
+  /// Fewer elevators than the floors and units ask for.
+  ServicesElevators = 16
+  /// No service shaft reaches every floor.
+  ServicesShaft = 17
+  /// A structural bay is wider than the structure's span limit.
+  StructureSpan = 18
+  /// The footprint is inside the setbacks.
+  SiteSetback = 19
+  /// The footprint covers more of the lot than the district allows.
+  SiteCoverage = 20
+  /// The building is taller than the district allows.
+  SiteHeight = 21
+  /// The building has no entrance on the lot's street side.
+  SiteFrontage = 22
+}
+
+// ---- parameters --------------------------------------------------------------------------------
+
+/// A district kind's share of the city's area.
+struct DistrictShare @version(1) {
+  kind: DistrictKind = Residential
+  share: f32 = 0
+}
+
+struct ArchetypeWeight @version(1) {
+  archetype: Archetype = MidRiseOverShops
+  weight: f32 = 1
+}
+
+/// One kind of district's style: its street pattern and its lot rules. Data, so a different
+/// island is parameters and not code.
+struct DistrictStyle @version(1) {
+  kind: DistrictKind = Residential
+  pattern: StreetPattern = Grid
+  /// A block's side, between street centre lines.
+  block_min: f32 = 60 @unit(m)
+  block_max: f32 = 140 @unit(m)
+  lot_layout: LotLayout = Perimeter
+  /// A lot's width along its street and its depth away from it.
+  lot_width_min: f32 = 12 @unit(m)
+  lot_width_max: f32 = 24 @unit(m)
+  lot_depth_min: f32 = 16 @unit(m)
+  lot_depth_max: f32 = 24 @unit(m)
+  setback_front: f32 = 0 @unit(m)
+  setback_side: f32 = 0 @unit(m)
+  setback_rear: f32 = 2 @unit(m)
+  /// The footprint's largest share of its lot.
+  coverage_max: f32 = 0.7
+  floors_min: u32 = 3
+  floors_max: u32 = 6
+  height_max: f32 = 25 @unit(m)
+  /// Parks' smallest share of the district's area.
+  park_share: f32 = 0.06
+  /// Organic streets: the chance a junction gets a square, a lane is pedestrian, a line is merged
+  /// away between two blocks.
+  square_chance: f32 = 0
+  lane_chance: f32 = 0
+  merge_chance: f32 = 0
+  archetypes: ArchetypeWeight[]
+  /// The dwelling mix: studio, one, two and three bedrooms.
+  unit_mix: f32[4]
+}
+
+struct StreetWidth @version(1) {
+  street_class: StreetClass = Local
+  width: f32 = 12 @unit(m)
+}
+
+struct ParkRules @version(1) {
+  /// Every dwelling lot is within this of a park (to the park's edge, in a straight line).
+  walk_distance: f32 = 400 @unit(m)
+  /// The central park's share of the city's area, in whole superblocks next to downtown.
+  central_share: f32 = 0.025
+}
+
+struct CivicCounts @version(1) {
+  hospitals: u32 = 1
+  universities: u32 = 1
+  stations: u32 = 2
+  government: u32 = 1
+}
+
+/// When a kind of workplace is open: minutes after midnight, and the days as a bit mask, Monday
+/// bit 0. `close` below `open` runs past midnight; 0 to 1440 is all day.
+struct OpeningHours @version(1) {
+  kind: WorkKind = Retail
+  open: u32 = 540
+  close: u32 = 1140
+  days: u8 = 127
+}
+
+/// A room semantic's minimum clear dimensions, the smaller side and the larger.
+struct RoomMinimum @version(1) {
+  kind: SpaceKind = Bedroom
+  width: f32 = 2.6 @unit(m)
+  depth: f32 = 2.8 @unit(m)
+}
+
+/// The grammar's building-wide rules and the validators' limits.
+struct BuildingRules @version(1) {
+  module: f32 = 2 @unit(m)
+  floor_height: f32 = 3.2 @unit(m)
+  ground_floor_height: f32 = 4.2 @unit(m)
+  exterior_wall: f32 = 0.3 @unit(m)
+  core_wall: f32 = 0.25 @unit(m)
+  party_wall: f32 = 0.2 @unit(m)
+  partition: f32 = 0.1 @unit(m)
+  corridor_width: f32 = 1.8 @unit(m)
+  civic_corridor_width: f32 = 2.8 @unit(m)
+  /// The band of a dwelling between its corridor wall and its rooms: entry, bathroom, WC.
+  service_band: f32 = 2.4 @unit(m)
+  /// A dwelling's depth from its corridor to its facade: the smallest and the largest.
+  unit_depth_min: f32 = 6.4 @unit(m)
+  unit_depth_max: f32 = 8.8 @unit(m)
+  /// Two stairs from this many floors up.
+  two_stair_floors: u32 = 4
+  /// The stairs at least this fraction of the footprint's diagonal apart.
+  stair_separation: f32 = 0.33
+  /// From a unit's entry to a stair, along the corridor.
+  max_travel: f32 = 30 @unit(m)
+  stair_width: f32 = 2.8 @unit(m)
+  elevator_width: f32 = 2.4 @unit(m)
+  shaft_width: f32 = 1.4 @unit(m)
+  /// An elevator from this many floors up, and one for every this many units or workplaces above
+  /// the ground floor.
+  elevator_floors: u32 = 5
+  units_per_elevator: u32 = 60
+  workplaces_per_elevator: u32 = 250
+  /// A structural bay's largest span: a frame, a house's walls, a warehouse's portal frame.
+  max_span: f32 = 9 @unit(m)
+  max_span_house: f32 = 7 @unit(m)
+  max_span_hall: f32 = 30 @unit(m)
+  door_width: f32 = 0.9 @unit(m)
+  entrance_width: f32 = 1.4 @unit(m)
+  loading_width: f32 = 4 @unit(m)
+  window_width: f32 = 1.4 @unit(m)
+  window_sill: f32 = 0.9 @unit(m)
+  window_head: f32 = 2.3 @unit(m)
+  /// A double bed and the clearance on its side and foot.
+  bed_width: f32 = 1.6 @unit(m)
+  bed_length: f32 = 2.0 @unit(m)
+  bed_clearance: f32 = 0.6 @unit(m)
+  /// Area per workplace: offices, shops, industry.
+  office_area: f32 = 10 @unit(m)
+  retail_area: f32 = 25 @unit(m)
+  industrial_area: f32 = 80 @unit(m)
+  civic_area: f32 = 20 @unit(m)
+  minimums: RoomMinimum[]
+}
+
+/// One authored pin: an id of the plan, and what it is pinned to. Everything not pinned is
+/// generated (docs/subsystems/city.md, "Authored overrides").
+enum OverrideKind : u8 {
+  /// `id` is a district; `district_kind` replaces the kind the rules gave it.
+  District = 0
+  /// `id` is a street; `street_class` replaces its class along its whole length.
+  Street = 1
+  /// `id` is a block; `park` makes it a park of that kind, or `None` keeps every park rule off it.
+  Park = 2
+  /// `id` is a lot; `civic` reserves it for that civic kind, or `None` keeps every civic rule off
+  /// its block.
+  Civic = 3
+}
+
+struct Override @version(1) {
+  what: OverrideKind = District
+  id: u32 = 0
+  district_kind: DistrictKind = Residential
+  street_class: StreetClass = Local
+  park: ParkKind = None
+  civic: CivicKind = None
+}
+
+/// An island: everything the plan is a function of.
+struct IslandParams @version(1) {
+  /// "engine.city-params.v1".
+  format: string
+  name: string
+  seed: u64 = 1
+  /// The island's mean radius.
+  radius: f32 = 2000 @unit(m)
+  /// The seeded outline's roughness, a fraction of the radius.
+  coast_roughness: f32 = 0.1
+  /// An authored coastline, x and z in metres, counter-clockwise seen from above; three points or
+  /// more replace the seeded outline.
+  coastline: vec2[]
+  /// Where the mountain is, degrees about +y from +x, and the share of the island's extent along
+  /// that direction it and its wilderness take.
+  mountain_deg: f32 = 90 @unit(deg)
+  mountain_share: f32 = 0.3
+  /// The band between the city and the mountain.
+  greenbelt: f32 = 150 @unit(m)
+  /// The harbour: a bay carved into the coast in this direction.
+  harbour_deg: f32 = 270 @unit(deg)
+  harbour_width: f32 = 800 @unit(m)
+  harbour_depth: f32 = 350 @unit(m)
+  /// The world's tile edge (plan 03 §3.7): the unit of the per-tile query.
+  tile_size: f32 = 64 @unit(m)
+  /// The arterial grid's spacing and its seeded jitter as a fraction of it.
+  arterial_spacing: f32 = 480 @unit(m)
+  arterial_jitter: f32 = 0.12
+  /// A district's typical extent.
+  district_size: f32 = 800 @unit(m)
+  /// Empty: the default mix (docs/subsystems/city.md, "Districts").
+  district_mix: DistrictShare[]
+  /// One per kind; a kind with none takes the default style.
+  styles: DistrictStyle[]
+  street_widths: StreetWidth[]
+  parks: ParkRules
+  civic: CivicCounts
+  building: BuildingRules
+  hours: OpeningHours[]
+  overrides: Override[]
+}
+
+// ---- the plan ----------------------------------------------------------------------------------
+
+struct PlanDistrict @version(1) {
+  id: u32 = 0
+  kind: DistrictKind = Residential
+  pinned: bool = false
+  /// The seed cell's centre, centimetres.
+  center: i32[2]
+  superblocks: u32 = 0
+  /// Its kept blocks' area on the street centre lines, square centimetres.
+  area: u64 = 0
+}
+
+/// A street: one named line, whole, from the arterial grid or inside one superblock.
+struct PlanStreet @version(1) {
+  id: u32 = 0
+  street_class: StreetClass = Local
+  pinned: bool = false
+  /// Runs along x (true) or along z.
+  along_x: bool = true
+  /// The line's coordinate, and where the street's kept segments begin and end on it,
+  /// centimetres.
+  line: i32 = 0
+  from: i32 = 0
+  to: i32 = 0
+  width: i32 = 0
+  /// The superblock it lies in, or 4294967295 for an arterial.
+  superblock: u32 = 4294967295
+}
+
+struct PlanBlock @version(1) {
+  id: u32 = 0
+  district: u32 = 0
+  superblock: u32 = 0
+  /// x0, z0, x1, z1 on the street centre lines, and what the streets' halves leave of it.
+  rect: i32[4]
+  buildable: i32[4]
+  park: ParkKind = None
+  civic: CivicKind = None
+  /// Streets on its sides, +x, -z, -x, +z (the quarter-turn order).
+  streets: u32[4]
+}
+
+struct PlanLot @version(1) {
+  id: u32 = 0
+  block: u32 = 0
+  district: u32 = 0
+  rect: i32[4]
+  /// The quarter turn from the lot toward its street: 0 +x, 1 -z, 2 -x, 3 +z.
+  front: u8 = 0
+  street: u32 = 0
+  use: LotUse = Building
+  archetype: Archetype = MidRiseOverShops
+  park: ParkKind = None
+  civic: CivicKind = None
+}
+
+struct PlanPark @version(1) {
+  kind: ParkKind = District
+  block: u32 = 0
+  /// The lot for a pocket park, 4294967295 for a whole block.
+  lot: u32 = 4294967295
+  district: u32 = 0
+  rect: i32[4]
+}
+
+/// The whole-island plan: a pure function of `params`, cached under `ddc/city/<key>/`.
+struct PlanFile @version(1) {
+  /// "engine.city-plan.v1".
+  format: string
+  /// `k_generator_version` of the build that wrote it.
+  generator: u32 = 0
+  /// `plan_key(params)` and `hash_plan`, 16 lower-case hex digits each.
+  key: string
+  hash: string
+  params: IslandParams
+  /// The coastline, centimetres, x0 z0 x1 z1 ...
+  coastline: i32[]
+  /// The arterial lines, centimetres.
+  arterials_x: i32[]
+  arterials_z: i32[]
+  /// The mountain's axis (Q14) and where along it the city ends and the mountain begins.
+  mountain_axis: i32[2]
+  city_limit: i32 = 0
+  mountain_start: i32 = 0
+  districts: PlanDistrict[]
+  streets: PlanStreet[]
+  blocks: PlanBlock[]
+  lots: PlanLot[]
+  parks: PlanPark[]
+}
+
+// ---- a building --------------------------------------------------------------------------------
+
+struct BuildingFloor @version(1) {
+  index: u32 = 0
+  /// The slab's top above the building's base, and the floor-to-floor height, centimetres.
+  elevation: i32 = 0
+  height: i32 = 0
+}
+
+struct BuildingCore @version(1) {
+  /// x0, z0, x1, z1 in the building's frame, centimetres.
+  rect: i32[4]
+  stair: bool = true
+  elevators: u32 = 0
+  shaft: bool = false
+  /// The floors it serves, both included.
+  floor_from: u32 = 0
+  floor_to: u32 = 0
+}
+
+struct BuildingSpace @version(1) {
+  id: u32 = 0
+  floor: u32 = 0
+  /// Its unit, or -1 for circulation and cores.
+  unit: i32 = -1
+  kind: SpaceKind = Corridor
+  rect: i32[4]
+}
+
+/// A unit: a dwelling or a workplace, the thing an NPC has as a home or a job. Its id is stable:
+/// (generator version, plan key, lot, unit) names the same unit whenever it is generated again.
+struct BuildingUnit @version(1) {
+  id: u32 = 0
+  floor: u32 = 0
+  kind: UnitKind = Studio
+  rect: i32[4]
+  /// The space its entry door opens into.
+  entry: u32 = 0
+  bedrooms: u32 = 0
+  /// Dwellings: how many people it houses. Workplaces: how many work there.
+  residents: u32 = 0
+  workplaces: u32 = 0
+  work: WorkKind = Retail
+}
+
+struct BuildingWall @version(1) {
+  floor: u32 = 0
+  /// Centre line ends, centimetres in the building's frame.
+  from: i32[2]
+  to: i32[2]
+  thickness: i32 = 0
+  kind: WallKind = Partition
+  /// The spaces either side; -1 is outside.
+  a: i32 = -1
+  b: i32 = -1
+}
+
+struct BuildingOpening @version(1) {
+  wall: u32 = 0
+  kind: OpeningKind = Door
+  /// Along the wall from its `from` end to the opening's centre, centimetres.
+  at: i32 = 0
+  width: i32 = 0
+  sill: i32 = 0
+  head: i32 = 0
+}
+
+struct BuildingZone @version(1) {
+  space: u32 = 0
+  kind: ZoneKind = Bed
+  rect: i32[4]
+}
+
+/// What the NPC routine work reads (docs/subsystems/city.md, "The occupancy summary"): homes and
+/// jobs, counted, and when the jobs are worked. Built on nothing yet.
+struct Occupancy @version(1) {
+  dwellings: u32 = 0
+  /// Dwellings by kind: studio, one, two and three bedrooms, house.
+  dwellings_by_kind: u32[5]
+  bedrooms: u32 = 0
+  residents: u32 = 0
+  /// Workplaces by kind: retail, office, industrial, medical, education, civic, transport.
+  workplaces: u32[7]
+  /// The hours of each kind of workplace the building has.
+  hours: OpeningHours[]
+}
+
+struct Failure @version(1) {
+  rule: Rule = ReachRoom
+  floor: u32 = 0
+  /// The space, unit, lot or street the rule failed on.
+  subject: u32 = 0
+  /// What was measured and what it had to be (centimetres, counts or Q16 fractions, by rule).
+  value: i64 = 0
+  limit: i64 = 0
+}
+
+struct BuildingFile @version(1) {
+  /// "engine.city-building.v1".
+  format: string
+  generator: u32 = 0
+  plan_key: string
+  lot: u32 = 0
+  archetype: Archetype = MidRiseOverShops
+  civic: CivicKind = None
+  seed: string
+  stage: Stage = Rooms
+  /// The building frame's origin on the plan, centimetres, and the quarter turn toward the street:
+  /// local +z runs away from the street, local x along the front.
+  origin: i32[2]
+  front: u8 = 0
+  footprint: i32[4]
+  /// The structural grid's bays along x and z.
+  bay: i32[2]
+  floors: BuildingFloor[]
+  cores: BuildingCore[]
+  spaces: BuildingSpace[]
+  units: BuildingUnit[]
+  walls: BuildingWall[]
+  openings: BuildingOpening[]
+  zones: BuildingZone[]
+  occupancy: Occupancy
+  failures: Failure[]
+}
