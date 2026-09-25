@@ -516,8 +516,8 @@ TEST_CASE(
       // Its centre, half its length along its yaw from its origin, is outside every wall by its
       // own radius and inside the tile.
       const f64 yaw = static_cast<f64>(block.yaw) * 22.5 * 3.14159265358979323846 / 180.0;
-      const f64 cx = block.position.x + 0.005 * kb.length_cm * std::cos(yaw);
-      const f64 cz = block.position.z - 0.005 * kb.length_cm * std::sin(yaw);
+      const f64 cx = static_cast<f64>(block.position.x) + 0.005 * kb.length_cm * std::cos(yaw);
+      const f64 cz = static_cast<f64>(block.position.z) - 0.005 * kb.length_cm * std::sin(yaw);
       CHECK(cx >= tile.x * 32.0);
       CHECK(cx <= tile.x * 32.0 + 32.0);
       CHECK(cz >= tile.z * 32.0);
