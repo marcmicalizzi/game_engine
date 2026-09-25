@@ -3,11 +3,11 @@
 - **Question ([09 §9.4](../plan/09-testing-profiling.md#94-benchmark-scene-corpus)):** the owner flew the desert with a hundred ruins of the ashlar kit and reported two things — (1) **the ruins look reflective instead of matte**; (2) **green and grey ground textures shift on different position thresholds**, patches of the ground changing as he moved, with the marker key pressed where he saw it. Where does each come from, and what fixes it?
 - **Date:** 2026-09-25. **Machine:** Intel i9-10980XE, 64 GB, Windows 11 Pro; **GPU:** RTX 5090 (32 GB). **The session:** 12:47 UTC, a `msvc-release` build of main at `d952a5e` (the recording's header names it, not dirty), `fly-ashlar-100.json` — the desert terrain at 2049 × 2049 over 5.12 km (seed 23, 8 m dunes, three ridges, the basin of the oasis at (0, 60)) and 100 buildings of E33's ashlar kit v2 (`kit-ashlar-cc0`, [E33](e33-hard-surface-kits.md)) — at 11520×2160 `--views surround3`, `--shadows csm`, `--start 0,5,-600 0,-4`, `view.fly.speed` 30, over main's derived-data root. **The diagnosis:** `msvc-release` builds of this change's parent (`d952a5e`) and of each fix, replaying the recording offscreen at 3840×720 `surround3` with the session's other flags over a copy of that root.
 - **Machine state:** the session's own summary — other processes at 7.5% of the CPU at the start and 24.6% at the end, the GPU 17% and 6% busy with 9.8 and 9.9 GB of its 32.6 GB held by other tenants, the GPU lock the owner's. Every result below is a picture, an id buffer or a count, which a busy machine does not change; no timing from a replay is used, and the replays ran under the GPU lock (`agent-visual`).
-- **Decision:** two engine fixes, neither in the kit — the terrain's colour is a map over its UVs rather than a material voted per cluster ([renderer](../subsystems/renderer.md#invariants)), and the resolve's sky term weights its specular share by the lobe's own reflectance rather than by bare Schlick ([gfx](../subsystems/gfx.md)) — and a test that holds the first at the owner's own marker cameras.
+- **Decision:** two engine fixes, neither in the kit — the terrain's colour is a map over its UVs rather than a material voted per cluster ([renderer](../subsystems/renderer.md#invariants)), and the resolve's sky term weights its specular share by the lobe's own reflectance rather than by bare Schlick ([gfx](../subsystems/gfx.md)) — and a test that holds the first at the owner's own marker cameras. The session's frame times, which paired, are the third item and have [a section of their own](#present-pacing) with its own machine and machine state: a display pacer by default.
 
 ## The recording
 
-`D:\workspace\game_engine_local\flythrough\interactive-2026-09-25T1226-input.jsonl` (2,368 events after its header; 16,677 ticks at 240 Hz, 69.5 s) and `interactive-2026-09-25T1226-frames.jsonl` (5,677 frames: GPU 2.24 ms median and 3.11 ms p99; the frame time bimodal, 7.19 ms median and 22.6 ms p95, which is the present-pacing item of the [first session](first-interactive-session-2026-09-24.md#1-the-stutter-near-an-asset) and not this page's). The header names the default map's hash (`95496522437046028`), so the marker is scancode 16, M, and the owner pressed it six times:
+`D:\workspace\game_engine_local\flythrough\interactive-2026-09-25T1226-input.jsonl` (2,368 events after its header; 16,677 ticks at 240 Hz, 69.5 s) and `interactive-2026-09-25T1226-frames.jsonl` (5,677 frames: GPU 2.24 ms median and 3.11 ms p99; the frame time bimodal, 7.19 ms median and 22.6 ms p95, which is the present-pacing item of the [first session](first-interactive-session-2026-09-24.md#1-the-stutter-near-an-asset), settled in [Present pacing](#present-pacing) below). The header names the default map's hash (`95496522437046028`), so the marker is scancode 16, M, and the owner pressed it six times:
 
 | Marker | Tick | Camera | What he had just done |
 |---|---|---|---|
@@ -69,9 +69,151 @@ Before the fix every pixel whose colour moved was on a changed cluster and none 
 
 **What was not changed, and why.** The kit: its ORM is not the cause, so the generator was not touched and no member regenerated. The atlas script should still write its ORM and normal maps as **PNG** — JPEG's 4:2:0 chroma subsampling and quantization put up to 18% of metallic where roughness steps, and smears a normal map's x against its y — which is the kit author's call and costs a regeneration of every member; it is recorded here for the next kit build. A roughness view (`--view roughness`, `--view metallic`) was not added: the resolve's modes are `gfx::ResolveMode`, a `domain/gfx` public header another change is working in, and the forced-roughness build answered the question a view would have.
 
+## Present pacing
+
+- **Question:** the owner flew the ruins scene by hand on 2026-09-25 at 11520×2160 and reported that performance felt good; the session's frame log said otherwise — frame times bimodal, a median of 7.2 ms and a p95 of 22.6 ms, 2,785 of 5,676 frames over 20 ms, while the GPU needed 2.24 ms a frame and the CPU 0.36 ms. The first session's write-up had left the same alternation as "the present-pacing item" ([first session](first-interactive-session-2026-09-24.md#1-the-stutter-near-an-asset)). What sets the cadence, and what fixes it?
+- **Date:** 2026-09-25. **Machine:** Intel i9-10980XE (18 cores / 36 threads), 64 GB, Windows 11 Pro; **GPU:** RTX 5090 (32 GB), driver 610.88, Vulkan presentation through NVIDIA's DXGI-layered present layer (`VK_LAYER_NV_present`). **Display:** NVIDIA Surround — the three 4K monitors are **one** Windows display, 11520×2160 at 82 Hz (12.2063 ms a refresh by the driver's own report), plus a 1920×1080 60 Hz monitor above them. **Build:** `msvc-release` of this branch.
+- **Machine state:** every measured run below was taken under the GPU lock (`agent-pacing`) with the harness's samples in its summary; other processes used 7–52% of the CPU and the GPU was 0–40% busy at one end or the other of each run, so every run raised the WARNING and **every duration is an upper bound**. The comparisons rest on ratios and on the shape of distributions taken minutes apart on the same machine, which the load does not change: the frames that pair do so at 2 ms of GPU work in a 12.2 ms refresh.
+- **Decision:** a display pacer, on by default for FIFO-family presentation (`--pace`, [apps](../subsystems/apps.md#pacing)); the frame log's waits, display times and drawn pose (`FrameRecord` version 6, `FlythroughSummary` version 7); the window's presentation choices as flags; and two driver behaviours written down in [gfx](../subsystems/gfx.md).
+
+### The two recordings
+
+Both sessions' frame logs (`D:\workspace\game_engine_local\flythrough\interactive-2026-09-24T2253-frames.jsonl` and `…2026-09-25T1226-frames.jsonl`) were read again frame by frame. `frame_ms[i]` is the length of iteration *i−1* of the loop.
+
+| | 2026-09-24 (desert overlook, `--shadows rt`) | 2026-09-25 (ruins, `--shadows csm`) |
+|---|---|---|
+| frames | 17,716 | 5,676 |
+| frame_ms median / p95 / p99 | 12.20 / 23.81 / 24.13 | 7.19 / 22.56 / 23.13 |
+| frames over 20 ms | 8,689 | 2,785 |
+| lag-1 autocorrelation of frame_ms | −0.994 | −0.947 |
+| pairs from | frame 243 (3.0 s, after one 31.4 ms frame) | frame 22 (after the load's 78 and 52 ms frames) |
+| the short iteration / the long / the pair | 1.37 / 23.03 / **24.41 ms** | 2.43 / 21.98 / **24.42 ms** |
+| short iteration less the GPU time of the frame it waited for | 0.10 ms | 0.16 ms |
+| breaks in the alternation after it set | 108 | 26 |
+| ticks per pair (long + short), commonest | 0+6 (4,432), 1+5 (3,031), 0+5 (1,217) | 1+5 (1,632), 0+6 (757), 0+5 (390) |
+
+**The period is exactly two refreshes**: 24.41–24.42 ms a pair, twice the driver's 12.206 ms, so the display was never missed — two frames were shown in every two refreshes. The CPU's share is the same in both halves of a pair (0.34–0.39 ms), and the ticks follow the waits (the frame after the long wait runs five or six ticks, the one after the short none or one). The one thing the short iteration tracks is **the GPU time of a frame**: it is that frame's GPU milliseconds plus 0.10–0.16 ms (correlation 0.33–0.49 against it; nothing else logged correlates). So in each pair the loop waited 22–23 ms for a vblank and then only for a GPU frame that had started at it. Both sessions settled into it after a hitch and never left: the first was even for its first 3 s, the second paired from its 22nd frame.
+
+### Instruments
+
+Each windowed frame now records where its time went ([apps](../subsystems/apps.md#pacing)): `wait_ms` (the frame slot, `begin_frame`), `acquire_ms`, `present_ms`, `pace_ms`, `submit_ms` (inside `cpu_ms`), the camera the frame drew and the simulated time it stands for (`pose_*`, added for [the strafing stutter](#the-strafing-stutter)), and, where the swapchain offers VK_EXT_present_timing, `shown_ms` and `latency_ms` from each present's first-pixel-out time; the summary gains a `presentation` block. `--windowed` replays the owner's recording **in the window**, at its recorded pace, with a frame log — the fair before and after — and every run below is that replay of today's recording (`…T1226-input.jsonl`), cut to 820 frames (10 s) or 1,640 (20 s) with `--frames`.
+
+Two things the instruments found about the driver before they found anything about the loop, both in [gfx](../subsystems/gfx.md):
+
+- **Reading display times blocks.** `vkGetPastPresentationTimingEXT` took 10.4–11.2 ms a call whatever its flags, so a loop that polled it every frame was paced by the poll (and looked like 12.2 ms frames with 11.9 ms of "CPU" in them). The driver's queue is now set 16,384 deep and read once, after the run.
+- **Display times read early.** The only time domain on offer is the present stage's own; mapped onto our clock through `vkGetCalibratedTimestampsKHR`, a paced frame with 8.3 ms of work between sampling and presenting was reported shown 3.6 ms after sampling. The intervals between display times are exact; their offset from anything else is at least 5 ms short, so `latency_ms` is compared between runs, never read as a number. The differences below are the reliable part.
+
+### Reproducing it, and separating the variables
+
+A 1280×720 window on the same display — composed by DWM, since it does not cover the display — paced evenly with FIFO, with or without present timing and with two images or three; one frame in flight and FIFO-relaxed did not (10 s each):
+
+| 1280×720, composed | frame p50 / p95 / p99 ms | >20 ms | present ms | display p5–p95 ms | sample → display (reported) |
+|---|---|---|---|---|---|
+| FIFO, 3 images, 2 in flight | 12.21 / 12.87 / 13.28 | 0 | 10.80 | 5.4–18.9 | 59.5 ms |
+| the same without present timing | 12.21 / 12.30 / 12.42 | 2 | 10.68 | — | — |
+| 1 frame in flight | 12.17 / 36.38 / 36.81 | 46 | 10.79 | 4.8–19.6 | 36.1 ms |
+| 2 images | 12.20 / 12.95 / 13.58 | 0 | 10.78 | 5.2–19.3 | 59.5 ms |
+| mailbox / immediate / FIFO-latest-ready | 0.7–0.8 (1,300 fps) | 0 | 0.10 | — | 2.2–2.8 ms |
+| FIFO-relaxed | 12.19 / 23.77 / 24.43 | 133 | 10.85 | 4.7–19.9 | 59.6 ms |
+
+The spanned window — the owner's 11520×2160 with its title bar pushed off the top of the display, and a `--borderless` one at the display's corner (approved by the owner for this; 10 s each) — reproduced the pairs, and **only when the swapchain did not ask for display times**:
+
+| 11520×2160 | frame p50 / p95 / p99 ms | >20 ms of 790 | wait / present ms | display p5–p95 ms | sample → display (reported) |
+|---|---|---|---|---|---|
+| FIFO, no present timing (**the owner's configuration**) | 12.20 / 24.39 / 36.33 | 124 | 0.09 / 9.30 | — | — |
+| the same, borderless | 12.20 / 24.36 / 36.19 | 117 | 0.06 / 9.43 | — | — |
+| the same, three more runs (two of them with present ids and waits) | 12.20 / 24.3–24.4 / 36.2–36.3 | 113, 136, 131 | 0.06–0.07 / 9.3 | — | — |
+| FIFO **with** present timing | 12.21 / 12.93 / 13.42 | 0 | 2.60 / 9.11 | 12.18–12.26 | 50.1 ms |
+| the same, borderless / repeated | 12.20–12.21 / 12.9 / 13.4–13.9 | 0, 0 | 2.6 / 9.2 | 12.21 | 50.0–50.1 ms |
+| 1 frame in flight (with timing) | 12.20 / 13.43 / 36.86 | 32 | 0.10 / 9.57 | 12.18–12.23 | 28.6 ms |
+| 2 images (with timing) | 12.21 / 12.96 / 13.79 | 0 | 2.60 / 9.16 | 12.19–12.21 | 50.1 ms |
+| mailbox (with timing) | 12.21 / 23.67 / 24.02 | 86 | 0.05 / 11.61 | 12.19–12.23 | 52.7 ms |
+| FIFO-latest-ready (with timing) | 12.21 / 23.55 / 23.98 | 70 | 0.11 / 9.69 | 12.19–12.22 | 64.5 ms |
+| **FIFO + the display pacer** (its first build; the same at depth 1) | 12.28 / 13.56 / 14.53 | 0 | 0.05 / 0.07 | 12.19–12.21 | 3.4 ms |
+| the same, borderless | 12.30 / 13.54 / 14.46 | 0 | 0.05 / 0.07 | 12.19–12.23 | 3.5 ms |
+
+What the instrumented paired runs show, frame by frame: in the even rhythm every present blocks 11.5 ms and nothing else waits; in the paired rhythm one iteration's present returns in 0.05–0.35 ms and the next waits **14.1 ms for its frame slot** and 9.3 ms in its present — 0.6 ms and 23.7 ms. Two throttles are in the loop, the driver's present queue and the frame slot, and the slot is gated by the display, because a frame's GPU work waits on its swapchain image and the image comes back when the display flips past it. In the even rhythm the present queue absorbs each refresh; in the paired one two images come back at one refresh, two GPU frames run back to back after it, and the slot and the present take turns absorbing two refreshes at once. Either is stable; a hitch moves the loop from the first to the second.
+
+**The owner's configuration today — FIFO, three images, two frames in flight, no pacer, no present timing — is the pairing one.** Nothing else measured is: decorated or borderless made no difference, two images behave as three, one frame in flight misses refreshes outright (36 ms frames), and mailbox and FIFO-latest-ready, which a window covering the display is paced through like FIFO, pair all the same.
+
+**The present-timing observation** (open: a signature, not a mechanism). A FIFO chain created with VK_EXT_present_timing never paired — five runs, 0–1 frames over 20 ms — and every FIFO chain created without it did — six runs, 113–243 — present ids and waits alone changing nothing; mailbox and FIFO-latest-ready paired with it as well. With timing, the frame-slot wait is 2.6 ms on every frame — the GPU time plus half a millisecond, i.e. each frame's image came back at its own refresh and its GPU work ran then — and it never showed two images coming back at one refresh. What NVIDIA's present layer does differently for a timed chain is not visible from here; the practical consequences are that a measurement of the loop as the owner flies it must not ask for display times (`--no-present-timing`), and that present timing is not a fix to rely on — it costs a blocking read to be of any use, and the loop it produces still queues 50 ms deep.
+
+### The fix: sample when the last frame has been shown
+
+`--pace display` (and `auto`, the new default for FIFO-family presentation) waits, before a frame polls its window and reads the clock, until the frame presented last has been shown (`vkWaitForPresent2KHR`). Each frame then starts one refresh after the one before on the display's own clock with one frame queued, and the slot, image and present waits all fall under 0.1 ms. Deeper work is handled by `view::DisplayPacer`: two missed refreshes within 32 frames send it one frame deeper for 240 frames, and it tries again with a doubling hold (see [apps](../subsystems/apps.md#pacing) for the rule and why misses are counted the way they are).
+
+**Before and after, the owner's recording replayed in the spanned window, 20 s each** (the two "after" runs on the committed build but for one addition made after them, which none of them reached: two timed-out waits in a row stop the pacer waiting for 120 frames, for a window nobody can see; the first 30 frames of each run left out, so the load's own frames are not counted):
+
+| frame_ms | before: the owner's configuration (`--pace off --no-present-timing`) | before, with present timing (`--pace off`) | after (default), run 1 | after (default), run 2 |
+|---|---:|---:|---:|---:|
+| 0–2 | 283 | 3 | 3 | 0 |
+| 2–8 | 0 | 2 | 26 | 0 |
+| 8–10 | 1 | 6 | 48 | 7 |
+| 10–11 | 8 | 11 | 105 | 118 |
+| 11–12 | 165 | 283 | 328 | 493 |
+| 12–13 | 896 | 1,243 | 755 | 670 |
+| 13–14 | 12 | 51 | 236 | 285 |
+| 14–16 | 2 | 10 | 69 | 36 |
+| 16–20 | 0 | 0 | 36 | 1 |
+| 20–24 | 104 | 0 | 1 | 0 |
+| 24–28 | 99 | 1 | 2 | 0 |
+| ≥ 28 | 40 | 0 | 1 | 0 |
+| **over 20 ms** | **243** | 1 | 4 | **0** |
+| p50 / p95 / p99 ms | 12.20 / 24.39 / 36.18 | 12.21 / 12.94 / 13.59 | 12.21 / 14.41 / 18.13 | 12.18 / 13.65 / 14.17 |
+| waits: slot / present ms (median) | 0.06 / 9.27 | 2.75 / 9.03 | 0.05 / 0.10 | 0.05 / 0.07 |
+| shown at the refresh (12.21 ± 1 ms) | — | 1,602 of 1,603 | 1,497 of 1,601 | 1,608 of 1,609 |
+| sample → display, reported (see above) | — | 50.0 ms | 12.6 ms | 3.5 ms |
+| machine: others' CPU / GPU busy, start / end | 11 / 13 %, 4 / 0 % | 21 / 8 %, 14 / 25 % | 15 / 23 %, 20 / 27 % | 17 / 10 %, 20 / 26 % |
+
+The paced frames sample on a clock 12.2 ms apart on average but not to the microsecond (run 2: 125 of 1,610 frames under 11 ms, 322 over 13): the present wait returns up to a millisecond and a half either side of its usual moment. The display saw none of that — every frame of run 2 reached it one refresh after the one before. **Run 1 began composed**: for its first 340 frames the display times show the compositor's pattern (a frame 18–21 ms after the last, the next 4–6 ms after it), something on the desktop kept DWM from handing the window the display, and the pacer, seeing waits come late, went a frame deeper for three of its four changes; from frame 340 the window was flipped directly and ran as run 2 did. It is kept because it is what a notification over the owner's window will do.
+
+**With more work.** A frame with 6 ms of synthetic CPU work after sampling (8.3 ms with the GPU's; 10 s, a flag used for this run only and not committed) still made every refresh at depth 1 — 0 of 790 frames off the refresh, frame p99 14.1 ms — having gone one frame deeper for 240 frames after the load's hitches and come back; the unpaced loop with the same work did not pair in 10 s either (p99 13.4 ms, present 5.8 ms: the CPU's 6 ms leaves no room for two frames in one refresh) but kept its deep queue. So at 82 Hz a depth-1 frame has about a refresh for its work, and the reported 3.5 ms "latency" of the paced runs is the display times reading early: a frame that did 8.3 ms of work after sampling was reported shown 3.6 ms after sampling. **What the timestamps do measure is the difference**: pacing brought frames to the display 46.5 ms sooner after they sampled their input than the unpaced loop with present timing (50.0 against 3.5 ms reported), about 3.8 refreshes; since a paced frame needs at least its 8.3 ms, the unpaced loop's true sample-to-display time is 55–60 ms and the paced one's 8–13 ms, about one refresh.
+
+**In a composed window** (1280×720, 10 s each) the same pacer lowers the reported sample-to-display time from 68 to 24 ms but samples on an uneven clock (p95 18.6 ms against the unpaced loop's 12.5), because DWM's present waits return anywhere from about 5 to 20 ms apart; it spends most of its time a frame deeper there. `--pace off` keeps the even sampling cadence at the cost of the latency. The owner's window is not composed.
+
+### The strafing stutter
+
+After flying the build with the visual fixes (`6050961`, still the old presentation), the owner reported one more thing: a slight stutter while strafing with A or D with the mouse held on an asset — "one frame in between each frame is in a previous position" — whenever lateral motion and a turn coincide, and never otherwise; the recording is `interactive-2026-09-25T1526-input.jsonl` (5,727 frames, paired from frame 16: 2,847 pairs of 2.72 ms and 21.69 ms, 24.42 ms a pair). The hypothesis was a pose that goes backwards in display time. To test it the frame log now carries the camera each frame drew (`pose_position`, `pose_yaw`, `pose_pitch`) and the simulated time it stands for (`pose_time`, the fraction of a tick past the tick before the last that `FlySession::camera_at` draws).
+
+**The pose never went backwards**, in any of the four runs below: 0 frames whose `pose_time` was earlier than the frame before. What the old loop gets wrong is how far and in what order each part of the camera moves:
+
+- **Uneven steps.** The frames of a pair start 0.6 ms and 23.7 ms apart, but each reads the clock after its frame-slot wait, so the cameras they draw stand **15 ms and 9 ms** apart, alternately, instead of 12.2 — and whenever the rhythm stumbles one frame lands barely after the other (3.4 ms, 0.4 ms). Replaying the new recording in the spanned window for 20 s (others' CPU 20 % and 11 %, GPU 14 % and 29 % busy at the ends of the unpaced run; 11 % and 17 %, 4 % and 1 % of the paced one): pose steps p5 3.7, median 12.2, p95 27.1 ms, with 90 of 1,609 frames (5.6%) advancing less than half a refresh — a near-repeat of the frame before. Under the pacer: p5 10.8, median 12.2, p95 13.6 ms, none under half a refresh, and each frame's pose step within 1.4 ms (p5–p95) of the display's own step.
+- **A turn on every other frame, out of step with the strafe.** The window is polled once a loop iteration, and pointer motion is fed at the next tick; in the paired rhythm the polls are 24 ms apart, so the turn arrives on every other displayed frame while the strafe, which is keys held, advances every tick. A live session driven through the window's own event queue (`--inject-input`, a synthetic log of D held and 1 pixel of pointer a tick, 30 m/s, at 11520×2160, 5 s each) shows it frame by frame: unpaced, the strafe per displayed frame alternated 0.28 m and 0.46 m while the turn alternated 0.50° and 0.25° **in the opposite phase** — the frame that moved less turned more — so an asset held under the pointer is pushed one way and pulled back on alternate frames: the frame in its previous position. The turn missed what its own time step called for by 0.13° median, 0.56° p95. **Paced**: strafe 0.32–0.41 m a frame (p5–p95), turn within 0.014° median and 0.17° p95 of its step.
+
+| Live strafe and turn, 11520×2160 | camera step p5 / p50 / p95 | strafe a frame p5 / p50 / p95 | turn off its step p50 / p95 / max | frame p95 | machine: others' CPU, GPU busy (start / end) |
+|---|---|---|---|---|---|
+| `--pace off --no-present-timing` (the old loop) | 8.78 / 12.15 / 15.55 ms | 0.016 / 0.364 / 0.467 m | 0.126 / 0.564 / 0.615° | 24.10 ms | 13 / 10 %, 21 / 1 % |
+| default pacer | 10.92 / 12.21 / 13.51 ms | 0.317 / 0.366 / 0.405 m | 0.014 / 0.172 / 0.407° | 13.55 ms | 9 / 6 %, 25 / 29 % |
+
+**What survives the pacer** is at most one tick of turn (0.126° at 1 pixel a tick): the pointer motion a frame reads enters the camera whole at one tick, while the position the frame draws is interpolated between the last two, so the two can disagree by up to a tick as the tick count per frame goes 3, 3, 2. Stamping pointer motion with the time the platform delivered it (SDL events carry one) rather than the tick of the poll would let it interpolate like the position does; it changes what a recording's ticks mean, so it is left as a follow-up rather than done here.
+
+**The owner's recording carries the old rhythm**: its pointer events are stamped every five or six ticks, because that is how often the loop that recorded them polled. Replayed under the pacer its turns still land on every other frame (318 of 769 strafing frames turned by nothing, against 141 unpaced, the paced frames now lining up with the recording's two-frame beat), so a recording made before this change cannot show the fix; a session flown with the pacer records motion every refresh.
+
+### What the owner should expect at 11520×2160
+
+- **A steady 82 Hz with nothing waiting on presentation.** Every frame sampled one refresh after the last and shown one refresh after the last: frame time 12.2 ms median, p95 13.7–14.4 ms, p99 14.2–18.1 ms, 0–4 frames over 20 ms in 1,610 against 243 in the configuration he flew today. The title's number will read 12.2 ms and stop alternating with 1–2 ms.
+- **The camera moves by a refresh a frame, and the mouse reaches every frame.** With the pairs the drawn camera stepped 15 ms and 9 ms of its time on alternate frames (now and then barely at all) and the window's input was read every 24 ms, so a turn landed on every other frame, out of step with a strafe; now every frame steps 11–13.5 ms and carries its own share of the turn. That is the strafing stutter he reported this afternoon ([below](#the-strafing-stutter)) and the half of the first session's near-object stutter interpolation could not reach.
+- **About four refreshes less input lag**: 46.5 ms less from input to display by the display times, roughly 55–60 ms down to one refresh.
+- **Room for real GPU work.** Frames with 8.3 ms of work still made every refresh; past about a refresh the pacer queues one frame more (one refresh more lag) rather than halving the frame rate, and tries to come back every few seconds.
+- **The GPU's 2.15 ms is unchanged**; it is still idle five-sixths of every refresh, which is headroom, not waste, now that it no longer shows up as alternating frame times.
+- **If something covers part of the window** (a notification, a window of another program), DWM composes it for as long as it is there, the display cadence goes uneven and the pacer drops a frame deeper, as run 1's first four seconds did. `--pace off` restores today's loop exactly.
+
+### Windowed runs made
+
+All under the GPU lock as `agent-pacing`, none while the owner was flying: **30 runs at 1280×720** on the Surround display's middle monitor (3 of 820 frames before the instruments were settled, 5 of 160–400 frames finding the timing poll and the time domain, 21 of 820 frames — about 10 s — for the tables above, and one 5 s injected session trying the strafe probe), and **28 at 11520×2160**, approved by the owner beforehand: 12 of 820 frames (7 decorated, 5 borderless), 4 of 820 separating the present-timing effect, 4 of 1,640 (20 s) for the before and after, 2 of 820 with synthetic work, 2 of 1,640 with the final pacer, 2 of 1,640 replaying the strafing recording, and 2 injected strafe-and-turn sessions of 5 s. Their frame logs are in the session's scratch directory and not kept.
+
+### What is not settled
+
+- **Why a timed chain does not pair** (above): the driver's, and worth a line to NVIDIA if it matters again.
+- **The display times' offset.** Latencies here are differences; an absolute one needs a second clock (a photodiode, or a driver whose present stage domain calibrates to the host's).
+- **Composed windows.** The pacer's sampling there is only as even as DWM's present waits; pacing on a grid phase-locked to them would even it out at the cost of the milliseconds the grid sits behind the latest wait, and was not tried.
+- **Pointer motion stamped when it happened**, not at the poll ([The strafing stutter](#the-strafing-stutter)): the last tick of turn the pacer leaves.
+- **Displays with separate clocks.** The owner's three monitors are one Surround display with one clock. A window spanning two independent displays was not measured.
+- **Exclusive fullscreen** (VK_EXT_full_screen_exclusive, offered by the driver) was not tried: the borderless window covering the display already gets the display flipped to it, and the pacer made the cadence exact there.
+
 ## What remains
 
 - **Normal-map filtering into roughness.** A normal map's mip chain is renormalized, so the variance a distant texel averages away is lost rather than moved into roughness (Toksvig, LEAN); a far normal-mapped wall is smoother than its near self. It was not what the owner saw — the sheen was at every distance and at roughness 1 too — but it is the next thing a far ruin's gloss would come from, and it is the texture pipeline's (`domain/texture`, the ORM's mips reading the normal map's).
 - **The kit's JPEG maps** (above): PNG for the ORM and the normal maps at the next regeneration.
 - **The terrain's maps at 4097.** One texel a cell makes 4096² maps for the largest terrain `k_terrain_max_size` allows, 21 MiB each built; a scene that big may want a coarser map, which is a one-line change to `terrain_map_side` and a version bump.
-- **Present pacing**: still the item of the first session's page.
+- **Present pacing**: fixed by the display pacer ([Present pacing](#present-pacing)); what it leaves open is that section's last list.
