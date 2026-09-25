@@ -782,6 +782,39 @@ bool load_partitioned(const DiskView& disk, const LayerRef& ref, Layer& out, Sto
 
   out = Layer(ref.name, ref.role);
   out.set_partition(index.partition);
+  // Every record of every tile, then the untiled ones, gathered and put into the layer once, in id
+  // order. Set one at a time in tile order, each record landed in the middle of the layer's sorted
+  // map and moved everything after it: quadratic, 45 s for the 130,500 records of the npc
+  // capability's 10^5-resident world (docs/experiments/e38-scheduled-npcs.md). A record in two
+  // files is found as two equal ids side by side once sorted, and reported at the later file.
+  struct Gathered {
+    ObjectRecord record;
+    u32 source = 0;  // the tile's index in the index; tile count for untiled.json
+  };
+  Vector<Gathered> gathered;
+  const auto commit = [&]() -> bool {
+    Vector<u32> order;
+    order.reserve(gathered.size());
+    for (u32 k = 0; k < gathered.size(); ++k)
+      order.push_back(k);
+    std::sort(order.begin(), order.end(), [&](u32 a, u32 b) {
+      const ObjectId& x = gathered[a].record.id;
+      const ObjectId& y = gathered[b].record.id;
+      return x < y || (x == y && gathered[a].source < gathered[b].source);
+    });
+    for (u32 k = 1; k < order.size(); ++k) {
+      const Gathered& g = gathered[order[k]];
+      if (!(gathered[order[k - 1]].record.id == g.record.id)) continue;
+      const bool untiled = g.source >= index.tiles.size();
+      set_error(error, untiled ? untiled_path : disk.full(lf.tile(index.tiles[g.source].file)),
+                "record " + hex_of(g.record.id) +
+                    (untiled ? " is already in a tile" : " is already in another tile"));
+      return false;
+    }
+    for (const u32 k : order)
+      out.set(std::move(gathered[k].record));
+    return true;
+  };
   FlatSet<std::string_view> listed;
   for (u32 i = 0; i < index.tiles.size(); ++i) {
     const TileRef& t = index.tiles[i];
@@ -828,11 +861,7 @@ bool load_partitioned(const DiskView& disk, const LayerRef& ref, Layer& out, Sto
         set_error(error, path, "record " + hex_of(r.id) + " does not fall in this tile");
         return false;
       }
-      if (out.find(r.id) != nullptr) {
-        set_error(error, path, "record " + hex_of(r.id) + " is already in another tile");
-        return false;
-      }
-      out.set(std::move(r));
+      gathered.push_back(Gathered{std::move(r), i});
     }
   }
 
@@ -852,6 +881,7 @@ bool load_partitioned(const DiskView& disk, const LayerRef& ref, Layer& out, Sto
       set_error(error, untiled_path, "present although the index lists no untiled records");
       return false;
     }
+    if (!commit()) return false;
     stored.index = std::move(index);
     fill_places(stored);
     return true;
@@ -879,12 +909,9 @@ bool load_partitioned(const DiskView& disk, const LayerRef& ref, Layer& out, Sto
           "record " + hex_of(r.id) + " has a position and belongs in " + tile_file_name(tile));
       return false;
     }
-    if (out.find(r.id) != nullptr) {
-      set_error(error, untiled_path, "record " + hex_of(r.id) + " is already in a tile");
-      return false;
-    }
-    out.set(std::move(r));
+    gathered.push_back(Gathered{std::move(r), index.tiles.size()});
   }
+  if (!commit()) return false;
   stored.index = std::move(index);
   fill_places(stored);
   return true;

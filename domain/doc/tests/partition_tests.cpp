@@ -529,6 +529,37 @@ TEST_CASE("doc partition: a malformed index fails the load with a message") {
   }
   restore();
 
+  // One record in two tiles: record 0 written again into 3_0 at a position that falls there, and
+  // the index listing it there instead of record 1. The load gathers every tile before it sorts, so
+  // the two copies meet side by side and the later file is the one named.
+  {
+    Document other;
+    DocumentManifest other_manifest;
+    REQUIRE(DocumentStore::create(vfs, "docs://other", "Other", other, other_manifest, &error));
+    other.set_layer_partition(0, partition_of("position", 64));
+    other.layer(0).set(placed(0, 200, 8));
+    other.rebuild_index();
+    other.mark_all_dirty();
+    REQUIRE(DocumentStore::save(vfs, "docs://other", other, other_manifest, &error));
+    std::string twin;
+    REQUIRE(vfs.read("docs://other/layers/base/tiles/3_0.json", twin) == io::Status::Ok);
+    REQUIRE(vfs.write("docs://world/layers/base/tiles/3_0.json", twin) == io::Status::Ok);
+    std::string index;
+    REQUIRE(vfs.read("docs://world/layers/base/index.json", index) == io::Status::Ok);
+    char one[Id128::k_hex_length + 1];
+    char zero[Id128::k_hex_length + 1];
+    id_of(1).to_hex(one);
+    id_of(0).to_hex(zero);
+    const usize listed = index.find(one);
+    REQUIRE(listed != std::string::npos);
+    index.replace(listed, Id128::k_hex_length, zero);
+    REQUIRE(vfs.write("docs://world/layers/base/index.json", index) == io::Status::Ok);
+    const std::string message = load_fails("one record in two tiles");
+    CHECK(message.find("3_0.json") != std::string::npos);
+    CHECK(message.find("is already in another tile") != std::string::npos);
+  }
+  restore();
+
   // A tile file nothing lists.
   REQUIRE(vfs.write("docs://world/layers/base/tiles/9_9.json", text) == io::Status::Ok);
   CHECK(load_fails("an unlisted tile file").find("the index does not list") != std::string::npos);
