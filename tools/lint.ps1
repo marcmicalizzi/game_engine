@@ -13,13 +13,16 @@
       // engine-lint: allow-exceptions <reason>
       // engine-lint: allow-flecs <reason>
       // engine-lint: allow-temp-path <reason>
+      // engine-lint: allow-vulkan <reason>
 
   A file may opt out entirely with the same marker anywhere in its first 5 lines.
 
   Allowed locations without a marker: tools/, tests/ directories, bench/ directories,
   third_party/, build/ — except for rules that name their own `AllowedPaths`, which
   are confined to those paths wherever they appear, and rules whose Scope is 'test',
-  which apply *only* inside tests/ and bench/ directories and nowhere else.
+  which apply *only* inside tests/ and bench/ directories and nowhere else. A rule with a
+  `PathPattern` applies only to files whose repository-relative path matches it, and a rule
+  with `CodeOnly` reads a line with its comments removed.
 #>
 [CmdletBinding()]
 param(
@@ -74,7 +77,50 @@ $rules = @(
      # Empty since 2026-09-18, when the last fixed temp names (engine-view's kept fixture copies)
      # went; keep it empty.
      Pending = @()
-     Message = 'a test or bench names no path under the system temp directory; take scratch space from engine::test::TempDir (<test_temp_dir.h>), see AGENTS.md "Test hygiene"' }
+     Message = 'a test or bench names no path under the system temp directory; take scratch space from engine::test::TempDir (<test_temp_dir.h>), see AGENTS.md "Test hygiene"' },
+  # docs/subsystems/gfx.md, "The RHI surface and the backend surface"; plan 10 §10.6, 2026-09-25.
+  # A public header is what every module that includes it compiles against, so a Vulkan type in
+  # one is a Vulkan dependency in all of them — and a second backend (D3D12 behind plan 08 §8.3's
+  # trigger, or a console's API) cannot live beside a renderer whose headers say VkBuffer. Until
+  # 2026-09-25 eleven of gfx's seventeen public headers and the renderer's did, and the leak grew
+  # every week, which is why this is a lint and not a review item. The backend's own headers live
+  # under the two named `backend/vulkan/` directories and are the only ones allowed to. Comments
+  # are not read (`CodeOnly`): naming the Vulkan extension a capability comes from is
+  # documentation of the backend, not a type the includer compiles against. The marker exists for
+  # a stated exception; the exemptions are meant to be zero, and are.
+  @{ Name = 'vulkan-in-public-header'; Marker = 'allow-vulkan'; Scope = 'all'; CodeOnly = $true
+     PathPattern = '(^|/)include/'
+     Pattern = '\bVk[A-Z]\w+|\bVK_[A-Z][A-Z0-9_]*|^\s*#\s*include\s*[<"](vulkan/|volk\.h|vk_mem_alloc\.h)'
+     AllowedPaths = @('domain/gfx/include/domain/gfx/backend/vulkan',
+                      'foundation/window/include/foundation/window/backend/vulkan')
+     # The debt as it stood when the rule landed (2026-09-25): 217 lines in these fourteen
+     # headers, reported on every run and not yet failing it. The change that follows retires all
+     # of them and empties the list.
+     Pending = @('domain/gfx/include/domain/gfx/acceleration.h',
+                 'domain/gfx/include/domain/gfx/bindless.h',
+                 'domain/gfx/include/domain/gfx/capture.h',
+                 'domain/gfx/include/domain/gfx/cluster_acceleration.h',
+                 'domain/gfx/include/domain/gfx/frame.h',
+                 'domain/gfx/include/domain/gfx/gpu_timer.h',
+                 'domain/gfx/include/domain/gfx/render_graph.h',
+                 'domain/gfx/include/domain/gfx/shader_library.h',
+                 'domain/gfx/include/domain/gfx/swapchain.h',
+                 'domain/gfx/include/domain/gfx/vulkan.h',
+                 'foundation/window/include/foundation/window/window.h',
+                 'systems/renderer/include/systems/renderer/gpu_scene.h',
+                 'systems/renderer/include/systems/renderer/scene_renderer.h',
+                 'systems/renderer/include/systems/renderer/streaming.h')
+     Message = 'a public header names no Vulkan type, constant or header; say it in the engine''s vocabulary (domain/gfx/rhi.h) or put it in a backend/vulkan/ header, see docs/subsystems/gfx.md "The RHI surface and the backend surface"' },
+  # The other half of the same decision: the backend header set, and the Vulkan, volk and VMA
+  # headers behind it, are confined to the modules that own a device, a swapchain or a surface —
+  # gfx itself and its tests, the window system's surface glue, and engine-view, which presents.
+  # `systems/renderer` records into an image the caller names and needs none of it; were it to
+  # include the backend, a second backend could not run it. The build enforces this as well (only
+  # targets that link engine::gfx_vulkan see volk.h); the lint says why, and says it first.
+  @{ Name = 'vulkan-backend-include'; Marker = 'allow-vulkan'; Scope = 'all'
+     Pattern = '^\s*#\s*include\s*[<"](domain/gfx/backend/|foundation/window/backend/|vulkan/|volk\.h|vk_mem_alloc\.h)'
+     AllowedPaths = @('domain/gfx', 'foundation/window', 'apps/engine_view')
+     Message = 'the Vulkan backend set (domain/gfx/backend/vulkan/, foundation/window/backend/vulkan/, volk, VMA, vulkan/*) is included only by domain/gfx, foundation/window and apps/engine_view; everything else uses the engine''s RHI vocabulary, see docs/subsystems/gfx.md "The RHI surface and the backend surface"' }
 )
 
 $violations = New-Object System.Collections.Generic.List[string]
@@ -100,7 +146,9 @@ foreach ($dir in $scanRoots) {
     $isTestOrBench = $file.FullName -match '[\\/](tests|bench)[\\/]'
     $inEngineTree = Test-AllowedPath $rel $engineRoots
     $scanned++
-    $lines = Get-Content -LiteralPath $file.FullName
+    # @() because Get-Content returns a bare string for a one-line file, and indexing a string
+    # yields its characters: a one-line file's violation was read as the single character '#'.
+    $lines = @(Get-Content -LiteralPath $file.FullName)
     $head = ($lines | Select-Object -First 5) -join "`n"
     foreach ($rule in $rules) {
       if ($rule.Scope -eq 'test') {
@@ -111,11 +159,20 @@ foreach ($dir in $scanRoots) {
         if (-not $inEngineTree) { continue }
         if ($rule.Scope -ne 'all' -and $isTestOrBench) { continue }
       }
+      if ($rule.PathPattern -and $rel -notmatch $rule.PathPattern) { continue }
       if ($rule.AllowedPaths -and (Test-AllowedPath $rel $rule.AllowedPaths)) { continue }
       if ($head -match "engine-lint:\s*$($rule.Marker)") { continue }
       for ($i = 0; $i -lt $lines.Count; $i++) {
         $line = $lines[$i]
-        if ($line -match $rule.Pattern -and $line -notmatch "engine-lint:\s*$($rule.Marker)") {
+        # A CodeOnly rule reads what the compiler reads: a `//` comment, a one-line `/* */` and a
+        # line that continues a block comment (` * ...`) are dropped first. Good enough for the
+        # tree's headers, which comment with `//`; a miss here is a missed report, never a false one.
+        $code = $line
+        if ($rule.CodeOnly) {
+          $code = $code -replace '/\*.*?\*/', '' -replace '//.*$', ''
+          if ($code -match '^\s*(\*|/\*)') { $code = '' }
+        }
+        if ($code -match $rule.Pattern -and $line -notmatch "engine-lint:\s*$($rule.Marker)") {
           $report = "{0}:{1}: [{2}] {3}`n    {4}" -f $rel, ($i + 1), $rule.Name, $rule.Message, $line.Trim()
           if ($rule.Pending -and (Test-AllowedPath $rel $rule.Pending)) {
             $pending.Add($report)

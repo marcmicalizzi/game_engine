@@ -12,7 +12,12 @@
   at all. The scoped rules get the positive cases too: the flecs include is fine inside its
   allowed roots, including in their tests and benches, where the older rules deliberately do not
   apply; and the temp-path rule is the mirror image, applying only inside tests/ and bench/ and
-  never to `tests/support`, which is where `engine::test::TempDir` computes the one root.
+  never to `tests/support`, which is where `engine::test::TempDir` computes the one root. The two
+  Vulkan rules (docs/subsystems/gfx.md, "The RHI surface and the backend surface") get both kinds:
+  a `Vk` type, a `VK_` constant and a Vulkan include in a public header are each reported, a
+  comment naming an extension is not, the two backend directories may say what they like, the
+  `allow-vulkan` marker opts a line or a file out, and the backend set included from the renderer,
+  its tests or engine-host is reported while gfx, the window system and engine-view may include it.
 
   Every case gets its own copy of the fixture, so a case cannot pass because of what another one
   left behind, and every fixture root is a fresh GUID under the system temp directory, so two
@@ -66,6 +71,16 @@ function New-Fixture {
   Set-FixtureFile $root 'tests/support/test_temp_dir.h' "#pragma once`n#include <filesystem>`nnamespace engine::test { inline auto root() { return std::filesystem::temp_directory_path(); } }`n"
   Set-FixtureFile $root 'foundation/io/src/vfs.cpp' "#include <filesystem>`nnamespace engine::io { auto scratch() { return std::filesystem::temp_directory_path(); } }`n"
   Set-FixtureFile $root 'tools/schemac/tests/schemac_tests.cpp' "#include <test_temp_dir.h>`nint main() { return 0; }`n"
+  # The Vulkan backend set and who may see it (docs/subsystems/gfx.md, "The RHI surface and the
+  # backend surface"): the two named backend directories say Vulkan freely, gfx's sources include
+  # them, engine-view includes them because it presents, and a public header that only *mentions*
+  # an extension in a comment is not a leak.
+  Set-FixtureFile $root 'domain/gfx/include/domain/gfx/backend/vulkan/vulkan.h' "#pragma once`n#include <volk.h>`nnamespace engine::gfx::vk { inline VkBuffer native(); }`n"
+  Set-FixtureFile $root 'foundation/window/include/foundation/window/backend/vulkan/surface.h' "#pragma once`ntypedef struct VkInstance_T* VkInstance;`n"
+  Set-FixtureFile $root 'domain/gfx/src/device.cpp' "#include <domain/gfx/backend/vulkan/vulkan.h>`n#include <vk_mem_alloc.h>`nnamespace engine::gfx { VkDevice d; }`n"
+  Set-FixtureFile $root 'domain/gfx/tests/device_tests.cpp' "#include <domain/gfx/backend/vulkan/vulkan.h>`nint main() { return VK_SUCCESS; }`n"
+  Set-FixtureFile $root 'domain/gfx/include/domain/gfx/budget.h' "#pragma once`n// Reports VK_EXT_memory_budget when the device has it; VkPhysicalDevice is behind Handles.`nnamespace engine::gfx { struct MemoryBudget { bool valid = false; }; }  // VK_EXT_memory_budget`n"
+  Set-FixtureFile $root 'apps/engine_view/main.cpp' "#include <domain/gfx/backend/vulkan/swapchain.h>`n#include <foundation/window/backend/vulkan/surface.h>`nint main() { VkSurfaceKHR s = VK_NULL_HANDLE; return 0; }`n"
   return $root
 }
 
@@ -177,6 +192,49 @@ try {
   $root = New-Fixture
   Set-FixtureFile $root 'core/schema/src/type_info.cpp' "#include <flecs.h>  // engine-lint: allow-flecs deliberate`n"
   Test-That 'a line-level marker opts out' { (Invoke-Lint $root).Code -eq 0 }
+
+  # The Vulkan leak (plan 10 §10.6, 2026-09-25). The clean fixture already holds the backend set
+  # in both named directories, gfx's sources and tests including it, engine-view including it, and
+  # a public header whose comments name an extension; each check below breaks one of those rules.
+  Test-That 'the backend directories may say Vulkan, and a comment naming an extension is fine' {
+    ($result.Code -eq 0) -and -not $result.Out.Contains('vulkan')
+  }
+
+  $root = New-Fixture
+  Set-FixtureFile $root 'domain/gfx/include/domain/gfx/timeline.h' "#pragma once`nnamespace engine::gfx {`nstruct FrameContext { VkCommandBuffer begin_frame(); };`n}`n"
+  Test-Reports 'a Vulkan type in a public header is reported' $root 'domain/gfx/include/domain/gfx/timeline.h:3: [vulkan-in-public-header]'
+  Test-Reports 'and the message says where it belongs' $root 'domain/gfx/rhi.h'
+
+  $root = New-Fixture
+  Set-FixtureFile $root 'systems/renderer/include/systems/renderer/frame_target.h' "#pragma once`nnamespace engine::renderer { inline constexpr int k_format = VK_FORMAT_R8G8B8A8_UNORM; }`n"
+  Test-Reports 'a Vulkan constant in a public header is reported' $root 'systems/renderer/include/systems/renderer/frame_target.h:2: [vulkan-in-public-header]'
+
+  $root = New-Fixture
+  Set-FixtureFile $root 'foundation/window/include/foundation/window/display.h' "#pragma once`n#include <vulkan/vulkan_core.h>`n"
+  Test-Reports 'a Vulkan include in a public header is reported' $root 'foundation/window/include/foundation/window/display.h:2: [vulkan-in-public-header]'
+
+  $root = New-Fixture
+  Set-FixtureFile $root 'domain/gfx/include/domain/gfx/timeline.h' "#pragma once`nstruct Legacy { VkSemaphore s; };  // engine-lint: allow-vulkan the reason, stated`n"
+  Test-That 'a line-level allow-vulkan marker opts a public header line out' { (Invoke-Lint $root).Code -eq 0 }
+
+  $root = New-Fixture
+  Set-FixtureFile $root 'domain/gfx/include/domain/gfx/timeline.h' "#pragma once`n// engine-lint: allow-vulkan the reason, stated`nstruct Legacy { VkSemaphore s; };`n"
+  Test-That 'a file-level allow-vulkan marker opts a public header out' { (Invoke-Lint $root).Code -eq 0 }
+
+  # The confinement half: the renderer records through the engine's vocabulary and must not reach
+  # the backend, in its sources or in its tests.
+  $root = New-Fixture
+  Set-FixtureFile $root 'systems/renderer/src/scene_renderer.cpp' "#include <domain/gfx/backend/vulkan/vulkan.h>`nnamespace engine::renderer {}`n"
+  Test-Reports 'the renderer including the backend set is reported' $root 'systems/renderer/src/scene_renderer.cpp:1: [vulkan-backend-include]'
+  Test-Reports 'and the message names who may' $root 'domain/gfx, foundation/window and apps/engine_view'
+
+  $root = New-Fixture
+  Set-FixtureFile $root 'systems/renderer/tests/renderer_tests.cpp' "#include <volk.h>`nint main() { return 0; }`n"
+  Test-Reports "the renderer's tests may not reach volk either" $root 'systems/renderer/tests/renderer_tests.cpp:1: [vulkan-backend-include]'
+
+  $root = New-Fixture
+  Set-FixtureFile $root 'apps/engine_host/render_methods.cpp' "#include `"foundation/window/backend/vulkan/surface.h`"`n"
+  Test-Reports 'a quoted include of the window backend outside a presenting app is reported' $root 'apps/engine_host/render_methods.cpp:1: [vulkan-backend-include]'
 } finally {
   foreach ($r in $roots) {
     if ($KeepTemp) {
