@@ -57,6 +57,10 @@ struct DeviceInfo {
   u32 channels = 0;     // its native channel count, 0 when it would not say
   u32 sample_rate = 0;  // its native rate, 0 when it would not say
   bool is_default = false;
+  // What the endpoint is — headphones, a headset, speakers, a digital link — from the platform's
+  // endpoint properties (Windows' form factor). `Unknown` where the platform does not say, which
+  // is Linux today (docs/subsystems/audio.md, "Headphones").
+  EndpointFormFactor form_factor = EndpointFormFactor::Unknown;
 };
 
 struct DeviceList {
@@ -71,8 +75,17 @@ struct DeviceList {
 DeviceList enumerate_devices();
 
 // The layout a mixer should be declared with, given what a device reports: the `audio.layout`
-// setting when it names a layout, else `device_layout` when it is known, else stereo.
-ChannelLayout resolve_layout(ChannelLayout device_layout) noexcept;
+// setting when it names a layout; else headphones when the endpoint is headphones or a headset
+// with two channels or fewer (its channel map cannot say it is worn — a pair of headphones reports
+// stereo — and one that reports 7.1 virtualizes its speakers itself); else `device_layout` when it
+// is known; else stereo.
+ChannelLayout resolve_layout(ChannelLayout device_layout,
+                             EndpointFormFactor form_factor = EndpointFormFactor::Unknown) noexcept;
+// The same for a device as enumeration or an output describes it.
+ChannelLayout resolve_layout(const DeviceInfo& device) noexcept;
+
+// "unknown", "speakers", "headphones", "headset", "line_level", "digital", "other".
+const char* form_factor_name(EndpointFormFactor form_factor) noexcept;
 
 enum class OutputBackend : u8 { Null = 0, Device };
 

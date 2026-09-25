@@ -8,11 +8,38 @@ namespace engine::audio {
 
 DeviceList enumerate_devices() { return backend::enumerate(); }
 
-ChannelLayout resolve_layout(ChannelLayout device_layout) noexcept {
+ChannelLayout resolve_layout(ChannelLayout device_layout, EndpointFormFactor form_factor) noexcept {
   const ChannelLayout setting = tunable_layout();
   if (setting != ChannelLayout::Unknown) return setting;
+  // Headphones are chosen for an endpoint that is worn and has two channels (or will not say how
+  // many). One that is worn and reports more — a gaming headset's 7.1 endpoint — renders those
+  // speakers to the ears itself, in its driver: that is the decode happening at the endpoint, which
+  // the direction note puts first (plan 05 §5.11), so it gets its own layout.
+  const bool worn =
+      form_factor == EndpointFormFactor::Headphones || form_factor == EndpointFormFactor::Headset;
+  const bool two_or_fewer = device_layout == ChannelLayout::Unknown ||
+                            device_layout == ChannelLayout::Stereo ||
+                            device_layout == ChannelLayout::Mono;
+  if (worn && two_or_fewer) return ChannelLayout::Headphones;
   if (device_layout != ChannelLayout::Unknown) return device_layout;
   return ChannelLayout::Stereo;
+}
+
+ChannelLayout resolve_layout(const DeviceInfo& device) noexcept {
+  return resolve_layout(device.layout, device.form_factor);
+}
+
+const char* form_factor_name(EndpointFormFactor form_factor) noexcept {
+  switch (form_factor) {
+    case EndpointFormFactor::Unknown: return "unknown";
+    case EndpointFormFactor::Speakers: return "speakers";
+    case EndpointFormFactor::Headphones: return "headphones";
+    case EndpointFormFactor::Headset: return "headset";
+    case EndpointFormFactor::LineLevel: return "line_level";
+    case EndpointFormFactor::Digital: return "digital";
+    case EndpointFormFactor::Other: return "other";
+  }
+  return "unknown";
 }
 
 const char* output_backend_name(OutputBackend backend) noexcept {
@@ -57,6 +84,7 @@ bool Output::open(const OutputConfig& config) {
       open_ = true;
       ENGINE_LOG_INFO(log_audio, "output device opened", log::field("device", device_info_.name),
                       log::field("device_layout", layout_name(device_info_.layout)),
+                      log::field("form_factor", form_factor_name(device_info_.form_factor)),
                       log::field("device_rate", device_info_.sample_rate),
                       log::field("mix_layout", layout_name(mixer_->layout())),
                       log::field("period_frames", request.period_frames));
@@ -126,6 +154,7 @@ bool Output::update() {
       log::field("previous_backend", output_backend_name(previous_backend)),
       log::field("device", device_info_.name), log::field("backend", output_backend_name(backend_)),
       log::field("device_layout", layout_name(device_info_.layout)),
+      log::field("form_factor", form_factor_name(device_info_.form_factor)),
       log::field("mix_layout", layout_name(mixer_->layout())), log::field("reopens", reopens_));
   return true;
 }

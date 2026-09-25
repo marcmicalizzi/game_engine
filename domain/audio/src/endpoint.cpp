@@ -122,6 +122,60 @@ void unwatch(Output::Watcher* watcher) noexcept {
   if (owes) CoUninitialize();
 }
 
+namespace {
+
+// PKEY_AudioEndpoint_FormFactor, spelled out from mmdeviceapi.h: the SDK declares it with
+// DEFINE_PROPERTYKEY, which without INITGUID is only an extern, and defining INITGUID here would
+// define every GUID the headers declare.
+constexpr PROPERTYKEY k_form_factor_key{
+    {0x1da5d803, 0xd492, 0x4edd, {0x8c, 0x23, 0xe0, 0xc0, 0xff, 0xee, 0x7f, 0x0e}}, 0};
+
+// The platform's EndpointFormFactor values (mmdeviceapi.h), in the engine's coarser terms: what
+// matters to a mix is whether the endpoint is worn, is speakers, or hands the signal on.
+EndpointFormFactor from_platform(ULONG value) noexcept {
+  switch (value) {
+    case 1: return EndpointFormFactor::Speakers;    // Speakers
+    case 2: return EndpointFormFactor::LineLevel;   // LineLevel
+    case 3: return EndpointFormFactor::Headphones;  // Headphones
+    case 5: return EndpointFormFactor::Headset;     // Headset
+    case 7:                                         // UnknownDigitalPassthrough
+    case 8:                                         // SPDIF
+    case 9: return EndpointFormFactor::Digital;     // DigitalAudioDisplayDevice (HDMI)
+    case 0:                                         // RemoteNetworkDevice
+    case 4:                                         // Microphone
+    case 6: return EndpointFormFactor::Other;       // Handset
+    default: return EndpointFormFactor::Unknown;    // UnknownFormFactor, and anything newer
+  }
+}
+
+}  // namespace
+
+EndpointFormFactor form_factor(const IdChar* id) noexcept {
+  if (id == nullptr || id[0] == L'\0') return EndpointFormFactor::Unknown;
+  const HRESULT com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+  const bool owes = SUCCEEDED(com);
+  EndpointFormFactor result = EndpointFormFactor::Unknown;
+  IMMDeviceEnumerator* enumerator = nullptr;
+  IMMDevice* device = nullptr;
+  IPropertyStore* store = nullptr;
+  if (SUCCEEDED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
+                                 __uuidof(IMMDeviceEnumerator),
+                                 reinterpret_cast<void**>(&enumerator))) &&
+      SUCCEEDED(enumerator->GetDevice(id, &device)) &&
+      SUCCEEDED(device->OpenPropertyStore(STGM_READ, &store))) {
+    PROPVARIANT value;
+    PropVariantInit(&value);
+    if (SUCCEEDED(store->GetValue(k_form_factor_key, &value)) && value.vt == VT_UI4)
+      result = from_platform(value.ulVal);
+    PropVariantClear(&value);
+  }
+  if (store != nullptr) store->Release();
+  if (device != nullptr) device->Release();
+  if (enumerator != nullptr) enumerator->Release();
+  if (owes) CoUninitialize();
+  return result;
+}
+
 }  // namespace endpoint
 
 #else
@@ -130,6 +184,7 @@ namespace endpoint {
 
 Output::Watcher* watch(std::atomic<u32>*, const IdChar*) noexcept { return nullptr; }
 void unwatch(Output::Watcher*) noexcept {}
+EndpointFormFactor form_factor(const IdChar*) noexcept { return EndpointFormFactor::Unknown; }
 
 }  // namespace endpoint
 

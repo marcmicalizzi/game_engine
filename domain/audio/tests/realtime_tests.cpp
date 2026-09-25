@@ -391,13 +391,13 @@ TEST_CASE(
     return;
   }
   const DeviceList list = enumerate_devices();
-  ChannelLayout device_layout = ChannelLayout::Unknown;
+  DeviceInfo default_device;
   for (const DeviceInfo& d : list.devices) {
-    if (d.is_default) device_layout = d.layout;
+    if (d.is_default) default_device = d;
   }
   ClipStore clips;
   MixerConfig config;
-  config.layout = resolve_layout(device_layout);
+  config.layout = resolve_layout(default_device);
   Mixer mixer(clips, config);
   Output output(mixer);
   REQUIRE(output.open(OutputConfig{}));
@@ -407,8 +407,11 @@ TEST_CASE(
     CHECK(mixer.stats().blocks >= 5u);
     MESSAGE("device " << output.device().name << ": "
                       << std::string(layout_name(output.device().layout)) << " at "
-                      << output.device().sample_rate << " Hz, mixing "
+                      << output.device().sample_rate << " Hz, "
+                      << std::string(form_factor_name(output.device().form_factor)) << ", mixing "
                       << std::string(layout_name(mixer.layout())));
+    // What the enumeration said the default is, the opened output says too.
+    CHECK(output.device().form_factor == default_device.form_factor);
     // The reopen a default-device change causes, on a real endpoint: the device is closed (its
     // thread joined) and opened again on the default, and its thread pulls the same mixer again.
     output.notify(DeviceEvent::DefaultChanged);
@@ -445,12 +448,19 @@ TEST_CASE("device enumeration answers on a machine with no audio device at all")
     }
   }
   CHECK(defaults <= 1u);
+  // Windows says what every endpoint is (its form factor); a machine with devices has at least one
+  // that says something other than "unknown". Elsewhere the platform does not say (audio.md).
+  u32 known = 0;
+  for (const DeviceInfo& device : list.devices)
+    known += device.form_factor != EndpointFormFactor::Unknown ? 1u : 0u;
+  if (backend == "wasapi" && !list.devices.empty()) CHECK(known > 0u);
+  if (backend != "wasapi") CHECK(known == 0u);
   MESSAGE("audio backend " << backend << ", " << list.devices.size() << " playback devices");
   for (const DeviceInfo& device : list.devices) {
-    const std::string line = "  " + device.name + ": " + layout_name(device.layout) + ", " +
-                             std::to_string(device.channels) + " channels at " +
-                             std::to_string(device.sample_rate) + " Hz" +
-                             (device.is_default ? " (default)" : "");
+    const std::string line =
+        "  " + device.name + ": " + layout_name(device.layout) + ", " +
+        std::to_string(device.channels) + " channels at " + std::to_string(device.sample_rate) +
+        " Hz, " + form_factor_name(device.form_factor) + (device.is_default ? " (default)" : "");
     MESSAGE(line);
   }
 }
@@ -468,6 +478,9 @@ TEST_CASE("audio.devices answers through the protocol with the devices and the m
   REQUIRE(result->find("backend") != nullptr);
   REQUIRE(result->find("devices") != nullptr);
   CHECK(result->find("devices")->is_array());
+  // Each device says what it is (schema version 2 of AudioDevice).
+  for (const JsonValue& device : result->find("devices")->as_array())
+    CHECK(device.find("form_factor") != nullptr);
   REQUIRE(result->find("mix_sample_rate") != nullptr);
   u64 rate = 0;
   CHECK(result->find("mix_sample_rate")->get_u64(rate));

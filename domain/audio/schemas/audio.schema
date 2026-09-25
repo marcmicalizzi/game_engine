@@ -137,8 +137,25 @@ struct AudioListener @version(1) @kind(component) {
   up: vec3
 }
 
+/// What kind of thing an endpoint is, as the platform says (Windows: the endpoint's form factor).
+/// `Headphones` and `Headset` choose the headphones profile when `audio.layout` is `auto`.
+enum EndpointFormFactor : u8 {
+  /// The platform did not say, or has no way to (Linux, today).
+  Unknown = 0
+  Speakers = 1
+  Headphones = 2
+  /// Headphones with a microphone: a Bluetooth hands-free device, a gaming headset.
+  Headset = 3
+  /// A line output to something else's amplifier.
+  LineLevel = 4
+  /// S/PDIF, HDMI or another digital link to a receiver or display.
+  Digital = 5
+  /// A handset, a microphone, a network device: nothing a mix is shaped for.
+  Other = 6
+}
+
 /// One playback device, as `audio.devices` reports it.
-struct AudioDevice @version(1) {
+struct AudioDevice @version(2) {
   name: string
   /// The endpoint's own layout, read from its channel map; `Unknown` when the map matches no
   /// declared layout or the device would not say.
@@ -148,6 +165,9 @@ struct AudioDevice @version(1) {
   /// The endpoint's native sample rate; 0 when the device would not say.
   sample_rate: u32 = 0
   is_default: bool = false
+  /// What the endpoint is: headphones, speakers, a digital link. `Unknown` where the platform does
+  /// not say.
+  form_factor: EndpointFormFactor = Unknown @since(2)
 }
 
 /// Result of `audio.devices`: what this machine can play to. An empty `devices` is a normal answer
@@ -157,8 +177,9 @@ struct AudioDevicesResult @version(1) {
   /// "wasapi", "pulseaudio", "alsa", or "none" when no platform audio API would start.
   backend: string
   devices: AudioDevice[]
-  /// The layout a mixer would be declared with now: the `audio.layout` setting, or the default
-  /// device's own layout when the setting is `auto`, or stereo when neither says.
+  /// The layout a mixer would be declared with now: the `audio.layout` setting; when it is
+  /// `auto`, headphones if the default device is headphones or a headset, else the default
+  /// device's own layout; stereo when nothing says.
   mix_layout: ChannelLayout = Stereo
   /// The mix rate, which every clip is converted to at decode time.
   mix_sample_rate: u32 = 48000

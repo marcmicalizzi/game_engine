@@ -13,7 +13,7 @@ bool devices(protocol::Context&, AudioDevicesResult& result, protocol::RpcError&
   const DeviceList list = enumerate_devices();
   result.backend = list.backend;
   result.mix_sample_rate = k_sample_rate;
-  ChannelLayout default_layout = ChannelLayout::Unknown;
+  DeviceInfo default_device;
   result.devices.reserve(list.devices.size());
   for (const DeviceInfo& device : list.devices) {
     AudioDevice out;
@@ -22,10 +22,11 @@ bool devices(protocol::Context&, AudioDevicesResult& result, protocol::RpcError&
     out.channels = device.channels;
     out.sample_rate = device.sample_rate;
     out.is_default = device.is_default;
-    if (device.is_default) default_layout = device.layout;
+    out.form_factor = device.form_factor;
+    if (device.is_default) default_device = device;
     result.devices.push_back(std::move(out));
   }
-  result.mix_layout = resolve_layout(default_layout);
+  result.mix_layout = resolve_layout(default_device);
   return true;
 }
 
@@ -34,9 +35,10 @@ bool devices(protocol::Context&, AudioDevicesResult& result, protocol::RpcError&
 void register_methods(protocol::Dispatcher& dispatcher) {
   dispatcher.add(protocol::method_no_params<AudioDevicesResult, &devices>(
       "audio.devices",
-      "The playback devices this machine has, each with the speaker layout and rate its endpoint "
-      "really has, the platform API that listed them, and the layout a mixer would be declared "
-      "with now. An empty list is a normal answer: the engine then mixes into the null backend."));
+      "The playback devices this machine has, each with the speaker layout, rate and form factor "
+      "(headphones, speakers, ...) its endpoint really has, the platform API that listed them, and "
+      "the layout a mixer would be declared with now. An empty list is a normal answer: the engine "
+      "then mixes into the null backend."));
 }
 
 }  // namespace engine::audio

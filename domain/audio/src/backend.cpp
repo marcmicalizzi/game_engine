@@ -231,10 +231,22 @@ bool probe(ma_context& context, const ma_device_id* id, Endpoint& out) {
   return true;
 }
 
+// The endpoint's id in the spelling the platform file takes (endpoint.h), or null.
+const endpoint::IdChar* platform_id(const ma_context& context, const ma_device_id& id) noexcept {
+#if ENGINE_PLATFORM_WINDOWS
+  return context.backend == ma_backend_wasapi ? id.wasapi : nullptr;
+#else
+  (void)context;
+  (void)id;
+  return nullptr;
+#endif
+}
+
 DeviceInfo describe(ma_context& context, const ma_device_info& device) {
   DeviceInfo info;
   info.name = device.name;
   info.is_default = device.isDefault != MA_FALSE;
+  info.form_factor = endpoint::form_factor(platform_id(context, device.id));
   Endpoint endpoint;
   if (probe(context, &device.id, endpoint)) {
     info.layout = endpoint.layout;
@@ -400,6 +412,7 @@ Output::Device* open_device(const DeviceRequest& request, Mixer& mixer, std::ato
   opened = DeviceInfo{};
   opened.name = out->device.playback.name;
   opened.is_default = !by_name || chosen.isDefault != MA_FALSE;
+  opened.form_factor = endpoint::form_factor(platform_id(out->context, out->device.playback.id));
   opened.channels = out->device.playback.internalChannels;
   opened.sample_rate = out->device.playback.internalSampleRate;
   Speaker speakers[MA_MAX_CHANNELS];
@@ -424,12 +437,7 @@ bool device_stopped(const Output::Device* device) noexcept {
 }
 
 const endpoint::IdChar* endpoint_id(const Output::Device* device) noexcept {
-#if ENGINE_PLATFORM_WINDOWS
-  return device->context.backend == ma_backend_wasapi ? device->device.playback.id.wasapi : nullptr;
-#else
-  (void)device;
-  return nullptr;
-#endif
+  return platform_id(device->context, device->device.playback.id);
 }
 
 }  // namespace backend

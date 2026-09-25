@@ -43,6 +43,27 @@ TEST_CASE("audio declares a determinism stance, a 48 kHz mix and its tunables") 
 TEST_CASE("the layout is chosen from the setting, then the device, and stereo only last") {
   CHECK(resolve_layout(ChannelLayout::Surround51) == ChannelLayout::Surround51);
   CHECK(resolve_layout(ChannelLayout::Unknown) == ChannelLayout::Stereo);
+  // A worn endpoint with two channels is headphones: its channel map says stereo, its form factor
+  // says what it is.
+  constexpr EndpointFormFactor headphones = EndpointFormFactor::Headphones;
+  constexpr EndpointFormFactor headset = EndpointFormFactor::Headset;
+  CHECK(resolve_layout(ChannelLayout::Stereo, headphones) == ChannelLayout::Headphones);
+  CHECK(resolve_layout(ChannelLayout::Stereo, headset) == ChannelLayout::Headphones);
+  CHECK(resolve_layout(ChannelLayout::Unknown, headset) == ChannelLayout::Headphones);
+  // One that reports 7.1 renders those speakers to the ears in its own driver: it keeps 7.1.
+  CHECK(resolve_layout(ChannelLayout::Surround71, headset) == ChannelLayout::Surround71);
+  // Speakers, a digital link, or a platform that will not say: the channel map decides.
+  CHECK(resolve_layout(ChannelLayout::Stereo, EndpointFormFactor::Speakers) ==
+        ChannelLayout::Stereo);
+  CHECK(resolve_layout(ChannelLayout::Stereo, EndpointFormFactor::Digital) ==
+        ChannelLayout::Stereo);
+  CHECK(resolve_layout(ChannelLayout::Stereo, EndpointFormFactor::Unknown) ==
+        ChannelLayout::Stereo);
+  DeviceInfo worn;
+  worn.layout = ChannelLayout::Stereo;
+  worn.form_factor = headphones;
+  CHECK(resolve_layout(worn) == ChannelLayout::Headphones);
+  CHECK(std::string_view{form_factor_name(headset)} == "headset");
   // A setting names a layout: it wins over what the device says.
   tunables::Tunable* setting = tunables::find("audio.layout");
   REQUIRE(setting != nullptr);
@@ -50,6 +71,9 @@ TEST_CASE("the layout is chosen from the setting, then the device, and stereo on
   REQUIRE(setting->set_from_text("quad", &error));
   CHECK(resolve_layout(ChannelLayout::Surround51) == ChannelLayout::Quad);
   CHECK(resolve_layout(ChannelLayout::Unknown) == ChannelLayout::Quad);
+  CHECK(resolve_layout(ChannelLayout::Stereo, headphones) == ChannelLayout::Quad);  // explicit wins
+  REQUIRE(setting->set_from_text("stereo", &error));
+  CHECK(resolve_layout(ChannelLayout::Stereo, headset) == ChannelLayout::Stereo);
   setting->reset();
   CHECK(tunable_layout() == ChannelLayout::Unknown);
 }

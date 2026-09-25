@@ -32,4 +32,11 @@ Output::Watcher* watch(std::atomic<u32>* events, const IdChar* ours) noexcept;
 // Stops the watcher and frees it. Null is fine.
 void unwatch(Output::Watcher* watcher) noexcept;
 
+// What the endpoint `id` is — headphones, a headset, speakers, a digital link — from the platform's
+// endpoint properties: `PKEY_AudioEndpoint_FormFactor` on Windows. `Unknown` for a null id, where
+// the platform will not say, and on every platform but Windows (miniaudio does not surface
+// PulseAudio's sink properties; docs/subsystems/audio.md, "Headphones", says what would). Cold:
+// it opens the endpoint's property store.
+EndpointFormFactor form_factor(const IdChar* id) noexcept;
+
 }  // namespace engine::audio::endpoint
