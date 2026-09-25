@@ -1,6 +1,6 @@
 # ruins (domain, capability)
 
-**Purpose.** The ruin assembler of [07 §7.6](../plan/07-content-pipeline.md#76-procedural-generation-volume-content)'s direction note of 2026-09-24 — *ruined desert structures are assembled from the kit, never one asset*. From a **kit** (wall members described as data beside their meshes), a **world seed**, a **tile coordinate** and a **height query**, it makes one ruined building as **instances of the kit's meshes**: a footprint of walls at right angles, a corner member at every join, openings with their lintels on the walls still standing, a ruin state per wall, the debris the fallen stones make, and the sand drift each wall asks the terrain for. It builds no geometry, touches no GPU, and does not build the sand. The same building has a second representation, **laid block by block** from a block kit ([The block layer](#the-block-layer)): the assembler's footprint, ruin and openings, with every block of every course an instance of one of a dozen block meshes — the other side of the pair-cost trade [07 §7.6](../plan/07-content-pipeline.md#76-procedural-generation-volume-content) asked to be measured. Two callers use it today: the renderer's scene reader, for a scene's `ruins` entry ([renderer](renderer.md#scenes-camera-paths-and-flythroughs)), and `engine-content ruins`, which writes one tile's building as a scene fragment ([apps](apps.md#engine-content-ruins-a-tiles-ruined-building-as-a-scene-fragment)). An optional capability ([ADR-0027](../adr/0027-additive-capabilities.md)): `ENGINE_WITH_RUINS=OFF`, or a `*-minimal` preset, leaves it out, and then the scene reader and `engine-content` refuse ruins with a sentence.
+**Purpose.** The ruin assembler of [07 §7.6](../plan/07-content-pipeline.md#76-procedural-generation-volume-content)'s direction note of 2026-09-24 — *ruined desert structures are assembled from the kit, never one asset*. From a **kit** (wall members described as data beside their meshes), a **world seed**, a **tile coordinate** and a **height query**, it makes one ruined building as **instances of the kit's meshes**: a footprint of walls at right angles, a corner member at every join, openings with their lintels on the walls still standing, a ruin state per wall, the debris the fallen stones make, and the sand drift each wall asks the terrain for. It builds no geometry, touches no GPU, and does not build the sand. The same building has a second representation, **laid block by block** from a block kit ([The block layer](#the-block-layer)): the assembler's footprint, ruin and openings, with every block of every course an instance of one of a dozen block meshes — the other side of the pair-cost trade [07 §7.6](../plan/07-content-pipeline.md#76-procedural-generation-volume-content) asked to be measured, which [E34](../experiments/e34-ruin-blocks.md) did. Two callers use it today: the renderer's scene reader, for a scene's `ruins` entry ([renderer](renderer.md#scenes-camera-paths-and-flythroughs)), and `engine-content ruins`, which writes one tile's building as a scene fragment ([apps](apps.md#engine-content-ruins-a-tiles-ruined-building-as-a-scene-fragment)). An optional capability ([ADR-0027](../adr/0027-additive-capabilities.md)): `ENGINE_WITH_RUINS=OFF`, or a `*-minimal` preset, leaves it out, and then the scene reader and `engine-content` refuse ruins with a sentence.
 
 **Why this shape.**
 
@@ -27,7 +27,7 @@
 
 **The member's frame.** The wall's first socket at the origin, the wall running along +x, the building's inside toward −z (the footprint is walked with its inside on the left, seen from above). A section's sockets are at the origin and at (length, 0, 0); an outside corner's at (0, 0, −arm_in), where the incoming wall arrives travelling +z, and at (arm_out, 0, 0); an inside corner's at (0, 0, +arm_in), arriving travelling −z. Members of one kind and length that differ only in `height` are the ruin rule's **height variants**.
 
-**What the schema does not say yet.** The second E33 kit (`kit-ashlar-cc0`: nineteen members, 2 m module, 0.64 m walls 2.70 m high, 2 m and 4 m sections only — the 10 m section was dropped for its pair cost — a doorway, a window, an inside corner and five debris stones; a brick kit beside it at a 1.35 m module) was the first real kit through the loader, and it found seven things the schema cannot express or check. None is fixed here; each is where the next kit, or the next version of the schema, has to look:
+**What the schema does not say yet.** The second E33 kit (`kit-ashlar-cc0`: nineteen members, 2 m module, 0.64 m walls 2.70 m high, 2 m and 4 m sections only — the 10 m section was dropped for its pair cost — a doorway, a window, an inside corner and five debris stones; a brick kit beside it at a 1.35 m module) was the first real kit through the loader, and it found seven things the schema cannot express or check ([E33, "What the assembler's kit schema cannot say"](../experiments/e33-hard-surface-kits.md#what-the-assemblers-kit-schema-cannot-say)). None is fixed here; each is where the next kit, or the next version of the schema, has to look:
 
 - **A member's extent past its sockets is unchecked.** Sockets say where neighbours join, not how far the mesh reaches, so a projecting sill or a 1.9 m debris heap is never tested against its neighbours or against the tile's edge the footprint was fitted to.
 - **A member has one height, and a ruined top does not.** A section's broken top varies along the wall by up to 0.6 m between its two sockets, so two neighbours chosen for the same `height` can meet at a step.
@@ -122,11 +122,11 @@ What happens to a ruin afterwards — a wall brought down, a doorway buried — 
 
 | fidelity | a block | triangles | clusters (all levels) |
 |---|---|---|---|
-| `low` | a box with every edge chamfered, on its faces' 24 vertices | 44 | 1 |
-| `mid` | a grid over the box, its arrises rounded (4 mm crisp; 25–35 mm eroded) and its surface eaten inward by two octaves of seeded noise (about 8 cm features and 2 cm pits, up to 0.8 mm crisp and 9–12 mm eroded), smooth normals | about 5,000 | tens |
-| `high` | the same at about 50,000 triangles | about 50,000 | hundreds |
+| `low` | a box with every edge chamfered, on its faces' 24 vertices (a vertex per polygon corner, 80 of them, was three clusters: the cluster limit is 64 vertices) | 44 | 1 |
+| `mid` | a grid over the box, its arrises rounded (4 mm crisp; 25–35 mm eroded) and its surface eaten inward by two octaves of seeded noise (about 8 cm features and 2 cm pits, up to 0.8 mm crisp and 9–12 mm eroded), smooth normals | 4,860–5,064 | 105–111 (51–53 leaves) |
+| `high` | the same at about 50,000 triangles | 49,636–50,372 | 1,093–1,116 (517–526 leaves) |
 
-The `high` block is the bracket for a scan-quality block such as E33's image-to-3D bricks (49,000 triangles and 1,212 clusters for Tripo's sandstone brick). The noise is a hashed integer lattice and float arithmetic only, so the bytes are a function of the options; nothing pins them, since the golden hash is over the layer's decisions and not the meshes'.
+Counted by `engine-content build` on the E34 kit (0.64 m wall, 0.6 m stretcher). The `high` block is the bracket for a scan-quality block such as E33's image-to-3D bricks, which build to 1,212 clusters (Tripo's sandstone brick, 49,304 triangles) and 1,195 (its brick block, 48,682). The noise is a hashed integer lattice and float arithmetic only, so the bytes are a function of the options; nothing pins them, since the golden hash is over the layer's decisions and not the meshes'.
 
 ## The E33 kit as a kit
 
@@ -136,6 +136,8 @@ The ashlar members under `game_engine_local\blender-kits\ruined-wall\out\` assem
 - **The corner's arms (4 m and 3 m on the outer face, 3.68 m and 2.68 m on the centre line) close only rectangles and courtyards** in a 2 m module. Arms of a whole number of modules each (or an inside corner whose arms cancel the outside one's) would let the L and U through.
 - **Every member was exported as a free-standing wall**: eroded free ends, and its own rubble and sand skirt. Assembled, each join shows two broken ends and two skirts overlap. For assembly the generator's footprint mode wants joined ends (`free_start`/`free_end` false), no skirt (the drift is the terrain's), and the debris exported as members of its own.
 - **Its doorway is 3.0 m high in a kit whose walls are 2.8 m.** The assembler asked a wall to stand an opening member's full height over it, which no wall of that kit can, so no doorway was ever placed until the requirement was capped at the intact wall. The synthetic kit could not have found it: its members are exactly the wall's height.
+
+The kit's second iteration (`out\kit-ashlar-cc0\kit.json`, [E33](../experiments/e33-hard-surface-kits.md#second-iteration-2026-09-24-the-kit-as-members-for-the-ruin-assembler)) answers the first three: one-module openings, corner arms in the socket convention with an inside corner, joined ends with no skirt, and debris as members; its assembled L, U and courtyard footprints close. What it found in turn is the list under [The kit](#the-kit). [E34](../experiments/e34-ruin-blocks.md)'s section rows are that kit (1,564 pieces of the first kit and 8.8 million pairs for 100 ruins became 4,697 pieces and 3.4 million pairs: the 10 m section is gone, and debris members came in).
 
 ## Public API
 
@@ -172,7 +174,19 @@ A building allocates nothing once its output's arrays have grown to it: its wall
 | the dune field drawn per call (`terrain_height`) | 43.9 ms | 43.4–58.6 ms |
 | one `TerrainSampler` for the read | 23.9 ms | 23.3–27.5 ms |
 
-What is left is the height itself (six waves of `sin` each, three ridges and a basin) and the assembly: the same buildings on flat ground cost 6.7 ms.
+What is left is the height itself (six waves of `sin` each, three ridges and a basin) and the assembly: the same buildings on flat ground cost 6.7 ms. Since the block layer came, a scatter of more than 32 tiles is assembled on a pool made for the read, and the same read is 9.6 ms on 36 threads ([E34](../experiments/e34-ruin-blocks.md), a busy machine).
+
+**The block layer, on the CPU** (the same bench, [E34](../experiments/e34-ruin-blocks.md)'s run: seven repeats at 7% of the CPU in other processes; the kit of boxes' footprints laid from the synthetic block kit on flat ground, 1,000 buildings of 684,962 blocks):
+
+| what | median | min |
+|---|---|---|
+| one building laid block by block (`ruins.blocks.building`) | 67.8 µs | 67.7 µs |
+| 1,000 buildings, one thread (`ruins.blocks.1000/0`) | 74.9 ms | 74.8 ms |
+| on the pool, 4 workers and the caller (`/4`) | 36.1 ms | 35.8 ms |
+| 8 workers and the caller (`/8`) | 22.2 ms | 21.3 ms |
+| the same buildings in sections, in the same run (`ruins.assemble.building`, `.1000/0`) | 5.34 µs, 5.47 ms | 5.33 µs, 5.40 ms |
+
+About 110 ns a block: fourteen times the sections' time for fourteen times the pieces, so the cost is per piece. Over the desert overlook's terrain a thousand E33 footprints laid block by block read in 83–88 ms on 36 threads, the fallen blocks' ground queries (about 350 a building) being most of it.
 
 **Instances per building** (`engine-content ruins … --region -16,-16,31,31 --count 1000`, world seed 2026, 32 m tiles; the far tier is `--walls`):
 
@@ -192,7 +206,16 @@ Debris is two thirds of a building's pieces with the default rules, which is why
 | + 1,000 ruins of the synthetic kit | 49,973 | 240,109 | 4,056 (9,774; 20,020) | 0.030 (0.032) | 0.024 | 0.128 | 438 MiB |
 | + 100 ruins of the E33 ashlar kit | 1,564 | 8,760,850 | 5,405 (17,257; 24,246) | 0.202 (0.225) | 0.027 | 0.308 | 1,225 MiB |
 
-**What it says.** The cull pass is one thread per (instance, cluster) pair over **every level of every member's DAG** ([renderer](renderer.md)), so its cost follows pairs, and a ruin's pairs are its pieces times each member's clusters: a box is one cluster, an E33 member 2,335 (the 2 m section) to 13,163 (the 10 m wall). A thousand ruins of boxes add 52,000 pairs and four thousandths of a millisecond; a hundred ruins of the E33 kit add 8.6 million pairs and 0.18 ms — about 0.02 ms per million pairs — and 787 MB of GPU memory, of which the four meshes and their textures are a few hundred and the rest grows with the pairs. **A thousand E33 ruins would be about 90 million pairs** (extrapolated, not run): some 1.8 ms of cull a frame before a triangle is drawn, and gigabytes of per-pair buffers. So the kit-section representation is cheap in instances and expensive in pairs at E33's density (the ashlar 10 m wall is 526,000 triangles, about 19,000 a square metre of wall face, [E33](../experiments/e33-hard-surface-kits.md#what-it-decides)), and the far tier E33 asked for is a *pair* budget as much as a triangle one. The block-by-block representation is the other side of the trade: a 10 m wall of 267 block instances of a dozen block meshes of a few clusters each is some hundreds of pairs against the section's 13,163, but hundreds of instances, and at distance every block still draws its coarsest cluster where the section draws one. That is the comparison [07 §7.6](../plan/07-content-pipeline.md#76-procedural-generation-volume-content) asks for, and these three rows are its first numbers.
+**What it says.** The cull pass is one thread per (instance, cluster) pair over **every level of every member's DAG** ([renderer](renderer.md)), so its cost follows pairs, and a ruin's pairs are its pieces times each member's clusters: a box is one cluster, an E33 member 2,335 (the 2 m section) to 13,163 (the 10 m wall). A thousand ruins of boxes add 52,000 pairs and four thousandths of a millisecond; a hundred ruins of the E33 kit add 8.6 million pairs and 0.18 ms — about 0.02 ms per million pairs — and 787 MB of GPU memory, of which the four meshes and their textures are a few hundred and the rest grows with the pairs. **A thousand E33 ruins would be about 90 million pairs** (extrapolated, not run): some 1.8 ms of cull a frame before a triangle is drawn, and gigabytes of per-pair buffers. So the kit-section representation is cheap in instances and expensive in pairs at E33's density (the ashlar 10 m wall is 526,000 triangles, about 19,000 a square metre of wall face, [E33](../experiments/e33-hard-surface-kits.md#what-it-decides)), and the far tier E33 asked for is a *pair* budget as much as a triangle one. The block-by-block representation is the other side of the trade, and [E34](../experiments/e34-ruin-blocks.md) measured it on the same path with E33's second kit:
+
+| 100 ruins on E33's footprints | pieces | pairs | visible pairs, median | cull ms, median | GPU memory |
+|---|---|---|---|---|---|
+| in E33's sections | 4,697 | 3,414,823 | 2,924 | 0.088 | 2,219 MiB (textures duplicated per member) |
+| in blocks of 1 cluster (`low`) | 71,502 | 259,162 | 4,239 | 0.030 | 431 MiB |
+| in blocks of about 108 clusters (`mid`) | 71,502 | 7,889,914 | 4,244 | 0.213 | 801 MiB |
+| in blocks of about 1,100 clusters (`high`) | 71,502 | 79,300,143 | refused: past the 2^24 pairs the visibility id names | | |
+
+A thousand buildings of one-cluster blocks — 711,468 instances — cost 0.073 ms of cull and 496 MiB; of mid blocks, 77 million pairs, refused. **Instances are nearly free and pairs are not**: the cull visits every level of every block's DAG, so a block with a deep DAG is the wrong unit, and the visible pairs hardly move with it (4,239 against 4,244). **At distance a block building is a pair a block** — one far L, 863 blocks, keeps 863 visible pairs at every distance from 190 m to 1.1 km, where the same building in sections falls from 1,467 to 73 — so blocks cannot be the far tier either, and the handover the [block layer](#the-block-layer) leaves open is blocks of one to a few clusters near, sections or a slab far, decided per tile.
 
 ## Capability contract (ADR-0027)
 
