@@ -349,10 +349,16 @@ TEST_CASE(
   }
   MESSAGE("state hash at tick 300: " << at_save.value << ", at tick 600: " << a.value);
   CHECK(number(a.whole, "tick") == 600);
-  CHECK(number(a.whole, "event_count") > 0);
+  // Every tile that went was written, whatever the build: a snapshot per tile.
   CHECK(number(a.whole, "snapshot_count") > 0);
-  CHECK(number(a.whole, "projection_count") > 0);
   CHECK(text(a.whole, "store") == "read");
+#if defined(ENGINE_CLI_TESTS_KINEMATICS)
+  // With an entity store the tiles held entities, so their projections were written, and the carts
+  // moved, so the write-back logged events. Without one (the *-no-ecs presets) nothing
+  // materializes and both tables stay empty — the three runs must still agree, on less.
+  CHECK(number(a.whole, "event_count") > 0);
+  CHECK(number(a.whole, "projection_count") > 0);
+#endif
 
   // (b) Loaded: a fresh host, the save loaded into a new directory, the same log handed over.
   Hash b;
