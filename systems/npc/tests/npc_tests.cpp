@@ -273,7 +273,7 @@ TEST_CASE("npc: a resident is the same however, whenever and in whatever order i
   std::sort(tiles.begin(), tiles.end());
   CHECK(tiles.size() > 4);
   for (usize i = tiles.size(); i-- > 0;)
-    b.driver.materialize(d, sim::MaterializeScope::of_tile(tiles[i]));
+    b.driver.materialize(d, sim::MaterializeScope::of_tile(tiles[static_cast<u32>(i)]));
   CHECK(b.npc.residents() == n);
 
   Rig c(k_morning);
@@ -522,7 +522,7 @@ TEST_CASE("npc: a resident that walks into another tile is reported, refiled or 
   u32 kept = 0;
   Vector<Id128> gone;
   for (usize i = 0; i < moved.size(); ++i) {
-    const sim::TileMove& m = moved[i];
+    const sim::TileMove& m = moved[static_cast<u32>(i)];
     CHECK(m.to_tiled);
     if (i % 2 == 0) {
       CHECK(rig.driver.refile(m.id, true, m.to));

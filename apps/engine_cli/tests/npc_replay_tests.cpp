@@ -282,8 +282,8 @@ TEST_CASE("npc: 10^5 scheduled residents streamed, saved, loaded and replayed to
 // a small resident world, streamed 300 ticks and saved, into `ENGINE_SAVE_CORPUS_NPC_OUT` when that
 // is set. Without the variable it does nothing, so the suite never writes into the repository.
 TEST_CASE("save corpus: write the resident save when asked") {
-  const char* out = std::getenv("ENGINE_SAVE_CORPUS_NPC_OUT");
-  if (out == nullptr || *out == '\0') return;
+  const std::string out = test::detail::environment("ENGINE_SAVE_CORPUS_NPC_OUT");
+  if (out.empty()) return;
   const test::TempDir tmp("cli_npc_corpus_write");
   REQUIRE(tmp.ok());
   const std::string doc = tmp.file("doc");
