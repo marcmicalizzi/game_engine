@@ -136,68 +136,80 @@ TEST_CASE("the audio thread allocates nothing and logs nothing, whatever the com
   std::string spec_error;
   REQUIRE(log::apply_level_spec("trace", &spec_error));
 
-  ClipStore clips;
-  MixerConfig config;
-  config.voices = 6;
-  config.layout = ChannelLayout::Surround51;
-  Mixer mixer(clips, config);
-  const Vector<f32> tone = exact_sine(4800, 48, 0.6f);
-  const Vector<f32> blip = exact_sine(200, 48, 0.9f, 2);
-  const ClipHandle tone_clip = clips.add_pcm(Id128{9, 1}, tone, 1);
-  const ClipHandle blip_clip = clips.add_pcm(Id128{9, 2}, blip, 2);
+  // Twice: as configured by default, where the master's 4x drives the hard clip, and with the
+  // limiter on, where it drives the limiter's per-frame path instead.
+  for (const LimiterMode limiter : {LimiterMode::Off, LimiterMode::On}) {
+    CAPTURE(limiter == LimiterMode::On);
+    ClipStore clips;
+    MixerConfig config;
+    config.voices = 6;
+    config.layout = ChannelLayout::Surround51;
+    config.limiter = limiter;
+    Mixer mixer(clips, config);
+    const Vector<f32> tone = exact_sine(4800, 48, 0.6f);
+    const Vector<f32> blip = exact_sine(200, 48, 0.9f, 2);
+    const ClipHandle tone_clip = clips.add_pcm(Id128{9, 1}, tone, 1);
+    const ClipHandle blip_clip = clips.add_pcm(Id128{9, 2}, blip, 2);
 
-  Vector<f32> out;
-  out.resize_exact(4000u * mixer.channels());  // longer than a block, to cross the chunking too
-  Counted total;
-  mixer.set_bus_gain(k_bus_master, 4.0f);  // loud enough to clip
-  for (u32 block = 0; block < 40; ++block) {
-    // The controlling thread's half, which may allocate (it does not, but it is not the contract).
-    // Two plays a block, mostly loops, into a pool of six: it fills, and then steals and refuses.
-    mixer.update();
-    VoiceHandle voice;
-    for (u32 n = 0; n < 2; ++n) {
-      PlayParams p;
-      p.clip = (block + n) % 3u == 0 ? blip_clip : tone_clip;
-      p.pitch = 0.75f + 0.05f * static_cast<f32>((block + n) % 7u);
-      p.loop = (block + n) % 3u != 0;
-      p.priority = static_cast<u8>((block * 2u + n) * 37u);
-      p.source.position = Vec3{static_cast<f32>(block % 9u) - 4.0f, 0.0f, -2.0f};
-      p.source.flags = (block + n) % 4u == 0 ? k_source_2d : u8{0};
-      voice = mixer.play(p);
-    }
-    if (!voice.is_null() && block % 2u == 0) {
-      VoiceParams v;
-      v.gain = 1.5f;
-      v.pitch = 1.3f;
-      v.loop = true;
-      mixer.set_params(voice, v);
-      SourceSpatial s;
-      s.position = Vec3{2.0f, 1.0f, 3.0f};
-      s.directivity = Directivity::Cone;
-      mixer.set_source(voice, s);
-    }
-    if (block % 6u == 5u) mixer.stop(voice);
-    Listener l;
-    l.forward = Vec3{static_cast<f32>(block) * 0.1f, 0.0f, -1.0f};
-    mixer.set_listener(l);
-    mixer.set_bus_gain(k_bus_sfx, 0.5f + 0.01f * static_cast<f32>(block));
+    Vector<f32> out;
+    out.resize_exact(4000u * mixer.channels());  // longer than a block, to cross the chunking too
+    Counted total;
+    mixer.set_bus_gain(k_bus_master, 4.0f);  // loud enough to clip
+    for (u32 block = 0; block < 40; ++block) {
+      // The controlling thread's half, which may allocate (it does not, but it is not the
+      // contract). Two plays a block, mostly loops, into a pool of six: it fills, and then steals
+      // and refuses.
+      mixer.update();
+      VoiceHandle voice;
+      for (u32 n = 0; n < 2; ++n) {
+        PlayParams p;
+        p.clip = (block + n) % 3u == 0 ? blip_clip : tone_clip;
+        p.pitch = 0.75f + 0.05f * static_cast<f32>((block + n) % 7u);
+        p.loop = (block + n) % 3u != 0;
+        p.priority = static_cast<u8>((block * 2u + n) * 37u);
+        p.source.position = Vec3{static_cast<f32>(block % 9u) - 4.0f, 0.0f, -2.0f};
+        p.source.flags = (block + n) % 4u == 0 ? k_source_2d : u8{0};
+        voice = mixer.play(p);
+      }
+      if (!voice.is_null() && block % 2u == 0) {
+        VoiceParams v;
+        v.gain = 1.5f;
+        v.pitch = 1.3f;
+        v.loop = true;
+        mixer.set_params(voice, v);
+        SourceSpatial s;
+        s.position = Vec3{2.0f, 1.0f, 3.0f};
+        s.directivity = Directivity::Cone;
+        mixer.set_source(voice, s);
+      }
+      if (block % 6u == 5u) mixer.stop(voice);
+      Listener l;
+      l.forward = Vec3{static_cast<f32>(block) * 0.1f, 0.0f, -1.0f};
+      mixer.set_listener(l);
+      mixer.set_bus_gain(k_bus_sfx, 0.5f + 0.01f * static_cast<f32>(block));
 
-    // The audio thread's half, counted.
-    const Counted c = render_counted(mixer, out.data(), block % 2u == 0 ? 480u : 4000u, sink);
-    total.new_calls += c.new_calls;
-    total.engine_allocations += c.engine_allocations;
-    total.log_records += c.log_records;
+      // The audio thread's half, counted.
+      const Counted c = render_counted(mixer, out.data(), block % 2u == 0 ? 480u : 4000u, sink);
+      total.new_calls += c.new_calls;
+      total.engine_allocations += c.engine_allocations;
+      total.log_records += c.log_records;
+    }
+    const MixerStats stats = mixer.stats();
+    CHECK(stats.blocks > 40u);
+    CHECK(mixer.control_stats().events > 0u);
+    CHECK(mixer.control_stats().steals > 0u);
+    if (limiter == LimiterMode::On) {
+      CHECK(stats.limited_frames > 0u);
+      CHECK(stats.clipped_samples == 0u);
+    } else {
+      CHECK(stats.clipped_samples > 0u);
+    }
+    CHECK(stats.events_dropped == 0u);
+
+    CHECK(total.new_calls == 0u);
+    CHECK(total.engine_allocations == 0u);
+    CHECK(total.log_records == 0u);
   }
-  const MixerStats stats = mixer.stats();
-  CHECK(stats.blocks > 40u);
-  CHECK(mixer.control_stats().events > 0u);
-  CHECK(mixer.control_stats().steals > 0u);
-  CHECK(stats.clipped_samples > 0u);
-  CHECK(stats.events_dropped == 0u);
-
-  CHECK(total.new_calls == 0u);
-  CHECK(total.engine_allocations == 0u);
-  CHECK(total.log_records == 0u);
 
   // The counters count: an allocation on the counting thread is seen, and so is a record.
   t_allocations = 0;

@@ -11,6 +11,12 @@
 //                      the first, with the listener turning a little every block, so every voice
 //                      has a pan change in flight every block: the fixed-time ramp's price, where
 //                      the rows above are its fast path (the plain multiply-add)
+//   audio.mix.3d_limiter_idle
+//                      the first, with the master's limiter on and the mix a quarter of its level:
+//                      the limiter at rest, which only delays the block
+//   audio.mix.3d_limited
+//                      the first, with the limiter on and the master bus at 4x: its per-frame path
+//                      on every frame, the worst it costs
 //
 // The clips are a second long and loop, so the pool is full for every block measured.
 
@@ -34,7 +40,7 @@ Vector<f32> noise(u32 frames, u32 channels, u64 seed) {
   return out;
 }
 
-enum class Kind { Positioned, Flat, Turning };
+enum class Kind { Positioned, Flat, Turning, LimiterIdle, Limited };
 
 void run(bench::State& state, Kind kind, ChannelLayout layout) {
   const u32 voices = static_cast<u32>(state.arg());
@@ -42,7 +48,10 @@ void run(bench::State& state, Kind kind, ChannelLayout layout) {
   MixerConfig config;
   config.voices = voices;
   config.layout = layout;
+  const bool limiter = kind == Kind::LimiterIdle || kind == Kind::Limited;
+  config.limiter = limiter ? LimiterMode::On : LimiterMode::Off;
   Mixer mixer(clips, config);
+  if (limiter) mixer.set_bus_gain(k_bus_master, kind == Kind::Limited ? 4.0f : 0.25f);
   const u8 channels = kind == Kind::Flat ? 2 : 1;
   const Vector<f32> pcm = noise(k_sample_rate, channels, 1234);
   const ClipHandle clip = clips.add_pcm(Id128{1, 1}, pcm, channels);
@@ -97,4 +106,12 @@ ENGINE_BENCH_ARGS(mix_3d_51, "audio.mix.3d_51", 64) {
 
 ENGINE_BENCH_ARGS(mix_3d_turning, "audio.mix.3d_turning", 64) {
   run(state, Kind::Turning, ChannelLayout::Stereo);
+}
+
+ENGINE_BENCH_ARGS(mix_3d_limiter_idle, "audio.mix.3d_limiter_idle", 64) {
+  run(state, Kind::LimiterIdle, ChannelLayout::Stereo);
+}
+
+ENGINE_BENCH_ARGS(mix_3d_limited, "audio.mix.3d_limited", 64) {
+  run(state, Kind::Limited, ChannelLayout::Stereo);
 }

@@ -31,13 +31,24 @@ constexpr u32 k_block_frames = 480;
 // at the same frames.
 constexpr u32 k_whole[] = {k_block_frames};
 
-Vector<f32> run_session(ChannelLayout layout, std::span<const u32> calls = k_whole,
-                        u32 ramp_frames = 480) {
+struct Options {
+  std::span<const u32> calls = k_whole;
+  u32 ramp_frames = 480;  // 10 ms, audio.ramp_ms's default: part of what is pinned
+  // The master's limiter, at -1 dBFS given linearly (limiter.h: the dB tunable goes through the C
+  // library's pow) and a 100 ms release. Off is the default and what the first two pins are.
+  bool limiter = false;
+};
+
+Vector<f32> run_session(ChannelLayout layout, const Options& options = {}) {
+  const std::span<const u32> calls = options.calls;
   ClipStore clips;
   MixerConfig config;
   config.voices = 8;  // small, so the burst at block 30 has to steal and refuse
   config.layout = layout;
-  config.ramp_frames = ramp_frames;  // 10 ms, audio.ramp_ms's default: part of what is pinned
+  config.ramp_frames = options.ramp_frames;
+  config.limiter = options.limiter ? LimiterMode::On : LimiterMode::Off;
+  config.limiter_ceiling = 0.89125094f;
+  config.limiter_release_frames = 4800;
   Mixer mixer(clips, config);
   REQUIRE(mixer.layout() == layout);
 
@@ -178,7 +189,13 @@ Vector<f32> run_session(ChannelLayout layout, std::span<const u32> calls = k_who
   const MixerStats stats = mixer.stats();
   const ControlStats& control = mixer.control_stats();
   CHECK(stats.blocks == k_blocks * calls.size());
-  CHECK(stats.clipped_samples > 0u);
+  if (options.limiter) {
+    // The master bus's 3x at block 25 is over the ceiling: the limiter takes it, the clip does not.
+    CHECK(stats.limited_frames > 0u);
+    CHECK(stats.clipped_samples == 0u);
+  } else {
+    CHECK(stats.clipped_samples > 0u);
+  }
   CHECK(stats.stale_commands == 0u);
   CHECK(stats.events_dropped == 0u);
   CHECK(control.steals > 0u);
@@ -187,13 +204,21 @@ Vector<f32> run_session(ChannelLayout layout, std::span<const u32> calls = k_who
   return all;
 }
 
-void check_session(ChannelLayout layout, u64 pinned) {
-  const Vector<f32> first = run_session(layout);
-  const Vector<f32> second = run_session(layout);
+Options split(std::span<const u32> calls, const Options& base = {}) {
+  Options options = base;
+  options.calls = calls;
+  return options;
+}
+
+void check_session(ChannelLayout layout, u64 pinned, const Options& options = {}) {
+  const Vector<f32> first = run_session(layout, options);
+  const Vector<f32> second = run_session(layout, options);
   REQUIRE(first.size() == k_blocks * k_block_frames * layout_channels(layout));
   CHECK(first == second);
   const u64 hash = hash_mix(layout, {first.data(), first.size()});
-  MESSAGE(std::string(layout_name(layout)) << " session hash " << hex64(hash));
+  const std::string name =
+      std::string(layout_name(layout)) + (options.limiter ? " limited" : "") + " session hash ";
+  MESSAGE(name << hex64(hash));
   CHECK(hash == pinned);
 }
 
@@ -215,6 +240,17 @@ TEST_CASE("the same session declared 5.1 is its own pinned output") {
   check_session(ChannelLayout::Surround51, 0xc8486cc4956e413aull);
 }
 
+// The same session through the master's limiter, which the session's 3x master gain drives well
+// over its ceiling. The limiter's arithmetic is IEEE f32 and f64 with contraction off, integers
+// and `ceil` (limiter.h), so this is a cross-toolchain pin like the two above. Under the ceiling
+// the limiter is a pure delay, so until the session first goes over it this is the stereo pin's
+// output 240 frames later (the next test holds it to that).
+TEST_CASE("the session through the master's limiter is its own pinned output") {
+  Options options;
+  options.limiter = true;
+  check_session(ChannelLayout::Stereo, 0xdc377a2dac6eb43aull, options);
+}
+
 // The period a device asks for is not an input: the same commands at the same frames mix to the
 // same bytes however the frames between them are divided into render calls. Before the ramp was a
 // time this was false — a change ramped across whatever block it landed in, so a 160-frame period
@@ -227,13 +263,49 @@ TEST_CASE("the session mixes to the same bytes whatever the render calls' sizes"
   for (const ChannelLayout layout : {ChannelLayout::Stereo, ChannelLayout::Surround51}) {
     CAPTURE(layout_name(layout));
     const Vector<f32> whole = run_session(layout);
-    CHECK(run_session(layout, thirds) == whole);
-    CHECK(run_session(layout, ragged) == whole);
-    CHECK(run_session(layout, many) == whole);
+    CHECK(run_session(layout, split(thirds)) == whole);
+    CHECK(run_session(layout, split(ragged)) == whole);
+    CHECK(run_session(layout, split(many)) == whole);
   }
   // A ramp longer than a block (15 ms: 720 frames) crosses the calls, and still does not care.
-  const Vector<f32> long_ramp = run_session(ChannelLayout::Stereo, k_whole, 720);
-  CHECK(run_session(ChannelLayout::Stereo, thirds, 720) == long_ramp);
-  CHECK(run_session(ChannelLayout::Stereo, ragged, 720) == long_ramp);
-  CHECK(long_ramp != run_session(ChannelLayout::Stereo));  // and it is a different mix
+  Options long_ramp;
+  long_ramp.ramp_frames = 720;
+  const Vector<f32> slow = run_session(ChannelLayout::Stereo, long_ramp);
+  CHECK(run_session(ChannelLayout::Stereo, split(thirds, long_ramp)) == slow);
+  CHECK(run_session(ChannelLayout::Stereo, split(ragged, long_ramp)) == slow);
+  CHECK(slow != run_session(ChannelLayout::Stereo));  // and it is a different mix
+  // Nor does the limiter, whose state is per frame and carried across calls; its delay line wraps
+  // inside a call and across two.
+  Options limited;
+  limited.limiter = true;
+  const Vector<f32> through = run_session(ChannelLayout::Stereo, limited);
+  CHECK(run_session(ChannelLayout::Stereo, split(thirds, limited)) == through);
+  CHECK(run_session(ChannelLayout::Stereo, split(ragged, limited)) == through);
+  CHECK(run_session(ChannelLayout::Stereo, split(many, limited)) == through);
+}
+
+TEST_CASE("under the ceiling the limited session is the plain one, 5 ms later, bit for bit") {
+  Options limited;
+  limited.limiter = true;
+  const Vector<f32> plain = run_session(ChannelLayout::Stereo);
+  const Vector<f32> through = run_session(ChannelLayout::Stereo, limited);
+  // Until the first frame over the ceiling enters the limiter, its gain is 1 on every frame: output
+  // frame n is input frame n - 240 exactly.
+  constexpr f32 k_ceiling = 0.89125094f;
+  constexpr u32 k_delay = Limiter::k_lookahead_frames;
+  u32 first_loud = static_cast<u32>(plain.size() / 2u);
+  for (u32 i = 0; i < plain.size(); ++i) {
+    if (std::fabs(plain[i]) > k_ceiling) {
+      first_loud = i / 2u;
+      break;
+    }
+  }
+  MESSAGE("first frame over the ceiling: " << first_loud);
+  CHECK(first_loud > 10u * k_block_frames);  // enough of the session to mean something
+  for (u32 i = 0; i < 2u * k_delay; ++i)
+    CHECK(through[i] == 0.0f);
+  u32 differ = 0;
+  for (u32 i = 2u * k_delay; i < 2u * first_loud; ++i)
+    differ += through[i] == plain[i - 2u * k_delay] ? 0u : 1u;
+  CHECK(differ == 0u);
 }

@@ -26,7 +26,7 @@ engine_schema_library(NAME audio_schemas SCHEMAS schemas/audio.schema CAPABILITY
 engine_module(NAME audio LAYER domain OPTIONAL WHOLE_ARCHIVE
   DEPS base containers math hash ids jobs log tunables protocol audio_schemas
   SOURCES src/audio.cpp src/backend.cpp src/clip_store.cpp src/decoder.cpp src/device.cpp
-          src/format.cpp src/mixer.cpp src/protocol.cpp src/spatial.cpp)
+          src/format.cpp src/limiter.cpp src/mixer.cpp src/protocol.cpp src/spatial.cpp)
 
 # miniaudio is linked PRIVATE: its header, and the defines that shape its structs, reach
 # src/backend.cpp and nothing that includes a public header of this module (physics.md, "Why
@@ -35,7 +35,8 @@ target_link_libraries(engine_audio_impl PRIVATE engine::miniaudio)
 
 engine_module_tests(NAME audio
   SOURCES tests/audio_tests.cpp tests/queue_tests.cpp tests/mixer_tests.cpp tests/clip_tests.cpp
-          tests/determinism_tests.cpp tests/realtime_tests.cpp tests/size_table.cpp
+          tests/limiter_tests.cpp tests/determinism_tests.cpp tests/realtime_tests.cpp
+          tests/size_table.cpp
   DEPS json schema)
 
 # The mix cost per voice per 10 ms block, by voice count and by voice kind (docs/subsystems/audio.md,

@@ -27,3 +27,8 @@ ENGINE_EXPECT_SIZE(128, 64, Command);
 ENGINE_EXPECT_SIZE(8, 4, VoiceEvent);
 ENGINE_EXPECT_SIZE(8, 4, VoiceHandle);
 ENGINE_EXPECT_SIZE(4, 4, ClipHandle);
+// The master's limiter, walked every frame while it limits: its state is the four ring buffers'
+// headers (the delay line, the hold's two columns, the box filter's deficits — all sized once, in
+// the constructor) and the running scalars. Two cache lines and a bit; the rings themselves are
+// 240 frames of the layout, and 241 entries each.
+ENGINE_EXPECT_SIZE(136, 8, Limiter);

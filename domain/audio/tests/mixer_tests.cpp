@@ -748,6 +748,12 @@ TEST_CASE("the master clips hard at full scale and counts what it clipped") {
   CHECK(stats.voices_peak == 2u);
   CHECK(stats.blocks == 1u);
   CHECK(stats.frames == 480u);
+  // The limiter is off unless asked for: the counter above is how an over is reported, and nothing
+  // is delayed.
+  CHECK_FALSE(rig.mixer.limiter_enabled());
+  CHECK(rig.mixer.latency_frames() == 0u);
+  CHECK(stats.limited_frames == 0u);
+  CHECK(stats.limiter_gain == 1.0f);
 }
 
 TEST_CASE("render with no frames applies commands and mixes nothing") {

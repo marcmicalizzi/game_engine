@@ -56,6 +56,15 @@ u32 ramp_for(const MixerConfig& config) noexcept {
   return config.ramp_frames != 0 ? config.ramp_frames : tunable_ramp_frames();
 }
 
+bool limiter_for(const MixerConfig& config) noexcept {
+  switch (config.limiter) {
+    case LimiterMode::On: return true;
+    case LimiterMode::Off: return false;
+    case LimiterMode::Default: break;
+  }
+  return tunable_limiter();
+}
+
 // 32.32 fixed point. `pitch * 2^32` is exact in double for every f32 pitch (a 24-bit mantissa
 // times a power of two), so the conversion drops nothing and is the same on every compiler.
 u64 pitch_step(f32 pitch) noexcept {
@@ -296,6 +305,15 @@ Mixer::Mixer(const ClipStore& clips, const MixerConfig& config)
     bus_two_d_[b] = buses[b].two_d ? 1u : 0u;
     bus_mapping_[b] =
         buses[b].mapping == ChannelMapping::Inherit ? ChannelMapping::FrontPair : buses[b].mapping;
+  }
+
+  if (limiter_for(config)) {
+    const f32 ceiling = config.limiter_ceiling > 0.0f && config.limiter_ceiling <= 1.0f
+                            ? config.limiter_ceiling
+                            : tunable_limiter_ceiling();
+    const u32 release = config.limiter_release_frames != 0 ? config.limiter_release_frames
+                                                           : tunable_limiter_release_frames();
+    limiter_.configure(layout_->channels, ceiling, release);
   }
   publish(audio_stats_);
 }
@@ -542,7 +560,7 @@ u32 Mixer::update() noexcept {
 
 namespace {
 
-constexpr u32 k_stats_words = 9;
+constexpr u32 k_stats_words = 10;
 
 void pack_stats(const MixerStats& s, u64 (&w)[k_stats_words]) noexcept {
   w[0] = s.blocks;
@@ -553,7 +571,8 @@ void pack_stats(const MixerStats& s, u64 (&w)[k_stats_words]) noexcept {
   w[5] = s.events_dropped;
   w[6] = static_cast<u64>(s.voices_playing) | (static_cast<u64>(s.voices_peak) << 32);
   w[7] = std::bit_cast<u32>(s.peak);
-  w[8] = 0;
+  w[8] = s.limited_frames;
+  w[9] = std::bit_cast<u32>(s.limiter_gain);
 }
 
 MixerStats unpack_stats(const u64 (&w)[k_stats_words]) noexcept {
@@ -567,6 +586,8 @@ MixerStats unpack_stats(const u64 (&w)[k_stats_words]) noexcept {
   s.voices_playing = static_cast<u32>(w[6]);
   s.voices_peak = static_cast<u32>(w[6] >> 32);
   s.peak = std::bit_cast<f32>(static_cast<u32>(w[7]));
+  s.limited_frames = w[8];
+  s.limiter_gain = std::bit_cast<f32>(static_cast<u32>(w[9]));
   return s;
 }
 
@@ -770,16 +791,33 @@ void Mixer::mix_block(f32* out, u32 frames) noexcept {
     }
   }
 
-  // The master's policy: a hard clip at full scale, counted. No limiter in v0 — a limiter hides a
-  // mix that is too hot, where a counter says so (docs/subsystems/audio.md, "The master").
+  // The master's policy: a hard clip at full scale, counted, and — when the game asks for it — a
+  // look-ahead limiter in front of it that keeps the clip from firing (docs/subsystems/audio.md,
+  // "The master"). The limiter is off by default: it hides a mix that is too hot, where the
+  // counter says so, and it delays every sound by its look-ahead.
   f32 peak = 0.0f;
   u64 clipped = 0;
-  for (u32 i = 0; i < samples; ++i) {
-    const f32 x = out[i];
-    const f32 magnitude = std::fabs(x);
-    peak = magnitude > peak ? magnitude : peak;
-    clipped += magnitude > 1.0f ? 1u : 0u;
-    out[i] = x < -1.0f ? -1.0f : (x > 1.0f ? 1.0f : x);
+  if (limiter_.enabled()) {
+    for (u32 i = 0; i < samples; ++i) {
+      const f32 magnitude = std::fabs(out[i]);
+      peak = magnitude > peak ? magnitude : peak;
+    }
+    limiter_.process(out, frames, peak);
+    audio_stats_.limited_frames = limiter_.limited_frames();
+    audio_stats_.limiter_gain = limiter_.last_gain();
+    for (u32 i = 0; i < samples; ++i) {
+      const f32 x = out[i];
+      clipped += std::fabs(x) > 1.0f ? 1u : 0u;
+      out[i] = x < -1.0f ? -1.0f : (x > 1.0f ? 1.0f : x);
+    }
+  } else {
+    for (u32 i = 0; i < samples; ++i) {
+      const f32 x = out[i];
+      const f32 magnitude = std::fabs(x);
+      peak = magnitude > peak ? magnitude : peak;
+      clipped += magnitude > 1.0f ? 1u : 0u;
+      out[i] = x < -1.0f ? -1.0f : (x > 1.0f ? 1.0f : x);
+    }
   }
 
   ++audio_stats_.blocks;

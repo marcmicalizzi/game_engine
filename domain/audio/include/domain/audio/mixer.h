@@ -11,7 +11,7 @@
 //                 read the clip at the voice's pitch into a scratch signal   (the voice loop)
 //                 gain x bus path x source model's attenuation               (spatial.h)
 //                 decode stage: signal + SpatialParams -> layout channels    (decoder.h)
-//            -> master: hard clip -> out
+//            -> master: look-ahead limiter (off by default, limiter.h) -> hard clip -> out
 //
 // Nothing before the decode stage knows the layout. That is the owner's direction for audio
 // (docs/plan/05-simulation.md §5.11, "Direction note, 2026-09-24"): an object-based sound stage,
@@ -63,6 +63,7 @@
 #include <domain/audio/commands.h>
 #include <domain/audio/decoder.h>
 #include <domain/audio/format.h>
+#include <domain/audio/limiter.h>
 #include <domain/audio/spatial.h>
 #include <domain/audio/spsc_queue.h>
 
@@ -99,6 +100,9 @@ struct BusDesc {
 // master <- {music (2D), sfx, voice, ambient}.
 std::span<const BusDesc> default_buses() noexcept;
 
+// Whether the master's limiter runs: as the tunable says, or forced either way.
+enum class LimiterMode : u8 { Default = 0, Off, On };
+
 // ---- configuration and requests -----------------------------------------------------------------
 
 struct MixerConfig {
@@ -109,6 +113,13 @@ struct MixerConfig {
   // Frames a gain or pan change takes to reach its target, and a stop to fade out. 0 reads
   // `audio.ramp_ms` (10 ms: 480 frames). A time, never the block size.
   u32 ramp_frames = 0;
+  // The master's look-ahead limiter (limiter.h). `Default` reads `audio.limiter` (off).
+  LimiterMode limiter = LimiterMode::Default;
+  // Its ceiling, linear in (0, 1]. 0 reads `audio.limiter.threshold_db` (-1 dBFS) through the C
+  // library's pow; a caller that pins limited output passes the linear value instead.
+  f32 limiter_ceiling = 0.0f;
+  // Its release, in frames. 0 reads `audio.limiter.release_ms` (100 ms).
+  u32 limiter_release_frames = 0;
   // What the master feeds. Chosen by the caller from the device's own layout or from the
   // `audio.layout` setting (device.h, `resolve_layout`); `Unknown` is refused in favour of stereo,
   // with a log line.
@@ -166,9 +177,11 @@ struct MixerStats {
   u64 stale_commands = 0;   // commands naming a voice that had already ended
   u64 clipped_samples = 0;  // output samples the master's hard clip changed
   u64 events_dropped = 0;   // ended-voice events the ring refused; sized so it never happens
+  u64 limited_frames = 0;   // frames the limiter turned down; 0 while it is off
   u32 voices_playing = 0;   // after the last block
   u32 voices_peak = 0;      // most voices playing at the end of any block
-  f32 peak = 0.0f;          // largest |sample| of the last block, before the clip
+  f32 peak = 0.0f;          // largest |sample| of the last block, before the limiter and the clip
+  f32 limiter_gain = 1.0f;  // the limiter's lowest gain in the last block: 1 when it did nothing
 };
 
 // ---- the two records of one voice ---------------------------------------------------------------
@@ -256,6 +269,13 @@ class Mixer {
   const Decoder& decoder() const noexcept { return *decoder_; }
   // Frames a change takes to arrive and a stop to fade, fixed at construction.
   u32 ramp_frames() const noexcept { return ramp_frames_; }
+  // The master's limiter as configured (whether it runs, its ceiling and release), fixed at
+  // construction. Read its counters through `stats()`, not here: the audio thread writes them.
+  bool limiter_enabled() const noexcept { return limiter_.enabled(); }
+  f32 limiter_ceiling() const noexcept { return limiter_.ceiling(); }
+  // Frames between a command's effect entering the mix and leaving the master: the limiter's
+  // look-ahead when it runs, 0 otherwise.
+  u32 latency_frames() const noexcept { return limiter_.latency_frames(); }
   MixerStats stats() const noexcept;
 
   // ---- the audio thread ------------------------------------------------------------------------
@@ -291,7 +311,7 @@ class Mixer {
   SpscQueue<Command> commands_;
   SpscQueue<VoiceEvent> events_;
   alignas(64) std::atomic<u64> stats_sequence_{0};
-  std::atomic<u64> stats_words_[9];
+  std::atomic<u64> stats_words_[10];
 
   // ---- audio thread
   alignas(64) Vector<VoiceState> voices_;
@@ -304,6 +324,7 @@ class Mixer {
   Vector<u8> bus_two_d_;
   Vector<ChannelMapping> bus_mapping_;
   ListenerBasis listener_;
+  Limiter limiter_;
   MixerStats audio_stats_;
 };
 

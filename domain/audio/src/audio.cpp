@@ -3,6 +3,8 @@
 #include <domain/audio/audio.h>
 #include <foundation/tunables/tunables.h>
 
+#include <cmath>
+
 namespace engine::audio {
 
 ENGINE_LOG_CATEGORY_DEFINE(log_audio, "audio");
@@ -50,6 +52,25 @@ tunables::Int period_frames{"audio.period_frames", 480, 32, 16384,
 tunables::Float ramp_ms{"audio.ramp_ms", 10.0, 1.0, 100.0,
                         "Time a gain or pan change takes to reach its target, and a stop to fade"};
 
+// The master's look-ahead limiter (limiter.h). Off: the page's policy is that a mix too hot for its
+// headroom is said so by `MixerStats::clipped_samples`, not hidden, and the limiter's look-ahead
+// delays every sound by 5 ms. A game whose content cannot leave headroom turns it on.
+tunables::Bool limiter{"audio.limiter", false,
+                       "Run the master's look-ahead limiter in front of its hard clip"};
+
+// The limiter's ceiling — its threshold: no sample leaves above it. -1 dBFS leaves room for what
+// happens after the mix: the platform's conversion when the endpoint is not in the mix's format,
+// and the inter-sample peaks a DAC's reconstruction makes of samples near full scale (the margin
+// EBU R128 and the streaming services ask of a master for the same reason).
+tunables::Float limiter_threshold_db{"audio.limiter.threshold_db", -1.0, -24.0, 0.0,
+                                     "Limiter ceiling in dBFS: no sample leaves above it"};
+
+// How fast the limiter lets go. 100 ms is twice the period of 20 Hz, so the gain does not ride the
+// individual cycles of the lowest content — which is heard as distortion — and short enough that
+// the mix is back at full level a few ticks after a burst rather than audibly ducked under it.
+tunables::Float limiter_release_ms{"audio.limiter.release_ms", 100.0, 10.0, 2000.0,
+                                   "Time constant of the limiter's release, in milliseconds"};
+
 // The speaker layout the master is declared with. "auto" takes the device's own (device.h,
 // `resolve_layout`); a name forces it, and a device that is something else gets the platform's
 // channel conversion. The choices are indexed by `ChannelLayout`, whose `Unknown` is "auto".
@@ -70,6 +91,14 @@ u32 tunable_period_frames() noexcept { return static_cast<u32>(period_frames.get
 u32 tunable_ramp_frames() noexcept {
   // Whole frames at the mix rate, rounded; at least one, which is a step.
   const f64 frames = ramp_ms.get() * static_cast<f64>(k_sample_rate) / 1000.0 + 0.5;
+  return frames < 1.0 ? 1u : static_cast<u32>(frames);
+}
+bool tunable_limiter() noexcept { return limiter.get(); }
+f32 tunable_limiter_ceiling() noexcept {
+  return static_cast<f32>(std::pow(10.0, limiter_threshold_db.get() / 20.0));
+}
+u32 tunable_limiter_release_frames() noexcept {
+  const f64 frames = limiter_release_ms.get() * static_cast<f64>(k_sample_rate) / 1000.0 + 0.5;
   return frames < 1.0 ? 1u : static_cast<u32>(frames);
 }
 ChannelLayout tunable_layout() noexcept { return layout.get(); }
