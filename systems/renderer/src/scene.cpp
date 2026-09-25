@@ -20,6 +20,11 @@
 #include <schemas/scene.h>
 #include <utility>
 
+#if ENGINE_RENDERER_RUINS
+#include <domain/ruins/assembler.h>
+#include <domain/ruins/kit.h>
+#endif
+
 namespace engine::renderer {
 
 namespace {
@@ -670,6 +675,102 @@ void make_instance_grid(u32 n, f32 mesh_radius, u32 joints, f32 bounds_padding,
   }
 }
 
+#if ENGINE_RENDERER_RUINS
+// The terrain as the assembler's height query: a plain function over the scene's description.
+f32 terrain_ground(const void* context, f32 x, f32 z) noexcept {
+  return terrain_height(*static_cast<const TerrainDesc*>(context), x, z);
+}
+
+// A scene's `ruins` entries (schema `engine.scene.RuinScatter`, docs/subsystems/ruins.md): each
+// kit read once, its members' meshes appended after the file's own — so every index the file used
+// still names what it named, and the terrain, pushed after this, stays the last mesh — and every
+// building assembled here, standing on the terrain, so the renderer sees plain instances of kit
+// meshes and nothing else about ruins. Single-threaded on purpose: the loader has no job system,
+// and a thousand buildings cost milliseconds (ruins.md, "Performance notes").
+bool expand_ruins(const scene::Scene& file, const std::string& path, const std::string& dir,
+                  SceneDesc& out, std::string& error) {
+  struct LoadedKit {
+    std::string path;
+    ruins::Kit kit;
+    u32 first_mesh = 0;
+  };
+  Vector<LoadedKit> kits;
+  kits.reserve(file.ruins.size());
+  for (u32 r = 0; r < file.ruins.size(); ++r) {
+    const scene::RuinScatter& scatter = file.ruins[r];
+    const std::string where = path + ": ruins " + std::to_string(r);
+    if (scatter.kit.empty()) {
+      error = where + " names no kit";
+      return false;
+    }
+    const std::string kit_path = io::is_absolute_path(scatter.kit) || dir.empty()
+                                     ? scatter.kit
+                                     : io::join_path(dir, scatter.kit);
+    u32 k = 0;
+    while (k < kits.size() && kits[k].path != kit_path)
+      ++k;
+    if (k == kits.size()) {
+      LoadedKit loaded;
+      loaded.path = kit_path;
+      if (!ruins::read_kit_file(kit_path, loaded.kit, error)) {
+        error = where + ": " + error;
+        return false;
+      }
+      loaded.first_mesh = out.meshes.size();
+      for (u32 m = 0; m < loaded.kit.meshes.size(); ++m) {
+        out.meshes.push_back(loaded.kit.meshes[m]);
+        SceneMeshInfo info;
+        info.name = loaded.kit.name + "/" + std::string(io::file_name(loaded.kit.meshes[m]));
+        info.hash = loaded.kit.mesh_hashes[m];
+        out.mesh_info.push_back(std::move(info));
+      }
+      kits.push_back(std::move(loaded));
+    }
+    const LoadedKit& loaded = kits[k];
+    const i32 tile_cm = ruins::to_cm(scatter.tile_size);
+    if (tile_cm <= 0) {
+      error = where + ": tile_size must be positive";
+      return false;
+    }
+    Vector<ruins::TileCoord> tiles;
+    ruins::choose_tiles(scatter.seed, ruins::TileCoord{scatter.tile_min[0], scatter.tile_min[1]},
+                        ruins::TileCoord{scatter.tile_max[0], scatter.tile_max[1]}, scatter.count,
+                        scatter.density, tiles);
+    ruins::Placement placement;
+    placement.world_seed = scatter.seed;
+    placement.tile_cm = tile_cm;
+    placement.wind_step = ruins::yaw_step_from_degrees(scatter.wind_deg);
+    if (out.terrain.enabled) placement.ground = ruins::Ground{&terrain_ground, &out.terrain};
+    ruins::Output built;
+    const i64 start = time::monotonic_ns();
+    if (!ruins::assemble_tiles(loaded.kit, placement,
+                               std::span<const ruins::TileCoord>(tiles.data(), tiles.size()),
+                               nullptr, built, &error)) {
+      error = where + ": " + error;
+      return false;
+    }
+    out.instances.reserve(out.instances.size() + built.instances.size());
+    for (const ruins::Instance& piece : built.instances) {
+      SceneInstance instance;
+      instance.mesh = loaded.first_mesh + loaded.kit.members[piece.member].mesh_index;
+      instance.transform.position = ruins::instance_translation(loaded.kit, piece);
+      instance.transform.rotation = quat_from_axis_angle(
+          Vec3{0.0f, 1.0f, 0.0f},
+          radians(22.5f * static_cast<f32>(ruins::instance_yaw_step(loaded.kit, piece))));
+      out.instances.push_back(instance);
+    }
+    out.ruin_buildings += built.sites.size();
+    out.ruin_instances += built.instances.size();
+    ENGINE_LOG_INFO(log_renderer, "ruins assembled", log::field("scene", path),
+                    log::field("kit", loaded.kit.name), log::field("buildings", built.sites.size()),
+                    log::field("instances", built.instances.size()),
+                    log::field("ms", static_cast<f64>(time::monotonic_ns() - start) / 1.0e6),
+                    log::field("hash", hash_hex(ruins::hash_output(built))));
+  }
+  return true;
+}
+#endif
+
 }  // namespace
 
 void mesh_bounds(const geometry::ClusterLodMesh& lod, u32 first, u32 count, Vec3& center,
@@ -747,8 +848,8 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
     error = path + ": format is '" + file.format + "', not engine.scene.v1";
     return false;
   }
-  if (file.meshes.empty() && !file.terrain.has_value()) {
-    error = path + ": no \"meshes\" and no \"terrain\": a scene needs at least one";
+  if (file.meshes.empty() && !file.terrain.has_value() && file.ruins.empty()) {
+    error = path + ": no \"meshes\", no \"terrain\" and no \"ruins\": a scene needs at least one";
     return false;
   }
   out.name = file.name;
@@ -921,19 +1022,32 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
       out.instances.push_back(instance);
     }
   }
-  if (file.instances.empty() && file.scatters.empty()) {
+  // Ruins, assembled from their kits by the ruins capability, when this build has it.
+  if (!file.ruins.empty()) {
+#if ENGINE_RENDERER_RUINS
+    if (!expand_ruins(file, path, dir, out, error)) return false;
+#else
+    error = path +
+            ": the scene names ruins, and this build has no ruins capability "
+            "(ENGINE_WITH_RUINS=OFF or ENGINE_MINIMAL=ON)";
+    return false;
+#endif
+  }
+  if (file.instances.empty() && file.scatters.empty() && file.ruins.empty()) {
     for (u32 i = 0; i < file_meshes; ++i)
       out.instances.push_back(SceneInstance{i, Transform3::identity()});
   }
   // The terrain is the last mesh, with one identity instance after everything the file placed,
   // so every index the file used still names what it named.
   if (out.terrain.enabled) {
+    // After the file's meshes and any ruin kit's, so its index is the count so far.
+    const u32 terrain_mesh = out.meshes.size();
     out.meshes.push_back(std::string());
     SceneMeshInfo info;
     info.name = "terrain";
     info.origin = "terrain";
     out.mesh_info.push_back(std::move(info));
-    out.instances.push_back(SceneInstance{file_meshes, Transform3::identity()});
+    out.instances.push_back(SceneInstance{terrain_mesh, Transform3::identity()});
   }
   return true;
 }

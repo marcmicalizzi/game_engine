@@ -273,3 +273,49 @@ TEST_CASE("engine-content: a build writes the committed bytes on every toolchain
     FAIL_CHECK("the container does not match the committed hashes; " << table);
   }
 }
+
+#if ENGINE_CONTENT_RUINS
+// The ruin assembler's row (docs/subsystems/ruins.md, "The same ruin from every toolchain"): the
+// synthetic kit of boxes, written by `ruins-kit`, and the 64 buildings world seed 2026 puts on the
+// 16 x 16 tiles around the origin, assembled on two thread counts, must hash to the number pinned
+// here. Every decision the assembler makes is integer arithmetic on centimetres and Q10 fractions
+// and every draw is the engine's hash, so the only floats in the hash are the kit's metres parsed
+// once and the positions written from integer centimetres — which is why the same number holds on
+// MSVC, GCC and Clang, at v2 and v3. The ground is flat: a terrain's height is the caller's, and
+// no decision reads it. A change to the grammar, the ruin rule or a draw's purpose moves it; say
+// so in the commit and take the new number from a failing run's message.
+//
+// Taken on MSVC 14.51, 2026-09-24: 64 buildings, 3,272 instances.
+constexpr u64 k_ruins_golden = 0x3667b0bbaa0d803cull;
+
+TEST_CASE("engine-content: ruins assembles the committed buildings on every toolchain") {
+  const test::TempDir tmp("engine_content_ruins_determinism");
+  const Output kit = run({"ruins-kit", tmp.file("kit")});
+  REQUIRE_MESSAGE(kit.exit_code == 0, kit.text);
+  const std::string kit_path = tmp.file("kit") + "/kit.json";
+  std::string hashes[2];
+  u64 buildings = 0;
+  u64 instances = 0;
+  const char* jobs[2] = {"1", "3"};
+  for (u32 t = 0; t < 2; ++t) {
+    const Output made = run({"ruins", kit_path, "2026", "-", "--region", "-8,-8,7,7", "--count",
+                             "64", "--wind", "30", "--no-write", "--jobs", jobs[t]});
+    REQUIRE_MESSAGE(made.exit_code == 0, made.text);
+    JsonValue summary;
+    REQUIRE(parse_json(made.text, summary).ok);
+    REQUIRE(summary.find("hash") != nullptr);
+    hashes[t] = std::string(summary.find("hash")->as_string());
+    REQUIRE(summary.find("buildings")->get_u64(buildings));
+    REQUIRE(summary.find("instances")->get_u64(instances));
+  }
+  CHECK(buildings == 64);
+  MESSAGE("ruins: 64 buildings, " << instances << " instances, hash " << hashes[0]);
+  // One thread or three: the same buildings in the same order.
+  CHECK(hashes[0] == hashes[1]);
+  char golden[17];
+  std::snprintf(golden, sizeof(golden), "%016llx", static_cast<unsigned long long>(k_ruins_golden));
+  CHECK_MESSAGE(hashes[0] == std::string(golden),
+                "the assembled ruins do not match the committed hash; this build's is 0x"
+                    << hashes[0] << "ull");
+}
+#endif

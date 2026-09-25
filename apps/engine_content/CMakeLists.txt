@@ -20,9 +20,17 @@ if(TARGET engine::tissue)
   list(APPEND _content_deps tissue schemas)
   list(APPEND _content_tests tests/tissue_tests.cpp)
 endif()
+# `ruins` and `ruins-kit` the same way, with the ruins capability (docs/subsystems/ruins.md). The
+# golden hash of a fixed seed lives in tests/determinism_tests.cpp beside the content build's rows,
+# and is compiled only where the command exists.
+if(TARGET engine::ruins)
+  list(APPEND _content_deps ruins schema schemas)
+  list(APPEND _content_tests tests/ruins_tests.cpp)
+endif()
+list(REMOVE_DUPLICATES _content_deps)
 
 engine_app(NAME engine_content OUTPUT engine-content
-  SOURCES main.cpp tissue_commands.cpp limit_dump.cpp normal_cases.cpp
+  SOURCES main.cpp tissue_commands.cpp ruins_commands.cpp limit_dump.cpp normal_cases.cpp
   DEPS ${_content_deps}
   E2E_TESTS ${_content_tests})
 
@@ -30,6 +38,12 @@ if(TARGET engine::tissue)
   target_compile_definitions(engine_engine_content PRIVATE ENGINE_CONTENT_TISSUE=1)
   if(TARGET engine_engine_content_tests)
     target_compile_definitions(engine_engine_content_tests PRIVATE ENGINE_CONTENT_TISSUE=1)
+  endif()
+endif()
+if(TARGET engine::ruins)
+  target_compile_definitions(engine_engine_content PRIVATE ENGINE_CONTENT_RUINS=1)
+  if(TARGET engine_engine_content_tests)
+    target_compile_definitions(engine_engine_content_tests PRIVATE ENGINE_CONTENT_RUINS=1)
   endif()
 endif()
 # The end-to-end tests write their own glTF fixtures, with PNGs that foundation/image encodes, so

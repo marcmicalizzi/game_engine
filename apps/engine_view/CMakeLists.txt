@@ -28,6 +28,12 @@ endif()
 set(_view_interactive fly_camera.cpp window_input.cpp)
 set(_view_tests tests/view_tests.cpp tests/mesh_view_tests.cpp tests/fly_tests.cpp
                 tests/interactive_tests.cpp ${_view_interactive})
+if(TARGET engine::ruins)
+  # A scene's `ruins` entry drawn end to end (docs/subsystems/ruins.md): the renderer's scene reader
+  # expands it, and the test writes the kit of boxes and counts the pieces with the assembler.
+  list(APPEND _view_deps ruins)
+  list(APPEND _view_tests tests/ruins_view_tests.cpp)
+endif()
 if(TARGET engine::animation)
   # The animation-LOD glue is a header beside main.cpp (`anim_lod.h`) rather than a block inside
   # it, because it is the pattern a game copies and because it is worth testing on its own: the

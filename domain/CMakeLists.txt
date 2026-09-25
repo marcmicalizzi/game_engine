@@ -26,3 +26,4 @@ add_subdirectory(tissue)
 # After protocol (audio.devices): the device and mixing half of audio. Its ECS half is
 # systems/audio_system, because flecs belongs to systems/ (ADR-0028 seam 5).
 add_subdirectory(audio)
+add_subdirectory(ruins)

@@ -24,8 +24,9 @@
 // command prints one JSON line per result on stdout, so scripts and agents read the numbers without
 // parsing prose; everything else goes through the log to stderr.
 //
-// `tissue` and `limit-dump` live beside this file (content_commands.h): the tissue definition's
-// import, info, validators and report, and the limit-surface conformance exchange.
+// `tissue`, `limit-dump` and `ruins` live beside this file (content_commands.h): the tissue
+// definition's import, info, validators and report, the limit-surface conformance exchange, and
+// the ruin assembler's scene fragment.
 //
 // The build itself — the rules, the per-primitive jobs, the manifest and its identity skip, the
 // texture step, and the metrics `stats` prints — is `domain/content_build`, because engine-host's
@@ -139,6 +140,11 @@ const char* k_usage =
     "                                          the limit-surface conformance exchange\n"
     "  normal-cases <cases.json> --out <results.json>\n"
     "                                          the footpoint-normal rule's edge cases, one by one\n"
+    "  ruins <kit.json> <seed> <x,z> --out <scene.json>   a tile's ruined building, assembled\n"
+    "                                          from a kit, as a scene fragment (ruins --help);\n"
+    "                                          present with the ruins capability\n"
+    "  ruins-kit <directory>                   the synthetic kit of boxes, for tests and\n"
+    "                                          measurements\n"
     "  --version                              the commit this binary was built from, as JSON\n"
     "\n"
     "the build-all manifest:\n"
@@ -1050,5 +1056,7 @@ int main(int argc, char** argv) {
   if (command == "tissue") return content::tissue_command(argc, argv);
   if (command == "limit-dump") return content::limit_dump_command(argc, argv);
   if (command == "normal-cases") return content::normal_cases_command(argc, argv);
+  if (command == "ruins") return content::ruins_command(argc, argv);
+  if (command == "ruins-kit") return content::ruins_kit_command(argc, argv);
   return usage("unknown command");
 }

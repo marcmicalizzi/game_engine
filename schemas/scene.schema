@@ -53,20 +53,205 @@ struct Animation @version(1) {
   phase: f32 = 0
 }
 
-/// One placement of one mesh.
-struct Instance @version(1) {
-  /// Index into the scene's `meshes`.
-  mesh: u32 = 0
+// ---- Ruins assembled from a kit (docs/subsystems/ruins.md, plan 07 §7.6) -----------------------
+//
+// A ruined building is a kit's wall members placed at right angles by a seeded assembler, never
+// one asset. The kit is data: what each member is, where its neighbours join it and which side is
+// outside, and the parameters of the profile's grammar and ruin rule. The real kits live outside
+// the repository beside their meshes; the tests generate a kit of boxes.
+
+/// Which slot of the assembler's grammar a kit member can fill.
+enum RuinPieceKind : u8 {
+  /// A straight run of wall between two sockets, a whole number of the kit's module long.
+  Section = 0
+  /// An outside (convex) right-angle corner: the quoins where two walls meet.
+  Corner = 1
+  /// A straight member with a doorway through it, lintel included.
+  Doorway = 2
+  /// A straight member with a window: an opening with a sill, lintel included.
+  Window = 3
+  /// A loose block the collapse leaves on the ground. No sockets.
+  Debris = 4
+  /// An inside (reflex) corner. Optional: without one, an outside corner turned half round
+  /// stands in for it.
+  InsideCorner = 5
+}
+
+/// Where a neighbour joins a kit member: a point on the wall's centre line at ground level, in
+/// the member's frame (after `offset` and `yaw_deg`).
+struct RuinSocket @version(1) {
+  position: vec3
+  /// The wall's direction of travel through the socket, going round the footprint with the
+  /// building's inside on the left seen from above: into the member at its first socket, out of
+  /// it at its second.
+  direction: vec3
+  /// Which side is outside: the wall's outward normal at the socket.
+  outside: vec3
+}
+
+/// One member of a kit.
+struct RuinMember @version(1) {
   name: string
-  translation: vec3
-  rotation: quat
-  /// Degrees about +y, applied after `rotation`: the spelling a placement on a map wants.
+  kind: RuinPieceKind = Section
+  /// A glTF, GLB or .clusters file, relative to the kit file.
+  mesh: string
+  /// `assets::source_mesh_hash` of `mesh`, 16 lower-case hex digits; empty: not checked.
+  hash: string
+  /// Brings the mesh into the member's frame: translate by `offset`, then turn by `yaw_deg`
+  /// about +y (a multiple of 22.5). The frame has the wall's first socket at the origin and the
+  /// wall running along +x with the building's inside toward -z.
+  offset: vec3
   yaw_deg: f32 = 0
-  /// Absent: 1, 1, 1.
-  scale: vec3?
-  /// `translation.y` is metres above the terrain's surface at (x, z) rather than absolute.
-  ground: bool = false
-  animation: Animation?
+  /// Metres from the ground to the member's top line. Members of one length and kind that differ
+  /// only in this are the ruin rule's height variants.
+  height: f32 = 2.4
+  /// A section, doorway or window has two (its start and its end); a corner has two (where the
+  /// incoming wall joins it and where the outgoing wall leaves it); debris has none.
+  sockets: RuinSocket[]
+  /// An opening's span along the member from its first socket, and its sill and head heights,
+  /// metres. Doorways and windows only.
+  opening_start: f32 = 0
+  opening_end: f32 = 0
+  sill: f32 = 0
+  head: f32 = 0
+  /// A debris piece's footprint radius on the ground, metres.
+  radius: f32 = 0.3
+  /// Relative weight among the members that could fill the same slot.
+  weight: u32 = 1
+}
+
+/// A profile's grammar and ruin rule. Fractions are of the intact wall's height; lengths are
+/// metres. Every seeded decision the rule makes is integer arithmetic on these, converted once.
+struct RuinRules @version(1) {
+  /// Relative weights of the four footprints. A shape the kit's corners cannot close falls back
+  /// to a rectangle.
+  rectangle: u32 = 4
+  l_shape: u32 = 2
+  u_shape: u32 = 1
+  courtyard: u32 = 1
+  /// A wall's fill between its corners, in modules.
+  min_fill: u32 = 1
+  max_fill: u32 = 5
+  /// Orientations a building may take: 1, 2, 4, 8 or 16 over the full turn.
+  yaw_steps: u32 = 16
+  /// The chance a wall is collapsed to a height fraction, and breached (a gap, standing either
+  /// side), and what facing the wind adds to both.
+  collapse: f32 = 0.3
+  breach: f32 = 0.25
+  windward: f32 = 0.2
+  /// The height fraction a collapsed wall stands to.
+  collapse_min: f32 = 0.15
+  collapse_max: f32 = 0.6
+  /// A breach's width, metres.
+  breach_min: f32 = 1.5
+  breach_max: f32 = 4
+  /// What an exposed (outside) corner loses beyond its walls, as a height fraction, and how far
+  /// along the walls the loss reaches, metres.
+  corner_drop: f32 = 0.2
+  corner_reach: f32 = 3
+  /// A section asked to stand lower than this fraction is left out.
+  min_height: f32 = 0.12
+  /// How much of its own height a member may sink into the ground to stand lower than it is.
+  max_sink: f32 = 0.5
+  /// The chance a wall still standing gets an opening.
+  opening: f32 = 0.6
+  /// Debris pieces per module of wall fully brought down, how far past the wall face they spread
+  /// (metres), and the share that falls outward.
+  debris_per_module: f32 = 3
+  debris_spread: f32 = 1.5
+  debris_outward: f32 = 0.6
+  /// The sand drift a wall asks of the terrain: its height against a windward face and a lee
+  /// face, metres, and how far it reaches from the face.
+  drift_windward: f32 = 0.34
+  drift_lee: f32 = 0.22
+  drift_reach: f32 = 1.6
+  /// How far every piece is set into the ground, metres, so that nothing floats on a slope.
+  embed: f32 = 0.05
+}
+
+/// A kit: one profile's members and the rules its buildings are assembled by.
+struct RuinKit @version(1) {
+  /// "engine.ruin-kit.v1".
+  format: string
+  name: string
+  /// "ashlar", "brick": the generator's parameter set the members were made with.
+  profile: string
+  /// Every straight member is a whole number of modules long, metres.
+  module: f32 = 2
+  /// The wall's thickness and its intact height, metres.
+  thickness: f32 = 0.64
+  wall_height: f32 = 2.4
+  /// The profile's course height and block length, metres: carried for a block-by-block
+  /// representation and a far tier, not read by the assembler.
+  course_height: f32 = 0.3
+  block_length: f32 = 0.6
+  members: RuinMember[]
+  rules: RuinRules
+}
+
+/// Ruined buildings over a square of the endless desert's tiles: a building on each of the
+/// `count` tiles the world seed ranks first (or on every tile the `density` admits), each one
+/// assembled from the kit by the seed and its tile. The expansion is a function of the fields and
+/// the kit alone, so the same file places the same ruins on every machine.
+struct RuinScatter @version(1) {
+  name: string
+  /// The kit (`RuinKit`), relative to the scene file.
+  kit: string
+  /// The world seed. With a tile's coordinates it is the only input a building is drawn from.
+  seed: u64 = 1
+  /// A tile's edge, metres: a building, its debris and its drift fit inside its tile.
+  tile_size: f32 = 32
+  /// The tiles, both corners included: tile (x, z) covers [x, x + 1) * tile_size in x and z.
+  tile_min: i32[2]
+  tile_max: i32[2]
+  /// How many buildings: the tiles of the square whose rank under the seed is lowest. Zero uses
+  /// `density` instead.
+  count: u32 = 0
+  /// The share of tiles that hold a building, the endless desert's rule.
+  density: f32 = 0.05
+  /// The direction the prevailing wind blows from, degrees about +y from +x.
+  wind_deg: f32 = 0
+}
+
+/// What the assembler said about one placed piece.
+struct RuinTag @version(1) {
+  /// Which building of the file, which wall of it, and which slot along the wall.
+  building: u32 = 0
+  wall: u32 = 0
+  slot: u32 = 0
+  kind: RuinPieceKind = Section
+  /// The height the ruin rule asked of the piece, as a fraction of the intact wall.
+  height: f32 = 1
+}
+
+/// One building the assembler placed.
+struct RuinSite @version(1) {
+  /// The building's own seed, from the world seed and the tile: 16 lower-case hex digits.
+  seed: string
+  tile: i32[2]
+  /// "rectangle", "l", "u" or "courtyard".
+  shape: string
+  /// The footprint's origin on the ground and its yaw about +y.
+  origin: vec3
+  yaw_deg: f32 = 0
+  walls: u32 = 0
+  instances: u32 = 0
+}
+
+/// The sand a wall asks the terrain to drift against it (plan 05 §5.13): a declaration for the
+/// deformable-surface system, not sand. The drift stands `height` against the face and falls to
+/// nothing `reach` metres out from it.
+struct SandDrift @version(1) {
+  building: u32 = 0
+  wall: u32 = 0
+  /// The wall face's ends, x and z, metres.
+  from: vec2
+  to: vec2
+  /// The face's outward normal, x and z.
+  normal: vec2
+  height: f32 = 0.3
+  reach: f32 = 1.6
+  windward: bool = false
 }
 
 /// Instances of one mesh scattered over an annulus, from a seed: the oasis's palms are one of
@@ -87,6 +272,25 @@ struct Scatter @version(1) {
   /// Stand each instance on the terrain's surface, `y` metres above it (negative sinks it).
   ground: bool = true
   y: f32 = 0
+}
+
+/// One placement of one mesh.
+struct Instance @version(2) {
+  /// Index into the scene's `meshes`.
+  mesh: u32 = 0
+  name: string
+  translation: vec3
+  rotation: quat
+  /// Degrees about +y, applied after `rotation`: the spelling a placement on a map wants.
+  yaw_deg: f32 = 0
+  /// Absent: 1, 1, 1.
+  scale: vec3?
+  /// `translation.y` is metres above the terrain's surface at (x, z) rather than absolute.
+  ground: bool = false
+  animation: Animation?
+  /// What the ruin assembler said about this piece, when it placed it: carried for the host and
+  /// never read by the renderer.
+  ruin: RuinTag? @since(2)
 }
 
 /// A rock ridge: a raised band along a segment, full height on the segment and falling to nothing
@@ -126,7 +330,7 @@ struct Terrain @version(1) {
 }
 
 /// A scene: meshes, placements of them, and an optional terrain.
-struct Scene @version(2) {
+struct Scene @version(3) {
   /// "engine.scene.v1". Empty is accepted, for the files written before the field existed.
   format: string
   name: string
@@ -140,6 +344,12 @@ struct Scene @version(2) {
   /// its first frame rather than at the orbit, which frames the whole scene's bounds and for a
   /// 5 km desert is 9 km away. Empty: the orbit.
   camera_path: string @since(2)
+  /// Ruined buildings assembled from kits when the scene is read, standing on the terrain.
+  ruins: RuinScatter[] @since(3)
+  /// What a scene fragment written by the assembler (`engine-content ruins`) says about its
+  /// buildings and the sand their walls ask for: carried, never read by the renderer.
+  ruin_sites: RuinSite[] @since(3)
+  sand_drifts: SandDrift[] @since(3)
 }
 
 /// Where the owner's replacements for a scene's placeholders are: a local file, never committed.

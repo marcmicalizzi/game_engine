@@ -157,6 +157,10 @@ struct SceneDesc {
   // path of its own starts a camera — engine-view's `--interactive` — read with `read_camera_path`
   // once the terrain it may stand on is known.
   std::string camera_path;
+  // What the file's `ruins` entries assembled into `instances` (docs/subsystems/ruins.md): the
+  // buildings and the pieces, for a host's summary. Zero for a scene with none.
+  u32 ruin_buildings = 0;
+  u32 ruin_instances = 0;
 };
 
 // What `read_scene_file` may be told besides the path.
@@ -169,7 +173,9 @@ struct SceneFileOptions {
 
 // Reads a scene file (schema `engine.scene.Scene`): meshes with an optional name, content hash,
 // overlay hash and fit; instances with a translation, rotation, yaw, scale and an optional height
-// above the terrain; seeded scatters of instances; and an optional terrain. The oldest spelling —
+// above the terrain; seeded scatters of instances; ruined buildings assembled from a kit over the
+// terrain's tiles (`ruins`, the ruins capability: the kit's meshes follow the file's own, and a
+// build without the capability refuses the file); and an optional terrain. The oldest spelling —
 // `{"meshes":[{"path":"..."}],"instances":[{"mesh":0,"translation":[x,y,z],"rotation":[x,y,z,w],
 // "scale":[x,y,z]}]}` — is a valid scene of the same type and reads exactly as it always did.
 // Mesh paths resolve against the file's own directory, so a scene file is movable as a unit; an
