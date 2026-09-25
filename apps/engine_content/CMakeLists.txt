@@ -4,8 +4,10 @@
 # manifest of meshes, `texture` builds one image into a block-compressed `.tex` (and `build` does it
 # for every image a mesh samples), and `info` and `stats` read one back. `limit-dump` is the
 # limit-surface conformance exchange with the authoring side, `normal-cases` its footpoint-normal
-# edge cases one by one, and `tissue` reads, validates and reports tissue definitions
-# (docs/subsystems/tissue.md).
+# edge cases one by one, `tissue` reads, validates and reports tissue definitions
+# (docs/subsystems/tissue.md), `ruins` assembles ruined buildings (docs/subsystems/ruins.md), and
+# `city` makes Island City's plan, buildings, proxy fragments and E18's yield
+# (docs/subsystems/city.md).
 #
 # `tissue` needs the tissue capability, which needs physics, and both are optional (ADR-0027). An
 # app is not a capability and cannot declare `engine_capability_requires`, so it does what
@@ -33,6 +35,13 @@ if(TARGET engine::terrain)
   list(APPEND _content_deps terrain terrain_schemas schema schemas)
   list(APPEND _content_tests tests/terrain_tests.cpp)
 endif()
+# `city` the same way, with the city capability (docs/subsystems/city.md): the plan, one lot's
+# building, the proxy fragment and E18's yield. Its golden hashes live in tests/determinism_tests.cpp
+# beside the ruins', and are compiled only where the command exists.
+if(TARGET engine::city)
+  list(APPEND _content_deps city schema schemas)
+  list(APPEND _content_tests tests/city_tests.cpp)
+endif()
 # The audio capability's derived step, the `.clip` (docs/subsystems/audio.md, "Built clips"), the
 # same way: `build` of a WAV, FLAC or MP3, a manifest's "clips" and `info` of a `.clip` exist when
 # this configuration has audio. content_build holds the step's table, not the capability, so it is
@@ -44,8 +53,8 @@ endif()
 list(REMOVE_DUPLICATES _content_deps)
 
 engine_app(NAME engine_content OUTPUT engine-content
-  SOURCES main.cpp tissue_commands.cpp ruins_commands.cpp limit_dump.cpp normal_cases.cpp
-          clip_commands.cpp terrain_commands.cpp
+  SOURCES main.cpp tissue_commands.cpp ruins_commands.cpp city_commands.cpp limit_dump.cpp
+          normal_cases.cpp clip_commands.cpp terrain_commands.cpp
   DEPS ${_content_deps}
   E2E_TESTS ${_content_tests})
 
@@ -66,6 +75,12 @@ if(TARGET engine::terrain)
   if(TARGET engine_engine_content_tests)
     target_compile_definitions(engine_engine_content_tests PRIVATE ENGINE_CONTENT_TERRAIN=1
       ENGINE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+  endif()
+endif()
+if(TARGET engine::city)
+  target_compile_definitions(engine_engine_content PRIVATE ENGINE_CONTENT_CITY=1)
+  if(TARGET engine_engine_content_tests)
+    target_compile_definitions(engine_engine_content_tests PRIVATE ENGINE_CONTENT_CITY=1)
   endif()
 endif()
 if(TARGET engine::audio)

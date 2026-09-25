@@ -370,3 +370,67 @@ TEST_CASE("engine-content: ruins laid block by block are the committed blocks on
       "the laid blocks do not match the committed hash; this build's is 0x" << hashes[0] << "ull");
 }
 #endif
+
+#if ENGINE_CONTENT_CITY
+// Island City's rows (docs/subsystems/city.md, "Determinism"): an island at seed 2026 with a 1.2 km
+// radius planned on one thread and on three, a district's proxy fragment, and E18's yield over 70
+// of its buildings on one thread and on three. The plan and the grammar decide on integers only —
+// centimetres, Q16 fractions, the engine's hash, a 64-step Q14 turn table — so the same numbers
+// hold on every toolchain. A change to the plan's or the grammar's rules or draws moves them; say
+// so in the commit and take the new numbers from a failing run's messages.
+//
+// Taken on Clang 18 (linux-clang-debug) and reproduced by GCC 13 (linux-gcc-release) on 2026-09-25;
+// MSVC has not run them yet, and its first run is the third toolchain's check.
+constexpr u64 k_city_plan_golden = 0x32c30ea2fc92c422ull;
+constexpr u64 k_city_fragment_golden = 0x1c9ac28f0ac7f795ull;
+constexpr u64 k_city_yield_golden = 0x84abd2d90209a7f4ull;
+
+TEST_CASE("engine-content: city makes the committed plan, fragment and yield on every toolchain") {
+  const test::TempDir tmp("engine_content_city_determinism");
+  {
+    std::ofstream params(tmp.file("island.json"), std::ios::binary);
+    params << "{\"seed\": 2026, \"radius\": 1200}\n";
+  }
+  auto hash_of = [](const Output& o) {
+    JsonValue summary;
+    REQUIRE_MESSAGE(parse_json(o.text, summary).ok, o.text);
+    REQUIRE(summary.find("hash") != nullptr);
+    return std::string(summary.find("hash")->as_string());
+  };
+  auto golden = [](u64 v) {
+    char text[17];
+    std::snprintf(text, sizeof(text), "%016llx", static_cast<unsigned long long>(v));
+    return std::string(text);
+  };
+  const char* jobs[2] = {"1", "3"};
+  std::string plans[2];
+  for (u32 t = 0; t < 2; ++t) {
+    const Output made = run(
+        {"city", "plan", tmp.file("island.json"), "--out", tmp.file("plan"), "--jobs", jobs[t]});
+    REQUIRE_MESSAGE(made.exit_code == 0, made.text);
+    plans[t] = hash_of(made);
+  }
+  CHECK(plans[0] == plans[1]);
+  CHECK_MESSAGE(
+      plans[0] == golden(k_city_plan_golden),
+      "the plan does not match the committed hash; this build's is 0x" << plans[0] << "ull");
+  const Output fragment = run({"city", "fragment", "--plan", tmp.file("plan"), "--district", "1",
+                               "--out", tmp.file("district.json"), "--jobs", "3"});
+  REQUIRE_MESSAGE(fragment.exit_code == 0, fragment.text);
+  const std::string frag = hash_of(fragment);
+  CHECK_MESSAGE(
+      frag == golden(k_city_fragment_golden),
+      "the fragment does not match the committed hash; this build's is 0x" << frag << "ull");
+  std::string yields[2];
+  for (u32 t = 0; t < 2; ++t) {
+    const Output y =
+        run({"city", "yield", "--plan", tmp.file("plan"), "--buildings", "70", "--jobs", jobs[t]});
+    REQUIRE_MESSAGE(y.exit_code == 0, y.text);
+    yields[t] = hash_of(y);
+  }
+  CHECK(yields[0] == yields[1]);
+  CHECK_MESSAGE(
+      yields[0] == golden(k_city_yield_golden),
+      "the yield does not match the committed hash; this build's is 0x" << yields[0] << "ull");
+}
+#endif

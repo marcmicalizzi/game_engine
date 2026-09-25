@@ -24,9 +24,9 @@
 // command prints one JSON line per result on stdout, so scripts and agents read the numbers without
 // parsing prose; everything else goes through the log to stderr.
 //
-// `tissue`, `limit-dump` and `ruins` live beside this file (content_commands.h): the tissue
-// definition's import, info, validators and report, the limit-surface conformance exchange, and
-// the ruin assembler's scene fragment.
+// `tissue`, `limit-dump`, `ruins` and `city` live beside this file (content_commands.h): the
+// tissue definition's import, info, validators and report, the limit-surface conformance exchange,
+// the ruin assembler's scene fragment, and Island City's plan, buildings, proxy fragment and yield.
 //
 // The build itself — the rules, the per-primitive jobs, the manifest and its identity skip, the
 // texture step, and the metrics `stats` prints — is `domain/content_build`, because engine-host's
@@ -154,6 +154,10 @@ const char* k_usage =
     "  terrain <scene.json> --tile <x,z> [--time <s>]   one tile of the scene's dune field at a\n"
     "                                          game time as one JSON line (terrain --help);\n"
     "                                          present with the terrain capability\n"
+    "  city params|plan|building|fragment|yield ...   Island City: the whole-island plan, one\n"
+    "                                          lot's building, the proxy scene fragment and E18's\n"
+    "                                          yield (city --help); present with the city\n"
+    "                                          capability\n"
     "  --version                              the commit this binary was built from, as JSON\n"
     "\n"
     "the build-all manifest:\n"
@@ -1189,5 +1193,6 @@ int main(int argc, char** argv) {
   if (command == "ruins-kit") return content::ruins_kit_command(argc, argv);
   if (command == "ruins-block-kit") return content::ruins_block_kit_command(argc, argv);
   if (command == "terrain") return content::terrain_command(argc, argv);
+  if (command == "city") return content::city_command(argc, argv);
   return usage("unknown command");
 }

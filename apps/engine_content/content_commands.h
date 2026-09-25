@@ -16,6 +16,10 @@
 //   terrain                                       one tile of a scene's dune field at a game
 //                                                 time (docs/subsystems/terrain.md), present when
 //                                                 this build has the terrain capability
+//   city params|plan|building|fragment|yield      Island City's plan, one lot's building, the proxy
+//                                                 scene fragment and E18's yield
+//                                                 (docs/subsystems/city.md), present when this
+//                                                 build has the city capability
 //
 // Each prints one JSON line per result on stdout and returns the process exit code: 0 ok, 1 a file
 // could not be read, written or validated, 2 usage.
@@ -44,5 +48,6 @@ int ruins_command(int argc, char** argv);
 int ruins_kit_command(int argc, char** argv);
 int ruins_block_kit_command(int argc, char** argv);
 int terrain_command(int argc, char** argv);
+int city_command(int argc, char** argv);
 
 }  // namespace engine::content
