@@ -27,10 +27,19 @@ if(TARGET engine::ruins)
   list(APPEND _content_deps ruins schema schemas)
   list(APPEND _content_tests tests/ruins_tests.cpp)
 endif()
+# The audio capability's derived step, the `.clip` (docs/subsystems/audio.md, "Built clips"), the
+# same way: `build` of a WAV, FLAC or MP3, a manifest's "clips" and `info` of a `.clip` exist when
+# this configuration has audio. content_build holds the step's table, not the capability, so it is
+# this app that links audio and hands the step over (clip_commands.cpp).
+if(TARGET engine::audio)
+  list(APPEND _content_deps audio)
+  list(APPEND _content_tests tests/clip_tests.cpp)
+endif()
 list(REMOVE_DUPLICATES _content_deps)
 
 engine_app(NAME engine_content OUTPUT engine-content
   SOURCES main.cpp tissue_commands.cpp ruins_commands.cpp limit_dump.cpp normal_cases.cpp
+          clip_commands.cpp
   DEPS ${_content_deps}
   E2E_TESTS ${_content_tests})
 
@@ -44,6 +53,14 @@ if(TARGET engine::ruins)
   target_compile_definitions(engine_engine_content PRIVATE ENGINE_CONTENT_RUINS=1)
   if(TARGET engine_engine_content_tests)
     target_compile_definitions(engine_engine_content_tests PRIVATE ENGINE_CONTENT_RUINS=1)
+  endif()
+endif()
+if(TARGET engine::audio)
+  target_compile_definitions(engine_engine_content PRIVATE ENGINE_CONTENT_AUDIO=1)
+  if(TARGET engine_engine_content_tests)
+    target_compile_definitions(engine_engine_content_tests PRIVATE ENGINE_CONTENT_AUDIO=1)
+    # The clip test reads a built `.clip` back, and builds one itself to compare.
+    target_link_libraries(engine_engine_content_tests PRIVATE engine::audio)
   endif()
 endif()
 # The end-to-end tests write their own glTF fixtures, with PNGs that foundation/image encodes, so

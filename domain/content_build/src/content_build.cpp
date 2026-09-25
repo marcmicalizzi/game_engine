@@ -666,7 +666,7 @@ jobs::JobSystemConfig job_config(u32 worker_count) {
 // Reads the manifest and resolves every path against the manifest's own directory, so a manifest
 // is movable as a unit and says the same thing from any working directory.
 bool read_manifest(const std::string& path, const MeshOptions& defaults, Vector<ManifestEntry>& out,
-                   std::string& error) {
+                   std::string& error, std::span<const char* const> other_arrays) {
   std::string text;
   const io::Status status = io::read_file(path, text);
   if (status != io::Status::Ok) {
@@ -681,6 +681,13 @@ bool read_manifest(const std::string& path, const MeshOptions& defaults, Vector<
     return false;
   }
   const JsonValue* meshes = document.is_object() ? document.find("meshes") : nullptr;
+  if (meshes == nullptr && document.is_object()) {
+    // A manifest of a derived step's entries alone (a list of clips) has no meshes to build.
+    for (const char* other : other_arrays) {
+      const JsonValue* array = document.find(other);
+      if (array != nullptr && array->is_array()) return true;
+    }
+  }
   if (meshes == nullptr || !meshes->is_array()) {
     error = "manifest '" + path + "' has no \"meshes\" array";
     return false;
@@ -1022,6 +1029,133 @@ void run_mesh_tasks(std::span<MeshTask> tasks, jobs::JobSystem& pool) {
   jobs::Counter counter;
   for (MeshTask& task : tasks)
     job_list.push_back(jobs::Job{run_mesh_task, &task, &counter});
+  if (job_list.empty()) return;
+  pool.schedule(jobs::Pool::Performance,
+                std::span<const jobs::Job>(job_list.data(), job_list.size()), counter);
+  pool.wait(counter);
+}
+
+// ---- derived steps ------------------------------------------------------------------------------
+
+bool read_derived_entries(const std::string& manifest, const DerivedStep& step,
+                          Vector<DerivedEntry>& out, std::string& error) {
+  out.clear();
+  std::string text;
+  const io::Status status = io::read_file(manifest, text);
+  if (status != io::Status::Ok) {
+    error = "cannot read manifest '" + manifest + "': " + io::status_name(status);
+    return false;
+  }
+  JsonValue document;
+  const JsonParseResult parsed = parse_json(text, document);
+  if (!parsed.ok) {
+    error = "manifest '" + manifest + "' line " + std::to_string(parsed.line) + " column " +
+            std::to_string(parsed.column) + ": " + parsed.message;
+    return false;
+  }
+  const JsonValue* array = document.is_object() ? document.find(step.manifest_array) : nullptr;
+  if (array == nullptr) return true;
+  if (!array->is_array()) {
+    error =
+        "manifest '" + manifest + "' has a \"" + step.manifest_array + "\" that is not an array";
+    return false;
+  }
+  const std::string dir(io::parent_path(manifest));
+  auto resolve = [&dir](std::string_view relative) {
+    return io::is_absolute_path(relative) ? io::normalize_path(relative)
+                                          : io::join_path(dir, relative);
+  };
+  for (usize i = 0; i < array->size(); ++i) {
+    const JsonValue& entry = (*array)[i];
+    const std::string at =
+        "manifest '" + manifest + "' " + step.manifest_array + " entry " + std::to_string(i);
+    if (!entry.is_object()) {
+      error = at + " is not an object";
+      return false;
+    }
+    const JsonValue* source = entry.find("source");
+    if (source == nullptr || !source->is_string()) {
+      error = at + " has no \"source\" string";
+      return false;
+    }
+    DerivedEntry built;
+    built.source = resolve(source->as_string());
+    if (const JsonValue* output = entry.find("output"); output != nullptr) {
+      if (!output->is_string()) {
+        error = at + " has an \"output\" that is not a string";
+        return false;
+      }
+      built.output = resolve(output->as_string());
+    }
+    out.push_back(std::move(built));
+  }
+  return true;
+}
+
+void run_derived_task(void* data) {
+  DerivedTask& task = *static_cast<DerivedTask*>(data);
+  const DerivedStep& step = *task.step;
+  const DerivedEntry& entry = *task.entry;
+  std::string bytes;
+  const io::Status status = io::read_file(entry.source, bytes);
+  if (status != io::Status::Ok) {
+    task.error.rule = k_rule_source_unreadable;
+    task.error.message = "cannot read '" + entry.source + "': " + io::status_name(status);
+    task.state = TaskState::Failed;
+    return;
+  }
+  // The identity first, whatever the destination: it addresses the cache entry, and the output
+  // records it so that a later build can tell it is still the answer.
+  const std::span<const u8> source(reinterpret_cast<const u8*>(bytes.data()), bytes.size());
+  task.source_bytes = bytes.size();
+  task.source_hash = hash_bytes(source.data(), source.size());
+  task.build_key = step.build_key(task.source_hash);
+  task.path = entry.output.empty() ? step.cache_path(*task.ddc, task.build_key) : entry.output;
+
+  io::FileInfo info;
+  if (!task.force) {
+    u64 recorded_source = 0;
+    u64 recorded_key = 0;
+    if (step.identity(task.path, recorded_source, recorded_key) && recorded_key != 0 &&
+        recorded_source == task.source_hash && recorded_key == task.build_key) {
+      if (io::stat_file(task.path, info) == io::Status::Ok) task.bytes = info.size;
+      task.state = TaskState::Skipped;
+      return;
+    }
+  }
+  if (entry.output.empty()) {
+    const io::Status made = io::make_directories(io::parent_path(task.path));
+    if (made != io::Status::Ok) {
+      task.error.rule = k_rule_derived_build;
+      task.error.message = "cannot create '" + std::string(io::parent_path(task.path)) +
+                           "': " + io::status_name(made);
+      task.state = TaskState::Failed;
+      return;
+    }
+  }
+  const i64 start_ns = time::monotonic_ns();
+  std::string message;
+  task.report = JsonValue::object();
+  if (!step.build(source, task.source_hash, task.build_key, task.path, task.report, message)) {
+    task.error.rule = k_rule_derived_build;
+    task.error.message = entry.source + ": " + message;
+    task.state = TaskState::Failed;
+    return;
+  }
+  task.build_ms = static_cast<f64>(time::monotonic_ns() - start_ns) / 1.0e6;
+  if (io::stat_file(task.path, info) == io::Status::Ok) task.bytes = info.size;
+  task.state = TaskState::Built;
+  ENGINE_LOG_DEBUG(log_content, "derived output built", log::field("step", step.name),
+                   log::field("source", entry.source), log::field("path", task.path),
+                   log::field("bytes", task.bytes));
+}
+
+void run_derived_tasks(std::span<DerivedTask> tasks, jobs::JobSystem& pool) {
+  Vector<jobs::Job> job_list;
+  job_list.reserve(static_cast<u32>(tasks.size()));
+  jobs::Counter counter;
+  for (DerivedTask& task : tasks)
+    job_list.push_back(jobs::Job{run_derived_task, &task, &counter});
   if (job_list.empty()) return;
   pool.schedule(jobs::Pool::Performance,
                 std::span<const jobs::Job>(job_list.data(), job_list.size()), counter);

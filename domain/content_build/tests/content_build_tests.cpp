@@ -3,6 +3,8 @@
 // through the command line, byte for byte — so these cases pin what a second host relies on: the
 // build key's two moves, the spellings, a manifest's resolution, the identity skip and `force`,
 // the metrics of a container, and the protocol's option defaults agreeing with the build's.
+#include <core/hash/hash.h>
+#include <core/jobs/job_system.h>
 #include <core/json/json.h>
 #include <core/schema/json_reflect.h>
 #include <domain/content_build/container_stats.h>
@@ -297,4 +299,138 @@ TEST_CASE("content_build: the protocol's ContentBuildOptions states the build's 
   CHECK(wire.atlas_proxy == build.atlas.proxy_triangles);
   CHECK(wire.atlas_chart_cost == build.atlas.max_chart_cost_milli);
   CHECK(wire.atlas_supersample == build.atlas.supersample);
+}
+
+// ---- derived steps ------------------------------------------------------------------------------
+//
+// The table a capability hands the build (the audio capability's `.clip` is the one in the tree,
+// held to its rules end to end by apps/engine_content/tests/clip_tests.cpp). A stand-in step here
+// holds the orchestration to the rules without any capability: the source's identity, the skip,
+// `force`, the manifest's array and its resolution, and the two failures.
+
+namespace {
+
+// "Builds" a source by writing its bytes behind the 16-byte identity it was given.
+bool fake_accepts(std::string_view path) { return path.ends_with(".txt"); }
+
+u64 fake_key(u64 source_hash) { return source_hash ^ 0x5a5a5a5a5a5a5a5aull; }
+
+std::string fake_path(std::string_view ddc, u64 key) {
+  return io::join_path(io::join_path(ddc, "fake"), std::to_string(key) + ".out");
+}
+
+bool fake_identity(const std::string& output, u64& source_hash, u64& build_key) {
+  std::string bytes;
+  if (io::read_file(output, bytes) != io::Status::Ok || bytes.size() < 16) return false;
+  std::memcpy(&source_hash, bytes.data(), 8);
+  std::memcpy(&build_key, bytes.data() + 8, 8);
+  return true;
+}
+
+bool fake_build(std::span<const u8> source, u64 source_hash, u64 build_key,
+                const std::string& output, JsonValue& report, std::string& error) {
+  if (source.size() >= 3 && std::memcmp(source.data(), "bad", 3) == 0) {
+    error = "not a source this step takes";
+    return false;
+  }
+  std::string bytes(16 + source.size(), '\0');
+  std::memcpy(bytes.data(), &source_hash, 8);
+  std::memcpy(bytes.data() + 8, &build_key, 8);
+  std::memcpy(bytes.data() + 16, source.data(), source.size());
+  if (io::write_file_atomic(output, bytes) != io::Status::Ok) {
+    error = "cannot write";
+    return false;
+  }
+  report.set("length", JsonValue(static_cast<u64>(source.size())));
+  return true;
+}
+
+const content_build::DerivedStep k_fake_step{"fake",     "fakes",        &fake_accepts, &fake_key,
+                                             &fake_path, &fake_identity, &fake_build};
+
+}  // namespace
+
+TEST_CASE("content_build: a derived step builds a manifest's entries once and skips them after") {
+  const test::TempDir tmp("content_build_derived");
+  REQUIRE(tmp.ok());
+  REQUIRE(write_text(tmp.file("a.txt"), "alpha"));
+  REQUIRE(write_text(tmp.file("b.txt"), "bravo"));
+  REQUIRE(write_text(tmp.file("bad.txt"), "bad input"));
+  REQUIRE(io::make_directories(tmp.file("out")) == io::Status::Ok);
+  const std::string manifest = tmp.file("manifest.json");
+  REQUIRE(write_text(manifest,
+                     "{\"fakes\":[{\"source\":\"a.txt\"},"
+                     "{\"source\":\"b.txt\",\"output\":\"out/b.out\"},"
+                     "{\"source\":\"bad.txt\",\"output\":\"out/bad.out\"},"
+                     "{\"source\":\"missing.txt\",\"output\":\"out/m.out\"}]}"));
+
+  // A manifest of a step's entries alone has no meshes, when the host names the step's array.
+  const content_build::MeshOptions defaults;
+  Vector<content_build::ManifestEntry> meshes;
+  std::string message;
+  CHECK_FALSE(content_build::read_manifest(manifest, defaults, meshes, message));
+  const char* const arrays[] = {"fakes"};
+  REQUIRE(content_build::read_manifest(manifest, defaults, meshes, message, arrays));
+  CHECK(meshes.empty());
+
+  Vector<content_build::DerivedEntry> entries;
+  REQUIRE(content_build::read_derived_entries(manifest, k_fake_step, entries, message));
+  REQUIRE(entries.size() == 4u);
+  CHECK(entries[0].source == io::join_path(tmp.path(), "a.txt"));
+  CHECK(entries[0].output.empty());
+  CHECK(entries[1].output == io::join_path(tmp.path(), "out/b.out"));
+
+  const std::string ddc = tmp.file("ddc");
+  jobs::JobSystem pool(content_build::job_config(2));
+  auto run = [&](bool force) {
+    Vector<content_build::DerivedTask> tasks;
+    for (const content_build::DerivedEntry& entry : entries) {
+      content_build::DerivedTask task;
+      task.step = &k_fake_step;
+      task.entry = &entry;
+      task.ddc = &ddc;
+      task.force = force;
+      tasks.push_back(std::move(task));
+    }
+    content_build::run_derived_tasks(
+        std::span<content_build::DerivedTask>(tasks.data(), tasks.size()), pool);
+    return tasks;
+  };
+
+  const Vector<content_build::DerivedTask> first = run(false);
+  CHECK(first[0].state == content_build::TaskState::Built);
+  CHECK(first[0].source_hash == hash_bytes("alpha", 5));
+  CHECK(first[0].build_key == fake_key(first[0].source_hash));
+  CHECK(first[0].path == fake_path(ddc, first[0].build_key));  // the cache's, its directory made
+  CHECK(first[0].bytes == 21u);
+  u64 length = 0;
+  REQUIRE(first[0].report.find("length") != nullptr);
+  CHECK(first[0].report.find("length")->get_u64(length));
+  CHECK(length == 5u);
+  CHECK(first[1].state == content_build::TaskState::Built);
+  CHECK(first[2].state == content_build::TaskState::Failed);
+  CHECK(std::string(first[2].error.rule) == content_build::k_rule_derived_build);
+  CHECK(first[3].state == content_build::TaskState::Failed);
+  CHECK(std::string(first[3].error.rule) == content_build::k_rule_source_unreadable);
+
+  const Vector<content_build::DerivedTask> second = run(false);
+  CHECK(second[0].state == content_build::TaskState::Skipped);
+  CHECK(second[1].state == content_build::TaskState::Skipped);
+  CHECK(second[1].bytes == 21u);
+
+  const Vector<content_build::DerivedTask> forced = run(true);
+  CHECK(forced[0].state == content_build::TaskState::Built);
+  CHECK(forced[1].state == content_build::TaskState::Built);
+
+  // A changed source is a new key: built, into a new cache entry.
+  REQUIRE(write_text(tmp.file("a.txt"), "alpha, again"));
+  const Vector<content_build::DerivedTask> changed = run(false);
+  CHECK(changed[0].state == content_build::TaskState::Built);
+  CHECK(changed[0].path != first[0].path);
+  CHECK(changed[1].state == content_build::TaskState::Skipped);
+
+  // An array that is not one is refused, naming the manifest.
+  REQUIRE(write_text(manifest, "{\"fakes\":5}"));
+  CHECK_FALSE(content_build::read_derived_entries(manifest, k_fake_step, entries, message));
+  CHECK(message.find("manifest") != std::string::npos);
 }

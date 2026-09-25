@@ -154,6 +154,12 @@ struct ClipStoreConfig {
   // calling thread, which is what tests and tools want; with a job system, decodes go to its
   // Efficiency pool.
   jobs::JobSystem* jobs = nullptr;
+  // The derived-data root (`<repo>/ddc`, or wherever the game keeps its built data). With one, a
+  // clip loaded from an encoded source is first looked for as `<ddc>/clips/<key>.clip`, the
+  // content build's decode of the same bytes (clip_file.h): found, it is a copy, or a stream by
+  // range, and nothing is decoded. Empty looks for nothing. The store reads the cache and never
+  // writes it: `engine-content build` fills it.
+  std::string ddc_root;
 };
 
 class ClipStore {
@@ -173,6 +179,8 @@ class ClipStore {
   // The same from a file (a native path), read on the decode job. A clip over the stream threshold
   // is not read whole: voices stream it from the file by range. A clip loaded this way is the one
   // kind the budget may evict, since the file is still there to stream from and decode again.
+  // The file may be a `.clip` the content build wrote (told by its magic, not its name): then it
+  // is copied, or streamed by range, and never decoded.
   ClipHandle load_file(const Id128& key, std::string_view path);
 
   // A clip from samples already at the mix rate — generated audio, tests. Ready at once, or
@@ -217,6 +225,9 @@ class ClipStore {
   u32 evictions() const noexcept { return evictions_; }
   // Evicted clips decoded again because a voice was started on them.
   u32 reloads() const noexcept { return reloads_; }
+  // Loads answered by a built `.clip` — named directly, or found in the derived-data cache — with
+  // no decode.
+  u32 built_loads() const noexcept { return built_loads_; }
   // The job system decodes run on, null when they run inline; a mixer's stream fills run there too.
   jobs::JobSystem* jobs() const noexcept { return jobs_; }
 
@@ -236,6 +247,7 @@ class ClipStore {
   jobs::JobSystem* jobs_ = nullptr;
   u64 budget_ = 0;
   u64 stream_threshold_ = 0;
+  std::string ddc_root_;
   Vector<std::unique_ptr<Clip>> clips_;
   HashMap<Id128, u32> by_key_;
   // Clips with a decode job in flight, whose results `update()` takes when they land.
@@ -247,6 +259,7 @@ class ClipStore {
   u32 over_budget_ = 0;
   u32 evictions_ = 0;
   u32 reloads_ = 0;
+  u32 built_loads_ = 0;
   // One count per decode job in flight; `wait()` and the destructor wait on it.
   jobs::Counter pending_;
 };

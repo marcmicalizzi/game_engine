@@ -18,7 +18,9 @@
 //                         uses, and audio.devices' result
 //   [ ] scheduler entry   none here; systems/audio_system registers the emitter system
 //   [ ] render passes     none: audio draws nothing
-//   [ ] derived data      none yet; clips are decoded at load (docs page, "Not yet")
+//   [x] derived data      clip_file.h: the `.clip` a clip's source is decoded into once, keyed
+//                         by its bytes; engine-content builds it through content_build's
+//                         derived-step table, and the clip store loads it as a copy or a stream
 //   [x] protocol methods  audio.devices, register_methods() in protocol.h
 //   [x] tunables          audio.voices, audio.command_queue, audio.clip_budget_mb,
 //                         audio.period_frames, audio.layout, audio.ramp_ms, audio.limiter,
@@ -39,6 +41,7 @@
 // of its inputs is what makes an audio bug replayable.
 
 #include <core/base/types.h>
+#include <domain/audio/clip_file.h>
 #include <domain/audio/clip_store.h>
 #include <domain/audio/commands.h>
 #include <domain/audio/decoder.h>

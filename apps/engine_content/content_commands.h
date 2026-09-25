@@ -16,8 +16,23 @@
 //
 // Each prints one JSON line per result on stdout and returns the process exit code: 0 ok, 1 a file
 // could not be read, written or validated, 2 usage.
+//
+// And the derived steps capabilities hand to the content build (clip_commands.cpp): the audio
+// capability's `.clip`, which `build`, `build-all` and `info` reach through these, present when
+// this build has the audio capability.
+
+#include <domain/content_build/content_build.h>
+
+#include <span>
+#include <string>
 
 namespace engine::content {
+
+// The steps this configuration has, in the order `build` asks them whether they take a source.
+std::span<const content_build::DerivedStep* const> derived_steps();
+// Prints `info` for a `.clip` and sets the exit code; false when `path` is not one (or this build
+// has no audio capability), for `info` to try the next kind.
+bool clip_info(const std::string& path, int& code);
 
 int tissue_command(int argc, char** argv);
 int limit_dump_command(int argc, char** argv);

@@ -275,9 +275,11 @@ struct ManifestEntry {
 // Reads `{"meshes":[{"source","output","options"}]}` and resolves every path against the
 // manifest's own directory, so a manifest is movable as a unit and says the same thing from any
 // working directory. `defaults` is what an entry's `options` does not say. False, with a sentence
-// naming the manifest and the entry, on the first problem.
+// naming the manifest and the entry, on the first problem. A manifest with no "meshes" array is
+// refused unless it has one of `other_arrays` — a derived step's array (below) — in which case it
+// has no meshes.
 bool read_manifest(const std::string& path, const MeshOptions& defaults, Vector<ManifestEntry>& out,
-                   std::string& error);
+                   std::string& error, std::span<const char* const> other_arrays = {});
 
 enum class TaskState : u8 { Built, Skipped, Failed };
 
@@ -309,5 +311,76 @@ void run_mesh_task(void* data);
 // the per-primitive builds inside a task run in sequence: the manifest is the coarser level and
 // already fills the pool.
 void run_mesh_tasks(std::span<MeshTask> tasks, jobs::JobSystem& pool);
+
+// ---- derived steps a capability supplies (ADR-0027, "a derived content-build step") -------------
+//
+// A capability whose content is worth precomputing — the audio capability's `.clip`, a clip
+// decoded once into the mix format (docs/subsystems/audio.md, "Built clips") — attaches here as a
+// table of functions rather than by being linked into this module: this module is not a
+// capability and must build, and build the same meshes, with every capability switched off, and a
+// capability is declared after it. So the host that has the capability (engine-content, in a
+// configuration with audio) hands the step to the build, and the build runs it over the manifest's
+// entries for it with the rules meshes get: the key a function of the source's bytes and never of
+// a path or a timestamp, an output that records this source and this key skipped, one job per
+// entry, and results read in manifest order.
+
+struct DerivedStep {
+  const char* name = "";            // the step, as a build line names it: "audio"
+  const char* manifest_array = "";  // the manifest array of its entries: "clips"
+  // Whether `engine-content build <path>` runs this step on `path` (by its extension).
+  bool (*accepts)(std::string_view path) = nullptr;
+  // The build key over a source's hash — `hash_bytes` over its bytes as read, the convention every
+  // derived node starts from — the options and the step's own version constant.
+  u64 (*build_key)(u64 source_hash) = nullptr;
+  // Where the output of a key lives under a derived-data root.
+  std::string (*cache_path)(std::string_view ddc, u64 key) = nullptr;
+  // What an output on disk records it was built from. False for none, or one it cannot read.
+  bool (*identity)(const std::string& output, u64& source_hash, u64& build_key) = nullptr;
+  // Builds the source's bytes into `output`, recording `source_hash` and `build_key` in it, and
+  // says what it built in `report` (an object whose keys go into the build line). False, with
+  // `error`, when the source is not one it can build or the output cannot be written.
+  bool (*build)(std::span<const u8> source, u64 source_hash, u64 build_key,
+                const std::string& output, JsonValue& report, std::string& error) = nullptr;
+};
+
+// A derived step's build failed: the source was not one it takes, or the output was not written.
+inline constexpr const char* k_rule_derived_build = "derived.build";
+// A source that could not be read (a mesh's own failure of the same kind says the same).
+inline constexpr const char* k_rule_source_unreadable = "source.unreadable";
+
+struct DerivedEntry {
+  std::string source;  // resolved against the manifest's directory
+  std::string output;  // likewise; empty means "the derived-data cache"
+};
+
+// The step's array of `{"source","output"}` from a manifest, resolved as meshes are; an absent
+// array is no entries. False, with a sentence naming the manifest and the entry, on a problem.
+bool read_derived_entries(const std::string& manifest, const DerivedStep& step,
+                          Vector<DerivedEntry>& out, std::string& error);
+
+// One derived output in flight; everything a job writes lives here.
+struct DerivedTask {
+  const DerivedStep* step = nullptr;
+  const DerivedEntry* entry = nullptr;
+  const std::string* ddc = nullptr;  // the cache root, for an entry with no output
+  bool force = false;                // build even when the output is already the answer
+  TaskState state = TaskState::Failed;
+  std::string path;  // the output
+  u64 source_hash = 0;
+  u64 build_key = 0;
+  u64 source_bytes = 0;
+  u64 bytes = 0;  // of the output
+  f64 build_ms = 0.0;
+  JsonValue report = JsonValue::object();  // the step's own account of what it built
+  Diagnostic error;
+};
+
+// One task, as a job function (`data` is the `DerivedTask`): reads the source, hashes it, takes the
+// key, and skips the entry when the output already records that source and that key (a zero key is
+// never a match); otherwise builds it. A cache output's directory is made; a named one's must
+// exist.
+void run_derived_task(void* data);
+// Every task as one job on the performance pool, waited for.
+void run_derived_tasks(std::span<DerivedTask> tasks, jobs::JobSystem& pool);
 
 }  // namespace engine::content_build

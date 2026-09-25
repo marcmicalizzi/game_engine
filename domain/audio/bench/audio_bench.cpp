@@ -36,6 +36,8 @@
 //   audio.stream.fill_flac       16-bit stereo FLAC in memory (verbatim subframes: the framing and
 //                                its CRCs, not a predictor — a lower bound on a real FLAC)
 //   audio.stream.fill_resample   the WAV at 44.1 kHz: the linear resampler at its highest order
+//   audio.stream.fill_clip_file  the WAV's built `.clip`, read from the file by range: no decoder,
+//                                twice the bytes of the 16-bit WAV
 
 #include "../tests/audio_test_support.h"
 
@@ -200,7 +202,7 @@ void run_streamed(bench::State& state) {
   state.set_items(voices);
 }
 
-enum class Source { Wav, WavFile, Flac, Resample };
+enum class Source { Wav, WavFile, Flac, Resample, ClipFile };
 
 // One fill of the fill-ahead per iteration: the voice plays it away with the clock stopped, and
 // the next `update()` — the one timed — tops the ring up by the same amount.
@@ -208,11 +210,16 @@ void run_fill(bench::State& state, Source kind) {
   const u32 rate = kind == Source::Resample ? 44100u : k_sample_rate;
   const Vector<f32> pcm = noise(10u * rate, 2, 99);  // ten seconds, looped
   const Vector<i16> s16 = audio::test::to_s16(pcm);
-  const Vector<u8> file =
+  Vector<u8> file =
       kind == Source::Flac ? audio::test::flac_s16(s16, 2) : audio::test::wav_s16(s16, 2, rate);
   const engine::test::TempDir tmp("audio_bench_stream");
   const std::string path = tmp.file("clip.bin");
-  {
+  if (kind == Source::ClipFile) {
+    // The content build's decode of the same WAV: the frames a fill reads as they are.
+    ClipFileData built;
+    build_clip({file.data(), file.size()}, built);
+    write_clip_file(path, built);
+  } else {
     std::ofstream out(path, std::ios::binary);
     out.write(reinterpret_cast<const char*>(file.data()),
               static_cast<std::streamsize>(file.size()));
@@ -220,9 +227,9 @@ void run_fill(bench::State& state, Source kind) {
   ClipStoreConfig store_config;
   store_config.stream_threshold_bytes = 1024;
   ClipStore clips(store_config);
-  const ClipHandle clip = kind == Source::WavFile
-                              ? clips.load_file(Id128{2, 1}, path)
-                              : clips.load(Id128{2, 1}, {file.data(), file.size()});
+  const bool from_file = kind == Source::WavFile || kind == Source::ClipFile;
+  const ClipHandle clip = from_file ? clips.load_file(Id128{2, 1}, path)
+                                    : clips.load(Id128{2, 1}, {file.data(), file.size()});
   MixerConfig config;
   config.voices = 1;
   config.streams = 1;
@@ -256,4 +263,7 @@ ENGINE_BENCH(stream_fill_wav_file, "audio.stream.fill_wav_file") {
 ENGINE_BENCH(stream_fill_flac, "audio.stream.fill_flac") { run_fill(state, Source::Flac); }
 ENGINE_BENCH(stream_fill_resample, "audio.stream.fill_resample") {
   run_fill(state, Source::Resample);
+}
+ENGINE_BENCH(stream_fill_clip_file, "audio.stream.fill_clip_file") {
+  run_fill(state, Source::ClipFile);
 }

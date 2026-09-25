@@ -78,6 +78,10 @@ const char* k_usage =
     "usage: engine-content <command> [options]\n"
     "\n"
     "  build <in.gltf|in.glb> <out.clusters>   import a mesh and write a cluster container\n"
+    "  build <in.wav|flac|mp3> <out.clip>      decode a clip once into the mix format (48 kHz\n"
+    "                                          f32), as the clip store loads it; --cache writes\n"
+    "                                          <ddc>/clips/<key>.clip. The mesh flags below do\n"
+    "                                          not apply. Present with the audio capability\n"
     "      --max-triangles <n>   triangles per cluster (4..256, default 124)\n"
     "      --max-vertices <n>    vertices per cluster (1..255, default 64)\n"
     "      --page-bytes <n>      streaming page target in bytes (default 131072); 0 writes no\n"
@@ -115,7 +119,7 @@ const char* k_usage =
     "                            (default: the machine's performance CPUs)\n"
     "      --strict              treat validation warnings as errors\n"
     "      --log <spec>          log levels, e.g. \"info\" or \"warn,content=debug\"\n"
-    "  build-all <manifest.json>               build every mesh a manifest names\n"
+    "  build-all <manifest.json>               build every mesh (and clip) a manifest names\n"
     "      --cache               entries with no \"output\" go to the derived-data cache\n"
     "      --page-bytes <n>      the default for entries whose \"options\" do not say\n"
     "      --ddc <dir>, --no-textures, --jobs <n>, --strict, --log <spec>   as above; a mesh\n"
@@ -132,7 +136,7 @@ const char* k_usage =
     "                            tiling texture's levels tile too\n"
     "      --cache               write <ddc>/textures/<key>.tex instead of a named output\n"
     "      --ddc <dir>, --jobs <n>, --log <spec>   as above\n"
-    "  info <file.clusters|file.tex>           print the header, sections, and counts\n"
+    "  info <file.clusters|file.tex|file.clip>  print the header, sections, and counts\n"
     "  stats <file.clusters>                   print the content-build metrics of a container\n"
     "  tissue import|info|validate|report|example ...   tissue definitions (engine-content tissue\n"
     "                                          help); present with the tissue capability\n"
@@ -154,6 +158,10 @@ const char* k_usage =
     "               \"options\":{\"max_triangles\":124,\"max_vertices\":64,\"weld\":true,\n"
     "                           \"page_bytes\":131072,\"atlas\":\"keep\"}}]}\n"
     "  paths are relative to the manifest file; \"output\" and \"options\" are optional.\n"
+    "  with the audio capability, "
+    "\"clips\":[{\"source\":\"theme.wav\",\"output\":\"theme.clip\"}]\n"
+    "  beside (or instead of) \"meshes\": each built once, skipped while its output records the\n"
+    "  same source and build key.\n"
     "\n"
     "examples:\n"
     "  engine-content build content/samples/Suzanne/Suzanne.gltf ddc/suzanne.clusters\n"
@@ -162,6 +170,7 @@ const char* k_usage =
     "  engine-content build-all content/meshes.json --cache --jobs 8\n"
     "  engine-content texture albedo.png albedo.tex --format bc7 --srgb\n"
     "  engine-content texture normal.png normal.tex --normal\n"
+    "  engine-content build music/theme.wav --cache\n"
     "  engine-content info ddc/suzanne.clusters\n"
     "  engine-content stats ddc/suzanne.clusters\n";
 
@@ -388,6 +397,35 @@ int build(const BuildCommandOptions& options) {
   return texture_failures == 0 ? k_exit_ok : k_exit_error;
 }
 
+// A capability's derived output (content_commands.h): one source, always built, into the named
+// output or the cache — the same task a manifest runs, forced, as `build` always builds a mesh.
+int derived_build(const BuildCommandOptions& options, const content_build::DerivedStep& step) {
+  content_build::DerivedEntry entry;
+  entry.source = options.input;
+  if (!options.cache) entry.output = options.output;
+  content_build::DerivedTask task;
+  task.step = &step;
+  task.entry = &entry;
+  task.ddc = &options.ddc;
+  task.force = true;
+  content_build::run_derived_task(&task);
+  if (task.state == TaskState::Failed)
+    return failed(std::string(task.error.rule) + ": " + task.error.message);
+  JsonValue summary = JsonValue::object();
+  summary.set("path", JsonValue(task.path));
+  summary.set("cached", JsonValue(options.cache));
+  summary.set("step", JsonValue(step.name));
+  summary.set("source_hash", JsonValue(task.source_hash));
+  summary.set("build_key", JsonValue(task.build_key));
+  summary.set("source_bytes", JsonValue(task.source_bytes));
+  for (auto [key, value] : task.report.as_object())
+    summary.set(key, value);
+  summary.set("bytes", JsonValue(task.bytes));
+  summary.set("build_ms", JsonValue(task.build_ms));
+  print_json(summary);
+  return k_exit_ok;
+}
+
 int build_command(int argc, char** argv) {
   BuildCommandOptions options;
   Vector<std::string> positional;
@@ -471,7 +509,16 @@ int build_command(int argc, char** argv) {
 
   log::StreamSink stderr_sink(stderr, log::StreamSink::Format::Text);
   start_logging(stderr_sink, options.log_spec);
-  const int code = build(options);
+  // A source a capability's derived step takes (an audio clip) is that step's to build; the mesh
+  // flags do not apply to it.
+  const content_build::DerivedStep* step = nullptr;
+  for (const content_build::DerivedStep* candidate : content::derived_steps()) {
+    if (candidate->accepts(options.input)) {
+      step = candidate;
+      break;
+    }
+  }
+  const int code = step != nullptr ? derived_build(options, *step) : build(options);
   log::remove_sink(&stderr_sink);
   return code;
 }
@@ -494,7 +541,27 @@ int build_all(const BuildAllCommandOptions& options) {
   const i64 start_ns = time::monotonic_ns();
   Vector<ManifestEntry> entries;
   std::string message;
-  if (!read_manifest(options.manifest, options.defaults, entries, message)) return failed(message);
+  // The derived steps this configuration has read their own arrays of the same manifest; a
+  // manifest of nothing but clips has no "meshes".
+  const std::span<const DerivedStep* const> steps = content::derived_steps();
+  Vector<const char*> step_arrays;
+  for (const DerivedStep* step : steps)
+    step_arrays.push_back(step->manifest_array);
+  if (!read_manifest(options.manifest, options.defaults, entries, message,
+                     std::span<const char* const>(step_arrays.data(), step_arrays.size()))) {
+    return failed(message);
+  }
+  Vector<Vector<DerivedEntry>> derived_entries(static_cast<u32>(steps.size()));
+  for (u32 s = 0; s < steps.size(); ++s) {
+    if (!read_derived_entries(options.manifest, *steps[s], derived_entries[s], message))
+      return failed(message);
+    for (const DerivedEntry& entry : derived_entries[s]) {
+      if (entry.output.empty() && !options.cache) {
+        return failed("manifest '" + options.manifest + "' entry '" + entry.source +
+                      "' has no \"output\" and --cache was not given");
+      }
+    }
+  }
   for (const ManifestEntry& entry : entries) {
     if (entry.output.empty() && !options.cache) {
       return failed("manifest '" + options.manifest + "' entry '" + entry.source +
@@ -520,6 +587,19 @@ int build_all(const BuildAllCommandOptions& options) {
 
   jobs::JobSystem pool(job_config(options.jobs));
   run_mesh_tasks(std::span<MeshTask>(tasks.data(), tasks.size()), pool);
+
+  // The derived outputs, one job each, after the meshes: nothing a mesh builds depends on them.
+  Vector<DerivedTask> derived;
+  for (u32 s = 0; s < steps.size(); ++s) {
+    for (const DerivedEntry& entry : derived_entries[s]) {
+      DerivedTask task;
+      task.step = steps[s];
+      task.entry = &entry;
+      task.ddc = &options.ddc;
+      derived.push_back(std::move(task));
+    }
+  }
+  run_derived_tasks(std::span<DerivedTask>(derived.data(), derived.size()), pool);
 
   // The texture step, once every container is settled, in manifest order and then image order —
   // never completion order — with a texture two meshes share built once, for the first of them.
@@ -615,10 +695,52 @@ int build_all(const BuildAllCommandOptions& options) {
     print_json(line);
   }
 
+  // A line per derived output, in manifest order, and a count per step. Its failures fail the
+  // command as a mesh's do.
+  JsonValue step_counts = JsonValue::object();
+  for (const DerivedStep* step : steps) {
+    JsonValue counts = JsonValue::object();
+    counts.set("built", JsonValue(0u));
+    counts.set("skipped", JsonValue(0u));
+    counts.set("failed", JsonValue(0u));
+    step_counts.set(step->name, std::move(counts));
+  }
+  u32 derived_failures = 0;
+  for (const DerivedTask& task : derived) {
+    JsonValue line = JsonValue::object();
+    line.set("source", JsonValue(task.entry->source));
+    line.set("path", JsonValue(task.path));
+    line.set("step", JsonValue(task.step->name));
+    const char* status = task.state == TaskState::Built     ? "built"
+                         : task.state == TaskState::Skipped ? "skipped"
+                                                            : "failed";
+    line.set("status", JsonValue(status));
+    JsonValue& count = step_counts[task.step->name][status];
+    count = JsonValue(count.as_uint() + 1u);
+    if (task.state == TaskState::Failed) {
+      ++derived_failures;
+      line.set("rule", JsonValue(task.error.rule));
+      line.set("error", JsonValue(task.error.message));
+      std::fprintf(stderr, "engine-content: %s: %s\n", task.error.rule, task.error.message.c_str());
+    } else {
+      line.set("source_hash", JsonValue(task.source_hash));
+      line.set("build_key", JsonValue(task.build_key));
+      line.set("bytes", JsonValue(task.bytes));
+      if (task.state == TaskState::Built) {
+        for (auto [key, value] : task.report.as_object())
+          line.set(key, value);
+        line.set("build_ms", JsonValue(task.build_ms));
+      }
+    }
+    print_json(line);
+  }
+  failures += derived_failures;
+
   JsonValue summary = JsonValue::object();
   summary.set("built", JsonValue(built));
   summary.set("skipped", JsonValue(skipped));
-  summary.set("failed", JsonValue(failures));
+  summary.set("failed", JsonValue(failures - derived_failures));
+  if (!steps.empty()) summary.set("steps", std::move(step_counts));
   summary.set("textures", textures_json(texture_results, ~u32{0}, textures, true));
   summary.set("seconds", JsonValue(static_cast<f64>(time::monotonic_ns() - start_ns) / 1.0e9));
   print_json(summary);
@@ -922,7 +1044,9 @@ JsonValue texture_records_json(const geometry::ClusterFileData& data) {
 }
 
 int info(const std::string& path) {
-  // A texture or a container, told apart by the magic rather than by the file's name.
+  // A clip, a texture or a container, told apart by the magic rather than by the file's name.
+  int clip_code = k_exit_ok;
+  if (content::clip_info(path, clip_code)) return clip_code;
   u8 magic[4] = {0, 0, 0, 0};
   u64 got = 0;
   if (io::read_file_range(path, 0, magic, sizeof(magic), got) == io::Status::Ok &&

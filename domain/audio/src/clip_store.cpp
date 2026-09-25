@@ -5,6 +5,7 @@
 #include <core/hash/hash.h>
 #include <core/jobs/job_system.h>
 #include <domain/audio/audio.h>
+#include <domain/audio/clip_file.h>
 #include <domain/audio/clip_store.h>
 
 #include <utility>
@@ -24,7 +25,13 @@ struct ClipStore::Clip {
   u8 channels = 0;
   u8 source_channels = 0;
   u32 source_rate = 0;
-  u64 bytes = 0;                // what it holds resident: its samples, or a stream's kept bytes
+  u64 bytes = 0;  // what it holds resident: its samples, or a stream's kept bytes
+  // Where a voice streams it from: its file, its bytes, or a built `.clip` (the file named, or its
+  // entry in the derived-data cache). Set when the first decode lands and never changed after,
+  // since a stream holds a view of the path.
+  ClipSourceKind stream_kind = ClipSourceKind::None;
+  std::string stream_path;
+  u64 stream_offset = 0;
   bool streamed = false;        // voices stream it
   bool resident = false;        // its samples are in memory
   bool over_threshold = false;  // never decoded whole: it always streams
@@ -41,6 +48,10 @@ struct ClipStore::Clip {
     DecodeStatus status = DecodeStatus::Ok;
     bool stream = false;  // over the threshold: not decoded, stream it
     u64 kept = 0;         // for a stream from bytes, the bytes kept
+    bool built = false;   // answered by a built `.clip`, not decoded
+    ClipSourceKind stream_kind = ClipSourceKind::None;
+    std::string stream_path;
+    u64 stream_offset = 0;
     Vector<f32> samples;
     u32 frames = 0;
     u8 channels = 0;
@@ -87,7 +98,8 @@ ClipStore::ClipStore(const ClipStoreConfig& config)
     : jobs_(config.jobs),
       budget_(config.budget_bytes != 0 ? config.budget_bytes : tunable_clip_budget_bytes()),
       stream_threshold_(config.stream_threshold_bytes != 0 ? config.stream_threshold_bytes
-                                                           : tunable_stream_threshold_bytes()) {}
+                                                           : tunable_stream_threshold_bytes()),
+      ddc_root_(config.ddc_root) {}
 
 // A job holds a pointer to its clip; none may outlive the store.
 ClipStore::~ClipStore() {
@@ -211,6 +223,57 @@ void stage_format(ClipStore::Clip& clip, const backend::StreamFormat& format, u6
   clip.staged.source_rate = format.source_rate;
 }
 
+// A built `.clip` at `path` whose front `layout` has been read: over the threshold it is streamed
+// from the file by range, under it the whole file is read — its content hash checked — and copied.
+// False when the full read fails; the caller decides whether there is anything to fall back on.
+bool stage_built(ClipStore::Clip& clip, const std::string& path, const ClipFileLayout& layout,
+                 u64 threshold) {
+  ClipStore::Clip::Staged& staged = clip.staged;
+  const u64 bytes = u64{layout.frames} * layout.channels * sizeof(f32);
+  if (bytes > threshold) {
+    staged.stream = true;
+    staged.stream_kind = ClipSourceKind::ClipFile;
+    staged.stream_path = path;
+    staged.stream_offset = layout.samples_offset;
+  } else {
+    ClipFileData data;
+    std::string error;
+    if (!read_clip_file(path, data, &error)) {
+      ENGINE_LOG_WARN(log_audio, "built clip unreadable", log::field("clip", clip.key),
+                      log::field("path", path), log::field("error", error));
+      return false;
+    }
+    staged.samples = std::move(data.samples);
+  }
+  staged.built = true;
+  staged.frames = layout.frames;
+  staged.channels = static_cast<u8>(layout.channels);
+  staged.source_channels =
+      static_cast<u8>(layout.source_channels > 255u ? 255u : layout.source_channels);
+  staged.source_rate = layout.source_rate;
+  return true;
+}
+
+// The content build's decode of these bytes, if the derived-data cache has it: the key is over the
+// bytes (clip_file.h), and an entry is taken only when it records that same source and key.
+bool stage_cached(ClipStore::Clip& clip, std::span<const u8> encoded, const std::string& ddc,
+                  u64 threshold) {
+  const u64 source_hash = clip_source_hash(encoded);
+  const u64 key = clip_cache_key(source_hash);
+  const std::string path = clip_cache_path(ddc, key);
+  if (!io::exists(path)) return false;
+  io::FileHandle file;
+  ClipFileLayout layout;
+  std::string error;
+  if (file.open(path) != io::Status::Ok || !read_clip_file_layout(file, layout, &error) ||
+      layout.source_hash != source_hash || layout.build_key != key) {
+    ENGINE_LOG_DEBUG(log_audio, "cached clip unusable, decoding", log::field("clip", clip.key),
+                     log::field("path", path), log::field("error", error));
+    return false;
+  }
+  return stage_built(clip, path, layout, threshold);
+}
+
 }  // namespace
 
 void ClipStore::decode_job(void* data) {
@@ -218,11 +281,16 @@ void ClipStore::decode_job(void* data) {
   const ClipStore& store = *clip.store;
   Clip::Staged& staged = clip.staged;
   staged = Clip::Staged{};
+  // Where a voice streams it from unless a built clip turns up: its file, or its bytes.
+  staged.stream_kind = clip.source;
+  staged.stream_path = clip.path;
+  const auto land = [&clip] { clip.landed.store(1, std::memory_order_release); };
 
   // The format first, without decoding: a clip over the threshold is never decoded whole — a voice
   // streams it, from the file by range or from the bytes the store keeps (stream.h). The length is
   // the decoder's own answer at the mix rate; a decoder that cannot give one without decoding the
-  // whole file answers 0, and that clip is decoded whole.
+  // whole file answers 0, and that clip is decoded whole. And before that, whether it needs a
+  // decoder at all: a `.clip` is the content build's decode already.
   backend::StreamFormat format;
   std::string file_bytes;
   std::span<const u8> encoded(clip.encoded.data(), clip.encoded.size());
@@ -232,41 +300,106 @@ void ClipStore::decode_job(void* data) {
       ENGINE_LOG_WARN(log_audio, "clip file unreadable", log::field("clip", clip.key),
                       log::field("path", clip.path));
       staged.status = DecodeStatus::UnknownFormat;
-      clip.landed.store(1, std::memory_order_release);
+      land();
       return;
     }
-    backend::ByteSource source;
-    source.file = &file;
-    source.size = file.size();
-    staged.status = backend::probe(source, format);
-    if (staged.status == DecodeStatus::Ok && format.frames != 0 &&
-        decoded_bytes(format) > store.stream_threshold_) {
-      stage_format(clip, format, 0);
-      clip.landed.store(1, std::memory_order_release);
+    u8 magic[4] = {};
+    u64 got = 0;
+    if (file.read_at(0, magic, sizeof(magic), got) == io::Status::Ok && got == sizeof(magic) &&
+        is_clip_file(std::span<const u8>(magic, sizeof(magic)))) {
+      // A built clip named directly: nothing to fall back on if it is damaged.
+      ClipFileLayout layout;
+      std::string error;
+      if (!read_clip_file_layout(file, layout, &error) ||
+          !stage_built(clip, clip.path, layout, store.stream_threshold_)) {
+        ENGINE_LOG_WARN(log_audio, "built clip unreadable", log::field("clip", clip.key),
+                        log::field("path", clip.path), log::field("error", error));
+        staged.status = DecodeStatus::Corrupt;
+      }
+      land();
       return;
     }
-    // Under the threshold: the whole file, decoded as bytes.
-    if (staged.status == DecodeStatus::Ok &&
-        io::read_file(clip.path, file_bytes) != io::Status::Ok) {
-      ENGINE_LOG_WARN(log_audio, "clip file unreadable", log::field("clip", clip.key),
-                      log::field("path", clip.path));
-      staged.status = DecodeStatus::UnknownFormat;
+    if (!store.ddc_root_.empty()) {
+      // The cache is keyed by the source's bytes, so the file is read whole to hash it — once,
+      // sequentially, here — and on a miss the bytes in hand are decoded (or, over the threshold,
+      // streamed from the file by range after all).
+      if (io::read_file(clip.path, file_bytes) != io::Status::Ok) {
+        ENGINE_LOG_WARN(log_audio, "clip file unreadable", log::field("clip", clip.key),
+                        log::field("path", clip.path));
+        staged.status = DecodeStatus::UnknownFormat;
+        land();
+        return;
+      }
+      encoded =
+          std::span<const u8>(reinterpret_cast<const u8*>(file_bytes.data()), file_bytes.size());
+      if (stage_cached(clip, encoded, store.ddc_root_, store.stream_threshold_)) {
+        land();
+        return;
+      }
+    } else {
+      backend::ByteSource source;
+      source.file = &file;
+      source.size = file.size();
+      staged.status = backend::probe(source, format);
+      if (staged.status == DecodeStatus::Ok && format.frames != 0 &&
+          decoded_bytes(format) > store.stream_threshold_) {
+        stage_format(clip, format, 0);
+        land();
+        return;
+      }
+      // Under the threshold: the whole file, decoded as bytes.
+      if (staged.status == DecodeStatus::Ok &&
+          io::read_file(clip.path, file_bytes) != io::Status::Ok) {
+        ENGINE_LOG_WARN(log_audio, "clip file unreadable", log::field("clip", clip.key),
+                        log::field("path", clip.path));
+        staged.status = DecodeStatus::UnknownFormat;
+      }
+      if (staged.status != DecodeStatus::Ok) {
+        ENGINE_LOG_WARN(log_audio, "clip decode failed", log::field("clip", clip.key),
+                        log::field("status", decode_status_name(staged.status)));
+        land();
+        return;
+      }
+      encoded =
+          std::span<const u8>(reinterpret_cast<const u8*>(file_bytes.data()), file_bytes.size());
     }
-    if (staged.status != DecodeStatus::Ok) {
-      ENGINE_LOG_WARN(log_audio, "clip decode failed", log::field("clip", clip.key),
-                      log::field("status", decode_status_name(staged.status)));
-      clip.landed.store(1, std::memory_order_release);
-      return;
+  } else if (is_clip_file(encoded)) {
+    // A built clip handed over as bytes: already the mix format, so a copy — even over the
+    // threshold, since the bytes are in memory either way.
+    ClipFileData built;
+    std::string error;
+    if (!read_clip_file_memory(encoded, built, &error)) {
+      ENGINE_LOG_WARN(log_audio, "built clip unreadable", log::field("clip", clip.key),
+                      log::field("error", error));
+      staged.status = DecodeStatus::Corrupt;
+    } else {
+      staged.built = true;
+      staged.frames = built.frames;
+      staged.channels = static_cast<u8>(built.channels);
+      staged.source_channels =
+          static_cast<u8>(built.source_channels > 255u ? 255u : built.source_channels);
+      staged.source_rate = built.source_rate;
+      staged.samples = std::move(built.samples);
     }
-    encoded =
-        std::span<const u8>(reinterpret_cast<const u8*>(file_bytes.data()), file_bytes.size());
-  } else {
+    clip.encoded = Vector<u8>{};
+    land();
+    return;
+  } else if (!store.ddc_root_.empty() &&
+             stage_cached(clip, encoded, store.ddc_root_, store.stream_threshold_)) {
+    clip.encoded = Vector<u8>{};
+    land();
+    return;
+  }
+
+  // The source's bytes are in hand. Over the threshold, a stream: from the file it was read from,
+  // or from the bytes, which the store keeps.
+  {
     backend::ByteSource source;
     source.memory = encoded;
     if (backend::probe(source, format) == DecodeStatus::Ok && format.frames != 0 &&
         decoded_bytes(format) > store.stream_threshold_) {
-      stage_format(clip, format, clip.encoded.size());
-      clip.landed.store(1, std::memory_order_release);
+      stage_format(clip, format, clip.source == ClipSourceKind::Memory ? clip.encoded.size() : 0u);
+      land();
       return;
     }
     // Anything the probe refused goes on to the decoder, which says why in its own words.
@@ -310,7 +443,12 @@ void ClipStore::take(Clip& clip) noexcept {
     clip.channels = staged.channels;
     clip.source_channels = staged.source_channels;
     clip.source_rate = staged.source_rate;
+    // Never changed after this: a stream playing the clip holds a view of the path.
+    clip.stream_kind = staged.stream_kind;
+    clip.stream_path = std::move(staged.stream_path);
+    clip.stream_offset = staged.stream_offset;
   }
+  if (staged.built) ++built_loads_;
   if (staged.stream) {
     clip.over_threshold = true;
     commit_stream(clip, staged.kept);
@@ -484,10 +622,11 @@ ClipSource ClipStore::source(ClipHandle clip) const noexcept {
   const Clip& c = *clips_[clip.index];
   if (c.resident) return ClipSource{};
   ClipSource out;
-  out.kind = c.source;
-  if (c.source == ClipSourceKind::Memory)
+  out.kind = c.stream_kind;
+  if (c.stream_kind == ClipSourceKind::Memory)
     out.memory = std::span<const u8>(c.encoded.data(), c.encoded.size());
-  out.path = c.path;
+  out.path = c.stream_path;
+  out.samples_offset = c.stream_offset;
   out.frames = c.frames;
   out.channels = c.channels;
   out.key = c.key;
