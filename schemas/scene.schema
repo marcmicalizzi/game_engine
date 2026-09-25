@@ -644,11 +644,16 @@ struct FrameRecord @version(6) {
   /// A windowed frame's waits, CPU milliseconds each, which `cpu_ms` leaves out: for the frame
   /// slot to come free (`wait_ms`, the renderer's `begin_frame`: the GPU finishing the frame that
   /// last used the slot), for a swapchain image (`acquire_ms`), and in the present call
-  /// (`present_ms`). Where the frame time goes when it is not the engine's
+  /// (`present_ms`); and the pacer's own wait before the frame sampled its input (`pace_ms`, zero
+  /// unless `--pace` asked for one). Where the frame time goes when it is not the engine's
   /// (docs/experiments/second-interactive-session-2026-09-25.md). Zero offscreen.
   wait_ms: f64 = 0 @since(6)
   acquire_ms: f64 = 0 @since(6)
   present_ms: f64 = 0 @since(6)
+  pace_ms: f64 = 0 @since(6)
+  /// How far back the pacer waited before this frame: 1 (for the last present to be shown), 2
+  /// (the one before it), 0 without a pacer (`docs/subsystems/apps.md`, "Pacing").
+  pace_depth: u32 = 0 @since(6)
   /// The part of `cpu_ms` spent in the renderer's `submit_frame`: recording the frame and handing
   /// it to the queue. It is not all the CPU's own: a driver that presents a window through the
   /// compositor can block inside the queue submission until the swapchain image it waits on is
@@ -852,7 +857,7 @@ struct FlythroughTextures @version(1) {
 }
 
 /// How a windowed run presented (`engine-view --interactive --benchmark`, and a replay flown in
-/// the window with `--windowed`): the swapchain it got, the frames it kept in flight,
+/// the window with `--windowed`): the swapchain it got, the frames it kept in flight, the pacer,
 /// and where the frames' waits went. What a frame-time distribution has to be read against,
 /// since the same GPU work paces differently under another present mode or queue depth
 /// (docs/subsystems/apps.md, "Pacing").
@@ -867,6 +872,15 @@ struct FlythroughPresentation @version(1) {
   image_count: u32 = 0
   requested_images: u32 = 0
   frames_in_flight: u32 = 0
+  /// The pacer the run had (`--pace`, resolved): "display" (each frame sampled when the one before
+  /// it reached the display, `docs/subsystems/apps.md`, "Pacing") or "off" (the swapchain's own
+  /// waits set the cadence), whatever was asked — "auto" resolves to one of the two, and
+  /// "display" on a surface that cannot wait on a present is "off".
+  pacing: string
+  /// The display pacer's own count: refreshes that went by with no new frame (frames that missed
+  /// their refresh, and stalls; `view::DisplayPacer::misses`), and its changes of depth.
+  pace_misses: u64 = 0
+  pace_switches: u32 = 0
   /// `--borderless`: the window had no decorations and sat at the primary display's corner.
   borderless: bool = false
   /// The display's refresh as the swapchain reports it (VK_EXT_present_timing), 0 where it
@@ -886,6 +900,7 @@ struct FlythroughPresentation @version(1) {
   wait_ms: Percentiles
   acquire_ms: Percentiles
   present_ms: Percentiles
+  pace_ms: Percentiles
   submit_ms: Percentiles
 }
 

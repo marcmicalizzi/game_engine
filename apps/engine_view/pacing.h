@@ -2,7 +2,7 @@
 
 // A window's frame pacing (docs/subsystems/apps.md, "Pacing"), in the pieces that need no GPU and
 // no window and so are tested with made-up numbers (tests/fly_tests.cpp): `--present`'s names,
-// the display times a measured run keeps, and what the window title
+// the display pacer's depth, the display times a measured run keeps, and what the window title
 // says while a session is flown — the last frame's milliseconds and the 99th percentile over the
 // last second. There is no UI module yet, and the title is the one piece of text a window has that
 // nobody has to build a renderer pass for.
@@ -43,6 +43,138 @@ inline bool parse_present_mode(std::string_view text, PresentMode* out) noexcept
   }
   return false;
 }
+
+// **How far the display pacer waits back** (`--pace display`, docs/subsystems/apps.md, "Pacing").
+// Before a frame samples its input the loop waits until an earlier present has been shown: the
+// last one (depth 1: one frame queued, the least latency) or the one before it (depth 2: two
+// queued, a refresh more latency and a refresh more room for the frame's own work). At depth 1 a
+// frame has about one refresh from sampling its input to being ready — on the RTX 5090 at
+// 11520×2160 frames with 8.3 ms of CPU and GPU work in them made every 12.2 ms refresh — and one
+// with more work than that misses its refresh; a depth-1 loop that keeps missing shows every frame
+// for two refreshes, half the rate the unpaced loop would have kept.
+//
+// So this watches the waits it is fed for **misses**: a wait that came round a refresh and a half
+// or more after the one before, which the next one did not make up for. The second condition is
+// for a window the compositor composes, where a wait that returns late is followed by one that
+// returns early and the two together still span two refreshes (measured: waits from about 5 to
+// 20 ms apart round a 12.2 ms refresh in a composed 1280×720 window). Two misses
+// within `k_recent` waits mean the work no longer fits, and the pacer goes to depth 2; after
+// `hold()` frames there it tries depth 1 again, and a try that fails within two windows doubles the
+// hold (up to 16 times `k_hold`), so a loop whose work does not fit pays two or three missed
+// refreshes a minute and one whose work shrank has its latency back within seconds. The first wait
+// after a change of depth is the queue refilling or draining, and is not judged. The refresh is
+// the swapchain's where it reports one, else the median interval of the last `k_window` waits.
+// Fixed storage, no allocation, and a function of what it is fed, so tests/fly_tests.cpp drives it
+// with made-up waits.
+class DisplayPacer {
+ public:
+  static constexpr u32 k_window = 64;  // waits the refresh median is taken over
+  static constexpr u32 k_recent = 32;  // two misses closer than this mean the work does not fit
+  static constexpr u32 k_hold = 240;   // frames at depth 2 before depth 1 is tried (about 3 s)
+  static constexpr u32 k_max_hold = 16 * k_hold;
+  static constexpr u32 k_blind = 120;  // frames not waited for after two waits timed out
+
+  // `refresh_ns`: the display's period where the swapchain reports it, else 0.
+  explicit DisplayPacer(i64 refresh_ns = 0) noexcept : refresh_ns_(refresh_ns) {}
+
+  u32 depth() const noexcept { return depth_; }
+  u32 hold() const noexcept { return hold_; }
+  u32 switches() const noexcept { return switches_; }
+  i64 refresh_ns() const noexcept { return refresh_ns_ > 0 ? refresh_ns_ : estimate_ns_; }
+  // Refreshes that went by with no new frame, all told: frames that missed their refresh and
+  // stalls. Each wait counts the refreshes it spanned less one, so an early wait after a late one
+  // counts back, jitter nets out, and a small error in an estimated refresh does not accumulate.
+  u64 misses() const noexcept { return missed_ > 0 ? static_cast<u64>(missed_) : 0; }
+
+  // Whether to wait before this frame at all. Two waits running that timed out (a minimized or
+  // covered window, whose presents are never shown) turn waiting off for `k_blind` frames, so such
+  // a window costs two timeouts every `k_blind` frames rather than one every frame.
+  bool should_wait() noexcept {
+    if (blind_ == 0) return true;
+    --blind_;
+    return false;
+  }
+
+  // A wait returned at `now_ns`; `shown` is false when it timed out (a window nobody can see),
+  // which is neither a miss nor an interval.
+  void waited(i64 now_ns, bool shown) noexcept {
+    ++frames_;
+    const i64 interval = last_return_ns_ != 0 ? now_ns - last_return_ns_ : 0;
+    last_return_ns_ = shown ? now_ns : 0;
+    timeouts_ = shown ? 0 : timeouts_ + 1;
+    if (timeouts_ >= 2) {
+      blind_ = k_blind;
+      timeouts_ = 0;
+    }
+    if (!shown || interval <= 0) return;
+    intervals_[count_ % k_window] = interval;
+    ++count_;
+    if (refresh_ns_ == 0 && count_ % k_window == 0) {
+      for (u32 i = 0; i < k_window; ++i)
+        scratch_[i] = intervals_[i];
+      std::nth_element(scratch_, scratch_ + k_window / 2, scratch_ + k_window);
+      estimate_ns_ = scratch_[k_window / 2];
+    }
+    const i64 period = refresh_ns();
+    if (period <= 0) return;
+    missed_ += (interval + period / 2) / period - 1;
+    if (skip_next_) {
+      skip_next_ = false;
+    } else {
+      const bool is_long = interval * 2 >= period * 3;
+      const bool is_early = interval * 2 < period;
+      if (pending_long_ && !is_early) {
+        miss_at_[0] = miss_at_[1];
+        miss_at_[1] = frames_;
+      }
+      pending_long_ = is_long;
+    }
+    if (depth_ == 1) {
+      if (miss_at_[0] == 0 || miss_at_[1] - miss_at_[0] >= k_recent) return;
+      // The work no longer fits in a refresh. A try at depth 1 that failed this soon doubles the
+      // hold before the next; one that lasted resets it.
+      hold_ = tried_at_ != 0 && frames_ - tried_at_ < 2 * k_recent
+                  ? (hold_ * 2 < k_max_hold ? hold_ * 2 : k_max_hold)
+                  : k_hold;
+      depth_ = 2;
+      ++switches_;
+      switched_at_ = frames_;
+      clear_recent();
+    } else if (frames_ - switched_at_ >= hold_) {
+      depth_ = 1;
+      ++switches_;
+      tried_at_ = frames_;
+      clear_recent();
+    }
+  }
+
+ private:
+  void clear_recent() noexcept {
+    miss_at_[0] = 0;
+    miss_at_[1] = 0;
+    pending_long_ = false;
+    skip_next_ = true;
+  }
+
+  i64 refresh_ns_ = 0;
+  i64 estimate_ns_ = 0;
+  i64 last_return_ns_ = 0;
+  i64 intervals_[k_window] = {};
+  i64 scratch_[k_window] = {};
+  u64 count_ = 0;
+  i64 missed_ = 0;       // refreshes spanned beyond one a wait, early waits counting back
+  u64 miss_at_[2] = {};  // the frames of the last two misses, oldest first; 0: none
+  bool pending_long_ = false;
+  bool skip_next_ = false;
+  u64 frames_ = 0;
+  u64 switched_at_ = 0;
+  u64 tried_at_ = 0;
+  u32 depth_ = 1;
+  u32 hold_ = k_hold;
+  u32 switches_ = 0;
+  u32 timeouts_ = 0;  // waits running that timed out
+  u32 blind_ = 0;     // frames left not to wait for
+};
 
 // When each presented frame reached the display, by present id (the swapchain's first-pixel-out
 // time on time::monotonic_ns()'s clock), and when it sampled its input. A windowed `--benchmark`

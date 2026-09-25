@@ -612,6 +612,95 @@ TEST_CASE("fly camera: the title's pacing numbers") {
   CHECK(pacing.percentile(2000 * ms, 1000 * ms, 1.0) == 1.0f);
 }
 
+TEST_CASE("fly camera: the display pacer waits further back when frames miss, and comes back") {
+  const i64 ms = 1'000'000;
+  const i64 refresh = 12 * ms;
+  i64 t = 0;
+  view::DisplayPacer pacer(refresh);
+  auto wait = [&](i64 refreshes_times_ten) {
+    t += refresh * refreshes_times_ten / 10;
+    pacer.waited(t, true);
+  };
+  // Frames that come round every refresh: depth 1 throughout, nothing missed.
+  for (u32 i = 0; i < 500; ++i)
+    wait(10);
+  CHECK(pacer.depth() == 1);
+  CHECK(pacer.misses() == 0);
+  // One stall of three refreshes: two refreshes went by without a frame, and it is one miss.
+  wait(30);
+  wait(10);
+  CHECK(pacer.misses() == 2);
+  CHECK(pacer.depth() == 1);
+  // A compositor's jitter — a wait late by six tenths of a refresh, the next early by as much —
+  // shows nothing missed however long it goes on, stall or no stall before it.
+  for (u32 i = 0; i < 200; ++i)
+    wait(i % 2 == 0 ? 16 : 4);
+  CHECK(pacer.depth() == 1);
+  CHECK(pacer.misses() == 2);
+  for (u32 i = 0; i < 100; ++i)
+    wait(10);
+  // Work that no longer fits: every frame misses its refresh. A miss is known when the wait after
+  // it did not make up for it, so the third such wait makes two, and the pacer goes to depth 2.
+  wait(20);
+  wait(20);
+  CHECK(pacer.depth() == 1);
+  wait(20);
+  CHECK(pacer.depth() == 2);
+  CHECK(pacer.switches() == 1);
+  // It holds depth 2 for k_hold frames, then tries depth 1 again...
+  for (u32 i = 0; i < view::DisplayPacer::k_hold; ++i)
+    wait(10);
+  CHECK(pacer.depth() == 1);
+  // ...where the first wait is the deeper queue draining and is not judged. A try that misses at
+  // once goes back with twice the hold.
+  wait(20);
+  wait(20);
+  wait(20);
+  CHECK(pacer.depth() == 1);
+  wait(20);
+  CHECK(pacer.depth() == 2);
+  CHECK(pacer.hold() == 2 * view::DisplayPacer::k_hold);
+  for (u32 i = 0; i + 1 < 2 * view::DisplayPacer::k_hold; ++i)
+    wait(10);
+  CHECK(pacer.depth() == 2);
+  wait(10);
+  CHECK(pacer.depth() == 1);
+  // A try that holds for longer than two windows resets the hold the next time it is needed.
+  for (u32 i = 0; i < 3 * view::DisplayPacer::k_recent; ++i)
+    wait(10);
+  wait(20);
+  wait(20);
+  wait(20);
+  CHECK(pacer.depth() == 2);
+  CHECK(pacer.hold() == view::DisplayPacer::k_hold);
+  // A wait that timed out (nobody can see the window) is neither a miss nor an interval...
+  const u64 before = pacer.misses();
+  t += 10 * refresh;
+  pacer.waited(t, false);
+  wait(10);
+  CHECK(pacer.misses() == before);
+  CHECK(pacer.should_wait());
+  // ...and two running stop the waiting for k_blind frames, so a window nobody can see is not
+  // held to a timeout a frame.
+  pacer.waited(t += 4 * refresh, false);
+  pacer.waited(t += 4 * refresh, false);
+  for (u32 i = 0; i < view::DisplayPacer::k_blind; ++i)
+    CHECK_FALSE(pacer.should_wait());
+  CHECK(pacer.should_wait());
+
+  // With no refresh from the swapchain the pacer takes the median of its own waits' intervals,
+  // and counts nothing missed until it has one.
+  view::DisplayPacer estimated;
+  t = 0;
+  for (u32 i = 0; i <= view::DisplayPacer::k_window; ++i)
+    estimated.waited(t += refresh + (i % 2 == 0 ? ms / 10 : -ms / 10), true);
+  CHECK(estimated.refresh_ns() > refresh - ms / 5);
+  CHECK(estimated.refresh_ns() < refresh + ms / 5);
+  CHECK(estimated.misses() == 0);
+  estimated.waited(t += 3 * refresh, true);
+  CHECK(estimated.misses() == 2);
+}
+
 TEST_CASE("fly camera: --present's names, and display times by present id") {
   view::PresentMode mode = view::PresentMode::Fifo;
   CHECK(view::parse_present_mode("mailbox", &mode));

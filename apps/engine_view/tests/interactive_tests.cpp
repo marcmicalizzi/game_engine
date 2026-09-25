@@ -152,11 +152,14 @@ TEST_CASE("engine-view: interactive flags that cannot work together exit 2") {
   CHECK(run_view({"--swapchain-images", "9"}).exit_code == 2);
   CHECK(run_view({"--frames-in-flight", "0"}).exit_code == 2);
   CHECK(run_view({"--frames-in-flight", "4"}).exit_code == 2);
+  CHECK(run_view({"--pace", "sometimes"}).exit_code == 2);
+  CHECK(run_view({"--offscreen", "--pace", "display"}).exit_code == 2);
   CHECK(run_view({"--offscreen", "--present", "mailbox"}).exit_code == 2);
   CHECK(run_view({"--offscreen", "--borderless"}).exit_code == 2);
   CHECK(run_view({"--offscreen", "--no-present-timing"}).exit_code == 2);
+  CHECK(run_view({"--offscreen", "--pace", "off"}).exit_code == 2);
   CHECK(
-      run_view({"--replay-input", log, "--benchmark", "x.jsonl", "--present", "fifo"}).exit_code ==
+      run_view({"--replay-input", log, "--benchmark", "x.jsonl", "--pace", "display"}).exit_code ==
       2);  // a replay's benchmark is offscreen unless --windowed
   CHECK(run_view({"--windowed"}).exit_code == 2);
   CHECK(run_view({"--interactive", "--windowed"}).exit_code == 2);
@@ -463,8 +466,9 @@ TEST_CASE("engine-view: a replay flown in the window measures its presentation")
   JsonValue expected;
   REQUIRE(parse_json(committed, expected).ok);
   const std::string jsonl = tmp.file("windowed.jsonl");
-  const Run run = run_view({"--replay-input", log, "--windowed", "--benchmark", jsonl, "--width",
-                            "256", "--height", "160", "--ddc", tmp.file("ddc")});
+  const Run run =
+      run_view({"--replay-input", log, "--windowed", "--benchmark", jsonl, "--pace", "display",
+                "--width", "256", "--height", "160", "--ddc", tmp.file("ddc")});
   if (run.exit_code == 3) {
     MESSAGE("engine-view unavailable here: " << run.output);
     return;
@@ -490,8 +494,8 @@ TEST_CASE("engine-view: a replay flown in the window measures its presentation")
         u64 n = 0;
         if (line.find("ticks") != nullptr && line.find("ticks")->get_u64(n)) ticks += n;
         if (line.find("wait_ms") != nullptr && line.find("acquire_ms") != nullptr &&
-            line.find("present_ms") != nullptr && line.find("submit_ms") != nullptr &&
-            line.find("shown_ms") != nullptr) {
+            line.find("present_ms") != nullptr && line.find("pace_ms") != nullptr &&
+            line.find("submit_ms") != nullptr && line.find("shown_ms") != nullptr) {
           ++waits_named;
         }
         ++records;
@@ -507,7 +511,9 @@ TEST_CASE("engine-view: a replay flown in the window measures its presentation")
   const JsonValue* presentation = last.find("presentation");
   REQUIRE_MESSAGE(presentation != nullptr, text);
   REQUIRE(presentation->is_object());
-  // FIFO, the default; the images the driver gave for the three asked; the default depth.
+  // FIFO, the default; the images the driver gave for the three asked; the default depth. The
+  // pacer is "display" where the surface can wait on a present and "off" (with a warning) where
+  // it cannot, so either is an answer; what is checked is that it says which.
   CHECK(text_of(presentation, "present_mode") == "fifo");
   CHECK(text_of(presentation, "requested_mode") == "auto");
   u64 images = 0;
@@ -518,4 +524,6 @@ TEST_CASE("engine-view: a replay flown in the window measures its presentation")
   REQUIRE(presentation->find("frames_in_flight")->get_u64(in_flight));
   CHECK(images >= 2);
   CHECK(in_flight == 2);
+  const std::string pacing = text_of(presentation, "pacing");
+  CHECK((pacing == "display" || pacing == "off"));
 }

@@ -140,7 +140,7 @@ constexpr const char* k_usage =
     "                   [--replay-input <log.jsonl>] [--windowed]\n"
     "                   [--inject-input <log.jsonl>] [--input-map <map.json>]\n"
     "                   [--present <mode>] [--swapchain-images <n>] [--frames-in-flight <n>]\n"
-    "                   [--borderless] [--no-present-timing]\n"
+    "                   [--pace auto|display|off] [--borderless] [--no-present-timing]\n"
     "                   [--tunables <file.json>] [--tunable <name=value,...>]\n"
     "       engine-view --version    the commit this binary was built from, as one JSON line\n"
     "\n"
@@ -359,6 +359,11 @@ constexpr const char* k_usage =
     "  --borderless     a window with no title bar or border at the primary display's top-left\n"
     "                   corner: --width and --height of the display cover it exactly (not an\n"
     "                   exclusive fullscreen; the display mode never changes)\n"
+    "  --pace <m>       when a window's frame samples its input: display (when the frame before\n"
+    "                   it has reached the display, one refresh later, at most one frame queued),\n"
+    "                   off (as soon as a frame slot and an image are free: the swapchain's own\n"
+    "                   waits set the cadence), or auto (the default: display on a FIFO-family\n"
+    "                   present mode, off on mailbox and immediate); docs/subsystems/apps.md\n"
     "  --no-present-timing  a window's --benchmark asks the driver for no display times, so its\n"
     "                   records carry no shown_ms or latency_ms (on NVIDIA's driver a chain that\n"
     "                   asks paces FIFO differently; this measures the one that does not)\n"
@@ -398,11 +403,12 @@ struct Options {
   std::string capture;
   bool vsync = true;
   // The window's presentation (docs/subsystems/apps.md, "Pacing"): the present mode asked for by
-  // name ("" is FIFO, or `--no-vsync`'s choice), the swapchain's images, and the frames the loop
-  // keeps in flight.
+  // name ("" is FIFO, or `--no-vsync`'s choice), the swapchain's images, the frames the loop keeps
+  // in flight, and the pacer.
   std::string present;
   u32 swapchain_images = 3;
   u32 frames_in_flight = k_frames_in_flight;
+  std::string pace = "auto";
   bool present_timing = true;  // --no-present-timing: a measured window asks for no display times
   bool windowed = false;       // --windowed: a replay's --benchmark flies in the window
   bool borderless = false;     // --borderless: no decorations, at the primary display's corner
@@ -1253,11 +1259,13 @@ struct PendingFrame {
   f64 time = 0.0;
   f64 cpu_ms = 0.0;
   f64 frame_ms = 0.0;
-  // A windowed frame's waits (FrameRecord's `wait_ms`, `acquire_ms`, `present_ms`, `submit_ms`),
+  // A windowed frame's waits (FrameRecord's `wait_ms`, `acquire_ms`, `present_ms`, `pace_ms`),
   // and the id its present carried, which is how its display time finds it later.
   f64 wait_ms = 0.0;
   f64 acquire_ms = 0.0;
   f64 present_ms = 0.0;
+  f64 pace_ms = 0.0;
+  u32 pace_depth = 0;
   f64 submit_ms = 0.0;
   u64 present_id = 0;
 };
@@ -1281,6 +1289,8 @@ void take_folded(const renderer::SceneRenderer& renderer, u64& folded,
   record.wait_ms = p.wait_ms;
   record.acquire_ms = p.acquire_ms;
   record.present_ms = p.present_ms;
+  record.pace_ms = p.pace_ms;
+  record.pace_depth = p.pace_depth;
   record.submit_ms = p.submit_ms;
   records.push_back(std::move(record));
   if (present_ids != nullptr) present_ids->push_back(p.present_id);
@@ -1517,12 +1527,12 @@ const char* present_mode_name(VkPresentModeKHR mode) {
 }
 
 // The summary's `presentation` block for a windowed run (scene::FlythroughPresentation): the
-// swapchain, the loop's depth, and the distributions of the waits and display times the records
-// carry.
+// swapchain, the loop's depth and pacer, and the distributions of the waits and display times the
+// records carry.
 scene::FlythroughPresentation presentation_summary(const Options& options,
                                                    const gfx::Swapchain& swapchain,
                                                    std::span<const scene::FrameRecord> records,
-                                                   u32 recreated) {
+                                                   u32 recreated, const view::DisplayPacer* pacer) {
   scene::FlythroughPresentation out;
   out.present_mode = present_mode_name(swapchain.present_mode());
   out.requested_mode =
@@ -1530,6 +1540,11 @@ scene::FlythroughPresentation presentation_summary(const Options& options,
   out.image_count = swapchain.image_count();
   out.requested_images = options.swapchain_images;
   out.frames_in_flight = options.frames_in_flight;
+  out.pacing = pacer != nullptr ? "display" : "off";
+  if (pacer != nullptr) {
+    out.pace_misses = pacer->misses();
+    out.pace_switches = pacer->switches();
+  }
   out.borderless = options.borderless;
   out.refresh_ms = static_cast<f64>(swapchain.refresh_ns()) / 1.0e6;
   out.present_timing = swapchain.present_timing();
@@ -1538,6 +1553,7 @@ scene::FlythroughPresentation presentation_summary(const Options& options,
   Vector<f64> wait;
   Vector<f64> acquire;
   Vector<f64> present;
+  Vector<f64> pace;
   Vector<f64> submit;
   Vector<f64> shown;
   Vector<f64> latency;
@@ -1545,6 +1561,7 @@ scene::FlythroughPresentation presentation_summary(const Options& options,
     wait.push_back(r.wait_ms);
     acquire.push_back(r.acquire_ms);
     present.push_back(r.present_ms);
+    pace.push_back(r.pace_ms);
     submit.push_back(r.submit_ms);
     if (r.shown_ms > 0.0) shown.push_back(r.shown_ms);
     if (r.latency_ms > 0.0) latency.push_back(r.latency_ms);
@@ -1555,6 +1572,7 @@ scene::FlythroughPresentation presentation_summary(const Options& options,
   out.wait_ms = of(wait);
   out.acquire_ms = of(acquire);
   out.present_ms = of(present);
+  out.pace_ms = of(pace);
   out.submit_ms = of(submit);
   out.shown_ms = of(shown);
   out.latency_ms = of(latency);
@@ -2912,6 +2930,12 @@ int main(int argc, char** argv) {
                      "fifo-latest-ready\n");
         return k_exit_usage;
       }
+    } else if (a == "--pace") {
+      if (!next_value(argc, argv, i, a, options.pace)) return k_exit_usage;
+      if (options.pace != "auto" && options.pace != "off" && options.pace != "display") {
+        std::fprintf(stderr, "engine-view: --pace expects auto, display or off\n");
+        return k_exit_usage;
+      }
     } else if (a == "--windowed") {
       options.windowed = true;
     } else {
@@ -3063,11 +3087,12 @@ int main(int argc, char** argv) {
        options.verify_occlusion)) {
     options.offscreen = true;
   }
-  if (options.offscreen && (!options.present.empty() || options.swapchain_images != 3 ||
-                            options.frames_in_flight != k_frames_in_flight || options.borderless ||
-                            !options.present_timing)) {
+  if (options.offscreen &&
+      (!options.present.empty() || options.pace != "auto" || options.swapchain_images != 3 ||
+       options.frames_in_flight != k_frames_in_flight || options.borderless ||
+       !options.present_timing)) {
     std::fprintf(stderr,
-                 "engine-view: --present, --swapchain-images, --frames-in-flight, "
+                 "engine-view: --present, --swapchain-images, --frames-in-flight, --pace, "
                  "--borderless and --no-present-timing are the window's; an offscreen run has "
                  "none\n");
     return k_exit_usage;
@@ -3347,9 +3372,10 @@ int main(int argc, char** argv) {
     swapchain_desc.vsync = options.vsync;
     swapchain_desc.present_mode = vk_present_mode(options.present);
     swapchain_desc.min_image_count = options.swapchain_images;
-    // A measured session asks for display times, unless `--no-present-timing` says not to (on this
-    // project's driver a chain with them paces FIFO differently, which a before-and-after has to
-    // be able to leave out).
+    // The pacer waits on present ids; a measured session asks for display times as well, unless
+    // `--no-present-timing` says not to (on this project's driver a chain with them paces FIFO
+    // differently, which a before-and-after has to be able to leave out).
+    swapchain_desc.present_wait = options.pace != "off";
     swapchain_desc.timing =
         options.interactive && !options.benchmark.empty() && options.present_timing;
     if (!swapchain.create(device, swapchain_desc, &error)) {
@@ -3655,6 +3681,24 @@ int main(int argc, char** argv) {
     Vector<u64> record_present_ids;
     if (timed_display) display.reserve(1u << 16);
     if (interactive.on && !options.benchmark.empty()) record_present_ids.reserve(1u << 14);
+    // `--pace auto` (the default) paces a FIFO-family chain — the modes that show every frame at
+    // the display's rate — and leaves mailbox and immediate, which were asked for to run
+    // unthrottled, as they are; `display` paces whatever the mode.
+    const VkPresentModeKHR mode = swapchain.present_mode();
+    const bool fifo_family = mode == VK_PRESENT_MODE_FIFO_KHR ||
+                             mode == VK_PRESENT_MODE_FIFO_RELAXED_KHR ||
+                             mode == VK_PRESENT_MODE_FIFO_LATEST_READY_KHR;
+    const bool pace_wanted = options.pace == "display" || (options.pace == "auto" && fifo_family);
+    const bool pace_display = pace_wanted && swapchain.present_wait();
+    if (pace_wanted && !pace_display) {
+      ENGINE_LOG_WARN(log_view,
+                      "the display pacer needs present waits (VK_KHR_present_wait2) on this "
+                      "surface; frames are paced by the swapchain's own waits");
+    }
+    // Longer than any refresh a display runs at (20 Hz), short enough that a window nobody can see
+    // still turns over its events.
+    constexpr u64 k_pace_timeout_ns = 50'000'000;
+    view::DisplayPacer pacer(static_cast<i64>(swapchain.refresh_ns()));
 
     bool running = true;
     bool resize_pending = false;
@@ -3662,6 +3706,27 @@ int main(int argc, char** argv) {
     started_ns = time::monotonic_ns();
     clock_ns = started_ns;
     while (running) {
+      // ---- --pace display: sample this frame when the last one reached the display ----------
+      // Before the input is polled and the clock read, wait until the frame presented last has
+      // been shown (VK_KHR_present_wait2). Each frame then starts one refresh after the one
+      // before, from the display's own clock, with at most one frame queued ahead of it; the
+      // waits for a frame slot, an image and the present that set the cadence otherwise — and
+      // that could fall into two frames per two refreshes — find nothing to wait for
+      // (docs/subsystems/apps.md, "Pacing"). Presents that are never shown (a minimized or
+      // covered window) cost two timeouts, and then the pacer stops waiting for a while.
+      i64 paced_ns = 0;
+      u32 paced_depth = 0;
+      if (pace_display && pacer.should_wait()) {
+        // Depth 1 waits for the last present, depth 2 for the one before it (view::DisplayPacer).
+        const u64 last = swapchain.last_present_id();
+        paced_depth = pacer.depth();
+        const u64 target = last >= paced_depth ? last - (paced_depth - 1) : 0;
+        const i64 before_pace = time::monotonic_ns();
+        const bool shown = target != 0 && swapchain.wait_for_present(target, k_pace_timeout_ns);
+        const i64 after_pace = time::monotonic_ns();
+        paced_ns = after_pace - before_pace;
+        if (target != 0) pacer.waited(after_pace, shown);
+      }
       const i64 frame_start = time::monotonic_ns();
       // --inject-input: the log's keys and motion go onto the window's own queue as their ticks
       // come due, and come back out of poll() below like anything the platform delivered.
@@ -3739,9 +3804,9 @@ int main(int argc, char** argv) {
       }
 #endif
       // The CPU's share of the frame is everything but the waits: for a free frame slot (the GPU),
-      // for a swapchain image and in the present (the display). Each is timed on its own, because
-      // which of them a frame's time went to is the whole question presentation pacing asks
-      // (docs/subsystems/apps.md, "Pacing").
+      // for a swapchain image and in the present (the display), and the pacer's own. Each is
+      // timed on its own, because which of them a frame's time went to is the whole question
+      // presentation pacing asks (docs/subsystems/apps.md, "Pacing").
       const i64 before_waits = time::monotonic_ns();
       view_renderer.begin_frame();
       const i64 slot_free = time::monotonic_ns();
@@ -3900,6 +3965,8 @@ int main(int argc, char** argv) {
           p.frame_ms = frame_ms;
           p.wait_ms = static_cast<f64>(slot_free - before_waits) / 1.0e6;
           p.acquire_ms = static_cast<f64>(after_waits - before_acquire) / 1.0e6;
+          p.pace_ms = static_cast<f64>(paced_ns) / 1.0e6;
+          p.pace_depth = paced_depth;
           p.submit_ms = static_cast<f64>(submitted_ns - before_submit) / 1.0e6;
           p.present_ms = 0.0;  // after the present, below
           p.present_id = 0;
@@ -4047,7 +4114,8 @@ int main(int argc, char** argv) {
 #endif
       summary.presentation = presentation_summary(
           options, swapchain, std::span<const scene::FrameRecord>(records.data(), records.size()),
-          swapchain.chains_created() > 0 ? swapchain.chains_created() - 1 : 0);
+          swapchain.chains_created() > 0 ? swapchain.chains_created() - 1 : 0,
+          pace_display ? &pacer : nullptr);
       const io::Status status = write_benchmark(
           options.benchmark, std::span<const scene::FrameRecord>(records.data(), records.size()),
           write_json(schema::to_json(summary), JsonWriteOptions{.pretty = false}));
