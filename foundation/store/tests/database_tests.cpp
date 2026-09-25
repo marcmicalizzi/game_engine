@@ -4,6 +4,8 @@
 #include <test_temp_dir.h>
 
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <string>
 
 using namespace engine;
@@ -288,4 +290,79 @@ TEST_CASE("store: file_size_bytes reports pages times page size") {
   REQUIRE(db.file_size_bytes(bytes) == Status::Ok);
   CHECK(bytes >= 256 * 1024);
   CHECK(bytes % 8192 == 0);
+}
+
+namespace {
+
+std::string file_bytes(const std::string& path) {
+  std::ifstream in(path, std::ios::binary);
+  return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+}
+
+}  // namespace
+
+// Backups (store.md, "Backups"): VACUUM INTO, a consistent snapshot of a WAL database whatever
+// is still in its WAL, whose bytes are a function of the content — a backup of the backup is the
+// same file — which is what lets a save round-trip byte for byte through a load.
+TEST_CASE("store: a backup is a consistent copy whose bytes depend on its content alone") {
+  TempDir dir("engine_store_backup");
+  const std::string live = dir.file("live.db");
+  Database db;
+  REQUIRE(db.open(live) == Status::Ok);
+  REQUIRE(db.exec("CREATE TABLE t(k INTEGER PRIMARY KEY, v BLOB); CREATE INDEX t_v ON t(v);") ==
+          Status::Ok);
+  // Rows committed but not checkpointed: they are in the WAL, not yet in the main file.
+  for (i64 k = 0; k < 200; ++k) {
+    Statement insert;
+    REQUIRE(db.prepare("INSERT INTO t(k,v) VALUES(?1,?2)", insert) == Status::Ok);
+    const std::string v = "value " + std::to_string(k * 7919 % 211);
+    insert.bind(1, k).bind(2, std::string_view(v));
+    REQUIRE(insert.run() == Status::Ok);
+  }
+  // History the content does not show: a table made and dropped, rows deleted.
+  REQUIRE(db.exec("CREATE TABLE gone(a); DROP TABLE gone; DELETE FROM t WHERE k % 3 = 0;") ==
+          Status::Ok);
+  REQUIRE(std::filesystem::exists(live + "-wal"));
+
+  const std::string first = dir.file("first.db");
+  REQUIRE(db.backup_to(first) == Status::Ok);
+  // A backup is a rollback-journal file with nothing beside it, holding what the WAL held.
+  CHECK_FALSE(std::filesystem::exists(first + "-wal"));
+  {
+    Database copy;
+    OpenOptions options;
+    options.read_only = true;
+    options.wal = false;
+    options.create = false;
+    REQUIRE(copy.open(first, options) == Status::Ok);
+    CHECK(scalar(copy, "SELECT count(*) FROM t") == 133);
+    CHECK(scalar(copy, "SELECT sum(k) FROM t") == scalar(db, "SELECT sum(k) FROM t"));
+    CHECK(scalar(copy, "PRAGMA page_size") == 8192);
+    CHECK(scalar(copy, "PRAGMA schema_version") == 1);
+    CHECK(scalar(copy, "PRAGMA freelist_count") == 0);
+  }
+
+  // The backup of the backup, through a connection that opened it in WAL mode as a live store
+  // would, is the same bytes: nothing of either file's history survives into its copy.
+  const std::string again = dir.file("again.db");
+  {
+    const std::string reopened = dir.file("reopened.db");
+    std::filesystem::copy_file(first, reopened);
+    Database second;
+    REQUIRE(second.open(reopened) == Status::Ok);
+    REQUIRE(second.backup_to(again) == Status::Ok);
+  }
+  const std::string a = file_bytes(first);
+  const std::string b = file_bytes(again);
+  REQUIRE_FALSE(a.empty());
+  CHECK(a.size() == b.size());
+  CHECK(a == b);
+
+  // A path that is there is refused, and the file is left alone.
+  CHECK(db.backup_to(first) == Status::AlreadyExists);
+  CHECK(file_bytes(first) == a);
+  // So is a backup inside a transaction, which VACUUM cannot run in.
+  Transaction transaction;
+  REQUIRE(db.begin(transaction) == Status::Ok);
+  CHECK(db.backup_to(dir.file("inside.db")) == Status::InvalidArgument);
 }

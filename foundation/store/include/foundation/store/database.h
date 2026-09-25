@@ -194,6 +194,20 @@ class Database {
   Status user_version(i32& out);
   Status set_user_version(i32 version);
 
+  // A consistent, compact copy of the database in a new file at `native_path`, which must not
+  // exist: `VACUUM INTO`, so the copy is one read transaction's snapshot whatever other
+  // connections are writing, the WAL's committed frames are in it, and it has no free pages. The
+  // copy is written in rollback-journal mode at the page size this connection was opened with.
+  //
+  // **Its bytes are a function of the database's content**, not of its history. `VACUUM INTO`
+  // lays every table out afresh in key order, and the one header field that still remembers
+  // history — the schema cookie, which it sets to the source's plus one, so that a backup of a
+  // backup would differ from the backup by one — is set to 1 once the copy is written, through a
+  // connection of its own on a file nothing else has open (which is the one case the pragma is safe
+  // in). That is what lets a save round-trip byte for byte through a load (docs/subsystems/
+  // store.md, "Backups"). AlreadyExists when the path does; the call runs outside a transaction.
+  Status backup_to(std::string_view native_path);
+
   // "wal", "delete", "memory", ... as the connection reports it.
   Status journal_mode(std::string& out);
   // page_count * page_size, which is the file's size on disk for a database with no WAL

@@ -96,6 +96,8 @@ struct SnapshotInfo {
 // indirect call through a type-erased object per row, and nothing here needs to capture.
 using EventVisitor = void (*)(const EventRecord& record, void* user);
 using ProjectionVisitor = void (*)(const ProjectionRecord& record, void* user);
+// A snapshot's row and its packed blob, as `visit_snapshots` hands them over.
+using SnapshotVisitor = void (*)(const SnapshotInfo& info, std::span<const u8> blob, void* user);
 
 // A place in the whole log, across tiles, in the order `EventLog::scan` walks it: simulation tick,
 // then tile, then the tile's own sequence. The sequence alone is per tile, so it cannot say "after
@@ -165,13 +167,27 @@ class EventLog {
 
   // Packs every projection of the tile into one blob and stores it against the tile's current
   // log sequence, replacing the previous snapshot. This is what bounds replay length: a load
-  // reads the snapshot and replays only the events after `info.sequence`.
+  // reads the snapshot and replays only the events after `info.sequence`. The sequence is read
+  // from the file, never from this log's append cache: another connection to the same file may
+  // have appended to the tile since this one last looked, and a snapshot that claimed less than
+  // the file holds would replay those events twice (store.md, "Two connections, one file").
   Status snapshot(TileId tile, u64 sim_tick, i64 game_time_us, SnapshotInfo& info);
   // Reads the snapshot back and hands each packed record to `fn`. NotFound when the tile has
   // none. The records point into the snapshot blob and are valid only inside the call.
   Status load_snapshot(TileId tile, SnapshotInfo& info, ProjectionVisitor fn, void* user);
   // Writes the tile's snapshot records back into the projections table, in one transaction.
   Status restore_snapshot(TileId tile, SnapshotInfo& info);
+
+  // The whole store, table by table, in each table's key order: events by (tile, sequence),
+  // projections by (tile, entity, kind), snapshots by tile — tile ids and the halves of an id
+  // compared as the tables store them, signed. That order is a function of the rows alone, never
+  // of when or through which connection they were written, which is what a canonical hash of the
+  // store reads them in (`world::state_hash`, docs/subsystems/world.md, "The persistent-state
+  // hash"). Records and blobs are valid only inside the call. A walk of the whole table, for a
+  // hash or a tool, not for anything per tick.
+  Status visit_events(EventVisitor fn, void* user);
+  Status visit_projections(ProjectionVisitor fn, void* user);
+  Status visit_snapshots(SnapshotVisitor fn, void* user);
 
  private:
   Status highest_sequence(TileId tile, u64& out);

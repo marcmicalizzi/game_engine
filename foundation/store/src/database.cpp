@@ -466,6 +466,40 @@ Status Database::migrate(std::span<const Migration> migrations) {
   return Status::Ok;
 }
 
+Status Database::backup_to(std::string_view native_path) {
+  if (db_ == nullptr) return Status::NotOpen;
+  if (in_transaction_ || native_path.empty()) return Status::InvalidArgument;
+  const std::string path(native_path);
+  // SQLite's own view of the filesystem, so the store needs no file layer of its own. VACUUM INTO
+  // refuses a non-empty file itself; an empty one it would write over, which a backup must not.
+  sqlite3_vfs* vfs = sqlite3_vfs_find(nullptr);
+  int exists = 0;
+  if (vfs != nullptr && vfs->xAccess != nullptr &&
+      vfs->xAccess(vfs, path.c_str(), SQLITE_ACCESS_EXISTS, &exists) == SQLITE_OK && exists != 0) {
+    error_ = "backup: the destination exists";
+    return Status::AlreadyExists;
+  }
+  {
+    Statement stmt;
+    Status status = prepare("VACUUM INTO ?1", stmt);
+    if (status != Status::Ok) return status;
+    stmt.bind(1, std::string_view(path));
+    status = stmt.run();
+    if (status != Status::Ok) return status;
+  }
+  // The copy's schema cookie is the source's plus one; set it to a constant so the copy's bytes
+  // depend on its content alone. A connection of its own, in rollback-journal mode so no WAL is
+  // left beside the file, on a file no other connection has open.
+  Database copy;
+  OpenOptions options;
+  options.create = false;
+  options.wal = false;
+  Status status = copy.open(path, options);
+  if (status == Status::Ok) status = copy.exec("PRAGMA schema_version=1");
+  if (status != Status::Ok) error_ = "backup: " + std::string(copy.last_error());
+  return status;
+}
+
 Status Database::journal_mode(std::string& out) {
   out.clear();
   Statement stmt;

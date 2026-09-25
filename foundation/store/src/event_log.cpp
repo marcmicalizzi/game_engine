@@ -440,9 +440,16 @@ Status EventLog::snapshot(TileId tile, u64 sim_tick, i64 game_time_us, SnapshotI
   info = SnapshotInfo{};
   if (db_ == nullptr || !db_->is_open()) return Status::NotOpen;
 
-  u64 next = 0;
-  Status status = next_sequence(tile, next);
+  // What the file holds, not what this log last appended: another connection may have appended to
+  // the tile since (store.md, "Two connections, one file"). The append cache learns it too, so this
+  // log's next append does not collide with those events.
+  u64 highest = 0;
+  Status status = highest_sequence(tile, highest);
   if (status != Status::Ok) return status;
+  const u64 next = highest + 1;
+  if (u64* cached = next_sequence_.find_value(tile); cached != nullptr && *cached < next) {
+    *cached = next;
+  }
 
   Vector<u8> bytes;
   bytes.reserve(64 * 1024);
@@ -560,6 +567,88 @@ Status EventLog::restore_snapshot(TileId tile, SnapshotInfo& info) {
   if (status != Status::Ok) return status;
   if (restore.status != Status::Ok) return restore.status;
   return transaction.commit();
+}
+
+// ---- the whole store, in key order
+// ----------------------------------------------------------------
+
+Status EventLog::visit_events(EventVisitor fn, void* user) {
+  if (db_ == nullptr || !db_->is_open()) return Status::NotOpen;
+  if (fn == nullptr) return Status::InvalidArgument;
+  Statement stmt;
+  const Status status = db_->prepare(
+      "SELECT tile,seq,sim_tick,game_time,type,depth,origin,subject_hi,subject_lo,cause,payload "
+      "FROM events ORDER BY tile,seq",
+      stmt);
+  if (status != Status::Ok) return status;
+  EventRecord record;
+  for (;;) {
+    bool row = false;
+    const Status step = stmt.step(row);
+    if (step != Status::Ok) return step;
+    if (!row) return Status::Ok;
+    record.tile = as_u64(stmt.column_i64(0));
+    record.sequence = as_u64(stmt.column_i64(1));
+    record.sim_tick = as_u64(stmt.column_i64(2));
+    record.game_time_us = stmt.column_i64(3);
+    record.type = static_cast<u32>(stmt.column_i64(4));
+    record.depth = static_cast<u16>(stmt.column_i64(5));
+    record.origin = static_cast<EventOrigin>(stmt.column_i64(6));
+    record.subject.hi = as_u64(stmt.column_i64(7));
+    record.subject.lo = as_u64(stmt.column_i64(8));
+    record.cause = as_u64(stmt.column_i64(9));
+    record.payload = stmt.column_blob(10);
+    fn(record, user);
+  }
+}
+
+Status EventLog::visit_projections(ProjectionVisitor fn, void* user) {
+  if (db_ == nullptr || !db_->is_open()) return Status::NotOpen;
+  if (fn == nullptr) return Status::InvalidArgument;
+  Statement stmt;
+  const Status status = db_->prepare(
+      "SELECT tile,entity_hi,entity_lo,kind,version,blob FROM projections "
+      "ORDER BY tile,entity_hi,entity_lo,kind",
+      stmt);
+  if (status != Status::Ok) return status;
+  ProjectionRecord record;
+  for (;;) {
+    bool row = false;
+    const Status step = stmt.step(row);
+    if (step != Status::Ok) return step;
+    if (!row) return Status::Ok;
+    record.tile = as_u64(stmt.column_i64(0));
+    record.entity.hi = as_u64(stmt.column_i64(1));
+    record.entity.lo = as_u64(stmt.column_i64(2));
+    record.kind = static_cast<u32>(stmt.column_i64(3));
+    record.version = as_u64(stmt.column_i64(4));
+    record.blob = stmt.column_blob(5);
+    fn(record, user);
+  }
+}
+
+Status EventLog::visit_snapshots(SnapshotVisitor fn, void* user) {
+  if (db_ == nullptr || !db_->is_open()) return Status::NotOpen;
+  if (fn == nullptr) return Status::InvalidArgument;
+  Statement stmt;
+  const Status status = db_->prepare(
+      "SELECT tile,seq,sim_tick,game_time,record_count,blob FROM snapshots ORDER BY tile", stmt);
+  if (status != Status::Ok) return status;
+  SnapshotInfo info;
+  for (;;) {
+    bool row = false;
+    const Status step = stmt.step(row);
+    if (step != Status::Ok) return step;
+    if (!row) return Status::Ok;
+    info.tile = as_u64(stmt.column_i64(0));
+    info.sequence = as_u64(stmt.column_i64(1));
+    info.sim_tick = as_u64(stmt.column_i64(2));
+    info.game_time_us = stmt.column_i64(3);
+    info.record_count = static_cast<u32>(stmt.column_i64(4));
+    const std::span<const u8> blob = stmt.column_blob(5);
+    info.blob_bytes = static_cast<u32>(blob.size());
+    fn(info, blob, user);
+  }
 }
 
 }  // namespace engine::store

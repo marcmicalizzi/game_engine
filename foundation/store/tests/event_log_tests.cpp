@@ -426,3 +426,118 @@ TEST_CASE("store: origins have names") {
   CHECK(std::string_view(origin_name(EventOrigin::Deterministic)) == "deterministic");
   CHECK(std::string_view(origin_name(EventOrigin::Llm)) == "llm");
 }
+
+// store.md, "Two connections, one file": engine-host kept one connection for the write-back's
+// events and the world another for its tiles, and the world's snapshot trusted its own append
+// cache for the sequence it covers. Events the other connection appended to the tile after that
+// were then claimed by no snapshot — and a world loaded from a save, whose cache starts empty,
+// wrote a different sequence than the run that never stopped. A snapshot reads the file.
+TEST_CASE("store: a snapshot covers events another connection appended to its tile") {
+  TempDir dir("engine_store_event");
+  const std::string path = dir.file("world.db");
+  Database a;
+  Database b;
+  REQUIRE(a.open(path) == Status::Ok);
+  REQUIRE(b.open(path) == Status::Ok);
+  EventLog world(a);
+  EventLog writer(b);
+  REQUIRE(world.open() == Status::Ok);
+  REQUIRE(writer.open() == Status::Ok);
+
+  EventRecord first = make_event(3, 1, "one");
+  REQUIRE(world.append(first) == Status::Ok);
+  SnapshotInfo before;
+  REQUIRE(world.snapshot(3, 10, 10, before) == Status::Ok);
+  CHECK(before.sequence == 1);
+
+  // The other connection appends twice to the same tile.
+  EventRecord second = make_event(3, 2, "two");
+  EventRecord third = make_event(3, 3, "three");
+  REQUIRE(writer.append(second) == Status::Ok);
+  REQUIRE(writer.append(third) == Status::Ok);
+  CHECK(third.sequence == 3);
+
+  SnapshotInfo after;
+  REQUIRE(world.snapshot(3, 20, 20, after) == Status::Ok);
+  CHECK(after.sequence == 3);
+  // And this connection's next append follows them instead of colliding with one.
+  EventRecord fourth = make_event(3, 4, "four");
+  REQUIRE(world.append(fourth) == Status::Ok);
+  CHECK(fourth.sequence == 4);
+}
+
+namespace {
+
+struct Dump {
+  Vector<std::string> rows;
+};
+
+void dump_event(const EventRecord& r, void* user) {
+  static_cast<Dump*>(user)->rows.push_back(
+      "e " + std::to_string(r.tile) + ":" + std::to_string(r.sequence) + " t" +
+      std::to_string(r.sim_tick) + " " +
+      std::string(reinterpret_cast<const char*>(r.payload.data()), r.payload.size()));
+}
+
+void dump_projection(const ProjectionRecord& r, void* user) {
+  char hex[Id128::k_hex_length + 1];
+  r.entity.to_hex(hex);
+  static_cast<Dump*>(user)->rows.push_back(
+      "p " + std::to_string(r.tile) + ":" + hex + ":" + std::to_string(r.kind) + " " +
+      std::string(reinterpret_cast<const char*>(r.blob.data()), r.blob.size()));
+}
+
+void dump_snapshot(const SnapshotInfo& info, std::span<const u8> blob, void* user) {
+  static_cast<Dump*>(user)->rows.push_back(
+      "s " + std::to_string(info.tile) + ":" + std::to_string(info.sequence) + " n" +
+      std::to_string(info.record_count) + " b" + std::to_string(blob.size()));
+}
+
+}  // namespace
+
+// The whole store in key order (store.md, "Reading the whole store"): what the persistent-state
+// hash reads. The order is the tables' keys, never the order the rows were written in, so two
+// stores holding the same rows written in different orders read the same.
+TEST_CASE("store: the whole store is visited in key order, whatever order it was written in") {
+  auto fill = [](EventLog& log, bool reversed) {
+    const TileId tiles[3] = {9, 2, 5};
+    for (u32 k = 0; k < 3; ++k) {
+      const TileId tile = tiles[reversed ? 2 - k : k];
+      for (u32 i = 0; i < 3; ++i) {
+        EventRecord e = make_event(tile, i, "p");
+        REQUIRE(log.append(e) == Status::Ok);
+        ProjectionRecord p;
+        p.entity = Id128::from_seed(tile, reversed ? 2 - i : i);
+        p.tile = tile;
+        p.kind = 1;
+        p.blob = bytes_of("blob");
+        REQUIRE(log.upsert_projection(p) == Status::Ok);
+      }
+      SnapshotInfo info;
+      REQUIRE(log.snapshot(tile, 1, 1, info) == Status::Ok);
+    }
+  };
+  Dump dumps[2];
+  for (u32 pass = 0; pass < 2; ++pass) {
+    Database db;
+    REQUIRE(db.open_memory() == Status::Ok);
+    EventLog log(db);
+    REQUIRE(log.open() == Status::Ok);
+    fill(log, pass == 1);
+    REQUIRE(log.visit_events(&dump_event, &dumps[pass]) == Status::Ok);
+    REQUIRE(log.visit_projections(&dump_projection, &dumps[pass]) == Status::Ok);
+    REQUIRE(log.visit_snapshots(&dump_snapshot, &dumps[pass]) == Status::Ok);
+  }
+  REQUIRE(dumps[0].rows.size() == 9 + 9 + 3);
+  CHECK(dumps[0].rows[0].rfind("e 2:1 ", 0) == 0);
+  CHECK(dumps[0].rows[8].rfind("e 9:3 ", 0) == 0);
+  CHECK(dumps[0].rows[18].rfind("s 2:3 n3 b", 0) == 0);
+  CHECK(dumps[0].rows[20].rfind("s 9:3 n3 b", 0) == 0);
+  for (u32 i = 0; i < dumps[0].rows.size(); ++i) {
+    CAPTURE(i);
+    CHECK(dumps[0].rows[i] == dumps[1].rows[i]);
+  }
+  Database closed;
+  EventLog nothing(closed);
+  CHECK(nothing.visit_events(&dump_event, nullptr) == Status::NotOpen);
+}
