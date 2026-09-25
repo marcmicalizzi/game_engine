@@ -91,6 +91,72 @@ TEST_CASE("io: native read, write, stat, list, remove") {
   CHECK(entries.empty());
 }
 
+TEST_CASE("io: make_directories on a directory that is there, one that is not, and a file") {
+  TempDir tmp("engine_io");
+  const std::string deep = join_path(tmp.path(), "a/b/c");
+  // Missing: every level made, as create_directories always did.
+  CHECK(make_directories(deep) == Status::Ok);
+  FileInfo info;
+  REQUIRE(stat_file(deep, info) == Status::Ok);
+  CHECK(info.is_directory);
+  // There: Ok again, and nothing touched (the check that answers it without creating anything).
+  CHECK(make_directories(deep) == Status::Ok);
+  CHECK(make_directories(tmp.path()) == Status::Ok);
+  // A file where a directory is asked for, at the leaf or on the way: refused as before, and the
+  // file left alone.
+  const std::string file = join_path(tmp.path(), "a/f.txt");
+  REQUIRE(write_file(file, "x") == Status::Ok);
+  CHECK(make_directories(file) != Status::Ok);
+  CHECK(make_directories(join_path(file, "under")) != Status::Ok);
+  std::string data;
+  CHECK(read_file(file, data) == Status::Ok);
+  CHECK(data == "x");
+}
+
+TEST_CASE("io: overwrite_file writes in place, cuts, grows, makes, and remakes when told") {
+  TempDir tmp("engine_io");
+  const std::string file = join_path(tmp.path(), "new/dir/file.json");
+  std::string data;
+  // Not there, nor its directory: made.
+  CHECK(overwrite_file(file, "hello, world") == Status::Ok);
+  CHECK(read_file(file, data) == Status::Ok);
+  CHECK(data == "hello, world");
+  // Shorter: the old tail is cut off, not left behind.
+  CHECK(overwrite_file(file, "bye") == Status::Ok);
+  CHECK(read_file(file, data) == Status::Ok);
+  CHECK(data == "bye");
+  // Longer, and empty.
+  CHECK(overwrite_file(file, "a longer text than before") == Status::Ok);
+  CHECK(read_file(file, data) == Status::Ok);
+  CHECK(data == "a longer text than before");
+  CHECK(overwrite_file(file, "") == Status::Ok);
+  CHECK(read_file(file, data) == Status::Ok);
+  CHECK(data.empty());
+  // Told the old length of a large file whose length changes, it removes it and makes it again:
+  // the same bytes either way, in both directions, and when the length it was told is wrong.
+  const std::string big(20000, 'b');
+  const std::string bigger(30000, 'c');
+  CHECK(overwrite_file(file, big, 0) == Status::Ok);
+  CHECK(read_file(file, data) == Status::Ok);
+  CHECK(data == big);
+  CHECK(overwrite_file(file, bigger, big.size()) == Status::Ok);
+  CHECK(read_file(file, data) == Status::Ok);
+  CHECK(data == bigger);
+  CHECK(overwrite_file(file, big, bigger.size()) == Status::Ok);
+  CHECK(read_file(file, data) == Status::Ok);
+  CHECK(data == big);
+  CHECK(overwrite_file(file, "small", 12345) == Status::Ok);
+  CHECK(read_file(file, data) == Status::Ok);
+  CHECK(data == "small");
+  // A directory in the way is not a file.
+  CHECK(overwrite_file(join_path(tmp.path(), "new"), "x") != Status::Ok);
+  // Nothing else left in the directory: no temporaries, unlike a rename would need.
+  Vector<DirEntry> entries;
+  CHECK(list_directory(join_path(tmp.path(), "new/dir"), entries) == Status::Ok);
+  REQUIRE(entries.size() == 1);
+  CHECK(entries[0].name == "file.json");
+}
+
 TEST_CASE("io: mounts resolve virtual paths and refuse escapes") {
   TempDir tmp("engine_io");
   Vfs vfs;

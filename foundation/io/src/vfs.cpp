@@ -12,7 +12,11 @@
 #include <utility>
 
 #if ENGINE_PLATFORM_WINDOWS
+#include <fcntl.h>  // _O_WRONLY, _O_CREAT, _O_BINARY, _O_NOINHERIT (overwrite_file)
+#include <io.h>     // _wsopen_s, _write, _chsize_s, _close
 #include <process.h>
+#include <share.h>     // _SH_DENYNO
+#include <sys/stat.h>  // _S_IREAD, _S_IWRITE
 // The ranged reads below are the one place this module needs the OS directly: positional,
 // concurrency-safe reads are `ReadFile` with an `OVERLAPPED` offset on Windows and `pread` on
 // POSIX, and the standard library has neither.
@@ -273,6 +277,71 @@ Status append_file(std::string_view native_path, std::string_view data) {
   return ok ? Status::Ok : Status::IoError;
 }
 
+namespace {
+
+// At and above this, a file whose length changes is removed and made again rather than cut or
+// grown in place: 0.7 ms against 1.2 ms at 4 KiB, 4.8 ms against 1.2 ms at 16 KiB
+// (doc.fs.overwrite_resize, doc.fs.recreate in domain/doc/bench).
+constexpr u64 k_recreate_from = 8 * 1024;
+
+// One attempt: open for writing alone without truncating, write from the start, cut to the length.
+Status overwrite_once(const std::string& native, std::string_view data) {
+  bool ok = true;
+#if ENGINE_PLATFORM_WINDOWS
+  const fs::path p = to_path(native);
+  int fd = -1;
+  // Shared, so a scanner or an indexer that opened the file after the last write does not make
+  // this one fail.
+  if (const errno_t e = _wsopen_s(&fd, p.c_str(), _O_WRONLY | _O_BINARY | _O_CREAT | _O_NOINHERIT,
+                                  _SH_DENYNO, _S_IREAD | _S_IWRITE);
+      e != 0)
+    return status_from_errno(e);
+  for (usize done = 0; ok && done < data.size();) {
+    const usize chunk = std::min<usize>(data.size() - done, usize{1} << 30);
+    const int wrote = _write(fd, data.data() + done, static_cast<unsigned>(chunk));
+    ok = wrote > 0;
+    if (ok) done += static_cast<usize>(wrote);
+  }
+  ok = _chsize_s(fd, static_cast<long long>(data.size())) == 0 && ok;
+  ok = _close(fd) == 0 && ok;
+#else
+  const int fd = ::open(native.c_str(), O_WRONLY | O_CREAT | O_CLOEXEC, 0666);
+  if (fd < 0) return status_from_errno(errno);
+  for (usize done = 0; ok && done < data.size();) {
+    const ssize_t wrote = ::write(fd, data.data() + done, data.size() - done);
+    if (wrote < 0 && errno == EINTR) continue;
+    ok = wrote > 0;
+    if (ok) done += static_cast<usize>(wrote);
+  }
+  ok = ::ftruncate(fd, static_cast<off_t>(data.size())) == 0 && ok;
+  ok = ::close(fd) == 0 && ok;
+#endif
+  return ok ? Status::Ok : Status::IoError;
+}
+
+}  // namespace
+
+Status overwrite_file(std::string_view native_path, std::string_view data, u64 previous_size) {
+  const std::string native(native_path);
+  if (previous_size != k_unknown_file_size && previous_size != data.size() &&
+      std::max<u64>(previous_size, data.size()) >= k_recreate_from) {
+    std::error_code ignored;
+    fs::remove(to_path(native), ignored);
+  }
+  for (int attempt = 0;; ++attempt) {
+    Status s = overwrite_once(native, data);
+    // The directory is made when the write finds it missing, not asked for first: nearly every
+    // write is into a directory that is there.
+    if (s == Status::NotFound) {
+      const std::string_view parent = parent_path(native);
+      if (parent.empty() || make_directories(parent) != Status::Ok) return s;
+      s = overwrite_once(native, data);
+    }
+    if (s != Status::PermissionDenied || attempt >= 40) return s;
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+}
+
 Status stat_file(std::string_view native_path, FileInfo& out) {
   std::error_code ec;
   const fs::path p = to_path(native_path);
@@ -317,8 +386,17 @@ Status list_directory(std::string_view native_path, Vector<DirEntry>& out) {
 }
 
 Status make_directories(std::string_view native_path) {
+  // Asked first, because the answer is nearly always yes: `Vfs::write` and `Vfs::append` call this
+  // for the parent of every file they write. MSVC's create_directories walks the path from its root
+  // and creates every prefix in turn, each failing because it is there, which cost 4.3 ms on the
+  // development machine (`doc.fs.make_directories`) where one stat costs 0.08 ms. A path that is
+  // not a directory — missing, or something else in the way — goes to create_directories exactly
+  // as before, so what it does and what it reports are unchanged.
+  const fs::path p = to_path(native_path);
   std::error_code ec;
-  fs::create_directories(to_path(native_path), ec);
+  if (fs::is_directory(p, ec)) return Status::Ok;
+  ec.clear();
+  fs::create_directories(p, ec);
   if (ec) return status_from(ec);
   return Status::Ok;
 }

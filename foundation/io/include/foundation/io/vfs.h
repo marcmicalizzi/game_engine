@@ -79,10 +79,26 @@ Status write_file(std::string_view native_path, std::string_view data);
 Status write_file_atomic(std::string_view native_path, std::string_view data);
 // Appends to the file, creating it when absent (journals and logs).
 Status append_file(std::string_view native_path, std::string_view data);
+
+// A file's length when the caller does not know it (overwrite_file).
+inline constexpr u64 k_unknown_file_size = ~u64{0};
+// Writes `data` over the file in place: opened for writing alone and without truncating it,
+// written from the start, cut to the new length, closed. Makes the file, and its missing parent
+// directories, when it is not there, and retries briefly while something else holds it. **Not
+// atomic**: a reader can see it half written, so a caller that needs all or nothing makes it so
+// itself (domain/doc's save log). What it is for is the cost on Windows (docs/subsystems/io.md,
+// "Writing a file"): 0.5 ms at any size where `write_file_atomic` costs 3 ms and truncating or
+// opening to read as well costs 5-12 ms from 64 KiB. A caller that knows the file's current length
+// passes it as `previous_size`: a file of 8 KiB or more whose length changes is then removed and
+// made again, 1.2 ms, where changing its length in place costs 4.8 ms from 16 KiB.
+Status overwrite_file(std::string_view native_path, std::string_view data,
+                      u64 previous_size = k_unknown_file_size);
 Status stat_file(std::string_view native_path, FileInfo& out);
 bool exists(std::string_view native_path) noexcept;
 // Entries sorted by name; "." and ".." excluded.
 Status list_directory(std::string_view native_path, Vector<DirEntry>& out);
+// Makes the directory and every missing parent. Ok when it is already a directory, which it asks
+// first: one stat, where creating every prefix of an existing path cost 4.3 ms on Windows.
 Status make_directories(std::string_view native_path);
 Status remove_file(std::string_view native_path);
 // Removes a directory and everything under it.

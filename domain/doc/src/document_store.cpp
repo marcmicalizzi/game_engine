@@ -10,23 +10,10 @@
 #include <domain/doc/partition.h>
 
 #include <algorithm>
-#include <cerrno>
-#include <chrono>
 #include <filesystem>
 #include <memory>
 #include <optional>
 #include <span>
-#include <thread>
-
-#if ENGINE_PLATFORM_WINDOWS
-#include <fcntl.h>     // _O_WRONLY, _O_CREAT, _O_BINARY
-#include <io.h>        // _wsopen_s, _write, _chsize_s, _close
-#include <share.h>     // _SH_DENYNO
-#include <sys/stat.h>  // _S_IREAD, _S_IWRITE
-#else
-#include <fcntl.h>   // open
-#include <unistd.h>  // write, ftruncate, close
-#endif
 
 namespace engine::doc {
 
@@ -210,7 +197,7 @@ void fill_places(StoredLayer& layer) {
 // --- planning a save ------------------------------------------------------------------------
 
 // A file's length before a write, when the store does not know it.
-constexpr u64 k_unknown_size = ~u64{0};
+constexpr u64 k_unknown_size = io::k_unknown_file_size;
 
 struct PlannedWrite {
   std::string path;  // under the document directory
@@ -406,91 +393,18 @@ void plan_partitioned_changes(SavePlan& plan, const Layer& layer, const LayerFil
 
 // --- writing a file -------------------------------------------------------------------------
 //
-// What a file operation costs on this project's Windows machine (doc.fs.* in bench/doc_bench.cpp;
-// docs/subsystems/doc.md, "Writing a file"). Writing over an existing file in place, opened for
-// writing alone, at its own length, costs 0.5 ms whatever its size. Removing a file and making it
-// again costs 1.2 ms. Replacing a file by renaming a new one over it costs 3 ms. Changing a file's
-// length in place, truncating it before writing it, or opening it to read as well as write
-// (stdio's "r+") costs 5-12 ms once the file is 16 KiB or more. The file system charges by the
-// operation, and by its kind, not by the byte. So a save writes each file once, write-only, in
-// place when its length stays or it is small and made again when not, and makes the save as a
-// whole all or nothing with one log written first (below) instead of making each file atomic
-// with a rename of its own.
+// The file system on this project's Windows machine charges by the operation and its kind, not by
+// the byte (docs/subsystems/io.md, "Writing a file"): a write over a file at its own length costs
+// 0.5 ms, a file removed and made again 1.2 ms, a rename over a file 3 ms, a file's length changed
+// in place 4.8 ms from 16 KiB. So a save writes each file once with `io::overwrite_file` — in
+// place, or made again when a file of 8 KiB or more changes length, which it knows from what it
+// last wrote — and makes the save as a whole all or nothing with one log written first (below),
+// instead of making each file atomic with a rename of its own.
 
-// At and above this, a file whose length changes is removed and made again rather than cut or
-// grown in place: 0.7 ms against 1.2 ms at 4 KiB, 4.8 ms against 1.2 ms at 16 KiB (doc.fs.
-// overwrite_resize, doc.fs.recreate).
-constexpr u64 k_recreate_from = 8 * 1024;
-
-io::Status status_of_errno(int err) noexcept {
-  switch (err) {
-    case ENOENT: return io::Status::NotFound;
-    case EACCES: return io::Status::PermissionDenied;
-    case EISDIR: return io::Status::IsDirectory;
-    case ENOTDIR: return io::Status::NotDirectory;
-    default: return io::Status::IoError;
-  }
-}
-
-// Writes `data` over the file — opened for writing alone and without truncating it, written from
-// the start, cut to the new length, closed — creating it when it is not there. With `half`, stops
-// after half the bytes, as a process killed in the middle would: the crash tests' torn write.
-io::Status overwrite_once(const std::string& native, std::string_view data, bool half) {
-  const usize n = half ? data.size() / 2 : data.size();
-  bool ok = true;
-#if ENGINE_PLATFORM_WINDOWS
-  const std::filesystem::path p(
-      std::u8string_view(reinterpret_cast<const char8_t*>(native.data()), native.size()));
-  int fd = -1;
-  // Shared, so a scanner or an indexer that opened the file after the last write does not make
-  // this one fail.
-  if (const errno_t e = _wsopen_s(&fd, p.c_str(), _O_WRONLY | _O_BINARY | _O_CREAT | _O_NOINHERIT,
-                                  _SH_DENYNO, _S_IREAD | _S_IWRITE);
-      e != 0)
-    return status_of_errno(e);
-  for (usize done = 0; ok && done < n;) {
-    const usize chunk = std::min<usize>(n - done, usize{1} << 30);
-    const int wrote = _write(fd, data.data() + done, static_cast<unsigned>(chunk));
-    ok = wrote > 0;
-    if (ok) done += static_cast<usize>(wrote);
-  }
-  if (!half) ok = _chsize_s(fd, static_cast<long long>(data.size())) == 0 && ok;
-  ok = _close(fd) == 0 && ok;
-#else
-  const int fd = ::open(native.c_str(), O_WRONLY | O_CREAT | O_CLOEXEC, 0666);
-  if (fd < 0) return status_of_errno(errno);
-  for (usize done = 0; ok && done < n;) {
-    const ssize_t wrote = ::write(fd, data.data() + done, n - done);
-    if (wrote < 0 && errno == EINTR) continue;
-    ok = wrote > 0;
-    if (ok) done += static_cast<usize>(wrote);
-  }
-  if (!half) ok = ::ftruncate(fd, static_cast<off_t>(data.size())) == 0 && ok;
-  ok = ::close(fd) == 0 && ok;
-#endif
-  return ok ? io::Status::Ok : io::Status::IoError;
-}
-
-// The same, making the file's directory when the write finds it missing — asking for every parent
-// on every write is what `Vfs::write` does, and MSVC's create_directories creates each prefix in
-// turn, which costs more than the write — and retrying briefly while something else holds the file.
-// A file of k_recreate_from or more whose length changes (`was_size`, when the store knows it) is
-// removed first and made again; the save log is what makes that as safe as a write over it.
-io::Status overwrite_file(const std::string& native, std::string_view data,
-                          u64 was_size = k_unknown_size, bool half = false) {
-  if (was_size != k_unknown_size && was_size != data.size() &&
-      std::max<u64>(was_size, data.size()) >= k_recreate_from)
-    (void)io::remove_file(native);
-  for (int attempt = 0;; ++attempt) {
-    io::Status s = overwrite_once(native, data, half);
-    if (s == io::Status::NotFound) {
-      const std::string_view parent = io::parent_path(native);
-      if (parent.empty() || io::make_directories(parent) != io::Status::Ok) return s;
-      s = overwrite_once(native, data, half);
-    }
-    if (s != io::Status::PermissionDenied || attempt >= 40) return s;
-    std::this_thread::sleep_for(std::chrono::milliseconds(5));
-  }
+// Half the bytes, as a process killed in the middle of the write would leave: the crash tests'
+// torn write (SaveOptions::tear).
+void tear(const std::string& native, std::string_view data) {
+  (void)io::overwrite_file(native, data.substr(0, data.size() / 2));
 }
 
 bool ensure_directory(const std::string& native) {
@@ -654,12 +568,12 @@ bool apply_ops(const std::string& root, std::string_view dir, std::span<const Fi
   for (const FileOp& op : ops) {
     const std::string native = join(root, op.path);
     if (death != nullptr && death->dies()) {
-      if (death->torn() && !op.remove) (void)overwrite_file(native, op.text, op.was_size, true);
+      if (death->torn() && !op.remove) tear(native, op.text);
       set_error(error, join(dir, op.path), "the save was stopped here (SaveOptions)");
       return false;
     }
     const io::Status s =
-        op.remove ? io::remove_file(native) : overwrite_file(native, op.text, op.was_size);
+        op.remove ? io::remove_file(native) : io::overwrite_file(native, op.text, op.was_size);
     if (s != io::Status::Ok && !(op.remove && s == io::Status::NotFound)) {
       set_error(error, join(dir, op.path), io::status_name(s));
       return false;
@@ -707,12 +621,12 @@ bool carry_out(const SavePlan& plan, std::string_view dir, const SaveOptions& op
   const std::string log_path = plan.native(DocumentStore::k_save_log);
   const std::string log = log_text(ops);
   if (death.dies()) {
-    if (death.torn()) (void)overwrite_file(log_path, log, k_unknown_size, /*half=*/true);
+    if (death.torn()) tear(log_path, log);
     set_error(error, join(dir, DocumentStore::k_save_log),
               "the save was stopped here (SaveOptions)");
     return false;
   }
-  if (const io::Status s = overwrite_file(log_path, log); s != io::Status::Ok) {
+  if (const io::Status s = io::overwrite_file(log_path, log); s != io::Status::Ok) {
     (void)io::remove_file(log_path);  // a log that is not whole names no save; tidy it anyway
     set_error(error, join(dir, DocumentStore::k_save_log), io::status_name(s));
     return false;
@@ -1255,8 +1169,10 @@ std::string journal_line(const Patch& patch) {
   return line;
 }
 
-// Appends, making the directory when the append finds it missing rather than asking first, which
-// is what `Vfs::append` does and what costs more than the append on Windows.
+// Appends, making the directory when the append finds it missing rather than asking first, as
+// `Vfs::append` does. Asking is one stat now that `io::make_directories` looks before it creates
+// (0.07 ms; it was 4.3 ms), so this saves little, but nearly every append is into a directory
+// that is there, and the journal is appended on every commit.
 io::Status append_native(const std::string& native, std::string_view text) {
   io::Status s = io::append_file(native, text);
   if (s == io::Status::NotFound) {

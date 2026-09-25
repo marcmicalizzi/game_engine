@@ -3,7 +3,7 @@
 - **Status:** Proposed
 - **Date:** 2026-09-25
 - **Plan references:** docs/plan/03-data-model.md §3.2 (the authoring document and its files), §3.7 (tile-partitioned layers); docs/plan/06-agent-tooling.md §6.5 (many agents on one document); experiment E12 ([write-up](../experiments/e12-proposal-layers-and-leases.md)).
-- **Docs touched:** [doc](../subsystems/doc.md#saving), [protocol](../subsystems/protocol.md), [E12](../experiments/e12-proposal-layers-and-leases.md)
+- **Docs touched:** [doc](../subsystems/doc.md#saving), [io](../subsystems/io.md#writing-a-file), [protocol](../subsystems/protocol.md), [E12](../experiments/e12-proposal-layers-and-leases.md)
 
 ## Context
 
@@ -31,11 +31,10 @@ Three shapes were on the table. **Keep each file atomic (a rename each) and only
 - `save.pending` is a new name in a document directory. It never exists at rest; one found there is a save that did not finish, and it must not be committed or deleted by hand without loading the document with a writer.
 - The store's knowledge is only right while this store is the directory's one writer, which ADR-0039 already assumes. `Document::mark_all_dirty()` is how a caller says otherwise.
 - The journal is cut in place and appended to, never rewritten, and a half-written last line (an append that died) is left out by `load` and cut off by the next append.
-- `Vfs::write` and `Vfs::append` still pay `create_directories` on every call. The store and the protocol's side files avoid them; every other caller does not, and the right fix for them is in `foundation/io` (ask whether the directory exists first), not here.
+- The in-place write is `io::overwrite_file` in `foundation/io`, where any caller can have it, and `io::make_directories` asks whether the directory is there before creating every prefix, so every `Vfs::write` and `Vfs::append` caller stopped paying 4.3 ms a call for it ([io](../subsystems/io.md#writing-a-file)).
 
 ## Revisit when
 
 - A document has to survive a power cut (git checkpointing, plan 03): the log is where an `fsync` would go, once, before the files are written.
 - More than one process has to write a document at once: the store's knowledge and the log both assume one writer.
-- `foundation/io` offers an in-place write and a `make_directories` that looks before it creates: the store's private writer should move there.
 - A platform's rename turns out cheaper than its in-place write: the log could then write new files and rename them, at the same guarantee.

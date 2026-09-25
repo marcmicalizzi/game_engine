@@ -71,9 +71,8 @@ bool read_json_file(const io::Vfs& vfs, const std::string& path, T& out, bool& p
   return true;
 }
 
-// Written beside the document through the store (DocumentStore::write_side_file): atomically, not
-// at all when the bytes are the ones there, and without `Vfs::write`'s question about every parent
-// directory, which costs more than the write on Windows (docs/subsystems/doc.md, "Writing a file").
+// Written beside the document through the store (DocumentStore::write_side_file): atomically, and
+// not at all when the bytes are the ones there (docs/subsystems/doc.md, "Writing a file").
 template <class T>
 bool write_json_file(const io::Vfs& vfs, const std::string& path, const T& value, RpcError& error) {
   std::string text = write_json(schema::to_json(value));

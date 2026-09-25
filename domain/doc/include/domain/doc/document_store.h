@@ -142,8 +142,7 @@ class DocumentStore {
   // Files beside a document that are not the document's own — the protocol's leases.json,
   // proposals.json and proposals/<layer>.base.jsonl (ADR-0039) — by their Vfs path. A whole file is
   // replaced atomically and only when its bytes change; an append appends. Either makes a
-  // directory only when the write finds it missing, where `Vfs::write` and `Vfs::append` ask for
-  // every parent on every call, which costs more than the write on Windows.
+  // directory only when the write finds it missing, where `Vfs::write` and `Vfs::append` ask first.
   static bool write_side_file(const io::Vfs& vfs, std::string_view path, std::string_view text,
                               std::string* error);
   static bool append_side_file(const io::Vfs& vfs, std::string_view path, std::string_view text,

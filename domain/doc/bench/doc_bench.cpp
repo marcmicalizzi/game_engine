@@ -32,13 +32,7 @@
 #include <string>
 
 #if ENGINE_PLATFORM_WINDOWS
-#include <fcntl.h>
-#include <io.h>
-#include <share.h>
-#include <sys/stat.h>
-#else
-#include <fcntl.h>
-#include <unistd.h>
+#include <share.h>  // _SH_DENYNO, for the stdio row
 #endif
 
 using namespace engine;
@@ -539,62 +533,22 @@ ENGINE_BENCH_ARGS(fs_write_atomic, "doc.fs.write_atomic", 64, 4096, 65536, 10485
   state.set_bytes(data.size());
 }
 
-// What the store does (document_store.cpp, overwrite_once): the file opened for writing alone and
-// without truncating it, written from the start, cut to the new length, closed. Spelled again here,
-// since the store keeps it private; the two must stay the same calls.
+// What a save does, `io::overwrite_file`: the file opened for writing alone and without truncating
+// it, written from the start, cut to the new length, closed — here at the length it already has.
 ENGINE_BENCH_ARGS(fs_overwrite, "doc.fs.overwrite", 64, 4096, 65536, 1048576) {
   engine::test::TempDir tmp("engine_doc_fs_bench");
   const std::string path = tmp.file("file.json");
   const std::string data = payload(state.arg());
   (void)io::write_file(path, data);
-  while (state.keep_running()) {
-#if ENGINE_PLATFORM_WINDOWS
-    int fd = -1;
-    if (_wsopen_s(&fd, std::filesystem::path(path).c_str(),
-                  _O_WRONLY | _O_BINARY | _O_CREAT | _O_NOINHERIT, _SH_DENYNO,
-                  _S_IREAD | _S_IWRITE) != 0)
-      continue;
-    bench::keep(_write(fd, data.data(), static_cast<unsigned>(data.size())));
-    bench::keep(_chsize_s(fd, static_cast<long long>(data.size())));
-    bench::keep(_close(fd));
-#else
-    const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_CLOEXEC, 0666);
-    if (fd < 0) continue;
-    bench::keep(::write(fd, data.data(), data.size()));
-    bench::keep(::ftruncate(fd, static_cast<off_t>(data.size())));
-    bench::keep(::close(fd));
-#endif
-  }
+  while (state.keep_running())
+    bench::keep(io::overwrite_file(path, data, data.size()));
   state.set_items(1);
   state.set_bytes(data.size());
 }
 
-namespace {
-
-// The store's write, of `n` bytes of `data`.
-bool overwrite(const std::string& path, const std::string& data, usize n) {
-#if ENGINE_PLATFORM_WINDOWS
-  int fd = -1;
-  if (_wsopen_s(&fd, std::filesystem::path(path).c_str(),
-                _O_WRONLY | _O_BINARY | _O_CREAT | _O_NOINHERIT, _SH_DENYNO,
-                _S_IREAD | _S_IWRITE) != 0)
-    return false;
-  bool ok = _write(fd, data.data(), static_cast<unsigned>(n)) == static_cast<int>(n);
-  ok = _chsize_s(fd, static_cast<long long>(n)) == 0 && ok;
-  return _close(fd) == 0 && ok;
-#else
-  const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_CLOEXEC, 0666);
-  if (fd < 0) return false;
-  bool ok = ::write(fd, data.data(), n) == static_cast<ssize_t>(n);
-  ok = ::ftruncate(fd, static_cast<off_t>(n)) == 0 && ok;
-  return ::close(fd) == 0 && ok;
-#endif
-}
-
-}  // namespace
-
 // A save's file changes length with nearly every edit — a digit more, a name shorter. The same
-// write as `doc.fs.overwrite`, a byte shorter and a byte longer by turns.
+// write as `doc.fs.overwrite`, a byte shorter and a byte longer by turns, told nothing of the old
+// length so that it cuts or grows the file in place.
 ENGINE_BENCH_ARGS(fs_overwrite_resize, "doc.fs.overwrite_resize", 4096, 16384, 65536) {
   engine::test::TempDir tmp("engine_doc_fs_bench");
   const std::string path = tmp.file("file.json");
@@ -602,12 +556,14 @@ ENGINE_BENCH_ARGS(fs_overwrite_resize, "doc.fs.overwrite_resize", 4096, 16384, 6
   (void)io::write_file(path, data);
   u64 n = 0;
   while (state.keep_running())
-    bench::keep(overwrite(path, data, data.size() - (n++ % 2)));
+    bench::keep(
+        io::overwrite_file(path, std::string_view(data).substr(0, data.size() - (n++ % 2))));
   state.set_items(1);
   state.set_bytes(data.size());
 }
 
-// The file removed and made again, which a save's log makes as safe as a write over it.
+// The file removed and made again, which a save's log makes as safe as a write over it; what
+// `io::overwrite_file` does from 8 KiB when it is told the old length and the length changes.
 ENGINE_BENCH_ARGS(fs_recreate, "doc.fs.recreate", 4096, 16384, 65536) {
   engine::test::TempDir tmp("engine_doc_fs_bench");
   const std::string path = tmp.file("file.json");
@@ -616,7 +572,8 @@ ENGINE_BENCH_ARGS(fs_recreate, "doc.fs.recreate", 4096, 16384, 65536) {
   u64 n = 0;
   while (state.keep_running()) {
     bench::keep(io::remove_file(path));
-    bench::keep(overwrite(path, data, data.size() - (n++ % 2)));
+    bench::keep(
+        io::overwrite_file(path, std::string_view(data).substr(0, data.size() - (n++ % 2))));
   }
   state.set_items(1);
   state.set_bytes(data.size());
@@ -707,7 +664,8 @@ ENGINE_BENCH_ARGS(fs_read, "doc.fs.read", 64, 4096, 65536, 1048576) {
 }
 
 // The questions a save asks without writing: does a file exist, what is in a directory of 64
-// files, and does a directory exist (what `Vfs::write` asks about every parent).
+// files, and does a directory exist — `io::make_directories` on one that is, which `Vfs::write`
+// and `Vfs::append` call for every parent: 4.3 ms before it looked first, 0.07 ms after.
 ENGINE_BENCH(fs_exists, "doc.fs.exists") {
   engine::test::TempDir tmp("engine_doc_fs_bench");
   const std::string path = tmp.file("file.json");
@@ -736,4 +694,53 @@ ENGINE_BENCH(fs_make_directories, "doc.fs.make_directories") {
   while (state.keep_running())
     bench::keep(io::make_directories(path));
   state.set_items(1);
+}
+
+// The same for a directory that is not there yet, under one that is: the leaf is made, and removed
+// again outside the timing. What the first write into a new layer's directory pays.
+ENGINE_BENCH(fs_make_directories_new, "doc.fs.make_directories_new") {
+  engine::test::TempDir tmp("engine_doc_fs_bench");
+  const std::string parent = tmp.file("layers/world");
+  (void)io::make_directories(parent);
+  const std::string path = parent + "/tiles";
+  while (state.keep_running()) {
+    bench::keep(io::make_directories(path));
+    state.pause_timing();
+    (void)io::remove_directory_recursive(path);
+    state.resume_timing();
+  }
+  state.set_items(1);
+}
+
+// What every caller of the Vfs pays for a file beside a document: `Vfs::write` (its parent's
+// directories, then an atomic replace) and `Vfs::append` (its parent's directories, then the
+// append), through a mount, 256 bytes each.
+ENGINE_BENCH(fs_vfs_write, "doc.fs.vfs_write") {
+  engine::test::TempDir tmp("engine_doc_fs_bench");
+  io::Vfs vfs;
+  (void)vfs.mount("docs", tmp.path(), /*writable=*/true);
+  const std::string data = payload(256);
+  (void)vfs.write("docs://world/leases.json", data);
+  while (state.keep_running())
+    bench::keep(vfs.write("docs://world/leases.json", data));
+  state.set_items(1);
+  state.set_bytes(data.size());
+}
+
+ENGINE_BENCH(fs_vfs_append, "doc.fs.vfs_append") {
+  engine::test::TempDir tmp("engine_doc_fs_bench");
+  io::Vfs vfs;
+  (void)vfs.mount("docs", tmp.path(), /*writable=*/true);
+  const std::string data = payload(256);
+  u64 appended = 0;
+  while (state.keep_running()) {
+    bench::keep(vfs.append("docs://world/proposals/p.base.jsonl", data));
+    if (++appended % 4096 == 0) {
+      state.pause_timing();
+      (void)vfs.remove("docs://world/proposals/p.base.jsonl");
+      state.resume_timing();
+    }
+  }
+  state.set_items(1);
+  state.set_bytes(data.size());
 }
