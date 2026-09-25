@@ -126,7 +126,9 @@ std::string open_session(Host& host, const std::string& dir) {
 constexpr u32 k_residents = 100'000;
 
 // The generator's parameters: the host's world seed (1, until a document carries one), 64 m tiles,
-// and the routines' clock at 07:00 at game time 0.
+// and the routines' clock five seconds before 07:00 at game time 0, so the seven o'clock minute — where many
+// rows start — falls inside the first run and its transitions (timers fired, records moved, state
+// written back) are part of what every run replays; at 07:00 exactly nothing transitions in ten seconds.
 npc::GeneratorParams resident_world(u32 residents) {
   npc::GeneratorParams p;
   p.seed = 1;
@@ -136,7 +138,7 @@ npc::GeneratorParams resident_world(u32 residents) {
   p.max_x = 256.0;
   p.max_z = 256.0;
   p.tile_size = 64.0;
-  p.clock_offset_us = 7 * 60 * npc::k_us_per_minute;
+  p.clock_offset_us = 7 * 60 * npc::k_us_per_minute - 5 * 1'000'000;
   return p;
 }
 
@@ -218,7 +220,7 @@ TEST_CASE("npc: 10^5 scheduled residents streamed, saved, loaded and replayed to
     // Every resident and every place within reach came in, at the first fill.
     CHECK(number(streamed, "created") >= k_residents);
     CHECK(number(streamed, "deactivated") > 0);
-    MESSAGE("first 300 ticks: " << number(run, "wall_ms") << " ms wall, "
+    MESSAGE("first 300 ticks: "
                                 << number(streamed, "created") << " created, document "
                                 << write_json(at(streamed, "document_ms"), JsonWriteOptions{})
                                 << " ms, store "
