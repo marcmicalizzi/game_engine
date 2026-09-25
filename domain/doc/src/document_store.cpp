@@ -41,6 +41,7 @@ bool write_text(const io::Vfs& vfs, const std::string& path, std::string_view te
     return false;
   }
   ++report.files_written;
+  report.bytes_written += text.size();
   return true;
 }
 

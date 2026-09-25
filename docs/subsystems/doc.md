@@ -84,6 +84,22 @@ Loading checks the layout rather than trusting it, and names the file in the mes
 
 The two big wins are the two that were quadratic: `objects()` resolved every id to test liveness, and `children()` walked the whole document for one parent. `resolve` and `property` are a wash, and honestly so — over a two-layer stack the index replaces two `FlatMap` binary searches with a hash lookup into a 100k-entry map and one or two of the same searches, and `resolve`'s cost is dominated by composing and allocating its property map either way. The index earns its place there by being O(1) in the depth of the stack rather than O(layers), and by making `exists()` and `is_defined()` — which every strict command calls — a single hash lookup instead of a full compose with an allocation. Maintaining it costs a `SetProperty` 722 ns at 100k records (294 ns at 1k). `build_layer_index` over 100k records is 17.7 ms, which is a save's cost, not a query's.
 
+## What a save costs
+
+[E12](../experiments/e12-proposal-layers-and-leases.md#what-surprised-me) found an edit costing 87–158 ms and a promotion about 400 ms on Windows, almost all of it the store, so the store has benchmarks of its own. `doc.store.*` in `bench/doc_bench.cpp` times what `Session::commit_commands` does for one `doc.apply` — a one-command transaction, its journal line, the manifest's undo position, the save — on two declared shapes, with the files and bytes each commit wrote in the items and bytes columns: **store**, eight layers and 10⁴ records (`world` partitioned into 8 × 8 tiles of 64 m with 8,000 placements, seven single-file feature layers of 286 overrides), committing to a tile (`commit.tile`) or to a single-file layer (`commit.plain`), and saving with nothing changed (`save.unchanged`); and **e12**, E12's document with 4 or 16 proposal layers of ten overrides each, one agent committing to its own (`commit.e12/<agents>`). `doc.fs.*` times the file operations a save is made of, one at a time and at four sizes.
+
+Before this section's change (`msvc-release`, one Windows machine, milliseconds per commit; machine state: another agent held the GPU lock and other processes used 12% of the CPU, so these are upper bounds, and the spread was up to 45%):
+
+| | ms | files | bytes |
+|---|---|---|---|
+| `commit.e12/4` | 142 | 5 | 4,674 |
+| `commit.e12/16` | 262 | 5 | 7,084 |
+| `commit.tile` | 226 | 11 | 406,906 |
+| `commit.plain` | 108 | 11 | 406,765 |
+| `save.unchanged` | 200 | 9 | 362,073 |
+
+A commit wrote five files and spent a quarter of a second doing it: the cost was not the bytes. The same rows in the Linux container (`linux-clang-debug`) took 5.1 ms and 7.9 ms for `commit.e12`, and about 90 ms for the 10⁴-record shape, where a debug build's serialization of every single-file layer on every save is what shows.
+
 ## Change feed
 
 A reader that mirrors the document — the runtime world's materializer — must not rescan it to learn what changed. So every mutation stamps the ids whose composition it changed with the document's next **revision** (`IndexEntry::revision`, `revision_of(id)`, `revision()`) and appends them to a **feed**; `changed_since(since, out)` returns each id changed after revision `since` once, in id order — live, deleted and gone alike, because the reader has to hear about all three. A record nothing touched costs such a reader nothing at all.

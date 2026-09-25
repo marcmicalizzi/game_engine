@@ -31,6 +31,7 @@ namespace engine::doc {
 // asserts a second save rewrites one tile and not the layer.
 struct SaveReport {
   u32 files_written = 0;  // layer, tile, index, and manifest files written this call
+  u64 bytes_written = 0;  // what those files hold, summed
   u32 tiles_written = 0;
   u32 tiles_removed = 0;  // tile files that no longer have any records
   u32 tiles_total = 0;    // occupied tiles across every partitioned layer

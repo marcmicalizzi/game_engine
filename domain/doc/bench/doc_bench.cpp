@@ -8,10 +8,22 @@
 // not any more; resolve() and property() are a wash over a shallow stack, because a hash lookup
 // into a large map costs about what the two FlatMap searches it replaces cost. Keep both halves
 // in the table rather than reporting only the wins.
+//
+// The "doc.store.*" benchmarks at the end are what a commit costs on disk: a transaction, its
+// journal line and the save, on two declared document shapes, with the files and bytes each save
+// wrote as the items and bytes columns. The "doc.fs.*" ones are the file operations a save is
+// made of, one at a time and at four sizes, which is how to tell whether this file system charges
+// by the operation or by the byte.
 #include <core/ids/id128.h>
+#include <core/json/json.h>
+#include <core/schema/json_reflect.h>
 #include <domain/doc/document.h>
+#include <domain/doc/document_store.h>
 #include <domain/doc/partition.h>
 #include <foundation/bench/bench.h>
+#include <foundation/io/vfs.h>
+
+#include <test_temp_dir.h>
 
 #include <algorithm>
 #include <schemas/provenance.h>
@@ -264,4 +276,339 @@ ENGINE_BENCH_ARGS(build_index_tiles, "doc.partition.build_index", 1000, 100000) 
   while (state.keep_running())
     bench::keep(build_layer_index(document.layer(0)).tiles.size());
   state.set_items(count);
+}
+
+// ---- the store: what a commit costs on disk ----------------------------------------------------
+//
+// Two document shapes, each built once per measurement in a scratch directory of its own:
+//
+//   store      eight layers and 10^4 records: `world`, partitioned into 8 x 8 tiles of 64 m and
+//              holding 8,000 placements, and seven single-file feature layers of 286 overrides.
+//   e12        E12's document (docs/experiments/e12-proposal-layers-and-leases.md): an empty
+//              `base`, `world` tiled 10 m a side with six props in each of its 8 x 8 tiles, and
+//              one proposal layer per agent over it — the argument — stored in world's form and
+//              holding the ten overrides an agent has made in its block.
+//
+// A commit is what `Session::commit_commands` does for one `doc.apply`: a transaction of one
+// SetProperty on the named layer, the journal line, the manifest's undo position, and the save.
+// The items column is the files the commit wrote (the journal line counts as one) and the bytes
+// column what they held, both averaged over the iterations.
+
+namespace {
+
+constexpr u32 k_grid = 8;  // tiles a side, in both shapes
+
+struct StoreShape {
+  f64 tile = 64.0;
+  u32 world_records = 8000;
+  u32 plain_layers = 7;      // single-file feature layers
+  u32 plain_records = 286;   // overrides in each
+  u32 proposals = 0;         // partitioned proposal layers over world
+  u32 proposal_records = 0;  // overrides in each
+};
+
+StoreShape declared_shape() { return StoreShape{}; }
+
+StoreShape e12_shape(u32 agents) {
+  StoreShape s;
+  s.tile = 10.0;
+  s.world_records = k_grid * k_grid * 6;
+  s.plain_layers = 0;
+  s.plain_records = 0;
+  s.proposals = agents;
+  s.proposal_records = 10;
+  return s;
+}
+
+ObjectId store_id(u32 n) { return Id128::from_parts(7, n + 1); }
+
+// A record of `world`, placed in tile n % 64 so consecutive ids spread over the grid.
+ObjectRecord placement(u32 n, f64 tile) {
+  const u32 t = n % (k_grid * k_grid);
+  const f64 inside = static_cast<f64>((n / (k_grid * k_grid)) % 97) / 97.0 * (tile * 0.9);
+  const f64 x = static_cast<f64>(t % k_grid) * tile + inside + tile * 0.05;
+  const f64 z = static_cast<f64>(t / k_grid) * tile + inside + tile * 0.05;
+  ObjectRecord r;
+  r.id = store_id(n);
+  r.type = k_type;
+  r.parent = ObjectId{};
+  r.properties.insert_or_assign("generator", JsonValue("prop-" + std::to_string(n)));
+  r.properties.insert_or_assign(
+      "position", JsonValue(JsonValue::Array{JsonValue(x), JsonValue(0.0), JsonValue(z)}));
+  return r;
+}
+
+ObjectRecord override_of(u32 n, std::string_view value) {
+  ObjectRecord r;
+  r.id = store_id(n);
+  r.properties.insert_or_assign("license", JsonValue(std::string(value)));
+  return r;
+}
+
+// Builds the shape in memory and saves it whole, as a fresh document would be, so the measured
+// commits start from a directory the store wrote itself.
+struct StoreFixture {
+  engine::test::TempDir tmp{"engine_doc_store_bench"};
+  io::Vfs vfs;
+  std::string dir = "docs://world";
+  Document doc;
+  DocumentManifest manifest;
+  u32 world = 0;
+  u32 first_plain = 0;
+  u32 first_proposal = 0;
+  StoreShape shape;
+
+  explicit StoreFixture(const StoreShape& s) : shape(s) {
+    (void)vfs.mount("docs", tmp.path(), /*writable=*/true);
+    std::string error;
+    ENGINE_VERIFY(DocumentStore::create(vfs, dir, "Bench", doc, manifest, &error),
+                  "doc store bench: create failed");
+    LayerPartition partition;
+    partition.property = "position";
+    partition.tile_size = s.tile;
+
+    Layer world_layer("world", LayerRole::Feature);
+    for (u32 i = 0; i < s.world_records; ++i)
+      world_layer.set(placement(i, s.tile));
+    world = doc.add_layer(std::move(world_layer));
+    doc.set_layer_partition(world, partition);
+
+    first_plain = doc.layer_count();
+    for (u32 l = 0; l < s.plain_layers; ++l) {
+      Layer layer("feature" + std::to_string(l), LayerRole::Feature);
+      for (u32 k = 0; k < s.plain_records; ++k)
+        layer.set(override_of((l * s.plain_records + k) * 3 % s.world_records, "MIT"));
+      doc.add_layer(std::move(layer));
+    }
+    first_proposal = doc.layer_count();
+    for (u32 p = 0; p < s.proposals; ++p) {
+      Layer layer("proposal" + std::to_string(p), LayerRole::Proposal);
+      // Ten overrides of props in the agent's own tile (p % 64). Half of them moved the prop, so
+      // carry a position and are filed in a tile of the proposal's own; the other half set only
+      // a property and are filed in its untiled.json.
+      for (u32 k = 0; k < s.proposal_records; ++k) {
+        const u32 n = (p + k * k_grid * k_grid) % s.world_records;
+        ObjectRecord r = override_of(n, "draft");
+        if (k % 2 == 0) {
+          r.properties.insert_or_assign("position",
+                                        *placement(n, s.tile).properties.find_value("position"));
+        }
+        layer.set(std::move(r));
+      }
+      const u32 index = doc.add_layer(std::move(layer));
+      doc.set_layer_partition(index, partition);
+    }
+    doc.set_edit_layer(world);
+    ENGINE_VERIFY(DocumentStore::save(vfs, dir, doc, manifest, &error),
+                  "doc store bench: first save failed");
+  }
+
+  // One doc.apply: a SetProperty on `layer`'s record for `id`, journaled and saved. Adds the files
+  // and bytes the commit wrote.
+  void commit(u32 layer, ObjectId id, const char* property, u64 value, u64& files, u64& bytes) {
+    doc.set_edit_layer(layer);
+    Attribution who;
+    who.actor = "bench";
+    who.role = "bench";
+    who.timestamp_unix_ms = 1;
+    {
+      Transaction tx = doc.begin(who);
+      tx.apply(cmd_set(id, property, JsonValue(value)), /*strict=*/false);
+      tx.commit();
+    }
+    std::string error;
+    ENGINE_VERIFY(DocumentStore::append_journal(vfs, dir, doc.journal().back(), &error),
+                  "doc store bench: journal append failed");
+    manifest.undo_position = doc.journal().size();
+    SaveReport report;
+    ENGINE_VERIFY(DocumentStore::save(vfs, dir, doc, manifest, &error, &report),
+                  "doc store bench: save failed");
+    const std::string line =
+        write_json(schema::to_json(doc.journal().back()), JsonWriteOptions{.pretty = false});
+    files += report.files_written + 1u;
+    bytes += report.bytes_written + line.size() + 1u;
+  }
+};
+
+void report_io(bench::State& state, u64 files, u64 bytes, u64 count) {
+  if (count == 0) return;
+  state.set_items((files + count / 2) / count);
+  state.set_bytes((bytes + count / 2) / count);
+}
+
+}  // namespace
+
+// A commit to one record of the partitioned `world` layer: the edit that touches one tile.
+ENGINE_BENCH(store_commit_tile, "doc.store.commit.tile") {
+  StoreFixture f(declared_shape());
+  u64 files = 0, bytes = 0, commits = 0;
+  while (state.keep_running()) {
+    const u32 n = static_cast<u32>((commits * 7919) % f.shape.world_records);
+    f.commit(f.world, store_id(n), "generator", commits, files, bytes);
+    ++commits;
+  }
+  report_io(state, files, bytes, commits);
+}
+
+// A commit to one record of a single-file feature layer: the edit that rewrites a whole layer file.
+ENGINE_BENCH(store_commit_plain, "doc.store.commit.plain") {
+  StoreFixture f(declared_shape());
+  u64 files = 0, bytes = 0, commits = 0;
+  while (state.keep_running()) {
+    const u32 k = static_cast<u32>(commits % f.shape.plain_records);
+    f.commit(f.first_plain, store_id(k * 3 % f.shape.world_records), "license", commits, files,
+             bytes);
+    ++commits;
+  }
+  report_io(state, files, bytes, commits);
+}
+
+// A save with nothing to save: what `doc.save` costs, and the floor under every commit.
+ENGINE_BENCH(store_save_unchanged, "doc.store.save.unchanged") {
+  StoreFixture f(declared_shape());
+  u64 files = 0, bytes = 0, saves = 0;
+  std::string error;
+  while (state.keep_running()) {
+    SaveReport report;
+    ENGINE_VERIFY(DocumentStore::save(f.vfs, f.dir, f.doc, f.manifest, &error, &report),
+                  "doc store bench: save failed");
+    files += report.files_written;
+    bytes += report.bytes_written;
+    ++saves;
+  }
+  report_io(state, files, bytes, saves);
+}
+
+// E12's edit: one agent's commit to its own proposal layer, with 4 or 16 agents keeping one each.
+ENGINE_BENCH_ARGS(store_commit_e12, "doc.store.commit.e12", 4, 16) {
+  const u32 agents = static_cast<u32>(state.arg());
+  StoreFixture f(e12_shape(agents));
+  u64 files = 0, bytes = 0, commits = 0;
+  while (state.keep_running()) {
+    const u32 p = static_cast<u32>(commits % agents);
+    const u32 k = static_cast<u32>((commits / agents) % f.shape.proposal_records);
+    const u32 n = (p + k * k_grid * k_grid) % f.shape.world_records;
+    f.commit(f.first_proposal + p, store_id(n), "license", commits, files, bytes);
+    ++commits;
+  }
+  report_io(state, files, bytes, commits);
+}
+
+// ---- the file operations a save is made of -----------------------------------------------------
+//
+// One operation per iteration on a native path in a scratch directory, at 64 B, 4 KiB, 64 KiB and
+// 1 MiB. A cost that barely moves from 64 B to 64 KiB is charged per operation; one that grows
+// with the size is charged per byte.
+
+namespace {
+
+std::string payload(i64 size) { return std::string(static_cast<usize>(size), 'x'); }
+
+}  // namespace
+
+// What `Vfs::write` does: a sibling temporary file, written and closed, renamed over the target.
+ENGINE_BENCH_ARGS(fs_write_atomic, "doc.fs.write_atomic", 64, 4096, 65536, 1048576) {
+  engine::test::TempDir tmp("engine_doc_fs_bench");
+  const std::string path = tmp.file("file.json");
+  const std::string data = payload(state.arg());
+  (void)io::write_file(path, data);
+  while (state.keep_running())
+    bench::keep(io::write_file_atomic(path, data));
+  state.set_items(1);
+  state.set_bytes(data.size());
+}
+
+// The same bytes written over the file in place: opened, truncated, written, closed.
+ENGINE_BENCH_ARGS(fs_write_direct, "doc.fs.write_direct", 64, 4096, 65536, 1048576) {
+  engine::test::TempDir tmp("engine_doc_fs_bench");
+  const std::string path = tmp.file("file.json");
+  const std::string data = payload(state.arg());
+  while (state.keep_running())
+    bench::keep(io::write_file(path, data));
+  state.set_items(1);
+  state.set_bytes(data.size());
+}
+
+// A rename over an existing file, alone: the second half of an atomic write.
+ENGINE_BENCH(fs_rename, "doc.fs.rename") {
+  engine::test::TempDir tmp("engine_doc_fs_bench");
+  const std::string a = tmp.file("a.json");
+  const std::string b = tmp.file("b.json");
+  (void)io::write_file(a, "{}");
+  (void)io::write_file(b, "{}");
+  u64 n = 0;
+  while (state.keep_running()) {
+    // Back and forth, recreating the one that moved, outside the timing.
+    bench::keep(io::rename_path(a, b));
+    state.pause_timing();
+    (void)io::write_file(a, "{}");
+    state.resume_timing();
+    ++n;
+  }
+  bench::keep(n);
+  state.set_items(1);
+}
+
+// What the journal does: one line appended to a file that is opened and closed around it.
+ENGINE_BENCH_ARGS(fs_append, "doc.fs.append", 64, 4096) {
+  engine::test::TempDir tmp("engine_doc_fs_bench");
+  const std::string path = tmp.file("journal.jsonl");
+  const std::string data = payload(state.arg());
+  u64 appended = 0;
+  while (state.keep_running()) {
+    bench::keep(io::append_file(path, data));
+    // A journal of a hundred thousand lines is not what is being measured; start it again.
+    if (++appended % 4096 == 0) {
+      state.pause_timing();
+      (void)io::remove_file(path);
+      state.resume_timing();
+    }
+  }
+  state.set_items(1);
+  state.set_bytes(data.size());
+}
+
+ENGINE_BENCH_ARGS(fs_read, "doc.fs.read", 64, 4096, 65536, 1048576) {
+  engine::test::TempDir tmp("engine_doc_fs_bench");
+  const std::string path = tmp.file("file.json");
+  (void)io::write_file(path, payload(state.arg()));
+  std::string out;
+  while (state.keep_running()) {
+    bench::keep(io::read_file(path, out));
+    bench::keep(out.size());
+  }
+  state.set_items(1);
+  state.set_bytes(static_cast<u64>(state.arg()));
+}
+
+// The questions a save asks without writing: does a file exist, what is in a directory of 64
+// files, and does a directory exist (what `Vfs::write` asks about every parent).
+ENGINE_BENCH(fs_exists, "doc.fs.exists") {
+  engine::test::TempDir tmp("engine_doc_fs_bench");
+  const std::string path = tmp.file("file.json");
+  (void)io::write_file(path, "{}");
+  while (state.keep_running())
+    bench::keep(io::exists(path));
+  state.set_items(1);
+}
+
+ENGINE_BENCH(fs_list, "doc.fs.list") {
+  engine::test::TempDir tmp("engine_doc_fs_bench");
+  for (u32 i = 0; i < 64; ++i)
+    (void)io::write_file(tmp.file(std::to_string(i) + "_0.json"), "{}");
+  Vector<io::DirEntry> entries;
+  while (state.keep_running()) {
+    bench::keep(io::list_directory(tmp.path(), entries));
+    bench::keep(entries.size());
+  }
+  state.set_items(1);
+}
+
+ENGINE_BENCH(fs_make_directories, "doc.fs.make_directories") {
+  engine::test::TempDir tmp("engine_doc_fs_bench");
+  const std::string path = tmp.file("layers/world/tiles");
+  (void)io::make_directories(path);
+  while (state.keep_running())
+    bench::keep(io::make_directories(path));
+  state.set_items(1);
 }
