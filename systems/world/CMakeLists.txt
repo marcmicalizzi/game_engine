@@ -52,7 +52,9 @@ endif()
 engine_module(NAME world LAYER systems OPTIONAL WHOLE_ARCHIVE
   DEPS ${_world_deps}
   SOURCES ${_world_sources})
-if(TARGET engine::ruins)
+# `TARGET engine_world` as well: a configuration with the ruins but without the store (the graph
+# skips this module, above) has no target to define anything on.
+if(TARGET engine_world AND TARGET engine::ruins)
   # For whoever links the world (the module is an INTERFACE target wrapping `engine_world_impl`,
   # WHOLE_ARCHIVE): a host includes <systems/world/ruins_tiles.h> only where it exists.
   target_compile_definitions(engine_world INTERFACE ENGINE_WORLD_RUINS=1)
