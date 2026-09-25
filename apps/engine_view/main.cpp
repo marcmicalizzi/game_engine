@@ -137,8 +137,10 @@ constexpr const char* k_usage =
     "                   [--require-quiet] [--wait-quiet <seconds>]\n"
     "                   [--world] [--world-log <out.jsonl>] [--world-handover <out.jsonl>]\n"
     "                   [--interactive] [--start <x,y,z> <yaw,pitch>] [--record-input <log.jsonl>]\n"
-    "                   [--replay-input <log.jsonl>]\n"
+    "                   [--replay-input <log.jsonl>] [--windowed]\n"
     "                   [--inject-input <log.jsonl>] [--input-map <map.json>]\n"
+    "                   [--present <mode>] [--swapchain-images <n>] [--frames-in-flight <n>]\n"
+    "                   [--borderless] [--no-present-timing]\n"
     "                   [--tunables <file.json>] [--tunable <name=value,...>]\n"
     "       engine-view --version    the commit this binary was built from, as one JSON line\n"
     "\n"
@@ -346,6 +348,20 @@ constexpr const char* k_usage =
     "                   at one frame per four ticks; --marker-captures draws every marker. Names\n"
     "                   its own scene unless --scene or --mesh is given; refuses a log recorded\n"
     "                   against another action map or another camera integration version\n"
+    "  --windowed       --replay-input: fly the replay in the window at its recorded pace even\n"
+    "                   with --benchmark, which then writes a record per presented frame like a\n"
+    "                   live session's: the fair before and after of a presentation change\n"
+    "  --present <m>    the window's present mode: fifo (the default, with vsync), fifo-relaxed,\n"
+    "                   mailbox, immediate or fifo-latest-ready, FIFO where the surface lacks it;\n"
+    "                   --no-vsync is mailbox, else immediate\n"
+    "  --swapchain-images <n>  images to ask the window's swapchain for, 2..8 (default 3)\n"
+    "  --frames-in-flight <n>  frames the window's loop records ahead of the GPU, 1..3 (default 2)\n"
+    "  --borderless     a window with no title bar or border at the primary display's top-left\n"
+    "                   corner: --width and --height of the display cover it exactly (not an\n"
+    "                   exclusive fullscreen; the display mode never changes)\n"
+    "  --no-present-timing  a window's --benchmark asks the driver for no display times, so its\n"
+    "                   records carry no shown_ms or latency_ms (on NVIDIA's driver a chain that\n"
+    "                   asks paces FIFO differently; this measures the one that does not)\n"
     "  --inject-input <f>  --interactive: push a log's keys and mouse motion into the window's own\n"
     "                   event queue at their ticks, as if typed, for a test or a smoke run with\n"
     "                   nobody at the keyboard; the real pointer is never taken\n"
@@ -381,6 +397,15 @@ struct Options {
   u32 frames = 0;
   std::string capture;
   bool vsync = true;
+  // The window's presentation (docs/subsystems/apps.md, "Pacing"): the present mode asked for by
+  // name ("" is FIFO, or `--no-vsync`'s choice), the swapchain's images, and the frames the loop
+  // keeps in flight.
+  std::string present;
+  u32 swapchain_images = 3;
+  u32 frames_in_flight = k_frames_in_flight;
+  bool present_timing = true;  // --no-present-timing: a measured window asks for no display times
+  bool windowed = false;       // --windowed: a replay's --benchmark flies in the window
+  bool borderless = false;     // --borderless: no decorations, at the primary display's corner
   u32 adapter = 0;
   bool validation = false;
   u32 grid = 257;
@@ -1228,13 +1253,22 @@ struct PendingFrame {
   f64 time = 0.0;
   f64 cpu_ms = 0.0;
   f64 frame_ms = 0.0;
+  // A windowed frame's waits (FrameRecord's `wait_ms`, `acquire_ms`, `present_ms`, `submit_ms`),
+  // and the id its present carried, which is how its display time finds it later.
+  f64 wait_ms = 0.0;
+  f64 acquire_ms = 0.0;
+  f64 present_ms = 0.0;
+  f64 submit_ms = 0.0;
+  u64 present_id = 0;
 };
-constexpr u32 k_pending_frames = 8;  // more than k_frames_in_flight + 1
+constexpr u32 k_pending_frames = 8;  // more than the most frames in flight (3) + 1
 
 // Moves a folded frame's numbers into a record, if the fold is of a frame this loop submitted.
+// `present_ids`, when given, gets the frame's present id beside its record, for the display times
+// that come back after it (`fill_display_times`).
 void take_folded(const renderer::SceneRenderer& renderer, u64& folded,
                  const PendingFrame (&pending)[k_pending_frames],
-                 Vector<scene::FrameRecord>& records) {
+                 Vector<scene::FrameRecord>& records, Vector<u64>* present_ids = nullptr) {
   const renderer::Stats& stats = renderer.stats();
   if (stats.folded == folded) return;
   folded = stats.folded;
@@ -1244,7 +1278,21 @@ void take_folded(const renderer::SceneRenderer& renderer, u64& folded,
   record.cpu_ms = p.cpu_ms;
   record.frame_ms = p.frame_ms;
   record.ticks = p.ticks;
+  record.wait_ms = p.wait_ms;
+  record.acquire_ms = p.acquire_ms;
+  record.present_ms = p.present_ms;
+  record.submit_ms = p.submit_ms;
   records.push_back(std::move(record));
+  if (present_ids != nullptr) present_ids->push_back(p.present_id);
+}
+
+// Each record's `shown_ms` and `latency_ms` (view::DisplayTimes), by the present id kept beside it.
+void fill_display_times(const view::DisplayTimes& times, std::span<const u64> present_ids,
+                        std::span<scene::FrameRecord> records) {
+  for (u32 i = 0; i < records.size() && i < present_ids.size(); ++i) {
+    records[i].shown_ms = times.shown_ms(present_ids[i]);
+    records[i].latency_ms = times.latency_ms(present_ids[i]);
+  }
 }
 
 int prepare_interactive(Options& options, Interactive& it) {
@@ -1439,6 +1487,79 @@ io::Status write_benchmark(const std::string& path, std::span<const scene::Frame
   text += summary_line;
   text.push_back('\n');
   return io::write_file(path, text);
+}
+
+// `--present`'s names onto Vulkan's; "" (none asked for) is MAX_ENUM, which leaves the choice to
+// `SwapchainDesc::vsync`.
+VkPresentModeKHR vk_present_mode(const std::string& name) {
+  view::PresentMode mode = view::PresentMode::Fifo;
+  if (name.empty() || !view::parse_present_mode(name, &mode)) return VK_PRESENT_MODE_MAX_ENUM_KHR;
+  switch (mode) {
+    case view::PresentMode::Fifo: return VK_PRESENT_MODE_FIFO_KHR;
+    case view::PresentMode::FifoRelaxed: return VK_PRESENT_MODE_FIFO_RELAXED_KHR;
+    case view::PresentMode::Mailbox: return VK_PRESENT_MODE_MAILBOX_KHR;
+    case view::PresentMode::Immediate: return VK_PRESENT_MODE_IMMEDIATE_KHR;
+    case view::PresentMode::FifoLatestReady: return VK_PRESENT_MODE_FIFO_LATEST_READY_KHR;
+  }
+  return VK_PRESENT_MODE_MAX_ENUM_KHR;
+}
+
+// The summary's name for the mode a swapchain got.
+const char* present_mode_name(VkPresentModeKHR mode) {
+  switch (mode) {
+    case VK_PRESENT_MODE_FIFO_KHR: return "fifo";
+    case VK_PRESENT_MODE_FIFO_RELAXED_KHR: return "fifo_relaxed";
+    case VK_PRESENT_MODE_MAILBOX_KHR: return "mailbox";
+    case VK_PRESENT_MODE_IMMEDIATE_KHR: return "immediate";
+    case VK_PRESENT_MODE_FIFO_LATEST_READY_KHR: return "fifo_latest_ready";
+    default: return "other";
+  }
+}
+
+// The summary's `presentation` block for a windowed run (scene::FlythroughPresentation): the
+// swapchain, the loop's depth, and the distributions of the waits and display times the records
+// carry.
+scene::FlythroughPresentation presentation_summary(const Options& options,
+                                                   const gfx::Swapchain& swapchain,
+                                                   std::span<const scene::FrameRecord> records,
+                                                   u32 recreated) {
+  scene::FlythroughPresentation out;
+  out.present_mode = present_mode_name(swapchain.present_mode());
+  out.requested_mode =
+      options.present.empty() ? (options.vsync ? "auto" : "no-vsync") : options.present;
+  out.image_count = swapchain.image_count();
+  out.requested_images = options.swapchain_images;
+  out.frames_in_flight = options.frames_in_flight;
+  out.borderless = options.borderless;
+  out.refresh_ms = static_cast<f64>(swapchain.refresh_ns()) / 1.0e6;
+  out.present_timing = swapchain.present_timing();
+  out.recreated = recreated;
+  out.suboptimal = swapchain.suboptimal_presents();
+  Vector<f64> wait;
+  Vector<f64> acquire;
+  Vector<f64> present;
+  Vector<f64> submit;
+  Vector<f64> shown;
+  Vector<f64> latency;
+  for (const scene::FrameRecord& r : records) {
+    wait.push_back(r.wait_ms);
+    acquire.push_back(r.acquire_ms);
+    present.push_back(r.present_ms);
+    submit.push_back(r.submit_ms);
+    if (r.shown_ms > 0.0) shown.push_back(r.shown_ms);
+    if (r.latency_ms > 0.0) latency.push_back(r.latency_ms);
+  }
+  auto of = [](const Vector<f64>& v) {
+    return renderer::percentiles(std::span<const f64>(v.data(), v.size()));
+  };
+  out.wait_ms = of(wait);
+  out.acquire_ms = of(acquire);
+  out.present_ms = of(present);
+  out.submit_ms = of(submit);
+  out.shown_ms = of(shown);
+  out.latency_ms = of(latency);
+  out.timed_frames = latency.size();
+  return out;
 }
 
 // Saves a live session's recording: its events, the map's hash, and the session header with the
@@ -2673,6 +2794,10 @@ int main(int argc, char** argv) {
       if (!next_value(argc, argv, i, a, options.ddc)) return k_exit_usage;
     } else if (a == "--no-cache") {
       options.cache = false;
+    } else if (a == "--no-present-timing") {
+      options.present_timing = false;
+    } else if (a == "--borderless") {
+      options.borderless = true;
     } else if (a == "--no-vsync") {
       options.vsync = false;
     } else if (a == "--no-cull") {
@@ -2769,6 +2894,26 @@ int main(int argc, char** argv) {
       if (a == "--repeat") options.repeats = n;
       if (a == "--warmup") options.warmup = n;
       if (a == "--wait-quiet") options.wait_quiet_s = n;
+    } else if (a == "--swapchain-images" || a == "--frames-in-flight") {
+      if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
+      u32 n = 0;
+      const bool images = a == "--swapchain-images";
+      if (!parse_u32(value, n) || n < (images ? 2u : 1u) || n > (images ? 8u : 3u)) {
+        std::fprintf(stderr, "engine-view: %.*s expects a number within %s\n",
+                     static_cast<int>(a.size()), a.data(), images ? "2..8" : "1..3");
+        return k_exit_usage;
+      }
+      (images ? options.swapchain_images : options.frames_in_flight) = n;
+    } else if (a == "--present") {
+      if (!next_value(argc, argv, i, a, options.present)) return k_exit_usage;
+      if (!view::parse_present_mode(options.present, nullptr)) {
+        std::fprintf(stderr,
+                     "engine-view: --present expects fifo, fifo-relaxed, mailbox, immediate or "
+                     "fifo-latest-ready\n");
+        return k_exit_usage;
+      }
+    } else if (a == "--windowed") {
+      options.windowed = true;
     } else {
       std::fprintf(stderr, "engine-view: unknown argument %.*s\n%s", static_cast<int>(a.size()),
                    a.data(), k_usage);
@@ -2903,9 +3048,29 @@ int main(int argc, char** argv) {
                  "--interactive or --replay-input\n");
     return k_exit_usage;
   }
-  if (!live && (!options.benchmark.empty() || !options.marker_captures.empty() ||
-                options.verify_occlusion)) {
+  // `--windowed` keeps a replay's `--benchmark` in the window: a presentation change is measured
+  // on the recorded input at the recorded pace, which is the only fair before and after of one
+  // (docs/subsystems/apps.md, "Pacing"). A marker capture and `--offscreen` are offscreen things.
+  if (options.windowed &&
+      (options.replay_input.empty() || options.offscreen || !options.marker_captures.empty())) {
+    std::fprintf(stderr,
+                 "engine-view: --windowed flies a --replay-input in the window; it cannot be "
+                 "--offscreen or take --marker-captures\n");
+    return k_exit_usage;
+  }
+  if (!live && !options.windowed &&
+      (!options.benchmark.empty() || !options.marker_captures.empty() ||
+       options.verify_occlusion)) {
     options.offscreen = true;
+  }
+  if (options.offscreen && (!options.present.empty() || options.swapchain_images != 3 ||
+                            options.frames_in_flight != k_frames_in_flight || options.borderless ||
+                            !options.present_timing)) {
+    std::fprintf(stderr,
+                 "engine-view: --present, --swapchain-images, --frames-in-flight, "
+                 "--borderless and --no-present-timing are the window's; an offscreen run has "
+                 "none\n");
+    return k_exit_usage;
   }
   const renderer::CaptureChannels& channels = options.capture_channels;
   if (channels.ids || channels.depth || channels.normals) {
@@ -3055,6 +3220,7 @@ int main(int argc, char** argv) {
   window_desc.title = "engine-view";
   window_desc.width = options.width;
   window_desc.height = options.height;
+  window_desc.borderless = options.borderless;
   window::Window window;
   if (!window.create(window_desc, &error)) {
     window::shutdown();
@@ -3179,6 +3345,13 @@ int main(int argc, char** argv) {
     swapchain_desc.width = window.pixel_width();
     swapchain_desc.height = window.pixel_height();
     swapchain_desc.vsync = options.vsync;
+    swapchain_desc.present_mode = vk_present_mode(options.present);
+    swapchain_desc.min_image_count = options.swapchain_images;
+    // A measured session asks for display times, unless `--no-present-timing` says not to (on this
+    // project's driver a chain with them paces FIFO differently, which a before-and-after has to
+    // be able to leave out).
+    swapchain_desc.timing =
+        options.interactive && !options.benchmark.empty() && options.present_timing;
     if (!swapchain.create(device, swapchain_desc, &error)) {
       exit_code = fail("swapchain", error);
       break;
@@ -3379,7 +3552,7 @@ int main(int argc, char** argv) {
     renderer_desc.width = swapchain.extent().width;
     renderer_desc.height = swapchain.extent().height;
     renderer_desc.color_format = swapchain.format();
-    renderer_desc.frames_in_flight = k_frames_in_flight;
+    renderer_desc.frames_in_flight = options.frames_in_flight;
     renderer_desc.offscreen = false;  // the swapchain image is the target
     renderer_desc.shader_manifest = options.shaders;
     // The layout the flags asked for, over the swapchain. The monitor geometry of a surround is
@@ -3473,6 +3646,15 @@ int main(int argc, char** argv) {
     u64 submissions = 0;
     i64 previous_frame_ns = 0;
     i64 last_title_ns = 0;
+    // When the presented frames reached the display (a measured session with present timing): the
+    // sample times are kept for the run, and the display times read once, at its end, because
+    // reading them blocks for a refresh on this project's driver (gfx::Swapchain::poll_timings).
+    const bool timed_display =
+        interactive.on && !options.benchmark.empty() && swapchain.present_timing();
+    view::DisplayTimes display;
+    Vector<u64> record_present_ids;
+    if (timed_display) display.reserve(1u << 16);
+    if (interactive.on && !options.benchmark.empty()) record_present_ids.reserve(1u << 14);
 
     bool running = true;
     bool resize_pending = false;
@@ -3556,14 +3738,18 @@ int main(int argc, char** argv) {
         break;
       }
 #endif
-      // The CPU's share of the frame is everything but the two waits below: for a free frame slot
-      // (the GPU) and for a swapchain image (the display).
+      // The CPU's share of the frame is everything but the waits: for a free frame slot (the GPU),
+      // for a swapchain image and in the present (the display). Each is timed on its own, because
+      // which of them a frame's time went to is the whole question presentation pacing asks
+      // (docs/subsystems/apps.md, "Pacing").
       const i64 before_waits = time::monotonic_ns();
       view_renderer.begin_frame();
+      const i64 slot_free = time::monotonic_ns();
       if (interactive.on && !options.benchmark.empty()) {
-        take_folded(view_renderer, folded, pending, records);
+        take_folded(view_renderer, folded, pending, records, &record_present_ids);
       }
       u32 image_index = 0;
+      const i64 before_acquire = time::monotonic_ns();
       const gfx::PresentStatus acquired =
           swapchain.acquire(view_renderer.acquire_semaphore(), image_index);
       if (acquired != gfx::PresentStatus::Ok) {
@@ -3582,9 +3768,11 @@ int main(int argc, char** argv) {
       renderer::FrameDesc frame;
       u32 ticks_this_frame = 0;
       bool session_done = false;
+      i64 sampled_ns = 0;  // when the frame read the clock: what its display latency is from
       if (interactive.on) {
         // ---- the ticks due by now, as late as possible before the frame is recorded -----------
         const i64 now = time::monotonic_ns();
+        sampled_ns = now;
         clock.advance(now - clock_ns);
         clock_ns = now;
         while (clock.step()) {
@@ -3686,6 +3874,7 @@ int main(int argc, char** argv) {
       frame.final_layout = gfx::ImageLayout::Present;
       frame.wait = view_renderer.acquire_semaphore();
       frame.signal = swapchain.render_finished(image_index);
+      const i64 before_submit = time::monotonic_ns();
       const u64 value = view_renderer.submit_frame(frame, &error);
       if (value == 0) {
         exit_code = fail("frame", error);
@@ -3705,9 +3894,15 @@ int main(int argc, char** argv) {
           p.frame = static_cast<u32>(rendered);
           p.ticks = ticks_this_frame;
           p.time = static_cast<f64>(session.tick().value) / static_cast<f64>(session_hz);
-          p.cpu_ms =
-              static_cast<f64>((before_waits - frame_start) + (submitted_ns - after_waits)) / 1.0e6;
+          p.cpu_ms = static_cast<f64>((before_waits - frame_start) + (before_acquire - slot_free) +
+                                      (submitted_ns - after_waits)) /
+                     1.0e6;
           p.frame_ms = frame_ms;
+          p.wait_ms = static_cast<f64>(slot_free - before_waits) / 1.0e6;
+          p.acquire_ms = static_cast<f64>(after_waits - before_acquire) / 1.0e6;
+          p.submit_ms = static_cast<f64>(submitted_ns - before_submit) / 1.0e6;
+          p.present_ms = 0.0;  // after the present, below
+          p.present_id = 0;
         }
         // Four times a second: a title rewritten every frame is unreadable, and setting one is a
         // round trip to the window system.
@@ -3755,8 +3950,16 @@ int main(int argc, char** argv) {
           captured = true;
         }
       }
+      const i64 before_present = time::monotonic_ns();
       const gfx::PresentStatus presented =
           swapchain.present(image_index, swapchain.render_finished(image_index));
+      const i64 after_present = time::monotonic_ns();
+      if (interactive.on && !options.benchmark.empty()) {
+        PendingFrame& p = pending[(submissions - 1) % k_pending_frames];
+        p.present_ms = static_cast<f64>(after_present - before_present) / 1.0e6;
+        p.present_id = swapchain.last_present_id();
+        if (timed_display) display.sampled(p.present_id, sampled_ns);
+      }
       if (presented == gfx::PresentStatus::Error) {
         exit_code = fail("present", swapchain.last_error());
         break;
@@ -3769,9 +3972,9 @@ int main(int argc, char** argv) {
       // The last frames' GPU numbers fold in when their slots come around again: bring those
       // around with nothing drawn and nothing presented, and the session's last frames have
       // records too.
-      for (u32 d = 0; d < k_frames_in_flight; ++d) {
+      for (u32 d = 0; d < options.frames_in_flight; ++d) {
         view_renderer.begin_frame();
-        take_folded(view_renderer, folded, pending, records);
+        take_folded(view_renderer, folded, pending, records, &record_present_ids);
         view_renderer.abort_frame();
       }
     }
@@ -3797,6 +4000,19 @@ int main(int argc, char** argv) {
       anim_text = write_json(anim_summary(*animated, rendered), JsonWriteOptions{.pretty = false});
 #endif
     machine_end = bench::sample_machine_state(bench::k_sample_window_ms);
+    // The run's display times, read now that the quarter-second machine sample above has given
+    // the last presents time to reach the display, and written into every record.
+    if (timed_display) {
+      Vector<gfx::PresentTiming> timings(1024);
+      for (u32 n = swapchain.poll_timings(timings.data(), timings.size()); n > 0;
+           n = swapchain.poll_timings(timings.data(), timings.size())) {
+        for (u32 t = 0; t < n; ++t)
+          display.shown(timings[t].id, timings[t].shown_ns);
+      }
+      fill_display_times(display,
+                         std::span<const u64>(record_present_ids.data(), record_present_ids.size()),
+                         std::span<scene::FrameRecord>(records.data(), records.size()));
+    }
 
     // ---- an interactive session's --benchmark: the flythrough's JSONL, frame by frame ---------
     // One record per frame the window presented (the GPU's passes, the CPU's milliseconds, the
@@ -3829,6 +4045,9 @@ int main(int argc, char** argv) {
 #if ENGINE_VIEW_WORLD
       if (view_world.valid()) summary.world = view_world.summary_json();
 #endif
+      summary.presentation = presentation_summary(
+          options, swapchain, std::span<const scene::FrameRecord>(records.data(), records.size()),
+          swapchain.chains_created() > 0 ? swapchain.chains_created() - 1 : 0);
       const io::Status status = write_benchmark(
           options.benchmark, std::span<const scene::FrameRecord>(records.data(), records.size()),
           write_json(schema::to_json(summary), JsonWriteOptions{.pretty = false}));

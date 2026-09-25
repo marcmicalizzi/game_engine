@@ -611,3 +611,41 @@ TEST_CASE("fly camera: the title's pacing numbers") {
     pacing.add(2000 * ms, 1.0f);
   CHECK(pacing.percentile(2000 * ms, 1000 * ms, 1.0) == 1.0f);
 }
+
+TEST_CASE("fly camera: --present's names, and display times by present id") {
+  view::PresentMode mode = view::PresentMode::Fifo;
+  CHECK(view::parse_present_mode("mailbox", &mode));
+  CHECK(mode == view::PresentMode::Mailbox);
+  CHECK(view::parse_present_mode("fifo-relaxed", &mode));
+  CHECK(mode == view::PresentMode::FifoRelaxed);
+  CHECK(view::parse_present_mode("fifo-latest-ready", &mode));
+  CHECK(mode == view::PresentMode::FifoLatestReady);
+  CHECK(view::parse_present_mode("immediate", nullptr));
+  CHECK(view::parse_present_mode("fifo", nullptr));
+  CHECK_FALSE(view::parse_present_mode("vsync", nullptr));
+  CHECK_FALSE(view::parse_present_mode("fifo_relaxed", nullptr));  // the summary's spelling
+  CHECK_FALSE(view::parse_present_mode("", nullptr));
+
+  // Presents 1..4 sampled 2 ms apart and shown a refresh apart, 24 ms after the first sample;
+  // present 3's display time never came back, and present 5 was sampled but never shown.
+  view::DisplayTimes times;
+  const i64 ms = 1'000'000;
+  for (u64 id = 1; id <= 5; ++id)
+    times.sampled(id, static_cast<i64>(id) * 2 * ms);
+  times.shown(1, 26 * ms);
+  times.shown(2, 38 * ms);
+  times.shown(4, 62 * ms);
+  CHECK(times.reported() == 3);
+  CHECK(times.shown_ms(1) == 0.0);  // no present before the first
+  CHECK(times.shown_ms(2) == doctest::Approx(12.0));
+  CHECK(times.shown_ms(3) == 0.0);  // its own time is unknown
+  CHECK(times.shown_ms(4) == 0.0);  // the one before it is
+  CHECK(times.latency_ms(1) == doctest::Approx(24.0));
+  CHECK(times.latency_ms(2) == doctest::Approx(34.0));
+  CHECK(times.latency_ms(4) == doctest::Approx(54.0));
+  CHECK(times.latency_ms(5) == 0.0);
+  CHECK(times.latency_ms(9) == 0.0);  // never presented
+  times.shown(4, 61 * ms);            // a second report of one present replaces the first
+  CHECK(times.reported() == 3);
+  CHECK(times.latency_ms(4) == doctest::Approx(53.0));
+}

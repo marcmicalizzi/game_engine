@@ -641,6 +641,27 @@ struct FrameRecord @version(6) {
   /// The fixed camera ticks this frame consumed (engine-view --interactive): 0 when the frame
   /// came faster than a tick, several after a slow one. Zero on a flythrough.
   ticks: u32 = 0 @since(4)
+  /// A windowed frame's waits, CPU milliseconds each, which `cpu_ms` leaves out: for the frame
+  /// slot to come free (`wait_ms`, the renderer's `begin_frame`: the GPU finishing the frame that
+  /// last used the slot), for a swapchain image (`acquire_ms`), and in the present call
+  /// (`present_ms`). Where the frame time goes when it is not the engine's
+  /// (docs/experiments/second-interactive-session-2026-09-25.md). Zero offscreen.
+  wait_ms: f64 = 0 @since(6)
+  acquire_ms: f64 = 0 @since(6)
+  present_ms: f64 = 0 @since(6)
+  /// The part of `cpu_ms` spent in the renderer's `submit_frame`: recording the frame and handing
+  /// it to the queue. It is not all the CPU's own: a driver that presents a window through the
+  /// compositor can block inside the queue submission until the swapchain image it waits on is
+  /// free, which is a presentation wait wearing the CPU's name.
+  submit_ms: f64 = 0 @since(6)
+  /// When the frame reached the display, where the swapchain can say (VK_EXT_present_timing's
+  /// first pixel out): milliseconds after the previous presented frame's (`shown_ms`, the
+  /// cadence the viewer sees, 0 when unknown), and after this frame sampled its input
+  /// (`latency_ms`, 0 when unknown). The second rests on the driver's clock agreeing with ours,
+  /// which on the RTX 5090's it does not (it reads at least 5 ms early), so compare it between
+  /// runs rather than read it as a number (`docs/subsystems/apps.md`, "Pacing").
+  shown_ms: f64 = 0 @since(6)
+  latency_ms: f64 = 0 @since(6)
   /// Surviving (instance, cluster) pairs, by the draw that produced them.
   visible_pairs: u32 = 0
   visible_hw: u32 = 0
@@ -830,9 +851,47 @@ struct FlythroughTextures @version(1) {
   sharing: bool = true
 }
 
+/// How a windowed run presented (`engine-view --interactive --benchmark`, and a replay flown in
+/// the window with `--windowed`): the swapchain it got, the frames it kept in flight,
+/// and where the frames' waits went. What a frame-time distribution has to be read against,
+/// since the same GPU work paces differently under another present mode or queue depth
+/// (docs/subsystems/apps.md, "Pacing").
+struct FlythroughPresentation @version(1) {
+  /// The present mode the swapchain was created with: "fifo", "fifo_relaxed", "mailbox",
+  /// "immediate" or "fifo_latest_ready"; and the one `--present` asked for ("auto" when it
+  /// asked for none, which is FIFO with vsync).
+  present_mode: string
+  requested_mode: string
+  /// The swapchain's images as created (the driver may give more than was asked for), what
+  /// `--swapchain-images` asked for, and `--frames-in-flight`.
+  image_count: u32 = 0
+  requested_images: u32 = 0
+  frames_in_flight: u32 = 0
+  /// `--borderless`: the window had no decorations and sat at the primary display's corner.
+  borderless: bool = false
+  /// The display's refresh as the swapchain reports it (VK_EXT_present_timing), 0 where it
+  /// cannot say; and the median of the presented frames' `shown_ms`.
+  refresh_ms: f64 = 0
+  shown_ms: Percentiles
+  latency_ms: Percentiles
+  /// Whether frames' display times were measured at all (VK_EXT_present_timing on this
+  /// surface), and for how many frames they came back.
+  present_timing: bool = false
+  timed_frames: u32 = 0
+  /// Swapchain recreations during the run (a resize, or a present or acquire that said the chain
+  /// was out of date), and presents that came back VK_SUBOPTIMAL_KHR.
+  recreated: u32 = 0
+  suboptimal: u32 = 0
+  /// Per frame: the waits `FrameRecord` carries, and its `submit_ms`.
+  wait_ms: Percentiles
+  acquire_ms: Percentiles
+  present_ms: Percentiles
+  submit_ms: Percentiles
+}
+
 /// The last line of a flythrough benchmark's `.jsonl`, and engine-view's summary line. An
 /// interactive session measured with `--benchmark` ends its `.jsonl` with one too.
-struct FlythroughSummary @version(6) {
+struct FlythroughSummary @version(7) {
   /// "engine.flythrough.v1".
   format: string
   scene: string
@@ -903,4 +962,6 @@ struct FlythroughSummary @version(6) {
   world: json @since(5)
   /// The scene's textures on the device, and what one upload per distinct image saved.
   textures: FlythroughTextures @since(6)
+  /// A windowed run's presentation: null offscreen (see `FlythroughPresentation`).
+  presentation: FlythroughPresentation? @since(7)
 }

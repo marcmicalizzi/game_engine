@@ -145,6 +145,23 @@ TEST_CASE("engine-view: interactive flags that cannot work together exit 2") {
   CHECK(run_view({"--offscreen", "--capture-channels", "albedo", "--capture", "x.png"}).exit_code ==
         2);
   CHECK(run_view({"--offscreen", "--capture-channels", "ids"}).exit_code == 2);
+  // Presentation (apps.md, "Pacing"): known names and ranges, the window's flags refused where
+  // there is no window, and `--windowed` for a replay only.
+  CHECK(run_view({"--present", "vsync"}).exit_code == 2);
+  CHECK(run_view({"--swapchain-images", "1"}).exit_code == 2);
+  CHECK(run_view({"--swapchain-images", "9"}).exit_code == 2);
+  CHECK(run_view({"--frames-in-flight", "0"}).exit_code == 2);
+  CHECK(run_view({"--frames-in-flight", "4"}).exit_code == 2);
+  CHECK(run_view({"--offscreen", "--present", "mailbox"}).exit_code == 2);
+  CHECK(run_view({"--offscreen", "--borderless"}).exit_code == 2);
+  CHECK(run_view({"--offscreen", "--no-present-timing"}).exit_code == 2);
+  CHECK(
+      run_view({"--replay-input", log, "--benchmark", "x.jsonl", "--present", "fifo"}).exit_code ==
+      2);  // a replay's benchmark is offscreen unless --windowed
+  CHECK(run_view({"--windowed"}).exit_code == 2);
+  CHECK(run_view({"--interactive", "--windowed"}).exit_code == 2);
+  CHECK(run_view({"--replay-input", log, "--windowed", "--offscreen"}).exit_code == 2);
+  CHECK(run_view({"--replay-input", log, "--windowed", "--marker-captures", "dir"}).exit_code == 2);
 }
 
 TEST_CASE("engine-view: a live session starts at --start, else at the scene's own camera path") {
@@ -427,4 +444,78 @@ TEST_CASE("engine-view: a live session fed through its window replays to its own
   }
   CHECK(records > 0);
   CHECK(ticks == 480);
+}
+
+TEST_CASE("engine-view: a replay flown in the window measures its presentation") {
+  // `--windowed` keeps a replay's `--benchmark` in the window, at the recording's pace, which is
+  // how a presentation change is compared on the same input (apps.md, "Pacing"). The frame log
+  // then has a record per presented frame with the frame's waits, and its summary a
+  // `presentation` block saying what the swapchain was and how the frames were paced. The
+  // camera is the recording's either way. Needs a display and a device; skips without.
+  const test::TempDir tmp("engine_view_windowed");
+  const std::string log = fixture();
+  const std::string committed =
+      read_text(content_path("content/input-logs/sessions/fly-synthetic.trajectory.json"));
+  if (!test::path_exists(log) || committed.empty()) {
+    MESSAGE("the session fixture is not in this bundle");
+    return;
+  }
+  JsonValue expected;
+  REQUIRE(parse_json(committed, expected).ok);
+  const std::string jsonl = tmp.file("windowed.jsonl");
+  const Run run = run_view({"--replay-input", log, "--windowed", "--benchmark", jsonl, "--width",
+                            "256", "--height", "160", "--ddc", tmp.file("ddc")});
+  if (run.exit_code == 3) {
+    MESSAGE("engine-view unavailable here: " << run.output);
+    return;
+  }
+  REQUIRE_MESSAGE(run.exit_code == 0, run.output);
+  JsonValue summary;
+  REQUIRE_MESSAGE(summary_of(run, summary), run.output);
+  const JsonValue* trajectory = trajectory_of(summary);
+  REQUIRE(trajectory != nullptr);
+  CHECK(text_of(trajectory, "hash") == text_of(&expected, "hash"));
+
+  const std::string text = read_text(jsonl);
+  u64 ticks = 0;
+  u64 records = 0;
+  u64 waits_named = 0;
+  JsonValue last;
+  for (usize begin = 0; begin < text.size();) {
+    const usize end = text.find('\n', begin);
+    const usize stop = end == std::string::npos ? text.size() : end;
+    JsonValue line;
+    if (stop > begin && parse_json(text.substr(begin, stop - begin), line).ok) {
+      if (line.find("repeat") != nullptr) {
+        u64 n = 0;
+        if (line.find("ticks") != nullptr && line.find("ticks")->get_u64(n)) ticks += n;
+        if (line.find("wait_ms") != nullptr && line.find("acquire_ms") != nullptr &&
+            line.find("present_ms") != nullptr && line.find("submit_ms") != nullptr &&
+            line.find("shown_ms") != nullptr) {
+          ++waits_named;
+        }
+        ++records;
+      } else {
+        last = std::move(line);
+      }
+    }
+    begin = stop + 1;
+  }
+  CHECK(records > 0);
+  CHECK(waits_named == records);
+  CHECK(ticks == 480);
+  const JsonValue* presentation = last.find("presentation");
+  REQUIRE_MESSAGE(presentation != nullptr, text);
+  REQUIRE(presentation->is_object());
+  // FIFO, the default; the images the driver gave for the three asked; the default depth.
+  CHECK(text_of(presentation, "present_mode") == "fifo");
+  CHECK(text_of(presentation, "requested_mode") == "auto");
+  u64 images = 0;
+  u64 in_flight = 0;
+  REQUIRE(presentation->find("image_count") != nullptr);
+  REQUIRE(presentation->find("image_count")->get_u64(images));
+  REQUIRE(presentation->find("frames_in_flight") != nullptr);
+  REQUIRE(presentation->find("frames_in_flight")->get_u64(in_flight));
+  CHECK(images >= 2);
+  CHECK(in_flight == 2);
 }
