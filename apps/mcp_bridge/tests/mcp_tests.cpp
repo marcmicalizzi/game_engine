@@ -13,6 +13,7 @@
 #include <test_paths.h>
 #include <test_temp_dir.h>
 
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <iterator>
@@ -324,16 +325,17 @@ TEST_CASE("mcp: tools/list gives every tool a JSON Schema generated from the eng
 
   const JsonValue list = mcp.request("tools/list", "{}");
   const JsonValue& tools = at(at(list, "result"), "tools");
-  REQUIRE(tools.size() >= 25);
+  REQUIRE(tools.size() >= 35);
   JsonValue names = JsonValue::array();
   const JsonValue* by_name[64] = {};
-  const char* wanted[] = {"open_session",  "close_session",  "list_sessions", "layers",
-                          "add_layer",     "set_edit_layer", "objects",       "get",
-                          "create_object", "set_property",   "reparent",      "delete_object",
-                          "apply",         "undo",           "redo",          "journal",
-                          "diff",          "merge_layers",   "validate",      "describe",
-                          "list_schema",   "capture",        "benchmark",     "compare",
-                          "evaluate",      "get_logs",       "adapters",      "host_info"};
+  const char* wanted[] = {
+      "open_session",   "close_session", "list_sessions", "layers",        "add_layer",
+      "set_edit_layer", "objects",       "get",           "create_object", "set_property",
+      "reparent",       "delete_object", "apply",         "undo",          "redo",
+      "journal",        "diff",          "merge_layers",  "validate",      "describe",
+      "list_schema",    "capture",       "benchmark",     "compare",       "evaluate",
+      "scenes",         "unload",        "get_logs",      "adapters",      "host_info",
+      "build_content",  "events",        "budgets",       "run_headless",  "run_tests"};
   for (usize i = 0; i < tools.size(); ++i) {
     const JsonValue& t = tools[i];
     const std::string name = str(t, "name");
@@ -404,16 +406,72 @@ TEST_CASE("mcp: tools/list gives every tool a JSON Schema generated from the eng
   CHECK(at(schema_of("objects"), "properties").find("offset") == nullptr);
   CHECK(at(schema_of("objects"), "properties").find("cursor") != nullptr);
   CHECK(str(property("create_object", "id"), "pattern") == "^[0-9a-fA-F]{32}$");
+  // Started without --role and --task: the attribution states no default for either.
+  CHECK(at(at(attribution_schema, "properties"), "role").find("default") == nullptr);
+  CHECK(at(at(attribution_schema, "properties"), "task").find("default") == nullptr);
+  // unload takes the scene id, from render.unload's own params; scenes takes nothing.
+  CHECK(str(property("unload", "scene"), "type") == "string");
+  CHECK(has(at(schema_of("unload"), "required"), JsonValue("scene")));
+  CHECK(at(schema_of("scenes"), "properties").size() == 0);
 
   // Annotations, which a client uses to decide what to ask the user about.
   for (usize i = 0; i < tools.size(); ++i) {
-    if (str(tools[i], "name") == "objects") {
+    if (str(tools[i], "name") == "objects" || str(tools[i], "name") == "scenes") {
       CHECK(at(at(tools[i], "annotations"), "readOnlyHint") == JsonValue(true));
     }
-    if (str(tools[i], "name") == "delete_object") {
+    if (str(tools[i], "name") == "delete_object" || str(tools[i], "name") == "unload") {
       CHECK(at(at(tools[i], "annotations"), "destructiveHint") == JsonValue(true));
     }
   }
+}
+
+// --role and --task (docs/subsystems/apps.md, "Attribution"): defaults for the attribution's role
+// and task exactly as --actor is for its actor — stated in the generated schema, filled into a
+// mutation that leaves them out, and overridden by one that gives them.
+TEST_CASE("mcp: --role and --task are attribution defaults a call may override") {
+  const test::TempDir tmp("mcp_bridge_roles");
+  Mcp mcp(tmp.file("ws"), {"--role", "environment", "--task", "task-42"});
+  REQUIRE(mcp.ok);
+  mcp.initialize();
+
+  const JsonValue list = mcp.request("tools/list", "{}");
+  const JsonValue& tools = at(at(list, "result"), "tools");
+  bool checked = false;
+  for (usize i = 0; i < tools.size(); ++i) {
+    if (str(tools[i], "name") != "set_property") continue;
+    const JsonValue& a =
+        at(at(at(at(tools[i], "inputSchema"), "properties"), "attribution"), "properties");
+    CHECK(at(at(a, "role"), "default") == JsonValue("environment"));
+    CHECK(at(at(a, "task"), "default") == JsonValue("task-42"));
+    CHECK(str(at(a, "role"), "description").find("--role") != std::string::npos);
+    CHECK(at(at(a, "actor"), "default") == JsonValue("mcp-test"));
+    checked = true;
+  }
+  CHECK(checked);
+
+  const std::string session =
+      str(ok(mcp.tool("open_session", "{\"path\":\"" + tmp.file("doc") + "\",\"create\":true}")),
+          "session");
+  const std::string s = "\"session\":\"" + session + "\"";
+  // Only a rationale: the role and the task come from the flags.
+  ok(mcp.tool("create_object", "{" + s + ",\"id\":\"" + k_b + "\",\"type\":\"" + k_type +
+                                   "\",\"attribution\":{\"rationale\":\"defaults\"}}"));
+  // Both given: the call's own win. A blank one is left out, so the default fills it.
+  ok(mcp.tool("create_object", "{" + s + ",\"id\":\"" + k_c + "\",\"type\":\"" + k_type +
+                                   "\",\"attribution\":{\"role\":\"qa\",\"task\":\" \","
+                                   "\"rationale\":\"overridden\"}}"));
+  const JsonValue& journal = ok(mcp.tool("journal", "{" + s + "}"));
+  REQUIRE(at(journal, "patches").size() == 2);
+  const JsonValue& first = at(at(journal, "patches")[0], "attribution");
+  CHECK(str(first, "role") == "environment");
+  CHECK(str(first, "task") == "task-42");
+  CHECK(str(first, "actor") == "mcp-test");
+  const JsonValue& second = at(at(journal, "patches")[1], "attribution");
+  CHECK(str(second, "role") == "qa");
+  CHECK(str(second, "task") == "task-42");
+  const JsonValue& info = ok(mcp.tool("host_info", "{}"));
+  CHECK(str(at(info, "bridge"), "role") == "environment");
+  CHECK(str(at(info, "bridge"), "task") == "task-42");
 }
 
 TEST_CASE("mcp: a scripted editing session") {
@@ -649,6 +707,30 @@ TEST_CASE("mcp: render tools on a machine with no GPU say so, and the rest still
   CHECK_FALSE(str(opened, "session").empty());
 }
 
+// scenes and unload where nothing is loaded, which every machine can answer: the list is empty and
+// opens no device, and an id the host never handed out is a tool error with NotFound's code and a
+// hint that points at scenes.
+TEST_CASE("mcp: scenes and unload with nothing loaded") {
+  const test::TempDir tmp("mcp_bridge_scenes");
+  Mcp mcp(tmp.file("ws"));
+  REQUIRE(mcp.ok);
+  mcp.initialize();
+
+  const JsonValue listed = mcp.tool("scenes", "{}");
+  const JsonValue& none = ok(listed);
+  CHECK(at(none, "scenes").size() == 0);
+  CHECK(text_of(listed).find("0 scene(s) loaded") != std::string::npos);
+
+  const JsonValue unknown = mcp.tool("unload", R"({"scene":"scene9"})");
+  CHECK(is_error(unknown));
+  CHECK(num(at(data_of(unknown), "error"), "code") == 1003);
+  CHECK(text_of(unknown).find("no scene scene9") != std::string::npos);
+  CHECK(str(at(data_of(unknown), "error"), "hint").find("scenes") != std::string::npos);
+  const JsonValue missing = mcp.tool("unload", "{}");
+  CHECK(is_error(missing));
+  CHECK(text_of(missing).find("missing required argument 'scene'") != std::string::npos);
+}
+
 // No commas in this name: doctest splits a -tc/-tce filter at them, and this is the one case a
 // CPU-only run excludes (-tce="*renders into*").
 TEST_CASE("mcp: capture and benchmark and compare renders into the workspace or answers no GPU") {
@@ -722,6 +804,35 @@ TEST_CASE("mcp: capture and benchmark and compare renders into the workspace or 
   const JsonValue nothing = mcp.tool("capture", R"({"width":64,"height":48})");
   CHECK(is_error(nothing));
   CHECK(text_of(nothing).find("load") != std::string::npos);
+
+  // scenes lists what the host holds, with the load the bridge made it from.
+  const JsonValue& listed = ok(mcp.tool("scenes", "{}"));
+  REQUIRE(at(listed, "scenes").size() == 1);
+  const JsonValue& entry = at(listed, "scenes")[0];
+  CHECK(str(entry, "scene") == scene);
+  CHECK(str(entry, "kind") == "procedural");
+  CHECK(at(entry, "built") == JsonValue(true));
+  CHECK(num(at(entry, "load"), "grid") == 33);
+
+  // unload releases it: the id is dead to every render tool, a second unload says so too, and the
+  // same load loads it again under a new id instead of handing back the dead one.
+  const JsonValue unloaded = mcp.tool("unload", "{\"scene\":\"" + scene + "\"}");
+  const JsonValue& released = ok(unloaded);
+  CHECK(str(released, "scene") == scene);
+  CHECK(at(released, "gpu_scene") == JsonValue(true));
+  CHECK(num(released, "scenes_left") == 0);
+  CHECK(text_of(unloaded).find("Unloaded " + scene) != std::string::npos);
+  const JsonValue dead = mcp.tool(
+      "capture", "{\"scene\":\"" + scene + "\",\"width\":64,\"height\":48,\"name\":\"dead\"}");
+  CHECK(is_error(dead));
+  CHECK(num(at(data_of(dead), "error"), "code") == 1003);
+  CHECK(text_of(dead).find("unloaded") != std::string::npos);
+  CHECK(is_error(mcp.tool("unload", "{\"scene\":\"" + scene + "\"}")));
+  CHECK(at(ok(mcp.tool("scenes", "{}")), "scenes").size() == 0);
+  const JsonValue& reloaded =
+      ok(mcp.tool("capture", std::string("{") + load + R"(,"width":64,"height":48})"));
+  CHECK(str(reloaded, "scene") != scene);
+  CHECK(at(at(reloaded, "loaded"), "reused") == JsonValue(false));
 }
 
 TEST_CASE("mcp: a host that dies is reported, and the next call starts another") {
@@ -746,4 +857,79 @@ TEST_CASE("mcp: a host that dies is reported, and the next call starts another")
   const JsonValue& after = ok(mcp.tool("host_info", "{}"));
   CHECK(num(at(after, "host"), "pid") != pid);
   CHECK(num(at(after, "bridge"), "host_generation") == 2);
+}
+
+// A host that is alive and never answers (docs/subsystems/apps.md, "Deadlines"), made on purpose
+// with engine-host's test hook: `--host-arg` hands the bridge's host `--debug-hang <method>`, which
+// makes that one method never answer while everything else works. The call is answered with an
+// error naming the method and the seconds waited, the host is killed, and the next call starts a
+// new one — the shape a host that dies already has. The two classes get their own deadlines: a
+// quick call gives up at --call-timeout, a content build only at --long-call-timeout.
+TEST_CASE("mcp: a host that stops answering is stopped at the deadline and replaced") {
+  const test::TempDir tmp("mcp_bridge_deadline");
+  using clock = std::chrono::steady_clock;
+  const auto seconds_since = [](clock::time_point start) {
+    return std::chrono::duration<f64>(clock::now() - start).count();
+  };
+  {
+    Mcp mcp(tmp.file("ws"), {"--call-timeout", "1", "--long-call-timeout", "60", "--host-arg",
+                             "--debug-hang", "--host-arg", "session.list"});
+    REQUIRE(mcp.ok);
+    mcp.initialize();
+    const JsonValue& before = ok(mcp.tool("host_info", "{}"));
+    const u64 pid = num(at(before, "host"), "pid");
+    CHECK(num(at(before, "bridge"), "host_generation") == 1);
+    CHECK(at(at(before, "bridge"), "call_timeout_seconds") == JsonValue(1.0));
+
+    const auto start = clock::now();
+    const JsonValue hung = mcp.tool("list_sessions", "{}");
+    const f64 waited = seconds_since(start);
+    MESSAGE("a hung session.list was answered after " << waited << " s");
+    CHECK(is_error(hung));
+    CHECK(text_of(hung).find("did not answer session.list within 1 s") != std::string::npos);
+    CHECK(at(at(data_of(hung), "error"), "timed_out") == JsonValue(true));
+    CHECK(at(at(data_of(hung), "error"), "seconds") == JsonValue(1.0));
+    CHECK(str(at(data_of(hung), "error"), "hint").find("--call-timeout") != std::string::npos);
+    CHECK(waited >= 0.9);
+    CHECK(waited < 30.0);  // the short deadline, nowhere near the long one
+
+    // The next call starts another host: a new pid, generation 2, and it answers.
+    const JsonValue& after = ok(mcp.tool("host_info", "{}"));
+    CHECK(num(at(after, "host"), "pid") != pid);
+    CHECK(num(at(after, "bridge"), "host_generation") == 2);
+    CHECK(at(at(after, "host"), "uptime_seconds").is_number());
+    const JsonValue& opened =
+        ok(mcp.tool("open_session", "{\"path\":\"" + tmp.file("doc") + "\",\"create\":true}"));
+    CHECK_FALSE(str(opened, "session").empty());
+  }
+  {
+    // A long-class method waits for the long deadline, not the short one.
+    Mcp mcp(tmp.file("ws2"), {"--call-timeout", "1", "--long-call-timeout", "3", "--host-arg",
+                              "--debug-hang", "--host-arg", "content.build"});
+    REQUIRE(mcp.ok);
+    mcp.initialize();
+    const auto start = clock::now();
+    const JsonValue hung = mcp.tool("build_content", "{}");
+    const f64 waited = seconds_since(start);
+    MESSAGE("a hung content.build was answered after " << waited << " s");
+    CHECK(is_error(hung));
+    CHECK(text_of(hung).find("did not answer content.build within 3 s") != std::string::npos);
+    CHECK(str(at(data_of(hung), "error"), "hint").find("--long-call-timeout") != std::string::npos);
+    CHECK(waited >= 2.9);
+    CHECK(waited < 60.0);
+    CHECK(num(at(ok(mcp.tool("host_info", "{}")), "bridge"), "host_generation") == 2);
+  }
+  {
+    // A deadline that is not a number of seconds is a usage error, before any host starts.
+    for (const char* bad : {"soon", "-1", "1e9"}) {
+      const std::string_view argv[] = {bridge_exe(), "--call-timeout", bad};
+      platform::Process p;
+      REQUIRE(p.spawn(std::span<const std::string_view>(argv, std::size(argv))));
+      p.close_stdin();
+      std::string out;
+      p.read_all(out);
+      CHECK_MESSAGE(p.wait() == 2, bad);
+      CHECK(out.empty());
+    }
+  }
 }

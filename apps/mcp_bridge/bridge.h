@@ -23,6 +23,7 @@
 #include <core/json/json_value.h>
 #include <core/platform/process.h>
 
+#include <chrono>
 #include <memory>
 #include <span>
 #include <string>
@@ -30,48 +31,93 @@
 
 namespace engine::mcp {
 
+// The deadlines' defaults (docs/subsystems/apps.md, "Deadlines"): a quick call is bookkeeping over
+// a document or the host's own state, a long one does work that grows with the content or the
+// request — a render, a content build, a headless run, the validators.
+inline constexpr u64 k_default_call_timeout_ms = 120u * 1000u;
+inline constexpr u64 k_default_long_call_timeout_ms = 3600u * 1000u;
+
 struct BridgeOptions {
   std::string host_path;
   Vector<std::string> mounts;
+  // Appended to engine-host's command line as given (`--host-arg`, repeatable): `--log` or
+  // `--tunables` for the host, or the test hook `--debug-hang`.
+  Vector<std::string> host_args;
   // Absolute, forward slashes, no trailing slash. Created on the first bulk write.
   std::string workspace;
-  // The attribution actor a mutation carries when the caller names none.
+  // The attribution a mutation carries when the caller leaves a field out: the actor always has
+  // one, the role and the task only when the bridge was started with them.
   std::string actor;
+  std::string role;
+  std::string task;
+  // How long one protocol call may go unanswered before the host is taken for hung, in
+  // milliseconds; 0 waits for as long as it takes. `long_call_timeout_ms` is for the methods
+  // `is_long_call` names.
+  u64 call_timeout_ms = k_default_call_timeout_ms;
+  u64 long_call_timeout_ms = k_default_long_call_timeout_ms;
 };
+
+// Whether a protocol method is in the long class: render.load, render.capture, render.benchmark,
+// render.evaluate, render.compare, content.build, session.run_headless and engine.run_tests.
+bool is_long_call(std::string_view method) noexcept;
+// The deadline a call to `method` gets under these options, in milliseconds; 0 is none.
+u64 call_deadline_ms(const BridgeOptions& options, std::string_view method) noexcept;
+// Seconds as a reader writes them: "120", "0.5".
+std::string seconds_text(u64 milliseconds);
 
 // ---- the host --------------------------------------------------------------------------------
 
 // One engine-host behind the bridge, spoken to one JSON-RPC line at a time. A host that has died
 // is noticed on the call that finds its pipes closed — its stdin refuses the write, or its stdout
-// ends before the answer — which is when a dead process can be told from a slow one without a
-// timeout that would also cut off a long reference render.
+// ends before the answer. A host that is alive and never answers is noticed by the call's
+// **deadline**: every read of an answer waits at most the deadline of the method's class, and a
+// host that stays silent past it is killed and reaped, so the next `start` makes a new one. The
+// read itself happens on a reader thread of the host's own (host_client.cpp says why a thread).
 class HostClient {
  public:
-  enum class Status : u8 { ok, error, gone };
+  // `timed_out`: the host did not answer within the deadline and was killed; `error.message` names
+  // the method and the seconds waited.
+  enum class Status : u8 { ok, error, gone, timed_out };
   struct Error {
     i32 code = 0;
     std::string message;
     JsonValue data;
+    // For `timed_out`: the deadline that ran out, in milliseconds.
+    u64 deadline_ms = 0;
   };
 
-  HostClient() = default;
+  HostClient();
   ~HostClient();
   ENGINE_NON_COPYABLE(HostClient);
 
   bool start(const BridgeOptions& options, std::string& error);
   // `gone` fills `error.message` with what happened to the host and `error.code` with its exit
-  // code; the process is reaped, and the next `start` makes a new one.
+  // code; `timed_out` says which call it failed to answer and in how long. Either way the process
+  // is reaped, and the next `start` makes a new one.
   Status call(std::string_view method, const JsonValue& params, JsonValue& result, Error& error);
   bool running() const noexcept { return process_ != nullptr; }
-  // Closes the host's stdin and waits for it; the host exits when its input ends.
+  // Closes the host's stdin and waits for it to exit, which a host does when its input ends; one
+  // that is still there after the short deadline is killed.
   void stop();
   // Incremented by every start: a scene id from an earlier generation names nothing.
   u32 generation() const noexcept { return generation_; }
 
  private:
+  struct Reader;
+  enum class Next : u8 { line, end, timeout };
+
+  // The next line the host wrote, waiting until `due` (null: for as long as it takes).
+  Next next_line(std::string& line, const std::chrono::steady_clock::time_point* due);
   void reap(Error& error, std::string_view what);
+  // Kills the host after a deadline ran out and reaps it.
+  void abandon(Error& error, std::string_view method, u64 deadline_ms);
+  // Joins the reader, cancelling its read first on Windows (host_client.cpp).
+  void join_reader() noexcept;
 
   std::unique_ptr<platform::Process> process_;
+  std::unique_ptr<Reader> reader_;
+  u64 call_timeout_ms_ = k_default_call_timeout_ms;
+  u64 long_call_timeout_ms_ = k_default_long_call_timeout_ms;
   u64 next_id_ = 1;
   u32 generation_ = 0;
 };
@@ -179,6 +225,11 @@ class Bridge {
   // this host already loaded exactly that. `info` is the load's answer when there was one.
   bool scene_for(const JsonValue& args, std::string& scene, JsonValue& info, bool& reused,
                  ToolOutcome& out);
+  // The host no longer holds `scene` (the unload tool released it): a later `load` of the same
+  // thing loads it again instead of reusing a dead id.
+  void forget_scene(std::string_view scene);
+  // The `load` a scene of this host was loaded with through the render tools, or null.
+  const JsonValue* load_of(std::string_view scene) const noexcept;
 
   // The protocol version agreed at initialize: what the result is allowed to contain.
   std::string_view protocol_version() const noexcept { return protocol_version_; }
@@ -193,6 +244,7 @@ class Bridge {
     std::string key;
     std::string id;
     JsonValue info;
+    JsonValue load;
   };
 
   JsonValue on_initialize(const JsonValue* params);

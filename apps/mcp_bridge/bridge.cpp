@@ -39,9 +39,10 @@ constexpr const char* k_instructions =
     "merge_layers work on layers. list_schema and describe explain the object types and every "
     "protocol method. capture, benchmark, compare and evaluate render offscreen: they write "
     "their pictures and full results into the workspace directory and return file:// URIs to "
-    "read with your own tools, never the bytes. A render tool on a machine without a usable GPU "
-    "answers 'no GPU on this machine' and the document tools keep working. get_logs reads the "
-    "host's log.";
+    "read with your own tools, never the bytes. The host keeps every scene a render tool loads "
+    "until unload releases it: scenes lists them, and in a long session unload the ones you are "
+    "done with. A render tool on a machine without a usable GPU answers 'no GPU on this machine' "
+    "and the document tools keep working. get_logs reads the host's log.";
 
 JsonValue rpc_error(const JsonValue& id, i32 code, std::string message, JsonValue data = {}) {
   JsonValue error = JsonValue::object();
@@ -184,8 +185,8 @@ std::string hint_for(std::string_view method, i32 code, std::string_view message
       if (method == "session.open")
         return "Nothing is there yet: pass \"create\": true to make a new document at that path.";
       if (message.find("scene") != std::string_view::npos)
-        return "Scene ids live as long as the host; pass `load` instead of `scene` to load it "
-               "again.";
+        return "Scene ids live until unload releases them or the host exits; scenes lists the "
+               "loaded ones. Pass `load` instead of `scene` to load it again.";
       if (message.find("layer") != std::string_view::npos)
         return "layers lists the document's layer names.";
       return "Check the id or name: objects lists ids and layers lists layer names.";
@@ -223,7 +224,24 @@ void fail_from_host(std::string_view method, const HostClient::Status status,
   out.links.clear();
   JsonValue e = JsonValue::object();
   e.set("method", JsonValue(method));
-  if (status == HostClient::Status::gone) {
+  if (status == HostClient::Status::timed_out) {
+    // The same shape as a death — the host is gone and the next call starts another — with the
+    // deadline named, because "it hung" and "it was slower than the deadline" look alike from
+    // here and only the caller knows which one a render of that size is.
+    const std::string hint =
+        "The host was alive but gave no answer within the deadline of " + std::string(method) +
+        "'s class, so the bridge stopped it; the next call starts a new engine-host. Open "
+        "sessions and loaded scenes did not survive: call open_session again (every change the "
+        "host confirmed is on disk) and pass `load` again to the render tools. If the call was a "
+        "render or a build that needs longer, start engine-mcp with a larger " +
+        std::string(is_long_call(method) ? "--long-call-timeout" : "--call-timeout") +
+        " (0 is no deadline).";
+    out.summary = error.message + "\nHint: " + hint;
+    e.set("timed_out", JsonValue(true));
+    e.set("seconds", JsonValue(static_cast<f64>(error.deadline_ms) / 1000.0));
+    e.set("message", JsonValue(error.message));
+    e.set("hint", JsonValue(hint));
+  } else if (status == HostClient::Status::gone) {
     const std::string hint =
         "The bridge starts a new engine-host on the next call. Open sessions and loaded scenes "
         "did not survive: call open_session again (every change the host confirmed is on disk; "
@@ -378,8 +396,25 @@ bool Bridge::scene_for(const JsonValue& args, std::string& scene, JsonValue& inf
   }
   scene = text_of(result, "scene");
   info = result;
-  scenes_.push_back(LoadedScene{key, scene, result});
+  scenes_.push_back(LoadedScene{key, scene, result, *load});
   return true;
+}
+
+void Bridge::forget_scene(std::string_view scene) {
+  for (u32 i = 0; i < scenes_.size(); ++i) {
+    if (scenes_[i].id == scene) {
+      scenes_.erase_at(i);
+      return;
+    }
+  }
+}
+
+const JsonValue* Bridge::load_of(std::string_view scene) const noexcept {
+  if (host_.generation() != scenes_generation_) return nullptr;
+  for (const LoadedScene& s : scenes_) {
+    if (s.id == scene) return &s.load;
+  }
+  return nullptr;
 }
 
 const Bridge::Tool* Bridge::find_tool(std::string_view name) const noexcept {

@@ -265,12 +265,21 @@ bool attribution_schema(Bridge& b, JsonValue& schema, std::string& error) {
   drop(a, "timestamp_unix_ms");
   note(a, "actor",
        "Who is making the change. Defaults to '" + b.options().actor + "', the bridge's --actor.");
-  note(a, "role", "The role the change is made in: environment, designer, qa, ...");
-  note(a, "task", "The task id or short name the change belongs to.");
+  // The role and the task have a default only when the bridge was started with one, and the
+  // schema says so exactly then: a stated default is what the call will record.
+  const BridgeOptions& o = b.options();
+  std::string role = "The role the change is made in: environment, designer, qa, ...";
+  if (!o.role.empty()) role += " Defaults to '" + o.role + "', the bridge's --role.";
+  note(a, "role", role);
+  std::string task = "The task id or short name the change belongs to.";
+  if (!o.task.empty()) task += " Defaults to '" + o.task + "', the bridge's --task.";
+  note(a, "task", task);
   note(a, "rationale",
        "Why the change is made, in a sentence. Required: a mutation without one "
        "is refused.");
-  set_default(a, "actor", JsonValue(b.options().actor));
+  set_default(a, "actor", JsonValue(o.actor));
+  if (!o.role.empty()) set_default(a, "role", JsonValue(o.role));
+  if (!o.task.empty()) set_default(a, "task", JsonValue(o.task));
   JsonValue req = JsonValue::array();
   req.push_back(JsonValue("rationale"));
   a.set("required", std::move(req));
@@ -280,8 +289,9 @@ bool attribution_schema(Bridge& b, JsonValue& schema, std::string& error) {
   return true;
 }
 
-// The attribution a mutation is sent with: the caller's, with the actor filled from --actor, or
-// a refusal that says what to add.
+// The attribution a mutation is sent with: the caller's, with the actor, the role and the task
+// filled from --actor, --role and --task where the caller left them out or blank, or a refusal
+// that says what to add.
 bool attribution(Bridge& b, const JsonValue& args, JsonValue& out, ToolOutcome& failure) {
   const JsonValue* given = args.find("attribution");
   if (given != nullptr && !given->is_object()) {
@@ -303,7 +313,13 @@ bool attribution(Bridge& b, const JsonValue& args, JsonValue& out, ToolOutcome& 
              b.options().actor + "').");
     return false;
   }
-  if (text_of(out, "actor").empty()) out.set("actor", JsonValue(b.options().actor));
+  const BridgeOptions& o = b.options();
+  const auto blank = [&](const char* key) {
+    return text_of(out, key).find_first_not_of(" \t") == std::string::npos;
+  };
+  if (blank("actor")) out.set("actor", JsonValue(o.actor));
+  if (blank("role") && !o.role.empty()) out.set("role", JsonValue(o.role));
+  if (blank("task") && !o.task.empty()) out.set("task", JsonValue(o.task));
   return true;
 }
 
@@ -1024,7 +1040,8 @@ void run_list_schema(Bridge& b, const JsonValue& args, ToolOutcome& out) {
 bool scene_schema(Bridge& b, JsonValue& s, std::string& e) {
   note(s, "scene",
        "A scene id an earlier capture, benchmark or evaluate returned (\"scene1\"). Omit it and "
-       "give load instead. Scene ids live as long as the host.");
+       "give load instead. Scene ids live until unload releases them or the host exits; scenes "
+       "lists them.");
   JsonValue load;
   if (!b.schemas().params_schema("render.load", load, e)) return false;
   load.set("description",
@@ -1353,6 +1370,112 @@ void run_evaluate(Bridge& b, const JsonValue& args, ToolOutcome& out) {
   add_files(out, files, name);
 }
 
+// ---- the scenes the host holds ------------------------------------------------------------------
+//
+// render.load keeps a scene until render.unload releases it or the host exits, and the render
+// tools load one per distinct `load`, so a long session that looks at many assets holds all of
+// them — GPU buffers included — unless the agent lets them go. `scenes` is what it looks at to
+// decide, and `unload` is the letting go.
+
+std::string mib_text(u64 bytes) { return fixed(static_cast<f64>(bytes) / (1024.0 * 1024.0), 1); }
+
+// "GPU memory 312.0 -> 280.5 MiB", or nothing when the host could not say.
+std::string memory_change_text(const JsonValue& r, const char* before, const char* after,
+                               const char* what) {
+  const JsonValue* b = r.find(before);
+  const JsonValue* a = r.find(after);
+  u64 from = 0;
+  u64 to = 0;
+  if (b == nullptr || a == nullptr || !b->get_u64(from) || !a->get_u64(to)) return {};
+  return std::string(what) + " " + mib_text(from) + " -> " + mib_text(to) + " MiB";
+}
+
+bool schema_unload(Bridge& b, JsonValue& s, std::string& e) {
+  if (!b.schemas().params_schema("render.unload", s, e)) return false;
+  note(s, "scene",
+       "A scene id a render tool returned (\"scene1\"); scenes lists the ones the host holds.");
+  require(s, {"scene"});
+  return true;
+}
+
+void run_unload(Bridge& b, const JsonValue& args, ToolOutcome& out) {
+  const std::string scene = text_of(args, "scene");
+  JsonValue r;
+  if (!b.call("render.unload", args, r, out)) {
+    // Not held any more, whatever the reason: a later `load` of it must load it again.
+    if (out.data.find("error") != nullptr && uint_of(*out.data.find("error"), "code") == 1003)
+      b.forget_scene(scene);
+    return;
+  }
+  b.forget_scene(scene);
+  std::string released = bool_of(r, "gpu_scene")
+                             ? std::string("its GPU scene and renderer") +
+                                   (bool_of(r, "reference") ? " and reference path tracer" : "") +
+                                   ", " + std::to_string(uint_of(r, "textures")) + " texture(s)"
+                             : std::string("host memory only (it was never drawn)");
+  std::string memory;
+  for (const std::string& part :
+       {memory_change_text(r, "host_heap_bytes_before", "host_heap_bytes_after", "host heap"),
+        memory_change_text(r, "gpu_used_bytes_before", "gpu_used_bytes_after",
+                           "GPU memory of this process")}) {
+    if (part.empty()) continue;
+    memory += (memory.empty() ? "" : ", ") + part;
+  }
+  out.summary = "Unloaded " + text_of(r, "scene") + " (" + std::to_string(uint_of(r, "meshes")) +
+                " mesh(es), " + std::to_string(uint_of(r, "instances")) + " instance(s), " +
+                std::to_string(uint_of(r, "triangles")) + " triangles): released " + released +
+                "." + (memory.empty() ? "" : " " + memory + ".") + " " +
+                std::to_string(uint_of(r, "scenes_left")) +
+                " scene(s) still loaded. The id names nothing now.";
+  out.data = r;
+}
+
+bool schema_scenes(Bridge& b, JsonValue& s, std::string& e) {
+  return b.schemas().params_schema("render.scenes", s, e);
+}
+
+void run_scenes(Bridge& b, const JsonValue&, ToolOutcome& out) {
+  JsonValue r;
+  if (!b.call("render.scenes", JsonValue(), r, out)) return;
+  // Each scene the bridge loaded carries the `load` it was loaded with, which is what an agent
+  // would pass to get it back after an unload.
+  std::string lines;
+  if (JsonValue* list = r.find("scenes"); list != nullptr && list->is_array()) {
+    for (usize i = 0; i < list->size(); ++i) {
+      JsonValue& entry = (*list)[i];
+      const std::string id = text_of(entry, "scene");
+      if (const JsonValue* load = b.load_of(id); load != nullptr) entry.set("load", *load);
+      lines += "\n  " + id + ": " + text_of(entry, "kind") + " " + text_of(entry, "source") + ", " +
+               std::to_string(uint_of(entry, "triangles")) + " triangles, " +
+               std::to_string(uint_of(entry, "clusters")) + " clusters; ";
+      if (bool_of(entry, "built")) {
+        lines += "built " + std::to_string(uint_of(entry, "width")) + "x" +
+                 std::to_string(uint_of(entry, "height")) + " (" + text_of(entry, "raster") +
+                 ", shadows " + text_of(entry, "shadows") + ")";
+        if (uint_of(entry, "texture_bytes") > 0)
+          lines += ", textures " + mib_text(uint_of(entry, "texture_bytes")) + " MiB";
+        if (uint_of(entry, "rt_bytes") > 0)
+          lines += ", ray tracing " + mib_text(uint_of(entry, "rt_bytes")) + " MiB";
+        if (bool_of(entry, "reference")) lines += ", with the reference path tracer";
+      } else {
+        lines += "not drawn yet (host memory only)";
+      }
+    }
+  }
+  const JsonValue* list = r.find("scenes");
+  const usize count = list != nullptr ? list->size() : 0;
+  out.summary = std::to_string(count) + " scene(s) loaded" +
+                (text_of(r, "adapter").empty() ? std::string() : " on " + text_of(r, "adapter")) +
+                "; host heap " + mib_text(uint_of(r, "host_heap_bytes")) + " MiB";
+  if (const JsonValue* used = r.find("gpu_used_bytes"); used != nullptr && !used->is_null()) {
+    out.summary += ", GPU memory of this process " + mib_text(uint_of(r, "gpu_used_bytes")) +
+                   " of " + mib_text(uint_of(r, "gpu_budget_bytes")) + " MiB available";
+  }
+  out.summary += "." + lines;
+  if (count > 0) out.summary += "\nunload releases one.";
+  out.data = r;
+}
+
 // ---- machine and host
 // -------------------------------------------------------------------------------
 
@@ -1489,20 +1612,38 @@ bool schema_host_info(Bridge& b, JsonValue& s, std::string& e) {
 void run_host_info(Bridge& b, const JsonValue&, ToolOutcome& out) {
   JsonValue r;
   if (!b.call("engine.info", JsonValue(), r, out)) return;
+  // engine.ping's uptime beside it: the liveness answer, which is the one thing engine.info lacks.
+  JsonValue ping;
+  if (!b.call("engine.ping", JsonValue(), ping, out)) return;
+  const BridgeOptions& o = b.options();
   JsonValue bridge = JsonValue::object();
-  bridge.set("workspace", JsonValue(b.options().workspace));
-  bridge.set("workspace_uri", JsonValue(file_uri(b.options().workspace)));
-  bridge.set("actor", JsonValue(b.options().actor));
-  bridge.set("host_path", JsonValue(b.options().host_path));
+  bridge.set("workspace", JsonValue(o.workspace));
+  bridge.set("workspace_uri", JsonValue(file_uri(o.workspace)));
+  bridge.set("actor", JsonValue(o.actor));
+  if (!o.role.empty()) bridge.set("role", JsonValue(o.role));
+  if (!o.task.empty()) bridge.set("task", JsonValue(o.task));
+  bridge.set("host_path", JsonValue(o.host_path));
   bridge.set("host_generation", JsonValue(b.host().generation()));
+  bridge.set("call_timeout_seconds", JsonValue(static_cast<f64>(o.call_timeout_ms) / 1000.0));
+  bridge.set("long_call_timeout_seconds",
+             JsonValue(static_cast<f64>(o.long_call_timeout_ms) / 1000.0));
   bridge.set("protocol_version", JsonValue(b.protocol_version()));
   out.data = JsonValue::object();
+  if (ping.is_object()) r.set("uptime_seconds", JsonValue(real_of(ping, "uptime_seconds")));
   out.data.set("host", r);
   out.data.set("bridge", std::move(bridge));
-  out.summary = "engine-host " + text_of(r, "version") + " (" + text_of(r, "build") + "), pid " +
-                std::to_string(uint_of(r, "pid")) + ", " + std::to_string(uint_of(r, "methods")) +
-                " methods. Workspace " + b.options().workspace + "; default actor '" +
-                b.options().actor + "'; MCP " + std::string(b.protocol_version()) + ".";
+  const auto deadline = [](u64 ms) {
+    return ms == 0 ? std::string("none") : seconds_text(ms) + " s";
+  };
+  out.summary =
+      "engine-host " + text_of(r, "version") + " (" + text_of(r, "build") + "), pid " +
+      std::to_string(uint_of(r, "pid")) + ", generation " + std::to_string(b.host().generation()) +
+      (ping.is_object() ? ", up " + fixed(real_of(ping, "uptime_seconds"), 1) + " s" : "") + ", " +
+      std::to_string(uint_of(r, "methods")) + " methods. Workspace " + o.workspace +
+      "; default actor '" + o.actor + "'" + (o.role.empty() ? "" : ", role '" + o.role + "'") +
+      (o.task.empty() ? "" : ", task '" + o.task + "'") + "; deadlines " +
+      deadline(o.call_timeout_ms) + " a call, " + deadline(o.long_call_timeout_ms) +
+      " a render or build; MCP " + std::string(b.protocol_version()) + ".";
 }
 
 // ---- the day-one operations (content.build, session.events, engine.budgets,
@@ -1796,6 +1937,16 @@ constexpr ToolDef k_tools[] = {
      "measurement of plan 04 section 4.8 in one call. Needs a GPU with cluster acceleration "
      "structures (NVIDIA RTX).",
      "render.load render.evaluate", false, false, false, &schema_evaluate, &run_evaluate},
+    {"scenes", "List loaded scenes",
+     "The scenes the host holds for the render tools: each id with what it was loaded from (and "
+     "the load that made it), its counts, whether it has been drawn and at what size, and what "
+     "this process uses of the GPU's memory. A scene stays loaded until unload releases it.",
+     "render.scenes", true, false, true, &schema_scenes, &run_scenes},
+    {"unload", "Unload a scene",
+     "Release a scene the render tools loaded: its GPU buffers, textures, acceleration "
+     "structures, renderer and host memory. The id names nothing afterwards, and the same load "
+     "given to a render tool loads it again. Use it in a long session that looks at many scenes.",
+     "render.unload", false, true, true, &schema_unload, &run_unload},
     {"get_logs", "Read the host's log",
      "Log records from the host's ring, oldest first, from a sequence number on; pass the "
      "returned next as since to continue. Filter by minimum level and category.",
@@ -1805,9 +1956,10 @@ constexpr ToolDef k_tools[] = {
      "blocks or degrades it. The full requirements report goes to <workspace>/adapters.json.",
      "gpu.adapters", true, false, true, &schema_adapters, &run_adapters},
     {"host_info", "About the host",
-     "What the bridge is talking to: the engine-host's version, build, process id and method "
-     "count, the workspace directory, the default actor, and the MCP version agreed.",
-     "engine.info", true, false, true, &schema_host_info, &run_host_info},
+     "What the bridge is talking to: the engine-host's version, build, process id, uptime, "
+     "generation and method count, the workspace directory, the default attribution, the call "
+     "deadlines, and the MCP version agreed.",
+     "engine.info engine.ping", true, false, true, &schema_host_info, &run_host_info},
     {"build_content", "Build content",
      "Build a glTF/GLB file or a manifest into .clusters containers with the derived-data cache "
      "and the identity skip; metrics go to <workspace>/builds.",

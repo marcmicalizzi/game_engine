@@ -9,6 +9,7 @@
 #include <core/platform/cpu_baseline.h>
 #include <core/platform/process.h>
 
+#include <charconv>
 #include <cstdio>
 #include <engine_build_stamp.h>
 #include <filesystem>
@@ -28,24 +29,47 @@ using namespace engine;
 namespace {
 
 const char* k_usage =
-    "usage: engine-mcp [--host <path>] [--mount <scheme>=<dir>[:rw]]... [--workspace <dir>]\n"
-    "                  [--actor <name>] [--log <spec>]\n"
+    "usage: engine-mcp [--host <path>] [--host-arg <arg>]... [--mount <scheme>=<dir>[:rw]]...\n"
+    "                  [--workspace <dir>] [--actor <name>] [--role <name>] [--task <id>]\n"
+    "                  [--call-timeout <seconds>] [--long-call-timeout <seconds>] [--log <spec>]\n"
     "\n"
     "A Model Context Protocol server on stdin/stdout (newline-delimited JSON-RPC 2.0) over one\n"
     "engine-host it starts and owns. Register it with an MCP client; see docs/subsystems/apps.md.\n"
     "\n"
-    "  --host <path>      engine-host executable (default: beside engine-mcp)\n"
-    "  --mount <spec>     forwarded to engine-host; repeatable\n"
-    "  --workspace <dir>  where captures, benchmark results and reports are written (default:\n"
-    "                     ./mcp-workspace); tools return file:// URIs into it\n"
-    "  --actor <name>     the attribution actor of a mutation that names none (default: mcp)\n"
-    "  --log <spec>       log levels on stderr, e.g. \"info\" or \"info,mcp=debug\" (default:\n"
-    "                     warnings and up)\n"
-    "  --version          print the build stamp as one JSON line and exit\n";
+    "  --host <path>        engine-host executable (default: beside engine-mcp)\n"
+    "  --host-arg <arg>     appended to engine-host's command line; repeatable\n"
+    "  --mount <spec>       forwarded to engine-host; repeatable\n"
+    "  --workspace <dir>    where captures, benchmark results and reports are written (default:\n"
+    "                       ./mcp-workspace); tools return file:// URIs into it\n"
+    "  --actor <name>       the attribution actor of a mutation that names none (default: mcp)\n"
+    "  --role <name>        the attribution role of a mutation that names none (default: none)\n"
+    "  --task <id>          the attribution task of a mutation that names none (default: none)\n"
+    "  --call-timeout <s>   how long a quick call may go unanswered before the host is taken for\n"
+    "                       hung, stopped and replaced on the next call (default: 120; 0: never)\n"
+    "  --long-call-timeout <s>  the same for renders, content builds, headless runs and the\n"
+    "                       validators (default: 3600; 0: never)\n"
+    "  --log <spec>         log levels on stderr, e.g. \"info\" or \"info,mcp=debug\" (default:\n"
+    "                       warnings and up)\n"
+    "  --version            print the build stamp as one JSON line and exit\n";
 
 std::string utf8(const std::filesystem::path& p) {
   const std::u8string s = p.generic_u8string();
   return std::string(reinterpret_cast<const char*>(s.data()), s.size());
+}
+
+// Seconds as given on the command line — a whole or a decimal number, 0 for no deadline — in
+// milliseconds. At most thirty days: a deadline past that is a typo, and a clock's time point that
+// far out is where the arithmetic starts to overflow.
+bool read_seconds(std::string_view text, u64& milliseconds) {
+  f64 seconds = -1.0;
+  const std::from_chars_result r = std::from_chars(text.data(), text.data() + text.size(), seconds);
+  if (r.ec != std::errc() || r.ptr != text.data() + text.size() || !(seconds >= 0.0) ||
+      seconds > 30.0 * 24.0 * 3600.0) {
+    return false;
+  }
+  milliseconds = static_cast<u64>(seconds * 1000.0 + 0.5);
+  if (seconds > 0.0 && milliseconds == 0) milliseconds = 1;
+  return true;
 }
 
 }  // namespace
@@ -79,12 +103,30 @@ int main(int argc, char** argv) {
       if (!value(workspace)) return 2;
     } else if (a == "--actor") {
       if (!value(options.actor)) return 2;
+    } else if (a == "--role") {
+      if (!value(options.role)) return 2;
+    } else if (a == "--task") {
+      if (!value(options.task)) return 2;
+    } else if (a == "--call-timeout" || a == "--long-call-timeout") {
+      std::string text;
+      if (!value(text)) return 2;
+      u64& target = a == "--call-timeout" ? options.call_timeout_ms : options.long_call_timeout_ms;
+      if (!read_seconds(text, target)) {
+        std::fprintf(stderr,
+                     "engine-mcp: %.*s takes seconds, from 0 (no deadline) to 2592000; got '%s'\n",
+                     static_cast<int>(a.size()), a.data(), text.c_str());
+        return 2;
+      }
     } else if (a == "--log") {
       if (!value(log_spec)) return 2;
     } else if (a == "--mount") {
       std::string m;
       if (!value(m)) return 2;
       options.mounts.push_back(m);
+    } else if (a == "--host-arg") {
+      std::string h;
+      if (!value(h)) return 2;
+      options.host_args.push_back(h);
     } else {
       std::fprintf(stderr, "engine-mcp: unknown option '%s'\n%s", argv[i], k_usage);
       return 2;
