@@ -7,12 +7,15 @@
 //                                                            fragment: the derived-node form for an
 //                                                            authored place
 //       --region <x0,z0,x1,z1> [--count <n> | --density <d>]  many tiles instead of one
+//       --blocks <block-kit.json>                             laid block by block (blocks.h)
 //   ruins-kit <directory> [--e33-sizes] [--inside-corner]     the synthetic kit of boxes, written
 //                                                            where it is asked for
+//   ruins-block-kit <directory> [--fidelity low|mid|high]     the synthetic block kit
 //
-// `ruins` prints one JSON line: the buildings, the pieces by kind, the pieces per building, the
-// shapes, the milliseconds the assembly took and the hash of what it assembled — the number
-// `tests/determinism_tests.cpp` pins, which is the same on every toolchain.
+// `ruins` prints one JSON line: the buildings, the pieces by kind (with --blocks, the blocks by
+// role, standing and fallen), the pieces per building, the shapes, the milliseconds the assembly
+// took and the hash of what it assembled — the number `tests/determinism_tests.cpp` pins, which
+// is the same on every toolchain.
 #include "content_commands.h"
 
 #include <core/base/types.h>
@@ -57,10 +60,18 @@ const char* k_ruins_usage =
     "      --density <d>       with --region: every tile the seed gives a building at this\n"
     "                          density (default 0.05, the endless desert's rule)\n"
     "      --walls             leave the debris out: the capability's far tier\n"
+    "      --blocks <block-kit.json>  lay each building block by block from this block kit\n"
+    "                          (engine.scene.RuinBlockKit) instead of the kit's sections: the\n"
+    "                          same footprint, ruin and openings, every block an instance\n"
     "      --jobs <n>          performance-pool workers for a region (default: one per CPU)\n"
     "      --no-write          assemble and report without writing the fragment\n"
     "usage: engine-content ruins-kit <directory> [--e33-sizes] [--inside-corner]\n"
-    "  the synthetic kit of boxes: <directory>/kit.json and a GLB per member\n";
+    "  the synthetic kit of boxes: <directory>/kit.json and a GLB per member\n"
+    "usage: engine-content ruins-block-kit <directory> [--fidelity low|mid|high]\n"
+    "                                      [--thickness <m>] [--course <m>] [--stretcher <m>]\n"
+    "  the synthetic block kit: <directory>/block-kit.json and a GLB per block, at 44 triangles a\n"
+    "  block (low), about 5,000 (mid) or about 50,000 (high); the thickness should be the section\n"
+    "  kit's (default 0.6, the kit of boxes'; E33's ashlar is 0.64)\n";
 
 [[maybe_unused]] int usage(const char* message) {
   if (message != nullptr) std::fprintf(stderr, "engine-content ruins: %s\n", message);
@@ -110,6 +121,75 @@ f32 flat_ground(const void* context, f32, f32) noexcept {
   return *static_cast<const f32*>(context);
 }
 
+// `ruins --blocks`: the same buildings laid block by block, reported by role, standing and fallen,
+// with `hash_blocks` — the number the determinism test pins beside the assembler's.
+int ruins_blocks(const ruins::Kit& kit, const std::string& blocks_path,
+                 const ruins::Placement& placement, const Vector<ruins::TileCoord>& tiles,
+                 jobs::JobSystem& pool, bool write, const std::string& out_path,
+                 const std::string& seed_text, u64 seed) {
+  ruins::BlockKit blocks;
+  std::string error;
+  if (!ruins::read_block_kit_file(blocks_path, blocks, error)) return failed(error);
+  ruins::BlockOutput out;
+  const i64 start = time::monotonic_ns();
+  const bool ok = ruins::assemble_block_tiles(
+      kit, blocks, placement, std::span<const ruins::TileCoord>(tiles.data(), tiles.size()),
+      tiles.size() > 1 ? &pool : nullptr, out, &error);
+  const i64 elapsed = time::monotonic_ns() - start;
+  if (!ok) return failed(error);
+  if (write) {
+    const std::string name = kit.name + " ruins laid in " + blocks.name + ", seed " + seed_text;
+    if (!ruins::write_block_fragment(out_path, kit, blocks, out, name, &error))
+      return failed(error);
+  }
+  u32 roles[ruins::k_block_roles] = {};
+  u32 fallen = 0;
+  u32 eroded = 0;
+  for (const ruins::Block& b : out.blocks) {
+    ++roles[b.role < ruins::k_block_roles ? b.role : 0];
+    fallen += (b.flags & ruins::k_block_fallen) != 0 ? 1u : 0u;
+    eroded += (b.flags & ruins::k_block_eroded) != 0 ? 1u : 0u;
+  }
+  u32 lo = ~0u, hi = 0;
+  for (const ruins::Site& site : out.sites) {
+    lo = std::min(lo, site.instance_count);
+    hi = std::max(hi, site.instance_count);
+  }
+  if (out.sites.empty()) lo = 0;
+  JsonValue summary = JsonValue::object();
+  summary.set("kit", JsonValue(kit.name));
+  summary.set("block_kit", JsonValue(blocks.name));
+  summary.set("seed", JsonValue(seed));
+  summary.set("buildings", JsonValue(out.sites.size()));
+  summary.set("instances", JsonValue(out.blocks.size()));
+  summary.set("standing", JsonValue(out.blocks.size() - fallen));
+  summary.set("fallen", JsonValue(fallen));
+  summary.set("eroded", JsonValue(eroded));
+  summary.set("drifts", JsonValue(out.drifts.size()));
+  JsonValue by_role = JsonValue::object();
+  for (u32 r = 0; r < ruins::k_block_roles; ++r)
+    by_role.set(ruins::block_role_name(static_cast<ruins::BlockRole>(r)), JsonValue(roles[r]));
+  summary.set("roles", std::move(by_role));
+  JsonValue per = JsonValue::object();
+  per.set("min", JsonValue(lo));
+  per.set("max", JsonValue(hi));
+  per.set("mean", JsonValue(out.sites.empty() ? 0.0
+                                              : static_cast<f64>(out.blocks.size()) /
+                                                    static_cast<f64>(out.sites.size())));
+  summary.set("per_building", std::move(per));
+  summary.set("meshes", JsonValue(blocks.meshes.size()));
+  summary.set("ms", JsonValue(static_cast<f64>(elapsed) / 1.0e6));
+  summary.set("threads",
+              JsonValue(tiles.size() > 1 ? pool.worker_count(jobs::Pool::Performance) + 1 : 1u));
+  char hash[17];
+  std::snprintf(hash, sizeof(hash), "%016llx",
+                static_cast<unsigned long long>(ruins::hash_blocks(out)));
+  summary.set("hash", JsonValue(std::string(hash)));
+  if (write) summary.set("output", JsonValue(out_path));
+  print_json(summary);
+  return k_exit_ok;
+}
+
 int ruins(int argc, char** argv) {
   std::string positional[3];
   u32 count_positional = 0;
@@ -124,6 +204,7 @@ int ruins(int argc, char** argv) {
   bool walls = false;
   bool write = true;
   u64 jobs_wanted = 0;
+  std::string blocks_path;
   for (int i = 2; i < argc; ++i) {
     const std::string_view a = argv[i];
     auto value = [&](std::string_view& v) {
@@ -159,6 +240,9 @@ int ruins(int argc, char** argv) {
         return usage("--jobs is 1..4096");
     } else if (a == "--walls") {
       walls = true;
+    } else if (a == "--blocks") {
+      if (!value(v) || v.empty()) return usage("--blocks needs a block kit");
+      blocks_path = std::string(v);
     } else if (a == "--no-write") {
       write = false;
     } else if (a.size() > 1 && a[0] == '-' && !(a[1] >= '0' && a[1] <= '9')) {
@@ -199,6 +283,10 @@ int ruins(int argc, char** argv) {
   if (jobs_wanted > 0) config.performance_workers = static_cast<u32>(jobs_wanted);
   config.efficiency_workers = 1;
   jobs::JobSystem pool(config);
+  if (!blocks_path.empty()) {
+    return ruins_blocks(kit, blocks_path, placement, tiles, pool, write, out_path, positional[1],
+                        seed);
+  }
   ruins::Output out;
   const i64 start = time::monotonic_ns();
   const bool ok = ruins::assemble_tiles(
@@ -293,6 +381,62 @@ int ruins_kit(int argc, char** argv) {
   return k_exit_ok;
 }
 
+int ruins_block_kit(int argc, char** argv) {
+  std::string dir;
+  ruins::SyntheticBlockOptions options;
+  for (int i = 2; i < argc; ++i) {
+    const std::string_view a = argv[i];
+    auto value = [&](std::string_view& v) {
+      if (i + 1 >= argc) return false;
+      v = argv[++i];
+      return true;
+    };
+    std::string_view v;
+    if (a == "--fidelity") {
+      if (!value(v) || !ruins::parse_block_fidelity(v, options.fidelity))
+        return usage("--fidelity is low, mid or high");
+    } else if (a == "--thickness") {
+      if (!value(v) || !parse_f32(v, options.thickness) || !(options.thickness >= 0.05f))
+        return usage("--thickness is metres, at least 0.05");
+    } else if (a == "--course") {
+      if (!value(v) || !parse_f32(v, options.course) || !(options.course >= 0.05f))
+        return usage("--course is metres, at least 0.05");
+    } else if (a == "--stretcher") {
+      if (!value(v) || !parse_f32(v, options.stretcher) || !(options.stretcher >= 0.1f))
+        return usage("--stretcher is metres, at least 0.1");
+    } else if (!a.empty() && a[0] == '-') {
+      return usage("unknown option for ruins-block-kit");
+    } else if (dir.empty()) {
+      dir = std::string(a);
+    } else {
+      return usage("ruins-block-kit takes one directory");
+    }
+  }
+  if (dir.empty()) return usage("ruins-block-kit takes one directory");
+  std::string error;
+  std::string kit_path;
+  const i64 start = time::monotonic_ns();
+  if (!ruins::write_synthetic_block_kit(dir, options, &error, &kit_path)) return failed(error);
+  const i64 elapsed = time::monotonic_ns() - start;
+  ruins::BlockKit kit;
+  if (!ruins::read_block_kit_file(kit_path, kit, error)) return failed(error);
+  ruins::SyntheticBlockKit made;
+  make_synthetic_block_kit(options, made);
+  u32 triangles = 0;
+  for (const u32 t : made.triangles)
+    triangles += t;
+  JsonValue summary = JsonValue::object();
+  summary.set("kit", JsonValue(kit_path));
+  summary.set("name", JsonValue(kit.name));
+  summary.set("fidelity", JsonValue(std::string(ruins::block_fidelity_name(options.fidelity))));
+  summary.set("blocks", JsonValue(kit.blocks.size()));
+  summary.set("meshes", JsonValue(kit.meshes.size()));
+  summary.set("triangles", JsonValue(triangles));
+  summary.set("ms", JsonValue(static_cast<f64>(elapsed) / 1.0e6));
+  print_json(summary);
+  return k_exit_ok;
+}
+
 #endif
 
 [[maybe_unused]] int refuse() {
@@ -319,6 +463,16 @@ int ruins_command(int argc, char** argv) {
 int ruins_kit_command(int argc, char** argv) {
 #if ENGINE_CONTENT_RUINS
   return ruins_kit(argc, argv);
+#else
+  (void)argc;
+  (void)argv;
+  return refuse();
+#endif
+}
+
+int ruins_block_kit_command(int argc, char** argv) {
+#if ENGINE_CONTENT_RUINS
+  return ruins_block_kit(argc, argv);
 #else
   (void)argc;
   (void)argv;

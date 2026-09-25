@@ -12,8 +12,11 @@
 //
 //   kit.h            the kit, converted to integer centimetres and Q10 once (read_kit_file)
 //   assembler.h      (kit, world seed, tile, height query) -> instances, drifts, sites
-//   fragment.h       that output as an engine.scene.Scene fragment (engine-content ruins)
-//   synthetic_kit.h  a kit of boxes, for the tests and the measurements
+//   blocks.h         the same building laid block by block from a block kit: the other
+//                    representation, every block an instance of one of a dozen block meshes
+//   fragment.h       either output as an engine.scene.Scene fragment (engine-content ruins)
+//   synthetic_kit.h  a kit of boxes and a synthetic block kit at three fidelities, for the tests
+//                    and the measurements
 //
 // Registration points (ADR-0027 decision 2), each wired or deliberately not needed; the docs page
 // says why:
@@ -32,6 +35,7 @@
 //   [x] docs, tests, size table, bench
 
 #include <domain/ruins/assembler.h>
+#include <domain/ruins/blocks.h>
 #include <domain/ruins/kit.h>
 
 namespace engine::ruins {

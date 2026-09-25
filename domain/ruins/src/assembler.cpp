@@ -1,3 +1,5 @@
+#include "grid.h"
+
 #include <core/hash/hash.h>
 #include <core/jobs/job_system.h>
 #include <domain/ruins/assembler.h>
@@ -35,71 +37,25 @@ enum Purpose : u64 {
   k_tile_rank = 0x7275696e73000010ull,
 };
 
-u64 draw(u64 seed, u64 purpose, u64 index) noexcept {
-  return hash_combine(hash_combine(seed, purpose), index);
-}
+// The seeded draws, the Q14 turn and the quarter turns are the module's one copy, shared with the
+// block layer (src/grid.h).
+using grid::draw;
+using grid::isqrt_ceil;
+using grid::k_dx;
+using grid::k_dz;
+using grid::left_of;
+using grid::overlaps;
+using grid::pick;
+using grid::Rect;
+using grid::right_of;
+using grid::rotate_cm;
+using grid::side_rect;
 
-// A value in [0, n) from the draw's top 32 bits: multiply-shift, so there is no division and no
-// modulo bias worth the name.
-u32 pick(u64 value, u32 n) noexcept {
-  return static_cast<u32>(((value >> 32) * static_cast<u64>(n)) >> 32);
-}
-
-// ---- sixteenths of a turn, as integers and as floats
-// ------------------------------------------------
-//
-// cos and sin of k * 22.5 degrees. The integer table (Q14) turns a building's centimetres into
-// the world's, which is part of every decision downstream of it; the float table turns a member's
-// mesh offset for the renderer. Neither calls the C library, so neither depends on it.
-constexpr i32 k_cos14[16] = {16384,  15137,  11585,  6270,  0, -6270, -11585, -15137,
-                             -16384, -15137, -11585, -6270, 0, 6270,  11585,  15137};
+// cos of k * 22.5 degrees as floats: what turns a member's mesh offset for the renderer, never a
+// decision. A table rather than the C library, like its integer twin in grid.h.
 constexpr f32 k_cosf[16] = {
     1.0f,  0.92387953f,  0.70710678f,  0.38268343f,  0.0f, -0.38268343f, -0.70710678f, -0.92387953f,
     -1.0f, -0.92387953f, -0.70710678f, -0.38268343f, 0.0f, 0.38268343f,  0.70710678f,  0.92387953f};
-constexpr i32 cos14(u32 step) noexcept { return k_cos14[step & 15u]; }
-constexpr i32 sin14(u32 step) noexcept { return k_cos14[(step + 12u) & 15u]; }
-
-// Rotation about +y by `step` sixteenths: (x, z) -> (c x + s z, -s x + c z), rounded to the
-// nearest centimetre (C++20 defines >> on a negative value as the arithmetic shift).
-void rotate_cm(u32 step, i64 x, i64 z, i64& out_x, i64& out_z) noexcept {
-  const i64 c = cos14(step);
-  const i64 s = sin14(step);
-  out_x = (c * x + s * z + 8192) >> 14;
-  out_z = (-s * x + c * z + 8192) >> 14;
-}
-
-// Quarter turns: 0 +x, 1 -z, 2 -x, 3 +z. A left turn seen from above is +1, a right turn -1.
-constexpr i32 k_dx[4] = {1, 0, -1, 0};
-constexpr i32 k_dz[4] = {0, -1, 0, 1};
-constexpr u8 left_of(u8 q) noexcept { return static_cast<u8>((q + 1u) & 3u); }
-constexpr u8 right_of(u8 q) noexcept { return static_cast<u8>((q + 3u) & 3u); }
-
-i64 isqrt_ceil(i64 v) noexcept {
-  if (v <= 0) return 0;
-  i64 r = static_cast<i64>(std::sqrt(static_cast<f64>(v)));
-  while (r * r > v)
-    --r;
-  while (r * r < v)
-    ++r;
-  return r;
-}
-
-// The axis-aligned box a wall occupies, centre line +/- half its thickness, and past each vertex
-// by as much, so that it covers the corner squares.
-struct Rect {
-  i32 x0, z0, x1, z1;
-};
-
-Rect side_rect(const Assembler::Side& s, i32 half) noexcept {
-  const i32 x1 = s.x0 + k_dx[s.dir] * s.length_cm;
-  const i32 z1 = s.z0 + k_dz[s.dir] * s.length_cm;
-  return Rect{std::min(s.x0, x1) - half, std::min(s.z0, z1) - half, std::max(s.x0, x1) + half,
-              std::max(s.z0, z1) + half};
-}
-
-bool overlaps(const Rect& a, const Rect& b) noexcept {
-  return a.x0 < b.x1 && b.x0 < a.x1 && a.z0 < b.z1 && b.z0 < a.z1;
-}
 
 // A weighted pick among members: `members` indexes the kit's.
 u32 weighted(const Kit& kit, const Vector<u32>& members, u64 value) noexcept {
@@ -414,6 +370,16 @@ i32 Assembler::profile_q(const Side& s, u32 wall, u64 seed, i32 at_cm) const noe
   return std::clamp(h, 0, k_q_one);
 }
 
+i32 Assembler::height_q(u32 wall, i32 at_cm) const noexcept {
+  return wall < sides_.size() ? profile_q(sides_[wall], wall, frame_.seed, at_cm) : 0;
+}
+
+void Assembler::to_world_cm(i64 x, i64 z, i64& wx, i64& wz) const noexcept {
+  rotate_cm(frame_.yaw, x, z, wx, wz);
+  wx += frame_.origin_x_cm;
+  wz += frame_.origin_z_cm;
+}
+
 bool Assembler::assemble(const Placement& placement, TileCoord tile, Output& out,
                          std::string* error) {
   const Kit& kit = kit_;
@@ -520,6 +486,7 @@ bool Assembler::assemble(const Placement& placement, TileCoord tile, Output& out
     }
   }
   const i32 base_cm = static_cast<i32>(std::floor(lowest * 100.0f)) - rules.embed_cm;
+  frame_ = Frame{seed, origin_x, origin_z, base_cm, yaw};
 
   // ---- 3. each wall's ruin state: the wind and the corners decide how far it came down
   // --------------
@@ -716,6 +683,8 @@ bool Assembler::assemble(const Placement& placement, TileCoord tile, Output& out
       const u32 width = static_cast<u32>(mb.length_cm / m);
       run(0, opening_at);
       const i32 a = s.start_cm + static_cast<i32>(opening_at) * m;
+      sides_[w].opening = opening;
+      sides_[w].opening_at_cm = a;
       emit(s.x0 + k_dx[s.dir] * a, s.z0 + k_dz[s.dir] * a, 0, opening, w, slot, k_q_one, mb.kind,
            static_cast<u32>(s.dir) * 4u);
       ++slot;
@@ -761,21 +730,7 @@ bool Assembler::assemble(const Placement& placement, TileCoord tile, Output& out
         i32 x = s.x0 + k_dx[s.dir] * along + k_dx[n] * dist;
         i32 z = s.z0 + k_dz[s.dir] * along + k_dz[n] * dist;
         // Settle: out of every wall, pushed across the wall it landed in to the nearer face.
-        bool clear = false;
-        for (u32 pass = 0; pass <= sides_.size() && !clear; ++pass) {
-          clear = true;
-          for (const Side& other : sides_) {
-            const Rect rc = side_rect(other, half);
-            if (x <= rc.x0 - r || x >= rc.x1 + r || z <= rc.z0 - r || z >= rc.z1 + r) continue;
-            clear = false;
-            if ((other.dir & 1u) == 0) {  // along x: out across z
-              z = z - (rc.z0 - r) < (rc.z1 + r) - z ? rc.z0 - r - 1 : rc.z1 + r + 1;
-            } else {
-              x = x - (rc.x0 - r) < (rc.x1 + r) - x ? rc.x0 - r - 1 : rc.x1 + r + 1;
-            }
-          }
-        }
-        if (!clear) continue;
+        if (!grid::settle_clear(sides_, half, r, x, z)) continue;
         i64 wx = 0, wz = 0;
         world(x, z, wx, wz);
         if (wx - r < tile_x0 || wx + r > tile_x0 + tile_cm || wz - r < tile_z0 ||

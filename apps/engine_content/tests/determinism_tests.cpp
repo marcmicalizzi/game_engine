@@ -318,4 +318,49 @@ TEST_CASE("engine-content: ruins assembles the committed buildings on every tool
                 "the assembled ruins do not match the committed hash; this build's is 0x"
                     << hashes[0] << "ull");
 }
+
+// The block layer's row (docs/subsystems/ruins.md, "The block layer"): the same 64 buildings laid
+// block by block from the synthetic block kit, written by `ruins-block-kit`, on two thread counts.
+// The layer decides on the same integers the assembler does — centimetres along a wall, Q10
+// fractions, the engine's hash, the Q14 turn — so the same number holds on every toolchain. A
+// change to the layer's rules or draws moves it; say so in the commit and take the new number
+// from a failing run's message.
+//
+// Taken on MSVC 14.51, 2026-09-24: 64 buildings, 44,876 blocks.
+constexpr u64 k_ruin_blocks_golden = 0x68ed0c002d78242full;
+
+TEST_CASE("engine-content: ruins laid block by block are the committed blocks on every toolchain") {
+  const test::TempDir tmp("engine_content_ruin_blocks_determinism");
+  const Output kit = run({"ruins-kit", tmp.file("kit")});
+  REQUIRE_MESSAGE(kit.exit_code == 0, kit.text);
+  const Output blocks = run({"ruins-block-kit", tmp.file("blocks")});
+  REQUIRE_MESSAGE(blocks.exit_code == 0, blocks.text);
+  const std::string kit_path = tmp.file("kit") + "/kit.json";
+  const std::string blocks_path = tmp.file("blocks") + "/block-kit.json";
+  std::string hashes[2];
+  u64 buildings = 0;
+  u64 instances = 0;
+  const char* jobs[2] = {"1", "3"};
+  for (u32 t = 0; t < 2; ++t) {
+    const Output made =
+        run({"ruins", kit_path, "2026", "-", "--region", "-8,-8,7,7", "--count", "64", "--wind",
+             "30", "--blocks", blocks_path, "--no-write", "--jobs", jobs[t]});
+    REQUIRE_MESSAGE(made.exit_code == 0, made.text);
+    JsonValue summary;
+    REQUIRE(parse_json(made.text, summary).ok);
+    REQUIRE(summary.find("hash") != nullptr);
+    hashes[t] = std::string(summary.find("hash")->as_string());
+    REQUIRE(summary.find("buildings")->get_u64(buildings));
+    REQUIRE(summary.find("instances")->get_u64(instances));
+  }
+  CHECK(buildings == 64);
+  MESSAGE("ruin blocks: 64 buildings, " << instances << " blocks, hash " << hashes[0]);
+  CHECK(hashes[0] == hashes[1]);
+  char golden[17];
+  std::snprintf(golden, sizeof(golden), "%016llx",
+                static_cast<unsigned long long>(k_ruin_blocks_golden));
+  CHECK_MESSAGE(
+      hashes[0] == std::string(golden),
+      "the laid blocks do not match the committed hash; this build's is 0x" << hashes[0] << "ull");
+}
 #endif

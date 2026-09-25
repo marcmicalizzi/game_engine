@@ -16,12 +16,14 @@
 
 #include <algorithm>
 #include <cmath>
+#include <optional>
 #include <renderer_log.h>
 #include <schemas/scene.h>
 #include <utility>
 
 #if ENGINE_RENDERER_RUINS
 #include <domain/ruins/assembler.h>
+#include <domain/ruins/blocks.h>
 #include <domain/ruins/kit.h>
 #endif
 
@@ -681,21 +683,53 @@ f32 terrain_ground(const void* context, f32 x, f32 z) noexcept {
   return static_cast<const TerrainSampler*>(context)->height(x, z);
 }
 
+// Appends a kit's meshes after everything the scene has so far, named "<kit>/<file>", and says
+// where they start.
+u32 append_kit_meshes(const std::string& kit_name, const Vector<std::string>& meshes,
+                      const Vector<u64>& hashes, SceneDesc& out) {
+  const u32 first = out.meshes.size();
+  for (u32 m = 0; m < meshes.size(); ++m) {
+    out.meshes.push_back(meshes[m]);
+    SceneMeshInfo info;
+    info.name = kit_name + "/" + std::string(io::file_name(meshes[m]));
+    info.hash = hashes[m];
+    out.mesh_info.push_back(std::move(info));
+  }
+  return first;
+}
+
 // A scene's `ruins` entries (schema `engine.scene.RuinScatter`, docs/subsystems/ruins.md): each
-// kit read once, its members' meshes appended after the file's own — so every index the file used
-// still names what it named, and the terrain, pushed after this, stays the last mesh — and every
-// building assembled here, standing on the terrain, so the renderer sees plain instances of kit
-// meshes and nothing else about ruins. Single-threaded on purpose: the loader has no job system,
-// and a thousand buildings cost milliseconds (ruins.md, "Performance notes").
+// kit read once, and the meshes a scatter draws appended after the file's own — so every index the
+// file used still names what it named, and the terrain, pushed after this, stays the last mesh —
+// and every building assembled here, standing on the terrain, so the renderer sees plain instances
+// of kit meshes and nothing else about ruins. A scatter drawn in **sections** draws its kit's
+// members; one drawn in **blocks** reads the kit for the footprint and draws only its block kit's
+// meshes, laid by the block layer on the same buildings (ruins.md, "The block layer") — the section
+// kit's meshes are not appended for it, since nothing would instance them and E33's members are
+// hundreds of megabytes on the GPU. A read of more than a few tiles assembles them on the job
+// system's performance pool, as `build_cache_textures` builds textures: the buildings are joined in
+// tile order whatever the thread count, so the instances are the same ones a single thread makes.
 bool expand_ruins(const scene::Scene& file, const std::string& path, const std::string& dir,
                   const TerrainSampler& ground, SceneDesc& out, std::string& error) {
   struct LoadedKit {
     std::string path;
     ruins::Kit kit;
+    u32 first_mesh = ~0u;  // appended the first time a sections scatter draws it
+  };
+  struct LoadedBlocks {
+    std::string path;
+    ruins::BlockKit kit;
     u32 first_mesh = 0;
   };
   Vector<LoadedKit> kits;
+  Vector<LoadedBlocks> block_kits;
   kits.reserve(file.ruins.size());
+  block_kits.reserve(file.ruins.size());
+  auto resolve = [&](const std::string& p) {
+    return io::is_absolute_path(p) || dir.empty() ? p : io::join_path(dir, p);
+  };
+  // One pool for the read, and only when there is enough to share out.
+  std::optional<jobs::JobSystem> pool;
   for (u32 r = 0; r < file.ruins.size(); ++r) {
     const scene::RuinScatter& scatter = file.ruins[r];
     const std::string where = path + ": ruins " + std::to_string(r);
@@ -703,9 +737,7 @@ bool expand_ruins(const scene::Scene& file, const std::string& path, const std::
       error = where + " names no kit";
       return false;
     }
-    const std::string kit_path = io::is_absolute_path(scatter.kit) || dir.empty()
-                                     ? scatter.kit
-                                     : io::join_path(dir, scatter.kit);
+    const std::string kit_path = resolve(scatter.kit);
     u32 k = 0;
     while (k < kits.size() && kits[k].path != kit_path)
       ++k;
@@ -716,17 +748,34 @@ bool expand_ruins(const scene::Scene& file, const std::string& path, const std::
         error = where + ": " + error;
         return false;
       }
-      loaded.first_mesh = out.meshes.size();
-      for (u32 m = 0; m < loaded.kit.meshes.size(); ++m) {
-        out.meshes.push_back(loaded.kit.meshes[m]);
-        SceneMeshInfo info;
-        info.name = loaded.kit.name + "/" + std::string(io::file_name(loaded.kit.meshes[m]));
-        info.hash = loaded.kit.mesh_hashes[m];
-        out.mesh_info.push_back(std::move(info));
-      }
       kits.push_back(std::move(loaded));
     }
-    const LoadedKit& loaded = kits[k];
+    LoadedKit& loaded = kits[k];
+    const bool blocks = scatter.representation == scene::RuinRepresentation::Blocks;
+    u32 b = 0;
+    if (blocks) {
+      if (scatter.block_kit.empty()) {
+        error = where + " is drawn in blocks and names no block_kit";
+        return false;
+      }
+      const std::string blocks_path = resolve(scatter.block_kit);
+      while (b < block_kits.size() && block_kits[b].path != blocks_path)
+        ++b;
+      if (b == block_kits.size()) {
+        LoadedBlocks made;
+        made.path = blocks_path;
+        if (!ruins::read_block_kit_file(blocks_path, made.kit, error)) {
+          error = where + ": " + error;
+          return false;
+        }
+        made.first_mesh =
+            append_kit_meshes(made.kit.name, made.kit.meshes, made.kit.mesh_hashes, out);
+        block_kits.push_back(std::move(made));
+      }
+    } else if (loaded.first_mesh == ~0u) {
+      loaded.first_mesh =
+          append_kit_meshes(loaded.kit.name, loaded.kit.meshes, loaded.kit.mesh_hashes, out);
+    }
     const i32 tile_cm = ruins::to_cm(scatter.tile_size);
     if (tile_cm <= 0) {
       error = where + ": tile_size must be positive";
@@ -741,31 +790,67 @@ bool expand_ruins(const scene::Scene& file, const std::string& path, const std::
     placement.tile_cm = tile_cm;
     placement.wind_step = ruins::yaw_step_from_degrees(scatter.wind_deg);
     if (out.terrain.enabled) placement.ground = ruins::Ground{&terrain_ground, &ground};
-    ruins::Output built;
     const i64 start = time::monotonic_ns();
-    if (!ruins::assemble_tiles(loaded.kit, placement,
-                               std::span<const ruins::TileCoord>(tiles.data(), tiles.size()),
-                               nullptr, built, &error)) {
+    if (tiles.size() > 32 && !pool.has_value()) pool.emplace(content_build::job_config(0));
+    jobs::JobSystem* workers = tiles.size() > 32 ? &*pool : nullptr;
+    const u32 threads = workers != nullptr ? workers->worker_count(jobs::Pool::Performance) + 1 : 1;
+    const std::span<const ruins::TileCoord> span(tiles.data(), tiles.size());
+    if (!blocks) {
+      ruins::Output built;
+      if (!ruins::assemble_tiles(loaded.kit, placement, span, workers, built, &error)) {
+        error = where + ": " + error;
+        return false;
+      }
+      out.instances.reserve(out.instances.size() + built.instances.size());
+      for (const ruins::Instance& piece : built.instances) {
+        SceneInstance instance;
+        instance.mesh = loaded.first_mesh + loaded.kit.members[piece.member].mesh_index;
+        instance.transform.position = ruins::instance_translation(loaded.kit, piece);
+        instance.transform.rotation = quat_from_axis_angle(
+            Vec3{0.0f, 1.0f, 0.0f},
+            radians(22.5f * static_cast<f32>(ruins::instance_yaw_step(loaded.kit, piece))));
+        out.instances.push_back(instance);
+      }
+      out.ruin_buildings += built.sites.size();
+      out.ruin_instances += built.instances.size();
+      ENGINE_LOG_INFO(log_renderer, "ruins assembled", log::field("scene", path),
+                      log::field("representation", "sections"), log::field("kit", loaded.kit.name),
+                      log::field("buildings", built.sites.size()),
+                      log::field("instances", built.instances.size()),
+                      log::field("threads", threads),
+                      log::field("ms", static_cast<f64>(time::monotonic_ns() - start) / 1.0e6),
+                      log::field("hash", hash_hex(ruins::hash_output(built))));
+      continue;
+    }
+    const LoadedBlocks& laid = block_kits[b];
+    ruins::BlockOutput built;
+    if (!ruins::assemble_block_tiles(loaded.kit, laid.kit, placement, span, workers, built,
+                                     &error)) {
       error = where + ": " + error;
       return false;
     }
-    out.instances.reserve(out.instances.size() + built.instances.size());
-    for (const ruins::Instance& piece : built.instances) {
+    out.instances.reserve(out.instances.size() + built.blocks.size());
+    u32 fallen = 0;
+    for (const ruins::Block& block : built.blocks) {
       SceneInstance instance;
-      instance.mesh = loaded.first_mesh + loaded.kit.members[piece.member].mesh_index;
-      instance.transform.position = ruins::instance_translation(loaded.kit, piece);
+      instance.mesh = laid.first_mesh + laid.kit.blocks[block.block].mesh_index;
+      instance.transform.position = ruins::block_translation(laid.kit, block);
       instance.transform.rotation = quat_from_axis_angle(
           Vec3{0.0f, 1.0f, 0.0f},
-          radians(22.5f * static_cast<f32>(ruins::instance_yaw_step(loaded.kit, piece))));
+          radians(22.5f * static_cast<f32>(ruins::block_yaw_step(laid.kit, block))));
       out.instances.push_back(instance);
+      fallen += (block.flags & ruins::k_block_fallen) != 0 ? 1u : 0u;
     }
     out.ruin_buildings += built.sites.size();
-    out.ruin_instances += built.instances.size();
+    out.ruin_instances += built.blocks.size();
     ENGINE_LOG_INFO(log_renderer, "ruins assembled", log::field("scene", path),
-                    log::field("kit", loaded.kit.name), log::field("buildings", built.sites.size()),
-                    log::field("instances", built.instances.size()),
+                    log::field("representation", "blocks"), log::field("kit", loaded.kit.name),
+                    log::field("block_kit", laid.kit.name),
+                    log::field("buildings", built.sites.size()),
+                    log::field("instances", built.blocks.size()), log::field("fallen", fallen),
+                    log::field("threads", threads),
                     log::field("ms", static_cast<f64>(time::monotonic_ns() - start) / 1.0e6),
-                    log::field("hash", hash_hex(ruins::hash_output(built))));
+                    log::field("hash", hash_hex(ruins::hash_blocks(built))));
   }
   return true;
 }
@@ -1262,6 +1347,12 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
 
   update_scene_bounds(out);
   out.build_ns = time::monotonic_ns() - build_start;
+  // What the load cost and what it made: an offscreen run has no other line that says it, and a
+  // scene of hundreds of thousands of ruin blocks spends its time here, in the instance table.
+  ENGINE_LOG_INFO(
+      log_renderer, "scene loaded", log::field("ms", static_cast<f64>(out.build_ns) / 1.0e6),
+      log::field("meshes", out.parts.size()), log::field("instances", out.instances.size()),
+      log::field("pairs", out.pair_count), log::field("clusters", out.cluster_count()));
   return true;
 }
 

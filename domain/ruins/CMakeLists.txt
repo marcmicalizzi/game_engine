@@ -7,14 +7,17 @@
 # engine-content refuses `ruins` and `ruins-kit`, each with a sentence. That is the proof the
 # capability is additive.
 #
-# `schema` and `schemas` are the kit's: a kit file is `engine.scene.RuinKit`, and a fragment an
-# `engine.scene.Scene` (schemas/scene.schema). `jobs` is `assemble_tiles`'s performance pool.
+# `schema` and `schemas` are the kit's: a kit file is `engine.scene.RuinKit` (a block kit
+# `engine.scene.RuinBlockKit`), and a fragment an `engine.scene.Scene` (schemas/scene.schema).
+# `jobs` is `assemble_tiles`'s and `assemble_block_tiles`'s performance pool. `src/grid.h` is the
+# integer arithmetic the assembler and the block layer share, private to the module.
 engine_module(NAME ruins LAYER domain OPTIONAL
   DEPS base containers math hash json schema schemas io log jobs
-  SOURCES src/kit.cpp src/assembler.cpp src/fragment.cpp src/synthetic_kit.cpp)
+  SOURCES src/kit.cpp src/assembler.cpp src/block_kit.cpp src/blocks.cpp src/fragment.cpp
+          src/synthetic_kit.cpp src/synthetic_blocks.cpp)
 
 engine_module_tests(NAME ruins
-  SOURCES tests/ruins_tests.cpp tests/size_table.cpp)
+  SOURCES tests/ruins_tests.cpp tests/blocks_tests.cpp tests/size_table.cpp)
 
 # The assembler's cost per building and per thousand, on one thread and on the pool.
 engine_module_bench(NAME ruins

@@ -153,9 +153,32 @@ class Assembler {
     i32 level_q = 0;  // a collapsed wall's height fraction
     i32 breach_at_cm = 0;
     i32 breach_half_cm = 0;
+    // The opening the wall got, if any: a kit member (~0u for none) whose first socket is
+    // `opening_at_cm` along the wall from its start vertex. The block layer lays its gap, sill
+    // and lintel from these.
+    u32 opening = ~0u;
+    i32 opening_at_cm = 0;
   };
   const Vector<Side>& sides() const noexcept { return sides_; }
   Shape shape() const noexcept { return shape_; }
+
+  // Where the building it last assembled stands, in integer centimetres: its footprint's frame
+  // is turned `yaw` sixteenths about +y and put at `origin`, and every wall stands on `base_cm`.
+  // With `sides()` and `height_q` this is everything a second representation of the same building
+  // needs — the block layer (blocks.h) lays its courses from it — and nothing in it is a float.
+  struct Frame {
+    u64 seed = 0;  // building_seed(world seed, tile)
+    i64 origin_x_cm = 0;
+    i64 origin_z_cm = 0;
+    i32 base_cm = 0;
+    u8 yaw = 0;
+  };
+  const Frame& frame() const noexcept { return frame_; }
+  // The ruin rule's height at `at_cm` along wall `wall` of the building it last assembled, Q10 of
+  // the intact wall: the line the sections were chosen by, and the one a block stands under.
+  i32 height_q(u32 wall, i32 at_cm) const noexcept;
+  // A point of the building's frame in the world, centimetres (the Q14 turn, then the origin).
+  void to_world_cm(i64 x, i64 z, i64& wx, i64& wz) const noexcept;
 
  private:
   // What one corner, section or gap lost to the ruin rule: the debris pass's input.
@@ -177,6 +200,7 @@ class Assembler {
   Vector<Loss> losses_;
   Vector<u32> candidates_;
   Shape shape_ = Shape::rectangle;
+  Frame frame_;
 };
 
 // The building's seed: the world seed and the tile, through the engine's hash.

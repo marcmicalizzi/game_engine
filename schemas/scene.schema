@@ -189,11 +189,101 @@ struct RuinKit @version(1) {
   rules: RuinRules
 }
 
+// ---- The block-by-block representation (ruins.md, "The block layer") -----------------------------
+//
+// The same building laid block by block: every block of every course an instance of one of a
+// block kit's dozen meshes, courses in running bond along each wall's centre line, quoins taking
+// the corners in turn, openings spanned by lintels, the ruin rule's line deciding which blocks
+// stand, and the fallen ones lying beside the wall. The footprint, the ruin states and the
+// openings are the section assembler's, so the two representations are of one building.
+
+/// A block's part in a wall.
+enum RuinBlockRole : u8 {
+  /// A course's block, its long face on the wall's face: every straight run is laid in these.
+  Stretcher = 0
+  /// A short block that closes a run too short for a stretcher.
+  Half = 1
+  /// A corner block: it lies along one wall with its end on the other's face, and the two walls
+  /// take the corner in turn, course by course, so they interlock.
+  Quoin = 2
+  /// The block over an opening, bearing on both jambs.
+  Lintel = 3
+  /// The block under a window's opening.
+  Sill = 4
+}
+
+/// One block mesh of a block kit. Its frame: the block's start end at the origin and its bottom
+/// at y = 0, running along +x, centred on the wall's centre line in z, the outside at +z — after
+/// `offset` and `yaw_deg`, as for a kit member.
+struct RuinBlock @version(1) {
+  name: string
+  role: RuinBlockRole = Stretcher
+  /// A glTF, GLB or .clusters file, relative to the block kit file.
+  mesh: string
+  /// `assets::source_mesh_hash` of `mesh`, 16 lower-case hex digits; empty: not checked.
+  hash: string
+  offset: vec3
+  yaw_deg: f32 = 0
+  /// Its size, metres: along the wall, up, and through it. A quoin's length is the wall's
+  /// thickness and the bond's offset; a lintel's spans the opening and its bearings.
+  length: f32 = 0.6
+  height: f32 = 0.3
+  depth: f32 = 0.64
+  /// Weathered: what an exposed place (the broken top, a corner, a fallen block) asks for more
+  /// often than a sheltered one.
+  eroded: bool = false
+  /// Relative weight among the blocks of one role, length and weathering.
+  weight: u32 = 1
+}
+
+/// How a building's ruin reads block by block. Fractions and lengths as in `RuinRules`.
+struct RuinBlockRules @version(1) {
+  /// How far either side of the ruin rule's line the broken top reaches, as a fraction of a
+  /// course: a block whose top is within it stands or falls by its own draw.
+  top_drop: f32 = 0.5
+  /// The chance a block takes an eroded variant in an exposed place (the top of what stands, a
+  /// quoin, a fallen block), and anywhere else.
+  eroded_exposed: f32 = 0.75
+  eroded: f32 = 0.2
+  /// The share of a block's length the course under it must carry for it to stand.
+  support: f32 = 0.5
+  /// The least a lintel bears on each jamb, metres.
+  lintel_bearing: f32 = 0.2
+  /// The share of the fallen blocks that lie beside the wall; the rest are under the sand.
+  debris_kept: f32 = 1
+}
+
+/// A block kit: a dozen block meshes and the rules a wall is laid and ruined by. The footprint,
+/// the wall's height and the openings come from the section kit the scatter names.
+struct RuinBlockKit @version(1) {
+  /// "engine.ruin-block-kit.v1".
+  format: string
+  name: string
+  /// "ashlar": the generator's parameter set the blocks were made with.
+  profile: string
+  /// The course height and the wall's thickness, metres. The thickness should be the section
+  /// kit's, whose footprint the blocks are laid on.
+  course_height: f32 = 0.3
+  thickness: f32 = 0.64
+  /// The bond: "running", the one there is.
+  bond: string = "running"
+  blocks: RuinBlock[]
+  rules: RuinBlockRules
+}
+
+/// How a scatter's buildings are drawn.
+enum RuinRepresentation : u8 {
+  /// Kit members, each with its own LOD DAG: few instances, many pairs.
+  Sections = 0
+  /// Every block an instance of one of a block kit's meshes: many instances, few pairs each.
+  Blocks = 1
+}
+
 /// Ruined buildings over a square of the endless desert's tiles: a building on each of the
 /// `count` tiles the world seed ranks first (or on every tile the `density` admits), each one
 /// assembled from the kit by the seed and its tile. The expansion is a function of the fields and
 /// the kit alone, so the same file places the same ruins on every machine.
-struct RuinScatter @version(1) {
+struct RuinScatter @version(2) {
   name: string
   /// The kit (`RuinKit`), relative to the scene file.
   kit: string
@@ -211,17 +301,36 @@ struct RuinScatter @version(1) {
   density: f32 = 0.05
   /// The direction the prevailing wind blows from, degrees about +y from +x.
   wind_deg: f32 = 0
+  /// Sections (the kit's members) or blocks (the block kit's, laid on the same footprint).
+  representation: RuinRepresentation = Sections @since(2)
+  /// With `Blocks`: the block kit (`RuinBlockKit`), relative to the scene file.
+  block_kit: string @since(2)
+}
+
+/// Where a block stands in its wall, or fell from.
+struct RuinBlockTag @version(1) {
+  role: RuinBlockRole = Stretcher
+  /// Its course, counted from the ground.
+  course: u32 = 0
+  /// Lying beside the wall rather than standing in it.
+  fallen: bool = false
+  eroded: bool = false
 }
 
 /// What the assembler said about one placed piece.
-struct RuinTag @version(1) {
-  /// Which building of the file, which wall of it, and which slot along the wall.
+struct RuinTag @version(2) {
+  /// Which building of the file, which wall of it, and which slot along the wall (a block's
+  /// place along its course, or among its wall's fallen blocks).
   building: u32 = 0
   wall: u32 = 0
   slot: u32 = 0
+  /// A block standing in a wall is a `Section`'s stone, and a fallen one `Debris`.
   kind: RuinPieceKind = Section
-  /// The height the ruin rule asked of the piece, as a fraction of the intact wall.
+  /// The height the ruin rule asked of the piece, as a fraction of the intact wall; a block's is
+  /// the top of its course, and a fallen one's 0.
   height: f32 = 1
+  /// Set when the building was laid block by block.
+  block: RuinBlockTag? @since(2)
 }
 
 /// One building the assembler placed.

@@ -6,6 +6,7 @@
 // same ones. The picture is engine-view's end-to-end test (apps/engine_view/tests).
 #include <core/math/math.h>
 #include <domain/ruins/assembler.h>
+#include <domain/ruins/blocks.h>
 #include <domain/ruins/kit.h>
 #include <domain/ruins/synthetic_kit.h>
 #include <systems/renderer/scene.h>
@@ -123,6 +124,92 @@ TEST_CASE("renderer: a scene's ruins are the assembler's buildings, on the terra
   REQUIRE_MESSAGE(load_scene(desc, data, error), error);
   CHECK(data.instances.size() == desc.instances.size());
   CHECK(data.parts.size() == desc.meshes.size());
+}
+
+TEST_CASE("renderer: a scene's ruins drawn in blocks are the block layer's, on any thread count") {
+  const test::TempDir tmp("renderer_ruins_blocks");
+  std::string error;
+  std::string kit_path;
+  std::string blocks_path;
+  REQUIRE_MESSAGE(
+      ruins::write_synthetic_kit(tmp.file("kit"), ruins::SyntheticKitOptions{}, &error, &kit_path),
+      error);
+  REQUIRE_MESSAGE(ruins::write_synthetic_block_kit(
+                      tmp.file("blocks"), ruins::SyntheticBlockOptions{}, &error, &blocks_path),
+                  error);
+  // Forty buildings: past the count the reader shares out on the job system's pool, so this is
+  // also the check that a pooled read gives the single thread's instances.
+  const std::string scene_path = tmp.file("scene.json");
+  REQUIRE(write_text(scene_path,
+                     R"({"format":"engine.scene.v1","name":"ruin blocks",)"
+                     R"("terrain":{"size":65,"extent":200,"seed":3,"dune_height":1.5},)"
+                     R"("ruins":[{"name":"town","kit":"kit/kit.json","seed":11,"tile_size":24,)"
+                     R"("tile_min":[-6,-6],"tile_max":[5,5],"count":40,"wind_deg":45,)"
+                     R"("representation":"Blocks","block_kit":"blocks/block-kit.json"}]})"));
+  SceneDesc desc;
+  REQUIRE_MESSAGE(read_scene_file(scene_path, desc, error), error);
+  ruins::Kit kit;
+  REQUIRE_MESSAGE(ruins::read_kit_file(kit_path, kit, error), error);
+  ruins::BlockKit blocks;
+  REQUIRE_MESSAGE(ruins::read_block_kit_file(blocks_path, blocks, error), error);
+  // The block kit's meshes and then the terrain: the section kit's are not drawn, so not loaded.
+  REQUIRE(desc.meshes.size() == blocks.meshes.size() + 1);
+  for (u32 m = 0; m < blocks.meshes.size(); ++m)
+    CHECK(desc.meshes[m] == blocks.meshes[m]);
+  CHECK(desc.ruin_buildings == 40);
+
+  Vector<ruins::TileCoord> tiles;
+  ruins::choose_tiles(11, ruins::TileCoord{-6, -6}, ruins::TileCoord{5, 5}, 40, 0.0f, tiles);
+  ruins::Placement placement;
+  placement.world_seed = 11;
+  placement.tile_cm = 2400;
+  placement.wind_step = 2;
+  placement.ground =
+      ruins::Ground{[](const void* context, f32 x, f32 z) noexcept {
+                      return terrain_height(*static_cast<const TerrainDesc*>(context), x, z);
+                    },
+                    &desc.terrain};
+  ruins::BlockOutput built;
+  REQUIRE(ruins::assemble_block_tiles(kit, blocks, placement,
+                                      std::span<const ruins::TileCoord>(tiles.data(), tiles.size()),
+                                      nullptr, built, &error));
+  REQUIRE(desc.ruin_instances == built.blocks.size());
+  REQUIRE(desc.instances.size() == built.blocks.size() + 1);
+  bool all_same = true;
+  for (u32 i = 0; i < built.blocks.size() && all_same; ++i) {
+    const ruins::Block& block = built.blocks[i];
+    const SceneInstance& instance = desc.instances[i];
+    const Vec3 t = ruins::block_translation(blocks, block);
+    all_same = instance.mesh == blocks.blocks[block.block].mesh_index &&
+               instance.transform.position.x == t.x && instance.transform.position.y == t.y &&
+               instance.transform.position.z == t.z;
+    CHECK_MESSAGE(all_same, "block " << i);
+  }
+  CHECK(desc.instances.back().mesh == desc.meshes.size() - 1);  // the terrain's, last
+
+  // And it loads: the block GLBs cluster like any mesh, one cluster each at the low fidelity, so
+  // a block is one pair.
+  desc.ddc = tmp.file("ddc");
+  SceneData data;
+  REQUIRE_MESSAGE(load_scene(desc, data, error), error);
+  CHECK(data.instances.size() == desc.instances.size());
+  for (u32 m = 0; m < blocks.meshes.size(); ++m)
+    CHECK(data.parts[m].cluster_count == 1);
+}
+
+TEST_CASE("renderer: a scene's ruins drawn in blocks refuse a scatter with no block kit") {
+  const test::TempDir tmp("renderer_ruins_blocks_refuse");
+  std::string error;
+  REQUIRE_MESSAGE(ruins::write_synthetic_kit(tmp.file("kit"), ruins::SyntheticKitOptions{}, &error),
+                  error);
+  const std::string scene_path = tmp.file("scene.json");
+  REQUIRE(write_text(scene_path,
+                     R"({"format":"engine.scene.v1","terrain":{"size":17,"extent":20},)"
+                     R"("ruins":[{"kit":"kit/kit.json","count":1,"representation":"Blocks"}]})"));
+  SceneDesc desc;
+  CHECK_FALSE(read_scene_file(scene_path, desc, error));
+  CHECK(error.find("ruins 0") != std::string::npos);
+  CHECK(error.find("block_kit") != std::string::npos);
 }
 
 TEST_CASE("renderer: a scene's ruins refuse a kit that is not there, naming the entry") {

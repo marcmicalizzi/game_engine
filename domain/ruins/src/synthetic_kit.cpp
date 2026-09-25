@@ -1,3 +1,5 @@
+#include "glb.h"
+
 #include <core/json/json.h>
 #include <core/math/math.h>
 #include <core/schema/json_reflect.h>
@@ -35,55 +37,35 @@ std::string num(f32 v) {
   return text;
 }
 
-// Axis-aligned boxes as one GLB: 24 vertices a box with their face normals, 12 triangles wound
-// counter-clockwise seen from outside, and one metallic-roughness material.
-Vector<u8> boxes_glb(const Vector<Box>& boxes, const Vec3& colour) {
-  constexpr Vec3 k_normals[6] = {Vec3{1, 0, 0},  Vec3{-1, 0, 0}, Vec3{0, 1, 0},
-                                 Vec3{0, -1, 0}, Vec3{0, 0, 1},  Vec3{0, 0, -1}};
-  constexpr Vec3 k_tangents[6] = {Vec3{0, 1, 0}, Vec3{0, 1, 0}, Vec3{0, 0, 1},
-                                  Vec3{0, 0, 1}, Vec3{1, 0, 0}, Vec3{1, 0, 0}};
+}  // namespace
+
+Vector<u8> mesh_glb(const Vector<Vec3>& positions, const Vector<Vec3>& normals,
+                    const Vector<u32>& indices, const Vec3& colour, const char* generator) {
   Vector<u8> bin;
   Vec3 lo{1e30f, 1e30f, 1e30f};
   Vec3 hi{-1e30f, -1e30f, -1e30f};
-  for (const Box& box : boxes) {
-    const Vec3 centre = (box.lo + box.hi) * 0.5f;
-    const Vec3 size = box.hi - box.lo;
-    lo = min(lo, box.lo);
-    hi = max(hi, box.hi);
-    for (u32 f = 0; f < 6; ++f) {
-      const Vec3 n = k_normals[f];
-      const Vec3 t = k_tangents[f];
-      const Vec3 b = cross(n, t);
-      const Vec3 corners[4] = {n * 0.5f - t * 0.5f - b * 0.5f, n * 0.5f + t * 0.5f - b * 0.5f,
-                               n * 0.5f + t * 0.5f + b * 0.5f, n * 0.5f - t * 0.5f + b * 0.5f};
-      for (const Vec3& c : corners) {
-        put_f32(bin, centre.x + c.x * size.x);
-        put_f32(bin, centre.y + c.y * size.y);
-        put_f32(bin, centre.z + c.z * size.z);
-      }
-    }
+  for (const Vec3& p : positions) {
+    lo = min(lo, p);
+    hi = max(hi, p);
+    put_f32(bin, p.x);
+    put_f32(bin, p.y);
+    put_f32(bin, p.z);
   }
-  const u32 vertices = boxes.size() * 24;
+  const u32 vertices = positions.size();
   const u32 normal_offset = bin.size();
-  for (u32 i = 0; i < boxes.size(); ++i) {
-    for (u32 f = 0; f < 6; ++f) {
-      for (u32 c = 0; c < 4; ++c) {
-        put_f32(bin, k_normals[f].x);
-        put_f32(bin, k_normals[f].y);
-        put_f32(bin, k_normals[f].z);
-      }
-    }
+  for (const Vec3& n : normals) {
+    put_f32(bin, n.x);
+    put_f32(bin, n.y);
+    put_f32(bin, n.z);
   }
   const u32 index_offset = bin.size();
-  for (u32 face = 0; face < boxes.size() * 6; ++face) {
-    const u32 base = face * 4;
-    for (const u32 i : {base, base + 1, base + 2, base, base + 2, base + 3})
-      put_u32(bin, i);
-  }
+  for (const u32 i : indices)
+    put_u32(bin, i);
   const u32 index_bytes = bin.size() - index_offset;
   auto n = [](u32 v) { return std::to_string(v); };
   std::string json =
-      "{\"asset\":{\"version\":\"2.0\",\"generator\":\"engine ruins synthetic kit\"},"
+      "{\"asset\":{\"version\":\"2.0\",\"generator\":\"" + std::string(generator) +
+      "\"},"
       "\"scene\":0,\"scenes\":[{\"nodes\":[0]}],\"nodes\":[{\"mesh\":0}],"
       "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0,\"NORMAL\":1},"
       "\"indices\":2,\"material\":0}]}],"
@@ -99,7 +81,7 @@ Vector<u8> boxes_glb(const Vector<Box>& boxes, const Vec3& colour) {
       n(vertices) +
       ",\"type\":\"VEC3\"},"
       "{\"bufferView\":2,\"componentType\":5125,\"count\":" +
-      n(boxes.size() * 36) +
+      n(indices.size()) +
       ",\"type\":\"SCALAR\"}],"
       "\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":" +
       n(normal_offset) + "},{\"buffer\":0,\"byteOffset\":" + n(normal_offset) +
@@ -122,6 +104,66 @@ Vector<u8> boxes_glb(const Vector<Box>& boxes, const Vec3& colour) {
   for (const u8 byte : bin)
     glb.push_back(byte);
   return glb;
+}
+
+bool write_kit_files(const std::string& dir, const Vector<std::string>& names,
+                     const Vector<Vector<u8>>& glbs, std::string* error) {
+  if (io::make_directories(dir) != io::Status::Ok) {
+    if (error != nullptr) *error = "cannot create " + dir;
+    return false;
+  }
+  for (u32 i = 0; i < names.size(); ++i) {
+    const std::string path = io::join_path(dir, names[i]);
+    const Vector<u8>& bytes = glbs[i];
+    const io::Status status = io::write_file(
+        path, std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
+    if (status != io::Status::Ok) {
+      if (error != nullptr) *error = "cannot write " + path + ": " + io::status_name(status);
+      return false;
+    }
+  }
+  return true;
+}
+
+namespace {
+
+// Axis-aligned boxes as one GLB: 24 vertices a box with their face normals, 12 triangles wound
+// counter-clockwise seen from outside, and one metallic-roughness material.
+Vector<u8> boxes_glb(const Vector<Box>& boxes, const Vec3& colour) {
+  constexpr Vec3 k_normals[6] = {Vec3{1, 0, 0},  Vec3{-1, 0, 0}, Vec3{0, 1, 0},
+                                 Vec3{0, -1, 0}, Vec3{0, 0, 1},  Vec3{0, 0, -1}};
+  constexpr Vec3 k_tangents[6] = {Vec3{0, 1, 0}, Vec3{0, 1, 0}, Vec3{0, 0, 1},
+                                  Vec3{0, 0, 1}, Vec3{1, 0, 0}, Vec3{1, 0, 0}};
+  Vector<Vec3> positions;
+  Vector<Vec3> normals;
+  Vector<u32> indices;
+  for (const Box& box : boxes) {
+    const Vec3 centre = (box.lo + box.hi) * 0.5f;
+    const Vec3 size = box.hi - box.lo;
+    for (u32 f = 0; f < 6; ++f) {
+      const Vec3 n = k_normals[f];
+      const Vec3 t = k_tangents[f];
+      const Vec3 b = cross(n, t);
+      const Vec3 corners[4] = {n * 0.5f - t * 0.5f - b * 0.5f, n * 0.5f + t * 0.5f - b * 0.5f,
+                               n * 0.5f + t * 0.5f + b * 0.5f, n * 0.5f - t * 0.5f + b * 0.5f};
+      for (const Vec3& c : corners) {
+        positions.push_back(
+            Vec3{centre.x + c.x * size.x, centre.y + c.y * size.y, centre.z + c.z * size.z});
+      }
+    }
+  }
+  for (u32 i = 0; i < boxes.size(); ++i) {
+    for (u32 f = 0; f < 6; ++f) {
+      for (u32 c = 0; c < 4; ++c)
+        normals.push_back(k_normals[f]);
+    }
+  }
+  for (u32 face = 0; face < boxes.size() * 6; ++face) {
+    const u32 base = face * 4;
+    for (const u32 i : {base, base + 1, base + 2, base, base + 2, base + 3})
+      indices.push_back(i);
+  }
+  return mesh_glb(positions, normals, indices, colour, "engine ruins synthetic kit");
 }
 
 scene::RuinSocket socket(Vec3 position, Vec3 direction, Vec3 outside) {
@@ -278,20 +320,7 @@ bool write_synthetic_kit(const std::string& dir, const SyntheticKitOptions& opti
                          std::string* error, std::string* kit_path) {
   SyntheticKit kit;
   make_synthetic_kit(options, kit);
-  if (io::make_directories(dir) != io::Status::Ok) {
-    if (error != nullptr) *error = "cannot create " + dir;
-    return false;
-  }
-  for (u32 i = 0; i < kit.mesh_names.size(); ++i) {
-    const std::string path = io::join_path(dir, kit.mesh_names[i]);
-    const Vector<u8>& bytes = kit.glb[i];
-    const io::Status status = io::write_file(
-        path, std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
-    if (status != io::Status::Ok) {
-      if (error != nullptr) *error = "cannot write " + path + ": " + io::status_name(status);
-      return false;
-    }
-  }
+  if (!write_kit_files(dir, kit.mesh_names, kit.glb, error)) return false;
   const std::string path = io::join_path(dir, "kit.json");
   const std::string text = write_json(schema::to_json(kit.kit)) + "\n";
   const io::Status status = io::write_file(path, text);

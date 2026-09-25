@@ -11,6 +11,7 @@
 
 #include <core/base/types.h>
 #include <domain/ruins/assembler.h>
+#include <domain/ruins/blocks.h>
 #include <domain/ruins/kit.h>
 
 #include <schemas/scene.h>
@@ -27,5 +28,14 @@ void make_fragment(const Kit& kit, const Output& out, std::string_view fragment_
 // Writes the fragment as JSON to `path`.
 bool write_fragment(const std::string& path, const Kit& kit, const Output& out,
                     std::string_view name, std::string* error);
+
+// The same for buildings laid block by block (blocks.h): the block kit's meshes, one instance per
+// block — standing or fallen — whose `RuinTag` carries its `block` (role, course, fallen,
+// eroded), a standing block tagged as a section's stone and a fallen one as debris. `kit` is the
+// section kit the footprint came from, for the wall's height.
+void make_block_fragment(const Kit& kit, const BlockKit& blocks, const BlockOutput& out,
+                         std::string_view fragment_dir, std::string_view name, scene::Scene& scene);
+bool write_block_fragment(const std::string& path, const Kit& kit, const BlockKit& blocks,
+                          const BlockOutput& out, std::string_view name, std::string* error);
 
 }  // namespace engine::ruins
