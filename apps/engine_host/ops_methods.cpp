@@ -405,6 +405,12 @@ RuntimeWorld::RuntimeWorld(std::string session_id, SimTick start_tick, GameTime 
   scheduler_.add_hooks(npc_.hooks());
 #endif
   driver_.set_target(records_.target());
+#if defined(ENGINE_HOST_NPC)
+  // The schedule index (npc.md): a tile's pass brings in the residents whose routines have them in
+  // it now, wherever their records are, and the document consumer's settle brings in those whose
+  // routines walk them into a live tile between passes.
+  driver_.add_tile_source(npc_.tile_source());
+#endif
 #endif
   driver_.set_writeback_sink(sim::WriteBackSink{this, &RuntimeWorld::commit_writeback});
   driver_.install_writeback();
@@ -813,6 +819,7 @@ void RuntimeWorld::fill_report(protocol::HeadlessWorldResult& out) const {
   out.dematerialized_tiles = static_cast<u32>(d.deactivated - s.document_before.deactivated);
   out.created = static_cast<u32>(d.created - s.document_before.created);
   out.dematerialized = static_cast<u32>(d.dematerialized - s.document_before.dematerialized);
+  out.arrived = static_cast<u32>(d.arrived - s.document_before.arrived);
   out.document_ms = static_cast<f64>((d.materialize_ns - s.document_before.materialize_ns) +
                                      (d.dematerialize_ns - s.document_before.dematerialize_ns)) /
                     1.0e6;

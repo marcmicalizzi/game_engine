@@ -19,6 +19,10 @@ ENGINE_EXPECT_SIZE(28, 2, npc::DayPlan);
 ENGINE_EXPECT_SIZE(60, 2, npc::Variation);
 ENGINE_EXPECT_SIZE(32, 8, npc::RoutinePoint);
 ENGINE_EXPECT_SIZE(10, 2, npc::RoutineRow);
+// The schedule index's entry, once per resident of the document whether it is held or not: id,
+// clock offset, the tiles of its four places, its watch timer, routine, the mask of roles with a
+// place, and two flags (docs/subsystems/npc.md, "The schedule index").
+ENGINE_EXPECT_SIZE(72, 8, npc::ScheduledResident);
 // Everything the capability holds for one resident outside flecs and the wheel.
 static_assert(npc::NpcSystem::bytes_per_resident() == 177,
               "size table: a resident's arrays changed; update the table and npc.md");

@@ -743,3 +743,132 @@ TEST_CASE("sim: a tile pass through the document's tile index takes what a class
   CHECK(e.passes >= 1200);
   CHECK(e.records > 1000);  // the scopes the passes covered were not empty
 }
+
+namespace {
+
+// A capability that knows where some records are before their document does (TileSource): a map of
+// where it places each, and a log of what the driver told it.
+struct FakeSource {
+  std::map<Id128, doc::TileCoord> at;
+  std::vector<doc::TileCoord> ins;
+  std::vector<doc::TileCoord> outs;
+  std::vector<Id128> arriving;
+
+  static bool where(void* context, const doc::Document&, const Id128& id, doc::TileCoord& out) {
+    auto* self = static_cast<FakeSource*>(context);
+    const auto it = self->at.find(id);
+    if (it == self->at.end()) return false;
+    out = it->second;
+    return true;
+  }
+  static void tile_in(void* context, const doc::Document&, doc::TileCoord tile,
+                      Vector<Id128>& out) {
+    auto* self = static_cast<FakeSource*>(context);
+    self->ins.push_back(tile);
+    for (const auto& [id, t] : self->at) {
+      if (t == tile) out.push_back(id);
+    }
+  }
+  static void tile_out(void* context, doc::TileCoord tile) {
+    static_cast<FakeSource*>(context)->outs.push_back(tile);
+  }
+  static void arrivals(void* context, Vector<Id128>& out) {
+    auto* self = static_cast<FakeSource*>(context);
+    for (const Id128& id : self->arriving)
+      out.push_back(id);
+    self->arriving.clear();
+  }
+  TileSource source() {
+    TileSource s;
+    s.context = this;
+    s.name = "fake";
+    s.where = &where;
+    s.tile_in = &tile_in;
+    s.tile_out = &tile_out;
+    s.arrivals = &arrivals;
+    return s;
+  }
+};
+
+doc::Document yard_on_a_grid() {
+  doc::Document d;
+  d.add_layer("base", doc::LayerRole::Base);
+  doc::LayerPartition partition;
+  partition.tile_size = 10.0;
+  d.set_layer_partition(0, partition);
+  create(d, 1, k_crate, 0, props({{"position", vec3(5, 0, 5)}}));   // A: its record in (0, 0)
+  create(d, 2, k_crate, 0, props({{"position", vec3(15, 0, 5)}}));  // B: (1, 0)
+  create(d, 3, k_crate, 0, props({{"position", vec3(25, 0, 5)}}));  // C: (2, 0)
+  return d;
+}
+
+}  // namespace
+
+TEST_CASE("sim: a tile source places records the document has not caught up with") {
+  // Records the document has not caught up with (sim.md): the source has A in tile (1, 0) although
+  // its record is in (0, 0), and C in a tile nobody passes. Two orders of the same two passes end
+  // with the same records held under the same tiles.
+  const Id128 a = id_of(1), b = id_of(2), c = id_of(3);
+  for (u32 order = 0; order < 2; ++order) {
+    CAPTURE(order);
+    doc::Document d = yard_on_a_grid();
+    Rig rig;
+    FakeSource source;
+    source.at[a] = doc::TileCoord{1, 0};
+    source.at[c] = doc::TileCoord{5, 5};
+    rig.driver.add_tile_source(source.source());
+    const doc::TileCoord first = order == 0 ? doc::TileCoord{0, 0} : doc::TileCoord{1, 0};
+    const doc::TileCoord second = order == 0 ? doc::TileCoord{1, 0} : doc::TileCoord{0, 0};
+    const MaterializeReport r1 = rig.driver.materialize(d, MaterializeScope::of_tile(first));
+    const MaterializeReport r2 = rig.driver.materialize(d, MaterializeScope::of_tile(second));
+    // A is placed once: created under (1, 0) when that tile came first, refiled there when (0, 0)
+    // did and had filed it under its record's tile, (1, 0) not being live then.
+    CHECK(r1.placed + r2.placed == 1);
+    CHECK(rig.driver.tile_live(doc::TileCoord{0, 0}));
+    CHECK(rig.driver.tile_live(doc::TileCoord{1, 0}));
+    CHECK_FALSE(rig.driver.tile_live(doc::TileCoord{2, 0}));
+    REQUIRE(source.ins.size() == 2);
+    Vector<Id128> held;
+    rig.driver.held(MaterializeScope::of_tile({0, 0}), held);
+    CHECK(held.empty());
+    rig.driver.held(MaterializeScope::of_tile({1, 0}), held);
+    CHECK(held == (Vector<Id128>{a, b}));
+    CHECK_FALSE(rig.driver.holds(c));
+
+    // (0, 0) goes: the source hears it, and A stays, filed under the tile it is in.
+    CHECK(rig.driver.dematerialize(MaterializeScope::of_tile({0, 0})) == 0);
+    REQUIRE(source.outs.size() == 1);
+    CHECK(source.outs[0] == doc::TileCoord{0, 0});
+    CHECK_FALSE(rig.driver.tile_live(doc::TileCoord{0, 0}));
+    CHECK(rig.driver.holds(a));
+
+    // An arrival in a tile nobody passed is left alone; one in a live tile comes in there.
+    source.arriving.push_back(c);
+    CHECK(rig.driver.materialize_arrivals(d).created == 0);
+    source.at[c] = doc::TileCoord{1, 0};
+    source.arriving.push_back(c);
+    source.arriving.push_back(c);  // reported twice, brought in once
+    const MaterializeReport arrived = rig.driver.materialize_arrivals(d);
+    CHECK(arrived.created == 1);
+    CHECK(arrived.placed == 1);
+    rig.driver.held(MaterializeScope::of_tile({1, 0}), held);
+    CHECK(held == (Vector<Id128>{a, b, c}));
+    // An arrival already held is the business of the tile it is filed under.
+    source.arriving.push_back(b);
+    CHECK(rig.driver.materialize_arrivals(d).created == 0);
+
+    // The source now has A where nothing is simulated, and (1, 0) passes again: A is filed under
+    // (1, 0) by neither its record nor its source, so the pass lets it go.
+    source.at[a] = doc::TileCoord{7, 7};
+    const MaterializeReport again = rig.driver.materialize(d, MaterializeScope::of_tile({1, 0}));
+    CHECK(again.dematerialized == 1);
+    CHECK_FALSE(rig.driver.holds(a));
+    CHECK(rig.driver.holds(c));
+
+    // Everything goes, and the source hears every live tile go first.
+    rig.driver.dematerialize_all();
+    CHECK(source.outs.size() == 2);
+    CHECK(source.outs[1] == doc::TileCoord{1, 0});
+    CHECK_FALSE(rig.driver.tile_live(doc::TileCoord{1, 0}));
+  }
+}

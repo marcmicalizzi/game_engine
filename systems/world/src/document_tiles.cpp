@@ -49,6 +49,11 @@ TileConsumer DocumentTiles::consumer(u8 rings, const TileRing* ring) noexcept {
 
 u32 DocumentTiles::settle(const TileRing& ring) {
   if (document_ == nullptr || !grid_ok_) return 0;
+  // Arrivals first: a record a capability's own rule brought into a live tile since the last
+  // settle, filed under that tile by the driver. Then the records a write-back moved.
+  const sim::MaterializeReport arrived = driver_->materialize_arrivals(*document_);
+  stats_.arrived += arrived.created;
+  stats_.created += arrived.created;
   driver_->take_moved(moves_);
   if (moves_.empty()) return 0;
   gone_.clear();

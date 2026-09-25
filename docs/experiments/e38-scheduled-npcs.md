@@ -162,3 +162,36 @@ A command that moves nothing between tiles costs what it did (within the noise);
 ### What moved the replay hash
 
 Nothing: the tile index changes which records a tile pass looks at to find its own, not which records it materializes, and `npc_replay_tests.cpp` reaches `53a8c6295e6d4e78` on MSVC as before.
+
+### The schedule index
+
+The boundary npc.md stated — a resident whose record is in a tile nobody simulates is not materialized even when its routine has it in a live one — is closed by the npc capability's schedule index ([npc](../subsystems/npc.md#the-schedule-index)), consulted through a tile source the driver asks on every activation, and by a watch timer per resident that is not held but whose routine visits a live tile. Same machine and build as above; the harness recorded 5.6% → 8.7% of the CPU used by others for the tile rows, 6.1% → 2.8% for the watch rows, 2.9% → 8.2% for the build and 1.0% → 3.6% for the place index; the GPU at 0–1%, no lock held.
+
+```
+engine_npc_bench --filter='npc.tile_*' --repeats=3 --wait-quiet=900
+engine_npc_bench --filter='npc.watch*' --repeats=3 --wait-quiet=900
+engine_npc_bench --filter='npc.schedule*' --repeats=3 --wait-quiet=900
+engine_npc_bench --filter='npc.places*' --repeats=3 --wait-quiet=900
+```
+
+| Row | 10^4 | 10^5 | What |
+|---|---|---|---|
+| `npc.tile_pass` (as above, re-taken with the source code in the driver and none registered) | 0.478 ms | 0.580 ms | a tile's activation without the index |
+| `npc.tile_pass.scheduled` | 0.671 ms | 0.922 ms | the same with the capability's tile source registered, as engine-host has it |
+| **The index's cost per activation** | **0.19 ms** | **0.34 ms** | 250 and 401 residents' routines visit the bench tile (137 and 154 records): a closed form each, **0.8 µs a resident** |
+| `npc.watch/0`, `/1` (10^4, one tile live, a game day executed) | 1.02 ms, 2.52 ms | | the day without and with the source: 964 and 2,308 events delivered |
+| **One watch firing** | **1.1 µs** | | (2.52 − 1.02 ms) over the 1,344 watches the second day fired |
+| `npc.schedule.build` | 17.5 ms | 250.6 ms | the index built whole: the place index, then every resident's routine, clock and places' tiles |
+| `npc.places.build` | 1.9 ms | 35.9 ms | the place index alone, which the row above includes |
+| The index's memory (`bytes_scheduled()`, at 10^5) | | 15.5 MB | **155 bytes a resident of the document**, held or not |
+
+What the rows say:
+
+1. **An activation costs the residents whose routines visit the tile**, 0.8 µs each — the variation drawn again, the closed form, a hash lookup for where the resident is filed. At 10^5 a tile's pass is 0.92 ms with the index against 0.58 without; eight activations an update are 7.4 ms. Keeping the 60-byte variation in the index would take the draw out (a transition off the wheel, which has it, is 0.33 µs) for 6 MB at 10^5; at eight activations an update it would save, by the transition's price, under 2 ms in that update — an estimate, not a row — which is not yet worth a document-sized array.
+2. **A watch is a transition that finds nothing to do**, three times the price of a held resident's (1.1 µs against 0.33 µs) for the same reason, and at the rate of one: a watched resident's watch fires at its transitions, 9.2 a day. In the replay world below, 140 residents were let go into tiles nobody simulates in the second half and are watched from then on; at 10^5 with a third of the residents watched, watches cost a few microseconds a game second.
+3. **The build is once per document**, and whenever a place moves; engine-host pays it at the first call on a session (and at a load). 250 ms at 10^5 on the i9, about a fifteenth of the document's load time on the Xeon. After it, the index follows the document's change feed at the start of each call: a write-back changes none of what it keeps, so a changed resident costs a re-read and a comparison, about 2 µs.
+4. **Memory is the index's real cost**: 155 bytes for every resident of the document, held or not — a tenth of what the document already spends on the same resident's record (1.5 KB), and the same order as 05 §5.6's whole LOD3 budget. It is what "the residents whose routines visit a tile" costs to know without reading the document.
+
+### What moved the replay hash, again
+
+Still nothing. In `npc_replay_tests.cpp`'s world every place is inside the simulated rings, so no resident's routine crosses their edge and the index changes nothing — `53a8c6295e6d4e78`, on MSVC and on Clang 18 in the Linux container. The case that exercises it end to end is new in the same file: 2 × 10^4 residents on a 1,280 m square whose corners the rings never reach, the seven o'clock transitions after the save; three runs — continuous, loaded, replayed — reach one hash, **`16a407bfad492334`** (MSVC and Clang 18), and bring in the same 8 residents from tiles nobody simulates after the save, while 140 are let go into them.

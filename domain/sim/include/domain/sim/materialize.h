@@ -43,6 +43,7 @@
 #include <core/base/macros.h>
 #include <core/base/types.h>
 #include <core/containers/hash_map.h>
+#include <core/containers/hash_set.h>
 #include <core/containers/vector.h>
 #include <core/ids/id128.h>
 #include <core/json/json_value.h>
@@ -141,6 +142,41 @@ struct WriteBackSink {
   bool (*commit)(void* context, const WriteBackBatch& batch) = nullptr;
 };
 
+// **Records the document has not caught up with** (docs/subsystems/sim.md, the section of that
+// name). A record is filed under the tile its document puts it in, and the document learns where a
+// record is at the record's next write-back; but a capability whose records move by a rule of their
+// own knows sooner. A resident's routine walks it home from a tile nobody simulates while its
+// record still says work, and brought in by its record's tile alone it would wait there until that
+// tile came in. A source says where such records are now, and the driver files and brings them in
+// by it:
+//
+// - a pass of a tile also takes the live records the source places in that tile, and files every
+//   record it meets that the source places in a live tile under that tile, so what a sequence of
+//   passes leaves held, and where, depends on the live tiles and not on the order they came in;
+// - `materialize_arrivals` brings in the records the source reports as having arrived in a live
+//   tile since the last call — between ticks, as every call of the driver is.
+//
+// "Live" is the driver's own word: a tile it has passed and not let go of (`tile_live`). The
+// source hears both ends (`tile_in`, `tile_out`), because what it reports depends on them. A driver
+// with no source behaves exactly as it did before sources existed.
+struct TileSource {
+  void* context = nullptr;
+  const char* name = nullptr;
+  // Where record `id` is now by the source's rule: true with its tile for a record the source
+  // places, false for one it does not (which is where the document files it).
+  bool (*where)(void* context, const doc::Document& document, const Id128& id,
+                doc::TileCoord& out) = nullptr;
+  // A pass of `tile` begins, and the tile is live from now: appends the live records the source
+  // places in it, whether or not the document files them there.
+  void (*tile_in)(void* context, const doc::Document& document, doc::TileCoord tile,
+                  Vector<Id128>& out) = nullptr;
+  // The tile is let go (`dematerialize` of its scope, or `dematerialize_all`), before what is
+  // filed under it is: not live from now.
+  void (*tile_out)(void* context, doc::TileCoord tile) = nullptr;
+  // Appends the records the source placed in a live tile since the last call.
+  void (*arrivals)(void* context, Vector<Id128>& out) = nullptr;
+};
+
 struct MaterializeConfig {
   // The tier records are materialized at: LOD2 by default, as [05
   // §5.5](../../../docs/plan/05-simulation.md#55-reconciliation-when-a-tile-activates) step 4 has
@@ -182,6 +218,9 @@ struct MaterializeReport {
   u32 dematerialized = 0;
   u32 relinked = 0;  // held records materialized again because their parent now is
   u32 skipped = 0;
+  // Records filed under a live tile a source places them in rather than the one the document files
+  // them under: created there, or held and refiled there.
+  u32 placed = 0;
   u32 live = 0;                    // entities the driver holds after the call
   u32 orphans = 0;                 // held records whose document parent has no entity
   Vector<MaterializedType> types;  // by type name
@@ -267,6 +306,20 @@ class Materializer {
   // Returns how many went.
   u32 dematerialize(std::span<const Id128> ids);
 
+  // **Records the document has not caught up with** (`TileSource` above). Registers a source; the
+  // first registered that places a record decides where it is. A registration point added to this
+  // driver for the npc capability's schedule index (docs/subsystems/sim.md): the only caller that
+  // brings records in by tile is this driver, so the only place a capability can say "this record
+  // is in that tile now" without editing the ring or the scheduler is here.
+  void add_tile_source(const TileSource& source);
+  // Whether this driver has passed `tile` and not let go of it since.
+  bool tile_live(doc::TileCoord tile) const noexcept;
+  // Brings in the records the sources report as having arrived in a live tile since the last call,
+  // filed under that tile, parents before children and then by id. A record the driver already
+  // holds, or whose tile is no longer live, is left alone. Between ticks: the world's document
+  // consumer calls it when it settles (docs/subsystems/world.md, "Records that move").
+  MaterializeReport materialize_arrivals(const doc::Document& document);
+
   // One write-back flush: collects the changed writable fields and commits them through the sink
   // as one transaction. The Persist system calls it at the cadence; a host calls it when a run ends
   // so the document says where the world stopped. Returns the fields written.
@@ -297,13 +350,14 @@ class Materializer {
     bool tiled = false;
     bool parent_linked = false;
   };
-  enum class Verdict : u8 { OutOfScope, Skipped, Candidate };
+  enum class Verdict : u8 { Skipped, Candidate };
   struct Candidate {
     Id128 id;
     u32 depth = 0;
     const schema::MaterializeInfo* mapping = nullptr;
-    doc::TileCoord tile;
+    doc::TileCoord tile;  // where it is filed: `filing_of`
     bool tiled = false;
+    bool placed = false;  // a source placed it in a live tile the document does not file it under
   };
   struct MappingState {
     const schema::MaterializeInfo* info = nullptr;
@@ -317,10 +371,14 @@ class Materializer {
 
   MappingState& mapping_state(const schema::MaterializeInfo& info);
   bool check_mapping(MappingState& state, SkipReason& reason);
-  // Classifies one live record: out of scope (nothing counted), skipped (counted with its reason),
-  // or a candidate for the hooks.
-  Verdict classify(const doc::Document& document, const Id128& id, const MaterializeScope& scope,
-                   MaterializeReport& report, Candidate& out);
+  // Classifies one live record of the call's scope — the caller found it there, from the document's
+  // tile index or its live list — as skipped (counted with its reason) or a candidate for the
+  // hooks, filed where `filing_of` says.
+  Verdict classify(const doc::Document& document, const Id128& id, MaterializeReport& report,
+                   Candidate& out);
+  // Where a record is filed: the live tile a source places it in, or else the document's tile for
+  // it (its defining record's, from the tile index), or none.
+  void filing_of(const doc::Document& document, const Id128& id, Candidate& out);
   u32 depth_of(const doc::Document& document, const Id128& id);
   void count_type(MaterializeReport& report, std::string_view type, bool mapped, bool materialized,
                   const SkipReason* reason, std::string_view detail);
@@ -360,6 +418,11 @@ class Materializer {
   // everything held to find one tile's records.
   HashMap<u64, Vector<Id128>> filed_;
   Vector<Id128> filed_untiled_;
+  // Records the document has not caught up with: the sources, the tiles passed and not let go of
+  // (keyed as `filed_` is), and a pass's scratch for what the sources place in its tile.
+  Vector<TileSource> sources_;
+  HashSet<u64> live_tiles_;
+  Vector<Id128> claims_;
   Vector<MappingState> mappings_;
   HashMap<const schema::MaterializeInfo*, u32> mapping_index_;
   HashMap<Id128, u32> depth_cache_;  // per call

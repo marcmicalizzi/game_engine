@@ -316,13 +316,29 @@ void Materializer::unfile(const Held& held) {
   if (list->empty() && held.tiled) filed_.erase(tile_key(held.tile));
 }
 
+void Materializer::filing_of(const doc::Document& document, const Id128& id, Candidate& out) {
+  out.placed = false;
+  // With no live tile no source can place anything, and a world that is not streamed never asks.
+  if (!sources_.empty() && !live_tiles_.empty()) {
+    for (const TileSource& source : sources_) {
+      doc::TileCoord at;
+      if (source.where == nullptr || !source.where(source.context, document, id, at)) continue;
+      if (!live_tiles_.contains(tile_key(at))) break;  // placed, but where nothing is simulated
+      out.tiled = true;
+      out.tile = at;
+      doc::TileCoord filed;
+      out.placed = !record_tile(document, id, filed) || !(filed == at);
+      return;
+    }
+  }
+  out.tiled = record_tile(document, id, out.tile);
+}
+
 Materializer::Verdict Materializer::classify(const doc::Document& document, const Id128& id,
-                                             const MaterializeScope& scope,
                                              MaterializeReport& report, Candidate& out) {
   out = Candidate{};
   out.id = id;
-  out.tiled = record_tile(document, id, out.tile);
-  if (!in_scope(scope, out.tiled, out.tile)) return Verdict::OutOfScope;
+  filing_of(document, id, out);
   ++report.visited;
 
   const std::string_view type = document.type_of(id);
@@ -432,6 +448,7 @@ bool Materializer::materialize_one(const doc::Document& document, const Candidat
     ++report.created;
     ++stats_.created;
   }
+  if (candidate.placed) ++report.placed;
   count_type(report, info.record->qualified_name, true, true, nullptr, {});
   return true;
 }
@@ -537,7 +554,7 @@ MaterializeReport Materializer::materialize(const doc::Document& document,
         continue;
       }
       Candidate candidate;
-      const Verdict verdict = classify(document, id, scope, report, candidate);
+      const Verdict verdict = classify(document, id, report, candidate);
       held = held_.find_value(id);
       if (verdict != Verdict::Candidate) {
         if (held != nullptr) gone_.push_back(id);
@@ -556,22 +573,46 @@ MaterializeReport Materializer::materialize(const doc::Document& document,
     // The records in scope: every live one for the whole document, and for a tile or the untiled
     // records what the document's tile index files there — never a classification of the document
     // to find them, which cost a tile pass the document rather than the tile (E38).
-    const Vector<Id128> live_ids = scope.kind == MaterializeScope::Kind::Whole ? document.objects()
-                                   : scope.kind == MaterializeScope::Kind::Tile
-                                       ? document.ids_in_tile(scope.tile)
-                                       : document.untiled();
+    Vector<Id128> live_ids = scope.kind == MaterializeScope::Kind::Whole ? document.objects()
+                             : scope.kind == MaterializeScope::Kind::Tile
+                                 ? document.ids_in_tile(scope.tile)
+                                 : document.untiled();
+    if (scope.kind == MaterializeScope::Kind::Tile) {
+      // The tile is live from here, and the records the sources place in it now are in its scope
+      // as well as its own (TileSource): the union, in id order, of both.
+      live_tiles_.insert(tile_key(scope.tile));
+      if (!sources_.empty()) {
+        claims_.clear();
+        for (const TileSource& source : sources_) {
+          if (source.tile_in != nullptr)
+            source.tile_in(source.context, document, scope.tile, claims_);
+        }
+        if (!claims_.empty()) {
+          std::sort(claims_.begin(), claims_.end());
+          Vector<Id128> merged;
+          merged.reserve(live_ids.size() + claims_.size());
+          u32 i = 0, j = 0;
+          while (i < live_ids.size() || j < claims_.size()) {
+            if (j >= claims_.size() || (i < live_ids.size() && live_ids[i] < claims_[j])) {
+              merged.push_back(live_ids[i++]);
+              continue;
+            }
+            const Id128 claim = claims_[j];
+            while (j < claims_.size() && claims_[j] == claim)
+              ++j;
+            if (i < live_ids.size() && live_ids[i] == claim) ++i;
+            if (document.exists(claim)) merged.push_back(claim);
+          }
+          live_ids = std::move(merged);
+        }
+      }
+    }
     for (const Id128& id : live_ids) {
       Candidate candidate;
-      const Verdict verdict = classify(document, id, scope, report, candidate);
+      const Verdict verdict = classify(document, id, report, candidate);
       Held* held = held_.find_value(id);
       if (held == nullptr) {
         if (verdict == Verdict::Candidate) candidates_.push_back(candidate);
-        continue;
-      }
-      if (verdict == Verdict::OutOfScope) {
-        // Held and still live but no longer in this scope: it moved to another tile. The scope it
-        // was filed under owns it, so it goes when that scope is the one being materialized.
-        if (!in_scope(scope, held->tiled, held->tile)) held->seen_pass = pass_;
         continue;
       }
       held->seen_pass = pass_;
@@ -580,6 +621,12 @@ MaterializeReport Materializer::materialize(const doc::Document& document,
         continue;
       }
       if (held->revision == document.revision_of(id) && held->mapping == candidate.mapping) {
+        // In sync; but a record a source places in a live tile is filed there, whichever tile's
+        // pass met it first, so where it is filed does not depend on the order tiles came in.
+        if (candidate.placed && (!held->tiled || !(held->tile == candidate.tile))) {
+          refile(id, true, candidate.tile);
+          ++report.placed;
+        }
         ++report.unchanged;
         count_type(report, document.type_of(id), true, true, nullptr, {});
         continue;
@@ -588,7 +635,8 @@ MaterializeReport Materializer::materialize(const doc::Document& document,
     }
     // Held under this scope and not seen by the pass: deleted, removed with a layer, or — for a
     // tile or the untiled records — filed elsewhere by the document now. For a tile that is what
-    // the driver files under it, not everything it holds.
+    // the driver files under it, not everything it holds. One a source places in another live tile
+    // is filed there instead of let go.
     if (scope.kind == MaterializeScope::Kind::Whole) {
       for (u32 i = 0; i < held_.size(); ++i) {
         if (held_.value_at(i).seen_pass != pass_) gone_.push_back(held_.key_at(i));
@@ -598,7 +646,17 @@ MaterializeReport Materializer::materialize(const doc::Document& document,
       filed_in(scope, scratch_ids_);
       for (const Id128& id : scratch_ids_) {
         const Held* held = held_.find_value(id);
-        if (held != nullptr && held->seen_pass != pass_) gone_.push_back(id);
+        if (held == nullptr || held->seen_pass == pass_) continue;
+        if (document.exists(id)) {
+          Candidate elsewhere;
+          filing_of(document, id, elsewhere);
+          if (elsewhere.placed && !in_scope(scope, elsewhere.tiled, elsewhere.tile)) {
+            refile(id, true, elsewhere.tile);
+            ++report.placed;
+            continue;
+          }
+        }
+        gone_.push_back(id);
       }
     }
   }
@@ -632,6 +690,22 @@ MaterializeReport Materializer::materialize(const doc::Document& document,
 
 u32 Materializer::dematerialize_all() {
   MaterializeReport report;
+  // Every tile goes with it; the sources hear it first, in tile order, so nothing they do for a
+  // record let go below counts on a tile that is going.
+  if (!live_tiles_.empty()) {
+    Vector<u64> keys;
+    for (const u64 key : live_tiles_.keys())
+      keys.push_back(key);
+    std::sort(keys.begin(), keys.end());
+    live_tiles_.clear();
+    for (const u64 key : keys) {
+      const doc::TileCoord tile{static_cast<i32>(static_cast<u32>(key >> 32)),
+                                static_cast<i32>(static_cast<u32>(key))};
+      for (const TileSource& source : sources_) {
+        if (source.tile_out != nullptr) source.tile_out(source.context, tile);
+      }
+    }
+  }
   gone_.clear();
   for (const Id128& id : held_.keys())
     gone_.push_back(id);
@@ -646,6 +720,14 @@ u32 Materializer::dematerialize_all() {
 u32 Materializer::dematerialize(const MaterializeScope& scope) {
   if (scope.kind == MaterializeScope::Kind::Whole) return dematerialize_all();
   MaterializeReport report;
+  if (scope.kind == MaterializeScope::Kind::Tile) {
+    // Not live from here, and the sources hear it before its records go, so what they do for a
+    // record let go below does not count on this tile.
+    live_tiles_.erase(tile_key(scope.tile));
+    for (const TileSource& source : sources_) {
+      if (source.tile_out != nullptr) source.tile_out(source.context, scope.tile);
+    }
+  }
   gone_.clear();
   filed_in(scope, gone_);
   dematerialize_ids(gone_, report);
@@ -710,6 +792,57 @@ u32 Materializer::dematerialize(std::span<const Id128> ids) {
   }
   dematerialize_ids(gone_, report);
   return report.dematerialized;
+}
+
+void Materializer::add_tile_source(const TileSource& source) { sources_.push_back(source); }
+
+bool Materializer::tile_live(doc::TileCoord tile) const noexcept {
+  return live_tiles_.contains(tile_key(tile));
+}
+
+MaterializeReport Materializer::materialize_arrivals(const doc::Document& document) {
+  const i64 start_ns = time::monotonic_ns();
+  MaterializeReport report;
+  report.full = false;
+  if (sources_.empty()) return report;
+  scratch_ids_.clear();
+  for (const TileSource& source : sources_) {
+    if (source.arrivals != nullptr) source.arrivals(source.context, scratch_ids_);
+  }
+  if (scratch_ids_.empty()) return report;
+  ++pass_;
+  if (document_ != &document) synced_ = false;
+  document_ = &document;
+  if (!depth_cache_.empty()) depth_cache_.clear();
+  order_.clear();
+  candidates_.clear();
+  // Each arrival once, in id order, and only one that is live, not held, and placed by its source
+  // in a tile that is still live: between the report and this call its tile may have gone, and a
+  // record already held is the business of the tile it is filed under.
+  std::sort(scratch_ids_.begin(), scratch_ids_.end());
+  scratch_ids_.erase(std::unique(scratch_ids_.begin(), scratch_ids_.end()), scratch_ids_.end());
+  for (const Id128& id : scratch_ids_) {
+    if (held_.contains(id) || !document.exists(id)) continue;
+    Candidate placed;
+    placed.id = id;
+    filing_of(document, id, placed);
+    if (!placed.tiled || !live_tiles_.contains(tile_key(placed.tile))) continue;
+    Candidate candidate;
+    if (classify(document, id, report, candidate) == Verdict::Candidate)
+      candidates_.push_back(candidate);
+  }
+  std::sort(candidates_.begin(), candidates_.end(), [](const Candidate& a, const Candidate& b) {
+    if (a.depth != b.depth) return a.depth < b.depth;
+    return a.id < b.id;
+  });
+  for (const Candidate& candidate : candidates_)
+    materialize_one(document, candidate, report, false);
+  relink_orphans(document, report);
+  report.revision = document.revision();
+  report.live = held_.size();
+  report.orphans = orphans_.size();
+  report.ms = static_cast<f64>(time::monotonic_ns() - start_ns) / 1.0e6;
+  return report;
 }
 
 u64 Materializer::last_order_hash() const noexcept {

@@ -264,6 +264,86 @@ ENGINE_BENCH_ARGS(npc_tile_leave_held, "npc.tile_leave.held", 10000, 100000) {
   state.set_items(1);
 }
 
+// ---- the schedule index (docs/subsystems/npc.md, "The schedule index") -----------------------
+
+// `npc.tile_pass` with the capability's tile source registered, as engine-host registers it: the
+// pass also asks which residents' routines visit the tile, puts each at its closed form to find the
+// ones in it now, and watches the rest. The difference from `npc.tile_pass` is the index's cost per
+// activation.
+ENGINE_BENCH_ARGS(npc_tile_pass_scheduled, "npc.tile_pass.scheduled", 10000, 100000) {
+  const u32 residents = population(state);
+  World world(residents);
+  world.driver.add_tile_source(world.npc.tile_source());
+  world.npc.refresh_places(world.document);
+  const doc::TileCoord tile{0, 0};
+  while (state.keep_running()) {
+    bench::keep(
+        world.driver.materialize(world.document, sim::MaterializeScope::of_tile(tile)).created);
+    state.pause_timing();
+    world.driver.dematerialize(sim::MaterializeScope::of_tile(tile));
+    state.resume_timing();
+  }
+  state.set_items(1);
+}
+
+// A game day of 10^4 residents executed off the wheel with one tile live: the residents held in it
+// transition, and — with the tile source (arg 1) — the residents whose routines visit it but who
+// are elsewhere are watched, each watch a timer at its next transition that puts the resident at
+// its closed form and looks again. Arg 0 is the same day without the source. Items are the events
+// delivered; the difference between the two rows over the watches' firings is the cost of one.
+ENGINE_BENCH_ARGS(npc_watch, "npc.watch", 0, 1) {
+  World world(bench::smoke_mode() ? 1000u : 10000u);
+  if (state.arg() == 1) world.driver.add_tile_source(world.npc.tile_source());
+  world.npc.refresh_places(world.document);
+  world.driver.materialize(world.document, sim::MaterializeScope::of_tile(doc::TileCoord{0, 0}));
+  u64 delivered = 0;
+  u64 wakes = 0;
+  i64 at = k_morning;
+  while (state.keep_running()) {
+    at += k_day_us;
+    const u64 before = world.npc.schedule_stats().wakes;
+    delivered = world.npc.fast_forward(GameTime{at}, u64{1} << 40).delivered;
+    wakes = world.npc.schedule_stats().wakes - before;
+    bench::keep(delivered);
+  }
+  bench::keep(wakes);
+  state.set_items(delivered);
+}
+
+// The schedule index built whole from a document of 10^4 or 10^5 residents and their places: the
+// place index read (as `refresh_places` does first) and every resident's routine, clock and four
+// places' tiles. Once per document and whenever a place moves; items are residents.
+ENGINE_BENCH_ARGS(npc_schedule_build, "npc.schedule.build", 10000, 100000) {
+  const u32 residents = population(state);
+  World world(residents);
+  u32 scheduled = 0;
+  while (state.keep_running()) {
+    state.pause_timing();
+    auto npc = std::make_unique<NpcSystem>(World::npc_config());
+    state.resume_timing();
+    scheduled = npc->refresh_schedule(world.document);
+    state.pause_timing();
+    npc.reset();
+    state.resume_timing();
+  }
+  bench::keep(scheduled);
+  state.set_items(residents);
+}
+
+// The place index alone, which the row above includes: every live record's type asked, the places'
+// positions and roles read.
+ENGINE_BENCH_ARGS(npc_places_build, "npc.places.build", 10000, 100000) {
+  const u32 residents = population(state);
+  World world(residents);
+  u32 places = 0;
+  while (state.keep_running()) {
+    PlaceIndex index;
+    places = index.refresh(world.document);
+  }
+  bench::keep(places);
+  state.set_items(residents);
+}
+
 // A generated document of 10^4 or 10^5 residents and their places loaded from its directory: the
 // document part of a save's load time (E38). Items are records.
 ENGINE_BENCH_ARGS(npc_document_load, "npc.document_load", 10000, 100000) {

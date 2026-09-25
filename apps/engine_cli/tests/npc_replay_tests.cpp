@@ -126,9 +126,10 @@ std::string open_session(Host& host, const std::string& dir) {
 constexpr u32 k_residents = 100'000;
 
 // The generator's parameters: the host's world seed (1, until a document carries one), 64 m tiles,
-// and the routines' clock five seconds before 07:00 at game time 0, so the seven o'clock minute — where many
-// rows start — falls inside the first run and its transitions (timers fired, records moved, state
-// written back) are part of what every run replays; at 07:00 exactly nothing transitions in ten seconds.
+// and the routines' clock five seconds before 07:00 at game time 0, so the seven o'clock minute —
+// where many rows start — falls inside the first run and its transitions (timers fired, records
+// moved, state written back) are part of what every run replays; at 07:00 exactly nothing
+// transitions in ten seconds.
 npc::GeneratorParams resident_world(u32 residents) {
   npc::GeneratorParams p;
   p.seed = 1;
@@ -142,12 +143,11 @@ npc::GeneratorParams resident_world(u32 residents) {
   return p;
 }
 
-void make_world(const std::string& dir, u32 residents) {
+void make_world(const std::string& dir, const npc::GeneratorParams& params) {
   io::Vfs vfs;
   std::string error;
   npc::GeneratorStats stats;
-  REQUIRE_MESSAGE(
-      npc::generate_document(vfs, dir, resident_world(residents), nullptr, error, &stats), error);
+  REQUIRE_MESSAGE(npc::generate_document(vfs, dir, params, nullptr, error, &stats), error);
   MESSAGE("generated " << stats.residents << " residents and " << stats.places << " places in "
                        << stats.tiles << " tiles, " << stats.ms << " ms");
 }
@@ -158,6 +158,28 @@ void make_world(const std::string& dir, u32 residents) {
 std::string stream_params() {
   return ",\"stream\":{\"tile_size\":64,\"rings\":[2,6],\"simulated\":2,\"observers\":["
          "{\"position\":[-200.0,1.7,0.0],\"velocity\":[20.0,0.0,0.0]},"
+         "{\"position\":[0.0,1.7,0.0],\"velocity\":[0.0,0.0,0.0]}]}";
+}
+
+// A world larger than the simulated rings, so residents' routines cross their edge: 2 * 10^4
+// residents on a 1,280 m square, the same rings round a still observer at the centre (every tile
+// within 384 m of it) and a walker crossing the west. The routines' clock is eight seconds before
+// 07:00 at game time 0, so the seven o'clock transitions fall at tick 480 — after the save at 300 —
+// and the residents whose routines take them from a tile nobody simulates into one that is
+// simulated arrive in the second half of the run, from watches the loaded world had to arm again.
+npc::GeneratorParams crossing_world() {
+  npc::GeneratorParams p = resident_world(20'000);
+  p.min_x = -640.0;
+  p.min_z = -640.0;
+  p.max_x = 640.0;
+  p.max_z = 640.0;
+  p.clock_offset_us = 7 * 60 * npc::k_us_per_minute - 8 * 1'000'000;
+  return p;
+}
+
+std::string crossing_stream_params() {
+  return ",\"stream\":{\"tile_size\":64,\"rings\":[2,6],\"simulated\":2,\"observers\":["
+         "{\"position\":[-500.0,1.7,0.0],\"velocity\":[20.0,0.0,0.0]},"
          "{\"position\":[0.0,1.7,0.0],\"velocity\":[0.0,0.0,0.0]}]}";
 }
 
@@ -197,7 +219,7 @@ TEST_CASE("npc: 10^5 scheduled residents streamed, saved, loaded and replayed to
   const test::TempDir tmp("cli_npc_replay");
   REQUIRE(tmp.ok());
   const std::string start = tmp.file("start");
-  make_world(start, k_residents);
+  make_world(start, resident_world(k_residents));
   const std::string continuous = tmp.file("continuous");
   const std::string replayed = tmp.file("replayed");
   std::filesystem::copy(start, continuous, std::filesystem::copy_options::recursive);
@@ -220,8 +242,7 @@ TEST_CASE("npc: 10^5 scheduled residents streamed, saved, loaded and replayed to
     // Every resident and every place within reach came in, at the first fill.
     CHECK(number(streamed, "created") >= k_residents);
     CHECK(number(streamed, "deactivated") > 0);
-    MESSAGE("first 300 ticks: "
-                                << number(streamed, "created") << " created, document "
+    MESSAGE("first 300 ticks: " << number(streamed, "created") << " created, document "
                                 << write_json(at(streamed, "document_ms"), JsonWriteOptions{})
                                 << " ms, store "
                                 << write_json(at(streamed, "store_ms"), JsonWriteOptions{})
@@ -280,6 +301,93 @@ TEST_CASE("npc: 10^5 scheduled residents streamed, saved, loaded and replayed to
   CHECK(a.value == std::string(k_pinned));
 }
 
+// The number the crossing world's three runs reach at tick 600 (below), pinned like `k_pinned`:
+// taken on MSVC on 2026-09-25 and reproduced by Clang 18 in the Linux container. It moves with
+// everything `k_pinned` moves with, and with the schedule index (npc.md).
+constexpr const char* k_crossing_pinned = "16a407bfad492334";
+
+// The schedule index end to end (npc.md, "The schedule index"): residents whose
+// routines take them across the edge of the simulated tiles, saved, loaded and replayed to one
+// state hash. What it adds to the test above is residents that are not held and are watched —
+// their record in a tile nobody simulates, their routine visiting one that is simulated — whose
+// watches a loaded world arms again from its document, and whose arrivals at 07:00 (tick 480, after
+// the save) must come in the same in all three runs.
+TEST_CASE("npc: residents that cross the simulated edge, streamed, saved, loaded and replayed") {
+  const test::TempDir tmp("cli_npc_crossing");
+  REQUIRE(tmp.ok());
+  const std::string start = tmp.file("start");
+  make_world(start, crossing_world());
+  const std::string continuous = tmp.file("continuous");
+  const std::string replayed = tmp.file("replayed");
+  std::filesystem::copy(start, continuous, std::filesystem::copy_options::recursive);
+  std::filesystem::copy(start, replayed, std::filesystem::copy_options::recursive);
+  const std::string save = tmp.file("save-at-300");
+
+  Parts a;
+  Parts at_save;
+  u64 arrived_after_save = 0;
+  {
+    Host host;
+    REQUIRE(host.ok);
+    const std::string session = open_session(host, continuous);
+    const std::string s = "{\"session\":\"" + session + "\"";
+    const JsonValue first =
+        host.call("session.run_headless", s + ",\"seconds\":5" + crossing_stream_params() + "}");
+    const JsonValue& streamed = at(result_of(first), "streamed");
+    CHECK(number(streamed, "arrived") == 0);  // nobody's routine moves before 07:00
+    at_save = state_hash(host, session);
+    CHECK(
+        text(result_of(host.call("session.save_game", s + ",\"path\":" + json_string(save) + "}")),
+             "state_hash") == at_save.value);
+    const JsonValue second = host.call("session.run_headless", s + ",\"seconds\":5}");
+    CHECK(number(result_of(second), "tick") == 600);
+    arrived_after_save = number(at(result_of(second), "streamed"), "arrived");
+    MESSAGE("crossing world: " << arrived_after_save << " residents arrived at 07:00 from tiles "
+                               << "nobody simulates, "
+                               << number(at(result_of(second), "streamed"), "dematerialized")
+                               << " let go");
+    a = state_hash(host, session);
+  }
+  // The point of the world: residents came in from outside the simulated tiles with their routines.
+  CHECK(arrived_after_save > 0);
+
+  Parts b;
+  {
+    Host host;
+    REQUIRE(host.ok);
+    const JsonValue loaded =
+        host.call("session.load_game", "{\"path\":" + json_string(save) +
+                                           ",\"dir\":" + json_string(tmp.file("loaded")) + "}");
+    const JsonValue& load = result_of(loaded);
+    CHECK(text(load, "state_hash") == at_save.value);
+    const JsonValue run = host.call(
+        "session.run_headless", "{\"session\":\"" + text(load, "session") + "\",\"seconds\":5}");
+    CHECK(number(result_of(run), "tick") == 600);
+    // The same arrivals, from watches the load armed again rather than ones it carried over.
+    CHECK(number(at(result_of(run), "streamed"), "arrived") == arrived_after_save);
+    b = state_hash(host, text(load, "session"));
+  }
+
+  Parts c;
+  {
+    Host host;
+    REQUIRE(host.ok);
+    const std::string session = open_session(host, replayed);
+    const JsonValue run =
+        host.call("session.run_headless", "{\"session\":\"" + session + "\",\"seconds\":10" +
+                                              crossing_stream_params() + "}");
+    CHECK(number(result_of(run), "tick") == 600);
+    CHECK(number(at(result_of(run), "streamed"), "arrived") == arrived_after_save);
+    c = state_hash(host, session);
+  }
+  MESSAGE("crossing: continuous " << a.value << ", loaded " << b.value << ", replayed " << c.value);
+  same_parts(a, b);
+  same_parts(a, c);
+  CHECK(a.value == b.value);
+  CHECK(a.value == c.value);
+  CHECK(a.value == std::string(k_crossing_pinned));
+}
+
 // The migration corpus's resident save (content/migration-corpus/README.md, "Adding a version"):
 // a small resident world, streamed 300 ticks and saved, into `ENGINE_SAVE_CORPUS_NPC_OUT` when that
 // is set. Without the variable it does nothing, so the suite never writes into the repository.
@@ -289,7 +397,7 @@ TEST_CASE("save corpus: write the resident save when asked") {
   const test::TempDir tmp("cli_npc_corpus_write");
   REQUIRE(tmp.ok());
   const std::string doc = tmp.file("doc");
-  make_world(doc, 400);
+  make_world(doc, resident_world(400));
   Host host;
   REQUIRE(host.ok);
   const std::string s = "{\"session\":\"" + open_session(host, doc) + "\"";

@@ -32,6 +32,9 @@ struct DocumentTilesStats {
   // Records a system moved into another tile: filed under it, or let go with it not live.
   u64 refiled = 0;
   u64 left = 0;
+  // Records a capability's own rule brought into a live tile between two settles — a resident its
+  // routine walked home — materialized there (`sim::Materializer::materialize_arrivals`).
+  u64 arrived = 0;
   u64 visited = 0;  // records the tile passes looked at: a tile pass is a full pass over the scope
   u64 refused = 0;
   i64 materialize_ns = 0;
@@ -61,6 +64,12 @@ class DocumentTiles {
   // and not of the way the world came to be as it is, which is what lets a save be loaded into the
   // same world. Between ticks: the host after every update and at the end of a call; a deactivation
   // itself after its flush and before it lets its tile go (`flush`). Returns the records let go.
+  //
+  // It first brings in the records the driver's tile sources report as arrived in a live tile
+  // (`sim::Materializer::materialize_arrivals`; sim.md, "Records the document has not caught up
+  // with"): a resident whose routine walked it home to a live tile from one the ring does not
+  // simulate, which its record's tile alone would never bring in. Settling is where it goes because
+  // it is the one call every host already makes between ticks, before the ring updates.
   u32 settle(const TileRing& ring);
   // The write-back flushed, and the moves it made settled against `ring`: what a consumer calls
   // before it reads or drops what a tile holds.

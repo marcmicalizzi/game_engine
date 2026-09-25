@@ -1516,7 +1516,7 @@ struct HeadlessTile @version(1) {
 }
 
 /// What a headless run's world did during the call.
-struct HeadlessWorldResult @version(1) {
+struct HeadlessWorldResult @version(2) {
   /// Updates (one a tick, and one before the first) and the tiles' events over them.
   updates: u32 = 0
   activated: u32 = 0
@@ -1530,6 +1530,11 @@ struct HeadlessWorldResult @version(1) {
   dematerialized_tiles: u32 = 0
   created: u32 = 0
   dematerialized: u32 = 0
+  /// Of `created`, the records a capability's own rule brought into a live tile between two
+  /// passes — a resident whose routine walked it in from a tile the ring does not simulate — and
+  /// the driver brought in when the document consumer settled (sim.md, "Records the document has not
+  /// caught up with").
+  arrived: u32 = 0 @since(2)
   /// The store consumer: tiles reconciled (and of them known to the store), summarizers run over
   /// their gaps, records read back, and tiles written when they went.
   reconciled: u32 = 0

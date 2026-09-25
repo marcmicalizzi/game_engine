@@ -1,11 +1,15 @@
 #include <core/log/log.h>
+#include <core/schema/json_reflect.h>
 #include <core/schema/materialize.h>
+#include <core/time/time.h>
+#include <domain/doc/partition.h>
 #include <domain/ecs/components.h>
 #include <domain/ecs/identity.h>
 #include <domain/sim/materialize.h>
 #include <foundation/tunables/tunables.h>
 #include <systems/npc/npc.h>
 
+#include <algorithm>
 #include <schemas/npc_ecs.h>
 #include <schemas/world.h>
 #include <schemas/world_ecs.h>
@@ -63,6 +67,21 @@ PlaceRole role_of(const JsonValue* value) {
 }
 
 u32 role_index(PlaceRole role) noexcept { return static_cast<u32>(role) & 3u; }
+
+// A tile as one word, x in the high half: the driver's and the document's own packing.
+u64 tile_key(doc::TileCoord tile) noexcept {
+  return (static_cast<u64>(static_cast<u32>(tile.x)) << 32) | static_cast<u32>(tile.y);
+}
+
+doc::TileCoord tile_of_key(u64 key) noexcept {
+  return doc::TileCoord{static_cast<i32>(static_cast<u32>(key >> 32)),
+                        static_cast<i32>(static_cast<u32>(key))};
+}
+
+bool read_id(const JsonValue* value, Id128& out) {
+  std::string_view text;
+  return value != nullptr && value->get_string(text) && Id128::from_hex(text, out);
+}
 
 }  // namespace
 
@@ -273,6 +292,11 @@ sim::EntityHandle NpcSystem::materialize(const sim::EntityRecord& record, u8 tie
     const bool observed = observers_ != nullptr && !observers_->empty();
     tier_.push_back(observed ? u8{2} : (tier < 2 ? tier : u8{2}));
     by_handle_.insert(handle.value, i);
+    // Held from now: its own timer runs it, and a watch is not needed any more.
+    if (const u32* slot = schedule_by_id_.find_value(record.entity)) {
+      schedule_[*slot].held = true;
+      unwatch(*slot);
+    }
   }
   // What the document says, before we move it: where the record is, as the entity store wrote it.
   if (const world::Transform* t = e.try_get<world::Transform>()) fallback_[i] = t->position;
@@ -290,8 +314,16 @@ sim::EntityHandle NpcSystem::materialize(const sim::EntityRecord& record, u8 tie
 void NpcSystem::dematerialize(sim::EntityHandle entity) {
   const u32* held = by_handle_.find_value(entity.value);
   if (held == nullptr) return;
+  const Id128 id = ids_[*held];
   remove(*held);
   ++stats_.dematerialized;
+  // Let go — its tile went, or its routine took it into one that is not live — but its routine goes
+  // on: an arrival if it has it in a live tile already, watched while it visits one.
+  if (const u32* slot = schedule_by_id_.find_value(id)) {
+    schedule_[*slot].held = false;
+    if (!live_tiles_.empty() && scheduler_ != nullptr)
+      look_again(*slot, scheduler_->game_time().us);
+  }
 }
 
 void NpcSystem::remove(u32 i) {
@@ -348,6 +380,7 @@ void NpcSystem::resolve_places(u32 i, const NpcRoutine& routine) noexcept {
 
 u32 NpcSystem::refresh_places(const doc::Document& document) {
   const u32 count = places_.refresh(document);
+  refresh_schedule(document);
   if (places_.generation() == places_generation_) return count;
   places_generation_ = places_.generation();
   if (sim_ == nullptr) return count;
@@ -422,6 +455,10 @@ void NpcSystem::move_to(u32 i, const RoutinePoint& point, i64 t_us) {
 
 void NpcSystem::deliver(void* context, const sim::TimerEvent& event) {
   NpcSystem* self = static_cast<NpcSystem*>(context);
+  if (event.payload.kind == k_watch_kind) {
+    self->deliver_watch(event);
+    return;
+  }
   if (event.payload.kind != k_timer_kind) {
     self->next_(event);
     return;
@@ -459,6 +496,19 @@ u64 NpcSystem::summarize(GameTime /*from*/, GameTime to) {
     ++stats_.summarized;
   }
   stats_.summary_visits += visited;
+  // A watched resident's timer is a one-shot, which the wheel delivers through a summary rather
+  // than coarsen; left alone it would fire at every transition of the gap. Its watch is looked at
+  // once, at `to`, as its own transitions are: the same answer the firings would have reached at
+  // the end.
+  for (u32 slot = 0; slot < schedule_.size(); ++slot) {
+    Scheduled& s = schedule_[slot];
+    if (!s.watch.valid() || s.held) continue;
+    GameTime due;
+    if (scheduler_ != nullptr && scheduler_->wheel().due_time(s.watch, due) && due.us > to.us)
+      continue;
+    unwatch(slot);
+    look_again(slot, to.us);
+  }
   return visited;
 }
 
@@ -556,6 +606,354 @@ u64 NpcSystem::bytes_held() const noexcept {
   bytes += u64{by_handle_.capacity()} * (sizeof(u64) + sizeof(u32)) +
            u64{by_handle_.bucket_count()} * sizeof(u32);
   return bytes;
+}
+
+// ---- the schedule index ------------------------------------------------------------------------
+
+sim::TileSource NpcSystem::tile_source() noexcept {
+  sim::TileSource source;
+  source.context = this;
+  source.name = "npc";
+  source.where = &NpcSystem::where_fn;
+  source.tile_in = &NpcSystem::tile_in_fn;
+  source.tile_out = &NpcSystem::tile_out_fn;
+  source.arrivals = &NpcSystem::arrivals_fn;
+  return source;
+}
+
+u64 NpcSystem::bytes_scheduled() const noexcept {
+  u64 bytes = u64{schedule_.capacity()} * sizeof(Scheduled);
+  bytes += u64{schedule_by_id_.capacity()} * (sizeof(Id128) + sizeof(u32)) +
+           u64{schedule_by_id_.bucket_count()} * sizeof(u32);
+  bytes += u64{schedule_by_tile_.capacity()} * (sizeof(u64) + sizeof(Vector<u32>)) +
+           u64{schedule_by_tile_.bucket_count()} * sizeof(u32);
+  for (const Vector<u32>& list : schedule_by_tile_.values())
+    bytes += u64{list.capacity()} * sizeof(u32);
+  bytes += u64{place_tiles_.capacity()} * sizeof(u64) + u64{place_tiled_.capacity()};
+  return bytes;
+}
+
+u32 NpcSystem::watching() const noexcept {
+  u32 n = 0;
+  for (const Scheduled& s : schedule_)
+    n += s.live && !s.held && s.watch.valid() ? 1u : 0u;
+  return n;
+}
+
+void NpcSystem::visiting(doc::TileCoord tile, Vector<Id128>& out) const {
+  out.clear();
+  const Vector<u32>* slots = schedule_by_tile_.find_value(tile_key(tile));
+  if (slots == nullptr) return;
+  for (const u32 slot : *slots)
+    out.push_back(schedule_[slot].id);
+  std::sort(out.begin(), out.end());
+}
+
+bool NpcSystem::place_tile(u32 place, f64 tile_size, u64& out) {
+  if (place_tiles_size_ != tile_size || place_tiles_generation_ != places_.generation()) {
+    // Once per grid and per change of the place index: the tile of every place, by the function the
+    // partition files a record by, fed the position exactly as the write-back will write it.
+    place_tiles_.clear();
+    place_tiled_.clear();
+    place_tiles_size_ = tile_size;
+    place_tiles_generation_ = places_.generation();
+    for (u32 p = 0; p < places_.size(); ++p) {
+      const Vec3 at = places_.position(p);
+      JsonValue position = JsonValue::array();
+      position.push_back(JsonValue(static_cast<f64>(at.x)));
+      position.push_back(JsonValue(static_cast<f64>(at.y)));
+      position.push_back(JsonValue(static_cast<f64>(at.z)));
+      doc::TileCoord tile;
+      const bool tiled = doc::tile_of_position(position, tile_size, tile);
+      place_tiles_.push_back(tiled ? tile_key(tile) : 0u);
+      place_tiled_.push_back(tiled ? u8{1} : u8{0});
+    }
+  }
+  if (place >= place_tiles_.size() || place_tiled_[place] == 0) return false;
+  out = place_tiles_[place];
+  return true;
+}
+
+bool NpcSystem::read_scheduled(const doc::Document& document, const Id128& id, Scheduled& out) {
+  if (!document.exists(id) || document.type_of(id) != k_resident_type) return false;
+  // The composed values of the six properties the closed form and the places need, in one visit
+  // of the layers that hold the record, and the defining record's layer, whose grid is the one the
+  // resident's record is filed on.
+  static constexpr std::string_view k_keys[6] = {"home",    "job",     "service",
+                                                 "leisure", "routine", "clock_offset"};
+  const JsonValue* values[6] = {};
+  u32 defining = ~0u;
+  document.visit_records(id, [&](u32 layer, const doc::ObjectRecord& record) {
+    if (!record.type.empty()) defining = layer;
+    for (u32 k = 0; k < 6; ++k) {
+      if (const JsonValue* v = record.properties.find_value(k_keys[k])) values[k] = v;
+    }
+  });
+  if (defining == ~0u) return false;
+  const doc::Layer& layer = document.layer(defining);
+  // A resident on no grid is never in a tile, and one on a grid that reads another property than
+  // the one the anchor is written to is not moved between tiles by its routine: neither is ours to
+  // place.
+  if (!layer.partitioned()) return false;
+  if (doc::position_property(k_resident_type, layer.partition()) != "position") return false;
+  out = Scheduled{};
+  out.id = id;
+  out.live = true;
+  if (values[4] != nullptr) {
+    schema::ReadContext ctx;
+    Routine routine = Routine::Idle;
+    if (schema::from_json(routine, *values[4], ctx)) out.routine = routine;
+  }
+  if (values[5] != nullptr) (void)values[5]->get_i64(out.clock_offset);
+  for (u32 r = 0; r < 4; ++r) {
+    Id128 place;
+    if (!read_id(values[r], place) || place.is_null()) continue;
+    const u32 index = places_.find(place);
+    u64 key = 0;
+    // A place the index does not know is where a held resident falls back to its record's own
+    // position: the document's tile, which is no placement of ours.
+    if (index == k_no_place || !place_tile(index, layer.partition().tile_size, key)) continue;
+    out.tiles[r] = key;
+    out.tiled = static_cast<u8>(out.tiled | (1u << r));
+  }
+  return true;
+}
+
+void NpcSystem::link_tiles(u32 slot) {
+  const Scheduled& s = schedule_[slot];
+  for (u32 r = 0; r < 4; ++r) {
+    if (((s.tiled >> r) & 1u) == 0) continue;
+    bool seen = false;
+    for (u32 q = 0; q < r; ++q)
+      seen = seen || (((s.tiled >> q) & 1u) != 0 && s.tiles[q] == s.tiles[r]);
+    if (seen) continue;  // two places in one tile: the resident is listed there once
+    Vector<u32>& list = schedule_by_tile_[s.tiles[r]];
+    const auto at = std::lower_bound(list.begin(), list.end(), slot);
+    list.emplace(static_cast<u32>(at - list.begin()), slot);
+  }
+}
+
+void NpcSystem::unlink_tiles(u32 slot) {
+  const Scheduled& s = schedule_[slot];
+  for (u32 r = 0; r < 4; ++r) {
+    if (((s.tiled >> r) & 1u) == 0) continue;
+    Vector<u32>* list = schedule_by_tile_.find_value(s.tiles[r]);
+    if (list == nullptr) continue;
+    const auto at = std::lower_bound(list->begin(), list->end(), slot);
+    const u32 pos = static_cast<u32>(at - list->begin());
+    if (pos < list->size() && (*list)[pos] == slot) list->erase_at(pos);
+    if (list->empty()) schedule_by_tile_.erase(s.tiles[r]);
+  }
+}
+
+void NpcSystem::build_schedule(const doc::Document& document) {
+  const i64 start = time::monotonic_ns();
+  // The slots change, so every watch's payload would name the wrong resident: all go, and the ones
+  // still wanted are armed again below.
+  for (u32 slot = 0; slot < schedule_.size(); ++slot)
+    unwatch(slot);
+  schedule_.clear();
+  schedule_by_id_.clear();
+  schedule_by_tile_.clear();
+  // `objects()` is in id order, so slots are, and every tile's list comes out sorted as it is
+  // built.
+  for (const Id128& id : document.objects()) {
+    Scheduled s;
+    if (!read_scheduled(document, id, s)) continue;
+    const u32 slot = schedule_.size();
+    schedule_.push_back(s);
+    schedule_by_id_.insert(id, slot);
+    link_tiles(slot);
+  }
+  for (const Id128& id : ids_) {
+    if (const u32* slot = schedule_by_id_.find_value(id)) schedule_[*slot].held = true;
+  }
+  if (!live_tiles_.empty() && scheduler_ != nullptr) {
+    const i64 now = scheduler_->game_time().us;
+    for (u32 slot = 0; slot < schedule_.size(); ++slot) {
+      if (!schedule_[slot].held) look_again(slot, now);
+    }
+  }
+  ++schedule_stats_.builds;
+  schedule_stats_.build_ms = static_cast<f64>(time::monotonic_ns() - start) / 1.0e6;
+}
+
+void NpcSystem::update_scheduled(const doc::Document& document, const Id128& id) {
+  Scheduled fresh;
+  const bool keep = read_scheduled(document, id, fresh);
+  const u32* at = schedule_by_id_.find_value(id);
+  ++schedule_stats_.updates;
+  if (at == nullptr) {
+    if (!keep) return;
+    const u32 slot = schedule_.size();
+    schedule_.push_back(fresh);
+    schedule_by_id_.insert(id, slot);
+    link_tiles(slot);
+    return;
+  }
+  const u32 slot = *at;
+  Scheduled& s = schedule_[slot];
+  if (!keep) {
+    // Gone from the document, or no longer a resident on a grid: its slot stays, dead, until the
+    // next whole build, because a watch may still name it.
+    unwatch(slot);
+    unlink_tiles(slot);
+    s.live = false;
+    s.tiled = 0;
+    schedule_by_id_.erase(id);
+    return;
+  }
+  const bool same = s.routine == fresh.routine && s.clock_offset == fresh.clock_offset &&
+                    s.tiled == fresh.tiled &&
+                    std::equal(std::begin(s.tiles), std::end(s.tiles), std::begin(fresh.tiles));
+  if (same) return;  // a write-back of its state, which moves nothing the index keeps
+  unlink_tiles(slot);
+  s.routine = fresh.routine;
+  s.clock_offset = fresh.clock_offset;
+  s.tiled = fresh.tiled;
+  std::copy(std::begin(fresh.tiles), std::end(fresh.tiles), std::begin(s.tiles));
+  link_tiles(slot);
+}
+
+u32 NpcSystem::refresh_schedule(const doc::Document& document) {
+  places_.refresh(document);
+  const bool whole = !schedule_built_ || schedule_document_ != &document ||
+                     schedule_places_generation_ != places_.generation();
+  if (!whole && document.revision() == schedule_revision_) return scheduled();
+  Vector<Id128> changed;
+  if (whole || !document.changed_since(schedule_revision_, changed)) {
+    build_schedule(document);
+  } else {
+    for (const Id128& id : changed)
+      update_scheduled(document, id);
+  }
+  schedule_built_ = true;
+  schedule_document_ = &document;
+  schedule_revision_ = document.revision();
+  schedule_places_generation_ = places_.generation();
+  return scheduled();
+}
+
+RoutinePoint NpcSystem::scheduled_point(const Scheduled& s, i64 t_us) const noexcept {
+  return routine_at_offset(draw_variation(s.routine, config_.world_seed, s.id), t_us,
+                           s.clock_offset);
+}
+
+bool NpcSystem::anchor_tile(const Scheduled& s, const RoutinePoint& point, u64& out) noexcept {
+  const u32 r = role_index(point.place);
+  if (((s.tiled >> r) & 1u) == 0) return false;
+  out = s.tiles[r];
+  return true;
+}
+
+bool NpcSystem::visits_live(const Scheduled& s) const noexcept {
+  for (u32 r = 0; r < 4; ++r) {
+    if (((s.tiled >> r) & 1u) != 0 && live_tiles_.contains(s.tiles[r])) return true;
+  }
+  return false;
+}
+
+void NpcSystem::watch(u32 slot, i64 t_us) {
+  Scheduled& s = schedule_[slot];
+  if (s.watch.valid() || scheduler_ == nullptr) return;
+  sim::TimerPayload payload;
+  payload.subject = slot;
+  payload.kind = k_watch_kind;
+  s.watch = scheduler_->wheel().schedule(GameTime{scheduled_point(s, t_us).end_us}, payload);
+  ++schedule_stats_.watches;
+}
+
+void NpcSystem::unwatch(u32 slot) {
+  Scheduled& s = schedule_[slot];
+  if (s.watch.valid() && scheduler_ != nullptr) scheduler_->wheel().cancel(s.watch);
+  s.watch = sim::TimerHandle{};
+}
+
+void NpcSystem::look_again(u32 slot, i64 t_us) {
+  const Scheduled& s = schedule_[slot];
+  if (!s.live || s.held) return;
+  const RoutinePoint point = scheduled_point(s, t_us);
+  u64 at = 0;
+  if (anchor_tile(s, point, at) && live_tiles_.contains(at)) {
+    arrivals_.push_back(s.id);
+    ++schedule_stats_.arrivals;
+  }
+  // Watched either way while its routine visits a live tile: an arrival the driver could not take
+  // (its tile went first) is looked at again at the next transition, and one it took is held, and
+  // the materialization hook cancels the watch.
+  if (visits_live(s)) watch(slot, t_us);
+}
+
+void NpcSystem::deliver_watch(const sim::TimerEvent& event) {
+  const u64 slot = event.payload.subject;
+  if (slot >= schedule_.size()) return;
+  Scheduled& s = schedule_[static_cast<u32>(slot)];
+  if (!(s.watch == event.handle)) return;  // re-armed or cancelled since: a stale firing
+  s.watch = sim::TimerHandle{};
+  ++schedule_stats_.wakes;
+  // At the timer's own time, as a transition is: the row that starts when the watched one ends.
+  look_again(static_cast<u32>(slot), event.at.us);
+}
+
+bool NpcSystem::where_fn(void* context, const doc::Document&, const Id128& id,
+                         doc::TileCoord& out) {
+  auto* self = static_cast<NpcSystem*>(context);
+  const u32* slot = self->schedule_by_id_.find_value(id);
+  if (slot == nullptr || self->scheduler_ == nullptr) return false;
+  const Scheduled& s = self->schedule_[*slot];
+  u64 at = 0;
+  if (!anchor_tile(s, self->scheduled_point(s, self->scheduler_->game_time().us), at)) return false;
+  out = tile_of_key(at);
+  return true;
+}
+
+void NpcSystem::tile_in_fn(void* context, const doc::Document& document, doc::TileCoord tile,
+                           Vector<Id128>& out) {
+  auto* self = static_cast<NpcSystem*>(context);
+  // A host that never refreshed the places before its first tile: built here, once. After that the
+  // index follows the document at every `refresh_places`, which a host calls at the start of every
+  // call; within one, the document changes only by write-backs, which move nothing it keeps.
+  if (!self->schedule_built_ || self->schedule_document_ != &document)
+    self->refresh_schedule(document);
+  const u64 key = tile_key(tile);
+  self->live_tiles_.insert(key);
+  ++self->schedule_stats_.tile_passes;
+  const Vector<u32>* slots = self->schedule_by_tile_.find_value(key);
+  if (slots == nullptr || self->scheduler_ == nullptr) return;
+  const i64 now = self->scheduler_->game_time().us;
+  for (const u32 slot : *slots) {
+    const Scheduled& s = self->schedule_[slot];
+    if (!s.live) continue;
+    ++self->schedule_stats_.visits;
+    const RoutinePoint point = self->scheduled_point(s, now);
+    u64 at = 0;
+    const bool placed = anchor_tile(s, point, at);
+    if (placed && at == key) {
+      // In this tile now, wherever its record is: the pass brings it in, or files it here.
+      out.push_back(s.id);
+      doc::TileCoord filed;
+      if (!document.object_tile(s.id, filed) || tile_key(filed) != key)
+        ++self->schedule_stats_.placed;
+      continue;
+    }
+    if (s.held) continue;
+    // Elsewhere now: an arrival if that is live too (it came in with a tile it was not in then),
+    // and watched, since its routine visits this one.
+    self->look_again(slot, now);
+  }
+}
+
+void NpcSystem::tile_out_fn(void* context, doc::TileCoord tile) {
+  // A watch on a resident whose routine visited only this tile is let lapse at its next firing,
+  // which finds nothing live, rather than looked for here.
+  static_cast<NpcSystem*>(context)->live_tiles_.erase(tile_key(tile));
+}
+
+void NpcSystem::arrivals_fn(void* context, Vector<Id128>& out) {
+  auto* self = static_cast<NpcSystem*>(context);
+  for (const Id128& id : self->arrivals_)
+    out.push_back(id);
+  self->arrivals_.clear();
 }
 
 }  // namespace engine::npc

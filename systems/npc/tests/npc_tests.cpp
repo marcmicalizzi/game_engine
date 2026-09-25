@@ -4,6 +4,7 @@
 // (docs/subsystems/sim.md), the same resident however and whenever it is materialized, promotion
 // and demotion by the observer set, and residents that move between tiles.
 #include <core/json/json.h>
+#include <core/schema/json_reflect.h>
 #include <core/schema/materialize.h>
 #include <domain/doc/document.h>
 #include <domain/doc/partition.h>
@@ -622,4 +623,467 @@ TEST_CASE("npc: a resident's clock offset puts game time 0 at any time of its da
   CHECK(awake > 10);
   rig.run(1800);
   CHECK(rig.npc.stats().transitions > 0);
+}
+
+// ---- the schedule index (docs/subsystems/npc.md, "The schedule index") ------------------------
+
+namespace {
+
+constexpr f64 k_tile_size = 32.0;  // GeneratorParams' default grid
+constexpr i64 k_hour = 60 * k_us_per_minute;
+
+bool tile_of_vec(Vec3 at, doc::TileCoord& out) {
+  JsonValue position = JsonValue::array();
+  position.push_back(JsonValue(static_cast<f64>(at.x)));
+  position.push_back(JsonValue(static_cast<f64>(at.y)));
+  position.push_back(JsonValue(static_cast<f64>(at.z)));
+  return doc::tile_of_position(position, k_tile_size, out);
+}
+
+// A resident as the test reads it from the document, independently of the capability: its routine
+// and its four places' tiles (a role with no place has none).
+struct Reading {
+  Routine routine = Routine::Idle;
+  Id128 places[4];
+  doc::TileCoord tiles[4];
+  bool tiled[4] = {};
+};
+
+Reading read_resident(const doc::Document& d, const PlaceIndex& places, const Id128& id) {
+  Reading r;
+  schema::ReadContext ctx;
+  if (const JsonValue* v = d.property(id, "routine")) (void)schema::from_json(r.routine, *v, ctx);
+  const char* const keys[4] = {"home", "job", "service", "leisure"};
+  for (u32 k = 0; k < 4; ++k) {
+    std::string_view hex;
+    const JsonValue* v = d.property(id, keys[k]);
+    if (v == nullptr || !v->get_string(hex) || !Id128::from_hex(hex, r.places[k])) continue;
+    const u32 p = places.find(r.places[k]);
+    if (p != k_no_place) r.tiled[k] = tile_of_vec(places.position(p), r.tiles[k]);
+  }
+  return r;
+}
+
+// Where the routine has a resident at `t`: the tile of its row's place. The closed form the
+// capability uses, called here on the test's own reading of the document.
+bool anchor_at(const Reading& r, const Id128& id, i64 t, doc::TileCoord& out) {
+  const RoutinePoint p = routine_at(draw_variation(r.routine, k_seed, id), t);
+  const u32 role = static_cast<u32>(p.place) & 3u;
+  if (!r.tiled[role]) return false;
+  out = r.tiles[role];
+  return true;
+}
+
+// Every tile that holds a record of the layer, sorted: the tiles a world could activate.
+Vector<doc::TileCoord> occupied(const doc::Document& d) {
+  Vector<doc::TileCoord> tiles;
+  for (const Id128& id : d.objects()) {
+    doc::TileCoord t;
+    if (d.object_tile(id, t) && std::find(tiles.begin(), tiles.end(), t) == tiles.end())
+      tiles.push_back(t);
+  }
+  std::sort(tiles.begin(), tiles.end());
+  return tiles;
+}
+
+// What engine-host's document consumer does between ticks (world.md, `DocumentTiles::settle`),
+// against the driver's own live tiles: arrivals in, then the records a write-back moved refiled
+// under a live tile or let go.
+void settle(Rig& rig, const doc::Document& d) {
+  rig.driver.materialize_arrivals(d);
+  Vector<sim::TileMove> moves;
+  rig.driver.take_moved(moves);
+  Vector<Id128> gone;
+  for (const sim::TileMove& m : moves) {
+    if (m.to_tiled && rig.driver.tile_live(m.to)) {
+      rig.driver.refile(m.id, true, m.to);
+    } else {
+      gone.push_back(m.id);
+    }
+  }
+  rig.driver.dematerialize(std::span<const Id128>(gone.data(), gone.size()));
+}
+
+void run_settled(Rig& rig, const doc::Document& d, u32 ticks) {
+  for (u32 i = 0; i < ticks; ++i) {
+    rig.tick->step();
+    settle(rig, d);
+  }
+}
+
+// The residents a driver holds, sorted.
+Vector<Id128> held_residents(Rig& rig, u32 n) {
+  Vector<Id128> out;
+  for (u32 i = 0; i < n; ++i) {
+    if (rig.driver.holds(resident_id(k_seed, i))) out.push_back(resident_id(k_seed, i));
+  }
+  std::sort(out.begin(), out.end());
+  return out;
+}
+
+}  // namespace
+
+TEST_CASE("npc: the schedule index lists the residents whose routines visit a tile") {
+  const u32 n = 150;
+  doc::Document d = make_document(small_world(n, k_morning));
+  Rig rig(k_morning);
+  rig.npc.refresh_places(d);
+  CHECK(rig.npc.scheduled() == n);
+  CHECK(rig.npc.schedule_stats().builds == 1);
+
+  // Every occupied tile's list against the test's own reading of every resident's four places.
+  auto check_lists = [&]() {
+    u32 listed = 0;
+    for (const doc::TileCoord& t : occupied(d)) {
+      Vector<Id128> want;
+      for (const Id128& id : d.objects()) {
+        if (d.type_of(id) != k_resident_type) continue;
+        const Reading r = read_resident(d, rig.npc.places(), id);
+        for (u32 k = 0; k < 4; ++k) {
+          if (r.tiled[k] && r.tiles[k] == t) {
+            want.push_back(id);
+            break;
+          }
+        }
+      }
+      std::sort(want.begin(), want.end());
+      Vector<Id128> have;
+      rig.npc.visiting(t, have);
+      CAPTURE(t.x);
+      CAPTURE(t.y);
+      CHECK(have == want);
+      listed += have.size();
+    }
+    return listed;
+  };
+  CHECK(check_lists() > n);  // a resident's places are in more than one tile
+
+  // A resident given another home: read again from the change feed, not rebuilt.
+  const Id128 who = resident_id(k_seed, 3);
+  const Id128 elsewhere = place_id(k_seed, 7);
+  char hex[33];
+  elsewhere.to_hex(hex);
+  REQUIRE(d.apply(doc::cmd_set(who, "home", JsonValue(std::string(hex, 32))), nullptr, nullptr));
+  // A resident removed from the document.
+  REQUIRE(d.apply(doc::cmd_delete(resident_id(k_seed, 4)), nullptr, nullptr));
+  rig.npc.refresh_places(d);
+  CHECK(rig.npc.schedule_stats().builds == 1);
+  CHECK(rig.npc.schedule_stats().updates >= 2);
+  CHECK(rig.npc.scheduled() == n - 1);
+  check_lists();
+
+  // A place moved into another tile: the tiles of every resident change, so the index is built
+  // again.
+  const Id128 place = place_id(k_seed, 0);
+  JsonValue far = JsonValue::array();
+  far.push_back(JsonValue(155.25));
+  far.push_back(JsonValue(0.0));
+  far.push_back(JsonValue(90.25));
+  REQUIRE(d.apply(doc::cmd_set(place, "position", std::move(far)), nullptr, nullptr));
+  rig.npc.refresh_places(d);
+  CHECK(rig.npc.schedule_stats().builds == 2);
+  check_lists();
+  CHECK(rig.npc.bytes_scheduled() >= u64{n - 1} * sizeof(ScheduledResident));
+}
+
+TEST_CASE(
+    "npc: a resident whose routine brings it into a live tile comes in, wherever its record is") {
+  // The boundary npc.md used to state: a day worker who walked to work in a tile the ring does not
+  // simulate stayed there, a record, even when its routine had it home again in a live tile. With
+  // the schedule index it is watched while it is away and comes home with its routine.
+  const u32 n = 150;
+  const GeneratorParams params = small_world(n, k_morning);
+
+  // A day worker whose job is in another tile than its home, read from a scratch document.
+  Id128 who;
+  doc::TileCoord home;
+  doc::TileCoord job;
+  {
+    doc::Document d = make_document(params);
+    Rig probe(k_morning);
+    probe.npc.refresh_places(d);
+    for (u32 i = 0; i < n && who.is_null(); ++i) {
+      const Id128 id = resident_id(k_seed, i);
+      const Reading r = read_resident(d, probe.npc.places(), id);
+      if (r.routine != Routine::DayWorker || !r.tiled[0] || !r.tiled[1]) continue;
+      if (r.tiles[0] == r.tiles[1]) continue;
+      // Nobody else's home in the job's tile matters; the job's tile is the one left out.
+      who = id;
+      home = r.tiles[0];
+      job = r.tiles[1];
+    }
+  }
+  REQUIRE_FALSE(who.is_null());
+
+  // Two worlds on every occupied tile but the job's, one with the schedule index and one without.
+  auto make = [&](bool with_index, doc::Document& d, DocumentSink& sink) {
+    auto rig = std::make_unique<Rig>(k_morning);
+    if (with_index) rig->driver.add_tile_source(rig->npc.tile_source());
+    rig->npc.refresh_places(d);
+    rig->driver.set_writeback_sink(sim::WriteBackSink{&sink, &DocumentSink::commit});
+    rig->driver.set_writeback_every(60);
+    rig->driver.install_writeback();
+    for (const doc::TileCoord& t : occupied(d)) {
+      if (!(t == job)) rig->driver.materialize(d, sim::MaterializeScope::of_tile(t));
+    }
+    return rig;
+  };
+  doc::Document with_doc = make_document(params);
+  doc::Document without_doc = make_document(params);
+  DocumentSink with_sink{&with_doc};
+  DocumentSink without_sink{&without_doc};
+  std::unique_ptr<Rig> with = make(true, with_doc, with_sink);
+  std::unique_ptr<Rig> without = make(false, without_doc, without_sink);
+  REQUIRE(with->driver.holds(who));  // 06:00: asleep at home, in a live tile
+  REQUIRE(without->driver.holds(who));
+
+  // To 11:00: at work, in the tile nobody simulates, and let go by both.
+  run_settled(*with, with_doc, 5 * 3600);
+  run_settled(*without, without_doc, 5 * 3600);
+  CHECK_FALSE(with->driver.holds(who));
+  CHECK_FALSE(without->driver.holds(who));
+  CHECK(with->npc.watching() > 0);
+  CHECK(with->npc.schedule_stats().watches > 0);
+
+  // To 21:00: its routine has it home. Only the world with the index has it.
+  run_settled(*with, with_doc, 10 * 3600);
+  run_settled(*without, without_doc, 10 * 3600);
+  CHECK(with->npc.schedule_stats().arrivals > 0);
+  const i64 now = with->scheduler.game_time().us;
+  const Reading r = read_resident(with_doc, with->npc.places(), who);
+  doc::TileCoord at;
+  REQUIRE(anchor_at(r, who, now, at));
+  REQUIRE(at == home);
+  CHECK(with->driver.holds(who));
+  CHECK_FALSE(without->driver.holds(who));
+  check_closed_form(*with, who, Routine::DayWorker, now);
+  // And its record follows it home at the write-back, filed where the driver holds it.
+  with->driver.flush_writeback(with->scheduler.tick(), with->scheduler.game_time());
+  settle(*with, with_doc);
+  doc::TileCoord filed;
+  REQUIRE(with_doc.object_tile(who, filed));
+  CHECK(filed == home);
+  Vector<Id128> in_home;
+  with->driver.held(sim::MaterializeScope::of_tile(home), in_home);
+  CHECK(std::find(in_home.begin(), in_home.end(), who) != in_home.end());
+
+  // Every resident the world with the index holds is one its routine has in a live tile, and every
+  // resident its routine has in a live tile is held: the rule, over the whole population.
+  for (u32 i = 0; i < n; ++i) {
+    const Id128 id = resident_id(k_seed, i);
+    const Reading ri = read_resident(with_doc, with->npc.places(), id);
+    doc::TileCoord a;
+    const bool in_live = anchor_at(ri, id, now, a) && with->driver.tile_live(a);
+    CAPTURE(i);
+    CHECK(with->driver.holds(id) == in_live);
+  }
+}
+
+TEST_CASE("npc: what the tiles bring in does not depend on the order they came in") {
+  // The document says 06:00 and the world is at noon, so most residents' routines have them away
+  // from the tile their record is in. A set of tiles activated in five orders, then one of them let
+  // go, then the write-back and a settle: every order must hold the same residents, filed under the
+  // same tiles, in the same state.
+  //
+  // The rule (npc.md): after the passes, a resident is held when its record's tile or the tile its
+  // routine has it in is live, and filed under the second when that is live, the first otherwise;
+  // after the write-back, exactly the residents whose routines have them in a live tile are held.
+  const u32 n = 150;
+  const GeneratorParams params = small_world(n, k_morning);
+  constexpr i64 k_noon = 12 * k_hour;
+  doc::Document probe_doc = make_document(params);
+  const Vector<doc::TileCoord> all = occupied(probe_doc);
+  // Every other tile of the checkerboard, and one more, left out of it so that it goes later.
+  Vector<doc::TileCoord> live;
+  for (const doc::TileCoord& t : all) {
+    if (((t.x + t.y) & 1) == 0) live.push_back(t);
+  }
+  REQUIRE(live.size() > 6);
+  const doc::TileCoord leaving = live[live.size() / 2];
+
+  struct Outcome {
+    Vector<Id128> held;
+    Vector<Vector<Id128>> filed;  // per live tile, in `live` order
+    Vector<Snapshot> states;
+    Vector<Id128> after_leave;
+    Vector<Id128> after_settle;
+    u32 watching = 0;
+  };
+  u64 rng = 0x0bde'4001'0000'0001ull;
+  auto shuffled = [&](Vector<doc::TileCoord> tiles) {
+    for (u32 i = tiles.size(); i > 1; --i) {
+      rng = rng * 6364136223846793005ull + 1442695040888963407ull;
+      const u32 j = static_cast<u32>((rng >> 33) % i);
+      std::swap(tiles[i - 1], tiles[j]);
+    }
+    return tiles;
+  };
+
+  Vector<Outcome> outcomes;
+  for (u32 order = 0; order < 5; ++order) {
+    doc::Document d = make_document(params);
+    DocumentSink sink{&d};
+    Rig rig(k_noon);
+    rig.driver.add_tile_source(rig.npc.tile_source());
+    rig.npc.refresh_places(d);
+    rig.driver.set_writeback_sink(sim::WriteBackSink{&sink, &DocumentSink::commit});
+    const Vector<doc::TileCoord> sequence = order == 0 ? live : shuffled(live);
+    for (const doc::TileCoord& t : sequence)
+      rig.driver.materialize(d, sim::MaterializeScope::of_tile(t));
+
+    Outcome o;
+    o.held = held_residents(rig, n);
+    for (const doc::TileCoord& t : live) {
+      Vector<Id128> filed;
+      rig.driver.held(sim::MaterializeScope::of_tile(t), filed);
+      o.filed.push_back(std::move(filed));
+    }
+    for (const Id128& id : o.held)
+      o.states.push_back(snapshot(rig, id));
+    o.watching = rig.npc.watching();
+
+    // The rule itself, against the test's own reading of the document and the closed form.
+    if (order == 0) {
+      auto is_live = [&](doc::TileCoord t) {
+        return std::find(live.begin(), live.end(), t) != live.end();
+      };
+      for (u32 i = 0; i < n; ++i) {
+        const Id128 id = resident_id(k_seed, i);
+        const Reading r = read_resident(d, rig.npc.places(), id);
+        doc::TileCoord a;
+        doc::TileCoord rec;
+        const bool a_live = anchor_at(r, id, k_noon, a) && is_live(a);
+        const bool r_live = d.object_tile(id, rec) && is_live(rec);
+        CAPTURE(i);
+        CHECK(rig.driver.holds(id) == (a_live || r_live));
+        if (!rig.driver.holds(id)) continue;
+        const doc::TileCoord want = a_live ? a : rec;
+        Vector<Id128> filed;
+        rig.driver.held(sim::MaterializeScope::of_tile(want), filed);
+        CHECK(std::find(filed.begin(), filed.end(), id) != filed.end());
+      }
+    }
+
+    rig.driver.dematerialize(sim::MaterializeScope::of_tile(leaving));
+    o.after_leave = held_residents(rig, n);
+    rig.driver.flush_writeback(rig.scheduler.tick(), rig.scheduler.game_time());
+    settle(rig, d);
+    o.after_settle = held_residents(rig, n);
+    if (order == 0) {
+      for (u32 i = 0; i < n; ++i) {
+        const Id128 id = resident_id(k_seed, i);
+        const Reading r = read_resident(d, rig.npc.places(), id);
+        doc::TileCoord a;
+        const bool a_live = anchor_at(r, id, k_noon, a) && rig.driver.tile_live(a);
+        CAPTURE(i);
+        CHECK(rig.driver.holds(id) == a_live);
+      }
+    }
+    outcomes.push_back(std::move(o));
+  }
+
+  const Outcome& first = outcomes[0];
+  CHECK(first.held.size() > 20);
+  CHECK(first.after_settle.size() < first.held.size());
+  for (u32 k = 1; k < outcomes.size(); ++k) {
+    const Outcome& o = outcomes[k];
+    CAPTURE(k);
+    CHECK(o.held == first.held);
+    CHECK(o.watching == first.watching);
+    REQUIRE(o.filed.size() == first.filed.size());
+    for (u32 t = 0; t < o.filed.size(); ++t)
+      CHECK(o.filed[t] == first.filed[t]);
+    REQUIRE(o.states.size() == first.states.size());
+    for (u32 s = 0; s < o.states.size(); ++s)
+      CHECK(same(o.states[s], first.states[s]));
+    CHECK(o.after_leave == first.after_leave);
+    CHECK(o.after_settle == first.after_settle);
+  }
+}
+
+TEST_CASE(
+    "npc: a world brought in from its written-back document holds what the running one does") {
+  // What a load does (world.md, "Save and load"): the same tiles activated from the document the
+  // run left, at the run's time. The running world got there through twelve game hours of
+  // transitions, watches, arrivals and let-goes; the loaded one in one pass per tile, in another
+  // order.
+  const u32 n = 150;
+  const GeneratorParams params = small_world(n, k_morning);
+  doc::Document d = make_document(params);
+  const Vector<doc::TileCoord> all = occupied(d);
+  Vector<doc::TileCoord> live;
+  for (const doc::TileCoord& t : all) {
+    if (t.x < 2) live.push_back(t);  // the west of the square; the east is where many work
+  }
+  REQUIRE(live.size() < all.size());
+
+  DocumentSink sink{&d};
+  Rig running(k_morning);
+  running.driver.add_tile_source(running.npc.tile_source());
+  running.npc.refresh_places(d);
+  running.driver.set_writeback_sink(sim::WriteBackSink{&sink, &DocumentSink::commit});
+  running.driver.set_writeback_every(60);
+  running.driver.install_writeback();
+  for (const doc::TileCoord& t : live)
+    running.driver.materialize(d, sim::MaterializeScope::of_tile(t));
+  run_settled(running, d, 12 * 3600);
+  running.driver.flush_writeback(running.scheduler.tick(), running.scheduler.game_time());
+  settle(running, d);
+  CHECK(running.npc.schedule_stats().arrivals > 0);
+  CHECK(running.npc.stats().dematerialized > 0);
+
+  Rig loaded(running.scheduler.game_time().us);
+  loaded.driver.add_tile_source(loaded.npc.tile_source());
+  loaded.npc.refresh_places(d);
+  for (u32 i = live.size(); i-- > 0;)
+    loaded.driver.materialize(d, sim::MaterializeScope::of_tile(live[i]));
+  REQUIRE(loaded.scheduler.game_time() == running.scheduler.game_time());
+  const Vector<Id128> held = held_residents(running, n);
+  CHECK(held.size() > 10);
+  CHECK(held_residents(loaded, n) == held);
+  CHECK(loaded.npc.watching() == running.npc.watching());
+  for (const Id128& id : held) {
+    CAPTURE(id.lo);
+    CHECK(same(snapshot(running, id), snapshot(loaded, id)));
+  }
+  for (const doc::TileCoord& t : live) {
+    Vector<Id128> a;
+    Vector<Id128> b;
+    running.driver.held(sim::MaterializeScope::of_tile(t), a);
+    loaded.driver.held(sim::MaterializeScope::of_tile(t), b);
+    CHECK(a == b);
+  }
+}
+
+TEST_CASE("npc: a summary looks at every watch once and fires none of them") {
+  // A watch is a one-shot on the wheel, which a summary delivers rather than coarsens; the
+  // capability's summarizer takes its watches with the residents it holds, so a fast-forward over a
+  // day summarized delivers none of them and leaves the same residents watched as the executed day.
+  const u32 n = 150;
+  const GeneratorParams params = small_world(n, k_morning);
+  const Vector<doc::TileCoord> all = occupied(make_document(params));
+  u32 watching[2] = {};
+  for (u32 path = 0; path < 2; ++path) {
+    doc::Document d = make_document(params);
+    Rig rig(k_morning);
+    rig.driver.add_tile_source(rig.npc.tile_source());
+    rig.npc.refresh_places(d);
+    for (const doc::TileCoord& t : all) {
+      if (t.x < 2) rig.driver.materialize(d, sim::MaterializeScope::of_tile(t));
+    }
+    // Everyone away from the live tiles at 06:00 is watched; the residents at home are held.
+    const u64 wakes = rig.npc.schedule_stats().wakes;
+    const sim::FastForwardResult r =
+        rig.npc.fast_forward(GameTime{k_morning + 24 * k_hour}, path == 0 ? (u64{1} << 40) : 16);
+    if (path == 1) {
+      CHECK(r.summarized > 0);
+      CHECK(rig.npc.schedule_stats().wakes == wakes);  // no watch fired inside the gap
+    } else {
+      CHECK(rig.npc.schedule_stats().wakes > wakes);
+    }
+    // Either way every watch was looked at by the end of the day and armed again past it.
+    watching[path] = rig.npc.watching();
+    CHECK(watching[path] > 0);
+  }
+  CHECK(watching[0] == watching[1]);
 }
