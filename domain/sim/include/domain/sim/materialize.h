@@ -227,6 +227,16 @@ class Materializer {
   // Dematerializes everything the driver holds, deepest first. Returns how many.
   u32 dematerialize_all();
 
+  // Dematerializes what the driver holds **filed under `scope`** — the records a tile pass of that
+  // tile materialized, deepest first — and leaves everything else as it is: the mirror of
+  // `materialize(document, MaterializeScope::of_tile(t))`, which a tile that goes inactive needs
+  // (docs/subsystems/world.md). A child held under another tile whose parent this drops becomes an
+  // orphan, and is relinked when the parent comes back, as a deletion would leave it. The whole
+  // scope is `dematerialize_all()`. Returns how many.
+  u32 dematerialize(const MaterializeScope& scope);
+  // The ids held under `scope`, sorted: what a tile's snapshot writes before the tile goes.
+  void held(const MaterializeScope& scope, Vector<Id128>& out) const;
+
   // One write-back flush: collects the changed writable fields and commits them through the sink
   // as one transaction. The Persist system calls it at the cadence; a host calls it when a run ends
   // so the document says where the world stopped. Returns the fields written.

@@ -374,6 +374,50 @@ TEST_CASE("sim: a tile is materialized on its own, and a parent in another tile 
   CHECK_FALSE(rig.driver.holds(id_of(11)));
 }
 
+TEST_CASE("sim: a tile is dematerialized on its own, and its children elsewhere wait for it") {
+  // The mirror of a tile pass, which a tile that goes inactive needs (docs/subsystems/world.md):
+  // only what was filed under the tile goes, deepest first, and a child in another tile whose
+  // parent went is an orphan until the parent's tile comes back.
+  doc::Document d;
+  d.add_layer("base", doc::LayerRole::Base);
+  doc::LayerPartition partition;
+  partition.tile_size = 10.0;
+  d.set_layer_partition(0, partition);
+  create(d, 50, k_shelf, 0, props({{"position", vec3(5, 0, 5)}}));    // tile (0, 0)
+  create(d, 10, k_crate, 50, props({{"position", vec3(15, 0, 5)}}));  // tile (1, 0), child of 50
+  create(d, 11, k_crate, 0, props({{"position", vec3(12, 0, 1)}}));   // tile (1, 0)
+  create(d, 12, k_crate, 50, props({{"position", vec3(4, 0, 4)}}));   // tile (0, 0), child of 50
+
+  Rig rig;
+  rig.driver.materialize(d, MaterializeScope::of_tile({0, 0}));
+  rig.driver.materialize(d, MaterializeScope::of_tile({1, 0}));
+  REQUIRE(rig.driver.live() == 4);
+  Vector<Id128> west;
+  rig.driver.held(MaterializeScope::of_tile({0, 0}), west);
+  REQUIRE(west.size() == 2);
+  CHECK(west[0] == id_of(12));  // sorted
+  CHECK(west[1] == id_of(50));
+
+  std::vector<std::string> log;
+  rig.world.log = &log;
+  CHECK(rig.driver.dematerialize(MaterializeScope::of_tile({0, 0})) == 2);
+  CHECK(log.size() == 2);
+  CHECK_FALSE(rig.driver.holds(id_of(50)));
+  CHECK_FALSE(rig.driver.holds(id_of(12)));
+  CHECK(rig.driver.holds(id_of(10)));
+  CHECK(rig.driver.holds(id_of(11)));
+  CHECK(rig.world.entities.count(id_of(10)) == 1);
+
+  // The tile comes back: the shelf and its crate are created again, the other tile's crate relinks.
+  const MaterializeReport back = rig.driver.materialize(d, MaterializeScope::of_tile({0, 0}));
+  CHECK(back.created == 2);
+  CHECK(back.relinked == 1);
+  CHECK(back.orphans == 0);
+  // Dematerializing a tile nothing is filed under is nothing.
+  CHECK(rig.driver.dematerialize(MaterializeScope::of_tile({7, 7})) == 0);
+  CHECK(rig.driver.live() == 4);
+}
+
 TEST_CASE("sim: write-back commits one attributed transaction and the next pass leaves it alone") {
   doc::Document d = yard();
   Rig rig;

@@ -577,6 +577,28 @@ u32 Materializer::dematerialize_all() {
   return report.dematerialized;
 }
 
+u32 Materializer::dematerialize(const MaterializeScope& scope) {
+  if (scope.kind == MaterializeScope::Kind::Whole) return dematerialize_all();
+  MaterializeReport report;
+  gone_.clear();
+  for (u32 i = 0; i < held_.size(); ++i) {
+    const Held& held = held_.value_at(i);
+    if (in_scope(scope, held.tiled, held.tile)) gone_.push_back(held_.key_at(i));
+  }
+  dematerialize_ids(gone_, report);
+  // Anything left in the orphan list that is gone now is skipped by the next relink.
+  return report.dematerialized;
+}
+
+void Materializer::held(const MaterializeScope& scope, Vector<Id128>& out) const {
+  out.clear();
+  for (u32 i = 0; i < held_.size(); ++i) {
+    const Held& held = held_.value_at(i);
+    if (in_scope(scope, held.tiled, held.tile)) out.push_back(held_.key_at(i));
+  }
+  std::sort(out.begin(), out.end());
+}
+
 u64 Materializer::last_order_hash() const noexcept {
   u64 hash = 1469598103934665603ull;
   for (const Id128& id : order_) {
