@@ -768,9 +768,24 @@ struct FlythroughRt @version(1) {
   wanted: Percentiles
 }
 
+/// The materials' textures a scene holds on the device (`renderer::GpuScene`): the distinct
+/// textures, built from the content build's `.tex` files or decoded from their images; how many
+/// of the meshes' sampled images took a texture another mesh had already uploaded instead of their
+/// own copy; the device bytes of what was uploaded, and of what sharing did not upload again
+/// (docs/subsystems/renderer.md, "One upload per distinct image"). `sharing` is
+/// `RenderSettings::share_textures`: false is every mesh its own copy, to measure against.
+struct FlythroughTextures @version(1) {
+  built: u32 = 0
+  decoded: u32 = 0
+  shared: u32 = 0
+  bytes: u64 = 0
+  bytes_saved: u64 = 0
+  sharing: bool = true
+}
+
 /// The last line of a flythrough benchmark's `.jsonl`, and engine-view's summary line. An
 /// interactive session measured with `--benchmark` ends its `.jsonl` with one too.
-struct FlythroughSummary @version(5) {
+struct FlythroughSummary @version(6) {
   /// "engine.flythrough.v1".
   format: string
   scene: string
@@ -839,4 +854,6 @@ struct FlythroughSummary @version(5) {
   /// the ring's microseconds, each consumer's cost, the ruins' assembly and the renderer taking
   /// them). Null for a scene read whole.
   world: json @since(5)
+  /// The scene's textures on the device, and what one upload per distinct image saved.
+  textures: FlythroughTextures @since(6)
 }

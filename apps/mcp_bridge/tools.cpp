@@ -1474,6 +1474,10 @@ void run_scenes(Bridge& b, const JsonValue&, ToolOutcome& out) {
                  ", shadows " + text_of(entry, "shadows") + ")";
         if (uint_of(entry, "texture_bytes") > 0)
           lines += ", textures " + mib_text(uint_of(entry, "texture_bytes")) + " MiB";
+        if (uint_of(entry, "textures_shared") > 0)
+          lines += " (" + std::to_string(uint_of(entry, "textures_shared")) +
+                   " shared between meshes, " + mib_text(uint_of(entry, "texture_bytes_saved")) +
+                   " MiB not uploaded again)";
         if (uint_of(entry, "rt_bytes") > 0)
           lines += ", ray tracing " + mib_text(uint_of(entry, "rt_bytes")) + " MiB";
         if (bool_of(entry, "reference")) lines += ", with the reference path tracer";

@@ -35,7 +35,7 @@
 - **`max_sink` sinks by arbitrary centimetres**, which puts a sunk member's courses out of line with its neighbours'; a sink in whole courses would keep them aligned.
 - **Debris has a pick weight and no mass.** The exported stones weigh 16–181 kg (`kit.measure.json` beside each kit records them), which the simulation will want and the schema has nowhere to put.
 - **A flat socket is a straight vertical joint through every course.** A toothed joint, which is how masonry actually meets, would need a joint profile every member shares — and no sinking, which would shift it.
-- **Every member uploads its own copy of the same texture atlas.** The renderer loads each member's GLB as its own mesh with its own embedded images, so one building can hold the same atlas up to nineteen times on the GPU. That inflates a textured kit's GPU memory against a representation whose dozen meshes share less by accident; de-duplicating images across meshes is a renderer change of its own.
+- **Every member uploads its own copy of the same texture atlas.** The renderer loads each member's GLB as its own mesh with its own embedded images, so one building can hold the same atlas up to nineteen times on the GPU. That inflates a textured kit's GPU memory against a representation whose dozen meshes share less by accident; de-duplicating images across meshes is a renderer change of its own. **Since 2026-09-25 it is made**: a scene uploads one texture per distinct image content, so the ashlar kit's six images are six textures in 80 MiB however many members sample them, where they were 99 in 1,440 MiB ([renderer](renderer.md#one-upload-per-distinct-image)).
 
 ## The grammar and the ruin rule
 

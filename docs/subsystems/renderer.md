@@ -272,8 +272,9 @@ to clamp, so a decoded texture's picture moved within half a texel of its edges 
 UVs leave [0, 1]. It is **all or nothing per mesh**, so no material mixes the two, and the log says which and why
 (`mesh textures`, `from: built|decoded`, `reason`). A device without `textureCompressionBC` gets the
 decoded path and a warning naming the feature. `GpuScene::texture_bytes()`, `textures_built()` and
-`textures_decoded()` report what happened, and engine-view prints them as
-`"textures":{"built","decoded","bytes"}`.
+`textures_decoded()` report what happened — distinct textures, since one upload serves every mesh
+that samples the same image ([below](#one-upload-per-distinct-image)) — and engine-view prints them
+as `"textures":{"built","decoded","distinct","shared","bytes","bytes_saved","sharing"}`.
 
 **The renderer builds them itself on a cold cache.** A load through the derived-data cache
 (`SceneDesc::cache`) runs the content build's texture step (`content_build::run_texture_step`,
@@ -292,6 +293,103 @@ The reference path tracer samples the same textures at level 0, as it always sam
 is a compute pass with no derivatives, and a converged reference is not the place for a filter
 footprint. Its BC5 normal maps go through the same z reconstruction as the resolve's.
 
+## One upload per distinct image
+
+**A scene uploads each distinct texture once, however many of its meshes sample it** (since
+2026-09-25). `upload_materials` keys every (mesh, image) a material samples by what the texture is
+made from, and a key the scene already holds hands back the bindless slot of the texture already
+uploaded instead of uploading again:
+
+- **built**, by the `.tex` build key, `texture::texture_cache_key(source hash, options)`: the
+  image's encoded bytes and everything the build was told about them — format, colour space, the
+  edges its samplers wrap with ([texture](texture.md#the-derived-data-cache-and-the-containers-records)).
+  Two images with one key are one file in the derived-data root, so they are one texture.
+- **decoded**, by `hash_bytes` over the encoded bytes — embedded, or the file as it is now — and
+  the format the image goes up as (sRGB for colour, UNORM for data): the decode is a function of the
+  bytes, and the format is the rest of what the device holds.
+
+Each mesh still chooses between the two on its own, all or nothing, so a built texture and a
+decoded one never share (they are different images on the device). A key the scene already holds is
+not read from the derived-data root again — `find_built_textures` skips the read, since the mesh
+that uploaded it checked its identity — and not decoded again: a repeat costs a hash on the decoded
+path and nothing on the built one. The entry keeps both halves of its key and is compared whole, so a
+64-bit collision between two different images uploads the second again rather than drawing the
+wrong one.
+
+**Why the key is the content and not the path.** The duplication this removes is a kit's. E33's
+ashlar kit is nineteen GLBs exported one by one, and each embeds the same six images — the block's
+and the mortar's base colour, normal and ORM, 16.2 MB of JPEG — so each member uploaded its own
+copy of them: 99 textures for 6 images, and one building could hold the atlas nineteen times
+([E34](../experiments/e34-ruin-blocks.md), [ruins](ruins.md#the-kit)). An embedded image has no path
+at all. Where images are files, a path is both too strict and too loose: two paths name the same
+bytes whenever each member's folder carries its own copy, and one name holds different bytes in
+every kit that calls its atlas `atlas.png`. The content is the identity the derived-data cache
+already addresses a texture by ([ADR-0036](../adr/0036-built-textures-in-the-engines-own-container.md)),
+so on the built path the key costs nothing new — the container's record carries it for an embedded
+image, and a file is hashed as it is now anyway, which is also why a repainted file finds its new
+texture — and on the decoded path it costs a hash over bytes that were about to be decoded.
+
+**What it keeps.** The picture: every material reads the same texels through the same sampler,
+from a slot another mesh made. `texture_tests.cpp` holds a kit's picture — ids, depth and colour —
+to the byte against every member's own upload, from the decoded images and from the built textures,
+and so do the captures below. The bindless set spends one sampled-image slot per distinct image
+rather than per member. **Samplers were already shared this way**: one per distinct description
+(wrap s, wrap t, filters, mipmapped), scene-wide ([Materials](#materials)).
+
+**Lifetime: the scene's.** The textures are made with the `GpuScene`, owned by it and destroyed
+with it, and nothing counts them per instance. A streamed world's tail of instances
+([Instances that come and go](#instances-that-come-and-go)) takes its mesh's material base and
+nothing else, so a tile's buildings arriving and leaving uploads no texture; the test gives a scene
+of one instance the rest as a tail between frames and requires the same two textures, the same bytes
+and the same picture, and the E35 world below uploads the kit's six once and none in the 62 tails of
+its flight. **Nothing is shared across scenes**: two scenes engine-host holds at once
+each upload their own, because a texture's lifetime is its scene's and a host-wide table would
+need an owner that outlives every scene and a rule for when an entry dies, neither of which exists.
+
+**What it reports.** `GpuScene::textures_built()` and `textures_decoded()` count distinct textures;
+`texture_references()` the (mesh, image) pairs that reached one, `textures_shared()` those that took
+one the scene already held, and `texture_bytes_saved()` what their own copies would have cost on the
+device. The load logs it once (`scene textures`: `distinct`, `references`, `shared`, `bytes`,
+`bytes_saved`, `sharing`). engine-view's summary has `"textures":{"built","decoded","distinct",
+"shared","bytes","bytes_saved","sharing"}` and a flythrough's summary line the same block
+(`engine.scene.FlythroughTextures`, through `summarize_textures`); `render.scenes` and
+`render.unload` add `textures_shared` and `texture_bytes_saved` beside `textures` and
+`texture_bytes`. `RenderSettings::share_textures` false — `engine-view --no-texture-sharing`, the
+protocol's `"share_textures": false` — uploads every mesh's own copy again, which is the build
+before this one, kept to measure against and to hold the picture to.
+
+**What it measured** (RTX 5090, driver 610.88, `msvc-debug`, E33's ashlar kit from a derived-data
+root of its own, 2026-09-25; the machine shared, other processes at 8–23% of the CPU and the GPU
+0–1% busy with 7.1–7.9 GB of its 32.6 GB held by others at every sample of the two rows' runs).
+*Kit grid* is the nineteen members five times each, 95 instances, at 1280×720; *E34's row* is E34's
+"+ 100 ruins, E33 sections" scene, the desert overlook's terrain and 4,698 pieces, at 640×360.
+*Each its own* is `--no-texture-sharing`; the build before this change gives the same textures and
+bytes and the same device memory to within a megabyte. Device memory is `render.scenes`'s
+`gpu_used_bytes` after one capture; *upload* is `GpuScene::create`'s geometry and material upload in
+the debug build, from engine-view's log:
+
+| scene | textures | texture bytes | process device memory | upload (debug) |
+|---|---|---|---|---|
+| kit grid, each its own | 99 | 1,510,169,088 (1,440.2 MiB) | 1,868.2 MiB | 23.1 s |
+| kit grid, shared | **6** | **83,899,392 (80.0 MiB)** | **332.1 MiB** | **1.3 s** |
+| E34's row, each its own | 99 | 1,510,169,088 (1,440.2 MiB) | 2,203.4 MiB | 23.0 s |
+| E34's row, shared | **6** | **83,899,392 (80.0 MiB)** | **668.0 MiB** | **1.3 s** |
+
+`texture_bytes_saved` is 1,426,269,696 (1,360.2 MiB) in both, 93 of the 99 references shared.
+Flown the way E34 flew its rows — 1920×1080, the desert overlook's path, shadows off, here 60 frames
+and one repeat — E34's row holds **684 MiB** of device memory at the end of the flight where the build
+before holds 2,220 MiB (E34 measured 2,219), and E35's streamed ashlar world (rings 1.5/6/10, mid
+blocks near) **1,098 MiB** against 2,378 MiB at the same frame, the world having handed the
+renderer 62 tails and the scene uploaded no texture after its load (other processes at 3–11% of
+the CPU, 7.4–9.2 GB of the GPU's memory in use with ours).
+**The pictures are the same bytes**: the captures through `render.capture` and through engine-view —
+colour and the id buffer — shared, unshared and from the build before, in both scenes; and every
+file `render.evaluate` writes for every scene of the corpus (the real-time picture, the reference,
+the heat maps, at 32 samples), before and after, whose meshes have no image twice
+(`textures_shared` 0). The 22 s the debug build spent was reading ninety-three copies of textures
+it already had from the derived-data root and uploading them; a release build spends less on each,
+and the same ninety-three fewer.
+
 ## Materials
 
 **What a material table entry carries** (`gfx::ResolveMaterial`, 112 bytes; [gfx](gfx.md), "The
@@ -304,7 +402,9 @@ section 33 filled ([texture](texture.md#samplers-and-texture-transforms)).
 names — wrap s and t, the three filters — built (the whole chain, 16x anisotropic where the
 minification is linear) or decoded (level 0 alone), and `upload_materials` makes one bindless
 sampler per distinct combination the scene asks for, shared by every material after the first that
-asked (`GpuScene::material_samplers()`, logged as `material samplers`). A slot with no texture asks
+asked (`GpuScene::material_samplers()`, logged as `material samplers`) — keyed by that description,
+as the textures are keyed by their content ([One upload per distinct image](#one-upload-per-distinct-image)),
+so a kit whose members all ask for the glTF default draws through one. A slot with no texture asks
 for none and borrows the base colour's slot word, which it never reads. The classic heightfield keeps
 its own clamped tooling sampler, uncounted. Every sample in `content/samples` names the glTF default
 sampler or none, so each of them draws through **one** material sampler.
@@ -662,7 +762,7 @@ The benchmark corpus of [plan 09 §9.4](../plan/09-testing-profiling.md#94-bench
 
 ## Instances that come and go
 
-A streamed world's buildings arrive and leave with their tiles ([world](world.md)), so the resident scene has to take instances **between frames** without loading the scene again. The meshes stay — a kit is a few dozen, loaded with the scene — and only the instances change: `GpuScene::set_dynamic_instances(tail)`, which `SceneRenderer::set_dynamic_instances` calls after waiting for the device.
+A streamed world's buildings arrive and leave with their tiles ([world](world.md)), so the resident scene has to take instances **between frames** without loading the scene again. The meshes stay — a kit is a few dozen, loaded with the scene — and only the instances change: `GpuScene::set_dynamic_instances(tail)`, which `SceneRenderer::set_dynamic_instances` calls after waiting for the device. The meshes' textures stay with them, one per distinct image for the whole kit, and a tail uploads none ([One upload per distinct image](#one-upload-per-distinct-image)).
 
 **A fixed prefix and a tail.** A scene whose `SceneData::dynamic` is set is its load's instances — the terrain, whatever the file placed — followed by a tail the caller replaces whole. The prefix never moves: its instances, their `first_pair`s and so their pairs keep their numbers through every change, so the terrain's occlusion history survives every tile and its ids mean what they meant. The tail's instances are placed as the load places its own (`make_instance`: the mesh's fit, then the instance's transform, at the prefix sum where the prefix ended; `SceneData::mesh_fit` keeps the fits, because the float positions they were measured from may be gone by then), given their mesh's material base (kept by the GPU scene from the material table's layout), and **only the tail is written**: the tail's instance descriptors and the tail's entries of the pair table, after the prefix's, through one staging buffer the scene keeps and one submission into the two tables' kept buffers (`write_tables`). Those keep a capacity the way the per-pair buffers keep a stride (below) — the instance table in pages of 1,024 instances, half as much again when it grows, the pair table as long as the stride — and a change that outgrows either writes that table whole once. Nothing in the renderer knows a tile: the caller's order is the tail's order, which is why the world hands its tiles over in tile order — a scene streamed to a set of tiles then has one numbering of its pairs, whatever order the tiles came in, and the tie rule's picture is a function of the set.
 
@@ -681,11 +781,11 @@ A streamed world's buildings arrive and leave with their tiles ([world](world.md
 - `systems/renderer/scene.h` — `SceneDesc`, `SceneInstance`, `SceneAnimation`, `InstanceJoints`, `MeshFit`, `SceneMeshInfo`, `SceneFileOptions` (including `world`), `WorldDesc`, `StreamedRuins`, `SourceMesh`, `SceneData` (including `mesh_fit`, `dynamic`, `world` and `streamed_ruins`), `load_scene` (`SceneDesc::ruin_buildings`/`ruin_instances` count what a file's `ruins` entries made), `read_scene_file` (with and without `SceneFileOptions`), `make_instance` and `pairs_after` ([Instances that come and go](#instances-that-come-and-go)), `hash_hex`, `parse_hash_hex`, `mesh_bounds`, `update_scene_bounds`, `mesh_vertex_ids`.
 - `systems/renderer/terrain.h` — `TerrainDesc`, `TerrainRidge`, `TerrainBasin`, `terrain_height`, `TerrainSampler`, `terrain_ridge_weight`, `terrain_basin_weight`, `terrain_material`, `terrain_majority_material`, `terrain_hash`, `build_terrain_mesh`, `k_terrain_version`, `k_terrain_materials`, `k_terrain_max_size` ([Scenes, camera paths and flythroughs](#scenes-camera-paths-and-flythroughs)).
 - `systems/renderer/camera_path.h` — `CameraPath`, `CameraPathKey`, `CameraPathMarker`, `read_camera_path`, `parse_camera_path`, `sample_camera_path`, `camera_path_frame`, `camera_path_frame_time`.
-- `systems/renderer/flythrough.h` — `FlightStep`, `FlightHook`, `FlightOptions` (including `before_frame`), `Flight`, `fly_camera_path`, `frame_record`, `summarize_rt`, `percentiles`, `summarize_frames`, `marker_frame`, `VisibleCensus`.
+- `systems/renderer/flythrough.h` — `FlightStep`, `FlightHook`, `FlightOptions` (including `before_frame`), `Flight`, `fly_camera_path`, `frame_record`, `summarize_rt`, `summarize_textures`, `percentiles`, `summarize_frames`, `marker_frame`, `VisibleCensus`.
 - `systems/renderer/rt_capacity.h` — `RtCapacityConfig`, `RtCapacity`, `rt_budget_mib_tunable`, `rt_headroom_pct_tunable`, `rt_shrink_frames_tunable`, `rt_step_tunable`, `k_default_rt_budget_mib`, `k_initial_rt_clusters` ([The ray tracing chain's memory](#the-ray-tracing-chains-memory)).
 
 **Canonical vertex ids, read-only.** `mesh_vertex_ids(scene, mesh)` is a span over the loaded mesh's cluster vertices' canonical ids ([geometry](geometry.md#canonical-vertex-identity)): entry *i* names `lod.mesh.vertices[parts[mesh].first_vertex + i]`, and `parts[mesh].vertex_id_source` says which id space it is in — each mesh of a scene has its own. It is what a future binding step will look a vertex up by, since a file written beside a mesh names ids and never cluster indices, which every rebuild renumbers. **Nothing uploads it**: no pass reads an id yet, so it is not in a page's bytes, not in the GPU scene, and not released with the paged host streams when a streamed scene's pages come off disk (`attach_page_source`) — the lookup answers the same however the scene was loaded. A single-mesh scene fills its one part's source itself, as it does its morph channel run, because it never goes through `merge_cluster_meshes`. The span is empty for a mesh with no ids (the procedural scenes, a container from before cluster cache version 12) and for an index past the scene's meshes.
-- `systems/renderer/gpu_scene.h` — `GpuScene` (including `material_samplers` and `transform_conflicts` ([Materials](#materials)), `deform_pool_bytes`, `deform_pool_vertices`, `deform_whole_mesh_bytes`, `visible_entries`, `pair_entries_address`, `pair_cluster`, the ray tracing chain's `rt_bytes`, `rt_capacity`, `rt_capacity_limit`, `rt_union_clusters`, `rt_bytes_per_cluster` and `resize_ray_tracing`, and a dynamic scene's `pair_stride`, `dynamic`, `static_instance_count`, `static_pair_count`, `dynamic_instance_count`, `set_dynamic_instances` and `instance_mesh`), `k_visible_runs`, `k_max_pairs`, `k_joint_slots`, `k_stream_slots`, `k_max_page_requests`, `k_default_upload_budget`.
+- `systems/renderer/gpu_scene.h` — `GpuScene` (including `material_samplers` and `transform_conflicts` ([Materials](#materials)), `texture_references`, `textures_shared`, `texture_bytes_saved` and `share_textures` ([One upload per distinct image](#one-upload-per-distinct-image)), `deform_pool_bytes`, `deform_pool_vertices`, `deform_whole_mesh_bytes`, `visible_entries`, `pair_entries_address`, `pair_cluster`, the ray tracing chain's `rt_bytes`, `rt_capacity`, `rt_capacity_limit`, `rt_union_clusters`, `rt_bytes_per_cluster` and `resize_ray_tracing`, and a dynamic scene's `pair_stride`, `dynamic`, `static_instance_count`, `static_pair_count`, `dynamic_instance_count`, `set_dynamic_instances` and `instance_mesh`), `k_visible_runs`, `k_max_pairs`, `k_joint_slots`, `k_stream_slots`, `k_max_page_requests`, `k_default_upload_budget`.
 - `systems/renderer/streaming.h` — `StreamStats`, `GeometryStreamer` (see [Geometry streaming](#geometry-streaming-the-gpu-half-of-pages-and-residency)).
 - `systems/renderer/page_source.h` — `k_page_loads`, `k_page_reads`, `PageSource` (the interface the streamer reads pages through), `FilePageSource`, `attach_page_source`, `paged_stream_bytes`: where a streamed page's bytes come from, and the call that releases the host streams once they come from a file.
 - `systems/renderer/scene_renderer.h` — `GpuMemory`, `ViewStats`, `FrameStats` (including `instances` and `pairs`), `RtStats`, `Stats` (including `last`, `folded` and `rt`), `FrameDesc` (including `rt_complete`), `SceneRenderer` (including `sample_gpu_memory`, `views()` and `set_dynamic_instances`).
@@ -709,6 +809,8 @@ The flags and their validation, the window and its events, the surface and the s
 **The glTF sampler's wraps and the texture transform** are a fourth case of `texture_tests.cpp`: a quad with UVs from 0 to 3 and a 2×2 texture of four colours through a nearest sampler shows nine whole tiles under repeat, every other tile reflected under mirror, and one tile then the edge texel under clamp — all 36 cells, matched to the nearest of the four colours at their centres — and UVs from 0 to 1 with a `KHR_texture_transform` scale of 3 show the same nine tiles; each from the decoded image and from the built texture, with one material sampler in the scene. The reference's agreement case gained a **dark plane lit by its own emissive texture**, held to the same kind of FLIP bound as the other three: 0.014 on the RTX 5090, under a bound of 0.05 ([Materials](#materials)). The emissive and occlusion slots, the ORM packing and the transform's rotation are held to the CPU reference at the gfx level, 1 of 255 at worst on the RTX 5090 ([gfx](gfx.md)).
 
 **Built textures have three cases** (`texture_tests.cpp`, [Built textures](#built-textures)), each over a textured quad written at test time and loaded through a derived-data root in the test's scratch directory, drawn through the albedo view (`ResolveMode::Albedo`, the textured base colour unlit, so the lights are not in the comparison), once decoded and once after the test builds the `.tex` the container names. **Up close**, where level 0 is what both paths sample, the built picture is within BC7's bound of the decoded one (PSNR above 38 dB, no channel more than 16 codes off). **Far away**, a one-texel checkerboard resolves to its mean through the mips — display value 186, half the light, since the chain was filtered in linear light — with a spread under 3 codes, where the decoded path aliases to black and white. **The level the hardware picks** is read back from a probe texture written by hand whose level L is red 28 L: at four distances the red, taken back to linear, gives the level of detail the resolve's analytic derivatives selected, and it is log₂ of the texels per pixel that the projection's finite difference across a pixel gives, within 0.2 of a level. The distances put the level just past a whole one on purpose: NVIDIA's driver shortens the blend between two levels (a fraction f of the way reads as min(1, 2f)), which is the driver's filtering and not the derivatives' choice ([texture](texture.md#what-it-measured)).
+
+**One upload per distinct image has a case of its own** (`kit members that sample one image upload it once and draw the same picture`, [One upload per distinct image](#one-upload-per-distinct-image)): four kit members written at test time, each a glTF quad in a directory of its own — two naming their own copy of one PNG beside them, one embedding the same bytes as a data URI, one naming an `image.png` that is another picture — three instances each, from the decoded images and from the built textures a cold cache fills. Each member's own upload (`share_textures` off) is four textures; shared, it is two — the three members whose bytes match, whatever they called the image, and the one that only shares its name — with half the bytes, the other half counted as saved, and **0 differing pixels** in ids, depth and colour at 256×256 (14,840 covered, RTX 5090). The same scene loaded with one instance and given the other eleven as a tail between frames keeps the same two textures and bytes and draws the same picture again.
 
 **On a device without mesh shaders or ray queries — the baseline tier — the suite runs, it does not skip.** `RenderSettings{}` asks for `hw`, which `resolve_settings` turns into the vertex path there, so every case about the *picture* (the cube and its channels, two instances, the surround's centre view, occlusion culling, Panini, the skinned bar and its bend and sweep, the morph cases, the pool's budget, the cones, the shredded atlas, and all seven streaming cases) draws through `cluster_vertex.slang`. Only a case about a *path* skips, naming what is missing in the device's own words: the direct path (`no mesh shaders`), the mesh-path half of "the mesh, vertex and ray paths agree" and of the cone case (`no VK_EXT_mesh_shader`), and every ray half — the ray path, the turned surround's TLAS half, the four reference cases, the 8-bit-index streaming case, which only exists when the frame builds the ray chain — with `unavailable_reason`'s sentence. "The mesh, vertex and ray paths agree" holds the other two to the **vertex** path now, because it is the one every device that renders has; asking a device without mesh shaders for `hw` would compare the vertex path with itself. The harnesses of the atlas and streaming files skip **only** on no device or `check_availability`; a scene, GPU scene, page source or renderer that fails to build is a `REQUIRE` failure. Until 2026-09-23 they reported any build failure as a skip, which is how nine cases — all eight streaming cases and the shredded atlas — "passed" on the first run on the TITAN Xp without drawing a frame, while the renderer could not be created there at all; eight of them draw there now, and the ninth, the 8-bit-index case, skips because the card builds no ray chain ([self-hosted runners](../ci/self-hosted-runners.md#the-first-run-on-the-titan-xp)).
 

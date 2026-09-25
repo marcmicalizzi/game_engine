@@ -402,7 +402,7 @@ struct AdaptersResult @version(1) {
 // with the same functions in systems/renderer/settings.h.
 
 /// Every knob the renderer has. Absent fields keep the defaults, which are engine-view's.
-struct RenderSettings @version(6) {
+struct RenderSettings @version(7) {
   /// direct, hw, vertex, sw, auto, or rt. `hw` and `direct` fall back to `vertex` on a device
   /// without mesh shaders; the result says which one ran.
   raster: string = "hw"
@@ -472,6 +472,12 @@ struct RenderSettings @version(6) {
   shadow_cascades: u32 = 4 @since(6)
   shadow_map: u32 = 2048 @since(6)
   shadow_distance: f32 = 0 @since(6)
+  /// One texture per distinct image content per scene: every mesh whose material samples an image
+  /// whose bytes (and, built, whose `.tex` options) match one already uploaded shares that texture
+  /// (docs/subsystems/renderer.md, "One upload per distinct image"). False uploads every mesh's own
+  /// copy, the behaviour before 2026-09-25, to measure what sharing saves; the picture is the same
+  /// bytes either way. It is `engine-view --no-texture-sharing`.
+  share_textures: bool = true @since(7)
 }
 
 /// The ray tracing chain's memory over a run, mirroring `renderer::RtStats`: the capacity of the
@@ -1003,7 +1009,7 @@ struct RenderUnloadParams @version(1) {
 /// What `render.unload` released. The id names nothing afterwards: every render method that is
 /// given it answers 1003 NotFound, the answer for an id that never existed, with a message that
 /// says it was unloaded. Ids are never reused.
-struct RenderUnloadResult @version(1) {
+struct RenderUnloadResult @version(2) {
   scene: string
   /// What the scene held, as `render.load` counted it.
   meshes: u32 = 0
@@ -1017,10 +1023,16 @@ struct RenderUnloadResult @version(1) {
   gpu_scene: bool = false
   reference: bool = false
   /// The material textures its GPU scene had on the device — built from the content build's
-  /// `.tex` files or decoded from their images — and the device bytes of every texture it
-  /// uploaded, the procedural heightfield's own included, which no material names.
+  /// `.tex` files or decoded from their images, one per distinct image content — and the device
+  /// bytes of every texture it uploaded, the procedural heightfield's own included, which no
+  /// material names.
   textures: u32 = 0
   texture_bytes: u64 = 0
+  /// How many of its meshes' sampled images took a texture another mesh had already uploaded
+  /// rather than their own copy, and the device bytes those copies would have taken
+  /// (docs/subsystems/renderer.md, "One upload per distinct image"). 0 with `share_textures` off.
+  textures_shared: u32 = 0 @since(2)
+  texture_bytes_saved: u64 = 0 @since(2)
   /// The engine allocator's heap bytes before and after (`engine.budgets`' `memory.heap`): the
   /// difference is the scene's host arrays — clusters, the LOD graph, instances, materials.
   host_heap_bytes_before: u64 = 0
@@ -1037,7 +1049,7 @@ struct RenderUnloadResult @version(1) {
 }
 
 /// One scene the host holds, in `render.scenes`.
-struct RenderLoadedScene @version(1) {
+struct RenderLoadedScene @version(2) {
   scene: string
   /// "mesh", "scene" (a scene file) or "procedural", and the path it was loaded from or the
   /// procedural scene's name.
@@ -1064,6 +1076,10 @@ struct RenderLoadedScene @version(1) {
   textures: u32 = 0
   texture_bytes: u64 = 0
   rt_bytes: u64 = 0
+  /// The sampled images that shared a texture another mesh uploaded, and the bytes their own
+  /// copies would have taken (as in `RenderUnloadResult`). 0 until built.
+  textures_shared: u32 = 0 @since(2)
+  texture_bytes_saved: u64 = 0 @since(2)
 }
 
 /// Result of `render.scenes`: every scene the host holds, in load order.

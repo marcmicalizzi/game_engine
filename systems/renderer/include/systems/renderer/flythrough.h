@@ -41,6 +41,10 @@ scene::FrameRecord frame_record(const FrameStats& stats, u32 repeat, u32 frame, 
 // The run's ray tracing chain into the summary's `rt` block, all but the per-frame percentiles
 // `summarize_frames` fills; both hosts call it after the flight so the numbers are the run's.
 void summarize_rt(const RtStats& stats, scene::FlythroughRt& out);
+// The scene's textures into the summary's `textures` block: distinct textures built and decoded,
+// the images that shared another mesh's upload, and the bytes uploaded and saved
+// (docs/subsystems/renderer.md, "One upload per distinct image").
+void summarize_textures(const GpuScene& scene, scene::FlythroughTextures& out);
 
 // One submission of a flight, as the hook before it sees it (`FlightOptions::before_frame`).
 struct FlightStep {

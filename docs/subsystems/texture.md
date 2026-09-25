@@ -184,8 +184,18 @@ mipmapping samplers (below), and sets `k_material_mipped` on the mesh's material
 took — decode, RGBA8 at one level, level-0 reads — and the flags stay zero. It is all or nothing per
 mesh, so no material mixes the two. A device without `textureCompressionBC` draws the decoded path
 with a warning naming the feature (every desktop GPU has it; `engine-cli gpu.adapters` lists the
-row). `engine-view`'s summary says what happened: `"textures":{"built":n,"decoded":m,"bytes":b}`,
+row). `engine-view`'s summary says what happened: `"textures":{"built":n,"decoded":m,"bytes":b,…}`,
 the bytes being what the allocator gave the images.
+
+**One texture per distinct `.tex` per scene.** The build key is also how the renderer tells two
+meshes' images apart: a mesh whose image has a key the scene already uploaded — every member of a kit
+that embeds one atlas — takes that texture's bindless slot instead of uploading another copy, and a
+decoded image is keyed the same way by its encoded bytes and the format it goes up as. The key is
+the content rather than the path for the reason the cache is addressed by content: an embedded image
+has no path, and a path names neither the same bytes everywhere nor different bytes only. E33's
+ashlar kit went from 99 textures and 1,440 MiB on the device to 6 and 80 MiB, the picture the same
+bytes ([renderer](renderer.md#one-upload-per-distinct-image)); the summary's `distinct`, `shared` and
+`bytes_saved` say so for any scene.
 
 **Whoever fills the cache builds the textures.** The renderer's load through the cache runs the
 content build's texture step (`content_build::run_texture_step`) beside the container it writes

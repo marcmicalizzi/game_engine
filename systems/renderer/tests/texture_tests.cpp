@@ -37,6 +37,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -65,9 +66,11 @@ void put_f32(std::vector<u8>& out, f32 v) {
 // A unit-half-width quad in the XY plane facing +z, UV (0,0) at the top left and (uv_max, uv_max)
 // at the bottom right, with one white material whose base colour is `image.png` beside it.
 // `sampler` is a glTF sampler object for the texture, or empty for none (the glTF defaults);
-// `transform` is a KHR_texture_transform object for the reference, or empty for none.
+// `transform` is a KHR_texture_transform object for the reference, or empty for none; `image_uri`
+// is what the image names instead of `image.png` — a data URI embeds it.
 bool write_quad(const std::filesystem::path& dir, f32 uv_max = 1.0f,
-                const std::string& sampler = "", const std::string& transform = "") {
+                const std::string& sampler = "", const std::string& transform = "",
+                const std::string& image_uri = "image.png") {
   std::vector<u8> bin;
   const f32 positions[12] = {-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0};
   const f32 normals[12] = {0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1};
@@ -100,7 +103,8 @@ bool write_quad(const std::filesystem::path& dir, f32 uv_max = 1.0f,
       (sampler.empty()
            ? std::string("\"textures\":[{\"source\":0}],")
            : "\"samplers\":[" + sampler + "],\"textures\":[{\"source\":0,\"sampler\":0}],") +
-      "\"images\":[{\"uri\":\"image.png\"}],"
+      "\"images\":[{\"uri\":\"" + image_uri +
+      "\"}],"
       "\"accessors\":["
       "{\"bufferView\":0,\"componentType\":5126,\"count\":4,\"type\":\"VEC3\","
       "\"min\":[-1,-1,0],\"max\":[1,1,0]},"
@@ -616,4 +620,211 @@ TEST_CASE("renderer: glTF wrap modes and texture transforms tile, mirror and cla
                                        << " of 36 cells wrong; " << first_wrong);
     }
   }
+}
+
+namespace {
+
+std::string base64(const Vector<u8>& bytes) {
+  static constexpr char k_digits[] =
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  std::string out;
+  for (u32 i = 0; i < bytes.size(); i += 3) {
+    const u32 n = std::min<u32>(3, bytes.size() - i);
+    const u32 v = u32{bytes[i]} << 16 | (n > 1 ? u32{bytes[i + 1]} << 8 : 0u) |
+                  (n > 2 ? u32{bytes[i + 2]} : 0u);
+    out += k_digits[(v >> 18) & 63u];
+    out += k_digits[(v >> 12) & 63u];
+    out += n > 1 ? k_digits[(v >> 6) & 63u] : '=';
+    out += n > 2 ? k_digits[v & 63u] : '=';
+  }
+  return out;
+}
+
+// One scene of a kit's members, instanced, drawn shaded with no shadows (so a scene whose instances
+// come and go may draw it too), with the lights' reach pinned so that a scene holding only a prefix
+// of the instances is lit as the whole one is.
+struct KitRig {
+  SceneData data;
+  GpuScene scene;
+  SceneRenderer renderer;
+
+  bool build(const gfx::Device& device, const Vector<std::string>& meshes,
+             std::span<const SceneInstance> instances, const std::string& ddc, bool cache,
+             bool share, bool dynamic, std::string& skip) {
+    std::string error;
+    SceneDesc desc;
+    for (const std::string& mesh : meshes)
+      desc.meshes.push_back(mesh);
+    for (const SceneInstance& instance : instances)
+      desc.instances.push_back(instance);
+    desc.cache = cache;
+    desc.ddc = ddc;
+    REQUIRE_MESSAGE(load_scene(desc, data, error), "scene: " << error);
+    data.center = Vec3{0.0f, 0.0f, 0.0f};
+    data.radius = 6.0f;
+    data.dynamic = dynamic;
+    RenderSettings settings;
+    settings.shadows = ShadowMode::Off;
+    settings.share_textures = share;
+    ResolvedSettings resolved;
+    resolve_settings(settings, device.features(), &data, resolved);
+    const RenderAvailability availability = check_availability(resolved, device.features());
+    if (availability != RenderAvailability::Ok) {
+      skip = "unavailable here: " + unavailable_reason(availability, device);
+      return false;
+    }
+    REQUIRE_MESSAGE(scene.create(device, data, resolved, &error), "gpu scene: " << error);
+    SceneRenderer::Desc rd;
+    rd.width = k_size;
+    rd.height = k_size;
+    REQUIRE_MESSAGE(renderer.create(device, scene, resolved, rd, &error), "renderer: " << error);
+    return true;
+  }
+
+  CapturedFrame shot() {
+    FrameDesc frame;
+    frame.camera.position = Vec3{0.0f, 0.0f, 14.0f};
+    frame.camera.target = Vec3{0.0f, 0.0f, 0.0f};
+    frame.camera.fov_y = k_fov;
+    CaptureChannels channels;
+    channels.color = true;
+    channels.ids = true;
+    channels.depth = true;
+    CapturedFrame out;
+    std::string error;
+    REQUIRE_MESSAGE(renderer.capture(frame, channels, out, &error), error);
+    return out;
+  }
+
+  ~KitRig() {
+    renderer.destroy();
+    scene.destroy();
+  }
+};
+
+// Pixels whose id, depth or colour differ between two captures of one size.
+u32 differing_pixels(const CapturedFrame& a, const CapturedFrame& b) {
+  REQUIRE(a.width == b.width);
+  REQUIRE(a.height == b.height);
+  u32 differ = 0;
+  for (u32 p = 0; p < a.width * a.height; ++p) {
+    bool d = a.depth[p] != b.depth[p];
+    for (u32 w = 0; w < k_id_words; ++w)
+      d = d || a.ids[u64{p} * k_id_words + w] != b.ids[u64{p} * k_id_words + w];
+    for (u32 c = 0; c < 4; ++c)
+      d = d || a.color[u64{p} * 4 + c] != b.color[u64{p} * 4 + c];
+    differ += d ? 1u : 0u;
+  }
+  return differ;
+}
+
+}  // namespace
+
+// One upload per distinct image per scene (docs/subsystems/renderer.md, "One upload per distinct
+// image"). Four kit members, each a glTF quad of its own in a directory of its own — the way the
+// E33 ashlar kit's nineteen members each embed one atlas:
+//
+//   member 0 and member 1  name their own copy of the atlas, `image.png` beside them;
+//   member 2               embeds the same bytes as a data URI, with no path at all;
+//   member 3               names an `image.png` too, which is another picture.
+//
+// Three instances each, drawn from the decoded images (no cache) and from the built textures (a
+// cold cache the load fills). With sharing, the scene holds two textures — the atlas once for the
+// three members whose bytes match, whatever they called it, and member 3's, which only shares a
+// name — and the picture, ids, depth and colour, is the one each member's own upload draws, byte
+// for byte. So is the picture of the same scene loaded with one instance and given the rest as a
+// tail between frames, which is how a streamed world draws a kit; the tail uploads nothing.
+TEST_CASE("renderer: kit members that sample one image upload it once and draw the same picture") {
+  const test::TempDir tmp("renderer_texture_kit");
+  const std::filesystem::path root = tmp.native();
+  constexpr u32 k_image = 64;
+  constexpr u32 k_members = 4;
+  constexpr u32 k_copies = 3;
+  Vector<std::string> meshes;
+  for (u32 m = 0; m < k_members; ++m) {
+    const std::filesystem::path dir = root / ("member" + std::to_string(m));
+    std::filesystem::create_directories(dir);
+    Vector<u8> png;
+    REQUIRE(
+        write_image(dir, k_image, m == 3 ? checker_image(k_image) : smooth_image(k_image), png));
+    const std::string uri = m == 2 ? "data:image/png;base64," + base64(png) : "image.png";
+    // Different UVs, so four different meshes and four different containers.
+    REQUIRE(write_quad(dir, 1.0f + 0.5f * static_cast<f32>(m), "", "", uri));
+    meshes.push_back((dir / "quad.gltf").string());
+  }
+  Vector<SceneInstance> instances;
+  for (u32 m = 0; m < k_members; ++m) {
+    for (u32 c = 0; c < k_copies; ++c) {
+      SceneInstance instance;
+      instance.mesh = m;
+      instance.transform.position =
+          Vec3{(static_cast<f32>(c) - 1.0f) * 2.4f, (1.5f - static_cast<f32>(m)) * 2.4f, 0.0f};
+      instances.push_back(instance);
+    }
+  }
+  const std::string ddc = (root / "ddc").string();
+
+  gfx::Device device;
+  std::string error;
+  if (!device.create(gfx::DeviceOptions{}, &error)) {
+    MESSAGE("device unavailable: " << error);
+    return;
+  }
+  for (const bool built : {false, true}) {
+    const std::string path = built ? "built" : "decoded";
+    INFO(path);
+    std::string skip;
+    CapturedFrame own_frame;
+    u64 own_bytes = 0;
+    {
+      KitRig own;  // every member uploads its own copy, as before 2026-09-25
+      if (!own.build(device, meshes, instances, ddc, built, false, false, skip)) {
+        MESSAGE(skip);
+        break;
+      }
+      CHECK((built ? own.scene.textures_built() : own.scene.textures_decoded()) == k_members);
+      CHECK(own.scene.texture_references() == k_members);
+      CHECK(own.scene.textures_shared() == 0);
+      CHECK(own.scene.texture_bytes_saved() == 0);
+      own_bytes = own.scene.texture_bytes();
+      own_frame = own.shot();
+    }
+    CHECK(own_frame.covered > 0);
+
+    KitRig shared;
+    REQUIRE(shared.build(device, meshes, instances, ddc, built, true, false, skip));
+    CHECK(shared.scene.textures_built() == (built ? 2u : 0u));
+    CHECK(shared.scene.textures_decoded() == (built ? 0u : 2u));
+    CHECK(shared.scene.texture_references() == k_members);
+    CHECK(shared.scene.textures_shared() == 2);
+    // Four textures of one size before; two now, and the two not uploaded are the saving.
+    CHECK(shared.scene.texture_bytes() * 2 == own_bytes);
+    CHECK(shared.scene.texture_bytes() + shared.scene.texture_bytes_saved() == own_bytes);
+    const CapturedFrame shared_frame = shared.shot();
+    MESSAGE(path << ": " << own_bytes << " texture bytes each member its own, "
+                 << shared.scene.texture_bytes() << " shared; " << own_frame.covered
+                 << " pixels covered");
+    CHECK(differing_pixels(own_frame, shared_frame) == 0);
+
+    // The same scene as a prefix of one instance and a tail of the rest, taken between frames: the
+    // textures are the scene's, loaded with its meshes, and a tail touches none of them.
+    KitRig streamed;
+    REQUIRE(streamed.build(device, meshes, std::span<const SceneInstance>(instances.data(), 1), ddc,
+                           built, true, true, skip));
+    const u32 textures = streamed.scene.textures_built() + streamed.scene.textures_decoded();
+    const u64 bytes = streamed.scene.texture_bytes();
+    CHECK(textures == 2);
+    CHECK(bytes == shared.scene.texture_bytes());
+    (void)streamed.shot();
+    REQUIRE_MESSAGE(
+        streamed.renderer.set_dynamic_instances(
+            std::span<const SceneInstance>(instances.data() + 1, instances.size() - 1), &error),
+        error);
+    CHECK(streamed.scene.textures_built() + streamed.scene.textures_decoded() == textures);
+    CHECK(streamed.scene.texture_bytes() == bytes);
+    CHECK(streamed.scene.textures_shared() == 2);
+    (void)streamed.shot();  // a frame of culling after the change may differ; a pixel may not
+    CHECK(differing_pixels(streamed.shot(), shared_frame) == 0);
+  }
+  device.destroy();
 }

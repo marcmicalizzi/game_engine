@@ -126,6 +126,14 @@ struct RenderSettings {
   // whole instances' structures, shadow casters first (docs/subsystems/renderer.md, "The ray
   // tracing chain's memory"). It bounds a scene buffer, which is why it lives here.
   u32 rt_budget_mib = 0;
+  // One upload per distinct image per scene (docs/subsystems/renderer.md, "One upload per distinct
+  // image"): every (mesh, image) a material samples is keyed by its content — the `.tex` build key,
+  // or the hash of the image's encoded bytes when it is decoded — and every mesh that samples the
+  // same content shares one texture and one bindless slot. Off uploads each mesh's own copy, which
+  // is what every build before 2026-09-25 did; it exists to measure what sharing saves and to hold
+  // the picture to the same bytes, not as a mode. It decides what the scene's textures are, which
+  // is why it lives here, where a change forces a rebuild.
+  bool share_textures = true;
 
   // Geometry streaming (04 §4.3 step 3, §4.9). The scene's clusters are laid out in fixed-size
   // pages, the GPU holds a budgeted subset of them in a page pool, the cull pass draws whatever is

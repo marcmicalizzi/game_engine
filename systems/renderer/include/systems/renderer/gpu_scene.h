@@ -392,10 +392,20 @@ class GpuScene {
   u64 geometry_bytes() const noexcept { return geometry_bytes_; }
   // What the materials' textures take on the device, as the allocator reports it, and how many
   // were the content build's built textures against how many were decoded from their source images
-  // (docs/subsystems/texture.md, "In the renderer").
+  // (docs/subsystems/texture.md, "In the renderer"). Both counts are **distinct** textures: one
+  // upload per distinct content per scene (docs/subsystems/renderer.md, "One upload per distinct
+  // image"), however many meshes sample it.
   u64 texture_bytes() const noexcept { return texture_bytes_; }
   u32 textures_built() const noexcept { return textures_built_; }
   u32 textures_decoded() const noexcept { return textures_decoded_; }
+  // Every (mesh, image) a material samples and that reached a texture, counted once per mesh; of
+  // those, how many took a texture the scene already held rather than uploading their own, and the
+  // device bytes those uploads would have taken. With `RenderSettings::share_textures` off the last
+  // two are zero and the references are the uploads.
+  u32 texture_references() const noexcept { return texture_references_; }
+  u32 textures_shared() const noexcept { return textures_shared_; }
+  u64 texture_bytes_saved() const noexcept { return texture_bytes_saved_; }
+  bool share_textures() const noexcept { return share_textures_; }  // the setting it was built with
   // The bindless samplers the materials read through: one per distinct (wrap s, wrap t, filters,
   // mipmapped) combination the scene's slots asked for, however many materials share it
   // (docs/subsystems/renderer.md, "Materials"). The heightfield's own sampler is not counted.
@@ -562,11 +572,18 @@ class GpuScene {
   };
   Vector<MaterialSampler> material_samplers_;
   u32 transform_conflicts_ = 0;
-  Vector<gfx::ImageResource> textures_;  // built, or decoded from the meshes' images
+  // One per distinct texture of the scene, built or decoded from the meshes' images: the scene owns
+  // them, every mesh that samples one shares it, and a streamed tail of instances never touches
+  // them (renderer.md, "One upload per distinct image").
+  Vector<gfx::ImageResource> textures_;
   Vector<gfx::ImageViewHandle> texture_views_;
   u64 texture_bytes_ = 0;
   u32 textures_built_ = 0;
   u32 textures_decoded_ = 0;
+  u32 texture_references_ = 0;
+  u32 textures_shared_ = 0;
+  u64 texture_bytes_saved_ = 0;
+  bool share_textures_ = true;
   Vector<gfx::InstanceDesc> instance_table_;  // the scene's, with material_base and deform filled
   Vector<gfx::DeformDesc> deform_descs_;      // the static table, kept for each frame's copy
   Vector<u32> deform_instance_;               // the instance of each deform entry

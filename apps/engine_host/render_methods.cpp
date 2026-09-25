@@ -159,6 +159,7 @@ bool read_settings(const protocol::RenderSettings& in, renderer::RenderSettings&
   out.deform_amplitude = in.deform_amplitude;
   out.rt_templates = in.rt_templates;
   out.rt_budget_mib = in.rt_budget_mib;
+  out.share_textures = in.share_textures;
   out.side_yaw = radians(in.side_yaw_deg);
   out.panini_d = in.panini_d;
   out.peripheral_lod = in.peripheral_lod;
@@ -752,6 +753,7 @@ bool render_benchmark(protocol::Context& ctx, const protocol::RenderBenchmarkPar
     summary.gpu_memory_used_mib = scene->view->stats().gpu_memory.used_mib;
     summary.gpu_memory_budget_mib = scene->view->stats().gpu_memory.budget_mib;
     renderer::summarize_rt(scene->view->stats().rt, summary.rt);
+    renderer::summarize_textures(*scene->gpu, summary.textures);
     JsonValue machine = JsonValue::object();
     machine.set("start", bench::machine_state_json(machine_start));
     machine.set("end", bench::machine_state_json(machine_end));
@@ -1049,6 +1051,8 @@ bool render_unload(protocol::Context& ctx, const protocol::RenderUnloadParams& p
   if (scene->gpu != nullptr) {
     out.textures = scene->gpu->textures_built() + scene->gpu->textures_decoded();
     out.texture_bytes = scene->gpu->texture_bytes();
+    out.textures_shared = scene->gpu->textures_shared();
+    out.texture_bytes_saved = scene->gpu->texture_bytes_saved();
   }
   RenderHost::release(*scene);
   scene.reset();  // the host arrays, last
@@ -1089,6 +1093,8 @@ bool render_scenes(protocol::Context& ctx, protocol::RenderScenesResult& out, pr
       entry.textures = scene->gpu->textures_built() + scene->gpu->textures_decoded();
       entry.texture_bytes = scene->gpu->texture_bytes();
       entry.rt_bytes = scene->gpu->rt_bytes();
+      entry.textures_shared = scene->gpu->textures_shared();
+      entry.texture_bytes_saved = scene->gpu->texture_bytes_saved();
     }
     out.scenes.push_back(std::move(entry));
   }

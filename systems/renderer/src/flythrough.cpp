@@ -84,6 +84,15 @@ void summarize_rt(const RtStats& stats, scene::FlythroughRt& out) {
   out.dropped_caster_instances = stats.dropped_caster_instances;
 }
 
+void summarize_textures(const GpuScene& scene, scene::FlythroughTextures& out) {
+  out.built = scene.textures_built();
+  out.decoded = scene.textures_decoded();
+  out.shared = scene.textures_shared();
+  out.bytes = scene.texture_bytes();
+  out.bytes_saved = scene.texture_bytes_saved();
+  out.sharing = scene.share_textures();
+}
+
 bool fly_camera_path(SceneRenderer& renderer, const CameraPath& path, const FlightOptions& options,
                      Flight& out, std::string* error) {
   out = Flight{};

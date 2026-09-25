@@ -117,6 +117,7 @@ constexpr const char* k_usage =
     "                   [--raster direct|hw|vertex|sw|auto|rt] [--sw-px <px>] [--view <mode>] [--orbit <d>]\n"
     "                   [--mesh <file.gltf|file.glb|file.clusters>] [--scene <file.json>]\n"
     "                   [--grid-instances <n>] [--no-cache] [--ddc <dir>] [--no-lights]\n"
+    "                   [--no-texture-sharing]\n"
     "                   [--deform none|identity|wave|lattice] [--deform-amplitude <a>] [--rt-templates]\n"
     "                   [--rt-budget-mib <n>]\n"
     "                   [--stream] [--page-budget <MiB>] [--upload-budget <KiB>]\n"
@@ -160,6 +161,9 @@ constexpr const char* k_usage =
     "  --grid-instances <n>  place the loaded mesh n x n times with varied rotation and scale\n"
     "  --no-cache       always build a glTF from source; do not read or write ddc/clusters\n"
     "  --ddc <dir>      the derived-data root (default: <repo>/ddc, found beside AGENTS.md)\n"
+    "  --no-texture-sharing  upload every mesh's own copy of its textures. By default the scene\n"
+    "                   uploads one texture per distinct image content and every mesh that samples\n"
+    "                   it shares it; this is the old behaviour, for measuring what that saves\n"
     "  --lod <px>       screen-space error threshold in pixels for LOD selection (default 1)\n"
     "  --no-cull        draw every leaf cluster; no GPU culling or LOD selection\n"
     "  --no-occlusion   skip two-pass occlusion culling (hw mode only; on by default)\n"
@@ -1384,7 +1388,7 @@ JsonValue interactive_summary(const Interactive& it, const view::FlySession& ses
 void describe_run(const renderer::SceneData& scene_data, const Options& options,
                   const std::string& path_name, u64 path_hash,
                   const renderer::ResolvedSettings& resolved, const renderer::SceneRenderer& view,
-                  scene::FlythroughSummary& summary) {
+                  const renderer::GpuScene& gpu_scene, scene::FlythroughSummary& summary) {
   summary.scene = !scene_data.name.empty() ? scene_data.name : options.scene;
   summary.scene_hash = renderer::hash_hex(scene_data.file_hash);
   summary.path = path_name;
@@ -1421,6 +1425,7 @@ void describe_run(const renderer::SceneData& scene_data, const Options& options,
   summary.pairs = scene_data.pair_count;
   summary.clusters = scene_data.cluster_count();
   if (view.valid()) renderer::summarize_rt(view.stats().rt, summary.rt);
+  renderer::summarize_textures(gpu_scene, summary.textures);
 }
 
 // The `.jsonl` a benchmark writes: one record per line, then the summary line.
@@ -2336,7 +2341,8 @@ int run_offscreen(Options& options, Interactive& interactive) {
     const std::string path_name =
         interactive.on ? options.replay_input : (have_path ? path.name : std::string());
     const u64 path_hash = interactive.on ? interactive.log_hash : (have_path ? path.hash : 0);
-    describe_run(scene_data, options, path_name, path_hash, resolved, view_renderer, summary);
+    describe_run(scene_data, options, path_name, path_hash, resolved, view_renderer, scene,
+                 summary);
     summary.frames = frames;
     summary.repeats = measured ? repeats : 0;
     summary.warmup = measured && !interactive.on ? options.warmup : 0;
@@ -2677,6 +2683,8 @@ int main(int argc, char** argv) {
       options.settings.cone = false;
     } else if (a == "--no-shadow-casters") {
       options.settings.shadow_casters = false;
+    } else if (a == "--no-texture-sharing") {
+      options.settings.share_textures = false;
     } else if (a == "--no-lights") {
       options.settings.lights = false;
     } else if (a == "--validation") {
@@ -3136,6 +3144,10 @@ int main(int argc, char** argv) {
   u64 texture_bytes = 0;  // the materials' textures on the device (texture.md)
   u32 textures_built = 0;
   u32 textures_decoded = 0;
+  // The (mesh, image) references that took a texture the scene already held, and the device bytes
+  // their own uploads would have taken (renderer.md, "One upload per distinct image").
+  u32 textures_shared = 0;
+  u64 texture_bytes_saved = 0;
   std::string views_text = "{}";
   std::string streaming_text =
       write_json(streaming_summary(renderer::StreamStats{}), JsonWriteOptions{.pretty = false});
@@ -3344,6 +3356,8 @@ int main(int argc, char** argv) {
     texture_bytes = scene.texture_bytes();
     textures_built = scene.textures_built();
     textures_decoded = scene.textures_decoded();
+    textures_shared = scene.textures_shared();
+    texture_bytes_saved = scene.texture_bytes_saved();
     // Where a streamed page's bytes come from. Attaching the container-backed source is also what
     // releases the merged host streams, so it happens here, after the upload and before the
     // renderer that will read from it.
@@ -3793,7 +3807,8 @@ int main(int argc, char** argv) {
       summary.format = "engine.flythrough.v1";
       describe_run(scene_data, options,
                    interactive.replay ? options.replay_input : std::string("interactive"),
-                   interactive.replay ? interactive.log_hash : 0, resolved, view_renderer, summary);
+                   interactive.replay ? interactive.log_hash : 0, resolved, view_renderer, scene,
+                   summary);
       const u32 frames = static_cast<u32>(rendered);
       renderer::summarize_frames(
           std::span<const scene::FrameRecord>(records.data(), records.size()), frames, 1,
@@ -3881,7 +3896,8 @@ int main(int argc, char** argv) {
         "\"morph_cached_instances\":%u,\"morph_clip\":\"%s\",\"rt_templates\":%s,"
         "\"skinned_instances\":%u,\"joints\":%u,\"clip\":\"%s\",\"anim\":%s,"
         "\"template_bytes\":%llu,\"rt_bytes\":%llu,\"geometry_bytes\":%llu,\"stream_bytes\":%llu,"
-        "\"textures\":{\"built\":%u,\"decoded\":%u,\"bytes\":%llu},"
+        "\"textures\":{\"built\":%u,\"decoded\":%u,\"distinct\":%u,\"shared\":%u,\"bytes\":%llu,"
+        "\"bytes_saved\":%llu,\"sharing\":%s},"
         "\"rt\":%s,\"views\":%s,\"streaming\":%s,"
         "\"host_memory\":{\"bytes\":%llu,\"peak_bytes\":%llu},"
         "\"gpu_memory\":{\"budget_mib\":%llu,\"used_mib\":%llu,"
@@ -3916,7 +3932,10 @@ int main(int argc, char** argv) {
         clip_text.c_str(), anim_text.c_str(), static_cast<unsigned long long>(template_bytes),
         static_cast<unsigned long long>(rt_bytes), static_cast<unsigned long long>(geometry_bytes),
         static_cast<unsigned long long>(stream_bytes), textures_built, textures_decoded,
-        static_cast<unsigned long long>(texture_bytes), rt_text.c_str(), views_text.c_str(),
+        textures_built + textures_decoded, textures_shared,
+        static_cast<unsigned long long>(texture_bytes),
+        static_cast<unsigned long long>(texture_bytes_saved),
+        resolved.settings.share_textures ? "true" : "false", rt_text.c_str(), views_text.c_str(),
         streaming_text.c_str(), static_cast<unsigned long long>(host_memory),
         static_cast<unsigned long long>(host_memory_peak),
         static_cast<unsigned long long>(stats.gpu_memory.budget_mib),

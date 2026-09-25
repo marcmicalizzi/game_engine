@@ -1,3 +1,4 @@
+#include <core/containers/hash_map.h>
 #include <core/hash/hash.h>
 #include <domain/geometry/cluster_lod.h>
 #include <domain/geometry/material_sampling.h>
@@ -89,6 +90,60 @@ gfx::SamplerDesc sampler_desc(const geometry::TextureSampler& sampler, bool mipm
   return desc;
 }
 
+// **One upload per distinct image per scene** (docs/subsystems/renderer.md, "One upload per
+// distinct image"). Every (mesh, image) a material samples is keyed by what the texture is made
+// from — the `.tex` build key for a built one, which covers the image's bytes and its build
+// options, or `hash_bytes` over the encoded bytes and the format it goes up as for a decoded one —
+// and a key the scene already holds hands back that texture's bindless slot instead of uploading
+// again. The key is the content and not the path: a kit's members each embed the same atlas and
+// name it by no path at all, two files at different paths can hold the same bytes, and two images
+// called `atlas.png` in two kits' folders hold different ones.
+constexpr u32 k_form_built = ~u32{0};  // `SceneTexture::form` for a built texture
+
+struct SceneTexture {
+  u64 content = 0;  // the `.tex` build key, or hash_bytes over the image's encoded bytes
+  u32 form = 0;     // k_form_built, or the gfx::Format a decoded image went up as
+  u32 slot = 0;     // its bindless slot
+  u64 bytes = 0;    // what the allocator gave it
+  // What a built one is stored as: the material's BC5-normal flag reads it for a mesh that shares
+  // the texture as well as for the mesh that uploaded it.
+  texture::TextureFormat stored = texture::TextureFormat::rgba8;
+};
+
+// The scene's textures by content. With sharing off it finds nothing, and every mesh uploads its
+// own as every build before 2026-09-25 did. A 64-bit collision between two different (content,
+// form) pairs is not taken for a match: the entry keeps both halves and is compared whole, so the
+// worst a collision can do is upload the second texture again.
+class SceneTextures {
+ public:
+  explicit SceneTextures(bool share) noexcept : share_(share) {}
+  const SceneTexture* find(u64 content, u32 form) const noexcept {
+    if (!share_) return nullptr;
+    const u32* index = index_.find_value(hash_combine(content, form));
+    if (index == nullptr) return nullptr;
+    const SceneTexture& found = textures_[*index];
+    return found.content == content && found.form == form ? &found : nullptr;
+  }
+  void add(const SceneTexture& texture) {
+    if (share_) index_.try_emplace(hash_combine(texture.content, texture.form), textures_.size());
+    textures_.push_back(texture);
+  }
+
+ private:
+  bool share_;
+  Vector<SceneTexture> textures_;
+  HashMap<u64, u32> index_;
+};
+
+// One sampled image of a mesh on the built path: its `.tex` build key, the texture read from the
+// derived-data root — or nothing, when the scene already holds that key and the read would be for
+// a texture nobody uploads — and the format it is stored as either way.
+struct BuiltImage {
+  u64 key = 0;
+  texture::TextureData data;
+  texture::TextureFormat stored = texture::TextureFormat::rgba8;
+};
+
 // A mesh's built textures (docs/subsystems/texture.md, "In the renderer"): one per image the
 // resolve samples — base colour, metallic-roughness, normal, occlusion, emissive — found in the
 // derived-data root through the container's records, and read with their identity checked against
@@ -97,9 +152,10 @@ gfx::SamplerDesc sampler_desc(const geometry::TextureSampler& sampler, bool mipm
 // never the stale one. **All or nothing**: false, with the reason, as soon as one is missing, so a
 // mesh draws wholly from built textures or wholly as it always did, never a mix of the two.
 // `needed` is how many images the resolve samples; zero leaves the mesh on the old path, which
-// for a mesh with no textures is no path at all.
-bool find_built_textures(const SourceMesh& mesh, Vector<texture::TextureData>& out, u32& needed,
-                         std::string& why) {
+// for a mesh with no textures is no path at all. A key `known` already holds is not read again:
+// its identity was checked when the mesh that uploaded it read it, and the file is the same file.
+bool find_built_textures(const SourceMesh& mesh, const SceneTextures& known,
+                         Vector<BuiltImage>& out, u32& needed, std::string& why) {
   out.clear();
   needed = 0;
   const assets::MeshData& data = mesh.data;
@@ -152,20 +208,26 @@ bool find_built_textures(const SourceMesh& mesh, Vector<texture::TextureData>& o
       source_hash = hash_bytes(bytes.data(), bytes.size());
       key = texture::texture_cache_key(source_hash, options);
     }
+    out[i].key = key;
+    if (const SceneTexture* held = known.find(key, k_form_built); held != nullptr) {
+      out[i].stored = held->stored;
+      continue;
+    }
     const std::string path = texture::texture_cache_path(mesh.texture_ddc, key);
     if (!io::exists(path)) {
       why = image + " has not been built (engine-content build --cache builds it)";
       return false;
     }
     std::string error;
-    if (!texture::read_texture_file(path, out[i], &error)) {
+    if (!texture::read_texture_file(path, out[i].data, &error)) {
       why = image + ": " + error;
       return false;
     }
-    if (out[i].source_hash != source_hash || out[i].build_key != key) {
+    if (out[i].data.source_hash != source_hash || out[i].data.build_key != key) {
       why = image + ": '" + path + "' was built from other bytes or options";
       return false;
     }
+    out[i].stored = out[i].data.format;
   }
   return true;
 }
@@ -954,7 +1016,7 @@ bool GpuScene::create_streaming(const ResolvedSettings& resolved, std::string* e
   return true;
 }
 
-bool GpuScene::upload_materials(const ResolvedSettings&, std::string* error) {
+bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* error) {
   const gfx::Device& device = *device_;
   const geometry::ClusterLodMesh& lod = data_->lod;
   if (!gfx::create_sampler(device, gfx::Filter::Linear, sampler_, error)) return false;
@@ -980,6 +1042,10 @@ bool GpuScene::upload_materials(const ResolvedSettings&, std::string* error) {
   texture_bytes_ = 0;
   textures_built_ = 0;
   textures_decoded_ = 0;
+  texture_references_ = 0;
+  textures_shared_ = 0;
+  texture_bytes_saved_ = 0;
+  share_textures_ = resolved.settings.share_textures;
   transform_conflicts_ = 0;
   Vector<gfx::ResolveMaterial> material_table;
   Vector<u32> cluster_material(cluster_count_);
@@ -1027,11 +1093,11 @@ bool GpuScene::upload_materials(const ResolvedSettings&, std::string* error) {
     // Materials from the files, one mesh's table after the last: every instance adds its mesh's
     // base to the cluster's material index, so the clusters keep mesh-local indices. Images are
     // decoded on the CPU (embedded bytes or a file beside the glTF) and uploaded once each, into
-    // one bindless slot every material of that mesh which names the image shares; an image that
-    // fails to decode leaves its slot empty with a warning. Base color is color and goes up as
-    // sRGB, so that sampling returns linear; metallic-roughness and normal maps are data, not
-    // color, and go up UNORM. A glTF never gives one image both roles, so the format an image is
-    // first asked for is the one it keeps.
+    // one bindless slot every material which names the image shares — every material of the
+    // scene, below, not only of the mesh; an image that fails to decode leaves its slot empty with
+    // a warning. Base color is color and goes up as sRGB, so that sampling returns linear;
+    // metallic-roughness and normal maps are data, not color, and go up UNORM. A glTF never gives
+    // one image both roles, so the format an image is first asked for is the one it keeps.
     //
     // **Built textures** (docs/subsystems/texture.md, "In the renderer"): when the content build
     // has made every image this mesh's materials sample into a block-compressed, mipmapped `.tex`
@@ -1040,14 +1106,21 @@ bool GpuScene::upload_materials(const ResolvedSettings&, std::string* error) {
     // derivatives the resolve computes (`k_material_mipped`). Otherwise the mesh takes exactly the
     // path above: decode, one level, level-0 sampling. All or nothing per mesh, so no material
     // mixes the two samplers.
+    //
+    // **One upload per distinct image per scene** (docs/subsystems/renderer.md): a mesh whose image
+    // has the content of one an earlier mesh uploaded — the same `.tex` key built, the same bytes
+    // and format decoded — takes that texture's slot. A kit's nineteen members embedding one atlas
+    // upload it once, not nineteen times; the picture is the same bytes, because the texel data
+    // each material reads is.
+    SceneTextures scene_textures(share_textures_);
     for (u32 m = 0; m < data_->sources.size(); ++m) {
       const SourceMesh& source_mesh = data_->sources[m];
       const assets::MeshData& mesh_data = source_mesh.data;
       mesh_material_base[m] = material_table.size();
-      Vector<texture::TextureData> built;
+      Vector<BuiltImage> built;
       u32 sampled_images = 0;
       std::string why;
-      bool use_built = find_built_textures(source_mesh, built, sampled_images, why);
+      bool use_built = find_built_textures(source_mesh, scene_textures, built, sampled_images, why);
       if (use_built && !device.features().texture_compression_bc) {
         use_built = false;
         why = "the device has no textureCompressionBC";
@@ -1073,9 +1146,24 @@ bool GpuScene::upload_materials(const ResolvedSettings&, std::string* error) {
         gfx::ImageViewHandle view;
         std::string image_error;
         bool ok = false;
+        // The texture's content, and the scene's texture of that content if it has one yet.
+        SceneTexture made;
+        made.form = use_built ? k_form_built : static_cast<u32>(format);
+        auto share = [&]() -> const SceneTexture* {
+          const SceneTexture* held = scene_textures.find(made.content, made.form);
+          if (held == nullptr) return nullptr;
+          ++texture_references_;
+          ++textures_shared_;
+          texture_bytes_saved_ += held->bytes;
+          image_slot[index] = held->slot;
+          return held;
+        };
         if (use_built) {
+          made.content = built[index].key;
+          made.stored = built[index].stored;
+          if (share() != nullptr) return image_slot[index];
           // As stored: the blocks of every level, one staging copy, no decode.
-          const texture::TextureData& t = built[index];
+          const texture::TextureData& t = built[index].data;
           Vector<gfx::ImageLevelData> levels;
           levels.reserve(t.levels.size());
           for (u32 l = 0; l < t.levels.size(); ++l) {
@@ -1090,15 +1178,33 @@ bool GpuScene::upload_materials(const ResolvedSettings&, std::string* error) {
           if (!ok && uploaded.image.valid()) gfx::destroy_image(device, uploaded);
           if (ok) ++textures_built_;
         } else {
-          image::Image decoded;
+          // The encoded bytes — embedded, or the file as it is now — are what a decoded texture
+          // is keyed by, so they are read and hashed before anything is decoded: a repeat costs
+          // the read and the hash, not the decode and the upload. `image::read_image` is exactly
+          // this read followed by `decode_image`, so the pixels are the ones it gave.
+          std::string file_bytes;
+          std::span<const u8> encoded;
           if (!ref.bytes.empty()) {
-            ok = image::decode_image(std::span<const u8>(ref.bytes.data(), ref.bytes.size()),
-                                     decoded, 4, &image_error);
+            encoded = std::span<const u8>(ref.bytes.data(), ref.bytes.size());
+            ok = true;
           } else if (!ref.uri.empty()) {
             const std::string path = mesh_dir.empty() ? ref.uri : io::join_path(mesh_dir, ref.uri);
-            ok = image::read_image(path, decoded, 4, &image_error) == io::Status::Ok;
+            const io::Status status = io::read_file(path, file_bytes);
+            ok = status == io::Status::Ok;
+            if (ok) {
+              encoded = std::span<const u8>(reinterpret_cast<const u8*>(file_bytes.data()),
+                                            file_bytes.size());
+            } else {
+              image_error = "read_image: " + path + ": " + io::status_name(status);
+            }
           } else {
             image_error = "image has neither bytes nor a uri";
+          }
+          image::Image decoded;
+          if (ok) {
+            made.content = hash_bytes(encoded.data(), encoded.size());
+            if (share() != nullptr) return image_slot[index];
+            ok = image::decode_image(encoded, decoded, 4, &image_error);
           }
           if (ok && (!gfx::upload_image_2d(device, decoded.width, decoded.height, format,
                                            decoded.pixels.data(), decoded.pixels.size(), uploaded,
@@ -1115,9 +1221,13 @@ bool GpuScene::upload_materials(const ResolvedSettings&, std::string* error) {
           return gfx::k_no_texture;
         }
         texture_bytes_ += uploaded.bytes;
+        ++texture_references_;
         textures_.push_back(uploaded);
         texture_views_.push_back(view);
         image_slot[index] = bindless_.add_sampled_image(view, gfx::ImageLayout::ShaderReadOnly);
+        made.slot = image_slot[index];
+        made.bytes = uploaded.bytes;
+        scene_textures.add(made);
         return image_slot[index];
       };
       for (const assets::Material& source : mesh_data.materials) {
@@ -1145,7 +1255,7 @@ bool GpuScene::upload_materials(const ResolvedSettings&, std::string* error) {
           // A BC5 normal map holds x and y; the shader rebuilds z (material.slang).
           const i32 normal = source.normal_image;
           if (normal >= 0 && static_cast<u32>(normal) < built.size() &&
-              built[static_cast<u32>(normal)].format == texture::TextureFormat::bc5) {
+              built[static_cast<u32>(normal)].stored == texture::TextureFormat::bc5) {
             material.flags |= gfx::k_material_normal_rg;
           }
         }
@@ -1196,6 +1306,13 @@ bool GpuScene::upload_materials(const ResolvedSettings&, std::string* error) {
                                                                       : local_count;
       }
     }
+  }
+  if (texture_references_ != 0) {
+    ENGINE_LOG_INFO(
+        log_renderer, "scene textures", log::field("distinct", textures_built_ + textures_decoded_),
+        log::field("references", texture_references_), log::field("shared", textures_shared_),
+        log::field("bytes", texture_bytes_), log::field("bytes_saved", texture_bytes_saved_),
+        log::field("sharing", resolved.settings.share_textures));
   }
   if (!material_samplers_.empty() || transform_conflicts_ != 0) {
     ENGINE_LOG_INFO(log_renderer, "material samplers",
@@ -1636,6 +1753,8 @@ void GpuScene::destroy() noexcept {
   transform_conflicts_ = 0;
   texture_bytes_ = 0;
   textures_built_ = textures_decoded_ = 0;
+  texture_references_ = textures_shared_ = 0;
+  texture_bytes_saved_ = 0;
   bindless_.destroy();
   instance_table_.clear();
   deform_descs_.clear();
