@@ -13,7 +13,7 @@ using namespace engine;
 // phase (4), band and kind (2), and six bytes of padding. It grew from 56 when the reciprocals
 // moved the inner loop's divisions into the gather, and from 72 to 88 for the band table's
 // sinuous crests (terrain.md, "The band table"); a gather holds a few hundred.
-ENGINE_EXPECT_SIZE(88, 8, terrain::Primitive);
+ENGINE_EXPECT_SIZE(96, 8, terrain::Primitive);
 // Flux x, z and magnitude, speed (16), direction and the calm flag (4).
 ENGINE_EXPECT_SIZE(20, 4, terrain::WindDay);
 // Time (8), centre (8), two radii and a yaw (6), depth and rim (4), kind and five spare bytes (6):

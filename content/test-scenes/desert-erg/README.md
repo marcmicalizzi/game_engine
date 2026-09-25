@@ -14,10 +14,12 @@ Tallest first, because a band is shaped by the ones before it (terrain.md, "The 
 | Band | Kind | Height | Cell | Share | Couples | Why |
 |---|---|---|---|---|---|---|
 | `mega-draa` | transverse, sinuosity 0.08, crests 1.2–2 cells long | 80–200 m | 2,400 m | 0.85 | — | "towering dunes of a hundred metres and more at kilometre spacing": the draa of a real erg are 100–300 m high and 1–3 km apart; crests longer than a cell overlap into long sinuous lines, and a sixth of the cells empty leave corridors. Their slip faces remember a year of wind and sharpen over four months, because a 150 m face does not reform in a week |
-| `draa` | transverse, sinuosity 0.04 | 10–25 m | 360 m | 0.7 | on the flanks, over 8 m | "medium dunes on their flanks": they fade in as the mega-draa's sand rises past 8 m, so the floors stay open |
-| `crest` | transverse | 2.5–6 m | 110 m | 0.6 | on the flanks, over 3 m | the scene's own wavelength, riding on everything taller |
-| `barchan` | barchan | 1.5–5 m | 150 m | 0.35 | on the floors, under 2 m | crescents on the hardpan, fading out where the tall bands' sand passes 2 m |
+| `draa` | transverse, sinuosity 0.04 | 10–25 m | 360 m | 0.7 | on the flanks, across 400 m | "medium dunes on their flanks": they fade in across the first 400 m inside a mega-draa's footprint, so the floors stay open |
+| `crest` | transverse | 2.5–6 m | 110 m | 0.6 | on the flanks, across 100 m | the scene's own wavelength, riding on everything taller |
+| `barchan` | barchan | 1.5–5 m | 150 m | 0.35 | on the floors, across 80 m | crescents on the hardpan, fading out across the first 80 m inside a taller dune |
 | `wave` | transverse, never a slip face | 0.3–0.8 m | 10 m | 0.6 | — | "waves on every surface", between ripples and dunes; they follow a few days of wind and are rounded, not sharp |
+
+A coupling fades across a **width** inside the taller dunes' footprints, at least fifteen times the band's height, and not across a height of their sand: their sand rises as steeply as their faces, and a fade across a few metres of it stood the draa's surface at 37–39° at the foot of a slip face ([terrain](../../../docs/subsystems/terrain.md#the-repose-limiter)).
 
 Below them the ripples (12 cm apart, 6 mm high, the day's wind) are the field's detail term, drawn by the renderer's near-field refinement rather than the mesh.
 
@@ -34,3 +36,17 @@ The camera path (`camera-path.json`, 60 s at 60 fps, west to east, which is upwi
 | 3600 | `overview` | the erg from 350 m up: mega-draa about 2 km apart, open floors between |
 
 **What `time` shows.** Bagnold's rule leaves the mega-draa almost still — a metre a year in this wind (200 m² a year of sand flux) — while the draa move about 11 m a year, the crests 48, the barchans 62 and the waves about 330: in three years the waves have crossed a kilometre of floor and the tall dunes have not moved their own width. Set `time` a month and a year apart to compare.
+
+## What the numbers say
+
+`engine-content terrain content/test-scenes/desert-erg/scene.json --tile 0,0 --stats --stats-side 6144 --stats-spacing 4`, the whole scene at 4 m, three years in ([terrain](../../../docs/subsystems/terrain.md#what-the-numbers-say) has what each number is):
+
+| | |
+|---|---|
+| height above the floor, p10 / p50 / p90 / p99 / max | 0 / 4.4 / 113 / 184 / 193 m |
+| flats (within half a metre of the floor) | 36.7% |
+| sand steeper than 30° / 34° / 36° | 4.2% / 0 / **0** |
+| crest per km² | mega-draa 372 m, draa 515, crest 1,616, barchan 54, wave 17,882 |
+| the largest dune | 188 m, a mega-draa, the next about 2.1 km away |
+
+No sand stands past the angle of repose: over the whole scene at a metre, at 0, 1, 3 and 7 years, no vertex is steeper than 36° ([the repose limiter](../../../docs/subsystems/terrain.md#the-repose-limiter)).

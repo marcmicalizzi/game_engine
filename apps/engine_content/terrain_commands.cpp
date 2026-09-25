@@ -169,7 +169,7 @@ terrain::FieldDesc field_desc(const scene::Terrain& t) {
       m.side_days = b.side_days;
       m.sharp_days = b.sharp_days;
       m.couple = static_cast<terrain::BandCouple>(b.couple);
-      m.couple_height = b.couple_height;
+      m.couple_width = b.couple_width;
       m.far = b.far;
       f.bands.push_back(terrain::band_from_metres(m));
     }

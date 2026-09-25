@@ -1175,7 +1175,7 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
         band.side_days = b.side_days;
         band.sharp_days = b.sharp_days;
         band.couple = static_cast<u8>(b.couple);
-        band.couple_height = b.couple_height;
+        band.couple_width = b.couple_width;
         band.far = b.far;
         out.terrain.bands.push_back(std::move(band));
       }

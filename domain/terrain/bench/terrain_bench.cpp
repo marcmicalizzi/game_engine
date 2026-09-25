@@ -101,13 +101,13 @@ const DuneField& erg_field() {
     draa.sinuosity = 0.04f;
     draa.spread_deg = 25;
     draa.couple = BandCouple::flanks;
-    draa.couple_height = 8;
+    draa.couple_width = 400;
     BandMetres crest = band("crest", PrimitiveKind::transverse, 2.5f, 6, 110, 0.6f);
     crest.couple = BandCouple::flanks;
-    crest.couple_height = 3;
+    crest.couple_width = 100;
     BandMetres barchan = band("barchan", PrimitiveKind::barchan, 1.5f, 5, 150, 0.35f);
     barchan.couple = BandCouple::floors;
-    barchan.couple_height = 2;
+    barchan.couple_width = 80;
     barchan.far = false;
     BandMetres wave = band("wave", PrimitiveKind::transverse, 0.3f, 0.8f, 10, 0.6f);
     wave.length_min = 0.4f;

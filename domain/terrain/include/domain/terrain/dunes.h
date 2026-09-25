@@ -78,8 +78,8 @@ enum class PrimitiveKind : u8 { transverse = 0, barchan = 1 };
 const char* primitive_kind_name(PrimitiveKind kind) noexcept;
 
 // Where a band may stand relative to the bands before it in the table (terrain.md, "The band
-// table"): anywhere; only on their flanks (it fades in as their sand rises past `couple_mm`); or
-// only on the floors between them (it fades out as their sand rises past `couple_mm`).
+// table"): anywhere; only on their flanks (it fades in across `couple_mm` inside their
+// footprints); or only on the floors between them (it fades out across the same).
 enum class BandCouple : u8 { none = 0, flanks = 1, floors = 2 };
 const char* band_couple_name(BandCouple couple) noexcept;
 
@@ -96,7 +96,7 @@ struct BandMetres {
   f32 sharpness = 1.0f;
   u32 side_days = 120, sharp_days = 30;
   BandCouple couple = BandCouple::none;
-  f32 couple_height = 0.0f;
+  f32 couple_width = 0.0f;  // metres inside the earlier bands' footprints
   bool far = true;
   std::string name;
 };
@@ -122,8 +122,8 @@ struct BandDesc {
   i32 side_days = 120;        // the wind that decides the slip face's side
   i32 sharp_days = 30;        // and its sharpness (and a barchan's heading)
   BandCouple couple = BandCouple::none;
-  i64 couple_mm = 0;
-  bool far = true;  // kept by `Detail::coarse`
+  i64 couple_mm = 0;  // the width inside the earlier bands' footprints the coupling fades across
+  bool far = true;    // kept by `Detail::coarse`
   char name[15] = {};
 };
 
@@ -182,7 +182,9 @@ struct FieldDesc {
 
 // Bumped when anything a desc evaluates to changes, so a derived-data entry or a golden hash that
 // names this generator is never mistaken for another's.
-inline constexpr u32 k_generator_version = 1;
+// 2: the repose limiter (each band's lee absorbs the bands after it; lees measured across the
+// local crest) and the band table.
+inline constexpr u32 k_generator_version = 2;
 u64 field_hash(const FieldDesc& desc) noexcept;
 
 // One primitive as a gather holds it at one time: 88 bytes (tests/size_table.cpp). Positions are
@@ -215,6 +217,17 @@ struct Primitive {
   u16 meander_phase = 0;
   u8 band = 0;
   u8 kind = 0;  // PrimitiveKind
+  // The share of the half length its crest tapers over at each end, Q16: 0.4, or six times its
+  // height when that is longer (terrain.md, "The repose limiter"). Zero for a barchan.
+  u16 taper_q16 = 0;
+  // How far before its brink and past its lee the primitive absorbs the bands after it, mm: its
+  // band's `absorb` width (terrain.md, "The repose limiter").
+  i32 absorb = 0;
+  // How far across its mean line (less its bend) a crest can still add anything, mm: the wider of
+  // its stoss and its lee with the lee zone, over the cosine of the most its line can drift, since
+  // its profile is measured across the local crest. Zero for a barchan.
+  i32 widen = 0;
+  u32 inv_taper = 0;  // Q32 reciprocal of `taper_q16` (so Q16 of its reciprocal as a fraction)
 };
 
 // A region's primitives at one time: what every point of the region reads, gathered once. A tile
@@ -316,12 +329,28 @@ class DuneField {
   TimeShape time_shape(u32 band, i64 time_us) const noexcept;
   bool make_primitive(u32 band, i64 i, i64 j, const TimeShape& shape,
                       Primitive& out) const noexcept;
-  i64 band_sand(const Gather& gather, u32 band, i64 qx, i64 qz) const noexcept;
-  static i64 primitive_height(const Primitive& p, i64 dx, i64 dz) noexcept;
+  // A primitive's height at an offset from its centre, µm, and a bound on its slope there, Q16 (a
+  // tangent) — continuous, and the angle of repose over its lee zone — that the bands after it are
+  // scaled by (terrain.md, "The repose limiter").
+  struct Value {
+    i64 height = 0;
+    i64 slope = 0;
+    i64 inside = 0;  // mm: how deep inside its footprint the point is, what bands couple to
+  };
+  // `k_slope` false leaves `slope` and `inside` zero: the last band's are read by nothing.
+  template <bool k_slope>
+  static Value primitive_value(const Primitive& p, i64 dx, i64 dz) noexcept;
+  // A band's sand at a point in its frame (the maximum of its primitives) and its slope bound
+  // (the maximum of theirs).
+  template <bool k_slope>
+  Value band_value(const Gather& gather, u32 band, i64 qx, i64 qz) const noexcept;
   i64 ridge_lag_mm(i64 x, i64 z) const noexcept;
   i64 detail_um(const Gather& gather, i64 x, i64 z) const noexcept;
-  void features(i64 x, i64 z, i64& ridge_q16, i64& basin_flatten_q16,
-                i64& ridge_lag) const noexcept;
+  // The fixed features at a point: the ridge's profile, the basins' flattening, the ridge lag, and
+  // `squeeze_q16`, a bound on how much the lag's gradient compresses the bands' lattice there (the
+  // bands stand lower by it; terrain.md, "The repose limiter").
+  void features(i64 x, i64 z, i64& ridge_q16, i64& basin_flatten_q16, i64& ridge_lag,
+                i64& squeeze_q16) const noexcept;
 
   FieldDesc desc_;
   WindRecord wind_;
@@ -330,6 +359,8 @@ class DuneField {
   i64 cell_[k_max_bands] = {};             // mm
   i64 reach_[k_max_bands] = {};            // mm
   i64 celerity_height_[k_max_bands] = {};  // mm
+  i64 absorb_[k_max_bands] = {};           // mm: the lee zone's fade width
+  i64 drift_q16_[k_max_bands] = {};        // the most a crest line drifts per unit along it
   i32 roll_x_ = 0, roll_z_ = 0;            // Q14
   i64 roll_length_ = 1;                    // mm
   u32 roll_phase_ = 0;

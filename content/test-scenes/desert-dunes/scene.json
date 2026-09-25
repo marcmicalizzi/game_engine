@@ -95,7 +95,7 @@
         "sinuosity": 0.04,
         "spread_deg": 25,
         "couple": "Flanks",
-        "couple_height": 8
+        "couple_width": 400
       },
       {
         "name": "crest",
@@ -110,7 +110,7 @@
         "bend": 0.25,
         "spread_deg": 20,
         "couple": "Flanks",
-        "couple_height": 3
+        "couple_width": 100
       },
       {
         "name": "barchan",
@@ -120,7 +120,7 @@
         "cell": 150,
         "share": 0.35,
         "couple": "Floors",
-        "couple_height": 2,
+        "couple_width": 80,
         "far": false
       },
       {

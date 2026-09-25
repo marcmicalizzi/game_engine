@@ -447,9 +447,9 @@ enum DuneKind : u8 {
 enum DuneCouple : u8 {
   /// Anywhere.
   None = 0
-  /// Only on their flanks: it fades in as their sand rises past `couple_height`.
+  /// Only on their flanks: it fades in across `couple_width` inside their footprints.
   Flanks = 1
-  /// Only on the floors between them: it fades out as their sand rises past `couple_height`.
+  /// Only on the floors between them: it fades out across `couple_width` inside their footprints.
   Floors = 2
 }
 
@@ -483,8 +483,10 @@ struct TerrainBand @version(1) {
   side_days: u32 = 120
   sharp_days: u32 = 30
   couple: DuneCouple = None
-  /// The height of the earlier bands' sand the coupling fades across, metres.
-  couple_height: f32 = 0
+  /// How far inside the earlier bands' footprints the coupling fades across, metres: at least
+  /// fifteen times the band's height, or its fade steepens its faces past the angle of repose
+  /// (docs/subsystems/terrain.md, "The repose limiter").
+  couple_width: f32 = 0
   /// Kept by the far detail (past 2 km): false for bands of a few metres and less.
   far: bool = true
 }

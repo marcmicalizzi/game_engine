@@ -66,13 +66,13 @@ Vector<BandDesc> erg_bands() {
   draa.sinuosity = 0.04f;
   draa.spread_deg = 25;
   draa.couple = BandCouple::flanks;
-  draa.couple_height = 8;
+  draa.couple_width = 400;
   BandMetres crest = band("crest", PrimitiveKind::transverse, 2.5f, 6, 110, 0.6f);
   crest.couple = BandCouple::flanks;
-  crest.couple_height = 3;
+  crest.couple_width = 100;
   BandMetres barchan = band("barchan", PrimitiveKind::barchan, 1.5f, 5, 150, 0.35f);
   barchan.couple = BandCouple::floors;
-  barchan.couple_height = 2;
+  barchan.couple_width = 80;
   barchan.far = false;
   BandMetres wave = band("wave", PrimitiveKind::transverse, 0.3f, 0.8f, 10, 0.6f);
   wave.length_min = 0.4f;
@@ -351,13 +351,12 @@ TEST_CASE("terrain: the dunes are dunes — relief, crests, slip faces") {
   CHECK(height_m(highest) < 12.0f);
   CHECK(crests > 20);
   CHECK(barchans > 0);
-  // A slip face stands at the angle of repose. Where a crest's slip face coincides with a draa's
-  // the two bands' slopes add, and the sum can pass it — a known limit of superposing bands
-  // (terrain.md, "Not yet"), measured here so a change that makes it worse fails: 0.48% of these 49
-  // tiles' sand vertices over 36 degrees when it was written, the worst 53.5.
+  // A slip face stands at the angle of repose, and the repose limiter keeps the sum of the bands
+  // there too (terrain.md, "The repose limiter"): no sand over 36 degrees. Before the limiter,
+  // 0.48% of these vertices were, the worst 53.5.
   CHECK(steepest > 30.0f);
-  CHECK(steepest < 55.0f);
-  CHECK(over_repose * 100u < sand);
+  CHECK(steepest < 36.0f);
+  CHECK(over_repose == 0u);
 }
 
 TEST_CASE("terrain: a reversing wind moves the slip face to the other side, continuously") {
@@ -544,12 +543,12 @@ TEST_CASE("terrain: golden hashes of the reference tile on every toolchain") {
     u64 golden;
   };
   const Row rows[] = {
-      {0, 0xcdb65fedad6a22caull},
-      {90 * k_day + 6 * 3600 * k_us_per_second, 0xfd311c603c266ab5ull},
-      {25 * k_year + 200 * k_day, 0xc364843efab5ad9cull},
+      {0, 0xa03095a640aa8920ull},
+      {90 * k_day + 6 * 3600 * k_us_per_second, 0x6da261070ff17a84ull},
+      {25 * k_year + 200 * k_day, 0x31b9425cff40f30aull},
   };
   MESSAGE("field hash " << hex(field.hash()));
-  CHECK(field.hash() == 0xe4ce66bd0e50f703ull);
+  CHECK(field.hash() == 0x950ca7df2c6048adull);
   for (const Row& row : rows) {
     TileOutput tile;
     evaluate_tile(field, TileCoord{0, 0}, row.time_us, TileOptions{}, nullptr, nullptr, tile);
@@ -676,28 +675,59 @@ TEST_CASE("terrain: a band coupled to the floors stands only on them") {
   small.cell = 80;
   small.share = 0.9f;
   small.couple = BandCouple::floors;
-  small.couple_height = 2;
+  small.couple_width = 60;
   FieldDesc alone = desc;
   alone.bands.push_back(band_from_metres(big));
   desc.bands = alone.bands;
   desc.bands.push_back(band_from_metres(small));
   const DuneField with(desc);
   const DuneField without(alone);
-  u32 on_flanks = 0, on_floor = 0, differ_flank = 0, differ_floor = 0;
+  // The coupling fades across 60 m inside the big band's footprints, which reach at least as far
+  // as its sand, and a footprint's depth is measured across the local crest, which is at most the
+  // distance over the cosine of the crest's drift (1.2 here): so a point more than 90 m from every
+  // bare-floor point is deep enough inside that nothing of the small band may stand there.
+  // Measured on a 4 m grid by a chessboard distance transform (two passes), which never exceeds
+  // the true distance to the nearest bare grid point (and that, to the nearest bare point, by 4 m).
+  constexpr i64 k_step = 4'000;
+  constexpr u32 k_n = 201;
   Gather g1, g2;
   with.gather(0, 0, 800'000, 800'000, k_year, nullptr, g1);
   without.gather(0, 0, 800'000, 800'000, k_year, nullptr, g2);
-  for (i64 z = 0; z <= 800'000; z += 4'000) {
-    for (i64 x = 0; x <= 800'000; x += 4'000) {
-      const i64 base = without.sample(g2, x, z, Detail::dunes).sand;
-      const i64 both = with.sample(g1, x, z, Detail::dunes).sand;
-      if (base >= 2'000'000) {
-        ++on_flanks;
-        differ_flank += both != base;
-      } else if (base == 0) {
-        ++on_floor;
-        differ_floor += both != base;
-      }
+  std::vector<i64> base(k_n * k_n), both(k_n * k_n);
+  std::vector<u32> far(k_n * k_n);
+  for (u32 j = 0; j < k_n; ++j) {
+    for (u32 i = 0; i < k_n; ++i) {
+      base[j * k_n + i] = without.sample(g2, i * k_step, j * k_step, Detail::dunes).sand;
+      both[j * k_n + i] = with.sample(g1, i * k_step, j * k_step, Detail::dunes).sand;
+      far[j * k_n + i] = base[j * k_n + i] == 0 ? 0u : 1'000'000u;
+    }
+  }
+  for (u32 j = 0; j < k_n; ++j) {
+    for (u32 i = 0; i < k_n; ++i) {
+      u32& d = far[j * k_n + i];
+      if (i > 0) d = std::min(d, far[j * k_n + i - 1] + 1);
+      if (j > 0) d = std::min(d, far[(j - 1) * k_n + i] + 1);
+      if (i > 0 && j > 0) d = std::min(d, far[(j - 1) * k_n + i - 1] + 1);
+      if (i + 1 < k_n && j > 0) d = std::min(d, far[(j - 1) * k_n + i + 1] + 1);
+    }
+  }
+  for (u32 j = k_n; j-- > 0;) {
+    for (u32 i = k_n; i-- > 0;) {
+      u32& d = far[j * k_n + i];
+      if (i + 1 < k_n) d = std::min(d, far[j * k_n + i + 1] + 1);
+      if (j + 1 < k_n) d = std::min(d, far[(j + 1) * k_n + i] + 1);
+      if (i + 1 < k_n && j + 1 < k_n) d = std::min(d, far[(j + 1) * k_n + i + 1] + 1);
+      if (i > 0 && j + 1 < k_n) d = std::min(d, far[(j + 1) * k_n + i - 1] + 1);
+    }
+  }
+  u32 on_flanks = 0, on_floor = 0, differ_flank = 0, differ_floor = 0;
+  for (u32 k = 0; k < k_n * k_n; ++k) {
+    if (static_cast<i64>(far[k]) * k_step > 90'000) {
+      ++on_flanks;
+      differ_flank += both[k] != base[k];
+    } else if (base[k] == 0) {
+      ++on_floor;
+      differ_floor += both[k] != base[k];
     }
   }
   MESSAGE(differ_floor << " of " << on_floor << " floor points carry a barchan; " << differ_flank
@@ -775,6 +805,7 @@ void print_stats(const char* name, const DuneField& field, const FieldStats& st)
                         << " / " << height_m(st.above_floor_um[2]) << " / "
                         << height_m(st.above_floor_um[3]) << " / " << height_m(st.above_floor_um[4])
                         << " m, flat " << static_cast<f64>(st.flat) / static_cast<f64>(st.vertices)
+                        << ", 30 to 34 " << static_cast<f64>(st.slope[k_slope_bins - 3]) / sand
                         << ", over 34 " << static_cast<f64>(st.over_repose()) / sand << ", over 36 "
                         << st.over_36() << " vertices, tallest " << height_m(st.tallest_um)
                         << " m (" << std::string(field.band_name(st.tallest_band)) << ") every "
@@ -786,9 +817,9 @@ void print_stats(const char* name, const DuneField& field, const FieldStats& st)
 TEST_CASE("terrain: golden statistics of the default and the erg") {
   const StatsRow rows[] = {
       {"default, 1 km at 4 m", reference_desc(), -512'000, -512'000, 257, 4'000,
-       0xe3a283018ff163f6ull},
-      {"erg, 6 km at 24 m", erg_desc(), -3'072'000, -3'072'000, 257, 24'000, 0x980c2a354a4389c1ull},
-      {"erg, a slip face at 0.5 m", erg_desc(), 250'000, -128'000, 513, 500, 0xb789f5c92fc726c2ull},
+       0x25713d9620e73bcaull},
+      {"erg, 6 km at 24 m", erg_desc(), -3'072'000, -3'072'000, 257, 24'000, 0xd1791fa3c66fd2b5ull},
+      {"erg, a slip face at 0.5 m", erg_desc(), 250'000, -128'000, 513, 500, 0x71da6b6da056f461ull},
   };
   for (const StatsRow& row : rows) {
     const DuneField field(row.desc);
@@ -797,5 +828,34 @@ TEST_CASE("terrain: golden statistics of the default and the erg") {
                 nullptr, nullptr, st);
     print_stats(row.name, field, st);
     CHECK(hex(st.hash()) == hex(row.golden));
+    CHECK(st.over_36() == 0u);  // the repose limiter
   }
+}
+
+TEST_CASE(
+    "terrain: the repose limiter — no sand over 36 degrees on the erg, at every time sampled") {
+  // The windows where the bands' slopes added before the limiter (a draa's reversed slip face on a
+  // mega-draa's stoss, a mega-draa's crest end where its meander turns it, a coupled draa at the
+  // foot of a slip face), at a metre, at four times across the wind record's seasons.
+  const DuneField field(erg_desc());
+  jobs::JobSystem pool(jobs::JobSystemConfig{.performance_workers = 3, .pin_threads = false});
+  struct Window {
+    i64 x0, z0;
+  };
+  u64 sand = 0, steep = 0;
+  for (const i64 t : {i64{0}, k_year, 3 * k_year, 7 * k_year}) {
+    for (const Window w :
+         {Window{2'238'000, -3'059'000}, Window{2'183'000, -2'857'000}, Window{-1'842'000, 134'000},
+          Window{-1'813'000, 93'000}, Window{11'000, 45'000}, Window{2'033'000, 958'000},
+          Window{1'299'000, 141'000}}) {
+      FieldStats st;
+      field_stats(field, w.x0, w.z0, 201, 201, 1'000, t, Detail::dunes, nullptr, &pool, st);
+      CHECK(st.over_36() == 0u);
+      sand += st.sand_vertices;
+      steep += st.slope[k_slope_bins - 3] + st.over_repose();
+    }
+  }
+  MESSAGE("erg: 0 of " << sand << " sand vertices over 36 degrees, " << steep
+                       << " over 30 (the slip faces)");
+  CHECK(steep > sand / 100);  // the windows hold slip faces
 }

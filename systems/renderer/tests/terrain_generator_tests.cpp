@@ -207,7 +207,7 @@ TEST_CASE("renderer: a terrain's band table reads, hashes, and is validated") {
       good, scene(R"(,"bands":[{"name":"big","height_min":20,"height_max":40,)"
                   R"("cell":600,"share":0.8,"sinuosity":0.05},)"
                   R"({"name":"small","kind":"Barchan","height_min":1,"height_max":3,)"
-                  R"("cell":80,"share":0.4,"couple":"Floors","couple_height":2,"far":false}])")));
+                  R"("cell":80,"share":0.4,"couple":"Floors","couple_width":80,"far":false}])")));
   SceneDesc desc;
   REQUIRE_MESSAGE(read_scene_file(good, desc, error), error);
   REQUIRE(desc.terrain.has_bands);

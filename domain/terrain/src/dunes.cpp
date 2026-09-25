@@ -74,6 +74,69 @@ i64 cross_profile(i64 u, const Primitive& p) noexcept {
   return (linear * p.sharp_q16 + smooth * (k_one_q16 - p.sharp_q16)) >> 16;
 }
 
+// 1 / sqrt(1 + slope^2), Q16: what a distance across a crest line whose position drifts sideways
+// at `slope_q16` per unit along it is shortened by to be measured across the local crest.
+//
+// A table of 257 exact values over slopes 0 to 4, interpolated linearly: the bit-by-bit square
+// root this replaced cost a tile a quarter of its time, twice per crest a point visits. The
+// interpolation is within one Q16 unit of the exact value (the curve's second derivative is at most
+// one, and the step 1/64) and continuous; steeper drifts, which no band table draws, take the
+// square root.
+constexpr u64 isqrt_constexpr(u64 v) {
+  u64 result = 0;
+  u64 bit = u64{1} << 62;
+  while (bit > v)
+    bit >>= 2;
+  while (bit != 0) {
+    if (v >= result + bit) {
+      v -= result + bit;
+      result = (result >> 1) + bit;
+    } else {
+      result >>= 1;
+    }
+    bit >>= 2;
+  }
+  return result;
+}
+
+constexpr u32 k_across_steps = 256;
+constexpr i64 k_across_step_q16 = 1024;  // slope 1/64
+struct AcrossTable {
+  i32 v[k_across_steps + 1] = {};
+  constexpr AcrossTable() {
+    for (u32 i = 0; i <= k_across_steps; ++i) {
+      const u64 m = u64{i} * k_across_step_q16;
+      const u64 len = isqrt_constexpr(u64{65536} * 65536 + m * m);
+      v[i] = static_cast<i32>((u64{65536} * 65536) / len);
+    }
+  }
+};
+constexpr AcrossTable k_across_table;
+
+i64 across_scale_q16(i64 slope_q16) noexcept {
+  const i64 m = abs_i64(slope_q16);
+  if (m == 0) return k_one_q16;
+  const i64 i = m / k_across_step_q16;
+  if (i >= k_across_steps) {
+    const u64 len = isqrt(static_cast<u64>(k_one_q16) * k_one_q16 + static_cast<u64>(m * m));
+    return static_cast<i64>((static_cast<u64>(k_one_q16) * k_one_q16) / len);
+  }
+  const i64 f = m - i * k_across_step_q16;
+  const i64 a = k_across_table.v[i];
+  const i64 b = k_across_table.v[i + 1];
+  return a + ((b - a) * f) / k_across_step_q16;
+}
+
+// The most a band's crest line can drift sideways per unit along it, Q16: its meander's (2 pi
+// sinuosity) and its bend's (2 bend / half length at the crest's end, with the widest bend over the
+// shortest crest).
+i64 drift_bound_q16(const BandDesc& p) noexcept {
+  const i64 meander = (static_cast<i64>(p.sinuosity_q16) * 411775) >> 16;
+  const i64 bend =
+      (2 * static_cast<i64>(p.bend_q16) * k_one_q16) / max_i64(1, p.half_length_lo_q16);
+  return meander + bend;
+}
+
 u32 reciprocal_q32(i64 v) noexcept { return static_cast<u32>((i64{1} << 32) / max_i64(2, v)); }
 
 i64 lattice_value(u64 seed, i64 i, i64 j) noexcept {
@@ -273,7 +336,7 @@ BandDesc band_from_metres(const BandMetres& m) noexcept {
   b.side_days = static_cast<i32>(std::min<u32>(m.side_days, 1u << 20));
   b.sharp_days = static_cast<i32>(std::min<u32>(m.sharp_days, 1u << 20));
   b.couple = m.couple;
-  b.couple_mm = static_cast<i64>(std::floor(static_cast<f64>(m.couple_height) * 1000.0 + 0.5));
+  b.couple_mm = static_cast<i64>(std::floor(static_cast<f64>(m.couple_width) * 1000.0 + 0.5));
   b.far = m.far;
   set_name(b, m.name.c_str());
   return b;
@@ -314,7 +377,7 @@ bool validate_bands(std::span<const BandDesc> bands, std::string* error) {
     if (b.side_days < 1 || b.side_days > 3650 || b.sharp_days < 1 || b.sharp_days > 3650)
       return fail(where + ": the slip face's windows must be 1 to 3650 days");
     if (b.couple != BandCouple::none && (i == 0 || b.couple_mm <= 0))
-      return fail(where + ": couples to the bands before it, and needs some and a height");
+      return fail(where + ": couples to the bands before it, and needs some and a width");
     if (i > 0 && b.height_hi_cm > bands[i - 1].height_hi_cm)
       return fail(where + " is taller than the band before it: order the table tallest first");
   }
@@ -326,17 +389,29 @@ DuneField::DuneField(const FieldDesc& desc)
   bands_ = desc.bands.empty() ? default_bands(desc.dune_height, desc.wavelength) : desc.bands;
   if (bands_.size() > k_max_bands) bands_.resize(k_max_bands);
   for (u32 b = 0; b < bands_.size(); ++b) {
+    // The lee zone's fade: six times the tallest later band's height over the tangent of the
+    // angle of repose, so a band fading out across it loses its height at a sixth of the repose
+    // slope or less (terrain.md, "The repose limiter"). The last band absorbs nothing.
+    i64 later_cm = 0;
+    for (u32 c = b + 1; c < bands_.size(); ++c)
+      later_cm = max_i64(later_cm, bands_[c].height_hi_cm);
+    absorb_[b] = later_cm > 0 ? (later_cm * 60 * k_cot_repose_q16) >> 16 : 0;
+  }
+  for (u32 b = 0; b < bands_.size(); ++b) {
     const BandDesc& p = bands_[b];
     cell_[b] = p.cell_cm * 10;
     celerity_height_[b] = max_i64(10, (p.height_lo_cm + p.height_hi_cm) * 5);
     const i64 h_hi_um = p.height_hi_cm * 10'000;
     if (p.kind == PrimitiveKind::barchan) {
-      reach_[b] = (h_hi_um * 11) / 2000 + 10;
+      reach_[b] = (h_hi_um * 11) / 2000 + 10 + absorb_[b];
     } else {
       const i64 lee_smooth = 3 * ((h_hi_um * k_cot_repose_q16) / 65'536'000) + 1;
       const i64 cell = cell_[b];
-      reach_[b] = ((cell * p.half_length_hi_q16) >> 16) + ((cell * p.stoss_q16) >> 16) +
-                  lee_smooth + ((cell * p.bend_q16) >> 16) + ((cell * p.sinuosity_q16) >> 16) + 10;
+      drift_q16_[b] = drift_bound_q16(p);
+      const i64 across = max_i64((cell * p.stoss_q16) >> 16, lee_smooth + absorb_[b]);
+      reach_[b] = ((cell * p.half_length_hi_q16) >> 16) +
+                  (across * k_one_q16) / across_scale_q16(drift_q16_[b]) +
+                  ((cell * p.bend_q16) >> 16) + ((cell * p.sinuosity_q16) >> 16) + 10;
     }
   }
   const u64 roll = sub(hash_combine(desc.seed, k_tag_field), k_tag_roll);
@@ -412,7 +487,8 @@ bool DuneField::make_primitive(u32 band, i64 i, i64 j, const TimeShape& shape,
     out.half_length = static_cast<i32>((h_mm * 11) / 2);
     out.stoss = static_cast<i32>(h_mm * 4);
     out.bend = static_cast<i32>((h_mm * 11) / 2);
-    out.reach = out.half_length + 10;
+    out.absorb = static_cast<i32>(absorb_[band]);
+    out.reach = out.half_length + 10 + out.absorb;
     out.side_q16 = k_one_q16;
     out.sharp_q16 = k_one_q16;
     out.lee = static_cast<i32>(
@@ -433,7 +509,15 @@ bool DuneField::make_primitive(u32 band, i64 i, i64 j, const TimeShape& shape,
   out.bend = static_cast<i32>(((cell * draw(sub(h, 6), -p.bend_q16, p.bend_q16)) >> 16) * 10);
   out.lee =
       static_cast<i32>(max_i64(1, (static_cast<i64>(out.height) * k_cot_repose_q16) / 65'536'000));
-  out.reach = static_cast<i32>(out.half_length + out.stoss + 3 * out.lee + abs_i64(out.bend) + 10);
+  out.absorb = static_cast<i32>(absorb_[band]);
+  // The crest's ends fall over 0.4 of its half length, or over six times its height if that is
+  // longer (at most 0.95 of it): a tall crest that ended over the same share would stand its ends
+  // steeper than its slip face, and where a meander turns the crest across that slope the two add.
+  // Six is what keeps their sum under 36 degrees at the erg's worst meander (terrain.md, "The
+  // repose limiter", has the arithmetic).
+  const i64 taper = (static_cast<i64>(out.height) / 1000 * 6 * 65536) / max_i64(1, out.half_length);
+  out.taper_q16 = static_cast<u16>(min_i64(62259, max_i64(26214, taper)));
+  out.inv_taper = reciprocal_q32(out.taper_q16);
   out.inv_half = reciprocal_q32(out.half_length);
   out.inv_stoss = reciprocal_q32(out.stoss);
   out.inv_width = reciprocal_q32(out.lee);
@@ -443,6 +527,20 @@ bool DuneField::make_primitive(u32 band, i64 i, i64 j, const TimeShape& shape,
     out.inv_meander = reciprocal_q32(cell * 10);
     out.meander_phase = static_cast<u16>(sub(h, 7) >> 48);
   }
+  // Everything the crest can reach from its centre: along it, then across it — the stoss, or the
+  // rounded lee and the lee zone's fade past it, widened by the most its line drifts — the bend,
+  // and the meander.
+  // Its own drift, not the band's most: the meander's 2 pi meander / cell and the bend's 2 bend /
+  // half length at its ends.
+  const i64 drift =
+      ((static_cast<i64>(out.meander) * 411775 * static_cast<i64>(out.inv_meander)) >> 32) +
+      ((2 * abs_i64(out.bend) * k_one_q16) / max_i64(1, out.half_length));
+  out.widen = static_cast<i32>(
+      (max_i64(out.stoss, 3 * static_cast<i64>(out.lee) + out.absorb) * k_one_q16) /
+          across_scale_q16(drift) +
+      1);
+  out.reach =
+      static_cast<i32>(out.half_length + out.widen + abs_i64(out.bend) + abs_i64(out.meander) + 10);
   // The slip face's side and sharpness from the recent wind across the crest (its normal is
   // (az, -ax), which points down the prevailing wind).
   const i64 nx = out.az;
@@ -519,28 +617,36 @@ void DuneField::gather(i64 x0, i64 z0, i64 x1, i64 z1, i64 time_us, const LagFie
       min_i64(k_one_q16, ((time_us - day * k_us_per_day) * 65536) / k_ripple_realign_us));
 }
 
-i64 DuneField::band_sand(const Gather& gather, u32 band, i64 qx, i64 qz) const noexcept {
+template <bool k_slope>
+DuneField::Value DuneField::band_value(const Gather& gather, u32 band, i64 qx,
+                                       i64 qz) const noexcept {
   // Within a band the primitives meet by their maximum, never their sum: two crests of one band
   // that overlap make a junction, not a dune twice as tall. A smooth maximum was the first draft
   // and is wrong here: it adds a bump wherever it blends against a primitive's zero, so the surface
   // jumped where a primitive's reach began, and it made the result depend on the primitives' order.
   // The maximum is continuous, and exactly the same whatever order a gather holds them in — which
-  // is also why visiting only the cells that can reach the point (below) changes no bit.
-  i64 sand = 0;
+  // is also why visiting only the cells that can reach the point (below) changes no bit. The lee
+  // slope bound is the maximum of the primitives' bounds, for the same reasons: the slope of a
+  // maximum is the slope of whichever primitive is the maximum there, which is at most its bound.
+  Value out;
+  const auto visit = [&](const Primitive& p) {
+    const i64 dx = qx - p.cx;
+    const i64 dz = qz - p.cz;
+    if (abs_i64(dx) > p.reach || abs_i64(dz) > p.reach) return;
+    if (dx * dx + dz * dz > static_cast<i64>(p.reach) * p.reach) return;
+    const Value v = primitive_value<k_slope>(p, dx, dz);
+    out.height = max_i64(out.height, v.height);
+    out.slope = max_i64(out.slope, v.slope);
+    out.inside = max_i64(out.inside, v.inside);
+  };
   const u32 first = gather.band_begin[band];
   const u32 last = gather.band_begin[band + 1];
   if (last - first <= k_linear_primitives) {
     // A band with a handful of primitives in the gather (every band of the default field over a
     // tile): the list itself is cheaper than the cells round the point.
-    for (u32 k = first; k < last; ++k) {
-      const Primitive& p = gather.primitives[k];
-      const i64 dx = qx - p.cx;
-      const i64 dz = qz - p.cz;
-      if (abs_i64(dx) > p.reach || abs_i64(dz) > p.reach) continue;
-      if (dx * dx + dz * dz > static_cast<i64>(p.reach) * p.reach) continue;
-      sand = max_i64(sand, primitive_height(p, dx, dz));
-    }
-    return sand;
+    for (u32 k = first; k < last; ++k)
+      visit(gather.primitives[k]);
+    return out;
   }
   const i64 cell = cell_[band];
   const i64 reach = reach_[band];
@@ -556,62 +662,142 @@ i64 DuneField::band_sand(const Gather& gather, u32 band, i64 qx, i64 qz) const n
     const i64 row = static_cast<i64>(gather.grid_begin[band]) + (j - gj0) * ni;
     for (i64 i = i_lo; i <= i_hi; ++i) {
       const i32 slot = gather.grid[static_cast<u32>(row + (i - gi0))];
-      if (slot < 0) continue;
-      const Primitive& p = gather.primitives[static_cast<u32>(slot)];
-      const i64 dx = qx - p.cx;
-      const i64 dz = qz - p.cz;
-      if (abs_i64(dx) > p.reach || abs_i64(dz) > p.reach) continue;
-      if (dx * dx + dz * dz > static_cast<i64>(p.reach) * p.reach) continue;
-      sand = max_i64(sand, primitive_height(p, dx, dz));
+      if (slot >= 0) visit(gather.primitives[static_cast<u32>(slot)]);
     }
   }
-  return sand;
+  return out;
 }
 
-i64 DuneField::primitive_height(const Primitive& p, i64 dx, i64 dz) noexcept {
+namespace {
+
+// The lee zone across a crest (terrain.md, "The repose limiter"): nothing upwind of the fade,
+// rising to one at the brink over `absorb`, one over the slip face and the rounded lee (three lee
+// widths), and falling back to nothing over `absorb` past it.
+i64 lee_zone(i64 u, i64 lee, i64 absorb) noexcept {
+  const i64 end = 3 * lee;
+  if (absorb <= 0) return 0;  // the last band: nothing after it to scale
+  if (u <= -absorb) return 0;
+  if (u < 0) return k_one_q16 - falloff_q16(((u + absorb) * 65536) / absorb);
+  if (u <= end) return k_one_q16;
+  if (u >= end + absorb) return 0;
+  return falloff_q16(((u - end) * 65536) / absorb);
+}
+
+// 6 s (1 - s), Q16: the slope of `falloff_q16` at s, per unit of s.
+i64 falloff_slope_q16(i64 s) noexcept {
+  if (s <= 0 || s >= k_one_q16) return 0;
+  return (6 * s * (k_one_q16 - s)) >> 16;
+}
+
+// A bound on the slope of one side of a crest's profile at `u` across it, Q16 (a tangent), for a
+// crest `h_mm` tall: its stoss's own slope upwind of the brink and the angle of repose over the
+// lee zone, whichever is more. Continuous in u, which the slope of the profile itself is not (it
+// jumps at the brink), because the bands after it are scaled by it (terrain.md, "The repose
+// limiter").
+i64 side_slope_q16(i64 u, i64 h_mm, const Primitive& p) noexcept {
+  const i64 lee = (k_tan_repose_q16 * lee_zone(u, p.lee, p.absorb)) >> 16;
+  if (u >= 0) return lee;
+  const i64 v = (-u * p.inv_stoss) >> 16;
+  const i64 stoss = (h_mm * falloff_slope_q16(v) * static_cast<i64>(p.inv_stoss)) >> 32;
+  return max_i64(stoss, lee);
+}
+
+}  // namespace
+
+template <bool k_slope>
+DuneField::Value DuneField::primitive_value(const Primitive& p, i64 dx, i64 dz) noexcept {
+  Value out;
+  const i64 h_mm = p.height / 1000;
   if (p.kind == static_cast<u8>(PrimitiveKind::transverse)) {
     const i64 a = (dx * p.ax + dz * p.az) >> 14;
     i64 u0 = (dx * p.az - dz * p.ax) >> 14;
     const i64 abs_a = abs_i64(a);
-    if (abs_a >= p.half_length) return 0;
+    if (abs_a >= p.half_length) return out;
+    // The crest line's sideways drift along it, Q16: the meander's and the bend's.
+    i64 meander_slope = 0;
     if (p.meander != 0) {
       // The crest line meanders: one wave a cell along it, `meander` either side.
       const u32 angle = static_cast<u32>((a * p.inv_meander) >> 16) + p.meander_phase;
       u0 -= (static_cast<i64>(p.meander) * sin_q15(angle)) >> 15;
+      const i64 swing = (static_cast<i64>(p.meander) * cos_q15(angle)) >> 15;    // mm
+      meander_slope = (swing * 411775 * static_cast<i64>(p.inv_meander)) >> 32;  // 2 pi, Q16
     }
     const i64 sa = (abs_a * p.inv_half) >> 16;
-    // Full height over the middle 60% of the crest, falling smoothly to nothing at its ends.
-    const i64 taper = sa <= 39322 ? k_one_q16 : falloff_q16(((sa - 39322) * 5) / 2);
+    // Full height over the middle of the crest, falling smoothly to nothing at its ends over
+    // `taper_q16` of the half length (0.4 unless the crest is tall; make_primitive).
+    const i64 taper_start = k_one_q16 - p.taper_q16;
+    const i64 taper_s = sa <= taper_start ? 0 : ((sa - taper_start) * p.inv_taper) >> 16;
+    const i64 taper = falloff_q16(taper_s);
     // The ends lie `bend` downwind of the middle, on whichever side the slip face is.
     const i64 bend = (p.bend * ((sa * sa) >> 16)) >> 16;
-    // Beyond the stoss on one side and the rounded lee on the other, neither profile has height.
+    // Beyond the stoss on one side and the lee and its zone on the other, nothing.
     const i64 across = abs_i64(u0) - abs_i64(bend);
-    if (across >= p.stoss && across >= 3 * p.lee) return 0;
-    const i64 plus = cross_profile(u0 - bend, p);
-    const i64 minus = cross_profile(-u0 - bend, p);
+    if (across >= p.widen) return out;
+    // Measured across the local crest, not across the crest's mean line: a crest that bends or
+    // meanders would otherwise stand its slip face steeper than the angle of repose by the secant
+    // of its drift (a meander of 0.08 of a cell, 37 degrees).
+    const i64 bend_slope =
+        ((2 * static_cast<i64>(p.bend) * sa * static_cast<i64>(p.inv_half)) >> 32) *
+        (a < 0 ? -1 : 1);
+    const i64 up = (((u0 - bend) * across_scale_q16(meander_slope + bend_slope)) >> 16);
+    const i64 um = (((-u0 - bend) * across_scale_q16(meander_slope - bend_slope)) >> 16);
+    const i64 plus = cross_profile(up, p);
+    const i64 minus = cross_profile(um, p);
     const i64 w_plus = (k_one_q16 + p.side_q16) / 2;
     const i64 profile = (plus * w_plus + minus * (k_one_q16 - w_plus)) >> 16;
-    return (((static_cast<i64>(p.height) * taper) >> 16) * profile) >> 16;
+    out.height = (((static_cast<i64>(p.height) * taper) >> 16) * profile) >> 16;
+    if constexpr (!k_slope) return out;
+    // Its slope bound: across the crest, the two sides' bounds as the profile blends them, times
+    // the taper; along it, the taper's own slope under the profile. Continuous everywhere, since
+    // each part is (the taper's slope is zero where it starts and where it ends).
+    const i64 side = (side_slope_q16(up, h_mm, p) * w_plus +
+                      side_slope_q16(um, h_mm, p) * (k_one_q16 - w_plus)) >>
+                     16;
+    const i64 along_mm = (((h_mm * falloff_slope_q16(taper_s)) >> 16) * profile) >> 16;
+    const i64 along =
+        (((along_mm * static_cast<i64>(p.inv_taper)) >> 16) * static_cast<i64>(p.inv_half)) >> 16;
+    out.slope = ((side * taper) >> 16) + along;
+    // How deep inside its footprint the point is, mm: from the stoss's edge or the rounded lee's
+    // end, blended as the profile blends its two sides, and from the crest's end.
+    const auto depth = [&](i64 u) { return max_i64(0, min_i64(u + p.stoss, 3 * p.lee - u)); };
+    const i64 across_depth = (depth(up) * w_plus + depth(um) * (k_one_q16 - w_plus)) >> 16;
+    out.inside = min_i64(across_depth, p.half_length - abs_a);
+    return out;
   }
   const i64 x = (dx * p.ax + dz * p.az) >> 14;
   const i64 y = (dz * p.ax - dx * p.az) >> 14;
   const i64 xq = (x * (x < 0 ? p.inv_stoss : p.inv_half)) >> 16;
   const i64 yq = (y * p.inv_width) >> 16;
   const i64 rho2 = (xq * xq + yq * yq) >> 16;
-  if (rho2 >= k_one_q16) return 0;
+  if (rho2 >= k_one_q16) return out;
   const i64 rho = static_cast<i64>(isqrt(static_cast<u64>(rho2) << 16));
   const i64 dome = (static_cast<i64>(p.height) * falloff_q16(rho)) >> 16;
-  const i64 h_mm = p.height / 1000;
   const i64 scoop_r = (h_mm * 7) / 2;
   const i64 scoop_x = scoop_r + (h_mm * 3) / 10;
   const i64 d = length(x - scoop_x, y);
   const i64 face = max_i64(0, ((d - (scoop_r - p.lee)) * k_tan_repose_q16 * 1000) >> 16);
-  return min_i64(dome, face);
+  out.height = min_i64(dome, face);
+  if constexpr (!k_slope) return out;
+  // Its slope bound: the dome's, over its narrowest radius, and the angle of repose over the scoop
+  // (the slip face), fading out over `absorb` past its rim and to nothing at the dome's edge.
+  // The narrowest radius's reciprocal is the largest of the three.
+  const i64 inv_radius = max_i64(max_i64(p.inv_stoss, p.inv_half), p.inv_width);
+  const i64 dome_slope = (h_mm * falloff_slope_q16(rho) * inv_radius) >> 32;
+  const i64 body = min_i64(k_one_q16, ((k_one_q16 - rho) * 65536) / 9830);
+  const i64 zone = d < scoop_r ? k_one_q16
+                   : p.absorb > 0 && d < scoop_r + p.absorb
+                       ? falloff_q16(((d - scoop_r) * 65536) / p.absorb)
+                       : 0;
+  out.slope = max_i64(dome_slope, (((k_tan_repose_q16 * zone) >> 16) * body) >> 16);
+  out.inside = ((k_one_q16 - rho) << 16) / max_i64(1, inv_radius);
+  return out;
 }
 
-void DuneField::features(i64 x, i64 z, i64& ridge, i64& flatten, i64& lag) const noexcept {
+void DuneField::features(i64 x, i64 z, i64& ridge, i64& flatten, i64& lag,
+                         i64& squeeze) const noexcept {
   ridge = 0;
   lag = 0;
+  squeeze = 0;
   flatten = k_one_q16;
   for (const RidgeFeature& r : desc_.ridges) {
     const i64 w = max_i64(1, r.width);
@@ -625,6 +811,15 @@ void DuneField::features(i64 x, i64 z, i64& ridge, i64& flatten, i64& lag) const
       const i64 held =
           (((w * desc_.ridge_lag_q16) >> 16) * falloff_q16((d * 65536) / (2 * w))) >> 16;
       lag = max_i64(lag, held);
+      // The lag is w L falloff(d / 2w), so its gradient is at most L/2 |falloff'(u)| = 3 L u (1 -
+      // u) with u = d / 2w: a lattice looked up through it is squeezed by at most 1 + that (the
+      // largest singular value of I + wind grad(lag)), and a face at the angle of repose steepened
+      // by as much. The bound, not the gradient, because the bound of the largest of several
+      // ridges' lags is continuous where the gradient of it is not.
+      const i64 u = (d * 65536) / (2 * w);
+      const i64 bound =
+          (((3 * static_cast<i64>(desc_.ridge_lag_q16) * u) >> 16) * (k_one_q16 - u)) >> 16;
+      squeeze = max_i64(squeeze, bound);
     }
   }
   for (const BasinFeature& b : desc_.basins) {
@@ -641,8 +836,8 @@ void DuneField::features(i64 x, i64 z, i64& ridge, i64& flatten, i64& lag) const
 }
 
 i32 DuneField::ridge_q16(i64 x, i64 z) const noexcept {
-  i64 ridge = 0, flatten = 0, lag = 0;
-  features(x, z, ridge, flatten, lag);
+  i64 ridge = 0, flatten = 0, lag = 0, squeeze = 0;
+  features(x, z, ridge, flatten, lag, squeeze);
   return static_cast<i32>(ridge);
 }
 
@@ -660,8 +855,8 @@ i32 DuneField::basin_q16(i64 x, i64 z) const noexcept {
 }
 
 i64 DuneField::ridge_lag_mm(i64 x, i64 z) const noexcept {
-  i64 ridge = 0, flatten = 0, lag = 0;
-  features(x, z, ridge, flatten, lag);
+  i64 ridge = 0, flatten = 0, lag = 0, squeeze = 0;
+  features(x, z, ridge, flatten, lag, squeeze);
   return lag;
 }
 
@@ -701,59 +896,85 @@ i64 DuneField::detail_um(const Gather& g, i64 x, i64 z) const noexcept {
   return ripples + top + (((bottom - top) * tz) >> 16);
 }
 
+namespace {
+
+// One band laid on the bands before it (terrain.md, "The repose limiter"): given its slope bound
+// (Q16), the bound on the slope of the bands before it (`base_slope`) and how deep inside their
+// footprints the point is (`inside`, mm), returns the share of its height the band stands at
+// (Q16) and adds the slope it brings to `base_slope`. The share is 1 - base / tan 34, so its own
+// slope, at most tan 34, and theirs sum to the angle of repose; over a slip face the base is tan
+// 34 and the share nothing, which is absorption.
+i64 stack_band(const BandDesc& band, i64 slope, i64 inside, i64& base_slope) noexcept {
+  const i64 room = max_i64(0, k_one_q16 - (base_slope * 65536) / k_tan_repose_q16);
+  base_slope += (slope * room) >> 16;
+  if (band.couple == BandCouple::none) return room;
+  // On the flanks of the bands before it only, or on the floors between them only, fading across
+  // `couple_mm` inside their footprints. Across a width and not a height of their sand: their sand
+  // rises as steeply as their faces do, so a fade across a few metres of it stood a tall band up
+  // over a few metres of ground at the foot of a slip face; across a width, the fade's slope is
+  // the band's height over the width, and fifteen times the height keeps it under the margin
+  // between 34 and 36 degrees.
+  const i64 fade = falloff_q16((inside * 65536) / max_i64(1, band.couple_mm));
+  return (room * (band.couple == BandCouple::floors ? fade : k_one_q16 - fade)) >> 16;
+}
+
+}  // namespace
+
 Sample DuneField::sample(const Gather& gather, i64 x, i64 z, Detail detail) const noexcept {
   Sample s;
   s.floor = floor_um(x, z);
-  i64 ridge = 0, flatten = 0, ridge_lag = 0;
-  features(x, z, ridge, flatten, ridge_lag);
+  i64 ridge = 0, flatten = 0, ridge_lag = 0, squeeze = 0;
+  features(x, z, ridge, flatten, ridge_lag, squeeze);
   s.ridge_q16 = static_cast<u16>(min_i64(ridge, 65535));
   s.basin_q16 = static_cast<u16>(min_i64(basin_q16(x, z), 65535));
   if (detail == Detail::floor) return s;
   const i64 wx = wind_.prevailing_x_q14();
   const i64 wz = wind_.prevailing_z_q14();
   i64 sand = 0;
+  i64 base_slope = 0;  // Q16: a bound on the slope of the bands so far
+  i64 inside = 0;      // mm: how deep inside their footprints the point is
   for (u32 b = 0; b < gather.bands; ++b) {
     const BandDesc& band = bands_[b];
     if (detail == Detail::coarse && !band.far) continue;
     const i64 lag = ridge_lag + (gather.lag != nullptr ? gather.lag->lag_mm(lag_slot(b), x, z) : 0);
     const i64 qx = x - gather.dx[b] + ((wx * lag) >> 14);
     const i64 qz = z - gather.dz[b] + ((wz * lag) >> 14);
-    i64 h = band_sand(gather, b, qx, qz);
-    if (band.couple != BandCouple::none && h > 0) {
-      // Coupled to the sand of the bands before it: on their flanks only, or on the floors
-      // between them only, fading across `couple_mm` of that sand so the band never steps.
-      const i64 fade = falloff_q16((sand * 65536) / max_i64(1, band.couple_mm * 1000));
-      h = (h * (band.couple == BandCouple::floors ? fade : k_one_q16 - fade)) >> 16;
-    }
-    sand += h;
+    const Value v = b + 1 < gather.bands || detail == Detail::full
+                        ? band_value<true>(gather, b, qx, qz)
+                        : band_value<false>(gather, b, qx, qz);
+    sand += (v.height * stack_band(band, v.slope, inside, base_slope)) >> 16;
+    inside = max_i64(inside, v.inside);
   }
   const i64 mask = (((k_one_q16 - ((k_ridge_thinning_q16 * ridge) >> 16)) * flatten) >> 16);
   s.sand = (sand * mask) >> 16;
-  if (detail == Detail::full) s.detail = (detail_um(gather, x, z) * mask) >> 16;
+  // A band held back by a ridge is squeezed along the wind; it stands lower by as much, so its
+  // faces stay at the angle of repose (terrain.md, "The repose limiter").
+  if (squeeze > 0) s.sand = (s.sand * k_one_q16) / (k_one_q16 + squeeze);
+  if (detail == Detail::full) {
+    // Ripples do not survive on a slip face either.
+    const i64 room = max_i64(0, k_one_q16 - (base_slope * 65536) / k_tan_repose_q16);
+    s.detail = (((detail_um(gather, x, z) * mask) >> 16) * room) >> 16;
+  }
   return s;
 }
 
 i64 DuneField::band_weight_q16(const Gather& gather, u32 b, i64 x, i64 z) const noexcept {
-  const BandDesc& band = bands_[b];
-  if (band.couple == BandCouple::none) return k_one_q16;
-  i64 ridge = 0, flatten = 0, ridge_lag = 0;
-  features(x, z, ridge, flatten, ridge_lag);
+  // The evaluation's own loop up to band b: the share of its height it stands at.
+  i64 ridge = 0, flatten = 0, ridge_lag = 0, squeeze = 0;
+  features(x, z, ridge, flatten, ridge_lag, squeeze);
   const i64 wx = wind_.prevailing_x_q14();
   const i64 wz = wind_.prevailing_z_q14();
-  i64 sand = 0;
-  for (u32 c = 0; c < b; ++c) {
+  i64 inside = 0;
+  i64 base_slope = 0;
+  for (u32 c = 0; c <= b; ++c) {
     const i64 lag = ridge_lag + (gather.lag != nullptr ? gather.lag->lag_mm(lag_slot(c), x, z) : 0);
-    i64 h = band_sand(gather, c, x - gather.dx[c] + ((wx * lag) >> 14),
-                      z - gather.dz[c] + ((wz * lag) >> 14));
-    const BandDesc& earlier = bands_[c];
-    if (earlier.couple != BandCouple::none && h > 0) {
-      const i64 fade = falloff_q16((sand * 65536) / max_i64(1, earlier.couple_mm * 1000));
-      h = (h * (earlier.couple == BandCouple::floors ? fade : k_one_q16 - fade)) >> 16;
-    }
-    sand += h;
+    const Value v = band_value<true>(gather, c, x - gather.dx[c] + ((wx * lag) >> 14),
+                                     z - gather.dz[c] + ((wz * lag) >> 14));
+    const i64 share = stack_band(bands_[c], v.slope, inside, base_slope);
+    if (c == b) return share;
+    inside = max_i64(inside, v.inside);
   }
-  const i64 fade = falloff_q16((sand * 65536) / max_i64(1, band.couple_mm * 1000));
-  return band.couple == BandCouple::floors ? fade : k_one_q16 - fade;
+  return 0;
 }
 
 i64 DuneField::height_um(const Gather& gather, i64 x, i64 z, Detail detail) const noexcept {

@@ -68,7 +68,7 @@ struct TerrainBand {
   f32 sharpness = 1.0f;
   u32 side_days = 120, sharp_days = 30;
   u8 couple = 0;  // 0 none, 1 flanks, 2 floors
-  f32 couple_height = 0.0f;
+  f32 couple_width = 0.0f;
   bool far = true;
 };
 

@@ -61,7 +61,7 @@ terrain::FieldDesc field_desc(const TerrainDesc& desc) {
       m.side_days = band.side_days;
       m.sharp_days = band.sharp_days;
       m.couple = static_cast<terrain::BandCouple>(band.couple <= 2 ? band.couple : 0);
-      m.couple_height = band.couple_height;
+      m.couple_width = band.couple_width;
       m.far = band.far;
       f.bands.push_back(terrain::band_from_metres(m));
     }
@@ -443,10 +443,10 @@ u64 terrain_hash(const TerrainDesc& desc) noexcept {
   }
   if (desc.generator == TerrainGenerator::dunes) {
     // Only here, so a waves terrain keeps the hash it always had. The generator's version is its
-    // own (`terrain::k_generator_version`, 1 today), named as a number so the hash is the same
+    // own (`terrain::k_generator_version`, 2 today), named as a number so the hash is the same
     // whether or not this build could draw it.
     h = hash_combine(h, 0x44554E4553ull);  // "DUNES"
-    h = hash_combine(h, 1u);
+    h = hash_combine(h, 2u);
     h = hash_combine(h, std::bit_cast<u64>(desc.time_s));
     h = mix_f32(h, desc.sand_flux);
     if (desc.has_bands) {
@@ -457,7 +457,7 @@ u64 terrain_hash(const TerrainDesc& desc) noexcept {
         h = hash_combine(hash_combine(h, b.side_days), b.sharp_days);
         for (const f32 v :
              {b.height_min, b.height_max, b.cell, b.share, b.length_min, b.length_max, b.stoss,
-              b.bend, b.sinuosity, b.spread_deg, b.sharpness, b.couple_height})
+              b.bend, b.sinuosity, b.spread_deg, b.sharpness, b.couple_width})
           h = mix_f32(h, v);
       }
     }
