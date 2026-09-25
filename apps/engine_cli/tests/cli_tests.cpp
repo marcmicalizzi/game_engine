@@ -84,6 +84,32 @@ TEST_CASE("cli: engine.info and engine.methods through a spawned host") {
   CHECK(at(methods.result, "methods").size() >= 20);
 }
 
+// engine.ping (docs/subsystems/protocol.md): the host's pid and uptime from a method that touches
+// no state, so it answers the same on every machine. The pid is the one engine.info reports for the
+// same kind of process, and the uptime is a small positive number of seconds.
+TEST_CASE("cli: engine.ping answers with the host's pid and uptime") {
+  Run ping = cli({"engine.ping"});
+  CHECK(ping.exit_code == 0);
+  u64 pid = 0;
+  REQUIRE(at(ping.result, "pid").get_u64(pid));
+  CHECK(pid > 0);
+  f64 uptime = -1.0;
+  REQUIRE(at(ping.result, "uptime_seconds").get_f64(uptime));
+  CHECK(uptime >= 0.0);
+  CHECK(uptime < 600.0);
+  // In the catalogue with no params type and a result type of its own.
+  Run methods = cli({"--compact", "engine.methods"});
+  bool listed = false;
+  const JsonValue& list = at(methods.result, "methods");
+  for (usize i = 0; i < list.size(); ++i) {
+    if (at(list[i], "name") != JsonValue("engine.ping")) continue;
+    listed = true;
+    CHECK(at(list[i], "params_type") == JsonValue(""));
+    CHECK(at(list[i], "result_type") == JsonValue("engine.protocol.PingResult"));
+  }
+  CHECK(listed);
+}
+
 TEST_CASE("cli: --report writes the result as a file to send back") {
   // The flag exists for `gpu.adapters` on a machine nobody here can log in to
   // (docs/ci/self-hosted-runners.md), but it is generic, so the case uses a method that answers

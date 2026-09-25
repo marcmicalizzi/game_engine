@@ -5,6 +5,7 @@
 #include <core/hash/hash.h>
 #include <core/json/json_value.h>
 #include <core/log/log.h>
+#include <core/memory/memory.h>
 #include <core/time/time.h>
 #include <foundation/bench/machine_state.h>
 #include <foundation/image/decode.h>
@@ -18,6 +19,7 @@
 
 #include <cmath>
 #include <cstring>
+#include <optional>
 #include <schemas/scene.h>
 
 namespace engine::host {
@@ -37,6 +39,27 @@ protocol::RpcError unavailable(std::string message) {
 
 protocol::RpcError invalid(std::string message) {
   return protocol::make_error(protocol::codes::k_invalid_argument, std::move(message));
+}
+
+// A scene id the host does not hold. 1003 NotFound either way — an unloaded id and one that never
+// existed name nothing alike, and a client already tells "no such scene" apart by that code — but
+// the message says which, because "no scene scene3" right after loading scene3 reads like a bug
+// when the truth is that something unloaded it.
+protocol::RpcError missing_scene(const RenderHost* host, std::string_view id) {
+  std::string message = "no scene " + std::string(id);
+  if (host != nullptr && host->unloaded(id)) {
+    message += ": it was unloaded; render.load it again";
+  }
+  return protocol::make_error(protocol::codes::k_not_found, std::move(message));
+}
+
+// This process's device-local memory in use, as the driver reports it, when a device is open and
+// has VK_EXT_memory_budget. Opens nothing.
+std::optional<u64> gpu_used_bytes(const RenderHost& host) {
+  const gfx::Device* device = host.open_device();
+  gfx::MemoryBudget budget;
+  if (device == nullptr || !device->memory_budget(budget) || !budget.valid) return std::nullopt;
+  return budget.used_bytes;
 }
 
 // A `file://` URI of a native path, which is what a client needs to open the file without
@@ -435,6 +458,22 @@ bool render_load(protocol::Context& ctx, const protocol::RenderLoadParams& param
   scene->requested = settings;
   scene->resolved = resolved;
   scene->data = std::move(data);
+  if (!params.scene.empty()) {
+    scene->kind = "scene";
+    scene->source = params.scene;
+  } else if (!params.mesh.empty()) {
+    scene->kind = "mesh";
+    scene->source = params.mesh;
+  } else {
+    scene->kind = "procedural";
+    scene->source = procedural == renderer::Procedural::shredded_atlas
+                        ? std::string("shredded-atlas")
+                        : "heightfield, grid " + std::to_string(params.grid);
+  }
+  if (params.grid_instances > 1) {
+    scene->source += ", " + std::to_string(params.grid_instances) + "x" +
+                     std::to_string(params.grid_instances) + " instances";
+  }
 
   out.scene = scene->id;
   out.adapter = device->adapter().name;
@@ -469,7 +508,7 @@ bool render_capture(protocol::Context& ctx, const protocol::RenderCaptureParams&
   RenderHost* host = host_of(ctx);
   RenderHost::Scene* scene = host != nullptr ? host->find(params.scene) : nullptr;
   if (scene == nullptr) {
-    error = protocol::make_error(protocol::codes::k_not_found, "no scene " + params.scene);
+    error = missing_scene(host, params.scene);
     return false;
   }
   if (params.width == 0 || params.height == 0 || params.width > 16384 || params.height > 16384) {
@@ -582,7 +621,7 @@ bool render_benchmark(protocol::Context& ctx, const protocol::RenderBenchmarkPar
   RenderHost* host = host_of(ctx);
   RenderHost::Scene* scene = host != nullptr ? host->find(params.scene) : nullptr;
   if (scene == nullptr) {
-    error = protocol::make_error(protocol::codes::k_not_found, "no scene " + params.scene);
+    error = missing_scene(host, params.scene);
     return false;
   }
   if (params.width == 0 || params.height == 0 || params.width > 16384 || params.height > 16384) {
@@ -814,7 +853,7 @@ bool render_evaluate(protocol::Context& ctx, const protocol::RenderEvaluateParam
   RenderHost* host = host_of(ctx);
   RenderHost::Scene* scene = host != nullptr ? host->find(params.scene) : nullptr;
   if (scene == nullptr) {
-    error = protocol::make_error(protocol::codes::k_not_found, "no scene " + params.scene);
+    error = missing_scene(host, params.scene);
     return false;
   }
   if (params.width == 0 || params.height == 0 || params.width > 16384 || params.height > 16384) {
@@ -978,17 +1017,131 @@ bool render_evaluate(protocol::Context& ctx, const protocol::RenderEvaluateParam
   return true;
 }
 
+// ---- render.unload -----------------------------------------------------------------------------
+//
+// Everything the host keeps for a scene lives in its `RenderHost::Scene` — the host arrays, the GPU
+// scene, the renderer, the reference path tracer — so releasing a scene is taking that one object
+// out of the list and letting it go, GPU state first, through the same teardown the host's own
+// destructor uses. There is no second cache to clear: engine.budgets reads the list, and the
+// derived-data cache on disk is content-addressed and belongs to no scene. The device stays open:
+// it is the host's rather than any scene's, and the next render call would only open it again.
+
+bool render_unload(protocol::Context& ctx, const protocol::RenderUnloadParams& params,
+                   protocol::RenderUnloadResult& out, protocol::RpcError& error) {
+  RenderHost* host = host_of(ctx);
+  if (host == nullptr || host->find(params.scene) == nullptr) {
+    error = missing_scene(host, params.scene);
+    return false;
+  }
+  // Measured around the release and nowhere near a frame: both are a driver query or a counter
+  // read, and the renderer's teardown waits for the device first anyway.
+  out.gpu_used_bytes_before = gpu_used_bytes(*host);
+  out.host_heap_bytes_before = mem::total_stats().bytes_current;
+
+  std::unique_ptr<RenderHost::Scene> scene = host->take(params.scene);
+  out.scene = scene->id;
+  out.meshes = scene->data.parts.size();
+  out.instances = scene->data.instances.size();
+  out.clusters = scene->data.cluster_count();
+  out.triangles = scene->data.lod.leaf_triangle_count;
+  out.gpu_scene = scene->gpu != nullptr;
+  out.reference = scene->reference != nullptr;
+  if (scene->gpu != nullptr) {
+    out.textures = scene->gpu->textures_built() + scene->gpu->textures_decoded();
+    out.texture_bytes = scene->gpu->texture_bytes();
+  }
+  RenderHost::release(*scene);
+  scene.reset();  // the host arrays, last
+
+  out.host_heap_bytes_after = mem::total_stats().bytes_current;
+  out.gpu_used_bytes_after = gpu_used_bytes(*host);
+  out.scenes_left = static_cast<u32>(host->count());
+  ENGINE_LOG_INFO(log_render, "scene unloaded", log::field("scene", out.scene),
+                  log::field("gpu_scene", out.gpu_scene),
+                  log::field("scenes_left", out.scenes_left),
+                  log::field("host_heap_bytes_after", out.host_heap_bytes_after));
+  return true;
+}
+
+// ---- render.scenes -----------------------------------------------------------------------------
+
+bool render_scenes(protocol::Context& ctx, protocol::RenderScenesResult& out, protocol::RpcError&) {
+  out.host_heap_bytes = mem::total_stats().bytes_current;
+  const RenderHost* host = host_of(ctx);
+  if (host == nullptr) return true;
+  for (const std::unique_ptr<RenderHost::Scene>& scene : host->scenes()) {
+    protocol::RenderLoadedScene entry;
+    entry.scene = scene->id;
+    entry.kind = scene->kind;
+    entry.source = scene->source;
+    entry.meshes = scene->data.parts.size();
+    entry.instances = scene->data.instances.size();
+    entry.pairs = scene->data.pair_count;
+    entry.clusters = scene->data.cluster_count();
+    entry.triangles = scene->data.lod.leaf_triangle_count;
+    entry.raster = renderer::raster_name(scene->resolved.settings.raster);
+    entry.shadows = renderer::resolved_shadow_name(scene->resolved);
+    entry.built = scene->gpu != nullptr && scene->view != nullptr;
+    entry.reference = scene->reference != nullptr;
+    if (entry.built) {
+      entry.width = scene->view->width();
+      entry.height = scene->view->height();
+      entry.textures = scene->gpu->textures_built() + scene->gpu->textures_decoded();
+      entry.texture_bytes = scene->gpu->texture_bytes();
+      entry.rt_bytes = scene->gpu->rt_bytes();
+    }
+    out.scenes.push_back(std::move(entry));
+  }
+  if (const gfx::Device* device = host->open_device(); device != nullptr) {
+    out.adapter = device->adapter().name;
+    gfx::MemoryBudget budget;
+    if (device->memory_budget(budget) && budget.valid) {
+      out.gpu_used_bytes = budget.used_bytes;
+      out.gpu_budget_bytes = budget.budget_bytes;
+    }
+  }
+  return true;
+}
+
 }  // namespace
 
 RenderHost::~RenderHost() {
   // The renderers hold pipelines and the scenes hold buffers; both must go before the device.
-  for (const std::unique_ptr<Scene>& scene : scenes_) {
-    scene->reference.reset();  // it holds the renderer and the scene, so it goes first
-    scene->view.reset();
-    scene->gpu.reset();
-  }
+  for (const std::unique_ptr<Scene>& scene : scenes_)
+    release(*scene);
   scenes_.clear();
   if (device_ready_) device_.destroy();
+}
+
+void RenderHost::release(Scene& scene) noexcept {
+  scene.reference.reset();  // it holds the renderer and the scene, so it goes first
+  scene.view.reset();       // waits for the device, then its pipelines and screen targets go
+  scene.gpu.reset();        // the scene's buffers, textures and acceleration structures
+}
+
+std::unique_ptr<RenderHost::Scene> RenderHost::take(std::string_view id) noexcept {
+  for (u32 i = 0; i < scenes_.size(); ++i) {
+    if (scenes_[i]->id != id) continue;
+    std::unique_ptr<Scene> scene = std::move(scenes_[i]);
+    scenes_.erase_at(i);  // in order: render.scenes and engine.budgets list them as loaded
+    return scene;
+  }
+  return nullptr;
+}
+
+bool RenderHost::unloaded(std::string_view id) const noexcept {
+  constexpr std::string_view k_prefix = "scene";
+  if (!id.starts_with(k_prefix) || id.size() == k_prefix.size()) return false;
+  u32 n = 0;
+  for (const char c : id.substr(k_prefix.size())) {
+    if (c < '0' || c > '9' || n > 100000000u) return false;
+    n = n * 10 + static_cast<u32>(c - '0');
+  }
+  if (n == 0 || n >= next_id_) return false;
+  for (const std::unique_ptr<Scene>& scene : scenes_) {
+    if (scene->id == id) return false;
+  }
+  return true;
 }
 
 gfx::Device* RenderHost::device(u32 adapter, std::string& error) {
@@ -1132,6 +1285,15 @@ void add_render_methods(protocol::Dispatcher& d) {
       "Render one frame of a loaded scene through the real-time path and through the reference "
       "path tracer, compare them, write both pictures and the FLIP heat map, and return the "
       "numbers and the times: plan 04 section 4.8's optimization loop in one call."));
+  d.add(protocol::method<protocol::RenderUnloadParams, protocol::RenderUnloadResult,
+                         &render_unload>(
+      "render.unload",
+      "Release a loaded scene: its GPU buffers, textures, acceleration structures, renderer and "
+      "host arrays. The id names nothing afterwards; the device stays open for the next load."));
+  d.add(protocol::method_no_params<protocol::RenderScenesResult, &render_scenes>(
+      "render.scenes",
+      "The scenes this host holds, in load order: where each came from, its counts, whether its "
+      "GPU state is built and at what size, and what the process uses of the device's memory."));
 }
 
 }  // namespace engine::host

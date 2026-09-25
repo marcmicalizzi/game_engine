@@ -37,6 +37,10 @@ class RenderHost {
   // settings and the frame size and are rebuilt whenever either changes.
   struct Scene {
     std::string id;
+    // What it was loaded from, as `render.scenes` reports it: "mesh", "scene" or "procedural",
+    // and the path or the procedural scene's name.
+    std::string kind;
+    std::string source;
     renderer::SceneData data;
     renderer::RenderSettings requested;
     renderer::ResolvedSettings resolved;
@@ -57,6 +61,19 @@ class RenderHost {
 
   Scene* add_scene();
   Scene* find(std::string_view id) noexcept;
+  // Takes a scene out of the host, which then no longer knows the id; null when it holds none by
+  // that name. `render.unload` releases what it returns (`release`), and the scene's memory goes
+  // with the pointer.
+  std::unique_ptr<Scene> take(std::string_view id) noexcept;
+  // Whether `id` is one this host handed out and has since unloaded. Ids are never reused, so an
+  // id that parses as one below the next and is not held was unloaded — which is worth a sentence
+  // of its own in the NotFound a later call gets, since the id did exist.
+  bool unloaded(std::string_view id) const noexcept;
+  // Releases a scene's GPU state through the renderer's own teardown, in the order the objects
+  // hold each other: the reference path tracer holds the renderer and the GPU scene, the renderer
+  // holds the GPU scene. Each destructor waits for the device to finish with what it owns. The
+  // host arrays (`data`) stay until the `Scene` itself goes.
+  static void release(Scene& scene) noexcept;
   usize count() const noexcept { return scenes_.size(); }
   // Every loaded scene, in load order: what `engine.budgets` reports a scene's budgets from.
   std::span<const std::unique_ptr<Scene>> scenes() const noexcept {
@@ -88,9 +105,10 @@ class RenderHost {
   std::string device_error_;
 };
 
-// Registers render.load, render.capture, render.benchmark, render.compare, and render.evaluate.
-// The `RenderHost` they work on is the `render` member of the `HostState` the dispatcher's
-// `Context::app` points at (host_state.h), which the caller sets and owns.
+// Registers render.load, render.capture, render.benchmark, render.compare, render.evaluate,
+// render.unload and render.scenes. The `RenderHost` they work on is the `render` member of the
+// `HostState` the dispatcher's `Context::app` points at (host_state.h), which the caller sets and
+// owns.
 void add_render_methods(protocol::Dispatcher& dispatcher);
 
 }  // namespace engine::host

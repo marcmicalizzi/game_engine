@@ -5,21 +5,26 @@
 // in the process, which is what the Phase 1 exit criterion asks for: agents capture and
 // benchmark, and an agent has no display — and the rest of plan 06 §6.9's day-one operations,
 // content.build, session.events, engine.budgets, session.run_headless and engine.run_tests
-// (ops_methods.cpp).
+// (ops_methods.cpp). It answers `engine.ping` itself, below, because liveness is a question about
+// this process rather than about any library it links.
 #include "host_state.h"
 #include "ops_methods.h"
 #include "render_methods.h"
 
+#include <core/json/json.h>
 #include <core/log/log.h>
 #include <core/platform/cpu_baseline.h>
+#include <core/time/time.h>
 #include <domain/protocol/rpc.h>
 #include <domain/protocol/session.h>
 #include <foundation/io/vfs.h>
 #include <foundation/tunables/tunables.h>
 
+#include <condition_variable>
 #include <cstdio>
 #include <cstring>
 #include <iostream>
+#include <mutex>
 #include <string>
 #include <string_view>
 
@@ -32,6 +37,9 @@
 #if ENGINE_PLATFORM_WINDOWS
 #include <fcntl.h>
 #include <io.h>
+#include <process.h>
+#else
+#include <unistd.h>
 #endif
 
 using namespace engine;
@@ -50,7 +58,11 @@ const char* k_usage =
     "  --mount          expose a directory as <scheme>://; ':rw' makes it writable\n"
     "  --log <spec>     log levels, e.g. \"info,host=debug\" (stderr shows warnings and up)\n"
     "  --log-json       append every log record as JSON lines to this file\n"
-    "  --tunables       load tunable values from a JSON object file\n";
+    "  --tunables       load tunable values from a JSON object file\n"
+    "\n"
+    "Test hook, not for use (docs/subsystems/apps.md, \"Deadlines\"):\n"
+    "  --debug-hang <method>  never answer <method>, and read nothing after it: the host a\n"
+    "                         client's deadline exists for, made on purpose\n";
 
 bool next_value(int argc, char** argv, int& i, std::string_view flag, std::string& out) {
   if (i + 1 >= argc) {
@@ -62,14 +74,63 @@ bool next_value(int argc, char** argv, int& i, std::string_view flag, std::strin
   return true;
 }
 
+// ---- engine.ping -------------------------------------------------------------------------------
+//
+// Liveness, and nothing else: the process id and how long it has been up. It reads a clock and
+// touches no state — no session, no device, no lock — so it can be asked at any time and can never
+// itself be the reason a host stops answering.
+bool engine_ping(protocol::Context& ctx, protocol::PingResult& out, protocol::RpcError&) {
+#if ENGINE_PLATFORM_WINDOWS
+  out.pid = static_cast<u32>(::_getpid());
+#else
+  out.pid = static_cast<u32>(::getpid());
+#endif
+  const auto* state = static_cast<const host::HostState*>(ctx.app);
+  if (state != nullptr) {
+    out.uptime_seconds = static_cast<f64>(time::monotonic_ns() - state->started_ns) / 1.0e9;
+  }
+  return true;
+}
+
+// ---- --debug-hang ------------------------------------------------------------------------------
+//
+// A test hook: the one way to make a host that is alive and never answers on purpose, which is
+// what a client's deadline exists for (engine-mcp's `--call-timeout`; apps.md, "Deadlines"). The
+// request is recognized before it is dispatched, so the method's handler never runs and the hook
+// works for any method, including one this host does not serve. It is listed in `--help` under a
+// heading of its own rather than hidden: a flag the binary takes but never mentions is behaviour
+// nobody can find, and the heading says what it is for.
+bool names_method(std::string_view line, std::string_view method) {
+  JsonValue request;
+  if (!parse_json(line, request).ok || !request.is_object()) return false;
+  const JsonValue* name = request.find("method");
+  std::string_view text;
+  return name != nullptr && name->get_string(text) && text == method;
+}
+
+[[noreturn]] void hang_forever(std::string_view method) {
+  ENGINE_LOG_WARN(log_host, "--debug-hang: this request is never answered",
+                  log::field("method", method));
+  log::flush();
+  // Blocked in the kernel, not spinning: nothing ever notifies, and a spurious wake-up waits again.
+  // The process ends when a client kills it, which is what the hook is for.
+  std::mutex mutex;
+  std::condition_variable never;
+  std::unique_lock<std::mutex> lock(mutex);
+  for (;;)
+    never.wait(lock);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
   engine::platform::require_cpu_baseline();  // ADR-0031, first statement
+  const i64 started_ns = time::monotonic_ns();
   std::string request;
   std::string log_spec;
   std::string log_json;
   std::string tunables_file;
+  std::string hang_method;
   Vector<std::string> mounts;
   for (int i = 1; i < argc; ++i) {
     const std::string_view a = argv[i];
@@ -90,6 +151,8 @@ int main(int argc, char** argv) {
       if (!next_value(argc, argv, i, a, log_json)) return 2;
     } else if (a == "--tunables") {
       if (!next_value(argc, argv, i, a, tunables_file)) return 2;
+    } else if (a == "--debug-hang") {
+      if (!next_value(argc, argv, i, a, hang_method)) return 2;
     } else {
       std::fprintf(stderr, "engine-host: unknown option '%s'\n%s", argv[i], k_usage);
       return 2;
@@ -167,8 +230,13 @@ int main(int argc, char** argv) {
   // dispatcher. Nothing is created until a call asks for it, so a host that only edits documents
   // never opens a device and never builds a world.
   host::HostState state;
+  state.started_ns = started_ns;
   protocol::Dispatcher dispatcher(protocol::Context{&sessions, &ring, nullptr, &state});
   protocol::add_builtin_methods(dispatcher);
+  dispatcher.add(protocol::method_no_params<protocol::PingResult, &engine_ping>(
+      "engine.ping",
+      "Liveness: the host's process id and how long it has been up. Touches no state, so it is "
+      "answered at once whenever the host is reading requests at all."));
   host::add_render_methods(dispatcher);
   // content.build, session.events, engine.budgets, session.run_headless, engine.run_tests
   // (ops_methods.h): the rest of plan 06 §6.9's day-one list.
@@ -180,8 +248,13 @@ int main(int argc, char** argv) {
                   log::field("methods", static_cast<u64>(dispatcher.methods().size())),
                   log::field("mounts", static_cast<u64>(vfs.mounts().size())));
 
+  if (!hang_method.empty()) {
+    ENGINE_LOG_WARN(log_host, "--debug-hang is set: a test hook, never for use",
+                    log::field("method", hang_method));
+  }
   int exit_code = 0;
   if (!request.empty()) {
+    if (!hang_method.empty() && names_method(request, hang_method)) hang_forever(hang_method);
     const std::string out = dispatcher.dispatch_text(request);
     if (!out.empty()) {
       std::fwrite(out.data(), 1, out.size(), stdout);
@@ -192,6 +265,7 @@ int main(int argc, char** argv) {
     while (std::getline(std::cin, line)) {
       if (!line.empty() && line.back() == '\r') line.pop_back();
       if (line.empty()) continue;
+      if (!hang_method.empty() && names_method(line, hang_method)) hang_forever(hang_method);
       const std::string out = dispatcher.dispatch_text(line);
       if (!out.empty()) {
         std::fwrite(out.data(), 1, out.size(), stdout);

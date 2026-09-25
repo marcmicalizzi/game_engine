@@ -9,6 +9,8 @@
 #include "ops_methods.h"
 #include "render_methods.h"
 
+#include <core/base/types.h>
+
 namespace engine::host {
 
 struct HostState {
@@ -17,6 +19,8 @@ struct HostState {
   RenderHost render;
   // The sessions' runtime worlds, made by session.run_headless or session.materialize.
   OpsHost ops;
+  // When the host started (time::monotonic_ns), for engine.ping's uptime.
+  i64 started_ns = 0;
 };
 
 }  // namespace engine::host

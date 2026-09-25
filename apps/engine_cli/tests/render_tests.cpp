@@ -17,6 +17,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -521,6 +522,162 @@ TEST_CASE("render: a camera path flown over the protocol") {
                 R"({"scene":")" + heightfield + R"(","camera_path":")" + path_file + R"("})");
   CHECK(error_code(no_ground) != 0);
   CHECK(error_message(no_ground).find("terrain") != std::string::npos);
+}
+
+// `render.unload` and `render.scenes` with no scene at all, which is every machine's case: an id
+// the host never handed out is 1003 like any missing scene, and listing opens no device — the
+// adapter is empty and the memory figures null, not zero, because nothing was asked of a GPU.
+TEST_CASE("render: unload and scenes answer on a machine with or without a GPU") {
+  Host host;
+  REQUIRE(host.ok);
+  const JsonValue listed = host.call("render.scenes", "{}");
+  const JsonValue& scenes = result_of(listed);
+  REQUIRE(scenes.find("scenes") != nullptr);
+  CHECK(scenes.find("scenes")->size() == 0);
+  CHECK(text(scenes, "adapter").empty());
+  REQUIRE(scenes.find("gpu_used_bytes") != nullptr);
+  CHECK(scenes.find("gpu_used_bytes")->is_null());
+  CHECK(number(scenes, "host_heap_bytes") > 0);
+
+  const JsonValue unknown = host.call("render.unload", R"({"scene":"scene1"})");
+  CHECK(error_code(unknown) == k_not_found);
+  // Never handed out, so not "unloaded": the message says only that there is no such scene.
+  CHECK(error_message(unknown).find("unloaded") == std::string::npos);
+  CHECK(error_code(host.call("render.unload", "{}")) == k_not_found);
+  CHECK(error_code(host.call("render.unload", R"({"scene":5})")) == -32602);
+}
+
+// Loading, drawing and unloading, where there is a GPU (docs/subsystems/apps.md, "Scenes"). What
+// is checked is what unload is for: the id is dead afterwards — a capture of it, a benchmark of it
+// and a second unload are all 1003, with a message that says it was unloaded — and the memory goes.
+//
+// **Which memory, measured how.** The host heap is the engine allocator's own count, so it drops
+// back to within a little of what it was before the load (the log ring and the dispatcher's buffers
+// are the little). The device memory is the driver's figure for this process
+// (VK_EXT_memory_budget), which counts the allocator's *blocks*, not its allocations: a scene whose
+// buffers fit in blocks an earlier scene opened moves it by nothing, in either direction. So the
+// scene here is drawn at 7680x4320 — one benchmark frame, nothing read back — whose screen-sized
+// targets are large enough to be allocations of their own: the figure rises by hundreds of MiB with
+// the scene and falls back when it is unloaded. The bound is "at least three quarters of what the
+// load added came back", because the allocator may keep an emptied block for its next allocation;
+// measured on the RTX 5090 the figure went from 137.7 MB to 849.4 MB and back to 139.5 MB. And
+// nothing leaks: a second cycle of the same scene ends at no more than the first one did.
+TEST_CASE("render: unload releases a scene and scenes lists what the host holds") {
+  const test::TempDir tmp("engine_render_unload");
+  const std::string out_dir = tmp.path();
+  Host host;
+  REQUIRE(host.ok);
+
+  // A small scene first, drawn, so the device is open and every figure below is measured with it.
+  const JsonValue first = host.call("render.load", R"({"grid":33,"settings":{"shadows":"off"}})");
+  if (error_code(first) == k_render_unavailable) {
+    MESSAGE("render.* unavailable here: " << error_message(first));
+    return;
+  }
+  const std::string small = text(result_of(first), "scene");
+  const auto capture = [&](const std::string& id) {
+    return host.call("render.capture", "{\"scene\":\"" + id +
+                                           "\",\"width\":320,\"height\":240,\"out_dir\":\"" +
+                                           out_dir + "\",\"name\":\"" + id + "\"}");
+  };
+  result_of(capture(small));
+
+  // What the host holds, and what memory it takes to hold it.
+  struct Held {
+    usize scenes = 0;
+    u64 heap = 0;
+    std::optional<u64> gpu;
+  };
+  const auto held = [&]() {
+    const JsonValue response = host.call("render.scenes", "{}");
+    const JsonValue& r = result_of(response);
+    Held h;
+    h.scenes = r.find("scenes") != nullptr ? r.find("scenes")->size() : 0;
+    h.heap = number(r, "host_heap_bytes");
+    u64 gpu = 0;
+    if (const JsonValue* v = r.find("gpu_used_bytes"); v != nullptr && v->get_u64(gpu)) h.gpu = gpu;
+    return h;
+  };
+  const Held before = held();
+  CHECK(before.scenes == 1);
+
+  // The listing says where each scene came from and whether it has been drawn.
+  {
+    const JsonValue response = host.call("render.scenes", "{}");
+    const JsonValue& r = result_of(response);
+    const JsonValue& entry = (*r.find("scenes"))[0];
+    CHECK(text(entry, "scene") == small);
+    CHECK(text(entry, "kind") == "procedural");
+    CHECK(text(entry, "source") == "heightfield, grid 33");
+    CHECK(number(entry, "triangles") == 32 * 32 * 2);
+    CHECK(entry.find("built")->as_bool());
+    CHECK(number(entry, "width") == 320);
+    CHECK_FALSE(text(r, "adapter").empty());
+  }
+
+  // One cycle: load, draw one 8K frame, look, unload.
+  const auto cycle = [&](Held& peak, JsonValue& unloaded) {
+    const JsonValue loaded =
+        host.call("render.load", R"({"grid":257,"settings":{"shadows":"off"}})");
+    const std::string id = text(result_of(loaded), "scene");
+    const JsonValue drawn =
+        host.call("render.benchmark",
+                  "{\"scene\":\"" + id + "\",\"width\":7680,\"height\":4320,\"frames\":1}");
+    result_of(drawn);
+    peak = held();
+    const JsonValue response = host.call("render.unload", "{\"scene\":\"" + id + "\"}");
+    unloaded = result_of(response);
+    return id;
+  };
+  Held peak1;
+  JsonValue unload1;
+  const std::string big = cycle(peak1, unload1);
+  CHECK(peak1.scenes == 2);
+  CHECK(peak1.heap > before.heap + 1024 * 1024);  // 131,072 triangles' clusters and LOD graph
+  CHECK(text(unload1, "scene") == big);
+  CHECK(number(unload1, "triangles") == 256 * 256 * 2);
+  CHECK(unload1.find("gpu_scene")->as_bool());
+  CHECK_FALSE(unload1.find("reference")->as_bool());
+  CHECK(number(unload1, "scenes_left") == 1);
+  // The host arrays went: back to within a little of before the load, far below the peak.
+  const u64 heap_after = number(unload1, "host_heap_bytes_after");
+  CHECK(number(unload1, "host_heap_bytes_before") > heap_after + 1024 * 1024);
+  CHECK(heap_after < before.heap + 256 * 1024);
+  const Held after1 = held();
+  CHECK(after1.scenes == 1);
+
+  // The id names nothing now, and the error says it once did.
+  const JsonValue dead = capture(big);
+  CHECK(error_code(dead) == k_not_found);
+  CHECK(error_message(dead).find("unloaded") != std::string::npos);
+  CHECK(error_code(host.call("render.unload", "{\"scene\":\"" + big + "\"}")) == k_not_found);
+  CHECK(error_code(host.call("render.benchmark", "{\"scene\":\"" + big + "\"}")) == k_not_found);
+
+  // The device memory, where the driver reports it.
+  if (!before.gpu.has_value() || !peak1.gpu.has_value() || !after1.gpu.has_value()) {
+    MESSAGE("no VK_EXT_memory_budget on this device: the GPU memory half is not checked");
+    return;
+  }
+  MESSAGE("device memory of this process: " << *before.gpu << " before the load, " << *peak1.gpu
+                                            << " with the scene drawn at 7680x4320, " << *after1.gpu
+                                            << " after unloading it");
+  REQUIRE(*peak1.gpu > *before.gpu + 256u * 1024u * 1024u);
+  const u64 added = *peak1.gpu - *before.gpu;
+  CHECK(*after1.gpu <= *before.gpu + added / 4);
+  u64 reported = 0;
+  REQUIRE(unload1.find("gpu_used_bytes_after")->get_u64(reported));
+  CHECK(reported == *after1.gpu);  // unload's own figure is the one the listing reads
+
+  // A second cycle of the same scene ends where the first ended: nothing leaked.
+  Held peak2;
+  JsonValue unload2;
+  cycle(peak2, unload2);
+  u64 after2 = 0;
+  REQUIRE(unload2.find("gpu_used_bytes_after")->get_u64(after2));
+  MESSAGE("second cycle: " << *after1.gpu << " before the load, " << *peak2.gpu << " drawn, "
+                           << after2 << " after the unload");
+  CHECK(after2 <= *after1.gpu);
+  CHECK(held().scenes == 1);
 }
 
 // `render.compare` is the one render method that never opens a device, so it runs everywhere —

@@ -63,6 +63,18 @@ struct MethodsResult @version(1) {
   methods: MethodInfo[]
 }
 
+/// Result of `engine.ping`: the host is alive and answering. The method reads a clock and nothing
+/// else, so it costs nothing and can never itself be the call that hangs; a client uses it to
+/// tell a live host from one that has stopped answering. There is no generation here: a host does
+/// not know how many hosts came before it. The client that starts hosts counts them (engine-mcp's
+/// `host_info` reports its count), and compares `pid` to know whether it is still talking to the
+/// same process.
+struct PingResult @version(1) {
+  pid: u32 = 0
+  /// Seconds since the host started.
+  uptime_seconds: f64 = 0
+}
+
 /// Parameters of `session.open`.
 struct SessionOpenParams @version(1) {
   /// Directory holding manifest.json, layers/, and journal.jsonl (native or mounted path).
@@ -920,6 +932,98 @@ struct RenderEvaluateResult @version(1) {
   /// Sampled around the run, not inside it. A number taken beside another process's work is an
   /// upper bound, and the host says so on stderr as well.
   machine_state: MachineStateSpan
+}
+
+// ---- render.unload and render.scenes -----------------------------------------------------------
+// A scene is the host's, not a session's (docs/subsystems/protocol.md): `render.load` makes one and
+// it lives until `render.unload` releases it or the host exits. A client that loads many distinct
+// scenes over a long session — an agent comparing assets through engine-mcp, whose host lives as
+// long as the agent's client does — would otherwise hold every one of them, GPU buffers and all,
+// and a client that can release scenes has to be able to see which it holds.
+
+/// Parameters of `render.unload`.
+struct RenderUnloadParams @version(1) {
+  /// The id `render.load` returned.
+  scene: string
+}
+
+/// What `render.unload` released. The id names nothing afterwards: every render method that is
+/// given it answers 1003 NotFound, the answer for an id that never existed, with a message that
+/// says it was unloaded. Ids are never reused.
+struct RenderUnloadResult @version(1) {
+  scene: string
+  /// What the scene held, as `render.load` counted it.
+  meshes: u32 = 0
+  instances: u32 = 0
+  clusters: u32 = 0
+  triangles: u32 = 0
+  /// Whether it had a GPU scene and renderer to release. `render.load` builds neither — the first
+  /// capture, benchmark or evaluate does — so a scene loaded and never drawn held host memory
+  /// only. And whether it had the reference path tracer too, which a reference capture or an
+  /// evaluate makes and keeps.
+  gpu_scene: bool = false
+  reference: bool = false
+  /// The material textures its GPU scene had on the device — built from the content build's
+  /// `.tex` files or decoded from their images — and the device bytes of every texture it
+  /// uploaded, the procedural heightfield's own included, which no material names.
+  textures: u32 = 0
+  texture_bytes: u64 = 0
+  /// The engine allocator's heap bytes before and after (`engine.budgets`' `memory.heap`): the
+  /// difference is the scene's host arrays — clusters, the LOD graph, instances, materials.
+  host_heap_bytes_before: u64 = 0
+  host_heap_bytes_after: u64 = 0
+  /// Device-local memory this process was using before and after, as the driver reports it
+  /// (VK_EXT_memory_budget); null without the extension or without a device. The driver counts
+  /// the allocator's blocks, not its allocations: a scene whose buffers fit in blocks another
+  /// scene opened moves it by nothing either way, and the allocator may keep an emptied block for
+  /// its next allocation (docs/subsystems/apps.md, "Scenes").
+  gpu_used_bytes_before: u64?
+  gpu_used_bytes_after: u64?
+  /// Scenes the host still holds.
+  scenes_left: u32 = 0
+}
+
+/// One scene the host holds, in `render.scenes`.
+struct RenderLoadedScene @version(1) {
+  scene: string
+  /// "mesh", "scene" (a scene file) or "procedural", and the path it was loaded from or the
+  /// procedural scene's name.
+  kind: string
+  source: string
+  meshes: u32 = 0
+  instances: u32 = 0
+  /// The (instance, cluster) pairs the cull dispatch covers.
+  pairs: u32 = 0
+  clusters: u32 = 0
+  triangles: u32 = 0
+  /// Whether its GPU scene and renderer exist — the first capture, benchmark or evaluate builds
+  /// them — with the frame size and the resolved settings they were last built for, and whether a
+  /// reference path tracer is kept beside them.
+  built: bool = false
+  width: u32 = 0
+  height: u32 = 0
+  raster: string
+  shadows: string
+  reference: bool = false
+  /// The material textures on the device and the bytes of every texture uploaded (as in
+  /// `RenderUnloadResult`); the ray tracing chain's device bytes now (`engine.budgets`'
+  /// `renderer.rt`), 0 when the frame builds none. All 0 until built.
+  textures: u32 = 0
+  texture_bytes: u64 = 0
+  rt_bytes: u64 = 0
+}
+
+/// Result of `render.scenes`: every scene the host holds, in load order.
+struct RenderScenesResult @version(1) {
+  scenes: RenderLoadedScene[]
+  /// The device the render methods opened, and what this process uses of its device-local memory
+  /// and may use (VK_EXT_memory_budget). Empty and null until a render call has opened one;
+  /// asking opens nothing.
+  adapter: string
+  gpu_used_bytes: u64?
+  gpu_budget_bytes: u64?
+  /// The engine allocator's heap bytes (`memory.heap`), of which the scenes' host arrays are part.
+  host_heap_bytes: u64 = 0
 }
 
 // ---- content.build -----------------------------------------------------------------------------
