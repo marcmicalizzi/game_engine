@@ -434,10 +434,22 @@ struct Basin @version(1) {
   depth: f32 = 5
 }
 
+/// Which dune field a terrain draws.
+enum TerrainGenerator : u8 {
+  /// A handful of seeded transverse waves round one prevailing wind: the field every terrain drew
+  /// before the generator existed, and the default.
+  Waves = 0
+  /// The terrain capability's generator (docs/subsystems/terrain.md): parametric dunes the seeded
+  /// wind has carried to `time`, flowing round the ridges and basins. A build without the
+  /// capability refuses it with a sentence.
+  Dunes = 1
+}
+
 /// The procedural terrain: seeded dunes, plus ridges and basins placed by hand so that a camera
 /// path can be laid out against them. It is built into a cluster LOD DAG like any mesh, and its
 /// derived-data cache entry is keyed by these fields, so it is content-addressed like a file.
-struct Terrain @version(1) {
+/// Version 2 added the generator; a version 1 terrain reads as the waves it always drew.
+struct Terrain @version(2) {
   /// Vertices a side. 2 to 4097.
   size: u32 = 1025
   /// Half the side, in metres: the terrain spans [-extent, extent] in x and z.
@@ -449,6 +461,14 @@ struct Terrain @version(1) {
   dune_wavelength: f32 = 90
   ridges: Ridge[]
   basins: Basin[]
+  /// Which dune field: the waves, or the terrain capability's generator.
+  generator: TerrainGenerator = Waves @since(2)
+  /// With the generator: the game time the dunes are drawn at, seconds since the world's epoch. The
+  /// dunes migrate with it; the ridges, the basins and what ruins stand on do not.
+  time: f64 = 0 @since(2) @unit(s)
+  /// With the generator: the wind's mean sand flux, square metres a year (volume per metre of
+  /// width). 200 is a strong trade-wind desert, where a 1 m barchan moves 200 m a year.
+  sand_flux: f32 = 200 @since(2)
 }
 
 /// What a ruins entry is drawn as in one ring of a streamed world (docs/subsystems/world.md).

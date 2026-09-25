@@ -697,9 +697,11 @@ void make_instance_grid(u32 n, f32 mesh_radius, u32 joints, f32 bounds_padding,
 }
 
 #if ENGINE_RENDERER_RUINS
-// The terrain as the assembler's height query: a plain function over the read's one sampler.
+// The terrain as the assembler's height query: a plain function over the read's one sampler. The
+// ground, not the surface: with the dune generator a building stands on the interdune floor and the
+// dunes migrate over it (terrain.h, `TerrainSampler::ground`); with the waves they are the same.
 f32 terrain_ground(const void* context, f32 x, f32 z) noexcept {
-  return static_cast<const TerrainSampler*>(context)->height(x, z);
+  return static_cast<const TerrainSampler*>(context)->ground(x, z);
 }
 
 // Appends a kit's meshes after everything the scene has so far, named "<kit>/<file>", and says
@@ -1147,6 +1149,24 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
       out.terrain.ridges.push_back(TerrainRidge{r.from, r.to, r.height, r.width, r.roughness});
     for (const scene::Basin& b : t.basins)
       out.terrain.basins.push_back(TerrainBasin{b.center, b.radius, b.depth});
+    out.terrain.generator = t.generator == scene::TerrainGenerator::Dunes ? TerrainGenerator::dunes
+                                                                          : TerrainGenerator::waves;
+    out.terrain.time_s = t.time;
+    out.terrain.sand_flux = t.sand_flux;
+    if (out.terrain.generator == TerrainGenerator::dunes && !terrain_generator_available()) {
+      error = path +
+              ": the terrain names the dune generator (\"generator\": \"Dunes\"), and this build "
+              "has no terrain capability (ENGINE_WITH_TERRAIN is off)";
+      return false;
+    }
+    if (out.terrain.generator == TerrainGenerator::dunes &&
+        (!(t.time >= 0.0) || !(t.time < 3.0e11) || !(t.sand_flux >= 0.0f) ||
+         !(t.sand_flux <= 100'000.0f))) {
+      error = path +
+              ": the dune generator's time must be within [0, 3e11) s and its sand_flux "
+              "within [0, 100000] m^2 a year";
+      return false;
+    }
     if (t.size < 2 || t.size > k_terrain_max_size || !(t.extent > 0.0f)) {
       error = path + ": terrain size must be within 2.." + std::to_string(k_terrain_max_size) +
               " and extent positive";

@@ -1,0 +1,67 @@
+{
+  "format": "engine.scene.v1",
+  "name": "desert-dunes",
+  "camera_path": "../desert-overlook/camera-path.json",
+  "description": "The desert overlook's terrain — its 5.1 km, its two ridges, its oasis basin and its third ridge — drawn by the terrain capability's dune generator three years into the world instead of by the waves, with no meshes, so it needs no samples. Flown along the overlook's own camera path. Change `time` to watch the dunes migrate: the ridges and the basin stay, the 8 m draa move about 25 m a year, the barchans about 77 (README.md).",
+  "terrain": {
+    "size": 2049,
+    "extent": 2560,
+    "seed": 23,
+    "dune_height": 8,
+    "dune_wavelength": 110,
+    "ridges": [
+      {
+        "from": [
+          -2200,
+          420
+        ],
+        "to": [
+          -100,
+          330
+        ],
+        "height": 75,
+        "width": 150,
+        "roughness": 0.18
+      },
+      {
+        "from": [
+          100,
+          330
+        ],
+        "to": [
+          2200,
+          460
+        ],
+        "height": 70,
+        "width": 150,
+        "roughness": 0.18
+      },
+      {
+        "from": [
+          -700,
+          -260
+        ],
+        "to": [
+          520,
+          -340
+        ],
+        "height": 55,
+        "width": 110,
+        "roughness": 0.2
+      }
+    ],
+    "basins": [
+      {
+        "center": [
+          0,
+          60
+        ],
+        "radius": 200,
+        "depth": 9
+      }
+    ],
+    "generator": "Dunes",
+    "time": 94608000.0,
+    "sand_flux": 200
+  }
+}

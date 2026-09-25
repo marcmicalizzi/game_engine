@@ -15,15 +15,29 @@
 //
 // The height is an analytic function of (x, z), which is what lets a scene put an instance on the
 // ground and a camera path hold a height above it without the mesh existing yet.
+//
+// **Two dune fields.** `TerrainGenerator::waves` is the field this file has always drawn: a handful
+// of seeded transverse waves, and still the default. `TerrainGenerator::dunes` hands the dunes to
+// the terrain capability's generator (docs/subsystems/terrain.md, ADR-0043): parametric dune
+// primitives the seeded wind has carried to the description's game time, `time_s`, integer and the
+// same bits on every toolchain. Ridges and basins are this file's in both, added the same way, and
+// the generator flows its sand round them. A build without the terrain capability builds
+// everything here and the scene reader refuses a terrain that names the generator, with a sentence;
+// `terrain_generator_available` says which build this is.
 
 #include <core/base/types.h>
 #include <core/containers/vector.h>
 #include <core/math/math.h>
 
+#include <memory>
 #include <span>
 #include <string>
 
 namespace engine::renderer {
+
+enum class TerrainGenerator : u8 { waves = 0, dunes = 1 };
+// Whether this build links the terrain capability's dune generator.
+bool terrain_generator_available() noexcept;
 
 struct TerrainRidge {
   Vec2 from{};  // x, z
@@ -48,6 +62,11 @@ struct TerrainDesc {
   f32 dune_wavelength = 90.0f;
   Vector<TerrainRidge> ridges;
   Vector<TerrainBasin> basins;
+  // Which dune field (above). With `dunes`: the game time the field is drawn at, seconds since the
+  // world's epoch, and the wind's mean sand flux, m^2 a year (terrain.md, "The wind record").
+  TerrainGenerator generator = TerrainGenerator::waves;
+  f64 time_s = 0.0;
+  f32 sand_flux = 200.0f;
 };
 
 // Bumped when `terrain_height` or the mesh built from it changes, so a cache entry built by an
@@ -70,13 +89,33 @@ f32 terrain_height(const TerrainDesc& desc, f32 x, f32 z) noexcept;
 // point — no cache, no interpolation, nothing that could disagree (the renderer's flythrough test
 // compares them on a grid). It keeps a pointer to `desc`, whose ridges and basins it reads per
 // call, so the description must outlive it and must not change under it.
+//
+// With the dune generator the sampler holds the generator's field, and `height` asks it for the
+// point: a small gather per call, a few microseconds, and thread-safe (the scene reader assembles
+// ruins on a job pool through one sampler). `build_terrain_mesh` gathers once per block of vertices
+// instead, and the answer is the same bits (the generator's gather rule, terrain.md, "Tiles, seams
+// and the sampler").
 class TerrainSampler {
  public:
   explicit TerrainSampler(const TerrainDesc& desc) noexcept;
+  ~TerrainSampler();
+  TerrainSampler(const TerrainSampler&) = delete;
+  TerrainSampler& operator=(const TerrainSampler&) = delete;
   f32 height(f32 x, f32 z) const noexcept;
+  // What a building stands on: `height` with the waves; with the dune generator, the interdune
+  // floor plus the ridges and basins, which never moves — the dunes migrate over it and bury what
+  // stands there (terrain.md, "The ruins' ground"), so a tile's ruin is the same building at any
+  // time.
+  f32 ground(f32 x, f32 z) const noexcept;
   f32 ridge_weight(f32 x, f32 z) const noexcept;
   f32 basin_weight(f32 x, f32 z) const noexcept;
   const TerrainDesc& desc() const noexcept { return *desc_; }
+
+  // The generator's field, when the description names it and this build has it; else null.
+  struct Dunes;
+  const Dunes* dunes_field() const noexcept { return generator_.get(); }
+  // The ridges and basins alone, and the masks the waves are multiplied by: what both fields add.
+  f32 features(f32 x, f32 z, f32& ridge_mask, f32& flatten) const noexcept;
 
  private:
   static constexpr u32 k_waves = 6;
@@ -97,6 +136,7 @@ class TerrainSampler {
   f32 roll_kx_ = 0.0f;
   f32 roll_kz_ = 0.0f;
   f32 roll_phase_ = 0.0f;
+  std::unique_ptr<const Dunes> generator_;
 };
 
 // How much of each feature is under (x, z), in [0, 1]: the largest ridge profile and the largest
@@ -146,7 +186,9 @@ void bake_terrain_maps(const TerrainDesc& desc, u32 side, Vector<u8>& base_color
                        Vector<u8>& metallic_roughness);
 
 // A content hash over every field and `k_terrain_version`: the "source hash" of the terrain's
-// derived-data cache key, and what a run's summary names the terrain by.
+// derived-data cache key, and what a run's summary names the terrain by. The generator's fields
+// (and the generator's own version) enter it only when the description names the generator, so
+// every waves terrain keeps the hash, and the cache entry, it had.
 u64 terrain_hash(const TerrainDesc& desc) noexcept;
 
 // The grid: `size * size` positions, two counter-clockwise (seen from +y) triangles a quad, and

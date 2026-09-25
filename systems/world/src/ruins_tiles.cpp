@@ -16,7 +16,7 @@ namespace {
 ENGINE_LOG_CATEGORY_DEFINE(log_world_ruins, "world.ruins");
 
 f32 terrain_ground(const void* context, f32 x, f32 z) noexcept {
-  return static_cast<const renderer::TerrainSampler*>(context)->height(x, z);
+  return static_cast<const renderer::TerrainSampler*>(context)->ground(x, z);
 }
 
 renderer::SceneInstance yawed(u32 mesh, Vec3 at, u32 yaw_step) {

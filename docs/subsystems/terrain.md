@@ -87,6 +87,10 @@ The owner wants sparse volumetric sand blowing off the dune crests: renderer wor
 - **The local wind** (`TileWind`): the day's direction as a unit vector, its speed (`k_mean_wind_mps`, 8 m/s, at the record's mean strength), and the day's sand flux per metre of width.
 - **A saltation flux estimate**: that flux times the share of the tile that is loose sand, m² a day. A plume's density per crest metre is a function of it and of the crest's sharpness; the function is the pass's to choose.
 
+## Where it attaches
+
+- **The renderer** serves its `TerrainSampler` from the generator when a scene's terrain says `"generator": "Dunes"` (`engine.scene.Terrain` version 2: `generator`, `time`, `sand_flux`), and builds the terrain's mesh from it a 64 × 64 block of vertices at a time; the waves stay the default, and the ruins stand on `TerrainSampler::ground`, the generator's floor ([renderer](renderer.md#scenes-camera-paths-and-flythroughs)). [`content/test-scenes/desert-dunes/`](../../content/test-scenes/desert-dunes/README.md) is the scene for the owner's fly-through.
+
 ## LOD policy
 
 `Detail` (dunes.h) says which terms a surface computes, and the overlay is the coarse CPU grid:
@@ -170,6 +174,7 @@ Measured on the Linux container this capability was written in (4 vCPUs, `linux-
 - **Superposed slip faces pass the angle of repose.** The bands add, so where a crest's slip face coincides with a draa's the slopes add too: 0.48% of the sand vertices of 49 reference tiles stand steeper than 36°, the worst 53.5°. A repose limiter in closed form — the lee of the sum taken as the envelope of the bands' lees — is the fix; a mask that removes the crest band on a draa's slip face was tried on paper and makes the transition steeper, since the mask's own gradient times a crest's height is a slope.
 - **The renderer's pass.** The crest lines, wind and flux are there for a blowing-sand pass nobody has written; the GPU deformation map of 05 §5.13 that refines the overlay's grid is not written either.
 - **Stamps come from nowhere yet.** Nothing in the tree makes footprints: a character's feet, a vehicle's wheels, a dig tool are a game's, and call the host's `deform`.
+- **A registration point for scene generators.** The renderer links this capability where it is configured, exactly as it links the ruins, which makes it the second generator ADR-0037 said would trigger a registration point; [ADR-0043](../adr/0043-dunes-as-a-function-of-time.md) says why that design is left to the owner.
 - **Barchans are sharp in every wind.** Their slip face does not round off in a calm the way a crest's does.
 
 ## Capability contract (ADR-0027)
