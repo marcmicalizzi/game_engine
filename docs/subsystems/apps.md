@@ -5,8 +5,11 @@
 **engine-host.**
 ```
 engine-host [--stdio] [--request <json>] [--mount <scheme>=<dir>[:rw]]... [--log <spec>] [--log-json <path>] [--tunables <file>]
+            [--roles <file.json>] [--actor <name>] [--role <name>] [--task <id>]
 engine-host --debug-hang <method> ...     # a test hook (below)
 ```
+
+**`--roles` loads role configurations** ([plan 06 §6.5](../plan/06-agent-tooling.md#65-permissions-concurrency-and-leases); `content/roles/roles.json` is the five named roles): what each role may call, which layers, tiles and object types it may change, and whether its work needs review. Every call is then checked against the role it runs in ([protocol](protocol.md#roles-leases-and-proposals)); without the flag nothing is restricted, which is how the host behaved before it existed. **`--actor`, `--role` and `--task` say who a call that names none is**: its attribution's blank fields, and with `--roles` the role it is checked as. A host that serves one agent — engine-mcp starts one per agent — is told that agent's identity this way. A roles file that does not read or does not check, and a `--role` it does not have, exit 2 before the host serves anything: a host told to restrict calls that quietly restricted nothing would be worse than one that refused to start.
 stdout belongs to the protocol. Log records go to an in-memory ring (`log.tail` reads it), warnings and above to stderr, and optionally every record as JSON lines to a file. Assertion failures are routed through the log before the process aborts. `--request` answers one request and exits, for scripts that do not want a pipe.
 
 **`--debug-hang <method>` is a test hook, not for use.** A request for that method is recognized before it is dispatched and never answered, and the host reads nothing after it — blocked on a condition variable nobody notifies, not spinning — until something kills it: a host that is alive and never answers, made on purpose, which is what a client's deadline exists for (engine-mcp's deadline test hands it over with `--host-arg`; [Deadlines](#deadlines)). It works for any method name, served or not, because the handler never runs. `--help` lists it under a heading of its own that says so, rather than hiding it: a flag the binary takes but never mentions is behaviour nobody can find, and the heading is what keeps a reader from using it.
@@ -47,6 +50,15 @@ engine-cli --doc ./world session.run_headless '{"seconds":10,"write_back_every":
 engine-cli --doc ./world session.materialize '{}'                            # what mapped, what was skipped and why
 engine-cli --doc ./world engine.run_tests '{"containers":["prop.clusters"]}'
 engine-cli engine.run_tests '{"tissue":"torso.tissue"}'
+
+# roles, leases and proposals (protocol.md, "Roles, leases and proposals"); leases.json and
+# proposals.json sit beside the document, so each engine-cli call sees what the last one granted
+engine-cli --doc ./world lease.require '{"required":true,"attribution":{"actor":"director"}}'
+engine-cli --doc ./world lease.acquire '{"layer":"world","tiles":[{"x0":0,"y0":0,"x1":1,"y1":1}],"attribution":{"actor":"a","task":"t1"}}'
+engine-cli --doc ./world doc.propose_layer '{"name":"p.a","target":"world","attribution":{"actor":"a","rationale":"why"}}'
+engine-cli --doc ./world doc.apply '{"layer":"p.a","commands":[...],"attribution":{"actor":"a","rationale":"why"}}'
+engine-cli --doc ./world doc.promote '{"proposal":"p.a","attribution":{"actor":"director","rationale":"reviewed"}}'
+engine-cli --doc ./world lease.list
 ```
 
 A method that lives in the host rather than on disk — a runtime world's tick, a loaded scene — starts fresh with every engine-cli call, because each call spawns its own host; `session.run_headless` twice through engine-cli runs two fresh worlds, and through one engine-host (or engine-mcp) the second continues the first.

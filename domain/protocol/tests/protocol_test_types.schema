@@ -1,0 +1,18 @@
+// Object types the roles, leases and proposals tests and experiment E12 place in a world
+// (docs/plan/06-agent-tooling.md §6.5, docs/experiments/e12-proposal-layers-and-leases.md): one
+// that stands in a tile, with properties two agents can disagree about, and one with no place.
+namespace engine.protocol.test
+
+/// Something standing in the world: what an agent places, moves, recolours, renames and removes.
+struct Prop @version(1) @kind(record) {
+  name: string
+  /// World position; its presence puts the type on a partitioned layer's grid.
+  position: vec3
+  color: u32 = 0
+  scale: f32 = 1
+}
+
+/// A record with no place in the world — a note, a quest fact — so it never has a tile.
+struct Note @version(1) @kind(record) {
+  text: string
+}

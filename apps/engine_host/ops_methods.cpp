@@ -1775,17 +1775,18 @@ void add_ops_methods(protocol::Dispatcher& d) {
       "Build one glTF or GLB file, or a manifest of them, into .clusters containers in the host's "
       "process: engine-content build and build-all, with the derived-data cache, the job pool, "
       "the identity skip, and each output's content-build metrics."));
-  d.add(protocol::method<protocol::SessionEventsParams, protocol::SessionEventsResult,
-                         &session_events>(
+  d.add(protocol::read_only(protocol::method<protocol::SessionEventsParams,
+                                             protocol::SessionEventsResult, &session_events>(
       "session.events",
       "What has happened to a document, a page at a time: its journal's commits with attribution "
       "and, when the host has the store capability and the document a world.db, the world's event "
-      "log. Filter by kind and actor; pass next back as cursor to continue or to poll."));
-  d.add(protocol::method<protocol::BudgetsParams, protocol::BudgetsResult, &engine_budgets>(
+      "log. Filter by kind and actor; pass next back as cursor to continue or to poll.")));
+  d.add(protocol::read_only(protocol::method<protocol::BudgetsParams, protocol::BudgetsResult,
+                                             &engine_budgets>(
       "engine.budgets",
       "The budgets the engine knows and what uses them: the renderer's deform pool, streaming page "
       "and upload budgets and ray tracing memory (per loaded scene), audio clips and voices, the "
-      "allocation counter and heap, and each GPU's memory; name, limit, used, unit and source."));
+      "allocation counter and heap, and each GPU's memory; name, limit, used, unit and source.")));
   d.add(protocol::method<protocol::RunHeadlessParams, protocol::RunHeadlessResult,
                          &session_run_headless>(
       "session.run_headless",
@@ -1795,17 +1796,18 @@ void add_ops_methods(protocol::Dispatcher& d) {
       "run's own clock holds; what systems change in writable fields is committed back to the "
       "document, attributed to system. Returns ticks, game time, the materialization and the "
       "write-backs."));
-  d.add(protocol::method<protocol::MaterializeParams, protocol::MaterializeResult,
-                         &session_materialize>(
+  d.add(protocol::read_only(protocol::method<protocol::MaterializeParams,
+                                             protocol::MaterializeResult, &session_materialize>(
       "session.materialize",
       "Materialize the session's document (or one tile of it) into its runtime world now, and "
       "report which record types mapped, how many records became entities, which were skipped and "
-      "why, and every mapping this build compiled."));
-  d.add(protocol::method<protocol::RunTestsParams, protocol::RunTestsResult, &engine_run_tests>(
-      "engine.run_tests",
-      "Run the engine's own checks that are safe inside a host — the document validators, the "
-      "tissue validators over a tissue file, the content checks over built containers — and "
-      "return one structured report. Spawns nothing; ctest is CI's."));
+      "why, and every mapping this build compiled.")));
+  d.add(protocol::read_only(
+      protocol::method<protocol::RunTestsParams, protocol::RunTestsResult, &engine_run_tests>(
+          "engine.run_tests",
+          "Run the engine's own checks that are safe inside a host — the document validators, the "
+          "tissue validators over a tissue file, the content checks over built containers — and "
+          "return one structured report. Spawns nothing; ctest is CI's.")));
 }
 
 }  // namespace engine::host

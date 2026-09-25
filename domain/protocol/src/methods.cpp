@@ -52,6 +52,7 @@ bool engine_methods(Context& ctx, MethodsResult& out, RpcError&) {
     info.doc = m.doc != nullptr ? m.doc : "";
     info.params_type = m.params_type != nullptr ? m.params_type : "";
     info.result_type = m.result_type != nullptr ? m.result_type : "";
+    info.read_only = m.read_only;
     out.methods.push_back(std::move(info));
   }
   return true;
@@ -166,20 +167,34 @@ bool doc_get(Context& ctx, const GetParams& params, ObjectView& out, RpcError& e
   return true;
 }
 
+// Every client write goes through a Caller (policy.h): the call's attribution with the host's
+// defaults filled in and the role it runs in, which the session checks the write against.
 bool doc_apply(Context& ctx, const ApplyParams& params, ApplyResult& out, RpcError& error) {
   Session* s = ctx.sessions->require(params.session, error);
   if (s == nullptr) return false;
-  return s->apply(params.commands, params.attribution, params.atomic, out, error);
+  Caller caller;
+  if (!resolve_caller(ctx.policy, &params.attribution, caller, error)) return false;
+  return s->apply(params.commands, caller, params.atomic, params.layer, out, error);
+}
+
+const doc::Attribution* attribution_of(const std::optional<doc::Attribution>& a) {
+  return a.has_value() ? &*a : nullptr;
 }
 
 bool doc_undo(Context& ctx, const StepParams& params, StepResult& out, RpcError& error) {
   Session* s = ctx.sessions->require(params.session, error);
-  return s != nullptr && s->undo(params.steps, out, error);
+  if (s == nullptr) return false;
+  Caller caller;
+  if (!resolve_caller(ctx.policy, attribution_of(params.attribution), caller, error)) return false;
+  return s->undo(params.steps, &caller, out, error);
 }
 
 bool doc_redo(Context& ctx, const StepParams& params, StepResult& out, RpcError& error) {
   Session* s = ctx.sessions->require(params.session, error);
-  return s != nullptr && s->redo(params.steps, out, error);
+  if (s == nullptr) return false;
+  Caller caller;
+  if (!resolve_caller(ctx.policy, attribution_of(params.attribution), caller, error)) return false;
+  return s->redo(params.steps, &caller, out, error);
 }
 
 bool doc_diff(Context& ctx, const DiffParams& params, DiffResult& out, RpcError& error) {
@@ -199,7 +214,10 @@ bool doc_diff(Context& ctx, const DiffParams& params, DiffResult& out, RpcError&
 
 bool doc_merge(Context& ctx, const MergeParams& params, MergeResult& out, RpcError& error) {
   Session* s = ctx.sessions->require(params.session, error);
-  return s != nullptr && s->merge(params, out, error);
+  if (s == nullptr) return false;
+  Caller caller;
+  if (!resolve_caller(ctx.policy, attribution_of(params.attribution), caller, error)) return false;
+  return s->merge(params, &caller, out, error);
 }
 
 bool doc_validate(Context& ctx, const SessionRef& params, ValidateResult& out, RpcError& error) {
@@ -445,21 +463,37 @@ bool schema_describe(Context&, const SchemaDescribeParams& params, SchemaDescrib
 
 }  // namespace
 
+// policy_methods.cpp.
+void add_policy_methods(Dispatcher& d);
+
+// Read-only methods are marked `read_only` and no role restricts them (plan 06 §6.5: read access
+// is unrestricted); every other one is a write a role must name. A method is read-only when it
+// changes no document, no lease and no host setting. `doc.save` is one — it writes what the
+// document already holds — and so are the housekeeping of a caller's own handles, `session.open`
+// and `session.close` (as `render.unload` is in engine-host): a role that may only look must still
+// be able to open what it looks at and let it go.
 void add_builtin_methods(Dispatcher& d) {
-  d.add(method_no_params<EngineInfo, &engine_info>(
-      "engine.info", "Engine name, version, build configuration, process id, and counts."));
-  d.add(method_no_params<MethodsResult, &engine_methods>(
-      "engine.methods", "The method catalogue with parameter and result schema types."));
+  d.add(read_only(method_no_params<EngineInfo, &engine_info>(
+      "engine.info", "Engine name, version, build configuration, process id, and counts.")));
+  d.add(read_only(method_no_params<MethodsResult, &engine_methods>(
+      "engine.methods",
+      "The method catalogue with parameter and result schema types, and which methods are "
+      "read-only.")));
 
-  d.add(method<SessionOpenParams, SessionInfo, &session_open>(
-      "session.open", "Open a document directory (create it with `create`); returns the session."));
-  d.add(method<SessionRef, SessionRef, &session_close>("session.close", "Close a session."));
-  d.add(method_no_params<SessionsResult, &session_list>("session.list", "Open sessions."));
-  d.add(method<SessionRef, SessionInfo, &session_info>("session.info",
-                                                       "Layers, journal length, undo position."));
+  d.add(read_only(method<SessionOpenParams, SessionInfo, &session_open>(
+      "session.open",
+      "Open a document directory (create it with `create`); returns the session.")));
+  d.add(read_only(
+      method<SessionRef, SessionRef, &session_close>("session.close", "Close a session.")));
+  d.add(
+      read_only(method_no_params<SessionsResult, &session_list>("session.list", "Open sessions.")));
+  d.add(read_only(method<SessionRef, SessionInfo, &session_info>(
+      "session.info", "Layers, journal length, undo position.")));
 
-  d.add(method<SessionRef, LayersResult, &doc_layers>(
-      "doc.layers", "The layer stack, weakest first, with each layer's storage form and tiles."));
+  d.add(read_only(method<SessionRef, LayersResult, &doc_layers>(
+      "doc.layers",
+      "The layer stack, weakest first, with each layer's storage form and tiles, and a proposal "
+      "layer's target, owner and state.")));
   d.add(method<AddLayerParams, LayersResult, &doc_add_layer>(
       "doc.add_layer",
       "Append a layer (strongest), optionally partitioned into tile files and made the edit "
@@ -468,42 +502,48 @@ void add_builtin_methods(Dispatcher& d) {
       "doc.set_partition", "Store a layer as tile files, or as one file again, and rewrite it."));
   d.add(method<SetEditLayerParams, LayersResult, &doc_set_edit_layer>(
       "doc.set_edit_layer", "Choose the layer that commands edit."));
-  d.add(method<ObjectsParams, ObjectsResult, &doc_objects>(
-      "doc.objects", "Live objects with composed properties, filtered by type or parent."));
-  d.add(method<GetParams, ObjectView, &doc_get>("doc.get", "One live object, composed."));
+  d.add(read_only(method<ObjectsParams, ObjectsResult, &doc_objects>(
+      "doc.objects", "Live objects with composed properties, filtered by type or parent.")));
+  d.add(
+      read_only(method<GetParams, ObjectView, &doc_get>("doc.get", "One live object, composed.")));
   d.add(method<ApplyParams, ApplyResult, &doc_apply>(
       "doc.apply",
-      "Apply commands as one transaction with attribution; commits to the journal and saves."));
+      "Apply commands as one transaction with attribution; commits to the journal and saves. "
+      "Checked against the caller's role, a proposal's owner, and the leases when the document "
+      "requires them."));
   d.add(method<StepParams, StepResult, &doc_undo>("doc.undo", "Undo committed patches."));
   d.add(method<StepParams, StepResult, &doc_redo>("doc.redo", "Redo undone patches."));
-  d.add(method<DiffParams, DiffResult, &doc_diff>("doc.diff",
-                                                  "Commands that turn one layer into another."));
+  d.add(read_only(method<DiffParams, DiffResult, &doc_diff>(
+      "doc.diff", "Commands that turn one layer into another.")));
   d.add(method<MergeParams, MergeResult, &doc_merge>(
       "doc.merge",
       "Three-way merge of two layers over their common base into a layer, as one transaction."));
-  d.add(method<SessionRef, ValidateResult, &doc_validate>(
-      "doc.validate", "Validate every record against the schema registry."));
-  d.add(method<JournalParams, JournalResult, &doc_journal>("doc.journal",
-                                                           "Committed patches with attribution."));
-  d.add(method<SessionRef, SessionInfo, &doc_save>("doc.save",
-                                                   "Write layer files and the manifest."));
+  d.add(read_only(method<SessionRef, ValidateResult, &doc_validate>(
+      "doc.validate", "Validate every record against the schema registry.")));
+  d.add(read_only(method<JournalParams, JournalResult, &doc_journal>(
+      "doc.journal", "Committed patches with attribution.")));
+  d.add(read_only(method<SessionRef, SessionInfo, &doc_save>(
+      "doc.save", "Write layer files and the manifest.")));
 
-  d.add(method_no_params<TunablesResult, &tunables_list>("tunables.list",
-                                                         "Every tunable with value and range."));
+  d.add(read_only(method_no_params<TunablesResult, &tunables_list>(
+      "tunables.list", "Every tunable with value and range.")));
   d.add(method<TunableSetParams, TunablesResult, &tunables_set>("tunables.set",
                                                                 "Set one tunable by name."));
 
-  d.add(method<LogTailParams, LogTailResult, &log_tail>(
-      "log.tail", "Log records from the host's ring since a sequence number."));
+  d.add(read_only(method<LogTailParams, LogTailResult, &log_tail>(
+      "log.tail", "Log records from the host's ring since a sequence number.")));
 
-  d.add(method_no_params<AdaptersResult, &gpu_adapters>(
+  d.add(read_only(method_no_params<AdaptersResult, &gpu_adapters>(
       "gpu.adapters",
-      "Vulkan physical devices with driver, memory, queues, extensions, and tier."));
+      "Vulkan physical devices with driver, memory, queues, extensions, and tier.")));
 
-  d.add(method_no_params<SchemaTypesResult, &schema_types>("schema.types",
-                                                           "Every registered schema type."));
-  d.add(method<SchemaDescribeParams, SchemaDescribeResult, &schema_describe>(
-      "schema.describe", "Fields or values of one schema type."));
+  d.add(read_only(method_no_params<SchemaTypesResult, &schema_types>(
+      "schema.types", "Every registered schema type.")));
+  d.add(read_only(method<SchemaDescribeParams, SchemaDescribeResult, &schema_describe>(
+      "schema.describe", "Fields or values of one schema type.")));
+
+  // lease.*, doc.propose_layer, doc.promote, doc.reject and engine.roles (policy_methods.cpp).
+  add_policy_methods(d);
 }
 
 }  // namespace engine::protocol

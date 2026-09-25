@@ -91,14 +91,32 @@ bool parse_tile_file_name(std::string_view name, TileCoord& out) {
 }
 
 std::string_view position_property(const ObjectRecord& record, const LayerPartition& partition) {
+  return position_property(std::string_view(record.type), partition);
+}
+
+std::string_view position_property(std::string_view type, const LayerPartition& partition) {
   if (!partition.property.empty()) return partition.property;
-  if (record.type.empty()) return {};
-  const schema::TypeInfo* info = schema::Registry::global().find(record.type);
+  if (type.empty()) return {};
+  const schema::TypeInfo* info = schema::Registry::global().find(type);
   if (info == nullptr || info->kind != schema::Kind::Struct) return {};
   // A type opts in by declaring one of these; `position` wins when a type has both.
   if (info->find_field("position") != nullptr) return "position";
   if (info->find_field("transform") != nullptr) return "transform";
   return {};
+}
+
+bool tile_of_position(const JsonValue& value, f64 tile_size, TileCoord& out) {
+  if (!(tile_size > 0)) return false;
+  f64 x = 0, y = 0;
+  if (!read_position(value, x, y)) return false;
+  const f64 tx = std::floor(x / tile_size);
+  const f64 ty = std::floor(y / tile_size);
+  const f64 low = static_cast<f64>(std::numeric_limits<i32>::min());
+  const f64 high = static_cast<f64>(std::numeric_limits<i32>::max());
+  if (tx < low || tx > high || ty < low || ty > high) return false;
+  out.x = static_cast<i32>(tx);
+  out.y = static_cast<i32>(ty);
+  return true;
 }
 
 bool read_position(const JsonValue& value, f64& out_x, f64& out_y) {
@@ -118,17 +136,7 @@ bool tile_of(const ObjectRecord& record, const LayerPartition& partition, TileCo
   const std::string_view property = position_property(record, partition);
   if (property.empty()) return false;
   const JsonValue* value = record.properties.find_value(property);
-  if (value == nullptr) return false;
-  f64 x = 0, y = 0;
-  if (!read_position(*value, x, y)) return false;
-  const f64 tx = std::floor(x / partition.tile_size);
-  const f64 ty = std::floor(y / partition.tile_size);
-  const f64 low = static_cast<f64>(std::numeric_limits<i32>::min());
-  const f64 high = static_cast<f64>(std::numeric_limits<i32>::max());
-  if (tx < low || tx > high || ty < low || ty > high) return false;
-  out.x = static_cast<i32>(tx);
-  out.y = static_cast<i32>(ty);
-  return true;
+  return value != nullptr && tile_of_position(*value, partition.tile_size, out);
 }
 
 LayerIndex build_layer_index(const Layer& layer) {

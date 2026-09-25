@@ -28,6 +28,8 @@
                         the trajectory it has to fly.
     content/input-maps  engine-view's default bindings, which its tests hold
                         against the compiled-in map (4 KB).
+    content/roles       the five named role configurations, which the protocol
+                        test reads to check the shipped file loads (3 KB).
     content/test-scenes the reference-scene definitions (17 KB), for a later
                         job that wants them.
     content/samples     the Khronos glTF models, with -WithSamples only. They
@@ -246,9 +248,9 @@ foreach ($path in $exeFiles) {
   }
 }
 
-# Data the tests open. `content/input-logs` and `content/input-maps` are the ones the suite needs;
-# the rest is small and useful to have on the far end.
-$dataDirs = @('content/input-logs', 'content/input-maps', 'content/test-scenes')
+# Data the tests open. `content/input-logs`, `content/input-maps` and `content/roles` are the ones
+# the suite needs; the rest is small and useful to have on the far end.
+$dataDirs = @('content/input-logs', 'content/input-maps', 'content/roles', 'content/test-scenes')
 if ($WithSamples) { $dataDirs += 'content/samples' }
 $data = @()
 foreach ($rel in $dataDirs) {

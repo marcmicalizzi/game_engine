@@ -31,6 +31,7 @@ namespace engine::protocol {
 
 class SessionManager;
 class Dispatcher;
+class Policy;
 
 namespace codes {
 inline constexpr i32 k_parse_error = -32700;
@@ -51,6 +52,16 @@ inline constexpr i32 k_unavailable = 1006;
 // "this host has no log ring" and from "you asked for something wrong" — which is what lets one
 // end-to-end suite run on a hosted CI runner and on a GPU machine, skipping on the first.
 inline constexpr i32 k_render_unavailable = 1007;
+// Plan 06 §6.5 (policy.h, leases.h). The call's role forbids the method, the layer, a tile or an
+// object type it touches; or it writes a proposal layer it does not own, or one that is closed; or
+// a role that needs review promotes. `data.reason` says which, with what was refused.
+inline constexpr i32 k_forbidden = 1008;
+// A lease another actor holds stands in the way: `lease.acquire` overlaps it, or an edit touches a
+// record it covers. `data.lease` is the holder's lease, so the caller knows whom to wait for.
+inline constexpr i32 k_lease_conflict = 1009;
+// The document requires leases and the caller holds none covering a record the call touches:
+// acquire one (`lease.acquire`) and call again. `data` names the layer, the object and its tile.
+inline constexpr i32 k_lease_required = 1010;
 }  // namespace codes
 
 RpcError make_error(i32 code, std::string message, JsonValue data = {});
@@ -67,6 +78,10 @@ struct Context {
   // layers up — so the app owns the object, registers the methods that know its type, and
   // casts it back. The protocol never touches it, and nothing in domain/ may read it.
   void* app = nullptr;
+  // The host's roles and default identity (policy.h, plan 06 §6.5). Null restricts nothing and
+  // attributes nothing, which is every host before roles existed and every in-process caller that
+  // does not ask for them.
+  const Policy* policy = nullptr;
 };
 
 using Handler = bool (*)(Context& ctx, const JsonValue& params, JsonValue& result, RpcError& error);
@@ -77,7 +92,17 @@ struct MethodDesc {
   const char* params_type;  // qualified schema type, or "" for none
   const char* result_type;
   Handler handler;
+  // Changes no document, no lease and no host setting, so no role restricts it (plan 06 §6.5:
+  // read access is unrestricted). The default is a write on purpose: a method nobody classified
+  // is refused to a role that did not name it — loud — rather than open to every role — silent.
+  bool read_only = false;
 };
+
+// `method` marked read-only: `d.add(read_only(method<P, R, &fn>(...)))`.
+inline MethodDesc read_only(MethodDesc method) noexcept {
+  method.read_only = true;
+  return method;
+}
 
 class Dispatcher {
  public:
@@ -137,14 +162,18 @@ bool typed_result_handler(Context& ctx, const JsonValue&, JsonValue& result, Rpc
 
 template <class P, class R, bool (*Fn)(Context&, const P&, R&, RpcError&)>
 MethodDesc method(const char* name, const char* doc) {
-  return MethodDesc{name, doc, schema::type_of<P>().qualified_name,
-                    schema::type_of<R>().qualified_name, &typed_handler<P, R, Fn>};
+  return MethodDesc{name,
+                    doc,
+                    schema::type_of<P>().qualified_name,
+                    schema::type_of<R>().qualified_name,
+                    &typed_handler<P, R, Fn>,
+                    false};
 }
 
 template <class R, bool (*Fn)(Context&, R&, RpcError&)>
 MethodDesc method_no_params(const char* name, const char* doc) {
-  return MethodDesc{name, doc, "", schema::type_of<R>().qualified_name,
-                    &typed_result_handler<R, Fn>};
+  return MethodDesc{
+      name, doc, "", schema::type_of<R>().qualified_name, &typed_result_handler<R, Fn>, false};
 }
 
 }  // namespace engine::protocol

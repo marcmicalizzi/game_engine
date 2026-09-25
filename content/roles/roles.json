@@ -1,0 +1,57 @@
+{
+  "default_role": "qa",
+  "roles": [
+    {
+      "name": "director",
+      "doc": "Adjudicates: promotes or rejects other roles' proposals, requires leases on a document, adds layers, and may change anything directly (plan 06 section 6.10).",
+      "methods": ["*"],
+      "layers": ["*"],
+      "tiles": [],
+      "untiled": true,
+      "object_types": ["*"],
+      "review_required": false
+    },
+    {
+      "name": "designer",
+      "doc": "Gameplay and canon: quests, encounters, factions, facts, placed or not. Writes only to proposal layers it owns; a director promotes them.",
+      "methods": ["doc.apply", "doc.undo", "doc.redo", "doc.propose_layer", "doc.reject",
+                  "lease.acquire", "lease.renew", "lease.release"],
+      "layers": ["*"],
+      "tiles": [],
+      "untiled": true,
+      "object_types": ["*"],
+      "review_required": true
+    },
+    {
+      "name": "environment",
+      "doc": "The spatial world: terrain, props and placements that stand in a tile. Leases tiles, writes only to proposal layers it owns, and never touches records with no position; a director promotes its work.",
+      "methods": ["doc.apply", "doc.undo", "doc.redo", "doc.propose_layer", "doc.reject",
+                  "lease.acquire", "lease.renew", "lease.release"],
+      "layers": ["*"],
+      "tiles": [],
+      "untiled": false,
+      "object_types": ["*"],
+      "review_required": true
+    },
+    {
+      "name": "qa",
+      "doc": "Looks and reports: reads, validates, captures, benchmarks and runs the engine's checks, and changes nothing. A headless run writes back into the document, so it is not a QA method here; run one on a copy.",
+      "methods": [],
+      "layers": [],
+      "tiles": [],
+      "untiled": false,
+      "object_types": [],
+      "review_required": false
+    },
+    {
+      "name": "performance",
+      "doc": "Measures and tunes: builds content into the derived-data cache and sets tunables for a benchmark, and changes no document.",
+      "methods": ["content.build", "tunables.set"],
+      "layers": [],
+      "tiles": [],
+      "untiled": false,
+      "object_types": [],
+      "review_required": false
+    }
+  ]
+}

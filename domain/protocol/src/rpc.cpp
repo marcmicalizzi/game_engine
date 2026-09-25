@@ -1,6 +1,7 @@
 #include <core/base/assert.h>
 #include <core/json/json.h>
 #include <core/profiling/profile.h>
+#include <domain/protocol/policy.h>
 #include <domain/protocol/rpc.h>
 
 #include <algorithm>
@@ -126,6 +127,19 @@ JsonValue Dispatcher::dispatch_one(const JsonValue& request) {
 
   JsonValue result;
   RpcError error;
+  // The role gate (policy.h): a write must be one of the methods the call's role names. The role
+  // is the params' `attribution.role` wherever a method takes one, and the host's otherwise, so
+  // the gate reads it from the JSON here once rather than every handler learning to.
+  if (context_.policy != nullptr && !method->read_only) {
+    std::string_view named;
+    if (const JsonValue* a = p.is_object() ? p.find("attribution") : nullptr;
+        a != nullptr && a->is_object()) {
+      if (const JsonValue* role = a->find("role"); role != nullptr) (void)role->get_string(named);
+    }
+    if (!context_.policy->allows_method(*method, named, error)) {
+      return is_notification ? JsonValue() : error_response(id, error);
+    }
+  }
   const bool ok = method->handler(context_, p, result, error);
   if (is_notification) return JsonValue();
   return ok ? result_response(id, std::move(result)) : error_response(id, error);

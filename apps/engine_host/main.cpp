@@ -51,6 +51,7 @@ ENGINE_LOG_CATEGORY_DEFINE(log_host, "host");
 const char* k_usage =
     "usage: engine-host [--stdio] [--request <json>] [--mount <scheme>=<dir>[:rw]]...\n"
     "                   [--log <spec>] [--log-json <path>] [--tunables <file>]\n"
+    "                   [--roles <file.json>] [--actor <name>] [--role <name>] [--task <id>]\n"
     "\n"
     "  --stdio          serve JSON-RPC 2.0: one request per line on stdin, one response per\n"
     "                   line on stdout (default)\n"
@@ -59,6 +60,11 @@ const char* k_usage =
     "  --log <spec>     log levels, e.g. \"info,host=debug\" (stderr shows warnings and up)\n"
     "  --log-json       append every log record as JSON lines to this file\n"
     "  --tunables       load tunable values from a JSON object file\n"
+    "  --roles          role configurations (plan 06 section 6.5): what each role may change;\n"
+    "                   without it nothing is restricted (content/roles/roles.json)\n"
+    "  --actor, --role, --task\n"
+    "                   who a call that names no actor, role or task is: its attribution, and\n"
+    "                   with --roles the role it is checked as (--role must be in the file)\n"
     "\n"
     "Test hook, not for use (docs/subsystems/apps.md, \"Deadlines\"):\n"
     "  --debug-hang <method>  never answer <method>, and read nothing after it: the host a\n"
@@ -131,6 +137,8 @@ int main(int argc, char** argv) {
   std::string log_json;
   std::string tunables_file;
   std::string hang_method;
+  std::string roles_file;
+  protocol::Policy policy;
   Vector<std::string> mounts;
   for (int i = 1; i < argc; ++i) {
     const std::string_view a = argv[i];
@@ -153,6 +161,14 @@ int main(int argc, char** argv) {
       if (!next_value(argc, argv, i, a, tunables_file)) return 2;
     } else if (a == "--debug-hang") {
       if (!next_value(argc, argv, i, a, hang_method)) return 2;
+    } else if (a == "--roles") {
+      if (!next_value(argc, argv, i, a, roles_file)) return 2;
+    } else if (a == "--actor") {
+      if (!next_value(argc, argv, i, a, policy.identity.actor)) return 2;
+    } else if (a == "--role") {
+      if (!next_value(argc, argv, i, a, policy.identity.role)) return 2;
+    } else if (a == "--task") {
+      if (!next_value(argc, argv, i, a, policy.identity.task)) return 2;
     } else {
       std::fprintf(stderr, "engine-host: unknown option '%s'\n%s", argv[i], k_usage);
       return 2;
@@ -224,6 +240,28 @@ int main(int argc, char** argv) {
     }
   }
 
+  // Roles and the default identity (plan 06 §6.5, domain/protocol/policy.h). A roles file that does
+  // not read, or a --role it does not have, is a usage error: a host told to restrict calls that
+  // quietly restricted nothing would be worse than one that refused to start.
+  if (!roles_file.empty()) {
+    std::string text;
+    if (const io::Status s = io::read_file(roles_file, text); s != io::Status::Ok) {
+      std::fprintf(stderr, "engine-host: cannot read roles file '%s': %s\n", roles_file.c_str(),
+                   io::status_name(s));
+      return 2;
+    }
+    std::string error;
+    if (!policy.load_roles(roles_file, text, error)) {
+      std::fprintf(stderr, "engine-host: %s\n", error.c_str());
+      return 2;
+    }
+    if (!policy.identity.role.empty() && policy.find_role(policy.identity.role) == nullptr) {
+      std::fprintf(stderr, "engine-host: --role '%s' is not a role of %s\n",
+                   policy.identity.role.c_str(), roles_file.c_str());
+      return 2;
+    }
+  }
+
   protocol::SessionManager sessions(vfs);
   // The host's own methods' state reaches their handlers through Context::app (host_state.h): the
   // renderer's device and scenes, and the sessions' runtime worlds. It must outlive the
@@ -231,12 +269,12 @@ int main(int argc, char** argv) {
   // never opens a device and never builds a world.
   host::HostState state;
   state.started_ns = started_ns;
-  protocol::Dispatcher dispatcher(protocol::Context{&sessions, &ring, nullptr, &state});
+  protocol::Dispatcher dispatcher(protocol::Context{&sessions, &ring, nullptr, &state, &policy});
   protocol::add_builtin_methods(dispatcher);
-  dispatcher.add(protocol::method_no_params<protocol::PingResult, &engine_ping>(
+  dispatcher.add(protocol::read_only(protocol::method_no_params<protocol::PingResult, &engine_ping>(
       "engine.ping",
       "Liveness: the host's process id and how long it has been up. Touches no state, so it is "
-      "answered at once whenever the host is reading requests at all."));
+      "answered at once whenever the host is reading requests at all.")));
   host::add_render_methods(dispatcher);
   // content.build, session.events, engine.budgets, session.run_headless, engine.run_tests
   // (ops_methods.h): the rest of plan 06 §6.9's day-one list.

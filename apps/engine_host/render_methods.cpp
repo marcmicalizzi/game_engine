@@ -1261,39 +1261,41 @@ bool RenderHost::ensure_reference(Scene& scene, std::string& error, bool& unavai
 }
 
 void add_render_methods(protocol::Dispatcher& d) {
-  d.add(protocol::method<protocol::RenderLoadParams, protocol::RenderSceneInfo, &render_load>(
+  d.add(protocol::read_only(protocol::method<protocol::RenderLoadParams, protocol::RenderSceneInfo,
+                                             &render_load>(
       "render.load",
       "Load a mesh or a scene file into a GPU scene the session holds; returns its id and "
       "counts. `settings.stream` also keeps the scene's streaming page table, which `page_bytes` "
-      "sizes for the procedural heightfield."));
-  d.add(protocol::method<protocol::RenderCaptureParams, protocol::RenderCaptureResult,
-                         &render_capture>(
+      "sizes for the procedural heightfield.")));
+  d.add(protocol::read_only(protocol::method<protocol::RenderCaptureParams,
+                                             protocol::RenderCaptureResult, &render_capture>(
       "render.capture",
       "Render one frame of a loaded scene offscreen and write the asked-for channels (color, "
-      "ids, depth, normals) as files."));
-  d.add(protocol::method<protocol::RenderBenchmarkParams, protocol::RenderBenchmarkResult,
-                         &render_benchmark>(
+      "ids, depth, normals) as files.")));
+  d.add(protocol::read_only(protocol::method<protocol::RenderBenchmarkParams,
+                                             protocol::RenderBenchmarkResult, &render_benchmark>(
       "render.benchmark",
       "Render a loaded scene for n frames with the camera held still; returns GPU milliseconds "
-      "per pass, CPU milliseconds per frame, and the run's geometry residency in stats.stream."));
-  d.add(protocol::method<protocol::RenderCompareParams, protocol::RenderCompareResult,
-                         &render_compare>(
-      "render.compare", "FLIP, PSNR, and SSIM between two images, with an optional heat map."));
-  d.add(protocol::method<protocol::RenderEvaluateParams, protocol::RenderEvaluateResult,
-                         &render_evaluate>(
+      "per pass, CPU milliseconds per frame, and the run's geometry residency in stats.stream.")));
+  d.add(protocol::read_only(protocol::method<protocol::RenderCompareParams,
+                                             protocol::RenderCompareResult, &render_compare>(
+      "render.compare", "FLIP, PSNR, and SSIM between two images, with an optional heat map.")));
+  d.add(protocol::read_only(protocol::method<protocol::RenderEvaluateParams,
+                                             protocol::RenderEvaluateResult, &render_evaluate>(
       "render.evaluate",
       "Render one frame of a loaded scene through the real-time path and through the reference "
       "path tracer, compare them, write both pictures and the FLIP heat map, and return the "
-      "numbers and the times: plan 04 section 4.8's optimization loop in one call."));
-  d.add(protocol::method<protocol::RenderUnloadParams, protocol::RenderUnloadResult,
-                         &render_unload>(
+      "numbers and the times: plan 04 section 4.8's optimization loop in one call.")));
+  d.add(protocol::read_only(protocol::method<protocol::RenderUnloadParams,
+                                             protocol::RenderUnloadResult, &render_unload>(
       "render.unload",
       "Release a loaded scene: its GPU buffers, textures, acceleration structures, renderer and "
-      "host arrays. The id names nothing afterwards; the device stays open for the next load."));
-  d.add(protocol::method_no_params<protocol::RenderScenesResult, &render_scenes>(
+      "host arrays. The id names nothing afterwards; the device stays open for the next load.")));
+  d.add(protocol::read_only(protocol::method_no_params<protocol::RenderScenesResult,
+                                                       &render_scenes>(
       "render.scenes",
       "The scenes this host holds, in load order: where each came from, its counts, whether its "
-      "GPU state is built and at what size, and what the process uses of the device's memory."));
+      "GPU state is built and at what size, and what the process uses of the device's memory.")));
 }
 
 }  // namespace engine::host

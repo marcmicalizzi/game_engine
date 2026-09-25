@@ -50,13 +50,17 @@ struct EngineInfo @version(1) {
 }
 
 /// One entry of the method catalogue (`engine.methods`).
-struct MethodInfo @version(1) {
+struct MethodInfo @version(2) {
   name: string
   doc: string
   /// Qualified schema type of `params`; empty when the method takes none.
   params_type: string
   /// Qualified schema type of `result`.
   result_type: string
+  /// The method changes no document, no lease and no host setting, so no role restricts it
+  /// (plan 06 §6.5: read access is unrestricted). A method that does not say so is a write, and a
+  /// role has to allow it by name.
+  read_only: bool = false @since(2)
 }
 
 struct MethodsResult @version(1) {
@@ -85,7 +89,42 @@ struct SessionOpenParams @version(1) {
   name: string
 }
 
-struct LayerInfo @version(2) {
+/// Where a proposal layer is in its life (plan 06 §6.5; the section "roles, leases and proposals"
+/// below has the rest of its types).
+enum ProposalState : u8 {
+  /// Its owner is writing it.
+  Open = 0
+  /// Its opinions were merged into the target and the layer was emptied.
+  Promoted = 1
+  /// It was emptied without being merged.
+  Rejected = 2
+}
+
+/// A proposal layer's own properties (`doc.propose_layer`), kept in the document's
+/// `proposals.json` and reported by `doc.layers`.
+struct ProposalInfo @version(1) {
+  layer: string
+  /// The layer promotion merges into.
+  target: string
+  /// The actor that proposed it: the only one that writes it.
+  owner: string
+  owner_role: string
+  task: string
+  /// Why the proposal exists, from its opening attribution; the promotion journals it.
+  rationale: string
+  state: ProposalState = Open
+  opened_unix_ms: i64 = 0
+  /// Target records the proposal has touched since it was opened: each one's state when first
+  /// touched is its side of the merge base.
+  touched: u32 = 0
+  /// Who promoted or rejected it, and when.
+  closed_by: string
+  closed_unix_ms: i64 = 0
+  /// The promotion's journal patch in the target; null until promoted.
+  patch_index: u32?
+}
+
+struct LayerInfo @version(3) {
   name: string
   role: engine.doc.LayerRole = Base
   records: u32 = 0
@@ -96,6 +135,8 @@ struct LayerInfo @version(2) {
   partition: engine.doc.LayerPartition? @since(2)
   /// Occupied tiles; zero for a layer stored as one file.
   tiles: u32 = 0 @since(2)
+  /// Present when `doc.propose_layer` made the layer: its target, its owner and its state.
+  proposal: ProposalInfo? @since(3)
 }
 
 struct SessionInfo @version(1) {
@@ -116,13 +157,17 @@ struct SessionsResult @version(1) {
 }
 
 /// Parameters of `doc.apply`: one transaction.
-struct ApplyParams @version(1) {
+struct ApplyParams @version(2) {
   session: string
   commands: engine.doc.Command[]
   attribution: engine.doc.Attribution
   /// Roll the whole transaction back when any command fails, instead of committing what
   /// succeeded.
   atomic: bool = true
+  /// The layer this transaction edits; empty is the session's edit layer. Agents sharing one
+  /// session name their own proposal layers here rather than moving the session's edit layer
+  /// under each other (plan 06 §6.5).
+  layer: string @since(2)
 }
 
 struct ApplyResult @version(1) {
@@ -200,7 +245,7 @@ enum MergeConflictKind : u8 {
 
 /// Parameters of `doc.merge`: three layers of the open document, and the layer the merge is
 /// written to.
-struct MergeParams @version(1) {
+struct MergeParams @version(2) {
   session: string
   /// The common ancestor the other two diverged from.
   base_layer: string
@@ -210,6 +255,10 @@ struct MergeParams @version(1) {
   /// otherwise replaced. May be one of the three inputs.
   output_layer: string
   prefer: MergePrefer = Ours
+  /// Who merges and why. Journaled with the merge when given (the host's own attribution
+  /// otherwise), and what a role and the leases are checked against (plan 06 §6.5); blank fields
+  /// are the host's `--actor`, `--role` and `--task`.
+  attribution: engine.doc.Attribution? @since(2)
 }
 
 /// One conflict `doc.merge` found.
@@ -238,9 +287,13 @@ struct MergeResult @version(1) {
 }
 
 /// Parameters of `doc.undo` and `doc.redo`.
-struct StepParams @version(1) {
+struct StepParams @version(2) {
   session: string
   steps: u32 = 1
+  /// Who is stepping: what a role, a proposal's ownership and the leases are checked against
+  /// (plan 06 §6.5). Nothing is journaled for a step. Absent or blank fields are the host's
+  /// `--actor`, `--role` and `--task`.
+  attribution: engine.doc.Attribution? @since(2)
 }
 
 struct StepResult @version(1) {
@@ -1492,4 +1545,259 @@ struct RunTestsResult @version(1) {
   errors: u32 = 0
   warnings: u32 = 0
   skipped: u32 = 0
+}
+
+// ---- roles, leases and proposals ---------------------------------------------------------------
+// Plan 06 §6.5 (docs/subsystems/protocol.md, "Roles, leases and proposals"). A **role** is
+// configuration: which writing methods, layers, tiles and object types a call made in it may
+// touch, and whether its work needs review. A **lease** is a time-bounded, visible claim on
+// (layer, tile set) or (layer, object-type set), refused at acquisition when it overlaps another
+// actor's live one. A **proposal layer** is an agent's own layer over a target; promotion merges
+// its opinions into the target structurally, validates the result first, and journals it. Read
+// access is never restricted.
+
+/// An inclusive rectangle of tiles on a partitioned layer's grid (docs/plan/03-data-model.md §3.7):
+/// every tile (x, y) with x0 <= x <= x1 and y0 <= y <= y1. One tile is x0 == x1 and y0 == y1.
+struct TileRange @version(1) {
+  x0: i32 = 0
+  y0: i32 = 0
+  x1: i32 = 0
+  y1: i32 = 0
+}
+
+/// One role configuration (plan 06 §6.5). Director, designer, environment, QA and performance are
+/// rows of a roles file, not code. Every name list is an allow-list whose entries may use `*` as a
+/// wildcard for any run of characters: empty allows nothing and `"*"` everything. The tile list is
+/// the one exception, because a range has no wildcard: no ranges is the whole partition.
+struct Role @version(1) {
+  name: string
+  doc: string
+  /// The writing methods a call in this role may make: `doc.apply`, `lease.*`, `*`. A read-only
+  /// method (`engine.methods` marks them) is never restricted and need not be listed; empty is a
+  /// read-only role.
+  methods: string[]
+  /// The layers whose content the role may change, directly or through a proposal that targets
+  /// them: `world`, `feature.*`, `*`.
+  layers: string[]
+  /// The tiles of a partitioned layer the role may change, judged by the object's position before
+  /// and after the change. Empty: the whole partition.
+  tiles: TileRange[]
+  /// Whether the role may change a record that has no tile: no position, or a layer with no
+  /// partition.
+  untiled: bool = true
+  /// The object types the role may create or change: qualified names with wildcards,
+  /// `engine.world.*`, `*`.
+  object_types: string[]
+  /// Its commits need review: it writes only to proposal layers it owns (`doc.propose_layer`), and
+  /// it may not promote them; a role without the flag does that (plan 06 §6.10).
+  review_required: bool = false
+}
+
+/// A roles file, `engine-host --roles <file.json>` (`content/roles/` has the five named roles).
+struct RolesFile @version(1) @kind(document) {
+  /// The role of a call that names none, when the host was not given `--role`. Empty: such a call
+  /// is not restricted.
+  default_role: string
+  roles: Role[]
+}
+
+/// One role as `engine.roles` reports it.
+struct RoleInfo @version(1) {
+  role: Role
+  /// Every method this host serves that a call in the role may make: the read-only ones and the
+  /// ones its `methods` patterns match, in name order.
+  allowed_methods: string[]
+}
+
+/// Result of `engine.roles`: the host's role configuration and its default identity.
+struct RolesResult @version(1) {
+  /// A roles file was loaded. Without one nothing is restricted, which is also every host before
+  /// roles existed.
+  loaded: bool = false
+  /// The file the host read (`--roles`); empty when none.
+  path: string
+  default_role: string
+  /// The host's default identity (`--actor`, `--role`, `--task`): what a call that names no actor,
+  /// role or task is attributed to and checked as.
+  actor: string
+  role: string
+  task: string
+  roles: RoleInfo[]
+}
+
+/// A live lease: a claim on a layer's tiles or object types, held by one actor until it expires or
+/// is released.
+struct LeaseInfo @version(1) {
+  id: u64 = 0
+  /// The holder. Only the holder renews or releases it, and only the holder's edits it covers.
+  actor: string
+  role: string
+  task: string
+  /// The layer the lease is on: a feature layer, or the target a proposal layer promotes into
+  /// (an edit in a proposal is covered by a lease on its target).
+  layer: string
+  /// The tiles it covers; empty for an object-type lease.
+  tiles: TileRange[]
+  /// The object types it covers, qualified names, exact; empty for a tile lease.
+  object_types: string[]
+  acquired_unix_ms: i64 = 0
+  /// When it lapses, by the host's clock. An expired lease covers nothing and is dropped on the
+  /// next acquisition or list.
+  expires_unix_ms: i64 = 0
+}
+
+/// `leases.json` in a document directory: the lease table, kept beside the document so that a
+/// host started for one call (engine-cli) sees the leases an earlier one granted.
+struct LeaseFile @version(1) @kind(document) {
+  /// Every writing `doc.*` call must hold a lease covering the records it touches.
+  required: bool = false
+  next_id: u64 = 1
+  leases: LeaseInfo[]
+}
+
+/// Parameters of `lease.acquire`: a tile set or an object-type set on one layer, not both.
+struct LeaseAcquireParams @version(1) {
+  session: string
+  layer: string
+  tiles: TileRange[]
+  /// Qualified type names, exact (no wildcards: overlap has to be decidable from the names).
+  object_types: string[]
+  /// Time to live from now, 1 second to 24 hours.
+  ttl_seconds: f64 = 600
+  /// The holder: its actor, role and task. Blank fields are the host's `--actor`, `--role` and
+  /// `--task`; the actor must not end up blank.
+  attribution: engine.doc.Attribution
+}
+
+/// Parameters of `lease.renew`.
+struct LeaseRenewParams @version(1) {
+  session: string
+  lease: u64 = 0
+  /// The new time to live from now, 1 second to 24 hours.
+  ttl_seconds: f64 = 600
+  attribution: engine.doc.Attribution
+}
+
+/// Parameters of `lease.release`.
+struct LeaseReleaseParams @version(1) {
+  session: string
+  lease: u64 = 0
+  attribution: engine.doc.Attribution
+}
+
+/// Parameters of `lease.list`.
+struct LeaseListParams @version(1) {
+  session: string
+  /// Only leases on this layer; empty for every layer.
+  layer: string
+  /// Only leases this actor holds; empty for every holder.
+  actor: string
+}
+
+/// Parameters of `lease.require`.
+struct LeaseRequireParams @version(1) {
+  session: string
+  /// Every writing `doc.*` call must hold a lease covering the records it touches. Off by default,
+  /// and off in every document made before leases existed.
+  required: bool = true
+  attribution: engine.doc.Attribution
+}
+
+/// Result of `lease.list` and `lease.require`.
+struct LeasesResult @version(1) {
+  required: bool = false
+  /// The host's clock, which every expiry is judged by.
+  now_unix_ms: i64 = 0
+  leases: LeaseInfo[]
+  /// Expired leases this call dropped.
+  expired: u32 = 0
+}
+
+// ProposalState and ProposalInfo are declared before LayerInfo, which reports them.
+
+/// `proposals.json` in a document directory.
+struct ProposalsFile @version(1) @kind(document) {
+  proposals: ProposalInfo[]
+}
+
+/// One line of `proposals/<layer>.base.jsonl`: the target's record for an object as the proposal
+/// first found it — the merge base for that object. Absent `record`: the target had none.
+struct ProposalBaseEntry @version(1) {
+  id: id128
+  record: engine.doc.ObjectRecord?
+}
+
+/// Parameters of `doc.propose_layer`: a proposal layer over `target`, owned by the caller.
+struct ProposeLayerParams @version(1) {
+  session: string
+  /// The proposal layer's name, unique in the document. Naming a proposal the caller owns that is
+  /// no longer open (promoted or rejected) reopens it, over the same target.
+  name: string
+  /// The layer promotion merges into. It must exist and not be a proposal.
+  target: string
+  /// Make the proposal the session's edit layer.
+  edit: bool = true
+  /// The owner, and why the proposal exists: the rationale is journaled with the promotion.
+  attribution: engine.doc.Attribution
+}
+
+/// How `doc.promote` settles a conflict between the proposal and its target.
+enum PromotePrefer : u8 {
+  /// Refuse the promotion and report every conflict: a person or a director decides.
+  Refuse = 0
+  /// Keep the target's value; the proposal's side of the conflict is not taken.
+  Target = 1
+  /// Take the proposal's value.
+  Proposal = 2
+  /// Keep the base's value: neither side's change.
+  Base = 3
+}
+
+/// Parameters of `doc.promote`.
+struct PromoteParams @version(1) {
+  session: string
+  /// The proposal layer.
+  proposal: string
+  prefer: PromotePrefer = Refuse
+  /// Merge and validate, report, and commit nothing.
+  dry_run: bool = false
+  /// The promoter. The journal records the promotion under it, with the proposal's own rationale.
+  attribution: engine.doc.Attribution
+}
+
+/// Result of `doc.promote`.
+struct PromoteResult @version(1) {
+  /// Nothing stands in the way: no conflict `prefer` leaves open, and no new validation problem.
+  ok: bool = false
+  /// The target now holds the proposal's opinions and the proposal is empty.
+  promoted: bool = false
+  proposal: string
+  target: string
+  /// Why it was not promoted, in a sentence; empty when it was, or would have been on a dry run.
+  refused: string
+  /// Changes taken from each side of the merge: the target's own since the proposal first touched
+  /// each record, and the proposal's.
+  applied_target: u32 = 0
+  applied_proposal: u32 = 0
+  /// Records of the target the promotion rewrote.
+  records: u32 = 0
+  conflicts: MergeConflictInfo[]
+  /// Problems `doc.validate` finds in the merged world that it did not find before: what the
+  /// promotion would introduce. Problems already there do not block it.
+  validation: Diagnostic[]
+  /// The target's patch and the proposal's emptying patch; `doc.undo` with `steps: 2` takes the
+  /// promotion back whole.
+  patch_index: u32?
+  cleared_patch_index: u32?
+  /// Milliseconds: the three-way merge, the two validations, and the commits with their saves.
+  merge_ms: f64 = 0
+  validate_ms: f64 = 0
+  commit_ms: f64 = 0
+}
+
+/// Parameters of `doc.reject`: empty an open proposal without merging it.
+struct RejectParams @version(1) {
+  session: string
+  proposal: string
+  attribution: engine.doc.Attribution
 }

@@ -119,7 +119,8 @@ network does not think about. In it:
   comes with it: engine-view's synthetic session and the trajectory it flies, which is how a
   machine nobody here can log in to shows that its compiler flies a recording to the same place.
   `content/input-maps/` (the interactive camera's default bindings, checked against the compiled
-  ones) and `content/test-scenes/` ride along at a few kilobytes; `content/samples/` only with
+  ones), `content/roles/` (the five named role configurations, which the protocol test loads) and
+  `content/test-scenes/` ride along at a few kilobytes; `content/samples/` only with
   `-WithSamples`.
 - `bundle.json` — the commit, the branch, the preset, the CPU baseline (read out of the build's
   `CMakeCache.txt`, or `unknown` where that switch does not exist yet), and the **test list taken

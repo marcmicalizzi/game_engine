@@ -54,6 +54,15 @@ bool parse_tile_file_name(std::string_view name, TileCoord& out);
 // otherwise the record type's first `position` or `transform` field. Empty when neither the
 // setting nor the type offers one, which puts the record in untiled.json.
 std::string_view position_property(const ObjectRecord& record, const LayerPartition& partition);
+// The same rule for a record of type `type` (a qualified schema name): what a reader that holds a
+// composed object rather than one layer's record asks — the lease and role checks of plan 06
+// §6.5, which place an object by its composed position (domain/protocol/policy.h).
+std::string_view position_property(std::string_view type, const LayerPartition& partition);
+
+// The tile a position value falls in under a grid of `tile_size`: `read_position`, floored by
+// the tile size. False when the value is not a position, the size is not positive, or the tile
+// leaves i32. `tile_of` is this over the record's own position property.
+bool tile_of_position(const JsonValue& value, f64 tile_size, TileCoord& out);
 
 // Reads a position out of a property value and projects it onto the horizontal plane. Accepts
 // [x, y] and [x, y, z], an object with numeric `x` and `y` (and `z`), and a transform object

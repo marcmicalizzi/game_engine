@@ -33,12 +33,12 @@ bool devices(protocol::Context&, AudioDevicesResult& result, protocol::RpcError&
 }  // namespace
 
 void register_methods(protocol::Dispatcher& dispatcher) {
-  dispatcher.add(protocol::method_no_params<AudioDevicesResult, &devices>(
+  dispatcher.add(protocol::read_only(protocol::method_no_params<AudioDevicesResult, &devices>(
       "audio.devices",
       "The playback devices this machine has, each with the speaker layout, rate and form factor "
       "(headphones, speakers, ...) its endpoint really has, the platform API that listed them, and "
       "the layout a mixer would be declared with now. An empty list is a normal answer: the engine "
-      "then mixes into the null backend."));
+      "then mixes into the null backend.")));
 }
 
 }  // namespace engine::audio
