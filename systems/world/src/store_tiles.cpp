@@ -115,7 +115,11 @@ void StoreTiles::deactivate(void* context, const TileEvent& event) {
   // document where the world left it (03 §3.4, "Dematerialize: flush persistent deltas").
   self->rows_.clear();
   if (b.driver != nullptr && b.document != nullptr) {
-    b.driver->flush_writeback(b.scheduler->tick(), b.scheduler->game_time());
+    if (b.document_tiles != nullptr && b.world != nullptr) {
+      b.document_tiles->flush(b.world->ring());
+    } else {
+      b.driver->flush_writeback(b.scheduler->tick(), b.scheduler->game_time());
+    }
     b.driver->held(sim::MaterializeScope::of_tile(doc::TileCoord{event.tile.x, event.tile.z}),
                    self->held_);
     for (const Id128& id : self->held_) {

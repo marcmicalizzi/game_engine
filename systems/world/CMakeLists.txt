@@ -16,14 +16,19 @@
 # output instead of failing it.
 engine_capability_requires(world store)
 
-# The capability's own types (ADR-0007): a tile's projection in the store and the world log's line.
-# In `engine.world`, the runtime world's namespace, but a file of this capability's own — the
-# engine's `schemas/world.schema` already owns the name `world` — so the switch takes them out too.
-engine_schema_library(NAME world_schemas SCHEMAS schemas/world_tiles.schema CAPABILITY world)
+# The capability's own types (ADR-0007): a tile's projection in the store and the world log's line
+# (world_tiles.schema), and a save game's manifest (world_save.schema). In `engine.world`, the
+# runtime world's namespace, but files of this capability's own — the engine's `schemas/world.schema`
+# already owns the name `world` — so the switch takes them out too.
+engine_schema_library(NAME world_schemas
+  SCHEMAS schemas/world_tiles.schema schemas/world_save.schema
+  CAPABILITY world)
 
-set(_world_deps base containers math hash log time ids jobs tunables json io schema schemas sim doc
-                renderer store world_schemas)
+# `input` for the player of a headless world, an observer an input log steers (input_observer.h).
+set(_world_deps base containers math hash log time ids jobs tunables json io input schema schemas
+                sim doc renderer store world_schemas)
 set(_world_sources src/tile_ring.cpp src/world.cpp src/world_log.cpp src/tile_store.cpp
+                   src/state_hash.cpp src/save_game.cpp src/input_observer.cpp
                    src/store_tiles.cpp src/document_tiles.cpp)
 # The ruins consumer, when this configuration has the ruins capability: a desert's buildings are one
 # thing a tile holds, not what a tile is, so a world without ruins (a game with no desert) streams
@@ -45,6 +50,7 @@ if(TARGET engine::ruins)
 endif()
 
 set(_world_tests tests/world_tests.cpp tests/tile_store_tests.cpp tests/consumer_tests.cpp
+                 tests/save_tests.cpp
                  tests/size_table.cpp)
 if(TARGET engine::ruins)
   list(APPEND _world_tests tests/ruins_tiles_tests.cpp)

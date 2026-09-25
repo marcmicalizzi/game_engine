@@ -29,6 +29,9 @@ struct DocumentTilesStats {
   u64 deactivated = 0;
   u64 created = 0;
   u64 dematerialized = 0;
+  // Records a system moved into another tile: filed under it, or let go with it not live.
+  u64 refiled = 0;
+  u64 left = 0;
   u64 visited = 0;  // records the tile passes looked at: a tile pass is a full pass over the scope
   u64 refused = 0;
   i64 materialize_ns = 0;
@@ -44,8 +47,24 @@ class DocumentTiles {
   // The document the tiles are materialized from. The host rebinds it on every call, because a
   // session's document is the host's (engine-host keeps the world by session id).
   void bind(const doc::Document* document) noexcept;
-  TileConsumer consumer(u8 rings) noexcept;
+  // The row to register: `rings` is the rings the simulation runs in, and `ring` — the world's own,
+  // `World::ring()` — is what a deactivation settles the records that moved against (`settle`).
+  // Without one a deactivation only flushes, as it did before records followed their tile.
+  TileConsumer consumer(u8 rings, const TileRing* ring = nullptr) noexcept;
   const DocumentTilesStats& stats() const noexcept { return stats_; }
+
+  // **Records follow their tile** (world.md, "Records that move"). A record a system moved into
+  // another tile, once a write-back has told the document, is filed under its new tile when the
+  // ring holds that tile in this consumer's rings, and dematerialized when it does not — its state
+  // is in the document, which is where the new tile's activation will find it. So what is
+  // materialized is always the records of the live tiles, a function of the document and the ring
+  // and not of the way the world came to be as it is, which is what lets a save be loaded into the
+  // same world. Between ticks: the host after every update and at the end of a call; a deactivation
+  // itself after its flush and before it lets its tile go (`flush`). Returns the records let go.
+  u32 settle(const TileRing& ring);
+  // The write-back flushed, and the moves it made settled against `ring`: what a consumer calls
+  // before it reads or drops what a tile holds.
+  void flush(const TileRing& ring);
   // False, with the reason, when a partitioned layer of the bound document is on another grid.
   bool grid_matches(const char** why = nullptr) const noexcept;
 
@@ -56,10 +75,15 @@ class DocumentTiles {
   sim::Materializer* driver_ = nullptr;
   sim::SimScheduler* scheduler_ = nullptr;
   const doc::Document* document_ = nullptr;
+  // The ring this consumer's deactivations settle against: the world it is registered with.
+  const TileRing* ring_ = nullptr;
   f32 tile_size_ = 0.0f;
+  u8 rings_ = 0;
   bool grid_ok_ = true;
   bool warned_ = false;
   DocumentTilesStats stats_;
+  Vector<sim::TileMove> moves_;
+  Vector<Id128> gone_;
 };
 
 }  // namespace engine::world

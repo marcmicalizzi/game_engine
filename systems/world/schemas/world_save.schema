@@ -1,0 +1,119 @@
+// The world capability's save game (docs/subsystems/world.md, "Save and load"; ADR-0042): the
+// manifest a save's directory carries as `save.json` — every file of the set with its size and
+// hash, the formats its pieces were written in and at which version, the run's clock and seed, and
+// the drivers of the run that are state rather than derived: the tile ring's observers and the
+// tiles it held, and the input log a player steers one of those observers with. The document and
+// the store are files of the set; this is what says what they are and what else a load needs.
+//
+// A file of the capability's own, beside `world_tiles.schema`, so ENGINE_WITH_WORLD=OFF takes the
+// save format out with the rest of what reads and writes it.
+namespace engine.world
+
+/// One file of a save: where it is in the save's directory, how long it is and what it hashes to.
+/// A load refuses a save one of whose files is missing, of another length or another hash, naming
+/// the file.
+struct SaveFile @version(1) {
+  /// Relative to the save's directory, with forward slashes.
+  path: string
+  bytes: u64 = 0
+  /// `hash_bytes` of the file's bytes (core/hash), 16 hex digits: a check against a torn copy or
+  /// a file changed since, not a signature.
+  hash: string
+}
+
+/// A format one of a save's pieces is written in, and the version it was written at: a schema
+/// type by its qualified name (the manifest's own types, the payloads in the store, the document's
+/// record types), `store.tables` (the store's `user_version`) or `engine.input.log`. A load
+/// refuses a save that names a version newer than this build's, or a format this build does not
+/// have, and migrates one that names an older version.
+struct SaveVersion @version(1) {
+  name: string
+  version: u32 = 0
+}
+
+/// One observer of the tile ring, exactly as it was: an f32 widens to an f64 and back through the
+/// JSON writer bit for bit.
+struct SaveObserver @version(1) {
+  position: vec3 @unit(m)
+  /// Metres per game second, applied every tick.
+  velocity: vec3
+  weight: f32 = 1
+}
+
+/// One active tile and its ring.
+struct SaveTile @version(1) {
+  x: i32 = 0
+  z: i32 = 0
+  ring: u32 = 0
+}
+
+/// The observer an input log steers (`world::InputObserver`, docs/subsystems/world.md, "The
+/// player").
+struct SavePlayer @version(1) {
+  /// The observer it steers, an index into the ring's observers.
+  observer: u32 = 0
+  /// The Axis2 action it reads, and the speed full deflection moves it at.
+  action: string
+  speed: f32 = 0 @unit("m/s")
+  /// The log's events up to the save's tick, and the action map it was recorded against: files of
+  /// the save.
+  log: string
+  map: string
+}
+
+/// A world streamed tile by tile: the ring's parameters, its observers, the tiles it held.
+struct SaveRing @version(1) {
+  tile_size: f32 = 32 @unit(m)
+  /// Radii of the rings in tiles, innermost first.
+  rings: f32[]
+  hysteresis: f32 = 0.15
+  /// The per-update budget the ring was built with; 0 is unlimited.
+  max_activations: u32 = 0
+  max_deactivations: u32 = 0
+  /// Rings, innermost first, the document is materialized and the store reconciled in.
+  simulated: u32 = 2
+  /// Whether the tiles were kept in the store.
+  store: bool = true
+  observers: SaveObserver[]
+  /// Active tiles in tile order (x, then z) with their rings. State, not a function of the
+  /// observers: with hysteresis and a budget, which tiles are active depends on the way the
+  /// observers came.
+  tiles: SaveTile[]
+  player: SavePlayer?
+}
+
+/// A random stream a system advances by drawing from it rather than deriving from (seed, tick,
+/// id). None exists today — every stream in the engine is a hash of the world seed, a tile, an id
+/// and a tick (05 §5.10) — so a save's list is empty; a system that ever keeps one adds its
+/// state here, by name.
+struct SaveRngStream @version(1) {
+  name: string
+  state: u64[]
+}
+
+/// `save.json`: what a save is and what a load needs besides its files.
+struct SaveManifest @version(1) @kind(document) {
+  /// "engine.save".
+  format: string
+  /// This manifest's own schema version, read before anything else, since it says how to read the
+  /// rest.
+  version: u32 = 1
+  /// The run's clock: the tick the save was taken after and its game time, the fixed step's rate,
+  /// and the write-back cadence the last call ran at.
+  tick: u64 = 0
+  game_time_us: i64 = 0
+  hz: u32 = 60
+  write_back_every: u32 = 60
+  /// Every tile's seed is this hashed with the tile (`WorldStore::tile_seed`).
+  world_seed: u64 = 1
+  /// The document's directory in the save, and the store's file; empty when the session had none.
+  document: string
+  store: string
+  /// The streamed world, or null for a world the document was materialized into whole.
+  ring: SaveRing?
+  rng: SaveRngStream[]
+  /// The persistent-state hash when the save was taken (`world::state_hash`), 16 hex digits.
+  state_hash: string
+  versions: SaveVersion[]
+  files: SaveFile[]
+}

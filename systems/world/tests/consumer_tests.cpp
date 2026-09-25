@@ -77,7 +77,14 @@ struct FakeWorld {
     const auto it = self->entities.find(id);
     return it != self->entities.end() ? sim::EntityHandle{it->second} : sim::EntityHandle{};
   }
-  static void collect(void*, Vector<sim::WriteBackChange>&) {}
+  // What a system moved since the last flush, handed to the write-back as the entity store would.
+  Vector<sim::WriteBackChange> pending;
+  static void collect(void* c, Vector<sim::WriteBackChange>& out) {
+    auto* self = static_cast<FakeWorld*>(c);
+    for (sim::WriteBackChange& change : self->pending)
+      out.push_back(std::move(change));
+    self->pending.clear();
+  }
 
   sim::MaterializationHooks hooks() {
     sim::MaterializationHooks row;
@@ -247,6 +254,110 @@ TEST_CASE(
   REQUIRE(again.read_tile(TileCoord{0, 0}, rows, has_snapshot, info) == store::Status::Ok);
   CHECK(has_snapshot);
   CHECK(rows.size() == 2);
+}
+
+namespace {
+
+// A write-back committed as a session would: one transaction.
+struct Sink {
+  doc::Document* document = nullptr;
+  static bool commit(void* c, const sim::WriteBackBatch& batch) {
+    auto* self = static_cast<Sink*>(c);
+    doc::Transaction transaction = self->document->begin(batch.attribution);
+    for (const doc::Command& command : batch.commands) {
+      if (!transaction.apply(command)) return false;
+    }
+    return transaction.commit();
+  }
+};
+
+}  // namespace
+
+// Records that move (world.md): a record a system moved into another tile follows it when the tile
+// is live in the consumer's rings, and goes when it is not — so what is materialized is the records
+// of the live tiles, and a deactivation writes and drops the records that are in its tile now.
+TEST_CASE("world consumers: a record the world moved follows its tile, or goes with it not live") {
+  const test::TempDir tmp("engine_world_moves");
+  doc::Document d = partitioned(32.0);
+  node(d, 1, 5.0, 5.0);    // tile (0, 0): will move to (-1, 0), which is live
+  node(d, 2, 10.0, 5.0);   // tile (0, 0): will move 200 m east, where nothing is live
+  node(d, 3, 20.0, 20.0);  // tile (0, 0): stays
+
+  sim::SimScheduler scheduler;
+  FakeWorld fake;
+  scheduler.add_hooks(fake.hooks());
+  sim::MaterializeConfig config;
+  config.writeback_every = 0;
+  sim::Materializer driver(scheduler, config);
+  driver.set_target(fake.target());
+  Sink sink{&d};
+  driver.set_writeback_sink(sim::WriteBackSink{&sink, &Sink::commit});
+  WorldStore store;
+  REQUIRE(store.open(tmp.file("world.db")) == store::Status::Ok);
+
+  RingParams params;
+  params.ring_count = 2;
+  params.radius[0] = 1.5f;
+  params.radius[1] = 3.0f;
+  params.max_activations = 0;
+  params.max_deactivations = 0;
+  World world(params);
+  DocumentTiles document_tiles(driver, scheduler, 32.0f);
+  document_tiles.bind(&d);
+  StoreTilesBinding binding;
+  binding.store = &store;
+  binding.scheduler = &scheduler;
+  binding.driver = &driver;
+  binding.document = &d;
+  binding.world = &world;
+  binding.document_tiles = &document_tiles;
+  StoreTiles store_tiles(binding);
+  world.add_consumer(document_tiles.consumer(0x1, &world.ring()));
+  world.add_consumer(store_tiles.consumer(0x1));
+  world.update(at(0.0f, 0.0f), 0);
+  REQUIRE(driver.live() == 3);
+
+  const schema::MaterializeInfo* mapping = schema::MaterializeRegistry::global().find(k_node);
+  REQUIRE(mapping != nullptr);
+  u32 row = 0;
+  while (std::string_view(mapping->fields[row].property) != "position")
+    ++row;
+  auto move = [&](u64 n, f64 x, f64 z) {
+    sim::WriteBackChange change;
+    change.record = id_of(n);
+    change.mapping = mapping;
+    change.row = row;
+    change.value = vec3(x, 1.0, z);
+    fake.pending.push_back(change);
+  };
+  move(1, -10.0, 5.0);
+  move(2, 210.0, 5.0);
+  REQUIRE(driver.flush_writeback(SimTick{1}, GameTime{16667}) == 2);
+  // Settled between ticks: one follows into the live tile (-1, 0), the other goes.
+  CHECK(document_tiles.settle(world.ring()) == 1);
+  CHECK(document_tiles.stats().refiled == 1);
+  CHECK(document_tiles.stats().left == 1);
+  CHECK(driver.holds(id_of(1)));
+  CHECK_FALSE(driver.holds(id_of(2)));
+  CHECK(fake.entities.count(id_of(2)) == 0);
+  Vector<Id128> held;
+  driver.held(sim::MaterializeScope::of_tile({-1, 0}), held);
+  REQUIRE(held.size() == 1);
+  CHECK(held[0] == id_of(1));
+
+  // A move the deactivation's own flush finds is settled before the tile is written and let go:
+  // record 3 walks into (-1, 0) as (0, 0) goes, and is written under neither (0, 0) nor dropped.
+  move(3, -20.0, 20.0);
+  world.update(at(-40.0f, 0.0f), 1);  // (0, 0) leaves the inner ring; (-1, 0) and (-2, 0) stay
+  CHECK(world.ring().ring_of(TileCoord{0, 0}) != 0);
+  CHECK(driver.holds(id_of(3)));
+  CHECK(driver.holds(id_of(1)));
+  Vector<TileRow> rows;
+  bool has_snapshot = false;
+  store::SnapshotInfo info;
+  REQUIRE(store.read_tile(TileCoord{0, 0}, rows, has_snapshot, info) == store::Status::Ok);
+  CHECK(has_snapshot);
+  CHECK(rows.empty());
 }
 
 TEST_CASE("world consumers: a document on another grid is refused, once, with a sentence") {

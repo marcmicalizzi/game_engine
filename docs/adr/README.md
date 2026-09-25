@@ -45,3 +45,4 @@ Numbered, dated, and immutable once accepted. To change a decision, write a new 
 | [0039](0039-leases-and-proposals-beside-the-document.md) | Roles, leases and proposal layers are the protocol's, kept beside the document; a proposal merges each record against its first touch | Proposed |
 | [0040](0040-the-tile-ring.md) | The world's tile ring is tier assignment over tiles, with consumers in a declared order; the renderer takes a tile's instances as a tail behind a fixed prefix | Proposed |
 | [0041](0041-a-save-is-a-log-then-files-written-in-place.md) | A document save writes only what changed, as one log and then each file in place | Proposed |
+| [0042](0042-a-save-is-the-store-the-document-and-the-drivers.md) | A save is the whole store, the document and the drivers of the run, and records follow their tile | Proposed |

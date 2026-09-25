@@ -12,6 +12,12 @@
 //   tile_store.h      the tile's projections and snapshot in `foundation/store`, which
 //                     `SimScheduler::reconcile_tile` reads (05 §5.5 step 1) and deactivation writes
 //
+// and beside them what a run is saved, loaded and replayed through (world.md, "Save and load"):
+//
+//   input_observer.h  an observer an input log steers: the player of a headless world
+//   state_hash.h      the persistent-state hash two runs of a world compare (05 §5.10)
+//   save_game.h       a save: the document, the store's backup, the ring, and a manifest
+//
 // **Consumers are a table, not a base class**, for the reason `sim::MaterializationHooks` is: a
 // row of function pointers and a context, walked in registration order, so a world with no ruins
 // consumer has no ruins row and costs nothing for it, and nothing here names a consumer's type.
@@ -33,7 +39,8 @@
 //   [-] scheduler entry   none: the update runs between ticks (above), not in a phase
 //   [-] render passes     none: the ruins consumer hands the renderer instances it already draws
 //   [-] derived data      none: a tile's building is assembled at activation, from its seed
-//   [-] protocol methods  none of its own; session.run_headless takes the ring (apps.md)
+//   [x] protocol methods  session.save_game, load_game, state_hash (engine-host); run_headless
+//                         takes the ring (apps.md)
 //   [x] tunables          world.ring.max_activations / max_deactivations (the per-update budget)
 //   [x] LOD policy        the ring itself: sim::TierAssignment over tiles, with hysteresis
 //   [x] determinism       k_determinism below
@@ -132,6 +139,12 @@ class World {
   const UpdateStats& update(const sim::ObserverSet& observers, u64 tick, bool unlimited = false);
   // Every active tile deactivated, in tile order, consumers in reverse; then the commits.
   const UpdateStats& clear(u64 tick);
+  // The tiles a save kept, at their rings, with `observers` as the last update's
+  // (`TileRing::restore`): one activation per tile, in tile order, to the consumers whose rings it
+  // is in, as an update would make them, and the commits. Between ticks, on a world that holds no
+  // tile; false, with nothing changed, when the ring refuses the tiles.
+  bool restore(std::span<const TileCoord> tiles, std::span<const u8> rings,
+               const sim::ObserverSet& observers, u64 tick, const char** error = nullptr);
 
   const TileRing& ring() const noexcept { return ring_; }
   const UpdateStats& last() const noexcept { return last_; }

@@ -68,6 +68,30 @@ const UpdateStats& World::clear(u64 tick) {
   return last_;
 }
 
+bool World::restore(std::span<const TileCoord> tiles, std::span<const u8> rings,
+                    const sim::ObserverSet& observers, u64 tick, const char** error) {
+  Vector<u64> keys;
+  keys.reserve(static_cast<u32>(tiles.size()));
+  for (const TileCoord tile : tiles)
+    keys.push_back(tile_key(tile));
+  observers_.clear();
+  for (u32 o = 0; o < observers.size(); ++o) {
+    if (observers.weight(o) > 0.0f) observers_.add(observers.position(o), observers.weight(o));
+  }
+  events_.clear();
+  const i64 start = time::monotonic_ns();
+  if (!ring_.restore(std::span<const u64>(keys.data(), keys.size()), rings, observers_, events_,
+                     error)) {
+    return false;
+  }
+  last_ = UpdateStats{};
+  last_.tick = tick;
+  tick_ = tick;
+  last_.ring_ns = time::monotonic_ns() - start;
+  dispatch(tick);
+  return true;
+}
+
 void World::dispatch(u64 tick) {
   const RingStats& ring = ring_.stats();
   last_.events = events_.size();

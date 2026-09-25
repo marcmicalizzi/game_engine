@@ -144,6 +144,16 @@ class TileRing {
   u32 update(const sim::ObserverSet& observers, Vector<TileEvent>& events, bool unlimited = false);
   // Deactivates every active tile, appending the events in tile order.
   u32 clear(Vector<TileEvent>& events);
+  // Makes `keys` the active tiles at `rings`, as a save kept them (docs/subsystems/world.md, "Save
+  // and load"), on a ring that holds none, with `observers` as the last update's: appends one
+  // activation per tile, in tile order, and returns how many. The ring a tile is in depends on the
+  // way the observers came, not only on where they are (hysteresis and the budget), so it is
+  // restored rather than recomputed; the next update goes on from it exactly as it would have gone
+  // on from the update that left it. Refused, with nothing changed, when the ring already holds
+  // tiles, the keys are not strictly ascending, or a ring is not one of this ring's.
+  bool restore(std::span<const u64> keys, std::span<const u8> rings,
+               const sim::ObserverSet& observers, Vector<TileEvent>& events,
+               const char** error = nullptr);
 
   u32 active_count() const noexcept { return active_keys_.size(); }
   // The ring of `tile`, or `k_inactive`.

@@ -195,6 +195,44 @@ u32 TileRing::update(const sim::ObserverSet& observers, Vector<TileEvent>& event
   return emitted;
 }
 
+bool TileRing::restore(std::span<const u64> keys, std::span<const u8> rings,
+                       const sim::ObserverSet& observers, Vector<TileEvent>& events,
+                       const char** error) {
+  const char* why = nullptr;
+  if (!active_keys_.empty()) {
+    why = "the ring already holds tiles";
+  } else if (keys.size() != rings.size()) {
+    why = "every tile needs its ring";
+  } else {
+    for (usize i = 0; i < keys.size() && why == nullptr; ++i) {
+      if (i > 0 && !(keys[i - 1] < keys[i])) why = "the tiles are not in tile order, once each";
+      if (rings[i] >= params_.ring_count) why = "a tile is in a ring this ring does not have";
+    }
+  }
+  if (error != nullptr) *error = why;
+  if (why != nullptr) return false;
+  stats_ = RingStats{};
+  ground_.clear();
+  for (u32 o = 0; o < observers.size(); ++o) {
+    const Vec3 p = observers.position(o);
+    ground_.add(Vec3{p.x, 0.0f, p.z}, observers.weight(o));
+  }
+  for (usize i = 0; i < keys.size(); ++i) {
+    active_keys_.push_back(keys[i]);
+    active_rings_.push_back(rings[i]);
+    TileEvent event;
+    event.tile = tile_of_key(keys[i]);
+    event.kind = TileEventKind::Activate;
+    event.to = rings[i];
+    events.push_back(event);
+    ++stats_.per_ring[rings[i]];
+  }
+  stats_.activated = active_keys_.size();
+  stats_.active = active_keys_.size();
+  stats_.tracked = active_keys_.size();
+  return true;
+}
+
 u32 TileRing::clear(Vector<TileEvent>& events) {
   stats_ = RingStats{};
   for (u32 i = 0; i < active_keys_.size(); ++i) {

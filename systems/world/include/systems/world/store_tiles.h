@@ -21,6 +21,7 @@
 #include <domain/sim/materialize.h>
 #include <domain/sim/scheduler.h>
 #include <domain/sim/tiers.h>
+#include <systems/world/document_tiles.h>
 #include <systems/world/tile_ring.h>
 #include <systems/world/tile_store.h>
 #include <systems/world/world.h>
@@ -33,8 +34,12 @@ struct StoreTilesBinding {
   sim::Materializer* driver = nullptr;      // what the tile holds, and the write-back flush
   const doc::Document* document = nullptr;  // where each record is, for its projection
   const World* world = nullptr;             // the observers reconciliation promotes by
-  sim::TierParams tiers;                    // the entities' tiers (05 §5.4), not the ring's
-  u8 materialize_tier = 2;                  // 05 §5.5 step 4
+  // The document consumer, when the tile's records follow their tile (document_tiles.h, `settle`):
+  // a deactivation flushes through it, so a record the flush moves out of the tile is written
+  // under the tile it is in now, not under this one.
+  DocumentTiles* document_tiles = nullptr;
+  sim::TierParams tiers;    // the entities' tiers (05 §5.4), not the ring's
+  u8 materialize_tier = 2;  // 05 §5.5 step 4
 };
 
 struct StoreTilesStats {
