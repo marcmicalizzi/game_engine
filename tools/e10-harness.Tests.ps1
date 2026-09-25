@@ -121,6 +121,15 @@ try {
   $md = Get-Content -Raw (Join-Path $root 'fresh/report.md')
   $json = Get-Content -Raw $file | ConvertFrom-Json
   Test-That 'no caveat when nothing is stale, and the report says so' { $md -cnotmatch 'STALE' -and $null -eq $json.caveat -and $md -match 'none stale' }
+  Test-That 'a report measured without -Offscreen does not claim it' { $md -notmatch '--offscreen' }
+  $json.settings | Add-Member -NotePropertyName offscreen -NotePropertyValue $true -Force
+  $json.machine_state.samples = 0
+  [IO.File]::WriteAllText($file, ($json | ConvertTo-Json -Depth 20))
+  $r = Invoke-Harness -FromReport $file
+  $md = Get-Content -Raw (Join-Path $root 'fresh/report.md')
+  $json = Get-Content -Raw $file | ConvertFrom-Json
+  Test-That 'one measured with -Offscreen says so on its captures line' { $r.Code -eq 0 -and $md -match '--shadows off --offscreen` \(offscreen: both cuts through engine-host' }
+  Test-That 'and says its captures sampled no machine state rather than quoting empty ranges' { $md -match 'Not sampled: the captures went through engine-host' -and $md -notmatch 'at –% of the CPU' }
   Test-That 'times read back from a report stay ISO 8601, not the local culture''s format' { $md -match 'from 2026-09-23T00:00:00' }
 
   Write-Host '-FromReport, LOD collapse'

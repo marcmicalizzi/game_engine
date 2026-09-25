@@ -7,7 +7,7 @@
 .DESCRIPTION
   tools/e10-harness.ps1 -Folder <dir of .glb>... [-Out <dir>] [-Bin <dir> | -Preset msvc-release]
                         [-Width 640] [-Height 640] [-Orbit 0] [-Frames 4] [-CoarseLod 1] [-FinestLod 0.05]
-                        [-Shadows off|rt] [-Only <name,...>] [-KeepContainers] [-Title <text>]
+                        [-Shadows off|rt] [-Offscreen] [-Only <name,...>] [-KeepContainers] [-Title <text>]
                         [-MaxFlip 0.02] [-MinIslandTexels 1] [-MaxWarnings 0] [-DenseTriangles 250000]
                         [-LowCoverage 0.15] [-MaxCollapseShare 0.75] [-MinCollapseDensity 3]
                         [-AllowStale] [-StalenessPaths <path,...>]
@@ -113,6 +113,12 @@
   GPU lock (docs/subsystems/bench.md), and the picture metrics do not depend on load. The build
   milliseconds do, so the report carries the machine state engine-view recorded around every
   capture and the lock's holder at the start and the end, and a write-up quotes them.
+  -Offscreen draws both cuts without a window, so none opens on a machine someone is using: through
+  engine-host --stdio (`render.load`, `render.capture`, which draws offscreen), from the camera
+  engine-view's orbit gives the same frame, reading the visible pairs from the capture's stats.
+  `engine-view --offscreen` cannot do it: its plain offscreen summary has no visible-pair count,
+  which the collapse check is judged on. engine-host samples no machine state, so an offscreen
+  report says so instead of quoting one; the report records the mode.
 
 .EXAMPLE
   tools/e10-harness.ps1 -Folder D:\workspace\game_engine_local\generated\meshy\2026-09-22
@@ -132,6 +138,8 @@ param(
   [double]$CoarseLod = 1.0,
   [double]$FinestLod = 0.05,
   [ValidateSet('off', 'rt')] [string]$Shadows = 'off',
+  # Capture without a window, through engine-host (see THE GPU above). Recorded in the report.
+  [switch]$Offscreen,
   # The content build's atlas step (docs/subsystems/atlas.md): keep the generator's UV atlas, or
   # re-chart and rebake it (`engine-content build --atlas repack`). Recorded in the report.
   [ValidateSet('keep', 'repack')] [string]$Atlas = 'keep',
@@ -332,6 +340,53 @@ function Invoke-OneCamera([string]$HostExe, [string]$First, [string]$Second, [st
   return [pscustomobject]@{ first = (Join-Path $OutDir 'one-camera-first.png'); second = (Join-Path $OutDir 'one-camera-second.png') }
 }
 
+# -Offscreen: the two cuts of one container drawn through engine-host --stdio, which draws
+# offscreen, from the orbit camera engine-view would use for frame `Frame` (the same arithmetic as
+# Invoke-OneCamera). `engine-view --offscreen` cannot stand in: its plain offscreen summary carries
+# no visible-pair count, and the collapse check is judged on exactly that, while `render.capture`
+# returns the frame's `stats.visible_pairs`. Returns one visible-pair count per cut, in order; the
+# PNGs are <OutDir>/<tag>.png as engine-view's would be.
+function Invoke-OffscreenCuts([string]$HostExe, [string]$Clusters, [string]$OutDir, [double]$Distance, $Cuts, [int]$Frame, [string]$ShadowMode) {
+  $psi = New-Object Diagnostics.ProcessStartInfo
+  $psi.FileName = $HostExe
+  $psi.Arguments = '--stdio'
+  $psi.RedirectStandardInput = $true; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
+  $psi.UseShellExecute = $false
+  $process = [Diagnostics.Process]::Start($psi)
+  $null = $process.StandardError.ReadToEndAsync()
+  $process.StandardInput.NewLine = "`n"
+  $script:rpcId = 0
+  $call = {
+    param([string]$method, $params)
+    $script:rpcId++
+    $process.StandardInput.WriteLine(([ordered]@{ jsonrpc = '2.0'; id = $script:rpcId; method = $method; params = $params } | ConvertTo-Json -Depth 10 -Compress))
+    $process.StandardInput.Flush()
+    $response = $process.StandardOutput.ReadLine() | ConvertFrom-Json
+    if ($response.error) { throw "$method failed: $($response.error.message)" }
+    $response.result
+  }
+  $pairs = @()
+  try {
+    $camera = $null
+    foreach ($cut in $Cuts) {
+      $settings = [ordered]@{ lod_px = [double]$cut.lod; shadows = $ShadowMode; raster = 'hw' }
+      $scene = & $call 'render.load' ([ordered]@{ mesh = ($Clusters -replace '\\', '/'); settings = $settings; cache = $false })
+      if (-not $camera) {
+        $c = @($scene.center); $r = [double]$scene.radius
+        $d = $Distance * ($r / 10.0); $angle = $Frame * 0.006
+        $camera = [ordered]@{ position = @(([double]$c[0] + [math]::Cos($angle) * $d), ([double]$c[1] + 0.45 * $d), ([double]$c[2] + [math]::Sin($angle) * $d))
+          target = @([double]$c[0], [double]$c[1], [double]$c[2]); fov_deg = 55; znear = 0.01 * $r }
+      }
+      $result = & $call 'render.capture' ([ordered]@{ scene = [string]$scene.scene; camera = $camera; width = $Width; height = $Height; out_dir = ($OutDir -replace '\\', '/'); name = $cut.tag; frame = $Frame })
+      $pairs += [long]$result.stats.visible_pairs
+    }
+  } finally {
+    $process.StandardInput.Close()
+    if (-not $process.WaitForExit(60000)) { $process.Kill() }
+  }
+  return $pairs
+}
+
 function Get-Coverage([string]$png) {
   if (-not $IsWin) { return $null }
   try {
@@ -521,8 +576,8 @@ if ($FromReport) {
   # The binaries: copies, never the build tree in place.
   $source = if ($Bin) { (Resolve-Path -LiteralPath $Bin).Path } else { Join-Path $RepoRoot "build/$Preset/bin" }
   $binaries = @()
-  # engine-host only for -CompareKept, whose one-camera captures go through the render protocol.
-  foreach ($t in @('engine-content', 'engine-view', 'engine-image') + @(if ($CompareKept) { 'engine-host' })) {
+  # engine-host only for -CompareKept and -Offscreen, whose captures go through the render protocol.
+  foreach ($t in @('engine-content', 'engine-view', 'engine-image') + @(if ($CompareKept -or $Offscreen) { 'engine-host' })) {
     $src = Join-Path $source "$t$Exe"
     if (-not (Test-Path -LiteralPath $src)) { throw "no $t$Exe in $source. Build it (tools/dev.ps1 build -Preset $Preset) or pass -Bin <dir>." }
     Copy-Item -LiteralPath $src -Destination (Join-Path $Out 'bin') -Force
@@ -678,7 +733,19 @@ if ($FromReport) {
     # 3. two captures, of one frame, differing only in the LOD threshold
     $common = @('--mesh', $clusters, '--width', $Width, '--height', $Height, '--frames', $Frames, '--orbit', ([double]$orbitUsed).ToString($Inv), '--no-vsync', '--shadows', $Shadows)
     $picture = $true
-    foreach ($cut in @(@{ tag = 'coarse'; lod = $CoarseLod }, @{ tag = 'finest'; lod = $FinestLod })) {
+    $cuts = @(@{ tag = 'coarse'; lod = $CoarseLod }, @{ tag = 'finest'; lod = $FinestLod })
+    if ($Offscreen) {
+      # No window: both cuts through engine-host (Invoke-OffscreenCuts), from engine-view's camera.
+      try {
+        $pairs = Invoke-OffscreenCuts -HostExe $hostExe -Clusters $clusters -OutDir $dir -Distance ([double]$orbitUsed) -Cuts $cuts -Frame ($Frames - 1) -ShadowMode $Shadows
+        $row.coarse_visible_pairs = $pairs[0]
+        $row.finest_visible_pairs = $pairs[1]
+      } catch {
+        if ("$_" -match 'no Vulkan|device') { $picture = $false } else { throw "engine-host failed on ${name}: $_" }
+      }
+      $cuts = @()
+    }
+    foreach ($cut in $cuts) {
       $png = Join-Path $dir "$($cut.tag).png"
       $vOut = & $view @common --lod ($cut.lod.ToString($Inv)) --capture $png 2> (Join-Path $dir "view-$($cut.tag).err")
       $code = $LASTEXITCODE
@@ -752,7 +819,7 @@ if ($FromReport) {
   $toolsBlock = [ordered]@{ source = $source; commit = $commit; built_from = $freshness.built_from; preset = $(if ($Bin) { $null } else { $Preset }); binaries = $binaries
     freshness = $freshness; harness = 'tools/e10-harness.ps1' }
   $settingsBlock = [ordered]@{ width = $Width; height = $Height; orbit = $orbitUsed; framing = $framing; frames = $Frames; coarse_lod_px = $CoarseLod; finest_lod_px = $FinestLod; shadows = $Shadows; raster = 'hw (default)'
-    atlas = $Atlas; build_args = $BuildArgs; compare_kept = [bool]$CompareKept }
+    atlas = $Atlas; build_args = $BuildArgs; compare_kept = [bool]$CompareKept; offscreen = [bool]$Offscreen }
   if (-not $Title) { $Title = "E10 over $((Split-Path -Leaf (Split-Path -Parent $folders[0])))/$(Split-Path -Leaf $folders[0])" }
 }
 
@@ -855,7 +922,7 @@ $md.Add("Measured by ``tools/e10-harness.ps1`` from $startedText to $finishedTex
 $atlasText = if ($settingsBlock.atlas) { [string]$settingsBlock.atlas } else { 'keep' }
 $referenceText = if ($settingsBlock.compare_kept) { '; each repacked finest cut compared with the kept build''s from one camera, orbiting lights off (engine-host)' } else { '' }
 if ($settingsBlock.build_args) { $atlasText += ' ' + [string]$settingsBlock.build_args }
-$md.Add("Captures: $($settingsBlock.width)x$($settingsBlock.height), ``--orbit $($settingsBlock.orbit) --frames $($settingsBlock.frames) --shadows $($settingsBlock.shadows)``$(if ($settingsBlock.framing) { " (framing $($settingsBlock.framing))" }), coarse ``--lod $($settingsBlock.coarse_lod_px)`` against finest ``--lod $($settingsBlock.finest_lod_px)``. Containers built with ``--atlas $atlasText``$referenceText.")
+$md.Add("Captures: $($settingsBlock.width)x$($settingsBlock.height), ``--orbit $($settingsBlock.orbit) --frames $($settingsBlock.frames) --shadows $($settingsBlock.shadows)$(if ($settingsBlock.offscreen) { ' --offscreen' })``$(if ($settingsBlock.offscreen) { ' (offscreen: both cuts through engine-host from that orbit''s camera)' })$(if ($settingsBlock.framing) { " (framing $($settingsBlock.framing))" }), coarse ``--lod $($settingsBlock.coarse_lod_px)`` against finest ``--lod $($settingsBlock.finest_lod_px)``. Containers built with ``--atlas $atlasText``$referenceText.")
 $md.Add('')
 $md.Add("**Pass rate: $passed of $($rows.Count) ($([math]::Round(100 * $report.totals.pass_rate))%).** Failures by check: import $($byCheck.import), warnings $($byCheck.warnings), atlas island $($byCheck.island), coarse-vs-finest FLIP $($byCheck.flip), LOD collapse $($byCheck.collapse) (an asset can fail more than one).")
 $md.Add('')
@@ -937,8 +1004,13 @@ if ($fails.Count -gt 0) {
 $md.Add('## Machine state')
 $md.Add('')
 $ms = $machine
-$md.Add(("Sampled by engine-view before and after each of its {0} runs: other processes at {1}–{2}% of the CPU, the GPU {3}–{4}% busy with {5}–{6} MiB of {7} in use; {8} capture runs printed the busy-machine WARNING. GPU lock at the start: {9}; at the end: {10}. The picture metrics do not depend on load; the build milliseconds are upper bounds whenever the CPU figure is high." -f `
-    ([int]($ms.samples / 2)), $ms.cpu_others_pct.min, $ms.cpu_others_pct.max, $ms.gpu_util_pct.min, $ms.gpu_util_pct.max, $ms.gpu_memory_used_mib.min, $ms.gpu_memory_used_mib.max, $ms.gpu_memory_total_mib.max, $ms.captures_warned, $ms.gpu_lock_at_start, $ms.gpu_lock_at_end))
+if ([int]$ms.samples -eq 0) {
+  # -Offscreen captures go through engine-host, whose render.capture samples no machine state.
+  $md.Add(("Not sampled: the captures went through engine-host (``-Offscreen``), whose ``render.capture`` reports no machine state, so the build milliseconds are upper bounds of unknown slack. GPU lock at the start: {0}; at the end: {1}. The picture metrics do not depend on load." -f $ms.gpu_lock_at_start, $ms.gpu_lock_at_end))
+} else {
+  $md.Add(("Sampled by engine-view before and after each of its {0} runs: other processes at {1}–{2}% of the CPU, the GPU {3}–{4}% busy with {5}–{6} MiB of {7} in use; {8} capture runs printed the busy-machine WARNING. GPU lock at the start: {9}; at the end: {10}. The picture metrics do not depend on load; the build milliseconds are upper bounds whenever the CPU figure is high." -f `
+      ([int]($ms.samples / 2)), $ms.cpu_others_pct.min, $ms.cpu_others_pct.max, $ms.gpu_util_pct.min, $ms.gpu_util_pct.max, $ms.gpu_memory_used_mib.min, $ms.gpu_memory_used_mib.max, $ms.gpu_memory_total_mib.max, $ms.captures_warned, $ms.gpu_lock_at_start, $ms.gpu_lock_at_end))
+}
 [IO.File]::WriteAllText((Join-Path $Out 'report.md'), (($md -join "`n") + "`n"), (New-Object Text.UTF8Encoding($false)))
 
 Write-Log "e10: $passed of $($rows.Count) pass; report at $(Join-Path $Out 'report.md')"
