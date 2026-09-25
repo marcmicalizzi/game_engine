@@ -13,9 +13,11 @@ target_compile_definitions(engine_protocol PRIVATE ENGINE_VERSION="${PROJECT_VER
 engine_schema_library(NAME protocol_test_types
   SCHEMAS tests/protocol_test_types.schema)
 
+# `bench` is for E12 alone (tests/e12_tests.cpp): it records the machine's state around the run
+# the experiment page quotes, with the sampler every measurement here uses.
 engine_module_tests(NAME protocol
-  SOURCES tests/protocol_tests.cpp tests/policy_tests.cpp
-  DEPS protocol_test_types)
+  SOURCES tests/protocol_tests.cpp tests/policy_tests.cpp tests/e12_tests.cpp
+  DEPS protocol_test_types bench)
 if(TARGET engine_protocol_tests)
   # The shipped roles file (content/roles/roles.json), which one case loads.
   target_compile_definitions(engine_protocol_tests PRIVATE ENGINE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")

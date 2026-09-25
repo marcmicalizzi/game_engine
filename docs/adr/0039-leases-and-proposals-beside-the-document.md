@@ -2,7 +2,7 @@
 
 - **Status:** Proposed
 - **Date:** 2026-09-25
-- **Plan references:** docs/plan/06-agent-tooling.md §6.5 (permissions, concurrency and leases), §6.10 (review and the director); docs/plan/03-data-model.md §3.2 (layer roles), §3.3 (structural three-way merge), §3.7 (the tile grid as the unit of leases); experiment E12 ([10 §10.5](../plan/10-roadmap-risks.md#105-experiments-to-run-before-committing)).
+- **Plan references:** docs/plan/06-agent-tooling.md §6.5 (permissions, concurrency and leases), §6.10 (review and the director); docs/plan/03-data-model.md §3.2 (layer roles), §3.3 (structural three-way merge), §3.7 (the tile grid as the unit of leases); experiment E12 ([10 §10.5](../plan/10-roadmap-risks.md#105-experiments-to-run-before-committing), [write-up](../experiments/e12-proposal-layers-and-leases.md)).
 - **Docs touched:** [protocol](../subsystems/protocol.md#roles-leases-and-proposals), [doc](../subsystems/doc.md), [apps](../subsystems/apps.md), [06 §6.5](../plan/06-agent-tooling.md#65-permissions-concurrency-and-leases), [10 §10.5](../plan/10-roadmap-risks.md#105-experiments-to-run-before-committing), `content/roles/README.md`
 
 ## Context
@@ -35,4 +35,4 @@ Beside those four, and written down in [protocol](../subsystems/protocol.md#role
 - A host outlives its clients and serves several at once (plan 02's persistent host): the state could then live in the host, and leases could be tied to a connection rather than to a clock.
 - Authentication exists: roles stop being self-declared, and the bridge's rule that a call cannot name another role moves into the host.
 - E12 or real use shows the per-record first-touch base reporting conflicts agents had seen and built on — the case above — often enough to matter: record a base per touch rather than per first touch.
-- Documents get large enough that a promotion's two validations of the whole accepted world dominate its cost (E12 measures it at its own document's size): validate only the records the promotion changed and their neighbours.
+- Documents get large enough that a promotion's two validations of the whole accepted world dominate its cost ([E12](../experiments/e12-proposal-layers-and-leases.md) measures it at this document's size): validate only the records the promotion changed and their neighbours.
