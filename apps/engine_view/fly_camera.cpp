@@ -338,6 +338,26 @@ renderer::Camera fly_view(const FlyState& state, f32 fov_y, f32 znear) noexcept 
   return camera;
 }
 
+FlyState fly_interpolate(const FlyState& from, const FlyState& to, f32 t) noexcept {
+  if (!(t > 0.0f)) return from;  // and a NaN, which is not a camera
+  if (t >= 1.0f) return to;
+  FlyState out;
+  out.position = Vec3{from.position.x + (to.position.x - from.position.x) * t,
+                      from.position.y + (to.position.y - from.position.y) * t,
+                      from.position.z + (to.position.z - from.position.z) * t};
+  out.pitch = from.pitch + (to.pitch - from.pitch) * t;
+  // The yaw is kept in [-pi, pi], so a turn across the seam is a jump of nearly a whole turn in
+  // the stored numbers and a few milliradians on the screen; interpolate the few milliradians.
+  f32 turn = to.yaw - from.yaw;
+  if (turn > k_pi_f) turn -= k_two_pi_f;
+  if (turn < -k_pi_f) turn += k_two_pi_f;
+  f32 yaw = from.yaw + turn * t;
+  if (yaw > k_pi_f) yaw -= k_two_pi_f;
+  if (yaw < -k_pi_f) yaw += k_two_pi_f;
+  out.yaw = yaw;
+  return out;
+}
+
 FlyState fly_state_from_camera(const renderer::Camera& camera) noexcept {
   FlyState out;
   out.position = camera.position;
@@ -488,6 +508,7 @@ bool FlySession::start(const input::ActionMap& map, const SessionHeader& header,
   input_.set_map(map);
   header_ = header;
   state_ = header.start;
+  previous_ = header.start;
   tick_ = SimTick{0};
   trajectory_ = Trajectory{};
   trajectory_.hash = trajectory_seed(state_);
@@ -498,6 +519,7 @@ bool FlySession::start(const input::ActionMap& map, const SessionHeader& header,
 
 void FlySession::on_tick(void* user, SimTick tick, const input::InputState& state) {
   FlySession& self = *static_cast<FlySession*>(user);
+  self.previous_ = self.state_;
   fly_tick(self.state_, state, self.actions_, self.header_.params);
   self.tick_ = tick;
   self.trajectory_.ticks = tick.value;

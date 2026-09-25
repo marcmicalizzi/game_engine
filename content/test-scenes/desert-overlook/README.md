@@ -4,7 +4,7 @@ The first scene of the benchmark corpus of [plan 09 §9.4](../../../docs/plan/09
 
 | File | What |
 |---|---|
-| `scene.json` | the scene: 13 meshes, 25 placed instances, two palm scatters (64 palms), and the terrain |
+| `scene.json` | the scene: 13 meshes, 25 placed instances, two palm scatters (64 palms), the terrain, and `camera_path` naming the file below |
 | `camera-path.json` | 14 keys, cubic, 60 fps: 2,401 frames; and the markers below |
 
 **It is not a reference scene.** `tools/ci/reference-compare.ps1` reads only the `*.json` files at the top of `content/test-scenes/`, and this one lives in a directory of its own because it is a different kind of fixture: a path to be measured along, not one frame compared with a path trace.
@@ -20,6 +20,8 @@ engine-view --scene content/test-scenes/desert-overlook/scene.json `
 #            --overlay D:/workspace/game_engine_local/scenes/desert-overlook/landmarks.json
 tools/flythrough.ps1 -Preset msvc-release -Set substitute   # the whole measurement matrix
 ```
+
+**Flying it yourself**: `engine-view --scene content/test-scenes/desert-overlook/scene.json --interactive` starts where the path does — 900 m south of the oasis, 2.5 m over the dunes, looking north at the saddle — because the scene names its path (`camera_path`); `--start <x,y,z> <yaw,pitch>` starts it anywhere else, and `--overlay` flies the owner's landmarks ([apps](../../../docs/subsystems/apps.md#--interactive-a-camera-somebody-flies)). Before 2026-09-24 a session with no `--camera-path` started at the orbit, 9 km out.
 
 `--census` adds, per frame, the visible pairs by DAG level and by mesh; `--census-pixels` the pixels each mesh covers as well, which is how the states below were read; `--verify-occlusion` draws every frame with and without occlusion culling and compares them pixel for pixel; `--marker-captures <dir>` writes a picture of every marker. The terrain is built once per machine (about 45 s in `msvc-release`) and cached in `ddc/` under a key over its fields.
 
@@ -71,4 +73,4 @@ The pixel counts scale with the resolution and the states hold at every one meas
 
 ## Changing it
 
-A change to the scene, the path or the terrain generator changes the hashes a run reports, which is the point: a number names what it measured. **The pictures changed on 2026-09-24**, and for the better: until then every cluster of the terrain and of the FlightHelmet was drawn with the material of whichever cluster had sat at its index before the scene's merge reordered them ([renderer](../../../docs/subsystems/renderer.md#invariants)), so any capture of this scene taken before then shows rock patches on the dunes, sand on the ridges and metal on the helmet's leather; the timings and the visible pairs were unaffected. Change the markers and this table in the same commit as the file they describe, re-reading the states with `--census-pixels` against a `--no-occlusion` run — `tools/flythrough.ps1 -Markers` does both.
+A change to the scene, the path or the terrain generator changes the hashes a run reports, which is the point: a number names what it measured. **The scene file's hash moved on 2026-09-24** when it gained `camera_path`; nothing it places moved, so every cut, pair count and marker state below is the same, and a run's `identity` differs from an earlier one's by that field alone. The pictures did change that day, and for the better: until then every cluster of the terrain and of the FlightHelmet was drawn with the material of whichever cluster had sat at its index before the scene's merge reordered them ([renderer](../../../docs/subsystems/renderer.md#invariants)), so any capture of this scene taken before then shows rock patches on the dunes, sand on the ridges and metal on the helmet's leather; the timings and the visible pairs were unaffected. Change the markers and this table in the same commit as the file they describe, re-reading the states with `--census-pixels` against a `--no-occlusion` run — `tools/flythrough.ps1 -Markers` does both.

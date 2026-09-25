@@ -717,6 +717,10 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
   }
 
   const std::string dir(io::parent_path(path));
+  out.camera_path =
+      file.camera_path.empty() || io::is_absolute_path(file.camera_path) || dir.empty()
+          ? file.camera_path
+          : io::join_path(dir, file.camera_path);
   for (u32 i = 0; i < file.meshes.size(); ++i) {
     const scene::Mesh& mesh = file.meshes[i];
     const std::string where = path + ": mesh " + std::to_string(i);

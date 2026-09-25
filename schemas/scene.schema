@@ -126,7 +126,7 @@ struct Terrain @version(1) {
 }
 
 /// A scene: meshes, placements of them, and an optional terrain.
-struct Scene @version(1) {
+struct Scene @version(2) {
   /// "engine.scene.v1". Empty is accepted, for the files written before the field existed.
   format: string
   name: string
@@ -135,6 +135,11 @@ struct Scene @version(1) {
   instances: Instance[]
   scatters: Scatter[]
   terrain: Terrain?
+  /// The camera path this scene is flown along, relative to the scene file: where a camera nobody
+  /// scripted starts. `engine-view --interactive` without `--camera-path` or `--start` begins at
+  /// its first frame rather than at the orbit, which frames the whole scene's bounds and for a
+  /// 5 km desert is 9 km away. Empty: the orbit.
+  camera_path: string @since(2)
 }
 
 /// Where the owner's replacements for a scene's placeholders are: a local file, never committed.

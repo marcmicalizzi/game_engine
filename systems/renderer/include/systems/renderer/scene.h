@@ -152,6 +152,11 @@ struct SceneDesc {
   TerrainDesc terrain;
   std::string name;   // the scene file's own name
   u64 file_hash = 0;  // of the scene file's bytes; 0 for a scene no file described
+  // The camera path the scene file names (`Scene.camera_path`), resolved against the file's own
+  // directory; empty when it names none. Nothing here flies it: it is where a host that has no
+  // path of its own starts a camera — engine-view's `--interactive` — read with `read_camera_path`
+  // once the terrain it may stand on is known.
+  std::string camera_path;
 };
 
 // What `read_scene_file` may be told besides the path.

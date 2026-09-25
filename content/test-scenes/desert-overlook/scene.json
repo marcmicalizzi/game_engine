@@ -1,6 +1,7 @@
 {
   "format": "engine.scene.v1",
   "name": "desert-overlook",
+  "camera_path": "camera-path.json",
   "description": "A 5.1 km dune field with two rock ridges, an oasis basin with palms, props along the approach, and five landmarks at 100 m to 2.6 km placed so that the camera path in camera-path.json holds them hidden, partly hidden and in view at known frames (README.md). The meshes are Khronos samples fitted to the landmarks' sizes; an overlay manifest (engine-view --overlay) replaces the six placeholders that name an overlay hash with the owner's generated landmarks.",
   "meshes": [
     {"name": "skyscraper", "path": "../../samples/Lantern/Lantern.glb", "hash": "ffc0afdd1bc803ce", "overlay": "733773f40d248614", "fit": {"height": 270}},

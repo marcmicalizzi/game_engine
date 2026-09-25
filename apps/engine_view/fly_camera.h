@@ -125,6 +125,13 @@ void fly_tick(FlyState& state, const input::InputState& input, const FlyActions&
 // camera paths' reach for an orientation key, far enough that the direction survives the
 // subtraction at kilometres from the origin), and the header's field of view and near plane.
 renderer::Camera fly_view(const FlyState& state, f32 fov_y, f32 znear) noexcept;
+
+// **The camera between two ticks**, `t` of the way from `from` to `to` (0 is `from`, 1 is `to`):
+// the position on the segment between them, the pitch between theirs, and the yaw the short way
+// round, wrapped back into [-pi, pi]. It is what a *live* frame draws — see
+// `FlySession::camera_at` — and never what a tick integrates from: the trajectory, its hash and
+// every replay are the ticks' alone.
+FlyState fly_interpolate(const FlyState& from, const FlyState& to, f32 t) noexcept;
 // A start state from any camera. This is where the C library is used, once: its answer goes into
 // the session header and a replay reads it back rather than calling this again.
 FlyState fly_state_from_camera(const renderer::Camera& camera) noexcept;
@@ -206,8 +213,24 @@ class FlySession {
   SimTick tick() const noexcept { return tick_; }
   SimTick next() const noexcept { return SimTick{tick_.value + 1}; }
   const FlyState& state() const noexcept { return state_; }
+  // The state one tick before `state()`: the start camera until the first tick has run.
+  const FlyState& previous() const noexcept { return previous_; }
+  // The camera at the last tick boundary: what a replay's frames and every marker capture draw,
+  // because they are tick-aligned by construction.
   renderer::Camera camera() const noexcept {
     return fly_view(state_, header_.fov_y, header_.znear);
+  }
+  // **The camera a live frame draws**: `alpha` of a tick past `previous()`, where `alpha` is the
+  // fraction of a tick the clock had accumulated past the last tick it ran when the frame sampled
+  // it (`FixedStepClock::interpolation_alpha`). A frame that sampled the state at the last tick
+  // boundary instead moved the camera by however many whole ticks happened to fall due — three,
+  // then three, then two at 240 Hz against an 82 Hz display — and a near object under a turning,
+  // strafing camera stuttered at the beat
+  // (docs/experiments/first-interactive-session-2026-09-24.md). Drawing one tick behind,
+  // interpolated, moves the drawn camera by exactly the frame's own time. It reads the state and
+  // never writes it, so the trajectory and the replay guarantee are untouched.
+  renderer::Camera camera_at(f32 alpha) const noexcept {
+    return fly_view(fly_interpolate(previous_, state_, alpha), header_.fov_y, header_.znear);
   }
   // `FrameDesc::frame_index` for a frame drawn now: the tick at `k_frame_index_hz`.
   u64 frame_index() const noexcept {
@@ -227,6 +250,7 @@ class FlySession {
   FlyActions actions_;
   SessionHeader header_;
   FlyState state_;
+  FlyState previous_;  // before the last tick; what `camera_at` interpolates from
   SimTick tick_;
   Trajectory trajectory_;
   u32 capture_presses_ = 0;

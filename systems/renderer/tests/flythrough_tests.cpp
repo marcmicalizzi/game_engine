@@ -397,6 +397,7 @@ TEST_CASE(
   CHECK_FALSE(old_desc.instances[0].animation.play);
   CHECK_FALSE(old_desc.terrain.enabled);
   CHECK(old_desc.file_hash != 0);
+  CHECK(old_desc.camera_path.empty());  // a scene that names no path: the orbit
 
   // A typo is an error with the field's path, not a placement that quietly floats.
   const std::string typo = slashes(dir / "typo.json");
@@ -417,10 +418,13 @@ TEST_CASE(
                    {"mesh":1,"translation":[0,5,0]}],
       "scatters":[{"mesh":0,"center":[20,20],"radius_min":2,"radius_max":6,"count":5,"seed":9,
                    "scale_min":0.5,"scale_max":1.5}],
+      "camera_path":"paths/over.json",
       "terrain":{"size":17,"extent":40,"seed":2,"ridges":[{"from":[-5,0],"to":[5,0],"height":6,"width":10}]}})"));
   SceneDesc desc;
   REQUIRE_MESSAGE(read_scene_file(scene_file, desc, error), error);
   CHECK(desc.name == "t");
+  // The scene's own camera path, resolved against the scene file like a mesh path.
+  CHECK(desc.camera_path == slashes(dir / "paths" / "over.json"));
   REQUIRE(desc.meshes.size() == 3);  // two files and the terrain, last
   CHECK(desc.meshes[2].empty());
   REQUIRE(desc.mesh_info.size() == 3);

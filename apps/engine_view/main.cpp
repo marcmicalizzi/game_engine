@@ -44,6 +44,7 @@
 #include <foundation/tunables/tunables.h>
 #include <foundation/window/window.h>
 #include <systems/renderer/camera_path.h>
+#include <systems/renderer/capture.h>
 #include <systems/renderer/flythrough.h>
 #include <systems/renderer/gpu_scene.h>
 #include <systems/renderer/page_source.h>
@@ -123,9 +124,10 @@ constexpr const char* k_usage =
     "                   [--camera-path <file.json>] [--overlay <manifest.json>] [--offscreen]\n"
     "                   [--benchmark <out.jsonl>] [--repeat <n>] [--warmup <frames>] [--census]\n"
     "                   [--warmup-seconds <s>] [--census-pixels]\n"
-    "                   [--verify-occlusion] [--marker-captures <dir>]\n"
+    "                   [--verify-occlusion] [--marker-captures <dir>] [--capture-channels <list>]\n"
     "                   [--require-quiet] [--wait-quiet <seconds>]\n"
-    "                   [--interactive] [--record-input <log.jsonl>] [--replay-input <log.jsonl>]\n"
+    "                   [--interactive] [--start <x,y,z> <yaw,pitch>] [--record-input <log.jsonl>]\n"
+    "                   [--replay-input <log.jsonl>]\n"
     "                   [--inject-input <log.jsonl>] [--input-map <map.json>]\n"
     "                   [--tunables <file.json>] [--tunable <name=value,...>]\n"
     "       engine-view --version    the commit this binary was built from, as one JSON line\n"
@@ -294,16 +296,23 @@ constexpr const char* k_usage =
     "  --verify-occlusion  fly the path twice more, with and without occlusion culling, and\n"
     "                   compare the (instance, cluster) under every pixel and every colour byte\n"
     "  --marker-captures <d>  offscreen: write a PNG of every marker frame of the path into <d>\n"
+    "  --capture-channels <list>  offscreen --capture and --marker-captures: also read back ids,\n"
+    "                   depth and/or normals (e.g. ids,normals), written beside each PNG as\n"
+    "                   <stem>.ids.bin + .ids.json, <stem>.depth.png and <stem>.normals.png\n"
     "  --require-quiet  --benchmark: measure nothing on a busy machine; exit 4 instead\n"
     "  --wait-quiet <s> --benchmark: wait up to s seconds for a quiet machine, then run anyway\n"
     "  --interactive    fly the camera: WASD, E/Space up, Q/Ctrl down, the mouse to look while the\n"
     "                   window holds the pointer (Esc takes it and gives it back), Shift fast, Alt\n"
     "                   slow, M drops a marker; a gamepad's sticks, triggers, stick clicks, Back\n"
     "                   and North do the same. The camera integrates at a fixed tick\n"
-    "                   (view.fly.tick_hz, 240) and never from frame time; the title shows the\n"
-    "                   last frame's ms and the p99 over the last second. Starts at the orbit\n"
-    "                   camera, or at --camera-path's first frame. --benchmark writes the flythrough\n"
-    "                   JSONL of the session (one record per frame, ticks included)\n"
+    "                   (view.fly.tick_hz, 240) and never from frame time, and a frame draws it\n"
+    "                   between the last two ticks; the title shows the last frame's ms and the\n"
+    "                   p99 over the last second. Starts at --start, else at --camera-path's first\n"
+    "                   frame, else at the first frame of the scene file's own camera_path, else\n"
+    "                   at the orbit camera. --benchmark writes the flythrough JSONL of the\n"
+    "                   session (one record per frame, ticks included)\n"
+    "  --start <x,y,z> <yaw,pitch>  --interactive: start the camera here, metres and degrees (yaw\n"
+    "                   about +y counter-clockwise from above, 0 looking along -z; pitch up)\n"
     "  --record-input <f>  --interactive: write the session's input log, with a header naming\n"
     "                   the scene, the start camera, the tick rate, the map and this build\n"
     "  --replay-input <f>  fly a recorded session instead of the window's input: the same camera\n"
@@ -409,12 +418,22 @@ struct Options {
   bool census_pixels = false;  // and the pixels each mesh covers, from an id capture per frame
   bool verify_occlusion = false;
   std::string marker_captures;
+  // What an offscreen capture reads back beside the picture (`--capture-channels`): the id
+  // buffer, depth and normals, in `renderer::write_capture`'s files next to each PNG.
+  renderer::CaptureChannels capture_channels;
   bool require_quiet = false;
   u32 wait_quiet_s = 0;
   // The interactive camera (fly_camera.h). `--replay-input` implies `interactive`; `offscreen`
   // is resolved after parsing, because `--benchmark` means "offscreen" for a flythrough and a
   // replay and "measure the window" for a live session somebody is flying.
   bool interactive = false;
+  // `--start <x,y,z> <yaw,pitch>`: where a live session's camera begins, in metres and degrees
+  // (the camera paths' conventions: yaw about +y counter-clockwise from above, 0 looking along -z;
+  // pitch up positive). Unset, it begins at the path's first frame or at the orbit.
+  bool start_given = false;
+  Vec3 start_position{};
+  f32 start_yaw_deg = 0.0f;
+  f32 start_pitch_deg = 0.0f;
   std::string record_input;
   std::string replay_input;
   std::string inject_input;
@@ -458,6 +477,25 @@ bool parse_f32_zero_ok(const std::string& text, f32& out) {
   const double v = std::strtod(text.c_str(), &end);
   if (end == text.c_str() || *end != '\0' || !(v >= 0.0) || v > 1.0e6) return false;
   out = static_cast<f32>(v);
+  return true;
+}
+
+// `count` numbers separated by commas, each within ±`limit` (so finite): `--start`'s position and
+// angles, where a negative is as ordinary as a positive.
+bool parse_numbers(const std::string& text, f32* out, u32 count, f64 limit) {
+  const char* at = text.c_str();
+  for (u32 i = 0; i < count; ++i) {
+    char* end = nullptr;
+    const double v = std::strtod(at, &end);
+    if (end == at || !(v >= -limit && v <= limit)) return false;
+    out[i] = static_cast<f32>(v);
+    if (i + 1 < count) {
+      if (*end != ',') return false;
+      at = end + 1;
+    } else if (*end != '\0') {
+      return false;
+    }
+  }
   return true;
 }
 
@@ -1234,8 +1272,13 @@ int prepare_interactive(Options& options, Interactive& it) {
   return 0;
 }
 
-// A live session's header: this build, what the command line drew, and where the camera starts —
-// the camera path's first frame, or the orbit — with the tunables read once, here.
+// A live session's header: this build, what the command line drew, and where the camera starts,
+// with the tunables read once, here. The start is, in order: `--start` as given; the first frame
+// of `path`, which is `--camera-path`'s or else the scene file's own (`Scene.camera_path`); or the
+// orbit. The orbit frames the whole scene's bounds, which for the 5 km desert overlook put the
+// first owner session 9 km out and a minute of flying from anything
+// (docs/experiments/first-interactive-session-2026-09-24.md), so a scene with a path of its own
+// starts where its path does.
 view::SessionHeader live_header(const Options& options, const renderer::SceneData& scene_data,
                                 const renderer::CameraPath* path) {
   view::SessionHeader h;
@@ -1247,7 +1290,7 @@ view::SessionHeader live_header(const Options& options, const renderer::SceneDat
   h.grid = options.grid;
   h.grid_instances = options.grid_instances;
   renderer::Camera start;
-  if (path != nullptr && !path->keys.empty()) {
+  if (path != nullptr && !path->keys.empty() && !options.start_given) {
     start = renderer::camera_path_frame(*path, 0, path->frame_count());
   } else {
     start = renderer::orbit_camera(scene_data.center, scene_data.radius, options.orbit, 0);
@@ -1257,6 +1300,19 @@ view::SessionHeader live_header(const Options& options, const renderer::SceneDat
     if (start.znear > 0.05f) start.znear = 0.05f;
   }
   h.start = view::fly_state_from_camera(start);
+  if (options.start_given) {
+    // Given as numbers, so no C library turns a camera into them: the header carries exactly the
+    // angles the command line said, in radians, the yaw brought into [-pi, pi].
+    constexpr f64 k_to_radians = 3.14159265358979323846 / 180.0;
+    f64 yaw_deg = static_cast<f64>(options.start_yaw_deg);
+    while (yaw_deg > 180.0)
+      yaw_deg -= 360.0;
+    while (yaw_deg < -180.0)
+      yaw_deg += 360.0;
+    h.start.position = options.start_position;
+    h.start.yaw = static_cast<f32>(yaw_deg * k_to_radians);
+    h.start.pitch = static_cast<f32>(static_cast<f64>(options.start_pitch_deg) * k_to_radians);
+  }
   h.fov_y = start.fov_y;
   h.znear = start.znear;
   h.params.tick_hz = static_cast<u32>(fly_tick_hz.get());
@@ -1550,6 +1606,52 @@ std::string file_stem(std::string_view name) {
     out.push_back(plain ? c : '_');
   }
   return out.empty() ? std::string("marker") : out;
+}
+
+// `--capture-channels`: what an offscreen capture reads back. The picture is always one of them,
+// because the file the flag names is the picture; the list adds the others.
+bool parse_capture_channels(std::string_view text, renderer::CaptureChannels& out) {
+  out = renderer::CaptureChannels{};
+  while (!text.empty()) {
+    const size_t comma = text.find(',');
+    const std::string_view name = text.substr(0, comma);
+    if (name == "ids") {
+      out.ids = true;
+    } else if (name == "depth") {
+      out.depth = true;
+    } else if (name == "normals") {
+      out.normals = true;
+    } else if (name != "color") {
+      return false;
+    }
+    if (comma == std::string_view::npos) break;
+    text.remove_prefix(comma + 1);
+  }
+  return true;
+}
+
+// Writes an offscreen capture: the picture at `color_path`, exactly as a capture always wrote it,
+// and every other channel the frame carries beside it under the same stem, in `write_capture`'s
+// names and formats — `<stem>.ids.bin` + `<stem>.ids.json`, `<stem>.depth.png`,
+// `<stem>.normals.png` — which are also what `render.capture` writes, so one reader serves both.
+bool write_shot(const std::string& color_path, renderer::CapturedFrame& shot, std::string& error) {
+  const io::Status status =
+      image::write_png(color_path, shot.width, shot.height, 4,
+                       std::span<const u8>(shot.color.data(), shot.color.size()));
+  if (status != io::Status::Ok) {
+    error = "cannot write " + color_path + ": " + io::status_name(status);
+    return false;
+  }
+  if (shot.ids.empty() && shot.depth.empty() && shot.normals.empty()) return true;
+  std::string_view name = io::file_name(color_path);
+  if (name.size() > 4 && name.substr(name.size() - 4) == ".png") name.remove_suffix(4);
+  // The picture is written; the rest go through the renderer's writer without it.
+  Vector<u8> color = std::move(shot.color);
+  shot.color = Vector<u8>{};
+  renderer::CaptureFiles files;
+  const bool ok = renderer::write_capture(io::parent_path(color_path), name, shot, files, error);
+  shot.color = std::move(color);
+  return ok;
 }
 
 // Waits up to `seconds` for a quiet machine, sampling every five, the way the bench harness's
@@ -2024,16 +2126,13 @@ int run_offscreen(Options& options, Interactive& interactive) {
         for (u32 k = 0; k < 8 && ok; ++k)
           ok = view_renderer.render_offscreen(frame, &error);
         renderer::CapturedFrame shot;
-        ok = ok && view_renderer.capture(frame, renderer::CaptureChannels{}, shot, &error);
+        ok = ok && view_renderer.capture(frame, options.capture_channels, shot, &error);
         if (!ok) break;
         char name[40];
         std::snprintf(name, sizeof(name), "tick-%07llu.png",
                       static_cast<unsigned long long>(marker.tick));
         const std::string file = io::join_path(options.marker_captures, name);
-        if (image::write_png(file, shot.width, shot.height, 4,
-                             std::span<const u8>(shot.color.data(), shot.color.size())) !=
-            io::Status::Ok) {
-          error = "cannot write " + file;
+        if (!write_shot(file, shot, error)) {
           ok = false;
           break;
         }
@@ -2064,16 +2163,13 @@ int run_offscreen(Options& options, Interactive& interactive) {
         for (u32 k = 0; k < 8 && ok; ++k)
           ok = view_renderer.render_offscreen(frame, &error);
         renderer::CapturedFrame shot;
-        ok = ok && view_renderer.capture(frame, renderer::CaptureChannels{}, shot, &error);
+        ok = ok && view_renderer.capture(frame, options.capture_channels, shot, &error);
         if (!ok) break;
         char prefix[16];
         std::snprintf(prefix, sizeof(prefix), "%05u-", f);
         const std::string file = io::join_path(
             options.marker_captures, std::string(prefix) + file_stem(marker.name) + ".png");
-        if (image::write_png(file, shot.width, shot.height, 4,
-                             std::span<const u8>(shot.color.data(), shot.color.size())) !=
-            io::Status::Ok) {
-          error = "cannot write " + file;
+        if (!write_shot(file, shot, error)) {
           ok = false;
           break;
         }
@@ -2092,16 +2188,12 @@ int run_offscreen(Options& options, Interactive& interactive) {
         frame.frame_index = session.frame_index();
       }
       renderer::CapturedFrame shot;
-      if (!view_renderer.capture(frame, renderer::CaptureChannels{}, shot, &error)) {
+      if (!view_renderer.capture(frame, options.capture_channels, shot, &error)) {
         exit_code = fail("capture", error);
         break;
       }
-      const io::Status status =
-          image::write_png(options.capture, shot.width, shot.height, 4,
-                           std::span<const u8>(shot.color.data(), shot.color.size()));
-      if (status != io::Status::Ok) {
-        exit_code = fail("capture", std::string("cannot write ") + options.capture + ": " +
-                                        io::status_name(status));
+      if (!write_shot(options.capture, shot, error)) {
+        exit_code = fail("capture", error);
         break;
       }
       captured = true;
@@ -2465,8 +2557,35 @@ int main(int argc, char** argv) {
       if (!next_value(argc, argv, i, a, options.benchmark)) return k_exit_usage;
     } else if (a == "--marker-captures") {
       if (!next_value(argc, argv, i, a, options.marker_captures)) return k_exit_usage;
+    } else if (a == "--capture-channels") {
+      if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
+      if (!parse_capture_channels(value, options.capture_channels)) {
+        std::fprintf(stderr,
+                     "engine-view: --capture-channels expects a list of color, ids, depth and "
+                     "normals, e.g. ids,normals\n");
+        return k_exit_usage;
+      }
     } else if (a == "--interactive") {
       options.interactive = true;
+    } else if (a == "--start") {
+      std::string position;
+      std::string angles;
+      if (!next_value(argc, argv, i, a, position) || !next_value(argc, argv, i, a, angles)) {
+        return k_exit_usage;
+      }
+      f32 p[3] = {};
+      f32 yp[2] = {};
+      if (!parse_numbers(position, p, 3, 1.0e7) || !parse_numbers(angles, yp, 2, 720.0) ||
+          !(yp[1] > -90.0f && yp[1] < 90.0f)) {
+        std::fprintf(stderr,
+                     "engine-view: --start expects a position and two angles in degrees, e.g. "
+                     "--start 0,4,900 0,-5 (x,y,z yaw,pitch; pitch within -90..90)\n");
+        return k_exit_usage;
+      }
+      options.start_given = true;
+      options.start_position = Vec3{p[0], p[1], p[2]};
+      options.start_yaw_deg = yp[0];
+      options.start_pitch_deg = yp[1];
     } else if (a == "--record-input") {
       if (!next_value(argc, argv, i, a, options.record_input)) return k_exit_usage;
     } else if (a == "--replay-input") {
@@ -2616,6 +2735,18 @@ int main(int argc, char** argv) {
                  "start it somewhere else\n");
     return k_exit_usage;
   }
+  if (options.start_given && !live) {
+    std::fprintf(stderr,
+                 "engine-view: --start is where a live --interactive session begins; a replay "
+                 "starts where its recording started\n");
+    return k_exit_usage;
+  }
+  if (options.start_given && !options.camera_path.empty()) {
+    std::fprintf(stderr,
+                 "engine-view: --start and --camera-path both say where the session begins; "
+                 "give one\n");
+    return k_exit_usage;
+  }
   if (!options.interactive && !options.input_map.empty()) {
     std::fprintf(stderr,
                  "engine-view: --input-map is the interactive camera's bindings; add "
@@ -2625,6 +2756,24 @@ int main(int argc, char** argv) {
   if (!live && (!options.benchmark.empty() || !options.marker_captures.empty() ||
                 options.verify_occlusion)) {
     options.offscreen = true;
+  }
+  const renderer::CaptureChannels& channels = options.capture_channels;
+  if (channels.ids || channels.depth || channels.normals) {
+    // The id buffer, depth and normals come out of the renderer's own target; a window's capture
+    // is a read of the presented swapchain image, which is the picture and nothing else.
+    if (!options.offscreen || options.reference != 0) {
+      std::fprintf(stderr,
+                   "engine-view: --capture-channels reads the renderer's own target, so it needs "
+                   "an offscreen run (--offscreen, --marker-captures, or --replay-input with "
+                   "either); --reference writes a picture only\n");
+      return k_exit_usage;
+    }
+    if (options.capture.empty() && options.marker_captures.empty()) {
+      std::fprintf(stderr,
+                   "engine-view: --capture-channels says what --capture and --marker-captures "
+                   "write; give one of them\n");
+      return k_exit_usage;
+    }
   }
   if (!options.benchmark.empty() && options.camera_path.empty() && !options.interactive) {
     std::fprintf(stderr,
@@ -2776,6 +2925,7 @@ int main(int argc, char** argv) {
   renderer::FilePageSource page_source;
   renderer::SceneRenderer view_renderer;
   renderer::CameraPath window_path;  // --camera-path; empty keys: the orbit or the fly-in
+  renderer::CameraPath scene_path;   // the scene file's own, read only to start a live session
   u64 rendered = 0;
   i64 started_ns = 0;
   i64 finished_ns = 0;
@@ -2899,6 +3049,16 @@ int main(int argc, char** argv) {
       }
       // An interactive session only starts at the path's first camera; it ends when it ends.
       if (options.frames == 0 && !interactive.on) options.frames = window_path.frame_count();
+    }
+    // A live session given neither a path nor `--start` begins where the scene's own path does
+    // (`Scene.camera_path`), which is where the scene is meant to be seen from; nothing flies it.
+    if (live && options.camera_path.empty() && !options.start_given && !desc.camera_path.empty()) {
+      if (!renderer::read_camera_path(desc.camera_path,
+                                      scene_data.terrain.enabled ? &scene_data.terrain : nullptr,
+                                      scene_path, error)) {
+        exit_code = fail("camera path", desc.camera_path + ": " + error);
+        break;
+      }
     }
 
 #if ENGINE_VIEW_ANIMATION
@@ -3062,8 +3222,10 @@ int main(int argc, char** argv) {
     u64 session_end = 0;
     if (interactive.on) {
       if (!interactive.replay) {
-        interactive.header =
-            live_header(options, scene_data, window_path.keys.empty() ? nullptr : &window_path);
+        const renderer::CameraPath* start_path = !window_path.keys.empty()  ? &window_path
+                                                 : !scene_path.keys.empty() ? &scene_path
+                                                                            : nullptr;
+        interactive.header = live_header(options, scene_data, start_path);
       }
       if (!session.start(interactive.map, interactive.header, &error)) {
         exit_code = fail("interactive", error);
@@ -3223,9 +3385,18 @@ int main(int argc, char** argv) {
         }
         ticks_this_frame = static_cast<u32>(session.tick().value - before);
         session_done = session_end != 0 && session.tick().value >= session_end;
-        // The camera at the last tick boundary, not interpolated: the frame shows a state the
-        // session actually passed through, which is what a replay's frame shows too.
-        frame.camera = session.camera();
+        // **The camera between the last two ticks**, at the fraction of a tick the clock holds
+        // past the last one it ran: a frame's camera then moves by the frame's own time, where
+        // one sampled at the last tick boundary moved by whole ticks — 3, 3, 3, 2 at 240 Hz on an
+        // 82 Hz display — and a near object under a turning, strafing camera stuttered at that
+        // beat (docs/experiments/first-interactive-session-2026-09-24.md). One tick behind, so it
+        // is interpolated and never predicted. The ticks themselves are untouched: this reads the
+        // session's state, the trajectory is still the ticks', and a replay, a marker capture and
+        // an offscreen frame all stay tick-aligned. A session that has reached its end, or a
+        // clock that ran ahead of it, draws the last tick.
+        const f32 alpha =
+            session.tick().value == clock.tick().value ? clock.interpolation_alpha() : 1.0f;
+        frame.camera = session.camera_at(alpha);
         frame.frame_index = session.frame_index();
       } else {
         frame.camera = !window_path.keys.empty()

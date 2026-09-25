@@ -14,6 +14,9 @@
 // - **A live window fed the fixture through its own event queue (`--inject-input`) records a log
 //   whose replay flies the live session's trajectory to the last bit** — the live path and the
 //   replay path agree, which is the guarantee. Needs a display and a device; skips without.
+// - **A live session starts where it is told**: at `--start`, and otherwise at the first frame of
+//   the scene file's own camera path rather than at the orbit. Read back from the recording's
+//   header; needs a display and a device, and skips without.
 #include "../fly_camera.h"
 
 #include <core/json/json.h>
@@ -25,6 +28,7 @@
 #include <test_paths.h>
 #include <test_temp_dir.h>
 
+#include <cmath>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -126,6 +130,93 @@ TEST_CASE("engine-view: interactive flags that cannot work together exit 2") {
   CHECK(run_view({"--replay-input"}).exit_code == 2);
   CHECK(run_view({"--tunable", "view.fly.tick_hz=1"}).exit_code == 2);  // outside its range
   CHECK(run_view({"--tunable", "view.fly.nothing=1"}).exit_code == 2);
+  // `--start`: two values, three numbers and two, a pitch short of the poles, a live session only,
+  // and not together with a path that also says where to start.
+  CHECK(run_view({"--interactive", "--start", "0,1,2"}).exit_code == 2);
+  CHECK(run_view({"--interactive", "--start", "0,1", "0,0"}).exit_code == 2);
+  CHECK(run_view({"--interactive", "--start", "0,1,2", "0,95"}).exit_code == 2);
+  CHECK(run_view({"--interactive", "--start", "0,1,2", "zero,0"}).exit_code == 2);
+  CHECK(run_view({"--replay-input", log, "--start", "0,1,2", "0,0"}).exit_code == 2);
+  CHECK(
+      run_view({"--interactive", "--start", "0,1,2", "0,0", "--camera-path", "p.json"}).exit_code ==
+      2);
+  // `--capture-channels`: offscreen only, known names, and something to capture.
+  CHECK(run_view({"--capture-channels", "ids", "--capture", "x.png"}).exit_code == 2);
+  CHECK(run_view({"--offscreen", "--capture-channels", "albedo", "--capture", "x.png"}).exit_code ==
+        2);
+  CHECK(run_view({"--offscreen", "--capture-channels", "ids"}).exit_code == 2);
+}
+
+TEST_CASE("engine-view: a live session starts at --start, else at the scene's own camera path") {
+  // The first owner session started at the orbit, which frames a 5 km scene's whole bounds from
+  // 9 km out (docs/experiments/first-interactive-session-2026-09-24.md). A scene file that names
+  // its camera path starts a session at that path's first frame, and `--start` puts it anywhere.
+  const test::TempDir tmp("engine_view_start");
+  const std::filesystem::path dir(tmp.native());
+  const std::string scene = slashes(dir / "scene.json");
+  REQUIRE(io::write_file(scene, R"({"format":"engine.scene.v1","name":"start",
+      "camera_path":"path.json","terrain":{"size":17,"extent":20,"seed":1,"dune_height":0.5}})") ==
+          io::Status::Ok);
+  REQUIRE(io::write_file(slashes(dir / "path.json"),
+                         R"({"keys":[{"time":0,"position":[3,2,15],"ground":true,
+                                      "target":[0,0,0]}]})") == io::Status::Ok);
+  // A tenth of a second of session with nothing pressed: the recording's header is the point.
+  input::InputLog quiet;
+  quiet.set_map(view::default_fly_map());
+  view::SessionHeader quiet_header;
+  quiet_header.ticks = 24;
+  quiet.set_session(view::session_to_json(quiet_header));
+  const std::string inject = tmp.file("quiet.jsonl");
+  REQUIRE(quiet.save(inject) == io::Status::Ok);
+  const std::string ddc = tmp.file("ddc");
+
+  auto start_of = [&](const std::vector<std::string>& extra, view::FlyState& start) -> int {
+    const std::string recorded = tmp.file("recorded.jsonl");
+    std::vector<std::string> args = {"--interactive", "--inject-input",
+                                     inject,          "--record-input",
+                                     recorded,        "--scene",
+                                     scene,           "--width",
+                                     "256",           "--height",
+                                     "160",           "--no-vsync",
+                                     "--ddc",         ddc};
+    args.insert(args.end(), extra.begin(), extra.end());
+    const Run live = run_view(args);
+    if (live.exit_code != 0) {
+      if (live.exit_code != 3) FAIL_CHECK(live.output);
+      return live.exit_code;
+    }
+    input::InputLog recording;
+    std::string error;
+    REQUIRE_MESSAGE(recording.load(recorded, &error) == io::Status::Ok, error);
+    view::SessionHeader header;
+    REQUIRE_MESSAGE(view::session_from_json(recording.session(), header, &error), error);
+    start = header.start;
+    return 0;
+  };
+
+  view::FlyState from_scene;
+  const int code = start_of({}, from_scene);
+  if (code == 3) {
+    MESSAGE("engine-view unavailable here");
+    return;
+  }
+  REQUIRE(code == 0);
+  // The path's key, over the ground at (3, 15), looking at the origin: not the orbit.
+  CHECK(from_scene.position.x == 3.0f);
+  CHECK(from_scene.position.z == 15.0f);
+  CHECK(from_scene.position.y > 1.0f);
+  CHECK(from_scene.position.y < 4.0f);
+  CHECK(std::fabs(from_scene.yaw - std::atan2(3.0f, 15.0f)) < 1e-4f);
+
+  view::FlyState given;
+  REQUIRE(start_of({"--start", "1,-2,3.5", "90,-10"}, given) == 0);
+  CHECK(given.position == Vec3{1.0f, -2.0f, 3.5f});
+  CHECK(std::fabs(given.yaw - 1.5707963f) < 1e-6f);
+  CHECK(std::fabs(given.pitch + 0.17453293f) < 1e-6f);
+  // Angles past a half turn come back into [-180, 180] before they are radians.
+  view::FlyState wrapped;
+  REQUIRE(start_of({"--start", "0,0,0", "270,0"}, wrapped) == 0);
+  CHECK(std::fabs(wrapped.yaw + 1.5707963f) < 1e-6f);
 }
 
 TEST_CASE("engine-view: a replay refuses what it cannot fly, before it asks for a device") {

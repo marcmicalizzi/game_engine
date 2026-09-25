@@ -403,6 +403,86 @@ TEST_CASE("fly camera: the synthetic session flies the committed trajectory, how
   }
 }
 
+TEST_CASE("fly camera: a live frame draws a camera on the segment between the last two ticks") {
+  // A live frame samples the session between ticks and draws `camera_at(alpha)`: the camera
+  // `alpha` of the way from the tick before the last to the last, so its motion is the frame's own
+  // time rather than the whole ticks that fell due (docs/subsystems/apps.md, "Drawing between
+  // ticks"). Every tick of the synthetic session — which turns, strafes, climbs, crosses nothing
+  // but the pitch clamp — is checked at five fractions, and the ticks are the ticks: a session
+  // asked for its drawn camera after every tick flies the committed trajectory all the same.
+  const input::InputLog log = make_synthetic_session();
+  const view::SessionHeader header = synthetic_header();
+  const input::ActionMap map = view::default_fly_map();
+  view::FlySession session;
+  std::string error;
+  REQUIRE_MESSAGE(session.start(map, header, &error), error);
+  // Before any tick both ends are the start.
+  CHECK(session.previous().position == header.start.position);
+  CHECK(near(session.camera_at(0.5f).position, header.start.position, 0.0f));
+
+  const f32 fractions[] = {0.0f, 0.25f, 0.5f, 0.75f, 1.0f};
+  u32 cursor = 0;
+  f32 worst_off_segment = 0.0f;
+  f32 worst_along = 0.0f;
+  u32 checked = 0;
+  for (u64 t = 1; t <= header.ticks; ++t) {
+    cursor = session.run(log.events(), cursor, SimTick{t});
+    const view::FlyState a = session.previous();
+    const view::FlyState b = session.state();
+    const Vec3 d = b.position - a.position;
+    const f32 length2 = dot(d, d);
+    f32 turn = b.yaw - a.yaw;  // the short way round, as the interpolation takes it
+    if (turn > 3.14159265f) turn -= 6.28318531f;
+    if (turn < -3.14159265f) turn += 6.28318531f;
+    for (const f32 alpha : fractions) {
+      const view::FlyState s = view::fly_interpolate(a, b, alpha);
+      // On the segment: its distance from the line through a and b is nothing, and it is `alpha`
+      // of the way along.
+      const Vec3 from_a = s.position - a.position;
+      const f32 along = length2 > 0.0f ? dot(from_a, d) / length2 : alpha;
+      const Vec3 off = from_a - d * along;
+      worst_off_segment = std::fmax(worst_off_segment, std::sqrt(dot(off, off)));
+      worst_along = std::fmax(worst_along, std::fabs(along - alpha));
+      CHECK(along >= -1e-4f);
+      CHECK(along <= 1.0f + 1e-4f);
+      // The pitch between the two, and the yaw `alpha` of the short turn from a's.
+      CHECK(s.pitch >= std::fmin(a.pitch, b.pitch) - 1e-6f);
+      CHECK(s.pitch <= std::fmax(a.pitch, b.pitch) + 1e-6f);
+      f32 yaw_moved = s.yaw - a.yaw;
+      if (yaw_moved > 3.14159265f) yaw_moved -= 6.28318531f;
+      if (yaw_moved < -3.14159265f) yaw_moved += 6.28318531f;
+      CHECK(std::fabs(yaw_moved - turn * alpha) <= 1e-5f);
+      CHECK(s.yaw >= -3.14159266f);
+      CHECK(s.yaw <= 3.14159266f);
+      ++checked;
+    }
+    // The ends are the ticks exactly, and the camera drawn at them is the tick's camera.
+    CHECK(view::fly_interpolate(a, b, 0.0f).position == a.position);
+    CHECK(view::fly_interpolate(a, b, 1.0f).position == b.position);
+    CHECK(session.camera_at(1.0f).position == session.camera().position);
+    CHECK(session.camera_at(1.0f).target == session.camera().target);
+  }
+  MESSAGE(checked << " drawn cameras; furthest off the segment " << worst_off_segment
+                  << " m, furthest along it from alpha " << worst_along);
+  CHECK(worst_off_segment <= 1e-4f);
+  CHECK(worst_along <= 2e-3f);  // f32 steps of a few mm, 20 m from the origin
+  // Asked for its drawn camera after every tick, the session flew exactly the ticks it flies
+  // when nobody asks.
+  CHECK(session.trajectory().hash == fly(log, map, header, 1).hash);
+
+  // Across the yaw's seam: from just short of +pi to just past -pi is a small turn left, and
+  // half of it is pi, not the other way round through zero.
+  view::FlyState left;
+  left.yaw = 3.1f;
+  view::FlyState right;
+  right.yaw = -3.1f;
+  const view::FlyState half = view::fly_interpolate(left, right, 0.5f);
+  CHECK(std::fabs(std::fabs(half.yaw) - 3.14159265f) <= 1e-5f);
+  const view::FlyState quarter = view::fly_interpolate(left, right, 0.25f);
+  CHECK(quarter.yaw > 3.1f);
+  CHECK(quarter.yaw <= 3.14159266f);
+}
+
 TEST_CASE("fly camera: a recording is refused under another map or another integration") {
   const input::InputLog log = make_synthetic_session();
   // The player moved forward from W to the up arrow after recording: W in the log would now do
