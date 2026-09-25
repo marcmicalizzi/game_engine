@@ -1462,11 +1462,36 @@ struct HeadlessObserver @version(1) {
   weight: f32 = 1
 }
 
+/// An observer a recorded input log steers: the player of a headless run
+/// (docs/subsystems/world.md, "The player"). Each tick the log's events for that tick are fed
+/// through the map (foundation/input), and the observer moves at the `action`'s Axis2 times
+/// `speed` — x along world x, y forward along world -z — instead of at its own velocity. The input
+/// state is the fold of the log up to the world's tick, so a log handed to a world at tick K (a
+/// loaded save, a later call) catches up first and steers it as it would have steered the world
+/// that ran from the start.
+struct HeadlessPlayer @version(1) {
+  /// The input log: JSON lines as `input::InputLog` writes them (`engine-view --record-input`'s
+  /// format), its ticks this world's ticks.
+  log: string
+  /// The action map the log was recorded against, as JSON (`input::ActionMap::to_json`); a map
+  /// whose hash is not the log's is refused.
+  map: string
+  /// The Axis2 action that steers.
+  action: string = "move"
+  /// Metres per game second at full deflection.
+  speed: f32 = 4
+  /// The observer it steers, an index into the world's observers.
+  observer: u32 = 0
+}
+
 /// A headless run streamed tile by tile (the world capability, docs/subsystems/world.md): the
 /// tile ring round the declared observers, updated between every two ticks, materializing the
 /// document's partitioned layers a tile at a time and reconciling each tile from the store. The
-/// ring outlives the call, as the runtime world does; its parameters are the first call's.
-struct HeadlessWorld @version(1) {
+/// ring outlives the call, as the runtime world does; its parameters are the first call's. A call
+/// that declares observers puts them where it says and fills the ring round them with no budget; a
+/// call that declares none — or that names no `stream` at all, on a world that is streamed — goes
+/// on with them where they are, with no fill (version 2).
+struct HeadlessWorld @version(2) {
   /// A tile's edge, metres: the document's partitioned layers must be on the same grid.
   tile_size: f32 = 32
   /// Radii of the rings in tiles, innermost first. Empty: the capability's 1.5, 8 and 24.
@@ -1478,6 +1503,9 @@ struct HeadlessWorld @version(1) {
   /// Keep the tiles in the document's store (`world.db` beside it, created when absent): each
   /// tile's projections and snapshot written when it goes, and read back when it returns.
   store: bool = true
+  /// One of the observers steered by a recorded input log. Named again on a later call, the log
+  /// replaces the one the world has; not named, the world keeps the one it has.
+  player: HeadlessPlayer? @since(2)
 }
 
 /// One active tile of a headless world after the call.
@@ -1577,8 +1605,115 @@ struct RunHeadlessResult @version(3) {
   /// Write-back commits this call made, and the fields they wrote.
   write_backs: u32 = 0 @since(2)
   written_fields: u32 = 0 @since(2)
-  /// The streamed world's call, when `stream` was given.
+  /// The streamed world's call, when `stream` was given or the world was already streamed.
   streamed: HeadlessWorldResult? @since(3)
+}
+
+// ---- session.save_game, session.load_game, session.state_hash ------------------------------------
+// 03 §3.5's save game and 05 §5.10's replay assertion (docs/subsystems/world.md, "Save and load";
+// ADR-0042): a running world's persistent state and the drivers of its run as a set of files a
+// manifest names and hashes, a load that opens a session on a copy of it and continues the run
+// from its tick, and the one hash two runs of a world compare. The world capability's: 1006
+// Unavailable without it. All three are read-only in the protocol's sense — none changes a
+// document, a lease or a host setting: a save writes a new directory and a load opens a new
+// session on a new one, as `session.open` with `create` does.
+
+/// Parameters of `session.state_hash`.
+struct StateHashParams @version(1) {
+  session: string
+}
+
+/// Result of `session.state_hash`: the persistent-state hash (`world::state_hash`) and its parts,
+/// each 16 hex digits.
+struct StateHashResult @version(1) {
+  /// The whole: the clock, the document and the store, combined.
+  hash: string
+  /// The world's tick and game time; 0 for a session whose world has not run.
+  tick: u64 = 0
+  game_time_us: i64 = 0
+  /// The parts: the clock; the document's live records composed across its layers; the store's
+  /// events, projections and snapshots in key order.
+  clock: string
+  document: string
+  events: string
+  projections: string
+  snapshots: string
+  records: u64 = 0
+  event_count: u64 = 0
+  projection_count: u64 = 0
+  snapshot_count: u64 = 0
+  /// "read" when the document keeps a store (`world.db`), "absent" when it keeps none.
+  store: string
+}
+
+/// Parameters of `session.save_game`.
+struct SaveGameParams @version(1) {
+  session: string
+  /// Where the save goes: a new or empty directory, outside the document's own. Native or
+  /// mounted.
+  path: string
+}
+
+/// One file of a save, as its manifest names it.
+struct SaveGameFile @version(1) {
+  /// Relative to the save's directory.
+  path: string
+  bytes: u64 = 0
+  /// 16 hex digits.
+  hash: string
+}
+
+struct SaveGameResult @version(1) {
+  /// The save's directory, native.
+  path: string
+  /// The tick and game time the save was taken at: after the tick the world last ran.
+  tick: u64 = 0
+  game_time_us: i64 = 0
+  /// The persistent-state hash at the save, as `session.state_hash` gives it.
+  state_hash: string
+  /// The world was streamed: its active tiles and observers are in the save, and its player's
+  /// input log up to the tick when it has a player.
+  streamed: bool = false
+  tiles: u32 = 0
+  observers: u32 = 0
+  player: bool = false
+  /// Every file of the set (the manifest, `save.json`, names them), and their bytes together.
+  files: SaveGameFile[]
+  bytes: u64 = 0
+  ms: f64 = 0
+}
+
+/// Parameters of `session.load_game`.
+struct LoadGameParams @version(1) {
+  /// The save's directory: the one holding its `save.json`.
+  path: string
+  /// Where the loaded session works: a new or empty directory the save's document and store are
+  /// copied into. The save itself is never written.
+  dir: string
+}
+
+struct LoadGameResult @version(1) {
+  /// The session opened on `dir`, for every other method.
+  session: string
+  dir: string
+  /// The clock the world continues from.
+  tick: u64 = 0
+  game_time_us: i64 = 0
+  /// The hash the save recorded and the loaded world's. They are the same unless a format
+  /// migrated; a load that migrated nothing and does not reproduce it is refused.
+  saved_state_hash: string
+  state_hash: string
+  /// Every format the save was written at an older version of, as "<format> <from> -> <to>".
+  migrations: string[]
+  /// The world is streamed: its tiles activated again, its observers where they were, and its
+  /// player's input caught up to the tick.
+  streamed: bool = false
+  tiles: u32 = 0
+  observers: u32 = 0
+  player: bool = false
+  /// Entities materialized from the document after the load.
+  materialized: u32 = 0
+  ms: f64 = 0
 }
 
 // ---- engine.run_tests --------------------------------------------------------------------------

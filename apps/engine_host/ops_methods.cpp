@@ -80,10 +80,17 @@
 #include <domain/tissue/validate.h>
 #endif
 #if defined(ENGINE_HOST_WORLD)
+#include <foundation/input/input.h>
+#include <foundation/input/input_log.h>
 #include <systems/world/document_tiles.h>
+#include <systems/world/input_observer.h>
+#include <systems/world/save_game.h>
+#include <systems/world/state_hash.h>
 #include <systems/world/store_tiles.h>
 #include <systems/world/tile_store.h>
 #include <systems/world/world.h>
+
+#include <schemas/world_save.h>
 #endif
 
 namespace engine::host {
@@ -110,7 +117,10 @@ ENGINE_LOG_CATEGORY_DEFINE(log_ops, "host.ops");
 // game clock, and a driver with no target, which materializes nothing and says so in its report.
 class RuntimeWorld {
  public:
-  explicit RuntimeWorld(std::string session_id);
+  // A world starts at tick 0 and game time 0, or — loaded from a save — where the save was taken,
+  // so the write-back's cadence, the store's ticks and every timer land where they would have in
+  // the run that never stopped (docs/subsystems/world.md, "Save and load").
+  explicit RuntimeWorld(std::string session_id, SimTick start_tick = {}, GameTime start_time = {});
   ~RuntimeWorld();
   ENGINE_NON_COPYABLE(RuntimeWorld);
 
@@ -124,7 +134,10 @@ class RuntimeWorld {
   }
   sim::MaterializeReport materialize(const doc::Document& document,
                                      const sim::MaterializeScope& scope);
-  void set_writeback_every(u32 ticks) noexcept { driver_.set_writeback_every(ticks); }
+  void set_writeback_every(u32 ticks) noexcept {
+    writeback_every_ = ticks;
+    driver_.set_writeback_every(ticks);
+  }
   void step();
   // What systems changed in the writable fields and a periodic flush has not yet committed.
   u32 flush_writeback();
@@ -132,6 +145,7 @@ class RuntimeWorld {
   u64 tick() const noexcept { return scheduler_.tick().value; }
   i64 game_time_us() const noexcept { return scheduler_.game_time().us; }
   i64 us_per_tick() const noexcept { return scheduler_.step_size().us; }
+  u32 writeback_every() const noexcept { return writeback_every_; }
   static constexpr u32 hz() noexcept { return k_hz; }
   static constexpr u8 tier() noexcept { return k_tier; }
   const char* kind() const noexcept;
@@ -151,17 +165,50 @@ class RuntimeWorld {
   // ---- a streamed world (`session.run_headless` with `stream`; docs/subsystems/world.md) --------
   // The tile ring round the call's declared observers, the document consumer over this world's
   // driver and the store consumer over the document's `world.db`, made by the first call that asks
-  // and kept, like the rest of the world, while the host runs. Each call sets the observers where
-  // it declares them; the ring's parameters are the first call's.
-  bool stream(const protocol::HeadlessWorld& params, std::string& error);
+  // and kept, like the rest of the world, while the host runs. A call that declares observers sets
+  // them where it says (a first call, or a jump), and `fill` comes back true: the ring is then
+  // filled with no budget before the first tick. A call that declares none continues with them
+  // where they are, and fills nothing — which is what makes a run split over several calls, or over
+  // a save and a load, the run that never stopped. The ring's parameters are the first call's.
+  bool stream(const protocol::HeadlessWorld& params, bool& fill, std::string& error);
   bool streaming() const noexcept { return streamed_ != nullptr; }
   // One update of the ring, between two ticks: the first of a call fills it with no budget.
   void stream_update(bool unlimited);
-  // The observers move by their velocities over one fixed step.
+  // The records a write-back moved into another tile, filed under it or let go (world.md,
+  // "Records that move"): before every update, and when a call ends after its last flush, so a save
+  // between two calls finds what is materialized a function of the document and the live tiles.
+  void settle();
+  // The observers move over one fixed step: by their velocities, and the player's by its input.
   void advance_observers();
   // What the world did since `begin_report`, into the call's result.
   void begin_report();
   void fill_report(protocol::HeadlessWorldResult& out) const;
+
+  // ---- save and load (docs/subsystems/world.md, "Save and load") --------------------------------
+  // The ring as a save keeps it: its parameters, its observers exactly, the tiles it holds and
+  // their rings, the player. Null when the world is not streamed.
+  std::optional<world::SaveRing> save_ring() const;
+  const world::InputObserver* player() const noexcept {
+    return streamed_ != nullptr && streamed_->player.bound() ? &streamed_->player : nullptr;
+  }
+  // A saved ring, restored into a world made at the save's clock: the consumers bound, the tiles
+  // it held activated again at their rings (the document consumer materializing them, the store
+  // consumer reconciling them from what the store kept), the observers where they were, and the
+  // player's input folded up to the save's tick from the log the save kept.
+  bool restore_ring(const world::SaveRing& ring, std::string_view save_dir, u64 world_seed,
+                    std::string& error);
+  u64 world_seed() const noexcept {
+    return streamed_ != nullptr ? streamed_->store.world_seed() : 1u;
+  }
+#endif
+#if defined(ENGINE_HOST_STORE)
+  // The connection the world's store is written through, when the document keeps one: the tile
+  // store's when the world is streamed with one — one connection for the tiles and the
+  // write-back's events, so the append caches of two never disagree about a tile (store.md, "Two
+  // connections, one file") — and otherwise the one the write-back opened. Null when neither is
+  // open.
+  store::Database* store_database() noexcept;
+  store::EventLog* store_log() noexcept;
 #endif
 
  private:
@@ -172,9 +219,14 @@ class RuntimeWorld {
     world::WorldStore store;
     std::unique_ptr<world::StoreTiles> store_tiles;
     bool store_open = false;
+    // What the ring was made with, for a save.
+    u32 simulated = 0;
+    bool keep_store = false;
     Vector<Vec3> positions;
     Vector<Vec3> velocities;
     Vector<f32> weights;
+    // The observer an input log steers, when a call named one.
+    world::InputObserver player;
     // The report's baseline: totals when the call began, and each update's ring time since.
     u64 events_before = 0;
     Vector<world::ConsumerStats> consumers_before;
@@ -188,6 +240,13 @@ class RuntimeWorld {
     Vector<f64> ring_us;
   };
   std::unique_ptr<Streamed> streamed_;
+  // The ring and its consumers over this world's driver and, with `keep_store`, the document's
+  // `world.db`.
+  bool make_stream(const world::RingParams& ring, u32 simulated_rings, bool keep_store,
+                   std::string& error);
+  // The player bound to a log and caught up to this world's tick.
+  bool bind_player(const input::ActionMap& map, const input::InputLog& log, std::string_view action,
+                   f32 speed, u32 observer, std::string& error);
 #endif
   // The rate every other fixed step in the engine runs at (engine-view's animated world, the
   // deformation phase), so a second of `run_headless` is the same sixty ticks it is everywhere.
@@ -202,6 +261,8 @@ class RuntimeWorld {
   protocol::Session* session_ptr_ = nullptr;
   io::Vfs* vfs_ = nullptr;
   Vector<std::string> systems_;
+  // The write-back cadence the last call ran at (the driver's own default until one does).
+  u32 writeback_every_ = 1;
   sim::SimScheduler scheduler_;
 #if defined(ENGINE_HOST_ECS)
   ecs::SimWorld sim_;
@@ -238,9 +299,11 @@ class RuntimeWorld {
 
 namespace {
 
-sim::SimSchedulerConfig scheduler_config(u32 hz) {
+sim::SimSchedulerConfig scheduler_config(u32 hz, SimTick start_tick, GameTime start_time) {
   sim::SimSchedulerConfig config;
   config.hz = hz;
+  config.start_tick = start_tick;
+  config.epoch = start_time;
   return config;
 }
 
@@ -279,9 +342,9 @@ sim::MaterializeConfig driver_config(u8 tier) {
 
 }  // namespace
 
-RuntimeWorld::RuntimeWorld(std::string session_id)
+RuntimeWorld::RuntimeWorld(std::string session_id, SimTick start_tick, GameTime start_time)
     : session_(std::move(session_id)),
-      scheduler_(scheduler_config(k_hz))
+      scheduler_(scheduler_config(k_hz, start_tick, start_time))
 #if defined(ENGINE_HOST_ECS)
       ,
       sim_(world_config(k_hz)),
@@ -380,10 +443,110 @@ bool RuntimeWorld::component_json([[maybe_unused]] const Id128& id,
 }
 
 #if defined(ENGINE_HOST_WORLD)
-bool RuntimeWorld::stream(const protocol::HeadlessWorld& params, std::string& error) {
+bool RuntimeWorld::make_stream(const world::RingParams& ring, u32 simulated_rings, bool keep_store,
+                               std::string& error) {
+  auto made = std::make_unique<Streamed>();
+  const char* why = nullptr;
+  if (!made->world.configure(ring, &why)) {
+    error = std::string("world: ") + why;
+    return false;
+  }
+  // The simulation's rings, innermost first: the document is materialized and the store
+  // reconciled in them and nowhere else (world.md, "The consumers").
+  const u32 simulated = simulated_rings < ring.ring_count ? simulated_rings : ring.ring_count;
+  const u8 rings = static_cast<u8>((1u << simulated) - 1u);
+  made->simulated = simulated;
+  made->keep_store = keep_store;
+  made->document = std::make_unique<world::DocumentTiles>(driver_, scheduler_, ring.tile_size);
+  made->document->bind(&session_ptr_->document());
+  made->world.add_consumer(made->document->consumer(rings, &made->world.ring()));
+  if (keep_store) {
+    // The document's own store, `session.events`' convention: `world.db` beside it.
+    std::string native;
+    const std::string wanted = io::join_path(session_ptr_->dir(), "world.db");
+    if (vfs_ != nullptr && vfs_->resolve(wanted, native) == io::Status::Ok) {
+      const store::Status status = made->store.open(native, true);
+      if (status != store::Status::Ok) {
+        error = "world.db could not be opened: " + std::string(store::status_name(status));
+        return false;
+      }
+      made->store_open = true;
+      world::StoreTilesBinding binding;
+      binding.store = &made->store;
+      binding.scheduler = &scheduler_;
+      binding.driver = &driver_;
+      binding.document = &session_ptr_->document();
+      binding.world = &made->world;
+      binding.document_tiles = made->document.get();
+      binding.materialize_tier = k_tier;
+      made->store_tiles = std::make_unique<world::StoreTiles>(binding);
+      made->world.add_consumer(made->store_tiles->consumer(rings));
+    }
+  }
+  streamed_ = std::move(made);
+  ENGINE_LOG_INFO(log_ops, "world", log::field("session", session_),
+                  log::field("tile_size", ring.tile_size), log::field("rings", ring.ring_count),
+                  log::field("simulated", simulated), log::field("store", streamed_->store_open));
+  return true;
+}
+
+bool RuntimeWorld::bind_player(const input::ActionMap& map, const input::InputLog& log,
+                               std::string_view action, f32 speed, u32 observer,
+                               std::string& error) {
+  if (observer >= streamed_->positions.size()) {
+    error = "the player steers observer " + std::to_string(observer) + ", and the world has " +
+            std::to_string(streamed_->positions.size());
+    return false;
+  }
+  if (!streamed_->player.bind(map, log, action, speed, observer, error)) return false;
+  // The input state at this tick is the log's events up to it, whenever the log was handed over
+  // (input_observer.h): the world that ran from the start and the one loaded at this tick agree.
+  streamed_->player.catch_up(scheduler_.tick().value);
+  return true;
+}
+
+bool RuntimeWorld::stream(const protocol::HeadlessWorld& params, bool& fill, std::string& error) {
+  fill = false;
   if (session_ptr_ == nullptr) {
     error = "the world has no session";
     return false;
+  }
+  // The player's log and map, read and checked before anything is made, so a refusal leaves the
+  // world as it was.
+  input::ActionMap map;
+  input::InputLog log;
+  if (params.player.has_value()) {
+    const protocol::HeadlessPlayer& p = *params.player;
+    std::string native;
+    std::string text;
+    JsonValue json;
+    std::string why;
+    if (vfs_ == nullptr || vfs_->resolve(p.map, native) != io::Status::Ok ||
+        io::read_file(native, text) != io::Status::Ok || !parse_json(text, json).ok ||
+        !map.from_json(json, &why)) {
+      error = "stream.player.map '" + p.map + "' is not an action map it can read" +
+              (why.empty() ? "" : ": " + why);
+      return false;
+    }
+    if (vfs_->resolve(p.log, native) != io::Status::Ok ||
+        log.load(native, &why) != io::Status::Ok) {
+      error = "stream.player.log '" + p.log + "' is not an input log it can read" +
+              (why.empty() ? "" : ": " + why);
+      return false;
+    }
+    world::InputObserver check;
+    if (!check.bind(map, log, p.action, p.speed, p.observer, why)) {
+      error = "stream.player: " + why;
+      return false;
+    }
+    const u32 observers = !params.observers.empty() || streamed_ == nullptr
+                              ? params.observers.size()
+                              : streamed_->positions.size();
+    if (p.observer >= observers) {
+      error = "stream.player steers observer " + std::to_string(p.observer) + ", and there are " +
+              std::to_string(observers);
+      return false;
+    }
   }
   if (streamed_ == nullptr) {
     world::RingParams ring;
@@ -400,63 +563,143 @@ bool RuntimeWorld::stream(const protocol::HeadlessWorld& params, std::string& er
     ring.hysteresis = params.hysteresis;
     ring.max_activations = world::max_activations_tunable();
     ring.max_deactivations = world::max_deactivations_tunable();
-    auto made = std::make_unique<Streamed>();
-    const char* why = nullptr;
-    if (!made->world.configure(ring, &why)) {
-      error = std::string("world: ") + why;
-      return false;
-    }
-    // The simulation's rings, innermost first: the document is materialized and the store
-    // reconciled in them and nowhere else (world.md, "The consumers").
-    const u32 simulated = params.simulated < ring.ring_count ? params.simulated : ring.ring_count;
-    const u8 rings = static_cast<u8>((1u << simulated) - 1u);
-    made->document = std::make_unique<world::DocumentTiles>(driver_, scheduler_, ring.tile_size);
-    made->document->bind(&session_ptr_->document());
-    made->world.add_consumer(made->document->consumer(rings));
-    if (params.store) {
-      // The document's own store, `session.events`' convention: `world.db` beside it.
-      std::string native;
-      const std::string wanted = io::join_path(session_ptr_->dir(), "world.db");
-      if (vfs_ != nullptr && vfs_->resolve(wanted, native) == io::Status::Ok) {
-        const store::Status status = made->store.open(native, true);
-        if (status != store::Status::Ok) {
-          error = "world.db could not be opened: " + std::string(store::status_name(status));
-          return false;
-        }
-        made->store_open = true;
-        world::StoreTilesBinding binding;
-        binding.store = &made->store;
-        binding.scheduler = &scheduler_;
-        binding.driver = &driver_;
-        binding.document = &session_ptr_->document();
-        binding.world = &made->world;
-        binding.materialize_tier = k_tier;
-        made->store_tiles = std::make_unique<world::StoreTiles>(binding);
-        made->world.add_consumer(made->store_tiles->consumer(rings));
-      }
-    }
-    streamed_ = std::move(made);
-    ENGINE_LOG_INFO(log_ops, "world", log::field("session", session_),
-                    log::field("tile_size", ring.tile_size), log::field("rings", ring.ring_count),
-                    log::field("simulated", simulated), log::field("store", streamed_->store_open));
+    if (!make_stream(ring, params.simulated, params.store, error)) return false;
+    fill = true;
   }
   // The session's document, which is the host's and may have been reopened since.
   streamed_->document->bind(&session_ptr_->document());
   if (streamed_->store_tiles != nullptr)
     streamed_->store_tiles->rebind_document(&session_ptr_->document());
-  streamed_->positions.clear();
-  streamed_->velocities.clear();
-  streamed_->weights.clear();
-  for (const protocol::HeadlessObserver& o : params.observers) {
-    streamed_->positions.push_back(o.position);
-    streamed_->velocities.push_back(o.velocity);
-    streamed_->weights.push_back(o.weight);
+  // Observers declared: they are where the call says (a jump, or the first call). None declared on
+  // a world that has some: they go on from where they are.
+  if (fill || !params.observers.empty()) {
+    streamed_->positions.clear();
+    streamed_->velocities.clear();
+    streamed_->weights.clear();
+    for (const protocol::HeadlessObserver& o : params.observers) {
+      streamed_->positions.push_back(o.position);
+      streamed_->velocities.push_back(o.velocity);
+      streamed_->weights.push_back(o.weight);
+    }
+    fill = true;
+  }
+  if (params.player.has_value()) {
+    const protocol::HeadlessPlayer& p = *params.player;
+    if (!bind_player(map, log, p.action, p.speed, p.observer, error)) return false;
+  } else if (streamed_->player.bound() &&
+             streamed_->player.observer() >= streamed_->positions.size()) {
+    // Observers declared again, fewer of them: the player had nothing left to steer.
+    streamed_->player.unbind();
   }
   return true;
 }
 
+bool RuntimeWorld::restore_ring(const world::SaveRing& saved, std::string_view save_dir,
+                                u64 world_seed, std::string& error) {
+  if (session_ptr_ == nullptr || streamed_ != nullptr) {
+    error = "a ring is restored into a world made for the load";
+    return false;
+  }
+  world::RingParams ring;
+  ring.tile_size = saved.tile_size;
+  if (saved.rings.empty() || saved.rings.size() > world::k_max_rings) {
+    error = "the save's ring has " + std::to_string(saved.rings.size()) + " rings";
+    return false;
+  }
+  ring.ring_count = saved.rings.size();
+  for (u32 r = 0; r < world::k_max_rings; ++r)
+    ring.radius[r] = r < saved.rings.size() ? saved.rings[r] : 0.0f;
+  ring.hysteresis = saved.hysteresis;
+  ring.max_activations = saved.max_activations;
+  ring.max_deactivations = saved.max_deactivations;
+  if (!make_stream(ring, saved.simulated, saved.store, error)) return false;
+  streamed_->store.set_world_seed(world_seed);
+  for (const world::SaveObserver& o : saved.observers) {
+    streamed_->positions.push_back(o.position);
+    streamed_->velocities.push_back(o.velocity);
+    streamed_->weights.push_back(o.weight);
+  }
+  // The tiles it held, at their rings, activated again in tile order: the document consumer
+  // materializes them and the store consumer reconciles them from the snapshot and projections the
+  // store kept — which are the same as when they first came in, since a tile writes both only when
+  // it goes. Nothing is written.
+  Vector<world::TileCoord> tiles;
+  Vector<u8> rings;
+  for (const world::SaveTile& t : saved.tiles) {
+    tiles.push_back(world::TileCoord{t.x, t.z});
+    rings.push_back(static_cast<u8>(t.ring < 0xFFu ? t.ring : 0xFFu));
+  }
+  sim::ObserverSet observers;
+  for (u32 i = 0; i < streamed_->positions.size(); ++i)
+    observers.add(streamed_->positions[i], streamed_->weights[i]);
+  const char* why = nullptr;
+  if (!streamed_->world.restore(std::span<const world::TileCoord>(tiles.data(), tiles.size()),
+                                std::span<const u8>(rings.data(), rings.size()), observers,
+                                scheduler_.tick().value, &why)) {
+    error = std::string("the save's tiles: ") + why;
+    return false;
+  }
+  if (saved.player.has_value()) {
+    input::ActionMap map;
+    input::InputLog log;
+    if (!world::read_save_player(save_dir, *saved.player, map, log, error)) return false;
+    if (!bind_player(map, log, saved.player->action, saved.player->speed, saved.player->observer,
+                     error)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+std::optional<world::SaveRing> RuntimeWorld::save_ring() const {
+  if (streamed_ == nullptr) return std::nullopt;
+  const Streamed& s = *streamed_;
+  world::SaveRing out;
+  const world::RingParams& p = s.world.params();
+  out.tile_size = p.tile_size;
+  for (u32 r = 0; r < p.ring_count; ++r)
+    out.rings.push_back(p.radius[r]);
+  out.hysteresis = p.hysteresis;
+  out.max_activations = p.max_activations;
+  out.max_deactivations = p.max_deactivations;
+  out.simulated = s.simulated;
+  out.store = s.keep_store;
+  for (u32 i = 0; i < s.positions.size(); ++i) {
+    world::SaveObserver o;
+    o.position = s.positions[i];
+    o.velocity = s.velocities[i];
+    o.weight = s.weights[i];
+    out.observers.push_back(o);
+  }
+  const world::TileRing& ring = s.world.ring();
+  for (u32 i = 0; i < ring.active_count(); ++i) {
+    const world::TileCoord tile = world::tile_of_key(ring.active_keys()[i]);
+    world::SaveTile t;
+    t.x = tile.x;
+    t.z = tile.z;
+    t.ring = ring.active_rings()[i];
+    out.tiles.push_back(t);
+  }
+  if (s.player.bound()) {
+    world::SavePlayer player;
+    player.observer = s.player.observer();
+    player.action = std::string(s.player.action());
+    player.speed = s.player.speed();
+    out.player = std::move(player);
+  }
+  return out;
+}
+
+void RuntimeWorld::settle() {
+  if (streamed_ == nullptr) return;
+  streamed_->document->settle(streamed_->world.ring());
+}
+
 void RuntimeWorld::stream_update(bool unlimited) {
   if (streamed_ == nullptr) return;
+  // Records a write-back moved into another tile follow it before tiles come and go
+  // (document_tiles.h, `settle`), so what the update lets go is what the tiles hold.
+  settle();
   sim::ObserverSet observers;
   for (u32 i = 0; i < streamed_->positions.size(); ++i)
     observers.add(streamed_->positions[i], streamed_->weights[i]);
@@ -473,8 +716,16 @@ void RuntimeWorld::stream_update(bool unlimited) {
 void RuntimeWorld::advance_observers() {
   if (streamed_ == nullptr) return;
   const f32 seconds = static_cast<f32>(scheduler_.step_size().us) / 1.0e6f;
-  for (u32 i = 0; i < streamed_->positions.size(); ++i)
-    streamed_->positions[i] = streamed_->positions[i] + streamed_->velocities[i] * seconds;
+  // The player's observer moves at what its input asks for this tick; the rest at their own
+  // velocities (input_observer.h: the tick's input is fed here, between ticks, where the ring
+  // runs).
+  world::InputObserver& player = streamed_->player;
+  const u32 steered = player.bound() ? player.observer() : ~u32{0};
+  const Vec3 input = player.bound() ? player.step(scheduler_.tick().value) : Vec3{};
+  for (u32 i = 0; i < streamed_->positions.size(); ++i) {
+    const Vec3 velocity = i == steered ? input : streamed_->velocities[i];
+    streamed_->positions[i] = streamed_->positions[i] + velocity * seconds;
+  }
 }
 
 void RuntimeWorld::begin_report() {
@@ -557,8 +808,10 @@ void RuntimeWorld::log_writeback([[maybe_unused]] const sim::WriteBackBatch& bat
 #if defined(ENGINE_HOST_STORE)
   // The store's log is the persistent world's record of what happened (03 §3.5, ADR-0003): a
   // write-back happened, so it is an event there as well as a commit in the journal. Only where the
-  // document keeps one — `session.events`' convention, `world.db` in its directory.
-  if (!store_checked_) {
+  // document keeps one — `session.events`' convention, `world.db` in its directory — and through
+  // the tile store's connection when the world is streamed with one (`store_log`).
+  store::EventLog* event_log = store_log();
+  if (event_log == nullptr && !store_checked_) {
     store_checked_ = true;
     std::string native;
     const std::string wanted = io::join_path(session_ptr_->dir(), "world.db");
@@ -579,7 +832,8 @@ void RuntimeWorld::log_writeback([[maybe_unused]] const sim::WriteBackBatch& bat
       }
     }
   }
-  if (log_ == nullptr) return;
+  if (event_log == nullptr) event_log = log_.get();
+  if (event_log == nullptr) return;
   const doc::Document& document = session_ptr_->document();
   const u32 type = schema::stable_type_id(schema::type_of<world::WriteBack>().qualified_name);
   Vector<std::string> payloads;
@@ -612,7 +866,7 @@ void RuntimeWorld::log_writeback([[maybe_unused]] const sim::WriteBackBatch& bat
         std::span<const u8>(reinterpret_cast<const u8*>(payloads[i].data()), payloads[i].size());
   }
   const store::Status status =
-      log_->append(std::span<store::EventRecord>(records.data(), records.size()));
+      event_log->append(std::span<store::EventRecord>(records.data(), records.size()));
   if (status != store::Status::Ok) {
     ENGINE_LOG_WARN(log_ops, "write-back events not logged",
                     log::field("status", store::status_name(status)));
@@ -620,8 +874,40 @@ void RuntimeWorld::log_writeback([[maybe_unused]] const sim::WriteBackBatch& bat
 #endif
 }
 
+#if defined(ENGINE_HOST_STORE)
+store::EventLog* RuntimeWorld::store_log() noexcept {
+#if defined(ENGINE_HOST_WORLD)
+  if (streamed_ != nullptr && streamed_->store_open) return &streamed_->store.log();
+#endif
+  return log_.get();
+}
+
+store::Database* RuntimeWorld::store_database() noexcept {
+#if defined(ENGINE_HOST_WORLD)
+  if (streamed_ != nullptr && streamed_->store_open) return &streamed_->store.database();
+#endif
+  return db_.get();
+}
+#endif
+
 OpsHost::OpsHost() noexcept = default;
 OpsHost::~OpsHost() = default;
+
+RuntimeWorld* OpsHost::world_at(std::string_view session, const protocol::SessionManager& sessions,
+                                u64 tick, i64 game_time_us) {
+  RuntimeWorld* existing = world(session, sessions, false);
+  if (existing != nullptr) {
+    for (u32 i = 0; i < worlds_.size(); ++i) {
+      if (worlds_[i].get() == existing) {
+        worlds_.erase_at(i);
+        break;
+      }
+    }
+  }
+  worlds_.push_back(
+      std::make_unique<RuntimeWorld>(std::string(session), SimTick{tick}, GameTime{game_time_us}));
+  return worlds_.back().get();
+}
 
 RuntimeWorld* OpsHost::world(std::string_view session, const protocol::SessionManager& sessions,
                              bool create) {
@@ -1718,16 +2004,16 @@ bool session_run_headless(protocol::Context& ctx, const protocol::RunHeadlessPar
   // them. Otherwise the document into the world before the first tick: all of it on the first
   // call, what changed since on later ones — edits made through doc.apply between two calls reach
   // the world here.
-  const bool streamed = params.stream.has_value();
+  bool streamed = params.stream.has_value();
+  [[maybe_unused]] bool fill = false;
   sim::MaterializeScope scope = sim::MaterializeScope::whole();
   if (streamed) {
 #if defined(ENGINE_HOST_WORLD)
     std::string why;
-    if (!world->stream(*params.stream, why)) {
+    if (!world->stream(*params.stream, fill, why)) {
       error = invalid(std::move(why));
       return false;
     }
-    scope = sim::MaterializeScope::untiled();
 #else
     error = not_built(
         "a streamed world needs the world capability, and this build has none "
@@ -1735,16 +2021,23 @@ bool session_run_headless(protocol::Context& ctx, const protocol::RunHeadlessPar
     return false;
 #endif
   }
+#if defined(ENGINE_HOST_WORLD)
+  // A world that is streamed stays streamed: a call that names no `stream` — or one that declares
+  // no observers — goes on from where the observers are, with no fill, so a run split over calls
+  // (or over a save and a load) is the run that never stopped (world.md, "Save and load").
+  streamed = streamed || world->streaming();
+#endif
+  if (streamed) scope = sim::MaterializeScope::untiled();
   const sim::MaterializeReport pass = world->materialize(session->document(), scope);
   protocol::MaterializeResult report;
   fill_materialize(pass, RuntimeWorld::tier(), report);
   const u64 flushes_before = world->driver_stats().writeback_flushes;
   const u64 fields_before = world->driver_stats().writeback_fields;
 #if defined(ENGINE_HOST_WORLD)
-  // The ring round where the observers start, filled with no budget: the call's own start.
+  // The ring round where the observers were declared, filled with no budget: the call's own start.
   if (streamed) {
     world->begin_report();
-    world->stream_update(true);
+    if (fill) world->stream_update(true);
   }
 #endif
 
@@ -1771,6 +2064,9 @@ bool session_run_headless(protocol::Context& ctx, const protocol::RunHeadlessPar
   // returns — a document term may turn true on this last commit, with the time already out.
   const bool stopped_on_predicate = holds_now;
   world->flush_writeback();
+#if defined(ENGINE_HOST_WORLD)
+  if (streamed) world->settle();
+#endif
   out.wall_ms = ms_since(start_ns);
   out.ticks = ran;
   out.game_seconds = static_cast<f64>(ran) * static_cast<f64>(world->us_per_tick()) / 1.0e6;
@@ -1800,6 +2096,334 @@ bool session_run_headless(protocol::Context& ctx, const protocol::RunHeadlessPar
                   log::field("materialized", out.materialized),
                   log::field("write_backs", out.write_backs), log::field("stopped", out.stopped));
   return true;
+}
+
+// ---- session.state_hash, session.save_game, session.load_game ----------------------------------
+// docs/subsystems/world.md, "Save and load"; ADR-0042. The world capability's: a build without it
+// has no save format, no store to hash and no ring to restore, and says so with 1006.
+
+#if defined(ENGINE_HOST_WORLD)
+// The store a hash reads and a save backs up: the world's own connection when it has one open, or
+// else the document's `world.db` through a read-only connection of this call's, or none. A store
+// whose tables are older than this build's is not read here — a run of the world or a load opens it
+// for writing and migrates it first — because a hash of tables this build does not write would not
+// be the hash a run of it produces.
+struct StoreAccess {
+  std::unique_ptr<store::Database> own;
+  std::unique_ptr<store::EventLog> own_log;
+  store::Database* db = nullptr;
+  store::EventLog* log = nullptr;
+};
+
+bool open_store(RuntimeWorld* world, protocol::Session& session, io::Vfs& vfs, StoreAccess& out,
+                protocol::RpcError& error) {
+  if (world != nullptr && world->store_log() != nullptr) {
+    out.db = world->store_database();
+    out.log = world->store_log();
+    return true;
+  }
+  std::string native;
+  const std::string wanted = io::join_path(session.dir(), world::k_save_store_file);
+  if (vfs.resolve(wanted, native) != io::Status::Ok || !io::exists(native)) return true;
+  out.own = std::make_unique<store::Database>();
+  store::OpenOptions options;
+  options.read_only = true;
+  options.create = false;
+  options.wal = false;  // a read-only connection cannot set a journal mode, and need not
+  store::Status status = out.own->open(native, options);
+  i32 version = 0;
+  if (status == store::Status::Ok) status = out.own->user_version(version);
+  if (status != store::Status::Ok) {
+    error = io_error("cannot read the store '" + native + "': " + store::status_name(status) + " " +
+                     std::string(out.own->last_error()));
+    return false;
+  }
+  if (version != store::EventLog::schema_version()) {
+    error = io_error("the store '" + native + "' has table version " + std::to_string(version) +
+                     " and this build writes " + std::to_string(store::EventLog::schema_version()) +
+                     ": a run of the world, or a load, migrates it first");
+    return false;
+  }
+  out.own_log = std::make_unique<store::EventLog>(*out.own);
+  out.db = out.own.get();
+  out.log = out.own_log.get();
+  return true;
+}
+
+bool hash_session(RuntimeWorld* world, protocol::Session& session, io::Vfs& vfs,
+                  world::StateHash& out, bool& has_store, protocol::RpcError& error) {
+  StoreAccess store;
+  if (!open_store(world, session, vfs, store, error)) return false;
+  has_store = store.log != nullptr;
+  const u64 tick = world != nullptr ? world->tick() : 0;
+  const i64 time = world != nullptr ? world->game_time_us() : 0;
+  const store::Status status = world::state_hash(tick, time, session.document(), store.log, out);
+  if (status != store::Status::Ok) {
+    error = io_error(std::string("the store could not be hashed: ") + store::status_name(status));
+    return false;
+  }
+  return true;
+}
+#endif
+
+bool session_state_hash(protocol::Context& ctx, const protocol::StateHashParams& params,
+                        protocol::StateHashResult& out, protocol::RpcError& error) {
+  protocol::Session* session = ctx.sessions->require(params.session, error);
+  if (session == nullptr) return false;
+#if defined(ENGINE_HOST_WORLD)
+  HostState* state = state_of(ctx);
+  RuntimeWorld* world =
+      state != nullptr ? state->ops.world(params.session, *ctx.sessions, false) : nullptr;
+  if (world != nullptr) world->bind(session, &ctx.sessions->vfs());
+  world::StateHash h;
+  bool has_store = false;
+  if (!hash_session(world, *session, ctx.sessions->vfs(), h, has_store, error)) return false;
+  out.hash = world::hash_hex(h.value);
+  out.tick = world != nullptr ? world->tick() : 0;
+  out.game_time_us = world != nullptr ? world->game_time_us() : 0;
+  out.clock = world::hash_hex(h.clock);
+  out.document = world::hash_hex(h.document);
+  out.events = world::hash_hex(h.events);
+  out.projections = world::hash_hex(h.projections);
+  out.snapshots = world::hash_hex(h.snapshots);
+  out.records = h.records;
+  out.event_count = h.event_count;
+  out.projection_count = h.projection_count;
+  out.snapshot_count = h.snapshot_count;
+  out.store = has_store ? "read" : "absent";
+  return true;
+#else
+  (void)out;
+  error = not_built(
+      "the persistent-state hash is the world capability's, and this build has none "
+      "(ENGINE_WITH_WORLD=OFF or ENGINE_MINIMAL=ON)");
+  return false;
+#endif
+}
+
+bool session_save_game(protocol::Context& ctx, const protocol::SaveGameParams& params,
+                       protocol::SaveGameResult& out, protocol::RpcError& error) {
+  protocol::Session* session = ctx.sessions->require(params.session, error);
+  if (session == nullptr) return false;
+#if defined(ENGINE_HOST_WORLD)
+  const i64 start_ns = time::monotonic_ns();
+  if (params.path.empty()) {
+    error = invalid("path names the directory the save goes in: a new or an empty one");
+    return false;
+  }
+  io::Vfs& vfs = ctx.sessions->vfs();
+  std::string path;
+  std::string document_dir;
+  if (vfs.resolve(params.path, path, true) != io::Status::Ok) {
+    error = invalid("path '" + params.path + "' is not a place a save can be written");
+    return false;
+  }
+  if (vfs.resolve(session->dir(), document_dir) != io::Status::Ok) {
+    error = io_error("the session's document directory '" + session->dir() + "' does not resolve");
+    return false;
+  }
+  HostState* state = state_of(ctx);
+  RuntimeWorld* world =
+      state != nullptr ? state->ops.world(params.session, *ctx.sessions, false) : nullptr;
+  if (world != nullptr) world->bind(session, &vfs);
+
+  // Between calls nothing is pending: every `session.run_headless` ends with the write-back's
+  // flush, so the document already says where the world is, and the save changes nothing.
+  StoreAccess store;
+  if (!open_store(world, *session, vfs, store, error)) return false;
+  world::StateHash h;
+  const u64 tick = world != nullptr ? world->tick() : 0;
+  const i64 game_time = world != nullptr ? world->game_time_us() : 0;
+  if (world::state_hash(tick, game_time, session->document(), store.log, h) != store::Status::Ok) {
+    error = io_error("the store could not be hashed");
+    return false;
+  }
+  world::SaveManifest manifest;
+  manifest.tick = tick;
+  manifest.game_time_us = game_time;
+  manifest.hz = RuntimeWorld::hz();
+  manifest.write_back_every = world != nullptr ? world->writeback_every() : 1;
+  manifest.world_seed = world != nullptr ? world->world_seed() : 1;
+  if (world != nullptr) manifest.ring = world->save_ring();
+  manifest.state_hash = world::hash_hex(h.value);
+  world::SaveInputs inputs;
+  inputs.document_dir = document_dir;
+  inputs.document = &session->document();
+  inputs.store = store.db;
+  inputs.player = world != nullptr ? world->player() : nullptr;
+  std::string why;
+  if (!world::write_save(path, inputs, manifest, why)) {
+    error = invalid(std::move(why));
+    return false;
+  }
+  out.path = path;
+  out.tick = manifest.tick;
+  out.game_time_us = manifest.game_time_us;
+  out.state_hash = manifest.state_hash;
+  out.streamed = manifest.ring.has_value();
+  if (manifest.ring.has_value()) {
+    out.tiles = manifest.ring->tiles.size();
+    out.observers = manifest.ring->observers.size();
+    out.player = manifest.ring->player.has_value();
+  }
+  for (const world::SaveFile& file : manifest.files) {
+    protocol::SaveGameFile f;
+    f.path = file.path;
+    f.bytes = file.bytes;
+    f.hash = file.hash;
+    out.bytes += file.bytes;
+    out.files.push_back(std::move(f));
+  }
+  out.ms = ms_since(start_ns);
+  ENGINE_LOG_INFO(log_ops, "save_game", log::field("session", params.session),
+                  log::field("path", path), log::field("tick", out.tick),
+                  log::field("state_hash", out.state_hash), log::field("bytes", out.bytes));
+  return true;
+#else
+  (void)params;
+  (void)out;
+  error = not_built(
+      "a save game is the world capability's, and this build has none (ENGINE_WITH_WORLD=OFF or "
+      "ENGINE_MINIMAL=ON)");
+  return false;
+#endif
+}
+
+bool session_load_game(protocol::Context& ctx, const protocol::LoadGameParams& params,
+                       protocol::LoadGameResult& out, protocol::RpcError& error) {
+#if defined(ENGINE_HOST_WORLD)
+  const i64 start_ns = time::monotonic_ns();
+  HostState* state = state_of(ctx);
+  if (state == nullptr) {
+    error = not_built("this host has no runtime worlds attached");
+    return false;
+  }
+  if (params.path.empty() || params.dir.empty()) {
+    error = invalid("path is the save's directory and dir a new or empty one to load it into");
+    return false;
+  }
+  io::Vfs& vfs = ctx.sessions->vfs();
+  std::string save_dir;
+  std::string target;
+  if (vfs.resolve(params.path, save_dir) != io::Status::Ok) {
+    error = invalid("path '" + params.path + "' does not resolve");
+    return false;
+  }
+  if (vfs.resolve(params.dir, target, true) != io::Status::Ok) {
+    error = invalid("dir '" + params.dir + "' is not a place a document can be written");
+    return false;
+  }
+  // Everything a load must know before it touches anything: the save is one, of versions this
+  // build reads, with every file as its manifest says.
+  world::SaveManifest manifest;
+  world::SaveCheck check;
+  std::string why;
+  if (!world::read_save(save_dir, manifest, check, why)) {
+    error = protocol::make_error(protocol::codes::k_validation_failed, std::move(why));
+    return false;
+  }
+  if (manifest.hz != RuntimeWorld::hz()) {
+    error = invalid("the save's world ran at " + std::to_string(manifest.hz) +
+                    " Hz and this host's runs at " + std::to_string(RuntimeWorld::hz()));
+    return false;
+  }
+  if (io::exists(target)) {
+    Vector<io::DirEntry> entries;
+    if (io::list_directory(target, entries) != io::Status::Ok || !entries.empty()) {
+      error = invalid("dir '" + target +
+                      "' is not empty: a save is loaded into a new directory, never over one");
+      return false;
+    }
+  } else if (io::make_directories(target) != io::Status::Ok) {
+    error = io_error("cannot create '" + target + "'");
+    return false;
+  }
+  if (!world::restore_save_files(save_dir, manifest, target, why)) {
+    error = io_error(std::move(why));
+    return false;
+  }
+  // The store's tables to this build's version before anything reads them: a step per version,
+  // each with its own transaction (store.md, "Migrations").
+  if (!manifest.store.empty()) {
+    store::Database db;
+    store::OpenOptions options;
+    options.create = false;
+    store::Status status = db.open(io::join_path(target, world::k_save_store_file), options);
+    store::EventLog migrate(db);
+    if (status == store::Status::Ok) status = migrate.open();
+    if (status != store::Status::Ok) {
+      error = io_error(std::string("the save's store could not be opened: ") +
+                       store::status_name(status) + " " + std::string(db.last_error()));
+      return false;
+    }
+  }
+  protocol::SessionOpenParams open;
+  open.path = params.dir;
+  protocol::Session* session = ctx.sessions->open(open, error);
+  if (session == nullptr) return false;
+  const std::string session_id = session->id();
+  auto refuse = [&](protocol::RpcError e) {
+    ctx.sessions->close(session_id);
+    error = std::move(e);
+    return false;
+  };
+
+  // A world at the save's clock: the tick and game time go on from where the save was taken.
+  RuntimeWorld* world =
+      state->ops.world_at(session_id, *ctx.sessions, manifest.tick, manifest.game_time_us);
+  world->bind(session, &vfs);
+  world->set_writeback_every(manifest.write_back_every);
+  if (manifest.ring.has_value()) {
+    // As the first streamed call did: what no tile holds, whole; then the tiles the ring held.
+    world->materialize(session->document(), sim::MaterializeScope::untiled());
+    if (!world->restore_ring(*manifest.ring, save_dir, manifest.world_seed, why)) {
+      return refuse(protocol::make_error(protocol::codes::k_validation_failed, std::move(why)));
+    }
+  } else {
+    world->materialize(session->document(), sim::MaterializeScope::whole());
+  }
+
+  world::StateHash h;
+  bool has_store = false;
+  protocol::RpcError hash_error;
+  if (!hash_session(world, *session, vfs, h, has_store, hash_error)) return refuse(hash_error);
+  out.session = session_id;
+  out.dir = target;
+  out.tick = world->tick();
+  out.game_time_us = world->game_time_us();
+  out.saved_state_hash = manifest.state_hash;
+  out.state_hash = world::hash_hex(h.value);
+  for (std::string& step : check.migrations)
+    out.migrations.push_back(std::move(step));
+  // A load that migrated nothing reproduces the state the save recorded, or it is not a load.
+  if (out.migrations.empty() && out.state_hash != out.saved_state_hash) {
+    return refuse(protocol::make_error(
+        protocol::codes::k_validation_failed,
+        "the loaded world's state hash " + out.state_hash + " is not the " + out.saved_state_hash +
+            " the save recorded, with nothing migrated: the save does not load as it was written"));
+  }
+  out.streamed = manifest.ring.has_value();
+  if (manifest.ring.has_value()) {
+    out.tiles = manifest.ring->tiles.size();
+    out.observers = manifest.ring->observers.size();
+    out.player = manifest.ring->player.has_value();
+  }
+  out.materialized = world->materialized();
+  out.ms = ms_since(start_ns);
+  ENGINE_LOG_INFO(log_ops, "load_game", log::field("session", session_id),
+                  log::field("save", save_dir), log::field("tick", out.tick),
+                  log::field("state_hash", out.state_hash),
+                  log::field("migrations", static_cast<u32>(out.migrations.size())));
+  return true;
+#else
+  (void)ctx;
+  (void)params;
+  (void)out;
+  error = not_built(
+      "a save game is the world capability's, and this build has none (ENGINE_WITH_WORLD=OFF or "
+      "ENGINE_MINIMAL=ON)");
+  return false;
+#endif
 }
 
 // ---- engine.run_tests --------------------------------------------------------------------------
@@ -2047,6 +2671,31 @@ void add_ops_methods(protocol::Dispatcher& d) {
       "Materialize the session's document (or one tile of it) into its runtime world now, and "
       "report which record types mapped, how many records became entities, which were skipped and "
       "why, and every mapping this build compiled.")));
+  // Read-only in the protocol's sense (protocol.md, "Identity, and what a role restricts"): none
+  // changes a document, a lease or a host setting. A save writes a new directory from what the
+  // session holds, as `doc.save` and `render.capture` write theirs; a load opens a new session on a
+  // new directory, as `session.open` with `create` does; the hash reads.
+  d.add(protocol::read_only(protocol::method<protocol::StateHashParams, protocol::StateHashResult,
+                                             &session_state_hash>(
+      "session.state_hash",
+      "The persistent-state hash of the session's world (plan 05 section 5.10): its clock, its "
+      "document's live records composed across the layers, and its store's events, projections "
+      "and snapshots in key order, as one 64-bit number and its parts. Two runs of a world agree "
+      "on it exactly when they left the same persistent state; a replay compares it.")));
+  d.add(protocol::read_only(protocol::method<protocol::SaveGameParams, protocol::SaveGameResult,
+                                             &session_save_game>(
+      "session.save_game",
+      "Save the session's running world into a new directory: its document, a consistent backup "
+      "of its store, the clock and seed, the streamed world's observers and active tiles, the "
+      "player's input log so far, and a save.json naming and hashing every file. Changes nothing "
+      "in the session.")));
+  d.add(protocol::read_only(protocol::method<protocol::LoadGameParams, protocol::LoadGameResult,
+                                             &session_load_game>(
+      "session.load_game",
+      "Open a session on a save: its document and store copied into a new directory, the world "
+      "made at the save's tick with its tiles, observers and player restored, so "
+      "session.run_headless continues the run. Refuses a save newer than this build or whose files "
+      "do not match its manifest, naming what is wrong; migrates an older one.")));
   d.add(protocol::read_only(
       protocol::method<protocol::RunTestsParams, protocol::RunTestsResult, &engine_run_tests>(
           "engine.run_tests",

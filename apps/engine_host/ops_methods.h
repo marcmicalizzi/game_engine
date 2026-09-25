@@ -56,6 +56,10 @@ class OpsHost {
   // is unreachable, and holding a flecs world for it would be a leak with a name.
   RuntimeWorld* world(std::string_view session, const protocol::SessionManager& sessions,
                       bool create);
+  // A world for the session made at a clock — a loaded save's tick and game time — replacing any
+  // world the session had (docs/subsystems/world.md, "Save and load").
+  RuntimeWorld* world_at(std::string_view session, const protocol::SessionManager& sessions,
+                         u64 tick, i64 game_time_us);
   u32 count() const noexcept { return worlds_.size(); }
   RuntimeWorld* at(u32 index) noexcept { return worlds_[index].get(); }
 
