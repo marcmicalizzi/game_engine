@@ -63,7 +63,8 @@ struct BridgeOptions {
 };
 
 // Whether a protocol method is in the long class: render.load, render.capture, render.benchmark,
-// render.evaluate, render.compare, content.build, session.run_headless and engine.run_tests.
+// render.evaluate, render.compare, content.build, session.run_headless, engine.run_tests, and
+// session.save_game and session.load_game, which copy a world's store and document.
 bool is_long_call(std::string_view method) noexcept;
 // The deadline a call to `method` gets under these options, in milliseconds; 0 is none.
 u64 call_deadline_ms(const BridgeOptions& options, std::string_view method) noexcept;

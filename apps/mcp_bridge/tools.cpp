@@ -1805,6 +1805,86 @@ void run_run_headless(Bridge& b, const JsonValue& args, ToolOutcome& out) {
   out.data = r;
 }
 
+// ---- save and load (session.state_hash, session.save_game, session.load_game) -----------------
+// docs/subsystems/world.md, "Save and load". Thin, like the rest: the host's results are what an
+// agent reads, and the bridge adds a line saying what to do next.
+
+bool schema_state_hash(Bridge& b, JsonValue& s, std::string& e) {
+  return schema_session_ref(b, "session.state_hash", s, e);
+}
+
+void run_state_hash(Bridge& b, const JsonValue& args, ToolOutcome& out) {
+  JsonValue r;
+  if (!b.call("session.state_hash", args, r, out)) return;
+  out.summary =
+      "State hash " + text_of(r, "hash") + " at tick " + std::to_string(uint_of(r, "tick")) +
+      ": document " + text_of(r, "document") + " (" + std::to_string(uint_of(r, "records")) +
+      " records), events " + text_of(r, "events") + " (" +
+      std::to_string(uint_of(r, "event_count")) + "), projections " + text_of(r, "projections") +
+      " (" + std::to_string(uint_of(r, "projection_count")) + "), snapshots " +
+      text_of(r, "snapshots") + " (" + std::to_string(uint_of(r, "snapshot_count")) +
+      "); the store is " + text_of(r, "store") +
+      ". Two runs of a world agree on it exactly when they left the same persistent state.";
+  out.data = r;
+}
+
+bool schema_save_game(Bridge& b, JsonValue& s, std::string& e) {
+  if (!schema_session_ref(b, "session.save_game", s, e)) return false;
+  note(s, "path",
+       "A new or empty directory outside the document's, on the host; relative paths are relative "
+       "to where engine-mcp started.");
+  require(s, {"session", "path"});
+  return true;
+}
+
+void run_save_game(Bridge& b, const JsonValue& args, ToolOutcome& out) {
+  JsonValue r;
+  if (!b.call("session.save_game", args, r, out)) return;
+  const JsonValue* files = r.find("files");
+  out.summary = "Saved tick " + std::to_string(uint_of(r, "tick")) + " to " + text_of(r, "path") +
+                ": " + std::to_string(files != nullptr ? files->size() : 0) + " files, " +
+                std::to_string(uint_of(r, "bytes")) + " bytes, state hash " +
+                text_of(r, "state_hash") +
+                (bool_of(r, "streamed")
+                     ? ", the streamed world's " + std::to_string(uint_of(r, "tiles")) +
+                           " tiles and " + std::to_string(uint_of(r, "observers")) + " observers" +
+                           (bool_of(r, "player") ? " and its player's input" : "")
+                     : std::string()) +
+                ". load_game opens a new session on it and continues the run.";
+  out.data = r;
+  link(out, file_uri(text_of(r, "path") + "/save.json"), "save.json", "application/json");
+}
+
+bool schema_load_game(Bridge& b, JsonValue& s, std::string& e) {
+  if (!b.schemas().params_schema("session.load_game", s, e)) return false;
+  note(s, "path", "The save's directory, the one holding its save.json.");
+  note(s, "dir",
+       "A new or empty directory the save's document and store are copied into; the new session "
+       "works there and the save itself is never written.");
+  require(s, {"path", "dir"});
+  return true;
+}
+
+void run_load_game(Bridge& b, const JsonValue& args, ToolOutcome& out) {
+  JsonValue r;
+  if (!b.call("session.load_game", args, r, out)) return;
+  const JsonValue* steps = r.find("migrations");
+  std::string migrated;
+  for (usize i = 0; steps != nullptr && i < steps->size(); ++i)
+    migrated += (i == 0 ? "" : ", ") + std::string((*steps)[i].as_string());
+  out.summary =
+      "Loaded into session " + text_of(r, "session") + " at tick " +
+      std::to_string(uint_of(r, "tick")) + ", state hash " + text_of(r, "state_hash") +
+      (migrated.empty()
+           ? " (as saved)"
+           : " (saved as " + text_of(r, "saved_state_hash") + "; migrated: " + migrated + ")") +
+      ", " + std::to_string(uint_of(r, "materialized")) +
+      " entities materialized. run_headless on the new session continues the run: " +
+      (bool_of(r, "streamed") ? "declare no observers, and hand the player's log over again."
+                              : "nothing needs declaring.");
+  out.data = r;
+}
+
 bool schema_materialize(Bridge& b, JsonValue& s, std::string& e) {
   return schema_session_ref(b, "session.materialize", s, e);
 }
@@ -2237,6 +2317,21 @@ constexpr ToolDef k_tools[] = {
      "Materialize the session's document into its runtime world now and report which record "
      "types mapped, what became an entity, what was skipped and why, and every mapping.",
      "session.materialize", false, false, true, &schema_materialize, &run_materialize},
+    {"state_hash", "Hash the world's state",
+     "The persistent-state hash of a session's world: its clock, its document's live records and "
+     "its store's events, projections and snapshots, as one number and its parts. Two runs of a "
+     "world agree on it exactly when they left the same persistent state: what a replay compares.",
+     "session.state_hash", true, false, true, &schema_state_hash, &run_state_hash},
+    {"save_game", "Save the world",
+     "Save a session's running world into a new directory: its document, a backup of its store, "
+     "its clock, the streamed world's observers and tiles, the player's input so far, and a "
+     "save.json naming and hashing every file. Changes nothing in the session.",
+     "session.save_game", false, false, false, &schema_save_game, &run_save_game},
+    {"load_game", "Load a saved world",
+     "Open a new session on a save, copied into a new directory, with the world at the save's "
+     "tick so run_headless continues the run. Refuses a save newer than this engine or whose "
+     "files do not match its manifest, naming what is wrong; migrates an older one.",
+     "session.load_game", false, false, false, &schema_load_game, &run_load_game},
     {"run_tests", "Run the engine's checks",
      "Run the document, tissue and content validators that are safe inside the host and get one "
      "structured report.",

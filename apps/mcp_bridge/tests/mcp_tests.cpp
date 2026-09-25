@@ -339,7 +339,7 @@ TEST_CASE("mcp: tools/list gives every tool a JSON Schema generated from the eng
       "scenes",         "unload",        "get_logs",      "adapters",      "host_info",
       "build_content",  "events",        "budgets",       "run_headless",  "run_tests",
       "acquire_lease",  "renew_lease",   "release_lease", "leases",        "propose_layer",
-      "promote"};
+      "promote",        "state_hash",    "save_game",     "load_game"};
   for (usize i = 0; i < tools.size(); ++i) {
     const JsonValue& t = tools[i];
     const std::string name = str(t, "name");
@@ -420,8 +420,12 @@ TEST_CASE("mcp: tools/list gives every tool a JSON Schema generated from the eng
 
   // Annotations, which a client uses to decide what to ask the user about.
   for (usize i = 0; i < tools.size(); ++i) {
-    if (str(tools[i], "name") == "objects" || str(tools[i], "name") == "scenes") {
+    if (str(tools[i], "name") == "objects" || str(tools[i], "name") == "scenes" ||
+        str(tools[i], "name") == "state_hash") {
       CHECK(at(at(tools[i], "annotations"), "readOnlyHint") == JsonValue(true));
+    }
+    if (str(tools[i], "name") == "save_game" || str(tools[i], "name") == "load_game") {
+      CHECK(at(at(tools[i], "annotations"), "readOnlyHint") == JsonValue(false));
     }
     if (str(tools[i], "name") == "delete_object" || str(tools[i], "name") == "unload") {
       CHECK(at(at(tools[i], "annotations"), "destructiveHint") == JsonValue(true));
@@ -839,6 +843,45 @@ TEST_CASE("mcp: scenes and unload with nothing loaded") {
   const JsonValue missing = mcp.tool("unload", "{}");
   CHECK(is_error(missing));
   CHECK(text_of(missing).find("missing required argument 'scene'") != std::string::npos);
+}
+
+// Save and load through the bridge (apps.md, "The tools"; world.md, "Save and load"): the hash of a
+// fresh document, a save of it into the workspace and a load into a second session, whose hash is
+// the first's — or, on a host without the world capability, 1006 for each.
+TEST_CASE("mcp: state_hash, save_game and load_game round trip a session") {
+  const test::TempDir tmp("mcp_bridge_save");
+  Mcp mcp(tmp.file("ws"));
+  REQUIRE(mcp.ok);
+  mcp.initialize();
+  const std::string session =
+      str(ok(mcp.tool("open_session", "{\"path\":\"" + tmp.file("doc") + "\",\"create\":true}")),
+          "session");
+  const JsonValue hashed = mcp.tool("state_hash", "{\"session\":\"" + session + "\"}");
+  if (is_error(hashed)) {
+    CHECK(num(at(data_of(hashed), "error"), "code") == 1006);
+    return;
+  }
+  const std::string hash = str(ok(hashed), "hash");
+  CHECK(hash.size() == 16);
+  CHECK(text_of(hashed).find("State hash " + hash) != std::string::npos);
+
+  const std::string save = tmp.file("save");
+  const JsonValue saved =
+      mcp.tool("save_game", "{\"session\":\"" + session + "\",\"path\":\"" + save + "\"}");
+  CHECK(str(ok(saved), "state_hash") == hash);
+  CHECK(text_of(saved).find("load_game opens a new session") != std::string::npos);
+  CHECK(std::filesystem::exists(save + "/save.json"));
+  const JsonValue loaded =
+      mcp.tool("load_game", "{\"path\":\"" + save + "\",\"dir\":\"" + tmp.file("loaded") + "\"}");
+  const std::string other = str(ok(loaded), "session");
+  CHECK(other != session);
+  CHECK(str(ok(loaded), "state_hash") == hash);
+  CHECK(text_of(loaded).find("(as saved)") != std::string::npos);
+  CHECK(str(ok(mcp.tool("state_hash", "{\"session\":\"" + other + "\"}")), "hash") == hash);
+  // A load needs somewhere to go.
+  const JsonValue nowhere = mcp.tool("load_game", "{\"path\":\"" + save + "\"}");
+  CHECK(is_error(nowhere));
+  CHECK(text_of(nowhere).find("missing required argument 'dir'") != std::string::npos);
 }
 
 // No commas in this name: doctest splits a -tc/-tce filter at them, and this is the one case a

@@ -53,8 +53,9 @@ bool is_long_call(std::string_view method) noexcept {
   // a host that has stopped. render.unload and render.scenes are in the short class: they release
   // or list what is there, and the release waits only for the frames already submitted.
   constexpr std::string_view k_long[] = {
-      "render.load",    "render.capture", "render.benchmark",     "render.evaluate",
-      "render.compare", "content.build",  "session.run_headless", "engine.run_tests"};
+      "render.load",       "render.capture",   "render.benchmark",     "render.evaluate",
+      "render.compare",    "content.build",    "session.run_headless", "engine.run_tests",
+      "session.save_game", "session.load_game"};
   for (const std::string_view m : k_long) {
     if (method == m) return true;
   }
