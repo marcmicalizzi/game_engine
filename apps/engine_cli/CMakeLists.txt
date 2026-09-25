@@ -7,7 +7,7 @@ engine_app(NAME engine_cli OUTPUT engine-cli
   SOURCES main.cpp
   DEPS base containers json platform
   E2E_TESTS tests/cli_tests.cpp tests/render_tests.cpp tests/ops_tests.cpp tests/policy_tests.cpp
-            tests/save_tests.cpp)
+            tests/save_tests.cpp tests/npc_replay_tests.cpp)
 if(TARGET engine_engine_cli_tests)
   target_compile_definitions(engine_engine_cli_tests PRIVATE ENGINE_HOST_PATH="$<TARGET_FILE:engine_engine_host>")
   add_dependencies(engine_engine_cli_tests engine_engine_host)
@@ -31,6 +31,13 @@ if(TARGET engine_engine_cli_tests)
   # capability (docs/subsystems/world.md); without it the `stream` field is 1006 Unavailable.
   if(TARGET engine::world)
     target_compile_definitions(engine_engine_cli_tests PRIVATE ENGINE_CLI_TESTS_WORLD=1)
+  endif()
+  # A world of 10^5 scheduled residents, streamed, saved, loaded and replayed (npc.md, "Held to the
+  # clause"): the test writes its document with the generator itself, so it links the capability
+  # exactly when the host has it and the world to stream it.
+  if(TARGET engine::npc AND TARGET engine::world)
+    target_link_libraries(engine_engine_cli_tests PRIVATE engine::npc)
+    target_compile_definitions(engine_engine_cli_tests PRIVATE ENGINE_CLI_TESTS_NPC=1)
   endif()
   # engine.run_tests runs the tissue validators when the host has the tissue capability; the case
   # makes its fixture with `engine-content tissue example`, which is built in the same

@@ -19,7 +19,7 @@
 set(_host_deps base containers hash json log io image memory tunables protocol renderer schema
                schemas bench time platform jobs geometry gfx sim content_build doc input)
 set(_host_defs)
-foreach(_cap audio ecs animation audio_system kinematics store tissue world)
+foreach(_cap audio ecs animation audio_system kinematics npc store tissue world)
   if(TARGET engine::${_cap})
     list(APPEND _host_deps ${_cap})
     string(TOUPPER ${_cap} _cap_upper)

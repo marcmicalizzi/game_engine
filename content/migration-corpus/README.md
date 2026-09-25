@@ -21,6 +21,17 @@ Every save so far holds the same world, the one the replay test runs ([world](..
 
 `v1` recorded `8a6d7d078e00bcbf` when it was written and was measured then to load to that same hash and run on to `65b302f6a95c001d`; its two migrations moved both, because the store's events now carry a payload version and the hash reads it. **Migrated, `v1` is exactly `v2`**: the same hash once loaded, which is also the hash `v2` recorded, and the same hash a second later. The migration produces what the current version writes, not merely something that loads.
 
+### The resident save: written on the owner's machine, not yet here
+
+The npc capability's record types (`engine.npc.Resident`, `engine.npc.Place`, [npc](../../docs/subsystems/npc.md)) join the corpus through a save of their own, `v2-residents`: the same save format as `v2`, holding a world of 400 generated residents and their places on 64 m tiles, streamed round the replay test's walking and still observers and saved at tick 300. It is written by `apps/engine_cli/tests/npc_replay_tests.cpp`'s helper, "save corpus: write the resident save when asked", which does nothing unless `ENGINE_SAVE_CORPUS_NPC_OUT` names the directory:
+
+```powershell
+$env:ENGINE_SAVE_CORPUS_NPC_OUT = "content/migration-corpus/saves/v2-residents"
+build/msvc-debug/apps/engine_cli/engine_engine_cli_tests.exe -tc="save corpus: write the resident*"
+```
+
+It is not committed yet: the capability was built in an environment that could not build engine-host or the store, so the save and its row in the table above and in `corpus()` are added, as step 2 and 3 below say, on the owner's machine. Until then a build without the npc capability refuses nothing here, and a build with it has no corpus entry that names its types.
+
 ### Adding a version
 
 When a change bumps a version a save names — a field added to the manifest's types, a store table migration, a record type's `@version` — the change also adds the save the new version writes, and the older saves stay:

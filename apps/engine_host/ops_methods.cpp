@@ -59,6 +59,9 @@
 #if defined(ENGINE_HOST_KINEMATICS)
 #include <systems/kinematics/kinematics.h>
 #endif
+#if defined(ENGINE_HOST_NPC)
+#include <systems/npc/npc.h>
+#endif
 #if defined(ENGINE_HOST_ANIMATION)
 #include <systems/animation/animation.h>
 #include <systems/animation/library.h>
@@ -270,6 +273,14 @@ class RuntimeWorld {
 #if defined(ENGINE_HOST_KINEMATICS)
   kinematics::KinematicsSystem kinematics_;
 #endif
+#if defined(ENGINE_HOST_NPC)
+  // Scheduled residents (docs/subsystems/npc.md): their routines on the scheduler's wheel, their
+  // tiers from the ring's observers when the world is streamed (`npc_observers_`, refreshed between
+  // ticks where the ring runs), and the place index read from the session's document at the start
+  // of every call that materializes.
+  npc::NpcSystem npc_;
+  sim::ObserverSet npc_observers_;
+#endif
 #if defined(ENGINE_HOST_ANIMATION)
   // An empty library: the capability is installed and its three systems tick, over the instances
   // something attaches — a record whose mapping names `AnimationPlayer`, once a clip is loaded.
@@ -349,6 +360,10 @@ RuntimeWorld::RuntimeWorld(std::string session_id, SimTick start_tick, GameTime 
       ,
       sim_(world_config(k_hz)),
       records_(sim_.world())
+#if defined(ENGINE_HOST_NPC)
+      ,
+      npc_(npc::config_from_tunables())
+#endif
 #if defined(ENGINE_HOST_ANIMATION)
       ,
       animation_(library_)
@@ -368,6 +383,11 @@ RuntimeWorld::RuntimeWorld(std::string session_id, SimTick start_tick, GameTime 
 #if defined(ENGINE_HOST_KINEMATICS)
   kinematics_.install(sim_);
 #endif
+#if defined(ENGINE_HOST_NPC)
+  // The world seed of a headless run is the store's, 1 until a document carries one (world.md, "Not
+  // yet"); a streamed world sets it again from its store.
+  npc_.install(sim_, scheduler_);
+#endif
 #if defined(ENGINE_HOST_ANIMATION)
   animation_.install(sim_);
 #endif
@@ -379,6 +399,10 @@ RuntimeWorld::RuntimeWorld(std::string session_id, SimTick start_tick, GameTime 
   scheduler_.add_hooks(records_.hooks());
 #if defined(ENGINE_HOST_ANIMATION)
   scheduler_.add_hooks(animation_.hooks());
+#endif
+#if defined(ENGINE_HOST_NPC)
+  // After the entity store's: it attaches to the entity that hook made, and lets go of it first.
+  scheduler_.add_hooks(npc_.hooks());
 #endif
   driver_.set_target(records_.target());
 #endif
@@ -399,6 +423,11 @@ RuntimeWorld::~RuntimeWorld() = default;
 
 sim::MaterializeReport RuntimeWorld::materialize(const doc::Document& document,
                                                  const sim::MaterializeScope& scope) {
+#if defined(ENGINE_HOST_NPC)
+  // Every call that materializes starts here, before any tile of the ring comes in: the places a
+  // resident goes between, read from the document whatever tiles are live.
+  npc_.refresh_places(document);
+#endif
   return driver_.materialize(document, scope);
 }
 
@@ -484,6 +513,12 @@ bool RuntimeWorld::make_stream(const world::RingParams& ring, u32 simulated_ring
     }
   }
   streamed_ = std::move(made);
+#if defined(ENGINE_HOST_NPC)
+  // Residents take their tiers from the ring's observers: materialized at LOD2 inside the simulated
+  // rings, promoted by distance (05 §5.5 step 4).
+  npc_.set_observers(&npc_observers_);
+  npc_.set_world_seed(streamed_->store.world_seed());
+#endif
   ENGINE_LOG_INFO(log_ops, "world", log::field("session", session_),
                   log::field("tile_size", ring.tile_size), log::field("rings", ring.ring_count),
                   log::field("simulated", simulated), log::field("store", streamed_->store_open));
@@ -614,6 +649,10 @@ bool RuntimeWorld::restore_ring(const world::SaveRing& saved, std::string_view s
   ring.max_deactivations = saved.max_deactivations;
   if (!make_stream(ring, saved.simulated, saved.store, error)) return false;
   streamed_->store.set_world_seed(world_seed);
+#if defined(ENGINE_HOST_NPC)
+  npc_.set_world_seed(world_seed);
+  npc_.refresh_places(session_ptr_->document());
+#endif
   for (const world::SaveObserver& o : saved.observers) {
     streamed_->positions.push_back(o.position);
     streamed_->velocities.push_back(o.velocity);
@@ -632,6 +671,13 @@ bool RuntimeWorld::restore_ring(const world::SaveRing& saved, std::string_view s
   sim::ObserverSet observers;
   for (u32 i = 0; i < streamed_->positions.size(); ++i)
     observers.add(streamed_->positions[i], streamed_->weights[i]);
+#if defined(ENGINE_HOST_NPC)
+  // The residents the restored tiles bring in take their tiers from the same observers a stream
+  // update would have given them. Tiers are not saved: they decide what runs, not what is true.
+  npc_observers_.clear();
+  for (u32 i = 0; i < streamed_->positions.size(); ++i)
+    npc_observers_.add(streamed_->positions[i], streamed_->weights[i]);
+#endif
   const char* why = nullptr;
   if (!streamed_->world.restore(std::span<const world::TileCoord>(tiles.data(), tiles.size()),
                                 std::span<const u8>(rings.data(), rings.size()), observers,
@@ -703,6 +749,11 @@ void RuntimeWorld::stream_update(bool unlimited) {
   sim::ObserverSet observers;
   for (u32 i = 0; i < streamed_->positions.size(); ++i)
     observers.add(streamed_->positions[i], streamed_->weights[i]);
+#if defined(ENGINE_HOST_NPC)
+  npc_observers_.clear();
+  for (u32 i = 0; i < streamed_->positions.size(); ++i)
+    npc_observers_.add(streamed_->positions[i], streamed_->weights[i]);
+#endif
   const world::UpdateStats& s =
       streamed_->world.update(observers, scheduler_.tick().value, unlimited);
   ++streamed_->updates;
