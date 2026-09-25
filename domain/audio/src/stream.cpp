@@ -178,7 +178,11 @@ void fill_stream(Stream& s) noexcept {
     const u64 slot = filled % capacity;
     u64 n = room - 1u;
     if (n > capacity - slot) n = capacity - slot;  // up to the ring's end; the next read wraps
-    if (n > k_stream_fill_chunk) n = k_stream_fill_chunk;
+    // A decoder's output is published a chunk at a time, so a voice can start on the first while
+    // the next decodes. A built clip's frames need no decoding, and there the cost is the number of
+    // reads, so they are read in one piece up to the ring's end.
+    if (n > k_stream_fill_chunk && s.source.kind != ClipSourceKind::ClipFile)
+      n = k_stream_fill_chunk;
     const u32 want = static_cast<u32>(n);
     const u32 got = read_source(s, ring + slot * channels, want);
     if (s.failed) break;

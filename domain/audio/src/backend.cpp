@@ -163,7 +163,17 @@ struct StreamDecoder {
   u64 position = 0;
   ma_decoder decoder;
   bool open = false;
+  // A file is read ahead a window at a time: the decoders ask for a few kilobytes per call, and a
+  // positional read is a system call and a wait, so without it a quarter second of 16-bit stereo
+  // was a dozen reads (audio.stream.fill_wav_file, docs/subsystems/audio.md "Streaming").
+  Vector<u8> window;
+  u64 window_start = 0;
+  u64 window_bytes = 0;
 };
+
+// The read-ahead window: 64 KiB is a whole fill of 16-bit stereo (48 KB at the default fill-ahead)
+// in one read, and a hundredth of a stream's ring in memory.
+inline constexpr u64 k_stream_read_ahead = 64u * 1024u;
 
 namespace {
 
@@ -197,8 +207,27 @@ ma_result vfs_read(ma_vfs*, ma_vfs_file file, void* dst, size_t bytes, size_t* r
   if (n == 0) return bytes == 0 ? MA_SUCCESS : MA_AT_END;
   u64 got = n;
   if (d.source.file != nullptr) {
-    if (d.source.file->read_at(d.position, dst, n, got) != io::Status::Ok) return MA_IO_ERROR;
-    if (got == 0) return MA_AT_END;
+    const bool inside =
+        d.position >= d.window_start && d.position + n <= d.window_start + d.window_bytes;
+    if (!inside && n < k_stream_read_ahead) {
+      // Refill the window from here: one read serves this call and the next several.
+      if (d.window.size() != k_stream_read_ahead) d.window.resize_exact(k_stream_read_ahead);
+      u64 filled = 0;
+      if (d.source.file->read_at(d.position, d.window.data(), k_stream_read_ahead, filled) !=
+          io::Status::Ok) {
+        d.window_bytes = 0;
+        return MA_IO_ERROR;
+      }
+      d.window_start = d.position;
+      d.window_bytes = filled;
+    }
+    if (d.position >= d.window_start && d.position + n <= d.window_start + d.window_bytes) {
+      std::memcpy(dst, d.window.data() + (d.position - d.window_start), static_cast<size_t>(n));
+    } else {
+      // Larger than the window, or past what the file held when it was read: straight through.
+      if (d.source.file->read_at(d.position, dst, n, got) != io::Status::Ok) return MA_IO_ERROR;
+      if (got == 0) return MA_AT_END;
+    }
   } else {
     std::memcpy(dst, d.source.memory.data() + d.position, static_cast<size_t>(n));
   }
