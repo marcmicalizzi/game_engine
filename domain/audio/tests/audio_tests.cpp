@@ -25,6 +25,19 @@ TEST_CASE("audio declares a determinism stance, a 48 kHz mix and its tunables") 
   CHECK(tunable_period_frames() == 480u);
   CHECK(tunable_clip_budget_bytes() == 256ull * 1024u * 1024u);
   CHECK(tunable_layout() == ChannelLayout::Unknown);  // "auto"
+  CHECK(tunable_ramp_frames() == 480u);               // 10 ms
+
+  // The ramp is a time, turned into whole frames at the mix rate.
+  tunables::Tunable* ramp = tunables::find("audio.ramp_ms");
+  REQUIRE(ramp != nullptr);
+  std::string error;
+  REQUIRE(ramp->set_from_text("5", &error));
+  CHECK(tunable_ramp_frames() == 240u);
+  REQUIRE(ramp->set_from_text("2.5", &error));
+  CHECK(tunable_ramp_frames() == 120u);
+  CHECK_FALSE(ramp->set_from_text("0", &error));  // a step is a click: below the range
+  ramp->reset();
+  CHECK(tunable_ramp_frames() == 480u);
 }
 
 TEST_CASE("the layout is chosen from the setting, then the device, and stereo only last") {

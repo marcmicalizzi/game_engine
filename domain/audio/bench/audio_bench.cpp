@@ -7,6 +7,10 @@
 //                      loop's interpolating path, the source model and the stereo panner
 //   audio.mix.2d       stereo clips at pitch 1, 2D on the music bus: the voice loop's cheapest path
 //   audio.mix.3d_51    the first, declared 5.1: what a wider layout's stride costs the panner
+//   audio.mix.3d_turning
+//                      the first, with the listener turning a little every block, so every voice
+//                      has a pan change in flight every block: the fixed-time ramp's price, where
+//                      the rows above are its fast path (the plain multiply-add)
 //
 // The clips are a second long and loop, so the pool is full for every block measured.
 
@@ -30,7 +34,7 @@ Vector<f32> noise(u32 frames, u32 channels, u64 seed) {
   return out;
 }
 
-enum class Kind { Positioned, Flat };
+enum class Kind { Positioned, Flat, Turning };
 
 void run(bench::State& state, Kind kind, ChannelLayout layout) {
   const u32 voices = static_cast<u32>(state.arg());
@@ -63,7 +67,14 @@ void run(bench::State& state, Kind kind, ChannelLayout layout) {
   Vector<f32> out;
   out.resize_exact(480u * mixer.channels());
   mixer.render(out.data(), 480);  // applies the plays; the first block is not the one measured
+  u32 turn = 0;
   while (state.keep_running()) {
+    if (kind == Kind::Turning) {
+      // One command a block, and every positioned voice's pan moves with it.
+      Listener listener;
+      listener.forward = Vec3{0.01f * static_cast<f32>(++turn % 64u), 0.0f, -1.0f};
+      mixer.set_listener(listener);
+    }
     mixer.render(out.data(), 480);
     bench::keep(out[0]);
   }
@@ -82,4 +93,8 @@ ENGINE_BENCH_ARGS(mix_2d, "audio.mix.2d", 1, 16, 64, 256) {
 
 ENGINE_BENCH_ARGS(mix_3d_51, "audio.mix.3d_51", 64) {
   run(state, Kind::Positioned, ChannelLayout::Surround51);
+}
+
+ENGINE_BENCH_ARGS(mix_3d_turning, "audio.mix.3d_turning", 64) {
+  run(state, Kind::Turning, ChannelLayout::Stereo);
 }

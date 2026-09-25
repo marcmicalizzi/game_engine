@@ -37,6 +37,19 @@ tunables::Int clip_budget_mb{"audio.clip_budget_mb", 256, 1, 1 << 16,
 tunables::Int period_frames{"audio.period_frames", 480, 32, 16384,
                             "Frames per device callback at 48 kHz"};
 
+// How long a gain or pan change takes to arrive, and how long a stop fades: a time, not a block
+// (docs/subsystems/audio.md, "Parameter changes ramp in fixed time"). 10 ms because that is the
+// top of the range where a gain change stops being heard as a click and has not yet started to be
+// heard as a fade: a linear ramp of length T filters the step it replaces by sinc(f T), whose
+// envelope is -20 log10(pi f T) — at 10 ms, -30 dB at 1 kHz and -40 dB at 3 kHz, where the ear is
+// most sensitive, against -24 dB and -33 dB at 5 ms and -10 dB at 1 ms — and psychoacoustic
+// practice gates its test tones with 5 to 10 ms ramps for exactly that reason. The long end of the
+// range also finishes inside one 60 Hz tick (16.7 ms), so a source the tick moves every tick
+// follows it without lagging a ramp behind, and it is what v0's per-block ramp was at the default
+// 480-frame period, so the default configuration sounds as it did. Read once, by the mixer.
+tunables::Float ramp_ms{"audio.ramp_ms", 10.0, 1.0, 100.0,
+                        "Time a gain or pan change takes to reach its target, and a stop to fade"};
+
 // The speaker layout the master is declared with. "auto" takes the device's own (device.h,
 // `resolve_layout`); a name forces it, and a device that is something else gets the platform's
 // channel conversion. The choices are indexed by `ChannelLayout`, whose `Unknown` is "auto".
@@ -54,6 +67,11 @@ u64 tunable_clip_budget_bytes() noexcept {
   return static_cast<u64>(clip_budget_mb.get()) * 1024u * 1024u;
 }
 u32 tunable_period_frames() noexcept { return static_cast<u32>(period_frames.get()); }
+u32 tunable_ramp_frames() noexcept {
+  // Whole frames at the mix rate, rounded; at least one, which is a step.
+  const f64 frames = ramp_ms.get() * static_cast<f64>(k_sample_rate) / 1000.0 + 0.5;
+  return frames < 1.0 ? 1u : static_cast<u32>(frames);
+}
 ChannelLayout tunable_layout() noexcept { return layout.get(); }
 
 }  // namespace engine::audio

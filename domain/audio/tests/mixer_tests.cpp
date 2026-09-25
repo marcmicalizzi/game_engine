@@ -210,43 +210,120 @@ TEST_CASE("bus gains compose from the voice's bus up to the master") {
   CHECK(fallback.mixer.bus_count() == 5u);
 }
 
-TEST_CASE("a parameter change ramps across the block and a stop fades out, then frees the voice") {
-  Rig rig;
+namespace {
+
+// The left channel of `frames` frames rendered in calls of `block` frames — what a device with that
+// period would have pulled.
+Vector<f32> render_left(Rig& rig, u32 frames, u32 block) {
+  Vector<f32> left;
+  for (u32 done = 0; done < frames;) {
+    const u32 n = frames - done < block ? frames - done : block;
+    const Vector<f32> out = rig.render(n);
+    for (u32 k = 0; k < n; ++k)
+      left.push_back(out[2u * k]);
+    done += n;
+  }
+  return left;
+}
+
+// Ramp frame k (1-based) of a change from `from` to `to` over `ramp` frames, in the kernel's own
+// arithmetic; the target itself from frame `ramp` on.
+f32 ramp_at(f32 from, f32 to, u32 k, u32 ramp) {
+  return k >= ramp ? to : from + (to - from) / static_cast<f32>(ramp) * static_cast<f32>(k);
+}
+
+}  // namespace
+
+TEST_CASE("a change reaches its target after the ramp time, whatever the block size") {
+  // The default is 10 ms, 480 frames; the mixer reads it once.
+  CHECK(tunable_ramp_frames() == 480u);
+  CHECK(Rig().mixer.ramp_frames() == 480u);
+
+  const Vector<f32> ones(48000, 1.0f);
+  // A device's period is anything from a few dozen frames to thousands, and the render call can be
+  // longer than the mixer's own 1024-frame block (4096 is four of them).
+  for (const u32 block : {64u, 256u, 480u, 1000u, 4096u}) {
+    CAPTURE(block);
+    MixerConfig config;
+    config.ramp_frames = 480;
+    Rig rig(config);
+    PlayParams play = flat(rig.add(ones), -1.0f);  // hard left: the left channel is the gain
+    play.loop = true;
+    const VoiceHandle voice = rig.mixer.play(play);
+    REQUIRE_FALSE(voice.is_null());
+    for (const f32 s : render_left(rig, 1000, block))
+      CHECK(s == 1.0f);  // a new voice starts at its level
+
+    // 1 -> 0: linear over 480 frames, then held.
+    VoiceParams params;
+    params.pan = -1.0f;
+    params.loop = true;
+    params.gain = 0.0f;
+    REQUIRE(rig.mixer.set_params(voice, params));
+    const Vector<f32> down = render_left(rig, 1200, block);
+    for (u32 k = 0; k < down.size(); ++k)
+      CHECK(down[k] == ramp_at(1.0f, 0.0f, k + 1u, 480));
+    CHECK(down[478] > 0.0f);
+    CHECK(down[479] == 0.0f);  // exactly the target on frame 480
+
+    // A change that arrives mid-ramp starts a new ramp from where the gain had got to: no jump.
+    params.gain = 1.0f;
+    REQUIRE(rig.mixer.set_params(voice, params));
+    const Vector<f32> part = render_left(rig, 200, block < 200u ? block : 200u);
+    for (u32 k = 0; k < 200; ++k)
+      CHECK(part[k] == ramp_at(0.0f, 1.0f, k + 1u, 480));
+    params.gain = 0.5f;
+    REQUIRE(rig.mixer.set_params(voice, params));
+    const Vector<f32> turn = render_left(rig, 1000, block);
+    const f32 reached = ramp_at(0.0f, 1.0f, 200, 480);
+    CHECK(std::fabs(turn[0] - reached) < 0.01f);
+    for (u32 k = 0; k < turn.size(); ++k)
+      CHECK(turn[k] == ramp_at(reached, 0.5f, k + 1u, 480));
+
+    // A stop fades over the same time and then frees the voice, spanning calls when it must.
+    REQUIRE(rig.mixer.stop(voice));
+    CHECK(rig.mixer.is_live(voice));  // until the audio thread says it has ended
+    u32 faded = 0;
+    Vector<f32> tail;
+    while (rig.mixer.is_live(voice)) {
+      REQUIRE(faded < 2000u);
+      const u32 n = block;
+      const Vector<f32> out = rig.render(n);
+      for (u32 k = 0; k < n; ++k)
+        tail.push_back(out[2u * k]);
+      faded += n;
+      rig.mixer.update();
+    }
+    CHECK(faded >= 480u);         // not before the fade has run
+    CHECK(faded < 480u + block);  // and in the call it ended in
+    for (u32 k = 0; k < tail.size(); ++k)
+      CHECK(tail[k] == ramp_at(0.5f, 0.0f, k + 1u, 480));
+    CHECK(rig.mixer.live_voices() == 0u);
+    for (const f32 s : rig.render(480))
+      CHECK(s == 0.0f);
+  }
+}
+
+TEST_CASE("a ramp shorter than the block ends inside it and holds the target after") {
+  MixerConfig config;
+  config.ramp_frames = 240;
+  Rig rig(config);
+  CHECK(rig.mixer.ramp_frames() == 240u);
   const Vector<f32> ones(9600, 1.0f);
   PlayParams play = flat(rig.add(ones), -1.0f);
   play.loop = true;
   const VoiceHandle voice = rig.mixer.play(play);
-  REQUIRE_FALSE(voice.is_null());
-  Vector<f32> out = rig.render(480);
-  CHECK(out[0] == 1.0f);
-  CHECK(out[2u * 479u] == 1.0f);
-
-  VoiceParams quieter;
-  quieter.gain = 0.0f;
-  quieter.pan = -1.0f;
-  quieter.loop = true;
-  REQUIRE(rig.mixer.set_params(voice, quieter));
-  out = rig.render(480);
-  // Linear from 1 to 0: frame k at 1 + (0 - 1) / 480 * (k + 1).
-  for (u32 k = 0; k < 480; ++k) {
-    const f32 expected = 1.0f + (-1.0f / 480.0f) * static_cast<f32>(k + 1u);
-    CHECK(out[2u * k] == expected);
-  }
-  quieter.gain = 1.0f;
-  REQUIRE(rig.mixer.set_params(voice, quieter));
   rig.render(480);
-
-  REQUIRE(rig.mixer.stop(voice));
-  CHECK(rig.mixer.is_live(voice));  // until the audio thread says it has ended
-  out = rig.render(480);
-  CHECK(out[0] > 0.99f);
-  CHECK(std::fabs(out[2u * 479u]) < 1e-6f);
-  CHECK(rig.mixer.update() == 1u);
-  CHECK_FALSE(rig.mixer.is_live(voice));
-  CHECK(rig.mixer.live_voices() == 0u);
-  out = rig.render(480);
-  for (const f32 s : out)
-    CHECK(s == 0.0f);
+  VoiceParams params;
+  params.pan = -1.0f;
+  params.loop = true;
+  params.gain = 0.25f;
+  REQUIRE(rig.mixer.set_params(voice, params));
+  const Vector<f32> out = rig.render(480);
+  for (u32 k = 0; k < 480; ++k)
+    CHECK(out[2u * k] == ramp_at(1.0f, 0.25f, k + 1u, 240));
+  CHECK(out[2u * 239u] == 0.25f);
+  CHECK(out[2u * 479u] == 0.25f);
 }
 
 TEST_CASE("a one-shot ends at its last frame and a loop wraps exactly") {

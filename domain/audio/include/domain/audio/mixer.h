@@ -45,13 +45,16 @@
 //
 // ---- determinism -------------------------------------------------------------------------------
 //
-// For a given clip set, **a given layout and decoder**, and a given sequence of commands and
-// `render()` calls (with their frame counts), the output is the same bytes on every run, compiler
+// For a given clip set, **a given layout and decoder**, a given ramp time, and a given sequence of
+// commands and the frames they are applied at, the output is the same bytes on every run, compiler
 // and C library: voices are mixed in slot order, every operation is IEEE-754 arithmetic with
 // contraction off (ADR-0035), the playhead is 32.32 fixed point, and nothing on the audio thread
-// calls a transcendental function. The test pins a hash of a scripted mix per layout. Which block
-// a command lands in on a live device depends on when the device asked for the block, and that is
-// not claimed.
+// calls a transcendental function. The test pins a hash of a scripted mix per layout. How the
+// frames between two commands are divided into `render()` calls does not matter — a ramp is a time,
+// not a block, so a device with a 256-frame period and one with a 4096-frame period mix the same
+// commands at the same frames to the same bytes, and the test renders the session in uneven calls
+// to hold it to that. Which frame a command lands on on a live device depends on when the device
+// asked for its block, and that is not claimed.
 
 #include <core/base/macros.h>
 #include <core/base/types.h>
@@ -103,6 +106,9 @@ struct MixerConfig {
   u32 voices = 0;
   // Commands the ring holds. 0 reads `audio.command_queue` (1024).
   u32 command_capacity = 0;
+  // Frames a gain or pan change takes to reach its target, and a stop to fade out. 0 reads
+  // `audio.ramp_ms` (10 ms: 480 frames). A time, never the block size.
+  u32 ramp_frames = 0;
   // What the master feeds. Chosen by the caller from the device's own layout or from the
   // `audio.layout` setting (device.h, `resolve_layout`); `Unknown` is refused in favour of stereo,
   // with a log line.
@@ -181,6 +187,7 @@ struct VoiceState {
   u32 generation = 0;
   f32 gain = 1.0f;
   f32 pan = 0.0f;
+  u32 fade = 0;  // a stopping voice: frames of its fade still to mix before the slot is freed
   u8 state = 0;  // free, playing, stopping
   u8 channels = 0;
   u8 bus = 0;
@@ -201,7 +208,8 @@ class Mixer {
  public:
   // The largest block the voice loop fills at once. `render()` takes any frame count and works
   // through a longer one in blocks of this size; commands are applied once, at the start of the
-  // call, and each block ramps toward the same targets. 1024 frames is 21 ms.
+  // call. A block boundary is invisible in the output: a ramp that crosses one carries on where it
+  // was. 1024 frames is 21 ms.
   static constexpr u32 k_max_block_frames = 1024;
 
   // `clips` must outlive the mixer; a voice holds a pointer into one of its clips.
@@ -214,7 +222,8 @@ class Mixer {
   // Starts a voice. Null when refused: the clip is not Ready, a parameter is out of range, every
   // voice outranks it, or the ring is full. `ControlStats` says which.
   VoiceHandle play(const PlayParams& params) noexcept;
-  // Fades the voice out over the next block and frees it. False for a voice that is not live.
+  // Fades the voice out over the ramp time (`ramp_frames()`) and frees it. False for a voice that
+  // is not live.
   bool stop(VoiceHandle voice) noexcept;
   bool set_params(VoiceHandle voice, const VoiceParams& params) noexcept;
   // Replaces the voice's whole spatial block.
@@ -245,6 +254,8 @@ class Mixer {
   ChannelLayout layout() const noexcept { return layout_->layout; }
   u32 channels() const noexcept { return layout_->channels; }
   const Decoder& decoder() const noexcept { return *decoder_; }
+  // Frames a change takes to arrive and a stop to fade, fixed at construction.
+  u32 ramp_frames() const noexcept { return ramp_frames_; }
   MixerStats stats() const noexcept;
 
   // ---- the audio thread ------------------------------------------------------------------------
@@ -252,8 +263,8 @@ class Mixer {
   // Applies the queued commands and mixes `frames` frames of the declared layout, interleaved,
   // into `out` — `frames * channels()` floats — overwriting it. `frames == 0` applies commands and
   // publishes stats without mixing, and `out` may then be null. Parameter changes take effect at
-  // the start of the call and ramp linearly across each block; a new voice starts at its full
-  // level.
+  // the start of the call and ramp linearly to their targets over `ramp_frames()`, however the
+  // frames are divided into calls; a new voice starts at its full level.
   void render(f32* out, u32 frames) noexcept;
 
  private:
@@ -266,6 +277,7 @@ class Mixer {
   const ClipStore* clips_;
   const LayoutInfo* layout_;
   const Decoder* decoder_;
+  u32 ramp_frames_;
 
   // ---- controlling thread
   Vector<VoiceSlot> slots_;

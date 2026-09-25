@@ -22,8 +22,9 @@ constexpr u8 k_playing = 1;
 constexpr u8 k_stopping = 2;
 
 // A voice that has not been decoded for a block yet starts at its full level instead of ramping up
-// from silence: ramping would smear the attack of every percussive sound across a whole block. The
-// bit lives in the audio thread's flags only and never crosses the queue.
+// from silence: ramping would smear the attack of every percussive sound across the ramp time, and
+// a clip's own first samples are its attack, authored as it should be heard. The bit lives in the
+// audio thread's flags only and never crosses the queue.
 constexpr u8 k_voice_fresh = 1u << 7;
 
 // Pitch is a playback rate over six octaves either way. The floor keeps the 32.32 step far from
@@ -49,6 +50,10 @@ u32 voices_for(const MixerConfig& config) noexcept {
 
 u32 commands_for(const MixerConfig& config) noexcept {
   return config.command_capacity != 0 ? config.command_capacity : tunable_command_queue();
+}
+
+u32 ramp_for(const MixerConfig& config) noexcept {
+  return config.ramp_frames != 0 ? config.ramp_frames : tunable_ramp_frames();
 }
 
 // 32.32 fixed point. `pitch * 2^32` is exact in double for every f32 pitch (a 24-bit mantissa
@@ -242,6 +247,7 @@ Mixer::Mixer(const ClipStore& clips, const MixerConfig& config)
     : clips_(&clips),
       layout_(&layout_info(config.layout)),
       decoder_(config.decoder != nullptr ? config.decoder : &k_stereo_panner),
+      ramp_frames_(ramp_for(config)),
       commands_(commands_for(config)),
       // Twice the pool: `play()` drains this ring before it starts a voice, so between two drains
       // at most one voice starts, each voice ends at most once, and the ring can never hold more
@@ -622,6 +628,10 @@ void Mixer::apply(const Command& c) noexcept {
       VoiceState& v = voices_[c.slot];
       if (v.state == k_playing && v.generation == c.generation) {
         v.state = k_stopping;
+        // The fade is the decoder's ramp to zero, which takes the ramp time from the block it
+        // starts in; the slot is freed at the end of the block in which it has run. A voice that
+        // has not sounded yet starts at zero and has nothing to fade.
+        v.fade = (v.flags & k_voice_fresh) != 0 ? 0u : ramp_frames_;
       } else {
         ++audio_stats_.stale_commands;
       }
@@ -730,6 +740,7 @@ void Mixer::mix_block(f32* out, u32 frames) noexcept {
     in.frames = frames;
     in.channels = v.channels;
     in.gain = v.state == k_stopping ? 0.0f : v.gain * bus_effective_[v.bus];
+    in.ramp_frames = ramp_frames_;
     in.fresh = (v.flags & k_voice_fresh) != 0;
     in.two_d = two_d;
     in.mapping = source.mapping != ChannelMapping::Inherit ? source.mapping : bus_mapping_[v.bus];
@@ -746,7 +757,12 @@ void Mixer::mix_block(f32* out, u32 frames) noexcept {
                      out);
 
     v.flags = static_cast<u8>(v.flags & ~k_voice_fresh);
-    if (ended || v.state == k_stopping) {
+    bool faded = false;
+    if (v.state == k_stopping) {
+      v.fade -= frames < v.fade ? frames : v.fade;
+      faded = v.fade == 0;
+    }
+    if (ended || faded) {
       v.state = k_free;
       if (!events_.try_push(VoiceEvent{s, v.generation})) ++audio_stats_.events_dropped;
     } else {

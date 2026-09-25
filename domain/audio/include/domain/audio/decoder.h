@@ -42,9 +42,17 @@ struct DecodeInput {
   const f32* signal = nullptr;
   u32 frames = 0;
   u8 channels = 0;  // 1 or 2
-  // The level the block should end at: the voice's gain, its bus path, and the source model's
+  // The level the source is heading for: the voice's gain, its bus path, and the source model's
   // attenuation. 0 for a voice that is stopping.
   f32 gain = 0.0f;
+  // How long a change takes, in frames (`audio.ramp_ms`, fixed for the mixer's life). A gain the
+  // decoder derives from this block's input that differs from the one it was heading for starts a
+  // linear ramp from wherever the gain is now, and reaches the new value `ramp_frames` frames
+  // later — within this block or several blocks on. The ramp's length is a time, never the block
+  // size: that is what makes the mix of a command sequence the same bytes whatever period the
+  // device asked for (docs/subsystems/audio.md, "Parameter changes ramp in fixed time"), and a
+  // decoder that ramped across the block instead would break the test that says so.
+  u32 ramp_frames = 1;
   // First block of a voice: start at the target gains rather than ramping from the last block's.
   bool fresh = false;
   // Non-diegetic: map channels by `mapping` and `pan`, ignore `spatial`.
@@ -62,8 +70,8 @@ struct DecodeInput {
 
 struct Decoder {
   const char* name;
-  // Floats of state the decoder keeps per source (its last block's gains, say). The mixer
-  // allocates voices x this once, zeroed, and hands each call its own source's slice.
+  // Floats of state the decoder keeps per source (its gains and how far their ramp has got, say).
+  // The mixer allocates voices x this once, zeroed, and hands each call its own source's slice.
   u32 state_floats;
   // Whether it can feed `layout`. A mixer built with a decoder that cannot falls back to the
   // stereo panner and says so.
@@ -78,7 +86,9 @@ struct Decoder {
 // lateral component of its direction narrowed by its spread; balance for a stereo one; the channel
 // mapping for a 2D source. On a layout wider than stereo it feeds the front pair and leaves the
 // other speakers silent — honest about being a stereo panner — and a mono layout gets the fold.
-// Every gain ramps linearly across the block from where the last block left it.
+// Every gain change ramps linearly over `DecodeInput::ramp_frames`, spanning blocks when it must;
+// a source with no change in flight costs the plain multiply-add, and one at rest at zero costs
+// nothing.
 extern const Decoder k_stereo_panner;
 
 // Writes nothing: the mix is silence whatever the sources do. For tests that exercise the mixer's

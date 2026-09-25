@@ -25,11 +25,19 @@ namespace {
 constexpr u32 k_blocks = 48;
 constexpr u32 k_block_frames = 480;
 
-Vector<f32> run_session(ChannelLayout layout) {
+// Every block of the session — the frames between two rounds of commands — is rendered as calls of
+// these sizes in turn, which must add up to `k_block_frames`: one call of 480 is what a device with
+// a 480-frame period pulls; three of 160, or 7 and 473, are other devices given the same commands
+// at the same frames.
+constexpr u32 k_whole[] = {k_block_frames};
+
+Vector<f32> run_session(ChannelLayout layout, std::span<const u32> calls = k_whole,
+                        u32 ramp_frames = 480) {
   ClipStore clips;
   MixerConfig config;
   config.voices = 8;  // small, so the burst at block 30 has to steal and refuse
   config.layout = layout;
+  config.ramp_frames = ramp_frames;  // 10 ms, audio.ramp_ms's default: part of what is pinned
   Mixer mixer(clips, config);
   REQUIRE(mixer.layout() == layout);
 
@@ -157,14 +165,19 @@ Vector<f32> run_session(ChannelLayout layout) {
       l.up = Vec3{0.0f, 1.0f, 0.1f};
       mixer.set_listener(l);
     }
-    mixer.render(block.data(), k_block_frames);
+    u32 done = 0;
+    for (const u32 n : calls) {
+      mixer.render(block.data() + static_cast<usize>(done) * channels, n);
+      done += n;
+    }
+    REQUIRE(done == k_block_frames);
     all.append(std::span<const f32>(block.data(), block.size()));
   }
 
   // The session has to have done what it says, or the hash pins less than it claims.
   const MixerStats stats = mixer.stats();
   const ControlStats& control = mixer.control_stats();
-  CHECK(stats.blocks == k_blocks);
+  CHECK(stats.blocks == k_blocks * calls.size());
   CHECK(stats.clipped_samples > 0u);
   CHECK(stats.stale_commands == 0u);
   CHECK(stats.events_dropped == 0u);
@@ -188,11 +201,39 @@ void check_session(ChannelLayout layout, u64 pinned) {
 
 // Taken on MSVC (msvc-debug) on 2026-09-24. A change to the mix — the order voices are summed in,
 // the pan law, the ramp, the interpolation, the source model, the layout table — moves them, and
-// the commit that moves them says why.
+// the commit that moves them says why. They have moved once: when the ramp became a fixed time
+// (10 ms) instead of the block. The session's blocks are 480 frames, the same as the ramp, so every
+// ramp still starts and ends where it did; what changed is the ramp's last frame, which is now the
+// target itself rather than the ramp formula's rounding of it. Two samples of 46,080 (stereo) and
+// two of 138,240 (5.1) moved, each on a block's last frame, by 3e-8 at most (v0's pins were
+// 0x8daba54729a3c2f1 and 0xb15db834d3793bf4, reproduced with v0's panner before moving them).
 TEST_CASE("a scripted session mixes to the same bytes every time, on every compiler: stereo") {
-  check_session(ChannelLayout::Stereo, 0x8daba54729a3c2f1ull);
+  check_session(ChannelLayout::Stereo, 0x4e7aa0ccb3a4fdafull);
 }
 
 TEST_CASE("the same session declared 5.1 is its own pinned output") {
-  check_session(ChannelLayout::Surround51, 0xb15db834d3793bf4ull);
+  check_session(ChannelLayout::Surround51, 0xc8486cc4956e413aull);
+}
+
+// The period a device asks for is not an input: the same commands at the same frames mix to the
+// same bytes however the frames between them are divided into render calls. Before the ramp was a
+// time this was false — a change ramped across whatever block it landed in, so a 160-frame period
+// ramped three times as fast as a 480-frame one — and it is what lets a command log recorded on one
+// machine replay to the same mix on another whose device runs a different period.
+TEST_CASE("the session mixes to the same bytes whatever the render calls' sizes") {
+  constexpr u32 thirds[] = {160, 160, 160};
+  constexpr u32 ragged[] = {7, 473};
+  constexpr u32 many[] = {64, 64, 64, 64, 64, 64, 64, 32};
+  for (const ChannelLayout layout : {ChannelLayout::Stereo, ChannelLayout::Surround51}) {
+    CAPTURE(layout_name(layout));
+    const Vector<f32> whole = run_session(layout);
+    CHECK(run_session(layout, thirds) == whole);
+    CHECK(run_session(layout, ragged) == whole);
+    CHECK(run_session(layout, many) == whole);
+  }
+  // A ramp longer than a block (15 ms: 720 frames) crosses the calls, and still does not care.
+  const Vector<f32> long_ramp = run_session(ChannelLayout::Stereo, k_whole, 720);
+  CHECK(run_session(ChannelLayout::Stereo, thirds, 720) == long_ramp);
+  CHECK(run_session(ChannelLayout::Stereo, ragged, 720) == long_ramp);
+  CHECK(long_ramp != run_session(ChannelLayout::Stereo));  // and it is a different mix
 }

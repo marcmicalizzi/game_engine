@@ -28,7 +28,7 @@ render(out, frames):  apply every queued command (at most a ring's worth)
                           the voice loop:  clip at its pitch -> scratch signal       (no gain)
                           the level:       gain x bus path x source model's attenuation
                           the decode:      signal + SpatialParams -> layout channels  (decoder.h)
-                          ended? -> free the slot, post a VoiceEvent
+                          ended, or its stop faded out? -> free the slot, post a VoiceEvent
                         master: hard clip, peak, count
                       publish the stats
 ```
@@ -37,7 +37,9 @@ render(out, frames):  apply every queued command (at most a ring's worth)
 
 **Why pitch is the engine's own interpolation and not miniaudio's resampler per voice.** miniaudio's linear resampler is used where quality matters more than per-sample cost — once per clip, at decode time, with its low-pass filter (below). Per voice it would cost a per-frame loop with branches and a heap block of state per voice, a loop across a clip's end would take two calls, and its rate change carries a defect this module would inherit: `ma_linear_resampler_adjust_timer_for_new_rate` multiplies two `u32`s that each go up to the reduced output rate, and `set_rate_ratio` reduces over 10^6, so a pitch whose ratio does not reduce (a semitone, 1.059463) overflows and jumps the playhead by a fraction of a sample at every pitch change. The engine's loop is ten lines, has none of these, and is the thing the bench prices.
 
-**Parameter changes ramp** linearly across each block from where the last block ended, so a gain or pan change is never a click; a new voice starts at its full level (ramping it up would smear every percussive attack across a block), and a stop ramps to zero over one block and then frees the voice.
+**Parameter changes ramp in fixed time.** Every gain the decode stage derives — the voice's gain times its bus path times the source model's attenuation, split by the pan law — moves to a new value along a linear ramp of `audio.ramp_ms` (10 ms, 480 frames), starting from wherever the gain is when the change arrives, so a gain, pan, bus, position or listener change is never a click. The ramp's progress is per-source decoder state, so a ramp longer than a block carries on into the next one and one shorter than a block ends inside it: the gain on any frame is a function of how many frames ago the change arrived, and the block size — which is the device's period — does not appear. A change that arrives mid-ramp starts a new ramp from where the old one had got to. A **stop** ramps to zero over the same time and then frees the voice, at the end of the block in which the fade finished. A **new voice starts at its full level**: ramping it up would smear the attack of every percussive sound across the ramp, and a clip's first samples are its attack as it was authored. A source with no change in flight costs the plain multiply-add, and one at rest at zero (past its `max_distance`, on a muted bus) costs nothing, which is bit-identical to adding its zeros.
+
+**Why a time and not the block, and why 10 ms.** v0 ramped each change across the block it landed in, so its length was the device's period: 10 ms at the default 480 frames, 21 ms at 1024, 5 ms on a device that opened with 256 — and a stop took one block, however long that was. Two devices given the same commands mixed different bytes, and a period short enough to lower latency made every change clickier. The length is now declared. A linear ramp of length T filters the step it replaces by sinc(fT), whose envelope is −20·log10(πfT): at 10 ms that is −30 dB at 1 kHz and −40 dB at 3 kHz, where the ear is most sensitive, against −24 and −33 dB at 5 ms and −10 dB at 1 ms, and psychoacoustic practice gates its test tones with 5 to 10 ms ramps for exactly that reason. 10 ms is the top of that range: it also finishes inside one 60 Hz tick (16.7 ms), so a source the tick moves every tick follows it rather than lagging a ramp behind, and it is what v0 did at the default period, so the default configuration sounds as it did. The tunable's range is 1 to 100 ms: below a millisecond a ramp is a step, and above a tenth of a second a stop is heard as a fade.
 
 ## The thread model
 
@@ -83,7 +85,7 @@ Inverse distance is the free-field law (−6 dB per doubling). The taper is ther
 
 ## The decode stage
 
-`Decoder` is `{name, state_floats, supports(layout), decode(input, layout, state, out)}`. The mixer calls `decode` once per source per block with a `DecodeInput` — the source's signal after pitch and before any gain, its level, whether it is fresh, whether it is 2D and its resolved mapping and pan, the `SpatialParams`, and pointers to the whole `SourceSpatial` and the listener basis for a decoder that emits objects rather than channels — and the decoder adds the source into the layout's interleaved channels, keeping whatever per-source state it declared (the stereo panner keeps four gains: its last block's, where the next ramp starts).
+`Decoder` is `{name, state_floats, supports(layout), decode(input, layout, state, out)}`. The mixer calls `decode` once per source per block with a `DecodeInput` — the source's signal after pitch and before any gain, its level, the ramp time, whether it is fresh, whether it is 2D and its resolved mapping and pan, the `SpatialParams`, and pointers to the whole `SourceSpatial` and the listener basis for a decoder that emits objects rather than channels — and the decoder adds the source into the layout's interleaved channels, keeping whatever per-source state it declared (the stereo panner keeps nine floats: four gains where the current ramp started, the four it is heading for, and how many frames of the ramp have run). **Every decoder ramps in fixed time**: a gain it derives that differs from the one it was heading for starts a ramp of `DecodeInput::ramp_frames` from where the gain is, spanning blocks; one that ramped across the block instead would make the mix depend on the device's period again, and the determinism test's split renders would catch it.
 
 **Why a table of function pointers and not a virtual interface**: registration points in this engine are constant-initialized tables ([ADR-0027](../adr/0027-additive-capabilities.md), [02 §2.8](../plan/02-architecture.md#28-adding-a-capability)), and the call is once per source per block with the loop over frames inside it, so there is one indirect call per source per block and none in the loop. A decoder is chosen when the mixer is built and never changes under it; one that does not support the declared layout is replaced by the stereo panner with a log line.
 
@@ -117,9 +119,11 @@ miniaudio 0.11.25 ([third_party/LICENSES.md](../../third_party/LICENSES.md)) is 
 
 ## Determinism
 
-**The claim**: for a given clip set, a given layout and decoder, and a given sequence of commands and `render()` calls with their frame counts, the output is the same bytes on every run, compiler and C library. **Why it holds**: voices are summed in slot order into a cleared buffer, and slot allocation is a function of the command sequence; every operation on the audio thread is IEEE-754 `+ − × ÷` and `sqrt` in `f32`, which are correctly rounded everywhere, with floating-point contraction off for the whole tree ([ADR-0035](../adr/0035-no-floating-point-contraction.md)); the playhead is integer; and nothing on the audio thread calls a transcendental function — the pan law and the cone use `sin_quarter`/`cos_degrees`, fixed polynomials, rather than `std::sin`, which MSVC's and glibc's libraries are allowed to disagree about in the last bit. **What it does not cover**: which block a command lands in on a live device, which depends on when the device asked for the block; and the device's own conversion after the mix, when the endpoint is not in the mix's format.
+**The claim**: for a given clip set, a given layout and decoder, a given ramp time, and a given sequence of commands and the frames they are applied at, the output is the same bytes on every run, compiler and C library — **however the frames are divided into `render()` calls**, which is to say whatever period the device runs. That last clause is new with the fixed-time ramp: while a change ramped across the block it landed in, a 160-frame period ramped three times as fast as a 480-frame one, and a command log recorded on one machine mixed to different bytes on a machine whose device asked for a different period. **Why it holds**: voices are summed in slot order into a cleared buffer, and slot allocation is a function of the command sequence; every operation on the audio thread is IEEE-754 `+ − × ÷` and `sqrt` in `f32`, which are correctly rounded everywhere, with floating-point contraction off for the whole tree ([ADR-0035](../adr/0035-no-floating-point-contraction.md)); the playhead is integer; and nothing on the audio thread calls a transcendental function — the pan law and the cone use `sin_quarter`/`cos_degrees`, fixed polynomials, rather than `std::sin`, which MSVC's and glibc's libraries are allowed to disagree about in the last bit. **What it does not cover**: which block a command lands in on a live device, which depends on when the device asked for the block; and the device's own conversion after the mix, when the endpoint is not in the mix's format.
 
-**How it is tested**: `determinism_tests.cpp` runs a 48-block scripted session — every command kind, pitch through the interpolating path, loops and one-shots running out, a stereo clip, 2D sources on a 2D bus and panned by hand, 3D sources moving past a turning listener with a cone, a spread and the linear model, a bus change, the pool stealing and refusing, and the master clipping — twice in-process, compares the bytes, and pins `hash_mix(layout, samples)` for stereo and for 5.1. The clips are generated without the C library (`exact_sine` through `sin_quarter`, and an LCG), so the hash depends on the mixer alone. The values were taken on MSVC; the Linux container build must reproduce them with GCC 13 and Clang 18, which is the cross-toolchain half of the claim.
+**How it is tested**: `determinism_tests.cpp` runs a 48-block scripted session — every command kind, pitch through the interpolating path, loops and one-shots running out, a stereo clip, 2D sources on a 2D bus and panned by hand, 3D sources moving past a turning listener with a cone, a spread and the linear model, a bus change, the pool stealing and refusing, and the master clipping — twice in-process, compares the bytes, and pins `hash_mix(layout, samples)` for stereo and for 5.1, at the default 10 ms ramp. It then renders the same session with every 480-frame block split into three calls of 160, into 7 and 473, and into seven of 64 and one of 32, and requires the same bytes; and does the same with a 15 ms ramp, which crosses the calls. The clips are generated without the C library (`exact_sine` through `sin_quarter`, and an LCG), so the hash depends on the mixer alone. The values were taken on MSVC; the Linux container build must reproduce them with GCC 13 and Clang 18, which is the cross-toolchain half of the claim.
+
+**The pins moved once, with the ramp.** The session's blocks are 480 frames and the ramp is 480 frames, so every ramp still starts and ends where v0's did; what changed is a ramp's last frame, which is now the target itself rather than the ramp formula's rounding of it. Measured against v0's panner run in the same test (it reproduced v0's pins, `0x8daba54729a3c2f1` and `0xb15db834d3793bf4`): two samples of 46,080 moved in stereo and two of 138,240 in 5.1, each on a block's last frame, by at most 3·10⁻⁸. The new pins are `0x4e7aa0ccb3a4fdaf` and `0xc8486cc4956e413a`. A session whose blocks were not the ramp's length would have moved much more — which is the point: before, its bytes depended on the block.
 
 **The decode is pinned too, with one caveat stated.** A 44.1 kHz clip goes through miniaudio's low-pass filter, whose coefficients come from libm's `sin` and `cos` in double and are then rounded to `f32`; a last-bit difference between C libraries survives that rounding only when a coefficient sits within 2^-29 of an `f32` rounding boundary. `clip_tests.cpp` pins the hash of a decoded 44.1 kHz clip generated without libm, so a toolchain that disagrees is caught rather than assumed away.
 
@@ -135,6 +139,7 @@ miniaudio 0.11.25 ([third_party/LICENSES.md](../../third_party/LICENSES.md)) is 
 - The event ring never overflows (`events_dropped` stays 0), and a stop the command ring refused is re-sent.
 - A clip's samples do not move while the store lives; a voice is only ever given the pointer of a Ready clip.
 - Bus parents precede their children; the effective gain of a bus is the product of the gains on its path to the master.
+- A gain change reaches its target `ramp_frames` frames after the block it arrived in starts, and a stopped voice is freed at the end of the block in which its fade of the same length finished, however the frames are divided into `render()` calls.
 - The master's output is in [−1, 1]; every sample the clip changed is counted.
 - Nothing upstream of the decode stage depends on the layout; with the null decoder the mix is silence and every voice's lifecycle is unchanged.
 
@@ -154,7 +159,7 @@ miniaudio 0.11.25 ([third_party/LICENSES.md](../../third_party/LICENSES.md)) is 
 
 **Depends on.** `base`, `containers`, `math`, `hash`, `ids`, `jobs`, `log`, `tunables`, `protocol`, `audio_schemas`; miniaudio, privately.
 
-**Tunables.** `audio.voices` (64), `audio.command_queue` (1024), `audio.clip_budget_mb` (256), `audio.period_frames` (480), `audio.layout` (`auto`, or a profile name). Each is read by the constructor of the object it sizes; the audio thread reads none.
+**Tunables.** `audio.voices` (64), `audio.command_queue` (1024), `audio.clip_budget_mb` (256), `audio.period_frames` (480), `audio.layout` (`auto`, or a profile name), `audio.ramp_ms` (10, in 1–100). Each is read by the constructor of the object it sizes; the audio thread reads none.
 
 ## Capability contract (ADR-0027)
 
@@ -166,7 +171,7 @@ miniaudio 0.11.25 ([third_party/LICENSES.md](../../third_party/LICENSES.md)) is 
 | Render-graph passes | none | audio draws nothing |
 | Content-build derived step | none yet | see "Not yet" |
 | Protocol methods | `audio.devices`, `audio::register_methods()` | done; engine-host registers it |
-| Tunables | the five above | done |
+| Tunables | the six above | done |
 | LOD policy | the pool is the budget; per-emitter LOD is `audio_system`'s | done |
 | Determinism | `k_determinism` = `derived`: never read back into the simulation, and reproducible | done |
 | Zero cost when unused | no linked code with the switch off; linked and unused, no thread, no device and no allocation until a `Mixer` or `Output` exists | done |
@@ -179,11 +184,11 @@ miniaudio 0.11.25 ([third_party/LICENSES.md](../../third_party/LICENSES.md)) is 
 `tools/dev.ps1 test -Filter audio`, all headless through the null backend:
 
 - **Queue** (`queue_tests.cpp`): capacity rounding, refusal when full, an untouched output on an empty pop, and a producer thread and a consumer thread passing 200,000 commands through an 8-slot ring and 1,000,000 through a 1024-slot one — no command lost, reordered, duplicated or torn, the consumer only ever calling `try_pop`.
-- **Mixer** (`mixer_tests.cpp`): gain, pan (constant power for mono, balance for stereo) and pitch (2, 0.5 and 1.5) against analytic expectations on generated sines, bit for bit where the arithmetic allows and within interpolation error where it does not; bus gains composing through the default tree and a configured deeper one; the ramp on a parameter change and the fade on a stop; a one-shot ending at its last frame and a loop wrapping exactly, at pitch 1 and across the loop point at half speed; a render longer than a block; the voice policy refusing a lower priority and a loop's equal one, a one-shot stealing the oldest equal, a higher priority the lowest, and anything a stopping voice first; a stop the full ring refused, kept and re-sent by `update()`; refusals counted by cause; stale commands; a 3D source panned and attenuated by its distance model, turned toward and moved out of reach; the cone; spread; the 2D music bus and the `Direct` mapping; 5.1, 7.1.4, headphones and mono profiles against the stereo mix; the null decoder; the profile table against the device classification; the master's clip and its counters.
+- **Mixer** (`mixer_tests.cpp`): gain, pan (constant power for mono, balance for stereo) and pitch (2, 0.5 and 1.5) against analytic expectations on generated sines, bit for bit where the arithmetic allows and within interpolation error where it does not; bus gains composing through the default tree and a configured deeper one; a change reaching its target after the ramp time, frame for frame, rendered in calls of 64, 256, 480, 1000 and 4096 frames, a change arriving mid-ramp continuing from where the gain had got to, a stop fading over the same time and freeing the voice in the call it finished in, and a ramp shorter than the block ending inside it; a one-shot ending at its last frame and a loop wrapping exactly, at pitch 1 and across the loop point at half speed; a render longer than a block; the voice policy refusing a lower priority and a loop's equal one, a one-shot stealing the oldest equal, a higher priority the lowest, and anything a stopping voice first; a stop the full ring refused, kept and re-sent by `update()`; refusals counted by cause; stale commands; a 3D source panned and attenuated by its distance model, turned toward and moved out of reach; the cone; spread; the 2D music bus and the `Direct` mapping; 5.1, 7.1.4, headphones and mono profiles against the stereo mix; the null decoder; the profile table against the device classification; the master's clip and its counters.
 - **Clips** (`clip_tests.cpp`): generated 16-bit stereo and float mono WAVs decoding bit for bit, a generated FLAC decoding bit for bit, a 44.1 kHz clip resampled to 48 kHz with its frequency and level intact and its bytes pinned, six channels folded to stereo, junk refused, the store's key deduplication and reporting, the budget refusing rather than evicting, and eight decodes on the Efficiency pool.
-- **Determinism** (`determinism_tests.cpp`): the scripted session above, pinned for stereo and 5.1.
+- **Determinism** (`determinism_tests.cpp`): the scripted session above, pinned for stereo and 5.1, and the same bytes from the same session rendered in uneven calls, at the default ramp and at one longer than a block.
 - **Real time** (`realtime_tests.cpp`): the allocation and log counters around `render()`, the null backend as the same mix pulled by the caller, device enumeration that passes with zero devices, and `audio.devices` through a dispatcher.
-- **Model** (`audio_tests.cpp`): the tunables' defaults and `resolve_layout`, `sin_quarter` and `cos_degrees` against the true functions, the pan laws, the distance models, the listener basis, and `spatialize`.
+- **Model** (`audio_tests.cpp`): the tunables' defaults, `audio.ramp_ms` in whole frames, and `resolve_layout`, `sin_quarter` and `cos_degrees` against the true functions, the pan laws, the distance models, the listener basis, and `spatialize`.
 
 The size table pins `VoiceState` (48), `VoiceSlot` (16), `SourceSpatial` (56), `SpatialParams` (20), `ListenerBasis` (48), the payloads, `Command` (128, two lines — [commands.h](../../domain/audio/include/domain/audio/commands.h) says why) and the handles.
 
@@ -191,27 +196,29 @@ The size table pins `VoiceState` (48), `VoiceSlot` (16), `SourceSpatial` (56), `
 
 Benchmarks: `tools/dev.ps1 bench -Preset msvc-release -Filter 'audio.*'`, or the executable directly with `--require-quiet`. One iteration is one 10 ms block (480 frames) with N voices playing; the median over N is one voice's cost for one block.
 
-Measured 2026-09-24 on the i9-10980XE (18 cores, 36 threads), `msvc-release`, seven repeats. **Machine state: not quiet, so these are upper bounds.** `--wait-quiet=900` gave up after fifteen minutes: other processes used 14.7% of the CPU at the start and 20.4% at the end, the GPU lock was held by another agent's full test suite, and the GPU was 6–7% busy (the harness's `machine_state`). An earlier run beside a heavier load (others at 41.6%) came back within 10% of these rows, which is the evidence that they are near the cost and not dominated by the neighbours.
+Measured 2026-09-24 on the i9-10980XE (18 cores, 36 threads), `msvc-release`, seven repeats, v0 and the fixed-time ramp back to back from the same build tree. **Machine state: not quiet, so these are upper bounds**: `--wait-quiet=60` gave up both times, the GPU lock was held by another agent's full test suite, and other processes used 30.4% of the CPU at the start of v0's run and 22.9% at the start of this one (the harness's `machine_state`). v0's own quietest run that day (others at 10.6%) put `audio.mix.3d/64` at 90.3 µs and `audio.mix.2d/64` at 122.4 µs, within 5% of its row below, so the comparison is not the neighbours'.
 
-| Benchmark | Voices | Per 10 ms block | Per voice per block |
-|---|---|---|---|
-| `audio.mix.3d` — mono, pitched 0.8–1.2, positioned | 1 | 2.61 µs | 2.61 µs |
-| | 16 | 27.2 µs | 1.70 µs |
-| | 64 | 92.9 µs | **1.45 µs** |
-| | 256 | 367.8 µs | 1.44 µs |
-| `audio.mix.2d` — stereo, pitch 1, music bus | 1 | 3.37 µs | 3.37 µs |
-| | 16 | 32.5 µs | 2.03 µs |
-| | 64 | 126.7 µs | 1.98 µs |
-| | 256 | 502.3 µs | 1.96 µs |
-| `audio.mix.3d_51` — the first, declared 5.1 | 64 | 95.5 µs | 1.49 µs |
+| Benchmark | Voices | Per 10 ms block | Per voice per block | v0 |
+|---|---|---|---|---|
+| `audio.mix.3d` — mono, pitched 0.8–1.2, positioned | 1 | 2.25 µs | 2.25 µs | 2.63 µs |
+| | 16 | 18.5 µs | 1.16 µs | 23.2 µs |
+| | 64 | 70.4 µs | **1.10 µs** | 95.1 µs |
+| | 256 | 278.2 µs | 1.09 µs | 398.1 µs |
+| `audio.mix.2d` — stereo, pitch 1, music bus | 1 | 2.83 µs | 2.83 µs | 3.16 µs |
+| | 16 | 26.7 µs | 1.67 µs | 31.7 µs |
+| | 64 | 98.5 µs | 1.54 µs | 123.0 µs |
+| | 256 | 392.1 µs | 1.53 µs | 498.0 µs |
+| `audio.mix.3d_51` — the first, declared 5.1 | 64 | 73.3 µs | 1.15 µs | 91.8 µs |
+| `audio.mix.3d_turning` — the first, the listener turning every block | 64 | 91.9 µs | 1.44 µs | — |
 
 What the rows say:
 
-1. **A voice costs about 1.45 µs per 10 ms block** — three nanoseconds a frame for the voice loop, the source model and the decode together. The default pool of 64 is 93 µs, **0.9% of one core**; the pool's size, not the mixer, is the budget, which is why it is a tunable.
-2. **The fixed cost of a block is about 1.2 µs** — clearing the output, the master's pass over it, publishing the stats — which is why the per-voice figure falls from 2.6 µs to 1.45 µs as the pool fills.
-3. **A stereo 2D voice costs a third more than a mono 3D one** despite skipping the source model: it moves twice the samples through both passes. The source model's square root and two polynomials per voice per block do not show next to 480 frames.
-4. **5.1 costs 3% more than stereo** for the same voices: the stereo panner still writes two channels, the stride is wider, and the master's pass covers three times the samples. A VBAP decoder writing every speaker will cost more, and the bench row is where that will be seen.
-5. **Where the time goes**: the voice loop is a serial chain (the 32.32 playhead's add feeds the next frame's index) with two dependent loads a frame, and the decode is a second pass over the scratch signal. Fusing the two passes for the stereo panner and a vectorized pitch-1 path are the obvious next steps; at under 1% of a core for the default pool, neither is needed yet.
+1. **A voice costs about 1.1 µs per 10 ms block** — a little over two nanoseconds a frame for the voice loop, the source model and the decode together. The default pool of 64 is 70 µs, **0.7% of one core**; the pool's size, not the mixer, is the budget, which is why it is a tunable.
+2. **The fixed-time ramp's fast path is what took a quarter off.** v0 ramped every gain across every block whether it had changed or not, so every sample paid a multiply, an add and an integer-to-float conversion for a ramp from a gain to itself. A source with no change in flight now costs the plain multiply-add. `audio.mix.3d_turning` is the other side: every voice's pan changes every block, so every sample is on a ramp, and it costs what v0 always did (91.9 µs against v0's 90–95). A real scene sits between the two — a tick moves the sources that move, and a ramp is 10 ms, so a source moved every 60 Hz tick is on a ramp for 10 ms of every 16.7.
+3. **The fixed cost of a block is about 1.2 µs** — clearing the output, the master's pass over it, publishing the stats — which is why the per-voice figure falls from 2.3 µs to 1.1 µs as the pool fills.
+4. **A stereo 2D voice costs 40% more than a mono 3D one** despite skipping the source model: it moves twice the samples through both passes. The source model's square root and two polynomials per voice per block do not show next to 480 frames.
+5. **5.1 costs 4% more than stereo** for the same voices: the stereo panner still writes two channels, the stride is wider, and the master's pass covers three times the samples. A VBAP decoder writing every speaker will cost more, and the bench row is where that will be seen.
+6. **Where the time goes**: the voice loop is a serial chain (the 32.32 playhead's add feeds the next frame's index) with two dependent loads a frame, and the decode is a second pass over the scratch signal. Fusing the two passes for the stereo panner and a vectorized pitch-1 path are the obvious next steps; at under 1% of a core for the default pool, neither is needed yet.
 
 ## Not yet
 

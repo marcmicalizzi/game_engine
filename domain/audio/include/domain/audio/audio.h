@@ -21,8 +21,8 @@
 //   [ ] derived data      none yet; clips are decoded at load (docs page, "Not yet")
 //   [x] protocol methods  audio.devices, register_methods() in protocol.h
 //   [x] tunables          audio.voices, audio.command_queue, audio.clip_budget_mb,
-//                         audio.period_frames, audio.layout — read at construction, never in the
-//                         callback
+//                         audio.period_frames, audio.layout, audio.ramp_ms — read at
+//                         construction, never in the callback
 //   [x] LOD policy        the emitters' is systems/audio_system's; the mixer's cost is set by its
 //                         voice count, which is the budget
 //   [x] determinism       k_determinism below
@@ -58,6 +58,7 @@ u32 tunable_voices() noexcept;             // audio.voices, default 64
 u32 tunable_command_queue() noexcept;      // audio.command_queue, default 1024
 u64 tunable_clip_budget_bytes() noexcept;  // audio.clip_budget_mb, default 256 MB
 u32 tunable_period_frames() noexcept;      // audio.period_frames, default 480 (10 ms)
+u32 tunable_ramp_frames() noexcept;        // audio.ramp_ms, default 10 ms: 480 frames
 // audio.layout, default `Unknown` — spelled "auto": take the device's own layout.
 ChannelLayout tunable_layout() noexcept;
 

@@ -39,7 +39,7 @@ struct VoiceHandle {
 
 enum class CommandKind : u8 {
   Play = 0,     // start a voice in `slot`, replacing whatever the slot held
-  Stop,         // fade the voice out over the next block, then free it
+  Stop,         // fade the voice out over the ramp time, then free it
   SetParams,    // gain, pitch, pan, bus and loop of a live voice
   SetSource,    // the whole spatial block of a live voice
   SetListener,  // where the listener is; applies to every 3D source
