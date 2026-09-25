@@ -1,0 +1,132 @@
+// npc record and component types (ADR-0007, ADR-0027; docs/subsystems/npc.md). The capability's
+// own types live with the capability, so adding them touches no shared file, and ENGINE_WITH_NPC=OFF
+// takes them out of the build with everything else it owns. `Transform` is the world's
+// (schemas/world.schema), because every capability that places something reads it.
+namespace engine.npc
+import "world.schema"
+
+/// What a place is for, as a routine row names it: where the resident sleeps, works, shops or eats,
+/// and spends its free time.
+enum PlaceRole : u8 {
+  Home = 0
+  Work = 1
+  Service = 2
+  Leisure = 3
+}
+
+/// What a resident is doing: the state a routine row puts it in. `Travelling` is the one state that
+/// is between two places; its row's place is where it is going.
+enum ResidentState : u8 {
+  Sleeping = 0
+  AtHome = 1
+  Travelling = 2
+  Working = 3
+  Shopping = 4
+  Eating = 5
+  Leisure = 6
+}
+
+/// The routine archetype: which table of rows a resident's day is (systems/npc/src/routine.cpp,
+/// docs/subsystems/npc.md "The routine tables").
+enum Routine : u8 {
+  DayWorker = 0
+  NightWorker = 1
+  Shopkeeper = 2
+  Student = 3
+  Retiree = 4
+  Idle = 5
+}
+
+/// A place residents live, work, shop or spend time at. A document record like `engine.world.Node`,
+/// with what a routine needs to know about it.
+struct Place @version(1) @kind(record) {
+  name: string
+  position: vec3 @unit(m)
+  orientation: quat
+  role: PlaceRole = Home
+  /// The workplace or service kind, the game's own numbering (a hospital, radiology; a bakery).
+  kind: u32 = 0
+  /// How many residents it is meant for. Read by the generator, not enforced by the routine.
+  capacity: u32 = 1
+}
+
+/// What a place is, on its entity.
+struct NpcPlace @version(1) @kind(component) {
+  role: PlaceRole = Home
+  kind: u32 = 0
+  capacity: u32 = 1
+}
+
+/// A place is a transform and what it is for; its document parent is its `ChildOf`. A place does
+/// not move and nothing may move it, so nothing is written back and its entity is not watched.
+materialize Place {
+  Transform.position = position
+  Transform.orientation = orientation
+  NpcPlace.role = role
+  NpcPlace.kind = kind
+  NpcPlace.capacity = capacity
+  parent = ChildOf
+}
+
+/// One resident: 13 §13.2's persistent record — home, job, the state it is in and when its next
+/// transition is. `state`, `next_event` and `position` are what the timing wheel decided and the
+/// world writes back; everything else is the author's (or the generator's).
+struct Resident @version(1) @kind(record) {
+  name: string
+  /// Where its routine has it: the place of its current row, or — travelling — the place it is going
+  /// to. The partition reads it, so it is also the tile the record is filed under.
+  position: vec3 @unit(m)
+  /// Places, by record id. A routine row names a role and the resident's place for that role is
+  /// where it goes. A role the resident has no place for (a retiree's job) is never visited.
+  home: id128
+  job: id128
+  service: id128
+  leisure: id128
+  routine: Routine = Idle
+  state: ResidentState = Sleeping
+  /// Game time, microseconds, of the next transition.
+  next_event: i64 = 0 @unit(us)
+  /// Where the routine's clock stands at game time 0: the routine runs on game time plus this. A
+  /// world whose headless clock starts at 0 but whose day starts at 07:00 says so here, per resident,
+  /// until a document carries world settings (ADR-0045, "The clock").
+  clock_offset: i64 = 0 @unit(us)
+  /// ADR-0032's appearance parameter vector, reserved beside home and job and read by nothing yet.
+  appearance: f32[8]
+}
+
+/// The author's side of a resident on its entity: where it goes and which table its day is.
+struct NpcRoutine @version(1) @kind(component) {
+  clock_offset: i64 = 0 @unit(us)
+  home: id128
+  job: id128
+  service: id128
+  leisure: id128
+  routine: Routine = Idle
+}
+
+/// The routine's side: what the wheel decided. Written back, so it is in the document at `Persist`
+/// and survives a save. `anchor` is the place the current row is at (for a trip, its destination);
+/// the entity's `Transform` is where it is drawn, which at LOD1 and nearer moves along a trip. The
+/// widest field first: 24 bytes a resident rather than 32.
+struct NpcState @version(1) @kind(component) {
+  next_event: i64 = 0 @unit(us)
+  anchor: vec3 @unit(m)
+  state: ResidentState = Sleeping
+}
+
+/// A resident is a transform, its routine and its state. LOD3 is not an entity (05 §5.6: a record in
+/// the store), so the mapping stops at LOD2. `position` fills two rows: the anchor, which is written
+/// back and so moves the record between tiles, and the transform, which a tier may move along a trip
+/// and which is never written back — so a tier changes what runs, not what is true.
+materialize Resident @tiers(0, 1, 2) {
+  Transform.position = position
+  NpcRoutine.home = home
+  NpcRoutine.job = job
+  NpcRoutine.service = service
+  NpcRoutine.leisure = leisure
+  NpcRoutine.routine = routine
+  NpcRoutine.clock_offset = clock_offset
+  NpcState.state = state @writeback
+  NpcState.next_event = next_event @writeback
+  NpcState.anchor = position @writeback
+}
