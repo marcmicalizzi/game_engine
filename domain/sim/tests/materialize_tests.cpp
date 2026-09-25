@@ -464,6 +464,78 @@ TEST_CASE("sim: write-back commits one attributed transaction and the next pass 
   CHECK(rig.world.entities.at(id_of(10)).label.text == "mine");
 }
 
+// Records that move (sim.md): a write-back that puts a record in another tile of the document's is
+// reported by `take_moved`, once, and the world decides — `refile` it under the tile it is in now,
+// or let it go with `dematerialize(ids)`. The driver itself decides neither.
+TEST_CASE("sim: a record the world moved into another tile is reported, and refiled or let go") {
+  doc::Document d;
+  d.add_layer("base", doc::LayerRole::Base);
+  doc::LayerPartition partition;
+  partition.tile_size = 10.0;
+  d.set_layer_partition(0, partition);
+  create(d, 10, k_crate, 0, props({{"position", vec3(5, 0, 5)}}));  // tile (0, 0)
+  create(d, 11, k_crate, 0, props({{"position", vec3(6, 0, 5)}}));  // tile (0, 0)
+  create(d, 12, k_crate, 0, props({{"position", vec3(7, 0, 5)}}));  // tile (0, 0)
+
+  Rig rig;
+  DocumentSink sink;
+  sink.document = &d;
+  rig.driver.set_writeback_sink(WriteBackSink{&sink, &DocumentSink::commit});
+  rig.driver.materialize(d, MaterializeScope::of_tile({0, 0}));
+  REQUIRE(rig.driver.live() == 3);
+  Vector<TileMove> moves;
+  rig.driver.take_moved(moves);
+  CHECK(moves.empty());
+
+  // The world moves two of them out of the tile, and one within it.
+  const schema::MaterializeInfo* crate = schema::MaterializeRegistry::global().find(k_crate);
+  REQUIRE(crate != nullptr);
+  auto move_to = [&](u64 n, f64 x) {
+    WriteBackChange change;
+    change.record = id_of(n);
+    change.mapping = crate;
+    change.row = 0;
+    change.value = vec3(x, 0, 5);
+    rig.world.pending.push_back(change);
+  };
+  move_to(10, 14.0);  // into (1, 0)
+  move_to(11, 8.0);   // still (0, 0)
+  move_to(12, 23.0);  // into (2, 0)
+  REQUIRE(rig.driver.flush_writeback(SimTick{3}, GameTime{50000}) == 3);
+  rig.driver.take_moved(moves);
+  REQUIRE(moves.size() == 2);
+  CHECK(moves[0].id == id_of(10));
+  CHECK(moves[0].from_tiled);
+  CHECK(moves[0].from == doc::TileCoord{0, 0});
+  CHECK(moves[0].to == doc::TileCoord{1, 0});
+  CHECK(moves[1].id == id_of(12));
+  CHECK(moves[1].to == doc::TileCoord{2, 0});
+  // Reported once.
+  Vector<TileMove> again;
+  rig.driver.take_moved(again);
+  CHECK(again.empty());
+
+  // One follows its tile, the other is let go; the tile it was filed under no longer holds either.
+  CHECK(rig.driver.refile(id_of(10), true, doc::TileCoord{1, 0}));
+  const Id128 gone[] = {id_of(12), id_of(99)};
+  CHECK(rig.driver.dematerialize(std::span<const Id128>(gone, 2)) == 1);
+  CHECK_FALSE(rig.driver.holds(id_of(12)));
+  CHECK(rig.world.entities.count(id_of(12)) == 0);
+  Vector<Id128> held;
+  rig.driver.held(MaterializeScope::of_tile({0, 0}), held);
+  REQUIRE(held.size() == 1);
+  CHECK(held[0] == id_of(11));
+  rig.driver.held(MaterializeScope::of_tile({1, 0}), held);
+  REQUIRE(held.size() == 1);
+  CHECK(held[0] == id_of(10));
+  // The tile it went to lets it go with itself, and a pass of it afterwards finds it in sync.
+  CHECK(rig.driver.dematerialize(MaterializeScope::of_tile({1, 0})) == 1);
+  CHECK_FALSE(rig.driver.refile(id_of(10), true, doc::TileCoord{1, 0}));
+  const MaterializeReport back = rig.driver.materialize(d, MaterializeScope::of_tile({1, 0}));
+  CHECK(back.created == 1);
+  CHECK(rig.world.entities.at(id_of(10)).body.position == Vec3{14.0f, 0.0f, 5.0f});
+}
+
 TEST_CASE("sim: write-back is a system in the scheduler's table at Persist, on its cadence") {
   doc::Document d = yard();
   Rig rig;

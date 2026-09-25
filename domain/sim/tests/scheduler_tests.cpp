@@ -394,6 +394,42 @@ TEST_CASE("scheduler: the fixed step drives game time and the timing wheel") {
   CHECK(scheduler.tick().value == 68);
 }
 
+// A world loaded from a save starts its clock where the save was taken (world.md, "Save and
+// load"): the tick counter and the game time go on from there, and so does every periodic, on the
+// same instants it would have fired at in the run that never stopped.
+TEST_CASE("scheduler: a scheduler configured to start at a tick counts on from it") {
+  const auto run = [](SimScheduler& scheduler, u32 ticks, Vector<i64>& fired) {
+    auto body = [&](const TimerEvent& event) { fired.push_back(event.at.us); };
+    EventSink sink = make_sink(body);
+    scheduler.set_event_sink(sink);
+    for (u32 i = 0; i < ticks; ++i)
+      scheduler.step();
+  };
+  // Through: 300 ticks from the start, the periodic registered at the start.
+  SimScheduler through;
+  through.wheel().schedule_periodic(0, GameTime::from_seconds(1), GameTime{0});
+  Vector<i64> fired_through;
+  run(through, 300, fired_through);
+
+  // Resumed at tick 120: the counter and the clock carry on, and the periodic, registered again at
+  // the resumed world's start, fires on the same instants from there on.
+  SimScheduler first_half;
+  first_half.wheel().schedule_periodic(0, GameTime::from_seconds(1), GameTime{0});
+  Vector<i64> fired_resumed;
+  run(first_half, 120, fired_resumed);
+  SimSchedulerConfig config;
+  config.start_tick = first_half.tick();
+  config.epoch = first_half.game_time();
+  SimScheduler resumed(config);
+  CHECK(resumed.tick().value == 120);
+  CHECK(resumed.game_time().us == first_half.game_time().us);
+  resumed.wheel().schedule_periodic(0, GameTime::from_seconds(1), GameTime{0});
+  run(resumed, 180, fired_resumed);
+  CHECK(resumed.tick().value == 300);
+  CHECK(resumed.game_time().us == through.game_time().us);
+  CHECK(fired_resumed == fired_through);
+}
+
 TEST_CASE("scheduler: the persistence hook closes the tick") {
   struct Flush {
     u32 calls = 0;

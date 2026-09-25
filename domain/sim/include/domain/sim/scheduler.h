@@ -331,7 +331,13 @@ struct SimSchedulerConfig {
   u32 hz = 60;
   u32 max_steps_per_advance = 8;
   f64 game_seconds_per_real_second = 1.0;
+  // Where the clock starts: the game time the wheel's origin and the game clock begin at, and the
+  // tick the scheduler's own counter begins at. A world loaded from a save starts at the tick and
+  // game time it was saved at (docs/subsystems/world.md, "Save and load"), so the write-back's
+  // cadence (`tick % writeback_every`), the events' ticks and every timer due after the save land
+  // on the same ticks they would have in the run that never stopped.
   GameTime epoch;
+  SimTick start_tick;
   jobs::JobSystem* job_system = nullptr;
 };
 

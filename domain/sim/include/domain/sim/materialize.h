@@ -187,6 +187,16 @@ struct MaterializeReport {
   f64 ms = 0;
 };
 
+// A held record whose document tile is no longer the tile it is filed under: the world moved it
+// and a write-back told the document (`Materializer::take_moved`).
+struct TileMove {
+  Id128 id;
+  doc::TileCoord from;  // the tile it is filed under
+  doc::TileCoord to;    // the tile the document now puts it in
+  bool from_tiled = false;
+  bool to_tiled = false;
+};
+
 // Cumulative over the driver's life. `hook_calls` is the number that proves an unchanged record
 // costs nothing: it moves only when a record is handed to the hooks.
 struct MaterializeStats {
@@ -236,6 +246,24 @@ class Materializer {
   u32 dematerialize(const MaterializeScope& scope);
   // The ids held under `scope`, sorted: what a tile's snapshot writes before the tile goes.
   void held(const MaterializeScope& scope, Vector<Id128>& out) const;
+
+  // **Records the world moved between tiles** (docs/subsystems/sim.md, "Records that move"). A tile
+  // pass files a record under the tile it is in when it is materialized; when a system then moves
+  // it and a write-back commits the move, the document files it under another tile while this
+  // driver still has it under the first. Which of the two is right is the world's to say — whether
+  // the new tile is live is the tile ring's knowledge, not the driver's — so the driver only
+  // reports it: every held record a write-back wrote since the last call whose document tile is not
+  // the one it is filed under, sorted by id, and forgets them. The world then files each under its
+  // new tile (`refile`) or lets it go (`dematerialize(ids)`), which is what keeps the runtime world
+  // a function of the document and the live tiles rather than of the way it got there (03 §3.4) —
+  // and so a world loaded from a save the same world as the run that never stopped.
+  void take_moved(Vector<TileMove>& out);
+  // Files a held record under the tile the document now puts it in (`tiled` false: in none).
+  // False when the driver does not hold it.
+  bool refile(const Id128& id, bool tiled, doc::TileCoord tile) noexcept;
+  // Dematerializes these held records, deepest first; an id the driver does not hold is ignored.
+  // Returns how many went.
+  u32 dematerialize(std::span<const Id128> ids);
 
   // One write-back flush: collects the changed writable fields and commits them through the sink
   // as one transaction. The Persist system calls it at the cadence; a host calls it when a run ends
@@ -327,6 +355,8 @@ class Materializer {
   Vector<EntityHandle> handles_;
   Vector<Id128> orphans_;
   Vector<WriteBackChange> changes_;
+  // Held records a write-back wrote since the last `take_moved`: bounded by what is held.
+  HashMap<Id128, u8> written_;
   MaterializeStats stats_;
 };
 

@@ -146,6 +146,11 @@ u32 Materializer::flush_writeback(SimTick tick, GameTime time) {
   for (const Id128& id : scratch_ids_) {
     if (Held* held = held_.find_value(id)) held->revision = document_->revision_of(id);
   }
+  // Every record this wrote may now be in another tile of the document's; `take_moved` says which.
+  for (u32 i = 0; i < changes_.size(); ++i) {
+    if (i != 0 && changes_[i].record == changes_[i - 1].record) continue;
+    if (held_.contains(changes_[i].record)) written_.insert(changes_[i].record, 1);
+  }
   ++stats_.writeback_flushes;
   stats_.writeback_fields += fields;
   return fields;
@@ -597,6 +602,46 @@ void Materializer::held(const MaterializeScope& scope, Vector<Id128>& out) const
     if (in_scope(scope, held.tiled, held.tile)) out.push_back(held_.key_at(i));
   }
   std::sort(out.begin(), out.end());
+}
+
+void Materializer::take_moved(Vector<TileMove>& out) {
+  out.clear();
+  if (written_.size() == 0) return;
+  scratch_ids_.clear();
+  for (u32 i = 0; i < written_.size(); ++i)
+    scratch_ids_.push_back(written_.key_at(i));
+  written_.clear();
+  if (document_ == nullptr) return;
+  std::sort(scratch_ids_.begin(), scratch_ids_.end());
+  for (const Id128& id : scratch_ids_) {
+    const Held* held = held_.find_value(id);
+    if (held == nullptr) continue;
+    TileMove move;
+    move.id = id;
+    move.from = held->tile;
+    move.from_tiled = held->tiled;
+    move.to_tiled = record_tile(*document_, id, move.to);
+    if (move.to_tiled == held->tiled && (!move.to_tiled || move.to == held->tile)) continue;
+    out.push_back(move);
+  }
+}
+
+bool Materializer::refile(const Id128& id, bool tiled, doc::TileCoord tile) noexcept {
+  Held* held = held_.find_value(id);
+  if (held == nullptr) return false;
+  held->tiled = tiled;
+  held->tile = tiled ? tile : doc::TileCoord{};
+  return true;
+}
+
+u32 Materializer::dematerialize(std::span<const Id128> ids) {
+  MaterializeReport report;
+  gone_.clear();
+  for (const Id128& id : ids) {
+    if (held_.contains(id)) gone_.push_back(id);
+  }
+  dematerialize_ids(gone_, report);
+  return report.dematerialized;
 }
 
 u64 Materializer::last_order_hash() const noexcept {

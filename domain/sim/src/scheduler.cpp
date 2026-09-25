@@ -159,6 +159,7 @@ SimScheduler::SimScheduler(const SimSchedulerConfig& config)
       tiers_(config.job_system),
       jobs_(config.job_system) {
   game_clock_.jump_to(config.epoch);
+  tick_ = config.start_tick;
 }
 
 u16 SimScheduler::add_system(const SystemDesc& desc) {
