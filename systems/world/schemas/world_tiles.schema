@@ -1,0 +1,137 @@
+// The world capability's own types (docs/subsystems/world.md; ADR-0007, ADR-0027): what a tile
+// leaves in the persistent store when it goes inactive, and the line the world log writes per
+// update. They sit in the runtime world's namespace (`engine.world`, beside `Transform` and
+// `WriteBack` in schemas/world.schema) because they are the world's vocabulary, and in a file of
+// their own because they are this capability's: ENGINE_WITH_WORLD=OFF takes them out of the build.
+namespace engine.world
+
+/// One document record of a tile, as the tile's projections in the store keep it
+/// (`foundation/store`, `projections`, kind `stable_type_id("engine.world.TileProjection")`): what
+/// `SimScheduler::reconcile_tile` reads back as an `EntityRecord` when the tile activates again
+/// (docs/plan/05-simulation.md §5.5 step 1). The record's authored state stays the document's;
+/// this is what the simulation needs to place it and to promote it by distance.
+struct TileProjection @version(1) {
+  /// The record, and so the entity: one identity across saves (ADR-0028 seam 3).
+  record: id128
+  /// Its type's qualified name, as the document has it.
+  type: string
+  /// Where it was when the tile went inactive, world space, y up.
+  position: vec3 @unit(m)
+  /// What divides its distance to an observer (05 §5.4).
+  importance: f32 = 1
+}
+
+/// One consumer's share of a world update.
+struct TileConsumerFrame @version(1) {
+  name: string
+  /// Activations, moves between rings and deactivations this update.
+  calls: u32 = 0
+  refused: u32 = 0
+  /// Their wall time, and the commit's, milliseconds; and the longest single call among them.
+  ms: f64 = 0
+  commit_ms: f64 = 0
+  max_ms: f64 = 0
+}
+
+/// One world update, as engine-view's `--world-log` and a headless run record it
+/// (docs/subsystems/world.md, "The world log"): the tiles, the events, and what each cost.
+struct TileFrame @version(1) {
+  /// The flythrough's repeat and path frame, or zero; the tick the update ran before.
+  repeat: u32 = 0
+  frame: u32 = 0
+  /// True for a frame the timed flight records, false for a warm-up or the drain.
+  recorded: bool = false
+  tick: u64 = 0
+  /// Tiles scored, tiles active after the update, and the active tiles per ring.
+  tracked: u32 = 0
+  active: u32 = 0
+  per_ring: u32[]
+  /// This update's events by kind, and the consumers' refusals among them.
+  activated: u32 = 0
+  changed: u32 = 0
+  deactivated: u32 = 0
+  refused: u32 = 0
+  /// Changes the rate limits held over to a later update.
+  deferred_promotions: u32 = 0
+  deferred_demotions: u32 = 0
+  /// The ring update alone, microseconds, and every consumer's calls and commits, milliseconds.
+  ring_us: f64 = 0
+  dispatch_ms: f64 = 0
+  consumers: TileConsumerFrame[]
+  /// What the renderer holds after it: the scene's instances and (instance, cluster) pairs, the
+  /// buildings the ruins consumer has in its tiles, and its instances among the scene's.
+  instances: u32 = 0
+  pairs: u32 = 0
+  buildings: u32 = 0
+  ruin_instances: u32 = 0
+}
+
+/// One tile of a streamed world changing the representation its ruins are drawn in, seen from the
+/// camera that changed it (engine-view `--world-handover`): the frame the update left, against the
+/// same frame with only this tile's instances put back as they were — everything else the update
+/// did is in both pictures — and what differs between the two. It is the pop a handover without a
+/// cross-fade costs (docs/experiments/e35-world-streaming.md).
+struct TileHandover @version(1) {
+  frame: u32 = 0
+  x: i32 = 0
+  z: i32 = 0
+  /// The rings, and what the ruins were drawn as in each ("blocks", "sections", "walls").
+  from_ring: u32 = 0
+  to_ring: u32 = 0
+  from: string
+  to: string
+  /// Metres from the camera to the tile's centre on the ground plane.
+  distance: f32 = 0
+  /// Pixels the tile's own instances drew before and after.
+  tile_before: u32 = 0
+  tile_after: u32 = 0
+  /// Pixels covered in one picture and not the other, and covered in both at depths that differ by
+  /// more than a thousandth of the nearer: together, what popped.
+  coverage_changed: u32 = 0
+  depth_changed: u32 = 0
+  /// Of `depth_changed`, the pixels whose depth moved by more than a hundredth of the nearer (half
+  /// a metre at 50 m): geometry that moved, rather than relief on a surface that stayed.
+  depth_moved: u32 = 0
+  /// Pixels whose colour changed by more than 8 of 255 in any channel: what the eye sees change.
+  color_changed: u32 = 0
+  /// The frame's visible pairs before and after, each drawn once at this camera before it was
+  /// captured so its occlusion history is its own: the cull's side of the same jump.
+  visible_before: u32 = 0
+  visible_after: u32 = 0
+  /// The tile's instances and (instance, cluster) pairs before and after.
+  instances_before: u32 = 0
+  instances_after: u32 = 0
+  pairs_before: u32 = 0
+  pairs_after: u32 = 0
+}
+/// A world's run, the last line of engine-view's world log: what the ring did and what it cost.
+struct TileWorldSummary @version(1) {
+  format: string = "engine.world-log.v1"
+  tile_size: f32 = 0
+  radius: f32[]
+  ruins: string[]
+  hysteresis: f32 = 0
+  max_activations: u32 = 0
+  max_deactivations: u32 = 0
+  updates: u64 = 0
+  events: u64 = 0
+  /// The ring update's microseconds over the updates: median, p99, max.
+  ring_us_median: f64 = 0
+  ring_us_p99: f64 = 0
+  ring_us_max: f64 = 0
+  /// Per consumer over the run: calls, their milliseconds, the most one call took, the commits'.
+  consumers: TileConsumerFrame[]
+  /// The ruins consumer's totals: buildings assembled in sections, laid in blocks, dropped, withheld
+  /// by the pair budget (each time a tile went from drawn, or new, to withheld), and the milliseconds
+  /// of each kind of work.
+  assembled: u64 = 0
+  laid: u64 = 0
+  dropped: u64 = 0
+  refused: u64 = 0
+  assemble_ms: f64 = 0
+  lay_ms: f64 = 0
+  /// The renderer taking the tail (its device wait and the tables' upload), total and worst.
+  insert_ms: f64 = 0
+  insert_ms_max: f64 = 0
+  handed: u64 = 0
+}
