@@ -96,6 +96,27 @@ bool limits_fit(const ClusterSetLimits& limits, const ClusterAsProperties& props
          limits.max_geometry_index <= props.max_geometry_index;
 }
 
+// Which of `limits_fit`'s rows failed, with both numbers, because "limits exceed what the device
+// allows" sent the one person who met it (a surround whose geometry index was twice the device's)
+// reading code to learn which.
+std::string limits_message(const char* who, const ClusterSetLimits& limits,
+                           const ClusterAsProperties& props) {
+  std::string text(who);
+  if (limits.max_clusters == 0) return text + ": no clusters";
+  if (limits.max_triangles_per_cluster > props.max_triangles_per_cluster) {
+    return text + ": " + std::to_string(limits.max_triangles_per_cluster) +
+           " triangles a cluster; the device allows " +
+           std::to_string(props.max_triangles_per_cluster);
+  }
+  if (limits.max_vertices_per_cluster > props.max_vertices_per_cluster) {
+    return text + ": " + std::to_string(limits.max_vertices_per_cluster) +
+           " vertices a cluster; the device allows " +
+           std::to_string(props.max_vertices_per_cluster);
+  }
+  return text + ": geometry index " + std::to_string(limits.max_geometry_index) +
+         "; the device allows " + std::to_string(props.max_geometry_index);
+}
+
 }  // namespace
 
 bool cluster_as_properties(const Device& device, ClusterAsProperties& out) noexcept {
@@ -207,6 +228,9 @@ bool cluster_set_build_sizes(const Device& device, const ClusterSetLimits& limit
   VkAccelerationStructureBuildSizesInfoKHR sizes{};
   sizes.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
   vkGetClusterAccelerationStructureBuildSizesNV(device.handles().device, &input, &sizes);
+  // A driver that cannot size a request answers with zeros rather than an error code; a zero is
+  // a refusal, never a size.
+  if (sizes.accelerationStructureSize == 0) return false;
   // The same slack `create_cluster_set` adds, so a budget computed from this is what it allocates.
   out.data_bytes = sizes.accelerationStructureSize + props.cluster_alignment;
   out.scratch_bytes = sizes.buildScratchSize + props.scratch_alignment;
@@ -222,7 +246,7 @@ bool create_cluster_set(const Device& device, const ClusterSetLimits& limits, Cl
     return false;
   }
   if (!limits_fit(limits, props)) {
-    set_message(error, "create_cluster_set: limits exceed what the device allows");
+    if (error != nullptr) *error = limits_message("create_cluster_set", limits, props);
     return false;
   }
   VkClusterAccelerationStructureTriangleClusterInputNV triangles = triangle_input(limits);
@@ -230,6 +254,10 @@ bool create_cluster_set(const Device& device, const ClusterSetLimits& limits, Cl
   VkAccelerationStructureBuildSizesInfoKHR sizes{};
   sizes.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
   vkGetClusterAccelerationStructureBuildSizesNV(device.handles().device, &input, &sizes);
+  if (sizes.accelerationStructureSize == 0) {
+    set_message(error, "create_cluster_set: the driver gave no size for these limits");
+    return false;
+  }
   out.alignment = props.cluster_alignment;
   out.limits = limits;
   out.max_clusters = limits.max_clusters;
@@ -538,6 +566,7 @@ bool cluster_blas_set_build_sizes(const Device& device, u32 max_structures, u32 
   VkAccelerationStructureBuildSizesInfoKHR sizes{};
   sizes.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
   vkGetClusterAccelerationStructureBuildSizesNV(device.handles().device, &input, &sizes);
+  if (sizes.accelerationStructureSize == 0) return false;  // a refusal, as above
   out.data_bytes = sizes.accelerationStructureSize + props.bottom_level_alignment;
   out.scratch_bytes = sizes.buildScratchSize + props.scratch_alignment;
   return true;

@@ -1722,14 +1722,32 @@ bool GpuScene::create_ray_tracing(const ResolvedSettings& resolved, std::string*
   limits.max_clusters = rt_union_clusters_;
   limits.max_triangles_per_cluster = triangles_per_cluster_;
   limits.max_vertices_per_cluster = geometry::ClusterLodOptions{}.max_vertices;
-  limits.max_geometry_index = rt_union_clusters_ - 1;
   // A shadow caster's geometry index is its visible index too, and the casters are the list's run
   // `k_caster_run`, so with them the largest index is that run's last entry. The record count is
   // unchanged: in one view a pair is drawn or a caster, never both, so the union of the views'
   // runs still holds at most `views * pair_count` clusters.
-  if (resolved.casters) {
-    limits.max_geometry_index = (gfx::k_caster_run + 1) * rt_union_clusters_ - 1;
+  //
+  // **The device bounds that index, and the frame's size does not move it** (renderer.md, "The
+  // ray tracing chain's index space"). `resolve_settings` drops the casters, or the chain, when
+  // the scene's pairs in every view would pass `cluster_max_geometry_index`; a caller that went
+  // around it is refused here with both numbers, where it used to learn only that "the driver gave
+  // no sizes" — which is what the ashlar ruins on a three-view surround said, at any resolution.
+  const u64 max_index = rt_max_geometry_index(pair_count_, view_count_, resolved.casters);
+  gfx::ClusterAsProperties cluster_props;
+  const u32 device_max =
+      gfx::cluster_as_properties(device, cluster_props) ? cluster_props.max_geometry_index : 0u;
+  if (max_index > device_max) {
+    if (error != nullptr) {
+      *error = "the scene's " + std::to_string(pair_count_) + " pairs in " +
+               std::to_string(view_count_) + " view(s)" +
+               (resolved.casters ? " with shadow casters" : "") +
+               " name cluster geometry indices up to " + std::to_string(max_index) +
+               "; the device allows " + std::to_string(device_max) +
+               " (resolve_settings drops the casters or the chain for such a scene)";
+    }
+    return false;
   }
+  limits.max_geometry_index = static_cast<u32>(max_index);
   limits.instantiate = resolved.settings.rt_templates;
   rt_limits_ = limits;
   // One instance's structure can reference at most its mesh's clusters in every view.
@@ -1845,7 +1863,12 @@ bool GpuScene::create_ray_tracing(const ResolvedSettings& resolved, std::string*
   if (!gfx::cluster_set_build_sizes(device, probe, set_sizes) ||
       !gfx::cluster_blas_set_build_sizes(device, instance_count_, k_probe,
                                          std::min(rt_max_per_instance_, k_probe), blas_sizes)) {
-    if (error != nullptr) *error = "the driver gave no cluster acceleration structure sizes";
+    if (error != nullptr) {
+      *error = "the driver gave no cluster acceleration structure sizes for " +
+               std::to_string(k_probe) + " clusters over " + std::to_string(instance_count_) +
+               " bottom-level structures of at most " +
+               std::to_string(std::min(rt_max_per_instance_, k_probe)) + " each";
+    }
     return false;
   }
   const u64 record_bytes = resolved.settings.rt_templates ? gfx::k_cluster_instantiate_record_bytes

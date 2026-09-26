@@ -10,7 +10,11 @@
 //   shadows and on the ray path, where a structure the chain did not build would be a hole;
 // - past the budget, a frame drops whole instances' structures and says so, and what that costs is
 //   shadows: the surfaces are the same surfaces, and no pixel is shadowed that the full chain left
-//   lit.
+//   lit;
+// - the chain's **index space** — the geometry indices it names, the scene's pairs times the views,
+//   three times that with the shadow casters — is bounded by the device and not by the budget, and
+//   a scene past it starts anyway, with the casters dropped first and the chain second (the
+//   settings resolution, on the CPU against a made-up limit).
 //
 // The scene is the procedural heightfield as a grid of instances, so it needs no content. The GPU
 // cases skip on a device without cluster acceleration structures and ray queries.
@@ -103,6 +107,99 @@ FrameDesc frame_at(const SceneData& data, f32 distance, u64 index, u32 view_mode
 void run_starved(const gfx::Device& device);
 
 }  // namespace
+
+TEST_CASE("rt index space: past the device's geometry indices, the casters go, then the chain") {
+  // What the chain names, whatever the frame holds: the drawn clusters are the views' first runs,
+  // the casters run `k_caster_run` behind them.
+  CHECK(rt_max_geometry_index(1000, 1, false) == 999);
+  CHECK(rt_max_geometry_index(1000, 3, false) == 2999);
+  CHECK(rt_max_geometry_index(1000, 3, true) == 8999);
+  CHECK(rt_max_geometry_index(0, 3, true) == 0);
+  // The ashlar ruins on the owner's surround, and a product a u32 would have wrapped.
+  CHECK(rt_max_geometry_index(3699274, 3, false) == 11097821);
+  CHECK(rt_max_geometry_index(3699274, 3, true) == 33293465);
+  CHECK(rt_max_geometry_index(0xffffffffu, 3, true) == u64{9} * 0xffffffffu - 1);
+
+  gfx::DeviceFeatures features;  // a device that traces, with a limit a small scene can reach
+  features.mesh_shader = true;
+  features.buffer_int64_atomics = true;
+  features.acceleration_structure = true;
+  features.cluster_acceleration_structure = true;
+  features.ray_query = true;
+  SceneData scene;
+  scene.pair_count = 1000;
+  RenderSettings settings;
+  settings.shadows = ShadowMode::RayTraced;
+  settings.views = ViewLayout::Surround3;
+  ResolvedSettings resolved;
+  const auto starts = [&] {
+    return check_availability(resolved, features) == RenderAvailability::Ok;
+  };
+
+  // A hand-made DeviceFeatures reports no limit, and bounds nothing.
+  resolve_settings(settings, features, &scene, resolved);
+  CHECK(resolved.shadows);
+  CHECK(resolved.casters);
+
+  // Everything fits, to the last index.
+  features.cluster_max_geometry_index = 8999;
+  resolve_settings(settings, features, &scene, resolved);
+  CHECK(resolved.shadows);
+  CHECK(resolved.casters);
+  CHECK_FALSE(resolved.csm);
+  CHECK(starts());
+
+  // The casters do not: traced shadows without them, and the summary says so.
+  features.cluster_max_geometry_index = 8998;
+  resolve_settings(settings, features, &scene, resolved);
+  CHECK(resolved.shadows);
+  CHECK(resolved.rt_chain);
+  CHECK_FALSE(resolved.casters);
+  CHECK_FALSE(resolved.settings.shadow_casters);
+  CHECK(resolved.settings.shadows == ShadowMode::RayTraced);
+  CHECK(starts());
+  // With one view the same scene keeps them: the layout multiplies the range, not the frame.
+  settings.views = ViewLayout::Single;
+  resolve_settings(settings, features, &scene, resolved);
+  CHECK(resolved.casters);
+  settings.views = ViewLayout::Surround3;
+
+  // The drawn clusters do not either: the cascaded maps, for `rt` as for `auto`, and it starts.
+  features.cluster_max_geometry_index = 2998;
+  for (const ShadowMode mode : {ShadowMode::RayTraced, ShadowMode::Auto}) {
+    settings.shadows = mode;
+    resolve_settings(settings, features, &scene, resolved);
+    CHECK_FALSE(resolved.shadows);
+    CHECK_FALSE(resolved.rt_chain);
+    CHECK_FALSE(resolved.casters);
+    CHECK(resolved.csm);
+    CHECK(resolved.shadow_cascades > 0);
+    CHECK(resolved.settings.shadows == ShadowMode::Cascaded);
+    CHECK(starts());
+  }
+  // The ray path draws with the rasterizer — the mesh path, or the vertex path without mesh
+  // shaders — and its shadows are the maps.
+  settings.raster = RasterMode::RayTrace;
+  settings.shadows = ShadowMode::RayTraced;
+  resolve_settings(settings, features, &scene, resolved);
+  CHECK_FALSE(resolved.ray_path);
+  CHECK(resolved.settings.raster == RasterMode::Hardware);
+  CHECK_FALSE(resolved.rt_chain);
+  CHECK(resolved.csm);
+  CHECK(starts());
+  features.mesh_shader = false;
+  resolve_settings(settings, features, &scene, resolved);
+  CHECK(resolved.vertex_path);
+  CHECK(resolved.csm);
+  CHECK(starts());
+  features.mesh_shader = true;
+  // One view fits again (999 drawn), and its casters (2,999) do not.
+  settings.views = ViewLayout::Single;
+  resolve_settings(settings, features, &scene, resolved);
+  CHECK(resolved.ray_path);
+  CHECK(resolved.shadows);
+  CHECK_FALSE(resolved.casters);
+}
 
 TEST_CASE("rt capacity: grows ahead, shrinks late, steps, and stops at the limit") {
   RtCapacityConfig config;

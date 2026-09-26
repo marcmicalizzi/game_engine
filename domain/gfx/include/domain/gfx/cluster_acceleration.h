@@ -40,8 +40,12 @@ struct ClusterSetLimits {
   u32 max_clusters = 0;                 // records per build
   u32 max_triangles_per_cluster = 124;  // at most ClusterAsProperties::max_triangles_per_cluster
   u32 max_vertices_per_cluster = 64;
-  u32 max_geometry_index = 0;  // largest cluster id used as a geometry index
-  bool instantiate = false;    // the set holds instantiated templates, not rebuilt clusters
+  // The largest cluster id used as a geometry index: at most ClusterAsProperties::
+  // max_geometry_index (the same number as DeviceFeatures::cluster_max_geometry_index), which a
+  // set's size query and creation refuse to pass. It bounds what a set can *name*, not how many
+  // structures it holds, so a scene can exceed it where no frame's cut is large.
+  u32 max_geometry_index = 0;
+  bool instantiate = false;  // the set holds instantiated templates, not rebuilt clusters
 };
 
 struct ClusterAsProperties {
@@ -80,7 +84,8 @@ void write_cluster_build_records(std::span<const ClusterBuildInput> clusters, vo
 // `max_triangles_per_cluster` triangles and `max_vertices_per_cluster` vertices is what every
 // structure is reserved for, 6,144 bytes for 124 and 64 on the RTX 5090 at driver 610 — which is
 // what lets a caller turn a byte budget into a cluster count (docs/subsystems/renderer.md, "The
-// ray tracing chain's memory").
+// ray tracing chain's memory"). False — and nothing to budget with — for limits the device refuses
+// (`limits_fit`) and for a driver answer of zero bytes, which is how a driver refuses a size query.
 struct ClusterBuildSizes {
   u64 data_bytes = 0;
   u64 scratch_bytes = 0;

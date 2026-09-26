@@ -68,6 +68,16 @@ struct DeviceFeatures {
   bool validation = false;              // the validation layer is active
   bool memory_budget = false;  // VK_EXT_memory_budget: Device::memory_budget() reports real
                                // numbers rather than heap sizes alone
+  // The largest geometry index a cluster acceleration structure may carry
+  // (VkPhysicalDeviceClusterAccelerationStructurePropertiesNV::maxClusterGeometryIndex; 16,777,215
+  // on the RTX 5090 at driver 610, the record's 24 bits). 0 without cluster acceleration
+  // structures, and in a hand-made DeviceFeatures, where it means "not reported" and bounds
+  // nothing. It is a feature rather than a `cluster_acceleration.h` property because it is the
+  // one cluster limit a *scene* can exceed: the renderer names every cluster by its visible
+  // index, whose range is the scene's pairs times its views, and `renderer::resolve_settings`
+  // drops what does not fit rather than refusing to start (docs/subsystems/renderer.md, "The
+  // ray tracing chain's index space").
+  u32 cluster_max_geometry_index = 0;
 };
 
 // How much of the device-local memory this process may have, and how much of it it is using

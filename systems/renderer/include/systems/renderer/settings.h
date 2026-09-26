@@ -224,9 +224,28 @@ enum class RenderAvailability : u8 {
   NoAccelerationStructures
 };
 
+// **The largest cluster geometry index the ray tracing chain names** for a scene of `pair_count`
+// pairs in `views` views (docs/subsystems/renderer.md, "The ray tracing chain's index space"). A
+// cluster's geometry index is its visible index, so a hit leads straight to the pair the
+// rasterizer drew; the drawn clusters are the views' first runs of the visible list, run-major, so
+// they end at `views * pair_count - 1`, and the shadow casters are run `gfx::k_caster_run`, so
+// with them the range ends at `(k_caster_run + 1) * views * pair_count - 1`. It is a function of
+// the scene and the view layout and **not** of the frame's size or the chain's capacity: every
+// structure is created able to name any entry. The device bounds it
+// (`gfx::DeviceFeatures::cluster_max_geometry_index`, 2^24 - 1 on the RTX 5090), and
+// `resolve_settings` drops what does not fit. u64, because the product does not fit a u32 at the
+// scale where it matters. 0 for an empty scene.
+u64 rt_max_geometry_index(u32 pair_count, u32 views, bool casters) noexcept;
+
 // Applies every device and scene override, in the order the renderer depends on: the mesh
 // shader fallback first (it decides which path runs), then shadows (which decide whether
-// occlusion culling can run at all), then the switches that must be forced on. Logs one record
+// occlusion culling can run at all), then the switches that must be forced on. **The ray tracing
+// chain's index space** is one of them: a scene whose pairs in every view name more cluster
+// geometry indices than the device has (`rt_max_geometry_index` against
+// `gfx::DeviceFeatures::cluster_max_geometry_index`) loses the shadow casters first, and if the
+// drawn clusters alone do not fit, the ray path draws with the rasterizer and traced shadows —
+// `rt` or `auto` — become the cascaded maps. Never a refusal: the limit is the scene's times the
+// layout's, and the same flags run on a smaller scene or with one view. Logs one record
 // per override under the `renderer` category, because a picture that silently ignored a flag is
 // the hardest kind of surprise to track down. `scene` may be null before a scene is loaded; the
 // two scene-driven overrides are then skipped.

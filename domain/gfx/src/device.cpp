@@ -550,6 +550,14 @@ bool Device::create(const DeviceOptions& options, std::string* error) {
   if (ext_cluster) {
     link(reinterpret_cast<VkBaseOutStructure*>(&cluster));
     impl->features.cluster_acceleration_structure = true;
+    // The one cluster limit a *scene* can exceed (DeviceFeatures::cluster_max_geometry_index).
+    VkPhysicalDeviceClusterAccelerationStructurePropertiesNV limits{};
+    limits.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CLUSTER_ACCELERATION_STRUCTURE_PROPERTIES_NV;
+    VkPhysicalDeviceProperties2 properties{};
+    properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+    properties.pNext = &limits;
+    vkGetPhysicalDeviceProperties2(h.physical, &properties);
+    impl->features.cluster_max_geometry_index = limits.maxClusterGeometryIndex;
   }
 #endif
 #if defined(VK_EXT_memory_decompression)

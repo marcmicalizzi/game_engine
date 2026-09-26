@@ -103,9 +103,14 @@ void run_comparison(gfx::Device& device, u32 grid, f32 threshold_px, u32 k_w, u3
                                 << props.max_vertices_per_cluster << " vertices per cluster; "
                                 << "alignments cluster " << props.cluster_alignment << ", scratch "
                                 << props.scratch_alignment << ", blas "
-                                << props.bottom_level_alignment);
+                                << props.bottom_level_alignment << "; geometry index at most "
+                                << props.max_geometry_index);
   REQUIRE(props.max_triangles_per_cluster >= 124);
   REQUIRE(props.max_vertices_per_cluster >= 64);
+  // The renderer decides what a scene's chain can name from the feature, before any structure
+  // exists (renderer::resolve_settings); it has to be the property the builds are checked against.
+  REQUIRE(device.features().cluster_max_geometry_index == props.max_geometry_index);
+  REQUIRE(props.max_geometry_index > 0);
 
   Vector<Vec3> positions;
   Vector<u32> indices;
