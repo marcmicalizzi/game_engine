@@ -450,13 +450,23 @@ class GpuScene {
   // A host-visible, persistently mapped buffer for `samples` heights, which the caller fills from
   // any thread and hands to `terrain_upload`.
   bool terrain_staging(u64 samples, gfx::BufferResource& out, std::string* error = nullptr) const;
-  // Queues `staging` to be copied into field slot `slot` of `level` by the next frame recorded,
-  // which then retires the staging buffer. `window` says which lattice window the heights cover
-  // (its `heights` is ignored). The next frame records every copy queued, before anything reads a
-  // field, so the slot may be shown from that frame on; a second copy into the same slot before it
-  // replaces the first. The copy is ordered after every frame already submitted that read it.
+  // Queues `staging` to be copied into field slot `slot` of `level`, in pieces over as many frames
+  // as the upload budget takes (`set_terrain_upload_budget`), before anything in those frames reads
+  // a field; the frame that records the last piece retires the staging buffer. An `urgent` field —
+  // one the next frame shows — goes over whole in that frame. `window` says which lattice window
+  // the heights cover (its `heights` is ignored). A slot may be shown from the frame that records
+  // its last piece (`terrain_slot_uploaded`); a second copy into the same slot replaces the first.
+  // The copies are ordered after every frame already submitted that read the slot.
   bool terrain_upload(u32 level, u32 slot, const gfx::TerrainField& window,
-                      const gfx::BufferResource& staging, std::string* error = nullptr);
+                      const gfx::BufferResource& staging, std::string* error = nullptr,
+                      bool urgent = false);
+  // Whether no piece of a copy into field slot `slot` of `level` is still to be recorded — or
+  // would be left over by the next frame, which records every piece when the budget is 0.
+  bool terrain_slot_uploaded(u32 level, u32 slot) const noexcept;
+  // Bytes of fields a frame copies at most; 0 is all of them. `renderer.terrain.upload_mib` when
+  // the scene is made; an offscreen time-lapse, which waits for its fields, sets 0.
+  void set_terrain_upload_budget(u64 bytes) noexcept { terrain_upload_budget_ = bytes; }
+  u64 terrain_upload_budget() const noexcept { return terrain_upload_budget_; }
   // A staging buffer from `terrain_staging` that nothing will copy after all (a field a re-centre
   // made stale): the next frame retires it with its own.
   void terrain_retire(const gfx::BufferResource& staging) {
@@ -503,7 +513,9 @@ class GpuScene {
     struct Copy {
       gfx::BufferResource staging;
       gfx::BufferResource field;
-      u64 bytes = 0;
+      u64 bytes = 0;     // this piece's
+      u64 offset = 0;    // into the staging buffer and the field alike
+      bool last = true;  // the field's last piece: the frame retires the staging buffer after it
     };
     Vector<Copy> copies;
     Vector<gfx::BufferResource> fields;  // every field buffer the table names
@@ -787,7 +799,16 @@ class GpuScene {
     f32 padding = 0.0f;
     Vec4 hole{};
     f32 skirt = 0.0f;  // metres a ring's skirt hangs below its border
-    Vector<TerrainUpdate::Copy> pending;
+    // Copies handed over and not yet wholly recorded, in order: `done` bytes of each went already.
+    struct Pending {
+      gfx::BufferResource staging;
+      gfx::BufferResource field;
+      u32 slot = 0;
+      u64 bytes = 0;
+      u64 done = 0;
+      bool urgent = false;
+    };
+    Vector<Pending> pending;
   };
   Vector<TerrainLevel> terrain_;
   gfx::BufferResource terrain_table_;  // k_joint_slots regions of gfx::TerrainLevelDesc, mapped
@@ -835,6 +856,7 @@ class GpuScene {
   u64 vertex_capacity_ = 0;  // scene + arenas
   u64 triangle_capacity_ = 0;
   u64 terrain_ring_bytes_ = 0;
+  u64 terrain_upload_budget_ = 0;  // bytes of fields a frame copies; 0 all
   u64 terrain_chunk_uploads_ = 0;
   u64 terrain_chunk_upload_bytes_ = 0;
   Vector<TerrainUpdate::GeometryCopy> pending_geometry_;

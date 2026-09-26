@@ -237,9 +237,11 @@ TerrainMotion::~TerrainMotion() { finish(); }
 
 namespace {
 
-// Read when a time-lapse starts (docs/subsystems/renderer.md, "The rings in the scene").
+// Read when a time-lapse starts (docs/subsystems/renderer.md, "The rings in the scene"). A copy
+// runs at about 9.4 GB/s on the RTX 5090, so 16 MiB is under 2 ms of a frame, and the erg's
+// re-centres (91 MB of chunks each on its path) go over in about six frames.
 tunables::Float ring_upload_mib{
-    "renderer.terrain.ring_upload_mib", 32.0, 0.0, 4096.0,
+    "renderer.terrain.ring_upload_mib", 16.0, 0.0, 4096.0,
     "Megabytes of a terrain ring's rebuilt chunks copied onto the device a frame, at most (one "
     "chunk a frame whatever it weighs)"};
 
@@ -301,6 +303,9 @@ bool TerrainMotion::start(GpuScene& scene, TerrainRingSet* rings, const TimeLaps
   }
   config_ = config;
   jobs_ = jobs;
+  // Offscreen a frame waits for the field it needs, so nothing is spread over frames: the next
+  // frame copies every field whole (renderer.terrain.upload_mib is for a window's frames).
+  if (config_.wait) scene.set_terrain_upload_budget(0);
   desc_ = std::make_unique<TerrainDesc>(scene.data().terrain);
   sampler_ = std::make_unique<TerrainSampler>(*desc_);
   start_s_ = desc_->time_s;
@@ -353,7 +358,8 @@ bool TerrainMotion::start(GpuScene& scene, TerrainRingSet* rings, const TimeLaps
     gfx::BufferResource staging;
     if (!scene.terrain_staging(heights.size(), staging, error)) return false;
     std::memcpy(staging.mapped, heights.data(), heights.size() * sizeof(f32));
-    if (!scene.terrain_upload(k, 0, level.window, staging, error)) return false;
+    // The first frame shows it: copied whole by that frame, whatever the budget.
+    if (!scene.terrain_upload(k, 0, level.window, staging, error, true)) return false;
     level.a = Field{0, start_s_, padding, 0.0, level.window};
     level.b = Field{};
     level.next = Field{};
@@ -790,7 +796,10 @@ void TerrainMotion::take_field(Task& finished) {
   level.next.delta_m = finished.delta_m;
   level.next.padding_m = finished.padding_m;
   level.next.window = finished.window;
-  level.next_state = Level::Next::ready;
+  // Taken as b only once its last piece is in a frame (`GpuScene::terrain_slot_uploaded`).
+  level.next_state = scene_->terrain_slot_uploaded(finished.level, level.next.slot)
+                         ? Level::Next::ready
+                         : Level::Next::uploading;
   level.eval_ms_ema = level.stats.evaluated == 0 ? finished.eval_ms
                                                  : 0.5 * level.eval_ms_ema + 0.5 * finished.eval_ms;
   ++level.stats.evaluated;
@@ -899,7 +908,7 @@ void TerrainMotion::freeze_rings() {
   recentre_ = Recentre::pairs_asked;
   for (u32 k = 1; k < levels_.size(); ++k) {
     Level& level = levels_[k];
-    if (level.next_state == Level::Next::ready) {
+    if (level.next_state == Level::Next::ready || level.next_state == Level::Next::uploading) {
       level.next = Field{};
       level.next_state = Level::Next::none;
     }
@@ -1111,7 +1120,13 @@ void TerrainMotion::advance_recentre(bool complete) {
         wait_worker();
         break;
       case Recentre::swapping:
-        // The pairs' copies are recorded by the next frame, before anything reads a field.
+        // The carried pairs are drawn from the frame that records their last pieces on.
+        for (u32 k = 1; k < levels_.size(); ++k) {
+          const Pair& p = pending_[k];
+          if (!p.window_changed) continue;
+          if (!scene_->terrain_slot_uploaded(k, p.a.slot)) return;
+          if (p.has_b && !scene_->terrain_slot_uploaded(k, p.b.slot)) return;
+        }
         swap_rings();
         return;
     }
@@ -1124,6 +1139,14 @@ void TerrainMotion::frame(f64 real_dt_s, f32 camera_x, f32 camera_z) {
   game_s_ += real_dt_s * config_.rate;
   const f64 target = start_s_ + game_s_;
   take_finished();
+  // A field whose last piece earlier frames recorded may be taken as b now.
+  for (u32 k = 0; k < levels_.size(); ++k) {
+    Level& level = levels_[k];
+    if (level.next_state == Level::Next::uploading &&
+        scene_->terrain_slot_uploaded(k, level.next.slot)) {
+      level.next_state = Level::Next::ready;
+    }
+  }
   if (rings_ != nullptr && !rings_stopped_) {
     if (recentre_ == Recentre::none) ask_recentre(camera_x, camera_z);
     advance_recentre(config_.wait);

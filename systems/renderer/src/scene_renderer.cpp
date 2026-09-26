@@ -2188,7 +2188,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           for (u32 c = 0; c < terrain_copies; ++c) {
             const GpuScene::TerrainUpdate::Copy& copy = terrain_frame_.copies[c];
             cb.copy_buffer(copy.staging.buffer, copy.field.buffer,
-                           gfx::BufferCopy{0, 0, copy.bytes});
+                           gfx::BufferCopy{copy.offset, copy.offset, copy.bytes});
           }
           for (const GpuScene::TerrainUpdate::GeometryCopy& copy : terrain_frame_.geometry)
             cb.copy_buffer(copy.src, copy.dst, copy.region);
@@ -3030,12 +3030,12 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   graph.set_final_layout(color, frame.final_layout);
   const bool compiled = graph.compile(error);
   if (compiled) graph.execute(commands_);
-  // The terrain fields' staging is this frame's to free once it is done (the frame context holds
-  // it until the slot comes round), recorded or not: nothing else will.
+  // A terrain field's staging is the frame's that records its last piece to free once it is done
+  // (the frame context holds it until the slot comes round), recorded or not: nothing else will.
   u64 terrain_bytes = terrain_frame_.geometry_bytes;
   for (u32 c = 0; c < terrain_copies; ++c) {
     terrain_bytes += terrain_frame_.copies[c].bytes;
-    frames_.defer_destroy(terrain_frame_.copies[c].staging);
+    if (terrain_frame_.copies[c].last) frames_.defer_destroy(terrain_frame_.copies[c].staging);
   }
   for (const gfx::BufferResource& staging : terrain_frame_.retire)
     frames_.defer_destroy(staging);

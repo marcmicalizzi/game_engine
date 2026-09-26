@@ -47,6 +47,16 @@ tunables::Int terrain_pool_mib{
     "The deformed-vertex pool's budget, MiB, at least, for a scene whose "
     "terrain moves (its cut is the pool's largest tenant)"};
 
+// **A field is copied a budget a frame.** The erg's grid is 67 MB a field, and copied whole it cost
+// a frame 7 ms of GPU on a quiet RTX 5090 and 13-22 ms beside other work (renderer.md, "The dunes
+// in time-lapse", the costs) — a hitch every few frames at a game day a second. The next field is
+// ready well before the surface needs it, so it goes over in pieces and is shown only once its
+// last piece has been recorded: 8 MiB is under a millisecond.
+tunables::Int terrain_upload_mib{
+    "renderer.terrain.upload_mib", 8, 0, 4'096,
+    "MiB of evaluated terrain fields copied onto the device a frame, at most (0: all at once; a "
+    "field the frame must show is copied whole whatever the budget)"};
+
 // A device-local buffer of `capacity` bytes whose first `bytes` are `data`: the scene's part of a
 // stream the terrain rings' slots extend (renderer.md, "The rings in the scene"). The rest is
 // whatever the allocator gave, which nothing reads before a chunk's copy has written it. Without
@@ -1301,6 +1311,7 @@ bool GpuScene::create_terrain(const ResolvedSettings& resolved, std::string* err
   (void)resolved;
   const gfx::Device& device = *device_;
   terrain_.clear();
+  terrain_upload_budget_ = static_cast<u64>(terrain_upload_mib.get()) * 1024 * 1024;
   u32 instance = ~0u;
   for (u32 i = 0; i < instance_count_; ++i) {
     if (instance_table_[i].terrain == 1) {
@@ -1374,8 +1385,17 @@ bool GpuScene::terrain_staging(u64 samples, gfx::BufferResource& out, std::strin
                             out, error);
 }
 
+bool GpuScene::terrain_slot_uploaded(u32 level, u32 slot) const noexcept {
+  if (level >= terrain_.size()) return false;
+  if (terrain_upload_budget_ == 0) return true;  // the next frame records every piece
+  for (const TerrainLevel::Pending& p : terrain_[level].pending) {
+    if (p.slot == slot && !p.urgent) return false;
+  }
+  return true;
+}
+
 bool GpuScene::terrain_upload(u32 level, u32 slot, const gfx::TerrainField& window,
-                              const gfx::BufferResource& staging, std::string* error) {
+                              const gfx::BufferResource& staging, std::string* error, bool urgent) {
   if (level >= terrain_.size() || slot >= terrain_[level].slots) {
     if (error != nullptr) *error = "terrain_upload: no such level or field slot";
     return false;
@@ -1388,7 +1408,13 @@ bool GpuScene::terrain_upload(u32 level, u32 slot, const gfx::TerrainField& wind
   }
   l.windows[slot] = window;
   l.windows[slot].heights = l.fields[slot].address;
-  l.pending.push_back(TerrainUpdate::Copy{staging, l.fields[slot], bytes});
+  TerrainLevel::Pending p;
+  p.staging = staging;
+  p.field = l.fields[slot];
+  p.slot = slot;
+  p.bytes = bytes;
+  p.urgent = urgent;
+  l.pending.push_back(p);
   return true;
 }
 
@@ -1414,26 +1440,46 @@ void GpuScene::terrain_prepare(u32 slot, TerrainUpdate& out) {
   const u32 region = slot < k_joint_slots ? slot : slot % k_joint_slots;
   auto* table =
       static_cast<gfx::TerrainLevelDesc*>(terrain_table_.mapped) + u64{region} * terrain_.size();
+  // The fields' copies, a budget a frame (`renderer.terrain.upload_mib`), in the order they were
+  // handed over, a field in as many pieces as the budget cuts it into. A slot is shown only once
+  // its last piece is recorded (`terrain_slot_uploaded`), so a piece left for the next frame is
+  // never drawn half-copied — except an `urgent` one, which a frame about to show it copies whole,
+  // and every piece when the budget is 0. Until 2026-09-26 a frame recorded eight copies whole and
+  // left the rest, and the rings test caught an inner ring a frame's worth of sand behind: an
+  // offscreen frame that catches the surface up installs several fields a level, each into the
+  // slot the one before freed, and the ninth copy's slot was shown holding what it held before.
+  // A copy that a later one into the same slot replaces is dropped — two copies into one buffer in
+  // one pass would race — and its staging retired with the frame.
+  u64 budget = terrain_upload_budget_ == 0 ? ~u64{0} : terrain_upload_budget_;
   for (u32 k = 0; k < terrain_.size(); ++k) {
     TerrainLevel& l = terrain_[k];
-    // **Every** copy handed over since the last frame is recorded by this one, because the table
-    // it writes below may already show the slot: an offscreen frame that catches the surface up
-    // installs several fields a level, each into a slot the last one freed, and a copy left for
-    // the next frame would be drawn as whatever the slot held before (2026-09-26, the rings test:
-    // an inner ring a frame's worth of sand behind). A copy that a later one into the same slot
-    // replaces is dropped rather than recorded — two copies to one buffer in one pass would race —
-    // and its staging retired with the frame.
+    Vector<TerrainLevel::Pending> left;
     for (u32 c = 0; c < l.pending.size(); ++c) {
+      TerrainLevel::Pending& p = l.pending[c];
       bool superseded = false;
       for (u32 d = c + 1; d < l.pending.size(); ++d)
-        superseded = superseded || l.pending[d].field.buffer == l.pending[c].field.buffer;
+        superseded = superseded || l.pending[d].field.buffer == p.field.buffer;
       if (superseded) {
-        out.retire.push_back(l.pending[c].staging);
-      } else {
-        out.copies.push_back(l.pending[c]);
+        out.retire.push_back(p.staging);
+        continue;
       }
+      const u64 room = p.urgent ? p.bytes - p.done : std::min(budget, p.bytes - p.done);
+      if (room == 0) {
+        left.push_back(p);
+        continue;
+      }
+      TerrainUpdate::Copy copy;
+      copy.staging = p.staging;
+      copy.field = p.field;
+      copy.offset = p.done;
+      copy.bytes = room;
+      copy.last = p.done + room == p.bytes;
+      out.copies.push_back(copy);
+      if (!p.urgent) budget -= room;
+      p.done += room;
+      if (!copy.last) left.push_back(p);
     }
-    l.pending.clear();
+    l.pending = std::move(left);
     gfx::TerrainLevelDesc desc{};
     desc.origin = Vec2{static_cast<f32>(l.lattice.origin_x), static_cast<f32>(l.lattice.origin_z)};
     desc.spacing = static_cast<f32>(l.lattice.spacing);
@@ -2647,7 +2693,7 @@ void GpuScene::destroy() noexcept {
     for (gfx::BufferResource& field : level.fields)
       gfx::destroy_buffer(device, field);
     // A staging buffer no frame took yet is still this scene's to free.
-    for (TerrainUpdate::Copy& copy : level.pending)
+    for (TerrainLevel::Pending& copy : level.pending)
       gfx::destroy_buffer(device, copy.staging);
   }
   terrain_.clear();

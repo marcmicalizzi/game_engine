@@ -31,7 +31,7 @@ The scene gives the generator one number, `dune_height`, and the three bands der
 
 ## What the time question is
 
-`time` is a scene constant. At the default wind the draa move about 25 m a year and the barchans 77 m, so a real clock shows nothing in a flight, and the question the ADR asks the owner's eyes — do the migrating lattices read as dunes advancing or as a texture sliding — cannot be answered without a **time-lapse**: game time advancing at a day to a week per real second, the field re-evaluated on the job system every second or so and re-uploaded. The closed form makes that a re-evaluation, not a simulation.
+`time` is a scene constant. At the default wind the draa move about 25 m a year and the barchans 77 m, so a real clock shows nothing in a flight, and the question the ADR asks the owner's eyes — do the migrating lattices read as dunes advancing or as a texture sliding — cannot be answered without a **time-lapse**: game time advancing at a day to a week per real second, the field re-evaluated on the job system every second or so and re-uploaded. The closed form makes that a re-evaluation, not a simulation. *(Built on 2026-09-26, blended in the deformed-vertex pool rather than re-uploaded, with the finer rings near the camera: [below](#the-dunes-in-time-lapse-looked-at-2026-09-26).)*
 
 ## The frame log, in passing
 
@@ -76,3 +76,63 @@ A seam pixel here is one below the sky that is darker than the lit sand (red und
 **The clamp, committed.** `brdf_eval` now clamps n·v to 10⁻⁴ instead of rejecting it, in the shader and in its CPU reference, and the resolve turns a shading normal that is behind its triangle to the camera's side as the path tracer always did, so the clamp cannot let a light through thin two-sided geometry ([renderer](../subsystems/renderer.md#a-shading-normal-is-not-the-surface)). The three markers again, same recording and settings: **0, 0 and 0 seam pixels**, the picture within a pixel of the scratch experiment's (FLIP 0.0000 against it at all three), and FLIP 0.011, 0.012 and 0.010 against the pictures the owner flew, the maxima of 0.72 to 0.83 on the seams. Read side by side with the owner's: the first marker's slabs are gone and the dune behind them reads as one surface, lit on its near slope and soft over the crest; the other two markers' dashes along the crests are gone, and the crests show as a change of shade rather than a line. The corpus moved by no more than 0.0003 a scene and PSNR rose on every helmet scene.
 
 What the lee faces look like once they keep their sun is the question for the owner's next flight, and with it one the pictures already ask: under the renderer's stand-in lights the sky lights an up-facing surface nearly as much as the sun does (0.35 of `k_sky`, 0.19 to 0.32 a channel, against the sun's 0.25 per unit of albedo at its elevation), so shade on sand is never far from light, and a real desert's is.
+
+## The dunes in time-lapse, looked at (2026-09-26)
+
+- **Question:** does a time-lapse move the erg on screen without a step anywhere — across the rings' borders and through their re-centres — and what does it cost? ([renderer](../subsystems/renderer.md#the-dunes-in-time-lapse), [the rings](../subsystems/renderer.md#the-rings-in-the-scene); the answer to "What the time question is", above.)
+- **Machine:** the RTX 5090 host, `msvc-release` of the time-lapse branch at the commit that adds this section, offscreen and under the GPU lock (no window). The harness's `machine_state` at the runs' starts and ends: other processes' CPU 0–21%, GPU utilisation 0–40%, with one reading of 98% at the end of the still 1080p run — something outside the lock — so the table below is a quiet machine's except where that bites.
+- **Scene:** `content/test-scenes/desert-erg` along its own path (600 frames of it, flown three times, 240 frames of warm-up), and three still cameras whose paths are the session's scratch and not committed: 4 m over the mega-draa's stoss near the path's `crest` marker looking east along it (`crest-hold`), 3 m over the floor near the `floor` marker looking east (`floor-hold`), and 120 m inside the inner ring's eastern border, 3 m over the sand, looking at it (`ring-edge`), the rings having been built round a first key 120 m behind.
+
+### What the captures show
+
+Offscreen, 30 frames at a game day and at a game week a real second, a capture every tenth frame; 240 frames at a week a second for the floor. Every run with `--no-lights` (below). The difference of two captures of one run, over the 2,073,600 pixels of 1920×1080:
+
+| Run | Captures compared | Game time between | Mean \|difference\| | Pixels more than 8 of 255 apart |
+|---|---|---|---:|---:|
+| still (rate 0), rings | 9 → 29 | none | 0.000 | 0 |
+| crest, a day a second | 9 → 29 | 8 h | 0.033 | 204 (0.010%) |
+| crest, rings, a day a second | 9 → 29 | 8 h | 0.044 | 201 (0.010%) |
+| crest, a week a second | 9 → 29 | 2.3 days | 0.063 | 272 (0.013%) |
+| crest, rings, a week a second | 9 → 19, 19 → 29 | 1.2 days each | 0.073, 0.045 | 454, 162 |
+| floor, rings, a week a second | 59 → 119 | 1 week | 0.285 | 1,333 (0.064%) |
+| floor, rings, a week a second | 59 → 239 | 3 weeks | 0.354 | 3,682 (0.178%) |
+| ring edge, rings, a week a second | 9 → 29 | 2.3 days | 0.102 | 482 (0.023%) |
+
+**The dunes move, and nothing steps.** The pixels that change are the floor's barchans, the toe lines where the dunes meet the floor, the crests' silhouettes and the edges of the slip faces' shade; none is a block the shape of a field's tile, a ring's chunk or a ring's square, and a still run with the rings in the scene draws the same bytes on every frame. At the ring edge the inner ring's border, 130 m ahead at a grazing angle, shows no seam in a crop with its contrast stretched fourfold, frame after frame. **What the eye gets is slower than the numbers suggest:** the erg's tall dunes are slow by design (the mega-draa a metre a year, the draa 11 m), and the waves, which move most — about 2 m in the 2.3 days of the crest captures — are 0.3–0.8 m on 10 m cells, so from 3–4 m over the sand in a still frame they change the shading by a few levels and the motion that crosses the threshold is the barchans and the toes. Whether a flight at a week a second reads as dunes advancing is the owner's call in a window, which this session could not open.
+
+**The first captures were misleading, and why.** The renderer's stand-in lighting (`frame_lighting`) orbits two coloured point lights round the scene with the frame index, so the sand's colour changes from frame to frame whatever the sand does: with them on, three weeks of the floor were 57.6% of pixels apart, and nearly all of it was the lights. A time-lapse is looked at with `--no-lights`.
+
+**Dark specks on the far floor** — single dark pixels a kilometre and more away — are there with and without the rings and with and without shadows, so they are neither; they are older than this work and not chased here.
+
+### Two defects the rings test found
+
+The rings' GPU case (`terrain_motion_tests.cpp`, a 128 m terrain with the rings shrunk to fit, every pixel held to the level that draws it) failed twice before it passed, both times on something that was wrong before the rings:
+
+- **A frame showed field slots its copies had not reached.** A frame recorded at most eight field copies and left the rest for the next, while the table it wrote already named every slot; an offscreen frame that catches the surface up installs several fields a level, each into the slot the last one freed, so a ring drew for a frame whatever its slot had held — 7–16 mm at 25 cm, a frame's worth of sand. The scene grid alone had never installed enough in one frame to be caught. Now a field goes over a budget a frame and is taken as b only once its last piece is in a frame, and a frame that must show a slot copies it whole.
+- **The scene grid's hole folded at its corners.** The grid leaves the middle ring's square out by moving its vertices inside onto the nearest edge, and no such map is without a fold: a triangle whose corners went to two edges spanned the square's corner at the edges' heights and stood up to 1.3 m proud of the ring there. The vertices are now sunk by the distance they were moved, which puts those triangles under the ring's ground; with both fixed the case holds every level to its model within 0.2 mm over 2.4 million pixels and 9 re-centres.
+
+### What it costs
+
+The erg's path, 1,800 frames recorded a run, offscreen at a game day a second (the fields waited for, so every field is taken whole in the frame that needs it). GPU milliseconds from `gfx::GpuTimer`, median / 95th / 99th percentile:
+
+| Run | Pairs drawn (median) | Pool pass | Pool allocator | Frame total |
+|---|---:|---|---|---|
+| still, 1920×1080 | 1,006 | — | — | 0.42 / 0.65 / 0.79 |
+| time-lapse, 1920×1080 | 1,134 | 0.016 / 0.024 / 0.41 (max) | 0.008 / 0.010 | 0.48 / 7.60 / 8.15 |
+| time-lapse and rings, 1920×1080 | 1,543 | 0.026 / 0.56 / 1.38 (max) | 0.012 / 0.031 | 1.17 / 12.1 / 38.3 |
+| still, 11520×2160 over three views | 2,476 | — | — | 1.65 / 2.21 / 2.75 |
+| time-lapse, 11520×2160 | 2,797 | 0.058 / 0.53 / 0.85 (max) | 0.018 / 0.030 | 2.03 / 9.50 / 21.1 |
+| time-lapse and rings, 11520×2160 | 3,519 | 0.075 / 1.21 / 2.20 (max) | 0.024 / 0.047 | 3.28 / 24.6 / 50.4 |
+
+- **The pool pass is not the cost.** It is hundredths of a millisecond at the median; the tail of the frame total is the copies.
+- **Evaluation**, on the job pool: the erg's whole grid (4,097² samples) 750–775 ms, a middle ring's field (1 m over its 2 km square) 190 ms, an inner ring's (50 cm over 500 m) 72 ms. The worker keeps up at a day a second offscreen by waiting; in a window the lead rule times the grid's fields about 1.5 × 0.77 s × 86,400 = 28 game hours apart, where the displacement rule has them 7 game hours apart at most, so there the waves cross-fade rather than slide.
+- **Copies:** 14.6 GB of fields in the time-lapse runs, 1.55 s of GPU — 7.1 ms for each of the grid's 67 MB fields (9.4 GB/s), which is the whole of the 95th percentile at 1080p. Hence `renderer.terrain.upload_mib` (8 MiB, under a millisecond a frame) in a window.
+- **Rings:** 1.46 GB of slots and arenas on the device. 107 re-centres over the three flights of each run (the path crosses about 3 km, flown in 600 frames); a re-centre's chunks 0.5 s on the ring worker at the median and 3.4 s at worst (a middle ring's), the pairs carried over 0.23–0.29 s (0.53 s at worst); 8,111 chunks built and 26,496 kept, 91 MB of chunks a re-centre, the arenas at most 69% full. Offscreen the chunks go over in the frame that asks, which is the rings' 99th percentile; in a window, `renderer.terrain.ring_upload_mib` (16 MiB) a frame.
+- **Padding:** the grid's reached 15.6 m after six weeks of game time, the rings' stayed under 0.8 m (a re-centre re-bases the chunks it rebuilds).
+
+### What this decides, and what it does not
+
+- The time-lapse's mechanism stands: two fields and a blend in the pool, one surface time for every level, the cadence by displacement. What it costs a frame is the copies, now spread over frames, and what it costs the machine is the evaluations, which the lead rule stretches.
+- The rings are worth drawing near the ground and cost their clusters and 1.5 GB; they stay off by default until the owner has flown them.
+- The grid's padding grows with the time-lapse (15.6 m in six weeks) and its LOD errors with it: re-basing the grid in the background is the next piece ([renderer](../subsystems/renderer.md#not-yet)). The rings re-base on every re-centre; a still camera's rings age like the grid.
+- It does not decide whether migration reads as dunes advancing: that needs the owner's eyes on a window.

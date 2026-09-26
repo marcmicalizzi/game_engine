@@ -256,7 +256,9 @@ class TerrainMotion {
     Field b;
     Field next;
     bool has_b = false;
-    enum class Next : u8 { none, evaluating, ready } next_state = Next::none;
+    // The next field: asked of the worker, being copied onto the device a budget a frame, and
+    // ready to be taken as b once its last piece is in a frame.
+    enum class Next : u8 { none, evaluating, uploading, ready } next_state = Next::none;
     TerrainBlend blend;
     f64 eval_ms_ema = 0.0;
     LevelStats stats;

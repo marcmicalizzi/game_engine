@@ -355,6 +355,9 @@ TEST_CASE("terrain motion: the pool draws the blended field, and no vertex jumps
   REQUIRE(rig.resolved.terrain_levels);
   REQUIRE(rig.resolved.deform_pass);
   REQUIRE(rig.scene.terrain_level_count() == 1u);
+  // A field of this grid is 17 KB: a 4 KB budget copies each over five frames, and the motion
+  // must take none as b before its last piece is in a frame, or the pool reads a half-copied slot.
+  rig.scene.set_terrain_upload_budget(4096);
   const f64 bound = lapse.fraction * rig.scene.terrain_lattice(0).spacing;
   CaptureChannels channels;
   channels.depth = true;
