@@ -22,6 +22,8 @@ Generated images and meshes, the owner's ComfyUI workflow files, captures and co
   .blender-user\                      the empty Blender profile every blender-run.ps1 run uses
 ```
 
+A sidecar also records **the right to ship the asset**: the service, the tier or plan the generation was made under, the date, and the license grant it carries (the paid Tripo and Meshy tiers grant commercial use; a CC0 or CC-BY sample carries its attribution), because the reference games sell their store builds and every shipped asset has to prove its own grant ([ADR-0047](adr/0047-reference-games-are-licensed-apart-from-the-engine.md)); the pipeline refuses to ship an asset whose sidecar lacks it once that check exists.
+
 Services are `comfyui` (images), `comfyui-<workflow>` (meshes a ComfyUI image-to-3D workflow made — named after the workflow so two local 3D models' outputs of the same subject never collide), `trellis` and `pixal3d` (meshes the owner's text-to-3D workflow made with that model, [below](#text-to-mesh-in-one-workflow-comfyui-3d-trellis2-and-pixal3d)), `meshy` and `tripo`, and `blender` for what a procedural kit's script made through `tools/blender-run.ps1` ([below](#blender-toolsblender-runps1)). The file name is the subject's name in every service, so the same prop from three services is three files with one name in three folders, which is what a comparison joins on.
 
 ## Commands

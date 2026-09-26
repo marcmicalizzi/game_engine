@@ -41,4 +41,4 @@ tools/dev.ps1 test
 
 ## License
 
-Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE). Games built with the engine owe attribution only.
+Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE). Games built with the engine owe attribution only. The engine's own reference games are licensed apart from it, in repositories of their own: Desert Survival's code under GPL-3.0 with non-commercial assets and a trademarked title, so that it stays readable and buildable as the reference implementation while a low-effort clone cannot be sold ([ADR-0047](docs/adr/0047-reference-games-are-licensed-apart-from-the-engine.md)); Island City is an engine demo under the engine's terms unless it becomes a game.

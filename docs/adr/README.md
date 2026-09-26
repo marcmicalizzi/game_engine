@@ -50,3 +50,4 @@ Numbered, dated, and immutable once accepted. To change a decision, write a new 
 | [0044](0044-island-city-plan-and-building-grammar.md) | Island City is a whole-island plan made once, with buildings generated per lot as descriptions, proxies first | Proposed |
 | [0045](0045-routines-are-data-with-a-closed-form.md) | Resident routines are data with a closed form, and their tiers are the capability's own pass | Proposed |
 | [0046](0046-scene-generators-register-themselves.md) | Scene generators register themselves; the scene reader and the world ring look them up by name (supersedes 0037 when built) | Proposed |
+| [0047](0047-reference-games-are-licensed-apart-from-the-engine.md) | The reference games are licensed apart from the engine: Desert Survival's code GPL-3.0, its assets non-commercial, its title a trademark, in its own repository | Proposed |
