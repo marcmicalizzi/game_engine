@@ -225,21 +225,22 @@ warn  renderer shadow casters off reason="the scene's pairs in every view need m
 
 Nothing the frame builds comes near the capacity: the chain held 65,536 clusters (its first allocation, 549 MB, under a budget of 159,949 clusters) and no frame dropped a structure.
 
-**Measured.** The session's recording (`…T1526-input.jsonl`) replayed offscreen for 1,640 frames (20 s) at 11520×2160 `surround3`, a `msvc-release` build of this change, one run each, under the GPU lock with the owner's session locked. Others' CPU 23.6% and 20.4% at the ends of the traced run, the GPU 16% and 0% busy with 10.3–10.4 GB of the card held by other tenants; 13.5% and 12.7%, 3% and 99% for the maps' run (the end sample is the run's own last frames). The debug build of this change was configuring and compiling beside both, so by the harness's rule **every number is an upper bound**.
+**Measured.** The session's recording (`…T1526-input.jsonl`) replayed offscreen, whole — 4,201 frames — at 11520×2160 `surround3`, a `msvc-release` build of this change, one run each, under the GPU lock with the owner's session locked and `--wait-quiet 120`, which found the machine quiet before both. Others' CPU 8.6% and 11.8% at the ends of the traced run, the GPU 1% and 0% busy with 10.1–10.3 GB of the card held by other tenants; 8.1% and 16.7%, 0% and 99% for the maps' run (the end sample is the run's own last frames). The harness still flagged both as upper bounds. A first take over the flight's first 1,640 frames, beside this change's debug build, gave a GPU frame of 5.07 and 2.60 ms and a chain of 3.14 ms; it is a different stretch of the flight, so its passes differ with the cut (the CLAS build 0.79 ms against 0.66) rather than with the load.
 
 | | `--shadows rt` (no casters) | `--shadows csm` |
 |---|---|---|
-| GPU frame, median / p95 / p99 | **5.07 / 5.94 / 6.66 ms** | 2.60 / 2.92 / 3.07 ms |
-| of it: the ray tracing chain | 3.14 / 3.51 / 3.68 | — |
-| — the CLAS build · the bottom-level build | 0.79 / 1.17 · 0.23 / 0.26 | — |
-| the resolve | 1.29 / 2.08 / 2.68 | 0.96 / 1.08 / 1.11 |
-| the cull pass, median / p95 (with the cascades' runs under `csm`) | 0.19 / 0.20 | 0.32 / 0.51 |
-| the maps' draw, median / p95 | — | 0.52 / 0.54 |
-| clusters built a frame, median / p95 / max | 31,501 / 45,725 / 52,864 | — |
-| device memory, this process | 2,294 MiB | 1,658 MiB |
-| frame, median / p95 (offscreen loop) | 9.60 / 10.93 ms | 2.81 / 3.26 ms |
+| GPU frame, median / p95 / p99 | **5.01 / 5.89 / 6.35 ms** | 2.61 / 2.88 / 2.99 ms |
+| of it: the ray tracing chain | 2.94 / 3.46 / 3.60 | — |
+| — the CLAS build · the bottom-level build | 0.66 / 1.07 · 0.22 / 0.26 | — |
+| the resolve | 1.41 / 2.02 / 2.73 | 0.98 / 1.09 / 1.11 |
+| the cull pass, median / p95 (with the cascades' runs under `csm`) | 0.18 / 0.19 | 0.32 / 0.36 |
+| the maps' draw, median / p95 | — | 0.52 / 0.56 |
+| clusters built a frame, median / p95 / max | 27,237 / 44,314 / 52,864 | — |
+| the chain's capacity at the end (peak); resizes | 20,480 (65,536); 3 grows, 2 shrinks, no frame dropped a structure | — |
+| device memory, this process | 2,030 MiB | 1,658 MiB |
+| frame, median / p95 (offscreen loop) | 9.52 / 11.03 ms | 2.81 / 3.21 ms |
 
-**The chain is 3.1 ms and most of it is not the builds.** The CLAS and bottom-level builds are 1.0 ms of it; the other 2.1 ms is the rest of the chain, which has no timer zone of its own: the three records passes, the copy of each bottom-level address into its top-level record, and the top-level build. The desert overlook's landmarks on the same surround spend 0.97 ms on the whole chain ([renderer](../subsystems/renderer.md#the-ray-tracing-chains-memory)), and what differs most between the two scenes is the **instance count** — 11,172 here against 90 — ahead of the pairs (11.1 million slots in every view against 0.7 million, which `emit_main` walks one thread each, cheap at any count). Two parts of the chain are serial in the instances and are the first suspects, unmeasured: `ranges_main` is **one thread** that walks every instance four times (the demand, the drawn clusters, the casters, the prefix sum and the bottom-level records), and the address copy is one `vkCmdCopyBuffer` of **11,172 regions of eight bytes**. A zone per pass would settle it. At 82 Hz (12.2 ms a refresh) either shadow fits; the maps are the cheaper one on this scene by 2.5 ms of GPU time.
+**The chain is 2.9 ms and most of it is not the builds.** The CLAS and bottom-level builds are 0.9 ms of it; the other 2.1 ms is the rest of the chain, which has no timer zone of its own: the three records passes, the copy of each bottom-level address into its top-level record, and the top-level build. The desert overlook's landmarks on the same surround spend 0.97 ms on the whole chain ([renderer](../subsystems/renderer.md#the-ray-tracing-chains-memory)), and what differs most between the two scenes is the **instance count** — 11,172 here against 90 — ahead of the pairs (11.1 million slots in every view against 0.7 million, which `emit_main` walks one thread each, cheap at any count). Two parts of the chain are serial in the instances and are the first suspects, unmeasured: `ranges_main` is **one thread** that walks every instance four times (the demand, the drawn clusters, the casters, the prefix sum and the bottom-level records), and the address copy is one `vkCmdCopyBuffer` of **11,172 regions of eight bytes**. A zone per pass would settle it. At 82 Hz (12.2 ms a refresh) either shadow fits; the maps are the cheaper one on this scene by 2.4 ms of GPU time.
 
 ## What remains
 
