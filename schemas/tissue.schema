@@ -38,11 +38,12 @@ enum BlockKind : u32 {
   Names = 2
   /// f32 x3: a region's node positions at the construction the definition was authored at.
   RegionNodes = 10
-  /// u32 x4: a region's tetrahedra, node indices, positively oriented.
+  /// u32 x4: a region's four-node tetrahedra, node indices, positively oriented.
   Tetrahedra = 11
   /// u32: a set of a region's node indices (an attachment's nodes, a role).
   NodeSet = 12
-  /// f32: one value per tetrahedron, a material phase's volume fraction in [0, 1].
+  /// f32: one value per cell of the region (four- or ten-node), a material phase's volume fraction
+  /// in [0, 1].
   PhaseFraction = 13
   /// u32 x3: membrane triangles over a region's nodes.
   MembraneTriangles = 14
@@ -100,6 +101,12 @@ enum BlockKind : u32 {
   /// f32 x3: the authoring side's transferred visible positions at a state, one per binding-domain
   /// id: kept for the agreement row, never used to transfer anything.
   ExpectedVisible = 37
+  /// u32 x10: a region's ten-node (quadratic) tetrahedra, node indices: the four corners, positively
+  /// oriented, then the six edge nodes in **Gmsh's order** (`MSH` element type 11) — the edges
+  /// (0, 1), (1, 2), (0, 2), (0, 3), (2, 3), (1, 3). VTK's quadratic tetrahedron, and meshio's
+  /// `tetra10`, name the last two the other way round, (1, 3) then (2, 3): a writer holding cells
+  /// in that order swaps nodes 8 and 9, and `region.cell_edge_nodes` refuses a file that did not.
+  QuadraticTetrahedra = 38
 }
 
 /// One binary block of the interchange: a file beside the JSON, or a section of the container.
@@ -126,12 +133,33 @@ enum RegionKind : u8 {
   Cavity = 1
 }
 
+/// The cells a region is made of. An enumerator carries no `@since` (the language has none for it),
+/// so the one added after v0 says in its documentation which `Region` version introduced it.
 enum CageKind : u8 {
-  /// Imported tetrahedra (Gmsh on the authoring side; plan 05 §5.14's tetrahedral cage). The only
-  /// kind v0 reads.
+  /// Imported four-node tetrahedra (a Tetrahedra block; Gmsh on the authoring side, plan 05
+  /// §5.14's tetrahedral cage): the runtime's kind.
   Tetrahedral = 0
+  /// Not read yet.
   Lattice = 1
+  /// Not read yet.
   Shell = 2
+  /// Imported ten-node tetrahedra (a QuadraticTetrahedra block, Gmsh's node order): the quadratic
+  /// cells a certified reference body is solved and certified on. Read from Region version 2. The
+  /// validators take each cell's exact volume and its Jacobian's sign from the ten nodes, and the
+  /// rows whose meaning is linear walk the cells' same-node linear subdivision and say so
+  /// (docs/subsystems/tissue.md, "The ten-node cell").
+  TetrahedralQuadratic = 3
+}
+
+/// What a region is for (Region version 2).
+enum RegionRole : u8 {
+  /// A cage the runtime solves: ADR-0029's size limits apply to it.
+  Runtime = 0
+  /// A certified reference body: what a runtime cage is derived from (plan 07 §7.10) and what a
+  /// regression fixture holds, never solved at run time. The rows that encode a runtime-only limit
+  /// report it as a budget and never fail (docs/subsystems/tissue.md, "Reference bodies");
+  /// everything geometric and material applies in full.
+  Reference = 1
 }
 
 /// One material a region's cells are made of, in SI units. A region's cells may mix phases.
@@ -147,7 +175,7 @@ struct Material @version(1) {
 
 /// A material and how much of each cell it makes up. The first phase takes whatever the others
 /// leave, so it names no block; each other phase names a PhaseFraction block, one value per
-/// tetrahedron, and in every cell the fractions of the others sum to at most one.
+/// cell, and in every cell the fractions of the others sum to at most one.
 struct MaterialPhase @version(1) {
   material: Material
   /// A PhaseFraction block; empty for the first phase.
@@ -204,13 +232,15 @@ struct Sheet @version(1) {
   level: u32 = 3
 }
 
-struct Region @version(1) {
+struct Region @version(2) {
   name: string
   kind: RegionKind = Volume
   cage: CageKind = Tetrahedral
   /// RegionNodes: the nodes at the construction the definition was authored at.
   nodes: string
-  /// Tetrahedra over them.
+  /// The cells over them: a Tetrahedra block for a `Tetrahedral` cage, a QuadraticTetrahedra block
+  /// for a `TetrahedralQuadratic` one. A per-cell block (PhaseFraction) has one value per cell
+  /// either way.
   tetrahedra: string
   phases: MaterialPhase[]
   membranes: Membrane[]
@@ -227,6 +257,9 @@ struct Region @version(1) {
   /// The deliberately authored hero volume of ADR-0029 (the 256-node default does not apply to
   /// it; 800 still does).
   hero: bool = false
+  /// A cage the runtime solves, or a certified reference body a runtime cage is derived from:
+  /// under `Reference` the runtime-only limits are reported, not failed.
+  role: RegionRole = Runtime @since(2)
 }
 
 // ---- frames, surfaces, attachments -------------------------------------------------------------
@@ -586,4 +619,66 @@ struct TissueDefinition @version(1) {
   budgets: DepthBudget[]
   /// Where the data came from, for a reader: a study, a packet, a script.
   provenance: string
+}
+
+// ---- the fixture expectation ---------------------------------------------------------------------
+//
+// A regression fixture's declared outcome (docs/subsystems/tissue.md, "The fixture mode"). The
+// format is the one the authoring side published with its first fixture packet,
+// "astra.tissue.expected-failures.v1" — its fields and its rule, the exact multiset of (id,
+// subject, severity) — adopted as published, as the normal modes' spellings are: a cross-tool
+// contract's spelling is not something to translate. The engine adds four optional fields a v1
+// file does not carry (`verdict`, `value`, `tolerance`, `note`), each with the default that means
+// what a v1 file means, and writes them only when they say something else.
+
+/// What a fixture declares about a row it is known not to pass.
+enum ExpectedVerdict : u8 {
+  /// The row runs and fails.
+  Fail = 0
+  /// The row cannot run on this definition (something it needs is absent). A fixture declares it,
+  /// because a fixture is accepted when every row is evaluated or declared not to be.
+  Skipped = 1
+}
+
+/// One row a fixture declares it does not pass: its id, subject and severity exactly as the report
+/// prints them, which is what is matched.
+struct ExpectedFailure @version(1) {
+  /// "cover.range".
+  id: string
+  /// "region source-side": the row's subject, exactly.
+  subject: string
+  /// "error", "warning" or "info", as the report prints the row's severity.
+  severity: string
+  /// The row's witness when the declaration was recorded: for a reader, and printed beside a
+  /// difference. Never matched: a witness names a node, a cell or a number, and moves with any
+  /// change in how the engine walks the data.
+  witness: string
+  /// Engine addition: `Skipped` declares a row that cannot run.
+  verdict: ExpectedVerdict = Fail
+  /// Engine addition: a pattern the row's value must match — every key it names in the value,
+  /// every number within `tolerance` of the value's, every string, boolean and null equal, an
+  /// array element by element and of the same length. Null declares nothing about the value.
+  value: json
+  /// Engine addition: the absolute tolerance on every number of `value`, in that number's own
+  /// units; 0 is equality with the number as the report prints it (its shortest round-trip form).
+  tolerance: f64 = 0
+  /// Engine addition: why the row is expected not to pass, for a reader.
+  note: string
+}
+
+/// A fixture's declared outcome: `engine-content tissue validate <file> --expect <this>` exits 0
+/// exactly when the rows that fail or are skipped are these and only these, whatever their
+/// severity.
+struct TissueExpectation @version(1) {
+  /// "astra.tissue.expected-failures.v1".
+  format: string
+  /// The rule, in words, for a reader: "exact multiset of id, subject, severity; no missing or
+  /// additional failures". The engine applies it whatever this says.
+  match: string
+  /// The engine the failures were recorded with, and the report they were recorded from: provenance
+  /// for a reader, not checked.
+  engine_binary_sha256: string
+  report_sha256: string
+  failures: ExpectedFailure[]
+  note: string
 }

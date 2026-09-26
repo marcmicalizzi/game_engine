@@ -114,16 +114,80 @@ f32 smooth_bump(f32 s, f32 t) {  // 1 at the centre, 0 at |s| = 1 or |t| = 1
   return a * a * b * b;
 }
 
+// A vertex node's grid position and its torus parameters, from its index.
+u32 grid_i(u32 n) { return n % k_nu; }
+u32 grid_j(u32 n) { return (n % (k_nu * k_nv)) / k_nu; }
+u32 grid_layer(u32 n) { return n / (k_nu * k_nv); }
+f64 param_u(u32 n) { return -k_u + 2.0 * k_u * grid_i(n) / (k_nu - 1); }
+f64 param_v(u32 n) { return -k_v + 2.0 * k_v * grid_j(n) / (k_nv - 1); }
+f64 param_rho(u32 n) {
+  return k_outer - (k_outer - k_inner) * static_cast<f64>(grid_layer(n)) / (k_layers - 1);
+}
+// The grid coordinates in [-1, 1] the states' bump is evaluated at.
+f32 grid_s(u32 n) { return -1.0f + 2.0f * static_cast<f32>(grid_i(n)) / (k_nu - 1); }
+f32 grid_t(u32 n) { return -1.0f + 2.0f * static_cast<f32>(grid_j(n)) / (k_nv - 1); }
+
+// The ten-node slab's edge nodes: one per edge of the four-node slab's tetrahedra, numbered after
+// the vertices in the order of their edges' (lower, higher) keys, so that an edge of the top layer
+// and the same edge of the support layer have the same rank among their layers' edge nodes and the
+// two sheets' refined surfaces keep one numbering (the stitch depends on it).
+struct EdgeNodes {
+  Vector<u64> keys;  // sorted, unique
+  u32 first = 0;     // the first edge node's index: the vertex count
+
+  static u64 key(u32 a, u32 b) { return (u64{std::min(a, b)} << 32) | u64{std::max(a, b)}; }
+  u32 node(u32 a, u32 b) const {
+    return first +
+           static_cast<u32>(std::lower_bound(keys.begin(), keys.end(), key(a, b)) - keys.begin());
+  }
+  u32 end_a(u32 edge_node) const { return static_cast<u32>(keys[edge_node - first] >> 32); }
+  u32 end_b(u32 edge_node) const { return static_cast<u32>(keys[edge_node - first] & 0xffffffffu); }
+};
+
+EdgeNodes edge_nodes(const Vector<u32>& tets, u32 vertices) {
+  EdgeNodes out;
+  out.first = vertices;
+  for (u32 t = 0; t < tets.size(); t += 4)
+    for (u32 a = 0; a < 4; ++a)
+      for (u32 b = a + 1; b < 4; ++b)
+        out.keys.push_back(EdgeNodes::key(tets[t + a], tets[t + b]));
+  std::sort(out.keys.begin(), out.keys.end());
+  out.keys.erase(std::unique(out.keys.begin(), out.keys.end()), out.keys.end());
+  return out;
+}
+
+// Each triangle split in four over its edges' nodes, wound as it was.
+Vector<u32> split_faces(const Vector<u32>& faces, const EdgeNodes& edges) {
+  Vector<u32> out;
+  for (u32 f = 0; f < faces.size(); f += 3) {
+    const u32 a = faces[f];
+    const u32 b = faces[f + 1];
+    const u32 c = faces[f + 2];
+    const u32 ab = edges.node(a, b);
+    const u32 bc = edges.node(b, c);
+    const u32 ca = edges.node(c, a);
+    const u32 tris[12] = {a, ab, ca, ab, b, bc, ca, bc, c, ab, bc, ca};
+    for (const u32 v : tris)
+      out.push_back(v);
+  }
+  return out;
+}
+
 }  // namespace
 
-SyntheticTissue make_synthetic_tissue() {
+SyntheticTissue make_synthetic_tissue(const SyntheticOptions& synthetic_options) {
+  const bool quadratic = synthetic_options.quadratic;
   SyntheticTissue out;
   TissueFile& file = out.file;
   TissueDefinition& d = file.definition;
   d.format = k_tissue_format;
-  d.name = "synthetic slab";
-  d.description = "a torus-section slab under a flat skin, on a box frame: generated, not measured";
-  d.provenance = "domain/tissue/src/synthetic.cpp, make_synthetic_tissue";
+  d.name = quadratic ? "synthetic quadratic slab" : "synthetic slab";
+  d.description =
+      quadratic ? "a torus-section slab of ten-node cells under a flat skin, on a box frame, as a "
+                  "reference body: generated, not measured"
+                : "a torus-section slab under a flat skin, on a box frame: generated, not measured";
+  d.provenance = quadratic ? "domain/tissue/src/synthetic.cpp, make_synthetic_tissue (quadratic)"
+                           : "domain/tissue/src/synthetic.cpp, make_synthetic_tissue";
 
   // ---- the skin: the base, the observation, the domain -------------------------------------
   Vector<Vec3> base;
@@ -179,12 +243,60 @@ SyntheticTissue make_synthetic_tissue() {
 
   // ---- the region
   // --------------------------------------------------------------------------------
-  const Vector<Vec3> nodes = region_nodes();
+  Vector<Vec3> nodes = region_nodes();
+  const u32 vertex_count = nodes.size();
   const Vector<u32> tets = tetrahedra(nodes);
-  const Vector<u32> top_faces = layer_faces(0, false);
-  const Vector<u32> support_faces = layer_faces(k_layers - 1, true);
+  Vector<u32> top_faces = layer_faces(0, false);
+  Vector<u32> support_faces = layer_faces(k_layers - 1, true);
+  // The ten-node slab: a node on every edge, placed on the torus at the mean of its ends'
+  // parameters (so the cells are gently curved, as a mesher's boundary-fitted ones are), the cells
+  // in Gmsh's order, and each sheet's control triangle split in four so that the sheets carry the
+  // edge nodes of their faces. The support's split faces are the top's, moved to the support layer
+  // and reversed, as the four-node sheets are: the stitch needs the two to number alike.
+  EdgeNodes edges;
+  Vector<u32> cells = tets;
+  if (quadratic) {
+    edges = edge_nodes(tets, vertex_count);
+    for (const u64 key : edges.keys) {
+      const u32 a = static_cast<u32>(key >> 32);
+      const u32 b = static_cast<u32>(key & 0xffffffffu);
+      nodes.push_back(torus_point(0.5 * (param_u(a) + param_u(b)), 0.5 * (param_v(a) + param_v(b)),
+                                  0.5 * (param_rho(a) + param_rho(b))));
+    }
+    cells.clear();
+    for (u32 t = 0; t < tets.size(); t += 4) {
+      const u32* v = tets.data() + t;
+      const u32 cell[10] = {v[0],
+                            v[1],
+                            v[2],
+                            v[3],
+                            edges.node(v[0], v[1]),
+                            edges.node(v[1], v[2]),
+                            edges.node(v[0], v[2]),
+                            edges.node(v[0], v[3]),
+                            edges.node(v[2], v[3]),
+                            edges.node(v[1], v[3])};
+      for (const u32 n : cell)
+        cells.push_back(n);
+    }
+    top_faces = split_faces(top_faces, edges);
+    const u32 offset = (k_layers - 1) * k_nu * k_nv;
+    const auto on_support = [&](u32 n) {
+      return n < vertex_count ? n + offset
+                              : edges.node(edges.end_a(n) + offset, edges.end_b(n) + offset);
+    };
+    support_faces.clear();
+    for (u32 f = 0; f < top_faces.size(); f += 3) {
+      support_faces.push_back(on_support(top_faces[f]));
+      support_faces.push_back(on_support(top_faces[f + 2]));
+      support_faces.push_back(on_support(top_faces[f + 1]));
+    }
+  }
   put(file, "slab.nodes", BlockKind::RegionNodes, nodes);
-  put(file, "slab.tets", BlockKind::Tetrahedra, tets, 4);
+  if (quadratic)
+    put(file, "slab.tets", BlockKind::QuadraticTetrahedra, cells, 10);
+  else
+    put(file, "slab.tets", BlockKind::Tetrahedra, tets, 4);
   put(file, "slab.top", BlockKind::SheetFaces, top_faces, 3);
   put(file, "slab.support", BlockKind::SheetFaces, support_faces, 3);
   Vector<f32> gland(static_cast<u32>(tets.size() / 4), 0.2f);
@@ -208,6 +320,21 @@ SyntheticTissue make_synthetic_tissue() {
         if (edge) rim.push_back(node(i, j, layer));
         if (!edge && layer + 1 == k_layers) posterior.push_back(node(i, j, layer));
       }
+  // An edge node is on the side wall when its edge lies in one of the wall's four planes, and on
+  // the support when its edge lies in the support layer; the wall wins, as for the vertices.
+  if (quadratic)
+    for (u32 n = vertex_count; n < nodes.size(); ++n) {
+      const u32 a = edges.end_a(n);
+      const u32 b = edges.end_b(n);
+      const bool wall =
+          (grid_i(a) == 0 && grid_i(b) == 0) || (grid_i(a) + 1 == k_nu && grid_i(b) + 1 == k_nu) ||
+          (grid_j(a) == 0 && grid_j(b) == 0) || (grid_j(a) + 1 == k_nv && grid_j(b) + 1 == k_nv);
+      if (wall) {
+        rim.push_back(n);
+      } else if (grid_layer(a) + 1 == k_layers && grid_layer(b) + 1 == k_layers) {
+        posterior.push_back(n);
+      }
+    }
   std::sort(rim.begin(), rim.end());
   put(file, "slab.rim", BlockKind::NodeSet, rim);
   put(file, "slab.posterior", BlockKind::NodeSet, posterior);
@@ -216,6 +343,12 @@ SyntheticTissue make_synthetic_tissue() {
   region.name = "slab";
   region.nodes = "slab.nodes";
   region.tetrahedra = "slab.tets";
+  if (quadratic) {
+    // 845 nodes: a reference body, which no runtime cage of ADR-0029's is, as the certified
+    // quadratic bodies the authoring side publishes are not.
+    region.cage = CageKind::TetrahedralQuadratic;
+    region.role = RegionRole::Reference;
+  }
   MaterialPhase fat;
   fat.material = Material{"fat", 100.0e3, 350.0, 950.0};
   MaterialPhase glandular;
@@ -237,8 +370,11 @@ SyntheticTissue make_synthetic_tissue() {
   region.cables.push_back(cable_set);
   region.node_sets.push_back(NodeSetRef{"rim", "slab.rim", "rim"});
   region.node_sets.push_back(NodeSetRef{"posterior", "slab.posterior", "posterior"});
-  region.sheets.push_back(Sheet{"top", "slab.top", 3});
-  region.sheets.push_back(Sheet{"support", "slab.support", 3});
+  // The ten-node sheets carry four control triangles for each of the four-node sheets' one, so
+  // one level less gives the same dense surface: 4,608 refined triangles either way.
+  const u32 level = quadratic ? 2u : 3u;
+  region.sheets.push_back(Sheet{"top", "slab.top", level});
+  region.sheets.push_back(Sheet{"support", "slab.support", level});
   region.top_sheet = "top";
   region.support_sheet = "support";
 
@@ -246,10 +382,18 @@ SyntheticTissue make_synthetic_tissue() {
   // control faces are the other's reversed, over nodes in the same order), so the top's rim edge
   // (a, b) pairs with the support's (a + T, b + T).
   geometry::LoopSurfaceOptions options;
-  options.level = 3;
+  options.level = level;
   options.tangents = true;
-  Vector<u32> top_local = top_faces;  // the top layer's nodes are 0 .. 48 already
-  geometry::build_loop_limit_surface(top_local, k_nu * k_nv, options, out.top);
+  // The sheet's control vertices are its nodes in ascending order, as the validator numbers them:
+  // the top layer's 0 .. 48 already, and after them the top layer's edge nodes.
+  Vector<u32> top_nodes = top_faces;
+  std::sort(top_nodes.begin(), top_nodes.end());
+  top_nodes.erase(std::unique(top_nodes.begin(), top_nodes.end()), top_nodes.end());
+  Vector<u32> top_local;
+  for (const u32 v : top_faces)
+    top_local.push_back(static_cast<u32>(std::lower_bound(top_nodes.begin(), top_nodes.end(), v) -
+                                         top_nodes.begin()));
+  geometry::build_loop_limit_surface(top_local, top_nodes.size(), options, out.top);
   const u32 refined = out.top.vertex_count();
   const Vector<u32> rim_edges = boundary_edges(out.top.faces);
   Vector<u32> stitch;
@@ -314,6 +458,15 @@ SyntheticTissue make_synthetic_tissue() {
           out_nodes[node(i, j, layer)] =
               out_nodes[node(i, j, layer)] + at_centre * smooth_bump(s, t);
         }
+    // An edge node moves by the bump at its own place, the mean of its ends' grid coordinates,
+    // not by the mean of their moves: the states' ten-node cells curve a little further.
+    for (u32 n = vertex_count; n < out_nodes.size(); ++n) {
+      const u32 a = edges.end_a(n);
+      const u32 b = edges.end_b(n);
+      const f32 s = 0.5f * (grid_s(a) + grid_s(b));
+      const f32 t = 0.5f * (grid_t(a) + grid_t(b));
+      out_nodes[n] = out_nodes[n] + at_centre * smooth_bump(s, t);
+    }
     return out_nodes;
   };
   out.reference_nodes = moved(nodes, Vec3{0.0f, 0.0f, -0.0005f});
@@ -392,8 +545,8 @@ SyntheticTissue make_synthetic_tissue() {
   for (f32& w : band_weight)
     w = std::clamp(w, 0.01f, 0.99f);
   Vector<Vec3> top_reference;
-  for (u32 k = 0; k < k_nu * k_nv; ++k)
-    top_reference.push_back(out.reference_nodes[k]);
+  for (const u32 n : top_nodes)
+    top_reference.push_back(out.reference_nodes[n]);
   geometry::BindingFrame at_rest;
   geometry::evaluate_binding_frame(geometry::NormalMode::limit_interpolated, out.top, top_reference,
                                    top_reference, at_rest);
@@ -427,7 +580,7 @@ SyntheticTissue make_synthetic_tissue() {
   binding.name = "skin over slab";
   binding.region = "slab";
   binding.sheet = "top";
-  binding.level = 3;
+  binding.level = level;
   binding.normal_mode = "limit-interpolated";
   binding.domain = "skin.binding.domain";
   binding.footprint.ids = "skin.binding.footprint";

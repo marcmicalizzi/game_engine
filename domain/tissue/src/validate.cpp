@@ -1,3 +1,4 @@
+#include "cells.h"
 #include "energy.h"
 #include "mesh_query.h"
 
@@ -122,10 +123,21 @@ struct StateModel {
   Vector<Vec3> expected_visible;
 };
 
+// How deep a ten-node cell is split when its Jacobian's Bernstein coefficients alone do not decide
+// its sign: eight pieces a level, and only the undecided ones go on.
+constexpr u32 k_jacobian_depth = 4;
+
 struct RegionModel {
   const Region* def = nullptr;
   Vector<Vec3> nodes;
+  // The cells as authored, `per_cell` node indices each: 4, or 10 for a quadratic cage.
+  u32 per_cell = 4;
+  Vector<u32> cell_nodes;
+  // The four-node cells the rows whose meaning is linear walk: the cells themselves for a
+  // four-node cage, the same-node linear subdivision (eight a cell, cells.h) for a ten-node one.
+  // `parent` is each one's cell.
   Vector<u32> tets;
+  Vector<u32> parent;
   Vector<SheetModel> sheets;
   i32 top = -1;
   i32 support = -1;
@@ -141,7 +153,39 @@ struct RegionModel {
       out.push_back(state[n]);
     return out;
   }
+
+  bool quadratic() const noexcept { return per_cell == 10; }
+  u32 cell_count() const noexcept { return static_cast<u32>(cell_nodes.size() / per_cell); }
+  const u32* cell(u32 c) const noexcept { return cell_nodes.data() + per_cell * c; }
+  // A cell's nodes at `x`, as doubles: the first `per_cell` entries of `out`.
+  void gather(u32 c, const Vector<Vec3>& x, query::D3 out[10]) const noexcept {
+    for (u32 k = 0; k < per_cell; ++k)
+      out[k] = query::d3(x[cell(c)[k]]);
+  }
+  // A cell's exact signed volume at `x`: a tetrahedron's, or a ten-node cell's integral of det J.
+  f64 cell_volume(u32 c, const Vector<Vec3>& x) const noexcept {
+    query::D3 p[10];
+    gather(c, x, p);
+    return quadratic() ? cells::quadratic_volume(p) : query::tet_volume(p[0], p[1], p[2], p[3]);
+  }
+  // What the rows whose meaning is linear walk, and the boundary they see, in words: every such
+  // row names it, so a number measured on the subdivision is never read as the cells'.
+  std::string linear_representation() const {
+    if (!quadratic()) return "the tetrahedra";
+    return "the same-node linear subdivision: " + str(tets.size() / 4) +
+           " four-node cells, eight to each of the " + str(cell_count()) + " ten-node cells";
+  }
+  const char* boundary_representation() const noexcept {
+    return quadratic() ? "the same-node linear subdivision's boundary: four triangles to each "
+                         "ten-node face, through every boundary node"
+                       : "the tetrahedra's boundary";
+  }
+  const char* cell_word() const noexcept { return quadratic() ? "cell" : "tetrahedron"; }
 };
+
+const char* role_name(RegionRole role) noexcept {
+  return role == RegionRole::Reference ? "Reference" : "Runtime";
+}
 
 struct FrameModel {
   const Frame* def = nullptr;
@@ -362,6 +406,7 @@ class Validator {
 
   void check_observation();
   void check_regions();
+  void check_edge_nodes(const RegionModel& region);
   void check_attachments();
   void check_mechanics();
   void check_frames();
@@ -546,19 +591,42 @@ void Validator::resolve_regions() {
     RegionModel m;
     m.def = &region;
     const std::string who = "region " + region.name;
-    bool ok = region.cage == CageKind::Tetrahedral;
-    if (!ok) problems_.push_back(who + " is not a tetrahedral cage, the only kind v0 reads");
+    const u32 per_cell = cells::nodes_per_cell(region.cage);
+    bool ok = per_cell != 0;
+    if (!ok)
+      problems_.push_back(who + " is a " + cells::cage_kind_name(region.cage) +
+                          " cage, which this build does not read (four- and ten-node tetrahedra)");
+    m.per_cell = ok ? per_cell : 4;
     ok = blocks_.read(region.nodes, BlockKind::RegionNodes, who + ".nodes", m.nodes) && ok;
-    ok = blocks_.read(region.tetrahedra, BlockKind::Tetrahedra, who + ".tetrahedra", m.tets, 4) &&
-         ok;
+    if (per_cell != 0)
+      ok = blocks_.read(region.tetrahedra, cells::cell_block(region.cage), who + ".tetrahedra",
+                        m.cell_nodes, per_cell) &&
+           ok;
     const u32 count = m.nodes.size();
-    for (const u32 v : m.tets)
+    for (const u32 v : m.cell_nodes)
       if (v >= count) {
-        problems_.push_back(who + " has a tetrahedron naming node " + str(v) + ", past " +
-                            str(count));
+        problems_.push_back(who + " has a cell naming node " + str(v) + ", past " + str(count));
         ok = false;
         break;
       }
+    // The linear cells: the cells themselves, or each ten-node cell's same-node subdivision,
+    // its octahedron's diagonal chosen at the construction so that every state walks the same one.
+    if (ok && m.quadratic()) {
+      for (u32 c = 0; c < m.cell_count(); ++c) {
+        query::D3 x[10];
+        m.gather(c, m.nodes, x);
+        u32 pieces[32];
+        cells::subdivide(m.cell(c), x, pieces);
+        for (const u32 v : pieces)
+          m.tets.push_back(v);
+        for (u32 k = 0; k < 8; ++k)
+          m.parent.push_back(c);
+      }
+    } else if (ok) {
+      m.tets = m.cell_nodes;
+      for (u32 c = 0; c < m.cell_count(); ++c)
+        m.parent.push_back(c);
+    }
     for (u32 s = 0; s < region.sheets.size(); ++s) {
       const Sheet& sheet = region.sheets[s];
       SheetModel sm;
@@ -940,92 +1008,165 @@ void Validator::check_observation() {
 void Validator::check_regions() {
   for (RegionModel& region : regions_) {
     const std::string subject = "region " + region.def->name;
+    const bool reference = region.def->role == RegionRole::Reference;
     JsonValue& numbers = region_numbers(region);
     numbers.set("nodes", JsonValue(static_cast<u64>(region.nodes.size())));
-    numbers.set("tetrahedra", JsonValue(static_cast<u64>(region.tets.size() / 4)));
+    numbers.set("tetrahedra", JsonValue(region.cell_count()));
+    numbers.set("cage", JsonValue(cells::cage_kind_name(region.def->cage)));
+    numbers.set("nodes_per_cell", JsonValue(region.per_cell));
+    numbers.set("role", JsonValue(role_name(region.def->role)));
+    if (region.quadratic())
+      numbers.set("linear_subdivision_cells", JsonValue(static_cast<u64>(region.tets.size() / 4)));
     {
+      // ADR-0029's limits are the runtime solver's: one solve group, 800 for any cage. A reference
+      // body is what a runtime cage is derived from (plan 07 §7.10), so its size is a budget the
+      // derived cage has to meet, reported with the verdict the runtime would give it.
       ValidationRow& r =
-          row("region.cage_size", subject, Severity::warning,
-              "at most 256 nodes unless hero, at most 800 for any volume (ADR-0029, "
-              "physics::cage_size_verdict)",
-              "a cage wider than one solve group does not scale; past 800 it is refused");
+          reference
+              ? row("region.cage_size", subject, Severity::info,
+                    "reported as a budget, never failed: a reference body is what a runtime cage "
+                    "is derived from; beside it, the verdict ADR-0029 would give it as a runtime "
+                    "cage (256 nodes unless hero, 800 for any)",
+                    "the runtime's size limits are the derived cage's to meet, not the body's")
+              : row("region.cage_size", subject, Severity::warning,
+                    "at most 256 nodes unless hero, at most 800 for any volume (ADR-0029, "
+                    "physics::cage_size_verdict)",
+                    "a cage wider than one solve group does not scale; past 800 it is refused");
       const u32 nodes = region.nodes.size();
       const physics::CageSizeVerdict v = physics::cage_size_verdict(nodes, region.def->hero);
       const char* names[] = {"Ok", "Wide", "Refused"};
       r.value.set("nodes", JsonValue(nodes));
+      r.value.set("cells", JsonValue(region.cell_count()));
       r.value.set("hero", JsonValue(region.def->hero));
-      r.value.set("verdict", JsonValue(names[static_cast<u32>(v)]));
+      r.value.set("role", JsonValue(role_name(region.def->role)));
+      r.value.set(reference ? "verdict_as_runtime" : "verdict",
+                  JsonValue(names[static_cast<u32>(v)]));
       r.value.set("verdict_as_hero",
                   JsonValue(names[static_cast<u32>(physics::cage_size_verdict(nodes, true))]));
-      if (v == physics::CageSizeVerdict::Wide)
-        fail(r, str(nodes) + " nodes, " + str(nodes - physics::k_cage_elements_default) +
-                    " over the ambient default");
-      if (v == physics::CageSizeVerdict::Refused) {
-        r.severity = Severity::error;
-        fail(r, str(nodes) + " nodes, past the 800 limit");
+      if (reference) {
+        const u32 over_default = nodes > physics::k_cage_elements_default
+                                     ? nodes - physics::k_cage_elements_default
+                                     : 0u;
+        const u32 over_max =
+            nodes > physics::k_cage_elements_max ? nodes - physics::k_cage_elements_max : 0u;
+        r.value.set("over_ambient_default", JsonValue(over_default));
+        r.value.set("over_limit", JsonValue(over_max));
+        r.witness = str(nodes) + " nodes, " + names[static_cast<u32>(v)] + " as a runtime cage";
+        numbers.set("cage_verdict_as_runtime", JsonValue(names[static_cast<u32>(v)]));
+      } else {
+        if (v == physics::CageSizeVerdict::Wide)
+          fail(r, str(nodes) + " nodes, " + str(nodes - physics::k_cage_elements_default) +
+                      " over the ambient default");
+        if (v == physics::CageSizeVerdict::Refused) {
+          r.severity = Severity::error;
+          fail(r, str(nodes) + " nodes, past the 800 limit");
+        }
+        numbers.set("cage_verdict", JsonValue(names[static_cast<u32>(v)]));
       }
-      numbers.set("cage_verdict", JsonValue(names[static_cast<u32>(v)]));
     }
     if (!region.ok) continue;
+    const char* cell_word = region.cell_word();
     {
-      ValidationRow& r = row("region.cell_quality", subject, Severity::warning,
-                             "every tetrahedron's SICN (Knupp's signed inverse condition number, "
-                             "as Gmsh reports it) above 0.1; at or below 0 is an inverted cell",
-                             "the imported tetrahedral cage kind needs a quality row: no engine "
-                             "tetrahedralizer stands behind it");
+      ValidationRow& r =
+          row("region.cell_quality", subject, Severity::warning,
+              region.quadratic()
+                  ? "every cell's corner tetrahedron's SICN (Knupp's signed inverse condition "
+                    "number, as Gmsh reports it for a linear cell) above 0.1; at or below 0 is an "
+                    "inverted cell. Reported beside it: each ten-node cell's Jacobian ratio (the "
+                    "least det J over the greatest, from its Bernstein bounds), which is its "
+                    "curvature"
+                  : "every tetrahedron's SICN (Knupp's signed inverse condition number, as Gmsh "
+                    "reports it) above 0.1; at or below 0 is an inverted cell",
+              "the imported tetrahedral cage kinds need a quality row: no engine tetrahedralizer "
+              "stands behind them");
       f64 worst = std::numeric_limits<f64>::infinity();
-      u32 worst_tet = 0;
+      u32 worst_cell = 0;
       f64 smallest = std::numeric_limits<f64>::infinity();
       f64 largest = 0.0;
       Vector<f64> all;
-      for (u32 t = 0; t + 3 < region.tets.size(); t += 4) {
-        const D3 a = d3(region.nodes[region.tets[t]]);
-        const D3 b = d3(region.nodes[region.tets[t + 1]]);
-        const D3 c = d3(region.nodes[region.tets[t + 2]]);
-        const D3 d = d3(region.nodes[region.tets[t + 3]]);
-        const f64 q = query::tet_sicn(a, b, c, d);
-        const f64 v = std::fabs(query::tet_volume(a, b, c, d));
+      Vector<f64> ratios;
+      for (u32 c = 0; c < region.cell_count(); ++c) {
+        D3 x[10];
+        region.gather(c, region.nodes, x);
+        const f64 q = query::tet_sicn(x[0], x[1], x[2], x[3]);
+        const f64 v = std::fabs(region.cell_volume(c, region.nodes));
         all.push_back(q);
         smallest = std::min(smallest, v);
         largest = std::max(largest, v);
         if (q < worst) {
           worst = q;
-          worst_tet = t / 4;
+          worst_cell = c;
+        }
+        if (region.quadratic()) {
+          const cells::JacobianCheck j = cells::quadratic_jacobian(x, k_jacobian_depth);
+          ratios.push_back(j.upper > 0.0 ? j.lower / j.upper : 0.0);
         }
       }
       r.value.set("sicn", stats(all, 1.0));
       r.value.set("volume_ratio", number(largest / smallest));
-      r.witness = "tetrahedron " + str(worst_tet);
+      if (region.quadratic()) r.value.set("jacobian_ratio", stats(ratios, 1.0));
+      r.witness = std::string(cell_word) + " " + str(worst_cell);
       if (worst <= 0.0) {
         r.severity = Severity::error;
-        fail(r, "tetrahedron " + str(worst_tet) + " is inverted or flat");
+        fail(r, std::string(cell_word) + " " + str(worst_cell) + " is inverted or flat");
       } else if (worst < 0.1) {
-        fail(r, "tetrahedron " + str(worst_tet));
+        fail(r, std::string(cell_word) + " " + str(worst_cell));
       }
       numbers.set("sicn_min", number(worst));
     }
+    if (region.quadratic()) check_edge_nodes(region);
     {
-      ValidationRow& r = row("region.cell_orientation", subject, Severity::error,
-                             "every tetrahedron positive in every state",
-                             "a cell that turns inside "
-                             "out has a volume constraint pushing it further out");
+      ValidationRow& r =
+          row("region.cell_orientation", subject, Severity::error,
+              region.quadratic()
+                  ? "every ten-node cell's Jacobian determinant positive over the whole cell in "
+                    "every state, proven by its Bernstein coefficients (a cell they do not decide "
+                    "is split in eight, to depth " +
+                        str(k_jacobian_depth) + "; one still undecided there fails)"
+                  : "every tetrahedron positive in every state",
+              "a cell that turns inside out has a volume constraint pushing it further out");
       JsonValue per_state = JsonValue::object();
       for (const StateModel& s : region.states) {
         u32 inverted = 0;
+        u32 uncertain = 0;
         f64 smallest = std::numeric_limits<f64>::infinity();
-        for (u32 t = 0; t + 3 < region.tets.size(); t += 4) {
-          const f64 v =
-              query::tet_volume(d3(s.nodes[region.tets[t]]), d3(s.nodes[region.tets[t + 1]]),
-                                d3(s.nodes[region.tets[t + 2]]), d3(s.nodes[region.tets[t + 3]]));
+        f64 lowest_ratio = std::numeric_limits<f64>::infinity();
+        for (u32 c = 0; c < region.cell_count(); ++c) {
+          const f64 v = region.cell_volume(c, s.nodes);
           smallest = std::min(smallest, v);
-          if (!(v > 0.0)) {
-            if (inverted == 0) fail(r, "state " + s.name + ", tetrahedron " + str(t / 4));
+          if (!region.quadratic()) {
+            if (!(v > 0.0)) {
+              if (inverted == 0) fail(r, "state " + s.name + ", tetrahedron " + str(c));
+              ++inverted;
+            }
+            continue;
+          }
+          D3 x[10];
+          region.gather(c, s.nodes, x);
+          const cells::JacobianCheck j = cells::quadratic_jacobian(x, k_jacobian_depth);
+          if (j.upper > 0.0) lowest_ratio = std::min(lowest_ratio, j.lower / j.upper);
+          if (j.result == cells::JacobianCheck::Result::inverted) {
+            if (inverted == 0 && uncertain == 0) {
+              char buffer[160];
+              std::snprintf(buffer, sizeof(buffer), "state %s, cell %u: det J reaches %.4g",
+                            s.name.c_str(), c, j.sampled);
+              fail(r, buffer);
+            }
             ++inverted;
+          } else if (j.result == cells::JacobianCheck::Result::uncertain) {
+            if (inverted == 0 && uncertain == 0)
+              fail(r, "state " + s.name + ", cell " + str(c) +
+                          ": det J not proven positive at depth " + str(k_jacobian_depth));
+            ++uncertain;
           }
         }
         JsonValue e = JsonValue::object();
         e.set("inverted", JsonValue(inverted));
         e.set("smallest_m3", number(smallest));
+        if (region.quadratic()) {
+          e.set("undecided", JsonValue(uncertain));
+          e.set("jacobian_ratio_min", number(lowest_ratio));
+        }
         per_state.set(s.name, std::move(e));
       }
       r.value.set("states", std::move(per_state));
@@ -1039,7 +1180,7 @@ void Validator::check_regions() {
               "physical quantities in SI units only; the build derives compliances");
       const Region& def = *region.def;
       if (def.phases.empty()) fail(r, "the region has no material");
-      Vector<f64> sum(static_cast<u32>(region.tets.size() / 4), 0.0);
+      Vector<f64> sum(region.cell_count(), 0.0);
       JsonValue phases = JsonValue::array();
       for (u32 p = 0; p < def.phases.size(); ++p) {
         const Material& mat = def.phases[p].material;
@@ -1057,17 +1198,18 @@ void Validator::check_regions() {
         if (!blocks_.read(def.phases[p].fraction, BlockKind::PhaseFraction,
                           subject + " phase " + mat.name, fraction) ||
             fraction.size() != sum.size()) {
-          fail(r, "phase " + mat.name + " has no fraction per tetrahedron");
+          fail(r, "phase " + mat.name + " has no fraction per " + cell_word);
           continue;
         }
         for (u32 t = 0; t < sum.size(); ++t) {
           if (!(fraction[t] >= 0.0f && fraction[t] <= 1.0f))
-            fail(r, "phase " + mat.name + ", tetrahedron " + str(t));
+            fail(r, "phase " + mat.name + ", " + cell_word + " " + str(t));
           sum[t] += static_cast<f64>(fraction[t]);
         }
       }
       for (u32 t = 0; t < sum.size(); ++t)
-        if (sum[t] > 1.0 + 1e-6) fail(r, "tetrahedron " + str(t) + "'s phases sum past 1");
+        if (sum[t] > 1.0 + 1e-6)
+          fail(r, std::string(cell_word) + " " + str(t) + "'s phases sum past 1");
       r.value.set("phases", std::move(phases));
       for (const Membrane& mem : def.membranes) {
         Vector<u32> tris;
@@ -1104,14 +1246,12 @@ void Validator::check_regions() {
         Vector<Vector<f32>> fractions(def.phases.size());
         for (u32 p = 1; p < def.phases.size(); ++p)
           blocks_.read(def.phases[p].fraction, BlockKind::PhaseFraction, subject, fractions[p]);
-        for (u32 t = 0; t + 3 < region.tets.size(); t += 4) {
-          const f64 v = query::tet_volume(
-              d3(region.nodes[region.tets[t]]), d3(region.nodes[region.tets[t + 1]]),
-              d3(region.nodes[region.tets[t + 2]]), d3(region.nodes[region.tets[t + 3]]));
+        for (u32 t = 0; t < region.cell_count(); ++t) {
+          const f64 v = region.cell_volume(t, region.nodes);
           f64 rest = 1.0;
           f64 density = 0.0;
           for (u32 p = 1; p < def.phases.size(); ++p) {
-            const f64 f = fractions[p].size() > t / 4 ? static_cast<f64>(fractions[p][t / 4]) : 0.0;
+            const f64 f = fractions[p].size() > t ? static_cast<f64>(fractions[p][t]) : 0.0;
             density += f * def.phases[p].material.density_kg_m3;
             rest -= f;
           }
@@ -1122,11 +1262,16 @@ void Validator::check_regions() {
       numbers.set("mass_kg", number(mass));
     }
     {
-      ValidationRow& r = row("region.sheets", subject, Severity::warning,
-                             "every sheet a Loop surface of at most five faces at any control "
-                             "boundary vertex (Hoppe's rules are G1 only there), and its refined "
-                             "triangles within the binding record's u16",
-                             "the skin follows the top sheet's limit surface");
+      ValidationRow& r =
+          row("region.sheets", subject, Severity::warning,
+              reference ? "every sheet a Loop surface of at most five faces at any control "
+                          "boundary vertex (Hoppe's rules are G1 only there); its refined "
+                          "triangles against the runtime binding record's u16 reported, "
+                          "not failed, for a reference body"
+                        : "every sheet a Loop surface of at most five faces at any control "
+                          "boundary vertex (Hoppe's rules are G1 only there), and its "
+                          "refined triangles within the binding record's u16",
+              "the skin follows the top sheet's limit surface");
       JsonValue list = JsonValue::object();
       for (const SheetModel& s : region.sheets) {
         JsonValue e = JsonValue::object();
@@ -1138,7 +1283,13 @@ void Validator::check_regions() {
         if (s.surface.max_boundary_faces > 5)
           fail(r, "sheet " + s.def->name + " has a boundary vertex with " +
                       str(s.surface.max_boundary_faces) + " faces");
-        if (!geometry::surface_binding_can_represent(s.surface.triangle_count())) {
+        const bool past_cap = !geometry::surface_binding_can_represent(s.surface.triangle_count());
+        e.set("past_u16_cap", JsonValue(past_cap));
+        // The u16 is the packed record a runtime reads; a reference body's binding is not the one
+        // shipped (the derived cage's is), so the cap is reported for it. The engine's transfer
+        // still reads the packed record, so a binding past it cannot be checked here, and
+        // blocks.resolve says so.
+        if (past_cap && !reference) {
           r.severity = Severity::error;
           fail(r, "sheet " + s.def->name + " refines to " + str(s.surface.triangle_count()) +
                       " triangles, past 65,536");
@@ -1287,6 +1438,156 @@ void Validator::check_regions() {
   }
 }
 
+// A ten-node cell's edge nodes: where they are and whose they are. The node order is Gmsh's, and
+// nothing in the numbers says which order a file was written in except the geometry, so the
+// construction is where it is read: an edge node a quarter of its edge or more from the straight
+// edge's midpoint is on another edge (a file in VTK's order has 8 and 9 swapped, which puts each
+// half an edge away) or folds its edge's own parametrization back (x'(t) along the edge is
+// e + 4 (1 - 2t) d for an offset d, which reverses at an end once d reaches e / 4). A quarter is
+// far above any curvature a mesher gives a boundary edge and far below a swap. And the mesh has to
+// be one mesh: an edge's node the same in every cell that shares the edge, and no node both a
+// corner and an edge node, or the cells do not meet.
+void Validator::check_edge_nodes(const RegionModel& region) {
+  const std::string subject = "region " + region.def->name;
+  ValidationRow& r =
+      row("region.cell_edge_nodes", subject, Severity::error,
+          "at the construction, each ten-node cell's edge node within a quarter of its edge's "
+          "length of the straight edge's midpoint, in Gmsh's order (nodes 4 to 9 on edges (0, 1), "
+          "(1, 2), (0, 2), (0, 3), (2, 3), (1, 3)); an edge's node the same node in every cell "
+          "that shares the edge, and no node both a corner and an edge node; the offsets in "
+          "every other state reported",
+          "the node order is read from the geometry: a file in VTK's order (8 and 9 swapped) puts "
+          "an edge node half an edge from its edge, and cells that disagree on an edge's node "
+          "leave a crack");
+  constexpr f64 k_limit = 0.25;
+  const auto offset = [&](const u32* cell, const Vector<Vec3>& x, u32 k) {
+    const D3 a = d3(x[cell[cells::k_quadratic_edges[k][0]]]);
+    const D3 b = d3(x[cell[cells::k_quadratic_edges[k][1]]]);
+    const f64 edge = query::length(b - a);
+    const D3 straight = (a + b) * 0.5;
+    const f64 off = query::length(d3(x[cell[4 + k]]) - straight);
+    return edge > 0.0 ? off / edge : std::numeric_limits<f64>::infinity();
+  };
+  JsonValue per_state = JsonValue::object();
+  for (u32 si = 0; si < region.states.size(); ++si) {
+    const StateModel& s = region.states[si];
+    Vector<f64> all;
+    f64 worst = -1.0;
+    u32 worst_cell = 0;
+    u32 worst_edge = 0;
+    u32 beyond = 0;
+    for (u32 c = 0; c < region.cell_count(); ++c)
+      for (u32 k = 0; k < 6; ++k) {
+        const f64 o = offset(region.cell(c), s.nodes, k);
+        all.push_back(o);
+        if (o > worst) {
+          worst = o;
+          worst_cell = c;
+          worst_edge = k;
+        }
+        if (!(o < k_limit)) ++beyond;
+      }
+    JsonValue e = JsonValue::object();
+    e.set("offset_over_edge", stats(all, 1.0));
+    e.set("beyond_a_quarter", JsonValue(beyond));
+    e.set("worst_cell", JsonValue(worst_cell));
+    per_state.set(s.name, std::move(e));
+    if (si != 0 || beyond == 0) continue;
+    // The construction decides. Is the worst cell another order's, read as Gmsh's? The two a
+    // writer is likely to hold: VTK's (and meshio's tetra10), edges 8 and 9 the other way round,
+    // and the lexicographic one, (0,1) (0,2) (0,3) (1,2) (1,3) (2,3), which the authoring side's
+    // reference-p2 sidecar uses. `from[k]` is where Gmsh's node k sits in the other order.
+    struct Order {
+      const char* name;
+      u32 from[10];
+    };
+    const Order orders[] = {
+        {"VTK's (edges 8 and 9 swapped)", {0, 1, 2, 3, 4, 5, 6, 7, 9, 8}},
+        {"the lexicographic (0,1) (0,2) (0,3) (1,2) (1,3) (2,3)", {0, 1, 2, 3, 4, 7, 5, 6, 9, 8}}};
+    const char* other = nullptr;
+    for (const Order& order : orders) {
+      u32 reordered[10];
+      for (u32 k = 0; k < 10; ++k)
+        reordered[k] = region.cell(worst_cell)[order.from[k]];
+      bool fits = true;
+      for (u32 k = 0; k < 6; ++k)
+        fits = fits && offset(reordered, s.nodes, k) < k_limit;
+      if (fits && other == nullptr) other = order.name;
+    }
+    char buffer[320];
+    std::snprintf(
+        buffer, sizeof(buffer),
+        "cell %u, edge (%u, %u): node %u at %.3g of the edge from its midpoint; %u edge "
+        "nodes beyond a quarter%s%s%s",
+        worst_cell, cells::k_quadratic_edges[worst_edge][0],
+        cells::k_quadratic_edges[worst_edge][1], 4 + worst_edge, worst, beyond,
+        other != nullptr ? "; read in " : "", other != nullptr ? other : "",
+        other != nullptr ? " order the cell fits: the file is in that order, not Gmsh's" : "");
+    fail(r, buffer);
+    r.value.set("order_it_fits", other != nullptr ? JsonValue(other) : JsonValue::null());
+  }
+  r.value.set("states", std::move(per_state));
+  // One mesh: every edge's node agreed on, and corners and edge nodes disjoint.
+  struct EdgeUse {
+    u64 key;
+    u32 node;
+    u32 cell;
+  };
+  Vector<EdgeUse> uses;
+  Vector<u8> corner(static_cast<u32>(region.nodes.size()), 0);
+  for (u32 c = 0; c < region.cell_count(); ++c) {
+    const u32* cell = region.cell(c);
+    for (u32 k = 0; k < 4; ++k)
+      corner[cell[k]] = 1;
+    for (u32 k = 0; k < 6; ++k) {
+      const u32 a = cell[cells::k_quadratic_edges[k][0]];
+      const u32 b = cell[cells::k_quadratic_edges[k][1]];
+      uses.push_back(EdgeUse{(u64{std::min(a, b)} << 32) | u64{std::max(a, b)}, cell[4 + k], c});
+    }
+  }
+  std::sort(uses.begin(), uses.end(), [](const EdgeUse& a, const EdgeUse& b) {
+    return a.key != b.key ? a.key < b.key : a.cell < b.cell;
+  });
+  u32 disagreements = 0;
+  u32 edges = 0;
+  Vector<std::pair<u32, u64>> node_edge;  // (edge node, edge) once per edge
+  for (u32 i = 0; i < uses.size();) {
+    u32 j = i;
+    while (j < uses.size() && uses[j].key == uses[i].key) {
+      if (uses[j].node != uses[i].node) {
+        if (disagreements == 0)
+          fail(r, "edge (" + str(uses[i].key >> 32) + ", " + str(uses[i].key & 0xffffffffu) +
+                      "): cell " + str(uses[i].cell) + " names node " + str(uses[i].node) +
+                      " and cell " + str(uses[j].cell) + " node " + str(uses[j].node));
+        ++disagreements;
+      }
+      ++j;
+    }
+    node_edge.push_back({uses[i].node, uses[i].key});
+    ++edges;
+    i = j;
+  }
+  std::sort(node_edge.begin(), node_edge.end());
+  u32 shared_nodes = 0;
+  for (u32 i = 1; i < node_edge.size(); ++i)
+    if (node_edge[i].first == node_edge[i - 1].first) {
+      if (shared_nodes == 0)
+        fail(r, "node " + str(node_edge[i].first) + " is the edge node of two edges");
+      ++shared_nodes;
+    }
+  u32 corner_and_edge = 0;
+  for (const std::pair<u32, u64>& entry : node_edge)
+    if (corner[entry.first] != 0) {
+      if (corner_and_edge == 0)
+        fail(r, "node " + str(entry.first) + " is both a corner and an edge node");
+      ++corner_and_edge;
+    }
+  r.value.set("edges", JsonValue(edges));
+  r.value.set("edges_whose_cells_disagree", JsonValue(disagreements));
+  r.value.set("nodes_on_two_edges", JsonValue(shared_nodes));
+  r.value.set("nodes_both_corner_and_edge", JsonValue(corner_and_edge));
+}
+
 void Validator::check_attachments() {
   ValidationRow& r = row("attachments.resolve", "the attachments", Severity::error,
                          "every attachment names a region, a node set of it, and a target that "
@@ -1405,7 +1706,12 @@ void Validator::check_mechanics() {
     if (!region.ok) continue;
     const Region& def = *region.def;
     const std::string subject = "region " + def.name;
-    const u32 cells = static_cast<u32>(region.tets.size() / 4);
+    // The cells as authored (the materials, the strain) and the linear cells the declared energy
+    // is built on, which are the same cells for a four-node cage and the same-node subdivision for
+    // a ten-node one: bulk-edge-v0 is the runtime's network of linear cells.
+    const u32 cell_count = region.cell_count();
+    const u32 linear_count = static_cast<u32>(region.tets.size() / 4);
+    const u32 per_cell = region.per_cell;
     const u32 n = static_cast<u32>(region.nodes.size());
 
     // The nodes' attachments: held (fixed, or a target the gap cannot see), sliding (the target's
@@ -1454,12 +1760,12 @@ void Validator::check_mechanics() {
       for (const u32 v : region.boundary)
         on_boundary[v] = 1;
       u32 spanning = 0;
-      for (u32 t = 0; t < cells; ++t) {
+      for (u32 t = 0; t < cell_count; ++t) {
         bool top = false;
         bool support = false;
-        for (u32 k = 0; k < 4; ++k) {
-          top = top || on_top[region.tets[4 * t + k]] != 0;
-          support = support || on_support[region.tets[4 * t + k]] != 0;
+        for (u32 k = 0; k < per_cell; ++k) {
+          top = top || on_top[region.cell(t)[k]] != 0;
+          support = support || on_support[region.cell(t)[k]] != 0;
         }
         if (top && support) ++spanning;
       }
@@ -1469,7 +1775,8 @@ void Validator::check_mechanics() {
         if (on_boundary[i] == 0) ++interior;
         if (on_top[i] == 0 && on_support[i] == 0) ++on_neither;
       }
-      r.value.set("cells", JsonValue(cells));
+      r.value.set("cells", JsonValue(cell_count));
+      r.value.set("nodes_per_cell", JsonValue(per_cell));
       r.value.set("cells_spanning_both_sheets", JsonValue(spanning));
       r.value.set("nodes", JsonValue(n));
       r.value.set("interior_nodes", JsonValue(interior));
@@ -1480,14 +1787,14 @@ void Validator::check_mechanics() {
     }
 
     // Each cell's material and density: the phases mixed by fraction, as region.materials mixes
-    // them for the mass.
-    Vector<energy::CellMaterial> materials(cells);
-    Vector<f64> density(cells, 0.0);
+    // them for the mass; a linear cell of the subdivision takes its cell's.
+    Vector<energy::CellMaterial> materials(cell_count);
+    Vector<f64> density(cell_count, 0.0);
     if (!def.phases.empty()) {
       Vector<Vector<f32>> fractions(static_cast<u32>(def.phases.size()));
       for (u32 p = 1; p < def.phases.size(); ++p)
         blocks_.read(def.phases[p].fraction, BlockKind::PhaseFraction, subject, fractions[p]);
-      for (u32 t = 0; t < cells; ++t) {
+      for (u32 t = 0; t < cell_count; ++t) {
         f64 first = 1.0;
         for (u32 p = 1; p < def.phases.size(); ++p) {
           const f64 f = fractions[p].size() > t ? static_cast<f64>(fractions[p][t]) : 0.0;
@@ -1503,6 +1810,13 @@ void Validator::check_mechanics() {
         density[t] += first * m.density_kg_m3;
       }
     }
+    Vector<energy::CellMaterial> linear_materials(linear_count);
+    Vector<f64> linear_density(linear_count, 0.0);
+    for (u32 t = 0; t < linear_count; ++t) {
+      linear_materials[t] = materials[region.parent[t]];
+      linear_density[t] = density[region.parent[t]];
+    }
+    const std::string linear = region.linear_representation();
     const StateModel* rest = nullptr;
     for (const StateModel& s : region.states)
       if (rest == nullptr && s.def != nullptr && s.role == StateRole::Rest) rest = &s;
@@ -1516,7 +1830,7 @@ void Validator::check_mechanics() {
     else if (def.phases.empty())
       model_error = "the region has no material";
     else
-      model_ok = model.build(to_d3(rest->nodes), region.tets, materials, &model_error);
+      model_ok = model.build(to_d3(rest->nodes), region.tets, linear_materials, &model_error);
 
     // ---- the affine patch test
     {
@@ -1528,6 +1842,7 @@ void Validator::check_mechanics() {
               "a network of edges carries its mesh's fabric: the law calibrates its isotropic "
               "part to the declared shear modulus exactly, and the planes are the mesh's");
       r.value.set("law", JsonValue(energy::k_law));
+      r.value.set("representation", JsonValue(linear));
       if (!model_ok) {
         r.verdict = Verdict::skipped;
         r.note = model_error;
@@ -1537,10 +1852,10 @@ void Validator::check_mechanics() {
         f64 volume = 0.0;
         f64 mu = 0.0;
         f64 kappa = 0.0;
-        for (u32 t = 0; t < cells; ++t) {
+        for (u32 t = 0; t < linear_count; ++t) {
           volume += v0[t];
-          mu += materials[t].shear_modulus_pa * v0[t];
-          kappa += materials[t].bulk_modulus_pa * v0[t];
+          mu += linear_materials[t].shear_modulus_pa * v0[t];
+          kappa += linear_materials[t].bulk_modulus_pa * v0[t];
         }
         mu /= volume;
         kappa /= volume;
@@ -1709,12 +2024,16 @@ void Validator::check_mechanics() {
         u32 worst = 0;
         f64 worst_value = -1.0;
         Vector<std::pair<f64, u32>> order;
-        for (u32 t = 0; t < cells; ++t) {
-          const u32* v = region.tets.data() + 4 * t;
-          const f64 v0 = query::tet_volume(d3(rest->nodes[v[0]]), d3(rest->nodes[v[1]]),
-                                           d3(rest->nodes[v[2]]), d3(rest->nodes[v[3]]));
-          const f64 v1 = query::tet_volume(d3(reference.nodes[v[0]]), d3(reference.nodes[v[1]]),
-                                           d3(reference.nodes[v[2]]), d3(reference.nodes[v[3]]));
+        // Per cell as authored, each cell's exact volume: a ten-node cell's integral of det J.
+        Vector<f64> rest_volume(cell_count);
+        Vector<f64> reference_volume(cell_count);
+        for (u32 t = 0; t < cell_count; ++t) {
+          rest_volume[t] = region.cell_volume(t, rest->nodes);
+          reference_volume[t] = region.cell_volume(t, reference.nodes);
+        }
+        for (u32 t = 0; t < cell_count; ++t) {
+          const f64 v0 = rest_volume[t];
+          const f64 v1 = reference_volume[t];
           const f64 j = v1 / v0 - 1.0;
           magnitude.push_back(std::fabs(j));
           pressure.push_back(std::fabs(j) * materials[t].bulk_modulus_pa);
@@ -1727,20 +2046,18 @@ void Validator::check_mechanics() {
           }
         }
         // Node-averaged: each node's rest-volume-weighted mean of its cells' strains, and each
-        // cell's deviation from the mean of its corners' averages. A smooth field reads the same
-        // both ways; a checkerboard of alternating cells averages away at the nodes and shows in
-        // the deviation.
+        // cell's deviation from the mean of its nodes' averages (its corners', and a ten-node
+        // cell's edge nodes' too). A smooth field reads the same both ways; a checkerboard of
+        // alternating cells averages away at the nodes and shows in the deviation.
         Vector<f64> node_sum(static_cast<u32>(region.nodes.size()), 0.0);
         Vector<f64> node_weight(static_cast<u32>(region.nodes.size()), 0.0);
         Vector<f64> signed_strain;
-        for (u32 t = 0; t < cells; ++t) {
-          const u32* v = region.tets.data() + 4 * t;
-          const f64 v0 = query::tet_volume(d3(rest->nodes[v[0]]), d3(rest->nodes[v[1]]),
-                                           d3(rest->nodes[v[2]]), d3(rest->nodes[v[3]]));
-          const f64 v1 = query::tet_volume(d3(reference.nodes[v[0]]), d3(reference.nodes[v[1]]),
-                                           d3(reference.nodes[v[2]]), d3(reference.nodes[v[3]]));
+        for (u32 t = 0; t < cell_count; ++t) {
+          const u32* v = region.cell(t);
+          const f64 v0 = rest_volume[t];
+          const f64 v1 = reference_volume[t];
           signed_strain.push_back(v1 / v0 - 1.0);
-          for (u32 k = 0; k < 4; ++k) {
+          for (u32 k = 0; k < per_cell; ++k) {
             node_sum[v[k]] += std::fabs(v0) * (v1 / v0 - 1.0);
             node_weight[v[k]] += std::fabs(v0);
           }
@@ -1755,10 +2072,10 @@ void Validator::check_mechanics() {
         Vector<f64> deviation;
         u32 worst_deviation_cell = 0;
         f64 worst_deviation = -1.0;
-        for (u32 t = 0; t < cells; ++t) {
+        for (u32 t = 0; t < cell_count; ++t) {
           f64 corners = 0.0;
-          for (u32 k = 0; k < 4; ++k)
-            corners += node_average[region.tets[4 * t + k]] / 4.0;
+          for (u32 k = 0; k < per_cell; ++k)
+            corners += node_average[region.cell(t)[k]] / static_cast<f64>(per_cell);
           const f64 d = std::fabs(signed_strain[t] - corners);
           deviation.push_back(d);
           if (d > worst_deviation) {
@@ -1771,13 +2088,17 @@ void Validator::check_mechanics() {
         r.value.set("worst_deviation_cell", JsonValue(worst_deviation_cell));
         std::sort(order.begin(), order.end());
         u32 held_among_worst = 0;
-        const u32 worst_count = std::min<u32>(10, cells);
+        const u32 worst_count = std::min<u32>(10, cell_count);
         for (u32 w = 0; w < worst_count; ++w) {
           bool touches = false;
-          for (u32 k = 0; k < 4; ++k)
-            touches = touches || kind[region.tets[4 * order[w].second + k]] == k_held;
+          for (u32 k = 0; k < per_cell; ++k)
+            touches = touches || kind[region.cell(order[w].second)[k]] == k_held;
           if (touches) ++held_among_worst;
         }
+        r.value.set("representation",
+                    JsonValue(region.quadratic()
+                                  ? "the ten-node cells, each one's exact volume from its ten nodes"
+                                  : "the tetrahedra"));
         const f64 p99 = percentile(magnitude, 0.99);
         r.value.set("reference", JsonValue(reference.name));
         r.value.set("rest", JsonValue(rest->name));
@@ -1828,6 +2149,7 @@ void Validator::check_mechanics() {
             "relaxation's fixed point, not at the energy's stationary point; this is the distance "
             "between the two, and the static-equilibrium residual of every stored state");
     r.value.set("law", JsonValue(energy::k_law));
+    r.value.set("representation", JsonValue(linear));
     if (!model_ok) {
       r.verdict = Verdict::skipped;
       r.note = model_error;
@@ -1881,16 +2203,16 @@ void Validator::check_mechanics() {
     r.value.set("complete", JsonValue(complete));
     r.value.set("not_included", std::move(not_included));
 
-    // Weight per node, lumped from the construction's cells (the configuration the densities are
-    // declared at) and less the medium's density, a quarter to each corner.
+    // Weight per node, lumped from the construction's linear cells (the configuration the
+    // densities are declared at) and less the medium's density, a quarter to each corner.
     Vector<f64> lumped_volume_density(n, 0.0);  // sum of rho V / 4
     Vector<f64> lumped_volume(n, 0.0);          // sum of V / 4
-    for (u32 t = 0; t < cells; ++t) {
+    for (u32 t = 0; t < linear_count; ++t) {
       const u32* v = region.tets.data() + 4 * t;
       const f64 volume = query::tet_volume(d3(region.nodes[v[0]]), d3(region.nodes[v[1]]),
                                            d3(region.nodes[v[2]]), d3(region.nodes[v[3]]));
       for (u32 k = 0; k < 4; ++k) {
-        lumped_volume_density[v[k]] += density[t] * volume / 4.0;
+        lumped_volume_density[v[k]] += linear_density[t] * volume / 4.0;
         lumped_volume[v[k]] += volume / 4.0;
       }
     }
@@ -2196,6 +2518,8 @@ void Validator::check_frames() {
       }
       report_.rows[contain_index].value.set("states", std::move(contain_states));
       report_.rows[cross_index].value.set("states", std::move(cross_states));
+      report_.rows[cross_index].value.set("piecewise_linear_boundary",
+                                          JsonValue(region.boundary_representation()));
     }
   }
 }
@@ -2231,6 +2555,8 @@ void Validator::check_skin_and_depth() {
         "local, so the intersection count stands beside it");
     const u32 contain_index = report_.rows.size() - 1u;
     report_.rows[contain_index].value.set("floor_mm", number(floor * k_mm));
+    report_.rows[contain_index].value.set("piecewise_linear_boundary",
+                                          JsonValue(region.boundary_representation()));
     Vector<u8> on_boundary(region.nodes.size(), 0);
     for (const u32 v : region.boundary)
       on_boundary[v] = 1;
@@ -2484,6 +2810,7 @@ void Validator::check_skin_and_depth() {
       clearance.set("nodes_mm", stats(nodes_clear, k_mm));
       clearance.set("dense_shell_mm", stats(dense_clear, k_mm));
       clearance.set("frame_vertices_to_boundary_mm", stats(frame_to_boundary, k_mm));
+      clearance.set("piecewise_linear_boundary", JsonValue(region.boundary_representation()));
       clearance.set("along_normal_mm", stats(clearance_along, k_mm));
     }
     JsonValue depth = JsonValue::object();
@@ -2992,8 +3319,12 @@ void Validator::check_volumes() {
     f64 cage_at_reference = 0.0;
     for (const StateModel& s : region.states) {
       JsonValue e = JsonValue::object();
-      const f64 cage = cage_volume(region.tets, s.nodes);
+      f64 cage = 0.0;
+      for (u32 c = 0; c < region.cell_count(); ++c)
+        cage += region.cell_volume(c, s.nodes);
       e.set("cage_ml", number(cage * k_ml));
+      if (region.quadratic())
+        e.set("cage_linear_ml", number(cage_volume(region.tets, s.nodes) * k_ml));
       if (!region.stitch.empty()) {
         Vector<D3> points;
         Vector<u32> faces;
@@ -3138,7 +3469,15 @@ void Validator::check_volumes() {
       const char* smooth = coverage_complete ? "complete: the sheets span every surface node"
                                              : "restricted: the sheets' control nodes only";
       JsonValue representations = JsonValue::object();
-      representations.set("cage_ml", JsonValue("complete: the tetrahedra, every node"));
+      representations.set(
+          "cage_ml",
+          JsonValue(region.quadratic() ? "complete: the ten-node cells' exact volume, every node"
+                                       : "complete: the tetrahedra, every node"));
+      if (region.quadratic())
+        representations.set("cage_linear_ml",
+                            JsonValue("the same-node linear subdivision, every node: what the "
+                                      "curvature of the cells adds is cage_ml minus this"));
+      representations.set("exposed_boundary", JsonValue(region.boundary_representation()));
       representations.set("shell_ml", JsonValue(smooth));
       representations.set("top_swept_ml", JsonValue(smooth));
       representations.set("visible_swept_ml", JsonValue(smooth));

@@ -18,6 +18,15 @@
 //                  the centre with the rim fixed (a response)
 //   the binding    the skin over the slab, footpoints from the nearest-point binder under the
 //                  limit-interpolated rule, stored as authored records
+//
+// **The quadratic variant** (`SyntheticOptions::quadratic`) is the same slab as ten-node cells, a
+// reference body: a node on each of the 698 edges (845 nodes in all, so no runtime cage), placed
+// on the torus at the mean of its ends' parameters, which curves the cells a little as a mesher's
+// boundary-fitted ones are, and moved in each state by the states' bump at its own place; the
+// cells in Gmsh's order; each sheet's control triangle split in four over its edges' nodes (288
+// a sheet, at Loop level 2, so the dense surface is the four-node slab's 4,608 triangles), so the
+// sheets still carry every moving surface node; the side wall's and the support's edge nodes in the
+// rim and posterior sets. `role` is `Reference`.
 
 #include <core/base/types.h>
 #include <core/containers/vector.h>
@@ -49,6 +58,11 @@ struct SyntheticTissue {
   Vector<Vec3> reference_nodes;    // the "standing" state
 };
 
-SyntheticTissue make_synthetic_tissue();
+struct SyntheticOptions {
+  // Ten-node cells and a reference body (above).
+  bool quadratic = false;
+};
+
+SyntheticTissue make_synthetic_tissue(const SyntheticOptions& options = {});
 
 }  // namespace engine::tissue

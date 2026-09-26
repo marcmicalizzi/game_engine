@@ -152,6 +152,7 @@ u32 block_element_size(BlockKind kind) noexcept {
     case BlockKind::BaseTriangles: return 12;
     case BlockKind::CableEdges: return 8;
     case BlockKind::FrameCoverProvenance: return 1;
+    case BlockKind::QuadraticTetrahedra: return 40;
   }
   return 0;
 }
@@ -188,6 +189,7 @@ const char* block_kind_name(u32 kind) noexcept {
     case BlockKind::AuthoredNormals: return "AuthoredNormals";
     case BlockKind::StateNodes: return "StateNodes";
     case BlockKind::ExpectedVisible: return "ExpectedVisible";
+    case BlockKind::QuadraticTetrahedra: return "QuadraticTetrahedra";
   }
   return "unknown";
 }

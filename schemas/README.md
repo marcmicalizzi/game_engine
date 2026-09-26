@@ -130,5 +130,6 @@ The engine's own world vocabulary is `world.schema` here: `engine.world.Transfor
 ## Evolution rules (docs/plan/03-data-model.md §3.8)
 
 - Adding a field: bump `@version`, mark the field `@since(new)`, give it a default.
+- Adding an enumerator: append it with the next value, never renumber or reuse one. An enumerator carries no `@since` (the parser reads only `@doc` on it), so its documentation says which version of the struct that reads it introduced it (`engine.tissue.CageKind.TetrahedralQuadratic`, read from `Region` version 2). A reader older than the enumerator refuses its name — `core/schema` reads an unknown enumerator as an error even where the reader asks it to ignore unknown fields — so where an older reader has to fall back rather than refuse, the new thing needs a field or a container section of its own beside the enumerator.
 - Renaming or removing a field: bump `@version` and register a `Migration` for `from_version = old` that rewrites the JSON; keep the migration forever (or as long as the migration corpus needs it).
 - Never reuse a field name for a different meaning; never change a field's type in place.

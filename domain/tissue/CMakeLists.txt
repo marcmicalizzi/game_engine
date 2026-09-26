@@ -13,9 +13,10 @@ engine_capability_requires(tissue physics)
 
 engine_module(NAME tissue LAYER domain OPTIONAL
   DEPS base containers math hash io json schema schemas geometry physics
-  SOURCES src/sha256.cpp src/tissue_file.cpp src/mesh_query.cpp src/energy.cpp src/validate.cpp
-          src/synthetic.cpp)
+  SOURCES src/sha256.cpp src/tissue_file.cpp src/mesh_query.cpp src/cells.cpp src/energy.cpp
+          src/validate.cpp src/expect.cpp src/synthetic.cpp)
 
 engine_module_tests(NAME tissue
   SOURCES tests/sha256_tests.cpp tests/tissue_file_tests.cpp tests/mesh_query_tests.cpp
-          tests/energy_tests.cpp tests/validate_tests.cpp tests/size_table.cpp)
+          tests/cells_tests.cpp tests/energy_tests.cpp tests/validate_tests.cpp
+          tests/quadratic_tests.cpp tests/expect_tests.cpp tests/size_table.cpp)

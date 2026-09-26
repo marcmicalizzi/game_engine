@@ -28,9 +28,10 @@ cannot be lower; and nothing in it ticks, renders or allocates per frame, so it 
 (`engine_capability_requires(tissue physics)`) and tissue is off wherever physics is.
 
 **Owned data.** A `TissueFile` owns a definition and its blocks' bytes. A `TissueReport` owns the
-rows and numbers one validation produced. `SyntheticTissue` owns the generated example. Nothing
-else holds a tissue definition; the render path, the solver and the content build's derived steps
-that will read one do not exist yet (below, "Not yet").
+rows and numbers one validation produced; an `ExpectationResult` what a fixture's declaration made
+of one. `SyntheticTissue` owns the generated example. Nothing else holds a tissue definition; the
+render path, the solver and the content build's derived steps that will read one do not exist yet
+(below, "Not yet").
 
 **Invariants.**
 - A block's bytes are the ones its SHA-256 names, checked at import and again at every container
@@ -44,6 +45,12 @@ that will read one do not exist yet (below, "Not yet").
 - The equilibrium gap and the reference's volumetric strain are diagnostics: they are reported and
   never fail, because the reference is the runtime solver's fixed point and a loaded state's strain
   does not name its cause.
+- A ten-node cell's volume and its Jacobian's sign are exact, from its ten nodes; a row that walks
+  the cells' linear subdivision instead says so in its value, and nothing subdivides silently.
+- A reference body is never held to a runtime-only limit, and never excused a geometric or material
+  one.
+- A fixture is accepted when its outcome is the declared one: the rows that fail or are skipped,
+  by id, subject and severity, exactly.
 
 **Public API.** `domain/tissue/tissue_file.h`: `TissueFileHeader`, `TissueFileSection`,
 `block_element_size`, `block_kind_name`, `TissueBlock`, `TissueFile`, `encode_tissue_file`,
@@ -51,9 +58,12 @@ that will read one do not exist yet (below, "Not yet").
 `read_tissue_file_info`, `import_interchange`, `export_interchange`, `seal_block`, `add_block`,
 `topology_sha256`. `domain/tissue/validate.h`: `Severity`, `Verdict`, `ValidationRow`,
 `ValidateOptions`, `TissueReport`, `validate_tissue`, `rows_json`, `report_json`.
-`domain/tissue/synthetic.h`: `make_synthetic_tissue`. `domain/tissue/sha256.h`: `Sha256`,
-`sha256`, `sha256_hex`. The types themselves are `engine::tissue::*` in `<schemas/tissue.h>`,
-generated from `schemas/tissue.schema`.
+`domain/tissue/expect.h`: `k_expect_format`, `k_expect_rule`, `parse_expectation`,
+`read_expectation`, `ExpectationDifference`, `ExpectationResult`, `compare_expectation`,
+`difference_kind_name`, `expectation_json`, `expectation_text`, `expectation_from_report`,
+`write_expectation`. `domain/tissue/synthetic.h`: `SyntheticOptions`, `make_synthetic_tissue`.
+`domain/tissue/sha256.h`: `Sha256`, `sha256`, `sha256_hex`. The types themselves are
+`engine::tissue::*` in `<schemas/tissue.h>`, generated from `schemas/tissue.schema`.
 
 **Depends on.** `base`, `containers`, `math`, `hash`, `io`, `json`, `schema`, `schemas`,
 `geometry`, `physics`.
@@ -70,7 +80,7 @@ name mechanics, never anatomy.
 
 | Object | What it holds |
 |---|---|
-| `Region` | name; `kind` (`Volume`, `Cavity`); `cage` (`Tetrahedral` — the one kind v0 reads, imported from the authoring side's mesher, never generated here); nodes and tetrahedra; `phases` (a material each — bulk and shear modulus, density — the first taking what the others' per-tetrahedron fractions leave); `membranes` (triangles, E·t per triangle or one value, ν, tension-only); `cables` (edges, stiffness, **slack** and **recruitment**); named `node_sets`; `sheets` (open control surfaces over its nodes, each with a Loop level); the `shell_stitch` that closes the sheets' limit surfaces into one shell; which sheet is the `top` (the skin follows it) and which the `support`; `hero` (ADR-0029's allowance) |
+| `Region` | name; `kind` (`Volume`, `Cavity`); `cage` (`Tetrahedral`, four-node cells, the runtime's kind, and since version 2 `TetrahedralQuadratic`, ten-node cells in Gmsh's order, the kind a certified reference body is solved on — both imported from the authoring side's mesher, never generated here; below, "The ten-node cell"); `role` (version 2: `Runtime`, a cage the runtime solves, or `Reference`, a certified body a runtime cage is derived from; below, "Reference bodies"); nodes and cells (`tetrahedra`, a Tetrahedra or a QuadraticTetrahedra block as the cage says); `phases` (a material each — bulk and shear modulus, density — the first taking what the others' per-tetrahedron fractions leave); `membranes` (triangles, E·t per triangle or one value, ν, tension-only); `cables` (edges, stiffness, **slack** and **recruitment**); named `node_sets`; `sheets` (open control surfaces over its nodes, each with a Loop level); the `shell_stitch` that closes the sheets' limit surfaces into one shell; which sheet is the `top` (the skin follows it) and which the `support`; `hero` (ADR-0029's allowance) |
 | `Frame` | a closed, outward-wound rigid proxy: vertices and triangles; **declared cover per vertex** with its `CoverProvenance` (`Undeclared`, `Fitted`, `AuthoredTransform`, `Authored`) and a provenance note, because a frame contracted to fit is a size changed, not discovered; `proxy`; the frames it lies `inside` |
 | `Surface` | an attachment target that is not a frame, flagged `proxy` |
 | `Attachment` | a region's node set, `kind` (`Fixed` — a stiff spring, not a weld —, `SlidingBilateral`, `Unilateral`), and a target: the world, a frame, a surface, another region's sheet (`region/sheet`) or a bone |
@@ -129,7 +139,8 @@ little-endian, f32 IEEE binary32, u32 unsigned, u8 a byte:
 | Kind | Element | Referenced from |
 |---|---|---|
 | `RegionNodes` 10, `FrameVertices` 20, `SurfaceVertices` 24, `ObservedPositions` 28, `BaseOutsidePositions` 29, `FootpointBarycentrics` 33, `AuthoredNormals` 35, `StateNodes` 36, `ExpectedVisible` 37 | f32 × 3 | positions, barycentrics, normals |
-| `Tetrahedra` 11, `BaseQuads` 27 | u32 × 4 | a region's cells; a base's quads (split (0, 1, 2), (0, 2, 3) wherever a triangle is needed) |
+| `Tetrahedra` 11, `BaseQuads` 27 | u32 × 4 | a region's four-node cells; a base's quads (split (0, 1, 2), (0, 2, 3) wherever a triangle is needed) |
+| `QuadraticTetrahedra` 38 | u32 × 10 | a region's ten-node cells: the four corners, then the edge nodes of (0, 1), (1, 2), (0, 2), (0, 3), (2, 3), (1, 3) — Gmsh's order (below) |
 | `MembraneTriangles` 14, `SheetFaces` 18, `ShellStitch` 19, `FrameTriangles` 21, `SurfaceTriangles` 25, `BaseTriangles` 26 | u32 × 3 | triangles |
 | `CableEdges` 16 | u32 × 2 | cables |
 | `NodeSet` 12, `CanonicalIds` 30, `FootpointTriangles` 32 | u32 | node sets; id sets, **strictly ascending**; one refined triangle per domain id |
@@ -153,7 +164,9 @@ indices widened to little-endian u64, face by face and corner by corner — NumP
 the spelling study019 recorded, so the hash the authoring side already published verifies.
 Enumerations are spelled by their schema names (`"Tetrahedral"`, `"SlidingBilateral"`); a field
 left out takes its schema default. `engine-content tissue example <dir>` writes the synthetic
-definition as a complete interchange: the worked example of every field.
+definition as a complete interchange, the worked example of every field, and beside it
+`synthetic-quadratic.json`, the worked example of a ten-node reference body (`"cage":
+"TetrahedralQuadratic"`, `"role": "Reference"`, a `QuadraticTetrahedra` block).
 
 `import_interchange` refuses what does not add up — an unknown kind, a byte count that is not
 count × element, a file of another length, a hash that differs, a duplicate name, a `format` other
@@ -175,11 +188,92 @@ whose kind a build lacks falls back rather than failing the file. What a read re
 wrong magic or version, a section past the end, a content hash that differs, and a block whose bytes
 are not the SHA-256 the table records.
 
+## The ten-node cell
+
+A certified reference body is solved on quadratic tetrahedra: 1,635 nodes and 846 ten-node cells in
+the authoring side's supine pair, study019's 275-node cage with a node on each of its 1,360 edges.
+`cage: "TetrahedralQuadratic"` reads them from a `QuadraticTetrahedra` block, u32 × 10 a cell.
+
+**The node order is Gmsh's** (`MSH` element type 11), because Gmsh is the authoring side's mesher and
+its order is the one documented where a mesh comes from. Three orders are in use, and they differ
+only in the six edge nodes:
+
+| Order | nodes 4 to 9 lie on the edges |
+|---|---|
+| Gmsh (this interchange) | (0, 1) (1, 2) (0, 2) (0, 3) (2, 3) (1, 3) |
+| VTK `VTK_QUADRATIC_TETRA`, meshio `tetra10` | (0, 1) (1, 2) (0, 2) (0, 3) (1, 3) (2, 3) |
+| lexicographic: the authoring side's `reference-p2.json` sidecar | (0, 1) (0, 2) (0, 3) (1, 2) (1, 3) (2, 3) |
+
+A writer holding another order permutes into Gmsh's: from VTK's, swap nodes 8 and 9; from the
+lexicographic, Gmsh's node k is the lexicographic node (0, 1, 2, 3, 4, 7, 5, 6, 9, 8)[k]. Nothing in
+the numbers says which order a file was written in, so the geometry is read instead:
+`region.cell_edge_nodes` refuses a cell whose edge node lies a quarter of its edge or more from the
+straight edge's midpoint at the construction, and when the cell fits one of the other two orders
+its witness says which (tested for both).
+
+**Volume and orientation are exact, from the ten nodes** (`src/cells.h`). A ten-node cell is a
+quadratic map from the reference tetrahedron; its Jacobian's columns are linear, so det J is a cubic,
+which on a tetrahedron is exactly twenty Bernstein coefficients (Johnen, Remacle and Geuzaine 2013,
+the validity test Gmsh itself runs on curved elements). The cell's volume, the integral of det J, is
+the coefficients' sum over 120, exactly; det J lies between the least and greatest coefficient and
+equals the corner coefficient at a corner. So a least coefficient above zero proves the cell valid, a
+corner at or below zero proves it inverted, and between the two the cell is split into eight and the
+pieces' coefficients recomputed, to depth 4, where a cell still undecided fails. The test checks the
+volume against det J from the shape functions' gradients integrated by a Gauss rule exact for the
+cubic, to 1e-13, and the bounds against det J sampled on a lattice, including cells that are
+positive at every corner and inverted inside.
+
+**The same-node linear subdivision** is what a row whose meaning is linear walks: each cell's four
+corner tetrahedra and its inner octahedron split along the octahedron's shortest diagonal at the
+construction (the first of (4, 8), (6, 9), (7, 5) on a tie), eight four-node cells over the cell's
+own ten nodes, chosen once so that every state walks the same ones. It is conforming across cells
+whatever diagonal each chose — every face of a cell splits into the same four triangles — so its
+boundary is the piecewise-linear surface through every boundary node. The authoring side's own
+diagnostic subdivision (6,768 cells for 846) need not have chosen the same diagonals; only the energy
+rows see the difference, the boundary does not. Row by row:
+
+| Row | On a ten-node cage |
+|---|---|
+| `region.cage_size` | natively: every node counts |
+| `region.cell_quality` | natively: each cell's corner tetrahedron's SICN (its straight-sided shape; Gmsh's own high-order SICN bounds the curved cell and can differ where it is curved), with each cell's Jacobian ratio (least det J over greatest, from its Bernstein bounds) reported beside it as its curvature |
+| `region.cell_edge_nodes` | ten-node cages only (above) |
+| `region.cell_orientation` | natively: det J positive over the whole cell, proven as above, every state |
+| `region.materials` | natively: one fraction per ten-node cell, the mass from the exact volumes |
+| `region.through_thickness` | natively: a cell spans the sheets when any of its ten nodes is on each |
+| `region.volumetric_strain` | natively: each cell's exact volume at the reference over the rest, averaged over its ten nodes |
+| `region.affine_patch`, `state.equilibrium_gap` | **on the subdivision**, named in the row's `representation`: `bulk-edge-v0` is the runtime's network of linear cells, which a ten-node cell does not have; its weight is lumped from the subdivision |
+| `frame.intersections`, `region.skin_containment`, the depth budget's boundary clearance, `volume.omitted_volume`'s exposed boundary | **on the subdivision's boundary**, named in the row's `piecewise_linear_boundary` or the volume report's representations: the curved faces are tested by their four chords each, which is what an exact triangle-pair test can take |
+| `frame.containment`, the node clearances | natively: nodes are nodes |
+| `volume.report` | `cage_ml` natively, the cells' exact volume; `cage_linear_ml` beside it is the subdivision's, and the difference is what the cells' curvature holds |
+
+## Reference bodies
+
+`role: "Reference"` says a region is a certified reference body — what a runtime cage will be derived
+from ([07 §7.10](../plan/07-content-pipeline.md#710-deformable-volume-assets): cage generation is a
+derived step) and what a regression fixture holds — and not a cage the runtime solves. The rows that
+encode a **runtime-only** limit report it and never fail:
+
+- `region.cage_size` becomes an info row with the same numbers, the verdict ADR-0029 would give the
+  body as a runtime cage (`verdict_as_runtime`, and `verdict_as_hero`), and how far over the ambient
+  default and the 800-node limit it is: the budget the derived cage has to meet.
+- `region.sheets` reports a sheet refining past the binding record's u16 instead of escalating: the
+  packed record is what a runtime reads, and a reference body's binding is not the one shipped. The
+  engine's transfer still reads the packed record, so a binding over such a sheet cannot be checked
+  here, and `blocks.resolve` says so; the five-faces rule is Hoppe's geometry and still applies.
+
+Everything else applies in full, because it is geometry, material or declaration and not the
+runtime's: cell quality, orientation and edge nodes, materials, containment and intersections, the
+depth budget and the cover, the binding rows, the volumes, and the inverse-statics declarations (a
+certified state still names what it was solved against). The diagnostics stay diagnostics.
+
 ## Validators
 
 `validate_tissue` runs every row; `engine-content tissue validate` prints them as one JSON line and
-exits 1 when an **error** row fails. Rows with a threshold the plan states but calls a quality gate
-are **warnings**; rows the reviews ask to see and never gate are **info**. The ids:
+exits 1 when an **error** row fails (or, in the fixture mode below, when the outcome is not the
+declared one). Rows with a threshold the plan states but calls a quality gate are **warnings**; rows
+the reviews ask to see and never gate are **info**. On a ten-node cage each row that walks cells
+works as "The ten-node cell" says, and on a reference body the two runtime-only limits report
+("Reference bodies"). The ids:
 
 | Row | Severity | Threshold | Why |
 |---|---|---|---|
@@ -189,11 +283,12 @@ are **warnings**; rows the reviews ask to see and never gate are **info**. The i
 | `observation.outside_bitwise` | error | the observation is the base **bit for bit** at every id outside the declared domain | "bitwise equal outside an explicitly declared id set" (05 §5.16, item 2) |
 | `observation.landmarks` | error | each landmark's id exists and its stated position is the observation's there, bit for bit | landmarks are named by canonical id |
 | `observation.load`, `observation.deviation`, `observation.acceptance` | warning, info, info | a declared load; the deviation map reported; acceptance reported, never gated | a sheet inspected is not an acceptance |
-| `region.cage_size` | warning (error past 800) | `physics::cage_size_verdict`: 256 nodes unless `hero`, 800 for any | one solve group; ADR-0029 decision 2 |
-| `region.cell_quality` | warning (error at or below 0) | every tetrahedron's SICN above 0.1 | the imported tetrahedral kind needs a quality row: no engine tetrahedralizer stands behind it |
-| `region.cell_orientation` | error | every tetrahedron positive in every state | a cell that turns inside out has a volume constraint pushing it further out |
-| `region.materials` | error | positive moduli and densities, fractions in [0, 1] summing to at most one, −1 < ν < 0.5, nonnegative cables | SI quantities that mean what they say |
-| `region.sheets` | warning (error past the u16 cap) | at most five faces at any control boundary vertex; refined triangles within 65,536 | Hoppe's rules are G1 only there; the record's triangle is a `u16` |
+| `region.cage_size` | warning (error past 800); **info under `Reference`** | `physics::cage_size_verdict`: 256 nodes unless `hero`, 800 for any; a reference body's reported as a budget with `verdict_as_runtime` | one solve group; ADR-0029 decision 2 |
+| `region.cell_quality` | warning (error at or below 0) | every cell's (corner) tetrahedron's SICN above 0.1; a ten-node cell's Jacobian ratio reported beside it | the imported tetrahedral kinds need a quality row: no engine tetrahedralizer stands behind them |
+| `region.cell_edge_nodes` | error, ten-node cages only | at the construction every edge node within a quarter of its edge of the straight edge's midpoint (Gmsh's order); every edge's node the same in every cell sharing the edge, no node both corner and edge node | the node order is read from the geometry, and a mesh whose cells disagree on an edge's node has a crack |
+| `region.cell_orientation` | error | every tetrahedron positive in every state; a ten-node cell's det J positive over the whole cell, proven by its Bernstein coefficients to depth 4 | a cell that turns inside out has a volume constraint pushing it further out |
+| `region.materials` | error | positive moduli and densities, fractions in [0, 1] summing to at most one per cell, −1 < ν < 0.5, nonnegative cables | SI quantities that mean what they say |
+| `region.sheets` | warning (error past the u16 cap, **reported under `Reference`**) | at most five faces at any control boundary vertex; refined triangles within 65,536 | Hoppe's rules are G1 only there; the record's triangle is a `u16` |
 | `state.inverse` | error | every inverse-statics state declares its method and interior extension; the node sets it held exist | one exterior observation does not identify the interior rest |
 | `state.inverse_solver` | warning (error for an identity that pins no fixed point) | every inverse-statics state names the solver its rest was recovered against; `xpbd` with its iterations and step, `static-minimization` with its gradient tolerance | the engine-facing reference is the runtime solver's fixed point |
 | `region.through_thickness` | info | the cells that span both sheets; the nodes inside the cage (off its boundary) and on neither sheet | a slab one cell thick has no through-thickness freedom, and refining it changes its response for that reason alone |
@@ -258,6 +353,45 @@ nodes where they are, minus what it sweeps with them where the bound surface wou
 The review of the authoring side's refinement pair is why: a 121-control binding over a 457-node
 anterior surface omitted +2.1 ml at standing and −1.6 ml of the response, against a whole visible
 response of +0.75 ml. The decomposition is unchanged and stays exact either way.
+
+## The fixture mode
+
+A regression fixture is a definition the engine is **expected to fail in known ways**: a certified
+reference body whose upstream audit rows are still open, a historical binding kept on purpose. Exit 0
+would hide both a fix upstream and a regression here behind one status, so the plan's contract
+([05 §5.16](../plan/05-simulation.md#516-characters-at-run-time), 2026-09-26) is that a fixture is
+accepted when "the file parses, every row is evaluated and the failures are the ones the packet
+declares". `engine-content tissue validate <file> --expect <expected.json>` is that contract
+(`domain/tissue/expect.h`):
+
+- **The declaration** is a `TissueExpectation` (`schemas/tissue.schema`): the format the authoring
+  side published with its first fixture packet, `astra.tissue.expected-failures.v1`, adopted as
+  published — the cross-tool spelling is kept, as the normal modes' are — so a packet's
+  `EXPECTED-FAILURES.json` is read as it stands. Each failure is an `id`, a `subject` and a
+  `severity` exactly as the report prints them, and the `witness` recorded with it. The engine adds
+  four optional fields a v1 file does not carry: `verdict` (`Skipped` declares a row that cannot
+  run), `value` (a pattern the row's value must match — every key named present, numbers within
+  `tolerance`, everything else equal), `tolerance` (absolute, in the number's own units; 0 is the
+  printed shortest round-trip form), and `note`.
+- **The match is exact on the multiset of (id, subject, severity)**, and on the outcome: every row
+  that fails or is skipped, whatever its severity, must be declared, and every declared failure must
+  fail (or be skipped) with the declared severity. A declared row that passes, runs as info or is
+  absent is a *missing* difference (fixed upstream, a role that now reports it, or a declaration out
+  of date); a failure nobody declared is an *unexpected* one (a regression); a declared value the row
+  no longer has is a *value* difference. The witness is never matched: it names a node or a number
+  and moves with any change in how the engine walks the data; it is printed beside a difference.
+- **Skipped rows count.** "Every row is evaluated" is the contract, and a row that could not run
+  says nothing, so it must be declared (`"verdict": "Skipped"`) or it is a difference. The v1 rule
+  names failures only; a fixture whose rows all run is unaffected.
+- **Exit 0 exactly when nothing differs**, whatever the error count; 1 otherwise, with every
+  difference printed to stderr in a sentence and in the JSON line's `"expect"` (`matched`,
+  `declared`, `outcomes`, `differences`); 1 as well when the declaration cannot be read — a file
+  that is not a v1 declaration is refused before anything is validated, never read as empty.
+- **`--write-expect <path>`** writes the declaration this run would match — every failing or skipped
+  row with its severity and witness, no value — for review before it is committed as a fixture's; the
+  engine's additions are written only where they differ from their defaults, so a declaration of
+  failures alone is exactly what a v1 writer produces. `report` already writes the report as data (one
+  JSON line), so it gained no flag.
 
 ## The declared energy, the patch test and the equilibrium gap
 
@@ -389,6 +523,53 @@ cells that share it, and the slab-frame numbers also depend on the in-plane axis
 does not state. The volumetric strain's p99 is 5.55% on the declared standing state and 5.9% on the
 review's re-solved equilibrium; the maximum and the rim's share agree.
 
+## The supine fixtures, imported as ten-node reference bodies
+
+The authoring side's step-one packet `astra-supine-negative-controls-2026-09-26` (manifest
+`e390ff7d…`) publishes the certified supine pair, B2a-supine and B2b-supine: per case the
+authoritative ten-node identity as a sidecar, `reference-p2.json` (`astra.tissue.reference-p2.v1`:
+1,635 float64 nodes, 846 ten-node cells in the lexicographic order), a same-node linear view in the
+v0 interchange (`diagnostic-v0.json`, 6,768 four-node cells, float32 blocks), and the declared
+failures of that view (`EXPECTED-FAILURES.json`, v1). It was imported on 2026-09-26 by a scratch
+adapter (a PowerShell script outside the repository; nothing of the packet is committed) that copies
+the v0 view and replaces only its cells: the sidecar's cells permuted into Gmsh's order as a
+`QuadraticTetrahedra` block, one gland fraction per ten-node cell, `cage: TetrahedralQuadratic`,
+`role: Reference`; every other block is the packet's. Its checks, all as the packet says: every
+child of the diagnostic uses only its parent's ten nodes, eight children a parent, the gland
+fraction is one value per parent, and the supine state block is exactly the float32 of the sidecar's
+float64 endpoint.
+
+**The packet's own view, as published, matches its declaration**: `validate diagnostic.tissue
+--expect EXPECTED-FAILURES.json` exits 0 for both cases, and every row's id, subject, severity,
+verdict and witness is the pinned release engine's (only the labels this change adds to the values
+are new; every number is the same). **As ten-node reference bodies** (43 rows: the 42 and
+`region.cell_edge_nodes`), both cases say, row for row against the linear view:
+
+| Row | Linear view (runtime role) | Ten-node reference body |
+|---|---|---|
+| `region.cage_size` | fails, error: 1,635 nodes past 800 | **reported**, info: 1,635 nodes and 846 cells, `Refused` as a runtime cage, 1,379 over the ambient default and 835 over the limit |
+| `region.cell_quality` | passes: SICN min 0.1063 over the 6,768 children | passes: SICN min 0.119319 over the 846 corner tetrahedra (study019's, Gmsh's), Jacobian ratio min 0.99973 at the construction |
+| `region.cell_edge_nodes` | — | passes: 1,360 edges agreed on by every cell, edge nodes within 1.4e-5 of an edge of the chords at the construction (float32), up to 0.20 (A) and 0.24 (B) of an edge in the failed standing reference |
+| `region.cell_orientation` | fails, error: the failed standing reference's children 3738 and 3974 (A; 3739 too in B) inverted | **passes**: every ten-node cell's det J proven positive in every state; the failed standing reference is the most curved, least Jacobian ratio 0.0457 (A) and 0.0459 (B), both at cell 496, the parent of child 3974 |
+| `region.skin_containment` | fails, error: construction node 929 at 0.847 mm | fails the same: nodes and boundary are the same (106 and 120 boundary pairs crossing the skin at supine, 6 and 26 shell pairs) |
+| `cover.range`, `volume.visible_vs_top`, `volume.omitted_volume` | fail, warnings | fail the same, same witnesses (3.186 and 3.617 ml; 624 moving surface nodes on no sheet) |
+| `region.through_thickness` (info) | none of the 6,768 children spans both sheets | 659 of the 846 cells do, study019's count; 673 interior nodes either way |
+| `region.volumetric_strain` (info) | p99 35.7% (A), max 213% at child 3972 | per ten-node cell, exact volumes: p99 20.0%, max 36.5% at cell 639 (A); 20.9% and 39.0% (B) |
+| `volume.report` (info) | cage 329.198 ml at supine | cage 329.766 ml (A), the linear view's 329.198 beside it; 329.993 against 328.405 ml in the failed standing reference, where the cells are most curved |
+| `state.equilibrium_gap`, `region.affine_patch` (info) | 7.25 N (A), 8.45 N (B) at the failed standing reference; isotropic 1.000, planes 0.70 to 1.27 | the same numbers to every digit: on the subdivision, whose diagonals are the packet's own |
+
+The other 30 rows have the same verdicts, witnesses and numbers (the mass is 0.3194 kg either way:
+the construction's cells are straight). **So the fixture mode says**: against the published declaration
+with `region.cage_size` removed (it now reports), `validate --expect` exits **1** with one
+difference: `region.cell_orientation` is declared failing and passes — the inversion the linear view
+reports is its subdivision's, of cells whose quadratic map is valid, which the packet's README says in
+its own words ("different interpolated geometries"). Against the declaration with both removed it
+exits 0: the ten-node bodies' failures are exactly `region.skin_containment`, `cover.range`,
+`volume.visible_vs_top` and `volume.omitted_volume`, and `--write-expect` writes that declaration.
+An independent sampling of det J on a lattice (a scratch script, outside the engine) agrees: no cell at
+or below zero in the failed standing reference, least ratio 0.045723 at cell 496, the engine's bound
+to every digit printed. The validation takes about 21 s a case in `msvc-debug`.
+
 ## The synthetic definition
 
 `make_synthetic_tissue()` (`synthetic.h`) generates, from formulas, a slab cut from a torus — tube
@@ -404,6 +585,17 @@ what it is for: the tests break one thing at a time and look for the row that sa
 shears read 0.49 to 0.78 of μ and its normal-stress differences 1.24 and 1.82: a slab of stretched
 Kuhn cells has the fabric of a lattice.
 `engine-content tissue example` writes it as an interchange and a container.
+
+**The quadratic variant** (`SyntheticOptions::quadratic`, written beside it as
+`synthetic-quadratic.*`) is the same slab as a ten-node reference body: a node on each of its 698
+edges (845 nodes, which no runtime cage is, so `role` is `Reference`), placed on the torus at the
+mean of its ends' parameters — so the cells curve a little, as a mesher's boundary-fitted ones do,
+by at most 3.6% of an edge — and moved in each state by the bump at its own place; each sheet's
+control triangle split in four over its edges' nodes at one Loop level less, so the dense surface is
+the four-node slab's and the sheets still carry every moving surface node. It passes every error row
+and fails only `cover.range`, and its exact volume is the solid torus section's to 4 parts in a
+million (99.1515 against 99.1519 ml; the four-node slab's chords give 98.4045 and the same nodes'
+subdivision 98.9647). It is the body the fixture-mode test declares two failures for.
 
 ## Testing
 
@@ -437,13 +629,30 @@ skin to it reported beside the cap's; the support sheet's sweep exactly zero at 
 own line at the response); `energy_tests.cpp` (the declared energy and its gradient zero at
 rest; the gradient against central differences; a dilation reading K and the five shears' mean
 reading μ on irregular cells; a regular cell's 1.25 and 0.625; a Poisson's ratio below 1/4 and an
-inverted rest refused); the size table pins the two container records. `apps/engine_content`'s end-to-end `tissue_tests.cpp` drives `example`, `import`, `info`,
-`validate` and `report`.
+inverted rest refused); `cells_tests.cpp` (a straight ten-node cell is its corner tetrahedron
+exactly; a curved cell's volume against det J from the shape functions integrated by an exact Gauss
+rule, to 1e-13; the Bernstein bounds against det J sampled on a lattice over 400 random cells,
+including cells positive at every corner and inverted inside; the subdivision tiling the cell along
+each of the three diagonals); `quadratic_tests.cpp` (the ten-node slab runs every row, fails only its
+cover, reports its size as a budget, names the subdivision in the linear rows and holds the torus
+section's volume; the same body as a runtime cage refused; a file in VTK's order and in the
+lexicographic order each named; a crack between cells counted; a cell folded in a response inverted,
+with the state in the witness; the container and the interchange carrying the kind);
+`expect_tests.cpp` (the fixture regression test: the ten-node slab with its apex landmark declared
+one ulp off, failing `cover.range` and `observation.landmarks` on purpose, matched by the published
+v1 declaration of those two; a failure left undeclared, a declared row that passes, a severity moved,
+a value outside its tolerance and a skipped row nobody declared each a difference; a first run's
+written declaration matching that run; a declaration of failures alone written exactly as v1; a
+declaration that is not one refused); the size table pins the two container records.
+`apps/engine_content`'s end-to-end `tissue_tests.cpp` drives `example`, `import`, `info`,
+`validate`, `report` and the fixture mode's `--write-expect` and `--expect`.
 
 **Performance notes.** Content-build code, CPU, double precision in the geometric queries, not a
 hot path: study019 validates and reports in about 10 s in `msvc-debug`, most of it the winding
 numbers (275 nodes against 4,096 frame triangles, in four states) and the shell-against-skin
-intersection pass. Nothing here runs per frame.
+intersection pass; a supine fixture's ten-node body in about 21 s, its 1,635 nodes costing what
+study019's 275 did six times over. A ten-node cell's Jacobian is 64 determinants and, only where
+they do not decide, eight pieces a level to depth 4. Nothing here runs per frame.
 
 ## LOD policy and determinism stance
 
@@ -457,7 +666,18 @@ simulates.
 
 ## Not yet
 
-- **The interchange carries P1 cages only, and a certified reference body is not a cage.** `Region` reads `Tetrahedral` cages of u32x4 nodes and `region.cage_size` applies ADR-0029's runtime limit (256 nodes unless hero, 800 hard), which is right for a runtime cage and wrong for the authoring side's certified supine pair (1,635 nodes, 846 quadratic cells) that the engine now wants as regression fixtures ([05 §5.16](../plan/05-simulation.md#516-characters-at-run-time), 2026-09-26). Owed: a ten-node tetrahedral cell kind, a **reference** role for a region under which `cage_size` is reported as a budget row and never fails (the runtime cage is derived from a reference body, 07 §7.7), and a fixture mode of `engine-content tissue validate` that takes a declared list of expected failing rows and exits 0 exactly when the report's failures are those and only those. Until then a fixture packet carries the P2 cells and certificates as a documented sidecar beside the v0 file.
+- **Resolved 2026-09-26: the interchange carries the certified reference body.** The ten-node cell
+  kind, the reference role and the fixture mode above; the supine pair imported through them (above).
+  What the three leave open: a curved face is tested against the frame and the skin by its four
+  chords (the subdivision's boundary), not by a curved-triangle intersection; the declared energy
+  (`bulk-edge-v0`) is the runtime's linear network, so the gap and the patch test on a ten-node body
+  measure its subdivision, not the P2 potential it was certified under, and a P2 gap needs that
+  potential and the D13 consistent load in the definition; positions are f32 in every block, so a
+  float64 endpoint's identity is the sidecar's to keep (the supine block is exactly the f32 of it);
+  a packet's `reference-p2.json` is the authoring side's sidecar and is converted, not read — step 2
+  writes the kind natively; and a build older than this one refuses a container naming
+  `TetrahedralQuadratic` outright rather than falling back, because an unknown enumerator is an
+  error in `core/schema` where an unknown field or block kind is skipped.
 No runtime solver: no element kind beyond the definition — the tetrahedra, membranes, cables and
 attachments are described and checked, not simulated, and a cable's slack and recruitment are carried
 without a law that reads them. No GPU pass: the transfer is the CPU reference in `domain/geometry`.
