@@ -457,6 +457,7 @@ simulates.
 
 ## Not yet
 
+- **The interchange carries P1 cages only, and a certified reference body is not a cage.** `Region` reads `Tetrahedral` cages of u32x4 nodes and `region.cage_size` applies ADR-0029's runtime limit (256 nodes unless hero, 800 hard), which is right for a runtime cage and wrong for the authoring side's certified supine pair (1,635 nodes, 846 quadratic cells) that the engine now wants as regression fixtures ([05 §5.16](../plan/05-simulation.md#516-characters-at-run-time), 2026-09-26). Owed: a ten-node tetrahedral cell kind, a **reference** role for a region under which `cage_size` is reported as a budget row and never fails (the runtime cage is derived from a reference body, 07 §7.7), and a fixture mode of `engine-content tissue validate` that takes a declared list of expected failing rows and exits 0 exactly when the report's failures are those and only those. Until then a fixture packet carries the P2 cells and certificates as a documented sidecar beside the v0 file.
 No runtime solver: no element kind beyond the definition — the tetrahedra, membranes, cables and
 attachments are described and checked, not simulated, and a cable's slack and recruitment are carried
 without a law that reads them. No GPU pass: the transfer is the CPU reference in `domain/geometry`.
