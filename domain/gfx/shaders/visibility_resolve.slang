@@ -77,7 +77,7 @@ struct ResolveParams {
   uint64_t visible;    // uint2[]: the cull pass's visible list; 0 reads {0, pair}
   uint scene;          // bindless slot of the top-level structure; 0xffffffff for none
   uint shadow_flags;   // bit 0 the sun casts, bit 1 the analytic lights cast
-  float shadow_bias;   // world units along the geometric normal, off the surface
+  float shadow_bias;   // world units along the geometric normal, off the surface (ray_offset)
   uint view_x;         // this view's rectangle of the color target
   uint view_y;
   uint out_width;
@@ -86,7 +86,7 @@ struct ResolveParams {
   float panini_x;      // the picture's half-width in image units
   float source_x;      // the rectilinear source's half-width, tan(half the horizontal fov)
   uint sky_is_clear;   // 1: the pass cleared the target to `sky`, so an empty pixel is discarded
-  uint pad;
+  float shadow_bias_steps;  // plus this many steps of the receiver's own grid (ray_offset)
   uint64_t coverage;    // uint[] per 32x32 tile of this view's region; 0: no mask, read every word
   uint coverage_pitch;  // tiles per row of that mask
   uint pad2;
@@ -330,15 +330,16 @@ float cascade_visibility(ShadowMapParams* maps, float3 position, float3 geometri
 // picks the cascaded maps, which shadow the sun alone and answer a fraction at a penumbra;
 // otherwise it is the ray query, which answers 0 or 1 and so leaves every ray-traced picture
 // exactly what it was. `position` and `geometric` are the reconstructed surface: the ray leaves
-// it offset along the geometric normal by `shadow_bias`, the map is looked up at it unmoved.
+// it offset along the geometric normal by `offset` — `ray_offset`'s, `shadow_bias` plus
+// `shadow_bias_steps` of the receiver's own grid — and the map is looked up at it unmoved.
 float shadow_visibility(ResolveParams* params, uint bit, float3 position, float3 geometric,
-                        float3 direction, float t_max) {
+                        float offset, float3 direction, float t_max) {
   if ((params->shadow_flags & bit) == 0) return 1.0;
   if ((params->shadow_flags & k_shadow_cascades) != 0) {
     if (bit != k_shadow_sun || params->shadow_maps == 0) return 1.0;
     return cascade_visibility((ShadowMapParams*)params->shadow_maps, position, geometric);
   }
-  const float3 origin = position + geometric * params->shadow_bias;
+  const float3 origin = position + geometric * offset;
   return shadow_ray_blocked(params, bit, origin, direction, t_max) ? 0.0 : 1.0;
 }
 
@@ -461,9 +462,12 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
   surface.metallic = sampled.metallic;
 
   // Shadows are `shadow_visibility`'s: a ray leaves the surface offset along the geometric normal
-  // (so that the quantized position the resolve reconstructs cannot start it inside the float
-  // positions the acceleration structure was built from), and the cascaded maps are read at the
-  // surface itself, whose own triangle the rasterizer drew into them from the same 16-bit grid.
+  // by `ray_offset` (so that the quantized position the resolve reconstructs cannot start it
+  // inside the float positions the acceleration structure was built from — a gap the size of the
+  // receiver's own grid, not of the scene), and the cascaded maps are read at the surface itself,
+  // whose own triangle the rasterizer drew into them from the same 16-bit grid.
+  const float ray_bias =
+      ray_offset(geo, instance, params->shadow_bias, params->shadow_bias_steps);
 
   // The shadow view (ResolveMode::Shadow): the sun's shadow query and nothing else, in flat values
   // a test or a person can count. White where the sun reaches the surface, black where it is
@@ -473,8 +477,8 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
   // the cascaded maps answer the filtered fraction, so their penumbra is grey between the two.
   if (params->mode == 6) {
     if (dot(surface.normal, params->sun.xyz) <= 0.0) return float4(0.5, 0.5, 0.5, 1.0);
-    const float v =
-        shadow_visibility(params, k_shadow_sun, s.position, s.geometric, params->sun.xyz, 1e30);
+    const float v = shadow_visibility(params, k_shadow_sun, s.position, s.geometric, ray_bias,
+                                      params->sun.xyz, 1e30);
     return float4(v, v, v, 1.0);
   }
 
@@ -483,8 +487,8 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
   // ray-traced or unshadowed pixel is the bytes it always was.
   float3 color = float3(0.0);
   if (dot(surface.normal, params->sun.xyz) > 0.0) {
-    const float v =
-        shadow_visibility(params, k_shadow_sun, s.position, s.geometric, params->sun.xyz, 1e30);
+    const float v = shadow_visibility(params, k_shadow_sun, s.position, s.geometric, ray_bias,
+                                      params->sun.xyz, 1e30);
     if (v > 0.0) color = brdf_direct(surface, params->sun.xyz, float3(params->sun.w) * v);
   }
   // The analytic lights: inverse square windowed to zero at the radius, spots by their cone, and
@@ -496,8 +500,8 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
     float light_distance;
     if (!light_sample(lights[i], s.position, light_dir, radiance, light_distance)) continue;
     if (dot(surface.normal, light_dir) > 0.0 &&
-        shadow_visibility(params, k_shadow_lights, s.position, s.geometric, light_dir,
-                          light_distance - params->shadow_bias) <= 0.0) {
+        shadow_visibility(params, k_shadow_lights, s.position, s.geometric, ray_bias, light_dir,
+                          light_distance - ray_bias) <= 0.0) {
       continue;
     }
     color += brdf_direct(surface, light_dir, radiance);

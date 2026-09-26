@@ -67,7 +67,11 @@ struct PathTraceParams {
   u32 max_bounces = 3;  // scattering events after the primary hit; 1 is direct plus one bounce
   u32 seed = 0;
   u32 flags = 0;
-  f32 ray_bias = 0.0f;  // world units along the geometric normal, off the surface
+  // How far a ray leaves a surface along its geometric normal: `ray_bias` world units plus
+  // `ray_bias_steps` (below) steps of the hit surface's own grid — the resolve's offset exactly
+  // (`ResolveParams::shadow_bias`, `shadow_bias_steps`; `ray_offset` in material.slang), because
+  // the hit is rebuilt off the same grid and the two must start their shadow rays alike.
+  f32 ray_bias = 0.0f;
   // u32[width * height]: 1 where any sample's **primary** ray hit geometry. It exists because the
   // real-time path writes the sky straight out as a display-space colour for an uncovered pixel,
   // while the reference carries linear radiance and would have to round-trip it through
@@ -83,7 +87,7 @@ struct PathTraceParams {
   // same float exactly and writes 178. So the one value that has to match to the byte is computed
   // where there is precision to spare (`pack_unorm_rgba8`) and handed over ready.
   u32 background = 0;
-  u32 pad = 0;
+  f32 ray_bias_steps = 0.0f;  // steps of the hit surface's own grid added to `ray_bias`
 };
 
 // A linear-space colour into the byte a UNORM target would hold, in double precision so the

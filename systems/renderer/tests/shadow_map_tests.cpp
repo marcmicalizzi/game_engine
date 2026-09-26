@@ -20,6 +20,9 @@
 //   3. **The light-view cull never changes the shadow**: every cascade drawn with and without its
 //      frustum test gives the same bytes, on the fixture and on the heightfield, deformed too.
 //   4. **Mapped and traced shadows agree** where both are defined, away from the filter's edge.
+//   5. **A shadow ray leaves its surface by that surface's own grid**, not by the scene's size:
+//      the casters on a ground kilometres across still cast, pixel for pixel what a CPU ray fired
+//      from the same lifted point finds (the ashlar ruins' missing shadows, 2026-09-26).
 //
 // A TITAN-Xp-like device's default request drawing maps is in renderer_tests.cpp beside the rest of
 // that profile. The measurement on the Khronos samples is the last case, skipped by default.
@@ -30,6 +33,7 @@
 #include <foundation/image/png.h>
 #include <systems/renderer/capture.h>
 #include <systems/renderer/gpu_scene.h>
+#include <systems/renderer/lighting.h>
 #include <systems/renderer/scene.h>
 #include <systems/renderer/scene_renderer.h>
 #include <systems/renderer/settings.h>
@@ -381,7 +385,10 @@ bool ray_blocked(const CasterTriangles& tris, Dvec o, Dvec d) {
 // Per pixel of a fixture picture: -1 not ground, 0 lit, 1 shadowed, by a CPU ray from the ground
 // point under the pixel's centre to the sun. The ground is the plane y = 0 (the fixture's frame
 // only turns about y), so the point is the camera ray's crossing of it, in double precision.
-Vector<i8> cpu_shadow(Caster caster, Vec3 eye_local, Vec3 target_local, const Shot& shot) {
+// `ground_y` moves the plane to where the ground's grid put it, and `lift` starts the ray that far
+// up the ground's normal, as a traced shadow ray starts.
+Vector<i8> cpu_shadow(Caster caster, Vec3 eye_local, Vec3 target_local, const Shot& shot,
+                      f64 lift = 0.0, f64 ground_y = 0.0) {
   const Mat4 frame = fixture_frame();
   const Dvec eye = dv(to_world(frame, eye_local));
   const Dvec target = dv(to_world(frame, target_local));
@@ -401,8 +408,8 @@ Vector<i8> cpu_shadow(Caster caster, Vec3 eye_local, Vec3 target_local, const Sh
       const f64 ny = 1.0 - (static_cast<f64>(y) + 0.5) / k_height * 2.0;
       const Dvec d = f + s * (nx * tx) + u * (ny * ty);
       if (d.y >= 0.0) continue;
-      const Dvec ground = eye + d * (-eye.y / d.y);
-      out[p] = ray_blocked(tris, ground, sun) ? 1 : 0;
+      const Dvec ground = eye + d * ((ground_y - eye.y) / d.y);
+      out[p] = ray_blocked(tris, ground + Dvec{0.0, lift, 0.0}, sun) ? 1 : 0;
     }
   }
   return out;
@@ -714,6 +721,82 @@ TEST_CASE("renderer: mapped and ray-traced shadows agree away from the filter's 
             << " edge pixels (" << a.penumbra << " grey, " << a.band_differ
             << " black or white against the rays), 3x3 bilinear PCF");
     CHECK(a.shadowed > 200);
+    CHECK(a.differ == 0);
+  }
+}
+
+// ---- a shadow ray leaves its surface by that surface's own grid ---------------------------------
+//
+// The regression case for the ashlar ruins' missing shadows (docs/subsystems/renderer.md,
+// "Shadows"): the fixture's casters, a metre and a half tall, on a ground that is one mesh five
+// kilometres across (`ground_mesh`'s reach) — a 7.6 cm grid, drawn 3 cm below its floats, and a
+// scene 3.9 km in radius, as the ruins' walls stand on a 5 km terrain with a 7.8 cm grid. Until
+// 2026-09-26 every shadow ray left its surface by a thousandth of the *scene's* radius, 3.9 m here,
+// and started above every caster: the sand beside a wall was lit. The fixture's other cases could
+// not see it, because their scene is only as big as its caster. Now a ray leaves by `ray_offset`:
+// one step of the receiver's own grid plus the float term the scene's reach sets. The CPU
+// reference fires the same ray, from the same lifted point on the plane the grid drew, at the
+// caster's triangles in double precision, so every interior ground pixel must agree with it.
+// Measured when it was written: with the old offset every shadowed pixel differs (297, 334, 899
+// and 903 of them, card to ell); with the float term alone and no grid term the ray starts inside
+// the ground's float plane and 32,513 to 34,370 of about 34,000 lit pixels are black; with the grid
+// term alone it passes, 15 to 20 edge pixels moving. What the float term is for — a small mesh far
+// from the origin, whose own grid is finer than the float arithmetic — is measured on the ruins.
+TEST_CASE("renderer: a shadow ray leaves the ground by the ground's own grid, not the scene's") {
+  constexpr f32 k_reach = 2500.0f;
+  // The offset the rule says a ray from this ground leaves by (lighting.h, `k_shadow_bias_*`):
+  // one step of the ground's own grid and 2^-18 of the scene's reach. It is worked out here from
+  // the rule and the scene, not read back from the renderer, so a renderer that offsets by
+  // anything else draws a different shadow from the CPU's.
+  f64 lift = 0.0;
+  f64 ground_y = 0.0;  // where the grid put the plane y = 0
+  {
+    SceneData data;
+    std::string error;
+    REQUIRE_MESSAGE(make_scene(Caster::cube, data, error, k_reach), error);
+    const geometry::ClusterMeshPart& part = data.parts[k_ground];
+    const f32 grid = part.quant_scale * data.instances[k_ground].scale_max;
+    const f32 reach = length(data.center) + data.radius;
+    lift = static_cast<f64>(k_shadow_bias_steps * grid + k_shadow_bias_relative * reach);
+    const f64 origin = static_cast<f64>(part.quant_origin.y);
+    const f64 step = static_cast<f64>(part.quant_scale);
+    ground_y = origin + std::round(-origin / step) * step;
+    MESSAGE("the scene's radius " << data.radius << ", the ground's grid step " << grid
+                                  << ", the ground drawn " << ground_y
+                                  << " off its floats: a ray leaves the ground " << lift
+                                  << " up, where a thousandth of the radius was "
+                                  << 1.0e-3f * data.radius);
+    CHECK(data.radius > 3000.0f);   // the witnesses: the scene is as big as the ruins',
+    CHECK(ground_y < -0.3 * step);  // and the surface drawn is below the one traced
+    CHECK(ground_y + lift > 0.0);
+    // The casters' lowest point is 0.4 up (the ell's foot) and their tops 1.5 to 1.6: an offset
+    // that is a small part of that is one the shadow survives; 3.5 was none of it.
+    CHECK(lift < 0.1);
+  }
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("renderer unavailable here: " << gpu.why);
+    return;
+  }
+  if (!gpu.device.features().cluster_acceleration_structure || !gpu.device.features().ray_query) {
+    MESSAGE("ray-traced shadows unavailable here: " << unavailable_reason(
+                RenderAvailability::NoAccelerationStructures, gpu.device));
+    return;
+  }
+  for (const Caster caster : k_casters) {
+    ShotOptions options;
+    options.shadows = ShadowMode::RayTraced;
+    options.ground_reach = k_reach;
+    const Shot traced = render(gpu.device, caster, options);
+    REQUIRE(traced.available);
+    const Vector<i8> reference =
+        cpu_shadow(caster, k_eye_local, k_target_local, traced, lift, ground_y);
+    const Agreement a = agree(traced, reference, k_edge_pixels);
+    MESSAGE(std::string(caster_name(caster))
+            << " on a 5 km ground: " << a.compared << " interior ground pixels, " << a.shadowed
+            << " shadowed by a CPU ray, " << a.differ << " differ in the traced picture; " << a.band
+            << " edge pixels (" << a.band_differ << " against the CPU)");
+    CHECK(a.shadowed > 200);  // the witness: the caster does cast, as on the small ground
     CHECK(a.differ == 0);
   }
 }

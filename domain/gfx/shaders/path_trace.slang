@@ -68,10 +68,10 @@ struct PathTraceParams {
   uint max_bounces;
   uint seed;
   uint flags;
-  float ray_bias;
+  float ray_bias;  // world units along the geometric normal, off the surface (ray_offset)
   uint64_t coverage;  // uint[width * height]: 1 where a primary ray hit geometry
   uint background;    // packed RGBA8 of the sky, quantized on the CPU
-  uint pad;
+  float ray_bias_steps;  // plus this many steps of the hit surface's own grid (ray_offset)
 };
 
 struct PathTracePush {
@@ -130,9 +130,10 @@ bool occluded(PathTraceParams* params, float3 origin, float3 direction, float t_
 }
 
 // Next-event estimation: the sun and every analytic light, each with one shadow ray, each
-// weighted by the same `brdf_direct` the resolve calls. Delta lights, so no MIS weight.
+// weighted by the same `brdf_direct` the resolve calls. Delta lights, so no MIS weight. `bias` is
+// how far `shadow_origin` sits off the surface (`ray_offset`), which a light's ray stops short by.
 float3 next_event(PathTraceParams* params, BrdfSurface surface, float3 position,
-                  float3 shadow_origin) {
+                  float3 shadow_origin, float bias) {
   float3 direct = float3(0.0);
   if (params->sun.w > 0.0 && dot(surface.normal, params->sun.xyz) > 0.0 &&
       !occluded(params, shadow_origin, params->sun.xyz, 1e30)) {
@@ -145,7 +146,7 @@ float3 next_event(PathTraceParams* params, BrdfSurface surface, float3 position,
     float light_distance;
     if (!light_sample(lights[i], position, light_dir, radiance, light_distance)) continue;
     if (dot(surface.normal, light_dir) <= 0.0) continue;
-    if (occluded(params, shadow_origin, light_dir, light_distance - params->ray_bias)) continue;
+    if (occluded(params, shadow_origin, light_dir, light_distance - bias)) continue;
     direct += brdf_direct(surface, light_dir, radiance);
   }
   return direct;
@@ -221,9 +222,14 @@ float3 trace_path(PathTraceParams* params, float3 origin, float3 direction, inou
     surface.roughness = sampled.roughness;
     surface.metallic = sampled.metallic;
 
+    // Every ray from here leaves the surface by the resolve's own offset (`ray_offset`): the hit
+    // is rebuilt off the mesh's grid by `fetch_triangle` exactly as a rasterized pixel is, so it
+    // has the same gap to the float surface the structures hold, and the two integrators must
+    // start their shadow rays alike or a comparison measures the offset.
+    const float bias = ray_offset(geo, instance, params->ray_bias, params->ray_bias_steps);
     const float3 front = dot(s.geometric, surface.view) >= 0.0 ? s.geometric : -s.geometric;
-    const float3 shadow_origin = s.position + front * params->ray_bias;
-    radiance += throughput * next_event(params, surface, s.position, shadow_origin);
+    const float3 shadow_origin = s.position + front * bias;
+    radiance += throughput * next_event(params, surface, s.position, shadow_origin, bias);
 
     if (bounce >= params->max_bounces) break;
 
@@ -261,7 +267,7 @@ float3 trace_path(PathTraceParams* params, float3 origin, float3 direction, inou
       throughput /= max(survive, 1e-6);
     }
 
-    origin = s.position + (dot(next, front) >= 0.0 ? front : -front) * params->ray_bias;
+    origin = s.position + (dot(next, front) >= 0.0 ? front : -front) * bias;
     direction = next;
   }
   return radiance;

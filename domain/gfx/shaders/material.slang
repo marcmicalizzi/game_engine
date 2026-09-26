@@ -210,6 +210,27 @@ Surface surface_at(SceneGeometry geo, InstanceDesc instance, TriangleFetch tri, 
   return s;
 }
 
+// **How far a ray leaves a surface**, along its geometric normal, before it looks for anything:
+// `floor` world units plus `steps` steps of the surface's **own** 16-bit position grid, through its
+// instance's largest scale (docs/subsystems/renderer.md, "Shadows").
+//
+// Both integrators rebuild a surface point off that grid (`fetch_triangle`), and the acceleration
+// structures hold the float positions it was rounded from, half a step away on each axis at most,
+// so at most √3/2 of a step along any normal: a ray started on the rebuilt surface can start behind
+// the one it is traced against and hit its own triangle. That gap is a property of the receiver's
+// mesh — 0.06 mm on a 4 m wall of the ashlar kit, 7.8 cm on the 5 km terrain it stands on — and
+// the offset follows it, where it used to be a thousandth of the *scene's* radius: 4.1 m in that
+// scene, which put every ray from the sand above every wall. `floor` is what is left, the float
+// arithmetic of a position that far from the origin, which the renderer sizes from the scene's
+// bounds (`renderer::FrameLighting`). A deformed instance's positions come out of the pool the
+// structures were built from, so it needs no grid term; it gets its rest mesh's anyway, which only
+// moves its rays a grid step further out, and covers a cluster the pool had no room for, which
+// both read at rest.
+float ray_offset(SceneGeometry geo, InstanceDesc instance, float floor, float steps) {
+  MeshDesc* meshes = (MeshDesc*)geo.mesh;
+  return floor + steps * meshes[instance.mesh].quant.w * instance.scale_max;
+}
+
 // The resolve's reconstruction: screen-space barycentrics against `pixel_center`, made
 // perspective-correct through the vertices' clip-space w. A rasterized pixel has no barycentrics
 // of its own — the visibility buffer holds an id and a depth — so they are recovered by putting

@@ -249,6 +249,7 @@ bool ReferenceRenderer::render(const Camera& camera, const ReferenceSettings& se
   params.max_bounces = settings.max_bounces;
   params.seed = settings.seed;
   params.ray_bias = lighting.shadow_bias;
+  params.ray_bias_steps = lighting.shadow_bias_steps;
   params.flags = (settings.uniform_sky ? gfx::k_pt_uniform_sky : 0u) |
                  (settings.pixel_center ? gfx::k_pt_pixel_center : 0u);
   // A furnace is a closed environment and *nothing else*: a furnace with a sun in it does not

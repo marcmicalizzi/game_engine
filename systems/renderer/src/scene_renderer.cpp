@@ -1600,11 +1600,13 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     }
     // Shadows: every light traces against this frame's top-level structure, which holds the same
     // visible list the rasterizer drew from, so a shadow can only come from geometry the picture
-    // has. The bias is `FrameLighting::shadow_bias`, shared with the reference for the same
-    // reason the lights are.
+    // has. The offset a ray leaves its surface by is `FrameLighting::shadow_bias` plus
+    // `shadow_bias_steps` of the surface's own grid, shared with the reference for the same reason
+    // the lights are.
     resolve.scene = shadows ? scene.tlas_slot() : gfx::k_no_scene;
     resolve.shadow_flags = shadows ? gfx::k_shadow_sun | gfx::k_shadow_lights : 0u;
     resolve.shadow_bias = lighting.shadow_bias;
+    resolve.shadow_bias_steps = lighting.shadow_bias_steps;
     // Or the sun's cascaded maps: the same query, filtered out of the atlas, and the sun alone.
     if (csm) {
       resolve.shadow_flags = gfx::k_shadow_sun | gfx::k_shadow_cascades;

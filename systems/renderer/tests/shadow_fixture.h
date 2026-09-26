@@ -163,9 +163,26 @@ inline MeshSource caster_mesh(Caster c) {
   return m;
 }
 
-inline MeshSource ground_mesh() {
+// The ground: seven by six, eight quads to the unit. `reach` > 0 adds two specks of ground, a unit
+// square each, `reach` out along both diagonals — which makes the ground **one mesh 2 * reach + 2
+// across**, so its 16-bit grid is as coarse as a terrain that size (7.6 cm at a reach of 2,500) and
+// the scene kilometres wide, while the part the camera sees is the same small plane of small
+// triangles. The far speck is sunk 10.4 grid steps, which puts the grid's rows 0.4 of a step off
+// y = 0: the plane the rasterizer draws and the resolve rebuilds is then **3 cm below** the float
+// one the acceleration structures hold, as a terrain's heights sit anywhere between its rows —
+// without it a flat ground at y = 0 lands on a row exactly and has no gap to measure. Scaling the
+// ground's instance instead would make the grid as coarse, but would also make a triangle of it
+// reach behind the camera, which the resolve reconstructs wrongly (renderer.md, "Shadows"): a
+// different defect, and not this fixture's to measure.
+inline MeshSource ground_mesh(f32 reach = 0.0f) {
   MeshSource m;
   add_face(m, Vec3{-4.0f, 0.0f, -3.0f}, Vec3{0.0f, 0.0f, 6.0f}, Vec3{7.0f, 0.0f, 0.0f});  // +y
+  if (reach > 0.0f) {
+    const f32 step = (2.0f * reach + 2.0f) / 65535.0f;  // geometry::quantize_positions's
+    add_face(m, Vec3{reach, 0.0f, reach}, Vec3{0.0f, 0.0f, 1.0f}, Vec3{1.0f, 0.0f, 0.0f});
+    add_face(m, Vec3{-reach - 1.0f, -10.4f * step, -reach - 1.0f}, Vec3{0.0f, 0.0f, 1.0f},
+             Vec3{1.0f, 0.0f, 0.0f});
+  }
   return m;
 }
 
@@ -219,9 +236,11 @@ inline const Vec3 k_eye_local{-6.0f, 3.0f, 1.2f};
 inline const Vec3 k_target_local{-0.6f, 0.5f, 0.0f};
 
 // Ground (instance 0) and one caster (instance 1), by hand for the reason the file header gives.
-inline bool make_scene(Caster caster, SceneData& out, std::string& error) {
+// `ground_reach` is `ground_mesh`'s: how a case puts the same caster on a ground kilometres across,
+// a scene whose size has nothing to do with the caster's, as a ruin's wall on a 5 km terrain.
+inline bool make_scene(Caster caster, SceneData& out, std::string& error, f32 ground_reach = 0.0f) {
   geometry::ClusterLodMesh parts[2];
-  if (!leaves_as_roots(ground_mesh(), parts[0], error)) return false;
+  if (!leaves_as_roots(ground_mesh(ground_reach), parts[0], error)) return false;
   if (!leaves_as_roots(caster_mesh(caster), parts[1], error)) return false;
   if (!geometry::merge_cluster_meshes(std::span<const geometry::ClusterLodMesh>(parts, 2), out.lod,
                                       out.parts, &error)) {
@@ -283,6 +302,7 @@ struct ShotOptions {
   // The camera, in the fixture's frame.
   Vec3 eye = k_eye_local;
   Vec3 target = k_target_local;
+  f32 ground_reach = 0.0f;  // make_scene's
 };
 
 // One picture of the scene, with its ids, under the options given.
@@ -290,7 +310,7 @@ inline Shot render(const gfx::Device& device, Caster caster, const ShotOptions& 
   Shot shot;
   SceneData data;
   std::string error;
-  REQUIRE_MESSAGE(make_scene(caster, data, error), error);
+  REQUIRE_MESSAGE(make_scene(caster, data, error, options.ground_reach), error);
   RenderSettings settings;
   settings.raster = options.raster;
   settings.shadows = options.shadows;

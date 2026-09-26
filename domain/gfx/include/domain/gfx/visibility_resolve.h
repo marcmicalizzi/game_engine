@@ -344,7 +344,10 @@ struct ResolveParams {
   u64 visible = 0;         // u32x2[]: the cull pass's visible list; 0 reads {0, pair}
   u32 scene = k_no_scene;  // bindless slot of the top-level structure the shadow rays trace
   u32 shadow_flags = 0;    // k_shadow_sun | k_shadow_lights [| k_shadow_cascades]; 0: no shadows
-  f32 shadow_bias = 0.0f;  // world units along the geometric normal, off the surface
+  // How far a shadow ray leaves the surface along its geometric normal: `shadow_bias` world units
+  // plus `shadow_bias_steps` (below) steps of the receiver's own 16-bit position grid, through its
+  // instance's largest scale — `ray_offset` in material.slang, which the path tracer calls too.
+  f32 shadow_bias = 0.0f;
   // This view's rectangle of the color target: the origin the shader takes off SV_Position, and
   // the extent of the picture. A rectilinear view's picture is exactly as big as the visibility
   // region it resolves, so the shader reads `out_width`/`out_height` **only when the view
@@ -368,7 +371,12 @@ struct ResolveParams {
   // else — `domain/gfx`'s resolve tests clear to black and read the sky back out of the
   // picture — needs. Whoever sets it owns the clear value beside it.
   u32 sky_is_clear = 0;
-  u32 pad = 0;
+  // Steps of the receiver's own grid (`MeshDesc::quant`'s step times `InstanceDesc::scale_max`)
+  // added to `shadow_bias`. The rebuilt surface is off that grid and the acceleration structures
+  // hold the float positions, at most √3/2 of a step apart along any normal, so this is what keeps
+  // a ray out of its own triangle; being the receiver's, it is 0.06 mm on a 4 m wall beside 7.8 cm
+  // on a 5 km terrain. Zero adds nothing, which is what `domain/gfx`'s own tests draw with.
+  f32 shadow_bias_steps = 0.0f;
   // One u32 per 32 x 32 tile of this view's visibility region, non-zero when the tile holds any
   // surface; 0 reads the visibility word for every pixel, as the pass always did. It is the Hi-Z
   // build's by-product (`hiz_build.slang`), so it costs nothing to produce and exists only while

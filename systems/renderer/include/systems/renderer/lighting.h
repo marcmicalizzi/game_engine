@@ -35,6 +35,27 @@ inline constexpr u32 k_frame_lights = 2;
 // already made once here and measured (docs/subsystems/renderer.md, "Reference renderer").
 inline constexpr Vec4 k_sky{0.55f, 0.70f, 0.90f, 1.0f};
 
+// **How far a ray leaves a surface** (`FrameLighting::shadow_bias` and `shadow_bias_steps`;
+// `ray_offset` in material.slang; docs/subsystems/renderer.md, "Shadows"), in two parts because
+// there are two gaps between the surface a pixel is rebuilt on and the one a ray is traced against:
+//
+// - **One step of the surface's own 16-bit grid**, through its instance's largest scale. Rounding
+//   to the grid moves a vertex at most half a step on each axis, so √3/2 of a step along any
+//   normal; one step clears it. It is the receiver's own, so the 5 km terrain gets 7.8 cm and a
+//   4 m wall standing on it 0.06 mm.
+// - **2^-18 of the scene's reach** (the distance from the origin to the far side of its bounds,
+//   which no coordinate exceeds), for the float arithmetic the grid says nothing about: a world
+//   position is a matrix product of the grid's floats and the ray is transformed back into the
+//   instance's space. 2^-18 is 32 to 64 ulps of the largest coordinate; 1.8 cm on the ashlar ruins'
+//   5 km scene, 4 µm on a Khronos sample a metre across.
+//
+// Measured on the ruins at frame 900 of the owner's 15:26 recording (renderer.md): the terrain
+// with no grid term is acne over 2.3 million pixels, the kit with no float term speckles, and both
+// together leave the rays and the cascaded maps disagreeing on 6,445 of 8.3 million pixels, every
+// one at an edge or in a dent the maps' texels cannot hold.
+inline constexpr f32 k_shadow_bias_steps = 1.0f;
+inline constexpr f32 k_shadow_bias_relative = 1.0f / 262144.0f;
+
 struct FrameLighting {
   Vec4 sky{};  // rgb: the background an uncovered pixel shows, and the hemisphere's upper half
   Vec4 sun{};  // xyz normalized direction towards the light, w intensity
@@ -43,11 +64,15 @@ struct FrameLighting {
   Vec4 ground{};
   gfx::ResolveLight lights[k_frame_lights];
   u32 light_count = 0;
-  // World units a ray leaves a surface by, along the geometric normal. A thousandth of the scene
-  // radius — a couple of centimetres on the heightfield, well over the half grid step by which a
-  // quantized position may differ from the float one the acceleration structures were built from,
-  // and far under any feature that casts.
+  // How far a ray leaves a surface along its geometric normal: `shadow_bias` world units plus
+  // `shadow_bias_steps` steps of **the surface's own** 16-bit position grid (`ray_offset` in
+  // material.slang; gfx::ResolveParams and gfx::PathTraceParams carry both). The grid term is the
+  // gap between the surface a pixel or a hit is rebuilt on and the float one the acceleration
+  // structures hold; the world term is float error, sized by the scene's reach. Until 2026-09-26
+  // it was one number, a thousandth of the scene's radius, which is 4.1 m over the ashlar ruins'
+  // 5 km terrain: every ray from the sand started above every wall (renderer.md, "Shadows").
   f32 shadow_bias = 0.0f;
+  f32 shadow_bias_steps = 0.0f;
 };
 
 // `frame_index` drives the orbit, exactly as it drives the deformation phase, so frame 0 of a

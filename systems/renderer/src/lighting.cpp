@@ -10,7 +10,10 @@ void frame_lighting(const SceneData& scene, u64 frame_index, bool lights, FrameL
   out.sky = k_sky;
   out.sun = Vec4{normalize(Vec3{0.4f, 0.8f, 0.45f}), 1.0f};
   out.ground = Vec4{scene.ground_albedo, 0.0f};
-  out.shadow_bias = 1.0e-3f * scene.radius;
+  // The ray's offset (lighting.h, `k_shadow_bias_*`): the float part sized by the scene's reach,
+  // the grid part left to the shader, which knows whose grid a pixel is on.
+  out.shadow_bias = k_shadow_bias_relative * (length(scene.center) + scene.radius);
+  out.shadow_bias_steps = k_shadow_bias_steps;
   if (!lights) return;
 
   const Vec3 center = scene.center;
