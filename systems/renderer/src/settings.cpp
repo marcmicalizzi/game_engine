@@ -326,13 +326,23 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
   // **A moving terrain is a deformed one** (renderer.md, "The dunes in time-lapse"): the dune
   // generator's terrain under a time-lapse draws its heights out of the pool, blended between two
   // evaluated fields. Not for a scene whose instances come and go, which has no pool.
-  out.terrain_levels = scene != nullptr && s.time_rate > 0.0 && !dynamic &&
+  out.terrain_levels = scene != nullptr && (s.time_rate > 0.0 || s.terrain_rings) && !dynamic &&
                        scene->terrain.enabled &&
                        scene->terrain.generator == TerrainGenerator::dunes &&
                        scene->terrain_mesh != ~0u && terrain_generator_available();
-  if (scene != nullptr && s.time_rate > 0.0 && !out.terrain_levels && dynamic) {
+  if (scene != nullptr && (s.time_rate > 0.0 || s.terrain_rings) && !out.terrain_levels &&
+      dynamic) {
     ENGINE_LOG_WARN(log_renderer, "the terrain does not move",
                     log::field("reason", "a scene whose instances come and go has no pool"));
+  }
+  // The rings are more meshes in the scene, laid out once beside its own: not for a streamed scene,
+  // whose clusters live in pages, and not with cluster templates, which are built once per mesh
+  // from a rest pose a ring's slot does not have.
+  out.terrain_rings =
+      out.terrain_levels && s.terrain_rings && !(s.stream && scene != nullptr && scene->paged());
+  if (out.terrain_rings && s.rt_templates) {
+    s.rt_templates = false;
+    ENGINE_LOG_WARN(log_renderer, "cluster templates ignored with terrain rings");
   }
   out.deform_pass = s.deform || out.terrain_levels ||
                     (scene != nullptr && (scene->skinned() || scene->morphed()));

@@ -140,6 +140,12 @@ struct RenderSettings {
   // `time` and nothing re-evaluated. It sizes nothing, but it is a question about the scene, and
   // both hosts read their questions from here.
   f64 time_rate = 0.0;
+  // The dune generator's ground near the camera at the terrain rings' finer grids, drawn beside the
+  // scene's own (terrain_rings.h, docs/subsystems/renderer.md, "The rings in the scene"): an inner
+  // ring at 50 cm and a middle one at a metre by default (`terrain.rings.*`), rebuilt round the
+  // camera as it moves. Off by default: they are built at load, a few seconds on the erg, and hold
+  // their slots on the device whether the camera is near the ground or not.
+  bool terrain_rings = false;
 
   // Geometry streaming (04 §4.3 step 3, §4.9). The scene's clusters are laid out in fixed-size
   // pages, the GPU holds a budgeted subset of them in a page pool, the cull pass draws whatever is
@@ -206,8 +212,13 @@ struct ResolvedSettings {
   // The terrain is drawn as **terrain levels** (docs/subsystems/renderer.md, "The dunes in
   // time-lapse"): its instance is deformed, and the pool pass writes its heights blended between
   // two evaluated fields of the dune generator. True when the scene's terrain is the generator's
-  // and the settings move it (`time_rate` above zero); it turns `deform_pass` on with it.
+  // and the settings move it (`time_rate` above zero) or ask for its rings; it turns `deform_pass`
+  // on with it.
   bool terrain_levels = false;
+  // The terrain rings are drawn as levels beside the scene's grid (`RenderSettings::terrain_rings`
+  // on a scene with terrain levels, read whole): the host builds a `TerrainRingSet` and hands it
+  // to `GpuScene::create` and `TerrainMotion::start`.
+  bool terrain_rings = false;
   // Geometry pages stream on demand. True only when the caller asked *and* the scene carries a
   // page table *and* nothing else in the frame contradicts it — see `resolve_settings` for the
   // three things that do and why each one is a refusal rather than a silent half-measure.

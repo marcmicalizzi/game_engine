@@ -425,7 +425,10 @@ struct TerrainLevelDesc {
   f32 spacing = 1.0f;  // metres between lattice points
   f32 blend = 0.0f;    // 0 draws `a`, 1 draws `b`
   f32 padding = 0.0f;  // metres: the cull's sphere padding for every cluster of the level
-  u32 pad[3] = {};
+  // Metres a ring's skirt hangs below its border: a vertex whose rest normal points straight down
+  // is a skirt's (renderer::GpuScene marks them so), and is written that far under the field.
+  f32 skirt = 0.0f;
+  u32 pad[2] = {};
   Vec4 hole{};  // x0, z0, x1, z1, metres; none when x1 <= x0
 };
 

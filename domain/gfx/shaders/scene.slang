@@ -85,7 +85,7 @@ struct TerrainLevelDesc {
   float spacing;
   float blend;    // 0 draws a, 1 draws b
   float padding;  // replaces InstanceDesc::bounds_padding for the level's clusters
-  uint pad0;
+  float skirt;    // a skirt vertex (its rest normal points down) hangs this far under the field
   uint pad1;
   uint pad2;
   float4 hole;    // x0, z0, x1, z1; none when x1 <= x0

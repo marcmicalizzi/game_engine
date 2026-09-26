@@ -47,6 +47,34 @@ tunables::Int terrain_pool_mib{
     "The deformed-vertex pool's budget, MiB, at least, for a scene whose "
     "terrain moves (its cut is the pool's largest tenant)"};
 
+// A device-local buffer of `capacity` bytes whose first `bytes` are `data`: the scene's part of a
+// stream the terrain rings' slots extend (renderer.md, "The rings in the scene"). The rest is
+// whatever the allocator gave, which nothing reads before a chunk's copy has written it. Without
+// rings the capacity is the data and this is `upload_buffer`.
+bool upload_room(const gfx::Device& device, const void* data, u64 bytes, u64 capacity,
+                 gfx::BufferUsage usage, gfx::BufferResource& out, std::string* error) {
+  if (capacity <= bytes) return gfx::upload_buffer(device, data, bytes, usage, out, error);
+  if (!gfx::create_buffer(
+          device, capacity,
+          usage | gfx::BufferUsage::TransferDst | gfx::BufferUsage::ShaderDeviceAddress, false, out,
+          error)) {
+    return false;
+  }
+  if (bytes == 0) return true;
+  gfx::BufferResource staging;
+  if (!gfx::create_buffer(device, bytes, gfx::BufferUsage::TransferSrc, true, staging, error))
+    return false;
+  std::memcpy(staging.mapped, data, static_cast<usize>(bytes));
+  const bool ok = gfx::submit_immediate(
+      device,
+      [&](gfx::CommandList cb) {
+        cb.copy_buffer(staging.buffer, out.buffer, gfx::BufferCopy{0, 0, bytes});
+      },
+      error);
+  gfx::destroy_buffer(device, staging);
+  return ok;
+}
+
 u32 pool_budget_vertices(const ResolvedSettings& resolved, u64 whole_mesh_vertices) noexcept {
   u64 kib = resolved.settings.deform_pool_kib > 0 ? u64{resolved.settings.deform_pool_kib}
                                                   : u64{k_default_deform_pool_kib};
@@ -249,10 +277,11 @@ bool find_built_textures(const SourceMesh& mesh, const SceneTextures& known,
 GpuScene::~GpuScene() { destroy(); }
 
 bool GpuScene::create(const gfx::Device& device, const SceneData& data,
-                      const ResolvedSettings& resolved, std::string* error) {
+                      const ResolvedSettings& resolved, std::string* error, TerrainRingSet* rings) {
   destroy();
   device_ = &device;
   data_ = &data;
+  rings_ = rings;
   ray_tracing_ = resolved.rt_chain;
   // A scene deforms when the settings say every instance does, or when any instance is skinned.
   // The two are independent: `--deform wave` on a scene with a skinned character deforms the
@@ -283,6 +312,20 @@ bool GpuScene::create(const gfx::Device& device, const SceneData& data,
   resolved_ = resolved;
   triangles_per_cluster_ = geometry::ClusterLodOptions{}.max_triangles;
   instance_table_ = data.instances;
+  scene_vertex_count_ = data.lod.mesh.vertices.size();
+  scene_triangle_count_ = data.lod.mesh.triangles.size();
+  vertex_capacity_ = scene_vertex_count_;
+  triangle_capacity_ = scene_triangle_count_;
+  // The terrain rings' slots, beside the scene's own meshes and instances: more clusters, pairs,
+  // instances and arena room than the scene has, reserved now so that nothing about the scene's
+  // layout ever has to move for a ring (renderer.md, "The rings in the scene").
+  if (rings != nullptr && resolved.terrain_levels && rings->valid() && !dynamic_ && !streamed_) {
+    if (!lay_out_rings(resolved, *rings, error)) {
+      destroy();
+      return false;
+    }
+    pair_stride_ = pair_count_;
+  }
   // The visibility id is `pair << 8 | triangle` in 32 bits (gfx.md, "The tie rule"), so a scene
   // names at most 2^24 pairs; past that two pairs would share an id and the picture would be wrong
   // without a word, so refuse the scene instead.
@@ -317,12 +360,30 @@ bool GpuScene::create(const gfx::Device& device, const SceneData& data,
     return false;
   }
 
+  // The rings' chunks built round the camera before the scene was, each into a slot of its ring,
+  // staged now that every buffer they are copied into exists, and drawn from the first frame.
+  if (!ring_slots_.empty()) {
+    for (RingSlots& ring : ring_slots_) {
+      for (TerrainChunk& chunk : rings->chunks(ring.level)) {
+        if (chunk.lod.mesh.clusters.empty() || ring.free_slots.empty()) continue;
+        const u32 s = ring.free_slots.back();
+        ring.free_slots.pop_back();
+        if (!stage_chunk(ring, s, chunk, error)) {
+          destroy();
+          return false;
+        }
+        ring.slots[s].on = true;
+      }
+    }
+  }
   // One MeshDesc per mesh: its own grid, its range of the shared cluster array, the one
   // quantized stream every mesh of the scene indexes, and where a deformed instance's positions
   // come from instead — the frame's pool, the deform table, and this mesh's cluster templates.
-  // It is uploaded last because those three addresses have to exist first.
-  Vector<gfx::MeshDesc> mesh_descs;
-  for (const geometry::ClusterMeshPart& part : data.parts) {
+  // It is uploaded last because those three addresses have to exist first. A ring's slot is a
+  // mesh too: its chunk's grid and clusters when it draws one, no clusters when it does not.
+  Vector<gfx::MeshDesc>& mesh_descs = mesh_descs_;
+  mesh_descs.clear();
+  const auto described = [&](const geometry::ClusterMeshPart& part) {
     gfx::MeshDesc desc{};
     desc.quant = Vec4{part.quant_origin, part.quant_scale};
     desc.quantized = quantized.address;
@@ -332,7 +393,21 @@ bool GpuScene::create(const gfx::Device& device, const SceneData& data,
     desc.deform_slots = deform_slots.address;
     desc.templates = clas_templates.addresses.address;
     desc.skin = skin.address;
-    mesh_descs.push_back(desc);
+    return desc;
+  };
+  for (const geometry::ClusterMeshPart& part : data.parts)
+    mesh_descs.push_back(described(part));
+  for (RingSlots& ring : ring_slots_) {
+    for (u32 s = 0; s < ring.slots.size(); ++s) {
+      TerrainSlot& slot = ring.slots[s];
+      // The template every state of the slot is written from: the scene's addresses, the slot's
+      // clusters; `quant` and the count are the chunk's while it draws one.
+      slot.desc = described(part_of(ring.first_mesh + s));
+      gfx::MeshDesc desc = slot.desc;
+      desc.quant = slot.quant;
+      desc.cluster_count = slot.loaded && slot.on ? slot.clusters : 0u;
+      mesh_descs.push_back(desc);
+    }
   }
   // A hole of a dynamic scene's pair space names a **null mesh**, one past the scene's, with no
   // clusters: the cull pass finds the pair past every cluster that mesh has and rejects it before
@@ -354,6 +429,27 @@ bool GpuScene::create(const gfx::Device& device, const SceneData& data,
       destroy();
       return false;
     }
+    // The rings' first chunks, copied in now and waited for: this is `create`, where uploads are
+    // one-shot, and the first frame draws them. Their records are in `meshes` already.
+    if (!pending_geometry_.empty()) {
+      const bool copied = gfx::submit_immediate(
+          device,
+          [&](gfx::CommandList cb) {
+            for (const TerrainUpdate::GeometryCopy& copy : pending_geometry_)
+              cb.copy_buffer(copy.src, copy.dst, copy.region);
+          },
+          error);
+      for (gfx::BufferResource& staging : pending_staging_)
+        gfx::destroy_buffer(device, staging);
+      pending_staging_.clear();
+      pending_geometry_.clear();
+      pending_geometry_bytes_ = 0;
+      if (!copied) {
+        destroy();
+        return false;
+      }
+    }
+    rings_ = nullptr;
     return true;
   }
   // A dynamic scene's tables are sets, one per frame in flight (two until a renderer asks for
@@ -423,7 +519,7 @@ bool GpuScene::upload_pair_table(std::string* error) {
   Vector<u32> table(pair_count_ * 2u, 0u);
   for (u32 i = 0; i < instance_table_.size(); ++i) {
     const gfx::InstanceDesc& instance = instance_table_[i];
-    const geometry::ClusterMeshPart& part = data_->parts[instance.mesh];
+    const geometry::ClusterMeshPart& part = part_of(instance.mesh);
     for (u32 c = 0; c < part.cluster_count; ++c) {
       table[(instance.first_pair + c) * 2u] = i;
       table[(instance.first_pair + c) * 2u + 1u] = part.first_cluster + c;
@@ -793,22 +889,28 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
   // to point into that slot, so the copy that puts the array here is a transfer destination.
   const gfx::BufferUsage cluster_usage =
       streamed_ ? (k_storage | gfx::BufferUsage::TransferDst) : k_storage;
-  if (!gfx::upload_buffer(device, lod.mesh.clusters.data(),
-                          u64{cluster_count_} * sizeof(geometry::ClusterDesc), cluster_usage,
-                          clusters, error) ||
-      !gfx::upload_buffer(device, lod.lod.data(),
-                          u64{cluster_count_} * sizeof(geometry::ClusterLodDesc), k_storage, lods,
-                          error)) {
+  // With terrain rings every stream below is the scene's and then the rings' slots and arenas
+  // (`lay_out_rings`): `cluster_count_` and the capacities count both, the scene's arrays only
+  // their own part.
+  const u64 scene_clusters = data_->cluster_count();
+  if (!upload_room(device, lod.mesh.clusters.data(), scene_clusters * sizeof(geometry::ClusterDesc),
+                   u64{cluster_count_} * sizeof(geometry::ClusterDesc), cluster_usage, clusters,
+                   error) ||
+      !upload_room(device, lod.lod.data(), scene_clusters * sizeof(geometry::ClusterLodDesc),
+                   u64{cluster_count_} * sizeof(geometry::ClusterLodDesc), k_storage, lods,
+                   error)) {
     return false;
   }
   // Everything below this line is a *payload* stream: under streaming it is a page pool of
-  // fixed-size slots that `create_streaming` already allocated, and nothing is uploaded here.
-  if (!streamed_ && (!gfx::upload_buffer(device, lod.mesh.quantized.data(),
-                                         u64{lod.mesh.quantized.size()} * sizeof(u16), k_storage,
-                                         quantized, error) ||
-                     !gfx::upload_buffer(device, lod.mesh.triangles.data(),
-                                         u64{lod.mesh.triangles.size()} * sizeof(u32), k_storage,
-                                         triangles, error))) {
+  // fixed-size slots that `create_streaming` already allocated, and nothing is uploaded here. A
+  // ring vertex v's three u16 are at byte 6 v like the scene's, and the last one is read as two
+  // words, so the arena's end keeps four bytes of room.
+  const bool ring_room = !ring_slots_.empty();
+  if (!streamed_ &&
+      (!upload_room(device, lod.mesh.quantized.data(), u64{lod.mesh.quantized.size()} * sizeof(u16),
+                    ring_room ? vertex_capacity_ * 6 + 4 : 0, k_storage, quantized, error) ||
+       !upload_room(device, lod.mesh.triangles.data(), u64{lod.mesh.triangles.size()} * sizeof(u32),
+                    triangle_capacity_ * sizeof(u32), k_storage, triangles, error))) {
     return false;
   }
   // The deformed-vertex pool, its per-instance table, and the per-entry allocation table. The
@@ -830,16 +932,20 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
       // A skinned instance is deformed whatever the settings say; a rigid one only under
       // `--deform`, so a scene of one character and a hundred props allocates pool blocks for the
       // character alone and every prop stays on the instruction-for-instruction rigid path.
-      const u32 instance_joints = skinned_ ? data_->instance_joints[i] : 0u;
-      const geometry::ClusterMeshPart& part = data_->parts[instance_table_[i].mesh];
+      const bool ring_slot = instance_table_[i].mesh >= data_->parts.size();
+      const u32 instance_joints =
+          skinned_ && i < data_->instance_joints.size() ? data_->instance_joints[i] : 0u;
+      const geometry::ClusterMeshPart& part = part_of(instance_table_[i].mesh);
       // A terrain level (renderer.md, "The dunes in time-lapse"): the terrain's instance, whose
-      // heights the pool pass reads out of the level's two fields. Level 0 is the scene's grid.
+      // heights the pool pass reads out of the level's two fields — level 0, the scene's grid —
+      // and every ring slot's (`lay_out_rings` gave them their levels).
       const bool terrain_level =
-          resolved.terrain_levels && instance_table_[i].mesh == data_->terrain_mesh;
+          resolved.terrain_levels && (instance_table_[i].mesh == data_->terrain_mesh || ring_slot);
       if (instance_joints == 0 && part.morph_channel_count == 0 && !resolved.settings.deform &&
           !terrain_level)
         continue;
-      const u32 next = instance_table_[i].mesh + 1 < data_->parts.size()
+      const u32 next = ring_slot ? part.first_vertex + part.cluster_count * 64u
+                       : instance_table_[i].mesh + 1 < data_->parts.size()
                            ? data_->parts[instance_table_[i].mesh + 1].first_vertex
                            : total_vertices;
       gfx::DeformDesc desc{};
@@ -855,7 +961,7 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
                                         : 0u);
       if (terrain_level) {
         desc.stages = gfx::k_deform_stage_terrain;
-        instance_table_[i].terrain = 1;
+        if (!ring_slot) instance_table_[i].terrain = 1;  // a slot's is its ring's level already
       }
       desc.first_vertex = part.first_vertex;
       desc.first_channel = part.first_morph_channel;
@@ -933,8 +1039,9 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
   // the reason the patched offsets force: a CLAS record addresses a cluster's vertices as
   // `vertices + vertex_offset * 12`, and `vertex_offset` is slot-relative.
   if (ray_tracing_ && !streamed_ &&
-      !gfx::upload_buffer(device, lod.mesh.vertices.data(), float_position_bytes,
-                          k_storage | gfx::k_build_input_usage, vertices, error)) {
+      !upload_room(device, lod.mesh.vertices.data(), float_position_bytes,
+                   vertex_capacity_ * sizeof(Vec3), k_storage | gfx::k_build_input_usage, vertices,
+                   error)) {
     return false;
   }
   ENGINE_LOG_INFO(log_renderer, "positions quantized",
@@ -952,9 +1059,10 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
     return false;
   }
   if (streamed_) return true;
-  return gfx::upload_buffer(device, lod.mesh.attributes.data(),
-                            u64{lod.mesh.attributes.size()} * sizeof(geometry::VertexAttributes),
-                            k_storage, attributes, error);
+  return upload_room(device, lod.mesh.attributes.data(),
+                     u64{lod.mesh.attributes.size()} * sizeof(geometry::VertexAttributes),
+                     vertex_capacity_ * sizeof(geometry::VertexAttributes), k_storage, attributes,
+                     error);
 }
 
 // What one page costs the pool, stream by stream, which is what an upload copies and what the
@@ -1210,20 +1318,33 @@ bool GpuScene::create_terrain(const ResolvedSettings& resolved, std::string* err
     if (error != nullptr) *error = "a moving terrain's instance must have the identity transform";
     return false;
   }
-  TerrainLevel level;
-  level.lattice = terrain_scene_lattice(data_->terrain);
-  level.instance = instance;
-  level.capacity = u64{level.lattice.size} * level.lattice.size;
-  for (u32 s = 0; s < k_terrain_field_slots; ++s) {
-    if (!gfx::create_buffer(device, level.capacity * sizeof(f32),
-                            k_address | gfx::BufferUsage::TransferDst, false, level.fields[s],
-                            error)) {
-      for (u32 t = 0; t < s; ++t)
-        gfx::destroy_buffer(device, level.fields[t]);
-      return false;
+  // Level 0 is the scene's grid; with rings, level k > 0 is ring level k of the ring set, whose
+  // fields cover a window of the ring's lattice as large as any layout's (`field_window`).
+  const u32 level_count = ring_slots_.empty() ? 1u : rings_->level_count();
+  for (u32 k = 0; k < level_count; ++k) {
+    TerrainLevel level;
+    if (k == 0) {
+      level.lattice = terrain_scene_lattice(data_->terrain);
+      level.instance = instance;
+      level.capacity = u64{level.lattice.size} * level.lattice.size;
+      level.slots = 3;
+    } else {
+      level.lattice = rings_->lattice(k);
+      level.capacity = rings_->field_capacity(k);
+      level.slots = 4;
     }
+    for (u32 s = 0; s < level.slots; ++s) {
+      if (!gfx::create_buffer(device, level.capacity * sizeof(f32),
+                              k_address | gfx::BufferUsage::TransferDst, false, level.fields[s],
+                              error)) {
+        for (u32 t = 0; t < s; ++t)
+          gfx::destroy_buffer(device, level.fields[t]);
+        return false;
+      }
+    }
+    level.skirt = k == 0 ? 0.0f : rings_->skirt_m(k);
+    terrain_.push_back(std::move(level));
   }
-  terrain_.push_back(std::move(level));
   // The per-frame tables, one region per frame slot like the joint matrices: the frame writes its
   // own and a slot is not reused until the frame that last had it is done.
   if (!gfx::create_buffer(device,
@@ -1241,7 +1362,7 @@ bool GpuScene::create_terrain(const ResolvedSettings& resolved, std::string* err
   }
   u64 bytes = 0;
   for (const TerrainLevel& l : terrain_)
-    bytes += l.capacity * sizeof(f32) * k_terrain_field_slots;
+    bytes += l.capacity * sizeof(f32) * l.slots;
   ENGINE_LOG_INFO(log_renderer, "terrain levels", log::field("levels", terrain_.size()),
                   log::field("field_bytes", bytes),
                   log::field("normal_pool_bytes", u64{deform_pool_vertices_} * sizeof(u32)));
@@ -1255,7 +1376,7 @@ bool GpuScene::terrain_staging(u64 samples, gfx::BufferResource& out, std::strin
 
 bool GpuScene::terrain_upload(u32 level, u32 slot, const gfx::TerrainField& window,
                               const gfx::BufferResource& staging, std::string* error) {
-  if (level >= terrain_.size() || slot >= k_terrain_field_slots) {
+  if (level >= terrain_.size() || slot >= terrain_[level].slots) {
     if (error != nullptr) *error = "terrain_upload: no such level or field slot";
     return false;
   }
@@ -1275,8 +1396,8 @@ void GpuScene::terrain_show(u32 level, u32 slot_a, u32 slot_b, f32 blend, f32 pa
                             Vec4 hole) noexcept {
   if (level >= terrain_.size()) return;
   TerrainLevel& l = terrain_[level];
-  l.shown_a = slot_a < k_terrain_field_slots ? slot_a : ~0u;
-  l.shown_b = slot_b < k_terrain_field_slots ? slot_b : ~0u;
+  l.shown_a = slot_a < l.slots ? slot_a : ~0u;
+  l.shown_b = slot_b < l.slots ? slot_b : ~0u;
   l.blend = blend;
   l.padding = padding;
   l.hole = hole;
@@ -1286,28 +1407,40 @@ void GpuScene::terrain_prepare(u32 slot, TerrainUpdate& out) {
   out.table = 0;
   out.copies.clear();
   out.fields.clear();
+  out.retire.clear();
+  out.geometry.clear();
+  out.geometry_bytes = 0;
   if (terrain_.empty() || terrain_table_.mapped == nullptr) return;
   const u32 region = slot < k_joint_slots ? slot : slot % k_joint_slots;
   auto* table =
       static_cast<gfx::TerrainLevelDesc*>(terrain_table_.mapped) + u64{region} * terrain_.size();
   for (u32 k = 0; k < terrain_.size(); ++k) {
     TerrainLevel& l = terrain_[k];
-    // At most `k_terrain_copies_per_frame` a frame; the rest wait in order for the next one, and a
-    // level shows a slot only once its copy is in a frame (`TerrainMotion` asks
-    // `terrain_uploaded`).
-    u32 taken = 0;
-    for (const TerrainUpdate::Copy& copy : l.pending) {
-      if (out.copies.size() >= k_terrain_copies_per_frame) break;
-      out.copies.push_back(copy);
-      ++taken;
+    // **Every** copy handed over since the last frame is recorded by this one, because the table
+    // it writes below may already show the slot: an offscreen frame that catches the surface up
+    // installs several fields a level, each into a slot the last one freed, and a copy left for
+    // the next frame would be drawn as whatever the slot held before (2026-09-26, the rings test:
+    // an inner ring a frame's worth of sand behind). A copy that a later one into the same slot
+    // replaces is dropped rather than recorded — two copies to one buffer in one pass would race —
+    // and its staging retired with the frame.
+    for (u32 c = 0; c < l.pending.size(); ++c) {
+      bool superseded = false;
+      for (u32 d = c + 1; d < l.pending.size(); ++d)
+        superseded = superseded || l.pending[d].field.buffer == l.pending[c].field.buffer;
+      if (superseded) {
+        out.retire.push_back(l.pending[c].staging);
+      } else {
+        out.copies.push_back(l.pending[c]);
+      }
     }
-    l.pending.erase(l.pending.begin(), l.pending.begin() + taken);
+    l.pending.clear();
     gfx::TerrainLevelDesc desc{};
     desc.origin = Vec2{static_cast<f32>(l.lattice.origin_x), static_cast<f32>(l.lattice.origin_z)};
     desc.spacing = static_cast<f32>(l.lattice.spacing);
     desc.blend = l.blend;
     desc.padding = l.padding;
     desc.hole = l.hole;
+    desc.skirt = l.skirt;
     if (l.shown_a != ~0u) {
       desc.a = l.windows[l.shown_a];
       out.fields.push_back(l.fields[l.shown_a]);
@@ -1320,6 +1453,339 @@ void GpuScene::terrain_prepare(u32 slot, TerrainUpdate& out) {
   }
   out.table =
       terrain_table_.address + u64{region} * terrain_.size() * sizeof(gfx::TerrainLevelDesc);
+  // The rings' chunk uploads since the last frame, and the records of every slot turned on or off,
+  // each written once with the state it ends in (a slot turned off and another on in one frame are
+  // two records, never one written twice).
+  if (!pending_mesh_writes_.empty() && meshes.buffer.valid()) {
+    std::sort(pending_mesh_writes_.begin(), pending_mesh_writes_.end());
+    pending_mesh_writes_.erase(
+        std::unique(pending_mesh_writes_.begin(), pending_mesh_writes_.end()),
+        pending_mesh_writes_.end());
+    gfx::BufferResource staging;
+    std::string error;
+    if (gfx::create_buffer(*device_, u64{pending_mesh_writes_.size()} * sizeof(gfx::MeshDesc),
+                           gfx::BufferUsage::TransferSrc, true, staging, &error)) {
+      auto* descs = static_cast<gfx::MeshDesc*>(staging.mapped);
+      for (u32 k = 0; k < pending_mesh_writes_.size(); ++k) {
+        const u32 mesh = pending_mesh_writes_[k];
+        descs[k] = mesh_descs_[mesh];
+        pending_geometry_.push_back(TerrainUpdate::GeometryCopy{
+            staging.buffer, meshes.buffer,
+            gfx::BufferCopy{u64{k} * sizeof(gfx::MeshDesc), u64{mesh} * sizeof(gfx::MeshDesc),
+                            sizeof(gfx::MeshDesc)}});
+      }
+      pending_geometry_bytes_ += u64{pending_mesh_writes_.size()} * sizeof(gfx::MeshDesc);
+      pending_staging_.push_back(staging);
+    } else {
+      ENGINE_LOG_ERROR(log_renderer, "a terrain ring's slot records could not be staged",
+                       log::field("error", error));
+    }
+    pending_mesh_writes_.clear();
+  }
+  out.geometry = std::move(pending_geometry_);
+  pending_geometry_ = Vector<TerrainUpdate::GeometryCopy>{};
+  for (const gfx::BufferResource& staging : pending_staging_)
+    out.retire.push_back(staging);
+  pending_staging_ = Vector<gfx::BufferResource>{};
+  out.geometry_bytes = pending_geometry_bytes_;
+  pending_geometry_bytes_ = 0;
+}
+
+// ---- the rings' slots (renderer.md, "The rings in the scene")
+// ------------------------------------
+
+const geometry::ClusterMeshPart& GpuScene::part_of(u32 mesh) const noexcept {
+  const u32 scene = data_->parts.size();
+  return mesh < scene ? data_->parts[mesh] : slot_parts_[mesh - scene];
+}
+
+bool GpuScene::take_range(Vector<Range>& free, u64 count, Range& out) noexcept {
+  if (count == 0) {
+    out = Range{};
+    return true;
+  }
+  // First fit: the arenas turn over a ring's chunks a re-centre at a time, and chunks are all about
+  // one size, so a first fit leaves few holes a chunk does not fit.
+  for (u32 k = 0; k < free.size(); ++k) {
+    if (free[k].count < count) continue;
+    out = Range{free[k].offset, count};
+    free[k].offset += count;
+    free[k].count -= count;
+    if (free[k].count == 0) free.erase(free.begin() + k);
+    return true;
+  }
+  return false;
+}
+
+void GpuScene::give_range(Vector<Range>& free, Range range) noexcept {
+  if (range.count == 0) return;
+  // Kept sorted by offset, and merged with a neighbour it touches.
+  u32 at = 0;
+  while (at < free.size() && free[at].offset < range.offset)
+    ++at;
+  free.insert(free.begin() + at, range);
+  if (at + 1 < free.size() && free[at].offset + free[at].count == free[at + 1].offset) {
+    free[at].count += free[at + 1].count;
+    free.erase(free.begin() + at + 1);
+  }
+  if (at > 0 && free[at - 1].offset + free[at - 1].count == free[at].offset) {
+    free[at - 1].count += free[at].count;
+    free.erase(free.begin() + at);
+  }
+}
+
+bool GpuScene::lay_out_rings(const ResolvedSettings& resolved, TerrainRingSet& rings,
+                             std::string* error) {
+  (void)resolved;
+  ring_slots_.clear();
+  slot_parts_.clear();
+  u64 bytes = 0;
+  for (u32 level = 1; level < rings.level_count(); ++level) {
+    const TerrainRingSet::Capacity c = rings.capacity(level);
+    if (c.slots == 0 || c.clusters_per_slot == 0) continue;
+    RingSlots ring;
+    ring.level = level;
+    ring.first_mesh = data_->parts.size() + slot_parts_.size();
+    ring.first_instance = instance_table_.size();
+    ring.first_cluster = cluster_count_;
+    ring.clusters_per_slot = c.clusters_per_slot;
+    ring.vertex_base = vertex_capacity_;
+    ring.triangle_base = triangle_capacity_;
+    ring.vertex_capacity = c.vertices;
+    ring.triangle_capacity = c.triangles;
+    ring.slots.resize(c.slots);
+    for (u32 s = c.slots; s-- > 0;)
+      ring.free_slots.push_back(s);  // slot 0 is taken first
+    ring.free_vertices.push_back(Range{vertex_capacity_, c.vertices});
+    ring.free_triangles.push_back(Range{triangle_capacity_, c.triangles});
+    for (u32 s = 0; s < c.slots; ++s) {
+      // A slot's mesh owns a fixed run of the cluster array and of the pairs, `clusters_per_slot`
+      // long, whichever chunk it draws; the cull pass drops a pair past the chunk's own clusters
+      // as it drops a streamed world's hole (the MeshDesc's count is the chunk's).
+      geometry::ClusterMeshPart part;
+      part.first_cluster = cluster_count_ + s * c.clusters_per_slot;
+      part.cluster_count = c.clusters_per_slot;
+      part.leaf_cluster_count = c.clusters_per_slot;
+      part.first_vertex = static_cast<u32>(vertex_capacity_);
+      slot_parts_.push_back(part);
+      gfx::InstanceDesc instance{};
+      gfx::set_instance_transform(instance, Mat4::identity());
+      instance.mesh = ring.first_mesh + s;
+      instance.first_pair = pair_count_ + s * c.clusters_per_slot;
+      instance.terrain = level + 1;
+      instance_table_.push_back(instance);
+    }
+    const u64 slot_clusters = u64{c.slots} * c.clusters_per_slot;
+    if (u64{pair_count_} + slot_clusters > k_max_pairs) {
+      if (error != nullptr)
+        *error =
+            "the terrain rings' slots would take the scene past the 2^24 pairs the "
+            "visibility id names; lower terrain.rings.*";
+      return false;
+    }
+    cluster_count_ += static_cast<u32>(slot_clusters);
+    pair_count_ += static_cast<u32>(slot_clusters);
+    instance_count_ += c.slots;
+    vertex_capacity_ += c.vertices;
+    triangle_capacity_ += c.triangles;
+    bytes +=
+        slot_clusters * (sizeof(geometry::ClusterDesc) + sizeof(geometry::ClusterLodDesc) + 4) +
+        c.vertices * (6 + sizeof(geometry::VertexAttributes) + (ray_tracing_ ? sizeof(Vec3) : 0)) +
+        c.triangles * (sizeof(u32) + (ray_tracing_ ? 3 : 0));
+    ring_slots_.push_back(std::move(ring));
+  }
+  terrain_ring_bytes_ = bytes;
+  ENGINE_LOG_INFO(log_renderer, "terrain ring slots", log::field("rings", ring_slots_.size()),
+                  log::field("instances", instance_count_), log::field("pairs", pair_count_),
+                  log::field("bytes", bytes));
+  return true;
+}
+
+bool GpuScene::stage_chunk(RingSlots& ring, u32 s, TerrainChunk& chunk, std::string* error) {
+  const geometry::ClusterMesh& mesh = chunk.lod.mesh;
+  const u32 nc = mesh.clusters.size();
+  const u64 nv = mesh.vertices.size();
+  const u64 nt = mesh.triangles.size();
+  const auto fail = [&](std::string sentence) {
+    if (error != nullptr) *error = std::move(sentence);
+    return false;
+  };
+  if (nc > ring.clusters_per_slot) {
+    return fail("a terrain ring's chunk has " + std::to_string(nc) +
+                " clusters, more than a slot's " + std::to_string(ring.clusters_per_slot) +
+                " (raise renderer.terrain.ring_slack)");
+  }
+  TerrainSlot& slot = ring.slots[s];
+  if (!take_range(ring.free_vertices, nv, slot.vertices)) {
+    return fail("a terrain ring's vertex arena has no room for a chunk of " + std::to_string(nv) +
+                " (raise renderer.terrain.ring_slack)");
+  }
+  if (!take_range(ring.free_triangles, nt, slot.triangles)) {
+    give_range(ring.free_vertices, slot.vertices);
+    slot.vertices = Range{};
+    return fail("a terrain ring's triangle arena has no room for a chunk of " + std::to_string(nt) +
+                " (raise renderer.terrain.ring_slack)");
+  }
+  const u64 v0 = slot.vertices.offset;
+  const u64 t0 = slot.triangles.offset;
+  // One staging buffer for the chunk, its streams one after another at 16-byte offsets.
+  const auto aligned = [](u64 v) { return (v + 15) & ~u64{15}; };
+  const u64 at_clusters = 0;
+  const u64 at_lods = aligned(at_clusters + u64{nc} * sizeof(geometry::ClusterDesc));
+  const u64 at_quant = aligned(at_lods + u64{nc} * sizeof(geometry::ClusterLodDesc));
+  const u64 at_attributes = aligned(at_quant + nv * 6);
+  const u64 at_triangles = aligned(at_attributes + nv * sizeof(geometry::VertexAttributes));
+  const u64 at_vertices = aligned(at_triangles + nt * sizeof(u32));
+  const u64 at_indices = aligned(at_vertices + (ray_tracing_ ? nv * sizeof(Vec3) : 0));
+  const u64 total = aligned(at_indices + (ray_tracing_ ? nt * 3 : 0));
+  gfx::BufferResource staging;
+  if (!gfx::create_buffer(*device_, total, gfx::BufferUsage::TransferSrc, true, staging, error)) {
+    give_range(ring.free_vertices, slot.vertices);
+    give_range(ring.free_triangles, slot.triangles);
+    slot.vertices = slot.triangles = Range{};
+    return false;
+  }
+  u8* base = static_cast<u8*>(staging.mapped);
+  // The clusters, with their vertex and triangle offsets moved from the chunk's arrays to the
+  // arenas' (the streaming path patches a page's clusters the same way).
+  auto* clusters_out = reinterpret_cast<geometry::ClusterDesc*>(base + at_clusters);
+  for (u32 c = 0; c < nc; ++c) {
+    clusters_out[c] = mesh.clusters[c];
+    clusters_out[c].vertex_offset += static_cast<u32>(v0);
+    clusters_out[c].triangle_offset += static_cast<u32>(t0);
+  }
+  std::memcpy(base + at_lods, chunk.lod.lod.data(), u64{nc} * sizeof(geometry::ClusterLodDesc));
+  std::memcpy(base + at_quant, mesh.quantized.data(), nv * 6);
+  // A skirt vertex's rest normal is turned straight down: the terrain stage reads it to hang the
+  // vertex under the field by the ring's skirt depth (deform.slang), and the pool's normals are
+  // the ones the resolve shades with.
+  auto* attributes_out = reinterpret_cast<geometry::VertexAttributes*>(base + at_attributes);
+  const u32 down = geometry::encode_normal_oct(Vec3{0.0f, -1.0f, 0.0f});
+  for (u32 v = 0; v < mesh.vertices.size(); ++v) {
+    attributes_out[v] = mesh.attributes[v];
+    if (v < mesh.vertex_source.size() && mesh.vertex_source[v] >= chunk.grid_vertices)
+      attributes_out[v].normal_oct = down;
+  }
+  std::memcpy(base + at_triangles, mesh.triangles.data(), nt * sizeof(u32));
+  if (ray_tracing_) {
+    std::memcpy(base + at_vertices, mesh.vertices.data(), nv * sizeof(Vec3));
+    Vector<u8> packed;
+    gfx::pack_cluster_indices(std::span<const u32>(mesh.triangles.data(), mesh.triangles.size()),
+                              packed);
+    std::memcpy(base + at_indices, packed.data(), packed.size());
+  }
+  const u64 cluster_at = u64{ring.first_cluster} + u64{s} * ring.clusters_per_slot;
+  const auto copy = [&](const gfx::BufferResource& dst, u64 src, u64 dst_offset, u64 size) {
+    if (size == 0) return;
+    pending_geometry_.push_back(TerrainUpdate::GeometryCopy{
+        staging.buffer, dst.buffer, gfx::BufferCopy{src, dst_offset, size}});
+  };
+  copy(clusters, at_clusters, cluster_at * sizeof(geometry::ClusterDesc),
+       u64{nc} * sizeof(geometry::ClusterDesc));
+  copy(lods, at_lods, cluster_at * sizeof(geometry::ClusterLodDesc),
+       u64{nc} * sizeof(geometry::ClusterLodDesc));
+  copy(quantized, at_quant, v0 * 6, nv * 6);
+  copy(attributes, at_attributes, v0 * sizeof(geometry::VertexAttributes),
+       nv * sizeof(geometry::VertexAttributes));
+  copy(triangles, at_triangles, t0 * sizeof(u32), nt * sizeof(u32));
+  if (ray_tracing_) {
+    copy(vertices, at_vertices, v0 * sizeof(Vec3), nv * sizeof(Vec3));
+    copy(indices8, at_indices, t0 * 3, nt * 3);
+  }
+  pending_staging_.push_back(staging);
+  pending_geometry_bytes_ += total;
+  slot.quant = Vec4{mesh.quant_origin, mesh.quant_scale};
+  slot.clusters = nc;
+  slot.loaded = true;
+  slot.on = false;
+  ++terrain_chunk_uploads_;
+  terrain_chunk_upload_bytes_ += total;
+  chunk.slot = s;
+  // The GPU scene has it: the DAG's host copy is not read again (a chunk is rebuilt from its key's
+  // cells whenever the key changes), and a ring's DAGs are gigabytes on the erg.
+  chunk.lod = geometry::ClusterLodMesh{};
+  return true;
+}
+
+u32 GpuScene::terrain_slots(u32 level) const noexcept {
+  for (const RingSlots& ring : ring_slots_)
+    if (ring.level == level) return ring.slots.size();
+  return 0;
+}
+
+u32 GpuScene::terrain_slot_clusters(u32 level) const noexcept {
+  for (const RingSlots& ring : ring_slots_)
+    if (ring.level == level) return ring.clusters_per_slot;
+  return 0;
+}
+
+u32 GpuScene::terrain_free_slots(u32 level) const noexcept {
+  for (const RingSlots& ring : ring_slots_)
+    if (ring.level == level) return ring.free_slots.size();
+  return 0;
+}
+
+GpuScene::ArenaFree GpuScene::terrain_arena_free(u32 level) const noexcept {
+  ArenaFree out;
+  for (const RingSlots& ring : ring_slots_) {
+    if (ring.level != level) continue;
+    for (const Range& r : ring.free_vertices) {
+      out.vertices += r.count;
+      out.largest_vertices = std::max(out.largest_vertices, r.count);
+    }
+    for (const Range& r : ring.free_triangles) {
+      out.triangles += r.count;
+      out.largest_triangles = std::max(out.largest_triangles, r.count);
+    }
+    out.vertex_capacity = ring.vertex_capacity;
+    out.triangle_capacity = ring.triangle_capacity;
+  }
+  return out;
+}
+
+bool GpuScene::terrain_chunk_upload(u32 level, TerrainChunk& chunk, std::string* error) {
+  for (RingSlots& ring : ring_slots_) {
+    if (ring.level != level) continue;
+    if (ring.free_slots.empty()) {
+      if (error != nullptr) *error = "a terrain ring has no free slot for a chunk";
+      return false;
+    }
+    const u32 s = ring.free_slots.back();
+    ring.free_slots.pop_back();
+    if (!stage_chunk(ring, s, chunk, error)) {
+      ring.free_slots.push_back(s);
+      return false;
+    }
+    return true;
+  }
+  if (error != nullptr) *error = "no terrain ring at that level";
+  return false;
+}
+
+void GpuScene::terrain_chunk_show(u32 level, u32 s, bool on) noexcept {
+  for (RingSlots& ring : ring_slots_) {
+    if (ring.level != level || s >= ring.slots.size()) continue;
+    TerrainSlot& slot = ring.slots[s];
+    const u32 mesh = ring.first_mesh + s;
+    slot.on = on && slot.loaded;
+    gfx::MeshDesc desc = slot.desc;
+    desc.quant = slot.quant;
+    desc.cluster_count = slot.on ? slot.clusters : 0u;
+    mesh_descs_[mesh] = desc;
+    pending_mesh_writes_.push_back(mesh);
+    if (!on && slot.loaded) {
+      // Nothing recorded from the next frame on reads it, and the copy that reuses its ranges is
+      // ordered after the frames in flight that may (the frame imports the geometry as last read
+      // everywhere), so the slot and its arena ranges are free at once.
+      give_range(ring.free_vertices, slot.vertices);
+      give_range(ring.free_triangles, slot.triangles);
+      slot.vertices = slot.triangles = Range{};
+      slot.loaded = false;
+      slot.clusters = 0;
+      ring.free_slots.push_back(s);
+    }
+    return;
+  }
 }
 
 bool GpuScene::create_streaming(const ResolvedSettings& resolved, std::string* error) {
@@ -1764,6 +2230,14 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
                     log::field("materials", transform_conflicts_),
                     log::field("drawn_with", "the base colour's, or the first textured slot's"));
   }
+  // A ring slot draws with the terrain's own material — the maps over the terrain's UVs, which a
+  // ring's chunks carry in the terrain's frame — at material 0 of each of its clusters (the
+  // table's zeros), from the terrain mesh's base.
+  if (!slot_parts_.empty()) {
+    const u32 terrain_base =
+        data_->terrain_mesh < data_->parts.size() ? mesh_material_base[data_->terrain_mesh] : 0u;
+    mesh_material_base.resize(data_->parts.size() + slot_parts_.size(), terrain_base);
+  }
   // Now that the tables are laid out, every instance knows where its mesh's materials start — and
   // so does every instance a dynamic scene takes later, which is why the table is kept.
   for (gfx::InstanceDesc& instance : instance_table_)
@@ -1828,12 +2302,16 @@ bool GpuScene::create_working_set(const ResolvedSettings& resolved, std::string*
   // whichever is smaller; past the budget a survivor is drawn by the fallback, not dropped.
   if (ok && resolved.vertex_indexed) {
     const geometry::ClusterLodMesh& lod = data_->lod;
-    Vector<u64> mesh_triangles(data_->parts.size(), 0);
+    Vector<u64> mesh_triangles(data_->parts.size() + slot_parts_.size(), 0);
     for (u32 m = 0; m < data_->parts.size(); ++m) {
       const geometry::ClusterMeshPart& part = data_->parts[m];
       for (u32 c = 0; c < part.cluster_count; ++c)
         mesh_triangles[m] += lod.mesh.clusters[part.first_cluster + c].triangle_count;
     }
+    // A ring slot may draw any chunk it has room for: its clusters, full.
+    for (u32 k = 0; k < slot_parts_.size(); ++k)
+      mesh_triangles[data_->parts.size() + k] =
+          u64{slot_parts_[k].cluster_count} * triangles_per_cluster_;
     // A scene whose instances come and go has no bound its load could know: the budget, which a
     // cut past it survives through the fallback draw rather than by dropping anything. (Its table
     // also holds the null instances of its holes, whose mesh is past the scene's.)
@@ -1912,11 +2390,12 @@ bool GpuScene::create_ray_tracing(const ResolvedSettings& resolved, std::string*
   limits.max_geometry_index = static_cast<u32>(max_index);
   limits.instantiate = resolved.settings.rt_templates;
   rt_limits_ = limits;
-  // One instance's structure can reference at most its mesh's clusters in every view.
+  // One instance's structure can reference at most its mesh's clusters in every view (a ring
+  // slot's: the clusters it has room for).
   rt_max_per_instance_ = 0;
   for (const gfx::InstanceDesc& instance : instance_table_) {
     rt_max_per_instance_ =
-        std::max(rt_max_per_instance_, data_->parts[instance.mesh].cluster_count * view_count_);
+        std::max(rt_max_per_instance_, part_of(instance.mesh).cluster_count * view_count_);
   }
 
   constexpr gfx::BufferUsage k_record_usage = k_address | gfx::BufferUsage::AccelerationBuildInput;
@@ -1930,7 +2409,7 @@ bool GpuScene::create_ray_tracing(const ResolvedSettings& resolved, std::string*
   rt_instance_copies.reserve(instance_count_);
   for (u32 i = 0; i < instance_count_; ++i) {
     gfx::TlasInstance record;
-    record.transform = data_->instances[i].world;
+    record.transform = instance_table_[i].world;
     record.custom_index = i;
     record.blas = 0;
     tlas_records.push_back(record);
@@ -1942,8 +2421,9 @@ bool GpuScene::create_ray_tracing(const ResolvedSettings& resolved, std::string*
   Vector<u8> tlas_bytes(u64{instance_count_} * gfx::k_instance_record_bytes, u8{0});
   gfx::write_instances(std::span<const gfx::TlasInstance>(tlas_records.data(), tlas_records.size()),
                        tlas_bytes.data());
-  bool ok = (streamed_ || gfx::upload_buffer(device, packed.data(), packed.size(),
-                                             gfx::k_build_input_usage, indices8, error)) &&
+  bool ok = (streamed_ || upload_room(device, packed.data(), packed.size(),
+                                      ring_slots_.empty() ? 0 : triangle_capacity_ * 3 + 4,
+                                      gfx::k_build_input_usage, indices8, error)) &&
             gfx::create_buffer(device, sizeof(u32) * gfx::k_cluster_record_count_words,
                                k_record_usage | gfx::BufferUsage::TransferSrc, false, record_count,
                                error) &&
@@ -2172,6 +2652,18 @@ void GpuScene::destroy() noexcept {
   }
   terrain_.clear();
   gfx::destroy_buffer(device, terrain_table_);
+  for (gfx::BufferResource& staging : pending_staging_)
+    gfx::destroy_buffer(device, staging);
+  pending_staging_.clear();
+  pending_geometry_.clear();
+  pending_geometry_bytes_ = 0;
+  pending_mesh_writes_.clear();
+  ring_slots_.clear();
+  slot_parts_.clear();
+  mesh_descs_.clear();
+  rings_ = nullptr;
+  scene_vertex_count_ = scene_triangle_count_ = vertex_capacity_ = triangle_capacity_ = 0;
+  terrain_ring_bytes_ = terrain_chunk_uploads_ = terrain_chunk_upload_bytes_ = 0;
   gfx::destroy_buffer(device, deform_normals);
   gfx::destroy_buffer(device, static_cache);
   gfx::destroy_buffer(device, joints);
@@ -2271,8 +2763,8 @@ bool GpuScene::pair_cluster(u32 pair, u32& instance, u32& cluster) const noexcep
     }
   }
   const gfx::InstanceDesc& desc = instance_table_[lo];
-  if (desc.mesh >= data_->parts.size()) return false;
-  const geometry::ClusterMeshPart& part = data_->parts[desc.mesh];
+  if (desc.mesh >= data_->parts.size() + slot_parts_.size()) return false;
+  const geometry::ClusterMeshPart& part = part_of(desc.mesh);
   if (pair - desc.first_pair >= part.cluster_count) return false;
   instance = lo;
   cluster = part.first_cluster + (pair - desc.first_pair);

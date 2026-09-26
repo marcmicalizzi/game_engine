@@ -35,6 +35,7 @@
 #include <domain/gfx/visibility_resolve.h>
 #include <systems/renderer/scene.h>
 #include <systems/renderer/settings.h>
+#include <systems/renderer/terrain_rings.h>
 #include <systems/renderer/tile_layout.h>
 
 #include <span>
@@ -111,8 +112,12 @@ class GpuScene {
   // Uploads `data` with the buffers `resolved` calls for. The device must outlive the scene.
   // Under `resolved.stream` the vertex, attribute, triangle and float-position streams are a
   // **page pool** of fixed-size slots instead of the whole scene, and `GeometryStreamer` fills it.
+  // With terrain levels, `rings` — built round the camera before the scene is (TerrainRingSet) —
+  // adds each moving ring's slots and arenas beside the scene's own meshes and uploads the chunks
+  // it holds into the first of them (renderer.md, "The rings in the scene"); its chunks then know
+  // their slots and give their DAGs up.
   bool create(const gfx::Device& device, const SceneData& data, const ResolvedSettings& resolved,
-              std::string* error = nullptr);
+              std::string* error = nullptr, TerrainRingSet* rings = nullptr);
   void destroy() noexcept;
   bool valid() const noexcept { return device_ != nullptr; }
 
@@ -420,13 +425,17 @@ class GpuScene {
   // draws it as **deformed instances**: the pool pass writes each vertex of the cut at its lattice
   // point with the height blended between two evaluated fields (deform.slang's terrain stage, a
   // `gfx::TerrainLevelDesc` per level). What lives here is the device side and nothing else: per
-  // level, `k_terrain_field_slots` field buffers big enough for the level's largest window, and a
-  // host-visible table of level descriptions per frame slot. The fields arrive from the host
-  // (`TerrainMotion` evaluates them off the frame) in host-visible staging buffers that the frame
-  // copies from and then retires, so a field's upload waits for nothing and blocks nothing.
-  static constexpr u32 k_terrain_field_slots = 3;
-  static constexpr u32 k_terrain_copies_per_frame = 8;
+  // level, field buffers big enough for the level's largest window — three for the scene's grid
+  // (the pair drawn and the next), four for a ring (the pair drawn and the pair a re-centre draws
+  // next) — and a host-visible table of level descriptions per frame slot. The fields arrive from
+  // the host (`TerrainMotion` evaluates them off the frame) in host-visible staging buffers that
+  // the frame copies from and then retires, so a field's upload waits for nothing and blocks
+  // nothing.
+  static constexpr u32 k_terrain_field_slots = 4;
   u32 terrain_level_count() const noexcept { return terrain_.size(); }
+  u32 terrain_field_slots(u32 level) const noexcept {
+    return level < terrain_.size() ? terrain_[level].slots : 0u;
+  }
   // Whether nothing handed to `terrain_upload` for `level` is still waiting for a frame to copy it.
   bool terrain_uploaded(u32 level) const noexcept {
     return level < terrain_.size() && terrain_[level].pending.empty();
@@ -443,14 +452,49 @@ class GpuScene {
   bool terrain_staging(u64 samples, gfx::BufferResource& out, std::string* error = nullptr) const;
   // Queues `staging` to be copied into field slot `slot` of `level` by the next frame recorded,
   // which then retires the staging buffer. `window` says which lattice window the heights cover
-  // (its `heights` is ignored). The slot must not be one a frame still to be recorded shows; the
-  // copy is ordered after every frame already submitted that read it.
+  // (its `heights` is ignored). The next frame records every copy queued, before anything reads a
+  // field, so the slot may be shown from that frame on; a second copy into the same slot before it
+  // replaces the first. The copy is ordered after every frame already submitted that read it.
   bool terrain_upload(u32 level, u32 slot, const gfx::TerrainField& window,
                       const gfx::BufferResource& staging, std::string* error = nullptr);
+  // A staging buffer from `terrain_staging` that nothing will copy after all (a field a re-centre
+  // made stale): the next frame retires it with its own.
+  void terrain_retire(const gfx::BufferResource& staging) {
+    if (staging.buffer.valid()) pending_staging_.push_back(staging);
+  }
   // What `level` draws from the next frame on: field slot `slot_a`, and `slot_b` blended in by
   // `blend` (`~0u` for none), its spheres padded by `padding` metres, and nothing of it inside
   // `hole` (x0, z0, x1, z1; empty when x1 <= x0).
   void terrain_show(u32 level, u32 slot_a, u32 slot_b, f32 blend, f32 padding, Vec4 hole) noexcept;
+  // **The rings' chunks** (renderer.md, "The rings in the scene"). Each ring level has
+  // `terrain_slots(level)` slots — a mesh and an identity instance each, `terrain_slot_clusters`
+  // clusters and pairs apiece — and arenas of vertices and triangles. A chunk goes into a free
+  // slot (`terrain_chunk_upload`: its clusters, LOD records, positions, attributes and triangles,
+  // and with ray tracing its float positions and 8-bit indices, staged for the next frame to copy,
+  // with its offsets moved to the slot's and the arenas'), and is drawn from the frame in which
+  // `terrain_chunk_show` turns its slot on, which is also where its predecessor's is turned off
+  // and freed. False, with a sentence, when no slot or no arena room is left, and nothing changes.
+  u32 terrain_slots(u32 level) const noexcept;
+  u32 terrain_slot_clusters(u32 level) const noexcept;
+  u32 terrain_free_slots(u32 level) const noexcept;
+  // A ring's arenas: what is free in all, and the largest free run, in vertices and triangles.
+  struct ArenaFree {
+    u64 vertices = 0;
+    u64 largest_vertices = 0;
+    u64 triangles = 0;
+    u64 largest_triangles = 0;
+    u64 vertex_capacity = 0;
+    u64 triangle_capacity = 0;
+  };
+  ArenaFree terrain_arena_free(u32 level) const noexcept;
+  bool terrain_chunk_upload(u32 level, TerrainChunk& chunk, std::string* error = nullptr);
+  // On: the slot draws its chunk from the next frame. Off: it draws nothing, and its slot and arena
+  // ranges are free for the next upload (whose copy the frame orders after every frame in flight).
+  void terrain_chunk_show(u32 level, u32 slot, bool on) noexcept;
+  // What the rings' slots and arenas hold on the device, and what the uploads have moved.
+  u64 terrain_ring_bytes() const noexcept { return terrain_ring_bytes_; }
+  u64 terrain_chunk_uploads() const noexcept { return terrain_chunk_uploads_; }
+  u64 terrain_chunk_upload_bytes() const noexcept { return terrain_chunk_upload_bytes_; }
   // The frame's half, called by the frame about to be recorded in frame slot `slot`: writes that
   // slot's level table, and hands over the copies to record, the field buffers the frame reads, and
   // the staging buffers to retire once it is done.
@@ -463,6 +507,16 @@ class GpuScene {
     };
     Vector<Copy> copies;
     Vector<gfx::BufferResource> fields;  // every field buffer the table names
+    // The rings' chunk uploads and their slots' mesh records: copies into the scene's geometry
+    // buffers, which every pass that reads geometry then has to be ordered after.
+    struct GeometryCopy {
+      gfx::BufferHandle src;
+      gfx::BufferHandle dst;
+      gfx::BufferCopy region;
+    };
+    Vector<GeometryCopy> geometry;
+    u64 geometry_bytes = 0;
+    Vector<gfx::BufferResource> retire;  // staging the frame frees once it is done
   };
   void terrain_prepare(u32 slot, TerrainUpdate& out);
   // The bytes the static shape caches actually hold, and how many instances got one. An instance
@@ -724,6 +778,7 @@ class GpuScene {
     TerrainLattice lattice;
     u32 instance = ~0u;
     u64 capacity = 0;  // samples a field buffer holds
+    u32 slots = 0;     // field buffers made: 3 for the scene's grid, 4 for a ring
     gfx::BufferResource fields[k_terrain_field_slots];
     gfx::TerrainField windows[k_terrain_field_slots];  // what each holds, its address filled in
     u32 shown_a = ~0u;
@@ -731,10 +786,63 @@ class GpuScene {
     f32 blend = 0.0f;
     f32 padding = 0.0f;
     Vec4 hole{};
+    f32 skirt = 0.0f;  // metres a ring's skirt hangs below its border
     Vector<TerrainUpdate::Copy> pending;
   };
   Vector<TerrainLevel> terrain_;
   gfx::BufferResource terrain_table_;  // k_joint_slots regions of gfx::TerrainLevelDesc, mapped
+  // ---- the rings' slots ----
+  struct Range {
+    u64 offset = 0;
+    u64 count = 0;
+  };
+  struct TerrainSlot {
+    Range vertices;
+    Range triangles;
+    gfx::MeshDesc desc{};  // the template: the scene's addresses and the slot's clusters
+    Vec4 quant{};          // the chunk's own 16-bit grid
+    u32 clusters = 0;      // the chunk's clusters
+    bool loaded = false;
+    bool on = false;
+  };
+  struct RingSlots {
+    u32 level = 0;
+    u32 first_mesh = 0;  // mesh of slot 0; slot s is mesh first_mesh + s
+    u32 first_instance = 0;
+    u32 first_cluster = 0;
+    u32 clusters_per_slot = 0;
+    u64 vertex_base = 0;
+    u64 triangle_base = 0;
+    u64 vertex_capacity = 0;
+    u64 triangle_capacity = 0;
+    Vector<TerrainSlot> slots;
+    Vector<u32> free_slots;
+    Vector<Range> free_vertices;  // offsets absolute (scene-wide vertex index)
+    Vector<Range> free_triangles;
+  };
+  // The part of mesh `mesh`: the scene's, or a ring slot's (capacity, not its chunk).
+  const geometry::ClusterMeshPart& part_of(u32 mesh) const noexcept;
+  bool lay_out_rings(const ResolvedSettings& resolved, TerrainRingSet& rings, std::string* error);
+  // Stages a chunk into slot `s` of `ring` (arena ranges already taken) as copies for the next
+  // frame, or for `create`'s one-shot upload.
+  bool stage_chunk(RingSlots& ring, u32 s, TerrainChunk& chunk, std::string* error);
+  static bool take_range(Vector<Range>& free, u64 count, Range& out) noexcept;
+  static void give_range(Vector<Range>& free, Range range) noexcept;
+  Vector<RingSlots> ring_slots_;                  // index level - 1
+  Vector<geometry::ClusterMeshPart> slot_parts_;  // mesh data.parts.size() + k
+  u64 scene_vertex_count_ = 0;                    // the scene's own, where the arenas start
+  u64 scene_triangle_count_ = 0;
+  u64 vertex_capacity_ = 0;  // scene + arenas
+  u64 triangle_capacity_ = 0;
+  u64 terrain_ring_bytes_ = 0;
+  u64 terrain_chunk_uploads_ = 0;
+  u64 terrain_chunk_upload_bytes_ = 0;
+  Vector<TerrainUpdate::GeometryCopy> pending_geometry_;
+  Vector<gfx::BufferResource> pending_staging_;
+  u64 pending_geometry_bytes_ = 0;
+  Vector<u32> pending_mesh_writes_;   // mesh indices whose MeshDesc the next frame writes
+  Vector<gfx::MeshDesc> mesh_descs_;  // what `meshes` holds, for a slot's record to be rewritten
+  TerrainRingSet* rings_ = nullptr;   // during `create` only
 
   const gfx::Device* device_ = nullptr;
   const SceneData* data_ = nullptr;

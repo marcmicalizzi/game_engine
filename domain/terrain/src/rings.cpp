@@ -417,6 +417,7 @@ bool build_ring_chunk(const Ring& ring, RingChunkCoord chunk, const RingParams& 
   RingMesh mesh;
   build_ring_chunk_mesh(ring, chunk, params, source, nullptr, mesh);
   out.grid_triangles = mesh.grid_triangles;
+  out.grid_vertices = mesh.grid_vertices;
   out.skirt_triangles = mesh.skirt_triangles;
   out.lod = geometry::ClusterLodMesh{};
   if (mesh.indices.empty()) return true;
@@ -432,10 +433,12 @@ bool build_ring_chunk(const Ring& ring, RingChunkCoord chunk, const RingParams& 
 
 bool TerrainRings::reset(const RingParams& params, i64 camera_x, i64 camera_z,
                          const RingHeights& source, const geometry::ClusterLodOptions& options,
-                         jobs::JobSystem* jobs, std::string* error) {
+                         jobs::JobSystem* jobs, std::string* error, u32 build_mask, bool merge) {
   params_ = params;
   source_ = &source;
   options_ = options;
+  build_mask_ = build_mask;
+  merge_ = merge;
   for (RingState& r : rings_)
     r = RingState{};
   place_rings(params_, camera_x, camera_z, layout_);
@@ -444,7 +447,7 @@ bool TerrainRings::reset(const RingParams& params, i64 camera_x, i64 camera_z,
 
 bool TerrainRings::update(i64 camera_x, i64 camera_z, jobs::JobSystem* jobs, u32& rebuilt,
                           std::string* error) {
-  rebuilt = recentre_rings(params_, camera_x, camera_z, layout_);
+  rebuilt = recentre_rings(params_, camera_x, camera_z, layout_) & build_mask_;
   if (rebuilt == 0) return true;
   return rebuild(rebuilt, jobs, error);
 }
@@ -452,6 +455,7 @@ bool TerrainRings::update(i64 camera_x, i64 camera_z, jobs::JobSystem* jobs, u32
 bool TerrainRings::rebuild(u32 mask, jobs::JobSystem* jobs, std::string* error) {
   last_built_ = 0;
   last_reused_ = 0;
+  mask &= build_mask_;
   for (u32 k = 0; k < layout_.count; ++k) {
     if ((mask & (1u << k)) == 0) continue;
     RingState& state = rings_[k];
@@ -501,14 +505,15 @@ bool TerrainRings::rebuild(u32 mask, jobs::JobSystem* jobs, std::string* error) 
       }
     }
     state.chunks = std::move(next);
+    state.lod = geometry::ClusterLodMesh{};
+    state.hash = 0;
+    if (!merge_) continue;
     // The ring's DAG: its chunks' merged in chunk order, so the bytes are the same whichever
     // thread built which chunk and whichever chunks were kept from before.
     Vector<geometry::ClusterLodMesh> parts;
     for (const RingChunk& chunk : state.chunks) {
       if (!chunk.lod.mesh.clusters.empty()) parts.push_back(chunk.lod);
     }
-    state.lod = geometry::ClusterLodMesh{};
-    state.hash = 0;
     if (parts.empty()) continue;
     if (!geometry::merge_cluster_lod(
             std::span<const geometry::ClusterLodMesh>(parts.data(), parts.size()), state.lod,

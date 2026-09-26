@@ -179,6 +179,9 @@ struct RingChunk {
   geometry::ClusterLodMesh lod;  // empty for a chunk with no triangles
   u32 grid_triangles = 0;
   u32 skirt_triangles = 0;
+  // The chunk mesh's grid vertices come first and its skirts' after (`RingMesh::grid_vertices`):
+  // a DAG vertex whose `vertex_source` is at or past this hangs from the ring's border.
+  u32 grid_vertices = 0;
 };
 
 // One chunk's mesh and DAG, on the calling thread.
@@ -190,10 +193,15 @@ bool build_ring_chunk(const Ring& ring, RingChunkCoord chunk, const RingParams& 
 // kept current by the re-centre rule. Owns nothing but what it built; `source` must outlive it.
 class TerrainRings {
  public:
-  // Lays the rings out round the camera and builds every one.
+  // Lays the rings out round the camera and builds every one in `build_mask` (bit k for ring k):
+  // every ring by default. A ring outside the mask is laid out, and its hole follows the ring
+  // inside it, but it is never built — the renderer's rings leave the outer one to the scene's own
+  // cached grid (renderer.md, "The rings in the scene"). `merge` false skips each ring's merged
+  // DAG (`lod`, `hash`), which a consumer that draws the chunks one by one never reads: the merge
+  // costs as much as a chunk's build and the memory of the ring twice over.
   bool reset(const RingParams& params, i64 camera_x, i64 camera_z, const RingHeights& source,
              const geometry::ClusterLodOptions& options, jobs::JobSystem* jobs,
-             std::string* error = nullptr);
+             std::string* error = nullptr, u32 build_mask = ~0u, bool merge = true);
   // The re-centre rule for the camera's new position: rebuilds what it says to (`rebuilt`, a mask
   // of rings) and nothing when it says nothing.
   bool update(i64 camera_x, i64 camera_z, jobs::JobSystem* jobs, u32& rebuilt,
@@ -212,6 +220,11 @@ class TerrainRings {
   const geometry::ClusterLodMesh& lod(u32 ring) const noexcept { return rings_[ring].lod; }
   u64 hash(u32 ring) const noexcept { return rings_[ring].hash; }
   const Vector<RingChunk>& chunks(u32 ring) const noexcept { return rings_[ring].chunks; }
+  // The same, for a consumer that takes a chunk's geometry away once it has used it (the renderer
+  // uploads it and keeps only the chunk's key). Only without `merge`: a kept chunk's DAG is then
+  // never read again, and a chunk is rebuilt from its key's cells whenever its key changes.
+  Vector<RingChunk>& chunks_mut(u32 ring) noexcept { return rings_[ring].chunks; }
+  u32 build_mask() const noexcept { return build_mask_; }
   // What the last reset, update or rebuild built and kept, in chunks.
   u32 last_built() const noexcept { return last_built_; }
   u32 last_reused() const noexcept { return last_reused_; }
@@ -229,6 +242,8 @@ class TerrainRings {
   RingState rings_[k_max_rings];
   u32 last_built_ = 0;
   u32 last_reused_ = 0;
+  u32 build_mask_ = ~0u;
+  bool merge_ = true;
 };
 
 }  // namespace engine::terrain

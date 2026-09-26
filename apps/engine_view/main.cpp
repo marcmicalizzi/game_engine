@@ -250,6 +250,12 @@ constexpr const char* k_usage =
     "                   moving more than that fraction of the spacing in one frame. Offscreen a late\n"
     "                   field is waited for; in a window the sand holds until it comes. The\n"
     "                   summary's \"time_lapse\" block says how often and what it cost\n"
+    "  --terrain-rings  draw a dune terrain's ground near the camera at the rings' finer grids\n"
+    "                   (terrain.rings.*: 50 cm to 250 m, 1 m to 1 km by default) beside the\n"
+    "                   scene's own, rebuilt round the camera as it moves and swapped in whole in\n"
+    "                   one frame; with --time-rate they move with the rest of the sand. Built at\n"
+    "                   load, round the camera's first position; the summary's \"time_lapse\"\n"
+    "                   block counts the re-centres\n"
     "  --animate [clip] play a skinned glTF's animation: the skin becomes a skeleton, a clip is\n"
     "                   ticked at the fixed step, and every instance is skinned through the same\n"
     "                   deformed-vertex pool --deform uses. The optional value names the clip by\n"
@@ -1124,8 +1130,11 @@ JsonValue anim_summary(const AnimatedScene& scene, u64 frames) {
 // "--time-rate"): the rate and the rules it ran under, the game time reached, and per terrain level
 // what its surface stood for, how its fields were timed and how long they took, how far any vertex
 // moved in one frame at most, and the hash of the last field's bytes — the number two runs of the
-// same `--frames --time-rate` compare. The fields' uploads are the renderer's to count.
-JsonValue time_lapse_summary(const renderer::TerrainMotion& lapse, const renderer::Stats& stats) {
+// same `--frames --time-rate` compare. The fields' uploads are the renderer's to count. With
+// `--terrain-rings`, a "rings" block counts the re-centres: what they built, kept and uploaded,
+// what the last one took on the worker and in frames, and what the rings' slots hold on the device.
+JsonValue time_lapse_summary(const renderer::TerrainMotion& lapse, const renderer::Stats& stats,
+                             const renderer::GpuScene& scene) {
   if (!lapse.active()) return JsonValue();
   JsonValue out = JsonValue::object();
   out.set("rate", lapse.config().rate);
@@ -1165,6 +1174,29 @@ JsonValue time_lapse_summary(const renderer::TerrainMotion& lapse, const rendere
     levels.push_back(std::move(level));
   }
   out.set("levels", std::move(levels));
+  if (lapse.has_rings()) {
+    const renderer::TerrainMotion::RingStats& r = lapse.ring_stats();
+    JsonValue rings = JsonValue::object();
+    rings.set("rebuilds", r.rebuilds);
+    rings.set("swaps", r.swaps);
+    rings.set("failed", r.failed);
+    rings.set("chunks_built", r.chunks_built);
+    rings.set("chunks_kept", r.chunks_kept);
+    rings.set("chunks_uploaded", r.chunks_uploaded);
+    rings.set("upload_bytes", r.upload_bytes);
+    rings.set("upload_frames", r.upload_frames);
+    rings.set("last_rebuild_ms", r.last_rebuild_ms);
+    rings.set("max_rebuild_ms", r.max_rebuild_ms);
+    rings.set("last_pairs_ms", r.last_pairs_ms);
+    rings.set("max_pairs_ms", r.max_pairs_ms);
+    rings.set("last_upload_frames", r.last_upload_frames);
+    rings.set("last_upload_bytes", r.last_upload_bytes);
+    rings.set("last_swap_frames", r.last_swap_frames);
+    rings.set("last_frozen_frames", r.last_frozen_frames);
+    rings.set("arena_peak_share", r.arena_peak_share);
+    rings.set("device_bytes", scene.terrain_ring_bytes());
+    out.set("rings", std::move(rings));
+  }
   return out;
 }
 
@@ -1975,6 +2007,9 @@ int run_offscreen(Options& options, Interactive& interactive) {
   // The dune field's time-lapse, when `--time-rate` asks for one (started below, once the scene is
   // read; its pool is its own, so it never competes with the page reads for a worker).
   std::unique_ptr<jobs::JobSystem> time_jobs;
+  // The terrain rings (`--terrain-rings`), built before the GPU scene reserves their slots, and
+  // rebuilt by the time-lapse's worker, so they outlive both.
+  std::unique_ptr<renderer::TerrainRingSet> terrain_rings;
   renderer::TerrainMotion time_lapse;
   std::string summary_line;  // printed after the teardown, so it is the last thing out
   bench::MachineState machine_start;
@@ -2068,7 +2103,24 @@ int run_offscreen(Options& options, Interactive& interactive) {
       frames =
           options.frames != 0 && options.frames < whole ? options.frames : static_cast<u32>(whole);
     }
-    if (!scene.create(device, scene_data, resolved, &error)) {
+    // The time-lapse's pool, and the terrain rings round the first frame's camera: built before
+    // the GPU scene, which reserves their slots beside its own meshes and uploads their chunks.
+    if (resolved.terrain_levels) {
+      time_jobs = std::make_unique<jobs::JobSystem>(jobs::JobSystemConfig{.pin_threads = false});
+    }
+    if (resolved.terrain_rings) {
+      const renderer::Camera first =
+          have_path
+              ? renderer::camera_path_frame(path, 0, frames)
+              : renderer::orbit_camera(scene_data.center, scene_data.radius, options.orbit, 0);
+      terrain_rings = std::make_unique<renderer::TerrainRingSet>();
+      if (!terrain_rings->build(scene_data.terrain, first.position.x, first.position.z,
+                                time_jobs.get(), &error)) {
+        exit_code = fail("terrain-rings", error);
+        break;
+      }
+    }
+    if (!scene.create(device, scene_data, resolved, &error, terrain_rings.get())) {
       exit_code = fail("scene", error);
       break;
     }
@@ -2119,12 +2171,11 @@ int run_offscreen(Options& options, Interactive& interactive) {
     // two evaluated fields every frame. Offscreen, a field the surface has caught up with is waited
     // for, and fields are timed by the dunes' motion alone, so two runs of `--frames N` draw the
     // same pictures on the same frames however fast the machine evaluates.
-    if (resolved.settings.time_rate > 0.0) {
-      time_jobs = std::make_unique<jobs::JobSystem>(jobs::JobSystemConfig{.pin_threads = false});
+    if (resolved.terrain_levels) {
       renderer::TimeLapseConfig lapse =
           renderer::time_lapse_config_from_tunables(resolved.settings.time_rate);
       lapse.wait = true;
-      if (!time_lapse.start(scene, lapse, time_jobs.get(), &error)) {
+      if (!time_lapse.start(scene, terrain_rings.get(), lapse, time_jobs.get(), &error)) {
         exit_code = fail("time-rate", error);
         break;
       }
@@ -2155,13 +2206,13 @@ int run_offscreen(Options& options, Interactive& interactive) {
                                          : step == WorldStep::complete
                                              ? view::ViewWorld::Mode::Complete
                                              : view::ViewWorld::Mode::Budgeted;
-      time_lapse.frame(1.0 / view::k_frame_index_hz);
+      time_lapse.frame(1.0 / view::k_frame_index_hz, camera.position.x, camera.position.z);
       return !view_world.valid() ||
              view_world.update(camera, world_tick++, mode, repeat, f, recorded, &error);
     };
 #else
-    auto world_before = [&](const renderer::Camera&, WorldStep, u32, u32, bool) {
-      time_lapse.frame(1.0 / view::k_frame_index_hz);
+    auto world_before = [&](const renderer::Camera& camera, WorldStep, u32, u32, bool) {
+      time_lapse.frame(1.0 / view::k_frame_index_hz, camera.position.x, camera.position.z);
       return true;
     };
 #endif
@@ -2609,7 +2660,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
     if (view_world.valid()) summary.world = view_world.summary_json();
 #endif
     time_lapse.finish();
-    summary.time_lapse = time_lapse_summary(time_lapse, view_renderer.stats());
+    summary.time_lapse = time_lapse_summary(time_lapse, view_renderer.stats(), scene);
     if (interactive.on) summary.interactive = interactive_summary(interactive, session, options);
     if (measured) {
       renderer::summarize_frames(
@@ -2716,6 +2767,8 @@ int main(int argc, char** argv) {
         return k_exit_usage;
       }
       options.settings.time_rate = v;
+    } else if (a == "--terrain-rings") {
+      options.settings.terrain_rings = true;
     } else if (a == "--lod" || a == "--sw-px" || a == "--orbit" || a == "--deform-amplitude") {
       if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
       f32 px = 0.0f;
@@ -3480,6 +3533,8 @@ int main(int argc, char** argv) {
   // The dune field's time-lapse (`--time-rate`): as offscreen, a sixtieth of a second of real time
   // a frame, so the window and a `--frames` run evaluate the same boundaries.
   std::unique_ptr<jobs::JobSystem> time_jobs;
+  std::unique_ptr<renderer::TerrainRingSet> terrain_rings;  // `--terrain-rings`: outlives both
+  renderer::Camera terrain_camera;  // the camera the rings follow: the last frame's
   renderer::TerrainMotion time_lapse;
   std::string time_lapse_text = "null";
   u32 skinned_instances = 0;
@@ -3639,7 +3694,27 @@ int main(int argc, char** argv) {
       exit_code = unavailable(why.c_str(), "");
       break;
     }
-    if (!scene.create(device, scene_data, resolved, &error)) {
+    // The time-lapse's pool, and the terrain rings round where the camera starts (a path's first
+    // frame, the scene's own path's, or the orbit's): built before the GPU scene, which reserves
+    // their slots. A camera that starts elsewhere re-centres them in its first frames.
+    if (resolved.terrain_levels) {
+      time_jobs = std::make_unique<jobs::JobSystem>(jobs::JobSystemConfig{.pin_threads = false});
+    }
+    terrain_camera =
+        !window_path.keys.empty()
+            ? renderer::camera_path_frame(window_path, 0, window_path.frame_count())
+        : !scene_path.keys.empty()
+            ? renderer::camera_path_frame(scene_path, 0, scene_path.frame_count())
+            : renderer::orbit_camera(scene_data.center, scene_data.radius, options.orbit, 0);
+    if (resolved.terrain_rings) {
+      terrain_rings = std::make_unique<renderer::TerrainRingSet>();
+      if (!terrain_rings->build(scene_data.terrain, terrain_camera.position.x,
+                                terrain_camera.position.z, time_jobs.get(), &error)) {
+        exit_code = fail("terrain-rings", error);
+        break;
+      }
+    }
+    if (!scene.create(device, scene_data, resolved, &error, terrain_rings.get())) {
       exit_code = fail("scene", error);
       break;
     }
@@ -3732,10 +3807,10 @@ int main(int argc, char** argv) {
       exit_code = fail("renderer", error);
       break;
     }
-    // In a window the fields are never waited for: a late one holds the surface where it is.
-    if (resolved.settings.time_rate > 0.0) {
-      time_jobs = std::make_unique<jobs::JobSystem>(jobs::JobSystemConfig{.pin_threads = false});
-      if (!time_lapse.start(scene,
+    // In a window the fields are never waited for: a late one holds the surface where it is, and
+    // a re-centre's chunks are uploaded a few a frame and swapped in when they are all there.
+    if (resolved.terrain_levels) {
+      if (!time_lapse.start(scene, terrain_rings.get(),
                             renderer::time_lapse_config_from_tunables(resolved.settings.time_rate),
                             time_jobs.get(), &error)) {
         exit_code = fail("time-rate", error);
@@ -3956,7 +4031,9 @@ int main(int argc, char** argv) {
       // for a swapchain image and in the present (the display), and the pacer's own. Each is
       // timed on its own, because which of them a frame's time went to is the whole question
       // presentation pacing asks (docs/subsystems/apps.md, "Pacing").
-      time_lapse.frame(1.0 / view::k_frame_index_hz);
+      // The rings follow the last frame's camera, as the streamed world does.
+      time_lapse.frame(1.0 / view::k_frame_index_hz, terrain_camera.position.x,
+                       terrain_camera.position.z);
       const i64 before_waits = time::monotonic_ns();
       view_renderer.begin_frame();
       const i64 slot_free = time::monotonic_ns();
@@ -4054,6 +4131,7 @@ int main(int argc, char** argv) {
                                                     options.orbit, rendered);
         frame.frame_index = rendered;
       }
+      terrain_camera = frame.camera;  // the next frame's rings follow this one
 #if ENGINE_VIEW_WORLD
       world_camera = frame.camera;  // the next frame's world follows this one
       world_camera_set = true;
@@ -4224,7 +4302,7 @@ int main(int argc, char** argv) {
     }
     time_lapse.finish();
     if (time_lapse.active()) {
-      time_lapse_text = write_json(time_lapse_summary(time_lapse, view_renderer.stats()),
+      time_lapse_text = write_json(time_lapse_summary(time_lapse, view_renderer.stats(), scene),
                                    JsonWriteOptions{.pretty = false});
     }
 #if ENGINE_VIEW_ANIMATION

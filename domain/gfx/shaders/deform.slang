@@ -415,10 +415,18 @@ void terrain_vertex(MeshDesc mesh, TerrainLevelDesc level, uint vertex, out floa
   // Strictly inside the square the next finer level draws: onto its nearest edge. The edges are
   // lines of this level's lattice (renderer::terrain_levels snaps them there), so the vertex lands
   // on a lattice point and takes the field's own height there. A cluster that straddles the edge
-  // keeps its part outside, exact at the edge; a vertex on the edge is not moved.
+  // keeps its part outside, exact at the edge; a vertex on the edge is not moved. **And down by as
+  // far as it moved**: no map of a square's inside onto its edge is without a fold (the diagonals,
+  // where the nearest edge changes), so a triangle whose corners went to two different edges spans
+  // the square's corner at the edges' heights, over ground the finer level draws, and stood up to
+  // a metre proud of it on the test's dunes. Sunk by the distance its corners were pulled in, it
+  // lies under that ground unless the sand across it rises faster than that; the price is that a
+  // triangle stretched from the last vertex outside to the edge dips there by at most the length
+  // it was stretched, a notch the finer level's skirt stands in.
   const float4 hole = level.hole;
   const float x = level.origin.x + float(i) * level.spacing;
   const float z = level.origin.y + float(j) * level.spacing;
+  float sunk = 0.0;
   if (hole.z > hole.x && x > hole.x && x < hole.z && z > hole.y && z < hole.w) {
     const float left = x - hole.x;
     const float right = hole.z - x;
@@ -434,8 +442,19 @@ void terrain_vertex(MeshDesc mesh, TerrainLevelDesc level, uint vertex, out floa
     } else {
       j = int(round((hole.w - level.origin.y) * inv));
     }
+    sunk = nearest;
   }
-  position = float3(level.origin.x + float(i) * level.spacing, terrain_height(level, i, j),
+  // A ring's skirt hangs from its border: same lattice point as the border vertex above it, and
+  // `skirt` metres under the field, so it follows the sand down the whole way. The GPU scene marks
+  // a skirt vertex by a rest normal pointing straight down, which no heightfield vertex has (the
+  // pool writes the normals the resolve reads, so the rest one is free to say so).
+  bool skirt = false;
+  if (level.skirt > 0.0 && g_params.attributes != 0) {
+    VertexAttributes* attributes = (VertexAttributes*)g_params.attributes;
+    skirt = decode_oct(attributes[vertex].normal_oct).y < -0.5;
+  }
+  position = float3(level.origin.x + float(i) * level.spacing,
+                    terrain_height(level, i, j) - (skirt ? level.skirt : 0.0) - sunk,
                     level.origin.y + float(j) * level.spacing);
   const int2 wx = terrain_window(level, false);
   const int2 wz = terrain_window(level, true);

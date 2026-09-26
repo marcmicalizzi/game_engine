@@ -444,7 +444,8 @@ BlendRun run_blend(f64 rate, f64 speed, f64 step, u32 latency, u32 stall_at, u32
     f64 frame_move = 0.0;
     for (u32 i = 0; i < n; ++i) {
       const f32 h = blend.has_b ? a[i] * (1.0f - t) + b[i] * t : a[i];
-      frame_move = std::max(frame_move, std::abs(static_cast<f64>(h) - previous[i]));
+      frame_move =
+          std::max(frame_move, std::abs(static_cast<f64>(h) - static_cast<f64>(previous[i])));
       previous[i] = h;
     }
     run.max_move = std::max(run.max_move, frame_move);
@@ -550,4 +551,134 @@ TEST_CASE("renderer: a blend step is exact at its ends and never goes past b") {
   CHECK(blend.time_b == 30.0);
   CHECK(blend.surface_s == 25.0);
   CHECK(result.moved_m == doctest::Approx(0.2 + 1.0));
+}
+
+TEST_CASE("renderer: the terrain's levels share one surface time, each within its own bound") {
+  // The scene's grid at a metre and a ring at 25 cm over the same travelling profile, each with
+  // fields timed by its own cadence (a quarter of its own spacing of travel apart). The grid's
+  // arrive two frames after they are asked for; every third of the ring's is 40 frames late.
+  constexpr u32 n = 256;
+  const f64 speed = 0.9 / 86'400.0;
+  const f64 rate = 604'800.0;
+  const f64 t0 = 1'000.0;
+  const f64 slack = 1.0e-5;
+  struct Level {
+    f64 spacing = 0.0;
+    f64 budget = 0.0;
+    f64 step = 0.0;
+    gfx::TerrainField window{};
+    Vector<f32> a, b, latest, next_field, previous;
+    f64 latest_time = 0.0;
+    bool pending = false;
+    u32 ready_at = 0;
+    u32 asked = 0;
+    u32 installed = 0;
+    f64 max_move = 0.0;
+  };
+  Level levels[2];
+  TerrainBlend blends[2];
+  TerrainNextField next[2];
+  for (u32 k = 0; k < 2; ++k) {
+    Level& l = levels[k];
+    l.spacing = k == 0 ? 1.0 : 0.25;
+    l.budget = 0.25 * l.spacing;
+    l.step = l.budget / speed;
+    l.window.nx = n;
+    l.window.nz = 1;
+    l.a = travelling_field(t0, speed, n, l.spacing);
+    l.b = l.a;
+    l.latest = l.a;
+    l.previous = l.a;
+    l.latest_time = t0;
+    blends[k].time_a = blends[k].time_b = blends[k].surface_s = t0;
+  }
+  u32 held_by_ring = 0;
+  bool monotonic = true;
+  f64 last = t0;
+  for (u32 f = 1; f <= 900; ++f) {
+    const f64 target = t0 + rate * static_cast<f64>(f) / 60.0;
+    for (u32 k = 0; k < 2; ++k) {
+      Level& l = levels[k];
+      if (!next[k].ready && !l.pending) {
+        l.pending = true;
+        l.ready_at = f + (k == 0 ? 2u : (l.asked % 3 == 2 ? 40u : 1u));
+        ++l.asked;
+      }
+      if (l.pending && f >= l.ready_at) {
+        const f64 at = l.latest_time + l.step;
+        l.next_field = travelling_field(at, speed, n, l.spacing);
+        next[k].ready = true;
+        next[k].time_s = at;
+        next[k].delta_m =
+            terrain_field_delta(std::span<const f32>(l.latest.data(), n), l.window,
+                                std::span<const f32>(l.next_field.data(), n), l.window);
+        l.latest = l.next_field;
+        l.latest_time = at;
+        l.pending = false;
+      }
+    }
+    const bool had_b[2] = {blends[0].has_b, blends[1].has_b};
+    const f64 budgets[2] = {levels[0].budget, levels[1].budget};
+    f64 moved[2] = {};
+    u32 installed[2] = {};
+    const TerrainSurfaceResult result = terrain_surface_frame(
+        std::span<TerrainBlend>(blends, 2), target, std::span<const f64>(budgets, 2),
+        std::span<TerrainNextField>(next, 2), std::span<f64>(moved, 2),
+        std::span<u32>(installed, 2));
+    CHECK(blends[0].surface_s == blends[1].surface_s);
+    CHECK(result.surface_s == blends[0].surface_s);
+    monotonic = monotonic && result.surface_s >= last;
+    last = result.surface_s;
+    held_by_ring += result.held && result.limiting == 1 ? 1u : 0u;
+    for (u32 k = 0; k < 2; ++k) {
+      Level& l = levels[k];
+      if (installed[k] > 0) {
+        if (had_b[k]) l.a = l.b;
+        l.b = l.next_field;
+        l.installed += installed[k];
+      }
+      // What the pool pass draws for the level, against the level's own bound.
+      const f32 t = static_cast<f32>(blends[k].blend());
+      f64 frame_move = 0.0;
+      for (u32 i = 0; i < n; ++i) {
+        const f32 h = blends[k].has_b ? l.a[i] * (1.0f - t) + l.b[i] * t : l.a[i];
+        frame_move =
+            std::max(frame_move, std::abs(static_cast<f64>(h) - static_cast<f64>(l.previous[i])));
+        l.previous[i] = h;
+      }
+      l.max_move = std::max(l.max_move, frame_move);
+      CHECK(moved[k] <= l.budget + 1.0e-12);
+    }
+  }
+  CHECK(monotonic);
+  CHECK(held_by_ring > 0u);  // a late ring field held the grid too
+  for (u32 k = 0; k < 2; ++k) {
+    CAPTURE(k);
+    CHECK(levels[k].installed > 1u);
+    CHECK(levels[k].max_move <= levels[k].budget + slack);
+  }
+  // One level is the one-level blend exactly.
+  TerrainBlend single;
+  single.time_a = 10.0;
+  single.time_b = 20.0;
+  single.has_b = true;
+  single.delta_m = 2.0;
+  single.surface_s = 19.0;
+  TerrainBlend shared = single;
+  TerrainNextField n1{true, 30.0, 2.0};
+  TerrainNextField n2 = n1;
+  const TerrainFrameResult one = terrain_blend_frame(single, 25.0, 0.9, n1);
+  f64 moved = 0.0;
+  u32 installed = 0;
+  const f64 budget = 0.9;
+  const TerrainSurfaceResult many =
+      terrain_surface_frame(std::span<TerrainBlend>(&shared, 1), 25.0,
+                            std::span<const f64>(&budget, 1), std::span<TerrainNextField>(&n2, 1),
+                            std::span<f64>(&moved, 1), std::span<u32>(&installed, 1));
+  CHECK(shared.surface_s == single.surface_s);
+  CHECK(shared.time_a == single.time_a);
+  CHECK(shared.time_b == single.time_b);
+  CHECK(installed == one.installed);
+  CHECK(moved == doctest::Approx(one.moved_m));
+  CHECK(many.capped == one.capped);
 }

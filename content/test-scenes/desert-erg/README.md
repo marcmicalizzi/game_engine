@@ -6,9 +6,10 @@ An **erg** drawn by the terrain capability's dune generator ([terrain](../../../
 build/msvc-release/bin/engine-view --scene content/test-scenes/desert-erg/scene.json --interactive
 build/msvc-release/bin/engine-content terrain content/test-scenes/desert-erg/scene.json --tile 0,0 --stats --stats-side 6144
 build/msvc-release/bin/engine-view --scene content/test-scenes/desert-erg/scene.json --interactive --time-rate 86400
+build/msvc-release/bin/engine-view --scene content/test-scenes/desert-erg/scene.json --interactive --time-rate 86400 --terrain-rings
 ```
 
-`--time-rate 86400` runs a game day a real second and moves the sand on screen, blended between evaluated fields every frame so no dune ever steps ([renderer](../../../docs/subsystems/renderer.md#the-dunes-in-time-lapse)); the summary line's `time_lapse` block says how often the field was evaluated and what it cost.
+`--time-rate 86400` runs a game day a real second and moves the sand on screen, blended between evaluated fields every frame so no dune ever steps ([renderer](../../../docs/subsystems/renderer.md#the-dunes-in-time-lapse)); the summary line's `time_lapse` block says how often the field was evaluated and what it cost. `--terrain-rings` draws the ground near the camera at 50 cm out to 250 m and at a metre out to a kilometre instead of the grid's 1.5 m, so a slip face near the camera is tens of samples wide rather than five, and moves it with the rest ([renderer](../../../docs/subsystems/renderer.md#the-rings-in-the-scene)).
 
 ## The band table
 

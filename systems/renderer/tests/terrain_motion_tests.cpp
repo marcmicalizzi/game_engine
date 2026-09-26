@@ -6,18 +6,24 @@
 // vertex moves in one frame. And the visibility invariants on the pool-fed terrain: occlusion
 // culling and the cone test change no pixel (the cone test does not run on a deformed instance at
 // all, and a rigid copy of the same terrain shows it would have culled), and the hardware and
-// software rasterizers — and the ray path where the device traces — draw the same surface.
+// software rasterizers — and the ray path where the device traces — draw the same surface. The
+// same again with the terrain rings in the scene (renderer.md, "The rings in the scene"): every
+// level draws its own blended field at one surface time, the rings re-centre under a moving camera
+// and every frame, the swaps' included, draws the continuous model, and the invariants hold over
+// the rings' slots as they do over the scene's grid.
 // Compiled only where the terrain capability is; each GPU case skips with a message where there is
 // no device.
 #include <core/jobs/job_system.h>
 #include <core/math/math.h>
 #include <domain/gfx/device.h>
+#include <foundation/tunables/tunables.h>
 #include <systems/renderer/capture.h>
 #include <systems/renderer/gpu_scene.h>
 #include <systems/renderer/scene.h>
 #include <systems/renderer/scene_renderer.h>
 #include <systems/renderer/settings.h>
 #include <systems/renderer/terrain.h>
+#include <systems/renderer/terrain_rings.h>
 #include <systems/renderer/terrain_time.h>
 
 #include <doctest/doctest.h>
@@ -26,6 +32,7 @@
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
+#include <memory>
 #include <string>
 
 using namespace engine;
@@ -71,28 +78,66 @@ SceneDesc moving_scene(const std::string& ddc) {
   return desc;
 }
 
+// The rings for a 128 m terrain at a metre: an inner ring 6 m either side at 25 cm and a middle one
+// 20 m either side at 50 cm, each a third of the one round it or less, as `validate_rings` wants.
+// The tunables are the process's, so they are put back when the case ends.
+struct SmallRings {
+  SmallRings() {
+    set("terrain.rings.inner_half_m", "6");
+    set("terrain.rings.inner_spacing_cm", "25");
+    set("terrain.rings.middle_half_m", "20");
+    set("terrain.rings.middle_spacing_cm", "50");
+  }
+  ~SmallRings() {
+    for (const char* name : {"terrain.rings.inner_half_m", "terrain.rings.inner_spacing_cm",
+                             "terrain.rings.middle_half_m", "terrain.rings.middle_spacing_cm"}) {
+      if (tunables::Tunable* t = tunables::find(name)) t->reset();
+    }
+  }
+  static void set(const char* name, const char* value) {
+    tunables::Tunable* t = tunables::find(name);
+    REQUIRE_MESSAGE(t != nullptr, name);
+    std::string error;
+    REQUIRE_MESSAGE(t->set_from_text(value, &error), error);
+  }
+};
+
+// Twice the moving scene's side at the same spacing, so two rings fit inside it.
+SceneDesc ring_scene(const std::string& ddc) {
+  SceneDesc desc = moving_scene(ddc);
+  desc.terrain.size = 129;
+  desc.terrain.extent = 64.0f;
+  return desc;
+}
+
 struct Rig {
   SceneData data;
   ResolvedSettings resolved;
+  std::unique_ptr<TerrainRingSet> rings;  // outlives the scene and the motion
   GpuScene scene;
   SceneRenderer renderer;
   TerrainMotion motion;
   std::string error;
 
   bool build(const gfx::Device& device, const SceneDesc& desc, const RenderSettings& settings,
-             u32 width, u32 height, const TimeLapseConfig* lapse, jobs::JobSystem* jobs) {
+             u32 width, u32 height, const TimeLapseConfig* lapse, jobs::JobSystem* jobs,
+             Vec3 ring_camera = Vec3{}) {
     if (!load_scene(desc, data, error)) return false;
     resolve_settings(settings, device.features(), &data, resolved);
     if (check_availability(resolved, device.features()) != RenderAvailability::Ok) {
       error = "unavailable";
       return false;
     }
-    if (!scene.create(device, data, resolved, &error)) return false;
+    if (resolved.terrain_rings) {
+      rings = std::make_unique<TerrainRingSet>();
+      if (!rings->build(data.terrain, ring_camera.x, ring_camera.z, jobs, &error)) return false;
+    }
+    if (!scene.create(device, data, resolved, &error, rings.get())) return false;
     SceneRenderer::Desc rd;
     rd.width = width;
     rd.height = height;
     if (!renderer.create(device, scene, resolved, rd, &error)) return false;
-    return lapse == nullptr || motion.start(scene, *lapse, jobs, &error);
+    return lapse == nullptr || motion.start(scene, rings.get(), *lapse, jobs, &error);
   }
 };
 
@@ -173,6 +218,112 @@ Camera looking_across(const TerrainDesc& desc, u32 f) {
                        z - 30.0f * std::sin(0.6f + a)};
   camera.znear = 0.05f;
   return camera;
+}
+
+// One level's blended field as the motion draws it this frame: the level's two fields at its
+// times over the window it draws, blended in floats as deform.slang blends them, and the squares
+// it draws inside and leaves to the level inside it.
+struct LevelModel {
+  TerrainLattice lattice;
+  gfx::TerrainField window;  // `heights` unused
+  Vector<f32> h;
+  bool bounded = false;  // a ring: only inside `square`
+  Vec4 square{};
+  bool holed = false;  // leaves `hole` to the next finer level
+  Vec4 hole{};
+};
+
+void model_level(const SceneData& data, const TerrainMotion& motion, const TerrainRingSet* rings,
+                 u32 k, LevelModel& out) {
+  const TerrainMotion::LevelStats s = motion.level_stats(k);
+  const TerrainSampler sampler(data.terrain);
+  out.window = gfx::TerrainField{};
+  if (k == 0) {
+    out.lattice = terrain_scene_lattice(data.terrain);
+    out.window.nx = data.terrain.size;
+    out.window.nz = data.terrain.size;
+  } else {
+    out.lattice = rings->lattice(k);
+    out.window = rings->field_window(k, motion.ring_layout());
+  }
+  const u32 n = out.window.nx * out.window.nz;
+  const u32 blocks = terrain_window_blocks(out.window.nx, out.window.nz);
+  Vector<f32> a(n);
+  Vector<f32> b(n);
+  evaluate_terrain_window(sampler, s.time_a, out.lattice, out.window.i0, out.window.j0,
+                          out.window.nx, out.window.nz, 0, blocks, std::span<f32>(a.data(), n));
+  evaluate_terrain_window(sampler, s.time_b, out.lattice, out.window.i0, out.window.j0,
+                          out.window.nx, out.window.nz, 0, blocks, std::span<f32>(b.data(), n));
+  const f32 t = static_cast<f32>(s.blend);
+  out.h.resize(n);
+  for (u32 v = 0; v < n; ++v)
+    out.h[v] = s.time_b > s.time_a ? a[v] * (1.0f - t) + b[v] * t : a[v];
+  out.bounded = k > 0;
+  out.square = k > 0 ? rings->square(k, motion.ring_layout()) : Vec4{};
+  out.holed = rings != nullptr && k + 1 < rings->level_count();
+  out.hole = out.holed ? rings->square(k + 1, motion.ring_layout()) : Vec4{};
+}
+
+// The lowest and highest of the four lattice points round (x, z) on a level: whichever diagonal
+// its mesh cut the cell along, the surface there lies between them. False off the level's window.
+bool cell_bounds(const LevelModel& m, f32 x, f32 z, f32& lo, f32& hi) {
+  const f64 fx = (static_cast<f64>(x) - m.lattice.origin_x) / m.lattice.spacing;
+  const f64 fz = (static_cast<f64>(z) - m.lattice.origin_z) / m.lattice.spacing;
+  const i64 i = static_cast<i64>(std::floor(fx)) - m.window.i0;
+  const i64 j = static_cast<i64>(std::floor(fz)) - m.window.j0;
+  if (i < 0 || j < 0 || i + 1 >= i64{m.window.nx} || j + 1 >= i64{m.window.nz}) return false;
+  const u32 nx = m.window.nx;
+  const f32 c[4] = {m.h[static_cast<u32>(j) * nx + static_cast<u32>(i)],
+                    m.h[static_cast<u32>(j) * nx + static_cast<u32>(i) + 1],
+                    m.h[static_cast<u32>(j + 1) * nx + static_cast<u32>(i)],
+                    m.h[static_cast<u32>(j + 1) * nx + static_cast<u32>(i) + 1]};
+  lo = std::min(std::min(c[0], c[1]), std::min(c[2], c[3]));
+  hi = std::max(std::max(c[0], c[1]), std::max(c[2], c[3]));
+  return true;
+}
+
+// Whether (x, z) is `margin` or more inside the square.
+bool inside(const Vec4& square, f32 x, f32 z, f32 margin) {
+  return x > square.x + margin && x < square.z - margin && z > square.y + margin &&
+         z < square.w - margin;
+}
+// Whether it is `margin` or more away from the square's edges, on either side.
+bool clear_of(const Vec4& square, f32 x, f32 z, f32 margin) {
+  return inside(square, x, z, margin) || !inside(square, x, z, -margin);
+}
+
+// The level that draws (x, z), or ~0u within `margin` of a boundary between two levels, where a
+// border, a skirt or the scene grid's collapsed edge may stand.
+u32 level_at(const Vector<LevelModel>& levels, f32 x, f32 z, f32 margin) {
+  for (u32 k = levels.size(); k-- > 0;) {
+    const LevelModel& m = levels[k];
+    if (m.bounded && !clear_of(m.square, x, z, margin)) return ~0u;
+    if (m.bounded && !inside(m.square, x, z, 0.0f)) continue;
+    return k;
+  }
+  return ~0u;
+}
+
+// The largest change of a level's blended field between two frames, over the lattice points both
+// frames' windows hold.
+f64 level_move(const LevelModel& now, const LevelModel& before) {
+  const i32 i0 = std::max(now.window.i0, before.window.i0);
+  const i32 j0 = std::max(now.window.j0, before.window.j0);
+  const i32 i1 = std::min(now.window.i0 + static_cast<i32>(now.window.nx),
+                          before.window.i0 + static_cast<i32>(before.window.nx));
+  const i32 j1 = std::min(now.window.j0 + static_cast<i32>(now.window.nz),
+                          before.window.j0 + static_cast<i32>(before.window.nz));
+  f64 most = 0.0;
+  for (i32 j = j0; j < j1; ++j) {
+    for (i32 i = i0; i < i1; ++i) {
+      const f32 a = now.h[static_cast<u32>(j - now.window.j0) * now.window.nx +
+                          static_cast<u32>(i - now.window.i0)];
+      const f32 b = before.h[static_cast<u32>(j - before.window.j0) * before.window.nx +
+                             static_cast<u32>(i - before.window.i0)];
+      most = std::max(most, static_cast<f64>(std::abs(a - b)));
+    }
+  }
+  return most;
 }
 
 }  // namespace
@@ -267,17 +418,26 @@ TEST_CASE("terrain motion: the pool draws the blended field, and no vertex jumps
   CHECK(worst_error <= 2.0e-3);
 }
 
-TEST_CASE("terrain motion: culling changes nothing and the rasterizers agree on a moving terrain") {
+namespace {
+
+// The visibility invariants on a moving terrain, over the scene's grid alone or with the rings in
+// the scene beside it (re-centred under the camera as it moves along the sand).
+void culling_case(bool with_rings) {
   Gpu gpu;
   if (!gpu.ok) {
     MESSAGE("renderer unavailable here: " << gpu.why);
     return;
   }
+  std::unique_ptr<SmallRings> small;
+  if (with_rings) small = std::make_unique<SmallRings>();
   test::TempDir tmp{"engine_renderer_terrain_motion_culling"};
-  const SceneDesc desc = moving_scene(slashes(tmp.native() / "ddc"));
+  const SceneDesc desc = with_rings ? ring_scene(slashes(tmp.native() / "ddc"))
+                                    : moving_scene(slashes(tmp.native() / "ddc"));
   RenderSettings base;
   base.shadows = ShadowMode::Off;
   base.time_rate = 604'800.0;
+  base.terrain_rings = with_rings;
+  const Vec3 ring_camera = looking_across(desc.terrain, 0).position;
   TimeLapseConfig lapse = time_lapse_config_from_tunables(base.time_rate);
   lapse.wait = true;  // every rig draws the same sand on the same frame
   jobs::JobSystem pool(jobs::JobSystemConfig{.performance_workers = 2, .pin_threads = false});
@@ -308,7 +468,8 @@ TEST_CASE("terrain motion: culling changes nothing and the rasterizers agree on 
   channels.depth = true;
   for (u32 k = 0; k < 5; ++k) {
     Rig rig;
-    if (!rig.build(gpu.device, desc, variants[k].settings, k_width, k_height, &lapse, &pool)) {
+    if (!rig.build(gpu.device, desc, variants[k].settings, k_width, k_height, &lapse, &pool,
+                   ring_camera)) {
       if (variants[k].needs_rays && rig.error == "unavailable") {
         MESSAGE("no ray path here: " << unavailable_reason(
                     RenderAvailability::NoAccelerationStructures, gpu.device));
@@ -317,11 +478,13 @@ TEST_CASE("terrain motion: culling changes nothing and the rasterizers agree on 
       FAIL("variant " << variants[k].name << ": " << rig.error);
     }
     REQUIRE(rig.resolved.terrain_levels);
+    REQUIRE(rig.resolved.terrain_rings == with_rings);
     u32 shot = 0;
     for (u32 f = 0; f < k_frames; ++f) {
-      rig.motion.frame(1.0 / 60.0);
+      const Camera camera = looking_across(desc.terrain, f);
+      rig.motion.frame(1.0 / 60.0, camera.position.x, camera.position.z);
       FrameDesc frame;
-      frame.camera = looking_across(desc.terrain, f);
+      frame.camera = camera;
       frame.frame_index = f;
       frame.lod_px = 0.5f;
       if (shot < 3 && f == shots_at[shot]) {
@@ -332,6 +495,13 @@ TEST_CASE("terrain motion: culling changes nothing and the rasterizers agree on 
       } else {
         REQUIRE_MESSAGE(rig.renderer.render_offscreen(frame, &rig.error), rig.error);
       }
+    }
+    if (with_rings) {
+      const TerrainMotion::RingStats& r = rig.motion.ring_stats();
+      MESSAGE("variant " << std::string(variants[k].name) << ": " << r.swaps << " ring re-centres, "
+                         << r.chunks_built << " chunks built, " << r.chunks_kept << " kept");
+      CHECK(r.failed == 0u);
+      CHECK(r.swaps > 0u);
     }
     rig.motion.finish();
     ran[k] = true;
@@ -397,6 +567,7 @@ TEST_CASE("terrain motion: culling changes nothing and the rasterizers agree on 
       CHECK(d.ids <= d.both / 200u + 4u);
     }
   }
+  if (with_rings) return;
   // The case is worth something only if the cone test would cull here: a rigid copy of the same
   // terrain, cones on and off, draws fewer pairs with them.
   RenderSettings rigid = base;
@@ -421,4 +592,152 @@ TEST_CASE("terrain motion: culling changes nothing and the rasterizers agree on 
   MESSAGE("a rigid copy draws " << with.renderer.stats().visible_pairs() << " pairs with cones and "
                                 << without.renderer.stats().visible_pairs() << " without");
   CHECK(with.renderer.stats().visible_pairs() < without.renderer.stats().visible_pairs());
+}
+
+}  // namespace
+
+TEST_CASE("terrain motion: culling changes nothing and the rasterizers agree on a moving terrain") {
+  culling_case(false);
+}
+
+TEST_CASE("terrain rings: culling changes nothing and the rasterizers agree over the rings") {
+  culling_case(true);
+}
+
+TEST_CASE(
+    "terrain rings: every level draws its blended field at one time, and no re-centre steps") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("renderer unavailable here: " << gpu.why);
+    return;
+  }
+  SmallRings small;
+  test::TempDir tmp{"engine_renderer_terrain_rings"};
+  const SceneDesc desc = ring_scene(slashes(tmp.native() / "ddc"));
+  RenderSettings settings;
+  settings.shadows = ShadowMode::Off;
+  settings.time_rate = 604'800.0;
+  settings.terrain_rings = true;
+  TimeLapseConfig lapse = time_lapse_config_from_tunables(settings.time_rate);
+  lapse.wait = true;  // every re-centre is swapped in the frame that asks for it
+  jobs::JobSystem pool(jobs::JobSystemConfig{.performance_workers = 2, .pin_threads = false});
+  constexpr u32 k_width = 256;
+  constexpr u32 k_height = 192;
+  constexpr u32 k_frames = 60;
+  // 40 m over the sand, looking down steeply enough that the ground under the camera is in view,
+  // and sliding along x, 40 cm a frame: the rings follow the camera's position, so the inner ring
+  // (6 m either side) is the ground below it and re-centres every few metres, and the middle one
+  // (20 m) round it once or twice, with the grid beyond.
+  const auto camera_at = [](u32 f) {
+    Camera camera;
+    const f32 x = -10.0f + 0.4f * static_cast<f32>(f);
+    camera.position = Vec3{x, 40.0f, 4.0f};
+    camera.target = Vec3{x + 2.0f, 0.0f, -12.0f};
+    camera.znear = 0.5f;
+    return camera;
+  };
+  Rig rig;
+  REQUIRE_MESSAGE(rig.build(gpu.device, desc, settings, k_width, k_height, &lapse, &pool,
+                            camera_at(0).position),
+                  rig.error);
+  REQUIRE(rig.resolved.terrain_rings);
+  REQUIRE(rig.scene.terrain_level_count() == 3u);
+  const u32 levels = rig.scene.terrain_level_count();
+  CaptureChannels channels;
+  channels.depth = true;
+  channels.ids = true;
+  f64 worst_error = 0.0;
+  f64 worst_level_error[3] = {};
+  Vec3 worst_at[3] = {};
+  u32 worst_frame[3] = {};
+  u32 worst_drawn_by[3] = {};
+  Vec2 worst_bounds[3] = {};
+  u64 compared[3] = {};
+  u64 wrong_level[3] = {};
+  f64 worst_move[3] = {};
+  Vector<LevelModel> models(levels);
+  Vector<LevelModel> before;
+  const u32 scene_instances = rig.data.instances.size();
+  for (u32 f = 0; f < k_frames; ++f) {
+    const Camera camera = camera_at(f);
+    rig.motion.frame(1.0 / 60.0, camera.position.x, camera.position.z);
+    // One surface time: where two levels meet they draw the same sand.
+    for (u32 k = 1; k < levels; ++k)
+      CHECK(rig.motion.level_stats(k).surface_s == rig.motion.level_stats(0).surface_s);
+    FrameDesc frame;
+    frame.camera = camera;
+    frame.frame_index = f;
+    frame.lod_px = 0.0f;  // the finest clusters: every level's own lattice
+    CapturedFrame shot;
+    REQUIRE_MESSAGE(rig.renderer.capture(frame, channels, shot, &rig.error), rig.error);
+    for (u32 k = 0; k < levels; ++k)
+      model_level(rig.data, rig.motion, rig.rings.get(), k, models[k]);
+    // The per-frame bound on every level, a re-centre's frame included: its lattice points move by
+    // no more than a fraction of its own spacing.
+    if (!before.empty()) {
+      for (u32 k = 0; k < levels; ++k)
+        worst_move[k] = std::max(worst_move[k], level_move(models[k], before[k]));
+    }
+    before = models;
+    // And every covered pixel against the level that draws it.
+    const Mat4 inverse_view_proj = inverse(rig.renderer.views()[0].view_proj);
+    for (u32 py = 0; py < k_height; ++py) {
+      for (u32 px = 0; px < k_width; ++px) {
+        Vec3 world;
+        if (!unproject(shot, inverse_view_proj, px, py, world)) continue;
+        const u32 k = level_at(models, world.x, world.z, 2.0f);
+        if (k == ~0u) continue;
+        f32 lo = 0.0f;
+        f32 hi = 0.0f;
+        if (!cell_bounds(models[k], world.x, world.z, lo, hi)) continue;
+        const f64 error =
+            std::max({0.0, static_cast<f64>(lo - world.y), static_cast<f64>(world.y - hi)});
+        worst_error = std::max(worst_error, error);
+        // Drawn by the level it stands in: the scene grid's own instance outside the rings, a
+        // ring's slot inside them — the middle ring's slots first, then the inner one's.
+        const u32 instance = shot.ids[(py * k_width + px) * k_id_words];
+        const bool ring_slot = instance >= scene_instances;
+        const u32 drawn_by =
+            !ring_slot ? 0u : (instance - scene_instances < rig.scene.terrain_slots(1) ? 1u : 2u);
+        if (error > worst_level_error[k]) {
+          worst_level_error[k] = error;
+          worst_at[k] = world;
+          worst_frame[k] = f;
+          worst_drawn_by[k] = drawn_by;
+          worst_bounds[k] = Vec2{lo, hi};
+        }
+        ++compared[k];
+        wrong_level[k] += drawn_by != k ? 1u : 0u;
+      }
+    }
+  }
+  rig.motion.finish();
+  const TerrainMotion::RingStats& r = rig.motion.ring_stats();
+  const TerrainMotion::LevelStats s0 = rig.motion.level_stats(0);
+  MESSAGE(k_frames << " frames: " << r.swaps << " re-centres swapped (" << r.chunks_built
+                   << " chunks built, " << r.chunks_kept << " kept, " << r.upload_bytes
+                   << " bytes uploaded, last rebuild " << r.last_rebuild_ms
+                   << " ms, arenas at most " << r.arena_peak_share << " full); " << s0.installed
+                   << " grid fields installed; pixels compared per level " << compared[0] << ", "
+                   << compared[1] << ", " << compared[2] << ", worst distance from the model "
+                   << worst_error << " m; largest move a "
+                   << "frame " << worst_move[0] << ", " << worst_move[1] << ", " << worst_move[2]
+                   << " m");
+  CHECK(r.failed == 0u);
+  CHECK(r.swaps >= 2u);
+  CHECK(r.rebuilds == r.swaps);
+  CHECK(s0.installed > 2u);
+  for (u32 k = 0; k < levels; ++k) {
+    CAPTURE(k);
+    MESSAGE("level " << k << ": " << compared[k] << " pixels, " << wrong_level[k]
+                     << " drawn by the other kind of level, worst " << worst_level_error[k]
+                     << " m at (" << worst_at[k].x << ", " << worst_at[k].y << ", " << worst_at[k].z
+                     << ") in frame " << worst_frame[k] << ", drawn by level " << worst_drawn_by[k]
+                     << ", the cell between " << worst_bounds[k].x << " and " << worst_bounds[k].y);
+    CHECK(compared[k] > 1'000u);
+    CHECK(wrong_level[k] == 0u);
+    CHECK(worst_level_error[k] <= 5.0e-3);
+    CHECK(worst_move[k] <= lapse.fraction * rig.scene.terrain_lattice(k).spacing + 1.0e-5);
+  }
+  CHECK(worst_error <= 5.0e-3);
 }

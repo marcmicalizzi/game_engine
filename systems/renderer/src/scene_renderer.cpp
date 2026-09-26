@@ -1,4 +1,5 @@
 #include <core/base/assert.h>
+#include <core/containers/small_vector.h>
 #include <core/platform/process.h>
 #include <core/time/time.h>
 #include <domain/gfx/capture.h>
@@ -1927,9 +1928,10 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   struct TerrainCopy {
     gfx::RgBuffer staging, field;
   };
-  TerrainCopy rg_terrain_copies[GpuScene::k_terrain_copies_per_frame]{};
-  const u32 terrain_copies =
-      std::min<u32>(terrain_frame_.copies.size(), GpuScene::k_terrain_copies_per_frame);
+  // Every copy handed over since the last frame, one a slot (GpuScene::terrain_prepare): a frame
+  // that shows a slot copies it in first.
+  const u32 terrain_copies = terrain_frame_.copies.size();
+  SmallVector<TerrainCopy, 16> rg_terrain_copies(terrain_copies);
   for (u32 c = 0; c < terrain_copies; ++c) {
     const GpuScene::TerrainUpdate::Copy& copy = terrain_frame_.copies[c];
     rg_terrain_copies[c].staging = graph.import_buffer(
@@ -1954,6 +1956,41 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   auto read_terrain = [&, terrain_field_count](gfx::PassBuilder& b) {
     for (u32 f = 0; f < terrain_field_count; ++f)
       b.read(rg_terrain_fields[f], gfx::Access::ComputeRead);
+  };
+  // The rings' chunk uploads and slot records (GpuScene::terrain_chunk_upload/show): copies into
+  // the scene's geometry buffers, which every pass reads. On such a frame the buffers are imported
+  // as last read everywhere — so the copies wait for the frames in flight that may still read a
+  // slot being reused — and every pass that reads geometry declares it (`read_pool`), so the graph
+  // orders it after the copies. Every other frame declares nothing, as a scene read whole never
+  // has.
+  const bool terrain_geometry = !terrain_frame_.geometry.empty();
+  struct TerrainGeometry {
+    gfx::RgBuffer clusters, lods, quantized, attributes, triangles, meshes, vertices, indices8;
+  } tg{};
+  if (terrain_geometry) {
+    const auto import = [&](const char* name, const gfx::BufferResource& buffer) {
+      return buffer.buffer.valid()
+                 ? graph.import_buffer(name, buffer, gfx::PipelineStage::AllCommands,
+                                       gfx::MemoryAccess::MemoryRead)
+                 : gfx::RgBuffer{};
+    };
+    tg.clusters = import("ring clusters", scene.clusters);
+    tg.lods = import("ring lods", scene.lods);
+    tg.quantized = import("ring quantized", scene.quantized);
+    tg.attributes = import("ring attributes", scene.attributes);
+    tg.triangles = import("ring triangles", scene.triangles);
+    tg.meshes = import("ring meshes", scene.meshes);
+    if (rt_chain) {
+      tg.vertices = import("ring vertices", scene.vertices);
+      tg.indices8 = import("ring indices8", scene.indices8);
+    }
+  }
+  auto read_ring_geometry = [&, terrain_geometry](gfx::PassBuilder& b, gfx::Access access) {
+    if (!terrain_geometry) return;
+    for (const gfx::RgBuffer handle : {tg.clusters, tg.lods, tg.quantized, tg.attributes,
+                                       tg.triangles, tg.meshes, tg.vertices, tg.indices8}) {
+      if (handle.valid()) b.read(handle, access);
+    }
   };
   // The streamed scene's page pool and its feedback. The pool buffers have to be *declared*, not
   // only written: a page upload is a transfer into the same `clusters`, `quantized`, `attributes`
@@ -1983,6 +2020,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   // Every pass that reads geometry out of the pool says so with the access its own stage uses, so
   // the one transfer that filled it this frame is made visible to each of them.
   auto read_pool = [&, streaming, rt_chain](gfx::PassBuilder& b, gfx::Access access) {
+    read_ring_geometry(b, access);
     if (!streaming) return;
     b.read(sb.pool_clusters, access);
     b.read(sb.pool_quantized, access);
@@ -2130,13 +2168,19 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   // A moving terrain's fields the host evaluated since the last frame, copied out of their staging
   // into their field slots before the cull pass and the pool pass read them. The staging buffers go
   // to the frame context once this frame is recorded, and are freed when it is done.
-  if (terrain_copies > 0) {
+  if (terrain_copies > 0 || terrain_geometry) {
     graph.add_pass(
         "terrain upload", gfx::PassKind::Transfer,
-        [&, terrain_copies](gfx::PassBuilder& b) {
+        [&, terrain_copies, terrain_geometry](gfx::PassBuilder& b) {
           for (u32 c = 0; c < terrain_copies; ++c) {
             b.read(rg_terrain_copies[c].staging, gfx::Access::TransferRead);
             b.write(rg_terrain_copies[c].field, gfx::Access::TransferWrite);
+          }
+          if (terrain_geometry) {
+            for (const gfx::RgBuffer handle : {tg.clusters, tg.lods, tg.quantized, tg.attributes,
+                                               tg.triangles, tg.meshes, tg.vertices, tg.indices8}) {
+              if (handle.valid()) b.write(handle, gfx::Access::TransferWrite);
+            }
           }
         },
         [&, terrain_copies](gfx::CommandList cb, gfx::RenderGraph&) {
@@ -2146,6 +2190,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             cb.copy_buffer(copy.staging.buffer, copy.field.buffer,
                            gfx::BufferCopy{0, 0, copy.bytes});
           }
+          for (const GpuScene::TerrainUpdate::GeometryCopy& copy : terrain_frame_.geometry)
+            cb.copy_buffer(copy.src, copy.dst, copy.region);
           timer.end(cb);
         });
   }
@@ -2272,6 +2318,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           b.read(rg_visible, gfx::Access::ComputeRead);
           b.write(rg_slots, gfx::Access::ComputeWrite);
           b.write(rg_alloc, gfx::Access::ComputeReadWrite);
+          read_pool(b, gfx::Access::ComputeRead);
         },
         [&, run](gfx::CommandList cb, gfx::RenderGraph&) {
           // Its own zone rather than a view's: one dispatch covers every view of the run, so
@@ -2307,6 +2354,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           b.read(rg_slots, gfx::Access::ComputeRead);
           b.write(rg_pool, gfx::Access::ComputeWrite);
           read_terrain(b);
+          read_pool(b, gfx::Access::ComputeRead);
         },
         [&, run](gfx::CommandList cb, gfx::RenderGraph&) {
           cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.deform.pipeline);
@@ -2513,6 +2561,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             b.read(rg_visible, gfx::Access::ComputeRead);
             b.write(rg_slots, gfx::Access::ComputeWrite);
             b.write(rg_alloc, gfx::Access::ComputeReadWrite);
+            read_pool(b, gfx::Access::ComputeRead);
           },
           [&](gfx::CommandList cb, gfx::RenderGraph&) {
             timer.begin(cb, "shadow");
@@ -2545,6 +2594,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             b.read(rg_slots, gfx::Access::ComputeRead);
             b.write(rg_pool, gfx::Access::ComputeWrite);
             read_terrain(b);
+            read_pool(b, gfx::Access::ComputeRead);
           },
           [&, count](gfx::CommandList cb, gfx::RenderGraph&) {
             cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.deform.pipeline);
@@ -2832,6 +2882,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             b.read(rt.clas_data, gfx::Access::RayQueryRead);
             b.read(rg_visible, gfx::Access::ComputeRead);  // a hit's entry -> its pair, the id
             b.write(rg_vis, gfx::Access::ComputeWrite);
+            read_pool(b, gfx::Access::ComputeRead);
           },
           [&](gfx::CommandList cb, gfx::RenderGraph&) {
             cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.trace.pipeline);
@@ -2981,11 +3032,14 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   if (compiled) graph.execute(commands_);
   // The terrain fields' staging is this frame's to free once it is done (the frame context holds
   // it until the slot comes round), recorded or not: nothing else will.
-  u64 terrain_bytes = 0;
+  u64 terrain_bytes = terrain_frame_.geometry_bytes;
   for (u32 c = 0; c < terrain_copies; ++c) {
     terrain_bytes += terrain_frame_.copies[c].bytes;
     frames_.defer_destroy(terrain_frame_.copies[c].staging);
   }
+  for (const gfx::BufferResource& staging : terrain_frame_.retire)
+    frames_.defer_destroy(staging);
+  terrain_frame_.retire.clear();
   if (slot < slot_terrain_bytes_.size()) slot_terrain_bytes_[slot] = terrain_bytes;
   return compiled;
 }

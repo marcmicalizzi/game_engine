@@ -18,6 +18,13 @@
 // it arrives, catching up at the same capped speed: a late field costs the time-lapse a moment of
 // stillness and never a step.
 //
+// **One surface time for every level** (`terrain_surface_frame`). The scene's grid and the rings
+// round the camera are the same function of time at different spacings, and where two meet they
+// must draw the same sand: a ring a game hour ahead of the grid round it would stand a step above
+// it wherever the dunes move, which no skirt hides. So the levels share the surface time, each with
+// its own pair, and it moves no further than the nearest of their b's and no faster than any
+// level's bound allows; a level whose next field is late holds them all.
+//
 // **The cadence is by displacement, not the calendar** (`terrain_next_time`). The generator knows
 // how far each band travels — the wind's flux path over the band's height, Bagnold's rule, storms
 // included — so the next field is timed for when the fastest band will have travelled
@@ -40,10 +47,12 @@
 #include <domain/gfx/cluster_cull.h>
 #include <domain/gfx/resources.h>
 #include <systems/renderer/terrain.h>
+#include <systems/renderer/terrain_rings.h>
 
 #include <condition_variable>
 #include <memory>
 #include <mutex>
+#include <span>
 #include <string>
 #include <thread>
 
@@ -116,14 +125,34 @@ struct TerrainFrameResult {
 TerrainFrameResult terrain_blend_frame(TerrainBlend& blend, f64 target_s, f64 budget_m,
                                        TerrainNextField& next) noexcept;
 
+// **One frame of the whole terrain's surface** (above): the same rules for several levels that
+// share one surface time, every `blends[k].surface_s` equal on entry and left equal. The surface
+// moves towards `target_s`, never past any level's b, never by more than `budgets_m[k]` of height
+// on level k; a level standing at its b takes its `next[k]` when it is ready (cleared when taken)
+// and the surface moves on. `moved_m[k]` is what level k's vertices moved at most, `installed[k]`
+// the fields it took. At most `k_max_surface_levels` levels.
+inline constexpr u32 k_max_surface_levels = 8;
+struct TerrainSurfaceResult {
+  f64 surface_s = 0.0;
+  bool held = false;    // it stood at a level's b with game time still to reach and no next field
+  bool capped = false;  // a level's bound stopped it short of the game's time and of every b
+  u32 limiting = ~0u;   // the level that held or capped it
+};
+TerrainSurfaceResult terrain_surface_frame(std::span<TerrainBlend> blends, f64 target_s,
+                                           std::span<const f64> budgets_m,
+                                           std::span<TerrainNextField> next, std::span<f64> moved_m,
+                                           std::span<u32> installed) noexcept;
+
 // The largest |b - a| over the samples two windows of one lattice share (`a` and `b` are `nx * nz`
 // heights, rows of x in order of z), and the largest |f - rest|: what the blend's speed and the
 // cull's padding are computed from.
 f64 terrain_field_delta(std::span<const f32> a, const gfx::TerrainField& wa, std::span<const f32> b,
                         const gfx::TerrainField& wb) noexcept;
 
-// **The time-lapse itself**: the levels' fields evaluated off the frame, handed to the GPU scene,
-// and blended a frame at a time.
+// **The time-lapse itself, and the rings round the camera**: the levels' fields evaluated off the
+// frame, handed to the GPU scene and blended a frame at a time; and, with rings, their re-centres —
+// the chunks rebuilt off the frame, uploaded into free slots a few a frame, and swapped in whole in
+// one frame (renderer.md, "The rings in the scene").
 class TerrainMotion {
  public:
   TerrainMotion() = default;
@@ -132,21 +161,49 @@ class TerrainMotion {
   TerrainMotion& operator=(const TerrainMotion&) = delete;
 
   // False, with a sentence, for a scene with no terrain levels (`ResolvedSettings::terrain_levels`)
-  // or a rate not positive. Evaluates every level's field at the scene's own time on the calling
-  // thread (through `jobs` when given) and hands it over, so the first frame draws it: the rest
-  // pose, to the bit on the scene's grid. The scene must outlive the motion.
-  bool start(GpuScene& scene, const TimeLapseConfig& config, jobs::JobSystem* jobs,
-             std::string* error = nullptr);
+  // or a negative rate. `rings` is the set the GPU scene was made with, or null; the motion owns it
+  // from here (its worker rebuilds it). Evaluates every level's field at the scene's own time on
+  // the calling thread (through `jobs` when given) and hands it over, so the first frame draws it:
+  // the rest pose, to the bit on the scene's grid. A rate of zero is a still field whose rings
+  // follow the camera. The scene and the rings must outlive the motion.
+  bool start(GpuScene& scene, TerrainRingSet* rings, const TimeLapseConfig& config,
+             jobs::JobSystem* jobs, std::string* error = nullptr);
   // Before a frame: game time moves on by `real_dt_s * rate`, each level's surface towards it, a
-  // finished field goes to the GPU scene and the next is asked for. What the frame draws is handed
-  // to the scene (`GpuScene::terrain_show`).
-  void frame(f64 real_dt_s);
-  // Stops the worker, waiting for a field in flight.
+  // finished field goes to the GPU scene and the next is asked for; with rings, a camera that has
+  // left a ring's middle half asks for a re-centre, and a finished one is uploaded and swapped in.
+  // What the frame draws is handed to the scene (`GpuScene::terrain_show`, `terrain_chunk_show`).
+  void frame(f64 real_dt_s, f32 camera_x = 0.0f, f32 camera_z = 0.0f);
+  // Stops the worker, waiting for a field or a re-centre in flight.
   void finish();
 
   bool active() const noexcept { return scene_ != nullptr; }
   const TimeLapseConfig& config() const noexcept { return config_; }
   f64 game_time_s() const noexcept { return start_s_ + game_s_; }
+
+  // What the rings did (renderer.md, "The rings in the scene").
+  struct RingStats {
+    u32 rebuilds = 0;         // re-centres the worker built
+    u32 swaps = 0;            // and the frames that swapped them in
+    u32 chunks_built = 0;     // chunks rebuilt over all re-centres
+    u32 chunks_kept = 0;      // chunks a re-centre kept
+    u32 chunks_uploaded = 0;  // chunks copied onto the device after the first frame
+    u64 upload_bytes = 0;
+    u32 upload_frames = 0;      // frames that uploaded chunks
+    u32 failed = 0;             // re-centres dropped (no room: a slot or an arena)
+    f64 last_rebuild_ms = 0.0;  // the ring worker's wall time for the last re-centre's chunks
+    f64 max_rebuild_ms = 0.0;
+    f64 last_pairs_ms = 0.0;  // the field worker's for carrying the rings' pairs over
+    f64 max_pairs_ms = 0.0;
+    u32 last_upload_frames = 0;  // frames the last re-centre's chunks took to upload
+    u64 last_upload_bytes = 0;
+    u32 last_swap_frames = 0;    // frames from asking for the last re-centre to drawing it
+    u32 last_frozen_frames = 0;  // of which the rings held their pairs
+    f64 arena_peak_share = 0.0;  // the fullest a ring's arenas were, at a swap: old and new chunks
+  };
+  const RingStats& ring_stats() const noexcept { return ring_stats_; }
+  bool has_rings() const noexcept { return rings_ != nullptr; }
+  // The layout the frames draw: the last re-centre swapped in.
+  const TerrainRingLayout& ring_layout() const noexcept { return shown_layout_; }
 
   // What a summary reports (renderer.md, "The dunes in time-lapse").
   struct LevelStats {
@@ -179,15 +236,22 @@ class TerrainMotion {
   struct Field {
     u32 slot = ~0u;
     f64 time_s = 0.0;
-    f64 padding_m = 0.0;  // largest |field - rest|
+    f64 padding_m = 0.0;  // largest |field - rest| over what the level draws
     f64 delta_m = 0.0;    // largest |field - the field before it|
+    gfx::TerrainField window;
+  };
+  // A field the worker keeps on the CPU: a level's newest few, for the next one's delta and a
+  // re-centre's chunks.
+  struct Cached {
+    f64 time_s = 0.0;
+    gfx::TerrainField window;
+    Vector<f32> heights;
   };
   struct Level {
     f64 spacing_m = 0.0;
+    u32 slots = 0;             // field slots the GPU scene gave it
     TerrainLattice lattice;    // the level's (GpuScene::terrain_lattice)
-    gfx::TerrainField window;  // the lattice window every field of the level covers
-    Vector<f32> rest;          // the heights at the scene's time: what the mesh was built from
-    Vector<f32> latest;        // the last field evaluated, for the next one's delta
+    gfx::TerrainField window;  // what the level's fields cover under the layout drawn
     Field a;
     Field b;
     Field next;
@@ -196,27 +260,89 @@ class TerrainMotion {
     TerrainBlend blend;
     f64 eval_ms_ema = 0.0;
     LevelStats stats;
+    Vector<u32> shown_slots;  // a ring level's chunks drawn: their slots
+    // The worker's alone once the motion has started (the frame never reads them): the heights
+    // the scene's grid was built from (level 0), and the level's recent fields.
+    Vector<f32> rest;
+    Vector<Cached> cache;
   };
-  // One evaluation, handed to the worker and back.
+  // A ring level's pair over a re-centre's layout: the pair drawn when the rings froze, over the
+  // new layout's window when the ring moved (slots of their own), or the same fields with their
+  // paddings measured again when only its chunks changed.
+  struct Pair {
+    bool moved = false;           // its chunks changed
+    bool window_changed = false;  // and the window its fields cover with them
+    bool has_b = false;
+    Field a;
+    Field b;
+    gfx::BufferResource staging_a;
+    gfx::BufferResource staging_b;
+  };
+  // One piece of the field worker's work, handed to it and back: a field, or a re-centre's pairs.
   struct Task {
+    enum class Kind : u8 { field, pairs } kind = Kind::field;
+    // A field of `level` at `time_s` over `window`, written into `staging`; its delta is measured
+    // from the level's field at `from_s`, and cached fields before `keep_from_s` are dropped.
     u32 level = 0;
     f64 time_s = 0.0;
+    f64 from_s = 0.0;
+    f64 keep_from_s = 0.0;
+    gfx::TerrainField window;
     gfx::BufferResource staging;
-    Vector<f32> heights;
     f64 delta_m = 0.0;
     f64 padding_m = 0.0;
     f64 eval_ms = 0.0;
     u64 hash = 0;
+    // A re-centre's pairs: per ring level, the pair to carry over to the new layout.
+    Pair pairs[k_max_terrain_levels];
+    bool done = false;
+  };
+  // A re-centre's chunks, on the ring worker: the rule for a camera at (x, z), the chunks it
+  // changes rebuilt from the field at `time_s`.
+  struct RingTask {
+    f32 camera_x = 0.0f;
+    f32 camera_z = 0.0f;
+    f64 time_s = 0.0;
+    TerrainRingLayout layout;  // where the frame expects the rings to land
+    u32 moved = 0;
+    u32 built = 0;
+    u32 kept = 0;
+    f64 ms = 0.0;
+    bool ok = true;
+    std::string error;
     bool done = false;
   };
   void worker_main();
-  void run(Task& task);
+  void ring_worker_main();
+  void run_field(Task& task);
+  void run_pairs(Task& task);
+  void run_rings(RingTask& task);
+  const f32* field_heights(Level& level, f64 time_s, const gfx::TerrainField& window,
+                           Vector<f32>& scratch);
+  void field_over(Level& level, f64 time_s, const gfx::TerrainField& window, Vector<f32>& out);
+  void keep_field(Level& level, f64 time_s, const gfx::TerrainField& window, Vector<f32>&& heights,
+                  f64 keep_from_s);
+  bool worker_busy();
+  void wait_worker();
+  void post(Task&& task);
   bool schedule(u32 level);
+  void schedule_next();
+  void ask_recentre(f32 camera_x, f32 camera_z);
+  bool schedule_pairs();
+  void advance_recentre(bool complete);
+  bool take_rings(bool block);
   void take_finished();
-  u32 free_slot(const Level& level) const noexcept;
+  void take_field(Task& finished);
+  void take_pairs(Task& finished);
+  bool upload_chunks(bool all);
+  void freeze_rings();
+  void swap_rings();
+  void abandon_recentre(const std::string& why);
+  u32 free_slot(const Level& level, u32 besides = ~0u) const noexcept;
   void show(u32 level);
 
   GpuScene* scene_ = nullptr;
+  TerrainRingSet* rings_ = nullptr;
   TimeLapseConfig config_;
   jobs::JobSystem* jobs_ = nullptr;
   std::unique_ptr<TerrainDesc> desc_;
@@ -225,7 +351,41 @@ class TerrainMotion {
   f64 start_s_ = 0.0;
   f64 game_s_ = 0.0;
   f64 last_move_m_ = 0.0;
-  // The worker: one task at a time, in the order asked.
+  // **A re-centre, from its asking to its swap**: the chunks rebuilt on the ring worker while the
+  // sand moves on (`rebuilding`), uploaded into free slots a budget a frame (`uploading`); then the
+  // rings freeze their pairs (`pairs_asked`) while the field worker carries them over to the new
+  // layout (`pairing`), whose copies are handed to the scene (`swapping`); then the swap, in the
+  // frame that records those copies.
+  enum class Recentre : u8 {
+    none,
+    rebuilding,
+    uploading,
+    pairs_asked,
+    pairing,
+    swapping
+  } recentre_ = Recentre::none;
+  // A ring level holds its pair from the freeze to the swap: the pair is what the swap carries
+  // over to the new layout, at the same blend.
+  bool frozen(u32 level) const noexcept { return level > 0 && recentre_ >= Recentre::pairs_asked; }
+  TerrainRingLayout shown_layout_;  // what the frames draw
+  TerrainRingLayout pending_layout_;
+  u32 pending_moved_ = 0;
+  Pair pending_[k_max_terrain_levels];
+  struct Upload {
+    u32 level = 0;
+    u32 chunk = 0;
+  };
+  Vector<Upload> uploads_;
+  u32 upload_next_ = 0;
+  u32 upload_frames_ = 0;  // of the re-centre being uploaded
+  u64 upload_bytes_ = 0;
+  u64 upload_budget_bytes_ = 0;
+  bool rings_stopped_ = false;  // a re-centre failed: the rings stay where they are
+  u64 frames_ = 0;
+  u64 asked_frame_ = 0;
+  u64 frozen_frame_ = 0;
+  RingStats ring_stats_;
+  // The field worker: one task at a time, in the order asked.
   std::thread worker_;
   std::mutex mutex_;
   std::condition_variable wake_;
@@ -233,6 +393,14 @@ class TerrainMotion {
   Task task_;
   bool busy_ = false;  // a task is posted and not yet taken back
   bool stop_ = false;
+  // The ring worker: one re-centre's chunks at a time.
+  std::thread ring_worker_;
+  std::mutex ring_mutex_;
+  std::condition_variable ring_wake_;
+  std::condition_variable ring_done_;
+  RingTask ring_task_;
+  bool ring_busy_ = false;
+  bool ring_stop_ = false;
 };
 
 }  // namespace engine::renderer
