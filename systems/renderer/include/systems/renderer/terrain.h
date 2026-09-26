@@ -90,6 +90,10 @@ struct TerrainDesc {
   // (derived from the dune height and wavelength).
   bool has_bands = false;
   Vector<TerrainBand> bands;
+  // With `dunes`: sandstorms a year (0..31) and their peak wind as a multiple of the mean
+  // (terrain.md, "Storms"). None by default, and none leaves the hash as it was.
+  u32 storms_per_year = 0;
+  f32 storm_strength = 2.5f;
 };
 
 // With `dunes`: false, with a sentence, when the band table is one the generator cannot be built

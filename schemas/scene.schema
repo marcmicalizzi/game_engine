@@ -483,8 +483,9 @@ struct TerrainBand @version(1) {
   side_days: u32 = 120
   sharp_days: u32 = 30
   couple: DuneCouple = None
-  /// How far inside the earlier bands' footprints the coupling fades across, metres: at least
-  /// fifteen times the band's height, or its fade steepens its faces past the angle of repose
+  /// How far inside the earlier bands' footprints the coupling fades across, metres. The fade's
+  /// own slope is charged to the band's room, so a narrow width lowers the band where it fades
+  /// rather than steepening it; fifteen times the band's height keeps that small
   /// (docs/subsystems/terrain.md, "The repose limiter").
   couple_width: f32 = 0
   /// Kept by the far detail (past 2 km): false for bands of a few metres and less.
@@ -529,6 +530,14 @@ struct Terrain @version(3) {
   /// With the generator: the band table, tallest first. Null: the default's three bands, derived
   /// from `dune_height` and `dune_wavelength`. An empty table is refused.
   bands: TerrainBand[]? @since(3)
+  /// With the generator: sandstorms a year, 0 to 31 — a few hours each of wind at about
+  /// `storm_strength` times the mean, blowing within 60 degrees of the prevailing wind, their sand
+  /// summed into the same flux integral the days are (docs/subsystems/terrain.md, "Storms"). 0 is
+  /// no storms, the record as before they existed.
+  storms_per_year: u32 = 0 @since(3)
+  /// A storm's peak wind, as a multiple of the record's mean strength; each storm draws 80% to 120%
+  /// of it. By the cube law 2.5 moves about sixteen times a mean day's sand an hour.
+  storm_strength: f32 = 2.5 @since(3)
 }
 
 /// What a ruins entry is drawn as in one ring of a streamed world (docs/subsystems/world.md).

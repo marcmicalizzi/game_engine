@@ -20,6 +20,18 @@
 // the daily weather and short enough that the table and its prefix sums are 125 KiB, built in well
 // under a millisecond.
 //
+// **Storm hours.** A day's flux spread evenly over it is the strongest thing a day can say, and a
+// sandstorm is a few hours, not a day. So the record also draws `storms_per_year` storms a year
+// from the seed: each an interval of a few hours inside one day, with its own direction (within
+// `storm_spread_turn` of the prevailing wind) and a strength that rises and falls over it (a half
+// sine, peaking at `storm_speed_q16` of the record's mean strength), whose flux is the cube law's
+// on the same scale as the days'. A storm day's flux is its own day's plus the storm's, so the
+// prefix sums hold the storms and a period's total counts them; within a storm day the integral
+// follows a cumulative table of its 24 hours rather than a straight line. I(t) is still the
+// period's cycles, the prefix to the day and the day's own profile — the line, or the storm's table
+// — and `wind_at(t)` answers the wind in the hour holding t from the same numbers, so a dune, a
+// footprint's refill, the dust and the gameplay all read one wind (terrain.md, "Storms").
+//
 // Everything is integer: the table is built from the engine's hash and the integer sine of
 // fixed.h, and I(t) is exact, so the integral from t1 to t2 is `integral(t2) - integral(t1)`
 // exactly, and the sum of the daily fluxes a stepwise simulation would add up day by day is the
@@ -57,17 +69,20 @@ struct WindParams {
   i32 seasonal_q16 = 26214;
   i32 gust_q16 = 22938;
   i32 calm_q16 = 9830;
+  // Storms (terrain.md, "Storms"). None by default, so a record described before storms existed
+  // is the same bytes. Each lasts `storm_hours_min` to `storm_hours_max` hours of one day, blows
+  // within `storm_spread_turn` of the prevailing wind (10,923 is 60 degrees), and peaks at
+  // `storm_speed_q16` of the record's mean strength (2.5: about 16 times a mean day's flux an hour,
+  // by the cube law).
+  i32 storms_per_year = 0;
+  i32 storm_hours_min = 3;
+  i32 storm_hours_max = 12;
+  i32 storm_spread_turn = 10923;
+  i32 storm_speed_q16 = 163840;
 };
 
-// One day of the record: 20 bytes (tests/size_table.cpp).
-struct WindDay {
-  i32 fx = 0;         // the day's sand flux towards +x, cm^2
-  i32 fz = 0;         // towards +z
-  i32 magnitude = 0;  // |flux|, cm^2; 0 on a calm day
-  i32 speed_q16 = 0;  // the wind's strength relative to the record's mean, Q16
-  u16 turn = 0;       // where the sand moves to, binary angle
-  u16 calm = 0;       // 1 on a calm day
-};
+// The most storms a year a record may hold: a period's storms are numbered in a byte.
+inline constexpr i32 k_max_storms_per_year = 31;
 
 // A flux integral: sand moved per unit width, as a vector and as the integral of its magnitude
 // (the scalar is what fills a footprint; the vector is what moves a dune). cm^2.
@@ -80,6 +95,40 @@ struct FluxIntegral {
 constexpr FluxIntegral operator-(const FluxIntegral& a, const FluxIntegral& b) noexcept {
   return FluxIntegral{a.x - b.x, a.z - b.z, a.magnitude - b.magnitude};
 }
+
+// One day of the record: 20 bytes (tests/size_table.cpp).
+struct WindDay {
+  i32 fx = 0;         // the day's sand flux towards +x, cm^2, its storm's included
+  i32 fz = 0;         // towards +z
+  i32 magnitude = 0;  // |flux| summed over its hours, cm^2; 0 on a calm day without a storm
+  i32 speed_q16 = 0;  // the day's own wind's strength relative to the record's mean, Q16
+  u16 turn = 0;       // where the day's own wind moves the sand to, binary angle
+  u8 calm = 0;        // 1 on a calm day
+  u8 storm = 0;       // 1 + the index of the day's storm in the record's, 0 for none
+};
+
+// A storm of the record: which day, which hours, where it blows, and its hours' cumulative flux.
+struct WindStorm {
+  i32 day = 0;         // in the period
+  i32 first_hour = 0;  // [first_hour, first_hour + hours) of that day
+  i32 hours = 0;
+  u16 turn = 0;      // where it moves the sand to
+  i32 peak_q16 = 0;  // its strongest hour's strength, Q16 of the record's mean
+  // The day's flux to the start of each of its hours, storm and day together: 25 entries, the
+  // last the day's total. cm^2.
+  FluxIntegral hour[25];
+};
+
+// The wind in the hour holding a time: its sand flux over that hour, where it moves the sand, how
+// strong it is, and whether it is a storm's. What everything that needs "the wind now" reads.
+struct WindAt {
+  FluxIntegral flux;  // over the hour, cm^2
+  u16 turn = 0;       // of the hour's flux (the day's own direction in a calm)
+  i32 speed_q16 = 0;  // the stronger of the day's wind and the storm's this hour
+  bool storm = false;
+  i32 hour = 0;  // of the day, 0..23
+  i64 day = 0;
+};
 
 class WindRecord {
  public:
@@ -99,8 +148,12 @@ class WindRecord {
   FluxIntegral between(i64 from_us, i64 to_us) const noexcept {
     return integral(to_us) - integral(from_us);
   }
-  // The period's totals: what one cycle of the record moves.
+  // The period's totals: what one cycle of the record moves, storms included.
   const FluxIntegral& period_total() const noexcept { return prefix_[k_record_days]; }
+  // The wind in the hour holding `time_us`.
+  WindAt wind_at(i64 time_us) const noexcept;
+  // The period's storms, in day order.
+  const Vector<WindStorm>& storms() const noexcept { return storms_; }
 
  private:
   WindParams params_;
@@ -109,6 +162,7 @@ class WindRecord {
   i32 prevailing_z_ = 0;
   Vector<WindDay> days_;         // k_record_days
   Vector<FluxIntegral> prefix_;  // k_record_days + 1: prefix_[d] is days [0, d)
+  Vector<WindStorm> storms_;
 };
 
 }  // namespace engine::terrain

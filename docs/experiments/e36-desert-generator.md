@@ -67,3 +67,58 @@ It does not decide how the dunes look — that is the owner's fly-through on his
 - GCC only for the timing; Clang reproduces the same bits (the golden hashes) but was not timed.
 - No ridges in the bench field: a scene's ridges add a segment distance per point per ridge within twice its width, and the desert overlook has three.
 - The storage numbers are the overlay tests' walks, not a played game's: a real player's footprints follow paths, which touch fewer blocks than the tests' sweep.
+
+## 2026-09-26: the scale spectrum, the repose limiter, rings, a time-lapse and storms
+
+Same container and build (GCC 13.3 release, x86-64-v3, contraction off). **Machine state:** the tile and re-evaluation benches ran with `--wait-quiet` and recorded 0–3% of the CPU in other processes; the ring numbers are single timed builds from a test harness taken while the host's CPU pressure (`/proc/pressure/cpu`) was near zero, after an earlier attempt under 80% pressure had to be abandoned — the pool reached about 3.3 times one core, so their wall times are this box's and their CPU times are the portable number.
+
+**A tile, before and after** (`terrain.tile.eval`, 128 cells a side, median):
+
+| Field | 2026-09-25 | Band table and binning | Repose limiter |
+|---|---|---|---|
+| default, three bands | 2.62 ms | 2.37 ms | 3.3–3.5 ms |
+| erg, five bands | — | 5.61 ms | 7.0–7.2 ms |
+
+The limiter costs each crest a point visits its slope bound, its footprint depth and a fade width more of reach. The first version cost 4.5 times, because the perpendicular correction called the bit-by-bit square root twice per crest and every crest was widened by its band's worst bend; a 257-entry table and a per-crest widening took it to 1.4 and 1.3 times.
+
+**The slope statistic** (sand vertices over 36°, [terrain](../subsystems/terrain.md#the-repose-limiter)):
+
+| Where | Before | After |
+|---|---|---|
+| 49 reference tiles at 25 cm | 0.48% (worst 53.5°) | 0 (worst 34.1°) |
+| erg, a 256 m slip-face window at 0.5 m | 26,769 | 0 |
+| erg, 6.1 km at 1 m, 0 / 1 / 3 / 7 years, with and without 12 storms a year | — | 0 of 5.79 M each |
+| the reference field, 36 windows at 25 cm, four times | — | 0 of 5.73 M each |
+| the erg over the overlook's ridges and basin, 5.1 km at 1 m | 442 (before the features' cap) | 0 of 26 M |
+
+**Rings** (the erg, the camera at (250, −120) m, one build):
+
+| Ring | Chunks | Triangles | Clusters | Coarsest cut | Wall / CPU |
+|---|---|---|---|---|---|
+| inner, 250 m at 50 cm | 72 | 2.0 M | 44,722 | 44,068 triangles | 1.9 s / 6.3 s |
+| middle, 999 m at 1 m | 247 | 7.5 M | 167,029 | 143,042 triangles | 7.3 s / 23.7 s |
+| outer, 6.1 km at 1.5 m | 943 | 30.0 M | 667,942 | 520,528 triangles | 36.9 s / 104 s |
+
+A ring built whole was 6.4 s for the inner ring's 2.1 million triangles, on one thread. A 150 m re-centre rebuilt 55 and 103 chunks and kept 264 and 216: 3.0 and 4.0 s wall. All three rings' chunk DAGs held about 5.7 GB.
+
+**Re-evaluation** (`terrain.field.reevaluate`, the erg's whole grid at a new time on the pool, median of 3): **2.58 s at 2,049 a side, 8.81 s at 4,097** — 530 ns a vertex of wall time.
+
+**Storms** (`terrain_tests.cpp`): 12 storms a year are 85 storm hours and 5.5% more sand over the period; a year's migration 7% further for every band, turned 1.4°; the stormiest day 5.5 mean days of sand, a storm's peak hour 24 mean hours.
+
+### What surprised me
+
+- **Every term the limiter needed was found by the statistic, not by thinking.** Absorption alone left the crest-end cross term, then a reversed slip face on a stoss, then the coupling's fade, then the ridge's squeeze, then the masks under tall dunes, then a barchan's fade in a storm year: seven rounds, each a few hundred vertices in millions, each a place where one term's gradient met another's height.
+- **A mask is a slope.** Every multiplicative thing in the field — the taper, the coupling, the ridge's thinning, the basin's flattening, the lag's squeeze — contributes height × its own gradient, and on a 150 m dune that is not small. The cure each time was to make the multiplier's gradient part of the budget, or to cap the height under it first.
+- **Locking chunk borders is cheap where it matters and costly where it does not.** The near chunks never reach their coarse levels; the far chunks keep 2.2% of their triangles at the coarsest cut, which is what the outer ring pays for being buildable in parallel and in pieces.
+
+### What it decides
+
+- The rings' defaults (tunables `terrain.rings.*`) and that the outer ring stays the scene's own cached mesh: at 37 s and most of 5.7 GB it is not something to rebuild on a re-centre.
+- A time-lapse of the erg wants its 2,049 grid or a region, not the 4,097 one, at a game day a real second; the step rule skips rather than queues, so a slow evaluation shows as fewer steps, not a growing lag.
+- Storms stay opt-in per scene (`storms_per_year`), 12 a year in the erg scenes.
+
+### Caveats
+
+- The ring times are one build each, not a benched median; `terrain.ring.build` repeats them.
+- The rings are not drawn and the time-lapse's heights are not uploaded: neither cost includes the GPU.
+- The owner's machine was not used; the look of any of it is his flight to judge.

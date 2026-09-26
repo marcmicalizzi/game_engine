@@ -543,9 +543,9 @@ TEST_CASE("terrain: golden hashes of the reference tile on every toolchain") {
     u64 golden;
   };
   const Row rows[] = {
-      {0, 0xa03095a640aa8920ull},
-      {90 * k_day + 6 * 3600 * k_us_per_second, 0x6da261070ff17a84ull},
-      {25 * k_year + 200 * k_day, 0x31b9425cff40f30aull},
+      {0, 0x632fb88e12b208bbull},
+      {90 * k_day + 6 * 3600 * k_us_per_second, 0x53e88152156ddb13ull},
+      {25 * k_year + 200 * k_day, 0xe037c4e040cddcd1ull},
   };
   MESSAGE("field hash " << hex(field.hash()));
   CHECK(field.hash() == 0x950ca7df2c6048adull);
@@ -817,9 +817,9 @@ void print_stats(const char* name, const DuneField& field, const FieldStats& st)
 TEST_CASE("terrain: golden statistics of the default and the erg") {
   const StatsRow rows[] = {
       {"default, 1 km at 4 m", reference_desc(), -512'000, -512'000, 257, 4'000,
-       0x25713d9620e73bcaull},
-      {"erg, 6 km at 24 m", erg_desc(), -3'072'000, -3'072'000, 257, 24'000, 0xd1791fa3c66fd2b5ull},
-      {"erg, a slip face at 0.5 m", erg_desc(), 250'000, -128'000, 513, 500, 0x71da6b6da056f461ull},
+       0x988f00dab9665187ull},
+      {"erg, 6 km at 24 m", erg_desc(), -3'072'000, -3'072'000, 257, 24'000, 0xbe18cf12866489b1ull},
+      {"erg, a slip face at 0.5 m", erg_desc(), 250'000, -128'000, 513, 500, 0x9675f50c35d91508ull},
   };
   for (const StatsRow& row : rows) {
     const DuneField field(row.desc);
@@ -858,4 +858,153 @@ TEST_CASE(
   MESSAGE("erg: 0 of " << sand << " sand vertices over 36 degrees, " << steep
                        << " over 30 (the slip faces)");
   CHECK(steep > sand / 100);  // the windows hold slip faces
+  // And the erg over the desert overlook's rock (content/test-scenes/desert-dunes): its ridges and
+  // oasis basin thin and flatten the sand, and a 150 m dune scaled across a ridge's edge was a
+  // slope of its own until the features' cap. The window where it showed, and the basin, at a
+  // metre, three years in.
+  FieldDesc rock = erg_desc();
+  rock.seed = 23;
+  rock.wind.seed = 23;
+  rock.wind.storms_per_year = 12;
+  rock.ridges.push_back(RidgeFeature{-2'200'000, 420'000, -100'000, 330'000, 150'000});
+  rock.ridges.push_back(RidgeFeature{100'000, 330'000, 2'200'000, 460'000, 150'000});
+  rock.ridges.push_back(RidgeFeature{-700'000, -260'000, 520'000, -340'000, 110'000});
+  rock.basins.push_back(BasinFeature{0, 60'000, 200'000});
+  const DuneField overlook(rock);
+  // The erg with its scene's storms, where a floor-coupled barchan's fade stood past 36 degrees
+  // seven years in before the fade's slope joined the budget.
+  FieldDesc stormy = erg_desc();
+  stormy.wind.storms_per_year = 12;
+  FieldStats barchans;
+  field_stats(DuneField(stormy), -2'816'000, -3'072'000, 257, 257, 1'000, 7 * k_year, Detail::dunes,
+              nullptr, &pool, barchans);
+  CHECK(barchans.over_36() == 0u);
+  for (const Window w :
+       {Window{-1'536'000, 512'000}, Window{-1'280'000, 768'000}, Window{-128'000, -68'000}}) {
+    FieldStats st;
+    field_stats(overlook, w.x0, w.z0, 257, 257, 1'000, 3 * k_year, Detail::dunes, nullptr, &pool,
+                st);
+    CHECK(st.over_36() == 0u);
+  }
+}
+
+TEST_CASE("terrain: storm hours — the integral is the hours' winds, hour by hour") {
+  WindParams quiet;
+  quiet.seed = 7;
+  WindParams stormy = quiet;
+  stormy.storms_per_year = 12;
+  const WindRecord calm(quiet);
+  const WindRecord record(stormy);
+  const Vector<WindStorm>& storms = record.storms();
+  REQUIRE(storms.size() == 12u * k_record_years);
+  constexpr i64 k_hour = 3'600 * k_us_per_second;
+  u32 storm_hours = 0;
+  for (u32 k = 0; k < storms.size(); ++k) {
+    const WindStorm& s = storms[k];
+    if (k > 0) CHECK(storms[k - 1].day < s.day);  // in day order, one a day
+    CHECK(s.hours >= 3);
+    CHECK(s.hours <= 12);
+    CHECK(s.first_hour + s.hours <= 24);
+    CHECK(record.day(s.day).storm == k + 1);
+    // Hour by hour through the storm's day and the day after it: what the integral moves over an
+    // hour is exactly the wind that hour reports, and the storm blows in exactly its hours.
+    for (i64 day = s.day; day <= s.day + 1; ++day) {
+      for (i64 hour = 0; hour < 24; ++hour) {
+        const i64 t = day * k_us_per_day + hour * k_hour;
+        const WindAt at = record.wind_at(t + k_hour / 2);
+        CHECK(record.between(t, t + k_hour) == at.flux);
+        // That day's own storm: the day after may have one of its own.
+        const u8 index = record.day(day).storm;
+        const WindStorm* own = index != 0 ? &storms[index - 1u] : nullptr;
+        const bool in_storm =
+            own != nullptr && hour >= own->first_hour && hour < own->first_hour + own->hours;
+        CHECK(at.storm == in_storm);
+        if (day == s.day) storm_hours += at.storm;
+        if (in_storm) CHECK(at.turn == own->turn);
+      }
+    }
+    // The day's total is its 24 hours, and the day without its storm is the storm-free record's.
+    const i64 t = static_cast<i64>(s.day) * k_us_per_day;
+    const FluxIntegral whole = record.between(t, t + k_us_per_day);
+    CHECK(whole.x == record.day(s.day).fx);
+    CHECK(whole.magnitude == record.day(s.day).magnitude);
+    CHECK(record.day(s.day).speed_q16 == calm.day(s.day).speed_q16);
+    CHECK(whole.magnitude > calm.day(s.day).magnitude);
+  }
+  u32 expected_hours = 0;
+  for (const WindStorm& s : storms)
+    expected_hours += static_cast<u32>(s.hours);
+  CHECK(storm_hours == expected_hours);
+  // Every day without a storm is the storm-free record's day, and the prefix sums hold the storms:
+  // the period's total is the days', and the integral is continuous across every midnight.
+  FluxIntegral sum;
+  u32 same = 0;
+  for (i32 d = 0; d < k_record_days; ++d) {
+    const WindDay& a = record.day(d);
+    const WindDay& b = calm.day(d);
+    if (a.storm == 0)
+      same += a.fx == b.fx && a.fz == b.fz && a.magnitude == b.magnitude && a.turn == b.turn;
+    sum.x += a.fx;
+    sum.z += a.fz;
+    sum.magnitude += a.magnitude;
+  }
+  CHECK(same == static_cast<u32>(k_record_days) - storms.size());
+  CHECK(sum == record.period_total());
+  for (i64 d = -3; d < 3 * k_record_days; d += 97) {
+    const WindDay& day = record.day(d);
+    CHECK(record.between(d * k_us_per_day, (d + 1) * k_us_per_day) ==
+          (FluxIntegral{day.fx, day.fz, day.magnitude}));
+  }
+  // And a sample of hours across three periods, before the epoch too.
+  u32 checked = 0;
+  for (i64 h = -48; h < 3 * k_record_days * 24; h += 101) {
+    const i64 t = h * k_hour;
+    CHECK(record.between(t, t + k_hour) == record.wind_at(t).flux);
+    ++checked;
+  }
+  // How a storm compares with the weather round it: its day against a mean day, its strongest hour
+  // against a mean day's hour.
+  const f64 mean_day = static_cast<f64>(calm.period_total().magnitude) / k_record_days;
+  f64 biggest_day = 0.0, biggest_hour = 0.0;
+  for (const WindStorm& st : storms) {
+    biggest_day = std::max(biggest_day, static_cast<f64>(record.day(st.day).magnitude) / mean_day);
+    for (i32 h = 0; h < 24; ++h)
+      biggest_hour =
+          std::max(biggest_hour, static_cast<f64>(st.hour[h + 1].magnitude - st.hour[h].magnitude) /
+                                     (mean_day / 24.0));
+  }
+  MESSAGE("the stormiest day moves " << biggest_day << " mean days of sand, its strongest hour "
+                                     << biggest_hour << " mean hours");
+  CHECK(biggest_hour > 10.0);
+  const f64 extra = static_cast<f64>(record.period_total().magnitude) /
+                    static_cast<f64>(calm.period_total().magnitude);
+  MESSAGE("12 storms a year: " << expected_hours / k_record_years << " storm hours a year, "
+                               << (extra - 1.0) * 100.0 << "% more sand moved; " << checked
+                               << " sampled hours exact");
+  CHECK(extra > 1.02);
+}
+
+TEST_CASE("terrain: a season of storms moves the erg further, the small forms most") {
+  FieldDesc calm_desc = erg_desc();
+  FieldDesc stormy_desc = erg_desc();
+  stormy_desc.wind.storms_per_year = 12;
+  const DuneField calm(calm_desc);
+  const DuneField stormy(stormy_desc);
+  CHECK(calm.hash() != stormy.hash());
+  // A year: how far each band moves, with and without storms.
+  for (u32 b = 0; b < calm.band_count(); ++b) {
+    i64 cx = 0, cz = 0, sx = 0, sz = 0;
+    calm.displacement(b, k_year, cx, cz);
+    stormy.displacement(b, k_year, sx, sz);
+    const f64 c = std::sqrt(static_cast<f64>(cx) * cx + static_cast<f64>(cz) * cz) / 1000.0;
+    const f64 s = std::sqrt(static_cast<f64>(sx) * sx + static_cast<f64>(sz) * sz) / 1000.0;
+    const f64 turn = std::atan2(static_cast<f64>(cx) * sz - static_cast<f64>(cz) * sx,
+                                static_cast<f64>(cx) * sx + static_cast<f64>(cz) * sz) *
+                     57.29578;
+    MESSAGE(std::string(calm.band_name(b)) << ": " << c << " m a year, " << s
+                                           << " m with 12 storms, turned " << turn << " degrees");
+    CHECK(s > c);
+  }
+  // Nothing about the storm-free field moved: its goldens stand (the golden test holds them).
+  CHECK(DuneField(erg_desc()).hash() == calm.hash());
 }

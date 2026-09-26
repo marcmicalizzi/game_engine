@@ -12,6 +12,7 @@
     "generator": "Dunes",
     "time": 94608000.0,
     "sand_flux": 200,
+    "storms_per_year": 12,
     "bands": [
       {
         "name": "mega-draa",

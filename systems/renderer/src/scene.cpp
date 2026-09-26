@@ -1153,6 +1153,8 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
                                                                           : TerrainGenerator::waves;
     out.terrain.time_s = t.time;
     out.terrain.sand_flux = t.sand_flux;
+    out.terrain.storms_per_year = t.storms_per_year;
+    out.terrain.storm_strength = t.storm_strength;
     out.terrain.has_bands = false;
     out.terrain.bands.clear();
     if (t.bands.has_value()) {
@@ -1188,10 +1190,12 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
     }
     if (out.terrain.generator == TerrainGenerator::dunes &&
         (!(t.time >= 0.0) || !(t.time < 3.0e11) || !(t.sand_flux >= 0.0f) ||
-         !(t.sand_flux <= 100'000.0f))) {
+         !(t.sand_flux <= 100'000.0f) || t.storms_per_year > 31 || !(t.storm_strength > 0.0f) ||
+         !(t.storm_strength <= 3.0f))) {
       error = path +
-              ": the dune generator's time must be within [0, 3e11) s and its sand_flux "
-              "within [0, 100000] m^2 a year";
+              ": the dune generator's time must be within [0, 3e11) s, its sand_flux within "
+              "[0, 100000] m^2 a year, its storms_per_year within 0..31 and its storm_strength "
+              "within (0, 3]";
       return false;
     }
     if (out.terrain.generator == TerrainGenerator::dunes) {

@@ -140,12 +140,15 @@ void evaluate_tile(const DuneField& field, TileCoord tile, i64 time_us, const Ti
   out.mean_um = sum / static_cast<i64>(v * v);
   out.sand_vertices = sand;
 
-  // The day's wind, and the sand it moves across this tile.
+  // The hour's wind (a storm's, when one blows), and the sand it moves across this tile. The one
+  // wind: `WindRecord::wind_at`, what everything that asks "the wind now" reads.
   const WindDay& day = field.wind().day(day_of(time_us));
-  out.wind.direction = Vec2{static_cast<f32>(cos_q15(day.turn)) / 32768.0f,
-                            static_cast<f32>(sin_q15(day.turn)) / 32768.0f};
-  out.wind.speed_mps = static_cast<f32>(day.speed_q16) / 65536.0f * k_mean_wind_mps;
-  out.wind.flux_m2_per_day = static_cast<f32>(day.magnitude) * 1e-4f;
+  const WindAt now = field.wind().wind_at(time_us);
+  out.wind.direction = Vec2{static_cast<f32>(cos_q15(now.turn)) / 32768.0f,
+                            static_cast<f32>(sin_q15(now.turn)) / 32768.0f};
+  out.wind.speed_mps = static_cast<f32>(now.speed_q16) / 65536.0f * k_mean_wind_mps;
+  out.wind.flux_m2_per_day = static_cast<f32>(now.flux.magnitude * 24) * 1e-4f;
+  out.wind.storm = now.storm;
   out.wind.saltation_m2_per_day =
       out.wind.flux_m2_per_day * static_cast<f32>(sand) / static_cast<f32>(v * v);
 

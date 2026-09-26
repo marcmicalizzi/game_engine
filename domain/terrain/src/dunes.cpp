@@ -21,6 +21,12 @@ constexpr i64 k_tan_repose_q16 = 44205;
 constexpr i64 k_cot_repose_q16 = 97161;
 // The sand thins to 40% over a ridge's crest, as the renderer's heightfield always had it.
 constexpr i64 k_ridge_thinning_q16 = 39322;
+// The fixed features' cap on the sand (terrain.md, "The repose limiter"): the slope a feature's
+// mask may add to the sand under it, 0.04 of a tangent (the gap between 34 and 36 degrees is
+// 0.052), the cap's own rise beyond, 30 degrees (tan, Q16), and "no cap".
+constexpr i64 k_cap_slack_q16 = 2621;
+constexpr i64 k_tan_cap_q16 = 37837;
+constexpr i64 k_no_cap = i64{1} << 60;
 // Ripples: 12 cm apart, 6 mm high at the mean wind, drifting 1 cm a minute at it, and realigned to
 // a new day's wind over two hours.
 constexpr i64 k_ripple_mm = 120;
@@ -214,8 +220,14 @@ u64 field_hash(const FieldDesc& desc) noexcept {
     h = hash_combine(hash_combine(h, static_cast<u64>(b.x)), static_cast<u64>(b.z));
     h = hash_combine(h, static_cast<u64>(b.radius));
   }
-  // The band table enters only when there is one, so every field described before it existed
-  // keeps its hash (and its golden).
+  // Storms enter only when there are some, and the band table only when there is one, so every
+  // field described before either existed keeps its hash (and its golden).
+  if (w.storms_per_year > 0) {
+    h = hash_combine(h, 0x53544F524Dull);  // "STORM"
+    for (const i32 v : {w.storms_per_year, w.storm_hours_min, w.storm_hours_max,
+                        w.storm_spread_turn, w.storm_speed_q16})
+      h = hash_combine(h, static_cast<u64>(static_cast<u32>(v)));
+  }
   if (!desc.bands.empty()) {
     h = hash_combine(h, 0x42414E44ull);  // "BAND"
     h = hash_combine(h, desc.bands.size());
@@ -397,6 +409,11 @@ DuneField::DuneField(const FieldDesc& desc)
       later_cm = max_i64(later_cm, bands_[c].height_hi_cm);
     absorb_[b] = later_cm > 0 ? (later_cm * 60 * k_cot_repose_q16) >> 16 : 0;
   }
+  // How far a feature's cap reaches before it stands above the tallest sand the bands can stack.
+  i64 stack_um = 0;
+  for (const BandDesc& p : bands_)
+    stack_um += p.height_hi_cm * 10'000;
+  cap_reach_ = (stack_um * 65536) / (k_tan_cap_q16 * 1000) + 1;
   for (u32 b = 0; b < bands_.size(); ++b) {
     const BandDesc& p = bands_[b];
     cell_[b] = p.cell_cm * 10;
@@ -793,15 +810,25 @@ DuneField::Value DuneField::primitive_value(const Primitive& p, i64 dx, i64 dz) 
   return out;
 }
 
-void DuneField::features(i64 x, i64 z, i64& ridge, i64& flatten, i64& lag,
-                         i64& squeeze) const noexcept {
+void DuneField::features(i64 x, i64 z, i64& ridge, i64& flatten, i64& lag, i64& squeeze,
+                         i64& cap) const noexcept {
   ridge = 0;
   lag = 0;
   squeeze = 0;
   flatten = k_one_q16;
+  cap = k_no_cap;
   for (const RidgeFeature& r : desc_.ridges) {
     const i64 w = max_i64(1, r.width);
-    const i64 d = segment_distance(x, z, r, 2 * w);
+    const i64 d = segment_distance(x, z, r, 2 * w + cap_reach_);
+    // The cap (terrain.md, "The repose limiter"): within two widths of the ridge's line, where its
+    // thinning and its lag's squeeze vary, no more sand than keeps height times their gradients
+    // (0.6 pi / 2w and 1.5 L / w at most) under k_cap_slack; past that, rising at k_tan_cap until
+    // it passes the tallest sand the bands can stack.
+    if (d - 2 * w <= cap_reach_) {
+      const i64 flat_um = (k_cap_slack_q16 * w * 1000) /
+                          (61'763 + 3 * static_cast<i64>(desc_.ridge_lag_q16) / 2);  // 0.94 + 1.5 L
+      cap = min_i64(cap, flat_um + ((max_i64(0, d - 2 * w) * k_tan_cap_q16 * 1000) >> 16));
+    }
     if (d < w) {
       // 1/2 + cos(pi d / w)/2, the renderer's cosine profile, from the integer cosine.
       const i64 profile = k_one_q15 + cos_q15(static_cast<u32>((d * 32768) / w));
@@ -826,8 +853,14 @@ void DuneField::features(i64 x, i64 z, i64& ridge, i64& flatten, i64& lag,
     const i64 radius = max_i64(1, b.radius);
     const i64 dx = x - b.x;
     const i64 dz = z - b.z;
-    if (abs_i64(dx) >= radius || abs_i64(dz) >= radius) continue;
-    const i64 r = (length(dx, dz) * 65536) / radius;
+    const i64 reach = radius + cap_reach_;
+    if (abs_i64(dx) >= reach || abs_i64(dz) >= reach) continue;
+    const i64 d = length(dx, dz);
+    // The cap: within the radius, where the flattening varies (by 1.5 / 0.65 R at most), no more
+    // sand than keeps height times that under k_cap_slack; past it, rising at k_tan_cap.
+    const i64 flat_um = (k_cap_slack_q16 * radius * 1000 * 65) / (150 * 65536);
+    cap = min_i64(cap, flat_um + ((max_i64(0, d - radius) * k_tan_cap_q16 * 1000) >> 16));
+    const i64 r = (d * 65536) / radius;
     if (r >= k_one_q16) continue;
     // smoothstep(0.35, 1, r): the dunes die away towards the basin's middle.
     const i64 t = ((r - 22938) * 65536) / (k_one_q16 - 22938);
@@ -836,8 +869,8 @@ void DuneField::features(i64 x, i64 z, i64& ridge, i64& flatten, i64& lag,
 }
 
 i32 DuneField::ridge_q16(i64 x, i64 z) const noexcept {
-  i64 ridge = 0, flatten = 0, lag = 0, squeeze = 0;
-  features(x, z, ridge, flatten, lag, squeeze);
+  i64 ridge = 0, flatten = 0, lag = 0, squeeze = 0, cap = 0;
+  features(x, z, ridge, flatten, lag, squeeze, cap);
   return static_cast<i32>(ridge);
 }
 
@@ -855,8 +888,8 @@ i32 DuneField::basin_q16(i64 x, i64 z) const noexcept {
 }
 
 i64 DuneField::ridge_lag_mm(i64 x, i64 z) const noexcept {
-  i64 ridge = 0, flatten = 0, lag = 0, squeeze = 0;
-  features(x, z, ridge, flatten, lag, squeeze);
+  i64 ridge = 0, flatten = 0, lag = 0, squeeze = 0, cap = 0;
+  features(x, z, ridge, flatten, lag, squeeze, cap);
   return lag;
 }
 
@@ -901,21 +934,34 @@ namespace {
 // One band laid on the bands before it (terrain.md, "The repose limiter"): given its slope bound
 // (Q16), the bound on the slope of the bands before it (`base_slope`) and how deep inside their
 // footprints the point is (`inside`, mm), returns the share of its height the band stands at
-// (Q16) and adds the slope it brings to `base_slope`. The share is 1 - base / tan 34, so its own
-// slope, at most tan 34, and theirs sum to the angle of repose; over a slip face the base is tan
-// 34 and the share nothing, which is absorption.
+// (Q16) and adds the slope it brings to `base_slope`. The share is the room the base leaves,
+// (tan 34 - base) over what the band can add per unit of its share — its own slope, at most tan
+// 34, and for a coupled band the coupling's fade too — so the sum stays at the angle of repose;
+// over a slip face the base is tan 34 and the share nothing, which is absorption.
 i64 stack_band(const BandDesc& band, i64 slope, i64 inside, i64& base_slope) noexcept {
-  const i64 room = max_i64(0, k_one_q16 - (base_slope * 65536) / k_tan_repose_q16);
-  base_slope += (slope * room) >> 16;
-  if (band.couple == BandCouple::none) return room;
+  const i64 free = k_tan_repose_q16 - base_slope;
+  if (free <= 0) return 0;
+  if (band.couple == BandCouple::none) {
+    const i64 room = k_one_q16 - (base_slope * 65536) / k_tan_repose_q16;
+    base_slope += (slope * room) >> 16;
+    return room;
+  }
   // On the flanks of the bands before it only, or on the floors between them only, fading across
   // `couple_mm` inside their footprints. Across a width and not a height of their sand: their sand
   // rises as steeply as their faces do, so a fade across a few metres of it stood a tall band up
-  // over a few metres of ground at the foot of a slip face; across a width, the fade's slope is
-  // the band's height over the width, and fifteen times the height keeps it under the margin
-  // between 34 and 36 degrees.
-  const i64 fade = falloff_q16((inside * 65536) / max_i64(1, band.couple_mm));
-  return (room * (band.couple == BandCouple::floors ? fade : k_one_q16 - fade)) >> 16;
+  // over a few metres of ground at the foot of a slip face. The fade's own slope is the band's
+  // height times its rate — at most the band's tallest, times 1.5 over the width, times 1.25 for
+  // a depth measured across a drifting crest — and it goes into the budget with the band's own:
+  // the bound uses the band's tallest rather than its height here, so the room does not vary as
+  // fast as the band does.
+  const i64 width = max_i64(1, band.couple_mm);
+  const i64 t = (inside * 65536) / width;
+  const i64 fade = falloff_q16(t);
+  const i64 couple = band.couple == BandCouple::floors ? fade : k_one_q16 - fade;
+  const i64 fade_slope = (band.height_hi_cm * 10 * falloff_slope_q16(t) * 5) / (4 * width);
+  const i64 room = min_i64(k_one_q16, (free * 65536) / (k_tan_repose_q16 + fade_slope));
+  base_slope += (room * (((couple * slope) >> 16) + fade_slope)) >> 16;
+  return (room * couple) >> 16;
 }
 
 }  // namespace
@@ -923,8 +969,8 @@ i64 stack_band(const BandDesc& band, i64 slope, i64 inside, i64& base_slope) noe
 Sample DuneField::sample(const Gather& gather, i64 x, i64 z, Detail detail) const noexcept {
   Sample s;
   s.floor = floor_um(x, z);
-  i64 ridge = 0, flatten = 0, ridge_lag = 0, squeeze = 0;
-  features(x, z, ridge, flatten, ridge_lag, squeeze);
+  i64 ridge = 0, flatten = 0, ridge_lag = 0, squeeze = 0, cap = 0;
+  features(x, z, ridge, flatten, ridge_lag, squeeze, cap);
   s.ridge_q16 = static_cast<u16>(min_i64(ridge, 65535));
   s.basin_q16 = static_cast<u16>(min_i64(basin_q16(x, z), 65535));
   if (detail == Detail::floor) return s;
@@ -946,7 +992,12 @@ Sample DuneField::sample(const Gather& gather, i64 x, i64 z, Detail detail) cons
     inside = max_i64(inside, v.inside);
   }
   const i64 mask = (((k_one_q16 - ((k_ridge_thinning_q16 * ridge) >> 16)) * flatten) >> 16);
-  s.sand = (sand * mask) >> 16;
+  // Capped by the features, then thinned over the rock and flattened into a basin. Scaling a tall
+  // dune across a ridge's or a basin's edge is a slope of its own — its height times the mask's
+  // gradient — so the sand is capped first, low enough where the masks vary that the product stays
+  // at the angle of repose, and rising at 30 degrees beyond: the smaller of two surfaces is no
+  // steeper than the steeper of them (terrain.md, "The repose limiter").
+  s.sand = (min_i64(sand, cap) * mask) >> 16;
   // A band held back by a ridge is squeezed along the wind; it stands lower by as much, so its
   // faces stay at the angle of repose (terrain.md, "The repose limiter").
   if (squeeze > 0) s.sand = (s.sand * k_one_q16) / (k_one_q16 + squeeze);
@@ -960,8 +1011,8 @@ Sample DuneField::sample(const Gather& gather, i64 x, i64 z, Detail detail) cons
 
 i64 DuneField::band_weight_q16(const Gather& gather, u32 b, i64 x, i64 z) const noexcept {
   // The evaluation's own loop up to band b: the share of its height it stands at.
-  i64 ridge = 0, flatten = 0, ridge_lag = 0, squeeze = 0;
-  features(x, z, ridge, flatten, ridge_lag, squeeze);
+  i64 ridge = 0, flatten = 0, ridge_lag = 0, squeeze = 0, cap = 0;
+  features(x, z, ridge, flatten, ridge_lag, squeeze, cap);
   const i64 wx = wind_.prevailing_x_q14();
   const i64 wz = wind_.prevailing_z_q14();
   i64 inside = 0;

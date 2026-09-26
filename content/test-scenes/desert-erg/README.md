@@ -1,6 +1,6 @@
 # desert-erg
 
-An **erg** drawn by the terrain capability's dune generator ([terrain](../../../docs/subsystems/terrain.md#the-erg-profile), [ADR-0043](../../../docs/adr/0043-dunes-as-a-function-of-time.md)): the owner's reference after his first flight over the generator ([third session](../../../docs/experiments/third-interactive-session-2026-09-25.md)) — Erg Chebbi's kind of dune sea, towering dunes at kilometre spacing with long sinuous crests and slip faces in shade, medium dunes on their flanks, waves and ripples on every surface, and flat interdune floors between. 6.1 km a side (`extent` 3,072 m) on a 4,097 grid (1.5 m a sample), seed 7, no ridges, no basin, no meshes (it needs no samples), three years into the world (`"time": 94608000`).
+An **erg** drawn by the terrain capability's dune generator ([terrain](../../../docs/subsystems/terrain.md#the-erg-profile), [ADR-0043](../../../docs/adr/0043-dunes-as-a-function-of-time.md)): the owner's reference after his first flight over the generator ([third session](../../../docs/experiments/third-interactive-session-2026-09-25.md)) — Erg Chebbi's kind of dune sea, towering dunes at kilometre spacing with long sinuous crests and slip faces in shade, medium dunes on their flanks, waves and ripples on every surface, and flat interdune floors between. 6.1 km a side (`extent` 3,072 m) on a 4,097 grid (1.5 m a sample), seed 7, no ridges, no basin, no meshes (it needs no samples), three years into the world (`"time": 94608000`), with **12 sandstorms a year** (`storms_per_year`; [terrain](../../../docs/subsystems/terrain.md#storms)).
 
 ```powershell
 build/msvc-release/bin/engine-view --scene content/test-scenes/desert-erg/scene.json --interactive
@@ -22,7 +22,7 @@ Tallest first, because a band is shaped by the ones before it (terrain.md, "The 
 | `barchan` | barchan | 1.5–5 m | 150 m | 0.35 | on the floors, across 80 m | crescents on the hardpan, fading out across the first 80 m inside a taller dune |
 | `wave` | transverse, never a slip face | 0.3–0.8 m | 10 m | 0.6 | — | "waves on every surface", between ripples and dunes; they follow a few days of wind and are rounded, not sharp |
 
-A coupling fades across a **width** inside the taller dunes' footprints, at least fifteen times the band's height, and not across a height of their sand: their sand rises as steeply as their faces, and a fade across a few metres of it stood the draa's surface at 37–39° at the foot of a slip face ([terrain](../../../docs/subsystems/terrain.md#the-repose-limiter)).
+A coupling fades across a **width** inside the taller dunes' footprints, about fifteen times the band's height, and not across a height of their sand: their sand rises as steeply as their faces, and a fade across a few metres of it stood the draa's surface at 37–39° at the foot of a slip face. The fade's own slope is charged to the band's room ([terrain](../../../docs/subsystems/terrain.md#the-repose-limiter)), so a narrower width lowers the band where it fades rather than steepening it.
 
 Below them the ripples (12 cm apart, 6 mm high, the day's wind) are the field's detail term, drawn by the renderer's near-field refinement rather than the mesh.
 
@@ -46,10 +46,10 @@ The camera path (`camera-path.json`, 60 s at 60 fps, west to east, which is upwi
 
 | | |
 |---|---|
-| height above the floor, p10 / p50 / p90 / p99 / max | 0 / 4.4 / 113 / 184 / 193 m |
-| flats (within half a metre of the floor) | 36.7% |
-| sand steeper than 30° / 34° / 36° | 4.2% / 0 / **0** |
-| crest per km² | mega-draa 372 m, draa 515, crest 1,616, barchan 54, wave 17,882 |
+| height above the floor, p10 / p50 / p90 / p99 / max | 0 / 3.2 / 113 / 184 / 193 m |
+| flats (within half a metre of the floor) | 38.5% |
+| sand steeper than 30° / 34° / 36° | 4.7% / 0.39% / **0** |
+| crest per km² | mega-draa 372 m, draa 469, crest 1,963, barchan 92, wave 27,942 |
 | the largest dune | 188 m, a mega-draa, the next about 2.1 km away |
 
-No sand stands past the angle of repose: over the whole scene at a metre, at 0, 1, 3 and 7 years, no vertex is steeper than 36° ([the repose limiter](../../../docs/subsystems/terrain.md#the-repose-limiter)).
+No sand stands past the angle of repose: over the whole scene at a metre, at 0, 1, 3 and 7 years and with its storms, no vertex is steeper than 36° ([the repose limiter](../../../docs/subsystems/terrain.md#the-repose-limiter)). The storms move a year's dunes about 7% further than the same wind without them ([terrain](../../../docs/subsystems/terrain.md#storms)).

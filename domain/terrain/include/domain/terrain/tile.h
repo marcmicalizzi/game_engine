@@ -65,13 +65,16 @@ struct CrestLine {
 };
 
 // The tile's wind at its time: the day's direction and strength, and the sand it moves.
+// The wind over the tile in the hour holding the tile's time (`WindRecord::wind_at`): a storm's
+// when one is blowing, the day's otherwise.
 struct TileWind {
   Vec2 direction;              // unit, where the sand moves to
-  f32 speed_mps = 0.0f;        // the day's wind, `k_mean_wind_mps` at the record's mean
-  f32 flux_m2_per_day = 0.0f;  // the day's sand flux per metre of width (m^3 / m / day)
-  // The saltation flux over this tile: the day's flux times the share of the tile that is loose
-  // sand (rock sheds no grains), m^2 a day. What drives a crest's plume.
+  f32 speed_mps = 0.0f;        // the hour's wind, `k_mean_wind_mps` at the record's mean
+  f32 flux_m2_per_day = 0.0f;  // the hour's sand flux per metre of width, as a daily rate
+  // The saltation flux over this tile: that flux times the share of the tile that is loose sand
+  // (rock sheds no grains), m^2 a day. What drives a crest's plume.
   f32 saltation_m2_per_day = 0.0f;
+  bool storm = false;  // a storm is blowing this hour
 };
 
 // Everything a tile adds to its base: the drifts that can reach it (its neighbours' included) and

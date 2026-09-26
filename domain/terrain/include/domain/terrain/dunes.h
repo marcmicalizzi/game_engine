@@ -348,9 +348,10 @@ class DuneField {
   i64 detail_um(const Gather& gather, i64 x, i64 z) const noexcept;
   // The fixed features at a point: the ridge's profile, the basins' flattening, the ridge lag, and
   // `squeeze_q16`, a bound on how much the lag's gradient compresses the bands' lattice there (the
-  // bands stand lower by it; terrain.md, "The repose limiter").
+  // bands stand lower by it), and `cap_um`, the most sand the features let stand there (a cone at
+  // 30 degrees from a ridge's line and a basin's flat core; terrain.md, "The repose limiter").
   void features(i64 x, i64 z, i64& ridge_q16, i64& basin_flatten_q16, i64& ridge_lag,
-                i64& squeeze_q16) const noexcept;
+                i64& squeeze_q16, i64& cap_um) const noexcept;
 
   FieldDesc desc_;
   WindRecord wind_;
@@ -360,9 +361,11 @@ class DuneField {
   i64 reach_[k_max_bands] = {};            // mm
   i64 celerity_height_[k_max_bands] = {};  // mm
   i64 absorb_[k_max_bands] = {};           // mm: the lee zone's fade width
-  i64 drift_q16_[k_max_bands] = {};        // the most a crest line drifts per unit along it
-  i32 roll_x_ = 0, roll_z_ = 0;            // Q14
-  i64 roll_length_ = 1;                    // mm
+  i64 drift_q16_[k_max_bands] = {};
+  i64 cap_reach_ = 0;  // mm: where a feature's cap passes the tallest sand the bands can stack //
+                       // the most a crest line drifts per unit along it
+  i32 roll_x_ = 0, roll_z_ = 0;  // Q14
+  i64 roll_length_ = 1;          // mm
   u32 roll_phase_ = 0;
   i64 max_ridge_lag_ = 0;  // mm
 };

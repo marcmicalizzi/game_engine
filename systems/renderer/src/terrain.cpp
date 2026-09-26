@@ -32,6 +32,9 @@ terrain::FieldDesc field_desc(const TerrainDesc& desc) {
   // m^2 a year to cm^2 a day.
   f.wind.flux_cm2_per_day =
       static_cast<i32>(std::floor(static_cast<f64>(desc.sand_flux) * 10'000.0 / 365.0 + 0.5));
+  f.wind.storms_per_year = static_cast<i32>(desc.storms_per_year);
+  f.wind.storm_speed_q16 =
+      static_cast<i32>(std::floor(static_cast<f64>(desc.storm_strength) * 65'536.0 + 0.5));
   for (const TerrainRidge& r : desc.ridges) {
     f.ridges.push_back(terrain::RidgeFeature{terrain::to_mm(r.from.x), terrain::to_mm(r.from.y),
                                              terrain::to_mm(r.to.x), terrain::to_mm(r.to.y),
@@ -449,6 +452,10 @@ u64 terrain_hash(const TerrainDesc& desc) noexcept {
     h = hash_combine(h, 2u);
     h = hash_combine(h, std::bit_cast<u64>(desc.time_s));
     h = mix_f32(h, desc.sand_flux);
+    if (desc.storms_per_year > 0) {
+      h = hash_combine(hash_combine(h, 0x53544F524Dull), desc.storms_per_year);  // "STORM"
+      h = mix_f32(h, desc.storm_strength);
+    }
     if (desc.has_bands) {
       h = hash_combine(h, desc.bands.size());
       for (const TerrainBand& b : desc.bands) {

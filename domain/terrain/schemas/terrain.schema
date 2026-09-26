@@ -99,11 +99,14 @@ struct TileReport @version(2) {
   primitives: u32 = 0
   /// The share of the tile that is loose sand rather than rock.
   sand_share: f32 = 0
-  /// The day's wind: where the sand moves to (unit, x z), its speed and the sand it moves.
+  /// The wind in the hour holding the time (`WindRecord::wind_at`, a storm's when one blows): where
+  /// the sand moves to (unit, x z), its speed and the sand it moves, as a daily rate.
   wind_direction: vec2
   wind_speed_mps: f32 = 0
   flux_m2_per_day: f32 = 0
   saltation_m2_per_day: f32 = 0
+  /// A sandstorm is blowing in that hour (docs/subsystems/terrain.md, "Storms").
+  storm: bool = false @since(2)
   /// How far each band has moved since time zero, metres (x z), in the table's order.
   displacement_m: vec2[]
   crests: CrestReport[]

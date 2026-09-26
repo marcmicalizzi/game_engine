@@ -140,6 +140,9 @@ terrain::FieldDesc field_desc(const scene::Terrain& t) {
   f.wavelength = terrain::to_mm(t.dune_wavelength);
   f.wind.flux_cm2_per_day =
       static_cast<i32>(std::floor(static_cast<f64>(t.sand_flux) * 10'000.0 / 365.0 + 0.5));
+  f.wind.storms_per_year = static_cast<i32>(t.storms_per_year);
+  f.wind.storm_speed_q16 =
+      static_cast<i32>(std::floor(static_cast<f64>(t.storm_strength) * 65'536.0 + 0.5));
   for (const scene::Ridge& r : t.ridges) {
     f.ridges.push_back(terrain::RidgeFeature{terrain::to_mm(r.from.x), terrain::to_mm(r.from.y),
                                              terrain::to_mm(r.to.x), terrain::to_mm(r.to.y),
@@ -334,6 +337,12 @@ int terrain_command(int argc, char** argv) {
           std::span<const terrain::BandDesc>(desc.bands.data(), desc.bands.size()), &error)) {
     return failed(scene_path + ": terrain.bands: " + error);
   }
+  if (source.storms_per_year > static_cast<u32>(terrain::k_max_storms_per_year) ||
+      !(source.storm_strength > 0.0f) || !(source.storm_strength <= 3.0f)) {
+    return failed(scene_path +
+                  ": terrain: storms_per_year must be within 0..31 and "
+                  "storm_strength within (0, 3]");
+  }
   const terrain::DuneField field(desc);
   terrain::TileOptions options;
   options.tile_mm = tile_mm;
@@ -365,6 +374,7 @@ int terrain_command(int argc, char** argv) {
   report.wind_speed_mps = tile.wind.speed_mps;
   report.flux_m2_per_day = tile.wind.flux_m2_per_day;
   report.saltation_m2_per_day = tile.wind.saltation_m2_per_day;
+  report.storm = tile.wind.storm;
   for (u32 b = 0; b < field.band_count(); ++b) {
     i64 dx = 0;
     i64 dz = 0;
