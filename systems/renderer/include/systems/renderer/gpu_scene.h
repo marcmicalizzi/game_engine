@@ -408,7 +408,63 @@ class GpuScene {
   u32 morph_channel_count() const noexcept { return morph_channel_count_; }
   bool morphed() const noexcept { return morph_channel_count_ > 0; }
   u64 morph_params_address() const noexcept { return morphed() ? morph_params.address : 0; }
-  u64 normal_pool_address() const noexcept { return morphed() ? deform_normals.address : 0; }
+  // The deformed normal pool: a scene with morph channels carries one, and so does one with terrain
+  // levels, whose pool pass writes the moved field's normals (below).
+  u64 normal_pool_address() const noexcept {
+    return morphed() || !terrain_.empty() ? deform_normals.address : 0;
+  }
+
+  // ---- terrain levels (docs/subsystems/renderer.md, "The dunes in time-lapse") ----------------
+  //
+  // A scene whose terrain is the dune generator's, drawn with `ResolvedSettings::terrain_levels`,
+  // draws it as **deformed instances**: the pool pass writes each vertex of the cut at its lattice
+  // point with the height blended between two evaluated fields (deform.slang's terrain stage, a
+  // `gfx::TerrainLevelDesc` per level). What lives here is the device side and nothing else: per
+  // level, `k_terrain_field_slots` field buffers big enough for the level's largest window, and a
+  // host-visible table of level descriptions per frame slot. The fields arrive from the host
+  // (`TerrainMotion` evaluates them off the frame) in host-visible staging buffers that the frame
+  // copies from and then retires, so a field's upload waits for nothing and blocks nothing.
+  static constexpr u32 k_terrain_field_slots = 3;
+  static constexpr u32 k_terrain_copies_per_frame = 8;
+  u32 terrain_level_count() const noexcept { return terrain_.size(); }
+  // Whether nothing handed to `terrain_upload` for `level` is still waiting for a frame to copy it.
+  bool terrain_uploaded(u32 level) const noexcept {
+    return level < terrain_.size() && terrain_[level].pending.empty();
+  }
+  const TerrainLattice& terrain_lattice(u32 level) const noexcept {
+    return terrain_[level].lattice;
+  }
+  // Samples one field buffer of `level` holds.
+  u64 terrain_field_capacity(u32 level) const noexcept { return terrain_[level].capacity; }
+  // The scene instance that draws `level`.
+  u32 terrain_instance(u32 level) const noexcept { return terrain_[level].instance; }
+  // A host-visible, persistently mapped buffer for `samples` heights, which the caller fills from
+  // any thread and hands to `terrain_upload`.
+  bool terrain_staging(u64 samples, gfx::BufferResource& out, std::string* error = nullptr) const;
+  // Queues `staging` to be copied into field slot `slot` of `level` by the next frame recorded,
+  // which then retires the staging buffer. `window` says which lattice window the heights cover
+  // (its `heights` is ignored). The slot must not be one a frame still to be recorded shows; the
+  // copy is ordered after every frame already submitted that read it.
+  bool terrain_upload(u32 level, u32 slot, const gfx::TerrainField& window,
+                      const gfx::BufferResource& staging, std::string* error = nullptr);
+  // What `level` draws from the next frame on: field slot `slot_a`, and `slot_b` blended in by
+  // `blend` (`~0u` for none), its spheres padded by `padding` metres, and nothing of it inside
+  // `hole` (x0, z0, x1, z1; empty when x1 <= x0).
+  void terrain_show(u32 level, u32 slot_a, u32 slot_b, f32 blend, f32 padding, Vec4 hole) noexcept;
+  // The frame's half, called by the frame about to be recorded in frame slot `slot`: writes that
+  // slot's level table, and hands over the copies to record, the field buffers the frame reads, and
+  // the staging buffers to retire once it is done.
+  struct TerrainUpdate {
+    u64 table = 0;  // this frame slot's `gfx::TerrainLevelDesc[]`; 0 without terrain levels
+    struct Copy {
+      gfx::BufferResource staging;
+      gfx::BufferResource field;
+      u64 bytes = 0;
+    };
+    Vector<Copy> copies;
+    Vector<gfx::BufferResource> fields;  // every field buffer the table names
+  };
+  void terrain_prepare(u32 slot, TerrainUpdate& out);
   // The bytes the static shape caches actually hold, and how many instances got one. An instance
   // that did not runs its static stage every frame, which is a cost and not a defect.
   u64 static_cache_bytes() const noexcept { return static_cache_bytes_; }
@@ -662,6 +718,23 @@ class GpuScene {
   bool create_ray_tracing(const ResolvedSettings& resolved, std::string* error);
   bool create_streaming(const ResolvedSettings& resolved, std::string* error);
   bool create_morph(const ResolvedSettings& resolved, std::string* error);
+  bool create_terrain(const ResolvedSettings& resolved, std::string* error);
+  // One terrain level's device side (above).
+  struct TerrainLevel {
+    TerrainLattice lattice;
+    u32 instance = ~0u;
+    u64 capacity = 0;  // samples a field buffer holds
+    gfx::BufferResource fields[k_terrain_field_slots];
+    gfx::TerrainField windows[k_terrain_field_slots];  // what each holds, its address filled in
+    u32 shown_a = ~0u;
+    u32 shown_b = ~0u;
+    f32 blend = 0.0f;
+    f32 padding = 0.0f;
+    Vec4 hole{};
+    Vector<TerrainUpdate::Copy> pending;
+  };
+  Vector<TerrainLevel> terrain_;
+  gfx::BufferResource terrain_table_;  // k_joint_slots regions of gfx::TerrainLevelDesc, mapped
 
   const gfx::Device* device_ = nullptr;
   const SceneData* data_ = nullptr;

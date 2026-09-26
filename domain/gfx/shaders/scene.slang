@@ -61,7 +61,34 @@ struct InstanceDesc {
   // whose vertices leave their rest positions is still culled conservatively. Zero for a rigid
   // one, and a float plus zero is exact, so the rigid arithmetic is unchanged.
   float bounds_padding;
-  uint pad;
+  uint terrain;  // 1 + this instance's terrain level in the frame's TerrainLevelDesc table, or 0
+};
+
+// Mirrors gfx::TerrainField (24 bytes): one evaluated height field on a window of a terrain
+// level's lattice, sample (i, j) at lattice point (i0 + i, j0 + j), rows of x in order of z.
+struct TerrainField {
+  uint64_t heights;  // float[nx * nz], metres
+  int i0;
+  int j0;
+  uint nx;
+  uint nz;
+};
+
+// Mirrors gfx::TerrainLevelDesc (96 bytes): a terrain level as this frame draws it — its lattice,
+// the two fields it blends, the padding its spheres take, and the square the next finer level
+// draws instead (deform.slang's terrain stage; cluster_cull.slang drops a cluster wholly inside
+// `hole`). In the level's mesh space, which is the world.
+struct TerrainLevelDesc {
+  TerrainField a;
+  TerrainField b;
+  float2 origin;  // x, z of lattice point (0, 0)
+  float spacing;
+  float blend;    // 0 draws a, 1 draws b
+  float padding;  // replaces InstanceDesc::bounds_padding for the level's clusters
+  uint pad0;
+  uint pad1;
+  uint pad2;
+  float4 hole;    // x0, z0, x1, z1; none when x1 <= x0
 };
 
 // Mirrors gfx::DeformDesc (48 bytes): one per deformed instance, read by the pool pass alone.
@@ -183,6 +210,7 @@ static const uint k_deform_stage_pose = 0x200u;
 static const uint k_deform_stage_skin = 0x400u;
 static const uint k_deform_stage_procedural = 0x800u;
 static const uint k_deform_stage_rebuild_cache = 0x1000u;
+static const uint k_deform_stage_terrain = 0x2000u;
 
 // The rest pose: three u16 at 3 * vertex of the mesh's grid, read as the 32-bit words that
 // contain them. The stream is padded to an even u16 count on the CPU, so the last word read is

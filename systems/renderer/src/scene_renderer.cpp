@@ -263,6 +263,15 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
     destroy();
     return false;
   }
+  // The terrain levels' table is per frame slot for the same reason (GpuScene::terrain_prepare).
+  if (scene.terrain_level_count() > 0 && desc.frames_in_flight > k_joint_slots) {
+    if (error != nullptr) {
+      *error = "a scene whose terrain moves supports at most " + std::to_string(k_joint_slots) +
+               " frames in flight; its level table has one region per frame slot";
+    }
+    destroy();
+    return false;
+  }
 
   // A streamed world's tables: one set per frame in flight, so a change is written into a set no
   // frame in flight reads and never waits for the device (GpuScene, "Instances that come and go").
@@ -296,7 +305,7 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
       // structure zones, the trace and the resolve, with room to spare. The shadow cascades add
       // one cull zone and at most two per cascade plus two (index expansion, pool pass and its
       // allocation, the depth raster), twelve; a streamed world's table update two more.
-      !timer_.create(device, desc.frames_in_flight, 42 + 16 * (views - 1), error)) {
+      !timer_.create(device, desc.frames_in_flight, 43 + 16 * (views - 1), error)) {
     destroy();
     return false;
   }
@@ -312,6 +321,7 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
   slot_holes_.assign(desc.frames_in_flight, 0);
   slot_table_slots_.assign(desc.frames_in_flight, 0);
   slot_table_pairs_.assign(desc.frames_in_flight, 0);
+  slot_terrain_bytes_.assign(desc.frames_in_flight, 0);
   constexpr gfx::BufferUsage k_address =
       gfx::BufferUsage::Storage | gfx::BufferUsage::ShaderDeviceAddress;
   const u64 stat_bytes =
@@ -985,10 +995,13 @@ void SceneRenderer::collect_slot(u32 slot) {
     last.gpu_shadow = last.gpu_shadow_cull + timer_.ms("shadow");
     last.gpu_pair_expand = timer_.ms("pair expand");
     last.gpu_tables = timer_.ms("table copy") + last.gpu_pair_expand;
+    last.gpu_terrain_upload = timer_.ms("terrain upload");
     last.gpu_total = timer_.total_ms();
     stats_.tiles.gpu_tables += last.gpu_tables;
     stats_.tiles.gpu_pair_expand += last.gpu_pair_expand;
   }
+  last.terrain_upload_bytes = slot < slot_terrain_bytes_.size() ? slot_terrain_bytes_[slot] : 0;
+  stats_.terrain_upload_bytes += last.terrain_upload_bytes;
   if (!timer_.results().empty()) {
     for (u32 v = 0; v < view_count(); ++v) {
       ViewStats& view = stats_.views[v];
@@ -1020,6 +1033,7 @@ void SceneRenderer::collect_slot(u32 slot) {
     // The cascaded maps are drawn once for every view, so they are the frame's cost too.
     stats_.gpu_shadow_cull += timer_.ms("shadow cull");
     stats_.gpu_shadow += timer_.ms("shadow cull") + timer_.ms("shadow");
+    stats_.gpu_terrain_upload += timer_.ms("terrain upload");
     stats_.gpu_total += timer_.total_ms();
     ++stats_.timed_frames;
   }
@@ -1205,6 +1219,12 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   // change.
   if (!scene.prepare_tables(slot, tables_, error)) return false;
   const bool write_tables = tables_.write;
+  // A moving terrain's levels (docs/subsystems/renderer.md, "The dunes in time-lapse"): this frame
+  // slot's table of what each level draws, which the cull pass and the pool pass read, and the
+  // fields the host handed over since the last frame, which this frame copies onto the device
+  // before either pass runs. Nothing for a scene whose terrain does not move.
+  scene.terrain_prepare(slot, terrain_frame_);
+  const u64 terrain_table = terrain_frame_.table;
   // The pairs there are, which is what the cull dispatches over and bounds-checks against, and the
   // run length every per-pair buffer is laid out by, which is what every offset into one uses. The
   // two are one number for a scene read whole; a scene whose instances come and go keeps a stride
@@ -1492,6 +1512,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     cull.meshes = scene.meshes.address;
     cull.instance_count = instance_count;
     cull.pair_count = pair_count;
+    cull.terrain = terrain_table;
     // Geometry streaming: the drawing rule, and the feedback it writes. Null for a scene uploaded
     // whole, and the pass then runs exactly the instructions it always ran.
     cull.streaming = stream_params;
@@ -1640,6 +1661,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       d.amplitude = settings.deform_amplitude;
       d.max_entries = pair_stride;
       d.visible_offset = vf.run_base[run];
+      d.terrain = terrain_table;
     }
 
     if (ray_path) {
@@ -1706,6 +1728,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     cull.meshes = scene.meshes.address;
     cull.instance_count = instance_count;
     cull.pair_count = pair_count;
+    cull.terrain = terrain_table;
     cull.streaming = stream_params;
     cull.page_count = scene.page_count();
     cull.max_requests = scene.max_requests();
@@ -1894,6 +1917,44 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     rg_alloc = graph.import_buffer("deform alloc", scene.deform_alloc);
     rg_deform_args = graph.import_buffer("deform args", scene.deform_args);
   }
+  // The terrain levels' fields: every field buffer this frame's table names, which the pool pass
+  // reads, and the ones the host handed over, which this frame copies in from their staging. A
+  // field slot is written only once no table still to be recorded names it, but frames already
+  // submitted may still read it, so the import says it was last read everywhere: the copy's barrier
+  // then waits for them (docs/subsystems/renderer.md, "The dunes in time-lapse").
+  gfx::RgBuffer rg_terrain_fields[2 * GpuScene::k_terrain_field_slots * 4]{};
+  u32 terrain_field_count = 0;
+  struct TerrainCopy {
+    gfx::RgBuffer staging, field;
+  };
+  TerrainCopy rg_terrain_copies[GpuScene::k_terrain_copies_per_frame]{};
+  const u32 terrain_copies =
+      std::min<u32>(terrain_frame_.copies.size(), GpuScene::k_terrain_copies_per_frame);
+  for (u32 c = 0; c < terrain_copies; ++c) {
+    const GpuScene::TerrainUpdate::Copy& copy = terrain_frame_.copies[c];
+    rg_terrain_copies[c].staging = graph.import_buffer(
+        "terrain staging", copy.staging, gfx::PipelineStage::Host, gfx::MemoryAccess::HostWrite);
+    rg_terrain_copies[c].field =
+        graph.import_buffer("terrain field", copy.field, gfx::PipelineStage::AllCommands,
+                            gfx::MemoryAccess::MemoryRead);
+  }
+  for (const gfx::BufferResource& field : terrain_frame_.fields) {
+    if (terrain_field_count >= std::size(rg_terrain_fields)) break;
+    gfx::RgBuffer handle{};
+    for (u32 c = 0; c < terrain_copies; ++c) {
+      if (terrain_frame_.copies[c].field.buffer == field.buffer)
+        handle = rg_terrain_copies[c].field;
+    }
+    if (!handle.valid()) {
+      handle = graph.import_buffer("terrain field", field, gfx::PipelineStage::AllCommands,
+                                   gfx::MemoryAccess::MemoryRead);
+    }
+    rg_terrain_fields[terrain_field_count++] = handle;
+  }
+  auto read_terrain = [&, terrain_field_count](gfx::PassBuilder& b) {
+    for (u32 f = 0; f < terrain_field_count; ++f)
+      b.read(rg_terrain_fields[f], gfx::Access::ComputeRead);
+  };
   // The streamed scene's page pool and its feedback. The pool buffers have to be *declared*, not
   // only written: a page upload is a transfer into the same `clusters`, `quantized`, `attributes`
   // and `triangles` the cull pass, the rasterizers, the resolve and the CLAS builds read, and the
@@ -2066,6 +2127,29 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
         [&](gfx::CommandList cb, gfx::RenderGraph&) { streamer_.record_uploads(cb); });
   }
 
+  // A moving terrain's fields the host evaluated since the last frame, copied out of their staging
+  // into their field slots before the cull pass and the pool pass read them. The staging buffers go
+  // to the frame context once this frame is recorded, and are freed when it is done.
+  if (terrain_copies > 0) {
+    graph.add_pass(
+        "terrain upload", gfx::PassKind::Transfer,
+        [&, terrain_copies](gfx::PassBuilder& b) {
+          for (u32 c = 0; c < terrain_copies; ++c) {
+            b.read(rg_terrain_copies[c].staging, gfx::Access::TransferRead);
+            b.write(rg_terrain_copies[c].field, gfx::Access::TransferWrite);
+          }
+        },
+        [&, terrain_copies](gfx::CommandList cb, gfx::RenderGraph&) {
+          timer.begin(cb, "terrain upload");
+          for (u32 c = 0; c < terrain_copies; ++c) {
+            const GpuScene::TerrainUpdate::Copy& copy = terrain_frame_.copies[c];
+            cb.copy_buffer(copy.staging.buffer, copy.field.buffer,
+                           gfx::BufferCopy{0, 0, copy.bytes});
+          }
+          timer.end(cb);
+        });
+  }
+
   // A streamed world's change, into the table set this frame flipped to and nothing else: the
   // slots the change wrote (every change since this set was last current), then one workgroup per
   // live instance among them writing its pairs (pair_expand.slang). The frames in flight read the
@@ -2222,6 +2306,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           b.read(rg_visible, gfx::Access::ComputeRead);
           b.read(rg_slots, gfx::Access::ComputeRead);
           b.write(rg_pool, gfx::Access::ComputeWrite);
+          read_terrain(b);
         },
         [&, run](gfx::CommandList cb, gfx::RenderGraph&) {
           cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.deform.pipeline);
@@ -2459,6 +2544,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             b.read(rg_visible, gfx::Access::ComputeRead);
             b.read(rg_slots, gfx::Access::ComputeRead);
             b.write(rg_pool, gfx::Access::ComputeWrite);
+            read_terrain(b);
           },
           [&, count](gfx::CommandList cb, gfx::RenderGraph&) {
             cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.deform.pipeline);
@@ -2891,9 +2977,17 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
         });
   }
   graph.set_final_layout(color, frame.final_layout);
-  if (!graph.compile(error)) return false;
-  graph.execute(commands_);
-  return true;
+  const bool compiled = graph.compile(error);
+  if (compiled) graph.execute(commands_);
+  // The terrain fields' staging is this frame's to free once it is done (the frame context holds
+  // it until the slot comes round), recorded or not: nothing else will.
+  u64 terrain_bytes = 0;
+  for (u32 c = 0; c < terrain_copies; ++c) {
+    terrain_bytes += terrain_frame_.copies[c].bytes;
+    frames_.defer_destroy(terrain_frame_.copies[c].staging);
+  }
+  if (slot < slot_terrain_bytes_.size()) slot_terrain_bytes_[slot] = terrain_bytes;
+  return compiled;
 }
 
 bool SceneRenderer::capture(const FrameDesc& frame, const CaptureChannels& channels,

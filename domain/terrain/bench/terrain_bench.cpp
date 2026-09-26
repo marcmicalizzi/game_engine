@@ -23,7 +23,7 @@
 //                           time, keeping the chunks it still has. What a re-centre costs.
 //   terrain.field.reevaluate  the erg's whole grid at a new game time on the job pool
 //                           (evaluate_grid): 2,049 or 4,097 vertices a side over its 6.1 km, what
-//                           one step of a time-lapse costs (renderer's TerrainTimeLapse). A smoke
+//                           one field of a time-lapse costs (renderer's TerrainMotion). A smoke
 //                           run takes 129.
 #include <core/jobs/job_system.h>
 #include <domain/terrain/terrain.h>

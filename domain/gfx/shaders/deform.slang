@@ -13,7 +13,9 @@
 //
 // **It is a chain of stages, not one exclusive mode.** `DeformDesc::stages` is a mask, and the
 // pass runs what it names in a fixed order: static shape, pose morphs, skinning, then the
-// procedural cage stand-in. The order is what the data means rather than a preference — a morph
+// procedural cage stand-in. A **terrain level** runs a stage of its own instead of the chain
+// (`k_deform_stage_terrain`, below): its heights blended between two evaluated fields of the dune
+// field, the renderer's time-lapse. The order is what the data means rather than a preference — a morph
 // delta is authored in **bind space** against the rest mesh, so it has to be applied before the
 // skin moves that mesh, and a cage acts on the **posed** surface because that is what a
 // soft-tissue solver sees. gfx.md ("The deform chain") carries the argument and the crack rule
@@ -72,7 +74,7 @@ struct MorphParams {
   uint64_t normal_deltas; // int16[3 * delta_count], or 0
 };
 
-// Mirrors gfx::DeformParams (104 bytes). `deform_cache_main` reads two of the fields with a
+// Mirrors gfx::DeformParams (112 bytes). `deform_cache_main` reads two of the fields with a
 // different meaning, and says so where it uses them, because the block is at the 128-byte limit
 // the renderer allows and the two it needs are the two the cut dispatch uses for the same
 // purpose: where to start, and how many.
@@ -92,6 +94,7 @@ struct DeformParams {
   float amplitude;        // displacement scale as a fraction of the mesh's grid box
   uint max_entries;       // the run's capacity; the device count is clamped to it
   uint visible_offset;    // this run's first entry in the whole visible list
+  uint64_t terrain;       // TerrainLevelDesc[]: the frame's terrain levels, or 0
 };
 
 [[vk::push_constant]] ConstantBuffer<DeformParams> g_params;
@@ -361,6 +364,95 @@ void deform_vertex(MeshDesc mesh, DeformDesc deform, ClusterDesc cluster, uint c
   }
 }
 
+// ---- the terrain stage (docs/subsystems/renderer.md, "The dunes in time-lapse") -----------------
+//
+// A terrain level is a heightfield on a lattice, and the dune field moves only its heights. So a
+// vertex's position is a function of **its lattice point alone**: (i, j) from the rest position,
+// which every copy of the vertex on every LOD level shares bit for bit (the crack rule, gfx.md's
+// deform chain), then `origin + (i, j) * spacing` across and the blend of the level's two fields
+// up. The fields are the same function of time evaluated at two game times; the blend is a
+// continuous function of game time the host advances a little every frame, so the surface moves
+// every frame by a fraction of the difference and reaches the second field exactly when the next
+// one is ready to start (renderer::TerrainMotion). The normal is the blended field's central
+// difference at the lattice point — the arithmetic `load_terrain` gives the rest mesh its normals
+// with, one-sided at a field's edge like it — so the light moves with the sand.
+
+// Height at lattice point (i, j) of one field, clamped into its window.
+float terrain_sample(TerrainField field, int i, int j) {
+  const int x = clamp(i - field.i0, 0, int(field.nx) - 1);
+  const int z = clamp(j - field.j0, 0, int(field.nz) - 1);
+  float* heights = (float*)field.heights;
+  return heights[uint(z) * field.nx + uint(x)];
+}
+
+// The blended field. `a (1 - t) + b t` rather than `a + (b - a) t`: it is exactly `a` at t = 0 and
+// exactly `b` at t = 1, so a level that has reached its next field draws that field's heights to
+// the bit, and a level with one field draws it.
+float terrain_height(TerrainLevelDesc level, int i, int j) {
+  const float a = terrain_sample(level.a, i, j);
+  if (level.b.heights == 0) return a;
+  const float b = terrain_sample(level.b, i, j);
+  return a * (1.0 - level.blend) + b * level.blend;
+}
+
+// The lattice range both fields cover along one axis, which a neighbour for the normal is clamped
+// into — the one-sided difference at a field's edge that the rest mesh's normals take at the grid's.
+int2 terrain_window(TerrainLevelDesc level, bool along_z) {
+  const int lo_a = along_z ? level.a.j0 : level.a.i0;
+  const int hi_a = lo_a + int(along_z ? level.a.nz : level.a.nx) - 1;
+  if (level.b.heights == 0) return int2(lo_a, hi_a);
+  const int lo_b = along_z ? level.b.j0 : level.b.i0;
+  const int hi_b = lo_b + int(along_z ? level.b.nz : level.b.nx) - 1;
+  return int2(max(lo_a, lo_b), min(hi_a, hi_b));
+}
+
+void terrain_vertex(MeshDesc mesh, TerrainLevelDesc level, uint vertex, out float3 position,
+                    out float3 normal) {
+  const float3 rest = load_quantized_position(mesh, vertex);
+  const float inv = 1.0 / level.spacing;
+  int i = int(round((rest.x - level.origin.x) * inv));
+  int j = int(round((rest.z - level.origin.y) * inv));
+  // Strictly inside the square the next finer level draws: onto its nearest edge. The edges are
+  // lines of this level's lattice (renderer::terrain_levels snaps them there), so the vertex lands
+  // on a lattice point and takes the field's own height there. A cluster that straddles the edge
+  // keeps its part outside, exact at the edge; a vertex on the edge is not moved.
+  const float4 hole = level.hole;
+  const float x = level.origin.x + float(i) * level.spacing;
+  const float z = level.origin.y + float(j) * level.spacing;
+  if (hole.z > hole.x && x > hole.x && x < hole.z && z > hole.y && z < hole.w) {
+    const float left = x - hole.x;
+    const float right = hole.z - x;
+    const float low = z - hole.y;
+    const float high = hole.w - z;
+    const float nearest = min(min(left, right), min(low, high));
+    if (nearest == left) {
+      i = int(round((hole.x - level.origin.x) * inv));
+    } else if (nearest == right) {
+      i = int(round((hole.z - level.origin.x) * inv));
+    } else if (nearest == low) {
+      j = int(round((hole.y - level.origin.y) * inv));
+    } else {
+      j = int(round((hole.w - level.origin.y) * inv));
+    }
+  }
+  position = float3(level.origin.x + float(i) * level.spacing, terrain_height(level, i, j),
+                    level.origin.y + float(j) * level.spacing);
+  const int2 wx = terrain_window(level, false);
+  const int2 wz = terrain_window(level, true);
+  const int x0 = clamp(i - 1, wx.x, wx.y);
+  const int x1 = clamp(i + 1, wx.x, wx.y);
+  const int z0 = clamp(j - 1, wz.x, wz.y);
+  const int z1 = clamp(j + 1, wz.x, wz.y);
+  const float dx = float(x1 - x0) * level.spacing;
+  const float dz = float(z1 - z0) * level.spacing;
+  const float hx = terrain_height(level, x1, j) - terrain_height(level, x0, j);
+  const float hz = terrain_height(level, i, z1) - terrain_height(level, i, z0);
+  // cross((0, hz, dz), (dx, hx, 0)), as `load_terrain` takes it: +y for a flat field.
+  const float3 n = float3(-dz * hx, dz * dx, -dx * hz);
+  const float len = length(n);
+  normal = len > 0.0 ? n / len : float3(0.0, 1.0, 0.0);
+}
+
 [shader("compute")]
 [numthreads(128, 1, 1)]
 void deform_main(uint3 group : SV_GroupID, uint3 group_thread : SV_GroupThreadID) {
@@ -388,6 +480,34 @@ void deform_main(uint3 group : SV_GroupID, uint3 group_thread : SV_GroupThreadID
 
   float* pool = (float*)g_params.pool;
   uint* normals = (uint*)g_params.normal_pool;
+  if ((deform.stages & k_deform_stage_terrain) != 0) {
+    // A terrain level with no table this frame, or no field in it yet (a host that made the level
+    // and runs no motion), writes its rest pose into the block it was given, so a reader never
+    // meets an unwritten slot.
+    bool have_level = g_params.terrain != 0 && instance.terrain != 0;
+    TerrainLevelDesc level = (TerrainLevelDesc)0;
+    if (have_level) {
+      level = ((TerrainLevelDesc*)g_params.terrain)[instance.terrain - 1];
+      have_level = level.a.heights != 0;
+    }
+    for (uint i = group_thread.x; i < cluster.vertex_count; i += 128) {
+      float3 moved;
+      float3 normal;
+      const uint vertex = cluster.vertex_offset + i;
+      if (have_level) {
+        terrain_vertex(mesh, level, vertex, moved, normal);
+      } else {
+        moved = load_quantized_position(mesh, vertex);
+        normal = rest_normal(mesh, vertex, moved);
+      }
+      const uint slot = (base + i) * 3;
+      pool[slot] = moved.x;
+      pool[slot + 1] = moved.y;
+      pool[slot + 2] = moved.z;
+      if (g_params.normal_pool != 0) normals[base + i] = encode_oct_normal(normal);
+    }
+    return;
+  }
   for (uint i = group_thread.x; i < cluster.vertex_count; i += 128) {
     float3 moved;
     float3 normal;

@@ -57,7 +57,19 @@ ENGINE_EXPECT_SIZE(16, 4, gfx::DeformAlloc);
 // 104, not 88: the chain gained the morph stream's block address and the deformed normal pool's.
 // Both are null for a scene with no morph channels, so the pass then runs the instructions it ran
 // before them. The 128-byte push limit is why the morph stream is one address and not six.
-ENGINE_EXPECT_SIZE(104, 8, gfx::DeformParams);
+// 112, not 104: the terrain stage's table of levels (`terrain`), null for a scene with none, so
+// every other scene's pool pass runs the instructions it ran before (renderer.md, "The dunes in
+// time-lapse").
+ENGINE_EXPECT_SIZE(112, 8, gfx::DeformParams);
+
+// A terrain level's height field and its frame (gfx.md, "The deform chain"; renderer.md, "The dunes
+// in time-lapse"): 24 bytes a field — the heights' address, the window's lattice origin and its
+// size — and 96 a level: two fields, the lattice's origin and spacing, the blend, the padding its
+// spheres take while its fields have moved away from its rest heights, and the square the next
+// finer level draws. Written per frame into a host-visible table the cull pass and the pool pass
+// read through one address each.
+ENGINE_EXPECT_SIZE(24, 8, gfx::TerrainField);
+ENGINE_EXPECT_SIZE(96, 8, gfx::TerrainLevelDesc);
 
 // 72: the allocator's push block. One dispatch per run of the visible list, one workgroup, every
 // view inside it — so it carries the run and the view count rather than a per-view block.
@@ -65,7 +77,8 @@ ENGINE_EXPECT_SIZE(72, 8, gfx::DeformAllocParams);
 
 // Unchanged at 96: `deform` took one of the three pad words and `bounds_padding` a second, so a
 // deformed instance can say how far its vertices leave their rest positions without the record
-// growing. One pad word is left.
+// growing. `terrain` took the last: the frame's terrain level an instance draws, for the cull
+// pass's hole test and the pool pass's terrain stage. None is left.
 ENGINE_EXPECT_SIZE(96, 4, gfx::InstanceDesc);
 
 ENGINE_EXPECT_SIZE(128, 8, gfx::ClusterDrawParams);
@@ -93,7 +106,10 @@ ENGINE_EXPECT_SIZE(128, 8, gfx::ClusterRecordParams);
 // depth tie is settled by the scene's order and not by the append's (gfx.md, "The tie rule"), and
 // the resolve needs the way back: `pair_entries`, this view's pair-to-entry table the pass writes
 // for every pair it draws, and the two run bases an entry is counted from.
-ENGINE_EXPECT_SIZE(464, 8, gfx::CullParams);
+// 480, not 464: the terrain levels' table (`terrain`), so a cluster of a terrain level wholly
+// inside the square a finer level draws is dropped before any test that costs; eight bytes of pad
+// keep the block a whole number of float4 rows.
+ENGINE_EXPECT_SIZE(480, 8, gfx::CullParams);
 
 // The vertex path's indexed draw, per run: the header is the draw's, the fallback's and the
 // expansion's indirect arguments in one aligned block; a record is the entry the vertex stage reads

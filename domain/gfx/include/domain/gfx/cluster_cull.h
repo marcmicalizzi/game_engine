@@ -160,8 +160,13 @@ struct CullParams {
   u64 pair_entries = 0;     // u32[pair_count], this view's
   u32 visible_base = 0;     // the whole list's index of `visible[0]`
   u32 sw_visible_base = 0;  // and of `sw_visible[0]`
+  // **Terrain levels** (`TerrainLevelDesc`): the frame's table, which an instance with
+  // `InstanceDesc::terrain` names. A cluster of a level whose sphere lies wholly inside the level's
+  // `hole` is dropped — the next finer level draws that ground. 0 tests nothing.
+  u64 terrain = 0;
+  u64 pad_terrain = 0;
 };
-static_assert(sizeof(CullParams) == 464);
+static_assert(sizeof(CullParams) == 480);
 static_assert(sizeof(CullParams) % 16 == 0, "the block is read as float4 rows on the GPU");
 
 inline constexpr f32 k_raster_hardware = 0.0f;  // CullParams::raster.y
@@ -370,8 +375,59 @@ inline constexpr u32 k_deform_stage_procedural = 1u << 11;  // wave / lattice / 
 // Set for the one frame in which the static stage's cache has to be filled. The pass then writes
 // `DeformDesc::cache` as well as the pool; every other frame reads the cache and skips the stage.
 inline constexpr u32 k_deform_stage_rebuild_cache = 1u << 12;
-inline constexpr u32 k_deform_stage_mask =
-    k_deform_stage_static | k_deform_stage_pose | k_deform_stage_skin | k_deform_stage_procedural;
+// **A terrain level's heights** (docs/subsystems/renderer.md, "The dunes in time-lapse"): the
+// vertex's height is read out of two evaluated height fields and blended, `a (1 - t) + b t`, and
+// its normal is the central difference of the blended field. It is a stage of its own and never
+// runs beside the others: a terrain level is a heightfield whose every vertex sits on one lattice,
+// which is what lets its position be a function of the lattice point alone (`TerrainLevelDesc`).
+inline constexpr u32 k_deform_stage_terrain = 1u << 13;
+inline constexpr u32 k_deform_stage_mask = k_deform_stage_static | k_deform_stage_pose |
+                                           k_deform_stage_skin | k_deform_stage_procedural |
+                                           k_deform_stage_terrain;
+
+// ---- terrain levels (docs/subsystems/renderer.md, "The dunes in time-lapse")
+// ----------------------
+//
+// **One evaluated height field**: the dune field sampled at one game time on a window of a level's
+// lattice — `nx * nz` heights in metres, rows of x in order of z, sample (i, j) at lattice point
+// (i0 + i, j0 + j). A level's two fields may sit on different windows of the same lattice (a ring
+// that re-centred between their evaluations), which is why each carries its own.
+struct TerrainField {
+  u64 heights = 0;  // f32[nx * nz], or 0: none
+  i32 i0 = 0;       // the lattice point of sample (0, 0), along x
+  i32 j0 = 0;       // and along z
+  u32 nx = 0;
+  u32 nz = 0;
+};
+
+// **A terrain level as a frame draws it**: its lattice, its two fields and the blend between them,
+// how far its vertices may have left their rest heights, and the square the next finer level
+// covers. One per level, written per frame into a host-visible table (`CullParams::terrain`,
+// `DeformParams::terrain`) and named by `InstanceDesc::terrain`.
+//
+// The pool pass writes a level vertex at lattice point (i, j) — found from its rest position, which
+// every copy of the vertex shares, so the stage keeps the crack rule of gfx.md's deform chain — at
+// `origin + (i, j) * spacing` with the height `a (1 - blend) + b blend` and the normal of the
+// blended field's central differences. A vertex strictly inside `hole` is moved to the hole's
+// nearest edge, at the field's height there: the finer level draws that ground, and a cluster of
+// this one that straddles the edge keeps only its part outside it. The cull pass drops a cluster
+// whose sphere is wholly inside `hole`, so a level does not pay for the ground a finer one draws,
+// and pads every sphere of the level by `padding` — the largest distance any of its vertices is
+// from its rest height in either field — in place of `InstanceDesc::bounds_padding`, because it
+// changes as the fields do and a per-frame table is where it can change without an upload.
+//
+// Everything is in the level's **mesh space**, which is the world: a terrain level's instance has
+// the identity transform (renderer::GpuScene refuses anything else).
+struct TerrainLevelDesc {
+  TerrainField a;
+  TerrainField b;
+  Vec2 origin{};       // x, z of lattice point (0, 0), metres
+  f32 spacing = 1.0f;  // metres between lattice points
+  f32 blend = 0.0f;    // 0 draws `a`, 1 draws `b`
+  f32 padding = 0.0f;  // metres: the cull's sphere padding for every cluster of the level
+  u32 pad[3] = {};
+  Vec4 hole{};  // x0, z0, x1, z1, metres; none when x1 <= x0
+};
 
 // GPU-mirrored; keep in step with the MeshDesc struct in the shaders. 64 bytes, read through a
 // device address. One per mesh of the scene: the 16-bit position grid this mesh's positions are
@@ -443,7 +499,9 @@ struct InstanceDesc {
   u32 flags = k_instance_uniform_scale;
   u32 deform = k_invalid_deform;  // entry of the DeformDesc table; k_invalid_deform: rigid
   f32 bounds_padding = 0.0f;  // mesh-space slack added to every sphere this instance is culled by
-  u32 pad = 0;
+  // 1 + the terrain level this instance draws, in the frame's `TerrainLevelDesc` table; 0 for
+  // everything that is not a terrain level. It took the record's last pad word.
+  u32 terrain = 0;
 };
 static_assert(sizeof(InstanceDesc) == 96);
 
@@ -533,8 +591,11 @@ struct DeformParams {
   f32 amplitude = 1.0f;    // displacement scale as a fraction of the mesh's grid box
   u32 max_entries = 0;     // the run's capacity; the count read from the device is clamped to it
   u32 visible_offset = 0;  // this run's first entry in the whole visible list
+  // The frame's `TerrainLevelDesc` table, which a `k_deform_stage_terrain` instance reads through
+  // `InstanceDesc::terrain`; 0 for a scene with no terrain levels.
+  u64 terrain = 0;
 };
-static_assert(sizeof(DeformParams) == 104);
+static_assert(sizeof(DeformParams) == 112);
 
 // Mirrors AllocParams in deform_alloc.slang: the push constants of the pool's allocator. 72
 // bytes. **One workgroup**, once per run of the visible list, looping over the views inside it:

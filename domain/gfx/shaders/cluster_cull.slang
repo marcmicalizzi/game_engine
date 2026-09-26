@@ -38,7 +38,7 @@ struct StreamParams {
   uint64_t request_mask;     // uint per page
 };
 
-// Read through a device address; mirrors gfx::CullParams (464 bytes).
+// Read through a device address; mirrors gfx::CullParams (480 bytes).
 struct CullParams {
   float4 planes[6];  // inward-facing, normalized: dot(n, p) + w >= 0 inside
   float4 camera;     // xyz position, w = znear
@@ -88,6 +88,10 @@ struct CullParams {
   uint64_t pair_entries;  // uint[pair_count]
   uint visible_base;
   uint sw_visible_base;
+  // Terrain levels (scene.slang, TerrainLevelDesc): the frame's table, or 0. A cluster of a level
+  // whose sphere is wholly inside the level's hole is dropped: the finer level draws that ground.
+  uint64_t terrain;
+  uint64_t pad_terrain;
 };
 
 struct CullPush {
@@ -317,7 +321,24 @@ void cull_pair(uint pair, bool vertex_draw) {
   // The same constant goes on the LOD spheres below, which is what keeps the cut crack-free: a
   // cluster's parent sphere is its children's own sphere, so one constant per instance still
   // leaves exactly one cluster per DAG path passing (docs/subsystems/renderer.md).
-  const float padding = instance.bounds_padding * instance.scale_max;
+  float padding = instance.bounds_padding * instance.scale_max;
+  // A **terrain level** (scene.slang, TerrainLevelDesc) takes its padding from the frame's table,
+  // where it follows the fields as they move away from the rest heights the spheres were fit to,
+  // and a cluster of it wholly inside the square the next finer level covers draws nothing the
+  // picture keeps: every vertex of it would be moved onto the square's edge by the pool pass
+  // (deform.slang's terrain stage). A level moves its vertices up and down only, so the test is on
+  // the rest sphere's footprint, and it is the same test for every run and view.
+  if (instance.terrain != 0 && params->terrain != 0) {
+    TerrainLevelDesc* levels = (TerrainLevelDesc*)params->terrain;
+    const TerrainLevelDesc level = levels[instance.terrain - 1];
+    padding = max(padding, level.padding);
+    const float4 hole = level.hole;
+    const float footprint = cluster.radius * instance.scale_max;
+    if (hole.z > hole.x && center.x - footprint >= hole.x && center.x + footprint <= hole.z &&
+        center.z - footprint >= hole.y && center.z + footprint <= hole.w) {
+      return;
+    }
+  }
   const float radius = cluster.radius * instance.scale_max + padding;
 
   if (params->lod.w > 0.0) {

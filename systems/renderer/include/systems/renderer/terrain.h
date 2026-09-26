@@ -246,4 +246,43 @@ u32 terrain_height_blocks(const TerrainDesc& desc) noexcept;
 bool evaluate_terrain_heights(const TerrainSampler& sampler, f64 time_s, u32 block_begin,
                               u32 block_end, std::span<f32> heights) noexcept;
 
+// **A terrain level's lattice** (renderer.md, "The dunes in time-lapse"): the points a level's
+// vertices sit on and its height fields are sampled at. The scene's own grid is one — its
+// coordinates computed exactly as `build_terrain_mesh` computes them, so a field on it is the
+// mesh's heights to the bit — and a ring's is the world's grid at the ring's spacing, counted from
+// the world's origin (terrain.md, "Rings"), so a ring that moves samples the points it did.
+struct TerrainLattice {
+  f64 origin_x = 0.0;  // metres of lattice point (0, 0)
+  f64 origin_z = 0.0;
+  f64 spacing = 1.0;  // metres between points
+  // The scene grid: `-extent + 2 extent (i / (size - 1))` in f32, `build_terrain_mesh`'s own
+  // expression. Otherwise `i * spacing_mm / 1000`, the rings' (`terrain::build_ring_chunk_mesh`).
+  bool scene_grid = false;
+  f32 extent = 0.0f;
+  u32 size = 0;
+  i64 spacing_mm = 0;
+  f32 x(i32 i) const noexcept;
+  f32 z(i32 j) const noexcept;
+};
+TerrainLattice terrain_scene_lattice(const TerrainDesc& desc) noexcept;
+TerrainLattice terrain_ring_lattice(i64 spacing_mm) noexcept;
+
+// The generator's heights on a window of a lattice at `time_s`: `nx * nz` of them, rows of x in
+// order of z, sample (i, j) at lattice point (i0 + i, j0 + j) — the ridges and basins added as
+// `height` adds them. Cut into 64 x 64 blocks exactly as `evaluate_terrain_heights` is (one gather
+// a block), so a caller hands blocks [begin, end) to as many jobs as it likes and gets the same
+// bytes; over the scene lattice's whole window it is `evaluate_terrain_heights`. False, filling
+// nothing, without a generator.
+u32 terrain_window_blocks(u32 nx, u32 nz) noexcept;
+bool evaluate_terrain_window(const TerrainSampler& sampler, f64 time_s,
+                             const TerrainLattice& lattice, i32 i0, i32 j0, u32 nx, u32 nz,
+                             u32 block_begin, u32 block_end, std::span<f32> heights) noexcept;
+
+// **How far the generator's fastest band travels between two game times**, metres: the largest
+// over the bands of the wind's flux path length over the band's height (Bagnold's rule, the
+// closed form `terrain::DuneField::displacement` moves the band's lattice by, taken along the path
+// rather than between its ends so a reversal inside the interval is not a short move). Storms are
+// in the record, so a storm's hours travel further. 0 without a generator.
+f64 terrain_band_travel_m(const TerrainSampler& sampler, f64 from_s, f64 to_s) noexcept;
+
 }  // namespace engine::renderer

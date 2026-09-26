@@ -203,6 +203,11 @@ struct ResolvedSettings {
   // is one of `deform.slang`'s kinds rather than a second pass, so a scene with a character in it
   // fills the pool whether or not anyone asked for `--deform`.
   bool deform_pass = false;
+  // The terrain is drawn as **terrain levels** (docs/subsystems/renderer.md, "The dunes in
+  // time-lapse"): its instance is deformed, and the pool pass writes its heights blended between
+  // two evaluated fields of the dune generator. True when the scene's terrain is the generator's
+  // and the settings move it (`time_rate` above zero); it turns `deform_pass` on with it.
+  bool terrain_levels = false;
   // Geometry pages stream on demand. True only when the caller asked *and* the scene carries a
   // page table *and* nothing else in the frame contradicts it — see `resolve_settings` for the
   // three things that do and why each one is a refusal rather than a silent half-measure.

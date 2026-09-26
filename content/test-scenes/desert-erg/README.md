@@ -8,7 +8,7 @@ build/msvc-release/bin/engine-content terrain content/test-scenes/desert-erg/sce
 build/msvc-release/bin/engine-view --scene content/test-scenes/desert-erg/scene.json --interactive --time-rate 86400
 ```
 
-`--time-rate 86400` runs a game day a real second and re-evaluates the grid at each day ([renderer](../../../docs/subsystems/renderer.md#scenes-camera-paths-and-flythroughs), "The dunes in time-lapse"); the heights are not uploaded yet, so the summary line's `time_lapse` block is what shows it working.
+`--time-rate 86400` runs a game day a real second and moves the sand on screen, blended between evaluated fields every frame so no dune ever steps ([renderer](../../../docs/subsystems/renderer.md#the-dunes-in-time-lapse)); the summary line's `time_lapse` block says how often the field was evaluated and what it cost.
 
 ## The band table
 

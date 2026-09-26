@@ -1381,6 +1381,15 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
     }
   }
   out.terrain = resolved.terrain;
+  out.terrain_mesh = ~0u;
+  if (resolved.terrain.enabled) {
+    for (u32 m = 0; m < resolved.meshes.size(); ++m) {
+      if (resolved.meshes[m].empty()) {
+        out.terrain_mesh = m;
+        break;
+      }
+    }
+  }
   // The ground the hemisphere ambient's lower half carries: a terrain's sand, which is most of
   // any terrain, or the neutral grey (renderer.md, "The sky above, the ground below").
   const f32 grey = gfx::k_neutral_ground_albedo;

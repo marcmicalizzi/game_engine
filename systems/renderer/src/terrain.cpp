@@ -479,45 +479,80 @@ constexpr u32 k_height_block = 64;
 }  // namespace
 
 u32 terrain_height_blocks(const TerrainDesc& desc) noexcept {
-  const u32 per_side = (desc.size + k_height_block - 1) / k_height_block;
-  return per_side * per_side;
+  return terrain_window_blocks(desc.size, desc.size);
 }
 
 bool evaluate_terrain_heights(const TerrainSampler& sampler, f64 time_s, u32 block_begin,
                               u32 block_end, std::span<f32> heights) noexcept {
+  const TerrainDesc& desc = sampler.desc();
+  return evaluate_terrain_window(sampler, time_s, terrain_scene_lattice(desc), 0, 0, desc.size,
+                                 desc.size, block_begin, block_end, heights);
+}
+
+f32 TerrainLattice::x(i32 i) const noexcept {
+  if (scene_grid)
+    return -extent + 2.0f * extent * (static_cast<f32>(i) / static_cast<f32>(size - 1));
+  return static_cast<f32>(static_cast<f64>(i64{i} * spacing_mm) / 1000.0);
+}
+
+f32 TerrainLattice::z(i32 j) const noexcept { return x(j); }
+
+TerrainLattice terrain_scene_lattice(const TerrainDesc& desc) noexcept {
+  TerrainLattice l;
+  l.scene_grid = true;
+  l.extent = desc.extent;
+  l.size = std::max(desc.size, 2u);
+  l.origin_x = -static_cast<f64>(desc.extent);
+  l.origin_z = -static_cast<f64>(desc.extent);
+  l.spacing = 2.0 * static_cast<f64>(desc.extent) / static_cast<f64>(l.size - 1);
+  return l;
+}
+
+TerrainLattice terrain_ring_lattice(i64 spacing_mm) noexcept {
+  TerrainLattice l;
+  l.spacing_mm = spacing_mm > 0 ? spacing_mm : 1;
+  l.spacing = static_cast<f64>(l.spacing_mm) / 1000.0;
+  return l;
+}
+
+u32 terrain_window_blocks(u32 nx, u32 nz) noexcept {
+  return ((nx + k_height_block - 1) / k_height_block) *
+         ((nz + k_height_block - 1) / k_height_block);
+}
+
+bool evaluate_terrain_window(const TerrainSampler& sampler, f64 time_s,
+                             const TerrainLattice& lattice, i32 i0, i32 j0, u32 nx, u32 nz,
+                             u32 block_begin, u32 block_end, std::span<f32> heights) noexcept {
 #if ENGINE_RENDERER_TERRAIN
   const TerrainSampler::Dunes* dunes = sampler.dunes_field();
-  const TerrainDesc& desc = sampler.desc();
-  const u32 n = desc.size;
-  if (dunes == nullptr || heights.size() != static_cast<usize>(n) * n) return false;
-  TerrainDesc at = desc;
+  if (dunes == nullptr || heights.size() != static_cast<usize>(nx) * nz) return false;
+  TerrainDesc at = sampler.desc();
   at.time_s = time_s;
   const i64 time_us = time_us_of(at);
-  const f32 extent = desc.extent;
-  const u32 per_side = (n + k_height_block - 1) / k_height_block;
-  const auto coord = [&](u32 i) {
-    return -extent + 2.0f * extent * (static_cast<f32>(i) / static_cast<f32>(n - 1));
-  };
+  const u32 per_side = (nx + k_height_block - 1) / k_height_block;
   // One gather per block, and the same heights as `height` (the generator's rule: any gather that
   // covers a point gives it the same primitives, which meet by their maximum and add across bands).
   terrain::Gather gather;
   for (u32 block = block_begin; block < block_end; ++block) {
     const u32 bx = (block % per_side) * k_height_block;
     const u32 bz = (block / per_side) * k_height_block;
-    const u32 ez = std::min(n, bz + k_height_block);
-    const u32 ex = std::min(n, bx + k_height_block);
-    dunes->field.gather(terrain::to_mm(coord(bx)), terrain::to_mm(coord(bz)),
-                        terrain::to_mm(coord(ex - 1)), terrain::to_mm(coord(ez - 1)), time_us,
-                        nullptr, gather);
+    const u32 ez = std::min(nz, bz + k_height_block);
+    const u32 ex = std::min(nx, bx + k_height_block);
+    dunes->field.gather(terrain::to_mm(lattice.x(i0 + static_cast<i32>(bx))),
+                        terrain::to_mm(lattice.z(j0 + static_cast<i32>(bz))),
+                        terrain::to_mm(lattice.x(i0 + static_cast<i32>(ex - 1))),
+                        terrain::to_mm(lattice.z(j0 + static_cast<i32>(ez - 1))), time_us, nullptr,
+                        gather);
     for (u32 zi = bz; zi < ez; ++zi) {
-      const f32 z = coord(zi);
+      const f32 z = lattice.z(j0 + static_cast<i32>(zi));
       for (u32 xi = bx; xi < ex; ++xi) {
-        const f32 x = coord(xi);
+        const f32 x = lattice.x(i0 + static_cast<i32>(xi));
         f32 ridge_mask = 0.0f;
         f32 flatten = 1.0f;
         const f32 sand = terrain::height_m(dunes->field.height_um(
             gather, terrain::to_mm(x), terrain::to_mm(z), terrain::Detail::dunes));
-        heights[zi * n + xi] = sand + sampler.features(x, z, ridge_mask, flatten);
+        heights[static_cast<usize>(zi) * nx + xi] =
+            sand + sampler.features(x, z, ridge_mask, flatten);
       }
     }
   }
@@ -525,10 +560,39 @@ bool evaluate_terrain_heights(const TerrainSampler& sampler, f64 time_s, u32 blo
 #else
   (void)sampler;
   (void)time_s;
+  (void)lattice;
+  (void)i0;
+  (void)j0;
+  (void)nx;
+  (void)nz;
   (void)block_begin;
   (void)block_end;
   (void)heights;
   return false;
+#endif
+}
+
+f64 terrain_band_travel_m(const TerrainSampler& sampler, f64 from_s, f64 to_s) noexcept {
+#if ENGINE_RENDERER_TERRAIN
+  const TerrainSampler::Dunes* dunes = sampler.dunes_field();
+  if (dunes == nullptr) return 0.0;
+  const auto us = [](f64 s) { return static_cast<i64>(std::floor(s * 1'000'000.0 + 0.5)); };
+  // The flux path length over the interval, cm^2, and each band's travel along it: cm^2 over the
+  // band's celerity height in mm, times 100 for mm^2, which is Bagnold's rule as
+  // `terrain::DuneField::displacement` takes it, applied to |flux| rather than to the vector.
+  const i64 magnitude = dunes->field.wind().between(us(from_s), us(to_s)).magnitude;
+  f64 most = 0.0;
+  for (u32 b = 0; b < dunes->field.band_count(); ++b) {
+    const f64 mm = static_cast<f64>(magnitude) * 100.0 /
+                   static_cast<f64>(std::max<i64>(1, dunes->field.band_height(b)));
+    most = std::max(most, mm / 1000.0);
+  }
+  return std::abs(most);
+#else
+  (void)sampler;
+  (void)from_s;
+  (void)to_s;
+  return 0.0;
 #endif
 }
 

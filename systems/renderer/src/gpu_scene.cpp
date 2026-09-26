@@ -7,6 +7,7 @@
 #include <domain/texture/texture_file.h>
 #include <foundation/image/decode.h>
 #include <foundation/io/vfs.h>
+#include <foundation/tunables/tunables.h>
 #include <systems/renderer/gpu_scene.h>
 #include <systems/renderer/rt_capacity.h>
 
@@ -36,9 +37,20 @@ constexpr gfx::BufferUsage k_transfer =
 // cost before the suballocation existed, and makes overflow impossible on any scene small enough
 // for the layout E25 built. Both ends are stated rather than hidden (ADR-0017): the summary
 // reports the pool bytes and what the whole-mesh layout would have taken beside them.
+// **A moving terrain's cut is the pool's largest tenant by far**: every cluster of the ground in
+// view, a view and a cascade at a time, where a crowd's is a few thousand. An entry the budget has
+// no room for draws its rest pose, and for a terrain level that is a jump — the one thing a moving
+// terrain must never do — so a scene with terrain levels takes at least this budget
+// (renderer.md, "The dunes in time-lapse", has what the erg's cut needs).
+tunables::Int terrain_pool_mib{
+    "renderer.terrain.pool_mib", 768, 1, 16'384,
+    "The deformed-vertex pool's budget, MiB, at least, for a scene whose "
+    "terrain moves (its cut is the pool's largest tenant)"};
+
 u32 pool_budget_vertices(const ResolvedSettings& resolved, u64 whole_mesh_vertices) noexcept {
   u64 kib = resolved.settings.deform_pool_kib > 0 ? u64{resolved.settings.deform_pool_kib}
                                                   : u64{k_default_deform_pool_kib};
+  if (resolved.terrain_levels) kib = std::max<u64>(kib, u64(terrain_pool_mib.get()) * 1024);
   if (kib < k_min_deform_pool_kib) kib = k_min_deform_pool_kib;
   u64 vertices = kib * 1024 / (3 * sizeof(f32));
   if (vertices < 1) vertices = 1;
@@ -820,7 +832,12 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
       // character alone and every prop stays on the instruction-for-instruction rigid path.
       const u32 instance_joints = skinned_ ? data_->instance_joints[i] : 0u;
       const geometry::ClusterMeshPart& part = data_->parts[instance_table_[i].mesh];
-      if (instance_joints == 0 && part.morph_channel_count == 0 && !resolved.settings.deform)
+      // A terrain level (renderer.md, "The dunes in time-lapse"): the terrain's instance, whose
+      // heights the pool pass reads out of the level's two fields. Level 0 is the scene's grid.
+      const bool terrain_level =
+          resolved.terrain_levels && instance_table_[i].mesh == data_->terrain_mesh;
+      if (instance_joints == 0 && part.morph_channel_count == 0 && !resolved.settings.deform &&
+          !terrain_level)
         continue;
       const u32 next = instance_table_[i].mesh + 1 < data_->parts.size()
                            ? data_->parts[instance_table_[i].mesh + 1].first_vertex
@@ -828,13 +845,18 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
       gfx::DeformDesc desc{};
       // The chain's stage mask. A skinned instance runs the skinning stage; a `--deform` one runs
       // the procedural stage with the kind the flag named. They are separate bits, so an instance
-      // that is both runs both — which is the thing E25 said needed a wider field.
+      // that is both runs both — which is the thing E25 said needed a wider field. A terrain level
+      // runs the terrain stage and nothing else.
       desc.stages =
           (instance_joints > 0 ? gfx::k_deform_stage_skin : 0u) |
           (resolved.settings.deform ? gfx::k_deform_stage_procedural | resolved.settings.deform_kind
                                     : 0u) |
           (part.morph_channel_count > 0 ? gfx::k_deform_stage_static | gfx::k_deform_stage_pose
                                         : 0u);
+      if (terrain_level) {
+        desc.stages = gfx::k_deform_stage_terrain;
+        instance_table_[i].terrain = 1;
+      }
       desc.first_vertex = part.first_vertex;
       desc.first_channel = part.first_morph_channel;
       desc.channel_count = part.morph_channel_count;
@@ -894,6 +916,7 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
       }
     }
     if (ok && !lod.mesh.morph_channels.empty()) ok = create_morph(resolved, error);
+    if (ok && resolved.terrain_levels) ok = create_terrain(resolved, error);
     if (!ok) return false;
     ENGINE_LOG_INFO(
         log_renderer, "deformed-vertex pool", log::field("mode", deform_name(resolved.settings)),
@@ -1158,6 +1181,145 @@ void GpuScene::set_static_weights(std::span<const f32> weights) {
     }
   }
   static_cache_dirty_ = true;
+}
+
+// ---- terrain levels (renderer.md, "The dunes in time-lapse")
+// -------------------------------------
+//
+// The device side of a moving terrain, and nothing about when it moves: `TerrainMotion` decides
+// that, evaluates the fields off the frame, and hands them over through `terrain_upload` and
+// `terrain_show`. Level 0 is the scene's own grid, drawn by the terrain mesh's instance.
+bool GpuScene::create_terrain(const ResolvedSettings& resolved, std::string* error) {
+  (void)resolved;
+  const gfx::Device& device = *device_;
+  terrain_.clear();
+  u32 instance = ~0u;
+  for (u32 i = 0; i < instance_count_; ++i) {
+    if (instance_table_[i].terrain == 1) {
+      instance = i;
+      break;
+    }
+  }
+  if (instance == ~0u) return true;
+  // A level's vertices are placed on its lattice in mesh space, which the cull pass and the pool
+  // pass take for the world; a terrain's instance is the identity, and anything else is refused
+  // rather than drawn in the wrong place.
+  const Mat4& world = instance_table_[instance].world;
+  const Mat4 identity = Mat4::identity();
+  if (std::memcmp(&world, &identity, sizeof(Mat4)) != 0) {
+    if (error != nullptr) *error = "a moving terrain's instance must have the identity transform";
+    return false;
+  }
+  TerrainLevel level;
+  level.lattice = terrain_scene_lattice(data_->terrain);
+  level.instance = instance;
+  level.capacity = u64{level.lattice.size} * level.lattice.size;
+  for (u32 s = 0; s < k_terrain_field_slots; ++s) {
+    if (!gfx::create_buffer(device, level.capacity * sizeof(f32),
+                            k_address | gfx::BufferUsage::TransferDst, false, level.fields[s],
+                            error)) {
+      for (u32 t = 0; t < s; ++t)
+        gfx::destroy_buffer(device, level.fields[t]);
+      return false;
+    }
+  }
+  terrain_.push_back(std::move(level));
+  // The per-frame tables, one region per frame slot like the joint matrices: the frame writes its
+  // own and a slot is not reused until the frame that last had it is done.
+  if (!gfx::create_buffer(device,
+                          u64{k_joint_slots} * terrain_.size() * sizeof(gfx::TerrainLevelDesc),
+                          k_address, true, terrain_table_, error)) {
+    return false;
+  }
+  std::memset(terrain_table_.mapped, 0, terrain_table_.size);
+  // The moved field's normals go into the normal pool, which a scene with morph channels already
+  // has; one without makes it here, parallel to the position pool.
+  if (!deform_normals.buffer.valid() &&
+      !gfx::create_buffer(device, u64{deform_pool_vertices_} * sizeof(u32), k_address, false,
+                          deform_normals, error)) {
+    return false;
+  }
+  u64 bytes = 0;
+  for (const TerrainLevel& l : terrain_)
+    bytes += l.capacity * sizeof(f32) * k_terrain_field_slots;
+  ENGINE_LOG_INFO(log_renderer, "terrain levels", log::field("levels", terrain_.size()),
+                  log::field("field_bytes", bytes),
+                  log::field("normal_pool_bytes", u64{deform_pool_vertices_} * sizeof(u32)));
+  return true;
+}
+
+bool GpuScene::terrain_staging(u64 samples, gfx::BufferResource& out, std::string* error) const {
+  return gfx::create_buffer(*device_, samples * sizeof(f32), gfx::BufferUsage::TransferSrc, true,
+                            out, error);
+}
+
+bool GpuScene::terrain_upload(u32 level, u32 slot, const gfx::TerrainField& window,
+                              const gfx::BufferResource& staging, std::string* error) {
+  if (level >= terrain_.size() || slot >= k_terrain_field_slots) {
+    if (error != nullptr) *error = "terrain_upload: no such level or field slot";
+    return false;
+  }
+  TerrainLevel& l = terrain_[level];
+  const u64 bytes = u64{window.nx} * window.nz * sizeof(f32);
+  if (bytes > l.capacity * sizeof(f32) || bytes > staging.size) {
+    if (error != nullptr) *error = "terrain_upload: the window is larger than the field slot";
+    return false;
+  }
+  l.windows[slot] = window;
+  l.windows[slot].heights = l.fields[slot].address;
+  l.pending.push_back(TerrainUpdate::Copy{staging, l.fields[slot], bytes});
+  return true;
+}
+
+void GpuScene::terrain_show(u32 level, u32 slot_a, u32 slot_b, f32 blend, f32 padding,
+                            Vec4 hole) noexcept {
+  if (level >= terrain_.size()) return;
+  TerrainLevel& l = terrain_[level];
+  l.shown_a = slot_a < k_terrain_field_slots ? slot_a : ~0u;
+  l.shown_b = slot_b < k_terrain_field_slots ? slot_b : ~0u;
+  l.blend = blend;
+  l.padding = padding;
+  l.hole = hole;
+}
+
+void GpuScene::terrain_prepare(u32 slot, TerrainUpdate& out) {
+  out.table = 0;
+  out.copies.clear();
+  out.fields.clear();
+  if (terrain_.empty() || terrain_table_.mapped == nullptr) return;
+  const u32 region = slot < k_joint_slots ? slot : slot % k_joint_slots;
+  auto* table =
+      static_cast<gfx::TerrainLevelDesc*>(terrain_table_.mapped) + u64{region} * terrain_.size();
+  for (u32 k = 0; k < terrain_.size(); ++k) {
+    TerrainLevel& l = terrain_[k];
+    // At most `k_terrain_copies_per_frame` a frame; the rest wait in order for the next one, and a
+    // level shows a slot only once its copy is in a frame (`TerrainMotion` asks
+    // `terrain_uploaded`).
+    u32 taken = 0;
+    for (const TerrainUpdate::Copy& copy : l.pending) {
+      if (out.copies.size() >= k_terrain_copies_per_frame) break;
+      out.copies.push_back(copy);
+      ++taken;
+    }
+    l.pending.erase(l.pending.begin(), l.pending.begin() + taken);
+    gfx::TerrainLevelDesc desc{};
+    desc.origin = Vec2{static_cast<f32>(l.lattice.origin_x), static_cast<f32>(l.lattice.origin_z)};
+    desc.spacing = static_cast<f32>(l.lattice.spacing);
+    desc.blend = l.blend;
+    desc.padding = l.padding;
+    desc.hole = l.hole;
+    if (l.shown_a != ~0u) {
+      desc.a = l.windows[l.shown_a];
+      out.fields.push_back(l.fields[l.shown_a]);
+    }
+    if (l.shown_b != ~0u && l.shown_b != l.shown_a) {
+      desc.b = l.windows[l.shown_b];
+      out.fields.push_back(l.fields[l.shown_b]);
+    }
+    table[k] = desc;
+  }
+  out.table =
+      terrain_table_.address + u64{region} * terrain_.size() * sizeof(gfx::TerrainLevelDesc);
 }
 
 bool GpuScene::create_streaming(const ResolvedSettings& resolved, std::string* error) {
@@ -2001,6 +2163,15 @@ void GpuScene::destroy() noexcept {
   gfx::destroy_buffer(device, morph_normals);
   gfx::destroy_buffer(device, morph_params);
   gfx::destroy_buffer(device, morph_weights);
+  for (TerrainLevel& level : terrain_) {
+    for (gfx::BufferResource& field : level.fields)
+      gfx::destroy_buffer(device, field);
+    // A staging buffer no frame took yet is still this scene's to free.
+    for (TerrainUpdate::Copy& copy : level.pending)
+      gfx::destroy_buffer(device, copy.staging);
+  }
+  terrain_.clear();
+  gfx::destroy_buffer(device, terrain_table_);
   gfx::destroy_buffer(device, deform_normals);
   gfx::destroy_buffer(device, static_cache);
   gfx::destroy_buffer(device, joints);

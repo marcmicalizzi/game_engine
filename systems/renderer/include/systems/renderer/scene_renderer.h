@@ -165,6 +165,10 @@ struct FrameStats {
   u32 hole_pairs = 0;
   f64 gpu_tables = 0.0;
   f64 gpu_pair_expand = 0.0;
+  // A moving terrain's fields (docs/subsystems/renderer.md, "The dunes in time-lapse"): the bytes
+  // of evaluated heights this frame copied onto the device, and what the copy cost.
+  u64 terrain_upload_bytes = 0;
+  f64 gpu_terrain_upload = 0.0;
 
   u32 visible_pairs() const noexcept { return visible_hw + visible_pass2 + visible_sw; }
 };
@@ -271,6 +275,9 @@ struct Stats {
   // filtering is in `gpu_resolve`, where it runs.
   f64 gpu_shadow = 0.0;
   f64 gpu_shadow_cull = 0.0;
+  // A moving terrain's field uploads (`FrameStats::gpu_terrain_upload`), summed, and their bytes.
+  f64 gpu_terrain_upload = 0.0;
+  u64 terrain_upload_bytes = 0;
   f64 gpu_total = 0.0;
   f64 cpu_ns = 0.0;  // wall time inside submit_frame, summed
   // Sampled by sample_gpu_memory(), not by a frame: it is a driver query and the frame path
@@ -609,7 +616,10 @@ class SceneRenderer {
   Vector<u32> slot_holes_;
   Vector<u32> slot_table_slots_;  // and what it wrote into the table set it flipped to
   Vector<u32> slot_table_pairs_;
-  GpuScene::TableUpdate tables_;  // the frame being recorded's table update; its copies are kept
+  Vector<u64> slot_terrain_bytes_;  // per frame slot: the terrain field bytes that frame uploaded
+  GpuScene::TableUpdate tables_;    // the frame being recorded's table update; its copies are kept
+  // The frame being recorded's terrain levels: its table, the fields it copies in and reads.
+  GpuScene::TerrainUpdate terrain_frame_;
   Vector<gfx::BufferResource> retired_;  // a change's outgrown buffers, on their way to deferral
   Stats stats_;
   gfx::CommandList commands_;  // the frame between begin_frame and submit_frame

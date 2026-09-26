@@ -323,7 +323,19 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
   // scene has a skinned one, and those are the same pass: skinning is `deform.slang`'s third
   // kind, not a path beside it. Deciding it here rather than at each use is what keeps
   // renderer.md's "every device- and scene-driven override lives in one function" true.
-  out.deform_pass = s.deform || (scene != nullptr && (scene->skinned() || scene->morphed()));
+  // **A moving terrain is a deformed one** (renderer.md, "The dunes in time-lapse"): the dune
+  // generator's terrain under a time-lapse draws its heights out of the pool, blended between two
+  // evaluated fields. Not for a scene whose instances come and go, which has no pool.
+  out.terrain_levels = scene != nullptr && s.time_rate > 0.0 && !dynamic &&
+                       scene->terrain.enabled &&
+                       scene->terrain.generator == TerrainGenerator::dunes &&
+                       scene->terrain_mesh != ~0u && terrain_generator_available();
+  if (scene != nullptr && s.time_rate > 0.0 && !out.terrain_levels && dynamic) {
+    ENGINE_LOG_WARN(log_renderer, "the terrain does not move",
+                    log::field("reason", "a scene whose instances come and go has no pool"));
+  }
+  out.deform_pass = s.deform || out.terrain_levels ||
+                    (scene != nullptr && (scene->skinned() || scene->morphed()));
   if (out.deform_pass && !s.cull) {
     s.cull = true;  // the pool pass walks the cull's visible list, which is the point
     ENGINE_LOG_WARN(log_renderer, "culling forced on with a deformed scene");

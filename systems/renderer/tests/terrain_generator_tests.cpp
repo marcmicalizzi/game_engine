@@ -255,110 +255,299 @@ TEST_CASE("renderer: a terrain's band table reads, hashes, and is validated") {
   CHECK(error.find("smaller than its own dune") != std::string::npos);
 }
 
-namespace {
-
-// Keeps every grid a time-lapse hands over, with its time.
-class KeepHeights final : public TerrainHeightSink {
- public:
-  void heights(f64 time_s, std::span<const f32> h) override {
-    times.push_back(time_s);
-    grids.push_back(Vector<f32>(h.begin(), h.end()));
-  }
-  Vector<f64> times;
-  Vector<Vector<f32>> grids;
-};
-
-}  // namespace
-
-TEST_CASE("renderer: the time-lapse's step rule fires exactly when it should") {
-  // The rule alone: a boundary crossed since the last one evaluated, enough frames since the last
-  // start, and nothing in flight.
-  CHECK(time_lapse_due(0, 0.9, 1.0, 5, 3, false) == -1);  // no boundary crossed
-  CHECK(time_lapse_due(0, 1.0, 1.0, 5, 3, false) == 1);   // exactly on one
-  CHECK(time_lapse_due(0, 3.7, 1.0, 5, 3, false) == 3);   // several: the last
-  CHECK(time_lapse_due(0, 3.7, 1.0, 2, 3, false) == -1);  // too soon
-  CHECK(time_lapse_due(0, 3.7, 1.0, 5, 3, true) == -1);   // one in flight
-  CHECK(time_lapse_due(3, 3.9, 1.0, 5, 3, false) == -1);  // already evaluated
-
-  // Driven a frame at a time: half a game day a frame, a step of a day, three frames apart at
-  // least. Boundaries fall on every other frame, so the frame spacing decides which are
-  // evaluated: day 1 on frame 2, day 2 on frame 5 (frame 4 is too soon), day 4 on frame 8 (day 3's
-  // boundary came and went while waiting) — each at the boundary's own time, not the frame's.
+TEST_CASE(
+    "renderer: a time-lapse field is the mesh's heights at its time, on any number of threads") {
   const TerrainDesc desc = dunes_desc(1'000.0);
-  TimeLapseConfig config;
-  config.rate = 0.5 * 86'400.0 * 60.0;  // game seconds per real second, at 1/60 s a frame
-  config.step_s = 86'400.0;
-  config.min_frames = 3;
-  TerrainTimeLapse lapse;
-  std::string error;
-  REQUIRE(lapse.start(desc, config, nullptr, &error));
-  KeepHeights keep;
-  Vector<u32> started_on;
-  for (u32 frame = 1; frame <= 12; ++frame) {
-    if (lapse.tick(1.0 / 60.0, keep)) started_on.push_back(frame);
-  }
-  REQUIRE(started_on.size() == 4u);
-  CHECK(started_on[0] == 2u);
-  CHECK(started_on[1] == 5u);
-  CHECK(started_on[2] == 8u);
-  CHECK(started_on[3] == 11u);
-  REQUIRE(keep.times.size() == 4u);
-  CHECK(keep.times[0] == 1'000.0 + 86'400.0);
-  CHECK(keep.times[1] == 1'000.0 + 2 * 86'400.0);
-  CHECK(keep.times[2] == 1'000.0 + 4 * 86'400.0);
-  CHECK(keep.times[3] == 1'000.0 + 5 * 86'400.0);
-  // A waves terrain has no time to run, and a rate of zero is not a time-lapse.
-  TerrainDesc waves = desc;
-  waves.generator = TerrainGenerator::waves;
-  TerrainTimeLapse refused;
-  CHECK_FALSE(refused.start(waves, config, nullptr, &error));
-  config.rate = 0.0;
-  CHECK_FALSE(refused.start(desc, config, nullptr, &error));
-}
-
-TEST_CASE("renderer: a time-lapse's grid is the mesh's at that time, on any number of threads") {
-  const TerrainDesc desc = dunes_desc(1'000.0);
-  TimeLapseConfig config;
-  config.rate = 3.0 * 86'400.0 * 60.0;  // three game days a frame
-  config.step_s = 86'400.0;
-  config.min_frames = 1;
-  u64 hashes[3] = {};
-  f64 times[3] = {};
+  const TerrainSampler sampler(desc);
+  const TerrainLattice lattice = terrain_scene_lattice(desc);
+  const f64 at = 1'000.0 + 3.0 * 86'400.0;
+  const u32 n = desc.size;
+  const u32 blocks = terrain_window_blocks(n, n);
   jobs::JobSystem one(jobs::JobSystemConfig{.performance_workers = 1, .pin_threads = false});
   jobs::JobSystem three(jobs::JobSystemConfig{.performance_workers = 3, .pin_threads = false});
   jobs::JobSystem* pools[3] = {nullptr, &one, &three};
+  u64 hashes[3] = {};
+  Vector<f32> heights[3];
   for (u32 p = 0; p < 3; ++p) {
-    TerrainTimeLapse lapse;
-    std::string error;
-    REQUIRE(lapse.start(desc, config, pools[p], &error));
-    KeepHeights keep;
-    lapse.tick(1.0 / 60.0, keep);
-    lapse.finish(keep);
-    REQUIRE(keep.grids.size() == 1u);
-    times[p] = keep.times[0];
-    hashes[p] = hash_bytes(keep.grids[0].data(), keep.grids[0].size() * sizeof(f32));
-    if (p == 0) {
-      // The mesh built for a description at that time has the same heights to the bit.
-      TerrainDesc at = desc;
-      at.time_s = keep.times[0];
-      Vector<Vec3> positions;
-      Vector<u32> indices;
-      Vector<Vec2> uvs;
-      REQUIRE(build_terrain_mesh(at, positions, indices, uvs, &error));
-      u32 differ = 0;
-      for (u32 v = 0; v < positions.size(); ++v)
-        differ += positions[v].y != keep.grids[0][v];
-      CHECK(differ == 0u);
-      // And the dunes have moved in three days.
-      Vector<Vec3> before;
-      REQUIRE(build_terrain_mesh(desc, before, indices, uvs, &error));
-      u32 moved = 0;
-      for (u32 v = 0; v < before.size(); ++v)
-        moved += before[v].y != positions[v].y;
-      CHECK(moved > 0u);
+    heights[p].resize(n * n);
+    const std::span<f32> out(heights[p].data(), heights[p].size());
+    if (pools[p] == nullptr) {
+      REQUIRE(evaluate_terrain_window(sampler, at, lattice, 0, 0, n, n, 0, blocks, out));
+    } else {
+      pools[p]->parallel_for(jobs::Pool::Performance, blocks, 1, [&](u32 b, u32 e) {
+        evaluate_terrain_window(sampler, at, lattice, 0, 0, n, n, b, e, out);
+      });
     }
+    hashes[p] = hash_bytes(heights[p].data(), heights[p].size() * sizeof(f32));
   }
-  CHECK(times[0] == 1'000.0 + 3 * 86'400.0);
   CHECK(hashes[1] == hashes[0]);
   CHECK(hashes[2] == hashes[0]);
+  // The mesh built for the description at that time has the same heights to the bit, and the
+  // dunes have moved in three days.
+  TerrainDesc then = desc;
+  then.time_s = at;
+  Vector<Vec3> positions;
+  Vector<Vec3> before;
+  Vector<u32> indices;
+  Vector<Vec2> uvs;
+  std::string error;
+  REQUIRE(build_terrain_mesh(then, positions, indices, uvs, &error));
+  REQUIRE(build_terrain_mesh(desc, before, indices, uvs, &error));
+  u32 differ = 0;
+  u32 moved = 0;
+  for (u32 v = 0; v < positions.size(); ++v) {
+    differ += positions[v].y != heights[0][v];
+    moved += before[v].y != positions[v].y;
+  }
+  CHECK(differ == 0u);
+  CHECK(moved > 0u);
+  // The scene lattice's points are the mesh's, and a ring's are the world's grid at its spacing:
+  // a window of either is the generator's heights at those points, the ridges and basins added.
+  const TerrainSampler at_then(then);
+  const TerrainLattice ring = terrain_ring_lattice(500);
+  Vector<f32> window(9 * 7);
+  REQUIRE(evaluate_terrain_window(sampler, at, ring, -40, 30, 9, 7, 0, terrain_window_blocks(9, 7),
+                                  std::span<f32>(window.data(), window.size())));
+  u32 off = 0;
+  for (u32 j = 0; j < 7; ++j) {
+    for (u32 i = 0; i < 9; ++i) {
+      const f32 x = static_cast<f32>(-40 + static_cast<i32>(i)) * 0.5f;
+      const f32 z = static_cast<f32>(30 + static_cast<i32>(j)) * 0.5f;
+      CHECK(ring.x(-40 + static_cast<i32>(i)) == x);
+      off += window[j * 9 + i] != at_then.height(x, z);
+    }
+  }
+  CHECK(off == 0u);
+}
+
+TEST_CASE("renderer: the cadence rule keeps the fastest band within a fraction of a sample") {
+  const TerrainDesc desc = dunes_desc(1'000.0);
+  const TerrainSampler sampler(desc);
+  const f64 year = 365.0 * 86'400.0;
+  const f64 from = 1'000.0 + 40.0 * 86'400.0;
+  for (const f64 spacing : {0.5, 1.0, 1.5}) {
+    for (const f64 fraction : {0.25, 0.1}) {
+      const f64 bound = fraction * spacing;
+      const f64 at = terrain_next_time(sampler, from, spacing, fraction, 1.0, year);
+      CAPTURE(spacing);
+      CAPTURE(fraction);
+      CHECK(at > from);
+      // Within the bound, and the longest step that is, to a second.
+      CHECK(terrain_band_travel_m(sampler, from, at) <= bound);
+      CHECK(terrain_band_travel_m(sampler, from, at + 1.0) > bound);
+    }
+  }
+  // A smaller share of a sample is a shorter step, and the clamps hold.
+  const f64 quarter = terrain_next_time(sampler, from, 1.0, 0.25, 1.0, year) - from;
+  const f64 tenth = terrain_next_time(sampler, from, 1.0, 0.1, 1.0, year) - from;
+  CHECK(tenth < quarter);
+  CHECK(terrain_next_time(sampler, from, 1.0, 0.25, quarter * 2.0, year) == from + quarter * 2.0);
+  CHECK(terrain_next_time(sampler, from, 1.0, 0.25, 1.0, quarter / 2.0) == from + quarter / 2.0);
+  // Storms move sand faster, so the same stretch of the record takes more fields: count the steps
+  // across sixty days with and without them.
+  TerrainDesc stormy = desc;
+  stormy.storms_per_year = 31;
+  stormy.storm_strength = 3.0f;
+  const TerrainSampler storm_sampler(stormy);
+  const auto steps = [&](const TerrainSampler& s) {
+    u32 count = 0;
+    for (f64 t = from; t < from + 60.0 * 86'400.0;
+         t = terrain_next_time(s, t, 1.5, 0.25, 1.0, year))
+      ++count;
+    return count;
+  };
+  CHECK(steps(storm_sampler) > steps(sampler));
+}
+
+namespace {
+
+// A dune profile travelling downwind at `speed` metres a game second, sampled on a line of `n`
+// points `spacing` apart: 2 m tall, 12 m from crest to crest, with a sharp brink — the kind of
+// shape whose straight-line blend between two times is worst.
+Vector<f32> travelling_field(f64 time_s, f64 speed, u32 n, f64 spacing) {
+  Vector<f32> out(n);
+  for (u32 i = 0; i < n; ++i) {
+    const f64 x = static_cast<f64>(i) * spacing - speed * time_s;
+    const f64 u = x / 12.0 - std::floor(x / 12.0);  // 0..1 along one wavelength
+    out[i] = static_cast<f32>(u < 0.8 ? 2.0 * u / 0.8 : 2.0 * (1.0 - u) / 0.2);
+  }
+  return out;
+}
+
+struct BlendRun {
+  f64 max_move = 0.0;      // the most any sample changed between two consecutive frames
+  f64 max_reported = 0.0;  // the most the blend said it moved
+  f64 worst_excess = 0.0;  // how far a frame's real change passed what the blend said
+  u32 held = 0;
+  u32 capped = 0;
+  u32 installed = 0;
+  f64 final_lag = 0.0;
+  bool monotonic = true;
+};
+
+// Drives `terrain_blend_frame` a frame at a time at `rate` game seconds a real second (a frame a
+// sixtieth of a second), with fields timed by displacement (`step` game seconds apart) and ready
+// `latency` frames after they are asked for — and none at all for `stall` frames from frame
+// `stall_at` — and checks the heights the pool pass would draw, sample by sample.
+BlendRun run_blend(f64 rate, f64 speed, f64 step, u32 latency, u32 stall_at, u32 stall, u32 frames,
+                   f64 budget) {
+  constexpr u32 n = 256;
+  constexpr f64 spacing = 0.5;
+  gfx::TerrainField window{};
+  window.nx = n;
+  window.nz = 1;
+  const f64 t0 = 1'000.0;
+  TerrainBlend blend;
+  blend.time_a = blend.time_b = blend.surface_s = t0;
+  Vector<f32> a = travelling_field(t0, speed, n, spacing);
+  Vector<f32> b = a;
+  Vector<f32> latest = a;
+  f64 latest_time = t0;
+  TerrainNextField next;
+  Vector<f32> next_field;
+  bool pending = false;
+  u32 ready_at = 0;
+  Vector<f32> previous = a;
+  BlendRun run;
+  f64 last_surface = t0;
+  for (u32 f = 1; f <= frames; ++f) {
+    const f64 target = t0 + rate * static_cast<f64>(f) / 60.0;
+    const bool stalled = f >= stall_at && f < stall_at + stall;
+    if (!next.ready && !pending && !stalled) {
+      pending = true;
+      ready_at = f + latency;
+    }
+    if (pending && f >= ready_at && !stalled) {
+      const f64 at = latest_time + step;
+      next_field = travelling_field(at, speed, n, spacing);
+      next.ready = true;
+      next.time_s = at;
+      next.delta_m = terrain_field_delta(std::span<const f32>(latest.data(), n), window,
+                                         std::span<const f32>(next_field.data(), n), window);
+      latest = next_field;
+      latest_time = at;
+      pending = false;
+    }
+    const bool had_b = blend.has_b;
+    const TerrainFrameResult result = terrain_blend_frame(blend, target, budget, next);
+    if (result.installed > 0) {
+      if (had_b) a = b;
+      b = next_field;
+    }
+    run.held += result.held ? 1u : 0u;
+    run.capped += result.capped ? 1u : 0u;
+    run.installed += result.installed;
+    run.monotonic = run.monotonic && blend.surface_s >= last_surface;
+    last_surface = blend.surface_s;
+    // What the pool pass draws: `a (1 - t) + b t` in floats, as deform.slang writes it.
+    const f32 t = static_cast<f32>(blend.blend());
+    f64 frame_move = 0.0;
+    for (u32 i = 0; i < n; ++i) {
+      const f32 h = blend.has_b ? a[i] * (1.0f - t) + b[i] * t : a[i];
+      frame_move = std::max(frame_move, std::abs(static_cast<f64>(h) - previous[i]));
+      previous[i] = h;
+    }
+    run.max_move = std::max(run.max_move, frame_move);
+    run.max_reported = std::max(run.max_reported, result.moved_m);
+    run.worst_excess = std::max(run.worst_excess, frame_move - result.moved_m);
+    run.final_lag = target - blend.surface_s;
+  }
+  return run;
+}
+
+}  // namespace
+
+TEST_CASE("renderer: the blend never moves a sample more than its bound in a frame") {
+  // A quarter of the 0.5 m spacing a frame, the default. The profile moves 0.9 m a game day — the
+  // erg's waves, the fastest band — so the cadence rule times fields a quarter of a sample of
+  // travel apart: 0.125 / (0.9 / 86,400) = 12,000 game seconds.
+  const f64 budget = 0.25 * 0.5;
+  const f64 speed = 0.9 / 86'400.0;
+  const f64 step = budget / speed;
+  // Float rounding of a blend of two heights of 2 m: a few ulps.
+  const f64 slack = 1.0e-5;
+  struct Case {
+    const char* what;
+    f64 rate;
+    u32 latency;
+    u32 stall_at;
+    u32 stall;
+  };
+  const Case cases[] = {
+      {"a real clock, fields on time", 1.0, 0, 0, 0},
+      {"a game day a second, fields on time", 86'400.0, 0, 0, 0},
+      {"a game day a second, every field 20 frames late", 86'400.0, 20, 0, 0},
+      {"a game week a second, every field 45 frames late", 604'800.0, 45, 0, 0},
+      {"a game day a second, no field for 400 frames", 86'400.0, 2, 100, 400},
+      {"a game month a second, fields on time", 2'592'000.0, 0, 0, 0},
+  };
+  for (const Case& c : cases) {
+    CAPTURE(c.what);
+    const BlendRun run =
+        run_blend(c.rate, speed, step, c.latency, c.stall_at, c.stall, 1'200, budget);
+    // No sample ever changes by more than the bound between two frames — not when a field is late,
+    // not when none comes for seconds and the surface then catches up — and never by more than
+    // the blend says it moved, which is the step the bound is kept on.
+    CHECK(run.max_move <= budget + slack);
+    CHECK(run.worst_excess <= slack);
+    CHECK(run.max_reported <= budget + 1.0e-12);
+    CHECK(run.monotonic);
+    CHECK(run.installed > 0u);
+    if (c.stall > 0 || c.latency > 0 || c.rate > 86'400.0) {
+      CHECK(run.held + run.capped > 0u);  // it had to wait or slow down, and did
+    }
+  }
+  // At a real clock the fields are hours apart, the surface keeps game time exactly and nothing
+  // stops it; at a day a second with fields on time it keeps game time within a frame.
+  const BlendRun still = run_blend(1.0, speed, step, 0, 0, 0, 600, budget);
+  CHECK(still.held == 0u);
+  CHECK(still.capped == 0u);
+  CHECK(still.final_lag == 0.0);
+  const BlendRun day = run_blend(86'400.0, speed, step, 0, 0, 0, 600, budget);
+  CHECK(day.final_lag <= 86'400.0 / 60.0);
+  CHECK(day.max_move > 0.0);
+}
+
+TEST_CASE("renderer: a blend step is exact at its ends and never goes past b") {
+  TerrainBlend blend;
+  blend.time_a = 10.0;
+  blend.time_b = 20.0;
+  blend.has_b = true;
+  blend.delta_m = 2.0;
+  blend.surface_s = 10.0;
+  // Unbounded: straight to the target, and no further than b.
+  TerrainBlendStep step = terrain_blend_step(blend, 15.0, 100.0);
+  CHECK(step.surface_s == 15.0);
+  CHECK(step.moved_m == doctest::Approx(1.0));
+  CHECK_FALSE(step.at_b);
+  step = terrain_blend_step(blend, 99.0, 100.0);
+  CHECK(step.surface_s == 20.0);
+  CHECK(step.at_b);
+  // Bounded: a budget of 0.5 m is a quarter of the pair's 2 m, so a quarter of its ten seconds.
+  step = terrain_blend_step(blend, 99.0, 0.5);
+  CHECK(step.surface_s == doctest::Approx(12.5));
+  CHECK(step.moved_m == doctest::Approx(0.5));
+  // Never backwards.
+  blend.surface_s = 18.0;
+  step = terrain_blend_step(blend, 12.0, 100.0);
+  CHECK(step.surface_s == 18.0);
+  CHECK(step.moved_m == 0.0);
+  // The blend itself: 0 at a, 1 at b, 0 with no b.
+  blend.surface_s = 20.0;
+  CHECK(blend.blend() == 1.0);
+  blend.surface_s = 10.0;
+  CHECK(blend.blend() == 0.0);
+  blend.has_b = false;
+  CHECK(blend.blend() == 0.0);
+  // A frame that crosses a pair's end takes the next field and goes on with what is left.
+  blend.has_b = true;
+  blend.surface_s = 19.0;
+  TerrainNextField next{true, 30.0, 2.0};
+  const TerrainFrameResult result = terrain_blend_frame(blend, 25.0, 100.0, next);
+  CHECK(result.installed == 1u);
+  CHECK_FALSE(next.ready);
+  CHECK(blend.time_a == 20.0);
+  CHECK(blend.time_b == 30.0);
+  CHECK(blend.surface_s == 25.0);
+  CHECK(result.moved_m == doctest::Approx(0.2 + 1.0));
 }

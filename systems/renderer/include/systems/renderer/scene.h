@@ -305,6 +305,9 @@ struct SceneData {
   // Carried from the `SceneDesc`, for a host that has only the loaded scene: the terrain answers
   // a camera path's heights above the ground, and the rest names what a measurement measured.
   TerrainDesc terrain;
+  // Which mesh the terrain built (the empty path that built it), `~0u` without one: what the GPU
+  // scene makes a terrain level of when the terrain moves (renderer.md, "The dunes in time-lapse").
+  u32 terrain_mesh = ~0u;
   Vector<SceneMeshInfo> mesh_info;
   std::string name;
   u64 file_hash = 0;

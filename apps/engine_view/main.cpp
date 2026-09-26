@@ -113,6 +113,7 @@ tunables::Float fly_pitch_limit{"view.fly.pitch_limit_deg", 89.0, 1.0, 89.9,
 // clang-format off
 constexpr const char* k_usage =
     "usage: engine-view [--width <px>] [--height <px>] [--frames <n>] [--capture <file.png>]\n"
+    "                   [--capture-every <n>]\n"
     "                   [--no-vsync] [--adapter <index>] [--validation] [--grid <n>] [--log <spec>]\n"
     "                   [--shaders <manifest.json>] [--lod <px>] [--no-cull] [--no-occlusion] [--no-cone]\n"
     "                   [--raster direct|hw|vertex|sw|auto|rt] [--sw-px <px>] [--view <mode>] [--orbit <d>]\n"
@@ -147,6 +148,8 @@ constexpr const char* k_usage =
     "\n"
     "  --frames <n>     render n frames, then exit (0: until the window closes)\n"
     "  --capture <png>  write the last frame as a PNG (implies --frames 60 when unset)\n"
+    "  --capture-every <n>  offscreen, with --capture: also write every n-th frame, drawn at that\n"
+    "                   frame, as <capture>-<frame>.png (a time-lapse's sand as it stood then)\n"
     "  --grid <n>       heightfield resolution, n x n vertices (default 257)\n"
     "  --procedural <n> which scene an absent --mesh builds: heightfield (default), or\n"
     "                   shredded-atlas, the UV-atlas LOD stress fixture (geometry.md)\n"
@@ -241,10 +244,12 @@ constexpr const char* k_usage =
     "                   than the budget holds drops whole instances' structures, shadow casters\n"
     "                   first, and the summary's \"rt\" block counts it\n"
     "  --time-rate <r>  run a dune terrain's game time at r game seconds per real second (a frame\n"
-    "                   is 1/60 s) and re-evaluate its grid on the job pool at each game day\n"
-    "                   (renderer.terrain.time_step_s), at most once per 30 frames\n"
-    "                   (renderer.terrain.time_min_frames); the summary's \"time_lapse\" block\n"
-    "                   says how often and what it cost. The heights are not uploaded yet\n"
+    "                   is 1/60 s): the field is re-evaluated off the frame whenever its fastest\n"
+    "                   band will have moved a quarter of a sample (renderer.terrain.move_fraction)\n"
+    "                   and the terrain blended between the last two fields every frame, no vertex\n"
+    "                   moving more than that fraction of the spacing in one frame. Offscreen a late\n"
+    "                   field is waited for; in a window the sand holds until it comes. The\n"
+    "                   summary's \"time_lapse\" block says how often and what it cost\n"
     "  --animate [clip] play a skinned glTF's animation: the skin becomes a skeleton, a clip is\n"
     "                   ticked at the fixed step, and every instance is skinned through the same\n"
     "                   deformed-vertex pool --deform uses. The optional value names the clip by\n"
@@ -407,6 +412,9 @@ struct Options {
   u32 height = 720;
   u32 frames = 0;
   std::string capture;
+  // Offscreen: also capture every n-th frame of the run as <capture stem>-<frame>.png, drawn at
+  // that frame (its camera, its time-lapse), not after the run. 0 captures the last frame only.
+  u32 capture_every = 0;
   bool vsync = true;
   // The window's presentation (docs/subsystems/apps.md, "Pacing"): the present mode asked for by
   // name ("" is FIFO, or `--no-vsync`'s choice), the swapchain's images, the frames the loop keeps
@@ -1112,48 +1120,51 @@ JsonValue anim_summary(const AnimatedScene& scene, u64 frames) {
 }
 #endif
 
-// Where a time-lapse's heights go (terrain_time.h): the renderer has no path that uploads moved
-// terrain heights into the terrain's cluster mesh yet, so for now this is the upload path — it
-// takes each evaluated grid, keeps its game time, its range and a hash of its bytes (the number two
-// runs of the same `--frames --time-rate` compare), and the summary reports them.
-class TimeLapseRecorder final : public renderer::TerrainHeightSink {
- public:
-  void heights(f64 time_s, std::span<const f32> heights) override {
-    last_time_s = time_s;
-    ++received;
-    lo = heights.empty() ? 0.0f : heights[0];
-    hi = lo;
-    for (const f32 h : heights) {
-      lo = h < lo ? h : lo;
-      hi = h > hi ? h : hi;
-    }
-    last_hash = hash_bytes(heights.data(), heights.size() * sizeof(f32));
-  }
-  f64 last_time_s = 0.0;
-  u32 received = 0;
-  f32 lo = 0.0f, hi = 0.0f;
-  u64 last_hash = 0;
-};
-
-// The time-lapse block of the summary line.
-JsonValue time_lapse_summary(const renderer::TerrainTimeLapse& lapse,
-                             const TimeLapseRecorder& recorder) {
+// The time-lapse block of the summary line (terrain_time.h; docs/subsystems/apps.md,
+// "--time-rate"): the rate and the rules it ran under, the game time reached, and per terrain level
+// what its surface stood for, how its fields were timed and how long they took, how far any vertex
+// moved in one frame at most, and the hash of the last field's bytes — the number two runs of the
+// same `--frames --time-rate` compare. The fields' uploads are the renderer's to count.
+JsonValue time_lapse_summary(const renderer::TerrainMotion& lapse, const renderer::Stats& stats) {
   if (!lapse.active()) return JsonValue();
   JsonValue out = JsonValue::object();
   out.set("rate", lapse.config().rate);
-  out.set("step_s", lapse.config().step_s);
-  out.set("min_frames", lapse.config().min_frames);
+  out.set("fraction", lapse.config().fraction);
+  out.set("min_step_s", lapse.config().min_step_s);
+  out.set("max_step_s", lapse.config().max_step_s);
+  out.set("lead", lapse.config().lead);
+  out.set("wait", lapse.config().wait);
   out.set("game_time_s", lapse.game_time_s());
-  out.set("started", lapse.started());
-  out.set("delivered", lapse.delivered());
-  out.set("last_time_s", recorder.last_time_s);
-  out.set("last_min_m", static_cast<f64>(recorder.lo));
-  out.set("last_max_m", static_cast<f64>(recorder.hi));
-  char hash[17];
-  std::snprintf(hash, sizeof(hash), "%016llx", static_cast<unsigned long long>(recorder.last_hash));
-  out.set("last_hash", std::string(hash));
-  out.set("last_eval_ms", lapse.last_eval_ms());
-  out.set("mean_eval_ms", lapse.delivered() > 0 ? lapse.total_eval_ms() / lapse.delivered() : 0.0);
+  out.set("upload_bytes", stats.terrain_upload_bytes);
+  out.set("upload_ms", stats.gpu_terrain_upload);
+  JsonValue levels = JsonValue::array();
+  for (u32 k = 0; k < lapse.level_count(); ++k) {
+    const renderer::TerrainMotion::LevelStats s = lapse.level_stats(k);
+    JsonValue level = JsonValue::object();
+    level.set("spacing_m", s.spacing_m);
+    level.set("surface_s", s.surface_s);
+    level.set("time_a", s.time_a);
+    level.set("time_b", s.time_b);
+    level.set("blend", s.blend);
+    level.set("padding_m", s.padding_m);
+    level.set("evaluated", s.evaluated);
+    level.set("installed", s.installed);
+    level.set("held", s.held);
+    level.set("capped", s.capped);
+    level.set("waited", s.waited);
+    level.set("late", s.late);
+    level.set("max_move_m", s.max_move_m);
+    level.set("max_delta_m", s.max_delta_m);
+    level.set("max_step_s", s.max_step_s);
+    level.set("max_lag_s", s.max_lag_s);
+    level.set("last_eval_ms", s.last_eval_ms);
+    level.set("mean_eval_ms", s.evaluated > 0 ? s.total_eval_ms / s.evaluated : 0.0);
+    char hash[17];
+    std::snprintf(hash, sizeof(hash), "%016llx", static_cast<unsigned long long>(s.last_hash));
+    level.set("last_hash", std::string(hash));
+    levels.push_back(std::move(level));
+  }
+  out.set("levels", std::move(levels));
   return out;
 }
 
@@ -1964,8 +1975,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
   // The dune field's time-lapse, when `--time-rate` asks for one (started below, once the scene is
   // read; its pool is its own, so it never competes with the page reads for a worker).
   std::unique_ptr<jobs::JobSystem> time_jobs;
-  renderer::TerrainTimeLapse time_lapse;
-  TimeLapseRecorder time_recorder;
+  renderer::TerrainMotion time_lapse;
   std::string summary_line;  // printed after the teardown, so it is the last thing out
   bench::MachineState machine_start;
   bench::MachineState machine_end;
@@ -2105,14 +2115,16 @@ int run_offscreen(Options& options, Interactive& interactive) {
                  : renderer::orbit_camera(scene_data.center, scene_data.radius, options.orbit, f);
     };
     // The dune field's time-lapse (`--time-rate`, terrain_time.h): game time advanced a sixtieth
-    // of a second of real time a frame — the frame index's clock, so two runs of `--frames N`
-    // evaluate the same boundaries on the same frames — and the grid re-evaluated on a pool of its
-    // own, never waited for by a frame.
+    // of a second of real time a frame — the frame index's clock — and the terrain blended between
+    // two evaluated fields every frame. Offscreen, a field the surface has caught up with is waited
+    // for, and fields are timed by the dunes' motion alone, so two runs of `--frames N` draw the
+    // same pictures on the same frames however fast the machine evaluates.
     if (resolved.settings.time_rate > 0.0) {
       time_jobs = std::make_unique<jobs::JobSystem>(jobs::JobSystemConfig{.pin_threads = false});
-      if (!time_lapse.start(scene_data.terrain,
-                            renderer::time_lapse_config_from_tunables(resolved.settings.time_rate),
-                            time_jobs.get(), &error)) {
+      renderer::TimeLapseConfig lapse =
+          renderer::time_lapse_config_from_tunables(resolved.settings.time_rate);
+      lapse.wait = true;
+      if (!time_lapse.start(scene, lapse, time_jobs.get(), &error)) {
         exit_code = fail("time-rate", error);
         break;
       }
@@ -2143,13 +2155,13 @@ int run_offscreen(Options& options, Interactive& interactive) {
                                          : step == WorldStep::complete
                                              ? view::ViewWorld::Mode::Complete
                                              : view::ViewWorld::Mode::Budgeted;
-      time_lapse.tick(1.0 / view::k_frame_index_hz, time_recorder);
+      time_lapse.frame(1.0 / view::k_frame_index_hz);
       return !view_world.valid() ||
              view_world.update(camera, world_tick++, mode, repeat, f, recorded, &error);
     };
 #else
     auto world_before = [&](const renderer::Camera&, WorldStep, u32, u32, bool) {
-      time_lapse.tick(1.0 / view::k_frame_index_hz, time_recorder);
+      time_lapse.frame(1.0 / view::k_frame_index_hz);
       return true;
     };
 #endif
@@ -2356,18 +2368,45 @@ int run_offscreen(Options& options, Interactive& interactive) {
       // ---- a plain offscreen run: the frames, and the last one captured -------------------
       view_renderer.reset_stats();
       u64 last = 0;
+      bool shot_failed = false;
       for (u32 f = 0; f < frames; ++f) {
         if (!world_before(camera_at(f), f == 0 ? WorldStep::restart : WorldStep::budgeted, 0, f,
                           true)) {
           break;
         }
-        view_renderer.begin_frame();
         renderer::FrameDesc frame;
         frame.camera = camera_at(f);
         frame.frame_index = f;
+        // `--capture-every n`: every n-th frame is drawn by the capture itself, so the picture is
+        // that frame's — its camera and, under `--time-rate`, the sand where it stood then.
+        if (options.capture_every > 0 && !options.capture.empty() &&
+            (f + 1) % options.capture_every == 0) {
+          renderer::CapturedFrame shot;
+          if (!view_renderer.capture(frame, options.capture_channels, shot, &error)) {
+            last = 0;
+            break;
+          }
+          std::string stem = options.capture;
+          if (stem.size() > 4 && stem.substr(stem.size() - 4) == ".png")
+            stem.resize(stem.size() - 4);
+          char suffix[16];
+          std::snprintf(suffix, sizeof(suffix), "-%05u.png", f);
+          if (!write_shot(stem + suffix, shot, error)) {
+            shot_failed = true;
+            break;
+          }
+          last = 1;
+          ++rendered;
+          continue;
+        }
+        view_renderer.begin_frame();
         last = view_renderer.submit_frame(frame, &error);
         if (last == 0) break;
         ++rendered;
+      }
+      if (shot_failed) {
+        exit_code = fail("capture", error);
+        break;
       }
       if (last == 0) {
         exit_code = fail("frame", error);
@@ -2569,8 +2608,8 @@ int run_offscreen(Options& options, Interactive& interactive) {
 #if ENGINE_VIEW_WORLD
     if (view_world.valid()) summary.world = view_world.summary_json();
 #endif
-    time_lapse.finish(time_recorder);
-    summary.time_lapse = time_lapse_summary(time_lapse, time_recorder);
+    time_lapse.finish();
+    summary.time_lapse = time_lapse_summary(time_lapse, view_renderer.stats());
     if (interactive.on) summary.interactive = interactive_summary(interactive, session, options);
     if (measured) {
       renderer::summarize_frames(
@@ -2646,7 +2685,7 @@ int main(int argc, char** argv) {
       return 0;
     } else if (a == "--width" || a == "--height" || a == "--frames" || a == "--adapter" ||
                a == "--grid" || a == "--grid-instances" || a == "--deform-pool-mib" ||
-               a == "--rt-budget-mib") {
+               a == "--rt-budget-mib" || a == "--capture-every") {
       if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
       u32 n = 0;
       if (!parse_u32(value, n)) {
@@ -2657,6 +2696,7 @@ int main(int argc, char** argv) {
       if (a == "--width") options.width = n;
       if (a == "--height") options.height = n;
       if (a == "--frames") options.frames = n;
+      if (a == "--capture-every") options.capture_every = n;
       if (a == "--adapter") options.adapter = n;
       if (a == "--grid") options.grid = n;
       if (a == "--grid") options.procedural_given = true;
@@ -3440,8 +3480,7 @@ int main(int argc, char** argv) {
   // The dune field's time-lapse (`--time-rate`): as offscreen, a sixtieth of a second of real time
   // a frame, so the window and a `--frames` run evaluate the same boundaries.
   std::unique_ptr<jobs::JobSystem> time_jobs;
-  renderer::TerrainTimeLapse time_lapse;
-  TimeLapseRecorder time_recorder;
+  renderer::TerrainMotion time_lapse;
   std::string time_lapse_text = "null";
   u32 skinned_instances = 0;
   u32 joint_matrices = 0;
@@ -3693,9 +3732,10 @@ int main(int argc, char** argv) {
       exit_code = fail("renderer", error);
       break;
     }
+    // In a window the fields are never waited for: a late one holds the surface where it is.
     if (resolved.settings.time_rate > 0.0) {
       time_jobs = std::make_unique<jobs::JobSystem>(jobs::JobSystemConfig{.pin_threads = false});
-      if (!time_lapse.start(scene_data.terrain,
+      if (!time_lapse.start(scene,
                             renderer::time_lapse_config_from_tunables(resolved.settings.time_rate),
                             time_jobs.get(), &error)) {
         exit_code = fail("time-rate", error);
@@ -3916,7 +3956,7 @@ int main(int argc, char** argv) {
       // for a swapchain image and in the present (the display), and the pacer's own. Each is
       // timed on its own, because which of them a frame's time went to is the whole question
       // presentation pacing asks (docs/subsystems/apps.md, "Pacing").
-      time_lapse.tick(1.0 / view::k_frame_index_hz, time_recorder);
+      time_lapse.frame(1.0 / view::k_frame_index_hz);
       const i64 before_waits = time::monotonic_ns();
       view_renderer.begin_frame();
       const i64 slot_free = time::monotonic_ns();
@@ -4182,9 +4222,9 @@ int main(int argc, char** argv) {
       streaming_text = write_json(streaming_summary(view_renderer.streamer().stats()),
                                   JsonWriteOptions{.pretty = false});
     }
-    time_lapse.finish(time_recorder);
+    time_lapse.finish();
     if (time_lapse.active()) {
-      time_lapse_text = write_json(time_lapse_summary(time_lapse, time_recorder),
+      time_lapse_text = write_json(time_lapse_summary(time_lapse, view_renderer.stats()),
                                    JsonWriteOptions{.pretty = false});
     }
 #if ENGINE_VIEW_ANIMATION
