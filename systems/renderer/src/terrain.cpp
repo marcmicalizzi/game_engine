@@ -353,6 +353,10 @@ TerrainSurface terrain_surface(const TerrainSampler& field, f32 x, f32 z) noexce
   return mix(s, 3, band(0.55f, basin));
 }
 
+Vec3 terrain_sand_albedo() noexcept {
+  return Vec3{k_surfaces[0][0], k_surfaces[0][1], k_surfaces[0][2]};
+}
+
 u32 terrain_map_side(const TerrainDesc& desc) noexcept { return std::max(desc.size, 2u) - 1u; }
 
 void bake_terrain_maps(const TerrainDesc& desc, u32 side, Vector<u8>& base_color,

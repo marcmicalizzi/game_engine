@@ -11,7 +11,9 @@
 // fixed, the sky is a constant, and the two point lights orbit out of phase — one warm, one cool
 // — so the BSDF's specular response sweeps across a surface while the camera turns and metal
 // reads as metal. Reach and intensity scale with the scene's radius, intensity with its square
-// because the falloff is inverse square, so a 2 cm mesh and a 20 m heightfield look alike.
+// because the falloff is inverse square, so a 2 cm mesh and a 20 m heightfield look alike. The
+// ground they light is the scene's own, `SceneData::ground_albedo`: a terrain's sand, or a
+// neutral grey for a scene without one.
 
 #include <core/base/types.h>
 #include <core/math/math.h>
@@ -34,8 +36,11 @@ inline constexpr u32 k_frame_lights = 2;
 inline constexpr Vec4 k_sky{0.55f, 0.70f, 0.90f, 1.0f};
 
 struct FrameLighting {
-  Vec4 sky{};  // rgb: the background an uncovered pixel shows, and the hemisphere ambient
+  Vec4 sky{};  // rgb: the background an uncovered pixel shows, and the hemisphere's upper half
   Vec4 sun{};  // xyz normalized direction towards the light, w intensity
+  // rgb: the ground's albedo, `SceneData::ground_albedo` — the hemisphere's lower half is this
+  // ground lit by `sun` and `sky` (gfx::ResolveParams::ground, PathTraceParams::ground). w unused.
+  Vec4 ground{};
   gfx::ResolveLight lights[k_frame_lights];
   u32 light_count = 0;
   // World units a ray leaves a surface by, along the geometric normal. A thousandth of the scene

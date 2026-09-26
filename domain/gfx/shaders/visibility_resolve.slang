@@ -16,8 +16,9 @@
 // glTF metallic-roughness map (G roughness, B metallic) that multiplies both factors, and a
 // tangent-space normal map that perturbs the shading normal in a frame solved from the hit
 // triangle's own world-space positions and UVs. The shared BSDF (brdf.slang) then shades a
-// directional sun, N analytic point and spot lights, and a sky hemisphere. Debug modes show
-// cluster colors, triangle shading, depth, the interpolated normal before any map, or UVs.
+// directional sun, N analytic point and spot lights, and a hemisphere of sky above and lit
+// ground below. Debug modes show cluster colors, triangle shading, depth, the interpolated normal
+// before any map, or UVs.
 // Empty pixels (value 0: depth 0 is the far plane and id 0 never occurs there) take the sky
 // color.
 //
@@ -52,10 +53,11 @@
 // the visibility buffer. A **Panini** view goes one step further: its region holds a wider
 // rectilinear picture, and `panini_x`/`source_x`/`panini_d` map each output pixel back into it.
 //
-// Read through a device address; mirrors gfx::ResolveParams (304 bytes).
+// Read through a device address; mirrors gfx::ResolveParams (320 bytes).
 struct ResolveParams {
-  float4 sky;     // rgb, shown for empty pixels and used as the hemisphere ambient
+  float4 sky;     // rgb, shown for empty pixels and the hemisphere ambient's upper half
   float4 sun;     // xyz normalized direction towards the light, w intensity
+  float4 ground;  // rgb the ground's albedo, the hemisphere ambient's lower half; w unused
   float4 camera;  // xyz position
   column_major float4x4 view_proj;
   uint64_t visibility;         // uint64_t[width * height]
@@ -493,18 +495,23 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
     }
     color += brdf_direct(surface, light_dir, radiance);
   }
-  // The sky hemisphere is the whole indirect term until the lighting passes exist: the diffuse
-  // albedo takes it by normal elevation, and the specular lobe takes the part of it
-  // `brdf_env_specular` says a lobe of this roughness reflects at this view angle — which keeps
-  // metals, which have no diffuse lobe, from going black, and keeps rough stone matte at grazing
-  // (it was bare Schlick at n.v until 2026-09-25, a mirror's sheen at every roughness; brdf.slang
-  // has why). The path tracer picks the same function up as the radiance an escaped ray carries,
-  // which is what makes the two comparable.
+  // The hemisphere is the whole indirect term until the lighting passes exist: the sky above the
+  // horizon and the ground below it — the scene's ground albedo under this frame's sun and sky,
+  // `ground_radiance` — blended by how much of the normal's cosine lobe each half fills
+  // (`ambient_radiance`, brdf.slang's `brdf_hemisphere_ambient`), so a face turned towards the
+  // ground is lit by the ground: a dune's slip face in shade by the sand around it. The diffuse
+  // albedo takes it, and the specular lobe takes the part of it `brdf_env_specular` says a lobe of
+  // this roughness reflects at this view angle — which keeps metals, which have no diffuse lobe,
+  // from going black, and keeps rough stone matte at grazing (it was bare Schlick at n.v until
+  // 2026-09-25, a mirror's sheen at every roughness; brdf.slang has why). The path tracer picks
+  // the same two halves up as the radiance an escaped ray carries (`environment_radiance`), which
+  // is what makes the two comparable.
   // The material's ambient occlusion multiplies this term and nothing else — not the sun, not the
   // point lights, not the emission — because it stands in for the part of the hemisphere the
   // surface cannot see, which is exactly what this term assumes it sees all of. A material with no
   // map multiplies nothing.
-  const float3 ambient = sky_radiance(params->sky.rgb, surface.normal);
+  const float3 ground = ground_radiance(params->sky.rgb, params->ground.rgb, params->sun);
+  const float3 ambient = ambient_radiance(params->sky.rgb, ground, surface.normal);
   const float n_dot_v = max(dot(surface.normal, surface.view), 0.0);
   float3 indirect =
       ambient * (albedo * (1.0 - surface.metallic) +

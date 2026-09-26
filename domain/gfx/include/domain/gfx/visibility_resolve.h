@@ -9,12 +9,13 @@
 // transforms them by the instance's world matrix: exactly the triangle that was drawn. Materials
 // are a flat table indexed per cluster plus the instance's `material_base`, which is enough until
 // the material graph arrives. Shading is the physically based BSDF of shaders/brdf.slang (GGX
-// specular, Lambert diffuse) under a directional sun, a list of analytic lights, and a sky
-// hemisphere. A light whose bit is set in `shadow_flags` is shadowed by a ray query against the
-// top-level structure in bindless slot `scene` — the one the frame built from the same visible list
-// the rasterizer drew from, so the shadows are cast by exactly the geometry in the picture — or,
-// with `k_shadow_cascades`, the sun is shadowed by the cascaded depth maps behind `shadow_maps`,
-// filtered (the baseline tier's shadow, for a device without ray queries).
+// specular, Lambert diffuse) under a directional sun, a list of analytic lights, and a hemisphere
+// of sky above the horizon and lit ground below it. A light whose bit is set in `shadow_flags` is
+// shadowed by a ray query against the top-level structure in bindless slot `scene` — the one the
+// frame built from the same visible list the rasterizer drew from, so the shadows are cast by
+// exactly the geometry in the picture — or, with `k_shadow_cascades`, the sun is shadowed by the
+// cascaded depth maps behind `shadow_maps`, filtered (the baseline tier's shadow, for a device
+// without ray queries).
 //
 // **One resolve per view.** A `renderer::ViewSet` (docs/plan/04-renderer.md §4.6) puts N views in
 // one color target, so the pass runs once per view with that view's viewport rectangle and that
@@ -309,10 +310,22 @@ inline f32 panini_oversample(f32 d, f32 half_fov_x) noexcept {
   return panini > 0.0f ? std::tan(half_fov_x) / panini : 1.0f;
 }
 
-// Mirrors ResolveParams in visibility_resolve.slang. 304 bytes.
+// The ground's albedo when a scene says nothing about its ground: a neutral grey. Under the
+// renderer's stand-in sun and sky (`renderer::frame_lighting`) a face turned straight down then
+// receives about the light it did before the ground existed — 0.2 × 0.49 = 0.099 in luminance
+// against the old lower endpoint's 0.15 × the sky's 0.68 = 0.102 — so a scene with no terrain
+// changes the *hue* of its undersides (a neutral ground instead of a dim blue sky) far more than
+// their brightness (docs/subsystems/renderer.md, "The sky above, the ground below").
+inline constexpr f32 k_neutral_ground_albedo = 0.2f;
+
+// Mirrors ResolveParams in visibility_resolve.slang. 320 bytes.
 struct ResolveParams {
-  Vec4 sky{};     // rgb shown for empty pixels and used as the hemisphere ambient
-  Vec4 sun{};     // xyz normalized direction towards the light, w intensity
+  Vec4 sky{};  // rgb shown for empty pixels, and the hemisphere ambient's upper half
+  Vec4 sun{};  // xyz normalized direction towards the light, w intensity
+  // rgb: the ground's albedo, linear. The hemisphere ambient's lower half is this ground lit by
+  // `sun` and `sky` (brdf.slang, `brdf_ground_radiance`), so a surface turned towards the ground is
+  // lit by it — a dune's slip face in shade by the sand around it. w is unused.
+  Vec4 ground{k_neutral_ground_albedo, k_neutral_ground_albedo, k_neutral_ground_albedo, 0.0f};
   Vec4 camera{};  // xyz position
   Mat4 view_proj;
   u64 visibility = 0;         // u64[width * height]
@@ -390,7 +403,7 @@ struct ResolveParams {
   // zero for every caller that does not draw maps.
   u64 shadow_maps = 0;
 };
-static_assert(sizeof(ResolveParams) == 304);
+static_assert(sizeof(ResolveParams) == 320);
 static_assert(sizeof(ResolveParams) % 16 == 0, "the block is read as float4 rows on the GPU");
 
 }  // namespace engine::gfx

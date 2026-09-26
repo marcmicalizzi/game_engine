@@ -22,6 +22,7 @@
 
 #include <core/base/types.h>
 #include <core/math/math.h>
+#include <domain/gfx/visibility_resolve.h>
 
 namespace engine::gfx {
 
@@ -36,12 +37,16 @@ inline constexpr u32 k_pt_uniform_sky = 1u;
 // comparison that is about shading rather than about antialiasing turns the jitter off.
 inline constexpr u32 k_pt_pixel_center = 2u;
 
-// Mirrors PathTraceParams in path_trace.slang. 240 bytes.
+// Mirrors PathTraceParams in path_trace.slang. 272 bytes.
 struct PathTraceParams {
   Mat4 inv_view_proj;  // clip to world, for the primary rays
   Vec4 camera{};       // xyz eye position
   Vec4 sky{};          // rgb, the same value ResolveParams::sky carries
   Vec4 sun{};          // xyz normalized direction towards the light, w intensity
+  // rgb: the ground's albedo, the same value ResolveParams::ground carries. An escaped ray below
+  // the horizon returns this ground lit by `sun` and `sky`, the lower half of the environment the
+  // resolve's hemisphere term stands for, so the two integrators see one ground. w is unused.
+  Vec4 ground{k_neutral_ground_albedo, k_neutral_ground_albedo, k_neutral_ground_albedo, 0.0f};
   u64 accum = 0;       // float4[width * height]: radiance sum in rgb, sample count in w
   u64 output = 0;      // u32[width * height] packed RGBA8; read by the tonemap entry point only
   u64 clusters = 0;    // geometry::ClusterDesc[]
@@ -90,7 +95,7 @@ inline u32 pack_unorm_rgba8(Vec4 color) noexcept {
   };
   return quantize(color.x) | (quantize(color.y) << 8) | (quantize(color.z) << 16) | (255u << 24);
 }
-static_assert(sizeof(PathTraceParams) == 256);
+static_assert(sizeof(PathTraceParams) == 272);
 static_assert(sizeof(PathTraceParams) % 16 == 0, "the block is read as float4 rows on the GPU");
 
 // Russian roulette starts after this many scattering events, so a short path is never cut and a

@@ -20,6 +20,7 @@
 #include <domain/geometry/cluster_lod.h>
 #include <domain/geometry/cluster_pages.h>
 #include <domain/gfx/cluster_cull.h>
+#include <domain/gfx/visibility_resolve.h>
 #include <systems/renderer/terrain.h>
 
 #include <span>
@@ -295,6 +296,12 @@ struct SceneData {
   u32 mesh_primitives = 0;    // of the first mesh, as the summary reports it
   const char* mesh_cache = "none";
   i64 build_ns = 0;  // import, weld, cluster, page, and merge
+  // The ground's albedo, linear: the lower half of the resolve's hemisphere ambient is this ground
+  // lit by the frame's sun and sky (`FrameLighting::ground`), so a surface turned towards the
+  // ground is lit by it. `load_scene` makes it the terrain's sand when the scene has a terrain
+  // (`terrain_sand_albedo`) and leaves the neutral grey otherwise.
+  Vec3 ground_albedo{gfx::k_neutral_ground_albedo, gfx::k_neutral_ground_albedo,
+                     gfx::k_neutral_ground_albedo};
   // Carried from the `SceneDesc`, for a host that has only the loaded scene: the terrain answers
   // a camera path's heights above the ground, and the rest names what a measurement measured.
   TerrainDesc terrain;

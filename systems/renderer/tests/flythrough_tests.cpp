@@ -9,11 +9,14 @@
 #include <core/math/math.h>
 #include <domain/assets/gltf.h>
 #include <domain/gfx/device.h>
+#include <domain/gfx/path_trace.h>
+#include <domain/gfx/visibility_resolve.h>
 #include <domain/texture/texture_build.h>
 #include <systems/renderer/camera_path.h>
 #include <systems/renderer/capture.h>
 #include <systems/renderer/flythrough.h>
 #include <systems/renderer/gpu_scene.h>
+#include <systems/renderer/lighting.h>
 #include <systems/renderer/scene.h>
 #include <systems/renderer/scene_renderer.h>
 #include <systems/renderer/settings.h>
@@ -785,6 +788,35 @@ TEST_CASE("flythrough: a terrain comes back from its cache entry as the terrain 
   CHECK(hit.data.images[0].bytes == first.sources[terrain].data.images[0].bytes);
   CHECK(hit.data.images[1].bytes == first.sources[terrain].data.images[1].bytes);
   CHECK(hit.textures.size() == 2);
+  // The ground under the hemisphere ambient is the terrain's sand, from a miss and from a hit, and
+  // the frame's lighting hands it to the resolve and the reference alike.
+  CHECK(near(first.ground_albedo, terrain_sand_albedo()));
+  CHECK(near(second.ground_albedo, terrain_sand_albedo()));
+  FrameLighting lighting;
+  frame_lighting(second, 0, true, lighting);
+  CHECK(near(lighting.ground.xyz(), terrain_sand_albedo()));
+}
+
+TEST_CASE("lighting: the ground is the terrain's sand, or a neutral grey without a terrain") {
+  // The sand is `terrain_surface`'s own colour away from every feature, not a second spelling.
+  TerrainDesc desc;
+  desc.enabled = true;
+  desc.size = 33;
+  desc.extent = 100.0f;
+  desc.seed = 7;
+  const TerrainSampler field(desc);
+  CHECK(near(terrain_sand_albedo(), terrain_surface(field, 80.0f, -80.0f).albedo));
+  // A scene with no terrain keeps the neutral default, and the frame carries it with w unused.
+  const SceneData plain;
+  FrameLighting lighting;
+  frame_lighting(plain, 0, false, lighting);
+  const f32 grey = gfx::k_neutral_ground_albedo;
+  CHECK(near(lighting.ground.xyz(), Vec3{grey, grey, grey}));
+  CHECK(lighting.ground.w == 0.0f);
+  // And it is what a resolve block and a path-trace block start from, so a caller that fills
+  // neither — every `domain/gfx` test — draws the same ground the renderer's default scene does.
+  CHECK(gfx::ResolveParams{}.ground.x == grey);
+  CHECK(gfx::PathTraceParams{}.ground.z == grey);
 }
 
 TEST_CASE("scene: every cluster keeps its own material through the scene's merge") {

@@ -1563,6 +1563,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     // morph channels, and the resolve then reads the rest attribute stream exactly as it did.
     resolve.normal_pool = scene.normal_pool_address();
     resolve.sun = lighting.sun;
+    // The ground below the hemisphere's horizon: the scene's, shared with the reference like the
+    // sun and the sky, so its escaped rays see the ground this term stands for.
+    resolve.ground = lighting.ground;
     resolve.camera = Vec4{eye, 0.0f};
     resolve.view_proj = view.view_proj;
     resolve.visibility = vf.vis_address;

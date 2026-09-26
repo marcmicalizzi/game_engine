@@ -27,8 +27,9 @@
 //
 // **The sky has the two roles the resolve gives it, on purpose.** A primary miss returns the
 // background color the resolve writes for an empty pixel, in linear (`sky^2.2`, so the display
-// transform gives the same bytes back), and an escaped secondary ray returns `sky_radiance`, the
-// hemisphere term the resolve adds as its whole indirect light. They are not the same function,
+// transform gives the same bytes back), and an escaped secondary ray returns the environment the
+// resolve's whole indirect light stands for: the sky's uniform radiance above the horizon and the
+// lit ground below it (`environment_radiance`). They are not the same function,
 // which is a property of the real-time path's sky model rather than of this file: mirroring it
 // is what lets the two pictures be compared at all. `k_pt_uniform_sky` replaces both with a
 // constant, which is the white furnace the integrator is checked with.
@@ -40,12 +41,13 @@
 
 [[vk::binding(3, 0)]] RaytracingAccelerationStructure g_scenes[];
 
-// Mirrors gfx::PathTraceParams (240 bytes).
+// Mirrors gfx::PathTraceParams (272 bytes).
 struct PathTraceParams {
   column_major float4x4 inv_view_proj;
   float4 camera;  // xyz eye position
   float4 sky;
-  float4 sun;  // xyz normalized direction towards the light, w intensity
+  float4 sun;     // xyz normalized direction towards the light, w intensity
+  float4 ground;  // rgb the ground's albedo below the horizon, as ResolveParams::ground; w unused
   uint64_t accum;   // float4[width * height]
   uint64_t output;  // uint[width * height] packed RGBA8
   uint64_t clusters;
@@ -100,11 +102,14 @@ SceneGeometry geometry_of(PathTraceParams* params) {
 }
 
 // The radiance a ray that hit nothing carries. See the header note: the two roles are the
-// resolve's, and the furnace flag collapses them into one.
+// resolve's, and the furnace flag collapses them into one. An escaped secondary ray sees the
+// resolve's two halves: the sky above the horizon, and below it the ground the resolve's
+// hemisphere term puts there — the scene's ground albedo under this frame's sun and sky.
 float3 environment(PathTraceParams* params, float3 direction, bool primary) {
   if ((params->flags & k_pt_uniform_sky) != 0) return params->sky.rgb;
   if (primary) return pow(max(params->sky.rgb, 0.0), 2.2);
-  return sky_radiance(params->sky.rgb, direction);
+  const float3 ground = ground_radiance(params->sky.rgb, params->ground.rgb, params->sun);
+  return environment_radiance(params->sky.rgb, ground, direction);
 }
 
 // Anything between `origin` and `t_max` along `direction`? One terminate-on-first-hit query, the

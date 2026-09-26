@@ -427,10 +427,10 @@ MaterialSample sample_material_grad(ResolveMaterial material, float2 uv, float2 
 
 // The material's ambient occlusion at `uv`: glTF's `1 + strength * (texel.r - 1)`, and exactly 1
 // for a material with no occlusion map. **The resolve's alone**, and only ever a factor on its
-// indirect term (the sky hemisphere today, Phase 2's indirect lighting when it exists): an
-// occlusion map is a baked estimate of how much of the hemisphere a point sees, which is what
-// direct light's shadows and a path tracer's bounces already compute, so applying it to either
-// would count the same occlusion twice (docs/subsystems/texture.md, "Occlusion").
+// indirect term (the sky-and-ground hemisphere today, Phase 2's indirect lighting when it
+// exists): an occlusion map is a baked estimate of how much of the hemisphere a point sees, which
+// is what direct light's shadows and a path tracer's bounces already compute, so applying it to
+// either would count the same occlusion twice (docs/subsystems/texture.md, "Occlusion").
 float sample_occlusion(ResolveMaterial material, float2 uv, float2 duv_dx, float2 duv_dy) {
   if (material.occlusion_texture == k_no_texture) return 1.0;
   const uint s = slot_sampler(material, material.samplers_occlusion_emissive, 0);
@@ -514,12 +514,44 @@ bool light_sample(ResolveLight light, float3 position, out float3 direction, out
   return true;
 }
 
-// The sky as **illumination**: the hemisphere term the resolve adds as its whole indirect light,
-// and the environment radiance the path tracer's escaped rays pick up, so that the two agree in
-// the limit as far as the model allows (docs/subsystems/renderer.md, "Reference renderer"). The
-// ramp by elevation is the resolve's own and is kept here so there is one of it.
-float3 sky_radiance(float3 sky, float3 direction) {
-  return sky * lerp(0.15, 0.35, direction.y * 0.5 + 0.5);
+// ---- the environment: the sky above the horizon, the ground below it ---------------------------
+//
+// What the resolve's indirect term stands for and what the path tracer's escaped rays pick up, so
+// that the two agree in the limit as far as the model allows (docs/subsystems/renderer.md, "The sky
+// above, the ground below"): two **uniform** halves. Uniform is what makes the resolve's blend
+// exact — for two uniform halves the cosine-weighted mean a Lambertian surface of normal n sees is
+// the lerp `brdf_hemisphere_ambient` computes, at every n — so in open space the two integrators'
+// diffuse ambient is one number and what is left between them is occlusion, interreflection and the
+// specular lobe's shape.
+//
+// Until 2026-09-25 the environment was one ramp over the whole sphere, `sky * lerp(0.15, 0.35,
+// d.y / 2 + 1/2)`, which the resolve evaluated at the normal: 0.35 of the sky colour facing up,
+// 0.15 facing down. Its cosine-weighted mean is `sky * (0.25 + 0.067 n.y)`, so the resolve was 10%
+// bright facing up and 18% dark facing down against its own reference, exact only facing sideways.
+// The upper half keeps the old top, 0.35, so every surface that faces up draws what it always drew.
+
+// The sky's radiance, the same in every direction above the horizon: 0.35 of the sky colour, the
+// ambient an up-facing surface takes and the sky's share of the light on the ground.
+float3 sky_radiance(float3 sky) { return sky * 0.35; }
+
+// The ground below the horizon (`brdf_ground_radiance`): the scene's ground albedo under this
+// frame's sun and sky. Both integrators compute it from the same three numbers, so the resolve's
+// lower half and the reference's are one radiance.
+float3 ground_radiance(float3 sky, float3 ground_albedo, float4 sun) {
+  return brdf_ground_radiance(ground_albedo, sun.xyz, sun.w, sky_radiance(sky));
+}
+
+// The environment an escaped ray sees in the reference: the sky above the horizon and the ground
+// below it.
+float3 environment_radiance(float3 sky, float3 ground, float3 direction) {
+  return direction.y >= 0.0 ? sky_radiance(sky) : ground;
+}
+
+// The resolve's indirect light at a shading normal: that environment's cosine-weighted mean, the
+// sky and the ground blended by the share of the normal's cosine lobe each half fills
+// (`brdf_hemisphere_ambient`).
+float3 ambient_radiance(float3 sky, float3 ground, float3 normal) {
+  return brdf_hemisphere_ambient(sky_radiance(sky), ground, normal.y);
 }
 
 // Linear to what a UNORM target holds. Both integrators end on this, so a reference image and a

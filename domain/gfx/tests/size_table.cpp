@@ -141,7 +141,11 @@ ENGINE_EXPECT_SIZE(48, 8, gfx::HizParams);
 // `pair_entries`; `pairs` added the sixteen bytes after it.
 // Still 304 with cascaded shadow maps: `shadow_maps`, the address of the block below, took the pad
 // word behind `pairs`. It is zero for every frame that draws no maps.
-ENGINE_EXPECT_SIZE(304, 8, gfx::ResolveParams);
+// 320, not 304: `ground`, the ground's albedo, beside `sky` and `sun` (2026-09-25). The resolve's
+// hemisphere ambient took a lower half of its own — the ground lit by the frame's sun and sky —
+// so a face turned towards the ground is lit by it (docs/subsystems/renderer.md, "The sky above,
+// the ground below"). Three floats with no pad word left to take them, so the block grew a row.
+ENGINE_EXPECT_SIZE(320, 8, gfx::ResolveParams);
 
 // The cascaded shadow maps (docs/subsystems/renderer.md, "Shadows"): per cascade its world-to-tile
 // matrix and three numbers the filter and the bias need; per frame four cascades, the light's
@@ -154,7 +158,9 @@ ENGINE_EXPECT_SIZE(400, 4, gfx::ShadowMapParams);
 // path — one dispatch per batch of samples, minutes per picture allowed — so it carries all
 // eleven scene addresses outright rather than packing them, and the padding keeps it a whole
 // number of float4 rows like every other addressed block.
-ENGINE_EXPECT_SIZE(256, 8, gfx::PathTraceParams);
+// 272, not 256: `ground`, the same albedo `ResolveParams::ground` carries, so an escaped ray below
+// the horizon sees the ground the resolve's hemisphere term puts there (2026-09-25).
+ENGINE_EXPECT_SIZE(272, 8, gfx::PathTraceParams);
 
 // 112, not 64: the occlusion and emissive textures, the occlusion strength, a sampler for each
 // slot (two 16-bit halves per word, the base colour keeping `sampler`) and one UV transform (a

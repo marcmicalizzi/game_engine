@@ -3,8 +3,9 @@
 // The CPU mirror of domain/gfx/shaders/brdf.slang and of the shading block of
 // visibility_resolve.slang, in double precision: the same Cook-Torrance BSDF (GGX, Smith
 // height-correlated visibility, Schlick Fresnel), the same windowed inverse-square falloff, the
-// same sky hemisphere and the ambient occlusion that weighs it, the same emissive term (the factor
-// times the sRGB-decoded emissive texel), the same tangent frame and normal-map perturbation, and
+// same hemisphere of sky above and lit ground below and the ambient occlusion that weighs it, the
+// same emissive term (the factor times the sRGB-decoded emissive texel), the same tangent frame
+// and normal-map perturbation, and
 // the same display gamma. The shading and attributes tests render a known surface on the GPU and
 // compare the pixels against this, so the lighting model is pinned by a second implementation
 // rather than by numbers nobody can rederive. Changing brdf.slang means changing this file in the
@@ -208,14 +209,35 @@ inline double occlusion_of(u8 red, double strength) {
   return 1.0 + strength * (static_cast<double>(red) / 255.0 - 1.0);
 }
 
-// The whole shaded branch of fs_resolve: sun, analytic lights, sky hemisphere (diffuse by normal
-// elevation plus the specular lobe's share of it, `env_specular`, so metals are not black and
-// rough dielectrics stay matte at grazing), emissive. Linear, before the gamma.
-// `sun_shadowed` and `Light::shadowed` are what the resolve's shadow rays found: a shadowed light
-// contributes nothing, and nothing else about the surface changes. `occlusion` is the material's
-// ambient occlusion (`occlusion_of`), and it multiplies the sky hemisphere term alone — never a
-// light, never the emission — which is the one place the resolve applies it.
-inline Dvec3 shade(const Surface& s, Dvec3 sun_dir, double sun_intensity, Dvec3 sky,
+// material.slang's `sky_radiance`: the sky's radiance, uniform above the horizon, 0.35 of its
+// colour.
+inline Dvec3 sky_radiance(Dvec3 sky) { return sky * 0.35; }
+
+// brdf.slang's `brdf_ground_radiance` through material.slang's `ground_radiance`: a Lambertian
+// ground of `ground_albedo` under the sun's irradiance on a horizontal surface and the sky's
+// radiance. It takes the sun's intensity whether or not the shaded point is in the sun's shadow —
+// it is the ground *around* the point — which is why `shade` below computes it before it asks.
+inline Dvec3 ground_radiance(Dvec3 ground_albedo, Dvec3 sun_dir, double sun_intensity, Dvec3 sky) {
+  const double horizontal = sun_intensity * (sun_dir.y > 0.0 ? sun_dir.y : 0.0);
+  return ground_albedo * (splat(horizontal / k_pi) + sky_radiance(sky));
+}
+
+// brdf.slang's `brdf_hemisphere_ambient`: the sky above and the ground below, blended by the share
+// of the normal's cosine lobe above the horizon, (1 + n.y) / 2.
+inline Dvec3 hemisphere_ambient(Dvec3 sky, Dvec3 ground, double normal_y) {
+  return lerp(ground, sky, clamp01(normal_y * 0.5 + 0.5));
+}
+
+// The whole shaded branch of fs_resolve: sun, analytic lights, the hemisphere (the sky above the
+// horizon and the lit ground below it, `ground_radiance`, blended by the normal: diffuse, plus the
+// specular lobe's share of it, `env_specular`, so metals are not black and rough dielectrics stay
+// matte at grazing), emissive. Linear, before the gamma. `ground` is `ResolveParams::ground`, the
+// ground's albedo. `sun_shadowed` and `Light::shadowed` are what the resolve's shadow rays found:
+// a shadowed light contributes nothing, and nothing else about the surface changes — the ground's
+// bounce of the sun included. `occlusion` is the material's ambient occlusion (`occlusion_of`),
+// and it multiplies the hemisphere term alone — never a light, never the emission — which is the
+// one place the resolve applies it.
+inline Dvec3 shade(const Surface& s, Dvec3 sun_dir, double sun_intensity, Dvec3 sky, Dvec3 ground,
                    const Light* lights, u32 light_count, Dvec3 emissive, bool sun_shadowed = false,
                    double occlusion = 1.0) {
   Dvec3 color = sun_shadowed ? Dvec3{} : direct(s, sun_dir, splat(sun_intensity));
@@ -233,7 +255,8 @@ inline Dvec3 shade(const Surface& s, Dvec3 sun_dir, double sun_intensity, Dvec3 
     }
     color = color + direct(s, light_dir, light.color * (light.intensity * attenuation));
   }
-  const Dvec3 ambient = sky * (0.15 + 0.20 * (s.normal.y * 0.5 + 0.5));
+  const Dvec3 lit_ground = ground_radiance(ground, sun_dir, sun_intensity, sky);
+  const Dvec3 ambient = hemisphere_ambient(sky_radiance(sky), lit_ground, s.normal.y);
   const double n_dot_v = dot(s.normal, s.view);
   const Dvec3 specular = env_specular(f0_of(s.albedo, s.metallic), s.roughness, n_dot_v);
   color = color + ambient * (s.albedo * (1.0 - s.metallic) + specular) * occlusion + emissive;

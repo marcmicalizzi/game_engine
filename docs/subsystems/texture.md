@@ -262,8 +262,9 @@ been a bigger lie than none — which the Lantern's glass was.
 ## Occlusion
 
 The occlusion texture's red channel with glTF's strength, `1 + strength · (r − 1)`, multiplies **the
-resolve's indirect term and nothing else**. Today that term is the sky hemisphere — the resolve's
-whole ambient, until Phase 2's indirect lighting exists — so an occlusion map darkens the ambient in
+resolve's indirect term and nothing else**. Today that term is the hemisphere of sky above and lit
+ground below ([renderer](renderer.md#the-sky-above-the-ground-below)) — the resolve's whole
+ambient, until Phase 2's indirect lighting exists — so an occlusion map darkens the ambient in
 creases and leaves the sun, the point lights and the emission alone: it is a baked estimate of how
 much of the hemisphere a point sees, and direct light's shadows already answer that for direct
 light. **It is never applied in the path tracer**, which computes that visibility by tracing and

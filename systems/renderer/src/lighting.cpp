@@ -9,6 +9,7 @@ void frame_lighting(const SceneData& scene, u64 frame_index, bool lights, FrameL
   out = FrameLighting{};
   out.sky = k_sky;
   out.sun = Vec4{normalize(Vec3{0.4f, 0.8f, 0.45f}), 1.0f};
+  out.ground = Vec4{scene.ground_albedo, 0.0f};
   out.shadow_bias = 1.0e-3f * scene.radius;
   if (!lights) return;
 

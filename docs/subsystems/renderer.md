@@ -427,7 +427,8 @@ the resolve 2–5% slower on the FlightHelmet at 1080p and 4K, about half of it 
 against the reference, `flighthelmet` from 0.0190 to 0.0172 FLIP and `thin-geometry` from 0.0051 to
 0.0048 — both towards it — and every other scene of the corpus where it was.
 
-**Occlusion** multiplies the resolve's indirect term — the sky hemisphere today — and nothing else,
+**Occlusion** multiplies the resolve's indirect term — the hemisphere of sky and ground today,
+[below](#the-sky-above-the-ground-below) — and nothing else,
 and is never applied in the reference, which traces that visibility. `--view occlusion`
 (`ResolveMode::Occlusion`, `render.load`'s `"view":"occlusion"`) shows the value unencoded beside
 `--view albedo`: a captured byte is the occlusion times 255 ([texture](texture.md#occlusion)).
@@ -438,6 +439,99 @@ orbit distances and two resolutions; the table and the machine's state are in
 every level included, against **213.9 MB** decoded at one level; the resolve moved by no more than
 3% against the parent commit either way (2–3% slower up close for the derivative pass, 3% faster
 far away at 4K); and the decoded path's capture is byte-identical to the parent commit's.
+
+## The sky above, the ground below
+
+**The resolve's whole indirect term is a hemisphere of two uniform halves** (2026-09-25): the sky
+above the horizon, at 0.35 of `k_sky` (`sky_radiance` in `material.slang`), and below it the
+**ground** — the scene's ground albedo lit by the frame's sun and sky, `ρ (E_sun / π + L_sky)`, where
+`E_sun` is the sun's intensity times the sine of its elevation, its irradiance on a horizontal
+surface (`brdf_ground_radiance` in `brdf.slang`). A surface of normal n takes the two blended by the
+share of its cosine lobe each half fills, `lerp(ground, sky, (1 + n.y) / 2)`
+(`brdf_hemisphere_ambient`) — the sky view factor of a tilted plane, which makes the blend exact for
+two uniform halves — and, as before, the diffuse albedo takes that and the specular lobe the share
+`brdf_env_specular` gives it. The ground is **not shadowed**: it stands for the ground *around* the
+point, which the sun lights whether or not the point is in shade, so a sun-shadowed pixel keeps the
+ground's bounce of the sun (the shading tests' shadowed pixels are the model with the sun's direct
+term removed and nothing else). Before, the lower half was the sky's own ramp run on past the
+horizon — 0.15 of the sky colour facing straight down — so a surface turned towards the ground saw a
+dim blue sky under it, which is what the third owner session's dunes asked about
+([its write-up](../experiments/third-interactive-session-2026-09-25.md#the-grounds-bounce-measured-2026-09-25-evening)).
+A real bounce is Phase 4's; this is the smallest term that lets the ground's colour reach a surface
+facing it.
+
+**The ground's albedo is a scene value.** `SceneData::ground_albedo`: `load_scene` makes it the
+terrain's sand when the scene has a terrain (`terrain_sand_albedo`, `terrain_surface`'s own colour
+away from every ridge and basin, (0.84, 0.69, 0.47) linear — most of a desert is that sand) and
+leaves the neutral grey `gfx::k_neutral_ground_albedo`, 0.2, otherwise; `frame_lighting` hands it to
+both integrators as `FrameLighting::ground`, which becomes `gfx::ResolveParams::ground` and
+`gfx::PathTraceParams::ground` (each block 16 bytes larger, 320 and 272). No scene-file field or
+flag sets it yet. **Why 0.2:** under the stand-in sun and sky a face turned straight down then
+receives about the light it did before the ground existed — 0.2 × 0.49 = 0.099 in luminance against
+the old lower end's 0.15 × the sky's 0.68 = 0.102 — so a scene without a terrain changes the hue of
+its undersides, a neutral ground under them instead of a blue sky, and hardly their brightness.
+
+**The reference sees the same two halves** (`environment_radiance`): an escaped secondary ray
+returns the sky's uniform radiance above the horizon and the ground below it, computed from the
+same three numbers. **Uniform, not the ramp the sky used to be, and that choice is measured.** The
+old environment was one ramp over the whole sphere, `sky · lerp(0.15, 0.35, d.y / 2 + 1/2)`, which
+the resolve evaluated at the normal; its cosine-weighted mean is `sky · (0.25 + 0.067 n.y)`, so the
+resolve had been 10% bright facing up and 18% dark facing down against its own reference, and exact
+only at the horizon. Keeping that ramp above the horizon and putting the ground below it — the first
+version of this change — moved the error to the horizon instead: `shredded-atlas`, a torus with
+every normal in it, went from 0.0424 to **0.0651** FLIP and `flighthelmet` from 0.0128 to 0.0144.
+With two uniform halves the blend is exact, so in open space the two integrators' diffuse ambient is
+one number and what is left between them is occlusion, interreflection and the specular lobe's shape.
+The upper half keeps the ramp's old top, so a surface facing up draws exactly what it drew before.
+
+**What the comparisons say** (RTX 5090, `msvc-release`, the same day and the same binary but for the
+change; the corpus at its files' samples and bounces, the agreement cases at 512 samples and one
+bounce, [Reference renderer](#reference-renderer)):
+
+| | before | after |
+|---|---|---|
+| `flighthelmet` FLIP / p95 | 0.0128 / 0.0924 | 0.0132 / 0.0907 |
+| `heightfield` | 0.0268 / 0.1249 (direct-only 0.0281) | **0.0235** / 0.1315 (direct-only **0.0209**) |
+| `helmet-grid` | 0.0037 | 0.0037 |
+| `shredded-atlas` | 0.0424 / 0.1339 | **0.0390** / 0.1138 |
+| `thin-geometry` | 0.0036 | 0.0035 |
+| `wide-frustum` | 0.0010 | 0.0010 |
+| agreement: diffuse plane, sun and two point lights | 0.0131 (44.7 dB) | **0.0051** (55.5 dB) |
+| agreement: diffuse plane, sun only | 0.0140 (43.7 dB) | **0.0055** (54.5 dB) |
+| agreement: a cube over the plane, shadows traced | 0.0215 (37.7 dB) | **0.0157** (39.5 dB) |
+| agreement: the emissive plane | 0.0034 (59.3 dB) | **0.0015** (64.6 dB) |
+
+Every scene agrees with the reference as well or better except `flighthelmet`, 0.0004 worse on the
+mean and better on the p95, which is about a third of the reference's own noise floor on that scene at
+1024 samples (0.0011, [Reference renderer](#reference-renderer)). The plane cases gain most because an up-facing plane's ambient,
+0.35 of the sky in the resolve, was 0.317 in the reference and is now 0.35 in both. The `heightfield`
+row's full number is now *above* its direct-only one — the reference's second and third bounces off
+the hills are light the real-time path does not have, which is what the two columns are there to
+show — where before the ramp's error had been larger than the whole indirect share. The thresholds
+were left where they were.
+
+**What it costs**: the ground's radiance is a dozen arithmetic operations per shaded pixel and the
+block one float4 row more. Over the owner's dune flight replayed as a benchmark (8,903 frames at
+1920×1080, `--shadows csm`, two runs of each binary, alternating, under the GPU lock but not quiet —
+other processes 4–15% of the CPU — so upper bounds) the resolve's median went from 0.0713 and
+0.0713 ms to 0.0716 and 0.0719, half a percent, and the frame's total did not move (0.1958 and
+0.1957 against 0.1946 and 0.1953).
+
+**What it does to the dunes, and what it does not.** The shaded slopes of the owner's markers warm by
+two to three levels in red (a foreground slope in the cascades' shadow: 182, 170, 150 → 185, 173,
+151), and a genuinely steep face near the horizon by up to nine (109, 112, 106 → 118, 117, 108). The
+**grey seams do not move**: 13,093, 7,212 and 6,653 seam pixels at the three markers before and after,
+their mean colour 112, 115, 109 before and 113, 115, 109 after, FLIP 0.003–0.007 between the two
+pictures. They were never the slip faces in shade. Read against the markers' normals captures, their
+shading normals point nearly straight up (n.y 0.97–0.99 on average, none under 0.77) and every one of
+them faces the sun (N·L from 0.42 to 0.92, mean 0.73), with shadows on or off; yet every one has the
+same colour, the sky ambient of an up-facing normal with nothing else — the signature of `brdf_eval`
+returning zero for the sun because **the interpolated
+shading normal faces away from the camera** (n·v ≤ 0) while the triangle under it faces towards it,
+which happens wherever a grazing view crosses a crest whose smooth vertex normals lean away. The hard,
+angular edges are where n·v crosses zero inside a triangle. [Not yet](#not-yet) has the item; the
+evidence, and the one-line experiment that removes every seam pixel, is in the
+[session's write-up](../experiments/third-interactive-session-2026-09-25.md#the-grounds-bounce-measured-2026-09-25-evening).
 
 ## Geometry streaming: the GPU half of pages and residency
 
@@ -622,12 +716,12 @@ Measured on the FlightHelmet at 640×480, `--orbit 22`, 1024 samples, three boun
 |---|---|
 | the scene, its materials and textures, the acceleration structures the frame built | the integrator: rasterize-and-resolve against trace-and-accumulate |
 | `brdf.slang`: the BSDF, the falloffs, the roughness clamp | `sampling.slang`: densities and a random stream, which the resolve has no use for |
-| `material.slang`: the triangle fetch, the attributes, the tangent frame, the textures, `light_sample`, `sky_radiance`, `display_encode` | the resolve's screen-space reconstruction, which exists because a rasterized pixel carries no barycentrics and a ray-traced one does |
-| `frame_lighting`: sun, sky, the two point lights, the ray bias | the shadow ray's *shape* is the same; the reference traces one per light per **path vertex**, the resolve one per light per pixel |
+| `material.slang`: the triangle fetch, the attributes, the tangent frame, the textures, `light_sample`, the environment (`sky_radiance`, `ground_radiance`, `environment_radiance`), `display_encode` | the resolve's screen-space reconstruction, which exists because a rasterized pixel carries no barycentrics and a ray-traced one does |
+| `frame_lighting`: sun, sky, the ground's albedo, the two point lights, the ray bias | the shadow ray's *shape* is the same; the reference traces one per light per **path vertex**, the resolve one per light per pixel |
 
-**The sky has two roles and the reference mirrors both, deliberately.** In the real-time path `ResolveParams::sky` is written straight out for an uncovered pixel *and* used, scaled by normal elevation, as the entire indirect term. Those are two different functions of one number, which is a property of a renderer that has no sky model yet. The reference copies it rather than fixing it: a **primary** miss returns `sky^2.2` in linear, so the display transform gives back exactly the bytes the resolve writes, and a **secondary** miss returns `sky_radiance(sky, direction)`, the same hemisphere ramp the resolve adds. Copying it is what makes the two comparable at all; fixing it belongs with the atmosphere of §4.2 step 5, and until then the residual in the table below is partly this.
+**The sky has two roles and the reference mirrors both, deliberately.** In the real-time path `ResolveParams::sky` is written straight out for an uncovered pixel *and* used, with the ground, as the entire indirect term. Those are two different functions of one number, which is a property of a renderer that has no sky model yet. The reference copies it rather than fixing it: a **primary** miss returns `sky^2.2` in linear, so the display transform gives back exactly the bytes the resolve writes, and a **secondary** miss returns `environment_radiance` — the sky's uniform radiance above the horizon and the lit ground below it — the environment whose cosine-weighted mean the resolve's hemisphere term is ([The sky above, the ground below](#the-sky-above-the-ground-below)). Copying it is what makes the two comparable at all; fixing it belongs with the atmosphere of §4.2 step 5.
 
-**Where the two still disagree, in order of size.** No indirect light in the real-time path at all — the resolve has one ambient term where the reference integrates a hemisphere, and at more than one bounce the reference carries light that bounced off the rest of the scene, which is most of the FLIP on any scene with interiors or close-standing geometry. The ambient model itself: `albedo * sky_radiance(n)` plus the specular lobe's share of the sky (`brdf_env_specular`, an analytic fit of the lobe integrated against a uniform environment) against an integral of `sky_radiance(d)` over the hemisphere, which differ by about 10% even with nothing else in the scene. Antialiasing: the reference box-filters a pixel and the rasterizer point-samples one, which shows at every silhouette — `ReferenceSettings::pixel_center` turns the jitter off when a comparison is about shading rather than about edges. And one honest divergence: the reference turns a shading normal that has ended up behind the surface into the geometric hemisphere, where the resolve lets the BSDF return nothing and keeps only its ambient. It is the reference that is right, and it matters on thin two-sided geometry.
+**Where the two still disagree, in order of size.** No indirect light in the real-time path at all — the resolve has one ambient term where the reference integrates a hemisphere, and at more than one bounce the reference carries light that bounced off the rest of the scene, which is most of the FLIP on any scene with interiors or close-standing geometry. The ambient model itself: since 2026-09-25 the diffuse half is exact in open space — the resolve's `albedo * lerp(ground, sky, (1 + n.y) / 2)` *is* the cosine-weighted mean of the reference's two uniform halves — and what is left is the specular lobe's share (`brdf_env_specular`, an analytic fit of the lobe integrated against a uniform environment, evaluated with the environment at the normal rather than along the reflection) and the Fresnel the reference's diffuse lobe loses and the ambient does not. Until that day the environment was a ramp the resolve read at the normal, 10% bright facing up and 18% dark facing down against its own integral. Antialiasing: the reference box-filters a pixel and the rasterizer point-samples one, which shows at every silhouette — `ReferenceSettings::pixel_center` turns the jitter off when a comparison is about shading rather than about edges. And one honest divergence: the reference turns a shading normal that has ended up behind the surface into the geometric hemisphere, where the resolve lets the BSDF return nothing and keeps only its ambient. It is the reference that is right, and it matters on thin two-sided geometry.
 
 **Accumulation, batches, and what "deterministic" means.** `accum` is one `float4` per pixel — radiance sum in rgb, sample count in w — and a dispatch adds `batch` samples starting at `sample_base`. A pixel's Nth sample is a function of (pixel, N, seed) and nothing else, so the *samples* do not depend on how the render was split; batching exists so progress can be reported, a render can be stopped and still produce a valid (noisier) picture, and no single submission runs long enough to meet the display driver's watchdog. The guarantee is therefore precise: **the same seed and the same batch size is the same bytes**, which the tests check. Across batch sizes the samples are identical and only the order the partial sums are added in differs, and float addition is not associative — measured at 64 spp that is under `4.5e-7` of linear radiance, which after the display transform moves **no byte at all**.
 
@@ -639,12 +733,12 @@ Measured on the FlightHelmet at 640×480, `--orbit 22`, 1024 samples, three boun
 
 | Scene | FLIP mean | FLIP p95 | PSNR | SSIM |
 |---|---|---|---|---|
-| diffuse plane, sun and two point lights | 0.0131 | 0.105 | 44.7 dB | 0.9977 |
-| diffuse plane, sun only | 0.0140 | 0.112 | 43.7 dB | 0.9980 |
-| a cube over the plane, shadows traced | 0.0215 | 0.144 | 37.7 dB | 0.9896 |
-| emissive: a dark plane lit by its own texture | 0.0034 | 0.029 | 59.3 dB | 0.9999 |
+| diffuse plane, sun and two point lights | 0.0051 | 0.042 | 55.5 dB | 0.9996 |
+| diffuse plane, sun only | 0.0055 | 0.045 | 54.5 dB | 0.9996 |
+| a cube over the plane, shadows traced | 0.0157 | 0.106 | 39.5 dB | 0.9922 |
+| emissive: a dark plane lit by its own texture | 0.0015 | 0.011 | 64.6 dB | 0.9999 |
 
-FLIP calls about 0.1 the threshold at which a person starts to notice a difference, so all four are comfortably "the same picture", and what is left is the ambient model and the one bounce of real indirect light the resolve does not have. The shadowed case is the largest because a shadow edge is where a one-ray-per-pixel test and a converged integral differ most. **The table moved on 2026-09-25**, when the resolve's sky term stopped weighting its specular share by bare Schlick at n·v — a mirror's curve at every roughness — and took the GGX lobe's own reflectance of a uniform sky (`brdf_env_specular`, [gfx](gfx.md)): the same four cases measured the same day before the change read 0.0206, 0.0218, 0.0281 and 0.0144 FLIP (39.5, 38.8, 35.3 and 43.1 dB), so the path tracer, which integrates that sky, agrees with the resolve better by a quarter to three quarters. That change is what made the ashlar ruins matte ([the second owner session](../experiments/second-interactive-session-2026-09-25.md)).
+FLIP calls about 0.1 the threshold at which a person starts to notice a difference, so all four are comfortably "the same picture", and what is left is the ambient model and the one bounce of real indirect light the resolve does not have. The shadowed case is the largest because a shadow edge is where a one-ray-per-pixel test and a converged integral differ most. **The table moved twice on 2026-09-25.** In the evening the environment became two uniform halves with a ground below ([The sky above, the ground below](#the-sky-above-the-ground-below)), which made the resolve's diffuse ambient the reference's integral exactly: the four read 0.0131, 0.0140, 0.0215 and 0.0034 the same day before that change (44.7, 43.7, 37.7 and 59.3 dB). Earlier, when the resolve's sky term stopped weighting its specular share by bare Schlick at n·v — a mirror's curve at every roughness — and took the GGX lobe's own reflectance of a uniform sky (`brdf_env_specular`, [gfx](gfx.md)): the same four cases measured the same day before the change read 0.0206, 0.0218, 0.0281 and 0.0144 FLIP (39.5, 38.8, 35.3 and 43.1 dB), so the path tracer, which integrates that sky, agrees with the resolve better by a quarter to three quarters. That change is what made the ashlar ruins matte ([the second owner session](../experiments/second-interactive-session-2026-09-25.md)).
 
 **The noise floor, and how many samples a scene needs.** A reference is only a reference once its own noise is well under the difference it is being used to measure. Measured on the RTX 5090 in `msvc-release` at 640×480, three bounces, against a **different-seeded** 8192-sample picture of the same frame, taken twice with identical results (GPU 1–3% busy, 3.6 GiB of 32 GiB held by other processes, CPU 12% — quiet enough that the times are close to a cost rather than an upper bound):
 
@@ -659,18 +753,18 @@ FLIP calls about 0.1 the threshold at which a person starts to notice a differen
 
 PSNR is the honest convergence indicator here and it climbs by **5.7, 5.1, 4.0 and 2.8 dB per quadrupling** where 1/√n predicts a flat 6 dB; the shortfall at the top is the 8192-sample picture's own noise, not the estimator's. FLIP flattens sooner because most of these frames are exactly-matching background, which no amount of sampling improves. **The corpus runs at 1024 samples**, where the noise floor is 0.0027 and 0.0011 against a real signal of 0.035 and 0.019 — an order of magnitude of headroom — and a scene costs a twentieth of a second. These are small scenes seen from a distance, so most rays miss; a frame that fills the screen with geometry costs far more, and the corpus's own report carries the time per scene.
 
-**Today's corpus** (`content/test-scenes/`, `tools/ci/reference-compare.ps1`, same machine and preset; the numbers as of 2026-09-25, after the resolve's sky term changed, below the table). `direct` is the same real-time picture against the reference at **one bounce**, so `full` − `direct` is the indirect light the real-time path does not have:
+**Today's corpus** (`content/test-scenes/`, `tools/ci/reference-compare.ps1`, same machine and preset; the numbers as of the evening of 2026-09-25, after the environment gained its ground, below the table). `direct` is the same real-time picture against the reference at **one bounce**, so `full` − `direct` is the indirect light the real-time path does not have:
 
 | Scene | FLIP mean | FLIP p95 | direct-only FLIP | PSNR | SSIM |
 |---|---|---|---|---|---|
-| heightfield, 640×480 | 0.0268 | 0.1249 | 0.0281 | 39.1 dB | 0.9900 |
-| flighthelmet, 640×480 | 0.0128 | 0.0924 | 0.0131 | 34.5 dB | 0.9825 |
+| heightfield, 640×480 | 0.0235 | 0.1315 | 0.0209 | 39.1 dB | 0.9900 |
+| flighthelmet, 640×480 | 0.0132 | 0.0907 | 0.0134 | 34.5 dB | 0.9824 |
 | helmet-grid (3×3), 640×480 | 0.0037 | 0.0023 | 0.0037 | 36.7 dB | 0.9943 |
-| thin-geometry (Lantern), 640×480 | 0.0036 † | 0.0000 | 0.0036 | 40.1 dB | 0.9958 |
+| thin-geometry (Lantern), 640×480 | 0.0035 † | 0.0000 | 0.0035 | 40.1 dB | 0.9958 |
 | wide-frustum, 1920×360 | 0.0010 | 0.0000 | 0.0010 | 42.1 dB | 0.9986 |
-| shredded-atlas, 512×512 ‡ | 0.0424 | 0.1339 | 0.0424 | 34.2 dB | 0.9852 |
+| shredded-atlas, 512×512 ‡ | 0.0390 | 0.1138 | 0.0390 | 34.2 dB | 0.9845 |
 
-**The table moved on 2026-09-25**, every row by a quarter to a third, when the resolve's sky term stopped weighting its specular share by bare Schlick at n·v and took the lobe's own reflectance of the sky (`brdf_env_specular`, [gfx](gfx.md)). The same corpus the same day, one build apart (the older one an engine-host with the Schlick term and no shader manifest beside it — a build directory's manifest recompiles an edited `.slang` at start-up, so a before-and-after by editing the source and rebuilding measures the source on disk, not the binary): flighthelmet 0.0168 → 0.0128, heightfield 0.0348 → 0.0268, helmet-grid 0.0050 → 0.0037, thin-geometry 0.0053 → 0.0036, wide-frustum 0.0014 → 0.0010, shredded-atlas 0.0575 → 0.0424. The reference integrates the same sky the resolve's ambient term approximates, so a term closer to that integral moves every scene towards it; the thresholds were left where they were. (The [second owner session](../experiments/second-interactive-session-2026-09-25.md) is why the term changed.)
+**The table moved twice on 2026-09-25.** The second time, in the evening, the environment gained its ground and became two uniform halves: heightfield 0.0268 → 0.0235 (direct-only 0.0281 → 0.0209), shredded-atlas 0.0424 → 0.0390, thin-geometry 0.0036 → 0.0035, flighthelmet 0.0128 → 0.0132 (under the reference's own noise), helmet-grid and wide-frustum unchanged ([The sky above, the ground below](#the-sky-above-the-ground-below) has the table and why uniform). The first time, every row by a quarter to a third, when the resolve's sky term stopped weighting its specular share by bare Schlick at n·v and took the lobe's own reflectance of the sky (`brdf_env_specular`, [gfx](gfx.md)). The same corpus the same day, one build apart (the older one an engine-host with the Schlick term and no shader manifest beside it — a build directory's manifest recompiles an edited `.slang` at start-up, so a before-and-after by editing the source and rebuilding measures the source on disk, not the binary): flighthelmet 0.0168 → 0.0128, heightfield 0.0348 → 0.0268, helmet-grid 0.0050 → 0.0037, thin-geometry 0.0053 → 0.0036, wide-frustum 0.0014 → 0.0010, shredded-atlas 0.0575 → 0.0424. The reference integrates the same sky the resolve's ambient term approximates, so a term closer to that integral moves every scene towards it; the thresholds were left where they were. (The [second owner session](../experiments/second-interactive-session-2026-09-25.md) is why the term changed.)
 
 † **The thin-geometry row used to have two values, and finding out why was worth the gate's whole cost.** It read 0.0116 (PSNR 33.6) when the Lantern came out of the derived-data cache and 0.0051 (PSNR 37.4) when it was built from the glTF — reproducibly, and with the *same* 15-pair cut either way, which is what made it look like noise rather than a defect. It was neither the renderer nor the reference. Measured directly, three `--no-cache` renders of the Lantern were byte-identical to each other and to the first cached run (the one that missed and built in memory), three cached renders were byte-identical to each other, and the two groups differed by 0.019 FLIP with a worst pixel of 0.97. The Lantern is a GLB, so its four textures live in buffer views and have no paths — and a `.clusters` container recorded image *paths* and nothing else, so from the cache the mesh drew untextured. Containers carry the encoded bytes of the images their source embedded since 2026-09-18 ([geometry](geometry.md#embedded-images-the-container-carries-them)), and the corpus now gives **identical numbers cold and warm**: the row above is both, run twice from an empty `ddc/` and twice from a full one.
 
@@ -682,7 +776,7 @@ Two things about how that was caught are worth keeping. The gate found a bug it 
 
 **A sixth scene, and the blind spot it closes.** Every row above compares the real-time path and the reference at the **same** LOD threshold — the reference traces the structures the frame built, which is what makes the comparison about shading rather than about geometry. That is also a blind spot the size of the whole LOD system: a defect in simplification puts the same wrong triangles into both pictures and the gate reports that they agree. It hid one for months ([geometry](geometry.md#what-the-simplifier-is-given-and-why)): the LOD builder was collapsing across UV atlas islands, and no picture test in the tree could see it because none of them ever rendered two different cuts. `shredded-atlas` is the row that does — the procedural atlas fixture at a coarse threshold against `"reference": {"finest": true}`, which traces the source geometry — so the number it carries is *what LOD costs the picture* rather than what shading does. Measured through the renderer's own test at 384×384, coarse (63 pairs) against finest (140 pairs) on the same camera: **FLIP 0.0092, PSNR 39.0 dB** with the seam rule, and **FLIP 0.140, PSNR 18.8 dB** without it, from cuts of the same size — 63 pairs against 64. The whole of that difference is texture, not geometry, which is the clearest statement of the defect there is.
 
-Two things are worth reading out of that. **The indirect share is near zero on all five**, which is not a claim that the real-time path has global illumination — it is that these are isolated objects under an open sky, where a second bounce almost always escapes and the resolve's hemisphere ambient is a fair approximation of it. A scene with interiors, a mirror room or a foliage wall would separate the two columns, and none of those is in the corpus yet; that is the gap the pathological scenes of §4.8 fill. **The p95 is below the mean on three scenes** because most of those frames is background the two agree on exactly, so the error is concentrated in the few percent of pixels the object covers — which is why the thresholds carry both numbers.
+Two things are worth reading out of that. **The indirect share is near zero on the isolated objects**, which is not a claim that the real-time path has global illumination — it is that these are isolated objects under an open sky, where a second bounce almost always escapes and the resolve's hemisphere ambient is a fair approximation of it. The heightfield is the one scene where it shows (0.0235 full against 0.0209 direct): its hills light each other, and once the ambient model's own error stopped being larger than that light, the column could see it. A scene with interiors, a mirror room or a foliage wall would separate the two columns, and none of those is in the corpus yet; that is the gap the pathological scenes of §4.8 fill. **The p95 is below the mean on three scenes** because most of those frames is background the two agree on exactly, so the error is concentrated in the few percent of pixels the object covers — which is why the thresholds carry both numbers.
 
 **An animated instance.** A reference render is one frame, so what it draws is **one pose**, and getting that right needed a pass-through and nothing else: `ReferenceSettings::joints` and `instance_joints` are the same two spans `FrameDesc` takes, the preliminary frame writes the deformed-vertex pool from them, the cluster acceleration structures are built from the pool, and the reference traces those. The reference therefore path traces a character where the tick put it without this module learning what a clip is — which is the same "nothing had to change" that [Skinned instances](#skinned-instances) reports for the ray path, for the same reason. Measured on the Khronos Fox at 320×240, 64 samples: the posed reference is **0.0275** FLIP from the posed real-time frame and **0.0675** from a reference of the same scene at rest, so the pose is demonstrably in the picture rather than assumed to be. What the reference cannot do is *play* the clip: `engine-view --reference --animate` ticks the world once and draws the pose the windowed path's first frame would draw, `--frames` means nothing to it, and it says so on stderr when a caller passes one anyway. A sequence — which is what §4.8's temporal-stability metric will need — is a loop over frame indices that does not exist yet.
 
@@ -902,5 +996,5 @@ Three things it says. **The pool pass itself did not move** — within ±5% at e
 
 ## Not yet
 
-- **Shaded sand reads grey.** The sky's diffuse term is one irradiance for every normal and there is no indirect light from the ground, so a dune's slip face turned from the sun is lit by a cool sky alone and renders grey where a real one is dark orange from the bright sand around it — the "grey seams" of the owner's first flight over the dune generator ([third session](../experiments/third-interactive-session-2026-09-25.md): the same with shadows off, smooth normals, one albedo). The smallest fix is a hemisphere ambient whose lower half carries the ground's albedo, in `brdf.slang` and its reference together; a real bounce is Phase 4's.
+- **A shading normal turned from the camera loses the sun.** `brdf_eval` returns nothing when n·v ≤ 0, so wherever an interpolated normal leans away from the eye while the triangle under it faces it — a grazing view across a crest, a normal map's texel turned away — the pixel keeps only the hemisphere ambient and reads as a flat, constant grey with hard edges where n·v crosses zero inside a triangle. It is the whole of the "grey seams" of the owner's first flight over the dune generator ([third session](../experiments/third-interactive-session-2026-09-25.md#the-grounds-bounce-measured-2026-09-25-evening)): every seam pixel at the three markers faces the sun (N·L 0.42–0.92) with a normal nearly straight up, and the ground's bounce ([above](#the-sky-above-the-ground-below)), which the first diagnosis asked for, moved them by under a byte. Clamping n·v to a small positive number instead of rejecting it — Filament's `clampNoV` — removes every seam pixel at all three markers in an experiment; it is a change to `brdf_eval`, which the reference path tracer shares, so it goes in with its CPU mirror and its own test. The path tracer has the same rejection, so the corpus cannot see this.
 Multi-view got the per-frame working set split ([above](#multi-view-a-viewset-over-one-scene)), so a second `SceneRenderer` on one `GpuScene` is no longer what §4.6 wants — one renderer draws the whole set. What is still open there: a per-view **internal resolution** and the shading-rate half of foveation (the `ViewQuality::shading_rate` stub), which need `VK_KHR_fragment_shading_rate` in the RHI; one RT cut at a view-agnostic threshold instead of the union of the views' cuts; a filtered color-domain Panini resample; multi-window presentation and per-output HDR metadata (engine-view has one swapchain); and the screen-space passes §4.6 says run per view, none of which exist yet — there is no TAA, no denoiser and no upscaler to run per view. Changing `RenderSettings` without rebuilding the `GpuScene` and the `SceneRenderer`: the deformed-vertex pool and the ray tracing chain are sized by the settings, so engine-host rebuilds both and keeps only the `SceneData`, which is where the import and the clustering cost is. Streaming ([above](#geometry-streaming-the-gpu-half-of-pages-and-residency)) is built for geometry and **only** for geometry: the textures are still uploaded whole, the acceleration structures are sized by the frames rather than by a budget streaming shares ([The ray tracing chain's memory](#the-ray-tracing-chains-memory)) and their bucketing scratch is still four bytes for every pair in every view, and `04 §4.9`'s "one residency manager, three page types, one budget with per-type floors" is one page type with one budget. A page's bytes now come out of the `.clusters` container by range, so the budget bounds host memory as well as device memory — but only in the **steady state**: the load still materializes the merged streams and `attach_page_source` releases them afterwards, so the peak working set is what it always was. Making the load never read them needs `geometry::merge_paged_cluster_meshes` to take the merged vertex and triangle bases from the page table instead of from `mesh.vertices.size()`. Streaming also refuses a deformed or skinned scene and `--rt-templates`, for the reasons in that section, and a scene without a container behind every mesh keeps the in-memory source. The reference path tracer and the accept-or-reject loop's automation ([04 §4.8](../plan/04-renderer.md#48-reference-renderer-and-objective-optimization)) — `render.compare` is the metric half of it, and the integrator is Phase 2's.

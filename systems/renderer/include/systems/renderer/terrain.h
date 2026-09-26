@@ -172,6 +172,12 @@ struct TerrainSurface {
 };
 TerrainSurface terrain_surface(const TerrainSampler& field, f32 x, f32 z) noexcept;
 
+// The sand's base colour, linear: `terrain_surface`'s albedo away from every ridge and basin, and
+// the ground a scene with a terrain lights its hemisphere ambient's lower half with
+// (`SceneData::ground_albedo`) — most of a desert is this sand, so a slip face in shade is lit by
+// the colour it stands in.
+Vec3 terrain_sand_albedo() noexcept;
+
 // The side of the terrain's material maps in texels: one texel per grid cell (`size - 1`),
 // at least one. A cell is 2.5 m on the desert's 2049 grid over 5,120 m, and the colour changes
 // over ten metres or more, so a finer map would store the same picture four times over.

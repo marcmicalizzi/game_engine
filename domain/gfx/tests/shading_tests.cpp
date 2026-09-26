@@ -65,7 +65,8 @@ namespace {
 constexpr f32 k_roughness[4] = {0.05f, 0.3f, 0.7f, 1.0f};
 constexpr u32 k_materials = 8;  // k_roughness x {dielectric, conductor}
 constexpr u32 k_white = 8;      // the reflectance-sanity material
-constexpr u32 k_blocks = 12;    // one ResolveParams, one render target, per block
+constexpr u32 k_blocks = 15;    // one ResolveParams, one render target, per block
+constexpr u32 k_below = 12;     // the first block that sees the quad from below
 constexpr u32 k_size = 128;
 
 // A horizontal rectangle, the shadow test's occluder: y = plane, x in [x0, x1], z in [z0, z1].
@@ -147,14 +148,26 @@ TEST_CASE("material resolve: shading matches a CPU reference over roughness and 
   const Vec3 up{0.0f, 0.0f, -1.0f};
   const f32 fov_y = radians(60.0f);
   const Mat4 view_proj = perspective_reversed_z(fov_y, 1.0f, 0.1f) * look_at(eye, target, up);
+  // The same quad seen from below, into a visibility buffer of its own. The mesh has no vertex
+  // normals, so the resolve shades it with the plane's normal turned towards the camera, (0, -1,
+  // 0): a surface facing straight down at the ground, with the sun and the point light both above
+  // it.
+  const Vec3 eye_below{0.0f, -10.0f, 0.0f};
+  const Mat4 view_proj_below =
+      perspective_reversed_z(fov_y, 1.0f, 0.1f) * look_at(eye_below, target, up);
   const u64 vis_bytes = u64{k_size} * k_size * sizeof(u64);
   gfx::BufferResource vis;
+  gfx::BufferResource vis_below;
   gfx::BufferResource params;
   gfx::BufferResource host_color;
   REQUIRE(gfx::create_buffer(
       device, vis_bytes,
       k_storage | gfx::BufferUsage::ShaderDeviceAddress | gfx::BufferUsage::TransferDst, false, vis,
       &error));
+  REQUIRE(gfx::create_buffer(
+      device, vis_bytes,
+      k_storage | gfx::BufferUsage::ShaderDeviceAddress | gfx::BufferUsage::TransferDst, false,
+      vis_below, &error));
   REQUIRE(gfx::create_buffer(device, sizeof(gfx::ResolveParams) * k_blocks,
                              k_storage | gfx::BufferUsage::ShaderDeviceAddress, true, params,
                              &error));
@@ -193,6 +206,9 @@ TEST_CASE("material resolve: shading matches a CPU reference over roughness and 
   draw.visibility = vis.address;
   draw.width = k_size;
   draw.height = k_size;
+  gfx::ClusterDrawParams draw_below = draw;
+  draw_below.view_proj = view_proj_below;
+  draw_below.visibility = vis_below.address;
 
   const Vec4 sky{0.2f, 0.3f, 0.4f, 1.0f};
   const Vec3 sun_dir = normalize(Vec3{0.0f, 1.0f, 0.45f});  // 24 degrees off the quad's normal
@@ -230,12 +246,27 @@ TEST_CASE("material resolve: shading matches a CPU reference over roughness and 
   blocks[11].sun = Vec4{0.0f, 1.0f, 0.0f, 1.0f};
   blocks[11].sky = Vec4{};
   blocks[11].light_count = 0;
+  // Blocks 12..14: the roughest dielectric seen from below, facing the ground. Nothing above the
+  // quad reaches it — the sun and the point light are both behind it — so what lights it is the
+  // hemisphere's lower half alone: the ground lit by the sun and the sky. 12 is the default,
+  // neutral ground; 13 a sand-coloured one; 14 no ground at all, which must leave it black.
+  const Vec4 sand{0.84f, 0.69f, 0.47f, 0.0f};
+  for (u32 i = k_below; i < k_blocks; ++i) {
+    blocks[i] = base;
+    blocks[i].cluster_materials = cluster_materials.address + 3 * sizeof(u32);
+    blocks[i].camera = Vec4{eye_below, 0.0f};
+    blocks[i].view_proj = view_proj_below;
+    blocks[i].visibility = vis_below.address;
+  }
+  blocks[k_below + 1].ground = sand;
+  blocks[k_below + 2].ground = Vec4{};
   u64 block_address[k_blocks];
   for (u32 i = 0; i < k_blocks; ++i)
     block_address[i] = params.address + i * sizeof(gfx::ResolveParams);
 
   gfx::RenderGraph graph(device);
   const gfx::RgBuffer rg_vis = graph.import_buffer("vis", vis);
+  const gfx::RgBuffer rg_vis_below = graph.import_buffer("vis below", vis_below);
   const gfx::RgBuffer rg_host = graph.import_buffer("host", host_color);
   gfx::RgImage targets[k_blocks];
   for (u32 i = 0; i < k_blocks; ++i) {
@@ -245,9 +276,13 @@ TEST_CASE("material resolve: shading matches a CPU reference over roughness and 
   }
   graph.add_pass(
       "clear", gfx::PassKind::Transfer,
-      [&](gfx::PassBuilder& b) { b.write(rg_vis, gfx::Access::TransferWrite); },
+      [&](gfx::PassBuilder& b) {
+        b.write(rg_vis, gfx::Access::TransferWrite);
+        b.write(rg_vis_below, gfx::Access::TransferWrite);
+      },
       [&](gfx::CommandList cb, gfx::RenderGraph&) {
         cb.fill_buffer(vis.buffer, 0, gfx::k_whole_size, 0);
+        cb.fill_buffer(vis_below.buffer, 0, gfx::k_whole_size, 0);
       });
   graph.add_pass(
       "visibility", gfx::PassKind::Raster,
@@ -256,13 +291,20 @@ TEST_CASE("material resolve: shading matches a CPU reference over roughness and 
         b.write(rg_vis, gfx::Access::FragmentReadWrite);
       },
       [&](gfx::CommandList cb, gfx::RenderGraph&) { raster.draw(cb, bindless, draw, 1); });
+  graph.add_pass(
+      "visibility below", gfx::PassKind::Raster,
+      [&](gfx::PassBuilder& b) {
+        b.render_area(k_size, k_size);
+        b.write(rg_vis_below, gfx::Access::FragmentReadWrite);
+      },
+      [&](gfx::CommandList cb, gfx::RenderGraph&) { raster.draw(cb, bindless, draw_below, 1); });
   for (u32 i = 0; i < k_blocks; ++i) {
     graph.add_pass(
         "resolve", gfx::PassKind::Raster,
         [&, i](gfx::PassBuilder& b) {
           gfx::ClearColor clear{};
           b.color_attachment(targets[i], gfx::LoadOp::Clear, clear);
-          b.read(rg_vis, gfx::Access::FragmentRead);
+          b.read(i < k_below ? rg_vis : rg_vis_below, gfx::Access::FragmentRead);
         },
         [&, i](gfx::CommandList cb, gfx::RenderGraph&) {
           cb.bind_pipeline(gfx::BindPoint::Graphics, resolve_pipeline);
@@ -320,6 +362,9 @@ TEST_CASE("material resolve: shading matches a CPU reference over roughness and 
   near_light.intensity = static_cast<double>(light_table[0].color_intensity.w);
   const ref::Dvec3 sky_ref = ref::dvec3(sky);
   const ref::Dvec3 sun_ref = ref::dvec3(sun_dir);
+  // The default ground, which the quad seen from above never looks at: its normal is straight up,
+  // where the hemisphere is the sky alone.
+  const ref::Dvec3 ground_ref = ref::dvec3(base.ground);
 
   // Every material of the sweep: the center pixel against the reference, within 2 of 255.
   const u32 cx = k_size / 2;
@@ -327,7 +372,8 @@ TEST_CASE("material resolve: shading matches a CPU reference over roughness and 
   int worst = 0;
   for (u32 i = 0; i < k_materials; ++i) {
     const ref::Surface s = surface_at(cx, cy, material_table[i]);
-    const ref::Dvec3 linear = ref::shade(s, sun_ref, 1.0, sky_ref, &near_light, 1, ref::Dvec3{});
+    const ref::Dvec3 linear =
+        ref::shade(s, sun_ref, 1.0, sky_ref, ground_ref, &near_light, 1, ref::Dvec3{});
     const u8 expect[3] = {ref::display(linear.x), ref::display(linear.y), ref::display(linear.z)};
     const u8* got = pixel(i, cx, cy);
     int worst_here = 0;
@@ -355,7 +401,8 @@ TEST_CASE("material resolve: shading matches a CPU reference over roughness and 
     const u32 ox = cx + k_size / 4;
     const u32 oy = cy + k_size / 8;
     const ref::Surface s = surface_at(ox, oy, material_table[3]);
-    const ref::Dvec3 linear = ref::shade(s, sun_ref, 1.0, sky_ref, &near_light, 1, ref::Dvec3{});
+    const ref::Dvec3 linear =
+        ref::shade(s, sun_ref, 1.0, sky_ref, ground_ref, &near_light, 1, ref::Dvec3{});
     const u8* got = pixel(3, ox, oy);
     for (u32 c = 0; c < 3; ++c) {
       const u8 expect = ref::display(c == 0 ? linear.x : (c == 1 ? linear.y : linear.z));
@@ -410,8 +457,8 @@ TEST_CASE("material resolve: shading matches a CPU reference over roughness and 
   head_on.albedo = ref::Dvec3{1.0, 1.0, 1.0};
   head_on.roughness = 1.0;
   head_on.metallic = 0.0;
-  const ref::Dvec3 head_on_linear =
-      ref::shade(head_on, ref::Dvec3{0.0, 1.0, 0.0}, 1.0, ref::Dvec3{}, nullptr, 0, ref::Dvec3{});
+  const ref::Dvec3 head_on_linear = ref::shade(head_on, ref::Dvec3{0.0, 1.0, 0.0}, 1.0,
+                                               ref::Dvec3{}, ground_ref, nullptr, 0, ref::Dvec3{});
   CHECK(std::abs(head_on_linear.x - 0.30876059) < 1.0e-7);
   CHECK(ref::display(head_on_linear.x) == 149);
   const u8* white = pixel(11, cx, cy);
@@ -423,6 +470,68 @@ TEST_CASE("material resolve: shading matches a CPU reference over roughness and 
   MESSAGE("white dielectric, roughness 1, head-on unit sun: reference "
           << head_on_linear.x << " linear, " << int{ref::display(head_on_linear.x)}
           << " displayed; gpu " << int{white[0]} << "," << int{white[1]} << "," << int{white[2]});
+
+  // **The ground.** Seen from below, the quad faces straight down: the sun and the point light are
+  // both behind it, so the hemisphere's lower half — the ground's albedo lit by the sun's
+  // irradiance on a horizontal surface and by the sky's zenith — is all that lights it. Every
+  // covered pixel is compared against the reference, a neutral ground and a sand-coloured one.
+  auto below_at = [&](u32 x, u32 y) {
+    ref::Surface s = surface_at(x, y, material_table[3]);
+    s.position = ref::pixel_on_plane(ref::dvec3(eye_below), ref::dvec3(target), ref::dvec3(up),
+                                     static_cast<double>(fov_y), 1.0, k_size, k_size, x, y, 0.0);
+    s.normal = ref::Dvec3{0.0, -1.0, 0.0};
+    s.view = ref::normalize(ref::dvec3(eye_below) - s.position);
+    return s;
+  };
+  u32 below_covered = 0;
+  int below_worst = 0;
+  for (u32 y = 0; y < k_size; ++y) {
+    for (u32 x = 0; x < k_size; ++x) {
+      if (is_sky(pixel(k_below, x, y))) continue;
+      ++below_covered;
+      for (u32 b = k_below; b < k_below + 2; ++b) {
+        const ref::Dvec3 linear =
+            ref::shade(below_at(x, y), sun_ref, 1.0, sky_ref, ref::dvec3(blocks[b].ground),
+                       &near_light, 1, ref::Dvec3{});
+        const u8 expect[3] = {ref::display(linear.x), ref::display(linear.y),
+                              ref::display(linear.z)};
+        const u8* got = pixel(b, x, y);
+        int here = 0;
+        for (u32 c = 0; c < 3; ++c)
+          here = std::max(here, std::abs(int{got[c]} - int{expect[c]}));
+        below_worst = std::max(below_worst, here);
+        if (here > 2) {
+          CHECK_MESSAGE(here <= 2, "facing the ground, block "
+                                       << b << " at " << x << "," << y << ": gpu " << int{got[0]}
+                                       << "," << int{got[1]} << "," << int{got[2]} << " reference "
+                                       << int{expect[0]} << "," << int{expect[1]} << ","
+                                       << int{expect[2]});
+        }
+      }
+    }
+  }
+  CHECK(below_covered > k_size * k_size / 3);
+  worst = std::max(worst, below_worst);
+  // The sand ground is warmer than the neutral one — red over blue — by what its albedo says.
+  const u8* grey_ground = pixel(k_below, cx, cy);
+  const u8* sand_ground = pixel(k_below + 1, cx, cy);
+  CHECK(int{sand_ground[0]} - int{sand_ground[2]} > int{grey_ground[0]} - int{grey_ground[2]} + 10);
+  // With no ground at all nothing lights a face turned to it: every covered pixel is black.
+  u32 lit_without_ground = 0;
+  for (u32 y = 0; y < k_size; ++y) {
+    for (u32 x = 0; x < k_size; ++x) {
+      if (is_sky(pixel(k_below, x, y))) continue;
+      const u8* p = pixel(k_below + 2, x, y);
+      if (p[0] != 0 || p[1] != 0 || p[2] != 0) ++lit_without_ground;
+    }
+  }
+  CHECK(lit_without_ground == 0u);
+  MESSAGE("facing the ground: " << below_covered << " covered pixels, neutral ground gpu "
+                                << int{grey_ground[0]} << "," << int{grey_ground[1]} << ","
+                                << int{grey_ground[2]} << ", sand ground gpu "
+                                << int{sand_ground[0]} << "," << int{sand_ground[1]} << ","
+                                << int{sand_ground[2]} << ", worst " << below_worst
+                                << " of 255; lit with no ground: " << lit_without_ground);
   // The one number to quote for a device: every pixel this case holds to the reference.
   MESSAGE("worst reference-vs-GPU difference over every compared pixel, "
           << std::string(raster.name()) << " path on " << std::string(device.adapter().name) << ": "
@@ -434,8 +543,8 @@ TEST_CASE("material resolve: shading matches a CPU reference over roughness and 
   gfx::destroy_shader_module(device, resolve_module);
   bindless.destroy();
   scene.destroy(device);
-  for (gfx::BufferResource* b : {&host_color, &params, &vis, &lights, &cluster_materials,
-                                 &materials, &triangles, &clusters}) {
+  for (gfx::BufferResource* b : {&host_color, &params, &vis, &vis_below, &lights,
+                                 &cluster_materials, &materials, &triangles, &clusters}) {
     gfx::destroy_buffer(device, *b);
   }
   frames.destroy();
@@ -818,8 +927,8 @@ TEST_CASE("material resolve: ray-traced shadows against the geometry the rasteri
           continue;
         }
         (margin > 0.0 ? shadowed : lit) += 1;
-        const ref::Dvec3 linear =
-            ref::shade(s, sun_ref, 1.0, sky_ref, &light, 1, ref::Dvec3{}, sun_shadowed);
+        const ref::Dvec3 linear = ref::shade(s, sun_ref, 1.0, sky_ref, ref::dvec3(base.ground),
+                                             &light, 1, ref::Dvec3{}, sun_shadowed);
         const u8 expect[3] = {ref::display(linear.x), ref::display(linear.y),
                               ref::display(linear.z)};
         int here = 0;
@@ -1258,8 +1367,9 @@ TEST_CASE("material resolve: cascaded shadow maps against the geometry the raste
         light.intensity = static_cast<double>(light_table[0].color_intensity.w);
         const double margin = quad_margin(s.position, sun_ref, occluder, 1.0e30);
         const bool sun_shadowed = margin > 0.0;
-        const ref::Dvec3 linear =
-            ref::shade(s, sun_ref, 1.0, sky_ref, &light, 1, ref::Dvec3{}, sun_shadowed);
+        // The ground's bounce of the sun stays on a shadowed pixel: it is the ground around it.
+        const ref::Dvec3 linear = ref::shade(s, sun_ref, 1.0, sky_ref, ref::dvec3(base.ground),
+                                             &light, 1, ref::Dvec3{}, sun_shadowed);
         const u8 expect[3] = {ref::display(linear.x), ref::display(linear.y),
                               ref::display(linear.z)};
         int here = 0;

@@ -225,6 +225,7 @@ bool ReferenceRenderer::render(const Camera& camera, const ReferenceSettings& se
   params.camera = Vec4{camera.position, 0.0f};
   params.sky = lighting.sky;
   params.sun = lighting.sun;
+  params.ground = lighting.ground;
   params.accum = accum_.address;
   params.output = output_.address;
   params.coverage = coverage_.address;

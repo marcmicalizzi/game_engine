@@ -77,6 +77,37 @@ float3 brdf_env_specular(float3 f0, float roughness, float n_dot_v) {
   return max(f0 * ab.x + ab.y, float3(0.0));
 }
 
+// ---- the environment: the sky above the horizon, the ground below it ---------------------------
+//
+// The resolve's indirect term sees an environment of two halves, the sky above the horizon and the
+// ground below it (material.slang, `sky_radiance` and `ground_radiance`). Until 2026-09-25 there
+// was no ground: the sky's own ramp ran on past the horizon (0.15 of the sky colour straight down),
+// so a surface turned towards the ground saw a dim blue sky under it
+// (docs/experiments/third-interactive-session-2026-09-25.md, whose dunes asked for this).
+
+// The radiance of the ground: a Lambertian plane of albedo `ground_albedo` lit by the sun and the
+// sky, rho * (E_sun / pi + L_sky). E_sun is the sun's irradiance on a horizontal surface,
+// `sun_intensity * max(sun_dir.y, 0)`, which the Lambert lobe turns into radiance by dividing by
+// pi; `sky` is the sky's radiance, which is also the ambient an up-facing surface takes. So the
+// ground is what the resolve itself draws for a lit horizontal patch of that albedo, less its
+// Fresnel and its specular lobe. **No shadow**: it stands for the ground *around* the point, which
+// the sun lights whether or not the point itself is in shade — that is the whole reason the term
+// exists — and a shadowed pixel therefore keeps it (the resolve's sun-shadowed pixels are the model
+// with the sun's direct term removed, the ground's bounce of it included).
+float3 brdf_ground_radiance(float3 ground_albedo, float3 sun_dir, float sun_intensity,
+                            float3 sky) {
+  return ground_albedo * (sun_intensity * max(sun_dir.y, 0.0) / k_brdf_pi + sky);
+}
+
+// The hemisphere ambient: the mean radiance, weighted by the cosine, that a surface of normal n
+// receives from an environment that is `sky` above the horizon and `ground` below it, each uniform.
+// The share of the cosine lobe above the horizon is exactly (1 + n.y) / 2 — the sky view factor of
+// a plane tilted by acos(n.y) — so the blend is exact for two uniform halves: a face turned up sees
+// the sky alone, a vertical one half of each, and one turned straight down the ground alone.
+float3 brdf_hemisphere_ambient(float3 sky, float3 ground, float normal_y) {
+  return lerp(ground, sky, clamp(normal_y * 0.5 + 0.5, 0.0, 1.0));
+}
+
 // The BSDF for one incident direction, without the cosine: diffuse plus specular, per steradian.
 float3 brdf_eval(BrdfSurface s, float3 light_dir) {
   const float n_dot_l = dot(s.normal, light_dir);

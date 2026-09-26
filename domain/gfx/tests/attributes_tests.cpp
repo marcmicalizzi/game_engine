@@ -99,6 +99,7 @@ TEST_CASE("material resolve: vertex normals steer the shading and textures sampl
   REQUIRE(gfx::upload_buffer(device, &one, sizeof(one), k_storage, textured_index, &error));
 
   constexpr u32 k_size = 128;
+  constexpr u32 k_blocks = 4;
   const Vec3 eye{0.0f, 10.0f, 0.0f};
   const Vec3 target{};
   const Vec3 up{0.0f, 0.0f, -1.0f};
@@ -112,11 +113,11 @@ TEST_CASE("material resolve: vertex normals steer the shading and textures sampl
       device, vis_bytes,
       k_storage | gfx::BufferUsage::ShaderDeviceAddress | gfx::BufferUsage::TransferDst, false, vis,
       &error));
-  REQUIRE(gfx::create_buffer(device, sizeof(gfx::ResolveParams) * 3,
+  REQUIRE(gfx::create_buffer(device, sizeof(gfx::ResolveParams) * k_blocks,
                              k_storage | gfx::BufferUsage::ShaderDeviceAddress, true, params,
                              &error));
-  REQUIRE(gfx::create_buffer(device, u64{k_size} * k_size * 4 * 3, gfx::BufferUsage::TransferDst,
-                             true, host_color, &error));
+  REQUIRE(gfx::create_buffer(device, u64{k_size} * k_size * 4 * k_blocks,
+                             gfx::BufferUsage::TransferDst, true, host_color, &error));
 
   gfx::FrameContext frames;
   REQUIRE(frames.create(device, 2, &error));
@@ -165,7 +166,9 @@ TEST_CASE("material resolve: vertex normals steer the shading and textures sampl
   base.attributes = attributes.address;
   base.width = k_size;
   base.height = k_size;
-  // Block 0: shaded, untextured. Block 1: normals. Block 2: shaded with the texture.
+  // Block 0: shaded, untextured. Block 1: normals. Block 2: shaded with the texture. Block 3:
+  // block 0 over a sand-coloured ground instead of the neutral default — the tilted normal sees
+  // (1 - cos 45°) / 2 of its cosine lobe below the horizon, and that share is the ground's.
   auto* blocks = static_cast<gfx::ResolveParams*>(params.mapped);
   blocks[0] = base;
   blocks[0].mode = static_cast<u32>(gfx::ResolveMode::Shaded);
@@ -174,14 +177,17 @@ TEST_CASE("material resolve: vertex normals steer the shading and textures sampl
   blocks[2] = base;
   blocks[2].mode = static_cast<u32>(gfx::ResolveMode::Shaded);
   blocks[2].cluster_materials = textured_index.address;
-  const u64 block_address[3] = {params.address, params.address + sizeof(gfx::ResolveParams),
-                                params.address + 2 * sizeof(gfx::ResolveParams)};
+  blocks[3] = blocks[0];
+  blocks[3].ground = Vec4{0.84f, 0.69f, 0.47f, 0.0f};
+  u64 block_address[k_blocks];
+  for (u32 i = 0; i < k_blocks; ++i)
+    block_address[i] = params.address + i * sizeof(gfx::ResolveParams);
 
   gfx::RenderGraph graph(device);
   const gfx::RgBuffer rg_vis = graph.import_buffer("vis", vis);
   const gfx::RgBuffer rg_host = graph.import_buffer("host", host_color);
-  gfx::RgImage targets[3];
-  for (u32 i = 0; i < 3; ++i) {
+  gfx::RgImage targets[k_blocks];
+  for (u32 i = 0; i < k_blocks; ++i) {
     targets[i] = graph.create_image(
         "resolved", {k_size, k_size, gfx::Format::R8G8B8A8Unorm,
                      gfx::ImageUsage::ColorAttachment | gfx::ImageUsage::TransferSrc});
@@ -199,7 +205,7 @@ TEST_CASE("material resolve: vertex normals steer the shading and textures sampl
         b.write(rg_vis, gfx::Access::FragmentReadWrite);
       },
       [&](gfx::CommandList cb, gfx::RenderGraph&) { raster.draw(cb, bindless, draw, 1); });
-  for (u32 i = 0; i < 3; ++i) {
+  for (u32 i = 0; i < k_blocks; ++i) {
     graph.add_pass(
         "resolve", gfx::PassKind::Raster,
         [&, i](gfx::PassBuilder& b) {
@@ -218,12 +224,12 @@ TEST_CASE("material resolve: vertex normals steer the shading and textures sampl
   graph.add_pass(
       "readback", gfx::PassKind::Transfer,
       [&](gfx::PassBuilder& b) {
-        for (u32 i = 0; i < 3; ++i)
+        for (u32 i = 0; i < k_blocks; ++i)
           b.read(targets[i], gfx::Access::TransferRead);
         b.write(rg_host, gfx::Access::TransferWrite);
       },
       [&](gfx::CommandList cb, gfx::RenderGraph& g) {
-        for (u32 i = 0; i < 3; ++i) {
+        for (u32 i = 0; i < k_blocks; ++i) {
           VkBufferImageCopy region{};
           region.bufferOffset = u64{k_size} * k_size * 4 * i;
           region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
@@ -244,7 +250,8 @@ TEST_CASE("material resolve: vertex normals steer the shading and textures sampl
   };
   // The reference surface at a pixel: the point the resolve reconstructs on the quad's plane,
   // the tilted vertex normal (the same at every vertex, so interpolation cannot change it), the
-  // view from there, and the albedo the material and the texture produce together.
+  // view from there, and the albedo the material and the texture produce together, under the
+  // block's own ground.
   int worst = 0;
   auto expect_pixel = [&](u32 image, u32 x, u32 y, Vec3 albedo, const std::string& what) {
     ref::Surface s;
@@ -256,7 +263,8 @@ TEST_CASE("material resolve: vertex normals steer the shading and textures sampl
     s.roughness = static_cast<double>(material_set[0].albedo.w);
     s.metallic = 0.0;
     const ref::Dvec3 linear =
-        ref::shade(s, ref::dvec3(sun_dir), 1.0, ref::dvec3(sky), nullptr, 0, ref::Dvec3{});
+        ref::shade(s, ref::dvec3(sun_dir), 1.0, ref::dvec3(sky), ref::dvec3(blocks[image].ground),
+                   nullptr, 0, ref::Dvec3{});
     const u8 expect[3] = {ref::display(linear.x), ref::display(linear.y), ref::display(linear.z)};
     const u8* p = pixel(image, x, y);
     for (u32 c = 0; c < 3; ++c)
@@ -282,6 +290,17 @@ TEST_CASE("material resolve: vertex normals steer the shading and textures sampl
                          std::abs(int{normal[2]} - int{half_up}) <= 2;
   CHECK_MESSAGE(normal_ok,
                 "normal " << int{normal[0]} << "," << int{normal[1]} << "," << int{normal[2]});
+
+  // The ground's share: the same tilted surface over a sand-coloured ground is the reference with
+  // that ground, and it is not the neutral ground's picture — a seventh of the tilted normal's
+  // cosine lobe is below the horizon, and it lands on the pixel.
+  expect_pixel(3, cx, cy, material_set[0].albedo.xyz(), "tilted normal over sand");
+  const u8* neutral = pixel(0, cx, cy);
+  const u8* sand = pixel(3, cx, cy);
+  CHECK(int{sand[0]} - int{neutral[0]} >= 4);
+  MESSAGE("tilted normal: neutral ground gpu "
+          << int{neutral[0]} << "," << int{neutral[1]} << "," << int{neutral[2]}
+          << ", sand ground gpu " << int{sand[0]} << "," << int{sand[1]} << "," << int{sand[2]});
 
   // The texture: u grows with +x (screen right); v grows with +z, which this camera (looking down
   // -y with -z as up) maps to screen down. Sample a quarter of the quad's footprint from center.
@@ -574,8 +593,8 @@ TEST_CASE("material resolve: metallic-roughness and normal maps") {
     s.albedo = ref::dvec3(base_color);
     s.roughness = roughness;
     s.metallic = metallic;
-    const ref::Dvec3 linear =
-        ref::shade(s, ref::dvec3(sun_dir), 1.0, ref::dvec3(sky), nullptr, 0, ref::Dvec3{});
+    const ref::Dvec3 linear = ref::shade(s, ref::dvec3(sun_dir), 1.0, ref::dvec3(sky),
+                                         ref::dvec3(base.ground), nullptr, 0, ref::Dvec3{});
     const u8 expect[3] = {ref::display(linear.x), ref::display(linear.y), ref::display(linear.z)};
     const u8* p = pixel(image, x, y);
     int here = 0;
@@ -669,9 +688,9 @@ TEST_CASE("material resolve: metallic-roughness and normal maps") {
 //      and nothing else: the reference's shade() with `occlusion_of(texel, 0.75)`.
 //   3. **The occlusion view** (ResolveMode::Occlusion) returns 1 + strength * (r - 1) as a byte,
 //      unencoded.
-//   4, 5. **No indirect term, no difference.** With the sky at zero the resolve has no indirect
-//      light, so the occluded material and the same material without its map are the same
-//      picture byte for byte: occlusion never touches the sun.
+//   4, 5. **No indirect term, no difference.** With the sky and the ground's albedo at zero the
+//      resolve has no indirect light, so the occluded material and the same material without its
+//      map are the same picture byte for byte: occlusion never touches the sun.
 //   6. **A quarter turn of KHR_texture_transform** on a 2x2 checker read through a repeating,
 //      nearest sampler: each quadrant shows the texel `gfx::set_uv_transform`'s matrix sends it
 //      to, which pins the GPU's arithmetic to the CPU's and the rotation's direction to the one
@@ -900,7 +919,10 @@ TEST_CASE("material resolve: emissive and occlusion maps, and the UV transform")
   struct Block {
     u32 material;
     bool lit;  // the sun; off, and with no sky, the frame has no light at all
-    bool sky;  // the sky hemisphere, the resolve's whole indirect term
+    // The hemisphere, the resolve's whole indirect term: the sky, and the ground it and the sun
+    // light. Off is both at zero — a ground with no albedo — or the sun would still reach the
+    // indirect term through the ground's bounce of it.
+    bool sky;
     gfx::ResolveMode mode;
   };
   const Block block_desc[k_blocks] = {
@@ -920,7 +942,10 @@ TEST_CASE("material resolve: emissive and occlusion maps, and the UV transform")
     blocks[i].cluster_materials = cluster_materials.address + block_desc[i].material * sizeof(u32);
     blocks[i].mode = static_cast<u32>(block_desc[i].mode);
     if (!block_desc[i].lit) blocks[i].sun = Vec4{sun_dir, 0.0f};
-    if (!block_desc[i].sky) blocks[i].sky = Vec4{0.0f, 0.0f, 0.0f, 1.0f};
+    if (!block_desc[i].sky) {
+      blocks[i].sky = Vec4{0.0f, 0.0f, 0.0f, 1.0f};
+      blocks[i].ground = Vec4{};
+    }
     block_address[i] = params.address + i * sizeof(gfx::ResolveParams);
   }
 
@@ -1015,8 +1040,9 @@ TEST_CASE("material resolve: emissive and occlusion maps, and the UV transform")
     s.roughness = static_cast<double>(k_roughness);
     s.metallic = 0.0;
     const ref::Dvec3 sky_used = block.sky ? ref::dvec3(sky) : ref::Dvec3{};
+    const ref::Dvec3 ground_used = block.sky ? ref::dvec3(base.ground) : ref::Dvec3{};
     const ref::Dvec3 linear = ref::shade(s, ref::dvec3(sun_dir), block.lit ? 1.0 : 0.0, sky_used,
-                                         nullptr, 0, emissive, false, occlusion);
+                                         ground_used, nullptr, 0, emissive, false, occlusion);
     const u8 expect[3] = {ref::display(linear.x), ref::display(linear.y), ref::display(linear.z)};
     expect_bytes(image, x, y, expect, 2, what);
   };
@@ -1052,8 +1078,8 @@ TEST_CASE("material resolve: emissive and occlusion maps, and the UV transform")
   // And the occlusion darkens the lit picture where it is shut and not where it is open.
   CHECK(int{pixel(2, qx[3], qy[3])[2]} < int{pixel(2, qx[0], qy[0])[2]});
 
-  // 4 and 5: with no sky there is no indirect term, and the occluded material's picture is the
-  // unoccluded one's, byte for byte.
+  // 4 and 5: with no sky and no ground there is no indirect term, and the occluded material's
+  // picture is the unoccluded one's, byte for byte.
   int no_indirect = 0;
   for (u32 y = 0; y < k_size; ++y) {
     for (u32 x = 0; x < k_size; ++x) {
