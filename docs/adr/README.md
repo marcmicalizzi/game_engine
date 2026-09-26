@@ -49,3 +49,4 @@ Numbered, dated, and immutable once accepted. To change a decision, write a new 
 | [0043](0043-dunes-as-a-function-of-time.md) | The desert's dunes are a function of time; the player's changes are a bounded overlay with one saturating feedback | Proposed |
 | [0044](0044-island-city-plan-and-building-grammar.md) | Island City is a whole-island plan made once, with buildings generated per lot as descriptions, proxies first | Proposed |
 | [0045](0045-routines-are-data-with-a-closed-form.md) | Resident routines are data with a closed form, and their tiers are the capability's own pass | Proposed |
+| [0046](0046-scene-generators-register-themselves.md) | Scene generators register themselves; the scene reader and the world ring look them up by name (supersedes 0037 when built) | Proposed |
