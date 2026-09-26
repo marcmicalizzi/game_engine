@@ -9,9 +9,13 @@
 //   tissue info <file.tissue>                       the header, every section (known or not) and
 //                                                   the definition's outline
 //   tissue validate <file.tissue|interchange.json>  every validator row; exit 1 on a failing error
+//       --expect <expected.json>                    the fixture mode: exit 0 exactly when the rows
+//                                                   that fail or are skipped are the declared ones
+//       --write-expect <expected.json>              write the declaration this run would match
 //   tissue report <file.tissue|interchange.json>    the rows and every number they stand on
-//   tissue example <directory>                      the synthetic definition as an interchange and
-//                                                   a container: a worked example of the format
+//   tissue example <directory>                      the synthetic definition, and its ten-node
+//                                                   reference-body variant, as interchanges and
+//                                                   containers: worked examples of the format
 #include "content_commands.h"
 
 #include <core/base/types.h>
@@ -23,6 +27,7 @@
 
 #if ENGINE_CONTENT_TISSUE
 #include <core/containers/vector.h>
+#include <domain/tissue/expect.h>
 #include <domain/tissue/synthetic.h>
 #include <domain/tissue/tissue_file.h>
 #include <domain/tissue/validate.h>
@@ -44,11 +49,18 @@ const char* k_tissue_usage =
     "  validate <file.tissue|interchange.json>  every validator row as one JSON line; exit 1 when\n"
     "                                           an error row fails\n"
     "      --no-modes   skip transferring each binding under the other two normal modes\n"
+    "      --expect <expected.json>\n"
+    "                   the fixture mode: exit 0 exactly when the rows that fail or are skipped\n"
+    "                   are the ones the file declares, whatever their severity; every\n"
+    "                   difference is printed to stderr and in the line's \"expect\"\n"
+    "      --write-expect <expected.json>\n"
+    "                   write the declaration this run would match, for review; exit 0\n"
     "  report <file.tissue|interchange.json>    the rows and the numbers they stand on\n"
     "      --no-modes   as above\n"
     "  example <directory>                      write the synthetic definition as\n"
-    "                                           <directory>/synthetic.json with its blocks, and\n"
-    "                                           <directory>/synthetic.tissue\n";
+    "                                           <directory>/synthetic.json with its blocks and\n"
+    "                                           <directory>/synthetic.tissue, and its ten-node\n"
+    "                                           reference body as synthetic-quadratic.*\n";
 
 int usage(const char* message) {
   if (message != nullptr) std::fprintf(stderr, "engine-content tissue: %s\n", message);
@@ -159,35 +171,81 @@ int info_command(const std::string& path) {
   return k_exit_ok;
 }
 
-int validate_command(const std::string& path, bool report, bool modes) {
-  tissue::TissueFile file;
+struct ValidateArgs {
+  bool report = false;
+  bool modes = true;
+  std::string expect;        // --expect: the fixture mode's declaration
+  std::string write_expect;  // --write-expect: where to write the declaration this run matches
+};
+
+int validate_command(const std::string& path, const ValidateArgs& args) {
+  // The declaration is read before the definition is validated, so a broken one costs nothing.
+  tissue::TissueExpectation expectation;
   std::string error;
+  if (!args.expect.empty() && !tissue::read_expectation(args.expect, expectation, &error))
+    return failed(args.expect + ": " + error);
+  tissue::TissueFile file;
   if (!load(path, file, error)) return failed(path + ": " + error);
   tissue::ValidateOptions options;
-  options.compare_modes = modes;
+  options.compare_modes = args.modes;
   tissue::TissueReport result;
   tissue::validate_tissue(file, options, result);
-  JsonValue out = report ? tissue::report_json(result) : tissue::rows_json(result);
+  JsonValue out = args.report ? tissue::report_json(result) : tissue::rows_json(result);
   out.set("file", JsonValue(path));
+  if (!args.write_expect.empty()) {
+    const tissue::TissueExpectation written = tissue::expectation_from_report(
+        result, "written by engine-content tissue validate --write-expect from " + path +
+                    ": review it before it is a fixture's declaration");
+    const io::Status status =
+        io::write_file_atomic(args.write_expect, tissue::write_expectation(written));
+    if (status != io::Status::Ok)
+      return failed("cannot write '" + args.write_expect + "': " + io::status_name(status));
+    out.set("expect_written", JsonValue(args.write_expect));
+    out.set("expect_failures", JsonValue(static_cast<u64>(written.failures.size())));
+    print_json(out);
+    return k_exit_ok;
+  }
+  if (!args.expect.empty()) {
+    tissue::ExpectationResult compared;
+    tissue::compare_expectation(result, expectation, compared);
+    JsonValue e = tissue::expectation_json(compared);
+    e.set("file", JsonValue(args.expect));
+    out.set("expect", std::move(e));
+    print_json(out);
+    const std::string text = tissue::expectation_text(compared);
+    if (!text.empty()) std::fputs(text.c_str(), stderr);
+    return compared.matched() ? k_exit_ok : k_exit_error;
+  }
   print_json(out);
-  if (!report && result.errors > 0) return k_exit_error;
+  if (!args.report && result.errors > 0) return k_exit_error;
   return k_exit_ok;
 }
 
 int example_command(const std::string& directory) {
-  const tissue::SyntheticTissue synthetic = tissue::make_synthetic_tissue();
   std::string error;
   if (io::make_directories(directory) != io::Status::Ok)
     return failed("cannot create '" + directory + "'");
-  if (!tissue::export_interchange(synthetic.file, directory, "synthetic", &error))
-    return failed(error);
-  const std::string container = io::join_path(directory, "synthetic.tissue");
-  if (!tissue::write_tissue_file(container, synthetic.file, &error)) return failed(error);
   JsonValue out = JsonValue::object();
-  out.set("interchange", JsonValue(io::join_path(directory, "synthetic.json")));
-  out.set("container", JsonValue(container));
-  out.set("blocks", JsonValue(static_cast<u64>(synthetic.file.blocks.size())));
-  out.set("definition", outline(synthetic.file.definition));
+  for (const bool quadratic : {false, true}) {
+    tissue::SyntheticOptions options;
+    options.quadratic = quadratic;
+    const tissue::SyntheticTissue synthetic = tissue::make_synthetic_tissue(options);
+    const std::string stem = quadratic ? "synthetic-quadratic" : "synthetic";
+    if (!tissue::export_interchange(synthetic.file, directory, stem, &error)) return failed(error);
+    const std::string container = io::join_path(directory, stem + ".tissue");
+    if (!tissue::write_tissue_file(container, synthetic.file, &error)) return failed(error);
+    JsonValue e = JsonValue::object();
+    e.set("interchange", JsonValue(io::join_path(directory, stem + ".json")));
+    e.set("container", JsonValue(container));
+    e.set("blocks", JsonValue(static_cast<u64>(synthetic.file.blocks.size())));
+    e.set("definition", outline(synthetic.file.definition));
+    if (quadratic) {
+      out.set("quadratic", std::move(e));
+    } else {
+      for (auto [key, value] : e.as_object())
+        out.set(key, value);
+    }
+  }
   print_json(out);
   return k_exit_ok;
 }
@@ -206,11 +264,14 @@ int tissue_command(int argc, char** argv) {
 #if ENGINE_CONTENT_TISSUE
   std::string positional[2];
   u32 count = 0;
-  bool modes = true;
+  ValidateArgs args;
   for (int i = 3; i < argc; ++i) {
     const std::string_view a = argv[i];
     if (a == "--no-modes") {
-      modes = false;
+      args.modes = false;
+    } else if (a == "--expect" || a == "--write-expect") {
+      if (i + 1 >= argc) return usage("--expect and --write-expect take a path");
+      (a == "--expect" ? args.expect : args.write_expect) = argv[++i];
     } else if (!a.empty() && a[0] == '-') {
       return usage("unknown option");
     } else if (count < 2) {
@@ -219,14 +280,21 @@ int tissue_command(int argc, char** argv) {
       return usage("too many arguments");
     }
   }
+  if (sub != "validate" && (!args.expect.empty() || !args.write_expect.empty()))
+    return usage("--expect and --write-expect belong to validate");
+  if (!args.expect.empty() && !args.write_expect.empty())
+    return usage("--expect compares with a declaration and --write-expect writes one: not both");
   if (sub == "import") {
     if (count != 2) return usage("import takes an interchange JSON and an output path");
     return import_command(positional[0], positional[1]);
   }
   if (count != 1) return usage("the command takes one path");
   if (sub == "info") return info_command(positional[0]);
-  if (sub == "validate") return validate_command(positional[0], false, modes);
-  if (sub == "report") return validate_command(positional[0], true, modes);
+  if (sub == "validate") return validate_command(positional[0], args);
+  if (sub == "report") {
+    args.report = true;
+    return validate_command(positional[0], args);
+  }
   if (sub == "example") return example_command(positional[0]);
   return usage("unknown tissue command");
 #else

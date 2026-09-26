@@ -98,6 +98,56 @@ TEST_CASE("tissue: example, import, info, validate and report, one JSON line eac
   CHECK(numbers->find("regions")->find("slab")->find("states")->find("pressed") != nullptr);
 }
 
+TEST_CASE("tissue: the ten-node example, and the fixture mode's contract") {
+  engine::test::TempDir tmp("content_tissue_fixture");
+  const std::string dir = tmp.file("example");
+  Run run = content({"tissue", "example", dir});
+  REQUIRE(run.exit_code == 0);
+  const std::string body = dir + "/synthetic-quadratic.tissue";
+  REQUIRE(io::exists(body));
+  CHECK(io::exists(dir + "/synthetic-quadratic.json"));
+
+  // A reference body of ten-node cells: it validates, and its one failure is the cover warning.
+  run = content({"tissue", "validate", body, "--no-modes"});
+  INFO(run.output);
+  CHECK(run.exit_code == 0);
+  CHECK(count(run.result, "errors") == 0);
+  CHECK(count(run.result, "warnings") == 1);
+
+  // The declaration a first run matches, written for review; then the fixture mode reads it.
+  const std::string declared = tmp.file("expected.json");
+  run = content({"tissue", "validate", body, "--no-modes", "--write-expect", declared});
+  CHECK(run.exit_code == 0);
+  CHECK(count(run.result, "expect_failures") == 1);
+  run = content({"tissue", "validate", body, "--no-modes", "--expect", declared});
+  CHECK(run.exit_code == 0);
+  const JsonValue* expect = run.result.find("expect");
+  REQUIRE(expect != nullptr);
+  bool matched = false;
+  expect->find("matched")->get_bool(matched);
+  CHECK(matched);
+
+  // The failure left out of the declaration: a regression, exit 1, the difference in the line.
+  std::string text;
+  REQUIRE(io::read_file(declared, text) == io::Status::Ok);
+  JsonValue json;
+  REQUIRE(parse_json(text, json).ok);
+  json.set("failures", JsonValue::array());
+  REQUIRE(io::write_file(declared, write_json(json)) == io::Status::Ok);
+  run = content({"tissue", "validate", body, "--no-modes", "--expect", declared});
+  CHECK(run.exit_code == 1);
+  REQUIRE(run.result.find("expect") != nullptr);
+  CHECK(run.result.find("expect")->find("differences")->size() == 1);
+
+  // A declaration that is not one is refused before anything is validated; the flags are
+  // validate's.
+  REQUIRE(io::write_file(declared, "{\"format\": \"something else\", \"failures\": []}") ==
+          io::Status::Ok);
+  CHECK(content({"tissue", "validate", body, "--expect", declared}).exit_code == 1);
+  CHECK(content({"tissue", "report", body, "--expect", declared}).exit_code == 2);
+  CHECK(content({"tissue", "validate", body, "--expect"}).exit_code == 2);
+}
+
 TEST_CASE("tissue: a damaged block and a broken contract are refused") {
   engine::test::TempDir tmp("content_tissue_refusals");
   const std::string dir = tmp.file("example");

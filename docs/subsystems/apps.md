@@ -179,7 +179,7 @@ engine-content info <file.clusters|file.tex|file.clip>
 engine-content stats <file.clusters>
 engine-content tissue import <interchange.json> <out.tissue>
 engine-content tissue info <file.tissue>
-engine-content tissue validate <file.tissue|interchange.json> [--no-modes]
+engine-content tissue validate <file.tissue|interchange.json> [--no-modes] [--expect <expected.json> | --write-expect <expected.json>]
 engine-content tissue report <file.tissue|interchange.json> [--no-modes]
 engine-content tissue example <directory>
 engine-content limit-dump <control.json> --level <n> --out <dump.json> [--mode <m>]
@@ -296,16 +296,20 @@ engine-content terrain content/test-scenes/desert-dunes/scene.json --tile 0,0 --
 - `validate <file>` runs every validator and prints the rows: `{"errors", "warnings", "rows": [{"id", "subject", "severity", "verdict", "threshold", "value", "witness", "note"}]}`. **Exit 1 when an error row fails**, 0 otherwise, warnings included. It reads a container or, for a path ending `.json`, an interchange directly.
 - `report <file>` prints the rows and every number they stand on (`"numbers"`: by region, frame, binding and state, in millimetres and millilitres), exit 0 whenever the file reads.
 - `--no-modes` skips transferring each binding under the other two normal modes, the one comparison that triples the transfers.
-- `example <directory>` writes the synthetic definition as `synthetic.json` with its blocks and as `synthetic.tissue`: the worked example of the interchange an authoring tool can read field by field.
+- `validate <file> --expect <expected.json>` is **the fixture mode** ([tissue](tissue.md#the-fixture-mode)): the file declares the rows a regression fixture is known not to pass — the authoring side's `astra.tissue.expected-failures.v1`, read as a packet publishes it: `{"format", "match", "failures": [{"id", "subject", "severity", "witness"}], ...}` — and the exit is **0 exactly when the rows that fail or are skipped are those and only those**, by id, subject and severity, whatever the error count. Otherwise 1, with each difference (a declared row that passes, a failure nobody declared, a declared value the row no longer has) as a sentence on stderr and in the line's `"expect"`. A declaration that cannot be read is exit 1 before anything is validated.
+- `validate <file> --write-expect <expected.json>` writes the declaration this run would match, every failing or skipped row with its severity and witness, for review before it becomes a fixture's; exit 0. The two flags belong to `validate` and do not combine; `report` already writes its report as data and takes neither.
+- `example <directory>` writes the synthetic definition as `synthetic.json` with its blocks and as `synthetic.tissue`, and its ten-node reference-body variant as `synthetic-quadratic.json` and `.tissue`: the worked examples of the interchange an authoring tool can read field by field, the second of the `TetrahedralQuadratic` cage kind and the `Reference` role.
 
 ```
 engine-content tissue example scratch/tissue
 engine-content tissue import scratch/tissue/synthetic.json scratch/slab.tissue
 engine-content tissue validate scratch/slab.tissue
 engine-content tissue report scratch/slab.tissue
+engine-content tissue validate scratch/tissue/synthetic-quadratic.tissue --write-expect scratch/expected.json
+engine-content tissue validate scratch/tissue/synthetic-quadratic.tissue --expect scratch/expected.json
 ```
 
-On study019's neutral data, converted once (tissue.md has the table), `validate` returns 0 errors and 3 warnings in about 10 s in `msvc-debug`.
+On study019's neutral data, converted once (tissue.md has the table), `validate` returns 0 errors and 3 warnings in about 10 s in `msvc-debug`. The supine fixtures' ten-node bodies validate in about 21 s, and their packet's published declaration, read by `--expect`, says what tissue.md's table does.
 
 ## engine-content limit-dump: the conformance exchange
 
