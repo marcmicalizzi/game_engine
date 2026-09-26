@@ -1,6 +1,7 @@
 # ADR-0047: The reference games are licensed apart from the engine — Desert Survival's code under GPL-3.0, its assets non-commercial, its title a trademark, in its own repository
 
-- **Status:** Proposed (records the owner's decision of 2026-09-26; becomes Accepted when the owner has read it)
+- **Status:** Proposed
+- **Decided:** by the owner on 2026-09-26; this record becomes Accepted when he has read it
 - **Date:** 2026-09-26
 - **Plan references:** docs/plan/13-reference-consumer-games.md §13.1 and §13.2 (the two reference games and what each qualifies), §13.5 (Desert Survival as the recommended first shippable), docs/plan/12-ai-usage-policy.md (generated content is content), docs/content-generation.md (provenance sidecars). Builds on [ADR-0014](0014-apache-2-license-and-dependency-policy.md) (the engine is Apache-2.0 and its dependencies permissive) and [ADR-0022](0022-consumer-game-order.md) (Desert Survival first).
 - **Docs touched:** [13 §13.1, §13.2, §13.8](../plan/13-reference-consumer-games.md), the root [README](../../README.md) (license section), [content-generation](../content-generation.md) (what a sidecar records).
