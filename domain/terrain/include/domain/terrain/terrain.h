@@ -30,11 +30,14 @@
 //                         `engine-content terrain` report; the scene's fields in scene.schema
 //   [-] scheduler entry   none: the field is a function, evaluated where a tile is built; the
 //                         overlay advances where its tile is held (the world consumer)
-//   [-] render passes     none here: the outputs are what a future pass reads (terrain.md)
+//   [-] render passes     none here: the outputs are what a future pass reads (terrain.md); the
+//                         terrain rings (rings.h) are cluster meshes the renderer draws like any
+//                         other
 //   [x] derived data      the field is `derived`: a tile is a function of its inputs (field_hash)
 //   [-] protocol methods  none yet; `engine-content terrain` is the agents' surface
-//   [x] tunables          terrain.overlay.*, terrain.feedback.* (below)
-//   [x] LOD policy        `Detail` and `detail_for_distance` (dunes.h); the overlay is the coarse
+//   [x] tunables          terrain.overlay.*, terrain.feedback.* (below), terrain.rings.*
+//   (rings.cpp) [x] LOD policy        `Detail` and `detail_for_distance` (dunes.h); the overlay is
+//   the coarse
 //                         CPU grid of 05 §5.13
 //   [x] determinism       k_determinism below
 //   [x] zero cost unused  no linked code; a scene that does not name the generator reads as before
@@ -44,6 +47,8 @@
 #include <domain/terrain/dunes.h>
 #include <domain/terrain/feedback.h>
 #include <domain/terrain/overlay.h>
+#include <domain/terrain/rings.h>
+#include <domain/terrain/stats.h>
 #include <domain/terrain/tile.h>
 #include <domain/terrain/wind.h>
 

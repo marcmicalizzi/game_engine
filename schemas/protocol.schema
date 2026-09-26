@@ -402,7 +402,7 @@ struct AdaptersResult @version(1) {
 // with the same functions in systems/renderer/settings.h.
 
 /// Every knob the renderer has. Absent fields keep the defaults, which are engine-view's.
-struct RenderSettings @version(7) {
+struct RenderSettings @version(8) {
   /// direct, hw, vertex, sw, auto, or rt. `hw` and `direct` fall back to `vertex` on a device
   /// without mesh shaders; the result says which one ran.
   raster: string = "hw"
@@ -478,6 +478,12 @@ struct RenderSettings @version(7) {
   /// copy, the behaviour before 2026-09-25, to measure what sharing saves; the picture is the same
   /// bytes either way. It is `engine-view --no-texture-sharing`.
   share_textures: bool = true @since(7)
+  /// Game seconds per real second for the dune field's time-lapse: a terrain that names the dune
+  /// generator is re-evaluated on the job pool at each step of game time (a game day by default,
+  /// `renderer.terrain.time_step_s`), at most once per `renderer.terrain.time_min_frames` frames
+  /// (docs/subsystems/renderer.md, "The dunes in time-lapse"). 0 is the scene's own `time`. It is
+  /// `engine-view --time-rate`.
+  time_rate: f64 = 0 @since(8)
 }
 
 /// The ray tracing chain's memory over a run, mirroring `renderer::RtStats`: the capacity of the

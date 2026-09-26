@@ -5,7 +5,10 @@ An **erg** drawn by the terrain capability's dune generator ([terrain](../../../
 ```powershell
 build/msvc-release/bin/engine-view --scene content/test-scenes/desert-erg/scene.json --interactive
 build/msvc-release/bin/engine-content terrain content/test-scenes/desert-erg/scene.json --tile 0,0 --stats --stats-side 6144
+build/msvc-release/bin/engine-view --scene content/test-scenes/desert-erg/scene.json --interactive --time-rate 86400
 ```
+
+`--time-rate 86400` runs a game day a real second and re-evaluates the grid at each day ([renderer](../../../docs/subsystems/renderer.md#scenes-camera-paths-and-flythroughs), "The dunes in time-lapse"); the heights are not uploaded yet, so the summary line's `time_lapse` block is what shows it working.
 
 ## The band table
 

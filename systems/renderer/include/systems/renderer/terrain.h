@@ -231,4 +231,15 @@ u64 terrain_hash(const TerrainDesc& desc) noexcept;
 bool build_terrain_mesh(const TerrainDesc& desc, Vector<Vec3>& positions, Vector<u32>& indices,
                         Vector<Vec2>& uvs, std::string* error = nullptr);
 
+// **The dune generator's grid at another game time** (terrain.md, "Re-evaluation"): the heights
+// `build_terrain_mesh` puts in its positions' y, `size * size` of them in the same order, for the
+// field the sampler holds at `time_s` instead of the description's own `time`. The grid is cut into
+// the same 64 x 64 blocks the mesh is built in, `terrain_height_blocks` of them; this fills blocks
+// [begin, end) of `heights` (sized `size * size` by the caller), so a caller can hand the blocks to
+// as many jobs as it likes and get the same bytes. False, filling nothing, when the sampler holds
+// no generator (the waves have no time) or this build has no terrain capability.
+u32 terrain_height_blocks(const TerrainDesc& desc) noexcept;
+bool evaluate_terrain_heights(const TerrainSampler& sampler, f64 time_s, u32 block_begin,
+                              u32 block_end, std::span<f32> heights) noexcept;
+
 }  // namespace engine::renderer

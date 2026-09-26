@@ -976,7 +976,7 @@ struct FlythroughPresentation @version(1) {
 
 /// The last line of a flythrough benchmark's `.jsonl`, and engine-view's summary line. An
 /// interactive session measured with `--benchmark` ends its `.jsonl` with one too.
-struct FlythroughSummary @version(7) {
+struct FlythroughSummary @version(8) {
   /// "engine.flythrough.v1".
   format: string
   scene: string
@@ -1049,4 +1049,9 @@ struct FlythroughSummary @version(7) {
   textures: FlythroughTextures @since(6)
   /// A windowed run's presentation: null offscreen (see `FlythroughPresentation`).
   presentation: FlythroughPresentation? @since(7)
+  /// The dune field's time-lapse (`engine-view --time-rate`, docs/subsystems/renderer.md, "The
+  /// dunes in time-lapse"): the rate, the step, the evaluations started and handed over, the game
+  /// time the last one was for, and the milliseconds an evaluation took on the job pool. Null
+  /// without one.
+  time_lapse: json @since(8)
 }

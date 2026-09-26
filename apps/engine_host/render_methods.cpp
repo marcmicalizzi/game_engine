@@ -160,6 +160,11 @@ bool read_settings(const protocol::RenderSettings& in, renderer::RenderSettings&
   out.rt_templates = in.rt_templates;
   out.rt_budget_mib = in.rt_budget_mib;
   out.share_textures = in.share_textures;
+  if (!(in.time_rate >= 0.0) || in.time_rate > 1e9) {
+    error = invalid("time_rate must be within 0..1e9 game seconds per real second");
+    return false;
+  }
+  out.time_rate = in.time_rate;
   out.side_yaw = radians(in.side_yaw_deg);
   out.panini_d = in.panini_d;
   out.peripheral_lod = in.peripheral_lod;

@@ -5,10 +5,13 @@
 // sampler, the direct function and the mesh the same heights to the bit; the ground (what ruins
 // stand on) the floor, which does not move while the dunes do; and, with the ruins capability, a
 // scene's buildings standing on that ground.
+#include <core/hash/hash.h>
+#include <core/jobs/job_system.h>
 #include <core/math/math.h>
 #include <domain/terrain/dunes.h>
 #include <systems/renderer/scene.h>
 #include <systems/renderer/terrain.h>
+#include <systems/renderer/terrain_time.h>
 
 #if ENGINE_RENDERER_RUINS
 #include <domain/ruins/assembler.h>
@@ -250,4 +253,112 @@ TEST_CASE("renderer: a terrain's band table reads, hashes, and is validated") {
       small, scene(R"(,"bands":[{"name":"tight","height_min":20,"height_max":40,"cell":50}])")));
   CHECK_FALSE(read_scene_file(small, desc, error));
   CHECK(error.find("smaller than its own dune") != std::string::npos);
+}
+
+namespace {
+
+// Keeps every grid a time-lapse hands over, with its time.
+class KeepHeights final : public TerrainHeightSink {
+ public:
+  void heights(f64 time_s, std::span<const f32> h) override {
+    times.push_back(time_s);
+    grids.push_back(Vector<f32>(h.begin(), h.end()));
+  }
+  Vector<f64> times;
+  Vector<Vector<f32>> grids;
+};
+
+}  // namespace
+
+TEST_CASE("renderer: the time-lapse's step rule fires exactly when it should") {
+  // The rule alone: a boundary crossed since the last one evaluated, enough frames since the last
+  // start, and nothing in flight.
+  CHECK(time_lapse_due(0, 0.9, 1.0, 5, 3, false) == -1);  // no boundary crossed
+  CHECK(time_lapse_due(0, 1.0, 1.0, 5, 3, false) == 1);   // exactly on one
+  CHECK(time_lapse_due(0, 3.7, 1.0, 5, 3, false) == 3);   // several: the last
+  CHECK(time_lapse_due(0, 3.7, 1.0, 2, 3, false) == -1);  // too soon
+  CHECK(time_lapse_due(0, 3.7, 1.0, 5, 3, true) == -1);   // one in flight
+  CHECK(time_lapse_due(3, 3.9, 1.0, 5, 3, false) == -1);  // already evaluated
+
+  // Driven a frame at a time: half a game day a frame, a step of a day, three frames apart at
+  // least. Boundaries fall on every other frame, so the frame spacing decides which are
+  // evaluated: day 1 on frame 2, day 2 on frame 5 (frame 4 is too soon), day 4 on frame 8 (day 3's
+  // boundary came and went while waiting) — each at the boundary's own time, not the frame's.
+  const TerrainDesc desc = dunes_desc(1'000.0);
+  TimeLapseConfig config;
+  config.rate = 0.5 * 86'400.0 * 60.0;  // game seconds per real second, at 1/60 s a frame
+  config.step_s = 86'400.0;
+  config.min_frames = 3;
+  TerrainTimeLapse lapse;
+  std::string error;
+  REQUIRE(lapse.start(desc, config, nullptr, &error));
+  KeepHeights keep;
+  Vector<u32> started_on;
+  for (u32 frame = 1; frame <= 12; ++frame) {
+    if (lapse.tick(1.0 / 60.0, keep)) started_on.push_back(frame);
+  }
+  REQUIRE(started_on.size() == 4u);
+  CHECK(started_on[0] == 2u);
+  CHECK(started_on[1] == 5u);
+  CHECK(started_on[2] == 8u);
+  CHECK(started_on[3] == 11u);
+  REQUIRE(keep.times.size() == 4u);
+  CHECK(keep.times[0] == 1'000.0 + 86'400.0);
+  CHECK(keep.times[1] == 1'000.0 + 2 * 86'400.0);
+  CHECK(keep.times[2] == 1'000.0 + 4 * 86'400.0);
+  CHECK(keep.times[3] == 1'000.0 + 5 * 86'400.0);
+  // A waves terrain has no time to run, and a rate of zero is not a time-lapse.
+  TerrainDesc waves = desc;
+  waves.generator = TerrainGenerator::waves;
+  TerrainTimeLapse refused;
+  CHECK_FALSE(refused.start(waves, config, nullptr, &error));
+  config.rate = 0.0;
+  CHECK_FALSE(refused.start(desc, config, nullptr, &error));
+}
+
+TEST_CASE("renderer: a time-lapse's grid is the mesh's at that time, on any number of threads") {
+  const TerrainDesc desc = dunes_desc(1'000.0);
+  TimeLapseConfig config;
+  config.rate = 3.0 * 86'400.0 * 60.0;  // three game days a frame
+  config.step_s = 86'400.0;
+  config.min_frames = 1;
+  u64 hashes[3] = {};
+  f64 times[3] = {};
+  jobs::JobSystem one(jobs::JobSystemConfig{.performance_workers = 1, .pin_threads = false});
+  jobs::JobSystem three(jobs::JobSystemConfig{.performance_workers = 3, .pin_threads = false});
+  jobs::JobSystem* pools[3] = {nullptr, &one, &three};
+  for (u32 p = 0; p < 3; ++p) {
+    TerrainTimeLapse lapse;
+    std::string error;
+    REQUIRE(lapse.start(desc, config, pools[p], &error));
+    KeepHeights keep;
+    lapse.tick(1.0 / 60.0, keep);
+    lapse.finish(keep);
+    REQUIRE(keep.grids.size() == 1u);
+    times[p] = keep.times[0];
+    hashes[p] = hash_bytes(keep.grids[0].data(), keep.grids[0].size() * sizeof(f32));
+    if (p == 0) {
+      // The mesh built for a description at that time has the same heights to the bit.
+      TerrainDesc at = desc;
+      at.time_s = keep.times[0];
+      Vector<Vec3> positions;
+      Vector<u32> indices;
+      Vector<Vec2> uvs;
+      REQUIRE(build_terrain_mesh(at, positions, indices, uvs, &error));
+      u32 differ = 0;
+      for (u32 v = 0; v < positions.size(); ++v)
+        differ += positions[v].y != keep.grids[0][v];
+      CHECK(differ == 0u);
+      // And the dunes have moved in three days.
+      Vector<Vec3> before;
+      REQUIRE(build_terrain_mesh(desc, before, indices, uvs, &error));
+      u32 moved = 0;
+      for (u32 v = 0; v < before.size(); ++v)
+        moved += before[v].y != positions[v].y;
+      CHECK(moved > 0u);
+    }
+  }
+  CHECK(times[0] == 1'000.0 + 3 * 86'400.0);
+  CHECK(hashes[1] == hashes[0]);
+  CHECK(hashes[2] == hashes[0]);
 }

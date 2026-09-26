@@ -109,6 +109,34 @@ three lookups and a multiply, whatever t is (9.8 ns). **Why a period and not a t
 
 **The ruins' ground** is `DuneField::ground_height`, which has the signature of `ruins::Ground::fn` without this module depending on the ruins capability, and answers the **interdune floor** (`Detail::floor`), which never moves. A ruin assembled on a tile at any time is therefore the same building, and the dunes migrate over it: a doorway buried by a moving dune, which [07 §7.6](../plan/07-content-pipeline.md#76-procedural-generation-volume-content) asked for, is the field passing over a building that stands on the floor.
 
+## Rings
+
+[rings.h](../../domain/terrain/include/domain/terrain/rings.h). **The problem.** The scene's terrain is one grid, 4,097 vertices a side at most: 1.5 m a sample over the erg's 6.1 km, where a 34° slip face is five samples wide — a faceted plane with hard edges near the camera, which is what the owner's first flight saw ([third session](../experiments/third-interactive-session-2026-09-25.md)). The cluster LOD DAG coarsens what it is given and never refines it, so the near ground needs a finer source grid, and only near the camera.
+
+**Square rings round the camera.** An **inner** ring 250 m either side at 50 cm, a **middle** ring 1 km either side at 1 m, and the **outer** ring — the scene's own grid, "the rest as today" — each with a hole where the ring inside it is. `ring_of` says which ring a point is in (the innermost whose half-open square holds it), so every point of the outer square is in exactly one. The sizes are tunables (`terrain.rings.*`); the defaults are the plan's "a few hundred metres at 25–50 cm" and "one to two kilometres at a metre", at the coarse end of each because a ring's cost is its triangles (below).
+
+**Every vertex stays where it is in the world.** A ring's centre and half-side are multiples of the least common multiple of its spacing and the next ring's (`ring_snap_mm`: 1 m for the inner, 3 m for a middle ring over the erg's 1.5 m grid), counted in millimetres from the world's origin. So a ring's grid is the world's grid at its spacing — a ring that moves samples the same points it did, and nothing swims — and its edges are lines of the next ring's grid, so its hole is exactly cells of the ring round it and no sliver of ground belongs to neither. The outer ring's corner must lie on its own grid, which a scene grid does (`size` odd, `extent` a multiple of the spacing).
+
+**The re-centre rule.** A ring moves when the camera is more than half its half-side from its centre (Chebyshev distance), to the camera snapped to its step, clamped inside the ring round it; a ring whose hole moved is rebuilt too (`recentre_rings` returns the mask). A moving ring at least three times the one inside it keeps it inside whatever the camera does, which `validate_rings` requires, so the clamp only bites at the scene's edge, where the rings stop and wait. The test walks a camera a metre at a time and checks the rule fires on exactly the metres it should.
+
+**Seams: skirts between rings, locks between chunks.** Where two rings meet, the finer one has vertices between the coarser one's, and each ring simplifies separately, so the edges do not meet exactly. Rather than stitching two meshes whose borders change with every re-centre, each ring hangs a vertical **skirt** from every border edge, `skirt` deep (eight of its spacings by default, `terrain.rings.skirt_spacings`), facing away from its own ground, with the top vertex's normal and UV: any crack shows a skirt the colour of the ground beside it. Inside a ring the joins are exact (below).
+
+**A ring is built in chunks, and a re-centre rebuilds only what changed.** Built whole, a ring's DAG is one thread's work: 6.4 s for the inner ring's 2.1 million triangles, nearly all of it the simplifier. So a ring is cut into world-aligned chunks of 128 cells a side (`k_ring_chunk_cells`); each chunk's mesh and DAG is built on the job pool with its border vertices **locked** (`geometry::AttributeSource::locked`, added for this: a vertex the simplifier never moves), so two chunks meet exactly at every level; and the ring's DAG is the chunks' merged in chunk order (`geometry::merge_cluster_lod`). A chunk's key is its cells, its hole and which of its sides are the ring's border (`ring_chunk_key`), so a re-centre keeps every chunk whose key is unchanged — everything a ring's move does not reach, and all of the ring round it but the chunks its hole crossed — and builds the rest (`TerrainRings`). The merged DAG is the same bytes whichever thread built which chunk and whichever chunks were kept; the test builds a layout on no pool, one worker and three, and a re-centred ring against the same layout built from scratch, and gets one hash. **The price of the locks**: a chunk's coarsest level keeps its border, so a ring's far chunks cannot coarsen to one cluster each. Over the erg (seed 7, three years in, the camera at (250, −120) m; GCC release on the 4-vCPU container, the host quiet at the time, wall and CPU time of one build; `terrain.ring.build` in `terrain_bench.cpp` is the same work):
+
+| Ring | Chunks | Triangles (grid + skirt) | Clusters, levels | Coarsest cut | Build, wall / CPU |
+|---|---|---|---|---|---|
+| inner, 250 m at 50 cm | 72 | 2,000,000 + 8,000 | 44,722, 7 | 689 clusters, 44,068 triangles | 1.9 s / 6.3 s |
+| middle, 999 m at 1 m | 247 | 7,484,008 + 19,216 | 167,029, 7 | 2,324 clusters, 143,042 triangles | 7.3 s / 23.7 s |
+| outer, the scene's 6.1 km at 1.5 m | 943 | 30,005,984 + 43,424 | 667,942, 7 | 8,740 clusters, 520,528 triangles | 36.9 s / 104 s |
+
+A **re-centre** — the camera 150 m east and back — rebuilt 55 and 103 chunks and kept 264 and 216, in 3.0 and 4.0 s wall (6.1 and 10.0 s CPU): the inner ring's moved chunks and the middle ring's round its old and new hole. The coarsest cut is the locks' price: about 2.2% of a ring's triangles, where a ring built whole would coarsen to a few clusters. **Where that leaves the rings**: the inner ring re-centres every 125 m, and a walker at 1.5 m/s crosses that in 80 s against a 3–4 s rebuild on this box; a vehicle at 30 m/s would outrun it. Holding every ring's chunk DAGs took about 5.7 GB of host memory for the erg, most of it the outer ring's 30 million triangles, which is the argument for the outer ring staying the scene's cached mesh and the rings above it being the only ones that move.
+
+**What is not done.** The renderer draws none of this yet: a ring is a `ClusterLodMesh` like any other, but putting three of them in the GPU scene and replacing them on a re-centre is the renderer's streaming work, and the brief this was written under kept it CPU-side. The heights a ring reads are the dune field's (`FieldRingHeights`); the renderer's ridge rock and basins are its own (`TerrainSampler::features`), and a `RingHeights` of its own will add them when it draws rings.
+
+## Re-evaluation
+
+The field is a function of time, so moving the dunes is asking it for another t: `evaluate_grid` fills an existing grid (resized once, then reused) with the heights at a time, a gather per 64 × 64 block on the job pool, each block writing its own slots — the same bytes on any number of threads. The renderer's time-lapse (`engine-view --time-rate`, [renderer](renderer.md#scenes-camera-paths-and-flythroughs)) asks the same of the scene's grid once per game day of its clock, off the frame, through `evaluate_terrain_heights` — the mesh's own per-block arithmetic, so a re-evaluated grid is the heights a mesh built at that time has, to the bit. `terrain.field.reevaluate` measures it for the erg's whole grid: **2.58 s at 2,049 a side and 8.81 s at 4,097** on the pool (GCC release, three workers and the caller, quiet: 530 ns a vertex of wall time for five bands). A time-lapse at a game day a real second therefore wants the 2,049 grid or a smaller region; the default profile's three bands cost about half the erg's per vertex (the tiles below).
+
 ## The overlay and its bound
 
 [overlay.h](../../domain/terrain/include/domain/terrain/overlay.h). What the player changed, and nothing else. **Stamps** — a footprint (an ellipse to a depth, a flat floor to half its radius and a soft wall, a rim of the sand it pushed out), a dig, sand dumped — are applied to a grid of 128 × 128 `i16` millimetres a tile: at the world's 32 m tile a vertex every 25 cm, which is 05 §5.13's coarse deterministic CPU grid that gameplay reads (foot depth, movement penalty, tracking, audio). The value is the **deviation from the steady state** — the base dunes plus the drift every declared wall face asks for — so a ruin's drift is already there when its tile first comes in (the walls are older than the player) and costs nothing to store, and a wall the player builds declares its drift on the day it is built, which starts it empty (`declare_drift`).
@@ -200,14 +228,15 @@ Each is a test in `tests/terrain_tests.cpp` or `tests/overlay_tests.cpp`.
 - `domain/terrain/feedback.h` — `TileLag`, `FeedbackRules`, `DriftDecl`, `drift_volume_mm3`, `drift_height_um`, `derived_lag_units`, `LagField`.
 - `domain/terrain/overlay.h` — `Stamp`, `StampKind`, `OverlayRules`, `Overlay`, `k_overlay_cells`, `k_overlay_record_max_bytes`.
 - `domain/terrain/stats.h` — `FieldStats`, `BandStats`, `field_stats`, `evaluate_grid`, `slope_bin`, `k_slope_bins`, `k_slope_edges_deg`, `k_flat_um`.
+- `domain/terrain/rings.h` — `k_max_rings`, `k_ring_max_vertices`, `RingSpec`, `RingParams`, `ring_params_from_tunables`, `ring_snap_mm`, `validate_rings`, `Ring`, `RingLayout`, `place_rings`, `recentre_rings`, `ring_of`, `RingHeights`, `FieldRingHeights`, `k_ring_chunk_cells`, `RingChunkCoord`, `ring_chunks`, `ring_chunk_key`, `RingMesh`, `build_ring_chunk_mesh`, `RingChunk`, `build_ring_chunk`, `TerrainRings`.
 - `domain/terrain/tile.h` — `TileOptions`, `CrestLine`, `TileWind`, `Deformation`, `TileOutput`, `evaluate_tile`, `evaluate_tiles`, `build_tile_mesh`, `TileSampler`, `grid_normal`, `material_at`.
 - `domain/terrain/schemas/terrain.schema` — `engine.terrain.OverlayTile` (the store's projection kind), `CrestReport`, `TileReport` (version 2: `tile_stats`, `region`), `StatsReport`, `BandStatsReport`.
 
-**Depends on.** `base`, `containers`, `math`, `hash`, `jobs` (`evaluate_tiles`'s pool), `tunables`, `schema`, `terrain_schemas`.
+**Depends on.** `base`, `containers`, `math`, `hash`, `jobs` (`evaluate_tiles`'s pool), `tunables`, `schema`, `terrain_schemas`, `geometry` (the rings' cluster LOD builder).
 
 ## Tunables
 
-Read once by whoever holds tiles (`overlay_rules_from_tunables`). A record carries the hash of the rules it was written under and is refused under others, so a change to one is a change to the world, not a quiet reinterpretation of a save.
+Read once by whoever holds tiles (`overlay_rules_from_tunables`), and the rings' when a terrain's rings are laid out (`ring_params_from_tunables`). A record carries the hash of the rules it was written under and is refused under others, so a change to one is a change to the world, not a quiet reinterpretation of a save.
 
 | Tunable | Default | Why |
 |---|---|---|
@@ -218,6 +247,11 @@ Read once by whoever holds tiles (`overlay_rules_from_tunables`). A record carri
 | `terrain.feedback.lag_max_units` | 96 | 7.68 m: a dune held back by a camp by about a crest's width, never more |
 | `terrain.feedback.pit_volume_l` | 1,000 | a cubic metre: a pit, not a footprint or a posthole |
 | `terrain.feedback.drift_volume_l` | 1,000 | a wall 5 m long with a 40 cm drift is about one; a post is not |
+| `terrain.rings.inner_half_m` | 250 | the plan's "a few hundred metres": the ground a walker sees in detail, and 2.1 million triangles at 50 cm; 0 drops the ring |
+| `terrain.rings.inner_spacing_cm` | 50 | the coarse end of the plan's 25–50 cm: a 3 m dune's 4.5 m slip face is nine samples wide, and 25 cm would be four times the triangles for what the overlay's 25 cm grid already refines where the player stands |
+| `terrain.rings.middle_half_m` | 1,000 | the plan's "one to two kilometres" at its low end, and three times the inner ring's with room, which is what keeps the inner ring inside it however the camera moves |
+| `terrain.rings.middle_spacing_cm` | 100 | a metre: a 150 m mega-draa's slip face is 220 samples wide at a kilometre |
+| `terrain.rings.skirt_spacings` | 8 | how deep the skirts hang, in the ring's own spacings: deeper than the join's error at the cut round the camera (a pixel is about a metre at a kilometre), and still a strip nobody sees from above |
 
 ## Testing
 
@@ -230,6 +264,8 @@ Measured on the Linux container this capability was written in (4 vCPUs, `linux-
 - **`terrain.tile.eval`**: a 32 m tile with normals and crest lines, 3.56 ms at 128 cells a side (16,641 vertices, an apron round them), 1.06 ms at 64 and 0.36 ms at 32; **`terrain.tile.eval_erg`**, the erg's five bands, 7.14, 2.22 and 0.80 ms; **`terrain.tile.eval_far`**, the reference tile a thousand years in, 3.28 ms. The repose limiter took the first from 2.37 ms and the second from 5.61: each crest a point visits now computes its slope bound and its footprint depth, and reaches F further. Moving the inner loop's divisions into the gather as Q32 reciprocals took the tile from 3.56 ms to 2.49 before the band table (`Primitive` grew from 56 to 72 bytes for it; the table's meander took it to 88, the limiter's lee zone, footprint and taper reciprocal to 96).
 - **`terrain.overlay.decay`**: an hour's advance of a settled tile (a few footprints) 6 µs, of a trampled one (every block holding a deviation) 228 µs. An empty grid costs nothing.
 - **`terrain.wind.integral`**: 9.8 ns.
+- **`terrain.ring.build`** and **`terrain.ring.recentre`**: the table under [Rings](#rings) — the inner ring 1.9 s, the middle 7.3 s, the outer 36.9 s from scratch, a 150 m re-centre 3–4 s.
+- **`terrain.field.reevaluate`**: the erg's grid at a new time, 2.58 s at 2,049 a side and 8.81 s at 4,097 ([Re-evaluation](#re-evaluation)).
 
 ## Not yet
 

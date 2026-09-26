@@ -239,6 +239,12 @@ struct AttributeSource {
   // leaves the built mesh with no id stream (`VertexIdSource::none`).
   std::span<const u32> vertex_ids;
   VertexIdSource vertex_id_source = VertexIdSource::none;
+  // Optional per-vertex locks over the same source vertices: a non-zero entry is a vertex the LOD
+  // simplifier never moves (`meshopt_SimplifyVertex_Lock`, and every vertex at its position with
+  // it). For a mesh built in parts whose DAGs are merged (`merge_cluster_lod`): lock the vertices
+  // two parts share and the parts meet exactly at every level. Empty locks nothing, and costs
+  // nothing. Only `build_cluster_lod` reads it.
+  std::span<const u8> locked;
 };
 
 u32 encode_normal_oct(Vec3 normal) noexcept;

@@ -14,6 +14,18 @@
 //                           advance; nothing when its grid is empty.
 //   terrain.wind.integral   the closed-form integral alone.
 //   terrain.field.build     a field from its description: the wind record and the bands.
+//   terrain.ring.build      one terrain ring of the erg (rings.h) from scratch — every chunk's
+//                           heights, mesh, skirts and cluster LOD DAG on the job pool, and the
+//                           merge — at the default sizes: the argument is the ring, 0 the inner
+//                           (512 m at 50 cm), 1 the middle (2 km at 1 m), 2 the outer (the erg's
+//                           6.1 km grid at 1.5 m, with the middle ring's hole). Items: triangles.
+//   terrain.ring.recentre   the camera stepping 150 m and back: the inner ring re-centres every
+//                           time, keeping the chunks it still has. What a re-centre costs.
+//   terrain.field.reevaluate  the erg's whole grid at a new game time on the job pool
+//                           (evaluate_grid): 2,049 or 4,097 vertices a side over its 6.1 km, what
+//                           one step of a time-lapse costs (renderer's TerrainTimeLapse). A smoke
+//                           run takes 129.
+#include <core/jobs/job_system.h>
 #include <domain/terrain/terrain.h>
 #include <foundation/bench/bench.h>
 
@@ -199,4 +211,85 @@ ENGINE_BENCH(terrain_field_build, "terrain.field.build") {
     bench::keep(field.hash());
   }
   state.set_items(k_record_days);
+}
+
+namespace {
+
+// The erg's rings at the default sizes — an inner ring 256 m either side at 50 cm, a middle ring
+// 1,002 m either side at 1 m (a multiple of lcm(1 m, 1.5 m)), the erg's own 6.1 km grid at 1.5 m —
+// round a camera a quarter of a kilometre from the middle, three years in. A smoke run builds rings
+// a sixteenth the size.
+jobs::JobSystem& ring_pool() {
+  static jobs::JobSystem pool(jobs::JobSystemConfig{.pin_threads = false});
+  return pool;
+}
+
+TerrainRings& erg_rings() {
+  static const FieldRingHeights heights(erg_field(), 3 * k_year);
+  static TerrainRings rings = [] {
+    const bool smoke = bench::smoke_mode();
+    RingParams params;
+    params.count = 3;
+    params.ring[0] = RingSpec{smoke ? 16'000 : 256'000, 500, 4'000};
+    params.ring[1] = RingSpec{smoke ? 63'000 : 1'002'000, 1'000, 8'000};
+    params.ring[2] = RingSpec{smoke ? 192'000 : 3'072'000, 1'500, 12'000};
+    params.uv_x0_mm = -params.ring[2].half_mm;
+    params.uv_z0_mm = -params.ring[2].half_mm;
+    params.uv_size_mm = 2 * params.ring[2].half_mm;
+    TerrainRings r;
+    r.reset(params, smoke ? 16'000 : 250'000, smoke ? -8'000 : -120'000, heights,
+            geometry::ClusterLodOptions{}, &ring_pool(), nullptr);
+    return r;
+  }();
+  return rings;
+}
+
+}  // namespace
+
+ENGINE_BENCH_ARGS(terrain_ring_build, "terrain.ring.build", 0, 1, 2) {
+  TerrainRings& rings = erg_rings();
+  const u32 ring = static_cast<u32>(state.arg());
+  while (state.keep_running()) {
+    rings.drop_chunks();
+    rings.rebuild(1u << ring, &ring_pool());
+    bench::keep(rings.hash(ring));
+  }
+  u64 triangles = 0;
+  for (const RingChunk& chunk : rings.chunks(ring))
+    triangles += chunk.grid_triangles;
+  state.set_items(triangles);
+}
+
+// A re-centre: the camera steps 150 m and back, so the inner ring moves every time (its trigger
+// is half its half-side, 128 m) and the middle ring never does; what is rebuilt is the inner
+// ring's chunks that changed and the middle ring's round its old and new hole.
+ENGINE_BENCH(terrain_ring_recentre, "terrain.ring.recentre") {
+  TerrainRings& rings = erg_rings();
+  const bool smoke = bench::smoke_mode();
+  const i64 x0 = rings.layout().ring[0].cx, z0 = rings.layout().ring[0].cz;
+  const i64 step = smoke ? 9'000 : 150'000;
+  bool out = false;
+  u32 built = 0;
+  while (state.keep_running()) {
+    out = !out;
+    u32 rebuilt = 0;
+    rings.update(out ? x0 + step : x0, z0, &ring_pool(), rebuilt);
+    built += rings.last_built();
+    bench::keep(rebuilt);
+  }
+  bench::keep(built);
+}
+
+ENGINE_BENCH_ARGS(terrain_field_reevaluate, "terrain.field.reevaluate", 2049, 4097) {
+  const u32 n = bench::smoke_mode() ? 129u : static_cast<u32>(state.arg());
+  const i64 spacing = 6'144'000 / (n - 1);
+  Vector<i64> heights;
+  i64 day = 0;
+  while (state.keep_running()) {
+    evaluate_grid(erg_field(), -3'072'000, -3'072'000, n, n, spacing,
+                  3 * k_year + day * k_us_per_day, Detail::dunes, nullptr, &ring_pool(), heights);
+    bench::keep(heights[heights.size() / 2]);
+    ++day;
+  }
+  state.set_items(u64{n} * n);
 }

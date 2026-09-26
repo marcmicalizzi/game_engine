@@ -465,6 +465,66 @@ u64 terrain_hash(const TerrainDesc& desc) noexcept {
   return h;
 }
 
+namespace {
+
+constexpr u32 k_height_block = 64;
+
+}  // namespace
+
+u32 terrain_height_blocks(const TerrainDesc& desc) noexcept {
+  const u32 per_side = (desc.size + k_height_block - 1) / k_height_block;
+  return per_side * per_side;
+}
+
+bool evaluate_terrain_heights(const TerrainSampler& sampler, f64 time_s, u32 block_begin,
+                              u32 block_end, std::span<f32> heights) noexcept {
+#if ENGINE_RENDERER_TERRAIN
+  const TerrainSampler::Dunes* dunes = sampler.dunes_field();
+  const TerrainDesc& desc = sampler.desc();
+  const u32 n = desc.size;
+  if (dunes == nullptr || heights.size() != static_cast<usize>(n) * n) return false;
+  TerrainDesc at = desc;
+  at.time_s = time_s;
+  const i64 time_us = time_us_of(at);
+  const f32 extent = desc.extent;
+  const u32 per_side = (n + k_height_block - 1) / k_height_block;
+  const auto coord = [&](u32 i) {
+    return -extent + 2.0f * extent * (static_cast<f32>(i) / static_cast<f32>(n - 1));
+  };
+  // One gather per block, and the same heights as `height` (the generator's rule: any gather that
+  // covers a point gives it the same primitives, which meet by their maximum and add across bands).
+  terrain::Gather gather;
+  for (u32 block = block_begin; block < block_end; ++block) {
+    const u32 bx = (block % per_side) * k_height_block;
+    const u32 bz = (block / per_side) * k_height_block;
+    const u32 ez = std::min(n, bz + k_height_block);
+    const u32 ex = std::min(n, bx + k_height_block);
+    dunes->field.gather(terrain::to_mm(coord(bx)), terrain::to_mm(coord(bz)),
+                        terrain::to_mm(coord(ex - 1)), terrain::to_mm(coord(ez - 1)), time_us,
+                        nullptr, gather);
+    for (u32 zi = bz; zi < ez; ++zi) {
+      const f32 z = coord(zi);
+      for (u32 xi = bx; xi < ex; ++xi) {
+        const f32 x = coord(xi);
+        f32 ridge_mask = 0.0f;
+        f32 flatten = 1.0f;
+        const f32 sand = terrain::height_m(dunes->field.height_um(
+            gather, terrain::to_mm(x), terrain::to_mm(z), terrain::Detail::dunes));
+        heights[zi * n + xi] = sand + sampler.features(x, z, ridge_mask, flatten);
+      }
+    }
+  }
+  return true;
+#else
+  (void)sampler;
+  (void)time_s;
+  (void)block_begin;
+  (void)block_end;
+  (void)heights;
+  return false;
+#endif
+}
+
 bool build_terrain_mesh(const TerrainDesc& desc, Vector<Vec3>& positions, Vector<u32>& indices,
                         Vector<Vec2>& uvs, std::string* error) {
   if (desc.size < 2 || desc.size > k_terrain_max_size || !(desc.extent > 0.0f)) {
@@ -483,38 +543,22 @@ bool build_terrain_mesh(const TerrainDesc& desc, Vector<Vec3>& positions, Vector
   positions.reserve(n * n);
   uvs.reserve(n * n);
 #if ENGINE_RENDERER_TERRAIN
-  if (const TerrainSampler::Dunes* dunes = field.dunes_field(); dunes != nullptr) {
-    // The generator's grid a block of vertices at a time: one gather per block rather than one per
-    // vertex, and the same heights as `height` (the generator's rule: any gather that covers a
-    // point gives it the same primitives, which meet by their maximum and add across bands).
+  if (field.dunes_field() != nullptr) {
+    // The generator's grid a block of vertices at a time (`evaluate_terrain_heights`): one gather
+    // per block rather than one per vertex, and the same heights as `height`.
+    Vector<f32> heights(n * n);
+    evaluate_terrain_heights(field, desc.time_s, 0, terrain_height_blocks(desc),
+                             std::span<f32>(heights.data(), heights.size()));
     positions.resize(n * n);
     uvs.resize(n * n);
-    constexpr u32 k_block = 64;
-    terrain::Gather gather;
-    for (u32 bz = 0; bz < n; bz += k_block) {
-      for (u32 bx = 0; bx < n; bx += k_block) {
-        const u32 ez = std::min(n, bz + k_block);
-        const u32 ex = std::min(n, bx + k_block);
-        const auto coord = [&](u32 i) {
-          return -extent + 2.0f * extent * (static_cast<f32>(i) / static_cast<f32>(n - 1));
-        };
-        dunes->field.gather(terrain::to_mm(coord(bx)), terrain::to_mm(coord(bz)),
-                            terrain::to_mm(coord(ex - 1)), terrain::to_mm(coord(ez - 1)),
-                            dunes->time_us, nullptr, gather);
-        for (u32 zi = bz; zi < ez; ++zi) {
-          const f32 v = static_cast<f32>(zi) / static_cast<f32>(n - 1);
-          const f32 z = -extent + 2.0f * extent * v;
-          for (u32 xi = bx; xi < ex; ++xi) {
-            const f32 u = static_cast<f32>(xi) / static_cast<f32>(n - 1);
-            const f32 x = -extent + 2.0f * extent * u;
-            f32 ridge_mask = 0.0f;
-            f32 flatten = 1.0f;
-            const f32 sand = terrain::height_m(dunes->field.height_um(
-                gather, terrain::to_mm(x), terrain::to_mm(z), terrain::Detail::dunes));
-            positions[zi * n + xi] = Vec3{x, sand + field.features(x, z, ridge_mask, flatten), z};
-            uvs[zi * n + xi] = Vec2{u, v};
-          }
-        }
+    for (u32 zi = 0; zi < n; ++zi) {
+      const f32 v = static_cast<f32>(zi) / static_cast<f32>(n - 1);
+      const f32 z = -extent + 2.0f * extent * v;
+      for (u32 xi = 0; xi < n; ++xi) {
+        const f32 u = static_cast<f32>(xi) / static_cast<f32>(n - 1);
+        const f32 x = -extent + 2.0f * extent * u;
+        positions[zi * n + xi] = Vec3{x, heights[zi * n + xi], z};
+        uvs[zi * n + xi] = Vec2{u, v};
       }
     }
   } else

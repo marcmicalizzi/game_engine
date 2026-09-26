@@ -44,7 +44,7 @@ engine_module(NAME renderer LAYER systems
   SOURCES src/settings.cpp src/view_set.cpp src/scene.cpp src/gpu_scene.cpp src/lighting.cpp
           src/page_source.cpp src/streaming.cpp src/scene_renderer.cpp src/reference.cpp
           src/capture.cpp src/terrain.cpp src/camera_path.cpp src/flythrough.cpp
-          src/rt_capacity.cpp src/shadow_cascades.cpp src/tile_layout.cpp)
+          src/rt_capacity.cpp src/shadow_cascades.cpp src/tile_layout.cpp src/terrain_time.cpp)
 target_include_directories(engine_renderer PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 
 if(TARGET engine::ruins)

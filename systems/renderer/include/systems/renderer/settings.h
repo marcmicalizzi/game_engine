@@ -135,6 +135,12 @@ struct RenderSettings {
   // is why it lives here, where a change forces a rebuild.
   bool share_textures = true;
 
+  // Game seconds per real second for the dune field's time-lapse (terrain_time.h,
+  // docs/subsystems/renderer.md, "The dunes in time-lapse"); 0, the default, is the scene's own
+  // `time` and nothing re-evaluated. It sizes nothing, but it is a question about the scene, and
+  // both hosts read their questions from here.
+  f64 time_rate = 0.0;
+
   // Geometry streaming (04 §4.3 step 3, §4.9). The scene's clusters are laid out in fixed-size
   // pages, the GPU holds a budgeted subset of them in a page pool, the cull pass draws whatever is
   // resident and asks for what it is missing, and the picture converges. These size the scene's

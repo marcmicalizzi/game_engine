@@ -284,6 +284,16 @@ bool build_cluster_lod(std::span<const Vec3> positions, std::span<const u32> ind
     mesh.vertex_lock = vertex_lock.data();
   }
 
+  // Vertices the caller locks (a part's border, when parts are built apart and merged): clusterlod
+  // spreads a lock to every vertex at the same position, so one wedge is enough.
+  if (attributes.locked.size() == positions.size()) {
+    vertex_lock.resize(vertex_count, 0u);
+    for (u32 v = 0; v < vertex_count; ++v) {
+      if (attributes.locked[v] != 0) vertex_lock[v] |= seam_bit(SeamRule::lock);
+    }
+    mesh.vertex_lock = vertex_lock.data();
+  }
+
   BuildContext ctx;
   ctx.positions = positions;
   ctx.out = &out;
