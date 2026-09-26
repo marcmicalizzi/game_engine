@@ -211,8 +211,40 @@ All under the GPU lock as `agent-pacing`, none while the owner was flying: **30 
 - **Displays with separate clocks.** The owner's three monitors are one Surround display with one clock. A window spanning two independent displays was not measured.
 - **Exclusive fullscreen** (VK_EXT_full_screen_exclusive, offered by the driver) was not tried: the borderless window covering the display already gets the display flipped to it, and the pacer made the cadence exact there.
 
+## Traced shadows on the surround (2026-09-25, evening)
+
+The owner flew this session with `--shadows csm` because `--shadows rt` refused to start at 11520×2160 `surround3`: *engine-view: scene: the driver gave no cluster acceleration structure sizes*.
+
+**Cause.** Not the frame's size: the **view count**. The ray tracing chain names every cluster it builds by its visible entry, as its base geometry index, and every per-frame set is created able to name any entry a frame could produce — the three views' first runs of the visible list and, with shadow casters, their run `k_caster_run` behind them: `3 × 3 × 3,699,274 − 1 = 33,293,465`. The RTX 5090 reports `maxClusterGeometryIndex` **16,777,215** (driver 610.88, the record's 24 bits), so `gfx::cluster_set_build_sizes` refused the capacity probe's limits before the driver was asked anything, and the renderer reported it as the driver's silence. Bisected offscreen under the GPU lock with this branch's parent: 640×360 `surround3` refused exactly as 11520×2160 did; 11520×2160 and 1920×1080 with one view (11,097,821 with casters) started and drew; and 11520×2160 `surround3 --no-shadow-casters` (11,097,821 without them) started and drew. The "640×360 works" report was a single view. The desert overlook never met it — 239,833 pairs are 2,158,496 on a surround with casters — and the ashlar ruins are fifteen times its pairs.
+
+**Fix** ([renderer](../subsystems/renderer.md#the-ray-tracing-chains-index-space), [gfx](../subsystems/gfx.md)). `gfx::DeviceFeatures::cluster_max_geometry_index` carries the device's limit, and `renderer::resolve_settings` checks the scene's pairs in every view against it: the shadow casters go first (the shadows of surfaces facing away from the camera, which the capacity's rule also gives up first), and only if the drawn clusters alone do not fit do traced shadows become the cascaded maps and `--raster rt` the rasterizer — each with one warning naming the pairs, the views, the index asked for and the limit. Here the drawn clusters fit (11,097,821), so the owner's line starts with traced shadows and without casters:
+
+```
+warn  renderer shadow casters off reason="the scene's pairs in every view need more cluster geometry indices than the device has" pairs=3699274 views=3 geometry_index=33293465 device_limit=16777215
+```
+
+Nothing the frame builds comes near the capacity: the chain held 65,536 clusters (its first allocation, 549 MB, under a budget of 159,949 clusters) and no frame dropped a structure.
+
+**Measured.** The session's recording (`…T1526-input.jsonl`) replayed offscreen for 1,640 frames (20 s) at 11520×2160 `surround3`, a `msvc-release` build of this change, one run each, under the GPU lock with the owner's session locked. Others' CPU 23.6% and 20.4% at the ends of the traced run, the GPU 16% and 0% busy with 10.3–10.4 GB of the card held by other tenants; 13.5% and 12.7%, 3% and 99% for the maps' run (the end sample is the run's own last frames). The debug build of this change was configuring and compiling beside both, so by the harness's rule **every number is an upper bound**.
+
+| | `--shadows rt` (no casters) | `--shadows csm` |
+|---|---|---|
+| GPU frame, median / p95 / p99 | **5.07 / 5.94 / 6.66 ms** | 2.60 / 2.92 / 3.07 ms |
+| of it: the ray tracing chain | 3.14 / 3.51 / 3.68 | — |
+| — the CLAS build · the bottom-level build | 0.79 / 1.17 · 0.23 / 0.26 | — |
+| the resolve | 1.29 / 2.08 / 2.68 | 0.96 / 1.08 / 1.11 |
+| the cull pass, median / p95 (with the cascades' runs under `csm`) | 0.19 / 0.20 | 0.32 / 0.51 |
+| the maps' draw, median / p95 | — | 0.52 / 0.54 |
+| clusters built a frame, median / p95 / max | 31,501 / 45,725 / 52,864 | — |
+| device memory, this process | 2,294 MiB | 1,658 MiB |
+| frame, median / p95 (offscreen loop) | 9.60 / 10.93 ms | 2.81 / 3.26 ms |
+
+**The chain is 3.1 ms and most of it is not the builds.** The CLAS and bottom-level builds are 1.0 ms of it; the other 2.1 ms is the rest of the chain, which has no timer zone of its own: the three records passes, the copy of each bottom-level address into its top-level record, and the top-level build. The desert overlook's landmarks on the same surround spend 0.97 ms on the whole chain ([renderer](../subsystems/renderer.md#the-ray-tracing-chains-memory)), and what differs most between the two scenes is the **instance count** — 11,172 here against 90 — ahead of the pairs (11.1 million slots in every view against 0.7 million, which `emit_main` walks one thread each, cheap at any count). Two parts of the chain are serial in the instances and are the first suspects, unmeasured: `ranges_main` is **one thread** that walks every instance four times (the demand, the drawn clusters, the casters, the prefix sum and the bottom-level records), and the address copy is one `vkCmdCopyBuffer` of **11,172 regions of eight bytes**. A zone per pass would settle it. At 82 Hz (12.2 ms a refresh) either shadow fits; the maps are the cheaper one on this scene by 2.5 ms of GPU time.
+
 ## What remains
 
+- **Shadow casters on the ruins' surround.** The chain names a cluster by its visible entry, so a surround of this scene can name its drawn clusters and not its casters ([Traced shadows on the surround](#traced-shadows-on-the-surround-2026-09-25-evening)). Naming a hit by its dense record index, which the capacity bounds, with a record-to-entry table the emit pass writes, would keep them on any scene; it costs a dependent load in the ray pass and the path tracer ([gfx](../subsystems/gfx.md)).
+- **The chain's 2.1 ms outside the builds** on the same surround: a timer zone per records pass and for the address copy, then whatever it names — most likely what is serial in the scene's 11,172 instances (`ranges_main`'s single thread, the copy's one region an instance).
 - **Normal-map filtering into roughness.** A normal map's mip chain is renormalized, so the variance a distant texel averages away is lost rather than moved into roughness (Toksvig, LEAN); a far normal-mapped wall is smoother than its near self. It was not what the owner saw — the sheen was at every distance and at roughness 1 too — but it is the next thing a far ruin's gloss would come from, and it is the texture pipeline's (`domain/texture`, the ORM's mips reading the normal map's).
 - **The kit's JPEG maps** (above): PNG for the ORM and the normal maps at the next regeneration.
 - **The terrain's maps at 4097.** One texel a cell makes 4096² maps for the largest terrain `k_terrain_max_size` allows, 21 MiB each built; a scene that big may want a coarser map, which is a one-line change to `terrain_map_side` and a version bump.
