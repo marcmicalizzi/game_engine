@@ -763,22 +763,23 @@ DuneField::Value DuneField::primitive_value(const Primitive& p, i64 dx, i64 dz) 
     const i64 w_plus = (k_one_q16 + p.side_q16) / 2;
     const i64 profile = (plus * w_plus + minus * (k_one_q16 - w_plus)) >> 16;
     out.height = (((static_cast<i64>(p.height) * taper) >> 16) * profile) >> 16;
-    if constexpr (!k_slope) return out;
-    // Its slope bound: across the crest, the two sides' bounds as the profile blends them, times
-    // the taper; along it, the taper's own slope under the profile. Continuous everywhere, since
-    // each part is (the taper's slope is zero where it starts and where it ends).
-    const i64 side = (side_slope_q16(up, h_mm, p) * w_plus +
-                      side_slope_q16(um, h_mm, p) * (k_one_q16 - w_plus)) >>
-                     16;
-    const i64 along_mm = (((h_mm * falloff_slope_q16(taper_s)) >> 16) * profile) >> 16;
-    const i64 along =
-        (((along_mm * static_cast<i64>(p.inv_taper)) >> 16) * static_cast<i64>(p.inv_half)) >> 16;
-    out.slope = ((side * taper) >> 16) + along;
-    // How deep inside its footprint the point is, mm: from the stoss's edge or the rounded lee's
-    // end, blended as the profile blends its two sides, and from the crest's end.
-    const auto depth = [&](i64 u) { return max_i64(0, min_i64(u + p.stoss, 3 * p.lee - u)); };
-    const i64 across_depth = (depth(up) * w_plus + depth(um) * (k_one_q16 - w_plus)) >> 16;
-    out.inside = min_i64(across_depth, p.half_length - abs_a);
+    if constexpr (k_slope) {
+      // Its slope bound: across the crest, the two sides' bounds as the profile blends them, times
+      // the taper; along it, the taper's own slope under the profile. Continuous everywhere, since
+      // each part is (the taper's slope is zero where it starts and where it ends).
+      const i64 side = (side_slope_q16(up, h_mm, p) * w_plus +
+                        side_slope_q16(um, h_mm, p) * (k_one_q16 - w_plus)) >>
+                       16;
+      const i64 along_mm = (((h_mm * falloff_slope_q16(taper_s)) >> 16) * profile) >> 16;
+      const i64 along =
+          (((along_mm * static_cast<i64>(p.inv_taper)) >> 16) * static_cast<i64>(p.inv_half)) >> 16;
+      out.slope = ((side * taper) >> 16) + along;
+      // How deep inside its footprint the point is, mm: from the stoss's edge or the rounded lee's
+      // end, blended as the profile blends its two sides, and from the crest's end.
+      const auto depth = [&](i64 u) { return max_i64(0, min_i64(u + p.stoss, 3 * p.lee - u)); };
+      const i64 across_depth = (depth(up) * w_plus + depth(um) * (k_one_q16 - w_plus)) >> 16;
+      out.inside = min_i64(across_depth, p.half_length - abs_a);
+    }
     return out;
   }
   const i64 x = (dx * p.ax + dz * p.az) >> 14;
@@ -794,19 +795,20 @@ DuneField::Value DuneField::primitive_value(const Primitive& p, i64 dx, i64 dz) 
   const i64 d = length(x - scoop_x, y);
   const i64 face = max_i64(0, ((d - (scoop_r - p.lee)) * k_tan_repose_q16 * 1000) >> 16);
   out.height = min_i64(dome, face);
-  if constexpr (!k_slope) return out;
-  // Its slope bound: the dome's, over its narrowest radius, and the angle of repose over the scoop
-  // (the slip face), fading out over `absorb` past its rim and to nothing at the dome's edge.
-  // The narrowest radius's reciprocal is the largest of the three.
-  const i64 inv_radius = max_i64(max_i64(p.inv_stoss, p.inv_half), p.inv_width);
-  const i64 dome_slope = (h_mm * falloff_slope_q16(rho) * inv_radius) >> 32;
-  const i64 body = min_i64(k_one_q16, ((k_one_q16 - rho) * 65536) / 9830);
-  const i64 zone = d < scoop_r ? k_one_q16
-                   : p.absorb > 0 && d < scoop_r + p.absorb
-                       ? falloff_q16(((d - scoop_r) * 65536) / p.absorb)
-                       : 0;
-  out.slope = max_i64(dome_slope, (((k_tan_repose_q16 * zone) >> 16) * body) >> 16);
-  out.inside = ((k_one_q16 - rho) << 16) / max_i64(1, inv_radius);
+  if constexpr (k_slope) {
+    // Its slope bound: the dome's, over its narrowest radius, and the angle of repose over the
+    // scoop (the slip face), fading out over `absorb` past its rim and to nothing at the dome's
+    // edge. The narrowest radius's reciprocal is the largest of the three.
+    const i64 inv_radius = max_i64(max_i64(p.inv_stoss, p.inv_half), p.inv_width);
+    const i64 dome_slope = (h_mm * falloff_slope_q16(rho) * inv_radius) >> 32;
+    const i64 body = min_i64(k_one_q16, ((k_one_q16 - rho) * 65536) / 9830);
+    const i64 zone = d < scoop_r ? k_one_q16
+                     : p.absorb > 0 && d < scoop_r + p.absorb
+                         ? falloff_q16(((d - scoop_r) * 65536) / p.absorb)
+                         : 0;
+    out.slope = max_i64(dome_slope, (((k_tan_repose_q16 * zone) >> 16) * body) >> 16);
+    out.inside = ((k_one_q16 - rho) << 16) / max_i64(1, inv_radius);
+  }
   return out;
 }
 
