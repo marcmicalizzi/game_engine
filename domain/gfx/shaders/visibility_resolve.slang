@@ -446,6 +446,13 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
           apply_normal_map_grad(material, uv, duv_dx, duv_dy, s.normal, tangent, bitangent);
     }
   }
+  // A shading normal that ended up behind the surface — the far side of thin two-sided geometry,
+  // whose vertex normals are the near side's — is turned to the camera's side, as the reference
+  // path tracer turns it to the side its ray came from. It matters more since `brdf_eval` clamps
+  // n.v instead of rejecting it (2026-09-25): a normal behind the surface would otherwise take
+  // the lights on the far side of it through the surface. A normal merely leaning away from the
+  // eye on the camera's side of its triangle is left alone; that is what the clamp is for.
+  if (dot(shading_normal, s.geometric) < 0.0) shading_normal = -shading_normal;
   BrdfSurface surface;
   surface.albedo = albedo;
   surface.normal = shading_normal;

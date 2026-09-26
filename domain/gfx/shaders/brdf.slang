@@ -18,6 +18,9 @@ static const float k_brdf_pi = 3.14159265358979323846;
 // 32-bit float holds; clamping keeps it finite. Filament's value.
 static const float k_min_roughness = 0.045;
 
+// n.v is clamped to this rather than rejected (`brdf_eval`). Filament's MIN_N_DOT_V.
+static const float k_min_n_dot_v = 1e-4;
+
 struct BrdfSurface {
   float3 albedo;    // linear base color
   float3 normal;    // unit, out of the surface
@@ -109,11 +112,25 @@ float3 brdf_hemisphere_ambient(float3 sky, float3 ground, float normal_y) {
 }
 
 // The BSDF for one incident direction, without the cosine: diffuse plus specular, per steradian.
+//
+// **n.v is clamped, not rejected** (Filament's `clampNoV`). A shading normal is an interpolation,
+// or a normal map's texel, and not the surface: wherever it leans away from the eye while the
+// triangle under it faces the eye — a grazing view across a crest whose smooth vertex normals lean
+// over the far side, a normal map's texel turned away — n.v is negative for a point the camera
+// plainly sees. Until 2026-09-25 this returned nothing there, so such a pixel lost every light and
+// kept only the hemisphere ambient: a flat, constant grey with hard edges where n.v crosses zero
+// inside a triangle, which is all the "grey seams" on the dunes of the third owner session were
+// (docs/experiments/third-interactive-session-2026-09-25.md). Clamped, the diffuse lobe takes the
+// light by n.l alone and the specular lobe's visibility term stays finite. Only a light behind the
+// shading normal (n.l <= 0) contributes nothing.
 float3 brdf_eval(BrdfSurface s, float3 light_dir) {
   const float n_dot_l = dot(s.normal, light_dir);
-  const float n_dot_v = dot(s.normal, s.view);
-  if (n_dot_l <= 0.0 || n_dot_v <= 0.0) return float3(0.0);
-  const float3 h = normalize(light_dir + s.view);
+  if (n_dot_l <= 0.0) return float3(0.0);
+  const float n_dot_v = max(dot(s.normal, s.view), k_min_n_dot_v);
+  // With n.v allowed below zero the light can stand exactly opposite the eye, where l + v is zero
+  // and the half vector undefined; the normal stands in for it there rather than a NaN.
+  const float3 half_sum = light_dir + s.view;
+  const float3 h = dot(half_sum, half_sum) > 1e-12 ? normalize(half_sum) : s.normal;
   const float n_dot_h = clamp(dot(s.normal, h), 0.0, 1.0);
   const float v_dot_h = clamp(dot(s.view, h), 0.0, 1.0);
   const float alpha = brdf_alpha(s.roughness);

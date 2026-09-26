@@ -337,7 +337,11 @@ TEST_CASE("material resolve: vertex normals steer the shading and textures sampl
 // map tilted 45 degrees about the tangent axis, once at normal_scale 1 and once at 0. The
 // expected colors again come from brdf_reference.h, now with the quadrant's roughness and
 // metallic and with the tangent frame and the perturbed normal it computes the way the shader
-// does. Through the device's raster path, as above; skips only without 64-bit buffer atomics.
+// does. Then the two ways a shading normal parts from its surface: a map tilted 80 degrees, whose
+// normal faces away from the camera over half the quad while it faces the sun (n.v is clamped,
+// so the sun stays), and the quad seen from below, whose normals are behind it (turned to the
+// camera's side, so the sun does not come through). Through the device's raster path, as above;
+// skips only without 64-bit buffer atomics.
 TEST_CASE("material resolve: metallic-roughness and normal maps") {
   gfx::Device device;
   std::string error;
@@ -372,32 +376,49 @@ TEST_CASE("material resolve: metallic-roughness and normal maps") {
   constexpr u8 k_cos45 = 218;
   const u8 normal_texels[16] = {k_zero, k_cos45, k_cos45, 255, k_zero, k_cos45, k_cos45, 255,
                                 k_zero, k_cos45, k_cos45, 255, k_zero, k_cos45, k_cos45, 255};
+  // A steep one: 80 degrees about the same axis, so the shading normal leans so far towards +z
+  // that over the far half of the quad it faces away from the camera above it while still facing
+  // the sun overhead (n.v < 0 < n.l) — the grazing-view case of the dunes' grey seams.
+  constexpr u8 k_sin80 = 253;
+  constexpr u8 k_cos80 = 150;
+  const u8 steep_texels[16] = {k_zero, k_sin80, k_cos80, 255, k_zero, k_sin80, k_cos80, 255,
+                               k_zero, k_sin80, k_cos80, 255, k_zero, k_sin80, k_cos80, 255};
   gfx::ImageResource mr_image;
   gfx::ImageResource normal_image;
+  gfx::ImageResource steep_image;
   REQUIRE_MESSAGE(gfx::upload_image_2d(device, 2, 2, gfx::Format::R8G8B8A8Unorm, mr_texels,
                                        sizeof(mr_texels), mr_image, &error),
                   error);
   REQUIRE_MESSAGE(gfx::upload_image_2d(device, 2, 2, gfx::Format::R8G8B8A8Unorm, normal_texels,
                                        sizeof(normal_texels), normal_image, &error),
                   error);
+  REQUIRE_MESSAGE(gfx::upload_image_2d(device, 2, 2, gfx::Format::R8G8B8A8Unorm, steep_texels,
+                                       sizeof(steep_texels), steep_image, &error),
+                  error);
   gfx::ImageViewHandle mr_view = {};
   gfx::ImageViewHandle normal_view = {};
+  gfx::ImageViewHandle steep_view = {};
   REQUIRE(gfx::create_image_view(device, mr_image, mr_view, &error));
   REQUIRE(gfx::create_image_view(device, normal_image, normal_view, &error));
+  REQUIRE(gfx::create_image_view(device, steep_image, steep_view, &error));
   gfx::SamplerHandle nearest = {};
   REQUIRE(gfx::create_sampler(device, gfx::Filter::Nearest, nearest, &error));
   gfx::BindlessSet bindless;
   REQUIRE(bindless.create(device, gfx::BindlessConfig{}, &error));
   const u32 mr_slot = bindless.add_sampled_image(mr_view, gfx::ImageLayout::ShaderReadOnly);
   const u32 normal_slot = bindless.add_sampled_image(normal_view, gfx::ImageLayout::ShaderReadOnly);
+  const u32 steep_slot = bindless.add_sampled_image(steep_view, gfx::ImageLayout::ShaderReadOnly);
   const u32 sampler_slot = bindless.add_sampler(nearest);
 
-  // Four materials, one per block: plain, metallic-roughness mapped (both factors 1, so the
-  // texture passes straight through), normal mapped, and normal mapped with the scale at zero.
-  constexpr u32 k_blocks = 4;
+  // Five materials, one per block: plain, metallic-roughness mapped (both factors 1, so the
+  // texture passes straight through), normal mapped, normal mapped with the scale at zero, and
+  // the steep normal map. A sixth block draws the plain material from below.
+  constexpr u32 k_materials = 5;
+  constexpr u32 k_blocks = 6;
+  constexpr u32 k_below = 5;
   const Vec3 base_color{0.8f, 0.6f, 0.3f};
   constexpr f32 k_plain_roughness = 0.6f;
-  gfx::ResolveMaterial material_set[k_blocks];
+  gfx::ResolveMaterial material_set[k_materials];
   for (gfx::ResolveMaterial& material : material_set) {
     material.albedo = Vec4{base_color, k_plain_roughness};
     material.emissive = Vec4{};  // dielectric
@@ -410,8 +431,10 @@ TEST_CASE("material resolve: metallic-roughness and normal maps") {
   material_set[2].normal_scale = 1.0f;
   material_set[3].normal_texture = normal_slot;
   material_set[3].normal_scale = 0.0f;
-  u32 material_index[k_blocks];
-  for (u32 i = 0; i < k_blocks; ++i)
+  material_set[4].normal_texture = steep_slot;
+  material_set[4].normal_scale = 1.0f;
+  u32 material_index[k_materials];
+  for (u32 i = 0; i < k_materials; ++i)
     material_index[i] = i;
 
   constexpr gfx::BufferUsage k_storage = gfx::BufferUsage::Storage;
@@ -440,13 +463,23 @@ TEST_CASE("material resolve: metallic-roughness and normal maps") {
   const Vec3 up{0.0f, 0.0f, -1.0f};
   const f32 fov_y = radians(60.0f);
   const Mat4 view_proj = perspective_reversed_z(fov_y, 1.0f, 0.1f) * look_at(eye, target, up);
+  // The same quad from below, into a visibility buffer of its own: its vertex normals still point
+  // up, away from this camera and through the quad at the sun.
+  const Vec3 eye_below{0.0f, -10.0f, 0.0f};
+  const Mat4 view_proj_below =
+      perspective_reversed_z(fov_y, 1.0f, 0.1f) * look_at(eye_below, target, up);
   gfx::BufferResource vis;
+  gfx::BufferResource vis_below;
   gfx::BufferResource params;
   gfx::BufferResource host_color;
   REQUIRE(gfx::create_buffer(
       device, u64{k_size} * k_size * sizeof(u64),
       k_storage | gfx::BufferUsage::ShaderDeviceAddress | gfx::BufferUsage::TransferDst, false, vis,
       &error));
+  REQUIRE(gfx::create_buffer(
+      device, u64{k_size} * k_size * sizeof(u64),
+      k_storage | gfx::BufferUsage::ShaderDeviceAddress | gfx::BufferUsage::TransferDst, false,
+      vis_below, &error));
   REQUIRE(gfx::create_buffer(device, sizeof(gfx::ResolveParams) * k_blocks,
                              k_storage | gfx::BufferUsage::ShaderDeviceAddress, true, params,
                              &error));
@@ -482,6 +515,9 @@ TEST_CASE("material resolve: metallic-roughness and normal maps") {
   draw.visibility = vis.address;
   draw.width = k_size;
   draw.height = k_size;
+  gfx::ClusterDrawParams draw_below = draw;
+  draw_below.view_proj = view_proj_below;
+  draw_below.visibility = vis_below.address;
 
   const Vec4 sky{0.2f, 0.3f, 0.4f, 1.0f};
   const Vec3 sun_dir{0.0f, 1.0f, 0.0f};
@@ -501,17 +537,22 @@ TEST_CASE("material resolve: metallic-roughness and normal maps") {
   base.width = k_size;
   base.height = k_size;
   // One block per material: the quad is a single cluster, so a block selects its material by
-  // pointing the resolve at its own word of the cluster-material array.
+  // pointing the resolve at its own word of the cluster-material array. The last block is the
+  // plain material from below.
   auto* blocks = static_cast<gfx::ResolveParams*>(params.mapped);
   u64 block_address[k_blocks];
   for (u32 i = 0; i < k_blocks; ++i) {
     blocks[i] = base;
-    blocks[i].cluster_materials = cluster_materials.address + i * sizeof(u32);
+    blocks[i].cluster_materials = cluster_materials.address + (i % k_materials) * sizeof(u32);
     block_address[i] = params.address + i * sizeof(gfx::ResolveParams);
   }
+  blocks[k_below].camera = Vec4{eye_below, 0.0f};
+  blocks[k_below].view_proj = view_proj_below;
+  blocks[k_below].visibility = vis_below.address;
 
   gfx::RenderGraph graph(device);
   const gfx::RgBuffer rg_vis = graph.import_buffer("vis", vis);
+  const gfx::RgBuffer rg_vis_below = graph.import_buffer("vis below", vis_below);
   const gfx::RgBuffer rg_host = graph.import_buffer("host", host_color);
   gfx::RgImage targets[k_blocks];
   for (u32 i = 0; i < k_blocks; ++i) {
@@ -521,9 +562,13 @@ TEST_CASE("material resolve: metallic-roughness and normal maps") {
   }
   graph.add_pass(
       "clear", gfx::PassKind::Transfer,
-      [&](gfx::PassBuilder& b) { b.write(rg_vis, gfx::Access::TransferWrite); },
+      [&](gfx::PassBuilder& b) {
+        b.write(rg_vis, gfx::Access::TransferWrite);
+        b.write(rg_vis_below, gfx::Access::TransferWrite);
+      },
       [&](gfx::CommandList cb, gfx::RenderGraph&) {
         cb.fill_buffer(vis.buffer, 0, gfx::k_whole_size, 0);
+        cb.fill_buffer(vis_below.buffer, 0, gfx::k_whole_size, 0);
       });
   graph.add_pass(
       "visibility", gfx::PassKind::Raster,
@@ -532,13 +577,20 @@ TEST_CASE("material resolve: metallic-roughness and normal maps") {
         b.write(rg_vis, gfx::Access::FragmentReadWrite);
       },
       [&](gfx::CommandList cb, gfx::RenderGraph&) { raster.draw(cb, bindless, draw, 1); });
+  graph.add_pass(
+      "visibility below", gfx::PassKind::Raster,
+      [&](gfx::PassBuilder& b) {
+        b.render_area(k_size, k_size);
+        b.write(rg_vis_below, gfx::Access::FragmentReadWrite);
+      },
+      [&](gfx::CommandList cb, gfx::RenderGraph&) { raster.draw(cb, bindless, draw_below, 1); });
   for (u32 i = 0; i < k_blocks; ++i) {
     graph.add_pass(
         "resolve", gfx::PassKind::Raster,
         [&, i](gfx::PassBuilder& b) {
           gfx::ClearColor clear{};
           b.color_attachment(targets[i], gfx::LoadOp::Clear, clear);
-          b.read(rg_vis, gfx::Access::FragmentRead);
+          b.read(i == k_below ? rg_vis_below : rg_vis, gfx::Access::FragmentRead);
         },
         [&, i](gfx::CommandList cb, gfx::RenderGraph&) {
           cb.bind_pipeline(gfx::BindPoint::Graphics, resolve_pipeline);
@@ -655,6 +707,97 @@ TEST_CASE("material resolve: metallic-roughness and normal maps") {
   CHECK_MESSAGE(scale_zero <= 1, "normal_scale 0 changed the picture by " << scale_zero);
   MESSAGE("normal_scale 0 against no normal map at all: worst pixel difference " << scale_zero
                                                                                  << " of 255");
+
+  // **A shading normal turned from the camera keeps the sun.** The steep map leans the normal
+  // 80 degrees towards +z, so wherever the view comes from +z of it — the far half of the quad —
+  // n.v is negative while n.l is 0.17. The BSDF clamps n.v rather than rejecting it, so every
+  // covered pixel is the reference, which clamps it too; and on the pixels whose n.v is negative
+  // the picture is brighter than the same surface with no sun, which is the whole difference from
+  // a BSDF that returned nothing there and left the flat grey of the dunes' seams.
+  const ref::Dvec3 steep = ref::map_normal(flat_normal, tangent, bitangent, steep_texels, 1.0);
+  u32 steep_covered = 0;
+  u32 facing_away = 0;
+  u32 away_unlit = 0;
+  int steep_worst = 0;
+  for (u32 y = 0; y < k_size; ++y) {
+    for (u32 x = 0; x < k_size; ++x) {
+      const u8* got = pixel(4, x, y);
+      if (std::abs(int{got[0]} - 51) <= 1 && std::abs(int{got[1]} - 77) <= 1 &&
+          std::abs(int{got[2]} - 102) <= 1) {
+        continue;  // the sky
+      }
+      ++steep_covered;
+      ref::Surface s;
+      s.position = ref::pixel_on_plane(ref::dvec3(eye), ref::dvec3(target), ref::dvec3(up),
+                                       static_cast<double>(fov_y), 1.0, k_size, k_size, x, y, 0.0);
+      s.normal = steep;
+      s.view = ref::normalize(ref::dvec3(eye) - s.position);
+      s.albedo = ref::dvec3(base_color);
+      s.roughness = static_cast<double>(k_plain_roughness);
+      s.metallic = 0.0;
+      const ref::Dvec3 lit = ref::shade(s, ref::dvec3(sun_dir), 1.0, ref::dvec3(sky),
+                                        ref::dvec3(base.ground), nullptr, 0, ref::Dvec3{});
+      int here = 0;
+      here = std::max(here, std::abs(int{got[0]} - int{ref::display(lit.x)}));
+      here = std::max(here, std::abs(int{got[1]} - int{ref::display(lit.y)}));
+      here = std::max(here, std::abs(int{got[2]} - int{ref::display(lit.z)}));
+      steep_worst = std::max(steep_worst, here);
+      if (ref::dot(s.normal, s.view) < 0.0) {
+        ++facing_away;
+        // The same pixel with the sun's direct term taken out and its ground bounce kept: what a
+        // BSDF that rejected n.v <= 0 would have drawn. It must be clearly darker.
+        const ref::Dvec3 sunless =
+            ref::shade(s, ref::dvec3(sun_dir), 1.0, ref::dvec3(sky), ref::dvec3(base.ground),
+                       nullptr, 0, ref::Dvec3{}, true);
+        if (int{got[0]} < int{ref::display(sunless.x)} + 8) ++away_unlit;
+      }
+    }
+  }
+  CHECK_MESSAGE(steep_worst <= 2, "steep normal map: worst " << steep_worst << " of 255");
+  CHECK(facing_away > steep_covered / 4);
+  CHECK_MESSAGE(away_unlit == 0u, away_unlit << " pixels facing away from the camera lost the sun");
+  worst = std::max(worst, steep_worst);
+  MESSAGE("steep normal map: " << steep_covered << " covered pixels, " << facing_away
+                               << " with n.v < 0, all lit by the sun; worst " << steep_worst
+                               << " of 255 against the reference");
+
+  // **A shading normal behind the surface is turned to the camera's side**, as the reference path
+  // tracer turns it. From below, the quad's vertex normals point up — behind the surface as this
+  // camera sees it, and straight at the sun. Turned, the normal faces the ground, which is all that
+  // lights it: every covered pixel is the reference for a normal of (0, -1, 0). Left alone, the
+  // clamped n.v would have let the sun through the quad.
+  u32 below_covered = 0;
+  int below_worst = 0;
+  for (u32 y = 0; y < k_size; ++y) {
+    for (u32 x = 0; x < k_size; ++x) {
+      const u8* got = pixel(k_below, x, y);
+      if (std::abs(int{got[0]} - 51) <= 1 && std::abs(int{got[1]} - 77) <= 1 &&
+          std::abs(int{got[2]} - 102) <= 1) {
+        continue;  // the sky
+      }
+      ++below_covered;
+      ref::Surface s;
+      s.position = ref::pixel_on_plane(ref::dvec3(eye_below), ref::dvec3(target), ref::dvec3(up),
+                                       static_cast<double>(fov_y), 1.0, k_size, k_size, x, y, 0.0);
+      s.normal = ref::Dvec3{0.0, -1.0, 0.0};
+      s.view = ref::normalize(ref::dvec3(eye_below) - s.position);
+      s.albedo = ref::dvec3(base_color);
+      s.roughness = static_cast<double>(k_plain_roughness);
+      s.metallic = 0.0;
+      const ref::Dvec3 lit = ref::shade(s, ref::dvec3(sun_dir), 1.0, ref::dvec3(sky),
+                                        ref::dvec3(base.ground), nullptr, 0, ref::Dvec3{});
+      int here = 0;
+      here = std::max(here, std::abs(int{got[0]} - int{ref::display(lit.x)}));
+      here = std::max(here, std::abs(int{got[1]} - int{ref::display(lit.y)}));
+      here = std::max(here, std::abs(int{got[2]} - int{ref::display(lit.z)}));
+      below_worst = std::max(below_worst, here);
+    }
+  }
+  CHECK(below_covered > k_size * k_size / 3);
+  CHECK_MESSAGE(below_worst <= 2, "from below: worst " << below_worst << " of 255");
+  worst = std::max(worst, below_worst);
+  MESSAGE("from below, the normal behind the surface turned: "
+          << below_covered << " covered pixels, worst " << below_worst << " of 255");
   MESSAGE("worst reference-vs-GPU difference over the maps, "
           << std::string(raster.name()) << " path: " << worst << " of 255 (tolerance 2)");
 
@@ -664,13 +807,15 @@ TEST_CASE("material resolve: metallic-roughness and normal maps") {
   gfx::destroy_shader_module(device, resolve_module);
   bindless.destroy();
   gfx::destroy_sampler(device, nearest);
+  gfx::destroy_image_view(device, steep_view);
   gfx::destroy_image_view(device, normal_view);
   gfx::destroy_image_view(device, mr_view);
+  gfx::destroy_image(device, steep_image);
   gfx::destroy_image(device, normal_image);
   gfx::destroy_image(device, mr_image);
   scene.destroy(device);
-  for (gfx::BufferResource* b : {&host_color, &params, &vis, &cluster_materials, &materials,
-                                 &attributes, &triangles, &clusters}) {
+  for (gfx::BufferResource* b : {&host_color, &params, &vis, &vis_below, &cluster_materials,
+                                 &materials, &attributes, &triangles, &clusters}) {
     gfx::destroy_buffer(device, *b);
   }
   frames.destroy();

@@ -112,11 +112,17 @@ inline Dvec3 env_specular(Dvec3 f0, double roughness, double n_dot_v) {
   return {out.x > 0.0 ? out.x : 0.0, out.y > 0.0 ? out.y : 0.0, out.z > 0.0 ? out.z : 0.0};
 }
 
+// brdf.slang's `brdf_eval`, with n.v clamped to `k_min_n_dot_v` rather than rejected: a shading
+// normal that leans away from the eye still takes a light it faces.
+inline constexpr double k_min_n_dot_v = 1e-4;
+
 inline Dvec3 eval(const Surface& s, Dvec3 light_dir) {
   const double n_dot_l = dot(s.normal, light_dir);
-  const double n_dot_v = dot(s.normal, s.view);
-  if (n_dot_l <= 0.0 || n_dot_v <= 0.0) return {};
-  const Dvec3 h = normalize(light_dir + s.view);
+  if (n_dot_l <= 0.0) return {};
+  const double raw_n_dot_v = dot(s.normal, s.view);
+  const double n_dot_v = raw_n_dot_v > k_min_n_dot_v ? raw_n_dot_v : k_min_n_dot_v;
+  const Dvec3 half_sum = light_dir + s.view;
+  const Dvec3 h = dot(half_sum, half_sum) > 1e-12 ? normalize(half_sum) : s.normal;
   const double n_dot_h = clamp01(dot(s.normal, h));
   const double v_dot_h = clamp01(dot(s.view, h));
   const double alpha = alpha_of(s.roughness);

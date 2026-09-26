@@ -205,10 +205,11 @@ float3 trace_path(PathTraceParams* params, float3 origin, float3 direction, inou
         shading_normal = apply_normal_map(material, uv, s.normal, tangent, bitangent);
       }
     }
-    // A shading normal that ended up behind the surface is turned to the side the ray came from.
-    // The resolve does not do this — it lets the BSDF return nothing and keeps only the ambient —
-    // and the difference is real on thin two-sided geometry. It is the reference that is right:
-    // a path must not be swallowed by an interpolated normal.
+    // A shading normal that ended up behind the surface is turned to the side the ray came from:
+    // a path must not be swallowed by an interpolated normal. The resolve turns it the same way
+    // (since 2026-09-25; it used to let the BSDF return nothing and keep only its ambient), so the
+    // two agree on thin two-sided geometry. A normal that merely leans away from the ray on the
+    // ray's side is `brdf_eval`'s clamp's to handle, and ends the path below.
     if (dot(shading_normal, s.geometric) < 0.0) shading_normal = -shading_normal;
 
     radiance += throughput * sampled.emissive;
