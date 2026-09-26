@@ -539,6 +539,19 @@ child of the diagnostic uses only its parent's ten nodes, eight children a paren
 fraction is one value per parent, and the supine state block is exactly the float32 of the sidecar's
 float64 endpoint.
 
+The adapter no longer stands between the packet and the validator. The authoring side exported the
+same fixtures natively on 2026-09-26 (`astra-supine-native-reference-2026-09-26`, manifest
+`ceeedd4a…`; per case `reference-native.tissue`, `56c034f7…` for B2a and `afb39fc7…` for B2b): the
+ten-node cells built from the original corners and canonical edge ids in Gmsh's order, the original
+per-cell gland fractions, `cage: TetrahedralQuadratic`, `role: Reference`, all thirty-nine original
+blocks kept. The release `engine-content` (`0fd48ede…`, built from `main` at `5e7c8d1`) imports both,
+exits 0 in fixture mode against the four-row declaration written down before the run
+(`EXPECTED-FAILURES.predeclared.json`), and its 43 rows — 27 pass, 12 info, 4 fail — equal the adapter
+route's row for row to the witness in both cases, which is the check that the permutation and the
+native construction describe one body. Those two files, by hash, are what the engine's regression
+fixture pins from here; the step-one packet stays the record of where they came from.
+
+
 **The packet's own view, as published, matches its declaration**: `validate diagnostic.tissue
 --expect EXPECTED-FAILURES.json` exits 0 for both cases, and every row's id, subject, severity,
 verdict and witness is the pinned release engine's (only the labels this change adds to the values
@@ -667,7 +680,8 @@ simulates.
 ## Not yet
 
 - **Resolved 2026-09-26: the interchange carries the certified reference body.** The ten-node cell
-  kind, the reference role and the fixture mode above; the supine pair imported through them (above).
+  kind, the reference role and the fixture mode above; the supine pair imported through them and
+  then exported natively, the two files the regression fixture pins (above).
   What the three leave open: a curved face is tested against the frame and the skin by its four
   chords (the subdivision's boundary), not by a curved-triangle intersection; the declared energy
   (`bulk-edge-v0`) is the runtime's linear network, so the gap and the patch test on a ten-node body
