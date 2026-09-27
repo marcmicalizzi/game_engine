@@ -1,6 +1,6 @@
 # ADR-0037: The scene reader links the ruins capability where it is configured, until placement generators have a registration point
 
-- **Status:** Accepted
+- **Status:** Superseded by ADR-0046
 - **Accepted as:** an interim, on 2026-09-24. It is replaced by a scene-generator registration point the moment a second generator exists ("Revisit when").
 - **Date:** 2026-09-24
 - **Plan references:** docs/plan/07-content-pipeline.md §7.6 (the direction note of 2026-09-24 and its status note), docs/plan/02-architecture.md §2.8; builds on ADR-0027 (decisions 1 and 3)

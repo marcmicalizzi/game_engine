@@ -80,6 +80,26 @@ function(engine_capability_requires capability)
   set_property(GLOBAL PROPERTY ENGINE_CAPABILITY_REQUIRES_${capability} "${_already}")
 endfunction()
 
+# Every capability `capability` requires, directly or through another, lower-cased: what a
+# capability's module may depend on besides its own (engine_module's check below). The graph is
+# acyclic (the switch resolution refuses a cycle) and a handful of edges deep.
+function(_engine_capability_requires_closure capability out_var)
+  set(_closure "")
+  set(_todo "${capability}")
+  while(_todo)
+    list(POP_FRONT _todo _next)
+    get_property(_requires GLOBAL PROPERTY ENGINE_CAPABILITY_REQUIRES_${_next})
+    foreach(_req IN LISTS _requires)
+      string(TOLOWER "${_req}" _req_lower)
+      if(NOT _req_lower IN_LIST _closure)
+        list(APPEND _closure "${_req_lower}")
+        list(APPEND _todo "${_req}")
+      endif()
+    endforeach()
+  endwhile()
+  set(${out_var} "${_closure}" PARENT_SCOPE)
+endfunction()
+
 # The switch behind one capability (ADR-0027 decision 4). Declared on first use so a capability
 # that is not part of this configuration's source tree contributes no stale cache entry.
 # ENGINE_MINIMAL wins over the per-capability option: the minimal build is a proof, and a proof
@@ -222,6 +242,41 @@ function(engine_module)
       message(FATAL_ERROR
         "engine_module(${EM_NAME}) [${EM_LAYER}]: depends on '${_dep}' [${_dep_layer}], which is a higher layer. "
         "See docs/plan/02-architecture.md section 2.3.")
+    endif()
+    # ADR-0027 decision 1 in every configuration, not only the ones that switch the capability off
+    # (ADR-0046): a module that is not a capability never depends on one, however its CMakeLists
+    # arrives at the edge — which is what closed the conditional link ADR-0037 allowed once and the
+    # dunes took a second time. A host (engine_app) links the capabilities it carries; a module
+    # reaches one through a registration point (the scene-generator registry, the schema registry,
+    # the scheduler's table). A capability that needs another declares the edge, so it is switched
+    # off with it (the capability graph above) — the one check the `*-no-ecs` presets otherwise
+    # make, and only for `ecs`.
+    get_property(_dep_optional TARGET engine_${_dep} PROPERTY ENGINE_MODULE_OPTIONAL)
+    if(_dep_optional)
+      get_property(_dep_capability TARGET engine_${_dep} PROPERTY ENGINE_MODULE_CAPABILITY)
+      if(NOT _optional)
+        message(FATAL_ERROR
+          "engine_module(${EM_NAME}) [${EM_LAYER}]: depends on '${_dep}', the ${_dep_capability} capability, "
+          "and is not a capability itself. A capability never becomes a dependency of a module that is not "
+          "part of it (ADR-0027 decision 1), in any configuration: reach it through a registration point "
+          "(a scene generator registers itself: docs/subsystems/scene_gen.md, ADR-0046), and link it into "
+          "the hosts that carry it.")
+      endif()
+      # Capability names compare as their switches do, whatever their case (`CAPABILITY PHYSICS`,
+      # `engine_capability_requires(tissue physics)`: both are ENGINE_WITH_PHYSICS).
+      string(TOLOWER "${_dep_capability}" _dep_cap_lower)
+      string(TOLOWER "${_capability}" _cap_lower)
+      if(NOT _dep_cap_lower STREQUAL _cap_lower)
+        _engine_capability_requires_closure("${_capability}" _closure)
+        if(NOT _dep_cap_lower IN_LIST _closure)
+          message(FATAL_ERROR
+            "engine_module(${EM_NAME}) [${EM_LAYER}]: the ${_capability} capability depends on '${_dep}', the "
+            "${_dep_capability} capability, without declaring it. Say "
+            "engine_capability_requires(${_capability} ${_dep_capability}) at the top of its CMakeLists.txt, "
+            "so a configuration without ${_dep_capability} switches ${_capability} off instead of failing "
+            "(docs/plan/08-toolchain.md section 8.5).")
+        endif()
+      endif()
     endif()
     list(APPEND _dep_targets engine::${_dep})
   endforeach()
