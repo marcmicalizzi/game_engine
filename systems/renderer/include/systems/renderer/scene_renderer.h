@@ -341,7 +341,12 @@ struct Stats {
 // a pool write the cut already paid for.
 struct FrameDesc {
   Camera camera;
-  u64 frame_index = 0;      // drives the light orbit and the deformation phase, as engine-view does
+  u64 frame_index = 0;  // drives the light orbit and the deformation phase, as engine-view does
+  // How far into the sun's day the frame is, game seconds (lighting.h, "The sun's day"): the sun
+  // stands on its daily arc there. 0, the default, is the start — the sun every frame had before
+  // the sun had a day, to the bit. The caller's clock and not the frame index's, because the rate
+  // the day runs at can change while it runs (engine-view's `[` and `]`).
+  f64 sun_time_s = 0.0;
   u32 view_mode = ~u32{0};  // override the settings' view mode; ~0 uses it
   // Override the settings' LOD pixel threshold for this frame; negative uses it. The reference
   // renderer passes 0 to make the frame's cut the *finest* clusters, so the acceleration

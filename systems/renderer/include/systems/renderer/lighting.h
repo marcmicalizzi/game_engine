@@ -8,16 +8,18 @@
 // same numbers at the same frame index (docs/plan/04-renderer.md §4.8).
 //
 // These are the renderer's own stand-in lights until a scene carries authored ones: the sun stands
-// where `RenderSettings` or the `renderer.sun.*` tunables put it, the sky is a constant, and the
-// two point lights — one warm, one cool — stand still, or with `orbit_lights` orbit out of phase as
-// the frame index advances so the BSDF's specular response sweeps across a surface. **Nothing moves
-// with the frame by default** (since 2026-09-27): the orbit was frame-driven, and a time-lapse's
-// sand, lit by a warm light a scene's radius away that went round it every eight seconds, read as a
-// sun racing across the sky (renderer.md, "The dunes in time-lapse"). There is no day and night.
-// Reach and intensity scale with the scene's radius, intensity with its square because the falloff
-// is inverse square, so a 2 cm mesh and a 20 m heightfield look alike. The ground they light is the
-// scene's own, `SceneData::ground_albedo`: a terrain's sand, or a neutral grey for a scene without
-// one.
+// where `RenderSettings` or the `renderer.sun.*` tunables put it — or, when its day runs, moves
+// from there along its daily arc (`sun_on_arc`, below) — the sky is a constant, and the two point
+// lights — one warm, one cool — stand still, or with `orbit_lights` orbit out of phase as the frame
+// index advances so the BSDF's specular response sweeps across a surface. **Nothing moves with the
+// frame by default** (since 2026-09-27): the orbit was frame-driven, and a time-lapse's sand, lit
+// by a warm light a scene's radius away that went round it every eight seconds, read as a sun
+// racing across the sky (renderer.md, "The dunes in time-lapse"). The day is the caller's clock,
+// not the frame's: a frame is told how far into the day it is (`FrameDesc::sun_time_s`), and 0 is
+// the sun it always had. Reach and intensity scale with the scene's radius, intensity with its
+// square because the falloff is inverse square, so a 2 cm mesh and a 20 m heightfield look alike.
+// The ground they light is the scene's own, `SceneData::ground_albedo`: a terrain's sand, or a
+// neutral grey for a scene without one.
 
 #include <core/base/types.h>
 #include <core/math/math.h>
@@ -40,15 +42,62 @@ inline constexpr f64 k_default_sun_elevation_deg = 53.034893494453584;
 // it, degrees; exactly the old fixed vector at the defaults.
 Vec3 sun_direction(f64 azimuth_deg, f64 elevation_deg) noexcept;
 
-// What `frame_lighting` lights with: the point lights or not, orbiting or not, and the sun.
+// **The sun's day** (renderer.md, "The sun's day"; engine-view's `--sun-rate` and `[` / `]`). The
+// sun turns once a game day round the celestial pole, which stands `tilt_deg` above the northern
+// horizon — north is -z, the way the camera paths and `--start` call "looking north", so east is
+// +x and south +z — and it goes round on **the circle through its start** (`--sun`, or the
+// `renderer.sun.*` tunables): whatever the start is, it is on the day's arc, which is what lets a
+// day that has not moved be exactly the sun a frame had before there was a day. The circle's
+// distance from the pole is the sun's declination, so the season is whatever the start implies:
+// the default start (south-east, 53° up) at the default tilt is a mid-morning in April
+// (declination 9.75°), whose sun culminates due south at 59.75° and sets 12.8° north of west after
+// 13.1 hours above the horizon (sun_arc_tests.cpp prints them).
+//
+// The tilt is the latitude: 0 is the equator, where the day's circle stands upright and the sun of
+// an equinox crosses the zenith; 90 a pole, where the sun circles at one elevation all day. It is
+// `renderer.sun.arc_tilt_deg`, 40 by default, a mid-latitude — about where the Taklamakan and the
+// Gobi are, and ten degrees north of the Sahara's middle.
+inline constexpr f64 k_default_sun_arc_tilt_deg = 40.0;
+inline constexpr f64 k_sun_day_s = 86'400.0;  // one turn of the arc, game seconds
+struct SunArc {
+  f64 azimuth_deg = k_default_sun_azimuth_deg;  // where the sun stands at the start of its day
+  f64 elevation_deg = k_default_sun_elevation_deg;
+  f64 tilt_deg = k_default_sun_arc_tilt_deg;  // the pole's elevation over the northern horizon
+};
+// A request's arc: the start from `RenderSettings::sun_*`, or the `renderer.sun.azimuth_deg` /
+// `elevation_deg` tunables' when it names none, and the tilt from `renderer.sun.arc_tilt_deg`.
+SunArc sun_arc(const RenderSettings& settings);
+// The direction towards the sun `time_s` game seconds into its day: the start turned about the
+// pole by a turn a day, westward — a morning sun climbs towards the south, an evening one sinks
+// towards the west and below the horizon. **At `time_s == 0` it is `sun_direction(azimuth,
+// elevation)` to the bit**, so a day with a rate of zero draws what every frame drew before the
+// day existed; elsewhere it is evaluated in f64 and is continuous in the time.
+Vec3 sun_on_arc(const SunArc& arc, f64 time_s) noexcept;
+// How strongly a sun in `direction` shines: 1 at and above the horizon, fading to nothing
+// `k_sun_twilight_deg` below it (a smoothstep in the sine of the elevation, which is the
+// direction's y). The sun's colour is left alone, and so are the sky and the point lights: there is
+// no sunset red and no night sky (renderer.md, "The sun's day", says why).
+inline constexpr f64 k_sun_twilight_deg = 6.0;
+f32 sun_intensity(const Vec3& direction) noexcept;
+// `renderer.sun.rate`: game seconds per real second the sun's day runs at, 0 (a still sun) by
+// default. The host's to read and to integrate — engine-view's `--sun-rate` and its `[` / `]` —
+// because the renderer is handed how far into the day a frame is, never how fast the day runs.
+f64 sun_rate_tunable();
+
+// What `frame_lighting` lights with: the point lights or not, orbiting or not, and the sun and how
+// strongly it shines (`FrameLighting::sun.w`).
 struct LightingOptions {
   bool lights = true;
   bool orbit = false;
   Vec3 sun = sun_direction(k_default_sun_azimuth_deg, k_default_sun_elevation_deg);
+  f32 sun_intensity = 1.0f;
 };
-// A request's: its sun, or the `renderer.sun.azimuth_deg` / `elevation_deg` tunables' when it names
-// none.
-LightingOptions lighting_options(const RenderSettings& settings);
+// A request's, `sun_time_s` game seconds into the sun's day (`sun_arc`, `sun_on_arc`): at 0 its sun
+// is the start and shines at 1 wherever the start is, which is what every frame had before there
+// was a day; later the sun is on the arc and shines by `sun_intensity`. (A start below the horizon
+// is therefore lit at 1 until the day moves it and by the rule after, which is a step once, at the
+// first frame of the day; a start at or above the horizon has none.)
+LightingOptions lighting_options(const RenderSettings& settings, f64 sun_time_s = 0.0);
 
 // The two point lights beside the sun.
 inline constexpr u32 k_frame_lights = 2;
@@ -105,7 +154,8 @@ struct FrameLighting {
 // With `orbit`, `frame_index` drives the point lights' orbit, exactly as it drives the deformation
 // phase, so frame N of a capture and frame N of a reference render are lit identically; without it
 // they stand where frame 0 puts them. `lights` false leaves the two point lights out and the count
-// at zero, which is what `--no-lights` asks for.
+// at zero, which is what `--no-lights` asks for. The sun is `options.sun` shining at
+// `options.sun_intensity`.
 void frame_lighting(const SceneData& scene, u64 frame_index, const LightingOptions& options,
                     FrameLighting& out);
 

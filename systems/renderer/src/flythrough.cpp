@@ -155,6 +155,7 @@ bool fly_camera_path(SceneRenderer& renderer, const CameraPath& path, const Flig
     FrameDesc frame;
     frame.camera = camera_path_frame(path, f, frames);
     frame.frame_index = f;
+    frame.sun_time_s = options.sun_rate * static_cast<f64>(f) / 60.0;
     submissions.push_back(Submission{repeat, f, recorded});
     const bool ok = renderer.submit_frame(frame, error) != 0;
     Submission& mine = submissions[submissions.size() - 1];

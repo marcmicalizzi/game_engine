@@ -67,6 +67,9 @@ struct ReferenceSettings {
   // antialiasing turns the jitter off.
   bool pixel_center = false;
   u64 frame_index = 0;  // drives the light orbit, exactly as a capture's frame number does
+  // How far into the sun's day, exactly as a frame's `FrameDesc::sun_time_s`: both integrators
+  // light with the sun at the same place on its arc (lighting.h, "The sun's day").
+  f64 sun_time_s = 0.0;
   // **An animated instance's pose**, in the same two spans `FrameDesc` takes. A reference render
   // is one frame, so what it draws is one pose: the caller ticks its world, hands over the
   // matrices, and the reference path traces the character where the tick put it. Nothing else was

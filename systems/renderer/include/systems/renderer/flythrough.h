@@ -74,6 +74,11 @@ struct FlightOptions {
   // the same frames reading 1.55, 0.77 and 0.71 ms back to back for exactly that reason).
   f64 warmup_seconds = 0.0;
   u32 frames_in_flight = 2;
+  // Game seconds per real second of the sun's day (lighting.h, "The sun's day"). A frame is a
+  // sixtieth of a second, the frame index's clock, so path frame f is lit `sun_rate * f / 60` game
+  // seconds into the day — the numbers engine-view's plain offscreen run lights frame f with — and
+  // every repeat, and every warm-up frame (at the path's first camera), is lit alike.
+  f64 sun_rate = 0.0;
 };
 
 struct Flight {

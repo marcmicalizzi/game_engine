@@ -1403,9 +1403,10 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   // The frame's lights, shared by every view and living behind the last view's params block in
   // one buffer. They come out of `frame_lighting` rather than being built here, because the
   // reference path tracer has to light the same scene with the same numbers at the same frame
-  // index or a comparison between the two measures the lights (04 §4.8, lighting.h).
+  // index or a comparison between the two measures the lights (04 §4.8, lighting.h). The sun is
+  // where the caller's day has put it (`FrameDesc::sun_time_s`; 0 is the sun it always had).
   FrameLighting lighting;
-  frame_lighting(data, rendered, lighting_options(settings), lighting);
+  frame_lighting(data, rendered, lighting_options(settings, frame.sun_time_s), lighting);
   std::memcpy(resolve_bytes + sizeof(gfx::ResolveParams) * views, lighting.lights,
               sizeof(lighting.lights));
 

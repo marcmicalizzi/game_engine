@@ -201,6 +201,7 @@ bool ReferenceRenderer::render(const Camera& camera, const ReferenceSettings& se
   FrameDesc frame;
   frame.camera = camera;
   frame.frame_index = settings.frame_index;
+  frame.sun_time_s = settings.sun_time_s;
   frame.lod_px = settings.finest ? 0.0f : -1.0f;
   // Every structure the frame wants, budget or not: the converged picture traces nothing else, and
   // the finest cut is every leaf in view (docs/subsystems/renderer.md, "The ray tracing chain's
@@ -216,7 +217,8 @@ bool ReferenceRenderer::render(const Camera& camera, const ReferenceSettings& se
 
   const RenderSettings& resolved = renderer_->settings().settings;
   FrameLighting lighting;
-  frame_lighting(scene_->data(), settings.frame_index, lighting_options(resolved), lighting);
+  frame_lighting(scene_->data(), settings.frame_index,
+                 lighting_options(resolved, settings.sun_time_s), lighting);
   std::memcpy(lights_.mapped, lighting.lights, sizeof(lighting.lights));
 
   const View& view = renderer_->views()[0];
