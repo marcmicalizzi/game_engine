@@ -8,6 +8,7 @@
 #include <core/schema/json_reflect.h>
 #include <foundation/io/vfs.h>
 #include <systems/renderer/capture.h>
+#include <systems/world/scene_consumers.h>
 #include <systems/world/tile_ring.h>
 
 #include <algorithm>
@@ -54,8 +55,9 @@ bool ViewWorld::create(const renderer::SceneData& data, renderer::SceneRenderer&
   if (!data.streamed.empty()) {
     if (!placements_.create(data, placements_config_, error)) return false;
     placements_.set_sink(&ViewWorld::hand_over, this);
-    placements_.set_ring(&world_.ring());
-    world_.add_consumer(placements_.consumer());
+    // In the declared order, through the one function that states it. No ground consumer: a
+    // streamed world draws the scene's one terrain mesh, and no renderer takes ground tiles yet.
+    world::add_scene_consumers(world_, nullptr, &placements_);
   }
   ENGINE_LOG_INFO(log_view_world, "world", log::field("tile_size", params.tile_size),
                   log::field("rings", params.ring_count), log::field("inner", params.radius[0]),
