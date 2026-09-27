@@ -107,8 +107,8 @@ TEST_CASE("lighting: the sun's day is a circle round the pole through the start,
     const Vec3 d = sun_on_arc(arc, t);
     worst_length = std::fmax(worst_length, std::fabs(static_cast<f64>(length(d)) - 1.0));
     worst_circle = std::fmax(worst_circle, std::fabs(dot3(d, pole) - from_pole));
-    if (d.y > highest) {
-      highest = d.y;
+    if (static_cast<f64>(d.y) > highest) {
+      highest = static_cast<f64>(d.y);
       noon = d;
     }
     if (previous.y >= 0.0f && d.y < 0.0f) set_azimuth = azimuth_deg(d);
