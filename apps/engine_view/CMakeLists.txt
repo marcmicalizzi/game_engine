@@ -31,14 +31,15 @@ set(_view_tests tests/view_tests.cpp tests/mesh_view_tests.cpp tests/fly_tests.c
                 tests/interactive_tests.cpp tests/time_controls_tests.cpp ${_view_interactive})
 if(TARGET engine::ruins)
   # A scene's `ruins` entry drawn end to end (docs/subsystems/ruins.md): the renderer's scene reader
-  # expands it, and the test writes the kit of boxes and counts the pieces with the assembler.
-  list(APPEND _view_deps ruins)
+  # expands it through the registry, and the test writes the kit of boxes and counts the pieces with
+  # the assembler.
   list(APPEND _view_tests tests/ruins_view_tests.cpp)
 endif()
 # The scene generators this configuration has (ADR-0046; docs/subsystems/scene_gen.md): linked for
-# their registrars, which is what makes `--scene` read a terrain that names the dunes. Nothing here
-# calls one: the renderer's scene reader finds each by the name a scene gives.
-foreach(_gen terrain)
+# their registrars, which is what makes `--scene` read a terrain that names the dunes and a scene's
+# ruins, and `--world` stream them. Nothing here calls one: the renderer's scene reader and the
+# world's placements consumer find each by the name a scene gives.
+foreach(_gen ruins terrain)
   if(TARGET engine::${_gen})
     list(APPEND _view_deps ${_gen})
   endif()

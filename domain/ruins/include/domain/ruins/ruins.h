@@ -25,6 +25,9 @@
 //                         Scatter they sit with
 //   [-] scheduler entry   none: nothing ticks; a building is a function of its seed and tile
 //   [-] render passes     none: the output is instances the renderer already draws
+//   [x] scene generators  the placement generator "ruins" (scene_generator.h, ADR-0046): what the
+//                         scene reader expands a scene's `ruins` entries through, and the world
+//                         ring streams them through a tile at a time
 //   [x] derived data      `engine-content ruins` writes a scene fragment for an authored place
 //   [-] protocol methods  none yet
 //   [-] tunables          none: every parameter is the kit's, and the kit is content
@@ -37,6 +40,7 @@
 #include <domain/ruins/assembler.h>
 #include <domain/ruins/blocks.h>
 #include <domain/ruins/kit.h>
+#include <domain/ruins/scene_generator.h>
 
 namespace engine::ruins {
 

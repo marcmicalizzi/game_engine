@@ -21,12 +21,6 @@
 #include <schemas/scene.h>
 #include <utility>
 
-#if ENGINE_RENDERER_RUINS
-#include <domain/ruins/assembler.h>
-#include <domain/ruins/blocks.h>
-#include <domain/ruins/kit.h>
-#endif
-
 namespace engine::renderer {
 
 namespace {
@@ -696,280 +690,152 @@ void make_instance_grid(u32 n, f32 mesh_radius, u32 joints, f32 bounds_padding,
   }
 }
 
-#if ENGINE_RENDERER_RUINS
-// The terrain as the assembler's height query: a plain function over the read's one sampler. The
-// ground, not the surface: with the dune generator a building stands on the interdune floor and the
-// dunes migrate over it (terrain.h, `TerrainSampler::ground`); with the waves they are the same.
-f32 terrain_ground(const void* context, f32 x, f32 z) noexcept {
-  return static_cast<const TerrainSampler*>(context)->ground(x, z);
-}
+// A scene's placement entries, in the order the reader walks them (scene_gen.md, "The order
+// rule"): the `ruins` entries first — each the placement generator "ruins" with the entry itself as
+// its parameters, so every file written before the generic list reads as it did — then
+// `placements`, each as it names itself.
+struct PlacementRef {
+  std::string generator;
+  JsonValue params;
+  std::string where;
+};
 
-// Appends a kit's meshes after everything the scene has so far, named "<kit>/<file>", and says
-// where they start.
-u32 append_kit_meshes(const std::string& kit_name, const Vector<std::string>& meshes,
-                      const Vector<u64>& hashes, SceneDesc& out) {
-  const u32 first = out.meshes.size();
-  for (u32 m = 0; m < meshes.size(); ++m) {
-    out.meshes.push_back(meshes[m]);
-    SceneMeshInfo info;
-    info.name = kit_name + "/" + std::string(io::file_name(meshes[m]));
-    info.hash = hashes[m];
-    out.mesh_info.push_back(std::move(info));
-  }
-  return first;
-}
-
-// A scene's `ruins` entries (schema `engine.scene.RuinScatter`, docs/subsystems/ruins.md): each
-// kit read once, and the meshes a scatter draws appended after the file's own — so every index the
-// file used still names what it named, and the terrain, pushed after this, stays the last mesh —
-// and every building assembled here, standing on the terrain, so the renderer sees plain instances
-// of kit meshes and nothing else about ruins. A scatter drawn in **sections** draws its kit's
-// members; one drawn in **blocks** reads the kit for the footprint and draws only its block kit's
-// meshes, laid by the block layer on the same buildings (ruins.md, "The block layer") — the section
-// kit's meshes are not appended for it, since nothing would instance them and E33's members are
-// hundreds of megabytes on the GPU. A read of more than a few tiles assembles them on the job
-// system's performance pool, as `build_cache_textures` builds textures: the buildings are joined in
-// tile order whatever the thread count, so the instances are the same ones a single thread makes.
-bool expand_ruins(const scene::Scene& file, const std::string& path, const std::string& dir,
-                  const TerrainSampler& ground, SceneDesc& out, std::string& error) {
-  struct LoadedKit {
-    std::string path;
-    ruins::Kit kit;
-    u32 first_mesh = ~0u;  // appended the first time a sections scatter draws it
-  };
-  struct LoadedBlocks {
-    std::string path;
-    ruins::BlockKit kit;
-    u32 first_mesh = 0;
-  };
-  Vector<LoadedKit> kits;
-  Vector<LoadedBlocks> block_kits;
-  kits.reserve(file.ruins.size());
-  block_kits.reserve(file.ruins.size());
-  auto resolve = [&](const std::string& p) {
-    return io::is_absolute_path(p) || dir.empty() ? p : io::join_path(dir, p);
-  };
-  // One pool for the read, and only when there is enough to share out.
+// The job system's performance pool, made the first time a generator asks for it: a read of a few
+// tiles never starts one, and a read of many shares one, as `build_cache_textures` makes one.
+struct LazyPool {
   std::optional<jobs::JobSystem> pool;
-  for (u32 r = 0; r < file.ruins.size(); ++r) {
-    const scene::RuinScatter& scatter = file.ruins[r];
-    const std::string where = path + ": ruins " + std::to_string(r);
-    if (scatter.kit.empty()) {
-      error = where + " names no kit";
+  static jobs::JobSystem* get(void* context) {
+    auto* self = static_cast<LazyPool*>(context);
+    if (!self->pool.has_value()) self->pool.emplace(content_build::job_config(0));
+    return &*self->pool;
+  }
+};
+
+// Appends a generator's meshes after everything the scene has so far, each once: a mesh an earlier
+// entry appended — the same file under the same name, two entries of one kit — is that one, which
+// is what reading each kit once did. Returns each of the generator's meshes as a scene mesh.
+struct MeshKey {
+  std::string path;
+  std::string name;
+  u64 hash = 0;
+};
+Vector<u32> append_placement_meshes(std::span<const scene_gen::PlacementMesh> meshes,
+                                    Vector<std::pair<MeshKey, u32>>& seen, SceneDesc& out) {
+  Vector<u32> index;
+  index.reserve(static_cast<u32>(meshes.size()));
+  for (const scene_gen::PlacementMesh& mesh : meshes) {
+    u32 found = ~0u;
+    for (const auto& [key, scene_mesh] : seen) {
+      if (key.path == mesh.path && key.name == mesh.name && key.hash == mesh.hash) {
+        found = scene_mesh;
+        break;
+      }
+    }
+    if (found == ~0u) {
+      found = out.meshes.size();
+      out.meshes.push_back(mesh.path);
+      SceneMeshInfo info;
+      info.name = mesh.name;
+      info.hash = mesh.hash;
+      out.mesh_info.push_back(std::move(info));
+      seen.push_back({MeshKey{mesh.path, mesh.name, mesh.hash}, found});
+    }
+    index.push_back(found);
+  }
+  return index;
+}
+
+// The scene's placement entries through the scene-generator registry (docs/subsystems/scene_gen.md,
+// ADR-0046): each generator found by the name the entry gives, opened on the entry's parameters,
+// and either expanded whole — its instances standing on the terrain's ground (the provider's
+// floor), its meshes appended after the file's own and every earlier entry's, so every index the
+// file used still names what it named and the terrain, pushed after this, stays the last mesh — or,
+// in a streamed world, asked for the meshes it holds resident and left for the world's placements
+// consumer to expand a tile at a time. The renderer sees plain instances of meshes and nothing
+// else about a generator, and names none.
+bool expand_placements(const scene::Scene& file, const std::string& path, const std::string& dir,
+                       const TerrainSampler& ground, SceneDesc& out, std::string& error) {
+  Vector<PlacementRef> entries;
+  for (u32 r = 0; r < file.ruins.size(); ++r)
+    entries.push_back(PlacementRef{"ruins", schema::to_json(file.ruins[r]),
+                                   path + ": ruins " + std::to_string(r)});
+  for (u32 p = 0; p < file.placements.size(); ++p) {
+    entries.push_back(PlacementRef{file.placements[p].generator, file.placements[p].params,
+                                   path + ": placements " + std::to_string(p)});
+  }
+  if (entries.empty()) return true;
+  const scene_gen::GeneratorRegistry& registry = scene_gen::GeneratorRegistry::global();
+  // The world block a streamed entry is opened against: the file's, or the capability's defaults.
+  const scene::WorldRings world = file.world.has_value() ? *file.world : scene::WorldRings{};
+  LazyPool pool;
+  scene_gen::Context context;
+  context.world_seed = out.terrain.enabled ? out.terrain.seed : 0;
+  context.tile_size = out.world.enabled ? out.world.tile_size : 32.0f;
+  context.dir = dir;
+  if (out.terrain.enabled) context.ground = ground.provider().view();
+  context.world = out.world.enabled ? &world : nullptr;
+  context.jobs_fn = &LazyPool::get;
+  context.jobs_context = &pool;
+  Vector<std::pair<MeshKey, u32>> seen;
+  for (const PlacementRef& entry : entries) {
+    const scene_gen::PlacementGeneratorDesc* generator = registry.find_placement(entry.generator);
+    if (generator == nullptr) {
+      error = entry.where + " " + registry.unknown_placement(entry.generator);
       return false;
     }
-    const std::string kit_path = resolve(scatter.kit);
-    u32 k = 0;
-    while (k < kits.size() && kits[k].path != kit_path)
-      ++k;
-    if (k == kits.size()) {
-      LoadedKit loaded;
-      loaded.path = kit_path;
-      if (!ruins::read_kit_file(kit_path, loaded.kit, error)) {
-        error = where + ": " + error;
+    context.where = entry.where;
+    void* state = nullptr;
+    if (!generator->open(entry.params, context, &state, &error)) return false;
+    // Closed however this entry ends.
+    struct Close {
+      const scene_gen::PlacementGeneratorDesc* generator;
+      void* state;
+      ~Close() { generator->close(state); }
+    } close{generator, state};
+    if (out.world.enabled) {
+      if (generator->meshes == nullptr || generator->tile == nullptr) {
+        error = entry.where + ": the placement generator \"" + entry.generator +
+                "\" has no tiles, so a streamed world cannot hold it";
         return false;
       }
-      kits.push_back(std::move(loaded));
-    }
-    LoadedKit& loaded = kits[k];
-    const bool blocks = scatter.representation == scene::RuinRepresentation::Blocks;
-    u32 b = 0;
-    if (blocks) {
-      if (scatter.block_kit.empty()) {
-        error = where + " is drawn in blocks and names no block_kit";
-        return false;
-      }
-      const std::string blocks_path = resolve(scatter.block_kit);
-      while (b < block_kits.size() && block_kits[b].path != blocks_path)
-        ++b;
-      if (b == block_kits.size()) {
-        LoadedBlocks made;
-        made.path = blocks_path;
-        if (!ruins::read_block_kit_file(blocks_path, made.kit, error)) {
-          error = where + ": " + error;
-          return false;
-        }
-        made.first_mesh =
-            append_kit_meshes(made.kit.name, made.kit.meshes, made.kit.mesh_hashes, out);
-        block_kits.push_back(std::move(made));
-      }
-    } else if (loaded.first_mesh == ~0u) {
-      loaded.first_mesh =
-          append_kit_meshes(loaded.kit.name, loaded.kit.meshes, loaded.kit.mesh_hashes, out);
-    }
-    const i32 tile_cm = ruins::to_cm(scatter.tile_size);
-    if (tile_cm <= 0) {
-      error = where + ": tile_size must be positive";
-      return false;
-    }
-    Vector<ruins::TileCoord> tiles;
-    ruins::choose_tiles(scatter.seed, ruins::TileCoord{scatter.tile_min[0], scatter.tile_min[1]},
-                        ruins::TileCoord{scatter.tile_max[0], scatter.tile_max[1]}, scatter.count,
-                        scatter.density, tiles);
-    ruins::Placement placement;
-    placement.world_seed = scatter.seed;
-    placement.tile_cm = tile_cm;
-    placement.wind_step = ruins::yaw_step_from_degrees(scatter.wind_deg);
-    if (out.terrain.enabled) placement.ground = ruins::Ground{&terrain_ground, &ground};
-    const i64 start = time::monotonic_ns();
-    if (tiles.size() > 32 && !pool.has_value()) pool.emplace(content_build::job_config(0));
-    jobs::JobSystem* workers = tiles.size() > 32 ? &*pool : nullptr;
-    const u32 threads = workers != nullptr ? workers->worker_count(jobs::Pool::Performance) + 1 : 1;
-    const std::span<const ruins::TileCoord> span(tiles.data(), tiles.size());
-    if (!blocks) {
-      ruins::Output built;
-      if (!ruins::assemble_tiles(loaded.kit, placement, span, workers, built, &error)) {
-        error = where + ": " + error;
-        return false;
-      }
-      out.instances.reserve(out.instances.size() + built.instances.size());
-      for (const ruins::Instance& piece : built.instances) {
-        SceneInstance instance;
-        instance.mesh = loaded.first_mesh + loaded.kit.members[piece.member].mesh_index;
-        instance.transform.position = ruins::instance_translation(loaded.kit, piece);
-        instance.transform.rotation = quat_from_axis_angle(
-            Vec3{0.0f, 1.0f, 0.0f},
-            radians(22.5f * static_cast<f32>(ruins::instance_yaw_step(loaded.kit, piece))));
-        out.instances.push_back(instance);
-      }
-      out.ruin_buildings += built.sites.size();
-      out.ruin_instances += built.instances.size();
-      ENGINE_LOG_INFO(log_renderer, "ruins assembled", log::field("scene", path),
-                      log::field("representation", "sections"), log::field("kit", loaded.kit.name),
-                      log::field("buildings", built.sites.size()),
-                      log::field("instances", built.instances.size()),
-                      log::field("threads", threads),
-                      log::field("ms", static_cast<f64>(time::monotonic_ns() - start) / 1.0e6),
-                      log::field("hash", hash_hex(ruins::hash_output(built))));
+      Vector<scene_gen::PlacementMesh> resident;
+      if (!generator->meshes(state, context, resident, &error)) return false;
+      StreamedPlacements streamed;
+      streamed.generator = entry.generator;
+      streamed.params = entry.params;
+      streamed.dir = dir;
+      streamed.where = entry.where;
+      streamed.meshes = append_placement_meshes(
+          std::span<const scene_gen::PlacementMesh>(resident.data(), resident.size()), seen, out);
+      out.streamed.push_back(std::move(streamed));
       continue;
     }
-    const LoadedBlocks& laid = block_kits[b];
-    ruins::BlockOutput built;
-    if (!ruins::assemble_block_tiles(loaded.kit, laid.kit, placement, span, workers, built,
-                                     &error)) {
-      error = where + ": " + error;
-      return false;
-    }
-    out.instances.reserve(out.instances.size() + built.blocks.size());
-    u32 fallen = 0;
-    for (const ruins::Block& block : built.blocks) {
+    scene_gen::Placements placed;
+    if (!generator->expand(state, context, placed, &error)) return false;
+    const Vector<u32> meshes = append_placement_meshes(
+        std::span<const scene_gen::PlacementMesh>(placed.meshes.data(), placed.meshes.size()), seen,
+        out);
+    out.instances.reserve(out.instances.size() + placed.instances.size());
+    for (const scene_gen::Placement& p : placed.instances) {
+      if (p.mesh >= meshes.size()) {
+        error = entry.where + ": the placement generator \"" + entry.generator +
+                "\" placed a mesh it did not name";
+        return false;
+      }
       SceneInstance instance;
-      instance.mesh = laid.first_mesh + laid.kit.blocks[block.block].mesh_index;
-      instance.transform.position = ruins::block_translation(laid.kit, block);
-      instance.transform.rotation = quat_from_axis_angle(
-          Vec3{0.0f, 1.0f, 0.0f},
-          radians(22.5f * static_cast<f32>(ruins::block_yaw_step(laid.kit, block))));
+      instance.mesh = meshes[p.mesh];
+      instance.transform = p.transform;
       out.instances.push_back(instance);
-      fallen += (block.flags & ruins::k_block_fallen) != 0 ? 1u : 0u;
     }
-    out.ruin_buildings += built.sites.size();
-    out.ruin_instances += built.blocks.size();
-    ENGINE_LOG_INFO(log_renderer, "ruins assembled", log::field("scene", path),
-                    log::field("representation", "blocks"), log::field("kit", loaded.kit.name),
-                    log::field("block_kit", laid.kit.name),
-                    log::field("buildings", built.sites.size()),
-                    log::field("instances", built.blocks.size()), log::field("fallen", fallen),
-                    log::field("threads", threads),
-                    log::field("ms", static_cast<f64>(time::monotonic_ns() - start) / 1.0e6),
-                    log::field("hash", hash_hex(ruins::hash_blocks(built))));
+    out.placed_buildings += placed.things;
+    out.placed_instances += placed.instances.size();
+  }
+  if (out.world.enabled) {
+    ENGINE_LOG_INFO(log_renderer, "placements streamed by the world", log::field("scene", path),
+                    log::field("entries", entries.size()), log::field("meshes", seen.size()));
   }
   return true;
 }
-
-// A streamed world's `ruins` entries (docs/subsystems/world.md): the kits are read — so a bad kit
-// is refused when the scene is, not when the first tile asks — and their meshes appended exactly as
-// `expand_ruins` appends them, the section kit's always (the rings beyond the inner one draw
-// sections) and the block kit's when the entry is drawn in blocks; and no building is assembled.
-// Each entry becomes a `StreamedRuins` the world's ruins consumer assembles a tile at a time.
-bool stream_ruins(const scene::Scene& file, const std::string& path, const std::string& dir,
-                  SceneDesc& out, std::string& error) {
-  auto resolve = [&](const std::string& p) {
-    return io::is_absolute_path(p) || dir.empty() ? p : io::join_path(dir, p);
-  };
-  struct Appended {
-    std::string path;
-    u32 first = 0;
-    u32 count = 0;
-  };
-  Vector<Appended> kits;
-  Vector<Appended> block_kits;
-  auto find = [](const Vector<Appended>& list, const std::string& p) -> const Appended* {
-    for (const Appended& a : list) {
-      if (a.path == p) return &a;
-    }
-    return nullptr;
-  };
-  for (u32 r = 0; r < file.ruins.size(); ++r) {
-    const scene::RuinScatter& scatter = file.ruins[r];
-    const std::string where = path + ": ruins " + std::to_string(r);
-    if (scatter.kit.empty()) {
-      error = where + " names no kit";
-      return false;
-    }
-    if (std::abs(scatter.tile_size - out.world.tile_size) > 1e-4f) {
-      error = where + ": its tile_size is " + std::to_string(scatter.tile_size) +
-              " and the world's " + std::to_string(out.world.tile_size) +
-              "; a streamed entry is assembled one ring tile at a time, so they must be one grid";
-      return false;
-    }
-    StreamedRuins entry;
-    entry.kit = resolve(scatter.kit);
-    if (const Appended* seen = find(kits, entry.kit)) {
-      entry.kit_first_mesh = seen->first;
-      entry.kit_meshes = seen->count;
-    } else {
-      ruins::Kit kit;
-      if (!ruins::read_kit_file(entry.kit, kit, error)) {
-        error = where + ": " + error;
-        return false;
-      }
-      Appended made{entry.kit, append_kit_meshes(kit.name, kit.meshes, kit.mesh_hashes, out),
-                    kit.meshes.size()};
-      entry.kit_first_mesh = made.first;
-      entry.kit_meshes = made.count;
-      kits.push_back(std::move(made));
-    }
-    entry.blocks = scatter.representation == scene::RuinRepresentation::Blocks;
-    if (entry.blocks) {
-      if (scatter.block_kit.empty()) {
-        error = where + " is drawn in blocks and names no block_kit";
-        return false;
-      }
-      entry.block_kit = resolve(scatter.block_kit);
-      if (const Appended* seen = find(block_kits, entry.block_kit)) {
-        entry.block_first_mesh = seen->first;
-        entry.block_meshes = seen->count;
-      } else {
-        ruins::BlockKit kit;
-        if (!ruins::read_block_kit_file(entry.block_kit, kit, error)) {
-          error = where + ": " + error;
-          return false;
-        }
-        Appended made{entry.block_kit,
-                      append_kit_meshes(kit.name, kit.meshes, kit.mesh_hashes, out),
-                      kit.meshes.size()};
-        entry.block_first_mesh = made.first;
-        entry.block_meshes = made.count;
-        block_kits.push_back(std::move(made));
-      }
-    }
-    entry.seed = scatter.seed;
-    entry.tile_size = scatter.tile_size;
-    entry.tile_min[0] = scatter.tile_min[0];
-    entry.tile_min[1] = scatter.tile_min[1];
-    entry.tile_max[0] = scatter.tile_max[0];
-    entry.tile_max[1] = scatter.tile_max[1];
-    entry.count = scatter.count;
-    entry.density = scatter.density;
-    entry.wind_deg = scatter.wind_deg;
-    out.streamed_ruins.push_back(std::move(entry));
-  }
-  ENGINE_LOG_INFO(log_renderer, "ruins streamed by the world", log::field("scene", path),
-                  log::field("entries", file.ruins.size()), log::field("kits", kits.size()),
-                  log::field("block_kits", block_kits.size()));
-  return true;
-}
-#endif
 
 }  // namespace
 
@@ -1048,8 +914,11 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
     error = path + ": format is '" + file.format + "', not engine.scene.v1";
     return false;
   }
-  if (file.meshes.empty() && !file.terrain.has_value() && file.ruins.empty()) {
-    error = path + ": no \"meshes\", no \"terrain\" and no \"ruins\": a scene needs at least one";
+  if (file.meshes.empty() && !file.terrain.has_value() && file.ruins.empty() &&
+      file.placements.empty()) {
+    error = path +
+            ": no \"meshes\", no \"terrain\", no \"ruins\" and no \"placements\": a scene needs at "
+            "least one";
     return false;
   }
   out.name = file.name;
@@ -1306,30 +1175,19 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
       return false;
     }
   }
-  // Ruins, assembled from their kits by the ruins capability, when this build has it — or, in a
-  // streamed world, left for the world to assemble tile by tile.
-  if (!file.ruins.empty()) {
-#if ENGINE_RENDERER_RUINS
-    if (out.world.enabled) {
-      if (!stream_ruins(file, path, dir, out, error)) return false;
-    } else if (!expand_ruins(file, path, dir, ground, out, error)) {
-      return false;
-    }
-#else
-    error = path +
-            ": the scene names ruins, and this build has no ruins capability "
-            "(ENGINE_WITH_RUINS=OFF or ENGINE_MINIMAL=ON)";
-    return false;
-#endif
-  }
-  if (file.instances.empty() && file.scatters.empty() && file.ruins.empty()) {
+  // The placement entries — the ruins, and any generator by name — through the scene-generator
+  // registry, after the ground they stand on: expanded here, or in a streamed world left for the
+  // world to expand tile by tile.
+  if (!expand_placements(file, path, dir, ground, out, error)) return false;
+  if (file.instances.empty() && file.scatters.empty() && file.ruins.empty() &&
+      file.placements.empty()) {
     for (u32 i = 0; i < file_meshes; ++i)
       out.instances.push_back(SceneInstance{i, Transform3::identity()});
   }
   // The terrain is the last mesh, with one identity instance after everything the file placed,
   // so every index the file used still names what it named.
   if (out.terrain.enabled) {
-    // After the file's meshes and any ruin kit's, so its index is the count so far.
+    // After the file's meshes and every placement generator's, so its index is the count so far.
     const u32 terrain_mesh = out.meshes.size();
     out.meshes.push_back(std::string());
     SceneMeshInfo info;
@@ -1560,7 +1418,7 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
   if (out.skinned_instances == 0) out.instance_joints.clear();
   out.mesh_fit = std::move(fit_of_mesh);
   out.world = resolved.world;
-  out.streamed_ruins = resolved.streamed_ruins;
+  out.streamed = resolved.streamed;
   out.dynamic = resolved.world.enabled;
 
   update_scene_bounds(out);

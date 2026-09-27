@@ -6,12 +6,13 @@
 
 ## Who registers, and who looks
 
-**Status, 2026-09-27.** The ruins and the city move onto the registry one at a time after the grounds, each in a change of its own that removes the route it used to take; this section says where each stands.
+**Status, 2026-09-27.** The city moves onto the registry after the grounds and the ruins, in a change of its own; this section says where each stands.
 
 | Generator | Kind | Registered by | Looked up by |
 |---|---|---|---|
 | `waves` | ground | `systems/renderer/src/terrain.cpp` — the renderer's own, so the default terrain takes the same path a capability's does | the renderer's `TerrainSampler`, for every terrain that names it or names nothing |
 | `dunes` | ground (moves, rings) | `domain/terrain/src/scene_ground.cpp` — the terrain capability; `ENGINE_RENDERER_TERRAIN` and the renderer's link to `terrain` are gone | the renderer's `TerrainSampler` (the scene read, the mesh, the time-lapse, the rings), by `provider` or the old `generator` enum |
+| `ruins` | placements (`expand`, `meshes`, `tile`, `occupies`, `representation`) | `domain/ruins/src/scene_generator.cpp` — the ruins capability; `ENGINE_RENDERER_RUINS`, `ENGINE_WORLD_RUINS` and both modules' links to `ruins` are gone | the scene reader (`expand_placements`: a `ruins` entry, or a `placements` entry naming it) and the world's placements consumer (`world::PlacementTiles`, which replaced `RuinsTiles`) |
 
 **The fixed features.** A terrain entry's ridges and basins (`engine.scene.Terrain.ridges`, `basins`) are the scene's, added by every ground the same way — the waves multiply their dunes down over them and add them, the dunes thin their sand over them and add them — so their arithmetic is here, beside the entry's type, in one copy (`terrain_features.h`: `terrain_features`, `ridge_weight`, `basin_weight`). It was the renderer's until the dunes moved into the terrain capability, and it moved expression for expression.
 

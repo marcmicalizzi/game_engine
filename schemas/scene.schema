@@ -572,11 +572,13 @@ struct WorldRing @version(1) {
 }
 
 /// A scene streamed tile by tile around its observers (the world capability, docs/subsystems/
-/// world.md): its `ruins` entries are not assembled when the scene is read but a tile at a time as
-/// the ring around the camera activates it, and dropped when it deactivates. Every field has the
-/// capability's default, so `"world": {}` is a streamed scene with the default rings.
+/// world.md): its `ruins` and `placements` entries are not expanded when the scene is read but a
+/// tile at a time as the ring around the camera activates it, and dropped when it deactivates.
+/// Every field has the capability's default, so `"world": {}` is a streamed scene with the default
+/// rings.
 struct WorldRings @version(1) {
-  /// A tile's edge, metres; the ruins entries' own `tile_size` must be the same.
+  /// A tile's edge, metres; the ruins entries' own `tile_size`, and every placement entry's grid,
+  /// must be the same.
   tile_size: f32 = 32
   /// Innermost first. Empty: 1.5 tiles in blocks, 8 in sections, 24 in walls only.
   rings: WorldRing[]
@@ -587,8 +589,19 @@ struct WorldRings @version(1) {
   simulated: u32 = 2
 }
 
-/// A scene: meshes, placements of them, and an optional terrain.
-struct Scene @version(4) {
+/// One entry of a scene's placement generators (docs/subsystems/scene_gen.md, ADR-0046): the name
+/// a placement generator registered under — "ruins", "city" — and its parameters, which the
+/// generator reads with its own schema type (the ruins' are an `engine.scene.RuinScatter`). The
+/// reader expands each entry where it stands in the list, standing on the terrain; a streamed world
+/// (`world`) streams it a tile at a time instead. A name the executable does not carry is refused
+/// with a sentence naming it.
+struct PlacementEntry @version(1) {
+  generator: string
+  params: json
+}
+
+/// A scene: meshes, placements of them, and an optional terrain. Version 5 added `placements`.
+struct Scene @version(5) {
   /// "engine.scene.v1". Empty is accepted, for the files written before the field existed.
   format: string
   name: string
@@ -602,15 +615,19 @@ struct Scene @version(4) {
   /// its first frame rather than at the orbit, which frames the whole scene's bounds and for a
   /// 5 km desert is 9 km away. Empty: the orbit.
   camera_path: string @since(2)
-  /// Ruined buildings assembled from kits when the scene is read, standing on the terrain.
+  /// Ruined buildings assembled from kits when the scene is read, standing on the terrain. Each is
+  /// read as the placement generator "ruins" with the entry as its parameters, before `placements`.
   ruins: RuinScatter[] @since(3)
   /// What a scene fragment written by the assembler (`engine-content ruins`) says about its
   /// buildings and the sand their walls ask for: carried, never read by the renderer.
   ruin_sites: RuinSite[] @since(3)
   sand_drifts: SandDrift[] @since(3)
-  /// Stream the scene tile by tile instead of reading it whole: its ruins entries are assembled
-  /// per tile as the ring round the camera activates them. Null: everything is read at once.
+  /// Stream the scene tile by tile instead of reading it whole: its ruins and placement entries are
+  /// expanded per tile as the ring round the camera activates them. Null: everything is read at once.
   world: WorldRings? @since(4)
+  /// Placement generators by name, with their parameters (ADR-0046): expanded in this order after
+  /// the `ruins` entries, each standing on the terrain, or streamed a tile at a time in a world.
+  placements: PlacementEntry[] @since(5)
 }
 
 /// Where the owner's replacements for a scene's placeholders are: a local file, never committed.

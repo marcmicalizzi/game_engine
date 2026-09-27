@@ -11,13 +11,19 @@
 # `engine.scene.RuinBlockKit`), and a fragment an `engine.scene.Scene` (schemas/scene.schema).
 # `jobs` is `assemble_tiles`'s and `assemble_block_tiles`'s performance pool. `src/grid.h` is the
 # integer arithmetic the assembler and the block layer share, private to the module.
-engine_module(NAME ruins LAYER domain OPTIONAL
-  DEPS base containers math hash json schema schemas io log jobs
+#
+# `scene_gen` is the placement generator's (scene_generator.h; ADR-0046): the ruins register as the
+# placement generator "ruins" from `src/scene_generator.cpp`, and the renderer's scene reader and the
+# world ring find them by that name and link nothing of this module. WHOLE_ARCHIVE keeps the
+# registrar, which nothing references.
+engine_module(NAME ruins LAYER domain OPTIONAL WHOLE_ARCHIVE
+  DEPS base containers math hash json schema schemas io log jobs time scene_gen
   SOURCES src/kit.cpp src/assembler.cpp src/block_kit.cpp src/blocks.cpp src/fragment.cpp
-          src/synthetic_kit.cpp src/synthetic_blocks.cpp)
+          src/synthetic_kit.cpp src/synthetic_blocks.cpp src/scene_generator.cpp)
 
 engine_module_tests(NAME ruins
-  SOURCES tests/ruins_tests.cpp tests/blocks_tests.cpp tests/size_table.cpp)
+  SOURCES tests/ruins_tests.cpp tests/blocks_tests.cpp tests/scene_generator_tests.cpp
+          tests/size_table.cpp)
 
 # The assembler's cost per building and per thousand, on one thread and on the pool.
 engine_module_bench(NAME ruins

@@ -2,9 +2,9 @@
 
 // engine-view's streamed world (`--world`, or a scene file's `world` block;
 // docs/subsystems/world.md and apps.md): the world capability's tile ring over the loaded scene,
-// with the camera as its one observer, and its ruins consumer handing the renderer each frame's
-// tail of instances. Compiled only where the world capability is (ENGINE_VIEW_WORLD); engine-view
-// without it refuses `--world` with a sentence, which the minimal build proves.
+// with the camera as its one observer, and its placements consumer handing the renderer each
+// frame's tail of instances. Compiled only where the world capability is (ENGINE_VIEW_WORLD);
+// engine-view without it refuses `--world` with a sentence, which the minimal build proves.
 //
 // **The update runs between frames**, before `begin_frame`, because the renderer takes a new tail
 // only between frames (`SceneRenderer::set_dynamic_instances`): in a flythrough from the frame's
@@ -20,11 +20,9 @@
 #include <systems/renderer/scene.h>
 #include <systems/renderer/scene_renderer.h>
 #include <systems/renderer/view_set.h>
+#include <systems/world/placement_tiles.h>
 #include <systems/world/world.h>
 #include <systems/world/world_log.h>
-#if ENGINE_WORLD_RUINS
-#include <systems/world/ruins_tiles.h>
-#endif
 
 #include <memory>
 #include <string>
@@ -39,8 +37,9 @@ class ViewWorld {
   ViewWorld& operator=(const ViewWorld&) = delete;
 
   // The ring from the scene's world block (its defaults where it gave none), the budget from the
-  // tunables, and the ruins consumer over the scene's streamed entries with the renderer as its
-  // sink. `data` and `renderer` must outlive this.
+  // tunables, and the placements consumer over the scene's streamed entries (its ruins, its
+  // placements: whatever generators the scene names, found in the scene-generator registry) with
+  // the renderer as its sink. `data` and `renderer` must outlive this.
   bool create(const renderer::SceneData& data, renderer::SceneRenderer& renderer,
               std::string* error);
   bool valid() const noexcept { return renderer_ != nullptr; }
@@ -64,10 +63,8 @@ class ViewWorld {
                      u32& handovers, std::string* error);
 
   world::World& world() noexcept { return world_; }
-#if ENGINE_WORLD_RUINS
-  world::RuinsTiles& ruins() noexcept { return ruins_; }
-#endif
-  // Whether a ring change of `tile` changes what its ruins are drawn as (and it has any).
+  world::PlacementTiles& placements() noexcept { return placements_; }
+  // Whether a ring change of `tile` changes what its placements are drawn as (and it has any).
   bool is_handover(const world::TileEvent& event) const noexcept;
   const char* drawn_as(u8 ring) const noexcept;
   // The run's world: the log's summary line, and the same object in engine-view's summary.
@@ -84,12 +81,10 @@ class ViewWorld {
   world::WorldLog log_;
   std::string log_path_;  // empty: no log
   std::string log_text_;
-#if ENGINE_WORLD_RUINS
-  world::RuinsTiles ruins_;
-  world::RuinsTilesConfig ruins_config_;
-  Vector<world::RuinsTiles::TileRange> ranges_;  // hand_over's: the tail's tiles
-  Vector<renderer::DynamicBlock> blocks_;        // and the blocks they are
-#endif
+  world::PlacementTiles placements_;
+  world::PlacementTilesConfig placements_config_;
+  Vector<world::PlacementTiles::TileRange> ranges_;  // hand_over's: the tail's tiles
+  Vector<renderer::DynamicBlock> blocks_;            // and the blocks they are
   bool compact_next_ = false;  // the next hand-over lays the tiles out from scratch (a restart)
 };
 

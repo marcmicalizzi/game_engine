@@ -5,8 +5,10 @@
 // tile ring (tile_ring.h), and turns the ring's changes into calls on the **consumers** registered
 // with it — what a tile *is* to the renderer, the document and the persistent store is theirs:
 //
-//   ruins_tiles.h     a tile's ruined building, as instances the renderer adds and removes between
-//                     frames (blocks in the inner ring, sections beyond: E34)
+//   placement_tiles.h what a scene's placement generators put on a tile — its ruined building
+//                     (blocks in the inner ring, sections beyond: E34), a district's proxies — as
+//                     instances the renderer adds and removes between frames, each generator found
+//                     in the scene-generator registry by name (ADR-0046)
 //   document_tiles.h  the tile of a partitioned document, materialized through the scheduler's
 //                     hooks (`sim::Materializer`) and dematerialized again
 //   tile_store.h      the tile's projections and snapshot in `foundation/store`, which
@@ -19,13 +21,13 @@
 //   save_game.h       a save: the document, the store's backup, the ring, and a manifest
 //
 // **Consumers are a table, not a base class**, for the reason `sim::MaterializationHooks` is: a
-// row of function pointers and a context, walked in registration order, so a world with no ruins
-// consumer has no ruins row and costs nothing for it, and nothing here names a consumer's type.
-// Activation (and a move between rings) calls the consumers **in registration order**;
-// deactivation calls them **in reverse**, the mirror of construction — whatever a later consumer
-// built on a tile (the store's reconciliation resolves the document consumer's entities) lets go
-// before what it was built on does. Each consumer names the rings it acts in; a tile moving out of
-// them is a deactivation *to that consumer* even while it stays active in the ring.
+// row of function pointers and a context, walked in registration order, so a world with no
+// placements consumer has no placements row and costs nothing for it, and nothing here names a
+// consumer's type. Activation (and a move between rings) calls the consumers **in registration
+// order**; deactivation calls them **in reverse**, the mirror of construction — whatever a later
+// consumer built on a tile (the store's reconciliation resolves the document consumer's entities)
+// lets go before what it was built on does. Each consumer names the rings it acts in; a tile moving
+// out of them is a deactivation *to that consumer* even while it stays active in the ring.
 //
 // **Between ticks, never inside one.** An update materializes and dematerializes, and the driver
 // (`sim::Materializer`) must be called by whoever owns the tick, outside it (sim.md, "Between
@@ -37,7 +39,8 @@
 //
 //   [x] schema types      schemas/world_tiles.schema (the store's projection, the world log's line)
 //   [-] scheduler entry   none: the update runs between ticks (above), not in a phase
-//   [-] render passes     none: the ruins consumer hands the renderer instances it already draws
+//   [-] render passes     none: the placements consumer hands the renderer instances it already
+//   draws
 //   [-] derived data      none: a tile's building is assembled at activation, from its seed
 //   [x] protocol methods  session.save_game, load_game, state_hash (engine-host); run_headless
 //                         takes the ring (apps.md)
@@ -60,7 +63,8 @@ namespace engine::world {
 // Determinism stance (ADR-0010): `hashed`. Which tiles are active decides what is materialized
 // and reconciled, so it is simulation state, and it is a function of the sequence of observer sets
 // alone (tile_ring.h). A replay that feeds the same observers gets the same events in the same
-// order, and so the same consumers' calls. What the ruins consumer builds from them is `derived`.
+// order, and so the same consumers' calls. What the placements consumer builds from them is
+// `derived`.
 inline constexpr const char* k_determinism = "hashed";
 
 // The per-update budget, from the tunables (`world.ring.max_activations`,
@@ -80,7 +84,7 @@ struct TileConsumer {
   bool (*change_ring)(void* context, const TileEvent& event) = nullptr;
   void (*deactivate)(void* context, const TileEvent& event) = nullptr;
   // Once at the end of an update in which any of this consumer's tiles changed: where a consumer
-  // hands its batch on (the ruins consumer's instances, to the renderer, once a frame).
+  // hands its batch on (the placements consumer's instances, to the renderer, once a frame).
   void (*commit)(void* context) = nullptr;
 };
 

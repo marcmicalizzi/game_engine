@@ -1,17 +1,19 @@
-// The ruins consumer (systems/world/ruins_tiles.h; docs/subsystems/world.md, "The consumers"):
-// a tile's building assembled when the ring activates it, in the representation its ring draws —
-// blocks in the inner ring, sections beyond, walls only past that — exactly the assembler's
-// building for that tile; dropped when it goes; the tail handed on in tile order; and the pair
-// budget drawing the nearest tiles first before the renderer is asked. No device: the scene is
-// read, not loaded, and its parts are laid out by hand, one cluster a mesh, which is what the kit
-// of boxes and the low block kit are.
+// The placements consumer over a streamed ruins entry (systems/world/placement_tiles.h;
+// docs/subsystems/world.md, "The consumers"; scene_gen.md): a tile's building made by the placement
+// generator "ruins" when the ring activates it, in the representation its ring draws — blocks in
+// the inner ring, sections beyond, walls only past that — exactly the assembler's building for that
+// tile; dropped when it goes; the tail handed on in tile order; and the pair budget drawing the
+// nearest tiles first before the renderer is asked. Compiled where the ruins capability is and
+// linked with it as a host is, since the world reaches the ruins through the registry. No device:
+// the scene is read, not loaded, and its parts are laid out by hand, one cluster a mesh, which is
+// what the kit of boxes and the low block kit are.
 #include <domain/ruins/assembler.h>
 #include <domain/ruins/blocks.h>
 #include <domain/ruins/kit.h>
 #include <domain/ruins/synthetic_kit.h>
 #include <systems/renderer/scene.h>
 #include <systems/renderer/terrain.h>
-#include <systems/world/ruins_tiles.h>
+#include <systems/world/placement_tiles.h>
 #include <systems/world/world.h>
 
 #include <doctest/doctest.h>
@@ -50,7 +52,7 @@ void fake_load(const renderer::SceneDesc& desc, renderer::SceneData& out) {
     out.parts[m].first_cluster = m;
     out.parts[m].cluster_count = 1;
   }
-  out.streamed_ruins = desc.streamed_ruins;
+  out.streamed = desc.streamed;
   out.terrain = desc.terrain;
   out.world = desc.world;
   out.dynamic = desc.world.enabled;
@@ -63,15 +65,18 @@ struct Kits {
 };
 
 // The instances the scene reader would have made of one tile's building, in `detail`, and how many
-// of them are rubble (debris members, fallen blocks).
+// of them are rubble (debris members, fallen blocks). The entry is `scene_text`'s: seed 11, 24 m
+// tiles, the wind from 45 degrees; its generator holds the kit's meshes resident and then the block
+// kit's (`StreamedPlacements::meshes`).
 Vector<renderer::SceneInstance> expected(const Kits& kits, const renderer::SceneData& scene,
                                          TileCoord tile, RingRuins detail, u32* rubble = nullptr) {
-  const renderer::StreamedRuins& entry = scene.streamed_ruins[0];
+  const renderer::StreamedPlacements& entry = scene.streamed[0];
+  const u32 kit_meshes = kits.kit.meshes.size();
   renderer::TerrainSampler ground(scene.terrain);
   ruins::Placement placement;
-  placement.world_seed = entry.seed;
-  placement.tile_cm = ruins::to_cm(entry.tile_size);
-  placement.wind_step = ruins::yaw_step_from_degrees(entry.wind_deg);
+  placement.world_seed = 11;
+  placement.tile_cm = ruins::to_cm(24.0f);
+  placement.wind_step = ruins::yaw_step_from_degrees(45.0f);
   placement.ground =
       ruins::Ground{[](const void* c, f32 x, f32 z) noexcept {
                       return static_cast<const renderer::TerrainSampler*>(c)->height(x, z);
@@ -85,7 +90,7 @@ Vector<renderer::SceneInstance> expected(const Kits& kits, const renderer::Scene
     REQUIRE(layer.assemble(placement, ruins::TileCoord{tile.x, tile.z}, built, &error));
     for (const ruins::Block& block : built.blocks) {
       renderer::SceneInstance i;
-      i.mesh = entry.block_first_mesh + kits.blocks.blocks[block.block].mesh_index;
+      i.mesh = entry.meshes[kit_meshes + kits.blocks.blocks[block.block].mesh_index];
       i.transform.position = ruins::block_translation(kits.blocks, block);
       out.push_back(i);
       if (rubble != nullptr && (block.flags & ruins::k_block_fallen) != 0) ++*rubble;
@@ -98,7 +103,7 @@ Vector<renderer::SceneInstance> expected(const Kits& kits, const renderer::Scene
   REQUIRE(assembler.assemble(placement, ruins::TileCoord{tile.x, tile.z}, built, &error));
   for (const ruins::Instance& piece : built.instances) {
     renderer::SceneInstance i;
-    i.mesh = entry.kit_first_mesh + kits.kit.members[piece.member].mesh_index;
+    i.mesh = entry.meshes[kits.kit.members[piece.member].mesh_index];
     i.transform.position = ruins::instance_translation(kits.kit, piece);
     out.push_back(i);
     if (rubble != nullptr && piece.kind == static_cast<u8>(ruins::PieceKind::debris)) ++*rubble;
@@ -173,10 +178,10 @@ struct Fixture {
 
 TEST_CASE("world ruins: each ring's tiles draw the assembler's building in the ring's form") {
   Fixture f;
-  REQUIRE(f.scene.streamed_ruins.size() == 1);
-  RuinsTilesConfig config;
+  REQUIRE(f.scene.streamed.size() == 1);
+  PlacementTilesConfig config;
   config.tile_size = 24.0f;
-  RuinsTiles ruins;
+  PlacementTiles ruins;
   std::string error;
   REQUIRE_MESSAGE(ruins.create(f.scene, config, &error), error);
   Sink sink;
@@ -192,8 +197,8 @@ TEST_CASE("world ruins: each ring's tiles draw the assembler's building in the r
   for (u32 i = 0; i < world.ring().active_count(); ++i) {
     const TileCoord tile = tile_of_key(world.ring().active_keys()[i]);
     const u8 ring = world.ring().active_rings()[i];
-    CHECK(ruins.has_building(tile) == (tile.x >= -4 && tile.x <= 3 && tile.z >= -4 && tile.z <= 3));
-    if (!ruins.has_building(tile)) {
+    CHECK(ruins.occupied(tile) == (tile.x >= -4 && tile.x <= 3 && tile.z >= -4 && tile.z <= 3));
+    if (!ruins.occupied(tile)) {
       CHECK(ruins.tile_instances(tile).empty());
       continue;
     }
@@ -216,12 +221,12 @@ TEST_CASE("world ruins: each ring's tiles draw the assembler's building in the r
              std::span<const renderer::SceneInstance>(joined.data(), joined.size())));
   CHECK(ruins.stats().instances == joined.size());
   CHECK(ruins.stats().pairs == joined.size());  // one cluster a mesh
-  CHECK(ruins.stats().laid == 9);
+  CHECK(ruins.stats().built[0] == 9);
   // Each of the tail's instances says whether it is rubble: as many as the tiles' debris members
   // and fallen blocks.
-  REQUIRE(ruins.tail_rubble().size() == ruins.tail().size());
+  REQUIRE(ruins.tail_tags().size() == ruins.tail().size());
   u32 marked = 0;
-  for (const u8 r : ruins.tail_rubble())
+  for (const u8 r : ruins.tail_tags())
     marked += r;
   CHECK(marked == rubble);
   CHECK(rubble > 0);
@@ -257,9 +262,9 @@ TEST_CASE(
   // How many pairs each ring's tiles take with no budget (one cluster a mesh: a pair an instance).
   u32 ring_pairs[3] = {};
   {
-    RuinsTilesConfig config;
+    PlacementTilesConfig config;
     config.tile_size = 24.0f;
-    RuinsTiles ruins;
+    PlacementTiles ruins;
     std::string error;
     REQUIRE_MESSAGE(ruins.create(f.scene, config, &error), error);
     World world(rings());
@@ -277,10 +282,10 @@ TEST_CASE(
   // Room for the inner ring and half the middle one. Decided per event, in tile order, the budget
   // went to whichever tiles came first, and a first fill refused buildings beside the observer
   // for ones at the edge (E35's first run of the ashlar kit under the default rings).
-  RuinsTilesConfig config;
+  PlacementTilesConfig config;
   config.tile_size = 24.0f;
   config.max_pairs = f.scene.pair_count + ring_pairs[0] + ring_pairs[1] / 2;
-  RuinsTiles ruins;
+  PlacementTiles ruins;
   std::string error;
   REQUIRE_MESSAGE(ruins.create(f.scene, config, &error), error);
   Sink sink;
@@ -338,19 +343,23 @@ TEST_CASE("world ruins: a streamed scene keeps its kits' meshes and none of its 
   Fixture streamed;
   CHECK(streamed.desc.world.enabled);
   CHECK(streamed.desc.instances.size() == 1);  // the terrain's only
-  REQUIRE(streamed.desc.streamed_ruins.size() == 1);
-  const renderer::StreamedRuins& entry = streamed.desc.streamed_ruins[0];
-  CHECK(entry.blocks);
-  CHECK(entry.kit_meshes == streamed.kits.kit.meshes.size());
-  CHECK(entry.block_meshes == streamed.kits.blocks.meshes.size());
-  CHECK(entry.block_first_mesh == entry.kit_first_mesh + entry.kit_meshes);
-  CHECK(streamed.desc.meshes.size() == entry.kit_meshes + entry.block_meshes + 1);
-  CHECK(streamed.desc.ruin_instances == 0);
+  REQUIRE(streamed.desc.streamed.size() == 1);
+  const renderer::StreamedPlacements& entry = streamed.desc.streamed[0];
+  CHECK(entry.generator == "ruins");
+  // The kit's meshes resident, then the block kit's: the entry is drawn in blocks.
+  const u32 kit_meshes = streamed.kits.kit.meshes.size();
+  const u32 block_meshes = streamed.kits.blocks.meshes.size();
+  REQUIRE(entry.meshes.size() == kit_meshes + block_meshes);
+  for (u32 m = 0; m < entry.meshes.size(); ++m)
+    CHECK(entry.meshes[m] == m);
+  CHECK(streamed.desc.meshes[kit_meshes] == streamed.kits.blocks.meshes[0]);
+  CHECK(streamed.desc.meshes.size() == kit_meshes + block_meshes + 1);
+  CHECK(streamed.desc.placed_instances == 0);
 
   Fixture whole{""};
   CHECK_FALSE(whole.desc.world.enabled);
-  CHECK(whole.desc.streamed_ruins.empty());
-  CHECK(whole.desc.ruin_buildings == 64);
+  CHECK(whole.desc.streamed.empty());
+  CHECK(whole.desc.placed_buildings == 64);
 
   // `--world` on a file with no world block streams it with the defaults, at the entries' own grid
   // only when that is the world's: 24 m tiles against the default 32 m are refused.

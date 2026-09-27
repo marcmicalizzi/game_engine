@@ -14,6 +14,7 @@
 
 #include <core/base/types.h>
 #include <core/containers/vector.h>
+#include <core/json/json_value.h>
 #include <core/math/math.h>
 #include <domain/assets/gltf.h>
 #include <domain/geometry/cluster_file.h>
@@ -110,8 +111,9 @@ struct SceneMeshInfo {
 // interpreted**, like `SceneAnimation`: the tile ring is the world capability's
 // (docs/subsystems/world.md), which the renderer must not depend on, and the scene file is one file
 // read by one parser. What the renderer does with it is only what its reader does differently —
-// the ruins entries become `StreamedRuins` instead of instances — and what `SceneData::dynamic`
-// says: that instances will come and go between frames (`GpuScene::set_dynamic_instances`).
+// the placement entries become `StreamedPlacements` instead of instances — and what
+// `SceneData::dynamic` says: that instances will come and go between frames
+// (`GpuScene::set_dynamic_instances`).
 struct WorldDesc {
   bool enabled = false;
   f32 tile_size = 32.0f;
@@ -122,25 +124,21 @@ struct WorldDesc {
   u32 simulated = 2;  // rings, innermost first, the simulation runs in
 };
 
-// One `ruins` entry of a streamed scene, as the reader left it: its kits' meshes are in the scene
-// (so the renderer has them resident before a tile asks), its buildings are not. Everything the
-// world's ruins consumer needs to assemble a tile's building exactly as `expand_ruins` would have
-// assembled it at load — the same seed, tiles, wind and kits — and where the kits' meshes start.
-struct StreamedRuins {
-  std::string kit;        // resolved against the scene file's directory
-  std::string block_kit;  // empty: sections in every ring
-  bool blocks = false;    // `representation` was `Blocks` (and a block kit is named)
-  u64 seed = 1;
-  f32 tile_size = 32.0f;
-  i32 tile_min[2] = {};
-  i32 tile_max[2] = {};
-  u32 count = 0;
-  f32 density = 0.05f;
-  f32 wind_deg = 0.0f;
-  u32 kit_first_mesh = 0;  // the kit's meshes: scene mesh `kit_first_mesh + Member::mesh_index`
-  u32 kit_meshes = 0;
-  u32 block_first_mesh = 0;  // the block kit's, when there is one
-  u32 block_meshes = 0;
+// One placement entry of a streamed scene (a `ruins` entry, or one of `placements`), as the reader
+// left it: the meshes its generator holds resident are in the scene (so the renderer has them
+// before a tile asks), and none of its instances are. Everything the world's placements consumer
+// needs to open the generator again and ask it for a tile exactly as the whole read would have
+// expanded that tile (docs/subsystems/scene_gen.md) — the generator's name, the entry's
+// parameters, what its paths resolve against — and which scene mesh each of the generator's
+// resident meshes is.
+struct StreamedPlacements {
+  std::string generator;  // the placement generator's registered name
+  JsonValue params;       // the entry's parameters, as the file gave them
+  std::string dir;        // the scene file's directory
+  std::string where;      // "scene.json: ruins 0", for a sentence
+  // The generator's resident meshes (`scene_gen::PlacementGeneratorDesc::meshes`), in its order, as
+  // scene meshes: a tile's placement of mesh `m` is an instance of scene mesh `meshes[m]`.
+  Vector<u32> meshes;
 };
 
 // What to load: mesh files and instances of them, or one of the procedural scenes above.
@@ -195,15 +193,16 @@ struct SceneDesc {
   // path of its own starts a camera — engine-view's `--interactive` — read with `read_camera_path`
   // once the terrain it may stand on is known.
   std::string camera_path;
-  // What the file's `ruins` entries assembled into `instances` (docs/subsystems/ruins.md): the
-  // buildings and the pieces, for a host's summary. Zero for a scene with none.
-  u32 ruin_buildings = 0;
-  u32 ruin_instances = 0;
+  // What the file's placement entries — its `ruins` and its `placements` — expanded into
+  // `instances` (docs/subsystems/scene_gen.md): the things their generators made (buildings) and
+  // the instances, for a host's summary. Zero for a scene with none.
+  u32 placed_buildings = 0;
+  u32 placed_instances = 0;
   // A streamed world (`engine.scene.WorldRings`): enabled by the file's `world` block or by
-  // `SceneFileOptions::world`, and then every ruins entry is in `streamed_ruins` and none in
-  // `instances`.
+  // `SceneFileOptions::world`, and then every placement entry is in `streamed` and none of its
+  // instances in `instances`.
   WorldDesc world;
-  Vector<StreamedRuins> streamed_ruins;
+  Vector<StreamedPlacements> streamed;
 };
 
 // What `read_scene_file` may be told besides the path.
@@ -220,9 +219,13 @@ struct SceneFileOptions {
 
 // Reads a scene file (schema `engine.scene.Scene`): meshes with an optional name, content hash,
 // overlay hash and fit; instances with a translation, rotation, yaw, scale and an optional height
-// above the terrain; seeded scatters of instances; ruined buildings assembled from a kit over the
-// terrain's tiles (`ruins`, the ruins capability: the kit's meshes follow the file's own, and a
-// build without the capability refuses the file); and an optional terrain. The oldest spelling —
+// above the terrain; seeded scatters of instances; placement entries — ruined buildings over the
+// terrain's tiles (`ruins`) and any generator by name (`placements`) — expanded through the
+// scene-generator registry (docs/subsystems/scene_gen.md): ground first, then each entry in the
+// file's order (the `ruins` before the `placements`), standing on the terrain, its meshes after the
+// file's own and each generator's after the ones before it, and a name this executable does not
+// carry refused with a sentence; and an optional terrain drawn by the ground provider it names. The
+// oldest spelling —
 // `{"meshes":[{"path":"..."}],"instances":[{"mesh":0,"translation":[x,y,z],"rotation":[x,y,z,w],
 // "scale":[x,y,z]}]}` — is a valid scene of the same type and reads exactly as it always did.
 // Mesh paths resolve against the file's own directory, so a scene file is movable as a unit; an
@@ -317,11 +320,11 @@ struct SceneData {
   Vector<Mat4> mesh_fit;
   // **Instances come and go between frames.** A streamed world's (`WorldDesc`): `instances` is the
   // fixed prefix the load produced and the GPU scene takes a tail of more after it
-  // (`GpuScene::set_dynamic_instances`). Carried with the world description and the streamed ruins
-  // entries for the capability that streams them.
+  // (`GpuScene::set_dynamic_instances`). Carried with the world description and the streamed
+  // placement entries for the capability that streams them.
   bool dynamic = false;
   WorldDesc world;
-  Vector<StreamedRuins> streamed_ruins;
+  Vector<StreamedPlacements> streamed;
 
   u32 cluster_count() const noexcept { return lod.mesh.clusters.size(); }
   u32 leaf_count() const noexcept {

@@ -3,8 +3,8 @@
 // version 2 fields read and a version 1 terrain read as the waves it always drew; a waves terrain's
 // hash untouched by the new fields and a generator terrain's hash moving with its time; the
 // sampler, the direct function and the mesh the same heights to the bit; the ground (what ruins
-// stand on) the floor, which does not move while the dunes do; and, with the ruins capability, a
-// scene's buildings standing on that ground.
+// stand on) the floor, which does not move while the dunes do. A scene's buildings standing on that
+// ground is ruins_scene_tests.cpp's, where the ruins are.
 #include <core/hash/hash.h>
 #include <core/jobs/job_system.h>
 #include <core/math/math.h>
@@ -12,11 +12,6 @@
 #include <systems/renderer/scene.h>
 #include <systems/renderer/terrain.h>
 #include <systems/renderer/terrain_time.h>
-
-#if ENGINE_RENDERER_RUINS
-#include <domain/ruins/assembler.h>
-#include <domain/ruins/synthetic_kit.h>
-#endif
 
 #include <doctest/doctest.h>
 #include <test_temp_dir.h>
@@ -205,45 +200,6 @@ TEST_CASE("renderer: the dunes move with time and the ground does not") {
   CHECK_FALSE(w.moves());
   CHECK(w.ground(12.0f, 3.0f) == w.height(12.0f, 3.0f));
 }
-
-#if ENGINE_RENDERER_RUINS
-TEST_CASE("renderer: ruins over the dune generator stand on its ground") {
-  const test::TempDir tmp("renderer_terrain_generator_ruins");
-  std::string error;
-  std::string kit_path;
-  REQUIRE_MESSAGE(
-      ruins::write_synthetic_kit(tmp.file("kit"), ruins::SyntheticKitOptions{}, &error, &kit_path),
-      error);
-  const auto scene = [](const char* time) {
-    return std::string(R"({"format":"engine.scene.v1","name":"ruins-on-dunes",)"
-                       R"("terrain":{"size":65,"extent":60,"seed":3,"dune_height":2,)"
-                       R"("generator":"Dunes","time":)") +
-           time +
-           R"(},"ruins":[{"name":"town","kit":"kit/kit.json","seed":11,"tile_size":24,)"
-           R"("tile_min":[-1,-1],"tile_max":[0,0],"count":4,"wind_deg":45}]})";
-  };
-  const std::string early = tmp.file("early.json");
-  const std::string late = tmp.file("late.json");
-  REQUIRE(write_text(early, scene("0")));
-  REQUIRE(write_text(late, scene("31536000")));  // a year on
-  SceneDesc a, b;
-  REQUIRE_MESSAGE(read_scene_file(early, a, error), error);
-  REQUIRE_MESSAGE(read_scene_file(late, b, error), error);
-  CHECK(a.ruin_buildings == 4);
-  // The same buildings a year apart, to the bit: they stand on the floor, which does not move.
-  REQUIRE(a.instances.size() == b.instances.size());
-  for (u32 i = 0; i + 1 < a.instances.size(); ++i)
-    CHECK(a.instances[i].transform == b.instances[i].transform);
-  // And on the ground: nothing of a building floats above the floor at its origin.
-  const TerrainSampler ground(a.terrain);
-  u32 floating = 0;
-  for (u32 i = 0; i + 1 < a.instances.size(); ++i) {
-    const Vec3 p = a.instances[i].transform.position;
-    floating += p.y > ground.ground(p.x, p.z) + 1.0f;
-  }
-  CHECK(floating == 0);
-}
-#endif
 
 TEST_CASE("renderer: a terrain's band table reads, hashes, and is validated") {
   const test::TempDir tmp("renderer_terrain_bands");

@@ -43,27 +43,20 @@ bool ViewWorld::create(const renderer::SceneData& data, renderer::SceneRenderer&
     if (error != nullptr) *error = std::string("the scene's world rings: ") + why;
     return false;
   }
-#if ENGINE_WORLD_RUINS
-  ruins_config_.tile_size = params.tile_size;
-  ruins_config_.ring_count = params.ring_count;
+  placements_config_.tile_size = params.tile_size;
+  placements_config_.ring_count = params.ring_count;
   if (data.world.ring_count > 0) {
     for (u32 r = 0; r < data.world.ring_count; ++r)
-      ruins_config_.ruins[r] = static_cast<world::RingRuins>(data.world.ruins[r]);
+      placements_config_.ruins[r] = static_cast<world::RingRuins>(data.world.ruins[r]);
   }
-  if (!data.streamed_ruins.empty()) {
-    if (!ruins_.create(data, ruins_config_, error)) return false;
-    ruins_.set_sink(&ViewWorld::hand_over, this);
-    ruins_.set_ring(&world_.ring());
-    world_.add_consumer(ruins_.consumer());
+  // The scene's streamed placement entries, whatever generators they name: the reader has already
+  // refused a name this executable does not carry, and the consumer finds each by it again.
+  if (!data.streamed.empty()) {
+    if (!placements_.create(data, placements_config_, error)) return false;
+    placements_.set_sink(&ViewWorld::hand_over, this);
+    placements_.set_ring(&world_.ring());
+    world_.add_consumer(placements_.consumer());
   }
-#else
-  if (!data.streamed_ruins.empty()) {
-    if (error != nullptr) {
-      *error = "the scene streams ruins, and this build has no ruins capability";
-    }
-    return false;
-  }
-#endif
   ENGINE_LOG_INFO(log_view_world, "world", log::field("tile_size", params.tile_size),
                   log::field("rings", params.ring_count), log::field("inner", params.radius[0]),
                   log::field("outer", params.radius[params.ring_count - 1]),
@@ -79,10 +72,9 @@ bool ViewWorld::create(const renderer::SceneData& data, renderer::SceneRenderer&
 bool ViewWorld::hand_over(void* context, std::span<const renderer::SceneInstance> tail,
                           std::string* error) {
   auto* self = static_cast<ViewWorld*>(context);
-#if ENGINE_WORLD_RUINS
-  self->ruins_.tile_ranges(self->ranges_);
+  self->placements_.tile_ranges(self->ranges_);
   self->blocks_.clear();
-  for (const world::RuinsTiles::TileRange& range : self->ranges_)
+  for (const world::PlacementTiles::TileRange& range : self->ranges_)
     self->blocks_.push_back(renderer::DynamicBlock{range.key, range.first, range.count});
   // A world started over (a flythrough's repeat) is laid out again from scratch, as its first fill
   // was: without it each repeat would inherit where the last one's tiles ended up, and the repeats'
@@ -93,9 +85,6 @@ bool ViewWorld::hand_over(void* context, std::span<const renderer::SceneInstance
   return self->renderer_->set_dynamic_instances(
       tail, std::span<const renderer::DynamicBlock>(self->blocks_.data(), self->blocks_.size()),
       error, compact);
-#else
-  return self->renderer_->set_dynamic_instances(tail, error);
-#endif
 }
 
 // The log is kept in memory and written whole at the end — a line an update is a few hundred bytes,
@@ -139,15 +128,13 @@ bool ViewWorld::update(const renderer::Camera& camera, u64 tick, Mode mode, u32 
   (void)error;
   world::TileFrame line = log_.after(world_, repeat, frame, recorded);
   if (log_path_.empty()) return true;
-  // What the renderer holds after the update: the load's prefix and the ruins' tail.
+  // What the renderer holds after the update: the load's prefix and the placements' tail.
   line.instances = data_->instances.size();
   line.pairs = data_->pair_count;
-#if ENGINE_WORLD_RUINS
-  line.buildings = ruins_.stats().buildings;
-  line.ruin_instances = ruins_.stats().instances;
-  line.instances += ruins_.stats().instances;
-  line.pairs += ruins_.stats().pairs;
-#endif
+  line.buildings = placements_.stats().buildings;
+  line.ruin_instances = placements_.stats().instances;
+  line.instances += placements_.stats().instances;
+  line.pairs += placements_.stats().pairs;
   log_text_ += write_json(schema::to_json(line), JsonWriteOptions{.pretty = false});
   log_text_ += '\n';
   return true;
@@ -155,27 +142,33 @@ bool ViewWorld::update(const renderer::Camera& camera, u64 tick, Mode mode, u32 
 
 world::TileWorldSummary ViewWorld::summary() const {
   world::TileWorldSummary summary = log_.summary(world_);
-#if ENGINE_WORLD_RUINS
   for (u32 r = 0; r < world_.params().ring_count; ++r)
-    summary.ruins.push_back(world::ring_ruins_name(ruins_config_.ruins[r]));
-  const world::RuinsTilesStats& s = ruins_.stats();
-  summary.assembled = s.assembled;
-  summary.laid = s.laid;
+    summary.ruins.push_back(world::ring_ruins_name(placements_config_.ruins[r]));
+  // The consumer counts by the representation a generator drew, the generator's own numbering; the
+  // summary's columns are the ruins' — laid in blocks (0), assembled in sections or walls (1, 2),
+  // which is the scene's `RingRuins` — and a city's tiles, which draw one kind, count as assembled.
+  const world::PlacementTilesStats& s = placements_.stats();
+  const auto blocks = static_cast<u32>(world::RingRuins::Blocks);
+  for (u32 k = 0; k < world::k_placement_kinds; ++k) {
+    if (k == blocks) {
+      summary.laid += s.built[k];
+      summary.lay_ms += static_cast<f64>(s.build_ns[k]) / 1.0e6;
+    } else {
+      summary.assembled += s.built[k];
+      summary.assemble_ms += static_cast<f64>(s.build_ns[k]) / 1.0e6;
+    }
+  }
   summary.dropped = s.dropped;
   summary.refused = s.refused;
-  summary.assemble_ms = static_cast<f64>(s.assemble_ns) / 1.0e6;
-  summary.lay_ms = static_cast<f64>(s.lay_ns) / 1.0e6;
   summary.insert_ms = static_cast<f64>(s.sink_ns) / 1.0e6;
   summary.insert_ms_max = static_cast<f64>(s.max_sink_ns) / 1.0e6;
   summary.handed = s.handed;
-#endif
   return summary;
 }
 
 bool ViewWorld::fly_handovers(const renderer::CameraPath& camera_path, u32 frames,
                               const std::string& path, u32& handovers, std::string* error) {
   handovers = 0;
-#if ENGINE_WORLD_RUINS
   std::string out;
   renderer::CaptureChannels channels;
   channels.ids = true;
@@ -199,16 +192,16 @@ bool ViewWorld::fly_handovers(const renderer::CameraPath& camera_path, u32 frame
   Vector<u8> before_rubble;
   Vector<u8> after_rubble;
   Vector<renderer::SceneInstance> swapped;
-  Vector<world::RuinsTiles::TileRange> before_ranges;
-  Vector<world::RuinsTiles::TileRange> after_ranges;
+  Vector<world::PlacementTiles::TileRange> before_ranges;
+  Vector<world::PlacementTiles::TileRange> after_ranges;
   // A tile the pair budget left out of the tail has no range; it would sit where the next one
   // starts, so that is where an empty range of it is.
-  auto range_of = [](const Vector<world::RuinsTiles::TileRange>& ranges, u64 key, u32 total) {
-    for (const world::RuinsTiles::TileRange& range : ranges) {
+  auto range_of = [](const Vector<world::PlacementTiles::TileRange>& ranges, u64 key, u32 total) {
+    for (const world::PlacementTiles::TileRange& range : ranges) {
       if (range.key == key) return range;
-      if (range.key > key) return world::RuinsTiles::TileRange{key, range.first, 0};
+      if (range.key > key) return world::PlacementTiles::TileRange{key, range.first, 0};
     }
-    return world::RuinsTiles::TileRange{key, total, 0};
+    return world::PlacementTiles::TileRange{key, total, 0};
   };
   auto pairs_of = [&](const renderer::SceneInstance* first, u32 count) {
     u32 pairs = 0;
@@ -233,11 +226,11 @@ bool ViewWorld::fly_handovers(const renderer::CameraPath& camera_path, u32 frame
   };
   // The blocks of a tail laid out as `ranges` say, with tile `key`'s run `count` long.
   Vector<renderer::DynamicBlock> blocks;
-  auto blocks_of = [&](const Vector<world::RuinsTiles::TileRange>& ranges, u64 key, u32 count) {
+  auto blocks_of = [&](const Vector<world::PlacementTiles::TileRange>& ranges, u64 key, u32 count) {
     blocks.clear();
     u32 first = 0;
     bool placed = false;
-    for (const world::RuinsTiles::TileRange& range : ranges) {
+    for (const world::PlacementTiles::TileRange& range : ranges) {
       if (!placed && range.key >= key) {
         if (count > 0) blocks.push_back(renderer::DynamicBlock{key, first, count});
         first += count;
@@ -254,9 +247,9 @@ bool ViewWorld::fly_handovers(const renderer::CameraPath& camera_path, u32 frame
     renderer::FrameDesc frame;
     frame.camera = renderer::camera_path_frame(camera_path, f, frames);
     frame.frame_index = f;
-    before_tail.assign(ruins_.tail().begin(), ruins_.tail().end());
-    before_rubble.assign(ruins_.tail_rubble().begin(), ruins_.tail_rubble().end());
-    ruins_.tile_ranges(before_ranges);
+    before_tail.assign(placements_.tail().begin(), placements_.tail().end());
+    before_rubble.assign(placements_.tail_tags().begin(), placements_.tail_tags().end());
+    placements_.tile_ranges(before_ranges);
     ok = update(frame.camera, tick++, Mode::Budgeted, 0, f, false, error);
     if (!ok) break;
     bool changed = false;
@@ -272,17 +265,17 @@ bool ViewWorld::fly_handovers(const renderer::CameraPath& camera_path, u32 frame
     ok = renderer_->render_offscreen(frame, error) &&
          renderer_->capture(frame, channels, after, error);
     const u32 visible_after = renderer_->stats().visible_pairs();
-    after_tail.assign(ruins_.tail().begin(), ruins_.tail().end());
-    after_rubble.assign(ruins_.tail_rubble().begin(), ruins_.tail_rubble().end());
-    ruins_.tile_ranges(after_ranges);
+    after_tail.assign(placements_.tail().begin(), placements_.tail().end());
+    after_rubble.assign(placements_.tail_tags().begin(), placements_.tail_tags().end());
+    placements_.tile_ranges(after_ranges);
     if (ok) to_tail(after);
     const Vec3 eye = frame.camera.position;
     for (const world::TileEvent& event : world_.last_events()) {
       if (!ok) break;
       if (!is_handover(event)) continue;
       const u64 key = world::tile_key(event.tile);
-      const world::RuinsTiles::TileRange was = range_of(before_ranges, key, before_tail.size());
-      const world::RuinsTiles::TileRange now = range_of(after_ranges, key, after_tail.size());
+      const world::PlacementTiles::TileRange was = range_of(before_ranges, key, before_tail.size());
+      const world::PlacementTiles::TileRange now = range_of(after_ranges, key, after_tail.size());
       // The update's tail with this tile's block as it was: the blocks before it are the same
       // length in both, so the tile starts at `now.first` either way.
       swapped.clear();
@@ -387,7 +380,7 @@ bool ViewWorld::fly_handovers(const renderer::CameraPath& camera_path, u32 frame
     // The update's own tail again, tile by tile: every block but the swapped tile's is where it
     // was.
     blocks.clear();
-    for (const world::RuinsTiles::TileRange& range : after_ranges)
+    for (const world::PlacementTiles::TileRange& range : after_ranges)
       blocks.push_back(renderer::DynamicBlock{range.key, range.first, range.count});
     ok = ok && renderer_->set_dynamic_instances(
                    std::span<const renderer::SceneInstance>(after_tail.data(), after_tail.size()),
@@ -398,39 +391,23 @@ bool ViewWorld::fly_handovers(const renderer::CameraPath& camera_path, u32 frame
     return false;
   }
   return ok;
-#else
-  (void)camera_path;
-  (void)frames;
-  (void)path;
-  if (error != nullptr) *error = "a handover is a ruins tile's, and this build has no ruins";
-  return false;
-#endif
 }
 
 bool ViewWorld::is_handover(const world::TileEvent& event) const noexcept {
-#if ENGINE_WORLD_RUINS
   if (event.kind != world::TileEventKind::ChangeRing) return false;
-  if (!ruins_.has_building(event.tile)) return false;
-  const u32 n = ruins_config_.ring_count;
+  if (!placements_.occupied(event.tile)) return false;
+  const u32 n = placements_config_.ring_count;
   const world::RingRuins from =
-      event.from < n ? ruins_config_.ruins[event.from] : world::RingRuins::Walls;
+      event.from < n ? placements_config_.ruins[event.from] : world::RingRuins::Walls;
   const world::RingRuins to =
-      event.to < n ? ruins_config_.ruins[event.to] : world::RingRuins::Walls;
+      event.to < n ? placements_config_.ruins[event.to] : world::RingRuins::Walls;
   return from != to;
-#else
-  (void)event;
-  return false;
-#endif
 }
 
 const char* ViewWorld::drawn_as(u8 ring) const noexcept {
-#if ENGINE_WORLD_RUINS
-  return world::ring_ruins_name(ring < ruins_config_.ring_count ? ruins_config_.ruins[ring]
-                                                                : world::RingRuins::Walls);
-#else
-  (void)ring;
-  return "";
-#endif
+  return world::ring_ruins_name(ring < placements_config_.ring_count
+                                    ? placements_config_.ruins[ring]
+                                    : world::RingRuins::Walls);
 }
 
 JsonValue ViewWorld::summary_json() const { return schema::to_json(summary()); }

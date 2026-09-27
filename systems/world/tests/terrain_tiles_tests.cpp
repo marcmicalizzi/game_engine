@@ -2,18 +2,12 @@
 // terrain capability is: a held tile is the generator's tile at the ring's resolution; footprints
 // go to every held tile they touch; a tile's overlay goes to the store when the tile goes and comes
 // back caught up — the same bytes as an overlay that never left — and a buried tile stores nothing;
-// a pit's lag rebuilds the tiles round it and keeps them seamless; and, with the ruins, a building
-// stands on the generator's ground.
+// a pit's lag rebuilds the tiles round it and keeps them seamless. A building on the generator's
+// ground is ruins_on_dunes_tests.cpp's, where both capabilities are.
 #include <domain/terrain/terrain.h>
 #include <systems/world/terrain_tiles.h>
 #include <systems/world/tile_store.h>
 #include <systems/world/world.h>
-
-#if ENGINE_WORLD_RUINS
-#include <domain/ruins/assembler.h>
-#include <domain/ruins/kit.h>
-#include <domain/ruins/synthetic_kit.h>
-#endif
 
 #include <doctest/doctest.h>
 #include <test_temp_dir.h>
@@ -202,34 +196,3 @@ TEST_CASE("world terrain: a pit's lag rebuilds the tiles round it, and they stay
   }
   CHECK(bad == 0);
 }
-
-#if ENGINE_WORLD_RUINS
-TEST_CASE("world terrain: a ruin stands on the generator's ground, the same at any time") {
-  const test::TempDir tmp("world_terrain_ruins");
-  std::string error;
-  std::string kit_path;
-  REQUIRE_MESSAGE(
-      ruins::write_synthetic_kit(tmp.file("kit"), ruins::SyntheticKitOptions{}, &error, &kit_path),
-      error);
-  ruins::Kit kit;
-  REQUIRE_MESSAGE(ruins::read_kit_file(kit_path, kit, error), error);
-  const terrain::DuneField field(field_desc());
-  ruins::Placement placement;
-  placement.world_seed = 5;
-  placement.ground = ruins::Ground{&terrain::DuneField::ground_height, &field};
-  ruins::Assembler assembler(kit);
-  ruins::Output out;
-  REQUIRE(assembler.assemble(placement, ruins::TileCoord{2, -1}, out, &error));
-  REQUIRE(!out.instances.empty());
-  u32 debris = 0;
-  for (const ruins::Instance& piece : out.instances) {
-    const f32 ground =
-        terrain::DuneField::ground_height(&field, piece.position.x, piece.position.z);
-    if (piece.kind == static_cast<u8>(ruins::PieceKind::debris)) {
-      ++debris;
-      CHECK(std::fabs(piece.position.y - ground) <= 0.07f);
-    }
-  }
-  MESSAGE(out.instances.size() << " pieces, " << debris << " debris on the generator's floor");
-}
-#endif
