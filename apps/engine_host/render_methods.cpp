@@ -156,6 +156,19 @@ bool read_settings(const protocol::RenderSettings& in, renderer::RenderSettings&
   out.shadow_map = in.shadow_map;
   out.shadow_distance = in.shadow_distance;
   out.lights = in.lights;
+  out.orbit_lights = in.orbit_lights;
+  if (in.sun_azimuth_deg.has_value() != in.sun_elevation_deg.has_value()) {
+    error = invalid("sun_azimuth_deg and sun_elevation_deg go together");
+    return false;
+  }
+  if (in.sun_elevation_deg.has_value() &&
+      (!(*in.sun_elevation_deg >= -90.0f && *in.sun_elevation_deg <= 90.0f) ||
+       !std::isfinite(*in.sun_azimuth_deg))) {
+    error = invalid("the sun's elevation must be within -90..90 degrees, its azimuth finite");
+    return false;
+  }
+  out.sun_azimuth_deg = in.sun_azimuth_deg;
+  out.sun_elevation_deg = in.sun_elevation_deg;
   out.deform_amplitude = in.deform_amplitude;
   out.rt_templates = in.rt_templates;
   out.rt_budget_mib = in.rt_budget_mib;

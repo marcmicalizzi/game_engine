@@ -174,6 +174,7 @@ terrain::FieldDesc field_desc(const scene::Terrain& t) {
       m.couple = static_cast<terrain::BandCouple>(b.couple);
       m.couple_width = b.couple_width;
       m.far = b.far;
+      m.celerity_scale = b.celerity_scale;
       f.bands.push_back(terrain::band_from_metres(m));
     }
   }

@@ -14,6 +14,7 @@
 #include <domain/gfx/device.h>
 #include <domain/gfx/visibility_resolve.h>
 
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -98,7 +99,13 @@ struct RenderSettings {
   // Texels the cascaded maps' lookup leaves the surface along its geometric normal at a grazing
   // surface (gfx::ShadowMapParams::normal_offset); negative is k_shadow_normal_offset_texels.
   f32 shadow_normal_offset = -1.0f;
-  bool lights = true;   // the two orbiting point lights beside the sun
+  bool lights = true;  // the two point lights beside the sun
+  // They orbit as the frame index advances (lighting.h); off, the default since 2026-09-27, they
+  // stand where frame 0 puts them, so a time-lapse's sand is lit the same from frame to frame.
+  bool orbit_lights = false;
+  // The sun, degrees (lighting.h, `sun_direction`); unset takes the `renderer.sun.*` tunables.
+  std::optional<f32> sun_azimuth_deg;
+  std::optional<f32> sun_elevation_deg;
   bool deform = false;  // every instance reads the per-frame deformed-vertex pool
   u32 deform_kind = gfx::k_deform_identity;
   f32 deform_amplitude = 0.02f;

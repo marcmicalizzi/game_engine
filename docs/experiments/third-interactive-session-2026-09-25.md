@@ -147,4 +147,6 @@ The owner flew the erg in a window (RTX 5090, 11520×2160 surround, cascaded sha
 - **The sun moves too fast to see the sand move.** The stand-in lights orbit with the frame index (above: 57% of pixels changed from lighting alone). A fixed sun for time-lapse flights is in the same brief.
 - **The largest dunes' crests never move.** The sand round a mega-draa's crest fills and empties, but the crest line stays. Bagnold's rule makes a 100–200 m dune nearly stationary, so some of this is the physics the generator was built on; whether it is *only* physics (the crest advancing by the band's travel, not anchored to its lattice cell) is to be measured, and a per-band celerity scale for cinematic rates proposed, in the same brief.
 
+What was done about all three is [time-lapse smoothness](time-lapse-smoothness-2026-09-27.md): a surface clock that keeps the sand's speed continuous, lights that stand still, and the crests measured (not anchored; Bagnold) with a stylization for cinematic rates.
+
 What this adds to the decision above: the time-lapse's mechanism stands, and its pacing rule does not — "a late field costs a moment of stillness and never a step" is true of displacement and false of what a viewer sees at the rates a sandstorm needs.

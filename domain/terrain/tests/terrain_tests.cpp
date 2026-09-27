@@ -232,6 +232,38 @@ TEST_CASE("terrain: bands migrate downwind at the flux over their height") {
   CHECK(p0.cx == p1.cx);  // the same cell, the same centre in the band's own frame
 }
 
+TEST_CASE("terrain: a band's celerity_scale multiplies its travel, and 1 changes nothing") {
+  // A stylization for cinematic rates (terrain.md, "How far the big dunes move"): the erg's
+  // mega-draa travel a metre and a half a game year, which a week a second shows as nothing.
+  const FieldDesc physical = erg_desc();
+  FieldDesc same = physical;
+  same.bands = erg_bands();
+  CHECK(field_hash(same) == field_hash(physical));  // 1 is the default, and hashes as before
+  FieldDesc styled = physical;
+  styled.bands[0].celerity_q16 = 20 * 65536;  // twenty times the mega-draa's rate
+  CHECK(field_hash(styled) != field_hash(physical));
+  CHECK(validate_bands(std::span<const BandDesc>(styled.bands.data(), styled.bands.size())));
+  const DuneField a(physical);
+  const DuneField b(styled);
+  CHECK(b.band_height(0) * 20 == a.band_height(0));  // 140 m over 20: exact here
+  CHECK(b.band_height(1) == a.band_height(1));       // the other bands untouched
+  const i64 t = 3 * k_year;
+  i64 ax = 0, az = 0, bx = 0, bz = 0;
+  a.displacement(0, t, ax, az);
+  b.displacement(0, t, bx, bz);
+  CHECK(std::abs(bx - 20 * ax) <= 20);  // one division's rounding, twenty times
+  CHECK(std::abs(bz - 20 * az) <= 20);
+  // The metres a band moves, from the band table: `celerity_scale` from the scene's metres.
+  BandMetres m;
+  m.celerity_scale = 2.5f;
+  CHECK(band_from_metres(m).celerity_q16 == 163'840);
+  FieldDesc bad = physical;
+  bad.bands[2].celerity_q16 = 0;
+  std::string why;
+  CHECK_FALSE(validate_bands(std::span<const BandDesc>(bad.bands.data(), bad.bands.size()), &why));
+  CHECK(why.find("celerity_scale") != std::string::npos);
+}
+
 TEST_CASE("terrain: tiles meet without a seam, at every time") {
   const DuneField field(reference_desc());
   TileOptions options;

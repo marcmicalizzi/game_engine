@@ -253,6 +253,27 @@ TEST_CASE("renderer: a terrain's band table reads, hashes, and is validated") {
       small, scene(R"(,"bands":[{"name":"tight","height_min":20,"height_max":40,"cell":50}])")));
   CHECK_FALSE(read_scene_file(small, desc, error));
   CHECK(error.find("smaller than its own dune") != std::string::npos);
+  // A stylized band (terrain.md, "How far the big dunes move"): read, in the hash only when it is
+  // not the physical rate, travelling its scale times as far, and refused at zero.
+  const std::string styled = tmp.file("styled.json");
+  REQUIRE(write_text(styled, scene(R"(,"bands":[{"name":"big","height_min":20,"height_max":40,)"
+                                   R"("cell":600,"share":0.8,"celerity_scale":1}])")));
+  SceneDesc one;
+  REQUIRE_MESSAGE(read_scene_file(styled, one, error), error);
+  CHECK(one.terrain.bands[0].celerity_scale == 1.0f);
+  TerrainDesc fast = one.terrain;
+  fast.bands[0].celerity_scale = 10.0f;
+  CHECK(terrain_hash(fast) != terrain_hash(one.terrain));
+  const TerrainSampler slow_sampler(one.terrain);
+  const TerrainSampler fast_sampler(fast);
+  const f64 year = 365.0 * 86'400.0;
+  CHECK(terrain_band_travel_m(fast_sampler, 0.0, year) ==
+        doctest::Approx(10.0 * terrain_band_travel_m(slow_sampler, 0.0, year)).epsilon(1e-6));
+  const std::string still = tmp.file("still.json");
+  REQUIRE(write_text(still, scene(R"(,"bands":[{"name":"big","height_min":20,"height_max":40,)"
+                                  R"("cell":600,"share":0.8,"celerity_scale":0}])")));
+  CHECK_FALSE(read_scene_file(still, desc, error));
+  CHECK(error.find("celerity_scale") != std::string::npos);
 }
 
 TEST_CASE(

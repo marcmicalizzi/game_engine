@@ -25,6 +25,11 @@
 //                           (evaluate_grid): 2,049 or 4,097 vertices a side over its 6.1 km, what
 //                           one field of a time-lapse costs (renderer's TerrainMotion). A smoke
 //                           run takes 129.
+//   terrain.field.window    one 257 x 257 window of the erg at its grid's 1.5 m, on one thread,
+//                           the window stepping 400 m along the erg's diagonal each iteration: the
+//                           per-sample cost of a field at the density the time-lapse evaluates it,
+//                           without the pool — what a profile of evaluate_grid reads (the whole
+//                           grid at 129 is all gather). A smoke run takes 33.
 #include <core/jobs/job_system.h>
 #include <domain/terrain/terrain.h>
 #include <foundation/bench/bench.h>
@@ -219,8 +224,13 @@ namespace {
 // 1,002 m either side at 1 m (a multiple of lcm(1 m, 1.5 m)), the erg's own 6.1 km grid at 1.5 m —
 // round a camera a quarter of a kilometre from the middle, three years in. A smoke run builds rings
 // a sixteenth the size.
+// Pinned, one worker a CPU: the runner pins its own thread to one CPU (docs/subsystems/bench.md),
+// and threads it starts afterwards inherit that mask unless they set their own. Until 2026-09-27
+// this pool was unpinned, so every worker shared the runner's CPU and `terrain.ring.*` and
+// `terrain.field.reevaluate` measured one core's worth of work in the pool's clothes
+// (docs/experiments/time-lapse-smoothness-2026-09-27.md).
 jobs::JobSystem& ring_pool() {
-  static jobs::JobSystem pool(jobs::JobSystemConfig{.pin_threads = false});
+  static jobs::JobSystem pool(jobs::JobSystemConfig{});
   return pool;
 }
 
@@ -290,6 +300,20 @@ ENGINE_BENCH_ARGS(terrain_field_reevaluate, "terrain.field.reevaluate", 2049, 40
                   3 * k_year + day * k_us_per_day, Detail::dunes, nullptr, &ring_pool(), heights);
     bench::keep(heights[heights.size() / 2]);
     ++day;
+  }
+  state.set_items(u64{n} * n);
+}
+
+ENGINE_BENCH_ARGS(terrain_field_window, "terrain.field.window", 257) {
+  const u32 n = bench::smoke_mode() ? 33u : static_cast<u32>(state.arg());
+  Vector<i64> heights;
+  u32 step = 0;
+  while (state.keep_running()) {
+    const i64 at = -2'800'000 + static_cast<i64>(step % 14) * 400'000;
+    evaluate_grid(erg_field(), at, at, n, n, 1'500, 3 * k_year + step * k_us_per_day, Detail::dunes,
+                  nullptr, nullptr, heights);
+    bench::keep(heights[heights.size() / 2]);
+    ++step;
   }
   state.set_items(u64{n} * n);
 }

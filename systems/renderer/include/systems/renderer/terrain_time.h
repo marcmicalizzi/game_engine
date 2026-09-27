@@ -143,6 +143,84 @@ TerrainSurfaceResult terrain_surface_frame(std::span<TerrainBlend> blends, f64 t
                                            std::span<TerrainNextField> next, std::span<f64> moved_m,
                                            std::span<u32> installed) noexcept;
 
+// **When to time a level's next field so that the surface never waits for it and never outruns
+// the per-frame bound** (renderer.md, "A clock that never stops"): the displacement rule's `at_s`,
+// pushed out to `from_s + lead * rate * turnaround_s` — the real time from the level wanting a
+// field to its being ready to draw, which is the evaluation *and* the wait behind the other levels'
+// on the one field worker, at the rate — and to the span over which a pair as different as the last
+// one (`delta_m`) crosses at the rate within `budget_m` a frame of `frame_s`, with a quarter to
+// spare; no further than `longest_step_s` past `from_s`. `late` says a push decided it.
+struct TerrainKeepUp {
+  f64 rate = 0.0;          // game seconds per real second
+  f64 turnaround_s = 0.0;  // real seconds from wanting a field to its being ready
+  f64 lead = 1.5;          // renderer.terrain.lead
+  f64 frame_s = 0.0;       // a frame's real seconds
+  f64 delta_m = 0.0;       // the level's last pair's largest difference
+  f64 budget_m = 0.0;      // the level's per-frame bound
+  f64 longest_step_s = 2'592'000.0;
+};
+f64 terrain_keep_up_time(f64 from_s, f64 at_s, const TerrainKeepUp& keep,
+                         bool* late = nullptr) noexcept;
+
+// **The surface clock** (renderer.md, "A clock that never stops"): where an interactive time-lapse
+// puts the surface time each frame, so that the sand's speed is continuous. The surface runs at
+// game time minus a latency L, and at the rate while it is there. L is `margin` times the worst of
+// the levels' recent **turnarounds** at the rate — the real time from a level wanting its next
+// field to that field being ready to draw, the evaluation and the wait behind the other levels':
+// how long, in game time, a field is on its way, which is how far behind game time the surface must
+// stand for the field it needs to be there already. The levels share one surface, so it is the
+// largest of theirs. (Not the interval between arrivals: at a slow rate that is the displacement
+// cadence, hours of game time between fields that were ready in milliseconds, and no delay at all.)
+// The speed changes by at most the rate every `response_s` of real time, closes a gap to its target
+// over `settle_s`, never passes `catch_up` times the rate, and brakes at the same rate for the
+// newest field every level has (`horizon_s`), so a field later than L allows slows the sand down
+// gently and the sand sets off again gently: never a stop followed by a sprint. The per-frame bound
+// of `terrain_surface_frame` still applies after it: the clock chooses a target, the blend's own
+// rule how far the surface goes towards it.
+struct TerrainClockConfig {
+  f64 rate = 0.0;        // game seconds per real second
+  f64 margin = 1.2;      // L is this times the worst recent turnaround at the rate
+  f64 catch_up = 1.5;    // the surface never runs faster than this times the rate
+  f64 response_s = 0.5;  // real seconds for its speed to change by the whole rate, at most
+  f64 settle_s = 2.0;    // real seconds over which a gap to game time minus L closes
+};
+inline constexpr u32 k_clock_samples = 8;  // arrivals a level remembers
+class TerrainClock {
+ public:
+  void reset(const TerrainClockConfig& config) noexcept;
+  // Level `level`'s next field became ready to draw `turnaround_s` real seconds after the level
+  // came to want it.
+  void arrived(u32 level, f64 turnaround_s) noexcept;
+  // Where the surface should stand after a frame of `real_dt_s`, from `surface_s`, with game time
+  // at `game_s` and every level's newest field at or after `horizon_s`: never backwards, never past
+  // the horizon.
+  f64 advance(f64 real_dt_s, f64 game_s, f64 surface_s, f64 horizon_s) noexcept;
+  // Where the frame actually left it (the per-frame bound may have stopped it short): the speed
+  // the next frame starts from.
+  void settle(f64 real_dt_s, f64 from_s, f64 to_s) noexcept;
+  // The worst of level `level`'s recent turnarounds, real seconds (0 before its first arrival):
+  // what its next field is timed by (`TerrainKeepUp::turnaround_s`), because a field timed by a
+  // typical turnaround is late whenever it waits behind a longer evaluation.
+  f64 turnaround_s(u32 level) const noexcept;
+  f64 latency_s() const noexcept { return latency_s_; }  // L, game seconds
+  f64 speed() const noexcept { return speed_; }          // game seconds per real second
+  // The last `advance` slowed the surface for the horizon: a field is later than L allowed.
+  bool braked() const noexcept { return braked_; }
+
+ private:
+  struct Level {
+    f64 turnaround_s[k_clock_samples] = {};
+    u32 count = 0;
+    u32 next = 0;
+  };
+  void update_latency() noexcept;
+  TerrainClockConfig config_;
+  Level levels_[k_max_surface_levels];
+  f64 latency_s_ = 0.0;
+  f64 speed_ = 0.0;
+  bool braked_ = false;
+};
+
 // The largest |b - a| over the samples two windows of one lattice share (`a` and `b` are `nx * nz`
 // heights, rows of x in order of z), and the largest |f - rest|: what the blend's speed and the
 // cull's padding are computed from.
@@ -225,12 +303,33 @@ class TerrainMotion {
     f64 max_lag_s = 0.0;    // the most the surface fell behind game time
     f64 last_eval_ms = 0.0;
     f64 total_eval_ms = 0.0;
+    f64 last_turnaround_s = 0.0;  // real seconds from wanting the last field to its being ready
+    f64 max_turnaround_s = 0.0;
     u64 last_hash = 0;  // of the last field's bytes
+    // This frame's (the `--benchmark` records' `terrain` object): the most any vertex moved, and
+    // whether this level's newest field was what the surface stood or braked for.
+    f64 frame_move_m = 0.0;
+    bool frame_held = false;
+    bool frame_late = false;
+    u32 ahead = 0;  // fields after b: evaluating, uploading or ready
   };
   u32 level_count() const noexcept { return levels_.size(); }
   LevelStats level_stats(u32 level) const noexcept;
   // The move of every vertex of every level in the last frame, metres: the largest.
   f64 last_move_m() const noexcept { return last_move_m_; }
+  // The surface clock (renderer.md, "A clock that never stops"): L, how far behind game time the
+  // surface is meant to stand, and its largest over the run, game seconds (0 with `wait`, whose
+  // surface keeps game time and waits for its fields instead).
+  f64 latency_s() const noexcept { return clock_.latency_s(); }
+  f64 max_latency_s() const noexcept { return max_latency_s_; }
+  // How far behind game time the surface stands now, game seconds.
+  f64 lag_s() const noexcept;
+  // The surface's speed over the rate in the last frame: 1 is the true speed.
+  f64 speed_ratio() const noexcept { return speed_ratio_; }
+  // Frames the surface stood still while game time ran (after it first moved), and frames the
+  // clock braked for a field later than L allowed.
+  u32 stopped_frames() const noexcept { return stopped_frames_; }
+  u32 braked_frames() const noexcept { return braked_frames_; }
 
  private:
   struct Field {
@@ -254,11 +353,27 @@ class TerrainMotion {
     gfx::TerrainField window;  // what the level's fields cover under the layout drawn
     Field a;
     Field b;
-    Field next;
     bool has_b = false;
-    // The next field: asked of the worker, being copied onto the device a budget a frame, and
-    // ready to be taken as b once its last piece is in a frame.
-    enum class Next : u8 { none, evaluating, uploading, ready } next_state = Next::none;
+    // The fields after b, oldest first: asked of the worker, being copied onto the device a budget
+    // a frame, and ready to be taken as b once their last piece is in a frame. Up to two of them —
+    // a ring's four slots are a, b and these — so a level asks for the one after next while the
+    // next waits to be drawn, and a field that waits behind another level's on the one worker is
+    // not late (renderer.md, "A clock that never stops"). One at a time is on its way.
+    static constexpr u32 k_ahead = 2;
+    // How many the level's slots leave room for: two for a ring (four slots), one for the scene's
+    // grid (three). A level with room for one times its fields with twice the lead, because it
+    // has no second field to cover a wait behind the others' evaluations.
+    u32 max_ahead() const noexcept { return slots > 3 ? k_ahead : 1u; }
+    enum class Next : u8 { none, evaluating, uploading, ready };
+    Field next[k_ahead];
+    Next next_state[k_ahead] = {Next::none, Next::none};
+    u32 ahead = 0;
+    bool on_its_way() const noexcept { return ahead > 0 && next_state[ahead - 1] != Next::ready; }
+    f64 newest_s() const noexcept {
+      return ahead > 0 ? next[ahead - 1].time_s : (has_b ? b.time_s : a.time_s);
+    }
+    f64 newest_delta_m = 0.0;  // the newest field's difference from the one before it
+    f64 wanted_s = 0.0;  // real time it came to want a field; negative while it has room for none
     TerrainBlend blend;
     f64 eval_ms_ema = 0.0;
     LevelStats stats;
@@ -341,6 +456,8 @@ class TerrainMotion {
   void swap_rings();
   void abandon_recentre(const std::string& why);
   u32 free_slot(const Level& level, u32 besides = ~0u) const noexcept;
+  void field_ready(u32 level, u32 entry);
+  void drop_ahead(u32 level);
   void show(u32 level);
 
   GpuScene* scene_ = nullptr;
@@ -352,7 +469,15 @@ class TerrainMotion {
   Vector<Level> levels_;
   f64 start_s_ = 0.0;
   f64 game_s_ = 0.0;
+  f64 real_s_ = 0.0;  // real seconds the frames have stood for
+  f64 frame_s_ema_ = 1.0 / 60.0;
   f64 last_move_m_ = 0.0;
+  TerrainClock clock_;
+  f64 max_latency_s_ = 0.0;
+  f64 speed_ratio_ = 0.0;
+  bool moved_once_ = false;
+  u32 stopped_frames_ = 0;
+  u32 braked_frames_ = 0;
   // **A re-centre, from its asking to its swap**: the chunks rebuilt on the ring worker while the
   // sand moves on (`rebuilding`), uploaded into free slots a budget a frame (`uploading`); then the
   // rings freeze their pairs (`pairs_asked`) while the field worker carries them over to the new

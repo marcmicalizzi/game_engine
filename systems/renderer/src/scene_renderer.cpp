@@ -1405,7 +1405,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   // reference path tracer has to light the same scene with the same numbers at the same frame
   // index or a comparison between the two measures the lights (04 §4.8, lighting.h).
   FrameLighting lighting;
-  frame_lighting(data, rendered, settings.lights, lighting);
+  frame_lighting(data, rendered, lighting_options(settings), lighting);
   std::memcpy(resolve_bytes + sizeof(gfx::ResolveParams) * views, lighting.lights,
               sizeof(lighting.lights));
 

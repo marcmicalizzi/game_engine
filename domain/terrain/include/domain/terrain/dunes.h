@@ -98,6 +98,9 @@ struct BandMetres {
   BandCouple couple = BandCouple::none;
   f32 couple_width = 0.0f;  // metres inside the earlier bands' footprints
   bool far = true;
+  // A stylization for cinematic time-lapse rates: the band travels Bagnold's distance times this.
+  // 1 is the physical rate (terrain.md, "How far the big dunes move").
+  f32 celerity_scale = 1.0f;
   std::string name;
 };
 
@@ -125,6 +128,10 @@ struct BandDesc {
   i64 couple_mm = 0;  // the width inside the earlier bands' footprints the coupling fades across
   bool far = true;    // kept by `Detail::coarse`
   char name[15] = {};
+  // The band's travel over Bagnold's, Q16: 65536, the physical rate, unless a scene stylizes it
+  // for a cinematic time-lapse (`BandMetres::celerity_scale`). Its celerity height is the middle
+  // of its height range over this (`DuneField::band_height`).
+  i32 celerity_q16 = 65536;
 };
 
 // Metres to the band's own units: centimetres and Q16 rounded to nearest, degrees to a binary
@@ -310,7 +317,8 @@ class DuneField {
   // The largest reach of any primitive in a band, mm.
   i64 band_reach(u32 b) const noexcept { return reach_[b]; }
   i64 band_cell(u32 b) const noexcept { return cell_[b]; }
-  // The height a band's lattice moves as (its celerity is flux / this), mm.
+  // The height a band's lattice moves as (its celerity is flux / this), mm: the middle of its
+  // range, over its `celerity_scale` when a scene stylizes it.
   i64 band_height(u32 b) const noexcept { return celerity_height_[b]; }
 
   // Each band's displacement by the wind from time 0 to `time_us`, mm: the closed form.

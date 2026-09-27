@@ -7,23 +7,50 @@
 // same call, so the reference path tracer and the real-time resolve light the same scene with the
 // same numbers at the same frame index (docs/plan/04-renderer.md §4.8).
 //
-// These are the renderer's own stand-in lights until a scene carries authored ones: the sun is
-// fixed, the sky is a constant, and the two point lights orbit out of phase — one warm, one cool
-// — so the BSDF's specular response sweeps across a surface while the camera turns and metal
-// reads as metal. Reach and intensity scale with the scene's radius, intensity with its square
-// because the falloff is inverse square, so a 2 cm mesh and a 20 m heightfield look alike. The
-// ground they light is the scene's own, `SceneData::ground_albedo`: a terrain's sand, or a
-// neutral grey for a scene without one.
+// These are the renderer's own stand-in lights until a scene carries authored ones: the sun stands
+// where `RenderSettings` or the `renderer.sun.*` tunables put it, the sky is a constant, and the
+// two point lights — one warm, one cool — stand still, or with `orbit_lights` orbit out of phase as
+// the frame index advances so the BSDF's specular response sweeps across a surface. **Nothing moves
+// with the frame by default** (since 2026-09-27): the orbit was frame-driven, and a time-lapse's
+// sand, lit by a warm light a scene's radius away that went round it every eight seconds, read as a
+// sun racing across the sky (renderer.md, "The dunes in time-lapse"). There is no day and night.
+// Reach and intensity scale with the scene's radius, intensity with its square because the falloff
+// is inverse square, so a 2 cm mesh and a 20 m heightfield look alike. The ground they light is the
+// scene's own, `SceneData::ground_albedo`: a terrain's sand, or a neutral grey for a scene without
+// one.
 
 #include <core/base/types.h>
 #include <core/math/math.h>
 #include <domain/gfx/visibility_resolve.h>
 
+#include <optional>
+
 namespace engine::renderer {
 
 struct SceneData;
+struct RenderSettings;
 
-// The two orbiting point lights beside the sun.
+// The sun every frame had before it could be moved, normalize(0.4, 0.8, 0.45): 48.37 degrees from
+// +x towards +z, 53.03 above the horizon. The tunables' defaults are these, and a sun at them is
+// this vector to the bit, so a picture that did not ask for a sun is the picture it always was.
+inline constexpr f64 k_default_sun_azimuth_deg = 48.3664606634298;
+inline constexpr f64 k_default_sun_elevation_deg = 53.034893494453584;
+
+// The direction towards the sun, azimuth in the ground plane from +x towards +z and elevation above
+// it, degrees; exactly the old fixed vector at the defaults.
+Vec3 sun_direction(f64 azimuth_deg, f64 elevation_deg) noexcept;
+
+// What `frame_lighting` lights with: the point lights or not, orbiting or not, and the sun.
+struct LightingOptions {
+  bool lights = true;
+  bool orbit = false;
+  Vec3 sun = sun_direction(k_default_sun_azimuth_deg, k_default_sun_elevation_deg);
+};
+// A request's: its sun, or the `renderer.sun.azimuth_deg` / `elevation_deg` tunables' when it names
+// none.
+LightingOptions lighting_options(const RenderSettings& settings);
+
+// The two point lights beside the sun.
 inline constexpr u32 k_frame_lights = 2;
 
 // The sky, in one place, because **three** things have to be the same number. It is the resolve
@@ -75,9 +102,11 @@ struct FrameLighting {
   f32 shadow_bias_steps = 0.0f;
 };
 
-// `frame_index` drives the orbit, exactly as it drives the deformation phase, so frame 0 of a
-// capture and frame 0 of a reference render are lit identically. `lights` false leaves the two
-// point lights out and the count at zero, which is what `--no-lights` asks for.
-void frame_lighting(const SceneData& scene, u64 frame_index, bool lights, FrameLighting& out);
+// With `orbit`, `frame_index` drives the point lights' orbit, exactly as it drives the deformation
+// phase, so frame N of a capture and frame N of a reference render are lit identically; without it
+// they stand where frame 0 puts them. `lights` false leaves the two point lights out and the count
+// at zero, which is what `--no-lights` asks for.
+void frame_lighting(const SceneData& scene, u64 frame_index, const LightingOptions& options,
+                    FrameLighting& out);
 
 }  // namespace engine::renderer

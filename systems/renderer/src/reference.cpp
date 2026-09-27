@@ -216,7 +216,7 @@ bool ReferenceRenderer::render(const Camera& camera, const ReferenceSettings& se
 
   const RenderSettings& resolved = renderer_->settings().settings;
   FrameLighting lighting;
-  frame_lighting(scene_->data(), settings.frame_index, resolved.lights, lighting);
+  frame_lighting(scene_->data(), settings.frame_index, lighting_options(resolved), lighting);
   std::memcpy(lights_.mapped, lighting.lights, sizeof(lighting.lights));
 
   const View& view = renderer_->views()[0];

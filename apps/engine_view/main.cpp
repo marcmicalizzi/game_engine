@@ -79,6 +79,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -119,6 +120,7 @@ constexpr const char* k_usage =
     "                   [--raster direct|hw|vertex|sw|auto|rt] [--sw-px <px>] [--view <mode>] [--orbit <d>]\n"
     "                   [--mesh <file.gltf|file.glb|file.clusters>] [--scene <file.json>]\n"
     "                   [--grid-instances <n>] [--no-cache] [--ddc <dir>] [--no-lights]\n"
+    "                   [--sun <azimuth,elevation>] [--orbit-lights]\n"
     "                   [--no-texture-sharing]\n"
     "                   [--deform none|identity|wave|lattice] [--deform-amplitude <a>] [--rt-templates]\n"
     "                   [--rt-budget-mib <n>] [--time-rate <game s per real s>]\n"
@@ -174,7 +176,12 @@ constexpr const char* k_usage =
     "  --no-cull        draw every leaf cluster; no GPU culling or LOD selection\n"
     "  --no-occlusion   skip two-pass occlusion culling (hw mode only; on by default)\n"
     "  --no-cone        skip backface culling of clusters by their normal cones (on by default)\n"
-    "  --no-lights      only the sun and the sky; no orbiting point lights (they are on by default)\n"
+    "  --no-lights      only the sun and the sky; no point lights (they are on by default)\n"
+    "  --sun <az,el>    where the sun stands, degrees: azimuth in the ground plane from +x towards\n"
+    "                   +z, elevation above the horizon (default: the renderer.sun.* tunables,\n"
+    "                   48.37,53.03). It stands still: there is no time of day\n"
+    "  --orbit-lights   the two point lights orbit the scene as the frame number advances (off:\n"
+    "                   they stand where frame 0 puts them)\n"
     "  --shadows <how>  off, rt, or csm. rt: every light in the resolve casts a ray-traced shadow\n"
     "                   against the structures the frame built from its own visible list; in a\n"
     "                   raster mode the frame runs the acceleration structure chain as well, which\n"
@@ -1144,6 +1151,15 @@ JsonValue time_lapse_summary(const renderer::TerrainMotion& lapse, const rendere
   out.set("lead", lapse.config().lead);
   out.set("wait", lapse.config().wait);
   out.set("game_time_s", lapse.game_time_s());
+  // The surface clock (renderer.md, "A clock that never stops"): L now and at most, the lag the
+  // run ended on, and the frames the sand stood still or was braked for a late field.
+  out.set("latency_s", lapse.latency_s());
+  out.set("max_latency_s", lapse.max_latency_s());
+  out.set("latency_frames",
+          lapse.config().rate > 0.0 ? lapse.latency_s() / lapse.config().rate * 60.0 : 0.0);
+  out.set("lag_s", lapse.lag_s());
+  out.set("stopped_frames", lapse.stopped_frames());
+  out.set("braked_frames", lapse.braked_frames());
   out.set("upload_bytes", stats.terrain_upload_bytes);
   out.set("upload_ms", stats.gpu_terrain_upload);
   JsonValue levels = JsonValue::array();
@@ -1168,6 +1184,8 @@ JsonValue time_lapse_summary(const renderer::TerrainMotion& lapse, const rendere
     level.set("max_lag_s", s.max_lag_s);
     level.set("last_eval_ms", s.last_eval_ms);
     level.set("mean_eval_ms", s.evaluated > 0 ? s.total_eval_ms / s.evaluated : 0.0);
+    level.set("last_turnaround_s", s.last_turnaround_s);
+    level.set("max_turnaround_s", s.max_turnaround_s);
     char hash[17];
     std::snprintf(hash, sizeof(hash), "%016llx", static_cast<unsigned long long>(s.last_hash));
     level.set("last_hash", std::string(hash));
@@ -1196,6 +1214,33 @@ JsonValue time_lapse_summary(const renderer::TerrainMotion& lapse, const rendere
     rings.set("arena_peak_share", r.arena_peak_share);
     rings.set("device_bytes", scene.terrain_ring_bytes());
     out.set("rings", std::move(rings));
+  }
+  return out;
+}
+
+// A `--benchmark` record's `terrain` object (scene::FrameTerrain): the time-lapse as the frame
+// drew it — game time, the surface clock's latency, how far behind game time the surface stood and
+// how fast it went, and per level the pair and the blend the pool pass drew, the most any vertex
+// moved, and whether a late field held or braked it. Null without a time-lapse.
+std::optional<scene::FrameTerrain> frame_terrain(const renderer::TerrainMotion& lapse) {
+  if (!lapse.active()) return std::nullopt;
+  scene::FrameTerrain out;
+  out.game_s = lapse.game_time_s();
+  out.latency_s = lapse.latency_s();
+  out.lag_s = lapse.lag_s();
+  out.speed = lapse.speed_ratio();
+  for (u32 k = 0; k < lapse.level_count(); ++k) {
+    const renderer::TerrainMotion::LevelStats s = lapse.level_stats(k);
+    scene::TerrainLevelFrame level;
+    level.surface_s = s.surface_s;
+    level.time_a = s.time_a;
+    level.time_b = s.time_b;
+    level.blend = s.blend;
+    level.move_m = s.frame_move_m;
+    level.held = s.frame_held;
+    level.late = s.frame_late;
+    level.ahead = s.ahead;
+    out.levels.push_back(level);
   }
   return out;
 }
@@ -1365,6 +1410,8 @@ struct PendingFrame {
   // The camera the frame drew and the simulated time it stands for (FrameRecord's `pose_*`).
   view::FlyState pose;
   f64 pose_time = 0.0;
+  // The time-lapse as the frame drew it (FrameRecord's `terrain`).
+  std::optional<scene::FrameTerrain> terrain;
 };
 constexpr u32 k_pending_frames = 8;  // more than the most frames in flight (3) + 1
 
@@ -1393,6 +1440,7 @@ void take_folded(const renderer::SceneRenderer& renderer, u64& folded,
   record.pose_yaw = p.pose.yaw;
   record.pose_pitch = p.pose.pitch;
   record.pose_time = p.pose_time;
+  record.terrain = p.terrain;
   records.push_back(std::move(record));
   if (present_ids != nullptr) present_ids->push_back(p.present_id);
 }
@@ -2268,6 +2316,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
         PendingFrame& p = pending[submissions % k_pending_frames];
         p.submission = submissions;
         p.frame = f;
+        p.terrain = frame_terrain(time_lapse);
         p.ticks = static_cast<u32>(session.tick().value - before_tick);
         p.time = static_cast<f64>(session.tick().value) / static_cast<f64>(tick_hz);
         p.cpu_ms = static_cast<f64>(time::monotonic_ns() - ready) / 1.0e6;
@@ -2313,17 +2362,29 @@ int run_offscreen(Options& options, Interactive& interactive) {
       // A streamed world updates between frames from each frame's own camera, and starts every
       // repeat over (its first warm-up frame, or its first frame with no warm-up), so the repeats
       // fly the same world.
+      // The time-lapse's state as each recorded frame drew it, for its record's `terrain`.
       struct WorldHook {
         decltype(world_before)* before = nullptr;
         bool no_warmup = false;
-      } world_hook{&world_before, options.warmup == 0};
+        const renderer::TerrainMotion* lapse = nullptr;
+        Vector<std::optional<scene::FrameTerrain>>* terrain = nullptr;
+        u32 frames = 0;
+      };
+      Vector<std::optional<scene::FrameTerrain>> terrain_of;
+      if (time_lapse.active()) terrain_of.resize(static_cast<usize>(frames) * repeats);
+      WorldHook world_hook{&world_before, options.warmup == 0, &time_lapse, &terrain_of, frames};
       flight_options.before_frame = [](void* context, const renderer::FlightStep& step,
                                        std::string*) {
         const auto* hook = static_cast<const WorldHook*>(context);
         const bool first =
             step.warmup == 0 || (hook->no_warmup && step.recorded && step.frame == 0);
-        return (*hook->before)(step.camera, first ? WorldStep::restart : WorldStep::budgeted,
-                               step.repeat, step.frame, step.recorded);
+        const bool ok =
+            (*hook->before)(step.camera, first ? WorldStep::restart : WorldStep::budgeted,
+                            step.repeat, step.frame, step.recorded);
+        const u32 at = step.repeat * hook->frames + step.frame;
+        if (step.recorded && at < hook->terrain->size())
+          (*hook->terrain)[at] = frame_terrain(*hook->lapse);
+        return ok;
       };
       flight_options.before_frame_context = &world_hook;
       renderer::Flight flight;
@@ -2332,6 +2393,10 @@ int run_offscreen(Options& options, Interactive& interactive) {
         break;
       }
       records = std::move(flight.records);
+      for (scene::FrameRecord& record : records) {
+        const u32 at = record.repeat * frames + record.frame;
+        if (at < terrain_of.size()) record.terrain = terrain_of[at];
+      }
       timed_seconds = flight.seconds;
       view_renderer.sample_gpu_memory();
       machine_end = bench::sample_machine_state(bench::k_sample_window_ms);
@@ -3017,6 +3082,24 @@ int main(int argc, char** argv) {
       options.settings.share_textures = false;
     } else if (a == "--no-lights") {
       options.settings.lights = false;
+    } else if (a == "--orbit-lights") {
+      options.settings.orbit_lights = true;
+    } else if (a == "--sun") {
+      std::string v;
+      if (!next_value(argc, argv, i, a, v)) return k_exit_usage;
+      const usize comma = v.find(',');
+      char* end = nullptr;
+      const f64 az = std::strtod(v.c_str(), &end);
+      const bool az_ok = comma != std::string::npos && end == v.c_str() + comma;
+      const f64 el = az_ok ? std::strtod(v.c_str() + comma + 1, &end) : 0.0;
+      if (!az_ok || *end != '\0' || !std::isfinite(az) || !(el >= -90.0 && el <= 90.0)) {
+        std::fprintf(stderr,
+                     "engine-view: --sun takes <azimuth,elevation> in degrees, the elevation "
+                     "within -90..90\n");
+        return k_exit_usage;
+      }
+      options.settings.sun_azimuth_deg = static_cast<f32>(az);
+      options.settings.sun_elevation_deg = static_cast<f32>(el);
     } else if (a == "--validation") {
       options.validation = true;
     } else if (a == "--camera-path") {
@@ -4193,6 +4276,7 @@ int main(int argc, char** argv) {
           PendingFrame& p = pending[submissions % k_pending_frames];
           p.submission = submissions;
           p.frame = static_cast<u32>(rendered);
+          p.terrain = frame_terrain(time_lapse);
           p.ticks = ticks_this_frame;
           p.time = static_cast<f64>(session.tick().value) / static_cast<f64>(session_hz);
           p.cpu_ms = static_cast<f64>((before_waits - frame_start) + (before_acquire - slot_free) +

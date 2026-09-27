@@ -793,7 +793,7 @@ TEST_CASE("flythrough: a terrain comes back from its cache entry as the terrain 
   CHECK(near(first.ground_albedo, terrain_sand_albedo()));
   CHECK(near(second.ground_albedo, terrain_sand_albedo()));
   FrameLighting lighting;
-  frame_lighting(second, 0, true, lighting);
+  frame_lighting(second, 0, LightingOptions{}, lighting);
   CHECK(near(lighting.ground.xyz(), terrain_sand_albedo()));
 }
 
@@ -809,7 +809,7 @@ TEST_CASE("lighting: the ground is the terrain's sand, or a neutral grey without
   // A scene with no terrain keeps the neutral default, and the frame carries it with w unused.
   const SceneData plain;
   FrameLighting lighting;
-  frame_lighting(plain, 0, false, lighting);
+  frame_lighting(plain, 0, LightingOptions{false, false}, lighting);
   const f32 grey = gfx::k_neutral_ground_albedo;
   CHECK(near(lighting.ground.xyz(), Vec3{grey, grey, grey}));
   CHECK(lighting.ground.w == 0.0f);

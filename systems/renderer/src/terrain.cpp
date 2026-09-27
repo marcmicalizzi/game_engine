@@ -66,6 +66,7 @@ terrain::FieldDesc field_desc(const TerrainDesc& desc) {
       m.couple = static_cast<terrain::BandCouple>(band.couple <= 2 ? band.couple : 0);
       m.couple_width = band.couple_width;
       m.far = band.far;
+      m.celerity_scale = band.celerity_scale;
       f.bands.push_back(terrain::band_from_metres(m));
     }
   }
@@ -466,6 +467,8 @@ u64 terrain_hash(const TerrainDesc& desc) noexcept {
              {b.height_min, b.height_max, b.cell, b.share, b.length_min, b.length_max, b.stoss,
               b.bend, b.sinuosity, b.spread_deg, b.sharpness, b.couple_width})
           h = mix_f32(h, v);
+        // Only when it is not the physical rate, so every scene before it keeps its hash.
+        if (b.celerity_scale != 1.0f) h = mix_f32(hash_combine(h, 0x43454CULL), b.celerity_scale);
       }
     }
   }
@@ -593,6 +596,16 @@ f64 terrain_band_travel_m(const TerrainSampler& sampler, f64 from_s, f64 to_s) n
   (void)from_s;
   (void)to_s;
   return 0.0;
+#endif
+}
+
+const terrain::DuneField* terrain_dune_field(const TerrainSampler& sampler) noexcept {
+#if ENGINE_RENDERER_TERRAIN
+  const TerrainSampler::Dunes* dunes = sampler.dunes_field();
+  return dunes != nullptr ? &dunes->field : nullptr;
+#else
+  (void)sampler;
+  return nullptr;
 #endif
 }
 

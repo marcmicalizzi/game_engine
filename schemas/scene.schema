@@ -456,7 +456,7 @@ enum DuneCouple : u8 {
 /// One band of the dune generator's table (docs/subsystems/terrain.md, "The band table"): a
 /// population of primitives of one kind on a lattice of square cells, at most one a cell, which
 /// the wind carries at its sand flux over the band's height. Metres; fractions are of the cell.
-struct TerrainBand @version(1) {
+struct TerrainBand @version(2) {
   name: string
   kind: DuneKind = Transverse
   /// The range each primitive's height is drawn from, metres.
@@ -490,6 +490,11 @@ struct TerrainBand @version(1) {
   couple_width: f32 = 0
   /// Kept by the far detail (past 2 km): false for bands of a few metres and less.
   far: bool = true
+  /// A stylization for cinematic time-lapse rates, never physics: the band's travel is Bagnold's
+  /// (the wind's flux over its height) times this, so a mega-draa that moves a metre and a half a
+  /// game year can be seen to move at a week a second. 1, the default, is the physical rate;
+  /// (0, 1000] (docs/subsystems/terrain.md, "How far the big dunes move").
+  celerity_scale: f32 = 1 @since(2)
 }
 
 /// Which dune field a terrain draws.
@@ -691,9 +696,38 @@ struct PassMs @version(4) {
   tables: f64 = 0 @since(4)
 }
 
+/// One terrain level's surface in one frame of a time-lapse (`engine-view --time-rate`;
+/// docs/subsystems/renderer.md, "The dunes in time-lapse"): what the pool pass blended.
+struct TerrainLevelFrame @version(1) {
+  /// The game time the surface stands for, seconds from the world's start, and the times of the
+  /// pair it blends between; `blend` is 0 at a and 1 at b.
+  surface_s: f64 = 0
+  time_a: f64 = 0
+  time_b: f64 = 0
+  blend: f64 = 0
+  /// The most any vertex of the level moved this frame, metres: never above the level's bound.
+  move_m: f64 = 0
+  /// The surface stood at this level's b with no next field to take (`held`), or the clock
+  /// braked for this level's newest field (`late`): a field later than the latency allowed.
+  held: bool = false
+  late: bool = false
+  /// Fields after b this level had: evaluating, uploading or ready (at most two).
+  ahead: u32 = 0
+}
+
+/// A time-lapse's frame (`engine-view --time-rate`): the game time, the surface clock's latency
+/// and how far behind game time the surface stood, its speed over the true one, and each level's.
+struct FrameTerrain @version(1) {
+  game_s: f64 = 0
+  latency_s: f64 = 0
+  lag_s: f64 = 0
+  speed: f64 = 0
+  levels: TerrainLevelFrame[]
+}
+
 /// One frame of a flythrough benchmark, or of an interactive session measured with
 /// `engine-view --interactive --benchmark`. One line of the `.jsonl` a run writes.
-struct FrameRecord @version(6) {
+struct FrameRecord @version(7) {
   /// Which pass over the path, from 0.
   repeat: u32 = 0
   /// The path frame, from 0; an interactive session's frame, from 0.
@@ -797,6 +831,8 @@ struct FrameRecord @version(6) {
   /// With `--census-pixels`: pixels of the picture each scene mesh covers, from the id channel.
   /// A mesh that comes into view is the frame this goes above zero.
   pixels: u32[]
+  /// With `--time-rate`: the dune field's time-lapse in this frame; null without one.
+  terrain: FrameTerrain? = null @since(7)
 }
 
 /// A distribution over a path's frames.

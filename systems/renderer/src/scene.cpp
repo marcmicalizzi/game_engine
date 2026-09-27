@@ -1179,6 +1179,11 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
         band.couple = static_cast<u8>(b.couple);
         band.couple_width = b.couple_width;
         band.far = b.far;
+        if (!(b.celerity_scale > 0.0f && b.celerity_scale <= 1000.0f)) {
+          error = path + ": a dune band's celerity_scale must be within (0, 1000]";
+          return false;
+        }
+        band.celerity_scale = b.celerity_scale;
         out.terrain.bands.push_back(std::move(band));
       }
     }

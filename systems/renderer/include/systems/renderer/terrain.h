@@ -33,6 +33,10 @@
 #include <span>
 #include <string>
 
+namespace engine::terrain {
+class DuneField;
+}  // namespace engine::terrain
+
 namespace engine::renderer {
 
 enum class TerrainGenerator : u8 { waves = 0, dunes = 1 };
@@ -70,6 +74,7 @@ struct TerrainBand {
   u8 couple = 0;  // 0 none, 1 flanks, 2 floors
   f32 couple_width = 0.0f;
   bool far = true;
+  f32 celerity_scale = 1.0f;  // a stylization: the band's travel times this (terrain.md)
 };
 
 struct TerrainDesc {
@@ -284,5 +289,10 @@ bool evaluate_terrain_window(const TerrainSampler& sampler, f64 time_s,
 // rather than between its ends so a reversal inside the interval is not a short move). Storms are
 // in the record, so a storm's hours travel further. 0 without a generator.
 f64 terrain_band_travel_m(const TerrainSampler& sampler, f64 from_s, f64 to_s) noexcept;
+
+// The generator's own field behind a sampler, or null (no generator, or a build without the
+// terrain capability): for the tests and reports that ask it what the sampler does not — a band's
+// primitives and displacement, where a crest stands (terrain.md, "How far the big dunes move").
+const terrain::DuneField* terrain_dune_field(const TerrainSampler& sampler) noexcept;
 
 }  // namespace engine::renderer

@@ -252,6 +252,16 @@ u64 field_hash(const FieldDesc& desc) noexcept {
       for (const u64 word : words)
         h = hash_combine(h, word);
     }
+    // A stylized band's travel enters only when some band has one, so every table before it keeps
+    // its hash.
+    bool styled = false;
+    for (const BandDesc& b : desc.bands)
+      styled = styled || b.celerity_q16 != k_one_q16;
+    if (styled) {
+      h = hash_combine(h, 0x43454C4552ull);  // "CELER"
+      for (const BandDesc& b : desc.bands)
+        h = hash_combine(h, static_cast<u64>(static_cast<u32>(b.celerity_q16)));
+    }
   }
   return h;
 }
@@ -350,6 +360,9 @@ BandDesc band_from_metres(const BandMetres& m) noexcept {
   b.couple = m.couple;
   b.couple_mm = static_cast<i64>(std::floor(static_cast<f64>(m.couple_width) * 1000.0 + 0.5));
   b.far = m.far;
+  b.celerity_q16 = static_cast<i32>(
+      clamp_i64(static_cast<i64>(std::floor(static_cast<f64>(m.celerity_scale) * 65536.0 + 0.5)), 0,
+                i64{1000} * 65536));
   set_name(b, m.name.c_str());
   return b;
 }
@@ -388,6 +401,8 @@ bool validate_bands(std::span<const BandDesc> bands, std::string* error) {
       return fail(where + ": sharpness must be within [0, 1]");
     if (b.side_days < 1 || b.side_days > 3650 || b.sharp_days < 1 || b.sharp_days > 3650)
       return fail(where + ": the slip face's windows must be 1 to 3650 days");
+    if (b.celerity_q16 <= 0 || b.celerity_q16 > 1000 * k_one_q16)
+      return fail(where + ": celerity_scale must be within (0, 1000]");
     if (b.couple != BandCouple::none && (i == 0 || b.couple_mm <= 0))
       return fail(where + ": couples to the bands before it, and needs some and a width");
     if (i > 0 && b.height_hi_cm > bands[i - 1].height_hi_cm)
@@ -417,7 +432,12 @@ DuneField::DuneField(const FieldDesc& desc)
   for (u32 b = 0; b < bands_.size(); ++b) {
     const BandDesc& p = bands_[b];
     cell_[b] = p.cell_cm * 10;
-    celerity_height_[b] = max_i64(10, (p.height_lo_cm + p.height_hi_cm) * 5);
+    // Bagnold's height, the middle of the band's range, mm — over a stylized band's scale, which
+    // is the same thing as its travel times the scale and keeps the displacement one division.
+    const i64 bagnold = max_i64(10, (p.height_lo_cm + p.height_hi_cm) * 5);
+    celerity_height_[b] = p.celerity_q16 == k_one_q16
+                              ? bagnold
+                              : max_i64(1, (bagnold * k_one_q16) / max_i64(1, p.celerity_q16));
     const i64 h_hi_um = p.height_hi_cm * 10'000;
     if (p.kind == PrimitiveKind::barchan) {
       reach_[b] = (h_hi_um * 11) / 2000 + 10 + absorb_[b];

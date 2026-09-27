@@ -402,7 +402,7 @@ struct AdaptersResult @version(1) {
 // with the same functions in systems/renderer/settings.h.
 
 /// Every knob the renderer has. Absent fields keep the defaults, which are engine-view's.
-struct RenderSettings @version(8) {
+struct RenderSettings @version(9) {
   /// direct, hw, vertex, sw, auto, or rt. `hw` and `direct` fall back to `vertex` on a device
   /// without mesh shaders; the result says which one ran.
   raster: string = "hw"
@@ -422,8 +422,16 @@ struct RenderSettings @version(8) {
   cull: bool = true
   occlusion: bool = true
   cone: bool = true
-  /// The two orbiting point lights beside the sun.
+  /// The two point lights beside the sun.
   lights: bool = true
+  /// The point lights orbit the scene as the frame number advances; off, they stand where frame 0
+  /// puts them. For the tests that sweep a highlight across a surface; never a time of day.
+  orbit_lights: bool = false @since(9)
+  /// Where the sun stands, degrees: azimuth in the ground plane from +x towards +z, elevation
+  /// above the horizon. Null takes the `renderer.sun.azimuth_deg` and `renderer.sun.elevation_deg`
+  /// tunables, whose defaults are the direction every frame has always had.
+  sun_azimuth_deg: f32? = null @since(9)
+  sun_elevation_deg: f32? = null @since(9)
   /// none, identity, wave, or lattice: the per-frame deformed-vertex pool.
   deform: string = "none"
   deform_amplitude: f32 = 0.02

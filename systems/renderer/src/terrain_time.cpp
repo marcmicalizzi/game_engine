@@ -26,9 +26,11 @@ tunables::Float lead{"renderer.terrain.lead", 1.5, 0.0, 100.0,
                      "How far ahead of what an evaluation of the dune field costs the next field "
                      "is timed, as a multiple of the last evaluation's wall time at the rate"};
 
-// Blocks a job takes: a 4,097 grid's 4,225 blocks are a few hundred jobs, a 257 grid's 25 still
-// spread over a pool.
-constexpr u32 k_blocks_per_job = 16;
+// Blocks a job takes: a 4,097 grid's 4,225 blocks are a thousand jobs, a 257 grid's 25 still spread
+// over a pool. The erg's blocks cost 2 to 12 ms on one core (median 3; a mega-draa's reach is the
+// dear end), so sixteen a job left the last wave of a 32-thread pool 11% idle and four leave it 2%
+// (docs/experiments/time-lapse-smoothness-2026-09-27.md, "Evaluation").
+constexpr u32 k_blocks_per_job = 4;
 
 }  // namespace
 
@@ -231,6 +233,81 @@ TerrainSurfaceResult terrain_surface_frame(std::span<TerrainBlend> blends, f64 t
   return result;
 }
 
+f64 terrain_keep_up_time(f64 from_s, f64 at_s, const TerrainKeepUp& keep, bool* late) noexcept {
+  if (late != nullptr) *late = false;
+  if (!(keep.rate > 0.0)) return at_s;
+  f64 want = from_s;
+  // Ready before the surface reaches it: a field takes its turnaround to come.
+  if (keep.lead > 0.0 && keep.turnaround_s > 0.0)
+    want = std::max(want, from_s + keep.rate * keep.turnaround_s * keep.lead);
+  // Crossed at the rate within the per-frame bound: a vertex moves |b - a| times the blend's
+  // change, so a pair `delta` apart needs `delta / budget` frames of game time.
+  if (keep.delta_m > 0.0 && keep.budget_m > 0.0 && keep.frame_s > 0.0)
+    want = std::max(want, from_s + 1.25 * keep.delta_m / keep.budget_m * keep.rate * keep.frame_s);
+  if (!(want > at_s)) return at_s;
+  if (late != nullptr) *late = true;
+  return std::max(at_s, std::min(want, from_s + keep.longest_step_s));
+}
+
+void TerrainClock::reset(const TerrainClockConfig& config) noexcept {
+  config_ = config;
+  for (Level& level : levels_)
+    level = Level{};
+  latency_s_ = 0.0;
+  braked_ = false;
+  // A clock starts still: the first field is not there yet, and the sand sets off from rest.
+  speed_ = 0.0;
+}
+
+void TerrainClock::arrived(u32 level, f64 turnaround_s) noexcept {
+  if (level >= k_max_surface_levels) return;
+  Level& l = levels_[level];
+  l.turnaround_s[l.next] = std::max(turnaround_s, 0.0);
+  l.next = (l.next + 1) % k_clock_samples;
+  l.count = std::min(l.count + 1, k_clock_samples);
+  update_latency();
+}
+
+f64 TerrainClock::turnaround_s(u32 level) const noexcept {
+  if (level >= k_max_surface_levels) return 0.0;
+  const Level& l = levels_[level];
+  f64 worst = 0.0;
+  for (u32 i = 0; i < l.count; ++i)
+    worst = std::max(worst, l.turnaround_s[i]);
+  return worst;
+}
+
+void TerrainClock::update_latency() noexcept {
+  f64 worst = 0.0;
+  for (u32 k = 0; k < k_max_surface_levels; ++k)
+    worst = std::max(worst, turnaround_s(k));
+  latency_s_ = config_.margin * worst * config_.rate;
+}
+
+f64 TerrainClock::advance(f64 real_dt_s, f64 game_s, f64 surface_s, f64 horizon_s) noexcept {
+  const f64 rate = config_.rate;
+  if (!(rate > 0.0) || !(real_dt_s > 0.0)) return surface_s;
+  const f64 accel = rate / std::max(config_.response_s, 1.0e-3);
+  // Towards game time minus L: at the rate when there, faster (up to catch_up) when behind, slower
+  // (down to still) when ahead, and never changing speed by more than `accel` allows.
+  const f64 gap = game_s - latency_s_ - surface_s;
+  const f64 want =
+      std::clamp(rate + gap / std::max(config_.settle_s, 1.0e-3), 0.0, config_.catch_up * rate);
+  f64 speed = std::clamp(want, speed_ - accel * real_dt_s, speed_ + accel * real_dt_s);
+  // Braking for the newest field every level has: the fastest speed from which the surface can
+  // still stop at it decelerating at `accel`, so a late field is approached like a stop sign.
+  const f64 room = std::max(horizon_s - surface_s, 0.0);
+  const f64 brake = std::min(std::sqrt(2.0 * accel * room), room / real_dt_s);
+  braked_ = brake < speed;
+  speed = std::clamp(std::min(speed, brake), 0.0, config_.catch_up * rate);
+  return std::min(surface_s + speed * real_dt_s, std::max(horizon_s, surface_s));
+}
+
+void TerrainClock::settle(f64 real_dt_s, f64 from_s, f64 to_s) noexcept {
+  if (!(real_dt_s > 0.0)) return;
+  speed_ = std::max(to_s - from_s, 0.0) / real_dt_s;
+}
+
 // ---- the motion ------------------------------------------------------------------------------
 
 TerrainMotion::~TerrainMotion() { finish(); }
@@ -310,7 +387,16 @@ bool TerrainMotion::start(GpuScene& scene, TerrainRingSet* rings, const TimeLaps
   sampler_ = std::make_unique<TerrainSampler>(*desc_);
   start_s_ = desc_->time_s;
   game_s_ = 0.0;
+  real_s_ = 0.0;
   last_move_m_ = 0.0;
+  TerrainClockConfig clock_config;
+  clock_config.rate = config_.rate;
+  clock_.reset(clock_config);
+  max_latency_s_ = 0.0;
+  speed_ratio_ = 0.0;
+  moved_once_ = false;
+  stopped_frames_ = 0;
+  braked_frames_ = 0;
   recentre_ = Recentre::none;
   rings_stopped_ = false;
   frames_ = 0;
@@ -362,9 +448,14 @@ bool TerrainMotion::start(GpuScene& scene, TerrainRingSet* rings, const TimeLaps
     if (!scene.terrain_upload(k, 0, level.window, staging, error, true)) return false;
     level.a = Field{0, start_s_, padding, 0.0, level.window};
     level.b = Field{};
-    level.next = Field{};
     level.has_b = false;
-    level.next_state = Level::Next::none;
+    for (u32 e = 0; e < Level::k_ahead; ++e) {
+      level.next[e] = Field{};
+      level.next_state[e] = Level::Next::none;
+    }
+    level.ahead = 0;
+    level.newest_delta_m = 0.0;
+    level.wanted_s = 0.0;
     level.blend = TerrainBlend{};
     level.blend.time_a = level.blend.time_b = level.blend.surface_s = start_s_;
     level.eval_ms_ema = ms_since(started);
@@ -682,32 +773,43 @@ u32 TerrainMotion::free_slot(const Level& level, u32 besides) const noexcept {
   for (u32 s = 0; s < level.slots; ++s) {
     if (s == besides || s == level.a.slot) continue;
     if (level.has_b && s == level.b.slot) continue;
-    if (level.next_state != Level::Next::none && s == level.next.slot) continue;
+    bool taken = false;
+    for (u32 e = 0; e < level.ahead; ++e)
+      taken = taken || s == level.next[e].slot;
+    if (taken) continue;
     return s;
   }
   return ~0u;
 }
 
-// Asks the worker for `level`'s next field, timed by the cadence rule (and, without `wait`, far
-// enough ahead that evaluating it keeps up). False when the worker is busy, the level holds its
-// pair for a re-centre, or there is no slot.
+// Asks the worker for the field after `level`'s newest, timed by the cadence rule (and, without
+// `wait`, far enough ahead that it is there before the surface needs it and the pair it ends is
+// crossed within the per-frame bound: `terrain_keep_up_time`). False when the worker is busy, the
+// level holds its pair for a re-centre, has a field on its way or no room for another, or there is
+// no slot.
 bool TerrainMotion::schedule(u32 k) {
   Level& level = levels_[k];
-  if (frozen(k) || level.next_state != Level::Next::none || !(config_.rate > 0.0)) return false;
+  if (frozen(k) || level.ahead >= level.max_ahead() || level.on_its_way() || !(config_.rate > 0.0))
+    return false;
   if (worker_busy()) return false;
   const u32 slot = free_slot(level);
   if (slot == ~0u) return false;
-  const f64 from = level.has_b ? level.b.time_s : level.a.time_s;
+  const f64 from = level.newest_s();
   f64 at = terrain_next_time(*sampler_, from, level.spacing_m, config_.fraction, config_.min_step_s,
                              config_.max_step_s);
-  if (!config_.wait && config_.lead > 0.0) {
-    // Far enough ahead that the field is ready before the surface reaches it: an evaluation costs
-    // its wall time, which is `rate` game seconds a second.
-    const f64 keep_up = from + config_.rate * level.eval_ms_ema / 1000.0 * config_.lead;
-    if (keep_up > at) {
-      at = std::min(keep_up, from + config_.max_step_s);
-      ++level.stats.late;
-    }
+  if (!config_.wait) {
+    TerrainKeepUp keep;
+    keep.rate = config_.rate;
+    // The worst recent turnaround; before the first, the rest pose's evaluation.
+    keep.turnaround_s = std::max(clock_.turnaround_s(k), level.eval_ms_ema / 1000.0);
+    keep.lead = config_.lead * static_cast<f64>(Level::k_ahead + 1 - level.max_ahead());
+    keep.frame_s = frame_s_ema_;
+    keep.delta_m = level.newest_delta_m;
+    keep.budget_m = config_.fraction * level.spacing_m;
+    keep.longest_step_s = config_.max_step_s;
+    bool late = false;
+    at = terrain_keep_up_time(from, at, keep, &late);
+    if (late) ++level.stats.late;
   }
   level.stats.max_step_s = std::max(level.stats.max_step_s, at - from);
   gfx::BufferResource staging;
@@ -717,14 +819,15 @@ bool TerrainMotion::schedule(u32 k) {
                      log::field("error", error));
     return false;
   }
-  level.next = Field{slot, at, 0.0, 0.0, level.window};
-  level.next_state = Level::Next::evaluating;
+  const u32 e = level.ahead++;
+  level.next[e] = Field{slot, at, 0.0, 0.0, level.window};
+  level.next_state[e] = Level::Next::evaluating;
   Task task;
   task.kind = Task::Kind::field;
   task.level = k;
   task.time_s = at;
   task.from_s = from;
-  // The scene's grid measures its next field from b alone; a ring keeps its a too, which a
+  // The scene's grid measures its next field from its newest alone; a ring keeps its a too, which a
   // re-centre carries over to the new layout with its b.
   task.keep_from_s = k == 0 ? from : level.a.time_s;
   task.window = level.window;
@@ -734,7 +837,7 @@ bool TerrainMotion::schedule(u32 k) {
 }
 
 // The field worker's next task when it has none: a re-centre's pairs when the rings hold them,
-// else the next field of the level whose b the surface reaches first.
+// else the next field of the level whose newest field the surface reaches first.
 void TerrainMotion::schedule_next() {
   if (worker_busy()) return;
   if (recentre_ == Recentre::pairs_asked) {
@@ -746,8 +849,8 @@ void TerrainMotion::schedule_next() {
   f64 best_from = 0.0;
   for (u32 k = 0; k < levels_.size(); ++k) {
     const Level& level = levels_[k];
-    if (frozen(k) || level.next_state != Level::Next::none) continue;
-    const f64 from = level.has_b ? level.b.time_s : level.a.time_s;
+    if (frozen(k) || level.ahead >= level.max_ahead() || level.on_its_way()) continue;
+    const f64 from = level.newest_s();
     if (best == ~0u || from < best_from) {
       best = k;
       best_from = from;
@@ -775,37 +878,66 @@ void TerrainMotion::take_finished() {
 // A field the worker finished goes to the scene, which the next frame copies into its slot.
 void TerrainMotion::take_field(Task& finished) {
   Level& level = levels_[finished.level];
-  if (frozen(finished.level) || level.next_state != Level::Next::evaluating) {
-    // A ring's field the freeze made stale: the re-centre carries the ring's pair over, and the
-    // field after it is asked for again once the rings are swapped.
+  const u32 e = level.ahead > 0 ? level.ahead - 1 : 0;
+  if (frozen(finished.level) || level.ahead == 0 ||
+      level.next_state[e] != Level::Next::evaluating) {
+    // A ring's field the freeze made stale (`drop_ahead`): the re-centre carries the ring's pair
+    // over, and the fields after it are asked for again once the rings are swapped.
     scene_->terrain_retire(finished.staging);
-    level.next = Field{};
-    level.next_state = Level::Next::none;
     return;
   }
   std::string error;
-  if (!scene_->terrain_upload(finished.level, level.next.slot, finished.window, finished.staging,
+  if (!scene_->terrain_upload(finished.level, level.next[e].slot, finished.window, finished.staging,
                               &error)) {
     ENGINE_LOG_ERROR(log_renderer, "a terrain field could not be handed over",
                      log::field("error", error));
     scene_->terrain_retire(finished.staging);
-    level.next = Field{};
-    level.next_state = Level::Next::none;
+    level.next[e] = Field{};
+    level.next_state[e] = Level::Next::none;
+    --level.ahead;
     return;
   }
-  level.next.delta_m = finished.delta_m;
-  level.next.padding_m = finished.padding_m;
-  level.next.window = finished.window;
-  // Taken as b only once its last piece is in a frame (`GpuScene::terrain_slot_uploaded`).
-  level.next_state = scene_->terrain_slot_uploaded(finished.level, level.next.slot)
-                         ? Level::Next::ready
-                         : Level::Next::uploading;
+  level.next[e].delta_m = finished.delta_m;
+  level.next[e].padding_m = finished.padding_m;
+  level.next[e].window = finished.window;
+  level.newest_delta_m = finished.delta_m;
   level.eval_ms_ema = level.stats.evaluated == 0 ? finished.eval_ms
                                                  : 0.5 * level.eval_ms_ema + 0.5 * finished.eval_ms;
   ++level.stats.evaluated;
   level.stats.last_eval_ms = finished.eval_ms;
   level.stats.total_eval_ms += finished.eval_ms;
   level.stats.last_hash = finished.hash;
+  // Taken as b only once its last piece is in a frame (`GpuScene::terrain_slot_uploaded`).
+  level.next_state[e] = Level::Next::uploading;
+  if (scene_->terrain_slot_uploaded(finished.level, level.next[e].slot))
+    field_ready(finished.level, e);
+}
+
+// A level's field has its last piece in a frame: it may be drawn, and how long it took to come is
+// what the clock's latency and the next field's timing are made of.
+void TerrainMotion::field_ready(u32 k, u32 e) {
+  Level& level = levels_[k];
+  level.next_state[e] = Level::Next::ready;
+  const f64 took = std::max(real_s_ - level.wanted_s, 0.0);
+  if (level.wanted_s >= 0.0) {
+    clock_.arrived(k, took);
+    level.stats.last_turnaround_s = took;
+    level.stats.max_turnaround_s = std::max(level.stats.max_turnaround_s, took);
+  }
+  level.wanted_s = level.ahead < level.max_ahead() ? real_s_ : -1.0;
+}
+
+// A ring's fields after b, dropped at a freeze: their slots are what the re-centre carries its
+// pair over into. One on the worker comes back while the ring is frozen (the pairs wait for the
+// worker) and is retired then (`take_field`).
+void TerrainMotion::drop_ahead(u32 k) {
+  Level& level = levels_[k];
+  for (u32 e = 0; e < Level::k_ahead; ++e) {
+    level.next[e] = Field{};
+    level.next_state[e] = Level::Next::none;
+  }
+  level.ahead = 0;
+  level.wanted_s = -1.0;
 }
 
 // ---- the rings' re-centres
@@ -906,13 +1038,8 @@ bool TerrainMotion::upload_chunks(bool all) {
 void TerrainMotion::freeze_rings() {
   frozen_frame_ = frames_;
   recentre_ = Recentre::pairs_asked;
-  for (u32 k = 1; k < levels_.size(); ++k) {
-    Level& level = levels_[k];
-    if (level.next_state == Level::Next::ready || level.next_state == Level::Next::uploading) {
-      level.next = Field{};
-      level.next_state = Level::Next::none;
-    }
-  }
+  for (u32 k = 1; k < levels_.size(); ++k)
+    drop_ahead(k);
 }
 
 // The field worker carries the held pairs over: into a ring's two free slots when its window
@@ -1040,6 +1167,9 @@ void TerrainMotion::swap_rings() {
   }
   shown_layout_ = pending_layout_;
   recentre_ = Recentre::none;
+  // The rings want their next fields again from here: a freeze is not a field's turnaround.
+  for (u32 k = 1; k < levels_.size(); ++k)
+    if (levels_[k].ahead == 0) levels_[k].wanted_s = real_s_;
   ++ring_stats_.swaps;
   ring_stats_.last_swap_frames = static_cast<u32>(frames_ - asked_frame_);
   ring_stats_.last_frozen_frames = static_cast<u32>(frames_ - frozen_frame_);
@@ -1137,14 +1267,18 @@ void TerrainMotion::frame(f64 real_dt_s, f32 camera_x, f32 camera_z) {
   if (!active()) return;
   ++frames_;
   game_s_ += real_dt_s * config_.rate;
+  real_s_ += real_dt_s;
+  if (real_dt_s > 0.0) frame_s_ema_ = 0.9 * frame_s_ema_ + 0.1 * real_dt_s;
   const f64 target = start_s_ + game_s_;
   take_finished();
   // A field whose last piece earlier frames recorded may be taken as b now.
   for (u32 k = 0; k < levels_.size(); ++k) {
     Level& level = levels_[k];
-    if (level.next_state == Level::Next::uploading &&
-        scene_->terrain_slot_uploaded(k, level.next.slot)) {
-      level.next_state = Level::Next::ready;
+    for (u32 e = 0; e < level.ahead; ++e) {
+      if (level.next_state[e] == Level::Next::uploading &&
+          scene_->terrain_slot_uploaded(k, level.next[e].slot)) {
+        field_ready(k, e);
+      }
     }
   }
   if (rings_ != nullptr && !rings_stopped_) {
@@ -1152,6 +1286,28 @@ void TerrainMotion::frame(f64 real_dt_s, f32 camera_x, f32 camera_z) {
     advance_recentre(config_.wait);
   }
   const u32 n = levels_.size();
+  const f64 before = levels_[0].blend.surface_s;
+  // Where the surface goes this frame. Offscreen (`wait`), to game time, waiting below for a field
+  // it has caught up with; in a window, where the clock says — game time minus L, at a speed that
+  // changes a little a frame and brakes for the newest field every level has.
+  f64 goal = target;
+  u32 horizon_level = ~0u;
+  if (!config_.wait && config_.rate > 0.0) {
+    f64 horizon = target;
+    for (u32 k = 0; k < n; ++k) {
+      const Level& level = levels_[k];
+      f64 frontier = level.has_b ? level.blend.time_b : level.blend.time_a;
+      if (!frozen(k)) {
+        for (u32 e = 0; e < level.ahead && level.next_state[e] == Level::Next::ready; ++e)
+          frontier = level.next[e].time_s;
+      }
+      if (frontier < horizon) {
+        horizon = frontier;
+        horizon_level = k;
+      }
+    }
+    goal = clock_.advance(real_dt_s, target, before, std::max(horizon, before));
+  }
   f64 budget[k_max_terrain_levels];
   f64 moved[k_max_terrain_levels] = {};
   bool waited[k_max_terrain_levels] = {};
@@ -1166,12 +1322,12 @@ void TerrainMotion::frame(f64 real_dt_s, f32 camera_x, f32 camera_z) {
     for (u32 k = 0; k < n; ++k) {
       const Level& level = levels_[k];
       blends[k] = level.blend;
-      next[k].ready = level.next_state == Level::Next::ready && !frozen(k);
-      next[k].time_s = level.next.time_s;
-      next[k].delta_m = level.next.delta_m;
+      next[k].ready = level.ahead > 0 && level.next_state[0] == Level::Next::ready && !frozen(k);
+      next[k].time_s = level.next[0].time_s;
+      next[k].delta_m = level.next[0].delta_m;
     }
     result =
-        terrain_surface_frame(std::span<TerrainBlend>(blends, n), target,
+        terrain_surface_frame(std::span<TerrainBlend>(blends, n), goal,
                               std::span<const f64>(budget, n), std::span<TerrainNextField>(next, n),
                               std::span<f64>(step, n), std::span<u32>(installed, n));
     for (u32 k = 0; k < n; ++k) {
@@ -1180,12 +1336,19 @@ void TerrainMotion::frame(f64 real_dt_s, f32 camera_x, f32 camera_z) {
       moved[k] += step[k];
       budget[k] = std::max(budget[k] - step[k], 0.0);
       if (installed[k] > 0) {
-        // The field slots follow the pair: b's slot is a's now, the next field's is b's.
+        // The field slots follow the pair: b's slot is a's now, the next field's is b's, and the
+        // one after it moves up.
         if (level.has_b) level.a = level.b;
-        level.b = level.next;
+        level.b = level.next[0];
         level.has_b = true;
-        level.next = Field{};
-        level.next_state = Level::Next::none;
+        for (u32 e = 1; e < Level::k_ahead; ++e) {
+          level.next[e - 1] = level.next[e];
+          level.next_state[e - 1] = level.next_state[e];
+        }
+        level.next[Level::k_ahead - 1] = Field{};
+        level.next_state[Level::k_ahead - 1] = Level::Next::none;
+        --level.ahead;
+        if (level.wanted_s < 0.0) level.wanted_s = real_s_;
         level.stats.max_delta_m = std::max(level.stats.max_delta_m, level.b.delta_m);
         ++level.stats.installed;
       }
@@ -1199,18 +1362,29 @@ void TerrainMotion::frame(f64 real_dt_s, f32 camera_x, f32 camera_z) {
     if (frozen(h)) {
       advance_recentre(true);
       if (frozen(h)) break;
-    } else if (level.next_state == Level::Next::none) {
+    } else if (level.ahead == 0) {
       if (!schedule(h)) {
         if (!worker_busy()) break;
         wait_worker();
       }
-    } else if (level.next_state == Level::Next::evaluating) {
+    } else if (level.next_state[0] == Level::Next::evaluating) {
       wait_worker();
     } else {
       break;
     }
     waited[h] = true;
   }
+  const f64 after = levels_[0].blend.surface_s;
+  if (!config_.wait && config_.rate > 0.0) {
+    clock_.settle(real_dt_s, before, after);
+    max_latency_s_ = std::max(max_latency_s_, clock_.latency_s());
+  }
+  speed_ratio_ =
+      config_.rate > 0.0 && real_dt_s > 0.0 ? (after - before) / (config_.rate * real_dt_s) : 0.0;
+  const bool braked = !config_.wait && clock_.braked();
+  if (after > before) moved_once_ = true;
+  if (moved_once_ && !(after > before) && config_.rate > 0.0 && real_dt_s > 0.0) ++stopped_frames_;
+  if (braked) ++braked_frames_;
   last_move_m_ = 0.0;
   for (u32 k = 0; k < n; ++k) {
     Level& level = levels_[k];
@@ -1220,10 +1394,17 @@ void TerrainMotion::frame(f64 real_dt_s, f32 camera_x, f32 camera_z) {
     if (waited[k]) ++stats.waited;
     stats.max_move_m = std::max(stats.max_move_m, moved[k]);
     stats.max_lag_s = std::max(stats.max_lag_s, target - level.blend.surface_s);
+    stats.frame_move_m = moved[k];
+    stats.frame_held = result.held && result.limiting == k;
+    stats.frame_late = braked && horizon_level == k;
     last_move_m_ = std::max(last_move_m_, moved[k]);
     show(k);
   }
   schedule_next();
+}
+
+f64 TerrainMotion::lag_s() const noexcept {
+  return levels_.empty() ? 0.0 : game_time_s() - levels_[0].blend.surface_s;
 }
 
 void TerrainMotion::show(u32 k) {
@@ -1246,6 +1427,7 @@ TerrainMotion::LevelStats TerrainMotion::level_stats(u32 k) const noexcept {
   s.time_b = level.has_b ? level.blend.time_b : level.blend.time_a;
   s.blend = level.blend.blend();
   s.padding_m = std::max(level.a.padding_m, level.has_b ? level.b.padding_m : 0.0);
+  s.ahead = level.ahead;
   return s;
 }
 

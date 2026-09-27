@@ -68,7 +68,8 @@ endif()
 if(TARGET engine::terrain)
   # A scene whose terrain names the dune generator: fields, hash, sampler against mesh, the ground,
   # and the time-lapse's cadence and blend; and on a GPU, the moving terrain's pool pass.
-  list(APPEND _renderer_tests tests/terrain_generator_tests.cpp tests/terrain_motion_tests.cpp)
+  list(APPEND _renderer_tests tests/terrain_generator_tests.cpp tests/terrain_motion_tests.cpp
+       tests/terrain_clock_tests.cpp tests/terrain_crest_tests.cpp)
 endif()
 engine_module_tests(NAME renderer SOURCES ${_renderer_tests})
 if(TARGET engine::terrain AND TARGET engine::ruins)
