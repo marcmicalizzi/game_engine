@@ -188,6 +188,50 @@
       ],
       "kind": "button",
       "name": "marker"
+    },
+    {
+      "bindings": [
+        {
+          "code": 47,
+          "scale": 1.0,
+          "source": "key"
+        }
+      ],
+      "kind": "button",
+      "name": "sun_slower"
+    },
+    {
+      "bindings": [
+        {
+          "code": 48,
+          "scale": 1.0,
+          "source": "key"
+        }
+      ],
+      "kind": "button",
+      "name": "sun_faster"
+    },
+    {
+      "bindings": [
+        {
+          "code": 54,
+          "scale": 1.0,
+          "source": "key"
+        }
+      ],
+      "kind": "button",
+      "name": "dunes_slower"
+    },
+    {
+      "bindings": [
+        {
+          "code": 55,
+          "scale": 1.0,
+          "source": "key"
+        }
+      ],
+      "kind": "button",
+      "name": "dunes_faster"
     }
   ],
   "version": 1

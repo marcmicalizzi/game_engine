@@ -24,6 +24,7 @@
 // them: it draws through the vertex-shader baseline tier.
 #include "fly_camera.h"
 #include "pacing.h"
+#include "time_controls.h"
 #include "window_input.h"
 #include "world_view.h"  // empty without the world capability (ENGINE_VIEW_WORLD)
 
@@ -55,6 +56,7 @@
 #include <systems/renderer/capture.h>
 #include <systems/renderer/flythrough.h>
 #include <systems/renderer/gpu_scene.h>
+#include <systems/renderer/lighting.h>
 #include <systems/renderer/page_source.h>
 #include <systems/renderer/reference.h>
 #include <systems/renderer/scene.h>
@@ -78,6 +80,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <memory>
 #include <optional>
 #include <string>
@@ -120,7 +123,7 @@ constexpr const char* k_usage =
     "                   [--raster direct|hw|vertex|sw|auto|rt] [--sw-px <px>] [--view <mode>] [--orbit <d>]\n"
     "                   [--mesh <file.gltf|file.glb|file.clusters>] [--scene <file.json>]\n"
     "                   [--grid-instances <n>] [--no-cache] [--ddc <dir>] [--no-lights]\n"
-    "                   [--sun <azimuth,elevation>] [--orbit-lights]\n"
+    "                   [--sun <azimuth,elevation>] [--sun-rate <game s per real s>] [--orbit-lights]\n"
     "                   [--no-texture-sharing]\n"
     "                   [--deform none|identity|wave|lattice] [--deform-amplitude <a>] [--rt-templates]\n"
     "                   [--rt-budget-mib <n>] [--time-rate <game s per real s>]\n"
@@ -177,9 +180,14 @@ constexpr const char* k_usage =
     "  --no-occlusion   skip two-pass occlusion culling (hw mode only; on by default)\n"
     "  --no-cone        skip backface culling of clusters by their normal cones (on by default)\n"
     "  --no-lights      only the sun and the sky; no point lights (they are on by default)\n"
-    "  --sun <az,el>    where the sun stands, degrees: azimuth in the ground plane from +x towards\n"
+    "  --sun <az,el>    where the sun starts, degrees: azimuth in the ground plane from +x towards\n"
     "                   +z, elevation above the horizon (default: the renderer.sun.* tunables,\n"
-    "                   48.37,53.03). It stands still: there is no time of day\n"
+    "                   48.37,53.03). It stands still unless its day runs (--sun-rate)\n"
+    "  --sun-rate <r>   run the sun's day at r game seconds per real second (default: the\n"
+    "                   renderer.sun.rate tunable, 0): it turns once a game day round the pole on\n"
+    "                   the arc through its start, tilted renderer.sun.arc_tilt_deg (40), and\n"
+    "                   fades below the horizon. Independent of --time-rate; [ and ] step it in an\n"
+    "                   --interactive window. The summary's \"sun\" block says where it ended\n"
     "  --orbit-lights   the two point lights orbit the scene as the frame number advances (off:\n"
     "                   they stand where frame 0 puts them)\n"
     "  --shadows <how>  off, rt, or csm. rt: every light in the resolve casts a ray-traced shadow\n"
@@ -255,7 +263,8 @@ constexpr const char* k_usage =
     "                   band will have moved a quarter of a sample (renderer.terrain.move_fraction)\n"
     "                   and the terrain blended between the last two fields every frame, no vertex\n"
     "                   moving more than that fraction of the spacing in one frame. Offscreen a late\n"
-    "                   field is waited for; in a window the sand holds until it comes. The\n"
+    "                   field is waited for; in a window the sand runs a latency behind game time\n"
+    "                   and slows for a late field. , and . step it in an --interactive window. The\n"
     "                   summary's \"time_lapse\" block says how often and what it cost\n"
     "  --terrain-rings  draw a dune terrain's ground near the camera at the rings' finer grids\n"
     "                   (terrain.rings.*: 50 cm to 250 m, 1 m to 1 km by default) beside the\n"
@@ -353,15 +362,18 @@ constexpr const char* k_usage =
     "                   changes representation draw the frame with its old and its new instances;\n"
     "                   one engine.world.TileHandover per change: what popped\n"
     "  --interactive    fly the camera: WASD, E/Space up, Q/Ctrl down, the mouse to look while the\n"
-    "                   window holds the pointer (Esc takes it and gives it back), Shift fast, Alt\n"
-    "                   slow, M drops a marker; a gamepad's sticks, triggers, stick clicks, Back\n"
-    "                   and North do the same. The camera integrates at a fixed tick\n"
+    "                   window holds the pointer (a click or the window gaining focus takes it; Esc\n"
+    "                   gives it back, and Esc with it given back ends the session), Shift fast,\n"
+    "                   Alt slow, M drops a marker; [ and ] the sun's day slower and faster, , and .\n"
+    "                   the dunes' time-lapse (0, 60, 600, 3600, 8640, 86400 game s a real s, and\n"
+    "                   604800 for the dunes); a gamepad's sticks, triggers, stick clicks, Back (as\n"
+    "                   Esc) and North do the same. The camera integrates at a fixed tick\n"
     "                   (view.fly.tick_hz, 240) and never from frame time, and a frame draws it\n"
-    "                   between the last two ticks; the title shows the last frame's ms and the\n"
-    "                   p99 over the last second. Starts at --start, else at --camera-path's first\n"
-    "                   frame, else at the first frame of the scene file's own camera_path, else\n"
-    "                   at the orbit camera. --benchmark writes the flythrough JSONL of the\n"
-    "                   session (one record per frame, ticks included)\n"
+    "                   between the last two ticks; the title shows the two rates, the pointer,\n"
+    "                   the last frame's ms and the p99 over the last second. Starts at --start,\n"
+    "                   else at --camera-path's first frame, else at the first frame of the scene\n"
+    "                   file's own camera_path, else at the orbit camera. --benchmark writes the\n"
+    "                   flythrough JSONL of the session (one record per frame, ticks included)\n"
     "  --start <x,y,z> <yaw,pitch>  --interactive: start the camera here, metres and degrees (yaw\n"
     "                   about +y counter-clockwise from above, 0 looking along -z; pitch up)\n"
     "  --record-input <f>  --interactive: write the session's input log, with a header naming\n"
@@ -535,6 +547,9 @@ struct Options {
   std::string tunables_file;
   std::string tunable_overrides;
   bool procedural_given = false;  // --procedural or --grid: a replay then draws what it is told
+  // `--sun-rate`: the sun's day in game seconds per real second (lighting.h, "The sun's day");
+  // unset takes the `renderer.sun.rate` tunable. The day's clock is the host's: `view::SunDay`.
+  std::optional<f64> sun_rate;
   renderer::RenderSettings settings;
 };
 
@@ -1144,7 +1159,10 @@ JsonValue time_lapse_summary(const renderer::TerrainMotion& lapse, const rendere
                              const renderer::GpuScene& scene) {
   if (!lapse.active()) return JsonValue();
   JsonValue out = JsonValue::object();
+  // The rate the run ended at, the one it started at, and how often `,` and `.` changed it.
   out.set("rate", lapse.config().rate);
+  out.set("start_rate", lapse.start_rate());
+  out.set("rate_changes", lapse.rate_changes());
   out.set("fraction", lapse.config().fraction);
   out.set("min_step_s", lapse.config().min_step_s);
   out.set("max_step_s", lapse.config().max_step_s);
@@ -1229,6 +1247,7 @@ std::optional<scene::FrameTerrain> frame_terrain(const renderer::TerrainMotion& 
   out.latency_s = lapse.latency_s();
   out.lag_s = lapse.lag_s();
   out.speed = lapse.speed_ratio();
+  out.rate = lapse.config().rate;
   for (u32 k = 0; k < lapse.level_count(); ++k) {
     const renderer::TerrainMotion::LevelStats s = lapse.level_stats(k);
     scene::TerrainLevelFrame level;
@@ -1242,6 +1261,38 @@ std::optional<scene::FrameTerrain> frame_terrain(const renderer::TerrainMotion& 
     level.ahead = s.ahead;
     out.levels.push_back(level);
   }
+  return out;
+}
+
+// The summary's `sun` block (apps.md, "--sun-rate"; renderer.md, "The sun's day"): the rate its
+// day ran at when the run ended, the one it started with and how often `[` and `]` changed it, how
+// far into the day the last frame was (game seconds), where it started and the arc's tilt, and
+// where it stood at the end — direction, azimuth from +x towards +z and elevation, degrees — and
+// how strongly it shone. The renderer's own model, asked the same question the frame asked it.
+JsonValue sun_summary(const renderer::RenderSettings& settings, const view::SunDay& day) {
+  const renderer::SunArc arc = renderer::sun_arc(settings);
+  const renderer::LightingOptions lit = renderer::lighting_options(settings, day.time_s);
+  constexpr f64 k_deg = 180.0 / 3.14159265358979323846;
+  const Vec3 d = lit.sun;
+  f64 azimuth = std::atan2(static_cast<f64>(d.z), static_cast<f64>(d.x)) * k_deg;
+  if (azimuth < 0.0) azimuth += 360.0;
+  const f64 y = static_cast<f64>(d.y);
+  JsonValue out = JsonValue::object();
+  out.set("rate", day.rate);
+  out.set("start_rate", day.start_rate);
+  out.set("rate_changes", day.changes);
+  out.set("time_s", day.time_s);
+  out.set("start_azimuth_deg", arc.azimuth_deg);
+  out.set("start_elevation_deg", arc.elevation_deg);
+  out.set("tilt_deg", arc.tilt_deg);
+  out.set("azimuth_deg", azimuth);
+  out.set("elevation_deg", std::asin(y < -1.0 ? -1.0 : (y > 1.0 ? 1.0 : y)) * k_deg);
+  out.set("intensity", static_cast<f64>(lit.sun_intensity));
+  JsonValue direction = JsonValue::array();
+  direction.push_back(JsonValue(d.x));
+  direction.push_back(JsonValue(d.y));
+  direction.push_back(JsonValue(d.z));
+  out.set("direction", std::move(direction));
   return out;
 }
 
@@ -1458,8 +1509,15 @@ int prepare_interactive(Options& options, Interactive& it) {
   it.on = true;
   it.replay = !options.replay_input.empty();
   std::string error;
+  if (it.replay) {
+    if (it.log.load(options.replay_input, &error) != io::Status::Ok) return fail("replay", error);
+  }
   if (options.input_map.empty()) {
+    // engine-view's own map; for a replay, the revision the log was recorded against, so a session
+    // recorded before the time-lapse keys existed still replays (fly_camera.h, "The map's
+    // revisions"). A log of another map is refused below with both hashes.
     it.map = view::default_fly_map();
+    if (it.replay) (void)view::default_fly_map_for(it.log.map_hash(), it.map);
   } else {
     std::string text;
     JsonValue value;
@@ -1475,7 +1533,6 @@ int prepare_interactive(Options& options, Interactive& it) {
   if (!view::resolve_fly_actions(it.map, actions, &error)) return fail("input map", error);
 
   if (it.replay) {
-    if (it.log.load(options.replay_input, &error) != io::Status::Ok) return fail("replay", error);
     if (!view::session_from_json(it.log.session(), it.header, &error)) {
       return fail("replay", options.replay_input + ": " + error);
     }
@@ -2073,6 +2130,14 @@ int run_offscreen(Options& options, Interactive& interactive) {
   const u32 tick_hz = interactive.header.params.tick_hz > 0 ? interactive.header.params.tick_hz : 1;
   const u32 ticks_per_frame =
       tick_hz / view::k_frame_index_hz > 0 ? tick_hz / view::k_frame_index_hz : 1u;
+  // The sun's day (renderer.md, "The sun's day"): offscreen the rate is the flag's for the whole
+  // run — the keys are a window's — so a frame's place in the day is a function of its frame index
+  // at the frame index's own sixty a second, and two runs light the same frames alike.
+  view::SunDay sun;
+  sun.start(options.sun_rate.value_or(renderer::sun_rate_tunable()));
+  const auto sun_at = [&](u64 frame_index) {
+    return sun.rate * static_cast<f64>(frame_index) / static_cast<f64>(view::k_frame_index_hz);
+  };
   do {
     renderer::SceneDesc desc;
     desc.procedural = options.procedural == "shredded-atlas" ? renderer::Procedural::shredded_atlas
@@ -2309,6 +2374,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
         renderer::FrameDesc frame;
         frame.camera = session.camera();
         frame.frame_index = session.frame_index();
+        frame.sun_time_s = sun_at(frame.frame_index);
         if (view_renderer.submit_frame(frame, &error) == 0) {
           ok = false;
           break;
@@ -2359,6 +2425,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
       flight_options.warmup = options.warmup;
       flight_options.warmup_seconds = static_cast<f64>(options.warmup_seconds);
       flight_options.frames_in_flight = k_frames_in_flight;
+      flight_options.sun_rate = sun.rate;  // path frame f at sun_rate * f / 60, as below
       // A streamed world updates between frames from each frame's own camera, and starts every
       // repeat over (its first warm-up frame, or its first frame with no warm-up), so the repeats
       // fly the same world.
@@ -2419,6 +2486,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
           renderer::FrameDesc frame;
           frame.camera = camera_at(0);
           frame.frame_index = 0;
+          frame.sun_time_s = sun_at(frame.frame_index);
           ok = ok && view_renderer.submit_frame(frame, &error) != 0;
         }
         if (options.warmup == 0) ok = world_before(camera_at(0), WorldStep::restart, 0, 0, false);
@@ -2432,6 +2500,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
           renderer::FrameDesc frame;
           frame.camera = camera_at(f);
           frame.frame_index = f;
+          frame.sun_time_s = sun_at(frame.frame_index);
           if (!world_before(frame.camera, WorldStep::budgeted, 0, f, false)) {
             ok = false;
             break;
@@ -2493,6 +2562,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
         renderer::FrameDesc frame;
         frame.camera = camera_at(f);
         frame.frame_index = f;
+        frame.sun_time_s = sun_at(frame.frame_index);
         // `--capture-every n`: every n-th frame is drawn by the capture itself, so the picture is
         // that frame's — its camera and, under `--time-rate`, the sand where it stood then.
         if (options.capture_every > 0 && !options.capture.empty() &&
@@ -2553,6 +2623,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
         renderer::FrameDesc frame;
         frame.camera = camera_at(f);
         frame.frame_index = f;
+        frame.sun_time_s = sun_at(frame.frame_index);
         renderer::CapturedFrame a;
         renderer::CapturedFrame b;
         ok = view_renderer.capture(frame, channels, a, &error) &&
@@ -2629,6 +2700,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
         frame.camera =
             view::fly_view(marker.state, interactive.header.fov_y, interactive.header.znear);
         frame.frame_index = marker.tick * view::k_frame_index_hz / tick_hz;
+        frame.sun_time_s = sun_at(frame.frame_index);
         ok = world_before(frame.camera, WorldStep::complete, 0, 0, false);
         for (u32 k = 0; k < 8 && ok; ++k)
           ok = view_renderer.render_offscreen(frame, &error);
@@ -2665,6 +2737,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
         renderer::FrameDesc frame;
         frame.camera = camera_at(f);
         frame.frame_index = f;
+        frame.sun_time_s = sun_at(frame.frame_index);
         // A few frames at the marker's camera first, so a streamed scene has its pages and the
         // occlusion history is this view's, and then the picture — and a streamed world its ring.
         ok = world_before(frame.camera, WorldStep::complete, 0, f, false);
@@ -2695,6 +2768,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
         frame.camera = session.camera();
         frame.frame_index = session.frame_index();
       }
+      frame.sun_time_s = sun_at(frame.frame_index);
       renderer::CapturedFrame shot;
       if (!world_before(frame.camera, WorldStep::complete, 0, static_cast<u32>(frame.frame_index),
                         false) ||
@@ -2726,6 +2800,10 @@ int run_offscreen(Options& options, Interactive& interactive) {
 #endif
     time_lapse.finish();
     summary.time_lapse = time_lapse_summary(time_lapse, view_renderer.stats(), scene);
+    // The day where the last frame drew it: the path's last frame, or where the replay ended —
+    // the frame the final --capture draws too.
+    sun.time_s = sun_at(interactive.on ? session.frame_index() : (frames > 0 ? frames - 1 : 0u));
+    summary.sun = sun_summary(resolved.settings, sun);
     if (interactive.on) summary.interactive = interactive_summary(interactive, session, options);
     if (measured) {
       renderer::summarize_frames(
@@ -3100,6 +3178,16 @@ int main(int argc, char** argv) {
       }
       options.settings.sun_azimuth_deg = static_cast<f32>(az);
       options.settings.sun_elevation_deg = static_cast<f32>(el);
+    } else if (a == "--sun-rate") {
+      if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
+      char* end = nullptr;
+      const double v = std::strtod(value.c_str(), &end);
+      if (end == value.c_str() || *end != '\0' || !(v >= 0.0) || v > 1.0e7) {
+        std::fprintf(stderr,
+                     "engine-view: --sun-rate expects game seconds per real second, 0 to 1e7\n");
+        return k_exit_usage;
+      }
+      options.sun_rate = v;
     } else if (a == "--validation") {
       options.validation = true;
     } else if (a == "--camera-path") {
@@ -3357,6 +3445,11 @@ int main(int argc, char** argv) {
        options.verify_occlusion)) {
     options.offscreen = true;
   }
+  // An interactive window steps the dunes' rate with `,` and `.` (TerrainMotion::set_rate), so a
+  // dune terrain is drawn as terrain levels even at --time-rate 0: the motion has to exist to be
+  // set going (RenderSettings::time_rate_live). Offscreen the keys do nothing and the rate is the
+  // flag's.
+  if (options.interactive && !options.offscreen) options.settings.time_rate_live = true;
   if (options.offscreen &&
       (!options.present.empty() || options.pace != "auto" || options.swapchain_images != 3 ||
        options.frames_in_flight != k_frames_in_flight || options.borderless ||
@@ -3620,6 +3713,10 @@ int main(int argc, char** argv) {
   renderer::Camera terrain_camera;  // the camera the rings follow: the last frame's
   renderer::TerrainMotion time_lapse;
   std::string time_lapse_text = "null";
+  // The sun's day (renderer.md, "The sun's day"): its clock is this loop's, advanced by each
+  // frame's simulated seconds at a rate `[` and `]` change in an interactive window.
+  view::SunDay sun;
+  std::string sun_text = "null";
   u32 skinned_instances = 0;
   u32 joint_matrices = 0;
   std::string clip_text;
@@ -3630,11 +3727,16 @@ int main(int argc, char** argv) {
   view::FramePacing pacing;            // the title's last-frame and p99 numbers
   Vector<scene::FrameRecord> records;  // --benchmark
   std::string interactive_text = "null";
-  bool pointer_captured = false;  // the edge converts pointer motion only while this is true
-  bool pointer_grabbed = false;   // what the window was last asked for
-  // An injected run never takes the real pointer: it happens on somebody's desktop, and the
-  // capture it toggles is only the edge's decision about which motion is looking.
+  // An injected run never takes the real pointer: it happens on somebody's desktop, and its
+  // capture is only the edge's decision about which motion is looking. It starts as a window with
+  // the focus would — holding it — and then follows the log's clicks and Escapes alone, never the
+  // desktop's focus, so what its Escape does is a function of the log.
   const bool grab_pointer = options.inject_input.empty();
+  // The edge converts pointer motion only while this is true (apps.md, "--interactive": a click
+  // or the window gaining focus takes the pointer, Escape gives it back, and Escape with it given
+  // back ends the session).
+  bool pointer_captured = live && !grab_pointer;
+  bool pointer_grabbed = false;  // what the window was last asked for
 
   // Everything below unwinds through this block so the destruction order stays in one place.
   do {
@@ -3974,6 +4076,44 @@ int main(int argc, char** argv) {
     u32 replay_cursor = 0;
     u32 inject_cursor = 0;
     u32 capture_seen = 0;
+    // The time-lapse keys' presses acted on so far (fly_camera.h, `ViewControl`), whether an
+    // Escape asked the session to end, and whether the title has something new to say.
+    u32 control_seen[view::k_view_controls] = {};
+    bool exit_requested = false;
+    bool title_dirty = true;
+    char shown_title[256] = "";
+    sun.start(options.sun_rate.value_or(renderer::sun_rate_tunable()));
+    // One press of a time-lapse key: a rung of its ladder (time_controls.h), and one console line
+    // when that changed a rate. The dunes' rate goes through `TerrainMotion::set_rate`, whose rules
+    // are what keeps the sand from stepping. True when a rate changed.
+    const auto step_rate = [&](view::ViewControl control) -> bool {
+      const bool up =
+          control == view::ViewControl::sun_faster || control == view::ViewControl::dunes_faster;
+      char was_text[32];
+      char now_text[32];
+      if (control == view::ViewControl::sun_slower || control == view::ViewControl::sun_faster) {
+        const f64 was = sun.rate;
+        const f64 next = view::ladder_step(view::k_sun_ladder, was, up);
+        if (!sun.set_rate(next)) return false;
+        std::fprintf(stderr, "engine-view: sun x%s game s a real s (was x%s)\n",
+                     view::format_rate(next, now_text, sizeof(now_text)),
+                     view::format_rate(was, was_text, sizeof(was_text)));
+        return true;
+      }
+      if (!time_lapse.active()) {
+        std::fprintf(stderr,
+                     "engine-view: the dunes cannot move here: the scene's terrain does not name "
+                     "the dune generator, or its instances come and go\n");
+        return false;
+      }
+      const f64 was = time_lapse.config().rate;
+      const f64 next = view::ladder_step(view::k_dune_ladder, was, up);
+      if (next == was || !time_lapse.set_rate(next)) return false;
+      std::fprintf(stderr, "engine-view: dunes x%s game s a real s (was x%s)\n",
+                   view::format_rate(next, now_text, sizeof(now_text)),
+                   view::format_rate(was, was_text, sizeof(was_text)));
+      return true;
+    };
     PendingFrame pending[k_pending_frames];
     u64 folded = view_renderer.stats().folded;
     u64 submissions = 0;
@@ -4052,13 +4192,32 @@ int main(int argc, char** argv) {
           case window::EventKind::CloseRequested: running = false; break;
           case window::EventKind::Resized: resize_pending = true; break;
           case window::EventKind::KeyDown:
-            // Escape is an action in an interactive session (it takes and gives back the pointer),
-            // so there the window's close button is the way out.
+            // In an interactive session Escape is an action (`capture`), read at its tick below:
+            // it gives the pointer back, or with the pointer already free ends the session.
             if (!interactive.on && event.key == window::Key::Escape) running = false;
             break;
+          case window::EventKind::FocusGained:
+            // Switching to the window is switching to fly it: it takes the pointer. Not in an
+            // injected run, whose capture follows its log and not the desktop.
+            if (live && grab_pointer && !pointer_captured) {
+              pointer_captured = true;
+              title_dirty = true;
+            }
+            break;
           case window::EventKind::FocusLost:
-            // Whoever switched away gets the pointer back, and Escape takes it again.
-            if (live && pointer_captured && grab_pointer) pointer_captured = false;
+            // Whoever switched away gets the pointer back; coming back takes it again.
+            if (live && grab_pointer && pointer_captured) {
+              pointer_captured = false;
+              title_dirty = true;
+            }
+            break;
+          case window::EventKind::MouseButtonDown:
+            // A click in the window takes the pointer — the log's click too, in an injected run.
+            // The click is converted below like any button; nothing is bound to one.
+            if (live && !pointer_captured) {
+              pointer_captured = true;
+              title_dirty = true;
+            }
             break;
           default: break;
         }
@@ -4173,7 +4332,16 @@ int main(int argc, char** argv) {
           }
           while (capture_seen != session.capture_presses()) {
             ++capture_seen;
-            pointer_captured = !pointer_captured;
+            // Escape, at the tick it was pressed on: with the pointer held, give it back (the
+            // camera stops turning with the mouse; the keys still fly it); with it already free,
+            // end the session — this frame is drawn and presented, and the run ends as a closed
+            // window's does, the summary and the recording written.
+            if (pointer_captured) {
+              pointer_captured = false;
+              title_dirty = true;
+            } else {
+              exit_requested = true;
+            }
           }
           if (grab_pointer && pointer_grabbed != pointer_captured) {
             (void)window.set_relative_mouse(pointer_captured);
@@ -4181,6 +4349,18 @@ int main(int argc, char** argv) {
           }
         }
         ticks_this_frame = static_cast<u32>(session.tick().value - before);
+        // The time-lapse keys at the ticks they were pressed on — live, and in a replay in the
+        // window, which presses them where its recording did (an offscreen replay never reaches
+        // here: its rates are the flags').
+        for (u32 c = 0; c < view::k_view_controls; ++c) {
+          const auto control = static_cast<view::ViewControl>(c);
+          while (control_seen[c] != session.control_presses(control)) {
+            ++control_seen[c];
+            if (step_rate(control)) title_dirty = true;
+          }
+        }
+        // The sun's day moves by the frame's simulated seconds — its ticks — at the rate now.
+        sun.advance(static_cast<f64>(ticks_this_frame) / static_cast<f64>(session_hz));
         session_done = session_end != 0 && session.tick().value >= session_end;
         // **The camera between the last two ticks**, at the fraction of a tick the clock holds
         // past the last one it ran: a frame's camera then moves by the frame's own time, where
@@ -4213,7 +4393,11 @@ int main(int argc, char** argv) {
                            : renderer::orbit_camera(scene_data.center, scene_data.radius,
                                                     options.orbit, rendered);
         frame.frame_index = rendered;
+        // As offscreen: a sixtieth of a second a frame, so frame f is lit as `--frames` lights it.
+        sun.time_s =
+            sun.rate * static_cast<f64>(rendered) / static_cast<f64>(view::k_frame_index_hz);
       }
+      frame.sun_time_s = sun.time_s;
       terrain_camera = frame.camera;  // the next frame's rings follow this one
 #if ENGINE_VIEW_WORLD
       world_camera = frame.camera;  // the next frame's world follows this one
@@ -4293,27 +4477,42 @@ int main(int argc, char** argv) {
           p.pose = drawn;
           p.pose_time = drawn_time;
         }
-        // Four times a second: a title rewritten every frame is unreadable, and setting one is a
-        // round trip to the window system.
-        if (frame_start - last_title_ns >= 250'000'000) {
+        // **The title**: the two rates and the pointer first, at once when one changes, then the
+        // frame's numbers, four times a second — a title rewritten every frame is unreadable, and
+        // setting one is a round trip to the window system, so it is set only when its text moved.
+        if (title_dirty || frame_start - last_title_ns >= 250'000'000) {
+          title_dirty = false;
           last_title_ns = frame_start;
+          view::TitleStatus status;
+          status.dunes = time_lapse.active();
+          status.dune_rate = time_lapse.active() ? time_lapse.config().rate : 0.0;
+          status.sun_rate = sun.rate;
+          status.live = !interactive.replay;
+          status.captured = pointer_captured;
+          char status_text[160];
+          (void)view::format_status(status, status_text, sizeof(status_text));
+          constexpr const char* k_dash = " \xE2\x80\x94 ";  // U+2014 EM DASH, in UTF-8
           char title[256];
           const f32 p99 = pacing.percentile(frame_start, 1'000'000'000, 0.99);
           if (interactive.replay) {
             std::snprintf(title, sizeof(title),
-                          "engine-view  %.2f ms  p99 %.2f ms (1 s)  replay tick %llu of %llu",
-                          static_cast<f64>(pacing.last_ms()), static_cast<f64>(p99),
+                          "engine-view%s%s%sreplay tick %llu of %llu%s%.2f ms, p99 %.2f ms (1 s)",
+                          k_dash, status_text, k_dash,
                           static_cast<unsigned long long>(session.tick().value),
-                          static_cast<unsigned long long>(session_end));
+                          static_cast<unsigned long long>(session_end), k_dash,
+                          static_cast<f64>(pacing.last_ms()), static_cast<f64>(p99));
           } else {
-            std::snprintf(
-                title, sizeof(title), "engine-view  %.2f ms  p99 %.2f ms (1 s)  tick %llu%s  %s",
-                static_cast<f64>(pacing.last_ms()), static_cast<f64>(p99),
-                static_cast<unsigned long long>(session.tick().value),
-                options.record_input.empty() ? "" : "  recording",
-                pointer_captured ? "Esc: give the pointer back" : "Esc: take the pointer to look");
+            std::snprintf(title, sizeof(title),
+                          "engine-view%s%s%s%.2f ms, p99 %.2f ms (1 s)%stick %llu%s", k_dash,
+                          status_text, k_dash, static_cast<f64>(pacing.last_ms()),
+                          static_cast<f64>(p99), k_dash,
+                          static_cast<unsigned long long>(session.tick().value),
+                          options.record_input.empty() ? "" : ", recording");
           }
-          window.set_title(title);
+          if (std::strcmp(title, shown_title) != 0) {
+            window.set_title(title);
+            std::snprintf(shown_title, sizeof(shown_title), "%s", title);
+          }
         }
       }
       ++submissions;
@@ -4354,7 +4553,7 @@ int main(int argc, char** argv) {
         break;
       }
       if (presented == gfx::PresentStatus::OutOfDate) resize_pending = true;
-      if (last || exit_code != 0) running = false;
+      if (last || exit_code != 0 || exit_requested) running = false;
     }
     finished_ns = time::monotonic_ns();
     if (interactive.on && !options.benchmark.empty() && view_renderer.valid() && exit_code == 0) {
@@ -4389,6 +4588,7 @@ int main(int argc, char** argv) {
       time_lapse_text = write_json(time_lapse_summary(time_lapse, view_renderer.stats(), scene),
                                    JsonWriteOptions{.pretty = false});
     }
+    sun_text = write_json(sun_summary(resolved.settings, sun), JsonWriteOptions{.pretty = false});
 #if ENGINE_VIEW_ANIMATION
     if (animated)
       anim_text = write_json(anim_summary(*animated, rendered), JsonWriteOptions{.pretty = false});
@@ -4436,6 +4636,8 @@ int main(int argc, char** argv) {
       summary.quiet =
           bench::is_quiet(bench::worst_of(machine_start, machine_end), bench::QuietThresholds{});
       summary.interactive = interactive_summary(interactive, session, options);
+      summary.time_lapse = time_lapse_summary(time_lapse, view_renderer.stats(), scene);
+      summary.sun = sun_summary(resolved.settings, sun);
 #if ENGINE_VIEW_WORLD
       if (view_world.valid()) summary.world = view_world.summary_json();
 #endif
@@ -4519,7 +4721,7 @@ int main(int argc, char** argv) {
         "\"gpu_ms\":{\"cull\":%.4f,\"hw\":%.4f,\"sw\":%.4f,\"hiz\":%.4f,\"resolve\":%.4f,"
         "\"rt\":%.4f,\"clas\":%.4f,\"deform\":%.4f,\"deform_alloc\":%.4f,"
         "\"trace\":%.4f,\"shadow\":%.4f,\"shadow_cull\":%.4f,\"total\":%.4f,"
-        "\"frames\":%llu},\"captured\":%s,\"interactive\":%s,\"time_lapse\":%s}\n",
+        "\"frames\":%llu},\"captured\":%s,\"interactive\":%s,\"time_lapse\":%s,\"sun\":%s}\n",
         static_cast<unsigned long long>(rendered), seconds, avg_ms, extent_width, extent_height,
         scene_data.cluster_count(), scene_data.leaf_count(), scene_data.lod.leaf_triangle_count,
         scene_data.lod.level_cluster_counts.size(), static_cast<f64>(scene_data.build_ns) / 1.0e6,
@@ -4559,7 +4761,8 @@ int main(int argc, char** argv) {
         stats.resolve_ms(), stats.rt_ms(), stats.clas_ms(), stats.deform_ms(),
         stats.deform_alloc_ms(), stats.trace_ms(), stats.shadow_ms(), stats.shadow_cull_ms(),
         stats.total_ms(), static_cast<unsigned long long>(stats.timed_frames),
-        captured ? "true" : "false", interactive_text.c_str(), time_lapse_text.c_str());
+        captured ? "true" : "false", interactive_text.c_str(), time_lapse_text.c_str(),
+        sun_text.c_str());
     std::fflush(stdout);
   }
   log::remove_sink(&stderr_sink);

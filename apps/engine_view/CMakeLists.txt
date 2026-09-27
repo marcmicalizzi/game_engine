@@ -14,8 +14,9 @@
 # `--animate` with a sentence. `msvc-minimal` is the proof that the second half works.
 #
 # `--interactive` is the first owner of a window that turns its events into `input::RawEvent`s
-# (window_input.cpp) for something to fly (fly_camera.cpp): `input` for the bindings, the tick
-# state and the log, `tunables` for the camera's speeds and tick rate.
+# (window_input.cpp) for something to fly (fly_camera.cpp), and the first to step the time-lapse's
+# rates on keys (time_controls.cpp): `input` for the bindings, the tick state and the log,
+# `tunables` for the camera's speeds and tick rate.
 set(_view_deps base containers hash math time jobs log platform window image io gfx renderer json
                schema schemas bench input tunables)
 if(TARGET engine::animation)
@@ -25,9 +26,9 @@ endif()
 # The camera and the conversion are compiled into the tests as well as the app: the trajectory of
 # the committed session fixture is checked with no GPU and no window (tests/fly_tests.cpp), which
 # is the half of the replay test that runs on every machine CI has.
-set(_view_interactive fly_camera.cpp window_input.cpp)
+set(_view_interactive fly_camera.cpp window_input.cpp time_controls.cpp)
 set(_view_tests tests/view_tests.cpp tests/mesh_view_tests.cpp tests/fly_tests.cpp
-                tests/interactive_tests.cpp ${_view_interactive})
+                tests/interactive_tests.cpp tests/time_controls_tests.cpp ${_view_interactive})
 if(TARGET engine::ruins)
   # A scene's `ruins` entry drawn end to end (docs/subsystems/ruins.md): the renderer's scene reader
   # expands it, and the test writes the kit of boxes and counts the pieces with the assembler.

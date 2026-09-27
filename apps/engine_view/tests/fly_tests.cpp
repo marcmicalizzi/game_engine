@@ -144,7 +144,10 @@ input::InputLog make_synthetic_session() {
     }
   }
   input::InputLog log;
-  log.set_map(view::default_fly_map());
+  // Recorded against the map's first revision, as every session before 2026-09-27 was: the
+  // fixture is also the proof that such a recording still replays (fly_camera.h, "The map's
+  // revisions").
+  log.set_map(view::default_fly_map(1));
   // Events of one tick in the order the lambdas above pushed them; the log only needs the ticks
   // not to go backwards, and within a tick InputState's results do not depend on the order.
   for (const input::RawEvent& e : events)
@@ -191,7 +194,9 @@ TEST_CASE("fly camera: the default map is the committed file, and every action i
   view::FlyActions actions;
   std::string error;
   REQUIRE_MESSAGE(view::resolve_fly_actions(map, actions, &error), error);
-  CHECK(map.action_count() == 8);
+  // The camera's eight, and the time-lapse's four keys appended after them (revision 2).
+  CHECK(map.action_count() == 12);
+  CHECK(view::default_fly_map(1).action_count() == 8);
 
   const std::string expected = write_json(map.to_json(), JsonWriteOptions{.pretty = true}) + "\n";
   const std::string path = content_path("content/input-maps/engine-view.json");
@@ -363,7 +368,10 @@ TEST_CASE("fly camera: the synthetic session flies the committed trajectory, how
   REQUIRE_MESSAGE(view::session_from_json(log.session(), header, &error), error);
   CHECK(header.ticks == 480);
   CHECK(header.params.tick_hz == 240);
-  const input::ActionMap map = view::default_fly_map();
+  // The fixture names the map's first revision, and engine-view finds that revision by the hash.
+  CHECK(log.map_hash() == view::default_fly_map(1).hash());
+  input::ActionMap map;
+  REQUIRE(view::default_fly_map_for(log.map_hash(), map));
   const input::InputState probe(map);
   REQUIRE_MESSAGE(log.check_map(probe, &error), error);
 

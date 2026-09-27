@@ -106,6 +106,21 @@ std::string text_of(const JsonValue* value, const char* key) {
   return found != nullptr ? std::string(found->as_string()) : std::string();
 }
 
+f64 number_of(const JsonValue* value, const char* key) {
+  const JsonValue* found = value != nullptr ? value->find(key) : nullptr;
+  f64 out = -1.0;
+  if (found == nullptr || !found->get_f64(out)) return -1.0;
+  return out;
+}
+
+// A small dune terrain the time-lapse and the rings can move in a debug build: 33 samples over
+// 64 m of the terrain capability's generator, three years into the world.
+void write_dune_scene(const std::string& path) {
+  REQUIRE(io::write_file(path, R"({"format":"engine.scene.v1","name":"dunes",
+      "terrain":{"size":33,"extent":32,"seed":5,"dune_height":2,"dune_wavelength":20,
+                 "generator":"Dunes","time":94608000}})") == io::Status::Ok);
+}
+
 std::string slashes(const std::filesystem::path& path) {
   std::string out = path.string();
   for (char& c : out) {
@@ -162,6 +177,11 @@ TEST_CASE("engine-view: interactive flags that cannot work together exit 2") {
       run_view({"--replay-input", log, "--benchmark", "x.jsonl", "--pace", "display"}).exit_code ==
       2);  // a replay's benchmark is offscreen unless --windowed
   CHECK(run_view({"--windowed"}).exit_code == 2);
+  // The sun's day: game seconds per real second, 0 to 1e7.
+  CHECK(run_view({"--sun-rate", "-1"}).exit_code == 2);
+  CHECK(run_view({"--sun-rate", "fast"}).exit_code == 2);
+  CHECK(run_view({"--sun-rate", "2e7"}).exit_code == 2);
+  CHECK(run_view({"--sun-rate"}).exit_code == 2);
   CHECK(run_view({"--interactive", "--windowed"}).exit_code == 2);
   CHECK(run_view({"--replay-input", log, "--windowed", "--offscreen"}).exit_code == 2);
   CHECK(run_view({"--replay-input", log, "--windowed", "--marker-captures", "dir"}).exit_code == 2);
@@ -527,4 +547,131 @@ TEST_CASE("engine-view: a replay flown in the window measures its presentation")
   CHECK(in_flight == 2);
   const std::string pacing = text_of(presentation, "pacing");
   CHECK((pacing == "display" || pacing == "off"));
+}
+
+TEST_CASE("engine-view: an offscreen time-lapse and sun's day carry both summary blocks") {
+  // The brief's smoke, on a scene a debug build draws in a second: `--time-rate` and `--sun-rate`
+  // offscreen, where the keys do nothing and a frame's place in the day is its frame index at
+  // sixty a second. Needs a device; skips without.
+  const test::TempDir tmp("engine_view_sun_day");
+  const std::string scene = tmp.file("dunes.json");
+  write_dune_scene(scene);
+  const std::string ddc = tmp.file("ddc");
+  const std::vector<std::string> common = {"--offscreen", "--scene", scene, "--frames",
+                                           "12",          "--width", "96",  "--height",
+                                           "64",          "--ddc",   ddc};
+  std::vector<std::string> args = common;
+  for (const char* a : {"--time-rate", "86400", "--sun-rate", "3600", "--capture"})
+    args.push_back(a);
+  args.push_back(tmp.file("a.png"));
+  const Run run = run_view(args);
+  if (run.exit_code == 3) {
+    MESSAGE("engine-view unavailable here: " << run.output);
+    return;
+  }
+  REQUIRE_MESSAGE(run.exit_code == 0, run.output);
+  JsonValue summary;
+  REQUIRE_MESSAGE(summary_of(run, summary), run.output);
+  const JsonValue* lapse = summary.find("time_lapse");
+  REQUIRE_MESSAGE(lapse != nullptr, run.output);
+  REQUIRE(lapse->is_object());
+  CHECK(number_of(lapse, "rate") == 86'400.0);
+  CHECK(number_of(lapse, "start_rate") == 86'400.0);
+  CHECK(number_of(lapse, "rate_changes") == 0.0);
+  const JsonValue* sun = summary.find("sun");
+  REQUIRE_MESSAGE(sun != nullptr, run.output);
+  REQUIRE(sun->is_object());
+  CHECK(number_of(sun, "rate") == 3'600.0);
+  CHECK(number_of(sun, "start_rate") == 3'600.0);
+  CHECK(number_of(sun, "rate_changes") == 0.0);
+  CHECK(number_of(sun, "time_s") == doctest::Approx(3'600.0 * 11.0 / 60.0));  // the last frame's
+  CHECK(number_of(sun, "tilt_deg") == 40.0);
+  CHECK(number_of(sun, "intensity") == 1.0);  // eleven game minutes into an April morning
+  CHECK(number_of(sun, "elevation_deg") > number_of(sun, "start_elevation_deg"));  // climbing
+
+  // A still day is the sun it always was, and the tunable is the default rate.
+  args = common;
+  for (const char* a : {"--tunable", "renderer.sun.rate=0"})
+    args.push_back(a);
+  const Run still = run_view(args);
+  REQUIRE_MESSAGE(still.exit_code == 0, still.output);
+  JsonValue still_summary;
+  REQUIRE(summary_of(still, still_summary));
+  const JsonValue* still_sun = still_summary.find("sun");
+  REQUIRE(still_sun != nullptr);
+  CHECK(number_of(still_sun, "time_s") == 0.0);
+  CHECK(number_of(still_sun, "elevation_deg") ==
+        doctest::Approx(number_of(still_sun, "start_elevation_deg")).epsilon(1e-5));
+  // Without --time-rate, offscreen, nothing moves the sand and there is no time-lapse.
+  REQUIRE(still_summary.find("time_lapse") != nullptr);
+  CHECK(still_summary.find("time_lapse")->is_null());
+}
+
+TEST_CASE("engine-view: a live session's keys: the two rates, the click, and Esc twice") {
+  // An injected session over a dune terrain at --time-rate 0 — drawn as terrain levels because an
+  // interactive window may set the sand going — whose log presses `.` once and `]` twice, gives
+  // the pointer back with Escape, takes it again with a click, gives it back again and presses
+  // Escape once more, which ends the session long before the log does. The summary says where the
+  // rates ended and how often they changed; the recording is written as a closed window's is.
+  // Needs a display and a device; skips without.
+  const test::TempDir tmp("engine_view_keys");
+  const std::string scene = tmp.file("dunes.json");
+  write_dune_scene(scene);
+  input::InputLog keys;
+  keys.set_map(view::default_fly_map());
+  const auto press = [&](u64 tick, input::Source source, u32 code) {
+    keys.record(input::RawEvent{SimTick{tick}, source, code, 1.0f, 0});
+    keys.record(input::RawEvent{SimTick{tick + 1}, source, code, 0.0f, 0});
+  };
+  // Eighty ticks apart: a frame runs a quarter of a second of ticks at most (the fixed-step clock's
+  // cap), so no two presses can land on one tick even on a machine that stalls, and a press is
+  // never two presses swallowed into one.
+  constexpr u32 k_escape = 41;
+  press(3, input::Source::Key, k_escape);     // captured at the start: gives the pointer back
+  press(83, input::Source::Key, 55);          // .  dunes 0 -> 60
+  press(163, input::Source::Key, 48);         // ]  sun 0 -> 60
+  press(243, input::Source::Key, 48);         // ]  sun 60 -> 600
+  press(323, input::Source::MouseButton, 1);  // a click takes the pointer
+  press(403, input::Source::Key, k_escape);   // gives it back
+  press(483, input::Source::Key, k_escape);   // and with it given back, ends the session
+  view::SessionHeader header;
+  header.ticks = 800;
+  keys.set_session(view::session_to_json(header));
+  const std::string inject = tmp.file("keys.jsonl");
+  REQUIRE(keys.save(inject) == io::Status::Ok);
+  const std::string recorded = tmp.file("recorded.jsonl");
+  const Run live =
+      run_view({"--interactive", "--inject-input", inject, "--record-input", recorded, "--scene",
+                scene, "--width", "160", "--height", "96", "--no-vsync", "--ddc", tmp.file("ddc")});
+  if (live.exit_code == 3) {
+    MESSAGE("engine-view unavailable here: " << live.output);
+    return;
+  }
+  REQUIRE_MESSAGE(live.exit_code == 0, live.output);
+  JsonValue summary;
+  REQUIRE_MESSAGE(summary_of(live, summary), live.output);
+  const JsonValue* lapse = summary.find("time_lapse");
+  REQUIRE_MESSAGE(lapse != nullptr, live.output);
+  REQUIRE_MESSAGE(lapse->is_object(), live.output);
+  CHECK(number_of(lapse, "start_rate") == 0.0);
+  CHECK(number_of(lapse, "rate") == 60.0);
+  CHECK(number_of(lapse, "rate_changes") == 1.0);
+  const JsonValue* sun = summary.find("sun");
+  REQUIRE(sun != nullptr);
+  CHECK(number_of(sun, "start_rate") == 0.0);
+  CHECK(number_of(sun, "rate") == 600.0);
+  CHECK(number_of(sun, "rate_changes") == 2.0);
+  CHECK(number_of(sun, "time_s") > 0.0);
+  // The console said so, a line a change.
+  CHECK(live.output.find("dunes x60 game s a real s (was x0)") != std::string::npos);
+  CHECK(live.output.find("sun x600 game s a real s (was x60)") != std::string::npos);
+  // Esc with the pointer free ended it: the recording stops at the last Escape, not at 800.
+  input::InputLog recording;
+  std::string error;
+  REQUIRE_MESSAGE(recording.load(recorded, &error) == io::Status::Ok, error);
+  view::SessionHeader written;
+  REQUIRE_MESSAGE(view::session_from_json(recording.session(), written, &error), error);
+  CHECK(written.ticks >= 483u);
+  CHECK(written.ticks < 800u);
+  CHECK(recording.map_hash() == view::default_fly_map().hash());
 }

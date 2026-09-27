@@ -82,26 +82,57 @@ struct FlyState {
   f32 pitch = 0.0f;
 };
 
+// **The viewer's controls** beside the camera's (docs/subsystems/apps.md): buttons the session
+// counts presses of for its host and never flies with — the time-lapse's two rates, `[` and `]`
+// for the sun's day and `,` and `.` for the dunes (time_controls.h). They move nothing the
+// trajectory hashes, so they are not the integration's and `k_fly_version` does not change with
+// them. A map without them — the first revision, which every session recorded before 2026-09-27
+// carries — is still a map the camera flies with; the keys then do nothing.
+enum class ViewControl : u8 { sun_slower, sun_faster, dunes_slower, dunes_faster };
+inline constexpr u32 k_view_controls = 4;
+// "sun_slower", "sun_faster", "dunes_slower", "dunes_faster": the actions' names in a map.
+const char* view_control_name(ViewControl control) noexcept;
+
 // The actions the camera reads, by id in one map. The map is data (`default_fly_map`, a file under
-// content/input-maps/, or a player's rebind); these are the names it has to carry.
+// content/input-maps/, or a player's rebind); these are the names it has to carry, and the
+// viewer's controls, which it may.
 struct FlyActions {
-  input::ActionId move = input::k_invalid_action;     // Axis2: x right, y forward
-  input::ActionId lift = input::k_invalid_action;     // Axis: up positive, along world +y
-  input::ActionId look = input::k_invalid_action;     // Axis2, read as a delta: pixels, y up
-  input::ActionId turn = input::k_invalid_action;     // Axis2, read as a rate: a stick, y up
-  input::ActionId fast = input::k_invalid_action;     // Button
-  input::ActionId slow = input::k_invalid_action;     // Button
-  input::ActionId capture = input::k_invalid_action;  // Button: the window takes the pointer
-  input::ActionId marker = input::k_invalid_action;   // Button: remember this tick's camera
+  input::ActionId move = input::k_invalid_action;  // Axis2: x right, y forward
+  input::ActionId lift = input::k_invalid_action;  // Axis: up positive, along world +y
+  input::ActionId look = input::k_invalid_action;  // Axis2, read as a delta: pixels, y up
+  input::ActionId turn = input::k_invalid_action;  // Axis2, read as a rate: a stick, y up
+  input::ActionId fast = input::k_invalid_action;  // Button
+  input::ActionId slow = input::k_invalid_action;  // Button
+  // Button: Escape. With the pointer held it gives it back; with the pointer already free it ends
+  // the session (the host decides which: apps.md, "--interactive"). The name is the map's since
+  // 2026-09-24, when the same key took the pointer as well, and stays so recordings replay.
+  input::ActionId capture = input::k_invalid_action;
+  input::ActionId marker = input::k_invalid_action;  // Button: remember this tick's camera
+  // Buttons, by `ViewControl`; `k_invalid_action` where the map has none.
+  input::ActionId controls[k_view_controls] = {input::k_invalid_action, input::k_invalid_action,
+                                               input::k_invalid_action, input::k_invalid_action};
 };
 
-// The bindings engine-view ships (content/input-maps/engine-view.json is this map, byte for byte,
-// and a test holds the two together): WASD to move, E/Space up and Q/Ctrl down, pointer motion to
-// look while the window holds the pointer, Shift fast, Alt slow, Escape to take or give back the
-// pointer, M to drop a marker; and on a gamepad the left stick to move, the triggers up and down,
-// the right stick to turn, the stick clicks fast and slow, Back to capture and North to mark.
-input::ActionMap default_fly_map();
-// Every action above by name and kind. False, naming the first one missing or of the wrong kind.
+// **The map's revisions.** 1 is the eight actions the camera reads (2026-09-24); 2 appends the
+// four viewer controls (2026-09-27). A revision appends and never reorders, and a log names the
+// hash of the map it was recorded against, so a log recorded against an earlier revision is
+// replayed with that revision (`default_fly_map_for`) rather than refused as a rebind: under it
+// every key means what it meant when the session was flown, and a key a later revision binds —
+// a `.` pressed before it meant anything — does nothing, as it did then.
+inline constexpr u32 k_fly_map_revision = 2;
+// The bindings engine-view ships (content/input-maps/engine-view.json is the latest revision, byte
+// for byte, and a test holds the two together): WASD to move, E/Space up and Q/Ctrl down, pointer
+// motion to look while the window holds the pointer, Shift fast, Alt slow, Escape to give back the
+// pointer (or, with it given back, to end the session), M to drop a marker, `[` `]` the sun's day
+// slower and faster and `,` `.` the dunes'; and on a gamepad the left stick to move, the triggers
+// up and down, the right stick to turn, the stick clicks fast and slow, Back as Escape and North to
+// mark. `revision` 1 is the map without the four time-lapse keys.
+input::ActionMap default_fly_map(u32 revision = k_fly_map_revision);
+// The shipped map, of whichever revision hashes to `hash`, into `out`: false when none does (a
+// player's own map, which only `--input-map` can supply).
+bool default_fly_map_for(u64 hash, input::ActionMap& out);
+// Every camera action above by name and kind, and the viewer's controls where the map has them.
+// False, naming the first camera action missing or any action of the wrong kind.
 bool resolve_fly_actions(const input::ActionMap& map, FlyActions& out, std::string* error);
 
 // sin and cos of `angle` from arithmetic alone (see the file comment): a Taylor polynomial in f64
@@ -237,8 +268,12 @@ class FlySession {
     return tick_.value * k_frame_index_hz / header_.params.tick_hz;
   }
   // Presses of `capture` so far. The window owner compares it with the count it last acted on,
-  // so the toggle happens once per press, on the tick the press was fed.
+  // so it acts once per press, on the tick the press was fed.
   u32 capture_presses() const noexcept { return capture_presses_; }
+  // Presses of a viewer control so far, the same way (0 for a map without it).
+  u32 control_presses(ViewControl control) const noexcept {
+    return control_presses_[static_cast<u32>(control)];
+  }
   const Trajectory& trajectory() const noexcept { return trajectory_; }
   const input::InputState& input() const noexcept { return input_; }
   const SessionHeader& header() const noexcept { return header_; }
@@ -254,6 +289,7 @@ class FlySession {
   SimTick tick_;
   Trajectory trajectory_;
   u32 capture_presses_ = 0;
+  u32 control_presses_[k_view_controls] = {};
 };
 
 }  // namespace engine::view

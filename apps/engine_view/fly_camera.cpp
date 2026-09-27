@@ -6,6 +6,7 @@
 #include <bit>
 #include <cmath>
 #include <cstdio>
+#include <utility>
 
 namespace engine::view {
 
@@ -21,6 +22,10 @@ constexpr u32 k_key_s = 22;
 constexpr u32 k_key_w = 26;
 constexpr u32 k_key_escape = 41;
 constexpr u32 k_key_space = 44;
+constexpr u32 k_key_left_bracket = 47;
+constexpr u32 k_key_right_bracket = 48;
+constexpr u32 k_key_comma = 54;
+constexpr u32 k_key_period = 55;
 constexpr u32 k_key_lctrl = 224;
 constexpr u32 k_key_lshift = 225;
 constexpr u32 k_key_lalt = 226;
@@ -120,12 +125,22 @@ std::string hex16(u64 value) {
 
 }  // namespace
 
-input::ActionMap default_fly_map() {
+const char* view_control_name(ViewControl control) noexcept {
+  switch (control) {
+    case ViewControl::sun_slower: return "sun_slower";
+    case ViewControl::sun_faster: return "sun_faster";
+    case ViewControl::dunes_slower: return "dunes_slower";
+    case ViewControl::dunes_faster: return "dunes_faster";
+  }
+  return "unknown";
+}
+
+input::ActionMap default_fly_map(u32 revision) {
   using input::Binding;
   using input::Source;
   input::ActionMap map;
-  // The order is the file's order and part of the hash: append, never reorder, or every recorded
-  // session stops replaying (the log refuses a map whose hash moved).
+  // The order is the file's order and part of the hash: append, never reorder. A new revision
+  // appends and moves the hash, and `default_fly_map_for` keeps every earlier revision replaying.
   const input::ActionId move = map.add_action("move", input::ActionKind::Axis2);
   map.bind(move, Binding{Source::Key, k_key_d, 1.0f}, 0);
   map.bind(move, Binding{Source::Key, k_key_a, -1.0f}, 0);
@@ -172,7 +187,29 @@ input::ActionMap default_fly_map() {
   const input::ActionId marker = map.add_action("marker", input::ActionKind::Button);
   map.bind(marker, Binding{Source::Key, k_key_m});
   map.bind(marker, Binding{Source::GamepadButton, k_pad_north});
+  if (revision < 2) return map;
+
+  // Revision 2 (2026-09-27): the time-lapse's two rates, keys only — a pad's d-pad is free for a
+  // player's own map to bind.
+  const u32 keys[k_view_controls] = {k_key_left_bracket, k_key_right_bracket, k_key_comma,
+                                     k_key_period};
+  for (u32 c = 0; c < k_view_controls; ++c) {
+    const input::ActionId id =
+        map.add_action(view_control_name(static_cast<ViewControl>(c)), input::ActionKind::Button);
+    map.bind(id, Binding{Source::Key, keys[c]});
+  }
   return map;
+}
+
+bool default_fly_map_for(u64 hash, input::ActionMap& out) {
+  for (u32 revision = k_fly_map_revision; revision >= 1; --revision) {
+    input::ActionMap map = default_fly_map(revision);
+    if (map.hash() == hash) {
+      out = std::move(map);
+      return true;
+    }
+  }
+  return false;
 }
 
 bool resolve_fly_actions(const input::ActionMap& map, FlyActions& out, std::string* error) {
@@ -201,6 +238,21 @@ bool resolve_fly_actions(const input::ActionMap& map, FlyActions& out, std::stri
       return false;
     }
     *w.slot = id;
+  }
+  // The viewer's controls are optional: a map without them flies, and the keys do nothing. One
+  // that has a control of the wrong kind is a mistake in the map, and is refused.
+  for (u32 c = 0; c < k_view_controls; ++c) {
+    const char* name = view_control_name(static_cast<ViewControl>(c));
+    const input::ActionId id = map.find_action(name);
+    out.controls[c] = input::k_invalid_action;
+    if (id == input::k_invalid_action) continue;
+    if (map.action_kind(id) != input::ActionKind::Button) {
+      if (error != nullptr) {
+        *error = std::string("the action map's '") + name + "' is not a button action";
+      }
+      return false;
+    }
+    out.controls[c] = id;
   }
   return true;
 }
@@ -514,6 +566,8 @@ bool FlySession::start(const input::ActionMap& map, const SessionHeader& header,
   trajectory_.hash = trajectory_seed(state_);
   trajectory_.last = state_;
   capture_presses_ = 0;
+  for (u32& presses : control_presses_)
+    presses = 0;
   return true;
 }
 
@@ -526,6 +580,10 @@ void FlySession::on_tick(void* user, SimTick tick, const input::InputState& stat
   self.trajectory_.hash = hash_fly_state(self.trajectory_.hash, self.state_);
   self.trajectory_.last = self.state_;
   if (state.pressed(self.actions_.capture)) ++self.capture_presses_;
+  for (u32 c = 0; c < k_view_controls; ++c) {
+    const input::ActionId id = self.actions_.controls[c];
+    if (id != input::k_invalid_action && state.pressed(id)) ++self.control_presses_[c];
+  }
   if (state.pressed(self.actions_.marker)) {
     self.trajectory_.markers.push_back(FlyMarker{tick.value, self.state_});
   }

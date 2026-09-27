@@ -717,12 +717,16 @@ struct TerrainLevelFrame @version(1) {
 
 /// A time-lapse's frame (`engine-view --time-rate`): the game time, the surface clock's latency
 /// and how far behind game time the surface stood, its speed over the true one, and each level's.
-struct FrameTerrain @version(1) {
+struct FrameTerrain @version(2) {
   game_s: f64 = 0
   latency_s: f64 = 0
   lag_s: f64 = 0
   speed: f64 = 0
   levels: TerrainLevelFrame[]
+  /// The rate in force that frame, game seconds per real second: what `speed` is over. An
+  /// interactive window changes it with `,` and `.` (docs/subsystems/renderer.md, "Changing the
+  /// rate while it runs"); 0 in a record written before version 2.
+  rate: f64 = 0 @since(2)
 }
 
 /// One frame of a flythrough benchmark, or of an interactive session measured with
@@ -1021,7 +1025,7 @@ struct FlythroughPresentation @version(1) {
 
 /// The last line of a flythrough benchmark's `.jsonl`, and engine-view's summary line. An
 /// interactive session measured with `--benchmark` ends its `.jsonl` with one too.
-struct FlythroughSummary @version(8) {
+struct FlythroughSummary @version(9) {
   /// "engine.flythrough.v1".
   format: string
   scene: string
@@ -1099,4 +1103,9 @@ struct FlythroughSummary @version(8) {
   /// time the last one was for, and the milliseconds an evaluation took on the job pool. Null
   /// without one.
   time_lapse: json @since(8)
+  /// The stand-in sun and its day (docs/subsystems/renderer.md, "The sun's day"): where it started,
+  /// the arc's tilt, the rate its day ran at and how often that changed, how far into the day the
+  /// last frame was, and where the sun stood then and how strongly it shone. Null in a summary
+  /// written before version 9.
+  sun: json @since(9)
 }

@@ -119,8 +119,12 @@ by hand. Two seconds at 240 Hz over the procedural heightfield at `--grid 65` (n
 and a fraction of a second to load in a debug build), from a camera 22 m south of the field looking
 north and 0.3 rad down, at 4 m/s:
 
-- Escape at tick 1 (the window takes the pointer, which is what lets a live session read the
-  motion that follows);
+- Escape at tick 1 (when the fixture was written the window started without the pointer and this
+  took it; since 2026-09-27 a window starts holding it and Escape gives it back, so fed live
+  through `--inject-input` the session gives the pointer back here and looks with none of the
+  motion that follows — its own recording, which the end-to-end test replays, then holds none of
+  it. A replay feeds every event in the log whatever the pointer did, so the committed trajectory
+  below is the same either way);
 - W from tick 10 to 130 while the pointer moves 4 px right per tick for 60 ticks;
 - D from 140 to 200 with Shift held for 40 of it; E from 210 to 260 while looking up 3 px a tick;
 - S with Alt from 270 to 330; Q and A together from 340 to 400 while looking left and down;
@@ -128,7 +132,11 @@ north and 0.3 rad down, at 4 m/s:
 - W and D together from 440 to 470, the diagonal that must not be faster than W alone;
 - M pressed at ticks 60, 240, 420, 450 and 475: five markers.
 
-Pointer motion is one event per axis per tick, which is what engine-view's edge writes.
+Pointer motion is one event per axis per tick, which is what engine-view's edge writes. The log
+names the hash of **the first revision** of engine-view's action map, the eight camera actions;
+the second (2026-09-27) appends the time-lapse's four keys, and engine-view replays a log with the
+revision its hash names, so this file — like every session recorded before then — replays
+unchanged and is the test that says so.
 
 ### `sessions/fly-synthetic.trajectory.json` — where it goes
 
