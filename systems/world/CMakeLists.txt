@@ -59,7 +59,7 @@ if(TARGET engine_world AND TARGET engine::ruins)
   # WHOLE_ARCHIVE): a host includes <systems/world/ruins_tiles.h> only where it exists.
   target_compile_definitions(engine_world INTERFACE ENGINE_WORLD_RUINS=1)
 endif()
-if(TARGET engine::terrain)
+if(TARGET engine_world AND TARGET engine::terrain)
   # Likewise <systems/world/terrain_tiles.h>.
   target_compile_definitions(engine_world INTERFACE ENGINE_WORLD_TERRAIN=1)
 endif()
