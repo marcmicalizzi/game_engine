@@ -37,9 +37,9 @@ if(TARGET engine::ruins)
 endif()
 # The scene generators this configuration has (ADR-0046; docs/subsystems/scene_gen.md): linked for
 # their registrars, which is what makes `--scene` read a terrain that names the dunes and a scene's
-# ruins, and `--world` stream them. Nothing here calls one: the renderer's scene reader and the
-# world's placements consumer find each by the name a scene gives.
-foreach(_gen ruins terrain)
+# ruins and city, and `--world` stream them. Nothing here calls one: the renderer's scene reader and
+# the world's placements consumer find each by the name a scene gives.
+foreach(_gen city ruins terrain)
   if(TARGET engine::${_gen})
     list(APPEND _view_deps ${_gen})
   endif()

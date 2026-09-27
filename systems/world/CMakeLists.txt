@@ -25,35 +25,22 @@ engine_schema_library(NAME world_schemas
   CAPABILITY world)
 
 # `input` for the player of a headless world, an observer an input log steers (input_observer.h).
-# `scene_gen` for the placements consumer (placement_tiles.h): a tile's placements are what the
-# scene's placement generators — the ruins, the city — put on it, found in the scene-generator
-# registry by the names the scene gave them (ADR-0046), so the world links no generator and a world
-# without one (a game with no desert) streams its document and its store as it always did.
+# `scene_gen` for the generator consumers (ADR-0046): the placements consumer (placement_tiles.h)
+# holds what the scene's placement generators — the ruins, the city — put on a tile, and the ground
+# consumer (ground_tiles.h) a tile of the scene's ground with its record in the store — the dunes'
+# tile and overlay — each generator found in the scene-generator registry by the name the scene gave
+# it. So the world links no generator, names none, and a world without one (a game with no desert)
+# streams its document and its store as it always did.
 set(_world_deps base containers math hash log time ids jobs tunables json io input schema schemas
                 sim doc renderer store world_schemas scene_gen)
 set(_world_sources src/tile_ring.cpp src/world.cpp src/world_log.cpp src/tile_store.cpp
                    src/state_hash.cpp src/save_game.cpp src/input_observer.cpp
-                   src/store_tiles.cpp src/document_tiles.cpp src/placement_tiles.cpp)
-
-# The terrain consumer, when this configuration has the terrain capability (ADR-0043): a tile of the
-# dune generator's field for every held tile, and the tile's deformation overlay kept in the store.
-# The same pattern as the ruins: a world without a desert streams its document and its store and
-# links nothing of the generator.
-if(TARGET engine::terrain)
-  list(APPEND _world_deps terrain)
-  list(APPEND _world_sources src/terrain_tiles.cpp)
-endif()
+                   src/store_tiles.cpp src/document_tiles.cpp src/placement_tiles.cpp
+                   src/ground_tiles.cpp)
 
 engine_module(NAME world LAYER systems OPTIONAL WHOLE_ARCHIVE
   DEPS ${_world_deps}
   SOURCES ${_world_sources})
-# `TARGET engine_world` as well: a configuration with the terrain but without the store (the graph
-# skips this module, above) has no target to define anything on.
-if(TARGET engine_world AND TARGET engine::terrain)
-  # For whoever links the world (the module is an INTERFACE target wrapping `engine_world_impl`,
-  # WHOLE_ARCHIVE): a host includes <systems/world/terrain_tiles.h> only where it exists.
-  target_compile_definitions(engine_world INTERFACE ENGINE_WORLD_TERRAIN=1)
-endif()
 
 set(_world_tests tests/world_tests.cpp tests/tile_store_tests.cpp tests/consumer_tests.cpp
                  tests/save_tests.cpp
@@ -64,13 +51,18 @@ if(TARGET engine::ruins)
   list(APPEND _world_tests tests/placement_tiles_tests.cpp)
 endif()
 if(TARGET engine::terrain)
-  list(APPEND _world_tests tests/terrain_tiles_tests.cpp)
+  # The ground consumer over the dunes, which reach it through the registry: linked as a host would.
+  list(APPEND _world_tests tests/ground_tiles_tests.cpp)
 endif()
 if(TARGET engine::ruins AND TARGET engine::terrain)
   list(APPEND _world_tests tests/ruins_on_dunes_tests.cpp)
 endif()
+if(TARGET engine::city)
+  # The placements consumer over a streamed city: its per-tile query, reached through the registry.
+  list(APPEND _world_tests tests/city_tiles_tests.cpp)
+endif()
 engine_module_tests(NAME world SOURCES ${_world_tests})
-foreach(_gen ruins)
+foreach(_gen city ruins terrain)
   if(TARGET engine_world_tests AND TARGET engine::${_gen})
     target_link_libraries(engine_world_tests PRIVATE engine::${_gen})
   endif()

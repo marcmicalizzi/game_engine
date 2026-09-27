@@ -687,3 +687,26 @@ struct BuildingFile @version(1) {
   occupancy: Occupancy
   failures: Failure[]
 }
+
+// ---- a scene's entry ----------------------------------------------------------------------------
+
+/// A scene's city (`engine.scene.PlacementEntry` naming the placement generator "city";
+/// docs/subsystems/city.md, "Where it attaches"; ADR-0046): a plan, and what of it the scene draws
+/// as proxies — the fragment `engine-content city fragment` writes, made in memory instead. A whole
+/// read draws one tile, one district, or with neither every lot and every street; a streamed world
+/// draws the tiles its ring holds, each at the detail the city's LOD policy gives the ring.
+struct CityEntry @version(1) {
+  /// The plan: a directory holding `plan.json` (`engine-content city plan`'s output), or the file,
+  /// relative to the scene. Its tile must be the world's when the scene is streamed.
+  plan: string
+  /// Draw one tile of the plan, x and z, as `city fragment --tile` does.
+  tile: i32[2]?
+  /// Or one district, as `city fragment --district` does.
+  district: u32?
+  /// How far the grammar runs for a whole read. Absent: rooms for a tile, floors for a district,
+  /// massing for the whole city.
+  detail: Stage?
+  /// Where the twelve proxy box meshes are, relative to the scene; written there when a mesh is
+  /// missing. Empty: `proxy` beside the plan file.
+  meshes: string
+}

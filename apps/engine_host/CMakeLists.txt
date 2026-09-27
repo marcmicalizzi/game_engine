@@ -28,9 +28,9 @@ foreach(_cap audio ecs animation audio_system kinematics npc store tissue world)
 endforeach()
 # The scene generators this configuration has (ADR-0046; docs/subsystems/scene_gen.md): linked for
 # their registrars alone, which is what makes `render.load` read a scene whose terrain names the
-# dunes or whose entries name the ruins. Nothing here calls one: the renderer's scene reader finds
+# dunes or whose entries name the ruins or the city. Nothing here calls one: the scene reader finds
 # each by the name a scene gives.
-foreach(_gen ruins terrain)
+foreach(_gen city ruins terrain)
   if(TARGET engine::${_gen})
     list(APPEND _host_deps ${_gen})
   endif()

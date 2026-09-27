@@ -6,13 +6,14 @@
 
 ## Who registers, and who looks
 
-**Status, 2026-09-27.** The city moves onto the registry after the grounds and the ruins, in a change of its own; this section says where each stands.
+**Status, 2026-09-27.** Every generator the tree has is on the registry; this section says where each stands.
 
 | Generator | Kind | Registered by | Looked up by |
 |---|---|---|---|
 | `waves` | ground | `systems/renderer/src/terrain.cpp` — the renderer's own, so the default terrain takes the same path a capability's does | the renderer's `TerrainSampler`, for every terrain that names it or names nothing |
-| `dunes` | ground (moves, rings) | `domain/terrain/src/scene_ground.cpp` — the terrain capability; `ENGINE_RENDERER_TERRAIN` and the renderer's link to `terrain` are gone | the renderer's `TerrainSampler` (the scene read, the mesh, the time-lapse, the rings), by `provider` or the old `generator` enum |
+| `dunes` | ground (moves, rings, tiles) | `domain/terrain/src/scene_ground.cpp` (its tiles `ground_tiles.cpp`) — the terrain capability; `ENGINE_RENDERER_TERRAIN`, `ENGINE_WORLD_TERRAIN` and both modules' links to `terrain` are gone | the renderer's `TerrainSampler` (the scene read, the mesh, the time-lapse, the rings), by `provider` or the old `generator` enum; the world's ground consumer (`world::GroundTiles`, which replaced `TerrainTiles`) |
 | `ruins` | placements (`expand`, `meshes`, `tile`, `occupies`, `representation`) | `domain/ruins/src/scene_generator.cpp` — the ruins capability; `ENGINE_RENDERER_RUINS`, `ENGINE_WORLD_RUINS` and both modules' links to `ruins` are gone | the scene reader (`expand_placements`: a `ruins` entry, or a `placements` entry naming it) and the world's placements consumer (`world::PlacementTiles`, which replaced `RuinsTiles`) |
+| `city` | placements (`expand`, `meshes`, `tile`, `occupies`, `representation`) | `domain/city/src/scene_generator.cpp` — the city capability, which reached the reader before only as a fragment written to disk | the scene reader (a `placements` entry naming it: `expand` is what the fragment writer writes, in memory) and the world's placements consumer (`tile` is the plan's per-tile query at the ring's detail) |
 
 **The fixed features.** A terrain entry's ridges and basins (`engine.scene.Terrain.ridges`, `basins`) are the scene's, added by every ground the same way — the waves multiply their dunes down over them and add them, the dunes thin their sand over them and add them — so their arithmetic is here, beside the entry's type, in one copy (`terrain_features.h`: `terrain_features`, `ridge_weight`, `basin_weight`). It was the renderer's until the dunes moved into the terrain capability, and it moved expression for expression.
 

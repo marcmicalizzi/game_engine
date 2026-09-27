@@ -56,8 +56,7 @@ struct TileCoord {
   constexpr bool operator==(const TileCoord&) const = default;
 };
 
-// ---- the ground a placement stands on
-// ------------------------------------------------------------
+// ---- the ground a placement stands on -----------------------------------------------------------
 
 // A height in metres at (x, z): a plain function and a context, because a placement generator asks
 // it a few dozen times a building and is in the domain layer, below whoever made the ground.
@@ -80,8 +79,7 @@ struct Ground {
   }
 };
 
-// ---- what a generator sees
-// -----------------------------------------------------------------------
+// ---- what a generator sees ----------------------------------------------------------------------
 
 // Everything a generator is handed besides its entry, and nothing of any other generator (ADR-0046
 // decision 4). A generator that wants another's output asks the ground it is handed, never the
@@ -112,8 +110,7 @@ struct Context {
 };
 inline constexpr u8 k_no_ring = 0xFFu;
 
-// ---- placements
-// ----------------------------------------------------------------------------------
+// ---- placements ---------------------------------------------------------------------------------
 
 // A mesh a placement instances: a path the reader resolves through the derived-data cache as it
 // does any scene mesh (glTF, GLB or `.clusters`), the name a summary knows it by, and the content
@@ -182,8 +179,7 @@ struct PlacementGeneratorDesc {
   u8 (*representation)(const void* state, const Context& context) noexcept = nullptr;
 };
 
-// ---- ground
-// ---------------------------------------------------------------------------------------
+// ---- ground -------------------------------------------------------------------------------------
 
 // **A lattice** a grid of the ground is sampled on (renderer.md, "The dunes in time-lapse"): the
 // scene's own terrain grid, its coordinates computed exactly as the renderer's mesh computes them —
@@ -210,8 +206,7 @@ Lattice ring_lattice(i64 spacing_mm) noexcept;
 inline constexpr u32 k_height_block = 64;
 u32 window_blocks(u32 nx, u32 nz) noexcept;
 
-// ---- the rings round a camera
-// --------------------------------------------------------------------
+// ---- the rings round a camera -------------------------------------------------------------------
 
 // The most rings a ground's ring set has, the scene's own grid counted as its outer ring.
 inline constexpr u32 k_max_rings = 4;
@@ -315,8 +310,7 @@ class GroundRings {
   void* state_ = nullptr;
 };
 
-// ---- the ground's tiles in a world
-// ---------------------------------------------------------------
+// ---- the ground's tiles in a world --------------------------------------------------------------
 
 // Where a ground keeps a tile's record between activations (the world's store, when it has one):
 // bytes under the tile, whatever the ground makes of them.
@@ -369,8 +363,7 @@ class GroundTiles {
   void* state_ = nullptr;
 };
 
-// ---- a ground provider
-// ---------------------------------------------------------------------------
+// ---- a ground provider --------------------------------------------------------------------------
 
 // What one ground provider is, made for one scene's terrain: a table of plain functions over the
 // state its `make` allocated. `height` is required; everything else may be null.
@@ -465,8 +458,7 @@ inline constexpr u32 k_ground_moves = 1u << 0;  // `evaluate` and `travel_m`
 inline constexpr u32 k_ground_rings = 1u << 1;  // `make_rings`
 inline constexpr u32 k_ground_tiles = 1u << 2;  // `open_tiles`
 
-// ---- the registry
-// --------------------------------------------------------------------------------
+// ---- the registry -------------------------------------------------------------------------------
 
 // Every generator this executable carries, by kind and name: the descriptors themselves, which are
 // constant-initialized in their capabilities' sources and never copied. Filled before `main` by

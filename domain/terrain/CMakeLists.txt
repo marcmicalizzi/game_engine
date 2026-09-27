@@ -26,7 +26,7 @@ engine_schema_library(NAME terrain_schemas SCHEMAS schemas/terrain.schema CAPABI
 engine_module(NAME terrain LAYER domain OPTIONAL WHOLE_ARCHIVE
   DEPS base containers math hash jobs tunables schema schemas terrain_schemas geometry scene_gen
   SOURCES src/fixed.cpp src/wind.cpp src/dunes.cpp src/feedback.cpp src/overlay.cpp src/tile.cpp
-          src/stats.cpp src/rings.cpp src/terrain.cpp src/scene_ground.cpp)
+          src/stats.cpp src/rings.cpp src/terrain.cpp src/scene_ground.cpp src/ground_tiles.cpp)
 
 engine_module_tests(NAME terrain
   SOURCES tests/terrain_tests.cpp tests/overlay_tests.cpp tests/rings_tests.cpp

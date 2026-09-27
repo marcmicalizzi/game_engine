@@ -5,6 +5,7 @@
 // expression for expression, so the renderer's goldens and the capability's hold.
 #include <core/jobs/job_system.h>
 #include <domain/scene_gen/terrain_features.h>
+#include <domain/terrain/ground_tiles.h>
 #include <domain/terrain/rings.h>
 #include <domain/terrain/scene_ground.h>
 
@@ -108,8 +109,7 @@ f64 dunes_travel_m(const void* state, f64 from_s, f64 to_s) noexcept {
   return std::abs(most);
 }
 
-// ---- the rings
-// -----------------------------------------------------------------------------------
+// ---- the rings ----------------------------------------------------------------------------------
 
 // The caller's heights, as the rings' builder asks for them.
 class CallerHeights final : public RingHeights {
@@ -230,8 +230,21 @@ bool dunes_make_rings(const void*, i64 extent_mm, i64 spacing_mm, scene_gen::Gro
   return true;
 }
 
-// ---- the provider
-// --------------------------------------------------------------------------------
+// ---- the tiles in a world ----------------------------------------------------------------------
+
+// The field's tiles a world's ground consumer holds, their overlays kept in the world's records
+// (ground_tiles.h).
+bool dunes_open_tiles(const void* state, const scene_gen::TileRecords& records, i64 tile_mm,
+                      scene_gen::GroundTiles& out, std::string* error) {
+  if (tile_mm <= 0) {
+    if (error != nullptr) *error = "the dunes' tiles: a world's tile must be positive";
+    return false;
+  }
+  out = make_dune_tiles(static_cast<const DunesGround*>(state)->field, records, tile_mm);
+  return true;
+}
+
+// ---- the provider ------------------------------------------------------------------------------
 
 void dunes_destroy(void* state) noexcept { delete static_cast<DunesGround*>(state); }
 
@@ -243,6 +256,8 @@ constexpr scene_gen::GroundOps k_dunes_ops{
     .evaluate = &dunes_evaluate,
     .travel_m = &dunes_travel_m,
     .make_rings = &dunes_make_rings,
+    .open_tiles = &dunes_open_tiles,
+    .record = k_overlay_record,
 };
 
 // The entry's generator fields checked as the scene reader always checked them, and the band table
@@ -277,7 +292,7 @@ bool dunes_make(const scene::Terrain& entry, const scene_gen::Context&,
 constexpr scene_gen::GroundProviderDesc k_dunes{
     .name = k_ground_provider,
     .make = &dunes_make,
-    .flags = scene_gen::k_ground_moves | scene_gen::k_ground_rings,
+    .flags = scene_gen::k_ground_moves | scene_gen::k_ground_rings | scene_gen::k_ground_tiles,
 };
 const scene_gen::Registrar k_dunes_registrar{k_dunes};
 

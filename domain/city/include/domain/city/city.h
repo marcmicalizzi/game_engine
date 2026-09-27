@@ -17,6 +17,7 @@
 //   building.h   the grammar: one lot to one building description and its occupancy summary
 //   validate.h   the validators, and E18's yield
 //   fragment.h   the proxy scene fragment
+//   scene_generator.h  the same proxies as the placement generator "city" (ADR-0046)
 //
 // Registration points (ADR-0027 decision 2), each wired or deliberately not needed; the docs page
 // says why:
@@ -24,6 +25,8 @@
 //   [x] schema types      domain/city/schemas/city.schema (engine.city), the capability's own
 //   [-] scheduler entry   none: nothing ticks; a plan and a building are functions of their inputs
 //   [-] render passes     none: the proxies are instances the renderer already draws
+//   [x] scene generators  the placement generator "city": a scene names it with a plan, and the
+//                         world ring streams a tile's proxies through its per-tile query
 //   [x] derived data      `engine-content city plan` caches the plan under ddc/city/<key>/;
 //                         `city building`, `city fragment` and `city yield` read it
 //   [-] protocol methods  none yet
@@ -39,6 +42,7 @@
 #include <domain/city/fragment.h>
 #include <domain/city/params.h>
 #include <domain/city/plan.h>
+#include <domain/city/scene_generator.h>
 #include <domain/city/validate.h>
 
 namespace engine::city {

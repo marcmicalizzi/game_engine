@@ -5,6 +5,8 @@
 // tile ring (tile_ring.h), and turns the ring's changes into calls on the **consumers** registered
 // with it — what a tile *is* to the renderer, the document and the persistent store is theirs:
 //
+//   ground_tiles.h    a tile of the scene's ground — the dunes' field and deformation overlay —
+//                     with its record kept in the store, from the ground provider the terrain names
 //   placement_tiles.h what a scene's placement generators put on a tile — its ruined building
 //                     (blocks in the inner ring, sections beyond: E34), a district's proxies — as
 //                     instances the renderer adds and removes between frames, each generator found

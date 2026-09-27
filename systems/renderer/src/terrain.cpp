@@ -148,8 +148,7 @@ const scene_gen::Registrar k_waves_registrar{k_waves_provider};
 
 }  // namespace
 
-// ---- the description
-// ------------------------------------------------------------------------------
+// ---- the description ----------------------------------------------------------------------------
 
 std::string_view terrain_provider(const TerrainDesc& desc) noexcept {
   if (!desc.provider.empty()) return desc.provider;
@@ -225,8 +224,7 @@ bool terrain_has_rings(const TerrainDesc& desc) noexcept {
   return found != nullptr && (found->flags & scene_gen::k_ground_rings) != 0;
 }
 
-// ---- the sampler
-// -----------------------------------------------------------------------------------
+// ---- the sampler --------------------------------------------------------------------------------
 
 TerrainSampler::~TerrainSampler() = default;
 

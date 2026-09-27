@@ -6,8 +6,7 @@
 
 namespace engine::scene_gen {
 
-// ---- lattices
-// ------------------------------------------------------------------------------------
+// ---- lattices -----------------------------------------------------------------------------------
 
 f32 Lattice::x(i32 i) const noexcept {
   if (scene_grid)
@@ -40,8 +39,7 @@ u32 window_blocks(u32 nx, u32 nz) noexcept {
          ((nz + k_height_block - 1) / k_height_block);
 }
 
-// ---- the handles
-// ---------------------------------------------------------------------------------
+// ---- the handles --------------------------------------------------------------------------------
 
 GroundRings& GroundRings::operator=(GroundRings&& other) noexcept {
   if (this != &other) {
@@ -148,8 +146,7 @@ Ground GroundProvider::view() const noexcept {
   return Ground{&surface_of, &floor_of, this};
 }
 
-// ---- the registry
-// --------------------------------------------------------------------------------
+// ---- the registry -------------------------------------------------------------------------------
 
 GeneratorRegistry& GeneratorRegistry::global() {
   // A function-local static, so a registrar in any translation unit finds it constructed whatever

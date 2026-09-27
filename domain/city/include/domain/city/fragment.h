@@ -7,10 +7,9 @@
 // of instances of a dozen meshes, which is what the renderer's instance-of-mesh model is for. It is
 // how the city is looked at before any kit exists: `engine-view --scene` draws it like any scene.
 //
-// **Not a scene-reader generator.** The scene reader links the ruins generator where it is
-// configured (ADR-0037); the registration point that replaces that link is the owner's to design,
-// so the city is not a third link: it is viewed as a fragment written by `engine-content city
-// fragment` until that point exists.
+// **And a scene generator.** The same proxies are what the placement generator "city" makes
+// (scene_generator.h, ADR-0046): a scene naming `city` with a plan draws them without a fragment on
+// disk, and a streamed world streams a tile's.
 //
 // Every proxy is axis-aligned (the plan and the buildings are), so an instance is a translation
 // and a scale with no rotation, and every number in the fragment comes from integer centimetres.
@@ -77,6 +76,13 @@ void append_district_ground_proxies(const Plan& plan, u32 district, Vector<Proxy
 // plan's content restricted to the tile, which the tests assert.
 bool tile_proxies(const Plan& plan, TileCoord tile, Stage detail, Vector<Proxy>& out,
                   std::string* error);
+
+// Where a proxy's box stands and how large it is, metres: the instance a fragment writes for it and
+// the placement the scene generator "city" makes of it (scene_generator.h), the same floats.
+Vec3 proxy_translation(const Proxy& proxy) noexcept;
+Vec3 proxy_scale(const Proxy& proxy) noexcept;
+// A proxy mesh's file in `dir`: "<dir>/<name>.glb".
+std::string proxy_mesh_path(std::string_view dir, ProxyMesh mesh);
 
 // A deterministic order (by position, then size, mesh and lot) for comparing two proxy sets.
 void sort_proxies(Vector<Proxy>& proxies);

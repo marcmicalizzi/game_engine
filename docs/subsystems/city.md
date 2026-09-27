@@ -93,7 +93,17 @@ A pin that names an id the plan does not have refuses the plan with a sentence (
 
 `lots_in_tile(plan, tile)` is the lots whose **closed** rectangle touches the tile — closed, because a building's facade stands on its lot's line, and a proxy on a tile's edge belongs to the tile beyond it — from a sorted index of (tile, lot) built with the plan. `owner_tile(lot)` is the one tile holding the lot's centre, for a consumer that must see each building exactly once (a census of residents, a save). `tile_proxies(plan, tile, detail)` is everything a tile holds: the buildings of its lots generated at `detail`, their proxies and the ground's, keeping those anchored in the tile. Every proxy has one anchor (the centre of its bottom face) and the ground is cut along the tile grid first, so **a tile's content is the whole plan's content restricted to the tile**, piece for piece, and the tiles together are the whole; `plan_tests.cpp` asserts both over every tile of the small island.
 
-**No world-ring consumer yet.** The world capability's consumers live in `systems/world` (the ruins consumer is `world::RuinsTiles`), and adding one there is an edit to another capability, which ADR-0027 forbids a capability to make; the per-tile query is what such a consumer would call, one tile at a time, and the LOD policy below is what it would pass. It belongs with the generator registration point ADR-0037's revisit is designing.
+**The world ring streams it** ([Where it attaches](#where-it-attaches)): the per-tile query is the placement generator `city`'s `tile`, which the world's generic placements consumer calls one tile at a time with the detail the LOD policy below gives the tile's ring — the consumer lives in `systems/world` and names no generator, so the city needed no edit to another capability to be streamed.
+
+## Where it attaches
+
+**The placement generator `city`** ([scene_gen](scene_gen.md), [ADR-0046](../adr/0046-scene-generators-register-themselves.md); `scene_generator.h`, `src/scene_generator.cpp`), registered from this module's own source by a `scene_gen::Registrar` — the module is `WHOLE_ARCHIVE` for it — so a scene names the city and neither the renderer nor the world links this capability:
+
+```json
+{"placements": [{"generator": "city", "params": {"plan": "ddc/city/<key>", "district": 1}}]}
+```
+
+The parameters are an `engine.city.CityEntry` (`city.schema`, read with the schema's reader, so an unknown field is refused with its path): `plan` (a directory holding `plan.json` — `engine-content city plan`'s output, the cache's `ddc/city/<key>/` — or the file, relative to the scene), one `tile` (`[x, z]`) or one `district` or neither, a `detail` (`Massing`, `Floors`, `Rooms`), and `meshes` (where the twelve proxy boxes are; empty is `proxy/` beside the plan file, and `open` writes them there when one is missing — they are a function of nothing, so a file already there is the right one). **`expand` is the fragment writer's content in memory**: a tile's proxies (`tile_proxies`, `rooms` by default), a district's buildings and ground (`floors`), or with neither every building lot and every street and park (`massing`, since a whole island in rooms is hundreds of thousands of instances) — one placement per proxy, placed as `make_fragment` places its instance (`proxy_translation`, `proxy_scale`, shared by both), each an instance of one of the twelve meshes (`city/massing`, …); the pool the reader offers generates the buildings past 32 lots, in runs of 256, appended in lot order. **`tile` is the per-tile query**: `tile_proxies` for the tile at `stage_for_distance` of the tile's ring's inner radius (rooms in the innermost ring, floors within 6 tiles, massing beyond), each building counted by the one tile that owns its lot (`owner_tile`); `occupies` is the plan's bounds and `representation` the ring's stage, so a tile moving between two rings of one stage is not built again. A streamed city's plan must be on the world's tile grid (`params.tile_cm`), or the entry is refused ("must be one grid"). Every placement's tag is 0 and every tile's kind 1: the city draws one kind of thing. `tests/scene_generator_tests.cpp` holds a district's expansion to the fragment `city fragment --district` writes, instance for instance, every streamed tile to `tile_proxies` at the ring's detail with each building counted once, and the refusals. A host links the capability for its registrar (engine-view and engine-host, where the configuration has it).
 
 ## The building grammar
 
@@ -196,14 +206,15 @@ Each is a test in `tests/` unless it says otherwise.
 - `domain/city/plan.h` — `Plan` and its records (`District`, `Street`, `Node`, `Segment`, `Block`, `Lot`, `Park`, `TileEntry`, `Rect`, `TileCoord`), `generate_plan`, `on_land`, `along_mountain`, `tile_key`, `tile_of`, `tile_rect`, `lots_in_tile`, `owner_tile`, `build_tile_index`, `plan_key`, `plan_cache_dir`, `hash_plan`, `lot_seed`, `plan_to_schema`, `plan_from_schema`, `write_plan_file`, `read_plan_file`, `PlanStats`, `plan_stats`, `k_generator_version`.
 - `domain/city/building.h` — `Building` and its records (`Floor`, `Core`, `Space`, `Unit`, `Wall`, `Opening`, `Zone`, `Link`, `OccupancySummary`), `Grammar`, `generate_buildings`, `stage_for_distance`, `to_plan`, `footprint_on_plan`, `hash_building`, `building_to_schema`.
 - `domain/city/validate.h` — `Finding`, `Report`, `Validator`, `validator_of`, `validator_name`, `validate_plan`, `validate_building`, `choose_yield_lots`, `YieldRow`, `YieldTable`, `measure_yield`.
-- `domain/city/fragment.h` — `ProxyMesh`, `Proxy`, `append_building_proxies`, `append_ground_proxies`, `append_district_ground_proxies`, `tile_proxies`, `sort_proxies`, `hash_proxies`, `write_proxy_meshes`, `make_fragment`, `write_fragment`.
+- `domain/city/fragment.h` — `ProxyMesh`, `Proxy`, `append_building_proxies`, `append_ground_proxies`, `append_district_ground_proxies`, `tile_proxies`, `proxy_translation`, `proxy_scale`, `proxy_mesh_path`, `sort_proxies`, `hash_proxies`, `write_proxy_meshes`, `make_fragment`, `write_fragment`.
+- `domain/city/scene_generator.h` — the placement generator `city` ([Where it attaches](#where-it-attaches)): `k_placement_generator`; its parameters are `engine.city.CityEntry` in `city.schema`.
 - `domain/city/city.h` — all of the above, the capability checklist, and `k_determinism`.
 
-**Depends on.** `base`, `containers`, `math`, `hash`, `json`, `schema`, `schemas` (the fragment is an `engine.scene.Scene`), `io`, `log`, `jobs`, and its own `city_schemas`. **Depended on by** `engine-content`, where this capability is configured, and nothing else.
+**Depends on.** `base`, `containers`, `math`, `hash`, `json`, `schema`, `schemas` (the fragment is an `engine.scene.Scene`), `io`, `log`, `jobs`, its own `city_schemas`, and `scene_gen` (the registry the generator registers into). **Depended on by** no module: `engine-content` links it where this capability is configured, and engine-view and engine-host for the generator's registrar; the renderer's scene reader and the world's placements consumer find it by name.
 
 ## Testing
 
-`tools/dev.ps1 test -Filter city` runs `tests/plan_tests.cpp`, `tests/building_tests.cpp` and `tests/validate_tests.cpp` (no device, no files but the plan file's round trip in a `TempDir`; the islands in `tests/city_fixtures.h`, the default one at seed 2026 and a 900 m one), `engine-content`'s `city_tests.cpp` (the commands end to end into the test's scratch directory, the cache hit, the refusals) and the city row of its `determinism_tests.cpp`. Benchmarks: `tools/dev.ps1 bench -Filter 'city.*'`.
+`tools/dev.ps1 test -Filter city` runs `tests/plan_tests.cpp`, `tests/building_tests.cpp`, `tests/validate_tests.cpp` and `tests/scene_generator_tests.cpp` (the generator through the registry, the plan written into a `TempDir`; no device, no files but the plan file's round trip in a `TempDir`; the islands in `tests/city_fixtures.h`, the default one at seed 2026 and a 900 m one), `engine-content`'s `city_tests.cpp` (the commands end to end into the test's scratch directory, the cache hit, the refusals) and the city row of its `determinism_tests.cpp`. Benchmarks: `tools/dev.ps1 bench -Filter 'city.*'`.
 
 ## Performance notes
 
@@ -228,7 +239,7 @@ Measured 2026-09-25 in this change's cloud session — **not** the development m
 - **Point towers, courtyards, L-shaped footprints.** A tower is a slab (a bar at most twice as wide as it is deep); a perimeter block's courtyard is the space between lots, not a building's own; footprints are rectangles.
 - **The station** is the civic shell's bar of departments with a transport workplace kind, not a concourse.
 - **Terrain.** The plan reads the coastline and a mountain axis, not a heightfield; everything stands at y = 0. The island's terrain is the next generator's, and the building bases will ask it for heights the way the ruins ask theirs.
-- **A world-ring consumer and the scene reader's registration point** ([The per-tile query](#the-per-tile-query)).
+- **Interiors streamed by the tile.** A streamed tile in the inner ring generates its buildings at `rooms` on activation, 127 µs a building ([Performance notes](#performance-notes)); a tile of towers is where the per-floor interior cells of 13 §13.4 item 10 will pay, and nothing measures a ring of the city yet.
 
 ## Capability contract (ADR-0027)
 
@@ -238,13 +249,14 @@ Measured 2026-09-25 in this change's cloud session — **not** the development m
 | Component and event types | `engine.city`: `IslandParams` and its tables, `PlanFile` and its records, `BuildingFile` and its records, `Occupancy`, the enumerations, in `domain/city/schemas/city.schema` | done |
 | Tick scheduler entry | none: nothing ticks; a plan and a building are functions of their inputs | not needed |
 | Render-graph passes | none: the proxies are instances the renderer already draws | not needed |
+| Scene generators | the placement generator `city` in `scene_gen`'s registry (`src/scene_generator.cpp`; [ADR-0046](../adr/0046-scene-generators-register-themselves.md)): a scene names it with a plan, and the world ring streams a tile's proxies through its per-tile query | done |
 | Content-build derived step | `engine-content city plan --cache` writes `ddc/city/<key>/plan.json`; `building`, `fragment` and `yield` read it | done, as a command; a manifest step with the parameters as a document object is next |
 | Protocol methods | none yet | not needed |
 | Tunables | none: every parameter is the island's, and the island is content | not needed |
 | LOD policy | `stage_for_distance`: rooms within 1.5 tiles, floors within 6, massing beyond | done |
 | Determinism | `city::k_determinism` = `derived`, and bit for bit on every toolchain | done |
-| Zero cost when unused | nothing calls the module unless `engine-content city` does; switched off, it is not linked | done |
-| Tests and size table | `tests/plan_tests.cpp`, `tests/building_tests.cpp`, `tests/validate_tests.cpp`, `tests/size_table.cpp` (`Lot` 36 bytes, `Block` 72, `Street` 32, `Space` 28, `Wall` 32, `Opening` 20, `Proxy` 32, …) | done |
+| Zero cost when unused | nothing calls the module unless `engine-content city` does or a scene names `city`; switched off, it is not linked | done |
+| Tests and size table | `tests/plan_tests.cpp`, `tests/building_tests.cpp`, `tests/validate_tests.cpp`, `tests/scene_generator_tests.cpp`, `tests/size_table.cpp` (`Lot` 36 bytes, `Block` 72, `Street` 32, `Space` 28, `Wall` 32, `Opening` 20, `Proxy` 32, …) | done |
 | Bench | `bench/city_bench.cpp`: `city.plan`, `city.building`, `city.validate`, `city.fragment.district` | done |
 | Removal proof | `ENGINE_WITH_CITY`, off in the minimal build | works |
 

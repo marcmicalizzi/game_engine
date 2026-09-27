@@ -422,6 +422,20 @@ bool write_proxy_meshes(const std::string& dir, std::string* error) {
   return true;
 }
 
+Vec3 proxy_translation(const Proxy& p) noexcept {
+  return Vec3{static_cast<f32>(p.x) * 0.01f, static_cast<f32>(p.y) * 0.01f,
+              static_cast<f32>(p.z) * 0.01f};
+}
+
+Vec3 proxy_scale(const Proxy& p) noexcept {
+  return Vec3{static_cast<f32>(p.sx) * 0.01f, static_cast<f32>(p.sy) * 0.01f,
+              static_cast<f32>(p.sz) * 0.01f};
+}
+
+std::string proxy_mesh_path(std::string_view dir, ProxyMesh mesh) {
+  return io::join_path(dir, std::string(k_mesh_names[static_cast<u32>(mesh)]) + ".glb");
+}
+
 void make_fragment(const Vector<Proxy>& proxies, std::string_view mesh_dir,
                    std::string_view fragment_dir, std::string_view name, scene::Scene& scene) {
   scene = scene::Scene{};
@@ -443,10 +457,8 @@ void make_fragment(const Vector<Proxy>& proxies, std::string_view mesh_dir,
     instance.mesh = static_cast<u32>(p.mesh);
     if (p.lot != k_no_id)
       instance.name = "lot " + std::to_string(p.lot) + " floor " + std::to_string(p.floor);
-    instance.translation = Vec3{static_cast<f32>(p.x) * 0.01f, static_cast<f32>(p.y) * 0.01f,
-                                static_cast<f32>(p.z) * 0.01f};
-    instance.scale = Vec3{static_cast<f32>(p.sx) * 0.01f, static_cast<f32>(p.sy) * 0.01f,
-                          static_cast<f32>(p.sz) * 0.01f};
+    instance.translation = proxy_translation(p);
+    instance.scale = proxy_scale(p);
     scene.instances.push_back(std::move(instance));
   }
 }

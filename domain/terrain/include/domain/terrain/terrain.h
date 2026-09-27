@@ -46,6 +46,7 @@
 #include <core/base/types.h>
 #include <domain/terrain/dunes.h>
 #include <domain/terrain/feedback.h>
+#include <domain/terrain/ground_tiles.h>
 #include <domain/terrain/overlay.h>
 #include <domain/terrain/rings.h>
 #include <domain/terrain/scene_ground.h>
