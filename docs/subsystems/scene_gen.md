@@ -1,0 +1,75 @@
+# scene_gen (domain)
+
+**Purpose.** The registration point a scene generator attaches through ([ADR-0046](../adr/0046-scene-generators-register-themselves.md), [02 §2.8](../plan/02-architecture.md#28-adding-a-capability)): the two kinds a generator is — a **ground provider** and a **placement generator** — and the one table, `GeneratorRegistry::global()`, the renderer's scene reader and the world ring look a generator up in by the name a scene gives it. A capability registers a constant-initialized descriptor from its own source with a static `Registrar`; a host links the capabilities its configuration has; nothing below the host names one. A scene naming a generator the executable does not carry is refused with a sentence that names it and says what the executable has (`unknown_ground`, `unknown_placement`). A plain module, not a capability: every executable that reads a scene has at least the renderer's own ground in it.
+
+**Why it exists.** Three generators expand content the renderer draws and the world streams — the ruins, the dunes and Island City — and before this module each reached the reader and the ring by its own route: the ruins and the dunes through an `#if` in the renderer and in the world and a dependency declared only where the capability was configured ([ADR-0037](../adr/0037-scene-reader-links-ruins-where-configured.md), the one exception to [ADR-0027](../adr/0027-additive-capabilities.md) decision 1, taken a second time), the city by no route at all but a fragment written to disk. Each new generator would have added an `#if`, a conditional dependency and a consumer file in two modules that are not capabilities. What the three have in common, seen from the reader and the ring, is what this module states: a generator is a pure function of the scene's parameters, the world seed and a tile, and its output is either **ground** (a height, a floor and a grid of itself, a function of position and time) or **placements** (instances of a few meshes, with tags).
+
+## Who registers, and who looks
+
+**Status, 2026-09-27: the registry is built, and nothing but its own tests registers into it yet.** The renderer's waves, the terrain capability's dunes, the ruins and the city move onto it one at a time, each in a change of its own that removes the route it used to take; this section says where each stands.
+
+## Owned data
+
+The table of descriptors: `GroundProviderDesc` and `PlacementGeneratorDesc`, by name, in two lists. It owns the descriptors' *registration*, not the descriptors — each is a `constexpr` object in its capability's own source — and holds no state of any generator: a generator's state is what its `make` or `open` allocated, owned by the handle the caller holds (`GroundProvider`, a placement generator's `void*` it closes).
+
+## The two kinds
+
+**A ground provider** (`GroundProviderDesc { name, make, flags }`) is made from a scene's terrain entry (`engine.scene.Terrain`, as parsed) into a `GroundProvider`: a table of plain functions (`GroundOps`) over the state `make` allocated, which answers:
+
+- `height(x, z)`: the surface at the ground's own time, metres; thread-safe.
+- `floor(x, z)`: what a building stands on — the ground that does not move while the surface does (the dunes migrate over the interdune floor and bury what stands there; with the waves the two are the same). Null: the surface.
+- `grid(lattice, window)`: a window of heights on a `Lattice` at its own time — the scene's grid, computed exactly as the renderer's mesh computes it, or the world's grid at a spacing in millimetres — what a mesh is built from. Null: `height` at each point, which is the same heights to the bit.
+- `evaluate(t, lattice, window, blocks)`: the same window at another game time, in 64 × 64 blocks a caller spreads over as many jobs as it likes: the time-lapse's re-evaluation. Null for a ground with no time; `moves()` says which.
+- `travel_m(from, to)`: how far its fastest feature travels between two times, which a moving ground's cadence is timed by.
+- `make_rings(extent, spacing)`: the rings round a camera (`GroundRings`, over `GroundRingsOps`: the layout rule, the re-centre rule and the chunks' cluster DAGs), when the ground has them.
+- `open_tiles(records, tile)`: its tiles in a world ring (`GroundTiles`, over `GroundTilesOps`), their per-tile records kept wherever the world keeps them (`TileRecords`), when it has any.
+
+`GroundProviderDesc::flags` (`k_ground_moves`, `k_ground_rings`, `k_ground_tiles`) say what every ground a provider makes can do, so a host can decide a setting before it has a scene's sampler. `GroundProvider::view()` is the `Ground` a placement generator is handed: the surface and the floor as a plain function and a context.
+
+**A placement generator** (`PlacementGeneratorDesc`) runs one scene entry — its parameters as JSON (`engine.scene.PlacementEntry.params`, or a legacy field's object) — through `open` (read what the entry names and check it, once), then `expand` (the whole entry, a scene read whole) or `meshes` and `tile` (a streamed scene: the meshes it holds resident, and one tile at a time in the tile's ring), and `close`. Its output is `Placements`: instances of named meshes (a path the reader resolves through the derived-data cache like any scene mesh, a name, a content hash), each with a world transform and a tag, and a count of the things made. `tile` must agree with `expand`: a tile's placements are the whole expansion restricted to the tile. `occupies(tile)` and `representation(ring)` let a streaming host skip what a tile does not need: a tile with nothing on it, a ring change that draws the same.
+
+## The order rule
+
+**Ground first, then placements in the scene's order**, in the reader and in the ring. Ground is what placements stand on, so the reader makes the terrain's provider before it walks the placement entries and hands each its `view()`; the ring registers its ground consumer before its placements consumer, so a tile's ground is built before anything on it ([ADR-0040](../adr/0040-the-tile-ring.md)'s declared order). **A generator sees the ground it is handed and nothing of any other** (`Context`: the world seed, the tile size, the scene's directory, the ground, a streamed world's block and ring, and a job pool made on first ask). A generator that wants another's output asks the ground, never the registry, which keeps each generator a function of (entry, seed, tile, ground) — the per-tile determinism the ruins and the city rest on.
+
+## The registrar pattern
+
+```cpp
+// In the capability's own source, beside the functions it names:
+constexpr scene_gen::PlacementGeneratorDesc k_ruins{
+    .name = "ruins", .open = &open, .close = &close, .expand = &expand,
+    .meshes = &meshes, .tile = &tile, .occupies = &occupies, .representation = &representation};
+const scene_gen::Registrar k_ruins_registrar{k_ruins};
+```
+
+The descriptor is constant-initialized; the `Registrar` adds it to `GeneratorRegistry::global()` during static initialization (a function-local static, so a registrar in any translation unit finds the registry constructed whatever order the units initialize in). The module holding it is **`WHOLE_ARCHIVE`**, or the linker drops the object nothing references and the registration with it. A second descriptor under a name another holds stops the program at start with a message — two generators under one name would make what a scene means depend on link order — while the same descriptor twice is a library linked into two images of one process, and fine. `GeneratorRegistry::add` returns the same answer as a value, which is what the tests hold.
+
+## Adding a generator
+
+1. Write the functions and the descriptor in the capability's own module (`src/scene_generator.cpp` by convention), and a `Registrar` beside it; make the module `WHOLE_ARCHIVE` and give it `scene_gen` as a dependency.
+2. Pick a name no other generator of the kind has — the capability's own name is the convention (`ruins`, `dunes`, `city`) — and read the entry's parameters with the schema's reader where they have a schema type, so an unknown field is refused with its path.
+3. Link the capability into the hosts that should carry it (engine-view, engine-host), guarded by `if(TARGET engine::<name>)`. Nothing in `renderer` or `world` changes: a scene names it in `placements` (`{"generator": "<name>", "params": {...}}`) or as its terrain's `provider`.
+4. Test the generator through the registry from the capability's own tests (a scene is not needed: make a `Context`, `open`, `expand`, `tile`), and that `tile` over every tile is `expand`.
+
+## Invariants
+
+- One descriptor per name per kind; the lists are sorted by name when read (`ground_names`, `placement_names`), so a sentence and a summary are the same whatever order the registrars ran in.
+- A generator is a function of its entry, the world seed, the tile and the ground it is handed; its output on any number of threads is the same.
+- A ground's `grid` is its `height` at the lattice's points, to the bit; `evaluate` at its own time is its `grid`.
+- A placement generator's `tile` over a set of tiles is its `expand` restricted to them.
+
+## Public API
+
+`include/domain/scene_gen/scene_gen.h`: `TileCoord`, `Ground`, `Context`, `PlacementMesh`, `Placement`, `Placements`, `PlacementGeneratorDesc`, `Lattice` (`scene_lattice`, `ring_lattice`, `window_blocks`, `k_height_block`), the rings' types (`RingSpec`, `RingPlace`, `RingsLayout`, `RingChunkRef`, `RingHeights`, `GroundRingsOps`, `GroundRings`), the tiles' (`TileRecords`, `GroundTilesOps`, `GroundTiles`), `GroundOps`, `GroundProvider`, `GroundProviderDesc` and its flags, `GeneratorRegistry`, `Registrar`.
+
+## Depends on
+
+`base`, `containers`, `math`, `hash`, `json` (an entry's parameters), `schema` and `schemas` (the scene's entries as parsed: `engine.scene.Terrain`, `engine.scene.WorldRings`), `jobs` (the pool a generator is offered), `log`, and `geometry`: a ground's ring chunk is a cluster LOD DAG, so the rings' table names `geometry::ClusterLodMesh`. Nothing above the domain layer, and no capability.
+
+## Testing
+
+`tools/dev.ps1 test -Filter scene_gen`: `tests/scene_gen_tests.cpp` registers a ground and a placement generator from its own source and finds them by name; holds the unknown-name sentence word for word; refuses a second descriptor under one name and takes the same one twice; and samples a ground with no grid of its own on a lattice, the same heights as its point function. `tests/size_table.cpp` pins `Placement` (48 bytes), `TileCoord` and `RingPlace`.
+
+## Performance notes
+
+A lookup by name is a walk of a handful of descriptors, once per scene read or world made. A generator's per-point height is a call through a pointer, which is why every grid is one call a block: the mesh's grid, the time-lapse's 64 × 64 blocks, a ring's chunk. Nothing here runs per frame.

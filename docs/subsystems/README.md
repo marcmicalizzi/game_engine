@@ -58,6 +58,7 @@ One page per module, created in the same change that creates the module. Templat
 | tissue (capability) | domain | [tissue.md](tissue.md) |
 | sim | domain | [sim.md](sim.md) |
 | audio (capability) | domain | [audio.md](audio.md) |
+| scene_gen | domain | [scene_gen.md](scene_gen.md) |
 | ruins (capability) | domain | [ruins.md](ruins.md) |
 | terrain (capability) | domain | [terrain.md](terrain.md) |
 | city (capability) | domain | [city.md](city.md) |

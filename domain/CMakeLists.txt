@@ -26,6 +26,10 @@ add_subdirectory(tissue)
 # After protocol (audio.devices): the device and mixing half of audio. Its ECS half is
 # systems/audio_system, because flecs belongs to systems/ (ADR-0028 seam 5).
 add_subdirectory(audio)
+# After geometry (a ground's ring chunks are cluster LOD DAGs), before every generator: the registry
+# the ground providers and placement generators below register into, and the renderer's scene reader
+# and the world ring look them up in (ADR-0046).
+add_subdirectory(scene_gen)
 add_subdirectory(ruins)
 add_subdirectory(terrain)
 add_subdirectory(city)
