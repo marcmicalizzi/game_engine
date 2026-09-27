@@ -27,17 +27,16 @@
 # and one generator does not make one worth adding (ADR-0037 records the alternatives and when to
 # revisit).
 #
-# `terrain` the same way, for the same reason (ADR-0043): a scene's terrain may name the terrain
-# capability's dune generator, which `TerrainSampler` and `build_terrain_mesh` then draw
-# (terrain.h, "Two dune fields"). Without it the renderer builds, draws every waves terrain as it
-# always did, and the scene reader refuses a terrain that names the generator with a sentence.
+# A scene's terrain is drawn by the ground provider it names, found in `scene_gen`'s registry
+# (ADR-0046; terrain.h, "Ground providers"): the waves are the renderer's own and registered by
+# `src/terrain.cpp`, and the terrain capability's dunes register themselves from their own module,
+# which a host links where its configuration has it. So nothing here names the terrain capability:
+# without it the renderer builds, draws every waves terrain as it always did, and the scene reader
+# refuses a terrain that names the dunes with the registry's sentence.
 set(_renderer_deps base containers hash math time jobs log platform io image geometry anim assets
-                   gfx json texture tunables content_build schema schemas)
+                   gfx json texture tunables content_build schema schemas scene_gen)
 if(TARGET engine::ruins)
   list(APPEND _renderer_deps ruins)
-endif()
-if(TARGET engine::terrain)
-  list(APPEND _renderer_deps terrain)
 endif()
 engine_module(NAME renderer LAYER systems
   DEPS ${_renderer_deps}
@@ -50,9 +49,6 @@ target_include_directories(engine_renderer PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/
 
 if(TARGET engine::ruins)
   target_compile_definitions(engine_renderer PRIVATE ENGINE_RENDERER_RUINS=1)
-endif()
-if(TARGET engine::terrain)
-  target_compile_definitions(engine_renderer PRIVATE ENGINE_RENDERER_TERRAIN=1)
 endif()
 
 set(_renderer_tests tests/renderer_tests.cpp tests/reference_tests.cpp tests/streaming_tests.cpp
@@ -73,6 +69,11 @@ if(TARGET engine::terrain)
        tests/terrain_clock_tests.cpp tests/terrain_crest_tests.cpp)
 endif()
 engine_module_tests(NAME renderer SOURCES ${_renderer_tests})
+if(TARGET engine_renderer_tests AND TARGET engine::terrain)
+  # The dunes reach the scene reader through the registry, so the tests that read a dune scene link
+  # the capability as a host does: its registrar is what makes "dunes" a name the reader knows.
+  target_link_libraries(engine_renderer_tests PRIVATE engine::terrain)
+endif()
 if(TARGET engine::terrain AND TARGET engine::ruins)
   target_compile_definitions(engine_renderer_tests PRIVATE ENGINE_RENDERER_RUINS=1)
 endif()

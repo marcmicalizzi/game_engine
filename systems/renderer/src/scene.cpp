@@ -1149,8 +1149,18 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
       out.terrain.ridges.push_back(TerrainRidge{r.from, r.to, r.height, r.width, r.roughness});
     for (const scene::Basin& b : t.basins)
       out.terrain.basins.push_back(TerrainBasin{b.center, b.radius, b.depth});
-    out.terrain.generator = t.generator == scene::TerrainGenerator::Dunes ? TerrainGenerator::dunes
-                                                                          : TerrainGenerator::waves;
+    // The ground provider (scene_gen.md): `provider` by name, or the one `generator` names; a
+    // provider beside `generator: Dunes` other than the dunes is two answers to one question.
+    if (t.generator == scene::TerrainGenerator::Dunes && !t.provider.empty() &&
+        t.provider != "dunes") {
+      error = path + ": the terrain names the ground provider \"" + t.provider +
+              "\" and the generator Dunes; name one";
+      return false;
+    }
+    out.terrain.provider = t.provider;
+    out.terrain.generator = t.generator == scene::TerrainGenerator::Dunes || t.provider == "dunes"
+                                ? TerrainGenerator::dunes
+                                : TerrainGenerator::waves;
     out.terrain.time_s = t.time;
     out.terrain.sand_flux = t.sand_flux;
     out.terrain.storms_per_year = t.storms_per_year;
@@ -1187,41 +1197,28 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
         out.terrain.bands.push_back(std::move(band));
       }
     }
-    if (out.terrain.generator == TerrainGenerator::dunes && !terrain_generator_available()) {
-      error = path +
-              ": the terrain names the dune generator (\"generator\": \"Dunes\"), and this build "
-              "has no terrain capability (ENGINE_WITH_TERRAIN is off)";
+  }
+  const u32 file_meshes = file.meshes.size();
+  // One sampler for every height this read asks the terrain for — each grounded instance, each
+  // scatter's, and each ruin's dozens — because `terrain_height` draws the dune field again per
+  // call, and that was most of what reading a thousand ruins cost (ruins.md, "Performance
+  // notes"). The heights are the direct function's, bit for bit. It is also where the terrain's
+  // ground provider is found and made (scene_gen.md): a name this executable does not carry, or an
+  // entry the provider refuses — a dune time out of range, a band table the field cannot be built
+  // from — refuses the file with the provider's sentence.
+  const TerrainSampler ground(out.terrain);
+  if (out.terrain.enabled) {
+    if (!ground.ok()) {
+      error = path + ": " + ground.error();
       return false;
     }
-    if (out.terrain.generator == TerrainGenerator::dunes &&
-        (!(t.time >= 0.0) || !(t.time < 3.0e11) || !(t.sand_flux >= 0.0f) ||
-         !(t.sand_flux <= 100'000.0f) || t.storms_per_year > 31 || !(t.storm_strength > 0.0f) ||
-         !(t.storm_strength <= 3.0f))) {
-      error = path +
-              ": the dune generator's time must be within [0, 3e11) s, its sand_flux within "
-              "[0, 100000] m^2 a year, its storms_per_year within 0..31 and its storm_strength "
-              "within (0, 3]";
-      return false;
-    }
-    if (out.terrain.generator == TerrainGenerator::dunes) {
-      std::string why;
-      if (!terrain_bands_valid(out.terrain, &why)) {
-        error = path + ": terrain.bands: " + why;
-        return false;
-      }
-    }
+    const scene::Terrain& t = *file.terrain;
     if (t.size < 2 || t.size > k_terrain_max_size || !(t.extent > 0.0f)) {
       error = path + ": terrain size must be within 2.." + std::to_string(k_terrain_max_size) +
               " and extent positive";
       return false;
     }
   }
-  const u32 file_meshes = file.meshes.size();
-  // One sampler for every height this read asks the terrain for — each grounded instance, each
-  // scatter's, and each ruin's dozens — because `terrain_height` draws the dune field again per
-  // call, and that was most of what reading a thousand ruins cost (ruins.md, "Performance
-  // notes"). The heights are the direct function's, bit for bit.
-  const TerrainSampler ground(out.terrain);
   auto ground_at = [&](f32 x, f32 z) { return out.terrain.enabled ? ground.height(x, z) : 0.0f; };
 
   for (u32 i = 0; i < file.instances.size(); ++i) {

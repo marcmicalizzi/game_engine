@@ -6,7 +6,14 @@
 
 ## Who registers, and who looks
 
-**Status, 2026-09-27: the registry is built, and nothing but its own tests registers into it yet.** The renderer's waves, the terrain capability's dunes, the ruins and the city move onto it one at a time, each in a change of its own that removes the route it used to take; this section says where each stands.
+**Status, 2026-09-27.** The ruins and the city move onto the registry one at a time after the grounds, each in a change of its own that removes the route it used to take; this section says where each stands.
+
+| Generator | Kind | Registered by | Looked up by |
+|---|---|---|---|
+| `waves` | ground | `systems/renderer/src/terrain.cpp` — the renderer's own, so the default terrain takes the same path a capability's does | the renderer's `TerrainSampler`, for every terrain that names it or names nothing |
+| `dunes` | ground (moves, rings) | `domain/terrain/src/scene_ground.cpp` — the terrain capability; `ENGINE_RENDERER_TERRAIN` and the renderer's link to `terrain` are gone | the renderer's `TerrainSampler` (the scene read, the mesh, the time-lapse, the rings), by `provider` or the old `generator` enum |
+
+**The fixed features.** A terrain entry's ridges and basins (`engine.scene.Terrain.ridges`, `basins`) are the scene's, added by every ground the same way — the waves multiply their dunes down over them and add them, the dunes thin their sand over them and add them — so their arithmetic is here, beside the entry's type, in one copy (`terrain_features.h`: `terrain_features`, `ridge_weight`, `basin_weight`). It was the renderer's until the dunes moved into the terrain capability, and it moved expression for expression.
 
 ## Owned data
 
@@ -59,6 +66,8 @@ The descriptor is constant-initialized; the `Registrar` adds it to `GeneratorReg
 - A placement generator's `tile` over a set of tiles is its `expand` restricted to them.
 
 ## Public API
+
+`include/domain/scene_gen/terrain_features.h`: `TerrainFeatures`, `terrain_features`, `ridge_weight`, `basin_weight` — the scene's ridges and basins.
 
 `include/domain/scene_gen/scene_gen.h`: `TileCoord`, `Ground`, `Context`, `PlacementMesh`, `Placement`, `Placements`, `PlacementGeneratorDesc`, `Lattice` (`scene_lattice`, `ring_lattice`, `window_blocks`, `k_height_block`), the rings' types (`RingSpec`, `RingPlace`, `RingsLayout`, `RingChunkRef`, `RingHeights`, `GroundRingsOps`, `GroundRings`), the tiles' (`TileRecords`, `GroundTilesOps`, `GroundTiles`), `GroundOps`, `GroundProvider`, `GroundProviderDesc` and its flags, `GeneratorRegistry`, `Registrar`.
 

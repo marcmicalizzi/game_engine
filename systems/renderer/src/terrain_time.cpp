@@ -49,7 +49,7 @@ f64 terrain_next_time(const TerrainSampler& sampler, f64 from_s, f64 spacing_m, 
   const f64 lo_step = std::max(min_step, 1.0);
   const f64 hi_step = std::max(max_step, lo_step);
   const f64 target = fraction * spacing_m;
-  if (sampler.dunes_field() == nullptr || !(target > 0.0)) return from_s + hi_step;
+  if (!sampler.moves() || !(target > 0.0)) return from_s + hi_step;
   if (terrain_band_travel_m(sampler, from_s, from_s + lo_step) >= target) return from_s + lo_step;
   if (terrain_band_travel_m(sampler, from_s, from_s + hi_step) <= target) return from_s + hi_step;
   // The travel only grows with the step (it is a path length), so the largest step within the

@@ -25,6 +25,11 @@
 // applied to meshes rather than instances: a change costs the chunks it changed, never the ring.
 // So there are twice as many slots as a ring has chunks, and twice its vertices and triangles.
 //
+// **The rings are the ground's.** The ring tunables, the layout and re-centre rules and the chunks'
+// meshes and DAGs come from the ground provider the terrain names (`scene_gen::GroundRings`, which
+// the terrain capability's dunes make; the waves have none), found through the scene-generator
+// registry, so the renderer links nothing of the capability that builds them.
+//
 // **What this file owns** is the CPU half: the layout, the chunks' DAGs until they are uploaded,
 // each drawn chunk's slot and its **rest heights** (what its bounds and LOD errors were fit to,
 // which a moving field's padding is measured from), the lattice and the field window of each
@@ -90,9 +95,9 @@ class TerrainRingSet {
   // Lays the rings out round the camera at (x, z), metres, with the terrain capability's ring
   // tunables (`terrain.rings.*`), and builds every moving ring's chunks from the field at the
   // terrain's own time, on `jobs` when given. The scene's grid is the outer ring and is never built
-  // here. False, with a sentence, for a terrain that is not the dune generator's, a build without
-  // the terrain capability, a scene grid whose spacing is not a whole number of millimetres, or
-  // tunables that leave no moving ring. `desc` must outlive the set.
+  // here. False, with a sentence, for a terrain whose ground provider makes no rings (the waves; a
+  // provider this build does not carry), a scene grid whose spacing is not a whole number of
+  // millimetres, or tunables that leave no moving ring. `desc` must outlive the set.
   bool build(const TerrainDesc& desc, f32 camera_x, f32 camera_z, jobs::JobSystem* jobs,
              std::string* error = nullptr);
   bool valid() const noexcept { return levels_ > 1; }

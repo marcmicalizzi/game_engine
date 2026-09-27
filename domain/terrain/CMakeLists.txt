@@ -18,10 +18,15 @@
 # `engine-content terrain` report. CAPABILITY ties them to the same switch.
 engine_schema_library(NAME terrain_schemas SCHEMAS schemas/terrain.schema CAPABILITY terrain)
 
+#
+# `scene_gen` and `schemas` are the ground provider's (scene_ground.h; ADR-0046): the dunes register
+# as the ground provider "dunes", made from a scene's terrain entry (`engine.scene.Terrain`), so the
+# renderer's scene reader and the world ring reach the field through the registry and link nothing
+# of this module. WHOLE_ARCHIVE keeps that registrar too.
 engine_module(NAME terrain LAYER domain OPTIONAL WHOLE_ARCHIVE
-  DEPS base containers math hash jobs tunables schema terrain_schemas geometry
+  DEPS base containers math hash jobs tunables schema schemas terrain_schemas geometry scene_gen
   SOURCES src/fixed.cpp src/wind.cpp src/dunes.cpp src/feedback.cpp src/overlay.cpp src/tile.cpp
-          src/stats.cpp src/rings.cpp src/terrain.cpp)
+          src/stats.cpp src/rings.cpp src/terrain.cpp src/scene_ground.cpp)
 
 engine_module_tests(NAME terrain
   SOURCES tests/terrain_tests.cpp tests/overlay_tests.cpp tests/rings_tests.cpp

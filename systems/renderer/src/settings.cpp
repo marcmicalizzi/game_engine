@@ -323,15 +323,15 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
   // scene has a skinned one, and those are the same pass: skinning is `deform.slang`'s third
   // kind, not a path beside it. Deciding it here rather than at each use is what keeps
   // renderer.md's "every device- and scene-driven override lives in one function" true.
-  // **A moving terrain is a deformed one** (renderer.md, "The dunes in time-lapse"): the dune
-  // generator's terrain under a time-lapse draws its heights out of the pool, blended between two
-  // evaluated fields. Not for a scene whose instances come and go, which has no pool. A rate that
-  // may change while it runs (`time_rate_live`) needs the levels at zero too; a scene that cannot
-  // have them is only warned about when something asked for motion now.
+  // **A moving terrain is a deformed one** (renderer.md, "The dunes in time-lapse"): a terrain
+  // whose ground provider moves with game time (the dunes; `terrain_moves`, from the registry)
+  // under a time-lapse draws its heights out of the pool, blended between two evaluated fields.
+  // Not for a scene whose instances come and go, which has no pool. A rate that may change while
+  // it runs (`time_rate_live`) needs the levels at zero too; a scene that cannot have them is only
+  // warned about when something asked for motion now.
   out.terrain_levels =
       scene != nullptr && (s.time_rate > 0.0 || s.terrain_rings || s.time_rate_live) && !dynamic &&
-      scene->terrain.enabled && scene->terrain.generator == TerrainGenerator::dunes &&
-      scene->terrain_mesh != ~0u && terrain_generator_available();
+      scene->terrain.enabled && scene->terrain_mesh != ~0u && terrain_moves(scene->terrain);
   if (scene != nullptr && (s.time_rate > 0.0 || s.terrain_rings) && !out.terrain_levels &&
       dynamic) {
     ENGINE_LOG_WARN(log_renderer, "the terrain does not move",

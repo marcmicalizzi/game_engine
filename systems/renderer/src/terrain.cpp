@@ -1,101 +1,13 @@
 #include <core/hash/hash.h>
+#include <domain/scene_gen/terrain_features.h>
 #include <domain/texture/texture_build.h>
 #include <systems/renderer/terrain.h>
-
-#if ENGINE_RENDERER_TERRAIN
-#include <domain/terrain/dunes.h>
-#endif
 
 #include <algorithm>
 #include <bit>
 #include <cmath>
 
 namespace engine::renderer {
-
-// The terrain capability's field, when this build has it (terrain.h, "Two dune fields"). Without
-// the capability the type exists and is never made, so the sampler's layout does not depend on the
-// build.
-#if ENGINE_RENDERER_TERRAIN
-struct TerrainSampler::Dunes {
-  terrain::DuneField field;
-  i64 time_us = 0;
-};
-
-namespace {
-
-terrain::FieldDesc field_desc(const TerrainDesc& desc) {
-  terrain::FieldDesc f;
-  f.seed = desc.seed;
-  f.wind.seed = desc.seed;
-  f.dune_height = terrain::to_mm(desc.dune_height);
-  f.wavelength = terrain::to_mm(desc.dune_wavelength);
-  // m^2 a year to cm^2 a day.
-  f.wind.flux_cm2_per_day =
-      static_cast<i32>(std::floor(static_cast<f64>(desc.sand_flux) * 10'000.0 / 365.0 + 0.5));
-  f.wind.storms_per_year = static_cast<i32>(desc.storms_per_year);
-  f.wind.storm_speed_q16 =
-      static_cast<i32>(std::floor(static_cast<f64>(desc.storm_strength) * 65'536.0 + 0.5));
-  for (const TerrainRidge& r : desc.ridges) {
-    f.ridges.push_back(terrain::RidgeFeature{terrain::to_mm(r.from.x), terrain::to_mm(r.from.y),
-                                             terrain::to_mm(r.to.x), terrain::to_mm(r.to.y),
-                                             terrain::to_mm(r.width)});
-  }
-  for (const TerrainBasin& b : desc.basins) {
-    f.basins.push_back(terrain::BasinFeature{terrain::to_mm(b.center.x), terrain::to_mm(b.center.y),
-                                             terrain::to_mm(b.radius)});
-  }
-  if (desc.has_bands) {
-    for (const TerrainBand& band : desc.bands) {
-      terrain::BandMetres m;
-      m.name = band.name;
-      m.kind =
-          band.kind == 1 ? terrain::PrimitiveKind::barchan : terrain::PrimitiveKind::transverse;
-      m.height_min = band.height_min;
-      m.height_max = band.height_max;
-      m.cell = band.cell;
-      m.share = band.share;
-      m.length_min = band.length_min;
-      m.length_max = band.length_max;
-      m.stoss = band.stoss;
-      m.bend = band.bend;
-      m.sinuosity = band.sinuosity;
-      m.spread_deg = band.spread_deg;
-      m.sharpness = band.sharpness;
-      m.side_days = band.side_days;
-      m.sharp_days = band.sharp_days;
-      m.couple = static_cast<terrain::BandCouple>(band.couple <= 2 ? band.couple : 0);
-      m.couple_width = band.couple_width;
-      m.far = band.far;
-      m.celerity_scale = band.celerity_scale;
-      f.bands.push_back(terrain::band_from_metres(m));
-    }
-  }
-  return f;
-}
-
-i64 time_us_of(const TerrainDesc& desc) noexcept {
-  return static_cast<i64>(std::floor(desc.time_s * 1'000'000.0 + 0.5));
-}
-
-}  // namespace
-
-bool terrain_generator_available() noexcept { return true; }
-
-bool terrain_bands_valid(const TerrainDesc& desc, std::string* error) noexcept {
-  if (!desc.has_bands) return true;
-  const terrain::FieldDesc f = field_desc(desc);
-  if (f.bands.empty()) {
-    if (error != nullptr) *error = "the band table is empty: leave it out for the default";
-    return false;
-  }
-  return terrain::validate_bands(std::span<const terrain::BandDesc>(f.bands.data(), f.bands.size()),
-                                 error);
-}
-#else
-struct TerrainSampler::Dunes {};
-bool terrain_generator_available() noexcept { return false; }
-bool terrain_bands_valid(const TerrainDesc&, std::string*) noexcept { return true; }
-#endif
 
 namespace {
 
@@ -118,69 +30,55 @@ f32 smoothstep(f32 edge0, f32 edge1, f32 x) noexcept {
   return t * t * (3.0f - 2.0f * t);
 }
 
-// A lattice value noise in [-1, 1], smooth between lattice points: what roughens a ridge. The
-// lattice value is a hash of the cell and the seed, so no table is kept.
-f32 lattice(u32 seed, i32 x, i32 z) noexcept {
-  const u64 h = mix64((static_cast<u64>(static_cast<u32>(x)) << 32 | static_cast<u32>(z)) ^
-                      (static_cast<u64>(seed) * 0xD6E8FEB86659FD93ull));
-  return static_cast<f32>(h >> 40) / static_cast<f32>(1u << 23) - 1.0f;
-}
-
-f32 value_noise(u32 seed, f32 x, f32 z) noexcept {
-  const f32 fx = std::floor(x);
-  const f32 fz = std::floor(z);
-  const i32 ix = static_cast<i32>(fx);
-  const i32 iz = static_cast<i32>(fz);
-  const f32 tx = x - fx;
-  const f32 tz = z - fz;
-  const f32 sx = tx * tx * (3.0f - 2.0f * tx);
-  const f32 sz = tz * tz * (3.0f - 2.0f * tz);
-  const f32 a = lattice(seed, ix, iz);
-  const f32 b = lattice(seed, ix + 1, iz);
-  const f32 c = lattice(seed, ix, iz + 1);
-  const f32 d = lattice(seed, ix + 1, iz + 1);
-  return (a + (b - a) * sx) + ((c + (d - c) * sx) - (a + (b - a) * sx)) * sz;
-}
-
-// The distance from p to the segment ab, all in the xz plane.
-f32 segment_distance(Vec2 p, Vec2 a, Vec2 b) noexcept {
-  const f32 abx = b.x - a.x;
-  const f32 abz = b.y - a.y;
-  const f32 apx = p.x - a.x;
-  const f32 apz = p.y - a.y;
-  const f32 len2 = abx * abx + abz * abz;
-  const f32 t = len2 > 0.0f ? std::clamp((apx * abx + apz * abz) / len2, 0.0f, 1.0f) : 0.0f;
-  const f32 dx = apx - abx * t;
-  const f32 dz = apz - abz * t;
-  return std::sqrt(dx * dx + dz * dz);
-}
-
 u64 mix_f32(u64 h, f32 v) noexcept { return hash_combine(h, std::bit_cast<u32>(v)); }
 
-}  // namespace
+std::span<const scene::Ridge> ridges_of(const Vector<scene::Ridge>& ridges) noexcept {
+  return std::span<const scene::Ridge>(ridges.data(), ridges.size());
+}
+std::span<const scene::Basin> basins_of(const Vector<scene::Basin>& basins) noexcept {
+  return std::span<const scene::Basin>(basins.data(), basins.size());
+}
+
+// ---- the waves: the renderer's own ground provider ----------------------------------------------
 
 // The terrain as a function: the dune waves are drawn from the seed once, so evaluating a whole
 // grid — or a scene's worth of grounded instances and ruins — costs the waves and not the
 // generator. This was a private class of this file until 2026-09-24, built afresh by every
 // `terrain_height` call; reading 1,000 ruins over the desert overlook asked it about forty thousand
-// times and spent 45–64 ms doing so (docs/subsystems/ruins.md, "Performance notes").
-TerrainSampler::~TerrainSampler() = default;
+// times and spent 45–64 ms doing so (docs/subsystems/ruins.md, "Performance notes"). Since
+// 2026-09-27 it is a ground provider like any other (scene_gen.md), registered by this file, so a
+// scene's default terrain goes down the same path as one a capability draws.
+constexpr u32 k_waves = 6;
+struct Wave {
+  f32 kx = 0.0f;
+  f32 kz = 0.0f;
+  f32 phase = 0.0f;
+  f32 mx = 0.0f;
+  f32 mz = 0.0f;
+  f32 meander = 0.0f;
+  f32 meander_phase = 0.0f;
+  f32 amplitude = 0.0f;
+};
 
-TerrainSampler::TerrainSampler(const TerrainDesc& desc) noexcept : desc_(&desc) {
-#if ENGINE_RENDERER_TERRAIN
-  if (desc.generator == TerrainGenerator::dunes) {
-    generator_ = std::make_unique<const Dunes>(
-        Dunes{terrain::DuneField(field_desc(desc)), time_us_of(desc)});
-  }
-#endif
-  u64 state = static_cast<u64>(desc.seed) * 0x2545F4914F6CDD1Dull + 0x6A09E667F3BCC909ull;
+struct WavesGround {
+  scene::Terrain entry;  // the seed, the dune height and wavelength, the ridges and basins
+  Wave waves[k_waves];
+  f32 roll_kx = 0.0f;
+  f32 roll_kz = 0.0f;
+  f32 roll_phase = 0.0f;
+};
+
+WavesGround* make_waves(const scene::Terrain& entry) {
+  auto* g = new WavesGround{};
+  g->entry = entry;
+  u64 state = static_cast<u64>(entry.seed) * 0x2545F4914F6CDD1Dull + 0x6A09E667F3BCC909ull;
   // One prevailing wind: transverse dunes run across it, so every wave's crest is within about
   // 25 degrees of perpendicular to it and the field reads as a dune sea rather than as noise.
   const f32 wind = unit(state) * 2.0f * k_pi;
   for (u32 i = 0; i < k_waves; ++i) {
-    Wave& w = waves_[i];
+    Wave& w = g->waves[i];
     const f32 angle = wind + (unit(state) - 0.5f) * 0.9f;
-    const f32 wavelength = desc.dune_wavelength * (0.45f + 1.15f * unit(state));
+    const f32 wavelength = entry.dune_wavelength * (0.45f + 1.15f * unit(state));
     const f32 k = 2.0f * k_pi / std::max(wavelength, 1.0f);
     w.kx = std::cos(angle) * k;
     w.kz = std::sin(angle) * k;
@@ -191,7 +89,7 @@ TerrainSampler::TerrainSampler(const TerrainDesc& desc) noexcept : desc_(&desc) 
     w.mz = std::cos(angle) * meander_k;
     w.meander = 0.4f + 0.8f * unit(state);
     w.meander_phase = unit(state) * 2.0f * k_pi;
-    w.amplitude = std::pow(wavelength / std::max(desc.dune_wavelength, 1.0f), 1.2f);
+    w.amplitude = std::pow(wavelength / std::max(entry.dune_wavelength, 1.0f), 1.2f);
   }
   // Normalized so the field's peak-to-trough is about `dune_height`, and centred on zero: s^2
   // for s = (1 + sin u) / 2 averages 3/8 and has a standard deviation of about 0.365, and a sum
@@ -200,138 +98,184 @@ TerrainSampler::TerrainSampler(const TerrainDesc& desc) noexcept : desc_(&desc) 
   // and the LOD builder, rightly, turned the ground in front of the camera into a handful of
   // clusters a few hundred metres across.
   f32 variance = 0.0f;
-  for (const Wave& w : waves_)
+  for (const Wave& w : g->waves)
     variance += (0.365f * w.amplitude) * (0.365f * w.amplitude);
-  const f32 scale = variance > 0.0f ? 0.25f * desc.dune_height / std::sqrt(variance) : 0.0f;
-  for (Wave& w : waves_)
+  const f32 scale = variance > 0.0f ? 0.25f * entry.dune_height / std::sqrt(variance) : 0.0f;
+  for (Wave& w : g->waves)
     w.amplitude *= scale;
   const f32 roll_angle = wind + 1.2f;
-  const f32 roll_k = 2.0f * k_pi / std::max(desc.dune_wavelength * 11.0f, 1.0f);
-  roll_kx_ = std::cos(roll_angle) * roll_k;
-  roll_kz_ = std::sin(roll_angle) * roll_k;
-  roll_phase_ = unit(state) * 2.0f * k_pi;
+  const f32 roll_k = 2.0f * k_pi / std::max(entry.dune_wavelength * 11.0f, 1.0f);
+  g->roll_kx = std::cos(roll_angle) * roll_k;
+  g->roll_kz = std::sin(roll_angle) * roll_k;
+  g->roll_phase = unit(state) * 2.0f * k_pi;
+  return g;
 }
 
-f32 TerrainSampler::dunes(f32 x, f32 z) const noexcept {
+f32 waves_dunes(const WavesGround& g, f32 x, f32 z) noexcept {
   f32 h = 0.0f;
-  for (const Wave& w : waves_) {
+  for (const Wave& w : g.waves) {
     const f32 bend = w.meander * std::sin(w.mx * x + w.mz * z + w.meander_phase);
     const f32 s = 0.5f + 0.5f * std::sin(w.kx * x + w.kz * z + w.phase + bend);
     h += w.amplitude * (s * s - 0.375f);
   }
   // A slow roll under the dunes, so the ground is not a plane with ripples on it.
-  return h + 0.35f * desc_->dune_height * std::sin(roll_kx_ * x + roll_kz_ * z + roll_phase_);
+  return h + 0.35f * g.entry.dune_height * std::sin(g.roll_kx * x + g.roll_kz * z + g.roll_phase);
+}
+
+// The same arithmetic in the same order as before the generator existed: the waves' heights,
+// their cache entries and the fixtures' pinned numbers do not move.
+f32 waves_height(const void* state, f32 x, f32 z) noexcept {
+  const auto& g = *static_cast<const WavesGround*>(state);
+  const scene_gen::TerrainFeatures f = scene_gen::terrain_features(
+      g.entry.seed, ridges_of(g.entry.ridges), basins_of(g.entry.basins), x, z);
+  return waves_dunes(g, x, z) * f.flatten * (1.0f - 0.6f * f.ridge_mask) + f.ridges + f.basins;
+}
+
+void waves_destroy(void* state) noexcept { delete static_cast<WavesGround*>(state); }
+
+// The waves have no time, no rings and no tiles of their own: a point function, which the registry
+// samples a point at a time for a grid.
+constexpr scene_gen::GroundOps k_waves_ops{.destroy = &waves_destroy, .height = &waves_height};
+
+bool waves_make(const scene::Terrain& entry, const scene_gen::Context&,
+                scene_gen::GroundProvider& out, std::string*) {
+  out = scene_gen::GroundProvider(&k_waves_ops, make_waves(entry));
+  return true;
+}
+
+constexpr scene_gen::GroundProviderDesc k_waves_provider{.name = "waves", .make = &waves_make};
+const scene_gen::Registrar k_waves_registrar{k_waves_provider};
+
+}  // namespace
+
+// ---- the description
+// ------------------------------------------------------------------------------
+
+std::string_view terrain_provider(const TerrainDesc& desc) noexcept {
+  if (!desc.provider.empty()) return desc.provider;
+  return desc.generator == TerrainGenerator::dunes ? std::string_view("dunes")
+                                                   : std::string_view("waves");
+}
+
+scene::Terrain terrain_entry(const TerrainDesc& desc) {
+  scene::Terrain t;
+  t.size = desc.size;
+  t.extent = desc.extent;
+  t.seed = desc.seed;
+  t.dune_height = desc.dune_height;
+  t.dune_wavelength = desc.dune_wavelength;
+  t.ridges = desc.ridges;
+  t.basins = desc.basins;
+  t.generator = desc.generator == TerrainGenerator::dunes ? scene::TerrainGenerator::Dunes
+                                                          : scene::TerrainGenerator::Waves;
+  t.time = desc.time_s;
+  t.sand_flux = desc.sand_flux;
+  if (desc.has_bands) {
+    Vector<scene::TerrainBand> bands;
+    for (const TerrainBand& band : desc.bands) {
+      scene::TerrainBand b;
+      b.name = band.name;
+      b.kind = band.kind == 1 ? scene::DuneKind::Barchan : scene::DuneKind::Transverse;
+      b.height_min = band.height_min;
+      b.height_max = band.height_max;
+      b.cell = band.cell;
+      b.share = band.share;
+      b.length_min = band.length_min;
+      b.length_max = band.length_max;
+      b.stoss = band.stoss;
+      b.bend = band.bend;
+      b.sinuosity = band.sinuosity;
+      b.spread_deg = band.spread_deg;
+      b.sharpness = band.sharpness;
+      b.side_days = band.side_days;
+      b.sharp_days = band.sharp_days;
+      b.couple = static_cast<scene::DuneCouple>(band.couple <= 2 ? band.couple : 0);
+      b.couple_width = band.couple_width;
+      b.far = band.far;
+      b.celerity_scale = band.celerity_scale;
+      bands.push_back(std::move(b));
+    }
+    t.bands = std::move(bands);
+  }
+  t.storms_per_year = desc.storms_per_year;
+  t.storm_strength = desc.storm_strength;
+  t.provider = std::string(terrain_provider(desc));
+  return t;
+}
+
+namespace {
+
+const scene_gen::GroundProviderDesc* provider_of(const TerrainDesc& desc) noexcept {
+  return scene_gen::GeneratorRegistry::global().find_ground(terrain_provider(desc));
+}
+
+}  // namespace
+
+bool terrain_provider_known(const TerrainDesc& desc) noexcept {
+  return provider_of(desc) != nullptr;
+}
+
+bool terrain_moves(const TerrainDesc& desc) noexcept {
+  const scene_gen::GroundProviderDesc* found = provider_of(desc);
+  return found != nullptr && (found->flags & scene_gen::k_ground_moves) != 0;
+}
+
+bool terrain_has_rings(const TerrainDesc& desc) noexcept {
+  const scene_gen::GroundProviderDesc* found = provider_of(desc);
+  return found != nullptr && (found->flags & scene_gen::k_ground_rings) != 0;
+}
+
+// ---- the sampler
+// -----------------------------------------------------------------------------------
+
+TerrainSampler::~TerrainSampler() = default;
+
+TerrainSampler::TerrainSampler(const TerrainDesc& desc) noexcept : desc_(&desc) {
+  const scene::Terrain entry = terrain_entry(desc);
+  const scene_gen::GeneratorRegistry& registry = scene_gen::GeneratorRegistry::global();
+  const std::string_view name = terrain_provider(desc);
+  const scene_gen::GroundProviderDesc* found = registry.find_ground(name);
+  scene_gen::Context context;
+  context.world_seed = desc.seed;
+  if (found == nullptr) {
+    error_ = "the terrain " + registry.unknown_ground(name);
+  } else if (!found->make(entry, context, provider_, &error_) || !provider_.valid()) {
+    if (error_.empty())
+      error_ = "the terrain's ground provider \"" + std::string(name) + "\" refused it";
+    provider_.reset();
+  }
+  // Whatever could not be made, the waves over the same description: made directly, not through
+  // the registry, so a sampler always has a ground.
+  if (!provider_.valid()) provider_ = scene_gen::GroundProvider(&k_waves_ops, make_waves(entry));
 }
 
 f32 TerrainSampler::ridge_weight(f32 x, f32 z) const noexcept {
-  f32 best = 0.0f;
-  for (const TerrainRidge& r : desc_->ridges) {
-    const f32 d = segment_distance(Vec2{x, z}, r.from, r.to);
-    if (d >= r.width) continue;
-    best = std::max(best, 0.5f + 0.5f * std::cos(k_pi * d / std::max(r.width, 1e-3f)));
-  }
-  return best;
+  return scene_gen::ridge_weight(ridges_of(desc_->ridges), x, z);
 }
 
 f32 TerrainSampler::basin_weight(f32 x, f32 z) const noexcept {
-  f32 best = 0.0f;
-  for (const TerrainBasin& b : desc_->basins) {
-    const f32 dx = x - b.center.x;
-    const f32 dz = z - b.center.y;
-    const f32 r = std::sqrt(dx * dx + dz * dz) / std::max(b.radius, 1e-3f);
-    if (r < 1.0f) best = std::max(best, 1.0f - r);
-  }
-  return best;
+  return scene_gen::basin_weight(basins_of(desc_->basins), x, z);
 }
 
 f32 TerrainSampler::features(f32 x, f32 z, f32& ridge_mask, f32& flatten) const noexcept {
-  f32 ridges = 0.0f;
-  ridge_mask = 0.0f;
-  for (const TerrainRidge& r : desc_->ridges) {
-    const f32 d = segment_distance(Vec2{x, z}, r.from, r.to);
-    if (d >= r.width) continue;
-    const f32 profile = 0.5f + 0.5f * std::cos(k_pi * d / std::max(r.width, 1e-3f));
-    // Two octaves of rock: the roughness scales with the profile, so the ridge's foot blends
-    // into the sand and its crest is broken.
-    const f32 rock = 0.65f * value_noise(desc_->seed + 17u, x / 23.0f, z / 23.0f) +
-                     0.35f * value_noise(desc_->seed + 29u, x / 8.5f, z / 8.5f);
-    ridges += r.height * profile * (1.0f + r.roughness * rock);
-    ridge_mask = std::max(ridge_mask, profile);
-  }
-  f32 basins = 0.0f;
-  flatten = 1.0f;
-  for (const TerrainBasin& b : desc_->basins) {
-    const f32 dx = x - b.center.x;
-    const f32 dz = z - b.center.y;
-    const f32 r = std::sqrt(dx * dx + dz * dz) / std::max(b.radius, 1e-3f);
-    if (r >= 1.0f) continue;
-    const f32 bowl = 1.0f - r * r;
-    basins -= b.depth * bowl * bowl;
-    flatten = std::min(flatten, smoothstep(0.35f, 1.0f, r));
-  }
-  return ridges + basins;
-}
-
-f32 TerrainSampler::height(f32 x, f32 z) const noexcept {
-  f32 ridge_mask = 0.0f;
-  f32 flatten = 1.0f;
-#if ENGINE_RENDERER_TERRAIN
-  if (generator_ != nullptr) {
-    // The generator thins and flattens its own sand over the same features (terrain.md, "Fixed
-    // features"); the rock and the bowls are added here, as the waves have them.
-    const f32 sand = terrain::height_m(generator_->field.height_um(
-        terrain::to_mm(x), terrain::to_mm(z), generator_->time_us, terrain::Detail::dunes));
-    return sand + features(x, z, ridge_mask, flatten);
-  }
-#endif
-  // The same arithmetic in the same order as before the generator existed: the waves' heights,
-  // their cache entries and the fixtures' pinned numbers do not move.
-  f32 ridges = 0.0f;
-  f32 basins = 0.0f;
-  for (const TerrainRidge& r : desc_->ridges) {
-    const f32 d = segment_distance(Vec2{x, z}, r.from, r.to);
-    if (d >= r.width) continue;
-    const f32 profile = 0.5f + 0.5f * std::cos(k_pi * d / std::max(r.width, 1e-3f));
-    const f32 rock = 0.65f * value_noise(desc_->seed + 17u, x / 23.0f, z / 23.0f) +
-                     0.35f * value_noise(desc_->seed + 29u, x / 8.5f, z / 8.5f);
-    ridges += r.height * profile * (1.0f + r.roughness * rock);
-    ridge_mask = std::max(ridge_mask, profile);
-  }
-  for (const TerrainBasin& b : desc_->basins) {
-    const f32 dx = x - b.center.x;
-    const f32 dz = z - b.center.y;
-    const f32 r = std::sqrt(dx * dx + dz * dz) / std::max(b.radius, 1e-3f);
-    if (r >= 1.0f) continue;
-    const f32 bowl = 1.0f - r * r;
-    basins -= b.depth * bowl * bowl;
-    flatten = std::min(flatten, smoothstep(0.35f, 1.0f, r));
-  }
-  return dunes(x, z) * flatten * (1.0f - 0.6f * ridge_mask) + ridges + basins;
-}
-
-f32 TerrainSampler::ground(f32 x, f32 z) const noexcept {
-#if ENGINE_RENDERER_TERRAIN
-  if (generator_ != nullptr) {
-    f32 ridge_mask = 0.0f;
-    f32 flatten = 1.0f;
-    const f32 floor =
-        terrain::height_m(generator_->field.floor_um(terrain::to_mm(x), terrain::to_mm(z)));
-    return floor + features(x, z, ridge_mask, flatten);
-  }
-#endif
-  return height(x, z);
+  const scene_gen::TerrainFeatures f = scene_gen::terrain_features(
+      desc_->seed, ridges_of(desc_->ridges), basins_of(desc_->basins), x, z);
+  ridge_mask = f.ridge_mask;
+  flatten = f.flatten;
+  return f.ridges + f.basins;
 }
 
 f32 terrain_height(const TerrainDesc& desc, f32 x, f32 z) noexcept {
   return TerrainSampler(desc).height(x, z);
 }
 
+// The surface weights are the scene's ridges and basins alone: no ground is made for them.
 f32 terrain_ridge_weight(const TerrainDesc& desc, f32 x, f32 z) noexcept {
-  return TerrainSampler(desc).ridge_weight(x, z);
+  return scene_gen::ridge_weight(ridges_of(desc.ridges), x, z);
 }
 
 f32 terrain_basin_weight(const TerrainDesc& desc, f32 x, f32 z) noexcept {
-  return TerrainSampler(desc).basin_weight(x, z);
+  return scene_gen::basin_weight(basins_of(desc.basins), x, z);
 }
 
 namespace {
@@ -445,7 +389,14 @@ u64 terrain_hash(const TerrainDesc& desc) noexcept {
   for (const TerrainBasin& b : desc.basins) {
     h = mix_f32(mix_f32(mix_f32(mix_f32(h, b.center.x), b.center.y), b.radius), b.depth);
   }
-  if (desc.generator == TerrainGenerator::dunes) {
+  const std::string_view provider = terrain_provider(desc);
+  if (provider != "waves") {
+    if (provider != "dunes") {
+      // A provider other than the two by its name, before the fields every provider may read, so
+      // two providers over one description are two cache entries.
+      h = hash_combine(h, 0x50524F5649444552ull);  // "PROVIDER"
+      h = hash_combine(h, hash_bytes(provider.data(), provider.size()));
+    }
     // Only here, so a waves terrain keeps the hash it always had. The generator's version is its
     // own (`terrain::k_generator_version`, 2 today), named as a number so the hash is the same
     // whether or not this build could draw it.
@@ -475,12 +426,6 @@ u64 terrain_hash(const TerrainDesc& desc) noexcept {
   return h;
 }
 
-namespace {
-
-constexpr u32 k_height_block = 64;
-
-}  // namespace
-
 u32 terrain_height_blocks(const TerrainDesc& desc) noexcept {
   return terrain_window_blocks(desc.size, desc.size);
 }
@@ -492,121 +437,28 @@ bool evaluate_terrain_heights(const TerrainSampler& sampler, f64 time_s, u32 blo
                                  desc.size, block_begin, block_end, heights);
 }
 
-f32 TerrainLattice::x(i32 i) const noexcept {
-  if (scene_grid)
-    return -extent + 2.0f * extent * (static_cast<f32>(i) / static_cast<f32>(size - 1));
-  return static_cast<f32>(static_cast<f64>(i64{i} * spacing_mm) / 1000.0);
-}
-
-f32 TerrainLattice::z(i32 j) const noexcept { return x(j); }
-
 TerrainLattice terrain_scene_lattice(const TerrainDesc& desc) noexcept {
-  TerrainLattice l;
-  l.scene_grid = true;
-  l.extent = desc.extent;
-  l.size = std::max(desc.size, 2u);
-  l.origin_x = -static_cast<f64>(desc.extent);
-  l.origin_z = -static_cast<f64>(desc.extent);
-  l.spacing = 2.0 * static_cast<f64>(desc.extent) / static_cast<f64>(l.size - 1);
-  return l;
+  return scene_gen::scene_lattice(desc.extent, desc.size);
 }
 
 TerrainLattice terrain_ring_lattice(i64 spacing_mm) noexcept {
-  TerrainLattice l;
-  l.spacing_mm = spacing_mm > 0 ? spacing_mm : 1;
-  l.spacing = static_cast<f64>(l.spacing_mm) / 1000.0;
-  return l;
+  return scene_gen::ring_lattice(spacing_mm);
 }
 
-u32 terrain_window_blocks(u32 nx, u32 nz) noexcept {
-  return ((nx + k_height_block - 1) / k_height_block) *
-         ((nz + k_height_block - 1) / k_height_block);
-}
+u32 terrain_window_blocks(u32 nx, u32 nz) noexcept { return scene_gen::window_blocks(nx, nz); }
 
+// The provider's re-evaluation entry (`scene_gen::GroundOps::evaluate`): for the dunes, one gather
+// a block and the same heights as `height` (the generator's rule: any gather that covers a point
+// gives it the same primitives, which meet by their maximum and add across bands).
 bool evaluate_terrain_window(const TerrainSampler& sampler, f64 time_s,
                              const TerrainLattice& lattice, i32 i0, i32 j0, u32 nx, u32 nz,
                              u32 block_begin, u32 block_end, std::span<f32> heights) noexcept {
-#if ENGINE_RENDERER_TERRAIN
-  const TerrainSampler::Dunes* dunes = sampler.dunes_field();
-  if (dunes == nullptr || heights.size() != static_cast<usize>(nx) * nz) return false;
-  TerrainDesc at = sampler.desc();
-  at.time_s = time_s;
-  const i64 time_us = time_us_of(at);
-  const u32 per_side = (nx + k_height_block - 1) / k_height_block;
-  // One gather per block, and the same heights as `height` (the generator's rule: any gather that
-  // covers a point gives it the same primitives, which meet by their maximum and add across bands).
-  terrain::Gather gather;
-  for (u32 block = block_begin; block < block_end; ++block) {
-    const u32 bx = (block % per_side) * k_height_block;
-    const u32 bz = (block / per_side) * k_height_block;
-    const u32 ez = std::min(nz, bz + k_height_block);
-    const u32 ex = std::min(nx, bx + k_height_block);
-    dunes->field.gather(terrain::to_mm(lattice.x(i0 + static_cast<i32>(bx))),
-                        terrain::to_mm(lattice.z(j0 + static_cast<i32>(bz))),
-                        terrain::to_mm(lattice.x(i0 + static_cast<i32>(ex - 1))),
-                        terrain::to_mm(lattice.z(j0 + static_cast<i32>(ez - 1))), time_us, nullptr,
-                        gather);
-    for (u32 zi = bz; zi < ez; ++zi) {
-      const f32 z = lattice.z(j0 + static_cast<i32>(zi));
-      for (u32 xi = bx; xi < ex; ++xi) {
-        const f32 x = lattice.x(i0 + static_cast<i32>(xi));
-        f32 ridge_mask = 0.0f;
-        f32 flatten = 1.0f;
-        const f32 sand = terrain::height_m(dunes->field.height_um(
-            gather, terrain::to_mm(x), terrain::to_mm(z), terrain::Detail::dunes));
-        heights[static_cast<usize>(zi) * nx + xi] =
-            sand + sampler.features(x, z, ridge_mask, flatten);
-      }
-    }
-  }
-  return true;
-#else
-  (void)sampler;
-  (void)time_s;
-  (void)lattice;
-  (void)i0;
-  (void)j0;
-  (void)nx;
-  (void)nz;
-  (void)block_begin;
-  (void)block_end;
-  (void)heights;
-  return false;
-#endif
+  return sampler.provider().evaluate(time_s, lattice, i0, j0, nx, nz, block_begin, block_end,
+                                     heights);
 }
 
 f64 terrain_band_travel_m(const TerrainSampler& sampler, f64 from_s, f64 to_s) noexcept {
-#if ENGINE_RENDERER_TERRAIN
-  const TerrainSampler::Dunes* dunes = sampler.dunes_field();
-  if (dunes == nullptr) return 0.0;
-  const auto us = [](f64 s) { return static_cast<i64>(std::floor(s * 1'000'000.0 + 0.5)); };
-  // The flux path length over the interval, cm^2, and each band's travel along it: cm^2 over the
-  // band's celerity height in mm, times 100 for mm^2, which is Bagnold's rule as
-  // `terrain::DuneField::displacement` takes it, applied to |flux| rather than to the vector.
-  const i64 magnitude = dunes->field.wind().between(us(from_s), us(to_s)).magnitude;
-  f64 most = 0.0;
-  for (u32 b = 0; b < dunes->field.band_count(); ++b) {
-    const f64 mm = static_cast<f64>(magnitude) * 100.0 /
-                   static_cast<f64>(std::max<i64>(1, dunes->field.band_height(b)));
-    most = std::max(most, mm / 1000.0);
-  }
-  return std::abs(most);
-#else
-  (void)sampler;
-  (void)from_s;
-  (void)to_s;
-  return 0.0;
-#endif
-}
-
-const terrain::DuneField* terrain_dune_field(const TerrainSampler& sampler) noexcept {
-#if ENGINE_RENDERER_TERRAIN
-  const TerrainSampler::Dunes* dunes = sampler.dunes_field();
-  return dunes != nullptr ? &dunes->field : nullptr;
-#else
-  (void)sampler;
-  return nullptr;
-#endif
+  return sampler.provider().travel_m(from_s, to_s);
 }
 
 bool build_terrain_mesh(const TerrainDesc& desc, Vector<Vec3>& positions, Vector<u32>& indices,
@@ -624,39 +476,25 @@ bool build_terrain_mesh(const TerrainDesc& desc, Vector<Vec3>& positions, Vector
   positions.clear();
   indices.clear();
   uvs.clear();
-  positions.reserve(n * n);
-  uvs.reserve(n * n);
-#if ENGINE_RENDERER_TERRAIN
-  if (field.dunes_field() != nullptr) {
-    // The generator's grid a block of vertices at a time (`evaluate_terrain_heights`): one gather
-    // per block rather than one per vertex, and the same heights as `height`.
-    Vector<f32> heights(n * n);
-    evaluate_terrain_heights(field, desc.time_s, 0, terrain_height_blocks(desc),
-                             std::span<f32>(heights.data(), heights.size()));
-    positions.resize(n * n);
-    uvs.resize(n * n);
-    for (u32 zi = 0; zi < n; ++zi) {
-      const f32 v = static_cast<f32>(zi) / static_cast<f32>(n - 1);
-      const f32 z = -extent + 2.0f * extent * v;
-      for (u32 xi = 0; xi < n; ++xi) {
-        const f32 u = static_cast<f32>(xi) / static_cast<f32>(n - 1);
-        const f32 x = -extent + 2.0f * extent * u;
-        positions[zi * n + xi] = Vec3{x, heights[zi * n + xi], z};
-        uvs[zi * n + xi] = Vec2{u, v};
-      }
+  // The ground's grid on the scene's lattice (`scene_gen::GroundOps::grid`), whose points are the
+  // ones computed below, to the bit: the dunes a block of vertices at a time (one gather per block
+  // rather than one per vertex), the waves a point at a time, and either way the same heights as
+  // `height`.
+  Vector<f32> heights(n * n);
+  field.provider().grid(terrain_scene_lattice(desc), 0, 0, n, n,
+                        std::span<f32>(heights.data(), heights.size()));
+  positions.resize(n * n);
+  uvs.resize(n * n);
+  for (u32 zi = 0; zi < n; ++zi) {
+    const f32 v = static_cast<f32>(zi) / static_cast<f32>(n - 1);
+    const f32 z = -extent + 2.0f * extent * v;
+    for (u32 xi = 0; xi < n; ++xi) {
+      const f32 u = static_cast<f32>(xi) / static_cast<f32>(n - 1);
+      const f32 x = -extent + 2.0f * extent * u;
+      positions[zi * n + xi] = Vec3{x, heights[zi * n + xi], z};
+      uvs[zi * n + xi] = Vec2{u, v};
     }
-  } else
-#endif
-    for (u32 zi = 0; zi < n; ++zi) {
-      const f32 v = static_cast<f32>(zi) / static_cast<f32>(n - 1);
-      const f32 z = -extent + 2.0f * extent * v;
-      for (u32 xi = 0; xi < n; ++xi) {
-        const f32 u = static_cast<f32>(xi) / static_cast<f32>(n - 1);
-        const f32 x = -extent + 2.0f * extent * u;
-        positions.push_back(Vec3{x, field.height(x, z), z});
-        uvs.push_back(Vec2{u, v});
-      }
-    }
+  }
   // Counter-clockwise seen from +y, the classic heightfield's winding (renderer.md).
   indices.reserve((n - 1) * (n - 1) * 6);
   for (u32 zi = 0; zi + 1 < n; ++zi) {

@@ -16,46 +16,39 @@
 // The height is an analytic function of (x, z), which is what lets a scene put an instance on the
 // ground and a camera path hold a height above it without the mesh existing yet.
 //
-// **Two dune fields.** `TerrainGenerator::waves` is the field this file has always drawn: a handful
-// of seeded transverse waves, and still the default. `TerrainGenerator::dunes` hands the dunes to
-// the terrain capability's generator (docs/subsystems/terrain.md, ADR-0043): parametric dune
-// primitives the seeded wind has carried to the description's game time, `time_s`, integer and the
-// same bits on every toolchain. Ridges and basins are this file's in both, added the same way, and
-// the generator flows its sand round them. A build without the terrain capability builds
-// everything here and the scene reader refuses a terrain that names the generator, with a sentence;
-// `terrain_generator_available` says which build this is.
+// **Ground providers** (docs/subsystems/scene_gen.md, ADR-0046). What the terrain's height is comes
+// from the ground provider the description names (`TerrainDesc::provider`, or `generator`), found
+// in the scene-generator registry and made from the description: `waves` is the field this file
+// has always drawn — a handful of seeded transverse waves, still the default, and registered by
+// this file itself, so the one path serves the default too — and `dunes` is the terrain
+// capability's generator (docs/subsystems/terrain.md, ADR-0043): parametric dune primitives the
+// seeded wind has carried to the description's game time, `time_s`, integer and the same bits on
+// every toolchain. Ridges and basins are the scene's in both (scene_gen/terrain_features.h), added
+// the same way, and the generator flows its sand round them. The renderer links no provider but its
+// own: a build without the terrain capability builds everything here, and the scene reader refuses
+// a terrain that names a provider the executable does not carry, with a sentence naming it.
 
 #include <core/base/types.h>
 #include <core/containers/vector.h>
 #include <core/math/math.h>
+#include <domain/scene_gen/scene_gen.h>
 
-#include <memory>
+#include <schemas/scene.h>
 #include <span>
 #include <string>
-
-namespace engine::terrain {
-class DuneField;
-}  // namespace engine::terrain
+#include <string_view>
 
 namespace engine::renderer {
 
+// Which dune field a scene's `generator` enum names (`engine.scene.TerrainGenerator`), read as the
+// provider `waves` or `dunes` when the description names none.
 enum class TerrainGenerator : u8 { waves = 0, dunes = 1 };
-// Whether this build links the terrain capability's dune generator.
-bool terrain_generator_available() noexcept;
 
-struct TerrainRidge {
-  Vec2 from{};  // x, z
-  Vec2 to{};
-  f32 height = 50.0f;
-  f32 width = 100.0f;  // where the profile reaches zero, metres from the segment
-  f32 roughness = 0.15f;
-};
-
-struct TerrainBasin {
-  Vec2 center{};  // x, z
-  f32 radius = 100.0f;
-  f32 depth = 5.0f;
-};
+// A ridge and a basin are the scene's own records (`engine.scene.Ridge`, `engine.scene.Basin`: a
+// segment's ends and its height, width and roughness; a centre, radius and depth), which every
+// provider adds the same way.
+using TerrainRidge = scene::Ridge;
+using TerrainBasin = scene::Basin;
 
 // One band of the dune generator's table (`engine.scene.TerrainBand`; terrain.md, "The band
 // table"), in metres and fractions of its cell, as the scene says it. The renderer hands it to the
@@ -99,12 +92,24 @@ struct TerrainDesc {
   // (terrain.md, "Storms"). None by default, and none leaves the hash as it was.
   u32 storms_per_year = 0;
   f32 storm_strength = 2.5f;
+  // The ground provider's name (`engine.scene.Terrain.provider`; scene_gen.md). Empty: the one
+  // `generator` names.
+  std::string provider;
 };
 
-// With `dunes`: false, with a sentence, when the band table is one the generator cannot be built
-// from (terrain.md, `validate_bands`); true without the capability, which refuses the generator
-// on its own.
-bool terrain_bands_valid(const TerrainDesc& desc, std::string* error) noexcept;
+// The name of the ground provider a description is drawn by: `provider`, or the one `generator`
+// names ("waves", "dunes").
+std::string_view terrain_provider(const TerrainDesc& desc) noexcept;
+// The description as the scene's terrain entry (`engine.scene.Terrain`), what a provider is made
+// from: every field as it is, and the provider's name.
+scene::Terrain terrain_entry(const TerrainDesc& desc);
+// Whether this executable carries the description's provider, and whether that provider's grounds
+// move with game time (`scene_gen::k_ground_moves`) and have rings round a camera
+// (`scene_gen::k_ground_rings`): what a host decides a time-lapse and the rings by, without making
+// a ground.
+bool terrain_provider_known(const TerrainDesc& desc) noexcept;
+bool terrain_moves(const TerrainDesc& desc) noexcept;
+bool terrain_has_rings(const TerrainDesc& desc) noexcept;
 
 // Bumped when `terrain_height` or the mesh built from it changes, so a cache entry built by an
 // older generator is never mistaken for this one's. 5: one material over baked maps instead of
@@ -118,62 +123,58 @@ inline constexpr u32 k_terrain_max_size = 4097;
 // `pow` each); a caller that asks more than a handful of times holds a `TerrainSampler` instead.
 f32 terrain_height(const TerrainDesc& desc, f32 x, f32 z) noexcept;
 
-// The terrain's height function with its dune field drawn once: what a scene read asks for every
+// The terrain's height function with its ground made once: what a scene read asks for every
 // instance it stands on the ground, every building of a ruins scatter asks some forty times (and a
-// block-by-block ruin some hundreds), and a camera path asks for every key. It is the very object
-// `terrain_height` builds per call and `build_terrain_mesh` builds per grid, so a height sampled
-// here is **the same float, bit for bit**, as the direct function and as the mesh's vertex at that
-// point — no cache, no interpolation, nothing that could disagree (the renderer's flythrough test
-// compares them on a grid). It keeps a pointer to `desc`, whose ridges and basins it reads per
-// call, so the description must outlive it and must not change under it.
+// block-by-block ruin some hundreds), and a camera path asks for every key. It is **the reader's
+// view of a ground provider** (scene_gen.md): the provider the description names, made from it
+// through the registry, and the very object `terrain_height` builds per call and
+// `build_terrain_mesh` builds per grid, so a height sampled here is **the same float, bit for
+// bit**, as the direct function and as the mesh's vertex at that point — no cache, no
+// interpolation, nothing that could disagree (the renderer's flythrough test compares them on a
+// grid). It keeps a pointer to `desc`, whose ridges and basins its surface functions read, so the
+// description must outlive it and must not change under it.
 //
-// With the dune generator the sampler holds the generator's field, and `height` asks it for the
-// point: a small gather per call, a few microseconds, and thread-safe (the scene reader assembles
-// ruins on a job pool through one sampler). `build_terrain_mesh` gathers once per block of vertices
-// instead, and the answer is the same bits (the generator's gather rule, terrain.md, "Tiles, seams
-// and the sampler").
+// With the dunes the sampler holds the generator's field, and `height` asks it for the point: a
+// small gather per call, a few microseconds, and thread-safe (the scene reader assembles ruins on a
+// job pool through one sampler). `build_terrain_mesh` gathers once per block of vertices instead,
+// and the answer is the same bits (the generator's gather rule, terrain.md, "Tiles, seams and the
+// sampler").
+//
+// **A provider it cannot make** — a name this executable does not carry, or a description the
+// provider refuses (a dune time out of range, a band table the field cannot be built from) — leaves
+// the sampler drawing the waves over the same description, as a build without the terrain
+// capability always did, with `ok()` false and the sentence in `error()`. The scene reader refuses
+// such a file with that sentence; everything else gets a ground.
 class TerrainSampler {
  public:
   explicit TerrainSampler(const TerrainDesc& desc) noexcept;
   ~TerrainSampler();
   TerrainSampler(const TerrainSampler&) = delete;
   TerrainSampler& operator=(const TerrainSampler&) = delete;
-  f32 height(f32 x, f32 z) const noexcept;
-  // What a building stands on: `height` with the waves; with the dune generator, the interdune
-  // floor plus the ridges and basins, which never moves — the dunes migrate over it and bury what
-  // stands there (terrain.md, "The ruins' ground"), so a tile's ruin is the same building at any
-  // time.
-  f32 ground(f32 x, f32 z) const noexcept;
+  f32 height(f32 x, f32 z) const noexcept { return provider_.height(x, z); }
+  // What a building stands on: `height` with the waves; with the dunes, the interdune floor plus
+  // the ridges and basins, which never moves — the dunes migrate over it and bury what stands there
+  // (terrain.md, "The ruins' ground"), so a tile's ruin is the same building at any time.
+  f32 ground(f32 x, f32 z) const noexcept { return provider_.floor(x, z); }
   f32 ridge_weight(f32 x, f32 z) const noexcept;
   f32 basin_weight(f32 x, f32 z) const noexcept;
   const TerrainDesc& desc() const noexcept { return *desc_; }
 
-  // The generator's field, when the description names it and this build has it; else null.
-  struct Dunes;
-  const Dunes* dunes_field() const noexcept { return generator_.get(); }
-  // The ridges and basins alone, and the masks the waves are multiplied by: what both fields add.
+  // The ground the description names, as made: what the time-lapse re-evaluates, the rings are
+  // built from and a placement generator stands on (`provider().view()`).
+  const scene_gen::GroundProvider& provider() const noexcept { return provider_; }
+  // Whether the ground moves with game time: the dunes do, the waves do not.
+  bool moves() const noexcept { return provider_.moves(); }
+  // False, with the sentence, when the named provider could not be made (above).
+  bool ok() const noexcept { return error_.empty(); }
+  const std::string& error() const noexcept { return error_; }
+  // The ridges and basins alone, and the masks the waves are multiplied by: what every ground adds.
   f32 features(f32 x, f32 z, f32& ridge_mask, f32& flatten) const noexcept;
 
  private:
-  static constexpr u32 k_waves = 6;
-  struct Wave {
-    f32 kx = 0.0f;
-    f32 kz = 0.0f;
-    f32 phase = 0.0f;
-    f32 mx = 0.0f;
-    f32 mz = 0.0f;
-    f32 meander = 0.0f;
-    f32 meander_phase = 0.0f;
-    f32 amplitude = 0.0f;
-  };
-  f32 dunes(f32 x, f32 z) const noexcept;
-
   const TerrainDesc* desc_;
-  Wave waves_[k_waves];
-  f32 roll_kx_ = 0.0f;
-  f32 roll_kz_ = 0.0f;
-  f32 roll_phase_ = 0.0f;
-  std::unique_ptr<const Dunes> generator_;
+  scene_gen::GroundProvider provider_;
+  std::string error_;
 };
 
 // How much of each feature is under (x, z), in [0, 1]: the largest ridge profile and the largest
@@ -230,8 +231,10 @@ void bake_terrain_maps(const TerrainDesc& desc, u32 side, Vector<u8>& base_color
 
 // A content hash over every field and `k_terrain_version`: the "source hash" of the terrain's
 // derived-data cache key, and what a run's summary names the terrain by. The generator's fields
-// (and the generator's own version) enter it only when the description names the generator, so
-// every waves terrain keeps the hash, and the cache entry, it had.
+// (and the generator's own version) enter it only when the description names the dunes, so every
+// waves terrain keeps the hash, and the cache entry, it had; and a provider other than those two
+// enters it by its name, with every field, so two providers never share an entry. Naming the dunes
+// by `provider` or by `generator` is the same terrain and the same hash.
 u64 terrain_hash(const TerrainDesc& desc) noexcept;
 
 // The grid: `size * size` positions, two counter-clockwise (seen from +y) triangles a quad, and
@@ -240,13 +243,14 @@ u64 terrain_hash(const TerrainDesc& desc) noexcept;
 bool build_terrain_mesh(const TerrainDesc& desc, Vector<Vec3>& positions, Vector<u32>& indices,
                         Vector<Vec2>& uvs, std::string* error = nullptr);
 
-// **The dune generator's grid at another game time** (terrain.md, "Re-evaluation"): the heights
+// **The moving ground's grid at another game time** (terrain.md, "Re-evaluation"): the heights
 // `build_terrain_mesh` puts in its positions' y, `size * size` of them in the same order, for the
-// field the sampler holds at `time_s` instead of the description's own `time`. The grid is cut into
-// the same 64 x 64 blocks the mesh is built in, `terrain_height_blocks` of them; this fills blocks
-// [begin, end) of `heights` (sized `size * size` by the caller), so a caller can hand the blocks to
-// as many jobs as it likes and get the same bytes. False, filling nothing, when the sampler holds
-// no generator (the waves have no time) or this build has no terrain capability.
+// ground the sampler holds at `time_s` instead of the description's own `time` — the provider's
+// re-evaluation entry (`scene_gen::GroundOps::evaluate`). The grid is cut into the same 64 x 64
+// blocks the mesh is built in, `terrain_height_blocks` of them; this fills blocks [begin, end) of
+// `heights` (sized `size * size` by the caller), so a caller can hand the blocks to as many jobs as
+// it likes and get the same bytes. False, filling nothing, when the ground does not move (the
+// waves have no time).
 u32 terrain_height_blocks(const TerrainDesc& desc) noexcept;
 bool evaluate_terrain_heights(const TerrainSampler& sampler, f64 time_s, u32 block_begin,
                               u32 block_end, std::span<f32> heights) noexcept;
@@ -255,44 +259,34 @@ bool evaluate_terrain_heights(const TerrainSampler& sampler, f64 time_s, u32 blo
 // vertices sit on and its height fields are sampled at. The scene's own grid is one — its
 // coordinates computed exactly as `build_terrain_mesh` computes them, so a field on it is the
 // mesh's heights to the bit — and a ring's is the world's grid at the ring's spacing, counted from
-// the world's origin (terrain.md, "Rings"), so a ring that moves samples the points it did.
-struct TerrainLattice {
-  f64 origin_x = 0.0;  // metres of lattice point (0, 0)
-  f64 origin_z = 0.0;
-  f64 spacing = 1.0;  // metres between points
-  // The scene grid: `-extent + 2 extent (i / (size - 1))` in f32, `build_terrain_mesh`'s own
-  // expression. Otherwise `i * spacing_mm / 1000`, the rings' (`terrain::build_ring_chunk_mesh`).
-  bool scene_grid = false;
-  f32 extent = 0.0f;
-  u32 size = 0;
-  i64 spacing_mm = 0;
-  f32 x(i32 i) const noexcept;
-  f32 z(i32 j) const noexcept;
-};
+// the world's origin (terrain.md, "Rings"), so a ring that moves samples the points it did. The
+// lattice is the registry's (`scene_gen::Lattice`), since a provider samples on it.
+using TerrainLattice = scene_gen::Lattice;
 TerrainLattice terrain_scene_lattice(const TerrainDesc& desc) noexcept;
 TerrainLattice terrain_ring_lattice(i64 spacing_mm) noexcept;
 
-// The generator's heights on a window of a lattice at `time_s`: `nx * nz` of them, rows of x in
-// order of z, sample (i, j) at lattice point (i0 + i, j0 + j) — the ridges and basins added as
+// The moving ground's heights on a window of a lattice at `time_s`: `nx * nz` of them, rows of x
+// in order of z, sample (i, j) at lattice point (i0 + i, j0 + j) — the ridges and basins added as
 // `height` adds them. Cut into 64 x 64 blocks exactly as `evaluate_terrain_heights` is (one gather
 // a block), so a caller hands blocks [begin, end) to as many jobs as it likes and gets the same
 // bytes; over the scene lattice's whole window it is `evaluate_terrain_heights`. False, filling
-// nothing, without a generator.
+// nothing, for a ground that does not move.
 u32 terrain_window_blocks(u32 nx, u32 nz) noexcept;
 bool evaluate_terrain_window(const TerrainSampler& sampler, f64 time_s,
                              const TerrainLattice& lattice, i32 i0, i32 j0, u32 nx, u32 nz,
                              u32 block_begin, u32 block_end, std::span<f32> heights) noexcept;
 
-// **How far the generator's fastest band travels between two game times**, metres: the largest
-// over the bands of the wind's flux path length over the band's height (Bagnold's rule, the
-// closed form `terrain::DuneField::displacement` moves the band's lattice by, taken along the path
-// rather than between its ends so a reversal inside the interval is not a short move). Storms are
-// in the record, so a storm's hours travel further. 0 without a generator.
+// **How far the ground's fastest feature travels between two game times**, metres — for the
+// dunes, the largest over the bands of the wind's flux path length over the band's height
+// (Bagnold's rule, the closed form `terrain::DuneField::displacement` moves the band's lattice by,
+// taken along the path rather than between its ends so a reversal inside the interval is not a
+// short move). Storms are in the record, so a storm's hours travel further. 0 for a ground that
+// does not move.
 f64 terrain_band_travel_m(const TerrainSampler& sampler, f64 from_s, f64 to_s) noexcept;
 
-// The generator's own field behind a sampler, or null (no generator, or a build without the
-// terrain capability): for the tests and reports that ask it what the sampler does not — a band's
-// primitives and displacement, where a crest stands (terrain.md, "How far the big dunes move").
-const terrain::DuneField* terrain_dune_field(const TerrainSampler& sampler) noexcept;
+// The dunes' own field behind a sampler — a band's primitives and displacement, where a crest
+// stands (terrain.md, "How far the big dunes move") — is the terrain capability's to hand out, not
+// the renderer's, which links no generator: 	errain::dune_field(sampler.provider()), null for
+// another ground (domain/terrain/scene_ground.h).
 
 }  // namespace engine::renderer

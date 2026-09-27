@@ -511,8 +511,10 @@ enum TerrainGenerator : u8 {
 /// The procedural terrain: seeded dunes, plus ridges and basins placed by hand so that a camera
 /// path can be laid out against them. It is built into a cluster LOD DAG like any mesh, and its
 /// derived-data cache entry is keyed by these fields, so it is content-addressed like a file.
-/// Version 2 added the generator; a version 1 terrain reads as the waves it always drew.
-struct Terrain @version(3) {
+/// Version 2 added the generator; a version 1 terrain reads as the waves it always drew. Version 4
+/// added `provider`, the ground provider's name (ADR-0046), which `generator` is read as when it is
+/// empty.
+struct Terrain @version(4) {
   /// Vertices a side. 2 to 4097.
   size: u32 = 1025
   /// Half the side, in metres: the terrain spans [-extent, extent] in x and z.
@@ -543,6 +545,13 @@ struct Terrain @version(3) {
   /// A storm's peak wind, as a multiple of the record's mean strength; each storm draws 80% to 120%
   /// of it. By the cube law 2.5 moves about sixteen times a mean day's sand an hour.
   storm_strength: f32 = 2.5 @since(3)
+  /// The ground provider that draws the terrain, by the name it registered under
+  /// (docs/subsystems/scene_gen.md): "waves" (the renderer's own) and "dunes" (the terrain
+  /// capability's) today. Empty: the one `generator` names, "waves" for `Waves` and "dunes" for
+  /// `Dunes`, so every terrain written before the field reads as it did; a name other than "dunes"
+  /// beside `generator: Dunes` is refused. A name the executable does not carry is refused with a
+  /// sentence naming it.
+  provider: string @since(4)
 }
 
 /// What a ruins entry is drawn as in one ring of a streamed world (docs/subsystems/world.md).

@@ -12,10 +12,10 @@
 //
 // It owns the field, the wind record, the overlay's rules and format, and the lag. It does not own
 // what a tile is to the world (the world capability's consumer builds a tile's field when the ring
-// activates it and keeps its overlay in the store), what the renderer draws (the scene reader
-// serves its `TerrainSampler` from this when a scene's terrain names the generator), or any GPU
-// work: the deformation map's refinement and the blowing sand are the renderer's, from the outputs
-// here.
+// activates it and keeps its overlay in the store), what the renderer draws (the renderer's
+// `TerrainSampler` draws this capability's ground provider, "dunes", through the scene-generator
+// registry when a scene's terrain names it: scene_ground.h), or any GPU work: the deformation
+// map's refinement and the blowing sand are the renderer's, from the outputs here.
 //
 // **Why `domain`, and why "terrain".** It is pure CPU arithmetic over core modules, read by the
 // renderer (L3), the world (L3) and the content tool (L4), and it must not depend on any of them —
@@ -48,6 +48,7 @@
 #include <domain/terrain/feedback.h>
 #include <domain/terrain/overlay.h>
 #include <domain/terrain/rings.h>
+#include <domain/terrain/scene_ground.h>
 #include <domain/terrain/stats.h>
 #include <domain/terrain/tile.h>
 #include <domain/terrain/wind.h>

@@ -3,10 +3,6 @@
 #include <foundation/tunables/tunables.h>
 #include <systems/renderer/terrain_rings.h>
 
-#if ENGINE_RENDERER_TERRAIN
-#include <domain/terrain/rings.h>
-#endif
-
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -27,16 +23,11 @@ i64 floor_div(i64 a, i64 b) noexcept {
 }
 i64 ceil_div(i64 a, i64 b) noexcept { return -floor_div(-a, b); }
 
-}  // namespace
-
-#if ENGINE_RENDERER_TERRAIN
-namespace {
-
 // The heights a ring's chunk is built from: the renderer's own function at a game time — the
-// generator's dunes and the ridges and basins this module adds — in micrometres, read from the
-// level's newest evaluated field where that covers the chunk and evaluated where it does not.
-class RingSource final : public terrain::RingHeights {
- public:
+// ground's own field and the ridges and basins it adds — in micrometres, read from the level's
+// newest evaluated field where that covers the chunk and evaluated through the ground provider's
+// re-evaluation entry where it does not.
+struct RingSource {
   const TerrainSampler* sampler = nullptr;
   f64 time_s = 0.0;
   struct Field {
@@ -47,13 +38,14 @@ class RingSource final : public terrain::RingHeights {
   Field fields[k_max_terrain_levels];
   u32 field_count = 0;
 
-  void heights(i64 x0, i64 z0, u32 nx, u32 nz, i64 spacing_mm, jobs::JobSystem*,
-               Vector<i64>& out_um) const override {
+  static void heights(const void* context, i64 x0, i64 z0, u32 nx, u32 nz, i64 spacing_mm,
+                      jobs::JobSystem*, Vector<i64>& out_um) {
+    const auto& self = *static_cast<const RingSource*>(context);
     out_um.resize(static_cast<usize>(nx) * nz);
     const i32 i0 = static_cast<i32>(floor_div(x0, spacing_mm));
     const i32 j0 = static_cast<i32>(floor_div(z0, spacing_mm));
-    for (u32 f = 0; f < field_count; ++f) {
-      const Field& field = fields[f];
+    for (u32 f = 0; f < self.field_count; ++f) {
+      const Field& field = self.fields[f];
       if (field.spacing_mm != spacing_mm || field.heights == nullptr) continue;
       const gfx::TerrainField& w = field.window;
       if (i0 < w.i0 || j0 < w.j0 || i0 + static_cast<i32>(nx) > w.i0 + static_cast<i32>(w.nx) ||
@@ -69,31 +61,12 @@ class RingSource final : public terrain::RingHeights {
     }
     Vector<f32> h(static_cast<usize>(nx) * nz);
     const TerrainLattice lattice = terrain_ring_lattice(spacing_mm);
-    evaluate_terrain_window(*sampler, time_s, lattice, i0, j0, nx, nz, 0,
+    evaluate_terrain_window(*self.sampler, self.time_s, lattice, i0, j0, nx, nz, 0,
                             terrain_window_blocks(nx, nz), std::span<f32>(h.data(), h.size()));
     for (u32 k = 0; k < h.size(); ++k)
       out_um[k] = std::llround(static_cast<f64>(h[k]) * 1.0e6);
   }
 };
-
-}  // namespace
-#endif
-
-struct TerrainRingSet::State {
-#if ENGINE_RENDERER_TERRAIN
-  std::unique_ptr<TerrainSampler> sampler;
-  RingSource source;
-  terrain::RingParams params;
-  terrain::TerrainRings rings;
-  geometry::ClusterLodOptions options;
-#endif
-};
-
-TerrainRingSet::TerrainRingSet() = default;
-TerrainRingSet::~TerrainRingSet() = default;
-
-#if ENGINE_RENDERER_TERRAIN
-namespace {
 
 // A chunk's rest heights, from its own DAG: every copy of a grid vertex on every level is at a
 // lattice point of the ring, at the height the chunk was built from.
@@ -135,7 +108,18 @@ void rest_of(TerrainChunk& chunk, const TerrainLattice& lattice) {
 }
 
 }  // namespace
-#endif
+
+// The ground's own sampler, the rings its provider made (`scene_gen::GroundRings`: the layout
+// rule, the re-centre rule and the chunks' DAGs), and where their heights come from.
+struct TerrainRingSet::State {
+  std::unique_ptr<TerrainSampler> sampler;
+  RingSource source;
+  scene_gen::GroundRings rings;
+  geometry::ClusterLodOptions options;
+};
+
+TerrainRingSet::TerrainRingSet() = default;
+TerrainRingSet::~TerrainRingSet() = default;
 
 f64 TerrainRingSet::padding_of(std::span<const TerrainChunk> chunks, std::span<const f32> field,
                                const gfx::TerrainField& window) {
@@ -177,25 +161,22 @@ bool TerrainRingSet::build(const TerrainDesc& desc, f32 camera_x, f32 camera_z,
   levels_ = 0;
   for (Vector<TerrainChunk>& list : chunks_)
     list.clear();
-#if !ENGINE_RENDERER_TERRAIN
-  (void)desc;
-  (void)camera_x;
-  (void)camera_z;
-  (void)jobs;
-  if (error != nullptr) *error = "terrain rings: this build has no terrain capability";
-  return false;
-#else
   const auto fail = [&](std::string sentence) {
     if (error != nullptr) *error = std::move(sentence);
     return false;
   };
-  if (!desc.enabled || desc.generator != TerrainGenerator::dunes)
-    return fail("terrain rings: the scene's terrain does not name the dune generator");
+  if (!desc.enabled) return fail("terrain rings: the scene has no terrain");
   desc_ = &desc;
   const i64 started = time::monotonic_ns();
   state_ = std::make_unique<State>();
   State& s = *state_;
   s.sampler = std::make_unique<TerrainSampler>(desc);
+  // Whether a ground has rings is its provider's to say (the dunes do, the waves do not), and a
+  // provider this executable does not carry has none here.
+  if (!s.sampler->ok() || !s.sampler->provider().has_rings()) {
+    return fail("terrain rings: the scene's terrain has none: its ground provider (\"" +
+                std::string(terrain_provider(desc)) + "\") makes no rings in this build");
+  }
   // The rings are the world's grids at their spacings, counted from the world's origin in
   // millimetres, and the scene's grid is their outer ring: its corner and spacing must be whole
   // millimetres for its lattice to be one of theirs.
@@ -208,28 +189,26 @@ bool TerrainRingSet::build(const TerrainDesc& desc, f32 camera_x, f32 camera_z,
         "terrain rings: the scene grid's spacing and half-side must be whole millimetres, so its "
         "lattice is the rings' outer grid");
   }
-  s.params = terrain::ring_params_from_tunables(0, 0, extent, spacing);
   std::string why;
-  if (!terrain::validate_rings(s.params, &why)) return fail(why);
-  if (s.params.count < 2)
-    return fail("terrain rings: the ring tunables leave no ring inside the scene's grid");
-  levels_ = s.params.count;
+  if (!s.sampler->provider().make_rings(extent, spacing, s.rings, &why)) return fail(why);
+  levels_ = s.rings.count();
   lattice_[0] = terrain_scene_lattice(desc);
   skirt_m_[0] = 0.0f;
   for (u32 level = 1; level < levels_; ++level) {
-    const u32 r = ring_of_level(level);
-    lattice_[level] = terrain_ring_lattice(s.params.ring[r].spacing_mm);
-    skirt_m_[level] = static_cast<f32>(static_cast<f64>(s.params.ring[r].skirt_mm) / 1000.0);
-    half_mm_[level] = s.params.ring[r].half_mm;
+    const scene_gen::RingSpec spec = s.rings.spec(ring_of_level(level));
+    lattice_[level] = terrain_ring_lattice(spec.spacing_mm);
+    skirt_m_[level] = static_cast<f32>(static_cast<f64>(spec.skirt_mm) / 1000.0);
+    half_mm_[level] = spec.half_mm;
   }
   s.options = geometry::ClusterLodOptions{};
   s.source.sampler = s.sampler.get();
   s.source.time_s = desc.time_s;
   s.source.field_count = 0;
-  const u32 moving_mask = (1u << (s.params.count - 1)) - 1u;
-  if (!s.rings.reset(s.params, std::llround(static_cast<f64>(camera_x) * 1000.0),
-                     std::llround(static_cast<f64>(camera_z) * 1000.0), s.source, s.options, jobs,
-                     error, moving_mask, false)) {
+  const u32 moving_mask = (1u << (levels_ - 1)) - 1u;
+  if (!s.rings.build(std::llround(static_cast<f64>(camera_x) * 1000.0),
+                     std::llround(static_cast<f64>(camera_z) * 1000.0),
+                     scene_gen::RingHeights{&RingSource::heights, &s.source}, s.options, jobs,
+                     moving_mask, error)) {
     levels_ = 0;
     return false;
   }
@@ -242,8 +221,8 @@ bool TerrainRingSet::build(const TerrainDesc& desc, f32 camera_x, f32 camera_z,
   // What the GPU scene reserves: room for two of the largest ring this layout rule can make.
   const f64 slack = ring_slack.get();
   for (u32 level = 1; level < levels_; ++level) {
-    const terrain::RingSpec& spec = s.params.ring[ring_of_level(level)];
-    const i64 chunk_mm = terrain::k_ring_chunk_cells * spec.spacing_mm;
+    const scene_gen::RingSpec spec = s.rings.spec(ring_of_level(level));
+    const i64 chunk_mm = spec.chunk_mm;
     const u64 side = static_cast<u64>(ceil_div(2 * spec.half_mm, chunk_mm) + 1);
     const u64 most_chunks = side * side;
     u32 clusters = 0;
@@ -290,50 +269,49 @@ bool TerrainRingSet::build(const TerrainDesc& desc, f32 camera_x, f32 camera_z,
   last_built_ = s.rings.last_built();
   last_kept_ = s.rings.last_reused();
   return true;
-#endif
 }
 
 void TerrainRingSet::take_chunks(u32 level_mask) {
-#if ENGINE_RENDERER_TERRAIN
   State& s = *state_;
   for (u32 level = 1; level < levels_; ++level) {
     if ((level_mask & (1u << level)) == 0) continue;
-    Vector<terrain::RingChunk>& built = s.rings.chunks_mut(ring_of_level(level));
-    // Which of the capability's chunks this set holds already (the same cells, hole and border:
-    // the same key), and the new ones with their rest heights, all before anything a reader of
+    const u32 ring = ring_of_level(level);
+    const u32 count = s.rings.chunk_count(ring);
+    // Which of the provider's chunks this set holds already (the same cells, hole and border: the
+    // same key), and the new ones with their rest heights, all before anything a reader of
     // `padding` sees changes: only this thread writes the lists, so reading them here is safe.
-    Vector<u32> kept_from(built.size(), ~0u);
+    Vector<u32> kept_from(count, ~0u);
     Vector<TerrainChunk> fresh;
     const Vector<TerrainChunk>& old = chunks_[level];
-    for (u32 c = 0; c < built.size(); ++c) {
-      terrain::RingChunk& rc = built[c];
+    for (u32 c = 0; c < count; ++c) {
+      const scene_gen::RingChunkRef rc = s.rings.chunk(ring, c);
       for (u32 o = 0; o < old.size(); ++o) {
-        if (old[o].i == rc.coord.i && old[o].j == rc.coord.j && old[o].key == rc.key) {
+        if (old[o].i == rc.i && old[o].j == rc.j && old[o].key == rc.key) {
           kept_from[c] = o;
           break;
         }
       }
       if (kept_from[c] != ~0u) continue;
       TerrainChunk chunk;
-      chunk.i = rc.coord.i;
-      chunk.j = rc.coord.j;
+      chunk.i = rc.i;
+      chunk.j = rc.j;
       chunk.key = rc.key;
       chunk.grid_vertices = rc.grid_vertices;
-      chunk.lod = std::move(rc.lod);
-      rc.lod = geometry::ClusterLodMesh{};
+      chunk.lod = std::move(*rc.lod);
+      *rc.lod = geometry::ClusterLodMesh{};
       chunk.rest_time_s = state_->source.time_s;
       rest_of(chunk, lattice_[level]);
       fresh.push_back(std::move(chunk));
     }
-    // Then the lists, in the capability's chunk order, under the lock `padding` takes: the kept
+    // Then the lists, in the provider's chunk order, under the lock `padding` takes: the kept
     // chunks keep their slots and rests, and what they replace is kept as `previous_`, which is
     // still drawn until the frame that swaps the new chunks in.
     std::lock_guard<std::mutex> lock(mutex_);
     Vector<TerrainChunk> next;
-    next.reserve(built.size());
+    next.reserve(count);
     Vector<u8> taken(old.size(), u8{0});
     u32 f = 0;
-    for (u32 c = 0; c < built.size(); ++c) {
+    for (u32 c = 0; c < count; ++c) {
       if (kept_from[c] != ~0u) {
         taken[kept_from[c]] = 1;
         next.push_back(std::move(chunks_[level][kept_from[c]]));
@@ -348,15 +326,11 @@ void TerrainRingSet::take_chunks(u32 level_mask) {
     chunks_[level] = std::move(next);
     previous_[level] = std::move(replaced);
   }
-#else
-  (void)level_mask;
-#endif
 }
 
 bool TerrainRingSet::update(f32 camera_x, f32 camera_z, f64 time_s, std::span<const Heights> fields,
                             jobs::JobSystem* jobs, u32& moved, std::string* error) {
   moved = 0;
-#if ENGINE_RENDERER_TERRAIN
   if (!valid()) return true;
   State& s = *state_;
   const i64 started = time::monotonic_ns();
@@ -384,29 +358,19 @@ bool TerrainRingSet::update(f32 camera_x, f32 camera_z, f64 time_s, std::span<co
   last_built_ = s.rings.last_built();
   last_kept_ = s.rings.last_reused();
   return true;
-#else
-  (void)camera_x;
-  (void)camera_z;
-  (void)time_s;
-  (void)fields;
-  (void)jobs;
-  (void)error;
-  return true;
-#endif
 }
 
 TerrainRingLayout TerrainRingSet::layout() const noexcept {
   TerrainRingLayout out;
-#if ENGINE_RENDERER_TERRAIN
   if (!valid()) return out;
-  const terrain::RingLayout& l = state_->rings.layout();
+  scene_gen::RingsLayout l;
+  state_->rings.layout(l);
   for (u32 level = 1; level < levels_; ++level) {
-    const terrain::Ring& r = l.ring[ring_of_level(level)];
+    const scene_gen::RingPlace& r = l.ring[ring_of_level(level)];
     out.cx[level] = r.cx;
     out.cz[level] = r.cz;
     out.half[level] = r.half;
   }
-#endif
   return out;
 }
 
@@ -463,43 +427,32 @@ u64 TerrainRingSet::field_capacity(u32 level) const noexcept {
   return side * side;
 }
 
+// The provider's own re-centre rule on a copy of the layout
+// (`scene_gen::GroundRings::next_layout`): a ring clamped at the scene's edge that the camera has
+// left behind does not move, and asks for nothing. It reads the ring parameters and nothing
+// `update` changes, so the frame may ask while a re-centre is being built.
 TerrainRingLayout TerrainRingSet::next_layout(f32 camera_x, f32 camera_z,
                                               const TerrainRingLayout& from) const noexcept {
-#if ENGINE_RENDERER_TERRAIN
   if (!valid()) return from;
-  // The capability's own rule on a copy of the layout: a ring clamped at the scene's edge that the
-  // camera has left behind does not move, and asks for nothing. It reads the ring parameters and
-  // nothing `update` changes, so the frame may ask while a re-centre is being built.
-  const terrain::RingParams& params = state_->params;
-  terrain::RingLayout copy;
-  terrain::place_rings(params, 0, 0, copy);
+  scene_gen::RingsLayout rings;
+  rings.count = levels_;
   for (u32 level = 1; level < levels_; ++level) {
-    terrain::Ring& r = copy.ring[ring_of_level(level)];
+    scene_gen::RingPlace& r = rings.ring[ring_of_level(level)];
     r.cx = from.cx[level];
     r.cz = from.cz[level];
     r.half = from.half[level];
   }
-  for (u32 k = 1; k < copy.count; ++k) {
-    copy.ring[k].has_hole = true;
-    copy.ring[k].hole_cx = copy.ring[k - 1].cx;
-    copy.ring[k].hole_cz = copy.ring[k - 1].cz;
-    copy.ring[k].hole_half = copy.ring[k - 1].half;
-  }
-  terrain::recentre_rings(params, std::llround(static_cast<f64>(camera_x) * 1000.0),
-                          std::llround(static_cast<f64>(camera_z) * 1000.0), copy);
+  scene_gen::RingsLayout moved;
+  state_->rings.next_layout(std::llround(static_cast<f64>(camera_x) * 1000.0),
+                            std::llround(static_cast<f64>(camera_z) * 1000.0), rings, moved);
   TerrainRingLayout out;
   for (u32 level = 1; level < levels_; ++level) {
-    const terrain::Ring& r = copy.ring[ring_of_level(level)];
+    const scene_gen::RingPlace& r = moved.ring[ring_of_level(level)];
     out.cx[level] = r.cx;
     out.cz[level] = r.cz;
     out.half[level] = r.half;
   }
   return out;
-#else
-  (void)camera_x;
-  (void)camera_z;
-  return from;
-#endif
 }
 
 bool TerrainRingSet::wants_update(f32 camera_x, f32 camera_z,

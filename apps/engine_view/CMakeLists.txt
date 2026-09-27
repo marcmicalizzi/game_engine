@@ -35,6 +35,14 @@ if(TARGET engine::ruins)
   list(APPEND _view_deps ruins)
   list(APPEND _view_tests tests/ruins_view_tests.cpp)
 endif()
+# The scene generators this configuration has (ADR-0046; docs/subsystems/scene_gen.md): linked for
+# their registrars, which is what makes `--scene` read a terrain that names the dunes. Nothing here
+# calls one: the renderer's scene reader finds each by the name a scene gives.
+foreach(_gen terrain)
+  if(TARGET engine::${_gen})
+    list(APPEND _view_deps ${_gen})
+  endif()
+endforeach()
 if(TARGET engine::world)
   # `--world`: a streamed scene's tile ring with the camera as its observer (world_view.cpp,
   # docs/subsystems/world.md). The world capability is optional (ADR-0027), so this is the same

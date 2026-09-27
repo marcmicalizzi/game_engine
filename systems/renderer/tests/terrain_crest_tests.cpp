@@ -11,6 +11,7 @@
 #include <core/base/types.h>
 #include <domain/terrain/dunes.h>
 #include <domain/terrain/fixed.h>
+#include <domain/terrain/scene_ground.h>
 #include <domain/terrain/wind.h>
 #include <systems/renderer/scene.h>
 #include <systems/renderer/terrain.h>
@@ -115,7 +116,7 @@ TEST_CASE("renderer: the erg's big dunes advance by their band's travel, as Bagn
   std::string error;
   REQUIRE_MESSAGE(read_scene_file(path, scene, error), error);
   const TerrainSampler sampler(scene.terrain);
-  const terrain::DuneField* field = terrain_dune_field(sampler);
+  const terrain::DuneField* field = terrain::dune_field(sampler.provider());
   REQUIRE(field != nullptr);
   const i64 t0 = static_cast<i64>(std::llround(scene.terrain.time_s * 1.0e6));
   const i64 half_extent_mm =

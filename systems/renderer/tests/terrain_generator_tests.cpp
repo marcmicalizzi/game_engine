@@ -56,7 +56,7 @@ TerrainDesc dunes_desc(f64 time_s) {
 TEST_CASE("renderer: a scene's terrain names the dune generator, and an old one reads as before") {
   const test::TempDir tmp("renderer_terrain_generator");
   std::string error;
-  REQUIRE(terrain_generator_available());
+  REQUIRE(terrain_provider_known(dunes_desc(0.0)));
   const std::string path = tmp.file("dunes.json");
   REQUIRE(write_text(path, R"({"format":"engine.scene.v1","name":"dunes",)"
                            R"("terrain":{"size":33,"extent":40,"seed":4,"dune_height":2,)"
@@ -81,6 +81,54 @@ TEST_CASE("renderer: a scene's terrain names the dune generator, and an old one 
   CHECK(error.find("time") != std::string::npos);
 }
 
+TEST_CASE("renderer: a terrain names its ground provider, and the generator enum reads as one") {
+  // ADR-0046: `provider` names the ground by the name it registered under; `generator` is read as
+  // the provider it always meant, so a file written either way is the same terrain and the same
+  // cache entry.
+  const test::TempDir tmp("renderer_terrain_provider");
+  std::string error;
+  const auto scene = [](const std::string& fields) {
+    return std::string(R"({"format":"engine.scene.v1","terrain":{"size":33,"extent":40,"seed":4,)"
+                       R"("dune_height":2,"time":86400)") +
+           fields + "}}";
+  };
+  const std::string by_name = tmp.file("by_name.json");
+  const std::string by_enum = tmp.file("by_enum.json");
+  REQUIRE(write_text(by_name, scene(R"(,"provider":"dunes")")));
+  REQUIRE(write_text(by_enum, scene(R"(,"generator":"Dunes")")));
+  SceneDesc a, b;
+  REQUIRE_MESSAGE(read_scene_file(by_name, a, error), error);
+  REQUIRE_MESSAGE(read_scene_file(by_enum, b, error), error);
+  CHECK(terrain_provider(a.terrain) == "dunes");
+  CHECK(terrain_provider(b.terrain) == "dunes");
+  CHECK(a.terrain.generator == TerrainGenerator::dunes);
+  CHECK(terrain_hash(a.terrain) == terrain_hash(b.terrain));
+  CHECK(terrain_moves(a.terrain));
+  CHECK(terrain_has_rings(a.terrain));
+  // The waves by name are the default.
+  const std::string waves = tmp.file("waves.json");
+  REQUIRE(write_text(waves, scene(R"(,"provider":"waves")")));
+  SceneDesc w;
+  REQUIRE_MESSAGE(read_scene_file(waves, w, error), error);
+  CHECK(w.terrain.generator == TerrainGenerator::waves);
+  CHECK_FALSE(terrain_moves(w.terrain));
+  TerrainDesc plain = w.terrain;
+  plain.provider.clear();
+  CHECK(terrain_hash(plain) == terrain_hash(w.terrain));
+  // Two answers to one question are refused, and so is a name this executable does not carry,
+  // with the registry's sentence.
+  const std::string both = tmp.file("both.json");
+  REQUIRE(write_text(both, scene(R"(,"generator":"Dunes","provider":"waves")")));
+  SceneDesc refused;
+  CHECK_FALSE(read_scene_file(both, refused, error));
+  CHECK(error.find("name one") != std::string::npos);
+  const std::string unknown = tmp.file("unknown.json");
+  REQUIRE(write_text(unknown, scene(R"(,"provider":"snow")")));
+  CHECK_FALSE(read_scene_file(unknown, refused, error));
+  CHECK(error.find("names the ground provider \"snow\", which this build does not have") !=
+        std::string::npos);
+}
+
 TEST_CASE("renderer: the generator's fields enter the terrain hash only when it is named") {
   TerrainDesc waves = dunes_desc(0.0);
   waves.generator = TerrainGenerator::waves;
@@ -102,7 +150,7 @@ TEST_CASE("renderer: the generator's sampler, direct function and mesh agree to 
   REQUIRE_MESSAGE(build_terrain_mesh(desc, positions, indices, uvs, &error), error);
   REQUIRE(positions.size() == desc.size * desc.size);
   const TerrainSampler sampler(desc);
-  REQUIRE(sampler.dunes_field() != nullptr);
+  REQUIRE(sampler.moves());
   u32 bad = 0;
   f32 lo = 1e9f, hi = -1e9f;
   for (const Vec3& p : positions) {
@@ -154,7 +202,7 @@ TEST_CASE("renderer: the dunes move with time and the ground does not") {
   TerrainDesc waves = now;
   waves.generator = TerrainGenerator::waves;
   const TerrainSampler w(waves);
-  CHECK(w.dunes_field() == nullptr);
+  CHECK_FALSE(w.moves());
   CHECK(w.ground(12.0f, 3.0f) == w.height(12.0f, 3.0f));
 }
 

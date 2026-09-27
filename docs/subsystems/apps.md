@@ -501,6 +501,8 @@ render.unload    {scene} -> what was released: counts, GPU state, textures, host
 render.scenes    {} -> every scene held: id, source, counts, whether and at what size it is built, its textures and what sharing them saved; the adapter and the process's device memory
 ```
 
+**A scene naming a generator this build lacks** ([scene_gen](scene_gen.md), [ADR-0046](../adr/0046-scene-generators-register-themselves.md)). What generates part of a scene — its terrain's ground provider — is found in the scene-generator registry by the name the scene gives, and a generator is in the registry because the host links its capability: engine-view and engine-host link the terrain capability where the configuration has it, for its registrar alone, and nothing else in either names it. A scene whose terrain names a provider the executable does not carry — `"generator": "Dunes"` or `"provider": "dunes"` in a build without the terrain capability, a misspelt name anywhere — is refused as any unreadable scene is (engine-view exits 1, `render.load` answers 1005), with the registry's sentence after the file: `scene.json: the terrain names the ground provider "dunes", which this build does not have: its capability is switched off or not linked into this executable (it has waves)`.
+
 `render.load` is the expensive call — it imports and clusters a glTF, or reads the container the cache already holds — and the host keeps the result, so a capture and a benchmark of the same scene pay it once. `settings` on `render.benchmark` may differ from the ones the scene was loaded with; the host then rebuilds the GPU scene and the renderer from the loaded `SceneData` rather than re-importing the mesh.
 
 ```bash
