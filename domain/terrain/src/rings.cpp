@@ -353,10 +353,19 @@ void build_ring_chunk_mesh(const Ring& ring, RingChunkCoord chunk, const RingPar
     if (l == ~0u) {
       const u32 top = slot[j * nx + i];
       l = out.positions.size();
+      // Copies, taken before the pushes. `Vector::push_back` frees its old buffer before it
+      // reads the argument (`emplace_back` reallocates first; std::vector does not), so a
+      // reference into the vector being pushed to — `out.normals.push_back(out.normals[top])`,
+      // which this was — reads freed memory whenever that push is the one that grows it. The
+      // grid's pushes leave a capacity a full chunk's skirts stay inside and a chunk clipped to
+      // a few rows along the ring's border does not (terrain.md, "Rings": the crash of
+      // 2026-09-26).
       const Vec3 p = out.positions[top];
+      const Vec3 n = out.normals[top];
+      const Vec2 uv = out.uvs[top];
       out.positions.push_back(Vec3{p.x, p.y - drop, p.z});
-      out.normals.push_back(out.normals[top]);
-      out.uvs.push_back(out.uvs[top]);
+      out.normals.push_back(n);
+      out.uvs.push_back(uv);
       out.locked.push_back(u8{1});
     }
     return l;

@@ -1,14 +1,18 @@
 // The terrain rings (docs/subsystems/terrain.md, "Rings"): which ring a point is in, that the
 // rings' meshes cover the outer square with no gap and no overlap, the re-centre rule step by step,
 // the skirts' winding, vertices that stay on the world's grid when a ring moves, and a rebuild that
-// is the same bytes on any number of threads.
+// is the same bytes on one, two, three and sixteen workers, and every skirt vertex of the chunks
+// the clamps clip thin against the grid vertex it hangs from.
+#include <core/containers/detail/raw_storage.h>
 #include <core/jobs/job_system.h>
 #include <domain/terrain/fixed.h>
 #include <domain/terrain/terrain.h>
 
 #include <doctest/doctest.h>
 
+#include <bit>
 #include <string>
+#include <unordered_map>
 
 using namespace engine;
 using namespace engine::terrain;
@@ -44,6 +48,47 @@ bool inside(const Ring& inner, const Ring& outer) {
          inner.cx + inner.half <= outer.cx + outer.half &&
          inner.cz - inner.half >= outer.cz - outer.half &&
          inner.cz + inner.half <= outer.cz + outer.half;
+}
+
+// A vertex's (x, z) as one key: a skirt vertex copies its top's x and z bit for bit.
+u64 column_key(Vec3 p) noexcept {
+  return (static_cast<u64>(std::bit_cast<u32>(p.x)) << 32) | std::bit_cast<u32>(p.z);
+}
+
+// The capacity `pushes` pushes onto an empty `Vector<T, u32>` leave it with, by the containers'
+// growth policy (1.5x from a floor of four): where the next push reallocates.
+u32 capacity_after(u32 pushes) noexcept {
+  u32 cap = 0;
+  for (u32 n = 0; n < pushes; ++n) {
+    if (n == cap) cap = containers::detail::grow_capacity(cap, n + 1, ~0u);
+  }
+  return cap;
+}
+
+// Every skirt vertex of `mesh` against the grid vertex it hangs from: the same x and z, `drop`
+// below it, the same normal and UV, and locked. Counts in `wrong` the ones it could not match or
+// that differ, and returns how many it checked.
+u32 check_skirt_vertices(const RingMesh& mesh, f32 drop, u32& wrong) {
+  std::unordered_map<u64, u32> tops;
+  for (u32 v = 0; v < mesh.grid_vertices; ++v)
+    tops.emplace(column_key(mesh.positions[v]), v);
+  u32 checked = 0;
+  for (u32 v = mesh.grid_vertices; v < mesh.positions.size(); ++v) {
+    const auto it = tops.find(column_key(mesh.positions[v]));
+    if (it == tops.end()) {
+      ++wrong;
+      continue;
+    }
+    const u32 t = it->second;
+    const bool same = mesh.positions[v].y == mesh.positions[t].y - drop &&
+                      mesh.normals[v].x == mesh.normals[t].x &&
+                      mesh.normals[v].y == mesh.normals[t].y &&
+                      mesh.normals[v].z == mesh.normals[t].z && mesh.uvs[v].x == mesh.uvs[t].x &&
+                      mesh.uvs[v].y == mesh.uvs[t].y && mesh.locked[v] == 1;
+    wrong += same ? 0u : 1u;
+    ++checked;
+  }
+  return checked;
 }
 
 }  // namespace
@@ -181,6 +226,66 @@ TEST_CASE("terrain rings: the skirts face away from the ring's own ground") {
   CHECK(wrong == 0u);
 }
 
+TEST_CASE("terrain rings: a skirt vertex keeps its top's attributes in a chunk clipped thin") {
+  // The crash of 2026-09-26 (terrain.md, "Rings"): a skirt vertex took its top's normal and UV
+  // by reference into the vector the push appended to, and `Vector` frees its old buffer before
+  // it reads the argument, so the push that grew the vector read freed memory — a segfault when
+  // the freed block had been unmapped, silently the top's stale bytes (or the allocator's own)
+  // when it had not. The grid's pushes leave a capacity a full chunk's skirts stay inside (16,641
+  // vertices, capacity 18,207, at most 516 skirt vertices) and a chunk clipped to a few rows along
+  // a ring's border does not: 129 x 3 vertices are 387 and a capacity of 474, and the border's
+  // 129 skirt vertices cross it. Every layout has such chunks, since a ring's edge falls where the
+  // camera put it, not on a chunk line. So: every skirt vertex against its top, bit for bit, over
+  // the coverage test's layouts and a ring whose corner lies one cell into a chunk — that chunk's
+  // four grid vertices are exactly the capacity four pushes leave, so the first skirt vertex's
+  // push is the one that grows the vector, and what it copies is vertex 0, the first bytes of the
+  // freed buffer, the ones an allocator overwrites first. Under ASan the old code is a
+  // use-after-free report on the first such chunk; `grew` says the reallocation happened.
+  const RingParams p = small_rings();
+  const FieldRingHeights heights(field(), 0);
+  u32 wrong = 0, checked = 0, grew = 0;
+  const auto check_layout = [&](const RingLayout& layout) {
+    for (u32 k = 0; k < layout.count; ++k) {
+      Vector<RingChunkCoord> chunks;
+      ring_chunks(layout.ring[k], chunks);
+      const f32 drop = static_cast<f32>(static_cast<f64>(layout.ring[k].skirt) / 1000.0);
+      for (const RingChunkCoord chunk : chunks) {
+        RingMesh mesh;
+        build_ring_chunk_mesh(layout.ring[k], chunk, p, heights, nullptr, mesh);
+        checked += check_skirt_vertices(mesh, drop, wrong);
+        grew += mesh.positions.size() > capacity_after(mesh.grid_vertices) ? 1u : 0u;
+      }
+    }
+  };
+  for (const i64 camera : {i64{3'700}, i64{-505'000}}) {
+    RingLayout layout;
+    place_rings(p, camera, -camera / 2, layout);
+    check_layout(layout);
+  }
+  CHECK(grew > 0u);
+  CHECK(wrong == 0u);
+  // The corner: a ring 64 m either side of (191, 191) m at a metre, its low corner at 127 m, one
+  // cell before the chunk line at 128 m.
+  RingLayout corner;
+  corner.count = 1;
+  corner.ring[0] =
+      Ring{.cx = 191'000, .cz = 191'000, .half = 64'000, .spacing = 1'000, .skirt = 8'000};
+  Vector<RingChunkCoord> chunks;
+  ring_chunks(corner.ring[0], chunks);
+  REQUIRE(chunks.size() == 4u);
+  RingMesh one;
+  build_ring_chunk_mesh(corner.ring[0], RingChunkCoord{0, 0}, p, heights, nullptr, one);
+  CHECK(one.grid_vertices == 4u);
+  CHECK(capacity_after(4) == 4u);
+  CHECK(one.grid_triangles == 2u);
+  CHECK(one.skirt_triangles == 4u);  // two border edges, two triangles each
+  const u32 before = grew;
+  check_layout(corner);
+  CHECK(grew > before);
+  CHECK(wrong == 0u);
+  CHECK(checked > 0u);
+}
+
 TEST_CASE("terrain rings: the re-centre rule fires when the camera crosses half a ring") {
   const RingParams p = small_rings();
   RingLayout layout;
@@ -240,9 +345,13 @@ TEST_CASE("terrain rings: a rebuild is the same bytes on any number of threads, 
     CHECK(serial.lod(k).level_cluster_counts.size() > 1u);  // a DAG, not one level
   }
   CHECK(off_grid == 0u);
+  // One worker, two, three (the chunks split unevenly), and sixteen: more workers than the inner
+  // ring has chunks, so most of them wait on a build they have no part in.
   jobs::JobSystem one(jobs::JobSystemConfig{.performance_workers = 1, .pin_threads = false});
+  jobs::JobSystem two(jobs::JobSystemConfig{.performance_workers = 2, .pin_threads = false});
   jobs::JobSystem three(jobs::JobSystemConfig{.performance_workers = 3, .pin_threads = false});
-  for (jobs::JobSystem* pool : {&one, &three}) {
+  jobs::JobSystem sixteen(jobs::JobSystemConfig{.performance_workers = 16, .pin_threads = false});
+  for (jobs::JobSystem* pool : {&one, &two, &three, &sixteen}) {
     TerrainRings again;
     REQUIRE(again.reset(p, 0, 0, heights, options, pool, &error));
     for (u32 k = 0; k < again.count(); ++k)
@@ -272,5 +381,7 @@ TEST_CASE("terrain rings: a rebuild is the same bytes on any number of threads, 
   MESSAGE("rings: " << moving.chunks(0).size() << " + " << moving.chunks(1).size() << " + "
                     << moving.chunks(2).size() << " chunks, " << moving.lod(1).mesh.clusters.size()
                     << " clusters in the middle ring; a 20 m move rebuilt " << built
-                    << " chunks and kept " << kept);
+                    << " chunks and kept " << kept << "; hashes " << serial.hash(0) << " "
+                    << serial.hash(1) << " " << serial.hash(2) << " moved " << incremental[0] << " "
+                    << incremental[1] << " " << incremental[2]);
 }
