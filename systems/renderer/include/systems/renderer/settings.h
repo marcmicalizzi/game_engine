@@ -147,6 +147,13 @@ struct RenderSettings {
   // `time` and nothing re-evaluated. It sizes nothing, but it is a question about the scene, and
   // both hosts read their questions from here.
   f64 time_rate = 0.0;
+  // The rate may change while the scene is drawn (`TerrainMotion::set_rate`; engine-view's `,` and
+  // `.` in an interactive window), so a dune terrain is drawn as terrain levels even at a
+  // `time_rate` of zero: the motion has to exist, standing still, for a key to set it going. It
+  // costs what a still terrain's levels cost — the pool's `renderer.terrain.pool_mib` floor, the
+  // rest pose evaluated once at load, no cone test on the terrain — and draws the same picture
+  // (the rest pose is the mesh's heights to the bit). Nothing else asks for it.
+  bool time_rate_live = false;
   // The dune generator's ground near the camera at the terrain rings' finer grids, drawn beside the
   // scene's own (terrain_rings.h, docs/subsystems/renderer.md, "The rings in the scene"): an inner
   // ring at 50 cm and a middle one at a metre by default (`terrain.rings.*`), rebuilt round the
@@ -219,8 +226,8 @@ struct ResolvedSettings {
   // The terrain is drawn as **terrain levels** (docs/subsystems/renderer.md, "The dunes in
   // time-lapse"): its instance is deformed, and the pool pass writes its heights blended between
   // two evaluated fields of the dune generator. True when the scene's terrain is the generator's
-  // and the settings move it (`time_rate` above zero) or ask for its rings; it turns `deform_pass`
-  // on with it.
+  // and the settings move it (`time_rate` above zero), may move it later (`time_rate_live`) or ask
+  // for its rings; it turns `deform_pass` on with it.
   bool terrain_levels = false;
   // The terrain rings are drawn as levels beside the scene's grid (`RenderSettings::terrain_rings`
   // on a scene with terrain levels, read whole): the host builds a `TerrainRingSet` and hands it

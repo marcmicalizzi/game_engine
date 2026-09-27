@@ -177,6 +177,22 @@ f64 terrain_keep_up_time(f64 from_s, f64 at_s, const TerrainKeepUp& keep,
 // gently and the sand sets off again gently: never a stop followed by a sprint. The per-frame bound
 // of `terrain_surface_frame` still applies after it: the clock chooses a target, the blend's own
 // rule how far the surface goes towards it.
+//
+// **A change of rate** (`set_rate`; renderer.md, "Changing the rate while it runs") is a change of
+// what the clock steers by, never of where the surface stands: L is the new rate's at once (the
+// same turnarounds, at the new rate), and the speed the surface had carries over and changes at
+// **the acceleration of that speed** — the old rate once the clock has settled, whatever it had
+// reached when a second key comes before that — for a latency's worth of real time (`margin` times
+// the worst turnaround), and after that for as long as it is still above the new rate's reach.
+// Down, that is the larger acceleration: a week a second slowed to a minute a second decelerates in
+// under a second, as it set off, rather than over the hours the new rate's own would take, and a
+// rate of zero brings the sand to rest the same way rather than at once. Up, it is the smaller, and
+// on purpose: the fields on their way were timed at the old rate and hold about a latency of it, so
+// a sand that took the new rate's acceleration at once outran them and braked to a stand before
+// the first field timed at the new rate could come (the CPU model measured five frames of it from
+// a tenth of a day to a day); for a latency it gains its old speed every `response_s`, and then
+// the new rate's. From rest there is nothing to carry over, and the new rate's own starts it. At a
+// constant rate nothing here differs from a clock that never changed.
 struct TerrainClockConfig {
   f64 rate = 0.0;        // game seconds per real second
   f64 margin = 1.2;      // L is this times the worst recent turnaround at the rate
@@ -188,12 +204,17 @@ inline constexpr u32 k_clock_samples = 8;  // arrivals a level remembers
 class TerrainClock {
  public:
   void reset(const TerrainClockConfig& config) noexcept;
+  // The rate changes (above): L follows it now, the speed over the next second or so. The
+  // turnarounds are real seconds and are kept. A negative rate is taken as zero.
+  void set_rate(f64 rate) noexcept;
+  f64 rate() const noexcept { return config_.rate; }
   // Level `level`'s next field became ready to draw `turnaround_s` real seconds after the level
   // came to want it.
   void arrived(u32 level, f64 turnaround_s) noexcept;
   // Where the surface should stand after a frame of `real_dt_s`, from `surface_s`, with game time
   // at `game_s` and every level's newest field at or after `horizon_s`: never backwards, never past
-  // the horizon.
+  // the horizon. At a rate of zero a surface still moving from a faster rate decelerates to rest;
+  // one at rest stays where it is.
   f64 advance(f64 real_dt_s, f64 game_s, f64 surface_s, f64 horizon_s) noexcept;
   // Where the frame actually left it (the per-frame bound may have stopped it short): the speed
   // the next frame starts from.
@@ -218,6 +239,11 @@ class TerrainClock {
   Level levels_[k_max_surface_levels];
   f64 latency_s_ = 0.0;
   f64 speed_ = 0.0;
+  // The speed at the last change while its ramp lasts (0 otherwise): what the acceleration is
+  // taken from for `ramp_left_s_` more real seconds, and after them while the speed is above the
+  // new rate's reach.
+  f64 ramp_rate_ = 0.0;
+  f64 ramp_left_s_ = 0.0;
   bool braked_ = false;
 };
 
@@ -254,8 +280,31 @@ class TerrainMotion {
   // Stops the worker, waiting for a field or a re-centre in flight.
   void finish();
 
+  // **The rate changes while the sand moves** (renderer.md, "Changing the rate while it runs";
+  // engine-view's `,` and `.`). Game time runs on at the new rate from the next frame; the surface
+  // clock takes it (`TerrainClock::set_rate`: L at the new rate at once, the speed towards it at
+  // the acceleration of the speed it had for a latency and then the new rate's, so the sand slows
+  // down within a second, speeds up over one to three without outrunning the fields already on
+  // their way, and comes to rest at zero rather than stopping dead); and **the next field is timed
+  // at the new
+  // rate** — a level that has no field on its way comes to want its next one now, since the time
+  // spent at a rate of zero, when nothing is asked for, is no field's turnaround, and whatever it
+  // asks for next is timed by the cadence rule and the keep-up rule at the new rate. Fields already
+  // evaluated or on their way keep their times: they are the same function of time, and a pair of
+  // them is crossed within the per-frame bound whatever it spans (at a slower rate, by a
+  // cross-fade over the span the faster one chose, until the fields timed at the new rate arrive).
+  // Nothing the surface stands on is touched — not the surface time, not a pair, not a blend — so a
+  // change never steps the sand, and every frame after it goes through `terrain_surface_frame`'s
+  // bound like every frame before. With `wait` (offscreen) the fields are timed by displacement
+  // alone as ever, so a run that changes its rate at the same frames draws the same pictures;
+  // engine-view's offscreen runs never change it. False, with nothing changed, before `start` or
+  // for a rate that is negative or not finite.
+  bool set_rate(f64 rate) noexcept;
+  u32 rate_changes() const noexcept { return rate_changes_; }  // changes that changed the rate
+  f64 start_rate() const noexcept { return start_rate_; }      // the rate `start` was given
+
   bool active() const noexcept { return scene_ != nullptr; }
-  const TimeLapseConfig& config() const noexcept { return config_; }
+  const TimeLapseConfig& config() const noexcept { return config_; }  // `rate` is the current one
   f64 game_time_s() const noexcept { return start_s_ + game_s_; }
 
   // What the rings did (renderer.md, "The rings in the scene").
@@ -475,6 +524,8 @@ class TerrainMotion {
   TerrainClock clock_;
   f64 max_latency_s_ = 0.0;
   f64 speed_ratio_ = 0.0;
+  f64 start_rate_ = 0.0;
+  u32 rate_changes_ = 0;
   bool moved_once_ = false;
   u32 stopped_frames_ = 0;
   u32 braked_frames_ = 0;

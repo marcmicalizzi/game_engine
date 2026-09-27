@@ -257,6 +257,26 @@ void TerrainClock::reset(const TerrainClockConfig& config) noexcept {
   braked_ = false;
   // A clock starts still: the first field is not there yet, and the sand sets off from rest.
   speed_ = 0.0;
+  ramp_rate_ = 0.0;
+  ramp_left_s_ = 0.0;
+}
+
+void TerrainClock::set_rate(f64 rate) noexcept {
+  const f64 next = rate > 0.0 ? rate : 0.0;
+  if (next == config_.rate) return;
+  // The speed carries over, and changes at the acceleration of the speed it had — the rate the
+  // sand was going at, which is the old rate once the clock has settled and whatever it had reached
+  // when the keys come faster than that (terrain_time.h, "A change of rate") — for one latency's
+  // worth of real time, how long the first field timed at the new rate takes to come, and after
+  // that while it is still above the new rate's reach. From rest there is nothing to carry over,
+  // and the new rate's own acceleration starts it, as at the start.
+  ramp_rate_ = speed_;
+  f64 worst = 0.0;
+  for (u32 k = 0; k < k_max_surface_levels; ++k)
+    worst = std::max(worst, turnaround_s(k));
+  ramp_left_s_ = config_.margin * worst;
+  config_.rate = next;
+  update_latency();
 }
 
 void TerrainClock::arrived(u32 level, f64 turnaround_s) noexcept {
@@ -286,26 +306,38 @@ void TerrainClock::update_latency() noexcept {
 
 f64 TerrainClock::advance(f64 real_dt_s, f64 game_s, f64 surface_s, f64 horizon_s) noexcept {
   const f64 rate = config_.rate;
-  if (!(rate > 0.0) || !(real_dt_s > 0.0)) return surface_s;
-  const f64 accel = rate / std::max(config_.response_s, 1.0e-3);
+  if (!(real_dt_s > 0.0)) return surface_s;
+  if (!(rate > 0.0) && !(speed_ > 0.0)) {  // still, and at rest
+    braked_ = false;
+    return surface_s;
+  }
+  // After a change of rate, the speed it had then for a while (`set_rate`); otherwise the rate's.
+  const f64 accel = (ramp_rate_ > 0.0 ? ramp_rate_ : rate) / std::max(config_.response_s, 1.0e-3);
+  const f64 ceiling = config_.catch_up * rate;
   // Towards game time minus L: at the rate when there, faster (up to catch_up) when behind, slower
   // (down to still) when ahead, and never changing speed by more than `accel` allows.
   const f64 gap = game_s - latency_s_ - surface_s;
-  const f64 want =
-      std::clamp(rate + gap / std::max(config_.settle_s, 1.0e-3), 0.0, config_.catch_up * rate);
-  f64 speed = std::clamp(want, speed_ - accel * real_dt_s, speed_ + accel * real_dt_s);
+  const f64 want = std::clamp(rate + gap / std::max(config_.settle_s, 1.0e-3), 0.0, ceiling);
+  const f64 slowest = speed_ - accel * real_dt_s;
+  f64 speed = std::clamp(want, slowest, speed_ + accel * real_dt_s);
   // Braking for the newest field every level has: the fastest speed from which the surface can
   // still stop at it decelerating at `accel`, so a late field is approached like a stop sign.
   const f64 room = std::max(horizon_s - surface_s, 0.0);
   const f64 brake = std::min(std::sqrt(2.0 * accel * room), room / real_dt_s);
   braked_ = brake < speed;
-  speed = std::clamp(std::min(speed, brake), 0.0, config_.catch_up * rate);
+  // Never above catch_up times the rate — except while coming down from a faster rate, which
+  // decelerates rather than dropping to the new rate at once. At a constant rate the speed the last
+  // frame settled on is within the ceiling, so `slowest` is too and this is the ceiling.
+  speed = std::clamp(std::min(speed, brake), 0.0, std::max(ceiling, slowest));
   return std::min(surface_s + speed * real_dt_s, std::max(horizon_s, surface_s));
 }
 
 void TerrainClock::settle(f64 real_dt_s, f64 from_s, f64 to_s) noexcept {
   if (!(real_dt_s > 0.0)) return;
   speed_ = std::max(to_s - from_s, 0.0) / real_dt_s;
+  // A change of rate is over once its latency has passed and the speed is within the rate's reach.
+  ramp_left_s_ = std::max(ramp_left_s_ - real_dt_s, 0.0);
+  if (ramp_left_s_ == 0.0 && speed_ <= config_.catch_up * config_.rate) ramp_rate_ = 0.0;
 }
 
 // ---- the motion ------------------------------------------------------------------------------
@@ -394,6 +426,8 @@ bool TerrainMotion::start(GpuScene& scene, TerrainRingSet* rings, const TimeLaps
   clock_.reset(clock_config);
   max_latency_s_ = 0.0;
   speed_ratio_ = 0.0;
+  start_rate_ = config_.rate;
+  rate_changes_ = 0;
   moved_once_ = false;
   stopped_frames_ = 0;
   braked_frames_ = 0;
@@ -490,6 +524,27 @@ bool TerrainMotion::start(GpuScene& scene, TerrainRingSet* rings, const TimeLaps
                   log::field("spacing_m", levels_[0].spacing_m),
                   log::field("rest_ms", levels_[0].stats.last_eval_ms),
                   log::field("rings", rings_ != nullptr), log::field("wait", config_.wait));
+  return true;
+}
+
+bool TerrainMotion::set_rate(f64 rate) noexcept {
+  if (!active() || !(rate >= 0.0) || !std::isfinite(rate)) return false;
+  if (rate == config_.rate) return true;
+  const f64 was = config_.rate;
+  config_.rate = rate;
+  clock_.set_rate(rate);
+  ++rate_changes_;
+  // The next field is timed at the new rate: `schedule` reads the rate, and the turnaround it is
+  // timed by is the time from wanting a field to its being ready. A level with nothing on its way
+  // comes to want its next field now, because the time before — at a rate of zero, when nothing is
+  // asked for, or at a rate whose field it had already been given — is no field's turnaround. A
+  // field on its way keeps the moment it was wanted: its turnaround is a real one.
+  for (Level& level : levels_) {
+    if (level.wanted_s >= 0.0 && !level.on_its_way()) level.wanted_s = real_s_;
+  }
+  ENGINE_LOG_INFO(log_renderer, "terrain time-lapse rate", log::field("from", was),
+                  log::field("to", rate), log::field("game_time_s", game_time_s()),
+                  log::field("latency_s", clock_.latency_s()), log::field("wait", config_.wait));
   return true;
 }
 
@@ -1289,10 +1344,12 @@ void TerrainMotion::frame(f64 real_dt_s, f32 camera_x, f32 camera_z) {
   const f64 before = levels_[0].blend.surface_s;
   // Where the surface goes this frame. Offscreen (`wait`), to game time, waiting below for a field
   // it has caught up with; in a window, where the clock says — game time minus L, at a speed that
-  // changes a little a frame and brakes for the newest field every level has.
+  // changes a little a frame and brakes for the newest field every level has. At a rate of zero
+  // too: a surface still moving from a faster rate is brought to rest by the clock rather than
+  // sent to where game time stopped, L ahead of it (`set_rate`), and one at rest stays put.
   f64 goal = target;
   u32 horizon_level = ~0u;
-  if (!config_.wait && config_.rate > 0.0) {
+  if (!config_.wait) {
     f64 horizon = target;
     for (u32 k = 0; k < n; ++k) {
       const Level& level = levels_[k];
@@ -1375,7 +1432,7 @@ void TerrainMotion::frame(f64 real_dt_s, f32 camera_x, f32 camera_z) {
     waited[h] = true;
   }
   const f64 after = levels_[0].blend.surface_s;
-  if (!config_.wait && config_.rate > 0.0) {
+  if (!config_.wait) {
     clock_.settle(real_dt_s, before, after);
     max_latency_s_ = std::max(max_latency_s_, clock_.latency_s());
   }

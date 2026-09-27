@@ -325,11 +325,13 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
   // renderer.md's "every device- and scene-driven override lives in one function" true.
   // **A moving terrain is a deformed one** (renderer.md, "The dunes in time-lapse"): the dune
   // generator's terrain under a time-lapse draws its heights out of the pool, blended between two
-  // evaluated fields. Not for a scene whose instances come and go, which has no pool.
-  out.terrain_levels = scene != nullptr && (s.time_rate > 0.0 || s.terrain_rings) && !dynamic &&
-                       scene->terrain.enabled &&
-                       scene->terrain.generator == TerrainGenerator::dunes &&
-                       scene->terrain_mesh != ~0u && terrain_generator_available();
+  // evaluated fields. Not for a scene whose instances come and go, which has no pool. A rate that
+  // may change while it runs (`time_rate_live`) needs the levels at zero too; a scene that cannot
+  // have them is only warned about when something asked for motion now.
+  out.terrain_levels =
+      scene != nullptr && (s.time_rate > 0.0 || s.terrain_rings || s.time_rate_live) && !dynamic &&
+      scene->terrain.enabled && scene->terrain.generator == TerrainGenerator::dunes &&
+      scene->terrain_mesh != ~0u && terrain_generator_available();
   if (scene != nullptr && (s.time_rate > 0.0 || s.terrain_rings) && !out.terrain_levels &&
       dynamic) {
     ENGINE_LOG_WARN(log_renderer, "the terrain does not move",

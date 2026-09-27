@@ -421,6 +421,120 @@ TEST_CASE("terrain motion: the pool draws the blended field, and no vertex jumps
   CHECK(worst_error <= 2.0e-3);
 }
 
+TEST_CASE("terrain motion: the rate changed while it runs, from a standing start, never steps") {
+  // engine-view's `,` and `.` (TerrainMotion::set_rate): a scene drawn with `time_rate_live` has
+  // its terrain levels at a rate of zero, and the rate then goes to a day a second, a week, an
+  // hour, zero and a week again, fields arriving when the worker has them. Every frame the pool
+  // draws the model of the motion's own pair and blend, no vertex moves more than the bound, the
+  // surface never goes backwards, and at zero it comes to rest and stays there.
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("renderer unavailable here: " << gpu.why);
+    return;
+  }
+  test::TempDir tmp{"engine_renderer_terrain_rate"};
+  const SceneDesc desc = moving_scene(slashes(tmp.native() / "ddc"));
+  RenderSettings settings;
+  settings.shadows = ShadowMode::Off;
+  settings.time_rate = 0.0;
+  settings.time_rate_live = true;
+  TimeLapseConfig lapse = time_lapse_config_from_tunables(0.0);
+  lapse.wait = false;
+  jobs::JobSystem pool(jobs::JobSystemConfig{.performance_workers = 2, .pin_threads = false});
+  constexpr u32 k_width = 160;
+  constexpr u32 k_height = 96;
+  Rig rig;
+  // Not before the motion has started.
+  CHECK_FALSE(rig.motion.set_rate(60.0));
+  REQUIRE_MESSAGE(rig.build(gpu.device, desc, settings, k_width, k_height, &lapse, &pool),
+                  rig.error);
+  REQUIRE(rig.resolved.terrain_levels);  // at a rate of zero, because the rate may change
+  // Without `time_rate_live` a still terrain is drawn rigid, as it always was.
+  {
+    ResolvedSettings still;
+    RenderSettings plain = settings;
+    plain.time_rate_live = false;
+    resolve_settings(plain, gpu.device.features(), &rig.data, still);
+    CHECK_FALSE(still.terrain_levels);
+  }
+  CHECK_FALSE(rig.motion.set_rate(-1.0));
+  CHECK_FALSE(rig.motion.set_rate(std::nan("")));
+  const f64 bound = lapse.fraction * rig.scene.terrain_lattice(0).spacing;
+  struct Step {
+    u32 frames;
+    f64 rate;
+  };
+  constexpr Step k_steps[] = {{10, 0.0},     {40, 86'400.0}, {40, 604'800.0},
+                              {20, 3'600.0}, {50, 0.0},      {30, 604'800.0}};
+  CaptureChannels channels;
+  channels.depth = true;
+  f64 worst_error = 0.0;
+  f64 worst_vertex_move = 0.0;
+  f64 worst_reported_move = 0.0;
+  u64 compared = 0;
+  bool monotonic = true;
+  bool rested = true;
+  f64 last_surface = rig.motion.level_stats(0).surface_s;
+  Vector<f32> previous;
+  Vector<f32> expected;
+  u32 f = 0;
+  u32 changes = 0;
+  for (const Step& step : k_steps) {
+    if (step.rate != rig.motion.config().rate) ++changes;
+    REQUIRE(rig.motion.set_rate(step.rate));
+    CHECK(rig.motion.config().rate == step.rate);
+    for (u32 i = 0; i < step.frames; ++i, ++f) {
+      rig.motion.frame(1.0 / 60.0);
+      worst_reported_move = std::max(worst_reported_move, rig.motion.last_move_m());
+      const TerrainMotion::LevelStats s = rig.motion.level_stats(0);
+      monotonic = monotonic && s.surface_s >= last_surface;
+      // At zero, after the deceleration: at rest.
+      if (step.rate == 0.0 && i >= 48) rested = rested && s.surface_s == last_surface;
+      last_surface = s.surface_s;
+      FrameDesc frame;
+      frame.camera = looking_down();
+      frame.frame_index = f;
+      frame.lod_px = 0.0f;
+      CapturedFrame shot;
+      REQUIRE_MESSAGE(rig.renderer.capture(frame, channels, shot, &rig.error), rig.error);
+      expected_heights(rig.data, s, expected);
+      if (!previous.empty()) {
+        for (u32 v = 0; v < expected.size(); ++v)
+          worst_vertex_move =
+              std::max(worst_vertex_move, static_cast<f64>(std::abs(expected[v] - previous[v])));
+      }
+      previous = expected;
+      const Mat4 inverse_view_proj = inverse(rig.renderer.views()[0].view_proj);
+      for (u32 py = 0; py < k_height; py += 2) {
+        for (u32 px = 0; px < k_width; px += 2) {
+          Vec3 world;
+          if (!unproject(shot, inverse_view_proj, px, py, world)) continue;
+          const f32 model = surface_at(rig.data.terrain, expected, world.x, world.z);
+          if (std::isnan(model)) continue;
+          worst_error = std::max(worst_error, static_cast<f64>(std::abs(world.y - model)));
+          ++compared;
+        }
+      }
+    }
+  }
+  rig.motion.finish();
+  const TerrainMotion::LevelStats s = rig.motion.level_stats(0);
+  MESSAGE(f << " frames over " << changes << " changes of rate: " << s.installed
+            << " fields installed, " << s.held << " frames held, " << s.capped
+            << " capped; largest vertex move a frame " << worst_vertex_move << " m (bound " << bound
+            << "); the pool against the model at " << compared << " pixels, worst " << worst_error
+            << " m");
+  CHECK(rig.motion.rate_changes() == changes);
+  CHECK(rig.motion.start_rate() == 0.0);
+  CHECK(s.installed > 2u);
+  CHECK(monotonic);
+  CHECK(rested);
+  CHECK(worst_vertex_move <= bound + 1.0e-5);
+  CHECK(worst_reported_move <= bound + 1.0e-9);
+  CHECK(compared > 1'000u);
+  CHECK(worst_error <= 2.0e-3);
+}
+
 namespace {
 
 // The visibility invariants on a moving terrain, over the scene's grid alone or with the rings in
