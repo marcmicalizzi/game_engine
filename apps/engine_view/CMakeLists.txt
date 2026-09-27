@@ -74,6 +74,10 @@ if(TARGET engine_engine_view_tests)
   # the source tree (or the test bundle's copy of it: tests/support/test_paths.h).
   target_compile_definitions(engine_engine_view_tests PRIVATE
     ENGINE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+  if(TARGET engine::terrain)
+    # The cases over a dune scene skip only in a build whose engine-view has no dunes to draw it.
+    target_compile_definitions(engine_engine_view_tests PRIVATE ENGINE_VIEW_TESTS_DUNES=1)
+  endif()
 endif()
 
 if(TARGET engine::animation)

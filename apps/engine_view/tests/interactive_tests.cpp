@@ -121,6 +121,19 @@ void write_dune_scene(const std::string& path) {
                  "generator":"Dunes","time":94608000}})") == io::Status::Ok);
 }
 
+// Whether this build's engine-view carries the terrain capability's dunes: the CMake file defines
+// it where the capability is linked. A build without it (msvc-minimal) refuses the dune scene with
+// the scene-generator registry's sentence (docs/subsystems/apps.md), which is not what the cases
+// over that scene test, so they skip there — and only there: with the capability, a refusal fails
+// them.
+#ifndef ENGINE_VIEW_TESTS_DUNES
+#define ENGINE_VIEW_TESTS_DUNES 0
+#endif
+bool refused_without_dunes(const Run& run) {
+  return ENGINE_VIEW_TESTS_DUNES == 0 && run.exit_code == 1 &&
+         run.output.find("which this build does not have") != std::string::npos;
+}
+
 std::string slashes(const std::filesystem::path& path) {
   std::string out = path.string();
   for (char& c : out) {
@@ -565,7 +578,7 @@ TEST_CASE("engine-view: an offscreen time-lapse and sun's day carry both summary
     args.push_back(a);
   args.push_back(tmp.file("a.png"));
   const Run run = run_view(args);
-  if (run.exit_code == 3) {
+  if (run.exit_code == 3 || refused_without_dunes(run)) {
     MESSAGE("engine-view unavailable here: " << run.output);
     return;
   }
@@ -643,7 +656,7 @@ TEST_CASE("engine-view: a live session's keys: the two rates, the click, and Esc
   const Run live =
       run_view({"--interactive", "--inject-input", inject, "--record-input", recorded, "--scene",
                 scene, "--width", "160", "--height", "96", "--no-vsync", "--ddc", tmp.file("ddc")});
-  if (live.exit_code == 3) {
+  if (live.exit_code == 3 || refused_without_dunes(live)) {
     MESSAGE("engine-view unavailable here: " << live.output);
     return;
   }
